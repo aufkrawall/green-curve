@@ -1,4 +1,4 @@
-// Green Curve v0.1 - NVIDIA Blackwell VF Curve Editor
+// Green Curve v0.2 - NVIDIA Blackwell VF Curve Editor
 // Single-file Win32 GDI application
 // Compile: zig c++ -O ReleaseSmall -fstrip -mwindows -o greencurve.exe main.cpp -luser32 -lgdi32 -ladvapi32 -lshell32
 
@@ -71,7 +71,7 @@ static void init_dpi() {
 #define GRAPH_HEIGHT        420
 #define APP_ICON_ID         101
 #define APP_NAME            "Green Curve"
-#define APP_VERSION         "0.1"
+#define APP_VERSION         "0.2"
 #define APP_TITLE           APP_NAME " v" APP_VERSION
 #define APP_CLASS_NAME      "GreenCurveClass"
 #define APP_EXE_NAME        "greencurve.exe"
@@ -79,12 +79,23 @@ static void init_dpi() {
 #define APP_CLI_LOG_FILE    "greencurve_cli_log.txt"
 #define APP_JSON_FILE       "greencurve_curve.json"
 #define APP_DEBUG_ENV       "GREEN_CURVE_DEBUG"
+#define APP_WM_SYNC_STARTUP (WM_APP + 1)
 #define APPLY_BTN_ID        2000
 #define REFRESH_BTN_ID      2001
 #define RESET_BTN_ID        2003
-#define SAVE_CFG_BTN_ID     2004
 #define LICENSE_BTN_ID      2005
-#define STARTUP_APPLY_ID    2006
+// Profile slot IDs
+#define PROFILE_COMBO_ID    2020
+#define PROFILE_LOAD_ID     2021
+#define PROFILE_SAVE_ID     2022
+#define PROFILE_CLEAR_ID    2023
+#define APP_LAUNCH_COMBO_ID 2024
+#define LOGON_COMBO_ID      2025
+#define PROFILE_LABEL_ID    2026
+#define PROFILE_STATE_ID    2027
+#define APP_LAUNCH_LABEL_ID 2028
+#define LOGON_LABEL_ID      2029
+#define PROFILE_STATUS_ID   2030
 #define LOCK_BASE_ID        3000  // lock checkboxes: 3000+vi
 #define GPU_OFFSET_ID       2010
 #define MEM_OFFSET_ID       2011
@@ -94,9 +105,8 @@ static void init_dpi() {
 #define MAX_GPU_FANS        8
 #define CONFIG_FILE_NAME    "config.ini"
 #define STARTUP_TASK_PREFIX "Green Curve Startup - "
-#define CONFIG_STARTUP_PRESERVE (-1)
-#define CONFIG_STARTUP_DISABLE   0
-#define CONFIG_STARTUP_ENABLE    1
+#define CONFIG_NUM_SLOTS    5
+#define CONFIG_DEFAULT_SLOT 1
 #define NVML_PERF_STR_LEN   2048
 
 #define MIN_VISIBLE_VOLT_mV 700
@@ -165,6 +175,16 @@ enum {
 };
 
 enum {
+    NVAPI_GPU_PUBLIC_CLOCK_GRAPHICS = 0,
+    NVAPI_GPU_PUBLIC_CLOCK_MEMORY = 4,
+};
+
+enum {
+    NVAPI_GPU_PERF_PSTATE20_CLOCK_TYPE_SINGLE = 0,
+    NVAPI_GPU_PERF_PSTATE20_CLOCK_TYPE_RANGE = 1,
+};
+
+enum {
     NVML_PSTATE_0 = 0,
     NVML_PSTATE_1 = 1,
     NVML_PSTATE_2 = 2,
@@ -197,6 +217,11 @@ enum {
 #define NVML_THERMAL_COOLER_TARGET_POWER_SUPPLY (1 << 3)
 
 #define NVML_STRUCT_VERSION(data, ver) (unsigned int)(sizeof(nvml##data##_v##ver##_t) | ((ver) << 24U))
+#define NVAPI_STRUCT_VERSION(type, ver) (unsigned int)(sizeof(type) | ((ver) << 16U))
+
+#define NVAPI_MAX_GPU_PSTATE20_PSTATES 16
+#define NVAPI_MAX_GPU_PSTATE20_CLOCKS 8
+#define NVAPI_MAX_GPU_PSTATE20_BASE_VOLTAGES 4
 
 typedef struct {
     unsigned int version;
@@ -228,6 +253,75 @@ typedef struct {
 typedef nvmlCoolerInfo_v1_t nvmlCoolerInfo_t;
 #define nvmlCoolerInfo_v1 NVML_STRUCT_VERSION(CoolerInfo, 1)
 
+typedef struct {
+    int value;
+    struct {
+        int min;
+        int max;
+    } valueRange;
+} nvapiPstates20ParamDelta_t;
+
+typedef struct {
+    unsigned int freq_kHz;
+} nvapiPstate20SingleClock_t;
+
+typedef struct {
+    unsigned int minFreq_kHz;
+    unsigned int maxFreq_kHz;
+    unsigned int domainId;
+    unsigned int minVoltage_uV;
+    unsigned int maxVoltage_uV;
+} nvapiPstate20RangeClock_t;
+
+typedef union {
+    nvapiPstate20SingleClock_t single;
+    nvapiPstate20RangeClock_t range;
+} nvapiPstate20ClockData_t;
+
+typedef struct {
+    unsigned int domainId;
+    unsigned int typeId;
+    unsigned int bIsEditable:1;
+    unsigned int reserved:31;
+    nvapiPstates20ParamDelta_t freqDelta_kHz;
+    nvapiPstate20ClockData_t data;
+} nvapiPstate20ClockEntry_t;
+
+typedef struct {
+    unsigned int domainId;
+    unsigned int bIsEditable:1;
+    unsigned int reserved:31;
+    unsigned int volt_uV;
+    nvapiPstates20ParamDelta_t voltDelta_uV;
+} nvapiPstate20BaseVoltageEntry_t;
+
+typedef struct {
+    unsigned int pstateId;
+    unsigned int bIsEditable:1;
+    unsigned int reserved:31;
+    nvapiPstate20ClockEntry_t clocks[NVAPI_MAX_GPU_PSTATE20_CLOCKS];
+    nvapiPstate20BaseVoltageEntry_t baseVoltages[NVAPI_MAX_GPU_PSTATE20_BASE_VOLTAGES];
+} nvapiPstate20Entry_t;
+
+typedef struct {
+    unsigned int numVoltages;
+    nvapiPstate20BaseVoltageEntry_t voltages[NVAPI_MAX_GPU_PSTATE20_BASE_VOLTAGES];
+} nvapiPstates20Ov_t;
+
+typedef struct {
+    unsigned int version;
+    unsigned int bIsEditable:1;
+    unsigned int reserved:31;
+    unsigned int numPstates;
+    unsigned int numClocks;
+    unsigned int numBaseVoltages;
+    nvapiPstate20Entry_t pstates[NVAPI_MAX_GPU_PSTATE20_PSTATES];
+    nvapiPstates20Ov_t ov;
+} nvapiPerfPstates20Info_t;
+
+#define NVAPI_PERF_PSTATES20_INFO_VER2 NVAPI_STRUCT_VERSION(nvapiPerfPstates20Info_t, 2)
+#define NVAPI_PERF_PSTATES20_INFO_VER3 NVAPI_STRUCT_VERSION(nvapiPerfPstates20Info_t, 3)
+
 struct VFCurvePoint {
     unsigned int freq_kHz;
     unsigned int volt_uV;
@@ -243,13 +337,27 @@ struct AppData {
     HWND hRefreshBtn;
     HWND hResetBtn;
     HWND hLicenseBtn;
-    HWND hStartupApplyCheck;
     // OC/PL edit fields
     HWND hGpuOffsetEdit;
     HWND hMemOffsetEdit;
     HWND hPowerLimitEdit;
     HWND hFanEdit;
-    HWND hSaveCfgBtn;
+    // Profile controls
+    HWND hProfileCombo;       // slot selector 1-5
+    HWND hProfileLoadBtn;
+    HWND hProfileSaveBtn;
+    HWND hProfileClearBtn;
+    HWND hProfileLabel;
+    HWND hProfileStateLabel;
+    HWND hAppLaunchCombo;     // app start auto-load: Off / Slot 1..5
+    HWND hLogonCombo;         // system logon auto-apply: Off / Slot 1..5
+    HWND hAppLaunchLabel;
+    HWND hLogonLabel;
+    HWND hProfileStatusLabel;
+
+    HBRUSH hWindowClassBrush;
+    HANDLE hStartupSyncThread;
+    bool startupSyncInFlight;
     HDC hMemDC;
     HBITMAP hMemBmp;
     HBITMAP hOldBmp;
@@ -288,11 +396,25 @@ struct AppData {
     int offsetReadPstate;
     bool gpuOffsetRangeKnown;
     bool memOffsetRangeKnown;
+    int pstateGpuOffsetkHz;
+    int pstateMemOffsetkHz;
+    unsigned int pstateGpuMaxMHz;
+    unsigned int pstateMemMaxMHz;
     int powerLimitPct;       // power limit percentage (100 = default)
     int powerLimitDefaultmW; // default power limit in mW
     int powerLimitCurrentmW; // current power limit in mW
     int powerLimitMinmW;     // min power limit
     int powerLimitMaxmW;     // max power limit
+
+    // nvidia-smi max clocks (VBIOS defaults)
+    bool smiClocksRead;
+    unsigned int smiGpuMaxMHz;
+    unsigned int smiMemMaxMHz;
+
+    // Cached VF metadata
+    bool vfInfoCached;
+    unsigned int vfNumClocks;
+    unsigned char vfMask[32];
 
     // Fan state
     bool fanSupported;
@@ -370,6 +492,16 @@ typedef nvmlReturn_t (*nvmlDeviceSetFanSpeed_v2_t)(nvmlDevice_t, unsigned int, u
 typedef nvmlReturn_t (*nvmlDeviceSetDefaultFanSpeed_v2_t)(nvmlDevice_t, unsigned int);
 typedef nvmlReturn_t (*nvmlDeviceGetCoolerInfo_t)(nvmlDevice_t, nvmlCoolerInfo_t*);
 
+enum {
+    NVML_CLOCK_ID_CURRENT = 0,
+    NVML_CLOCK_ID_APP_CLOCK_TARGET = 1,
+    NVML_CLOCK_ID_APP_CLOCK_DEFAULT = 2,
+    NVML_CLOCK_ID_CUSTOMER_BOOST_MAX = 3,
+};
+
+typedef nvmlReturn_t (*nvmlDeviceGetClock_t)(nvmlDevice_t, unsigned int, unsigned int, unsigned int*);
+typedef nvmlReturn_t (*nvmlDeviceGetMaxClock_t)(nvmlDevice_t, unsigned int, unsigned int*);
+
 struct NvmlApi {
     nvmlInit_v2_t init;
     nvmlShutdown_t shutdown;
@@ -397,16 +529,31 @@ struct NvmlApi {
     nvmlDeviceSetFanSpeed_v2_t setFanSpeed;
     nvmlDeviceSetDefaultFanSpeed_v2_t setDefaultFanSpeed;
     nvmlDeviceGetCoolerInfo_t getCoolerInfo;
+    nvmlDeviceGetClock_t getClock;
+    nvmlDeviceGetMaxClock_t getMaxClock;
 };
 
 static NvmlApi g_nvml_api = {};
 static HMODULE g_nvml = nullptr;
 static bool g_debug_logging = false;
 
+typedef int (*NvApiFunc)(void*, void*);
+
+static void* nvapi_qi(unsigned int id);
 static bool nvapi_read_curve();
 static bool nvapi_read_offsets();
 static bool nvapi_read_pstates();
+static void detect_clock_offsets();
+static int uniform_curve_offset_khz();
+static int clamp_freq_delta_khz(int freqDelta_kHz);
 static bool nvapi_set_point(int pointIndex, int freqDelta_kHz);
+static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* pointMask, int maxBatchPasses);
+static void close_startup_sync_thread_handle();
+static void invalidate_main_window();
+static void redraw_window_sync(HWND hwnd);
+static void fill_window_background(HWND hwnd, HDC hdc);
+static void flush_desktop_composition();
+static void show_window_with_primed_first_frame(HWND hwnd, int nCmdShow);
 static bool nvapi_set_gpu_offset(int offsetkHz);
 static bool nvapi_set_mem_offset(int offsetkHz);
 static bool nvapi_set_power_limit(int pct);
@@ -414,6 +561,9 @@ static void rebuild_visible_map();
 static unsigned int get_edit_value(HWND hEdit);
 static void populate_edits();
 static void create_edit_controls(HWND hParent, HINSTANCE hInst);
+static unsigned int get_edit_value(HWND hEdit);
+static void set_edit_value(HWND hEdit, unsigned int value);
+static void unlock_all();
 static int mem_display_mhz_from_driver_khz(int driver_kHz);
 static int mem_display_mhz_from_driver_mhz(int driverMHz);
 static unsigned int displayed_curve_mhz(unsigned int rawFreq_kHz);
@@ -425,11 +575,34 @@ static void debug_log(const char* fmt, ...);
 static bool write_text_file_atomic(const char* path, const char* data, size_t dataSize, char* err, size_t errSize);
 static bool write_log_snapshot(const char* path, char* err, size_t errSize);
 static bool save_desired_to_config_with_startup(const char* path, const DesiredSettings* desired, bool useCurrentForUnset, int startupState, char* err, size_t errSize);
+// Profile I/O
+static bool load_profile_from_config(const char* path, int slot, DesiredSettings* desired, char* err, size_t errSize);
+static bool save_profile_to_config(const char* path, int slot, const DesiredSettings* desired, char* err, size_t errSize);
+static bool clear_profile_from_config(const char* path, int slot, char* err, size_t errSize);
+static bool is_profile_slot_saved(const char* path, int slot);
+static void refresh_profile_controls_from_config();
+static void migrate_legacy_config_if_needed(const char* path);
+static void layout_profile_controls(HWND hParent);
+static void merge_desired_settings(DesiredSettings* base, const DesiredSettings* override);
+static bool desired_has_any_action(const DesiredSettings* desired);
+static bool capture_gui_apply_settings(DesiredSettings* desired, char* err, size_t errSize);
+static void set_profile_status_text(const char* fmt, ...);
+static void update_profile_state_label();
+static void update_profile_action_buttons();
+static bool maybe_confirm_profile_load_replace(int slot);
+static void maybe_load_app_launch_profile_to_gui();
+// Legacy config constants kept for existing save_desired_to_config_with_startup
+#define CONFIG_STARTUP_PRESERVE (-1)
+#define CONFIG_STARTUP_DISABLE   0
+#define CONFIG_STARTUP_ENABLE    1
 static bool capture_gui_config_settings(DesiredSettings* desired, char* err, size_t errSize);
 static bool set_startup_task_enabled(bool enabled, char* err, size_t errSize);
+static bool load_startup_enabled_from_config(const char* path, bool* enabled);
 static bool is_startup_task_enabled();
-static void sync_startup_checkbox_from_system();
-static bool startup_checkbox_checked();
+static void sync_logon_combo_from_system();
+static void schedule_logon_combo_sync();
+static void destroy_backbuffer();
+
 static void detect_locked_tail_from_curve();
 static void close_nvml();
 
@@ -441,13 +614,24 @@ static int layout_rows_per_column() {
     return (g_app.numVisible + 5) / 6;
 }
 
+static int layout_global_controls_y() {
+    return dp(GRAPH_HEIGHT) + dp(14) + layout_rows_per_column() * dp(20) + dp(6);
+}
+
 static int layout_bottom_buttons_y() {
-    return dp(GRAPH_HEIGHT) + dp(14) + layout_rows_per_column() * dp(20) + dp(38);
+    return layout_global_controls_y() + dp(32);
+}
+
+static int layout_bottom_panel_bottom_y() {
+    int buttonsY = layout_bottom_buttons_y();
+    int profileY = buttonsY + dp(40);
+    int autoY = profileY + dp(34);
+    int statusY = autoY + dp(32);
+    return statusY + dp(18);
 }
 
 static int minimum_client_height() {
-    int btnBottom = layout_bottom_buttons_y() + dp(30);
-    return nvmax(dp(WINDOW_HEIGHT), btnBottom + dp(12));
+    return nvmax(dp(WINDOW_HEIGHT), layout_bottom_panel_bottom_y() + dp(12));
 }
 
 static SIZE adjusted_window_size_for_client(int clientWidth, int clientHeight, DWORD style, DWORD exStyle) {
@@ -492,28 +676,53 @@ static void layout_bottom_buttons(HWND hParent) {
     if (!hParent) return;
     RECT rc = {};
     GetClientRect(hParent, &rc);
-    int btnY = layout_bottom_buttons_y();
+    const int margin = dp(8);
+    const int gap = dp(6);
+    const int buttonH = dp(30);
+    const int smallButtonW = dp(76);
+    const int comboDropH = dp(220);
+    const int buttonsY = layout_bottom_buttons_y();
+    const int profileY = buttonsY + dp(40);
+    const int autoY = profileY + dp(34);
+    const int statusY = autoY + dp(32);
+
     if (g_app.hApplyBtn)
-        SetWindowPos(g_app.hApplyBtn, nullptr, dp(8), btnY, dp(110), dp(30), SWP_NOZORDER);
+        SetWindowPos(g_app.hApplyBtn, nullptr, margin, buttonsY, dp(132), buttonH, SWP_NOZORDER);
     if (g_app.hRefreshBtn)
-        SetWindowPos(g_app.hRefreshBtn, nullptr, dp(130), btnY, dp(90), dp(30), SWP_NOZORDER);
+        SetWindowPos(g_app.hRefreshBtn, nullptr, margin + dp(144), buttonsY, dp(98), buttonH, SWP_NOZORDER);
     if (g_app.hResetBtn)
-        SetWindowPos(g_app.hResetBtn, nullptr, dp(232), btnY, dp(90), dp(30), SWP_NOZORDER);
-    if (g_app.hSaveCfgBtn)
-        SetWindowPos(g_app.hSaveCfgBtn, nullptr, dp(334), btnY, dp(130), dp(30), SWP_NOZORDER);
-    if (g_app.hStartupApplyCheck) {
-        int startupX = dp(480);
-        int startupRight = rc.right - dp(100);
-        int startupW = nvmax(dp(190), startupRight - startupX);
-        SetWindowPos(g_app.hStartupApplyCheck, nullptr, startupX, btnY + dp(6), startupW, dp(20), SWP_NOZORDER);
-    }
+        SetWindowPos(g_app.hResetBtn, nullptr, margin + dp(254), buttonsY, dp(98), buttonH, SWP_NOZORDER);
     if (g_app.hLicenseBtn)
-        SetWindowPos(g_app.hLicenseBtn, nullptr, rc.right - dp(8) - dp(80), btnY, dp(80), dp(30), SWP_NOZORDER);
+        SetWindowPos(g_app.hLicenseBtn, nullptr, rc.right - margin - dp(118), buttonsY, dp(118), buttonH, SWP_NOZORDER);
+
+    if (g_app.hProfileLabel)
+        SetWindowPos(g_app.hProfileLabel, nullptr, margin, profileY + dp(4), dp(72), dp(18), SWP_NOZORDER);
+    if (g_app.hProfileCombo)
+        SetWindowPos(g_app.hProfileCombo, nullptr, margin + dp(76), profileY, dp(156), comboDropH, SWP_NOZORDER);
+    if (g_app.hProfileLoadBtn)
+        SetWindowPos(g_app.hProfileLoadBtn, nullptr, margin + dp(244), profileY, smallButtonW, dp(28), SWP_NOZORDER);
+    if (g_app.hProfileSaveBtn)
+        SetWindowPos(g_app.hProfileSaveBtn, nullptr, margin + dp(244) + smallButtonW + gap, profileY, smallButtonW, dp(28), SWP_NOZORDER);
+    if (g_app.hProfileClearBtn)
+        SetWindowPos(g_app.hProfileClearBtn, nullptr, margin + dp(244) + (smallButtonW + gap) * 2, profileY, smallButtonW, dp(28), SWP_NOZORDER);
+    if (g_app.hProfileStateLabel) {
+        int stateX = margin + dp(244) + (smallButtonW + gap) * 3 + dp(12);
+        int stateW = nvmax(dp(140), rc.right - stateX - margin);
+        SetWindowPos(g_app.hProfileStateLabel, nullptr, stateX, profileY + dp(4), stateW, dp(18), SWP_NOZORDER);
+    }
+
+    if (g_app.hAppLaunchLabel)
+        SetWindowPos(g_app.hAppLaunchLabel, nullptr, margin, autoY + dp(4), dp(170), dp(18), SWP_NOZORDER);
+    if (g_app.hAppLaunchCombo)
+        SetWindowPos(g_app.hAppLaunchCombo, nullptr, margin + dp(174), autoY, dp(170), comboDropH, SWP_NOZORDER);
+    if (g_app.hLogonLabel)
+        SetWindowPos(g_app.hLogonLabel, nullptr, margin + dp(366), autoY + dp(4), dp(208), dp(18), SWP_NOZORDER);
+    if (g_app.hLogonCombo)
+        SetWindowPos(g_app.hLogonCombo, nullptr, margin + dp(578), autoY, dp(170), comboDropH, SWP_NOZORDER);
+    if (g_app.hProfileStatusLabel)
+        SetWindowPos(g_app.hProfileStatusLabel, nullptr, margin, statusY, nvmax(dp(300), rc.right - margin * 2), dp(18), SWP_NOZORDER);
 }
 
-static bool startup_checkbox_checked() {
-    return g_app.hStartupApplyCheck && SendMessageA(g_app.hStartupApplyCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
-}
 
 static void set_default_config_path() {
     if (g_app.configPath[0]) return;
@@ -819,6 +1028,13 @@ static bool get_window_text_safe(HWND hwnd, char* buf, int bufSize) {
     return true;
 }
 
+static bool config_section_has_keys(const char* path, const char* section) {
+    if (!path || !section) return false;
+    char keys[256] = {};
+    DWORD n = GetPrivateProfileStringA(section, nullptr, "", keys, ARRAY_COUNT(keys), path);
+    return n > 0 && keys[0] != 0;
+}
+
 static bool load_desired_settings_from_ini(const char* path, DesiredSettings* desired, char* err, size_t errSize) {
     if (!path || !desired) return false;
     memset(desired, 0, sizeof(*desired));
@@ -889,6 +1105,624 @@ static bool load_desired_settings_from_ini(const char* path, DesiredSettings* de
     return true;
 }
 
+// ============================================================================
+// Profile Slot I/O
+// ============================================================================
+
+static int get_config_int(const char* path, const char* section, const char* key, int defaultVal) {
+    if (!path || !section || !key) return defaultVal;
+    char buf[32] = {};
+    GetPrivateProfileStringA(section, key, "", buf, sizeof(buf), path);
+    trim_ascii(buf);
+    if (!buf[0]) return defaultVal;
+    int v = 0;
+    if (!parse_int_strict(buf, &v)) return defaultVal;
+    return v;
+}
+
+static bool set_config_int(const char* path, const char* section, const char* key, int value) {
+    if (!path || !section || !key) return false;
+    char buf[32];
+    StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d", value);
+    return WritePrivateProfileStringA(section, key, buf, path) != FALSE;
+}
+
+static bool load_profile_from_config(const char* path, int slot, DesiredSettings* desired, char* err, size_t errSize) {
+    if (!path || !desired || slot < 1 || slot > CONFIG_NUM_SLOTS) {
+        set_message(err, errSize, "Invalid profile load arguments");
+        return false;
+    }
+    memset(desired, 0, sizeof(*desired));
+
+    // Use slot-specific sections if they exist, else legacy sections for slot 1
+    char controlsSection[32];
+    char curveSection[32];
+    StringCchPrintfA(controlsSection, ARRAY_COUNT(controlsSection), "profile%d", slot);
+    StringCchPrintfA(curveSection, ARRAY_COUNT(curveSection), "profile%d_curve", slot);
+
+    bool hasSlotSections = config_section_has_keys(path, controlsSection) || config_section_has_keys(path, curveSection);
+    if (!hasSlotSections && slot == 1) {
+        if (config_section_has_keys(path, "controls") || config_section_has_keys(path, "curve")) {
+            StringCchCopyA(controlsSection, ARRAY_COUNT(controlsSection), "controls");
+            StringCchCopyA(curveSection, ARRAY_COUNT(curveSection), "curve");
+        } else {
+            set_message(err, errSize, "Profile %d is empty", slot);
+            return false;
+        }
+    } else if (!hasSlotSections) {
+        set_message(err, errSize, "Profile %d is empty", slot);
+        return false;
+    }
+
+    if (!config_section_has_keys(path, controlsSection) && !config_section_has_keys(path, curveSection)) {
+        set_message(err, errSize, "Profile %d is empty", slot);
+        return false;
+    }
+
+    char fanBuf[64] = {};
+    char buf[64] = {};
+
+    GetPrivateProfileStringA(controlsSection, "gpu_offset_mhz", "", buf, sizeof(buf), path);
+    trim_ascii(buf);
+    if (buf[0]) {
+        int v = 0;
+        if (!parse_int_strict(buf, &v)) {
+            set_message(err, errSize, "Invalid gpu_offset_mhz in profile %d", slot);
+            return false;
+        }
+        desired->hasGpuOffset = true;
+        desired->gpuOffsetMHz = v;
+    }
+
+    GetPrivateProfileStringA(controlsSection, "mem_offset_mhz", "", buf, sizeof(buf), path);
+    trim_ascii(buf);
+    if (buf[0]) {
+        int v = 0;
+        if (!parse_int_strict(buf, &v)) {
+            set_message(err, errSize, "Invalid mem_offset_mhz in profile %d", slot);
+            return false;
+        }
+        desired->hasMemOffset = true;
+        desired->memOffsetMHz = v;
+    }
+
+    GetPrivateProfileStringA(controlsSection, "power_limit_pct", "", buf, sizeof(buf), path);
+    trim_ascii(buf);
+    if (buf[0]) {
+        int v = 0;
+        if (!parse_int_strict(buf, &v)) {
+            set_message(err, errSize, "Invalid power_limit_pct in profile %d", slot);
+            return false;
+        }
+        desired->hasPowerLimit = true;
+        desired->powerLimitPct = v;
+    }
+
+    GetPrivateProfileStringA(controlsSection, "fan", "", fanBuf, sizeof(fanBuf), path);
+    trim_ascii(fanBuf);
+    if (fanBuf[0]) {
+        desired->hasFan = true;
+        if (!parse_fan_value(fanBuf, &desired->fanAuto, &desired->fanPercent)) {
+            set_message(err, errSize, "Invalid fan setting in profile %d", slot);
+            return false;
+        }
+    }
+
+    for (int i = 0; i < VF_NUM_POINTS; i++) {
+        char key[32];
+        StringCchPrintfA(key, ARRAY_COUNT(key), "point%d", i);
+        GetPrivateProfileStringA(curveSection, key, "", buf, sizeof(buf), path);
+        trim_ascii(buf);
+        if (!buf[0]) continue;
+        int v = 0;
+        if (!parse_int_strict(buf, &v) || v <= 0) {
+            set_message(err, errSize, "Invalid curve point %d in profile %d", i, slot);
+            return false;
+        }
+        desired->hasCurvePoint[i] = true;
+        desired->curvePointMHz[i] = (unsigned int)v;
+    }
+
+    return true;
+}
+
+static bool is_profile_slot_saved(const char* path, int slot) {
+    if (!path || slot < 1 || slot > CONFIG_NUM_SLOTS) return false;
+    char section[32];
+    char curveSection[32];
+    StringCchPrintfA(section, ARRAY_COUNT(section), "profile%d", slot);
+    StringCchPrintfA(curveSection, ARRAY_COUNT(curveSection), "profile%d_curve", slot);
+    if (config_section_has_keys(path, section) || config_section_has_keys(path, curveSection)) return true;
+    // Fallback: check legacy sections for slot 1
+    if (slot == 1) {
+        if (config_section_has_keys(path, "controls") || config_section_has_keys(path, "curve")) return true;
+    }
+    return false;
+}
+
+static bool save_profile_to_config(const char* path, int slot, const DesiredSettings* desired, char* err, size_t errSize) {
+    if (!path || !desired || slot < 1 || slot > CONFIG_NUM_SLOTS) {
+        set_message(err, errSize, "Invalid profile save arguments");
+        return false;
+    }
+
+    // Read existing profile preferences
+    int appLaunchSlot = get_config_int(path, "profiles", "app_launch_slot", 0);
+    int logonSlot = get_config_int(path, "profiles", "logon_slot", 0);
+    int selectedSlot = slot;
+    if (appLaunchSlot < 0 || appLaunchSlot > CONFIG_NUM_SLOTS) appLaunchSlot = 0;
+    if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
+
+    // Buffer for building complete config
+    char cfg[131072] = {};
+    size_t used = 0;
+    auto appendf = [&](const char* fmt, ...) {
+        if (used >= sizeof(cfg) - 1) return;
+        va_list ap;
+        va_start(ap, fmt);
+        int n = _vsnprintf_s(cfg + used, sizeof(cfg) - used, _TRUNCATE, fmt, ap);
+        va_end(ap);
+        if (n > 0) used += (size_t)n;
+    };
+    // Read existing file to preserve sections we're not touching
+    char existingBuf[131072] = {};
+    DWORD existingLen = GetPrivateProfileStringA(nullptr, nullptr, "", existingBuf, sizeof(existingBuf), path);
+    (void)existingLen;
+
+    // Build [meta]
+    appendf("[meta]\r\nformat_version=2\r\n\r\n");
+
+    // Build [profiles] section
+    appendf("[profiles]\r\n");
+    appendf("selected_slot=%d\r\n", selectedSlot);
+    appendf("app_launch_slot=%d\r\n", appLaunchSlot);
+    appendf("logon_slot=%d\r\n", logonSlot);
+    appendf("\r\n");
+
+    // Write the target profile section
+    {
+        char controlsSection[32];
+        char curveSection[32];
+        StringCchPrintfA(controlsSection, ARRAY_COUNT(controlsSection), "profile%d", slot);
+        StringCchPrintfA(curveSection, ARRAY_COUNT(curveSection), "profile%d_curve", slot);
+
+        appendf("[%s]\r\n", controlsSection);
+        appendf("gpu_offset_mhz=%d\r\n", desired->hasGpuOffset ? desired->gpuOffsetMHz : (g_app.gpuClockOffsetkHz / 1000));
+        appendf("mem_offset_mhz=%d\r\n", desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
+        appendf("power_limit_pct=%d\r\n", desired->hasPowerLimit ? desired->powerLimitPct : g_app.powerLimitPct);
+        if (desired->hasFan) {
+            if (desired->fanAuto) appendf("fan=auto\r\n");
+            else appendf("fan=%d\r\n", desired->fanPercent);
+        } else {
+            if (g_app.fanIsAuto) appendf("fan=auto\r\n");
+            else appendf("fan=%u\r\n", g_app.fanCount ? g_app.fanPercent[0] : 0);
+        }
+        appendf("\r\n");
+
+        appendf("[%s]\r\n", curveSection);
+        for (int i = 0; i < VF_NUM_POINTS; i++) {
+            unsigned int mhz = 0;
+            if (desired->hasCurvePoint[i]) {
+                mhz = desired->curvePointMHz[i];
+            } else if (g_app.curve[i].freq_kHz > 0) {
+                mhz = displayed_curve_mhz(g_app.curve[i].freq_kHz);
+            }
+            if (mhz == 0) continue;
+            char key[16];
+            StringCchPrintfA(key, ARRAY_COUNT(key), "point%d", i);
+            appendf("%s=%u\r\n", key, mhz);
+        }
+        appendf("\r\n");
+    }
+
+    // Copy other profile sections (except the one being written)
+    {
+        const char* p = existingBuf;
+        while (*p) {
+            bool skip = false;
+            char targetControls[32], targetCurve[32];
+            StringCchPrintfA(targetControls, ARRAY_COUNT(targetControls), "profile%d", slot);
+            StringCchPrintfA(targetCurve, ARRAY_COUNT(targetCurve), "profile%d_curve", slot);
+            if (strcmp(p, targetControls) == 0 || strcmp(p, targetCurve) == 0 ||
+                strcmp(p, "meta") == 0 || strcmp(p, "profiles") == 0 || strcmp(p, "startup") == 0 ||
+                (slot == 1 && (strcmp(p, "controls") == 0 || strcmp(p, "curve") == 0))) {
+                skip = true;
+            }
+            if (!skip) {
+                appendf("[%s]\r\n", p);
+                char keys[16384] = {};
+                GetPrivateProfileStringA(p, nullptr, "", keys, sizeof(keys), path);
+                const char* kp = keys;
+                while (*kp) {
+                    char val[4096] = {};
+                    GetPrivateProfileStringA(p, kp, "", val, sizeof(val), path);
+                    appendf("%s=%s\r\n", kp, val);
+                    kp += strlen(kp) + 1;
+                }
+                appendf("\r\n");
+            }
+            p += strlen(p) + 1;
+        }
+    }
+
+    // Write legacy sections for backward compatibility when slot 1 is saved
+    if (slot == 1) {
+        appendf("[controls]\r\n");
+        appendf("gpu_offset_mhz=%d\r\n", desired->hasGpuOffset ? desired->gpuOffsetMHz : (g_app.gpuClockOffsetkHz / 1000));
+        appendf("mem_offset_mhz=%d\r\n", desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
+        appendf("power_limit_pct=%d\r\n", desired->hasPowerLimit ? desired->powerLimitPct : g_app.powerLimitPct);
+        if (desired->hasFan) {
+            if (desired->fanAuto) appendf("fan=auto\r\n");
+            else appendf("fan=%d\r\n", desired->fanPercent);
+        } else {
+            if (g_app.fanIsAuto) appendf("fan=auto\r\n");
+            else appendf("fan=%u\r\n", g_app.fanCount ? g_app.fanPercent[0] : 0);
+        }
+        appendf("\r\n");
+        appendf("[curve]\r\n");
+        for (int i = 0; i < VF_NUM_POINTS; i++) {
+            unsigned int mhz = 0;
+            if (desired->hasCurvePoint[i]) {
+                mhz = desired->curvePointMHz[i];
+            } else if (g_app.curve[i].freq_kHz > 0) {
+                mhz = displayed_curve_mhz(g_app.curve[i].freq_kHz);
+            }
+            if (mhz == 0) continue;
+            char key[16];
+            StringCchPrintfA(key, ARRAY_COUNT(key), "point%d", i);
+            appendf("%s=%u\r\n", key, mhz);
+        }
+        appendf("\r\n");
+    }
+
+    appendf("[startup]\r\napply_on_launch=%d\r\n\r\n", logonSlot > 0 ? 1 : 0);
+
+    bool ok = write_text_file_atomic(path, cfg, used, err, errSize);
+    if (ok) WritePrivateProfileStringA(NULL, NULL, NULL, NULL);
+    return ok;
+}
+
+static bool clear_profile_from_config(const char* path, int slot, char* err, size_t errSize) {
+    if (!path || slot < 1 || slot > CONFIG_NUM_SLOTS) {
+        set_message(err, errSize, "Invalid profile clear arguments");
+        return false;
+    }
+
+    // Read existing profile preferences
+    int appLaunchSlot = get_config_int(path, "profiles", "app_launch_slot", 0);
+    int logonSlot = get_config_int(path, "profiles", "logon_slot", 0);
+    int selectedSlot = get_config_int(path, "profiles", "selected_slot", CONFIG_DEFAULT_SLOT);
+    if (appLaunchSlot < 0 || appLaunchSlot > CONFIG_NUM_SLOTS) appLaunchSlot = 0;
+    if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
+    if (selectedSlot < 1 || selectedSlot > CONFIG_NUM_SLOTS) selectedSlot = CONFIG_DEFAULT_SLOT;
+
+    if (appLaunchSlot == slot) appLaunchSlot = 0;
+    if (logonSlot == slot) logonSlot = 0;
+    if (selectedSlot == slot) {
+        selectedSlot = CONFIG_DEFAULT_SLOT;
+        if (selectedSlot == slot) {
+            for (int s = 1; s <= CONFIG_NUM_SLOTS; s++) {
+                if (s != slot && is_profile_slot_saved(path, s)) {
+                    selectedSlot = s;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Read existing file
+    char existingBuf[131072] = {};
+    GetPrivateProfileStringA(nullptr, nullptr, "", existingBuf, sizeof(existingBuf), path);
+
+    char cfg[131072] = {};
+    size_t used = 0;
+    auto appendf = [&](const char* fmt, ...) {
+        if (used >= sizeof(cfg) - 1) return;
+        va_list ap;
+        va_start(ap, fmt);
+        int n = _vsnprintf_s(cfg + used, sizeof(cfg) - used, _TRUNCATE, fmt, ap);
+        va_end(ap);
+        if (n > 0) used += (size_t)n;
+    };
+
+    char targetControls[32], targetCurve[32];
+    StringCchPrintfA(targetControls, ARRAY_COUNT(targetControls), "profile%d", slot);
+    StringCchPrintfA(targetCurve, ARRAY_COUNT(targetCurve), "profile%d_curve", slot);
+
+    // Write [meta] and [profiles]
+    appendf("[meta]\r\nformat_version=2\r\n\r\n");
+    appendf("[profiles]\r\nselected_slot=%d\r\napp_launch_slot=%d\r\nlogon_slot=%d\r\n\r\n", selectedSlot, appLaunchSlot, logonSlot);
+
+    // Copy all sections except the cleared ones and managed sections
+    const char* p = existingBuf;
+    while (*p) {
+        bool skip = (strcmp(p, targetControls) == 0 || strcmp(p, targetCurve) == 0 ||
+                     strcmp(p, "meta") == 0 || strcmp(p, "profiles") == 0 || strcmp(p, "startup") == 0 ||
+                     (slot == 1 && (strcmp(p, "controls") == 0 || strcmp(p, "curve") == 0)));
+        if (!skip) {
+            appendf("[%s]\r\n", p);
+            char keys[16384] = {};
+            GetPrivateProfileStringA(p, nullptr, "", keys, sizeof(keys), path);
+            const char* kp = keys;
+            while (*kp) {
+                char val[4096] = {};
+                GetPrivateProfileStringA(p, kp, "", val, sizeof(val), path);
+                appendf("%s=%s\r\n", kp, val);
+                kp += strlen(kp) + 1;
+            }
+            appendf("\r\n");
+        }
+        p += strlen(p) + 1;
+    }
+
+    appendf("[startup]\r\napply_on_launch=%d\r\n\r\n", logonSlot > 0 ? 1 : 0);
+
+    bool ok2 = write_text_file_atomic(path, cfg, used, err, errSize);
+    if (ok2) WritePrivateProfileStringA(NULL, NULL, NULL, NULL);
+    return ok2;
+}
+
+static void populate_desired_into_gui(const DesiredSettings* desired) {
+    if (!desired) return;
+    unlock_all();
+    if (g_app.loaded) populate_edits();
+    // Curve points
+    for (int vi = 0; vi < g_app.numVisible; vi++) {
+        int ci = g_app.visibleMap[vi];
+        if (g_app.hEditsMhz[vi]) {
+            unsigned int mhz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
+            if (desired->hasCurvePoint[ci]) mhz = desired->curvePointMHz[ci];
+            set_edit_value(g_app.hEditsMhz[vi], mhz);
+        }
+    }
+    // GPU offset
+    if (desired->hasGpuOffset && g_app.hGpuOffsetEdit) {
+        set_edit_value(g_app.hGpuOffsetEdit, desired->gpuOffsetMHz);
+    }
+    // Mem offset
+    if (desired->hasMemOffset && g_app.hMemOffsetEdit) {
+        set_edit_value(g_app.hMemOffsetEdit, desired->memOffsetMHz);
+    }
+    // Power limit
+    if (desired->hasPowerLimit && g_app.hPowerLimitEdit) {
+        set_edit_value(g_app.hPowerLimitEdit, desired->powerLimitPct);
+    }
+    // Fan
+    if (desired->hasFan && g_app.hFanEdit) {
+        if (desired->fanAuto) {
+            SetWindowTextA(g_app.hFanEdit, "auto");
+        } else {
+            char buf[16];
+            StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d", desired->fanPercent);
+            SetWindowTextA(g_app.hFanEdit, buf);
+        }
+    }
+    detect_locked_tail_from_curve();
+}
+
+static void set_profile_status_text(const char* fmt, ...) {
+    if (!g_app.hProfileStatusLabel || !fmt) return;
+    char buf[256] = {};
+    va_list ap;
+    va_start(ap, fmt);
+    StringCchVPrintfA(buf, ARRAY_COUNT(buf), fmt, ap);
+    va_end(ap);
+    SetWindowTextA(g_app.hProfileStatusLabel, buf);
+}
+
+static void update_profile_state_label() {
+    if (!g_app.hProfileStateLabel || !g_app.hProfileCombo) return;
+    int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
+    if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
+    slot += 1;
+
+    bool saved = is_profile_slot_saved(g_app.configPath, slot);
+    bool isAppLaunch = (get_config_int(g_app.configPath, "profiles", "app_launch_slot", 0) == slot);
+    bool isLogon = (get_config_int(g_app.configPath, "profiles", "logon_slot", 0) == slot);
+
+    char roles[64] = {};
+    if (isAppLaunch && isLogon) StringCchCopyA(roles, ARRAY_COUNT(roles), " | app start + logon");
+    else if (isAppLaunch) StringCchCopyA(roles, ARRAY_COUNT(roles), " | app start");
+    else if (isLogon) StringCchCopyA(roles, ARRAY_COUNT(roles), " | logon");
+
+    char text[128] = {};
+    StringCchPrintfA(text, ARRAY_COUNT(text), "Slot %d is %s%s", slot,
+        saved ? "saved" : "empty", roles);
+    SetWindowTextA(g_app.hProfileStateLabel, text);
+}
+
+static void update_profile_action_buttons() {
+    if (!g_app.hProfileCombo) return;
+    int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
+    if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
+    slot += 1;
+    bool saved = is_profile_slot_saved(g_app.configPath, slot);
+    if (g_app.hProfileLoadBtn) EnableWindow(g_app.hProfileLoadBtn, saved ? TRUE : FALSE);
+    if (g_app.hProfileClearBtn) EnableWindow(g_app.hProfileClearBtn, saved ? TRUE : FALSE);
+}
+
+static bool maybe_confirm_profile_load_replace(int slot) {
+    DesiredSettings current = {};
+    DesiredSettings target = {};
+    char err[256] = {};
+    if (!capture_gui_config_settings(&current, err, sizeof(err))) return true;
+    if (!load_profile_from_config(g_app.configPath, slot, &target, err, sizeof(err))) return true;
+
+    DesiredSettings targetFull = {};
+    targetFull.hasGpuOffset = true;
+    targetFull.gpuOffsetMHz = g_app.gpuClockOffsetkHz / 1000;
+    targetFull.hasMemOffset = true;
+    targetFull.memOffsetMHz = mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
+    targetFull.hasPowerLimit = true;
+    targetFull.powerLimitPct = g_app.powerLimitPct;
+    targetFull.hasFan = true;
+    targetFull.fanAuto = g_app.fanIsAuto;
+    targetFull.fanPercent = g_app.fanCount ? (int)g_app.fanPercent[0] : 0;
+    for (int vi = 0; vi < g_app.numVisible; vi++) {
+        int ci = g_app.visibleMap[vi];
+        targetFull.hasCurvePoint[ci] = true;
+        targetFull.curvePointMHz[ci] = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
+    }
+    merge_desired_settings(&targetFull, &target);
+
+    bool same = true;
+    if (current.gpuOffsetMHz != targetFull.gpuOffsetMHz) same = false;
+    if (current.memOffsetMHz != targetFull.memOffsetMHz) same = false;
+    if (current.powerLimitPct != targetFull.powerLimitPct) same = false;
+    if (current.fanAuto != targetFull.fanAuto || current.fanPercent != targetFull.fanPercent) same = false;
+    for (int i = 0; same && i < VF_NUM_POINTS; i++) {
+        if (current.hasCurvePoint[i] != targetFull.hasCurvePoint[i]) same = false;
+        else if (current.hasCurvePoint[i] && current.curvePointMHz[i] != targetFull.curvePointMHz[i]) same = false;
+    }
+    if (same) return true;
+
+    char msg[256] = {};
+    StringCchPrintfA(msg, ARRAY_COUNT(msg),
+        "Loading slot %d will replace the values currently typed into the GUI. Continue?", slot);
+    return MessageBoxA(g_app.hMainWnd, msg, "Green Curve", MB_YESNO | MB_ICONQUESTION) == IDYES;
+}
+
+static void maybe_load_app_launch_profile_to_gui() {
+    int appLaunchSlot = get_config_int(g_app.configPath, "profiles", "app_launch_slot", 0);
+    if (appLaunchSlot < 1 || appLaunchSlot > CONFIG_NUM_SLOTS) {
+        set_profile_status_text("Ready. App start auto-load is disabled.");
+        return;
+    }
+    if (!is_profile_slot_saved(g_app.configPath, appLaunchSlot)) {
+        set_config_int(g_app.configPath, "profiles", "app_launch_slot", 0);
+        set_profile_status_text("App start slot %d was empty and has been disabled.", appLaunchSlot);
+        refresh_profile_controls_from_config();
+        layout_bottom_buttons(g_app.hMainWnd);
+        return;
+    }
+    DesiredSettings desired = {};
+    char err[256] = {};
+    if (!load_profile_from_config(g_app.configPath, appLaunchSlot, &desired, err, sizeof(err))) {
+        set_profile_status_text("App start load failed: %s", err[0] ? err : "unknown error");
+        return;
+    }
+    set_config_int(g_app.configPath, "profiles", "selected_slot", appLaunchSlot);
+    refresh_profile_controls_from_config();
+    populate_desired_into_gui(&desired);
+    set_profile_status_text("Loaded slot %d into the GUI on app start. GPU settings were not applied.", appLaunchSlot);
+}
+
+static void refresh_profile_controls_from_config() {
+    if (!g_app.hProfileCombo) return;
+    int selectedSlot = get_config_int(g_app.configPath, "profiles", "selected_slot", CONFIG_DEFAULT_SLOT);
+    int appLaunchSlot = get_config_int(g_app.configPath, "profiles", "app_launch_slot", 0);
+    int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
+
+    SendMessageA(g_app.hProfileCombo, WM_SETREDRAW, FALSE, 0);
+    SendMessageA(g_app.hProfileCombo, CB_RESETCONTENT, 0, 0);
+    for (int s = 1; s <= CONFIG_NUM_SLOTS; s++) {
+        char label[32] = {};
+        StringCchPrintfA(label, ARRAY_COUNT(label), "Slot %d - %s", s,
+            is_profile_slot_saved(g_app.configPath, s) ? "Saved" : "Empty");
+        SendMessageA(g_app.hProfileCombo, CB_ADDSTRING, 0, (LPARAM)label);
+    }
+    SendMessageA(g_app.hProfileCombo, CB_SETDROPPEDWIDTH, (WPARAM)dp(170), 0);
+
+    if (g_app.hAppLaunchCombo) {
+        SendMessageA(g_app.hAppLaunchCombo, WM_SETREDRAW, FALSE, 0);
+        SendMessageA(g_app.hAppLaunchCombo, CB_RESETCONTENT, 0, 0);
+        SendMessageA(g_app.hAppLaunchCombo, CB_ADDSTRING, 0, (LPARAM)"Disabled");
+        for (int s = 1; s <= CONFIG_NUM_SLOTS; s++) {
+            char label[32] = {};
+            StringCchPrintfA(label, ARRAY_COUNT(label), "Slot %d - %s", s,
+                is_profile_slot_saved(g_app.configPath, s) ? "Saved" : "Empty");
+            SendMessageA(g_app.hAppLaunchCombo, CB_ADDSTRING, 0, (LPARAM)label);
+        }
+        SendMessageA(g_app.hAppLaunchCombo, CB_SETDROPPEDWIDTH, (WPARAM)dp(180), 0);
+    }
+    if (g_app.hLogonCombo) {
+        SendMessageA(g_app.hLogonCombo, WM_SETREDRAW, FALSE, 0);
+        SendMessageA(g_app.hLogonCombo, CB_RESETCONTENT, 0, 0);
+        SendMessageA(g_app.hLogonCombo, CB_ADDSTRING, 0, (LPARAM)"Disabled");
+        for (int s = 1; s <= CONFIG_NUM_SLOTS; s++) {
+            char label[32] = {};
+            StringCchPrintfA(label, ARRAY_COUNT(label), "Slot %d - %s", s,
+                is_profile_slot_saved(g_app.configPath, s) ? "Saved" : "Empty");
+            SendMessageA(g_app.hLogonCombo, CB_ADDSTRING, 0, (LPARAM)label);
+        }
+        SendMessageA(g_app.hLogonCombo, CB_SETDROPPEDWIDTH, (WPARAM)dp(180), 0);
+    }
+
+    if (appLaunchSlot < 0 || appLaunchSlot > CONFIG_NUM_SLOTS) appLaunchSlot = 0;
+    if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
+    if (selectedSlot < 1 || selectedSlot > CONFIG_NUM_SLOTS) selectedSlot = CONFIG_DEFAULT_SLOT;
+    SendMessageA(g_app.hProfileCombo, CB_SETCURSEL, (WPARAM)(selectedSlot - 1), 0);
+
+    if (appLaunchSlot >= 0 && appLaunchSlot <= CONFIG_NUM_SLOTS)
+        SendMessageA(g_app.hAppLaunchCombo, CB_SETCURSEL, (WPARAM)appLaunchSlot, 0);
+    if (logonSlot >= 0 && logonSlot <= CONFIG_NUM_SLOTS)
+        SendMessageA(g_app.hLogonCombo, CB_SETCURSEL, (WPARAM)logonSlot, 0);
+
+    SendMessageA(g_app.hProfileCombo, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(g_app.hProfileCombo, nullptr, TRUE);
+    if (g_app.hAppLaunchCombo) {
+        SendMessageA(g_app.hAppLaunchCombo, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(g_app.hAppLaunchCombo, nullptr, TRUE);
+    }
+    if (g_app.hLogonCombo) {
+        SendMessageA(g_app.hLogonCombo, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(g_app.hLogonCombo, nullptr, TRUE);
+    }
+
+    update_profile_state_label();
+    update_profile_action_buttons();
+}
+
+static void migrate_legacy_config_if_needed(const char* path) {
+    if (!path) return;
+    // If new sections exist, nothing to do
+    char test[8] = {};
+    GetPrivateProfileStringA("meta", "format_version", "_X", test, sizeof(test), path);
+    if (strcmp(test, "_X") != 0) return;
+
+    // Check if legacy sections have data
+    GetPrivateProfileStringA("controls", "gpu_offset_mhz", "_X", test, sizeof(test), path);
+    if (strcmp(test, "_X") == 0) return; // No legacy data either
+
+    // Read legacy data as profile 1
+    DesiredSettings desired = {};
+    char err[256] = {};
+    if (load_desired_settings_from_ini(path, &desired, err, sizeof(err))) {
+        // Use existing settings (controls/curve) as current for unset points
+        for (int i = 0; i < VF_NUM_POINTS; i++) {
+            if (!desired.hasCurvePoint[i] && g_app.curve[i].freq_kHz > 0) {
+                desired.hasCurvePoint[i] = true;
+                desired.curvePointMHz[i] = displayed_curve_mhz(g_app.curve[i].freq_kHz);
+            }
+        }
+        // Set defaults for unset globals
+        if (!desired.hasGpuOffset) { desired.hasGpuOffset = true; desired.gpuOffsetMHz = g_app.gpuClockOffsetkHz / 1000; }
+        if (!desired.hasMemOffset) { desired.hasMemOffset = true; desired.memOffsetMHz = mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz); }
+        if (!desired.hasPowerLimit) { desired.hasPowerLimit = true; desired.powerLimitPct = g_app.powerLimitPct; }
+        if (!desired.hasFan) {
+            desired.hasFan = true;
+            desired.fanAuto = g_app.fanIsAuto;
+            desired.fanPercent = g_app.fanCount ? (int)g_app.fanPercent[0] : 0;
+        }
+
+        // Check if old startup was enabled
+        bool wasStartupEnabled = false;
+        load_startup_enabled_from_config(path, &wasStartupEnabled);
+
+        save_profile_to_config(path, 1, &desired, err, sizeof(err));
+        // Set logon preferences based on old startup setting
+        if (wasStartupEnabled) {
+            set_config_int(path, "profiles", "logon_slot", 1);
+        }
+        set_config_int(path, "profiles", "selected_slot", 1);
+        set_config_int(path, "profiles", "app_launch_slot", 0);
+    }
+}
+
+static void layout_profile_controls(HWND hParent) {
+    layout_bottom_buttons(hParent);
+}
+
 static void merge_desired_settings(DesiredSettings* base, const DesiredSettings* override) {
     if (!base || !override) return;
     if (override->hasGpuOffset) {
@@ -930,6 +1764,8 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
     memset(desired, 0, sizeof(*desired));
 
     char buf[64] = {};
+    int parsedCurveMHz[VF_NUM_POINTS] = {};
+    bool parsedCurveHave[VF_NUM_POINTS] = {};
     int currentGpuOffsetMHz = g_app.gpuClockOffsetkHz / 1000;
     get_window_text_safe(g_app.hGpuOffsetEdit, buf, sizeof(buf));
     int gpuOffsetMHz = currentGpuOffsetMHz;
@@ -943,7 +1779,9 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
     bool hasLock = g_app.lockedVi >= 0 && g_app.lockedVi < g_app.numVisible;
     int lockCi = -1;
     int effectiveLockTargetMHz = 0;
+    unsigned int currentLockMHz = 0;
     int gpuOffsetDeltaMHz = gpuOffsetMHz - currentGpuOffsetMHz;
+    bool anyExplicitCurvePoint = captureAllCurvePoints;
     if (hasLock) {
         lockCi = g_app.visibleMap[g_app.lockedVi];
         char lockBuf[32] = {};
@@ -952,11 +1790,12 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
             set_message(err, errSize, "Invalid MHz value for point %d", lockCi);
             return false;
         }
-        int currentLockMHz = (int)displayed_curve_mhz(g_app.curve[lockCi].freq_kHz);
-        if (effectiveLockTargetMHz == currentLockMHz && gpuOffsetMHz != currentGpuOffsetMHz) {
+        currentLockMHz = displayed_curve_mhz(g_app.curve[lockCi].freq_kHz);
+        if (effectiveLockTargetMHz == (int)currentLockMHz && gpuOffsetMHz != currentGpuOffsetMHz) {
             effectiveLockTargetMHz += gpuOffsetMHz - currentGpuOffsetMHz;
             if (effectiveLockTargetMHz <= 0) effectiveLockTargetMHz = 1;
         }
+        if (!captureAllCurvePoints && effectiveLockTargetMHz != (int)currentLockMHz) anyExplicitCurvePoint = true;
     }
 
     for (int vi = 0; vi < g_app.numVisible; vi++) {
@@ -974,9 +1813,23 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
                 return false;
             }
         }
+        parsedCurveMHz[ci] = mhz;
+        parsedCurveHave[ci] = true;
+        unsigned int currentMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
+        if (!captureAllCurvePoints && (!hasLock || vi < g_app.lockedVi) && (unsigned int)mhz != currentMHz) {
+            anyExplicitCurvePoint = true;
+        }
+    }
+
+    bool synthCurveFromGpuOffset = captureAllCurvePoints || hasLock || anyExplicitCurvePoint;
+
+    for (int vi = 0; vi < g_app.numVisible; vi++) {
+        int ci = g_app.visibleMap[vi];
+        if (!parsedCurveHave[ci]) continue;
+        int mhz = parsedCurveMHz[ci];
         unsigned int currentMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
         int effectiveMHz = mhz;
-        if (gpuOffsetDeltaMHz != 0 && (unsigned int)mhz == currentMHz) {
+        if (synthCurveFromGpuOffset && gpuOffsetDeltaMHz != 0 && (unsigned int)mhz == currentMHz) {
             effectiveMHz += gpuOffsetDeltaMHz;
             if (effectiveMHz <= 0) effectiveMHz = 1;
         }
@@ -1320,19 +2173,65 @@ static bool load_startup_enabled_from_config(const char* path, bool* enabled) {
     return true;
 }
 
-static void sync_startup_checkbox_from_system() {
-    if (!g_app.hStartupApplyCheck) return;
+static void sync_logon_combo_from_system() {
+    if (!g_app.hLogonCombo) return;
 
-    bool checked = is_startup_task_enabled();
-    if (!checked) {
-        bool configEnabled = false;
-        if (load_startup_enabled_from_config(g_app.configPath, &configEnabled) && configEnabled) {
+    int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
+    if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
+    bool taskExists = is_startup_task_enabled();
+
+    // If config says a slot is set but task is missing, recreate the task
+    if (logonSlot > 0 && !taskExists) {
+        // Verify slot data exists before creating task
+        if (is_profile_slot_saved(g_app.configPath, logonSlot)) {
             char err[256] = {};
-            if (set_startup_task_enabled(true, err, sizeof(err))) checked = true;
+            set_startup_task_enabled(true, err, sizeof(err));
+            taskExists = true;
+        } else {
+            // Slot is empty, disable logon
+            logonSlot = 0;
+            set_config_int(g_app.configPath, "profiles", "logon_slot", 0);
         }
     }
+    // If task exists but config says disabled, keep task (user may want it)
+    // The combo reflects config preference
+    SendMessageA(g_app.hLogonCombo, CB_SETCURSEL, (WPARAM)logonSlot, 0);
+    update_profile_state_label();
+}
 
-    SendMessageA(g_app.hStartupApplyCheck, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
+static DWORD WINAPI logon_sync_thread_proc(void* param) {
+    HWND hwnd = (HWND)param;
+    int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
+    if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
+    bool taskExists = is_startup_task_enabled();
+
+    if (logonSlot > 0 && !taskExists) {
+        if (is_profile_slot_saved(g_app.configPath, logonSlot)) {
+            char err[256] = {};
+            set_startup_task_enabled(true, err, sizeof(err));
+            taskExists = true;
+        } else {
+            logonSlot = 0;
+            set_config_int(g_app.configPath, "profiles", "logon_slot", 0);
+        }
+    }
+    PostMessageA(hwnd, APP_WM_SYNC_STARTUP, (WPARAM)logonSlot, 0);
+    return 0;
+}
+
+static void schedule_logon_combo_sync() {
+    if (!g_app.hMainWnd || g_app.startupSyncInFlight) return;
+    g_app.startupSyncInFlight = true;
+    DWORD threadId = 0;
+    HANDLE thread = CreateThread(nullptr, 0, logon_sync_thread_proc, g_app.hMainWnd, 0, &threadId);
+    if (!thread) {
+        g_app.startupSyncInFlight = false;
+        close_startup_sync_thread_handle();
+        sync_logon_combo_from_system();
+        return;
+    }
+    close_startup_sync_thread_handle();
+    g_app.hStartupSyncThread = thread;
 }
 
 static bool set_startup_task_enabled(bool enabled, char* err, size_t errSize) {
@@ -1578,7 +2477,7 @@ static bool nvml_read_clock_offsets(char* detail, size_t detailSize) {
     if (memOk) {
         g_app.memClockOffsetMinMHz = mem_display_mhz_from_driver_mhz(mn);
         g_app.memClockOffsetMaxMHz = mem_display_mhz_from_driver_mhz(mx);
-        g_app.memClockOffsetkHz = cur * 1000;
+        g_app.memClockOffsetkHz = (cur * 1000) / 2;
         g_app.memOffsetRangeKnown = true;
     } else {
         g_app.memOffsetRangeKnown = false;
@@ -1632,9 +2531,15 @@ static bool nvml_set_clock_offset_domain(unsigned int domain, int offsetMHz, boo
         return false;
     }
 
-    Sleep(50);
     int mn = 0, mx = 0, cur = 0;
-    if (!nvml_get_offset_range(domain, &mn, &mx, &cur, detail, detailSize)) {
+    bool readOk = false;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        if (attempt > 0) Sleep(10);
+        if (!nvml_get_offset_range(domain, &mn, &mx, &cur, detail, detailSize)) continue;
+        readOk = true;
+        if (cur == offsetMHz) break;
+    }
+    if (!readOk) {
         set_message(detail, detailSize, "write OK, readback failed");
         return true;
     }
@@ -1745,9 +2650,11 @@ static bool nvml_set_fan_auto(char* detail, size_t detailSize) {
             return false;
         }
     }
-    Sleep(50);
-    nvml_read_fans(detail, detailSize);
-    return true;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        if (attempt > 0) Sleep(10);
+        if (nvml_read_fans(detail, detailSize) && g_app.fanIsAuto) return true;
+    }
+    return nvml_read_fans(detail, detailSize);
 }
 
 static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_t detailSize) {
@@ -1766,23 +2673,27 @@ static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_
             return false;
         }
     }
-    Sleep(50);
-    nvml_read_fans(detail, detailSize);
-    bool ok = (g_app.fanCount > 0);
-    for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
-        int got = (int)g_app.fanPercent[fan];
-        if (pct == 0) {
-            if (got != 0) ok = false;
-        } else {
-            if (got == 0 && g_app.fanRpm[fan] > 0 && g_nvml_api.getTargetFanSpeed) {
-                unsigned int target = 0;
-                if (g_nvml_api.getTargetFanSpeed(g_app.nvmlDevice, fan, &target) == NVML_SUCCESS) {
-                    got = (int)target;
-                    g_app.fanPercent[fan] = target;
+    bool ok = false;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        if (attempt > 0) Sleep(10);
+        if (!nvml_read_fans(detail, detailSize)) continue;
+        ok = (g_app.fanCount > 0);
+        for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
+            int got = (int)g_app.fanPercent[fan];
+            if (pct == 0) {
+                if (got != 0) ok = false;
+            } else {
+                if (got == 0 && g_app.fanRpm[fan] > 0 && g_nvml_api.getTargetFanSpeed) {
+                    unsigned int target = 0;
+                    if (g_nvml_api.getTargetFanSpeed(g_app.nvmlDevice, fan, &target) == NVML_SUCCESS) {
+                        got = (int)target;
+                        g_app.fanPercent[fan] = target;
+                    }
                 }
+                if (got < pct - 2 || got > pct + 2) ok = false;
             }
-            if (got < pct - 2 || got > pct + 2) ok = false;
         }
+        if (ok) break;
     }
     if (exactApplied) *exactApplied = ok;
     return true;
@@ -1834,6 +2745,8 @@ static bool nvml_ensure_ready() {
         nvml_resolve((void**)&g_nvml_api.setFanSpeed, "nvmlDeviceSetFanSpeed_v2");
         nvml_resolve((void**)&g_nvml_api.setDefaultFanSpeed, "nvmlDeviceSetDefaultFanSpeed_v2");
         nvml_resolve((void**)&g_nvml_api.getCoolerInfo, "nvmlDeviceGetCoolerInfo");
+        nvml_resolve((void**)&g_nvml_api.getClock, "nvmlDeviceGetClock");
+        nvml_resolve((void**)&g_nvml_api.getMaxClock, "nvmlDeviceGetMaxClock");
     }
 
     if (!g_nvml_api.init || !g_nvml_api.getHandleByIndex) return false;
@@ -1851,7 +2764,201 @@ static bool refresh_global_state(char* detail, size_t detailSize) {
     bool ok3 = nvml_read_clock_offsets(detail, detailSize);
     bool ok4 = nvml_read_fans(detail, detailSize);
     if (!ok3 && !ok1) ok1 = nvapi_read_pstates();
+    detect_clock_offsets();
     return ok1 || ok2 || ok3 || ok4;
+}
+
+static bool nvapi_get_vf_info_cached(unsigned char* maskOut, unsigned int* numClocksOut) {
+    if (!g_app.vfInfoCached) {
+        memset(g_app.vfMask, 0, sizeof(g_app.vfMask));
+        memset(g_app.vfMask, 0xFF, 16);
+        g_app.vfNumClocks = 15;
+
+        auto getInfo = (NvApiFunc)nvapi_qi(VF_GET_INFO_ID);
+        if (getInfo) {
+            unsigned char ibuf[0x182C] = {};
+            const unsigned int version = (1u << 16) | 0x182C;
+            memcpy(&ibuf[0], &version, sizeof(version));
+            memset(&ibuf[4], 0xFF, 32);
+            if (getInfo(g_app.gpuHandle, ibuf) == 0) {
+                memcpy(g_app.vfMask, &ibuf[4], sizeof(g_app.vfMask));
+                memcpy(&g_app.vfNumClocks, &ibuf[0x14], sizeof(g_app.vfNumClocks));
+                if (g_app.vfNumClocks == 0) g_app.vfNumClocks = 15;
+            }
+        }
+        g_app.vfInfoCached = true;
+    }
+
+    if (maskOut) memcpy(maskOut, g_app.vfMask, sizeof(g_app.vfMask));
+    if (numClocksOut) *numClocksOut = g_app.vfNumClocks ? g_app.vfNumClocks : 15;
+    return true;
+}
+
+static int clamp_freq_delta_khz(int freqDelta_kHz) {
+    if (freqDelta_kHz > 1000000) return 1000000;
+    if (freqDelta_kHz < -1000000) return -1000000;
+    return freqDelta_kHz;
+}
+
+static bool nvapi_read_control_table(unsigned char* buf, size_t bufSize) {
+    const unsigned int CTRL_SIZE = 0x2420;
+    if (!buf || bufSize < CTRL_SIZE) return false;
+
+    auto getFunc = (NvApiFunc)nvapi_qi(VF_GET_CONTROL_ID);
+    if (!getFunc) return false;
+
+    unsigned char mask[32] = {};
+    nvapi_get_vf_info_cached(mask, nullptr);
+
+    memset(buf, 0, CTRL_SIZE);
+    const unsigned int version = (1u << 16) | CTRL_SIZE;
+    memcpy(&buf[0], &version, sizeof(version));
+    memcpy(&buf[4], mask, sizeof(mask));
+    return getFunc(g_app.gpuHandle, buf) == 0;
+}
+
+static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* pointMask, int maxBatchPasses) {
+    if (!targetOffsets || !pointMask) return false;
+
+    bool desiredMask[VF_NUM_POINTS] = {};
+    int desiredOffsets[VF_NUM_POINTS] = {};
+    bool pendingMask[VF_NUM_POINTS] = {};
+    int desiredCount = 0;
+
+    for (int i = 0; i < VF_NUM_POINTS; i++) {
+        if (!pointMask[i]) continue;
+        if (g_app.curve[i].freq_kHz == 0) continue;
+        desiredMask[i] = true;
+        pendingMask[i] = true;
+        desiredOffsets[i] = clamp_freq_delta_khz(targetOffsets[i]);
+        desiredCount++;
+    }
+    if (desiredCount == 0) return true;
+
+    if (maxBatchPasses < 1) maxBatchPasses = 1;
+
+    auto setFunc = (NvApiFunc)nvapi_qi(VF_SET_CONTROL_ID);
+    if (!setFunc) return false;
+
+    unsigned char baseControl[0x2420] = {};
+    if (!nvapi_read_control_table(baseControl, sizeof(baseControl))) return false;
+
+    bool anyWrite = false;
+    int batchedPoints = 0;
+    for (int i = 0; i < VF_NUM_POINTS; i++) {
+        if (desiredMask[i]) batchedPoints++;
+    }
+    bool allowBatch = batchedPoints > 1;
+    bool batchFailed = false;
+    if (!allowBatch) maxBatchPasses = 0;
+    for (int pass = 0; pass < maxBatchPasses; pass++) {
+        unsigned char buf[0x2420] = {};
+        memcpy(buf, baseControl, sizeof(buf));
+
+        unsigned char writeMask[32] = {};
+        bool anyPendingWrite = false;
+        for (int i = 0; i < VF_NUM_POINTS; i++) {
+            if (!pendingMask[i]) continue;
+            int currentDelta = 0;
+            memcpy(&currentDelta, &buf[0x44 + i * 0x24 + 0x14], sizeof(currentDelta));
+            if (currentDelta == desiredOffsets[i]) {
+                pendingMask[i] = false;
+                continue;
+            }
+            memcpy(&buf[0x44 + i * 0x24 + 0x14], &desiredOffsets[i], sizeof(desiredOffsets[i]));
+            writeMask[i / 8] |= (unsigned char)(1u << (i % 8));
+            anyPendingWrite = true;
+        }
+
+        if (!anyPendingWrite) break;
+
+        memcpy(&buf[4], writeMask, sizeof(writeMask));
+        int setRet = setFunc(g_app.gpuHandle, buf);
+        debug_log("curve batch pass %d: points=%d ret=%d\n", pass + 1, desiredCount, setRet);
+        if (setRet != 0) {
+            batchFailed = true;
+            break;
+        }
+        anyWrite = true;
+
+        bool readOk = false;
+        for (int verifyTry = 0; verifyTry < 6; verifyTry++) {
+            if (verifyTry > 0) Sleep(10);
+            if (nvapi_read_offsets()) {
+                readOk = true;
+                break;
+            }
+        }
+        if (!readOk) {
+            batchFailed = true;
+            break;
+        }
+
+        bool anyPending = false;
+        for (int i = 0; i < VF_NUM_POINTS; i++) {
+            if (!desiredMask[i]) continue;
+            pendingMask[i] = (g_app.freqOffsets[i] != desiredOffsets[i]);
+            if (pendingMask[i]) anyPending = true;
+            memcpy(&baseControl[0x44 + i * 0x24 + 0x14], &g_app.freqOffsets[i], sizeof(g_app.freqOffsets[i]));
+        }
+        if (!anyPending) break;
+    }
+
+    bool allOk = !batchFailed;
+    bool hasPending = false;
+    for (int i = 0; i < VF_NUM_POINTS; i++) {
+        if (!desiredMask[i]) continue;
+        if (g_app.freqOffsets[i] != desiredOffsets[i]) {
+            pendingMask[i] = true;
+            hasPending = true;
+        } else {
+            pendingMask[i] = false;
+        }
+    }
+
+    if (hasPending) {
+        for (int i = 0; i < VF_NUM_POINTS; i++) {
+            if (!pendingMask[i]) continue;
+            bool pointOk = nvapi_set_point(i, desiredOffsets[i]);
+            debug_log("curve fallback point %d target=%d ok=%d\n", i, desiredOffsets[i], pointOk ? 1 : 0);
+            if (!pointOk) {
+                allOk = false;
+            } else {
+                anyWrite = true;
+            }
+        }
+
+        bool readOk = false;
+        for (int verifyTry = 0; verifyTry < 6; verifyTry++) {
+            if (verifyTry > 0) Sleep(10);
+            if (nvapi_read_offsets()) {
+                readOk = true;
+                break;
+            }
+        }
+        if (!readOk) {
+            allOk = false;
+        }
+    }
+
+    if (anyWrite) {
+        if (!nvapi_read_curve()) allOk = false;
+        rebuild_visible_map();
+    }
+
+    for (int i = 0; i < VF_NUM_POINTS; i++) {
+        if (!desiredMask[i]) continue;
+        if (g_app.freqOffsets[i] != desiredOffsets[i]) allOk = false;
+    }
+
+    return allOk;
+}
+
+static void close_startup_sync_thread_handle() {
+    if (g_app.hStartupSyncThread) {
+        CloseHandle(g_app.hStartupSyncThread);
+        g_app.hStartupSyncThread = nullptr;
+    }
 }
 
 static void populate_global_controls() {
@@ -1997,39 +3104,59 @@ static int curve_delta_khz_for_target_display_mhz(int pointIndex, unsigned int d
 }
 
 static int mem_display_mhz_from_driver_khz(int driver_kHz) {
-    return (driver_kHz / 1000) / 2;
+    return driver_kHz / 1000; // actual clock kHz to actual MHz
 }
 
 static int mem_driver_khz_from_display_mhz(int displayMHz) {
-    return displayMHz * 2 * 1000;
+    return displayMHz * 1000; // actual clock kHz
 }
 
 static int mem_display_mhz_from_driver_mhz(int driverMHz) {
-    return driverMHz / 2;
+    return driverMHz / 2; // NVML memory offset MHz is effective; UI mirrors actual MHz like Afterburner
 }
 
-static bool restore_curve_offsets(const int* targetOffsets, const bool* populated, bool forceWriteAll) {
-    if (!targetOffsets || !populated) return false;
+static void invalidate_main_window() {
+    if (!g_app.hMainWnd) return;
+    InvalidateRect(g_app.hMainWnd, nullptr, FALSE);
+    UpdateWindow(g_app.hMainWnd);
+}
 
-    bool anyWrite = false;
-    bool allOk = true;
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (!populated[i]) continue;
-        if (!forceWriteAll && g_app.freqOffsets[i] == targetOffsets[i]) continue;
+static void redraw_window_sync(HWND hwnd) {
+    if (!hwnd) return;
+    RedrawWindow(hwnd, nullptr, nullptr,
+        RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_ERASE | RDW_FRAME);
+}
 
-        anyWrite = true;
-        if (!nvapi_set_point(i, targetOffsets[i])) allOk = false;
-        Sleep(2);
+static void flush_desktop_composition() {
+    typedef HRESULT (WINAPI *dwm_flush_t)();
+    static dwm_flush_t dwmFlush = nullptr;
+    static bool resolved = false;
+    if (!resolved) {
+        HMODULE dwm = LoadLibraryA("dwmapi.dll");
+        if (dwm) dwmFlush = (dwm_flush_t)GetProcAddress(dwm, "DwmFlush");
+        resolved = true;
     }
+    if (dwmFlush) dwmFlush();
+}
 
-    if (anyWrite) {
-        Sleep(100);
-        nvapi_read_curve();
-        nvapi_read_offsets();
-        rebuild_visible_map();
-    }
+static void show_window_with_primed_first_frame(HWND hwnd, int nCmdShow) {
+    if (!hwnd) return;
 
-    return allOk;
+    RECT wr = {};
+    GetWindowRect(hwnd, &wr);
+    int winW = wr.right - wr.left;
+    int winH = wr.bottom - wr.top;
+
+    SetWindowPos(hwnd, nullptr, -32000, -32000, 0, 0,
+        SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE);
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    redraw_window_sync(hwnd);
+    flush_desktop_composition();
+
+    SetWindowPos(hwnd, nullptr, wr.left, wr.top, winW, winH,
+        SWP_NOZORDER | SWP_NOACTIVATE);
+    ShowWindow(hwnd, nCmdShow);
+    redraw_window_sync(hwnd);
 }
 
 static void draw_lock_checkbox(const DRAWITEMSTRUCT* dis) {
@@ -2106,13 +3233,27 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
     bool memOffsetValid = true;
     bool shouldApplyMemOffset = false;
     int targetMemkHz = 0;
-    int preservedCurveOffsets[VF_NUM_POINTS] = {};
-    bool preservedCurvePopulated[VF_NUM_POINTS] = {};
+    bool memApplied = false;
+    bool powerChanged = false;
+    bool fanChanged = false;
+    int originalGlobalOffsetkHz = uniform_curve_offset_khz();
+    int targetGpuOffsetkHz = originalGlobalOffsetkHz;
+    bool gpuOffsetValid = true;
+    bool shouldApplyGpuOffset = false;
+    int originalCurveOffsets[VF_NUM_POINTS] = {};
+    int originalCurveFreqkHz[VF_NUM_POINTS] = {};
+    bool originalCurvePopulated[VF_NUM_POINTS] = {};
+    int targetCurveOffsets[VF_NUM_POINTS] = {};
+    bool targetCurveMask[VF_NUM_POINTS] = {};
+    bool haveNonZeroCurveOffsets = false;
 
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+        originalCurveOffsets[ci] = g_app.freqOffsets[ci];
+        originalCurveFreqkHz[ci] = (int)g_app.curve[ci].freq_kHz;
+        originalCurvePopulated[ci] = g_app.curve[ci].freq_kHz > 0;
+        if (originalCurveOffsets[ci] != 0) haveNonZeroCurveOffsets = true;
         if (desired->hasCurvePoint[ci]) {
             hasCurveEdits = true;
-            break;
         }
     }
 
@@ -2134,113 +3275,110 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
     if (desired->hasGpuOffset) {
         if (!g_app.gpuOffsetRangeKnown ||
             (desired->gpuOffsetMHz >= g_app.gpuClockOffsetMinMHz && desired->gpuOffsetMHz <= g_app.gpuClockOffsetMaxMHz)) {
-            int targetOffsetkHz = desired->gpuOffsetMHz * 1000;
-            if (g_app.gpuClockOffsetkHz != targetOffsetkHz) {
-                if (nvapi_set_gpu_offset(targetOffsetkHz)) {
-                    successCount++;
-                    if (hasCurveEdits || hasLock || shouldApplyMemOffset) {
-                        nvapi_read_curve();
-                        nvapi_read_offsets();
-                        rebuild_visible_map();
-                    }
-                } else {
-                    failCount++;
-                }
-            }
+            targetGpuOffsetkHz = desired->gpuOffsetMHz * 1000;
+            shouldApplyGpuOffset = (targetGpuOffsetkHz != originalGlobalOffsetkHz);
+            debug_log("desired gpu offset mhz=%d current=%d shouldApply=%d\n",
+                desired->gpuOffsetMHz, originalGlobalOffsetkHz / 1000, shouldApplyGpuOffset ? 1 : 0);
+        } else {
+            gpuOffsetValid = false;
+            debug_log("desired gpu offset mhz=%d rejected by range %d..%d\n",
+                desired->gpuOffsetMHz, g_app.gpuClockOffsetMinMHz, g_app.gpuClockOffsetMaxMHz);
+        }
+    }
+
+    if (!gpuOffsetValid) failCount++;
+    if (!memOffsetValid) failCount++;
+
+    bool gpuApplied = false;
+
+    // Apply GPU offset first via dedicated path (handles uniform offset reliably).
+    // When combined with lock/curve edits, applying the GPU offset separately avoids
+    // sending highly non-uniform offsets for all curve points in a single batch,
+    // which can fail. After this, the curve batch only needs to adjust the lock tail.
+    if (gpuOffsetValid && shouldApplyGpuOffset) {
+        if (nvapi_set_gpu_offset(targetGpuOffsetkHz)) {
+            successCount++;
+            gpuApplied = true;
         } else {
             failCount++;
+        }
+    }
+
+    // Refresh cached originals after GPU offset so subsequent curve computations
+    // use the post-offset state
+    if (gpuApplied) {
+        for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+            originalCurveOffsets[ci] = g_app.freqOffsets[ci];
+            originalCurveFreqkHz[ci] = (int)g_app.curve[ci].freq_kHz;
+        }
+        originalGlobalOffsetkHz = uniform_curve_offset_khz();
+    }
+
+    bool preserveCurveAcrossMem = shouldApplyMemOffset && (haveNonZeroCurveOffsets || gpuApplied);
+    bool userCurveRequest = hasCurveEdits || hasLock;
+
+    if (userCurveRequest || preserveCurveAcrossMem) {
+        for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+            if (!originalCurvePopulated[ci]) continue;
+            targetCurveOffsets[ci] = originalCurveOffsets[ci];
+            if (preserveCurveAcrossMem) targetCurveMask[ci] = true;
+        }
+
+        for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+            if (!desired->hasCurvePoint[ci]) continue;
+            if (!originalCurvePopulated[ci]) continue;
+            if (hasLock && ci >= lockCi) continue;
+            long long base = (long long)originalCurveFreqkHz[ci] - (long long)originalCurveOffsets[ci];
+            if (base < 0) base = 0;
+            long long target = (long long)desired->curvePointMHz[ci] * 1000LL;
+            targetCurveOffsets[ci] = clamp_freq_delta_khz((int)(target - base));
+            targetCurveMask[ci] = true;
+        }
+
+        if (hasLock && lockMhz > 0) {
+            for (int vi = g_app.lockedVi; vi < g_app.numVisible; vi++) {
+                int ci = g_app.visibleMap[vi];
+                if (!originalCurvePopulated[ci]) continue;
+                long long base = (long long)originalCurveFreqkHz[ci] - (long long)originalCurveOffsets[ci];
+                if (base < 0) base = 0;
+                long long target = (long long)lockMhz * 1000LL;
+                targetCurveOffsets[ci] = clamp_freq_delta_khz((int)(target - base));
+                targetCurveMask[ci] = true;
+            }
         }
     }
 
     if (desired->hasMemOffset) {
         if (memOffsetValid) {
             if (shouldApplyMemOffset) {
-                for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-                    preservedCurveOffsets[ci] = g_app.freqOffsets[ci];
-                    preservedCurvePopulated[ci] = g_app.curve[ci].freq_kHz > 0;
-                }
-
                 if (nvapi_set_mem_offset(targetMemkHz)) {
                     successCount++;
-
-                    bool curveOk = nvapi_read_curve();
-                    bool offsetOk = nvapi_read_offsets();
-                    rebuild_visible_map();
-
-                    if (!restore_curve_offsets(preservedCurveOffsets, preservedCurvePopulated, !(curveOk && offsetOk))) {
-                        failCount++;
-                    }
+                    memApplied = true;
                 } else {
                     failCount++;
                 }
             }
-        } else {
-            failCount++;
         }
     }
 
-    if (hasLock) {
-        int lockDelta = curve_delta_khz_for_target_display_mhz(lockCi, lockMhz);
-        if (nvapi_set_point(lockCi, lockDelta)) successCount++; else failCount++;
-        Sleep(20);
-        nvapi_read_curve();
-        nvapi_read_offsets();
-        rebuild_visible_map();
-    }
-
+    bool curveBatchOk = true;
+    bool curveBatchNeeded = false;
+    bool curveTouched = gpuApplied;
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-        if (!desired->hasCurvePoint[ci]) continue;
-        if (g_app.curve[ci].freq_kHz == 0) continue;
-        if (hasLock && ci >= lockCi) continue;
-
-        int delta_kHz = curve_delta_khz_for_target_display_mhz(ci, desired->curvePointMHz[ci]);
-
-        if (delta_kHz != 0 || hasLock) {
-            if (nvapi_set_point(ci, delta_kHz)) successCount++; else failCount++;
-            Sleep(2);
+        if (targetCurveMask[ci]) {
+            curveBatchNeeded = true;
+            break;
         }
     }
-
-    if (hasLock && lockMhz > 0) {
-        for (int vi = 0; vi < g_app.numVisible; vi++) {
-            int ci = g_app.visibleMap[vi];
-            if (ci <= lockCi) continue;
-            if (g_app.curve[ci].freq_kHz == 0) continue;
-            int delta_kHz = curve_delta_khz_for_target_display_mhz(ci, lockMhz);
-            if (delta_kHz == 0) continue;
-            if (nvapi_set_point(ci, delta_kHz)) successCount++; else failCount++;
-            Sleep(2);
+    if (curveBatchNeeded && (userCurveRequest || memApplied)) {
+        curveTouched = true;
+        curveBatchOk = apply_curve_offsets_verified(targetCurveOffsets, targetCurveMask, hasLock ? 3 : 2);
+        if (hasCurveEdits || hasLock) {
+            if (curveBatchOk) successCount++;
+            else failCount++;
         }
-    }
-
-    Sleep(100);
-    nvapi_read_curve();
-    nvapi_read_offsets();
-    rebuild_visible_map();
-
-    if (hasLock && lockMhz > 0) {
-        for (int pass = 0; pass < 6; pass++) {
-            bool retried = false;
-            for (int vi = 0; vi < g_app.numVisible; vi++) {
-                int ci = g_app.visibleMap[vi];
-                if (ci < lockCi) continue;
-                if (g_app.curve[ci].freq_kHz == 0) continue;
-                unsigned int gotMhz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
-                if (gotMhz == lockMhz) continue;
-                int retryDelta = curve_delta_khz_for_target_display_mhz(ci, lockMhz);
-                if (nvapi_set_point(ci, retryDelta)) {
-                    successCount++;
-                    retried = true;
-                } else {
-                    failCount++;
-                }
-                Sleep(5);
-            }
-            if (!retried) break;
-            Sleep(50);
-            nvapi_read_curve();
-            nvapi_read_offsets();
-            rebuild_visible_map();
+        if (memApplied && preserveCurveAcrossMem && !curveBatchOk && !userCurveRequest) {
+            failCount++;
         }
     }
 
@@ -2254,11 +3392,13 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
     if (desired->hasPowerLimit) {
         int currentPowerPct = g_app.powerLimitPct;
         if (desired->powerLimitPct != currentPowerPct) {
+            powerChanged = true;
             if (nvapi_set_power_limit(desired->powerLimitPct)) successCount++; else failCount++;
         }
     }
     if (desired->hasFan) {
         if (!fan_setting_matches_current(desired->fanAuto, desired->fanPercent)) {
+            fanChanged = true;
             bool exact = false;
             char detail[128] = {};
             bool ok = false;
@@ -2275,11 +3415,15 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
     }
 
     char detail[128] = {};
-    refresh_global_state(detail, sizeof(detail));
+    if (memApplied || powerChanged || fanChanged) {
+        refresh_global_state(detail, sizeof(detail));
+    } else if (!curveTouched) {
+        detect_clock_offsets();
+    }
     populate_global_controls();
     if (interactive) {
         populate_edits();
-        InvalidateRect(g_app.hMainWnd, nullptr, TRUE);
+        invalidate_main_window();
     }
 
     if (successCount == 0 && failCount == 0) {
@@ -2295,8 +3439,6 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
 // ============================================================================
 // NvAPI Interface
 // ============================================================================
-
-typedef int (*NvApiFunc)(void*, void*);
 
 static void* nvapi_qi(unsigned int id) {
     typedef void* (*qi_func)(unsigned int);
@@ -2340,27 +3482,12 @@ static bool nvapi_get_name() {
 }
 
 static bool nvapi_read_curve() {
-    auto getInfo = (NvApiFunc)nvapi_qi(VF_GET_INFO_ID);
     auto getStatus = (NvApiFunc)nvapi_qi(VF_GET_STATUS_ID);
     if (!getStatus) return false;
 
     unsigned char mask[32] = {};
     unsigned int numClocks = 15;
-
-    if (getInfo) {
-        unsigned char ibuf[0x182C] = {};
-        const unsigned int version = (1u << 16) | 0x182C;
-        memcpy(&ibuf[0], &version, sizeof(version));
-        memset(&ibuf[4], 0xFF, 32);
-        if (getInfo(g_app.gpuHandle, ibuf) == 0) {
-            memcpy(mask, &ibuf[4], 32);
-            memcpy(&numClocks, &ibuf[0x14], sizeof(numClocks));
-        } else {
-            memset(mask, 0xFF, 16);
-        }
-    } else {
-        memset(mask, 0xFF, 16);
-    }
+    nvapi_get_vf_info_cached(mask, &numClocks);
 
     unsigned char buf[VF_BUFFER_SIZE] = {};
     {
@@ -2386,36 +3513,138 @@ static bool nvapi_read_curve() {
     return true;
 }
 
-static bool nvapi_read_offsets() {
-    auto func = (NvApiFunc)nvapi_qi(VF_GET_CONTROL_ID);
-    if (!func) return false;
-
-    unsigned char mask[32] = {};
-    auto getInfo = (NvApiFunc)nvapi_qi(VF_GET_INFO_ID);
-    if (getInfo) {
-        unsigned char ibuf[0x182C] = {};
-        const unsigned int version = (1u << 16) | 0x182C;
-        memcpy(&ibuf[0], &version, sizeof(version));
-        memset(&ibuf[4], 0xFF, 32);
-        if (getInfo(g_app.gpuHandle, ibuf) == 0) {
-            memcpy(mask, &ibuf[4], 32);
-        } else {
-            memset(mask, 0xFF, 16);
+static void read_nvidia_smi_max_clocks() {
+    // Read nvidia-smi VBIOS default max clocks once, cache in AppData
+    if (g_app.smiClocksRead) return;
+    g_app.smiClocksRead = true;
+    
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
+    HANDLE hRead = nullptr, hWrite = nullptr;
+    if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return;
+    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+    
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    si.hStdOutput = hWrite;
+    si.hStdError = hWrite;
+    
+    PROCESS_INFORMATION pi = {};
+    WCHAR cmd[] = L"nvidia-smi -q -d CLOCK";
+    if (CreateProcessW(nullptr, cmd, nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        CloseHandle(hWrite);
+        char buf[4096] = {};
+        DWORD totalRead = 0;
+        while (totalRead < sizeof(buf) - 1) {
+            DWORD n = 0;
+            if (!ReadFile(hRead, buf + totalRead, sizeof(buf) - 1 - totalRead, &n, nullptr) || n == 0) break;
+            totalRead += n;
+        }
+        WaitForSingleObject(pi.hProcess, 5000);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        
+        bool inMaxSection = false;
+        char* line = buf;
+        while (line && *line) {
+            char* nextLine = strchr(line, '\n');
+            if (nextLine) { *nextLine = 0; nextLine++; }
+            char* cr = strchr(line, '\r');
+            if (cr) *cr = 0;
+            while (*line == ' ' || *line == '\t') line++;
+            
+            if (strstr(line, "Max Clocks")) { inMaxSection = true; line = nextLine; continue; }
+            if (inMaxSection && line[0] == '[') inMaxSection = false;
+            
+            if (inMaxSection) {
+                char* vp = nullptr;
+                if ((vp = strstr(line, "Graphics")) && (vp = strchr(vp, ':')))
+                    g_app.smiGpuMaxMHz = (unsigned int)atoi(vp + 1);
+                if ((vp = strstr(line, "Memory")) && (vp = strchr(vp, ':')))
+                    g_app.smiMemMaxMHz = (unsigned int)atoi(vp + 1);
+            }
+            line = nextLine;
         }
     } else {
-        memset(mask, 0xFF, 16);
+        CloseHandle(hWrite);
+    }
+    CloseHandle(hRead);
+}
+
+static int uniform_curve_offset_khz() {
+    int values[VF_NUM_POINTS] = {};
+    int counts[VF_NUM_POINTS] = {};
+    int uniqueCount = 0;
+    int populatedCount = 0;
+    for (int i = 0; i < VF_NUM_POINTS; i++) {
+        if (g_app.curve[i].freq_kHz == 0) continue;
+        populatedCount++;
+        int delta = g_app.freqOffsets[i];
+        bool found = false;
+        for (int j = 0; j < uniqueCount; j++) {
+            if (values[j] == delta) {
+                counts[j]++;
+                found = true;
+                break;
+            }
+        }
+        if (!found && uniqueCount < VF_NUM_POINTS) {
+            values[uniqueCount] = delta;
+            counts[uniqueCount] = 1;
+            uniqueCount++;
+        }
+    }
+    if (populatedCount == 0) return 0;
+
+    int bestValue = 0;
+    int bestCount = 0;
+    for (int i = 0; i < uniqueCount; i++) {
+        if (counts[i] > bestCount || (counts[i] == bestCount && abs(values[i]) > abs(bestValue))) {
+            bestValue = values[i];
+            bestCount = counts[i];
+        }
     }
 
+    if (bestCount * 2 < populatedCount) return 0;
+    return bestValue;
+}
+
+static void detect_clock_offsets() {
+    // Detect global offsets from generic driver-visible sources.
+    // GPU: use uniform VF control deltas, which reflect active global core offset.
+    // Memory: prefer public Pstates20 memory clocks vs VBIOS max clocks.
+    // This reflects the currently active offset and avoids stale NVML/Pstates delta fields
+    // surviving after another tool resets memory to default.
+
+    read_nvidia_smi_max_clocks();
+
+    int gpuOffsetkHz = uniform_curve_offset_khz();
+    if (gpuOffsetkHz != 0 || g_app.pstateGpuOffsetkHz != 0) {
+        if (gpuOffsetkHz == 0) gpuOffsetkHz = g_app.pstateGpuOffsetkHz;
+        g_app.gpuClockOffsetkHz = gpuOffsetkHz;
+        if (!g_app.gpuOffsetRangeKnown) {
+            int gpuOffsetMHz = gpuOffsetkHz / 1000;
+            g_app.gpuClockOffsetMinMHz = gpuOffsetMHz;
+            g_app.gpuClockOffsetMaxMHz = gpuOffsetMHz;
+        }
+    }
+
+    if (g_app.pstateMemMaxMHz > 0 && g_app.smiMemMaxMHz > 0) {
+        int memOffsetkHz = ((int)g_app.pstateMemMaxMHz - (int)g_app.smiMemMaxMHz) * 1000;
+        g_app.memClockOffsetkHz = memOffsetkHz;
+        if (!g_app.memOffsetRangeKnown && memOffsetkHz != 0) {
+            int memOffsetMHz = mem_display_mhz_from_driver_khz(memOffsetkHz);
+            g_app.memClockOffsetMinMHz = memOffsetMHz;
+            g_app.memClockOffsetMaxMHz = memOffsetMHz;
+        }
+    }
+}
+
+static bool nvapi_read_offsets() {
     const unsigned int CTRL_SIZE = 0x2420;
     unsigned char buf[0x2420] = {};
-    {
-        const unsigned int version = (1u << 16) | CTRL_SIZE;
-        memcpy(&buf[0], &version, sizeof(version));
-    }
-    memcpy(&buf[4], mask, 32);
-
-    int ret = func(g_app.gpuHandle, buf);
-    if (ret != 0) return false;
+    if (!nvapi_read_control_table(buf, CTRL_SIZE)) return false;
 
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         int delta = 0;
@@ -2426,46 +3655,22 @@ static bool nvapi_read_offsets() {
 }
 
 static bool nvapi_set_point(int pointIndex, int freqDelta_kHz) {
+    if (pointIndex < 0 || pointIndex >= VF_NUM_POINTS) return false;
+    freqDelta_kHz = clamp_freq_delta_khz(freqDelta_kHz);
+
     auto func = (NvApiFunc)nvapi_qi(VF_SET_CONTROL_ID);
     if (!func) return false;
-    if (pointIndex < 0 || pointIndex >= VF_NUM_POINTS) return false;
-    if (freqDelta_kHz < -1000000 || freqDelta_kHz > 1000000) return false;
-
-    auto getFunc = (NvApiFunc)nvapi_qi(VF_GET_CONTROL_ID);
-    if (!getFunc) return false;
-
-    unsigned char mask[32] = {};
-    auto getInfo = (NvApiFunc)nvapi_qi(VF_GET_INFO_ID);
-    if (getInfo) {
-        unsigned char ibuf[0x182C] = {};
-        const unsigned int version = (1u << 16) | 0x182C;
-        memcpy(&ibuf[0], &version, sizeof(version));
-        memset(&ibuf[4], 0xFF, 32);
-        if (getInfo(g_app.gpuHandle, ibuf) == 0) {
-            memcpy(mask, &ibuf[4], 32);
-        } else {
-            memset(mask, 0xFF, 16);
-        }
-    } else {
-        memset(mask, 0xFF, 16);
-    }
 
     const unsigned int CTRL_SIZE = 0x2420;
     unsigned char buf[0x2420] = {};
-    {
-        const unsigned int version = (1u << 16) | CTRL_SIZE;
-        memcpy(&buf[0], &version, sizeof(version));
-    }
-    memcpy(&buf[4], mask, 32);
-
-    int ret = getFunc(g_app.gpuHandle, buf);
-    if (ret != 0) return false;
+    if (!nvapi_read_control_table(buf, CTRL_SIZE)) return false;
 
     memset(&buf[4], 0, 32);
     buf[4 + pointIndex / 8] = (unsigned char)(1 << (pointIndex % 8));
     memcpy(&buf[0x44 + pointIndex * 0x24 + 0x14], &freqDelta_kHz, sizeof(freqDelta_kHz));
 
-    ret = func(g_app.gpuHandle, buf);
+    int ret = func(g_app.gpuHandle, buf);
+    debug_log("set_point idx=%d delta=%d ret=%d\n", pointIndex, freqDelta_kHz, ret);
     return ret == 0;
 }
 
@@ -2503,52 +3708,93 @@ static bool nvml_read_power_limit() {
 }
 
 static bool nvapi_read_pstates() {
-    // Read clock offsets from NvAPI Pstates20 (works for reading on Blackwell)
+    // Read clock data from public NvAPI Pstates20.
     auto func = (NvApiFunc)nvapi_qi(0x6FF81213u);
+    g_app.pstateGpuOffsetkHz = 0;
+    g_app.pstateMemOffsetkHz = 0;
+    g_app.pstateGpuMaxMHz = 0;
+    g_app.pstateMemMaxMHz = 0;
     if (!func) return false;
 
-    unsigned char buf[0x1CF8] = {};
-    {
-        const unsigned int version = (2u << 16) | 0x1CF8;
-        memcpy(&buf[0], &version, sizeof(version));
+    nvapiPerfPstates20Info_t info = {};
+    info.version = NVAPI_PERF_PSTATES20_INFO_VER3;
+    int ret = func(g_app.gpuHandle, &info);
+    if (ret != 0) {
+        info = {};
+        info.version = NVAPI_PERF_PSTATES20_INFO_VER2;
+        ret = func(g_app.gpuHandle, &info);
     }
-    if (func(g_app.gpuHandle, buf) != 0) return false;
+    if (ret != 0) return false;
 
-    memcpy(&g_app.gpuClockOffsetkHz, &buf[0x3C], sizeof(g_app.gpuClockOffsetkHz));
-    memcpy(&g_app.memClockOffsetkHz, &buf[0x54], sizeof(g_app.memClockOffsetkHz));
-    if (!g_app.gpuOffsetRangeKnown) {
-        g_app.gpuClockOffsetMinMHz = g_app.gpuClockOffsetkHz / 1000;
-        g_app.gpuClockOffsetMaxMHz = g_app.gpuClockOffsetkHz / 1000;
+    unsigned int numPstates = info.numPstates;
+    if (numPstates > NVAPI_MAX_GPU_PSTATE20_PSTATES) numPstates = NVAPI_MAX_GPU_PSTATE20_PSTATES;
+    unsigned int numClocks = info.numClocks;
+    if (numClocks > NVAPI_MAX_GPU_PSTATE20_CLOCKS) numClocks = NVAPI_MAX_GPU_PSTATE20_CLOCKS;
+
+    for (unsigned int pi = 0; pi < numPstates; pi++) {
+        const nvapiPstate20Entry_t* pstate = &info.pstates[pi];
+        for (unsigned int ci = 0; ci < numClocks; ci++) {
+            const nvapiPstate20ClockEntry_t* clock = &pstate->clocks[ci];
+            unsigned int maxFreq_kHz = 0;
+            if (clock->typeId == NVAPI_GPU_PERF_PSTATE20_CLOCK_TYPE_SINGLE) {
+                maxFreq_kHz = clock->data.single.freq_kHz;
+            } else if (clock->typeId == NVAPI_GPU_PERF_PSTATE20_CLOCK_TYPE_RANGE) {
+                maxFreq_kHz = clock->data.range.maxFreq_kHz;
+            }
+
+            if (clock->domainId == NVAPI_GPU_PUBLIC_CLOCK_GRAPHICS) {
+                if (abs(clock->freqDelta_kHz.value) > abs(g_app.pstateGpuOffsetkHz)) {
+                    g_app.pstateGpuOffsetkHz = clock->freqDelta_kHz.value;
+                }
+                unsigned int mhz = maxFreq_kHz / 1000;
+                if (mhz > g_app.pstateGpuMaxMHz) g_app.pstateGpuMaxMHz = mhz;
+            } else if (clock->domainId == NVAPI_GPU_PUBLIC_CLOCK_MEMORY) {
+                int memOffsetkHz = clock->freqDelta_kHz.value;
+                if (abs(memOffsetkHz) > abs(g_app.pstateMemOffsetkHz)) {
+                    g_app.pstateMemOffsetkHz = memOffsetkHz;
+                }
+                unsigned int mhz = maxFreq_kHz / 1000;
+                if (mhz > g_app.pstateMemMaxMHz) g_app.pstateMemMaxMHz = mhz;
+            }
+        }
     }
-    if (!g_app.memOffsetRangeKnown) {
-        g_app.memClockOffsetMinMHz = mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
-        g_app.memClockOffsetMaxMHz = mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
-    }
+
     return true;
 }
 
 static bool nvapi_set_gpu_offset(int offsetkHz) {
-    if (g_app.gpuClockOffsetkHz == offsetkHz) return true;
-    bool exact = false;
-    char detail[128] = {};
-    bool ok = nvml_set_clock_offset_domain(NVML_CLOCK_GRAPHICS, offsetkHz / 1000, &exact, detail, sizeof(detail));
-    if (ok && exact) {
-        nvml_read_clock_offsets(detail, sizeof(detail));
-        return true;
+    int currentGlobalkHz = uniform_curve_offset_khz();
+    if (currentGlobalkHz == offsetkHz) return true;
+
+    debug_log("set_gpu_offset current=%d target=%d\n", currentGlobalkHz, offsetkHz);
+
+    int targetOffsets[VF_NUM_POINTS] = {};
+    bool pointMask[VF_NUM_POINTS] = {};
+    for (int i = 0; i < VF_NUM_POINTS; i++) {
+        if (g_app.curve[i].freq_kHz == 0) continue;
+        targetOffsets[i] = clamp_freq_delta_khz(g_app.freqOffsets[i] - currentGlobalkHz + offsetkHz);
+        pointMask[i] = true;
     }
-    return false;
+    bool exactOk = apply_curve_offsets_verified(targetOffsets, pointMask, 2);
+    int uniformkHz = uniform_curve_offset_khz();
+    detect_clock_offsets();
+    bool functionalOk = (uniformkHz == offsetkHz) || (g_app.gpuClockOffsetkHz == offsetkHz);
+    debug_log("set_gpu_offset result exact=%d uniform=%d detected=%d\n",
+        exactOk ? 1 : 0, uniformkHz, g_app.gpuClockOffsetkHz);
+    return exactOk || functionalOk;
 }
 
 static bool nvapi_set_mem_offset(int offsetkHz) {
     if (g_app.memClockOffsetkHz == offsetkHz) return true;
     bool exact = false;
     char detail[128] = {};
-    bool ok = nvml_set_clock_offset_domain(NVML_CLOCK_MEM, offsetkHz / 1000, &exact, detail, sizeof(detail));
-    if (ok && exact) {
-        nvml_read_clock_offsets(detail, sizeof(detail));
-        return true;
-    }
-    return false;
+    bool ok = nvml_set_clock_offset_domain(NVML_CLOCK_MEM, (offsetkHz / 1000) * 2, &exact, detail, sizeof(detail));
+    if (!ok) return false;
+
+    nvml_read_clock_offsets(detail, sizeof(detail));
+    nvapi_read_pstates();
+    detect_clock_offsets();
+    return g_app.memClockOffsetkHz == offsetkHz;
 }
 
 static bool nvapi_set_power_limit(int pct) {
@@ -2725,21 +3971,48 @@ static void clear_debug_log_file() {
 // ============================================================================
 
 static void create_backbuffer(HWND hwnd) {
+    destroy_backbuffer();
     HDC hdc = GetDC(hwnd);
+    if (!hdc) return;
     RECT rc;
     GetClientRect(hwnd, &rc);
+    if (rc.right < 1) rc.right = 1;
+    if (rc.bottom < 1) rc.bottom = 1;
     g_app.hMemDC = CreateCompatibleDC(hdc);
+    if (!g_app.hMemDC) {
+        ReleaseDC(hwnd, hdc);
+        return;
+    }
     g_app.hMemBmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
+    if (!g_app.hMemBmp) {
+        DeleteDC(g_app.hMemDC);
+        g_app.hMemDC = nullptr;
+        ReleaseDC(hwnd, hdc);
+        return;
+    }
     g_app.hOldBmp = (HBITMAP)SelectObject(g_app.hMemDC, g_app.hMemBmp);
+    HBRUSH bg = CreateSolidBrush(COL_BG);
+    FillRect(g_app.hMemDC, &rc, bg);
+    DeleteObject(bg);
     ReleaseDC(hwnd, hdc);
+}
+
+static void fill_window_background(HWND hwnd, HDC hdc) {
+    if (!hdc) return;
+    RECT rc = {};
+    if (!GetClientRect(hwnd, &rc)) return;
+    HBRUSH brush = g_app.hWindowClassBrush ? g_app.hWindowClassBrush : (HBRUSH)GetStockObject(BLACK_BRUSH);
+    FillRect(hdc, &rc, brush);
 }
 
 static void destroy_backbuffer() {
     if (g_app.hMemDC) {
         SelectObject(g_app.hMemDC, g_app.hOldBmp);
-        DeleteObject(g_app.hMemBmp);
+        if (g_app.hMemBmp) DeleteObject(g_app.hMemBmp);
         DeleteDC(g_app.hMemDC);
         g_app.hMemDC = nullptr;
+        g_app.hMemBmp = nullptr;
+        g_app.hOldBmp = nullptr;
     }
 }
 
@@ -2965,7 +4238,7 @@ static void populate_edits() {
         EnableWindow(g_app.hEditsMv[vi], TRUE);
         SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_UNCHECKED, 0);
         EnableWindow(g_app.hLocks[vi], TRUE);
-        InvalidateRect(g_app.hLocks[vi], nullptr, TRUE);
+        InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
     }
     // Re-apply lock state if active
     if (g_app.lockedVi >= 0 && g_app.lockedVi < g_app.numVisible) {
@@ -2975,7 +4248,7 @@ static void populate_edits() {
             set_edit_value(g_app.hEditsMhz[j], g_app.lockedFreq);
             SendMessageA(g_app.hEditsMhz[j], EM_SETREADONLY, TRUE, 0);
             EnableWindow(g_app.hLocks[j], FALSE);
-            InvalidateRect(g_app.hLocks[j], nullptr, TRUE);
+            InvalidateRect(g_app.hLocks[j], nullptr, FALSE);
         }
     }
     populate_global_controls();
@@ -2986,7 +4259,7 @@ static void apply_lock(int vi) {
     if (g_app.lockedVi >= 0 && g_app.lockedVi < g_app.numVisible) {
         SendMessageA(g_app.hLocks[g_app.lockedVi], BM_SETCHECK, BST_UNCHECKED, 0);
         EnableWindow(g_app.hLocks[g_app.lockedVi], TRUE);
-        InvalidateRect(g_app.hLocks[g_app.lockedVi], nullptr, TRUE);
+        InvalidateRect(g_app.hLocks[g_app.lockedVi], nullptr, FALSE);
     }
 
     // Check this one
@@ -2994,14 +4267,14 @@ static void apply_lock(int vi) {
     g_app.lockedVi = vi;
     g_app.lockedFreq = get_edit_value(g_app.hEditsMhz[vi]);
     EnableWindow(g_app.hLocks[vi], TRUE);
-    InvalidateRect(g_app.hLocks[vi], nullptr, TRUE);
+    InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
 
     // Set all subsequent MHz fields to locked value, make read-only, disable lock checkboxes
     for (int j = vi + 1; j < g_app.numVisible; j++) {
         set_edit_value(g_app.hEditsMhz[j], g_app.lockedFreq);
         SendMessageA(g_app.hEditsMhz[j], EM_SETREADONLY, TRUE, 0);
         EnableWindow(g_app.hLocks[j], FALSE);
-        InvalidateRect(g_app.hLocks[j], nullptr, TRUE);
+        InvalidateRect(g_app.hLocks[j], nullptr, FALSE);
     }
 }
 
@@ -3015,7 +4288,7 @@ static void unlock_all() {
         set_edit_value(g_app.hEditsMhz[vi], displayed_curve_mhz(g_app.curve[ci].freq_kHz));
         SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_UNCHECKED, 0);
         EnableWindow(g_app.hLocks[vi], TRUE);
-        InvalidateRect(g_app.hLocks[vi], nullptr, TRUE);
+        InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
     }
 }
 
@@ -3092,7 +4365,7 @@ static void create_edit_controls(HWND hParent, HINSTANCE hInst) {
     }
 
     // Global control fields below edits
-    int ocY = startY + rowsPerCol * rowH + dp(6);
+    int ocY = layout_global_controls_y();
     int fieldW = dp(78);
 
     CreateWindowExA(0, "STATIC", "GPU Offset (MHz):",
@@ -3141,7 +4414,7 @@ static void create_edit_controls(HWND hParent, HINSTANCE hInst) {
 
     if (g_app.loaded) populate_edits();
 
-    sync_startup_checkbox_from_system();
+    refresh_profile_controls_from_config();
 }
 
 // ============================================================================
@@ -3157,7 +4430,9 @@ static void apply_changes() {
         return;
     }
     char result[256] = {};
+    SetCursor(LoadCursor(nullptr, IDC_WAIT));
     bool ok = apply_desired_settings(&desired, true, result, sizeof(result));
+    SetCursor(LoadCursor(nullptr, IDC_ARROW));
     MessageBoxA(g_app.hMainWnd, result, "Green Curve", MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONWARNING));
 }
 
@@ -3166,7 +4441,11 @@ static void destroy_edit_controls(HWND hParent) {
     while (child) {
         HWND next = GetWindow(child, GW_HWNDNEXT);
         LONG_PTR id = GetWindowLongPtr(child, GWLP_ID);
-        if (id != APPLY_BTN_ID && id != REFRESH_BTN_ID && id != RESET_BTN_ID && id != SAVE_CFG_BTN_ID && id != LICENSE_BTN_ID && id != STARTUP_APPLY_ID) {
+        if (id != APPLY_BTN_ID && id != REFRESH_BTN_ID && id != RESET_BTN_ID && id != LICENSE_BTN_ID
+            && id != PROFILE_COMBO_ID && id != PROFILE_LOAD_ID && id != PROFILE_SAVE_ID && id != PROFILE_CLEAR_ID
+            && id != APP_LAUNCH_COMBO_ID && id != LOGON_COMBO_ID
+            && id != PROFILE_LABEL_ID && id != PROFILE_STATE_ID && id != APP_LAUNCH_LABEL_ID
+            && id != LOGON_LABEL_ID && id != PROFILE_STATUS_ID) {
             DestroyWindow(child);
         }
         child = next;
@@ -3192,7 +4471,7 @@ static void refresh_curve() {
         // Recreate edit controls for new visible set
         destroy_edit_controls(g_app.hMainWnd);
         create_edit_controls(g_app.hMainWnd, g_app.hInst);
-        InvalidateRect(g_app.hMainWnd, nullptr, TRUE);
+        invalidate_main_window();
 
         debug_log("Green Curve: Refreshed - %d points loaded\n", g_app.numPopulated);
         for (int i = 0; i < VF_NUM_POINTS && i < 10; i++) {
@@ -3211,86 +4490,52 @@ static void refresh_curve() {
 static void reset_curve() {
     if (!g_app.loaded) return;
 
-    // Explicitly set freqDelta = 0 for every populated point
-    // This directly writes zero offset instead of computing an inverse
-    auto getFunc = (NvApiFunc)nvapi_qi(VF_GET_CONTROL_ID);
-    auto setFunc = (NvApiFunc)nvapi_qi(VF_SET_CONTROL_ID);
-    auto getInfo = (NvApiFunc)nvapi_qi(VF_GET_INFO_ID);
-
-    if (!getFunc || !setFunc) {
+    if (!(NvApiFunc)nvapi_qi(VF_SET_CONTROL_ID)) {
         MessageBoxA(g_app.hMainWnd, "NvAPI functions not available.", "Green Curve", MB_OK | MB_ICONERROR);
         return;
     }
 
-    unsigned char mask[32] = {};
-    if (getInfo) {
-        unsigned char ibuf[0x182C] = {};
-        const unsigned int version = (1u << 16) | 0x182C;
-        memcpy(&ibuf[0], &version, sizeof(version));
-        memset(&ibuf[4], 0xFF, 32);
-        if (getInfo(g_app.gpuHandle, ibuf) == 0) {
-            memcpy(mask, &ibuf[4], 32);
-        } else {
-            memset(mask, 0xFF, 16);
-        }
-    } else {
-        memset(mask, 0xFF, 16);
-    }
-
-    const unsigned int CTRL_SIZE = 0x2420;
-    int successCount = 0;
-    int failCount = 0;
-
+    int targetOffsets[VF_NUM_POINTS] = {};
+    bool targetMask[VF_NUM_POINTS] = {};
+    bool hadCurveOffsets = false;
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         if (g_app.curve[ci].freq_kHz == 0) continue;
-        if (g_app.freqOffsets[ci] == 0) continue;
-
-        // Read current control state
-        unsigned char buf[0x2420] = {};
-        const unsigned int version = (1u << 16) | CTRL_SIZE;
-        memcpy(&buf[0], &version, sizeof(version));
-        memcpy(&buf[4], mask, 32);
-        int ret = getFunc(g_app.gpuHandle, buf);
-        if (ret != 0) { failCount++; continue; }
-
-        // Set single-bit mask and freqDelta = 0
-        memset(&buf[4], 0, 32);
-        buf[4 + ci / 8] = (unsigned char)(1 << (ci % 8));
-        {
-            const int zero = 0;
-            memcpy(&buf[0x44 + ci * 0x24 + 0x14], &zero, sizeof(zero));
-        }
-
-        ret = setFunc(g_app.gpuHandle, buf);
-        if (ret == 0) successCount++; else failCount++;
-        Sleep(2);
+        targetMask[ci] = true;
+        if (g_app.freqOffsets[ci] != 0) hadCurveOffsets = true;
     }
 
-    // Zero offsets in memory
-    memset(g_app.freqOffsets, 0, sizeof(g_app.freqOffsets));
-    Sleep(100);
+    int successCount = 0;
+    int failCount = 0;
+    if (hadCurveOffsets) {
+        if (apply_curve_offsets_verified(targetOffsets, targetMask, 2)) successCount++;
+        else failCount++;
+    }
 
-    // Re-read to confirm
-    nvapi_read_curve();
-    nvapi_read_offsets();
-    rebuild_visible_map();
     detect_locked_tail_from_curve();
 
     // Reset global controls to defaults
-    nvapi_set_gpu_offset(0);
-    nvapi_set_mem_offset(0);
-    nvapi_set_power_limit(100);
+    if (g_app.gpuClockOffsetkHz != 0) {
+        if (nvapi_set_gpu_offset(0)) successCount++; else failCount++;
+    }
+    if (g_app.memClockOffsetkHz != 0) {
+        if (nvapi_set_mem_offset(0)) successCount++; else failCount++;
+    }
+    if (g_app.powerLimitPct != 100) {
+        if (nvapi_set_power_limit(100)) successCount++; else failCount++;
+    }
     char detail[128] = {};
-    nvml_set_fan_auto(detail, sizeof(detail));
+    if (!g_app.fanIsAuto) {
+        if (nvml_set_fan_auto(detail, sizeof(detail))) successCount++; else failCount++;
+    }
     refresh_global_state(detail, sizeof(detail));
 
     // Recreate edit controls
     destroy_edit_controls(g_app.hMainWnd);
     create_edit_controls(g_app.hMainWnd, g_app.hInst);
-    InvalidateRect(g_app.hMainWnd, nullptr, TRUE);
+    invalidate_main_window();
 
     char msg[128];
-    StringCchPrintfA(msg, ARRAY_COUNT(msg), "Reset %d offsets to 0 (%d failed).", successCount, failCount);
+    StringCchPrintfA(msg, ARRAY_COUNT(msg), "Reset %d items to default (%d failed).", successCount, failCount);
     MessageBoxA(g_app.hMainWnd, msg, "Green Curve", MB_OK | MB_ICONINFORMATION);
 }
 
@@ -3316,6 +4561,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_ERASEBKGND:
+            fill_window_background(hwnd, (HDC)wParam);
             return 1;
 
         case WM_SETTINGCHANGE:
@@ -3323,11 +4569,30 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             apply_system_titlebar_theme(hwnd);
             break;
 
+        case APP_WM_SYNC_STARTUP:
+            close_startup_sync_thread_handle();
+            g_app.startupSyncInFlight = false;
+            if (g_app.hLogonCombo) {
+                int slot = (int)wParam;
+                if (slot >= 0 && slot <= CONFIG_NUM_SLOTS)
+                    SendMessageA(g_app.hLogonCombo, CB_SETCURSEL, (WPARAM)slot, 0);
+            }
+            update_profile_state_label();
+            return 0;
+
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
             RECT rc;
             GetClientRect(hwnd, &rc);
+
+            fill_window_background(hwnd, hdc);
+
+            if (!g_app.hMemDC || !g_app.hMemBmp) create_backbuffer(hwnd);
+            if (!g_app.hMemDC) {
+                EndPaint(hwnd, &ps);
+                return 0;
+            }
 
             int graphH = dp(GRAPH_HEIGHT);
 
@@ -3365,48 +4630,133 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 refresh_curve();
             } else if (LOWORD(wParam) == RESET_BTN_ID) {
                 reset_curve();
-            } else if (LOWORD(wParam) == SAVE_CFG_BTN_ID) {
+            } else if (LOWORD(wParam) == PROFILE_COMBO_ID && HIWORD(wParam) == CBN_SELCHANGE) {
+                int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
+                if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
+                slot += 1;
+                set_config_int(g_app.configPath, "profiles", "selected_slot", slot);
+                update_profile_state_label();
+                update_profile_action_buttons();
+                set_profile_status_text("Selected slot %d for save/load actions.", slot);
+            } else if (LOWORD(wParam) == PROFILE_LOAD_ID) {
+                int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
+                if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
+                slot += 1;
+                if (!is_profile_slot_saved(g_app.configPath, slot)) {
+                    set_profile_status_text("Slot %d is empty. Save a profile first.", slot);
+                    break;
+                }
+                if (!maybe_confirm_profile_load_replace(slot)) break;
+                DesiredSettings desired = {};
+                char err[256] = {};
+                if (!load_profile_from_config(g_app.configPath, slot, &desired, err, sizeof(err))) {
+                    MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
+                    break;
+                }
+                populate_desired_into_gui(&desired);
+                set_config_int(g_app.configPath, "profiles", "selected_slot", slot);
+                refresh_profile_controls_from_config();
+                set_profile_status_text("Loaded slot %d into the GUI. GPU settings were not applied.", slot);
+                invalidate_main_window();
+            } else if (LOWORD(wParam) == PROFILE_SAVE_ID) {
+                int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
+                if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
+                slot += 1;
                 DesiredSettings desired = {};
                 char err[256] = {};
                 if (!capture_gui_config_settings(&desired, err, sizeof(err))) {
                     MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
-                } else if (save_current_gui_state_to_config(startup_checkbox_checked() ? CONFIG_STARTUP_ENABLE : CONFIG_STARTUP_DISABLE,
-                           err, sizeof(err))) {
-                    if (startup_checkbox_checked() && !set_startup_task_enabled(true, err, sizeof(err))) {
-                        SendMessageA(g_app.hStartupApplyCheck, BM_SETCHECK, BST_UNCHECKED, 0);
+                    break;
+                }
+                if (!save_profile_to_config(g_app.configPath, slot, &desired, err, sizeof(err))) {
+                    MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
+                    break;
+                }
+                refresh_profile_controls_from_config();
+                layout_bottom_buttons(g_app.hMainWnd);
+                set_profile_status_text("Saved the current GUI values to slot %d.", slot);
+                invalidate_main_window();
+            } else if (LOWORD(wParam) == PROFILE_CLEAR_ID) {
+                int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
+                if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
+                slot += 1;
+                if (!is_profile_slot_saved(g_app.configPath, slot)) {
+                    set_profile_status_text("Slot %d is already empty.", slot);
+                    break;
+                }
+                char confirm[192];
+                StringCchPrintfA(confirm, ARRAY_COUNT(confirm),
+                    "Clear profile %d? Any app start or logon assignment for this slot will also be disabled.", slot);
+                if (MessageBoxA(g_app.hMainWnd, confirm, "Green Curve", MB_YESNO | MB_ICONQUESTION) != IDYES) break;
+                char err[256] = {};
+                if (!clear_profile_from_config(g_app.configPath, slot, err, sizeof(err))) {
+                    MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
+                    break;
+                }
+                int activeLogonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
+                bool taskOk = true;
+                if (activeLogonSlot > 0) taskOk = set_startup_task_enabled(true, err, sizeof(err));
+                else taskOk = set_startup_task_enabled(false, err, sizeof(err));
+                if (!taskOk && err[0]) {
+                    MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONWARNING);
+                }
+                refresh_profile_controls_from_config();
+                layout_bottom_buttons(g_app.hMainWnd);
+                set_profile_status_text("Cleared slot %d and disabled any auto-use for it.", slot);
+                invalidate_main_window();
+            } else if (LOWORD(wParam) == APP_LAUNCH_COMBO_ID || LOWORD(wParam) == LOGON_COMBO_ID) {
+                if (HIWORD(wParam) != CBN_SELCHANGE) break;
+                HWND hCombo = g_app.hAppLaunchCombo;
+                const char* key = "app_launch_slot";
+                if (LOWORD(wParam) == LOGON_COMBO_ID) {
+                    hCombo = g_app.hLogonCombo;
+                    key = "logon_slot";
+                }
+                int sel = (int)SendMessageA(hCombo, CB_GETCURSEL, 0, 0);
+                int slot = (sel < 0) ? 0 : sel;  // index 0 = Disabled (slot 0)
+                if (slot > 0 && !is_profile_slot_saved(g_app.configPath, slot)) {
+                    MessageBoxA(g_app.hMainWnd,
+                        "That slot is empty. Save a profile there before using it for automatic actions.",
+                        "Green Curve", MB_OK | MB_ICONINFORMATION);
+                    refresh_profile_controls_from_config();
+                    break;
+                }
+                if (LOWORD(wParam) == LOGON_COMBO_ID) {
+                    char err[256] = {};
+                    int previousSlot = get_config_int(g_app.configPath, "profiles", key, 0);
+                    if (previousSlot < 0 || previousSlot > CONFIG_NUM_SLOTS) previousSlot = 0;
+                    bool ok = false;
+                    set_config_int(g_app.configPath, "profiles", key, slot);
+                    if (slot > 0) ok = set_startup_task_enabled(true, err, sizeof(err));
+                    else ok = set_startup_task_enabled(false, err, sizeof(err));
+                    if (!ok) {
+                        set_config_int(g_app.configPath, "profiles", key, previousSlot);
                         MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
+                        refresh_profile_controls_from_config();
                         break;
                     }
-                    MessageBoxA(g_app.hMainWnd, "Config saved to config.ini.", "Green Curve", MB_OK | MB_ICONINFORMATION);
+                    set_profile_status_text(slot > 0
+                        ? "At Windows logon, slot %d will be applied automatically."
+                        : "Windows logon auto-apply disabled.", slot);
                 } else {
-                    MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
+                    set_config_int(g_app.configPath, "profiles", key, slot);
+                    set_profile_status_text(slot > 0
+                        ? "At app start, slot %d will load into the GUI only."
+                        : "App start auto-load disabled.", slot);
                 }
-            } else if (LOWORD(wParam) == STARTUP_APPLY_ID) {
-                char err[256] = {};
-                bool enable = startup_checkbox_checked();
-                if (enable) {
-                    if (!save_current_gui_state_for_startup(err, sizeof(err)) ||
-                        !set_startup_task_enabled(true, err, sizeof(err))) {
-                        SendMessageA(g_app.hStartupApplyCheck, BM_SETCHECK, BST_UNCHECKED, 0);
-                        MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
-                    }
-                } else {
-                    if (!save_desired_to_config_with_startup(g_app.configPath, nullptr, true, CONFIG_STARTUP_DISABLE, err, sizeof(err)) ||
-                        !set_startup_task_enabled(false, err, sizeof(err))) {
-                        SendMessageA(g_app.hStartupApplyCheck, BM_SETCHECK, BST_CHECKED, 0);
-                        MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
-                    }
-                }
+                refresh_profile_controls_from_config();
+                layout_bottom_buttons(g_app.hMainWnd);
+                invalidate_main_window();
             } else if (LOWORD(wParam) >= LOCK_BASE_ID && LOWORD(wParam) < LOCK_BASE_ID + VF_NUM_POINTS) {
                 // Lock checkbox clicked
                 int vi = LOWORD(wParam) - LOCK_BASE_ID;
                 if (vi == g_app.lockedVi) {
                     SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_UNCHECKED, 0);
-                    InvalidateRect(g_app.hLocks[vi], nullptr, TRUE);
+                    InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
                     unlock_all();
                 } else {
                     SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_CHECKED, 0);
-                    InvalidateRect(g_app.hLocks[vi], nullptr, TRUE);
+                    InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
                     apply_lock(vi);
                 }
             } else if (LOWORD(wParam) == LICENSE_BTN_ID) {
@@ -3434,13 +4784,29 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_CTLCOLORSTATIC: {
             HDC hdcStatic = (HDC)wParam;
+            HWND hCtl = (HWND)lParam;
+            if (hCtl == g_app.hProfileCombo || hCtl == g_app.hAppLaunchCombo || hCtl == g_app.hLogonCombo) {
+                SetTextColor(hdcStatic, COL_TEXT);
+                SetBkColor(hdcStatic, RGB(0x1A, 0x1A, 0x2A));
+                static HBRUSH hComboBr = CreateSolidBrush(RGB(0x1A, 0x1A, 0x2A));
+                return (LRESULT)hComboBr;
+            }
             SetTextColor(hdcStatic, COL_LABEL);
             SetBkColor(hdcStatic, RGB(0x22, 0x22, 0x32));
             static HBRUSH hBr = CreateSolidBrush(RGB(0x22, 0x22, 0x32));
             return (LRESULT)hBr;
         }
 
+        case WM_CTLCOLORLISTBOX: {
+            HDC hdcList = (HDC)wParam;
+            SetTextColor(hdcList, COL_TEXT);
+            SetBkColor(hdcList, RGB(0x1A, 0x1A, 0x2A));
+            static HBRUSH hListBr = CreateSolidBrush(RGB(0x1A, 0x1A, 0x2A));
+            return (LRESULT)hListBr;
+        }
+
         case WM_DESTROY:
+            close_startup_sync_thread_handle();
             destroy_backbuffer();
             PostQuitMessage(0);
             return 0;
@@ -3502,7 +4868,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
     CLI_LOG("Green Curve CLI mode started\n");
 
     if (opts.showHelp) {
-        CLI_LOG("Green Curve v0.1 - NVIDIA Blackwell VF Curve Editor\n");
+        CLI_LOG("Green Curve v0.2 - NVIDIA Blackwell VF Curve Editor\n");
         CLI_LOG("Usage:\n");
         CLI_LOG("  greencurve.exe              Launch GUI\n");
         CLI_LOG("  greencurve.exe --dump       Write VF curve to greencurve_cli_log.txt\n");
@@ -3510,8 +4876,8 @@ static bool handle_cli(LPWSTR wCmdLine) {
         CLI_LOG("  greencurve.exe --probe      Probe NvAPI/NVML control support\n");
         CLI_LOG("  greencurve.exe --gpu-offset <mhz> --mem-offset <mhz> --power-limit <pct>\n");
         CLI_LOG("  greencurve.exe --fan <auto|0-100> --point49 <mhz> ... --point126 <mhz>\n");
-        CLI_LOG("  greencurve.exe --apply-config [--config <path>]\n");
-        CLI_LOG("  greencurve.exe --save-config [--config <path>]\n");
+        CLI_LOG("  greencurve.exe --apply-config [--config <path>]  Apply logon profile slot\n");
+        CLI_LOG("  greencurve.exe --save-config [--config <path>]  Save to selected profile slot\n");
         CLI_LOG("  greencurve.exe --reset      Reset curve/global controls to defaults\n");
         CLI_LOG("  greencurve.exe --help       This help\n");
         fclose(logf);
@@ -3562,10 +4928,24 @@ static bool handle_cli(LPWSTR wCmdLine) {
     if (opts.applyConfig) {
         DesiredSettings cfg = {};
         char err[256] = {};
-        if (!load_desired_settings_from_ini(g_app.configPath, &cfg, err, sizeof(err))) {
-            CLI_LOG("ERROR: %s\n", err);
-            fclose(logf);
-            return true;
+        // Determine which profile slot to apply
+        int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
+        if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
+        int loadSlot = (logonSlot > 0) ? logonSlot : CONFIG_DEFAULT_SLOT;
+        if (is_profile_slot_saved(g_app.configPath, loadSlot)) {
+            if (!load_profile_from_config(g_app.configPath, loadSlot, &cfg, err, sizeof(err))) {
+                CLI_LOG("ERROR: %s\n", err);
+                fclose(logf);
+                return true;
+            }
+            CLI_LOG("Applying profile %d...\n", loadSlot);
+        } else {
+            // Fallback to legacy config
+            if (!load_desired_settings_from_ini(g_app.configPath, &cfg, err, sizeof(err))) {
+                CLI_LOG("ERROR: %s\n", err);
+                fclose(logf);
+                return true;
+            }
         }
         merge_desired_settings(&cfg, &opts.desired);
         char result[256] = {};
@@ -3586,17 +4966,18 @@ static bool handle_cli(LPWSTR wCmdLine) {
     }
 
     if (opts.reset) {
+        int resetOffsets[VF_NUM_POINTS] = {};
+        bool resetMask[VF_NUM_POINTS] = {};
         for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
             if (g_app.curve[ci].freq_kHz == 0) continue;
-            if (g_app.freqOffsets[ci] == 0) continue;
-            nvapi_set_point(ci, 0);
-            Sleep(2);
+            resetMask[ci] = true;
         }
-        nvapi_set_gpu_offset(0);
-        nvapi_set_mem_offset(0);
-        nvapi_set_power_limit(100);
+        apply_curve_offsets_verified(resetOffsets, resetMask, 2);
+        if (g_app.gpuClockOffsetkHz != 0) nvapi_set_gpu_offset(0);
+        if (g_app.memClockOffsetkHz != 0) nvapi_set_mem_offset(0);
+        if (g_app.powerLimitPct != 100) nvapi_set_power_limit(100);
         char detail[128] = {};
-        nvml_set_fan_auto(detail, sizeof(detail));
+        if (!g_app.fanIsAuto) nvml_set_fan_auto(detail, sizeof(detail));
         refresh_global_state(detail, sizeof(detail));
         CLI_LOG("Reset applied.\n");
     }
@@ -3604,6 +4985,8 @@ static bool handle_cli(LPWSTR wCmdLine) {
     if (opts.saveConfig) {
         DesiredSettings saveDesired = {};
         bool useDesired = false;
+        int targetSlot = get_config_int(g_app.configPath, "profiles", "selected_slot", CONFIG_DEFAULT_SLOT);
+        if (targetSlot < 1 || targetSlot > CONFIG_NUM_SLOTS) targetSlot = CONFIG_DEFAULT_SLOT;
         if (opts.applyConfig) {
             if (!load_desired_settings_from_ini(g_app.configPath, &saveDesired, opts.error, sizeof(opts.error))) {
                 CLI_LOG("ERROR: %s\n", opts.error);
@@ -3617,12 +5000,29 @@ static bool handle_cli(LPWSTR wCmdLine) {
             useDesired = true;
         }
         char err[256] = {};
-        if (!save_desired_to_config(g_app.configPath, useDesired ? &saveDesired : nullptr, !useDesired, err, sizeof(err))) {
+        if (!useDesired) {
+            saveDesired.hasGpuOffset = true;
+            saveDesired.gpuOffsetMHz = g_app.gpuClockOffsetkHz / 1000;
+            saveDesired.hasMemOffset = true;
+            saveDesired.memOffsetMHz = mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
+            saveDesired.hasPowerLimit = true;
+            saveDesired.powerLimitPct = g_app.powerLimitPct;
+            saveDesired.hasFan = true;
+            saveDesired.fanAuto = g_app.fanIsAuto;
+            saveDesired.fanPercent = g_app.fanCount ? (int)g_app.fanPercent[0] : 0;
+            for (int i = 0; i < VF_NUM_POINTS; i++) {
+                if (g_app.curve[i].freq_kHz > 0) {
+                    saveDesired.hasCurvePoint[i] = true;
+                    saveDesired.curvePointMHz[i] = displayed_curve_mhz(g_app.curve[i].freq_kHz);
+                }
+            }
+        }
+        if (!save_profile_to_config(g_app.configPath, targetSlot, &saveDesired, err, sizeof(err))) {
             CLI_LOG("ERROR: %s\n", err);
             fclose(logf);
             return true;
         }
-        CLI_LOG("Config written to %s\n", g_app.configPath);
+        CLI_LOG("Profile %d written to %s\n", targetSlot, g_app.configPath);
     }
 
     if (opts.dump) {
@@ -3703,6 +5103,38 @@ static bool handle_cli(LPWSTR wCmdLine) {
             if (r == 0) break;
         }
 
+        // Dump Pstates20 offset fields at known and nearby offsets
+        {
+            auto psFunc = (NvApiFunc)nvapi_qi(0x6FF81213u);
+            if (psFunc) {
+                unsigned char buf[0x1CF8] = {};
+                const unsigned int version = (2u << 16) | 0x1CF8;
+                memcpy(&buf[0], &version, sizeof(version));
+                if (psFunc(g_app.gpuHandle, buf) == 0) {
+                    CLI_LOG("Pstates20 v2 offset field scan (size 0x1CF8):\n");
+                    for (unsigned int off = 0x30; off <= 0x60; off += 4) {
+                        int val = 0;
+                        memcpy(&val, &buf[off], 4);
+                        CLI_LOG("  [0x%03X] = %d kHz%s\n", off, val,
+                            (off == 0x3C) ? " <-- known GPU offset" :
+                            (off == 0x54) ? " <-- known Mem offset" : "");
+                    }
+                    // Also try v3
+                    memset(buf, 0, sizeof(buf));
+                    const unsigned int v3ver = (3u << 16) | 0x1CF8;
+                    memcpy(&buf[0], &v3ver, sizeof(v3ver));
+                    if (psFunc(g_app.gpuHandle, buf) == 0) {
+                        CLI_LOG("Pstates20 v3 offset field scan (size 0x1CF8):\n");
+                        for (unsigned int off = 0x30; off <= 0x60; off += 4) {
+                            int val = 0;
+                            memcpy(&val, &buf[off], 4);
+                            CLI_LOG("  [0x%03X] = %d kHz\n", off, val);
+                        }
+                    }
+                }
+            }
+        }
+
         // Try Pstates20 set existence
         auto setPS = (NvApiFunc)nvapi_qi(0x0F4DAE6B);
         CLI_LOG("[%08X] %-40s  %s\n", 0x0F4DAE6Bu, "GPU_SetPstates20",
@@ -3720,7 +5152,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
         auto getStatus = (NvApiFunc)nvapi_qi(VF_GET_STATUS_ID);
         if (getStatus) {
             // Try with different mask for mem domain
-            for (unsigned int dom = 1; dom < 16; dom++) {
+            for (unsigned int dom = 0; dom < 16; dom++) {
                 unsigned char buf[VF_BUFFER_SIZE] = {};
                 const unsigned int version = (1u << 16) | VF_BUFFER_SIZE;
                 memcpy(&buf[0], &version, sizeof(version));
@@ -3728,12 +5160,22 @@ static bool handle_cli(LPWSTR wCmdLine) {
                 memcpy(&buf[0x24], &dom, sizeof(dom));
                 int ret = getStatus(g_app.gpuHandle, buf);
                 if (ret == 0) {
+                    int populated = 0;
                     unsigned int f0 = 0, v0 = 0;
-                    memcpy(&f0, &buf[VF_ENTRIES_OFFSET], sizeof(f0));
-                    memcpy(&v0, &buf[VF_ENTRIES_OFFSET + 4], sizeof(v0));
-                    if (f0 > 0 || v0 > 0) {
-                        CLI_LOG("VF GetStatus dom=%2u: OK, point0=%u kHz / %u uV\n", dom, f0, v0);
+                    unsigned int fMax = 0;
+                    for (int i = 0; i < VF_NUM_POINTS; i++) {
+                        unsigned int freq = 0, volt = 0;
+                        memcpy(&freq, &buf[VF_ENTRIES_OFFSET + i * VF_ENTRY_STRIDE], sizeof(freq));
+                        memcpy(&volt, &buf[VF_ENTRIES_OFFSET + i * VF_ENTRY_STRIDE + 4], sizeof(volt));
+                        if (freq > 0) {
+                            populated++;
+                            if (f0 == 0) { f0 = freq; v0 = volt; }
+                            if (freq > fMax) fMax = freq;
+                        }
                     }
+                    CLI_LOG("VF GetStatus dom=%2u: OK, %d pts, first=%u kHz/%u uV, max=%u kHz%s\n",
+                        dom, populated, f0, v0, fMax,
+                        (dom == 0) ? " <-- GPU graphics" : "");
                 }
             }
         }
@@ -3750,6 +5192,32 @@ static bool handle_cli(LPWSTR wCmdLine) {
                 mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz), g_app.memClockOffsetMinMHz, g_app.memClockOffsetMaxMHz);
         } else {
             CLI_LOG("Clock offsets: %s\n", detail);
+        }
+
+        // nvmlDeviceGetClock diagnostics - try ALL clock IDs
+        CLI_LOG("\n--- NVML Effective Clocks ---\n");
+        if (g_nvml_api.getClock) {
+            unsigned int val = 0;
+            if (g_nvml_api.getClock(g_app.nvmlDevice, NVML_CLOCK_GRAPHICS, NVML_CLOCK_ID_CURRENT, &val) == NVML_SUCCESS)
+                CLI_LOG("GPU current clock: %u MHz\n", val);
+            if (g_nvml_api.getClock(g_app.nvmlDevice, NVML_CLOCK_MEM, NVML_CLOCK_ID_CURRENT, &val) == NVML_SUCCESS)
+                CLI_LOG("Mem current clock: %u MHz\n", val);
+        } else {
+            CLI_LOG("nvmlDeviceGetClock: NOT AVAILABLE\n");
+        }
+
+        // Run offset detection and show results
+        detect_clock_offsets();
+        CLI_LOG("\n--- Offset Detection Results ---\n");
+        CLI_LOG("GPU offset (after detection): %d MHz\n", g_app.gpuClockOffsetkHz / 1000);
+        CLI_LOG("Mem offset (after detection): %d MHz (display)\n", mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
+        if (g_app.loaded) {
+            unsigned int vfMaxMHz = 0;
+            for (int i = 0; i < VF_NUM_POINTS; i++) {
+                unsigned int freqMHz = displayed_curve_mhz(g_app.curve[i].freq_kHz);
+                if (freqMHz > vfMaxMHz) vfMaxMHz = freqMHz;
+            }
+            CLI_LOG("VF curve max: %u MHz\n", vfMaxMHz);
         }
         if (nvml_read_fans(detail, sizeof(detail))) {
             CLI_LOG("Fans: %u (range %u..%u), mode=%s\n", g_app.fanCount, g_app.fanMinPct, g_app.fanMaxPct, g_app.fanIsAuto ? "auto" : "manual");
@@ -3840,6 +5308,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         refresh_global_state(detail, sizeof(detail));
     }
 
+    // Migrate legacy config to profile slot format if needed
+    migrate_legacy_config_if_needed(g_app.configPath);
+
     // Register window class
     auto load_app_icon = [hInstance](int cx, int cy) -> HICON {
         HICON icon = (HICON)LoadImageA(hInstance, MAKEINTRESOURCEA(APP_ICON_ID), IMAGE_ICON, cx, cy, LR_SHARED);
@@ -3847,13 +5318,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         return icon;
     };
 
+    g_app.hWindowClassBrush = CreateSolidBrush(COL_BG);
+
     WNDCLASSEXA wc = {};
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
     wc.lpszClassName = APP_CLASS_NAME;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.hbrBackground = nullptr;
+    wc.hbrBackground = g_app.hWindowClassBrush;
     wc.hIcon = load_app_icon(GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
     wc.hIconSm = load_app_icon(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
     wc.style = 0;  // no CS_HREDRAW/CS_VREDRAW to reduce flicker
@@ -3913,29 +5386,96 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         g_app.hMainWnd, (HMENU)(INT_PTR)LICENSE_BTN_ID, hInstance, nullptr
     );
 
-    g_app.hSaveCfgBtn = CreateWindowExA(
-        0, "BUTTON", "Save To Config",
+    g_app.hProfileCombo = CreateWindowExA(
+        0, "COMBOBOX", "",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+        0, 0, dp(156), dp(220),
+        g_app.hMainWnd, (HMENU)(INT_PTR)PROFILE_COMBO_ID, hInstance, nullptr
+    );
+    SendMessageA(g_app.hProfileCombo, CB_SETCURSEL, (WPARAM)(CONFIG_DEFAULT_SLOT - 1), 0);
+
+    g_app.hProfileLabel = CreateWindowExA(
+        0, "STATIC", "Profile slot:",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        0, 0, dp(72), dp(18),
+        g_app.hMainWnd, (HMENU)(INT_PTR)PROFILE_LABEL_ID, hInstance, nullptr
+    );
+
+    g_app.hProfileStateLabel = CreateWindowExA(
+        0, "STATIC", "",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        0, 0, dp(220), dp(18),
+        g_app.hMainWnd, (HMENU)(INT_PTR)PROFILE_STATE_ID, hInstance, nullptr
+    );
+
+    g_app.hProfileLoadBtn = CreateWindowExA(
+        0, "BUTTON", "Load",
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        0, 0, dp(130), dp(30),
-        g_app.hMainWnd, (HMENU)(INT_PTR)SAVE_CFG_BTN_ID, hInstance, nullptr
+        0, 0, dp(65), dp(22),
+        g_app.hMainWnd, (HMENU)(INT_PTR)PROFILE_LOAD_ID, hInstance, nullptr
     );
 
-    g_app.hStartupApplyCheck = CreateWindowExA(
-        0, "BUTTON", "Apply saved config on startup",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-        0, 0, dp(220), dp(20),
-        g_app.hMainWnd, (HMENU)(INT_PTR)STARTUP_APPLY_ID, hInstance, nullptr
+    g_app.hProfileSaveBtn = CreateWindowExA(
+        0, "BUTTON", "Save",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        0, 0, dp(65), dp(22),
+        g_app.hMainWnd, (HMENU)(INT_PTR)PROFILE_SAVE_ID, hInstance, nullptr
     );
 
-    sync_startup_checkbox_from_system();
+    g_app.hProfileClearBtn = CreateWindowExA(
+        0, "BUTTON", "Clear",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        0, 0, dp(65), dp(22),
+        g_app.hMainWnd, (HMENU)(INT_PTR)PROFILE_CLEAR_ID, hInstance, nullptr
+    );
+
+    g_app.hAppLaunchCombo = CreateWindowExA(
+        0, "COMBOBOX", "",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+        0, 0, dp(170), dp(220),
+        g_app.hMainWnd, (HMENU)(INT_PTR)APP_LAUNCH_COMBO_ID, hInstance, nullptr
+    );
+    SendMessageA(g_app.hAppLaunchCombo, CB_SETCURSEL, 0, 0);
+
+    g_app.hAppLaunchLabel = CreateWindowExA(
+        0, "STATIC", "Load into GUI on app start:",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        0, 0, dp(170), dp(18),
+        g_app.hMainWnd, (HMENU)(INT_PTR)APP_LAUNCH_LABEL_ID, hInstance, nullptr
+    );
+
+    g_app.hLogonCombo = CreateWindowExA(
+        0, "COMBOBOX", "",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+        0, 0, dp(170), dp(220),
+        g_app.hMainWnd, (HMENU)(INT_PTR)LOGON_COMBO_ID, hInstance, nullptr
+    );
+    SendMessageA(g_app.hLogonCombo, CB_SETCURSEL, 0, 0);
+
+    g_app.hLogonLabel = CreateWindowExA(
+        0, "STATIC", "Apply automatically at logon:",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        0, 0, dp(208), dp(18),
+        g_app.hMainWnd, (HMENU)(INT_PTR)LOGON_LABEL_ID, hInstance, nullptr
+    );
+
+    g_app.hProfileStatusLabel = CreateWindowExA(
+        0, "STATIC", "",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        0, 0, dp(420), dp(18),
+        g_app.hMainWnd, (HMENU)(INT_PTR)PROFILE_STATUS_ID, hInstance, nullptr
+    );
 
     layout_bottom_buttons(g_app.hMainWnd);
 
     // Create edit controls
     create_edit_controls(g_app.hMainWnd, hInstance);
+    maybe_load_app_launch_profile_to_gui();
+    invalidate_main_window();
 
-    ShowWindow(g_app.hMainWnd, nCmdShow);
-    UpdateWindow(g_app.hMainWnd);
+    show_window_with_primed_first_frame(g_app.hMainWnd, nCmdShow);
+
+    schedule_logon_combo_sync();
 
     // Message loop
     MSG msg = {};
@@ -3945,6 +5485,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     }
 
     close_nvml();
+    if (g_app.hWindowClassBrush) {
+        DeleteObject(g_app.hWindowClassBrush);
+        g_app.hWindowClassBrush = nullptr;
+    }
 
     return (int)msg.wParam;
 }

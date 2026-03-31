@@ -1,0 +1,2 @@
+#define APP_ICON_ID 101
+APP_ICON_ID ICON "greencurve.ico"
