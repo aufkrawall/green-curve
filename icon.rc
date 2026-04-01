@@ -1,2 +1,11 @@
 #define APP_ICON_ID 101
+#define TRAY_ICON_DEFAULT_ID 111
+#define TRAY_ICON_OC_ID 112
+#define TRAY_ICON_FAN_ID 113
+#define TRAY_ICON_OC_FAN_ID 114
+
 APP_ICON_ID ICON "greencurve.ico"
+TRAY_ICON_DEFAULT_ID ICON "greencurve_tray_default.ico"
+TRAY_ICON_OC_ID ICON "greencurve_tray_oc.ico"
+TRAY_ICON_FAN_ID ICON "greencurve_tray_fan.ico"
+TRAY_ICON_OC_FAN_ID ICON "greencurve_tray_oc_fan.ico"
