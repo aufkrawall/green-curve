@@ -194,7 +194,8 @@ static bool handle_cli(LPWSTR wCmdLine) {
         if (!useDesired) {
             initialize_desired_settings_defaults(&saveDesired);
             saveDesired.hasGpuOffset = true;
-            saveDesired.gpuOffsetMHz = g_app.gpuClockOffsetkHz / 1000;
+            saveDesired.gpuOffsetMHz = current_applied_gpu_offset_mhz();
+            saveDesired.gpuOffsetExcludeLow70 = g_app.appliedGpuOffsetExcludeLow70;
             saveDesired.hasMemOffset = true;
             saveDesired.memOffsetMHz = mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
             saveDesired.hasPowerLimit = true;

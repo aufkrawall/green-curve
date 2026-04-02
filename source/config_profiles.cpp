@@ -52,6 +52,17 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         desired->gpuOffsetMHz = v;
     }
 
+    GetPrivateProfileStringA(controlsSection, "gpu_offset_exclude_low_70", "", buf, sizeof(buf), path);
+    trim_ascii(buf);
+    if (buf[0]) {
+        int value = 0;
+        if (!parse_int_strict(buf, &value)) {
+            set_message(err, errSize, "Invalid gpu_offset_exclude_low_70 in profile %d", slot);
+            return false;
+        }
+        desired->gpuOffsetExcludeLow70 = value != 0;
+    }
+
     GetPrivateProfileStringA(controlsSection, "mem_offset_mhz", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
@@ -209,6 +220,7 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
 
         appendf("[%s]\r\n", controlsSection);
         appendf("gpu_offset_mhz=%d\r\n", desired->hasGpuOffset ? desired->gpuOffsetMHz : (g_app.gpuClockOffsetkHz / 1000));
+        appendf("gpu_offset_exclude_low_70=%d\r\n", desired->hasGpuOffset && desired->gpuOffsetExcludeLow70 ? 1 : 0);
         appendf("mem_offset_mhz=%d\r\n", desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
         appendf("power_limit_pct=%d\r\n", desired->hasPowerLimit ? desired->powerLimitPct : g_app.powerLimitPct);
         appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : get_effective_live_fan_mode()));
@@ -277,6 +289,7 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
     if (slot == 1) {
         appendf("[controls]\r\n");
         appendf("gpu_offset_mhz=%d\r\n", desired->hasGpuOffset ? desired->gpuOffsetMHz : (g_app.gpuClockOffsetkHz / 1000));
+        appendf("gpu_offset_exclude_low_70=%d\r\n", desired->hasGpuOffset && desired->gpuOffsetExcludeLow70 ? 1 : 0);
         appendf("mem_offset_mhz=%d\r\n", desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
         appendf("power_limit_pct=%d\r\n", desired->hasPowerLimit ? desired->powerLimitPct : g_app.powerLimitPct);
         appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : get_effective_live_fan_mode()));
@@ -519,6 +532,7 @@ static void merge_desired_settings(DesiredSettings* base, const DesiredSettings*
     if (override->hasGpuOffset) {
         base->hasGpuOffset = true;
         base->gpuOffsetMHz = override->gpuOffsetMHz;
+        base->gpuOffsetExcludeLow70 = override->gpuOffsetExcludeLow70;
     }
     if (override->hasMemOffset) {
         base->hasMemOffset = true;
@@ -566,8 +580,16 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
         }
     }
     // GPU offset
+    if (desired->hasGpuOffset) {
+        g_app.guiGpuOffsetMHz = desired->gpuOffsetMHz;
+        g_app.guiGpuOffsetExcludeLow70 = desired->gpuOffsetExcludeLow70;
+    }
     if (desired->hasGpuOffset && g_app.hGpuOffsetEdit) {
         set_edit_value(g_app.hGpuOffsetEdit, desired->gpuOffsetMHz);
+        if (g_app.hGpuOffsetExcludeLowCheck) {
+            SendMessageA(g_app.hGpuOffsetExcludeLowCheck, BM_SETCHECK,
+                (WPARAM)(desired->gpuOffsetExcludeLow70 ? BST_CHECKED : BST_UNCHECKED), 0);
+        }
     }
     // Mem offset
     if (desired->hasMemOffset && g_app.hMemOffsetEdit) {
@@ -651,7 +673,8 @@ static bool maybe_confirm_profile_load_replace(int slot) {
     DesiredSettings targetFull = {};
     initialize_desired_settings_defaults(&targetFull);
     targetFull.hasGpuOffset = true;
-    targetFull.gpuOffsetMHz = g_app.gpuClockOffsetkHz / 1000;
+    targetFull.gpuOffsetMHz = current_applied_gpu_offset_mhz();
+    targetFull.gpuOffsetExcludeLow70 = g_app.appliedGpuOffsetExcludeLow70;
     targetFull.hasMemOffset = true;
     targetFull.memOffsetMHz = mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
     targetFull.hasPowerLimit = true;
@@ -670,6 +693,7 @@ static bool maybe_confirm_profile_load_replace(int slot) {
 
     bool same = true;
     if (current.gpuOffsetMHz != targetFull.gpuOffsetMHz) same = false;
+    if (current.gpuOffsetExcludeLow70 != targetFull.gpuOffsetExcludeLow70) same = false;
     if (current.memOffsetMHz != targetFull.memOffsetMHz) same = false;
     if (current.powerLimitPct != targetFull.powerLimitPct) same = false;
     if (current.fanMode != targetFull.fanMode || current.fanPercent != targetFull.fanPercent || !fan_curve_equals(&current.fanCurve, &targetFull.fanCurve)) same = false;
@@ -708,10 +732,14 @@ static void maybe_load_app_launch_profile_to_gui() {
         set_profile_status_text("App start load failed: %s", err[0] ? err : "unknown error");
         return;
     }
+    char result[512] = {};
+    bool ok = apply_desired_settings(&desired, false, result, sizeof(result));
+    populate_desired_into_gui(&desired);
     set_config_int(g_app.configPath, "profiles", "selected_slot", appLaunchSlot);
     refresh_profile_controls_from_config();
-    populate_desired_into_gui(&desired);
-    set_profile_status_text("Loaded slot %d into the GUI on app start. GPU settings were not applied.", appLaunchSlot);
+    set_profile_status_text(ok
+        ? "Loaded slot %d into the GUI and applied it on app start."
+        : "Loaded slot %d into the GUI, but app-start apply failed: %s", appLaunchSlot, result);
 }
 
 static bool ensure_profile_slot_available_for_auto_action(int slot) {

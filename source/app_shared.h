@@ -47,7 +47,7 @@ void init_dpi();
 #define TRAY_ICON_FAN_ID    113
 #define TRAY_ICON_OC_FAN_ID 114
 #define APP_NAME            "Green Curve"
-#define APP_VERSION         "0.3"
+#define APP_VERSION         "0.4"
 #define APP_TITLE           APP_NAME " v" APP_VERSION
 #define APP_CLASS_NAME      "GreenCurveClass"
 #define APP_EXE_NAME        "greencurve.exe"
@@ -75,6 +75,7 @@ void init_dpi();
 #define START_ON_LOGON_CHECK_ID 2031
 #define FAN_MODE_COMBO_ID   2032
 #define FAN_CURVE_BTN_ID    2033
+#define GPU_OFFSET_EXCLUDE_LOW_CHECK_ID 2034
 #define LOCK_BASE_ID        3000
 #define GPU_OFFSET_ID       2010
 #define MEM_OFFSET_ID       2011
@@ -324,6 +325,7 @@ struct AppData {
     HWND hResetBtn;
     HWND hLicenseBtn;
     HWND hGpuOffsetEdit;
+    HWND hGpuOffsetExcludeLowCheck;
     HWND hMemOffsetEdit;
     HWND hPowerLimitEdit;
     HWND hFanEdit;
@@ -411,6 +413,11 @@ struct AppData {
     int gpuTemperatureC;
     bool gpuTemperatureValid;
 
+    int guiGpuOffsetMHz;
+    bool guiGpuOffsetExcludeLow70;
+    int appliedGpuOffsetMHz;
+    bool appliedGpuOffsetExcludeLow70;
+
     int guiFanMode;
     int guiFanFixedPercent;
     FanCurveConfig guiFanCurve;
@@ -439,6 +446,7 @@ struct DesiredSettings {
     unsigned int curvePointMHz[VF_NUM_POINTS];
     bool hasGpuOffset;
     int gpuOffsetMHz;
+    bool gpuOffsetExcludeLow70;
     bool hasMemOffset;
     int memOffsetMHz;
     bool hasPowerLimit;

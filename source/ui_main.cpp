@@ -491,6 +491,11 @@ static void create_edit_controls(HWND hParent, HINSTANCE hInst) {
         WS_CHILD | WS_VISIBLE | ES_RIGHT | ES_AUTOHSCROLL,
         dp(136), ocY, fieldW, dp(20),
         hParent, (HMENU)(INT_PTR)GPU_OFFSET_ID, hInst, nullptr);
+    g_app.hGpuOffsetExcludeLowCheck = CreateWindowExA(
+        0, "BUTTON", "Exclude from first 70 VF points",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        dp(8), ocY + dp(24), dp(208), dp(18),
+        hParent, (HMENU)(INT_PTR)GPU_OFFSET_EXCLUDE_LOW_CHECK_ID, hInst, nullptr);
 
     CreateWindowExA(0, "STATIC", "Mem Offset (MHz):",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
@@ -589,6 +594,7 @@ static void destroy_edit_controls(HWND hParent) {
         g_app.hLocks[i] = nullptr;
     }
     g_app.hGpuOffsetEdit = nullptr;
+    g_app.hGpuOffsetExcludeLowCheck = nullptr;
     g_app.hMemOffsetEdit = nullptr;
     g_app.hPowerLimitEdit = nullptr;
     g_app.hFanEdit = nullptr;
@@ -664,6 +670,12 @@ static void reset_curve() {
         if (nvml_set_fan_auto(detail, sizeof(detail))) successCount++; else failCount++;
     }
     refresh_global_state(detail, sizeof(detail));
+    g_app.guiGpuOffsetMHz = 0;
+    g_app.guiGpuOffsetExcludeLow70 = false;
+    g_app.appliedGpuOffsetMHz = 0;
+    g_app.appliedGpuOffsetExcludeLow70 = false;
+    g_app.guiFanMode = -1;
+    g_app.guiFanFixedPercent = 0;
 
     // Recreate edit controls
     destroy_edit_controls(g_app.hMainWnd);
@@ -814,6 +826,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     g_app.guiFanMode = selection;
                     update_fan_controls_enabled_state();
                 }
+            } else if (LOWORD(wParam) == GPU_OFFSET_EXCLUDE_LOW_CHECK_ID && HIWORD(wParam) == BN_CLICKED) {
+                g_app.guiGpuOffsetExcludeLow70 = SendMessageA(g_app.hGpuOffsetExcludeLowCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
             } else if (LOWORD(wParam) == FAN_CURVE_BTN_ID && HIWORD(wParam) == BN_CLICKED) {
                 open_fan_curve_dialog();
             } else if (LOWORD(wParam) == START_ON_LOGON_CHECK_ID && HIWORD(wParam) == BN_CLICKED) {
@@ -943,7 +957,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 } else {
                     set_config_int(g_app.configPath, "profiles", key, slot);
                     set_profile_status_text(slot > 0
-                        ? "At app start, slot %d will load into the GUI only."
+                        ? "At app start, slot %d will load into the GUI and apply automatically."
                         : "App start auto-load disabled.", slot);
                 }
                 refresh_profile_controls_from_config();
