@@ -60,6 +60,114 @@ static void fan_curve_dialog_sync_controls() {
     fan_curve_dialog_select_combo_value(g_fanCurveDialog.hysteresisCombo, g_fanCurveDialog.working.hysteresisC);
 }
 
+static void fan_curve_dialog_temperature_bounds(const FanCurveConfig* curve, int pointIndex, int* minimumOut, int* maximumOut) {
+    int minimum = 0;
+    int maximum = 100;
+    if (curve) {
+        for (int i = pointIndex - 1; i >= 0; i--) {
+            if (!curve->points[i].enabled) continue;
+            minimum = curve->points[i].temperatureC + 1;
+            break;
+        }
+        for (int i = pointIndex + 1; i < FAN_CURVE_MAX_POINTS; i++) {
+            if (!curve->points[i].enabled) continue;
+            maximum = curve->points[i].temperatureC - 1;
+            break;
+        }
+    }
+    minimum = nvmax(0, minimum);
+    maximum = nvmin(100, maximum);
+    if (maximum < minimum) maximum = minimum;
+    if (minimumOut) *minimumOut = minimum;
+    if (maximumOut) *maximumOut = maximum;
+}
+
+static bool fan_curve_dialog_temperature_in_bounds(const FanCurveConfig* curve, int pointIndex, int value) {
+    int minimum = 0;
+    int maximum = 100;
+    fan_curve_dialog_temperature_bounds(curve, pointIndex, &minimum, &maximum);
+    return value >= minimum && value <= maximum;
+}
+
+static void fan_curve_dialog_percent_bounds(const FanCurveConfig* curve, int pointIndex, int* minimumOut, int* maximumOut) {
+    int minimum = 0;
+    int maximum = 100;
+    if (curve) {
+        for (int i = pointIndex - 1; i >= 0; i--) {
+            if (!curve->points[i].enabled) continue;
+            minimum = curve->points[i].fanPercent;
+            break;
+        }
+        for (int i = pointIndex + 1; i < FAN_CURVE_MAX_POINTS; i++) {
+            if (!curve->points[i].enabled) continue;
+            maximum = curve->points[i].fanPercent;
+            break;
+        }
+    }
+    minimum = nvmax(0, minimum);
+    maximum = nvmin(100, maximum);
+    if (maximum < minimum) maximum = minimum;
+    if (minimumOut) *minimumOut = minimum;
+    if (maximumOut) *maximumOut = maximum;
+}
+
+static bool fan_curve_dialog_percent_in_bounds(const FanCurveConfig* curve, int pointIndex, int value) {
+    int minimum = 0;
+    int maximum = 100;
+    fan_curve_dialog_percent_bounds(curve, pointIndex, &minimum, &maximum);
+    return value >= minimum && value <= maximum;
+}
+
+static void fan_curve_dialog_set_temperature_error(const FanCurveConfig* curve, int pointIndex, char* err, size_t errSize) {
+    int minimum = 0;
+    int maximum = 100;
+    fan_curve_dialog_temperature_bounds(curve, pointIndex, &minimum, &maximum);
+    if (minimum == maximum) {
+        set_message(err, errSize, "Fan point %d temperature must be %d\xB0""C", pointIndex + 1, minimum);
+        return;
+    }
+    set_message(err, errSize, "Fan point %d temperature must be between %d\xB0""C and %d\xB0""C", pointIndex + 1, minimum, maximum);
+}
+
+static void fan_curve_dialog_set_percent_error(const FanCurveConfig* curve, int pointIndex, char* err, size_t errSize) {
+    int minimum = 0;
+    int maximum = 100;
+    fan_curve_dialog_percent_bounds(curve, pointIndex, &minimum, &maximum);
+    if (minimum == maximum) {
+        set_message(err, errSize, "Fan point %d percentage must be %d%%", pointIndex + 1, minimum);
+        return;
+    }
+    set_message(err, errSize, "Fan point %d percentage must be between %d%% and %d%%", pointIndex + 1, minimum, maximum);
+}
+
+static bool fan_curve_dialog_validate_temperature_order(const FanCurveConfig* curve, char* err, size_t errSize) {
+    if (!curve) return false;
+    int previousEnabled = -1;
+    for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
+        if (!curve->points[i].enabled) continue;
+        if (previousEnabled >= 0 && curve->points[i].temperatureC <= curve->points[previousEnabled].temperatureC) {
+            fan_curve_dialog_set_temperature_error(curve, i, err, errSize);
+            return false;
+        }
+        previousEnabled = i;
+    }
+    return true;
+}
+
+static bool fan_curve_dialog_validate_percent_order(const FanCurveConfig* curve, char* err, size_t errSize) {
+    if (!curve) return false;
+    int previousEnabled = -1;
+    for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
+        if (!curve->points[i].enabled) continue;
+        if (previousEnabled >= 0 && curve->points[i].fanPercent < curve->points[previousEnabled].fanPercent) {
+            fan_curve_dialog_set_percent_error(curve, i, err, errSize);
+            return false;
+        }
+        previousEnabled = i;
+    }
+    return true;
+}
+
 static bool fan_curve_dialog_capture_working(bool strict, bool normalize, FanCurveConfig* out, char* err, size_t errSize) {
     FanCurveConfig preview = g_fanCurveDialog.working;
     preview.pollIntervalMs = fan_curve_dialog_combo_value(g_fanCurveDialog.intervalCombo, preview.pollIntervalMs);
@@ -78,7 +186,16 @@ static bool fan_curve_dialog_capture_working(bool strict, bool normalize, FanCur
                         return false;
                     }
                 } else {
-                    preview.points[i].temperatureC = value;
+                    if (value < 0) value = 0;
+                    if (value > 100) value = 100;
+                    if (preview.points[i].enabled && !fan_curve_dialog_temperature_in_bounds(&preview, i, value)) {
+                        if (strict) {
+                            fan_curve_dialog_set_temperature_error(&preview, i, err, errSize);
+                            return false;
+                        }
+                    } else {
+                        preview.points[i].temperatureC = value;
+                    }
                 }
             }
         }
@@ -93,7 +210,15 @@ static bool fan_curve_dialog_capture_working(bool strict, bool normalize, FanCur
                         return false;
                     }
                 } else {
-                    preview.points[i].fanPercent = value;
+                    value = clamp_percent(value);
+                    if (preview.points[i].enabled && !fan_curve_dialog_percent_in_bounds(&preview, i, value)) {
+                        if (strict) {
+                            fan_curve_dialog_set_percent_error(&preview, i, err, errSize);
+                            return false;
+                        }
+                    } else {
+                        preview.points[i].fanPercent = value;
+                    }
                 }
             }
         }
@@ -103,6 +228,8 @@ static bool fan_curve_dialog_capture_working(bool strict, bool normalize, FanCur
         preview.points[i].fanPercent = clamp_percent(preview.points[i].fanPercent);
     }
 
+    if (strict && !fan_curve_dialog_validate_temperature_order(&preview, err, errSize)) return false;
+    if (strict && !fan_curve_dialog_validate_percent_order(&preview, err, errSize)) return false;
     if (normalize) fan_curve_normalize(&preview);
     if (strict && !fan_curve_validate(&preview, err, errSize)) return false;
 
@@ -133,6 +260,59 @@ static void fan_curve_dialog_update_working_from_controls(HWND hwnd) {
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
+static void fan_curve_dialog_sanitize_temperature_edit(int pointIndex) {
+    if (pointIndex < 0 || pointIndex >= FAN_CURVE_MAX_POINTS) return;
+    if (!g_fanCurveDialog.tempEdits[pointIndex]) return;
+
+    char buf[32] = {};
+    get_window_text_safe(g_fanCurveDialog.tempEdits[pointIndex], buf, sizeof(buf));
+
+    int minimum = 0;
+    int maximum = 100;
+    if (g_fanCurveDialog.working.points[pointIndex].enabled) {
+        fan_curve_dialog_temperature_bounds(&g_fanCurveDialog.working, pointIndex, &minimum, &maximum);
+    }
+
+    int value = g_fanCurveDialog.working.points[pointIndex].temperatureC;
+    if (buf[0] && parse_int_strict(buf, &value)) {
+        if (value < minimum) value = minimum;
+        if (value > maximum) value = maximum;
+    }
+
+    char normalized[16] = {};
+    StringCchPrintfA(normalized, ARRAY_COUNT(normalized), "%d", value);
+    if (strcmp(buf, normalized) != 0) {
+        SetWindowTextA(g_fanCurveDialog.tempEdits[pointIndex], normalized);
+    }
+}
+
+static void fan_curve_dialog_sanitize_percent_edit(int pointIndex) {
+    if (pointIndex < 0 || pointIndex >= FAN_CURVE_MAX_POINTS) return;
+    if (!g_fanCurveDialog.percentEdits[pointIndex]) return;
+
+    char buf[32] = {};
+    get_window_text_safe(g_fanCurveDialog.percentEdits[pointIndex], buf, sizeof(buf));
+
+    int minimum = 0;
+    int maximum = 100;
+    if (g_fanCurveDialog.working.points[pointIndex].enabled) {
+        fan_curve_dialog_percent_bounds(&g_fanCurveDialog.working, pointIndex, &minimum, &maximum);
+    }
+
+    int value = g_fanCurveDialog.working.points[pointIndex].fanPercent;
+    if (buf[0] && parse_int_strict(buf, &value)) {
+        value = clamp_percent(value);
+        if (value < minimum) value = minimum;
+        if (value > maximum) value = maximum;
+    }
+
+    char normalized[16] = {};
+    StringCchPrintfA(normalized, ARRAY_COUNT(normalized), "%d", value);
+    if (strcmp(buf, normalized) != 0) {
+        SetWindowTextA(g_fanCurveDialog.percentEdits[pointIndex], normalized);
+    }
+}
+
 static void fan_curve_dialog_draw_preview(HWND hwnd, HDC hdc) {
     RECT client = {};
     GetClientRect(hwnd, &client);
@@ -140,7 +320,10 @@ static void fan_curve_dialog_draw_preview(HWND hwnd, HDC hdc) {
     RECT graph = { dp(16), dp(16), client.right - dp(16), dp(220) };
     RECT plot = graph;
     int pointRadius = dp(3);
-    InflateRect(&plot, -dp(8), -dp(8));
+    plot.left += dp(34);
+    plot.right -= dp(8);
+    plot.top += dp(8);
+    plot.bottom -= dp(24);
     if ((plot.right - plot.left) < dp(40) || (plot.bottom - plot.top) < dp(40)) {
         plot = graph;
     }
@@ -173,6 +356,27 @@ static void fan_curve_dialog_draw_preview(HWND hwnd, HDC hdc) {
 
     SelectObject(hdc, axisPen);
     Rectangle(hdc, plot.left, plot.top, plot.right, plot.bottom);
+
+    for (int p = 0; p <= 100; p += 20) {
+        char label[16] = {};
+        StringCchPrintfA(label, ARRAY_COUNT(label), "%d%%", p);
+        SIZE textSize = {};
+        GetTextExtentPoint32A(hdc, label, (int)strlen(label), &textSize);
+        int y = plot.bottom - 1 - (p * (height - 1)) / 100 - textSize.cy / 2;
+        y = nvmax(graph.top, nvmin(graph.bottom - textSize.cy, y));
+        int x = nvmax(graph.left, plot.left - dp(6) - textSize.cx);
+        TextOutA(hdc, x, y, label, (int)strlen(label));
+    }
+
+    for (int t = 0; t <= 100; t += 10) {
+        char label[16] = {};
+        StringCchPrintfA(label, ARRAY_COUNT(label), "%d\xB0""C", t);
+        SIZE textSize = {};
+        GetTextExtentPoint32A(hdc, label, (int)strlen(label), &textSize);
+        int x = plot.left + (t * (width - 1)) / 100 - textSize.cx / 2;
+        x = nvmax(graph.left, nvmin(graph.right - textSize.cx, x));
+        TextOutA(hdc, x, plot.bottom + dp(6), label, (int)strlen(label));
+    }
 
     FanCurveConfig preview = {};
     if (!fan_curve_dialog_capture_working(false, false, &preview, nullptr, 0)) {
@@ -214,8 +418,6 @@ static void fan_curve_dialog_draw_preview(HWND hwnd, HDC hdc) {
     char summary[128] = {};
     fan_curve_format_summary(&preview, summary, sizeof(summary));
     TextOutA(hdc, graph.left, graph.bottom + dp(6), summary, (int)strlen(summary));
-    TextOutA(hdc, graph.left, graph.top - dp(14), "Fan %", 5);
-    TextOutA(hdc, graph.right - dp(46), graph.bottom + dp(6), "Temp C", 6);
 
     SelectObject(hdc, oldBrush);
     SelectObject(hdc, oldPen);
@@ -247,7 +449,7 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
 
             CreateWindowExA(0, "STATIC", "Enable", WS_CHILD | WS_VISIBLE | SS_LEFT,
                 dp(18), dp(252), dp(52), dp(18), hwnd, nullptr, g_app.hInst, nullptr);
-            CreateWindowExA(0, "STATIC", "Temp C", WS_CHILD | WS_VISIBLE | SS_LEFT,
+            CreateWindowExA(0, "STATIC", "Temp \xB0""C", WS_CHILD | WS_VISIBLE | SS_LEFT,
                 dp(110), dp(252), dp(58), dp(18), hwnd, nullptr, g_app.hInst, nullptr);
             CreateWindowExA(0, "STATIC", "Fan %", WS_CHILD | WS_VISIBLE | SS_LEFT,
                 dp(198), dp(252), dp(58), dp(18), hwnd, nullptr, g_app.hInst, nullptr);
@@ -274,6 +476,8 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 SendMessageA(g_fanCurveDialog.enableChecks[i], WM_SETFONT, (WPARAM)font, TRUE);
                 SendMessageA(g_fanCurveDialog.tempEdits[i], WM_SETFONT, (WPARAM)font, TRUE);
                 SendMessageA(g_fanCurveDialog.percentEdits[i], WM_SETFONT, (WPARAM)font, TRUE);
+                SendMessageA(g_fanCurveDialog.tempEdits[i], EM_SETLIMITTEXT, 3, 0);
+                SendMessageA(g_fanCurveDialog.percentEdits[i], EM_SETLIMITTEXT, 3, 0);
             }
 
             CreateWindowExA(0, "STATIC", "Poll interval", WS_CHILD | WS_VISIBLE | SS_LEFT,
@@ -298,9 +502,9 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
                 dp(304), dp(354), dp(150), dp(180),
                 hwnd, (HMENU)(INT_PTR)FAN_DIALOG_HYSTERESIS_ID, g_app.hInst, nullptr);
-            for (int value = 0; value <= 5; value++) {
+            for (int value = 0; value <= FAN_CURVE_MAX_HYSTERESIS_C; value++) {
                 char text[16] = {};
-                StringCchPrintfA(text, ARRAY_COUNT(text), "%d C", value);
+                StringCchPrintfA(text, ARRAY_COUNT(text), "%d\xB0""C", value);
                 int index = (int)SendMessageA(g_fanCurveDialog.hysteresisCombo, CB_ADDSTRING, 0, (LPARAM)text);
                 SendMessageA(g_fanCurveDialog.hysteresisCombo, CB_SETITEMDATA, (WPARAM)index, (LPARAM)value);
             }
@@ -352,6 +556,14 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 fan_curve_dialog_update_working_from_controls(hwnd);
                 return 0;
             }
+            if (id >= FAN_DIALOG_TEMP_BASE && id < FAN_DIALOG_TEMP_BASE + FAN_CURVE_MAX_POINTS && notification == EN_KILLFOCUS) {
+                fan_curve_dialog_sanitize_temperature_edit(id - FAN_DIALOG_TEMP_BASE);
+                return 0;
+            }
+            if (id >= FAN_DIALOG_PERCENT_BASE && id < FAN_DIALOG_PERCENT_BASE + FAN_CURVE_MAX_POINTS && notification == EN_KILLFOCUS) {
+                fan_curve_dialog_sanitize_percent_edit(id - FAN_DIALOG_PERCENT_BASE);
+                return 0;
+            }
             if ((id == FAN_DIALOG_INTERVAL_ID || id == FAN_DIALOG_HYSTERESIS_ID) && notification == CBN_SELCHANGE) {
                 fan_curve_dialog_update_working_from_controls(hwnd);
                 return 0;
@@ -362,7 +574,6 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 return 0;
             }
             if (id == FAN_DIALOG_CANCEL_ID && notification == BN_CLICKED) {
-                if (!fan_curve_dialog_commit(hwnd)) return 0;
                 DestroyWindow(hwnd);
                 return 0;
             }
@@ -400,7 +611,6 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
         }
 
         case WM_CLOSE:
-            if (!fan_curve_dialog_commit(hwnd)) return 0;
             DestroyWindow(hwnd);
             return 0;
 

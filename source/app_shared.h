@@ -47,7 +47,7 @@ void init_dpi();
 #define TRAY_ICON_FAN_ID    113
 #define TRAY_ICON_OC_FAN_ID 114
 #define APP_NAME            "Green Curve"
-#define APP_VERSION         "0.5"
+#define APP_VERSION         "0.6"
 #define APP_TITLE           APP_NAME " v" APP_VERSION
 #define APP_CLASS_NAME      "GreenCurveClass"
 #define APP_EXE_NAME        "greencurve.exe"
@@ -86,6 +86,7 @@ void init_dpi();
 
 #define FAN_CURVE_TIMER_ID  1
 #define FAN_CURVE_MAX_POINTS 8
+#define FAN_CURVE_MAX_HYSTERESIS_C 10
 
 #define MAX_GPU_FANS        8
 #define CONFIG_FILE_NAME    "config.ini"
@@ -377,9 +378,12 @@ struct AppData {
     int gpuClockOffsetMaxMHz;
     int memClockOffsetMinMHz;
     int memClockOffsetMaxMHz;
+    int curveOffsetMinkHz;
+    int curveOffsetMaxkHz;
     int offsetReadPstate;
     bool gpuOffsetRangeKnown;
     bool memOffsetRangeKnown;
+    bool curveOffsetRangeKnown;
     int pstateGpuOffsetkHz;
     int pstateMemOffsetkHz;
     unsigned int pstateGpuMaxMHz;

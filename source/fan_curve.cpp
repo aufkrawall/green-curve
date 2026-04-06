@@ -50,7 +50,7 @@ void fan_curve_normalize(FanCurveConfig* config) {
 
     config->pollIntervalMs = clamp_int(config->pollIntervalMs, 250, 5000);
     config->pollIntervalMs = ((config->pollIntervalMs + 125) / 250) * 250;
-    config->hysteresisC = clamp_int(config->hysteresisC, 0, 5);
+    config->hysteresisC = clamp_int(config->hysteresisC, 0, FAN_CURVE_MAX_HYSTERESIS_C);
 
     FanCurvePoint enabled[FAN_CURVE_MAX_POINTS] = {};
     FanCurvePoint disabled[FAN_CURVE_MAX_POINTS] = {};
@@ -97,8 +97,8 @@ bool fan_curve_validate(const FanCurveConfig* config, char* err, size_t errSize)
         set_message(err, errSize, "Fan curve poll interval must be 0.25s to 5.0s in 0.25s steps");
         return false;
     }
-    if (config->hysteresisC < 0 || config->hysteresisC > 5) {
-        set_message(err, errSize, "Fan curve hysteresis must be between 0C and 5C");
+    if (config->hysteresisC < 0 || config->hysteresisC > FAN_CURVE_MAX_HYSTERESIS_C) {
+        set_message(err, errSize, "Fan curve hysteresis must be between 0\xB0""C and %d\xB0""C", FAN_CURVE_MAX_HYSTERESIS_C);
         return false;
     }
 
@@ -107,7 +107,7 @@ bool fan_curve_validate(const FanCurveConfig* config, char* err, size_t errSize)
     for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
         const FanCurvePoint* point = &config->points[i];
         if (point->temperatureC < 0 || point->temperatureC > 100) {
-            set_message(err, errSize, "Fan curve temperatures must be between 0C and 100C");
+            set_message(err, errSize, "Fan curve temperatures must be between 0\xB0""C and 100\xB0""C");
             return false;
         }
         if (point->fanPercent < 0 || point->fanPercent > 100) {
@@ -126,6 +126,10 @@ bool fan_curve_validate(const FanCurveConfig* config, char* err, size_t errSize)
     for (int i = 1; i < activeCount; i++) {
         if (active[i].temperatureC <= active[i - 1].temperatureC) {
             set_message(err, errSize, "Enabled fan curve temperatures must be strictly increasing");
+            return false;
+        }
+        if (active[i].fanPercent < active[i - 1].fanPercent) {
+            set_message(err, errSize, "Enabled fan curve percentages must be nondecreasing");
             return false;
         }
     }
@@ -171,7 +175,7 @@ void fan_curve_format_summary(const FanCurveConfig* config, char* buffer, size_t
         return;
     }
 
-    StringCchPrintfA(buffer, bufferSize, "%d pts | %.2fs | %dC hyst",
+    StringCchPrintfA(buffer, bufferSize, "%d pts | %.2fs | %d\xB0""C hyst",
         fan_curve_active_count(config),
         (double)config->pollIntervalMs / 1000.0,
         config->hysteresisC);

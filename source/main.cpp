@@ -1,4 +1,4 @@
-// Green Curve v0.5 - NVIDIA Blackwell VF Curve Editor
+// Green Curve v0.6 - NVIDIA Blackwell VF Curve Editor
 // Win32 GDI application
 
 #include "app_shared.h"
@@ -33,6 +33,8 @@ static bool nvapi_read_offsets();
 static bool nvapi_read_pstates();
 static void detect_clock_offsets();
 static int uniform_curve_offset_khz();
+static void set_curve_offset_range_khz(int minkHz, int maxkHz);
+static bool get_curve_offset_range_khz(int* minkHz, int* maxkHz);
 static int clamp_freq_delta_khz(int freqDelta_kHz);
 static bool nvapi_set_point(int pointIndex, int freqDelta_kHz);
 static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* pointMask, int maxBatchPasses);
@@ -59,6 +61,8 @@ static void unlock_all();
 static int mem_display_mhz_from_driver_khz(int driver_kHz);
 static int mem_display_mhz_from_driver_mhz(int driverMHz);
 static unsigned int displayed_curve_mhz(unsigned int rawFreq_kHz);
+static int curve_delta_khz_for_target_display_mhz_unclamped(int pointIndex, unsigned int displayMHz);
+static void set_curve_target_mismatch_detail(int pointIndex, unsigned int actualMHz, unsigned int targetMHz, bool lockTail, char* detail, size_t detailSize);
 static bool curve_targets_match_request(const DesiredSettings* desired, const bool* lockedTailMask, unsigned int lockMhz, char* detail, size_t detailSize);
 static void apply_system_titlebar_theme(HWND hwnd);
 static void show_license_dialog(HWND parent);
@@ -1193,6 +1197,14 @@ static bool write_log_snapshot(const char* path, char* err, size_t errSize) {
     appendf("GPU offset: %d MHz", g_app.gpuClockOffsetkHz / 1000);
     if (g_app.gpuOffsetRangeKnown) appendf(" (range %d..%d)", g_app.gpuClockOffsetMinMHz, g_app.gpuClockOffsetMaxMHz);
     appendf("\r\n");
+    int curveMinkHz = 0;
+    int curveMaxkHz = 0;
+    bool curveRangeKnown = get_curve_offset_range_khz(&curveMinkHz, &curveMaxkHz);
+    appendf("VF curve delta clamp: %d..%d kHz", curveMinkHz, curveMaxkHz);
+    appendf("%s\r\n",
+        g_app.curveOffsetRangeKnown ? " (driver curve range)" :
+        curveRangeKnown ? " (graphics offset fallback)" :
+        " (default fallback)");
     appendf("Mem offset: %d MHz", mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
     if (g_app.memOffsetRangeKnown) appendf(" (range %d..%d)", g_app.memClockOffsetMinMHz, g_app.memClockOffsetMaxMHz);
     appendf("\r\n");
@@ -1259,6 +1271,14 @@ static bool write_error_report_log(const char* summary, const char* details, cha
     appendf("GPU offset: %d MHz", g_app.gpuClockOffsetkHz / 1000);
     if (g_app.gpuOffsetRangeKnown) appendf(" (range %d..%d)", g_app.gpuClockOffsetMinMHz, g_app.gpuClockOffsetMaxMHz);
     appendf("\r\n");
+    int curveMinkHz = 0;
+    int curveMaxkHz = 0;
+    bool curveRangeKnown = get_curve_offset_range_khz(&curveMinkHz, &curveMaxkHz);
+    appendf("VF curve delta clamp: %d..%d kHz", curveMinkHz, curveMaxkHz);
+    appendf("%s\r\n",
+        g_app.curveOffsetRangeKnown ? " (driver curve range)" :
+        curveRangeKnown ? " (graphics offset fallback)" :
+        " (default fallback)");
     appendf("Mem offset: %d MHz", mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
     if (g_app.memOffsetRangeKnown) appendf(" (range %d..%d)", g_app.memClockOffsetMinMHz, g_app.memClockOffsetMaxMHz);
     appendf("\r\n");
@@ -2459,6 +2479,9 @@ static bool nvml_read_clock_offsets(char* detail, size_t detailSize) {
         g_app.gpuClockOffsetMaxMHz = mx;
         g_app.gpuClockOffsetkHz = cur * 1000;
         g_app.gpuOffsetRangeKnown = true;
+        if (!g_app.curveOffsetRangeKnown) {
+            set_curve_offset_range_khz(mn * 1000, mx * 1000);
+        }
     } else {
         g_app.gpuOffsetRangeKnown = false;
     }
@@ -2820,9 +2843,39 @@ static bool nvapi_get_vf_info_cached(unsigned char* maskOut, unsigned int* numCl
 }
 
 static int clamp_freq_delta_khz(int freqDelta_kHz) {
-    if (freqDelta_kHz > 1000000) return 1000000;
-    if (freqDelta_kHz < -1000000) return -1000000;
+    int minkHz = 0;
+    int maxkHz = 0;
+    get_curve_offset_range_khz(&minkHz, &maxkHz);
+    if (freqDelta_kHz > maxkHz) return maxkHz;
+    if (freqDelta_kHz < minkHz) return minkHz;
     return freqDelta_kHz;
+}
+
+static void set_curve_offset_range_khz(int minkHz, int maxkHz) {
+    if (minkHz > maxkHz) return;
+    g_app.curveOffsetMinkHz = minkHz;
+    g_app.curveOffsetMaxkHz = maxkHz;
+    g_app.curveOffsetRangeKnown = true;
+}
+
+static bool get_curve_offset_range_khz(int* minkHz, int* maxkHz) {
+    int minValue = -1000000;
+    int maxValue = 1000000;
+    bool known = false;
+
+    if (g_app.curveOffsetRangeKnown && g_app.curveOffsetMinkHz <= g_app.curveOffsetMaxkHz) {
+        minValue = g_app.curveOffsetMinkHz;
+        maxValue = g_app.curveOffsetMaxkHz;
+        known = true;
+    } else if (g_app.gpuOffsetRangeKnown && g_app.gpuClockOffsetMinMHz <= g_app.gpuClockOffsetMaxMHz) {
+        minValue = g_app.gpuClockOffsetMinMHz * 1000;
+        maxValue = g_app.gpuClockOffsetMaxMHz * 1000;
+        known = true;
+    }
+
+    if (minkHz) *minkHz = minValue;
+    if (maxkHz) *maxkHz = maxValue;
+    return known;
 }
 
 static bool nvapi_read_control_table(unsigned char* buf, size_t bufSize) {
@@ -3212,9 +3265,7 @@ static bool curve_targets_match_request(const DesiredSettings* desired, const bo
         unsigned int actualMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
         unsigned int targetMHz = desired->curvePointMHz[ci];
         if (!matches_target(ci, actualMHz, targetMHz)) {
-            set_message(detail, detailSize,
-                "VF point %d verified at %u MHz instead of requested %u MHz",
-                ci, actualMHz, targetMHz);
+            set_curve_target_mismatch_detail(ci, actualMHz, targetMHz, false, detail, detailSize);
             return false;
         }
     }
@@ -3228,11 +3279,7 @@ static bool curve_targets_match_request(const DesiredSettings* desired, const bo
             sawTailPoint = true;
             unsigned int actualMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
             if (!matches_target(ci, actualMHz, lockMhz)) {
-                set_message(detail, detailSize,
-                    "Lock tail verified at %u MHz @ %u mV instead of requested %u MHz",
-                    actualMHz,
-                    g_app.curve[ci].volt_uV / 1000,
-                    lockMhz);
+                set_curve_target_mismatch_detail(ci, actualMHz, lockMhz, true, detail, detailSize);
                 return false;
             }
         }
@@ -3259,13 +3306,62 @@ static int curve_base_khz_for_point(int pointIndex) {
     return (int)base;
 }
 
-static int curve_delta_khz_for_target_display_mhz(int pointIndex, unsigned int displayMHz) {
+static int curve_delta_khz_for_target_display_mhz_unclamped(int pointIndex, unsigned int displayMHz) {
     long long target = (long long)raw_curve_khz_from_display_mhz(displayMHz);
     long long base = (long long)curve_base_khz_for_point(pointIndex);
     long long delta = target - base;
-    if (delta > 1000000LL) delta = 1000000LL;
-    if (delta < -1000000LL) delta = -1000000LL;
     return (int)delta;
+}
+
+static int curve_delta_khz_for_target_display_mhz(int pointIndex, unsigned int displayMHz) {
+    return clamp_freq_delta_khz(curve_delta_khz_for_target_display_mhz_unclamped(pointIndex, displayMHz));
+}
+
+static void set_curve_target_mismatch_detail(int pointIndex, unsigned int actualMHz, unsigned int targetMHz, bool lockTail, char* detail, size_t detailSize) {
+    int requiredDeltaKHz = curve_delta_khz_for_target_display_mhz_unclamped(pointIndex, targetMHz);
+    int minkHz = 0;
+    int maxkHz = 0;
+    bool rangeKnown = get_curve_offset_range_khz(&minkHz, &maxkHz);
+    unsigned int voltMV = 0;
+    if (pointIndex >= 0 && pointIndex < VF_NUM_POINTS) {
+        voltMV = g_app.curve[pointIndex].volt_uV / 1000;
+    }
+
+    if (rangeKnown && requiredDeltaKHz < minkHz) {
+        if (lockTail) {
+            set_message(detail, detailSize,
+                "Lock tail hit the minimum curve offset at %u mV: reaching %u MHz needs %d kHz, but the supported range is %d..%d kHz (actual %u MHz)",
+                voltMV, targetMHz, requiredDeltaKHz, minkHz, maxkHz, actualMHz);
+        } else {
+            set_message(detail, detailSize,
+                "VF point %d hit the minimum curve offset: reaching %u MHz needs %d kHz, but the supported range is %d..%d kHz (actual %u MHz)",
+                pointIndex, targetMHz, requiredDeltaKHz, minkHz, maxkHz, actualMHz);
+        }
+        return;
+    }
+
+    if (rangeKnown && requiredDeltaKHz > maxkHz) {
+        if (lockTail) {
+            set_message(detail, detailSize,
+                "Lock tail hit the maximum curve offset at %u mV: reaching %u MHz needs %d kHz, but the supported range is %d..%d kHz (actual %u MHz)",
+                voltMV, targetMHz, requiredDeltaKHz, minkHz, maxkHz, actualMHz);
+        } else {
+            set_message(detail, detailSize,
+                "VF point %d hit the maximum curve offset: reaching %u MHz needs %d kHz, but the supported range is %d..%d kHz (actual %u MHz)",
+                pointIndex, targetMHz, requiredDeltaKHz, minkHz, maxkHz, actualMHz);
+        }
+        return;
+    }
+
+    if (lockTail) {
+        set_message(detail, detailSize,
+            "Lock tail verified at %u MHz @ %u mV instead of requested %u MHz",
+            actualMHz, voltMV, targetMHz);
+    } else {
+        set_message(detail, detailSize,
+            "VF point %d verified at %u MHz instead of requested %u MHz",
+            pointIndex, actualMHz, targetMHz);
+    }
 }
 
 static int mem_display_mhz_from_driver_khz(int driver_kHz) {

@@ -7,13 +7,14 @@
 #define ARRAY_COUNT(a) (sizeof(a) / sizeof((a)[0]))
 
 #define APP_NAME "Green Curve"
-#define APP_VERSION "0.5"
+#define APP_VERSION "0.6"
 #define CONFIG_FILE_NAME "config.ini"
 #define APP_LINUX_PROBE_FILE "greencurve_linux_probe.md"
 #define APP_LINUX_ASSETS_DIR "linux-artifacts"
 
 #define VF_NUM_POINTS 128
 #define FAN_CURVE_MAX_POINTS 8
+#define FAN_CURVE_MAX_HYSTERESIS_C 10
 #define CONFIG_NUM_SLOTS 5
 #define CONFIG_DEFAULT_SLOT 1
 #define LINUX_PATH_MAX 4096

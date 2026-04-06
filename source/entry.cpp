@@ -657,7 +657,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     SendMessageA(g_app.hAppLaunchCombo, CB_SETCURSEL, 0, 0);
 
     g_app.hAppLaunchLabel = CreateWindowExA(
-        0, "STATIC", "Load into GUI on app start:",
+        0, "STATIC", "Apply profile on GUI start:",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
         0, 0, dp(170), dp(18),
         g_app.hMainWnd, (HMENU)(INT_PTR)APP_LAUNCH_LABEL_ID, hInstance, nullptr
@@ -672,7 +672,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     SendMessageA(g_app.hLogonCombo, CB_SETCURSEL, 0, 0);
 
     g_app.hLogonLabel = CreateWindowExA(
-        0, "STATIC", "Apply automatically at logon:",
+        0, "STATIC", "Apply profile after user log in:",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
         0, 0, dp(208), dp(18),
         g_app.hMainWnd, (HMENU)(INT_PTR)LOGON_LABEL_ID, hInstance, nullptr
@@ -686,7 +686,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     );
 
     g_app.hStartOnLogonCheck = CreateWindowExA(
-        0, "BUTTON", "Start the full program hidden in the tray at Windows logon",
+        0, "BUTTON", "Start program to tray on log in",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
         0, 0, dp(320), dp(24),
         g_app.hMainWnd, (HMENU)(INT_PTR)START_ON_LOGON_CHECK_ID, hInstance, nullptr

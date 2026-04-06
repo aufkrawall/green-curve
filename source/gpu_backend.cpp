@@ -755,6 +755,24 @@ static bool nvapi_read_pstates() {
     if (numPstates > NVAPI_MAX_GPU_PSTATE20_PSTATES) numPstates = NVAPI_MAX_GPU_PSTATE20_PSTATES;
     unsigned int numClocks = info.numClocks;
     if (numClocks > NVAPI_MAX_GPU_PSTATE20_CLOCKS) numClocks = NVAPI_MAX_GPU_PSTATE20_CLOCKS;
+    bool curveRangeAnyFound = false;
+    bool curveRangeP0Found = false;
+    int curveRangeAnyMinkHz = 0;
+    int curveRangeAnyMaxkHz = 0;
+    int curveRangeP0MinkHz = 0;
+    int curveRangeP0MaxkHz = 0;
+
+    auto update_curve_range = [](bool* found, int* minOut, int* maxOut, int minValue, int maxValue) {
+        if (!found || !minOut || !maxOut) return;
+        if (!*found) {
+            *minOut = minValue;
+            *maxOut = maxValue;
+            *found = true;
+            return;
+        }
+        if (minValue < *minOut) *minOut = minValue;
+        if (maxValue > *maxOut) *maxOut = maxValue;
+    };
 
     for (unsigned int pi = 0; pi < numPstates; pi++) {
         const nvapiPstate20Entry_t* pstate = &info.pstates[pi];
@@ -773,6 +791,15 @@ static bool nvapi_read_pstates() {
                 }
                 unsigned int mhz = maxFreq_kHz / 1000;
                 if (mhz > g_app.pstateGpuMaxMHz) g_app.pstateGpuMaxMHz = mhz;
+                if (clock->bIsEditable) {
+                    if (pstate->pstateId == NVML_PSTATE_0) {
+                        update_curve_range(&curveRangeP0Found, &curveRangeP0MinkHz, &curveRangeP0MaxkHz,
+                            clock->freqDelta_kHz.valueRange.min, clock->freqDelta_kHz.valueRange.max);
+                    } else {
+                        update_curve_range(&curveRangeAnyFound, &curveRangeAnyMinkHz, &curveRangeAnyMaxkHz,
+                            clock->freqDelta_kHz.valueRange.min, clock->freqDelta_kHz.valueRange.max);
+                    }
+                }
             } else if (clock->domainId == NVAPI_GPU_PUBLIC_CLOCK_MEMORY) {
                 int memOffsetkHz = clock->freqDelta_kHz.value;
                 if (abs(memOffsetkHz) > abs(g_app.pstateMemOffsetkHz)) {
@@ -782,6 +809,12 @@ static bool nvapi_read_pstates() {
                 if (mhz > g_app.pstateMemMaxMHz) g_app.pstateMemMaxMHz = mhz;
             }
         }
+    }
+
+    if (curveRangeP0Found) {
+        set_curve_offset_range_khz(curveRangeP0MinkHz, curveRangeP0MaxkHz);
+    } else if (curveRangeAnyFound) {
+        set_curve_offset_range_khz(curveRangeAnyMinkHz, curveRangeAnyMaxkHz);
     }
 
     return true;

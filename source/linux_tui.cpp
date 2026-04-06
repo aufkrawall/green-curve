@@ -224,8 +224,8 @@ static void apply_action(TuiState* state, const ClickAction& action) {
         case ACTION_HYST_DELTA:
             state->desired.hasFan = true;
             state->desired.fanMode = FAN_MODE_CURVE;
-            state->desired.fanCurve.hysteresisC = clamp_value(state->desired.fanCurve.hysteresisC + action.value, 0, 5);
-            snprintf(state->status, sizeof(state->status), "Fan hysteresis now %d C", state->desired.fanCurve.hysteresisC);
+            state->desired.fanCurve.hysteresisC = clamp_value(state->desired.fanCurve.hysteresisC + action.value, 0, FAN_CURVE_MAX_HYSTERESIS_C);
+            snprintf(state->status, sizeof(state->status), "Fan hysteresis now %d\xC2\xB0""C", state->desired.fanCurve.hysteresisC);
             break;
         case ACTION_FAN_POINT_ENABLE:
             state->desired.hasFan = true;
@@ -238,7 +238,7 @@ static void apply_action(TuiState* state, const ClickAction& action) {
             state->desired.fanMode = FAN_MODE_CURVE;
             state->desired.fanCurve.points[action.index].enabled = true;
             state->desired.fanCurve.points[action.index].temperatureC = clamp_value(state->desired.fanCurve.points[action.index].temperatureC + action.value, 0, 100);
-            snprintf(state->status, sizeof(state->status), "Fan point %d temp now %d C", action.index, state->desired.fanCurve.points[action.index].temperatureC);
+            snprintf(state->status, sizeof(state->status), "Fan point %d temp now %d\xC2\xB0""C", action.index, state->desired.fanCurve.points[action.index].temperatureC);
             break;
         case ACTION_FAN_POINT_PCT_DELTA:
             state->desired.hasFan = true;
@@ -368,7 +368,7 @@ static void render_ui(TuiState* state) {
     append_text(&line, " ");
     push_button(state, &line, y + 1, ACTION_HYST_DELTA, 0, 1, "+1");
     append_text(&line, "   ");
-    snprintf(buffer, sizeof(buffer), "%d C", state->desired.fanCurve.hysteresisC);
+    snprintf(buffer, sizeof(buffer), "%d\xC2\xB0""C", state->desired.fanCurve.hysteresisC);
     append_text(&line, buffer);
     printf("%s\n", line.c_str());
     y++;
@@ -383,7 +383,7 @@ static void render_ui(TuiState* state) {
         append_text(&line, " ");
         push_button(state, &line, y + 1, ACTION_FAN_POINT_TEMP_DELTA, i, 1, "+");
         append_text(&line, " ");
-        snprintf(buffer, sizeof(buffer), "%3dC", state->desired.fanCurve.points[i].temperatureC);
+        snprintf(buffer, sizeof(buffer), "%3d\xC2\xB0""C", state->desired.fanCurve.points[i].temperatureC);
         append_text(&line, buffer);
         append_text(&line, "   Pct ");
         push_button(state, &line, y + 1, ACTION_FAN_POINT_PCT_DELTA, i, -1, "-");
