@@ -631,7 +631,8 @@ static void refresh_curve() {
 static void reset_curve() {
     if (!g_app.loaded) return;
 
-    if (!(NvApiFunc)nvapi_qi(VF_SET_CONTROL_ID)) {
+    if (!g_app.vfBackend || !g_app.vfBackend->writeSupported ||
+        !(NvApiFunc)nvapi_qi(g_app.vfBackend->setControlId)) {
         MessageBoxA(g_app.hMainWnd, "NvAPI functions not available.", "Green Curve", MB_OK | MB_ICONERROR);
         return;
     }

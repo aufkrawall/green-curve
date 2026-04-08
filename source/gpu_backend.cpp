@@ -507,20 +507,27 @@ static bool nvapi_get_name() {
 }
 
 static bool nvapi_read_curve() {
-    auto getStatus = (NvApiFunc)nvapi_qi(VF_GET_STATUS_ID);
+    const VfBackendSpec* backend = g_app.vfBackend;
+    if (!backend || !backend->readSupported) return false;
+
+    auto getStatus = (NvApiFunc)nvapi_qi(backend->getStatusId);
     if (!getStatus) return false;
 
     unsigned char mask[32] = {};
-    unsigned int numClocks = 15;
-    nvapi_get_vf_info_cached(mask, &numClocks);
+    unsigned int numClocks = backend->defaultNumClocks;
+    if (!nvapi_get_vf_info_cached(mask, &numClocks)) return false;
 
-    unsigned char buf[VF_BUFFER_SIZE] = {};
+    unsigned char buf[0x4000] = {};
+    if (backend->statusBufferSize > sizeof(buf)) return false;
     {
-        const unsigned int version = (1u << 16) | VF_BUFFER_SIZE;
+        const unsigned int version = (backend->statusVersion << 16) | backend->statusBufferSize;
         memcpy(&buf[0], &version, sizeof(version));
     }
-    memcpy(&buf[4], mask, 32);
-    memcpy(&buf[0x24], &numClocks, sizeof(numClocks));
+    if (backend->statusMaskOffset + sizeof(mask) > backend->statusBufferSize) return false;
+    memcpy(&buf[backend->statusMaskOffset], mask, sizeof(mask));
+    if (backend->statusNumClocksOffset + sizeof(numClocks) <= backend->statusBufferSize) {
+        memcpy(&buf[backend->statusNumClocksOffset], &numClocks, sizeof(numClocks));
+    }
 
     int ret = getStatus(g_app.gpuHandle, buf);
     if (ret != 0) return false;
@@ -528,8 +535,14 @@ static bool nvapi_read_curve() {
     g_app.numPopulated = 0;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         unsigned int freq = 0, volt = 0;
-        memcpy(&freq, &buf[VF_ENTRIES_OFFSET + i * VF_ENTRY_STRIDE], sizeof(freq));
-        memcpy(&volt, &buf[VF_ENTRIES_OFFSET + i * VF_ENTRY_STRIDE + 4], sizeof(volt));
+        unsigned int entryOffset = backend->statusEntriesOffset + (unsigned int)i * backend->statusEntryStride;
+        if (entryOffset + 8 > backend->statusBufferSize) {
+            g_app.curve[i].freq_kHz = 0;
+            g_app.curve[i].volt_uV = 0;
+            continue;
+        }
+        memcpy(&freq, &buf[entryOffset], sizeof(freq));
+        memcpy(&volt, &buf[entryOffset + 4], sizeof(volt));
         g_app.curve[i].freq_kHz = freq;
         g_app.curve[i].volt_uV = volt;
         if (freq > 0) g_app.numPopulated++;
@@ -598,6 +611,8 @@ static void read_nvidia_smi_max_clocks() {
 }
 
 static int uniform_curve_offset_khz() {
+    if (!vf_curve_global_gpu_offset_supported()) return 0;
+
     int values[VF_NUM_POINTS] = {};
     int counts[VF_NUM_POINTS] = {};
     int uniqueCount = 0;
@@ -637,7 +652,9 @@ static int uniform_curve_offset_khz() {
 
 static void detect_clock_offsets() {
     // Detect global offsets from generic driver-visible sources.
-    // GPU: use uniform VF control deltas, which reflect active global core offset.
+    // GPU: only use uniform VF control deltas on write-supported backends where
+    // the control-table layout is validated. Probe-only/read-only backends may
+    // expose non-user-visible baseline deltas that do not map to a global offset.
     // Memory: prefer public Pstates20 memory clocks vs VBIOS max clocks.
     // This reflects the currently active offset and avoids stale NVML/Pstates delta fields
     // surviving after another tool resets memory to default.
@@ -667,13 +684,21 @@ static void detect_clock_offsets() {
 }
 
 static bool nvapi_read_offsets() {
-    const unsigned int CTRL_SIZE = 0x2420;
-    unsigned char buf[0x2420] = {};
-    if (!nvapi_read_control_table(buf, CTRL_SIZE)) return false;
+    const VfBackendSpec* backend = g_app.vfBackend;
+    if (!backend || !backend->readSupported) return false;
+
+    unsigned char buf[0x4000] = {};
+    if (backend->controlBufferSize > sizeof(buf)) return false;
+    if (!nvapi_read_control_table(buf, sizeof(buf))) return false;
 
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         int delta = 0;
-        memcpy(&delta, &buf[0x44 + i * 0x24 + 0x14], sizeof(delta));
+        unsigned int deltaOffset = backend->controlEntryBaseOffset + (unsigned int)i * backend->controlEntryStride + backend->controlEntryDeltaOffset;
+        if (deltaOffset + sizeof(delta) > backend->controlBufferSize) {
+            g_app.freqOffsets[i] = 0;
+            continue;
+        }
+        memcpy(&delta, &buf[deltaOffset], sizeof(delta));
         g_app.freqOffsets[i] = delta;
     }
     return true;
@@ -683,16 +708,21 @@ static bool nvapi_set_point(int pointIndex, int freqDelta_kHz) {
     if (pointIndex < 0 || pointIndex >= VF_NUM_POINTS) return false;
     freqDelta_kHz = clamp_freq_delta_khz(freqDelta_kHz);
 
-    auto func = (NvApiFunc)nvapi_qi(VF_SET_CONTROL_ID);
+    const VfBackendSpec* backend = g_app.vfBackend;
+    if (!backend || !backend->writeSupported) return false;
+
+    auto func = (NvApiFunc)nvapi_qi(backend->setControlId);
     if (!func) return false;
 
-    const unsigned int CTRL_SIZE = 0x2420;
-    unsigned char buf[0x2420] = {};
-    if (!nvapi_read_control_table(buf, CTRL_SIZE)) return false;
+    unsigned char buf[0x4000] = {};
+    if (backend->controlBufferSize > sizeof(buf)) return false;
+    if (!nvapi_read_control_table(buf, sizeof(buf))) return false;
 
-    memset(&buf[4], 0, 32);
-    buf[4 + pointIndex / 8] = (unsigned char)(1 << (pointIndex % 8));
-    memcpy(&buf[0x44 + pointIndex * 0x24 + 0x14], &freqDelta_kHz, sizeof(freqDelta_kHz));
+    memset(&buf[backend->controlMaskOffset], 0, 32);
+    buf[backend->controlMaskOffset + pointIndex / 8] = (unsigned char)(1 << (pointIndex % 8));
+    unsigned int deltaOffset = backend->controlEntryBaseOffset + (unsigned int)pointIndex * backend->controlEntryStride + backend->controlEntryDeltaOffset;
+    if (deltaOffset + sizeof(freqDelta_kHz) > backend->controlBufferSize) return false;
+    memcpy(&buf[deltaOffset], &freqDelta_kHz, sizeof(freqDelta_kHz));
 
     int ret = func(g_app.gpuHandle, buf);
     debug_log("set_point idx=%d delta=%d ret=%d\n", pointIndex, freqDelta_kHz, ret);
@@ -821,6 +851,22 @@ static bool nvapi_read_pstates() {
 }
 
 static bool nvapi_set_gpu_offset(int offsetkHz) {
+    if (!vf_curve_global_gpu_offset_supported()) {
+        if (g_app.gpuClockOffsetkHz == offsetkHz) return true;
+
+        bool exact = false;
+        char detail[128] = {};
+        bool ok = nvml_set_clock_offset_domain(NVML_CLOCK_GRAPHICS, offsetkHz / 1000, &exact, detail, sizeof(detail));
+        if (!ok) return false;
+
+        nvml_read_clock_offsets(detail, sizeof(detail));
+        nvapi_read_pstates();
+        detect_clock_offsets();
+        nvapi_read_offsets();
+        if (nvapi_read_curve()) rebuild_visible_map();
+        return exact || g_app.gpuClockOffsetkHz == offsetkHz;
+    }
+
     int currentGlobalkHz = uniform_curve_offset_khz();
     if (currentGlobalkHz == offsetkHz) return true;
 

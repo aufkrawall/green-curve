@@ -1,4 +1,4 @@
-// Green Curve v0.6 - NVIDIA Blackwell VF Curve Editor
+// Green Curve v0.7 - NVIDIA VF Curve Editor
 // Win32 GDI application
 
 #include "app_shared.h"
@@ -31,6 +31,16 @@ static void* nvapi_qi(unsigned int id);
 static bool nvapi_read_curve();
 static bool nvapi_read_offsets();
 static bool nvapi_read_pstates();
+static bool nvapi_get_interface_version_string(char* text, size_t textSize);
+static bool nvapi_get_error_message(int status, char* text, size_t textSize);
+static const char* gpu_family_name(GpuFamily family);
+static bool nvapi_read_gpu_metadata();
+static bool select_vf_backend_for_current_gpu();
+static const VfBackendSpec* probe_backend_for_current_gpu();
+static bool vf_curve_global_gpu_offset_supported();
+static bool vf_backend_is_best_guess(const VfBackendSpec* backend);
+static bool should_show_best_guess_warning();
+static void show_best_guess_support_warning(HWND parent);
 static void detect_clock_offsets();
 static int uniform_curve_offset_khz();
 static void set_curve_offset_range_khz(int minkHz, int maxkHz);
@@ -70,6 +80,7 @@ static void layout_bottom_buttons(HWND hParent);
 static void debug_log(const char* fmt, ...);
 static bool write_text_file_atomic(const char* path, const char* data, size_t dataSize, char* err, size_t errSize);
 static bool write_log_snapshot(const char* path, char* err, size_t errSize);
+static bool write_probe_report(const char* path, char* err, size_t errSize);
 static bool write_error_report_log(const char* summary, const char* details, char* err, size_t errSize);
 static bool save_desired_to_config_with_startup(const char* path, const DesiredSettings* desired, bool useCurrentForUnset, int startupState, char* err, size_t errSize);
 // Profile I/O
@@ -125,6 +136,9 @@ static void start_fan_curve_runtime();
 static void start_fixed_fan_runtime();
 static void apply_fan_curve_tick();
 static bool nvml_read_temperature(int* temperatureC, char* detail, size_t detailSize);
+static bool nvml_read_power_limit();
+static bool nvml_read_clock_offsets(char* detail, size_t detailSize);
+static bool nvml_read_fans(char* detail, size_t detailSize);
 static bool is_start_on_logon_enabled(const char* path);
 static bool set_start_on_logon_enabled(const char* path, bool enabled);
 static bool should_enable_startup_task_from_config(const char* path);
@@ -138,6 +152,156 @@ static bool current_applied_gpu_offset_excludes_low_points();
 static void open_fan_curve_dialog();
 static void refresh_fan_curve_button_text();
 static bool apply_desired_settings(const DesiredSettings* desired, bool interactive, char* result, size_t resultSize);
+
+static const VfBackendSpec g_vfBackendBlackwell = {
+    "blackwell",
+    GPU_FAMILY_BLACKWELL,
+    true,
+    true,
+    true,
+    false,
+    0x21537AD4u,
+    0x507B4B59u,
+    0x23F1B133u,
+    0x0733E009u,
+    0x1C28,
+    1,
+    0x04,
+    0x24,
+    0x48,
+    0x1C,
+    0x182C,
+    1,
+    0x04,
+    0x14,
+    0x2420,
+    1,
+    0x04,
+    0x44,
+    0x24,
+    0x14,
+    15,
+};
+
+static const VfBackendSpec g_vfBackendLovelace = {
+    "lovelace",
+    GPU_FAMILY_LOVELACE,
+    true,
+    true,
+    true,
+    false,
+    0x21537AD4u,
+    0x507B4B59u,
+    0x23F1B133u,
+    0x0733E009u,
+    0x1C28,
+    1,
+    0x04,
+    0x24,
+    0x48,
+    0x1C,
+    0x182C,
+    1,
+    0x04,
+    0x14,
+    0x2420,
+    1,
+    0x04,
+    0x44,
+    0x24,
+    0x14,
+    15,
+};
+
+static const VfBackendSpec g_vfBackendAmpere = {
+    "ampere",
+    GPU_FAMILY_AMPERE,
+    true,
+    true,
+    true,
+    true,
+    0x21537AD4u,
+    0x507B4B59u,
+    0x23F1B133u,
+    0x0733E009u,
+    0x1C28,
+    1,
+    0x04,
+    0x24,
+    0x48,
+    0x1C,
+    0x182C,
+    1,
+    0x04,
+    0x14,
+    0x2420,
+    1,
+    0x04,
+    0x44,
+    0x24,
+    0x14,
+    15,
+};
+
+static const VfBackendSpec g_vfBackendTuring = {
+    "turing",
+    GPU_FAMILY_TURING,
+    true,
+    true,
+    true,
+    true,
+    0x21537AD4u,
+    0x507B4B59u,
+    0x23F1B133u,
+    0x0733E009u,
+    0x1C28,
+    1,
+    0x04,
+    0x24,
+    0x48,
+    0x1C,
+    0x182C,
+    1,
+    0x04,
+    0x14,
+    0x2420,
+    1,
+    0x04,
+    0x44,
+    0x24,
+    0x14,
+    15,
+};
+
+static const VfBackendSpec g_vfBackendPascal = {
+    "pascal",
+    GPU_FAMILY_PASCAL,
+    true,
+    true,
+    true,
+    true,
+    0x21537AD4u,
+    0x507B4B59u,
+    0x23F1B133u,
+    0x0733E009u,
+    0x1C28,
+    1,
+    0x04,
+    0x24,
+    0x48,
+    0x1C,
+    0x182C,
+    1,
+    0x04,
+    0x14,
+    0x2420,
+    1,
+    0x04,
+    0x44,
+    0x24,
+    0x14,
+    15,
+};
 
 struct FanCurveDialogState {
     HWND hwnd;
@@ -168,6 +332,119 @@ enum {
 static const UINT FAN_FIXED_RUNTIME_INTERVAL_MS = 5000;
 static const ULONGLONG FAN_RUNTIME_REAPPLY_INTERVAL_MS = 15000;
 static const ULONGLONG FAN_RUNTIME_FAILURE_WINDOW_MS = 10000;
+
+static const char* gpu_family_name(GpuFamily family) {
+    switch (family) {
+        case GPU_FAMILY_PASCAL: return "pascal";
+        case GPU_FAMILY_TURING: return "turing";
+        case GPU_FAMILY_AMPERE: return "ampere";
+        case GPU_FAMILY_LOVELACE: return "lovelace";
+        case GPU_FAMILY_BLACKWELL: return "blackwell";
+        default: return "unknown";
+    }
+}
+
+static bool select_vf_backend_for_current_gpu() {
+    g_app.vfBackend = nullptr;
+    g_app.gpuFamily = GPU_FAMILY_UNKNOWN;
+
+    switch (g_app.gpuArchitecture) {
+        case NV_GPU_ARCHITECTURE_GP100:
+            g_app.gpuFamily = GPU_FAMILY_PASCAL;
+            g_app.vfBackend = &g_vfBackendPascal;
+            return true;
+        case NV_GPU_ARCHITECTURE_TU100:
+            g_app.gpuFamily = GPU_FAMILY_TURING;
+            g_app.vfBackend = &g_vfBackendTuring;
+            return true;
+        case NV_GPU_ARCHITECTURE_GA100:
+            g_app.gpuFamily = GPU_FAMILY_AMPERE;
+            g_app.vfBackend = &g_vfBackendAmpere;
+            return true;
+        case NV_GPU_ARCHITECTURE_AD100:
+            g_app.gpuFamily = GPU_FAMILY_LOVELACE;
+            g_app.vfBackend = &g_vfBackendLovelace;
+            return true;
+        case NV_GPU_ARCHITECTURE_GB200:
+            g_app.gpuFamily = GPU_FAMILY_BLACKWELL;
+            g_app.vfBackend = &g_vfBackendBlackwell;
+            return true;
+        default:
+            return false;
+    }
+}
+
+static const VfBackendSpec* probe_backend_for_current_gpu() {
+    if (g_app.vfBackend) return g_app.vfBackend;
+
+    // Keep probe collection available on unrecognized architectures without
+    // enabling live VF reads/writes in the normal runtime path.
+    return &g_vfBackendBlackwell;
+}
+
+static bool nvapi_get_interface_version_string(char* text, size_t textSize) {
+    if (!text || textSize == 0) return false;
+    text[0] = 0;
+
+    typedef int (*version_t)(char*);
+    auto getVersion = (version_t)nvapi_qi(NVAPI_GET_INTERFACE_VERSION_STRING_ID);
+    if (!getVersion) return false;
+    return getVersion(text) == 0;
+}
+
+static bool nvapi_get_error_message(int status, char* text, size_t textSize) {
+    if (!text || textSize == 0) return false;
+    text[0] = 0;
+
+    typedef int (*error_message_t)(int, char*);
+    auto getErrorMessage = (error_message_t)nvapi_qi(NVAPI_GET_ERROR_MESSAGE_ID);
+    if (!getErrorMessage) return false;
+
+    char shortText[64] = {};
+    if (getErrorMessage(status, shortText) != 0) return false;
+    StringCchCopyA(text, textSize, shortText);
+    return true;
+}
+
+static bool nvapi_read_gpu_metadata() {
+    g_app.gpuArchInfoValid = false;
+    g_app.gpuPciInfoValid = false;
+    g_app.gpuArchitecture = 0;
+    g_app.gpuImplementation = 0;
+    g_app.gpuChipRevision = 0;
+    g_app.gpuDeviceId = 0;
+    g_app.gpuSubSystemId = 0;
+    g_app.gpuPciRevisionId = 0;
+    g_app.gpuExtDeviceId = 0;
+
+    typedef int (*get_arch_t)(GPU_HANDLE, nvapiGpuArchInfo_t*);
+    auto getArchInfo = (get_arch_t)nvapi_qi(NVAPI_GPU_GET_ARCH_INFO_ID);
+    if (getArchInfo) {
+        nvapiGpuArchInfo_t info = {};
+        info.version = NVAPI_GPU_ARCH_INFO_VER2;
+        if (getArchInfo(g_app.gpuHandle, &info) == 0) {
+            g_app.gpuArchitecture = info.architecture;
+            g_app.gpuImplementation = info.implementation;
+            g_app.gpuChipRevision = info.revision;
+            g_app.gpuArchInfoValid = true;
+        }
+    }
+
+    typedef int (*get_pci_t)(GPU_HANDLE, unsigned int*, unsigned int*, unsigned int*, unsigned int*);
+    auto getPciIdentifiers = (get_pci_t)nvapi_qi(NVAPI_GPU_GET_PCI_IDENTIFIERS_ID);
+    if (getPciIdentifiers) {
+        if (getPciIdentifiers(
+                g_app.gpuHandle,
+                &g_app.gpuDeviceId,
+                &g_app.gpuSubSystemId,
+                &g_app.gpuPciRevisionId,
+                &g_app.gpuExtDeviceId) == 0) {
+            g_app.gpuPciInfoValid = true;
+        }
+    }
+
+    return select_vf_backend_for_current_gpu() || g_app.gpuArchInfoValid || g_app.gpuPciInfoValid;
+}
 
 static const char* fan_mode_label(int mode) {
     switch (mode) {
@@ -355,7 +632,101 @@ static int gpu_offset_component_mhz_for_point(int pointIndex, int gpuOffsetMHz, 
     return gpuOffsetMHz;
 }
 
+static bool vf_backend_is_best_guess(const VfBackendSpec* backend) {
+    return backend && backend->bestGuessOnly;
+}
+
+static bool should_show_best_guess_warning() {
+    if (!g_app.vfBackend || !vf_backend_is_best_guess(g_app.vfBackend)) return false;
+    if (!g_app.configPath[0]) return true;
+
+    char key[64] = {};
+    StringCchPrintfA(key, ARRAY_COUNT(key), "hide_best_guess_warning_%s", gpu_family_name(g_app.gpuFamily));
+    return get_config_int(g_app.configPath, "warnings", key, 0) == 0;
+}
+
+static void show_best_guess_support_warning(HWND parent) {
+    if (!should_show_best_guess_warning()) return;
+
+    char message[768] = {};
+    StringCchPrintfA(message, ARRAY_COUNT(message),
+        "Detected %s GPU (%s).\n\n"
+        "Green Curve is enabling VF curve support on this family by best guess using the same private backend layout that works on Blackwell and Lovelace. It may work normally, but it is not yet verified on this architecture.\n\n"
+        "Check applied clocks and offsets carefully after changes.",
+        gpu_family_name(g_app.gpuFamily),
+        g_app.gpuName[0] ? g_app.gpuName : "NVIDIA GPU");
+
+    bool dontShowAgainChecked = false;
+    bool handled = false;
+    HMODULE comctl = LoadLibraryA("comctl32.dll");
+    if (comctl) {
+        typedef HRESULT (WINAPI *TaskDialogIndirect_t)(const TASKDIALOGCONFIG*, int*, int*, BOOL*);
+        auto taskDialogIndirect = (TaskDialogIndirect_t)GetProcAddress(comctl, "TaskDialogIndirect");
+        if (taskDialogIndirect) {
+            TASKDIALOGCONFIG config = {};
+            config.cbSize = sizeof(config);
+            config.hwndParent = parent;
+            config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+            config.dwCommonButtons = TDCBF_OK_BUTTON | TDCBF_CANCEL_BUTTON;
+            config.pszWindowTitle = L"Green Curve - Experimental GPU Support";
+            config.pszMainIcon = TD_WARNING_ICON;
+
+            WCHAR mainInstruction[128] = {};
+            StringCchPrintfW(mainInstruction, ARRAY_COUNT(mainInstruction), L"Experimental %hs support enabled", gpu_family_name(g_app.gpuFamily));
+            config.pszMainInstruction = mainInstruction;
+
+            WCHAR content[1024] = {};
+            StringCchPrintfW(content, ARRAY_COUNT(content),
+                L"Detected %hs GPU (%hs).\n\n"
+                L"Green Curve is enabling VF curve support on this family by best guess using the same private backend layout that works on Blackwell and Lovelace. It may work normally, but it is not yet verified on this architecture.\n\n"
+                L"Check applied clocks and offsets carefully after changes.",
+                gpu_family_name(g_app.gpuFamily),
+                g_app.gpuName[0] ? g_app.gpuName : "NVIDIA GPU");
+            config.pszContent = content;
+            config.pszVerificationText = L"Do not show this warning again for this GPU family";
+
+            int button = 0;
+            BOOL verification = FALSE;
+            HRESULT hr = taskDialogIndirect(&config, &button, nullptr, &verification);
+            if (SUCCEEDED(hr)) {
+                handled = true;
+                if (button == IDCANCEL) ExitProcess(0);
+                dontShowAgainChecked = verification == TRUE;
+            }
+        }
+        FreeLibrary(comctl);
+    }
+
+    if (!handled) {
+        int result = MessageBoxA(parent, message, "Green Curve - Experimental GPU Support", MB_OKCANCEL | MB_ICONWARNING);
+        if (result == IDCANCEL) ExitProcess(0);
+
+        int dontShowAgain = MessageBoxA(parent,
+            "Do not show this experimental support warning again for this GPU family?",
+            "Green Curve - Experimental GPU Support",
+            MB_YESNO | MB_ICONQUESTION);
+        dontShowAgainChecked = dontShowAgain == IDYES;
+    }
+
+    if (dontShowAgainChecked && g_app.configPath[0]) {
+        char key[64] = {};
+        StringCchPrintfA(key, ARRAY_COUNT(key), "hide_best_guess_warning_%s", gpu_family_name(g_app.gpuFamily));
+        set_config_int(g_app.configPath, "warnings", key, 1);
+    }
+}
+
+static bool vf_curve_global_gpu_offset_supported() {
+    const VfBackendSpec* backend = g_app.vfBackend;
+    if (!backend || !backend->writeSupported) return false;
+    return backend->family == GPU_FAMILY_BLACKWELL;
+}
+
 static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut) {
+    if (!vf_curve_global_gpu_offset_supported()) {
+        if (gpuOffsetMHzOut) *gpuOffsetMHzOut = 0;
+        return false;
+    }
+
     int candidateOffsets[VF_NUM_POINTS] = {};
     int candidateCount = 0;
 
@@ -413,7 +784,9 @@ static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut) {
 }
 
 static int current_applied_gpu_offset_mhz() {
-    if (g_app.appliedGpuOffsetExcludeLow70 && g_app.appliedGpuOffsetMHz != 0) {
+    if (!vf_curve_global_gpu_offset_supported()) {
+        g_app.appliedGpuOffsetMHz = g_app.gpuClockOffsetkHz / 1000;
+        g_app.appliedGpuOffsetExcludeLow70 = false;
         return g_app.appliedGpuOffsetMHz;
     }
     int detectedSelectiveOffsetMHz = 0;
@@ -422,20 +795,24 @@ static int current_applied_gpu_offset_mhz() {
         g_app.appliedGpuOffsetExcludeLow70 = true;
         return detectedSelectiveOffsetMHz;
     }
+    g_app.appliedGpuOffsetExcludeLow70 = false;
     return g_app.gpuClockOffsetkHz / 1000;
 }
 
 static bool current_applied_gpu_offset_excludes_low_points() {
-    if (g_app.appliedGpuOffsetExcludeLow70 && current_applied_gpu_offset_mhz() != 0) {
-        return true;
+    if (!vf_curve_global_gpu_offset_supported()) {
+        g_app.appliedGpuOffsetExcludeLow70 = false;
+        return false;
     }
+
     int detectedSelectiveOffsetMHz = 0;
     if (detect_live_selective_gpu_offset_state(&detectedSelectiveOffsetMHz)) {
         g_app.appliedGpuOffsetMHz = detectedSelectiveOffsetMHz;
         g_app.appliedGpuOffsetExcludeLow70 = true;
         return true;
     }
-    return g_app.appliedGpuOffsetExcludeLow70 && current_applied_gpu_offset_mhz() != 0;
+    g_app.appliedGpuOffsetExcludeLow70 = false;
+    return false;
 }
 
 static void copy_fan_curve(FanCurveConfig* destination, const FanCurveConfig* source) {
@@ -499,6 +876,7 @@ static bool live_state_has_custom_oc() {
     if (g_app.gpuClockOffsetkHz != 0) return true;
     if (g_app.memClockOffsetkHz != 0) return true;
     if (g_app.powerLimitPct != 100) return true;
+    if (!g_app.vfBackend || !g_app.vfBackend->writeSupported) return false;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (g_app.freqOffsets[i] != 0) return true;
     }
@@ -1376,6 +1754,630 @@ static bool write_json_snapshot(const char* path, char* err, size_t errSize) {
         }
     }
     append("\n  ]\n}\n");
+
+    bool ok = write_text_file_atomic(path, json, used, err, errSize);
+    free(json);
+    return ok;
+}
+
+static bool write_probe_report(const char* path, char* err, size_t errSize) {
+    char* json = (char*)malloc(524288);
+    if (!json) {
+        set_message(err, errSize, "Out of memory generating probe report");
+        return false;
+    }
+
+    size_t used = 0;
+    auto append = [&](const char* fmt, ...) -> bool {
+        if (used >= 524288) return false;
+        va_list ap;
+        va_start(ap, fmt);
+        int written = _vsnprintf_s(json + used, 524288 - used, _TRUNCATE, fmt, ap);
+        va_end(ap);
+        if (written < 0) {
+            used = 524287;
+            json[524287] = 0;
+            return false;
+        }
+        used += (size_t)written;
+        return true;
+    };
+
+    auto append_json_string = [&](const char* text) {
+        append("\"");
+        for (const unsigned char* p = (const unsigned char*)(text ? text : ""); *p; ++p) {
+            switch (*p) {
+                case '\\': append("\\\\"); break;
+                case '"': append("\\\""); break;
+                case '\n': append("\\n"); break;
+                case '\r': append("\\r"); break;
+                case '\t': append("\\t"); break;
+                default:
+                    if (*p < 32) append("\\u%04x", *p);
+                    else append("%c", *p);
+                    break;
+            }
+        }
+        append("\"");
+    };
+
+    auto append_hex_bytes = [&](const unsigned char* bytes, unsigned int count) {
+        for (unsigned int i = 0; i < count; i++) {
+            append("%02X", bytes[i]);
+            if (i + 1 < count) append(" ");
+        }
+    };
+
+    enum ProbeKind {
+        PROBE_KIND_GENERIC = 0,
+        PROBE_KIND_INFO = 1,
+        PROBE_KIND_STATUS = 2,
+        PROBE_KIND_CONTROL = 3,
+    };
+
+    struct ProbeCallResult {
+        bool found;
+        bool callable;
+        int ret;
+        unsigned int size;
+        unsigned char buf[0x4000];
+        char errorText[64];
+    };
+
+    const VfBackendSpec* selected = probe_backend_for_current_gpu();
+    unsigned char ffMask[32] = {};
+    memset(ffMask, 0xFF, sizeof(ffMask));
+
+    auto run_probe_call = [&](unsigned int id,
+                              unsigned int size,
+                              unsigned int version,
+                              ProbeKind kind,
+                              const VfBackendSpec* layout,
+                              const unsigned char* maskSeed,
+                              size_t maskSeedLen,
+                              bool hasNumClocksSeed,
+                              unsigned int numClocksSeed) -> ProbeCallResult {
+        ProbeCallResult result = {};
+        result.ret = -9999;
+        result.size = size;
+        result.errorText[0] = 0;
+
+        auto func = (NvApiFunc)nvapi_qi(id);
+        if (!func) return result;
+        result.found = true;
+
+        if (size > sizeof(result.buf)) return result;
+        result.callable = true;
+
+        const unsigned int header = (version << 16) | size;
+        memcpy(&result.buf[0], &header, sizeof(header));
+
+        if (layout && maskSeed && maskSeedLen > 0) {
+            unsigned int maskOffset = 0;
+            if (kind == PROBE_KIND_INFO) maskOffset = layout->infoMaskOffset;
+            else if (kind == PROBE_KIND_STATUS) maskOffset = layout->statusMaskOffset;
+            else if (kind == PROBE_KIND_CONTROL) maskOffset = layout->controlMaskOffset;
+            if (maskOffset + maskSeedLen <= size) {
+                memcpy(&result.buf[maskOffset], maskSeed, maskSeedLen);
+            }
+        }
+
+        if (layout && kind == PROBE_KIND_STATUS && hasNumClocksSeed) {
+            if (layout->statusNumClocksOffset + sizeof(numClocksSeed) <= size) {
+                memcpy(&result.buf[layout->statusNumClocksOffset], &numClocksSeed, sizeof(numClocksSeed));
+            }
+        }
+
+        result.ret = func(g_app.gpuHandle, result.buf);
+        if (result.ret != 0) {
+            nvapi_get_error_message(result.ret, result.errorText, sizeof(result.errorText));
+        }
+        return result;
+    };
+
+    ProbeCallResult seedInfo = run_probe_call(
+        selected->getInfoId,
+        selected->infoBufferSize,
+        selected->infoVersion,
+        PROBE_KIND_INFO,
+        selected,
+        ffMask,
+        sizeof(ffMask),
+        false,
+        0);
+
+    unsigned char cachedMask[32] = {};
+    unsigned int cachedNumClocks = selected->defaultNumClocks;
+    bool cachedSeedAvailable = false;
+    if (seedInfo.ret == 0 &&
+        selected->infoMaskOffset + sizeof(cachedMask) <= seedInfo.size &&
+        selected->infoNumClocksOffset + sizeof(cachedNumClocks) <= seedInfo.size) {
+        memcpy(cachedMask, &seedInfo.buf[selected->infoMaskOffset], sizeof(cachedMask));
+        memcpy(&cachedNumClocks, &seedInfo.buf[selected->infoNumClocksOffset], sizeof(cachedNumClocks));
+        if (cachedNumClocks == 0) cachedNumClocks = selected->defaultNumClocks;
+        cachedSeedAvailable = true;
+    }
+
+    auto append_probe_result = [&](const char* label,
+                                   unsigned int id,
+                                   unsigned int size,
+                                   unsigned int version,
+                                   ProbeKind kind,
+                                   const VfBackendSpec* layout,
+                                   const char* seedSource,
+                                   const unsigned char* maskSeed,
+                                   size_t maskSeedLen,
+                                   bool hasNumClocksSeed,
+                                   unsigned int numClocksSeed,
+                                   bool includeFullBytes) {
+        ProbeCallResult result = run_probe_call(id, size, version, kind, layout, maskSeed, maskSeedLen, hasNumClocksSeed, numClocksSeed);
+
+        append("      {\n");
+        append("        \"label\": ");
+        append_json_string(label);
+        append(",\n        \"id\": \"0x%08X\",\n", id);
+        append("        \"size\": %u,\n", size);
+        append("        \"version\": %u,\n", version);
+        if (seedSource && *seedSource) {
+            append("        \"seed_source\": ");
+            append_json_string(seedSource);
+            append(",\n");
+        }
+        if (maskSeed && maskSeedLen > 0) {
+            append("        \"seed_mask_hex\": \"");
+            append_hex_bytes(maskSeed, (unsigned int)maskSeedLen);
+            append("\",");
+            append("\n");
+        }
+        if (hasNumClocksSeed) {
+            append("        \"seed_num_clocks\": %u,\n", numClocksSeed);
+        }
+
+        if (!result.found) {
+            append("        \"found\": false\n");
+            append("      }");
+            return;
+        }
+
+        append("        \"found\": true,\n");
+        if (!result.callable) {
+            append("        \"callable\": false,\n");
+            append("        \"error\": \"buffer too large for built-in probe\"\n");
+            append("      }");
+            return;
+        }
+
+        append("        \"callable\": true,\n");
+        append("        \"result\": %d,\n", result.ret);
+        append("        \"result_hex\": \"0x%08X\",\n", (unsigned int)result.ret);
+        append("        \"result_text\": ");
+        append_json_string(result.errorText[0] ? result.errorText : (result.ret == 0 ? "NVAPI_OK" : ""));
+        append(",\n");
+        append("        \"first_bytes\": \"");
+        unsigned int dumpCount = result.size < 64 ? result.size : 64;
+        append_hex_bytes(result.buf, dumpCount);
+        append("\"");
+
+        if (result.ret == 0 && includeFullBytes) {
+            append(",\n        \"full_bytes\": \"");
+            append_hex_bytes(result.buf, result.size);
+            append("\"");
+        }
+
+        if (result.ret == 0 && layout) {
+            if (kind == PROBE_KIND_INFO) {
+                if (layout->infoMaskOffset + 32 <= result.size && layout->infoNumClocksOffset + 4 <= result.size) {
+                    unsigned int assumedNumClocks = 0;
+                    memcpy(&assumedNumClocks, &result.buf[layout->infoNumClocksOffset], sizeof(assumedNumClocks));
+                    append(",\n        \"assumed_info\": {\n");
+                    append("          \"mask_hex\": \"");
+                    append_hex_bytes(&result.buf[layout->infoMaskOffset], 32);
+                    append("\",\n");
+                    append("          \"num_clocks\": %u\n", assumedNumClocks);
+                    append("        }");
+                }
+            } else if (kind == PROBE_KIND_STATUS) {
+                int populated = 0;
+                unsigned int firstFreq = 0;
+                unsigned int firstVolt = 0;
+                unsigned int maxFreq = 0;
+                if (layout->statusEntriesOffset + 8 <= result.size) {
+                    for (int i = 0; i < VF_NUM_POINTS; i++) {
+                        unsigned int entryOffset = layout->statusEntriesOffset + (unsigned int)i * layout->statusEntryStride;
+                        if (entryOffset + 8 > result.size) break;
+                        unsigned int freq = 0;
+                        unsigned int volt = 0;
+                        memcpy(&freq, &result.buf[entryOffset], sizeof(freq));
+                        memcpy(&volt, &result.buf[entryOffset + 4], sizeof(volt));
+                        if (freq > 0) {
+                            populated++;
+                            if (firstFreq == 0) {
+                                firstFreq = freq;
+                                firstVolt = volt;
+                            }
+                            if (freq > maxFreq) maxFreq = freq;
+                        }
+                    }
+                    append(",\n        \"assumed_status_parse\": {\n");
+                    append("          \"populated_points\": %d,\n", populated);
+                    append("          \"first_freq_khz\": %u,\n", firstFreq);
+                    append("          \"first_volt_uv\": %u,\n", firstVolt);
+                    append("          \"max_freq_khz\": %u\n", maxFreq);
+                    append("        }");
+                }
+            }
+        }
+
+        append("\n      }");
+    };
+
+    char nvapiVersion[64] = {};
+    nvapi_get_interface_version_string(nvapiVersion, sizeof(nvapiVersion));
+    SYSTEMTIME now = {};
+    GetLocalTime(&now);
+
+    struct PublicCallSummary {
+        bool found;
+        bool callable;
+        int ret;
+        char errorText[64];
+    };
+    auto run_public_summary = [&](unsigned int id, unsigned int size, unsigned int version) -> PublicCallSummary {
+        PublicCallSummary summary = {};
+        ProbeCallResult result = run_probe_call(id, size, version, PROBE_KIND_GENERIC, nullptr, nullptr, 0, false, 0);
+        summary.found = result.found;
+        summary.callable = result.callable;
+        summary.ret = result.ret;
+        StringCchCopyA(summary.errorText, ARRAY_COUNT(summary.errorText), result.errorText);
+        return summary;
+    };
+
+    const unsigned int psSizes[] = {0x0008, 0x0018, 0x0048, 0x00B0, 0x01C8, 0x0410,
+                                     0x0840, 0x1098, 0x1C94, 0x2420, 0x3000};
+    int psV2Results[ARRAY_COUNT(psSizes)] = {};
+    int psV3Results[ARRAY_COUNT(psSizes)] = {};
+    for (size_t i = 0; i < ARRAY_COUNT(psSizes); i++) {
+        PublicCallSummary v2 = run_public_summary(0x6FF81213u, psSizes[i], 2);
+        PublicCallSummary v3 = run_public_summary(0x6FF81213u, psSizes[i], 3);
+        psV2Results[i] = v2.found && v2.callable ? v2.ret : -9999;
+        psV3Results[i] = v3.found && v3.callable ? v3.ret : -9999;
+    }
+
+    int psOffsetsV2[13] = {};
+    bool psOffsetsV2Valid = false;
+    ProbeCallResult psScanV2 = run_probe_call(0x6FF81213u, 0x1CF8, 2, PROBE_KIND_GENERIC, nullptr, nullptr, 0, false, 0);
+    if (psScanV2.found && psScanV2.callable && psScanV2.ret == 0) {
+        psOffsetsV2Valid = true;
+        for (int i = 0; i < 13; i++) {
+            memcpy(&psOffsetsV2[i], &psScanV2.buf[0x30 + i * 4], sizeof(psOffsetsV2[i]));
+        }
+    }
+
+    int psOffsetsV3[13] = {};
+    bool psOffsetsV3Valid = false;
+    ProbeCallResult psScanV3 = run_probe_call(0x6FF81213u, 0x1CF8, 3, PROBE_KIND_GENERIC, nullptr, nullptr, 0, false, 0);
+    if (psScanV3.found && psScanV3.callable && psScanV3.ret == 0) {
+        psOffsetsV3Valid = true;
+        for (int i = 0; i < 13; i++) {
+            memcpy(&psOffsetsV3[i], &psScanV3.buf[0x30 + i * 4], sizeof(psOffsetsV3[i]));
+        }
+    }
+
+    PublicCallSummary powerPoliciesGetInfo = run_public_summary(0x34206D86u, 0x28, 1);
+    PublicCallSummary powerPoliciesGetStatus = run_public_summary(0x355C8B8Cu, 0x50, 1);
+    bool powerPoliciesSetStatusFound = nvapi_qi(0xAD95F5EDu) != nullptr;
+    bool pstates20SetFound = nvapi_qi(0x0F4DAE6Bu) != nullptr;
+    bool pstatesInfoExFound = nvapi_qi(0x6048B02Fu) != nullptr;
+    bool selectedSetControlFound = nvapi_qi(selected->setControlId) != nullptr;
+    bool nvmlReady = nvml_ensure_ready();
+
+    int liveGpuOffsetMHz = g_app.gpuClockOffsetkHz / 1000;
+    int liveMemOffsetMHz = mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
+    int livePowerLimitPct = g_app.powerLimitPct;
+    bool liveFanSupported = g_app.fanSupported;
+    int rawGpuOffsetMinMHz = g_app.gpuClockOffsetMinMHz;
+    int rawGpuOffsetMaxMHz = g_app.gpuClockOffsetMaxMHz;
+    int rawMemOffsetMinMHz = g_app.memClockOffsetMinMHz;
+    int rawMemOffsetMaxMHz = g_app.memClockOffsetMaxMHz;
+    int rawOffsetReadPstate = g_app.offsetReadPstate;
+    int detectedGpuOffsetMHz = g_app.gpuClockOffsetkHz / 1000;
+    int detectedMemOffsetMHz = mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
+    int detectedPowerLimitPct = g_app.powerLimitPct;
+    bool detectedFanSupported = g_app.fanSupported;
+
+    char offsetDetail[128] = {};
+    if (nvml_read_clock_offsets(offsetDetail, sizeof(offsetDetail))) {
+        liveGpuOffsetMHz = g_app.gpuClockOffsetkHz / 1000;
+        liveMemOffsetMHz = mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
+        rawGpuOffsetMinMHz = g_app.gpuClockOffsetMinMHz;
+        rawGpuOffsetMaxMHz = g_app.gpuClockOffsetMaxMHz;
+        rawMemOffsetMinMHz = g_app.memClockOffsetMinMHz;
+        rawMemOffsetMaxMHz = g_app.memClockOffsetMaxMHz;
+        rawOffsetReadPstate = g_app.offsetReadPstate;
+    }
+
+    if (nvml_read_power_limit()) {
+        livePowerLimitPct = g_app.powerLimitPct;
+    }
+
+    char fanDetail[128] = {};
+    if (nvml_read_fans(fanDetail, sizeof(fanDetail))) {
+        liveFanSupported = g_app.fanSupported;
+    }
+
+    append("{\n");
+    append("  \"tool\": "); append_json_string(APP_NAME); append(",\n");
+    append("  \"version\": "); append_json_string(APP_VERSION); append(",\n");
+    append("  \"generated_at\": \"%04u-%02u-%02uT%02u:%02u:%02u\",\n",
+        now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
+    append("  \"gpu\": {\n");
+    append("    \"name\": "); append_json_string(g_app.gpuName); append(",\n");
+    append("    \"family\": "); append_json_string(gpu_family_name(g_app.gpuFamily)); append(",\n");
+    append("    \"arch_info_valid\": %s,\n", g_app.gpuArchInfoValid ? "true" : "false");
+    append("    \"pci_info_valid\": %s,\n", g_app.gpuPciInfoValid ? "true" : "false");
+    append("    \"architecture\": \"0x%08X\",\n", g_app.gpuArchitecture);
+    append("    \"implementation\": \"0x%08X\",\n", g_app.gpuImplementation);
+    append("    \"chip_revision\": \"0x%08X\",\n", g_app.gpuChipRevision);
+    append("    \"device_id\": \"0x%08X\",\n", g_app.gpuDeviceId);
+    append("    \"subsystem_id\": \"0x%08X\",\n", g_app.gpuSubSystemId);
+    append("    \"pci_revision_id\": \"0x%08X\",\n", g_app.gpuPciRevisionId);
+    append("    \"ext_device_id\": \"0x%08X\"\n", g_app.gpuExtDeviceId);
+    append("  },\n");
+    append("  \"selected_backend\": {\n");
+    append("    \"name\": "); append_json_string(g_app.vfBackend ? g_app.vfBackend->name : "none"); append(",\n");
+    append("    \"supported\": %s,\n", (g_app.vfBackend && g_app.vfBackend->supported) ? "true" : "false");
+    append("    \"read_supported\": %s,\n", (g_app.vfBackend && g_app.vfBackend->readSupported) ? "true" : "false");
+    append("    \"write_supported\": %s,\n", (g_app.vfBackend && g_app.vfBackend->writeSupported) ? "true" : "false");
+    append("    \"best_guess_only\": %s,\n", (g_app.vfBackend && g_app.vfBackend->bestGuessOnly) ? "true" : "false");
+    append("    \"probe_layout_fallback\": %s,\n", g_app.vfBackend ? "false" : "true");
+    append("    \"get_status_id\": \"0x%08X\",\n", selected->getStatusId);
+    append("    \"get_info_id\": \"0x%08X\",\n", selected->getInfoId);
+    append("    \"get_control_id\": \"0x%08X\",\n", selected->getControlId);
+    append("    \"set_control_id\": \"0x%08X\",\n", selected->setControlId);
+    append("    \"status_buffer_size\": %u,\n", selected->statusBufferSize);
+    append("    \"info_buffer_size\": %u,\n", selected->infoBufferSize);
+    append("    \"control_buffer_size\": %u\n", selected->controlBufferSize);
+    append("  },\n");
+    append("  \"backend_layout_assumptions\": {\n");
+    append("    \"family\": "); append_json_string(gpu_family_name(selected->family)); append(",\n");
+    append("    \"supported\": %s,\n", selected->supported ? "true" : "false");
+    append("    \"read_supported\": %s,\n", selected->readSupported ? "true" : "false");
+    append("    \"write_supported\": %s,\n", selected->writeSupported ? "true" : "false");
+    append("    \"best_guess_only\": %s,\n", selected->bestGuessOnly ? "true" : "false");
+    append("    \"get_info\": {\n");
+    append("      \"id\": \"0x%08X\",\n", selected->getInfoId);
+    append("      \"buffer_size\": %u,\n", selected->infoBufferSize);
+    append("      \"version\": %u,\n", selected->infoVersion);
+    append("      \"mask_offset\": %u,\n", selected->infoMaskOffset);
+    append("      \"num_clocks_offset\": %u\n", selected->infoNumClocksOffset);
+    append("    },\n");
+    append("    \"get_status\": {\n");
+    append("      \"id\": \"0x%08X\",\n", selected->getStatusId);
+    append("      \"buffer_size\": %u,\n", selected->statusBufferSize);
+    append("      \"version\": %u,\n", selected->statusVersion);
+    append("      \"mask_offset\": %u,\n", selected->statusMaskOffset);
+    append("      \"num_clocks_offset\": %u,\n", selected->statusNumClocksOffset);
+    append("      \"entries_offset\": %u,\n", selected->statusEntriesOffset);
+    append("      \"entry_stride\": %u\n", selected->statusEntryStride);
+    append("    },\n");
+    append("    \"get_control\": {\n");
+    append("      \"id\": \"0x%08X\",\n", selected->getControlId);
+    append("      \"buffer_size\": %u,\n", selected->controlBufferSize);
+    append("      \"version\": %u,\n", selected->controlVersion);
+    append("      \"mask_offset\": %u,\n", selected->controlMaskOffset);
+    append("      \"entry_base_offset\": %u,\n", selected->controlEntryBaseOffset);
+    append("      \"entry_stride\": %u,\n", selected->controlEntryStride);
+    append("      \"entry_delta_offset\": %u\n", selected->controlEntryDeltaOffset);
+    append("    },\n");
+    append("    \"set_control\": {\n");
+    append("      \"id\": \"0x%08X\"\n", selected->setControlId);
+    append("    },\n");
+    append("    \"default_num_clocks\": %u\n", selected->defaultNumClocks);
+    append("  },\n");
+    append("  \"nvapi\": {\n");
+    append("    \"version_string\": "); append_json_string(nvapiVersion); append("\n");
+    append("  },\n");
+    append("  \"vf_seed\": {\n");
+    append("    \"selected_info_probe_ok\": %s,\n", seedInfo.ret == 0 ? "true" : "false");
+    append("    \"assumed_mask_available\": %s,\n", cachedSeedAvailable ? "true" : "false");
+    append("    \"assumed_num_clocks\": %u,\n", cachedNumClocks);
+    append("    \"assumed_mask_hex\": \"");
+    append_hex_bytes(cachedSeedAvailable ? cachedMask : ffMask, 32);
+    append("\"\n");
+    append("  },\n");
+    append("  \"live_state\": {\n");
+    append("    \"curve_loaded\": %s,\n", g_app.loaded ? "true" : "false");
+    append("    \"populated_points\": %d,\n", g_app.numPopulated);
+    append("    \"gpu_offset_mhz\": %d,\n", liveGpuOffsetMHz);
+    append("    \"mem_offset_mhz\": %d,\n", liveMemOffsetMHz);
+    append("    \"gpu_offset_range_min_mhz\": %d,\n", rawGpuOffsetMinMHz);
+    append("    \"gpu_offset_range_max_mhz\": %d,\n", rawGpuOffsetMaxMHz);
+    append("    \"mem_offset_range_min_mhz\": %d,\n", rawMemOffsetMinMHz);
+    append("    \"mem_offset_range_max_mhz\": %d,\n", rawMemOffsetMaxMHz);
+    append("    \"offset_read_pstate\": %d,\n", rawOffsetReadPstate);
+    append("    \"power_limit_pct\": %d,\n", livePowerLimitPct);
+    append("    \"fan_supported\": %s\n", liveFanSupported ? "true" : "false");
+    append("  },\n");
+    append("  \"detected_state\": {\n");
+    append("    \"gpu_offset_mhz\": %d,\n", detectedGpuOffsetMHz);
+    append("    \"mem_offset_mhz\": %d,\n", detectedMemOffsetMHz);
+    append("    \"power_limit_pct\": %d,\n", detectedPowerLimitPct);
+    append("    \"fan_supported\": %s\n", detectedFanSupported ? "true" : "false");
+    append("  },\n");
+    append("  \"nvml_capabilities\": {\n");
+    append("    \"ready\": %s,\n", nvmlReady ? "true" : "false");
+    append("    \"get_power_limit\": %s,\n", g_nvml_api.getPowerLimit ? "true" : "false");
+    append("    \"get_power_default_limit\": %s,\n", g_nvml_api.getPowerDefaultLimit ? "true" : "false");
+    append("    \"get_power_constraints\": %s,\n", g_nvml_api.getPowerConstraints ? "true" : "false");
+    append("    \"set_power_limit\": %s,\n", g_nvml_api.setPowerLimit ? "true" : "false");
+    append("    \"get_clock_offsets\": %s,\n", g_nvml_api.getClockOffsets ? "true" : "false");
+    append("    \"set_clock_offsets\": %s,\n", g_nvml_api.setClockOffsets ? "true" : "false");
+    append("    \"get_perf_state\": %s,\n", g_nvml_api.getPerformanceState ? "true" : "false");
+    append("    \"get_gpc_clk_vf_offset\": %s,\n", g_nvml_api.getGpcClkVfOffset ? "true" : "false");
+    append("    \"get_mem_clk_vf_offset\": %s,\n", g_nvml_api.getMemClkVfOffset ? "true" : "false");
+    append("    \"get_gpc_clk_minmax_vf_offset\": %s,\n", g_nvml_api.getGpcClkMinMaxVfOffset ? "true" : "false");
+    append("    \"get_mem_clk_minmax_vf_offset\": %s,\n", g_nvml_api.getMemClkMinMaxVfOffset ? "true" : "false");
+    append("    \"set_gpc_clk_vf_offset\": %s,\n", g_nvml_api.setGpcClkVfOffset ? "true" : "false");
+    append("    \"set_mem_clk_vf_offset\": %s,\n", g_nvml_api.setMemClkVfOffset ? "true" : "false");
+    append("    \"get_num_fans\": %s,\n", g_nvml_api.getNumFans ? "true" : "false");
+    append("    \"get_minmax_fan_speed\": %s,\n", g_nvml_api.getMinMaxFanSpeed ? "true" : "false");
+    append("    \"get_fan_control_policy\": %s,\n", g_nvml_api.getFanControlPolicy ? "true" : "false");
+    append("    \"set_fan_control_policy\": %s,\n", g_nvml_api.setFanControlPolicy ? "true" : "false");
+    append("    \"get_fan_speed\": %s,\n", g_nvml_api.getFanSpeed ? "true" : "false");
+    append("    \"get_target_fan_speed\": %s,\n", g_nvml_api.getTargetFanSpeed ? "true" : "false");
+    append("    \"get_fan_speed_rpm\": %s,\n", g_nvml_api.getFanSpeedRpm ? "true" : "false");
+    append("    \"set_fan_speed\": %s,\n", g_nvml_api.setFanSpeed ? "true" : "false");
+    append("    \"set_default_fan_speed\": %s,\n", g_nvml_api.setDefaultFanSpeed ? "true" : "false");
+    append("    \"get_cooler_info\": %s,\n", g_nvml_api.getCoolerInfo ? "true" : "false");
+    append("    \"get_temperature\": %s,\n", g_nvml_api.getTemperature ? "true" : "false");
+    append("    \"get_clock\": %s,\n", g_nvml_api.getClock ? "true" : "false");
+    append("    \"get_max_clock\": %s\n", g_nvml_api.getMaxClock ? "true" : "false");
+    append("  },\n");
+    append("  \"public_probe\": {\n");
+    append("    \"power_policies_get_info\": {\n");
+    append("      \"found\": %s,\n", powerPoliciesGetInfo.found ? "true" : "false");
+    append("      \"callable\": %s,\n", powerPoliciesGetInfo.callable ? "true" : "false");
+    append("      \"result\": %d,\n", powerPoliciesGetInfo.ret);
+    append("      \"result_text\": "); append_json_string(powerPoliciesGetInfo.errorText[0] ? powerPoliciesGetInfo.errorText : (powerPoliciesGetInfo.ret == 0 ? "NVAPI_OK" : "")); append("\n");
+    append("    },\n");
+    append("    \"power_policies_get_status\": {\n");
+    append("      \"found\": %s,\n", powerPoliciesGetStatus.found ? "true" : "false");
+    append("      \"callable\": %s,\n", powerPoliciesGetStatus.callable ? "true" : "false");
+    append("      \"result\": %d,\n", powerPoliciesGetStatus.ret);
+    append("      \"result_text\": "); append_json_string(powerPoliciesGetStatus.errorText[0] ? powerPoliciesGetStatus.errorText : (powerPoliciesGetStatus.ret == 0 ? "NVAPI_OK" : "")); append("\n");
+    append("    },\n");
+    append("    \"power_policies_set_status_found\": %s,\n", powerPoliciesSetStatusFound ? "true" : "false");
+    append("    \"pstates20_set_found\": %s,\n", pstates20SetFound ? "true" : "false");
+    append("    \"pstates_info_ex_found\": %s,\n", pstatesInfoExFound ? "true" : "false");
+    append("    \"selected_set_control_found\": %s,\n", selectedSetControlFound ? "true" : "false");
+    append("    \"pstates20_sizes\": [\n");
+    for (size_t i = 0; i < ARRAY_COUNT(psSizes); i++) {
+        append("      {\"size\": %u, \"v2_result\": %d, \"v3_result\": %d}%s\n",
+            psSizes[i], psV2Results[i], psV3Results[i], (i + 1 < ARRAY_COUNT(psSizes)) ? "," : "");
+    }
+    append("    ],\n");
+    append("    \"pstates20_offset_scan_v2\": {\n");
+    for (int i = 0; i < 13; i++) {
+        unsigned int offset = 0x30u + (unsigned int)i * 4u;
+        append("      \"0x%03X\": %d%s\n", offset, psOffsetsV2Valid ? psOffsetsV2[i] : 0, (i < 12) ? "," : "");
+    }
+    append("    },\n");
+    append("    \"pstates20_offset_scan_v2_valid\": %s,\n", psOffsetsV2Valid ? "true" : "false");
+    append("    \"pstates20_offset_scan_v3\": {\n");
+    for (int i = 0; i < 13; i++) {
+        unsigned int offset = 0x30u + (unsigned int)i * 4u;
+        append("      \"0x%03X\": %d%s\n", offset, psOffsetsV3Valid ? psOffsetsV3[i] : 0, (i < 12) ? "," : "");
+    }
+    append("    },\n");
+    append("    \"pstates20_offset_scan_v3_valid\": %s\n", psOffsetsV3Valid ? "true" : "false");
+    append("  },\n");
+    const unsigned char* selectedMaskSeed = cachedSeedAvailable ? cachedMask : ffMask;
+    const char* selectedMaskSeedSource = cachedSeedAvailable ? "cached_get_info_mask" : "ff_mask_fallback";
+    unsigned int selectedNumClocksSeed = cachedSeedAvailable ? cachedNumClocks : selected->defaultNumClocks;
+
+    append("  \"control_layout_probe\": {\n");
+    ProbeCallResult controlSeed = run_probe_call(selected->getControlId, selected->controlBufferSize, selected->controlVersion,
+        PROBE_KIND_CONTROL, selected, selectedMaskSeed, sizeof(cachedMask), false, 0);
+    if (controlSeed.ret == 0) {
+        int controlPreviewCount = 16;
+        append("    \"current_assumption\": {\n");
+        append("      \"entry_base_offset\": %u,\n", selected->controlEntryBaseOffset);
+        append("      \"entry_stride\": %u,\n", selected->controlEntryStride);
+        append("      \"entry_delta_offset\": %u,\n", selected->controlEntryDeltaOffset);
+        append("      \"first_deltas\": [");
+        for (int i = 0; i < controlPreviewCount; i++) {
+            unsigned int deltaOffset = selected->controlEntryBaseOffset + (unsigned int)i * selected->controlEntryStride + selected->controlEntryDeltaOffset;
+            int delta = 0;
+            if (deltaOffset + sizeof(delta) <= controlSeed.size) memcpy(&delta, &controlSeed.buf[deltaOffset], sizeof(delta));
+            append("%s%d", i ? ", " : "", delta);
+        }
+        append("]\n");
+        append("    },\n");
+
+        append("    \"candidate_layouts\": [\n");
+        bool firstCandidate = true;
+        unsigned int candidateStrides[] = { 24, 28, 32, 36, 40 };
+        unsigned int candidateBases[] = { 32, 44, 56, 68, 80 };
+        unsigned int candidateDeltaOffsets[] = { 8, 12, 16, 20, 24, 28 };
+        for (unsigned int stride : candidateStrides) {
+            for (unsigned int baseOffset : candidateBases) {
+                for (unsigned int deltaOffset : candidateDeltaOffsets) {
+                    int deltas[8] = {};
+                    bool inRange = true;
+                    int minDelta = 0;
+                    int maxDelta = 0;
+                    for (int i = 0; i < 8; i++) {
+                        unsigned int offset = baseOffset + (unsigned int)i * stride + deltaOffset;
+                        if (offset + sizeof(int) > controlSeed.size) {
+                            inRange = false;
+                            break;
+                        }
+                        memcpy(&deltas[i], &controlSeed.buf[offset], sizeof(int));
+                        if (i == 0 || deltas[i] < minDelta) minDelta = deltas[i];
+                        if (i == 0 || deltas[i] > maxDelta) maxDelta = deltas[i];
+                    }
+                    if (!inRange) continue;
+                    if (minDelta < -1500000 || maxDelta > 1500000) continue;
+                    append(firstCandidate ? "" : ",\n");
+                    firstCandidate = false;
+                    append("      {\n");
+                    append("        \"entry_base_offset\": %u,\n", baseOffset);
+                    append("        \"entry_stride\": %u,\n", stride);
+                    append("        \"entry_delta_offset\": %u,\n", deltaOffset);
+                    append("        \"first_deltas\": [");
+                    for (int i = 0; i < 8; i++) append("%s%d", i ? ", " : "", deltas[i]);
+                    append("]\n");
+                    append("      }");
+                }
+            }
+        }
+        append("\n    ]\n");
+    } else {
+        append("    \"error\": \"selected get_control probe failed\"\n");
+    }
+    append("  },\n");
+    append("  \"vf_probe\": [\n");
+
+    append_probe_result("selected_get_info", selected->getInfoId, selected->infoBufferSize, selected->infoVersion,
+        PROBE_KIND_INFO, selected, "ff_mask_seed", ffMask, sizeof(ffMask), false, 0, true);
+    append(",\n");
+    append_probe_result("selected_get_info_v2", selected->getInfoId, selected->infoBufferSize, 2,
+        PROBE_KIND_INFO, selected, "ff_mask_seed", ffMask, sizeof(ffMask), false, 0, false);
+    append(",\n");
+    append_probe_result("selected_get_info_alt_size_minus_4", selected->getInfoId, selected->infoBufferSize >= 4 ? (selected->infoBufferSize - 4) : selected->infoBufferSize, selected->infoVersion,
+        PROBE_KIND_INFO, selected, "ff_mask_seed", ffMask, sizeof(ffMask), false, 0, false);
+    append(",\n");
+    append_probe_result("selected_get_info_alt_size_plus_4", selected->getInfoId, selected->infoBufferSize + 4, selected->infoVersion,
+        PROBE_KIND_INFO, selected, "ff_mask_seed", ffMask, sizeof(ffMask), false, 0, false);
+    append(",\n");
+    append_probe_result("selected_get_status_ff_seed", selected->getStatusId, selected->statusBufferSize, selected->statusVersion,
+        PROBE_KIND_STATUS, selected, "ff_mask_seed", ffMask, sizeof(ffMask), true, selected->defaultNumClocks, false);
+    append(",\n");
+    append_probe_result("selected_get_status_cached_seed", selected->getStatusId, selected->statusBufferSize, selected->statusVersion,
+        PROBE_KIND_STATUS, selected, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), true, selectedNumClocksSeed, true);
+    append(",\n");
+    append_probe_result("selected_get_control_ff_seed", selected->getControlId, selected->controlBufferSize, selected->controlVersion,
+        PROBE_KIND_CONTROL, selected, "ff_mask_seed", ffMask, sizeof(ffMask), false, 0, false);
+    append(",\n");
+    append_probe_result("selected_get_control_cached_seed", selected->getControlId, selected->controlBufferSize, selected->controlVersion,
+        PROBE_KIND_CONTROL, selected, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), false, 0, true);
+    append(",\n");
+    append_probe_result("selected_get_status_cached_seed_v2", selected->getStatusId, selected->statusBufferSize, 2,
+        PROBE_KIND_STATUS, selected, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), true, selectedNumClocksSeed, false);
+    append(",\n");
+    append_probe_result("selected_get_control_cached_seed_v2", selected->getControlId, selected->controlBufferSize, 2,
+        PROBE_KIND_CONTROL, selected, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), false, 0, false);
+    append(",\n");
+    append_probe_result("selected_get_status_cached_seed_alt_size_minus_4", selected->getStatusId, selected->statusBufferSize >= 4 ? (selected->statusBufferSize - 4) : selected->statusBufferSize, selected->statusVersion,
+        PROBE_KIND_STATUS, selected, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), true, selectedNumClocksSeed, false);
+    append(",\n");
+    append_probe_result("selected_get_status_cached_seed_alt_size_plus_4", selected->getStatusId, selected->statusBufferSize + 4, selected->statusVersion,
+        PROBE_KIND_STATUS, selected, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), true, selectedNumClocksSeed, false);
+    append(",\n");
+    append_probe_result("blackwell_get_status_cached_seed", g_vfBackendBlackwell.getStatusId, g_vfBackendBlackwell.statusBufferSize, g_vfBackendBlackwell.statusVersion,
+        PROBE_KIND_STATUS, &g_vfBackendBlackwell, selectedMaskSeedSource, selectedMaskSeed, sizeof(cachedMask), true, selectedNumClocksSeed, false);
+    append("\n  ]\n");
+    append("}\n");
 
     bool ok = write_text_file_atomic(path, json, used, err, errSize);
     free(json);
@@ -2354,6 +3356,14 @@ static bool parse_cli_options(LPWSTR cmdLine, CliOptions* opts) {
                 return false;
             }
             opts->hasConfigPath = true;
+        } else if (wcscmp(arg, L"--probe-output") == 0) {
+            opts->recognized = true;
+            if (i + 1 >= argc || !copy_wide_to_utf8(argv[++i], opts->probeOutputPath, MAX_PATH)) {
+                set_message(opts->error, sizeof(opts->error), "Invalid --probe-output path");
+                LocalFree(argv);
+                return false;
+            }
+            opts->hasProbeOutputPath = true;
         } else if (wcscmp(arg, L"--gpu-offset") == 0) {
             opts->recognized = true;
             int v = 0;
@@ -2817,28 +3827,38 @@ static bool refresh_global_state(char* detail, size_t detailSize) {
 }
 
 static bool nvapi_get_vf_info_cached(unsigned char* maskOut, unsigned int* numClocksOut) {
+    const VfBackendSpec* backend = g_app.vfBackend;
+    if (!backend) return false;
+
     if (!g_app.vfInfoCached) {
         memset(g_app.vfMask, 0, sizeof(g_app.vfMask));
         memset(g_app.vfMask, 0xFF, 16);
-        g_app.vfNumClocks = 15;
+        g_app.vfNumClocks = backend->defaultNumClocks;
 
-        auto getInfo = (NvApiFunc)nvapi_qi(VF_GET_INFO_ID);
+        auto getInfo = (NvApiFunc)nvapi_qi(backend->getInfoId);
         if (getInfo) {
-            unsigned char ibuf[0x182C] = {};
-            const unsigned int version = (1u << 16) | 0x182C;
+            unsigned char ibuf[0x4000] = {};
+            if (backend->infoBufferSize > sizeof(ibuf)) return false;
+            const unsigned int version = (backend->infoVersion << 16) | backend->infoBufferSize;
             memcpy(&ibuf[0], &version, sizeof(version));
-            memset(&ibuf[4], 0xFF, 32);
+            if (backend->infoMaskOffset + sizeof(g_app.vfMask) <= backend->infoBufferSize) {
+                memset(&ibuf[backend->infoMaskOffset], 0xFF, sizeof(g_app.vfMask));
+            }
             if (getInfo(g_app.gpuHandle, ibuf) == 0) {
-                memcpy(g_app.vfMask, &ibuf[4], sizeof(g_app.vfMask));
-                memcpy(&g_app.vfNumClocks, &ibuf[0x14], sizeof(g_app.vfNumClocks));
-                if (g_app.vfNumClocks == 0) g_app.vfNumClocks = 15;
+                if (backend->infoMaskOffset + sizeof(g_app.vfMask) <= backend->infoBufferSize) {
+                    memcpy(g_app.vfMask, &ibuf[backend->infoMaskOffset], sizeof(g_app.vfMask));
+                }
+                if (backend->infoNumClocksOffset + sizeof(g_app.vfNumClocks) <= backend->infoBufferSize) {
+                    memcpy(&g_app.vfNumClocks, &ibuf[backend->infoNumClocksOffset], sizeof(g_app.vfNumClocks));
+                }
+                if (g_app.vfNumClocks == 0) g_app.vfNumClocks = backend->defaultNumClocks;
             }
         }
         g_app.vfInfoCached = true;
     }
 
     if (maskOut) memcpy(maskOut, g_app.vfMask, sizeof(g_app.vfMask));
-    if (numClocksOut) *numClocksOut = g_app.vfNumClocks ? g_app.vfNumClocks : 15;
+    if (numClocksOut) *numClocksOut = g_app.vfNumClocks ? g_app.vfNumClocks : backend->defaultNumClocks;
     return true;
 }
 
@@ -2879,24 +3899,29 @@ static bool get_curve_offset_range_khz(int* minkHz, int* maxkHz) {
 }
 
 static bool nvapi_read_control_table(unsigned char* buf, size_t bufSize) {
-    const unsigned int CTRL_SIZE = 0x2420;
-    if (!buf || bufSize < CTRL_SIZE) return false;
+    const VfBackendSpec* backend = g_app.vfBackend;
+    if (!backend) return false;
+    if (!buf || bufSize < backend->controlBufferSize) return false;
 
-    auto getFunc = (NvApiFunc)nvapi_qi(VF_GET_CONTROL_ID);
+    auto getFunc = (NvApiFunc)nvapi_qi(backend->getControlId);
     if (!getFunc) return false;
 
     unsigned char mask[32] = {};
-    nvapi_get_vf_info_cached(mask, nullptr);
+    if (!nvapi_get_vf_info_cached(mask, nullptr)) return false;
 
-    memset(buf, 0, CTRL_SIZE);
-    const unsigned int version = (1u << 16) | CTRL_SIZE;
+    memset(buf, 0, backend->controlBufferSize);
+    const unsigned int version = (backend->controlVersion << 16) | backend->controlBufferSize;
     memcpy(&buf[0], &version, sizeof(version));
-    memcpy(&buf[4], mask, sizeof(mask));
+    if (backend->controlMaskOffset + sizeof(mask) > backend->controlBufferSize) return false;
+    memcpy(&buf[backend->controlMaskOffset], mask, sizeof(mask));
     return getFunc(g_app.gpuHandle, buf) == 0;
 }
 
 static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* pointMask, int maxBatchPasses) {
     if (!targetOffsets || !pointMask) return false;
+
+    const VfBackendSpec* backend = g_app.vfBackend;
+    if (!backend || !backend->writeSupported) return false;
 
     bool desiredMask[VF_NUM_POINTS] = {};
     int desiredOffsets[VF_NUM_POINTS] = {};
@@ -2915,10 +3940,11 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
 
     if (maxBatchPasses < 1) maxBatchPasses = 1;
 
-    auto setFunc = (NvApiFunc)nvapi_qi(VF_SET_CONTROL_ID);
+    auto setFunc = (NvApiFunc)nvapi_qi(backend->setControlId);
     if (!setFunc) return false;
 
-    unsigned char baseControl[0x2420] = {};
+    unsigned char baseControl[0x4000] = {};
+    if (backend->controlBufferSize > sizeof(baseControl)) return false;
     if (!nvapi_read_control_table(baseControl, sizeof(baseControl))) return false;
 
     bool anyWrite = false;
@@ -2930,27 +3956,29 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
     bool batchFailed = false;
     if (!allowBatch) maxBatchPasses = 0;
     for (int pass = 0; pass < maxBatchPasses; pass++) {
-        unsigned char buf[0x2420] = {};
-        memcpy(buf, baseControl, sizeof(buf));
+        unsigned char buf[0x4000] = {};
+        memcpy(buf, baseControl, backend->controlBufferSize);
 
         unsigned char writeMask[32] = {};
         bool anyPendingWrite = false;
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             if (!pendingMask[i]) continue;
             int currentDelta = 0;
-            memcpy(&currentDelta, &buf[0x44 + i * 0x24 + 0x14], sizeof(currentDelta));
+            unsigned int deltaOffset = backend->controlEntryBaseOffset + (unsigned int)i * backend->controlEntryStride + backend->controlEntryDeltaOffset;
+            if (deltaOffset + sizeof(currentDelta) > backend->controlBufferSize) return false;
+            memcpy(&currentDelta, &buf[deltaOffset], sizeof(currentDelta));
             if (currentDelta == desiredOffsets[i]) {
                 pendingMask[i] = false;
                 continue;
             }
-            memcpy(&buf[0x44 + i * 0x24 + 0x14], &desiredOffsets[i], sizeof(desiredOffsets[i]));
+            memcpy(&buf[deltaOffset], &desiredOffsets[i], sizeof(desiredOffsets[i]));
             writeMask[i / 8] |= (unsigned char)(1u << (i % 8));
             anyPendingWrite = true;
         }
 
         if (!anyPendingWrite) break;
 
-        memcpy(&buf[4], writeMask, sizeof(writeMask));
+        memcpy(&buf[backend->controlMaskOffset], writeMask, sizeof(writeMask));
         int setRet = setFunc(g_app.gpuHandle, buf);
         debug_log("curve batch pass %d: points=%d ret=%d\n", pass + 1, desiredCount, setRet);
         if (setRet != 0) {
@@ -2977,7 +4005,9 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
             if (!desiredMask[i]) continue;
             pendingMask[i] = (g_app.freqOffsets[i] != desiredOffsets[i]);
             if (pendingMask[i]) anyPending = true;
-            memcpy(&baseControl[0x44 + i * 0x24 + 0x14], &g_app.freqOffsets[i], sizeof(g_app.freqOffsets[i]));
+            unsigned int deltaOffset = backend->controlEntryBaseOffset + (unsigned int)i * backend->controlEntryStride + backend->controlEntryDeltaOffset;
+            if (deltaOffset + sizeof(g_app.freqOffsets[i]) > backend->controlBufferSize) return false;
+            memcpy(&baseControl[deltaOffset], &g_app.freqOffsets[i], sizeof(g_app.freqOffsets[i]));
         }
         if (!anyPending) break;
     }

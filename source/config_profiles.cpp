@@ -680,7 +680,7 @@ static bool maybe_confirm_profile_load_replace(int slot) {
     initialize_desired_settings_defaults(&targetFull);
     targetFull.hasGpuOffset = true;
     targetFull.gpuOffsetMHz = current_applied_gpu_offset_mhz();
-    targetFull.gpuOffsetExcludeLow70 = g_app.appliedGpuOffsetExcludeLow70;
+    targetFull.gpuOffsetExcludeLow70 = current_applied_gpu_offset_excludes_low_points();
     targetFull.hasMemOffset = true;
     targetFull.memOffsetMHz = mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
     targetFull.hasPowerLimit = true;

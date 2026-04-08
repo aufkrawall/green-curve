@@ -1,10 +1,18 @@
 #ifndef GREEN_CURVE_APP_SHARED_H
 #define GREEN_CURVE_APP_SHARED_H
 
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
+#ifndef _WIN32_IE
+#define _WIN32_IE 0x0600
+#endif
+
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 
+#include <commctrl.h>
 #include <shellapi.h>
 #include <strsafe.h>
 #include <ctype.h>
@@ -26,17 +34,13 @@ int dp(int px);
 void init_dpi();
 
 #define VF_NUM_POINTS       128
-#define VF_ENTRY_STRIDE     0x1C
-#define VF_BUFFER_SIZE      0x1C28
-#define VF_ENTRIES_OFFSET   0x48
-
-#define VF_GET_STATUS_ID    0x21537AD4u
-#define VF_GET_INFO_ID      0x507B4B59u
-#define VF_GET_CONTROL_ID   0x23F1B133u
-#define VF_SET_CONTROL_ID   0x0733E009u
 #define NVAPI_INIT_ID       0x0150E828u
 #define NVAPI_ENUM_GPU_ID   0xE5AC921Fu
 #define NVAPI_GET_NAME_ID   0xCEEE8E9Fu
+#define NVAPI_GET_INTERFACE_VERSION_STRING_ID 0x01053FA5u
+#define NVAPI_GET_ERROR_MESSAGE_ID 0x6C2D048Cu
+#define NVAPI_GPU_GET_PCI_IDENTIFIERS_ID 0x2DDFB66Eu
+#define NVAPI_GPU_GET_ARCH_INFO_ID 0xD8265D24u
 
 #define WINDOW_WIDTH        1180
 #define WINDOW_HEIGHT       800
@@ -47,7 +51,7 @@ void init_dpi();
 #define TRAY_ICON_FAN_ID    113
 #define TRAY_ICON_OC_FAN_ID 114
 #define APP_NAME            "Green Curve"
-#define APP_VERSION         "0.6"
+#define APP_VERSION         "0.7"
 #define APP_TITLE           APP_NAME " v" APP_VERSION
 #define APP_CLASS_NAME      "GreenCurveClass"
 #define APP_EXE_NAME        "greencurve.exe"
@@ -285,6 +289,63 @@ typedef struct {
 #define NVAPI_PERF_PSTATES20_INFO_VER2 NVAPI_STRUCT_VERSION(nvapiPerfPstates20Info_t, 2)
 #define NVAPI_PERF_PSTATES20_INFO_VER3 NVAPI_STRUCT_VERSION(nvapiPerfPstates20Info_t, 3)
 
+typedef enum {
+    NV_GPU_ARCHITECTURE_UNKNOWN = 0,
+    NV_GPU_ARCHITECTURE_GP100 = 0x00000130,
+    NV_GPU_ARCHITECTURE_TU100 = 0x00000160,
+    NV_GPU_ARCHITECTURE_GA100 = 0x00000170,
+    NV_GPU_ARCHITECTURE_AD100 = 0x00000190,
+    NV_GPU_ARCHITECTURE_GB200 = 0x000001B0,
+} NvGpuArchitectureId;
+
+typedef struct {
+    unsigned int version;
+    unsigned int architecture;
+    unsigned int implementation;
+    unsigned int revision;
+} nvapiGpuArchInfo_t;
+
+#define NVAPI_GPU_ARCH_INFO_VER2 NVAPI_STRUCT_VERSION(nvapiGpuArchInfo_t, 2)
+
+typedef enum {
+    GPU_FAMILY_UNKNOWN = 0,
+    GPU_FAMILY_PASCAL = 1,
+    GPU_FAMILY_TURING = 2,
+    GPU_FAMILY_AMPERE = 3,
+    GPU_FAMILY_LOVELACE = 4,
+    GPU_FAMILY_BLACKWELL = 5,
+} GpuFamily;
+
+typedef struct {
+    const char* name;
+    GpuFamily family;
+    bool supported;
+    bool readSupported;
+    bool writeSupported;
+    bool bestGuessOnly;
+    unsigned int getStatusId;
+    unsigned int getInfoId;
+    unsigned int getControlId;
+    unsigned int setControlId;
+    unsigned int statusBufferSize;
+    unsigned int statusVersion;
+    unsigned int statusMaskOffset;
+    unsigned int statusNumClocksOffset;
+    unsigned int statusEntriesOffset;
+    unsigned int statusEntryStride;
+    unsigned int infoBufferSize;
+    unsigned int infoVersion;
+    unsigned int infoMaskOffset;
+    unsigned int infoNumClocksOffset;
+    unsigned int controlBufferSize;
+    unsigned int controlVersion;
+    unsigned int controlMaskOffset;
+    unsigned int controlEntryBaseOffset;
+    unsigned int controlEntryStride;
+    unsigned int controlEntryDeltaOffset;
+    unsigned int defaultNumClocks;
+} VfBackendSpec;
+
 struct VFCurvePoint {
     unsigned int freq_kHz;
     unsigned int volt_uV;
@@ -356,6 +417,17 @@ struct AppData {
     GPU_HANDLE gpuHandle;
     char gpuName[256];
     char configPath[MAX_PATH];
+    unsigned int gpuArchitecture;
+    unsigned int gpuImplementation;
+    unsigned int gpuChipRevision;
+    unsigned int gpuDeviceId;
+    unsigned int gpuSubSystemId;
+    unsigned int gpuPciRevisionId;
+    unsigned int gpuExtDeviceId;
+    bool gpuArchInfoValid;
+    bool gpuPciInfoValid;
+    GpuFamily gpuFamily;
+    const VfBackendSpec* vfBackend;
 
     bool nvmlReady;
     nvmlDevice_t nvmlDevice;
@@ -477,12 +549,14 @@ struct CliOptions {
     bool dump;
     bool json;
     bool probe;
+    bool hasProbeOutputPath;
     bool reset;
     bool saveConfig;
     bool applyConfig;
     bool logonStart;
     bool hasConfigPath;
     char configPath[MAX_PATH];
+    char probeOutputPath[MAX_PATH];
     char error[256];
     DesiredSettings desired;
 };
