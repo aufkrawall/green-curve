@@ -583,7 +583,8 @@ static void destroy_edit_controls(HWND hParent) {
             && id != PROFILE_COMBO_ID && id != PROFILE_LOAD_ID && id != PROFILE_SAVE_ID && id != PROFILE_CLEAR_ID
             && id != APP_LAUNCH_COMBO_ID && id != LOGON_COMBO_ID
             && id != PROFILE_LABEL_ID && id != PROFILE_STATE_ID && id != APP_LAUNCH_LABEL_ID
-            && id != LOGON_LABEL_ID && id != PROFILE_STATUS_ID && id != START_ON_LOGON_CHECK_ID) {
+            && id != LOGON_LABEL_ID && id != PROFILE_STATUS_ID && id != START_ON_LOGON_CHECK_ID
+            && id != LOGON_HINT_ID) {
             DestroyWindow(child);
         }
         child = next;
@@ -834,6 +835,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             } else if (LOWORD(wParam) == START_ON_LOGON_CHECK_ID && HIWORD(wParam) == BN_CLICKED) {
                 bool enabled = SendMessageA(g_app.hStartOnLogonCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
                 bool previous = is_start_on_logon_enabled(g_app.configPath);
+                int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
+                if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
                 char err[256] = {};
                 if (!set_start_on_logon_enabled(g_app.configPath, enabled) ||
                     !set_startup_task_enabled(should_enable_startup_task_from_config(g_app.configPath), err, sizeof(err))) {
@@ -843,9 +846,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     break;
                 }
                 refresh_profile_controls_from_config();
-                set_profile_status_text(enabled
-                    ? "Green Curve will start hidden in the tray at Windows logon."
-                    : "Program start at Windows logon disabled.");
+                if (enabled) {
+                    set_profile_status_text(logonSlot > 0
+                        ? "At Windows logon, slot %d will be applied and Green Curve will start hidden in the tray."
+                        : "Green Curve will start hidden in the tray at Windows logon.",
+                        logonSlot);
+                } else {
+                    set_profile_status_text(logonSlot > 0
+                        ? "At Windows logon, slot %d will be applied silently without showing the tray icon."
+                        : "Program start at Windows logon disabled.",
+                        logonSlot);
+                }
             } else if (LOWORD(wParam) == PROFILE_COMBO_ID && HIWORD(wParam) == CBN_SELCHANGE) {
                 int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
                 if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
@@ -949,11 +960,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         refresh_profile_controls_from_config();
                         break;
                     }
-                    bool residentRuntimeRequired = logon_profile_requires_resident_runtime(g_app.configPath);
+                    bool startProgramAtLogon = is_start_on_logon_enabled(g_app.configPath);
                     set_profile_status_text(slot > 0
-                        ? (residentRuntimeRequired
-                            ? "At Windows logon, slot %d will be applied and the program will stay running hidden because it uses custom fan control."
-                            : "At Windows logon, slot %d will be applied automatically.")
+                        ? (startProgramAtLogon
+                            ? "At Windows logon, slot %d will be applied and Green Curve will start hidden in the tray."
+                            : "At Windows logon, slot %d will be applied silently without showing the tray icon.")
                         : "Windows logon auto-apply disabled.", slot);
                 } else {
                     set_config_int(g_app.configPath, "profiles", key, slot);

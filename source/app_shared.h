@@ -51,7 +51,7 @@ void init_dpi();
 #define TRAY_ICON_FAN_ID    113
 #define TRAY_ICON_OC_FAN_ID 114
 #define APP_NAME            "Green Curve"
-#define APP_VERSION         "0.7"
+#define APP_VERSION         "0.8"
 #define APP_TITLE           APP_NAME " v" APP_VERSION
 #define APP_CLASS_NAME      "GreenCurveClass"
 #define APP_EXE_NAME        "greencurve.exe"
@@ -80,6 +80,7 @@ void init_dpi();
 #define FAN_MODE_COMBO_ID   2032
 #define FAN_CURVE_BTN_ID    2033
 #define GPU_OFFSET_EXCLUDE_LOW_CHECK_ID 2034
+#define LOGON_HINT_ID       2035
 #define LOCK_BASE_ID        3000
 #define GPU_OFFSET_ID       2010
 #define MEM_OFFSET_ID       2011
@@ -405,6 +406,7 @@ struct AppData {
     HWND hLogonLabel;
     HWND hProfileStatusLabel;
     HWND hStartOnLogonCheck;
+    HWND hLogonHintLabel;
 
     HBRUSH hWindowClassBrush;
     HANDLE hStartupSyncThread;

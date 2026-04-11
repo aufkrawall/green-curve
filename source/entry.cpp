@@ -174,6 +174,13 @@ static bool handle_cli(LPWSTR wCmdLine) {
             }
         }
         merge_desired_settings(&cfg, &opts.desired);
+        if (cfg.hasFan && cfg.fanMode != FAN_MODE_AUTO) {
+            cfg.fanMode = FAN_MODE_AUTO;
+            cfg.fanAuto = true;
+            cfg.fanPercent = 0;
+            fan_curve_set_default(&cfg.fanCurve);
+            CLI_LOG("Note: silent one-shot logon apply leaves fan control on driver auto when the tray app is not running.\n");
+        }
         char result[512] = {};
         bool ok = apply_desired_settings(&cfg, false, result, sizeof(result));
         CLI_LOG("%s\n", result);
@@ -795,6 +802,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
         0, 0, dp(320), dp(24),
         g_app.hMainWnd, (HMENU)(INT_PTR)START_ON_LOGON_CHECK_ID, hInstance, nullptr
+    );
+
+    g_app.hLogonHintLabel = CreateWindowExA(
+        0, "STATIC",
+        "Starts silently without tray icon or window when apply on log in is activated without above tray checkbox ticked.\r\nWithout tray runtime, custom fan modes fall back to driver auto.",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        0, 0, dp(900), dp(34),
+        g_app.hMainWnd, (HMENU)(INT_PTR)LOGON_HINT_ID, hInstance, nullptr
     );
 
     layout_bottom_buttons(g_app.hMainWnd);
