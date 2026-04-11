@@ -1,4 +1,4 @@
-static int fan_curve_dialog_combo_value(HWND combo, int fallback) {
+﻿static int fan_curve_dialog_combo_value(HWND combo, int fallback) {
     if (!combo) return fallback;
     int sel = (int)SendMessageA(combo, CB_GETCURSEL, 0, 0);
     if (sel < 0) return fallback;

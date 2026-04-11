@@ -1,4 +1,4 @@
-// Green Curve v0.7 - NVIDIA VF Curve Editor
+﻿// Green Curve v0.7 - NVIDIA VF Curve Editor
 // Win32 GDI application
 
 #include "app_shared.h"
