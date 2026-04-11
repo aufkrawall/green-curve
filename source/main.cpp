@@ -1,4 +1,4 @@
-// Green Curve v0.7 - NVIDIA VF Curve Editor
+﻿// Green Curve v0.7 - NVIDIA VF Curve Editor
 // Win32 GDI application
 
 #include "app_shared.h"
@@ -139,6 +139,8 @@ static bool nvml_read_temperature(int* temperatureC, char* detail, size_t detail
 static bool nvml_read_power_limit();
 static bool nvml_read_clock_offsets(char* detail, size_t detailSize);
 static bool nvml_read_fans(char* detail, size_t detailSize);
+static bool is_apply_and_exit_enabled(const char* path);
+static bool set_apply_and_exit_enabled(const char* path, bool enabled);
 static bool is_start_on_logon_enabled(const char* path);
 static bool set_start_on_logon_enabled(const char* path, bool enabled);
 static bool should_enable_startup_task_from_config(const char* path);
@@ -303,6 +305,12 @@ static const VfBackendSpec g_vfBackendPascal = {
     15,
 };
 
+enum FanGraphMode {
+    FAN_GRAPH_MODE_NORMAL = 0,
+    FAN_GRAPH_MODE_ADD    = 1,
+    FAN_GRAPH_MODE_DELETE = 2,
+};
+
 struct FanCurveDialogState {
     HWND hwnd;
     HWND enableChecks[FAN_CURVE_MAX_POINTS];
@@ -313,6 +321,15 @@ struct FanCurveDialogState {
     HWND okButton;
     HWND cancelButton;
     FanCurveConfig working;
+    // Graph interaction state (modifier)
+    FanGraphMode graphMode;
+    bool  graphDragging;
+    int   graphDragPointIdx;
+    int   graphDragAnchorX;
+    int   graphDragAnchorY;
+    int   graphDragStartTemp;
+    int   graphDragStartPct;
+    int   graphHoverIdx;
 };
 
 static FanCurveDialogState g_fanCurveDialog = {};
@@ -858,6 +875,14 @@ static void initialize_gui_fan_settings_from_live_state() {
     }
 }
 
+static bool is_apply_and_exit_enabled(const char* path) {
+    return get_config_int(path, "startup", "apply_and_exit", 0) != 0;
+}
+
+static bool set_apply_and_exit_enabled(const char* path, bool enabled) {
+    return set_config_int(path, "startup", "apply_and_exit", enabled ? 1 : 0);
+}
+
 static bool is_start_on_logon_enabled(const char* path) {
     return get_config_int(path, "startup", "start_program_on_logon", 0) != 0;
 }
@@ -1018,6 +1043,8 @@ static void show_tray_menu(HWND hwnd) {
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
     AppendMenuA(menu, MF_STRING, TRAY_MENU_SHOW_ID, IsWindowVisible(hwnd) ? "Show Window" : "Open Green Curve");
+    AppendMenuA(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuA(menu, MF_STRING, TRAY_MENU_APPLY_AND_EXIT_ID, "Apply and Exit");
     AppendMenuA(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuA(menu, MF_STRING, TRAY_MENU_EXIT_ID, "Exit");
 
@@ -1358,7 +1385,8 @@ static int layout_bottom_panel_bottom_y() {
     int buttonsY = layout_bottom_buttons_y();
     int profileY = buttonsY + dp(40);
     int autoY = profileY + dp(34);
-    int statusY = autoY + dp(32);
+    // statusY must be below hApplyAndExitCheck (autoY+28, height 24) -> autoY+52 minimum
+    int statusY = autoY + dp(56);
     return statusY + dp(18);
 }
 
@@ -1416,7 +1444,7 @@ static void layout_bottom_buttons(HWND hParent) {
     const int buttonsY = layout_bottom_buttons_y();
     const int profileY = buttonsY + dp(40);
     const int autoY = profileY + dp(34);
-    const int statusY = autoY + dp(32);
+    const int statusY = autoY + dp(56);
 
     if (g_app.hApplyBtn)
         SetWindowPos(g_app.hApplyBtn, nullptr, margin, buttonsY, dp(132), buttonH, SWP_NOZORDER);
@@ -1453,6 +1481,8 @@ static void layout_bottom_buttons(HWND hParent) {
         SetWindowPos(g_app.hLogonCombo, nullptr, margin + dp(578), autoY, dp(170), comboDropH, SWP_NOZORDER);
     if (g_app.hStartOnLogonCheck)
         SetWindowPos(g_app.hStartOnLogonCheck, nullptr, margin + dp(760), autoY + dp(2), dp(320), dp(24), SWP_NOZORDER);
+    if (g_app.hApplyAndExitCheck)
+        SetWindowPos(g_app.hApplyAndExitCheck, nullptr, margin + dp(760), autoY + dp(28), dp(320), dp(24), SWP_NOZORDER);
     if (g_app.hProfileStatusLabel)
         SetWindowPos(g_app.hProfileStatusLabel, nullptr, margin, statusY, nvmax(dp(300), rc.right - margin * 2), dp(18), SWP_NOZORDER);
 }

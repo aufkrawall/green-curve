@@ -622,12 +622,24 @@ def parse_args():
 def main():
     args = parse_args()
     print("=== Green Curve build ===")
-    download_zig()
-    if args.target in ("windows", "all"):
-        compile_windows_binary()
-    if args.target in ("linux", "all"):
-        compile_linux_binary()
-    print("=== Done ===")
+    try:
+        download_zig()
+        if args.target in ("windows", "all"):
+            compile_windows_binary()
+        if args.target in ("linux", "all"):
+            compile_linux_binary()
+        print("=== Done ===")
+    except SystemExit as e:
+        if e.code != 0:
+            print(f"\n=== Build FAILED (exit code {e.code}) ===")
+        input("\nDevam etmek için Enter'a basın...")
+        raise
+    except Exception as e:
+        print(f"\n=== Beklenmedik hata: {e} ===")
+        input("\nDevam etmek için Enter'a basın...")
+        raise
+    else:
+        input("\nDevam etmek için Enter'a basın...")
 
 
 if __name__ == "__main__":

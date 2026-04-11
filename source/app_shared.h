@@ -1,4 +1,4 @@
-#ifndef GREEN_CURVE_APP_SHARED_H
+﻿#ifndef GREEN_CURVE_APP_SHARED_H
 #define GREEN_CURVE_APP_SHARED_H
 
 #ifndef _WIN32_WINNT
@@ -11,6 +11,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <windowsx.h>
 
 #include <commctrl.h>
 #include <shellapi.h>
@@ -87,6 +88,9 @@ void init_dpi();
 #define FAN_CONTROL_ID      2013
 #define TRAY_MENU_SHOW_ID   2100
 #define TRAY_MENU_EXIT_ID   2101
+#define TRAY_MENU_APPLY_AND_EXIT_ID        2102
+#define TRAY_MENU_APPLY_AND_EXIT_TIMER_ID  3
+#define APPLY_AND_EXIT_CHECK_ID 2035
 
 #define FAN_CURVE_TIMER_ID  1
 #define FAN_CURVE_MAX_POINTS 8
@@ -107,6 +111,7 @@ void init_dpi();
 #define COL_AXIS            RGB(0x80, 0x80, 0x90)
 #define COL_CURVE           RGB(0x40, 0xA0, 0xFF)
 #define COL_POINT           RGB(0xFF, 0x60, 0x60)
+#define COL_POINT_SEL       RGB(0xFF, 0xFF, 0x00)  // selected point: yellow
 #define COL_TEXT            RGB(0xE0, 0xE0, 0xE0)
 #define COL_LABEL           RGB(0xA0, 0xA0, 0xB0)
 
@@ -405,6 +410,7 @@ struct AppData {
     HWND hLogonLabel;
     HWND hProfileStatusLabel;
     HWND hStartOnLogonCheck;
+    HWND hApplyAndExitCheck;
 
     HBRUSH hWindowClassBrush;
     HANDLE hStartupSyncThread;
@@ -524,6 +530,15 @@ struct AppData {
     char trayProfileCacheMode[64];
     char trayProfileCacheProfilePart[64];
     char trayLastRenderedTip[128];
+
+    // Graph interaction state (modifier)
+    bool graphPointSelected[VF_NUM_POINTS];
+    bool graphDragging;
+    int  graphDragCi;
+    int  graphDragAnchorY;
+    int  graphDragStartFreqMHz[VF_NUM_POINTS];
+    int  graphDragPreviewMHz[VF_NUM_POINTS];
+    int  graphLastClickCi;
 };
 
 struct DesiredSettings {
