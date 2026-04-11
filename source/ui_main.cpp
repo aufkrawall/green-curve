@@ -222,10 +222,13 @@ static void draw_graph(HDC hdc, RECT* rc) {
     TextOutA(hdc, dp(2), mt - dp(4), yTitle, (int)strlen(yTitle));
 
     // Build polyline: sort curve points by voltage, only plot within our ranges
+    // Use preview frequencies during drag
     POINT pts[VF_NUM_POINTS];
     int nPts = 0;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
-        unsigned int freq_mhz = displayed_curve_mhz(g_app.curve[i].freq_kHz);
+        unsigned int freq_mhz = (g_app.graphDragging && g_app.graphDragPreviewMHz[i] > 0)
+            ? (unsigned int)g_app.graphDragPreviewMHz[i]
+            : displayed_curve_mhz(g_app.curve[i].freq_kHz);
         unsigned int volt_mv = g_app.curve[i].volt_uV / 1000;
         if (freq_mhz == 0 && volt_mv == 0) continue;
         // Only plot points within our visible range
@@ -244,21 +247,40 @@ static void draw_graph(HDC hdc, RECT* rc) {
         DeleteObject(curvePen);
     }
 
-    // Data points (filled circles)
-    HBRUSH ptBrush = CreateSolidBrush(COL_POINT);
-    HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, ptBrush);
-    HPEN ptPen = CreatePen(PS_SOLID, 1, COL_POINT);
-    SelectObject(hdc, ptPen);
+    // Data points (filled circles) - selected = yellow, others = red
+    HBRUSH ptBrush    = CreateSolidBrush(COL_POINT);
+    HBRUSH ptBrushSel = CreateSolidBrush(COL_POINT_SEL);
+    HPEN   ptPen      = CreatePen(PS_SOLID, 1, COL_POINT);
+    HPEN   ptPenSel   = CreatePen(PS_SOLID, 1, COL_POINT_SEL);
+    HBRUSH oldBrush   = (HBRUSH)SelectObject(hdc, ptBrush);
 
-    int r = dp(3);
-    for (int i = 0; i < nPts; i++) {
-        Ellipse(hdc, pts[i].x - r, pts[i].y - r, pts[i].x + r, pts[i].y + r);
+    int r = dp(5); // slightly larger - easier to click
+
+    // nPts/pts only contains points within the visible range.
+    // Re-apply the same filter to find the real curve index.
+    {
+        int visIdx2 = 0;
+        for (int i = 0; i < VF_NUM_POINTS && visIdx2 < nPts; i++) {
+            unsigned int freq_mhz = displayed_curve_mhz(g_app.curve[i].freq_kHz);
+            unsigned int volt_mv  = g_app.curve[i].volt_uV / 1000;
+            if (freq_mhz == 0 && volt_mv == 0) continue;
+            if (volt_mv  < (unsigned)MIN_VOLT_mV  || volt_mv  > (unsigned)MAX_VOLT_mV)  continue;
+            if (freq_mhz < (unsigned)MIN_FREQ_MHz || freq_mhz > (unsigned)MAX_FREQ_MHz) continue;
+            bool sel = g_app.graphPointSelected[i];
+            SelectObject(hdc, sel ? ptBrushSel : ptBrush);
+            SelectObject(hdc, sel ? ptPenSel   : ptPen);
+            Ellipse(hdc, pts[visIdx2].x - r, pts[visIdx2].y - r,
+                         pts[visIdx2].x + r, pts[visIdx2].y + r);
+            visIdx2++;
+        }
     }
 
     SelectObject(hdc, oldBrush);
     SelectObject(hdc, oldPen);
     DeleteObject(ptBrush);
+    DeleteObject(ptBrushSel);
     DeleteObject(ptPen);
+    DeleteObject(ptPenSel);
 
     // Frequency labels on curve (every 8 visible points)
     SelectObject(hdc, hFontSmall);
@@ -413,7 +435,7 @@ static void create_edit_controls(HWND hParent, HINSTANCE hInst) {
     int gap = dp(2);
     int rowH = dp(20);
     int headerH = dp(16);
-    // Layout: [#] [☑] [MHz edit] [mV edit]
+    // Layout: [#] [cb] [MHz edit] [mV edit]
     int colW = labelW + cbW + editW + editW + gap * 3 + dp(8);
     int numCols = 6;
     int rowsPerCol = (g_app.numVisible + numCols - 1) / numCols;
@@ -496,6 +518,15 @@ static void create_edit_controls(HWND hParent, HINSTANCE hInst) {
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
         dp(8), ocY + dp(24), dp(208), dp(18),
         hParent, (HMENU)(INT_PTR)GPU_OFFSET_EXCLUDE_LOW_CHECK_ID, hInst, nullptr);
+    {
+        typedef HRESULT (WINAPI *SetWindowTheme_t)(HWND, LPCWSTR, LPCWSTR);
+        HMODULE uxtheme = LoadLibraryA("uxtheme.dll");
+        if (uxtheme) {
+            auto pSetWindowTheme = (SetWindowTheme_t)GetProcAddress(uxtheme, "SetWindowTheme");
+            if (pSetWindowTheme) pSetWindowTheme(g_app.hGpuOffsetExcludeLowCheck, L"", L"");
+            FreeLibrary(uxtheme);
+        }
+    }
 
     CreateWindowExA(0, "STATIC", "Mem Offset (MHz):",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
@@ -583,7 +614,8 @@ static void destroy_edit_controls(HWND hParent) {
             && id != PROFILE_COMBO_ID && id != PROFILE_LOAD_ID && id != PROFILE_SAVE_ID && id != PROFILE_CLEAR_ID
             && id != APP_LAUNCH_COMBO_ID && id != LOGON_COMBO_ID
             && id != PROFILE_LABEL_ID && id != PROFILE_STATE_ID && id != APP_LAUNCH_LABEL_ID
-            && id != LOGON_LABEL_ID && id != PROFILE_STATUS_ID && id != START_ON_LOGON_CHECK_ID) {
+            && id != LOGON_LABEL_ID && id != PROFILE_STATUS_ID && id != START_ON_LOGON_CHECK_ID
+            && id != APPLY_AND_EXIT_CHECK_ID) {
             DestroyWindow(child);
         }
         child = next;
@@ -762,6 +794,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 apply_fan_curve_tick();
                 return 0;
             }
+            if (wParam == TRAY_MENU_APPLY_AND_EXIT_TIMER_ID) {
+                KillTimer(hwnd, TRAY_MENU_APPLY_AND_EXIT_TIMER_ID);
+                DestroyWindow(hwnd);
+                return 0;
+            }
             break;
 
         case WM_PAINT: {
@@ -846,6 +883,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 set_profile_status_text(enabled
                     ? "Green Curve will start hidden in the tray at Windows logon."
                     : "Program start at Windows logon disabled.");
+            } else if (LOWORD(wParam) == APPLY_AND_EXIT_CHECK_ID && HIWORD(wParam) == BN_CLICKED) {
+                bool enabled = SendMessageA(g_app.hApplyAndExitCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                set_apply_and_exit_enabled(g_app.configPath, enabled);
+                refresh_profile_controls_from_config();
+                set_profile_status_text(enabled
+                    ? "At logon, profile will be applied then program will exit after 1 second."
+                    : "Apply Profile and Exit disabled.");
             } else if (LOWORD(wParam) == PROFILE_COMBO_ID && HIWORD(wParam) == CBN_SELCHANGE) {
                 int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
                 if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
@@ -966,6 +1010,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 invalidate_main_window();
             } else if (LOWORD(wParam) == TRAY_MENU_SHOW_ID) {
                 show_main_window_from_tray();
+            } else if (LOWORD(wParam) == TRAY_MENU_APPLY_AND_EXIT_ID) {
+                if (g_app.loaded) {
+                    DesiredSettings desired = {};
+                    char err[256] = {};
+                    if (capture_gui_apply_settings(&desired, err, sizeof(err))) {
+                        char result[512] = {};
+                        SetCursor(LoadCursor(nullptr, IDC_WAIT));
+                        apply_desired_settings(&desired, false, result, sizeof(result));
+                        SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                    }
+                }
+                SetTimer(hwnd, TRAY_MENU_APPLY_AND_EXIT_TIMER_ID, 1000, nullptr);
             } else if (LOWORD(wParam) == TRAY_MENU_EXIT_ID) {
                 DestroyWindow(hwnd);
             } else if (LOWORD(wParam) >= LOCK_BASE_ID && LOWORD(wParam) < LOCK_BASE_ID + VF_NUM_POINTS) {
@@ -985,6 +1041,171 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             return 0;
 
+        // ================================================================
+        // Interactive point dragging on graph
+        // ================================================================
+        case WM_LBUTTONDOWN: {
+            if (!g_app.loaded) break;
+            int mx = GET_X_LPARAM(lParam);
+            int my = GET_Y_LPARAM(lParam);
+            int graphH = dp(GRAPH_HEIGHT);
+            if (my >= graphH) break; // outside graph area
+
+            // Recalculate graph params (same as draw_graph)
+            RECT rc2; GetClientRect(hwnd, &rc2);
+            int w = rc2.right;
+            const int MIN_VOLT_mV = 700, MAX_VOLT_mV = 1250;
+            const int MIN_FREQ_MHz = 500, MAX_FREQ_MHz = 3400;
+            int ml = dp(70), mr = dp(30), mt = dp(35), mb = dp(55);
+            int pw = w - ml - mr;
+            int ph = graphH - mt - mb;
+            auto volt_to_x2 = [&](unsigned int mv) -> int {
+                if (mv < (unsigned)MIN_VOLT_mV) mv = MIN_VOLT_mV;
+                if (mv > (unsigned)MAX_VOLT_mV) mv = MAX_VOLT_mV;
+                return ml + (int)((long long)(mv - MIN_VOLT_mV) * pw / (MAX_VOLT_mV - MIN_VOLT_mV));
+            };
+            auto freq_to_y2 = [&](unsigned int mhz) -> int {
+                if (mhz < (unsigned)MIN_FREQ_MHz) mhz = MIN_FREQ_MHz;
+                if (mhz > (unsigned)MAX_FREQ_MHz) mhz = MAX_FREQ_MHz;
+                return mt + ph - (int)((long long)(mhz - MIN_FREQ_MHz) * ph / (MAX_FREQ_MHz - MIN_FREQ_MHz));
+            };
+
+            int hitR   = dp(10); // hit radius
+            int hitCi  = -1;
+            int hitDist = INT_MAX;
+
+            for (int i = 0; i < VF_NUM_POINTS; i++) {
+                unsigned int freq_mhz = displayed_curve_mhz(g_app.curve[i].freq_kHz);
+                unsigned int volt_mv  = g_app.curve[i].volt_uV / 1000;
+                if (freq_mhz == 0 && volt_mv == 0) continue;
+                if (volt_mv  < (unsigned)MIN_VOLT_mV  || volt_mv  > (unsigned)MAX_VOLT_mV)  continue;
+                if (freq_mhz < (unsigned)MIN_FREQ_MHz || freq_mhz > (unsigned)MAX_FREQ_MHz) continue;
+                int px = volt_to_x2(volt_mv);
+                int py = freq_to_y2(freq_mhz);
+                int dx = mx - px, dy = my - py;
+                int dist = dx*dx + dy*dy;
+                if (dist < hitR * hitR && dist < hitDist) {
+                    hitDist = dist;
+                    hitCi   = i;
+                }
+            }
+
+            bool ctrl  = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            bool shift = (GetKeyState(VK_SHIFT)   & 0x8000) != 0;
+
+            if (hitCi >= 0) {
+                if (shift && g_app.graphLastClickCi >= 0) {
+                    // Shift + tik: son tiktan current clicked point for range selection
+                    int a = g_app.graphLastClickCi;
+                    int b = hitCi;
+                    if (a > b) { int tmp = a; a = b; b = tmp; }
+                    if (!ctrl) memset(g_app.graphPointSelected, 0, sizeof(g_app.graphPointSelected));
+                    for (int i = 0; i < VF_NUM_POINTS; i++) {
+                        unsigned int freq_mhz = displayed_curve_mhz(g_app.curve[i].freq_kHz);
+                        unsigned int volt_mv  = g_app.curve[i].volt_uV / 1000;
+                        if (freq_mhz == 0 && volt_mv == 0) continue;
+                        if (i >= a && i <= b) g_app.graphPointSelected[i] = true;
+                    }
+                    // graphLastClickCi stays fixed - anchor remains stable for consecutive Shift-clicks
+                } else if (ctrl) {
+                    // Ctrl + tik: secimi ac/kapat
+                    g_app.graphPointSelected[hitCi] = !g_app.graphPointSelected[hitCi];
+                    g_app.graphLastClickCi = hitCi;
+                } else {
+                    // Normal tik: secili degilse oncekini temizle, bunu sec
+                    if (!g_app.graphPointSelected[hitCi]) {
+                        memset(g_app.graphPointSelected, 0, sizeof(g_app.graphPointSelected));
+                        g_app.graphPointSelected[hitCi] = true;
+                    }
+                    g_app.graphLastClickCi = hitCi;
+                    // Start drag
+                    g_app.graphDragging    = true;
+                    g_app.graphDragCi      = hitCi;
+                    g_app.graphDragAnchorY = my;
+                    // Save starting frequencies and initialise preview array
+                    for (int i = 0; i < VF_NUM_POINTS; i++) {
+                        unsigned int freq_mhz = displayed_curve_mhz(g_app.curve[i].freq_kHz);
+                        g_app.graphDragStartFreqMHz[i] = (int)freq_mhz;
+                        g_app.graphDragPreviewMHz[i]   = (int)freq_mhz;
+                    }
+                    SetCapture(hwnd);
+                    SetCursor(LoadCursor(nullptr, IDC_SIZENS));
+                }
+            } else if (!ctrl && !shift) {
+                // Click on empty area: clear selection
+                memset(g_app.graphPointSelected, 0, sizeof(g_app.graphPointSelected));
+                g_app.graphLastClickCi = -1;
+            }
+            invalidate_main_window();
+            return 0;
+        }
+
+        case WM_MOUSEMOVE: {
+            if (!g_app.graphDragging) break;
+            int my = GET_Y_LPARAM(lParam);
+            int graphH = dp(GRAPH_HEIGHT);
+
+            RECT rc2; GetClientRect(hwnd, &rc2);
+            const int MIN_FREQ_MHz = 500, MAX_FREQ_MHz = 3400;
+            int mt = dp(35), mb = dp(55);
+            int ph = graphH - mt - mb;
+
+            // How many MHz per pixel?
+            double mhzPerPixel = (double)(MAX_FREQ_MHz - MIN_FREQ_MHz) / ph;
+
+            // Update all selected points
+            for (int i = 0; i < VF_NUM_POINTS; i++) {
+                if (!g_app.graphPointSelected[i]) continue;
+                int baseMHz = g_app.graphDragStartFreqMHz[i];
+                if (baseMHz == 0) continue;
+                // Total delta from drag start (anchor)
+                int totalDeltaY = g_app.graphDragAnchorY - my;
+                int newMHz = baseMHz + (int)(totalDeltaY * mhzPerPixel);
+                if (newMHz < MIN_FREQ_MHz) newMHz = MIN_FREQ_MHz;
+                if (newMHz > MAX_FREQ_MHz) newMHz = MAX_FREQ_MHz;
+                // Update preview array (read by draw_graph)
+                g_app.graphDragPreviewMHz[i] = newMHz;
+                // Also write to edit box
+                for (int vi = 0; vi < g_app.numVisible; vi++) {
+                    if (g_app.visibleMap[vi] == i) {
+                        set_edit_value(g_app.hEditsMhz[vi], (unsigned int)newMHz);
+                        break;
+                    }
+                }
+            }
+            SetCursor(LoadCursor(nullptr, IDC_SIZENS));
+            invalidate_main_window();
+            return 0;
+        }
+
+        case WM_LBUTTONUP: {
+            if (!g_app.graphDragging) break;
+            // Commit preview values to curve (without this the point snaps back on mouse-up)
+            for (int i = 0; i < VF_NUM_POINTS; i++) {
+                if (!g_app.graphPointSelected[i]) continue;
+                if (g_app.graphDragPreviewMHz[i] <= 0) continue;
+                if (g_app.curve[i].freq_kHz == 0) continue;
+                g_app.curve[i].freq_kHz = (unsigned int)g_app.graphDragPreviewMHz[i] * 1000u;
+            }
+            g_app.graphDragging = false;
+            g_app.graphDragCi   = -1;
+            // Clear preview array - real curve data is now used
+            memset(g_app.graphDragPreviewMHz, 0, sizeof(g_app.graphDragPreviewMHz));
+            ReleaseCapture();
+            SetCursor(LoadCursor(nullptr, IDC_ARROW));
+            invalidate_main_window();
+            return 0;
+        }
+
+        case WM_SETCURSOR: {
+            // Show SIZENS cursor over graph area (if dragging)
+            if (g_app.graphDragging) {
+                SetCursor(LoadCursor(nullptr, IDC_SIZENS));
+                return TRUE;
+            }
+            break;
+        }
+
         case WM_GETMINMAXINFO: {
             MINMAXINFO* mmi = (MINMAXINFO*)lParam;
             if (mmi) {
@@ -1001,6 +1222,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             SetBkColor(hdcEdit, RGB(0x1A, 0x1A, 0x2A));
             static HBRUSH hEditBr = CreateSolidBrush(RGB(0x1A, 0x1A, 0x2A));
             return (LRESULT)hEditBr;
+        }
+
+        case WM_CTLCOLORBTN: {
+            // Checkboxes with visual styles disabled (SetWindowTheme L"" L"")
+            // send WM_CTLCOLORBTN. Return the window background brush and set
+            // transparent mode so the checkbox renders on the dark background.
+            HDC hdcBtn = (HDC)wParam;
+            HWND hBtn  = (HWND)lParam;
+            if (hBtn == g_app.hStartOnLogonCheck ||
+                hBtn == g_app.hApplyAndExitCheck ||
+                hBtn == g_app.hGpuOffsetExcludeLowCheck) {
+                SetTextColor(hdcBtn, COL_TEXT);
+                SetBkMode(hdcBtn, TRANSPARENT);
+                return (LRESULT)g_app.hWindowClassBrush;
+            }
+            break;
         }
 
         case WM_CTLCOLORSTATIC: {

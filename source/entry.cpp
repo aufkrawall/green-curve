@@ -529,6 +529,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
 
     g_debug_logging = (GetEnvironmentVariableA(APP_DEBUG_ENV, nullptr, 0) > 0);
     SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
+    g_app.graphDragCi      = -1;
+    g_app.graphLastClickCi = -1;
 
     // CLI mode - handle --dump, --json, --help
     if (handle_cli(wCmdLine)) {
@@ -797,21 +799,48 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         g_app.hMainWnd, (HMENU)(INT_PTR)START_ON_LOGON_CHECK_ID, hInstance, nullptr
     );
 
+    g_app.hApplyAndExitCheck = CreateWindowExA(
+        0, "BUTTON", "Apply Profile and Exit",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        0, 0, dp(320), dp(24),
+        g_app.hMainWnd, (HMENU)(INT_PTR)APPLY_AND_EXIT_CHECK_ID, hInstance, nullptr
+    );
+
+    // Apply dark visual style to checkboxes so they render correctly on dark backgrounds.
+    // "Explorer" theme makes the checkbox box itself transparent-background-friendly;
+    // combined with WM_CTLCOLORBTN returning the window brush this prevents the white fill.
+    {
+        typedef HRESULT (WINAPI *SetWindowTheme_t)(HWND, LPCWSTR, LPCWSTR);
+        HMODULE uxtheme = LoadLibraryA("uxtheme.dll");
+        if (uxtheme) {
+            auto pSetWindowTheme = (SetWindowTheme_t)GetProcAddress(uxtheme, "SetWindowTheme");
+            if (pSetWindowTheme) {
+                pSetWindowTheme(g_app.hStartOnLogonCheck, L"", L"");
+                pSetWindowTheme(g_app.hApplyAndExitCheck, L"", L"");
+            }
+            FreeLibrary(uxtheme);
+        }
+    }
+
     layout_bottom_buttons(g_app.hMainWnd);
 
     // Create edit controls
     create_edit_controls(g_app.hMainWnd, hInstance);
-    ensure_tray_icon();
     apply_logon_startup_behavior();
-    if (!g_app.startHiddenToTray) {
+    maybe_load_app_launch_profile_to_gui();
+    // In "Apply Profile and Exit" mode the tray icon is never shown.
+    bool applyAndExitActive = g_app.launchedFromLogon && is_apply_and_exit_enabled(g_app.configPath);
+    if (!applyAndExitActive) {
+        ensure_tray_icon();
+    }
+    if (!g_app.startHiddenToTray && !applyAndExitActive) {
         show_best_guess_support_warning(g_app.hMainWnd);
     }
-    maybe_load_app_launch_profile_to_gui();
     invalidate_main_window();
 
-    if (g_app.startHiddenToTray) {
+    if (g_app.startHiddenToTray && !applyAndExitActive) {
         hide_main_window_to_tray();
-    } else {
+    } else if (!applyAndExitActive) {
         show_window_with_primed_first_frame(g_app.hMainWnd, nCmdShow);
     }
 

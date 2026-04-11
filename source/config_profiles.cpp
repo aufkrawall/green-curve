@@ -179,6 +179,7 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
     int appLaunchSlot = get_config_int(path, "profiles", "app_launch_slot", 0);
     int logonSlot = get_config_int(path, "profiles", "logon_slot", 0);
     bool startOnLogon = is_start_on_logon_enabled(path);
+    bool applyAndExit = is_apply_and_exit_enabled(path);
     int selectedSlot = slot;
     if (appLaunchSlot < 0 || appLaunchSlot > CONFIG_NUM_SLOTS) appLaunchSlot = 0;
     if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
@@ -322,7 +323,7 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         append_fan_curve_section_text(cfg, sizeof(cfg), &used, "fan_curve", curveToWrite);
     }
 
-    appendf("[startup]\r\napply_on_launch=%d\r\nstart_program_on_logon=%d\r\n\r\n", logonSlot > 0 ? 1 : 0, startOnLogon ? 1 : 0);
+    appendf("[startup]\r\napply_on_launch=%d\r\nstart_program_on_logon=%d\r\napply_and_exit=%d\r\n\r\n", logonSlot > 0 ? 1 : 0, startOnLogon ? 1 : 0, applyAndExit ? 1 : 0);
 
     bool ok = write_text_file_atomic(path, cfg, used, err, errSize);
     if (ok) {
@@ -343,6 +344,7 @@ static bool clear_profile_from_config(const char* path, int slot, char* err, siz
     int logonSlot = get_config_int(path, "profiles", "logon_slot", 0);
     int selectedSlot = get_config_int(path, "profiles", "selected_slot", CONFIG_DEFAULT_SLOT);
     bool startOnLogon = is_start_on_logon_enabled(path);
+    bool applyAndExit = is_apply_and_exit_enabled(path);
     if (appLaunchSlot < 0 || appLaunchSlot > CONFIG_NUM_SLOTS) appLaunchSlot = 0;
     if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
     if (selectedSlot < 1 || selectedSlot > CONFIG_NUM_SLOTS) selectedSlot = CONFIG_DEFAULT_SLOT;
@@ -407,7 +409,7 @@ static bool clear_profile_from_config(const char* path, int slot, char* err, siz
         p += strlen(p) + 1;
     }
 
-    appendf("[startup]\r\napply_on_launch=%d\r\nstart_program_on_logon=%d\r\n\r\n", logonSlot > 0 ? 1 : 0, startOnLogon ? 1 : 0);
+    appendf("[startup]\r\napply_on_launch=%d\r\nstart_program_on_logon=%d\r\napply_and_exit=%d\r\n\r\n", logonSlot > 0 ? 1 : 0, startOnLogon ? 1 : 0, applyAndExit ? 1 : 0);
 
     bool ok2 = write_text_file_atomic(path, cfg, used, err, errSize);
     if (ok2) {
@@ -481,6 +483,10 @@ static void refresh_profile_controls_from_config() {
     if (g_app.hStartOnLogonCheck) {
         SendMessageA(g_app.hStartOnLogonCheck, BM_SETCHECK,
             (WPARAM)(is_start_on_logon_enabled(g_app.configPath) ? BST_CHECKED : BST_UNCHECKED), 0);
+    }
+    if (g_app.hApplyAndExitCheck) {
+        SendMessageA(g_app.hApplyAndExitCheck, BM_SETCHECK,
+            (WPARAM)(is_apply_and_exit_enabled(g_app.configPath) ? BST_CHECKED : BST_UNCHECKED), 0);
     }
 
     update_profile_state_label();
@@ -572,7 +578,7 @@ static bool desired_has_any_action(const DesiredSettings* desired) {
     return false;
 }
 
-static void populate_desired_into_gui(const DesiredSettings* desired) {
+static void populate_desired_into_gui(const DesiredSettings* desired, bool applyFanToGui = true) {
     if (!desired) return;
     unlock_all();
     if (g_app.loaded) populate_edits();
@@ -605,8 +611,9 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
     if (desired->hasPowerLimit && g_app.hPowerLimitEdit) {
         set_edit_value(g_app.hPowerLimitEdit, desired->powerLimitPct);
     }
-    // Fan
-    if (desired->hasFan) {
+    // Fan - on automatic loads (app start, logon) the fan GUI is not touched;
+    // it is only updated when the user explicitly loads a profile.
+    if (desired->hasFan && applyFanToGui) {
         g_app.guiFanMode = desired->fanMode;
         g_app.guiFanFixedPercent = clamp_percent(desired->fanPercent);
         copy_fan_curve(&g_app.guiFanCurve, &desired->fanCurve);
@@ -739,8 +746,10 @@ static void maybe_load_app_launch_profile_to_gui() {
         return;
     }
     char result[512] = {};
+    // On normal startup the fan setting is not written to GPU - avoids unnecessary fan spin.
+    desired.hasFan = false;
     bool ok = apply_desired_settings(&desired, false, result, sizeof(result));
-    populate_desired_into_gui(&desired);
+    populate_desired_into_gui(&desired, false); // fan GUI'sine dokunma
     set_config_int(g_app.configPath, "profiles", "selected_slot", appLaunchSlot);
     refresh_profile_controls_from_config();
     set_profile_status_text(ok
@@ -760,10 +769,17 @@ static void apply_logon_startup_behavior() {
 
     g_app.startHiddenToTray = true;
 
+    // If "Apply Profile and Exit" is active: apply profile, then close after 1s
+    bool applyAndExit = is_apply_and_exit_enabled(g_app.configPath);
+
     int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
     if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
     if (logonSlot == 0) {
-        set_profile_status_text("Started in the tray at Windows logon.");
+        if (applyAndExit) {
+            set_profile_status_text("Apply Profile and Exit: no logon profile slot set.");
+        } else {
+            set_profile_status_text("Started in the tray at Windows logon.");
+        }
         return;
     }
 
@@ -781,12 +797,23 @@ static void apply_logon_startup_behavior() {
     }
 
     char result[512] = {};
+    // Fan is not applied in "Apply Profile and Exit" mode.
+    // The program is about to exit so setting a fixed fan speed is pointless.
+    if (applyAndExit) desired.hasFan = false;
     bool ok = apply_desired_settings(&desired, false, result, sizeof(result));
-    populate_desired_into_gui(&desired);
+    populate_desired_into_gui(&desired, false); // fan GUI'sine dokunma
     set_config_int(g_app.configPath, "profiles", "selected_slot", logonSlot);
     refresh_profile_controls_from_config();
-    set_profile_status_text(ok
-        ? "Started in the tray and applied slot %d at Windows logon."
-        : "Started in the tray, but slot %d apply failed: %s", logonSlot, result);
+
+    if (applyAndExit) {
+        set_profile_status_text(ok
+            ? "Applied slot %d at logon. Exiting in 1 second..."
+            : "Slot %d apply failed: %s. Exiting in 1 second...", logonSlot, result);
+        SetTimer(g_app.hMainWnd, TRAY_MENU_APPLY_AND_EXIT_TIMER_ID, 1000, nullptr);
+    } else {
+        set_profile_status_text(ok
+            ? "Started in the tray and applied slot %d at Windows logon."
+            : "Started in the tray, but slot %d apply failed: %s", logonSlot, result);
+    }
 }
 
