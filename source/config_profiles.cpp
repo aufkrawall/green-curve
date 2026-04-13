@@ -39,6 +39,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
 
     char fanBuf[64] = {};
     char buf[64] = {};
+    bool hasExplicitFanMode = false;
 
     GetPrivateProfileStringA(controlsSection, "gpu_offset_mhz", "", buf, sizeof(buf), path);
     trim_ascii(buf);
@@ -98,6 +99,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         desired->hasFan = true;
         desired->fanMode = fanMode;
         desired->fanAuto = fanMode == FAN_MODE_AUTO;
+        hasExplicitFanMode = true;
     }
 
     GetPrivateProfileStringA(controlsSection, "fan", "", fanBuf, sizeof(fanBuf), path);
@@ -109,8 +111,12 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
             set_message(err, errSize, "Invalid fan setting in profile %d", slot);
             return false;
         }
-        if (!desired->hasFan || desired->fanMode != FAN_MODE_CURVE) {
+        if (!hasExplicitFanMode) {
             set_desired_fan_from_legacy_value(desired, fanAuto, fanPercent);
+        } else if (desired->fanMode == FAN_MODE_FIXED && !fanAuto) {
+            desired->hasFan = true;
+            desired->fanAuto = false;
+            desired->fanPercent = clamp_percent(fanPercent);
         }
     }
 
@@ -122,10 +128,12 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
             set_message(err, errSize, "Invalid fan_fixed_pct in profile %d", slot);
             return false;
         }
-        desired->hasFan = true;
-        desired->fanMode = (desired->fanMode == FAN_MODE_CURVE) ? FAN_MODE_CURVE : FAN_MODE_FIXED;
-        desired->fanAuto = false;
-        desired->fanPercent = clamp_percent(value);
+        if (!hasExplicitFanMode || desired->fanMode == FAN_MODE_FIXED) {
+            desired->hasFan = true;
+            desired->fanMode = FAN_MODE_FIXED;
+            desired->fanAuto = false;
+            desired->fanPercent = clamp_percent(value);
+        }
     }
 
     if (!load_fan_curve_config_from_section(path, fanCurveSection, &desired->fanCurve, err, errSize)) return false;
@@ -608,7 +616,11 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
     // Fan
     if (desired->hasFan) {
         g_app.guiFanMode = desired->fanMode;
-        g_app.guiFanFixedPercent = clamp_percent(desired->fanPercent);
+        if (desired->fanMode == FAN_MODE_FIXED) {
+            g_app.guiFanFixedPercent = clamp_percent(desired->fanPercent);
+        } else if (g_app.guiFanFixedPercent <= 0) {
+            g_app.guiFanFixedPercent = g_app.activeFanFixedPercent > 0 ? clamp_percent(g_app.activeFanFixedPercent) : 50;
+        }
         copy_fan_curve(&g_app.guiFanCurve, &desired->fanCurve);
         ensure_valid_fan_curve_config(&g_app.guiFanCurve);
         if (g_app.hFanModeCombo) {

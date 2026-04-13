@@ -2545,6 +2545,7 @@ static bool load_desired_settings_from_ini(const char* path, DesiredSettings* de
     initialize_desired_settings_defaults(desired);
     char fanBuf[64] = {};
     char buf[64] = {};
+    bool hasExplicitFanMode = false;
 
     GetPrivateProfileStringA("controls", "gpu_offset_mhz", "", buf, sizeof(buf), path);
     trim_ascii(buf);
@@ -2604,6 +2605,7 @@ static bool load_desired_settings_from_ini(const char* path, DesiredSettings* de
         desired->hasFan = true;
         desired->fanMode = fanMode;
         desired->fanAuto = fanMode == FAN_MODE_AUTO;
+        hasExplicitFanMode = true;
     }
 
     GetPrivateProfileStringA("controls", "fan", "", fanBuf, sizeof(fanBuf), path);
@@ -2615,8 +2617,12 @@ static bool load_desired_settings_from_ini(const char* path, DesiredSettings* de
             set_message(err, errSize, "Invalid fan setting in %s", path);
             return false;
         }
-        if (!desired->hasFan || desired->fanMode != FAN_MODE_CURVE) {
+        if (!hasExplicitFanMode) {
             set_desired_fan_from_legacy_value(desired, fanAuto, fanPercent);
+        } else if (desired->fanMode == FAN_MODE_FIXED && !fanAuto) {
+            desired->hasFan = true;
+            desired->fanAuto = false;
+            desired->fanPercent = clamp_percent(fanPercent);
         }
     }
 
@@ -2628,10 +2634,12 @@ static bool load_desired_settings_from_ini(const char* path, DesiredSettings* de
             set_message(err, errSize, "Invalid fan_fixed_pct in %s", path);
             return false;
         }
-        desired->hasFan = true;
-        desired->fanMode = (desired->fanMode == FAN_MODE_CURVE) ? FAN_MODE_CURVE : FAN_MODE_FIXED;
-        desired->fanAuto = false;
-        desired->fanPercent = clamp_percent(value);
+        if (!hasExplicitFanMode || desired->fanMode == FAN_MODE_FIXED) {
+            desired->hasFan = true;
+            desired->fanMode = FAN_MODE_FIXED;
+            desired->fanAuto = false;
+            desired->fanPercent = clamp_percent(value);
+        }
     }
 
     if (!load_fan_curve_config_from_section(path, "fan_curve", &desired->fanCurve, err, errSize)) return false;

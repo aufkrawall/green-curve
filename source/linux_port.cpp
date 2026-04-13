@@ -750,6 +750,8 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
     char messageContext[128] = {};
     snprintf(messageContext, sizeof(messageContext), "%s", contextLabel ? contextLabel : "config");
 
+    bool hasExplicitFanMode = false;
+
     std::string value = get_section_value(doc, controlsSection, "gpu_offset_mhz");
     if (!value.empty()) {
         if (!parse_int_strict(value.c_str(), &desired->gpuOffsetMHz)) {
@@ -785,6 +787,7 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
         }
         desired->hasFan = true;
         desired->fanAuto = desired->fanMode == FAN_MODE_AUTO;
+        hasExplicitFanMode = true;
     }
 
     value = get_section_value(doc, controlsSection, "fan");
@@ -796,8 +799,12 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
             set_message(err, errSize, "Invalid fan setting in %s", messageContext);
             return false;
         }
-        if (!desired->hasFan || desired->fanMode != FAN_MODE_CURVE) {
+        if (!hasExplicitFanMode) {
             set_desired_fan_from_legacy_value(desired, fanAuto, fanPercent);
+        } else if (desired->fanMode == FAN_MODE_FIXED && !fanAuto) {
+            desired->hasFan = true;
+            desired->fanAuto = false;
+            desired->fanPercent = clamp_percent(fanPercent);
         }
     }
 
@@ -808,10 +815,12 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
             set_message(err, errSize, "Invalid fan_fixed_pct in %s", messageContext);
             return false;
         }
-        desired->hasFan = true;
-        desired->fanMode = desired->fanMode == FAN_MODE_CURVE ? FAN_MODE_CURVE : FAN_MODE_FIXED;
-        desired->fanAuto = false;
-        desired->fanPercent = clamp_percent(parsed);
+        if (!hasExplicitFanMode || desired->fanMode == FAN_MODE_FIXED) {
+            desired->hasFan = true;
+            desired->fanMode = FAN_MODE_FIXED;
+            desired->fanAuto = false;
+            desired->fanPercent = clamp_percent(parsed);
+        }
     }
 
     if (!load_fan_curve_config_from_section(doc, fanCurveSection, &desired->fanCurve, err, errSize)) return false;

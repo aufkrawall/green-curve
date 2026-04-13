@@ -368,9 +368,12 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
                 }
             } else if (desiredFanMode == FAN_MODE_FIXED) {
                 stop_fan_curve_runtime();
-                if (!g_app.fanRangeKnown ||
-                    (desired->fanPercent >= (int)g_app.fanMinPct && desired->fanPercent <= (int)g_app.fanMaxPct) ||
-                    desired->fanPercent == 0) {
+                bool zeroPercentExplicitlySupported = g_app.fanRangeKnown && g_app.fanMinPct == 0;
+                bool allowFixedPercent = desired->fanPercent == 0
+                    ? zeroPercentExplicitlySupported
+                    : (!g_app.fanRangeKnown ||
+                        (desired->fanPercent >= (int)g_app.fanMinPct && desired->fanPercent <= (int)g_app.fanMaxPct));
+                if (allowFixedPercent) {
                     if (g_app.hMainWnd) {
                         g_app.activeFanFixedPercent = clamp_percent(desired->fanPercent);
                         start_fixed_fan_runtime();
@@ -385,8 +388,13 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
                         ok = nvml_set_fan_manual(desired->fanPercent, &exact, detail, sizeof(detail));
                     }
                 } else {
-                    set_message(detail, sizeof(detail), "Requested %d%% is outside the supported range %u..%u%%",
-                        desired->fanPercent, g_app.fanMinPct, g_app.fanMaxPct);
+                    if (desired->fanPercent == 0 && g_app.fanRangeKnown) {
+                        set_message(detail, sizeof(detail), "Requested 0%% manual fan is blocked because the GPU reports a supported range of %u..%u%%",
+                            g_app.fanMinPct, g_app.fanMaxPct);
+                    } else {
+                        set_message(detail, sizeof(detail), "Requested %d%% is outside the supported range %u..%u%%",
+                            desired->fanPercent, g_app.fanMinPct, g_app.fanMaxPct);
+                    }
                 }
                 if (ok) {
                     g_app.activeFanMode = FAN_MODE_FIXED;
