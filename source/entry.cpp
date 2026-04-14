@@ -2,14 +2,6 @@
 // Entry Point
 // ============================================================================
 
-static void dump_curve_to_file(const char* path) {
-    if (!g_debug_logging) return;
-    char err[256] = {};
-    if (!write_log_snapshot(path, err, sizeof(err))) {
-        debug_log("Failed to write log snapshot: %s\n", err);
-    }
-}
-
 // CLI mode: --dump, --json, or --probe
 // Returns true if CLI handled (should exit), false if should run GUI
 static bool handle_cli(LPWSTR wCmdLine) {
@@ -31,28 +23,10 @@ static bool handle_cli(LPWSTR wCmdLine) {
     set_default_config_path();
     if (opts.hasConfigPath) StringCchCopyA(g_app.configPath, ARRAY_COUNT(g_app.configPath), opts.configPath);
 
-    // Elevate if needed (VF curve read requires admin)
-    if (!is_elevated()) {
-        WCHAR path[MAX_PATH] = {};
-        GetModuleFileNameW(nullptr, path, MAX_PATH);
-        SHELLEXECUTEINFOW sei = {};
-        sei.cbSize = sizeof(sei);
-        sei.lpVerb = L"runas";
-        sei.lpFile = path;
-        sei.lpParameters = wCmdLine;  // pass through all args
-        sei.nShow = SW_HIDE;  // no window flash
-        sei.fMask = SEE_MASK_NOCLOSEPROCESS;
-        if (ShellExecuteExW(&sei) && sei.hProcess) {
-            WaitForSingleObject(sei.hProcess, INFINITE);
-            CloseHandle(sei.hProcess);
-        }
-        return true;
-    }
-
     // CLI always writes to file since we're a GUI subsystem app
     const char* logPath = APP_CLI_LOG_FILE;
     FILE* logf = fopen(logPath, "w");
-    if (!logf) return false;
+    if (!logf) return true;
 
     #define CLI_LOG(...) do { fprintf(logf, __VA_ARGS__); fflush(logf); } while(0)
 
@@ -157,22 +131,29 @@ static bool handle_cli(LPWSTR wCmdLine) {
         // Determine which profile slot to apply
         int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
         if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
-        int loadSlot = (logonSlot > 0) ? logonSlot : CONFIG_DEFAULT_SLOT;
-        if (is_profile_slot_saved(g_app.configPath, loadSlot)) {
-            if (!load_profile_from_config(g_app.configPath, loadSlot, &cfg, err, sizeof(err))) {
-                CLI_LOG("ERROR: %s\n", err);
-                fclose(logf);
-                return true;
-            }
-            CLI_LOG("Applying profile %d...\n", loadSlot);
-        } else {
-            // Fallback to legacy config
-            if (!load_desired_settings_from_ini(g_app.configPath, &cfg, err, sizeof(err))) {
-                CLI_LOG("ERROR: %s\n", err);
-                fclose(logf);
-                return true;
-            }
+        if (logonSlot < 1 || logonSlot > CONFIG_NUM_SLOTS) {
+            CLI_LOG("ERROR: No valid logon profile slot is configured. Silent logon apply was skipped.\n");
+            fclose(logf);
+            return true;
         }
+        if (!is_profile_slot_saved(g_app.configPath, logonSlot)) {
+            CLI_LOG("ERROR: Logon profile slot %d is empty. Silent logon apply was skipped.\n", logonSlot);
+            fclose(logf);
+            return true;
+        }
+        if (!load_profile_from_config(g_app.configPath, logonSlot, &cfg, err, sizeof(err))) {
+            write_error_report_log_for_user_failure("CLI profile load failed", err);
+            CLI_LOG("ERROR: %s\n", err);
+            fclose(logf);
+            return true;
+        }
+        if (!desired_settings_have_explicit_state(&cfg, true, err, sizeof(err))) {
+            write_error_report_log_for_user_failure("CLI logon profile rejected", err);
+            CLI_LOG("ERROR: %s\n", err);
+            fclose(logf);
+            return true;
+        }
+        CLI_LOG("Applying profile %d...\n", logonSlot);
         merge_desired_settings(&cfg, &opts.desired);
         if (cfg.hasFan && cfg.fanMode != FAN_MODE_AUTO) {
             cfg.fanMode = FAN_MODE_AUTO;
@@ -488,8 +469,8 @@ static bool handle_cli(LPWSTR wCmdLine) {
         if (nvml_read_fans(detail, sizeof(detail))) {
             CLI_LOG("Fans: %u (range %u..%u), mode=%s\n", g_app.fanCount, g_app.fanMinPct, g_app.fanMaxPct, g_app.fanIsAuto ? "auto" : "manual");
             for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
-                CLI_LOG("  Fan %u: pct=%u rpm=%u policy=%u signal=%u target=0x%X\n",
-                    fan, g_app.fanPercent[fan], g_app.fanRpm[fan], g_app.fanPolicy[fan], g_app.fanControlSignal[fan], g_app.fanTargetMask[fan]);
+                CLI_LOG("  Fan %u: pct=%u requested=%u rpm=%u policy=%u signal=%u target=0x%X\n",
+                    fan, g_app.fanPercent[fan], g_app.fanTargetPercent[fan], g_app.fanRpm[fan], g_app.fanPolicy[fan], g_app.fanControlSignal[fan], g_app.fanTargetMask[fan]);
             }
         } else {
             CLI_LOG("Fans: %s\n", detail);
@@ -534,7 +515,24 @@ static bool handle_cli(LPWSTR wCmdLine) {
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/, int nCmdShow) {
     LPWSTR wCmdLine = GetCommandLineW();
 
-    g_debug_logging = (GetEnvironmentVariableA(APP_DEBUG_ENV, nullptr, 0) > 0);
+    set_default_config_path();
+
+    // Initialize DPI and config lock before reading config
+    SetProcessDPIAware();
+    init_dpi();
+    initialize_dark_mode_support();
+
+    g_debug_logging = (GetEnvironmentVariableA(APP_DEBUG_ENV, nullptr, 0) > 0)
+        || (get_config_int(g_app.configPath, "debug", "enabled", 0) != 0);
+    if (g_debug_logging) {
+        char debugPath[MAX_PATH] = {};
+        GetModuleFileNameA(nullptr, debugPath, MAX_PATH);
+        char* slash = strrchr(debugPath, '\\');
+        if (!slash) slash = strrchr(debugPath, '/');
+        if (slash) slash[1] = 0; else debugPath[0] = 0;
+        StringCchCatA(debugPath, MAX_PATH, APP_DEBUG_LOG_FILE);
+        DeleteFileA(debugPath);
+    }
     SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
 
     // CLI mode - handle --dump, --json, --help
@@ -542,17 +540,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         return 0;
     }
 
-    // Initialize DPI awareness
-    SetProcessDPIAware();
-    init_dpi();
+    g_app.hInst = hInstance;
 
-    // GUI mode: Check UAC elevation
-    if (!is_elevated() && !is_elevated_flag(wCmdLine)) {
+    // Manual GUI launches can still use interactive elevation, but scheduled/logon starts must stay prompt-free.
+    if (!g_app.launchedFromLogon && !g_app.startHiddenToTray && !is_elevated() && !is_elevated_flag(wCmdLine)) {
         request_elevation();
     }
-
-    g_app.hInst = hInstance;
-    set_default_config_path();
 
     if (!acquire_single_instance_mutex()) {
         return 0;
@@ -560,13 +553,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
 
     // Init NvAPI
     if (!nvapi_init()) {
-        MessageBoxA(nullptr, "Failed to initialize NvAPI.\nIs an NVIDIA GPU and driver installed?",
-                     "Green Curve - Error", MB_OK | MB_ICONERROR);
+        if (!should_suppress_startup_ui()) {
+            MessageBoxA(nullptr, "Failed to initialize NvAPI.\nIs an NVIDIA GPU and driver installed?",
+                         "Green Curve - Error", MB_OK | MB_ICONERROR);
+        }
         return 1;
     }
 
     if (!nvapi_enum_gpu()) {
-        MessageBoxA(nullptr, "No NVIDIA GPU found.", "Green Curve - Error", MB_OK | MB_ICONERROR);
+        if (!should_suppress_startup_ui()) {
+            MessageBoxA(nullptr, "No NVIDIA GPU found.", "Green Curve - Error", MB_OK | MB_ICONERROR);
+        }
         return 1;
     }
 
@@ -608,7 +605,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
                 "Failed to read VF curve from GPU.\n"
                 "This may require administrator privileges or a supported GPU.");
         }
-        MessageBoxA(nullptr, message, "Green Curve - Error", MB_OK | MB_ICONERROR);
+        if (!should_suppress_startup_ui()) {
+            MessageBoxA(nullptr, message, "Green Curve - Error", MB_OK | MB_ICONERROR);
+        } else {
+            write_error_report_log_for_user_failure("Startup VF read failed", message);
+        }
         return 1;
     }
 
@@ -631,6 +632,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         if (!icon) icon = LoadIcon(nullptr, IDI_APPLICATION);
         return icon;
     };
+
+    g_taskbarCreatedMessage = RegisterWindowMessageA("TaskbarCreated");
 
     g_app.hWindowClassBrush = CreateSolidBrush(COL_BG);
 
@@ -668,6 +671,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         return 1;
     }
 
+    allow_dark_mode_for_window(g_app.hMainWnd);
+
     SendMessageA(g_app.hMainWnd, WM_SETICON, ICON_BIG, (LPARAM)wc.hIcon);
     SendMessageA(g_app.hMainWnd, WM_SETICON, ICON_SMALL, (LPARAM)wc.hIconSm);
 
@@ -691,28 +696,28 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     // Create buttons (positioned by create_edit_controls)
     g_app.hApplyBtn = CreateWindowExA(
         0, "BUTTON", "Apply Changes",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
         0, 0, dp(110), dp(30),
         g_app.hMainWnd, (HMENU)(INT_PTR)APPLY_BTN_ID, hInstance, nullptr
     );
 
     g_app.hRefreshBtn = CreateWindowExA(
         0, "BUTTON", "Refresh",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
         0, 0, dp(90), dp(30),
         g_app.hMainWnd, (HMENU)(INT_PTR)REFRESH_BTN_ID, hInstance, nullptr
     );
 
     g_app.hResetBtn = CreateWindowExA(
         0, "BUTTON", "Reset",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
         0, 0, dp(90), dp(30),
         g_app.hMainWnd, (HMENU)(INT_PTR)RESET_BTN_ID, hInstance, nullptr
     );
 
     g_app.hLicenseBtn = CreateWindowExA(
         0, "BUTTON", "License",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
         0, 0, dp(80), dp(30),
         g_app.hMainWnd, (HMENU)(INT_PTR)LICENSE_BTN_ID, hInstance, nullptr
     );
@@ -741,21 +746,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
 
     g_app.hProfileLoadBtn = CreateWindowExA(
         0, "BUTTON", "Load",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
         0, 0, dp(65), dp(22),
         g_app.hMainWnd, (HMENU)(INT_PTR)PROFILE_LOAD_ID, hInstance, nullptr
     );
 
     g_app.hProfileSaveBtn = CreateWindowExA(
         0, "BUTTON", "Save",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
         0, 0, dp(65), dp(22),
         g_app.hMainWnd, (HMENU)(INT_PTR)PROFILE_SAVE_ID, hInstance, nullptr
     );
 
     g_app.hProfileClearBtn = CreateWindowExA(
         0, "BUTTON", "Clear",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
         0, 0, dp(65), dp(22),
         g_app.hMainWnd, (HMENU)(INT_PTR)PROFILE_CLEAR_ID, hInstance, nullptr
     );
@@ -798,10 +803,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     );
 
     g_app.hStartOnLogonCheck = CreateWindowExA(
-        0, "BUTTON", "Start program to tray on log in",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-        0, 0, dp(320), dp(24),
+        0, "BUTTON", "",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+        0, 0, dp(16), dp(16),
         g_app.hMainWnd, (HMENU)(INT_PTR)START_ON_LOGON_CHECK_ID, hInstance, nullptr
+    );
+    g_app.hStartOnLogonLabel = CreateWindowExA(
+        0, "STATIC", "Start program to tray on log in",
+        WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOTIFY,
+        0, 0, dp(300), dp(18),
+        g_app.hMainWnd, (HMENU)(INT_PTR)START_ON_LOGON_LABEL_ID, hInstance, nullptr
     );
 
     g_app.hLogonHintLabel = CreateWindowExA(
@@ -811,6 +822,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         0, 0, dp(900), dp(34),
         g_app.hMainWnd, (HMENU)(INT_PTR)LOGON_HINT_ID, hInstance, nullptr
     );
+
+    apply_ui_font_to_children(g_app.hMainWnd);
 
     layout_bottom_buttons(g_app.hMainWnd);
 

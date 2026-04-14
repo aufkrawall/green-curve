@@ -50,10 +50,39 @@ static bool nvapi_set_point(int pointIndex, int freqDelta_kHz);
 static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* pointMask, int maxBatchPasses);
 static void close_startup_sync_thread_handle();
 static void invalidate_main_window();
+static bool refresh_global_state(char* detail, size_t detailSize);
+static void populate_global_controls();
 static void redraw_window_sync(HWND hwnd);
 static void fill_window_background(HWND hwnd, HDC hdc);
 static void flush_desktop_composition();
 static void show_window_with_primed_first_frame(HWND hwnd, int nCmdShow);
+static bool is_system_dark_theme_active();
+static void initialize_dark_mode_support();
+static void refresh_menu_theme_cache();
+static void allow_dark_mode_for_window(HWND hwnd);
+static const char* ui_font_face_name();
+static HFONT get_ui_font();
+static void apply_ui_font(HWND hwnd);
+static void apply_ui_font_to_children(HWND parent);
+static HFONT create_ui_sized_font(int heightPx, int weight = FW_NORMAL);
+static int themed_combo_item_height();
+static void style_input_control(HWND hwnd);
+static void style_combo_control(HWND hwnd);
+static void install_themed_combo_subclass(HWND hwnd);
+static void paint_themed_combo_overlay(HWND hwnd, HDC hdc);
+static void paint_themed_combo_full_custom(HWND hwnd, HDC hdc);
+static LRESULT CALLBACK themed_combo_wndproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+static bool is_themed_combo_id(UINT id);
+static void draw_themed_combo_item(const DRAWITEMSTRUCT* dis);
+static void measure_themed_combo_item(MEASUREITEMSTRUCT* mis);
+static void draw_themed_button(const DRAWITEMSTRUCT* dis);
+static bool is_themed_button_id(UINT id);
+static bool is_themed_checkbox_id(UINT id);
+static bool is_fan_dialog_checkbox_id(UINT id);
+static void draw_checkbox_tick_smooth(HDC hdc, const RECT* box, COLORREF color);
+static void write_error_report_log_for_user_failure(const char* summary, const char* details = nullptr);
+static void draw_curve_polyline_smooth(HDC hdc, const POINT* pts, int count, int widthPx, COLORREF color);
+static void draw_curve_points_ringed(HDC hdc, const POINT* pts, int count, int innerRadiusPx, int outerRadiusPx);
 static bool nvapi_set_gpu_offset(int offsetkHz);
 static bool nvapi_set_mem_offset(int offsetkHz);
 static bool nvapi_set_power_limit(int pct);
@@ -65,7 +94,6 @@ static unsigned int get_edit_value(HWND hEdit);
 static void populate_edits();
 static void create_edit_controls(HWND hParent, HINSTANCE hInst);
 static void apply_lock(int vi);
-static unsigned int get_edit_value(HWND hEdit);
 static void set_edit_value(HWND hEdit, unsigned int value);
 static void unlock_all();
 static int mem_display_mhz_from_driver_khz(int driver_kHz);
@@ -83,6 +111,7 @@ static bool write_log_snapshot(const char* path, char* err, size_t errSize);
 static bool write_probe_report(const char* path, char* err, size_t errSize);
 static bool write_error_report_log(const char* summary, const char* details, char* err, size_t errSize);
 static bool save_desired_to_config_with_startup(const char* path, const DesiredSettings* desired, bool useCurrentForUnset, int startupState, char* err, size_t errSize);
+static bool should_suppress_startup_ui();
 // Profile I/O
 static bool load_profile_from_config(const char* path, int slot, DesiredSettings* desired, char* err, size_t errSize);
 static bool save_profile_to_config(const char* path, int slot, const DesiredSettings* desired, char* err, size_t errSize);
@@ -90,7 +119,6 @@ static bool clear_profile_from_config(const char* path, int slot, char* err, siz
 static bool is_profile_slot_saved(const char* path, int slot);
 static void refresh_profile_controls_from_config();
 static void migrate_legacy_config_if_needed(const char* path);
-static void layout_profile_controls(HWND hParent);
 static void merge_desired_settings(DesiredSettings* base, const DesiredSettings* override);
 static bool desired_has_any_action(const DesiredSettings* desired);
 static bool capture_gui_apply_settings(DesiredSettings* desired, char* err, size_t errSize);
@@ -110,6 +138,8 @@ static bool is_startup_task_enabled();
 static void sync_logon_combo_from_system();
 static void schedule_logon_combo_sync();
 static void destroy_backbuffer();
+static void shutdown_gdiplus();
+static bool desired_settings_have_explicit_state(const DesiredSettings* desired, bool requireCurve, char* err, size_t errSize);
 
 static void detect_locked_tail_from_curve();
 static void close_nvml();
@@ -117,10 +147,20 @@ static const char* nvml_err_name(nvmlReturn_t r);
 static bool nvml_ensure_ready();
 static bool nvml_set_fan_auto(char* detail, size_t detailSize);
 static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_t detailSize);
-static void initialize_gui_fan_settings_from_live_state();
+static void initialize_gui_fan_settings_from_live_state(bool syncGuiCurve = true);
 static int get_effective_live_fan_mode();
 static bool fan_setting_matches_current(int wantMode, int wantPct, const FanCurveConfig* wantCurve);
 static bool nvml_manual_fan_matches_target(int pct, bool* matches, char* detail, size_t detailSize);
+static int current_displayed_fan_percent();
+static int current_manual_fan_target_percent();
+static bool manual_fan_readback_matches_target(int wantPct, int actualPct, unsigned int requestedPct);
+static void refresh_live_fan_telemetry(bool redrawControls = true);
+static bool window_should_redraw_fan_controls();
+static void sync_fan_ui_from_cached_state(bool redrawControls = true);
+static void update_fan_telemetry_timer();
+static bool fan_manual_control_available(char* detail, size_t detailSize);
+static bool validate_manual_fan_percent_for_runtime(int pct, char* detail, size_t detailSize);
+static bool validate_fan_curve_for_runtime(const FanCurveConfig* curve, char* detail, size_t detailSize);
 static void update_fan_controls_enabled_state();
 static void update_tray_icon();
 static void ensure_tray_profile_cache();
@@ -152,6 +192,8 @@ static bool current_applied_gpu_offset_excludes_low_points();
 static void open_fan_curve_dialog();
 static void refresh_fan_curve_button_text();
 static bool apply_desired_settings(const DesiredSettings* desired, bool interactive, char* result, size_t resultSize);
+static LRESULT CALLBACK LicenseDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+static void layout_license_dialog(HWND hwnd);
 
 static const VfBackendSpec g_vfBackendBlackwell = {
     "blackwell",
@@ -315,8 +357,17 @@ struct FanCurveDialogState {
     FanCurveConfig working;
 };
 
+struct LicenseDialogState {
+    HWND hwnd;
+    HWND textEdit;
+    HWND closeButton;
+    HWND owner;
+};
+
 static FanCurveDialogState g_fanCurveDialog = {};
+static LicenseDialogState g_licenseDialog = {};
 static HANDLE g_singleInstanceMutex = nullptr;
+static UINT g_taskbarCreatedMessage = 0;
 static const char APP_SINGLE_INSTANCE_MUTEX_NAME[] = "Local\\GreenCurveSingleInstance";
 
 enum {
@@ -327,9 +378,34 @@ enum {
     FAN_DIALOG_HYSTERESIS_ID = 6401,
     FAN_DIALOG_OK_ID = 6402,
     FAN_DIALOG_CANCEL_ID = 6403,
+    LICENSE_DIALOG_TEXT_ID = 6500,
+    LICENSE_DIALOG_CLOSE_ID = 6501,
 };
 
+enum {
+    APP_MODE_DEFAULT = 0,
+    APP_MODE_ALLOW_DARK = 1,
+};
+
+typedef BOOL (WINAPI *AllowDarkModeForWindowFn)(HWND, BOOL);
+typedef int (WINAPI *SetPreferredAppModeFn)(int);
+typedef void (WINAPI *FlushMenuThemesFn)();
+typedef BOOL (WINAPI *SystemParametersInfoForDpiFn)(UINT, UINT, PVOID, UINT, UINT);
+
+static AllowDarkModeForWindowFn s_fnAllowDarkModeForWindow = nullptr;
+static SetPreferredAppModeFn s_fnSetPreferredAppMode = nullptr;
+static FlushMenuThemesFn s_fnFlushMenuThemes = nullptr;
+static bool s_darkModeResolved = false;
+
+static HFONT s_hUiFont = nullptr;
+static LOGFONTA s_uiBaseLogFont = {};
+static bool s_uiBaseLogFontReady = false;
+
 static const UINT FAN_FIXED_RUNTIME_INTERVAL_MS = 5000;
+static const UINT FAN_TELEMETRY_INTERVAL_MS = 1000;
+static UINT fan_telemetry_interval_for_window_state() {
+    return FAN_TELEMETRY_INTERVAL_MS;
+}
 static const ULONGLONG FAN_RUNTIME_REAPPLY_INTERVAL_MS = 15000;
 static const ULONGLONG FAN_RUNTIME_FAILURE_WINDOW_MS = 10000;
 
@@ -461,45 +537,10 @@ static const char* tray_mode_label(bool customOc, bool customFan) {
     return "Default";
 }
 
-static bool desired_has_custom_oc(const DesiredSettings* desired) {
-    if (!desired) return false;
-    if (desired->hasGpuOffset || desired->hasMemOffset || desired->hasPowerLimit) return true;
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (desired->hasCurvePoint[i]) return true;
-    }
-    return false;
-}
-
-static const char* desired_fan_mode_label(const DesiredSettings* desired) {
-    if (!desired || !desired->hasFan || desired->fanMode == FAN_MODE_AUTO) return nullptr;
-    if (desired->fanMode == FAN_MODE_CURVE) return "Custom Fan Curve";
-    return "Custom Fan";
-}
-
-static void desired_mode_label(const DesiredSettings* desired, char* mode, size_t modeSize) {
-    if (!mode || modeSize == 0) return;
-
-    bool customOc = desired_has_custom_oc(desired);
-    const char* customFan = desired_fan_mode_label(desired);
-    if (customOc && customFan) {
-        StringCchPrintfA(mode, modeSize, "OC + %s", customFan);
-    } else if (customOc) {
-        StringCchCopyA(mode, modeSize, "OC");
-    } else if (customFan) {
-        StringCchCopyA(mode, modeSize, customFan);
-    } else {
-        StringCchCopyA(mode, modeSize, "Default");
-    }
-}
-
 void invalidate_tray_profile_cache() {
     g_app.trayProfileCacheValid = false;
-    g_app.trayProfileCacheHasMode = false;
-    g_app.trayProfileCacheCustomOc = false;
-    g_app.trayProfileCacheCustomFan = false;
     g_app.trayLastRenderedValid = false;
     g_app.trayLastRenderedState = TRAY_ICON_STATE_DEFAULT;
-    g_app.trayProfileCacheMode[0] = 0;
     g_app.trayProfileCacheProfilePart[0] = 0;
     g_app.trayLastRenderedTip[0] = 0;
 }
@@ -508,10 +549,6 @@ static void ensure_tray_profile_cache() {
     if (g_app.trayProfileCacheValid) return;
 
     g_app.trayProfileCacheValid = true;
-    g_app.trayProfileCacheHasMode = false;
-    g_app.trayProfileCacheCustomOc = false;
-    g_app.trayProfileCacheCustomFan = false;
-    g_app.trayProfileCacheMode[0] = 0;
     g_app.trayProfileCacheProfilePart[0] = 0;
 
     int selectedSlot = CONFIG_DEFAULT_SLOT;
@@ -539,31 +576,6 @@ static void ensure_tray_profile_cache() {
         "Profile %d (%s)",
         selectedSlot,
         hasSavedProfile ? "saved" : "empty");
-
-    if (!hasSavedProfile) return;
-
-    DesiredSettings desired = {};
-    char err[256] = {};
-    if (!load_profile_from_config(g_app.configPath, selectedSlot, &desired, err, sizeof(err))) return;
-
-    desired_mode_label(&desired, g_app.trayProfileCacheMode, sizeof(g_app.trayProfileCacheMode));
-    g_app.trayProfileCacheHasMode = true;
-    g_app.trayProfileCacheCustomOc = desired_has_custom_oc(&desired);
-    g_app.trayProfileCacheCustomFan = desired.hasFan && desired.fanMode != FAN_MODE_AUTO;
-}
-
-static void resolve_tray_icon_state(bool* customOcOut, bool* customFanOut) {
-    bool customOc = live_state_has_custom_oc();
-    bool customFan = live_state_has_custom_fan();
-
-    ensure_tray_profile_cache();
-    if (g_app.trayProfileCacheHasMode) {
-        customOc = g_app.trayProfileCacheCustomOc;
-        customFan = g_app.trayProfileCacheCustomFan;
-    }
-
-    if (customOcOut) *customOcOut = customOc;
-    if (customFanOut) *customFanOut = customFan;
 }
 
 static void build_tray_tooltip(char* tip, size_t tipSize) {
@@ -572,13 +584,9 @@ static void build_tray_tooltip(char* tip, size_t tipSize) {
     ensure_tray_profile_cache();
 
     char mode[64] = {};
-    if (g_app.trayProfileCacheHasMode) {
-        StringCchCopyA(mode, ARRAY_COUNT(mode), g_app.trayProfileCacheMode);
-    } else {
-        bool customOc = live_state_has_custom_oc();
-        bool customFan = live_state_has_custom_fan();
-        StringCchCopyA(mode, ARRAY_COUNT(mode), tray_mode_label(customOc, customFan));
-    }
+    bool customOc = live_state_has_custom_oc();
+    bool customFan = live_state_has_custom_fan();
+    StringCchCopyA(mode, ARRAY_COUNT(mode), tray_mode_label(customOc, customFan));
 
     const char* profilePart = g_app.trayProfileCacheProfilePart[0]
         ? g_app.trayProfileCacheProfilePart
@@ -592,38 +600,128 @@ static int clamp_percent(int value) {
     return value;
 }
 
+static int current_displayed_fan_percent() {
+    return g_app.fanCount ? (int)g_app.fanPercent[0] : 0;
+}
+
+static int current_manual_fan_target_percent() {
+    if (!g_app.fanCount) return 0;
+    if (g_app.fanTargetPercent[0] > 0) return (int)g_app.fanTargetPercent[0];
+    return current_displayed_fan_percent();
+}
+
+static bool window_should_redraw_fan_controls() {
+    if (!g_app.hMainWnd || !IsWindowVisible(g_app.hMainWnd)) return false;
+    return g_app.guiFanMode != FAN_MODE_FIXED || GetFocus() != g_app.hFanEdit;
+}
+
+static void sync_fan_ui_from_cached_state(bool redrawControls) {
+    initialize_gui_fan_settings_from_live_state(false);
+    update_tray_icon();
+    if (redrawControls) {
+        update_fan_controls_enabled_state();
+    }
+}
+
+static void update_fan_telemetry_timer() {
+    if (!g_app.hMainWnd) return;
+    KillTimer(g_app.hMainWnd, FAN_TELEMETRY_TIMER_ID);
+    if (!IsWindowVisible(g_app.hMainWnd)) return;
+    SetTimer(g_app.hMainWnd, FAN_TELEMETRY_TIMER_ID, fan_telemetry_interval_for_window_state(), nullptr);
+}
+
+static bool fan_manual_control_available(char* detail, size_t detailSize) {
+    if (!nvml_ensure_ready()) {
+        set_message(detail, detailSize, "NVML not ready");
+        return false;
+    }
+    if (!g_app.fanSupported || g_app.fanCount == 0) {
+        char refreshDetail[128] = {};
+        if (!nvml_read_fans(refreshDetail, sizeof(refreshDetail))) {
+            set_message(detail, detailSize, "%s", refreshDetail[0] ? refreshDetail : "Manual fan control unsupported on this GPU");
+            return false;
+        }
+    }
+    if (!g_app.fanSupported || g_app.fanCount == 0) {
+        set_message(detail, detailSize, "Manual fan control unsupported on this GPU");
+        return false;
+    }
+    if (!g_nvml_api.setFanSpeed) {
+        set_message(detail, detailSize, "Manual fan control unsupported by this NVIDIA driver");
+        return false;
+    }
+    return true;
+}
+
+static bool validate_manual_fan_percent_for_runtime(int pct, char* detail, size_t detailSize) {
+    if (pct < 0 || pct > 100) {
+        set_message(detail, detailSize, "Requested %d%% is outside the valid range 0..100%%", pct);
+        return false;
+    }
+    if (pct == 0) {
+        if (g_app.fanRangeKnown && g_app.fanMinPct == 0) return true;
+        if (g_app.fanRangeKnown) {
+            set_message(detail, detailSize,
+                "Requested 0%% manual fan is blocked because the GPU reports a supported range of %u..%u%%",
+                g_app.fanMinPct,
+                g_app.fanMaxPct);
+        } else {
+            set_message(detail, detailSize,
+                "Requested 0%% manual fan is blocked because the GPU did not report zero-speed support");
+        }
+        return false;
+    }
+    if (!g_app.fanRangeKnown) return true;
+    if (pct < (int)g_app.fanMinPct || pct > (int)g_app.fanMaxPct) {
+        set_message(detail, detailSize,
+            "Requested %d%% is outside the supported range %u..%u%%",
+            pct,
+            g_app.fanMinPct,
+            g_app.fanMaxPct);
+        return false;
+    }
+    return true;
+}
+
+static bool validate_fan_curve_for_runtime(const FanCurveConfig* curve, char* detail, size_t detailSize) {
+    if (!curve) {
+        set_message(detail, detailSize, "No fan curve config");
+        return false;
+    }
+    for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
+        if (!curve->points[i].enabled) continue;
+        char pointDetail[256] = {};
+        if (!validate_manual_fan_percent_for_runtime(curve->points[i].fanPercent, pointDetail, sizeof(pointDetail))) {
+            set_message(detail, detailSize, "Fan curve point %d is invalid: %s", i + 1, pointDetail);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool manual_fan_readback_matches_target(int wantPct, int actualPct, unsigned int requestedPct) {
+    if (wantPct == 0) return actualPct == 0;
+    if (actualPct >= wantPct - 2 && actualPct <= wantPct + 2) return true;
+
+    int requested = (int)requestedPct;
+    if (requested <= 0) return false;
+    return requested >= wantPct - 2 && requested <= wantPct + 2;
+}
+
 static bool is_gpu_offset_excluded_low_point(int pointIndex, int gpuOffsetMHz) {
     if (pointIndex < 0 || pointIndex >= VF_NUM_POINTS) return false;
     if (g_app.curve[pointIndex].freq_kHz == 0) return false;
 
     (void)gpuOffsetMHz;
 
-    int cutoffPointIndex = -1;
     int populatedCount = 0;
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         if (g_app.curve[ci].freq_kHz == 0) continue;
-        if (populatedCount == 69) {
-            cutoffPointIndex = ci;
-            break;
-        }
+        if (ci == pointIndex) return true;
         populatedCount++;
+        if (populatedCount >= 70) return false;
     }
-
-    if (cutoffPointIndex < 0) return true;
-
-    auto sorts_before_or_equal = [&](int lhs, int rhs) -> bool {
-        unsigned int lhsVolt = g_app.curve[lhs].volt_uV;
-        unsigned int rhsVolt = g_app.curve[rhs].volt_uV;
-        if (lhsVolt != rhsVolt) return lhsVolt < rhsVolt;
-
-        unsigned int lhsFreq = g_app.curve[lhs].freq_kHz;
-        unsigned int rhsFreq = g_app.curve[rhs].freq_kHz;
-        if (lhsFreq != rhsFreq) return lhsFreq < rhsFreq;
-
-        return lhs <= rhs;
-    };
-
-    return sorts_before_or_equal(pointIndex, cutoffPointIndex);
+    return true;
 }
 
 static int gpu_offset_component_mhz_for_point(int pointIndex, int gpuOffsetMHz, bool excludeLow70) {
@@ -690,7 +788,11 @@ static void show_best_guess_support_warning(HWND parent) {
             HRESULT hr = taskDialogIndirect(&config, &button, nullptr, &verification);
             if (SUCCEEDED(hr)) {
                 handled = true;
-                if (button == IDCANCEL) ExitProcess(0);
+                if (button == IDCANCEL) {
+                    remove_tray_icon();
+                    release_single_instance_mutex();
+                    ExitProcess(0);
+                }
                 dontShowAgainChecked = verification == TRUE;
             }
         }
@@ -699,7 +801,11 @@ static void show_best_guess_support_warning(HWND parent) {
 
     if (!handled) {
         int result = MessageBoxA(parent, message, "Green Curve - Experimental GPU Support", MB_OKCANCEL | MB_ICONWARNING);
-        if (result == IDCANCEL) ExitProcess(0);
+        if (result == IDCANCEL) {
+            remove_tray_icon();
+            release_single_instance_mutex();
+            ExitProcess(0);
+        }
 
         int dontShowAgain = MessageBoxA(parent,
             "Do not show this experimental support warning again for this GPU family?",
@@ -717,8 +823,13 @@ static void show_best_guess_support_warning(HWND parent) {
 
 static bool vf_curve_global_gpu_offset_supported() {
     const VfBackendSpec* backend = g_app.vfBackend;
-    if (!backend || !backend->writeSupported) return false;
-    return backend->family == GPU_FAMILY_BLACKWELL;
+    if (!backend || !backend->writeSupported) {
+        debug_log("vf_curve_global_gpu_offset_supported: no backend or not writable\n");
+        return false;
+    }
+    bool supported = backend->family == GPU_FAMILY_BLACKWELL;
+    debug_log("vf_curve_global_gpu_offset_supported: family=%d supported=%d\n", backend->family, supported ? 1 : 0);
+    return supported;
 }
 
 static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut) {
@@ -726,6 +837,8 @@ static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut) {
         if (gpuOffsetMHzOut) *gpuOffsetMHzOut = 0;
         return false;
     }
+
+    static const int TOLERANCE_MHZ = 30;
 
     int candidateOffsets[VF_NUM_POINTS] = {};
     int candidateCount = 0;
@@ -737,7 +850,7 @@ static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut) {
 
         bool seen = false;
         for (int i = 0; i < candidateCount; i++) {
-            if (candidateOffsets[i] == offsetMHz) {
+            if (abs(candidateOffsets[i] - offsetMHz) <= TOLERANCE_MHZ) {
                 seen = true;
                 break;
             }
@@ -749,54 +862,96 @@ static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut) {
 
     for (int candidateIndex = 0; candidateIndex < candidateCount; candidateIndex++) {
         int candidateMHz = candidateOffsets[candidateIndex];
+        int toleranceKHz = TOLERANCE_MHZ * 1000;
         bool sawExcludedPoint = false;
         bool sawIncludedPoint = false;
         bool match = true;
+        int includedSumKHz = 0;
+        int includedCount = 0;
 
         for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
             if (g_app.curve[ci].freq_kHz == 0) continue;
 
             bool excluded = is_gpu_offset_excluded_low_point(ci, candidateMHz);
-            int actualOffsetMHz = g_app.freqOffsets[ci] / 1000;
+            int actualOffsetKHz = g_app.freqOffsets[ci];
             if (excluded) {
                 sawExcludedPoint = true;
-                if (actualOffsetMHz != 0) {
-                    match = false;
-                    break;
-                }
             } else {
                 sawIncludedPoint = true;
-                if (actualOffsetMHz != candidateMHz) {
+                includedSumKHz += actualOffsetKHz;
+                includedCount++;
+            }
+        }
+
+        if (!sawIncludedPoint || !sawExcludedPoint) continue;
+
+        int medianOffsetKHz = includedCount > 0 ? (includedSumKHz / includedCount) : 0;
+
+        int excludedViolations = 0;
+        for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+            if (g_app.curve[ci].freq_kHz == 0) continue;
+            bool excluded = is_gpu_offset_excluded_low_point(ci, candidateMHz);
+            int actualOffsetKHz = g_app.freqOffsets[ci];
+            if (excluded) {
+                if (abs(actualOffsetKHz) > toleranceKHz) {
+                    excludedViolations++;
+                }
+            } else {
+                if (abs(actualOffsetKHz - medianOffsetKHz) > toleranceKHz) {
                     match = false;
                     break;
                 }
             }
         }
+        if (!match) continue;
 
-        if (match && sawExcludedPoint && sawIncludedPoint) {
-            if (gpuOffsetMHzOut) *gpuOffsetMHzOut = candidateMHz;
+        int excludedTotal = 0;
+        for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+            if (g_app.curve[ci].freq_kHz == 0) continue;
+            if (is_gpu_offset_excluded_low_point(ci, candidateMHz)) excludedTotal++;
+        }
+        if (excludedTotal > 0 && excludedViolations * 3 > excludedTotal) continue;
+
+        if (match && sawIncludedPoint) {
+            int detectedMHz = includedCount > 0
+                ? ((medianOffsetKHz >= 0 ? (medianOffsetKHz + 500) : (medianOffsetKHz - 500)) / 1000)
+                : candidateMHz;
+            debug_log("detect_live_selective: found selective offset=%d MHz (median=%d kHz, included=%d)\n",
+                detectedMHz, medianOffsetKHz, includedCount);
+            if (gpuOffsetMHzOut) *gpuOffsetMHzOut = detectedMHz;
             return true;
         }
     }
 
+    debug_log("detect_live_selective: no selective offset pattern found (candidates=%d)\n", candidateCount);
     if (gpuOffsetMHzOut) *gpuOffsetMHzOut = 0;
     return false;
 }
 
 static int current_applied_gpu_offset_mhz() {
     if (!vf_curve_global_gpu_offset_supported()) {
-        g_app.appliedGpuOffsetMHz = g_app.gpuClockOffsetkHz / 1000;
+        int offsetMHz = g_app.gpuClockOffsetkHz / 1000;
+        debug_log("current_applied_gpu_offset_mhz: not Blackwell, returning NVML offset=%d kHz -> %d MHz\n", g_app.gpuClockOffsetkHz, offsetMHz);
+        g_app.appliedGpuOffsetMHz = offsetMHz;
         g_app.appliedGpuOffsetExcludeLow70 = false;
         return g_app.appliedGpuOffsetMHz;
     }
     int detectedSelectiveOffsetMHz = 0;
     if (detect_live_selective_gpu_offset_state(&detectedSelectiveOffsetMHz)) {
+        debug_log("current_applied_gpu_offset_mhz: detected selective offset=%d MHz\n", detectedSelectiveOffsetMHz);
         g_app.appliedGpuOffsetMHz = detectedSelectiveOffsetMHz;
         g_app.appliedGpuOffsetExcludeLow70 = true;
         return detectedSelectiveOffsetMHz;
     }
+    if (g_app.appliedGpuOffsetExcludeLow70 && g_app.appliedGpuOffsetMHz != 0) {
+        debug_log("current_applied_gpu_offset_mhz: using session selective fallback=%d MHz\n", g_app.appliedGpuOffsetMHz);
+        return g_app.appliedGpuOffsetMHz;
+    }
+    int offsetMHz = g_app.gpuClockOffsetkHz / 1000;
+    debug_log("current_applied_gpu_offset_mhz: no selective detected, uniform offset=%d kHz -> %d MHz\n", g_app.gpuClockOffsetkHz, offsetMHz);
+    g_app.appliedGpuOffsetMHz = offsetMHz;
     g_app.appliedGpuOffsetExcludeLow70 = false;
-    return g_app.gpuClockOffsetkHz / 1000;
+    return offsetMHz;
 }
 
 static bool current_applied_gpu_offset_excludes_low_points() {
@@ -811,6 +966,10 @@ static bool current_applied_gpu_offset_excludes_low_points() {
         g_app.appliedGpuOffsetExcludeLow70 = true;
         return true;
     }
+    if (g_app.appliedGpuOffsetExcludeLow70 && g_app.appliedGpuOffsetMHz != 0) {
+        return true;
+    }
+    g_app.appliedGpuOffsetMHz = g_app.gpuClockOffsetkHz / 1000;
     g_app.appliedGpuOffsetExcludeLow70 = false;
     return false;
 }
@@ -840,22 +999,34 @@ static int get_effective_live_fan_mode() {
     return g_app.fanIsAuto ? FAN_MODE_AUTO : FAN_MODE_FIXED;
 }
 
-static void initialize_gui_fan_settings_from_live_state() {
+static void initialize_gui_fan_settings_from_live_state(bool syncGuiCurve) {
     ensure_valid_fan_curve_config(&g_app.guiFanCurve);
     ensure_valid_fan_curve_config(&g_app.activeFanCurve);
 
     g_app.activeFanMode = get_effective_live_fan_mode();
-    g_app.activeFanFixedPercent = g_app.fanCount ? (int)g_app.fanPercent[0] : 50;
+    if (g_app.activeFanMode == FAN_MODE_FIXED) {
+        g_app.activeFanFixedPercent = current_manual_fan_target_percent();
+    }
     if (g_app.guiFanMode < FAN_MODE_AUTO || g_app.guiFanMode > FAN_MODE_CURVE) {
         g_app.guiFanMode = g_app.activeFanMode;
     }
-    if (g_app.guiFanFixedPercent <= 0) {
-        g_app.guiFanFixedPercent = g_app.activeFanFixedPercent;
+    if (g_app.guiFanMode == FAN_MODE_FIXED) {
+        if (g_app.guiFanFixedPercent <= 0) {
+            g_app.guiFanFixedPercent = g_app.activeFanFixedPercent > 0 ? g_app.activeFanFixedPercent : 50;
+        }
+    } else {
+        g_app.guiFanFixedPercent = current_displayed_fan_percent();
     }
     g_app.guiFanFixedPercent = clamp_percent(g_app.guiFanFixedPercent);
-    if (g_app.activeFanMode == FAN_MODE_CURVE) {
+    if (syncGuiCurve && g_app.activeFanMode == FAN_MODE_CURVE) {
         copy_fan_curve(&g_app.guiFanCurve, &g_app.activeFanCurve);
     }
+}
+
+static void refresh_live_fan_telemetry(bool redrawControls) {
+    char detail[128] = {};
+    if (!nvml_read_fans(detail, sizeof(detail))) return;
+    sync_fan_ui_from_cached_state(redrawControls);
 }
 
 static bool is_start_on_logon_enabled(const char* path) {
@@ -905,7 +1076,10 @@ static void refresh_fan_curve_button_text() {
 
 static void update_fan_controls_enabled_state() {
     if (g_app.hFanModeCombo) {
-        SendMessageA(g_app.hFanModeCombo, CB_SETCURSEL, (WPARAM)g_app.guiFanMode, 0);
+        bool dropdownOpen = SendMessageA(g_app.hFanModeCombo, CB_GETDROPPEDSTATE, 0, 0) != 0;
+        if (!dropdownOpen) {
+            SendMessageA(g_app.hFanModeCombo, CB_SETCURSEL, (WPARAM)g_app.guiFanMode, 0);
+        }
         EnableWindow(g_app.hFanModeCombo, g_app.fanSupported ? TRUE : FALSE);
     }
     if (g_app.hFanEdit) {
@@ -926,7 +1100,6 @@ static void update_tray_icon() {
 
     bool hasCustomOc = live_state_has_custom_oc();
     bool hasCustomFan = live_state_has_custom_fan();
-    resolve_tray_icon_state(&hasCustomOc, &hasCustomFan);
     int state = TRAY_ICON_STATE_DEFAULT;
     if (hasCustomOc && hasCustomFan) {
         state = TRAY_ICON_STATE_OC_FAN;
@@ -1003,18 +1176,21 @@ static void hide_main_window_to_tray() {
     if (!g_app.hMainWnd) return;
     ensure_tray_icon();
     ShowWindow(g_app.hMainWnd, SW_HIDE);
+    update_fan_telemetry_timer();
 }
 
 static void show_main_window_from_tray() {
     if (!g_app.hMainWnd) return;
     ShowWindow(g_app.hMainWnd, SW_RESTORE);
     ShowWindow(g_app.hMainWnd, SW_SHOW);
+    update_fan_telemetry_timer();
     SetForegroundWindow(g_app.hMainWnd);
     g_app.startHiddenToTray = false;
 }
 
 static void show_tray_menu(HWND hwnd) {
     if (!hwnd) return;
+    refresh_menu_theme_cache();
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
     AppendMenuA(menu, MF_STRING, TRAY_MENU_SHOW_ID, IsWindowVisible(hwnd) ? "Show Window" : "Open Green Curve");
@@ -1118,7 +1294,9 @@ static void handle_fan_runtime_failure(const char* action, const char* detail) {
     stop_fan_curve_runtime();
     if (autoRestored) {
         g_app.activeFanMode = FAN_MODE_AUTO;
-        g_app.activeFanFixedPercent = g_app.fanCount ? (int)g_app.fanPercent[0] : 0;
+        sync_fan_ui_from_cached_state(window_should_redraw_fan_controls());
+    } else if (g_app.hMainWnd) {
+        refresh_live_fan_telemetry(window_should_redraw_fan_controls());
     }
 
     char reportDetails[768] = {};
@@ -1179,6 +1357,10 @@ static void stop_fan_curve_runtime(bool restoreFanAutoOnExit) {
     if (hadRuntime && (g_app.activeFanMode == FAN_MODE_CURVE || g_app.activeFanMode == FAN_MODE_FIXED)) {
         g_app.activeFanMode = g_app.fanIsAuto ? FAN_MODE_AUTO : FAN_MODE_FIXED;
     }
+    if (g_app.hMainWnd) {
+        refresh_live_fan_telemetry(true);
+    }
+    update_fan_telemetry_timer();
     update_tray_icon();
 }
 
@@ -1204,8 +1386,6 @@ static bool nvml_read_temperature(int* temperatureC, char* detail, size_t detail
 }
 
 static void apply_fan_curve_tick() {
-    if (!g_app.fanSupported) return;
-
     ULONGLONG now = GetTickCount64();
 
     if (g_app.fanFixedRuntimeActive) {
@@ -1223,6 +1403,7 @@ static void apply_fan_curve_tick() {
                 g_app.activeFanMode = FAN_MODE_FIXED;
                 g_app.activeFanFixedPercent = targetPercent;
                 g_app.fanRuntimeConsecutiveFailures = 0;
+                sync_fan_ui_from_cached_state(window_should_redraw_fan_controls());
                 return;
             }
         }
@@ -1240,6 +1421,7 @@ static void apply_fan_curve_tick() {
         g_app.activeFanMode = FAN_MODE_FIXED;
         g_app.activeFanFixedPercent = targetPercent;
         mark_fan_runtime_success(now);
+        sync_fan_ui_from_cached_state(window_should_redraw_fan_controls());
         return;
     }
 
@@ -1288,13 +1470,20 @@ static void apply_fan_curve_tick() {
     g_app.fanCurveLastAppliedTempC = currentTempC;
     g_app.fanCurveHasLastAppliedTemp = true;
     mark_fan_runtime_success(now);
+    sync_fan_ui_from_cached_state(window_should_redraw_fan_controls());
 }
 
 static void start_fan_curve_runtime() {
     if (!g_app.fanSupported || !g_app.hMainWnd) return;
     fan_curve_normalize(&g_app.activeFanCurve);
     char err[256] = {};
+    if (!fan_manual_control_available(err, sizeof(err))) {
+        return;
+    }
     if (!fan_curve_validate(&g_app.activeFanCurve, err, sizeof(err))) {
+        return;
+    }
+    if (!validate_fan_curve_for_runtime(&g_app.activeFanCurve, err, sizeof(err))) {
         return;
     }
 
@@ -1311,6 +1500,8 @@ static void start_fan_curve_runtime() {
         return;
     }
 
+    update_fan_telemetry_timer();
+
     if (g_app.fanCurveRuntimeActive) {
         apply_fan_curve_tick();
     }
@@ -1321,6 +1512,9 @@ static void start_fixed_fan_runtime() {
     if (!g_app.fanSupported || !g_app.hMainWnd) return;
 
     g_app.activeFanFixedPercent = clamp_percent(g_app.activeFanFixedPercent);
+    char detail[256] = {};
+    if (!fan_manual_control_available(detail, sizeof(detail))) return;
+    if (!validate_manual_fan_percent_for_runtime(g_app.activeFanFixedPercent, detail, sizeof(detail))) return;
     g_app.activeFanMode = FAN_MODE_FIXED;
     g_app.fanCurveRuntimeActive = false;
     g_app.fanFixedRuntimeActive = true;
@@ -1334,12 +1528,150 @@ static void start_fixed_fan_runtime() {
         return;
     }
 
+    update_fan_telemetry_timer();
+
     apply_fan_curve_tick();
     update_tray_icon();
 }
 
 static void show_license_dialog(HWND parent) {
-    MessageBoxA(parent, APP_LICENSE_TEXT, APP_NAME " License", MB_OK | MB_ICONINFORMATION);
+    if (g_licenseDialog.hwnd) {
+        ShowWindow(g_licenseDialog.hwnd, SW_SHOW);
+        SetForegroundWindow(g_licenseDialog.hwnd);
+        return;
+    }
+
+    WNDCLASSEXA wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = LicenseDialogProc;
+    wc.hInstance = g_app.hInst;
+    wc.lpszClassName = "GreenCurveLicenseDialog";
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = g_app.hWindowClassBrush;
+    wc.hIcon = (HICON)SendMessageA(g_app.hMainWnd, WM_GETICON, ICON_SMALL, 0);
+    WNDCLASSEXA existing = {};
+    if (!GetClassInfoExA(g_app.hInst, wc.lpszClassName, &existing)) {
+        RegisterClassExA(&wc);
+    }
+
+    RECT ownerRect = {};
+    if (parent) GetWindowRect(parent, &ownerRect);
+    int width = dp(760);
+    int height = dp(560);
+    int x = parent ? ownerRect.left + ((ownerRect.right - ownerRect.left) - width) / 2 : CW_USEDEFAULT;
+    int y = parent ? ownerRect.top + dp(30) : CW_USEDEFAULT;
+
+    g_licenseDialog.owner = parent;
+    g_licenseDialog.hwnd = CreateWindowExA(
+        WS_EX_DLGMODALFRAME,
+        wc.lpszClassName,
+        APP_NAME " License",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
+        x, y, width, height,
+        parent, nullptr, g_app.hInst, nullptr);
+    if (!g_licenseDialog.hwnd) return;
+
+    if (parent) EnableWindow(parent, FALSE);
+    ShowWindow(g_licenseDialog.hwnd, SW_SHOW);
+    UpdateWindow(g_licenseDialog.hwnd);
+}
+
+static void layout_license_dialog(HWND hwnd) {
+    if (!hwnd || !g_licenseDialog.textEdit || !g_licenseDialog.closeButton) return;
+    RECT rc = {};
+    GetClientRect(hwnd, &rc);
+    int margin = dp(16);
+    int buttonW = dp(92);
+    int buttonH = dp(30);
+    SetWindowPos(g_licenseDialog.textEdit, nullptr,
+        margin, margin, nvmax(dp(320), rc.right - margin * 2), nvmax(dp(220), rc.bottom - margin * 3 - buttonH),
+        SWP_NOZORDER);
+    SetWindowPos(g_licenseDialog.closeButton, nullptr,
+        rc.right - margin - buttonW, rc.bottom - margin - buttonH, buttonW, buttonH,
+        SWP_NOZORDER);
+}
+
+static LRESULT CALLBACK LicenseDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_CREATE: {
+            apply_system_titlebar_theme(hwnd);
+            allow_dark_mode_for_window(hwnd);
+
+            g_licenseDialog.textEdit = CreateWindowExA(
+                WS_EX_CLIENTEDGE, "EDIT", APP_LICENSE_TEXT,
+                WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY,
+                0, 0, 0, 0, hwnd, (HMENU)(INT_PTR)LICENSE_DIALOG_TEXT_ID, g_app.hInst, nullptr);
+            g_licenseDialog.closeButton = CreateWindowExA(
+                0, "BUTTON", "Close",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                0, 0, 0, 0, hwnd, (HMENU)(INT_PTR)LICENSE_DIALOG_CLOSE_ID, g_app.hInst, nullptr);
+
+            style_input_control(g_licenseDialog.textEdit);
+            apply_ui_font(g_licenseDialog.textEdit);
+            apply_ui_font(g_licenseDialog.closeButton);
+            layout_license_dialog(hwnd);
+            return 0;
+        }
+
+        case WM_SIZE:
+            layout_license_dialog(hwnd);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+
+        case WM_SETTINGCHANGE:
+        case WM_THEMECHANGED:
+            apply_system_titlebar_theme(hwnd);
+            allow_dark_mode_for_window(hwnd);
+            return 0;
+
+        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLOREDIT: {
+            HDC hdc = (HDC)wParam;
+            HWND hCtl = (HWND)lParam;
+            if (hCtl == g_licenseDialog.textEdit) {
+                SetTextColor(hdc, COL_TEXT);
+                SetBkColor(hdc, COL_INPUT);
+                static HBRUSH hInputBrush = CreateSolidBrush(COL_INPUT);
+                return (LRESULT)hInputBrush;
+            }
+            SetTextColor(hdc, COL_LABEL);
+            SetBkColor(hdc, COL_BG);
+            static HBRUSH hBgBrush = CreateSolidBrush(COL_BG);
+            return (LRESULT)hBgBrush;
+        }
+
+        case WM_DRAWITEM: {
+            const DRAWITEMSTRUCT* dis = (const DRAWITEMSTRUCT*)lParam;
+            if (dis && dis->CtlType == ODT_BUTTON && dis->CtlID == LICENSE_DIALOG_CLOSE_ID) {
+                draw_themed_button(dis);
+                return TRUE;
+            }
+            break;
+        }
+
+        case WM_COMMAND:
+            if (LOWORD(wParam) == LICENSE_DIALOG_CLOSE_ID && HIWORD(wParam) == BN_CLICKED) {
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            break;
+
+        case WM_CLOSE:
+            DestroyWindow(hwnd);
+            return 0;
+
+        case WM_DESTROY:
+            g_licenseDialog.textEdit = nullptr;
+            g_licenseDialog.closeButton = nullptr;
+            g_licenseDialog.hwnd = nullptr;
+            if (g_licenseDialog.owner) {
+                EnableWindow(g_licenseDialog.owner, TRUE);
+                SetForegroundWindow(g_licenseDialog.owner);
+                g_licenseDialog.owner = nullptr;
+            }
+            return 0;
+    }
+    return DefWindowProcA(hwnd, msg, wParam, lParam);
 }
 
 static int layout_rows_per_column() {
@@ -1347,7 +1679,7 @@ static int layout_rows_per_column() {
 }
 
 static int layout_global_controls_y() {
-    return dp(GRAPH_HEIGHT) + dp(14) + layout_rows_per_column() * dp(20) + dp(6);
+    return dp(GRAPH_HEIGHT) + dp(20) + layout_rows_per_column() * dp(20) + dp(6);
 }
 
 static int layout_bottom_buttons_y() {
@@ -1454,7 +1786,9 @@ static void layout_bottom_buttons(HWND hParent) {
     if (g_app.hLogonCombo)
         SetWindowPos(g_app.hLogonCombo, nullptr, margin + dp(578), autoY, dp(170), comboDropH, SWP_NOZORDER);
     if (g_app.hStartOnLogonCheck)
-        SetWindowPos(g_app.hStartOnLogonCheck, nullptr, margin + dp(760), autoY + dp(2), dp(320), dp(24), SWP_NOZORDER);
+        SetWindowPos(g_app.hStartOnLogonCheck, nullptr, margin + dp(760), autoY + dp(4), dp(16), dp(16), SWP_NOZORDER);
+    if (g_app.hStartOnLogonLabel)
+        SetWindowPos(g_app.hStartOnLogonLabel, nullptr, margin + dp(784), autoY + dp(3), dp(296), dp(18), SWP_NOZORDER);
     if (g_app.hLogonHintLabel)
         SetWindowPos(g_app.hLogonHintLabel, nullptr, margin, hintY, nvmax(dp(320), rc.right - margin * 2), dp(34), SWP_NOZORDER);
     if (g_app.hProfileStatusLabel)
@@ -1476,6 +1810,10 @@ static void set_default_config_path() {
     }
     StringCchCopyA(g_app.configPath, ARRAY_COUNT(g_app.configPath), path);
     invalidate_tray_profile_cache();
+}
+
+static bool should_suppress_startup_ui() {
+    return g_app.launchedFromLogon || g_app.startHiddenToTray;
 }
 
 static const char* nvml_err_name(nvmlReturn_t r) {
@@ -1503,6 +1841,20 @@ static void debug_log(const char* fmt, ...) {
     StringCchVPrintfA(buf, ARRAY_COUNT(buf), fmt, ap);
     va_end(ap);
     OutputDebugStringA(buf);
+
+    char debugPath[MAX_PATH] = {};
+    GetModuleFileNameA(nullptr, debugPath, MAX_PATH);
+    char* slash = strrchr(debugPath, '\\');
+    if (!slash) slash = strrchr(debugPath, '/');
+    if (slash) slash[1] = 0; else debugPath[0] = 0;
+    StringCchCatA(debugPath, MAX_PATH, APP_DEBUG_LOG_FILE);
+
+    HANDLE h = CreateFileA(debugPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+        DWORD written = 0;
+        WriteFile(h, buf, (DWORD)strlen(buf), &written, nullptr);
+        CloseHandle(h);
+    }
 }
 
 static bool write_text_file_atomic(const char* path, const char* data, size_t dataSize, char* err, size_t errSize) {
@@ -1594,8 +1946,8 @@ static bool write_log_snapshot(const char* path, char* err, size_t errSize) {
     if (g_app.fanSupported) {
         appendf("Fan: %s\r\n", g_app.fanIsAuto ? "auto" : "manual");
         for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
-            appendf("  Fan %u: %u%% / %u RPM / policy=%u signal=%u target=0x%X\r\n",
-                fan, g_app.fanPercent[fan], g_app.fanRpm[fan], g_app.fanPolicy[fan], g_app.fanControlSignal[fan], g_app.fanTargetMask[fan]);
+            appendf("  Fan %u: %u%% / %u RPM / policy=%u signal=%u target=0x%X requested=%u%%\r\n",
+                fan, g_app.fanPercent[fan], g_app.fanRpm[fan], g_app.fanPolicy[fan], g_app.fanControlSignal[fan], g_app.fanTargetMask[fan], g_app.fanTargetPercent[fan]);
         }
     } else {
         appendf("Fan: unsupported\r\n");
@@ -1668,8 +2020,8 @@ static bool write_error_report_log(const char* summary, const char* details, cha
     if (g_app.fanSupported) {
         appendf("Fan: %s\r\n", g_app.fanIsAuto ? "auto" : "manual");
         for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
-            appendf("  Fan %u: %u%% / %u RPM / policy=%u signal=%u target=0x%X\r\n",
-                fan, g_app.fanPercent[fan], g_app.fanRpm[fan], g_app.fanPolicy[fan], g_app.fanControlSignal[fan], g_app.fanTargetMask[fan]);
+            appendf("  Fan %u: %u%% / %u RPM / policy=%u signal=%u target=0x%X requested=%u%%\r\n",
+                fan, g_app.fanPercent[fan], g_app.fanRpm[fan], g_app.fanPolicy[fan], g_app.fanControlSignal[fan], g_app.fanTargetMask[fan], g_app.fanTargetPercent[fan]);
         }
     } else {
         appendf("Fan: unsupported\r\n");
@@ -1740,8 +2092,8 @@ static bool write_json_snapshot(const char* path, char* err, size_t errSize) {
     }
     append("  \"fans\": [\n");
     for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
-        append("    {\"index\": %u, \"percent\": %u, \"rpm\": %u, \"policy\": %u, \"signal\": %u, \"target\": %u}%s\n",
-            fan, g_app.fanPercent[fan], g_app.fanRpm[fan], g_app.fanPolicy[fan], g_app.fanControlSignal[fan], g_app.fanTargetMask[fan],
+        append("    {\"index\": %u, \"percent\": %u, \"requested_percent\": %u, \"rpm\": %u, \"policy\": %u, \"signal\": %u, \"target\": %u}%s\n",
+            fan, g_app.fanPercent[fan], g_app.fanTargetPercent[fan], g_app.fanRpm[fan], g_app.fanPolicy[fan], g_app.fanControlSignal[fan], g_app.fanTargetMask[fan],
             (fan + 1 < g_app.fanCount) ? "," : "");
     }
     append("  ],\n  \"points\": [\n");
@@ -2570,6 +2922,32 @@ static bool load_desired_settings_from_ini(const char* path, DesiredSettings* de
         desired->gpuOffsetExcludeLow70 = value != 0;
     }
 
+    GetPrivateProfileStringA("controls", "lock_ci", "", buf, sizeof(buf), path);
+    trim_ascii(buf);
+    if (buf[0]) {
+        int value = -1;
+        if (!parse_int_strict(buf, &value)) {
+            set_message(err, errSize, "Invalid lock_ci in %s", path);
+            return false;
+        }
+        desired->hasLock = value >= 0;
+        desired->lockCi = value;
+    }
+
+    GetPrivateProfileStringA("controls", "lock_mhz", "", buf, sizeof(buf), path);
+    trim_ascii(buf);
+    if (buf[0]) {
+        int value = 0;
+        if (!parse_int_strict(buf, &value) || value < 0) {
+            set_message(err, errSize, "Invalid lock_mhz in %s", path);
+            return false;
+        }
+        if (value > 0) {
+            desired->hasLock = true;
+            desired->lockMHz = (unsigned int)value;
+        }
+    }
+
     GetPrivateProfileStringA("controls", "mem_offset_mhz", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
@@ -2644,6 +3022,11 @@ static bool load_desired_settings_from_ini(const char* path, DesiredSettings* de
 
     if (!load_fan_curve_config_from_section(path, "fan_curve", &desired->fanCurve, err, errSize)) return false;
 
+    char curveSemantics[64] = {};
+    GetPrivateProfileStringA("curve", "curve_semantics", "", curveSemantics, sizeof(curveSemantics), path);
+    trim_ascii(curveSemantics);
+    bool legacyCurveSemantics = curveSemantics[0] == 0;
+
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         char key[32];
         StringCchPrintfA(key, ARRAY_COUNT(key), "point%d", i);
@@ -2657,6 +3040,26 @@ static bool load_desired_settings_from_ini(const char* path, DesiredSettings* de
         }
         desired->hasCurvePoint[i] = true;
         desired->curvePointMHz[i] = (unsigned int)v;
+    }
+
+    bool basePlusGpuOffsetCurve = streqi_ascii(curveSemantics, "base_plus_gpu_offset");
+    if (basePlusGpuOffsetCurve && desired->hasGpuOffset && desired->gpuOffsetMHz != 0) {
+        for (int i = 0; i < VF_NUM_POINTS; i++) {
+            if (!desired->hasCurvePoint[i]) continue;
+            int offsetCompmhz = gpu_offset_component_mhz_for_point(i, desired->gpuOffsetMHz, desired->gpuOffsetExcludeLow70);
+            int absoluteMhz = (int)desired->curvePointMHz[i] + offsetCompmhz;
+            if (absoluteMhz <= 0) {
+                desired->hasCurvePoint[i] = false;
+                desired->curvePointMHz[i] = 0;
+                continue;
+            }
+            desired->curvePointMHz[i] = (unsigned int)absoluteMhz;
+        }
+    } else if (legacyCurveSemantics && desired->hasGpuOffset && desired->gpuOffsetMHz != 0) {
+        for (int i = 0; i < VF_NUM_POINTS; i++) {
+            desired->hasCurvePoint[i] = false;
+            desired->curvePointMHz[i] = 0;
+        }
     }
 
     return true;
@@ -2673,9 +3076,9 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
     char buf[64] = {};
     int parsedCurveMHz[VF_NUM_POINTS] = {};
     bool parsedCurveHave[VF_NUM_POINTS] = {};
-    bool currentGpuOffsetExcludeLow70 = g_app.appliedGpuOffsetExcludeLow70;
     bool currentActiveGpuOffsetExcludeLow70 = current_applied_gpu_offset_excludes_low_points();
     int currentGpuOffsetMHz = current_applied_gpu_offset_mhz();
+    bool currentGpuOffsetExcludeLow70 = currentActiveGpuOffsetExcludeLow70;
     get_window_text_safe(g_app.hGpuOffsetEdit, buf, sizeof(buf));
     int gpuOffsetMHz = currentGpuOffsetMHz;
     if (buf[0]) {
@@ -2685,10 +3088,9 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
         }
     }
     bool gpuOffsetExcludeLow70 = g_app.guiGpuOffsetExcludeLow70;
-    if (g_app.hGpuOffsetExcludeLowCheck) {
-        gpuOffsetExcludeLow70 = SendMessageA(g_app.hGpuOffsetExcludeLowCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    }
     bool desiredActiveGpuOffsetExcludeLow70 = gpuOffsetExcludeLow70 && gpuOffsetMHz != 0;
+    debug_log("capture_gui: gpuOffsetMHz=%d excludeState=%d desiredExclude=%d currentExclude=%d\n",
+        gpuOffsetMHz, gpuOffsetExcludeLow70 ? 1 : 0, desiredActiveGpuOffsetExcludeLow70 ? 1 : 0, currentGpuOffsetExcludeLow70 ? 1 : 0);
     g_app.guiGpuOffsetMHz = gpuOffsetMHz;
     g_app.guiGpuOffsetExcludeLow70 = gpuOffsetExcludeLow70;
 
@@ -2700,13 +3102,18 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
     bool anyExplicitCurvePoint = captureAllCurvePoints || desiredActiveGpuOffsetExcludeLow70 || currentActiveGpuOffsetExcludeLow70;
     if (hasLock) {
         lockCi = g_app.visibleMap[g_app.lockedVi];
-        char lockBuf[32] = {};
-        get_window_text_safe(g_app.hEditsMhz[g_app.lockedVi], lockBuf, sizeof(lockBuf));
-        if (!parse_int_strict(lockBuf, &effectiveLockTargetMHz) || effectiveLockTargetMHz <= 0) {
-            set_message(err, errSize, "Invalid MHz value for point %d", lockCi);
-            return false;
-        }
         currentLockMHz = displayed_curve_mhz(g_app.curve[lockCi].freq_kHz);
+        effectiveLockTargetMHz = (int)g_app.lockedFreq;
+        if (effectiveLockTargetMHz <= 0) {
+            char lockBuf[32] = {};
+            get_window_text_safe(g_app.hEditsMhz[g_app.lockedVi], lockBuf, sizeof(lockBuf));
+            if (!lockBuf[0] && captureAllCurvePoints) {
+                effectiveLockTargetMHz = (int)currentLockMHz;
+            } else if (!parse_int_strict(lockBuf, &effectiveLockTargetMHz) || effectiveLockTargetMHz <= 0) {
+                set_message(err, errSize, "Invalid MHz value for point %d", lockCi);
+                return false;
+            }
+        }
         int currentLockGpuOffsetMHz = gpu_offset_component_mhz_for_point(lockCi, currentGpuOffsetMHz, currentActiveGpuOffsetExcludeLow70);
         int desiredLockGpuOffsetMHz = gpu_offset_component_mhz_for_point(lockCi, gpuOffsetMHz, desiredActiveGpuOffsetExcludeLow70);
         if (effectiveLockTargetMHz == (int)currentLockMHz && desiredLockGpuOffsetMHz != currentLockGpuOffsetMHz) {
@@ -2715,10 +3122,14 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
             lockTargetSynthesizedFromGpuOffset = true;
         }
         if (!captureAllCurvePoints && effectiveLockTargetMHz != (int)currentLockMHz) anyExplicitCurvePoint = true;
+        desired->hasLock = true;
+        desired->lockCi = lockCi;
+        desired->lockMHz = (unsigned int)effectiveLockTargetMHz;
     }
 
     for (int vi = 0; vi < g_app.numVisible; vi++) {
         int ci = g_app.visibleMap[vi];
+        unsigned int currentMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
         int mhz = 0;
         if (hasLock && expandLockedTail && vi >= g_app.lockedVi) {
             mhz = effectiveLockTargetMHz;
@@ -2727,14 +3138,15 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
         } else {
             char pointBuf[32] = {};
             get_window_text_safe(g_app.hEditsMhz[vi], pointBuf, sizeof(pointBuf));
-            if (!parse_int_strict(pointBuf, &mhz) || mhz <= 0) {
+            if (!pointBuf[0] && captureAllCurvePoints) {
+                mhz = (int)currentMHz;
+            } else if (!parse_int_strict(pointBuf, &mhz) || mhz <= 0) {
                 set_message(err, errSize, "Invalid MHz value for point %d", ci);
                 return false;
             }
         }
         parsedCurveMHz[ci] = mhz;
         parsedCurveHave[ci] = true;
-        unsigned int currentMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
         if (!captureAllCurvePoints && (!hasLock || vi < g_app.lockedVi) && (unsigned int)mhz != currentMHz) {
             anyExplicitCurvePoint = true;
         }
@@ -2992,10 +3404,7 @@ static bool write_startup_task_xml(const WCHAR* xmlPath, const WCHAR* exePath, c
         return false;
     }
 
-    const bool launchProgramAtLogon = is_start_on_logon_enabled(g_app.configPath);
-    const WCHAR* description = launchProgramAtLogon
-        ? L"Launch Green Curve in the tray at user logon."
-        : L"Apply Green Curve profile settings silently at user logon.";
+    const WCHAR* description = L"Launch Green Curve at user logon using the current startup configuration.";
 
     HANDLE h = CreateFileW(xmlPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
@@ -3030,15 +3439,22 @@ static bool write_startup_task_xml(const WCHAR* xmlPath, const WCHAR* exePath, c
         L"    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\r\n"
         L"    <AllowHardTerminate>true</AllowHardTerminate>\r\n"
         L"    <StartWhenAvailable>true</StartWhenAvailable>\r\n"
+        L"    <IdleSettings>\r\n"
+        L"      <StopOnIdleEnd>false</StopOnIdleEnd>\r\n"
+        L"      <RestartOnIdle>false</RestartOnIdle>\r\n"
+        L"    </IdleSettings>\r\n"
         L"    <AllowStartOnDemand>true</AllowStartOnDemand>\r\n"
         L"    <Enabled>true</Enabled>\r\n"
         L"    <Hidden>false</Hidden>\r\n"
-        L"    <ExecutionTimeLimit>PT10M</ExecutionTimeLimit>\r\n"
+        L"    <RunOnlyIfIdle>false</RunOnlyIfIdle>\r\n"
+        L"    <WakeToRun>false</WakeToRun>\r\n"
+        L"    <ExecutionTimeLimit>%ls</ExecutionTimeLimit>\r\n"
         L"    <Priority>7</Priority>\r\n"
         L"  </Settings>\r\n"
         L"  <Actions Context=\"Author\">\r\n"
         L"    <Exec>\r\n"
         L"      <Command>%ls</Command>\r\n"
+        L"      <WorkingDirectory>%ls</WorkingDirectory>\r\n"
         L"      <Arguments>%ls</Arguments>\r\n"
         L"    </Exec>\r\n"
         L"  </Actions>\r\n"
@@ -3056,9 +3472,17 @@ static bool write_startup_task_xml(const WCHAR* xmlPath, const WCHAR* exePath, c
     WCHAR cfgEsc[2048] = {};
     WCHAR userEsc[1024] = {};
     WCHAR argsEsc[2048] = {};
+    WCHAR workDir[MAX_PATH] = {};
+    WCHAR workDirEsc[2048] = {};
+    const WCHAR* executionTimeLimit = L"PT0S";
+    StringCchCopyW(workDir, ARRAY_COUNT(workDir), exePath);
+    WCHAR* slash = wcsrchr(workDir, L'\\');
+    if (!slash) slash = wcsrchr(workDir, L'/');
+    if (slash) *slash = 0;
     if (!xml_escape_wide(exePath, exeEsc, ARRAY_COUNT(exeEsc), false) ||
         !xml_escape_wide(cfgPath, cfgEsc, ARRAY_COUNT(cfgEsc), true) ||
-        !xml_escape_wide(userName, userEsc, ARRAY_COUNT(userEsc), false)) {
+        !xml_escape_wide(userName, userEsc, ARRAY_COUNT(userEsc), false) ||
+        !xml_escape_wide(workDir, workDirEsc, ARRAY_COUNT(workDirEsc), false)) {
         CloseHandle(h);
         DeleteFileW(xmlPath);
         set_message(err, errSize, "Failed escaping startup task XML");
@@ -3068,7 +3492,7 @@ static bool write_startup_task_xml(const WCHAR* xmlPath, const WCHAR* exePath, c
     HRESULT argsHr = StringCchPrintfW(
         argsEsc,
         ARRAY_COUNT(argsEsc),
-        launchProgramAtLogon ? L"--logon-start --config &quot;%ls&quot;" : L"--apply-config --config &quot;%ls&quot;",
+        L"--logon-start --config &quot;%ls&quot;",
         cfgEsc);
     if (FAILED(argsHr)) {
         CloseHandle(h);
@@ -3078,7 +3502,7 @@ static bool write_startup_task_xml(const WCHAR* xmlPath, const WCHAR* exePath, c
     }
 
     WCHAR xml[8192] = {};
-    HRESULT hr = StringCchPrintfW(xml, ARRAY_COUNT(xml), xmlFmt, userEsc, description, userEsc, userEsc, exeEsc, argsEsc);
+    HRESULT hr = StringCchPrintfW(xml, ARRAY_COUNT(xml), xmlFmt, userEsc, description, userEsc, userEsc, executionTimeLimit, exeEsc, workDirEsc, argsEsc);
     if (FAILED(hr)) {
         CloseHandle(h);
         DeleteFileW(xmlPath);
@@ -3196,7 +3620,7 @@ static void sync_logon_combo_from_system() {
         shouldEnableTask = should_enable_startup_task_from_config(g_app.configPath);
     }
 
-    if (shouldEnableTask || taskExists) {
+    if (shouldEnableTask != taskExists) {
         char err[256] = {};
         if (!set_startup_task_enabled(shouldEnableTask, err, sizeof(err)) && err[0]) {
             debug_log("startup task sync failed: %s\n", err);
@@ -3219,7 +3643,7 @@ static DWORD WINAPI logon_sync_thread_proc(void* param) {
         shouldEnableTask = should_enable_startup_task_from_config(g_app.configPath);
     }
 
-    if (shouldEnableTask || taskExists) {
+    if (shouldEnableTask != taskExists) {
         char err[256] = {};
         if (!set_startup_task_enabled(shouldEnableTask, err, sizeof(err)) && err[0]) {
             debug_log("startup task sync failed: %s\n", err);
@@ -3253,6 +3677,7 @@ static bool set_startup_task_enabled(bool enabled, char* err, size_t errSize) {
 
     DWORD exitCode = 0;
     if (!enabled) {
+        if (!is_startup_task_enabled()) return true;
         WCHAR deleteArgs[512] = {};
         if (FAILED(StringCchPrintfW(deleteArgs, ARRAY_COUNT(deleteArgs), L"/delete /tn \"%ls\" /f", taskName))) {
             set_message(err, errSize, "Scheduled task delete command too long");
@@ -3269,6 +3694,8 @@ static bool set_startup_task_enabled(bool enabled, char* err, size_t errSize) {
         }
         return true;
     }
+
+    if (is_startup_task_enabled()) return true;
 
     WCHAR exePath[MAX_PATH] = {};
     WCHAR cfgPath[MAX_PATH] = {};
@@ -3575,12 +4002,12 @@ static bool nvml_set_clock_offset_domain(unsigned int domain, int offsetMHz, boo
 
 static bool nvml_read_fans(char* detail, size_t detailSize) {
     if (!nvml_ensure_ready()) {
-        g_app.fanSupported = false;
         set_message(detail, detailSize, "NVML not ready");
         return false;
     }
 
     memset(g_app.fanPercent, 0, sizeof(g_app.fanPercent));
+    memset(g_app.fanTargetPercent, 0, sizeof(g_app.fanTargetPercent));
     memset(g_app.fanRpm, 0, sizeof(g_app.fanRpm));
     memset(g_app.fanPolicy, 0, sizeof(g_app.fanPolicy));
     memset(g_app.fanControlSignal, 0, sizeof(g_app.fanControlSignal));
@@ -3588,7 +4015,6 @@ static bool nvml_read_fans(char* detail, size_t detailSize) {
     g_app.fanCount = 0;
     g_app.fanMinPct = 0;
     g_app.fanMaxPct = 100;
-    g_app.fanSupported = false;
     g_app.fanRangeKnown = false;
     g_app.fanIsAuto = true;
 
@@ -3618,15 +4044,17 @@ static bool nvml_read_fans(char* detail, size_t detailSize) {
 
     bool allAuto = true;
     for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
+        bool policyKnown = false;
         if (g_nvml_api.getFanControlPolicy) {
             unsigned int pol = 0;
             if (g_nvml_api.getFanControlPolicy(g_app.nvmlDevice, fan, &pol) == NVML_SUCCESS) {
                 g_app.fanPolicy[fan] = pol;
+                policyKnown = true;
                 if (pol != NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW) allAuto = false;
             }
         }
         bool isAutoForFan = true;
-        if (g_nvml_api.getFanControlPolicy) {
+        if (policyKnown) {
             unsigned int pol = g_app.fanPolicy[fan];
             isAutoForFan = (pol == NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW);
         }
@@ -3636,10 +4064,14 @@ static bool nvml_read_fans(char* detail, size_t detailSize) {
                 g_app.fanPercent[fan] = pct;
             }
         }
-        if (g_nvml_api.getTargetFanSpeed && !isAutoForFan) {
+        bool shouldReadTarget = !policyKnown
+            ? (g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive || g_app.activeFanMode != FAN_MODE_AUTO)
+            : !isAutoForFan;
+        if (g_nvml_api.getTargetFanSpeed && shouldReadTarget) {
             unsigned int target = 0;
-            if (g_nvml_api.getTargetFanSpeed(g_app.nvmlDevice, fan, &target) == NVML_SUCCESS && target > 0) {
-                g_app.fanPercent[fan] = target;
+            if (g_nvml_api.getTargetFanSpeed(g_app.nvmlDevice, fan, &target) == NVML_SUCCESS) {
+                g_app.fanTargetPercent[fan] = target;
+                if (!policyKnown && target > 0) allAuto = false;
             }
         }
         if (g_nvml_api.getFanSpeedRpm) {
@@ -3665,14 +4097,31 @@ static bool nvml_read_fans(char* detail, size_t detailSize) {
 }
 
 static bool nvml_set_fan_auto(char* detail, size_t detailSize) {
-    if (!nvml_ensure_ready() || !g_app.fanSupported || !g_nvml_api.setDefaultFanSpeed) {
+    if (!nvml_ensure_ready() || !g_app.fanSupported || (!g_nvml_api.setDefaultFanSpeed && !g_nvml_api.setFanControlPolicy)) {
         set_message(detail, detailSize, "Fan auto unsupported");
         return false;
     }
     for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
-        nvmlReturn_t r = g_nvml_api.setDefaultFanSpeed(g_app.nvmlDevice, fan);
-        if (r != NVML_SUCCESS) {
-            set_message(detail, detailSize, "fan %u: %s", fan, nvml_err_name(r));
+        bool changed = false;
+        if (g_nvml_api.setDefaultFanSpeed) {
+            nvmlReturn_t r = g_nvml_api.setDefaultFanSpeed(g_app.nvmlDevice, fan);
+            if (r != NVML_SUCCESS) {
+                set_message(detail, detailSize, "fan %u: %s", fan, nvml_err_name(r));
+                return false;
+            }
+            changed = true;
+        }
+        if (g_nvml_api.setFanControlPolicy) {
+            nvmlReturn_t r = g_nvml_api.setFanControlPolicy(g_app.nvmlDevice, fan, NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW);
+            if (r == NVML_SUCCESS) {
+                changed = true;
+            } else if (!g_nvml_api.setDefaultFanSpeed) {
+                set_message(detail, detailSize, "fan %u: %s", fan, nvml_err_name(r));
+                return false;
+            }
+        }
+        if (!changed) {
+            set_message(detail, detailSize, "Fan auto unsupported");
             return false;
         }
     }
@@ -3680,7 +4129,53 @@ static bool nvml_set_fan_auto(char* detail, size_t detailSize) {
         if (attempt > 0) Sleep(10);
         if (nvml_read_fans(detail, detailSize) && g_app.fanIsAuto) return true;
     }
-    return nvml_read_fans(detail, detailSize);
+    if (!nvml_read_fans(detail, detailSize)) return false;
+    if (!g_app.fanIsAuto) {
+        set_message(detail, detailSize, "Fan readback did not confirm driver auto mode");
+        return false;
+    }
+    return true;
+}
+
+static bool desired_settings_have_explicit_state(const DesiredSettings* desired, bool requireCurve, char* err, size_t errSize) {
+    if (!desired) {
+        set_message(err, errSize, "No desired settings");
+        return false;
+    }
+
+    if (!desired->hasGpuOffset) {
+        set_message(err, errSize, "Profile is missing gpu_offset_mhz");
+        return false;
+    }
+    if (!desired->hasMemOffset) {
+        set_message(err, errSize, "Profile is missing mem_offset_mhz");
+        return false;
+    }
+    if (!desired->hasPowerLimit) {
+        set_message(err, errSize, "Profile is missing power_limit_pct");
+        return false;
+    }
+    if (!desired->hasFan) {
+        set_message(err, errSize, "Profile is missing fan_mode/fan settings");
+        return false;
+    }
+
+    if (requireCurve) {
+        bool haveCurvePoint = false;
+        for (int i = 0; i < VF_NUM_POINTS; i++) {
+            if (desired->hasCurvePoint[i]) {
+                haveCurvePoint = true;
+                break;
+            }
+        }
+        if (!haveCurvePoint) {
+            set_message(err, errSize, "Profile is missing VF curve points");
+            return false;
+        }
+    }
+
+    if (err && errSize > 0) err[0] = 0;
+    return true;
 }
 
 static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_t detailSize) {
@@ -3706,22 +4201,14 @@ static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_
         ok = (g_app.fanCount > 0);
         for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
             int got = (int)g_app.fanPercent[fan];
-            if (pct == 0) {
-                if (got != 0) ok = false;
-            } else {
-                if (got == 0 && g_app.fanRpm[fan] > 0 && g_nvml_api.getTargetFanSpeed) {
-                    unsigned int target = 0;
-                    if (g_nvml_api.getTargetFanSpeed(g_app.nvmlDevice, fan, &target) == NVML_SUCCESS) {
-                        got = (int)target;
-                        g_app.fanPercent[fan] = target;
-                    }
-                }
-                if (got < pct - 2 || got > pct + 2) ok = false;
-            }
+            if (!manual_fan_readback_matches_target(pct, got, g_app.fanTargetPercent[fan])) ok = false;
         }
         if (ok) break;
     }
     if (exactApplied) *exactApplied = ok;
+    if (!ok && detail && detailSize > 0 && !detail[0]) {
+        set_message(detail, detailSize, "Fan readback did not confirm %d%%", pct);
+    }
     return true;
 }
 
@@ -3740,11 +4227,7 @@ static bool nvml_manual_fan_matches_target(int pct, bool* matches, char* detail,
     bool ok = true;
     for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
         int got = (int)g_app.fanPercent[fan];
-        if (pct == 0) {
-            if (got != 0) ok = false;
-        } else if (got < pct - 2 || got > pct + 2) {
-            ok = false;
-        }
+        if (!manual_fan_readback_matches_target(pct, got, g_app.fanTargetPercent[fan])) ok = false;
     }
     if (!ok) {
         set_message(detail, detailSize, "Fan readback did not confirm %d%%", pct);
@@ -3758,12 +4241,12 @@ static bool fan_setting_matches_current(int wantMode, int wantPct, const FanCurv
     if (wantMode != g_app.activeFanMode) return false;
     if (wantMode == FAN_MODE_AUTO) return g_app.fanIsAuto;
     if (wantMode == FAN_MODE_CURVE) {
-        return wantCurve && fan_curve_equals(wantCurve, &g_app.activeFanCurve);
+        return !g_app.fanIsAuto && wantCurve && fan_curve_equals(wantCurve, &g_app.activeFanCurve);
     }
     if (g_app.fanIsAuto || g_app.fanCount == 0) return false;
     for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
         int gotPct = (int)g_app.fanPercent[fan];
-        if (gotPct < wantPct - 2 || gotPct > wantPct + 2) return false;
+        if (!manual_fan_readback_matches_target(wantPct, gotPct, g_app.fanTargetPercent[fan])) return false;
     }
     return true;
 }
@@ -3824,6 +4307,8 @@ static bool refresh_global_state(char* detail, size_t detailSize) {
     bool ok4 = nvml_read_fans(detail, detailSize);
     if (!ok3 && !ok1) ok1 = nvapi_read_pstates();
     detect_clock_offsets();
+    (void)current_applied_gpu_offset_excludes_low_points();
+    (void)current_applied_gpu_offset_mhz();
     initialize_gui_fan_settings_from_live_state();
     update_tray_icon();
     return ok1 || ok2 || ok3 || ok4;
@@ -4074,17 +4559,15 @@ static void close_startup_sync_thread_handle() {
 
 static void populate_global_controls() {
     initialize_gui_fan_settings_from_live_state();
-    int liveGpuOffsetMHz = g_app.gpuClockOffsetkHz / 1000;
-    if (!g_app.guiGpuOffsetExcludeLow70) {
-        g_app.guiGpuOffsetMHz = liveGpuOffsetMHz;
-    }
-    if (!g_app.appliedGpuOffsetExcludeLow70) {
-        g_app.appliedGpuOffsetExcludeLow70 = false;
-        g_app.appliedGpuOffsetMHz = liveGpuOffsetMHz;
-    }
+    bool liveGpuOffsetExcludeLow70 = current_applied_gpu_offset_excludes_low_points();
+    int liveGpuOffsetMHz = current_applied_gpu_offset_mhz();
+    g_app.appliedGpuOffsetExcludeLow70 = liveGpuOffsetExcludeLow70;
+    g_app.appliedGpuOffsetMHz = liveGpuOffsetMHz;
+    g_app.guiGpuOffsetExcludeLow70 = liveGpuOffsetExcludeLow70;
+    g_app.guiGpuOffsetMHz = liveGpuOffsetMHz;
     if (g_app.hGpuOffsetEdit) {
         char buf[32];
-        int gpuOffsetToShow = g_app.guiGpuOffsetExcludeLow70 ? g_app.guiGpuOffsetMHz : liveGpuOffsetMHz;
+        int gpuOffsetToShow = g_app.guiGpuOffsetMHz;
         StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d", gpuOffsetToShow);
         SetWindowTextA(g_app.hGpuOffsetEdit, buf);
         EnableWindow(g_app.hGpuOffsetEdit, g_app.gpuOffsetRangeKnown ? TRUE : FALSE);
@@ -4115,7 +4598,57 @@ static int displayed_curve_khz(unsigned int rawFreq_kHz) {
 }
 
 static bool capture_gui_apply_settings(DesiredSettings* desired, char* err, size_t errSize) {
-    return capture_gui_desired_settings(desired, false, true, false, err, errSize);
+    if (!desired) return false;
+
+    DesiredSettings full = {};
+    if (!capture_gui_desired_settings(&full, false, true, false, err, errSize)) return false;
+
+    DesiredSettings fanOnly = {};
+    initialize_desired_settings_defaults(&fanOnly);
+
+    int currentGpuOffsetMHz = current_applied_gpu_offset_mhz();
+    bool currentGpuOffsetExcludeLow70 = current_applied_gpu_offset_excludes_low_points();
+    int currentMemOffsetMHz = mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
+    int currentPowerLimitPct = g_app.powerLimitPct;
+
+    bool gpuUnchanged = !full.hasGpuOffset || (full.gpuOffsetMHz == currentGpuOffsetMHz && full.gpuOffsetExcludeLow70 == currentGpuOffsetExcludeLow70);
+    bool memUnchanged = !full.hasMemOffset || (full.memOffsetMHz == currentMemOffsetMHz);
+    bool powerUnchanged = !full.hasPowerLimit || (full.powerLimitPct == currentPowerLimitPct);
+
+    bool curveUnchanged = true;
+    for (int i = 0; i < VF_NUM_POINTS; i++) {
+        if (!full.hasCurvePoint[i]) continue;
+        if (g_app.curve[i].freq_kHz == 0) continue;
+        if (g_app.lockedVi >= 0 && g_app.lockedVi < g_app.numVisible) {
+            bool inLockedTail = false;
+            for (int vi = g_app.lockedVi; vi < g_app.numVisible; vi++) {
+                if (g_app.visibleMap[vi] == i) {
+                    inLockedTail = true;
+                    break;
+                }
+            }
+            if (inLockedTail) continue;
+        }
+        unsigned int currentMHz = displayed_curve_mhz(g_app.curve[i].freq_kHz);
+        if (full.curvePointMHz[i] != currentMHz) {
+            curveUnchanged = false;
+            break;
+        }
+    }
+
+    if (gpuUnchanged && memUnchanged && powerUnchanged && curveUnchanged && full.hasFan) {
+        debug_log("capture_gui_apply_settings: fan-only apply shortcut taken\n");
+        *desired = fanOnly;
+        desired->hasFan = true;
+        desired->fanMode = full.fanMode;
+        desired->fanAuto = full.fanAuto;
+        desired->fanPercent = full.fanPercent;
+        copy_fan_curve(&desired->fanCurve, &full.fanCurve);
+        return true;
+    }
+
+    *desired = full;
+    return true;
 }
 
 static bool capture_gui_config_settings(DesiredSettings* desired, char* err, size_t errSize) {
@@ -4138,6 +4671,11 @@ static bool save_desired_to_config_with_startup(const char* path, const DesiredS
 
     char buf[64];
 
+    if (!WritePrivateProfileStringA("debug", "enabled", g_debug_logging ? "1" : "0", path)) {
+        set_message(err, errSize, "Failed to write debug");
+        return false;
+    }
+
     int gpuOffset = desired && desired->hasGpuOffset ? desired->gpuOffsetMHz : (g_app.gpuClockOffsetkHz / 1000);
     bool gpuOffsetExcludeLow70 = desired && desired->hasGpuOffset ? desired->gpuOffsetExcludeLow70 : g_app.guiGpuOffsetExcludeLow70;
     int memOffset = desired && desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
@@ -4153,6 +4691,16 @@ static bool save_desired_to_config_with_startup(const char* path, const DesiredS
     }
     if (!WritePrivateProfileStringA("controls", "gpu_offset_exclude_low_70", gpuOffsetExcludeLow70 ? "1" : "0", path)) {
         set_message(err, errSize, "Failed to write gpu_offset_exclude_low_70");
+        return false;
+    }
+    StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d", desired && desired->hasLock ? desired->lockCi : (g_app.lockedCi >= 0 ? g_app.lockedCi : -1));
+    if (!WritePrivateProfileStringA("controls", "lock_ci", buf, path)) {
+        set_message(err, errSize, "Failed to write lock_ci");
+        return false;
+    }
+    StringCchPrintfA(buf, ARRAY_COUNT(buf), "%u", desired && desired->hasLock ? desired->lockMHz : g_app.lockedFreq);
+    if (!WritePrivateProfileStringA("controls", "lock_mhz", buf, path)) {
+        set_message(err, errSize, "Failed to write lock_mhz");
         return false;
     }
     StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d", memOffset);
@@ -4187,6 +4735,11 @@ static bool save_desired_to_config_with_startup(const char* path, const DesiredS
     }
 
     WritePrivateProfileStringA("curve", nullptr, nullptr, path);
+    if (!WritePrivateProfileStringA("curve", "curve_semantics", "base_plus_gpu_offset", path)) {
+        set_message(err, errSize, "Failed to write curve_semantics");
+        return false;
+    }
+    int saveGpuOffsetMHz = gpuOffset;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         bool have = desired && desired->hasCurvePoint[i];
         unsigned int mhz = 0;
@@ -4194,6 +4747,11 @@ static bool save_desired_to_config_with_startup(const char* path, const DesiredS
             mhz = desired->curvePointMHz[i];
         } else if (useCurrentForUnset && g_app.curve[i].freq_kHz > 0) {
             mhz = displayed_curve_mhz(g_app.curve[i].freq_kHz);
+        }
+        if (mhz != 0 && saveGpuOffsetMHz != 0) {
+            int offsetCompmhz = gpu_offset_component_mhz_for_point(i, saveGpuOffsetMHz, gpuOffsetExcludeLow70);
+            int baseMhz = (int)mhz - offsetCompmhz;
+            mhz = baseMhz > 0 ? (unsigned int)baseMhz : 0;
         }
         if (mhz == 0) continue;
         char key[32];
@@ -4242,7 +4800,7 @@ static bool save_desired_to_config_with_startup(const char* path, const DesiredS
 }
 
 static unsigned int displayed_curve_mhz(unsigned int rawFreq_kHz) {
-    return (unsigned int)(displayed_curve_khz(rawFreq_kHz) / 1000);
+    return (unsigned int)((displayed_curve_khz(rawFreq_kHz) + 500) / 1000);
 }
 
 static unsigned int curve_point_verify_tolerance_mhz(int pointIndex) {
@@ -4411,8 +4969,7 @@ static int mem_display_mhz_from_driver_mhz(int driverMHz) {
 
 static void invalidate_main_window() {
     if (!g_app.hMainWnd) return;
-    InvalidateRect(g_app.hMainWnd, nullptr, FALSE);
-    UpdateWindow(g_app.hMainWnd);
+    redraw_window_sync(g_app.hMainWnd);
 }
 
 static void redraw_window_sync(HWND hwnd) {
@@ -4453,22 +5010,877 @@ static void show_window_with_primed_first_frame(HWND hwnd, int nCmdShow) {
     redraw_window_sync(hwnd);
 }
 
+static bool is_system_dark_theme_active() {
+    DWORD value = 1;
+    DWORD type = 0;
+    DWORD size = sizeof(value);
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER,
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+            0, KEY_READ, &hKey) != ERROR_SUCCESS) {
+        return false;
+    }
+    bool dark = false;
+    if (RegQueryValueExA(hKey, "AppsUseLightTheme", nullptr, &type, (LPBYTE)&value, &size) == ERROR_SUCCESS) {
+        dark = value == 0;
+    }
+    RegCloseKey(hKey);
+    return dark;
+}
+
+static void initialize_dark_mode_support() {
+    if (s_darkModeResolved) return;
+    s_darkModeResolved = true;
+
+    HMODULE ux = LoadLibraryA("uxtheme.dll");
+    if (!ux) return;
+
+    s_fnAllowDarkModeForWindow = (AllowDarkModeForWindowFn)GetProcAddress(ux, MAKEINTRESOURCEA(133));
+    s_fnSetPreferredAppMode = (SetPreferredAppModeFn)GetProcAddress(ux, MAKEINTRESOURCEA(135));
+    s_fnFlushMenuThemes = (FlushMenuThemesFn)GetProcAddress(ux, MAKEINTRESOURCEA(136));
+
+    if (s_fnSetPreferredAppMode) {
+        s_fnSetPreferredAppMode(is_system_dark_theme_active() ? APP_MODE_ALLOW_DARK : APP_MODE_DEFAULT);
+    }
+    if (s_fnFlushMenuThemes) {
+        s_fnFlushMenuThemes();
+    }
+}
+
+static void refresh_menu_theme_cache() {
+    initialize_dark_mode_support();
+    if (s_fnSetPreferredAppMode) {
+        s_fnSetPreferredAppMode(is_system_dark_theme_active() ? APP_MODE_ALLOW_DARK : APP_MODE_DEFAULT);
+    }
+    if (s_fnFlushMenuThemes) {
+        s_fnFlushMenuThemes();
+    }
+}
+
+static void allow_dark_mode_for_window(HWND hwnd) {
+    if (!hwnd) return;
+    initialize_dark_mode_support();
+    if (s_fnAllowDarkModeForWindow) {
+        s_fnAllowDarkModeForWindow(hwnd, is_system_dark_theme_active() ? TRUE : FALSE);
+    }
+}
+
+static const char* ui_font_face_name() {
+    return "Segoe UI";
+}
+
+static HFONT create_ui_sized_font(int heightPx, int weight) {
+    LOGFONTA lf = {};
+    if (s_uiBaseLogFontReady) {
+        lf = s_uiBaseLogFont;
+    } else {
+        NONCLIENTMETRICSA ncm = {};
+        ncm.cbSize = sizeof(ncm);
+        if (SystemParametersInfoA(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
+            lf = ncm.lfMessageFont;
+        } else {
+            lf.lfCharSet = DEFAULT_CHARSET;
+            lf.lfOutPrecision = OUT_DEFAULT_PRECIS;
+            lf.lfClipPrecision = CLIP_DEFAULT_PRECIS;
+            lf.lfPitchAndFamily = DEFAULT_PITCH | FF_SWISS;
+            StringCchCopyA(lf.lfFaceName, ARRAY_COUNT(lf.lfFaceName), ui_font_face_name());
+        }
+    }
+
+    lf.lfHeight = -nvmax(1, heightPx);
+    lf.lfWeight = weight;
+    lf.lfItalic = FALSE;
+    lf.lfUnderline = FALSE;
+    lf.lfStrikeOut = FALSE;
+    lf.lfQuality = CLEARTYPE_QUALITY;
+    lf.lfOutPrecision = OUT_TT_PRECIS;
+    lf.lfClipPrecision = CLIP_DEFAULT_PRECIS;
+    lf.lfPitchAndFamily = DEFAULT_PITCH | FF_SWISS;
+    StringCchCopyA(lf.lfFaceName, ARRAY_COUNT(lf.lfFaceName), ui_font_face_name());
+    return CreateFontIndirectA(&lf);
+}
+
+static HFONT get_ui_font() {
+    if (s_hUiFont) return s_hUiFont;
+
+    NONCLIENTMETRICSA ncm = {};
+    ncm.cbSize = sizeof(ncm);
+    if (SystemParametersInfoA(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
+        s_uiBaseLogFont = ncm.lfMessageFont;
+        s_uiBaseLogFontReady = true;
+    } else {
+        memset(&s_uiBaseLogFont, 0, sizeof(s_uiBaseLogFont));
+        s_uiBaseLogFont.lfHeight = -MulDiv(9, g_dpi, 72);
+        s_uiBaseLogFont.lfWeight = FW_NORMAL;
+        s_uiBaseLogFont.lfCharSet = DEFAULT_CHARSET;
+        s_uiBaseLogFont.lfOutPrecision = OUT_TT_PRECIS;
+        s_uiBaseLogFont.lfClipPrecision = CLIP_DEFAULT_PRECIS;
+        s_uiBaseLogFont.lfQuality = CLEARTYPE_QUALITY;
+        s_uiBaseLogFont.lfPitchAndFamily = DEFAULT_PITCH | FF_SWISS;
+        StringCchCopyA(s_uiBaseLogFont.lfFaceName, ARRAY_COUNT(s_uiBaseLogFont.lfFaceName), ui_font_face_name());
+        s_uiBaseLogFontReady = true;
+    }
+
+    s_hUiFont = create_ui_sized_font(dp(12), FW_NORMAL);
+    return s_hUiFont;
+}
+
+static void apply_ui_font(HWND hwnd) {
+    if (!hwnd) return;
+    HFONT font = get_ui_font();
+    if (!font) return;
+    SendMessageA(hwnd, WM_SETFONT, (WPARAM)font, FALSE);
+}
+
+static void apply_ui_font_to_children(HWND parent) {
+    if (!parent) return;
+    HWND child = GetWindow(parent, GW_CHILD);
+    while (child) {
+        apply_ui_font(child);
+        child = GetWindow(child, GW_HWNDNEXT);
+    }
+}
+
+static int themed_combo_item_height() {
+    return dp(22);
+}
+
+struct GdpStartupInput { UINT32 ver; void* debugCb; int suppressBg; int suppressExt; };
+enum { GDP_SMOOTH_AA = 4, GDP_UNIT_PX = 2 };
+
+typedef int  (WINAPI *GdpStartupFn)(ULONG_PTR*, const GdpStartupInput*, void*);
+typedef void (WINAPI *GdpShutdownFn)(ULONG_PTR);
+typedef int  (WINAPI *GdpGfxFromHDCFn)(HDC, void**);
+typedef int  (WINAPI *GdpDelGfxFn)(void*);
+typedef int  (WINAPI *GdpSetSmoothFn)(void*, int);
+typedef int  (WINAPI *GdpMakePenFn)(unsigned int, float, int, void**);
+typedef int  (WINAPI *GdpDelPenFn)(void*);
+typedef int  (WINAPI *GdpDrawBeziersIFn)(void*, void*, const POINT*, int);
+typedef int  (WINAPI *GdpDrawLinesIFn)(void*, void*, const POINT*, int);
+typedef int  (WINAPI *GdpFillEllipseIFn)(void*, void*, int, int, int, int);
+typedef int  (WINAPI *GdpDrawEllipseIFn)(void*, void*, int, int, int, int);
+typedef int  (WINAPI *GdpMakeBrushFn)(unsigned int, void**);
+typedef int  (WINAPI *GdpDelBrushFn)(void*);
+
+static HMODULE       s_gdp_dll = nullptr;
+static ULONG_PTR     s_gdp_token = 0;
+static bool          s_gdp_tried = false;
+static bool          s_gdp_ok = false;
+static GdpGfxFromHDCFn  s_fnGfxHDC;
+static GdpDelGfxFn      s_fnDelGfx;
+static GdpSetSmoothFn   s_fnSmooth;
+static GdpMakePenFn     s_fnMakePen;
+static GdpDelPenFn      s_fnDelPen;
+static GdpDrawBeziersIFn s_fnBeziers;
+static GdpDrawLinesIFn   s_fnLines;
+static GdpFillEllipseIFn s_fnFillEllipse;
+static GdpDrawEllipseIFn s_fnDrawEllipse;
+static GdpMakeBrushFn    s_fnMakeBrush;
+static GdpDelBrushFn     s_fnDelBrush;
+static GdpShutdownFn     s_fnShutdown;
+
+static unsigned int colorref_to_argb(COLORREF c) {
+    return 0xFF000000u | ((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF);
+}
+
+static bool gdiplus_ensure() {
+    if (s_gdp_tried) return s_gdp_ok;
+    s_gdp_tried = true;
+    s_gdp_dll = LoadLibraryA("gdiplus.dll");
+    if (!s_gdp_dll) return false;
+    auto r = [](const char* n) -> void* { return (void*)GetProcAddress(s_gdp_dll, n); };
+    GdpStartupFn startup = (GdpStartupFn)r("GdiplusStartup");
+    s_fnShutdown    = (GdpShutdownFn)r("GdiplusShutdown");
+    s_fnGfxHDC      = (GdpGfxFromHDCFn)r("GdipCreateFromHDC");
+    s_fnDelGfx      = (GdpDelGfxFn)r("GdipDeleteGraphics");
+    s_fnSmooth      = (GdpSetSmoothFn)r("GdipSetSmoothingMode");
+    s_fnMakePen     = (GdpMakePenFn)r("GdipCreatePen1");
+    s_fnDelPen      = (GdpDelPenFn)r("GdipDeletePen");
+    s_fnBeziers     = (GdpDrawBeziersIFn)r("GdipDrawBeziersI");
+    s_fnLines       = (GdpDrawLinesIFn)r("GdipDrawLinesI");
+    s_fnFillEllipse = (GdpFillEllipseIFn)r("GdipFillEllipseI");
+    s_fnDrawEllipse = (GdpDrawEllipseIFn)r("GdipDrawEllipseI");
+    s_fnMakeBrush   = (GdpMakeBrushFn)r("GdipCreateSolidFill");
+    s_fnDelBrush    = (GdpDelBrushFn)r("GdipDeleteBrush");
+    if (!startup || !s_fnShutdown || !s_fnGfxHDC || !s_fnDelGfx || !s_fnSmooth ||
+        !s_fnMakePen || !s_fnDelPen || !s_fnBeziers || !s_fnLines ||
+        !s_fnFillEllipse || !s_fnDrawEllipse || !s_fnMakeBrush || !s_fnDelBrush)
+        return false;
+    GdpStartupInput inp = { 1, nullptr, 0, 0 };
+    if (startup(&s_gdp_token, &inp, nullptr) != 0) return false;
+    s_gdp_ok = true;
+    return true;
+}
+
+static void shutdown_gdiplus() {
+    if (s_gdp_ok && s_fnShutdown) s_fnShutdown(s_gdp_token);
+    s_gdp_ok = false;
+    s_gdp_token = 0;
+    if (s_gdp_dll) { FreeLibrary(s_gdp_dll); s_gdp_dll = nullptr; }
+}
+
+static void draw_curve_polyline_smooth(HDC hdc, const POINT* pts, int count, int widthPx, COLORREF color) {
+    if (!hdc || !pts || count < 2) return;
+    if (gdiplus_ensure()) {
+        void* gfx = nullptr;
+        s_fnGfxHDC(hdc, &gfx);
+        if (gfx) {
+            s_fnSmooth(gfx, GDP_SMOOTH_AA);
+            void* pen = nullptr;
+            s_fnMakePen(colorref_to_argb(color), (float)nvmax(1, widthPx), GDP_UNIT_PX, &pen);
+            if (pen) {
+                if (count < 3) {
+                    s_fnLines(gfx, pen, pts, count);
+                } else {
+                    POINT bez[VF_NUM_POINTS * 3] = {};
+                    int bc = 0;
+                    bez[bc++] = pts[0];
+                    for (int i = 0; i < count - 1; i++) {
+                        POINT p0 = (i > 0) ? pts[i - 1] : pts[i];
+                        POINT p1 = pts[i];
+                        POINT p2 = pts[i + 1];
+                        POINT p3 = (i + 2 < count) ? pts[i + 2] : pts[i + 1];
+                        int c1y = p1.y + (p2.y - p0.y) / 6;
+                        int c2y = p2.y - (p3.y - p1.y) / 6;
+                        int yLo = nvmin(p1.y, p2.y);
+                        int yHi = nvmax(p1.y, p2.y);
+                        if (c1y < yLo) c1y = yLo;
+                        if (c1y > yHi) c1y = yHi;
+                        if (c2y < yLo) c2y = yLo;
+                        if (c2y > yHi) c2y = yHi;
+                        bez[bc++] = { p1.x + (p2.x - p0.x) / 6, c1y };
+                        bez[bc++] = { p2.x - (p3.x - p1.x) / 6, c2y };
+                        bez[bc++] = p2;
+                    }
+                    s_fnBeziers(gfx, pen, bez, bc);
+                }
+                s_fnDelPen(pen);
+            }
+            s_fnDelGfx(gfx);
+        }
+        return;
+    }
+    HPEN pen = CreatePen(PS_SOLID, nvmax(1, widthPx), color);
+    HPEN oldPen = (HPEN)SelectObject(hdc, pen);
+    int oldMode = SetBkMode(hdc, TRANSPARENT);
+    if (count < 3) {
+        Polyline(hdc, pts, count);
+    } else {
+        POINT bez[VF_NUM_POINTS * 3] = {};
+        int bc = 0;
+        bez[bc++] = pts[0];
+        for (int i = 0; i < count - 1; i++) {
+            POINT p0 = (i > 0) ? pts[i - 1] : pts[i];
+            POINT p1 = pts[i];
+            POINT p2 = pts[i + 1];
+            POINT p3 = (i + 2 < count) ? pts[i + 2] : pts[i + 1];
+            int c1y = p1.y + (p2.y - p0.y) / 6;
+            int c2y = p2.y - (p3.y - p1.y) / 6;
+            int yLo = nvmin(p1.y, p2.y);
+            int yHi = nvmax(p1.y, p2.y);
+            if (c1y < yLo) c1y = yLo;
+            if (c1y > yHi) c1y = yHi;
+            if (c2y < yLo) c2y = yLo;
+            if (c2y > yHi) c2y = yHi;
+            bez[bc++] = { p1.x + (p2.x - p0.x) / 6, c1y };
+            bez[bc++] = { p2.x - (p3.x - p1.x) / 6, c2y };
+            bez[bc++] = p2;
+        }
+        PolyBezier(hdc, bez, bc);
+    }
+    SetBkMode(hdc, oldMode);
+    SelectObject(hdc, oldPen);
+    DeleteObject(pen);
+}
+
+static void draw_curve_points_ringed(HDC hdc, const POINT* pts, int count, int innerRadiusPx, int outerRadiusPx) {
+    if (!hdc || !pts || count < 1) return;
+    if (gdiplus_ensure()) {
+        void* gfx = nullptr;
+        s_fnGfxHDC(hdc, &gfx);
+        if (gfx) {
+            s_fnSmooth(gfx, GDP_SMOOTH_AA);
+            void* ringPen = nullptr;
+            s_fnMakePen(colorref_to_argb(COL_CURVE), 1.0f, GDP_UNIT_PX, &ringPen);
+            void* fillBr = nullptr;
+            s_fnMakeBrush(colorref_to_argb(COL_POINT), &fillBr);
+            if (ringPen) {
+                for (int i = 0; i < count; i++) {
+                    s_fnDrawEllipse(gfx, ringPen,
+                        pts[i].x - outerRadiusPx, pts[i].y - outerRadiusPx,
+                        outerRadiusPx * 2 + 1, outerRadiusPx * 2 + 1);
+                }
+                s_fnDelPen(ringPen);
+            }
+            if (fillBr) {
+                for (int i = 0; i < count; i++) {
+                    s_fnFillEllipse(gfx, fillBr,
+                        pts[i].x - innerRadiusPx, pts[i].y - innerRadiusPx,
+                        innerRadiusPx * 2 + 1, innerRadiusPx * 2 + 1);
+                }
+                s_fnDelBrush(fillBr);
+            }
+            s_fnDelGfx(gfx);
+        }
+        return;
+    }
+    HBRUSH fillBrush = CreateSolidBrush(COL_POINT);
+    HPEN ringPen = CreatePen(PS_SOLID, 1, COL_CURVE);
+    HPEN oldPen = (HPEN)SelectObject(hdc, ringPen);
+    HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
+    for (int i = 0; i < count; i++) {
+        Ellipse(hdc,
+            pts[i].x - outerRadiusPx,
+            pts[i].y - outerRadiusPx,
+            pts[i].x + outerRadiusPx + 1,
+            pts[i].y + outerRadiusPx + 1);
+    }
+    SelectObject(hdc, fillBrush);
+    for (int i = 0; i < count; i++) {
+        Ellipse(hdc,
+            pts[i].x - innerRadiusPx,
+            pts[i].y - innerRadiusPx,
+            pts[i].x + innerRadiusPx + 1,
+            pts[i].y + innerRadiusPx + 1);
+    }
+    SelectObject(hdc, oldBrush);
+    SelectObject(hdc, oldPen);
+    DeleteObject(fillBrush);
+    DeleteObject(ringPen);
+}
+
+static void style_input_control(HWND hwnd) {
+    if (!hwnd) return;
+    LONG_PTR exStyle = GetWindowLongPtrA(hwnd, GWL_EXSTYLE);
+    exStyle &= ~WS_EX_CLIENTEDGE;
+    SetWindowLongPtrA(hwnd, GWL_EXSTYLE, exStyle);
+    SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    apply_ui_font(hwnd);
+}
+
+static void style_combo_control(HWND hwnd) {
+    if (!hwnd) return;
+
+    typedef HRESULT (WINAPI *set_window_theme_t)(HWND, LPCWSTR, LPCWSTR);
+    static set_window_theme_t setWindowTheme = nullptr;
+    static bool resolved = false;
+    if (!resolved) {
+        HMODULE ux = LoadLibraryA("uxtheme.dll");
+        if (ux) setWindowTheme = (set_window_theme_t)GetProcAddress(ux, "SetWindowTheme");
+        resolved = true;
+    }
+    // Use DarkMode_CFD so WM_CTLCOLORSTATIC works for text
+    if (setWindowTheme) {
+        setWindowTheme(hwnd, is_system_dark_theme_active() ? L"DarkMode_CFD" : L"CFD", nullptr);
+    }
+    allow_dark_mode_for_window(hwnd);
+    COMBOBOXINFO info = {};
+    info.cbSize = sizeof(info);
+    if (GetComboBoxInfo(hwnd, &info)) {
+        if (info.hwndList) {
+            allow_dark_mode_for_window(info.hwndList);
+            apply_ui_font(info.hwndList);
+        }
+        if (info.hwndItem) {
+            allow_dark_mode_for_window(info.hwndItem);
+            apply_ui_font(info.hwndItem);
+        }
+    }
+    install_themed_combo_subclass(hwnd);
+    apply_ui_font(hwnd);
+    SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+}
+
+static bool is_themed_combo_id(UINT id) {
+    return id == FAN_MODE_COMBO_ID || id == PROFILE_COMBO_ID || id == APP_LAUNCH_COMBO_ID ||
+           id == LOGON_COMBO_ID || id == FAN_DIALOG_INTERVAL_ID || id == FAN_DIALOG_HYSTERESIS_ID;
+}
+
+static void paint_themed_combo_overlay(HWND hwnd, HDC hdc) {
+    if (!hwnd || !hdc) return;
+    COMBOBOXINFO info = {};
+    info.cbSize = sizeof(info);
+    if (!GetComboBoxInfo(hwnd, &info)) return;
+
+    RECT client = {};
+    GetClientRect(hwnd, &client);
+    RECT buttonRc = info.rcButton;
+    MapWindowPoints(nullptr, hwnd, (POINT*)&buttonRc, 2);
+    bool disabled = !IsWindowEnabled(hwnd);
+    bool dropped = SendMessageA(hwnd, CB_GETDROPPEDSTATE, 0, 0) != 0;
+
+    // Ensure buttonRc has valid coordinates
+    if (buttonRc.right <= buttonRc.left || buttonRc.bottom <= buttonRc.top) {
+        buttonRc.left = client.right - dp(20);
+        buttonRc.right = client.right;
+        buttonRc.top = client.top;
+        buttonRc.bottom = client.bottom;
+    }
+
+    // Paint over the button area with our theming
+    HRGN hOldClip = CreateRectRgn(0, 0, 0, 0);
+    int clipResult = GetClipRgn(hdc, hOldClip);
+    HRGN hButtonRegion = CreateRectRgnIndirect(&buttonRc);
+    SelectClipRgn(hdc, hButtonRegion);
+    DeleteObject(hButtonRegion);
+
+    // Fill button area with panel color (or pressed color when dropped)
+    HBRUSH buttonBr = CreateSolidBrush(dropped ? COL_BUTTON_PRESSED : COL_PANEL);
+    FillRect(hdc, &buttonRc, buttonBr);
+    DeleteObject(buttonBr);
+
+    // Draw separator line between text and button
+    HPEN sepPen = CreatePen(PS_SOLID, 1, disabled ? RGB(0x56, 0x56, 0x64) : COL_BUTTON_BORDER);
+    HPEN oldSepPen = (HPEN)SelectObject(hdc, sepPen);
+    MoveToEx(hdc, buttonRc.left, buttonRc.top + 1, nullptr);
+    LineTo(hdc, buttonRc.left, buttonRc.bottom - 1);
+    SelectObject(hdc, oldSepPen);
+    DeleteObject(sepPen);
+
+    // Draw dropdown arrow triangle (theme-matched muted blue-gray)
+    int centerX = buttonRc.left + (buttonRc.right - buttonRc.left) / 2;
+    int centerY = buttonRc.top + (buttonRc.bottom - buttonRc.top) / 2;
+    
+    POINT tri[3] = {
+        { centerX - dp(3), centerY - dp(2) },
+        { centerX + dp(3), centerY - dp(2) },
+        { centerX, centerY + dp(2) }
+    };
+    COLORREF arrowColor = disabled ? COL_LABEL : RGB(0xB0, 0xC0, 0xD0);
+    HBRUSH arrowBr = CreateSolidBrush(arrowColor);
+    HBRUSH oldArrowBrush = (HBRUSH)SelectObject(hdc, arrowBr);
+    HPEN oldArrowPen = (HPEN)SelectObject(hdc, GetStockObject(NULL_PEN));
+    Polygon(hdc, tri, 3);
+    SelectObject(hdc, oldArrowPen);
+    SelectObject(hdc, oldArrowBrush);
+    DeleteObject(arrowBr);
+
+    // Restore clipping
+    if (clipResult == 1) {
+        SelectClipRgn(hdc, hOldClip);
+    } else {
+        SelectClipRgn(hdc, nullptr);
+    }
+    DeleteObject(hOldClip);
+
+    // Paint over Windows' default border with our themed border
+    HBRUSH borderBrush = CreateSolidBrush(disabled ? RGB(0x56, 0x56, 0x64) : COL_BUTTON_BORDER);
+    // Top edge
+    RECT topEdge = { client.left, client.top, client.right, client.top + 1 };
+    FillRect(hdc, &topEdge, borderBrush);
+    // Bottom edge  
+    RECT bottomEdge = { client.left, client.bottom - 1, client.right, client.bottom };
+    FillRect(hdc, &bottomEdge, borderBrush);
+    // Left edge
+    RECT leftEdge = { client.left, client.top + 1, client.left + 1, client.bottom - 1 };
+    FillRect(hdc, &leftEdge, borderBrush);
+    // Right edge
+    RECT rightEdge = { client.right - 1, client.top + 1, client.right, client.bottom - 1 };
+    FillRect(hdc, &rightEdge, borderBrush);
+    DeleteObject(borderBrush);
+}
+
+static void paint_themed_combo_full_custom(HWND hwnd, HDC hdc) {
+    if (!hwnd || !hdc) return;
+    COMBOBOXINFO info = {};
+    info.cbSize = sizeof(info);
+    if (!GetComboBoxInfo(hwnd, &info)) return;
+
+    RECT client = {};
+    GetClientRect(hwnd, &client);
+    RECT buttonRc = info.rcButton;
+    MapWindowPoints(nullptr, hwnd, (POINT*)&buttonRc, 2);
+    bool disabled = !IsWindowEnabled(hwnd);
+    bool dropped = SendMessageA(hwnd, CB_GETDROPPEDSTATE, 0, 0) != 0;
+
+    // Ensure buttonRc has valid coordinates
+    if (buttonRc.right <= buttonRc.left || buttonRc.bottom <= buttonRc.top) {
+        buttonRc.left = client.right - dp(20);
+        buttonRc.right = client.right;
+        buttonRc.top = client.top;
+        buttonRc.bottom = client.bottom;
+    }
+
+    // Fill entire background with input color first
+    HBRUSH bgBrush = CreateSolidBrush(COL_INPUT);
+    FillRect(hdc, &client, bgBrush);
+    DeleteObject(bgBrush);
+
+    // Fill button area with panel color (or pressed color when dropped)
+    HBRUSH buttonBr = CreateSolidBrush(dropped ? COL_BUTTON_PRESSED : COL_PANEL);
+    FillRect(hdc, &buttonRc, buttonBr);
+    DeleteObject(buttonBr);
+
+    // Draw the text
+    int sel = (int)SendMessageA(hwnd, CB_GETCURSEL, 0, 0);
+    char textBuf[256] = {};
+    if (sel != CB_ERR) {
+        SendMessageA(hwnd, CB_GETLBTEXT, (WPARAM)sel, (LPARAM)textBuf);
+    }
+
+    if (textBuf[0]) {
+        RECT textRc = client;
+        textRc.left += dp(6);
+        textRc.right = buttonRc.left - dp(4);
+        textRc.top += 2;
+        textRc.bottom -= 2;
+        
+        if (textRc.right > textRc.left) {
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, disabled ? COL_LABEL : COL_TEXT);
+            
+            HFONT uiFont = get_ui_font();
+            HFONT oldFont = nullptr;
+            if (uiFont) {
+                oldFont = (HFONT)SelectObject(hdc, uiFont);
+            }
+            
+            DrawTextA(hdc, textBuf, -1, &textRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            
+            if (oldFont) {
+                SelectObject(hdc, oldFont);
+            }
+        }
+    }
+
+    // Draw separator line between text and button
+    HPEN sepPen = CreatePen(PS_SOLID, 1, disabled ? RGB(0x56, 0x56, 0x64) : COL_BUTTON_BORDER);
+    HPEN oldSepPen = (HPEN)SelectObject(hdc, sepPen);
+    MoveToEx(hdc, buttonRc.left, buttonRc.top + 1, nullptr);
+    LineTo(hdc, buttonRc.left, buttonRc.bottom - 1);
+    SelectObject(hdc, oldSepPen);
+    DeleteObject(sepPen);
+
+    // Draw dropdown arrow triangle (theme-matched muted blue-gray)
+    int centerX = buttonRc.left + (buttonRc.right - buttonRc.left) / 2;
+    int centerY = buttonRc.top + (buttonRc.bottom - buttonRc.top) / 2;
+    
+    POINT tri[3] = {
+        { centerX - dp(3), centerY - dp(2) },
+        { centerX + dp(3), centerY - dp(2) },
+        { centerX, centerY + dp(2) }
+    };
+    COLORREF arrowColor = disabled ? COL_LABEL : RGB(0xB0, 0xC0, 0xD0);
+    HBRUSH arrowBr = CreateSolidBrush(arrowColor);
+    HBRUSH oldArrowBrush = (HBRUSH)SelectObject(hdc, arrowBr);
+    HPEN oldArrowPen = (HPEN)SelectObject(hdc, GetStockObject(NULL_PEN));
+    Polygon(hdc, tri, 3);
+    SelectObject(hdc, oldArrowPen);
+    SelectObject(hdc, oldArrowBrush);
+    DeleteObject(arrowBr);
+
+    // Draw themed border around entire control
+    HBRUSH borderBrush = CreateSolidBrush(disabled ? RGB(0x56, 0x56, 0x64) : COL_BUTTON_BORDER);
+    // Top edge
+    RECT topEdge = { client.left, client.top, client.right, client.top + 1 };
+    FillRect(hdc, &topEdge, borderBrush);
+    // Bottom edge  
+    RECT bottomEdge = { client.left, client.bottom - 1, client.right, client.bottom };
+    FillRect(hdc, &bottomEdge, borderBrush);
+    // Left edge
+    RECT leftEdge = { client.left, client.top + 1, client.left + 1, client.bottom - 1 };
+    FillRect(hdc, &leftEdge, borderBrush);
+    // Right edge
+    RECT rightEdge = { client.right - 1, client.top + 1, client.right, client.bottom - 1 };
+    FillRect(hdc, &rightEdge, borderBrush);
+    DeleteObject(borderBrush);
+}
+
+static LRESULT CALLBACK themed_combo_wndproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    WNDPROC original = (WNDPROC)GetPropA(hwnd, "GreenCurveComboOrigProc");
+    if (!original) return DefWindowProcA(hwnd, msg, wParam, lParam);
+
+    switch (msg) {
+        case WM_PAINT: {
+            // Let Windows draw with its theming - we accept the default border/arrow
+            // The WM_CTLCOLORSTATIC handler ensures text is readable
+            LRESULT result = CallWindowProcA(original, hwnd, msg, wParam, lParam);
+            return result;
+        }
+
+        case WM_ERASEBKGND:
+            // Prevent default erasing to avoid flicker
+            return 1;
+
+        case WM_NCPAINT:
+        case WM_ENABLE:
+        case WM_THEMECHANGED:
+        case WM_SETTINGCHANGE:
+        case CB_SHOWDROPDOWN:
+        case WM_MOUSELEAVE:
+        case WM_MOUSEMOVE:
+        case WM_LBUTTONDOWN:
+        case WM_LBUTTONUP: {
+            LRESULT result = CallWindowProcA(original, hwnd, msg, wParam, lParam);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return result;
+        }
+
+        case WM_NCDESTROY:
+            RemovePropA(hwnd, "GreenCurveComboOrigProc");
+            SetWindowLongPtrA(hwnd, GWLP_WNDPROC, (LONG_PTR)original);
+            break;
+    }
+
+    return CallWindowProcA(original, hwnd, msg, wParam, lParam);
+}
+
+static void install_themed_combo_subclass(HWND hwnd) {
+    if (!hwnd) return;
+    if (GetPropA(hwnd, "GreenCurveComboOrigProc")) return;
+    WNDPROC original = (WNDPROC)GetWindowLongPtrA(hwnd, GWLP_WNDPROC);
+    if (!original) return;
+    SetPropA(hwnd, "GreenCurveComboOrigProc", (HANDLE)original);
+    SetWindowLongPtrA(hwnd, GWLP_WNDPROC, (LONG_PTR)themed_combo_wndproc);
+}
+
+static void draw_themed_combo_item(const DRAWITEMSTRUCT* dis) {
+    if (!dis || dis->CtlType != ODT_COMBOBOX) return;
+
+    HDC hdc = dis->hDC;
+    RECT rc = dis->rcItem;
+    bool selected = (dis->itemState & ODS_SELECTED) != 0;
+    bool focus = (dis->itemState & ODS_FOCUS) != 0;
+
+    // Determine colors based on state
+    COLORREF bgColor;
+    COLORREF textColor;
+    if (selected) {
+        bgColor = COL_BUTTON;  // Use button color for selection
+        textColor = RGB(0xF0, 0xF4, 0xFF);  // Bright text for selected
+    } else {
+        bgColor = COL_INPUT;  // Dark input background
+        textColor = COL_TEXT;  // Normal text
+    }
+
+    // Fill background
+    HBRUSH bgBrush = CreateSolidBrush(bgColor);
+    FillRect(hdc, &rc, bgBrush);
+    DeleteObject(bgBrush);
+
+    // Draw focus rectangle if focused
+    if (focus) {
+        HPEN focusPen = CreatePen(PS_DOT, 1, COL_BUTTON_BORDER);
+        HPEN oldPen = (HPEN)SelectObject(hdc, focusPen);
+        HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
+        Rectangle(hdc, rc.left + 1, rc.top + 1, rc.right - 1, rc.bottom - 1);
+        SelectObject(hdc, oldBrush);
+        SelectObject(hdc, oldPen);
+        DeleteObject(focusPen);
+    }
+
+    // Get item text
+    char text[256] = {};
+    if (dis->itemID != (UINT)-1) {
+        SendMessageA(dis->hwndItem, CB_GETLBTEXT, dis->itemID, (LPARAM)text);
+    }
+
+    // Draw text
+    if (text[0]) {
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, textColor);
+        HFONT font = (HFONT)SendMessageA(dis->hwndItem, WM_GETFONT, 0, 0);
+        HFONT oldFont = (HFONT)SelectObject(hdc, font ? font : get_ui_font());
+        RECT textRc = rc;
+        textRc.left += dp(6);
+        textRc.right -= dp(6);
+        DrawTextA(hdc, text, -1, &textRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        SelectObject(hdc, oldFont);
+    }
+}
+
+static void measure_themed_combo_item(MEASUREITEMSTRUCT* mis) {
+    if (!mis) return;
+    // Set item height to match our themed controls
+    mis->itemHeight = dp(18);
+}
+
+static void draw_checkbox_tick_smooth(HDC hdc, const RECT* box, COLORREF color) {
+    if (!hdc || !box) return;
+
+    POINT pts[3] = {
+        { box->left + (box->right - box->left) * 22 / 100, box->top + (box->bottom - box->top) * 54 / 100 },
+        { box->left + (box->right - box->left) * 44 / 100, box->top + (box->bottom - box->top) * 74 / 100 },
+        { box->left + (box->right - box->left) * 78 / 100, box->top + (box->bottom - box->top) * 28 / 100 },
+    };
+
+    if (gdiplus_ensure()) {
+        void* gfx = nullptr;
+        s_fnGfxHDC(hdc, &gfx);
+        if (gfx) {
+            s_fnSmooth(gfx, GDP_SMOOTH_AA);
+            void* pen = nullptr;
+            float width = (float)nvmax(2, (box->right - box->left) / 5);
+            s_fnMakePen(colorref_to_argb(color), width, GDP_UNIT_PX, &pen);
+            if (pen) {
+                s_fnLines(gfx, pen, pts, 3);
+                s_fnDelPen(pen);
+            }
+            s_fnDelGfx(gfx);
+            return;
+        }
+    }
+
+    HPEN pen = CreatePen(PS_SOLID, nvmax(2, (box->right - box->left) / 5), color);
+    HPEN oldPen = (HPEN)SelectObject(hdc, pen);
+    MoveToEx(hdc, pts[0].x, pts[0].y, nullptr);
+    LineTo(hdc, pts[1].x, pts[1].y);
+    LineTo(hdc, pts[2].x, pts[2].y);
+    SelectObject(hdc, oldPen);
+    DeleteObject(pen);
+}
+
+static bool is_themed_button_id(UINT id) {
+    switch (id) {
+        case APPLY_BTN_ID:
+        case REFRESH_BTN_ID:
+        case RESET_BTN_ID:
+        case LICENSE_BTN_ID:
+        case PROFILE_LOAD_ID:
+        case PROFILE_SAVE_ID:
+        case PROFILE_CLEAR_ID:
+        case FAN_CURVE_BTN_ID:
+        case FAN_DIALOG_OK_ID:
+        case FAN_DIALOG_CANCEL_ID:
+            return true;
+    }
+    return false;
+}
+
+static bool is_themed_checkbox_id(UINT id) {
+    return id == GPU_OFFSET_EXCLUDE_LOW_CHECK_ID || id == START_ON_LOGON_CHECK_ID || is_fan_dialog_checkbox_id(id);
+}
+
+static bool is_fan_dialog_checkbox_id(UINT id) {
+    return id >= FAN_DIALOG_ENABLE_BASE && id < FAN_DIALOG_ENABLE_BASE + FAN_CURVE_MAX_POINTS;
+}
+
+static bool themed_checkbox_checked_state(UINT id, HWND hwnd) {
+    if (id == GPU_OFFSET_EXCLUDE_LOW_CHECK_ID) return g_app.guiGpuOffsetExcludeLow70;
+    if (id == START_ON_LOGON_CHECK_ID) return is_start_on_logon_enabled(g_app.configPath);
+    if (is_fan_dialog_checkbox_id(id)) {
+        int pointIndex = (int)id - FAN_DIALOG_ENABLE_BASE;
+        if (pointIndex >= 0 && pointIndex < FAN_CURVE_MAX_POINTS) {
+            return g_fanCurveDialog.working.points[pointIndex].enabled;
+        }
+    }
+    return hwnd && (SendMessageA(hwnd, BM_GETCHECK, 0, 0) == BST_CHECKED);
+}
+
+static void write_error_report_log_for_user_failure(const char* summary, const char* details) {
+    char logErr[256] = {};
+    if (!write_error_report_log(summary, details, logErr, sizeof(logErr)) && logErr[0]) {
+        debug_log("error report log failed: %s\n", logErr);
+    }
+}
+
+static void draw_themed_button(const DRAWITEMSTRUCT* dis) {
+    if (!dis) return;
+
+    HDC hdc = dis->hDC;
+    RECT rc = dis->rcItem;
+    bool disabled = (dis->itemState & ODS_DISABLED) != 0;
+    bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+    bool focused = (dis->itemState & ODS_FOCUS) != 0;
+    bool checkbox = is_themed_checkbox_id(dis->CtlID);
+    bool checked = checkbox && themed_checkbox_checked_state(dis->CtlID, dis->hwndItem);
+    HFONT controlFont = dis->hwndItem ? (HFONT)SendMessageA(dis->hwndItem, WM_GETFONT, 0, 0) : nullptr;
+    HFONT oldFont = (HFONT)SelectObject(hdc, controlFont ? controlFont : get_ui_font());
+
+    HBRUSH bg = CreateSolidBrush(COL_BG);
+    FillRect(hdc, &rc, bg);
+    DeleteObject(bg);
+    SetBkMode(hdc, TRANSPARENT);
+
+    if (checkbox) {
+        char text[64] = {};
+        GetWindowTextA(dis->hwndItem, text, ARRAY_COUNT(text));
+        bool labeledCheckbox = is_fan_dialog_checkbox_id(dis->CtlID) && text[0];
+        int controlW = rc.right - rc.left;
+        int controlH = rc.bottom - rc.top;
+        int boxSize = labeledCheckbox
+            ? nvmin(controlH - dp(4), dp(16))
+            : nvmin(controlW, controlH) - dp(2);
+        if (boxSize < dp(12)) boxSize = dp(12);
+        if (boxSize > controlW) boxSize = controlW;
+        if (boxSize > controlH) boxSize = controlH;
+        int boxLeft = labeledCheckbox
+            ? rc.left + dp(2)
+            : rc.left + (controlW - boxSize) / 2;
+        RECT box = {
+            boxLeft,
+            rc.top + (controlH - boxSize) / 2,
+            boxLeft + boxSize,
+            rc.top + (controlH - boxSize) / 2 + boxSize,
+        };
+
+        COLORREF fill = disabled ? COL_BUTTON_DISABLED : (checked ? COL_BUTTON : COL_PANEL);
+        COLORREF border = disabled ? RGB(0x5A, 0x5A, 0x68) : COL_BUTTON_BORDER;
+        HBRUSH fillBr = CreateSolidBrush(fill);
+        FillRect(hdc, &box, fillBr);
+        DeleteObject(fillBr);
+
+        HPEN pen = CreatePen(PS_SOLID, 1, border);
+        HPEN oldPen = (HPEN)SelectObject(hdc, pen);
+        HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
+        Rectangle(hdc, box.left, box.top, box.right + 1, box.bottom + 1);
+        SelectObject(hdc, oldBrush);
+        DeleteObject(SelectObject(hdc, oldPen));
+
+        if (checked) {
+            draw_checkbox_tick_smooth(hdc, &box, disabled ? COL_LABEL : RGB(0xE8, 0xF2, 0xFF));
+        }
+
+        if (labeledCheckbox) {
+            RECT textRc = rc;
+            textRc.left = box.right + dp(8);
+            SetTextColor(hdc, disabled ? COL_LABEL : COL_TEXT);
+            DrawTextA(hdc, text, -1, &textRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+    } else {
+        COLORREF fill = disabled ? COL_BUTTON_DISABLED : (pressed ? COL_BUTTON_PRESSED : COL_BUTTON);
+        HBRUSH fillBr = CreateSolidBrush(fill);
+        FillRect(hdc, &rc, fillBr);
+        DeleteObject(fillBr);
+
+        HPEN borderPen = CreatePen(PS_SOLID, 1, disabled ? RGB(0x56, 0x56, 0x64) : COL_BUTTON_BORDER);
+        HPEN oldPen = (HPEN)SelectObject(hdc, borderPen);
+        HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
+        Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
+        SelectObject(hdc, oldBrush);
+        DeleteObject(SelectObject(hdc, oldPen));
+
+        char text[128] = {};
+        GetWindowTextA(dis->hwndItem, text, ARRAY_COUNT(text));
+        RECT textRc = rc;
+        if (pressed) OffsetRect(&textRc, 0, 1);
+        SetTextColor(hdc, disabled ? COL_LABEL : RGB(0xF0, 0xF4, 0xFF));
+        DrawTextA(hdc, text, -1, &textRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
+
+    if (focused) {
+        RECT focus = rc;
+        InflateRect(&focus, -3, -3);
+        DrawFocusRect(hdc, &focus);
+    }
+    SelectObject(hdc, oldFont);
+}
+
 static void draw_lock_checkbox(const DRAWITEMSTRUCT* dis) {
     if (!dis) return;
     HDC hdc = dis->hDC;
     RECT rc = dis->rcItem;
     bool disabled = (dis->itemState & ODS_DISABLED) != 0;
-    bool checked = SendMessageA(dis->hwndItem, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    if (!checked && !disabled) {
-        int vi = (int)dis->CtlID - LOCK_BASE_ID;
-        if (vi >= 0 && vi == g_app.lockedVi) checked = true;
-    }
+    int vi = (int)dis->CtlID - LOCK_BASE_ID;
+    bool checked = (vi >= 0 && vi < g_app.numVisible && vi == g_app.lockedVi);
 
     HBRUSH bg = CreateSolidBrush(COL_BG);
     FillRect(hdc, &rc, bg);
     DeleteObject(bg);
 
-    int boxSize = nvmin(rc.right - rc.left, rc.bottom - rc.top) - dp(4);
+    int boxSize = nvmin(rc.right - rc.left, rc.bottom - rc.top) - dp(2);
     if (boxSize < dp(10)) boxSize = dp(10);
     RECT box = {
         rc.left + (rc.right - rc.left - boxSize) / 2,
@@ -4477,8 +5889,8 @@ static void draw_lock_checkbox(const DRAWITEMSTRUCT* dis) {
         rc.top + (rc.bottom - rc.top - boxSize) / 2 + boxSize,
     };
 
-    COLORREF border = disabled ? RGB(0x6A, 0x6A, 0x78) : COL_TEXT;
-    COLORREF fill = disabled ? RGB(0x36, 0x36, 0x46) : RGB(0x16, 0x16, 0x24);
+    COLORREF border = disabled ? RGB(0x5A, 0x5A, 0x68) : COL_BUTTON_BORDER;
+    COLORREF fill = disabled ? COL_BUTTON_DISABLED : (checked ? COL_BUTTON : COL_PANEL);
     HBRUSH fillBr = CreateSolidBrush(fill);
     FillRect(hdc, &box, fillBr);
     DeleteObject(fillBr);
@@ -4486,28 +5898,17 @@ static void draw_lock_checkbox(const DRAWITEMSTRUCT* dis) {
     HPEN pen = CreatePen(PS_SOLID, 1, border);
     HPEN oldPen = (HPEN)SelectObject(hdc, pen);
     HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
-    Rectangle(hdc, box.left, box.top, box.right, box.bottom);
+    Rectangle(hdc, box.left, box.top, box.right + 1, box.bottom + 1);
     SelectObject(hdc, oldBrush);
     DeleteObject(SelectObject(hdc, oldPen));
 
     if (checked) {
-        HPEN checkPen = CreatePen(PS_SOLID, 2, disabled ? RGB(0x96, 0x96, 0xA6) : RGB(0xE8, 0xE8, 0xF0));
-        oldPen = (HPEN)SelectObject(hdc, checkPen);
-        int x1 = box.left + boxSize / 5;
-        int y1 = box.top + boxSize / 2;
-        int x2 = box.left + boxSize / 2 - 1;
-        int y2 = box.bottom - boxSize / 4;
-        int x3 = box.right - boxSize / 6;
-        int y3 = box.top + boxSize / 4;
-        MoveToEx(hdc, x1, y1, nullptr);
-        LineTo(hdc, x2, y2);
-        LineTo(hdc, x3, y3);
-        DeleteObject(SelectObject(hdc, oldPen));
+        draw_checkbox_tick_smooth(hdc, &box, disabled ? COL_LABEL : RGB(0xE8, 0xF2, 0xFF));
     }
 
     if (dis->itemState & ODS_FOCUS) {
         RECT focus = rc;
-        InflateRect(&focus, -1, -1);
+        InflateRect(&focus, -2, -2);
         DrawFocusRect(hdc, &focus);
     }
 }

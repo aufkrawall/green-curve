@@ -2,6 +2,7 @@
 
 int g_dpi = 96;
 float g_scale = 1.0f;
+CRITICAL_SECTION g_configLock = {};
 
 AppData g_app = {};
 NvmlApi g_nvml_api = {};
@@ -21,6 +22,19 @@ int dp(int px) {
 }
 
 void init_dpi() {
+    InitializeCriticalSection(&g_configLock);
+
+    HMODULE user32 = GetModuleHandleA("user32.dll");
+    if (user32) {
+        typedef UINT (WINAPI *GetDpiForSystem_t)();
+        auto pGetDpiForSystem = (GetDpiForSystem_t)GetProcAddress(user32, "GetDpiForSystem");
+        if (pGetDpiForSystem) {
+            g_dpi = (int)pGetDpiForSystem();
+            g_scale = (float)g_dpi / 96.0f;
+            return;
+        }
+    }
+
     HMODULE shcore = LoadLibraryA("shcore.dll");
     if (shcore) {
         typedef HRESULT (WINAPI *GetDpiForMonitor_t)(HANDLE, int, UINT*, UINT*);

@@ -77,7 +77,9 @@ bool config_section_has_keys(const char* path, const char* section) {
     if (!path || !section) return false;
 
     char keys[256] = {};
+    EnterCriticalSection(&g_configLock);
     DWORD n = GetPrivateProfileStringA(section, nullptr, "", keys, ARRAY_COUNT(keys), path);
+    LeaveCriticalSection(&g_configLock);
     return n > 0 && keys[0] != 0;
 }
 
@@ -85,7 +87,9 @@ int get_config_int(const char* path, const char* section, const char* key, int d
     if (!path || !section || !key) return defaultVal;
 
     char buf[32] = {};
+    EnterCriticalSection(&g_configLock);
     GetPrivateProfileStringA(section, key, "", buf, sizeof(buf), path);
+    LeaveCriticalSection(&g_configLock);
     trim_ascii(buf);
     if (!buf[0]) return defaultVal;
 
@@ -99,7 +103,9 @@ bool set_config_int(const char* path, const char* section, const char* key, int 
 
     char buf[32] = {};
     StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d", value);
+    EnterCriticalSection(&g_configLock);
     bool ok = WritePrivateProfileStringA(section, key, buf, path) != FALSE;
+    LeaveCriticalSection(&g_configLock);
     if (ok) invalidate_tray_profile_cache();
     return ok;
 }

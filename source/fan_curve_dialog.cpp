@@ -328,16 +328,15 @@ static void fan_curve_dialog_draw_preview(HWND hwnd, HDC hdc) {
         plot = graph;
     }
 
-    HBRUSH bg = CreateSolidBrush(RGB(0x18, 0x18, 0x28));
+    HBRUSH bg = CreateSolidBrush(COL_PANEL);
     FillRect(hdc, &graph, bg);
     DeleteObject(bg);
 
     HPEN gridPen = CreatePen(PS_SOLID, 1, COL_GRID);
     HPEN axisPen = CreatePen(PS_SOLID, 1, COL_AXIS);
-    HPEN curvePen = CreatePen(PS_SOLID, 2, RGB(0x50, 0xD0, 0x80));
-    HBRUSH pointBrush = CreateSolidBrush(COL_POINT);
     HGDIOBJ oldPen = SelectObject(hdc, gridPen);
     HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    HFONT oldFont = (HFONT)SelectObject(hdc, create_ui_sized_font(dp(11), FW_NORMAL));
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, COL_LABEL);
 
@@ -399,30 +398,22 @@ static void fan_curve_dialog_draw_preview(HWND hwnd, HDC hdc) {
     }
 
     if (activeCount > 0) {
-        SelectObject(hdc, curvePen);
+        POINT points[FAN_CURVE_MAX_POINTS] = {};
         for (int i = 0; i < activeCount; i++) {
-            int x = plot.left + (active[i].temperatureC * (width - 1)) / 100;
-            int y = plot.bottom - 1 - (active[i].fanPercent * (height - 1)) / 100;
-            if (i == 0) MoveToEx(hdc, x, y, nullptr);
-            else LineTo(hdc, x, y);
+            points[i].x = plot.left + (active[i].temperatureC * (width - 1)) / 100;
+            points[i].y = plot.bottom - 1 - (active[i].fanPercent * (height - 1)) / 100;
         }
-
-        SelectObject(hdc, pointBrush);
-        for (int i = 0; i < activeCount; i++) {
-            int x = plot.left + (active[i].temperatureC * (width - 1)) / 100;
-            int y = plot.bottom - 1 - (active[i].fanPercent * (height - 1)) / 100;
-            Ellipse(hdc, x - pointRadius, y - pointRadius, x + pointRadius + 1, y + pointRadius + 1);
-        }
+        draw_curve_polyline_smooth(hdc, points, activeCount, 2, COL_CURVE);
+        draw_curve_points_ringed(hdc, points, activeCount, pointRadius, pointRadius + 2);
     }
 
     char summary[128] = {};
     fan_curve_format_summary(&preview, summary, sizeof(summary));
     TextOutA(hdc, graph.left, graph.bottom + dp(6), summary, (int)strlen(summary));
 
+    DeleteObject(SelectObject(hdc, oldFont));
     SelectObject(hdc, oldBrush);
     SelectObject(hdc, oldPen);
-    DeleteObject(pointBrush);
-    DeleteObject(curvePen);
     DeleteObject(axisPen);
     DeleteObject(gridPen);
 }
@@ -445,7 +436,8 @@ static bool fan_curve_dialog_commit(HWND hwnd) {
 static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
-            HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+            apply_system_titlebar_theme(hwnd);
+            allow_dark_mode_for_window(hwnd);
 
             CreateWindowExA(0, "STATIC", "Enable", WS_CHILD | WS_VISIBLE | SS_LEFT,
                 dp(18), dp(252), dp(52), dp(18), hwnd, nullptr, g_app.hInst, nullptr);
@@ -460,22 +452,24 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 StringCchPrintfA(label, ARRAY_COUNT(label), "P%d", i + 1);
                 g_fanCurveDialog.enableChecks[i] = CreateWindowExA(
                     0, "BUTTON", label,
-                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_CHECKBOX,
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                     dp(18), y, dp(70), dp(22),
                     hwnd, (HMENU)(INT_PTR)(FAN_DIALOG_ENABLE_BASE + i), g_app.hInst, nullptr);
                 g_fanCurveDialog.tempEdits[i] = CreateWindowExA(
-                    WS_EX_CLIENTEDGE, "EDIT", "",
+                    0, "EDIT", "",
                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_NUMBER,
                     dp(104), y - dp(2), dp(68), dp(22),
                     hwnd, (HMENU)(INT_PTR)(FAN_DIALOG_TEMP_BASE + i), g_app.hInst, nullptr);
                 g_fanCurveDialog.percentEdits[i] = CreateWindowExA(
-                    WS_EX_CLIENTEDGE, "EDIT", "",
+                    0, "EDIT", "",
                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_NUMBER,
                     dp(192), y - dp(2), dp(68), dp(22),
                     hwnd, (HMENU)(INT_PTR)(FAN_DIALOG_PERCENT_BASE + i), g_app.hInst, nullptr);
-                SendMessageA(g_fanCurveDialog.enableChecks[i], WM_SETFONT, (WPARAM)font, TRUE);
-                SendMessageA(g_fanCurveDialog.tempEdits[i], WM_SETFONT, (WPARAM)font, TRUE);
-                SendMessageA(g_fanCurveDialog.percentEdits[i], WM_SETFONT, (WPARAM)font, TRUE);
+                style_input_control(g_fanCurveDialog.tempEdits[i]);
+                style_input_control(g_fanCurveDialog.percentEdits[i]);
+                apply_ui_font(g_fanCurveDialog.enableChecks[i]);
+                apply_ui_font(g_fanCurveDialog.tempEdits[i]);
+                apply_ui_font(g_fanCurveDialog.percentEdits[i]);
                 SendMessageA(g_fanCurveDialog.tempEdits[i], EM_SETLIMITTEXT, 3, 0);
                 SendMessageA(g_fanCurveDialog.percentEdits[i], EM_SETLIMITTEXT, 3, 0);
             }
@@ -487,6 +481,7 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
                 dp(304), dp(296), dp(150), dp(180),
                 hwnd, (HMENU)(INT_PTR)FAN_DIALOG_INTERVAL_ID, g_app.hInst, nullptr);
+            style_combo_control(g_fanCurveDialog.intervalCombo);
             const int intervals[] = { 250, 500, 750, 1000, 1500, 2000, 3000, 4000, 5000 };
             for (int value : intervals) {
                 char text[32] = {};
@@ -502,6 +497,7 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
                 dp(304), dp(354), dp(150), dp(180),
                 hwnd, (HMENU)(INT_PTR)FAN_DIALOG_HYSTERESIS_ID, g_app.hInst, nullptr);
+            style_combo_control(g_fanCurveDialog.hysteresisCombo);
             for (int value = 0; value <= FAN_CURVE_MAX_HYSTERESIS_C; value++) {
                 char text[16] = {};
                 StringCchPrintfA(text, ARRAY_COUNT(text), "%d\xB0""C", value);
@@ -511,19 +507,16 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
 
             g_fanCurveDialog.okButton = CreateWindowExA(
                 0, "BUTTON", "OK",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                 dp(304), dp(406), dp(72), dp(28),
                 hwnd, (HMENU)(INT_PTR)FAN_DIALOG_OK_ID, g_app.hInst, nullptr);
             g_fanCurveDialog.cancelButton = CreateWindowExA(
                 0, "BUTTON", "Close",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                 dp(384), dp(406), dp(72), dp(28),
                 hwnd, (HMENU)(INT_PTR)FAN_DIALOG_CANCEL_ID, g_app.hInst, nullptr);
 
-            SendMessageA(g_fanCurveDialog.intervalCombo, WM_SETFONT, (WPARAM)font, TRUE);
-            SendMessageA(g_fanCurveDialog.hysteresisCombo, WM_SETFONT, (WPARAM)font, TRUE);
-            SendMessageA(g_fanCurveDialog.okButton, WM_SETFONT, (WPARAM)font, TRUE);
-            SendMessageA(g_fanCurveDialog.cancelButton, WM_SETFONT, (WPARAM)font, TRUE);
+            apply_ui_font_to_children(hwnd);
             fan_curve_dialog_sync_controls();
             return 0;
         }
@@ -531,6 +524,24 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
         case WM_SIZE:
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
+
+        case WM_THEMECHANGED:
+        case WM_SETTINGCHANGE:
+            apply_system_titlebar_theme(hwnd);
+            allow_dark_mode_for_window(hwnd);
+            break;
+
+        case WM_DRAWITEM: {
+            const DRAWITEMSTRUCT* dis = (const DRAWITEMSTRUCT*)lParam;
+            if (dis && dis->CtlType == ODT_BUTTON) {
+                if (is_themed_button_id(dis->CtlID) ||
+                    (dis->CtlID >= FAN_DIALOG_ENABLE_BASE && dis->CtlID < FAN_DIALOG_ENABLE_BASE + FAN_CURVE_MAX_POINTS)) {
+                    draw_themed_button(dis);
+                    return TRUE;
+                }
+            }
+            return FALSE;
+        }
 
         case WM_GETMINMAXINFO: {
             MINMAXINFO* mmi = (MINMAXINFO*)lParam;
@@ -547,6 +558,10 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
             int notification = HIWORD(wParam);
 
             if (id >= FAN_DIALOG_ENABLE_BASE && id < FAN_DIALOG_ENABLE_BASE + FAN_CURVE_MAX_POINTS && notification == BN_CLICKED) {
+                bool enabled = g_fanCurveDialog.working.points[id - FAN_DIALOG_ENABLE_BASE].enabled;
+                SendMessageA(g_fanCurveDialog.enableChecks[id - FAN_DIALOG_ENABLE_BASE], BM_SETCHECK,
+                    (WPARAM)(enabled ? BST_UNCHECKED : BST_CHECKED), 0);
+                InvalidateRect(g_fanCurveDialog.enableChecks[id - FAN_DIALOG_ENABLE_BASE], nullptr, FALSE);
                 fan_curve_dialog_toggle_point(id - FAN_DIALOG_ENABLE_BASE, hwnd);
                 return 0;
             }
@@ -596,14 +611,33 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
         case WM_CTLCOLOREDIT: {
             HDC hdcEdit = (HDC)wParam;
             SetTextColor(hdcEdit, COL_TEXT);
-            SetBkColor(hdcEdit, RGB(0x1A, 0x1A, 0x2A));
-            static HBRUSH hEditBrush = CreateSolidBrush(RGB(0x1A, 0x1A, 0x2A));
+            SetBkColor(hdcEdit, COL_INPUT);
+            static HBRUSH hEditBrush = CreateSolidBrush(COL_INPUT);
             return (LRESULT)hEditBrush;
         }
 
-        case WM_CTLCOLORSTATIC:
         case WM_CTLCOLORLISTBOX: {
+            HDC hdcList = (HDC)wParam;
+            SetTextColor(hdcList, COL_TEXT);
+            SetBkColor(hdcList, COL_INPUT);
+            static HBRUSH hListBrush = CreateSolidBrush(COL_INPUT);
+            return (LRESULT)hListBrush;
+        }
+
+        case WM_CTLCOLORSTATIC: {
             HDC hdcStatic = (HDC)wParam;
+            HWND hCtl = (HWND)lParam;
+            char className[16] = {};
+            if (hCtl) GetClassNameA(hCtl, className, ARRAY_COUNT(className));
+            LONG_PTR style = hCtl ? GetWindowLongPtrA(hCtl, GWL_STYLE) : 0;
+            bool isEditInput = strcmp(className, "Edit") == 0 &&
+                (((style & ES_READONLY) != 0) || !IsWindowEnabled(hCtl));
+            if (isEditInput || hCtl == g_fanCurveDialog.intervalCombo || hCtl == g_fanCurveDialog.hysteresisCombo) {
+                SetTextColor(hdcStatic, COL_TEXT);
+                SetBkColor(hdcStatic, COL_INPUT);
+                static HBRUSH hInputBrush = CreateSolidBrush(COL_INPUT);
+                return (LRESULT)hInputBrush;
+            }
             SetTextColor(hdcStatic, COL_LABEL);
             SetBkColor(hdcStatic, COL_BG);
             static HBRUSH hStaticBrush = CreateSolidBrush(COL_BG);
@@ -642,7 +676,10 @@ static void open_fan_curve_dialog() {
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.hIcon = (HICON)SendMessageA(g_app.hMainWnd, WM_GETICON, ICON_SMALL, 0);
-    RegisterClassExA(&wc);
+    WNDCLASSEXA existing = {};
+    if (!GetClassInfoExA(g_app.hInst, wc.lpszClassName, &existing)) {
+        RegisterClassExA(&wc);
+    }
 
     ensure_valid_fan_curve_config(&g_app.guiFanCurve);
     copy_fan_curve(&g_fanCurveDialog.working, &g_app.guiFanCurve);
