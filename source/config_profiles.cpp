@@ -229,6 +229,10 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
     return true;
 }
 
+static void resolve_profile_gpu_offset_state_for_save(const DesiredSettings* desired, int* gpuOffsetMHzOut, bool* excludeLow70Out) {
+    resolve_effective_gpu_offset_state_for_config_save(desired, gpuOffsetMHzOut, excludeLow70Out);
+}
+
 static bool is_profile_slot_saved(const char* path, int slot) {
     if (!path || slot < 1 || slot > CONFIG_NUM_SLOTS) return false;
     char section[32];
@@ -296,9 +300,14 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         StringCchPrintfA(curveSection, ARRAY_COUNT(curveSection), "profile%d_curve", slot);
         StringCchPrintfA(fanCurveSection, ARRAY_COUNT(fanCurveSection), "profile%d_fan_curve", slot);
 
+        int profileGpuOffsetMHz = 0;
+        bool profileExcludeLow70 = false;
+        resolve_profile_gpu_offset_state_for_save(desired, &profileGpuOffsetMHz, &profileExcludeLow70);
+        bool profileHasGpuOffset = profileGpuOffsetMHz != 0;
+
         appendf("[%s]\r\n", controlsSection);
-        appendf("gpu_offset_mhz=%d\r\n", desired->hasGpuOffset ? desired->gpuOffsetMHz : (g_app.gpuClockOffsetkHz / 1000));
-        appendf("gpu_offset_exclude_low_70=%d\r\n", desired->hasGpuOffset && desired->gpuOffsetExcludeLow70 ? 1 : 0);
+        appendf("gpu_offset_mhz=%d\r\n", profileGpuOffsetMHz);
+        appendf("gpu_offset_exclude_low_70=%d\r\n", profileExcludeLow70 ? 1 : 0);
         appendf("lock_ci=%d\r\n", desired->hasLock ? desired->lockCi : (g_app.lockedCi >= 0 ? g_app.lockedCi : -1));
         appendf("lock_mhz=%u\r\n", desired->hasLock ? desired->lockMHz : g_app.lockedFreq);
         appendf("mem_offset_mhz=%d\r\n", desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
@@ -317,12 +326,6 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
 
         appendf("[%s]\r\n", curveSection);
         appendf("curve_semantics=base_plus_gpu_offset\r\n");
-        int profileGpuOffsetMHz = desired->hasGpuOffset ? desired->gpuOffsetMHz : (g_app.gpuClockOffsetkHz / 1000);
-        bool profileExcludeLow70 = desired->hasGpuOffset ? desired->gpuOffsetExcludeLow70 : false;
-        bool profileHasGpuOffset = desired->hasGpuOffset || g_app.gpuClockOffsetkHz != 0;
-        if (!desired->hasGpuOffset) {
-            profileExcludeLow70 = g_app.appliedGpuOffsetExcludeLow70;
-        }
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             unsigned int mhz = 0;
             if (desired->hasCurvePoint[i]) {
@@ -388,9 +391,16 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
 
     // Write legacy sections for backward compatibility when slot 1 is saved
     if (slot == 1) {
+        int profileGpuOffsetMHz = 0;
+        bool profileExcludeLow70 = false;
+        resolve_profile_gpu_offset_state_for_save(desired, &profileGpuOffsetMHz, &profileExcludeLow70);
+        bool profileHasGpuOffset = profileGpuOffsetMHz != 0;
+
         appendf("[controls]\r\n");
-        appendf("gpu_offset_mhz=%d\r\n", desired->hasGpuOffset ? desired->gpuOffsetMHz : (g_app.gpuClockOffsetkHz / 1000));
-        appendf("gpu_offset_exclude_low_70=%d\r\n", desired->hasGpuOffset && desired->gpuOffsetExcludeLow70 ? 1 : 0);
+        appendf("gpu_offset_mhz=%d\r\n", profileGpuOffsetMHz);
+        appendf("gpu_offset_exclude_low_70=%d\r\n", profileExcludeLow70 ? 1 : 0);
+        appendf("lock_ci=%d\r\n", desired->hasLock ? desired->lockCi : (g_app.lockedCi >= 0 ? g_app.lockedCi : -1));
+        appendf("lock_mhz=%u\r\n", desired->hasLock ? desired->lockMHz : g_app.lockedFreq);
         appendf("mem_offset_mhz=%d\r\n", desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
         appendf("power_limit_pct=%d\r\n", desired->hasPowerLimit ? desired->powerLimitPct : g_app.powerLimitPct);
         appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : get_effective_live_fan_mode()));
@@ -405,12 +415,23 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         }
         appendf("\r\n");
         appendf("[curve]\r\n");
+        appendf("curve_semantics=base_plus_gpu_offset\r\n");
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             unsigned int mhz = 0;
             if (desired->hasCurvePoint[i]) {
                 mhz = desired->curvePointMHz[i];
+                if (profileHasGpuOffset && g_app.curve[i].freq_kHz > 0) {
+                    int offsetCompmhz = gpu_offset_component_mhz_for_point(i, profileGpuOffsetMHz, profileExcludeLow70);
+                    mhz = (unsigned int)((int)mhz - offsetCompmhz);
+                    if ((int)mhz <= 0) mhz = 0;
+                }
             } else if (g_app.curve[i].freq_kHz > 0) {
                 mhz = displayed_curve_mhz(g_app.curve[i].freq_kHz);
+                if (profileHasGpuOffset) {
+                    int offsetCompmhz = gpu_offset_component_mhz_for_point(i, profileGpuOffsetMHz, profileExcludeLow70);
+                    mhz = (unsigned int)((int)mhz - offsetCompmhz);
+                    if ((int)mhz <= 0) mhz = 0;
+                }
             }
             if (mhz == 0) continue;
             char key[16];
@@ -683,9 +704,11 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
     if (!desired) return;
     unlock_all();
     if (g_app.loaded) populate_edits();
+
     // Curve points
     for (int vi = 0; vi < g_app.numVisible; vi++) {
         int ci = g_app.visibleMap[vi];
+        g_app.guiCurvePointExplicit[ci] = desired->hasCurvePoint[ci];
         if (g_app.hEditsMhz[vi]) {
             unsigned int mhz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
             if (desired->hasCurvePoint[ci]) mhz = desired->curvePointMHz[ci];
@@ -737,10 +760,8 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
     if (desired->hasLock && desired->lockCi >= 0 && desired->lockMHz > 0) {
         for (int vi = 0; vi < g_app.numVisible; vi++) {
             if (g_app.visibleMap[vi] != desired->lockCi) continue;
-            g_app.lockedVi = vi;
-            g_app.lockedCi = desired->lockCi;
-            g_app.lockedFreq = desired->lockMHz;
-            if (g_app.loaded) populate_edits();
+            set_edit_value(g_app.hEditsMhz[vi], desired->lockMHz);
+            apply_lock(vi);
             break;
         }
     }

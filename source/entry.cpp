@@ -16,8 +16,18 @@ static bool handle_cli(LPWSTR wCmdLine) {
         set_default_config_path();
         if (opts.hasConfigPath) StringCchCopyA(g_app.configPath, ARRAY_COUNT(g_app.configPath), opts.configPath);
         g_app.launchedFromLogon = true;
-        g_app.startHiddenToTray = true;
-        return false;
+
+        // Logon startup has two distinct behaviors:
+        // 1. tray startup enabled: launch resident app hidden to tray
+        // 2. tray startup disabled: do a silent one-shot profile apply and exit
+        if (is_start_on_logon_enabled(g_app.configPath)) {
+            g_app.startHiddenToTray = true;
+            return false;
+        }
+
+        opts.recognized = true;
+        opts.applyConfig = true;
+        opts.logonStart = false;
     }
     if (!opts.recognized) return false;
     set_default_config_path();
@@ -80,10 +90,13 @@ static bool handle_cli(LPWSTR wCmdLine) {
 
     bool curveOk = false;
     bool offsetsOk = false;
+    bool settleForWritePath = opts.applyConfig || opts.saveConfig || opts.reset || desired_has_any_action(&opts.desired);
+    int settleAttempts = settleForWritePath ? 6 : 3;
+    DWORD settleDelayMs = settleForWritePath ? 100 : 30;
 
     if (g_app.vfBackend && g_app.vfBackend->readSupported) {
-        CLI_LOG("Green Curve: Reading VF curve...\n");
-        curveOk = nvapi_read_curve();
+        CLI_LOG("Green Curve: Reading VF curve%s...\n", settleAttempts > 1 ? " (settled)" : "");
+        curveOk = read_live_curve_snapshot_settled(settleAttempts, settleDelayMs, &offsetsOk);
         if (!curveOk) {
             CLI_LOG("ERROR: Failed to read VF curve.\n");
             if (!opts.probe) {
@@ -95,7 +108,6 @@ static bool handle_cli(LPWSTR wCmdLine) {
         }
 
         CLI_LOG("Green Curve: Reading VF offsets...\n");
-        offsetsOk = nvapi_read_offsets();
         if (!offsetsOk) {
             CLI_LOG("WARNING: Failed to read VF offsets (non-fatal).\n");
         } else {
@@ -153,6 +165,34 @@ static bool handle_cli(LPWSTR wCmdLine) {
             fclose(logf);
             return true;
         }
+
+        if (g_app.vfBackend && g_app.vfBackend->readSupported) {
+            CLI_LOG("Green Curve: Refreshing settled VF baseline before apply...\n");
+            bool refreshedOffsetsOk = false;
+            if (!read_live_curve_snapshot_settled(6, 100, &refreshedOffsetsOk)) {
+                CLI_LOG("ERROR: Failed to refresh VF curve before apply.\n");
+                fclose(logf);
+                return true;
+            }
+            if (!refreshedOffsetsOk) {
+                CLI_LOG("WARNING: VF offset refresh before apply did not fully verify.\n");
+            }
+            char detail[128] = {};
+            refresh_global_state(detail, sizeof(detail));
+        }
+
+        int profileCurvePoints = 0;
+        for (int i = 0; i < VF_NUM_POINTS; i++) {
+            if (cfg.hasCurvePoint[i]) profileCurvePoints++;
+        }
+        CLI_LOG("Green Curve: Profile summary gpu=%dMHz excl70=%d lockCi=%d lockMHz=%u curvePoints=%d fanMode=%d\n",
+            cfg.gpuOffsetMHz,
+            cfg.gpuOffsetExcludeLow70 ? 1 : 0,
+            cfg.hasLock ? cfg.lockCi : -1,
+            cfg.hasLock ? cfg.lockMHz : 0u,
+            profileCurvePoints,
+            cfg.hasFan ? cfg.fanMode : -1);
+
         CLI_LOG("Applying profile %d...\n", logonSlot);
         merge_desired_settings(&cfg, &opts.desired);
         if (cfg.hasFan && cfg.fanMode != FAN_MODE_AUTO) {
@@ -570,9 +610,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     nvapi_get_name();
     nvapi_read_gpu_metadata();
 
-    // Read initial curve
-    bool curveOk = nvapi_read_curve();
-    nvapi_read_offsets();
+    // Read initial curve. The driver can briefly report an in-between VF snapshot
+    // right after startup, so take a few short samples before inferring lock state.
+    bool offsetsOk = false;
+    bool curveOk = read_live_curve_snapshot_settled(3, 30, &offsetsOk);
 
         if (!curveOk) {
             char message[512] = {};
@@ -613,9 +654,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         return 1;
     }
 
-    // Build visible map after initial read
-    rebuild_visible_map();
-    detect_locked_tail_from_curve();
+    // A settled snapshot already rebuilt the visible map and inferred the lock tail.
+    (void)offsetsOk;
 
     // Read global OC/PL/fan values
     {

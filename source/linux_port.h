@@ -40,8 +40,12 @@ struct FanCurveConfig {
 struct DesiredSettings {
     bool hasCurvePoint[VF_NUM_POINTS];
     unsigned int curvePointMHz[VF_NUM_POINTS];
+    bool hasLock;
+    int lockCi;
+    unsigned int lockMHz;
     bool hasGpuOffset;
     int gpuOffsetMHz;
+    bool gpuOffsetExcludeLow70;
     bool hasMemOffset;
     int memOffsetMHz;
     bool hasPowerLimit;

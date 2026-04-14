@@ -502,6 +502,7 @@ struct AppData {
     int gpuTemperatureC;
     bool gpuTemperatureValid;
 
+    bool guiCurvePointExplicit[VF_NUM_POINTS];
     int guiGpuOffsetMHz;
     bool guiGpuOffsetExcludeLow70;
     int appliedGpuOffsetMHz;

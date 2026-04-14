@@ -430,14 +430,25 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
         auto verify_curve_request = [&](char* detailOut, size_t detailOutSize) -> bool {
             if (!curveRequest) return true;
             if (gpuPolicyViaCurveBatch && selectiveOffsetApplied > 0 && selectiveOffsetApplied >= selectiveOffsetFailed) {
-                if (hasLock && lockCi >= 0 && lockCi < VF_NUM_POINTS && g_app.curve[lockCi].freq_kHz > 0 && lockMhz > 0) {
-                    unsigned int actualLockMHz = displayed_curve_mhz(g_app.curve[lockCi].freq_kHz);
-                    unsigned int toleranceMHz = curve_point_verify_tolerance_mhz(lockCi);
-                    unsigned int deltaMHz = actualLockMHz > lockMhz ? (actualLockMHz - lockMhz) : (lockMhz - actualLockMHz);
-                    if (deltaMHz > toleranceMHz) {
-                        set_curve_target_mismatch_detail(lockCi, actualLockMHz, lockMhz, true, detailOut, detailOutSize);
-                        debug_log("selective offset lock anchor mismatch: ci=%d actual=%u target=%u tol=%u\n",
-                            lockCi, actualLockMHz, lockMhz, toleranceMHz);
+                if (hasLock && lockMhz > 0) {
+                    bool sawTailPoint = false;
+                    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+                        if (!lockedTailMask[ci]) continue;
+                        if (g_app.curve[ci].freq_kHz == 0) continue;
+
+                        sawTailPoint = true;
+                        unsigned int actualLockMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
+                        unsigned int toleranceMHz = curve_point_verify_tolerance_mhz(ci);
+                        unsigned int deltaMHz = actualLockMHz > lockMhz ? (actualLockMHz - lockMhz) : (lockMhz - actualLockMHz);
+                        if (deltaMHz > toleranceMHz) {
+                            set_curve_target_mismatch_detail(ci, actualLockMHz, lockMhz, true, detailOut, detailOutSize);
+                            debug_log("selective offset lock tail mismatch: ci=%d actual=%u target=%u tol=%u\n",
+                                ci, actualLockMHz, lockMhz, toleranceMHz);
+                            return false;
+                        }
+                    }
+                    if (!sawTailPoint) {
+                        set_message(detailOut, detailOutSize, "No VF points were available to verify the curve lock");
                         return false;
                     }
                 }
@@ -1083,7 +1094,7 @@ static void rebuild_visible_map() {
     }
 }
 
-static bool restore_locked_tail_from_curve_index(int preferredCi) {
+static bool restore_locked_tail_from_curve_index_exact(int preferredCi) {
     if (preferredCi < 0 || preferredCi >= VF_NUM_POINTS) return false;
     if (g_app.numVisible < 2) return false;
     if (g_app.curve[preferredCi].freq_kHz == 0) return false;
@@ -1113,6 +1124,46 @@ static bool restore_locked_tail_from_curve_index(int preferredCi) {
     return true;
 }
 
+static bool restore_locked_tail_from_curve_index_tolerant(int preferredCi, int minTailPoints) {
+    if (preferredCi < 0 || preferredCi >= VF_NUM_POINTS) return false;
+    if (g_app.numVisible < 2) return false;
+    if (g_app.curve[preferredCi].freq_kHz == 0) return false;
+
+    int preferredVi = -1;
+    for (int vi = 0; vi < g_app.numVisible; vi++) {
+        if (g_app.visibleMap[vi] == preferredCi) {
+            preferredVi = vi;
+            break;
+        }
+    }
+    if (preferredVi < 0 || preferredVi >= g_app.numVisible - 1) return false;
+
+    static const int LOCK_TAIL_TOLERANCE_MHZ = 1;
+    unsigned int anchorMHz = displayed_curve_mhz(g_app.curve[preferredCi].freq_kHz);
+    unsigned int summedMHz = anchorMHz;
+    int pointCount = 1;
+    int tailPoints = 0;
+
+    for (int j = preferredVi + 1; j < g_app.numVisible; j++) {
+        int cj = g_app.visibleMap[j];
+        if (g_app.curve[cj].freq_kHz == 0) return false;
+
+        unsigned int pointMHz = displayed_curve_mhz(g_app.curve[cj].freq_kHz);
+        if (abs((int)pointMHz - (int)anchorMHz) > LOCK_TAIL_TOLERANCE_MHZ) return false;
+
+        summedMHz += pointMHz;
+        pointCount++;
+        tailPoints++;
+    }
+
+    if (tailPoints < minTailPoints) return false;
+
+    g_app.lockedVi = preferredVi;
+    g_app.lockedCi = preferredCi;
+    g_app.lockedFreq = (summedMHz + (unsigned int)(pointCount / 2)) / (unsigned int)pointCount;
+    return true;
+}
+
 static void detect_locked_tail_from_curve() {
     int preferredCi = (g_app.lockedFreq > 0 && g_app.lockedCi >= 0 && g_app.lockedCi < VF_NUM_POINTS)
         ? g_app.lockedCi
@@ -1123,7 +1174,10 @@ static void detect_locked_tail_from_curve() {
     g_app.lockedFreq = 0;
 
     if (g_app.numVisible < 2) return;
-    if (preferredCi >= 0 && restore_locked_tail_from_curve_index(preferredCi)) return;
+    if (preferredCi >= 0) {
+        if (restore_locked_tail_from_curve_index_exact(preferredCi)) return;
+        if (restore_locked_tail_from_curve_index_tolerant(preferredCi, 1)) return;
+    }
 
     for (int vi = 0; vi < g_app.numVisible - 1; vi++) {
         int ci = g_app.visibleMap[vi];
@@ -1153,5 +1207,38 @@ static void detect_locked_tail_from_curve() {
             return;
         }
     }
+
+    // Some drivers report a flattened tail with tiny per-point kHz drift even though
+    // the visible curve is effectively locked. Accept a long suffix that stays within
+    // 1 MHz of the anchor so startup detection does not jump to a later voltage point.
+    for (int vi = 0; vi < g_app.numVisible - 1; vi++) {
+        int ci = g_app.visibleMap[vi];
+        if (restore_locked_tail_from_curve_index_tolerant(ci, 3)) {
+            return;
+        }
+    }
+}
+
+static bool read_live_curve_snapshot_settled(int attempts, DWORD delayMs, bool* lastOffsetsOkOut) {
+    if (lastOffsetsOkOut) *lastOffsetsOkOut = false;
+    if (attempts < 1) attempts = 1;
+
+    bool anyCurveOk = false;
+    bool lastOffsetsOk = false;
+    for (int attempt = 0; attempt < attempts; attempt++) {
+        if (attempt > 0 && delayMs > 0) Sleep(delayMs);
+
+        bool curveOk = nvapi_read_curve();
+        bool offsetsOk = nvapi_read_offsets();
+        if (!curveOk) continue;
+
+        anyCurveOk = true;
+        lastOffsetsOk = offsetsOk;
+        rebuild_visible_map();
+        detect_locked_tail_from_curve();
+    }
+
+    if (lastOffsetsOkOut) *lastOffsetsOkOut = lastOffsetsOk;
+    return anyCurveOk;
 }
 

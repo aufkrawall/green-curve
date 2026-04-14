@@ -32,6 +32,12 @@ static void merge_desired_settings(DesiredSettings* base, const DesiredSettings*
     if (incoming->hasGpuOffset) {
         base->hasGpuOffset = true;
         base->gpuOffsetMHz = incoming->gpuOffsetMHz;
+        base->gpuOffsetExcludeLow70 = incoming->gpuOffsetExcludeLow70;
+    }
+    if (incoming->hasLock) {
+        base->hasLock = true;
+        base->lockCi = incoming->lockCi;
+        base->lockMHz = incoming->lockMHz;
     }
     if (incoming->hasMemOffset) {
         base->hasMemOffset = true;

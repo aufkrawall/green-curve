@@ -566,6 +566,7 @@ void normalize_desired_settings_for_ui(DesiredSettings* desired) {
     desired->hasMemOffset = true;
     desired->hasPowerLimit = true;
     desired->hasFan = true;
+    if (desired->gpuOffsetMHz == 0) desired->gpuOffsetExcludeLow70 = false;
     desired->powerLimitPct = clamp_percent(desired->powerLimitPct == 0 ? 100 : desired->powerLimitPct);
     desired->fanPercent = clamp_percent(desired->fanPercent <= 0 ? 50 : desired->fanPercent);
     if (desired->fanMode < FAN_MODE_AUTO || desired->fanMode > FAN_MODE_CURVE) desired->fanMode = FAN_MODE_AUTO;
@@ -642,6 +643,13 @@ static void set_desired_fan_from_legacy_value(DesiredSettings* desired, bool fan
     desired->fanAuto = fanAuto;
     desired->fanMode = fanAuto ? FAN_MODE_AUTO : FAN_MODE_FIXED;
     desired->fanPercent = fanPercent;
+}
+
+static int gpu_offset_component_mhz_for_point_linux(int pointIndex, int gpuOffsetMHz, bool excludeLow70) {
+    if (gpuOffsetMHz == 0) return 0;
+    if (!excludeLow70) return gpuOffsetMHz;
+    if (pointIndex < 0 || pointIndex >= VF_NUM_POINTS) return gpuOffsetMHz;
+    return pointIndex < 70 ? 0 : gpuOffsetMHz;
 }
 
 static bool load_fan_curve_config_from_section(const IniDocument* doc, const char* section, FanCurveConfig* curve, char* err, size_t errSize) {
@@ -761,6 +769,40 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
         desired->hasGpuOffset = true;
     }
 
+    value = get_section_value(doc, controlsSection, "gpu_offset_exclude_low_70");
+    if (!value.empty()) {
+        int parsed = 0;
+        if (!parse_int_strict(value.c_str(), &parsed)) {
+            set_message(err, errSize, "Invalid gpu_offset_exclude_low_70 in %s", messageContext);
+            return false;
+        }
+        desired->gpuOffsetExcludeLow70 = parsed != 0;
+    }
+
+    value = get_section_value(doc, controlsSection, "lock_ci");
+    if (!value.empty()) {
+        int parsed = -1;
+        if (!parse_int_strict(value.c_str(), &parsed)) {
+            set_message(err, errSize, "Invalid lock_ci in %s", messageContext);
+            return false;
+        }
+        desired->hasLock = parsed >= 0;
+        desired->lockCi = parsed;
+    }
+
+    value = get_section_value(doc, controlsSection, "lock_mhz");
+    if (!value.empty()) {
+        int parsed = 0;
+        if (!parse_int_strict(value.c_str(), &parsed) || parsed < 0) {
+            set_message(err, errSize, "Invalid lock_mhz in %s", messageContext);
+            return false;
+        }
+        if (parsed > 0) {
+            desired->hasLock = true;
+            desired->lockMHz = (unsigned int)parsed;
+        }
+    }
+
     value = get_section_value(doc, controlsSection, "mem_offset_mhz");
     if (!value.empty()) {
         if (!parse_int_strict(value.c_str(), &desired->memOffsetMHz)) {
@@ -825,6 +867,9 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
 
     if (!load_fan_curve_config_from_section(doc, fanCurveSection, &desired->fanCurve, err, errSize)) return false;
 
+    std::string curveSemantics = get_section_value(doc, curveSection, "curve_semantics");
+    bool legacyCurveSemantics = curveSemantics.empty();
+
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         char key[32] = {};
         snprintf(key, sizeof(key), "point%d", i);
@@ -837,6 +882,32 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
         }
         desired->hasCurvePoint[i] = true;
         desired->curvePointMHz[i] = (unsigned int)parsed;
+    }
+
+    bool basePlusGpuOffsetCurve = streqi_ascii(curveSemantics.c_str(), "base_plus_gpu_offset");
+    if (basePlusGpuOffsetCurve && desired->hasGpuOffset && desired->gpuOffsetMHz != 0) {
+        for (int i = 0; i < VF_NUM_POINTS; i++) {
+            if (!desired->hasCurvePoint[i]) continue;
+            int offsetCompMHz = gpu_offset_component_mhz_for_point_linux(i, desired->gpuOffsetMHz, desired->gpuOffsetExcludeLow70);
+            int absoluteMHz = (int)desired->curvePointMHz[i] + offsetCompMHz;
+            if (absoluteMHz <= 0) {
+                desired->hasCurvePoint[i] = false;
+                desired->curvePointMHz[i] = 0;
+                continue;
+            }
+            desired->curvePointMHz[i] = (unsigned int)absoluteMHz;
+        }
+    } else if (legacyCurveSemantics && desired->hasGpuOffset && desired->gpuOffsetMHz != 0) {
+        for (int i = 0; i < VF_NUM_POINTS; i++) {
+            desired->hasCurvePoint[i] = false;
+            desired->curvePointMHz[i] = 0;
+        }
+    }
+
+    for (int i = 1; i < VF_NUM_POINTS; i++) {
+        if (desired->hasCurvePoint[i] && desired->hasCurvePoint[i - 1] && desired->curvePointMHz[i] < desired->curvePointMHz[i - 1]) {
+            desired->curvePointMHz[i] = desired->curvePointMHz[i - 1];
+        }
     }
 
     return true;
@@ -947,6 +1018,12 @@ static void write_profile_sections(IniDocument* doc, const char* controlsSection
     char value[64] = {};
     snprintf(value, sizeof(value), "%d", desired->gpuOffsetMHz);
     addControl("gpu_offset_mhz", value);
+    snprintf(value, sizeof(value), "%d", desired->gpuOffsetExcludeLow70 ? 1 : 0);
+    addControl("gpu_offset_exclude_low_70", value);
+    snprintf(value, sizeof(value), "%d", desired->hasLock ? desired->lockCi : -1);
+    addControl("lock_ci", value);
+    snprintf(value, sizeof(value), "%u", desired->hasLock ? desired->lockMHz : 0u);
+    addControl("lock_mhz", value);
     snprintf(value, sizeof(value), "%d", desired->memOffsetMHz);
     addControl("mem_offset_mhz", value);
     snprintf(value, sizeof(value), "%d", desired->powerLimitPct);
@@ -960,13 +1037,20 @@ static void write_profile_sections(IniDocument* doc, const char* controlsSection
     snprintf(value, sizeof(value), "%d", clamp_percent(desired->fanPercent));
     addControl("fan_fixed_pct", value);
 
+    IniEntry semanticsEntry;
+    semanticsEntry.key = "curve_semantics";
+    semanticsEntry.value = "base_plus_gpu_offset";
+    curveEntries.push_back(semanticsEntry);
+
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (!desired->hasCurvePoint[i] || desired->curvePointMHz[i] == 0) continue;
         IniEntry entry;
         char key[32] = {};
         snprintf(key, sizeof(key), "point%d", i);
         entry.key = key;
-        snprintf(value, sizeof(value), "%u", desired->curvePointMHz[i]);
+        int baseMHz = (int)desired->curvePointMHz[i] - gpu_offset_component_mhz_for_point_linux(i, desired->gpuOffsetMHz, desired->gpuOffsetExcludeLow70);
+        if (baseMHz <= 0) continue;
+        snprintf(value, sizeof(value), "%d", baseMHz);
         entry.value = value;
         curveEntries.push_back(entry);
     }
@@ -1042,6 +1126,8 @@ void print_desired_settings_text(FILE* out, int slot, const DesiredSettings* des
     fprintf(out, "Green Curve Linux config snapshot\n");
     fprintf(out, "Profile slot: %d\n", slot);
     fprintf(out, "GPU offset: %d MHz\n", desired->gpuOffsetMHz);
+    fprintf(out, "GPU offset exclude first 70: %s\n", desired->gpuOffsetExcludeLow70 ? "yes" : "no");
+    if (desired->hasLock) fprintf(out, "Lock: point %d @ %u MHz\n", desired->lockCi, desired->lockMHz);
     fprintf(out, "Memory offset: %d MHz\n", desired->memOffsetMHz);
     fprintf(out, "Power limit: %d%%\n", desired->powerLimitPct);
     fprintf(out, "Fan mode: %s\n", fan_mode_label(desired->fanMode));
@@ -1065,6 +1151,9 @@ void print_desired_settings_json(FILE* out, int slot, const DesiredSettings* des
     fprintf(out, "{\n");
     fprintf(out, "  \"profile_slot\": %d,\n", slot);
     fprintf(out, "  \"gpu_offset_mhz\": %d,\n", desired->gpuOffsetMHz);
+    fprintf(out, "  \"gpu_offset_exclude_low_70\": %s,\n", desired->gpuOffsetExcludeLow70 ? "true" : "false");
+    fprintf(out, "  \"lock_ci\": %d,\n", desired->hasLock ? desired->lockCi : -1);
+    fprintf(out, "  \"lock_mhz\": %u,\n", desired->hasLock ? desired->lockMHz : 0u);
     fprintf(out, "  \"mem_offset_mhz\": %d,\n", desired->memOffsetMHz);
     fprintf(out, "  \"power_limit_pct\": %d,\n", desired->powerLimitPct);
     fprintf(out, "  \"fan_mode\": \"%s\",\n", json_escape(fan_mode_to_config_value(desired->fanMode)).c_str());
@@ -1173,6 +1262,15 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
             }
             opts->desired.hasGpuOffset = true;
             opts->desired.gpuOffsetMHz = value;
+            if (value == 0) opts->desired.gpuOffsetExcludeLow70 = false;
+        } else if (strcmp(arg, "--gpu-offset-exclude-low-70") == 0) {
+            opts->recognized = true;
+            opts->desired.hasGpuOffset = true;
+            opts->desired.gpuOffsetExcludeLow70 = true;
+        } else if (strcmp(arg, "--gpu-offset-include-low-70") == 0) {
+            opts->recognized = true;
+            opts->desired.hasGpuOffset = true;
+            opts->desired.gpuOffsetExcludeLow70 = false;
         } else if (strcmp(arg, "--mem-offset") == 0) {
             opts->recognized = true;
             int value = 0;

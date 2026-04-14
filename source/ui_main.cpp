@@ -316,6 +316,7 @@ static unsigned int get_edit_value(HWND hEdit) {
 }
 
 static void populate_edits() {
+    memset(g_app.guiCurvePointExplicit, 0, sizeof(g_app.guiCurvePointExplicit));
     for (int vi = 0; vi < g_app.numVisible; vi++) {
         int ci = g_app.visibleMap[vi];
         set_edit_value(g_app.hEditsMhz[vi], displayed_curve_mhz(g_app.curve[ci].freq_kHz));
@@ -388,6 +389,7 @@ static void unlock_all() {
     g_app.lockedVi = -1;
     g_app.lockedCi = -1;
     g_app.lockedFreq = 0;
+    memset(g_app.guiCurvePointExplicit, 0, sizeof(g_app.guiCurvePointExplicit));
 
     for (int vi = 0; vi < g_app.numVisible; vi++) {
         SendMessageA(g_app.hEditsMhz[vi], EM_SETREADONLY, FALSE, 0);
@@ -689,6 +691,7 @@ static void reset_curve() {
     g_app.guiGpuOffsetExcludeLow70 = false;
     g_app.appliedGpuOffsetMHz = 0;
     g_app.appliedGpuOffsetExcludeLow70 = false;
+    memset(g_app.guiCurvePointExplicit, 0, sizeof(g_app.guiCurvePointExplicit));
     g_app.guiFanMode = -1;
     g_app.guiFanFixedPercent = 0;
 
