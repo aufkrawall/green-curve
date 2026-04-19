@@ -554,6 +554,7 @@ void fan_curve_format_summary(const FanCurveConfig* config, char* buffer, size_t
 void initialize_desired_settings_defaults(DesiredSettings* desired) {
     if (!desired) return;
     memset(desired, 0, sizeof(*desired));
+    desired->lockTracksAnchor = true;
     desired->fanAuto = true;
     desired->fanMode = FAN_MODE_AUTO;
     desired->powerLimitPct = 100;

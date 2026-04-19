@@ -86,6 +86,8 @@ WINDOWS_LINK_LIBS = [
     "-lgdi32",
     "-ladvapi32",
     "-lshell32",
+    "-lole32",
+    "-lwtsapi32",
 ]
 
 

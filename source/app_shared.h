@@ -13,8 +13,11 @@
 #include <windows.h>
 
 #include <commctrl.h>
+#include <sddl.h>
+#include <shlobj.h>
 #include <shellapi.h>
 #include <strsafe.h>
+#include <wtsapi32.h>
 #include <ctype.h>
 #include <math.h>
 #include <stdarg.h>
@@ -52,7 +55,7 @@ void init_dpi();
 #define TRAY_ICON_FAN_ID    113
 #define TRAY_ICON_OC_FAN_ID 114
 #define APP_NAME            "Green Curve"
-#define APP_VERSION         "0.10"
+#define APP_VERSION         "0.11"
 #define APP_TITLE           APP_NAME " v" APP_VERSION
 #define APP_CLASS_NAME      "GreenCurveClass"
 #define APP_EXE_NAME        "greencurve.exe"
@@ -63,6 +66,8 @@ void init_dpi();
 #define APP_DEBUG_ENV       "GREEN_CURVE_DEBUG"
 #define APP_WM_SYNC_STARTUP (WM_APP + 1)
 #define APP_WM_TRAYICON     (WM_APP + 2)
+#define APP_WM_SERVICE_STATUS (WM_APP + 3)
+#define APP_WM_DEFERRED_RELAUNCH (WM_APP + 4)
 #define APPLY_BTN_ID        2000
 #define REFRESH_BTN_ID      2001
 #define RESET_BTN_ID        2003
@@ -85,6 +90,9 @@ void init_dpi();
 #define GPU_OFFSET_EXCLUDE_LOW_CHECK_ID 2034
 #define LOGON_HINT_ID       2035
 #define START_ON_LOGON_LABEL_ID 2036
+#define SERVICE_ENABLE_CHECK_ID 2037
+#define SERVICE_ENABLE_LABEL_ID 2038
+#define SERVICE_STATUS_ID   2039
 #define LOCK_BASE_ID        3000
 #define GPU_OFFSET_ID       2010
 #define MEM_OFFSET_ID       2011
@@ -388,6 +396,23 @@ struct FanCurveConfig {
     int hysteresisC;
 };
 
+struct ControlState {
+    bool valid;
+    bool hasGpuOffset;
+    int gpuOffsetMHz;
+    bool gpuOffsetExcludeLow70;
+    bool hasMemOffset;
+    int memOffsetMHz;
+    bool hasPowerLimit;
+    int powerLimitPct;
+    bool hasFan;
+    int fanMode;
+    int fanFixedPercent;
+    int fanCurrentPercent;
+    int fanCurrentTemperatureC;
+    FanCurveConfig fanCurve;
+};
+
 struct AppData {
     HINSTANCE hInst;
     HWND hMainWnd;
@@ -420,6 +445,9 @@ struct AppData {
     HWND hStartOnLogonCheck;
     HWND hStartOnLogonLabel;
     HWND hLogonHintLabel;
+    HWND hServiceEnableCheck;
+    HWND hServiceEnableLabel;
+    HWND hServiceStatusLabel;
 
     HBRUSH hWindowClassBrush;
     HANDLE hStartupSyncThread;
@@ -458,6 +486,7 @@ struct AppData {
     int lockedVi;
     int lockedCi;
     unsigned int lockedFreq;
+    bool guiLockTracksAnchor;
 
     int gpuClockOffsetkHz;
     int memClockOffsetkHz;
@@ -503,6 +532,7 @@ struct AppData {
     bool gpuTemperatureValid;
 
     bool guiCurvePointExplicit[VF_NUM_POINTS];
+    bool guiStateDirty;
     int guiGpuOffsetMHz;
     bool guiGpuOffsetExcludeLow70;
     int appliedGpuOffsetMHz;
@@ -525,6 +555,18 @@ struct AppData {
 
     bool launchedFromLogon;
     bool startHiddenToTray;
+    bool isServiceProcess;
+    bool usingBackgroundService;
+    bool backgroundServiceInstalled;
+    bool backgroundServiceRunning;
+    bool backgroundServiceAvailable;
+    bool backgroundServiceBroken;
+    bool serviceSnapshotAuthoritative;
+    bool serviceControlStateValid;
+    ControlState serviceControlState;
+    bool backgroundServiceToggleInFlight;
+    bool backgroundServiceToggleTargetEnabled;
+    bool backgroundServicePendingRelaunch;
     bool trayIconAdded;
     int trayIconState;
     HICON trayIcons[4];
@@ -533,6 +575,9 @@ struct AppData {
     int trayLastRenderedState;
     char trayProfileCacheProfilePart[64];
     char trayLastRenderedTip[128];
+    char backgroundServiceOwnerUser[256];
+    DWORD backgroundServiceOwnerSessionId;
+    ULONGLONG backgroundServiceOwnerUtcMs;
 };
 
 struct DesiredSettings {
@@ -541,6 +586,7 @@ struct DesiredSettings {
     bool hasLock;
     int lockCi;
     unsigned int lockMHz;
+    bool lockTracksAnchor;
     bool hasGpuOffset;
     int gpuOffsetMHz;
     bool gpuOffsetExcludeLow70;
@@ -566,11 +612,115 @@ struct CliOptions {
     bool saveConfig;
     bool applyConfig;
     bool logonStart;
+    bool serviceInstall;
+    bool serviceRemove;
+    bool startupTaskEnable;
+    bool startupTaskDisable;
     bool hasConfigPath;
     char configPath[MAX_PATH];
     char probeOutputPath[MAX_PATH];
     char error[256];
     DesiredSettings desired;
+};
+
+enum {
+    SERVICE_PROTOCOL_MAGIC = 0x47535643u,
+    SERVICE_PROTOCOL_VERSION = 1,
+};
+
+enum ServiceCommand {
+    SERVICE_CMD_NONE = 0,
+    SERVICE_CMD_PING = 1,
+    SERVICE_CMD_GET_SNAPSHOT = 2,
+    SERVICE_CMD_GET_TELEMETRY = 3,
+    SERVICE_CMD_APPLY = 4,
+    SERVICE_CMD_RESET = 5,
+    SERVICE_CMD_GET_ACTIVE_DESIRED = 6,
+};
+
+enum ServiceResponseStatus {
+    SERVICE_STATUS_OK = 0,
+    SERVICE_STATUS_ERROR = 1,
+    SERVICE_STATUS_VERSION_MISMATCH = 2,
+};
+
+struct ServiceSnapshot {
+    bool initialized;
+    bool loaded;
+    bool fanSupported;
+    bool fanRangeKnown;
+    bool fanIsAuto;
+    bool fanCurveRuntimeActive;
+    bool fanFixedRuntimeActive;
+    bool gpuOffsetRangeKnown;
+    bool memOffsetRangeKnown;
+    bool curveOffsetRangeKnown;
+    bool gpuTemperatureValid;
+    bool vfReadSupported;
+    bool vfWriteSupported;
+    bool vfBestGuess;
+    GpuFamily gpuFamily;
+    int numPopulated;
+    int gpuClockOffsetkHz;
+    int memClockOffsetkHz;
+    int gpuClockOffsetMinMHz;
+    int gpuClockOffsetMaxMHz;
+    int memOffsetMinMHz;
+    int memOffsetMaxMHz;
+    int curveOffsetMinkHz;
+    int curveOffsetMaxkHz;
+    int powerLimitPct;
+    int powerLimitDefaultmW;
+    int powerLimitCurrentmW;
+    int powerLimitMinmW;
+    int powerLimitMaxmW;
+    int appliedGpuOffsetMHz;
+    bool appliedGpuOffsetExcludeLow70;
+    int activeFanMode;
+    int activeFanFixedPercent;
+    int gpuTemperatureC;
+    unsigned int fanCount;
+    unsigned int fanMinPct;
+    unsigned int fanMaxPct;
+    unsigned int fanPercent[MAX_GPU_FANS];
+    unsigned int fanTargetPercent[MAX_GPU_FANS];
+    unsigned int fanRpm[MAX_GPU_FANS];
+    unsigned int fanPolicy[MAX_GPU_FANS];
+    unsigned int fanControlSignal[MAX_GPU_FANS];
+    unsigned int fanTargetMask[MAX_GPU_FANS];
+    VFCurvePoint curve[VF_NUM_POINTS];
+    int freqOffsets[VF_NUM_POINTS];
+    FanCurveConfig activeFanCurve;
+    char gpuName[256];
+    char ownerUser[256];
+    DWORD ownerSessionId;
+    ULONGLONG ownerUtcMs;
+};
+
+struct ServiceRequest {
+    DWORD magic;
+    DWORD version;
+    DWORD command;
+    DWORD flags;
+    DWORD callerPid;
+    DWORD callerSessionId;
+    DesiredSettings desired;
+    char source[64];
+};
+
+struct ServiceResponse {
+    DWORD magic;
+    DWORD version;
+    DWORD status;
+    DWORD reserved;
+    ServiceSnapshot snapshot;
+    DesiredSettings desired;
+    ControlState controlState;
+    char message[512];
+};
+
+enum {
+    GUI_FAN_MODE_UNSET = -1,
 };
 
 typedef nvmlReturn_t (*nvmlInit_v2_t)();

@@ -90,6 +90,17 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         }
     }
 
+    GetPrivateProfileStringA(controlsSection, "lock_tracks_anchor", "", buf, sizeof(buf), path);
+    trim_ascii(buf);
+    if (buf[0]) {
+        int value = 0;
+        if (!parse_int_strict(buf, &value)) {
+            set_message(err, errSize, "Invalid lock_tracks_anchor in profile %d", slot);
+            return false;
+        }
+        desired->lockTracksAnchor = value != 0;
+    }
+
     GetPrivateProfileStringA(controlsSection, "mem_offset_mhz", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
@@ -197,6 +208,12 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
             }
             desired->curvePointMHz[i] = (unsigned int)absoluteMhz;
         }
+        if (!selective_gpu_offset_curve_shape_looks_safe(desired, desired->gpuOffsetMHz, desired->gpuOffsetExcludeLow70)) {
+            set_message(err, errSize,
+                "Profile %d contains an unsafe selective GPU curve shape. Re-save the preset with this build before applying it.",
+                slot);
+            return false;
+        }
     } else if (legacyCurveSemantics && desired->hasGpuOffset && desired->gpuOffsetMHz != 0) {
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             desired->hasCurvePoint[i] = false;
@@ -212,12 +229,15 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         }
     }
 
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (!desired->hasCurvePoint[i]) continue;
-        unsigned int volt_mv = g_app.curve[i].volt_uV / 1000;
-        if (volt_mv == 0 || volt_mv < (unsigned)MIN_VISIBLE_VOLT_mV) {
-            desired->hasCurvePoint[i] = false;
-            desired->curvePointMHz[i] = 0;
+    bool haveLiveCurveVisibility = g_app.loaded && g_app.numPopulated > 0;
+    if (haveLiveCurveVisibility) {
+        for (int i = 0; i < VF_NUM_POINTS; i++) {
+            if (!desired->hasCurvePoint[i]) continue;
+            unsigned int volt_mv = g_app.curve[i].volt_uV / 1000;
+            if (volt_mv == 0 || volt_mv < (unsigned)MIN_VISIBLE_VOLT_mV) {
+                desired->hasCurvePoint[i] = false;
+                desired->curvePointMHz[i] = 0;
+            }
         }
     }
 
@@ -231,6 +251,18 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
 
 static void resolve_profile_gpu_offset_state_for_save(const DesiredSettings* desired, int* gpuOffsetMHzOut, bool* excludeLow70Out) {
     resolve_effective_gpu_offset_state_for_config_save(desired, gpuOffsetMHzOut, excludeLow70Out);
+}
+
+static bool can_save_curve_as_base_plus_gpu_offset(const DesiredSettings* desired, int gpuOffsetMHz, bool excludeLow70) {
+    if (!desired || gpuOffsetMHz == 0) return false;
+    if (!g_app.loaded || g_app.numPopulated <= 0) return false;
+    for (int i = 0; i < VF_NUM_POINTS; i++) {
+        if (!desired->hasCurvePoint[i]) continue;
+        int offsetCompmhz = gpu_offset_component_mhz_for_point(i, gpuOffsetMHz, excludeLow70);
+        int baseMhz = (int)desired->curvePointMHz[i] - offsetCompmhz;
+        if (baseMhz <= 0) return false;
+    }
+    return true;
 }
 
 static bool is_profile_slot_saved(const char* path, int slot) {
@@ -304,12 +336,15 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         bool profileExcludeLow70 = false;
         resolve_profile_gpu_offset_state_for_save(desired, &profileGpuOffsetMHz, &profileExcludeLow70);
         bool profileHasGpuOffset = profileGpuOffsetMHz != 0;
+        bool safeSelectiveCurve = selective_gpu_offset_curve_shape_looks_safe(desired, profileGpuOffsetMHz, profileExcludeLow70);
+        bool writeBasePlusGpuOffset = profileHasGpuOffset && safeSelectiveCurve && can_save_curve_as_base_plus_gpu_offset(desired, profileGpuOffsetMHz, profileExcludeLow70);
 
         appendf("[%s]\r\n", controlsSection);
         appendf("gpu_offset_mhz=%d\r\n", profileGpuOffsetMHz);
         appendf("gpu_offset_exclude_low_70=%d\r\n", profileExcludeLow70 ? 1 : 0);
         appendf("lock_ci=%d\r\n", desired->hasLock ? desired->lockCi : (g_app.lockedCi >= 0 ? g_app.lockedCi : -1));
         appendf("lock_mhz=%u\r\n", desired->hasLock ? desired->lockMHz : g_app.lockedFreq);
+        appendf("lock_tracks_anchor=%d\r\n", desired->hasLock ? (desired->lockTracksAnchor ? 1 : 0) : (g_app.guiLockTracksAnchor ? 1 : 0));
         appendf("mem_offset_mhz=%d\r\n", desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
         appendf("power_limit_pct=%d\r\n", desired->hasPowerLimit ? desired->powerLimitPct : g_app.powerLimitPct);
         appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : get_effective_live_fan_mode()));
@@ -325,19 +360,19 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         appendf("\r\n");
 
         appendf("[%s]\r\n", curveSection);
-        appendf("curve_semantics=base_plus_gpu_offset\r\n");
+        appendf("curve_semantics=%s\r\n", writeBasePlusGpuOffset ? "base_plus_gpu_offset" : "absolute");
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             unsigned int mhz = 0;
             if (desired->hasCurvePoint[i]) {
                 mhz = desired->curvePointMHz[i];
-                if (profileHasGpuOffset && g_app.curve[i].freq_kHz > 0) {
+                if (writeBasePlusGpuOffset) {
                     int offsetCompmhz = gpu_offset_component_mhz_for_point(i, profileGpuOffsetMHz, profileExcludeLow70);
                     mhz = (unsigned int)((int)mhz - offsetCompmhz);
                     if ((int)mhz <= 0) mhz = 0;
                 }
             } else if (g_app.curve[i].freq_kHz > 0) {
                 mhz = displayed_curve_mhz(g_app.curve[i].freq_kHz);
-                if (profileHasGpuOffset) {
+                if (writeBasePlusGpuOffset) {
                     int offsetCompmhz = gpu_offset_component_mhz_for_point(i, profileGpuOffsetMHz, profileExcludeLow70);
                     mhz = (unsigned int)((int)mhz - offsetCompmhz);
                     if ((int)mhz <= 0) mhz = 0;
@@ -395,12 +430,15 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         bool profileExcludeLow70 = false;
         resolve_profile_gpu_offset_state_for_save(desired, &profileGpuOffsetMHz, &profileExcludeLow70);
         bool profileHasGpuOffset = profileGpuOffsetMHz != 0;
+        bool safeSelectiveCurve = selective_gpu_offset_curve_shape_looks_safe(desired, profileGpuOffsetMHz, profileExcludeLow70);
+        bool writeBasePlusGpuOffset = profileHasGpuOffset && safeSelectiveCurve && can_save_curve_as_base_plus_gpu_offset(desired, profileGpuOffsetMHz, profileExcludeLow70);
 
         appendf("[controls]\r\n");
         appendf("gpu_offset_mhz=%d\r\n", profileGpuOffsetMHz);
         appendf("gpu_offset_exclude_low_70=%d\r\n", profileExcludeLow70 ? 1 : 0);
         appendf("lock_ci=%d\r\n", desired->hasLock ? desired->lockCi : (g_app.lockedCi >= 0 ? g_app.lockedCi : -1));
         appendf("lock_mhz=%u\r\n", desired->hasLock ? desired->lockMHz : g_app.lockedFreq);
+        appendf("lock_tracks_anchor=%d\r\n", desired->hasLock ? (desired->lockTracksAnchor ? 1 : 0) : (g_app.guiLockTracksAnchor ? 1 : 0));
         appendf("mem_offset_mhz=%d\r\n", desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
         appendf("power_limit_pct=%d\r\n", desired->hasPowerLimit ? desired->powerLimitPct : g_app.powerLimitPct);
         appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : get_effective_live_fan_mode()));
@@ -415,19 +453,19 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         }
         appendf("\r\n");
         appendf("[curve]\r\n");
-        appendf("curve_semantics=base_plus_gpu_offset\r\n");
+        appendf("curve_semantics=%s\r\n", writeBasePlusGpuOffset ? "base_plus_gpu_offset" : "absolute");
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             unsigned int mhz = 0;
             if (desired->hasCurvePoint[i]) {
                 mhz = desired->curvePointMHz[i];
-                if (profileHasGpuOffset && g_app.curve[i].freq_kHz > 0) {
+                if (writeBasePlusGpuOffset) {
                     int offsetCompmhz = gpu_offset_component_mhz_for_point(i, profileGpuOffsetMHz, profileExcludeLow70);
                     mhz = (unsigned int)((int)mhz - offsetCompmhz);
                     if ((int)mhz <= 0) mhz = 0;
                 }
             } else if (g_app.curve[i].freq_kHz > 0) {
                 mhz = displayed_curve_mhz(g_app.curve[i].freq_kHz);
-                if (profileHasGpuOffset) {
+                if (writeBasePlusGpuOffset) {
                     int offsetCompmhz = gpu_offset_component_mhz_for_point(i, profileGpuOffsetMHz, profileExcludeLow70);
                     mhz = (unsigned int)((int)mhz - offsetCompmhz);
                     if ((int)mhz <= 0) mhz = 0;
@@ -617,6 +655,8 @@ static void refresh_profile_controls_from_config() {
 
     update_profile_state_label();
     update_profile_action_buttons();
+    refresh_background_service_state();
+    update_background_service_controls();
     update_tray_icon();
 }
 
@@ -704,6 +744,8 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
     if (!desired) return;
     unlock_all();
     if (g_app.loaded) populate_edits();
+    begin_programmatic_edit_update();
+    set_gui_state_dirty(false);
 
     // Curve points
     for (int vi = 0; vi < g_app.numVisible; vi++) {
@@ -762,9 +804,11 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
             if (g_app.visibleMap[vi] != desired->lockCi) continue;
             set_edit_value(g_app.hEditsMhz[vi], desired->lockMHz);
             apply_lock(vi);
+            g_app.guiLockTracksAnchor = desired->lockTracksAnchor;
             break;
         }
     }
+    end_programmatic_edit_update();
 }
 
 static void set_profile_status_text(const char* fmt, ...) {
@@ -808,6 +852,45 @@ static void update_profile_action_buttons() {
     if (g_app.hProfileClearBtn) EnableWindow(g_app.hProfileClearBtn, saved ? TRUE : FALSE);
 }
 
+static void update_background_service_controls() {
+    if (g_app.hServiceEnableCheck) {
+        bool checked = g_app.backgroundServiceToggleInFlight
+            ? g_app.backgroundServiceToggleTargetEnabled
+            : g_app.backgroundServiceInstalled;
+        SendMessageA(g_app.hServiceEnableCheck, BM_SETCHECK, (WPARAM)(checked ? BST_CHECKED : BST_UNCHECKED), 0);
+        InvalidateRect(g_app.hServiceEnableCheck, nullptr, FALSE);
+        UpdateWindow(g_app.hServiceEnableCheck);
+        EnableWindow(g_app.hServiceEnableCheck, g_app.backgroundServiceToggleInFlight ? FALSE : TRUE);
+    }
+    if (g_app.hServiceEnableLabel) {
+        EnableWindow(g_app.hServiceEnableLabel, g_app.backgroundServiceToggleInFlight ? FALSE : TRUE);
+    }
+    if (g_app.hServiceStatusLabel) {
+        char text[512] = {};
+        if (g_app.backgroundServiceToggleInFlight) {
+            StringCchPrintfA(text, ARRAY_COUNT(text), "%s background service...",
+                g_app.backgroundServiceToggleTargetEnabled ? "Installing and starting" : "Stopping and removing");
+        } else if (!g_app.backgroundServiceInstalled) {
+            StringCchCopyA(text, ARRAY_COUNT(text), "Background service not installed.");
+        } else if (g_app.backgroundServiceBroken) {
+            StringCchCopyA(text, ARRAY_COUNT(text), "Background service is installed but not responding.");
+        } else if (g_app.backgroundServiceAvailable) {
+            if (g_app.backgroundServiceOwnerUser[0]) {
+                const char* ownerText = g_app.backgroundServiceOwnerUser;
+                if (strstr(ownerText, "SYSTEM") != nullptr) ownerText = "LocalSystem";
+                StringCchPrintfA(text, ARRAY_COUNT(text), "Background service active. Last machine-wide apply by %s.", ownerText);
+            } else {
+                StringCchCopyA(text, ARRAY_COUNT(text), "Background service active.");
+            }
+        } else if (g_app.backgroundServiceRunning) {
+            StringCchCopyA(text, ARRAY_COUNT(text), "Background service running.");
+        } else {
+            StringCchCopyA(text, ARRAY_COUNT(text), "Background service installed but stopped.");
+        }
+        SetWindowTextA(g_app.hServiceStatusLabel, text);
+    }
+}
+
 static bool maybe_confirm_profile_load_replace(int slot) {
     DesiredSettings current = {};
     DesiredSettings target = {};
@@ -816,19 +899,25 @@ static bool maybe_confirm_profile_load_replace(int slot) {
     if (!load_profile_from_config(g_app.configPath, slot, &target, err, sizeof(err))) return true;
 
     DesiredSettings targetFull = {};
+    ControlState control = {};
+    bool haveControlState = get_effective_control_state(&control);
     initialize_desired_settings_defaults(&targetFull);
     targetFull.hasGpuOffset = true;
-    targetFull.gpuOffsetMHz = current_applied_gpu_offset_mhz();
-    targetFull.gpuOffsetExcludeLow70 = current_applied_gpu_offset_excludes_low_points();
+    if (haveControlState && control_state_has_meaningful_gpu(&control)) {
+        targetFull.gpuOffsetMHz = control.gpuOffsetMHz;
+        targetFull.gpuOffsetExcludeLow70 = control.gpuOffsetExcludeLow70;
+    } else {
+        resolve_displayed_live_gpu_offset_state_for_gui(&targetFull.gpuOffsetMHz, &targetFull.gpuOffsetExcludeLow70);
+    }
     targetFull.hasMemOffset = true;
-    targetFull.memOffsetMHz = mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
+    targetFull.memOffsetMHz = haveControlState && control_state_has_meaningful_mem(&control) ? control.memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
     targetFull.hasPowerLimit = true;
-    targetFull.powerLimitPct = g_app.powerLimitPct;
+    targetFull.powerLimitPct = haveControlState && control_state_has_meaningful_power(&control) ? control.powerLimitPct : g_app.powerLimitPct;
     targetFull.hasFan = true;
-    targetFull.fanMode = g_app.activeFanMode;
-    targetFull.fanAuto = g_app.activeFanMode == FAN_MODE_AUTO;
-    targetFull.fanPercent = g_app.activeFanFixedPercent;
-    copy_fan_curve(&targetFull.fanCurve, &g_app.activeFanCurve);
+    targetFull.fanMode = haveControlState && control_state_has_meaningful_fan(&control) ? control.fanMode : g_app.activeFanMode;
+    targetFull.fanAuto = targetFull.fanMode == FAN_MODE_AUTO;
+    targetFull.fanPercent = haveControlState && control_state_has_meaningful_fan(&control) ? control.fanFixedPercent : g_app.activeFanFixedPercent;
+    copy_fan_curve(&targetFull.fanCurve, haveControlState && control_state_has_meaningful_fan(&control) ? &control.fanCurve : &g_app.activeFanCurve);
     for (int vi = 0; vi < g_app.numVisible; vi++) {
         int ci = g_app.visibleMap[vi];
         targetFull.hasCurvePoint[ci] = true;
@@ -888,12 +977,15 @@ static void maybe_load_app_launch_profile_to_gui() {
         return;
     }
     char result[512] = {};
+    refresh_background_service_state();
     bool ok = apply_desired_settings(&desired, false, result, sizeof(result));
     if (ok) {
         populate_desired_into_gui(&desired);
         set_config_int(g_app.configPath, "profiles", "selected_slot", appLaunchSlot);
         refresh_profile_controls_from_config();
-        set_profile_status_text("Loaded slot %d into the GUI and applied it on app start.", appLaunchSlot);
+        set_profile_status_text((g_app.backgroundServiceInstalled && g_app.backgroundServiceAvailable)
+            ? "Loaded slot %d into the GUI and applied it through the background service on app start."
+            : "Loaded slot %d into the GUI and applied it on app start.", appLaunchSlot);
     } else {
         char detail[128] = {};
         refresh_global_state(detail, sizeof(detail));
@@ -913,6 +1005,8 @@ static bool ensure_profile_slot_available_for_auto_action(int slot) {
 
 static void apply_logon_startup_behavior() {
     if (!g_app.launchedFromLogon) return;
+
+    refresh_background_service_state();
 
     bool startProgramAtLogon = is_start_on_logon_enabled(g_app.configPath);
     g_app.startHiddenToTray = startProgramAtLogon;
@@ -956,8 +1050,12 @@ static void apply_logon_startup_behavior() {
         set_config_int(g_app.configPath, "profiles", "selected_slot", logonSlot);
         refresh_profile_controls_from_config();
         set_profile_status_text(startProgramAtLogon
-            ? "Started in the tray and applied slot %d at Windows logon."
-            : "Applied slot %d silently at Windows logon.",
+            ? ((g_app.backgroundServiceInstalled && g_app.backgroundServiceAvailable)
+                ? "Started the tray client and applied slot %d through the background service at Windows logon."
+                : "Started in the tray and applied slot %d at Windows logon.")
+            : ((g_app.backgroundServiceInstalled && g_app.backgroundServiceAvailable)
+                ? "Applied slot %d through the background service at Windows logon without requiring the tray runtime."
+                : "Applied slot %d silently at Windows logon."),
             logonSlot);
     } else {
         char detail[128] = {};

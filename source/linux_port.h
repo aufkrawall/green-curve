@@ -7,7 +7,7 @@
 #define ARRAY_COUNT(a) (sizeof(a) / sizeof((a)[0]))
 
 #define APP_NAME "Green Curve"
-#define APP_VERSION "0.10"
+#define APP_VERSION "0.11"
 #define CONFIG_FILE_NAME "config.ini"
 #define APP_LINUX_PROBE_FILE "greencurve_linux_probe.md"
 #define APP_LINUX_ASSETS_DIR "linux-artifacts"

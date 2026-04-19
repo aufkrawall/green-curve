@@ -4,12 +4,14 @@
 
 // CLI mode: --dump, --json, or --probe
 // Returns true if CLI handled (should exit), false if should run GUI
+static int g_cliExitCode = 0;
 static bool handle_cli(LPWSTR wCmdLine) {
     CliOptions opts = {};
     if (!parse_cli_options(wCmdLine, &opts)) {
         char err[256] = {};
         const char* text = opts.error[0] ? opts.error : "Failed to parse CLI";
-        write_text_file_atomic(APP_CLI_LOG_FILE, text, strlen(text), err, sizeof(err));
+        resolve_data_paths(err, sizeof(err));
+        write_text_file_atomic(cli_log_path(), text, strlen(text), err, sizeof(err));
         return true;
     }
     if (opts.logonStart) {
@@ -34,13 +36,43 @@ static bool handle_cli(LPWSTR wCmdLine) {
     if (opts.hasConfigPath) StringCchCopyA(g_app.configPath, ARRAY_COUNT(g_app.configPath), opts.configPath);
 
     // CLI always writes to file since we're a GUI subsystem app
-    const char* logPath = APP_CLI_LOG_FILE;
+    char pathErr[256] = {};
+    resolve_data_paths(pathErr, sizeof(pathErr));
+    const char* logPath = cli_log_path();
     FILE* logf = fopen(logPath, "w");
     if (!logf) return true;
 
-    #define CLI_LOG(...) do { fprintf(logf, __VA_ARGS__); fflush(logf); } while(0)
+    #define CLI_LOG(...) do { char _gc_ts[64] = {}; format_log_timestamp_prefix(_gc_ts, sizeof(_gc_ts)); fprintf(logf, "%s", _gc_ts); fprintf(logf, __VA_ARGS__); fflush(logf); } while(0)
 
     CLI_LOG("Green Curve CLI mode started\n");
+
+    if (opts.serviceInstall || opts.serviceRemove) {
+        char err[256] = {};
+        bool ok = service_install_or_remove(opts.serviceInstall, err, sizeof(err));
+        if (ok) {
+            CLI_LOG(opts.serviceInstall ? "Background service installed.\n" : "Background service removed.\n");
+            g_cliExitCode = 0;
+        } else {
+            CLI_LOG("ERROR: %s\n", err[0] ? err : "Background service update failed");
+            g_cliExitCode = 1;
+        }
+        fclose(logf);
+        return true;
+    }
+
+    if (opts.startupTaskEnable || opts.startupTaskDisable) {
+        char err[256] = {};
+        bool ok = set_startup_task_enabled(opts.startupTaskEnable, err, sizeof(err));
+        if (ok) {
+            CLI_LOG(opts.startupTaskEnable ? "Startup task enabled.\n" : "Startup task disabled.\n");
+            g_cliExitCode = 0;
+        } else {
+            CLI_LOG("ERROR: %s\n", err[0] ? err : "Startup task update failed");
+            g_cliExitCode = 1;
+        }
+        fclose(logf);
+        return true;
+    }
 
     if (opts.showHelp) {
         CLI_LOG(APP_NAME " v" APP_VERSION " - NVIDIA VF Curve Editor\n");
@@ -52,6 +84,8 @@ static bool handle_cli(LPWSTR wCmdLine) {
         CLI_LOG("  greencurve.exe --gpu-offset <mhz> --mem-offset <mhz> --power-limit <pct>\n");
         CLI_LOG("  greencurve.exe --fan <auto|0-100> --point49 <mhz> ... --point126 <mhz>\n");
         CLI_LOG("  greencurve.exe --apply-config [--config <path>]  Apply logon profile slot\n");
+        CLI_LOG("  greencurve.exe --service-install           Install and start background service\n");
+        CLI_LOG("  greencurve.exe --service-remove            Stop and remove background service\n");
         CLI_LOG("  greencurve.exe --save-config [--config <path>]  Save to selected profile slot\n");
         CLI_LOG("  greencurve.exe --reset      Reset curve/global controls to defaults\n");
         CLI_LOG("  greencurve.exe --help       This help\n");
@@ -59,33 +93,39 @@ static bool handle_cli(LPWSTR wCmdLine) {
         return true;
     }
 
-    CLI_LOG("Green Curve: Initializing NvAPI...\n");
+    refresh_background_service_state();
 
-    if (!nvapi_init()) {
-        CLI_LOG("ERROR: Failed to initialize NvAPI.\n");
-        fclose(logf);
-        return true;
-    }
-    CLI_LOG("Green Curve: NvAPI initialized.\n");
-
-    if (!nvapi_enum_gpu()) {
-        CLI_LOG("ERROR: No NVIDIA GPU found.\n");
-        fclose(logf);
-        return true;
-    }
-    CLI_LOG("Green Curve: GPU enumerated.\n");
-
-    nvapi_get_name();
-    CLI_LOG("Green Curve: GPU name: %s\n", g_app.gpuName);
-    nvapi_read_gpu_metadata();
-    CLI_LOG("Green Curve: GPU family: %s\n", gpu_family_name(g_app.gpuFamily));
-    if (g_app.vfBackend) {
-        CLI_LOG("Green Curve: Selected VF backend: %s (%s)\n",
-            g_app.vfBackend->name,
-            !g_app.vfBackend->supported ? "probe-only" :
-            vf_backend_is_best_guess(g_app.vfBackend) ? "best-guess" : "supported");
+    if (g_app.usingBackgroundService && (opts.applyConfig || desired_has_any_action(&opts.desired) || opts.reset || opts.saveConfig)) {
+        CLI_LOG("Green Curve: Background service available, using service-backed control path.\n");
     } else {
-        CLI_LOG("Green Curve: Selected VF backend: none\n");
+        CLI_LOG("Green Curve: Initializing NvAPI...\n");
+
+        if (!nvapi_init()) {
+            CLI_LOG("ERROR: Failed to initialize NvAPI.\n");
+            fclose(logf);
+            return true;
+        }
+        CLI_LOG("Green Curve: NvAPI initialized.\n");
+
+        if (!nvapi_enum_gpu()) {
+            CLI_LOG("ERROR: No NVIDIA GPU found.\n");
+            fclose(logf);
+            return true;
+        }
+        CLI_LOG("Green Curve: GPU enumerated.\n");
+
+        nvapi_get_name();
+        CLI_LOG("Green Curve: GPU name: %s\n", g_app.gpuName);
+        nvapi_read_gpu_metadata();
+        CLI_LOG("Green Curve: GPU family: %s\n", gpu_family_name(g_app.gpuFamily));
+        if (g_app.vfBackend) {
+            CLI_LOG("Green Curve: Selected VF backend: %s (%s)\n",
+                g_app.vfBackend->name,
+                !g_app.vfBackend->supported ? "probe-only" :
+                vf_backend_is_best_guess(g_app.vfBackend) ? "best-guess" : "supported");
+        } else {
+            CLI_LOG("Green Curve: Selected VF backend: none\n");
+        }
     }
 
     bool curveOk = false;
@@ -94,7 +134,9 @@ static bool handle_cli(LPWSTR wCmdLine) {
     int settleAttempts = settleForWritePath ? 6 : 3;
     DWORD settleDelayMs = settleForWritePath ? 100 : 30;
 
-    if (g_app.vfBackend && g_app.vfBackend->readSupported) {
+    if (g_app.usingBackgroundService) {
+        CLI_LOG("Green Curve: Skipping local VF read because the background service will perform the apply.\n");
+    } else if (g_app.vfBackend && g_app.vfBackend->readSupported) {
         CLI_LOG("Green Curve: Reading VF curve%s...\n", settleAttempts > 1 ? " (settled)" : "");
         curveOk = read_live_curve_snapshot_settled(settleAttempts, settleDelayMs, &offsetsOk);
         if (!curveOk) {
@@ -122,7 +164,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
         opts.saveConfig ||
         opts.applyConfig ||
         desired_has_any_action(&opts.desired);
-    if (needsCurveWriteSupport && (!g_app.vfBackend || !g_app.vfBackend->writeSupported || !curveOk)) {
+    if (!g_app.usingBackgroundService && needsCurveWriteSupport && (!g_app.vfBackend || !g_app.vfBackend->writeSupported || !curveOk)) {
         CLI_LOG("ERROR: Live VF write operations are not available on this GPU yet.\n");
         CLI_LOG("Run --probe [--probe-output <path>] and share the JSON report so support can be added.\n");
         if (!opts.probe) {
@@ -132,7 +174,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
     }
 
     // Read global OC/PL values
-    {
+    if (!g_app.usingBackgroundService && curveOk) {
         char detail[128] = {};
         refresh_global_state(detail, sizeof(detail));
     }
@@ -166,7 +208,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
             return true;
         }
 
-        if (g_app.vfBackend && g_app.vfBackend->readSupported) {
+        if (!g_app.usingBackgroundService && g_app.vfBackend && g_app.vfBackend->readSupported) {
             CLI_LOG("Green Curve: Refreshing settled VF baseline before apply...\n");
             bool refreshedOffsetsOk = false;
             if (!read_live_curve_snapshot_settled(6, 100, &refreshedOffsetsOk)) {
@@ -195,7 +237,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
 
         CLI_LOG("Applying profile %d...\n", logonSlot);
         merge_desired_settings(&cfg, &opts.desired);
-        if (cfg.hasFan && cfg.fanMode != FAN_MODE_AUTO) {
+        if (!g_app.usingBackgroundService && cfg.hasFan && cfg.fanMode != FAN_MODE_AUTO) {
             cfg.fanMode = FAN_MODE_AUTO;
             cfg.fanAuto = true;
             cfg.fanPercent = 0;
@@ -203,6 +245,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
             CLI_LOG("Note: silent one-shot logon apply leaves fan control on driver auto when the tray app is not running.\n");
         }
         char result[512] = {};
+        set_pending_operation_source("CLI apply-config");
         bool ok = apply_desired_settings(&cfg, false, result, sizeof(result));
         CLI_LOG("%s\n", result);
         if (!ok) {
@@ -211,6 +254,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
         }
     } else if (desired_has_any_action(&opts.desired)) {
         char result[512] = {};
+        set_pending_operation_source("CLI direct apply");
         bool ok = apply_desired_settings(&opts.desired, false, result, sizeof(result));
         CLI_LOG("%s\n", result);
         if (!ok) {
@@ -256,18 +300,24 @@ static bool handle_cli(LPWSTR wCmdLine) {
         char err[256] = {};
         if (!useDesired) {
             initialize_desired_settings_defaults(&saveDesired);
+            ControlState control = {};
+            bool haveControlState = get_effective_control_state(&control);
             saveDesired.hasGpuOffset = true;
-            saveDesired.gpuOffsetMHz = current_applied_gpu_offset_mhz();
-            saveDesired.gpuOffsetExcludeLow70 = current_applied_gpu_offset_excludes_low_points();
+            if (haveControlState && control_state_has_meaningful_gpu(&control)) {
+                saveDesired.gpuOffsetMHz = control.gpuOffsetMHz;
+                saveDesired.gpuOffsetExcludeLow70 = control.gpuOffsetExcludeLow70;
+            } else {
+                resolve_displayed_live_gpu_offset_state_for_gui(&saveDesired.gpuOffsetMHz, &saveDesired.gpuOffsetExcludeLow70);
+            }
             saveDesired.hasMemOffset = true;
-            saveDesired.memOffsetMHz = mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
+            saveDesired.memOffsetMHz = haveControlState && control_state_has_meaningful_mem(&control) ? control.memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
             saveDesired.hasPowerLimit = true;
-            saveDesired.powerLimitPct = g_app.powerLimitPct;
+            saveDesired.powerLimitPct = haveControlState && control_state_has_meaningful_power(&control) ? control.powerLimitPct : g_app.powerLimitPct;
             saveDesired.hasFan = true;
-            saveDesired.fanMode = g_app.activeFanMode;
-            saveDesired.fanAuto = g_app.activeFanMode == FAN_MODE_AUTO;
-            saveDesired.fanPercent = g_app.activeFanFixedPercent;
-            copy_fan_curve(&saveDesired.fanCurve, &g_app.activeFanCurve);
+            saveDesired.fanMode = haveControlState && control_state_has_meaningful_fan(&control) ? control.fanMode : g_app.activeFanMode;
+            saveDesired.fanAuto = saveDesired.fanMode == FAN_MODE_AUTO;
+            saveDesired.fanPercent = haveControlState && control_state_has_meaningful_fan(&control) ? control.fanFixedPercent : g_app.activeFanFixedPercent;
+            copy_fan_curve(&saveDesired.fanCurve, haveControlState && control_state_has_meaningful_fan(&control) ? &control.fanCurve : &g_app.activeFanCurve);
             for (int i = 0; i < VF_NUM_POINTS; i++) {
                 if (g_app.curve[i].freq_kHz > 0) {
                     saveDesired.hasCurvePoint[i] = true;
@@ -537,8 +587,9 @@ static bool handle_cli(LPWSTR wCmdLine) {
 
     if (opts.json) {
         char err[256] = {};
-        if (curveOk && write_json_snapshot(APP_JSON_FILE, err, sizeof(err))) {
-            CLI_LOG("JSON written to %s\n", APP_JSON_FILE);
+        const char* jsonPath = json_snapshot_path();
+        if (curveOk && write_json_snapshot(jsonPath, err, sizeof(err))) {
+            CLI_LOG("JSON written to %s\n", jsonPath);
         } else if (!curveOk) {
             CLI_LOG("ERROR: JSON snapshot unavailable because live VF read did not succeed.\n");
         } else {
@@ -555,35 +606,57 @@ static bool handle_cli(LPWSTR wCmdLine) {
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/, int nCmdShow) {
     LPWSTR wCmdLine = GetCommandLineW();
 
-    set_default_config_path();
-
-    // Initialize DPI and config lock before reading config
+    // Initialize the shared config lock before the service handoff path can read config.
     SetProcessDPIAware();
     init_dpi();
+
+    if (maybe_handle_service_process(wCmdLine)) {
+        return 0;
+    }
+
+    set_default_config_path();
+    char pathErr[256] = {};
+    resolve_data_paths(pathErr, sizeof(pathErr));
+
+    // Initialize the remaining GUI-only process state before reading config/UI state.
     initialize_dark_mode_support();
 
-    g_debug_logging = (GetEnvironmentVariableA(APP_DEBUG_ENV, nullptr, 0) > 0)
-        || (get_config_int(g_app.configPath, "debug", "enabled", 0) != 0);
+    refresh_background_service_state();
+    debug_log("startup state: usingService=%d installed=%d running=%d available=%d broken=%d launchedFromLogon=%d hiddenToTray=%d\n",
+        g_app.usingBackgroundService ? 1 : 0,
+        g_app.backgroundServiceInstalled ? 1 : 0,
+        g_app.backgroundServiceRunning ? 1 : 0,
+        g_app.backgroundServiceAvailable ? 1 : 0,
+        g_app.backgroundServiceBroken ? 1 : 0,
+        g_app.launchedFromLogon ? 1 : 0,
+        g_app.startHiddenToTray ? 1 : 0);
+    debug_log("startup config path: %s\n", g_app.configPath[0] ? g_app.configPath : "<unset>");
+
+    bool debugEnvEnabled = (GetEnvironmentVariableA(APP_DEBUG_ENV, nullptr, 0) > 0);
+    bool configExists = config_file_exists();
+    int configDebugEnabled = get_config_int(g_app.configPath, "debug", "enabled", 1);
+    g_debug_logging = debugEnvEnabled || (configDebugEnabled != 0);
     if (g_debug_logging) {
-        char debugPath[MAX_PATH] = {};
-        GetModuleFileNameA(nullptr, debugPath, MAX_PATH);
-        char* slash = strrchr(debugPath, '\\');
-        if (!slash) slash = strrchr(debugPath, '/');
-        if (slash) slash[1] = 0; else debugPath[0] = 0;
-        StringCchCatA(debugPath, MAX_PATH, APP_DEBUG_LOG_FILE);
-        DeleteFileA(debugPath);
+        g_debugSessionStartTickMs = GetTickCount64();
+        debug_log("debug enabled: env=%d configExists=%d configDebug=%d path=%s\n",
+            debugEnvEnabled ? 1 : 0,
+            configExists ? 1 : 0,
+            configDebugEnabled,
+            g_app.configPath);
+        debug_log_session_marker("BEGIN", "gui", wCmdLine ? "WinMain startup" : nullptr);
     }
     SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
 
     // CLI mode - handle --dump, --json, --help
     if (handle_cli(wCmdLine)) {
-        return 0;
+        return g_cliExitCode;
     }
 
     g_app.hInst = hInstance;
+    g_app.guiFanMode = GUI_FAN_MODE_UNSET;
 
     // Manual GUI launches can still use interactive elevation, but scheduled/logon starts must stay prompt-free.
-    if (!g_app.launchedFromLogon && !g_app.startHiddenToTray && !is_elevated() && !is_elevated_flag(wCmdLine)) {
+    if (!g_app.usingBackgroundService && !g_app.launchedFromLogon && !g_app.startHiddenToTray && !is_elevated() && !is_elevated_flag(wCmdLine)) {
         request_elevation();
     }
 
@@ -591,73 +664,102 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         return 0;
     }
 
-    // Init NvAPI
-    if (!nvapi_init()) {
-        if (!should_suppress_startup_ui()) {
-            MessageBoxA(nullptr, "Failed to initialize NvAPI.\nIs an NVIDIA GPU and driver installed?",
-                         "Green Curve - Error", MB_OK | MB_ICONERROR);
-        }
-        return 1;
-    }
-
-    if (!nvapi_enum_gpu()) {
-        if (!should_suppress_startup_ui()) {
-            MessageBoxA(nullptr, "No NVIDIA GPU found.", "Green Curve - Error", MB_OK | MB_ICONERROR);
-        }
-        return 1;
-    }
-
-    nvapi_get_name();
-    nvapi_read_gpu_metadata();
-
-    // Read initial curve. The driver can briefly report an in-between VF snapshot
-    // right after startup, so take a few short samples before inferring lock state.
     bool offsetsOk = false;
-    bool curveOk = read_live_curve_snapshot_settled(3, 30, &offsetsOk);
+    bool curveOk = false;
+    if (g_app.backgroundServiceInstalled && g_app.backgroundServiceAvailable) {
+        ServiceSnapshot snapshot = {};
+        DesiredSettings activeDesired = {};
+        char err[256] = {};
+        if (!service_client_get_snapshot(&snapshot, err, sizeof(err))) {
+            g_app.backgroundServiceAvailable = false;
+            g_app.backgroundServiceBroken = true;
+            g_app.usingBackgroundService = false;
+            clear_service_authoritative_state();
+            curveOk = false;
+            offsetsOk = false;
+            debug_log("startup service snapshot failed: %s\n", err[0] ? err : "unknown");
+            set_profile_status_text("Background service is installed but not responding. Start or reinstall the service to restore GPU control.");
+        }
+        if (snapshot.initialized || snapshot.loaded) {
+            apply_service_snapshot_to_app(&snapshot);
+            char desiredErr[256] = {};
+            if (service_client_get_active_desired(&activeDesired, nullptr, desiredErr, sizeof(desiredErr))) {
+                apply_service_desired_to_gui(&activeDesired);
+            }
+            curveOk = snapshot.loaded;
+            offsetsOk = curveOk;
+        }
+    } else {
+        clear_service_authoritative_state();
+        if (!nvapi_init()) {
+            if (!should_suppress_startup_ui()) {
+                MessageBoxA(nullptr, "Failed to initialize NvAPI.\nIs an NVIDIA GPU and driver installed?",
+                             "Green Curve - Error", MB_OK | MB_ICONERROR);
+            }
+            return 1;
+        }
+
+        if (!nvapi_enum_gpu()) {
+            if (!should_suppress_startup_ui()) {
+                MessageBoxA(nullptr, "No NVIDIA GPU found.", "Green Curve - Error", MB_OK | MB_ICONERROR);
+            }
+            return 1;
+        }
+
+        nvapi_get_name();
+        nvapi_read_gpu_metadata();
+
+        curveOk = read_live_curve_snapshot_settled(3, 30, &offsetsOk);
 
         if (!curveOk) {
             char message[512] = {};
-        if (!g_app.vfBackend) {
-            StringCchPrintfA(message, ARRAY_COUNT(message),
-                "Detected an unrecognized NVIDIA GPU architecture (%s).\n\n"
-                "Green Curve will not enable live VF access on unknown GPUs yet.\n"
-                "Run:\n"
-                "greencurve.exe --probe --probe-output <path>\n\n"
-                "and share the resulting JSON report so support can be added safely.",
-                g_app.gpuName[0] ? g_app.gpuName : "NVIDIA GPU");
-        } else if (g_app.vfBackend && g_app.vfBackend->readSupported && !g_app.vfBackend->writeSupported) {
-            StringCchPrintfA(message, ARRAY_COUNT(message),
-                "Detected %s GPU (%s). Live VF curve reading is available, but VF editing is not implemented yet.\n\n"
-                "Ask a user of this GPU family to run:\n"
-                "greencurve.exe --probe --probe-output <path>\n\n"
-                "and share the resulting JSON report.",
-                gpu_family_name(g_app.gpuFamily),
-                g_app.gpuName[0] ? g_app.gpuName : "NVIDIA GPU");
-        } else if (g_app.vfBackend && !g_app.vfBackend->readSupported) {
-            StringCchPrintfA(message, ARRAY_COUNT(message),
-                "Detected %s GPU (%s), but live VF support is not implemented yet.\n\n"
-                "Ask a user of this GPU family to run:\n"
-                "greencurve.exe --probe --probe-output <path>\n\n"
-                "and share the resulting JSON report.",
-                gpu_family_name(g_app.gpuFamily),
-                g_app.gpuName[0] ? g_app.gpuName : "NVIDIA GPU");
-        } else {
-            StringCchPrintfA(message, ARRAY_COUNT(message),
-                "Failed to read VF curve from GPU.\n"
-                "This may require administrator privileges or a supported GPU.");
+            if (!g_app.vfBackend) {
+                StringCchPrintfA(message, ARRAY_COUNT(message),
+                    "Detected an unrecognized NVIDIA GPU architecture (%s).\n\n"
+                    "Green Curve will not enable live VF access on unknown GPUs yet.\n"
+                    "Run:\n"
+                    "greencurve.exe --probe --probe-output <path>\n\n"
+                    "and share the resulting JSON report so support can be added safely.",
+                    g_app.gpuName[0] ? g_app.gpuName : "NVIDIA GPU");
+            } else if (g_app.vfBackend && g_app.vfBackend->readSupported && !g_app.vfBackend->writeSupported) {
+                StringCchPrintfA(message, ARRAY_COUNT(message),
+                    "Detected %s GPU (%s). Live VF curve reading is available, but VF editing is not implemented yet.\n\n"
+                    "Ask a user of this GPU family to run:\n"
+                    "greencurve.exe --probe --probe-output <path>\n\n"
+                    "and share the resulting JSON report.",
+                    gpu_family_name(g_app.gpuFamily),
+                    g_app.gpuName[0] ? g_app.gpuName : "NVIDIA GPU");
+            } else if (g_app.vfBackend && !g_app.vfBackend->readSupported) {
+                StringCchPrintfA(message, ARRAY_COUNT(message),
+                    "Detected %s GPU (%s), but live VF support is not implemented yet.\n\n"
+                    "Ask a user of this GPU family to run:\n"
+                    "greencurve.exe --probe --probe-output <path>\n\n"
+                    "and share the resulting JSON report.",
+                    gpu_family_name(g_app.gpuFamily),
+                    g_app.gpuName[0] ? g_app.gpuName : "NVIDIA GPU");
+            } else {
+                StringCchPrintfA(message, ARRAY_COUNT(message),
+                    "Failed to read VF curve from GPU.\n"
+                    "This may require administrator privileges or a supported GPU.");
+            }
+            if (!should_suppress_startup_ui()) {
+                MessageBoxA(nullptr, message, "Green Curve - Error", MB_OK | MB_ICONERROR);
+            } else {
+                write_error_report_log_for_user_failure("Startup VF read failed", message);
+            }
+            return 1;
         }
-        if (!should_suppress_startup_ui()) {
-            MessageBoxA(nullptr, message, "Green Curve - Error", MB_OK | MB_ICONERROR);
-        } else {
-            write_error_report_log_for_user_failure("Startup VF read failed", message);
-        }
-        return 1;
     }
 
     // A settled snapshot already rebuilt the visible map and inferred the lock tail.
     (void)offsetsOk;
 
-    // Read global OC/PL/fan values
+    if (!curveOk && g_app.usingBackgroundService) {
+        g_app.loaded = false;
+        g_app.numPopulated = 0;
+        g_app.fanSupported = false;
+    }
+
     {
         char detail[128] = {};
         refresh_global_state(detail, sizeof(detail));
@@ -855,9 +957,28 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         g_app.hMainWnd, (HMENU)(INT_PTR)START_ON_LOGON_LABEL_ID, hInstance, nullptr
     );
 
+    g_app.hServiceEnableCheck = CreateWindowExA(
+        0, "BUTTON", "",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+        0, 0, dp(16), dp(16),
+        g_app.hMainWnd, (HMENU)(INT_PTR)SERVICE_ENABLE_CHECK_ID, hInstance, nullptr
+    );
+    g_app.hServiceEnableLabel = CreateWindowExA(
+        0, "STATIC", "Use background service for GPU control",
+        WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOTIFY,
+        0, 0, dp(340), dp(18),
+        g_app.hMainWnd, (HMENU)(INT_PTR)SERVICE_ENABLE_LABEL_ID, hInstance, nullptr
+    );
+    g_app.hServiceStatusLabel = CreateWindowExA(
+        0, "STATIC", "",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        0, 0, dp(460), dp(18),
+        g_app.hMainWnd, (HMENU)(INT_PTR)SERVICE_STATUS_ID, hInstance, nullptr
+    );
+
     g_app.hLogonHintLabel = CreateWindowExA(
         0, "STATIC",
-        "Starts silently without tray icon or window when apply on log in is activated without above tray checkbox ticked.\r\nWithout tray runtime, custom fan modes fall back to driver auto.",
+        "Service mode keeps OC and custom fan runtime in the elevated background service.\r\nWithout service mode, silent logon apply still falls back to driver auto fan when no tray runtime stays running.",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
         0, 0, dp(900), dp(34),
         g_app.hMainWnd, (HMENU)(INT_PTR)LOGON_HINT_ID, hInstance, nullptr
@@ -870,7 +991,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     // Create edit controls
     create_edit_controls(g_app.hMainWnd, hInstance);
     ensure_tray_icon();
+    refresh_background_service_state();
+    update_background_service_controls();
     apply_logon_startup_behavior();
+    if (g_app.usingBackgroundService && g_app.backgroundServiceBroken) {
+        set_profile_status_text("Background service is installed but not responding. Start or reinstall the service to restore GPU control.");
+    }
     if (!g_app.startHiddenToTray) {
         show_best_guess_support_warning(g_app.hMainWnd);
     }

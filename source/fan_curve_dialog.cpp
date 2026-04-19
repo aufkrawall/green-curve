@@ -428,6 +428,7 @@ static bool fan_curve_dialog_commit(HWND hwnd) {
 
     copy_fan_curve(&g_app.guiFanCurve, &validated);
     ensure_valid_fan_curve_config(&g_app.guiFanCurve);
+    set_gui_state_dirty(true);
     refresh_fan_curve_button_text();
     update_fan_controls_enabled_state();
     return true;
