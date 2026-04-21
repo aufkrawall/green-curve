@@ -4,8 +4,9 @@ This is a modified forked project of "green-curve"  by aufkrawall : https://gith
 
 Green Curve is a small Windows tool (will see if anything goes on Linux) for inspecting and editing the NVIDIA voltage/frequency curve on supported GeForce GPUs, mainly tested on RTX 5070. Has now also been user-tested on Lovelace, in addition to Blackwell support. Older GPUs *might* work, but are untested.
 
-<img width="505" height="551" alt="2" src="https://github.com/user-attachments/assets/4d691f62-d613-486d-b5fd-f28525e224b9" />
+
 <img width="1172" height="967" alt="1" src="https://github.com/user-attachments/assets/91783fb2-dec5-4979-88a3-3642d8fba020" />
+<img width="505" height="551" alt="2" src="https://github.com/user-attachments/assets/4d691f62-d613-486d-b5fd-f28525e224b9" />
 
 
 
