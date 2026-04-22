@@ -7,14 +7,14 @@ static int clamp_int(int value, int minimum, int maximum) {
 }
 
 static void sort_enabled_points(FanCurvePoint* points, int count) {
-    for (int i = 0; i < count; i++) {
-        for (int j = i + 1; j < count; j++) {
-            if (points[j].temperatureC < points[i].temperatureC) {
-                FanCurvePoint temp = points[i];
-                points[i] = points[j];
-                points[j] = temp;
-            }
+    for (int i = 1; i < count; i++) {
+        FanCurvePoint key = points[i];
+        int j = i - 1;
+        while (j >= 0 && points[j].temperatureC > key.temperatureC) {
+            points[j + 1] = points[j];
+            j--;
         }
+        points[j + 1] = key;
     }
 }
 

@@ -45,6 +45,16 @@ struct ClickAction {
     int value;
 };
 
+struct TerminalGuard;
+static TerminalGuard* g_activeTerminalGuard = nullptr;
+
+static void restore_terminal_mode();
+
+static void on_fatal_signal(int) {
+    restore_terminal_mode();
+    _exit(1);
+}
+
 struct TerminalGuard {
     termios original;
     bool active;
@@ -57,17 +67,24 @@ struct TerminalGuard {
         raw.c_oflag |= OPOST;
         if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0) return;
         active = true;
+        g_activeTerminalGuard = this;
         fputs("\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h", stdout);
         fflush(stdout);
     }
 
     ~TerminalGuard() {
-        if (!active) return;
-        fputs("\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l", stdout);
-        fflush(stdout);
-        tcsetattr(STDIN_FILENO, TCSAFLUSH, &original);
+        restore_terminal_mode();
+        g_activeTerminalGuard = nullptr;
     }
 };
+
+static void restore_terminal_mode() {
+    if (!g_activeTerminalGuard || !g_activeTerminalGuard->active) return;
+    fputs("\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l", stdout);
+    fflush(stdout);
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_activeTerminalGuard->original);
+    g_activeTerminalGuard->active = false;
+}
 
 struct TuiState {
     DesiredSettings desired;
@@ -287,28 +304,29 @@ static void render_ui(TuiState* state) {
 
     std::string line;
     line = "Profile slot: ";
-    push_button(state, &line, y + 1, ACTION_SLOT_DELTA, 0, -1, "<");
+    push_button(state, &line, y, ACTION_SLOT_DELTA, 0, -1, "<");
     append_text(&line, " ");
     char buffer[64] = {};
     snprintf(buffer, sizeof(buffer), "%d", state->currentSlot);
     append_text(&line, buffer);
     append_text(&line, " ");
-    push_button(state, &line, y + 1, ACTION_SLOT_DELTA, 0, 1, ">");
+    push_button(state, &line, y, ACTION_SLOT_DELTA, 0, 1, ">");
     append_text(&line, "   ");
-    push_button(state, &line, y + 1, ACTION_LOAD, 0, 0, "Load");
+    push_button(state, &line, y, ACTION_LOAD, 0, 0, "Load");
     append_text(&line, " ");
-    push_button(state, &line, y + 1, ACTION_SAVE, 0, 0, "Save");
+    push_button(state, &line, y, ACTION_SAVE, 0, 0, "Save");
     append_text(&line, " ");
-    push_button(state, &line, y + 1, ACTION_RESET, 0, 0, "Reset");
-    printf("\n%s\n", line.c_str());
-    y += 2;
+    push_button(state, &line, y, ACTION_RESET, 0, 0, "Reset");
+    y++;
+    printf("%s\n", line.c_str());
+    y++;
 
     printf("General controls\n");
     y++;
     line = "  GPU offset: ";
-    push_button(state, &line, y + 1, ACTION_GPU_DELTA, 0, -15, "-15");
+    push_button(state, &line, y, ACTION_GPU_DELTA, 0, -15, "-15");
     append_text(&line, " ");
-    push_button(state, &line, y + 1, ACTION_GPU_DELTA, 0, 15, "+15");
+    push_button(state, &line, y, ACTION_GPU_DELTA, 0, 15, "+15");
     append_text(&line, "   ");
     snprintf(buffer, sizeof(buffer), "%d MHz", state->desired.gpuOffsetMHz);
     append_text(&line, buffer);
@@ -316,9 +334,9 @@ static void render_ui(TuiState* state) {
     y++;
 
     line = "  Memory offset: ";
-    push_button(state, &line, y + 1, ACTION_MEM_DELTA, 0, -100, "-100");
+    push_button(state, &line, y, ACTION_MEM_DELTA, 0, -100, "-100");
     append_text(&line, " ");
-    push_button(state, &line, y + 1, ACTION_MEM_DELTA, 0, 100, "+100");
+    push_button(state, &line, y, ACTION_MEM_DELTA, 0, 100, "+100");
     append_text(&line, "   ");
     snprintf(buffer, sizeof(buffer), "%d MHz", state->desired.memOffsetMHz);
     append_text(&line, buffer);
@@ -326,9 +344,9 @@ static void render_ui(TuiState* state) {
     y++;
 
     line = "  Power limit: ";
-    push_button(state, &line, y + 1, ACTION_POWER_DELTA, 0, -5, "-5");
+    push_button(state, &line, y, ACTION_POWER_DELTA, 0, -5, "-5");
     append_text(&line, " ");
-    push_button(state, &line, y + 1, ACTION_POWER_DELTA, 0, 5, "+5");
+    push_button(state, &line, y, ACTION_POWER_DELTA, 0, 5, "+5");
     append_text(&line, "   ");
     snprintf(buffer, sizeof(buffer), "%d%%", state->desired.powerLimitPct);
     append_text(&line, buffer);
@@ -336,18 +354,18 @@ static void render_ui(TuiState* state) {
     y++;
 
     line = "  Fan mode: ";
-    push_button(state, &line, y + 1, ACTION_FAN_MODE_SET, 0, FAN_MODE_AUTO, state->desired.fanMode == FAN_MODE_AUTO ? "*Auto*" : "Auto");
+    push_button(state, &line, y, ACTION_FAN_MODE_SET, 0, FAN_MODE_AUTO, state->desired.fanMode == FAN_MODE_AUTO ? "*Auto*" : "Auto");
     append_text(&line, " ");
-    push_button(state, &line, y + 1, ACTION_FAN_MODE_SET, 0, FAN_MODE_FIXED, state->desired.fanMode == FAN_MODE_FIXED ? "*Fixed*" : "Fixed");
+    push_button(state, &line, y, ACTION_FAN_MODE_SET, 0, FAN_MODE_FIXED, state->desired.fanMode == FAN_MODE_FIXED ? "*Fixed*" : "Fixed");
     append_text(&line, " ");
-    push_button(state, &line, y + 1, ACTION_FAN_MODE_SET, 0, FAN_MODE_CURVE, state->desired.fanMode == FAN_MODE_CURVE ? "*Curve*" : "Curve");
+    push_button(state, &line, y, ACTION_FAN_MODE_SET, 0, FAN_MODE_CURVE, state->desired.fanMode == FAN_MODE_CURVE ? "*Curve*" : "Curve");
     printf("%s\n", line.c_str());
     y++;
 
     line = "  Fan fixed pct: ";
-    push_button(state, &line, y + 1, ACTION_FAN_FIXED_DELTA, 0, -5, "-5");
+    push_button(state, &line, y, ACTION_FAN_FIXED_DELTA, 0, -5, "-5");
     append_text(&line, " ");
-    push_button(state, &line, y + 1, ACTION_FAN_FIXED_DELTA, 0, 5, "+5");
+    push_button(state, &line, y, ACTION_FAN_FIXED_DELTA, 0, 5, "+5");
     append_text(&line, "   ");
     snprintf(buffer, sizeof(buffer), "%d%%", state->desired.fanPercent);
     append_text(&line, buffer);
@@ -357,16 +375,16 @@ static void render_ui(TuiState* state) {
     printf("Fan curve\n");
     y++;
     line = "  Poll interval: ";
-    push_button(state, &line, y + 1, ACTION_POLL_DELTA, 0, -250, "-250");
+    push_button(state, &line, y, ACTION_POLL_DELTA, 0, -250, "-250");
     append_text(&line, " ");
-    push_button(state, &line, y + 1, ACTION_POLL_DELTA, 0, 250, "+250");
+    push_button(state, &line, y, ACTION_POLL_DELTA, 0, 250, "+250");
     append_text(&line, "   ");
     snprintf(buffer, sizeof(buffer), "%d ms", state->desired.fanCurve.pollIntervalMs);
     append_text(&line, buffer);
     append_text(&line, "    Hysteresis: ");
-    push_button(state, &line, y + 1, ACTION_HYST_DELTA, 0, -1, "-1");
+    push_button(state, &line, y, ACTION_HYST_DELTA, 0, -1, "-1");
     append_text(&line, " ");
-    push_button(state, &line, y + 1, ACTION_HYST_DELTA, 0, 1, "+1");
+    push_button(state, &line, y, ACTION_HYST_DELTA, 0, 1, "+1");
     append_text(&line, "   ");
     snprintf(buffer, sizeof(buffer), "%d\xC2\xB0""C", state->desired.fanCurve.hysteresisC);
     append_text(&line, buffer);
@@ -377,18 +395,18 @@ static void render_ui(TuiState* state) {
         line = "  ";
         snprintf(buffer, sizeof(buffer), "P%d ", i);
         append_text(&line, buffer);
-        push_button(state, &line, y + 1, ACTION_FAN_POINT_ENABLE, i, 0, state->desired.fanCurve.points[i].enabled ? "On" : "Off");
+        push_button(state, &line, y, ACTION_FAN_POINT_ENABLE, i, 0, state->desired.fanCurve.points[i].enabled ? "On" : "Off");
         append_text(&line, "  Temp ");
-        push_button(state, &line, y + 1, ACTION_FAN_POINT_TEMP_DELTA, i, -1, "-");
+        push_button(state, &line, y, ACTION_FAN_POINT_TEMP_DELTA, i, -1, "-");
         append_text(&line, " ");
-        push_button(state, &line, y + 1, ACTION_FAN_POINT_TEMP_DELTA, i, 1, "+");
+        push_button(state, &line, y, ACTION_FAN_POINT_TEMP_DELTA, i, 1, "+");
         append_text(&line, " ");
         snprintf(buffer, sizeof(buffer), "%3d\xC2\xB0""C", state->desired.fanCurve.points[i].temperatureC);
         append_text(&line, buffer);
         append_text(&line, "   Pct ");
-        push_button(state, &line, y + 1, ACTION_FAN_POINT_PCT_DELTA, i, -1, "-");
+        push_button(state, &line, y, ACTION_FAN_POINT_PCT_DELTA, i, -1, "-");
         append_text(&line, " ");
-        push_button(state, &line, y + 1, ACTION_FAN_POINT_PCT_DELTA, i, 1, "+");
+        push_button(state, &line, y, ACTION_FAN_POINT_PCT_DELTA, i, 1, "+");
         append_text(&line, " ");
         snprintf(buffer, sizeof(buffer), "%3d%%", state->desired.fanCurve.points[i].fanPercent);
         append_text(&line, buffer);
@@ -396,12 +414,13 @@ static void render_ui(TuiState* state) {
         y++;
     }
 
-    printf("\nVF curve page %d/8\n", state->vfPage + 1);
-    y += 2;
+    y++;
+    printf("VF curve page %d/8\n", state->vfPage + 1);
+    y++;
     line = "  Page: ";
-    push_button(state, &line, y + 1, ACTION_VF_PAGE_DELTA, 0, -1, "Prev");
+    push_button(state, &line, y, ACTION_VF_PAGE_DELTA, 0, -1, "Prev");
     append_text(&line, " ");
-    push_button(state, &line, y + 1, ACTION_VF_PAGE_DELTA, 0, 1, "Next");
+    push_button(state, &line, y, ACTION_VF_PAGE_DELTA, 0, 1, "Next");
     printf("%s\n", line.c_str());
     y++;
 
@@ -411,13 +430,13 @@ static void render_ui(TuiState* state) {
         line = "  ";
         snprintf(buffer, sizeof(buffer), "P%03d ", pointIndex);
         append_text(&line, buffer);
-        push_button(state, &line, y + 1, ACTION_VF_POINT_DELTA, pointIndex, -100, "-100");
+        push_button(state, &line, y, ACTION_VF_POINT_DELTA, pointIndex, -100, "-100");
         append_text(&line, " ");
-        push_button(state, &line, y + 1, ACTION_VF_POINT_DELTA, pointIndex, -15, "-15");
+        push_button(state, &line, y, ACTION_VF_POINT_DELTA, pointIndex, -15, "-15");
         append_text(&line, " ");
-        push_button(state, &line, y + 1, ACTION_VF_POINT_DELTA, pointIndex, 15, "+15");
+        push_button(state, &line, y, ACTION_VF_POINT_DELTA, pointIndex, 15, "+15");
         append_text(&line, " ");
-        push_button(state, &line, y + 1, ACTION_VF_POINT_DELTA, pointIndex, 100, "+100");
+        push_button(state, &line, y, ACTION_VF_POINT_DELTA, pointIndex, 100, "+100");
         append_text(&line, "   ");
         snprintf(buffer, sizeof(buffer), "%4u MHz", state->desired.curvePointMHz[pointIndex]);
         append_text(&line, buffer);
@@ -425,19 +444,17 @@ static void render_ui(TuiState* state) {
         y++;
     }
 
-    line = "\n";
-    printf("%s", line.c_str());
     y++;
     line.clear();
-    push_button(state, &line, y + 1, ACTION_PROBE, 0, 0, "Probe");
+    push_button(state, &line, y, ACTION_PROBE, 0, 0, "Probe");
     append_text(&line, " ");
-    push_button(state, &line, y + 1, ACTION_WRITE_ASSETS, 0, 0, "Write Assets");
+    push_button(state, &line, y, ACTION_WRITE_ASSETS, 0, 0, "Write Assets");
     append_text(&line, " ");
-    push_button(state, &line, y + 1, ACTION_SAVE, 0, 0, "Save");
+    push_button(state, &line, y, ACTION_SAVE, 0, 0, "Save");
     append_text(&line, " ");
-    push_button(state, &line, y + 1, ACTION_LOAD, 0, 0, "Load");
+    push_button(state, &line, y, ACTION_LOAD, 0, 0, "Load");
     append_text(&line, " ");
-    push_button(state, &line, y + 1, ACTION_QUIT, 0, 0, "Quit");
+    push_button(state, &line, y, ACTION_QUIT, 0, 0, "Quit");
     printf("%s\n", line.c_str());
     y++;
 
@@ -553,6 +570,10 @@ int linux_run_tui(const char* configPath, int initialSlot, DesiredSettings* init
     snprintf(state.status, sizeof(state.status), "Ready. Left click buttons or use hotkeys.");
 
     signal(SIGWINCH, on_sigwinch);
+    signal(SIGINT, on_fatal_signal);
+    signal(SIGTERM, on_fatal_signal);
+    signal(SIGSEGV, on_fatal_signal);
+    atexit(restore_terminal_mode);
     TerminalGuard guard;
     if (!guard.active) {
         fprintf(stderr, "Linux TUI requires an interactive terminal.\n");
@@ -578,12 +599,16 @@ int linux_run_tui(const char* configPath, int initialSlot, DesiredSettings* init
             continue;
         }
 
-        for (char ch : input) {
-            if (ch == 3 || ch == 27) {
-                state.running = false;
-                break;
+        if (input.size() == 1 && input[0] == 27) {
+            state.running = false;
+        } else {
+            for (char ch : input) {
+                if (ch == 3) {
+                    state.running = false;
+                    break;
+                }
+                handle_hotkey(&state, ch);
             }
-            handle_hotkey(&state, ch);
         }
         render_ui(&state);
     }

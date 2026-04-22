@@ -1,13 +1,9 @@
 #include "linux_port.h"
 
-#include <algorithm>
 #include <ctype.h>
-#include <dirent.h>
 #include <errno.h>
 #include <glob.h>
-#include <limits.h>
 #include <stdarg.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -160,7 +156,7 @@ static bool ensure_directory_recursive(const char* path, char* err, size_t errSi
         if (!part.empty()) {
             current = path_join(current, part);
             if (!directory_exists(current.c_str())) {
-                if (mkdir(current.c_str(), 0755) != 0 && errno != EEXIST) {
+                if (mkdir(current.c_str(), 0700) != 0 && errno != EEXIST) {
                     set_message(err, errSize, "Failed to create %s (%s)", current.c_str(), strerror(errno));
                     return false;
                 }
@@ -227,6 +223,13 @@ static bool write_text_file_atomic(const char* path, const std::string& data, ch
     }
     if (fflush(file) != 0) {
         set_message(err, errSize, "Failed to flush %s (%s)", tempPath.c_str(), strerror(errno));
+        fclose(file);
+        unlink(tempPath.c_str());
+        return false;
+    }
+    int fd = fileno(file);
+    if (fd >= 0 && fsync(fd) != 0) {
+        set_message(err, errSize, "Failed to sync %s (%s)", tempPath.c_str(), strerror(errno));
         fclose(file);
         unlink(tempPath.c_str());
         return false;
@@ -424,14 +427,14 @@ static bool parse_fan_mode_config_value(const char* text, int* mode) {
 }
 
 static void sort_enabled_points(FanCurvePoint* points, int count) {
-    for (int i = 0; i < count; i++) {
-        for (int j = i + 1; j < count; j++) {
-            if (points[j].temperatureC < points[i].temperatureC) {
-                FanCurvePoint temp = points[i];
-                points[i] = points[j];
-                points[j] = temp;
-            }
+    for (int i = 1; i < count; i++) {
+        FanCurvePoint key = points[i];
+        int j = i - 1;
+        while (j >= 0 && points[j].temperatureC > key.temperatureC) {
+            points[j + 1] = points[j];
+            j--;
         }
+        points[j + 1] = key;
     }
 }
 
@@ -485,9 +488,6 @@ void fan_curve_normalize(FanCurveConfig* config) {
     for (int i = 0; i < disabledCount; i++) {
         config->points[enabledCount + i] = disabled[i];
         config->points[enabledCount + i].enabled = false;
-    }
-    for (int i = enabledCount + disabledCount; i < FAN_CURVE_MAX_POINTS; i++) {
-        config->points[i] = { false, 100, 100 };
     }
 }
 
@@ -590,8 +590,9 @@ bool desired_has_any_action(const DesiredSettings* desired) {
 
 bool get_executable_path(char* dst, size_t dstSize) {
     if (!dst || dstSize == 0) return false;
-    ssize_t readCount = readlink("/proc/self/exe", dst, dstSize - 1);
+    ssize_t readCount = readlink("/proc/self/exe", dst, dstSize);
     if (readCount < 0) return false;
+    if (readCount >= (ssize_t)dstSize) return false;
     dst[readCount] = 0;
     return true;
 }
@@ -1423,7 +1424,10 @@ static bool command_available(const char* name) {
         std::string part = pathList.substr(start, sep == std::string::npos ? std::string::npos : sep - start);
         if (part.empty()) part = ".";
         std::string candidate = path_join(part, name);
-        if (access(candidate.c_str(), X_OK) == 0) return true;
+        if (access(candidate.c_str(), X_OK) == 0) {
+            struct stat st = {};
+            if (stat(candidate.c_str(), &st) == 0 && S_ISREG(st.st_mode)) return true;
+        }
         if (sep == std::string::npos) break;
         start = sep + 1;
     }

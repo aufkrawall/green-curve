@@ -6,15 +6,15 @@
 static void print_help() {
     puts("Green Curve Linux scaffold");
     puts("Usage:");
-    puts("  greencurve-linux-x86_64-musl            Launch terminal UI");
-    puts("  greencurve-linux-x86_64-musl --tui      Launch terminal UI");
-    puts("  greencurve-linux-x86_64-musl --dump     Dump selected profile as text");
-    puts("  greencurve-linux-x86_64-musl --json     Dump selected profile as JSON");
-    puts("  greencurve-linux-x86_64-musl --probe [--probe-output path]");
-    puts("  greencurve-linux-x86_64-musl --write-assets [--assets-dir path]");
-    puts("  greencurve-linux-x86_64-musl --save-config [--profile N] [overrides]");
-    puts("  greencurve-linux-x86_64-musl --apply-config [--profile N]");
-    puts("  greencurve-linux-x86_64-musl --config path --profile N");
+    puts("  greencurve-x86_64-linux-musl            Launch terminal UI");
+    puts("  greencurve-x86_64-linux-musl --tui      Launch terminal UI");
+    puts("  greencurve-x86_64-linux-musl --dump     Dump selected profile as text");
+    puts("  greencurve-x86_64-linux-musl --json     Dump selected profile as JSON");
+    puts("  greencurve-x86_64-linux-musl --probe [--probe-output path]");
+    puts("  greencurve-x86_64-linux-musl --write-assets [--assets-dir path]");
+    puts("  greencurve-x86_64-linux-musl --save-config [--profile N] [overrides]");
+    puts("  greencurve-x86_64-linux-musl --apply-config [--profile N]");
+    puts("  greencurve-x86_64-linux-musl --config path --profile N");
     puts("Overrides:");
     puts("  --gpu-offset MHZ --mem-offset MHZ --power-limit PCT");
     puts("  --fan auto|PCT --fan-mode auto|fixed|curve --fan-fixed PCT");

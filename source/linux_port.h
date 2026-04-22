@@ -43,6 +43,7 @@ struct DesiredSettings {
     bool hasLock;
     int lockCi;
     unsigned int lockMHz;
+    bool lockTracksAnchor;
     bool hasGpuOffset;
     int gpuOffsetMHz;
     bool gpuOffsetExcludeLow70;

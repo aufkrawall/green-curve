@@ -59,6 +59,8 @@ void init_dpi();
 #define APP_TITLE           APP_NAME " v" APP_VERSION
 #define APP_CLASS_NAME      "GreenCurveClass"
 #define APP_EXE_NAME        "greencurve.exe"
+#define APP_SERVICE_EXE_NAME "greencurve-service.exe"
+#define APP_SERVICE_EXE_NAME_W L"greencurve-service.exe"
 #define APP_LOG_FILE        "greencurve_log.txt"
 #define APP_CLI_LOG_FILE    "greencurve_cli_log.txt"
 #define APP_DEBUG_LOG_FILE  "greencurve_debug.txt"
@@ -289,6 +291,7 @@ typedef struct {
     nvapiPstate20ClockEntry_t clocks[NVAPI_MAX_GPU_PSTATE20_CLOCKS];
     nvapiPstate20BaseVoltageEntry_t baseVoltages[NVAPI_MAX_GPU_PSTATE20_BASE_VOLTAGES];
 } nvapiPstate20Entry_t;
+static_assert(sizeof(nvapiPstate20Entry_t) == 456, "nvapiPstate20Entry_t size mismatch");
 
 typedef struct {
     unsigned int numVoltages;
@@ -305,6 +308,7 @@ typedef struct {
     nvapiPstate20Entry_t pstates[NVAPI_MAX_GPU_PSTATE20_PSTATES];
     nvapiPstates20Ov_t ov;
 } nvapiPerfPstates20Info_t;
+static_assert(sizeof(nvapiPerfPstates20Info_t) == 7416, "nvapiPerfPstates20Info_t size mismatch");
 
 #define NVAPI_PERF_PSTATES20_INFO_VER2 NVAPI_STRUCT_VERSION(nvapiPerfPstates20Info_t, 2)
 #define NVAPI_PERF_PSTATES20_INFO_VER3 NVAPI_STRUCT_VERSION(nvapiPerfPstates20Info_t, 3)
@@ -324,6 +328,7 @@ typedef struct {
     unsigned int implementation;
     unsigned int revision;
 } nvapiGpuArchInfo_t;
+static_assert(sizeof(nvapiGpuArchInfo_t) == 16, "nvapiGpuArchInfo_t size mismatch");
 
 #define NVAPI_GPU_ARCH_INFO_VER2 NVAPI_STRUCT_VERSION(nvapiGpuArchInfo_t, 2)
 
@@ -636,6 +641,9 @@ enum ServiceCommand {
     SERVICE_CMD_APPLY = 4,
     SERVICE_CMD_RESET = 5,
     SERVICE_CMD_GET_ACTIVE_DESIRED = 6,
+    SERVICE_CMD_WRITE_LOG_SNAPSHOT = 7,
+    SERVICE_CMD_WRITE_JSON_SNAPSHOT = 8,
+    SERVICE_CMD_WRITE_PROBE_REPORT = 9,
 };
 
 enum ServiceResponseStatus {
@@ -706,6 +714,7 @@ struct ServiceRequest {
     DWORD callerSessionId;
     DesiredSettings desired;
     char source[64];
+    char path[MAX_PATH];
 };
 
 struct ServiceResponse {

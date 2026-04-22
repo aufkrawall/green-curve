@@ -23,27 +23,6 @@ static bool is_elevated() {
     return result;
 }
 
-static bool is_elevated_flag(LPWSTR lpCmdLine) {
-    return wcsstr(lpCmdLine, L"--elevated") != nullptr;
-}
-
-static void request_elevation() {
-    WCHAR path[MAX_PATH] = {};
-    GetModuleFileNameW(nullptr, path, MAX_PATH);
-
-    SHELLEXECUTEINFOW sei = {};
-    sei.cbSize = sizeof(sei);
-    sei.lpVerb = L"runas";
-    sei.lpFile = path;
-    sei.lpParameters = L"--elevated";
-    sei.nShow = SW_NORMAL;
-
-    if (ShellExecuteExW(&sei)) {
-        ExitProcess(0);
-    }
-    // If user cancelled, just continue without elevation
-}
-
 static void apply_system_titlebar_theme(HWND hwnd) {
     if (!hwnd) return;
     HMODULE d = LoadLibraryA("dwmapi.dll");
@@ -129,11 +108,21 @@ static void draw_graph(HDC hdc, RECT* rc) {
     FillRect(hdc, &graphRc, bgBrush);
     DeleteObject(bgBrush);
 
+    if (!g_app.backgroundServiceAvailable) {
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, COL_TEXT);
+        const char* msg = g_app.backgroundServiceInstalled
+            ? "Background service not responding. Live controls disabled."
+            : "Background service not installed. Live controls disabled.";
+        TextOutA(hdc, w / 2 - dp(170), h / 2 - dp(8), msg, (int)strlen(msg));
+        return;
+    }
+
     if (!g_app.loaded) {
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, COL_TEXT);
-        const char* msg = "Reading VF curve...";
-        TextOutA(hdc, w / 2 - 60, h / 2 - 8, msg, (int)strlen(msg));
+        const char* msg = "Background service running, waiting for GPU snapshot...";
+        TextOutA(hdc, w / 2 - dp(150), h / 2 - dp(8), msg, (int)strlen(msg));
         return;
     }
 
@@ -320,6 +309,7 @@ static unsigned int get_edit_value(HWND hEdit) {
 static void populate_edits() {
     bool preserveDirty = gui_state_dirty();
     populate_global_controls();
+    bool serviceReady = g_app.backgroundServiceAvailable;
     begin_programmatic_edit_update();
     memset(g_app.guiCurvePointExplicit, 0, sizeof(g_app.guiCurvePointExplicit));
     for (int vi = 0; vi < g_app.numVisible; vi++) {
@@ -327,11 +317,11 @@ static void populate_edits() {
         set_edit_value(g_app.hEditsMhz[vi], displayed_curve_mhz(g_app.curve[ci].freq_kHz));
         set_edit_value(g_app.hEditsMv[vi], g_app.curve[ci].volt_uV / 1000);
         SendMessageA(g_app.hEditsMhz[vi], EM_SETREADONLY, FALSE, 0);
-        EnableWindow(g_app.hEditsMhz[vi], TRUE);
+        EnableWindow(g_app.hEditsMhz[vi], serviceReady ? TRUE : FALSE);
         SendMessageA(g_app.hEditsMv[vi], EM_SETREADONLY, TRUE, 0);
         EnableWindow(g_app.hEditsMv[vi], FALSE);
         SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_UNCHECKED, 0);
-        EnableWindow(g_app.hLocks[vi], TRUE);
+        EnableWindow(g_app.hLocks[vi], serviceReady ? TRUE : FALSE);
         InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
     }
     // Re-apply lock state if active
@@ -344,6 +334,10 @@ static void populate_edits() {
             EnableWindow(g_app.hEditsMhz[j], FALSE);
             EnableWindow(g_app.hLocks[j], FALSE);
             InvalidateRect(g_app.hLocks[j], nullptr, FALSE);
+        }
+        if (!serviceReady) {
+            EnableWindow(g_app.hEditsMhz[g_app.lockedVi], FALSE);
+            EnableWindow(g_app.hLocks[g_app.lockedVi], FALSE);
         }
     }
     end_programmatic_edit_update();
@@ -583,7 +577,7 @@ static void create_edit_controls(HWND hParent, HINSTANCE hInst) {
     style_combo_control(g_app.hLogonCombo);
     apply_ui_font_to_children(hParent);
 
-    if (g_app.loaded) populate_global_controls();
+    populate_global_controls();
 
     if (g_app.loaded) populate_edits();
 
@@ -596,11 +590,16 @@ static void create_edit_controls(HWND hParent, HINSTANCE hInst) {
 // ============================================================================
 
 static void apply_changes() {
-    if (!g_app.loaded) return;
+    if (!g_app.backgroundServiceAvailable || !g_app.loaded) return;
     set_pending_operation_source("GUI apply");
     record_ui_action("Apply clicked");
     DesiredSettings desired = {};
     char err[256] = {};
+    if (g_app.usingBackgroundService && !refresh_service_snapshot_and_active_desired(err, sizeof(err))) {
+        write_error_report_log_for_user_failure("GUI apply refresh failed", err);
+        MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
+        return;
+    }
     if (!capture_gui_apply_settings(&desired, err, sizeof(err))) {
         write_error_report_log_for_user_failure("GUI apply validation failed", err);
         MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
@@ -654,6 +653,15 @@ static void destroy_edit_controls(HWND hParent) {
 }
 
 static void refresh_curve() {
+    if (!g_app.backgroundServiceAvailable) {
+        refresh_background_service_state();
+        destroy_edit_controls(g_app.hMainWnd);
+        create_edit_controls(g_app.hMainWnd, g_app.hInst);
+        update_background_service_controls();
+        ensure_main_window_min_size(g_app.hMainWnd);
+        invalidate_main_window();
+        return;
+    }
     if (g_app.usingBackgroundService && !g_app.isServiceProcess) {
         char detail[256] = {};
         ServiceSnapshot snapshot = {};
@@ -662,6 +670,7 @@ static void refresh_curve() {
             destroy_edit_controls(g_app.hMainWnd);
             create_edit_controls(g_app.hMainWnd, g_app.hInst);
             update_background_service_controls();
+            ensure_main_window_min_size(g_app.hMainWnd);
             invalidate_main_window();
         } else {
             refresh_background_service_state();
@@ -670,43 +679,26 @@ static void refresh_curve() {
         }
         return;
     }
-    if (nvapi_read_curve() && nvapi_read_offsets()) {
-        rebuild_visible_map();
-        char detail[128] = {};
-        refresh_global_state(detail, sizeof(detail));
-
-        // Recreate edit controls for new visible set
-        destroy_edit_controls(g_app.hMainWnd);
-        create_edit_controls(g_app.hMainWnd, g_app.hInst);
-        invalidate_main_window();
-
-        debug_log("Green Curve: Refreshed - %d points loaded\n", g_app.numPopulated);
-        for (int i = 0; i < VF_NUM_POINTS && i < 10; i++) {
-            if (g_app.curve[i].freq_kHz > 0) {
-                debug_log("  Point %d: %u MHz @ %u mV (offset: %d kHz)\n",
-                    i, displayed_curve_mhz(g_app.curve[i].freq_kHz),
-                    g_app.curve[i].volt_uV / 1000,
-                    g_app.freqOffsets[i]);
-            }
-        }
-    } else {
-        debug_log("Green Curve: Failed to read VF curve\n");
-    }
 }
 
 static void reset_curve() {
-    if (!g_app.loaded) return;
+    if (!g_app.backgroundServiceAvailable || !g_app.loaded) return;
 
     if (g_app.usingBackgroundService && !g_app.isServiceProcess) {
         char result[512] = {};
         ServiceSnapshot snapshot = {};
         bool ok = service_client_reset(result, sizeof(result), &snapshot);
-        if (snapshot.initialized || snapshot.loaded || g_app.fanSupported || snapshot.fanSupported) {
+        if (ok && (snapshot.initialized || snapshot.loaded || g_app.fanSupported || snapshot.fanSupported)) {
+            clear_service_authoritative_state();
             apply_service_snapshot_to_app(&snapshot);
             if (ok) {
                 g_app.guiFanMode = FAN_MODE_AUTO;
                 g_app.guiFanFixedPercent = 0;
                 fan_curve_set_default(&g_app.guiFanCurve);
+                g_app.lockedVi = -1;
+                g_app.lockedCi = -1;
+                g_app.lockedFreq = 0;
+                set_gui_state_dirty(false);
             }
             destroy_edit_controls(g_app.hMainWnd);
             create_edit_controls(g_app.hMainWnd, g_app.hInst);
@@ -719,63 +711,6 @@ static void reset_curve() {
         return;
     }
 
-    if (!g_app.vfBackend || !g_app.vfBackend->writeSupported ||
-        !(NvApiFunc)nvapi_qi(g_app.vfBackend->setControlId)) {
-        MessageBoxA(g_app.hMainWnd, "NvAPI functions not available.", "Green Curve", MB_OK | MB_ICONERROR);
-        return;
-    }
-
-    int targetOffsets[VF_NUM_POINTS] = {};
-    bool targetMask[VF_NUM_POINTS] = {};
-    bool hadCurveOffsets = false;
-    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-        if (g_app.curve[ci].freq_kHz == 0) continue;
-        targetMask[ci] = true;
-        if (g_app.freqOffsets[ci] != 0) hadCurveOffsets = true;
-    }
-
-    int successCount = 0;
-    int failCount = 0;
-    if (hadCurveOffsets) {
-        if (apply_curve_offsets_verified(targetOffsets, targetMask, 2)) successCount++;
-        else failCount++;
-    }
-
-    detect_locked_tail_from_curve();
-
-    if (g_app.gpuClockOffsetkHz != 0) {
-        if (nvapi_set_gpu_offset(0)) successCount++; else failCount++;
-    }
-    if (g_app.memClockOffsetkHz != 0) {
-        if (nvapi_set_mem_offset(0)) successCount++; else failCount++;
-    }
-    if (g_app.powerLimitPct != 100) {
-        if (nvapi_set_power_limit(100)) successCount++; else failCount++;
-    }
-    char detail[128] = {};
-    stop_fan_curve_runtime();
-    if (!g_app.fanIsAuto) {
-        if (nvml_set_fan_auto(detail, sizeof(detail))) successCount++; else failCount++;
-    }
-    refresh_global_state(detail, sizeof(detail));
-    g_app.guiGpuOffsetMHz = 0;
-    g_app.guiGpuOffsetExcludeLow70 = false;
-    g_app.appliedGpuOffsetMHz = 0;
-    g_app.appliedGpuOffsetExcludeLow70 = false;
-    g_app.guiLockTracksAnchor = true;
-    memset(g_app.guiCurvePointExplicit, 0, sizeof(g_app.guiCurvePointExplicit));
-    g_app.guiFanMode = -1;
-    g_app.guiFanFixedPercent = 0;
-
-    destroy_edit_controls(g_app.hMainWnd);
-    create_edit_controls(g_app.hMainWnd, g_app.hInst);
-    invalidate_main_window();
-
-    char msg[128];
-    StringCchPrintfA(msg, ARRAY_COUNT(msg), "Reset %d items to default (%d failed).", successCount, failCount);
-    boost_fan_telemetry_for_ms(3000);
-    refresh_live_fan_telemetry(true);
-    MessageBoxA(g_app.hMainWnd, msg, "Green Curve", MB_OK | MB_ICONINFORMATION);
 }
 
 // ============================================================================
@@ -873,6 +808,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 bool redrawControls = window_should_redraw_fan_controls();
                 refresh_live_fan_telemetry(redrawControls);
                 update_fan_telemetry_timer();
+                static int s_serviceHealthTick = 0;
+                if (++s_serviceHealthTick >= 5) {
+                    s_serviceHealthTick = 0;
+                    bool wasInstalled = g_app.backgroundServiceInstalled;
+                    bool wasRunning = g_app.backgroundServiceRunning;
+                    bool wasAvailable = g_app.backgroundServiceAvailable;
+                    refresh_background_service_state();
+                    if (wasInstalled != g_app.backgroundServiceInstalled ||
+                        wasRunning != g_app.backgroundServiceRunning ||
+                        wasAvailable != g_app.backgroundServiceAvailable) {
+                        refresh_curve();
+                    }
+                }
                 return 0;
             }
             break;
@@ -1030,6 +978,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
             } else if ((LOWORD(wParam) == GPU_OFFSET_EXCLUDE_LOW_CHECK_ID && HIWORD(wParam) == BN_CLICKED) ||
                        (LOWORD(wParam) == GPU_OFFSET_EXCLUDE_LOW_LABEL_ID && HIWORD(wParam) == STN_CLICKED)) {
+                if (!g_app.backgroundServiceAvailable || !g_app.gpuOffsetRangeKnown) return 0;
                 g_app.guiGpuOffsetExcludeLow70 = !g_app.guiGpuOffsetExcludeLow70;
                 set_gui_state_dirty(true);
                 bool checked = g_app.guiGpuOffsetExcludeLow70;
@@ -1088,7 +1037,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     ok = launch_service_admin_helper(enable, err, sizeof(err));
                     if (ok) {
                         if (enable) {
-                            ok = wait_for_background_service_ready(15000, err, sizeof(err));
+                            ok = wait_for_background_service_ready(5000, err, sizeof(err));
                         } else {
                             refresh_background_service_state();
                         }
@@ -1111,22 +1060,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 update_background_service_controls();
                 schedule_logon_combo_sync();
                 if (enable) {
-                    set_profile_status_text("Background service installed. Future OC, UV, power, and fan operations now use the elevated service.");
-                    if (schedule_deferred_relaunch(hwnd, false)) {
-                        DestroyWindow(hwnd);
-                        return 0;
-                    }
-                    char relaunchErr[256] = {};
-                    bool relaunched = relaunch_without_elevation(false, relaunchErr, sizeof(relaunchErr));
-                    if (relaunched) {
-                        DestroyWindow(hwnd);
-                        return 0;
-                    }
-                    MessageBoxA(g_app.hMainWnd, relaunchErr, "Green Curve", MB_OK | MB_ICONWARNING);
+                    set_profile_status_text("Background service installed. Live OC, UV, power, and fan control is now available.");
+                    refresh_curve();
                 } else {
-                    set_profile_status_text("Background service removed. The GUI will use direct elevated hardware access again when needed.");
+                    set_profile_status_text("Background service removed. Live GPU control is unavailable until the service is installed again.");
                     refresh_background_service_state();
                     update_background_service_controls();
+                    populate_global_controls();
+                    if (g_app.loaded) populate_edits();
+                    invalidate_main_window();
                 }
             } else if (LOWORD(wParam) == PROFILE_COMBO_ID && HIWORD(wParam) == CBN_SELCHANGE) {
                 int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
@@ -1154,6 +1096,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     break;
                 }
                 populate_desired_into_gui(&desired);
+                set_gui_state_dirty(true);
+                populate_global_controls();
                 set_config_int(g_app.configPath, "profiles", "selected_slot", slot);
                 refresh_profile_controls_from_config();
                 set_profile_status_text("Loaded slot %d into the GUI. GPU settings were not applied.", slot);
@@ -1164,6 +1108,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 slot += 1;
                 DesiredSettings desired = {};
                 char err[256] = {};
+                if (!refresh_service_snapshot_and_active_desired(err, sizeof(err))) {
+                    write_error_report_log_for_user_failure("Profile save refresh failed", err);
+                    MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
+                    break;
+                }
                 if (!capture_gui_config_settings(&desired, err, sizeof(err))) {
                     write_error_report_log_for_user_failure("Profile save capture failed", err);
                     MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
@@ -1174,7 +1123,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
                     break;
                 }
+                populate_desired_into_gui(&desired);
                 refresh_profile_controls_from_config();
+                populate_desired_into_gui(&desired);
                 set_profile_status_text("Saved the current GUI values to slot %d.", slot);
                 invalidate_main_window();
             } else if (LOWORD(wParam) == PROFILE_CLEAR_ID) {
@@ -1197,9 +1148,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
                 bool taskOk = true;
                 taskOk = set_startup_task_enabled(should_enable_startup_task_from_config(g_app.configPath), err, sizeof(err));
-                if (!taskOk && err[0]) {
-                    write_error_report_log_for_user_failure("Startup task update failed after profile clear", err);
-                    MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONWARNING);
+                if (!taskOk) {
+                    write_error_report_log_for_user_failure("Startup task update failed after profile clear", err[0] ? err : "Unknown error");
+                    MessageBoxA(g_app.hMainWnd, err[0] ? err : "Failed to update startup task after profile clear", "Green Curve", MB_OK | MB_ICONWARNING);
                 }
                 refresh_profile_controls_from_config();
                 update_background_service_controls();
@@ -1283,11 +1234,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
-        case APP_WM_DEFERRED_RELAUNCH: {
-            g_app.backgroundServicePendingRelaunch = true;
-            return 0;
-        }
-
         case WM_DESTROY:
             KillTimer(hwnd, FAN_TELEMETRY_TIMER_ID);
             if (!g_app.usingBackgroundService || g_app.isServiceProcess) {
@@ -1296,7 +1242,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (g_debug_logging) {
                 ULONGLONG elapsedMs = g_debugSessionStartTickMs ? (GetTickCount64() - g_debugSessionStartTickMs) : 0;
                 char extra[160] = {};
-                StringCchPrintfA(extra, ARRAY_COUNT(extra), "gui shutdown uptimeMs=%llu pendingRelaunch=%d", elapsedMs, g_app.backgroundServicePendingRelaunch ? 1 : 0);
+                StringCchPrintfA(extra, ARRAY_COUNT(extra), "gui shutdown uptimeMs=%llu", elapsedMs);
                 debug_log_session_marker("END", "gui", extra);
             }
             remove_tray_icon();
@@ -1307,14 +1253,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (g_hStaticBr) { DeleteObject(g_hStaticBr); g_hStaticBr = nullptr; }
             if (g_hListBr) { DeleteObject(g_hListBr); g_hListBr = nullptr; }
             if (g_hEditBr) { DeleteObject(g_hEditBr); g_hEditBr = nullptr; }
-            if (g_app.backgroundServicePendingRelaunch) {
-                g_app.backgroundServicePendingRelaunch = false;
-                release_single_instance_mutex();
-                char err[256] = {};
-                if (!relaunch_without_elevation(false, err, sizeof(err))) {
-                    MessageBoxA(nullptr, err[0] ? err : "Failed restarting Green Curve.", "Green Curve", MB_OK | MB_ICONWARNING);
-                }
-            }
             shutdown_gdiplus();
             PostQuitMessage(0);
             return 0;

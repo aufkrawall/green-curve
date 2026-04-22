@@ -8,22 +8,42 @@ then builds ``greencurve.exe``. Linux cross-builds use a separate source set.
 """
 
 import argparse
+import hashlib
 import math
 import os
 import struct
 import subprocess
 import sys
 import urllib.request
+import tarfile
 import zipfile
 import zlib
 
 ZIG_VERSION = "0.13.0"
-ZIG_URL = (
-    f"https://ziglang.org/download/{ZIG_VERSION}/zig-windows-x86_64-{ZIG_VERSION}.zip"
-)
+
+# Platform-dependent Zig download settings
+if sys.platform == "win32":
+    _ZIG_PLATFORM = "windows"
+    _ZIG_ARCHIVE_EXT = ".zip"
+    _ZIG_EXE_NAME = "zig.exe"
+    _ZIG_SHA256 = "d859994725ef9402381e557c60bb57497215682e355204d754ee3df75ee3c158"
+elif sys.platform.startswith("linux"):
+    _ZIG_PLATFORM = "linux"
+    _ZIG_ARCHIVE_EXT = ".tar.xz"
+    _ZIG_EXE_NAME = "zig"
+    _ZIG_SHA256 = "d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea"
+else:
+    # Fallback to Windows settings on unknown platforms
+    _ZIG_PLATFORM = "windows"
+    _ZIG_ARCHIVE_EXT = ".zip"
+    _ZIG_EXE_NAME = "zig.exe"
+    _ZIG_SHA256 = ""
+
+ZIG_URL = f"https://ziglang.org/download/{ZIG_VERSION}/zig-{_ZIG_PLATFORM}-x86_64-{ZIG_VERSION}{_ZIG_ARCHIVE_EXT}"
+ZIG_SHA256 = _ZIG_SHA256
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ZIG_DIR = os.path.join(SCRIPT_DIR, "zig")
-ZIG_EXE = os.path.join(ZIG_DIR, "zig.exe")
+ZIG_EXE = os.path.join(ZIG_DIR, _ZIG_EXE_NAME)
 SOURCE_DIR = os.path.join(SCRIPT_DIR, "source")
 WINDOWS_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "main.cpp"),
@@ -39,6 +59,9 @@ LINUX_SOURCE_FILES = [
 WINDOWS_OUTPUT_EXE = os.path.join(SCRIPT_DIR, "greencurve.exe")
 WINDOWS_TEMP_OUTPUT_EXE = WINDOWS_OUTPUT_EXE + ".new"
 WINDOWS_BACKUP_EXE = WINDOWS_OUTPUT_EXE + ".bak"
+WINDOWS_SERVICE_OUTPUT_EXE = os.path.join(SCRIPT_DIR, "greencurve-service.exe")
+WINDOWS_SERVICE_TEMP_OUTPUT_EXE = WINDOWS_SERVICE_OUTPUT_EXE + ".new"
+WINDOWS_SERVICE_BACKUP_EXE = WINDOWS_SERVICE_OUTPUT_EXE + ".bak"
 LINUX_TARGET = "x86_64-linux-musl"
 LINUX_OUTPUT_BIN = os.path.join(SCRIPT_DIR, f"greencurve-{LINUX_TARGET}")
 LINUX_TEMP_OUTPUT_BIN = LINUX_OUTPUT_BIN + ".new"
@@ -69,6 +92,14 @@ COMMON_FLAGS = [
     "-fdata-sections",
     f"-I{SOURCE_DIR}",
     "-Wl,--gc-sections",
+    "-Wall",
+    "-Wextra",
+    "-Wshadow",
+    "-Wformat=2",
+    "-Wnull-dereference",
+    "-Wundef",
+    "-Wno-unused-function",
+    "-Wno-unused-parameter",
 ]
 
 WINDOWS_FLAGS = [
@@ -79,6 +110,12 @@ LINUX_FLAGS = [
     "-target",
     LINUX_TARGET,
     "-static",
+    "-s",
+    "-fstack-protector-strong",
+    "-D_FORTIFY_SOURCE=2",
+    "-fPIE",
+    "-pie",
+    "-Wl,-z,relro,-z,now",
 ]
 
 WINDOWS_LINK_LIBS = [
@@ -88,6 +125,15 @@ WINDOWS_LINK_LIBS = [
     "-lshell32",
     "-lole32",
     "-lwtsapi32",
+]
+
+WINDOWS_SERVICE_LINK_LIBS = [
+    "-lgdi32",
+    "-ladvapi32",
+    "-lshell32",
+    "-lole32",
+    "-lwtsapi32",
+    "-luserenv",
 ]
 
 
@@ -435,14 +481,31 @@ def write_ico(path, variant, sizes):
         handle.write(image_data)
 
 
+def _any_newer(sources, target):
+    """Return True if any source file is newer than the target, or if target is missing."""
+    if not os.path.exists(target):
+        return True
+    target_mtime = os.path.getmtime(target)
+    for src in sources:
+        if os.path.exists(src) and os.path.getmtime(src) > target_mtime:
+            return True
+    return False
+
+
 def generate_icon():
-    """Generate the main app icon and tray-state icon variants."""
+    """Generate the main app icon and tray-state icon variants if stale."""
+    build_script = os.path.join(SCRIPT_DIR, "build.py")
     for variant, path, sizes in ICON_OUTPUTS:
-        write_ico(path, variant, sizes)
+        if _any_newer([build_script], path):
+            write_ico(path, variant, sizes)
 
 
 def compile_resources():
-    """Compile the Windows resource file."""
+    """Compile the Windows resource file if stale."""
+    sources = [ICON_RC] + [path for _, path, _ in ICON_OUTPUTS]
+    if not _any_newer(sources, ICON_RES):
+        return
+
     if os.path.exists(ICON_RES):
         os.remove(ICON_RES)
 
@@ -460,6 +523,15 @@ def compile_resources():
         sys.exit(1)
 
 
+def verify_sha256(path, expected):
+    """Verify file SHA-256 matches expected value."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest().lower() == expected.lower()
+
+
 def download_zig():
     """Download and extract Zig compiler."""
     if os.path.exists(ZIG_EXE):
@@ -467,35 +539,57 @@ def download_zig():
         return
 
     print(f"Downloading Zig {ZIG_VERSION}...")
-    zip_path = os.path.join(SCRIPT_DIR, "zig.zip")
+    archive_path = os.path.join(SCRIPT_DIR, f"zig{_ZIG_ARCHIVE_EXT}")
 
     try:
-        urllib.request.urlretrieve(ZIG_URL, zip_path)
+        urllib.request.urlretrieve(ZIG_URL, archive_path)
     except Exception as exc:
         print(f"Failed to download Zig: {exc}")
         print(f"Please download manually from: {ZIG_URL}")
         print(f"Extract to: {ZIG_DIR}")
         sys.exit(1)
 
+    if ZIG_SHA256 and not verify_sha256(archive_path, ZIG_SHA256):
+        os.remove(archive_path)
+        print("ERROR: Zig archive SHA-256 verification failed")
+        sys.exit(1)
+
     print("Extracting Zig...")
     os.makedirs(ZIG_DIR, exist_ok=True)
-    with zipfile.ZipFile(zip_path, "r") as archive:
-        for member in archive.namelist():
-            parts = member.split("/", 1)
-            if len(parts) != 2 or not parts[1]:
-                continue
-            target = os.path.join(ZIG_DIR, parts[1])
-            if member.endswith("/"):
-                os.makedirs(target, exist_ok=True)
-            else:
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                with open(target, "wb") as handle:
-                    handle.write(archive.read(member))
 
-    os.remove(zip_path)
+    if _ZIG_ARCHIVE_EXT == ".zip":
+        with zipfile.ZipFile(archive_path, "r") as archive:
+            for member in archive.namelist():
+                parts = member.split("/", 1)
+                if len(parts) != 2 or not parts[1]:
+                    continue
+                target = os.path.join(ZIG_DIR, parts[1])
+                if member.endswith("/"):
+                    os.makedirs(target, exist_ok=True)
+                else:
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    with open(target, "wb") as handle:
+                        handle.write(archive.read(member))
+    else:
+        with tarfile.open(archive_path, "r:xz") as archive:
+            for member in archive.getmembers():
+                parts = member.name.split("/", 1)
+                if len(parts) != 2 or not parts[1]:
+                    continue
+                target = os.path.join(ZIG_DIR, parts[1])
+                if member.isdir():
+                    os.makedirs(target, exist_ok=True)
+                else:
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    src = archive.extractfile(member)
+                    if src:
+                        with src, open(target, "wb") as handle:
+                            handle.write(src.read())
+
+    os.remove(archive_path)
 
     if not os.path.exists(ZIG_EXE):
-        print("ERROR: zig.exe not found after extraction")
+        print(f"ERROR: {_ZIG_EXE_NAME} not found after extraction")
         sys.exit(1)
 
     print(f"Zig installed at {ZIG_EXE}")
@@ -575,6 +669,47 @@ def compile_windows_binary():
     finalize_output(WINDOWS_TEMP_OUTPUT_EXE, WINDOWS_OUTPUT_EXE, WINDOWS_BACKUP_EXE)
 
 
+def compile_windows_service_binary():
+    """Compile the dedicated Windows service executable."""
+    missing_sources = [path for path in WINDOWS_SOURCE_FILES if not os.path.exists(path)]
+    if missing_sources:
+        print("ERROR: Missing source files:")
+        for path in missing_sources:
+            print(f"  {path}")
+        sys.exit(1)
+
+    if os.path.exists(WINDOWS_SERVICE_TEMP_OUTPUT_EXE):
+        os.remove(WINDOWS_SERVICE_TEMP_OUTPUT_EXE)
+
+    cmd = [
+        ZIG_EXE,
+        "c++",
+        *COMMON_FLAGS,
+        *WINDOWS_FLAGS,
+        "-DGREEN_CURVE_SERVICE_BINARY=1",
+        "-o",
+        WINDOWS_SERVICE_TEMP_OUTPUT_EXE,
+        *WINDOWS_SOURCE_FILES,
+        *WINDOWS_SERVICE_LINK_LIBS,
+    ]
+
+    print(f"Compiling {len(WINDOWS_SOURCE_FILES)} source files -> {os.path.basename(WINDOWS_SERVICE_OUTPUT_EXE)}")
+    print(f"  Command: {' '.join(cmd)}")
+
+    result = subprocess.run(cmd, cwd=SCRIPT_DIR)
+    if result.returncode != 0:
+        if os.path.exists(WINDOWS_SERVICE_TEMP_OUTPUT_EXE):
+            os.remove(WINDOWS_SERVICE_TEMP_OUTPUT_EXE)
+        print("Compilation FAILED")
+        sys.exit(1)
+
+    finalize_output(
+        WINDOWS_SERVICE_TEMP_OUTPUT_EXE,
+        WINDOWS_SERVICE_OUTPUT_EXE,
+        WINDOWS_SERVICE_BACKUP_EXE,
+    )
+
+
 def compile_linux_binary():
     """Cross-compile the Linux terminal build as a static musl binary."""
     missing_sources = [path for path in LINUX_SOURCE_FILES if not os.path.exists(path)]
@@ -627,6 +762,7 @@ def main():
     download_zig()
     if args.target in ("windows", "all"):
         compile_windows_binary()
+        compile_windows_service_binary()
     if args.target in ("linux", "all"):
         compile_linux_binary()
     print("=== Done ===")

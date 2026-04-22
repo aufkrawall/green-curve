@@ -336,7 +336,11 @@ static void fan_curve_dialog_draw_preview(HWND hwnd, HDC hdc) {
     HPEN axisPen = CreatePen(PS_SOLID, 1, COL_AXIS);
     HGDIOBJ oldPen = SelectObject(hdc, gridPen);
     HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-    HFONT oldFont = (HFONT)SelectObject(hdc, create_ui_sized_font(dp(11), FW_NORMAL));
+    HFONT hFont = create_ui_sized_font(dp(11), FW_NORMAL);
+    HFONT oldFont = nullptr;
+    if (hFont) {
+        oldFont = (HFONT)SelectObject(hdc, hFont);
+    }
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, COL_LABEL);
 
@@ -411,7 +415,9 @@ static void fan_curve_dialog_draw_preview(HWND hwnd, HDC hdc) {
     fan_curve_format_summary(&preview, summary, sizeof(summary));
     TextOutA(hdc, graph.left, graph.bottom + dp(6), summary, (int)strlen(summary));
 
-    DeleteObject(SelectObject(hdc, oldFont));
+    if (hFont) {
+        DeleteObject(SelectObject(hdc, oldFont));
+    }
     SelectObject(hdc, oldBrush);
     SelectObject(hdc, oldPen);
     DeleteObject(axisPen);
