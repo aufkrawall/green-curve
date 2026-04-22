@@ -542,6 +542,11 @@ struct AppData {
 
     // VF graph mouse interaction
     bool graphPointSelected[VF_NUM_POINTS];
+
+    // Undo support (single level)
+    bool undoAvailable;
+    unsigned int undoEditsMhz[VF_NUM_POINTS];  // indexed by ci
+    bool undoPointValid[VF_NUM_POINTS];         // ci has an edit box value saved
     bool graphDragging;
     int  graphDragCi;
     int  graphDragAnchorY;

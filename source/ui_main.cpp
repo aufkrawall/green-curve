@@ -168,7 +168,7 @@ static void draw_graph(HDC hdc, RECT* rc) {
     HPEN oldPen = (HPEN)SelectObject(hdc, gridPen);
     HFONT hFont = CreateFontA(dp(13), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
-    HFONT hFontSmall = CreateFontA(dp(15), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET,
+    HFONT hFontSmall = CreateFontA(dp(14), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
     HFONT oldFont = (HFONT)SelectObject(hdc, hFont);
     SetBkMode(hdc, TRANSPARENT);
@@ -227,14 +227,12 @@ static void draw_graph(HDC hdc, RECT* rc) {
     // Rotate for Y axis is hard in GDI, place horizontally left of Y labels
     TextOutA(hdc, dp(2), mt - dp(4), yTitle, (int)strlen(yTitle));
 
-    // Mouse interaction hints -- two lines in bottom margin, below X axis labels
+    // Mouse + keyboard interaction hints -- bottom margin, below X axis labels
     {
         SelectObject(hdc, hFontSmall);
         SetTextColor(hdc, COL_LABEL);
-        const char* hint1 = "CTRL + Mouse: Pick Individual Points";
-        const char* hint2 = "Shift + Mouse: Pick Ranged Points";
-        // Place below the voltage tick labels (dp(4)) and xTitle (dp(24))
-        // mb=55 gives us room at dp(16) and dp(29)
+        const char* hint1 = "|CTRL + Mouse|: Pick Individual Points   |Shift + Mouse|: Pick Ranged Points";
+        const char* hint2 = "|Shift + A|: Equalize to Lowest Point   |CTRL + A|: Select All Points   |CTRL + Z|: Take Back";
         int hx = ml + dp(4);
         TextOutA(hdc, hx, mt + ph + dp(16), hint1, (int)strlen(hint1));
         TextOutA(hdc, hx, mt + ph + dp(29), hint2, (int)strlen(hint2));
@@ -945,6 +943,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             int my = GET_Y_LPARAM(lParam);
             int graphH = dp(GRAPH_HEIGHT);
             if (my >= graphH) break; // outside graph area
+            // Give focus to main window so WM_KEYDOWN shortcuts work after graph click
+            SetFocus(hwnd);
 
             // Recalculate graph params (same as draw_graph)
             RECT rc2; GetClientRect(hwnd, &rc2);
@@ -1073,8 +1073,94 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
+        case WM_KEYDOWN: {
+            int graphH = dp(GRAPH_HEIGHT);
+            bool ctrl  = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            bool shift = (GetKeyState(VK_SHIFT)   & 0x8000) != 0;
+
+            // Only process graph shortcuts if user has interacted with the graph
+            if (g_app.graphLastClickCi < 0 && !ctrl) break;
+
+            // Ctrl+A: select all visible points on the graph
+            if (ctrl && !shift && wParam == 'A') {
+                for (int vi = 0; vi < g_app.numVisible; vi++) {
+                    int ci = g_app.visibleMap[vi];
+                    if (ci >= 0 && ci < VF_NUM_POINTS) g_app.graphPointSelected[ci] = true;
+                }
+                g_app.graphLastClickCi = g_app.numVisible > 0 ? g_app.visibleMap[0] : -1;
+                invalidate_main_window();
+                return 0;
+            }
+
+            // Shift+A: set all selected points to the value of the leftmost selected point
+            if (shift && !ctrl && wParam == 'A') {
+                // Find leftmost selected visible point (lowest vi = lowest voltage)
+                int anchorVi = -1;
+                for (int vi = 0; vi < g_app.numVisible; vi++) {
+                    int ci = g_app.visibleMap[vi];
+                    if (g_app.graphPointSelected[ci]) { anchorVi = vi; break; }
+                }
+                if (anchorVi >= 0) {
+                    int anchorCi = g_app.visibleMap[anchorVi];
+                    unsigned int anchorMHz = get_edit_value(g_app.hEditsMhz[anchorVi]);
+                    if (anchorMHz > 0) {
+                        // Save undo snapshot before modifying
+                        g_app.undoAvailable = true;
+                        memset(g_app.undoPointValid, 0, sizeof(g_app.undoPointValid));
+                        for (int vi2 = 0; vi2 < g_app.numVisible; vi2++) {
+                            int ci2 = g_app.visibleMap[vi2];
+                            g_app.undoEditsMhz[ci2] = get_edit_value(g_app.hEditsMhz[vi2]);
+                            g_app.undoPointValid[ci2] = true;
+                        }
+                        // Apply anchor value to all selected points
+                        for (int vi2 = 0; vi2 < g_app.numVisible; vi2++) {
+                            int ci2 = g_app.visibleMap[vi2];
+                            if (!g_app.graphPointSelected[ci2]) continue;
+                            set_edit_value(g_app.hEditsMhz[vi2], anchorMHz);
+                            if (g_app.curve[ci2].freq_kHz > 0)
+                                g_app.curve[ci2].freq_kHz = anchorMHz * 1000u;
+                        }
+                        invalidate_main_window();
+                    }
+                }
+                return 0;
+            }
+
+            // Ctrl+Z: undo last Shift+A operation
+            if (ctrl && !shift && wParam == 'Z') {
+                if (g_app.undoAvailable) {
+                    g_app.undoAvailable = false;
+                    for (int vi = 0; vi < g_app.numVisible; vi++) {
+                        int ci = g_app.visibleMap[vi];
+                        if (!g_app.undoPointValid[ci]) continue;
+                        unsigned int mhz = g_app.undoEditsMhz[ci];
+                        set_edit_value(g_app.hEditsMhz[vi], mhz);
+                        if (g_app.curve[ci].freq_kHz > 0)
+                            g_app.curve[ci].freq_kHz = mhz * 1000u;
+                    }
+                    invalidate_main_window();
+                }
+                return 0;
+            }
+
+            break;
+        }
+
         case WM_LBUTTONUP: {
             if (!g_app.graphDragging) break;
+            // Save undo snapshot before committing drag
+            {
+                g_app.undoAvailable = true;
+                memset(g_app.undoPointValid, 0, sizeof(g_app.undoPointValid));
+                for (int vi = 0; vi < g_app.numVisible; vi++) {
+                    int ci = g_app.visibleMap[vi];
+                    // Save the pre-drag value (before preview was applied)
+                    unsigned int preDrag = g_app.curve[ci].freq_kHz > 0
+                        ? g_app.curve[ci].freq_kHz / 1000u : 0;
+                    g_app.undoEditsMhz[ci] = preDrag;
+                    g_app.undoPointValid[ci] = (preDrag > 0);
+                }
+            }
             // Commit preview values to curve (without this the point snaps back on mouse-up)
             for (int i = 0; i < VF_NUM_POINTS; i++) {
                 if (!g_app.graphPointSelected[i]) continue;
