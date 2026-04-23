@@ -3130,6 +3130,13 @@ static void set_default_config_path() {
     invalidate_tray_profile_cache();
 }
 
+static void refresh_service_debug_logging_from_config() {
+    if (!g_app.configPath[0]) return;
+    bool envDebug = (GetEnvironmentVariableA(APP_DEBUG_ENV, nullptr, 0) > 0);
+    int configDebug = get_config_int(g_app.configPath, "debug", "enabled", 1);
+    g_debug_logging = envDebug || (configDebug != 0);
+}
+
 static bool hardware_initialize(char* detail, size_t detailSize) {
     if (g_app.gpuHandle && g_app.loaded && g_app.vfBackend) return true;
     debug_log("hardware_initialize: (re)initializing GPU backend\n");
@@ -4652,6 +4659,7 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     if (!g_app.configPath[0]) {
                         set_default_config_path();
                     }
+                    refresh_service_debug_logging_from_config();
                     // If we couldn't apply logon profile at startup (no session yet),
                     // try now on the first authorized connection.
                     try_apply_logon_profile_on_service_startup();
@@ -4844,6 +4852,7 @@ static void try_apply_logon_profile_on_service_startup() {
     if (!g_app.configPath[0]) {
         set_default_config_path();
     }
+    refresh_service_debug_logging_from_config();
     int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
     if (logonSlot <= 0) {
         g_serviceLogonProfileApplied = true;
