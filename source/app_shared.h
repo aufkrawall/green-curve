@@ -66,6 +66,7 @@ void init_dpi();
 #define APP_DEBUG_LOG_FILE  "greencurve_debug.txt"
 #define APP_JSON_FILE       "greencurve_curve.json"
 #define APP_DEBUG_ENV       "GREEN_CURVE_DEBUG"
+#define APP_DEBUG_DEFAULT_ENABLED 1
 #define APP_WM_SYNC_STARTUP (WM_APP + 1)
 #define APP_WM_TRAYICON     (WM_APP + 2)
 #define APP_WM_SERVICE_STATUS (WM_APP + 3)
@@ -630,7 +631,7 @@ struct CliOptions {
 
 enum {
     SERVICE_PROTOCOL_MAGIC = 0x47535643u,
-    SERVICE_PROTOCOL_VERSION = 1,
+    SERVICE_PROTOCOL_VERSION = 2,
 };
 
 enum ServiceCommand {
@@ -812,8 +813,12 @@ typedef int (*NvApiFunc)(void*, void*);
 void trim_ascii(char* s);
 bool streqi_ascii(const char* a, const char* b);
 bool parse_int_strict(const char* s, int* out);
+bool parse_cli_point_arg_w(const WCHAR* arg, int* pointIndexOut);
+bool gpu_family_uses_best_guess_backend(GpuFamily family);
 void set_message(char* dst, size_t dstSize, const char* fmt, ...);
 bool parse_fan_value(const char* text, bool* isAuto, int* pct);
+bool enter_config_storage_lock(HANDLE* acquiredMutex);
+void leave_config_storage_lock(HANDLE acquiredMutex);
 bool config_section_has_keys(const char* path, const char* section);
 int get_config_int(const char* path, const char* section, const char* key, int defaultVal);
 bool set_config_int(const char* path, const char* section, const char* key, int value);

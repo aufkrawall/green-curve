@@ -25,7 +25,7 @@ static bool is_elevated() {
 
 static void apply_system_titlebar_theme(HWND hwnd) {
     if (!hwnd) return;
-    HMODULE d = LoadLibraryA("dwmapi.dll");
+    HMODULE d = load_system_library_a("dwmapi.dll");
     if (!d) return;
     typedef HRESULT (WINAPI *DwmSetWindowAttribute_t)(HWND, DWORD, LPCVOID, DWORD);
     auto setAttr = (DwmSetWindowAttribute_t)GetProcAddress(d, "DwmSetWindowAttribute");
@@ -362,8 +362,10 @@ static void apply_lock(int vi) {
     g_app.lockedCi = g_app.visibleMap[vi];
     g_app.lockedFreq = get_edit_value(g_app.hEditsMhz[vi]);
     g_app.guiLockTracksAnchor = true;
-    set_gui_state_dirty(true);
-    record_ui_action("lock point %d @ %u MHz (track anchor)", g_app.lockedCi, g_app.lockedFreq);
+    if (!programmatic_edit_update_active()) {
+        set_gui_state_dirty(true);
+        record_ui_action("lock point %d @ %u MHz (track anchor)", g_app.lockedCi, g_app.lockedFreq);
+    }
     EnableWindow(g_app.hLocks[vi], TRUE);
     InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
 
@@ -1214,6 +1216,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
                     if (g_app.lockedCi >= 0) record_ui_action("unlock point %d", g_app.lockedCi);
                     unlock_all();
+                    set_gui_state_dirty(true);
                 } else {
                     SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_CHECKED, 0);
                     InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);

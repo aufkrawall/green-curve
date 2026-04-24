@@ -312,6 +312,7 @@ static unsigned int saved_curve_point_mhz(const DesiredSettings* desired, int po
         mhz = displayed_curve_mhz(g_app.curve[pointIndex].freq_kHz);
     }
     if (mhz == 0) return 0;
+    if (!is_curve_point_visible_in_gui(pointIndex)) return mhz;
 
     int offsetCompMHz = gpu_offset_component_mhz_for_point(pointIndex, gpuOffsetMHz, excludeLow70);
     int baseMHz = (int)mhz - offsetCompMHz;
@@ -324,6 +325,7 @@ static bool can_save_curve_as_base_plus_gpu_offset(const DesiredSettings* desire
     if (!g_app.loaded || g_app.numPopulated <= 0) return false;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (!desired->hasCurvePoint[i]) continue;
+        if (!is_curve_point_visible_in_gui(i)) continue;
         int offsetCompmhz = gpu_offset_component_mhz_for_point(i, gpuOffsetMHz, excludeLow70);
         int baseMhz = (int)desired->curvePointMHz[i] - offsetCompmhz;
         if (baseMhz <= 0) return false;
@@ -889,6 +891,7 @@ static void infer_profile_lock_from_curve(const DesiredSettings* desired, int* l
 #ifndef GREEN_CURVE_SERVICE_BINARY
 static void populate_desired_into_gui(const DesiredSettings* desired) {
     if (!desired) return;
+    bool preserveDirty = gui_state_dirty();
     unlock_all();
     if (g_app.loaded) populate_edits();
     begin_programmatic_edit_update();
@@ -961,6 +964,7 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
         }
     }
     end_programmatic_edit_update();
+    set_gui_state_dirty(preserveDirty);
 }
 
 static void set_profile_status_text(const char* fmt, ...) {

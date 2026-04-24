@@ -338,7 +338,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
 
     bool debugEnvEnabled = (GetEnvironmentVariableA(APP_DEBUG_ENV, nullptr, 0) > 0);
     bool configExists = config_file_exists();
-    int configDebugEnabled = get_config_int(g_app.configPath, "debug", "enabled", 1);
+    int configDebugEnabled = get_config_int(g_app.configPath, "debug", "enabled", APP_DEBUG_DEFAULT_ENABLED);
     g_debug_logging = debugEnvEnabled || (configDebugEnabled != 0);
     if (g_debug_logging) {
         g_debugSessionStartTickMs = GetTickCount64();

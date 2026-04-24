@@ -3,6 +3,7 @@
 
 #include "app_shared.h"
 #include "fan_curve.h"
+#include "win32_raii.h"
 
 static const char APP_LICENSE_TEXT[] =
     "MIT License\r\n"
@@ -53,14 +54,19 @@ static ULONGLONG g_debugSessionStartTickMs = 0;
 static char g_userDataDir[MAX_PATH] = {};
 static char g_cliLogPath[MAX_PATH] = {};
 static char g_debugLogPath[MAX_PATH] = {};
+static char g_debugEarlyLogPath[MAX_PATH] = {};
+static char g_debugLogOpenPath[MAX_PATH] = {};
 static char g_jsonPath[MAX_PATH] = {};
 static char g_errorLogPath[MAX_PATH] = {};
+static char g_lastApplyPhase[128] = {};
 static ULONGLONG g_fanTelemetryBoostUntilTickMs = 0;
 static HANDLE g_serviceStopEvent = nullptr;
 static HANDLE g_serviceFanStopEvent = nullptr;
 static HANDLE g_serviceFanThread = nullptr;
 static HANDLE g_serviceRuntimeLock = nullptr;
 static HANDLE g_servicePipeWakeEvent = nullptr;
+static DWORD g_serviceRuntimeLockOwnerThreadId = 0;
+static unsigned int g_serviceRuntimeLockDepth = 0;
 static SERVICE_STATUS_HANDLE g_serviceStatusHandle = nullptr;
 static SERVICE_STATUS g_serviceStatus = {};
 static DesiredSettings g_serviceActiveDesired = {};
@@ -73,6 +79,27 @@ static HANDLE g_debugLogFile = INVALID_HANDLE_VALUE;
 static DWORD g_serviceUserPathsSessionId = (DWORD)-1;
 static char g_serviceUserProfileDir[MAX_PATH] = {};
 static bool g_serviceLogonProfileApplied = false;
+static ULONGLONG g_serviceRuntimeLastPulseLogTickMs = 0;
+static ULONGLONG g_serviceFanThreadLastWaitLogTickMs = 0;
+static DWORD g_serviceFanThreadLastWaitMs = 0;
+static bool g_serviceFanThreadLastWaitCurve = false;
+static bool g_serviceFanThreadLastWaitFixed = false;
+static ULONGLONG g_serviceTelemetryLastHardwarePollTickMs = 0;
+static char g_serviceTelemetryLastPollSource[64] = {};
+
+static const LONGLONG DEBUG_LOG_MAX_BYTES = 2LL * 1024LL * 1024LL;
+static const int SERVICE_DEBUG_DEFAULT_ENABLED = 1; // Service logs are opt-out via [debug] enabled=0 or GREEN_CURVE_DEBUG=0.
+static const DWORD SERVICE_STARTUP_DRIVER_READY_ATTEMPTS = 15;
+static const DWORD SERVICE_STARTUP_DRIVER_READY_DELAY_MS = 400;
+static const DWORD SERVICE_STARTUP_DRIVER_SETTLE_MS = 250;
+static const DWORD SERVICE_PIPE_CLIENT_CONNECT_SLICE_MS = 250;
+static const DWORD SERVICE_PIPE_CLIENT_SLEEP_SLICE_MS = 10;
+static const DWORD SERVICE_PIPE_SERVER_IO_TIMEOUT_MS = 5000;
+static const DWORD SERVICE_FAN_THREAD_STOP_TIMEOUT_MS = 5000;
+static const DWORD SERVICE_RUNTIME_NOISY_LOG_INTERVAL_MS = 5000;
+static const ULONGLONG SERVICE_TELEMETRY_IDLE_REFRESH_INTERVAL_MS = 5000;
+static const ULONGLONG SERVICE_TELEMETRY_RUNTIME_STALE_GRACE_MS = 1000;
+static const DWORD ELEVATED_HELPER_TIMEOUT_MS = 60000;
 
 static void* nvapi_qi(unsigned int id);
 static bool nvapi_init();
@@ -108,6 +135,7 @@ static void clear_service_authoritative_state();
 static int format_log_timestamp_prefix(char* out, size_t outSize);
 static const char* cli_log_path();
 static const char* debug_log_path();
+static const char* service_early_debug_log_path();
 static const char* json_snapshot_path();
 static const char* error_log_path();
 static bool parse_wide_int_arg(LPWSTR text, int* out);
@@ -129,12 +157,20 @@ static bool get_active_interactive_session_id(DWORD* sessionIdOut);
 static void ensure_service_runtime_lock();
 static void lock_service_runtime();
 static void unlock_service_runtime();
+static bool service_runtime_lock_held_by_current_thread();
 static void service_set_pending_operation_source(const char* source);
+static void set_last_apply_phase(const char* phase);
+static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* info);
+static bool service_resolve_active_user_paths_for_startup(const char* context);
+static bool service_wait_for_driver_ready_for_startup_apply(char* detail, size_t detailSize);
+static bool service_logon_profile_matches_live_state(const DesiredSettings* desired, char* detail, size_t detailSize);
 static DWORD WINAPI service_fan_runtime_thread_proc(void*);
 static DWORD WINAPI service_pipe_server_thread_proc(void*);
 static bool ensure_service_fan_runtime_thread();
 static void stop_service_fan_runtime_thread();
 static void service_runtime_pulse();
+static void mark_service_telemetry_cache_updated(const char* source);
+static bool service_refresh_telemetry_for_request(char* detail, size_t detailSize);
 static bool service_apply_desired_settings(const DesiredSettings* desired, bool interactive, char* result, size_t resultSize);
 static bool service_reset_all(char* result, size_t resultSize);
 static void try_apply_logon_profile_on_service_startup();
@@ -217,6 +253,10 @@ static void layout_bottom_buttons(HWND hParent);
 static void debug_log(const char* fmt, ...);
 static void debug_log_session_marker(const char* phase, const char* kind, const char* extra = nullptr);
 static void close_debug_log_file();
+static HMODULE load_system_library_a(const char* name);
+static bool find_trusted_nvidia_smi_path_w(WCHAR* out, size_t outCount);
+static bool find_trusted_nvidia_smi_path_a(char* out, size_t outSize);
+static bool file_is_regular_no_reparse_w(const WCHAR* path);
 static bool write_text_file_atomic(const char* path, const char* data, size_t dataSize, char* err, size_t errSize);
 static bool write_log_snapshot(const char* path, char* err, size_t errSize);
 static bool write_json_snapshot(const char* path, char* err, size_t errSize);
@@ -1235,7 +1275,7 @@ static int gpu_offset_component_mhz_for_point(int pointIndex, int gpuOffsetMHz, 
 }
 
 static bool vf_backend_is_best_guess(const VfBackendSpec* backend) {
-    return backend && backend->bestGuessOnly;
+    return backend && backend->bestGuessOnly && gpu_family_uses_best_guess_backend(backend->family);
 }
 
 static bool should_show_best_guess_warning() {
@@ -1260,7 +1300,7 @@ static bool show_best_guess_support_warning(HWND parent) {
 
     bool dontShowAgainChecked = false;
     bool handled = false;
-    HMODULE comctl = LoadLibraryA("comctl32.dll");
+    HMODULE comctl = load_system_library_a("comctl32.dll");
     if (comctl) {
         typedef HRESULT (WINAPI *TaskDialogIndirect_t)(const TASKDIALOGCONFIG*, int*, int*, BOOL*);
         auto taskDialogIndirect = (TaskDialogIndirect_t)GetProcAddress(comctl, "TaskDialogIndirect");
@@ -1458,15 +1498,24 @@ static bool load_runtime_selective_gpu_offset_request(int* gpuOffsetMHzOut, bool
     if (!g_app.configPath[0]) return false;
 
     char buf[32] = {};
+    HANDLE configMutex = nullptr;
+    if (!enter_config_storage_lock(&configMutex)) return false;
     GetPrivateProfileStringA("runtime", "selective_gpu_offset_mhz", "", buf, sizeof(buf), g_app.configPath);
     trim_ascii(buf);
-    if (!buf[0]) return false;
+    if (!buf[0]) {
+        leave_config_storage_lock(configMutex);
+        return false;
+    }
 
     int gpuOffsetMHz = 0;
-    if (!parse_int_strict(buf, &gpuOffsetMHz)) return false;
+    if (!parse_int_strict(buf, &gpuOffsetMHz)) {
+        leave_config_storage_lock(configMutex);
+        return false;
+    }
 
     bool excludeLow70 = false;
     GetPrivateProfileStringA("runtime", "selective_gpu_offset_exclude_low_70", "", buf, sizeof(buf), g_app.configPath);
+    leave_config_storage_lock(configMutex);
     trim_ascii(buf);
     if (buf[0]) {
         int value = 0;
@@ -1523,19 +1572,19 @@ static bool selective_gpu_offset_curve_shape_looks_safe(const DesiredSettings* d
 }
 
 static bool control_state_has_meaningful_gpu(const ControlState* state) {
-    return state && state->hasGpuOffset && (state->gpuOffsetMHz != 0 || state->gpuOffsetExcludeLow70);
+    return state && state->valid && state->hasGpuOffset;
 }
 
 static bool control_state_has_meaningful_mem(const ControlState* state) {
-    return state && state->hasMemOffset && state->memOffsetMHz != 0;
+    return state && state->valid && state->hasMemOffset;
 }
 
 static bool control_state_has_meaningful_power(const ControlState* state) {
-    return state && state->hasPowerLimit && state->powerLimitPct != 100;
+    return state && state->valid && state->hasPowerLimit;
 }
 
 static bool control_state_has_meaningful_fan(const ControlState* state) {
-    return state && state->hasFan && (state->fanMode != FAN_MODE_AUTO || state->fanFixedPercent != 0 || state->fanCurrentPercent != 0);
+    return state && state->valid && state->hasFan;
 }
 
 static bool control_state_has_any_meaningful_value(const ControlState* state) {
@@ -1578,10 +1627,12 @@ static bool should_auto_detect_locked_tail_from_live_curve() {
 
 static void persist_runtime_selective_gpu_offset_request(int gpuOffsetMHz, bool excludeLow70) {
     if (!g_app.configPath[0]) return;
+    HANDLE configMutex = nullptr;
+    if (!enter_config_storage_lock(&configMutex)) return;
     if (gpuOffsetMHz == 0 || !excludeLow70) {
         debug_log("persist_runtime_selective_gpu_offset_request: clearing runtime selective state\n");
-        WritePrivateProfileStringA("runtime", "selective_gpu_offset_mhz", nullptr, g_app.configPath);
-        WritePrivateProfileStringA("runtime", "selective_gpu_offset_exclude_low_70", nullptr, g_app.configPath);
+        WritePrivateProfileStringA("runtime", nullptr, nullptr, g_app.configPath);
+        leave_config_storage_lock(configMutex);
         return;
     }
 
@@ -1590,8 +1641,16 @@ static void persist_runtime_selective_gpu_offset_request(int gpuOffsetMHz, bool 
         excludeLow70 ? 1 : 0);
     char buf[32] = {};
     StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d", gpuOffsetMHz);
-    WritePrivateProfileStringA("runtime", "selective_gpu_offset_mhz", buf, g_app.configPath);
-    WritePrivateProfileStringA("runtime", "selective_gpu_offset_exclude_low_70", excludeLow70 ? "1" : "0", g_app.configPath);
+    char section[128] = {};
+    StringCchPrintfA(section, ARRAY_COUNT(section),
+        "selective_gpu_offset_mhz=%s%cselective_gpu_offset_exclude_low_70=%s%c%c",
+        buf,
+        '\0',
+        excludeLow70 ? "1" : "0",
+        '\0',
+        '\0');
+    WritePrivateProfileSectionA("runtime", section, g_app.configPath);
+    leave_config_storage_lock(configMutex);
 }
 
 static bool load_matching_runtime_selective_gpu_offset_request(int* gpuOffsetMHzOut) {
@@ -1779,6 +1838,35 @@ static bool load_curve_points_explicit_from_section(const char* path, const char
             debug_log("load_curve_points_explicit: warning %s=%d MHz exceeds sanity limit, clamping to 5000\n", key, mhz);
             mhz = 5000;
         }
+
+        char visibleKey[32] = {};
+        char visibleBuf[64] = {};
+        StringCchPrintfA(visibleKey, ARRAY_COUNT(visibleKey), "point%d_visible", i);
+        GetPrivateProfileStringA(section, visibleKey, "", visibleBuf, sizeof(visibleBuf), path);
+        trim_ascii(visibleBuf);
+        if (visibleBuf[0]) {
+            int visibleValue = 0;
+            if (!parse_int_strict(visibleBuf, &visibleValue)) {
+                set_message(err, errSize, "Invalid %s in section [%s]", visibleKey, section);
+                return false;
+            }
+            if (visibleValue == 0) {
+                debug_log("load_curve_points_explicit: skipping hidden %s=%d in section [%s]\n", key, mhz, section);
+                continue;
+            }
+        } else {
+            char mvKey[32] = {};
+            char mvBuf[64] = {};
+            StringCchPrintfA(mvKey, ARRAY_COUNT(mvKey), "point%d_mv", i);
+            GetPrivateProfileStringA(section, mvKey, "", mvBuf, sizeof(mvBuf), path);
+            trim_ascii(mvBuf);
+            int mv = 0;
+            if (mvBuf[0] && parse_int_strict(mvBuf, &mv) && mv > 0 && mv < MIN_VISIBLE_VOLT_mV) {
+                debug_log("load_curve_points_explicit: skipping legacy hidden %s=%d mV in section [%s]\n", mvKey, mv, section);
+                continue;
+            }
+        }
+
         // Non-monotonic points can confuse the driver. Log a warning but still
         // load the point so the user can see it in the GUI.
         if (lastCi >= 0 && mhz < lastMHz) {
@@ -2547,6 +2635,7 @@ static void start_fan_curve_runtime() {
     if (g_app.isServiceProcess) {
         populate_control_state(&g_serviceControlState);
         g_serviceControlStateValid = true;
+        mark_service_telemetry_cache_updated("fan curve start");
     }
     update_tray_icon();
 }
@@ -2585,6 +2674,7 @@ static void start_fixed_fan_runtime() {
     if (g_app.isServiceProcess) {
         populate_control_state(&g_serviceControlState);
         g_serviceControlStateValid = true;
+        mark_service_telemetry_cache_updated("fixed fan start");
     }
     update_tray_icon();
 }
@@ -2785,7 +2875,7 @@ static void trim_working_set() {
             return;
         }
     }
-    HMODULE psapi = LoadLibraryA("psapi.dll");
+    HMODULE psapi = load_system_library_a("psapi.dll");
     if (psapi) {
         typedef BOOL (WINAPI *EmptyWorkingSet_t)(HANDLE);
         auto fn = (EmptyWorkingSet_t)GetProcAddress(psapi, "EmptyWorkingSet");
@@ -2984,6 +3074,26 @@ static const char* debug_log_path() {
     return g_debugLogPath[0] ? g_debugLogPath : APP_DEBUG_LOG_FILE;
 }
 
+static const char* service_early_debug_log_path() {
+    if (g_debugEarlyLogPath[0]) return g_debugEarlyLogPath;
+
+    char programData[MAX_PATH] = {};
+    DWORD n = GetEnvironmentVariableA("ProgramData", programData, ARRAY_COUNT(programData));
+    if (n == 0 || n >= ARRAY_COUNT(programData)) {
+        StringCchCopyA(programData, ARRAY_COUNT(programData), "C:\\ProgramData");
+    }
+    StringCchPrintfA(g_debugEarlyLogPath, ARRAY_COUNT(g_debugEarlyLogPath),
+        "%s\\Green Curve\\%s", programData, APP_DEBUG_LOG_FILE);
+    return g_debugEarlyLogPath;
+}
+
+static const char* effective_debug_log_path() {
+    if (g_app.isServiceProcess && !g_serviceUserPathsResolved) {
+        return service_early_debug_log_path();
+    }
+    return debug_log_path();
+}
+
 static const char* json_snapshot_path() {
     return g_jsonPath[0] ? g_jsonPath : APP_JSON_FILE;
 }
@@ -3018,6 +3128,19 @@ static bool resolve_data_paths(char* err, size_t errSize) {
 static bool resolve_service_user_data_paths(DWORD sessionId, char* err, size_t errSize) {
     if (g_serviceUserPathsResolved && g_serviceUserPathsSessionId == sessionId) {
         return true;
+    }
+    if (g_serviceUserPathsResolved && g_serviceUserPathsSessionId != sessionId) {
+        close_debug_log_file();
+        g_userDataDir[0] = 0;
+        g_cliLogPath[0] = 0;
+        g_debugLogPath[0] = 0;
+        g_jsonPath[0] = 0;
+        g_errorLogPath[0] = 0;
+        g_serviceUserProfileDir[0] = 0;
+        g_app.configPath[0] = 0;
+        g_serviceUserPathsResolved = false;
+        g_serviceUserPathsSessionId = (DWORD)-1;
+        g_serviceLogonProfileApplied = false;
     }
     HANDLE hToken = nullptr;
     if (!WTSQueryUserToken(sessionId, &hToken)) {
@@ -3059,6 +3182,47 @@ static bool resolve_service_user_data_paths(DWORD sessionId, char* err, size_t e
     return true;
 }
 
+static bool service_debug_env_override(bool* enabledOut) {
+    if (enabledOut) *enabledOut = false;
+    char value[32] = {};
+    DWORD n = GetEnvironmentVariableA(APP_DEBUG_ENV, value, ARRAY_COUNT(value));
+    if (n == 0) return false;
+    value[ARRAY_COUNT(value) - 1] = 0;
+    trim_ascii(value);
+    bool enabled = true;
+    if (n >= ARRAY_COUNT(value) || value[0] == 0) {
+        enabled = true;
+    } else if (value[0] == '0' && value[1] == 0) {
+        enabled = false;
+    } else if ((value[0] == 'f' || value[0] == 'F') &&
+        (value[1] == 'a' || value[1] == 'A') &&
+        (value[2] == 'l' || value[2] == 'L') &&
+        (value[3] == 's' || value[3] == 'S') &&
+        (value[4] == 'e' || value[4] == 'E') &&
+        value[5] == 0) {
+        enabled = false;
+    }
+    if (enabledOut) *enabledOut = enabled;
+    return true;
+}
+
+static bool service_initial_debug_logging_enabled() {
+    bool envEnabled = false;
+    if (service_debug_env_override(&envEnabled)) return envEnabled;
+    return SERVICE_DEBUG_DEFAULT_ENABLED != 0;
+}
+
+static bool service_config_debug_logging_enabled(int* envValueOut, int* configValueOut) {
+    bool envEnabled = false;
+    bool haveEnv = service_debug_env_override(&envEnabled);
+    int configDebug = g_app.configPath[0]
+        ? get_config_int(g_app.configPath, "debug", "enabled", SERVICE_DEBUG_DEFAULT_ENABLED)
+        : SERVICE_DEBUG_DEFAULT_ENABLED;
+    if (envValueOut) *envValueOut = haveEnv ? (envEnabled ? 1 : 0) : -1;
+    if (configValueOut) *configValueOut = configDebug;
+    return haveEnv ? envEnabled : (configDebug != 0);
+}
+
 static bool config_file_exists() {
     if (!g_app.configPath[0]) return false;
     DWORD attrs = GetFileAttributesA(g_app.configPath);
@@ -3071,6 +3235,8 @@ static void clear_service_authoritative_state() {
     memset(&g_app.serviceControlState, 0, sizeof(g_app.serviceControlState));
     g_serviceControlStateValid = false;
     memset(&g_serviceControlState, 0, sizeof(g_serviceControlState));
+    g_serviceTelemetryLastHardwarePollTickMs = 0;
+    g_serviceTelemetryLastPollSource[0] = 0;
 }
 
 static int format_log_timestamp_prefix(char* out, size_t outSize) {
@@ -3131,31 +3297,51 @@ static void set_default_config_path() {
 }
 
 static void refresh_service_debug_logging_from_config() {
-    if (!g_app.configPath[0]) return;
-    bool envDebug = (GetEnvironmentVariableA(APP_DEBUG_ENV, nullptr, 0) > 0);
-    int configDebug = get_config_int(g_app.configPath, "debug", "enabled", 1);
-    g_debug_logging = envDebug || (configDebug != 0);
+    if (!g_app.isServiceProcess) return;
+    int envDebug = -1;
+    int configDebug = SERVICE_DEBUG_DEFAULT_ENABLED;
+    bool newDebugLogging = service_config_debug_logging_enabled(&envDebug, &configDebug);
+    bool oldDebugLogging = g_debug_logging;
+    if (oldDebugLogging || newDebugLogging) {
+        g_debug_logging = true;
+        debug_log("service debug config resolved: env=%d config=%d enabled=%d path=%s\n",
+            envDebug,
+            configDebug,
+            newDebugLogging ? 1 : 0,
+            g_app.configPath);
+    }
+    g_debug_logging = newDebugLogging;
+    if (!g_debug_logging) {
+        close_debug_log_file();
+    }
 }
 
 static bool hardware_initialize(char* detail, size_t detailSize) {
     if (g_app.gpuHandle && g_app.loaded && g_app.vfBackend) return true;
+    set_last_apply_phase("hardware initialize: begin");
     debug_log("hardware_initialize: (re)initializing GPU backend\n");
     if (!nvapi_init()) {
         set_message(detail, detailSize, "Failed to initialize NvAPI");
+        set_last_apply_phase("hardware initialize: NvAPI init failed");
         return false;
     }
+    set_last_apply_phase("hardware initialize: enumerate GPU");
     if (!nvapi_enum_gpu()) {
         set_message(detail, detailSize, "No NVIDIA GPU found");
+        set_last_apply_phase("hardware initialize: no GPU found");
         return false;
     }
     nvapi_get_name();
     nvapi_read_gpu_metadata();
     bool offsetsOk = false;
+    set_last_apply_phase("hardware initialize: VF curve readback");
     if (!read_live_curve_snapshot_settled(4, 40, &offsetsOk)) {
         set_message(detail, detailSize, "Failed to read VF curve from GPU");
+        set_last_apply_phase("hardware initialize: VF curve read failed");
         return false;
     }
     (void)offsetsOk;
+    set_last_apply_phase("hardware initialize: global state refresh");
     refresh_global_state(detail, detailSize);
     initialize_gui_fan_settings_from_live_state(false);
     // Preserve the service active desired state across reinitializations
@@ -3170,6 +3356,7 @@ static bool hardware_initialize(char* detail, size_t detailSize) {
 #ifdef GREEN_CURVE_SERVICE_BINARY
     trim_working_set();
 #endif
+    set_last_apply_phase("hardware initialize: complete");
     return true;
 }
 
@@ -3570,14 +3757,34 @@ static void ensure_service_runtime_lock() {
 static void lock_service_runtime() {
     ensure_service_runtime_lock();
     if (g_serviceRuntimeLock) {
-        WaitForSingleObject(g_serviceRuntimeLock, INFINITE);
+        DWORD waitResult = WaitForSingleObject(g_serviceRuntimeLock, INFINITE);
+        if (waitResult == WAIT_OBJECT_0 || waitResult == WAIT_ABANDONED) {
+            DWORD currentThreadId = GetCurrentThreadId();
+            if (g_serviceRuntimeLockOwnerThreadId == currentThreadId) {
+                g_serviceRuntimeLockDepth++;
+            } else {
+                g_serviceRuntimeLockOwnerThreadId = currentThreadId;
+                g_serviceRuntimeLockDepth = 1;
+            }
+        }
     }
 }
 
 static void unlock_service_runtime() {
     if (g_serviceRuntimeLock) {
+        DWORD currentThreadId = GetCurrentThreadId();
+        if (g_serviceRuntimeLockOwnerThreadId == currentThreadId && g_serviceRuntimeLockDepth > 0) {
+            g_serviceRuntimeLockDepth--;
+            if (g_serviceRuntimeLockDepth == 0) {
+                g_serviceRuntimeLockOwnerThreadId = 0;
+            }
+        }
         ReleaseMutex(g_serviceRuntimeLock);
     }
+}
+
+static bool service_runtime_lock_held_by_current_thread() {
+    return g_serviceRuntimeLockOwnerThreadId == GetCurrentThreadId() && g_serviceRuntimeLockDepth > 0;
 }
 
 static bool get_active_interactive_session_id(DWORD* sessionIdOut) {
@@ -3738,23 +3945,281 @@ static void service_set_pending_operation_source(const char* source) {
     set_pending_operation_source(callerUser);
 }
 
+static bool service_resolve_active_user_paths_for_startup(const char* context) {
+    DWORD sessionId = WTSGetActiveConsoleSessionId();
+    if (sessionId == 0xFFFFFFFF) {
+        debug_log("service user path resolve skipped%s%s: no active console session\n",
+            context && context[0] ? " for " : "",
+            context && context[0] ? context : "");
+        return false;
+    }
+
+    char pathErr[256] = {};
+    if (!resolve_service_user_data_paths(sessionId, pathErr, sizeof(pathErr))) {
+        debug_log("service user path resolve failed%s%s: %s\n",
+            context && context[0] ? " for " : "",
+            context && context[0] ? context : "",
+            pathErr[0] ? pathErr : "unknown");
+        return false;
+    }
+    if (!g_app.configPath[0]) {
+        set_default_config_path();
+    }
+    refresh_service_debug_logging_from_config();
+    debug_log("service user paths ready%s%s: session=%lu config=%s\n",
+        context && context[0] ? " for " : "",
+        context && context[0] ? context : "",
+        sessionId,
+        g_app.configPath[0] ? g_app.configPath : "<unset>");
+    return true;
+}
+
+static bool service_wait_for_driver_ready_for_startup_apply(char* detail, size_t detailSize) {
+    set_message(detail, detailSize, "GPU driver was not ready");
+    for (DWORD attempt = 0; attempt < SERVICE_STARTUP_DRIVER_READY_ATTEMPTS; attempt++) {
+        if (attempt > 0) {
+            DWORD waitResult = g_serviceStopEvent
+                ? WaitForSingleObject(g_serviceStopEvent, SERVICE_STARTUP_DRIVER_READY_DELAY_MS)
+                : WAIT_TIMEOUT;
+            if (waitResult == WAIT_OBJECT_0) {
+                set_message(detail, detailSize, "Service is stopping");
+                return false;
+            }
+        }
+
+        char hwDetail[256] = {};
+        set_last_apply_phase("startup readiness: hardware initialize");
+        bool initOk = hardware_initialize(hwDetail, sizeof(hwDetail));
+        bool offsetsOk = false;
+        bool curveOk = false;
+        if (initOk) {
+            set_last_apply_phase("startup readiness: live curve readback");
+            curveOk = read_live_curve_snapshot_settled(3, 50, &offsetsOk);
+        }
+
+        debug_log("startup readiness attempt %lu/%lu: init=%d curve=%d offsets=%d populated=%d detail=%s\n",
+            attempt + 1,
+            SERVICE_STARTUP_DRIVER_READY_ATTEMPTS,
+            initOk ? 1 : 0,
+            curveOk ? 1 : 0,
+            offsetsOk ? 1 : 0,
+            g_app.numPopulated,
+            hwDetail[0] ? hwDetail : "<none>");
+
+        if (initOk && curveOk && offsetsOk && g_app.loaded && g_app.numPopulated > 0) {
+            if (SERVICE_STARTUP_DRIVER_SETTLE_MS > 0) {
+                DWORD waitResult = g_serviceStopEvent
+                    ? WaitForSingleObject(g_serviceStopEvent, SERVICE_STARTUP_DRIVER_SETTLE_MS)
+                    : WAIT_TIMEOUT;
+                if (waitResult == WAIT_OBJECT_0) {
+                    set_message(detail, detailSize, "Service is stopping");
+                    return false;
+                }
+            }
+            if (detail && detailSize > 0) detail[0] = 0;
+            set_last_apply_phase("startup readiness: ready");
+            return true;
+        }
+
+        set_message(detail, detailSize, "%s",
+            hwDetail[0] ? hwDetail : "GPU driver did not provide stable VF curve and offset readback");
+    }
+    return false;
+}
+
+static bool service_logon_profile_matches_live_state(const DesiredSettings* desired, char* detail, size_t detailSize) {
+    if (!desired) {
+        set_message(detail, detailSize, "No desired settings");
+        return false;
+    }
+
+    set_last_apply_phase("startup idempotence: refresh live state");
+    bool offsetsOk = false;
+    if (!read_live_curve_snapshot_settled(3, 40, &offsetsOk) || !offsetsOk) {
+        set_message(detail, detailSize, "Live VF curve readback was not stable enough to skip apply");
+        return false;
+    }
+    char refreshDetail[256] = {};
+    refresh_global_state(refreshDetail, sizeof(refreshDetail));
+
+    if (desired->hasGpuOffset) {
+        int liveGpuMHz = current_applied_gpu_offset_mhz();
+        bool liveExcludeLow70 = current_applied_gpu_offset_excludes_low_points() && liveGpuMHz != 0;
+        bool desiredExcludeLow70 = desired->gpuOffsetExcludeLow70 && desired->gpuOffsetMHz != 0;
+        if (liveGpuMHz != desired->gpuOffsetMHz || liveExcludeLow70 != desiredExcludeLow70) {
+            set_message(detail, detailSize, "GPU offset live=%d exclude=%d desired=%d exclude=%d",
+                liveGpuMHz,
+                liveExcludeLow70 ? 1 : 0,
+                desired->gpuOffsetMHz,
+                desiredExcludeLow70 ? 1 : 0);
+            return false;
+        }
+    }
+
+    if (desired->hasMemOffset) {
+        int liveMemMHz = mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
+        if (liveMemMHz != desired->memOffsetMHz) {
+            set_message(detail, detailSize, "Memory offset live=%d desired=%d", liveMemMHz, desired->memOffsetMHz);
+            return false;
+        }
+    }
+
+    if (desired->hasPowerLimit && g_app.powerLimitPct != desired->powerLimitPct) {
+        set_message(detail, detailSize, "Power limit live=%d desired=%d", g_app.powerLimitPct, desired->powerLimitPct);
+        return false;
+    }
+
+    if (!curve_targets_match_request(desired, nullptr, 0, detail, detailSize)) {
+        return false;
+    }
+
+    if (desired->hasFan) {
+        FanCurveConfig curve = desired->fanCurve;
+        fan_curve_normalize(&curve);
+        int fanMode = desired->fanMode;
+        if (fanMode < FAN_MODE_AUTO || fanMode > FAN_MODE_CURVE) {
+            fanMode = desired->fanAuto ? FAN_MODE_AUTO : FAN_MODE_FIXED;
+        }
+        if (!fan_setting_matches_current(fanMode, desired->fanPercent, &curve)) {
+            set_message(detail, detailSize, "Fan state does not match requested profile");
+            return false;
+        }
+    }
+
+    if (detail && detailSize > 0) detail[0] = 0;
+    return true;
+}
+
+static DWORD service_active_fan_runtime_interval_ms() {
+    if (g_app.fanFixedRuntimeActive) return FAN_FIXED_RUNTIME_INTERVAL_MS;
+    if (g_app.fanCurveRuntimeActive) {
+        DWORD intervalMs = (DWORD)g_app.activeFanCurve.pollIntervalMs;
+        return intervalMs < 250 ? 250 : intervalMs;
+    }
+    return 0;
+}
+
+static void mark_service_telemetry_cache_updated(const char* source) {
+    if (!g_app.isServiceProcess) return;
+    g_serviceTelemetryLastHardwarePollTickMs = GetTickCount64();
+    if (source && source[0]) {
+        StringCchCopyA(g_serviceTelemetryLastPollSource, ARRAY_COUNT(g_serviceTelemetryLastPollSource), source);
+    } else {
+        g_serviceTelemetryLastPollSource[0] = 0;
+    }
+}
+
+static bool service_telemetry_cache_is_fresh(ULONGLONG now) {
+    if (!g_serviceTelemetryLastHardwarePollTickMs) return false;
+    ULONGLONG ageMs = now - g_serviceTelemetryLastHardwarePollTickMs;
+    DWORD runtimeIntervalMs = service_active_fan_runtime_interval_ms();
+    if (runtimeIntervalMs > 0) {
+        return ageMs <= (ULONGLONG)runtimeIntervalMs + SERVICE_TELEMETRY_RUNTIME_STALE_GRACE_MS;
+    }
+    return ageMs < SERVICE_TELEMETRY_IDLE_REFRESH_INTERVAL_MS;
+}
+
+static bool service_refresh_idle_telemetry(char* detail, size_t detailSize) {
+    char firstErr[128] = {};
+    bool anyOk = false;
+
+    char fanDetail[128] = {};
+    if (nvml_read_fans(fanDetail, sizeof(fanDetail))) {
+        anyOk = true;
+    } else if (fanDetail[0]) {
+        StringCchCopyA(firstErr, ARRAY_COUNT(firstErr), fanDetail);
+    }
+
+    char tempDetail[128] = {};
+    int temperatureC = 0;
+    if (nvml_read_temperature(&temperatureC, tempDetail, sizeof(tempDetail))) {
+        anyOk = true;
+    } else if (!firstErr[0] && tempDetail[0]) {
+        StringCchCopyA(firstErr, ARRAY_COUNT(firstErr), tempDetail);
+    }
+
+    if (!anyOk) {
+        set_message(detail, detailSize, "%s", firstErr[0] ? firstErr : "Telemetry refresh failed");
+        return false;
+    }
+
+    populate_control_state(&g_serviceControlState);
+    g_serviceControlStateValid = true;
+    mark_service_telemetry_cache_updated("idle telemetry");
+    return true;
+}
+
+static bool service_refresh_telemetry_for_request(char* detail, size_t detailSize) {
+    if (!hardware_initialize(detail, detailSize)) return false;
+
+    bool runtimeActive = g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive;
+    if (runtimeActive) {
+        bool needRuntimeThread = g_serviceFanThread == nullptr;
+        if (g_serviceFanThread) {
+            DWORD waitResult = WaitForSingleObject(g_serviceFanThread, 0);
+            needRuntimeThread = waitResult != WAIT_TIMEOUT;
+        }
+        if (needRuntimeThread) {
+            ensure_service_fan_runtime_thread();
+        }
+    }
+
+    ULONGLONG now = GetTickCount64();
+    if (runtimeActive) {
+        if (!service_telemetry_cache_is_fresh(now)) {
+            bool noRuntimeThread = !g_serviceFanThread;
+            bool noCache = g_serviceTelemetryLastHardwarePollTickMs == 0;
+            if (noRuntimeThread || noCache) {
+                service_runtime_pulse();
+            } else {
+                debug_log("service telemetry: using stale runtime cache ageMs=%llu source=%s\n",
+                    now - g_serviceTelemetryLastHardwarePollTickMs,
+                    g_serviceTelemetryLastPollSource[0] ? g_serviceTelemetryLastPollSource : "<none>");
+            }
+        }
+    } else if (!service_telemetry_cache_is_fresh(now)) {
+        char telemetryDetail[128] = {};
+        if (!service_refresh_idle_telemetry(telemetryDetail, sizeof(telemetryDetail))) {
+            debug_log("service telemetry: lightweight refresh failed: %s\n",
+                telemetryDetail[0] ? telemetryDetail : "unknown");
+            mark_service_telemetry_cache_updated("idle telemetry failed");
+        }
+    }
+
+    if (!g_serviceControlStateValid) {
+        populate_control_state(&g_serviceControlState);
+        g_serviceControlStateValid = true;
+    }
+    if (detail && detailSize > 0) detail[0] = 0;
+    return true;
+}
+
 static void service_runtime_pulse() {
     if (!g_app.fanCurveRuntimeActive && !g_app.fanFixedRuntimeActive) return;
-    debug_log("service_runtime_pulse: curve=%d fixed=%d lastApplyMs=%llu mode=%d fixedPct=%d\n",
-        g_app.fanCurveRuntimeActive ? 1 : 0,
-        g_app.fanFixedRuntimeActive ? 1 : 0,
-        g_app.fanRuntimeLastApplyTickMs,
-        g_app.activeFanMode,
-        g_app.activeFanFixedPercent);
+    ULONGLONG now = GetTickCount64();
+    bool logPulse = g_serviceRuntimeLastPulseLogTickMs == 0 ||
+        now - g_serviceRuntimeLastPulseLogTickMs >= SERVICE_RUNTIME_NOISY_LOG_INTERVAL_MS;
+    if (logPulse) {
+        g_serviceRuntimeLastPulseLogTickMs = now;
+        debug_log("service_runtime_pulse: curve=%d fixed=%d lastApplyMs=%llu mode=%d fixedPct=%d\n",
+            g_app.fanCurveRuntimeActive ? 1 : 0,
+            g_app.fanFixedRuntimeActive ? 1 : 0,
+            g_app.fanRuntimeLastApplyTickMs,
+            g_app.activeFanMode,
+            g_app.activeFanFixedPercent);
+    }
     apply_fan_curve_tick();
     populate_control_state(&g_serviceControlState);
     g_serviceControlStateValid = true;
-    debug_log("service_runtime_pulse_done: fanMode=%d currentPct=%d temp=%d runtimeLastApply=%llu failures=%u\n",
-        g_serviceControlState.fanMode,
-        g_serviceControlState.fanCurrentPercent,
-        g_serviceControlState.fanCurrentTemperatureC,
-        g_app.fanRuntimeLastApplyTickMs,
-        g_app.fanRuntimeConsecutiveFailures);
+    mark_service_telemetry_cache_updated("fan runtime");
+    if (logPulse) {
+        debug_log("service_runtime_pulse_done: fanMode=%d currentPct=%d temp=%d runtimeLastApply=%llu failures=%u\n",
+            g_serviceControlState.fanMode,
+            g_serviceControlState.fanCurrentPercent,
+            g_serviceControlState.fanCurrentTemperatureC,
+            g_app.fanRuntimeLastApplyTickMs,
+            g_app.fanRuntimeConsecutiveFailures);
+    }
 }
 
 static DWORD WINAPI service_fan_runtime_thread_proc(void*) {
@@ -3767,10 +4232,23 @@ static DWORD WINAPI service_fan_runtime_thread_proc(void*) {
             waitMs = (DWORD)g_app.activeFanCurve.pollIntervalMs;
             if (waitMs < 250) waitMs = 250;
         }
-        debug_log("service_fan_runtime_thread: waiting %lu ms curve=%d fixed=%d\n",
-            waitMs,
-            g_app.fanCurveRuntimeActive ? 1 : 0,
-            g_app.fanFixedRuntimeActive ? 1 : 0);
+        bool curveActive = g_app.fanCurveRuntimeActive;
+        bool fixedActive = g_app.fanFixedRuntimeActive;
+        ULONGLONG now = GetTickCount64();
+        if (g_serviceFanThreadLastWaitLogTickMs == 0 ||
+            now - g_serviceFanThreadLastWaitLogTickMs >= SERVICE_RUNTIME_NOISY_LOG_INTERVAL_MS ||
+            waitMs != g_serviceFanThreadLastWaitMs ||
+            curveActive != g_serviceFanThreadLastWaitCurve ||
+            fixedActive != g_serviceFanThreadLastWaitFixed) {
+            g_serviceFanThreadLastWaitLogTickMs = now;
+            g_serviceFanThreadLastWaitMs = waitMs;
+            g_serviceFanThreadLastWaitCurve = curveActive;
+            g_serviceFanThreadLastWaitFixed = fixedActive;
+            debug_log("service_fan_runtime_thread: waiting %lu ms curve=%d fixed=%d\n",
+                waitMs,
+                curveActive ? 1 : 0,
+                fixedActive ? 1 : 0);
+        }
         DWORD waitResult = WaitForMultipleObjects(1, waitHandles, FALSE, waitMs);
         if (waitResult == WAIT_OBJECT_0) break;
         if (waitResult == WAIT_TIMEOUT) {
@@ -3812,16 +4290,32 @@ static bool ensure_service_fan_runtime_thread() {
 static void stop_service_fan_runtime_thread() {
     if (!g_serviceFanThread) return;
     if (g_serviceFanStopEvent) SetEvent(g_serviceFanStopEvent);
-    WaitForSingleObject(g_serviceFanThread, INFINITE);
+    if (service_runtime_lock_held_by_current_thread()) {
+        debug_log("stop_service_fan_runtime_thread: stop signaled while runtime lock is held; deferring wait\n");
+        return;
+    }
+    DWORD waitResult = WaitForSingleObject(g_serviceFanThread, SERVICE_FAN_THREAD_STOP_TIMEOUT_MS);
+    if (waitResult != WAIT_OBJECT_0) {
+        debug_log("stop_service_fan_runtime_thread: timed out waiting for fan thread (%lu); leaving handle for later reap\n", waitResult);
+        return;
+    }
     CloseHandle(g_serviceFanThread);
     g_serviceFanThread = nullptr;
 }
 
 static bool service_apply_desired_settings(const DesiredSettings* desired, bool interactive, char* result, size_t resultSize) {
     char detail[256] = {};
+    set_last_apply_phase("service apply: hardware initialize");
     if (!hardware_initialize(detail, sizeof(detail))) {
         set_message(result, resultSize, "%s", detail[0] ? detail : "Hardware initialization failed");
+        set_last_apply_phase("service apply: hardware initialize failed");
         return false;
+    }
+    int requestedCurvePoints = 0;
+    if (desired) {
+        for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+            if (desired->hasCurvePoint[ci]) requestedCurvePoints++;
+        }
     }
     debug_log("service_apply_desired_settings: interactive=%d gpu=%d exclude=%d mem=%d power=%d fanMode=%d lockCi=%d lockMHz=%u curvePoints=%d\n",
         interactive ? 1 : 0,
@@ -3831,20 +4325,29 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         desired && desired->hasPowerLimit ? desired->powerLimitPct : 0,
         desired && desired->hasFan ? desired->fanMode : -1,
         desired && desired->hasLock ? desired->lockCi : -1,
-        desired && desired->hasLock ? desired->lockMHz : 0u);
+        desired && desired->hasLock ? desired->lockMHz : 0u,
+        requestedCurvePoints);
+    set_last_apply_phase("service apply: apply desired settings");
     bool ok = apply_desired_settings(desired, interactive, result, resultSize);
     if (ok) {
+        set_last_apply_phase("service apply: capture authoritative state");
         populate_control_state(&g_serviceControlState);
         g_serviceControlStateValid = true;
+        mark_service_telemetry_cache_updated("service apply");
         g_serviceActiveDesired = *desired;
         update_desired_lock_from_live_curve(&g_serviceActiveDesired);
         g_serviceHasActiveDesired = true;
-        ensure_service_fan_runtime_thread();
+        if (g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive) {
+            ensure_service_fan_runtime_thread();
+        } else {
+            stop_service_fan_runtime_thread();
+        }
     } else {
         clear_service_authoritative_state();
         g_serviceHasActiveDesired = false;
         memset(&g_serviceActiveDesired, 0, sizeof(g_serviceActiveDesired));
     }
+    set_last_apply_phase(ok ? "service apply: complete" : "service apply: failed");
     return ok;
 }
 
@@ -3960,6 +4463,7 @@ static bool service_reset_all(char* result, size_t resultSize) {
     }
     populate_control_state(&g_serviceControlState);
     g_serviceControlStateValid = true;
+    mark_service_telemetry_cache_updated("service reset");
     set_message(result, resultSize, "Reset applied %d OK, %d failed: %s", successCount, failCount, failureDetails[0] ? failureDetails : "one or more reset steps failed");
     return false;
 }
@@ -4053,6 +4557,71 @@ static void end_background_service_toggle() {
     g_app.backgroundServiceToggleInFlight = false;
 }
 
+static DWORD service_remaining_timeout_ms(ULONGLONG startTickMs, DWORD timeoutMs) {
+    if (timeoutMs == 0) return 0;
+    ULONGLONG elapsed = GetTickCount64() - startTickMs;
+    if (elapsed >= timeoutMs) return 0;
+    ULONGLONG remaining = timeoutMs - elapsed;
+    return remaining > 0xFFFFFFFFULL ? 0xFFFFFFFFu : (DWORD)remaining;
+}
+
+static bool service_pipe_io_exact(HANDLE pipe, bool writeOp, void* buffer, DWORD bufferSize, DWORD timeoutMs, const char* label, char* err, size_t errSize) {
+    if (!pipe || pipe == INVALID_HANDLE_VALUE || !buffer || bufferSize == 0) {
+        set_message(err, errSize, "Invalid service pipe I/O");
+        return false;
+    }
+    if (timeoutMs == 0) {
+        set_message(err, errSize, "Timed out during %s", label ? label : "service pipe I/O");
+        return false;
+    }
+
+    ScopedHandle event(CreateEventA(nullptr, TRUE, FALSE, nullptr));
+    OVERLAPPED ov = {};
+    ov.hEvent = event.get();
+    if (!event.valid()) {
+        set_message(err, errSize, "Cannot create service pipe event (error %lu)", GetLastError());
+        return false;
+    }
+
+    DWORD transferred = 0;
+    BOOL started = writeOp
+        ? WriteFile(pipe, buffer, bufferSize, nullptr, &ov)
+        : ReadFile(pipe, buffer, bufferSize, nullptr, &ov);
+    DWORD startErr = started ? ERROR_SUCCESS : GetLastError();
+    bool ok = false;
+    if (started || startErr == ERROR_IO_PENDING) {
+        DWORD waitResult = WaitForSingleObject(ov.hEvent, timeoutMs);
+        if (waitResult == WAIT_OBJECT_0) {
+            if (GetOverlappedResult(pipe, &ov, &transferred, FALSE) && transferred == bufferSize) {
+                ok = true;
+            } else {
+                DWORD e = GetLastError();
+                set_message(err, errSize, "Failed %s (error %lu, bytes %lu/%lu)",
+                    label ? label : "service pipe I/O",
+                    e,
+                    transferred,
+                    bufferSize);
+            }
+        } else if (waitResult == WAIT_TIMEOUT) {
+            CancelIoEx(pipe, &ov);
+            set_message(err, errSize, "Timed out during %s", label ? label : "service pipe I/O");
+        } else {
+            set_message(err, errSize, "Failed waiting for %s (error %lu)", label ? label : "service pipe I/O", GetLastError());
+        }
+    } else {
+        set_message(err, errSize, "Failed starting %s (error %lu)", label ? label : "service pipe I/O", startErr);
+    }
+    return ok;
+}
+
+static bool service_pipe_write_exact(HANDLE pipe, const void* data, DWORD dataSize, DWORD timeoutMs, const char* label, char* err, size_t errSize) {
+    return service_pipe_io_exact(pipe, true, (void*)data, dataSize, timeoutMs, label, err, errSize);
+}
+
+static bool service_pipe_read_exact(HANDLE pipe, void* data, DWORD dataSize, DWORD timeoutMs, const char* label, char* err, size_t errSize) {
+    return service_pipe_io_exact(pipe, false, data, dataSize, timeoutMs, label, err, errSize);
+}
+
 static bool service_send_request(const ServiceRequest* request, ServiceResponse* response, DWORD timeoutMs, char* err, size_t errSize) {
     if (response) memset(response, 0, sizeof(*response));
     if (!request) {
@@ -4065,28 +4634,37 @@ static bool service_send_request(const ServiceRequest* request, ServiceResponse*
         return false;
     }
 
-    DWORD waited = 0;
+    ULONGLONG startTickMs = GetTickCount64();
     while (true) {
-        HANDLE pipe = CreateFileW(pipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        DWORD remainingMs = service_remaining_timeout_ms(startTickMs, timeoutMs);
+        if (remainingMs == 0) {
+            set_message(err, errSize, "Timed out waiting for the background service");
+            return false;
+        }
+
+        HANDLE pipe = CreateFileW(
+            pipeName,
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
+            nullptr);
         if (pipe != INVALID_HANDLE_VALUE) {
             DWORD mode = PIPE_READMODE_MESSAGE;
             SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr);
-            DWORD written = 0;
-            if (!WriteFile(pipe, request, sizeof(*request), &written, nullptr) || written != sizeof(*request)) {
-                DWORD e = GetLastError();
+            remainingMs = service_remaining_timeout_ms(startTickMs, timeoutMs);
+            if (!service_pipe_write_exact(pipe, request, sizeof(*request), remainingMs, "writing service request", err, errSize)) {
                 CloseHandle(pipe);
-                set_message(err, errSize, "Failed writing service request (error %lu)", e);
                 g_app.backgroundServiceAvailable = false;
                 g_app.backgroundServiceBroken = true;
                 clear_service_authoritative_state();
                 return false;
             }
             if (response) {
-                DWORD read = 0;
-                if (!ReadFile(pipe, response, sizeof(*response), &read, nullptr) || read != sizeof(*response)) {
-                    DWORD e = GetLastError();
+                remainingMs = service_remaining_timeout_ms(startTickMs, timeoutMs);
+                if (!service_pipe_read_exact(pipe, response, sizeof(*response), remainingMs, "reading service response", err, errSize)) {
                     CloseHandle(pipe);
-                    set_message(err, errSize, "Failed reading service response (error %lu)", e);
                     g_app.backgroundServiceAvailable = false;
                     g_app.backgroundServiceBroken = true;
                     clear_service_authoritative_state();
@@ -4101,20 +4679,22 @@ static bool service_send_request(const ServiceRequest* request, ServiceResponse*
             set_message(err, errSize, "Failed connecting to service pipe (error %lu)", e);
             return false;
         }
-        if (waited >= timeoutMs) {
+        remainingMs = service_remaining_timeout_ms(startTickMs, timeoutMs);
+        if (remainingMs == 0) {
             set_message(err, errSize, "Timed out waiting for the background service");
             return false;
         }
-        DWORD waitSlice = timeoutMs - waited;
-        if (waitSlice > 250) waitSlice = 250;
+        if (e == ERROR_FILE_NOT_FOUND) {
+            Sleep(nvmin((int)SERVICE_PIPE_CLIENT_SLEEP_SLICE_MS, (int)remainingMs));
+            continue;
+        }
+        DWORD waitSlice = remainingMs;
+        if (waitSlice > SERVICE_PIPE_CLIENT_CONNECT_SLICE_MS) waitSlice = SERVICE_PIPE_CLIENT_CONNECT_SLICE_MS;
         if (!WaitNamedPipeW(pipeName, waitSlice)) {
             DWORD waitErr = GetLastError();
-            if (waitErr == ERROR_FILE_NOT_FOUND) {
-                // No pipe instance exists yet; the server may be between requests.
-                // Don't burn timeout budget for an instant failure; just yield briefly.
-                Sleep(10);
-            } else {
-                waited += waitSlice;
+            if (waitErr != ERROR_SEM_TIMEOUT && waitErr != ERROR_FILE_NOT_FOUND) {
+                set_message(err, errSize, "Failed waiting for service pipe (error %lu)", waitErr);
+                return false;
             }
         }
     }
@@ -4302,6 +4882,31 @@ static bool wait_for_background_service_ready(DWORD timeoutMs, char* err, size_t
     return false;
 }
 
+static bool wait_for_helper_process_bounded(HANDLE process, const char* description, char* err, size_t errSize) {
+    if (!process) return true;
+    DWORD waitResult = WaitForSingleObject(process, ELEVATED_HELPER_TIMEOUT_MS);
+    if (waitResult == WAIT_TIMEOUT) {
+        TerminateProcess(process, 1);
+        WaitForSingleObject(process, 1000);
+        set_message(err, errSize, "%s timed out", description ? description : "Elevated helper");
+        return false;
+    }
+    if (waitResult != WAIT_OBJECT_0) {
+        set_message(err, errSize, "Failed waiting for %s (error %lu)", description ? description : "elevated helper", GetLastError());
+        return false;
+    }
+    DWORD exitCode = 0;
+    if (!GetExitCodeProcess(process, &exitCode)) {
+        set_message(err, errSize, "Failed reading %s exit code (error %lu)", description ? description : "elevated helper", GetLastError());
+        return false;
+    }
+    if (exitCode != 0) {
+        set_message(err, errSize, "%s failed (exit code %lu)", description ? description : "Elevated helper", exitCode);
+        return false;
+    }
+    return true;
+}
+
 static bool launch_service_admin_helper(bool enable, char* err, size_t errSize) {
     WCHAR exePath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exePath, ARRAY_COUNT(exePath));
@@ -4318,14 +4923,9 @@ static bool launch_service_admin_helper(bool enable, char* err, size_t errSize) 
         return false;
     }
     if (sei.hProcess) {
-        WaitForSingleObject(sei.hProcess, INFINITE);
-        DWORD exitCode = 0;
-        GetExitCodeProcess(sei.hProcess, &exitCode);
-        CloseHandle(sei.hProcess);
-        if (exitCode != 0) {
-            set_message(err, errSize, "Elevated service helper failed (exit code %lu)", exitCode);
-            return false;
-        }
+        ScopedHandle helperProcess(sei.hProcess);
+        bool ok = wait_for_helper_process_bounded(helperProcess.get(), "Elevated service helper", err, errSize);
+        if (!ok) return false;
     }
     return true;
 }
@@ -4363,19 +4963,16 @@ static bool launch_startup_task_admin_helper(bool enable, char* err, size_t errS
         return false;
     }
     if (sei.hProcess) {
-        WaitForSingleObject(sei.hProcess, INFINITE);
-        DWORD exitCode = 0;
-        GetExitCodeProcess(sei.hProcess, &exitCode);
-        CloseHandle(sei.hProcess);
-        if (exitCode != 0) {
-            set_message(err, errSize, "Elevated startup task helper failed (exit code %lu)", exitCode);
-            return false;
-        }
+        ScopedHandle helperProcess(sei.hProcess);
+        bool ok = wait_for_helper_process_bounded(helperProcess.get(), "Elevated startup task helper", err, errSize);
+        if (!ok) return false;
     }
     return true;
 }
 
-static bool service_install_or_remove(bool enable, char* err, size_t errSize) {
+static bool get_adjacent_service_binary_path(WCHAR* out, size_t outCount, char* err, size_t errSize) {
+    if (!out || outCount == 0) return false;
+    out[0] = 0;
     WCHAR exePath[MAX_PATH] = {};
     DWORD exeLen = GetModuleFileNameW(nullptr, exePath, ARRAY_COUNT(exePath));
     if (exeLen == 0 || exeLen >= ARRAY_COUNT(exePath) - 1) {
@@ -4384,12 +4981,125 @@ static bool service_install_or_remove(bool enable, char* err, size_t errSize) {
     }
     WCHAR* slash = wcsrchr(exePath, L'\\');
     if (!slash) slash = wcsrchr(exePath, L'/');
-    if (slash) {
-        slash[1] = 0;
-        StringCchCatW(exePath, ARRAY_COUNT(exePath), APP_SERVICE_EXE_NAME_W);
+    if (!slash) {
+        set_message(err, errSize, "Current executable path has no directory");
+        return false;
+    }
+    slash[1] = 0;
+    if (FAILED(StringCchCatW(exePath, ARRAY_COUNT(exePath), APP_SERVICE_EXE_NAME_W)) ||
+        FAILED(StringCchCopyW(out, outCount, exePath))) {
+        set_message(err, errSize, "Service binary path is too long");
+        return false;
+    }
+    if (!file_is_regular_no_reparse_w(out)) {
+        set_message(err, errSize, "Service binary is missing or unsafe");
+        return false;
+    }
+    return true;
+}
+
+static bool get_secure_service_install_dir_w(WCHAR* out, size_t outCount, char* err, size_t errSize) {
+    if (!out || outCount == 0) return false;
+    out[0] = 0;
+    PWSTR programFiles = nullptr;
+    bool copied = false;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_ProgramFiles, 0, nullptr, &programFiles)) && programFiles) {
+        copied = SUCCEEDED(StringCchPrintfW(out, outCount, L"%ls\\Green Curve", programFiles));
+        CoTaskMemFree(programFiles);
+    }
+    if (!copied) copied = SUCCEEDED(StringCchCopyW(out, outCount, L"C:\\Program Files\\Green Curve"));
+    if (!copied) {
+        set_message(err, errSize, "Secure service directory path is too long");
+        return false;
+    }
+    return true;
+}
+
+static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char* err, size_t errSize) {
+    if (!out || outCount == 0) return false;
+    out[0] = 0;
+
+    WCHAR sourcePath[MAX_PATH] = {};
+    if (!get_adjacent_service_binary_path(sourcePath, ARRAY_COUNT(sourcePath), err, errSize)) return false;
+
+    WCHAR installDir[MAX_PATH] = {};
+    if (!get_secure_service_install_dir_w(installDir, ARRAY_COUNT(installDir), err, errSize)) return false;
+    if (!CreateDirectoryW(installDir, nullptr)) {
+        DWORD createErr = GetLastError();
+        if (createErr != ERROR_ALREADY_EXISTS) {
+            set_message(err, errSize, "Failed creating secure service directory (error %lu)", createErr);
+            return false;
+        }
+    }
+    DWORD dirAttrs = GetFileAttributesW(installDir);
+    if (dirAttrs == INVALID_FILE_ATTRIBUTES ||
+        (dirAttrs & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+        (dirAttrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        set_message(err, errSize, "Secure service directory is unavailable or unsafe");
+        return false;
+    }
+
+    WCHAR targetPath[MAX_PATH] = {};
+    if (FAILED(StringCchPrintfW(targetPath, ARRAY_COUNT(targetPath), L"%ls\\%ls", installDir, APP_SERVICE_EXE_NAME_W))) {
+        set_message(err, errSize, "Installed service binary path is too long");
+        return false;
+    }
+
+    if (_wcsicmp(sourcePath, targetPath) != 0) {
+        WCHAR tempPath[MAX_PATH] = {};
+        if (FAILED(StringCchPrintfW(tempPath, ARRAY_COUNT(tempPath), L"%ls.tmp", targetPath))) {
+            set_message(err, errSize, "Temporary service binary path is too long");
+            return false;
+        }
+        DeleteFileW(tempPath);
+        if (!CopyFileW(sourcePath, tempPath, FALSE)) {
+            set_message(err, errSize, "Failed staging service binary in Program Files (error %lu)", GetLastError());
+            return false;
+        }
+        if (!MoveFileExW(tempPath, targetPath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            DWORD moveErr = GetLastError();
+            DeleteFileW(tempPath);
+            set_message(err, errSize, "Failed installing service binary in Program Files (error %lu)", moveErr);
+            return false;
+        }
+    }
+
+    if (!file_is_regular_no_reparse_w(targetPath)) {
+        set_message(err, errSize, "Installed service binary is missing or unsafe");
+        return false;
+    }
+
+    return SUCCEEDED(StringCchCopyW(out, outCount, targetPath));
+}
+
+static void cleanup_secure_service_binary_after_remove() {
+    WCHAR installDir[MAX_PATH] = {};
+    char ignored[64] = {};
+    if (!get_secure_service_install_dir_w(installDir, ARRAY_COUNT(installDir), ignored, sizeof(ignored))) return;
+    WCHAR targetPath[MAX_PATH] = {};
+    if (SUCCEEDED(StringCchPrintfW(targetPath, ARRAY_COUNT(targetPath), L"%ls\\%ls", installDir, APP_SERVICE_EXE_NAME_W))) {
+        DeleteFileW(targetPath);
+    }
+    RemoveDirectoryW(installDir);
+}
+
+static bool service_install_or_remove(bool enable, char* err, size_t errSize) {
+    WCHAR exePath[MAX_PATH] = {};
+    if (enable && !ensure_secure_service_binary_path(exePath, ARRAY_COUNT(exePath), err, errSize)) return false;
+    if (!enable && !get_adjacent_service_binary_path(exePath, ARRAY_COUNT(exePath), err, errSize)) {
+        // Removal does not need the adjacent binary to exist; keep going with the secure target path for cleanup.
+        err[0] = 0;
+        WCHAR installDir[MAX_PATH] = {};
+        char ignored[64] = {};
+        if (get_secure_service_install_dir_w(installDir, ARRAY_COUNT(installDir), ignored, sizeof(ignored))) {
+            StringCchPrintfW(exePath, ARRAY_COUNT(exePath), L"%ls\\%ls", installDir, APP_SERVICE_EXE_NAME_W);
+        }
     }
     WCHAR binPath[1024] = {};
-    StringCchPrintfW(binPath, ARRAY_COUNT(binPath), L"\"%ls\" --service-run", exePath);
+    if (FAILED(StringCchPrintfW(binPath, ARRAY_COUNT(binPath), L"\"%ls\" --service-run", exePath))) {
+        set_message(err, errSize, "Service command line is too long");
+        return false;
+    }
     SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CREATE_SERVICE | SC_MANAGER_CONNECT);
     if (!scm) {
         set_message(err, errSize, "Failed opening service manager (error %lu)", GetLastError());
@@ -4459,6 +5169,7 @@ static bool service_install_or_remove(bool enable, char* err, size_t errSize) {
         SC_HANDLE svc = OpenServiceW(scm, L"GreenCurveService", SERVICE_STOP | DELETE | SERVICE_QUERY_STATUS);
         if (!svc) {
             ok = true;
+            cleanup_secure_service_binary_after_remove();
         } else {
             SERVICE_STATUS status = {};
             ControlService(svc, SERVICE_CONTROL_STOP, &status);
@@ -4475,6 +5186,7 @@ static bool service_install_or_remove(bool enable, char* err, size_t errSize) {
                 set_message(err, errSize, "Failed removing service (error %lu)", GetLastError());
             } else {
                 ok = true;
+                cleanup_secure_service_binary_after_remove();
             }
             CloseServiceHandle(svc);
         }
@@ -4485,6 +5197,53 @@ static bool service_install_or_remove(bool enable, char* err, size_t errSize) {
     return ok;
 }
 
+static bool service_path_has_reparse_component(const char* absPath, char* err, size_t errSize) {
+    if (!absPath || !absPath[0]) return false;
+    char probe[MAX_PATH] = {};
+    if (FAILED(StringCchCopyA(probe, ARRAY_COUNT(probe), absPath))) {
+        set_message(err, errSize, "Path is too long");
+        return true;
+    }
+
+    size_t len = strlen(probe);
+    size_t rootLen = 0;
+    if (len >= 3 && probe[1] == ':' && (probe[2] == '\\' || probe[2] == '/')) {
+        rootLen = 3;
+    } else if (len >= 2 && probe[0] == '\\' && probe[1] == '\\') {
+        const char* serverEnd = strpbrk(probe + 2, "\\/");
+        if (serverEnd) {
+            const char* shareEnd = strpbrk(serverEnd + 1, "\\/");
+            if (shareEnd) rootLen = (size_t)(shareEnd - probe + 1);
+        }
+    }
+
+    if (rootLen == 0 || rootLen >= len) return false;
+    for (size_t i = rootLen; i < len; i++) {
+        if (probe[i] != '\\' && probe[i] != '/') continue;
+        char saved = probe[i];
+        probe[i] = 0;
+        DWORD attrs = GetFileAttributesA(probe);
+        probe[i] = saved;
+        if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_REPARSE_POINT)) {
+            set_message(err, errSize, "Path crosses a reparse point");
+            return true;
+        }
+    }
+
+    char* slash = strrchr(probe, '\\');
+    char* slashAlt = strrchr(probe, '/');
+    if (!slash || (slashAlt && slashAlt > slash)) slash = slashAlt;
+    if (slash && (size_t)(slash - probe) >= rootLen) {
+        *slash = 0;
+        DWORD attrs = GetFileAttributesA(probe);
+        if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_REPARSE_POINT)) {
+            set_message(err, errSize, "Path crosses a reparse point");
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool service_validate_file_write_path(const char* path, char* err, size_t errSize) {
     if (!path || !path[0]) {
         set_message(err, errSize, "Empty path");
@@ -4492,6 +5251,10 @@ static bool service_validate_file_write_path(const char* path, char* err, size_t
     }
     if (strstr(path, "..")) {
         set_message(err, errSize, "Path contains parent directory references");
+        return false;
+    }
+    if (strchr(path, '*') || strchr(path, '?')) {
+        set_message(err, errSize, "Path contains wildcard characters");
         return false;
     }
     int colonCount = 0;
@@ -4516,6 +5279,9 @@ static bool service_validate_file_write_path(const char* path, char* err, size_t
     if (_strnicmp(absPath, g_serviceUserProfileDir, profileLen) != 0 ||
         (absPath[profileLen] != '\\' && absPath[profileLen] != '\0')) {
         set_message(err, errSize, "Path is outside the caller's profile directory");
+        return false;
+    }
+    if (service_path_has_reparse_component(absPath, err, errSize)) {
         return false;
     }
     return true;
@@ -4634,14 +5400,15 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
         }
 
         ServiceRequest request = {};
-        DWORD read = 0;
         ServiceResponse response = {};
         response.magic = SERVICE_PROTOCOL_MAGIC;
         response.version = SERVICE_PROTOCOL_VERSION;
         char callerUser[256] = {};
         DWORD callerSessionId = (DWORD)-1;
         DWORD callerPid = 0;
-        if (!ReadFile(pipe, &request, sizeof(request), &read, nullptr) || read != sizeof(request)) {
+        char pipeErr[256] = {};
+        if (!service_pipe_read_exact(pipe, &request, sizeof(request), SERVICE_PIPE_SERVER_IO_TIMEOUT_MS, "reading service request", pipeErr, sizeof(pipeErr))) {
+            debug_log("service_pipe_server: dropping stalled or invalid client read: %s\n", pipeErr[0] ? pipeErr : "unknown");
             DisconnectNamedPipe(pipe);
             CloseHandle(pipe);
             continue;
@@ -4660,9 +5427,8 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                         set_default_config_path();
                     }
                     refresh_service_debug_logging_from_config();
-                    // If we couldn't apply logon profile at startup (no session yet),
-                    // try now on the first authorized connection.
-                    try_apply_logon_profile_on_service_startup();
+                    debug_log("service_pipe_server: user paths resolved for command %u; no implicit startup apply\n",
+                        (unsigned int)request.command);
                 } else {
                     debug_log("service_pipe_server: failed to resolve user data paths: %s\n", pathErr);
                 }
@@ -4674,6 +5440,7 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     StringCchCopyA(response.message, ARRAY_COUNT(response.message), "pong");
                     break;
                 case SERVICE_CMD_GET_SNAPSHOT: {
+                    debug_log("service_pipe_server: snapshot only command; no profile apply\n");
                     char detail[256] = {};
                     lock_service_runtime();
                     bool ok = hardware_initialize(detail, sizeof(detail));
@@ -4702,22 +5469,15 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     break;
                 }
                 case SERVICE_CMD_GET_TELEMETRY: {
+                    debug_log("service_pipe_server: telemetry snapshot only command; no profile apply\n");
                     char detail[256] = {};
                     lock_service_runtime();
-                    if ((g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive) && !g_serviceFanThread) {
-                        debug_log("service telemetry: runtime active but thread missing, recreating\n");
-                        ensure_service_fan_runtime_thread();
-                    }
-                    if (!hardware_initialize(detail, sizeof(detail))) {
+                    if (!service_refresh_telemetry_for_request(detail, sizeof(detail))) {
                         debug_log("service telemetry: hardware initialize unavailable: %s\n", detail[0] ? detail : "unknown");
                     } else {
-                        if (!refresh_global_state(detail, sizeof(detail))) {
-                            debug_log("service telemetry: state refresh failed, returning cached snapshot%s%s\n",
-                                detail[0] ? ": " : "",
-                                detail[0] ? detail : "");
-                        }
-                        populate_control_state(&g_serviceControlState);
-                        g_serviceControlStateValid = true;
+                        debug_log("service telemetry: returning cached snapshot%s%s\n",
+                            g_serviceTelemetryLastPollSource[0] ? " from " : "",
+                            g_serviceTelemetryLastPollSource[0] ? g_serviceTelemetryLastPollSource : "");
                     }
                     response.status = SERVICE_STATUS_OK;
                     StringCchCopyA(response.message, ARRAY_COUNT(response.message), detail[0] ? detail : "telemetry ready");
@@ -4827,9 +5587,10 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
             }
         }
 
-        DWORD written = 0;
-        WriteFile(pipe, &response, sizeof(response), &written, nullptr);
-        FlushFileBuffers(pipe);
+        pipeErr[0] = 0;
+        if (!service_pipe_write_exact(pipe, &response, sizeof(response), SERVICE_PIPE_SERVER_IO_TIMEOUT_MS, "writing service response", pipeErr, sizeof(pipeErr))) {
+            debug_log("service_pipe_server: response write failed: %s\n", pipeErr[0] ? pipeErr : "unknown");
+        }
         DisconnectNamedPipe(pipe);
         CloseHandle(pipe);
     }
@@ -4839,23 +5600,35 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
 static HANDLE g_servicePipeThread = nullptr;
 
 static void try_apply_logon_profile_on_service_startup() {
-    if (g_serviceLogonProfileApplied) return;
+    lock_service_runtime();
+    if (g_serviceLogonProfileApplied) {
+        unlock_service_runtime();
+        return;
+    }
 
     DWORD sessionId = WTSGetActiveConsoleSessionId();
-    if (sessionId == 0xFFFFFFFF) return;
+    if (sessionId == 0xFFFFFFFF) {
+        debug_log("startup: no active console session; service startup apply deferred to logon client\n");
+        unlock_service_runtime();
+        return;
+    }
 
     char pathErr[256] = {};
     if (!resolve_service_user_data_paths(sessionId, pathErr, sizeof(pathErr))) {
         debug_log("startup: cannot resolve user data paths: %s\n", pathErr);
+        unlock_service_runtime();
         return;
     }
     if (!g_app.configPath[0]) {
         set_default_config_path();
     }
     refresh_service_debug_logging_from_config();
+    set_pending_operation_source("service startup apply");
     int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
     if (logonSlot <= 0) {
+        debug_log("startup: no logon profile configured\n");
         g_serviceLogonProfileApplied = true;
+        unlock_service_runtime();
         return;
     }
 
@@ -4864,15 +5637,58 @@ static void try_apply_logon_profile_on_service_startup() {
     if (!load_profile_from_config(g_app.configPath, logonSlot, &desired, err, sizeof(err))) {
         debug_log("startup: failed to load logon profile %d: %s\n", logonSlot, err);
         g_serviceLogonProfileApplied = true;
+        unlock_service_runtime();
         return;
     }
+    if (!desired_settings_have_explicit_state(&desired, true, err, sizeof(err))) {
+        debug_log("startup: rejected logon profile %d: %s\n", logonSlot, err);
+        g_serviceLogonProfileApplied = true;
+        unlock_service_runtime();
+        return;
+    }
+
+    char readyDetail[256] = {};
+    if (!service_wait_for_driver_ready_for_startup_apply(readyDetail, sizeof(readyDetail))) {
+        debug_log("startup: skipped logon profile %d because driver was not ready: %s\n",
+            logonSlot,
+            readyDetail[0] ? readyDetail : "unknown");
+        g_serviceLogonProfileApplied = true;
+        unlock_service_runtime();
+        return;
+    }
+
+    char matchDetail[256] = {};
+    if (service_logon_profile_matches_live_state(&desired, matchDetail, sizeof(matchDetail))) {
+        debug_log("startup: logon profile %d already matches live state; skipping hardware writes\n", logonSlot);
+        populate_control_state(&g_serviceControlState);
+        g_serviceControlStateValid = true;
+        g_serviceActiveDesired = desired;
+        update_desired_lock_from_live_curve(&g_serviceActiveDesired);
+        g_serviceHasActiveDesired = true;
+        mark_service_telemetry_cache_updated("startup matched profile");
+        if (g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive) {
+            ensure_service_fan_runtime_thread();
+        } else {
+            stop_service_fan_runtime_thread();
+        }
+        g_serviceLogonProfileApplied = true;
+        set_last_apply_phase("startup apply: skipped already matching");
+        unlock_service_runtime();
+        return;
+    }
+    debug_log("startup: profile %d does not match live state, applying: %s\n",
+        logonSlot,
+        matchDetail[0] ? matchDetail : "difference detected");
+
     char result[512] = {};
+    set_last_apply_phase("startup apply: service apply desired");
     if (!service_apply_desired_settings(&desired, false, result, sizeof(result))) {
         debug_log("startup: failed to apply logon profile %d: %s\n", logonSlot, result);
     } else {
         debug_log("startup: applied logon profile %d\n", logonSlot);
     }
     g_serviceLogonProfileApplied = true;
+    unlock_service_runtime();
 }
 
 static void WINAPI service_control_handler(DWORD control) {
@@ -4885,12 +5701,11 @@ static void WINAPI service_control_handler(DWORD control) {
 
 static void WINAPI service_main(DWORD, LPWSTR*) {
     g_app.isServiceProcess = true;
-    g_debug_logging = (GetEnvironmentVariableA(APP_DEBUG_ENV, nullptr, 0) > 0);
-    // Path resolution is deferred to the first authorized pipe connection
-    // so that files are written to the active user's profile instead of SYSTEM's.
+    SetUnhandledExceptionFilter(green_curve_unhandled_exception_filter);
+    g_debug_logging = service_initial_debug_logging_enabled();
+    g_debugSessionStartTickMs = GetTickCount64();
     if (g_debug_logging) {
-        g_debugSessionStartTickMs = GetTickCount64();
-        debug_log_session_marker("BEGIN", "service", "service_main startup");
+        debug_log_session_marker("BEGIN", "service", "service_main bootstrap");
     }
     g_serviceStatusHandle = RegisterServiceCtrlHandlerW(L"GreenCurveService", service_control_handler);
     if (!g_serviceStatusHandle) return;
@@ -4899,6 +5714,11 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
     g_serviceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
     g_serviceStatus.dwCurrentState = SERVICE_START_PENDING;
     SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
+
+    service_resolve_active_user_paths_for_startup("service_main startup");
+    if (g_debug_logging) {
+        debug_log_session_marker("BEGIN", "service", "service_main startup");
+    }
 
     ensure_service_runtime_lock();
     g_serviceStopEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
@@ -4912,12 +5732,7 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
     g_serviceStatus.dwCurrentState = SERVICE_RUNNING;
     SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
 
-    // Initialize hardware so we can reset fans to auto on startup.
-    char hwDetail[256] = {};
-    if (hardware_initialize(hwDetail, sizeof(hwDetail))) {
-        char fanDetail[128] = {};
-        nvml_set_fan_auto(fanDetail, sizeof(fanDetail));
-    }
+    debug_log("service_main: deferring hardware writes until explicit request or guarded startup apply\n");
 
     // Attempt to apply the active user's logon profile so settings survive
     // service restarts even when the GUI tray is not running.
@@ -4996,7 +5811,48 @@ static void close_debug_log_file() {
         CloseHandle(g_debugLogFile);
         g_debugLogFile = INVALID_HANDLE_VALUE;
     }
+    g_debugLogOpenPath[0] = 0;
     LeaveCriticalSection(&g_debugLogLock);
+}
+
+static DWORD debug_log_file_attributes() {
+    return FILE_ATTRIBUTE_NORMAL | (g_app.isServiceProcess ? FILE_FLAG_WRITE_THROUGH : 0);
+}
+
+static HANDLE open_debug_log_file_locked(const char* debugPath) {
+    if (!debugPath || !debugPath[0]) return INVALID_HANDLE_VALUE;
+    char pathErr[256] = {};
+    ensure_parent_directory_for_file(debugPath, pathErr, sizeof(pathErr));
+    HANDLE h = CreateFileA(debugPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+        OPEN_ALWAYS, debug_log_file_attributes(), nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+        StringCchCopyA(g_debugLogOpenPath, ARRAY_COUNT(g_debugLogOpenPath), debugPath);
+    }
+    return h;
+}
+
+static void debug_log_rotate_if_needed_locked(const char* debugPath) {
+    if (!debugPath || !debugPath[0] || g_debugLogFile == INVALID_HANDLE_VALUE) return;
+
+    LARGE_INTEGER size = {};
+    if (!GetFileSizeEx(g_debugLogFile, &size) || size.QuadPart < DEBUG_LOG_MAX_BYTES) return;
+
+    FlushFileBuffers(g_debugLogFile);
+    CloseHandle(g_debugLogFile);
+    g_debugLogFile = INVALID_HANDLE_VALUE;
+    g_debugLogOpenPath[0] = 0;
+
+    char firstBackup[MAX_PATH] = {};
+    char secondBackup[MAX_PATH] = {};
+    if (FAILED(StringCchPrintfA(firstBackup, ARRAY_COUNT(firstBackup), "%s.1", debugPath)) ||
+        FAILED(StringCchPrintfA(secondBackup, ARRAY_COUNT(secondBackup), "%s.2", debugPath))) {
+        return;
+    }
+
+    DeleteFileA(secondBackup);
+    MoveFileExA(firstBackup, secondBackup, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    MoveFileExA(debugPath, firstBackup, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    g_debugLogFile = open_debug_log_file_locked(debugPath);
 }
 
 static void debug_log(const char* fmt, ...) {
@@ -5011,17 +5867,28 @@ static void debug_log(const char* fmt, ...) {
     StringCchCatA(buf + prefixLen, ARRAY_COUNT(buf) - prefixLen, message);
     OutputDebugStringA(buf);
 
-    // In service mode, don't write to file until user paths are resolved.
-    if (g_app.isServiceProcess && !g_serviceUserPathsResolved) return;
-
     EnterCriticalSection(&g_debugLogLock);
+    const char* debugPath = effective_debug_log_path();
 
-    if (g_debugLogFile == INVALID_HANDLE_VALUE) {
+    if (!g_app.isServiceProcess && !g_debugLogPath[0]) {
         char pathErr[256] = {};
         resolve_data_paths(pathErr, sizeof(pathErr));
-        const char* debugPath = debug_log_path();
-        ensure_parent_directory_for_file(debugPath, pathErr, sizeof(pathErr));
-        g_debugLogFile = CreateFileA(debugPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        debugPath = effective_debug_log_path();
+    }
+
+    if (g_debugLogFile != INVALID_HANDLE_VALUE && _stricmp(g_debugLogOpenPath, debugPath) != 0) {
+        FlushFileBuffers(g_debugLogFile);
+        CloseHandle(g_debugLogFile);
+        g_debugLogFile = INVALID_HANDLE_VALUE;
+        g_debugLogOpenPath[0] = 0;
+    }
+
+    if (g_debugLogFile == INVALID_HANDLE_VALUE) {
+        g_debugLogFile = open_debug_log_file_locked(debugPath);
+    }
+
+    if (g_debugLogFile != INVALID_HANDLE_VALUE) {
+        debug_log_rotate_if_needed_locked(debugPath);
     }
 
     if (g_debugLogFile != INVALID_HANDLE_VALUE) {
@@ -5030,15 +5897,15 @@ static void debug_log(const char* fmt, ...) {
             // Handle may have become invalid; close, reopen, and retry once.
             CloseHandle(g_debugLogFile);
             g_debugLogFile = INVALID_HANDLE_VALUE;
+            g_debugLogOpenPath[0] = 0;
 
-            char pathErr[256] = {};
-            resolve_data_paths(pathErr, sizeof(pathErr));
-            const char* debugPath = debug_log_path();
-            ensure_parent_directory_for_file(debugPath, pathErr, sizeof(pathErr));
-            g_debugLogFile = CreateFileA(debugPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            g_debugLogFile = open_debug_log_file_locked(debugPath);
             if (g_debugLogFile != INVALID_HANDLE_VALUE) {
                 WriteFile(g_debugLogFile, buf, (DWORD)strlen(buf), &written, nullptr);
             }
+        }
+        if (g_app.isServiceProcess && g_debugLogFile != INVALID_HANDLE_VALUE) {
+            FlushFileBuffers(g_debugLogFile);
         }
     }
 
@@ -5069,6 +5936,59 @@ static void debug_log_session_marker(const char* phase, const char* kind, const 
         debug_log("details=%s\n", extra);
     }
     debug_log("========================\n");
+}
+
+static void set_last_apply_phase(const char* phase) {
+    if (!phase || !phase[0]) {
+        g_lastApplyPhase[0] = 0;
+        return;
+    }
+    StringCchCopyA(g_lastApplyPhase, ARRAY_COUNT(g_lastApplyPhase), phase);
+    debug_log("apply phase: %s\n", g_lastApplyPhase);
+}
+
+static void write_crash_breadcrumb_direct(const char* text) {
+    if (!text || !text[0]) return;
+    OutputDebugStringA(text);
+
+    const char* path = effective_debug_log_path();
+    if (!path || !path[0]) return;
+    char pathErr[256] = {};
+    ensure_parent_directory_for_file(path, pathErr, sizeof(pathErr));
+
+    HANDLE h = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    WriteFile(h, text, (DWORD)strlen(text), &written, nullptr);
+    FlushFileBuffers(h);
+    CloseHandle(h);
+}
+
+static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* info) {
+    SYSTEMTIME now = {};
+    GetLocalTime(&now);
+    DWORD code = 0;
+    void* address = nullptr;
+    if (info && info->ExceptionRecord) {
+        code = info->ExceptionRecord->ExceptionCode;
+        address = info->ExceptionRecord->ExceptionAddress;
+    }
+
+    char text[1024] = {};
+    StringCchPrintfA(text, ARRAY_COUNT(text),
+        "\r\n%04u-%02u-%02u %02u:%02u:%02u.%03u CRASH pid=%lu tid=%lu exception=0x%08lX address=%p source=%s phase=%s serviceProcess=%d config=%s\r\n",
+        now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds,
+        GetCurrentProcessId(),
+        GetCurrentThreadId(),
+        code,
+        address,
+        g_pendingOperationSource[0] ? g_pendingOperationSource : "<none>",
+        g_lastApplyPhase[0] ? g_lastApplyPhase : "<none>",
+        g_app.isServiceProcess ? 1 : 0,
+        g_app.configPath[0] ? g_app.configPath : "<unset>");
+    write_crash_breadcrumb_direct(text);
+    return EXCEPTION_EXECUTE_HANDLER;
 }
 
 static bool write_text_file_atomic(const char* path, const char* data, size_t dataSize, char* err, size_t errSize) {
@@ -7262,9 +8182,9 @@ static bool parse_cli_options(LPWSTR cmdLine, CliOptions* opts) {
             opts->desired.fanMode = opts->desired.fanAuto ? FAN_MODE_AUTO : FAN_MODE_FIXED;
         } else if (wcsncmp(arg, L"--point", 7) == 0) {
             opts->recognized = true;
-            int idx = _wtoi(arg + 7);
+            int idx = -1;
             int v = 0;
-            if (idx < 0 || idx >= VF_NUM_POINTS || i + 1 >= argc || !parse_wide_int_arg(argv[++i], &v) || v <= 0) {
+            if (!parse_cli_point_arg_w(arg, &idx) || i + 1 >= argc || !parse_wide_int_arg(argv[++i], &v) || v <= 0) {
                 set_message(opts->error, sizeof(opts->error), "Invalid --pointN value");
                 LocalFree(argv);
                 return false;
@@ -7282,6 +8202,82 @@ static bool nvml_resolve(void** out, const char* name) {
     if (!g_nvml) return false;
     *out = (void*)GetProcAddress(g_nvml, name);
     return *out != nullptr;
+}
+
+static bool file_is_regular_no_reparse_w(const WCHAR* path) {
+    if (!path || !path[0]) return false;
+    DWORD attrs = GetFileAttributesW(path);
+    return attrs != INVALID_FILE_ATTRIBUTES &&
+        (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0 &&
+        (attrs & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+}
+
+static bool find_program_files_nvsmi_file_w(const WCHAR* fileName, WCHAR* out, size_t outCount) {
+    if (!fileName || !out || outCount == 0) return false;
+    out[0] = 0;
+
+    PWSTR programFiles = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_ProgramFiles, 0, nullptr, &programFiles)) && programFiles) {
+        WCHAR candidate[MAX_PATH] = {};
+        if (SUCCEEDED(StringCchPrintfW(candidate, ARRAY_COUNT(candidate),
+                L"%ls\\NVIDIA Corporation\\NVSMI\\%ls", programFiles, fileName)) &&
+            file_is_regular_no_reparse_w(candidate) &&
+            SUCCEEDED(StringCchCopyW(out, outCount, candidate))) {
+            CoTaskMemFree(programFiles);
+            return true;
+        }
+        CoTaskMemFree(programFiles);
+    }
+
+    WCHAR fallback[MAX_PATH] = {};
+    if (SUCCEEDED(StringCchPrintfW(fallback, ARRAY_COUNT(fallback),
+            L"C:\\Program Files\\NVIDIA Corporation\\NVSMI\\%ls", fileName)) &&
+        file_is_regular_no_reparse_w(fallback) &&
+        SUCCEEDED(StringCchCopyW(out, outCount, fallback))) {
+        return true;
+    }
+    return false;
+}
+
+static HMODULE load_system_library_a(const char* name) {
+    if (!name || !name[0] || strchr(name, '\\') || strchr(name, '/')) return nullptr;
+    char systemDir[MAX_PATH] = {};
+    UINT systemLen = GetSystemDirectoryA(systemDir, ARRAY_COUNT(systemDir));
+    if (systemLen == 0 || systemLen >= ARRAY_COUNT(systemDir)) return nullptr;
+    char path[MAX_PATH] = {};
+    if (FAILED(StringCchPrintfA(path, ARRAY_COUNT(path), "%s\\%s", systemDir, name))) return nullptr;
+    return LoadLibraryA(path);
+}
+
+static bool find_trusted_nvidia_smi_path_w(WCHAR* out, size_t outCount) {
+    if (!out || outCount == 0) return false;
+    out[0] = 0;
+    if (find_program_files_nvsmi_file_w(L"nvidia-smi.exe", out, outCount)) return true;
+
+    WCHAR systemDir[MAX_PATH] = {};
+    UINT systemLen = GetSystemDirectoryW(systemDir, ARRAY_COUNT(systemDir));
+    if (systemLen == 0 || systemLen >= ARRAY_COUNT(systemDir)) return false;
+    WCHAR candidate[MAX_PATH] = {};
+    if (FAILED(StringCchPrintfW(candidate, ARRAY_COUNT(candidate), L"%ls\\nvidia-smi.exe", systemDir))) return false;
+    if (!file_is_regular_no_reparse_w(candidate)) return false;
+    return SUCCEEDED(StringCchCopyW(out, outCount, candidate));
+}
+
+static bool find_trusted_nvidia_smi_path_a(char* out, size_t outSize) {
+    if (!out || outSize == 0) return false;
+    out[0] = 0;
+    WCHAR pathW[MAX_PATH] = {};
+    if (!find_trusted_nvidia_smi_path_w(pathW, ARRAY_COUNT(pathW))) return false;
+    return copy_wide_to_ansi(pathW, out, (int)outSize);
+}
+
+static HMODULE load_trusted_nvml_library() {
+    WCHAR nvmlPath[MAX_PATH] = {};
+    if (find_program_files_nvsmi_file_w(L"nvml.dll", nvmlPath, ARRAY_COUNT(nvmlPath))) {
+        HMODULE module = LoadLibraryW(nvmlPath);
+        if (module) return module;
+    }
+    return load_system_library_a("nvml.dll");
 }
 
 static bool nvml_ensure_ready();
@@ -7529,6 +8525,9 @@ static bool nvml_set_fan_auto(char* detail, size_t detailSize) {
     for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
         bool changed = false;
         if (g_nvml_api.setDefaultFanSpeed) {
+            char phase[128] = {};
+            StringCchPrintfA(phase, ARRAY_COUNT(phase), "Fan auto default write: fan=%u", fan);
+            set_last_apply_phase(phase);
             nvmlReturn_t r = g_nvml_api.setDefaultFanSpeed(g_app.nvmlDevice, fan);
             if (r != NVML_SUCCESS) {
                 set_message(detail, detailSize, "fan %u: %s", fan, nvml_err_name(r));
@@ -7537,6 +8536,9 @@ static bool nvml_set_fan_auto(char* detail, size_t detailSize) {
             changed = true;
         }
         if (g_nvml_api.setFanControlPolicy) {
+            char phase[128] = {};
+            StringCchPrintfA(phase, ARRAY_COUNT(phase), "Fan auto policy write: fan=%u", fan);
+            set_last_apply_phase(phase);
             nvmlReturn_t r = g_nvml_api.setFanControlPolicy(g_app.nvmlDevice, fan, NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW);
             if (r == NVML_SUCCESS) {
                 changed = true;
@@ -7611,8 +8613,14 @@ static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_
     }
     for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
         if (g_nvml_api.setFanControlPolicy) {
+            char phase[128] = {};
+            StringCchPrintfA(phase, ARRAY_COUNT(phase), "Fan manual policy write: fan=%u", fan);
+            set_last_apply_phase(phase);
             g_nvml_api.setFanControlPolicy(g_app.nvmlDevice, fan, NVML_FAN_POLICY_MANUAL);
         }
+        char phase[128] = {};
+        StringCchPrintfA(phase, ARRAY_COUNT(phase), "Fan manual speed write: fan=%u pct=%d", fan, pct);
+        set_last_apply_phase(phase);
         nvmlReturn_t r = g_nvml_api.setFanSpeed(g_app.nvmlDevice, fan, (unsigned int)pct);
         if (r != NVML_SUCCESS) {
             set_message(detail, detailSize, "fan %u: %s", fan, nvml_err_name(r));
@@ -7679,8 +8687,7 @@ static bool fan_setting_matches_current(int wantMode, int wantPct, const FanCurv
 static bool nvml_ensure_ready() {
     if (g_app.nvmlReady && g_app.nvmlDevice) return true;
     if (!g_nvml) {
-        g_nvml = LoadLibraryA("C:\\Program Files\\NVIDIA Corporation\\NVSMI\\nvml.dll");
-        if (!g_nvml) g_nvml = LoadLibraryA("nvml.dll");
+        g_nvml = load_trusted_nvml_library();
     }
     if (!g_nvml) return false;
 
@@ -7750,6 +8757,9 @@ static bool refresh_global_state(char* detail, size_t detailSize) {
     (void)current_applied_gpu_offset_excludes_low_points();
     (void)current_applied_gpu_offset_mhz();
     initialize_gui_fan_settings_from_live_state();
+    if (ok1 || ok2 || ok3 || ok4) {
+        mark_service_telemetry_cache_updated("global refresh");
+    }
     update_tray_icon();
     return ok1 || ok2 || ok3 || ok4;
 }
@@ -7909,6 +8919,12 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
         if (!anyPendingWrite) break;
 
         memcpy(&buf[backend->controlMaskOffset], writeMask, sizeof(writeMask));
+        char phase[128] = {};
+        StringCchPrintfA(phase, ARRAY_COUNT(phase), "VF curve batch pass: pass=%d points=%d", pass + 1, pointsInPass);
+        set_last_apply_phase(phase);
+        debug_log("curve batch pass %d begin: points=%d maskBytes=%02X%02X%02X%02X\n",
+            pass + 1, pointsInPass,
+            writeMask[0], writeMask[1], writeMask[2], writeMask[3]);
         int setRet = setFunc(g_app.gpuHandle, buf);
         debug_log("curve batch pass %d: points=%d ret=%d maskBytes=%02X%02X%02X%02X\n",
             pass + 1, pointsInPass, setRet,
@@ -8501,7 +9517,7 @@ static void flush_desktop_composition() {
     static dwm_flush_t dwmFlush = nullptr;
     static bool resolved = false;
     if (!resolved) {
-        HMODULE dwm = LoadLibraryA("dwmapi.dll");
+        HMODULE dwm = load_system_library_a("dwmapi.dll");
         if (dwm) dwmFlush = (dwm_flush_t)GetProcAddress(dwm, "DwmFlush");
         resolved = true;
     }
@@ -8550,7 +9566,7 @@ static void initialize_dark_mode_support() {
     if (s_darkModeResolved) return;
     s_darkModeResolved = true;
 
-    HMODULE ux = LoadLibraryA("uxtheme.dll");
+    HMODULE ux = load_system_library_a("uxtheme.dll");
     if (!ux) return;
 
     s_fnAllowDarkModeForWindow = (AllowDarkModeForWindowFn)GetProcAddress(ux, MAKEINTRESOURCEA(133));
@@ -8704,7 +9720,7 @@ static unsigned int colorref_to_argb(COLORREF c) {
 static bool gdiplus_ensure() {
     if (s_gdp_tried) return s_gdp_ok;
     s_gdp_tried = true;
-    s_gdp_dll = LoadLibraryA("gdiplus.dll");
+    s_gdp_dll = load_system_library_a("gdiplus.dll");
     if (!s_gdp_dll) return false;
     auto r = [](const char* n) -> void* { return (void*)GetProcAddress(s_gdp_dll, n); };
     GdpStartupFn startup = (GdpStartupFn)r("GdiplusStartup");
@@ -8884,7 +9900,7 @@ static void style_combo_control(HWND hwnd) {
     static set_window_theme_t setWindowTheme = nullptr;
     static bool resolved = false;
     if (!resolved) {
-        HMODULE ux = LoadLibraryA("uxtheme.dll");
+        HMODULE ux = load_system_library_a("uxtheme.dll");
         if (ux) setWindowTheme = (set_window_theme_t)GetProcAddress(ux, "SetWindowTheme");
         resolved = true;
     }

@@ -42,6 +42,30 @@ bool parse_int_strict(const char* s, int* out) {
     return true;
 }
 
+bool parse_cli_point_arg_w(const WCHAR* arg, int* pointIndexOut) {
+    if (pointIndexOut) *pointIndexOut = -1;
+    if (!arg || wcsncmp(arg, L"--point", 7) != 0) return false;
+
+    const WCHAR* digits = arg + 7;
+    if (!*digits) return false;
+
+    int value = 0;
+    for (const WCHAR* p = digits; *p; ++p) {
+        if (*p < L'0' || *p > L'9') return false;
+        value = value * 10 + (int)(*p - L'0');
+        if (value >= VF_NUM_POINTS) return false;
+    }
+
+    if (pointIndexOut) *pointIndexOut = value;
+    return true;
+}
+
+bool gpu_family_uses_best_guess_backend(GpuFamily family) {
+    return family == GPU_FAMILY_PASCAL ||
+        family == GPU_FAMILY_TURING ||
+        family == GPU_FAMILY_AMPERE;
+}
+
 void set_message(char* dst, size_t dstSize, const char* fmt, ...) {
     if (!dst || dstSize == 0) return;
 
@@ -73,13 +97,45 @@ bool parse_fan_value(const char* text, bool* isAuto, int* pct) {
     return true;
 }
 
+static HANDLE g_configInterprocessMutex = nullptr;
+
+static HANDLE ensure_config_interprocess_mutex() {
+    if (!g_configInterprocessMutex) {
+        g_configInterprocessMutex = CreateMutexA(nullptr, FALSE, "Local\\GreenCurveConfigMutex");
+    }
+    return g_configInterprocessMutex;
+}
+
+bool enter_config_storage_lock(HANDLE* acquiredMutex) {
+    if (acquiredMutex) *acquiredMutex = nullptr;
+    EnterCriticalSection(&g_configLock);
+
+    HANDLE mutex = ensure_config_interprocess_mutex();
+    if (!mutex) return true;
+
+    DWORD waitResult = WaitForSingleObject(mutex, 5000);
+    if (waitResult == WAIT_OBJECT_0 || waitResult == WAIT_ABANDONED) {
+        if (acquiredMutex) *acquiredMutex = mutex;
+        return true;
+    }
+
+    LeaveCriticalSection(&g_configLock);
+    return false;
+}
+
+void leave_config_storage_lock(HANDLE acquiredMutex) {
+    if (acquiredMutex) ReleaseMutex(acquiredMutex);
+    LeaveCriticalSection(&g_configLock);
+}
+
 bool config_section_has_keys(const char* path, const char* section) {
     if (!path || !section) return false;
 
     char keys[256] = {};
-    EnterCriticalSection(&g_configLock);
+    HANDLE configMutex = nullptr;
+    if (!enter_config_storage_lock(&configMutex)) return false;
     DWORD n = GetPrivateProfileStringA(section, nullptr, "", keys, ARRAY_COUNT(keys), path);
-    LeaveCriticalSection(&g_configLock);
+    leave_config_storage_lock(configMutex);
     return n > 0 && keys[0] != 0;
 }
 
@@ -87,9 +143,10 @@ int get_config_int(const char* path, const char* section, const char* key, int d
     if (!path || !section || !key) return defaultVal;
 
     char buf[32] = {};
-    EnterCriticalSection(&g_configLock);
+    HANDLE configMutex = nullptr;
+    if (!enter_config_storage_lock(&configMutex)) return defaultVal;
     GetPrivateProfileStringA(section, key, "", buf, sizeof(buf), path);
-    LeaveCriticalSection(&g_configLock);
+    leave_config_storage_lock(configMutex);
     trim_ascii(buf);
     if (!buf[0]) return defaultVal;
 
@@ -103,9 +160,10 @@ bool set_config_int(const char* path, const char* section, const char* key, int 
 
     char buf[32] = {};
     StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d", value);
-    EnterCriticalSection(&g_configLock);
+    HANDLE configMutex = nullptr;
+    if (!enter_config_storage_lock(&configMutex)) return false;
     bool ok = WritePrivateProfileStringA(section, key, buf, path) != FALSE;
-    LeaveCriticalSection(&g_configLock);
+    leave_config_storage_lock(configMutex);
     if (ok) invalidate_tray_profile_cache();
     return ok;
 }

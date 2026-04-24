@@ -9,6 +9,16 @@ NvmlApi g_nvml_api = {};
 HMODULE g_nvml = nullptr;
 bool g_debug_logging = false;
 
+static HMODULE load_system_library_local_a(const char* name) {
+    if (!name || !name[0] || strchr(name, '\\') || strchr(name, '/')) return nullptr;
+    char systemDir[MAX_PATH] = {};
+    UINT systemLen = GetSystemDirectoryA(systemDir, ARRAY_COUNT(systemDir));
+    if (systemLen == 0 || systemLen >= ARRAY_COUNT(systemDir)) return nullptr;
+    char path[MAX_PATH] = {};
+    if (FAILED(StringCchPrintfA(path, ARRAY_COUNT(path), "%s\\%s", systemDir, name))) return nullptr;
+    return LoadLibraryA(path);
+}
+
 int nvmin(int a, int b) {
     return a < b ? a : b;
 }
@@ -35,7 +45,7 @@ void init_dpi() {
         }
     }
 
-    HMODULE shcore = LoadLibraryA("shcore.dll");
+    HMODULE shcore = load_system_library_local_a("shcore.dll");
     if (shcore) {
         typedef HRESULT (WINAPI *GetDpiForMonitor_t)(HANDLE, int, UINT*, UINT*);
         auto pGetDpiForMonitor = (GetDpiForMonitor_t)GetProcAddress(shcore, "GetDpiForMonitor");
