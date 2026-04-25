@@ -132,23 +132,27 @@ static bool handle_cli(LPWSTR wCmdLine) {
         if (logonSlot < 1 || logonSlot > CONFIG_NUM_SLOTS) {
             CLI_LOG("ERROR: No valid logon profile slot is configured. Silent logon apply was skipped.\n");
             fclose(logf);
+            g_cliExitCode = 1;
             return true;
         }
         if (!is_profile_slot_saved(g_app.configPath, logonSlot)) {
             CLI_LOG("ERROR: Logon profile slot %d is empty. Silent logon apply was skipped.\n", logonSlot);
             fclose(logf);
+            g_cliExitCode = 1;
             return true;
         }
         if (!load_profile_from_config(g_app.configPath, logonSlot, &cfg, err, sizeof(err))) {
             write_error_report_log_for_user_failure("CLI profile load failed", err);
             CLI_LOG("ERROR: %s\n", err);
             fclose(logf);
+            g_cliExitCode = 1;
             return true;
         }
         if (!desired_settings_have_explicit_state(&cfg, true, err, sizeof(err))) {
             write_error_report_log_for_user_failure("CLI logon profile rejected", err);
             CLI_LOG("ERROR: %s\n", err);
             fclose(logf);
+            g_cliExitCode = 1;
             return true;
         }
 
@@ -172,8 +176,10 @@ static bool handle_cli(LPWSTR wCmdLine) {
         CLI_LOG("%s\n", result);
         if (!ok) {
             fclose(logf);
+            g_cliExitCode = 1;
             return true;
         }
+        g_cliExitCode = 0;
     } else if (desired_has_any_action(&opts.desired)) {
         char result[512] = {};
         set_pending_operation_source("CLI direct apply");
@@ -181,8 +187,10 @@ static bool handle_cli(LPWSTR wCmdLine) {
         CLI_LOG("%s\n", result);
         if (!ok) {
             fclose(logf);
+            g_cliExitCode = 1;
             return true;
         }
+        g_cliExitCode = 0;
     }
 
     if (opts.reset) {

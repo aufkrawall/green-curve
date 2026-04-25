@@ -4344,6 +4344,10 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         }
     } else {
         clear_service_authoritative_state();
+        set_last_apply_phase("service apply: capture partial state");
+        populate_control_state(&g_serviceControlState);
+        g_serviceControlStateValid = true;
+        mark_service_telemetry_cache_updated("service apply partial");
         g_serviceHasActiveDesired = false;
         memset(&g_serviceActiveDesired, 0, sizeof(g_serviceActiveDesired));
     }
@@ -5498,10 +5502,13 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     populate_service_snapshot(&response.snapshot);
                     if (g_serviceHasActiveDesired) response.desired = g_serviceActiveDesired;
                     if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
-                    debug_log("service response APPLY: ok=%d gpu=%d exclude=%d fanMode=%d fanPct=%d\n",
+                    debug_log("service response APPLY: ok=%d controlValid=%d gpu=%d exclude=%d mem=%d power=%d fanMode=%d fanPct=%d\n",
                         ok ? 1 : 0,
+                        response.controlState.valid ? 1 : 0,
                         response.controlState.gpuOffsetMHz,
                         response.controlState.gpuOffsetExcludeLow70 ? 1 : 0,
+                        response.controlState.memOffsetMHz,
+                        response.controlState.powerLimitPct,
                         response.controlState.fanMode,
                         response.controlState.fanFixedPercent);
                     unlock_service_runtime();

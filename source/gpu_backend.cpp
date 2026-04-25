@@ -513,28 +513,68 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
             if (batchedMinCi < 0) batchedMinCi = ci;
             batchedMaxCi = ci;
         }
-        // Sanity-check for extreme offsets that are likely to cause driver issues.
-        int extremeOffsets = 0;
+        // Warn about unusually large offsets, but only refuse values beyond the
+        // driver-reported VF offset range. The former fixed 600 MHz cutoff was
+        // too conservative for cold-boot baselines where a valid locked profile
+        // can need larger transition-point deltas.
+        int highOffsetWarnings = 0;
+        int hardLimitOffsets = 0;
+        int maxAbsOffsetKHz = 0;
+        int maxAbsOffsetCi = -1;
+        int rangeMinKHz = 0;
+        int rangeMaxKHz = 0;
+        bool rangeKnown = get_curve_offset_range_khz(&rangeMinKHz, &rangeMaxKHz);
+        int hardLimitKHz = rangeKnown
+            ? nvmax(abs(rangeMinKHz), abs(rangeMaxKHz))
+            : 1000000;
+        if (hardLimitKHz <= 0) hardLimitKHz = 1000000;
         for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
             if (!targetCurveMask[ci]) continue;
-            if (abs(targetCurveOffsets[ci]) > 600000) { // > 600 MHz
-                extremeOffsets++;
-                debug_log("apply curve batch: warning point %d target offset %d kHz exceeds 600 MHz sanity limit\n",
-                    ci, targetCurveOffsets[ci]);
+            int absOffsetKHz = abs(targetCurveOffsets[ci]);
+            if (absOffsetKHz > maxAbsOffsetKHz) {
+                maxAbsOffsetKHz = absOffsetKHz;
+                maxAbsOffsetCi = ci;
+            }
+            if (absOffsetKHz > 600000) { // > 600 MHz
+                highOffsetWarnings++;
+                debug_log("apply curve batch: warning point %d target offset %d kHz exceeds 600 MHz warning level; driver range %d..%d kHz known=%d\n",
+                    ci,
+                    targetCurveOffsets[ci],
+                    rangeMinKHz,
+                    rangeMaxKHz,
+                    rangeKnown ? 1 : 0);
+            }
+            if (absOffsetKHz > hardLimitKHz) {
+                hardLimitOffsets++;
+                debug_log("apply curve batch: refusing point %d target offset %d kHz beyond hard range limit %d kHz\n",
+                    ci,
+                    targetCurveOffsets[ci],
+                    hardLimitKHz);
             }
         }
         char curveVerifyDetail[256] = {};
         bool curveRequestOk = true;
-        if (extremeOffsets > 0) {
-            set_last_apply_phase("apply: VF curve batch refused extreme offsets");
-            debug_log("apply curve batch: refused %d point(s) with target offsets beyond 600 MHz sanity limit\n", extremeOffsets);
+        if (hardLimitOffsets > 0) {
+            set_last_apply_phase("apply: VF curve batch refused out-of-range offsets");
+            debug_log("apply curve batch: refused %d point(s) beyond hard range limit %d kHz\n",
+                hardLimitOffsets,
+                hardLimitKHz);
             curveBatchOk = false;
             curveRequestOk = false;
             set_message(curveVerifyDetail, sizeof(curveVerifyDetail),
-                "Refused VF curve batch because %d point(s) exceeded the 600 MHz safety limit", extremeOffsets);
+                "Refused VF curve batch because %d point(s) exceeded the driver VF offset range", hardLimitOffsets);
         } else {
-            debug_log("apply curve batch: points=%d range=%d..%d passes=%d\n",
-                batchedCount, batchedMinCi, batchedMaxCi, hasLock ? 3 : 2);
+            debug_log("apply curve batch: points=%d range=%d..%d passes=%d offsetRange=%d..%d known=%d highWarnings=%d maxAbsPoint=%d maxAbs=%d\n",
+                batchedCount,
+                batchedMinCi,
+                batchedMaxCi,
+                hasLock ? 3 : 2,
+                rangeMinKHz,
+                rangeMaxKHz,
+                rangeKnown ? 1 : 0,
+                highOffsetWarnings,
+                maxAbsOffsetCi,
+                maxAbsOffsetKHz);
             curveBatchOk = apply_curve_offsets_verified(targetCurveOffsets, targetCurveMask, hasLock ? 3 : 2);
             bool settledOffsetsOk = false;
             if (!read_live_curve_snapshot_settled(6, 25, &settledOffsetsOk)) {
