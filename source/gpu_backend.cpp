@@ -347,18 +347,26 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
         }
 
         if (hasLock && lockMhz > 0) {
-            // First apply any explicit (non-tail) curve points from the desired settings
-            for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-                if (!desired->hasCurvePoint[ci]) continue;
-                if (lockedTailMask[ci]) continue;
-                if (!originalCurvePopulated[ci]) continue;
-                long long base = (long long)originalCurveFreqkHz[ci] - (long long)originalCurveOffsets[ci];
-                if (base < 0) base = 0;
-                long long target = (long long)desired->curvePointMHz[ci] * 1000LL;
-                targetCurveOffsets[ci] = clamp_freq_delta_khz((int)(target - base));
-                targetCurveMask[ci] = true;
+            // When gpuPolicyViaCurveBatch is active, the selective path has already
+            // written correct per-point +offset deltas into targetCurveOffsets.
+            // Skip the boost-region loop entirely -- it uses (profileAbsoluteTarget - liveBase)
+            // which balloons at cold boot when liveBase is elevated, causing driver crashes.
+            // Only the tail-flatten loop (fixed lockMhz) still needs to run.
+            // (gpu_backend.cpp fix: boost-via-selective path)
+            if (!gpuPolicyViaCurveBatch) {
+                // Non-selective path: apply explicit (non-tail) curve points
+                for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+                    if (!desired->hasCurvePoint[ci]) continue;
+                    if (lockedTailMask[ci]) continue;
+                    if (!originalCurvePopulated[ci]) continue;
+                    long long base = (long long)originalCurveFreqkHz[ci] - (long long)originalCurveOffsets[ci];
+                    if (base < 0) base = 0;
+                    long long target = (long long)desired->curvePointMHz[ci] * 1000LL;
+                    targetCurveOffsets[ci] = clamp_freq_delta_khz((int)(target - base));
+                    targetCurveMask[ci] = true;
+                }
             }
-            // Then apply the lock tail
+            // Tail-flatten loop: always runs (both selective and non-selective paths)
             for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
                 if (!lockedTailMask[ci]) continue;
                 if (!originalCurvePopulated[ci]) continue;
