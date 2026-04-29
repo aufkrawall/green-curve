@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+// SPDX-License-Identifier: MIT
+
 static int fan_curve_dialog_combo_value(HWND combo, int fallback) {
     if (!combo) return fallback;
     int sel = (int)SendMessageA(combo, CB_GETCURSEL, 0, 0);
@@ -619,16 +622,16 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
             HDC hdcEdit = (HDC)wParam;
             SetTextColor(hdcEdit, COL_TEXT);
             SetBkColor(hdcEdit, COL_INPUT);
-            static HBRUSH hEditBrush = CreateSolidBrush(COL_INPUT);
-            return (LRESULT)hEditBrush;
+            if (!g_fanCurveDialog.hEditBrush) g_fanCurveDialog.hEditBrush = CreateSolidBrush(COL_INPUT);
+            return (LRESULT)g_fanCurveDialog.hEditBrush;
         }
 
         case WM_CTLCOLORLISTBOX: {
             HDC hdcList = (HDC)wParam;
             SetTextColor(hdcList, COL_TEXT);
             SetBkColor(hdcList, COL_INPUT);
-            static HBRUSH hListBrush = CreateSolidBrush(COL_INPUT);
-            return (LRESULT)hListBrush;
+            if (!g_fanCurveDialog.hListBrush) g_fanCurveDialog.hListBrush = CreateSolidBrush(COL_INPUT);
+            return (LRESULT)g_fanCurveDialog.hListBrush;
         }
 
         case WM_CTLCOLORSTATIC: {
@@ -642,13 +645,13 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
             if (isEditInput || hCtl == g_fanCurveDialog.intervalCombo || hCtl == g_fanCurveDialog.hysteresisCombo) {
                 SetTextColor(hdcStatic, COL_TEXT);
                 SetBkColor(hdcStatic, COL_INPUT);
-                static HBRUSH hInputBrush = CreateSolidBrush(COL_INPUT);
-                return (LRESULT)hInputBrush;
+                if (!g_fanCurveDialog.hInputBrush) g_fanCurveDialog.hInputBrush = CreateSolidBrush(COL_INPUT);
+                return (LRESULT)g_fanCurveDialog.hInputBrush;
             }
             SetTextColor(hdcStatic, COL_LABEL);
             SetBkColor(hdcStatic, COL_BG);
-            static HBRUSH hStaticBrush = CreateSolidBrush(COL_BG);
-            return (LRESULT)hStaticBrush;
+            if (!g_fanCurveDialog.hStaticBrush) g_fanCurveDialog.hStaticBrush = CreateSolidBrush(COL_BG);
+            return (LRESULT)g_fanCurveDialog.hStaticBrush;
         }
 
         case WM_CLOSE:
@@ -656,6 +659,10 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
             return 0;
 
         case WM_DESTROY:
+            if (g_fanCurveDialog.hEditBrush) { DeleteObject(g_fanCurveDialog.hEditBrush); g_fanCurveDialog.hEditBrush = nullptr; }
+            if (g_fanCurveDialog.hListBrush) { DeleteObject(g_fanCurveDialog.hListBrush); g_fanCurveDialog.hListBrush = nullptr; }
+            if (g_fanCurveDialog.hInputBrush) { DeleteObject(g_fanCurveDialog.hInputBrush); g_fanCurveDialog.hInputBrush = nullptr; }
+            if (g_fanCurveDialog.hStaticBrush) { DeleteObject(g_fanCurveDialog.hStaticBrush); g_fanCurveDialog.hStaticBrush = nullptr; }
             g_fanCurveDialog.hwnd = nullptr;
             if (g_app.hMainWnd) {
                 EnableWindow(g_app.hMainWnd, TRUE);

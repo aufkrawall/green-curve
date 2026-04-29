@@ -1,8 +1,12 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+// SPDX-License-Identifier: MIT
+
 #include "app_shared.h"
 
 int g_dpi = 96;
 float g_scale = 1.0f;
 CRITICAL_SECTION g_configLock = {};
+CRITICAL_SECTION g_appLock = {};
 
 AppData g_app = {};
 NvmlApi g_nvml_api = {};
@@ -33,6 +37,7 @@ int dp(int px) {
 
 void init_dpi() {
     InitializeCriticalSection(&g_configLock);
+    InitializeCriticalSection(&g_appLock);
 
     HMODULE user32 = GetModuleHandleA("user32.dll");
     if (user32) {

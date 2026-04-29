@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+// SPDX-License-Identifier: MIT
+
 #include "app_shared.h"
 
 void trim_ascii(char* s) {
@@ -61,7 +64,8 @@ bool parse_cli_point_arg_w(const WCHAR* arg, int* pointIndexOut) {
 }
 
 bool gpu_family_uses_best_guess_backend(GpuFamily family) {
-    return family == GPU_FAMILY_PASCAL ||
+    return family == GPU_FAMILY_UNKNOWN ||
+        family == GPU_FAMILY_PASCAL ||
         family == GPU_FAMILY_TURING ||
         family == GPU_FAMILY_AMPERE;
 }

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+// SPDX-License-Identifier: MIT
+
 #ifndef GREEN_CURVE_APP_SHARED_H
 #define GREEN_CURVE_APP_SHARED_H
 
@@ -33,6 +36,7 @@ int nvmax(int a, int b);
 extern int g_dpi;
 extern float g_scale;
 extern CRITICAL_SECTION g_configLock;
+extern CRITICAL_SECTION g_appLock;
 
 int dp(int px);
 void init_dpi();
@@ -55,7 +59,13 @@ void init_dpi();
 #define TRAY_ICON_FAN_ID    113
 #define TRAY_ICON_OC_FAN_ID 114
 #define APP_NAME            "Green Curve"
-#define APP_VERSION         "0.11"
+#ifndef APP_VERSION
+#define APP_VERSION         "0.12"
+#endif
+#ifndef APP_BUILD_NUMBER
+#define APP_BUILD_NUMBER    0
+#endif
+#define APP_EDITION         "Timmy Edition"
 #define APP_TITLE           APP_NAME " v" APP_VERSION
 #define APP_CLASS_NAME      "GreenCurveClass"
 #define APP_EXE_NAME        "greencurve.exe"
@@ -90,12 +100,13 @@ void init_dpi();
 #define START_ON_LOGON_CHECK_ID 2031
 #define FAN_MODE_COMBO_ID   2032
 #define FAN_CURVE_BTN_ID    2033
-#define GPU_OFFSET_EXCLUDE_LOW_CHECK_ID 2034
+#define GPU_OFFSET_EXCLUDE_LOW_EDIT_ID 2034
 #define LOGON_HINT_ID       2035
 #define START_ON_LOGON_LABEL_ID 2036
 #define SERVICE_ENABLE_CHECK_ID 2037
 #define SERVICE_ENABLE_LABEL_ID 2038
 #define SERVICE_STATUS_ID   2039
+#define GPU_SELECT_COMBO_ID 2040
 #define LOCK_BASE_ID        3000
 #define GPU_OFFSET_ID       2010
 #define MEM_OFFSET_ID       2011
@@ -110,6 +121,7 @@ void init_dpi();
 #define FAN_CURVE_MAX_HYSTERESIS_C 10
 
 #define MAX_GPU_FANS        8
+#define MAX_GPU_ADAPTERS    8
 #define CONFIG_FILE_NAME    "config.ini"
 #define STARTUP_TASK_PREFIX "Green Curve Startup - "
 #define CONFIG_NUM_SLOTS    5
@@ -406,7 +418,7 @@ struct ControlState {
     bool valid;
     bool hasGpuOffset;
     int gpuOffsetMHz;
-    bool gpuOffsetExcludeLow70;
+    int gpuOffsetExcludeLowCount;
     bool hasMemOffset;
     int memOffsetMHz;
     bool hasPowerLimit;
@@ -417,6 +429,26 @@ struct ControlState {
     int fanCurrentPercent;
     int fanCurrentTemperatureC;
     FanCurveConfig fanCurve;
+};
+
+struct GpuAdapterInfo {
+    bool valid;
+    bool pciInfoValid;
+    bool vfReadSupported;
+    bool vfWriteSupported;
+    bool vfBestGuess;
+    unsigned int nvapiIndex;
+    unsigned int nvmlIndex;
+    unsigned int deviceId;
+    unsigned int subSystemId;
+    unsigned int pciRevisionId;
+    unsigned int extDeviceId;
+    unsigned int pciDomain;
+    unsigned int pciBus;
+    unsigned int pciDevice;
+    unsigned int pciFunction;
+    GpuFamily family;
+    char name[128];
 };
 
 struct AppData {
@@ -430,7 +462,7 @@ struct AppData {
     HWND hResetBtn;
     HWND hLicenseBtn;
     HWND hGpuOffsetEdit;
-    HWND hGpuOffsetExcludeLowCheck;
+    HWND hGpuOffsetExcludeLowEdit;
     HWND hGpuOffsetExcludeLowLabel;
     HWND hMemOffsetEdit;
     HWND hPowerLimitEdit;
@@ -454,16 +486,32 @@ struct AppData {
     HWND hServiceEnableCheck;
     HWND hServiceEnableLabel;
     HWND hServiceStatusLabel;
+    HWND hGpuSelectCombo;
 
     HBRUSH hWindowClassBrush;
     HANDLE hStartupSyncThread;
     bool startupSyncInFlight;
+    bool applyInFlight;
     HDC hMemDC;
     HBITMAP hMemBmp;
     HBITMAP hOldBmp;
 
+    // Cached GDI objects for graph rendering
+    HPEN hCachedGridPen;
+    HPEN hCachedAxisPen;
+    HFONT hCachedFont;
+    HFONT hCachedFontSmall;
+
     HMODULE hNvApi;
     GPU_HANDLE gpuHandle;
+    unsigned int selectedGpuIndex;
+    unsigned int selectedNvmlIndex;
+    bool selectedGpuExplicit;
+    bool selectedGpuIdentityValid;
+    bool selectedGpuOrdinalFallback;
+    GpuAdapterInfo adapters[MAX_GPU_ADAPTERS];
+    unsigned int adapterCount;
+    GpuAdapterInfo selectedGpu;
     char gpuName[256];
     char configPath[MAX_PATH];
     unsigned int gpuArchitecture;
@@ -540,9 +588,9 @@ struct AppData {
     bool guiCurvePointExplicit[VF_NUM_POINTS];
     bool guiStateDirty;
     int guiGpuOffsetMHz;
-    bool guiGpuOffsetExcludeLow70;
+    int guiGpuOffsetExcludeLowCount;
     int appliedGpuOffsetMHz;
-    bool appliedGpuOffsetExcludeLow70;
+    int appliedGpuOffsetExcludeLowCount;
 
     int guiFanMode;
     int guiFanFixedPercent;
@@ -567,6 +615,7 @@ struct AppData {
     bool backgroundServiceRunning;
     bool backgroundServiceAvailable;
     bool backgroundServiceBroken;
+    char backgroundServiceError[256];
     bool serviceSnapshotAuthoritative;
     bool serviceControlStateValid;
     ControlState serviceControlState;
@@ -595,7 +644,7 @@ struct DesiredSettings {
     bool lockTracksAnchor;
     bool hasGpuOffset;
     int gpuOffsetMHz;
-    bool gpuOffsetExcludeLow70;
+    int gpuOffsetExcludeLowCount;
     bool hasMemOffset;
     int memOffsetMHz;
     bool hasPowerLimit;
@@ -605,7 +654,28 @@ struct DesiredSettings {
     int fanMode;
     int fanPercent;
     FanCurveConfig fanCurve;
+    bool resetOcBeforeApply;
 };
+
+static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
+    if (!d) return;
+    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+        if (d->curvePointMHz[ci] > 5000u) d->curvePointMHz[ci] = 5000u;
+    }
+    if (d->hasPowerLimit && (d->powerLimitPct < 50 || d->powerLimitPct > 150)) {
+        d->powerLimitPct = d->powerLimitPct < 50 ? 50 : 150;
+    }
+    if (d->hasGpuOffset && (d->gpuOffsetMHz < -1000 || d->gpuOffsetMHz > 1000)) {
+        d->gpuOffsetMHz = d->gpuOffsetMHz < -1000 ? -1000 : 1000;
+    }
+    if (d->hasMemOffset && (d->memOffsetMHz < -5000 || d->memOffsetMHz > 5000)) {
+        d->memOffsetMHz = d->memOffsetMHz < -5000 ? -5000 : 5000;
+    }
+    if (d->hasFan) {
+        if (d->fanPercent < 0) d->fanPercent = 0;
+        if (d->fanPercent > 100) d->fanPercent = 100;
+    }
+}
 
 struct CliOptions {
     bool recognized;
@@ -631,7 +701,7 @@ struct CliOptions {
 
 enum {
     SERVICE_PROTOCOL_MAGIC = 0x47535643u,
-    SERVICE_PROTOCOL_VERSION = 2,
+    SERVICE_PROTOCOL_VERSION = 6,
 };
 
 enum ServiceCommand {
@@ -668,6 +738,10 @@ struct ServiceSnapshot {
     bool vfReadSupported;
     bool vfWriteSupported;
     bool vfBestGuess;
+    unsigned int adapterCount;
+    unsigned int selectedAdapterIndex;
+    bool selectedAdapterOrdinalFallback;
+    GpuAdapterInfo adapters[MAX_GPU_ADAPTERS];
     GpuFamily gpuFamily;
     int numPopulated;
     int gpuClockOffsetkHz;
@@ -684,7 +758,7 @@ struct ServiceSnapshot {
     int powerLimitMinmW;
     int powerLimitMaxmW;
     int appliedGpuOffsetMHz;
-    bool appliedGpuOffsetExcludeLow70;
+    int appliedGpuOffsetExcludeLowCount;
     int activeFanMode;
     int activeFanFixedPercent;
     int gpuTemperatureC;
@@ -713,21 +787,27 @@ struct ServiceRequest {
     DWORD flags;
     DWORD callerPid;
     DWORD callerSessionId;
+    DWORD resetOcBeforeApply;
+    GpuAdapterInfo targetGpu;
     DesiredSettings desired;
     char source[64];
     char path[MAX_PATH];
 };
+static_assert(sizeof(ServiceRequest) < 65536, "ServiceRequest size sanity check");
 
 struct ServiceResponse {
     DWORD magic;
     DWORD version;
     DWORD status;
     DWORD reserved;
+    DWORD serviceBuildNumber;
+    char serviceVersion[32];
     ServiceSnapshot snapshot;
     DesiredSettings desired;
     ControlState controlState;
     char message[512];
 };
+static_assert(sizeof(ServiceResponse) < 262144, "ServiceResponse size sanity check");
 
 enum {
     GUI_FAN_MODE_UNSET = -1,
@@ -736,6 +816,20 @@ enum {
 typedef nvmlReturn_t (*nvmlInit_v2_t)();
 typedef nvmlReturn_t (*nvmlShutdown_t)();
 typedef nvmlReturn_t (*nvmlDeviceGetHandleByIndex_v2_t)(unsigned int, nvmlDevice_t*);
+typedef nvmlReturn_t (*nvmlDeviceGetCount_v2_t)(unsigned int*);
+struct nvmlPciInfo_t {
+    char busId[32];
+    unsigned int domain;
+    unsigned int bus;
+    unsigned int device;
+    unsigned int pciDeviceId;
+    unsigned int pciSubSystemId;
+    unsigned int reserved0;
+    unsigned int reserved1;
+    unsigned int reserved2;
+    unsigned int reserved3;
+};
+typedef nvmlReturn_t (*nvmlDeviceGetPciInfo_t)(nvmlDevice_t, nvmlPciInfo_t*);
 typedef nvmlReturn_t (*nvmlDeviceGetPowerManagementLimit_t)(nvmlDevice_t, unsigned int*);
 typedef nvmlReturn_t (*nvmlDeviceGetPowerManagementDefaultLimit_t)(nvmlDevice_t, unsigned int*);
 typedef nvmlReturn_t (*nvmlDeviceGetPowerManagementLimitConstraints_t)(nvmlDevice_t, unsigned int*, unsigned int*);
@@ -775,6 +869,8 @@ struct NvmlApi {
     nvmlInit_v2_t init;
     nvmlShutdown_t shutdown;
     nvmlDeviceGetHandleByIndex_v2_t getHandleByIndex;
+    nvmlDeviceGetCount_v2_t getCount;
+    nvmlDeviceGetPciInfo_t getPciInfo;
     nvmlDeviceGetPowerManagementLimit_t getPowerLimit;
     nvmlDeviceGetPowerManagementDefaultLimit_t getPowerDefaultLimit;
     nvmlDeviceGetPowerManagementLimitConstraints_t getPowerConstraints;

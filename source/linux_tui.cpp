@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+// SPDX-License-Identifier: MIT
+
 #include "linux_port.h"
 
 #include <signal.h>

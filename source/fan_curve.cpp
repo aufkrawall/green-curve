@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+// SPDX-License-Identifier: MIT
+
 #include "fan_curve.h"
 
 static int clamp_int(int value, int minimum, int maximum) {
@@ -87,6 +90,18 @@ void fan_curve_normalize(FanCurveConfig* config) {
     }
 }
 
+void fan_curve_clamp_percentages(FanCurveConfig* config, int minPct, int maxPct) {
+    if (!config) return;
+    if (minPct < 0) minPct = 0;
+    if (maxPct > 100) maxPct = 100;
+    if (minPct > maxPct) minPct = maxPct;
+    for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
+        if (!config->points[i].enabled) continue;
+        if (config->points[i].fanPercent < minPct) config->points[i].fanPercent = minPct;
+        if (config->points[i].fanPercent > maxPct) config->points[i].fanPercent = maxPct;
+    }
+}
+
 bool fan_curve_validate(const FanCurveConfig* config, char* err, size_t errSize) {
     if (!config) {
         set_message(err, errSize, "No fan curve config");
@@ -146,7 +161,7 @@ int fan_curve_interpolate_percent(const FanCurveConfig* config, int temperatureC
         if (config->points[i].enabled) active[activeCount++] = config->points[i];
     }
 
-    if (activeCount < 1) return 0;
+    if (activeCount < 1) return 100;
     sort_enabled_points(active, activeCount);
     if (activeCount == 1) return clamp_int(active[0].fanPercent, 0, 100);
 
@@ -190,4 +205,13 @@ bool fan_curve_equals(const FanCurveConfig* lhs, const FanCurveConfig* rhs) {
         if (lhs->points[i].fanPercent != rhs->points[i].fanPercent) return false;
     }
     return true;
+}
+
+bool fan_curve_has_high_temp_low_fan_warning(const FanCurveConfig* config) {
+    if (!config) return false;
+    for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
+        if (!config->points[i].enabled) continue;
+        if (config->points[i].temperatureC >= 80 && config->points[i].fanPercent < 50) return true;
+    }
+    return false;
 }

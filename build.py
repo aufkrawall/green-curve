@@ -45,16 +45,23 @@ ZIG_DIR = os.path.join(SCRIPT_DIR, "zig")
 ZIG_EXE = os.path.join(ZIG_DIR, _ZIG_EXE_NAME)
 SOURCE_DIR = os.path.join(SCRIPT_DIR, "source")
 BUILD_WORK_DIR = os.path.join(SCRIPT_DIR, "build-tmp")
+ZIG_GLOBAL_CACHE_DIR = os.path.join(BUILD_WORK_DIR, "zig-global-cache")
+ZIG_LOCAL_CACHE_DIR = os.path.join(BUILD_WORK_DIR, "zig-local-cache")
+BUILD_NUMBER_PATH = os.path.join(SCRIPT_DIR, "BUILD_NUMBER")
+BUILD_FINGERPRINT_PATH = os.path.join(SCRIPT_DIR, ".build_fingerprint")
 WINDOWS_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "main.cpp"),
     os.path.join(SOURCE_DIR, "app_shared.cpp"),
     os.path.join(SOURCE_DIR, "config_utils.cpp"),
     os.path.join(SOURCE_DIR, "fan_curve.cpp"),
+    os.path.join(SOURCE_DIR, "string_table.cpp"),
 ]
 LINUX_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "linux_main.cpp"),
     os.path.join(SOURCE_DIR, "linux_port.cpp"),
+    os.path.join(SOURCE_DIR, "linux_port_profiles.cpp"),
     os.path.join(SOURCE_DIR, "linux_tui.cpp"),
+    os.path.join(SOURCE_DIR, "string_table.cpp"),
 ]
 WINDOWS_OUTPUT_EXE = os.path.join(SCRIPT_DIR, "greencurve.exe")
 WINDOWS_TEMP_OUTPUT_EXE = WINDOWS_OUTPUT_EXE + ".new"
@@ -73,6 +80,11 @@ TRAY_ICON_FAN_ICO = os.path.join(SCRIPT_DIR, "greencurve_tray_fan.ico")
 TRAY_ICON_OC_FAN_ICO = os.path.join(SCRIPT_DIR, "greencurve_tray_oc_fan.ico")
 ICON_RC = os.path.join(SCRIPT_DIR, "icon.rc")
 ICON_RES = os.path.join(SCRIPT_DIR, "icon.res")
+
+os.makedirs(ZIG_GLOBAL_CACHE_DIR, exist_ok=True)
+os.makedirs(ZIG_LOCAL_CACHE_DIR, exist_ok=True)
+os.environ.setdefault("ZIG_GLOBAL_CACHE_DIR", ZIG_GLOBAL_CACHE_DIR)
+os.environ.setdefault("ZIG_LOCAL_CACHE_DIR", ZIG_LOCAL_CACHE_DIR)
 
 ICON_OUTPUTS = [
     ("app", ICON_ICO, (256, 128, 64, 48, 32, 24, 16)),
@@ -109,21 +121,39 @@ COMMON_FLAGS = [
     "-Wundef",
     "-Wno-unused-function",
     "-Wno-unused-parameter",
+    "-Werror",
+    "-D_FORTIFY_SOURCE=2",
+]
+
+# C-002: read VERSION and inject it into all compile commands
+APP_VERSION = "0.12"
+APP_BUILD_NUMBER = 0
+_version_path = os.path.join(SCRIPT_DIR, "VERSION")
+if os.path.exists(_version_path):
+    with open(_version_path, "r", encoding="utf-8") as _vf:
+        APP_VERSION = _vf.read().strip()
+
+SANITIZER_FLAGS = [
+    "-fsanitize=undefined",
+    "-fno-sanitize-recover=all",
+    "-g",
 ]
 
 WINDOWS_FLAGS = [
     "-Wl,--subsystem,windows,--dynamicbase,--nxcompat,--high-entropy-va",
+    "-s",
 ]
 
 LINUX_FLAGS = [
     "-target",
     LINUX_TARGET,
     "-static",
-    "-s",
-    "-D_FORTIFY_SOURCE=2",
     "-fPIE",
     "-pie",
     "-Wl,-z,relro,-z,now",
+    "-Wl,-z,noexecstack",
+    "-s",
+    "-fstack-protector-strong",
 ]
 
 WINDOWS_LINK_LIBS = [
@@ -143,6 +173,71 @@ WINDOWS_SERVICE_LINK_LIBS = [
     "-lwtsapi32",
     "-luserenv",
 ]
+
+
+def read_int_file(path, default=0):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read().strip()
+        return int(text) if text else default
+    except (OSError, ValueError):
+        return default
+
+
+def write_text_if_changed(path, text):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            if handle.read() == text:
+                return
+    except OSError:
+        pass
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+
+
+def iter_build_fingerprint_inputs():
+    for name in ("build.py", "VERSION"):
+        path = os.path.join(SCRIPT_DIR, name)
+        if os.path.exists(path):
+            yield path
+    for root, _dirs, files in os.walk(SOURCE_DIR):
+        for name in sorted(files):
+            if name.endswith((".cpp", ".h")):
+                yield os.path.join(root, name)
+
+
+def compute_build_fingerprint():
+    digest = hashlib.sha256()
+    for path in sorted(iter_build_fingerprint_inputs()):
+        rel = os.path.relpath(path, SCRIPT_DIR).replace("\\", "/")
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                digest.update(chunk)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def configure_build_number(bump_for_real_build):
+    global APP_BUILD_NUMBER
+    APP_BUILD_NUMBER = read_int_file(BUILD_NUMBER_PATH, 0)
+    fingerprint = compute_build_fingerprint()
+    previous = ""
+    try:
+        with open(BUILD_FINGERPRINT_PATH, "r", encoding="utf-8") as handle:
+            previous = handle.read().strip()
+    except OSError:
+        previous = ""
+    if bump_for_real_build and fingerprint != previous:
+        APP_BUILD_NUMBER += 1
+        write_text_if_changed(BUILD_NUMBER_PATH, f"{APP_BUILD_NUMBER}\n")
+        write_text_if_changed(BUILD_FINGERPRINT_PATH, f"{fingerprint}\n")
+        print(f"Build number bumped to {APP_BUILD_NUMBER}")
+    elif bump_for_real_build and not os.path.exists(BUILD_FINGERPRINT_PATH):
+        write_text_if_changed(BUILD_FINGERPRINT_PATH, f"{fingerprint}\n")
+    COMMON_FLAGS.append(f'-DAPP_VERSION="\\"{APP_VERSION}\\""')
+    COMMON_FLAGS.append(f"-DAPP_BUILD_NUMBER={APP_BUILD_NUMBER}")
 
 
 def clamp01(value):
@@ -651,6 +746,15 @@ def download_zig():
 
     print(f"Zig installed at {ZIG_EXE}")
 
+    # Write integrity sentinel for future builds
+    sentinel = ZIG_EXE + ".sha256"
+    h = hashlib.sha256()
+    with open(ZIG_EXE, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    with open(sentinel, "w", encoding="utf-8") as f:
+        f.write(h.hexdigest().lower())
+
 
 def finalize_output(temp_output, output_path, backup_path=None):
     if not os.path.exists(temp_output):
@@ -686,6 +790,49 @@ def finalize_output(temp_output, output_path, backup_path=None):
     print(f"Build successful: {output_path} ({size:,} bytes / {size / 1024:.1f} KB)")
 
 
+def get_windows_gui_compile_command(temp_output):
+    """Return the command array for compiling the Windows GUI executable."""
+    return [
+        ZIG_EXE,
+        "c++",
+        *COMMON_FLAGS,
+        *WINDOWS_FLAGS,
+        "-o",
+        temp_output,
+        *WINDOWS_SOURCE_FILES,
+        ICON_RES,
+        *WINDOWS_LINK_LIBS,
+    ]
+
+
+def get_windows_service_compile_command(temp_output):
+    """Return the command array for compiling the Windows service executable."""
+    return [
+        ZIG_EXE,
+        "c++",
+        *COMMON_FLAGS,
+        *WINDOWS_FLAGS,
+        "-DGREEN_CURVE_SERVICE_BINARY=1",
+        "-o",
+        temp_output,
+        *WINDOWS_SOURCE_FILES,
+        *WINDOWS_SERVICE_LINK_LIBS,
+    ]
+
+
+def get_linux_compile_command(temp_output):
+    """Return the command array for compiling the Linux executable."""
+    return [
+        ZIG_EXE,
+        "c++",
+        *COMMON_FLAGS,
+        *LINUX_FLAGS,
+        "-o",
+        temp_output,
+        *LINUX_SOURCE_FILES,
+    ]
+
+
 def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_TEMP_OUTPUT_EXE, backup_path=WINDOWS_BACKUP_EXE, finalize=True):
     """Compile the Windows GUI executable using Zig's bundled clang."""
     missing_sources = [path for path in WINDOWS_SOURCE_FILES if not os.path.exists(path)]
@@ -701,17 +848,7 @@ def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_T
     if os.path.exists(temp_output):
         os.remove(temp_output)
 
-    cmd = [
-        ZIG_EXE,
-        "c++",
-        *COMMON_FLAGS,
-        *WINDOWS_FLAGS,
-        "-o",
-        temp_output,
-        *WINDOWS_SOURCE_FILES,
-        ICON_RES,
-        *WINDOWS_LINK_LIBS,
-    ]
+    cmd = get_windows_gui_compile_command(temp_output)
 
     print(f"Compiling {len(WINDOWS_SOURCE_FILES)} source files -> {os.path.basename(output_path)}")
     print(f"  Command: {' '.join(cmd)}")
@@ -742,17 +879,7 @@ def compile_windows_service_binary(output_path=WINDOWS_SERVICE_OUTPUT_EXE, temp_
     if os.path.exists(temp_output):
         os.remove(temp_output)
 
-    cmd = [
-        ZIG_EXE,
-        "c++",
-        *COMMON_FLAGS,
-        *WINDOWS_FLAGS,
-        "-DGREEN_CURVE_SERVICE_BINARY=1",
-        "-o",
-        temp_output,
-        *WINDOWS_SOURCE_FILES,
-        *WINDOWS_SERVICE_LINK_LIBS,
-    ]
+    cmd = get_windows_service_compile_command(temp_output)
 
     print(f"Compiling {len(WINDOWS_SOURCE_FILES)} source files -> {os.path.basename(output_path)}")
     print(f"  Command: {' '.join(cmd)}")
@@ -783,15 +910,7 @@ def compile_linux_binary(output_path=LINUX_OUTPUT_BIN, temp_output=LINUX_TEMP_OU
     if os.path.exists(temp_output):
         os.remove(temp_output)
 
-    cmd = [
-        ZIG_EXE,
-        "c++",
-        *COMMON_FLAGS,
-        *LINUX_FLAGS,
-        "-o",
-        temp_output,
-        *LINUX_SOURCE_FILES,
-    ]
+    cmd = get_linux_compile_command(temp_output)
 
     print(f"Compiling {len(LINUX_SOURCE_FILES)} source files -> {os.path.basename(output_path)}")
     print(f"  Command: {' '.join(cmd)}")
@@ -810,29 +929,30 @@ def compile_linux_binary(output_path=LINUX_OUTPUT_BIN, temp_output=LINUX_TEMP_OU
         print(f"Check build successful: {temp_output} ({size:,} bytes / {size / 1024:.1f} KB)")
 
 
-def run_check_builds(target):
+def run_check_builds(target, generate_lsp=True):
     """Build selected targets into a temporary directory without replacing release outputs."""
-    generate_lsp_files()
+    if generate_lsp:
+        generate_lsp_files()
     tmp = prepare_work_subdir("check")
     try:
         if target in ("windows", "all"):
             compile_windows_binary(
                 output_path=os.path.join(tmp, "greencurve.exe"),
                 temp_output=os.path.join(tmp, "greencurve.exe.new"),
-                backup_path=None,
+                backup_path="",
                 finalize=False,
             )
             compile_windows_service_binary(
                 output_path=os.path.join(tmp, "greencurve-service.exe"),
                 temp_output=os.path.join(tmp, "greencurve-service.exe.new"),
-                backup_path=None,
+                backup_path="",
                 finalize=False,
             )
         if target in ("linux", "all"):
             compile_linux_binary(
                 output_path=os.path.join(tmp, f"greencurve-{LINUX_TARGET}"),
                 temp_output=os.path.join(tmp, f"greencurve-{LINUX_TARGET}.new"),
-                backup_path=None,
+                backup_path="",
                 finalize=False,
             )
     finally:
@@ -860,8 +980,13 @@ def compile_flags_for_lsp(flags):
 def generate_lsp_files():
     """Generate compile_commands.json for clangd from the real Zig build flags."""
     entries = []
-    windows_flags = compile_flags_for_lsp([*COMMON_FLAGS, *WINDOWS_FLAGS])
-    linux_flags = compile_flags_for_lsp([*COMMON_FLAGS, *LINUX_FLAGS])
+    dummy_temp = os.path.join(SCRIPT_DIR, "dummy.out")
+    gui_cmd = get_windows_gui_compile_command(dummy_temp)
+    service_cmd = get_windows_service_compile_command(dummy_temp)
+    linux_cmd = get_linux_compile_command(dummy_temp)
+    windows_flags = compile_flags_for_lsp(gui_cmd[2:-len(WINDOWS_SOURCE_FILES) - len(WINDOWS_LINK_LIBS) - 2])
+    service_flags = compile_flags_for_lsp(service_cmd[2:-len(WINDOWS_SOURCE_FILES) - len(WINDOWS_SERVICE_LINK_LIBS) - 2])
+    linux_flags = compile_flags_for_lsp(linux_cmd[2:-len(LINUX_SOURCE_FILES) - 2])
 
     entries.append({
         "directory": SCRIPT_DIR,
@@ -871,7 +996,7 @@ def generate_lsp_files():
     entries.append({
         "directory": SCRIPT_DIR,
         "file": os.path.join(SOURCE_DIR, "main.cpp"),
-        "arguments": ["clang++", *windows_flags, "-DGREEN_CURVE_SERVICE_BINARY=1", "-fsyntax-only", os.path.join(SOURCE_DIR, "main.cpp")],
+        "arguments": ["clang++", *service_flags, "-fsyntax-only", os.path.join(SOURCE_DIR, "main.cpp")],
     })
     for source in LINUX_SOURCE_FILES:
         entries.append({
@@ -893,7 +1018,7 @@ def generate_lsp_files():
     print(f"Generated {path}")
 
 
-def run_regression_tests():
+def run_regression_tests(extra_flags=None):
     """Run pure regression tests that do not touch GPU hardware."""
     harness = r'''
 #include "fan_curve.h"
@@ -947,6 +1072,68 @@ int main(int argc, char** argv) {
     if (get_config_int(argv[1], "runtime", "selective_gpu_offset_mhz", 0) != 45) return 38;
     DeleteFileA(argv[1]);
 
+    // F-15-002: degenerate/empty fan curve interpolation returns 100 (safe fallback)
+    {
+        FanCurveConfig empty = {};
+        if (fan_curve_interpolate_percent(&empty, 50) != 100) return 40;
+    }
+
+    // fan_curve_clamp_percentages
+    {
+        FanCurveConfig clampCfg = {};
+        fan_curve_set_default(&clampCfg);
+        fan_curve_clamp_percentages(&clampCfg, 40, 80);
+        for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
+            if (clampCfg.points[i].enabled) {
+                if (clampCfg.points[i].fanPercent < 40 || clampCfg.points[i].fanPercent > 80) return 41;
+            }
+        }
+    }
+
+    // fan_curve_equals
+    {
+        FanCurveConfig a = {}, b = {};
+        fan_curve_set_default(&a);
+        fan_curve_set_default(&b);
+        if (!fan_curve_equals(&a, &b)) return 42;
+        a.pollIntervalMs = 999;
+        if (fan_curve_equals(&a, &b)) return 43;
+    }
+
+    // fan_curve_has_high_temp_low_fan_warning
+    {
+        FanCurveConfig safe = {};
+        fan_curve_set_default(&safe);
+        if (fan_curve_has_high_temp_low_fan_warning(&safe)) return 44;
+        FanCurveConfig danger = {};
+        danger.points[0] = { true, 85, 20 };
+        danger.points[1] = { true, 95, 30 };
+        if (!fan_curve_has_high_temp_low_fan_warning(&danger)) return 45;
+    }
+
+    // validate_desired_settings_for_ipc clamps out-of-range values
+    {
+        DesiredSettings ds = {};
+        ds.hasPowerLimit = true;
+        ds.powerLimitPct = 10;
+        ds.hasGpuOffset = true;
+        ds.gpuOffsetMHz = 5000;
+        ds.hasMemOffset = true;
+        ds.memOffsetMHz = -9000;
+        ds.hasFan = true;
+        ds.fanPercent = 200;
+        for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+            ds.hasCurvePoint[ci] = true;
+            ds.curvePointMHz[ci] = 9999u;
+        }
+        validate_desired_settings_for_ipc(&ds);
+        if (ds.powerLimitPct != 50) return 50;
+        if (ds.gpuOffsetMHz != 1000) return 51;
+        if (ds.memOffsetMHz != -5000) return 52;
+        if (ds.fanPercent != 100) return 53;
+        if (ds.curvePointMHz[0] != 5000u) return 54;
+    }
+
     DeleteCriticalSection(&g_configLock);
     return 0;
 }
@@ -972,6 +1159,8 @@ int main(int argc, char** argv) {
             os.path.join(SOURCE_DIR, "config_utils.cpp"),
             os.path.join(SOURCE_DIR, "app_shared.cpp"),
         ]
+        if extra_flags:
+            cmd.extend(extra_flags)
         if sys.platform == "win32":
             cmd.extend(["-luser32", "-lgdi32"])
         print("Compiling pure regression tests")
@@ -1001,24 +1190,82 @@ def require_text(path, needle, label):
 
 def run_source_regression_checks():
     main_cpp = os.path.join(SOURCE_DIR, "main.cpp")
+    entry_cpp = os.path.join(SOURCE_DIR, "entry.cpp")
+    diagnostics_cpp = os.path.join(SOURCE_DIR, "main_diagnostics.cpp")
+    service_ipc_cpp = os.path.join(SOURCE_DIR, "main_service_ipc.cpp")
+    service_server_cpp = os.path.join(SOURCE_DIR, "main_service_server.cpp")
+    config_profiles_ui_cpp = os.path.join(SOURCE_DIR, "config_profiles_ui.cpp")
+    gpu_backend_apply_cpp = os.path.join(SOURCE_DIR, "gpu_backend_apply.cpp")
+    main_gpu_state_cpp = os.path.join(SOURCE_DIR, "main_gpu_state.cpp")
+    main_shell_cpp = os.path.join(SOURCE_DIR, "main_shell.cpp")
+    main_fan_runtime_cpp = os.path.join(SOURCE_DIR, "main_fan_runtime.cpp")
+    runtime_nvml_cpp = os.path.join(SOURCE_DIR, "main_runtime_nvml.cpp")
     shared_h = os.path.join(SOURCE_DIR, "app_shared.h")
     build_script = os.path.join(SCRIPT_DIR, "build.py")
     gitignore = os.path.join(SCRIPT_DIR, ".gitignore")
 
     require_text(shared_h, "APP_DEBUG_DEFAULT_ENABLED 1", "debug logging remains default-on")
-    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 2", "service protocol version bumped")
-    require_text(main_cpp, "DEBUG_LOG_MAX_BYTES", "debug log size cap exists")
-    require_text(main_cpp, "MoveFileExA(debugPath, firstBackup", "debug log rotation renames active log")
+    require_text(shared_h, "APP_EDITION", "window title edition text exists")
+    require_text(shared_h, "APP_TITLE           APP_NAME \" v\" APP_VERSION", "plain title macro exists")
+    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 6", "service protocol version bumped")
+    require_text(shared_h, "resetOcBeforeApply", "GUI apply reset-before-apply protocol flag exists")
+    require_text(shared_h, "GpuAdapterInfo", "GPU adapter identity protocol exists")
+    require_text(shared_h, "APP_BUILD_NUMBER", "build number define exists")
+    require_text(shared_h, "serviceBuildNumber", "service response carries build number")
+    require_text(shared_h, "serviceVersion[32]", "service response carries version")
+    require_text(diagnostics_cpp, "protocol=%lu", "session marker logs IPC protocol")
+    require_text(diagnostics_cpp, "build=%lu", "session marker logs build number")
+    require_text(diagnostics_cpp, "close_debug_log_file", "debug log file cleanup exists")
+    require_text(diagnostics_cpp, "open_debug_log_file_locked", "debug log file open helper exists")
+    require_text(diagnostics_cpp, "green_curve_unhandled_exception_filter", "crash filter exists")
     require_text(main_cpp, "SERVICE_PIPE_SERVER_IO_TIMEOUT_MS", "service pipe server I/O timeout exists")
-    require_text(main_cpp, "CancelIoEx(pipe, &ov)", "stalled pipe operations are cancellable")
-    require_text(main_cpp, "ensure_secure_service_binary_path", "service install uses secure Program Files copy")
-    require_text(main_cpp, "CopyFileW(sourcePath, tempPath", "service binary is staged before install")
-    require_text(main_cpp, "wait_for_helper_process_bounded", "elevated helper waits are bounded")
-    require_text(main_cpp, "parse_cli_point_arg_w(arg, &idx)", "CLI point parsing is strict")
+    require_text(service_server_cpp, "CancelIoEx(pipe, &ov)", "stalled pipe operations are cancellable")
+    require_text(service_server_cpp, "response.serviceBuildNumber", "service responses include build number")
+    require_text(service_server_cpp, "stop_service_for_binary_update", "service repair stops old service before replacing binary")
+    require_text(service_server_cpp, "SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_STOP | SERVICE_QUERY_STATUS", "service repair can stop installed service")
+    require_text(service_ipc_cpp, "service_client_ping: identity mismatch", "GUI rejects mismatched service version identity")
+    require_text(service_ipc_cpp, "compatible build mismatch accepted", "GUI accepts compatible service build-number drift")
+    require_text(service_ipc_cpp, "backgroundServiceError", "service ping failures are surfaced to the GUI")
+    require_text(service_ipc_cpp, "GetNamedPipeServerProcessId", "GUI verifies service pipe server PID")
+    require_text(service_ipc_cpp, "ensure_secure_service_binary_path", "service install uses secure Program Files copy")
+    require_text(service_ipc_cpp, "CopyFileW(sourcePath, tempPath", "service binary is staged before install")
+    require_text(service_ipc_cpp, "wait_for_helper_process_bounded", "elevated helper waits are bounded")
+    require_text(config_profiles_ui_cpp, "maybe_load_selected_profile_to_gui_without_apply", "startup restores selected profile into GUI without applying")
+    require_text(config_profiles_ui_cpp, "repair needed", "broken installed service advertises repair state")
+    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "Repair and restart the background service", "broken installed service click repairs instead of removing")
+    require_text(config_profiles_ui_cpp, "GPU settings were not applied", "startup selected profile restore is GUI-only")
+    require_text(gpu_backend_apply_cpp, "attempting driver write anyway", "memory offsets outside reported range are attempted")
+    require_text(main_gpu_state_cpp, "live_selective_gpu_offset_matches_requested_shape", "persisted selective GPU offset is verified against live VF shape")
+    require_text(main_gpu_state_cpp, "runtime selective: ignoring persisted request", "stale persisted selective GPU offset is ignored")
+    require_text(main_gpu_state_cpp, "non-selective request clears runtime state", "uniform GPU offsets clear runtime selective state")
+    require_text(gpu_backend_apply_cpp, "interactive && !g_app.isServiceProcess", "service apply does not inherit stale GUI lock state")
+    require_text(gpu_backend_apply_cpp, "post-apply lock clear: no lock requested", "service no-lock applies clear stale lock markers")
+    require_text(gpu_backend_apply_cpp, "reset_oc_before_gui_apply", "GUI OC applies reset stale OC baseline before applying")
+    require_text(gpu_backend_apply_cpp, "Restoring the existing VF curve after the memory offset did not verify", "VF preservation failures are reported")
+    require_text(runtime_nvml_cpp, "rollback_changed_fans", "manual multi-fan writes roll back partial failures")
+    require_text(runtime_nvml_cpp, "nvml_select_device_for_selected_gpu", "NVML device is matched to selected GPU")
+    require_text(diagnostics_cpp, "write_text_file_atomic_service", "service file writes use hardened writer")
+    require_text(os.path.join(SOURCE_DIR, "ui_main.cpp"), "gpuSelectY = dp(10)", "GPU selector lives in the graph header gap")
+    require_text(main_gpu_state_cpp, "Writes are intentionally enabled", "best-guess VF writes remain explicitly enabled")
+    require_text(main_shell_cpp, "preserving requested value", "config memory offsets are not clamped to reported range")
+    require_text(runtime_nvml_cpp, "parse_cli_point_arg_w(arg, &idx)", "CLI point parsing is strict")
+    require_text(entry_cpp, "set_main_window_title", "window caption helper exists")
+    require_text(entry_cpp, "APP_EDITION", "window title edition macro remains present")
+    require_text(entry_cpp, "SetWindowTextA", "window caption uses ANSI text write")
+    require_text(entry_cpp, "RegisterClassExA", "main window uses ANSI class registration")
+    require_text(entry_cpp, "CreateWindowExA", "main window uses ANSI creation path")
+    require_text(main_fan_runtime_cpp, "FindWindowA", "single-instance lookup uses ANSI class matching")
     require_text(build_script, "--check", "build check flag exists")
     require_text(build_script, "--test", "test flag exists")
     require_text(build_script, "compile_commands.json", "LSP database generation exists")
     require_text(gitignore, "*.7z", "release archives are ignored")
+    # NOTE: Zig 0.13.0 does not emit stack canaries on Windows despite
+    # -fstack-protector-strong. This is a known toolchain limitation.
+    # The flag is kept so future Zig versions will automatically enable it.
+    require_text(build_script, "-fstack-protector-strong", "stack protector flag retained for future toolchain support")
+    require_text(build_script, "-fPIE", "Linux PIE hardening retained")
+    require_text(build_script, "-Wl,-z,relro,-z,now", "Linux RELRO/BIND_NOW hardening retained")
+    require_text(build_script, "-Wl,-z,noexecstack", "Linux non-executable stack hardening retained")
 
 
 def parse_args():
@@ -1044,33 +1291,82 @@ def parse_args():
         action="store_true",
         help="Generate compile_commands.json for clangd and exit",
     )
+    parser.add_argument(
+        "--sanitizer",
+        action="store_true",
+        help="Build with UndefinedBehaviorSanitizer",
+    )
     return parser.parse_args()
+
+
+def generate_version_nsh():
+    _VERSION_NSH_PATH = os.path.join(SCRIPT_DIR, "version.nsh")
+    with open(_VERSION_NSH_PATH, "w", encoding="utf-8") as _vnf:
+        _vnf.write(f'!define VERSION "{APP_VERSION}"\n')
+
+
+def verify_cached_zig():
+    if not os.path.exists(ZIG_EXE):
+        return
+    sentinel = ZIG_EXE + ".sha256"
+    current = hashlib.sha256()
+    with open(ZIG_EXE, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            current.update(chunk)
+    digest = current.hexdigest().lower()
+    if os.path.exists(sentinel):
+        with open(sentinel, "r", encoding="utf-8") as f:
+            expected = f.read().strip().lower()
+        if digest != expected:
+            print(f"ERROR: Cached Zig binary integrity check failed")
+            print(f"  Expected: {expected}")
+            print(f"  Actual:   {digest}")
+            print(f"  Delete the zig/ directory to force a fresh download.")
+            sys.exit(1)
+    else:
+        print("ERROR: Cached Zig binary is missing its integrity sentinel")
+        print("  Delete the zig/ directory to force a fresh verified download.")
+        sys.exit(1)
 
 
 def main():
     args = parse_args()
     print("=== Green Curve build ===")
     download_zig()
-    if args.lsp:
-        generate_lsp_files()
-        print("=== Done ===")
-        return
-    if args.test:
-        run_regression_tests()
-        if not args.check:
+    verify_cached_zig()
+    real_build = not args.lsp and not args.check and not args.test
+    configure_build_number(real_build)
+    generate_version_nsh()
+
+    # H-001 fix: avoid permanently mutating the global COMMON_FLAGS list.
+    # Save the original flags so sanitizer additions do not leak into
+    # subsequent release builds in the same process.
+    _original_common_flags = COMMON_FLAGS.copy()
+    if args.sanitizer:
+        COMMON_FLAGS.extend(SANITIZER_FLAGS)
+    try:
+        if args.lsp:
+            generate_lsp_files()
             print("=== Done ===")
             return
-    if args.check:
-        run_check_builds(args.target)
+        if args.test:
+            run_regression_tests(extra_flags=SANITIZER_FLAGS if args.sanitizer else None)
+            if not args.check:
+                print("=== Done ===")
+                return
+        if args.check:
+            run_check_builds(args.target, generate_lsp=not args.sanitizer)
+            print("=== Done ===")
+            return
+        generate_lsp_files()
+        if args.target in ("windows", "all"):
+            compile_windows_binary()
+            compile_windows_service_binary()
+        if args.target in ("linux", "all"):
+            compile_linux_binary()
         print("=== Done ===")
-        return
-    generate_lsp_files()
-    if args.target in ("windows", "all"):
-        compile_windows_binary()
-        compile_windows_service_binary()
-    if args.target in ("linux", "all"):
-        compile_linux_binary()
-    print("=== Done ===")
+    finally:
+        COMMON_FLAGS[:] = _original_common_flags
 
 
 if __name__ == "__main__":

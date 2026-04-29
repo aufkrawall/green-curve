@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+// SPDX-License-Identifier: MIT
+
 // ============================================================================
 // Entry Point
 // ============================================================================
@@ -5,6 +8,14 @@
 // CLI mode: --dump, --json, or --probe
 // Returns true if CLI handled (should exit), false if should run GUI
 static int g_cliExitCode = 0;
+
+static void set_main_window_title(HWND hwnd) {
+    if (!hwnd) return;
+    char title[128] = {};
+    StringCchPrintfA(title, ARRAY_COUNT(title), "%s v%s \"%s\"", APP_NAME, APP_VERSION, APP_EDITION);
+    SetWindowTextA(hwnd, title);
+}
+
 static bool handle_cli(LPWSTR wCmdLine) {
     CliOptions opts = {};
     if (!parse_cli_options(wCmdLine, &opts)) {
@@ -160,13 +171,42 @@ static bool handle_cli(LPWSTR wCmdLine) {
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             if (cfg.hasCurvePoint[i]) profileCurvePoints++;
         }
-        CLI_LOG("Green Curve: Profile summary gpu=%dMHz excl70=%d lockCi=%d lockMHz=%u curvePoints=%d fanMode=%d\n",
+        CLI_LOG("Green Curve: Profile summary gpu=%dMHz exclLow=%d lockCi=%d lockMHz=%u curvePoints=%d fanMode=%d\n",
             cfg.gpuOffsetMHz,
-            cfg.gpuOffsetExcludeLow70 ? 1 : 0,
+            cfg.gpuOffsetExcludeLowCount,
             cfg.hasLock ? cfg.lockCi : -1,
             cfg.hasLock ? cfg.lockMHz : 0u,
             profileCurvePoints,
             cfg.hasFan ? cfg.fanMode : -1);
+
+        if (g_app.launchedFromLogon) {
+            CLI_LOG("Waiting for GPU driver readiness before applying profile %d...\n", logonSlot);
+            bool driverReady = false;
+            for (int attempt = 0; attempt < 25; attempt++) {
+                refresh_background_service_state();
+                if (!g_app.backgroundServiceAvailable) {
+                    Sleep(500);
+                    continue;
+                }
+                ServiceSnapshot snapshot = {};
+                char snapErr[256] = {};
+                if (service_client_get_snapshot(&snapshot, snapErr, sizeof(snapErr))) {
+                    if (snapshot.loaded && snapshot.numPopulated > 0 && snapshot.initialized) {
+                        driverReady = true;
+                        CLI_LOG("GPU driver ready on attempt %d (populated=%d)\n", attempt + 1, snapshot.numPopulated);
+                        break;
+                    }
+                }
+                Sleep(400);
+            }
+            if (!driverReady) {
+                CLI_LOG("ERROR: GPU driver did not become ready in time. Skipping apply.\n");
+                fclose(logf);
+                g_cliExitCode = 1;
+                return true;
+            }
+            Sleep(300);
+        }
 
         CLI_LOG("Applying profile %d...\n", logonSlot);
         merge_desired_settings(&cfg, &opts.desired);
@@ -212,12 +252,14 @@ static bool handle_cli(LPWSTR wCmdLine) {
         char err[256] = {};
         if (!refresh_service_snapshot_and_active_desired(err, sizeof(err))) {
             CLI_LOG("ERROR: %s\n", err[0] ? err : "Failed to refresh background service state before save");
+            g_cliExitCode = 1;
             fclose(logf);
             return true;
         }
         if (opts.applyConfig) {
             if (!load_desired_settings_from_ini(g_app.configPath, &saveDesired, opts.error, sizeof(opts.error))) {
                 CLI_LOG("ERROR: %s\n", opts.error);
+                g_cliExitCode = 1;
                 fclose(logf);
                 return true;
             }
@@ -234,9 +276,9 @@ static bool handle_cli(LPWSTR wCmdLine) {
             saveDesired.hasGpuOffset = true;
             if (haveControlState && control_state_has_meaningful_gpu(&control)) {
                 saveDesired.gpuOffsetMHz = control.gpuOffsetMHz;
-                saveDesired.gpuOffsetExcludeLow70 = control.gpuOffsetExcludeLow70;
+                saveDesired.gpuOffsetExcludeLowCount = control.gpuOffsetExcludeLowCount;
             } else {
-                resolve_displayed_live_gpu_offset_state_for_gui(&saveDesired.gpuOffsetMHz, &saveDesired.gpuOffsetExcludeLow70);
+                resolve_displayed_live_gpu_offset_state_for_gui(&saveDesired.gpuOffsetMHz, &saveDesired.gpuOffsetExcludeLowCount);
             }
             saveDesired.hasMemOffset = true;
             saveDesired.memOffsetMHz = haveControlState && control_state_has_meaningful_mem(&control) ? control.memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
@@ -256,6 +298,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
         }
         if (!save_profile_to_config(g_app.configPath, targetSlot, &saveDesired, err, sizeof(err))) {
             CLI_LOG("ERROR: %s\n", err);
+            g_cliExitCode = 1;
             fclose(logf);
             return true;
         }
@@ -344,10 +387,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         g_app.startHiddenToTray ? 1 : 0);
     debug_log("startup config path: %s\n", g_app.configPath[0] ? g_app.configPath : "<unset>");
 
-    bool debugEnvEnabled = (GetEnvironmentVariableA(APP_DEBUG_ENV, nullptr, 0) > 0);
+    char debugEnvBuf[16] = {};
+    DWORD debugEnvLen = GetEnvironmentVariableA(APP_DEBUG_ENV, debugEnvBuf, ARRAY_COUNT(debugEnvBuf));
+    bool debugEnvExplicitlyDisabled = (debugEnvLen > 0 && debugEnvBuf[0] == '0' && debugEnvBuf[1] == '\0');
+    bool debugEnvEnabled = (debugEnvLen > 0 && !debugEnvExplicitlyDisabled);
     bool configExists = config_file_exists();
     int configDebugEnabled = get_config_int(g_app.configPath, "debug", "enabled", APP_DEBUG_DEFAULT_ENABLED);
-    g_debug_logging = debugEnvEnabled || (configDebugEnabled != 0);
+    if (debugEnvExplicitlyDisabled) {
+        g_debug_logging = false;
+    } else {
+        g_debug_logging = debugEnvEnabled || (configDebugEnabled != 0);
+    }
     if (g_debug_logging) {
         g_debugSessionStartTickMs = GetTickCount64();
         debug_log("debug enabled: env=%d configExists=%d configDebug=%d path=%s\n",
@@ -361,6 +411,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
 
     // CLI mode - handle --dump, --json, --help
     if (handle_cli(wCmdLine)) {
+        DeleteCriticalSection(&g_debugLogLock);
         return g_cliExitCode;
     }
 
@@ -451,7 +502,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     int winH = initialSize.cy;
     g_app.hMainWnd = CreateWindowExA(
         0, APP_CLASS_NAME,
-        APP_TITLE,
+        APP_NAME,
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         CW_USEDEFAULT, CW_USEDEFAULT,
         winW, winH,
@@ -464,6 +515,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     }
 
     allow_dark_mode_for_window(g_app.hMainWnd);
+    set_main_window_title(g_app.hMainWnd);
 
     SendMessageA(g_app.hMainWnd, WM_SETICON, ICON_BIG, (LPARAM)wc.hIcon);
     SendMessageA(g_app.hMainWnd, WM_SETICON, ICON_SMALL, (LPARAM)wc.hIconSm);
@@ -652,6 +704,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
             remove_tray_icon();
             release_single_instance_mutex();
             close_nvml();
+            if (g_app.hNvApi) { FreeLibrary(g_app.hNvApi); g_app.hNvApi = nullptr; }
             for (int i = 0; i < 4; i++) {
                 if (g_app.trayIcons[i]) {
                     DestroyIcon(g_app.trayIcons[i]);
@@ -668,6 +721,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
             }
             close_debug_log_file();
             DeleteCriticalSection(&g_configLock);
+            DeleteCriticalSection(&g_appLock);
             DeleteCriticalSection(&g_debugLogLock);
             return 0;
         }
@@ -692,6 +746,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
 
     release_single_instance_mutex();
     close_nvml();
+    if (g_app.hNvApi) { FreeLibrary(g_app.hNvApi); g_app.hNvApi = nullptr; }
     for (int i = 0; i < 4; i++) {
         if (g_app.trayIcons[i]) {
             DestroyIcon(g_app.trayIcons[i]);
@@ -708,6 +763,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     }
     close_debug_log_file();
     DeleteCriticalSection(&g_configLock);
+    DeleteCriticalSection(&g_appLock);
     DeleteCriticalSection(&g_debugLogLock);
 
     return (int)msg.wParam;

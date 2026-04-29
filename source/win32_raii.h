@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+// SPDX-License-Identifier: MIT
+
 #ifndef GREEN_CURVE_WIN32_RAII_H
 #define GREEN_CURVE_WIN32_RAII_H
 
@@ -53,6 +56,40 @@ struct ScopedGdiObject {
         if (object) DeleteObject(object);
         object = value;
     }
+};
+
+struct ScopedServiceHandle {
+    SC_HANDLE handle;
+
+    ScopedServiceHandle() : handle(nullptr) {}
+    explicit ScopedServiceHandle(SC_HANDLE value) : handle(value) {}
+    ~ScopedServiceHandle() { reset(); }
+
+    ScopedServiceHandle(const ScopedServiceHandle&) = delete;
+    ScopedServiceHandle& operator=(const ScopedServiceHandle&) = delete;
+
+    SC_HANDLE get() const { return handle; }
+    bool valid() const { return handle != nullptr; }
+    operator SC_HANDLE() const { return handle; }
+
+    SC_HANDLE detach() {
+        SC_HANDLE value = handle;
+        handle = nullptr;
+        return value;
+    }
+
+    void reset(SC_HANDLE value = nullptr) {
+        if (handle) CloseServiceHandle(handle);
+        handle = value;
+    }
+};
+
+struct ScopedCriticalSection {
+    CRITICAL_SECTION* cs;
+    explicit ScopedCriticalSection(CRITICAL_SECTION* cs) : cs(cs) { if (cs) EnterCriticalSection(cs); }
+    ~ScopedCriticalSection() { if (cs) LeaveCriticalSection(cs); }
+    ScopedCriticalSection(const ScopedCriticalSection&) = delete;
+    ScopedCriticalSection& operator=(const ScopedCriticalSection&) = delete;
 };
 
 #endif

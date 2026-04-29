@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+// SPDX-License-Identifier: MIT
+
 #ifndef GREEN_CURVE_LINUX_PORT_H
 #define GREEN_CURVE_LINUX_PORT_H
 
@@ -7,7 +10,9 @@
 #define ARRAY_COUNT(a) (sizeof(a) / sizeof((a)[0]))
 
 #define APP_NAME "Green Curve"
-#define APP_VERSION "0.11"
+#ifndef APP_VERSION
+#define APP_VERSION "0.12"
+#endif
 #define CONFIG_FILE_NAME "config.ini"
 #define APP_LINUX_PROBE_FILE "greencurve_linux_probe.md"
 #define APP_LINUX_ASSETS_DIR "linux-artifacts"
@@ -46,7 +51,7 @@ struct DesiredSettings {
     bool lockTracksAnchor;
     bool hasGpuOffset;
     int gpuOffsetMHz;
-    bool gpuOffsetExcludeLow70;
+    int gpuOffsetExcludeLowCount;
     bool hasMemOffset;
     int memOffsetMHz;
     bool hasPowerLimit;
@@ -99,7 +104,7 @@ struct ProbeSummary {
 void trim_ascii(char* s);
 bool streqi_ascii(const char* a, const char* b);
 bool parse_int_strict(const char* s, int* out);
-void set_message(char* dst, size_t dstSize, const char* fmt, ...);
+void set_message(char* dst, size_t dstSize, const char* fmt, ...) __attribute__((format(printf, 3, 4)));
 bool parse_fan_value(const char* text, bool* isAuto, int* pct);
 const char* fan_mode_label(int mode);
 void fan_curve_set_default(FanCurveConfig* config);
@@ -113,6 +118,7 @@ bool get_executable_path(char* dst, size_t dstSize);
 bool default_linux_config_path(char* dst, size_t dstSize);
 bool default_probe_output_path(const char* configPath, char* dst, size_t dstSize);
 bool default_assets_output_dir(const char* configPath, char* dst, size_t dstSize);
+void merge_desired_settings(DesiredSettings* base, const DesiredSettings* incoming);
 bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts);
 bool load_profile_from_config_path(const char* path, int slot, DesiredSettings* desired, char* err, size_t errSize);
 bool load_default_or_selected_profile(const char* path, int* slot, DesiredSettings* desired, char* err, size_t errSize);
