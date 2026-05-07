@@ -942,7 +942,11 @@ static void apply_logon_startup_behavior() {
     if (!g_app.launchedFromLogon) return;
 
     bool startProgramAtLogon = is_start_on_logon_enabled(g_app.configPath);
-    g_app.startHiddenToTray = startProgramAtLogon;
+    bool applyAndExit = is_apply_and_exit_enabled(g_app.configPath);
+
+    // Set startHiddenToTray BEFORE ensure_tray_icon() is called in the caller.
+    // If apply_and_exit is active, we do NOT want a tray icon at all.
+    g_app.startHiddenToTray = startProgramAtLogon && !applyAndExit;
 
     int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
     if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
@@ -982,6 +986,15 @@ static void apply_logon_startup_behavior() {
         populate_desired_into_gui(&desired);
         set_config_int(g_app.configPath, "profiles", "selected_slot", logonSlot);
         refresh_profile_controls_from_config();
+
+        // Apply-and-exit: profile applied, now close the program silently.
+        // Post WM_CLOSE so the message loop gets a chance to run once first.
+        if (applyAndExit) {
+            remove_tray_icon();
+            PostMessageA(g_app.hMainWnd, WM_CLOSE, 0, 0);
+            return;
+        }
+
         set_profile_status_text(startProgramAtLogon
             ? "Started in the tray and applied slot %d at Windows logon."
             : "Applied slot %d silently at Windows logon.",

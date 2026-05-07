@@ -878,8 +878,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
 
     // Create edit controls
     create_edit_controls(g_app.hMainWnd, hInstance);
-    ensure_tray_icon();
+    // apply_logon_startup_behavior must run first: it sets g_app.startHiddenToTray
+    // and g_app.applyAndExit flags before the tray icon is created.
     apply_logon_startup_behavior();
+    ensure_tray_icon();
     if (!g_app.startHiddenToTray) {
         show_best_guess_support_warning(g_app.hMainWnd);
     }
