@@ -221,6 +221,7 @@ static const VfBackendSpec g_vfBackendBlackwell = {
     0x24,
     0x48,
     0x1C,
+    0x14,  // statusEntryBaseFreqOffset: vf_tuple_base.freq_kHz
     0x182C,
     1,
     0x04,
@@ -251,6 +252,7 @@ static const VfBackendSpec g_vfBackendLovelace = {
     0x24,
     0x48,
     0x1C,
+    0x14,  // statusEntryBaseFreqOffset: vf_tuple_base.freq_kHz
     0x182C,
     1,
     0x04,
@@ -281,6 +283,7 @@ static const VfBackendSpec g_vfBackendAmpere = {
     0x24,
     0x48,
     0x1C,
+    0x14,  // statusEntryBaseFreqOffset: vf_tuple_base.freq_kHz
     0x182C,
     1,
     0x04,
@@ -311,6 +314,7 @@ static const VfBackendSpec g_vfBackendTuring = {
     0x24,
     0x48,
     0x1C,
+    0x14,  // statusEntryBaseFreqOffset: vf_tuple_base.freq_kHz
     0x182C,
     1,
     0x04,
@@ -341,6 +345,7 @@ static const VfBackendSpec g_vfBackendPascal = {
     0x24,
     0x48,
     0x1C,
+    0x14,  // statusEntryBaseFreqOffset: vf_tuple_base.freq_kHz
     0x182C,
     1,
     0x04,
@@ -4555,54 +4560,98 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
 
     unsigned char baseControl[0x4000] = {};
     if (backend->controlBufferSize > sizeof(baseControl)) return false;
-    if (!nvapi_read_control_table(baseControl, sizeof(baseControl))) return false;
+    bool ctrlReadOk = nvapi_read_control_table(baseControl, sizeof(baseControl));
+    if (!ctrlReadOk) {
+        // Control table read failed. For a reset (all targets==0) we can proceed
+        // with a zeroed buffer -- every point will appear as "needs write".
+        // For non-reset writes we also proceed; worst case we write unnecessarily.
+        debug_log("curve write: control table read failed, proceeding with zeroed base\n");
+        memset(baseControl, 0, backend->controlBufferSize);
+        // Set version field if backend knows it
+        if (backend->controlBufferSize >= 4) {
+            unsigned int version = (1u << 16) | backend->controlBufferSize;
+            memcpy(baseControl, &version, sizeof(version));
+        }
+    }
 
     bool anyWrite = false;
     bool batchFailed = false;
 
-    // -- Fast path: single batch write (Afterburner-style, no verify loop) ------
-    // Build one control buffer with all desired offsets and write it in one call.
-    // A single read-back follows to update g_app.freqOffsets / g_app.curve so the
-    // rest of the apply pipeline has accurate data. No Sleep() retries.
+    // -- Batch write first, per-point fallback for Blackwell ------------------
+    // Try writing all changed points in one call (fast). If the driver returns
+    // an error (Blackwell requires single-bit mask), fall back to per-point.
     {
-        unsigned char buf[0x4000] = {};
-        memcpy(buf, baseControl, backend->controlBufferSize);
+        // Build batch buffer with all desired changes
+        unsigned char batchBuf[0x4000] = {};
+        memcpy(batchBuf, baseControl, backend->controlBufferSize);
+        unsigned char batchWriteMask[32] = {};
+        int pendingCount = 0;
 
-        unsigned char writeMask[32] = {};
-        bool anyPendingWrite = false;
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             if (!pendingMask[i]) continue;
             unsigned int deltaOffset = backend->controlEntryBaseOffset
                 + (unsigned int)i * backend->controlEntryStride
                 + backend->controlEntryDeltaOffset;
-            if (deltaOffset + sizeof(desiredOffsets[i]) > backend->controlBufferSize) return false;
+            if (deltaOffset + sizeof(desiredOffsets[i]) > backend->controlBufferSize) continue;
+
             int currentDelta = 0;
-            memcpy(&currentDelta, &buf[deltaOffset], sizeof(currentDelta));
+            memcpy(&currentDelta, &baseControl[deltaOffset], sizeof(currentDelta));
             if (currentDelta == desiredOffsets[i]) { pendingMask[i] = false; continue; }
-            memcpy(&buf[deltaOffset], &desiredOffsets[i], sizeof(desiredOffsets[i]));
-            writeMask[i / 8] |= (unsigned char)(1u << (i % 8));
-            anyPendingWrite = true;
+
+            memcpy(&batchBuf[deltaOffset], &desiredOffsets[i], sizeof(desiredOffsets[i]));
+            batchWriteMask[i / 8] |= (unsigned char)(1u << (i % 8));
+            pendingCount++;
         }
 
-        if (anyPendingWrite) {
-            memcpy(&buf[backend->controlMaskOffset], writeMask, sizeof(writeMask));
-            int setRet = setFunc(g_app.gpuHandle, buf);
-            debug_log("curve fast-write: points=%d ret=%d\n", desiredCount, setRet);
-            if (setRet != 0) {
-                batchFailed = true;
-            } else {
+        if (pendingCount > 0) {
+            memcpy(&batchBuf[backend->controlMaskOffset], batchWriteMask, sizeof(batchWriteMask));
+            int batchRet = setFunc(g_app.gpuHandle, batchBuf);
+            debug_log("curve batch write: points=%d ret=%d\n", pendingCount, batchRet);
+
+            if (batchRet == 0) {
+                // Batch succeeded (older drivers, Pascal/Turing/Ampere)
                 anyWrite = true;
-                // Single read-back -- no retry, no Sleep
                 nvapi_read_offsets();
+            } else {
+                // Batch failed -- Blackwell requires single-bit mask per call.
+                // Fall back to per-point writes.
+                debug_log("curve batch failed, falling back to per-point writes\n");
+                int writeCount = 0, failCount = 0;
+                for (int i = 0; i < VF_NUM_POINTS; i++) {
+                    if (!pendingMask[i]) continue;
+                    unsigned int deltaOffset = backend->controlEntryBaseOffset
+                        + (unsigned int)i * backend->controlEntryStride
+                        + backend->controlEntryDeltaOffset;
+                    if (deltaOffset + sizeof(desiredOffsets[i]) > backend->controlBufferSize) {
+                        failCount++; continue;
+                    }
+                    unsigned char pbuf[0x4000] = {};
+                    memcpy(pbuf, baseControl, backend->controlBufferSize);
+                    memset(&pbuf[backend->controlMaskOffset], 0, 32);
+                    pbuf[backend->controlMaskOffset + i / 8] = (unsigned char)(1u << (i % 8));
+                    memcpy(&pbuf[deltaOffset], &desiredOffsets[i], sizeof(desiredOffsets[i]));
+                    int ret = setFunc(g_app.gpuHandle, pbuf);
+                    if (ret == 0) {
+                        writeCount++;
+                        anyWrite = true;
+                        memcpy(&baseControl[deltaOffset], &desiredOffsets[i], sizeof(desiredOffsets[i]));
+                    } else {
+                        failCount++;
+                        batchFailed = true;
+                    }
+                }
+                debug_log("per-point fallback: written=%d failed=%d\n", writeCount, failCount);
+                if (anyWrite) nvapi_read_offsets();
             }
         }
     }
 
     bool allOk = !batchFailed;
     if (anyWrite) {
-        // Use settled read (v011) for more reliable verification after write
+        // Brief settle wait -- driver needs ~1-2 frames to commit the new curve.
+        // 3 attempts x 10ms = 30ms max, fast enough to not block UI noticeably.
         bool settledOk = false;
-        if (!read_live_curve_snapshot_settled(6, 25, &settledOk)) allOk = false;
+        if (!read_live_curve_snapshot_settled(3, 10, &settledOk)) allOk = false;
         rebuild_visible_map();
     }
 

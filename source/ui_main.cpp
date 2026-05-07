@@ -613,20 +613,127 @@ static void create_edit_controls(HWND hParent, HINSTANCE hInst) {
 // Main Window
 // ============================================================================
 
+struct AsyncApplyArg {
+    HWND hwnd;
+    DesiredSettings desired;
+    bool isReset;
+};
+
+static DWORD WINAPI async_apply_thread(void* param) {
+    AsyncApplyArg* arg = (AsyncApplyArg*)param;
+
+    // Allocate result on heap - UI thread will free it
+    char* result = (char*)malloc(512);
+    if (!result) { delete arg; return 0; }
+    result[0] = ' ';
+
+    if (arg->isReset) {
+        // Reset: zero all offsets
+        int targetOffsets[VF_NUM_POINTS] = {};
+        bool targetMask[VF_NUM_POINTS] = {};
+        bool hadCurveOffsets = false;
+        for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+            if (g_app.curve[ci].freq_kHz == 0) continue;
+            targetMask[ci] = true;
+            if (g_app.freqOffsets[ci] != 0) hadCurveOffsets = true;
+        }
+        bool ok = true;
+        if (hadCurveOffsets) {
+            ok = apply_curve_offsets_verified(targetOffsets, targetMask, 2);
+            if (!ok) {
+                nvapi_read_curve();
+                nvapi_read_offsets();
+                ok = apply_curve_offsets_verified(targetOffsets, targetMask, 2);
+            }
+        }
+        if (g_app.gpuClockOffsetkHz != 0) nvapi_set_gpu_offset(0);
+        if (g_app.memClockOffsetkHz != 0) nvapi_set_mem_offset(0);
+        if (g_app.powerLimitPct != 100) nvapi_set_power_limit(100);
+        stop_fan_curve_runtime();
+        if (!g_app.fanIsAuto) {
+            char fanDetail[128] = {};
+            nvml_set_fan_auto(fanDetail, sizeof(fanDetail));
+        }
+        StringCchPrintfA(result, 512, ok ? "Reset complete." : "Reset had errors. Some settings may not have been restored.");
+        PostMessageA(arg->hwnd, APP_WM_ASYNC_DONE, 1, (LPARAM)result);
+    } else {
+        // Apply: pre-reset then apply desired
+        bool anyNonZero = false;
+        for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+            if (g_app.freqOffsets[ci] != 0) { anyNonZero = true; break; }
+        }
+        if (anyNonZero) {
+            int zeroOffsets[VF_NUM_POINTS] = {};
+            bool resetMask[VF_NUM_POINTS] = {};
+            for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+                if (g_app.curve[ci].freq_kHz > 0) resetMask[ci] = true;
+            }
+            apply_curve_offsets_verified(zeroOffsets, resetMask, 1);
+        }
+        apply_desired_settings(&arg->desired, true, result, 512);
+        PostMessageA(arg->hwnd, APP_WM_ASYNC_DONE, 0, (LPARAM)result);
+    }
+
+    delete arg;
+    return 0;
+}
+
+static void start_async_op(bool isReset) {
+    if (g_app.asyncOpRunning) {
+        MessageBoxA(g_app.hMainWnd, "An operation is already in progress.", "Green Curve", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    AsyncApplyArg* arg = new AsyncApplyArg{};
+    arg->hwnd = g_app.hMainWnd;
+    arg->isReset = isReset;
+    g_app.asyncOpRunning = true;
+    // Pause timers so they don't call NVAPI while the thread is active
+    KillTimer(g_app.hMainWnd, FAN_TELEMETRY_TIMER_ID);
+    KillTimer(g_app.hMainWnd, FAN_CURVE_TIMER_ID);
+    SetCursor(LoadCursor(nullptr, IDC_WAIT));
+    EnableWindow(g_app.hMainWnd, FALSE);
+    DWORD threadId = 0;
+    HANDLE h = CreateThread(nullptr, 0, async_apply_thread, arg, 0, &threadId);
+    if (h) CloseHandle(h);
+    else {
+        delete arg;
+        g_app.asyncOpRunning = false;
+        EnableWindow(g_app.hMainWnd, TRUE);
+        SetCursor(LoadCursor(nullptr, IDC_ARROW));
+        SetTimer(g_app.hMainWnd, FAN_TELEMETRY_TIMER_ID,
+                fan_telemetry_interval_for_window_state(), nullptr);
+    }
+}
+
 static void apply_changes() {
     if (!g_app.loaded) return;
-    DesiredSettings desired = {};
+    AsyncApplyArg* arg = new AsyncApplyArg{};
     char err[256] = {};
-    if (!capture_gui_apply_settings(&desired, err, sizeof(err))) {
+    if (!capture_gui_apply_settings(&arg->desired, err, sizeof(err))) {
+        delete arg;
         write_error_report_log_for_user_failure("GUI apply validation failed", err);
         MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
         return;
     }
-    char result[512] = {};
+    if (g_app.asyncOpRunning) {
+        delete arg;
+        MessageBoxA(g_app.hMainWnd, "An operation is already in progress.", "Green Curve", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    arg->hwnd = g_app.hMainWnd;
+    arg->isReset = false;
+    g_app.asyncOpRunning = true;
     SetCursor(LoadCursor(nullptr, IDC_WAIT));
-    bool ok = apply_desired_settings(&desired, true, result, sizeof(result));
-    SetCursor(LoadCursor(nullptr, IDC_ARROW));
-    MessageBoxA(g_app.hMainWnd, result, "Green Curve", MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+    EnableWindow(g_app.hMainWnd, FALSE);
+    DWORD threadId = 0;
+    HANDLE h = CreateThread(nullptr, 0, async_apply_thread, arg, 0, &threadId);
+    if (h) CloseHandle(h);
+    else {
+        delete arg;
+        g_app.asyncOpRunning = false;
+        EnableWindow(g_app.hMainWnd, TRUE);
+        SetCursor(LoadCursor(nullptr, IDC_ARROW));
+    }
 }
 
 static void destroy_edit_controls(HWND hParent) {
@@ -687,63 +794,12 @@ static void refresh_curve() {
 
 static void reset_curve() {
     if (!g_app.loaded) return;
-
     if (!g_app.vfBackend || !g_app.vfBackend->writeSupported ||
         !(NvApiFunc)nvapi_qi(g_app.vfBackend->setControlId)) {
         MessageBoxA(g_app.hMainWnd, "NvAPI functions not available.", "Green Curve", MB_OK | MB_ICONERROR);
         return;
     }
-
-    int targetOffsets[VF_NUM_POINTS] = {};
-    bool targetMask[VF_NUM_POINTS] = {};
-    bool hadCurveOffsets = false;
-    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-        if (g_app.curve[ci].freq_kHz == 0) continue;
-        targetMask[ci] = true;
-        if (g_app.freqOffsets[ci] != 0) hadCurveOffsets = true;
-    }
-
-    int successCount = 0;
-    int failCount = 0;
-    if (hadCurveOffsets) {
-        if (apply_curve_offsets_verified(targetOffsets, targetMask, 2)) successCount++;
-        else failCount++;
-    }
-
-    detect_locked_tail_from_curve();
-
-    // Reset global controls to defaults
-    if (g_app.gpuClockOffsetkHz != 0) {
-        if (nvapi_set_gpu_offset(0)) successCount++; else failCount++;
-    }
-    if (g_app.memClockOffsetkHz != 0) {
-        if (nvapi_set_mem_offset(0)) successCount++; else failCount++;
-    }
-    if (g_app.powerLimitPct != 100) {
-        if (nvapi_set_power_limit(100)) successCount++; else failCount++;
-    }
-    char detail[128] = {};
-    stop_fan_curve_runtime();
-    if (!g_app.fanIsAuto) {
-        if (nvml_set_fan_auto(detail, sizeof(detail))) successCount++; else failCount++;
-    }
-    refresh_global_state(detail, sizeof(detail));
-    g_app.guiGpuOffsetMHz = 0;
-    g_app.guiGpuOffsetExcludeLow70 = false;
-    g_app.appliedGpuOffsetMHz = 0;
-    g_app.appliedGpuOffsetExcludeLow70 = false;
-    memset(g_app.guiCurvePointExplicit, 0, sizeof(g_app.guiCurvePointExplicit));
-    g_app.guiFanMode = -1;
-    g_app.guiFanFixedPercent = 0;
-
-    // Recreate edit controls
-    destroy_edit_controls(g_app.hMainWnd);
-    create_edit_controls(g_app.hMainWnd, g_app.hInst);
-    invalidate_main_window();
-
-    char msg[128];
-    StringCchPrintfA(msg, ARRAY_COUNT(msg), "Reset %d items to default (%d failed).", successCount, failCount);
-    MessageBoxA(g_app.hMainWnd, msg, "Green Curve", MB_OK | MB_ICONINFORMATION);
+    start_async_op(true);
 }
 
 // ============================================================================
@@ -1393,6 +1449,49 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 SIZE minSize = main_window_min_size();
                 mmi->ptMinTrackSize.x = minSize.cx;
                 mmi->ptMinTrackSize.y = minSize.cy;
+            }
+            return 0;
+        }
+
+        case APP_WM_ASYNC_DONE: {
+            // Background apply/reset thread completed.
+            // wParam: 0=apply, 1=reset  lParam: heap-allocated result string
+            g_app.asyncOpRunning = false;
+            EnableWindow(hwnd, TRUE);
+            SetCursor(LoadCursor(nullptr, IDC_ARROW));
+            SetForegroundWindow(hwnd);
+            // Resume timers after async op completes
+            SetTimer(hwnd, FAN_TELEMETRY_TIMER_ID,
+                fan_telemetry_interval_for_window_state(), nullptr);
+            if (g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive)
+                SetTimer(hwnd, FAN_CURVE_TIMER_ID, FAN_FIXED_RUNTIME_INTERVAL_MS, nullptr);
+
+            char* result = (char*)(LPARAM)lParam;
+            bool isReset = (wParam == 1);
+            bool ok = result && (strstr(result, "failed") == nullptr && strstr(result, "error") == nullptr
+                              && strstr(result, "Failed") == nullptr && strstr(result, "Error") == nullptr);
+
+            if (isReset) {
+                // Refresh UI after reset
+                char detail[128] = {};
+                refresh_global_state(detail, sizeof(detail));
+                g_app.guiGpuOffsetMHz = 0;
+                g_app.guiGpuOffsetExcludeLow70 = false;
+                g_app.appliedGpuOffsetMHz = 0;
+                g_app.appliedGpuOffsetExcludeLow70 = false;
+                memset(g_app.guiCurvePointExplicit, 0, sizeof(g_app.guiCurvePointExplicit));
+                g_app.guiFanMode = -1;
+                g_app.guiFanFixedPercent = 0;
+                unlock_all();
+                detect_locked_tail_from_curve();
+                destroy_edit_controls(hwnd);
+                create_edit_controls(hwnd, g_app.hInst);
+                invalidate_main_window();
+            }
+
+            if (result) {
+                MessageBoxA(hwnd, result, "Green Curve", MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONWARNING));
+                free(result);
             }
             return 0;
         }

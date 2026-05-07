@@ -93,6 +93,24 @@ static bool apply_fan_settings(const DesiredSettings* desired, char* failureDeta
     return true;
 }
 
+// Returns the stable VBIOS base frequency for a curve point.
+// Uses vf_tuple_base if available (cold-boot safe), otherwise falls back to
+// the classic (live_freq - applied_offset) calculation.
+static long long stable_base_freq_khz(int ci,
+                                      const int* originalFreqkHz,
+                                      const int* originalOffsets)
+{
+    // Prefer vf_tuple_base: it is the NVAPI-reported static base and is not
+    // affected by thermal-boost transients at cold boot.
+    if (g_app.curve[ci].base_freq_kHz > 0) {
+        return (long long)g_app.curve[ci].base_freq_kHz;
+    }
+    // Fallback: live_freq - applied_offset (pre-reset values).
+    long long base = (long long)originalFreqkHz[ci] - (long long)originalOffsets[ci];
+    if (base < 0) base = 0;
+    return base;
+}
+
 static bool apply_desired_settings(const DesiredSettings* desired, bool interactive, char* result, size_t resultSize) {
     if (!desired) {
         set_message(result, resultSize, "No desired settings");
@@ -120,12 +138,43 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
                 if (g_app.curve[ci].freq_kHz == 0) continue;
                 if (g_app.freqOffsets[ci] != 0) zeroMask[ci] = true;
             }
-            apply_curve_offsets_verified(zeroOffsets, zeroMask, 2);
-            nvapi_read_curve();
-            nvapi_read_offsets();
+            bool resetOk = apply_curve_offsets_verified(zeroOffsets, zeroMask, 2);
+            // Use settled read after reset so that g_app.curve / g_app.freqOffsets
+            // reflect the stable VBIOS base before we compute new offsets.
+            // We now also read vf_tuple_base (base_freq_kHz) directly from the
+            // GetStatus call; this bypasses the cold-boot thermal boost issue
+            // entirely because vf_tuple_base is the NVAPI VBIOS constant.
+            bool settledOk = false;
+            read_live_curve_snapshot_settled(resetOk ? 4 : 2, 20, &settledOk);
+            if (!resetOk) {
+                nvapi_read_offsets();
+            }
+            // Cold-boot guard: vf_tuple_base lets us detect thermal-boost transients.
+            // If live_freq > base_freq + 50 MHz, the driver hasn't settled yet.
+            // Only do extra waiting if interactive==false (logon/startup apply):
+            // interactive applies are user-triggered so the GPU is likely warm already.
+            if (settledOk && !interactive) {
+                bool baseStable = true;
+                for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+                    if (g_app.curve[ci].freq_kHz == 0) continue;
+                    if (g_app.curve[ci].base_freq_kHz == 0) continue;
+                    unsigned int liveMHz = g_app.curve[ci].freq_kHz / 1000;
+                    unsigned int baseMHz = g_app.curve[ci].base_freq_kHz / 1000;
+                    if (liveMHz > baseMHz + 50) {
+                        baseStable = false;
+                        debug_log("cold-boot guard: ci=%d live=%u base=%u -- re-reading\n",
+                            ci, liveMHz, baseMHz);
+                        break;
+                    }
+                }
+                if (!baseStable) {
+                    read_live_curve_snapshot_settled(6, 40, &settledOk);
+                }
+            }
         } else if (g_app.vfBackend->readSupported) {
-            nvapi_read_curve();
-            nvapi_read_offsets();
+            // No reset needed -- just refresh so we have the latest live base.
+            bool settledOk = false;
+            read_live_curve_snapshot_settled(3, 15, &settledOk);
         }
     }
 
@@ -182,6 +231,19 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
         if (originalCurveOffsets[ci] != 0) haveNonZeroCurveOffsets = true;
         if (desired->hasCurvePoint[ci]) {
             hasCurveEdits = true;
+        }
+    }
+
+
+    // Re-read originalCurve arrays from the post-reset stable driver state.
+    // At cold boot the driver may briefly report elevated base frequencies;
+    // the settled read in the pre-apply reset block above waits for stabilisation.
+    // Refreshing here ensures target-offset calculations use the true VBIOS base.
+    {
+        for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+            originalCurveOffsets[ci] = g_app.freqOffsets[ci];
+            originalCurveFreqkHz[ci] = (int)g_app.curve[ci].freq_kHz;
+            originalCurvePopulated[ci] = g_app.curve[ci].freq_kHz > 0;
         }
     }
 
@@ -359,8 +421,7 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
                     if (!desired->hasCurvePoint[ci]) continue;
                     if (lockedTailMask[ci]) continue;
                     if (!originalCurvePopulated[ci]) continue;
-                    long long base = (long long)originalCurveFreqkHz[ci] - (long long)originalCurveOffsets[ci];
-                    if (base < 0) base = 0;
+                    long long base = stable_base_freq_khz(ci, originalCurveFreqkHz, originalCurveOffsets);
                     long long target = (long long)desired->curvePointMHz[ci] * 1000LL;
                     targetCurveOffsets[ci] = clamp_freq_delta_khz((int)(target - base));
                     targetCurveMask[ci] = true;
@@ -370,8 +431,7 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
             for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
                 if (!lockedTailMask[ci]) continue;
                 if (!originalCurvePopulated[ci]) continue;
-                long long base = (long long)originalCurveFreqkHz[ci] - (long long)originalCurveOffsets[ci];
-                if (base < 0) base = 0;
+                long long base = stable_base_freq_khz(ci, originalCurveFreqkHz, originalCurveOffsets);
                 long long target = (long long)lockMhz * 1000LL;
                 targetCurveOffsets[ci] = clamp_freq_delta_khz((int)(target - base));
                 targetCurveMask[ci] = true;
@@ -386,8 +446,7 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
             for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
                 if (!desired->hasCurvePoint[ci]) continue;
                 if (!originalCurvePopulated[ci]) continue;
-                long long base = (long long)originalCurveFreqkHz[ci] - (long long)originalCurveOffsets[ci];
-                if (base < 0) base = 0;
+                long long base = stable_base_freq_khz(ci, originalCurveFreqkHz, originalCurveOffsets);
                 long long target = (long long)desired->curvePointMHz[ci] * 1000LL;
                 targetCurveOffsets[ci] = clamp_freq_delta_khz((int)(target - base));
                 targetCurveMask[ci] = true;
@@ -740,6 +799,20 @@ static bool nvapi_read_curve() {
         memcpy(&volt, &buf[entryOffset + 4], sizeof(volt));
         g_app.curve[i].freq_kHz = freq;
         g_app.curve[i].volt_uV = volt;
+        // Read VBIOS static base freq (vf_tuple_base) if the backend exposes it.
+        // This is the freq at offset=0 -- not affected by driver boost transients.
+        if (backend->statusEntryBaseFreqOffset > 0) {
+            unsigned int baseEntryOffset = entryOffset + backend->statusEntryBaseFreqOffset;
+            if (baseEntryOffset + sizeof(unsigned int) <= backend->statusBufferSize) {
+                unsigned int baseFreq = 0;
+                memcpy(&baseFreq, &buf[baseEntryOffset], sizeof(baseFreq));
+                g_app.curve[i].base_freq_kHz = baseFreq;
+            } else {
+                g_app.curve[i].base_freq_kHz = 0;
+            }
+        } else {
+            g_app.curve[i].base_freq_kHz = 0;
+        }
         if (freq > 0) g_app.numPopulated++;
     }
     g_app.loaded = true;
@@ -896,6 +969,7 @@ static bool nvapi_read_offsets() {
     }
     return true;
 }
+
 
 static bool nvapi_set_point(int pointIndex, int freqDelta_kHz) {
     if (pointIndex < 0 || pointIndex >= VF_NUM_POINTS) return false;

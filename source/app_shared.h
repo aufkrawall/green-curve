@@ -64,6 +64,7 @@ void init_dpi();
 #define APP_DEBUG_ENV       "GREEN_CURVE_DEBUG"
 #define APP_WM_SYNC_STARTUP (WM_APP + 1)
 #define APP_WM_TRAYICON     (WM_APP + 2)
+#define APP_WM_ASYNC_DONE   (WM_APP + 3)   // wParam=0:apply wParam=1:reset, lParam=result ptr (heap, caller frees)
 #define APPLY_BTN_ID        2000
 #define REFRESH_BTN_ID      2001
 #define RESET_BTN_ID        2003
@@ -348,6 +349,7 @@ typedef struct {
     unsigned int statusNumClocksOffset;
     unsigned int statusEntriesOffset;
     unsigned int statusEntryStride;
+    unsigned int statusEntryBaseFreqOffset; // offset within entry to vf_tuple_base.freq_kHz (0 if unavailable)
     unsigned int infoBufferSize;
     unsigned int infoVersion;
     unsigned int infoMaskOffset;
@@ -362,8 +364,9 @@ typedef struct {
 } VfBackendSpec;
 
 struct VFCurvePoint {
-    unsigned int freq_kHz;
+    unsigned int freq_kHz;      // live freq (base + offset)
     unsigned int volt_uV;
+    unsigned int base_freq_kHz; // VBIOS static base (vf_tuple_base) -- never affected by offsets
 };
 
 enum {
@@ -521,6 +524,7 @@ struct AppData {
     int activeFanFixedPercent;
     FanCurveConfig activeFanCurve;
     bool fanCurveRuntimeActive;
+    bool asyncOpRunning;            // true while apply/reset thread is active
     bool guiStateDirty;
     bool fanFixedRuntimeActive;
     int fanCurveLastAppliedPercent;
