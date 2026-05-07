@@ -135,6 +135,8 @@ static void debug_log_session_marker(const char* phase, const char* kind, const 
         g_app.backgroundServiceRunning ? 1 : 0,
         g_app.backgroundServiceAvailable ? 1 : 0,
         configPath);
+    debug_log("debug logging is enabled by default. This log may contain GPU identifiers, config paths, and applied settings.\n");
+    debug_log("Set GREEN_CURVE_DEBUG=0 or [debug] enabled=0 to disable logging.\n");
     if (extra && extra[0]) {
         debug_log("details=%s\n", extra);
     }
@@ -216,6 +218,41 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
             g_app.fanRuntimeLastApplyTickMs);
     }
     write_crash_breadcrumb_direct(text);
+
+    // Write a minidump alongside the text breadcrumb for deeper crash analysis.
+    // Use MiniDumpWithDataSegs to capture stack, thread info, and data segments
+    // without the full overhead of a complete memory dump.
+    if (info && info->ExceptionRecord && info->ContextRecord) {
+        char dumpPath[MAX_PATH] = {};
+        const char* dataDir = g_userDataDir[0] ? g_userDataDir : ".";
+        StringCchPrintfA(dumpPath, ARRAY_COUNT(dumpPath), "%s\\greencurve_crash_%04u%02u%02u_%02u%02u%02u.dmp",
+            dataDir, now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
+        char pathErr[256] = {};
+        ensure_parent_directory_for_file(dumpPath, pathErr, sizeof(pathErr));
+
+        HANDLE hDump = CreateFileA(dumpPath, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hDump != INVALID_HANDLE_VALUE) {
+            MINIDUMP_EXCEPTION_INFORMATION mei = {};
+            mei.ThreadId = GetCurrentThreadId();
+            mei.ExceptionPointers = info;
+            mei.ClientPointers = FALSE;
+            BOOL dumpOk = MiniDumpWriteDump(
+                GetCurrentProcess(),
+                GetCurrentProcessId(),
+                hDump,
+                MiniDumpWithDataSegs,
+                &mei,
+                nullptr,
+                nullptr);
+            (void)dumpOk; // best-effort; log would fail inside a crash handler
+            CloseHandle(hDump);
+            if (!dumpOk) {
+                DeleteFileA(dumpPath);
+            }
+        }
+    }
+
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
@@ -284,6 +321,44 @@ static bool write_text_file_atomic_service(const char* path, const char* data, s
         set_message(err, errSize, "Invalid file write arguments");
         return false;
     }
+
+    // Verify the parent directory is safe (not a reparse point) before creating any temp file.
+    char parentDir[MAX_PATH] = {};
+    if (FAILED(StringCchCopyA(parentDir, ARRAY_COUNT(parentDir), path))) {
+        set_message(err, errSize, "Path is too long");
+        return false;
+    }
+    char* lastSlash = strrchr(parentDir, '\\');
+    if (!lastSlash) lastSlash = strrchr(parentDir, '/');
+    if (lastSlash) *lastSlash = 0;
+    HANDLE parentHandle = CreateFileA(parentDir,
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+        nullptr);
+    if (parentHandle == INVALID_HANDLE_VALUE) {
+        set_message(err, errSize, "Cannot open parent directory %s (error %lu)", parentDir, GetLastError());
+        return false;
+    }
+    char parentFinalPath[MAX_PATH] = {};
+    DWORD parentFinalLen = GetFinalPathNameByHandleA(parentHandle, parentFinalPath, ARRAY_COUNT(parentFinalPath), FILE_NAME_NORMALIZED);
+    CloseHandle(parentHandle);
+    if (parentFinalLen == 0 || parentFinalLen >= ARRAY_COUNT(parentFinalPath)) {
+        set_message(err, errSize, "Cannot resolve parent directory path");
+        return false;
+    }
+    const char* parentComparePath = parentFinalPath;
+    if (strncmp(parentFinalPath, "\\\\?\\", 4) == 0) parentComparePath = parentFinalPath + 4;
+    size_t profileLen = strlen(g_serviceUserProfileDir);
+    if (_strnicmp(parentComparePath, g_serviceUserProfileDir, profileLen) != 0 ||
+        (parentComparePath[profileLen] != '\\' && parentComparePath[profileLen] != '\0')) {
+        set_message(err, errSize, "Parent directory resolved outside the caller's profile directory");
+        return false;
+    }
+    debug_log("write_text_file_atomic_service: parent dir verified \"%s\"\n", parentComparePath);
+
     if (!ensure_parent_directory_for_file(path, err, errSize)) return false;
 
     char tempPath[MAX_PATH] = {};
@@ -297,7 +372,7 @@ static bool write_text_file_atomic_service(const char* path, const char* data, s
             attempt);
         h = CreateFileA(tempPath,
             GENERIC_READ | GENERIC_WRITE,
-            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             nullptr,
             CREATE_NEW,
             FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED,

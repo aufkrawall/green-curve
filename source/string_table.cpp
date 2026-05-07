@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "string_table.h"
+#include "app_shared.h"
 
 struct StringTable {
     const char* entries[static_cast<int>(StringId::Count)];

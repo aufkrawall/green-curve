@@ -565,7 +565,6 @@ static void apply_service_desired_to_gui(const DesiredSettings* desired) {
         if (desired->hasLock && desired->lockCi >= 0 && desired->lockMHz > 0) {
             g_app.lockedCi = desired->lockCi;
             g_app.lockedFreq = desired->lockMHz;
-            g_app.guiLockTracksAnchor = desired->lockTracksAnchor;
             g_app.lockedVi = -1;
             for (int vi = 0; vi < g_app.numVisible; vi++) {
                 if (g_app.visibleMap[vi] == desired->lockCi) {
@@ -573,10 +572,17 @@ static void apply_service_desired_to_gui(const DesiredSettings* desired) {
                     break;
                 }
             }
+            g_app.appliedLockVi = g_app.lockedVi;
+            g_app.appliedLockCi = g_app.lockedCi;
+            g_app.appliedLockFreq = g_app.lockedFreq;
+            g_app.guiLockTracksAnchor = desired->lockTracksAnchor;
         } else if (g_app.lockedFreq == 0 || g_app.lockedCi < 0) {
             g_app.lockedVi = -1;
             g_app.lockedCi = -1;
             g_app.lockedFreq = 0;
+            g_app.appliedLockVi = -1;
+            g_app.appliedLockCi = -1;
+            g_app.appliedLockFreq = 0;
             g_app.guiLockTracksAnchor = true;
         }
     }

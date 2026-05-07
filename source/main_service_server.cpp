@@ -291,40 +291,42 @@ static bool service_prepare_requested_gpu(const ServiceRequest* request, char* e
 
 static bool create_restricted_pipe_security_descriptor(PSECURITY_DESCRIPTOR* outSd) {
     *outSd = nullptr;
-    DWORD sessionId = WTSGetActiveConsoleSessionId();
-    if (sessionId == 0xFFFFFFFF) return false;
-    HANDLE hToken = nullptr;
-    if (!WTSQueryUserToken(sessionId, &hToken)) return false;
-
-    DWORD needed = 0;
-    GetTokenInformation(hToken, TokenUser, nullptr, 0, &needed);
-    if (needed == 0) {
-        CloseHandle(hToken);
-        return false;
-    }
-    TOKEN_USER* tokenUser = (TOKEN_USER*)malloc(needed);
-    if (!tokenUser) {
-        CloseHandle(hToken);
-        return false;
-    }
-    bool ok = false;
-    if (GetTokenInformation(hToken, TokenUser, tokenUser, needed, &needed) && tokenUser->User.Sid) {
-        LPWSTR sidStr = nullptr;
-        if (ConvertSidToStringSidW(tokenUser->User.Sid, &sidStr)) {
-            WCHAR sddl[512] = {};
-            if (SUCCEEDED(StringCchPrintfW(sddl, ARRAY_COUNT(sddl),
-                L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;%s)", sidStr))) {
-                if (ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                        sddl, SDDL_REVISION_1, outSd, nullptr)) {
-                    ok = true;
+    // Always include SYSTEM (full), Administrators (full), and Authenticated
+    // Users (read+write) so the pipe is accessible to any logged-in user.
+    // At boot (before login), WTSQueryUserToken fails, and without AU the pipe
+    // gets the default SYSTEM-process ACL which excludes non-admin users.
+    WCHAR sddl[512] = {};
+    if (SUCCEEDED(StringCchPrintfW(sddl, ARRAY_COUNT(sddl),
+        L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)"))) {
+        DWORD sessionId = WTSGetActiveConsoleSessionId();
+        if (sessionId != 0xFFFFFFFF) {
+            HANDLE hToken = nullptr;
+            if (WTSQueryUserToken(sessionId, &hToken)) {
+                DWORD needed = 0;
+                GetTokenInformation(hToken, TokenUser, nullptr, 0, &needed);
+                if (needed > 0) {
+                    TOKEN_USER* tokenUser = (TOKEN_USER*)malloc(needed);
+                    if (tokenUser) {
+                        if (GetTokenInformation(hToken, TokenUser, tokenUser, needed, &needed) && tokenUser->User.Sid) {
+                            LPWSTR sidStr = nullptr;
+                            if (ConvertSidToStringSidW(tokenUser->User.Sid, &sidStr)) {
+                                WCHAR sddlWithUser[512] = {};
+                                if (SUCCEEDED(StringCchPrintfW(sddlWithUser, ARRAY_COUNT(sddlWithUser),
+                                    L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)(A;;GRGW;;;%s)", sidStr))) {
+                                    StringCchCopyW(sddl, ARRAY_COUNT(sddl), sddlWithUser);
+                                }
+                                LocalFree(sidStr);
+                            }
+                        }
+                        free(tokenUser);
+                    }
                 }
+                CloseHandle(hToken);
             }
-            LocalFree(sidStr);
         }
     }
-    free(tokenUser);
-    CloseHandle(hToken);
-    return ok;
+    return ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl, SDDL_REVISION_1, outSd, nullptr) != FALSE;
 }
 
 static DWORD WINAPI service_pipe_server_thread_proc(void*) {
@@ -338,13 +340,8 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
         if (create_restricted_pipe_security_descriptor(&securityDescriptor)) {
             sa.lpSecurityDescriptor = securityDescriptor;
             debug_log("pipe_server: using restricted ACL for active console session user\n");
-        } else if (ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)",
-                SDDL_REVISION_1,
-                &securityDescriptor,
-                nullptr)) {
-            sa.lpSecurityDescriptor = securityDescriptor;
-            debug_log("pipe_server: falling back to Interactive Users ACL\n");
+        } else {
+            debug_log("pipe_server: cannot create restricted ACL, deferring pipe creation\n");
         }
 
         HANDLE pipe = CreateNamedPipeW(
@@ -620,6 +617,7 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
             }
         }
 
+        response.message[ARRAY_COUNT(response.message) - 1] = '\0';
         pipeErr[0] = 0;
         if (!service_pipe_write_exact(pipe, &response, sizeof(response), SERVICE_PIPE_SERVER_IO_TIMEOUT_MS, "writing service response", pipeErr, sizeof(pipeErr))) {
             debug_log("service_pipe_server: response write failed: %s\n", pipeErr[0] ? pipeErr : "unknown");

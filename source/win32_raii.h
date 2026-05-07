@@ -16,6 +16,12 @@ struct ScopedHandle {
     ScopedHandle(const ScopedHandle&) = delete;
     ScopedHandle& operator=(const ScopedHandle&) = delete;
 
+    ScopedHandle(ScopedHandle&& other) noexcept : handle(other.handle) { other.handle = nullptr; }
+    ScopedHandle& operator=(ScopedHandle&& other) noexcept {
+        if (this != &other) { reset(); handle = other.handle; other.handle = nullptr; }
+        return *this;
+    }
+
     HANDLE get() const { return handle; }
     bool valid() const { return handle && handle != INVALID_HANDLE_VALUE; }
     operator HANDLE() const { return handle; }
@@ -42,6 +48,12 @@ struct ScopedGdiObject {
     ScopedGdiObject(const ScopedGdiObject&) = delete;
     ScopedGdiObject& operator=(const ScopedGdiObject&) = delete;
 
+    ScopedGdiObject(ScopedGdiObject&& other) noexcept : object(other.object) { other.object = nullptr; }
+    ScopedGdiObject& operator=(ScopedGdiObject&& other) noexcept {
+        if (this != &other) { reset(); object = other.object; other.object = nullptr; }
+        return *this;
+    }
+
     HGDIOBJ get() const { return object; }
     bool valid() const { return object != nullptr; }
     operator HGDIOBJ() const { return object; }
@@ -67,6 +79,12 @@ struct ScopedServiceHandle {
 
     ScopedServiceHandle(const ScopedServiceHandle&) = delete;
     ScopedServiceHandle& operator=(const ScopedServiceHandle&) = delete;
+
+    ScopedServiceHandle(ScopedServiceHandle&& other) noexcept : handle(other.handle) { other.handle = nullptr; }
+    ScopedServiceHandle& operator=(ScopedServiceHandle&& other) noexcept {
+        if (this != &other) { reset(); handle = other.handle; other.handle = nullptr; }
+        return *this;
+    }
 
     SC_HANDLE get() const { return handle; }
     bool valid() const { return handle != nullptr; }

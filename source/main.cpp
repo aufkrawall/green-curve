@@ -7,6 +7,7 @@
 #include "app_shared.h"
 #include "fan_curve.h"
 #include "win32_raii.h"
+#include <dbghelp.h>
 
 static const char APP_LICENSE_TEXT[] =
     "MIT License\r\n"

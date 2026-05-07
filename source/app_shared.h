@@ -60,12 +60,11 @@ void init_dpi();
 #define TRAY_ICON_OC_FAN_ID 114
 #define APP_NAME            "Green Curve"
 #ifndef APP_VERSION
-#define APP_VERSION         "0.12"
+#define APP_VERSION         "0.13"
 #endif
 #ifndef APP_BUILD_NUMBER
 #define APP_BUILD_NUMBER    0
 #endif
-#define APP_EDITION         "Timmy Edition"
 #define APP_TITLE           APP_NAME " v" APP_VERSION
 #define APP_CLASS_NAME      "GreenCurveClass"
 #define APP_EXE_NAME        "greencurve.exe"
@@ -591,6 +590,9 @@ struct AppData {
     int guiGpuOffsetExcludeLowCount;
     int appliedGpuOffsetMHz;
     int appliedGpuOffsetExcludeLowCount;
+    int appliedLockVi;
+    int appliedLockCi;
+    unsigned int appliedLockFreq;
 
     int guiFanMode;
     int guiFanFixedPercent;
@@ -905,6 +907,16 @@ extern HMODULE g_nvml;
 extern bool g_debug_logging;
 
 typedef int (*NvApiFunc)(void*, void*);
+
+struct HeapBuffer {
+    void* ptr;
+    HeapBuffer(size_t size) : ptr(calloc(1, size)) {}
+    ~HeapBuffer() { free(ptr); }
+    HeapBuffer(const HeapBuffer&) = delete;
+    HeapBuffer& operator=(const HeapBuffer&) = delete;
+    operator unsigned char*() const { return (unsigned char*)ptr; }
+    operator bool() const { return ptr != nullptr; }
+};
 
 void trim_ascii(char* s);
 bool streqi_ascii(const char* a, const char* b);

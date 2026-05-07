@@ -445,6 +445,92 @@ static bool maybe_confirm_profile_load_replace(int slot) {
     return MessageBoxA(g_app.hMainWnd, msg, "Green Curve", MB_YESNO | MB_ICONQUESTION) == IDYES;
 }
 
+// Compare the loaded profile against the current live hardware state to detect
+// if the hardware has been externally modified (e.g., Afterburner "Reset to
+// Default", driver TDR, or external tool). Returns true if a mismatch is
+// detected that warrants skipping the profile restore.
+//
+// This comparison is unconditional: it compares the profile's saved values
+// directly against live hardware. This catches all cases where the GPU state
+// has changed externally, regardless of whether the service's in-memory
+// "active desired" state is still valid (it may be cleared on service restart).
+static bool profile_mismatches_live_hardware(const DesiredSettings* profile) {
+    if (!profile) return false;
+
+    // Build a DesiredSettings from the current live hardware state.
+    DesiredSettings live = {};
+    build_full_live_desired_settings(&live);
+
+    debug_log("profile_live_mismatch_check: comparing profile against live hardware\n"
+        "  profile:   hasGpu=%d gpu=%d exclude=%d hasMem=%d mem=%d hasPower=%d power=%d hasFan=%d fanMode=%d\n"
+        "  live:      hasGpu=%d gpu=%d exclude=%d hasMem=%d mem=%d hasPower=%d power=%d hasFan=%d fanMode=%d\n",
+        profile->hasGpuOffset ? 1 : 0, profile->gpuOffsetMHz, profile->gpuOffsetExcludeLowCount,
+        profile->hasMemOffset ? 1 : 0, profile->memOffsetMHz,
+        profile->hasPowerLimit ? 1 : 0, profile->powerLimitPct,
+        profile->hasFan ? 1 : 0, profile->fanMode,
+        live.hasGpuOffset ? 1 : 0, live.gpuOffsetMHz, live.gpuOffsetExcludeLowCount,
+        live.hasMemOffset ? 1 : 0, live.memOffsetMHz,
+        live.hasPowerLimit ? 1 : 0, live.powerLimitPct,
+        live.hasFan ? 1 : 0, live.fanMode);
+
+    // Compare each control field that the profile explicitly sets against the live state.
+    // Any difference indicates the hardware has diverged from what the profile expects.
+    if (profile->hasGpuOffset && profile->gpuOffsetMHz != live.gpuOffsetMHz) {
+        debug_log("profile_live_mismatch_check: MISMATCH gpu_offset_mhz profile=%d live=%d\n",
+            profile->gpuOffsetMHz, live.gpuOffsetMHz);
+        return true;
+    }
+    if (profile->hasGpuOffset && profile->gpuOffsetExcludeLowCount != live.gpuOffsetExcludeLowCount) {
+        debug_log("profile_live_mismatch_check: MISMATCH gpu_exclude_low_count profile=%d live=%d\n",
+            profile->gpuOffsetExcludeLowCount, live.gpuOffsetExcludeLowCount);
+        return true;
+    }
+    if (profile->hasMemOffset && profile->memOffsetMHz != live.memOffsetMHz) {
+        debug_log("profile_live_mismatch_check: MISMATCH mem_offset_mhz profile=%d live=%d\n",
+            profile->memOffsetMHz, live.memOffsetMHz);
+        return true;
+    }
+    if (profile->hasPowerLimit && profile->powerLimitPct != live.powerLimitPct) {
+        debug_log("profile_live_mismatch_check: MISMATCH power_limit_pct profile=%d live=%d\n",
+            profile->powerLimitPct, live.powerLimitPct);
+        return true;
+    }
+    if (profile->hasFan && profile->fanMode != live.fanMode) {
+        debug_log("profile_live_mismatch_check: MISMATCH fan_mode profile=%d live=%d\n",
+            profile->fanMode, live.fanMode);
+        return true;
+    }
+    if (profile->hasFan && profile->fanMode == FAN_MODE_FIXED && profile->fanPercent != live.fanPercent) {
+        debug_log("profile_live_mismatch_check: MISMATCH fan_fixed_pct profile=%d live=%d\n",
+            profile->fanPercent, live.fanPercent);
+        return true;
+    }
+
+    // Compare curve points — check visible points that the profile explicitly sets
+    // for any difference from the live hardware curve.
+    int mismatchCurvePoints = 0;
+    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+        if (!profile->hasCurvePoint[ci]) continue;
+        if (!is_curve_point_visible_in_gui(ci)) continue;
+        unsigned int liveMhz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
+        if (profile->curvePointMHz[ci] != liveMhz) {
+            mismatchCurvePoints++;
+            if (mismatchCurvePoints <= 3) {
+                debug_log("profile_live_mismatch_check: MISMATCH curve point %d profile=%u live=%u\n",
+                    ci, profile->curvePointMHz[ci], liveMhz);
+            }
+        }
+    }
+    if (mismatchCurvePoints > 0) {
+        debug_log("profile_live_mismatch_check: MISMATCH %d curve points differ from live\n",
+            mismatchCurvePoints);
+        return true;
+    }
+
+    debug_log("profile_live_mismatch_check: profile matches live hardware, restoring normally\n");
+    return false;
+}
+
 static bool maybe_load_selected_profile_to_gui_without_apply() {
     int selectedSlot = get_config_int(g_app.configPath, "profiles", "selected_slot", CONFIG_DEFAULT_SLOT);
     if (selectedSlot < 1 || selectedSlot > CONFIG_NUM_SLOTS) {
@@ -487,6 +573,16 @@ static bool maybe_load_selected_profile_to_gui_without_apply() {
         desired.hasMemOffset ? desired.memOffsetMHz : 0,
         desired.hasPowerLimit ? desired.powerLimitPct : 0,
         desired.hasFan ? desired.fanMode : -1);
+
+    // If the loaded profile values don't match the current live hardware, the
+    // hardware was externally modified. Skip the restore to avoid showing
+    // stale values from a previously-applied profile.
+    if (profile_mismatches_live_hardware(&desired)) {
+        debug_log("startup selected profile restore: LIVE HARDWARE MISMATCH detected for slot %d, skipping profile restore\n",
+            selectedSlot);
+        set_profile_status_text("Selected slot %d was not restored because the GPU hardware has been externally modified since the profile was saved.", selectedSlot);
+        return false;
+    }
 
     populate_desired_into_gui(&desired);
     refresh_profile_controls_from_config();

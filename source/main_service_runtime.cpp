@@ -455,16 +455,16 @@ static void stop_service_fan_runtime_thread() {
     if (g_serviceFanStopEvent) SetEvent(g_serviceFanStopEvent);
     bool lockHeld = service_runtime_lock_held_by_current_thread();
     if (lockHeld) {
-        // Release the runtime lock so the fan thread can finish its current
-        // pulse and observe the stop event. Without this we would deadlock.
         unlock_service_runtime();
     }
     DWORD waitResult = WaitForSingleObject(g_serviceFanThread, SERVICE_FAN_THREAD_STOP_TIMEOUT_MS);
     if (waitResult != WAIT_OBJECT_0) {
-        debug_log("stop_service_fan_runtime_thread: timed out waiting for fan thread (%lu)\n", waitResult);
+        debug_log("stop_service_fan_runtime_thread: timed out waiting for fan thread (result=%lu); thread handle preserved to prevent replacement\n", waitResult);
         if (lockHeld) {
             lock_service_runtime();
         }
+        // Keep g_serviceFanThread handle alive to prevent a new thread from starting
+        // while the original may still reference shared events or runtime state.
         return;
     }
     if (lockHeld) {

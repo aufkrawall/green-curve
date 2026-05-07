@@ -539,21 +539,37 @@ static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_
         set_message(detail, detailSize, "Fan manual unsupported");
         return false;
     }
+
+    // Snapshot pre-write fan state for rollback.
+    unsigned int previousPolicy[MAX_GPU_FANS] = {};
+    for (unsigned int fan = 0; fan < g_app.fanCount && fan < MAX_GPU_FANS; fan++) {
+        previousPolicy[fan] = g_app.fanPolicy[fan];
+    }
+
     bool changedFan[MAX_GPU_FANS] = {};
+    unsigned int rollbackFailures = 0;
     auto rollback_changed_fans = [&]() {
         char rollbackDetail[128] = {};
         for (unsigned int fan = 0; fan < g_app.fanCount && fan < MAX_GPU_FANS; fan++) {
             if (!changedFan[fan]) continue;
             if (g_nvml_api.setDefaultFanSpeed) {
-                g_nvml_api.setDefaultFanSpeed(g_app.nvmlDevice, fan);
+                if (g_nvml_api.setDefaultFanSpeed(g_app.nvmlDevice, fan) != NVML_SUCCESS) {
+                    rollbackFailures++;
+                    debug_log("nvml_set_fan_manual rollback: setDefaultFanSpeed fan=%u failed\n", fan);
+                }
             }
             if (g_nvml_api.setFanControlPolicy) {
-                g_nvml_api.setFanControlPolicy(g_app.nvmlDevice, fan, NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW);
+                nvmlReturn_t pr = g_nvml_api.setFanControlPolicy(g_app.nvmlDevice, fan, NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW);
+                if (pr != NVML_SUCCESS) {
+                    rollbackFailures++;
+                    debug_log("nvml_set_fan_manual rollback: setFanControlPolicy fan=%u failed: %s\n", fan, nvml_err_name(pr));
+                }
             }
             g_app.fanPolicy[fan] = NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW;
         }
         nvml_read_fans(rollbackDetail, sizeof(rollbackDetail));
-        debug_log("nvml_set_fan_manual: rolled back changed fans after partial failure%s%s\n",
+        debug_log("nvml_set_fan_manual: rolled back changed fans after partial failure (rollbackFailures=%u)%s%s\n",
+            rollbackFailures,
             rollbackDetail[0] ? ": " : "",
             rollbackDetail[0] ? rollbackDetail : "");
     };
@@ -696,6 +712,14 @@ static bool nvml_select_device_for_selected_gpu(char* detail, size_t detailSize)
     }
     unsigned int fallback = g_app.selectedGpuIndex;
     if (fallback >= count) fallback = 0;
+    if (count > 1 && g_app.selectedGpu.valid && g_app.selectedGpu.pciInfoValid) {
+        // PCI identity was available but did not match any NVML device on a multi-GPU system.
+        // Fail closed to prevent applying settings to the wrong adapter.
+        set_message(detail, detailSize, "No NVML device matched selected GPU PCI identity on a multi-GPU system; refusing ordinal fallback");
+        debug_log("nvml_select_device: multi-GPU ordinal fallback blocked for selected GPU index %u (count=%u)\n",
+            g_app.selectedGpuIndex, count);
+        return false;
+    }
     nvmlReturn_t r = g_nvml_api.getHandleByIndex(fallback, &g_app.nvmlDevice);
     if (r != NVML_SUCCESS) {
         set_message(detail, detailSize, "NVML device index %u failed: %s", fallback, nvml_err_name(r));
@@ -704,7 +728,7 @@ static bool nvml_select_device_for_selected_gpu(char* detail, size_t detailSize)
     g_app.selectedNvmlIndex = fallback;
     g_app.selectedGpuOrdinalFallback = count > 1;
     if (g_app.selectedGpuOrdinalFallback) {
-        debug_log("nvml_select_device: WARNING using ordinal fallback index %u on %u-device system\n", fallback, count);
+        debug_log("nvml_select_device: WARNING using ordinal fallback index %u on %u-device system (no PCI identity)\n", fallback, count);
     }
     return true;
 }
@@ -805,18 +829,22 @@ static bool nvapi_get_vf_info_cached(unsigned char* maskOut, unsigned int* numCl
 
         auto getInfo = (NvApiFunc)nvapi_qi(backend->getInfoId);
         if (getInfo) {
-            unsigned char ibuf[0x4000] = {};
-            if (backend->infoBufferSize > sizeof(ibuf)) return false;
-            const unsigned int version = (backend->infoVersion << 16) | backend->infoBufferSize;
+            size_t infoSize = backend->infoBufferSize > 0 ? backend->infoBufferSize : 0x4000;
+            if (infoSize > 0x4000) infoSize = 0x4000;
+            HeapBuffer ibuf(infoSize);
+            if (!ibuf) return false;
+            memset(ibuf, 0, infoSize);
+            if (backend->infoBufferSize > (unsigned int)infoSize) return false;
+            const unsigned int version = (backend->infoVersion << 16) | (unsigned int)infoSize;
             memcpy(&ibuf[0], &version, sizeof(version));
-            if (backend->infoMaskOffset + sizeof(g_app.vfMask) <= backend->infoBufferSize) {
+            if (backend->infoMaskOffset + sizeof(g_app.vfMask) <= (unsigned int)infoSize) {
                 memset(&ibuf[backend->infoMaskOffset], 0xFF, sizeof(g_app.vfMask));
             }
             if (getInfo(g_app.gpuHandle, ibuf) == 0) {
-                if (backend->infoMaskOffset + sizeof(g_app.vfMask) <= backend->infoBufferSize) {
+                if (backend->infoMaskOffset + sizeof(g_app.vfMask) <= (unsigned int)infoSize) {
                     memcpy(g_app.vfMask, &ibuf[backend->infoMaskOffset], sizeof(g_app.vfMask));
                 }
-                if (backend->infoNumClocksOffset + sizeof(g_app.vfNumClocks) <= backend->infoBufferSize) {
+                if (backend->infoNumClocksOffset + sizeof(g_app.vfNumClocks) <= (unsigned int)infoSize) {
                     memcpy(&g_app.vfNumClocks, &ibuf[backend->infoNumClocksOffset], sizeof(g_app.vfNumClocks));
                 }
                 if (g_app.vfNumClocks == 0) g_app.vfNumClocks = backend->defaultNumClocks;

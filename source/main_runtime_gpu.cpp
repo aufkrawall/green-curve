@@ -17,14 +17,6 @@ static bool nvapi_read_control_table(unsigned char* buf, size_t bufSize) {
     return getFunc(g_app.gpuHandle, buf) == 0;
 }
 
-struct HeapBuffer {
-    void* ptr;
-    HeapBuffer(size_t size) : ptr(calloc(1, size)) {}
-    ~HeapBuffer() { free(ptr); }
-    operator unsigned char*() const { return (unsigned char*)ptr; }
-    operator bool() const { return ptr != nullptr; }
-};
-
 static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* pointMask, int maxBatchPasses) {
     if (!targetOffsets || !pointMask) return false;
 
@@ -325,7 +317,19 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, char* err, size
         }
     }
 
-    if (gpuUnchanged && memUnchanged && powerUnchanged && curveUnchanged && fanChanged) {
+    bool lockWasApplied = g_app.appliedLockCi >= 0 && g_app.appliedLockFreq > 0;
+    bool lockNowActive = full.hasLock && full.lockCi >= 0 && full.lockMHz > 0;
+    bool lockChanged = lockNowActive != lockWasApplied
+        || (lockNowActive && (full.lockCi != g_app.appliedLockCi || full.lockMHz != g_app.appliedLockFreq));
+    debug_log("capture_gui_apply_settings: lockState applied=(ci=%d mhz=%u) desired=(has=%d ci=%d mhz=%u) changed=%d\n",
+        g_app.appliedLockCi,
+        g_app.appliedLockFreq,
+        full.hasLock ? 1 : 0,
+        full.hasLock ? full.lockCi : -1,
+        full.hasLock ? full.lockMHz : 0u,
+        lockChanged ? 1 : 0);
+
+    if (gpuUnchanged && memUnchanged && powerUnchanged && curveUnchanged && !lockChanged && fanChanged) {
         debug_log("capture_gui_apply_settings: fan-only apply shortcut taken\n");
         *desired = fanOnly;
         desired->hasFan = true;
@@ -336,7 +340,7 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, char* err, size
         return true;
     }
 
-    if (gpuUnchanged && memUnchanged && powerUnchanged && curveUnchanged && !fanChanged) {
+    if (gpuUnchanged && memUnchanged && powerUnchanged && curveUnchanged && !lockChanged && !fanChanged) {
         set_message(err, errSize, "No changes to apply");
         return false;
     }

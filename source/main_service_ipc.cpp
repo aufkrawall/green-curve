@@ -1,10 +1,11 @@
 static bool background_service_pipe_name(WCHAR* out, size_t outCount) {
+    // Fixed pipe name without session ID. Using the session ID in the pipe name
+    // breaks after reboot: the service starts at boot (session 0) and creates
+    // GreenCurveService_0, but after login the GUI looks for GreenCurveService_1.
+    // The security descriptor already restricts access to the active console
+    // session user, so session-based pipe names are redundant.
     if (!out || outCount == 0) return false;
-    DWORD sessionId = WTSGetActiveConsoleSessionId();
-    if (sessionId == 0xFFFFFFFF) {
-        return false;
-    }
-    return SUCCEEDED(StringCchPrintfW(out, outCount, L"\\\\.\\pipe\\GreenCurveService_%lu", sessionId));
+    return SUCCEEDED(StringCchPrintfW(out, outCount, L"\\\\.\\pipe\\GreenCurveService"));
 }
 
 static bool service_is_installed() {
@@ -61,6 +62,20 @@ static bool query_background_service_pid(DWORD* pidOut) {
     return true;
 }
 
+static bool get_secure_service_install_dir_w(WCHAR* out, size_t outCount, char* err, size_t errSize);
+
+static bool get_process_image_path(DWORD pid, WCHAR* out, size_t outCount) {
+    if (!out || outCount == 0) return false;
+    out[0] = 0;
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process) return false;
+    DWORD pathLen = (DWORD)outCount;
+    bool ok = QueryFullProcessImageNameW(process, 0, out, &pathLen) != FALSE;
+    CloseHandle(process);
+    if (!ok) out[0] = 0;
+    return ok;
+}
+
 static bool validate_service_pipe_server_identity(HANDLE pipe, char* err, size_t errSize) {
     typedef BOOL (WINAPI* get_pipe_server_pid_t)(HANDLE, PULONG);
     HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
@@ -84,6 +99,69 @@ static bool validate_service_pipe_server_identity(HANDLE pipe, char* err, size_t
         debug_log("service pipe identity mismatch: pipePid=%lu servicePid=%lu\n", (unsigned long)pipePid, (unsigned long)servicePid);
         return false;
     }
+    // Verify the server process executable is the expected service binary under Program Files.
+    WCHAR serverPath[MAX_PATH] = {};
+    bool haveServerPath = get_process_image_path(servicePid, serverPath, ARRAY_COUNT(serverPath));
+    if (!haveServerPath) {
+        // The GUI may not have permission to query the LocalSystem service's image path.
+        // Fall back to querying the SCM for the service binary path instead.
+        debug_log("service pipe identity: could not query process image path for pid=%lu, falling back to SCM query\n", (unsigned long)servicePid);
+        ScopedServiceHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
+        if (scm.valid()) {
+            ScopedServiceHandle svc(OpenServiceW(scm.get(), L"GreenCurveService", SERVICE_QUERY_STATUS | SERVICE_QUERY_CONFIG));
+            if (svc.valid()) {
+                DWORD bufSize = 0;
+                QueryServiceConfigW(svc.get(), nullptr, 0, &bufSize);
+                if (GetLastError() == ERROR_INSUFFICIENT_BUFFER && bufSize > 0) {
+                    LPQUERY_SERVICE_CONFIGW config = (LPQUERY_SERVICE_CONFIGW)malloc(bufSize);
+                    if (config) {
+                        DWORD needed = 0;
+                        if (QueryServiceConfigW(svc.get(), config, bufSize, &needed)) {
+                            // The SCM binary path includes quotes around the exe path, e.g. "C:\Program Files\...\greencurve-service.exe" --service-run
+                            WCHAR* scmPath = config->lpBinaryPathName;
+                            if (scmPath && scmPath[0]) {
+                                if (scmPath[0] == L'"') {
+                                    scmPath++;
+                                    WCHAR* endQuote = wcschr(scmPath, L'"');
+                                    if (endQuote) *endQuote = 0;
+                                }
+                                StringCchCopyW(serverPath, ARRAY_COUNT(serverPath), scmPath);
+                                haveServerPath = true;
+                                debug_log("service pipe identity: resolved SCM binary path \"%ls\"\n", serverPath);
+                            }
+                        }
+                        free(config);
+                    }
+                }
+            }
+        }
+    }
+    if (!haveServerPath) {
+        // Cannot verify the service binary path from an unelevated context.
+        // The PID check against the SCM is sufficient for the threat model.
+        // Log a warning and accept the connection.
+        debug_log("service pipe identity: cannot verify server binary path for pid=%lu from unelevated context; accepting PID match\n", (unsigned long)servicePid);
+        return true;
+    }
+    WCHAR expectedPath[MAX_PATH] = {};
+    {
+        WCHAR installDir[MAX_PATH] = {};
+        char ignored[64] = {};
+        if (!get_secure_service_install_dir_w(installDir, ARRAY_COUNT(installDir), ignored, sizeof(ignored))) {
+            set_message(err, errSize, "Cannot determine expected service directory");
+            return false;
+        }
+        if (FAILED(StringCchPrintfW(expectedPath, ARRAY_COUNT(expectedPath), L"%ls\\%ls", installDir, APP_SERVICE_EXE_NAME_W))) {
+            set_message(err, errSize, "Expected service binary path is too long");
+            return false;
+        }
+    }
+    if (_wcsicmp(serverPath, expectedPath) != 0) {
+        set_message(err, errSize, "Service pipe server executable does not match expected service binary");
+        debug_log("service pipe identity: server path \"%ls\" does not match expected \"%ls\"\n", serverPath, expectedPath);
+        return false;
+    }
+    debug_log("service pipe identity: verified pid=%lu path=\"%ls\"\n", (unsigned long)servicePid, serverPath);
     return true;
 }
 
@@ -100,8 +178,11 @@ static bool refresh_background_service_state() {
         char err[256] = {};
         g_app.backgroundServiceAvailable = service_client_ping(err, sizeof(err));
         g_app.backgroundServiceBroken = !g_app.backgroundServiceAvailable;
-        if (!g_app.backgroundServiceAvailable && err[0]) {
-            StringCchCopyA(g_app.backgroundServiceError, ARRAY_COUNT(g_app.backgroundServiceError), err);
+        if (!g_app.backgroundServiceAvailable) {
+            debug_log("refresh_background_service_state: ping FAILED err=[%s]\n", err[0] ? err : "(empty)");
+            if (err[0]) {
+                StringCchCopyA(g_app.backgroundServiceError, ARRAY_COUNT(g_app.backgroundServiceError), err);
+            }
         }
     } else if (g_app.backgroundServiceInstalled) {
         g_app.backgroundServiceBroken = true;
@@ -248,6 +329,7 @@ static bool service_send_request(const ServiceRequest* request, ServiceResponse*
             return true;
         }
         DWORD e = GetLastError();
+        debug_log("service_send_request: CreateFileW pipe failed error=%lu\n", (unsigned long)e);
         if (e != ERROR_PIPE_BUSY && e != ERROR_FILE_NOT_FOUND) {
             set_message(err, errSize, "Failed connecting to service pipe (error %lu)", e);
             return false;
@@ -614,15 +696,27 @@ static bool get_adjacent_service_binary_path(WCHAR* out, size_t outCount, char* 
 static bool get_secure_service_install_dir_w(WCHAR* out, size_t outCount, char* err, size_t errSize) {
     if (!out || outCount == 0) return false;
     out[0] = 0;
-    PWSTR programFiles = nullptr;
-    bool copied = false;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_ProgramFiles, 0, nullptr, &programFiles)) && programFiles) {
-        copied = SUCCEEDED(StringCchPrintfW(out, outCount, L"%ls\\Green Curve", programFiles));
-        CoTaskMemFree(programFiles);
+    WCHAR exePath[MAX_PATH] = {};
+    DWORD exeLen = GetModuleFileNameW(nullptr, exePath, ARRAY_COUNT(exePath));
+    if (exeLen == 0 || exeLen >= ARRAY_COUNT(exePath) - 1) {
+        PWSTR programFiles = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_ProgramFiles, 0, nullptr, &programFiles)) && programFiles) {
+            StringCchPrintfW(out, outCount, L"%ls\\Green Curve", programFiles);
+            CoTaskMemFree(programFiles);
+        } else {
+            StringCchCopyW(out, outCount, L"C:\\Program Files\\Green Curve");
+        }
+        return true;
     }
-    if (!copied) copied = SUCCEEDED(StringCchCopyW(out, outCount, L"C:\\Program Files\\Green Curve"));
-    if (!copied) {
-        set_message(err, errSize, "Secure service directory path is too long");
+    WCHAR* slash = wcsrchr(exePath, L'\\');
+    if (!slash) slash = wcsrchr(exePath, L'/');
+    if (!slash) {
+        set_message(err, errSize, "Current executable path has no directory");
+        return false;
+    }
+    slash[0] = 0;
+    if (FAILED(StringCchCopyW(out, outCount, exePath))) {
+        set_message(err, errSize, "Service directory path is too long");
         return false;
     }
     return true;
@@ -696,13 +790,10 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
 }
 
 static void cleanup_secure_service_binary_after_remove() {
-    WCHAR installDir[MAX_PATH] = {};
-    char ignored[64] = {};
-    if (!get_secure_service_install_dir_w(installDir, ARRAY_COUNT(installDir), ignored, sizeof(ignored))) return;
-    WCHAR targetPath[MAX_PATH] = {};
-    if (SUCCEEDED(StringCchPrintfW(targetPath, ARRAY_COUNT(targetPath), L"%ls\\%ls", installDir, APP_SERVICE_EXE_NAME_W))) {
-        DeleteFileW(targetPath);
-    }
-    RemoveDirectoryW(installDir);
+    // Service binary removal intentionally does NOT delete the file from disk.
+    // With the service now installed adjacent to the GUI binary, the user
+    // manages the service binary manually. Deleting it on service uninstall
+    // would destroy the user's manually-placed binary.
+    // The SCM unregistration (DeleteService) is sufficient.
 }
 

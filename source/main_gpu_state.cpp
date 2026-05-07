@@ -275,6 +275,13 @@ static bool load_runtime_selective_gpu_offset_request(int* gpuOffsetMHzOut, int*
         leave_config_storage_lock(configMutex);
         return false;
     }
+    // Reject values that would overflow when multiplied by 1000 for kHz conversion.
+    // The IPC validation clamps to ±1000, but persisted config values bypass it.
+    if (gpuOffsetMHz < -1000000 || gpuOffsetMHz > 1000000) {
+        debug_log("load_runtime_selective: rejecting out-of-range gpuOffsetMHz=%d\n", gpuOffsetMHz);
+        leave_config_storage_lock(configMutex);
+        return false;
+    }
 
     int excludeLowCount = 0;
     GetPrivateProfileStringA("runtime", "selective_gpu_offset_exclude_low_count", "", buf, sizeof(buf), g_app.configPath);

@@ -125,6 +125,22 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
             explicitCurveMask[ci] = true;
         }
     }
+    // After reset-before-apply, the live curve base frequencies may have shifted
+    // (e.g. due to temperature-dependent boost). Refresh the originals so that
+    // subsequent offset computations use post-reset base frequencies rather than
+    // stale pre-reset values. Otherwise points that should stay at their base
+    // frequency end up at the wrong MHz because the computed offset targets the
+    // old base frequency.
+    if (desired->resetOcBeforeApply) {
+        for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+            originalCurveOffsets[ci] = g_app.freqOffsets[ci];
+            originalCurveFreqkHz[ci] = (int)g_app.curve[ci].freq_kHz;
+            originalCurvePopulated[ci] = g_app.curve[ci].freq_kHz > 0;
+        }
+        debug_log("refresh originals after reset-before-apply: point 75 freq=%d kHz offset=%d\n",
+            originalCurveFreqkHz[75],
+            originalCurveOffsets[75]);
+    }
     if (hasLock) {
         if (desired->hasLock && desired->lockCi >= 0 && desired->lockCi < VF_NUM_POINTS && desired->lockMHz > 0) {
             lockCi = desired->lockCi;
@@ -610,7 +626,10 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
             if (curveRequest) {
                 curveRequestOk = verify_curve_request(curveVerifyDetail, sizeof(curveVerifyDetail));
                 if (!curveRequestOk) {
-                    for (int correctionPass = 0; correctionPass < 2; correctionPass++) {
+                    // Use generous correction passes because writing large tail offsets
+                    // can shift the base frequency of adjacent non-tail points (observed on
+                    // Blackwell). Iterate until all points converge or the limit is reached.
+                    for (int correctionPass = 0; correctionPass < 25; correctionPass++) {
                         int correctedCurveOffsets[VF_NUM_POINTS] = {};
                         bool correctedCurveMask[VF_NUM_POINTS] = {};
                         bool haveCorrections = false;
@@ -630,10 +649,40 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                             haveCorrections = true;
                         }
                         if (!haveCorrections) break;
+                        debug_log("curve correction pass %d: target point 75 live=%u MHz offset=%d desiredOffset=%d\n",
+                            correctionPass + 1,
+                            displayed_curve_mhz(g_app.curve[75].freq_kHz),
+                            g_app.freqOffsets[75],
+                            correctedCurveOffsets[75]);
                         set_last_apply_phase("apply: VF curve correction write");
                         bool correctionOk = apply_curve_offsets_verified(correctedCurveOffsets, correctedCurveMask, hasLock ? 3 : 2);
                         if (!correctionOk) {
                             debug_log("curve correction pass %d had an offset verification mismatch\n", correctionPass + 1);
+                        }
+                        // After writing correction offsets, check for non-tail points whose
+                        // required correction delta exceeds the hardware range. This happens
+                        // when tail offset writes shift adjacent point bases (observed on
+                        // Blackwell), causing the correction to diverge: each pass writes a
+                        // larger offset but the live frequency doesn't move, until the offset
+                        // hits the range limit. Accept the actual MHz for such points to
+                        // prevent runaway negative offset growth.
+                        {
+                            int divMinKHz = 0, divMaxKHz = 0;
+                            bool divRangeKnown = get_curve_offset_range_khz(&divMinKHz, &divMaxKHz);
+                            for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+                                if (!verifyDesired.hasCurvePoint[ci]) continue;
+                                if (hasLock && lockedTailMask[ci]) continue;
+                                if (g_app.curve[ci].freq_kHz == 0) continue;
+                                unsigned int actualMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
+                                unsigned int targetMHz = verifyDesired.curvePointMHz[ci];
+                                if (actualMHz == targetMHz) continue;
+                                int requiredDeltaKHz = curve_delta_khz_for_target_display_mhz_unclamped(ci, targetMHz);
+                                if (divRangeKnown && (requiredDeltaKHz < divMinKHz || requiredDeltaKHz > divMaxKHz)) {
+                                    debug_log("correction pass %d: point %d diverging (needs %d kHz, range %d..%d); accepting actual %u MHz\n",
+                                        correctionPass + 1, ci, requiredDeltaKHz, divMinKHz, divMaxKHz, actualMHz);
+                                    verifyDesired.curvePointMHz[ci] = actualMHz;
+                                }
+                            }
                         }
                         if (verify_curve_request(curveVerifyDetail, sizeof(curveVerifyDetail))) {
                             curveRequestOk = true;
@@ -676,6 +725,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
             }
         }
         if (memApplied && preserveCurveAcrossMem && !curveRequest && !curveBatchOk) {
+            curveRequestOk = false;
             failCount++;
             partialApplyRisk = true;
             append_failure("Restoring the existing VF curve after the memory offset did not verify");
@@ -708,6 +758,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
         g_app.lockedVi = lockVi;
         g_app.lockedCi = lockCi;
         g_app.lockedFreq = lockMhz;
+        g_app.appliedLockVi = lockVi;
+        g_app.appliedLockCi = lockCi;
+        g_app.appliedLockFreq = lockMhz;
         g_app.guiLockTracksAnchor = desired->lockTracksAnchor;
     }
     if (desired->hasGpuOffset && !gpuPolicyViaCurveBatch) {
@@ -739,6 +792,16 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
     }
     bool fanChanged = false;
     if (!apply_fan_settings(desired, failureDetails, sizeof(failureDetails), successCount, failCount, result, resultSize, fanChanged)) {
+        if (successCount > 0) {
+            partialApplyRisk = true;
+            rollback_to_safe_defaults();
+            g_app.gpuClockOffsetkHz = 0;
+            g_app.memClockOffsetkHz = 0;
+            g_app.powerLimitPct = 0;
+            char rollbackDetail[128] = {};
+            refresh_global_state(rollbackDetail, sizeof(rollbackDetail));
+            debug_log("apply: fan failure triggered rollback of %d earlier hardware writes\n", successCount);
+        }
         return false;
     }
     if (failCount > 0 && successCount > 0) {
@@ -769,6 +832,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
         g_app.lockedVi = lockVi;
         g_app.lockedCi = lockCi;
         g_app.lockedFreq = displayedLockMHz;
+        g_app.appliedLockVi = lockVi;
+        g_app.appliedLockCi = lockCi;
+        g_app.appliedLockFreq = displayedLockMHz;
         g_app.guiLockTracksAnchor = desired->lockTracksAnchor;
         debug_log("post-apply lock restore: ci=%d requested=%u displayed=%u trackAnchor=%d\n",
             lockCi,
@@ -779,6 +845,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
         g_app.lockedVi = -1;
         g_app.lockedCi = -1;
         g_app.lockedFreq = 0;
+        g_app.appliedLockVi = -1;
+        g_app.appliedLockCi = -1;
+        g_app.appliedLockFreq = 0;
         g_app.guiLockTracksAnchor = true;
         debug_log("post-apply lock clear: no lock requested; cleared stale service lock markers\n");
     }

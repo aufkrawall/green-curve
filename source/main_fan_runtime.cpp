@@ -644,14 +644,15 @@ static bool apply_fan_settings(const DesiredSettings* desired, char* failureDeta
         bool ok = false;
         if (desiredFanMode == FAN_MODE_AUTO) {
             set_last_apply_phase("apply: fan auto write");
-            stop_fan_curve_runtime();
             ok = nvml_set_fan_auto(detail, sizeof(detail));
             if (ok) {
+                stop_fan_curve_runtime();
                 g_app.activeFanMode = FAN_MODE_AUTO;
+                debug_log("apply fan auto: restored driver auto, runtime stopped\n");
             }
         } else if (desiredFanMode == FAN_MODE_FIXED) {
-            stop_fan_curve_runtime();
             if (validate_manual_fan_percent_for_runtime(desired->fanPercent, detail, sizeof(detail))) {
+                stop_fan_curve_runtime();
                 if (g_app.hMainWnd || g_app.isServiceProcess) {
                     set_last_apply_phase("apply: fixed fan runtime start");
                     g_app.activeFanFixedPercent = clamp_percent(desired->fanPercent);
@@ -673,15 +674,16 @@ static bool apply_fan_settings(const DesiredSettings* desired, char* failureDeta
                 g_app.activeFanFixedPercent = clamp_percent(desired->fanPercent);
             }
         } else {
-            copy_fan_curve(&g_app.activeFanCurve, &desiredCurve);
-            debug_log("apply fan curve: pollMs=%d hysteresis=%d firstEnabledPct=%d serviceProcess=%d\n",
-                g_app.activeFanCurve.pollIntervalMs,
-                g_app.activeFanCurve.hysteresisC,
-                g_app.activeFanCurve.points[0].enabled ? g_app.activeFanCurve.points[0].fanPercent : 0,
-                g_app.isServiceProcess ? 1 : 0);
             if (!validate_fan_curve_for_runtime(&desiredCurve, detail, sizeof(detail))) {
                 ok = false;
             } else if (g_app.hMainWnd || g_app.isServiceProcess) {
+                stop_fan_curve_runtime();
+                copy_fan_curve(&g_app.activeFanCurve, &desiredCurve);
+                debug_log("apply fan curve: pollMs=%d hysteresis=%d firstEnabledPct=%d serviceProcess=%d\n",
+                    g_app.activeFanCurve.pollIntervalMs,
+                    g_app.activeFanCurve.hysteresisC,
+                    g_app.activeFanCurve.points[0].enabled ? g_app.activeFanCurve.points[0].fanPercent : 0,
+                    g_app.isServiceProcess ? 1 : 0);
                 set_last_apply_phase("apply: fan curve runtime start");
                 start_fan_curve_runtime();
                 ok = g_app.fanCurveRuntimeActive && g_app.fanRuntimeLastApplyTickMs != 0;

@@ -55,6 +55,7 @@ WINDOWS_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "config_utils.cpp"),
     os.path.join(SOURCE_DIR, "fan_curve.cpp"),
     os.path.join(SOURCE_DIR, "string_table.cpp"),
+    os.path.join(SOURCE_DIR, "ssp_glue.cpp"),
 ]
 LINUX_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "linux_main.cpp"),
@@ -126,7 +127,7 @@ COMMON_FLAGS = [
 ]
 
 # C-002: read VERSION and inject it into all compile commands
-APP_VERSION = "0.12"
+APP_VERSION = "0.13"
 APP_BUILD_NUMBER = 0
 _version_path = os.path.join(SCRIPT_DIR, "VERSION")
 if os.path.exists(_version_path):
@@ -163,6 +164,7 @@ WINDOWS_LINK_LIBS = [
     "-lshell32",
     "-lole32",
     "-lwtsapi32",
+    "-ldbghelp",
 ]
 
 WINDOWS_SERVICE_LINK_LIBS = [
@@ -172,6 +174,7 @@ WINDOWS_SERVICE_LINK_LIBS = [
     "-lole32",
     "-lwtsapi32",
     "-luserenv",
+    "-ldbghelp",
 ]
 
 
@@ -236,7 +239,6 @@ def configure_build_number(bump_for_real_build):
         print(f"Build number bumped to {APP_BUILD_NUMBER}")
     elif bump_for_real_build and not os.path.exists(BUILD_FINGERPRINT_PATH):
         write_text_if_changed(BUILD_FINGERPRINT_PATH, f"{fingerprint}\n")
-    COMMON_FLAGS.append(f'-DAPP_VERSION="\\"{APP_VERSION}\\""')
     COMMON_FLAGS.append(f"-DAPP_BUILD_NUMBER={APP_BUILD_NUMBER}")
 
 
@@ -1218,6 +1220,7 @@ def run_source_regression_checks():
     require_text(diagnostics_cpp, "close_debug_log_file", "debug log file cleanup exists")
     require_text(diagnostics_cpp, "open_debug_log_file_locked", "debug log file open helper exists")
     require_text(diagnostics_cpp, "green_curve_unhandled_exception_filter", "crash filter exists")
+    require_text(diagnostics_cpp, "MiniDumpWriteDump", "crash filter writes minidump")
     require_text(main_cpp, "SERVICE_PIPE_SERVER_IO_TIMEOUT_MS", "service pipe server I/O timeout exists")
     require_text(service_server_cpp, "CancelIoEx(pipe, &ov)", "stalled pipe operations are cancellable")
     require_text(service_server_cpp, "response.serviceBuildNumber", "service responses include build number")
@@ -1259,13 +1262,65 @@ def run_source_regression_checks():
     require_text(build_script, "--test", "test flag exists")
     require_text(build_script, "compile_commands.json", "LSP database generation exists")
     require_text(gitignore, "*.7z", "release archives are ignored")
-    # NOTE: Zig 0.13.0 does not emit stack canaries on Windows despite
-    # -fstack-protector-strong. This is a known toolchain limitation.
-    # The flag is kept so future Zig versions will automatically enable it.
-    require_text(build_script, "-fstack-protector-strong", "stack protector flag retained for future toolchain support")
+    # NOTE: ssp_glue.cpp provides the runtime symbols (__stack_chk_guard,
+    # __stack_chk_fail) that the MinGW CRT omits on Windows, making stack-
+    # protector canaries functional.  Keep the flag at all times.
+    require_text(build_script, "-fstack-protector-strong", "stack protector flag enables canary emission with ssp_glue.cpp")
     require_text(build_script, "-fPIE", "Linux PIE hardening retained")
     require_text(build_script, "-Wl,-z,relro,-z,now", "Linux RELRO/BIND_NOW hardening retained")
     require_text(build_script, "-Wl,-z,noexecstack", "Linux non-executable stack hardening retained")
+
+    # F-04-001: Pipe server identity verification beyond PID
+    require_text(service_ipc_cpp, "does not match expected", "pipe server executable path is verified against expected service binary")
+    require_text(service_ipc_cpp, "cannot verify server binary path", "pipe server identity accepts PID match when image path cannot be queried")
+
+    # F-04-002: LocalSystem file-write parent directory verification
+    require_text(diagnostics_cpp, "parent dir verified", "service file-write verifies parent directory before temp creation")
+    require_text(diagnostics_cpp, "FILE_FLAG_OPEN_REPARSE_POINT", "service file-write opens parent without following reparse points")
+
+    # F-01-002: Fan failure triggers rollback of earlier hardware writes
+    require_text(gpu_backend_apply_cpp, "fan failure triggered rollback", "fan apply failure triggers rollback of earlier hardware writes")
+
+    # F-01-003: Multi-GPU ordinal fallback blocked
+    require_text(runtime_nvml_cpp, "refusing ordinal fallback", "multi-GPU ordinal fallback is blocked when PCI identity is available")
+
+    # F-02-001: Fan apply validates before mutating runtime state
+    require_text(main_fan_runtime_cpp, "fan auto write", "fan auto mode is applied before stopping runtime")
+    require_text(main_fan_runtime_cpp, "restored driver auto, runtime stopped", "fan auto apply logs successful restore before stopping runtime")
+
+    # F-15-002: Multi-fan rollback tracks failures
+    require_text(runtime_nvml_cpp, "rollbackFailures", "multi-fan rollback tracks individual rollback failures")
+
+    # F-03-001: Checked arithmetic for selective offset
+    require_text(main_gpu_state_cpp, "rejecting out-of-range gpuOffsetMHz", "persisted selective GPU offset is range-checked before use")
+
+    # F-02-002: Fan thread handle preserved on timeout
+    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "thread handle preserved", "fan thread handle is preserved on timeout to prevent replacement")
+
+    # F-01-001: Heap-based VF curve buffers (no large stack allocations)
+    require_text(os.path.join(SOURCE_DIR, "app_shared.h"), "struct HeapBuffer", "HeapBuffer is defined in shared header")
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"), "HeapBuffer buf(", "VF curve read uses heap buffer")
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"), "HeapBuffer buf(", "VF curve offset read uses heap buffer")
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"), "HeapBuffer buf(", "VF point write uses heap buffer")
+
+    # F-01-003: Pipe ACL restricted to console session user only (no IU fallback)
+    require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "restricted ACL for active console session user", "pipe uses restricted session ACL")
+    require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "cannot create restricted ACL, deferring", "pipe ACL fallback removed")
+
+    # F-01-006: Sanitizer build support
+    require_text(build_script, "--sanitizer", "sanitizer build flag exists")
+    require_text(build_script, "SANITIZER_FLAGS", "sanitizer flags referenced")
+
+    # F-01-007: Debug logging privacy notice
+    require_text(os.path.join(SOURCE_DIR, "main_diagnostics.cpp"), "debug logging is enabled by default", "debug log privacy notice exists")
+
+    # F-01-008: Move constructors on RAII wrappers
+    require_text(os.path.join(SOURCE_DIR, "win32_raii.h"), "ScopedHandle(ScopedHandle&&", "ScopedHandle has move constructor")
+    require_text(os.path.join(SOURCE_DIR, "win32_raii.h"), "ScopedGdiObject(ScopedGdiObject&&", "ScopedGdiObject has move constructor")
+    require_text(os.path.join(SOURCE_DIR, "win32_raii.h"), "ScopedServiceHandle(ScopedServiceHandle&&", "ScopedServiceHandle has move constructor")
+
+    # F-01-010: Response message defensive NUL termination
+    require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "response.message[ARRAY_COUNT(response.message) - 1] = '\\0'", "defensive response NUL termination exists")
 
 
 def parse_args():

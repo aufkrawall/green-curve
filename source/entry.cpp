@@ -12,7 +12,7 @@ static int g_cliExitCode = 0;
 static void set_main_window_title(HWND hwnd) {
     if (!hwnd) return;
     char title[128] = {};
-    StringCchPrintfA(title, ARRAY_COUNT(title), "%s v%s \"%s\"", APP_NAME, APP_VERSION, APP_EDITION);
+    StringCchPrintfA(title, ARRAY_COUNT(title), "%s v%s", APP_NAME, APP_VERSION);
     SetWindowTextA(hwnd, title);
 }
 
@@ -368,6 +368,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     SetProcessDPIAware();
     init_dpi();
     InitializeCriticalSection(&g_debugLogLock);
+    SetUnhandledExceptionFilter(green_curve_unhandled_exception_filter);
 
     set_default_config_path();
     char pathErr[256] = {};

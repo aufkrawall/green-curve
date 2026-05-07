@@ -172,8 +172,9 @@ static bool nvapi_read_curve() {
     unsigned char mask[32] = {};
     unsigned int numClocks = backend->defaultNumClocks;
     if (!nvapi_get_vf_info_cached(mask, &numClocks)) return false;
-    unsigned char buf[0x4000] = {};
-    if (backend->statusBufferSize > sizeof(buf)) return false;
+    HeapBuffer buf(backend->statusBufferSize > 0 ? backend->statusBufferSize : 0x4000);
+    if (!buf) return false;
+    memset(buf, 0, backend->statusBufferSize);
     {
         const unsigned int version = (backend->statusVersion << 16) | backend->statusBufferSize;
         memcpy(&buf[0], &version, sizeof(version));
@@ -229,16 +230,18 @@ static void read_nvidia_smi_max_clocks() {
     StringCchPrintfW(cmd, ARRAY_COUNT(cmd), L"\"%ls\" -q -d CLOCK", exePath);
     if (CreateProcessW(exePath, cmd, nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
         CloseHandle(hWrite);
-        char buf[4096] = {};
+        char* smiBuf = (char*)malloc(4096);
+        if (!smiBuf) { CloseHandle(hRead); CloseHandle(pi.hProcess); CloseHandle(pi.hThread); return; }
+        memset(smiBuf, 0, 4096);
         DWORD totalRead = 0;
         bool timedOut = false;
         ULONGLONG startTickMs = GetTickCount64();
-        while (totalRead < sizeof(buf) - 1) {
+        while (totalRead < 4096 - 1) {
             DWORD available = 0;
             if (PeekNamedPipe(hRead, nullptr, 0, nullptr, &available, nullptr) && available > 0) {
-                DWORD toRead = (DWORD)nvmin((int)available, (int)(sizeof(buf) - 1 - totalRead));
+                DWORD toRead = (DWORD)nvmin((int)available, (int)(4096 - 1 - totalRead));
                 DWORD n = 0;
-                if (!ReadFile(hRead, buf + totalRead, toRead, &n, nullptr) || n == 0) break;
+                if (!ReadFile(hRead, smiBuf + totalRead, toRead, &n, nullptr) || n == 0) break;
                 totalRead += n;
                 continue;
             }
@@ -257,7 +260,7 @@ static void read_nvidia_smi_max_clocks() {
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
         bool inMaxSection = false;
-        char* line = buf;
+        char* line = smiBuf;
         while (line && *line) {
             char* nextLine = strchr(line, '\n');
             if (nextLine) { *nextLine = 0; nextLine++; }
@@ -273,6 +276,7 @@ static void read_nvidia_smi_max_clocks() {
             }
             line = nextLine;
         }
+        free(smiBuf);
     } else {
         CloseHandle(hWrite);
     }
@@ -346,9 +350,11 @@ static void detect_clock_offsets() {
 static bool nvapi_read_offsets() {
     const VfBackendSpec* backend = g_app.vfBackend;
     if (!backend || !backend->readSupported) return false;
-    unsigned char buf[0x4000] = {};
-    if (backend->controlBufferSize > sizeof(buf)) return false;
-    if (!nvapi_read_control_table(buf, sizeof(buf))) return false;
+    HeapBuffer buf(backend->controlBufferSize > 0 ? backend->controlBufferSize : 0x4000);
+    if (!buf) return false;
+    memset(buf, 0, backend->controlBufferSize);
+    if (backend->controlBufferSize > 0x4000) return false;
+    if (!nvapi_read_control_table(buf, backend->controlBufferSize)) return false;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         int delta = 0;
         unsigned int deltaOffset = backend->controlEntryBaseOffset + (unsigned int)i * backend->controlEntryStride + backend->controlEntryDeltaOffset;
@@ -368,9 +374,11 @@ static bool nvapi_set_point(int pointIndex, int freqDelta_kHz) {
     if (!backend || !backend->writeSupported) return false;
     auto func = (NvApiFunc)nvapi_qi(backend->setControlId);
     if (!func) return false;
-    unsigned char buf[0x4000] = {};
-    if (backend->controlBufferSize > sizeof(buf)) return false;
-    if (!nvapi_read_control_table(buf, sizeof(buf))) return false;
+    HeapBuffer buf(backend->controlBufferSize > 0 ? backend->controlBufferSize : 0x4000);
+    if (!buf) return false;
+    memset(buf, 0, backend->controlBufferSize);
+    if (backend->controlBufferSize > 0x4000) return false;
+    if (!nvapi_read_control_table(buf, backend->controlBufferSize)) return false;
     memset(&buf[backend->controlMaskOffset], 0, 32);
     buf[backend->controlMaskOffset + pointIndex / 8] = (unsigned char)(1 << (pointIndex % 8));
     unsigned int deltaOffset = backend->controlEntryBaseOffset + (unsigned int)pointIndex * backend->controlEntryStride + backend->controlEntryDeltaOffset;
@@ -662,6 +670,14 @@ static bool restore_locked_tail_from_curve_index_tolerant(int preferredCi, int m
     g_app.guiLockTracksAnchor = true;
     return true;
 }
+static void sync_applied_lock_state_from_curve() {
+    if (!gui_state_dirty()) {
+        g_app.appliedLockVi = g_app.lockedVi;
+        g_app.appliedLockCi = g_app.lockedCi;
+        g_app.appliedLockFreq = g_app.lockedFreq;
+    }
+}
+
 static void detect_locked_tail_from_curve() {
     int preferredCi = (g_app.lockedFreq > 0 && g_app.lockedCi >= 0 && g_app.lockedCi < VF_NUM_POINTS)
         ? g_app.lockedCi
@@ -670,11 +686,18 @@ static void detect_locked_tail_from_curve() {
     g_app.lockedCi = -1;
     g_app.lockedFreq = 0;
     g_app.guiLockTracksAnchor = true;
+    sync_applied_lock_state_from_curve();
     if (g_app.numVisible < 2) return;
     if (!should_auto_detect_locked_tail_from_live_curve()) return;
     if (preferredCi >= 0) {
-        if (restore_locked_tail_from_curve_index_exact(preferredCi)) return;
-        if (restore_locked_tail_from_curve_index_tolerant(preferredCi, 1)) return;
+        if (restore_locked_tail_from_curve_index_exact(preferredCi)) {
+            sync_applied_lock_state_from_curve();
+            return;
+        }
+        if (restore_locked_tail_from_curve_index_tolerant(preferredCi, 1)) {
+            sync_applied_lock_state_from_curve();
+            return;
+        }
     }
     for (int vi = 0; vi < g_app.numVisible - 1; vi++) {
         int ci = g_app.visibleMap[vi];
@@ -699,6 +722,7 @@ static void detect_locked_tail_from_curve() {
             g_app.lockedVi = vi;
             g_app.lockedCi = ci;
             g_app.lockedFreq = displayed_curve_mhz(lockFreqkHz);
+            sync_applied_lock_state_from_curve();
             return;
         }
     }
@@ -708,10 +732,13 @@ static void detect_locked_tail_from_curve() {
     for (int vi = 0; vi < g_app.numVisible - 1; vi++) {
         int ci = g_app.visibleMap[vi];
         if (restore_locked_tail_from_curve_index_tolerant(ci, 3)) {
+            sync_applied_lock_state_from_curve();
             return;
         }
     }
+    // No lock detected - appliedLock already synced at function entry.
 }
+
 static bool read_live_curve_snapshot_settled(int attempts, DWORD delayMs, bool* lastOffsetsOkOut) {
     if (!g_app.isServiceProcess && g_app.usingBackgroundService) {
         char err[256] = {};
