@@ -944,9 +944,9 @@ static void apply_logon_startup_behavior() {
     bool startProgramAtLogon = is_start_on_logon_enabled(g_app.configPath);
     bool applyAndExit = is_apply_and_exit_enabled(g_app.configPath);
 
-    // Set startHiddenToTray BEFORE ensure_tray_icon() is called in the caller.
-    // If apply_and_exit is active, we do NOT want a tray icon at all.
-    g_app.startHiddenToTray = startProgramAtLogon && !applyAndExit;
+    // startHiddenToTray is set by handle_cli() before the GUI even starts.
+    // We just re-confirm it here from config (in case it wasn't set via CLI path).
+    g_app.startHiddenToTray = startProgramAtLogon;
 
     int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
     if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;

@@ -878,17 +878,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
 
     // Create edit controls
     create_edit_controls(g_app.hMainWnd, hInstance);
-    // apply_logon_startup_behavior must run first: it sets g_app.startHiddenToTray
-    // and g_app.applyAndExit flags before the tray icon is created.
-    apply_logon_startup_behavior();
     ensure_tray_icon();
+    apply_logon_startup_behavior();
     if (!g_app.startHiddenToTray) {
         show_best_guess_support_warning(g_app.hMainWnd);
     }
     maybe_load_app_launch_profile_to_gui();
     invalidate_main_window();
 
-    if (g_app.startHiddenToTray) {
+    bool applyAndExit = g_app.launchedFromLogon && is_apply_and_exit_enabled(g_app.configPath);
+    if (applyAndExit) {
+        // Apply-and-exit mode: keep window completely invisible, no tray icon.
+        // apply_logon_startup_behavior() already called PostMessage(WM_CLOSE).
+        remove_tray_icon();
+        ShowWindow(g_app.hMainWnd, SW_HIDE);
+    } else if (g_app.startHiddenToTray) {
         hide_main_window_to_tray();
     } else {
         show_window_with_primed_first_frame(g_app.hMainWnd, nCmdShow);
