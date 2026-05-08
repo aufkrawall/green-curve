@@ -878,7 +878,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
 
     // Create edit controls
     create_edit_controls(g_app.hMainWnd, hInstance);
-    ensure_tray_icon();
     apply_logon_startup_behavior();
     if (!g_app.startHiddenToTray) {
         show_best_guess_support_warning(g_app.hMainWnd);
@@ -888,13 +887,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
 
     bool applyAndExit = g_app.launchedFromLogon && is_apply_and_exit_enabled(g_app.configPath);
     if (applyAndExit) {
-        // Apply-and-exit mode: keep window completely invisible, no tray icon.
-        // apply_logon_startup_behavior() already called PostMessage(WM_CLOSE).
-        remove_tray_icon();
+        // Apply-and-exit mode: window stays completely invisible, no tray icon.
+        // apply_logon_startup_behavior() already posted WM_CLOSE.
         ShowWindow(g_app.hMainWnd, SW_HIDE);
     } else if (g_app.startHiddenToTray) {
+        // hide_main_window_to_tray() internally calls ensure_tray_icon()
         hide_main_window_to_tray();
     } else {
+        // Normal launch: add tray icon then show window
+        ensure_tray_icon();
         show_window_with_primed_first_frame(g_app.hMainWnd, nCmdShow);
     }
 
