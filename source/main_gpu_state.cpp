@@ -602,20 +602,13 @@ static void build_full_live_desired_settings(DesiredSettings* desired) {
         haveControlState && control_state_has_meaningful_fan(&control)
             ? &control.fanCurve
             : &g_app.activeFanCurve);
-    if (g_app.lockedCi >= 0 && g_app.lockedCi < VF_NUM_POINTS && g_app.lockedFreq > 0) {
-        desired->hasLock = true;
-        desired->lockCi = g_app.lockedCi;
-        desired->lockMHz = g_app.lockedFreq;
-        desired->lockTracksAnchor = g_app.guiLockTracksAnchor;
-    }
-    // Save every populated point so the profile is self-contained and the GUI
-    // can reconstruct the full curve reliably.  Hidden points are written with
-    // visible=0 so it is unambiguous which points are adjustable in the UI.
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (g_app.curve[i].freq_kHz == 0) continue;
-        desired->hasCurvePoint[i] = true;
-        desired->curvePointMHz[i] = displayed_curve_mhz(g_app.curve[i].freq_kHz);
-    }
+    // Do not save the applied lock or curve points when saving from live state.
+    // The VF curve may have been flattened by a previous profile's lock, and saving
+    // those frequencies as explicit curve points would cause infer_profile_lock_from_curve
+    // to detect the flat tail and re-apply the lock when the profile is loaded.
+    // Without curve points, the apply path's reset-before-apply restores the GPU
+    // to its factory base frequencies (via offset zeroing), which is the correct
+    // "no custom curve" behavior for a default/safety profile.
 }
 
 static bool load_curve_points_explicit_from_section(const char* path, const char* section, DesiredSettings* desired, char* err, size_t errSize) {

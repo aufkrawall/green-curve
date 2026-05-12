@@ -586,6 +586,7 @@ struct AppData {
 
     bool guiCurvePointExplicit[VF_NUM_POINTS];
     bool guiStateDirty;
+    bool guiHasUserModifiedValues;
     int guiGpuOffsetMHz;
     int guiGpuOffsetExcludeLowCount;
     int appliedGpuOffsetMHz;

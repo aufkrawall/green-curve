@@ -352,8 +352,24 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, char* err, size
         return false;
     }
 
+    bool fullHasExplicitCurve = false;
+    for (int i = 0; i < VF_NUM_POINTS && !fullHasExplicitCurve; i++) {
+        if (full.hasCurvePoint[i]) fullHasExplicitCurve = true;
+    }
+
     DesiredSettings resetFull = {};
     if (!capture_gui_desired_settings(&resetFull, true, true, true, err, errSize)) return false;
+
+    // If the profile doesn't define any explicit curve points, don't apply the
+    // live GPU's curve state (which may have flatten artifacts from a previous
+    // profile). The reset-before-apply step zeros all offsets and re-reads the
+    // stock curve — without explicit curve targets the GPU stays at stock.
+    if (!fullHasExplicitCurve) {
+        for (int i = 0; i < VF_NUM_POINTS; i++) {
+            resetFull.hasCurvePoint[i] = false;
+            resetFull.curvePointMHz[i] = 0;
+        }
+    }
     if (!fanChanged) {
         resetFull.hasFan = false;
         resetFull.fanAuto = false;

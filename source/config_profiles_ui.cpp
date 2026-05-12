@@ -217,6 +217,7 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
     if (g_app.loaded) populate_edits();
     begin_programmatic_edit_update();
     set_gui_state_dirty(false);
+    g_app.guiHasUserModifiedValues = false;
 
     // Curve points
     for (int vi = 0; vi < g_app.numVisible; vi++) {
@@ -284,6 +285,11 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
             g_app.guiLockTracksAnchor = desired->hasLock ? desired->lockTracksAnchor : true;
             break;
         }
+    } else if (g_app.lockedVi >= 0) {
+        SendMessageA(g_app.hLocks[g_app.lockedVi], BM_SETCHECK, BST_UNCHECKED, 0);
+        g_app.lockedVi = -1;
+        g_app.lockedCi = -1;
+        g_app.lockedFreq = 0;
     }
     end_programmatic_edit_update();
     set_gui_state_dirty(preserveDirty);
@@ -627,6 +633,8 @@ static void maybe_load_app_launch_profile_to_gui() {
     }
     char result[512] = {};
     refresh_background_service_state();
+    debug_log("maybe_load_app_launch_profile_to_gui: applying slot %d with reset-before-apply\n", appLaunchSlot);
+    desired.resetOcBeforeApply = true;
     bool ok = apply_desired_settings(&desired, false, result, sizeof(result));
     if (ok) {
         populate_desired_into_gui(&desired);
@@ -729,13 +737,14 @@ static void apply_logon_startup_behavior() {
     }
 
     char result[512] = {};
-    debug_log("apply_logon_startup_behavior: applying slot %d (gpu=%d exclude=%d mem=%d power=%d fanMode=%d)\n",
+    debug_log("apply_logon_startup_behavior: applying slot %d with reset-before-apply (gpu=%d exclude=%d mem=%d power=%d fanMode=%d)\n",
         logonSlot,
         desired.hasGpuOffset ? desired.gpuOffsetMHz : 0,
         desired.hasGpuOffset ? (desired.gpuOffsetExcludeLowCount ? 1 : 0) : 0,
         desired.hasMemOffset ? desired.memOffsetMHz : 0,
         desired.hasPowerLimit ? desired.powerLimitPct : 0,
         desired.hasFan ? desired.fanMode : -1);
+    desired.resetOcBeforeApply = true;
     bool ok = apply_desired_settings(&desired, false, result, sizeof(result));
     debug_log("apply_logon_startup_behavior: apply result ok=%d msg=%s\n", ok ? 1 : 0, result);
     if (ok) {

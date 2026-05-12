@@ -21,9 +21,10 @@ static bool reset_oc_before_gui_apply(char* result, size_t resultSize) {
         }
     }
     set_last_apply_phase("apply: reset OC baseline");
-    if (hadCurveOffsets && !apply_curve_offsets_verified(resetOffsets, resetMask, 2)) {
-        append_failure("VF curve offsets did not reset");
-    }
+    // Reset GPU offset first to avoid dangerous transient where VF curve tail
+    // points snap to factory base frequencies (~3300+ MHz on modern GPUs) while
+    // the GPU offset from the previous profile is still active — that spike
+    // (e.g. 3300 base + 475 old offset = 3775 MHz effective) causes TDR/crashes.
     if (g_app.gpuClockOffsetkHz != 0 && !nvapi_set_gpu_offset(0)) {
         append_failure("GPU offset did not reset");
     }
@@ -32,6 +33,9 @@ static bool reset_oc_before_gui_apply(char* result, size_t resultSize) {
     }
     if (g_app.powerLimitPct != 100 && !nvapi_set_power_limit(100)) {
         append_failure("Power target did not reset");
+    }
+    if (hadCurveOffsets && !apply_curve_offsets_verified(resetOffsets, resetMask, 2)) {
+        append_failure("VF curve offsets did not reset");
     }
     if (failures[0]) {
         set_message(result, resultSize, "Reset before apply failed: %s", failures);

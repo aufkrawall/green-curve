@@ -354,6 +354,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         bool lockTailPreviewPoint = (g_app.lockedVi >= 0 && vi > g_app.lockedVi);
                         if (!lockTailPreviewPoint) {
                             g_app.guiCurvePointExplicit[ci] = true;
+                            g_app.guiHasUserModifiedValues = true;
                             set_gui_state_dirty(true);
                         }
                         char pointBuf[32] = {};
@@ -373,6 +374,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 char buf[32] = {};
                 get_window_text_safe(g_app.hGpuOffsetEdit, buf, sizeof(buf));
                 int value = 0;
+                g_app.guiHasUserModifiedValues = true;
                 set_gui_state_dirty(true);
                 if (parse_int_strict(buf, &value)) record_ui_action("GPU offset edited to %d MHz", value);
             }
@@ -380,6 +382,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 char buf[32] = {};
                 get_window_text_safe(g_app.hMemOffsetEdit, buf, sizeof(buf));
                 int value = 0;
+                g_app.guiHasUserModifiedValues = true;
                 set_gui_state_dirty(true);
                 if (parse_int_strict(buf, &value)) record_ui_action("Mem offset edited to %d MHz", value);
             }
@@ -387,6 +390,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 char buf[32] = {};
                 get_window_text_safe(g_app.hPowerLimitEdit, buf, sizeof(buf));
                 int value = 0;
+                g_app.guiHasUserModifiedValues = true;
                 set_gui_state_dirty(true);
                 if (parse_int_strict(buf, &value)) record_ui_action("Power limit edited to %d%%", value);
             }
@@ -400,6 +404,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 int selection = (int)SendMessageA(g_app.hFanModeCombo, CB_GETCURSEL, 0, 0);
                 if (selection >= FAN_MODE_AUTO && selection <= FAN_MODE_CURVE) {
                     g_app.guiFanMode = selection;
+                    g_app.guiHasUserModifiedValues = true;
                     set_gui_state_dirty(true);
                     update_fan_controls_enabled_state();
                 }
@@ -416,6 +421,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         g_app.guiGpuOffsetExcludeLowCount = excludeCount;
                     }
                     set_gui_state_dirty(true);
+                    g_app.guiHasUserModifiedValues = true;
                 }
             } else if (LOWORD(wParam) == FAN_CURVE_BTN_ID && HIWORD(wParam) == BN_CLICKED) {
                 open_fan_curve_dialog();
@@ -557,10 +563,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
                     break;
                 }
-                if (!capture_gui_config_settings(&desired, err, sizeof(err))) {
-                    write_error_report_log_for_user_failure("Profile save capture failed", err);
-                    MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
-                    break;
+                if (g_app.guiHasUserModifiedValues) {
+                    if (!capture_gui_config_settings(&desired, err, sizeof(err))) {
+                        write_error_report_log_for_user_failure("Profile save capture failed", err);
+                        MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
+                        break;
+                    }
+                } else {
+                    build_full_live_desired_settings(&desired);
+                    debug_log("PROFILE_SAVE: no user edits, saving live state\n");
                 }
                 if (!save_profile_to_config(g_app.configPath, slot, &desired, err, sizeof(err))) {
                     write_error_report_log_for_user_failure("Profile save failed", err);

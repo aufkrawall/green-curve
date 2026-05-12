@@ -212,6 +212,8 @@ static bool handle_cli(LPWSTR wCmdLine) {
         merge_desired_settings(&cfg, &opts.desired);
         char result[512] = {};
         set_pending_operation_source("CLI apply-config");
+        debug_log("CLI apply-config: enabling reset-before-apply\n");
+        cfg.resetOcBeforeApply = true;
         bool ok = apply_desired_settings(&cfg, false, result, sizeof(result));
         CLI_LOG("%s\n", result);
         if (!ok) {

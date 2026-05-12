@@ -87,7 +87,7 @@
         }
     }
 
-    if (!desired->hasLock) {
+    if (!desired->hasLock && g_app.guiHasUserModifiedValues) {
         int inferredLockCi = -1;
         unsigned int inferredLockMHz = 0;
         infer_profile_lock_from_curve(desired, &inferredLockCi, &inferredLockMHz);

@@ -138,6 +138,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
 
     GetPrivateProfileStringA(controlsSection, "lock_ci", "", buf, sizeof(buf), path);
     trim_ascii(buf);
+    bool lockCiWasExplicit = buf[0] != '\0';
     if (buf[0]) {
         int value = -1;
         if (!parse_int_strict(buf, &value)) {
@@ -269,7 +270,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         }
     }
 
-    if (!desired->hasLock || desired->lockCi < 0 || desired->lockMHz == 0) {
+    if (!(lockCiWasExplicit && desired->lockCi < 0) && (!desired->hasLock || desired->lockCi < 0 || desired->lockMHz == 0)) {
         int inferredLockCi = -1;
         unsigned int inferredLockMHz = 0;
         infer_profile_lock_from_curve(desired, &inferredLockCi, &inferredLockMHz);
@@ -281,7 +282,27 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         }
     }
 
-    if (desired->hasLock && desired->lockCi >= 0 && desired->lockMHz > 0) {
+    // If config explicitly says lock_ci=-1 (no lock), strip any curve points that may
+    // have been erroneously saved by an older build that captured the GPU's current
+    // curve state (which could include flattened tail from a previous profile).
+    // Without strip, load+apply of such a profile would re-apply the flattened curve
+    // even though the user saved "no lock, no custom curve."
+    if (lockCiWasExplicit && desired->lockCi < 0) {
+        bool hadCurvePoints = false;
+        for (int i = 0; i < VF_NUM_POINTS; i++) {
+            if (desired->hasCurvePoint[i]) {
+                desired->hasCurvePoint[i] = false;
+                desired->curvePointMHz[i] = 0;
+                hadCurvePoints = true;
+            }
+        }
+        if (hadCurvePoints) {
+            debug_log("load_profile_from_config: stripped explicit curve points for lock_ci=-1 profile (slot %d)\n", slot);
+        }
+        desired->hasLock = false;
+        desired->lockCi = -1;
+        desired->lockMHz = 0;
+    } else if (desired->hasLock && desired->lockCi >= 0 && desired->lockMHz > 0) {
         bool sawVisibleTailPoint = false;
         bool tailMatchesLock = true;
         for (int ci = desired->lockCi; ci < VF_NUM_POINTS; ci++) {

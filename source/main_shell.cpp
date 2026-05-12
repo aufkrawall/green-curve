@@ -639,6 +639,20 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
     g_app.guiGpuOffsetExcludeLowCount = gpuOffsetExcludeLowCount;
 
     bool hasLock = g_app.lockedVi >= 0 && g_app.lockedVi < g_app.numVisible;
+    // If no user has actively edited the GUI since the last profile load/apply,
+    // and the lock checkbox's MHz matches the live curve frequency at that point
+    // AND the curve point was NOT explicitly loaded from a profile (guiCurvePointExplicit
+    // is false), the lock state is stale (left over from a previous profile's apply)
+    // and should not be captured.
+    if (hasLock && !g_app.guiHasUserModifiedValues) {
+        int lockCi = g_app.visibleMap[g_app.lockedVi];
+        unsigned int liveMHz = displayed_curve_mhz(g_app.curve[lockCi].freq_kHz);
+        if (g_app.lockedFreq == liveMHz && !g_app.guiCurvePointExplicit[lockCi]) {
+            hasLock = false;
+            debug_log("capture_gui_desired_settings: skipping stale lock at ci=%d (matches live %u MHz, no user edits, not explicit in profile)\n",
+                lockCi, liveMHz);
+        }
+    }
     int lockCi = -1;
     int effectiveLockTargetMHz = 0;
     unsigned int currentLockMHz = 0;
