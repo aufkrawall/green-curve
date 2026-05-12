@@ -187,6 +187,29 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
         }
     }
 
+    // If the crash is inside a GPU driver DLL (nvml.dll, nvapi64, NvMessageBus)
+    // it's caused by a driver update / stale handles — suppress the dump to avoid
+    // crash dump spam on every driver update. Only dump for crashes in our code.
+    bool isGpuDriverDll = false;
+    if (address) {
+        HMODULE hMod = nullptr;
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                (LPCWSTR)address, &hMod) && hMod) {
+            WCHAR modPath[MAX_PATH] = {};
+            if (GetModuleFileNameW(hMod, modPath, ARRAY_COUNT(modPath))) {
+                CharLowerW(modPath);
+                isGpuDriverDll = wcsstr(modPath, L"nvml.dll") != nullptr
+                    || wcsstr(modPath, L"nvapi64.dll") != nullptr
+                    || wcsstr(modPath, L"nvcuda.dll") != nullptr
+                    || wcsstr(modPath, L"nvmessagebus") != nullptr
+                    || wcsstr(modPath, L"nvwgf2umx") != nullptr;
+            }
+        }
+    }
+    if (isGpuDriverDll) {
+        return EXCEPTION_EXECUTE_HANDLER;
+    }
+
     char text[2048] = {};
     int len = 0;
     len += StringCchPrintfA(text + len, ARRAY_COUNT(text) - len,

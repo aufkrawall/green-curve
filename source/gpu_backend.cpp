@@ -549,11 +549,11 @@ static bool nvapi_set_mem_offset(int offsetkHz) {
 static bool nvapi_set_power_limit(int pct) {
     if (pct < 50 || pct > 150) return false;
     if (g_app.powerLimitDefaultmW <= 0) return false;
-    int watts = (g_app.powerLimitDefaultmW * pct + 50000) / 100000;
-    if (watts < 1) return false;
-    unsigned int targetmW = (unsigned int)watts * 1000u;
+    unsigned int targetmW = (unsigned int)(((long long)g_app.powerLimitDefaultmW * pct + 50) / 100);
+    if (targetmW < 1) return false;
     if (g_app.powerLimitMinmW > 0 && targetmW < (unsigned int)g_app.powerLimitMinmW) return false;
     if (g_app.powerLimitMaxmW > 0 && targetmW > (unsigned int)g_app.powerLimitMaxmW) return false;
+    debug_log("set_power_limit: pct=%d defaultmW=%d targetmW=%u\n", pct, g_app.powerLimitDefaultmW, targetmW);
     if (nvml_ensure_ready() && g_nvml_api.setPowerLimit) {
         set_last_apply_phase("Power limit NVML write");
         nvmlReturn_t r = g_nvml_api.setPowerLimit(g_app.nvmlDevice, targetmW);
@@ -568,6 +568,7 @@ static bool nvapi_set_power_limit(int pct) {
         debug_log("Power limit via nvidia-smi skipped: trusted executable not found\n");
         return false;
     }
+    int watts = (int)((targetmW + 500) / 1000);
     WCHAR cmdLine[MAX_PATH + 64] = {};
     StringCchPrintfW(cmdLine, ARRAY_COUNT(cmdLine), L"\"%ls\" -pl %d", exePath, watts);
     set_last_apply_phase("Power limit nvidia-smi write");
