@@ -13,12 +13,17 @@
                 return false;
             }
         }
-        if (captureAllCurvePoints) lockTracksAnchor = false;
         int currentLockGpuOffsetMHz = gpu_offset_component_mhz_for_point(lockCi, currentGpuOffsetMHz, currentActiveGpuOffsetExcludeLowCount);
         int desiredLockGpuOffsetMHz = gpu_offset_component_mhz_for_point(lockCi, gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount);
         if (lockTracksAnchor && desiredLockGpuOffsetMHz != currentLockGpuOffsetMHz) {
+            debug_log("capture lock: anchor tracks offset: base=%u + desiredOff=%d - currentOff=%d -> %u\n",
+                effectiveLockTargetMHz, desiredLockGpuOffsetMHz, currentLockGpuOffsetMHz,
+                (unsigned int)(effectiveLockTargetMHz + desiredLockGpuOffsetMHz - currentLockGpuOffsetMHz));
             effectiveLockTargetMHz += desiredLockGpuOffsetMHz - currentLockGpuOffsetMHz;
             if (effectiveLockTargetMHz <= 0) effectiveLockTargetMHz = 1;
+        } else {
+            debug_log("capture lock: tracksAnchor=%d desiredOff=%d currentOff=%d lockMHz=%u\n",
+                lockTracksAnchor ? 1 : 0, desiredLockGpuOffsetMHz, currentLockGpuOffsetMHz, g_app.lockedFreq);
         }
         desired->hasLock = true;
         desired->lockCi = lockCi;

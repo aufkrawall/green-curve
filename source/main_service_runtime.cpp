@@ -506,13 +506,20 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
     bool ok = apply_desired_settings(desired, interactive, result, resultSize);
     if (ok) {
         set_last_apply_phase("service apply: capture authoritative state");
+        // Update the active desired state BEFORE capturing the control state
+        // so that current_applied_gpu_offset_mhz() (called by populate_control_state)
+        // sees the new desired values rather than stale previous-profile values.
+        // Otherwise a profile 2 with hasGpuOffset=true/gpuOffsetMHz=0 would fall
+        // back to the previous profile's selective offset (e.g. 475/60) because
+        // g_serviceActiveDesired had not been updated yet and tail points with
+        // non-zero flatten offsets satisfied live_curve_has_any_nonzero_offsets().
+        g_serviceActiveDesired = *desired;
+        g_serviceActiveDesired.resetOcBeforeApply = false;
+        g_serviceHasActiveDesired = true;
         populate_control_state(&g_serviceControlState);
         g_serviceControlStateValid = true;
         mark_service_telemetry_cache_updated("service apply");
-        g_serviceActiveDesired = *desired;
-        g_serviceActiveDesired.resetOcBeforeApply = false;
         update_desired_lock_from_live_curve(&g_serviceActiveDesired);
-        g_serviceHasActiveDesired = true;
         if (g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive) {
             ensure_service_fan_runtime_thread();
         } else {

@@ -92,10 +92,11 @@ static bool is_locked_tail_detection_point(int pointIndex) {
     return g_app.lockedCi >= 0 && pointIndex >= g_app.lockedCi;
 }
 
-static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut, int* representativeOffsetkHzOut) {
+static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut, int* representativeOffsetkHzOut, int* detectedExcludeLowCountOut) {
     if (!vf_curve_global_gpu_offset_supported()) {
         if (gpuOffsetMHzOut) *gpuOffsetMHzOut = 0;
         if (representativeOffsetkHzOut) *representativeOffsetkHzOut = 0;
+        if (detectedExcludeLowCountOut) *detectedExcludeLowCountOut = 0;
         return false;
     }
 
@@ -103,9 +104,11 @@ static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut, int* re
 
     int candidateOffsets[VF_NUM_POINTS] = {};
     int candidateCount = 0;
+    int numPopulated = 0;
 
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         if (g_app.curve[ci].freq_kHz == 0) continue;
+        numPopulated++;
         int offsetMHz = g_app.freqOffsets[ci] / 1000;
         if (offsetMHz == 0) continue;
 
@@ -121,72 +124,110 @@ static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut, int* re
         }
     }
 
-    for (int candidateIndex = 0; candidateIndex < candidateCount; candidateIndex++) {
-        int candidateMHz = candidateOffsets[candidateIndex];
-        int toleranceKHz = TOLERANCE_MHZ * 1000;
-        bool sawExcludedPoint = false;
-        bool sawIncludedPoint = false;
-        bool skippedLockedTail = false;
-        int includedMatchSumKHz = 0;
-        int includedMatchCount = 0;
-        int includedConsideredCount = 0;
-        int excludedViolations = 0;
-        int excludedTotal = 0;
-        int candidateTargetKHz = candidateMHz * 1000;
+    // Track the best match across all exclude counts.
+    // Best = highest includedMatchCount, then lowest excludedViolations.
+    int bestDetectedMHz = 0;
+    int bestMatchedAverageKHz = 0;
+    int bestExcludeLowCount = 0;
+    int bestMatchCount = 0;
+    int bestViolations = INT_MAX;
 
-        for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-            if (g_app.curve[ci].freq_kHz == 0) continue;
+    for (int excludeTry = 1; excludeTry <= numPopulated; excludeTry++) {
+        for (int candidateIndex = 0; candidateIndex < candidateCount; candidateIndex++) {
+            int candidateMHz = candidateOffsets[candidateIndex];
+            int toleranceKHz = TOLERANCE_MHZ * 1000;
+            bool sawExcludedPoint = false;
+            bool sawIncludedPoint = false;
+            bool skippedLockedTail = false;
+            int includedMatchSumKHz = 0;
+            int includedMatchCount = 0;
+            int includedConsideredCount = 0;
+            int excludedViolations = 0;
+            int excludedTotal = 0;
+            int candidateTargetKHz = candidateMHz * 1000;
 
-            if (is_locked_tail_detection_point(ci)) {
-                skippedLockedTail = true;
-                continue;
+            for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+                if (g_app.curve[ci].freq_kHz == 0) continue;
+
+                if (is_locked_tail_detection_point(ci)) {
+                    skippedLockedTail = true;
+                    continue;
+                }
+
+                bool excluded = is_gpu_offset_excluded_low_point(ci, candidateMHz, excludeTry);
+                int actualOffsetKHz = g_app.freqOffsets[ci];
+                if (excluded) {
+                    sawExcludedPoint = true;
+                    excludedTotal++;
+                    if (abs(actualOffsetKHz) > toleranceKHz) {
+                        excludedViolations++;
+                    }
+                } else {
+                    sawIncludedPoint = true;
+                    includedConsideredCount++;
+                    if (abs(actualOffsetKHz - candidateTargetKHz) <= toleranceKHz) {
+                        includedMatchSumKHz += actualOffsetKHz;
+                        includedMatchCount++;
+                    }
+                }
             }
 
-            bool excluded = is_gpu_offset_excluded_low_point(ci, candidateMHz, 70);
-            int actualOffsetKHz = g_app.freqOffsets[ci];
-            if (excluded) {
-                sawExcludedPoint = true;
-                excludedTotal++;
-                if (abs(actualOffsetKHz) > toleranceKHz) {
-                    excludedViolations++;
-                }
-            } else {
-                sawIncludedPoint = true;
-                includedConsideredCount++;
-                if (abs(actualOffsetKHz - candidateTargetKHz) <= toleranceKHz) {
-                    includedMatchSumKHz += actualOffsetKHz;
-                    includedMatchCount++;
-                }
-            }
-        }
+            if (!sawIncludedPoint || !sawExcludedPoint) continue;
+            if (includedMatchCount == 0) continue;
 
-        if (!sawIncludedPoint || !sawExcludedPoint) continue;
-        if (includedMatchCount == 0) continue;
+            int minimumMatches = skippedLockedTail ? 2 : 3;
+            if (includedMatchCount < minimumMatches) continue;
+            if (includedMatchCount * 2 < includedConsideredCount) continue;
+            if (excludedTotal > 0 && excludedViolations * 3 > excludedTotal) continue;
 
-        int minimumMatches = skippedLockedTail ? 2 : 3;
-        if (includedMatchCount < minimumMatches) continue;
-        if (includedMatchCount * 2 < includedConsideredCount) continue;
-        if (excludedTotal > 0 && excludedViolations * 3 > excludedTotal) continue;
-
-        if (sawIncludedPoint) {
             int matchedAverageKHz = includedMatchSumKHz / includedMatchCount;
             int detectedMHz = (matchedAverageKHz >= 0 ? (matchedAverageKHz + 500) : (matchedAverageKHz - 500)) / 1000;
-            if (detectedMHz == 0) {
-                debug_log("detect_live_selective: rejecting near-zero selective candidate=%d MHz (matches=%d/%d, skippedTail=%d)\n",
-                    candidateMHz, includedMatchCount, includedConsideredCount, skippedLockedTail ? 1 : 0);
-                continue;
+            if (detectedMHz == 0) continue;
+            // Reject detected offsets at or below the tolerance threshold
+            // (30 MHz). These are not meaningful selective offsets — they
+            // typically arise from residual noise (e.g. 1-10 MHz offsets
+            // left by correction loop writes on non-tail points after a
+            // profile transitions away from a selective offset). A genuine
+            // user-set selective offset is always significantly larger.
+            if (abs(detectedMHz) <= TOLERANCE_MHZ) continue;
+
+            // Prefer more matches; on tie, prefer fewer excluded violations.
+            bool isBetter = (includedMatchCount > bestMatchCount)
+                || (includedMatchCount == bestMatchCount && excludedViolations < bestViolations);
+            if (isBetter) {
+                bestDetectedMHz = detectedMHz;
+                bestMatchedAverageKHz = matchedAverageKHz;
+                bestExcludeLowCount = excludeTry;
+                bestMatchCount = includedMatchCount;
+                bestViolations = excludedViolations;
+                debug_log("detect_live_selective: exclude=%d candidate=%d MHz -> detected=%d MHz (matches=%d/%d, exclViolations=%d/%d, skippedTail=%d)  [new best]\n",
+                    excludeTry, candidateMHz, detectedMHz,
+                    includedMatchCount, includedConsideredCount,
+                    excludedViolations, excludedTotal,
+                    skippedLockedTail ? 1 : 0);
+            } else {
+                debug_log("detect_live_selective: exclude=%d candidate=%d MHz -> detected=%d MHz (matches=%d/%d, exclViolations=%d/%d, skippedTail=%d)\n",
+                    excludeTry, candidateMHz, detectedMHz,
+                    includedMatchCount, includedConsideredCount,
+                    excludedViolations, excludedTotal,
+                    skippedLockedTail ? 1 : 0);
             }
-            debug_log("detect_live_selective: found selective offset=%d MHz (candidate=%d MHz, matches=%d/%d, skippedTail=%d)\n",
-                detectedMHz, candidateMHz, includedMatchCount, includedConsideredCount, skippedLockedTail ? 1 : 0);
-            if (gpuOffsetMHzOut) *gpuOffsetMHzOut = detectedMHz;
-            if (representativeOffsetkHzOut) *representativeOffsetkHzOut = matchedAverageKHz;
-            return true;
         }
     }
 
-    debug_log("detect_live_selective: no selective offset pattern found (candidates=%d)\n", candidateCount);
+    if (bestExcludeLowCount > 0) {
+        debug_log("detect_live_selective: BEST exclude=%d MHz=%d matches=%d violations=%d\n",
+            bestExcludeLowCount, bestDetectedMHz, bestMatchCount, bestViolations);
+        if (gpuOffsetMHzOut) *gpuOffsetMHzOut = bestDetectedMHz;
+        if (representativeOffsetkHzOut) *representativeOffsetkHzOut = bestMatchedAverageKHz;
+        if (detectedExcludeLowCountOut) *detectedExcludeLowCountOut = bestExcludeLowCount;
+        return true;
+    }
+
+    debug_log("detect_live_selective: no selective offset pattern found (candidates=%d, populated=%d)\n", candidateCount, numPopulated);
     if (gpuOffsetMHzOut) *gpuOffsetMHzOut = 0;
     if (representativeOffsetkHzOut) *representativeOffsetkHzOut = 0;
+    if (detectedExcludeLowCountOut) *detectedExcludeLowCountOut = 0;
     return false;
 }
 
@@ -196,7 +237,8 @@ static bool live_selective_gpu_offset_matches_requested_state_with_tolerance(int
 
     int detectedSelectiveOffsetMHz = 0;
     int representativeOffsetkHz = 0;
-    if (!detect_live_selective_gpu_offset_state(&detectedSelectiveOffsetMHz, &representativeOffsetkHz)) return false;
+    int detectedExclude = 0;
+    if (!detect_live_selective_gpu_offset_state(&detectedSelectiveOffsetMHz, &representativeOffsetkHz, &detectedExclude)) return false;
 
     int tolerancekHz = toleranceMHz * 1000;
     int requestedOffsetkHz = gpuOffsetMHz * 1000;
@@ -685,47 +727,12 @@ static void resolve_displayed_live_gpu_offset_state_for_gui(int* gpuOffsetMHzOut
 }
 
 static bool live_selective_gpu_offset_matches_requested_state(int gpuOffsetMHz) {
-    if (live_selective_gpu_offset_matches_requested_state_with_tolerance(gpuOffsetMHz, 12)) return true;
     if (!vf_curve_global_gpu_offset_supported() || gpuOffsetMHz == 0) return false;
-
-    static const int MATCH_TOLERANCE_MHZ = 12;
-    int toleranceKHz = MATCH_TOLERANCE_MHZ * 1000;
-    int targetOffsetKHz = gpuOffsetMHz * 1000;
-    bool sawExcludedPoint = false;
-    bool sawIncludedPoint = false;
-    bool skippedLockedTail = false;
-    int includedMatchCount = 0;
-    int includedConsideredCount = 0;
-    int excludedViolations = 0;
-    int excludedTotal = 0;
-
-    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-        if (g_app.curve[ci].freq_kHz == 0) continue;
-
-        if (is_locked_tail_detection_point(ci)) {
-            skippedLockedTail = true;
-            continue;
-        }
-
-        bool excluded = is_gpu_offset_excluded_low_point(ci, gpuOffsetMHz, 70);
-        int actualOffsetKHz = g_app.freqOffsets[ci];
-        if (excluded) {
-            sawExcludedPoint = true;
-            excludedTotal++;
-            if (abs(actualOffsetKHz) > toleranceKHz) excludedViolations++;
-        } else {
-            sawIncludedPoint = true;
-            includedConsideredCount++;
-            if (abs(actualOffsetKHz - targetOffsetKHz) <= toleranceKHz) includedMatchCount++;
-        }
-    }
-
-    if (!sawIncludedPoint || !sawExcludedPoint) return false;
-    int minimumMatches = skippedLockedTail ? 2 : 3;
-    if (includedMatchCount < minimumMatches) return false;
-    if (includedMatchCount * 2 < includedConsideredCount) return false;
-    if (excludedTotal > 0 && excludedViolations * 3 > excludedTotal) return false;
-    return true;
+    // Use the detection function with multi-exclude scan to find the best match.
+    int detectedMHz = 0;
+    int detectedExclude = 0;
+    if (!detect_live_selective_gpu_offset_state(&detectedMHz, nullptr, &detectedExclude)) return false;
+    return abs(detectedMHz - gpuOffsetMHz) <= 12;
 }
 
 static int current_applied_gpu_offset_mhz() {
@@ -751,10 +758,12 @@ static int current_applied_gpu_offset_mhz() {
         return persistedOffsetMHz;
     }
     int detectedSelectiveOffsetMHz = 0;
-    if (detect_live_selective_gpu_offset_state(&detectedSelectiveOffsetMHz, nullptr)) {
-        debug_log("current_applied_gpu_offset_mhz: detected selective offset=%d MHz\n", detectedSelectiveOffsetMHz);
+    int detectedExcludeLowCount = 0;
+    if (detect_live_selective_gpu_offset_state(&detectedSelectiveOffsetMHz, nullptr, &detectedExcludeLowCount)) {
+        debug_log("current_applied_gpu_offset_mhz: detected selective offset=%d MHz exclude=%d\n",
+            detectedSelectiveOffsetMHz, detectedExcludeLowCount);
         g_app.appliedGpuOffsetMHz = detectedSelectiveOffsetMHz;
-        g_app.appliedGpuOffsetExcludeLowCount = 70;
+        g_app.appliedGpuOffsetExcludeLowCount = detectedExcludeLowCount;
         return detectedSelectiveOffsetMHz;
     }
     int desiredServiceOffsetMHz = 0;
@@ -794,10 +803,11 @@ static bool current_applied_gpu_offset_excludes_low_points() {
     }
 
     int detectedSelectiveOffsetMHz = 0;
-    if (detect_live_selective_gpu_offset_state(&detectedSelectiveOffsetMHz, nullptr)) {
+    int detectedExcludeLowCount = 0;
+    if (detect_live_selective_gpu_offset_state(&detectedSelectiveOffsetMHz, nullptr, &detectedExcludeLowCount)) {
         g_app.appliedGpuOffsetMHz = detectedSelectiveOffsetMHz;
-        g_app.appliedGpuOffsetExcludeLowCount = 70;
-        return true;
+        g_app.appliedGpuOffsetExcludeLowCount = detectedExcludeLowCount;
+        return detectedExcludeLowCount > 0;
     }
     int desiredServiceOffsetMHz = 0;
     int desiredServiceExcludeLowCount = 0;

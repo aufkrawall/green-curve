@@ -108,7 +108,6 @@ static bool live_state_has_custom_oc() {
     if (g_app.gpuClockOffsetkHz != 0) return true;
     if (g_app.memClockOffsetkHz != 0) return true;
     if (g_app.powerLimitPct != 100) return true;
-    if (!g_app.vfBackend || !g_app.vfBackend->writeSupported) return false;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (g_app.freqOffsets[i] != 0) return true;
     }

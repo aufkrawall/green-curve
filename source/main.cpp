@@ -359,7 +359,7 @@ static void apply_logon_startup_behavior();
 static bool ensure_profile_slot_available_for_auto_action(int slot);
 static bool is_gpu_offset_excluded_low_point(int pointIndex, int gpuOffsetMHz, int excludeLowCount);
 static int gpu_offset_component_mhz_for_point(int pointIndex, int gpuOffsetMHz, int excludeLowCount);
-static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut, int* representativeOffsetkHzOut = nullptr);
+static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut, int* representativeOffsetkHzOut = nullptr, int* detectedExcludeLowCountOut = nullptr);
 static bool live_selective_gpu_offset_matches_requested_state_with_tolerance(int gpuOffsetMHz, int toleranceMHz);
 static bool live_selective_gpu_offset_matches_requested_state(int gpuOffsetMHz);
 static bool load_runtime_selective_gpu_offset_request(int* gpuOffsetMHzOut, int* excludeLowCountOut);

@@ -910,12 +910,24 @@ typedef int (*NvApiFunc)(void*, void*);
 
 struct HeapBuffer {
     void* ptr;
-    HeapBuffer(size_t size) : ptr(calloc(1, size)) {}
+    size_t bufSize;
+    HeapBuffer(size_t size) : ptr(calloc(1, size)), bufSize(size) {}
     ~HeapBuffer() { free(ptr); }
     HeapBuffer(const HeapBuffer&) = delete;
     HeapBuffer& operator=(const HeapBuffer&) = delete;
     operator unsigned char*() const { return (unsigned char*)ptr; }
     operator bool() const { return ptr != nullptr; }
+    size_t size() const { return bufSize; }
+    bool write_at(size_t offset, const void* data, size_t len) const {
+        if (!ptr || offset + len > bufSize || !data) return false;
+        memcpy((unsigned char*)ptr + offset, data, len);
+        return true;
+    }
+    bool read_at(size_t offset, void* data, size_t len) const {
+        if (!ptr || offset + len > bufSize || !data) return false;
+        memcpy(data, (unsigned char*)ptr + offset, len);
+        return true;
+    }
 };
 
 void trim_ascii(char* s);

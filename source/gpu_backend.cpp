@@ -34,6 +34,7 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
                 populate_global_controls();
                 if (g_app.loaded) populate_edits();
                 invalidate_main_window();
+                update_tray_icon();
             }
         }
         return ok;
@@ -177,12 +178,12 @@ static bool nvapi_read_curve() {
     memset(buf, 0, backend->statusBufferSize);
     {
         const unsigned int version = (backend->statusVersion << 16) | backend->statusBufferSize;
-        memcpy(&buf[0], &version, sizeof(version));
+        buf.write_at(0, &version, sizeof(version));
     }
     if (backend->statusMaskOffset + sizeof(mask) > backend->statusBufferSize) return false;
-    memcpy(&buf[backend->statusMaskOffset], mask, sizeof(mask));
+    buf.write_at(backend->statusMaskOffset, mask, sizeof(mask));
     if (backend->statusNumClocksOffset + sizeof(numClocks) <= backend->statusBufferSize) {
-        memcpy(&buf[backend->statusNumClocksOffset], &numClocks, sizeof(numClocks));
+        buf.write_at(backend->statusNumClocksOffset, &numClocks, sizeof(numClocks));
     }
     int ret = getStatus(g_app.gpuHandle, buf);
     if (ret != 0) return false;
@@ -195,8 +196,8 @@ static bool nvapi_read_curve() {
             g_app.curve[i].volt_uV = 0;
             continue;
         }
-        memcpy(&freq, &buf[entryOffset], sizeof(freq));
-        memcpy(&volt, &buf[entryOffset + 4], sizeof(volt));
+        buf.read_at(entryOffset, &freq, sizeof(freq));
+        buf.read_at(entryOffset + 4, &volt, sizeof(volt));
         g_app.curve[i].freq_kHz = freq;
         g_app.curve[i].volt_uV = volt;
         if (freq > 0) g_app.numPopulated++;
@@ -358,11 +359,10 @@ static bool nvapi_read_offsets() {
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         int delta = 0;
         unsigned int deltaOffset = backend->controlEntryBaseOffset + (unsigned int)i * backend->controlEntryStride + backend->controlEntryDeltaOffset;
-        if (deltaOffset + sizeof(delta) > backend->controlBufferSize) {
+        if (deltaOffset + sizeof(delta) > backend->controlBufferSize || !buf.read_at(deltaOffset, &delta, sizeof(delta))) {
             g_app.freqOffsets[i] = 0;
             continue;
         }
-        memcpy(&delta, &buf[deltaOffset], sizeof(delta));
         g_app.freqOffsets[i] = delta;
     }
     return true;
@@ -382,8 +382,9 @@ static bool nvapi_set_point(int pointIndex, int freqDelta_kHz) {
     memset(&buf[backend->controlMaskOffset], 0, 32);
     buf[backend->controlMaskOffset + pointIndex / 8] = (unsigned char)(1 << (pointIndex % 8));
     unsigned int deltaOffset = backend->controlEntryBaseOffset + (unsigned int)pointIndex * backend->controlEntryStride + backend->controlEntryDeltaOffset;
-    if (deltaOffset + sizeof(freqDelta_kHz) > backend->controlBufferSize) return false;
-    memcpy(&buf[deltaOffset], &freqDelta_kHz, sizeof(freqDelta_kHz));
+    if (deltaOffset + sizeof(freqDelta_kHz) > backend->controlBufferSize || !buf.write_at(deltaOffset, &freqDelta_kHz, sizeof(freqDelta_kHz))) {
+        return false;
+    }
     char phase[128] = {};
     StringCchPrintfA(phase, ARRAY_COUNT(phase), "VF point write: point=%d delta=%d", pointIndex, freqDelta_kHz);
     set_last_apply_phase(phase);

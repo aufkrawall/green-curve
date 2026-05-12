@@ -263,12 +263,55 @@ static void write_error_report_log_for_user_failure(const char* summary, const c
     }
 }
 
+// Verify that the parent directory of the given path does not contain reparse points
+// (symlinks, junctions, mount points) that could redirect the write to an unexpected
+// location. Scans each path component from the root downward.
+static bool verify_parent_no_reparse_point(const char* path, char* err, size_t errSize) {
+    if (!path || !path[0]) {
+        set_message(err, errSize, "Empty path");
+        return false;
+    }
+    char probe[MAX_PATH] = {};
+    if (FAILED(StringCchCopyA(probe, ARRAY_COUNT(probe), path))) {
+        set_message(err, errSize, "Path is too long");
+        return false;
+    }
+    size_t len = strlen(probe);
+    size_t rootLen = 0;
+    if (len >= 3 && probe[1] == ':' && (probe[2] == '\\' || probe[2] == '/')) {
+        rootLen = 3; // "C:\"
+    } else if (len >= 2 && probe[0] == '\\' && probe[1] == '\\') {
+        const char* serverEnd = strpbrk(probe + 2, "\\/");
+        if (serverEnd) {
+            const char* shareEnd = strpbrk(serverEnd + 1, "\\/");
+            if (shareEnd) rootLen = (size_t)(shareEnd - probe + 1);
+        }
+    }
+    if (rootLen == 0 || rootLen >= len) return true; // Cannot determine root, skip check
+    for (size_t i = rootLen; i < len; i++) {
+        if (probe[i] != '\\' && probe[i] != '/') continue;
+        char saved = probe[i];
+        probe[i] = 0;
+        DWORD attrs = GetFileAttributesA(probe);
+        probe[i] = saved;
+        if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_REPARSE_POINT)) {
+            set_message(err, errSize, "Path crosses a reparse point");
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool write_text_file_atomic(const char* path, const char* data, size_t dataSize, char* err, size_t errSize) {
     if (g_app.isServiceProcess && g_serviceUserPathsResolved) {
         return write_text_file_atomic_service(path, data, dataSize, err, errSize);
     }
     if (!path || !data) {
         set_message(err, errSize, "Invalid file write arguments");
+        return false;
+    }
+
+    if (!verify_parent_no_reparse_point(path, err, errSize)) {
         return false;
     }
 
@@ -649,6 +692,10 @@ static bool write_log_snapshot(const char* path, char* err, size_t errSize) {
     return ok;
 }
 
+// Write an error report log containing GPU runtime state (GPU name, all 128 VF curve
+// points with offsets, power limits, fan state, and operation history). This data helps
+// diagnose apply failures but includes GPU identifiers and runtime configuration.
+// The log is written to the user's configured error log path.
 static bool write_error_report_log(const char* summary, const char* details, char* err, size_t errSize) {
     char* text = (char*)VirtualAlloc(nullptr, 73728, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!text) {
