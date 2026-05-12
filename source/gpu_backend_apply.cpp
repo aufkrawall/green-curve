@@ -28,12 +28,12 @@ static bool reset_oc_before_gui_apply(char* result, size_t resultSize) {
     if (g_app.gpuClockOffsetkHz != 0 && !nvapi_set_gpu_offset(0)) {
         append_failure("GPU offset did not reset");
     }
-    if (g_app.memClockOffsetkHz != 0 && !nvapi_set_mem_offset(0)) {
-        append_failure("Memory offset did not reset");
-    }
     if (g_app.powerLimitPct != 100 && !nvapi_set_power_limit(100)) {
         append_failure("Power target did not reset");
     }
+    // Do NOT reset memory offset here — abruptly dropping from +3000 to 0
+    // while VRAM is under game load causes TDRs. The new profile's memory
+    // offset will be applied directly in the main apply phase.
     if (hadCurveOffsets && !apply_curve_offsets_verified(resetOffsets, resetMask, 2)) {
         append_failure("VF curve offsets did not reset");
     }
@@ -58,6 +58,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
     }
     if (desired->resetOcBeforeApply) {
         if (!reset_oc_before_gui_apply(result, resultSize)) return false;
+        Sleep(1000);
+        debug_log("apply_desired_settings: 1s settle at stock baseline complete\n");
     }
     clear_last_operation_details();
     build_operation_intent_summary(desired, interactive, g_lastOperationIntent, sizeof(g_lastOperationIntent));
