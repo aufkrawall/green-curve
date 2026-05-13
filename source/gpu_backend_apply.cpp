@@ -368,10 +368,15 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                 if (gpuPolicyViaCurveBatch && ci > 0) {
                     int prevCi = ci - 1;
                     if (originalCurvePopulated[prevCi]) {
-                        long long prevBase = (long long)originalCurveFreqkHz[prevCi] - (long long)originalCurveOffsets[prevCi];
-                        if (prevBase < 0) prevBase = 0;
-                        int prevSelectiveKHz = gpu_offset_component_mhz_for_point(prevCi, desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount) * 1000;
-                        long long prevTargetKHz = prevBase + (long long)prevSelectiveKHz;
+                        long long prevTargetKHz;
+                        if (lockedTailMask[prevCi]) {
+                            prevTargetKHz = (long long)lockMhz * 1000LL;
+                        } else {
+                            long long prevBase = (long long)originalCurveFreqkHz[prevCi] - (long long)originalCurveOffsets[prevCi];
+                            if (prevBase < 0) prevBase = 0;
+                            int prevSelectiveKHz = gpu_offset_component_mhz_for_point(prevCi, desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount) * 1000;
+                            prevTargetKHz = prevBase + (long long)prevSelectiveKHz;
+                        }
                         if (prevTargetKHz > target) {
                             target = prevTargetKHz;
                         }
@@ -583,7 +588,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                     unsigned int actualMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
                     if (hasLock && lockedTailMask[ci]) {
                         unsigned int deltaMHz = actualMHz > lockMhz ? (actualMHz - lockMhz) : (lockMhz - actualMHz);
-                        if (deltaMHz <= 15) {
+                        if (deltaMHz <= 8) {
                             flattenApplied++;
                         } else {
                             flattenFailed++;
@@ -666,6 +671,10 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                     // Use generous correction passes because writing large tail offsets
                     // can shift the base frequency of adjacent non-tail points (observed on
                     // Blackwell). Iterate until all points converge or the limit is reached.
+                    int prevErrorKHz[VF_NUM_POINTS] = {};
+                    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+                        prevErrorKHz[ci] = INT_MAX;
+                    }
                     for (int correctionPass = 0; correctionPass < 25; correctionPass++) {
                         int correctedCurveOffsets[VF_NUM_POINTS] = {};
                         bool correctedCurveMask[VF_NUM_POINTS] = {};
@@ -726,6 +735,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                         {
                             int divMinKHz = 0, divMaxKHz = 0;
                             bool divRangeKnown = get_curve_offset_range_khz(&divMinKHz, &divMaxKHz);
+                            int converging = 0, worsening = 0, stuck = 0, outOfRange = 0;
                             for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
                                 if (!verifyDesired.hasCurvePoint[ci]) continue;
                                 if (g_app.curve[ci].freq_kHz == 0) continue;
@@ -733,23 +743,41 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                                 unsigned int targetMHz = (hasLock && lockedTailMask[ci] && lockMhz > 0)
                                     ? lockMhz : verifyDesired.curvePointMHz[ci];
                                 if (actualMHz == targetMHz) continue;
+                                int actualKHz = (int)g_app.curve[ci].freq_kHz;
+                                int targetKHz = (int)targetMHz * 1000;
+                                int errorKHz = actualKHz > targetKHz ? (actualKHz - targetKHz) : (targetKHz - actualKHz);
                                 int requiredDeltaKHz = curve_delta_khz_for_target_display_mhz_unclamped(ci, targetMHz);
                                 bool diverged = (divRangeKnown && (requiredDeltaKHz < divMinKHz || requiredDeltaKHz > divMaxKHz));
                                 if (gpuPolicyViaCurveBatch && hasLock && lockedTailMask[ci] && lockMhz > 0) {
-                                    unsigned int toleranceMHz = curve_point_verify_tolerance_mhz(ci);
-                                    unsigned int deltaMHz = actualMHz > targetMHz ? (actualMHz - targetMHz) : (targetMHz - actualMHz);
-                                    if (deltaMHz > toleranceMHz) {
+                                    if (!diverged && prevErrorKHz[ci] != INT_MAX && errorKHz < prevErrorKHz[ci]) {
+                                        converging++;
+                                        diverged = false;
+                                    } else if (!diverged && prevErrorKHz[ci] != INT_MAX && errorKHz == prevErrorKHz[ci]) {
+                                        stuck++;
                                         diverged = true;
-                                        debug_log("correction pass %d: tail point %d actual %u MHz != target %u MHz (tol=%u); accepting actual\n",
-                                            correctionPass + 1, ci, actualMHz, targetMHz, toleranceMHz);
+                                    } else if (!diverged && prevErrorKHz[ci] != INT_MAX && errorKHz > prevErrorKHz[ci]) {
+                                        worsening++;
+                                        diverged = true;
+                                    } else if (diverged) {
+                                        outOfRange++;
+                                    } else {
+                                        converging++;
                                     }
+                                } else if (diverged) {
+                                    outOfRange++;
                                 }
                                 if (diverged) {
-                                    debug_log("correction pass %d: point %d diverging (needs %d kHz, range %d..%d); accepting actual %u MHz\n",
-                                        correctionPass + 1, ci, requiredDeltaKHz, divMinKHz, divMaxKHz, actualMHz);
+                                    debug_log("correction pass %d: tail point %d actual %u MHz != target %u MHz (tol=%u); accepting actual %u MHz (prevErr=%dKHz curErr=%dKHz)\n",
+                                        correctionPass + 1, ci, actualMHz, targetMHz,
+                                        curve_point_verify_tolerance_mhz(ci), actualMHz,
+                                        prevErrorKHz[ci] == INT_MAX ? -1 : prevErrorKHz[ci], errorKHz);
                                     verifyDesired.curvePointMHz[ci] = actualMHz;
+                                } else {
+                                    prevErrorKHz[ci] = errorKHz;
                                 }
                             }
+                            debug_log("correction pass %d convergence: converging=%d worsening=%d stuck=%d outOfRange=%d\n",
+                                correctionPass + 1, converging, worsening, stuck, outOfRange);
                         }
                         if (verify_curve_request(curveVerifyDetail, sizeof(curveVerifyDetail))) {
                             curveRequestOk = true;
