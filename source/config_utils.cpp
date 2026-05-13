@@ -117,7 +117,14 @@ bool enter_config_storage_lock(HANDLE* acquiredMutex) {
     HANDLE mutex = ensure_config_interprocess_mutex();
     if (!mutex) return true;
 
-    DWORD waitResult = WaitForSingleObject(mutex, 5000);
+    const DWORD CONFIG_MUTEX_TIMEOUT_MS = 5000;
+    DWORD waitResult = WaitForSingleObject(mutex, CONFIG_MUTEX_TIMEOUT_MS);
+    if (waitResult == WAIT_TIMEOUT) {
+        char warning[128] = {};
+        StringCchPrintfA(warning, ARRAY_COUNT(warning),
+            "[GreenCurve] WARNING: config mutex timed out after %lu ms\n", CONFIG_MUTEX_TIMEOUT_MS);
+        OutputDebugStringA(warning);
+    }
     if (waitResult == WAIT_OBJECT_0 || waitResult == WAIT_ABANDONED) {
         if (acquiredMutex) *acquiredMutex = mutex;
         return true;
@@ -149,8 +156,9 @@ int get_config_int(const char* path, const char* section, const char* key, int d
     char buf[32] = {};
     HANDLE configMutex = nullptr;
     if (!enter_config_storage_lock(&configMutex)) return defaultVal;
-    GetPrivateProfileStringA(section, key, "", buf, sizeof(buf), path);
+    DWORD n = GetPrivateProfileStringA(section, key, "", buf, sizeof(buf), path);
     leave_config_storage_lock(configMutex);
+    if (n >= sizeof(buf) - 1) return defaultVal;
     trim_ascii(buf);
     if (!buf[0]) return defaultVal;
 

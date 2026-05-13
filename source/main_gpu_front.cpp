@@ -638,6 +638,14 @@ static bool should_show_best_guess_warning() {
 }
 static void rollback_to_safe_defaults() {
     debug_log("rollback_to_safe_defaults: partial apply detected, reverting to safe defaults\n");
+    auto retry_op = [](auto op, int maxRetries, const char* label) -> bool {
+        for (int attempt = 0; attempt < maxRetries; attempt++) {
+            if (op()) return true;
+            if (attempt + 1 < maxRetries) Sleep(10);
+        }
+        debug_log("rollback: %s did not reset after %d attempts\n", label, maxRetries);
+        return false;
+    };
     // Reset VF curve offsets to zero.
     int resetOffsets[VF_NUM_POINTS] = {};
     bool resetMask[VF_NUM_POINTS] = {};
@@ -653,27 +661,19 @@ static void rollback_to_safe_defaults() {
         }
     }
     if (hadCurveOffsets) {
-        if (!apply_curve_offsets_verified(resetOffsets, resetMask, 2)) {
-            debug_log("rollback: VF curve offsets did not reset cleanly\n");
-        }
+        retry_op([&]() { return apply_curve_offsets_verified(resetOffsets, resetMask, 2); }, 3, "VF curve offsets");
     }
     // Reset GPU offset.
     if (g_app.gpuClockOffsetkHz != 0) {
-        if (!nvapi_set_gpu_offset(0)) {
-            debug_log("rollback: GPU offset did not reset to default\n");
-        }
+        retry_op([&]() { return nvapi_set_gpu_offset(0); }, 3, "GPU offset");
     }
     // Reset memory offset.
     if (g_app.memClockOffsetkHz != 0) {
-        if (!nvapi_set_mem_offset(0)) {
-            debug_log("rollback: Memory offset did not reset to default\n");
-        }
+        retry_op([&]() { return nvapi_set_mem_offset(0); }, 3, "Memory offset");
     }
     // Reset power limit to default.
     if (g_app.powerLimitPct != 100) {
-        if (!nvapi_set_power_limit(100)) {
-            debug_log("rollback: Power limit did not reset to default\n");
-        }
+        retry_op([&]() { return nvapi_set_power_limit(100); }, 3, "Power limit");
     }
     // Stop fan runtime and return to driver auto.
     stop_fan_curve_runtime();

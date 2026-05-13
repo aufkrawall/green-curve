@@ -110,4 +110,75 @@ struct ScopedCriticalSection {
     ScopedCriticalSection& operator=(const ScopedCriticalSection&) = delete;
 };
 
+struct ScopedProcess {
+    HANDLE processHandle;
+    HANDLE threadHandle;
+    HANDLE pipeRead;
+    HANDLE pipeWrite;
+
+    ScopedProcess() : processHandle(nullptr), threadHandle(nullptr), pipeRead(nullptr), pipeWrite(nullptr) {}
+    ~ScopedProcess() { cleanup(); }
+
+    ScopedProcess(const ScopedProcess&) = delete;
+    ScopedProcess& operator=(const ScopedProcess&) = delete;
+
+    ScopedProcess(ScopedProcess&& other) noexcept
+        : processHandle(other.processHandle), threadHandle(other.threadHandle),
+          pipeRead(other.pipeRead), pipeWrite(other.pipeWrite) {
+        other.processHandle = nullptr; other.threadHandle = nullptr;
+        other.pipeRead = nullptr; other.pipeWrite = nullptr;
+    }
+
+    ScopedProcess& operator=(ScopedProcess&& other) noexcept {
+        if (this != &other) {
+            cleanup();
+            processHandle = other.processHandle; other.processHandle = nullptr;
+            threadHandle = other.threadHandle; other.threadHandle = nullptr;
+            pipeRead = other.pipeRead; other.pipeRead = nullptr;
+            pipeWrite = other.pipeWrite; other.pipeWrite = nullptr;
+        }
+        return *this;
+    }
+
+    void assign(HANDLE proc, HANDLE thread) {
+        cleanup();
+        processHandle = proc;
+        threadHandle = thread;
+    }
+
+    void assign_pipes(HANDLE read, HANDLE write) {
+        if (pipeRead) CloseHandle(pipeRead);
+        if (pipeWrite) CloseHandle(pipeWrite);
+        pipeRead = read;
+        pipeWrite = write;
+    }
+
+    bool valid() const { return processHandle != nullptr && processHandle != INVALID_HANDLE_VALUE; }
+
+    DWORD wait(DWORD timeoutMs) const {
+        if (!valid()) return WAIT_OBJECT_0;
+        return WaitForSingleObject(processHandle, timeoutMs);
+    }
+
+    DWORD exit_code() const {
+        if (!valid()) return 0;
+        DWORD code = 0;
+        GetExitCodeProcess(processHandle, &code);
+        return code;
+    }
+
+    void terminate(DWORD exitCode = 1) {
+        if (valid()) {
+            TerminateProcess(processHandle, exitCode);
+        }
+    }
+
+    void cleanup() {
+        if (pipeWrite) { CloseHandle(pipeWrite); pipeWrite = nullptr; }
+        if (pipeRead) { CloseHandle(pipeRead); pipeRead = nullptr; }
+        if (threadHandle) { CloseHandle(threadHandle); threadHandle = nullptr; }
+        if (processHandle) { CloseHandle(processHandle); processHandle = nullptr; }
+    }
+};
+
 #endif

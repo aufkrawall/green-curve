@@ -1,3 +1,67 @@
+// TDR loop detection: if the driver resets 3+ times within 5 minutes and
+// OC is lost each time, stop re-applying to avoid a crash loop.
+#define RECOVERY_HISTORY_SIZE 8
+#define RECOVERY_LOOP_WINDOW_MS 300000
+#define MAX_RECOVERIES_BEFORE_BACKOFF 3
+
+static ULONGLONG g_driverRecoveryTimestamp[RECOVERY_HISTORY_SIZE] = {};
+static int g_driverRecoveryHead = 0;
+
+static unsigned int count_recent_driver_recoveries() {
+    ULONGLONG now = GetTickCount64();
+    unsigned int count = 0;
+    for (int i = 0; i < RECOVERY_HISTORY_SIZE; i++) {
+        if (g_driverRecoveryTimestamp[i] > 0 &&
+            now - g_driverRecoveryTimestamp[i] <= RECOVERY_LOOP_WINDOW_MS)
+            count++;
+    }
+    return count;
+}
+
+static void record_driver_recovery() {
+    g_driverRecoveryTimestamp[g_driverRecoveryHead] = GetTickCount64();
+    g_driverRecoveryHead = (g_driverRecoveryHead + 1) % RECOVERY_HISTORY_SIZE;
+}
+
+static void service_check_oc_persistence() {
+    if (!g_serviceHasActiveDesired || !nvml_ensure_ready()) return;
+
+    record_driver_recovery();
+
+    if (count_recent_driver_recoveries() >= MAX_RECOVERIES_BEFORE_BACKOFF) {
+        debug_log("oc_persistence: loop detected (%u recoveries in %u ms), blocking re-apply\n",
+            count_recent_driver_recoveries(), (unsigned int)RECOVERY_LOOP_WINDOW_MS);
+        return;
+    }
+
+    // Read live GPU offset via NVML to see if driver reset happened.
+    int offsetMHz = 0;
+    if (g_nvml_api.getGpcClkVfOffset) {
+        nvmlReturn_t r = g_nvml_api.getGpcClkVfOffset(g_app.nvmlDevice, &offsetMHz);
+        if (r != NVML_SUCCESS) return;
+    } else {
+        return;
+    }
+
+    int desiredGpu = g_serviceActiveDesired.hasGpuOffset ? g_serviceActiveDesired.gpuOffsetMHz : offsetMHz;
+
+    if (abs(offsetMHz - desiredGpu) <= 5) {
+        debug_log("oc_persistence: GPU offset intact (%d MHz vs desired %d MHz), no re-apply\n",
+            offsetMHz, desiredGpu);
+        return;
+    }
+
+    debug_log("oc_persistence: GPU offset lost (live=%d MHz desired=%d MHz), re-applying\n",
+        offsetMHz, desiredGpu);
+
+    char result[256] = {};
+    if (!service_apply_desired_settings(&g_serviceActiveDesired, false, result, sizeof(result))) {
+        debug_log("oc_persistence: re-apply failed: %s\n", result[0] ? result : "unknown");
+    } else {
+        debug_log("oc_persistence: re-apply successful\n");
+    }
+}
+
 static void service_capture_owner_identity(const char* user, DWORD sessionId) {
     g_app.backgroundServiceOwnerUser[0] = 0;
     if (user && user[0]) {
@@ -367,6 +431,22 @@ static void service_runtime_pulse() {
         LeaveCriticalSection(&g_appLock);
     }
     apply_fan_curve_tick();
+
+    // After the fan tick, check if NVML is stale (driver update without reboot).
+    // If so, reinitialize and check whether OC settings survived.
+    if (g_serviceHasActiveDesired) {
+        char detail[128] = {};
+        int dummyTemp = 0;
+        if (!nvml_read_temperature(&dummyTemp, detail, sizeof(detail))) {
+            debug_log("service_runtime_pulse: NVML stale, attempting recovery\n");
+            close_nvml();
+            if (nvml_ensure_ready()) {
+                debug_log("service_runtime_pulse: NVML recovered, checking OC persistence\n");
+                service_check_oc_persistence();
+            }
+        }
+    }
+
     mark_service_telemetry_cache_updated("fan runtime");
     if (logPulse) {
         EnterCriticalSection(&g_appLock);

@@ -741,6 +741,10 @@ struct ServiceSnapshot {
     bool vfReadSupported;
     bool vfWriteSupported;
     bool vfBestGuess;
+    bool hasLock;
+    int lockCi;
+    unsigned int lockMHz;
+    bool lockTracksAnchor;
     unsigned int adapterCount;
     unsigned int selectedAdapterIndex;
     bool selectedAdapterOrdinalFallback;
@@ -912,7 +916,7 @@ typedef int (*NvApiFunc)(void*, void*);
 struct HeapBuffer {
     void* ptr;
     size_t bufSize;
-    HeapBuffer(size_t size) : ptr(calloc(1, size)), bufSize(size) {}
+    HeapBuffer(size_t size) : ptr(calloc(1, size)), bufSize(size) { (void)(ptr != nullptr || size == 0); }
     ~HeapBuffer() { free(ptr); }
     HeapBuffer(const HeapBuffer&) = delete;
     HeapBuffer& operator=(const HeapBuffer&) = delete;

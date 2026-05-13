@@ -565,6 +565,10 @@ static const VfBackendSpec g_vfBackendFuture = {
     15,
 };
 
+static_assert(0x48u + (VF_NUM_POINTS - 1u) * 0x1Cu + 4u <= 0x1C28u, "VF status buffer overflow for shared backend layout");
+static_assert(0x04u + 32u <= 0x182Cu, "VF info buffer overflow for shared backend layout");
+static_assert(0x44u + (VF_NUM_POINTS - 1u) * 0x24u + 4u <= 0x2420u, "VF control buffer overflow for shared backend layout");
+
 struct FanCurveDialogState {
     HWND hwnd;
     HWND enableChecks[FAN_CURVE_MAX_POINTS];

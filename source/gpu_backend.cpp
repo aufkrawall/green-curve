@@ -206,12 +206,13 @@ static bool nvapi_read_curve() {
     return true;
 }
 static void read_nvidia_smi_max_clocks() {
-    // Read nvidia-smi VBIOS default max clocks once, cache in AppData
     if (g_app.smiClocksRead) return;
     g_app.smiClocksRead = true;
     SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
+    ScopedProcess proc;
     HANDLE hRead = nullptr, hWrite = nullptr;
     if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return;
+    proc.assign_pipes(hRead, hWrite);
     SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
@@ -219,20 +220,21 @@ static void read_nvidia_smi_max_clocks() {
     si.wShowWindow = SW_HIDE;
     si.hStdOutput = hWrite;
     si.hStdError = hWrite;
-    PROCESS_INFORMATION pi = {};
     WCHAR exePath[MAX_PATH] = {};
     if (!find_trusted_nvidia_smi_path_w(exePath, ARRAY_COUNT(exePath))) {
-        CloseHandle(hWrite);
-        CloseHandle(hRead);
         debug_log("nvidia-smi clock read skipped: trusted executable not found\n");
         return;
     }
     WCHAR cmd[MAX_PATH + 64] = {};
     StringCchPrintfW(cmd, ARRAY_COUNT(cmd), L"\"%ls\" -q -d CLOCK", exePath);
+    PROCESS_INFORMATION pi = {};
     if (CreateProcessW(exePath, cmd, nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        proc.assign(pi.hProcess, pi.hThread);
+        // hWrite is now owned by the child process; detach from ScopedProcess to avoid double-close
+        proc.pipeWrite = nullptr;
         CloseHandle(hWrite);
         char* smiBuf = (char*)malloc(4096);
-        if (!smiBuf) { CloseHandle(hRead); CloseHandle(pi.hProcess); CloseHandle(pi.hThread); return; }
+        if (!smiBuf) return;
         memset(smiBuf, 0, 4096);
         DWORD totalRead = 0;
         bool timedOut = false;
@@ -246,20 +248,18 @@ static void read_nvidia_smi_max_clocks() {
                 totalRead += n;
                 continue;
             }
-            DWORD waitResult = WaitForSingleObject(pi.hProcess, 25);
+            DWORD waitResult = proc.wait(25);
             if (waitResult == WAIT_OBJECT_0) break;
             if (GetTickCount64() - startTickMs >= 5000) {
                 timedOut = true;
-                TerminateProcess(pi.hProcess, 1);
+                proc.terminate(1);
                 break;
             }
         }
         if (timedOut) {
             debug_log("nvidia-smi clock read timed out and was terminated\n");
         }
-        WaitForSingleObject(pi.hProcess, 1000);
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
+        proc.wait(1000);
         bool inMaxSection = false;
         char* line = smiBuf;
         while (line && *line) {
@@ -278,10 +278,7 @@ static void read_nvidia_smi_max_clocks() {
             line = nextLine;
         }
         free(smiBuf);
-    } else {
-        CloseHandle(hWrite);
     }
-    CloseHandle(hRead);
 }
 static int uniform_curve_offset_khz() {
     if (!vf_curve_global_gpu_offset_supported()) return 0;
@@ -577,23 +574,20 @@ static bool nvapi_set_power_limit(int pct) {
     si.dwFlags = STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE;
     PROCESS_INFORMATION pi = {};
+    ScopedProcess proc;
     if (!CreateProcessW(exePath, cmdLine, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
         debug_log("Power limit via nvidia-smi failed to launch (error %lu)\n", GetLastError());
         return false;
     }
-    DWORD waitResult = WaitForSingleObject(pi.hProcess, 5000);
+    proc.assign(pi.hProcess, pi.hThread);
+    DWORD waitResult = proc.wait(5000);
     if (waitResult == WAIT_TIMEOUT) {
-        TerminateProcess(pi.hProcess, 1);
-        WaitForSingleObject(pi.hProcess, 1000);
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
+        proc.terminate(1);
+        proc.wait(1000);
         debug_log("Power limit via nvidia-smi timed out and was terminated\n");
         return false;
     }
-    DWORD exitCode = 0;
-    GetExitCodeProcess(pi.hProcess, &exitCode);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
+    DWORD exitCode = proc.exit_code();
     if (exitCode == 0) {
         nvml_read_power_limit();
     }

@@ -517,6 +517,14 @@ static void apply_fan_curve_tick() {
         if (currentTempC <= g_app.fanCurveLastAppliedTempC - minDrop) {
             shouldApply = true;
         }
+        // If hysteresis blocked the drop, do not let the timed re-apply override it.
+        // The fan will adjust naturally when the temperature drops past the hysteresis
+        // threshold. This prevents the re-apply timer from defeating user-configured
+        // hysteresis smoothing.
+        if (!shouldApply) {
+            LeaveCriticalSection(&g_appLock);
+            return;
+        }
     }
     if (!shouldApply) {
         ULONGLONG backoffMs = FAN_RUNTIME_REAPPLY_INTERVAL_MS;

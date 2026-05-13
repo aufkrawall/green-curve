@@ -367,6 +367,10 @@ static void populate_service_snapshot(ServiceSnapshot* snapshot) {
     snapshot->powerLimitMaxmW = g_app.powerLimitMaxmW;
     snapshot->appliedGpuOffsetMHz = snapshotGpuOffsetMHz;
     snapshot->appliedGpuOffsetExcludeLowCount = snapshotGpuOffsetExcludeLowCount;
+    snapshot->hasLock = (g_app.lockedCi >= 0 && g_app.lockedFreq > 0);
+    snapshot->lockCi = g_app.lockedCi;
+    snapshot->lockMHz = g_app.lockedFreq;
+    snapshot->lockTracksAnchor = g_app.guiLockTracksAnchor;
     snapshot->activeFanMode = g_app.activeFanMode;
     snapshot->activeFanFixedPercent = g_app.activeFanFixedPercent;
     snapshot->gpuTemperatureC = g_app.gpuTemperatureC;
@@ -485,7 +489,25 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
     g_app.backgroundServiceOwnerUtcMs = snapshot->ownerUtcMs;
     rebuild_visible_map();
     if (snapshot->loaded && should_accept_service_curve_lock_detection()) {
-        detect_locked_tail_from_curve();
+        if (snapshot->hasLock && snapshot->lockCi >= 0 && snapshot->lockMHz > 0) {
+            g_app.lockedCi = snapshot->lockCi;
+            g_app.lockedFreq = snapshot->lockMHz;
+            g_app.lockedVi = -1;
+            for (int vi = 0; vi < g_app.numVisible; vi++) {
+                if (g_app.visibleMap[vi] == snapshot->lockCi) {
+                    g_app.lockedVi = vi;
+                    break;
+                }
+            }
+            g_app.guiLockTracksAnchor = snapshot->lockTracksAnchor;
+            g_app.appliedLockVi = g_app.lockedVi;
+            g_app.appliedLockCi = g_app.lockedCi;
+            g_app.appliedLockFreq = g_app.lockedFreq;
+            debug_log("apply_service_snapshot_to_app: adopted service lock ci=%d mhz=%u visible=%d\n",
+                g_app.lockedCi, g_app.lockedFreq, g_app.lockedVi);
+        } else {
+            detect_locked_tail_from_curve();
+        }
     }
 
     // Sync GUI fan mode to the service snapshot only when the user hasn't

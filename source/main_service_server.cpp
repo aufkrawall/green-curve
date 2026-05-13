@@ -630,12 +630,29 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
 
 static HANDLE g_servicePipeThread = nullptr;
 
-static void WINAPI service_control_handler(DWORD control) {
-    if (control != SERVICE_CONTROL_STOP && control != SERVICE_CONTROL_SHUTDOWN) return;
+static DWORD WINAPI service_resume_reapply_thread_proc(void*) {
+    lock_service_runtime();
+    debug_log("resume reapply thread: checking OC persistence\n");
+    service_check_oc_persistence();
+    unlock_service_runtime();
+    return 0;
+}
+
+static DWORD WINAPI service_control_handler_ex(DWORD dwControl, DWORD dwEventType, LPVOID, LPVOID) {
+    if (dwControl == SERVICE_CONTROL_POWEREVENT && dwEventType == PBT_APMRESUMEAUTOMATIC) {
+        if (g_serviceHasActiveDesired) {
+            debug_log("power event: resume from standby, re-applying settings\n");
+            HANDLE hReapply = CreateThread(nullptr, 0, service_resume_reapply_thread_proc, nullptr, 0, nullptr);
+            if (hReapply) CloseHandle(hReapply);
+        }
+        return NO_ERROR;
+    }
+    if (dwControl != SERVICE_CONTROL_STOP && dwControl != SERVICE_CONTROL_SHUTDOWN) return NO_ERROR;
     g_serviceStatus.dwCurrentState = SERVICE_STOP_PENDING;
     SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
     if (g_serviceStopEvent) SetEvent(g_serviceStopEvent);
     if (g_servicePipeWakeEvent) SetEvent(g_servicePipeWakeEvent);
+    return NO_ERROR;
 }
 
 static void WINAPI service_main(DWORD, LPWSTR*) {
@@ -654,11 +671,11 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
     }
     g_debug_logging = envExplicitlyEnabled;
 
-    g_serviceStatusHandle = RegisterServiceCtrlHandlerW(L"GreenCurveService", service_control_handler);
+    g_serviceStatusHandle = RegisterServiceCtrlHandlerExW(L"GreenCurveService", service_control_handler_ex, nullptr);
     if (!g_serviceStatusHandle) return;
 
     g_serviceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-    g_serviceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
+    g_serviceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN | SERVICE_ACCEPT_POWEREVENT;
     g_serviceStatus.dwCurrentState = SERVICE_START_PENDING;
     SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
 
@@ -676,6 +693,15 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
     ensure_service_runtime_lock();
     g_serviceStopEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
     g_servicePipeWakeEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+    if (!g_serviceStopEvent) {
+        debug_log("service_main: FATAL failed to create stop event\n");
+        g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
+        SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
+        return;
+    }
+    if (!g_servicePipeWakeEvent) {
+        debug_log("service_main: WARNING failed to create pipe wake event, pipe thread will use 2-handle wait\n");
+    }
     if (g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive) {
         ensure_service_fan_runtime_thread();
     }

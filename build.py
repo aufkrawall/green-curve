@@ -1188,6 +1188,44 @@ int main(int argc, char** argv) {
     if (get_config_int(argv[1], "runtime", "selective_gpu_offset_mhz", 0) != 45) return 38;
     DeleteFileA(argv[1]);
 
+    // F-08-001: IPC object size and field layout sanity
+    {
+        if (sizeof(ServiceRequest) > 65535) return 70;
+        if (sizeof(ServiceResponse) > 262143) return 71;
+    }
+
+    // F-08-001: validate_desired_settings_for_ipc extreme edge cases
+    {
+        DesiredSettings ds = {};
+        validate_desired_settings_for_ipc(nullptr);
+        validate_desired_settings_for_ipc(&ds);
+        ds.hasPowerLimit = true; ds.powerLimitPct = 0;
+        ds.hasGpuOffset = true; ds.gpuOffsetMHz = -50000;
+        ds.hasMemOffset = true; ds.memOffsetMHz = 99999;
+        ds.hasFan = true; ds.fanPercent = -100;
+        for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+            ds.hasCurvePoint[ci] = true;
+            ds.curvePointMHz[ci] = 9999999u;
+        }
+        validate_desired_settings_for_ipc(&ds);
+        if (ds.powerLimitPct != 50) return 72;
+        if (ds.gpuOffsetMHz != -1000) return 73;
+        if (ds.memOffsetMHz != 5000) return 74;
+        if (ds.fanPercent != 0) return 75;
+        if (ds.curvePointMHz[0] != 5000u) return 76;
+    }
+
+    // F-08-001: IPC magic/version constants unchanged
+    {
+        if (SERVICE_PROTOCOL_MAGIC != 0x47535643u) return 80;
+        if (SERVICE_PROTOCOL_VERSION < 1) return 81;
+    }
+
+    // F-12-001: Backend spec VF_NUM_POINTS sanity
+    {
+        if (VF_NUM_POINTS != 128) return 90;
+    }
+
     // F-15-002: degenerate/empty fan curve interpolation returns 100 (safe fallback)
     {
         FanCurveConfig empty = {};
@@ -1406,6 +1444,9 @@ def run_source_regression_checks():
     # F-15-002: Multi-fan rollback tracks failures
     require_text(runtime_nvml_cpp, "rollbackFailures", "multi-fan rollback tracks individual rollback failures")
 
+    # F-02-003: Fan curve hysteresis prevents timed-reapply override
+    require_text(main_fan_runtime_cpp, "hysteresis blocked the drop", "fan curve hysteresis blocks timed-reapply override")
+
     # F-03-001: Checked arithmetic for selective offset
     require_text(main_gpu_state_cpp, "rejecting out-of-range gpuOffsetMHz", "persisted selective GPU offset is range-checked before use")
 
@@ -1437,6 +1478,62 @@ def run_source_regression_checks():
     # F-01-010: Response message defensive NUL termination
     require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "response.message[ARRAY_COUNT(response.message) - 1] = '\\0'", "defensive response NUL termination exists")
 
+    # F-06-001: ScopedProcess RAII wrapper exists
+    require_text(os.path.join(SOURCE_DIR, "win32_raii.h"), "struct ScopedProcess", "ScopedProcess RAII wrapper exists")
+    require_text(os.path.join(SOURCE_DIR, "win32_raii.h"), "void assign(HANDLE proc, HANDLE thread)", "ScopedProcess.assign exists")
+    require_text(os.path.join(SOURCE_DIR, "win32_raii.h"), "void assign_pipes(HANDLE read, HANDLE write)", "ScopedProcess.assign_pipes exists")
+    require_text(os.path.join(SOURCE_DIR, "win32_raii.h"), "void terminate(DWORD exitCode", "ScopedProcess.terminate exists")
+
+    # F-06-001: nvidia-smi callers use ScopedProcess
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"), "ScopedProcess proc", "nvidia-smi clock read uses ScopedProcess")
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"), "ScopedProcess proc", "nvidia-smi power limit uses ScopedProcess")
+
+    # F-15-001: Lock state propagated through ServiceSnapshot
+    require_text(shared_h, "bool hasLock", "ServiceSnapshot carries lock state")
+    require_text(shared_h, "int lockCi", "ServiceSnapshot carries lock curve index")
+    require_text(shared_h, "unsigned int lockMHz", "ServiceSnapshot carries lock frequency")
+    require_text(shared_h, "bool lockTracksAnchor", "ServiceSnapshot carries lock tracking flag")
+    require_text(os.path.join(SOURCE_DIR, "main_state_sync.cpp"), "adopted service lock ci=", "lock state from snapshot is adopted by GUI")
+
+    # F-12-001: Backend spec static_assert checks
+    require_text(os.path.join(SOURCE_DIR, "main.cpp"), "static_assert(0x48u + (VF_NUM_POINTS - 1u) * 0x1Cu + 4u <= 0x1C28u", "VF status buffer static_assert exists")
+    require_text(os.path.join(SOURCE_DIR, "main.cpp"), "static_assert(0x04u + 32u <= 0x182Cu", "VF info buffer static_assert exists")
+    require_text(os.path.join(SOURCE_DIR, "main.cpp"), "static_assert(0x44u + (VF_NUM_POINTS - 1u) * 0x24u + 4u <= 0x2420u", "VF control buffer static_assert exists")
+
+    # F-11-001: Service event creation integrity check
+    require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "g_serviceStopEvent) {", "service stop event creation check exists")
+
+    # F-05-001: Rollback retry support
+    require_text(os.path.join(SOURCE_DIR, "main_gpu_front.cpp"), "retry_op", "rollback uses retry_op helper")
+
+    # F-07-001: Config int truncation detection
+    require_text(os.path.join(SOURCE_DIR, "config_utils.cpp"), "n >= sizeof(buf) - 1", "config int read detects truncation")
+
+    # F-01-004: ASan flag exists
+    require_text(build_script, "--asan", "ASan build flag exists")
+
+    # F-10-001: Config mutex timeout diagnostic
+    require_text(os.path.join(SOURCE_DIR, "config_utils.cpp"), "config mutex timed out", "config mutex timeout warning exists")
+
+    # FP-01-001: Power event registration for resume detection
+    require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "RegisterServiceCtrlHandlerExW", "service uses Ex control handler for power events")
+    require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "SERVICE_ACCEPT_POWEREVENT", "service accepts power events")
+    require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "PBT_APMRESUMEAUTOMATIC", "service handles resume from standby")
+    require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "service_check_oc_persistence", "resume handler checks OC persistence")
+    require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "service_resume_reapply_thread_proc", "resume handler uses dedicated thread")
+
+    # FP-01-002: TDR loop detection for driver update / OC crash protection
+    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "RECOVERY_LOOP_WINDOW_MS", "TDR loop detection window exists")
+    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "MAX_RECOVERIES_BEFORE_BACKOFF", "TDR loop backoff threshold exists")
+    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "oc_persistence: loop detected", "TDR loop detection logs warning")
+    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "oc_persistence: GPU offset intact", "OC persistence check verifies before re-applying")
+    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "oc_persistence: GPU offset lost", "OC persistence re-applies when settings lost")
+    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "NVML stale, attempting recovery", "fan pulse NVML recovery path exists")
+
+    # FP-01-003: NVML recovery on service_runtime_pulse
+    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "close_nvml()", "NVML recovery closes stale handle before reinit")
+    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "nvml_ensure_ready()", "NVML recovery reinitializes after close")
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Build Green Curve targets with Zig")
@@ -1464,7 +1561,12 @@ def parse_args():
     parser.add_argument(
         "--sanitizer",
         action="store_true",
-        help="Build with UndefinedBehaviorSanitizer",
+        help="Build with UndefinedBehaviorSanitizer (now default in --test)",
+    )
+    parser.add_argument(
+        "--asan",
+        action="store_true",
+        help="Build with AddressSanitizer in addition to UBSan",
     )
     return parser.parse_args()
 
@@ -1520,7 +1622,13 @@ def main():
             print("=== Done ===")
             return
         if args.test:
-            run_regression_tests(extra_flags=SANITIZER_FLAGS if args.sanitizer else None)
+            # Always run with UBSan by default (F-01-001).
+            # --sanitizer is accepted for backward compatibility but is now the default behavior.
+            test_extra_flags = list(SANITIZER_FLAGS)
+            if args.asan:
+                test_extra_flags.append("-fsanitize=address")
+                test_extra_flags.append("-g")
+            run_regression_tests(extra_flags=test_extra_flags)
             if not args.check:
                 print("=== Done ===")
                 return
