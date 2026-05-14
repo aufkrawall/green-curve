@@ -3,13 +3,21 @@
         lockCi = g_app.visibleMap[g_app.lockedVi];
         currentLockMHz = displayed_curve_mhz(g_app.curve[lockCi].freq_kHz);
         effectiveLockTargetMHz = (int)g_app.lockedFreq;
-        if (effectiveLockTargetMHz <= 0) {
+        {
             char lockBuf[32] = {};
             get_window_text_safe(g_app.hEditsMhz[g_app.lockedVi], lockBuf, sizeof(lockBuf));
-            if (!lockBuf[0] && captureAllCurvePoints) {
+            if (lockBuf[0]) {
+                int parsed = 0;
+                if (!parse_int_strict(lockBuf, &parsed) || parsed <= 0) {
+                    set_message(err, errSize, "Invalid MHz value for point %d", lockCi);
+                    return false;
+                }
+                effectiveLockTargetMHz = parsed;
+            } else if (effectiveLockTargetMHz <= 0 && captureAllCurvePoints) {
                 effectiveLockTargetMHz = (int)currentLockMHz;
-            } else if (!parse_int_strict(lockBuf, &effectiveLockTargetMHz) || effectiveLockTargetMHz <= 0) {
-                set_message(err, errSize, "Invalid MHz value for point %d", lockCi);
+            }
+            if (effectiveLockTargetMHz <= 0) {
+                set_message(err, errSize, "Invalid or missing MHz value for point %d", lockCi);
                 return false;
             }
         }

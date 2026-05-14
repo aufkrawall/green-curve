@@ -569,6 +569,16 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
         snapshot->appliedGpuOffsetExcludeLowCount,
         g_app.serviceControlState.gpuOffsetMHz,
         g_app.serviceControlState.gpuOffsetExcludeLowCount);
+    // Log live curve MHz at key tail points on each telemetry snapshot to
+    // detect post-apply curve shifts (e.g. GPU dynamic boost or thermal drift).
+    if (g_app.lockedCi >= 0 && g_app.lockedFreq > 0 && g_app.lockedCi + 50 < VF_NUM_POINTS) {
+        debug_log("apply_service_snapshot_to_app: curve tail bookends: ci%d=%u ci%d=%u ci%d=%u ci%d=%u ci%d=%u\n",
+            g_app.lockedCi, displayed_curve_mhz(g_app.curve[g_app.lockedCi].freq_kHz),
+            g_app.lockedCi + 10, displayed_curve_mhz(g_app.curve[g_app.lockedCi + 10].freq_kHz),
+            g_app.lockedCi + 20, displayed_curve_mhz(g_app.curve[g_app.lockedCi + 20].freq_kHz),
+            g_app.lockedCi + 30, displayed_curve_mhz(g_app.curve[g_app.lockedCi + 30].freq_kHz),
+            g_app.lockedCi + 50, displayed_curve_mhz(g_app.curve[g_app.lockedCi + 50].freq_kHz));
+    }
     g_app.serviceControlStateValid = true;
     LeaveCriticalSection(&g_appLock);
 }
@@ -598,7 +608,7 @@ static void apply_service_desired_to_gui(const DesiredSettings* desired) {
             g_app.appliedLockCi = g_app.lockedCi;
             g_app.appliedLockFreq = g_app.lockedFreq;
             g_app.guiLockTracksAnchor = desired->lockTracksAnchor;
-        } else if (g_app.lockedFreq == 0 || g_app.lockedCi < 0) {
+        } else if (g_app.lockedFreq == 0 && g_app.lockedCi < 0) {
             g_app.lockedVi = -1;
             g_app.lockedCi = -1;
             g_app.lockedFreq = 0;

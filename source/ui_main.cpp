@@ -269,18 +269,38 @@ static void draw_graph(HDC hdc, RECT* rc) {
     // Info line at top
     SelectObject(hdc, hFont);
     SetTextColor(hdc, COL_TEXT);
-    unsigned int actualMaxFreq = 0;
-    unsigned int actualMaxVolt = 0;
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (g_app.curve[i].freq_kHz > actualMaxFreq) {
-            actualMaxFreq = g_app.curve[i].freq_kHz;
-            actualMaxVolt = g_app.curve[i].volt_uV;
+    char info[512];
+    if (g_app.lockedVi >= 0 && g_app.lockedCi >= 0 && g_app.lockedFreq > 0) {
+        unsigned int lockVoltMv = g_app.curve[g_app.lockedCi].volt_uV / 1000;
+        StringCchPrintfA(info, ARRAY_COUNT(info), "%s  |  %d pts  |  Lock: %u MHz @ %u mV",
+                         g_app.gpuName, g_app.numPopulated, g_app.lockedFreq, lockVoltMv);
+        static unsigned int lastLockMHz = 0, lastLockMv = 0;
+        if (g_app.lockedFreq != lastLockMHz || lockVoltMv != lastLockMv) {
+            lastLockMHz = g_app.lockedFreq;
+            lastLockMv = lockVoltMv;
+            debug_log("gui lock display: %u MHz @ %u mV\n", g_app.lockedFreq, lockVoltMv);
+        }
+    } else {
+        unsigned int actualMaxFreq = 0;
+        unsigned int actualMaxVolt = 0;
+        for (int i = 0; i < VF_NUM_POINTS; i++) {
+            if (g_app.curve[i].freq_kHz > actualMaxFreq) {
+                actualMaxFreq = g_app.curve[i].freq_kHz;
+                actualMaxVolt = g_app.curve[i].volt_uV;
+            }
+        }
+        StringCchPrintfA(info, ARRAY_COUNT(info), "%s  |  %d pts  |  Peak: %u MHz @ %u mV",
+                         g_app.gpuName, g_app.numPopulated,
+                         displayed_curve_mhz(actualMaxFreq), actualMaxVolt / 1000);
+        static unsigned int lastPeakMHz = 0, lastPeakMv = 0;
+        unsigned int peakMHz = displayed_curve_mhz(actualMaxFreq);
+        unsigned int peakMv = actualMaxVolt / 1000;
+        if (peakMHz != lastPeakMHz || peakMv != lastPeakMv) {
+            lastPeakMHz = peakMHz;
+            lastPeakMv = peakMv;
+            debug_log("gui peak: %u MHz @ %u mV\n", peakMHz, peakMv);
         }
     }
-    char info[512];
-    StringCchPrintfA(info, ARRAY_COUNT(info), "%s  |  %d pts  |  Peak: %u MHz @ %u mV",
-                     g_app.gpuName, g_app.numPopulated,
-                     displayed_curve_mhz(actualMaxFreq), actualMaxVolt / 1000);
     TextOutA(hdc, ml + dp(6), dp(4), info, (int)strlen(info));
 
     // Cleanup
@@ -413,7 +433,9 @@ static void apply_lock(int vi) {
     SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_CHECKED, 0);
     g_app.lockedVi = vi;
     g_app.lockedCi = g_app.visibleMap[vi];
-    g_app.lockedFreq = get_edit_value(g_app.hEditsMhz[vi]);
+    if (g_app.lockedFreq == 0) {
+        g_app.lockedFreq = get_edit_value(g_app.hEditsMhz[vi]);
+    }
     g_app.guiLockTracksAnchor = true;
     if (!programmatic_edit_update_active()) {
         set_gui_state_dirty(true);

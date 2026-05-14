@@ -697,6 +697,11 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                                 lastTargetMHz = 0;
                                 continue;
                             }
+                            debug_log("correction pass %d source: ci=%d isTail=%d targetMHz=%u verifyDesired=%u lockMhz=%u hasCP=%d origPop=%d\n",
+                                correctionPass + 1, ci, isTail ? 1 : 0, targetMHz,
+                                verifyDesired.hasCurvePoint[ci] ? verifyDesired.curvePointMHz[ci] : 0,
+                                lockMhz, verifyDesired.hasCurvePoint[ci] ? 1 : 0,
+                                originalCurvePopulated[ci] ? 1 : 0);
 
                             if (gpuPolicyViaCurveBatch && ci > 0 && lastTargetMHz > targetMHz) {
                                 targetMHz = lastTargetMHz;
@@ -708,8 +713,24 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
 
                             if (gpuPolicyViaCurveBatch && !isTail) {
                                 correctedCurveOffsets[ci] = gpu_offset_component_mhz_for_point(ci, desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount) * 1000;
+                                debug_log("correction pass %d branch: ci=%d viaCurvebatch path offset=%d\n",
+                                    correctionPass + 1, ci, correctedCurveOffsets[ci]);
+                            } else if (!gpuPolicyViaCurveBatch && !isTail && originalCurvePopulated[ci]) {
+                                long long stockBase = (long long)originalCurveFreqkHz[ci] - (long long)originalCurveOffsets[ci];
+                                if (stockBase < 0) stockBase = 0;
+                                long long targetKHz = (long long)raw_curve_khz_from_display_mhz(targetMHz);
+                                long long diff = targetKHz - stockBase;
+                                if (diff > INT_MAX) diff = INT_MAX;
+                                if (diff < INT_MIN) diff = INT_MIN;
+                                correctedCurveOffsets[ci] = clamp_freq_delta_khz((int)diff);
+                                debug_log("correction pass %d: ci=%d targetMHz=%u stockBase=%lld targetKHz=%lld diff=%lld live=%u offs=%d\n",
+                                    correctionPass + 1, ci, targetMHz, stockBase / 1000, targetKHz, diff,
+                                    displayed_curve_mhz(g_app.curve[ci].freq_kHz), g_app.freqOffsets[ci]);
                             } else {
                                 correctedCurveOffsets[ci] = curve_delta_khz_for_target_display_mhz(ci, targetMHz);
+                                debug_log("correction pass %d branch: ci=%d else path (live base) target=%u offset=%d live=%u offs=%d\n",
+                                    correctionPass + 1, ci, targetMHz, correctedCurveOffsets[ci],
+                                    displayed_curve_mhz(g_app.curve[ci].freq_kHz), g_app.freqOffsets[ci]);
                             }
                             correctedCurveMask[ci] = true;
                             haveCorrections = true;
@@ -766,6 +787,15 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                                 } else if (diverged) {
                                     outOfRange++;
                                 }
+                                // On Blackwell, writing large tail offsets can shift
+                                // adjacent non-tail points' base frequencies by up to
+                                // ~120 MHz. Accept the actual MHz for non-tail points
+                                // when a lock is active without GPU offset, since the
+                                // target wasn't explicitly set by the user (it was
+                                // captured from the stock curve after reset).
+                                if (!gpuPolicyViaCurveBatch && hasLock && !lockedTailMask[ci] && lockMhz > 0 && !diverged) {
+                                    diverged = true;
+                                }
                                 if (diverged) {
                                     debug_log("correction pass %d: tail point %d actual %u MHz != target %u MHz (tol=%u); accepting actual %u MHz (prevErr=%dKHz curErr=%dKHz)\n",
                                         correctionPass + 1, ci, actualMHz, targetMHz,
@@ -792,11 +822,10 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                 if (curveRequestOk && !curveBatchOk) {
                     debug_log("curve request matched live targets after offset verification mismatch\n");
                 }
-                // Enforce monotonicity for all points when lock + selective offset
-                // is active. Selective offset boosts in the boost region can make
-                // a point higher than the lock target in the tail, producing a
-                // non-monotonic curve that the GPU will reject.
-                if (curveRequestOk && hasLock && lockMhz > 0 && gpuPolicyViaCurveBatch) {
+                // Enforce monotonicity for all points when lock + flattened tail
+                // is active. Large offsets in the tail region can produce a
+                // non-monotonic curve that the GPU hardware may adjust later.
+                if (curveRequestOk && hasLock && lockMhz > 0) {
                     unsigned int lastTargetMHz = 0;
                     bool adjusted = false;
                     int adjustedCount = 0;
@@ -840,6 +869,14 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                             
                             if (gpuPolicyViaCurveBatch && !isTail) {
                                 monoOffsets[ci] = gpu_offset_component_mhz_for_point(ci, desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount) * 1000;
+                            } else if (!gpuPolicyViaCurveBatch && !isTail && originalCurvePopulated[ci]) {
+                                long long stockBase = (long long)originalCurveFreqkHz[ci] - (long long)originalCurveOffsets[ci];
+                                if (stockBase < 0) stockBase = 0;
+                                long long targetKHz = (long long)raw_curve_khz_from_display_mhz(targetMHz);
+                                long long diff = targetKHz - stockBase;
+                                if (diff > INT_MAX) diff = INT_MAX;
+                                if (diff < INT_MIN) diff = INT_MIN;
+                                monoOffsets[ci] = clamp_freq_delta_khz((int)diff);
                             } else {
                                 monoOffsets[ci] = curve_delta_khz_for_target_display_mhz(ci, targetMHz);
                             }
@@ -850,6 +887,50 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                             monoCount, adjustedCount, lockMhz, lastTargetMHz);
                         set_last_apply_phase("apply: monotonicity correction write");
                         apply_curve_offsets_verified(monoOffsets, monoMask, hasLock ? 3 : 2);
+                    }
+                }
+                // Post-apply curve state dump: log all points with target vs actual
+                // to detect weird shifts that differ from the intended VF curve shape.
+                // Also always log first/last tail point and any tail drift > 2 MHz.
+                {
+                    int tailOff = 0, tailOK = 0, nonTailOff = 0, nonTailOK = 0;
+                    int firstTail = -1, lastTail = -1;
+                    unsigned int firstTailActual = 0, firstTailTarget = 0;
+                    unsigned int lastTailActual = 0, lastTailTarget = 0;
+                    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+                        if (!verifyDesired.hasCurvePoint[ci]) continue;
+                        if (g_app.curve[ci].freq_kHz == 0) continue;
+                        unsigned int actualMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
+                        unsigned int targetMHz = (lockedTailMask[ci] && lockMhz > 0) ? lockMhz : verifyDesired.curvePointMHz[ci];
+                        unsigned int delta = actualMHz > targetMHz ? actualMHz - targetMHz : targetMHz - actualMHz;
+                        int tol = (int)curve_point_verify_tolerance_mhz(ci);
+                        bool isTail = (lockedTailMask[ci] && lockMhz > 0);
+                        if (delta > (unsigned int)tol) {
+                            debug_log("post-apply curve: ci=%d actual=%u target=%u delta=%u tol=%d freqOffs=%d %s\n",
+                                ci, actualMHz, targetMHz, delta, tol, g_app.freqOffsets[ci],
+                                isTail ? "TAIL" : "BOOST");
+                            if (isTail) tailOff++; else nonTailOff++;
+                        } else if (isTail && delta > 2) {
+                            debug_log("post-apply tail: ci=%d actual=%u target=%u delta=%u tol=%d freqOffs=%d\n",
+                                ci, actualMHz, targetMHz, delta, tol, g_app.freqOffsets[ci]);
+                        }
+                        if (isTail) {
+                            if (firstTail < 0) {
+                                firstTail = ci;
+                                firstTailActual = actualMHz;
+                                firstTailTarget = targetMHz;
+                            }
+                            lastTail = ci;
+                            lastTailActual = actualMHz;
+                            lastTailTarget = targetMHz;
+                        }
+                    }
+                    debug_log("post-apply tail bookends: first=ci%d actual=%u target=%u last=ci%d actual=%u target=%u\n",
+                        firstTail, firstTailActual, firstTailTarget,
+                        lastTail, lastTailActual, lastTailTarget);
+                    if (tailOff > 0 || nonTailOff > 0) {
+                        debug_log("post-apply curve summary: tail=%dOK+%dOFF boost=%dOK+%dOFF\n",
+                            tailOK, tailOff, nonTailOK, nonTailOff);
                     }
                 }
                 // Success/failure counting and state persistence

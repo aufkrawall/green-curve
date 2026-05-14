@@ -644,12 +644,12 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
     // AND the curve point was NOT explicitly loaded from a profile (guiCurvePointExplicit
     // is false), the lock state is stale (left over from a previous profile's apply)
     // and should not be captured.
-    if (hasLock && !g_app.guiHasUserModifiedValues) {
+    if (hasLock && !g_app.guiHasUserModifiedValues && g_app.lockedFreq == 0) {
         int lockCi = g_app.visibleMap[g_app.lockedVi];
         unsigned int liveMHz = displayed_curve_mhz(g_app.curve[lockCi].freq_kHz);
-        if (g_app.lockedFreq == liveMHz && !g_app.guiCurvePointExplicit[lockCi]) {
+        if (liveMHz > 0 && !g_app.guiCurvePointExplicit[lockCi]) {
             hasLock = false;
-            debug_log("capture_gui_desired_settings: skipping stale lock at ci=%d (matches live %u MHz, no user edits, not explicit in profile)\n",
+            debug_log("capture_gui_desired_settings: skipping stale lock at ci=%d (lockedFreq=0, matches live %u MHz, not explicit in profile)\n",
                 lockCi, liveMHz);
         }
     }

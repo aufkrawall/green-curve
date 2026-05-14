@@ -1354,6 +1354,7 @@ def run_source_regression_checks():
     main_shell_cpp = os.path.join(SOURCE_DIR, "main_shell.cpp")
     main_fan_runtime_cpp = os.path.join(SOURCE_DIR, "main_fan_runtime.cpp")
     runtime_nvml_cpp = os.path.join(SOURCE_DIR, "main_runtime_nvml.cpp")
+    main_runtime_control_cpp = os.path.join(SOURCE_DIR, "main_runtime_control.cpp")
     shared_h = os.path.join(SOURCE_DIR, "app_shared.h")
     build_script = os.path.join(SCRIPT_DIR, "build.py")
     gitignore = os.path.join(SCRIPT_DIR, ".gitignore")
@@ -1397,6 +1398,12 @@ def run_source_regression_checks():
     require_text(gpu_backend_apply_cpp, "reset_oc_before_gui_apply", "GUI OC applies reset stale OC baseline before applying")
     require_text(gpu_backend_apply_cpp, "Restoring the existing VF curve after the memory offset did not verify", "VF preservation failures are reported")
     require_text(gpu_backend_apply_cpp, "tail point %d actual %u MHz != target", "lock+selective tail points that can't converge accept actual MHz")
+    require_text(gpu_backend_apply_cpp, "stockBase = (long long)originalCurveFreqkHz", "correction loop uses stock base for non-tail explicit points to avoid cumulative offset bug")
+    require_text(gpu_backend_apply_cpp, "post-apply curve: ci=%d actual=%u", "post-apply curve state dump detects weird shifts")
+    require_text(gpu_backend_apply_cpp, "monotonicity enforcement: rewriting", "monotonicity enforcement is not scoped to gpuPolicyViaCurveBatch only")
+    require_text(os.path.join(SOURCE_DIR, "main_shell.cpp"), "skipping stale lock at ci=%d (lockedFreq=0", "stale lock skip only when lockedFreq=0, not when == liveMHz")
+    require_text(gpu_backend_apply_cpp, "post-apply tail bookends", "post-apply logs tail bookends even when within tolerance")
+    require_text(gpu_backend_apply_cpp, "post-apply tail: ci=%d actual=%u", "post-apply logs tail drifts > 2 MHz even when within tolerance")
     require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"), "update_tray_icon", "VF/GPU offset applies update tray icon from GUI-side apply path")
     require_text(main_fan_runtime_cpp, "if (g_app.freqOffsets[i] != 0) return true;", "live_state_has_custom_oc checks freqOffsets without vfBackend guard")
     require_text(runtime_nvml_cpp, "rollback_changed_fans", "manual multi-fan writes roll back partial failures")
@@ -1436,6 +1443,9 @@ def run_source_regression_checks():
 
     # F-01-003: Multi-GPU ordinal fallback blocked
     require_text(runtime_nvml_cpp, "refusing ordinal fallback", "multi-GPU ordinal fallback is blocked when PCI identity is available")
+
+    # F-06-001: Lock capture always reads edit box, not just when lockedFreq <= 0
+    require_text(main_runtime_control_cpp, "get_window_text_safe(g_app.hEditsMhz[g_app.lockedVi]", "lock capture reads edit box unconditionally")
 
     # F-02-001: Fan apply validates before mutating runtime state
     require_text(main_fan_runtime_cpp, "fan auto write", "fan auto mode is applied before stopping runtime")
@@ -1494,6 +1504,7 @@ def run_source_regression_checks():
     require_text(shared_h, "unsigned int lockMHz", "ServiceSnapshot carries lock frequency")
     require_text(shared_h, "bool lockTracksAnchor", "ServiceSnapshot carries lock tracking flag")
     require_text(os.path.join(SOURCE_DIR, "main_state_sync.cpp"), "adopted service lock ci=", "lock state from snapshot is adopted by GUI")
+    require_text(os.path.join(SOURCE_DIR, "main_state_sync.cpp"), "curve tail bookends", "telemetry snapshot logs tail bookends to detect post-apply shifts")
 
     # F-12-001: Backend spec static_assert checks
     require_text(os.path.join(SOURCE_DIR, "main.cpp"), "static_assert(0x48u + (VF_NUM_POINTS - 1u) * 0x1Cu + 4u <= 0x1C28u", "VF status buffer static_assert exists")
