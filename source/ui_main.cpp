@@ -657,18 +657,39 @@ static DWORD WINAPI async_apply_thread(void* param) {
         StringCchPrintfA(result, 512, ok ? "Reset complete." : "Reset had errors. Some settings may not have been restored.");
         PostMessageA(arg->hwnd, APP_WM_ASYNC_DONE, 1, (LPARAM)result);
     } else {
-        // Apply: pre-reset then apply desired
-        bool anyNonZero = false;
-        for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-            if (g_app.freqOffsets[ci] != 0) { anyNonZero = true; break; }
-        }
-        if (anyNonZero) {
+        // Full pre-reset before every apply -- mirrors the Reset button exactly.
+        // Zeroes curve offsets (2-pass verified), uniform GPU offset, mem offset,
+        // power limit, and fan, so apply_desired_settings always starts from a
+        // clean driver-default state regardless of what was previously active.
+        {
+            // Curve offsets: 2-pass verified zero (same as Reset button)
             int zeroOffsets[VF_NUM_POINTS] = {};
             bool resetMask[VF_NUM_POINTS] = {};
+            bool anyCurve = false;
             for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-                if (g_app.curve[ci].freq_kHz > 0) resetMask[ci] = true;
+                if (g_app.curve[ci].freq_kHz == 0) continue;
+                resetMask[ci] = true;
+                if (g_app.freqOffsets[ci] != 0) anyCurve = true;
             }
-            apply_curve_offsets_verified(zeroOffsets, resetMask, 1);
+            if (anyCurve) {
+                bool ok = apply_curve_offsets_verified(zeroOffsets, resetMask, 2);
+                if (!ok) {
+                    nvapi_read_curve();
+                    nvapi_read_offsets();
+                    apply_curve_offsets_verified(zeroOffsets, resetMask, 2);
+                }
+                // After curve reset, clear the tracked selective-offset state so
+                // apply_desired_settings sees currentDetected=false and computes
+                // targetOffset = 0 + desiredOffset (not 0 - oldOffset + desiredOffset = 0).
+                g_app.appliedGpuOffsetMHz = 0;
+                g_app.appliedGpuOffsetExcludeLow70 = false;
+            }
+            // Uniform GPU clock offset
+            if (g_app.gpuClockOffsetkHz != 0) nvapi_set_gpu_offset(0);
+            // Memory offset
+            if (g_app.memClockOffsetkHz != 0) nvapi_set_mem_offset(0);
+            // Power limit
+            if (g_app.powerLimitPct != 100) nvapi_set_power_limit(100);
         }
         apply_desired_settings(&arg->desired, true, result, 512);
         PostMessageA(arg->hwnd, APP_WM_ASYNC_DONE, 0, (LPARAM)result);

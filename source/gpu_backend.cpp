@@ -151,9 +151,9 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
             }
             // Cold-boot guard: vf_tuple_base lets us detect thermal-boost transients.
             // If live_freq > base_freq + 50 MHz, the driver hasn't settled yet.
-            // Only do extra waiting if interactive==false (logon/startup apply):
-            // interactive applies are user-triggered so the GPU is likely warm already.
-            if (settledOk && !interactive) {
+            // Applies to both interactive (manual Apply) and non-interactive (logon/startup)
+            // applies: a user may manually apply within seconds of a cold boot.
+            if (settledOk) {
                 bool baseStable = true;
                 for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
                     if (g_app.curve[ci].freq_kHz == 0) continue;
@@ -175,6 +175,29 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
             // No reset needed -- just refresh so we have the latest live base.
             bool settledOk = false;
             read_live_curve_snapshot_settled(3, 15, &settledOk);
+            // Cold-boot guard for the no-reset path (fresh boot: freqOffsets all zero).
+            // Without a prior reset we still need to wait for thermal-boost to settle
+            // before computing offsets, otherwise the live base is elevated and the
+            // resulting offsets will push the GPU to the wrong frequency.
+            // Applies to both interactive and non-interactive applies.
+            if (settledOk) {
+                bool baseStable = true;
+                for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+                    if (g_app.curve[ci].freq_kHz == 0) continue;
+                    if (g_app.curve[ci].base_freq_kHz == 0) continue;
+                    unsigned int liveMHz = g_app.curve[ci].freq_kHz / 1000;
+                    unsigned int baseMHz = g_app.curve[ci].base_freq_kHz / 1000;
+                    if (liveMHz > baseMHz + 50) {
+                        baseStable = false;
+                        debug_log("cold-boot guard (no-reset path): ci=%d live=%u base=%u -- re-reading\n",
+                            ci, liveMHz, baseMHz);
+                        break;
+                    }
+                }
+                if (!baseStable) {
+                    read_live_curve_snapshot_settled(6, 40, &settledOk);
+                }
+            }
         }
     }
 
@@ -428,10 +451,17 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
                 }
             }
             // Tail-flatten loop: always runs (both selective and non-selective paths)
+            // Use live post-reset base (originalFreqkHz - originalOffset) rather than
+            // vf_tuple_base (stable_base_freq_khz) for the lock target calculation.
+            // lockMhz is an absolute frequency target; the offset we write must be
+            // (lockMhz - actual_base_after_reset). On Blackwell, vf_tuple_base can
+            // differ from the real post-reset live base by ~15 MHz, causing the lock
+            // to land at the wrong frequency (e.g. 3082 instead of 3097).
             for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
                 if (!lockedTailMask[ci]) continue;
                 if (!originalCurvePopulated[ci]) continue;
-                long long base = stable_base_freq_khz(ci, originalCurveFreqkHz, originalCurveOffsets);
+                long long base = (long long)originalCurveFreqkHz[ci] - (long long)originalCurveOffsets[ci];
+                if (base < 0) base = 0;
                 long long target = (long long)lockMhz * 1000LL;
                 targetCurveOffsets[ci] = clamp_freq_delta_khz((int)(target - base));
                 targetCurveMask[ci] = true;

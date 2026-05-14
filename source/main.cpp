@@ -3313,7 +3313,12 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
         }
         previousRequestedCurveMHz = effectiveMHz;
         previousRequestedCurveCi = ci;
-        if (captureAllCurvePoints || (unsigned int)effectiveMHz != currentMHz) {
+        // Include this point if it differs from live state OR if the user explicitly
+        // loaded it from a profile (guiCurvePointExplicit). Without the explicit check,
+        // a profile re-applied after the first apply would see effectiveMHz == currentMHz
+        // for all points and produce an empty hasCurvePoint set, causing the async
+        // pre-reset to zero offsets without any subsequent curve write.
+        if (captureAllCurvePoints || (unsigned int)effectiveMHz != currentMHz || g_app.guiCurvePointExplicit[ci]) {
             desired->hasCurvePoint[ci] = true;
             desired->curvePointMHz[ci] = (unsigned int)effectiveMHz;
         }
