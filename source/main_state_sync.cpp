@@ -275,6 +275,7 @@ static bool hardware_initialize(char* detail, size_t detailSize) {
     if (g_app.gpuHandle && g_app.loaded && g_app.vfBackend) return true;
     set_last_apply_phase("hardware initialize: begin");
     debug_log("hardware_initialize: (re)initializing GPU backend\n");
+    g_app.lastApplyUsedGpuOffset = true;
     if (!nvapi_init()) {
         set_message(detail, detailSize, "Failed to initialize NvAPI");
         set_last_apply_phase("hardware initialize: NvAPI init failed");
@@ -367,6 +368,7 @@ static void populate_service_snapshot(ServiceSnapshot* snapshot) {
     snapshot->powerLimitMaxmW = g_app.powerLimitMaxmW;
     snapshot->appliedGpuOffsetMHz = snapshotGpuOffsetMHz;
     snapshot->appliedGpuOffsetExcludeLowCount = snapshotGpuOffsetExcludeLowCount;
+    snapshot->lastApplyUsedGpuOffset = g_app.lastApplyUsedGpuOffset;
     snapshot->hasLock = (g_app.lockedCi >= 0 && g_app.lockedFreq > 0);
     snapshot->lockCi = g_app.lockedCi;
     snapshot->lockMHz = g_app.lockedFreq;
@@ -461,13 +463,14 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
     g_app.powerLimitMinmW = snapshot->powerLimitMinmW;
     g_app.powerLimitMaxmW = snapshot->powerLimitMaxmW;
     bool snapshotGpuMeaningful = snapshot->appliedGpuOffsetMHz != 0 || snapshot->appliedGpuOffsetExcludeLowCount > 0;
-    if (snapshotGpuMeaningful || !previousServiceGpuMeaningful) {
+    if (snapshotGpuMeaningful || !previousServiceGpuMeaningful || !snapshot->lastApplyUsedGpuOffset) {
         g_app.appliedGpuOffsetMHz = snapshot->appliedGpuOffsetMHz;
         g_app.appliedGpuOffsetExcludeLowCount = snapshot->appliedGpuOffsetExcludeLowCount;
     } else {
         g_app.appliedGpuOffsetMHz = previousAppliedGpuOffsetMHz;
         g_app.appliedGpuOffsetExcludeLowCount = previousAppliedGpuOffsetExcludeLowCount;
     }
+    g_app.lastApplyUsedGpuOffset = snapshot->lastApplyUsedGpuOffset;
     g_app.activeFanMode = snapshot->activeFanMode;
     g_app.activeFanFixedPercent = snapshot->activeFanFixedPercent;
     g_app.gpuTemperatureC = snapshot->gpuTemperatureC;

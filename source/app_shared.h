@@ -591,6 +591,7 @@ struct AppData {
     int guiGpuOffsetExcludeLowCount;
     int appliedGpuOffsetMHz;
     int appliedGpuOffsetExcludeLowCount;
+    bool lastApplyUsedGpuOffset;
     int appliedLockVi;
     int appliedLockCi;
     unsigned int appliedLockFreq;
@@ -766,6 +767,7 @@ struct ServiceSnapshot {
     int powerLimitMaxmW;
     int appliedGpuOffsetMHz;
     int appliedGpuOffsetExcludeLowCount;
+    bool lastApplyUsedGpuOffset;
     int activeFanMode;
     int activeFanFixedPercent;
     int gpuTemperatureC;

@@ -144,6 +144,7 @@ static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut, int* re
             int includedConsideredCount = 0;
             int excludedViolations = 0;
             int excludedTotal = 0;
+            int includedZeroGaps = 0;
             int candidateTargetKHz = candidateMHz * 1000;
 
             for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
@@ -165,7 +166,9 @@ static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut, int* re
                 } else {
                     sawIncludedPoint = true;
                     includedConsideredCount++;
-                    if (abs(actualOffsetKHz - candidateTargetKHz) <= toleranceKHz) {
+                    if (abs(actualOffsetKHz) <= toleranceKHz && abs(candidateTargetKHz) > toleranceKHz) {
+                        includedZeroGaps++;
+                    } else if (abs(actualOffsetKHz - candidateTargetKHz) <= toleranceKHz) {
                         includedMatchSumKHz += actualOffsetKHz;
                         includedMatchCount++;
                     }
@@ -178,6 +181,7 @@ static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut, int* re
             int minimumMatches = skippedLockedTail ? 2 : 3;
             if (includedMatchCount < minimumMatches) continue;
             if (includedMatchCount * 2 < includedConsideredCount) continue;
+            if (includedZeroGaps > 0) continue;
             if (excludedTotal > 0 && excludedViolations * 3 > excludedTotal) continue;
 
             int matchedAverageKHz = includedMatchSumKHz / includedMatchCount;
@@ -260,6 +264,7 @@ static bool live_selective_gpu_offset_matches_requested_shape(int gpuOffsetMHz, 
     int includedConsideredCount = 0;
     int excludedViolations = 0;
     int excludedTotal = 0;
+    int includedZeroGaps = 0;
 
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         if (g_app.curve[ci].freq_kHz == 0) continue;
@@ -278,7 +283,9 @@ static bool live_selective_gpu_offset_matches_requested_shape(int gpuOffsetMHz, 
         } else {
             sawIncludedPoint = true;
             includedConsideredCount++;
-            if (abs(actualOffsetKHz - targetOffsetKHz) <= toleranceKHz) {
+            if (abs(actualOffsetKHz) <= toleranceKHz && abs(targetOffsetKHz) > toleranceKHz) {
+                includedZeroGaps++;
+            } else if (abs(actualOffsetKHz - targetOffsetKHz) <= toleranceKHz) {
                 includedMatchSumKHz += actualOffsetKHz;
                 includedMatchCount++;
             }
@@ -289,6 +296,7 @@ static bool live_selective_gpu_offset_matches_requested_shape(int gpuOffsetMHz, 
     int minimumMatches = skippedLockedTail ? 2 : 3;
     if (includedMatchCount < minimumMatches) return false;
     if (includedMatchCount * 2 < includedConsideredCount) return false;
+    if (includedZeroGaps > 0) return false;
     if (excludedTotal > 0 && excludedViolations * 3 > excludedTotal) return false;
 
     if (representativeOffsetkHzOut && includedMatchCount > 0) {
@@ -741,6 +749,12 @@ static int current_applied_gpu_offset_mhz() {
         debug_log("current_applied_gpu_offset_mhz: preserving session selective value=%d MHz\n", g_app.appliedGpuOffsetMHz);
         return g_app.appliedGpuOffsetMHz;
     }
+    if (!g_app.lastApplyUsedGpuOffset) {
+        debug_log("current_applied_gpu_offset_mhz: last apply did not use GPU offset, skipping detection\n");
+        g_app.appliedGpuOffsetMHz = 0;
+        g_app.appliedGpuOffsetExcludeLowCount = 0;
+        return 0;
+    }
     int persistedOffsetMHz = 0;
     int persistedExcludeLowCount = 0;
     if (load_matching_runtime_selective_gpu_offset_request(&persistedOffsetMHz, &persistedExcludeLowCount)) {
@@ -793,6 +807,13 @@ static bool current_applied_gpu_offset_excludes_low_points() {
         g_app.appliedGpuOffsetMHz = persistedOffsetMHz;
         g_app.appliedGpuOffsetExcludeLowCount = persistedExcludeLowCount;
         return persistedExcludeLowCount > 0;
+    }
+
+    if (!g_app.lastApplyUsedGpuOffset) {
+        debug_log("current_applied_gpu_offset_excludes_low_points: last apply did not use GPU offset, skipping detection\n");
+        g_app.appliedGpuOffsetMHz = 0;
+        g_app.appliedGpuOffsetExcludeLowCount = 0;
+        return false;
     }
 
     int detectedSelectiveOffsetMHz = 0;

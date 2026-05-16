@@ -41,6 +41,7 @@ static bool reset_oc_before_gui_apply(char* result, size_t resultSize) {
         set_message(result, resultSize, "Reset before apply failed: %s", failures);
         return false;
     }
+    g_app.lastApplyUsedGpuOffset = false;
     read_live_curve_snapshot_settled(4, 25, nullptr);
     refresh_global_state(result, resultSize);
     debug_log("reset-before-apply: OC baseline reset succeeded\n");
@@ -224,6 +225,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
             gpuApplied = true;
             g_app.appliedGpuOffsetMHz = desired->gpuOffsetMHz;
             g_app.appliedGpuOffsetExcludeLowCount = 0;
+            g_app.lastApplyUsedGpuOffset = true;
             bool settledOffsetsOk = false;
             if (!read_live_curve_snapshot_settled(6, 25, &settledOffsetsOk)) {
                 debug_log("apply gpu offset: settled refresh failed after dedicated GPU offset write\n");
@@ -936,6 +938,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                 // Success/failure counting and state persistence
                 if (curveRequestOk) {
                     successCount++;
+                    g_app.lastApplyUsedGpuOffset = gpuPolicyViaCurveBatch;
                     if (gpuPolicyViaCurveBatch) {
                         g_app.appliedGpuOffsetMHz = desired->gpuOffsetMHz;
                         g_app.appliedGpuOffsetExcludeLowCount = desiredActiveGpuOffsetExcludeLowCount;
