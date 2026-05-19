@@ -11,30 +11,25 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
                     : "Background service is not installed. Install it to enable live GPU control.");
             return false;
         }
-        ServiceSnapshot snapshot = {};
-        bool ok = service_client_apply_desired(desired, g_pendingOperationSource[0] ? g_pendingOperationSource : "client apply", interactive, result, resultSize, &snapshot);
+        ServiceSnapshot snapshot = {}; bool ok = service_client_apply_desired(desired, g_pendingOperationSource[0] ? g_pendingOperationSource : "client apply", interactive, result, resultSize, &snapshot);
         if (snapshot.initialized || snapshot.loaded) {
+            bool fanOnlyApply = desired_is_fan_only_apply_request(desired);
             apply_service_snapshot_to_app(&snapshot);
-            if (desired && desired->hasLock && desired->lockCi >= 0 && desired->lockCi < VF_NUM_POINTS && snapshot.curve[desired->lockCi].freq_kHz > 0) {
-                g_app.lockedCi = desired->lockCi;
-                g_app.lockedFreq = displayed_curve_mhz(snapshot.curve[desired->lockCi].freq_kHz);
-                g_app.guiLockTracksAnchor = desired->lockTracksAnchor;
+            if (desired && desired->hasLock && desired->lockCi >= 0 && desired->lockCi < VF_NUM_POINTS && desired->lockMHz > 0) {
+                g_app.lockedCi = desired->lockCi; g_app.lockedFreq = desired->lockMHz; g_app.guiLockTracksAnchor = desired->lockTracksAnchor; g_app.lockedVi = -1;
                 for (int vi = 0; vi < g_app.numVisible; vi++) {
                     if (g_app.visibleMap[vi] == desired->lockCi) {
                         g_app.lockedVi = vi;
                         break;
                     }
                 }
-                debug_log("service apply client lock sync: ci=%d liveMHz=%u trackAnchor=%d\n",
-                    g_app.lockedCi,
-                    g_app.lockedFreq,
-                    g_app.guiLockTracksAnchor ? 1 : 0);
+                g_app.appliedLockVi = g_app.lockedVi; g_app.appliedLockCi = g_app.lockedCi; g_app.appliedLockFreq = g_app.lockedFreq;
+                debug_log("service apply client lock sync: ci=%d requestedMHz=%u trackAnchor=%d\n", g_app.lockedCi, g_app.lockedFreq, g_app.guiLockTracksAnchor ? 1 : 0);
             }
             if (g_app.hMainWnd) {
-                populate_global_controls();
-                if (g_app.loaded) populate_edits();
-                invalidate_main_window();
-                update_tray_icon();
+                populate_global_controls(); if (g_app.loaded && !fanOnlyApply) populate_edits();
+                else if (fanOnlyApply) debug_log("service apply client: skipped VF edit repaint for fan-only apply to preserve sparse curve intent\n");
+                invalidate_main_window(); update_tray_icon();
             }
         }
         return ok;
@@ -366,6 +361,11 @@ static bool nvapi_read_offsets() {
 }
 static bool nvapi_set_point(int pointIndex, int freqDelta_kHz) {
     if (pointIndex < 0 || pointIndex >= VF_NUM_POINTS) return false;
+    unsigned char vfMaskByte = g_app.vfMask[pointIndex / 8];
+    if (!(vfMaskByte & (1u << (pointIndex % 8)))) {
+        debug_log("set_point: point %d not in vfMask, skipping\n", pointIndex);
+        return false;
+    }
     freqDelta_kHz = clamp_freq_delta_khz(freqDelta_kHz);
     const VfBackendSpec* backend = g_app.vfBackend;
     if (!backend || !backend->writeSupported) return false;
@@ -596,7 +596,11 @@ static bool nvapi_set_power_limit(int pct) {
 }
 static void rebuild_visible_map() {
     g_app.numVisible = 0;
+    int populatedOrdinal = 0;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
+        g_app.populatedOrdinal[i] = -1;
+        if (g_app.curve[i].freq_kHz == 0) continue;
+        g_app.populatedOrdinal[i] = populatedOrdinal++;
         // Keep the editable VF grid stable across applied offsets and curve edits.
         // Visibility should follow the baseline point position, not the current live target.
         unsigned int freq_mhz = (unsigned int)(curve_base_khz_for_point(i) / 1000);
@@ -678,13 +682,16 @@ static void detect_locked_tail_from_curve() {
     int preferredCi = (g_app.lockedFreq > 0 && g_app.lockedCi >= 0 && g_app.lockedCi < VF_NUM_POINTS)
         ? g_app.lockedCi
         : -1;
+    if (!should_auto_detect_locked_tail_from_live_curve()) {
+        if (preferredCi >= 0) debug_log("detect_locked_tail_from_curve: live lock detection suppressed; preserving intent ci=%d mhz=%u\n", g_app.lockedCi, g_app.lockedFreq);
+        return;
+    }
     g_app.lockedVi = -1;
     g_app.lockedCi = -1;
     g_app.lockedFreq = 0;
     g_app.guiLockTracksAnchor = true;
     sync_applied_lock_state_from_curve();
     if (g_app.numVisible < 2) return;
-    if (!should_auto_detect_locked_tail_from_live_curve()) return;
     if (preferredCi >= 0) {
         if (restore_locked_tail_from_curve_index_exact(preferredCi)) {
             sync_applied_lock_state_from_curve();

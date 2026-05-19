@@ -31,6 +31,11 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (!pointMask[i]) continue;
         if (g_app.curve[i].freq_kHz == 0) continue;
+        unsigned char vfMaskByte = g_app.vfMask[i / 8];
+        if (!(vfMaskByte & (1u << (i % 8)))) {
+            debug_log("apply_curve_offsets_verified: point %d not in vfMask, skipping\n", i);
+            continue;
+        }
         desiredMask[i] = true;
         pendingMask[i] = true;
         desiredOffsets[i] = clamp_freq_delta_khz(targetOffsets[i]);
@@ -358,12 +363,11 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, char* err, size
     }
 
     DesiredSettings resetFull = {};
-    if (!capture_gui_desired_settings(&resetFull, true, true, true, err, errSize)) return false;
+    if (!capture_gui_desired_settings(&resetFull, true, true, false, err, errSize)) return false;
 
-    // If the profile doesn't define any explicit curve points, don't apply the
-    // live GPU's curve state (which may have flatten artifacts from a previous
-    // profile). The reset-before-apply step zeros all offsets and re-reads the
-    // stock curve — without explicit curve targets the GPU stays at stock.
+    // Keep the VF curve request sparse. The reset-before-apply step zeros all
+    // offsets and re-reads the stock curve; only user-explicit points and the
+    // locked tail should be written back after that reset.
     if (!fullHasExplicitCurve) {
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             resetFull.hasCurvePoint[i] = false;
@@ -391,7 +395,7 @@ static bool capture_gui_config_settings(DesiredSettings* desired, char* err, siz
     if (!desired) return false;
 
     DesiredSettings guiDesired = {};
-    if (!capture_gui_desired_settings(&guiDesired, true, true, true, err, errSize)) return false;
+    if (!capture_gui_desired_settings(&guiDesired, true, true, false, err, errSize)) return false;
 
     DesiredSettings full = {};
     build_full_live_desired_settings(&full);
@@ -717,7 +721,7 @@ static int mem_driver_khz_from_display_mhz(int displayMHz) {
 }
 
 static int mem_display_mhz_from_driver_mhz(int driverMHz) {
-    return driverMHz / 2; // NVML memory offset MHz is effective; UI mirrors actual MHz like Afterburner
+    return driverMHz / 2; // NVML memory offset MHz is effective; UI mirrors actual MHz
 }
 
 static void invalidate_main_window() {

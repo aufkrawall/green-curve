@@ -309,6 +309,27 @@ static bool hardware_initialize(char* detail, size_t detailSize) {
         g_serviceActiveDesired = {};
         g_serviceHasActiveDesired = false;
     }
+    // On a fresh service start (no active desired), the NVML memory VF
+    // offset register may retain a stale non-zero value from a previous
+    // session (e.g. after Afterburner reset to defaults, which clears
+    // NvAPI PStates but not the NVML VF offset register).  The stale
+    // register value is not actually effective for memory clocks, but
+    // the GUI would display it as if an OC were active.
+    //
+    // detect_clock_offsets() cross-validates via PState20 vs SMI max
+    // clocks and normally corrects this.  But when nvidia-smi fails
+    // (smiMemMaxMHz == 0) the correction is skipped and the stale NVML
+    // value leaks through.  Since we have no active desired and no
+    // reliable cross-validation, reset the stale register to match the
+    // actual hardware state (no OC).
+    if (!g_serviceHasActiveDesired && g_app.memClockOffsetkHz != 0
+        && (g_app.smiMemMaxMHz == 0 || g_app.pstateMemMaxMHz == 0))
+    {
+        debug_log("hardware_initialize: stale mem VF offset %d kHz detected"
+            " (smi=%u pstate=%u); resetting to 0\n",
+            g_app.memClockOffsetkHz, g_app.smiMemMaxMHz, g_app.pstateMemMaxMHz);
+        nvapi_set_mem_offset(0);
+    }
 #ifdef GREEN_CURVE_SERVICE_BINARY
     trim_working_set();
 #endif
@@ -369,10 +390,30 @@ static void populate_service_snapshot(ServiceSnapshot* snapshot) {
     snapshot->appliedGpuOffsetMHz = snapshotGpuOffsetMHz;
     snapshot->appliedGpuOffsetExcludeLowCount = snapshotGpuOffsetExcludeLowCount;
     snapshot->lastApplyUsedGpuOffset = g_app.lastApplyUsedGpuOffset;
-    snapshot->hasLock = (g_app.lockedCi >= 0 && g_app.lockedFreq > 0);
-    snapshot->lockCi = g_app.lockedCi;
-    snapshot->lockMHz = g_app.lockedFreq;
-    snapshot->lockTracksAnchor = g_app.guiLockTracksAnchor;
+    bool snapshotLockFromActiveDesired = g_app.isServiceProcess
+        && g_serviceHasActiveDesired
+        && g_serviceActiveDesired.hasLock
+        && g_serviceActiveDesired.lockCi >= 0
+        && g_serviceActiveDesired.lockCi < VF_NUM_POINTS
+        && g_serviceActiveDesired.lockMHz > 0;
+    if (snapshotLockFromActiveDesired) {
+        snapshot->hasLock = true;
+        snapshot->lockCi = g_serviceActiveDesired.lockCi;
+        snapshot->lockMHz = g_serviceActiveDesired.lockMHz;
+        snapshot->lockTracksAnchor = g_serviceActiveDesired.lockTracksAnchor;
+        if (snapshot->lockCi != g_app.lockedCi || snapshot->lockMHz != g_app.lockedFreq) {
+            debug_log("populate_service_snapshot: reporting active desired lock ci=%d mhz=%u instead of live-detected ci=%d mhz=%u\n",
+                snapshot->lockCi,
+                snapshot->lockMHz,
+                g_app.lockedCi,
+                g_app.lockedFreq);
+        }
+    } else {
+        snapshot->hasLock = (g_app.lockedCi >= 0 && g_app.lockedFreq > 0);
+        snapshot->lockCi = g_app.lockedCi;
+        snapshot->lockMHz = g_app.lockedFreq;
+        snapshot->lockTracksAnchor = g_app.guiLockTracksAnchor;
+    }
     snapshot->activeFanMode = g_app.activeFanMode;
     snapshot->activeFanFixedPercent = g_app.activeFanFixedPercent;
     snapshot->gpuTemperatureC = g_app.gpuTemperatureC;
@@ -572,16 +613,7 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
         snapshot->appliedGpuOffsetExcludeLowCount,
         g_app.serviceControlState.gpuOffsetMHz,
         g_app.serviceControlState.gpuOffsetExcludeLowCount);
-    // Log live curve MHz at key tail points on each telemetry snapshot to
-    // detect post-apply curve shifts (e.g. GPU dynamic boost or thermal drift).
-    if (g_app.lockedCi >= 0 && g_app.lockedFreq > 0 && g_app.lockedCi + 50 < VF_NUM_POINTS) {
-        debug_log("apply_service_snapshot_to_app: curve tail bookends: ci%d=%u ci%d=%u ci%d=%u ci%d=%u ci%d=%u\n",
-            g_app.lockedCi, displayed_curve_mhz(g_app.curve[g_app.lockedCi].freq_kHz),
-            g_app.lockedCi + 10, displayed_curve_mhz(g_app.curve[g_app.lockedCi + 10].freq_kHz),
-            g_app.lockedCi + 20, displayed_curve_mhz(g_app.curve[g_app.lockedCi + 20].freq_kHz),
-            g_app.lockedCi + 30, displayed_curve_mhz(g_app.curve[g_app.lockedCi + 30].freq_kHz),
-            g_app.lockedCi + 50, displayed_curve_mhz(g_app.curve[g_app.lockedCi + 50].freq_kHz));
-    }
+    log_locked_tail_drift_diagnostics();
     g_app.serviceControlStateValid = true;
     LeaveCriticalSection(&g_appLock);
 }
@@ -597,6 +629,15 @@ static void apply_service_desired_to_gui(const DesiredSettings* desired) {
         }
     }
     if (!gui_state_dirty()) {
+        memset(g_app.guiCurvePointExplicit, 0, sizeof(g_app.guiCurvePointExplicit));
+        for (int vi = 0; vi < g_app.numVisible; vi++) {
+            int ci = g_app.visibleMap[vi];
+            if (ci < 0 || ci >= VF_NUM_POINTS) continue;
+            g_app.guiCurvePointExplicit[ci] = desired->hasCurvePoint[ci];
+            if (desired->hasCurvePoint[ci] && g_app.hEditsMhz[vi]) {
+                set_edit_value(g_app.hEditsMhz[vi], desired->curvePointMHz[ci]);
+            }
+        }
         if (desired->hasLock && desired->lockCi >= 0 && desired->lockMHz > 0) {
             g_app.lockedCi = desired->lockCi;
             g_app.lockedFreq = desired->lockMHz;

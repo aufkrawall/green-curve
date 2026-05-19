@@ -593,13 +593,47 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         // back to the previous profile's selective offset (e.g. 475/60) because
         // g_serviceActiveDesired had not been updated yet and tail points with
         // non-zero flatten offsets satisfied live_curve_has_any_nonzero_offsets().
-        g_serviceActiveDesired = *desired;
+        DesiredSettings mergedActiveDesired = {};
+        if (g_serviceHasActiveDesired) {
+            mergedActiveDesired = g_serviceActiveDesired;
+        } else {
+            initialize_desired_settings_defaults(&mergedActiveDesired);
+        }
+        bool replaceOcCurveIntent = desired_updates_curve_or_gpu_offset_state(desired);
+        if (replaceOcCurveIntent) {
+            for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+                mergedActiveDesired.hasCurvePoint[ci] = false;
+                mergedActiveDesired.curvePointMHz[ci] = 0;
+            }
+            mergedActiveDesired.hasLock = false;
+            mergedActiveDesired.lockCi = -1;
+            mergedActiveDesired.lockMHz = 0;
+            mergedActiveDesired.lockTracksAnchor = true;
+        }
+        merge_desired_settings(&mergedActiveDesired, desired);
+        if (replaceOcCurveIntent && desired->hasLock) {
+            mergedActiveDesired.hasLock = true;
+            mergedActiveDesired.lockCi = desired->lockCi;
+            mergedActiveDesired.lockMHz = desired->lockMHz;
+            mergedActiveDesired.lockTracksAnchor = desired->lockTracksAnchor;
+        }
+        if (desired_is_fan_only_apply_request(desired) && g_serviceHasActiveDesired) {
+            debug_log("service apply: merged fan-only request into active desired, preserving lockCi=%d lockMHz=%u curvePoints=%d\n",
+                mergedActiveDesired.hasLock ? mergedActiveDesired.lockCi : -1,
+                mergedActiveDesired.hasLock ? mergedActiveDesired.lockMHz : 0u,
+                desired_curve_point_count(&mergedActiveDesired));
+        }
+        g_serviceActiveDesired = mergedActiveDesired;
         g_serviceActiveDesired.resetOcBeforeApply = false;
         g_serviceHasActiveDesired = true;
         populate_control_state(&g_serviceControlState);
         g_serviceControlStateValid = true;
         mark_service_telemetry_cache_updated("service apply");
-        update_desired_lock_from_live_curve(&g_serviceActiveDesired);
+        if (g_serviceActiveDesired.hasLock) {
+            debug_log("service apply: preserving requested lock intent ci=%d mhz=%u after live readback\n",
+                g_serviceActiveDesired.lockCi,
+                g_serviceActiveDesired.lockMHz);
+        }
         if (g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive) {
             ensure_service_fan_runtime_thread();
         } else {

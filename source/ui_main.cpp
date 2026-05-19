@@ -101,6 +101,84 @@ static void destroy_backbuffer() {
     }
 }
 
+static unsigned int displayed_curve_mhz_for_gui_point(int ci) {
+    if (ci < 0 || ci >= VF_NUM_POINTS) return 0;
+    // Note: the locked tail override was removed after the uniform floor offset
+    // fix (Build 109) eliminated tail drift. Real driver-reported values now
+    // match the lock target, so no intent-vs-reality substitution is needed.
+    if (g_app.guiCurvePointExplicit[ci]) {
+        for (int vi = 0; vi < g_app.numVisible; vi++) {
+            if (g_app.visibleMap[vi] == ci && g_app.hEditsMhz[vi]) {
+                char buf[32] = {};
+                get_window_text_safe(g_app.hEditsMhz[vi], buf, sizeof(buf));
+                int editMhz = 0;
+                if (parse_int_strict(buf, &editMhz) && editMhz > 0) {
+                    return (unsigned int)editMhz;
+                }
+                break;
+            }
+        }
+    }
+    return displayed_curve_mhz(g_app.curve[ci].freq_kHz);
+}
+
+static void log_gui_locked_tail_display_drift_if_needed() {
+    static int lastLockCi = -2;
+    static unsigned int lastLockMHz = 0;
+    static int lastDriftCount = -1;
+    static int lastMaxDriftCi = -1;
+    static unsigned int lastMaxDeltaMHz = 0;
+
+    if (g_app.lockedCi < 0 || g_app.lockedCi >= VF_NUM_POINTS || g_app.lockedFreq == 0) {
+        lastLockCi = -2;
+        lastLockMHz = 0;
+        lastDriftCount = -1;
+        lastMaxDriftCi = -1;
+        lastMaxDeltaMHz = 0;
+        return;
+    }
+
+    int driftCount = 0;
+    int maxDriftCi = -1;
+    unsigned int maxDeltaMHz = 0;
+    for (int ci = g_app.lockedCi; ci < VF_NUM_POINTS; ci++) {
+        if (!is_curve_point_visible_in_gui(ci)) continue;
+        if (g_app.curve[ci].freq_kHz == 0) continue;
+        unsigned int liveMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
+        unsigned int deltaMHz = liveMHz > g_app.lockedFreq
+            ? liveMHz - g_app.lockedFreq
+            : g_app.lockedFreq - liveMHz;
+        if (deltaMHz <= 2) continue;
+        driftCount++;
+        if (deltaMHz > maxDeltaMHz) {
+            maxDeltaMHz = deltaMHz;
+            maxDriftCi = ci;
+        }
+    }
+
+    if (driftCount > 0
+        && (g_app.lockedCi != lastLockCi
+            || g_app.lockedFreq != lastLockMHz
+            || driftCount != lastDriftCount
+            || maxDriftCi != lastMaxDriftCi
+            || maxDeltaMHz != lastMaxDeltaMHz)) {
+        debug_log("gui locked tail live readback drift: ci=%d lock=%u MHz drifted=%d max=ci%d/%uMHz temp=%d valid=%d\n",
+            g_app.lockedCi,
+            g_app.lockedFreq,
+            driftCount,
+            maxDriftCi,
+            maxDeltaMHz,
+            g_app.gpuTemperatureC,
+            g_app.gpuTemperatureValid ? 1 : 0);
+    }
+
+    lastLockCi = g_app.lockedCi;
+    lastLockMHz = g_app.lockedFreq;
+    lastDriftCount = driftCount;
+    lastMaxDriftCi = maxDriftCi;
+    lastMaxDeltaMHz = maxDeltaMHz;
+}
+
 static void draw_graph(HDC hdc, RECT* rc) {
     int w = rc->right;
     int h = dp(GRAPH_HEIGHT);
@@ -219,11 +297,13 @@ static void draw_graph(HDC hdc, RECT* rc) {
     // Rotate for Y axis is hard in GDI, place horizontally left of Y labels
     TextOutA(hdc, dp(2), mt - dp(4), yTitle, (int)strlen(yTitle));
 
+    log_gui_locked_tail_display_drift_if_needed();
+
     // Build polyline: sort curve points by voltage, only plot within our ranges
     POINT pts[VF_NUM_POINTS];
     int nPts = 0;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
-        unsigned int freq_mhz = displayed_curve_mhz(g_app.curve[i].freq_kHz);
+        unsigned int freq_mhz = displayed_curve_mhz_for_gui_point(i);
         unsigned int volt_mv = g_app.curve[i].volt_uV / 1000;
         if (freq_mhz == 0 && volt_mv == 0) continue;
         // Only plot points within our visible range
@@ -249,7 +329,7 @@ static void draw_graph(HDC hdc, RECT* rc) {
         // Find original curve index for this point
         int visIdx = 0;
         for (int j = 0; j < VF_NUM_POINTS; j++) {
-            unsigned int freq_mhz = displayed_curve_mhz(g_app.curve[j].freq_kHz);
+            unsigned int freq_mhz = displayed_curve_mhz_for_gui_point(j);
             unsigned int volt_mv = g_app.curve[j].volt_uV / 1000;
             if (freq_mhz == 0 && volt_mv == 0) continue;
             if (volt_mv < (unsigned)MIN_VOLT_mV || volt_mv > (unsigned)MAX_VOLT_mV) continue;
@@ -266,21 +346,11 @@ static void draw_graph(HDC hdc, RECT* rc) {
         }
     }
 
-    // Info line at top
+    // Info line at top: always show live peak from driver readback
     SelectObject(hdc, hFont);
     SetTextColor(hdc, COL_TEXT);
     char info[512];
-    if (g_app.lockedVi >= 0 && g_app.lockedCi >= 0 && g_app.lockedFreq > 0) {
-        unsigned int lockVoltMv = g_app.curve[g_app.lockedCi].volt_uV / 1000;
-        StringCchPrintfA(info, ARRAY_COUNT(info), "%s  |  %d pts  |  Lock: %u MHz @ %u mV",
-                         g_app.gpuName, g_app.numPopulated, g_app.lockedFreq, lockVoltMv);
-        static unsigned int lastLockMHz = 0, lastLockMv = 0;
-        if (g_app.lockedFreq != lastLockMHz || lockVoltMv != lastLockMv) {
-            lastLockMHz = g_app.lockedFreq;
-            lastLockMv = lockVoltMv;
-            debug_log("gui lock display: %u MHz @ %u mV\n", g_app.lockedFreq, lockVoltMv);
-        }
-    } else {
+    {
         unsigned int actualMaxFreq = 0;
         unsigned int actualMaxVolt = 0;
         for (int i = 0; i < VF_NUM_POINTS; i++) {
@@ -289,16 +359,24 @@ static void draw_graph(HDC hdc, RECT* rc) {
                 actualMaxVolt = g_app.curve[i].volt_uV;
             }
         }
-        StringCchPrintfA(info, ARRAY_COUNT(info), "%s  |  %d pts  |  Peak: %u MHz @ %u mV",
-                         g_app.gpuName, g_app.numPopulated,
-                         displayed_curve_mhz(actualMaxFreq), actualMaxVolt / 1000);
+        if (g_app.lockedVi >= 0 && g_app.lockedCi >= 0 && g_app.lockedFreq > 0) {
+            unsigned int lockVoltMv = g_app.curve[g_app.lockedCi].volt_uV / 1000;
+            StringCchPrintfA(info, ARRAY_COUNT(info), "%s  |  %d pts  |  Lock: %u MHz @ %u mV  |  Live peak: %u MHz @ %u mV",
+                             g_app.gpuName, g_app.numPopulated,
+                             g_app.lockedFreq, lockVoltMv,
+                             displayed_curve_mhz(actualMaxFreq), actualMaxVolt / 1000);
+        } else {
+            StringCchPrintfA(info, ARRAY_COUNT(info), "%s  |  %d pts  |  Peak: %u MHz @ %u mV",
+                             g_app.gpuName, g_app.numPopulated,
+                             displayed_curve_mhz(actualMaxFreq), actualMaxVolt / 1000);
+        }
         static unsigned int lastPeakMHz = 0, lastPeakMv = 0;
         unsigned int peakMHz = displayed_curve_mhz(actualMaxFreq);
         unsigned int peakMv = actualMaxVolt / 1000;
         if (peakMHz != lastPeakMHz || peakMv != lastPeakMv) {
             lastPeakMHz = peakMHz;
             lastPeakMv = peakMv;
-            debug_log("gui peak: %u MHz @ %u mV\n", peakMHz, peakMv);
+            debug_log("gui live peak: %u MHz @ %u mV\n", peakMHz, peakMv);
         }
     }
     TextOutA(hdc, ml + dp(6), dp(4), info, (int)strlen(info));
@@ -396,13 +474,16 @@ static void populate_edits() {
         EnableWindow(g_app.hLocks[vi], serviceReady ? TRUE : FALSE);
         InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
     }
-    // Re-apply lock state if active
+    // Re-apply lock state if active — show live driver values in edit boxes
+    // but keep the tail points visually grayed out/disabled to indicate the
+    // locked/flattened state. Live values are shown since the uniform tail
+    // floor fix (Build 109) eliminated tail drift; real values equal lockedFreq.
     if (g_app.lockedVi >= 0 && g_app.lockedVi < g_app.numVisible) {
         SendMessageA(g_app.hLocks[g_app.lockedVi], BM_SETCHECK, BST_CHECKED, 0);
         InvalidateRect(g_app.hLocks[g_app.lockedVi], nullptr, FALSE);
         set_edit_value(g_app.hEditsMhz[g_app.lockedVi], g_app.lockedFreq);
         for (int j = g_app.lockedVi + 1; j < g_app.numVisible; j++) {
-            set_edit_value(g_app.hEditsMhz[j], g_app.lockedFreq);
+            // Show live readback value but visually disable to indicate locked state
             SendMessageA(g_app.hEditsMhz[j], EM_SETREADONLY, TRUE, 0);
             EnableWindow(g_app.hEditsMhz[j], FALSE);
             EnableWindow(g_app.hLocks[j], FALSE);
@@ -444,9 +525,9 @@ static void apply_lock(int vi) {
     EnableWindow(g_app.hLocks[vi], TRUE);
     InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
 
-    // Set all subsequent MHz fields to locked value, make read-only, disable lock checkboxes
+    // Disable tail edit boxes and lock checkboxes to indicate locked/flattened
+    // state. Edit boxes keep their live readback values (not overwritten).
     for (int j = vi + 1; j < g_app.numVisible; j++) {
-        set_edit_value(g_app.hEditsMhz[j], g_app.lockedFreq);
         SendMessageA(g_app.hEditsMhz[j], EM_SETREADONLY, TRUE, 0);
         EnableWindow(g_app.hEditsMhz[j], FALSE);
         EnableWindow(g_app.hLocks[j], FALSE);
@@ -468,9 +549,8 @@ static void sync_locked_tail_preview_from_anchor() {
     g_app.guiLockTracksAnchor = false;
     set_gui_state_dirty(true);
     if (g_app.lockedCi >= 0) record_ui_action("lock anchor point %d edited to %u MHz (absolute)", g_app.lockedCi, g_app.lockedFreq);
-    for (int j = g_app.lockedVi + 1; j < g_app.numVisible; j++) {
-        set_edit_value(g_app.hEditsMhz[j], g_app.lockedFreq);
-    }
+    // Note: previously overwrote tail edit boxes with lockedFreq here.
+    // Removed after the uniform tail floor fix — real values match the lock target.
 }
 
 static void unlock_all() {

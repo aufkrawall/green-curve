@@ -252,14 +252,20 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
 
     if (!load_fan_curve_config_from_section(path, fanCurveSection, &desired->fanCurve, err, errSize)) return false;
 
-    if (!load_curve_points_explicit_from_section(path, curveSection, desired, err, errSize)) {
-        set_message(err, errSize, "Profile %d is missing explicit [%s] point*_mhz entries", slot, curveSection);
-        return false;
+    char curveLoadErr[256] = {};
+    if (!load_curve_points_explicit_from_section(path, curveSection, desired, curveLoadErr, sizeof(curveLoadErr))) {
+        if (curveLoadErr[0]) {
+            set_message(err, errSize, "%s", curveLoadErr);
+            return false;
+        }
+        debug_log("load_profile_from_config: profile %d section [%s] has no explicit curve points\n", slot, curveSection);
     }
 
     if (curve_section_uses_base_plus_gpu_offset_semantics(path, curveSection, desired)) {
         restore_curve_points_from_base_plus_gpu_offset(desired);
     }
+
+    repair_profile_locked_curve_readback_artifacts(path, curveSection, slot, desired);
 
     for (int i = 1; i < VF_NUM_POINTS; i++) {
         if (desired->hasCurvePoint[i] && desired->hasCurvePoint[i - 1]) {
@@ -267,6 +273,28 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
                 set_message(err, errSize, "Profile %d has a non-monotonic curve point at index %d (%u MHz < %u MHz)", slot, i, desired->curvePointMHz[i], desired->curvePointMHz[i - 1]);
                 return false;
             }
+        }
+    }
+
+    // Validate that no saved pre-tail curve point exceeds the requested lock target.
+    // If a pre-tail point MHz > lockMHz, the driver would reject the lock tail as
+    // non-monotonic during apply. Catch this at load time rather than at apply time.
+    if (desired->hasLock && desired->lockCi >= 0 && desired->lockMHz > 0) {
+        unsigned int maxPreTailMHz = 0;
+        int maxPreTailCi = -1;
+        for (int ci = 0; ci < desired->lockCi && ci < VF_NUM_POINTS; ci++) {
+            if (!desired->hasCurvePoint[ci]) continue;
+            if (desired->curvePointMHz[ci] > maxPreTailMHz) {
+                maxPreTailMHz = desired->curvePointMHz[ci];
+                maxPreTailCi = ci;
+            }
+        }
+        if (maxPreTailCi >= 0 && maxPreTailMHz > desired->lockMHz) {
+            set_message(err, errSize,
+                "Profile %d lock target %u MHz at point %d is below pre-tail point %d (%u MHz). "
+                "Lower the preceding point or raise the lock target.",
+                slot, desired->lockMHz, desired->lockCi, maxPreTailCi, maxPreTailMHz);
+            return false;
         }
     }
 
@@ -342,12 +370,9 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
 static unsigned int saved_curve_point_mhz(const DesiredSettings* desired, int pointIndex, int gpuOffsetMHz, int excludeLowCount) {
     if (pointIndex < 0 || pointIndex >= VF_NUM_POINTS) return 0;
 
-    unsigned int mhz = 0;
-    if (desired && desired->hasCurvePoint[pointIndex]) {
-        mhz = desired->curvePointMHz[pointIndex];
-    } else if (g_app.curve[pointIndex].freq_kHz > 0) {
-        mhz = displayed_curve_mhz(g_app.curve[pointIndex].freq_kHz);
-    }
+    if (!desired || !desired->hasCurvePoint[pointIndex]) return 0;
+
+    unsigned int mhz = desired->curvePointMHz[pointIndex];
     if (mhz == 0) return 0;
     if (!is_curve_point_visible_in_gui(pointIndex)) return mhz;
 
@@ -400,11 +425,20 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (desired->hasCurvePoint[i]) desiredCurveCount++;
     }
-    debug_log("save_profile_to_config: slot=%d visible=%d populated=%d desiredCurveCount=%d point126=%d/%u point127=%d/%u service=%d dirty=%d\n",
+    char desiredCurvePoints[256] = {};
+    build_point_list_from_flags(desired->hasCurvePoint, desiredCurvePoints, sizeof(desiredCurvePoints));
+    debug_log("save_profile_to_config: slot=%d visible=%d populated=%d desiredCurveCount=%d points=%s point74=%d/%u point75=%d/%u point76=%d/%u point126=%d/%u point127=%d/%u service=%d dirty=%d\n",
         slot,
         g_app.numVisible,
         g_app.numPopulated,
         desiredCurveCount,
+        desiredCurvePoints,
+        desired->hasCurvePoint[74] ? 1 : 0,
+        desired->curvePointMHz[74],
+        desired->hasCurvePoint[75] ? 1 : 0,
+        desired->curvePointMHz[75],
+        desired->hasCurvePoint[76] ? 1 : 0,
+        desired->curvePointMHz[76],
         desired->hasCurvePoint[126] ? 1 : 0,
         desired->curvePointMHz[126],
         desired->hasCurvePoint[127] ? 1 : 0,
@@ -447,9 +481,17 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         else truncated = true;
     };
     // Read existing file to preserve sections we're not touching
-    EnterCriticalSection(&g_configLock);
+    // Use the cross-process named mutex so that the GUI and service
+    // do not race on the underlying config file between read and write.
+    HANDLE configMutex = nullptr;
+    if (!enter_config_storage_lock(&configMutex)) {
+        free(cfg);
+        free(existingBuf);
+        set_message(err, errSize, "Failed to acquire config lock for profile save");
+        return false;
+    }
     DWORD existingLen = GetPrivateProfileStringA(nullptr, nullptr, "", existingBuf, CFG_BUFFER_SIZE, path);
-    LeaveCriticalSection(&g_configLock);
+    leave_config_storage_lock(configMutex);
     (void)existingLen;
 
     // Build [meta]

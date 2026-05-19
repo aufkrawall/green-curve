@@ -1349,12 +1349,19 @@ def run_source_regression_checks():
     service_ipc_cpp = os.path.join(SOURCE_DIR, "main_service_ipc.cpp")
     service_server_cpp = os.path.join(SOURCE_DIR, "main_service_server.cpp")
     config_profiles_ui_cpp = os.path.join(SOURCE_DIR, "config_profiles_ui.cpp")
+    desired_settings_helpers_cpp = os.path.join(SOURCE_DIR, "desired_settings_helpers.cpp")
+    config_profile_repair_cpp = os.path.join(SOURCE_DIR, "config_profile_repair.cpp")
     gpu_backend_apply_cpp = os.path.join(SOURCE_DIR, "gpu_backend_apply.cpp")
     main_gpu_state_cpp = os.path.join(SOURCE_DIR, "main_gpu_state.cpp")
+    main_state_sync_cpp = os.path.join(SOURCE_DIR, "main_state_sync.cpp")
+    main_tail_diagnostics_cpp = os.path.join(SOURCE_DIR, "main_tail_diagnostics.cpp")
     main_shell_cpp = os.path.join(SOURCE_DIR, "main_shell.cpp")
     main_fan_runtime_cpp = os.path.join(SOURCE_DIR, "main_fan_runtime.cpp")
     runtime_nvml_cpp = os.path.join(SOURCE_DIR, "main_runtime_nvml.cpp")
     main_runtime_control_cpp = os.path.join(SOURCE_DIR, "main_runtime_control.cpp")
+    main_runtime_gpu_cpp = os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp")
+    main_service_runtime_cpp = os.path.join(SOURCE_DIR, "main_service_runtime.cpp")
+    ui_main_cpp = os.path.join(SOURCE_DIR, "ui_main.cpp")
     shared_h = os.path.join(SOURCE_DIR, "app_shared.h")
     build_script = os.path.join(SCRIPT_DIR, "build.py")
     gitignore = os.path.join(SCRIPT_DIR, ".gitignore")
@@ -1397,10 +1404,11 @@ def run_source_regression_checks():
     require_text(gpu_backend_apply_cpp, "post-apply lock clear: no lock requested", "service no-lock applies clear stale lock markers")
     require_text(gpu_backend_apply_cpp, "reset_oc_before_gui_apply", "GUI OC applies reset stale OC baseline before applying")
     require_text(gpu_backend_apply_cpp, "Restoring the existing VF curve after the memory offset did not verify", "VF preservation failures are reported")
-    require_text(gpu_backend_apply_cpp, "tail point %d actual %u MHz != target", "lock+selective tail points that can't converge accept actual MHz")
+    require_text(gpu_backend_apply_cpp, "non-tail readback point %d actual %u MHz != target", "non-tail readback artifacts are accepted only for verification")
+    require_text(gpu_backend_apply_cpp, "keeping strict lock target", "lock tail readback mismatches do not mutate requested intent")
     require_text(gpu_backend_apply_cpp, "stockBase = (long long)originalCurveFreqkHz", "correction loop uses stock base for non-tail explicit points to avoid cumulative offset bug")
     require_text(gpu_backend_apply_cpp, "post-apply curve: ci=%d actual=%u", "post-apply curve state dump detects weird shifts")
-    require_text(gpu_backend_apply_cpp, "monotonicity enforcement: rewriting", "monotonicity enforcement is not scoped to gpuPolicyViaCurveBatch only")
+    require_text(gpu_backend_apply_cpp, "not rewriting tail above lock", "monotonicity enforcement never raises the locked tail above the requested lock")
     require_text(os.path.join(SOURCE_DIR, "main_shell.cpp"), "skipping stale lock at ci=%d (lockedFreq=0", "stale lock skip only when lockedFreq=0, not when == liveMHz")
     require_text(gpu_backend_apply_cpp, "post-apply tail bookends", "post-apply logs tail bookends even when within tolerance")
     require_text(gpu_backend_apply_cpp, "post-apply tail: ci=%d actual=%u", "post-apply logs tail drifts > 2 MHz even when within tolerance")
@@ -1409,7 +1417,7 @@ def run_source_regression_checks():
     require_text(runtime_nvml_cpp, "rollback_changed_fans", "manual multi-fan writes roll back partial failures")
     require_text(runtime_nvml_cpp, "nvml_select_device_for_selected_gpu", "NVML device is matched to selected GPU")
     require_text(diagnostics_cpp, "write_text_file_atomic_service", "service file writes use hardened writer")
-    require_text(os.path.join(SOURCE_DIR, "ui_main.cpp"), "gpuSelectY = dp(10)", "GPU selector lives in the graph header gap")
+    require_text(ui_main_cpp, "gpuSelectY = dp(10)", "GPU selector lives in the graph header gap")
     require_text(main_gpu_state_cpp, "Writes are intentionally enabled", "best-guess VF writes remain explicitly enabled")
     require_text(main_shell_cpp, "preserving requested value", "config memory offsets are not clamped to reported range")
     require_text(runtime_nvml_cpp, "parse_cli_point_arg_w(arg, &idx)", "CLI point parsing is strict")
@@ -1503,8 +1511,26 @@ def run_source_regression_checks():
     require_text(shared_h, "int lockCi", "ServiceSnapshot carries lock curve index")
     require_text(shared_h, "unsigned int lockMHz", "ServiceSnapshot carries lock frequency")
     require_text(shared_h, "bool lockTracksAnchor", "ServiceSnapshot carries lock tracking flag")
-    require_text(os.path.join(SOURCE_DIR, "main_state_sync.cpp"), "adopted service lock ci=", "lock state from snapshot is adopted by GUI")
-    require_text(os.path.join(SOURCE_DIR, "main_state_sync.cpp"), "curve tail bookends", "telemetry snapshot logs tail bookends to detect post-apply shifts")
+    require_text(main_state_sync_cpp, "adopted service lock ci=", "lock state from snapshot is adopted by GUI")
+    require_text(main_state_sync_cpp, "reporting active desired lock", "service snapshots prefer configured lock intent over live tail detection")
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"), "live lock detection suppressed; preserving intent", "live lock detection does not clear configured lock intent")
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"), "requestedMHz=", "GUI-side service apply sync preserves requested lock MHz")
+    require_text(main_tail_diagnostics_cpp, "curve tail bookends", "telemetry snapshot logs tail bookends to detect post-apply shifts")
+    require_text(main_tail_diagnostics_cpp, "no automatic VF reapply", "runtime tail drift diagnostics do not silently reapply VF settings")
+    require_text(main_tail_diagnostics_cpp, "is_curve_point_visible_in_gui(ci)", "tail drift diagnostics skip hidden/unpopulated VF endpoints")
+    require_text(ui_main_cpp, "displayed_curve_mhz_for_gui_point", "GUI graph renders curve points from live driver readback")
+    require_text(ui_main_cpp, "gui locked tail live readback drift:", "GUI logs live tail readback drift diagnostics (no longer hidden)")
+    require_text(desired_settings_helpers_cpp, "desired_is_fan_only_apply_request", "fan-only apply requests are detected without curve/OC fields")
+    require_text(desired_settings_helpers_cpp, "desired_updates_curve_or_gpu_offset_state", "memory/power-only applies do not replace sparse curve intent")
+    require_text(main_service_runtime_cpp, "merged fan-only request into active desired", "service fan-only applies preserve active curve intent")
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"), "skipped VF edit repaint for fan-only apply", "GUI client fan-only applies do not clear sparse curve masks")
+    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "preserving VF editor intent after fan-only apply", "main apply handler preserves VF editor after fan-only apply")
+    require_text(main_runtime_control_cpp, "curvePoints=%d (%s)", "GUI capture logs sparse curve point list")
+    require_text(os.path.join(SOURCE_DIR, "config_profiles.cpp"), "point74=%d/%u point75=%d/%u point76=%d/%u", "profile save logs edited pre-tail VF points")
+    require_text(main_runtime_gpu_cpp, "capture_gui_desired_settings(&resetFull, true, true, false", "apply capture keeps sparse VF curve intent")
+    require_text(main_runtime_gpu_cpp, "capture_gui_desired_settings(&guiDesired, true, true, false", "profile save capture keeps sparse VF curve intent")
+    require_text(config_profile_repair_cpp, "profile repair: removed non-tail readback artifact", "profile load repairs logged non-tail readback artifacts")
+    require_text(main_gpu_state_cpp, "skippedLockedTail ? 4 : 3", "selective GPU offset detection rejects two-point high-edit false positives")
 
     # F-12-001: Backend spec static_assert checks
     require_text(os.path.join(SOURCE_DIR, "main.cpp"), "static_assert(0x48u + (VF_NUM_POINTS - 1u) * 0x1Cu + 4u <= 0x1C28u", "VF status buffer static_assert exists")
@@ -1544,6 +1570,26 @@ def run_source_regression_checks():
     # FP-01-003: NVML recovery on service_runtime_pulse
     require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "close_nvml()", "NVML recovery closes stale handle before reinit")
     require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "nvml_ensure_ready()", "NVML recovery reinitializes after close")
+
+    # FP-01-005: Increased VF offset range limit for tail flatten
+    require_text(gpu_backend_apply_cpp, "FALLBACK_VF_OFFSET_LIMIT_KHZ = 500000", "VF offset fallback increased to 500 MHz for tail flatten")
+    require_text(gpu_backend_apply_cpp, "tail point %d stuck at actual=%u target=%u", "tail point stuck diagnostic logging exists")
+    require_text(gpu_backend_apply_cpp, "tail point %d out of range", "tail point out-of-range diagnostic logging exists")
+    require_text(os.path.join(SOURCE_DIR, "main_runtime_nvml.cpp"), "FALLBACK_VF_OFFSET_LIMIT_KHZ = 1000000", "VF offset range fallback uses GPU offset range (1000 MHz)")
+
+    # FP-02-001: Uniform tail floor offset (Blackwell per-point delta fix)
+    require_text(gpu_backend_apply_cpp, "floorTailOffsetKHz", "uniform tail floor offset constant exists for initial tail loop")
+    require_text(gpu_backend_apply_cpp, "correctionFloorTailOffsetKHz", "uniform tail floor offset constant exists for correction passes")
+    require_text(gpu_backend_apply_cpp, "tail uniform floor offset=%d", "correction pass logs uniform tail floor offset write")
+    require_text(gpu_backend_apply_cpp, "All remaining tail points: use uniform floor offset", "initial tail loop uses uniform floor for non-lock tail points")
+
+    # FP-02-002: Pre-tail point capture after restart (non-zero offset detection, guarded by profile load check)
+    require_text(os.path.join(SOURCE_DIR, "main_runtime_control.cpp"), "preTailInferred", "pre-tail user-modified points inferred from non-zero live offset (guarded by hasPreTailExplicit)")
+
+    # FP-02-003: Stale NVML memory VF offset cleared on fresh service start
+    require_text(os.path.join(SOURCE_DIR, "main_state_sync.cpp"),
+        "stale mem VF offset %d kHz detected",
+        "stale NVML mem VF offset is detected and cleared on fresh service start")
 
 
 def parse_args():

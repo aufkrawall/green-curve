@@ -452,9 +452,9 @@ static bool maybe_confirm_profile_load_replace(int slot) {
 }
 
 // Compare the loaded profile against the current live hardware state to detect
-// if the hardware has been externally modified (e.g., Afterburner "Reset to
-// Default", driver TDR, or external tool). Returns true if a mismatch is
-// detected that warrants skipping the profile restore.
+// if the hardware has been externally modified (e.g., "Reset to Default",
+// driver TDR, or external tool). Returns true if a mismatch is detected that
+// warrants skipping the profile restore.
 //
 // This comparison is unconditional: it compares the profile's saved values
 // directly against live hardware. This catches all cases where the GPU state

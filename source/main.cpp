@@ -270,6 +270,7 @@ static void set_pending_operation_source(const char* source);
 static void record_ui_action(const char* fmt, ...);
 static void build_recent_ui_actions_text(char* out, size_t outSize);
 static void build_point_list_from_flags(const bool* flags, char* out, size_t outSize, int maxItems = 24);
+static void log_locked_tail_drift_diagnostics();
 static void describe_live_gpu_offset_state(char* out, size_t outSize);
 static void build_operation_intent_summary(const DesiredSettings* desired, bool interactive, char* out, size_t outSize);
 static void capture_last_operation_snapshot(char* dst, size_t dstSize);
@@ -291,6 +292,10 @@ static void refresh_profile_controls_from_config();
 static void migrate_legacy_config_if_needed(const char* path);
 static void merge_desired_settings(DesiredSettings* base, const DesiredSettings* override);
 static bool desired_has_any_action(const DesiredSettings* desired);
+static int desired_curve_point_count(const DesiredSettings* desired);
+static bool desired_updates_curve_or_gpu_offset_state(const DesiredSettings* desired);
+static bool desired_has_nonfan_apply_fields(const DesiredSettings* desired);
+static bool desired_is_fan_only_apply_request(const DesiredSettings* desired);
 static bool capture_gui_apply_settings(DesiredSettings* desired, char* err, size_t errSize);
 static void set_profile_status_text(const char* fmt, ...);
 static void update_profile_state_label();
@@ -371,9 +376,9 @@ static void build_full_live_desired_settings(DesiredSettings* desired);
 static bool load_curve_points_explicit_from_section(const char* path, const char* section, DesiredSettings* desired, char* err, size_t errSize);
 static bool curve_section_uses_base_plus_gpu_offset_semantics(const char* path, const char* section, const DesiredSettings* desired);
 static void restore_curve_points_from_base_plus_gpu_offset(DesiredSettings* desired);
+static void repair_profile_locked_curve_readback_artifacts(const char* path, const char* section, int slot, DesiredSettings* desired);
 static bool can_save_curve_as_base_plus_gpu_offset(const DesiredSettings* desired, int gpuOffsetMHz, int excludeLowCount);
 static int curve_base_khz_for_point(int pointIndex);
-static void update_desired_lock_from_live_curve(DesiredSettings* desired);
 static void persist_runtime_selective_gpu_offset_request(int gpuOffsetMHz, int excludeLowCount);
 static void clear_runtime_selective_gpu_offset_request();
 static void resolve_displayed_live_gpu_offset_state_for_gui(int* gpuOffsetMHzOut, int* excludeLowCountOut);
@@ -636,8 +641,11 @@ static bool s_uiBaseLogFontReady = false;
 static const UINT FAN_FIXED_RUNTIME_INTERVAL_MS = 5000;
 static const UINT FAN_TELEMETRY_INTERVAL_MS = 1000;
 #include "main_gpu_front.cpp"
+#include "desired_settings_helpers.cpp"
 #include "main_gpu_state.cpp"
+#include "main_tail_diagnostics.cpp"
 #include "main_fan_runtime.cpp"
+#include "config_profile_repair.cpp"
 #include "main_shell.cpp"
     SelectObject(hdc, oldBrush);
     DeleteObject(SelectObject(hdc, oldPen));

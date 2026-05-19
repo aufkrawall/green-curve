@@ -593,14 +593,20 @@ static void layout_bottom_buttons(HWND hParent) {
 
     if (!load_fan_curve_config_from_section(path, "fan_curve", &desired->fanCurve, err, errSize)) return false;
 
-    if (!load_curve_points_explicit_from_section(path, "curve", desired, err, errSize)) {
-        set_message(err, errSize, "Config is missing explicit [curve] point*_mhz entries in %s", path);
-        return false;
+    char curveLoadErr[256] = {};
+    if (!load_curve_points_explicit_from_section(path, "curve", desired, curveLoadErr, sizeof(curveLoadErr))) {
+        if (curveLoadErr[0]) {
+            set_message(err, errSize, "%s", curveLoadErr);
+            return false;
+        }
+        debug_log("load_desired_settings_from_ini: config has no explicit [curve] point*_mhz entries in %s\n", path);
     }
 
     if (curve_section_uses_base_plus_gpu_offset_semantics(path, "curve", desired)) {
         restore_curve_points_from_base_plus_gpu_offset(desired);
     }
+
+    repair_profile_locked_curve_readback_artifacts(path, "curve", 1, desired);
 
     return true;
 }

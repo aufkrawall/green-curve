@@ -862,8 +862,14 @@ static int clamp_freq_delta_khz(int freqDelta_kHz) {
     int minkHz = 0;
     int maxkHz = 0;
     get_curve_offset_range_khz(&minkHz, &maxkHz);
-    if (freqDelta_kHz > maxkHz) return maxkHz;
-    if (freqDelta_kHz < minkHz) return minkHz;
+    if (freqDelta_kHz > maxkHz) {
+        debug_log("clamp_freq_delta_khz: clamping %d kHz to max %d kHz\n", freqDelta_kHz, maxkHz);
+        return maxkHz;
+    }
+    if (freqDelta_kHz < minkHz) {
+        debug_log("clamp_freq_delta_khz: clamping %d kHz to min %d kHz\n", freqDelta_kHz, minkHz);
+        return minkHz;
+    }
     return freqDelta_kHz;
 }
 
@@ -875,18 +881,21 @@ static void set_curve_offset_range_khz(int minkHz, int maxkHz) {
 }
 
 static bool get_curve_offset_range_khz(int* minkHz, int* maxkHz) {
-    const int FALLBACK_VF_OFFSET_LIMIT_KHZ = 500000; // 500 MHz
+    // The GPU offset range (±1000 MHz) is the authoritative hardware
+    // capability that the driver actually accepts for VF curve offsets,
+    // superseding the narrower curve-specific range reported by NVML.
+    const int FALLBACK_VF_OFFSET_LIMIT_KHZ = 1000000; // 1000 MHz (up from 500 MHz)
     int minValue = -FALLBACK_VF_OFFSET_LIMIT_KHZ;
     int maxValue = FALLBACK_VF_OFFSET_LIMIT_KHZ;
     bool known = false;
 
-    if (g_app.curveOffsetRangeKnown && g_app.curveOffsetMinkHz <= g_app.curveOffsetMaxkHz) {
-        minValue = g_app.curveOffsetMinkHz;
-        maxValue = g_app.curveOffsetMaxkHz;
-        known = true;
-    } else if (g_app.gpuOffsetRangeKnown && g_app.gpuClockOffsetMinMHz <= g_app.gpuClockOffsetMaxMHz) {
+    if (g_app.gpuOffsetRangeKnown && g_app.gpuClockOffsetMinMHz <= g_app.gpuClockOffsetMaxMHz) {
         minValue = g_app.gpuClockOffsetMinMHz * 1000;
         maxValue = g_app.gpuClockOffsetMaxMHz * 1000;
+        known = true;
+    } else if (g_app.curveOffsetRangeKnown && g_app.curveOffsetMinkHz <= g_app.curveOffsetMaxkHz) {
+        minValue = g_app.curveOffsetMinkHz;
+        maxValue = g_app.curveOffsetMaxkHz;
         known = true;
     }
 

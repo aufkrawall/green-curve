@@ -66,6 +66,16 @@
     int previousRequestedCurveMHz = 0;
     int previousRequestedCurveCi = -1;
 
+    // If any pre-tail point was explicitly set from a profile load, don't
+    // infer pre-tail points from live GPU offsets (would leak previous profile).
+    bool inferPreTailFromGpu = hasLock;
+    if (hasLock) {
+        inferPreTailFromGpu = true;
+        for (int pi = 0; pi < g_app.lockedVi && inferPreTailFromGpu; pi++) {
+            int pci = g_app.visibleMap[pi];
+            if (g_app.guiCurvePointExplicit[pci]) inferPreTailFromGpu = false;
+        }
+    }
     for (int vi = 0; vi < g_app.numVisible; vi++) {
         int ci = g_app.visibleMap[vi];
         if (!parsedCurveHave[ci]) continue;
@@ -73,7 +83,10 @@
         int mhz = lockTailPoint ? effectiveLockTargetMHz : parsedCurveMHz[ci];
         unsigned int currentMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
         int effectiveMHz = mhz;
-        bool explicitPoint = captureAllCurvePoints || g_app.guiCurvePointExplicit[ci] || (hasLock && ci == lockCi && !lockTracksAnchor);
+        bool preTailInferred = inferPreTailFromGpu && !lockTailPoint && vi < g_app.lockedVi
+            && g_app.freqOffsets[ci] != 0;
+        bool explicitPoint = captureAllCurvePoints || g_app.guiCurvePointExplicit[ci]
+            || (hasLock && ci == lockCi && !lockTracksAnchor) || preTailInferred;
         if (previousRequestedCurveCi >= 0 && effectiveMHz < previousRequestedCurveMHz) {
             if (lockTailPoint) {
                 effectiveMHz = previousRequestedCurveMHz;
@@ -177,7 +190,9 @@
         copy_fan_curve(&desired->fanCurve, &guiCurve);
     }
 
-    debug_log("capture_gui_desired_settings: serviceMode=%d includeCurrent=%d forceExplicit=%d hasGpu=%d gpu=%d exclude=%d hasMem=%d mem=%d hasPower=%d power=%d hasFan=%d fanMode=%d fanPct=%d\n",
+    char capturedCurvePoints[256] = {};
+    build_point_list_from_flags(desired->hasCurvePoint, capturedCurvePoints, sizeof(capturedCurvePoints));
+    debug_log("capture_gui_desired_settings: serviceMode=%d includeCurrent=%d forceExplicit=%d hasGpu=%d gpu=%d exclude=%d hasMem=%d mem=%d hasPower=%d power=%d hasFan=%d fanMode=%d fanPct=%d hasLock=%d lockCi=%d lockMHz=%u curvePoints=%d (%s)\n",
         g_app.usingBackgroundService ? 1 : 0,
         includeCurrentGlobals ? 1 : 0,
         forceExplicitGlobals ? 1 : 0,
@@ -190,7 +205,12 @@
         desired->powerLimitPct,
         desired->hasFan ? 1 : 0,
         desired->fanMode,
-        desired->fanPercent);
+        desired->fanPercent,
+        desired->hasLock ? 1 : 0,
+        desired->hasLock ? desired->lockCi : -1,
+        desired->hasLock ? desired->lockMHz : 0u,
+        desired_curve_point_count(desired),
+        capturedCurvePoints);
 
     return true;
 }

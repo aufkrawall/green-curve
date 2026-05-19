@@ -146,6 +146,8 @@ static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut, int* re
             int excludedTotal = 0;
             int includedZeroGaps = 0;
             int candidateTargetKHz = candidateMHz * 1000;
+            int firstIncludedMatchCi = -1;
+            int lastIncludedMatchCi = -1;
 
             for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
                 if (g_app.curve[ci].freq_kHz == 0) continue;
@@ -171,6 +173,8 @@ static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut, int* re
                     } else if (abs(actualOffsetKHz - candidateTargetKHz) <= toleranceKHz) {
                         includedMatchSumKHz += actualOffsetKHz;
                         includedMatchCount++;
+                        if (firstIncludedMatchCi < 0) firstIncludedMatchCi = ci;
+                        lastIncludedMatchCi = ci;
                     }
                 }
             }
@@ -178,8 +182,9 @@ static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut, int* re
             if (!sawIncludedPoint || !sawExcludedPoint) continue;
             if (includedMatchCount == 0) continue;
 
-            int minimumMatches = skippedLockedTail ? 2 : 3;
+            int minimumMatches = skippedLockedTail ? 4 : 3;
             if (includedMatchCount < minimumMatches) continue;
+            if (skippedLockedTail && firstIncludedMatchCi >= 0 && lastIncludedMatchCi - firstIncludedMatchCi < 4) continue;
             if (includedMatchCount * 2 < includedConsideredCount) continue;
             if (includedZeroGaps > 0) continue;
             if (excludedTotal > 0 && excludedViolations * 3 > excludedTotal) continue;
@@ -220,15 +225,24 @@ static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut, int* re
     }
 
     if (bestExcludeLowCount > 0) {
-        debug_log("detect_live_selective: BEST exclude=%d MHz=%d matches=%d violations=%d\n",
-            bestExcludeLowCount, bestDetectedMHz, bestMatchCount, bestViolations);
+        debug_log("detect_live_selective: BEST exclude=%d MHz=%d matches=%d violations=%d (total candidates=%d bestMatchCount=%d)\n",
+            bestExcludeLowCount, bestDetectedMHz, bestMatchCount, bestViolations, candidateCount, bestMatchCount);
         if (gpuOffsetMHzOut) *gpuOffsetMHzOut = bestDetectedMHz;
         if (representativeOffsetkHzOut) *representativeOffsetkHzOut = bestMatchedAverageKHz;
         if (detectedExcludeLowCountOut) *detectedExcludeLowCountOut = bestExcludeLowCount;
         return true;
     }
 
-    debug_log("detect_live_selective: no selective offset pattern found (candidates=%d, populated=%d)\n", candidateCount, numPopulated);
+    if (candidateCount > 0) {
+        debug_log("detect_live_selective: no selective offset pattern found (candidates=%d, populated=%d) - candidates rejected:",
+            candidateCount, numPopulated);
+        for (int i = 0; i < candidateCount && i < 5; i++) {
+            debug_log(" candidate[%d]=%d MHz", i, candidateOffsets[i]);
+        }
+        debug_log("\n");
+    } else {
+        debug_log("detect_live_selective: no selective offset pattern found (candidates=%d, populated=%d)\n", candidateCount, numPopulated);
+    }
     if (gpuOffsetMHzOut) *gpuOffsetMHzOut = 0;
     if (representativeOffsetkHzOut) *representativeOffsetkHzOut = 0;
     if (detectedExcludeLowCountOut) *detectedExcludeLowCountOut = 0;
@@ -333,24 +347,26 @@ static bool load_runtime_selective_gpu_offset_request(int* gpuOffsetMHzOut, int*
         return false;
     }
 
-    int excludeLowCount = 0;
-    GetPrivateProfileStringA("runtime", "selective_gpu_offset_exclude_low_count", "", buf, sizeof(buf), g_app.configPath);
-    if (!buf[0]) {
-        GetPrivateProfileStringA("runtime", "selective_gpu_offset_exclude_low_70", "", buf, sizeof(buf), g_app.configPath);
+    // Read both values under the same mutex to avoid TOCTOU race.
+    // The exclude count may be stored as "selective_gpu_offset_exclude_low_count"
+    // (new format) or "selective_gpu_offset_exclude_low_70" (legacy).
+    char excludeBuf[32] = {};
+    GetPrivateProfileStringA("runtime", "selective_gpu_offset_exclude_low_count", "", excludeBuf, sizeof(excludeBuf), g_app.configPath);
+    bool hasExplicitLowCount = excludeBuf[0] != '\0';
+    if (!hasExplicitLowCount) {
+        GetPrivateProfileStringA("runtime", "selective_gpu_offset_exclude_low_70", "", excludeBuf, sizeof(excludeBuf), g_app.configPath);
     }
     leave_config_storage_lock(configMutex);
-    trim_ascii(buf);
-    if (buf[0]) {
+
+    int excludeLowCount = 0;
+    trim_ascii(excludeBuf);
+    if (excludeBuf[0]) {
         int value = 0;
-        if (!parse_int_strict(buf, &value)) return false;
-        if (excludeLowCountOut) {
-            GetPrivateProfileStringA("runtime", "selective_gpu_offset_exclude_low_count", "", buf, sizeof(buf), g_app.configPath);
-            trim_ascii(buf);
-            if (buf[0]) {
-                excludeLowCount = value;
-            } else {
-                excludeLowCount = value ? 70 : 0;
-            }
+        if (!parse_int_strict(excludeBuf, &value)) return false;
+        if (hasExplicitLowCount) {
+            excludeLowCount = value;
+        } else {
+            excludeLowCount = value ? 70 : 0;
         }
     }
 
@@ -447,6 +463,13 @@ static bool should_accept_service_curve_lock_detection() {
 }
 
 static bool should_auto_detect_locked_tail_from_live_curve() {
+    if (g_app.isServiceProcess
+        && g_serviceHasActiveDesired
+        && g_serviceActiveDesired.hasLock
+        && g_serviceActiveDesired.lockCi >= 0
+        && g_serviceActiveDesired.lockMHz > 0) {
+        return false;
+    }
     if (g_app.usingBackgroundService) {
         return should_accept_service_curve_lock_detection();
     }
@@ -701,14 +724,6 @@ static bool is_curve_point_visible_in_gui(int pointIndex) {
     unsigned int voltMv = g_app.curve[pointIndex].volt_uV / 1000;
     unsigned int freqMHz = (unsigned int)(curve_base_khz_for_point(pointIndex) / 1000);
     return voltMv >= MIN_VISIBLE_VOLT_mV && freqMHz >= MIN_VISIBLE_FREQ_MHz;
-}
-
-static void update_desired_lock_from_live_curve(DesiredSettings* desired) {
-    if (!desired || !desired->hasLock) return;
-    int lockCi = desired->lockCi;
-    if (lockCi < 0 || lockCi >= VF_NUM_POINTS) return;
-    if (g_app.curve[lockCi].freq_kHz == 0) return;
-    desired->lockMHz = displayed_curve_mhz(g_app.curve[lockCi].freq_kHz);
 }
 
 static void resolve_displayed_live_gpu_offset_state_for_gui(int* gpuOffsetMHzOut, int* excludeLowCountOut) {

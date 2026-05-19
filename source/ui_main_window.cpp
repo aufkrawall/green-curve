@@ -33,9 +33,14 @@ static void apply_changes() {
     bool ok = apply_desired_settings(&desired, true, result, sizeof(result));
     SetCursor(LoadCursor(nullptr, IDC_ARROW));
     if (ok) {
+        bool fanOnlyApply = desired_is_fan_only_apply_request(&desired);
         set_gui_state_dirty(false);
+        if (fanOnlyApply) {
+            debug_log("GUI apply: preserving VF editor intent after fan-only apply\n");
+        } else {
+            populate_desired_into_gui(&desired);
+        }
         populate_global_controls();
-        populate_edits();
         invalidate_main_window();
     }
     boost_fan_telemetry_for_ms(3000);
@@ -563,12 +568,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
                     break;
                 }
-                if (g_app.guiHasUserModifiedValues) {
+                if (g_app.guiHasUserModifiedValues || gui_has_pending_curve_or_lock_edits()) {
                     if (!capture_gui_config_settings(&desired, err, sizeof(err))) {
                         write_error_report_log_for_user_failure("Profile save capture failed", err);
                         MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
                         break;
                     }
+                    debug_log("PROFILE_SAVE: saving sparse GUI curve intent (modified=%d curveOrLock=%d)\n",
+                        g_app.guiHasUserModifiedValues ? 1 : 0,
+                        gui_has_pending_curve_or_lock_edits() ? 1 : 0);
                 } else {
                     build_full_live_desired_settings(&desired);
                     debug_log("PROFILE_SAVE: no user edits, saving live state\n");

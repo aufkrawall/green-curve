@@ -501,8 +501,13 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                         request.desired.hasGpuOffset ? 1 : 0,
                         request.desired.gpuOffsetMHz,
                         request.desired.gpuOffsetExcludeLowCount);
+                    int rawGpuMHz = request.desired.gpuOffsetMHz;
                     validate_desired_settings_for_ipc(&request.desired);
                     request.desired.resetOcBeforeApply = request.resetOcBeforeApply != 0;
+                    if (request.desired.hasGpuOffset && rawGpuMHz != request.desired.gpuOffsetMHz) {
+                        debug_log("ipc validated: GPU offset clamped from %d to %d MHz (out of [-1000,1000] IPC range)\n",
+                            rawGpuMHz, request.desired.gpuOffsetMHz);
+                    }
                     debug_log("ipc validated: hasMem=%d mem=%d\n",
                         request.desired.hasMemOffset ? 1 : 0,
                         request.desired.memOffsetMHz);

@@ -612,14 +612,11 @@ static bool is_gpu_offset_excluded_low_point(int pointIndex, int gpuOffsetMHz, i
     if (pointIndex < 0 || pointIndex >= VF_NUM_POINTS) return false;
     if (g_app.curve[pointIndex].freq_kHz == 0) return false;
     (void)gpuOffsetMHz;
-    int populatedCount = 0;
-    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-        if (g_app.curve[ci].freq_kHz == 0) continue;
-        if (ci == pointIndex) return true;
-        populatedCount++;
-        if (populatedCount >= excludeLowCount) return false;
-    }
-    return true;
+    // Use the pre-computed populated ordinal for O(1) lookup.
+    // A point is excluded if its ordinal is among the first `excludeLowCount` populated points.
+    int ordinal = g_app.populatedOrdinal[pointIndex];
+    if (ordinal < 0) return false;
+    return ordinal < excludeLowCount;
 }
 static int gpu_offset_component_mhz_for_point(int pointIndex, int gpuOffsetMHz, int excludeLowCount) {
     if (gpuOffsetMHz == 0) return 0;
