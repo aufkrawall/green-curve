@@ -40,9 +40,19 @@ else:
 
 ZIG_URL = f"https://ziglang.org/download/{ZIG_VERSION}/zig-{_ZIG_PLATFORM}-x86_64-{ZIG_VERSION}{_ZIG_ARCHIVE_EXT}"
 ZIG_SHA256 = _ZIG_SHA256
+
+# llvm-mingw: portable MinGW toolchain for Windows builds with full CFG support
+LLVM_MINGW_VERSION = "20260519"
+LLVM_MINGW_URL = ("https://github.com/mstorsjo/llvm-mingw/releases/download/"
+                  f"{LLVM_MINGW_VERSION}/llvm-mingw-{LLVM_MINGW_VERSION}-ucrt-x86_64.zip")
+LLVM_MINGW_SHA256 = "72dbd6e64614e3b3401998992d1bd9c8ace29e74611d71c80309ea71c3fb26f9"
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ZIG_DIR = os.path.join(SCRIPT_DIR, "zig")
 ZIG_EXE = os.path.join(ZIG_DIR, _ZIG_EXE_NAME)
+LLVM_MINGW_DIR = os.path.join(SCRIPT_DIR, "llvm-mingw")
+LLVM_MINGW_CLANG = os.path.join(LLVM_MINGW_DIR, "bin", "clang++.exe")
+LLVM_MINGW_RC = os.path.join(LLVM_MINGW_DIR, "bin", "llvm-rc.exe")
 SOURCE_DIR = os.path.join(SCRIPT_DIR, "source")
 BUILD_WORK_DIR = os.path.join(SCRIPT_DIR, "build-tmp")
 ZIG_GLOBAL_CACHE_DIR = os.path.join(BUILD_WORK_DIR, "zig-global-cache")
@@ -55,6 +65,7 @@ WINDOWS_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "config_utils.cpp"),
     os.path.join(SOURCE_DIR, "fan_curve.cpp"),
     os.path.join(SOURCE_DIR, "ssp_glue.cpp"),
+    os.path.join(SOURCE_DIR, "cfg_glue.cpp"),
 ]
 LINUX_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "linux_main.cpp"),
@@ -173,7 +184,14 @@ SANITIZER_FLAGS = [
 ]
 
 WINDOWS_FLAGS = [
-    "-Wl,--subsystem,windows,--dynamicbase,--nxcompat,--high-entropy-va",
+    "-Wl,--subsystem,windows,--dynamicbase,--nxcompat,--high-entropy-va,--allow-multiple-definition",
+    "-mguard=cf",
+    "-fcf-protection=full",
+    "-flto",
+    "-Wl,--icf=safe",
+    "-ftrivial-auto-var-init=pattern",
+    "-fno-delete-null-pointer-checks",
+    "-static",
     "-s",
 ]
 
@@ -201,6 +219,7 @@ WINDOWS_LINK_LIBS = [
     "-lshell32",
     "-lole32",
     "-lwtsapi32",
+    "-luuid",
     "-ldbghelp",
 ]
 
@@ -211,6 +230,7 @@ WINDOWS_SERVICE_LINK_LIBS = [
     "-lole32",
     "-lwtsapi32",
     "-luserenv",
+    "-luuid",
     "-ldbghelp",
 ]
 
@@ -731,7 +751,7 @@ def generate_resource_script():
 
 
 def compile_resources():
-    """Compile the Windows resource file if stale."""
+    """Compile the Windows resource file if stale using llvm-rc."""
     generate_resource_script()
     sources = [ICON_RC, MANIFEST_PATH] + [path for _, path, _ in ICON_OUTPUTS]
     if not _any_newer(sources, ICON_RES):
@@ -741,8 +761,7 @@ def compile_resources():
         os.remove(ICON_RES)
 
     cmd = [
-        ZIG_EXE,
-        "rc",
+        LLVM_MINGW_RC,
         "/x",
         f"/fo{ICON_RES}",
         ICON_RC,
@@ -771,11 +790,11 @@ def safe_extract_target(base_dir, archive_name):
         return None
     relative = os.path.normpath(parts[1])
     if os.path.isabs(relative) or relative == ".." or relative.startswith(".." + os.sep):
-        raise RuntimeError(f"Unsafe Zig archive member: {archive_name}")
+        raise RuntimeError(f"Unsafe archive member: {archive_name}")
     base_abs = os.path.abspath(base_dir)
     target = os.path.abspath(os.path.join(base_abs, relative))
     if os.path.commonpath([base_abs, target]) != base_abs:
-        raise RuntimeError(f"Unsafe Zig archive member: {archive_name}")
+        raise RuntimeError(f"Unsafe archive member: {archive_name}")
     return target
 
 
@@ -872,6 +891,62 @@ def download_zig():
         f.write(h.hexdigest().lower())
 
 
+def download_llvm_mingw():
+    """Download and extract llvm-mingw toolchain for Windows builds."""
+    if os.path.exists(LLVM_MINGW_CLANG):
+        print(f"llvm-mingw already present at {LLVM_MINGW_CLANG}")
+        return
+
+    print(f"Downloading llvm-mingw {LLVM_MINGW_VERSION}...")
+    archive_name = f"llvm-mingw-{LLVM_MINGW_VERSION}-ucrt-x86_64.zip"
+    archive_path = os.path.join(SCRIPT_DIR, archive_name)
+
+    try:
+        urllib.request.urlretrieve(LLVM_MINGW_URL, archive_path)
+    except Exception as exc:
+        print(f"Failed to download llvm-mingw: {exc}")
+        print(f"Please download manually from: {LLVM_MINGW_URL}")
+        print(f"Extract to: {LLVM_MINGW_DIR}")
+        sys.exit(1)
+
+    if LLVM_MINGW_SHA256 and not verify_sha256(archive_path, LLVM_MINGW_SHA256):
+        os.remove(archive_path)
+        print("ERROR: llvm-mingw archive SHA-256 verification failed")
+        sys.exit(1)
+
+    print("Extracting llvm-mingw...")
+    os.makedirs(LLVM_MINGW_DIR, exist_ok=True)
+
+    with zipfile.ZipFile(archive_path, "r") as archive:
+        for member in archive.namelist():
+            target = safe_extract_target(LLVM_MINGW_DIR, member)
+            if not target:
+                continue
+            if member.endswith("/"):
+                os.makedirs(target, exist_ok=True)
+            else:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with open(target, "wb") as handle:
+                    handle.write(archive.read(member))
+
+    os.remove(archive_path)
+
+    if not os.path.exists(LLVM_MINGW_CLANG):
+        print("ERROR: clang++.exe not found after extraction")
+        sys.exit(1)
+
+    print(f"llvm-mingw installed at {LLVM_MINGW_DIR}")
+
+    # Write integrity sentinel for future builds
+    sentinel = LLVM_MINGW_CLANG + ".sha256"
+    h = hashlib.sha256()
+    with open(LLVM_MINGW_CLANG, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    with open(sentinel, "w", encoding="utf-8") as f:
+        f.write(h.hexdigest().lower())
+
+
 def finalize_output(temp_output, output_path, backup_path=None):
     if not os.path.exists(temp_output):
         print(f"Compilation reported success but {temp_output} is missing")
@@ -907,10 +982,9 @@ def finalize_output(temp_output, output_path, backup_path=None):
 
 
 def get_windows_gui_compile_command(temp_output):
-    """Return the command array for compiling the Windows GUI executable."""
+    """Return the command array for compiling the Windows GUI executable with llvm-mingw."""
     return [
-        ZIG_EXE,
-        "c++",
+        LLVM_MINGW_CLANG,
         *COMMON_FLAGS,
         *WINDOWS_FLAGS,
         "-o",
@@ -922,10 +996,9 @@ def get_windows_gui_compile_command(temp_output):
 
 
 def get_windows_service_compile_command(temp_output):
-    """Return the command array for compiling the Windows service executable."""
+    """Return the command array for compiling the Windows service executable with llvm-mingw."""
     return [
-        ZIG_EXE,
-        "c++",
+        LLVM_MINGW_CLANG,
         *COMMON_FLAGS,
         *WINDOWS_FLAGS,
         "-DGREEN_CURVE_SERVICE_BINARY=1",
@@ -1094,14 +1167,16 @@ def compile_flags_for_lsp(flags):
 
 
 def generate_lsp_files():
-    """Generate compile_commands.json for clangd from the real Zig build flags."""
+    """Generate compile_commands.json for clangd from real build flags."""
     entries = []
     dummy_temp = os.path.join(SCRIPT_DIR, "dummy.out")
     gui_cmd = get_windows_gui_compile_command(dummy_temp)
     service_cmd = get_windows_service_compile_command(dummy_temp)
     linux_cmd = get_linux_compile_command(dummy_temp)
-    windows_flags = compile_flags_for_lsp(gui_cmd[2:-len(WINDOWS_SOURCE_FILES) - len(WINDOWS_LINK_LIBS) - 2])
-    service_flags = compile_flags_for_lsp(service_cmd[2:-len(WINDOWS_SOURCE_FILES) - len(WINDOWS_SERVICE_LINK_LIBS) - 2])
+    # gui_cmd[0] = clang++; service_cmd[0] = clang++; linux_cmd[0] = zig
+    # Skip the compiler executable (index 0), then strip trailing link args
+    windows_flags = compile_flags_for_lsp(gui_cmd[1:-len(WINDOWS_SOURCE_FILES) - len(WINDOWS_LINK_LIBS) - 2])
+    service_flags = compile_flags_for_lsp(service_cmd[1:-len(WINDOWS_SOURCE_FILES) - len(WINDOWS_SERVICE_LINK_LIBS) - 2])
     linux_flags = compile_flags_for_lsp(linux_cmd[2:-len(LINUX_SOURCE_FILES) - 2])
 
     entries.append({
@@ -1298,9 +1373,14 @@ int main(int argc, char** argv) {
         test_exe = os.path.join(tmp, "fan_curve_regression.exe" if sys.platform == "win32" else "fan_curve_regression")
         with open(harness_path, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(harness)
+        compiler = LLVM_MINGW_CLANG if sys.platform == "win32" else ZIG_EXE
         cmd = [
-            ZIG_EXE,
-            "c++",
+            compiler,
+        ]
+        # llvm-mingw clang++ takes flags directly; zig c++ needs the subcommand
+        if sys.platform != "win32":
+            cmd.append("c++")
+        cmd.extend([
             "-std=c++17",
             "-DNDEBUG",
             "-fno-exceptions",
@@ -1312,11 +1392,11 @@ int main(int argc, char** argv) {
             os.path.join(SOURCE_DIR, "fan_curve.cpp"),
             os.path.join(SOURCE_DIR, "config_utils.cpp"),
             os.path.join(SOURCE_DIR, "app_shared.cpp"),
-        ]
+        ])
         if extra_flags:
             cmd.extend(extra_flags)
         if sys.platform == "win32":
-            cmd.extend(["-luser32", "-lgdi32"])
+            cmd.extend(["-static", "-luser32", "-lgdi32", "-luuid"])
         print("Compiling pure regression tests")
         result = subprocess.run(cmd, cwd=SCRIPT_DIR)
         if result.returncode != 0:
@@ -1434,6 +1514,12 @@ def run_source_regression_checks():
     # __stack_chk_fail) that the MinGW CRT omits on Windows, making stack-
     # protector canaries functional.  Keep the flag at all times.
     require_text(build_script, "-fstack-protector-strong", "stack protector flag enables canary emission with ssp_glue.cpp")
+    require_text(build_script, "-mguard=cf", "Control Flow Guard flag enables CFG for Windows")
+    require_text(build_script, "-fcf-protection=full", "CET/Shadow Stack instrumentation (endbr64) adds hardware-enforced control-flow integrity")
+    require_text(build_script, "-flto", "Link-Time Optimization enables cross-module inlining and dead code elimination at link time")
+    require_text(build_script, "--icf=safe", "Identical Code Folding merges identical functions to reduce binary size")
+    require_text(build_script, "-ftrivial-auto-var-init=pattern", "auto-var-init pattern flag initializes stack variables")
+    require_text(build_script, "-fno-delete-null-pointer-checks", "null pointer check flag prevents deletion of null checks")
     require_text(build_script, "-fPIE", "Linux PIE hardening retained")
     require_text(build_script, "-Wl,-z,relro,-z,now", "Linux RELRO/BIND_NOW hardening retained")
     require_text(build_script, "-Wl,-z,noexecstack", "Linux non-executable stack hardening retained")
@@ -1634,35 +1720,20 @@ def generate_version_nsh():
         _vnf.write(f'!define VERSION "{APP_VERSION}"\n')
 
 
-def verify_cached_zig():
-    if not os.path.exists(ZIG_EXE):
-        return
-    sentinel = ZIG_EXE + ".sha256"
-    current = hashlib.sha256()
-    with open(ZIG_EXE, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            current.update(chunk)
-    digest = current.hexdigest().lower()
-    if os.path.exists(sentinel):
-        with open(sentinel, "r", encoding="utf-8") as f:
-            expected = f.read().strip().lower()
-        if digest != expected:
-            print(f"ERROR: Cached Zig binary integrity check failed")
-            print(f"  Expected: {expected}")
-            print(f"  Actual:   {digest}")
-            print(f"  Delete the zig/ directory to force a fresh download.")
-            sys.exit(1)
-    else:
-        print("ERROR: Cached Zig binary is missing its integrity sentinel")
-        print("  Delete the zig/ directory to force a fresh verified download.")
-        sys.exit(1)
+def ensure_toolchain(target):
+    """Download and verify the toolchain(s) needed for the given target."""
+    needs_windows = target in ("windows", "all")
+    needs_linux = target in ("linux", "all")
+    if needs_windows:
+        download_llvm_mingw()
+    if needs_linux:
+        download_zig()
 
 
 def main():
     args = parse_args()
     print("=== Green Curve build ===")
-    download_zig()
-    verify_cached_zig()
+    ensure_toolchain(args.target)
     real_build = not args.lsp and not args.check and not args.test
     configure_build_number(real_build)
     generate_version_nsh()
