@@ -65,7 +65,9 @@ bool streqi_ascii(const char* a, const char* b) {
 bool parse_int_strict(const char* s, int* out) {
     if (!s || !*s || !out) return false;
     char* end = nullptr;
+    errno = 0;
     long value = strtol(s, &end, 10);
+    if (errno == ERANGE) return false;
     if (!end || *end != 0) return false;
     if (value < -2147483647L - 1L || value > 2147483647L) return false;
     *out = (int)value;

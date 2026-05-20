@@ -37,7 +37,9 @@ bool parse_int_strict(const char* s, int* out) {
     if (!s || !*s || !out) return false;
 
     char* end = nullptr;
+    errno = 0;
     long v = strtol(s, &end, 10);
+    if (errno == ERANGE) return false;
     if (!end || *end != 0) return false;
     if (v < -2147483647L - 1L || v > 2147483647L) return false;
 

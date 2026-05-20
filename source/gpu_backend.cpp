@@ -200,6 +200,25 @@ static bool nvapi_read_curve() {
     g_app.loaded = true;
     return true;
 }
+
+static bool parse_mhz_value_prefix(const char* text, unsigned int* valueOut) {
+    if (valueOut) *valueOut = 0;
+    if (!text) return false;
+    while (*text == ' ' || *text == '\t') text++;
+    char digits[16] = {};
+    size_t count = 0;
+    while (text[count] >= '0' && text[count] <= '9') {
+        if (count + 1 >= ARRAY_COUNT(digits)) return false;
+        digits[count] = text[count];
+        count++;
+    }
+    if (count == 0) return false;
+    int parsed = 0;
+    if (!parse_int_strict(digits, &parsed) || parsed <= 0) return false;
+    if (valueOut) *valueOut = (unsigned int)parsed;
+    return true;
+}
+
 static void read_nvidia_smi_max_clocks() {
     if (g_app.smiClocksRead) return;
     g_app.smiClocksRead = true;
@@ -271,8 +290,14 @@ static void read_nvidia_smi_max_clocks() {
             if (inMaxSection && line[0] == '[') inMaxSection = false;
             if (inMaxSection) {
                 char* vp = nullptr;
-                if ((vp = strstr(line, "Memory")) && (vp = strchr(vp, ':')))
-                    g_app.smiMemMaxMHz = (unsigned int)atoi(vp + 1);
+                if ((vp = strstr(line, "Memory")) && (vp = strchr(vp, ':'))) {
+                    unsigned int parsedMHz = 0;
+                    if (parse_mhz_value_prefix(vp + 1, &parsedMHz)) {
+                        g_app.smiMemMaxMHz = parsedMHz;
+                    } else {
+                        debug_log("nvidia-smi clock read: could not parse memory max clock from \"%s\"\n", line);
+                    }
+                }
             }
             line = nextLine;
         }

@@ -342,6 +342,17 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
             debug_log("pipe_server: using restricted ACL for active console session user\n");
         } else {
             debug_log("pipe_server: cannot create restricted ACL, deferring pipe creation\n");
+            if (securityDescriptor) {
+                LocalFree(securityDescriptor);
+                securityDescriptor = nullptr;
+            }
+            Sleep(250);
+            continue;
+        }
+        if (!securityDescriptor) {
+            debug_log("pipe_server: restricted ACL creation returned no descriptor, deferring pipe creation\n");
+            Sleep(250);
+            continue;
         }
 
         HANDLE pipe = CreateNamedPipeW(
@@ -713,6 +724,29 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
 
     DWORD threadId = 0;
     g_servicePipeThread = CreateThread(nullptr, 1024 * 1024, service_pipe_server_thread_proc, nullptr, STACK_SIZE_PARAM_IS_A_RESERVATION, &threadId);
+    if (!g_servicePipeThread) {
+        debug_log("service_main: FATAL failed to create pipe server thread (error %lu)\n", GetLastError());
+        stop_service_fan_runtime_thread();
+        if (g_servicePipeWakeEvent) {
+            CloseHandle(g_servicePipeWakeEvent);
+            g_servicePipeWakeEvent = nullptr;
+        }
+        if (g_serviceFanStopEvent) {
+            CloseHandle(g_serviceFanStopEvent);
+            g_serviceFanStopEvent = nullptr;
+        }
+        if (g_serviceStopEvent) {
+            CloseHandle(g_serviceStopEvent);
+            g_serviceStopEvent = nullptr;
+        }
+        if (g_serviceRuntimeLock) {
+            CloseHandle(g_serviceRuntimeLock);
+            g_serviceRuntimeLock = nullptr;
+        }
+        g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
+        SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
+        return;
+    }
     g_serviceStatus.dwCurrentState = SERVICE_RUNNING;
     SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
 

@@ -526,6 +526,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
         int hardLimitOffsets = 0;
         int maxAbsOffsetKHz = 0;
         int maxAbsOffsetCi = -1;
+        int firstHighOffsetCi = -1;
+        int firstHighOffsetKHz = 0;
         int rangeMinKHz = 0;
         int rangeMaxKHz = 0;
         bool rangeKnown = get_curve_offset_range_khz(&rangeMinKHz, &rangeMaxKHz);
@@ -548,12 +550,10 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
             }
             if (absOffsetKHz > 600000) { // > 600 MHz
                 highOffsetWarnings++;
-                debug_log("apply curve batch: warning point %d target offset %d kHz exceeds 600 MHz warning level; driver range %d..%d kHz known=%d\n",
-                    ci,
-                    targetCurveOffsets[ci],
-                    rangeMinKHz,
-                    rangeMaxKHz,
-                    rangeKnown ? 1 : 0);
+                if (firstHighOffsetCi < 0) {
+                    firstHighOffsetCi = ci;
+                    firstHighOffsetKHz = targetCurveOffsets[ci];
+                }
             }
             if (absOffsetKHz > hardLimitKHz) {
                 hardLimitOffsets++;
@@ -575,6 +575,17 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
             set_message(curveVerifyDetail, sizeof(curveVerifyDetail),
                 "Refused VF curve batch because %d point(s) exceeded the driver VF offset range", hardLimitOffsets);
         } else {
+            if (highOffsetWarnings > 0) {
+                debug_log("apply curve batch: high offset warning summary count=%d firstPoint=%d firstOffset=%d maxAbsPoint=%d maxAbs=%d driverRange=%d..%d known=%d\n",
+                    highOffsetWarnings,
+                    firstHighOffsetCi,
+                    firstHighOffsetKHz,
+                    maxAbsOffsetCi,
+                    maxAbsOffsetKHz,
+                    rangeMinKHz,
+                    rangeMaxKHz,
+                    rangeKnown ? 1 : 0);
+            }
             debug_log("apply curve batch: points=%d range=%d..%d passes=%d offsetRange=%d..%d known=%d highWarnings=%d maxAbsPoint=%d maxAbs=%d\n",
                 batchedCount,
                 batchedMinCi,

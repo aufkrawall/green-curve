@@ -22,6 +22,7 @@
 #include <strsafe.h>
 #include <wtsapi32.h>
 #include <ctype.h>
+#include <errno.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -927,12 +928,12 @@ struct HeapBuffer {
     operator bool() const { return ptr != nullptr; }
     size_t size() const { return bufSize; }
     bool write_at(size_t offset, const void* data, size_t len) const {
-        if (!ptr || offset + len > bufSize || !data) return false;
+        if (!ptr || !data || offset > bufSize || len > bufSize - offset) return false;
         memcpy((unsigned char*)ptr + offset, data, len);
         return true;
     }
     bool read_at(size_t offset, void* data, size_t len) const {
-        if (!ptr || offset + len > bufSize || !data) return false;
+        if (!ptr || !data || offset > bufSize || len > bufSize - offset) return false;
         memcpy(data, (unsigned char*)ptr + offset, len);
         return true;
     }

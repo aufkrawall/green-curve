@@ -1259,6 +1259,27 @@ int main(int argc, char** argv) {
     fan_curve_normalize(&cfg);
     if (cfg.pollIntervalMs != 250) return 6;
 
+    FanCurveConfig invalidFanCurve = {};
+    invalidFanCurve.pollIntervalMs = 333;
+    invalidFanCurve.hysteresisC = 99;
+    fan_curve_normalize(&invalidFanCurve);
+    if (!fan_curve_validate(&invalidFanCurve, err, sizeof(err))) return 7;
+    if (fan_curve_active_count(&invalidFanCurve) != 5) return 8;
+    if (invalidFanCurve.pollIntervalMs != 250) return 9;
+    if (invalidFanCurve.hysteresisC != FAN_CURVE_MAX_HYSTERESIS_C) return 10;
+    FanCurveConfig onePointFanCurve = {};
+    onePointFanCurve.pollIntervalMs = 500;
+    onePointFanCurve.hysteresisC = 1;
+    onePointFanCurve.points[7] = { true, 99, 100 };
+    fan_curve_normalize(&onePointFanCurve);
+    if (!fan_curve_validate(&onePointFanCurve, err, sizeof(err))) return 11;
+
+    int parsedInt = 0;
+    if (!parse_int_strict("2147483647", &parsedInt) || parsedInt != 2147483647) return 12;
+    if (!parse_int_strict("-2147483648", &parsedInt) || parsedInt != (-2147483647 - 1)) return 13;
+    if (parse_int_strict("999999999999999999999999", &parsedInt)) return 14;
+    if (parse_int_strict("-999999999999999999999999", &parsedInt)) return 15;
+
     if (argc < 2 || !argv[1] || !argv[1][0]) return 31;
     DeleteFileA(argv[1]);
     HANDLE configMutex = nullptr;
@@ -1413,7 +1434,13 @@ int main(int argc, char** argv) {
             sys.exit(result.returncode)
         config_path = os.path.join(tmp, "config_roundtrip.ini")
         print("Running pure regression tests")
-        result = subprocess.run([test_exe, config_path], cwd=SCRIPT_DIR)
+        test_env = os.environ.copy()
+        if sys.platform == "win32":
+            # ASan links the llvm-mingw dynamic sanitizer runtime; keep the
+            # portable toolchain's bin directory on PATH for the test process.
+            llvm_bin = os.path.dirname(LLVM_MINGW_CLANG)
+            test_env["PATH"] = llvm_bin + os.pathsep + test_env.get("PATH", "")
+        result = subprocess.run([test_exe, config_path], cwd=SCRIPT_DIR, env=test_env)
         if result.returncode != 0:
             print(f"Regression tests FAILED ({result.returncode})")
             sys.exit(result.returncode)
@@ -1437,6 +1464,8 @@ def run_source_regression_checks():
     diagnostics_cpp = os.path.join(SOURCE_DIR, "main_diagnostics.cpp")
     service_ipc_cpp = os.path.join(SOURCE_DIR, "main_service_ipc.cpp")
     service_server_cpp = os.path.join(SOURCE_DIR, "main_service_server.cpp")
+    config_utils_cpp = os.path.join(SOURCE_DIR, "config_utils.cpp")
+    fan_curve_cpp = os.path.join(SOURCE_DIR, "fan_curve.cpp")
     config_profiles_ui_cpp = os.path.join(SOURCE_DIR, "config_profiles_ui.cpp")
     desired_settings_helpers_cpp = os.path.join(SOURCE_DIR, "desired_settings_helpers.cpp")
     config_profile_repair_cpp = os.path.join(SOURCE_DIR, "config_profile_repair.cpp")
@@ -1447,6 +1476,7 @@ def run_source_regression_checks():
     main_shell_cpp = os.path.join(SOURCE_DIR, "main_shell.cpp")
     main_fan_runtime_cpp = os.path.join(SOURCE_DIR, "main_fan_runtime.cpp")
     runtime_nvml_cpp = os.path.join(SOURCE_DIR, "main_runtime_nvml.cpp")
+    gpu_backend_cpp = os.path.join(SOURCE_DIR, "gpu_backend.cpp")
     main_runtime_control_cpp = os.path.join(SOURCE_DIR, "main_runtime_control.cpp")
     main_runtime_gpu_cpp = os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp")
     main_service_runtime_cpp = os.path.join(SOURCE_DIR, "main_service_runtime.cpp")
@@ -1469,15 +1499,21 @@ def run_source_regression_checks():
     require_text(diagnostics_cpp, "open_debug_log_file_locked", "debug log file open helper exists")
     require_text(diagnostics_cpp, "green_curve_unhandled_exception_filter", "crash filter exists")
     require_text(diagnostics_cpp, "MiniDumpWriteDump", "crash filter writes minidump")
+    require_text(diagnostics_cpp, "write_all_to_handle", "file writes use size_t-safe chunked write helper")
     require_text(main_cpp, "SERVICE_PIPE_SERVER_IO_TIMEOUT_MS", "service pipe server I/O timeout exists")
     require_text(service_server_cpp, "CancelIoEx(pipe, &ov)", "stalled pipe operations are cancellable")
     require_text(service_server_cpp, "response.serviceBuildNumber", "service responses include build number")
+    require_text(service_server_cpp, "restricted ACL creation returned no descriptor", "service pipe creation fails closed without ACL")
+    require_text(service_server_cpp, "FATAL failed to create pipe server thread", "service fails closed when pipe server thread cannot start")
     require_text(service_server_cpp, "stop_service_for_binary_update", "service repair stops old service before replacing binary")
     require_text(service_server_cpp, "SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_STOP | SERVICE_QUERY_STATUS", "service repair can stop installed service")
     require_text(service_ipc_cpp, "service_client_ping: identity mismatch", "GUI rejects mismatched service version identity")
     require_text(service_ipc_cpp, "compatible build mismatch accepted", "GUI accepts compatible service build-number drift")
     require_text(service_ipc_cpp, "backgroundServiceError", "service ping failures are surfaced to the GUI")
     require_text(service_ipc_cpp, "GetNamedPipeServerProcessId", "GUI verifies service pipe server PID")
+    require_text(service_ipc_cpp, "SetNamedPipeHandleState", "service pipe message mode is checked")
+    require_text(service_ipc_cpp, "Service response protocol mismatch", "service responses are validated before use")
+    require_text(service_ipc_cpp, "connected after %u retry", "service pipe connect retries are summarized")
     require_text(service_ipc_cpp, "ensure_secure_service_binary_path", "service install uses secure Program Files copy")
     require_text(service_ipc_cpp, "CopyFileW(sourcePath, tempPath", "service binary is staged before install")
     require_text(service_ipc_cpp, "wait_for_helper_process_bounded", "elevated helper waits are bounded")
@@ -1501,7 +1537,9 @@ def run_source_regression_checks():
     require_text(os.path.join(SOURCE_DIR, "main_shell.cpp"), "skipping stale lock at ci=%d (lockedFreq=0", "stale lock skip only when lockedFreq=0, not when == liveMHz")
     require_text(gpu_backend_apply_cpp, "post-apply tail bookends", "post-apply logs tail bookends even when within tolerance")
     require_text(gpu_backend_apply_cpp, "post-apply tail: ci=%d actual=%u", "post-apply logs tail drifts > 2 MHz even when within tolerance")
-    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"), "update_tray_icon", "VF/GPU offset applies update tray icon from GUI-side apply path")
+    require_text(gpu_backend_apply_cpp, "high offset warning summary", "large VF offset diagnostics are aggregated")
+    require_text(gpu_backend_cpp, "update_tray_icon", "VF/GPU offset applies update tray icon from GUI-side apply path")
+    require_text(gpu_backend_cpp, "parse_mhz_value_prefix", "nvidia-smi clock parsing is strict")
     require_text(main_fan_runtime_cpp, "if (g_app.freqOffsets[i] != 0) return true;", "live_state_has_custom_oc checks freqOffsets without vfBackend guard")
     require_text(runtime_nvml_cpp, "rollback_changed_fans", "manual multi-fan writes roll back partial failures")
     require_text(runtime_nvml_cpp, "nvml_select_device_for_selected_gpu", "NVML device is matched to selected GPU")
@@ -1568,9 +1606,9 @@ def run_source_regression_checks():
 
     # F-01-001: Heap-based VF curve buffers (no large stack allocations)
     require_text(os.path.join(SOURCE_DIR, "app_shared.h"), "struct HeapBuffer", "HeapBuffer is defined in shared header")
-    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"), "HeapBuffer buf(", "VF curve read uses heap buffer")
-    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"), "HeapBuffer buf(", "VF curve offset read uses heap buffer")
-    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"), "HeapBuffer buf(", "VF point write uses heap buffer")
+    require_text(gpu_backend_cpp, "HeapBuffer buf(", "VF curve read uses heap buffer")
+    require_text(gpu_backend_cpp, "HeapBuffer buf(", "VF curve offset read uses heap buffer")
+    require_text(gpu_backend_cpp, "HeapBuffer buf(", "VF point write uses heap buffer")
 
     # F-01-003: Pipe ACL restricted to console session user only (no IU fallback)
     require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "restricted ACL for active console session user", "pipe uses restricted session ACL")
@@ -1598,8 +1636,8 @@ def run_source_regression_checks():
     require_text(os.path.join(SOURCE_DIR, "win32_raii.h"), "void terminate(DWORD exitCode", "ScopedProcess.terminate exists")
 
     # F-06-001: nvidia-smi callers use ScopedProcess
-    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"), "ScopedProcess proc", "nvidia-smi clock read uses ScopedProcess")
-    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"), "ScopedProcess proc", "nvidia-smi power limit uses ScopedProcess")
+    require_text(gpu_backend_cpp, "ScopedProcess proc", "nvidia-smi clock read uses ScopedProcess")
+    require_text(gpu_backend_cpp, "ScopedProcess proc", "nvidia-smi power limit uses ScopedProcess")
 
     # F-15-001: Lock state propagated through ServiceSnapshot
     require_text(shared_h, "bool hasLock", "ServiceSnapshot carries lock state")
@@ -1608,8 +1646,8 @@ def run_source_regression_checks():
     require_text(shared_h, "bool lockTracksAnchor", "ServiceSnapshot carries lock tracking flag")
     require_text(main_state_sync_cpp, "adopted service lock ci=", "lock state from snapshot is adopted by GUI")
     require_text(main_state_sync_cpp, "reporting active desired lock", "service snapshots prefer configured lock intent over live tail detection")
-    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"), "live lock detection suppressed; preserving intent", "live lock detection does not clear configured lock intent")
-    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"), "requestedMHz=", "GUI-side service apply sync preserves requested lock MHz")
+    require_text(gpu_backend_cpp, "live lock detection suppressed; preserving intent", "live lock detection does not clear configured lock intent")
+    require_text(gpu_backend_cpp, "requestedMHz=", "GUI-side service apply sync preserves requested lock MHz")
     require_text(main_tail_diagnostics_cpp, "curve tail bookends", "telemetry snapshot logs tail bookends to detect post-apply shifts")
     require_text(main_tail_diagnostics_cpp, "no automatic VF reapply", "runtime tail drift diagnostics do not silently reapply VF settings")
     require_text(main_tail_diagnostics_cpp, "is_curve_point_visible_in_gui(ci)", "tail drift diagnostics skip hidden/unpopulated VF endpoints")
@@ -1618,7 +1656,7 @@ def run_source_regression_checks():
     require_text(desired_settings_helpers_cpp, "desired_is_fan_only_apply_request", "fan-only apply requests are detected without curve/OC fields")
     require_text(desired_settings_helpers_cpp, "desired_updates_curve_or_gpu_offset_state", "memory/power-only applies do not replace sparse curve intent")
     require_text(main_service_runtime_cpp, "merged fan-only request into active desired", "service fan-only applies preserve active curve intent")
-    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"), "skipped VF edit repaint for fan-only apply", "GUI client fan-only applies do not clear sparse curve masks")
+    require_text(gpu_backend_cpp, "skipped VF edit repaint for fan-only apply", "GUI client fan-only applies do not clear sparse curve masks")
     require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "preserving VF editor intent after fan-only apply", "main apply handler preserves VF editor after fan-only apply")
     require_text(main_runtime_control_cpp, "curvePoints=%d (%s)", "GUI capture logs sparse curve point list")
     require_text(os.path.join(SOURCE_DIR, "config_profiles.cpp"), "point74=%d/%u point75=%d/%u point76=%d/%u", "profile save logs edited pre-tail VF points")
@@ -1639,10 +1677,15 @@ def run_source_regression_checks():
     require_text(os.path.join(SOURCE_DIR, "main_gpu_front.cpp"), "retry_op", "rollback uses retry_op helper")
 
     # F-07-001: Config int truncation detection
-    require_text(os.path.join(SOURCE_DIR, "config_utils.cpp"), "n >= sizeof(buf) - 1", "config int read detects truncation")
+    require_text(config_utils_cpp, "n >= sizeof(buf) - 1", "config int read detects truncation")
+    require_text(config_utils_cpp, "errno == ERANGE", "Windows config integer parser rejects C library overflow")
+    require_text(os.path.join(SOURCE_DIR, "linux_port.cpp"), "errno == ERANGE", "Linux config integer parser rejects C library overflow")
+    require_text(fan_curve_cpp, "fan_curve_set_default(config)", "invalid fan curve normalization resets safely to defaults")
+    require_text(shared_h, "len > bufSize - offset", "HeapBuffer bounds checks avoid size_t addition overflow")
 
     # F-01-004: ASan flag exists
     require_text(build_script, "--asan", "ASan build flag exists")
+    require_text(build_script, "llvm_bin = os.path.dirname(LLVM_MINGW_CLANG)", "ASan test runner can find llvm-mingw sanitizer runtime")
 
     # F-10-001: Config mutex timeout diagnostic
     require_text(os.path.join(SOURCE_DIR, "config_utils.cpp"), "config mutex timed out", "config mutex timeout warning exists")

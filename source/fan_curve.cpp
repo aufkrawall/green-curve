@@ -54,6 +54,8 @@ void fan_curve_normalize(FanCurveConfig* config) {
     config->pollIntervalMs = clamp_int(config->pollIntervalMs, 250, 5000);
     config->pollIntervalMs = ((config->pollIntervalMs + 125) / 250) * 250;
     config->hysteresisC = clamp_int(config->hysteresisC, 0, FAN_CURVE_MAX_HYSTERESIS_C);
+    int normalizedPollIntervalMs = config->pollIntervalMs;
+    int normalizedHysteresisC = config->hysteresisC;
 
     FanCurvePoint enabled[FAN_CURVE_MAX_POINTS] = {};
     FanCurvePoint disabled[FAN_CURVE_MAX_POINTS] = {};
@@ -68,11 +70,10 @@ void fan_curve_normalize(FanCurveConfig* config) {
     }
 
     if (enabledCount < 2) {
-        FanCurveConfig defaults = {};
-        fan_curve_set_default(&defaults);
-        enabled[0] = defaults.points[0];
-        enabled[1] = defaults.points[1];
-        enabledCount = 2;
+        fan_curve_set_default(config);
+        config->pollIntervalMs = normalizedPollIntervalMs;
+        config->hysteresisC = normalizedHysteresisC;
+        return;
     }
 
     sort_enabled_points(enabled, enabledCount);

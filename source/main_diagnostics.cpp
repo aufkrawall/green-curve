@@ -345,6 +345,8 @@ static bool verify_parent_no_reparse_point(const char* path, char* err, size_t e
     return true;
 }
 
+static bool write_all_to_handle(HANDLE h, const char* data, size_t dataSize, const char* path, char* err, size_t errSize);
+
 static bool write_text_file_atomic(const char* path, const char* data, size_t dataSize, char* err, size_t errSize) {
     if (g_app.isServiceProcess && g_serviceUserPathsResolved) {
         return write_text_file_atomic_service(path, data, dataSize, err, errSize);
@@ -363,26 +365,30 @@ static bool write_text_file_atomic(const char* path, const char* data, size_t da
     }
 
     char tempPath[MAX_PATH] = {};
-    StringCchPrintfA(tempPath, ARRAY_COUNT(tempPath), "%s.tmp", path);
-
-    HANDLE h = CreateFileA(tempPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE h = INVALID_HANDLE_VALUE;
+    DWORD pid = GetCurrentProcessId();
+    for (unsigned int attempt = 0; attempt < 32; attempt++) {
+        if (FAILED(StringCchPrintfA(tempPath, ARRAY_COUNT(tempPath), "%s.tmp.%08lx.%08lx.%02u",
+                path,
+                (unsigned long)pid,
+                (unsigned long)GetTickCount(),
+                attempt))) {
+            set_message(err, errSize, "Temporary path is too long");
+            return false;
+        }
+        h = CreateFileA(tempPath, GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, nullptr);
+        if (h != INVALID_HANDLE_VALUE) break;
+        if (GetLastError() != ERROR_FILE_EXISTS && GetLastError() != ERROR_ALREADY_EXISTS) {
+            set_message(err, errSize, "Cannot create %s (error %lu)", tempPath, GetLastError());
+            return false;
+        }
+    }
     if (h == INVALID_HANDLE_VALUE) {
-        set_message(err, errSize, "Cannot create %s (error %lu)", tempPath, GetLastError());
+        set_message(err, errSize, "Cannot create a unique temporary output file");
         return false;
     }
 
-    DWORD totalWritten = 0;
-    bool ok = true;
-    while (totalWritten < dataSize) {
-        DWORD chunk = 0;
-        DWORD toWrite = (DWORD)nvmin((int)(dataSize - totalWritten), 1 << 20);
-        if (!WriteFile(h, data + totalWritten, toWrite, &chunk, nullptr) || chunk == 0) {
-            ok = false;
-            set_message(err, errSize, "Failed writing %s (error %lu)", tempPath, GetLastError());
-            break;
-        }
-        totalWritten += chunk;
-    }
+    bool ok = write_all_to_handle(h, data, dataSize, tempPath, err, errSize);
     if (ok && !FlushFileBuffers(h)) {
         ok = false;
         set_message(err, errSize, "Failed flushing %s (error %lu)", tempPath, GetLastError());
@@ -398,6 +404,25 @@ static bool write_text_file_atomic(const char* path, const char* data, size_t da
         set_message(err, errSize, "Failed finalizing %s (error %lu)", path, GetLastError());
         DeleteFileA(tempPath);
         return false;
+    }
+    return true;
+}
+
+static bool write_all_to_handle(HANDLE h, const char* data, size_t dataSize, const char* path, char* err, size_t errSize) {
+    if (h == INVALID_HANDLE_VALUE || !data) {
+        set_message(err, errSize, "Invalid file write handle");
+        return false;
+    }
+    size_t totalWritten = 0;
+    while (totalWritten < dataSize) {
+        size_t remaining = dataSize - totalWritten;
+        DWORD toWrite = (DWORD)(remaining > (1u << 20) ? (1u << 20) : remaining);
+        DWORD chunk = 0;
+        if (!WriteFile(h, data + totalWritten, toWrite, &chunk, nullptr) || chunk == 0) {
+            set_message(err, errSize, "Failed writing %s (error %lu)", path ? path : "output file", GetLastError());
+            return false;
+        }
+        totalWritten += chunk;
     }
     return true;
 }
@@ -451,11 +476,14 @@ static bool write_text_file_atomic_service(const char* path, const char* data, s
     HANDLE h = INVALID_HANDLE_VALUE;
     DWORD pid = GetCurrentProcessId();
     for (unsigned int attempt = 0; attempt < 32; attempt++) {
-        StringCchPrintfA(tempPath, ARRAY_COUNT(tempPath), "%s.tmp.%08lx.%08lx.%02u",
-            path,
-            (unsigned long)pid,
-            (unsigned long)GetTickCount(),
-            attempt);
+        if (FAILED(StringCchPrintfA(tempPath, ARRAY_COUNT(tempPath), "%s.tmp.%08lx.%08lx.%02u",
+                path,
+                (unsigned long)pid,
+                (unsigned long)GetTickCount(),
+                attempt))) {
+            set_message(err, errSize, "Temporary path is too long");
+            return false;
+        }
         h = CreateFileA(tempPath,
             GENERIC_READ | GENERIC_WRITE,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -483,17 +511,7 @@ static bool write_text_file_atomic_service(const char* path, const char* data, s
         return false;
     }
 
-    DWORD totalWritten = 0;
-    while (totalWritten < dataSize) {
-        DWORD chunk = 0;
-        DWORD toWrite = (DWORD)nvmin((int)(dataSize - totalWritten), 1 << 20);
-        if (!WriteFile(h, data + totalWritten, toWrite, &chunk, nullptr) || chunk == 0) {
-            ok = false;
-            set_message(err, errSize, "Failed writing %s (error %lu)", tempPath, GetLastError());
-            break;
-        }
-        totalWritten += chunk;
-    }
+    ok = write_all_to_handle(h, data, dataSize, tempPath, err, errSize);
     if (ok && !FlushFileBuffers(h)) {
         ok = false;
         set_message(err, errSize, "Failed flushing %s (error %lu)", tempPath, GetLastError());

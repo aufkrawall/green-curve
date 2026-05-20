@@ -282,6 +282,8 @@ static bool service_send_request(const ServiceRequest* request, ServiceResponse*
     }
 
     ULONGLONG startTickMs = GetTickCount64();
+    unsigned int connectFailures = 0;
+    DWORD lastConnectError = ERROR_SUCCESS;
     while (true) {
         DWORD remainingMs = service_remaining_timeout_ms(startTickMs, timeoutMs);
         if (remainingMs == 0) {
@@ -306,7 +308,20 @@ static bool service_send_request(const ServiceRequest* request, ServiceResponse*
                 return false;
             }
             DWORD mode = PIPE_READMODE_MESSAGE;
-            SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr);
+            if (!SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr)) {
+                DWORD modeErr = GetLastError();
+                CloseHandle(pipe);
+                g_app.backgroundServiceAvailable = false;
+                g_app.backgroundServiceBroken = true;
+                clear_service_authoritative_state();
+                set_message(err, errSize, "Failed configuring service pipe message mode (error %lu)", modeErr);
+                return false;
+            }
+            if (connectFailures > 0) {
+                debug_log("service_send_request: connected after %u retry(s), last error=%lu\n",
+                    connectFailures,
+                    (unsigned long)lastConnectError);
+            }
             remainingMs = service_remaining_timeout_ms(startTickMs, timeoutMs);
             if (!service_pipe_write_exact(pipe, request, sizeof(*request), remainingMs, "writing service request", err, errSize)) {
                 CloseHandle(pipe);
@@ -324,12 +339,31 @@ static bool service_send_request(const ServiceRequest* request, ServiceResponse*
                     clear_service_authoritative_state();
                     return false;
                 }
+                response->message[ARRAY_COUNT(response->message) - 1] = '\0';
+                response->serviceVersion[ARRAY_COUNT(response->serviceVersion) - 1] = '\0';
+                if (response->magic != SERVICE_PROTOCOL_MAGIC || response->version != SERVICE_PROTOCOL_VERSION) {
+                    CloseHandle(pipe);
+                    g_app.backgroundServiceAvailable = false;
+                    g_app.backgroundServiceBroken = true;
+                    clear_service_authoritative_state();
+                    set_message(err, errSize,
+                        "Service response protocol mismatch (magic=0x%08lX version=%lu)",
+                        (unsigned long)response->magic,
+                        (unsigned long)response->version);
+                    return false;
+                }
             }
             CloseHandle(pipe);
             return true;
         }
         DWORD e = GetLastError();
-        debug_log("service_send_request: CreateFileW pipe failed error=%lu\n", (unsigned long)e);
+        connectFailures++;
+        if (connectFailures == 1 || e != lastConnectError || (connectFailures % 10u) == 0u) {
+            debug_log("service_send_request: CreateFileW pipe failed error=%lu retry=%u\n",
+                (unsigned long)e,
+                connectFailures);
+        }
+        lastConnectError = e;
         if (e != ERROR_PIPE_BUSY && e != ERROR_FILE_NOT_FOUND) {
             set_message(err, errSize, "Failed connecting to service pipe (error %lu)", e);
             return false;
