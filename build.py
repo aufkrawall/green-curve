@@ -67,6 +67,8 @@ WINDOWS_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "ssp_glue.cpp"),
     os.path.join(SOURCE_DIR, "cfg_glue.cpp"),
 ]
+
+
 LINUX_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "linux_main.cpp"),
     os.path.join(SOURCE_DIR, "linux_port.cpp"),
@@ -184,6 +186,13 @@ SANITIZER_FLAGS = [
 ]
 
 WINDOWS_FLAGS = [
+    # --allow-multiple-definition is REQUIRED because the MinGW CRT
+    # unconditionally provides __guard_check_icall_fptr as a data pointer
+    # in .00cfg (mingw_cfguard_support.o, pulled in by loadcfg.o's PE
+    # load config references).  Our cfg_glue.cpp overrides it with a
+    # proper function.  The duplicate is harmless — LLD uses our
+    # definition (first on command line).  This is a known limitation
+    # of MinGW's CFG implementation.
     "-Wl,--subsystem,windows,--dynamicbase,--nxcompat,--high-entropy-va,--allow-multiple-definition",
     "-mguard=cf",
     "-fcf-protection=full",
@@ -1484,7 +1493,7 @@ def run_source_regression_checks():
     require_text(gpu_backend_apply_cpp, "post-apply lock clear: no lock requested", "service no-lock applies clear stale lock markers")
     require_text(gpu_backend_apply_cpp, "reset_oc_before_gui_apply", "GUI OC applies reset stale OC baseline before applying")
     require_text(gpu_backend_apply_cpp, "Restoring the existing VF curve after the memory offset did not verify", "VF preservation failures are reported")
-    require_text(gpu_backend_apply_cpp, "non-tail readback point %d actual %u MHz != target", "non-tail readback artifacts are accepted only for verification")
+    require_text(gpu_backend_apply_cpp, "non-tail %s point %d actual %u MHz != target", "non-tail readback artifacts are accepted only for verification")
     require_text(gpu_backend_apply_cpp, "keeping strict lock target", "lock tail readback mismatches do not mutate requested intent")
     require_text(gpu_backend_apply_cpp, "stockBase = (long long)originalCurveFreqkHz", "correction loop uses stock base for non-tail explicit points to avoid cumulative offset bug")
     require_text(gpu_backend_apply_cpp, "post-apply curve: ci=%d actual=%u", "post-apply curve state dump detects weird shifts")
