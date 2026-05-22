@@ -649,7 +649,7 @@ static HANDLE g_servicePipeThread = nullptr;
 static DWORD WINAPI service_resume_reapply_thread_proc(void*) {
     lock_service_runtime();
     debug_log("resume reapply thread: checking OC persistence\n");
-    service_check_oc_persistence();
+    service_check_oc_persistence(false);
     unlock_service_runtime();
     return 0;
 }

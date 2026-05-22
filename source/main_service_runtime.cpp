@@ -23,38 +23,91 @@ static void record_driver_recovery() {
     g_driverRecoveryHead = (g_driverRecoveryHead + 1) % RECOVERY_HISTORY_SIZE;
 }
 
-static void service_check_oc_persistence() {
+static void service_check_oc_persistence(bool isDriverRecovery) {
     if (!g_serviceHasActiveDesired || !nvml_ensure_ready()) return;
 
-    record_driver_recovery();
+    debug_log("oc_persistence: checking%s\n", isDriverRecovery ? " (driver recovery)" : " (standby resume)");
 
-    if (count_recent_driver_recoveries() >= MAX_RECOVERIES_BEFORE_BACKOFF) {
-        debug_log("oc_persistence: loop detected (%u recoveries in %u ms), blocking re-apply\n",
-            count_recent_driver_recoveries(), (unsigned int)RECOVERY_LOOP_WINDOW_MS);
-        return;
+    // Only record driver recovery for actual driver/TDR events, not standby resume.
+    if (isDriverRecovery) {
+        record_driver_recovery();
+
+        if (count_recent_driver_recoveries() >= MAX_RECOVERIES_BEFORE_BACKOFF) {
+            debug_log("oc_persistence: loop detected (%u recoveries in %u ms), blocking re-apply\n",
+                count_recent_driver_recoveries(), (unsigned int)RECOVERY_LOOP_WINDOW_MS);
+            return;
+        }
     }
 
-    // Read live GPU offset via NVML to see if driver reset happened.
-    int offsetMHz = 0;
+    // Read live settings via NVML to see if driver reset happened.
+    // Check GPU offset, memory offset, and power limit to determine whether
+    // settings survived. This avoids false "intact" results from a single field.
+    bool settingsLost = false;
+    char lostDetail[256] = {};
+    auto append_lost = [&](const char* fmt, ...) {
+        char part[128] = {};
+        va_list ap;
+        va_start(ap, fmt);
+        StringCchVPrintfA(part, ARRAY_COUNT(part), fmt, ap);
+        va_end(ap);
+        if (!part[0]) return;
+        if (lostDetail[0]) StringCchCatA(lostDetail, ARRAY_COUNT(lostDetail), "; ");
+        StringCchCatA(lostDetail, ARRAY_COUNT(lostDetail), part);
+    };
+
+    int gpuOffsetMHz = 0;
+    int memOffsetMHz = 0;
+
+    // 1. Check GPU clock offset
     if (g_nvml_api.getGpcClkVfOffset) {
-        nvmlReturn_t r = g_nvml_api.getGpcClkVfOffset(g_app.nvmlDevice, &offsetMHz);
+        nvmlReturn_t r = g_nvml_api.getGpcClkVfOffset(g_app.nvmlDevice, &gpuOffsetMHz);
         if (r != NVML_SUCCESS) return;
     } else {
         return;
     }
 
-    int desiredGpu = g_serviceActiveDesired.hasGpuOffset ? g_serviceActiveDesired.gpuOffsetMHz : offsetMHz;
+    int desiredGpu = g_serviceActiveDesired.hasGpuOffset ? g_serviceActiveDesired.gpuOffsetMHz : gpuOffsetMHz;
+    if (abs(gpuOffsetMHz - desiredGpu) > 5) {
+        settingsLost = true;
+        append_lost("GPU offset live=%d desired=%d", gpuOffsetMHz, desiredGpu);
+    }
 
-    if (abs(offsetMHz - desiredGpu) <= 5) {
-        debug_log("oc_persistence: GPU offset intact (%d MHz vs desired %d MHz), no re-apply\n",
-            offsetMHz, desiredGpu);
+    // 2. Check memory clock offset
+    if (g_nvml_api.getMemClkVfOffset && g_serviceActiveDesired.hasMemOffset) {
+        nvmlReturn_t r = g_nvml_api.getMemClkVfOffset(g_app.nvmlDevice, &memOffsetMHz);
+        if (r == NVML_SUCCESS) {
+            int desiredMem = g_serviceActiveDesired.memOffsetMHz;
+            if (abs(memOffsetMHz - desiredMem) > 5) {
+                settingsLost = true;
+                append_lost("mem offset live=%d desired=%d", memOffsetMHz, desiredMem);
+            }
+        }
+    }
+
+    // 3. Check power limit via NVML
+    if (g_nvml_api.getPowerLimit && g_nvml_api.getPowerDefaultLimit && g_serviceActiveDesired.hasPowerLimit) {
+        unsigned int curMw = 0, defMw = 0;
+        if (g_nvml_api.getPowerLimit(g_app.nvmlDevice, &curMw) == NVML_SUCCESS &&
+            g_nvml_api.getPowerDefaultLimit(g_app.nvmlDevice, &defMw) == NVML_SUCCESS && defMw > 0) {
+            int livePct = (int)((curMw * 100ULL + defMw / 2) / defMw);
+            int desiredPct = g_serviceActiveDesired.powerLimitPct;
+            if (abs(livePct - desiredPct) > 2) {
+                settingsLost = true;
+                append_lost("power limit live=%d%% desired=%d%%", livePct, desiredPct);
+            }
+        }
+    }
+
+    if (!settingsLost) {
+        debug_log("oc_persistence: all settings intact (gpu=%d mem=%d power=%d), no re-apply\n",
+            gpuOffsetMHz, memOffsetMHz, g_app.powerLimitPct);
         return;
     }
 
-    debug_log("oc_persistence: GPU offset lost (live=%d MHz desired=%d MHz), re-applying\n",
-        offsetMHz, desiredGpu);
+    debug_log("oc_persistence: settings lost: %s, re-applying with reset\n", lostDetail);
 
     char result[256] = {};
+    g_serviceActiveDesired.resetOcBeforeApply = true;
     if (!service_apply_desired_settings(&g_serviceActiveDesired, false, result, sizeof(result))) {
         debug_log("oc_persistence: re-apply failed: %s\n", result[0] ? result : "unknown");
     } else {
@@ -442,7 +495,7 @@ static void service_runtime_pulse() {
             close_nvml();
             if (nvml_ensure_ready()) {
                 debug_log("service_runtime_pulse: NVML recovered, checking OC persistence\n");
-                service_check_oc_persistence();
+                service_check_oc_persistence(true);
             }
         }
     }

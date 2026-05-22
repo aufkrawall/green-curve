@@ -1701,8 +1701,11 @@ def run_source_regression_checks():
     require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "RECOVERY_LOOP_WINDOW_MS", "TDR loop detection window exists")
     require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "MAX_RECOVERIES_BEFORE_BACKOFF", "TDR loop backoff threshold exists")
     require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "oc_persistence: loop detected", "TDR loop detection logs warning")
-    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "oc_persistence: GPU offset intact", "OC persistence check verifies before re-applying")
-    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "oc_persistence: GPU offset lost", "OC persistence re-applies when settings lost")
+    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "oc_persistence: checking", "OC persistence logs trigger source (driver recovery vs standby resume)")
+    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "oc_persistence: all settings intact", "OC persistence check verifies all settings before re-applying")
+    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "oc_persistence: settings lost:", "OC persistence re-applies with reset when settings lost")
+    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "GPU offset live=", "OC persistence check reads GPU offset")
+    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "re-applying with reset", "OC persistence uses reset-before-apply on auto re-apply")
     require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "NVML stale, attempting recovery", "fan pulse NVML recovery path exists")
 
     # FP-01-003: NVML recovery on service_runtime_pulse
