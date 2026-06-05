@@ -85,6 +85,7 @@ static void destroy_edit_controls(HWND hParent) {
 static void refresh_curve() {
     if (!g_app.backgroundServiceAvailable) {
         refresh_background_service_state();
+        start_service_reconnect_timer_if_needed();
         update_all_gui_for_service_state();
         return;
     }
@@ -105,6 +106,7 @@ static void refresh_curve() {
             invalidate_main_window();
         } else {
             refresh_background_service_state();
+            start_service_reconnect_timer_if_needed();
             clear_service_authoritative_state();
             update_all_gui_for_service_state();
             debug_log("Green Curve: Failed to read service snapshot: %s\n", detail);
@@ -169,6 +171,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             apply_system_titlebar_theme(hwnd);
             allow_dark_mode_for_window(hwnd);
             refresh_background_service_state();
+            start_service_reconnect_timer_if_needed();
             update_background_service_controls();
             update_fan_telemetry_timer();
             ensure_main_window_min_size(hwnd);
@@ -253,6 +256,30 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 bool redrawControls = window_should_redraw_fan_controls();
                 refresh_live_fan_telemetry(redrawControls);
                 update_fan_telemetry_timer();
+                return 0;
+            }
+            if (wParam == SERVICE_RECONNECT_TIMER_ID) {
+                // Auto-reconnect: periodic ping when service is unavailable
+                if (!g_app.backgroundServiceAvailable) {
+                    debug_log("reconnect timer: attempting service ping\n");
+                    if (refresh_background_service_state()) {
+                        // Service is back! Update GUI with latest state.
+                        update_all_gui_for_service_state();
+                        refresh_curve();
+                        // Only stop the timer once the GUI has fully loaded
+                        // curve data from the service.  If recovery is still
+                        // in progress the snapshot has loaded=false — keep
+                        // polling until it succeeds.
+                        if (g_app.loaded) {
+                            KillTimer(hwnd, SERVICE_RECONNECT_TIMER_ID);
+                            debug_log("reconnect timer: GPU snapshot loaded, stopping timer\n");
+                        } else {
+                            debug_log("reconnect timer: snapshot loaded=false, keeping timer alive\n");
+                        }
+                    }
+                } else {
+                    KillTimer(hwnd, SERVICE_RECONNECT_TIMER_ID);
+                }
                 return 0;
             }
             break;

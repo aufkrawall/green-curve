@@ -69,6 +69,102 @@ static const char* cli_log_path() {
     return g_cliLogPath[0] ? g_cliLogPath : APP_CLI_LOG_FILE;
 }
 
+// Resolve the machine-fixed per-process LocalAppData\Green Curve directory used
+// for service-side artifacts (restart history, reapply snapshot, early debug
+// log, crash dumps).  For the LocalSystem service this is the SYSTEM profile's
+// LocalAppData, which is admin-only, consistent across restarts, and available
+// before any interactive logon.  PROJECT POLICY: never use %ProgramData% for
+// program files — it is user-readable, which would disclose SYSTEM-process crash
+// dumps.  Crash-safe: stack buffers and environment variables only (callable
+// from the vectored exception handler).
+static bool resolve_service_machine_data_dir(char* out, size_t outSize) {
+    if (!out || outSize == 0) return false;
+    out[0] = 0;
+    char base[MAX_PATH] = {};
+    DWORD n = GetEnvironmentVariableA("LOCALAPPDATA", base, ARRAY_COUNT(base));
+    if (n == 0 || n >= ARRAY_COUNT(base)) {
+        // A LocalSystem service may not have %LOCALAPPDATA% in its environment;
+        // construct the SYSTEM profile's LocalAppData from %SystemRoot%.
+        char sysRoot[MAX_PATH] = {};
+        DWORD m = GetEnvironmentVariableA("SystemRoot", sysRoot, ARRAY_COUNT(sysRoot));
+        if (m == 0 || m >= ARRAY_COUNT(sysRoot)) {
+            StringCchCopyA(sysRoot, ARRAY_COUNT(sysRoot), "C:\\Windows");
+        }
+        if (FAILED(StringCchPrintfA(base, ARRAY_COUNT(base),
+                "%s\\System32\\config\\systemprofile\\AppData\\Local", sysRoot))) {
+            return false;
+        }
+    }
+    return SUCCEEDED(StringCchPrintfA(out, outSize, "%s\\Green Curve", base));
+}
+
+// Best-effort removal of the legacy %ProgramData%\Green Curve directory used by
+// older builds (restart history, reapply snapshot, early debug log, and — most
+// importantly — SYSTEM-process crash dumps that were world-readable there).
+// Honors the LocalAppData-only policy and clears any previously disclosed dumps.
+// Only deletes files inside our own legacy directory; never recurses.
+static void service_cleanup_legacy_programdata() {
+    char programData[MAX_PATH] = {};
+    DWORD n = GetEnvironmentVariableA("ProgramData", programData, ARRAY_COUNT(programData));
+    if (n == 0 || n >= ARRAY_COUNT(programData)) {
+        StringCchCopyA(programData, ARRAY_COUNT(programData), "C:\\ProgramData");
+    }
+    char legacyDir[MAX_PATH] = {};
+    if (FAILED(StringCchPrintfA(legacyDir, ARRAY_COUNT(legacyDir), "%s\\Green Curve", programData))) return;
+    DWORD attrs = GetFileAttributesA(legacyDir);
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) return;
+
+    char pattern[MAX_PATH] = {};
+    if (FAILED(StringCchPrintfA(pattern, ARRAY_COUNT(pattern), "%s\\*", legacyDir))) return;
+    WIN32_FIND_DATAA fd = {};
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) continue; // skip ., .., subdirs
+            char filePath[MAX_PATH] = {};
+            if (SUCCEEDED(StringCchPrintfA(filePath, ARRAY_COUNT(filePath), "%s\\%s", legacyDir, fd.cFileName))) {
+                DeleteFileA(filePath);
+            }
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+    if (RemoveDirectoryA(legacyDir)) {
+        debug_log("service: removed legacy ProgramData\\Green Curve directory (migrated to LocalAppData)\n");
+    }
+}
+
+// F-REL-2: cap the number of VEH minidumps kept on disk.  A driver-recovery
+// restart loop writes one greencurve_veh_*.dmp per crash cycle; without a cap a
+// sustained loop (or a poison-pill) could write hundreds and fill the disk.
+// Called once per fresh service process (which is once per restart cycle), so it
+// bounds the dumps across an entire loop.  Deletes the lexicographically-oldest
+// (the filename embeds a YYYYMMDD_HHMMSS timestamp) until at most maxKeep remain.
+static void service_rotate_minidumps(unsigned int maxKeep) {
+    char dir[MAX_PATH] = {};
+    if (!resolve_service_machine_data_dir(dir, sizeof(dir))) return;
+    char pattern[MAX_PATH] = {};
+    if (FAILED(StringCchPrintfA(pattern, ARRAY_COUNT(pattern), "%s\\greencurve_veh_*.dmp", dir))) return;
+    for (;;) {
+        WIN32_FIND_DATAA fd = {};
+        HANDLE h = FindFirstFileA(pattern, &fd);
+        if (h == INVALID_HANDLE_VALUE) return;
+        unsigned int count = 0;
+        char oldest[MAX_PATH] = {};
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            count++;
+            if (oldest[0] == 0 || lstrcmpA(fd.cFileName, oldest) < 0) {
+                StringCchCopyA(oldest, ARRAY_COUNT(oldest), fd.cFileName);
+            }
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+        if (count <= maxKeep || oldest[0] == 0) return;
+        char victim[MAX_PATH] = {};
+        if (FAILED(StringCchPrintfA(victim, ARRAY_COUNT(victim), "%s\\%s", dir, oldest))) return;
+        if (!DeleteFileA(victim)) return; // stop on failure to avoid an infinite loop
+    }
+}
+
 static bool resolve_data_paths(char* err, size_t errSize) {
     if (g_userDataDir[0] && g_cliLogPath[0] && g_debugLogPath[0] && g_jsonPath[0] && g_errorLogPath[0]) {
         return true;
@@ -297,8 +393,31 @@ static bool hardware_initialize(char* detail, size_t detailSize) {
         return false;
     }
     (void)offsetsOk;
-    set_last_apply_phase("hardware initialize: global state refresh");
-    refresh_global_state(detail, detailSize);
+    // Skip refresh_global_state() while recovering from a recent NVML crash
+    // (GPU device reconnect / driver restart via restart64.exe).
+    // refresh_global_state() issues NVML reads (power limit, clock offsets,
+    // fans) that can access-violate while the GPU kernel driver is still in a
+    // transitional state after the reconnect — even though NVAPI (used for the
+    // VF curve readback above) has already recovered.  A crash here kills
+    // whichever thread called hardware_initialize(): the fan runtime recovery
+    // thread OR the pipe server thread answering a GUI snapshot, breaking the
+    // GUI connection.
+    //
+    // nvml_crash_recovery_active() is true only while the VEH has flagged a
+    // recent stale-handle crash and the driver has not yet settled (the fan
+    // runtime thread clears g_nvmlCrashCount the instant a recovery reapply
+    // succeeds).  On normal startup it is false and the refresh runs as usual.
+    // NOTE: an earlier version checked `g_app.gpuHandle == nullptr` here, but
+    // nvapi_enum_gpu() above always sets gpuHandle non-null first, so the skip
+    // was dead code and refresh_global_state() always ran — that was the NVML
+    // access-violation the recovery loop kept hitting.
+    if (nvml_crash_recovery_active()) {
+        debug_log("hardware_initialize: skipping global state refresh during NVML crash recovery (crashCount=%ld)\n",
+            (long)g_nvmlCrashCount);
+    } else {
+        set_last_apply_phase("hardware initialize: global state refresh");
+        refresh_global_state(detail, detailSize);
+    }
     initialize_gui_fan_settings_from_live_state(false);
     // Preserve the service active desired state across reinitializations
     // (e.g. after a driver TDR) so the GUI does not lose track of what
@@ -390,12 +509,24 @@ static void populate_service_snapshot(ServiceSnapshot* snapshot) {
     snapshot->appliedGpuOffsetMHz = snapshotGpuOffsetMHz;
     snapshot->appliedGpuOffsetExcludeLowCount = snapshotGpuOffsetExcludeLowCount;
     snapshot->lastApplyUsedGpuOffset = g_app.lastApplyUsedGpuOffset;
+    // RC7 fix: only report the lock from active desired if the hardware
+    // is actually loaded and the reapply has confirmed the settings stuck.
+    // When hardware_initialize fails (e.g. nvapi_init FAILED after recovery),
+    // g_app.loaded is false and there is no applied lock regardless of what
+    // the stale active desired claims.  The hardware state is unknown/stock.
+    // While g_serviceReapplyInProgress is set, the GPU was just reconnected
+    // and the desired lock has NOT been reapplied — fall through to live
+    // curve detection so the GUI does not falsely display a locked tail.
+    bool reapplyPending = InterlockedExchangeAdd(&g_serviceReapplyInProgress, 0) != 0;
     bool snapshotLockFromActiveDesired = g_app.isServiceProcess
+        && g_app.loaded
+        && g_app.gpuHandle
         && g_serviceHasActiveDesired
         && g_serviceActiveDesired.hasLock
         && g_serviceActiveDesired.lockCi >= 0
         && g_serviceActiveDesired.lockCi < VF_NUM_POINTS
-        && g_serviceActiveDesired.lockMHz > 0;
+        && g_serviceActiveDesired.lockMHz > 0
+        && !reapplyPending;
     if (snapshotLockFromActiveDesired) {
         snapshot->hasLock = true;
         snapshot->lockCi = g_serviceActiveDesired.lockCi;
@@ -433,6 +564,13 @@ static void populate_service_snapshot(ServiceSnapshot* snapshot) {
     StringCchCopyA(snapshot->ownerUser, ARRAY_COUNT(snapshot->ownerUser), g_app.backgroundServiceOwnerUser);
     snapshot->ownerSessionId = g_app.backgroundServiceOwnerSessionId;
     snapshot->ownerUtcMs = g_app.backgroundServiceOwnerUtcMs;
+    // GPU recovery status
+    snapshot->serviceInRecovery = InterlockedExchangeAdd(&g_serviceGpuRecovering, 0) != 0;
+    snapshot->lastRecoveryTickMs = g_serviceLastRecoveryTickMs;
+    // Reapply-in-progress: set after recovery when the reapply thread is
+    // working on restoring OC/fan settings.  The GUI uses this to show
+    // "reapplying..." instead of a misleading "settings active" indicator.
+    snapshot->serviceReapplyInProgress = InterlockedExchangeAdd(&g_serviceReapplyInProgress, 0) != 0;
     LeaveCriticalSection(&g_appLock);
 }
 
@@ -532,6 +670,39 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
     g_app.backgroundServiceOwnerSessionId = snapshot->ownerSessionId;
     g_app.backgroundServiceOwnerUtcMs = snapshot->ownerUtcMs;
     rebuild_visible_map();
+    // F-REL-2e: clear a stale ADOPTED GUI lock when the service has authoritatively
+    // reset to no-lock (e.g. reset-to-defaults after an out-of-band restart) and the
+    // user has no unsaved edits.  This runs OUTSIDE should_accept_service_curve_lock_
+    // detection() — that gate returns false whenever lockedCi>=0, which would
+    // otherwise pin the stale lock checkbox / point value / "Lock:" header forever
+    // after a reset.  Narrow on purpose: only fires when the snapshot authoritatively
+    // reports no lock (a real recovery still reports the active desired lock, so this
+    // never fights an in-flight reapply), the user is NOT dirty-editing, and the
+    // current GUI lock matches the last applied/adopted lock (never a fresh,
+    // unapplied user edit).
+    if (snapshot->loaded && !snapshot->hasLock && !gui_state_dirty()
+        && g_app.lockedCi >= 0
+        && g_app.lockedCi == g_app.appliedLockCi
+        && g_app.lockedFreq == g_app.appliedLockFreq) {
+        debug_log("apply_service_snapshot_to_app: service reports no lock and GUI is not dirty — "
+            "clearing stale adopted GUI lock ci=%d mhz=%u and forcing a full GUI refresh to match the reset state\n",
+            g_app.lockedCi, g_app.lockedFreq);
+        g_app.lockedCi = -1;
+        g_app.lockedFreq = 0;
+        g_app.lockedVi = -1;
+        g_app.appliedLockCi = -1;
+        g_app.appliedLockFreq = 0;
+        g_app.appliedLockVi = -1;
+        g_app.guiLockTracksAnchor = true;
+        // The per-second telemetry poll deliberately does NOT resync the editable
+        // curve/lock controls (so it never wipes in-progress edits).  Since we just
+        // cleared an adopted lock to follow a service reset, request the same full
+        // visual resync the Refresh button performs (graph, per-point fields, lock
+        // checkboxes, "Lock:" header) so the WHOLE GUI reflects the default state —
+        // not just internal state.  Without this only field state changes and the
+        // graph/checkbox/header stay stale until the user presses Refresh.
+        g_guiForceFullRefresh = true;
+    }
     if (snapshot->loaded && should_accept_service_curve_lock_detection()) {
         if (snapshot->hasLock && snapshot->lockCi >= 0 && snapshot->lockMHz > 0) {
             g_app.lockedCi = snapshot->lockCi;
@@ -550,6 +721,22 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
             debug_log("apply_service_snapshot_to_app: adopted service lock ci=%d mhz=%u visible=%d\n",
                 g_app.lockedCi, g_app.lockedFreq, g_app.lockedVi);
         } else {
+            // RC7 fix: when the snapshot reports hasLock=false (e.g. after
+            // a GPU device reconnect where the reapply hasn't completed, or
+            // after a RESET), clear the GUI-side lock FIRST so that
+            // detect_locked_tail_from_curve() can properly re-detect from
+            // the live curve.  Without this, should_accept_service_curve_
+            // lock_detection() would return false (lockedCi >= 0 from old
+            // snapshot) and detect_locked_tail_from_curve would see
+            // should_auto_detect_locked_tail_from_live_curve() return false,
+            // preserving the stale lock indefinitely.
+            g_app.lockedCi = -1;
+            g_app.lockedFreq = 0;
+            g_app.guiLockTracksAnchor = true;
+            g_app.lockedVi = -1;
+            g_app.appliedLockCi = -1;
+            g_app.appliedLockFreq = 0;
+            g_app.appliedLockVi = -1;
             detect_locked_tail_from_curve();
         }
     }

@@ -39,25 +39,78 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
 // ============================================================================
 // NvAPI Interface
 // ============================================================================
+
+// Module-level cache so close_nvapi() can invalidate it across calls.
+// nvapi_qi() caches the nvapi_QueryInterface function pointer to avoid
+// repeated GetProcAddress lookups.  However, after a GPU driver restart
+// (VEH crash, driver update, TDR), nvml_ensure_ready() calls FreeLibrary
+// on nvapi64.dll which unmaps the DLL.  Without invalidating this cache,
+// the stale pointer causes an access violation on the next call.
+static void* (*g_nvapiQi)(unsigned int) = nullptr;
+
 static void* nvapi_qi(unsigned int id) {
-    typedef void* (*qi_func)(unsigned int);
-    static qi_func qi = nullptr;
-    if (!qi) {
+    // During GPU recovery, NvAPI handles are being closed/reloaded — skip
+    // all NvAPI calls until recovery completes.
+    // EXCEPT: when g_serviceInitInProgress is set, the recovery thread itself
+    // is the one calling us (Phase C re-init) and needs the early-return
+    // bypassed so it can obtain fresh module handles.  See the matching
+    // bypass in nvml_ensure_ready() and the long comment in app_shared.h.
+    LONG initInProgress = InterlockedExchangeAdd(&g_serviceInitInProgress, 0);
+    if (InterlockedExchangeAdd(&g_nvapiRecoveryInProgress, 0) != 0 &&
+        initInProgress == 0) {
+        return nullptr;
+    }
+    if (!g_nvapiQi) {
         g_app.hNvApi = load_system_library_a("nvapi64.dll");
         if (!g_app.hNvApi) {
             g_app.hNvApi = load_system_library_a("nvapi.dll");
         }
         if (!g_app.hNvApi) return nullptr;
-        qi = (qi_func)GetProcAddress(g_app.hNvApi, "nvapi_QueryInterface");
-        if (!qi) return nullptr;
+        g_nvapiQi = (void* (*)(unsigned int))GetProcAddress(g_app.hNvApi, "nvapi_QueryInterface");
+        if (!g_nvapiQi) return nullptr;
     }
-    return qi(id);
+    return g_nvapiQi(id);
 }
 static bool nvapi_init() {
     typedef int (*init_t)();
     auto init = (init_t)nvapi_qi(NVAPI_INIT_ID);
-    if (!init) return false;
-    return init() == 0;
+    if (!init) {
+        debug_log("nvapi_init: FAILED — nvapi_QueryInterface(id=NVAPI_INIT_ID) returned null"
+            " (dll=%s)\n",
+            g_app.hNvApi ? (GetProcAddress(g_app.hNvApi, "nvapi_QueryInterface") ? "loaded" : "qi-missing") : "not-loaded");
+        return false;
+    }
+    int r = init();
+    debug_log("nvapi_init: result=%d dll=%s\n",
+        r,
+        g_app.hNvApi ? "loaded" : "none");
+    return r == 0;
+}
+
+static void close_nvapi() {
+    if (g_app.hNvApi) {
+        FreeLibrary(g_app.hNvApi);
+        g_app.hNvApi = nullptr;
+    }
+    // Invalidate the nvapi_qi() module-level cache so the next call
+    // reloads nvapi64.dll with fresh function pointers.  Without this,
+    // after a GPU driver restart (VEH crash), the cached pointer points
+    // to unmapped memory and causes an access violation.
+    g_nvapiQi = nullptr;
+    // Clear adapter cache so re-enumeration is clean
+    g_app.selectedGpuIndex = 0;
+    g_app.selectedGpuIdentityValid = false;
+    g_app.selectedGpuExplicit = false;
+    memset(g_app.adapters, 0, sizeof(g_app.adapters));
+    g_app.adapterCount = 0;
+    // Clear GPU handle and hardware-init guards so the next call to
+    // hardware_initialize() fully re-enumerates GPUs instead of returning
+    // early with stale handles from the previous driver session.
+    g_app.gpuHandle = nullptr;
+
+    g_app.loaded = false;
+    g_app.vfBackend = nullptr;
+    debug_log("nvapi: closed DLL, cleared adapter cache, and invalidated nvapi_qi cache\n");
 }
 
 static bool gpu_adapter_has_same_pci_identity(const GpuAdapterInfo* a, const GpuAdapterInfo* b) {

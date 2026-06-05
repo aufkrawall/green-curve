@@ -9,6 +9,67 @@
 #include "win32_raii.h"
 #include <dbghelp.h>
 
+// Global VEH thread-ID tracking — the VEH only kills the fan runtime thread via
+// ExitThread; other threads (pipe server, etc.) also get killed but their
+// corresponding watchdogs recreate them.
+static DWORD g_fanRuntimeThreadId = 0;
+
+// The pipe handle created by the pipe server thread.  Stored globally so the
+// main loop's watchdog can close the orphaned handle when the thread is killed
+// by the VEH, before creating a new pipe server thread.
+static HANDLE g_servicePipeHandle = INVALID_HANDLE_VALUE;
+
+// Flag set by the VEH when it handles any nvml/nvapi crash.  The snapshot
+// handler checks this flag and skips refresh_global_state() (which calls
+// NVML directly) to avoid crashing the pipe server thread.  Cleared by
+// service_runtime_pulse() after successful NVML recovery.
+static volatile LONG g_nvmlVhCrashed = 0;
+
+// Crash back-off state: tick and count of consecutive NVML crashes (set by
+// VEH).  service_runtime_pulse() uses these to throttle NVML retries after a
+// driver restart that keeps producing stale device handles.
+static volatile ULONGLONG g_nvmlCrashTickMs = 0;
+static volatile LONG g_nvmlCrashCount = 0;
+
+// Upper bound of the NVML crash recovery window.  After a GPU device reconnect
+// / driver restart (e.g. restart64.exe), NVML reads access-violate for a few
+// seconds while the GPU kernel driver settles.  During this window, pipe-server
+// snapshots, telemetry, and hardware_initialize() avoid issuing NVML reads and
+// serve cached data while the recovery thread reloads the driver libraries.
+// The time cap guarantees telemetry self-heals even if no fan runtime thread is
+// active.
+// Reduced from 35s to 15s in build 191 — modern GPU drivers settle within
+// ~5-10s after a device reconnect; 15s provides comfortable margin without
+// excessive user wait.
+#define NVML_CRASH_RECOVERY_WINDOW_MS 15000ULL
+
+// Minimum interval between two consecutive launch_recovery_thread() calls.
+// Without this, the wedge watchdog / main-loop monitor can spawn a new
+// recovery every ~3 s when the previous recovery wedged, producing a
+// visible "recovery loop" in the log.  10 s gives the driver time to
+// actually settle before we try again, and is well below the
+// NVML_CRASH_RECOVERY_WINDOW_MS so it doesn't suppress the legitimate
+// single recovery on a fresh reconnect.
+#define SERVICE_RECOVERY_RELAUNCH_INTERVAL_MS 10000ULL
+
+// True while we are inside the NVML crash recovery window: the VEH has flagged
+// a stale-handle crash (g_nvmlCrashCount > 0) and the GPU kernel driver has not
+// yet had time to settle.  Callers use this to skip NVML reads that would
+// access-violate and kill the calling thread during the transitional window.
+static bool nvml_crash_recovery_active() {
+    LONG count = g_nvmlCrashCount;
+    ULONGLONG tick = g_nvmlCrashTickMs;
+    if (count <= 0 || tick == 0) return false;
+    return (GetTickCount64() - tick) < NVML_CRASH_RECOVERY_WINDOW_MS;
+}
+
+// Legacy restart request path retained for service-control fallbacks.  Driver
+// reconnect / upgrade recovery is in-process: stale GPU handles are closed,
+// libraries are reloaded, and the active desired profile is re-applied without
+// restarting the service.
+static volatile LONG g_serviceRestartRequested = 0;
+static void request_service_restart(const char* reason);
+
 // Declared in cfg_glue.cpp — set process-wide security mitigation policies.
 extern "C" void initialize_process_mitigations();
 
@@ -93,14 +154,47 @@ static bool g_serviceFanThreadLastWaitFixed = false;
 static ULONGLONG g_serviceTelemetryLastHardwarePollTickMs = 0;
 static char g_serviceTelemetryLastPollSource[64] = {};
 
+// Heartbeat written by the fan runtime thread at the START of every pulse
+// attempt (just before any NVML call) and again on completion.  The main-loop
+// watchdog uses it to detect a fan thread WEDGED inside nvml.dll on a dead
+// driver (a hang the VEH cannot catch) and launch in-process recovery.
+static volatile ULONGLONG g_serviceFanPulseHeartbeatMs = 0;
+static volatile LONG g_serviceFanPulseInFlight = 0;
+
+// Timestamp of the most recent successful in-process GPU recovery completion,
+// or 0 if no recovery has completed.  Read by the snapshot handler to report
+// recovery status to the GUI.
+static ULONGLONG g_serviceLastRecoveryTickMs = 0;
+static volatile LONG g_serviceRecoveryReapplyPending = 0;
+static DWORD g_serviceRecoveryReapplyAttempts = 0;
+static ULONGLONG g_serviceRecoveryReapplyNextTickMs = 0;
+
+// Reapply thread — runs the recovery reapply on a dedicated thread instead of
+// the main service loop.  If VEH kills this thread (NVML/NvAPI crash on a
+// still-transitional driver), the main loop survives and can retry.
+static HANDLE g_serviceReapplyThread = nullptr;
+static volatile DWORD g_serviceReapplyThreadId = 0;
+
+// Set when a reapply is in-flight after recovery and not yet confirmed
+// applied to hardware.  Cleared on successful reapply.  The GUI uses this
+// flag to show "reapplying..." instead of a misleading "settings active".
+static volatile LONG g_serviceReapplyInProgress = 0;
+
 static const int SERVICE_DEBUG_DEFAULT_ENABLED = 1; // Service logs are opt-out via [debug] enabled=0 or GREEN_CURVE_DEBUG=0.
 static const DWORD SERVICE_PIPE_CLIENT_CONNECT_SLICE_MS = 250;
 static const DWORD SERVICE_PIPE_CLIENT_SLEEP_SLICE_MS = 10;
 static const DWORD SERVICE_PIPE_SERVER_IO_TIMEOUT_MS = 2000;
 static const DWORD SERVICE_FAN_THREAD_STOP_TIMEOUT_MS = 5000;
+static const DWORD SERVICE_FAN_WATCHDOG_INTERVAL_MS = 3000;
+// A healthy fan pulse completes in well under a second (a few NVML reads/writes
+// plus short verified-readback sleeps).  If one is still in flight after this
+// long it is wedged inside nvml.dll on a dead driver; force a clean restart.
+static const ULONGLONG SERVICE_FAN_PULSE_WEDGE_TIMEOUT_MS = 12000;
 static const DWORD SERVICE_RUNTIME_NOISY_LOG_INTERVAL_MS = 5000;
 static const ULONGLONG SERVICE_TELEMETRY_IDLE_REFRESH_INTERVAL_MS = 5000;
 static const ULONGLONG SERVICE_TELEMETRY_RUNTIME_STALE_GRACE_MS = 1000;
+static const DWORD SERVICE_RECOVERY_REAPPLY_RETRY_INTERVAL_MS = 5000;
+static const DWORD SERVICE_RECOVERY_REAPPLY_MAX_ATTEMPTS = 12;
 static const DWORD ELEVATED_HELPER_TIMEOUT_MS = 60000;
 
 static void* nvapi_qi(unsigned int id);
@@ -168,16 +262,27 @@ static bool service_runtime_lock_held_by_current_thread();
 static void service_set_pending_operation_source(const char* source);
 static void set_last_apply_phase(const char* phase);
 static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* info);
+static LONG CALLBACK green_curve_vectored_handler(EXCEPTION_POINTERS* info);
 static bool service_resolve_active_user_paths_for_startup(const char* context);
 static DWORD WINAPI service_fan_runtime_thread_proc(void*);
 static DWORD WINAPI service_pipe_server_thread_proc(void*);
 static bool ensure_service_fan_runtime_thread();
 static void stop_service_fan_runtime_thread();
 static void service_runtime_pulse();
+static void service_write_restart_reapply_snapshot();
+static void service_clear_restart_reapply_snapshot();
+static void service_launch_startup_reapply();
+static void service_queue_recovery_reapply(const char* reason, DWORD delayMs);
+static void service_maybe_launch_recovery_from_main_loop(const char* source);
+static void service_maybe_launch_recovery_reapply_thread();
+static void service_check_reapply_thread_health();
 static void mark_service_telemetry_cache_updated(const char* source);
 static bool service_refresh_telemetry_for_request(char* detail, size_t detailSize);
 static bool service_apply_desired_settings(const DesiredSettings* desired, bool interactive, char* result, size_t resultSize);
 static bool service_reset_all(char* result, size_t resultSize);
+// GPU driver-recovery is handled by restarting the service process; record each
+// restart for persisted restart-loop protection (defined in main_service_runtime.cpp).
+static void service_record_restart_event();
 static bool background_service_pipe_name(WCHAR* out, size_t outCount);
 static bool service_is_installed();
 static bool service_is_running();
@@ -258,6 +363,28 @@ static void layout_bottom_buttons(HWND hParent);
 static void debug_log(const char* fmt, ...);
 static void debug_log_session_marker(const char* phase, const char* kind, const char* extra = nullptr);
 static void close_debug_log_file();
+
+// Request a controlled service-process restart for GPU driver recovery.
+// This is the single recovery action: in-process NVML/NvAPI reload after a
+// device reconnect / driver upgrade is unreliable, so we restart the process
+// and let a fresh instance map clean driver DLLs (see launch_recovery_thread).
+// Idempotent (first caller wins).  Snapshots the active OC/fan profile so the
+// fresh process re-applies it, records the restart for persisted loop
+// protection, and signals the main loop to exit non-zero so the SCM failure
+// action relaunches us.  Deliberately does NOT touch NVML/NvAPI here (those
+// calls can hang on a dead/transitional driver); the NVML-free exit happens in
+// the service_main loop's restart branch.
+static void request_service_restart(const char* reason) {
+    if (InterlockedExchange(&g_serviceRestartRequested, 1) != 0) return;
+    debug_log("request_service_restart: %s — exiting for clean driver DLL state, SCM will relaunch\n",
+        reason ? reason : "(unspecified)");
+    // Persist active OC/fan settings so the fresh process re-applies them.
+    service_write_restart_reapply_snapshot();
+    // Record this restart so the fresh process can detect a restart loop (a
+    // genuinely broken driver that crashes every process) and stop reapplying.
+    service_record_restart_event();
+    if (g_serviceStopEvent) SetEvent(g_serviceStopEvent);
+}
 static HMODULE load_system_library_a(const char* name);
 static bool find_trusted_nvidia_smi_path_w(WCHAR* out, size_t outCount);
 static bool find_trusted_nvidia_smi_path_a(char* out, size_t outSize);
@@ -323,8 +450,11 @@ static bool desired_settings_have_explicit_state(const DesiredSettings* desired,
 
 static void detect_locked_tail_from_curve();
 static void close_nvml();
+static void close_nvapi();
 static const char* nvml_err_name(nvmlReturn_t r);
 static bool nvml_ensure_ready();
+// Forward declaration for recovery entry point — defined in main_service_runtime.cpp
+static void launch_recovery_thread();
 static bool nvml_set_fan_auto(char* detail, size_t detailSize);
 static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_t detailSize);
 static void initialize_gui_fan_settings_from_live_state(bool syncGuiCurve = true);
@@ -338,6 +468,7 @@ static void refresh_live_fan_telemetry(bool redrawControls = true);
 static bool window_should_redraw_fan_controls();
 static void sync_fan_ui_from_cached_state(bool redrawControls = true);
 static void update_fan_telemetry_timer();
+static void start_service_reconnect_timer_if_needed();
 static void boost_fan_telemetry_for_ms(DWORD durationMs);
 static bool fan_manual_control_available(char* detail, size_t detailSize);
 static bool validate_manual_fan_percent_for_runtime(int pct, char* detail, size_t detailSize);

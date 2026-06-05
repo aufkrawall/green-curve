@@ -72,6 +72,24 @@ __attribute__((used)) void __cdecl __guard_check_icall_fptr(uintptr_t Target) {
 // Must be called early in process startup, after CRT init is complete.
 // Typically invoked from both the GUI and service entry points.
 extern "C" void initialize_process_mitigations() {
+    // Harden the DLL search path FIRST, before this process issues any
+    // LoadLibrary call.  Restrict the default search to System32 (plus any
+    // explicitly AddDllDirectory-registered user dirs, of which we register
+    // none) and drop the current working directory.  This blocks DLL planting
+    // (e.g. a rogue dbghelp.dll / version.dll dropped next to the binary) from
+    // hijacking the process — critical for the LocalSystem service.
+    //
+    // NVIDIA's nvml.dll / nvapi64.dll and their dependencies live in System32,
+    // and our own helper loads use absolute System32 paths (load_system_library_a),
+    // so this does not change which DLLs we resolve — it only removes the unsafe
+    // application-directory and CWD search entries.
+    //
+    // Statically-imported DLLs are bound by the loader BEFORE this runs, so the
+    // install-directory ACL (ensure_secure_service_binary_path) is the primary
+    // defense for those; this call protects every runtime LoadLibrary.
+    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS);
+    SetDllDirectoryW(L"");
+
     // Enable strict handle checking: any use of an invalid handle
     // (double-close, use-after-close, bogus value) raises an exception
     // instead of silently succeeding with unpredictable behavior.

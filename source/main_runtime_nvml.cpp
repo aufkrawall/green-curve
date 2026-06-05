@@ -681,7 +681,13 @@ static bool nvml_select_device_for_selected_gpu(char* detail, size_t detailSize)
     unsigned int count = 0;
     bool haveCount = g_nvml_api.getCount && g_nvml_api.getCount(&count) == NVML_SUCCESS && count > 0;
     if (!haveCount) count = g_app.adapterCount > 0 ? g_app.adapterCount : 1;
-    if (g_nvml_api.getPciInfo && g_app.selectedGpu.valid && g_app.selectedGpu.pciInfoValid) {
+    // Skip PCI-identity matching while a recovery reapply is in progress
+    // (g_serviceInitInProgress): nvmlDeviceGetPciInfo can access-violate on a
+    // still-transitional kernel driver even though nvmlInit_v2 succeeded.  The
+    // selected ordinal index is preserved from config, so ordinal fallback is
+    // reliable for the single-GPU case.
+    if (g_nvml_api.getPciInfo && g_app.selectedGpu.valid && g_app.selectedGpu.pciInfoValid &&
+        InterlockedExchangeAdd(&g_serviceInitInProgress, 0) == 0) {
         int matched = -1;
         for (unsigned int i = 0; i < count && i < 64; i++) {
             nvmlDevice_t candidate = nullptr;
@@ -734,7 +740,46 @@ static bool nvml_select_device_for_selected_gpu(char* detail, size_t detailSize)
 }
 
 static bool nvml_ensure_ready() {
+    // If device was removed, don't try to use NVML — the internal handles
+    // are stale and calling into nvml.dll will crash.  Wait for device
+    // arrival to re-initialize.
+    if (g_app.deviceRemoved) return false;
+
+    // In-process GPU recovery is active — NVML handles are being closed and
+    // re-initialized by the recovery thread.  Return not-ready so callers
+    // serve cached data instead of touching stale handles.
+    // EXCEPT: when g_serviceInitInProgress is set, the recovery thread itself
+    // is the one calling us (Phase C re-init) and needs the early-return
+    // bypassed so it can obtain fresh module handles.  The safety guard
+    // (g_nvmlCrashCount / g_nvmlCrashTickMs) stays set in that case, but
+    // g_serviceInitInProgress tells us we're the recovery's own re-init, not
+    // a stray pipe-server / fan-runtime call.
+    LONG initInProgress = InterlockedExchangeAdd(&g_serviceInitInProgress, 0);
+    LONG recovering = InterlockedExchangeAdd(&g_serviceGpuRecovering, 0);
+    if (recovering != 0 && initInProgress == 0) {
+        return false;
+    }
+
+    // RC7 ROOT CAUSE FIX: check for already-initialized handles BEFORE the
+    // crash recovery guard.  Recovery Phase C sets g_app.nvmlReady=true and
+    // g_app.nvmlDevice=valid, but the guard below runs first and DESTROYS
+    // those fresh handles (sets them to null/return false) during the safety
+    // window.  This breaks EVERY call during the window including GUI Apply
+    // and the reapply thread — both see "NVML not ready" because the handles
+    // were just cleared by the guard.
     if (g_app.nvmlReady && g_app.nvmlDevice) return true;
+
+    // After a VEH-handled nvml.dll crash (GPU driver restart), the recovery
+    // thread will re-initialize NVML with fresh handles.  Until then, report
+    // not-ready so callers fail gracefully / serve cached data.
+    // g_serviceInitInProgress bypasses this guard for the recovery's own
+    // Phase C re-init — see the comment above.
+    if (initInProgress == 0 &&
+        (g_nvmlVhCrashed || nvml_crash_recovery_active())) {
+        g_app.nvmlReady = false;
+        g_app.nvmlDevice = nullptr;
+        return false;
+    }
     if (!g_nvml) {
         g_nvml = load_trusted_nvml_library();
     }
@@ -774,9 +819,58 @@ static bool nvml_ensure_ready() {
         nvml_resolve((void**)&g_nvml_api.getMaxClock, "nvmlDeviceGetMaxClock");
     }
 
-    if (!g_nvml_api.init || !g_nvml_api.getHandleByIndex) return false;
+    if (!g_nvml_api.init || !g_nvml_api.getHandleByIndex) {
+        debug_log("nvml_ensure_ready: FAILED — missing core function pointers (init=%d getHandleByIndex=%d)\n",
+            g_nvml_api.init ? 1 : 0,
+            g_nvml_api.getHandleByIndex ? 1 : 0);
+        return false;
+    }
+
+    // Log which NVML component function groups resolved.  This helps diagnose
+    // driver-upgrade / device-reconnect issues: if fan or clock-offset
+    // functions are null after a reload, the new nvml.dll may not support
+    // the required APIs for the connected GPU.
+    {
+        int fanOk = 0;
+        if (g_nvml_api.getNumFans) fanOk++;
+        if (g_nvml_api.getFanSpeed) fanOk++;
+        if (g_nvml_api.setFanSpeed) fanOk++;
+        if (g_nvml_api.setDefaultFanSpeed) fanOk++;
+        if (g_nvml_api.setFanControlPolicy) fanOk++;
+        if (g_nvml_api.getFanControlPolicy) fanOk++;
+        if (g_nvml_api.getTargetFanSpeed) fanOk++;
+        int clockOk = 0;
+        if (g_nvml_api.getClockOffsets) clockOk++;
+        if (g_nvml_api.setClockOffsets) clockOk++;
+        if (g_nvml_api.getGpcClkVfOffset) clockOk++;
+        if (g_nvml_api.setGpcClkVfOffset) clockOk++;
+        if (g_nvml_api.getMemClkVfOffset) clockOk++;
+        if (g_nvml_api.setMemClkVfOffset) clockOk++;
+        if (g_nvml_api.getPerformanceState) clockOk++;
+        if (g_nvml_api.getClock) clockOk++;
+        int powerOk = 0;
+        if (g_nvml_api.getPowerLimit) powerOk++;
+        if (g_nvml_api.setPowerLimit) powerOk++;
+        if (g_nvml_api.getPowerConstraints) powerOk++;
+        bool haveTemp = g_nvml_api.getTemperature != nullptr;
+        debug_log("nvml: components resolved — fan=%d/8 clock=%d/8 power=%d/3 temperature=%d\n",
+            fanOk, clockOk, powerOk, haveTemp ? 1 : 0);
+    }
+
+    // RC7: log the exact nvmlInit result so we can distinguish fresh first-
+    // reference (NVML_SUCCESS==0) from second-reference (NVML_ERROR_ALREADY_
+    // INITIALIZED==12).  Only the former allows full write paths (mem offset,
+    // fan control) through the kernel driver.
     nvmlReturn_t r = g_nvml_api.init();
-    if (r != NVML_SUCCESS && r != NVML_ERROR_ALREADY_INITIALIZED) return false;
+        debug_log("nvml_ensure_ready: nvmlInit returned %d", (int)r);
+    if (r == NVML_SUCCESS) {
+        debug_log(" (NVML_SUCCESS — fresh first-reference client)\n");
+    } else if (r == NVML_ERROR_ALREADY_INITIALIZED) {
+        debug_log(" (NVML_ERROR_ALREADY_INITIALIZED — second-reference, writes may be rejected)\n");
+    } else {
+        debug_log(" (unknown — treating as failure)\n");
+        return false;
+    }
     char selectDetail[256] = {};
     if (!nvml_select_device_for_selected_gpu(selectDetail, sizeof(selectDetail))) {
         debug_log("nvml_ensure_ready: selected GPU mapping failed: %s\n", selectDetail[0] ? selectDetail : "unknown error");

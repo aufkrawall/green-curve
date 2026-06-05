@@ -1,3 +1,5 @@
+#include "service_acl.h"
+
 static bool background_service_pipe_name(WCHAR* out, size_t outCount) {
     // Fixed pipe name without session ID. Using the session ID in the pipe name
     // breaks after reboot: the service starts at boot (session 0) and creates
@@ -820,14 +822,48 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
         return false;
     }
 
+    // F-SEC-1: harden the installed binary's DACL so a standard user cannot
+    // overwrite it and gain SYSTEM code execution via the SCM/auto-restart path.
+    // Runs elevated (service install requires admin) and BEFORE the service is
+    // registered, so a failure to secure the binary fails the install closed.
+    char aclErr[160] = {};
+    if (!apply_protected_service_binary_dacl(targetPath, aclErr, sizeof(aclErr))) {
+        set_message(err, errSize, "Failed securing service binary: %s", aclErr[0] ? aclErr : "unknown");
+        return false;
+    }
+    if (service_path_is_under_secure_root(installDir)) {
+        debug_log("service install: binary DACL hardened; install dir is under an admin-only system root\n");
+    } else {
+        debug_log("service install WARNING: install dir \"%ls\" is not under an admin-only system "
+            "root. The binary DACL is hardened (no non-admin overwrite), but a user-writable parent "
+            "directory could still permit delete+recreate. Install under %%ProgramFiles%% for full "
+            "protection.\n", installDir);
+    }
+
     return SUCCEEDED(StringCchCopyW(out, outCount, targetPath));
 }
 
 static void cleanup_secure_service_binary_after_remove() {
     // Service binary removal intentionally does NOT delete the file from disk.
-    // With the service now installed adjacent to the GUI binary, the user
-    // manages the service binary manually. Deleting it on service uninstall
-    // would destroy the user's manually-placed binary.
-    // The SCM unregistration (DeleteService) is sufficient.
+    // With the service installed adjacent to the GUI binary, the user manages
+    // the service binary manually. Deleting it on service uninstall would
+    // destroy the user's manually-placed binary.
+    //
+    // F-SEC-1: we DO revert the protected DACL that install applied, so once the
+    // service is unregistered the user can freely delete or replace the binary
+    // again (the in-place hardening is only meaningful while it is a registered
+    // SYSTEM service).
+    WCHAR installDir[MAX_PATH] = {};
+    char ignored[64] = {};
+    if (!get_secure_service_install_dir_w(installDir, ARRAY_COUNT(installDir), ignored, sizeof(ignored))) return;
+    WCHAR targetPath[MAX_PATH] = {};
+    if (FAILED(StringCchPrintfW(targetPath, ARRAY_COUNT(targetPath), L"%ls\\%ls", installDir, APP_SERVICE_EXE_NAME_W))) return;
+    if (GetFileAttributesW(targetPath) == INVALID_FILE_ATTRIBUTES) return;
+    char aclErr[160] = {};
+    if (restore_inherited_dacl(targetPath, aclErr, sizeof(aclErr))) {
+        debug_log("service uninstall: reverted service binary DACL to inherited; user can delete/replace it\n");
+    } else {
+        debug_log("service uninstall: could not revert service binary DACL: %s\n", aclErr[0] ? aclErr : "unknown");
+    }
 }
 

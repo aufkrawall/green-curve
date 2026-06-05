@@ -66,6 +66,7 @@ WINDOWS_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "fan_curve.cpp"),
     os.path.join(SOURCE_DIR, "ssp_glue.cpp"),
     os.path.join(SOURCE_DIR, "cfg_glue.cpp"),
+    os.path.join(SOURCE_DIR, "service_acl.cpp"),
 ]
 
 
@@ -172,7 +173,7 @@ COMMON_FLAGS = [
 ]
 
 # C-002: read VERSION and inject it into all compile commands
-APP_VERSION = "0.13"
+APP_VERSION = "0.14"
 APP_BUILD_NUMBER = 0
 _version_path = os.path.join(SCRIPT_DIR, "VERSION")
 if os.path.exists(_version_path):
@@ -230,6 +231,7 @@ WINDOWS_LINK_LIBS = [
     "-lwtsapi32",
     "-luuid",
     "-ldbghelp",
+    "-lversion",
 ]
 
 WINDOWS_SERVICE_LINK_LIBS = [
@@ -241,6 +243,7 @@ WINDOWS_SERVICE_LINK_LIBS = [
     "-luserenv",
     "-luuid",
     "-ldbghelp",
+    "-lversion",
 ]
 
 
@@ -1204,7 +1207,7 @@ def generate_lsp_files():
             "file": source,
             "arguments": ["clang++", *linux_flags, "-fsyntax-only", source],
         })
-    for source in (os.path.join(SOURCE_DIR, "app_shared.cpp"), os.path.join(SOURCE_DIR, "config_utils.cpp"), os.path.join(SOURCE_DIR, "fan_curve.cpp")):
+    for source in (os.path.join(SOURCE_DIR, "app_shared.cpp"), os.path.join(SOURCE_DIR, "config_utils.cpp"), os.path.join(SOURCE_DIR, "fan_curve.cpp"), os.path.join(SOURCE_DIR, "service_acl.cpp")):
         entries.append({
             "directory": SCRIPT_DIR,
             "file": source,
@@ -1222,6 +1225,7 @@ def run_regression_tests(extra_flags=None):
     """Run pure regression tests that do not touch GPU hardware."""
     harness = r'''
 #include "fan_curve.h"
+#include "service_acl.h"
 
 void invalidate_tray_profile_cache() {}
 
@@ -1393,6 +1397,145 @@ int main(int argc, char** argv) {
         if (ds.curvePointMHz[0] != 5000u) return 54;
     }
 
+    // F-SEC-4: IPC validator also clamps index/mode/curve fields so a hostile
+    // unprivileged caller cannot drive an out-of-bounds index, an unknown fan
+    // mode, or out-of-range fan-curve values into the LocalSystem service.
+    {
+        DesiredSettings ds = {};
+        ds.lockCi = 9999;
+        validate_desired_settings_for_ipc(&ds);
+        if (ds.lockCi != VF_NUM_POINTS - 1) return 55;
+        ds.lockCi = -42;
+        validate_desired_settings_for_ipc(&ds);
+        if (ds.lockCi != -1) return 56;
+        ds.gpuOffsetExcludeLowCount = -5;
+        validate_desired_settings_for_ipc(&ds);
+        if (ds.gpuOffsetExcludeLowCount != 0) return 57;
+        ds.gpuOffsetExcludeLowCount = 9999;
+        validate_desired_settings_for_ipc(&ds);
+        if (ds.gpuOffsetExcludeLowCount != VF_NUM_POINTS) return 58;
+        ds.hasFan = true;
+        ds.fanMode = 99;
+        validate_desired_settings_for_ipc(&ds);
+        if (ds.fanMode != FAN_MODE_CURVE) return 59;
+        ds.fanMode = -7;
+        validate_desired_settings_for_ipc(&ds);
+        if (ds.fanMode != FAN_MODE_AUTO) return 60;
+        ds.fanCurve.points[0].fanPercent = 250;
+        ds.fanCurve.points[0].temperatureC = 9999;
+        ds.fanCurve.points[1].fanPercent = -30;
+        ds.fanCurve.points[1].temperatureC = -50;
+        ds.fanCurve.hysteresisC = 999;
+        ds.fanCurve.pollIntervalMs = 0;
+        validate_desired_settings_for_ipc(&ds);
+        if (ds.fanCurve.points[0].fanPercent != 100) return 61;
+        if (ds.fanCurve.points[0].temperatureC != 150) return 62;
+        if (ds.fanCurve.points[1].fanPercent != 0) return 63;
+        if (ds.fanCurve.points[1].temperatureC != 0) return 64;
+        if (ds.fanCurve.hysteresisC != FAN_CURVE_MAX_HYSTERESIS_C) return 65;
+        if (ds.fanCurve.pollIntervalMs != 1) return 66;
+    }
+
+    // FP-08-003 RC6d: lock-serialization smoke test.  Proves the
+    // g_serviceRuntimeLock mutex actually serializes two threads, which
+    // is the invariant the RC6 fix relies on (recovery thread takes the
+    // lock before closing NVML in Phase B, so the pipe-server APPLY
+    // cannot race the close).  This test is a supplement to the
+    // FP-08-003 source regression check (which is the deterministic
+    // verification of the fix in the actual production code).  Without
+    // serialization, the bug (recovery thread closes NVML under an
+    // in-flight apply) would re-appear.
+    {
+        // Two synthetic threads against a fresh local CRITICAL_SECTION
+        // (not g_serviceRuntimeLock, which is created lazily by
+        // ensure_service_runtime_lock() and may be in an undefined
+        // state during a hermetic test).  Each thread takes the CS,
+        // sleeps 200 ms, then releases.  If the CS serializes, the
+        // maximum concurrent-inside-CS count is exactly 1 and the
+        // total wall-clock time from thread launch to thread completion
+        // is at least ~400 ms (sum of both sleeps).  If the CS didn't
+        // serialize, two threads could be inside simultaneously and
+        // the total time would be ~200 ms (overlapping sleeps).
+        struct Rc6dShared {
+            CRITICAL_SECTION cs;
+            volatile long count;
+            long maxConcurrent;
+        };
+        static Rc6dShared s_rc6d = {};
+        InitializeCriticalSection(&s_rc6d.cs);
+        s_rc6d.count = 0;
+        s_rc6d.maxConcurrent = 0;
+        struct Rc6dThreadParams { Rc6dShared* s; };
+        auto rc6dThreadProc = +[](void* p) -> DWORD {
+            Rc6dThreadParams* params = (Rc6dThreadParams*)p;
+            Rc6dShared* s = params->s;
+            EnterCriticalSection(&s->cs);
+            long incremented = (long)InterlockedIncrement(&s->count);
+            if (incremented > s->maxConcurrent) {
+                s->maxConcurrent = incremented;
+            }
+            Sleep(200);
+            InterlockedDecrement(&s->count);
+            LeaveCriticalSection(&s->cs);
+            return 0;
+        };
+        Rc6dThreadParams params = {&s_rc6d};
+        LARGE_INTEGER qpcStart, qpcEnd, qpcFreq;
+        QueryPerformanceFrequency(&qpcFreq);
+        QueryPerformanceCounter(&qpcStart);
+        HANDLE t1 = CreateThread(nullptr, 0, rc6dThreadProc, &params, 0, nullptr);
+        HANDLE t2 = CreateThread(nullptr, 0, rc6dThreadProc, &params, 0, nullptr);
+        if (!t1 || !t2) {
+            if (t1) CloseHandle(t1);
+            if (t2) CloseHandle(t2);
+            DeleteCriticalSection(&s_rc6d.cs);
+            return 100;
+        }
+        HANDLE handles[2] = {t1, t2};
+        WaitForMultipleObjects(2, handles, TRUE, 5000);
+        QueryPerformanceCounter(&qpcEnd);
+        CloseHandle(t1);
+        CloseHandle(t2);
+        long finalCount = s_rc6d.count;
+        long maxConcurrent = s_rc6d.maxConcurrent;
+        long long totalUs = ((qpcEnd.QuadPart - qpcStart.QuadPart) * 1000000LL) / qpcFreq.QuadPart;
+        DeleteCriticalSection(&s_rc6d.cs);
+        if (finalCount != 0) return 101;
+        // Verify serialization: the maximum number of threads inside
+        // the critical section simultaneously must be exactly 1
+        // (otherwise the CS is broken).
+        if (maxConcurrent != 1) return 102;
+        // The total wall-clock time from thread launch to completion
+        // must be at least 2 * 200 ms = 400 ms (the sum of both
+        // sleeps).  If the CS didn't serialize, the second thread
+        // would enter immediately after the first, and the total time
+        // would be ~200 ms.  Allow 50 ms slop for tick resolution and
+        // scheduler noise (use 350 ms threshold = 400 ms - 50 ms).
+        if (totalUs < 350000LL) return 103;
+    }
+
+    // F-SEC-1: protected service-binary DACL round-trip.  apply_* must produce a
+    // hardened DACL (inheritance disabled, no non-admin write); restore_* must
+    // revert it so the file inherits its parent directory's ACLs again.  This
+    // verifies the exact security property without needing a second identity.
+    {
+        wchar_t tempDir[MAX_PATH] = {};
+        if (GetTempPathW(MAX_PATH, tempDir) == 0) return 110;
+        wchar_t aclFile[MAX_PATH] = {};
+        StringCchPrintfW(aclFile, MAX_PATH, L"%lsgc_acl_%lu.bin", tempDir, GetCurrentProcessId());
+        HANDLE ah = CreateFileW(aclFile, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (ah == INVALID_HANDLE_VALUE) return 111;
+        CloseHandle(ah);
+        char aclErr[160] = {};
+        // A fresh temp file inherits the (non-protected) temp dir ACL.
+        if (service_binary_dacl_is_hardened(aclFile)) { DeleteFileW(aclFile); return 112; }
+        if (!apply_protected_service_binary_dacl(aclFile, aclErr, sizeof(aclErr))) { DeleteFileW(aclFile); return 113; }
+        if (!service_binary_dacl_is_hardened(aclFile)) { DeleteFileW(aclFile); return 114; }
+        if (!restore_inherited_dacl(aclFile, aclErr, sizeof(aclErr))) { DeleteFileW(aclFile); return 115; }
+        if (service_binary_dacl_is_hardened(aclFile)) { DeleteFileW(aclFile); return 116; }
+        DeleteFileW(aclFile);
+    }
+
     DeleteCriticalSection(&g_configLock);
     return 0;
 }
@@ -1422,11 +1565,12 @@ int main(int argc, char** argv) {
             os.path.join(SOURCE_DIR, "fan_curve.cpp"),
             os.path.join(SOURCE_DIR, "config_utils.cpp"),
             os.path.join(SOURCE_DIR, "app_shared.cpp"),
+            os.path.join(SOURCE_DIR, "service_acl.cpp"),
         ])
         if extra_flags:
             cmd.extend(extra_flags)
         if sys.platform == "win32":
-            cmd.extend(["-static", "-luser32", "-lgdi32", "-luuid"])
+            cmd.extend(["-static", "-luser32", "-lgdi32", "-luuid", "-ladvapi32"])
         print("Compiling pure regression tests")
         result = subprocess.run(cmd, cwd=SCRIPT_DIR)
         if result.returncode != 0:
@@ -1458,10 +1602,60 @@ def require_text(path, needle, label):
         sys.exit(1)
 
 
+def forbid_text(path, needle, label):
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        text = handle.read()
+    if needle in text:
+        print(f"Regression source check FAILED (must be absent): {label}")
+        sys.exit(1)
+
+
+def require_order(path, first, second, label):
+    """Assert that `first` appears before `second` in the file (both required)."""
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        text = handle.read()
+    fi = text.find(first)
+    si = text.find(second)
+    if fi < 0 or si < 0 or fi >= si:
+        print(f"Regression source check FAILED (order): {label}")
+        sys.exit(1)
+
+
+def warn_oversized_source_files(soft_limit=800):
+    """F-MAINT-1: warn about source files exceeding the ~600-800 line guideline.
+
+    Non-fatal: prints a maintainability warning so file growth stays visible and
+    new oversized files get noticed. app_shared.h (shared protocol/type header) is
+    intentionally exempt — splitting it is high-risk/low-value.
+    """
+    exempt = {"app_shared.h"}
+    oversized = []
+    for name in sorted(os.listdir(SOURCE_DIR)):
+        if not (name.endswith(".cpp") or name.endswith(".h")):
+            continue
+        if name in exempt:
+            continue
+        path = os.path.join(SOURCE_DIR, name)
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                lines = sum(1 for _ in handle)
+        except OSError:
+            continue
+        if lines > soft_limit:
+            oversized.append((lines, name))
+    if oversized:
+        oversized.sort(reverse=True)
+        print(f"NOTE: {len(oversized)} source file(s) exceed the ~{soft_limit}-line guideline (F-MAINT-1):")
+        for lines, name in oversized:
+            print(f"  {lines:5d}  source/{name}")
+
+
 def run_source_regression_checks():
+    warn_oversized_source_files()
     main_cpp = os.path.join(SOURCE_DIR, "main.cpp")
     entry_cpp = os.path.join(SOURCE_DIR, "entry.cpp")
     diagnostics_cpp = os.path.join(SOURCE_DIR, "main_diagnostics.cpp")
+    secure_write_cpp = os.path.join(SOURCE_DIR, "main_secure_write.cpp")
     service_ipc_cpp = os.path.join(SOURCE_DIR, "main_service_ipc.cpp")
     service_server_cpp = os.path.join(SOURCE_DIR, "main_service_server.cpp")
     config_utils_cpp = os.path.join(SOURCE_DIR, "config_utils.cpp")
@@ -1480,15 +1674,26 @@ def run_source_regression_checks():
     main_runtime_control_cpp = os.path.join(SOURCE_DIR, "main_runtime_control.cpp")
     main_runtime_gpu_cpp = os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp")
     main_service_runtime_cpp = os.path.join(SOURCE_DIR, "main_service_runtime.cpp")
+    main_service_persist_cpp = os.path.join(SOURCE_DIR, "main_service_persist.cpp")
+    main_service_recovery_cpp = os.path.join(SOURCE_DIR, "main_service_recovery.cpp")
+    main_service_install_cpp = os.path.join(SOURCE_DIR, "main_service_install.cpp")
     ui_main_cpp = os.path.join(SOURCE_DIR, "ui_main.cpp")
     shared_h = os.path.join(SOURCE_DIR, "app_shared.h")
+    app_shared_h = shared_h
+    app_shared_cpp = os.path.join(SOURCE_DIR, "app_shared.cpp")
     build_script = os.path.join(SCRIPT_DIR, "build.py")
+    build_py_text = build_script
     gitignore = os.path.join(SCRIPT_DIR, ".gitignore")
 
     require_text(shared_h, "APP_DEBUG_DEFAULT_ENABLED 1", "debug logging remains default-on")
     require_text(shared_h, "APP_TITLE           APP_NAME \" v\" APP_VERSION", "plain title macro exists")
     require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 6", "service protocol version bumped")
     require_text(shared_h, "resetOcBeforeApply", "GUI apply reset-before-apply protocol flag exists")
+    # F-SEC-4: the IPC trust-boundary validator must clamp every field that can
+    # reach an array index, the fan policy switch, or a fan-speed write.
+    require_text(shared_h, "d->lockCi >= VF_NUM_POINTS", "IPC validator clamps lockCi to array bounds")
+    require_text(shared_h, "d->gpuOffsetExcludeLowCount > VF_NUM_POINTS", "IPC validator clamps selective-offset exclude count")
+    require_text(shared_h, "d->fanMode > FAN_MODE_CURVE", "IPC validator clamps fan mode to a valid enum value")
     require_text(shared_h, "GpuAdapterInfo", "GPU adapter identity protocol exists")
     require_text(shared_h, "APP_BUILD_NUMBER", "build number define exists")
     require_text(shared_h, "serviceBuildNumber", "service response carries build number")
@@ -1499,14 +1704,14 @@ def run_source_regression_checks():
     require_text(diagnostics_cpp, "open_debug_log_file_locked", "debug log file open helper exists")
     require_text(diagnostics_cpp, "green_curve_unhandled_exception_filter", "crash filter exists")
     require_text(diagnostics_cpp, "MiniDumpWriteDump", "crash filter writes minidump")
-    require_text(diagnostics_cpp, "write_all_to_handle", "file writes use size_t-safe chunked write helper")
+    require_text(secure_write_cpp, "write_all_to_handle", "file writes use size_t-safe chunked write helper")
     require_text(main_cpp, "SERVICE_PIPE_SERVER_IO_TIMEOUT_MS", "service pipe server I/O timeout exists")
     require_text(service_server_cpp, "CancelIoEx(pipe, &ov)", "stalled pipe operations are cancellable")
     require_text(service_server_cpp, "response.serviceBuildNumber", "service responses include build number")
     require_text(service_server_cpp, "restricted ACL creation returned no descriptor", "service pipe creation fails closed without ACL")
     require_text(service_server_cpp, "FATAL failed to create pipe server thread", "service fails closed when pipe server thread cannot start")
-    require_text(service_server_cpp, "stop_service_for_binary_update", "service repair stops old service before replacing binary")
-    require_text(service_server_cpp, "SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_STOP | SERVICE_QUERY_STATUS", "service repair can stop installed service")
+    require_text(main_service_install_cpp, "stop_service_for_binary_update", "service repair stops old service before replacing binary")
+    require_text(main_service_install_cpp, "SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_STOP | SERVICE_QUERY_STATUS", "service repair can stop installed service")
     require_text(service_ipc_cpp, "service_client_ping: identity mismatch", "GUI rejects mismatched service version identity")
     require_text(service_ipc_cpp, "compatible build mismatch accepted", "GUI accepts compatible service build-number drift")
     require_text(service_ipc_cpp, "backgroundServiceError", "service ping failures are surfaced to the GUI")
@@ -1521,7 +1726,7 @@ def run_source_regression_checks():
     require_text(config_profiles_ui_cpp, "repair needed", "broken installed service advertises repair state")
     require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "Repair and restart the background service", "broken installed service click repairs instead of removing")
     require_text(config_profiles_ui_cpp, "GPU settings were not applied", "startup selected profile restore is GUI-only")
-    require_text(gpu_backend_apply_cpp, "attempting driver write anyway", "memory offsets outside reported range are attempted")
+    require_text(gpu_backend_apply_cpp, "applying anyway by design", "memory offsets outside reported range are still attempted (F-DOM-1: not gated)")
     require_text(main_gpu_state_cpp, "live_selective_gpu_offset_matches_requested_shape", "persisted selective GPU offset is verified against live VF shape")
     require_text(main_gpu_state_cpp, "runtime selective: ignoring persisted request", "stale persisted selective GPU offset is ignored")
     require_text(main_gpu_state_cpp, "non-selective request clears runtime state", "uniform GPU offsets clear runtime selective state")
@@ -1543,7 +1748,7 @@ def run_source_regression_checks():
     require_text(main_fan_runtime_cpp, "if (g_app.freqOffsets[i] != 0) return true;", "live_state_has_custom_oc checks freqOffsets without vfBackend guard")
     require_text(runtime_nvml_cpp, "rollback_changed_fans", "manual multi-fan writes roll back partial failures")
     require_text(runtime_nvml_cpp, "nvml_select_device_for_selected_gpu", "NVML device is matched to selected GPU")
-    require_text(diagnostics_cpp, "write_text_file_atomic_service", "service file writes use hardened writer")
+    require_text(secure_write_cpp, "write_text_file_atomic_service", "service file writes use hardened writer")
     require_text(ui_main_cpp, "gpuSelectY = dp(10)", "GPU selector lives in the graph header gap")
     require_text(main_gpu_state_cpp, "Writes are intentionally enabled", "best-guess VF writes remain explicitly enabled")
     require_text(main_shell_cpp, "preserving requested value", "config memory offsets are not clamped to reported range")
@@ -1570,14 +1775,43 @@ def run_source_regression_checks():
     require_text(build_script, "-fPIE", "Linux PIE hardening retained")
     require_text(build_script, "-Wl,-z,relro,-z,now", "Linux RELRO/BIND_NOW hardening retained")
     require_text(build_script, "-Wl,-z,noexecstack", "Linux non-executable stack hardening retained")
+    # F-SEC-2: DLL-search hardening runs in initialize_process_mitigations(),
+    # which both the GUI (entry.cpp) and service (main.cpp) entry points call
+    # before any runtime LoadLibrary — blocks DLL planting of non-KnownDLLs.
+    cfg_glue_cpp = os.path.join(SOURCE_DIR, "cfg_glue.cpp")
+    require_text(cfg_glue_cpp, "SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32", "startup hardens the DLL search path against planting")
+    require_text(cfg_glue_cpp, "SetDllDirectoryW(L\"\")", "startup removes the CWD from the DLL search path")
+    # F-SEC-1: service install hardens the installed binary DACL (no non-admin
+    # overwrite of a SYSTEM service binary) and uninstall reverts it so the user
+    # can delete/replace the unregistered binary again.
+    service_acl_cpp = os.path.join(SOURCE_DIR, "service_acl.cpp")
+    require_text(service_ipc_cpp, "apply_protected_service_binary_dacl(targetPath", "service install hardens the installed binary DACL")
+    require_text(service_ipc_cpp, "restore_inherited_dacl(targetPath", "service uninstall reverts the binary DACL to inherited")
+    require_text(service_acl_cpp, "PROTECTED_DACL_SECURITY_INFORMATION", "binary DACL hardening disables inheritance")
+    require_text(service_acl_cpp, "(A;;0x1200a9;;;BU)", "binary DACL grants BUILTIN\\Users read+execute only")
+    # F-SEC-5 / policy: program files live only under %LOCALAPPDATA%\\Green Curve.
+    # The shared resolver and the one-time legacy cleanup are the only places
+    # permitted to mention ProgramData; the per-process data/diagnostics paths must
+    # not. (Service LocalAppData = SYSTEM profile, which is admin-only.)
+    state_sync_cpp = os.path.join(SOURCE_DIR, "main_state_sync.cpp")
+    service_runtime_cpp = os.path.join(SOURCE_DIR, "main_service_runtime.cpp")
+    require_text(state_sync_cpp, "resolve_service_machine_data_dir", "service machine data dir resolves under LocalAppData")
+    require_text(state_sync_cpp, "service_cleanup_legacy_programdata", "legacy ProgramData directory cleanup exists")
+    require_text(service_server_cpp, "service_cleanup_legacy_programdata()", "service startup runs the legacy ProgramData cleanup")
+    forbid_text(service_runtime_cpp, "ProgramData", "service runtime stores files under LocalAppData, not ProgramData")
+    forbid_text(diagnostics_cpp, "ProgramData", "diagnostics stores files under LocalAppData, not ProgramData")
+    # F-DOM-1: the experimental best-guess-family VF warning re-shows once per
+    # session and is no longer permanently dismissible via a persisted config flag.
+    require_text(os.path.join(SOURCE_DIR, "main_gpu_front.cpp"), "g_bestGuessWarningShownThisSession", "best-guess warning re-shows once per session")
+    forbid_text(os.path.join(SOURCE_DIR, "main_gpu_state.cpp"), "hide_best_guess_warning_", "best-guess warning is not permanently dismissible")
 
     # F-04-001: Pipe server identity verification beyond PID
     require_text(service_ipc_cpp, "does not match expected", "pipe server executable path is verified against expected service binary")
     require_text(service_ipc_cpp, "cannot verify server binary path", "pipe server identity accepts PID match when image path cannot be queried")
 
     # F-04-002: LocalSystem file-write parent directory verification
-    require_text(diagnostics_cpp, "parent dir verified", "service file-write verifies parent directory before temp creation")
-    require_text(diagnostics_cpp, "FILE_FLAG_OPEN_REPARSE_POINT", "service file-write opens parent without following reparse points")
+    require_text(secure_write_cpp, "parent dir verified", "service file-write verifies parent directory before temp creation")
+    require_text(secure_write_cpp, "FILE_FLAG_OPEN_REPARSE_POINT", "service file-write opens parent without following reparse points")
 
     # F-01-002: Fan failure triggers rollback of earlier hardware writes
     require_text(gpu_backend_apply_cpp, "fan failure triggered rollback", "fan apply failure triggers rollback of earlier hardware writes")
@@ -1705,12 +1939,13 @@ def run_source_regression_checks():
     require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "oc_persistence: all settings intact", "OC persistence check verifies all settings before re-applying")
     require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "oc_persistence: settings lost:", "OC persistence re-applies with reset when settings lost")
     require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "GPU offset live=", "OC persistence check reads GPU offset")
-    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "re-applying with reset", "OC persistence uses reset-before-apply on auto re-apply")
-    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "NVML stale, attempting recovery", "fan pulse NVML recovery path exists")
+    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "re-applying with reset", "OC persistence uses reset-before-apply on auto re-apply (standby/resume path)")
 
-    # FP-01-003: NVML recovery on service_runtime_pulse
-    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "close_nvml()", "NVML recovery closes stale handle before reinit")
-    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "nvml_ensure_ready()", "NVML recovery reinitializes after close")
+    # FP-01-003: GPU-driver-restart recovery must not use the old ad-hoc fan
+    # pulse NVML re-init path (which crash-looped/hung).  See FP-06 for the
+    # restart-based recovery; assert the old in-process re-init path is gone.
+    forbid_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"), "NVML stale, attempting recovery",
+        "fan pulse no longer does ad-hoc NVML recovery")
 
     # FP-01-005: Increased VF offset range limit for tail flatten
     require_text(gpu_backend_apply_cpp, "FALLBACK_VF_OFFSET_LIMIT_KHZ = 500000", "VF offset fallback increased to 500 MHz for tail flatten")
@@ -1731,6 +1966,314 @@ def run_source_regression_checks():
     require_text(os.path.join(SOURCE_DIR, "main_state_sync.cpp"),
         "stale mem VF offset %d kHz detected",
         "stale NVML mem VF offset is detected and cleared on fresh service start")
+
+    # FP-03-001: nvapi_qi() module-level cache invalidated by close_nvapi()
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"),
+        "g_nvapiQi = nullptr",
+        "nvapi_qi() module-level cache is reset on close_nvapi() to prevent stale function pointer crashes")
+
+    # FP-03-002: close_nvapi() clears hardware-init guards for full re-init
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"),
+        "g_app.loaded = false",
+        "close_nvapi() clears loaded flag so hardware_initialize() fully re-enumerates GPUs")
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"),
+        "g_app.vfBackend = nullptr",
+        "close_nvapi() clears VF backend so it is re-selected on next hardware_initialize()")
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"),
+        "g_app.gpuHandle = nullptr",
+        "close_nvapi() clears GPU handle so it is re-acquired on next hardware_initialize()")
+
+    # FP-03-003: close_nvapi() still resets all NVAPI state (module-level cache,
+    # adapter cache, hardware-init guards) for the normal GUI/shutdown close path.
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"),
+        "g_nvapiQi = nullptr",
+        "close_nvapi() still invalidates the nvapi_qi() module-level cache")
+
+    # FP-03-004: Device arrival handler reads deviceWasRemoved before clearing the flag
+    require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"),
+        "bool deviceWasRemoved = g_app.deviceRemoved;",
+        "device arrival handler saves removal flag before clearing it")
+
+    # FP-03-005: Device arrival no longer re-inits NVML/NVAPI directly on the
+    # SCM control thread; it requests a service restart via the chokepoint (FP-06).
+    forbid_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"),
+        "device event: NVML re-initialized after device arrival",
+        "device arrival handler no longer re-inits NVML on the SCM control thread")
+
+    # FP-04-001: hardware_initialize() skips refresh_global_state() during NVML
+    # crash recovery keyed on g_nvmlCrashCount.  The earlier check was keyed on
+    # `g_app.gpuHandle == nullptr`, but nvapi_enum_gpu() always sets gpuHandle
+    # non-null first, so the skip was dead code and refresh_global_state() ran
+    # on every recovery — the NVML access-violation the crash loop kept hitting.
+    require_text(main_state_sync_cpp,
+        "skipping global state refresh during NVML crash recovery",
+        "hardware_initialize() skips refresh_global_state() during NVML crash recovery")
+    require_text(main_state_sync_cpp,
+        "if (nvml_crash_recovery_active()) {",
+        "hardware_initialize() global-state-refresh skip uses the recovery-window helper, not the dead gpuHandle check")
+    forbid_text(main_state_sync_cpp,
+        "bool wasFreshInit = (g_app.gpuHandle == nullptr)",
+        "dead wasFreshInit==gpuHandle skip removed from hardware_initialize() (always-false, never skipped)")
+
+    # FP-04-004: shared NVML crash recovery window helper used by the pipe
+    # server snapshot handler and the telemetry handler so GUI requests serve
+    # cached globals (instead of access-violating in refresh_global_state)
+    # while the fan runtime thread drives recovery.
+    require_text(main_cpp,
+        "static bool nvml_crash_recovery_active()",
+        "shared NVML crash recovery window helper exists")
+    require_text(service_server_cpp,
+        "nvml_crash_recovery_active()",
+        "snapshot handler uses the recovery-window helper to serve cached globals")
+    forbid_text(service_server_cpp,
+        "if (InterlockedExchange(&g_nvmlVhCrashed, 0)) {",
+        "snapshot handler no longer consumes g_nvmlVhCrashed (left intact for fan thread recovery)")
+
+    # FP-06: GPU driver-recovery via SERVICE-PROCESS RESTART.
+    # In-process reload of nvml.dll / nvapi64.dll after a GPU device reconnect or
+    # an in-place driver upgrade is unreliable: the NVIDIA user-mode DLLs stay
+    # mapped (driver-pinned), so FreeLibrary does not unmap them and the new
+    # on-disk DLL is never loaded; nvmlInit then returns ALREADY_INITIALIZED on a
+    # handle bound to the dead driver instance, and NvAPI's process-global UMD
+    # cannot be reloaded and must version-match the kernel driver.  Recovery is
+    # therefore performed by restarting the service PROCESS: snapshot the active
+    # profile, exit non-zero, let the SCM failure action relaunch us, and re-apply
+    # the snapshot on the fresh (clean-DLL) process.
+
+    # FP-06-001: the broken in-process reload machinery is gone.
+    forbid_text(main_service_runtime_cpp,
+        "service_recover_gpu_connection",
+        "in-process GPU recovery (Phase A-E reload) has been removed")
+    forbid_text(main_service_runtime_cpp,
+        "service_recovery_thread_proc",
+        "in-process recovery thread has been removed")
+    forbid_text(main_service_runtime_cpp,
+        "service_safe_close_nvml(",
+        "in-process NVML close-for-reload has been removed")
+    forbid_text(main_service_runtime_cpp,
+        "service_safe_close_nvapi(",
+        "in-process NvAPI close-for-reload has been removed")
+
+    # FP-06-002: every recovery trigger routes through the single chokepoint
+    # launch_recovery_thread(), which now only requests a controlled restart.
+    require_text(main_service_runtime_cpp,
+        "static void launch_recovery_thread() {",
+        "launch_recovery_thread is the single recovery chokepoint")
+    require_text(main_service_runtime_cpp,
+        "request_service_restart(\"GPU driver recovery",
+        "launch_recovery_thread requests a service-process restart")
+    require_text(service_server_cpp,
+        "launch_recovery_thread();",
+        "DBT_DEVICEARRIVAL routes to the restart chokepoint")
+    require_text(service_server_cpp,
+        "request_service_restart(\"fan pulse wedged",
+        "fan-pulse wedge watchdog requests a service restart")
+
+    # FP-06-003: request_service_restart snapshots + records the restart, and the
+    # restart-exit is SAFE (no NVML teardown that can hang) and terminates WITHOUT
+    # reporting SERVICE_STOPPED so the SCM's DEFAULT crash-recovery path fires the
+    # SC_ACTION_RESTART failure action (no non-crash flag / admin rights needed —
+    # the LocalSystem service token cannot set that flag at runtime).
+    require_text(main_cpp,
+        "static void request_service_restart(const char* reason) {",
+        "request_service_restart exists")
+    require_text(main_cpp,
+        "service_record_restart_event();",
+        "request_service_restart records the restart for loop protection")
+    require_text(service_server_cpp,
+        "InterlockedExchangeAdd(&g_serviceRestartRequested, 0) != 0",
+        "service_main has a driver-recovery restart-exit branch")
+    require_text(service_server_cpp,
+        "terminating WITHOUT reporting SERVICE_STOPPED",
+        "restart exit terminates without reporting SERVICE_STOPPED (SCM default failure-action path)")
+    # Regression guard: the recovery exit must NOT re-introduce a reported
+    # SERVICE_STOPPED with a service-specific exit code (that needs the non-crash
+    # flag the LocalSystem service cannot set, so the SCM never relaunches).
+    forbid_text(service_server_cpp,
+        "ERROR_SERVICE_SPECIFIC_ERROR",
+        "recovery restart must not report SERVICE_STOPPED with a service-specific exit code")
+    require_text(service_server_cpp,
+        "ExitProcess(1);",
+        "restart exit terminates the process so the SCM relaunches a fresh one")
+    # The restart-exit branch must run BEFORE the normal shutdown NVML teardown
+    # (nvml_set_fan_auto / close_nvml can HANG on a dead/transitional driver).
+    require_order(service_server_cpp,
+        "ExitProcess(1);",
+        "nvml_set_fan_auto(fanDetail",
+        "restart exit (ExitProcess) precedes the normal NVML teardown")
+
+    # FP-06-004: SCM auto-restart failure actions are configured at install AND at
+    # every service start (so installs predating this code still auto-restart).
+    require_text(main_service_install_cpp,
+        "SC_ACTION_RESTART",
+        "service configures SCM auto-restart failure actions")
+    require_text(main_service_install_cpp,
+        "ChangeServiceConfig2W(svc, SERVICE_CONFIG_FAILURE_ACTIONS",
+        "service_configure_failure_actions applies SERVICE_CONFIG_FAILURE_ACTIONS")
+    require_text(service_server_cpp,
+        "service_ensure_failure_actions_configured();",
+        "service_main re-applies SCM failure actions at startup")
+    # F-REL-1: service_main verifies (queries) the SCM auto-restart net at startup
+    # and logs loudly when it is NOT ARMED (LocalSystem cannot set it at runtime).
+    require_text(service_server_cpp, "service_verify_restart_safety_net()",
+        "service_main verifies the SCM auto-restart safety net at startup")
+    require_text(main_service_install_cpp, "auto-restart net is %s",
+        "restart-safety verification logs ARMED/NOT ARMED state")
+    # F-SEC-3: once the active console user is resolved, the pipe restricts write
+    # to that user's SID and downgrades Authenticated Users to read-only; AU keeps
+    # read+write only as a no-lockout fallback (pre-login / RDP-only / token fail).
+    require_text(service_server_cpp, "(A;;GR;;;AU)",
+        "pipe ACL downgrades Authenticated Users to read-only when the console user is resolved")
+    require_text(service_server_cpp, "(A;;GRGW;;;AU)",
+        "pipe ACL keeps an Authenticated-Users read+write fallback to avoid lockout")
+
+    # FP-06-005: a fresh process restores the saved profile via startup reapply,
+    # with persisted restart-loop protection so a broken driver cannot loop.
+    require_text(main_service_recovery_cpp,
+        "service_startup_reapply_thread_proc",
+        "startup reapply thread restores the snapshot on a fresh process")
+    require_text(main_service_persist_cpp,
+        "service_write_restart_reapply_snapshot",
+        "restart reapply snapshot writer exists")
+    require_text(main_service_recovery_cpp,
+        "service_choose_recovery_reapply_desired",
+        "reapply chooses active desired before disk snapshot fallback")
+    require_text(main_service_persist_cpp,
+        "service_record_restart_event",
+        "restart events are recorded for loop protection")
+    require_text(main_service_recovery_cpp,
+        "service_count_recent_restarts",
+        "startup reapply checks the persisted restart-loop counter")
+    require_text(main_service_recovery_cpp,
+        "RESTART LOOP detected",
+        "startup reapply breaks an infinite restart loop")
+    # F-REL-2: the breaker goes dormant and RETAINS the snapshot (does not discard
+    # the user's profile); a genuine device arrival re-arms reapply; minidumps are
+    # rotated so a restart loop cannot fill the disk.
+    require_text(main_service_recovery_cpp, "going DORMANT",
+        "restart-loop breaker goes dormant and retains the snapshot")
+    # F-REL-2b: if the driver is not ready within the startup readiness wait
+    # (e.g. a prolonged Device Manager disable), the startup reapply does NOT
+    # abandon the profile — it hands off to the main-loop reapply worker (after
+    # promoting the disk snapshot to the in-memory active desired) so the running
+    # service reapplies once the driver finishes initializing.
+    require_text(main_service_recovery_cpp, "main-loop reapply worker (snapshot retained)",
+        "startup reapply defers to the worker instead of abandoning when the driver is slow to init")
+    require_order(main_service_recovery_cpp,
+        "g_serviceHasActiveDesired = true;",
+        "service_queue_recovery_reapply(\"startup reapply: driver not ready",
+        "startup reapply promotes the snapshot to active desired before queuing the worker")
+    # F-REL-2c: the reapply worker waits for a driver INDEFINITELY — "driver not
+    # ready yet" is retried without consuming the bounded attempt budget, so the
+    # configured OC/fan are guaranteed to reapply once any driver becomes active.
+    # The bound stays only for the dangerous "driver ready but apply fails" case.
+    require_text(main_service_recovery_cpp, "NOT counted against the retry budget",
+        "reapply worker waits for a driver indefinitely (no time cap on driver readiness)")
+    # F-REL-2d: a startup WITHOUT a pending snapshot (fresh boot or an out-of-band
+    # termination like a Task Manager kill) must NOT auto-reapply; it deliberately
+    # resets the GPU to driver defaults (OC + fan auto) via service_reset_all so the
+    # system is left in a clean, consistent state (and the GUI control state is
+    # repopulated, fixing a stale "fixed custom" fan display).
+    require_text(main_service_recovery_cpp, "service_reset_to_defaults_on_resume();",
+        "no-snapshot startup resets the GPU to driver defaults (does not auto-reapply)")
+    require_text(main_service_recovery_cpp, "reset GPU to driver defaults (OC + fan auto)",
+        "reset-to-defaults-on-resume helper performs a full reset via service_reset_all")
+    # F-REL-2e: after the service authoritatively resets to no-lock, the GUI clears
+    # a stale ADOPTED lock (checkbox / point value / header) when the user is not
+    # dirty-editing — otherwise the gate would pin it forever once lockedCi>=0.
+    require_text(state_sync_cpp, "clearing stale adopted GUI lock",
+        "GUI clears a stale adopted lock when the service reports authoritative no-lock and the user is not editing")
+    require_text(main_fan_runtime_cpp, "g_guiForceFullRefresh",
+        "telemetry poll does a full GUI resync (graph/fields/checkboxes/header) when a reset clears a stale lock")
+    # F-REL-2f: while minimized to the tray, keep a slow telemetry poll so the tray
+    # icon/tooltip reflect service state changes (e.g. a reset) without opening the window.
+    require_text(os.path.join(SOURCE_DIR, "main_gpu_front.cpp"), "TRAY_HIDDEN_POLL_INTERVAL_MS",
+        "tray icon keeps a slow telemetry poll while the window is hidden")
+    # F-REL-2g: the tray icon AND tooltip only report OC/fan/profile as active when
+    # the GPU live state is actually available (tray_hardware_live()), so a disabled
+    # driver / down service shows the default icon and a "GPU driver unavailable"
+    # tooltip instead of a false active state for the merely-pending desired.
+    main_gpu_front_cpp = os.path.join(SOURCE_DIR, "main_gpu_front.cpp")
+    require_text(main_gpu_front_cpp, "static bool tray_hardware_live()",
+        "shared tray hardware-availability helper exists")
+    require_text(main_fan_runtime_cpp, "tray_hardware_live()",
+        "tray icon gates OC/fan-active on actual GPU availability (not a pending desired)")
+    require_text(main_gpu_front_cpp, "Green Curve - GPU driver unavailable",
+        "tray tooltip reports GPU unavailable instead of a false OC/fan/profile-active state")
+    require_text(service_server_cpp, "service_clear_restart_history();",
+        "device arrival re-arms reapply by clearing the restart-loop history")
+    require_text(state_sync_cpp, "service_rotate_minidumps",
+        "VEH minidumps are rotated to bound disk usage")
+    require_text(service_server_cpp, "service_rotate_minidumps(",
+        "service startup rotates VEH minidumps")
+
+    # FP-06-006: the VEH is the crash DETECTOR only — it invalidates NVML without
+    # nvmlShutdown and lets the main loop request the restart.
+    require_text(main_service_runtime_cpp,
+        "service_close_nvml_without_shutdown",
+        "driver-crash recovery has a no-shutdown NVML invalidation helper")
+    require_text(diagnostics_cpp,
+        "service_close_nvml_without_shutdown();",
+        "VEH crash path invalidates NVML without nvmlShutdown")
+    forbid_text(diagnostics_cpp,
+        "close_nvml();",
+        "VEH crash path must not call nvmlShutdown via close_nvml")
+    require_text(runtime_nvml_cpp,
+        "g_nvmlVhCrashed || nvml_crash_recovery_active()",
+        "nvml_ensure_ready() reports not-ready during the brief pre-restart crash window")
+
+    # FP-06-007: on-disk driver-version detection is retained (logged at the
+    # recovery trigger so a driver upgrade is correlated in the debug log).
+    require_text(main_service_runtime_cpp,
+        "service_nvml_disk_version_changed",
+        "on-disk NVML version-change detector exists")
+    require_text(main_service_runtime_cpp,
+        "service_nvapi_disk_version_changed",
+        "on-disk NvAPI version-change detector exists")
+    require_text(service_server_cpp,
+        "service_check_disk_version_on_device_arrival",
+        "DBT_DEVICEARRIVAL logs the on-disk driver version delta")
+    require_text(build_py_text,
+        '"-lversion"',
+        "version.lib linked for GetFileVersionInfoW / VerQueryValueW")
+
+    # FP-06-008: the SCM auto-restart depends on opting into non-crash failure
+    # actions.  The recovery exit reports SERVICE_STOPPED with a non-zero exit
+    # code; without SERVICE_CONFIG_FAILURE_ACTIONS_FLAG /
+    # fFailureActionsOnNonCrashFailures=TRUE the SCM treats that as a graceful
+    # stop and never relaunches us, so the service stays dead after a GPU
+    # reconnect / driver upgrade.
+    require_text(main_service_install_cpp,
+        "SERVICE_CONFIG_FAILURE_ACTIONS_FLAG",
+        "service opts into non-crash failure actions so a reported SERVICE_STOPPED restarts")
+    require_text(main_service_install_cpp,
+        "fFailureActionsOnNonCrashFailures = TRUE",
+        "non-crash-failure flag is set TRUE so non-zero-exit STOPPED triggers SC_ACTION_RESTART")
+    require_order(main_service_install_cpp,
+        "SERVICE_CONFIG_FAILURE_ACTIONS,",
+        "SERVICE_CONFIG_FAILURE_ACTIONS_FLAG",
+        "failure actions are configured before the non-crash-failure flag in the same helper")
+
+    # FP-05-002: APPLY/RESET command handlers reject requests during the NVML
+    # crash recovery window instead of running NVML/NVAPI writes that crash the
+    # pipe server thread (GUI then sees ERROR_BROKEN_PIPE / error 109).
+    require_text(service_server_cpp,
+        "service APPLY rejected: NVML crash recovery in progress",
+        "APPLY handler rejects during NVML crash recovery window")
+    require_text(service_server_cpp,
+        "service RESET rejected: NVML crash recovery in progress",
+        "RESET handler rejects during NVML crash recovery window")
+
+    # FP-05-003: race-free pipe handle ownership so a double-close during the
+    # pipe-thread kill/recreate storm can't hard-crash the process via
+    # STATUS_INVALID_HANDLE under Strict Handle Checks.
+    require_text(service_server_cpp,
+        "static void service_close_owned_pipe(HANDLE pipe)",
+        "pipe server uses race-free single-owner close helper")
+    require_text(service_server_cpp,
+        "InterlockedCompareExchangePointer",
+        "pipe close helper atomically claims handle ownership before closing")
+
 
 
 def parse_args():

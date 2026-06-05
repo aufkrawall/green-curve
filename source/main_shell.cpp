@@ -413,9 +413,12 @@ static void layout_bottom_buttons(HWND hParent) {
 
 
 #include "main_state_sync.cpp"
+#include "main_service_persist.cpp"
+#include "main_service_recovery.cpp"
 #include "main_service_runtime.cpp"
 
 #include "main_service_ipc.cpp"
+#include "main_service_install.cpp"
 #include "main_service_server.cpp"
     switch (r) {
         case NVML_SUCCESS: return "NVML_SUCCESS";
@@ -434,6 +437,7 @@ static void layout_bottom_buttons(HWND hParent) {
 }
 
 #include "main_diagnostics.cpp"
+#include "main_secure_write.cpp"
 
 #include "main_probe_config.cpp"
     if (!path || !desired) return false;

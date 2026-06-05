@@ -84,7 +84,13 @@ static void refresh_live_fan_telemetry(bool redrawControls) {
         }
         apply_service_snapshot_to_app(&snapshot);
         sync_fan_ui_from_cached_state(redrawControls);
-        if (g_app.numVisible > 0 && !g_app.hEditsMhz[0]) {
+        // F-REL-2e: normally the telemetry poll does not resync the editable
+        // curve/lock controls (avoids wiping in-progress edits).  Force a full
+        // resync when first creating the edit controls, OR when a service reset
+        // just cleared a stale adopted lock (so graph/fields/checkboxes/header all
+        // reflect the default state, not just internal state).
+        if ((g_app.numVisible > 0 && !g_app.hEditsMhz[0]) || g_guiForceFullRefresh) {
+            g_guiForceFullRefresh = false;
             update_all_gui_for_service_state();
         }
         return;
@@ -155,8 +161,15 @@ static void update_tray_icon() {
     if (g_app.usingBackgroundService && !g_app.isServiceProcess) {
         refresh_background_service_state();
     }
-    bool hasCustomOc = live_state_has_custom_oc();
-    bool hasCustomFan = live_state_has_custom_fan();
+    // Only report OC/fan as active when the GPU live state is actually available.
+    // When the driver is disabled in Device Manager (or the GPU is removed, or the
+    // service is down), there is NO OC/fan in effect — the snapshot reflects the
+    // pending DESIRED profile, not live hardware.  Reporting OC/fan-active then
+    // would be false; show the default icon.  tray_hardware_live() is shared with
+    // build_tray_tooltip() so the icon theme and the tooltip stay consistent.
+    bool hardwareLive = tray_hardware_live();
+    bool hasCustomOc = hardwareLive && live_state_has_custom_oc();
+    bool hasCustomFan = hardwareLive && live_state_has_custom_fan();
     int state = TRAY_ICON_STATE_DEFAULT;
     if (hasCustomOc && hasCustomFan) {
         state = TRAY_ICON_STATE_OC_FAN;
@@ -442,49 +455,70 @@ static bool nvml_read_temperature(int* temperatureC, char* detail, size_t detail
     return true;
 }
 static void apply_fan_curve_tick() {
+    // Phase 1: snapshot mode flags and configuration under CS, then release
+    // before any NVML calls (which can crash in nvml.dll and kill this thread
+    // via VEH, corrupting the CS if held across the crash).
+    bool fixedActive = false;
+    bool curveActive = false;
+    ULONGLONG backoffMs = FAN_RUNTIME_REAPPLY_INTERVAL_MS;
+    ULONGLONG now = 0;
+    int fixedTargetPercent = 0;
     EnterCriticalSection(&g_appLock);
-    ULONGLONG now = GetTickCount64();
-    if (g_app.fanFixedRuntimeActive) {
-        int targetPercent = clamp_percent(g_app.activeFanFixedPercent);
-        ULONGLONG backoffMs = FAN_RUNTIME_REAPPLY_INTERVAL_MS;
+    fixedActive = g_app.fanFixedRuntimeActive;
+    curveActive = g_app.fanCurveRuntimeActive;
+    now = GetTickCount64();
+    if (fixedActive) {
+        fixedTargetPercent = clamp_percent(g_app.activeFanFixedPercent);
         if (g_app.fanRuntimeConsecutiveFailures > 0) {
             unsigned int factor = 1u << (g_app.fanRuntimeConsecutiveFailures > 4 ? 4 : g_app.fanRuntimeConsecutiveFailures);
             backoffMs *= factor;
             if (backoffMs > 120000) backoffMs = 120000;
         }
+    }
+    LeaveCriticalSection(&g_appLock);
+    if (!fixedActive && !curveActive) return;
+
+    // Phase 2a: fixed-fan mode — NVML calls are made WITHOUT holding g_appLock.
+    if (fixedActive) {
         bool needsReapply = (g_app.fanRuntimeLastApplyTickMs == 0) ||
             ((now - g_app.fanRuntimeLastApplyTickMs) >= backoffMs);
         bool matches = false;
         char detail[128] = {};
-        if (nvml_manual_fan_matches_target(targetPercent, &matches, detail, sizeof(detail))) {
+        // nvml_manual_fan_matches_target can crash in nvml.dll — NO CS held.
+        if (nvml_manual_fan_matches_target(fixedTargetPercent, &matches, detail, sizeof(detail))) {
             if (matches) {
+                EnterCriticalSection(&g_appLock);
                 if (needsReapply) {
-                    debug_log("fixed fan tick: timed re-apply skipped (speed already %d%%)\n", targetPercent);
+                    debug_log("fixed fan tick: timed re-apply skipped (speed already %d%%)\n", fixedTargetPercent);
                     mark_fan_runtime_success(now);
                 }
                 g_app.activeFanMode = FAN_MODE_FIXED;
-                g_app.activeFanFixedPercent = targetPercent;
+                g_app.activeFanFixedPercent = fixedTargetPercent;
                 g_app.fanRuntimeConsecutiveFailures = 0;
                 sync_fan_ui_from_cached_state(window_should_redraw_fan_controls());
                 LeaveCriticalSection(&g_appLock);
                 return;
             }
         } else if (!needsReapply) {
+            EnterCriticalSection(&g_appLock);
             handle_fan_runtime_failure("Fixed fan runtime verify failed", detail);
             LeaveCriticalSection(&g_appLock);
             return;
         }
         bool exact = false;
-        if (!nvml_set_fan_manual(targetPercent, &exact, detail, sizeof(detail)) || !exact) {
+        // nvml_set_fan_manual can crash in nvml.dll — NO CS held.
+        if (!nvml_set_fan_manual(fixedTargetPercent, &exact, detail, sizeof(detail)) || !exact) {
             if (!detail[0] && !exact) {
-                set_message(detail, sizeof(detail), "Fan readback did not confirm %d%%", targetPercent);
+                set_message(detail, sizeof(detail), "Fan readback did not confirm %d%%", fixedTargetPercent);
             }
+            EnterCriticalSection(&g_appLock);
             handle_fan_runtime_failure("Fixed fan runtime apply failed", detail);
             LeaveCriticalSection(&g_appLock);
             return;
         }
+        EnterCriticalSection(&g_appLock);
         g_app.activeFanMode = FAN_MODE_FIXED;
-        g_app.activeFanFixedPercent = targetPercent;
+        g_app.activeFanFixedPercent = fixedTargetPercent;
         mark_fan_runtime_success(now);
         if (g_app.isServiceProcess) {
             populate_control_state(&g_serviceControlState);
@@ -494,51 +528,71 @@ static void apply_fan_curve_tick() {
         LeaveCriticalSection(&g_appLock);
         return;
     }
-    if (!g_app.fanCurveRuntimeActive) {
-        LeaveCriticalSection(&g_appLock);
-        return;
-    }
+
+    // Phase 2b: curve-fan mode — read temperature first (NVML call, no CS).
     int currentTempC = 0;
     char detail[128] = {};
+    // nvml_read_temperature can crash in nvml.dll — NO CS held.
     if (!nvml_read_temperature(&currentTempC, detail, sizeof(detail))) {
+        EnterCriticalSection(&g_appLock);
         handle_fan_runtime_failure("Fan curve temperature poll failed", detail);
         LeaveCriticalSection(&g_appLock);
         return;
     }
-    int targetPercent = fan_curve_interpolate_percent(&g_app.activeFanCurve, currentTempC);
+
+    // Phase 3: process temperature and decide whether to apply.
+    // Re-acquire CS for g_app reads/writes.
     bool shouldApply = false;
-    if (!g_app.fanCurveHasLastAppliedTemp) {
+    bool hasLastAppliedTemp = false;
+    int lastAppliedPercent = 0;
+    int lastAppliedTempC = 0;
+    ULONGLONG lastApplyTickMs = 0;
+    int consecutiveFailures = 0;
+    FanCurveConfig activeCurve = {};
+    EnterCriticalSection(&g_appLock);
+    if (!g_app.fanCurveRuntimeActive) {
+        LeaveCriticalSection(&g_appLock);
+        return;
+    }
+    activeCurve = g_app.activeFanCurve;
+    hasLastAppliedTemp = g_app.fanCurveHasLastAppliedTemp;
+    lastAppliedPercent = g_app.fanCurveLastAppliedPercent;
+    lastAppliedTempC = g_app.fanCurveLastAppliedTempC;
+    lastApplyTickMs = g_app.fanRuntimeLastApplyTickMs;
+    consecutiveFailures = g_app.fanRuntimeConsecutiveFailures;
+    LeaveCriticalSection(&g_appLock);
+
+    int targetPercent = fan_curve_interpolate_percent(&activeCurve, currentTempC);
+    if (!hasLastAppliedTemp) {
         shouldApply = true;
-    } else if (targetPercent > g_app.fanCurveLastAppliedPercent) {
+    } else if (targetPercent > lastAppliedPercent) {
         shouldApply = true;
-    } else if (targetPercent < g_app.fanCurveLastAppliedPercent) {
-        int minDrop = g_app.activeFanCurve.hysteresisC;
+    } else if (targetPercent < lastAppliedPercent) {
+        int minDrop = activeCurve.hysteresisC;
         if (minDrop < 0) minDrop = 0;
-        if (currentTempC <= g_app.fanCurveLastAppliedTempC - minDrop) {
+        if (currentTempC <= lastAppliedTempC - minDrop) {
             shouldApply = true;
         }
         // If hysteresis blocked the drop, do not let the timed re-apply override it.
         // The fan will adjust naturally when the temperature drops past the hysteresis
         // threshold. This prevents the re-apply timer from defeating user-configured
         // hysteresis smoothing.
-        if (!shouldApply) {
-            LeaveCriticalSection(&g_appLock);
-            return;
-        }
     }
     if (!shouldApply) {
-        ULONGLONG backoffMs = FAN_RUNTIME_REAPPLY_INTERVAL_MS;
-        if (g_app.fanRuntimeConsecutiveFailures > 0) {
-            unsigned int factor = 1u << (g_app.fanRuntimeConsecutiveFailures > 4 ? 4 : g_app.fanRuntimeConsecutiveFailures);
+        backoffMs = FAN_RUNTIME_REAPPLY_INTERVAL_MS;
+        if (consecutiveFailures > 0) {
+            unsigned int factor = 1u << (consecutiveFailures > 4 ? 4 : consecutiveFailures);
             backoffMs *= factor;
             if (backoffMs > 120000) backoffMs = 120000;
         }
-        bool timerExpired = (g_app.fanRuntimeLastApplyTickMs == 0) ||
-            ((now - g_app.fanRuntimeLastApplyTickMs) >= backoffMs);
+        bool timerExpired = (lastApplyTickMs == 0) ||
+            ((now - lastApplyTickMs) >= backoffMs);
         if (timerExpired) {
             bool matches = false;
+            // nvml_manual_fan_matches_target can crash — NO CS held.
             if (nvml_manual_fan_matches_target(targetPercent, &matches, detail, sizeof(detail))) {
                 if (matches) {
+                    EnterCriticalSection(&g_appLock);
                     debug_log("fan curve tick: timed re-apply skipped (speed already matches %d%%, temp=%d)\n", targetPercent, currentTempC);
                     g_app.fanCurveLastAppliedPercent = targetPercent;
                     g_app.fanCurveLastAppliedTempC = currentTempC;
@@ -555,19 +609,22 @@ static void apply_fan_curve_tick() {
             }
         }
     }
-    if (!shouldApply) {
-        LeaveCriticalSection(&g_appLock);
-        return;
-    }
+    if (!shouldApply) return;
+
+    // Phase 4: apply fan speed — nvml_set_fan_manual can crash, NO CS held.
     bool exact = false;
     if (!nvml_set_fan_manual(targetPercent, &exact, detail, sizeof(detail)) || !exact) {
         if (!detail[0] && !exact) {
             set_message(detail, sizeof(detail), "Fan readback did not confirm %d%%", targetPercent);
         }
+        EnterCriticalSection(&g_appLock);
         handle_fan_runtime_failure("Fan curve runtime apply failed", detail);
         LeaveCriticalSection(&g_appLock);
         return;
     }
+
+    // Phase 5: write results under CS.
+    EnterCriticalSection(&g_appLock);
     g_app.activeFanMode = FAN_MODE_CURVE;
     g_app.activeFanFixedPercent = targetPercent;
     g_app.fanCurveLastAppliedPercent = targetPercent;

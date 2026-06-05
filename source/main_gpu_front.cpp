@@ -458,9 +458,25 @@ static void ensure_tray_profile_cache() {
         selectedSlot,
         hasSavedProfile ? "saved" : "empty");
 }
+// True when the GPU live state is actually available, so the snapshot's OC/fan
+// reflect real applied hardware state rather than a pending desired profile while
+// the driver is disabled/removed or the service is down.  Shared by the tray icon
+// theme and the tray tooltip so both stay consistent.
+static bool tray_hardware_live() {
+    if (g_app.usingBackgroundService && !g_app.isServiceProcess) {
+        return g_app.backgroundServiceAvailable && g_app.loaded;
+    }
+    return g_app.loaded;
+}
 static void build_tray_tooltip(char* tip, size_t tipSize) {
     if (!tip || tipSize == 0) return;
     ensure_tray_profile_cache();
+    if (!tray_hardware_live()) {
+        // GPU live state unavailable: nothing is actually applied, so do not report
+        // OC/fan/profile as active (matches the default tray icon theme).
+        StringCchCopyA(tip, tipSize, "Green Curve - GPU driver unavailable");
+        return;
+    }
     char mode[64] = {};
     bool customOc = live_state_has_custom_oc();
     bool customFan = live_state_has_custom_fan();
@@ -526,14 +542,37 @@ static void update_all_gui_for_service_state() {
 static void update_fan_telemetry_timer() {
     if (!g_app.hMainWnd) return;
     KillTimer(g_app.hMainWnd, FAN_TELEMETRY_TIMER_ID);
-    if (!IsWindowVisible(g_app.hMainWnd)) return;
+    bool visible = IsWindowVisible(g_app.hMainWnd) != FALSE;
+    // When the window is hidden, keep a SLOW poll only while we are sitting in the
+    // tray, so the tray icon + tooltip stay current (e.g. reflect a service reset
+    // to defaults after an out-of-band termination) without paying the
+    // foreground-rate polling cost.  The poll updates the tray icon via
+    // sync_fan_ui_from_cached_state() -> update_tray_icon().  With no tray icon
+    // there is nothing visible to update, so stop polling entirely.
+    if (!visible && !g_app.trayIconAdded) return;
     UINT intervalMs = fan_telemetry_interval_for_window_state();
     ULONGLONG now = GetTickCount64();
-    if (g_fanTelemetryBoostUntilTickMs > now) {
+    if (visible && g_fanTelemetryBoostUntilTickMs > now) {
         intervalMs = nvmin(intervalMs, (UINT)300);
+    }
+    if (!visible) {
+        const UINT TRAY_HIDDEN_POLL_INTERVAL_MS = 3000;
+        if (intervalMs < TRAY_HIDDEN_POLL_INTERVAL_MS) intervalMs = TRAY_HIDDEN_POLL_INTERVAL_MS;
     }
     SetTimer(g_app.hMainWnd, FAN_TELEMETRY_TIMER_ID, intervalMs, nullptr);
 }
+
+// Start the auto-reconnect timer if the GUI has a window handle and the
+// service is unavailable.  Polls every 3 seconds until the service responds.
+static void start_service_reconnect_timer_if_needed() {
+    if (g_app.isServiceProcess) return;
+    if (g_app.backgroundServiceAvailable) return;
+    HWND hWnd = g_app.hMainWnd;
+    if (!hWnd) return;
+    SetTimer(hWnd, SERVICE_RECONNECT_TIMER_ID, 3000, nullptr);
+    debug_log("start_service_reconnect_timer_if_needed: polling every 3s\n");
+}
+
 static bool fan_manual_control_available(char* detail, size_t detailSize) {
     if (!nvml_ensure_ready()) {
         set_message(detail, detailSize, "NVML not ready");
@@ -628,10 +667,11 @@ static bool vf_backend_is_best_guess(const VfBackendSpec* backend) {
 }
 static bool should_show_best_guess_warning() {
     if (!g_app.vfBackend || !vf_backend_is_best_guess(g_app.vfBackend)) return false;
-    if (!g_app.configPath[0]) return true;
-    char key[64] = {};
-    StringCchPrintfA(key, ARRAY_COUNT(key), "hide_best_guess_warning_%s", gpu_family_name(g_app.gpuFamily));
-    return get_config_int(g_app.configPath, "warnings", key, 0) == 0;
+    // F-DOM-1: re-show once per session. Writing VF data to an unvalidated
+    // architecture is risky on every run, so the warning is intentionally NOT
+    // permanently dismissible; it just doesn't nag again within the same session.
+    if (g_bestGuessWarningShownThisSession) return false;
+    return true;
 }
 static void rollback_to_safe_defaults() {
     debug_log("rollback_to_safe_defaults: partial apply detected, reverting to safe defaults\n");

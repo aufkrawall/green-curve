@@ -1,26 +1,212 @@
-// TDR loop detection: if the driver resets 3+ times within 5 minutes and
-// OC is lost each time, stop re-applying to avoid a crash loop.
-#define RECOVERY_HISTORY_SIZE 8
-#define RECOVERY_LOOP_WINDOW_MS 300000
-#define MAX_RECOVERIES_BEFORE_BACKOFF 3
 
-static ULONGLONG g_driverRecoveryTimestamp[RECOVERY_HISTORY_SIZE] = {};
-static int g_driverRecoveryHead = 0;
+// ---- NVML close helper (used by the VEH) ----
+//
+// GPU driver-recovery itself is handled by restarting the service process
+// (see launch_recovery_thread() below).  The only NVML teardown that still
+// runs in-process is this no-shutdown close, invoked by the VEH so a stale-
+// handle access violation does not leave dangling function pointers before
+// the process exits and the SCM relaunches a fresh, clean instance.
 
-static unsigned int count_recent_driver_recoveries() {
-    ULONGLONG now = GetTickCount64();
-    unsigned int count = 0;
-    for (int i = 0; i < RECOVERY_HISTORY_SIZE; i++) {
-        if (g_driverRecoveryTimestamp[i] > 0 &&
-            now - g_driverRecoveryTimestamp[i] <= RECOVERY_LOOP_WINDOW_MS)
-            count++;
+// Close NVML WITHOUT calling nvmlShutdown — this can hang at 100% CPU on
+// a dead/stale driver instance.  Just FreeLibrary the module and zero all
+// pointers.  The no-log helper is also used from the VEH, where taking the
+// debug-log lock would be unsafe.
+static void service_close_nvml_without_shutdown() {
+    g_app.nvmlReady = false;
+    g_app.nvmlDevice = nullptr;
+    if (g_nvml) {
+        HMODULE oldMod = g_nvml;
+        g_nvml = nullptr;
+        memset(&g_nvml_api, 0, sizeof(g_nvml_api));
+        FreeLibrary(oldMod);
+    } else {
+        memset(&g_nvml_api, 0, sizeof(g_nvml_api));
     }
-    return count;
 }
 
-static void record_driver_recovery() {
-    g_driverRecoveryTimestamp[g_driverRecoveryHead] = GetTickCount64();
-    g_driverRecoveryHead = (g_driverRecoveryHead + 1) % RECOVERY_HISTORY_SIZE;
+
+// Read a fixed-file-info version (MS + LS DWORDs) from a file on disk.
+// Returns true and fills *outMs/*outLs on success, false on any error
+// (file missing, no version resource, allocation failure).  Used by the
+// on-disk driver version check below.
+static bool service_get_file_version(const WCHAR* path, DWORD* outMs, DWORD* outLs) {
+    if (!path || !outMs || !outLs) return false;
+    DWORD handle = 0;
+    DWORD infoSize = GetFileVersionInfoSizeW(path, &handle);
+    if (infoSize == 0) return false;
+    HeapBuffer buf((size_t)infoSize);
+    if (!buf) return false;
+    if (!GetFileVersionInfoW(path, handle, infoSize, buf)) return false;
+    VS_FIXEDFILEINFO* info = nullptr;
+    UINT infoLen = 0;
+    if (!VerQueryValueW((LPVOID)(unsigned char*)buf, L"\\", (LPVOID*)&info, &infoLen)) return false;
+    if (!info || infoLen < sizeof(VS_FIXEDFILEINFO)) return false;
+    *outMs = info->dwFileVersionMS;
+    *outLs = info->dwFileVersionLS;
+    return true;
+}
+
+// Read the version of an already-loaded module by its HMODULE.
+// Returns true and fills *outMs/*outLs on success.
+static bool service_get_module_version(HMODULE mod, DWORD* outMs, DWORD* outLs) {
+    if (!mod || !outMs || !outLs) return false;
+    WCHAR path[MAX_PATH] = {};
+    if (GetModuleFileNameW(mod, path, ARRAY_COUNT(path)) == 0) return false;
+    return service_get_file_version(path, outMs, outLs);
+}
+
+// Build the on-disk path for nvml.dll.  Prefers the NVSMI copy
+// (%ProgramFiles%\NVIDIA Corporation\NVSMI\nvml.dll) because the driver
+// installer updates both copies in lockstep.  Falls back to system32.
+static bool service_get_nvml_disk_path(WCHAR* out, size_t outCount) {
+    if (!out || outCount == 0) return false;
+    out[0] = 0;
+    WCHAR systemDir[MAX_PATH] = {};
+    UINT systemLen = GetSystemDirectoryW(systemDir, ARRAY_COUNT(systemDir));
+    if (systemLen == 0 || systemLen >= ARRAY_COUNT(systemDir)) return false;
+    if (FAILED(StringCchPrintfW(out, outCount, L"%ls\\nvml.dll", systemDir))) return false;
+    return true;
+}
+
+static bool service_get_nvapi_disk_path(WCHAR* out, size_t outCount) {
+    if (!out || outCount == 0) return false;
+    out[0] = 0;
+    WCHAR systemDir[MAX_PATH] = {};
+    UINT systemLen = GetSystemDirectoryW(systemDir, ARRAY_COUNT(systemDir));
+    if (systemLen == 0 || systemLen >= ARRAY_COUNT(systemDir)) return false;
+    if (FAILED(StringCchPrintfW(out, outCount, L"%ls\\nvapi64.dll", systemDir))) return false;
+    return true;
+}
+
+// Detect whether the on-disk nvml.dll / nvapi64.dll differ from the version
+// currently mapped into the process.  After a driver upgrade, the in-process
+// copy is the old version and the on-disk file is the new one.  A simple
+// FreeLibrary + LoadLibrary may not pick up the new file if the old file is
+// still cached in the loader's mapping table.  Returning true here tells the
+// caller to force a fresh load.  This is the RC4 fix.
+static bool service_nvml_disk_version_changed() {
+    if (!g_nvml) return false;
+    DWORD inMs = 0, inLs = 0;
+    if (!service_get_module_version(g_nvml, &inMs, &inLs)) {
+        debug_log("service_nvml_disk_version_changed: in-process version unavailable\n");
+        return false;
+    }
+    WCHAR diskPath[MAX_PATH] = {};
+    if (!service_get_nvml_disk_path(diskPath, ARRAY_COUNT(diskPath))) return false;
+    DWORD onMs = 0, onLs = 0;
+    if (!service_get_file_version(diskPath, &onMs, &onLs)) {
+        debug_log("service_nvml_disk_version_changed: on-disk version unavailable for %ls\n", diskPath);
+        return false;
+    }
+    if (inMs == onMs && inLs == onLs) return false;
+    debug_log("service_nvml_disk_version_changed: in-process %u.%u.%u.%u differs from on-disk %ls %u.%u.%u.%u\n",
+        (unsigned)(inMs >> 16), (unsigned)(inMs & 0xFFFFu),
+        (unsigned)(inLs >> 16), (unsigned)(inLs & 0xFFFFu),
+        diskPath,
+        (unsigned)(onMs >> 16), (unsigned)(onMs & 0xFFFFu),
+        (unsigned)(onLs >> 16), (unsigned)(onLs & 0xFFFFu));
+    return true;
+}
+
+static bool service_nvapi_disk_version_changed() {
+    if (!g_app.hNvApi) return false;
+    DWORD inMs = 0, inLs = 0;
+    if (!service_get_module_version(g_app.hNvApi, &inMs, &inLs)) {
+        debug_log("service_nvapi_disk_version_changed: in-process version unavailable\n");
+        return false;
+    }
+    WCHAR diskPath[MAX_PATH] = {};
+    if (!service_get_nvapi_disk_path(diskPath, ARRAY_COUNT(diskPath))) return false;
+    DWORD onMs = 0, onLs = 0;
+    if (!service_get_file_version(diskPath, &onMs, &onLs)) {
+        debug_log("service_nvapi_disk_version_changed: on-disk version unavailable for %ls\n", diskPath);
+        return false;
+    }
+    if (inMs == onMs && inLs == onLs) return false;
+    debug_log("service_nvapi_disk_version_changed: in-process %u.%u.%u.%u differs from on-disk %ls %u.%u.%u.%u\n",
+        (unsigned)(inMs >> 16), (unsigned)(inMs & 0xFFFFu),
+        (unsigned)(inLs >> 16), (unsigned)(inLs & 0xFFFFu),
+        diskPath,
+        (unsigned)(onMs >> 16), (unsigned)(onMs & 0xFFFFu),
+        (unsigned)(onLs >> 16), (unsigned)(onLs & 0xFFFFu));
+    return true;
+}
+
+// Public entry point: log a single line per DLL when the on-disk version
+// differs from the in-process module.  Called from the DBT_DEVICEARRIVAL
+// handler (main_service_server.cpp) to correlate the device-reconnect
+// event with a possible driver upgrade.  The actual reload happens in the
+// recovery thread (Phase B/C) where the runtime lock is held.
+void service_check_disk_version_on_device_arrival() {
+    bool nvmlChanged = service_nvml_disk_version_changed();
+    bool nvapiChanged = service_nvapi_disk_version_changed();
+    if (nvmlChanged || nvapiChanged) {
+        debug_log("service_check_disk_version_on_device_arrival: driver upgrade detected "
+            "(nvmlChanged=%d nvapiChanged=%d) — recovery will pick up new files\n",
+            nvmlChanged ? 1 : 0, nvapiChanged ? 1 : 0);
+    } else {
+        debug_log("service_check_disk_version_on_device_arrival: on-disk driver matches in-process\n");
+    }
+}
+
+// ---- GPU driver-recovery: recover by restarting the service process ----
+//
+// In-process reload of nvml.dll / nvapi64.dll after a GPU device reconnect or an
+// in-place driver upgrade is unreliable: the NVIDIA user-mode DLLs stay mapped
+// (driver-pinned, with live worker threads), so FreeLibrary does not unmap them
+// and a subsequent LoadLibrary returns the OLD image; nvmlInit then reports
+// ALREADY_INITIALIZED and hands back a device handle bound to the dead driver
+// instance.  NvAPI is entangled with the process-global NVIDIA UMD stack, which
+// cannot be force-reloaded and must version-match the kernel driver.  The only
+// state that reliably re-binds a version-matched UMD to the new kernel driver is
+// a FRESH PROCESS.
+//
+// So every recovery trigger (DBT_DEVICEARRIVAL after a removal, a VEH-caught
+// stale-handle access violation, a fan-pulse wedge, or an on-disk driver-version
+// change) requests a controlled service restart.  request_service_restart()
+// snapshots the active OC/fan profile, records the restart for loop protection,
+// and exits the process non-zero; the SCM failure action relaunches us and
+// service_launch_startup_reapply() restores the profile on the fresh process —
+// i.e. the known-stable fresh-boot path.  The function keeps its historical name
+// because all four trigger call sites already call it.
+static void launch_recovery_thread() {
+    request_service_restart("GPU driver recovery (device reconnect / driver upgrade / TDR)");
+}
+
+static void service_maybe_launch_recovery_from_main_loop(const char* source) {
+    if (InterlockedExchangeAdd(&g_serviceGpuRecovering, 0) != 0) return;
+
+    bool deviceWasRemoved = false;
+    bool pendingRecovery = false;
+    EnterCriticalSection(&g_appLock);
+    if (g_app.deviceRemoved) deviceWasRemoved = true;
+    if (g_app.pendingDeviceRecovery) pendingRecovery = true;
+    LeaveCriticalSection(&g_appLock);
+    if (deviceWasRemoved) return;
+
+    LONG crashCount = g_nvmlCrashCount;
+    if (crashCount <= 0 && !pendingRecovery) return;
+
+    ULONGLONG now = GetTickCount64();
+    ULONGLONG lastRecoveryMs = g_serviceLastRecoveryTickMs;
+    if (lastRecoveryMs != 0 && (now - lastRecoveryMs) < NVML_CRASH_RECOVERY_WINDOW_MS) {
+        return;
+    }
+
+    if (lastRecoveryMs != 0 && g_nvmlCrashTickMs != 0 &&
+        g_nvmlCrashTickMs <= lastRecoveryMs && !pendingRecovery) {
+        debug_log("service recovery monitor: safety window expired, clearing stale crash flags\n");
+        g_nvmlCrashCount = 0;
+        g_nvmlCrashTickMs = 0;
+        g_serviceLastRecoveryTickMs = 0;
+        return;
+    }
+
+    debug_log("service recovery monitor: %s requesting service restart for driver recovery (crashCount=%ld pending=%d)\n",
+        source && source[0] ? source : "main loop",
+        (long)crashCount,
+        pendingRecovery ? 1 : 0);
+    launch_recovery_thread();
 }
 
 static void service_check_oc_persistence(bool isDriverRecovery) {
@@ -61,8 +247,12 @@ static void service_check_oc_persistence(bool isDriverRecovery) {
     // 1. Check GPU clock offset
     if (g_nvml_api.getGpcClkVfOffset) {
         nvmlReturn_t r = g_nvml_api.getGpcClkVfOffset(g_app.nvmlDevice, &gpuOffsetMHz);
-        if (r != NVML_SUCCESS) return;
+        if (r != NVML_SUCCESS) {
+            debug_log("oc_persistence: getGpcClkVfOffset failed (result=%d), skipping reapply\n", (int)r);
+            return;
+        }
     } else {
+        debug_log("oc_persistence: getGpcClkVfOffset not available, cannot check persistence\n");
         return;
     }
 
@@ -107,9 +297,17 @@ static void service_check_oc_persistence(bool isDriverRecovery) {
     debug_log("oc_persistence: settings lost: %s, re-applying with reset\n", lostDetail);
 
     char result[256] = {};
-    g_serviceActiveDesired.resetOcBeforeApply = true;
-    if (!service_apply_desired_settings(&g_serviceActiveDesired, false, result, sizeof(result))) {
+    DesiredSettings desired = g_serviceActiveDesired;
+    desired.resetOcBeforeApply = true;
+    if (!service_reapply_desired_preserving_intent(
+            &desired,
+            isDriverRecovery ? "driver recovery persistence check" : "standby resume persistence check",
+            result,
+            sizeof(result))) {
         debug_log("oc_persistence: re-apply failed: %s\n", result[0] ? result : "unknown");
+        if (isDriverRecovery) {
+            service_queue_recovery_reapply("OC persistence failure", SERVICE_RECOVERY_REAPPLY_RETRY_INTERVAL_MS);
+        }
     } else {
         debug_log("oc_persistence: re-apply successful\n");
     }
@@ -419,6 +617,17 @@ static bool service_refresh_idle_telemetry(char* detail, size_t detailSize) {
 }
 
 static bool service_refresh_telemetry_for_request(char* detail, size_t detailSize) {
+    // If within the NVML crash recovery window, skip hardware_initialize()
+    // entirely.  NVML reads (VF curve, temperature, etc.) access-violate on
+    // the transitional driver after a device reconnect, killing this pipe
+    // server thread and abandoning g_serviceRuntimeLock.  Return true without
+    // refreshing — the caller populates the snapshot from cached state.
+    if (nvml_crash_recovery_active()) {
+        debug_log("service telemetry: crash recovery active, skipping hardware_initialize\n");
+        if (detail && detailSize > 0) detail[0] = 0;
+        return true;
+    }
+
     if (!hardware_initialize(detail, detailSize)) return false;
 
     bool runtimeActive = g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive;
@@ -438,7 +647,17 @@ static bool service_refresh_telemetry_for_request(char* detail, size_t detailSiz
         if (!service_telemetry_cache_is_fresh(now)) {
             bool noRuntimeThread = !g_serviceFanThread;
             bool noCache = g_serviceTelemetryLastHardwarePollTickMs == 0;
-            if (noRuntimeThread || noCache) {
+            // Don't call service_runtime_pulse() from the pipe server
+            // telemetry handler while recovering from a recent NVML crash —
+            // doing so triggers the recovery-reapply path, which calls
+            // NVML/NVAPI writes that can access-violate when the GPU kernel
+            // driver is still in a transitional state after a device
+            // reconnect.  The VEH kills the pipe server thread, breaking the
+            // GUI connection with ERROR_BROKEN_PIPE (109).  The fan runtime
+            // thread handles recovery independently.  Uses the shared recovery
+            // window so the guard matches the fan thread's crash back-off.
+            bool recentCrash = nvml_crash_recovery_active();
+            if ((noRuntimeThread || noCache) && !recentCrash) {
                 service_runtime_pulse();
             } else {
                 debug_log("service telemetry: using stale runtime cache ageMs=%llu source=%s\n",
@@ -483,22 +702,113 @@ static void service_runtime_pulse() {
             g_app.activeFanFixedPercent);
         LeaveCriticalSection(&g_appLock);
     }
-    apply_fan_curve_tick();
+    // GPU driver restart recovery (restart64.exe / TDR / driver upgrade).
+    //
+    // When the WDDM driver restarts, the already-loaded nvml.dll/nvapi64.dll
+    // retain broken internal state bound to the dead driver instance.  We use
+    // IN-PROCESS recovery: close stale handles (FreeLibrary without shutdown),
+    // re-init NVML/NvAPI with fresh module instances, and reapply settings.
+    // No process restart.
+    LONG crashCount = g_nvmlCrashCount;
+    bool deviceWasRemoved = false;
+    bool pendingRecovery = false;
+    EnterCriticalSection(&g_appLock);
+    if (g_app.deviceRemoved) deviceWasRemoved = true;
+    if (g_app.pendingDeviceRecovery) pendingRecovery = true;
+    LeaveCriticalSection(&g_appLock);
 
-    // After the fan tick, check if NVML is stale (driver update without reboot).
-    // If so, reinitialize and check whether OC settings survived.
-    if (g_serviceHasActiveDesired) {
-        char detail[128] = {};
-        int dummyTemp = 0;
-        if (!nvml_read_temperature(&dummyTemp, detail, sizeof(detail))) {
-            debug_log("service_runtime_pulse: NVML stale, attempting recovery\n");
-            close_nvml();
-            if (nvml_ensure_ready()) {
-                debug_log("service_runtime_pulse: NVML recovered, checking OC persistence\n");
-                service_check_oc_persistence(true);
+    if (deviceWasRemoved) {
+        // Device physically gone — NVML is unsafe; wait for arrival.  Skip the
+        // fan tick entirely (it would only read stale/zero data).
+        if (logPulse) {
+            debug_log("service_runtime_pulse: device removed, awaiting arrival (NVML idle)\n");
+        }
+        return;
+    }
+
+    if (crashCount > 0 || pendingRecovery) {
+        // Launch in-process recovery, or skip if one just completed.
+        //
+        // Cooldown: if recovery recently completed (within the crash recovery
+        // window), don't re-launch recovery.  The crashCount was restored by
+        // recovery (see Phase E above) as a safety measure: it keeps
+        // nvml_crash_recovery_active() returning true so the telemetry handler
+        // skips service_runtime_pulse().  Let the window expire naturally.
+        ULONGLONG lastRecoveryMs = g_serviceLastRecoveryTickMs;
+        if (lastRecoveryMs != 0 && (GetTickCount64() - lastRecoveryMs) < NVML_CRASH_RECOVERY_WINDOW_MS) {
+            if (logPulse || crashCount > 0) {
+                debug_log("service_runtime_pulse: cooling down after recovery (%llums ago), skipping pulse\n",
+                    GetTickCount64() - lastRecoveryMs);
             }
+            return;
+        }
+
+        // Cooldown expired.  Distinguish between:
+        //   1. Safety restore from Phase E (crashTickMs <= lastRecoveryMs)
+        //      → clear flags and fall through to the healthy path.  If the
+        //        recovery reapply failed transiently, the main-loop retry
+        //        worker preserves and reapplies the active desired settings.
+        //   2. Genuine new VEH crash (crashTickMs > lastRecoveryMs)
+        //      → this is a real crash after recovery, launch a new recovery.
+        if (lastRecoveryMs != 0 && g_nvmlCrashTickMs != 0 &&
+            g_nvmlCrashTickMs <= lastRecoveryMs) {
+            // RC7: if the reapply is still in progress, do NOT clear crash
+            // flags yet — the fan pulse would immediately touch NVML (fan tick)
+            // and trigger another VEH crash before the reapply can finish.
+            // Keep the fan pulse on cooldown until the reapply thread either
+            // completes or exhausts its retries.
+            bool reapplyActive = InterlockedExchangeAdd(&g_serviceReapplyInProgress, 0) != 0
+                || InterlockedExchangeAdd(&g_serviceRecoveryReapplyPending, 0) != 0;
+            if (reapplyActive) {
+                if (logPulse) {
+                    debug_log("service_runtime_pulse: safety window expired but reapply still active,"
+                        " extending cooldown until reapply completes\n");
+                }
+                // RC7: DON'T touch g_nvmlCrashCount here — setting it to 1
+                // would trigger the main loop's recovery monitor to launch a
+                // NEW recovery cycle (which detects crashCount >= 1 and starts
+                // Phase A).  Instead, just extend the cooldown timer so the
+                // fan pulse stays in the cooldown path (checks
+                // g_serviceLastRecoveryTickMs) without starting a new recovery.
+                g_serviceLastRecoveryTickMs = now;
+                return;
+            }
+            debug_log("service_runtime_pulse: safety window expired, resuming normal operation\n"
+                "  (crashCount=%ld crashTickMs=%llu lastRecoveryMs=%llu)\n",
+                (long)crashCount,
+                (unsigned long long)g_nvmlCrashTickMs,
+                (unsigned long long)lastRecoveryMs);
+            g_nvmlCrashCount = 0;
+            g_nvmlCrashTickMs = 0;
+            g_serviceLastRecoveryTickMs = 0;
+            // Fall through to apply_fan_curve_tick()
+        } else {
+            if (logPulse || crashCount > 0) {
+                debug_log("service_runtime_pulse: new VEH crash detected, "
+                    "launching in-process recovery (crashCount=%ld)\n", (long)crashCount);
+            }
+            launch_recovery_thread();
+            return;
         }
     }
+
+    // RC7: if the reapply thread is in progress and we reach here (crashCount
+    // was cleared by the main loop's safety window expiry handler), skip the
+    // fan tick to avoid triggering a new VEH crash on the transitional driver.
+    // The reapply thread handles the writes; the fan pulse resumes after it
+    // completes or exhausts retries.
+    if (InterlockedExchangeAdd(&g_serviceReapplyInProgress, 0) != 0) {
+        if (logPulse) {
+            debug_log("service_runtime_pulse: reapply active, skipping fan tick\n");
+        }
+        return;
+    }
+
+    // Healthy path: drive the fan curve / fixed runtime.  If the GPU driver
+    // restarts during this call, nvml_read_temperature() access-violates, the
+    // VEH bumps g_nvmlCrashCount and ExitThreads us; the watchdog recreates the
+    // thread and the next pulse takes the restart branch above.
+    apply_fan_curve_tick();
 
     mark_service_telemetry_cache_updated("fan runtime");
     if (logPulse) {
@@ -548,9 +858,16 @@ static DWORD WINAPI service_fan_runtime_thread_proc(void*) {
         DWORD waitResult = WaitForMultipleObjects(1, waitHandles, FALSE, waitMs);
         if (waitResult == WAIT_OBJECT_0) break;
         if (waitResult == WAIT_TIMEOUT) {
+            // Heartbeat: stamp BEFORE acquiring the lock / touching NVML so the
+            // main-loop watchdog can detect a wedge inside nvml.dll (a hang the
+            // VEH cannot catch) and launch in-process recovery.
+            g_serviceFanPulseHeartbeatMs = GetTickCount64();
+            InterlockedExchange(&g_serviceFanPulseInFlight, 1);
             lock_service_runtime();
             service_runtime_pulse();
             unlock_service_runtime();
+            InterlockedExchange(&g_serviceFanPulseInFlight, 0);
+            g_serviceFanPulseHeartbeatMs = GetTickCount64();
         } else if (waitResult == WAIT_FAILED) {
             debug_log("service_fan_runtime_thread: wait failed error=%lu\n", GetLastError());
             break;
@@ -579,6 +896,7 @@ static bool ensure_service_fan_runtime_thread() {
     ResetEvent(g_serviceFanStopEvent);
     DWORD threadId = 0;
     g_serviceFanThread = CreateThread(nullptr, 64 * 1024, service_fan_runtime_thread_proc, nullptr, STACK_SIZE_PARAM_IS_A_RESERVATION, &threadId);
+    g_fanRuntimeThreadId = threadId;
     debug_log("ensure_service_fan_runtime_thread: created=%d threadId=%lu\n", g_serviceFanThread ? 1 : 0, threadId);
     return g_serviceFanThread != nullptr;
 }
@@ -679,6 +997,11 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         g_serviceActiveDesired = mergedActiveDesired;
         g_serviceActiveDesired.resetOcBeforeApply = false;
         g_serviceHasActiveDesired = true;
+        InterlockedExchange(&g_serviceRecoveryReapplyPending, 0);
+        InterlockedExchange(&g_serviceReapplyInProgress, 0); // RC7: reapply confirmed by successful manual apply
+        g_serviceRecoveryReapplyAttempts = 0;
+        g_serviceRecoveryReapplyNextTickMs = 0;
+        service_clear_restart_reapply_snapshot();
         populate_control_state(&g_serviceControlState);
         g_serviceControlStateValid = true;
         mark_service_telemetry_cache_updated("service apply");
@@ -698,8 +1021,18 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         populate_control_state(&g_serviceControlState);
         g_serviceControlStateValid = true;
         mark_service_telemetry_cache_updated("service apply partial");
-        g_serviceHasActiveDesired = false;
-        memset(&g_serviceActiveDesired, 0, sizeof(g_serviceActiveDesired));
+        // RC3 fix: do NOT clear g_serviceHasActiveDesired / g_serviceActiveDesired
+        // on transient apply failure.  Previously, a single failed apply (e.g.
+        // mid-recovery) wiped the active desired, so the next recovery had
+        // nothing to reapply and the service was stuck in "crash recovery
+        // active, skipping hardware_initialize" forever.  Preserving the
+        // active desired lets the next recovery reapply the same settings.
+        // The disk snapshot is also kept up to date so a service restart
+        // mid-recovery can still restore the previous profile.
+        debug_log("service apply: apply FAILED, preserving active desired (hasLock=%d lockCi=%d)\n",
+            g_serviceActiveDesired.hasLock ? 1 : 0,
+            g_serviceActiveDesired.hasLock ? g_serviceActiveDesired.lockCi : -1);
+        service_write_restart_reapply_snapshot();
     }
     set_last_apply_phase(ok ? "service apply: complete" : "service apply: failed");
     return ok;
@@ -817,12 +1150,24 @@ static bool service_reset_all(char* result, size_t resultSize) {
     if (failCount == 0) {
         g_app.appliedGpuOffsetMHz = 0;
         g_app.appliedGpuOffsetExcludeLowCount = 0;
+        InterlockedExchange(&g_serviceRecoveryReapplyPending, 0);
+        InterlockedExchange(&g_serviceReapplyInProgress, 0);
+        g_serviceRecoveryReapplyAttempts = 0;
+        g_serviceRecoveryReapplyNextTickMs = 0;
+        service_clear_restart_reapply_snapshot();
         clear_service_authoritative_state();
         populate_control_state(&g_serviceControlState);
         g_serviceControlStateValid = true;
         set_message(result, resultSize, "Reset applied.");
         return true;
     }
+    // RC3 fix: on partial reset failure, keep the on-disk snapshot so the
+    // next recovery (or service restart) can restore the previous profile.
+    // The in-memory g_serviceActiveDesired was already cleared above — that
+    // is correct for reset, which is a "stop applying anything" operation;
+    // but the disk snapshot is the safety net for a service restart after a
+    // partial reset.
+    service_write_restart_reapply_snapshot();
     populate_control_state(&g_serviceControlState);
     g_serviceControlStateValid = true;
     mark_service_telemetry_cache_updated("service reset");

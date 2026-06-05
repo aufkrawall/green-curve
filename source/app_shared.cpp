@@ -12,6 +12,20 @@ AppData g_app = {};
 NvmlApi g_nvml_api = {};
 HMODULE g_nvml = nullptr;
 bool g_debug_logging = false;
+bool g_bestGuessWarningShownThisSession = false;
+bool g_guiForceFullRefresh = false;
+
+// In-process GPU recovery flags
+volatile LONG g_serviceGpuRecovering = 0;
+volatile LONG g_nvapiRecoveryInProgress = 0;
+volatile LONG g_serviceInitInProgress = 0;
+volatile ULONGLONG g_serviceLastRecoveryAttemptMs = 0;
+
+// Recovery thread TID + handle (see app_shared.h for usage).  Volatile
+// because they are written by the recovery thread / launch thread and
+// read by the VEH on a different thread context.
+volatile DWORD g_serviceRecoveryThreadId = 0;
+volatile HANDLE g_serviceRecoveryThreadHandle = nullptr;
 
 static HMODULE load_system_library_local_a(const char* name) {
     if (!name || !name[0] || strchr(name, '\\') || strchr(name, '/')) return nullptr;

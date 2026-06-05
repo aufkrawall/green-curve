@@ -35,13 +35,12 @@ static const char* debug_log_path() {
 static const char* service_early_debug_log_path() {
     if (g_debugEarlyLogPath[0]) return g_debugEarlyLogPath;
 
-    char programData[MAX_PATH] = {};
-    DWORD n = GetEnvironmentVariableA("ProgramData", programData, ARRAY_COUNT(programData));
-    if (n == 0 || n >= ARRAY_COUNT(programData)) {
-        StringCchCopyA(programData, ARRAY_COUNT(programData), "C:\\ProgramData");
+    char dir[MAX_PATH] = {};
+    if (!resolve_service_machine_data_dir(dir, sizeof(dir))) {
+        return APP_DEBUG_LOG_FILE; // last-resort relative path
     }
     StringCchPrintfA(g_debugEarlyLogPath, ARRAY_COUNT(g_debugEarlyLogPath),
-        "%s\\Green Curve\\%s", programData, APP_DEBUG_LOG_FILE);
+        "%s\\%s", dir, APP_DEBUG_LOG_FILE);
     return g_debugEarlyLogPath;
 }
 
@@ -207,11 +206,16 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
         }
     }
     if (isGpuDriverDll) {
-        // Log the crash info even for GPU driver DLL crashes, then suppress the dump.
+        // For GPU driver DLL crashes, log the crash info.
+        // For the service process, also capture a minidump for crash analysis
+        // (driver upgrade crashes happen in GPU driver DLLs — stale handles).
+        // For the GUI process, suppress the dump to avoid crash dump spam.
+        BOOL captureDump = g_app.isServiceProcess && info && info->ExceptionRecord && info->ContextRecord;
+
         char text[2048] = {};
         int len = 0;
         len += StringCchPrintfA(text + len, ARRAY_COUNT(text) - len,
-            "\r\n%04u-%02u-%02u %02u:%02u:%02u.%03u CRASH pid=%lu tid=%lu exception=0x%08lX address=%p (GPU driver DLL)",
+            "\r\n%04u-%02u-%02u %02u:%02u:%02u.%03u CRASH pid=%lu tid=%lu exception=0x%08lX address=%p",
             now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds,
             GetCurrentProcessId(),
             GetCurrentThreadId(),
@@ -222,14 +226,48 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
                 " fault=%s@%p", faultWrite ? "write" : "read", faultAddr);
         }
         len += StringCchPrintfA(text + len, ARRAY_COUNT(text) - len,
-            " source=%s phase=%s serviceProcess=%d\r\n",
+            " source=%s phase=%s serviceProcess=%d deviceRemoved=%d gpuDriverDll=1\r\n",
             g_pendingOperationSource[0] ? g_pendingOperationSource : "<none>",
             g_lastApplyPhase[0] ? g_lastApplyPhase : "<none>",
-            g_app.isServiceProcess ? 1 : 0);
+            g_app.isServiceProcess ? 1 : 0,
+            g_app.deviceRemoved ? 1 : 0);
         write_crash_breadcrumb_direct(text);
+
+        if (captureDump) {
+            // Capture minidump for service crashes in GPU driver DLLs (driver upgrade crashes).
+            // Use FILE_FLAG_WRITE_THROUGH for reliability during crashes.
+            char dumpPath[MAX_PATH] = {};
+            const char* dataDir = g_userDataDir[0] ? g_userDataDir : ".";
+            StringCchPrintfA(dumpPath, ARRAY_COUNT(dumpPath), "%s\\greencurve_crash_%04u%02u%02u_%02u%02u%02u.dmp",
+                dataDir, now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
+            char pathErr[256] = {};
+            ensure_parent_directory_for_file(dumpPath, pathErr, sizeof(pathErr));
+
+            HANDLE hDump = CreateFileA(dumpPath, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+            if (hDump != INVALID_HANDLE_VALUE) {
+                MINIDUMP_EXCEPTION_INFORMATION mei = {};
+                mei.ThreadId = GetCurrentThreadId();
+                mei.ExceptionPointers = info;
+                mei.ClientPointers = FALSE;
+                BOOL dumpOk = MiniDumpWriteDump(
+                    GetCurrentProcess(),
+                    GetCurrentProcessId(),
+                    hDump,
+                    MiniDumpWithDataSegs,
+                    &mei,
+                    nullptr,
+                    nullptr);
+                CloseHandle(hDump);
+                if (!dumpOk) {
+                    DeleteFileA(dumpPath);
+                }
+            }
+        }
         return EXCEPTION_EXECUTE_HANDLER;
     }
 
+    // Non-GPU-driver-DLL crash: write breadcrumb and dump.
     char text[2048] = {};
     int len = 0;
     len += StringCchPrintfA(text + len, ARRAY_COUNT(text) - len,
@@ -299,6 +337,217 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
+// VEH-safe logging: does NOT acquire g_debugLogLock (the crashing thread may
+// hold it).  Uses OutputDebugStringA only, with a short fixed buffer.
+static void debug_log_veh(const char* msg) {
+    if (!msg) return;
+    OutputDebugStringA(msg);
+}
+
+// Write a focused minidump from within the VEH handler.  Must NOT acquire any
+// lock that the crashing thread might hold (g_appLock, g_debugLogLock).
+// Uses direct file I/O with no heap allocation (stack buffers only).
+static void write_veh_minidump(EXCEPTION_POINTERS* info, const WCHAR* modPath) {
+    if (!info || !info->ExceptionRecord || !info->ContextRecord) return;
+
+    SYSTEMTIME now = {};
+    GetLocalTime(&now);
+    char dumpPath[MAX_PATH] = {};
+    char dataDir[MAX_PATH] = {};
+    if (!resolve_service_machine_data_dir(dataDir, sizeof(dataDir))) return;
+    StringCchPrintfA(dumpPath, ARRAY_COUNT(dumpPath),
+        "%s\\greencurve_veh_%04u%02u%02u_%02u%02u%02u.dmp",
+        dataDir,
+        now.wYear, now.wMonth, now.wDay,
+        now.wHour, now.wMinute, now.wSecond);
+    ensure_parent_directory_for_file(dumpPath, nullptr, 0);
+
+    HANDLE hDump = CreateFileA(dumpPath, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+    if (hDump == INVALID_HANDLE_VALUE) return;
+
+    MINIDUMP_EXCEPTION_INFORMATION mei = {};
+    mei.ThreadId = GetCurrentThreadId();
+    mei.ExceptionPointers = info;
+    mei.ClientPointers = FALSE;
+    BOOL dumpOk = MiniDumpWriteDump(
+        GetCurrentProcess(),
+        GetCurrentProcessId(),
+        hDump,
+        (MINIDUMP_TYPE)(MiniDumpWithDataSegs | MiniDumpWithIndirectlyReferencedMemory),
+        &mei,
+        nullptr,
+        nullptr);
+    CloseHandle(hDump);
+    if (!dumpOk) {
+        DeleteFileA(dumpPath);
+    }
+
+    // Write companion breadcrumb with crash context
+    {
+        char text[512] = {};
+        StringCchPrintfA(text, ARRAY_COUNT(text),
+            "\r\n%04u-%02u-%02u %02u:%02u:%02u VEH MINIDUMP pid=%lu tid=%lu addr=%p module=%ws\r\n",
+            now.wYear, now.wMonth, now.wDay,
+            now.wHour, now.wMinute, now.wSecond,
+            GetCurrentProcessId(), GetCurrentThreadId(),
+            info->ExceptionRecord->ExceptionAddress,
+            modPath ? modPath : L"<unknown>");
+        char breadPath[MAX_PATH] = {};
+        StringCchPrintfA(breadPath, ARRAY_COUNT(breadPath),
+            "%s\\greencurve_crash.txt", dataDir);
+        HANDLE hBread = CreateFileA(breadPath, FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+        if (hBread != INVALID_HANDLE_VALUE) {
+            DWORD written = 0;
+            WriteFile(hBread, text, (DWORD)strlen(text), &written, nullptr);
+            FlushFileBuffers(hBread);
+            CloseHandle(hBread);
+        }
+    }
+}
+
+// Vectored exception handler — catches nvml.dll access violations at first chance
+// so the fan runtime thread survives stale-handle crashes (driver restart without
+// device removal notification).
+//
+// When nvmlDeviceGetTemperature reads from invalid memory inside nvml.dll (after
+// a WDDM driver restart, e.g. via restart64.exe), this handler writes a minidump,
+// invalidates NVML state, and cleanly terminates the crashing thread via
+// ExitThread(0).  It records the crash; the main service loop observes
+// crashCount>0 and requests a controlled service-process restart for clean
+// driver re-init (see request_service_restart / launch_recovery_thread).
+//
+// This approach replaces the earlier stack-scanning recovery attempt which was
+// unreliable (false positives from data values on the stack that happened to
+// look like code addresses).
+//
+// NOTE: llvm-mingw does not support __try/__except SEH blocks, so a VEH is the
+// standard Windows API for exception catching.
+static LONG CALLBACK green_curve_vectored_handler(EXCEPTION_POINTERS* info) {
+    // Only intercept access violations
+    if (!info || !info->ExceptionRecord || !info->ContextRecord)
+        return EXCEPTION_CONTINUE_SEARCH;
+    if (info->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    // Check if the crash is inside nvml.dll or nvapi64.dll (stale handle after
+    // driver restart / driver upgrade / device reconnect)
+    void* address = info->ExceptionRecord->ExceptionAddress;
+    HMODULE hMod = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            (LPCWSTR)address, &hMod) || !hMod)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    WCHAR modPath[MAX_PATH] = {};
+    if (!GetModuleFileNameW(hMod, modPath, MAX_PATH))
+        return EXCEPTION_CONTINUE_SEARCH;
+    CharLowerW(modPath);
+    if (!wcsstr(modPath, L"nvml.dll") && !wcsstr(modPath, L"nvapi64.dll"))
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    // Write a focused minidump BEFORE making any state changes — this captures
+    // the exact crash context.  Must NOT hold any locks.
+    if (g_app.isServiceProcess) {
+        write_veh_minidump(info, modPath);
+    }
+
+    // Mark NVML as invalid.  Do not call nvmlShutdown() from this crash path:
+    // after a driver restart it can hang inside the dead driver instance while
+    // the service is trying to recover.
+    if (g_app.isServiceProcess) {
+        service_close_nvml_without_shutdown();
+    } else {
+        g_app.nvmlReady = false;
+        g_app.nvmlDevice = nullptr;
+        if (g_nvml) {
+            FreeLibrary(g_nvml);
+            g_nvml = nullptr;
+        }
+        memset(&g_nvml_api, 0, sizeof(g_nvml_api));
+    }
+    // NOTE: Do NOT FreeLibrary(g_app.hNvApi) here — nvapi_qi() caches function
+    // pointers from the DLL in a static local.  Other threads (e.g. the pipe
+    // server thread processing a snapshot) may hold references to those cached
+    // pointers.  Unloading the DLL from within the VEH causes those pointers
+    // to dangle, crashing other threads with access violations in unmapped
+    // memory.  NvAPI invalidation happens in the recovery thread (which stops
+    // all other threads first).
+
+    // Set the NVML-crashed flag so the snapshot handler knows to skip
+    // refresh_global_state() and use cached data instead.  This prevents
+    // the pipe server thread from crashing when the next SNAPSHOT request
+    // arrives while NVML handles are stale.
+    InterlockedExchange(&g_nvmlVhCrashed, 1);
+    // Update crash back-off state.  The service main loop observes crashCount>0
+    // and requests a controlled process restart for clean driver re-init.
+    g_nvmlCrashTickMs = GetTickCount64();
+    LONG crashCountNow = InterlockedIncrement(&g_nvmlCrashCount);
+
+    {
+        char vehMsg[180] = {};
+        StringCchPrintfA(vehMsg, sizeof(vehMsg),
+            "VEH: nvml/nvapi access violation at %p handled (crashCount=%ld) — minidump captured; main loop will request service restart\n",
+            address, (long)crashCountNow);
+        debug_log_veh(vehMsg);
+    }
+
+    // The VEH only marks the crash and kills the faulting thread; the controlled
+    // process restart is orchestrated by the main service loop (which observes
+    // crashCount>0).  We still need the crashing TID for the reapply-thread
+    // cleanup below.
+    DWORD crashingTid = GetCurrentThreadId();
+
+    // RC7: If the VEH kills the reapply thread, clean up its state so the
+    // main-loop monitor can launch a new reapply thread.  The reapply thread
+    // is not critical — losing it means the retry is delayed by one cycle.
+    // RC8a: Also clear g_serviceInitInProgress, which the reapply thread set
+    // at main_service_runtime.cpp:241 to bypass the nvml_crash_recovery_active()
+    // guard.  If we do not clear it here, nvml_ensure_ready() (at
+    // main_runtime_nvml.cpp:771) will skip the crash-recovery guard until the
+    // next recovery's Phase E clears it — leaving a window where the fan pulse
+    // or pipe server can call into NVML without protection.
+    if (crashingTid == (DWORD)g_serviceReapplyThreadId) {
+        InterlockedExchange((volatile LONG*)&g_serviceReapplyThreadId, 0);
+        InterlockedExchange(&g_serviceInitInProgress, 0);
+        HANDLE killedHandle = (HANDLE)InterlockedExchangePointer(
+            (PVOID volatile*)&g_serviceReapplyThread, nullptr);
+        if (killedHandle) {
+            CloseHandle(killedHandle);
+        }
+        // Leave g_serviceReapplyInProgress set so the monitor knows a retry
+        // is needed.  If the pending flag was already cleared by thread entry,
+        // the monitor will see inProgress and set pending again.
+        char vehMsg[160] = {};
+        StringCchPrintfA(vehMsg, sizeof(vehMsg),
+            "VEH: reapply thread (tid=%lu) killed, handle cleaned up for retry\n", crashingTid);
+        debug_log_veh(vehMsg);
+    }
+
+    // Terminate the crashing thread via ExitThread(0).  Rsp is adjusted to
+    // simulate the return address a CALL would have pushed, maintaining
+    // 16-byte alignment through ExitThread's prologue.
+    //
+    // For the fan runtime thread: the main-loop watchdog recreates it after
+    // the recovery thread completes.
+    //
+    // For the pipe server thread: the pipe watchdog recreates it.  The
+    // g_nvmlVhCrashed flag causes the NEW pipe server thread to skip NVML
+    // calls in the snapshot handler, so it won't crash a second time.
+    HMODULE hK32 = GetModuleHandleA("kernel32");
+    if (hK32) {
+        FARPROC exitThread = GetProcAddress(hK32, "ExitThread");
+        if (exitThread) {
+            info->ContextRecord->Rip = (ULONG_PTR)exitThread;
+            info->ContextRecord->Rcx = 0; // exit code
+            info->ContextRecord->Rsp = (info->ContextRecord->Rsp & ~(ULONG_PTR)15) - 8;
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+    }
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
 static void write_error_report_log_for_user_failure(const char* summary, const char* details) {
     char logErr[256] = {};
     if (!write_error_report_log(summary, details, logErr, sizeof(logErr)) && logErr[0]) {
@@ -306,622 +555,3 @@ static void write_error_report_log_for_user_failure(const char* summary, const c
     }
 }
 
-// Verify that the parent directory of the given path does not contain reparse points
-// (symlinks, junctions, mount points) that could redirect the write to an unexpected
-// location. Scans each path component from the root downward.
-static bool verify_parent_no_reparse_point(const char* path, char* err, size_t errSize) {
-    if (!path || !path[0]) {
-        set_message(err, errSize, "Empty path");
-        return false;
-    }
-    char probe[MAX_PATH] = {};
-    if (FAILED(StringCchCopyA(probe, ARRAY_COUNT(probe), path))) {
-        set_message(err, errSize, "Path is too long");
-        return false;
-    }
-    size_t len = strlen(probe);
-    size_t rootLen = 0;
-    if (len >= 3 && probe[1] == ':' && (probe[2] == '\\' || probe[2] == '/')) {
-        rootLen = 3; // "C:\"
-    } else if (len >= 2 && probe[0] == '\\' && probe[1] == '\\') {
-        const char* serverEnd = strpbrk(probe + 2, "\\/");
-        if (serverEnd) {
-            const char* shareEnd = strpbrk(serverEnd + 1, "\\/");
-            if (shareEnd) rootLen = (size_t)(shareEnd - probe + 1);
-        }
-    }
-    if (rootLen == 0 || rootLen >= len) return true; // Cannot determine root, skip check
-    for (size_t i = rootLen; i < len; i++) {
-        if (probe[i] != '\\' && probe[i] != '/') continue;
-        char saved = probe[i];
-        probe[i] = 0;
-        DWORD attrs = GetFileAttributesA(probe);
-        probe[i] = saved;
-        if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_REPARSE_POINT)) {
-            set_message(err, errSize, "Path crosses a reparse point");
-            return false;
-        }
-    }
-    return true;
-}
-
-static bool write_all_to_handle(HANDLE h, const char* data, size_t dataSize, const char* path, char* err, size_t errSize);
-
-static bool write_text_file_atomic(const char* path, const char* data, size_t dataSize, char* err, size_t errSize) {
-    if (g_app.isServiceProcess && g_serviceUserPathsResolved) {
-        return write_text_file_atomic_service(path, data, dataSize, err, errSize);
-    }
-    if (!path || !data) {
-        set_message(err, errSize, "Invalid file write arguments");
-        return false;
-    }
-
-    if (!verify_parent_no_reparse_point(path, err, errSize)) {
-        return false;
-    }
-
-    if (!ensure_parent_directory_for_file(path, err, errSize)) {
-        return false;
-    }
-
-    char tempPath[MAX_PATH] = {};
-    HANDLE h = INVALID_HANDLE_VALUE;
-    DWORD pid = GetCurrentProcessId();
-    for (unsigned int attempt = 0; attempt < 32; attempt++) {
-        if (FAILED(StringCchPrintfA(tempPath, ARRAY_COUNT(tempPath), "%s.tmp.%08lx.%08lx.%02u",
-                path,
-                (unsigned long)pid,
-                (unsigned long)GetTickCount(),
-                attempt))) {
-            set_message(err, errSize, "Temporary path is too long");
-            return false;
-        }
-        h = CreateFileA(tempPath, GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, nullptr);
-        if (h != INVALID_HANDLE_VALUE) break;
-        if (GetLastError() != ERROR_FILE_EXISTS && GetLastError() != ERROR_ALREADY_EXISTS) {
-            set_message(err, errSize, "Cannot create %s (error %lu)", tempPath, GetLastError());
-            return false;
-        }
-    }
-    if (h == INVALID_HANDLE_VALUE) {
-        set_message(err, errSize, "Cannot create a unique temporary output file");
-        return false;
-    }
-
-    bool ok = write_all_to_handle(h, data, dataSize, tempPath, err, errSize);
-    if (ok && !FlushFileBuffers(h)) {
-        ok = false;
-        set_message(err, errSize, "Failed flushing %s (error %lu)", tempPath, GetLastError());
-    }
-    CloseHandle(h);
-
-    if (!ok) {
-        DeleteFileA(tempPath);
-        return false;
-    }
-
-    if (!MoveFileExA(tempPath, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        set_message(err, errSize, "Failed finalizing %s (error %lu)", path, GetLastError());
-        DeleteFileA(tempPath);
-        return false;
-    }
-    return true;
-}
-
-static bool write_all_to_handle(HANDLE h, const char* data, size_t dataSize, const char* path, char* err, size_t errSize) {
-    if (h == INVALID_HANDLE_VALUE || !data) {
-        set_message(err, errSize, "Invalid file write handle");
-        return false;
-    }
-    size_t totalWritten = 0;
-    while (totalWritten < dataSize) {
-        size_t remaining = dataSize - totalWritten;
-        DWORD toWrite = (DWORD)(remaining > (1u << 20) ? (1u << 20) : remaining);
-        DWORD chunk = 0;
-        if (!WriteFile(h, data + totalWritten, toWrite, &chunk, nullptr) || chunk == 0) {
-            set_message(err, errSize, "Failed writing %s (error %lu)", path ? path : "output file", GetLastError());
-            return false;
-        }
-        totalWritten += chunk;
-    }
-    return true;
-}
-
-static bool write_text_file_atomic_service(const char* path, const char* data, size_t dataSize, char* err, size_t errSize) {
-    if (!path || !data) {
-        set_message(err, errSize, "Invalid file write arguments");
-        return false;
-    }
-
-    // Verify the parent directory is safe (not a reparse point) before creating any temp file.
-    char parentDir[MAX_PATH] = {};
-    if (FAILED(StringCchCopyA(parentDir, ARRAY_COUNT(parentDir), path))) {
-        set_message(err, errSize, "Path is too long");
-        return false;
-    }
-    char* lastSlash = strrchr(parentDir, '\\');
-    if (!lastSlash) lastSlash = strrchr(parentDir, '/');
-    if (lastSlash) *lastSlash = 0;
-    HANDLE parentHandle = CreateFileA(parentDir,
-        GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        nullptr,
-        OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-        nullptr);
-    if (parentHandle == INVALID_HANDLE_VALUE) {
-        set_message(err, errSize, "Cannot open parent directory %s (error %lu)", parentDir, GetLastError());
-        return false;
-    }
-    char parentFinalPath[MAX_PATH] = {};
-    DWORD parentFinalLen = GetFinalPathNameByHandleA(parentHandle, parentFinalPath, ARRAY_COUNT(parentFinalPath), FILE_NAME_NORMALIZED);
-    CloseHandle(parentHandle);
-    if (parentFinalLen == 0 || parentFinalLen >= ARRAY_COUNT(parentFinalPath)) {
-        set_message(err, errSize, "Cannot resolve parent directory path");
-        return false;
-    }
-    const char* parentComparePath = parentFinalPath;
-    if (strncmp(parentFinalPath, "\\\\?\\", 4) == 0) parentComparePath = parentFinalPath + 4;
-    size_t profileLen = strlen(g_serviceUserProfileDir);
-    if (_strnicmp(parentComparePath, g_serviceUserProfileDir, profileLen) != 0 ||
-        (parentComparePath[profileLen] != '\\' && parentComparePath[profileLen] != '\0')) {
-        set_message(err, errSize, "Parent directory resolved outside the caller's profile directory");
-        return false;
-    }
-    debug_log("write_text_file_atomic_service: parent dir verified \"%s\"\n", parentComparePath);
-
-    if (!ensure_parent_directory_for_file(path, err, errSize)) return false;
-
-    char tempPath[MAX_PATH] = {};
-    HANDLE h = INVALID_HANDLE_VALUE;
-    DWORD pid = GetCurrentProcessId();
-    for (unsigned int attempt = 0; attempt < 32; attempt++) {
-        if (FAILED(StringCchPrintfA(tempPath, ARRAY_COUNT(tempPath), "%s.tmp.%08lx.%08lx.%02u",
-                path,
-                (unsigned long)pid,
-                (unsigned long)GetTickCount(),
-                attempt))) {
-            set_message(err, errSize, "Temporary path is too long");
-            return false;
-        }
-        h = CreateFileA(tempPath,
-            GENERIC_READ | GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            nullptr,
-            CREATE_NEW,
-            FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED,
-            nullptr);
-        if (h != INVALID_HANDLE_VALUE) break;
-        if (GetLastError() != ERROR_FILE_EXISTS && GetLastError() != ERROR_ALREADY_EXISTS) {
-            set_message(err, errSize, "Cannot create %s (error %lu)", tempPath, GetLastError());
-            return false;
-        }
-    }
-    if (h == INVALID_HANDLE_VALUE) {
-        set_message(err, errSize, "Cannot create a unique temporary output file");
-        return false;
-    }
-
-    char verifyErr[256] = {};
-    bool ok = service_verify_written_file_path(tempPath, verifyErr, sizeof(verifyErr));
-    if (!ok) {
-        CloseHandle(h);
-        DeleteFileA(tempPath);
-        StringCchCopyA(err, errSize, verifyErr[0] ? verifyErr : "Temporary output path failed verification");
-        return false;
-    }
-
-    ok = write_all_to_handle(h, data, dataSize, tempPath, err, errSize);
-    if (ok && !FlushFileBuffers(h)) {
-        ok = false;
-        set_message(err, errSize, "Failed flushing %s (error %lu)", tempPath, GetLastError());
-    }
-    CloseHandle(h);
-    if (!ok) {
-        DeleteFileA(tempPath);
-        return false;
-    }
-    if (!service_verify_written_file_path(tempPath, verifyErr, sizeof(verifyErr))) {
-        DeleteFileA(tempPath);
-        StringCchCopyA(err, errSize, verifyErr[0] ? verifyErr : "Temporary output path failed final verification");
-        return false;
-    }
-    if (!MoveFileExA(tempPath, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        set_message(err, errSize, "Failed finalizing %s (error %lu)", path, GetLastError());
-        DeleteFileA(tempPath);
-        return false;
-    }
-    if (!service_verify_written_file_path(path, verifyErr, sizeof(verifyErr))) {
-        StringCchCopyA(err, errSize, verifyErr[0] ? verifyErr : "Written file failed final verification");
-        return false;
-    }
-    return true;
-}
-
-static bool section_name_matches(const char* line, const char* section) {
-    if (!line || line[0] != '[') return false;
-    size_t len = strlen(section);
-    if (strncmp(line + 1, section, len) != 0) return false;
-    return line[1 + len] == ']';
-}
-
-static bool section_should_be_preserved(const char* line, const char* const* replaceSections, int replaceCount) {
-    if (!line || line[0] != '[') return true;
-    for (int i = 0; i < replaceCount; i++) {
-        if (section_name_matches(line, replaceSections[i])) return false;
-    }
-    return true;
-}
-
-static bool write_config_sections_atomic(const char* path, const char* newSectionsData, const char* const* replaceSections, int replaceCount, char* err, size_t errSize) {
-    if (!path || !newSectionsData) {
-        set_message(err, errSize, "Invalid config write arguments");
-        return false;
-    }
-
-    // Read existing file if present.
-    char* preserved = nullptr;
-    size_t preservedSize = 0;
-    HANDLE hExisting = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (hExisting != INVALID_HANDLE_VALUE) {
-        DWORD fileSize = GetFileSize(hExisting, nullptr);
-        if (fileSize != INVALID_FILE_SIZE && fileSize > 0 && fileSize < 8 * 1024 * 1024) {
-            preserved = (char*)malloc(fileSize + 1);
-            if (preserved) {
-                DWORD read = 0;
-                if (ReadFile(hExisting, preserved, fileSize, &read, nullptr) && read == fileSize) {
-                    preservedSize = fileSize;
-                    preserved[preservedSize] = 0;
-                } else {
-                    free(preserved);
-                    preserved = nullptr;
-                    preservedSize = 0;
-                }
-            }
-        }
-        CloseHandle(hExisting);
-    }
-
-    size_t newSectionsSize = strlen(newSectionsData);
-    size_t outCapacity = preservedSize + newSectionsSize + 256;
-    char* out = (char*)malloc(outCapacity);
-    if (!out) {
-        free(preserved);
-        set_message(err, errSize, "Out of memory building config");
-        return false;
-    }
-    size_t outUsed = 0;
-
-    auto appendOut = [&](const char* data, size_t len) -> bool {
-        if (outUsed + len + 1 > outCapacity) {
-            size_t newCap = outCapacity * 2 + len + 256;
-            char* tmp = (char*)realloc(out, newCap);
-            if (!tmp) return false;
-            out = tmp;
-            outCapacity = newCap;
-        }
-        memcpy(out + outUsed, data, len);
-        outUsed += len;
-        return true;
-    };
-
-    // Copy preserved content, skipping replaced sections.
-    if (preserved && preservedSize > 0) {
-        const char* p = preserved;
-        while (*p) {
-            const char* end = p;
-            while (*end && *end != '\r' && *end != '\n') end++;
-            size_t lineLen = end - p;
-
-            if (p[0] == '[' && section_should_be_preserved(p, replaceSections, replaceCount)) {
-                // Copy this line and all subsequent lines until next section.
-                if (!appendOut(p, lineLen)) { free(preserved); free(out); return false; }
-                if (*end == '\r') { if (!appendOut("\r", 1)) { free(preserved); free(out); return false; } end++; }
-                if (*end == '\n') { if (!appendOut("\n", 1)) { free(preserved); free(out); return false; } end++; }
-                p = end;
-                while (*p) {
-                    const char* nextEnd = p;
-                    while (*nextEnd && *nextEnd != '\r' && *nextEnd != '\n') nextEnd++;
-                    if (p[0] == '[') break;
-                    if (!appendOut(p, nextEnd - p)) { free(preserved); free(out); return false; }
-                    if (*nextEnd == '\r') { if (!appendOut("\r", 1)) { free(preserved); free(out); return false; } nextEnd++; }
-                    if (*nextEnd == '\n') { if (!appendOut("\n", 1)) { free(preserved); free(out); return false; } nextEnd++; }
-                    p = nextEnd;
-                }
-            } else {
-                // Skip this line (belongs to a replaced section or is not a section header).
-                if (p[0] == '[') {
-                    // Skip entire section.
-                    if (*end == '\r') end++;
-                    if (*end == '\n') end++;
-                    p = end;
-                    while (*p) {
-                        const char* nextEnd = p;
-                        while (*nextEnd && *nextEnd != '\r' && *nextEnd != '\n') nextEnd++;
-                        if (p[0] == '[') break;
-                        if (*nextEnd == '\r') nextEnd++;
-                        if (*nextEnd == '\n') nextEnd++;
-                        p = nextEnd;
-                    }
-                } else {
-                    // Normal line outside any replaced section - copy it.
-                    if (!appendOut(p, lineLen)) { free(preserved); free(out); return false; }
-                    if (*end == '\r') { if (!appendOut("\r", 1)) { free(preserved); free(out); return false; } end++; }
-                    if (*end == '\n') { if (!appendOut("\n", 1)) { free(preserved); free(out); return false; } end++; }
-                    p = end;
-                }
-            }
-        }
-    }
-
-    free(preserved);
-
-    // Append new sections.
-    if (!appendOut(newSectionsData, newSectionsSize)) { free(out); return false; }
-    if (outUsed == 0 || out[outUsed - 1] != '\n') {
-        if (!appendOut("\r\n", 2)) { free(out); return false; }
-    }
-
-    bool ok = write_text_file_atomic(path, out, outUsed, err, errSize);
-    free(out);
-    return ok;
-}
-
-static bool write_log_snapshot(const char* path, char* err, size_t errSize) {
-    const size_t TEXT_SIZE = 65536;
-    char* text = (char*)malloc(TEXT_SIZE);
-    if (!text) {
-        set_message(err, errSize, "Out of memory allocating log snapshot buffer");
-        return false;
-    }
-    memset(text, 0, TEXT_SIZE);
-
-    size_t used = 0;
-    auto appendf = [&](const char* fmt, ...) -> bool {
-        if (used >= TEXT_SIZE) return false;
-        va_list ap;
-        va_start(ap, fmt);
-        int written = _vsnprintf_s(text + used, TEXT_SIZE - used, _TRUNCATE, fmt, ap);
-        va_end(ap);
-        if (written < 0) {
-            used = TEXT_SIZE - 1;
-            text[TEXT_SIZE - 1] = 0;
-            return false;
-        }
-        used += (size_t)written;
-        return true;
-    };
-
-    appendf("GPU: %s\r\n", g_app.gpuName);
-    appendf("Populated points: %d\r\n\r\n", g_app.numPopulated);
-    appendf("GPU offset: %d MHz", g_app.gpuClockOffsetkHz / 1000);
-    if (g_app.gpuOffsetRangeKnown) appendf(" (range %d..%d)", g_app.gpuClockOffsetMinMHz, g_app.gpuClockOffsetMaxMHz);
-    appendf("\r\n");
-    int curveMinkHz = 0;
-    int curveMaxkHz = 0;
-    bool curveRangeKnown = get_curve_offset_range_khz(&curveMinkHz, &curveMaxkHz);
-    appendf("VF curve delta clamp: %d..%d kHz", curveMinkHz, curveMaxkHz);
-    appendf("%s\r\n",
-        g_app.curveOffsetRangeKnown ? " (driver curve range)" :
-        curveRangeKnown ? " (graphics offset fallback)" :
-        " (default fallback)");
-    appendf("Mem offset: %d MHz", mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
-    if (g_app.memOffsetRangeKnown) appendf(" (range %d..%d)", g_app.memClockOffsetMinMHz, g_app.memClockOffsetMaxMHz);
-    appendf("\r\n");
-    appendf("Power limit: %d%% (%d mW current / %d mW default)\r\n", g_app.powerLimitPct, g_app.powerLimitCurrentmW, g_app.powerLimitDefaultmW);
-    appendf("\r\nGUI state\r\n=========\r\n");
-    appendf("GUI GPU offset: %d MHz\r\n", g_app.guiGpuOffsetMHz);
-    appendf("GUI GPU exclude low 70: %s\r\n", g_app.guiGpuOffsetExcludeLowCount > 0 ? "yes" : "no");
-    appendf("GUI fan mode: %s\r\n", fan_mode_label(g_app.guiFanMode));
-    appendf("GUI fan fixed pct: %d\r\n", g_app.guiFanFixedPercent);
-    appendf("Applied/session GPU offset: %d MHz\r\n", g_app.appliedGpuOffsetMHz);
-    appendf("Applied/session GPU exclude low 70: %s\r\n", g_app.appliedGpuOffsetExcludeLowCount > 0 ? "yes" : "no");
-    appendf("Active fan mode: %s\r\n", fan_mode_label(g_app.activeFanMode));
-    appendf("Active fan fixed pct: %d\r\n", g_app.activeFanFixedPercent);
-    if (g_app.serviceControlStateValid) {
-        appendf("\r\nService control state\r\n====================\r\n");
-        appendf("GPU offset: %d MHz\r\n", g_app.serviceControlState.gpuOffsetMHz);
-        appendf("Exclude low 70: %s\r\n", g_app.serviceControlState.gpuOffsetExcludeLowCount > 0 ? "yes" : "no");
-        appendf("Mem offset: %d MHz\r\n", g_app.serviceControlState.memOffsetMHz);
-        appendf("Power limit: %d%%\r\n", g_app.serviceControlState.powerLimitPct);
-        appendf("Fan mode: %s\r\n", fan_mode_label(g_app.serviceControlState.fanMode));
-        appendf("Fan fixed pct: %d\r\n", g_app.serviceControlState.fanFixedPercent);
-    }
-    if (g_app.fanSupported) {
-        appendf("Fan: %s\r\n", g_app.fanIsAuto ? "auto" : "manual");
-        for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
-            appendf("  Fan %u: %u%% / %u RPM / policy=%u signal=%u target=0x%X requested=%u%%\r\n",
-                fan, g_app.fanPercent[fan], g_app.fanRpm[fan], g_app.fanPolicy[fan], g_app.fanControlSignal[fan], g_app.fanTargetMask[fan], g_app.fanTargetPercent[fan]);
-        }
-    } else {
-        appendf("Fan: unsupported\r\n");
-    }
-    appendf("\r\n%-6s  %-10s  %-10s  %-12s\r\n", "Point", "Freq(MHz)", "Volt(mV)", "Offset(kHz)");
-    appendf("------  ----------  ----------  ------------\r\n");
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (g_app.curve[i].freq_kHz > 0 || g_app.curve[i].volt_uV > 0) {
-            appendf("%-6d  %-10u  %-10u  %-12d\r\n",
-                i,
-                displayed_curve_mhz(g_app.curve[i].freq_kHz),
-                g_app.curve[i].volt_uV / 1000,
-                g_app.freqOffsets[i]);
-        }
-    }
-
-    bool ok = write_text_file_atomic(path, text, used, err, errSize);
-    free(text);
-    return ok;
-}
-
-// Write an error report log containing GPU runtime state (GPU name, all 128 VF curve
-// points with offsets, power limits, fan state, and operation history). This data helps
-// diagnose apply failures but includes GPU identifiers and runtime configuration.
-// The log is written to the user's configured error log path.
-static bool write_error_report_log(const char* summary, const char* details, char* err, size_t errSize) {
-    char* text = (char*)VirtualAlloc(nullptr, 73728, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!text) {
-        set_message(err, errSize, "Out of memory generating error log");
-        return false;
-    }
-
-    size_t used = 0;
-    auto appendf = [&](const char* fmt, ...) -> bool {
-        if (used >= 73728) return false;
-        va_list ap;
-        va_start(ap, fmt);
-        int written = _vsnprintf_s(text + used, 73728 - used, _TRUNCATE, fmt, ap);
-        va_end(ap);
-        if (written < 0) {
-            used = 73727;
-            text[73727] = 0;
-            return false;
-        }
-        used += (size_t)written;
-        return true;
-    };
-
-    SYSTEMTIME now = {};
-    GetLocalTime(&now);
-    appendf("Green Curve error report\r\n");
-    appendf("Generated: %04u-%02u-%02u %02u:%02u:%02u\r\n\r\n",
-        now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
-    appendf("Config path: %s\r\n", g_app.configPath[0] ? g_app.configPath : "<unset>");
-    appendf("Service mode: installed=%d running=%d available=%d using=%d broken=%d\r\n\r\n",
-        g_app.backgroundServiceInstalled ? 1 : 0,
-        g_app.backgroundServiceRunning ? 1 : 0,
-        g_app.backgroundServiceAvailable ? 1 : 0,
-        g_app.usingBackgroundService ? 1 : 0,
-        g_app.backgroundServiceBroken ? 1 : 0);
-    if (summary && *summary) appendf("Summary: %s\r\n", summary);
-    if (details && *details) appendf("Details: %s\r\n", details);
-    if (g_lastOperationIntent[0]) {
-        appendf("\r\nOperation intent\r\n================\r\n%s", g_lastOperationIntent);
-    }
-    if (g_lastOperationPlan[0]) {
-        appendf("\r\nApply plan\r\n==========\r\n%s", g_lastOperationPlan);
-    }
-    if (g_lastOperationBeforeSnapshot[0]) {
-        appendf("\r\nState before apply\r\n==================\r\n%s", g_lastOperationBeforeSnapshot);
-    }
-    if (g_lastOperationAfterSnapshot[0]) {
-        appendf("\r\nState after apply\r\n=================\r\n%s", g_lastOperationAfterSnapshot);
-    }
-    appendf("\r\nCurrent state snapshot\r\n======================\r\n");
-    appendf("GPU: %s\r\n", g_app.gpuName);
-    appendf("Populated points: %d\r\n\r\n", g_app.numPopulated);
-    char liveOffsetState[256] = {};
-    describe_live_gpu_offset_state(liveOffsetState, sizeof(liveOffsetState));
-    appendf("GPU offset: %d MHz", g_app.gpuClockOffsetkHz / 1000);
-    if (g_app.gpuOffsetRangeKnown) appendf(" (range %d..%d)", g_app.gpuClockOffsetMinMHz, g_app.gpuClockOffsetMaxMHz);
-    appendf("\r\n");
-    appendf("GPU offset state: %s\r\n", liveOffsetState);
-    int curveMinkHz = 0;
-    int curveMaxkHz = 0;
-    bool curveRangeKnown = get_curve_offset_range_khz(&curveMinkHz, &curveMaxkHz);
-    appendf("VF curve delta clamp: %d..%d kHz", curveMinkHz, curveMaxkHz);
-    appendf("%s\r\n",
-        g_app.curveOffsetRangeKnown ? " (driver curve range)" :
-        curveRangeKnown ? " (graphics offset fallback)" :
-        " (default fallback)");
-    appendf("Mem offset: %d MHz", mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
-    if (g_app.memOffsetRangeKnown) appendf(" (range %d..%d)", g_app.memClockOffsetMinMHz, g_app.memClockOffsetMaxMHz);
-    appendf("\r\n");
-    appendf("Power limit: %d%% (%d mW current / %d mW default)\r\n", g_app.powerLimitPct, g_app.powerLimitCurrentmW, g_app.powerLimitDefaultmW);
-    if (g_app.fanSupported) {
-        appendf("Fan: %s\r\n", g_app.fanIsAuto ? "auto" : "manual");
-        for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
-            appendf("  Fan %u: %u%% / %u RPM / policy=%u signal=%u target=0x%X requested=%u%%\r\n",
-                fan, g_app.fanPercent[fan], g_app.fanRpm[fan], g_app.fanPolicy[fan], g_app.fanControlSignal[fan], g_app.fanTargetMask[fan], g_app.fanTargetPercent[fan]);
-        }
-    } else {
-        appendf("Fan: unsupported\r\n");
-    }
-    appendf("\r\n%-6s  %-10s  %-10s  %-12s\r\n", "Point", "Freq(MHz)", "Volt(mV)", "Offset(kHz)");
-    appendf("------  ----------  ----------  ------------\r\n");
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (g_app.curve[i].freq_kHz > 0 || g_app.curve[i].volt_uV > 0) {
-            appendf("%-6d  %-10u  %-10u  %-12d\r\n",
-                i,
-                displayed_curve_mhz(g_app.curve[i].freq_kHz),
-                g_app.curve[i].volt_uV / 1000,
-                g_app.freqOffsets[i]);
-        }
-    }
-
-    bool ok = write_text_file_atomic(error_log_path(), text, used, err, errSize);
-    VirtualFree(text, 0, MEM_RELEASE);
-    return ok;
-}
-
-static bool write_json_snapshot(const char* path, char* err, size_t errSize) {
-    char* json = (char*)VirtualAlloc(nullptr, 131072, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!json) {
-        set_message(err, errSize, "Out of memory generating JSON");
-        return false;
-    }
-
-    size_t used = 0;
-    auto append = [&](const char* fmt, ...) -> bool {
-        if (used >= 131072) return false;
-        va_list ap;
-        va_start(ap, fmt);
-        int written = _vsnprintf_s(json + used, 131072 - used, _TRUNCATE, fmt, ap);
-        va_end(ap);
-        if (written < 0) {
-            used = 131071;
-            json[131071] = 0;
-            return false;
-        }
-        used += (size_t)written;
-        return true;
-    };
-
-    append("{\n  \"gpu\": \"");
-    for (const unsigned char* p = (const unsigned char*)g_app.gpuName; p && *p; ++p) {
-        switch (*p) {
-            case '\\': append("\\\\"); break;
-            case '"': append("\\\""); break;
-            case '\n': append("\\n"); break;
-            case '\r': append("\\r"); break;
-            case '\t': append("\\t"); break;
-            default:
-                if (*p < 32) append("\\u%04x", *p);
-                else append("%c", *p);
-                break;
-        }
-    }
-    append("\",\n  \"populated\": %d,\n", g_app.numPopulated);
-    append("  \"gpu_offset_mhz\": %d,\n", g_app.gpuClockOffsetkHz / 1000);
-    append("  \"mem_offset_mhz\": %d,\n", mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
-    append("  \"power_limit_pct\": %d,\n", g_app.powerLimitPct);
-    if (g_app.fanSupported) {
-        if (g_app.fanIsAuto) append("  \"fan\": \"auto\",\n");
-        else append("  \"fan\": %u,\n", g_app.fanPercent[0]);
-    } else {
-        append("  \"fan\": null,\n");
-    }
-    append("  \"fans\": [\n");
-    for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {
-        append("    {\"index\": %u, \"percent\": %u, \"requested_percent\": %u, \"rpm\": %u, \"policy\": %u, \"signal\": %u, \"target\": %u}%s\n",
-            fan, g_app.fanPercent[fan], g_app.fanTargetPercent[fan], g_app.fanRpm[fan], g_app.fanPolicy[fan], g_app.fanControlSignal[fan], g_app.fanTargetMask[fan],
-            (fan + 1 < g_app.fanCount) ? "," : "");
-    }
-    append("  ],\n  \"points\": [\n");
-    bool first = true;
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (g_app.curve[i].freq_kHz > 0 || g_app.curve[i].volt_uV > 0) {
-            append("%s    {\"index\": %d, \"freq_mhz\": %u, \"volt_mv\": %u, \"offset_khz\": %d}",
-                first ? "" : ",\n",
-                i,
-                displayed_curve_mhz(g_app.curve[i].freq_kHz),
-                g_app.curve[i].volt_uV / 1000,
-                g_app.freqOffsets[i]);
-            first = false;
-        }
-    }
-    append("\n  ]\n}\n");
-
-    bool ok = write_text_file_atomic(path, json, used, err, errSize);
-    VirtualFree(json, 0, MEM_RELEASE);
-    return ok;
-}

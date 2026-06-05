@@ -16,6 +16,7 @@
 #include <windows.h>
 
 #include <commctrl.h>
+#include <setupapi.h>
 #include <sddl.h>
 #include <shlobj.h>
 #include <shellapi.h>
@@ -61,7 +62,7 @@ void init_dpi();
 #define TRAY_ICON_OC_FAN_ID 114
 #define APP_NAME            "Green Curve"
 #ifndef APP_VERSION
-#define APP_VERSION         "0.13"
+#define APP_VERSION         "0.14"
 #endif
 #ifndef APP_BUILD_NUMBER
 #define APP_BUILD_NUMBER    0
@@ -117,6 +118,7 @@ void init_dpi();
 
 #define FAN_CURVE_TIMER_ID  1
 #define FAN_TELEMETRY_TIMER_ID 2
+#define SERVICE_RECONNECT_TIMER_ID 3
 #define FAN_CURVE_MAX_POINTS 8
 #define FAN_CURVE_MAX_HYSTERESIS_C 10
 
@@ -613,6 +615,11 @@ struct AppData {
     unsigned int fanRuntimeConsecutiveFailures;
     ULONGLONG fanRuntimeLastApplyTickMs;
 
+    // --- Driver upgrade resilience ---
+    bool deviceRemoved;               // GPU display adapter removed (driver uninstall in progress)
+    bool pendingDeviceRecovery;       // Service has detected device removal; run recovery after arrival
+    unsigned long long deviceRemoveTimeMs; // When device was last removed (tick count)
+
     bool launchedFromLogon;
     bool startHiddenToTray;
     bool isServiceProcess;
@@ -663,6 +670,13 @@ struct DesiredSettings {
     bool resetOcBeforeApply;
 };
 
+// Sanitize a DesiredSettings struct received over IPC.  This is the single
+// trust boundary between an unprivileged caller and the LocalSystem service:
+// every numeric field that can reach an array index, a hardware write, or a
+// runtime loop MUST be range-checked here.  Downstream code also guards the
+// index fields, but completing the clamps at the boundary is defense in depth
+// (CWE-20) so a malformed or hostile request can never drive out-of-range
+// behavior even if a future downstream guard is dropped.
 static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
     if (!d) return;
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
@@ -677,9 +691,30 @@ static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
     if (d->hasMemOffset && (d->memOffsetMHz < -5000 || d->memOffsetMHz > 5000)) {
         d->memOffsetMHz = d->memOffsetMHz < -5000 ? -5000 : 5000;
     }
+    // lockCi indexes VF_NUM_POINTS-sized arrays downstream.  Preserve the -1
+    // "no explicit lock" sentinel but neutralize any out-of-bounds index.
+    if (d->lockCi < -1) d->lockCi = -1;
+    if (d->lockCi >= VF_NUM_POINTS) d->lockCi = VF_NUM_POINTS - 1;
+    // Selective-offset exclude count gates per-point GPU offset application.
+    if (d->gpuOffsetExcludeLowCount < 0) d->gpuOffsetExcludeLowCount = 0;
+    if (d->gpuOffsetExcludeLowCount > VF_NUM_POINTS) d->gpuOffsetExcludeLowCount = VF_NUM_POINTS;
     if (d->hasFan) {
         if (d->fanPercent < 0) d->fanPercent = 0;
         if (d->fanPercent > 100) d->fanPercent = 100;
+        // fanMode selects the runtime policy (auto/fixed/curve); an unknown
+        // value would fall through every branch with undefined effect.
+        if (d->fanMode < FAN_MODE_AUTO) d->fanMode = FAN_MODE_AUTO;
+        if (d->fanMode > FAN_MODE_CURVE) d->fanMode = FAN_MODE_CURVE;
+        // The embedded fan curve feeds fan-speed writes and interpolation.
+        for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
+            if (d->fanCurve.points[i].fanPercent < 0) d->fanCurve.points[i].fanPercent = 0;
+            if (d->fanCurve.points[i].fanPercent > 100) d->fanCurve.points[i].fanPercent = 100;
+            if (d->fanCurve.points[i].temperatureC < 0) d->fanCurve.points[i].temperatureC = 0;
+            if (d->fanCurve.points[i].temperatureC > 150) d->fanCurve.points[i].temperatureC = 150;
+        }
+        if (d->fanCurve.hysteresisC < 0) d->fanCurve.hysteresisC = 0;
+        if (d->fanCurve.hysteresisC > FAN_CURVE_MAX_HYSTERESIS_C) d->fanCurve.hysteresisC = FAN_CURVE_MAX_HYSTERESIS_C;
+        if (d->fanCurve.pollIntervalMs < 1) d->fanCurve.pollIntervalMs = 1;
     }
 }
 
@@ -789,6 +824,15 @@ struct ServiceSnapshot {
     char ownerUser[256];
     DWORD ownerSessionId;
     ULONGLONG ownerUtcMs;
+    // GPU recovery status — populated when the service is recovering from
+    // a device reconnect / driver upgrade.  The GUI uses these to show
+    // "GPU reconnecting..." instead of "service not responding".
+    bool serviceInRecovery;
+    ULONGLONG lastRecoveryTickMs;
+    // True when the service has re-applied settings after recovery but not yet
+    // confirmed they stuck — the GUI shows "reapplying..." instead of a
+    // misleading "settings active".
+    bool serviceReapplyInProgress;
 };
 
 struct ServiceRequest {
@@ -914,6 +958,60 @@ extern AppData g_app;
 extern NvmlApi g_nvml_api;
 extern HMODULE g_nvml;
 extern bool g_debug_logging;
+// F-DOM-1: the experimental best-guess-family VF warning re-shows once per GUI
+// session (it must not be permanently dismissible) but should not nag within a
+// run; set once the warning has been acknowledged this session.
+extern bool g_bestGuessWarningShownThisSession;
+// F-REL-2e: set when a telemetry poll detects the service reset to defaults and
+// clears a stale adopted GUI lock — requests the next poll to do the same full
+// visual resync the Refresh button does (the poll otherwise skips it so it never
+// wipes in-progress edits).
+extern bool g_guiForceFullRefresh;
+
+// In-process GPU recovery flags — set/read atomically across threads.
+// g_serviceGpuRecovering: 1 while recovery thread is active (close stale
+//   handles, re-init NVML/NvAPI, reapply settings).  Pipe server serves
+//   cached data.  nvml_ensure_ready returns false.
+// g_nvapiRecoveryInProgress: 1 while NvAPI handles are being closed and
+//   reloaded during recovery.  All NvAPI call sites check this and
+//   return early.
+// g_serviceInitInProgress: 1 while the recovery thread is performing the
+//   in-process NVML/NvAPI re-init (Phase C).  nvml_ensure_ready() and
+//   nvapi_qi() check this flag and bypass their normal "crash recovery
+//   in progress, return not-ready" early-return so the re-init can run.
+//   Critically, the broader crash-recovery safety guard
+//   (g_nvmlCrashCount / g_nvmlCrashTickMs) stays SET throughout the
+//   recovery, so hardware_initialize() correctly skips
+//   refresh_global_state() (the dangerous NVML reads on a still-
+//   transitional driver).  Cleared in Phase E after the reapply succeeds.
+extern volatile LONG g_serviceGpuRecovering;
+extern volatile LONG g_nvapiRecoveryInProgress;
+extern volatile LONG g_serviceInitInProgress;
+
+// Recovery thread TID + handle.  Set by launch_recovery_thread() after
+// CreateThread succeeds; cleared by service_recovery_thread_proc() on
+// normal return.  Used by:
+//   - green_curve_vectored_handler (main_diagnostics.cpp) to detect
+//     when the VEH is killing the recovery thread mid-apply and clear
+//     the three stuck recovery flags above.
+//   - launch_recovery_thread (main_service_runtime.cpp) to defensively
+//     detect a dead previous recovery thread (e.g. one that was killed
+//     by a non-nvml/nvapi crash that the VEH did not handle) and clear
+//     the stuck flags before launching a new one.
+// The handle is NOT CloseHandle'd by launch_recovery_thread; it is
+// closed lazily by either the VEH-side cleanup (RC5a) or the
+// launch-side cleanup (RC5b) on the next launch.  This is the same
+// pattern as g_fanRuntimeThreadId (main.cpp:15).
+extern volatile DWORD g_serviceRecoveryThreadId;
+extern volatile HANDLE g_serviceRecoveryThreadHandle;
+
+// Timestamp of the most recent launch_recovery_thread() call (any caller).
+// Used by the wedge watchdog, main-loop monitor, and fan-runtime pulse
+// to bound how often a new recovery can be spawned — without this, a
+// wedged recovery produces a tight ~3 s loop of redundant recoveries
+// that all wedge in the same place.  See
+// SERVICE_RECOVERY_RELAUNCH_INTERVAL_MS in source/main.cpp.
+extern volatile ULONGLONG g_serviceLastRecoveryAttemptMs;
 
 typedef int (*NvApiFunc)(void*, void*);
 

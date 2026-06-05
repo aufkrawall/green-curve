@@ -9,7 +9,6 @@ static bool show_best_guess_support_warning(HWND parent) {
         gpu_family_name(g_app.gpuFamily),
         g_app.gpuName[0] ? g_app.gpuName : "NVIDIA GPU");
 
-    bool dontShowAgainChecked = false;
     bool handled = false;
     HMODULE comctl = load_system_library_a("comctl32.dll");
     if (comctl) {
@@ -36,11 +35,9 @@ static bool show_best_guess_support_warning(HWND parent) {
                 gpu_family_name(g_app.gpuFamily),
                 g_app.gpuName[0] ? g_app.gpuName : "NVIDIA GPU");
             config.pszContent = content;
-            config.pszVerificationText = L"Do not show this warning again for this GPU family";
 
             int button = 0;
-            BOOL verification = FALSE;
-            HRESULT hr = taskDialogIndirect(&config, &button, nullptr, &verification);
+            HRESULT hr = taskDialogIndirect(&config, &button, nullptr, nullptr);
             if (SUCCEEDED(hr)) {
                 handled = true;
                 if (button == IDCANCEL) {
@@ -48,7 +45,6 @@ static bool show_best_guess_support_warning(HWND parent) {
                     release_single_instance_mutex();
                     return false;
                 }
-                dontShowAgainChecked = verification == TRUE;
             }
         }
         FreeLibrary(comctl);
@@ -61,19 +57,13 @@ static bool show_best_guess_support_warning(HWND parent) {
             release_single_instance_mutex();
             return false;
         }
-
-        int dontShowAgain = MessageBoxA(parent,
-            "Do not show this experimental support warning again for this GPU family?",
-            "Green Curve - Experimental GPU Support",
-            MB_YESNO | MB_ICONQUESTION);
-        dontShowAgainChecked = dontShowAgain == IDYES;
     }
 
-    if (dontShowAgainChecked && g_app.configPath[0]) {
-        char key[64] = {};
-        StringCchPrintfA(key, ARRAY_COUNT(key), "hide_best_guess_warning_%s", gpu_family_name(g_app.gpuFamily));
-        set_config_int(g_app.configPath, "warnings", key, 1);
-    }
+    // F-DOM-1: the experimental-hardware warning is no longer permanently
+    // dismissible — suppress it only for the remainder of this session; it
+    // re-shows on the next launch so the user is reminded each run that VF
+    // writes target an unvalidated architecture.
+    g_bestGuessWarningShownThisSession = true;
     return true;
 }
 
@@ -590,7 +580,13 @@ static bool refresh_service_snapshot_and_active_desired(char* err, size_t errSiz
     DesiredSettings activeDesired = {};
     char desiredErr[256] = {};
     if (service_client_get_active_desired(&activeDesired, nullptr, desiredErr, sizeof(desiredErr))) {
-        apply_service_desired_to_gui(&activeDesired);
+        // RC7 fix: do NOT call apply_service_desired_to_gui() here — that would
+        // overwrite g_app.lockedCi/g_app.lockedFreq with the service's stale
+        // active desired (which may still hold old lock values from before a
+        // GPU device reconnect or reset), even when the just-received snapshot
+        // correctly reported hasLock=false.  The snapshot is the authoritative
+        // source for the GUI display.  The active desired is only returned to
+        // callers that need it (e.g. profile mismatch checks).
         if (activeDesiredOut) *activeDesiredOut = activeDesired;
     } else if (desiredErr[0]) {
         debug_log("refresh_service_snapshot_and_active_desired: active desired unavailable: %s\n", desiredErr);

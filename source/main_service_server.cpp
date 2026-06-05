@@ -1,147 +1,3 @@
-static bool wait_for_service_state(SC_HANDLE svc, DWORD desiredState, DWORD timeoutMs) {
-    if (!svc) return false;
-    ULONGLONG startTick = GetTickCount64();
-    SERVICE_STATUS_PROCESS ssp = {};
-    DWORD needed = 0;
-    while ((GetTickCount64() - startTick) < timeoutMs) {
-        ZeroMemory(&ssp, sizeof(ssp));
-        if (!QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, (LPBYTE)&ssp, sizeof(ssp), &needed)) return false;
-        if (ssp.dwCurrentState == desiredState) return true;
-        Sleep(200);
-    }
-    ZeroMemory(&ssp, sizeof(ssp));
-    return QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, (LPBYTE)&ssp, sizeof(ssp), &needed) &&
-        ssp.dwCurrentState == desiredState;
-}
-
-static bool stop_service_for_binary_update(SC_HANDLE svc, char* err, size_t errSize) {
-    if (!svc) return true;
-    SERVICE_STATUS_PROCESS ssp = {};
-    DWORD needed = 0;
-    if (!QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, (LPBYTE)&ssp, sizeof(ssp), &needed)) {
-        set_message(err, errSize, "Failed querying service state before repair (error %lu)", GetLastError());
-        return false;
-    }
-    if (ssp.dwCurrentState == SERVICE_STOPPED) return true;
-    debug_log("service repair: stopping existing service before binary update (state=%lu pid=%lu)\n",
-        (unsigned long)ssp.dwCurrentState,
-        (unsigned long)ssp.dwProcessId);
-    if (ssp.dwCurrentState != SERVICE_STOP_PENDING) {
-        SERVICE_STATUS status = {};
-        if (!ControlService(svc, SERVICE_CONTROL_STOP, &status)) {
-            DWORD stopErr = GetLastError();
-            if (stopErr != ERROR_SERVICE_NOT_ACTIVE) {
-                set_message(err, errSize, "Failed stopping service for binary update (error %lu)", stopErr);
-                return false;
-            }
-            return true;
-        }
-    }
-    if (!wait_for_service_state(svc, SERVICE_STOPPED, 10000)) {
-        set_message(err, errSize, "Timed out stopping service for binary update");
-        return false;
-    }
-    debug_log("service repair: existing service stopped for binary update\n");
-    return true;
-}
-
-static bool service_install_or_remove(bool enable, char* err, size_t errSize) {
-    WCHAR exePath[MAX_PATH] = {};
-    if (!enable && !get_adjacent_service_binary_path(exePath, ARRAY_COUNT(exePath), err, errSize)) {
-        // Removal does not need the adjacent binary to exist; keep going with the secure target path for cleanup.
-        err[0] = 0;
-        WCHAR installDir[MAX_PATH] = {};
-        char ignored[64] = {};
-        if (get_secure_service_install_dir_w(installDir, ARRAY_COUNT(installDir), ignored, sizeof(ignored))) {
-            StringCchPrintfW(exePath, ARRAY_COUNT(exePath), L"%ls\\%ls", installDir, APP_SERVICE_EXE_NAME_W);
-        }
-    }
-    ScopedServiceHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CREATE_SERVICE | SC_MANAGER_CONNECT));
-    if (!scm.valid()) {
-        set_message(err, errSize, "Failed opening service manager (error %lu)", GetLastError());
-        return false;
-    }
-
-    bool ok = false;
-    if (enable) {
-        ScopedServiceHandle svc(OpenServiceW(scm.get(), L"GreenCurveService", SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_STOP | SERVICE_QUERY_STATUS));
-        if (svc.valid() && !stop_service_for_binary_update(svc.get(), err, errSize)) return false;
-        if (!ensure_secure_service_binary_path(exePath, ARRAY_COUNT(exePath), err, errSize)) return false;
-        WCHAR binPath[1024] = {};
-        if (FAILED(StringCchPrintfW(binPath, ARRAY_COUNT(binPath), L"\"%ls\" --service-run", exePath))) {
-            set_message(err, errSize, "Service command line is too long");
-            return false;
-        }
-        if (!svc.valid()) {
-            svc.reset(CreateServiceW(
-                scm.get(),
-                L"GreenCurveService",
-                L"Green Curve Background Service",
-                SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_STOP | DELETE | SERVICE_QUERY_STATUS,
-                SERVICE_WIN32_OWN_PROCESS,
-                SERVICE_AUTO_START,
-                SERVICE_ERROR_NORMAL,
-                binPath,
-                nullptr,
-                nullptr,
-                nullptr,
-                L"LocalSystem",
-                nullptr));
-        } else {
-            if (!ChangeServiceConfigW(svc.get(), SERVICE_NO_CHANGE, SERVICE_AUTO_START, SERVICE_NO_CHANGE, binPath, nullptr, nullptr, nullptr, nullptr, nullptr, L"Green Curve Background Service")) {
-                set_message(err, errSize, "Failed updating service configuration (error %lu)", GetLastError());
-                return false;
-            }
-        }
-        if (!svc.valid()) {
-            set_message(err, errSize, "Failed installing service (error %lu)", GetLastError());
-        } else {
-            SERVICE_STATUS_PROCESS ssp = {};
-            DWORD needed = 0;
-            if (!QueryServiceStatusEx(svc.get(), SC_STATUS_PROCESS_INFO, (LPBYTE)&ssp, sizeof(ssp), &needed)) {
-                set_message(err, errSize, "Failed querying installed service state (error %lu)", GetLastError());
-                return false;
-            }
-            if (ssp.dwCurrentState != SERVICE_RUNNING) {
-                if (!StartServiceW(svc.get(), 0, nullptr)) {
-                    DWORD startErr = GetLastError();
-                    if (startErr != ERROR_SERVICE_ALREADY_RUNNING) {
-                        set_message(err, errSize, "Failed starting service (error %lu)", startErr);
-                        return false;
-                    }
-                }
-                wait_for_service_state(svc.get(), SERVICE_RUNNING, 10000);
-                ZeroMemory(&ssp, sizeof(ssp));
-                QueryServiceStatusEx(svc.get(), SC_STATUS_PROCESS_INFO, (LPBYTE)&ssp, sizeof(ssp), &needed);
-            }
-            if (ssp.dwCurrentState != SERVICE_RUNNING) {
-                set_message(err, errSize, "Service install succeeded but the service did not reach RUNNING state");
-            } else {
-                ok = true;
-            }
-        }
-    } else {
-        ScopedServiceHandle svc(OpenServiceW(scm.get(), L"GreenCurveService", SERVICE_STOP | DELETE | SERVICE_QUERY_STATUS));
-        if (!svc.valid()) {
-            ok = true;
-            cleanup_secure_service_binary_after_remove();
-        } else {
-            SERVICE_STATUS status = {};
-            ControlService(svc.get(), SERVICE_CONTROL_STOP, &status);
-            wait_for_service_state(svc.get(), SERVICE_STOPPED, 10000);
-            if (!DeleteService(svc.get())) {
-                set_message(err, errSize, "Failed removing service (error %lu)", GetLastError());
-            } else {
-                ok = true;
-                cleanup_secure_service_binary_after_remove();
-            }
-        }
-    }
-
-    if (ok) refresh_background_service_state();
-    return ok;
-}
-
 static bool service_path_has_reparse_component(const char* absPath, char* err, size_t errSize) {
     if (!absPath || !absPath[0]) return false;
     char probe[MAX_PATH] = {};
@@ -291,42 +147,88 @@ static bool service_prepare_requested_gpu(const ServiceRequest* request, char* e
 
 static bool create_restricted_pipe_security_descriptor(PSECURITY_DESCRIPTOR* outSd) {
     *outSd = nullptr;
-    // Always include SYSTEM (full), Administrators (full), and Authenticated
-    // Users (read+write) so the pipe is accessible to any logged-in user.
-    // At boot (before login), WTSQueryUserToken fails, and without AU the pipe
-    // gets the default SYSTEM-process ACL which excludes non-admin users.
-    WCHAR sddl[512] = {};
-    if (SUCCEEDED(StringCchPrintfW(sddl, ARRAY_COUNT(sddl),
-        L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)"))) {
-        DWORD sessionId = WTSGetActiveConsoleSessionId();
-        if (sessionId != 0xFFFFFFFF) {
-            HANDLE hToken = nullptr;
-            if (WTSQueryUserToken(sessionId, &hToken)) {
-                DWORD needed = 0;
-                GetTokenInformation(hToken, TokenUser, nullptr, 0, &needed);
-                if (needed > 0) {
-                    TOKEN_USER* tokenUser = (TOKEN_USER*)malloc(needed);
-                    if (tokenUser) {
-                        if (GetTokenInformation(hToken, TokenUser, tokenUser, needed, &needed) && tokenUser->User.Sid) {
-                            LPWSTR sidStr = nullptr;
-                            if (ConvertSidToStringSidW(tokenUser->User.Sid, &sidStr)) {
-                                WCHAR sddlWithUser[512] = {};
-                                if (SUCCEEDED(StringCchPrintfW(sddlWithUser, ARRAY_COUNT(sddlWithUser),
-                                    L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)(A;;GRGW;;;%s)", sidStr))) {
-                                    StringCchCopyW(sddl, ARRAY_COUNT(sddl), sddlWithUser);
-                                }
-                                LocalFree(sidStr);
-                            }
+    // SYSTEM (full) and Administrators (full) always.
+    //
+    // F-SEC-3: Authenticated Users (AU) get read+write ONLY as a no-lockout
+    // fallback when we cannot resolve the active console user (at boot before
+    // login, RDP-only sessions, or a transient WTSQueryUserToken failure).  Once
+    // the console user is resolved, AU is downgraded to read-only and read+write
+    // is granted to that user's SID instead — so a *different* local authenticated
+    // user cannot drive GPU OC/RESET through the SYSTEM service.  The unelevated
+    // GUI runs as the console user and keeps full read+write via its SID ACE
+    // (and elevated GUIs are covered by the Administrators ACE).
+    WCHAR userSid[256] = {};
+    DWORD sessionId = WTSGetActiveConsoleSessionId();
+    if (sessionId != 0xFFFFFFFF) {
+        HANDLE hToken = nullptr;
+        if (WTSQueryUserToken(sessionId, &hToken)) {
+            DWORD needed = 0;
+            GetTokenInformation(hToken, TokenUser, nullptr, 0, &needed);
+            if (needed > 0) {
+                TOKEN_USER* tokenUser = (TOKEN_USER*)malloc(needed);
+                if (tokenUser) {
+                    if (GetTokenInformation(hToken, TokenUser, tokenUser, needed, &needed) && tokenUser->User.Sid) {
+                        LPWSTR sidStr = nullptr;
+                        if (ConvertSidToStringSidW(tokenUser->User.Sid, &sidStr)) {
+                            StringCchCopyW(userSid, ARRAY_COUNT(userSid), sidStr);
+                            LocalFree(sidStr);
                         }
-                        free(tokenUser);
                     }
+                    free(tokenUser);
                 }
-                CloseHandle(hToken);
             }
+            CloseHandle(hToken);
         }
     }
+
+    WCHAR sddl[512] = {};
+    bool built = false;
+    if (userSid[0]) {
+        // Console user resolved: AU read-only, console user read+write.
+        built = SUCCEEDED(StringCchPrintfW(sddl, ARRAY_COUNT(sddl),
+            L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;AU)(A;;GRGW;;;%s)", userSid));
+    }
+    if (!built) {
+        // Fallback: AU read+write so a pre-login / RDP-only / token-failure GUI is
+        // never locked out of the pipe.
+        built = SUCCEEDED(StringCchPrintfW(sddl, ARRAY_COUNT(sddl),
+            L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)"));
+    }
+    if (!built) return false;
+
+    // Log only on transitions — this runs once per pipe instance in the server
+    // loop, so unconditional logging would flood the debug log.
+    static int s_lastAclMode = -1;
+    int mode = userSid[0] ? 1 : 0;
+    if (mode != s_lastAclMode) {
+        s_lastAclMode = mode;
+        debug_log(mode == 1
+            ? "service pipe ACL: write restricted to active console user (AU downgraded to read-only)\n"
+            : "service pipe ACL: AU read+write fallback (console user unresolved — no lockout)\n");
+    }
+
     return ConvertStringSecurityDescriptorToSecurityDescriptorW(
         sddl, SDDL_REVISION_1, outSd, nullptr) != FALSE;
+}
+
+// Close a pipe handle owned by the pipe server thread, atomically clearing the
+// shared g_servicePipeHandle slot first so the main-loop watchdog cannot also
+// close it.  A double-close raises STATUS_INVALID_HANDLE (c0000008) under the
+// Strict Handle Check mitigation, which is NOT an access violation so the VEH
+// does not catch it — it reaches the unhandled filter and terminates the whole
+// service process (GUI then sees ERROR_BROKEN_PIPE / error 109).  Exactly one
+// of the pipe thread (here) or the watchdog wins the slot via the atomic CAS
+// and performs the single close.  The pipe thread can only be VEH-terminated
+// while executing NVML/NVAPI inside a command handler — never inside this
+// function — so there is no leak window between the CAS and CloseHandle.
+static void service_close_owned_pipe(HANDLE pipe) {
+    if (pipe == nullptr || pipe == INVALID_HANDLE_VALUE) return;
+    HANDLE prev = (HANDLE)InterlockedCompareExchangePointer(
+        (PVOID volatile*)&g_servicePipeHandle, INVALID_HANDLE_VALUE, pipe);
+    if (prev == pipe) {
+        CloseHandle(pipe);
+    }
+    // else: the watchdog already reclaimed (and will close) this handle.
 }
 
 static DWORD WINAPI service_pipe_server_thread_proc(void*) {
@@ -372,11 +274,19 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
             Sleep(250);
             continue;
         }
+        // Publish the pipe handle so the main-loop watchdog can reclaim it if
+        // the VEH terminates this thread inside a command handler.  The slot
+        // is INVALID here (every close path clears it via service_close_owned_pipe
+        // / the watchdog), so this is a clean publish — we must NOT close the
+        // previous value (it was the just-freed handle from the prior iteration;
+        // closing it double-closes and the Strict Handle Check mitigation turns
+        // that into a process-killing STATUS_INVALID_HANDLE).
+        InterlockedExchangePointer((PVOID volatile*)&g_servicePipeHandle, pipe);
 
         OVERLAPPED ov = {};
         ov.hEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
         if (!ov.hEvent) {
-            CloseHandle(pipe);
+            service_close_owned_pipe(pipe);
             continue;
         }
         BOOL connected = ConnectNamedPipe(pipe, &ov);
@@ -388,14 +298,14 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                 CancelIoEx(pipe, &ov);
                 CloseHandle(ov.hEvent);
                 DisconnectNamedPipe(pipe);
-                CloseHandle(pipe);
+                service_close_owned_pipe(pipe);
                 break;
             }
             if (g_servicePipeWakeEvent && waitResult == WAIT_OBJECT_0 + 1) {
                 CancelIoEx(pipe, &ov);
                 CloseHandle(ov.hEvent);
                 DisconnectNamedPipe(pipe);
-                CloseHandle(pipe);
+                service_close_owned_pipe(pipe);
                 continue;
             }
             connected = waitResult == WAIT_OBJECT_0 + (g_servicePipeWakeEvent ? 2 : 1);
@@ -405,7 +315,7 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
         CloseHandle(ov.hEvent);
         if (!connected) {
             DisconnectNamedPipe(pipe);
-            CloseHandle(pipe);
+            service_close_owned_pipe(pipe);
             continue;
         }
 
@@ -422,7 +332,7 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
         if (!service_pipe_read_exact(pipe, &request, sizeof(request), SERVICE_PIPE_SERVER_IO_TIMEOUT_MS, "reading service request", pipeErr, sizeof(pipeErr))) {
             debug_log("service_pipe_server: dropping stalled or invalid client read: %s\n", pipeErr[0] ? pipeErr : "unknown");
             DisconnectNamedPipe(pipe);
-            CloseHandle(pipe);
+            service_close_owned_pipe(pipe);
             continue;
         }
         request.source[ARRAY_COUNT(request.source) - 1] = '\0';
@@ -471,7 +381,21 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                         } else if (!offsetsOk) {
                             debug_log("service snapshot: curve refresh completed without offset readback confirmation\n");
                         }
-                        if (!refresh_global_state(detail, sizeof(detail))) {
+                        // While recovering from a recent nvml.dll crash (GPU
+                        // device reconnect / driver restart), skip
+                        // refresh_global_state() which issues NVML reads
+                        // directly and would access-violate and kill this pipe
+                        // server thread, breaking the GUI connection.  Serve
+                        // cached globals instead.  We check the recovery WINDOW
+                        // (not the consume-once g_nvmlVhCrashed flag) so EVERY
+                        // snapshot during the window is safe, and we leave
+                        // g_nvmlVhCrashed intact for the fan runtime thread's
+                        // nvml_ensure_ready() to drive the actual NVML/NVAPI
+                        // re-init.  The fan thread clears the crash state on a
+                        // successful reapply, ending the window early.
+                        if (nvml_crash_recovery_active()) {
+                            debug_log("service snapshot: NVML crash recovery in progress, using cached globals\n");
+                        } else if (!refresh_global_state(detail, sizeof(detail))) {
                             debug_log("service snapshot: state refresh failed, returning cached globals%s%s\n",
                                 detail[0] ? ": " : "",
                                 detail[0] ? detail : "");
@@ -506,6 +430,32 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                 }
                 case SERVICE_CMD_APPLY: {
                     char result[512] = {};
+                    // Reject apply while recovering from a GPU device reconnect:
+                    // the NVML/NVAPI writes would access-violate on the still-
+                    // transitional driver and kill this pipe server thread
+                    // (GUI sees ERROR_BROKEN_PIPE).  The fan runtime thread
+                    // auto-reapplies the active profile once the driver settles.
+                    //
+                    // Allow apply if GPU data is already loaded (g_app.loaded
+                    // is true) — the crash window was restored by recovery as a
+                    // safety measure, but the handles are fresh and valid.
+                    // RC7: block ALL GUI applies during crash recovery, even if
+                    // g_app.loaded is true.  NVML writes (mem offset, fan speed)
+                    // access-violate on the transitional driver and kill the pipe
+                    // server thread (GUI sees ERROR_BROKEN_PIPE).  The dedicated
+                    // reapply thread handles writes during the recovery window and
+                    // survives VEH crashes via the health-check monitor.
+                    if (nvml_crash_recovery_active()) {
+                        debug_log("service APPLY rejected: NVML crash recovery in progress (loaded=%d)\n",
+                            g_app.loaded ? 1 : 0);
+                        response.status = SERVICE_STATUS_ERROR;
+                        StringCchCopyA(response.message, ARRAY_COUNT(response.message),
+                            "GPU driver is recovering after a device reconnect; please retry in a few seconds.");
+                        populate_service_snapshot(&response.snapshot);
+                        if (g_serviceHasActiveDesired) response.desired = g_serviceActiveDesired;
+                        if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
+                        break;
+                    }
                     debug_log("ipc raw: hasMem=%d memRaw=%d hasGpu=%d gpuRaw=%d exclRaw=%d\n",
                         request.desired.hasMemOffset ? 1 : 0,
                         request.desired.memOffsetMHz,
@@ -547,6 +497,27 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                 }
                 case SERVICE_CMD_RESET: {
                     char result[512] = {};
+                    // Reject reset while recovering from a GPU device reconnect:
+                    // service_reset_all() issues NVAPI/NVML writes + refresh
+                    // that would access-violate on the transitional driver and
+                    // kill this pipe server thread (GUI sees ERROR_BROKEN_PIPE).
+                    //
+                    // Allow reset if GPU data is already loaded (g_app.loaded is
+                    // true) — the crash window was restored by recovery as a
+                    // safety measure, but the handles are fresh and valid.
+                    // RC7: block ALL resets during crash recovery (same reason
+                    // as APPLY — writes access-violate on the transitional driver).
+                    if (nvml_crash_recovery_active()) {
+                        debug_log("service RESET rejected: NVML crash recovery in progress (loaded=%d)\n",
+                            g_app.loaded ? 1 : 0);
+                        response.status = SERVICE_STATUS_ERROR;
+                        StringCchCopyA(response.message, ARRAY_COUNT(response.message),
+                            "GPU driver is recovering after a device reconnect; please retry in a few seconds.");
+                        populate_service_snapshot(&response.snapshot);
+                        if (g_serviceHasActiveDesired) response.desired = g_serviceActiveDesired;
+                        if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
+                        break;
+                    }
                     lock_service_runtime();
                     bool ok = service_prepare_requested_gpu(&request, result, sizeof(result));
                     if (ok) ok = service_reset_all(result, sizeof(result));
@@ -639,12 +610,13 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
             debug_log("service_pipe_server: response write failed: %s\n", pipeErr[0] ? pipeErr : "unknown");
         }
         DisconnectNamedPipe(pipe);
-        CloseHandle(pipe);
+        service_close_owned_pipe(pipe);
     }
     return 0;
 }
 
 static HANDLE g_servicePipeThread = nullptr;
+static HANDLE g_serviceDeviceNotifyHandle = nullptr;
 
 static DWORD WINAPI service_resume_reapply_thread_proc(void*) {
     lock_service_runtime();
@@ -654,7 +626,7 @@ static DWORD WINAPI service_resume_reapply_thread_proc(void*) {
     return 0;
 }
 
-static DWORD WINAPI service_control_handler_ex(DWORD dwControl, DWORD dwEventType, LPVOID, LPVOID) {
+static DWORD WINAPI service_control_handler_ex(DWORD dwControl, DWORD dwEventType, LPVOID, LPVOID lpEventData) {
     if (dwControl == SERVICE_CONTROL_POWEREVENT && dwEventType == PBT_APMRESUMEAUTOMATIC) {
         if (g_serviceHasActiveDesired) {
             debug_log("power event: resume from standby, re-applying settings\n");
@@ -663,6 +635,72 @@ static DWORD WINAPI service_control_handler_ex(DWORD dwControl, DWORD dwEventTyp
         }
         return NO_ERROR;
     }
+
+    // Device event handling — only fires for GUID_DEVINTERFACE_DISPLAY_ADAPTER
+    if (dwControl == SERVICE_CONTROL_DEVICEEVENT) {
+        PDEV_BROADCAST_DEVICEINTERFACEW db_dev = (PDEV_BROADCAST_DEVICEINTERFACEW)lpEventData;
+        if (!db_dev) return NO_ERROR;
+
+        switch (dwEventType) {
+            case DBT_DEVICEREMOVEPENDING:
+            case DBT_DEVICEREMOVECOMPLETE: {
+                // This handler runs on the SCM control thread — it must NOT
+                // block or call into nvml.dll (which can hang on a dead driver).
+                // Just set the removed flag (read lock-free elsewhere) and the
+                // crash-tick so nvml_crash_recovery_active() / the fan pulse
+                // treat NVML as unsafe.  Snapshot the active settings for the
+                // recovery reapply fallback.  Do NOT stop the fan thread or
+                // close NVML here (both can block); the arrival handler or
+                // main-loop monitor will run in-process recovery.
+                debug_log("device event: GPU device removal detected (type=%lu)\n", dwEventType);
+                g_app.deviceRemoved = true;
+                g_app.deviceRemoveTimeMs = GetTickCount64();
+                g_app.pendingDeviceRecovery = g_serviceHasActiveDesired;
+                service_write_restart_reapply_snapshot();
+                debug_log("device event: marked removed, pendingRecovery=%d\n", g_app.pendingDeviceRecovery ? 1 : 0);
+                return NO_ERROR;
+            }
+
+            case DBT_DEVICEARRIVAL: {
+                // Device came back after a removal.  Perform in-process recovery:
+                // close stale NVML/NvAPI handles, re-init with fresh module
+                // instances, and reapply the saved OC/fan settings.  No process
+                // restart.  Must not block the SCM control thread — launch a
+                // dedicated recovery thread instead.
+                debug_log("device event: GPU device arrived (removal flag was %d)\n", g_app.deviceRemoved);
+                bool deviceWasRemoved = g_app.deviceRemoved;
+                g_app.deviceRemoved = false;
+                // The on-disk driver version may have changed during the
+                // device-removed window (driver upgrade).  Log it here so
+                // post-mortem analysis can correlate with the Phase B log
+                // line in the recovery thread.  The actual reload happens
+                // inside the recovery thread (Phase B/C) where the lock is
+                // held and the pipe server is blocked.
+                if (deviceWasRemoved) {
+                    service_check_disk_version_on_device_arrival();
+                }
+                if (deviceWasRemoved && (g_serviceHasActiveDesired ||
+                        g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive)) {
+                    debug_log("device event: GPU arrived with active settings — requesting service restart for clean driver re-init\n");
+                    // F-REL-2: a genuine device arrival / driver (re)install is a
+                    // strong signal the environment changed.  Clear the restart-loop
+                    // history so the fresh process re-arms and reapplies the retained
+                    // snapshot even if a recent loop had tripped the dormant breaker.
+                    service_clear_restart_history();
+                    launch_recovery_thread();
+                } else {
+                    debug_log("device event: arrival with nothing to restore; no recovery needed\n");
+                }
+                return NO_ERROR;
+            }
+
+            default:
+                debug_log("device event: unhandled type=%lu\n", dwEventType);
+                break;
+        }
+        return NO_ERROR;
+    }
+
     if (dwControl != SERVICE_CONTROL_STOP && dwControl != SERVICE_CONTROL_SHUTDOWN) return NO_ERROR;
     g_serviceStatus.dwCurrentState = SERVICE_STOP_PENDING;
     SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
@@ -674,6 +712,9 @@ static DWORD WINAPI service_control_handler_ex(DWORD dwControl, DWORD dwEventTyp
 static void WINAPI service_main(DWORD, LPWSTR*) {
     g_app.isServiceProcess = true;
     SetUnhandledExceptionFilter(green_curve_unhandled_exception_filter);
+    // Vectored handler catches nvml.dll access violations (driver restart without
+    // device removal notification) and lets the fan runtime thread survive.
+    AddVectoredExceptionHandler(1, green_curve_vectored_handler);
 
     // Suppress all debug logging until the user's config is read.
     // This guarantees zero file I/O when the user has opted out.
@@ -691,7 +732,9 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
     if (!g_serviceStatusHandle) return;
 
     g_serviceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-    g_serviceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN | SERVICE_ACCEPT_POWEREVENT;
+    // SERVICE_ACCEPT_DEVICE_EVENTS required for DBT_DEVICEREMOVEPENDING /
+    // DBT_DEVICEARRIVAL notifications to reach service_control_handler_ex.
+    g_serviceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN | SERVICE_ACCEPT_POWEREVENT | SERVICE_ACCEPT_DEVICE_EVENTS;
     g_serviceStatus.dwCurrentState = SERVICE_START_PENDING;
     SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
 
@@ -705,6 +748,14 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
         debug_log_session_marker("BEGIN", "service", "service_main bootstrap");
         debug_log_session_marker("BEGIN", "service", "service_main startup");
     }
+
+    // F-SEC-5 / policy: program files live only under %LOCALAPPDATA%\Green Curve.
+    // Remove the legacy %ProgramData%\Green Curve directory used by older builds
+    // (also clears any previously world-readable SYSTEM crash dumps).
+    service_cleanup_legacy_programdata();
+    // F-REL-2: bound the on-disk VEH minidumps so a restart loop cannot fill the
+    // disk (runs once per fresh process = once per restart cycle).
+    service_rotate_minidumps(10);
 
     ensure_service_runtime_lock();
     g_serviceStopEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
@@ -750,10 +801,153 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
     g_serviceStatus.dwCurrentState = SERVICE_RUNNING;
     SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
 
+    // Ensure SCM auto-restart failure actions are present (driver-recovery
+    // restart relies on the SCM relaunching us after a non-zero exit).  Done at
+    // every start so installs predating this code are repaired in place.
+    service_ensure_failure_actions_configured();
+    // F-REL-1: log whether the SCM auto-restart net is actually armed, so a
+    // "service never came back after a driver event" report is diagnosable.
+    service_verify_restart_safety_net();
+
+    // Register for GUID_DEVINTERFACE_DISPLAY_ADAPTER — fires ONLY for GPU/display
+    // devices, not for USB, network, or other device changes.
+    {
+        DEV_BROADCAST_DEVICEINTERFACEW db_dev = {};
+        db_dev.dbcc_size = sizeof(db_dev);
+        db_dev.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
+        db_dev.dbcc_reserved = 0;
+        db_dev.dbcc_classGuid = GUID_DISPLAY_ADAPTER_DEVINTERFACE;
+        g_serviceDeviceNotifyHandle = RegisterDeviceNotificationW(
+            g_serviceStatusHandle,
+            &db_dev,
+            DEVICE_NOTIFY_SERVICE_HANDLE
+        );
+        if (g_serviceDeviceNotifyHandle) {
+            debug_log("device notify: registered for GUID_DEVINTERFACE_DISPLAY_ADAPTER\n");
+        } else {
+            debug_log("device notify: failed to register (error %lu), device events will be missed\n",
+                GetLastError());
+        }
+    }
+
     debug_log("service_main: running; hardware writes only on explicit client request\n");
 
-    if (g_serviceStopEvent) WaitForSingleObject(g_serviceStopEvent, INFINITE);
+    // If a prior recovery was interrupted by service stop/restart, a reapply
+    // snapshot file exists; this thread waits for the driver to be ready,
+    // re-applies the saved OC/fan settings, and deletes the snapshot on
+    // success. On a normal boot (no snapshot) it is a no-op.
+    service_launch_startup_reapply();
 
+    // Main service loop: wait for stop event, but periodically check if the
+    // fan runtime thread or pipe server thread needs restarting (e.g. after a
+    // driver-upgrade crash handled by the VEH which calls ExitThread).
+    if (g_serviceStopEvent) {
+        while (true) {
+            DWORD wr = WaitForSingleObject(g_serviceStopEvent, SERVICE_FAN_WATCHDOG_INTERVAL_MS);
+            if (wr == WAIT_OBJECT_0) break; // stop event signaled
+
+            // Wedge watchdog: if a fan pulse has been in-flight far longer than
+            // any healthy pulse (a driver restart can HANG a read inside nvml.dll
+            // — a hang the VEH cannot catch), the fan thread is stuck inside the
+            // stale nvml.dll module.  Recover by restarting the process: a fresh
+            // process maps clean driver DLLs, and ExitProcess tears down the
+            // wedged thread.  Do NOT TerminateThread / close NVML here — racy and
+            // unnecessary right before the process exits.
+            if (g_serviceFanPulseInFlight && g_serviceFanPulseHeartbeatMs != 0) {
+                ULONGLONG stuckMs = GetTickCount64() - g_serviceFanPulseHeartbeatMs;
+                if (stuckMs > SERVICE_FAN_PULSE_WEDGE_TIMEOUT_MS) {
+                    debug_log("service_main: fan pulse wedged for %llu ms — requesting service restart\n", stuckMs);
+                    request_service_restart("fan pulse wedged inside nvml.dll");
+                }
+            }
+
+            // If a pipe-server request was the first thread to touch stale
+            // NVML/NvAPI after a driver restart, the VEH kills that pipe
+            // thread rather than the fan thread.  The main loop must still
+            // launch recovery so reset/apply works again even when no fan
+            // runtime is active.
+            service_maybe_launch_recovery_from_main_loop("main loop");
+
+            // Check and launch the recovery reapply on a dedicated thread.
+            // If VEH kills the reapply thread, it does NOT take down the
+            // main loop — the next iteration retries.
+            service_check_reapply_thread_health();
+
+            // Check fan runtime thread health
+            if (g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive) {
+                ensure_service_fan_runtime_thread();
+            }
+
+            // Check pipe server thread health
+            if (g_servicePipeThread && WaitForSingleObject(g_servicePipeThread, 0) == WAIT_OBJECT_0) {
+                debug_log("service_main: pipe server thread died, recreating\n");
+                // Reclaim the orphaned pipe handle atomically: take the slot to
+                // INVALID and close only if we won the real handle, so we never
+                // double-close one the dead thread already released (which would
+                // hard-crash the process under Strict Handle Checks).
+                HANDLE orphanPipe = (HANDLE)InterlockedExchangePointer(
+                    (PVOID volatile*)&g_servicePipeHandle, INVALID_HANDLE_VALUE);
+                if (orphanPipe != INVALID_HANDLE_VALUE) {
+                    CloseHandle(orphanPipe);
+                }
+                CloseHandle(g_servicePipeThread);
+                g_servicePipeThread = nullptr;
+                DWORD pipeThreadId = 0;
+                g_servicePipeThread = CreateThread(nullptr, 1024 * 1024,
+                    service_pipe_server_thread_proc, nullptr,
+                    STACK_SIZE_PARAM_IS_A_RESERVATION, &pipeThreadId);
+                debug_log("service_main: pipe server thread recreated=%d\n",
+                    g_servicePipeThread ? 1 : 0);
+            }
+        }
+    }
+
+    // Driver-recovery restart: a recovery trigger requested a controlled process
+    // restart (device reconnect / driver upgrade / TDR / fan-pulse wedge).
+    //
+    // CRITICAL (build 230): terminate WITHOUT reporting SERVICE_STOPPED.  The SCM
+    // queues the configured SC_ACTION_RESTART failure action by DEFAULT only when
+    // a service process dies *without* reporting SERVICE_STOPPED.  An earlier
+    // design reported SERVICE_STOPPED with a non-zero dwWin32ExitCode and relied
+    // on the SCM relaunching us — but that requires the
+    // SERVICE_CONFIG_FAILURE_ACTIONS_FLAG / fFailureActionsOnNonCrashFailures
+    // opt-in, which the LocalSystem service token CANNOT set at runtime
+    // (ChangeServiceConfig2 returns ERROR_ACCESS_DENIED because LocalSystem lacks
+    // SERVICE_CHANGE_CONFIG on its own service).  Result in the field: the SCM saw
+    // a reported "graceful" stop and never relaunched, so the service stayed dead
+    // after a GPU reconnect.  Exiting without reporting SERVICE_STOPPED takes the
+    // SCM's default crash-recovery path and needs no flag and no admin rights —
+    // only the SC_ACTION_RESTART actions (set at install).
+    //
+    // Also skip the normal NVML teardown below (nvml_set_fan_auto / close_nvml can
+    // HANG on a dead/transitional driver and wedge the stop).  The fresh process
+    // maps clean driver DLLs and service_launch_startup_reapply() restores the
+    // saved profile.
+    if (InterlockedExchangeAdd(&g_serviceRestartRequested, 0) != 0) {
+        debug_log("service_main: restart requested — terminating WITHOUT reporting SERVICE_STOPPED so the SCM SC_ACTION_RESTART failure action fires (default crash-recovery path); SCM will relaunch\n");
+        if (g_serviceDeviceNotifyHandle) {
+            UnregisterDeviceNotification(g_serviceDeviceNotifyHandle);
+            g_serviceDeviceNotifyHandle = nullptr;
+        }
+        if (g_debug_logging) {
+            debug_log_session_marker("END", "service", "restart for GPU driver recovery (unexpected-termination path)");
+        }
+        ExitProcess(1);
+    }
+
+    // Shutdown — clean up reapply thread first
+    if (g_serviceReapplyThread) {
+        // The reapply thread does not hold any resources that need orderly
+        // shutdown beyond handle cleanup.  Just close the handle; if the
+        // thread is still running, the process exit will clean it up.
+        HANDLE reapplyHandle = (HANDLE)InterlockedExchangePointer(
+            (PVOID volatile*)&g_serviceReapplyThread, nullptr);
+        if (reapplyHandle) {
+            WaitForSingleObject(reapplyHandle, 5000);
+            CloseHandle(reapplyHandle);
+        }
+        InterlockedExchange((volatile LONG*)&g_serviceReapplyThreadId, 0);
+    }
     stop_service_fan_runtime_thread();
     if (g_servicePipeThread) {
         if (g_servicePipeWakeEvent) SetEvent(g_servicePipeWakeEvent);
@@ -777,6 +971,11 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
         CloseHandle(g_serviceRuntimeLock);
         g_serviceRuntimeLock = nullptr;
     }
+    // Cleanup device notification handle
+    if (g_serviceDeviceNotifyHandle) {
+        UnregisterDeviceNotification(g_serviceDeviceNotifyHandle);
+        g_serviceDeviceNotifyHandle = nullptr;
+    }
     // Return fan control to driver auto on graceful shutdown.
     char fanDetail[128] = {};
     nvml_set_fan_auto(fanDetail, sizeof(fanDetail));
@@ -785,6 +984,11 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
         FreeLibrary(g_app.hNvApi);
         g_app.hNvApi = nullptr;
     }
+    // Graceful (user-requested) stop: report a zero exit code explicitly.  With
+    // fFailureActionsOnNonCrashFailures enabled, a non-zero dwWin32ExitCode on a
+    // reported SERVICE_STOPPED would auto-restart us; a clean stop must not.
+    g_serviceStatus.dwWin32ExitCode = NO_ERROR;
+    g_serviceStatus.dwServiceSpecificExitCode = 0;
     g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
     SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
     if (g_debug_logging) {
