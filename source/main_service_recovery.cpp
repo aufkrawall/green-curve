@@ -506,6 +506,30 @@ static DWORD WINAPI service_startup_reapply_thread_proc(void*) {
         service_reset_to_defaults_on_resume();
         return 0;
     }
+    // OC stabilization window: if the user applied OC settings less than
+    // SERVICE_OC_STABILIZATION_WINDOW_MS ago and the service has now crash-restarted,
+    // the just-applied settings are very likely UNSTABLE (they did not survive their
+    // proving period).  Do NOT auto-reapply them — drop them so the GPU stays at
+    // stock and the user can reconfigure.  This catches the FIRST crash (faster than
+    // the 5-in-5-min dormant breaker), and by clearing BOTH the disk snapshot and the
+    // in-memory active desired it also stops the in-process (standby-resume) reapply
+    // path from restoring the suspect profile.  A stable OC that already ran past the
+    // window is unaffected (its stamp is older than the window), so a later driver
+    // event still reapplies it.  Saved profile slots on disk are untouched.
+    if (service_oc_within_stabilization_window()) {
+        debug_log("service startup reapply: service restarted within the %llu ms OC stabilization window — "
+            "treating the just-applied settings as UNSTABLE; NOT reapplying. Dropping the active profile; "
+            "re-apply from the GUI after verifying/adjusting.\n",
+            (unsigned long long)SERVICE_OC_STABILIZATION_WINDOW_MS);
+        service_clear_restart_reapply_snapshot();
+        service_clear_restart_history();
+        service_clear_oc_apply_stamp();
+        InterlockedExchange(&g_serviceRecoveryReapplyPending, 0);
+        g_serviceRecoveryReapplyNextTickMs = 0;
+        g_serviceHasActiveDesired = false;
+        memset(&g_serviceActiveDesired, 0, sizeof(g_serviceActiveDesired));
+        return 0;
+    }
     // F-REL-2: restart-loop breaker — go DORMANT instead of giving up.
     // Re-applying is what crashes on a transitional/broken driver, so when too
     // many restarts pile up in the window we simply do NOT reapply this round.

@@ -747,6 +747,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                         int correctedCurveOffsets[VF_NUM_POINTS] = {};
                         bool correctedCurveMask[VF_NUM_POINTS] = {};
                         bool haveCorrections = false;
+                        int tailFloorCount = 0;
                         unsigned int lastTargetMHz = 0;
                         for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
                             if (g_app.curve[ci].freq_kHz == 0) {
@@ -765,17 +766,10 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                                 lastTargetMHz = 0;
                                 continue;
                             }
-                            debug_log("correction pass %d source: ci=%d isTail=%d targetMHz=%u verifyDesired=%u lockMhz=%u hasCP=%d origPop=%d\n",
-                                correctionPass + 1, ci, isTail ? 1 : 0, targetMHz,
-                                verifyDesired.hasCurvePoint[ci] ? verifyDesired.curvePointMHz[ci] : 0,
-                                lockMhz, verifyDesired.hasCurvePoint[ci] ? 1 : 0,
-                                originalCurvePopulated[ci] ? 1 : 0);
-
                             if (gpuPolicyViaCurveBatch && ci > 0 && lastTargetMHz > targetMHz && !isTail) {
                                 targetMHz = lastTargetMHz;
-                            } else if (gpuPolicyViaCurveBatch && ci > 0 && lastTargetMHz > targetMHz && isTail) {
-                                debug_log("correction pass %d: strict tail ci=%d remains at lock target %u below previous target %u\n",
-                                    correctionPass + 1, ci, targetMHz, lastTargetMHz);
+                            } else                             if (gpuPolicyViaCurveBatch && ci > 0 && lastTargetMHz > targetMHz && isTail) {
+                                // strict tail: remains at lock target, no action needed
                             }
 
                             lastTargetMHz = targetMHz;
@@ -784,8 +778,6 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
 
                             if (gpuPolicyViaCurveBatch && !isTail) {
                                 correctedCurveOffsets[ci] = gpu_offset_component_mhz_for_point(ci, desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount) * 1000;
-                                debug_log("correction pass %d branch: ci=%d viaCurvebatch path offset=%d\n",
-                                    correctionPass + 1, ci, correctedCurveOffsets[ci]);
                             } else if (!gpuPolicyViaCurveBatch && !isTail && originalCurvePopulated[ci]) {
                                 long long stockBase = (long long)originalCurveFreqkHz[ci] - (long long)originalCurveOffsets[ci];
                                 if (stockBase < 0) stockBase = 0;
@@ -794,9 +786,6 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                                 if (diff > INT_MAX) diff = INT_MAX;
                                 if (diff < INT_MIN) diff = INT_MIN;
                                 correctedCurveOffsets[ci] = clamp_freq_delta_khz((int)diff);
-                                debug_log("correction pass %d: ci=%d targetMHz=%u stockBase=%lld targetKHz=%lld diff=%lld live=%u offs=%d\n",
-                                    correctionPass + 1, ci, targetMHz, stockBase / 1000, targetKHz, diff,
-                                    displayed_curve_mhz(g_app.curve[ci].freq_kHz), g_app.freqOffsets[ci]);
                             } else if (isTail && ci != lockCi) {
                                 // Tail points beyond the lock point: use uniform
                                 // floor offset instead of per-point delta. On Blackwell
@@ -805,20 +794,18 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                                 // A uniform minimum offset floors all tail points,
                                 // letting the lock point control the entire region.
                                 correctedCurveOffsets[ci] = correctionFloorTailOffsetKHz;
-                                debug_log("correction pass %d branch: ci=%d tail uniform floor offset=%d target=%u live=%u offs=%d\n",
-                                    correctionPass + 1, ci, correctedCurveOffsets[ci],
-                                    targetMHz, displayed_curve_mhz(g_app.curve[ci].freq_kHz),
-                                    g_app.freqOffsets[ci]);
+                                tailFloorCount++;
                             } else {
                                 correctedCurveOffsets[ci] = curve_delta_khz_for_target_display_mhz(ci, targetMHz);
-                                debug_log("correction pass %d branch: ci=%d else path (live base) target=%u offset=%d live=%u offs=%d\n",
-                                    correctionPass + 1, ci, targetMHz, correctedCurveOffsets[ci],
-                                    displayed_curve_mhz(g_app.curve[ci].freq_kHz), g_app.freqOffsets[ci]);
                             }
                             correctedCurveMask[ci] = true;
                             haveCorrections = true;
                         }
                         if (!haveCorrections) break;
+                        if (tailFloorCount > 0) {
+                            debug_log("correction pass %d: %d tail points use tail uniform floor offset=%d\n",
+                                correctionPass + 1, tailFloorCount, correctionFloorTailOffsetKHz);
+                        }
                         debug_log("curve correction pass %d: target point 75 live=%u MHz offset=%d desiredOffset=%d\n",
                             correctionPass + 1,
                             displayed_curve_mhz(g_app.curve[75].freq_kHz),
@@ -840,6 +827,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                             int divMinKHz = 0, divMaxKHz = 0;
                             bool divRangeKnown = get_curve_offset_range_khz(&divMinKHz, &divMaxKHz);
                             int converging = 0, worsening = 0, stuck = 0, outOfRange = 0;
+                            int acceptedNonTail = 0, strictDiverged = 0;
                             for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
                                 if (!verifyDesired.hasCurvePoint[ci]) continue;
                                 if (g_app.curve[ci].freq_kHz == 0) continue;
@@ -908,6 +896,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                                     diverged = true;
                                 }
                                 if (diverged && acceptNonTailReadback) {
+                                    acceptedNonTail++;
                                     debug_log("correction pass %d: non-tail %s point %d actual %u MHz != target %u MHz (tol=%u); accepting verification-only actual %u MHz (prevErr=%dKHz curErr=%dKHz)%s\n",
                                         correctionPass + 1,
                                         userExplicitPoint ? "explicit" : "readback",
@@ -917,6 +906,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                                         userExplicitPoint ? " (cross-talk near locked tail)" : "");
                                     verifyDesired.curvePointMHz[ci] = actualMHz;
                                 } else if (diverged) {
+                                    strictDiverged++;
                                     debug_log("correction pass %d: strict %s point %d actual %u MHz != target %u MHz (tol=%u); keeping requested target (prevErr=%dKHz curErr=%dKHz)\n",
                                         correctionPass + 1,
                                         lockedTailMask[ci] ? "tail" : (userExplicitPoint ? "explicit" : "derived"),
@@ -928,8 +918,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                                     prevErrorKHz[ci] = errorKHz;
                                 }
                             }
-                            debug_log("correction pass %d convergence: converging=%d worsening=%d stuck=%d outOfRange=%d\n",
-                                correctionPass + 1, converging, worsening, stuck, outOfRange);
+                            debug_log("correction pass %d convergence: converging=%d worsening=%d stuck=%d outOfRange=%d acceptedNonTail=%d strictDiverged=%d\n",
+                                correctionPass + 1, converging, worsening, stuck, outOfRange, acceptedNonTail, strictDiverged);
                         }
                         if (verify_curve_request(curveVerifyDetail, sizeof(curveVerifyDetail))) {
                             curveRequestOk = true;

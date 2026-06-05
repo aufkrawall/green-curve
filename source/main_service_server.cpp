@@ -241,7 +241,6 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
         sa.nLength = sizeof(sa);
         if (create_restricted_pipe_security_descriptor(&securityDescriptor)) {
             sa.lpSecurityDescriptor = securityDescriptor;
-            debug_log("pipe_server: using restricted ACL for active console session user\n");
         } else {
             debug_log("pipe_server: cannot create restricted ACL, deferring pipe creation\n");
             if (securityDescriptor) {
@@ -351,8 +350,6 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                         set_default_config_path();
                     }
                     refresh_service_debug_logging_from_config();
-                    debug_log("service_pipe_server: user paths resolved for command %u; no implicit startup apply\n",
-                        (unsigned int)request.command);
                 } else {
                     debug_log("service_pipe_server: failed to resolve user data paths: %s\n", pathErr);
                 }
@@ -361,14 +358,9 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
             switch (request.command) {
                 case SERVICE_CMD_PING:
                     response.status = SERVICE_STATUS_OK;
-                    debug_log("service ping: service version=%s build=%lu protocol=%lu\n",
-                        response.serviceVersion,
-                        (unsigned long)response.serviceBuildNumber,
-                        (unsigned long)response.version);
                     StringCchCopyA(response.message, ARRAY_COUNT(response.message), "pong");
                     break;
                 case SERVICE_CMD_GET_SNAPSHOT: {
-                    debug_log("service_pipe_server: snapshot only command; no profile apply\n");
                     char detail[256] = {};
                     lock_service_runtime();
                     bool ok = hardware_initialize(detail, sizeof(detail));
@@ -411,15 +403,10 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     break;
                 }
                 case SERVICE_CMD_GET_TELEMETRY: {
-                    debug_log("service_pipe_server: telemetry snapshot only command; no profile apply\n");
                     char detail[256] = {};
                     lock_service_runtime();
                     if (!service_refresh_telemetry_for_request(detail, sizeof(detail))) {
                         debug_log("service telemetry: hardware initialize unavailable: %s\n", detail[0] ? detail : "unknown");
-                    } else {
-                        debug_log("service telemetry: returning cached snapshot%s%s\n",
-                            g_serviceTelemetryLastPollSource[0] ? " from " : "",
-                            g_serviceTelemetryLastPollSource[0] ? g_serviceTelemetryLastPollSource : "");
                     }
                     response.status = SERVICE_STATUS_OK;
                     StringCchCopyA(response.message, ARRAY_COUNT(response.message), detail[0] ? detail : "telemetry ready");
@@ -477,6 +464,10 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     if (ok) ok = service_apply_desired_settings(&request.desired, (request.flags & 1u) != 0, result, sizeof(result));
                     if (ok) {
                         service_capture_owner_identity(callerUser, callerSessionId);
+                        // OC stabilization window: record the user-apply time.  If the
+                        // service crash-restarts within the window, startup reapply treats
+                        // the just-applied settings as unstable and does NOT auto-reapply.
+                        service_record_oc_apply_stamp();
                     }
                     response.status = ok ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
                     StringCchCopyA(response.message, ARRAY_COUNT(response.message), result);
@@ -523,6 +514,8 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     if (ok) ok = service_reset_all(result, sizeof(result));
                     if (ok) {
                         service_capture_owner_identity(callerUser, callerSessionId);
+                        // OC reset to defaults — clear the stabilization window stamp.
+                        service_clear_oc_apply_stamp();
                     }
                     response.status = ok ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
                     StringCchCopyA(response.message, ARRAY_COUNT(response.message), result);

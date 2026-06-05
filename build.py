@@ -173,7 +173,7 @@ COMMON_FLAGS = [
 ]
 
 # C-002: read VERSION and inject it into all compile commands
-APP_VERSION = "0.14"
+APP_VERSION = "0.14.1"
 APP_BUILD_NUMBER = 0
 _version_path = os.path.join(SCRIPT_DIR, "VERSION")
 if os.path.exists(_version_path):
@@ -2200,6 +2200,21 @@ def run_source_regression_checks():
         "tray icon gates OC/fan-active on actual GPU availability (not a pending desired)")
     require_text(main_gpu_front_cpp, "Green Curve - GPU driver unavailable",
         "tray tooltip reports GPU unavailable instead of a false OC/fan/profile-active state")
+    # F-REL-4: OC stabilization window — settings that crash-restart the service
+    # within 10 min of being applied are treated as unstable and NOT auto-reapplied
+    # (by either reapply method), so an unstable OC cannot loop.  Stamp recorded on
+    # the user-initiated apply; checked + dropped by the restart-based reapply (the
+    # clear there neutralizes the in-process resume path too).
+    require_text(main_service_persist_cpp, "SERVICE_OC_STABILIZATION_WINDOW_MS",
+        "OC stabilization window constant exists")
+    require_text(main_service_persist_cpp, "service_oc_within_stabilization_window",
+        "OC stabilization window helper exists")
+    require_text(service_server_cpp, "service_record_oc_apply_stamp()",
+        "user-initiated apply records the OC stabilization stamp")
+    require_text(service_server_cpp, "service_clear_oc_apply_stamp()",
+        "reset clears the OC stabilization stamp")
+    require_text(main_service_recovery_cpp, "service_oc_within_stabilization_window()",
+        "startup reapply drops settings that crashed within the OC stabilization window")
     require_text(service_server_cpp, "service_clear_restart_history();",
         "device arrival re-arms reapply by clearing the restart-loop history")
     require_text(state_sync_cpp, "service_rotate_minidumps",

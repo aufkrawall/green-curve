@@ -154,6 +154,78 @@ static void service_clear_restart_history() {
     if (service_restart_history_path(path, sizeof(path))) DeleteFileA(path);
 }
 
+// ---- OC stabilization window (persisted across process restarts) ----
+//
+// When the user applies OC settings, record the apply tick.  If the service then
+// restarts (a driver crash/TDR) within SERVICE_OC_STABILIZATION_WINDOW_MS, the
+// freshly-relaunched process treats the just-applied settings as UNSTABLE and does
+// NOT auto-reapply them (it drops them so the GPU stays at stock and the user can
+// reconfigure) — much faster than waiting for the 5-in-5-min restart-loop breaker.
+// Only the user-initiated apply (SERVICE_CMD_APPLY) records the stamp, so a stable
+// OC that was already "proven" is still reapplied after a later driver event.
+// GetTickCount64 (uptime) is monotonic within a boot and resets across a reboot;
+// the reader guards `now >= stamp` so a stale cross-boot stamp is ignored.
+#define SERVICE_OC_STABILIZATION_WINDOW_MS 600000ULL  /* 10 minutes */
+#define SERVICE_OC_APPLY_STAMP_MAGIC       0x47434153u /* 'GCAS' */
+
+static bool service_oc_apply_stamp_path(char* out, size_t outSize) {
+    if (!out || outSize == 0) return false;
+    char dir[MAX_PATH] = {};
+    if (!resolve_service_machine_data_dir(dir, sizeof(dir))) return false;
+    return SUCCEEDED(StringCchPrintfA(out, outSize, "%s\\service_oc_apply_stamp.bin", dir));
+}
+
+static void service_record_oc_apply_stamp() {
+    char path[MAX_PATH] = {};
+    if (!service_oc_apply_stamp_path(path, sizeof(path))) return;
+    char pathErr[256] = {};
+    ensure_parent_directory_for_file(path, pathErr, sizeof(pathErr));
+    HANDLE h = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    DWORD magic = SERVICE_OC_APPLY_STAMP_MAGIC;
+    ULONGLONG now = GetTickCount64();
+    DWORD written = 0;
+    WriteFile(h, &magic, sizeof(magic), &written, nullptr);
+    WriteFile(h, &now, sizeof(now), &written, nullptr);
+    CloseHandle(h);
+    debug_log("oc stabilization: recorded apply stamp tick=%llu (window=%llu ms)\n",
+        (unsigned long long)now, (unsigned long long)SERVICE_OC_STABILIZATION_WINDOW_MS);
+}
+
+// Returns the recorded apply tick, or 0 if none / invalid.
+static ULONGLONG service_read_oc_apply_stamp() {
+    char path[MAX_PATH] = {};
+    if (!service_oc_apply_stamp_path(path, sizeof(path))) return 0;
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    DWORD magic = 0, read = 0;
+    ULONGLONG tick = 0;
+    bool ok = ReadFile(h, &magic, sizeof(magic), &read, nullptr) && read == sizeof(magic);
+    ok = ok && ReadFile(h, &tick, sizeof(tick), &read, nullptr) && read == sizeof(tick);
+    CloseHandle(h);
+    if (!ok || magic != SERVICE_OC_APPLY_STAMP_MAGIC) return 0;
+    return tick;
+}
+
+static void service_clear_oc_apply_stamp() {
+    char path[MAX_PATH] = {};
+    if (service_oc_apply_stamp_path(path, sizeof(path))) DeleteFileA(path);
+}
+
+// True if the user-applied OC is still within its stabilization window (i.e. it
+// has NOT yet proven stable for SERVICE_OC_STABILIZATION_WINDOW_MS).  Used by the
+// restart-based reapply to decide whether a crash-restart should be treated as an
+// unstable-OC failure (suppress + drop) rather than a normal recovery (reapply).
+static bool service_oc_within_stabilization_window() {
+    ULONGLONG stamp = service_read_oc_apply_stamp();
+    if (stamp == 0) return false;
+    ULONGLONG now = GetTickCount64();
+    if (now < stamp) return false; // cross-boot stale stamp (tick reset) — ignore
+    return (now - stamp) < SERVICE_OC_STABILIZATION_WINDOW_MS;
+}
+
 // Snapshot the current active desired settings to disk so the post-restart
 // process can re-apply them.  Writes nothing (and removes any stale file) when
 // there is no active desired — a restart with nothing applied should not

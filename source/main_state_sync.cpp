@@ -795,11 +795,6 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
         copy_fan_curve(&g_app.serviceControlState.fanCurve, &previousServiceControlState.fanCurve);
         ensure_valid_fan_curve_config(&g_app.serviceControlState.fanCurve);
     }
-    debug_log("apply_service_snapshot_to_app: snapshot gpu=%d exclude=%d cachedControl gpu=%d exclude=%d\n",
-        snapshot->appliedGpuOffsetMHz,
-        snapshot->appliedGpuOffsetExcludeLowCount,
-        g_app.serviceControlState.gpuOffsetMHz,
-        g_app.serviceControlState.gpuOffsetExcludeLowCount);
     log_locked_tail_drift_diagnostics();
     g_app.serviceControlStateValid = true;
     LeaveCriticalSection(&g_appLock);
@@ -869,13 +864,6 @@ static void apply_control_state_to_gui(const ControlState* state) {
     bool meaningfulMemState = control_state_has_meaningful_mem(state);
     bool meaningfulPowerState = control_state_has_meaningful_power(state);
     bool meaningfulFanState = control_state_has_meaningful_fan(state);
-    debug_log("apply_control_state_to_gui: gpu=%d exclude=%d mem=%d power=%d fanMode=%d fanPct=%d\n",
-        state->gpuOffsetMHz,
-        state->gpuOffsetExcludeLowCount,
-        state->memOffsetMHz,
-        state->powerLimitPct,
-        state->fanMode,
-        state->fanCurrentPercent > 0 ? state->fanCurrentPercent : state->fanFixedPercent);
     if (!control_state_has_any_meaningful_value(state)) {
         debug_log("apply_control_state_to_gui: ignoring non-meaningful service control update\n");
         return;
@@ -888,9 +876,6 @@ static void apply_control_state_to_gui(const ControlState* state) {
         merged.hasGpuOffset = true;
         merged.gpuOffsetMHz = state->gpuOffsetMHz;
         merged.gpuOffsetExcludeLowCount = (state->gpuOffsetExcludeLowCount > 0 && state->gpuOffsetMHz != 0) ? state->gpuOffsetExcludeLowCount : 0;
-        debug_log("apply_control_state_to_gui: merged service gpu=%d exclude=%d\n",
-            merged.gpuOffsetMHz,
-            merged.gpuOffsetExcludeLowCount);
     }
     if (state->hasMemOffset && meaningfulMemState) {
         merged.hasMemOffset = true;

@@ -489,7 +489,6 @@ static void apply_fan_curve_tick() {
             if (matches) {
                 EnterCriticalSection(&g_appLock);
                 if (needsReapply) {
-                    debug_log("fixed fan tick: timed re-apply skipped (speed already %d%%)\n", fixedTargetPercent);
                     mark_fan_runtime_success(now);
                 }
                 g_app.activeFanMode = FAN_MODE_FIXED;
@@ -593,7 +592,6 @@ static void apply_fan_curve_tick() {
             if (nvml_manual_fan_matches_target(targetPercent, &matches, detail, sizeof(detail))) {
                 if (matches) {
                     EnterCriticalSection(&g_appLock);
-                    debug_log("fan curve tick: timed re-apply skipped (speed already matches %d%%, temp=%d)\n", targetPercent, currentTempC);
                     g_app.fanCurveLastAppliedPercent = targetPercent;
                     g_app.fanCurveLastAppliedTempC = currentTempC;
                     g_app.fanCurveHasLastAppliedTemp = true;

@@ -107,7 +107,6 @@ static bool validate_service_pipe_server_identity(HANDLE pipe, char* err, size_t
     if (!haveServerPath) {
         // The GUI may not have permission to query the LocalSystem service's image path.
         // Fall back to querying the SCM for the service binary path instead.
-        debug_log("service pipe identity: could not query process image path for pid=%lu, falling back to SCM query\n", (unsigned long)servicePid);
         ScopedServiceHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
         if (scm.valid()) {
             ScopedServiceHandle svc(OpenServiceW(scm.get(), L"GreenCurveService", SERVICE_QUERY_STATUS | SERVICE_QUERY_CONFIG));
@@ -129,7 +128,6 @@ static bool validate_service_pipe_server_identity(HANDLE pipe, char* err, size_t
                                 }
                                 StringCchCopyW(serverPath, ARRAY_COUNT(serverPath), scmPath);
                                 haveServerPath = true;
-                                debug_log("service pipe identity: resolved SCM binary path \"%ls\"\n", serverPath);
                             }
                         }
                         free(config);
@@ -163,7 +161,6 @@ static bool validate_service_pipe_server_identity(HANDLE pipe, char* err, size_t
         debug_log("service pipe identity: server path \"%ls\" does not match expected \"%ls\"\n", serverPath, expectedPath);
         return false;
     }
-    debug_log("service pipe identity: verified pid=%lu path=\"%ls\"\n", (unsigned long)servicePid, serverPath);
     return true;
 }
 
@@ -284,8 +281,6 @@ static bool service_send_request(const ServiceRequest* request, ServiceResponse*
     }
 
     ULONGLONG startTickMs = GetTickCount64();
-    unsigned int connectFailures = 0;
-    DWORD lastConnectError = ERROR_SUCCESS;
     while (true) {
         DWORD remainingMs = service_remaining_timeout_ms(startTickMs, timeoutMs);
         if (remainingMs == 0) {
@@ -318,11 +313,6 @@ static bool service_send_request(const ServiceRequest* request, ServiceResponse*
                 clear_service_authoritative_state();
                 set_message(err, errSize, "Failed configuring service pipe message mode (error %lu)", modeErr);
                 return false;
-            }
-            if (connectFailures > 0) {
-                debug_log("service_send_request: connected after %u retry(s), last error=%lu\n",
-                    connectFailures,
-                    (unsigned long)lastConnectError);
             }
             remainingMs = service_remaining_timeout_ms(startTickMs, timeoutMs);
             if (!service_pipe_write_exact(pipe, request, sizeof(*request), remainingMs, "writing service request", err, errSize)) {
@@ -359,13 +349,6 @@ static bool service_send_request(const ServiceRequest* request, ServiceResponse*
             return true;
         }
         DWORD e = GetLastError();
-        connectFailures++;
-        if (connectFailures == 1 || e != lastConnectError || (connectFailures % 10u) == 0u) {
-            debug_log("service_send_request: CreateFileW pipe failed error=%lu retry=%u\n",
-                (unsigned long)e,
-                connectFailures);
-        }
-        lastConnectError = e;
         if (e != ERROR_PIPE_BUSY && e != ERROR_FILE_NOT_FOUND) {
             set_message(err, errSize, "Failed connecting to service pipe (error %lu)", e);
             return false;
@@ -426,11 +409,6 @@ static bool service_client_ping(char* err, size_t errSize) {
             APP_VERSION,
             (unsigned long)APP_BUILD_NUMBER,
             response.serviceVersion[0] ? response.serviceVersion : "<missing>",
-            (unsigned long)response.serviceBuildNumber,
-            (unsigned long)response.version);
-    } else {
-        debug_log("service_client_ping: identity ok version=%s build=%lu protocol=%lu\n",
-            response.serviceVersion,
             (unsigned long)response.serviceBuildNumber,
             (unsigned long)response.version);
     }

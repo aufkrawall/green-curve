@@ -27,12 +27,7 @@ static void log_locked_tail_drift_diagnostics() {
     for (int i = 0; i < TAIL_BOOKEND_COUNT; i++) {
         if (wantedVisibleOffsets[i] >= visibleTailOrdinal) bookendCi[i] = lastVisibleTailCi;
     }
-    debug_log("apply_service_snapshot_to_app: curve tail bookends: ci%d=%u ci%d=%u ci%d=%u ci%d=%u ci%d=%u\n",
-        bookendCi[0], displayed_curve_mhz(g_app.curve[bookendCi[0]].freq_kHz),
-        bookendCi[1], displayed_curve_mhz(g_app.curve[bookendCi[1]].freq_kHz),
-        bookendCi[2], displayed_curve_mhz(g_app.curve[bookendCi[2]].freq_kHz),
-        bookendCi[3], displayed_curve_mhz(g_app.curve[bookendCi[3]].freq_kHz),
-        bookendCi[4], displayed_curve_mhz(g_app.curve[bookendCi[4]].freq_kHz));
+    // curve tail bookends diagnostic (logged only when drift detected below)
 
     int tailPoints = 0;
     int driftPoints = 0;
