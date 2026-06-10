@@ -51,6 +51,12 @@ static void apply_changes() {
 }
 
 static void destroy_edit_controls(HWND hParent) {
+    // The lock tooltip subclasses the lock checkboxes; tear it down before the
+    // checkboxes are destroyed so it is rebuilt cleanly with the new controls.
+    if (g_app.hLockTooltip) {
+        DestroyWindow(g_app.hLockTooltip);
+        g_app.hLockTooltip = nullptr;
+    }
     HWND child = GetWindow(hParent, GW_CHILD);
     while (child) {
         HWND next = GetWindow(child, GW_HWNDNEXT);
@@ -82,6 +88,25 @@ static void destroy_edit_controls(HWND hParent) {
     g_app.hFanCurveBtn = nullptr;
 }
 
+// Rebuild the per-point edit controls with painting suppressed. The bulk
+// destroy/recreate of 40+ child windows during a service-state transition
+// (service start/restart, reset) otherwise flashes partially-built or stale
+// content because each CreateWindow/DestroyWindow triggers its own paints.
+// WM_SETREDRAW gates painting off for the whole batch; one full redraw at the
+// end paints the final layout cleanly (children + frame).
+static void rebuild_edit_controls() {
+    HWND hwnd = g_app.hMainWnd;
+    if (!hwnd) return;
+    debug_log("rebuild_edit_controls: redraw-suppressed rebuild (numVisible=%d loaded=%d)\n",
+        g_app.numVisible, g_app.loaded ? 1 : 0);
+    SendMessageA(hwnd, WM_SETREDRAW, FALSE, 0);
+    destroy_edit_controls(hwnd);
+    create_edit_controls(hwnd, g_app.hInst);
+    SendMessageA(hwnd, WM_SETREDRAW, TRUE, 0);
+    RedrawWindow(hwnd, nullptr, nullptr,
+        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_FRAME);
+}
+
 static void refresh_curve() {
     if (!g_app.backgroundServiceAvailable) {
         refresh_background_service_state();
@@ -96,8 +121,7 @@ static void refresh_curve() {
         if (service_client_get_snapshot(&snapshot, detail, sizeof(detail))) {
             apply_service_snapshot_to_app(&snapshot);
             if (g_app.numVisible != oldNumVisible) {
-                destroy_edit_controls(g_app.hMainWnd);
-                create_edit_controls(g_app.hMainWnd, g_app.hInst);
+                rebuild_edit_controls();
             } else {
                 update_all_gui_for_service_state();
             }
@@ -138,10 +162,10 @@ static void reset_curve() {
                 g_app.lockedVi = -1;
                 g_app.lockedCi = -1;
                 g_app.lockedFreq = 0;
+                g_app.lockMode = LOCK_MODE_NONE;
                 set_gui_state_dirty(false);
             }
-            destroy_edit_controls(g_app.hMainWnd);
-            create_edit_controls(g_app.hMainWnd, g_app.hInst);
+            rebuild_edit_controls();
             populate_global_controls();
             update_background_service_controls();
             invalidate_main_window();
@@ -152,6 +176,69 @@ static void reset_curve() {
         return;
     }
 
+}
+
+// Resolve a lock checkbox HWND back to its visible-point index, or -1.
+static int lock_index_from_hwnd(HWND h) {
+    if (!h) return -1;
+    for (int vi = 0; vi < g_app.numVisible; vi++) {
+        if (g_app.hLocks[vi] == h) return vi;
+    }
+    return -1;
+}
+
+// Right-click on a lock checkbox: choose the lock mode directly instead of
+// cycling through it with repeated left clicks. This also lets the user switch
+// HARD<->FLATTEN without first clearing the lock (which the left-click cycle
+// forces via NONE).
+static void show_lock_context_menu(HWND hwnd, int vi, POINT screenPt) {
+    if (vi < 0 || vi >= g_app.numVisible) return;
+    if (!g_app.hLocks[vi] || !IsWindowEnabled(g_app.hLocks[vi])) return;
+
+    LockMode current = (vi == g_app.lockedVi) ? g_app.lockMode : LOCK_MODE_NONE;
+
+    refresh_menu_theme_cache();
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    AppendMenuA(menu, MF_STRING, LOCK_CTX_NONE_ID, "No lock");
+    AppendMenuA(menu, MF_STRING, LOCK_CTX_FLATTEN_ID, "Flatten (cap tail)");
+    AppendMenuA(menu, MF_STRING, LOCK_CTX_PIN_ID, "Pin (hard lock)");
+    UINT currentId = current == LOCK_MODE_HARD ? LOCK_CTX_PIN_ID
+                   : current == LOCK_MODE_FLATTEN ? LOCK_CTX_FLATTEN_ID
+                   : LOCK_CTX_NONE_ID;
+    CheckMenuRadioItem(menu, LOCK_CTX_NONE_ID, LOCK_CTX_PIN_ID, currentId, MF_BYCOMMAND);
+
+    SetForegroundWindow(hwnd);
+    int cmd = (int)TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, screenPt.x, screenPt.y, 0, hwnd, nullptr);
+    DestroyMenu(menu);
+    if (cmd == 0) return;
+
+    int ci = g_app.visibleMap[vi];
+    if (cmd == LOCK_CTX_NONE_ID) {
+        if (vi == g_app.lockedVi) {
+            record_ui_action("unlock point %d via menu (was %s)", ci, lock_mode_name(g_app.lockMode));
+            unlock_all();
+            set_gui_state_dirty(true);
+            invalidate_main_window();
+        }
+    } else if (cmd == LOCK_CTX_FLATTEN_ID || cmd == LOCK_CTX_PIN_ID) {
+        LockMode target = (cmd == LOCK_CTX_PIN_ID) ? LOCK_MODE_HARD : LOCK_MODE_FLATTEN;
+        if (vi == g_app.lockedVi) {
+            if (g_app.lockMode != target) {
+                g_app.lockMode = target;
+                InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
+                set_gui_state_dirty(true);
+                record_ui_action("%s lock point %d @ %u MHz via menu",
+                    target == LOCK_MODE_HARD ? "hard" : "flatten", ci, g_app.lockedFreq);
+                invalidate_main_window();
+            }
+        } else {
+            apply_lock(vi, target);
+            record_ui_action("%s lock point %d @ %u MHz via menu",
+                target == LOCK_MODE_HARD ? "hard" : "flatten", ci, g_app.lockedFreq);
+            invalidate_main_window();
+        }
+    }
 }
 
 // ============================================================================
@@ -696,23 +783,53 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             } else if (LOWORD(wParam) == TRAY_MENU_EXIT_ID) {
                 DestroyWindow(hwnd);
             } else if (LOWORD(wParam) >= LOCK_BASE_ID && LOWORD(wParam) < LOCK_BASE_ID + VF_NUM_POINTS) {
-                // Lock checkbox clicked
+                // Lock checkbox clicked — tri-state cycle: NONE → FLATTEN → HARD → NONE
                 int vi = LOWORD(wParam) - LOCK_BASE_ID;
                 if (vi == g_app.lockedVi) {
-                    SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_UNCHECKED, 0);
-                    InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
-                    if (g_app.lockedCi >= 0) record_ui_action("unlock point %d", g_app.lockedCi);
-                    unlock_all();
-                    set_gui_state_dirty(true);
+                    if (g_app.lockMode == LOCK_MODE_FLATTEN) {
+                        // FLATTEN → HARD
+                        g_app.lockMode = LOCK_MODE_HARD;
+                        SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_CHECKED, 0);
+                        InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
+                        if (g_app.lockedCi >= 0) record_ui_action("hard lock point %d @ %u MHz (pinned)", g_app.lockedCi, g_app.lockedFreq);
+                        set_gui_state_dirty(true);
+                    } else {
+                        // HARD → NONE (or any other → NONE)
+                        SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_UNCHECKED, 0);
+                        InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
+                        if (g_app.lockedCi >= 0) record_ui_action("unlock point %d (was %s)", g_app.lockedCi, lock_mode_name(g_app.lockMode));
+                        unlock_all();
+                        set_gui_state_dirty(true);
+                    }
                 } else {
+                    // New lock point — default to FLATTEN
                     SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_CHECKED, 0);
                     InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
-                    apply_lock(vi);
+                    apply_lock(vi, LOCK_MODE_FLATTEN);
                 }
             } else if (LOWORD(wParam) == LICENSE_BTN_ID) {
                 show_license_dialog(g_app.hMainWnd);
             }
             return 0;
+
+        case WM_CONTEXTMENU: {
+            // Owner-drawn lock checkboxes forward WM_CONTEXTMENU here with
+            // wParam = the checkbox HWND. Right-click selects the lock mode.
+            int vi = lock_index_from_hwnd((HWND)wParam);
+            if (vi >= 0) {
+                POINT pt = { (LONG)(short)LOWORD(lParam), (LONG)(short)HIWORD(lParam) };
+                if (pt.x == -1 && pt.y == -1) {
+                    // Keyboard-invoked (Shift+F10 / menu key): anchor on the control.
+                    RECT rc = {};
+                    GetWindowRect(g_app.hLocks[vi], &rc);
+                    pt.x = rc.left;
+                    pt.y = rc.bottom;
+                }
+                show_lock_context_menu(hwnd, vi, pt);
+                return 0;
+            }
+            break;
+        }
 
         case WM_GETMINMAXINFO: {
             MINMAXINFO* mmi = (MINMAXINFO*)lParam;

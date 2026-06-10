@@ -469,7 +469,11 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
     append("    \"get_cooler_info\": %s,\n", g_nvml_api.getCoolerInfo ? "true" : "false");
     append("    \"get_temperature\": %s,\n", g_nvml_api.getTemperature ? "true" : "false");
     append("    \"get_clock\": %s,\n", g_nvml_api.getClock ? "true" : "false");
-    append("    \"get_max_clock\": %s\n", g_nvml_api.getMaxClock ? "true" : "false");
+    append("    \"get_max_clock\": %s,\n", g_nvml_api.getMaxClock ? "true" : "false");
+    append("    \"set_gpu_locked_clocks\": %s,\n", g_nvml_api.setGpuLockedClocks ? "true" : "false");
+    append("    \"reset_gpu_locked_clocks\": %s,\n", g_nvml_api.resetGpuLockedClocks ? "true" : "false");
+    append("    \"set_memory_locked_clocks\": %s,\n", g_nvml_api.setMemoryLockedClocks ? "true" : "false");
+    append("    \"reset_memory_locked_clocks\": %s\n", g_nvml_api.resetMemoryLockedClocks ? "true" : "false");
     append("  },\n");
     append("  \"public_probe\": {\n");
     append("    \"power_policies_get_info\": {\n");

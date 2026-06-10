@@ -283,6 +283,11 @@ static bool service_load_restart_reapply_snapshot(DesiredSettings* out) {
         debug_log("restart reapply load: read failed\n");
         return false;
     }
+    // The file lives in the admin-only SYSTEM-profile dir, so this is not a
+    // user trust boundary — but a torn/corrupt write would feed raw bytes
+    // straight into the apply path.  Clamp every field with the same
+    // validator used at the IPC boundary (also keeps lockMode in enum range).
+    validate_desired_settings_for_ipc(out);
     return true;
 }
 

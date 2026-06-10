@@ -625,6 +625,7 @@ static DWORD WINAPI service_control_handler_ex(DWORD dwControl, DWORD dwEventTyp
             debug_log("power event: resume from standby, re-applying settings\n");
             HANDLE hReapply = CreateThread(nullptr, 0, service_resume_reapply_thread_proc, nullptr, 0, nullptr);
             if (hReapply) CloseHandle(hReapply);
+            else debug_log("power event: resume reapply CreateThread FAILED (error=%lu) — OC persistence check skipped\n", GetLastError());
         }
         return NO_ERROR;
     }

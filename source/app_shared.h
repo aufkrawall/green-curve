@@ -62,7 +62,7 @@ void init_dpi();
 #define TRAY_ICON_OC_FAN_ID 114
 #define APP_NAME            "Green Curve"
 #ifndef APP_VERSION
-#define APP_VERSION         "0.14.1"
+#define APP_VERSION         "0.15"
 #endif
 #ifndef APP_BUILD_NUMBER
 #define APP_BUILD_NUMBER    0
@@ -115,6 +115,9 @@ void init_dpi();
 #define FAN_CONTROL_ID      2013
 #define TRAY_MENU_SHOW_ID   2100
 #define TRAY_MENU_EXIT_ID   2101
+#define LOCK_CTX_NONE_ID    2110
+#define LOCK_CTX_FLATTEN_ID 2111
+#define LOCK_CTX_PIN_ID     2112
 
 #define FAN_CURVE_TIMER_ID  1
 #define FAN_TELEMETRY_TIMER_ID 2
@@ -146,6 +149,25 @@ void init_dpi();
 #define COL_BUTTON_PRESSED  RGB(0x23, 0x36, 0x52)
 #define COL_BUTTON_BORDER   RGB(0x78, 0x9A, 0xD8)
 #define COL_BUTTON_DISABLED RGB(0x2A, 0x2A, 0x38)
+
+// Fixed underlying type so every int bit pattern is a valid enum value. This
+// matters at the IPC trust boundary: validate_desired_settings_for_ipc() reads
+// and clamps lockMode from caller-supplied bytes, and reading an out-of-range
+// value of an enum *without* a fixed underlying type is itself undefined
+// behavior (UBSan flags it), defeating the sanitization.
+enum LockMode : int {
+    LOCK_MODE_NONE = 0,
+    LOCK_MODE_FLATTEN = 1,
+    LOCK_MODE_HARD = 2,
+};
+
+inline const char* lock_mode_name(LockMode m) {
+    switch (m) {
+        case LOCK_MODE_FLATTEN: return "flatten";
+        case LOCK_MODE_HARD: return "hard";
+        default: return "none";
+    }
+}
 
 typedef void* GPU_HANDLE;
 
@@ -459,6 +481,7 @@ struct AppData {
     HWND hEditsMhz[VF_NUM_POINTS];
     HWND hEditsMv[VF_NUM_POINTS];
     HWND hLocks[VF_NUM_POINTS];
+    HWND hLockTooltip;
     HWND hApplyBtn;
     HWND hRefreshBtn;
     HWND hResetBtn;
@@ -543,6 +566,7 @@ struct AppData {
     int lockedVi;
     int lockedCi;
     unsigned int lockedFreq;
+    LockMode lockMode;
     bool guiLockTracksAnchor;
 
     int gpuClockOffsetkHz;
@@ -599,6 +623,7 @@ struct AppData {
     int appliedLockVi;
     int appliedLockCi;
     unsigned int appliedLockFreq;
+    LockMode appliedLockMode;
 
     int guiFanMode;
     int guiFanFixedPercent;
@@ -654,6 +679,7 @@ struct DesiredSettings {
     bool hasLock;
     int lockCi;
     unsigned int lockMHz;
+    LockMode lockMode;
     bool lockTracksAnchor;
     bool hasGpuOffset;
     int gpuOffsetMHz;
@@ -695,6 +721,11 @@ static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
     // "no explicit lock" sentinel but neutralize any out-of-bounds index.
     if (d->lockCi < -1) d->lockCi = -1;
     if (d->lockCi >= VF_NUM_POINTS) d->lockCi = VF_NUM_POINTS - 1;
+    if (d->lockMode < LOCK_MODE_NONE) d->lockMode = LOCK_MODE_NONE;
+    if (d->lockMode > LOCK_MODE_HARD) d->lockMode = LOCK_MODE_HARD;
+    // lockMHz feeds NVML locked-clocks and flatten-tail targets; cap it like
+    // the curve points (0 stays 0 = "no target").
+    if (d->lockMHz > 5000u) d->lockMHz = 5000u;
     // Selective-offset exclude count gates per-point GPU offset application.
     if (d->gpuOffsetExcludeLowCount < 0) d->gpuOffsetExcludeLowCount = 0;
     if (d->gpuOffsetExcludeLowCount > VF_NUM_POINTS) d->gpuOffsetExcludeLowCount = VF_NUM_POINTS;
@@ -716,6 +747,19 @@ static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
         if (d->fanCurve.hysteresisC > FAN_CURVE_MAX_HYSTERESIS_C) d->fanCurve.hysteresisC = FAN_CURVE_MAX_HYSTERESIS_C;
         if (d->fanCurve.pollIntervalMs < 1) d->fanCurve.pollIntervalMs = 1;
     }
+}
+
+// Decide whether the GUI may adopt the service snapshot's lock MODE for an
+// already-matching lock point.  Invariant: `lockMode != appliedLockMode`
+// means the user holds pending, not-yet-applied lock intent (checkbox click
+// FLATTEN->HARD, right-click menu switch, or a loaded profile) — the snapshot
+// still carries the PREVIOUSLY applied mode and must not clobber that intent,
+// or the change becomes un-appliable ("No changes to apply") and gets saved
+// wrong.  Adoption is allowed only when the GUI is clean and holds no
+// divergent intent (e.g. curve-detected FLATTEN while the service
+// authoritatively reports HARD at the same point).
+static inline bool lock_mode_sync_allowed(int guiLockMode, int guiAppliedLockMode, bool guiDirty) {
+    return !guiDirty && guiLockMode == guiAppliedLockMode;
 }
 
 struct CliOptions {
@@ -742,7 +786,7 @@ struct CliOptions {
 
 enum {
     SERVICE_PROTOCOL_MAGIC = 0x47535643u,
-    SERVICE_PROTOCOL_VERSION = 6,
+    SERVICE_PROTOCOL_VERSION = 7,
 };
 
 enum ServiceCommand {
@@ -782,6 +826,7 @@ struct ServiceSnapshot {
     bool hasLock;
     int lockCi;
     unsigned int lockMHz;
+    int lockMode;
     bool lockTracksAnchor;
     unsigned int adapterCount;
     unsigned int selectedAdapterIndex;
@@ -909,6 +954,10 @@ typedef nvmlReturn_t (*nvmlDeviceSetFanSpeed_v2_t)(nvmlDevice_t, unsigned int, u
 typedef nvmlReturn_t (*nvmlDeviceSetDefaultFanSpeed_v2_t)(nvmlDevice_t, unsigned int);
 typedef nvmlReturn_t (*nvmlDeviceGetCoolerInfo_t)(nvmlDevice_t, nvmlCoolerInfo_t*);
 typedef nvmlReturn_t (*nvmlDeviceGetTemperature_t)(nvmlDevice_t, unsigned int, unsigned int*);
+typedef nvmlReturn_t (*nvmlDeviceSetGpuLockedClocks_t)(nvmlDevice_t, unsigned int, unsigned int);
+typedef nvmlReturn_t (*nvmlDeviceResetGpuLockedClocks_t)(nvmlDevice_t);
+typedef nvmlReturn_t (*nvmlDeviceSetMemoryLockedClocks_t)(nvmlDevice_t, unsigned int, unsigned int);
+typedef nvmlReturn_t (*nvmlDeviceResetMemoryLockedClocks_t)(nvmlDevice_t);
 
 enum {
     NVML_CLOCK_ID_CURRENT = 0,
@@ -952,6 +1001,10 @@ struct NvmlApi {
     nvmlDeviceGetTemperature_t getTemperature;
     nvmlDeviceGetClock_t getClock;
     nvmlDeviceGetMaxClock_t getMaxClock;
+    nvmlDeviceSetGpuLockedClocks_t setGpuLockedClocks;
+    nvmlDeviceResetGpuLockedClocks_t resetGpuLockedClocks;
+    nvmlDeviceSetMemoryLockedClocks_t setMemoryLockedClocks;
+    nvmlDeviceResetMemoryLockedClocks_t resetMemoryLockedClocks;
 };
 
 extern AppData g_app;

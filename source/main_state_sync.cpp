@@ -531,11 +531,13 @@ static void populate_service_snapshot(ServiceSnapshot* snapshot) {
         snapshot->hasLock = true;
         snapshot->lockCi = g_serviceActiveDesired.lockCi;
         snapshot->lockMHz = g_serviceActiveDesired.lockMHz;
+        snapshot->lockMode = (int)g_serviceActiveDesired.lockMode;
         snapshot->lockTracksAnchor = g_serviceActiveDesired.lockTracksAnchor;
         if (snapshot->lockCi != g_app.lockedCi || snapshot->lockMHz != g_app.lockedFreq) {
-            debug_log("populate_service_snapshot: reporting active desired lock ci=%d mhz=%u instead of live-detected ci=%d mhz=%u\n",
+            debug_log("populate_service_snapshot: reporting active desired lock ci=%d mhz=%u mode=%s instead of live-detected ci=%d mhz=%u\n",
                 snapshot->lockCi,
                 snapshot->lockMHz,
+                lock_mode_name(g_serviceActiveDesired.lockMode),
                 g_app.lockedCi,
                 g_app.lockedFreq);
         }
@@ -543,6 +545,7 @@ static void populate_service_snapshot(ServiceSnapshot* snapshot) {
         snapshot->hasLock = (g_app.lockedCi >= 0 && g_app.lockedFreq > 0);
         snapshot->lockCi = g_app.lockedCi;
         snapshot->lockMHz = g_app.lockedFreq;
+        snapshot->lockMode = (int)g_app.lockMode;
         snapshot->lockTracksAnchor = g_app.guiLockTracksAnchor;
     }
     snapshot->activeFanMode = g_app.activeFanMode;
@@ -689,10 +692,12 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
             g_app.lockedCi, g_app.lockedFreq);
         g_app.lockedCi = -1;
         g_app.lockedFreq = 0;
+        g_app.lockMode = LOCK_MODE_NONE;
         g_app.lockedVi = -1;
         g_app.appliedLockCi = -1;
         g_app.appliedLockFreq = 0;
         g_app.appliedLockVi = -1;
+        g_app.appliedLockMode = LOCK_MODE_NONE;
         g_app.guiLockTracksAnchor = true;
         // The per-second telemetry poll deliberately does NOT resync the editable
         // curve/lock controls (so it never wipes in-progress edits).  Since we just
@@ -703,10 +708,43 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
         // graph/checkbox/header stay stale until the user presses Refresh.
         g_guiForceFullRefresh = true;
     }
+    // Sync lockMode from snapshot when the lock point matches, even when
+    // should_accept_service_curve_lock_detection() returns false (which it
+    // does when the GUI already has a lock set).  Gate: NEVER while the GUI
+    // holds divergent pending lock intent (lockMode != appliedLockMode, e.g.
+    // a FLATTEN->HARD checkbox click or a loaded HARD profile at the same
+    // point) or unsaved edits — the per-second telemetry snapshot still
+    // carries the previously APPLIED mode and would silently revert the
+    // user's pin before Apply ("No changes to apply") and corrupt saves.
+    if (snapshot->loaded && snapshot->hasLock && snapshot->lockCi >= 0 && snapshot->lockMHz > 0
+        && g_app.lockedCi == snapshot->lockCi && g_app.lockedFreq == snapshot->lockMHz
+        && (g_app.lockMode != (LockMode)snapshot->lockMode || g_app.appliedLockMode != (LockMode)snapshot->lockMode)) {
+        if (lock_mode_sync_allowed((int)g_app.lockMode, (int)g_app.appliedLockMode, gui_state_dirty())) {
+            g_app.lockMode = (LockMode)snapshot->lockMode;
+            g_app.appliedLockMode = (LockMode)snapshot->lockMode;
+            debug_log("apply_service_snapshot_to_app: synced lockMode=%s from snapshot (same lock point ci=%d mhz=%u)\n",
+                lock_mode_name(g_app.lockMode), g_app.lockedCi, g_app.lockedFreq);
+        } else {
+            // Per-second telemetry calls this; log only when the skipped
+            // state changes so a pending pin doesn't spam the debug log.
+            static int lastSkipLogged = -1;
+            int skipState = ((int)g_app.lockMode << 8) | ((int)g_app.appliedLockMode << 4) | (snapshot->lockMode & 0xF);
+            if (skipState != lastSkipLogged) {
+                lastSkipLogged = skipState;
+                debug_log("apply_service_snapshot_to_app: lockMode sync skipped (pending lock intent gui=%s applied=%s snapshot=%s dirty=%d ci=%d mhz=%u)\n",
+                    lock_mode_name(g_app.lockMode),
+                    lock_mode_name(g_app.appliedLockMode),
+                    lock_mode_name((LockMode)snapshot->lockMode),
+                    gui_state_dirty() ? 1 : 0,
+                    g_app.lockedCi, g_app.lockedFreq);
+            }
+        }
+    }
     if (snapshot->loaded && should_accept_service_curve_lock_detection()) {
         if (snapshot->hasLock && snapshot->lockCi >= 0 && snapshot->lockMHz > 0) {
             g_app.lockedCi = snapshot->lockCi;
             g_app.lockedFreq = snapshot->lockMHz;
+            g_app.lockMode = (LockMode)snapshot->lockMode;
             g_app.lockedVi = -1;
             for (int vi = 0; vi < g_app.numVisible; vi++) {
                 if (g_app.visibleMap[vi] == snapshot->lockCi) {
@@ -718,8 +756,9 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
             g_app.appliedLockVi = g_app.lockedVi;
             g_app.appliedLockCi = g_app.lockedCi;
             g_app.appliedLockFreq = g_app.lockedFreq;
-            debug_log("apply_service_snapshot_to_app: adopted service lock ci=%d mhz=%u visible=%d\n",
-                g_app.lockedCi, g_app.lockedFreq, g_app.lockedVi);
+            g_app.appliedLockMode = (LockMode)snapshot->lockMode;
+            debug_log("apply_service_snapshot_to_app: adopted service lock ci=%d mhz=%u mode=%s visible=%d\n",
+                g_app.lockedCi, g_app.lockedFreq, lock_mode_name(g_app.lockMode), g_app.lockedVi);
         } else {
             // RC7 fix: when the snapshot reports hasLock=false (e.g. after
             // a GPU device reconnect where the reapply hasn't completed, or
@@ -732,11 +771,13 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
             // preserving the stale lock indefinitely.
             g_app.lockedCi = -1;
             g_app.lockedFreq = 0;
+            g_app.lockMode = LOCK_MODE_NONE;
             g_app.guiLockTracksAnchor = true;
             g_app.lockedVi = -1;
             g_app.appliedLockCi = -1;
             g_app.appliedLockFreq = 0;
             g_app.appliedLockVi = -1;
+            g_app.appliedLockMode = LOCK_MODE_NONE;
             detect_locked_tail_from_curve();
         }
     }
@@ -823,6 +864,7 @@ static void apply_service_desired_to_gui(const DesiredSettings* desired) {
         if (desired->hasLock && desired->lockCi >= 0 && desired->lockMHz > 0) {
             g_app.lockedCi = desired->lockCi;
             g_app.lockedFreq = desired->lockMHz;
+            g_app.lockMode = desired->lockMode;
             g_app.lockedVi = -1;
             for (int vi = 0; vi < g_app.numVisible; vi++) {
                 if (g_app.visibleMap[vi] == desired->lockCi) {
@@ -833,14 +875,17 @@ static void apply_service_desired_to_gui(const DesiredSettings* desired) {
             g_app.appliedLockVi = g_app.lockedVi;
             g_app.appliedLockCi = g_app.lockedCi;
             g_app.appliedLockFreq = g_app.lockedFreq;
+            g_app.appliedLockMode = desired->lockMode;
             g_app.guiLockTracksAnchor = desired->lockTracksAnchor;
         } else if (g_app.lockedFreq == 0 && g_app.lockedCi < 0) {
             g_app.lockedVi = -1;
             g_app.lockedCi = -1;
             g_app.lockedFreq = 0;
+            g_app.lockMode = LOCK_MODE_NONE;
             g_app.appliedLockVi = -1;
             g_app.appliedLockCi = -1;
             g_app.appliedLockFreq = 0;
+            g_app.appliedLockMode = LOCK_MODE_NONE;
             g_app.guiLockTracksAnchor = true;
         }
     }

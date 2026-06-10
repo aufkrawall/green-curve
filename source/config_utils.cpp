@@ -128,6 +128,12 @@ bool enter_config_storage_lock(HANDLE* acquiredMutex) {
         OutputDebugStringA(warning);
     }
     if (waitResult == WAIT_OBJECT_0 || waitResult == WAIT_ABANDONED) {
+        if (waitResult == WAIT_ABANDONED) {
+            // Ownership IS acquired on WAIT_ABANDONED; the flag just means a
+            // peer process died while holding the mutex (possible torn
+            // config write) — log it for diagnosis.
+            OutputDebugStringA("[GreenCurve] WARNING: config mutex was abandoned by a dying peer process; continuing with ownership\n");
+        }
         if (acquiredMutex) *acquiredMutex = mutex;
         return true;
     }

@@ -173,7 +173,7 @@ COMMON_FLAGS = [
 ]
 
 # C-002: read VERSION and inject it into all compile commands
-APP_VERSION = "0.14.1"
+APP_VERSION = "0.15"
 APP_BUILD_NUMBER = 0
 _version_path = os.path.join(SCRIPT_DIR, "VERSION")
 if os.path.exists(_version_path):
@@ -1295,6 +1295,13 @@ int main(int argc, char** argv) {
     if (get_config_int(argv[1], "debug", "enabled", 0) != 1) return 36;
     if (!set_config_int(argv[1], "runtime", "selective_gpu_offset_mhz", 45)) return 37;
     if (get_config_int(argv[1], "runtime", "selective_gpu_offset_mhz", 0) != 45) return 38;
+    // Lock mode (none/flatten/pin) must round-trip through the profile INI.
+    // Pin (hard) loss on save was the user-reported bug; this guards the
+    // serialize/parse contract the GUI relies on.
+    if (!set_config_int(argv[1], "profile1", "lock_mode", LOCK_MODE_HARD)) return 39;
+    if (get_config_int(argv[1], "profile1", "lock_mode", 0) != LOCK_MODE_HARD) return 46;
+    if (!set_config_int(argv[1], "profile1", "lock_mode", LOCK_MODE_FLATTEN)) return 47;
+    if (get_config_int(argv[1], "profile1", "lock_mode", 0) != LOCK_MODE_FLATTEN) return 48;
     DeleteFileA(argv[1]);
 
     // F-08-001: IPC object size and field layout sanity
@@ -1322,6 +1329,13 @@ int main(int argc, char** argv) {
         if (ds.memOffsetMHz != 5000) return 74;
         if (ds.fanPercent != 0) return 75;
         if (ds.curvePointMHz[0] != 5000u) return 76;
+        // Lock mode must clamp to the valid tri-state range at the IPC boundary.
+        ds.lockMode = (LockMode)999;
+        validate_desired_settings_for_ipc(&ds);
+        if (ds.lockMode != LOCK_MODE_HARD) return 77;
+        ds.lockMode = (LockMode)(-5);
+        validate_desired_settings_for_ipc(&ds);
+        if (ds.lockMode != LOCK_MODE_NONE) return 78;
     }
 
     // F-08-001: IPC magic/version constants unchanged
@@ -1536,6 +1550,40 @@ int main(int argc, char** argv) {
         DeleteFileW(aclFile);
     }
 
+    // Pin-bug root-cause guard: the snapshot lockMode sync must NEVER adopt
+    // the service's (previously applied) mode while the GUI holds divergent
+    // pending lock intent (FLATTEN->HARD click / loaded HARD profile) or
+    // unsaved edits.  Before this gate existed, the per-second telemetry
+    // snapshot silently reverted a HARD pin to FLATTEN within ~1 s, making
+    // the pin un-appliable ("No changes to apply") and saving it wrong.
+    {
+        // Divergent intent (clean): user clicked FLATTEN->HARD, snapshot still FLATTEN.
+        if (lock_mode_sync_allowed(LOCK_MODE_HARD, LOCK_MODE_FLATTEN, false)) return 120;
+        // Divergent intent (dirty): same, with other unsaved edits.
+        if (lock_mode_sync_allowed(LOCK_MODE_HARD, LOCK_MODE_FLATTEN, true)) return 121;
+        // No divergence but dirty: never resync mid-edit.
+        if (lock_mode_sync_allowed(LOCK_MODE_FLATTEN, LOCK_MODE_FLATTEN, true)) return 122;
+        // Clean, no divergence: adoption allowed (e.g. curve-detected FLATTEN
+        // while the service authoritatively reports HARD at the same point).
+        if (!lock_mode_sync_allowed(LOCK_MODE_FLATTEN, LOCK_MODE_FLATTEN, false)) return 123;
+        if (!lock_mode_sync_allowed(LOCK_MODE_NONE, LOCK_MODE_NONE, false)) return 124;
+    }
+
+    // lockMHz is clamped at the IPC boundary like the curve points (it feeds
+    // NVML locked-clocks and flatten-tail targets); 0 = "no target" stays 0.
+    {
+        DesiredSettings ds = {};
+        ds.lockMHz = 4000000000u;
+        validate_desired_settings_for_ipc(&ds);
+        if (ds.lockMHz != 5000u) return 125;
+        ds.lockMHz = 0u;
+        validate_desired_settings_for_ipc(&ds);
+        if (ds.lockMHz != 0u) return 126;
+        ds.lockMHz = 2800u;
+        validate_desired_settings_for_ipc(&ds);
+        if (ds.lockMHz != 2800u) return 127;
+    }
+
     DeleteCriticalSection(&g_configLock);
     return 0;
 }
@@ -1687,7 +1735,7 @@ def run_source_regression_checks():
 
     require_text(shared_h, "APP_DEBUG_DEFAULT_ENABLED 1", "debug logging remains default-on")
     require_text(shared_h, "APP_TITLE           APP_NAME \" v\" APP_VERSION", "plain title macro exists")
-    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 6", "service protocol version bumped")
+    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 7", "service protocol version bumped")
     require_text(shared_h, "resetOcBeforeApply", "GUI apply reset-before-apply protocol flag exists")
     # F-SEC-4: the IPC trust-boundary validator must clamp every field that can
     # reach an array index, the fan policy switch, or a fan-speed write.
@@ -1718,7 +1766,7 @@ def run_source_regression_checks():
     require_text(service_ipc_cpp, "GetNamedPipeServerProcessId", "GUI verifies service pipe server PID")
     require_text(service_ipc_cpp, "SetNamedPipeHandleState", "service pipe message mode is checked")
     require_text(service_ipc_cpp, "Service response protocol mismatch", "service responses are validated before use")
-    require_text(service_ipc_cpp, "connected after %u retry", "service pipe connect retries are summarized")
+    require_text(service_ipc_cpp, "WaitNamedPipeW(pipeName, waitSlice)", "service pipe connect retries on ERROR_PIPE_BUSY")
     require_text(service_ipc_cpp, "ensure_secure_service_binary_path", "service install uses secure Program Files copy")
     require_text(service_ipc_cpp, "CopyFileW(sourcePath, tempPath", "service binary is staged before install")
     require_text(service_ipc_cpp, "wait_for_helper_process_bounded", "elevated helper waits are bounded")
@@ -1845,7 +1893,7 @@ def run_source_regression_checks():
     require_text(gpu_backend_cpp, "HeapBuffer buf(", "VF point write uses heap buffer")
 
     # F-01-003: Pipe ACL restricted to console session user only (no IU fallback)
-    require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "restricted ACL for active console session user", "pipe uses restricted session ACL")
+    require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "service pipe ACL: write restricted to active console user", "pipe uses restricted session ACL")
     require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "cannot create restricted ACL, deferring", "pipe ACL fallback removed")
 
     # F-01-006: Sanitizer build support
@@ -1898,6 +1946,46 @@ def run_source_regression_checks():
     require_text(main_runtime_gpu_cpp, "capture_gui_desired_settings(&guiDesired, true, true, false", "profile save capture keeps sparse VF curve intent")
     require_text(config_profile_repair_cpp, "profile repair: removed non-tail readback artifact", "profile load repairs logged non-tail readback artifacts")
     require_text(main_gpu_state_cpp, "skippedLockedTail ? 4 : 3", "selective GPU offset detection rejects two-point high-edit false positives")
+
+    # Lock mode (flatten/pin) must round-trip through profile save. The pin (hard)
+    # mode was previously dropped because merge_desired_settings ignored lock state
+    # and capture_gui_config_settings forgot lockMode. These would fail before the fix.
+    require_text(config_profiles_ui_cpp, "base->lockMode = override->lockMode", "Windows merge_desired_settings carries lock mode")
+    require_text(os.path.join(SOURCE_DIR, "linux_port_profiles.cpp"), "base->lockTracksAnchor = incoming->lockTracksAnchor", "Linux merge_desired_settings carries lock anchor tracking")
+    require_text(main_runtime_gpu_cpp, "full.lockMode = guiDesired.lockMode", "profile-save capture preserves lock mode from GUI")
+    require_text(main_runtime_gpu_cpp, "full.lockMode = g_app.lockMode", "profile-save capture preserves live lock mode")
+    require_text(os.path.join(SOURCE_DIR, "config_profiles.cpp"), "lock writing ci=", "profile save logs the lock ci/mhz/mode being written")
+    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "show_lock_context_menu", "lock checkbox right-click mode menu exists")
+    require_text(os.path.join(SOURCE_DIR, "ui_main.cpp"), "create_lock_tooltips", "lock checkbox hover tooltip is registered")
+
+    # Pin-bug root cause (snapshot lockMode clobber): the per-second telemetry
+    # snapshot must never overwrite divergent pending lock intent (a
+    # FLATTEN->HARD click or a loaded HARD profile at the same lock point) with
+    # the service's previously-applied mode. These would fail before the fix.
+    require_text(shared_h, "lock_mode_sync_allowed", "pending-lock-intent gate helper exists in shared header")
+    require_text(main_state_sync_cpp, "lock_mode_sync_allowed((int)g_app.lockMode, (int)g_app.appliedLockMode, gui_state_dirty())", "snapshot lockMode sync is gated on no pending lock intent")
+    require_text(main_state_sync_cpp, "lockMode sync skipped (pending lock intent", "skipped lockMode sync is logged for diagnosis")
+    require_text(gpu_backend_cpp, "g_app.appliedLockMode = g_app.lockMode;", "curve-detection sync keeps the lockMode/appliedLockMode intent invariant")
+    require_text(config_profiles_ui_cpp, "desired->hasFan || desired->hasLock", "Windows desired_has_any_action counts a lock-only profile as an action")
+    require_text(os.path.join(SOURCE_DIR, "linux_port.cpp"), "desired->hasFan || desired->hasLock", "Linux desired_has_any_action counts a lock-only profile as an action")
+
+    # Persistence hardening: both the service restart snapshot and INI profile
+    # loads route through the IPC validator so corrupt bytes cannot reach the
+    # apply path or the GUI-side curve math unclamped.
+    require_text(os.path.join(SOURCE_DIR, "main_service_persist.cpp"), "validate_desired_settings_for_ipc(out);", "restart-reapply snapshot fields are clamped on load")
+    require_text(os.path.join(SOURCE_DIR, "config_profiles.cpp"), "validate_desired_settings_for_ipc(desired);", "INI profile loads clamp fields before derived curve math")
+    require_text(shared_h, "if (d->lockMHz > 5000u)", "IPC validator clamps lockMHz like the curve points")
+
+    # Diagnostics for rare failure modes (no behavior change).
+    require_text(config_utils_cpp, "config mutex was abandoned", "abandoned config mutex acquisitions are logged")
+    require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "resume reapply CreateThread FAILED", "resume-reapply thread creation failure is logged")
+
+    # GUI repaint robustness during service start/restart (visual corruption).
+    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "WM_SETREDRAW, FALSE", "edit-control rebuild suppresses painting to avoid partial-paint corruption")
+    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "rebuild_edit_controls", "service-state control rebuild routes through redraw-suppressed helper")
+    require_text(service_ipc_cpp, "wait_object_pumping_ui", "blocking service waits pump the GUI so the window keeps repainting")
+    require_text(service_ipc_cpp, "MsgWaitForMultipleObjectsEx", "service waits use a message-pumping wait, not a frozen Sleep/WaitForSingleObject")
+    require_text(service_ipc_cpp, "struct UiInputGuard", "GUI input is disabled during pumped service waits to block re-entrancy")
 
     # F-12-001: Backend spec static_assert checks
     require_text(os.path.join(SOURCE_DIR, "main.cpp"), "static_assert(0x48u + (VF_NUM_POINTS - 1u) * 0x1Cu + 4u <= 0x1C28u", "VF status buffer static_assert exists")
@@ -1957,7 +2045,7 @@ def run_source_regression_checks():
     require_text(gpu_backend_apply_cpp, "floorTailOffsetKHz", "uniform tail floor offset constant exists for initial tail loop")
     require_text(gpu_backend_apply_cpp, "correctionFloorTailOffsetKHz", "uniform tail floor offset constant exists for correction passes")
     require_text(gpu_backend_apply_cpp, "tail uniform floor offset=%d", "correction pass logs uniform tail floor offset write")
-    require_text(gpu_backend_apply_cpp, "All remaining tail points: use uniform floor offset", "initial tail loop uses uniform floor for non-lock tail points")
+    require_text(gpu_backend_apply_cpp, "Determine the uniform floor offset for tail points.", "initial tail loop uses uniform floor for non-lock tail points")
 
     # FP-02-002: Pre-tail point capture after restart (non-zero offset detection, guarded by profile load check)
     require_text(os.path.join(SOURCE_DIR, "main_runtime_control.cpp"), "preTailInferred", "pre-tail user-modified points inferred from non-zero live offset (guarded by hasPreTailExplicit)")

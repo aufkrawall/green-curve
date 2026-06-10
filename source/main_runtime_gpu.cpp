@@ -325,13 +325,15 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, char* err, size
     bool lockWasApplied = g_app.appliedLockCi >= 0 && g_app.appliedLockFreq > 0;
     bool lockNowActive = full.hasLock && full.lockCi >= 0 && full.lockMHz > 0;
     bool lockChanged = lockNowActive != lockWasApplied
-        || (lockNowActive && (full.lockCi != g_app.appliedLockCi || full.lockMHz != g_app.appliedLockFreq));
-    debug_log("capture_gui_apply_settings: lockState applied=(ci=%d mhz=%u) desired=(has=%d ci=%d mhz=%u) changed=%d\n",
+        || (lockNowActive && (full.lockCi != g_app.appliedLockCi || full.lockMHz != g_app.appliedLockFreq || full.lockMode != g_app.appliedLockMode));
+    debug_log("capture_gui_apply_settings: lockState applied=(ci=%d mhz=%u mode=%s) desired=(has=%d ci=%d mhz=%u mode=%s) changed=%d\n",
         g_app.appliedLockCi,
         g_app.appliedLockFreq,
+        lock_mode_name(g_app.appliedLockMode),
         full.hasLock ? 1 : 0,
         full.hasLock ? full.lockCi : -1,
         full.hasLock ? full.lockMHz : 0u,
+        lock_mode_name(full.lockMode),
         lockChanged ? 1 : 0);
 
     if (gpuUnchanged && memUnchanged && powerUnchanged && curveUnchanged && !lockChanged && fanChanged) {
@@ -405,13 +407,22 @@ static bool capture_gui_config_settings(DesiredSettings* desired, char* err, siz
         full.hasLock = true;
         full.lockCi = guiDesired.lockCi;
         full.lockMHz = guiDesired.lockMHz;
+        full.lockMode = guiDesired.lockMode;
         full.lockTracksAnchor = guiDesired.lockTracksAnchor;
     } else if (g_app.lockedCi >= 0 && g_app.lockedFreq > 0) {
         full.hasLock = true;
         full.lockCi = g_app.lockedCi;
         full.lockMHz = g_app.lockedFreq;
+        full.lockMode = g_app.lockMode;
         full.lockTracksAnchor = g_app.guiLockTracksAnchor;
     }
+    debug_log("capture_gui_config_settings: resolved lock has=%d ci=%d mhz=%u mode=%s tracksAnchor=%d (source=%s)\n",
+        full.hasLock ? 1 : 0,
+        full.hasLock ? full.lockCi : -1,
+        full.hasLock ? full.lockMHz : 0u,
+        lock_mode_name(full.lockMode),
+        full.lockTracksAnchor ? 1 : 0,
+        guiDesired.hasLock ? "gui" : ((g_app.lockedCi >= 0 && g_app.lockedFreq > 0) ? "live" : "none"));
     *desired = full;
     return true;
 }

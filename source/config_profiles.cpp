@@ -174,6 +174,22 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         desired->lockTracksAnchor = value != 0;
     }
 
+    GetPrivateProfileStringA(controlsSection, "lock_mode", "", buf, sizeof(buf), path);
+    trim_ascii(buf);
+    if (buf[0]) {
+        int value = 0;
+        if (!parse_int_strict(buf, &value)) {
+            set_message(err, errSize, "Invalid lock_mode in profile %d", slot);
+            return false;
+        }
+        if (value >= LOCK_MODE_NONE && value <= LOCK_MODE_HARD) {
+            desired->lockMode = (LockMode)value;
+        }
+    } else if (desired->hasLock) {
+        // Backward compat: old profiles without lock_mode default to flatten
+        desired->lockMode = LOCK_MODE_FLATTEN;
+    }
+
     GetPrivateProfileStringA(controlsSection, "mem_offset_mhz", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
@@ -260,6 +276,13 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         }
         debug_log("load_profile_from_config: profile %d section [%s] has no explicit curve points\n", slot, curveSection);
     }
+
+    // Clamp every numeric field to the same ranges enforced at the IPC trust
+    // boundary BEFORE any derived math below.  A corrupt/hand-edited INI value
+    // (e.g. a curve point > INT_MAX) would otherwise reach the (int) casts in
+    // restore_curve_points_from_base_plus_gpu_offset with implementation-
+    // defined results.  Legit saved values are always within these ranges.
+    validate_desired_settings_for_ipc(desired);
 
     if (curve_section_uses_base_plus_gpu_offset_semantics(path, curveSection, desired)) {
         restore_curve_points_from_base_plus_gpu_offset(desired);
@@ -445,6 +468,12 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         desired->curvePointMHz[127],
         g_app.usingBackgroundService ? 1 : 0,
         gui_state_dirty() ? 1 : 0);
+    debug_log("save_profile_to_config: lock writing ci=%d mhz=%u mode=%s tracksAnchor=%d (desiredHasLock=%d)\n",
+        desired->hasLock ? desired->lockCi : (g_app.lockedCi >= 0 ? g_app.lockedCi : -1),
+        desired->hasLock ? desired->lockMHz : g_app.lockedFreq,
+        lock_mode_name(desired->hasLock ? desired->lockMode : g_app.lockMode),
+        desired->hasLock ? (desired->lockTracksAnchor ? 1 : 0) : (g_app.guiLockTracksAnchor ? 1 : 0),
+        desired->hasLock ? 1 : 0);
 
     // Read existing profile preferences
     int appLaunchSlot = get_config_int(path, "profiles", "app_launch_slot", 0);
@@ -524,6 +553,7 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         appendf("lock_ci=%d\r\n", desired->hasLock ? desired->lockCi : (g_app.lockedCi >= 0 ? g_app.lockedCi : -1));
         appendf("lock_mhz=%u\r\n", desired->hasLock ? desired->lockMHz : g_app.lockedFreq);
         appendf("lock_tracks_anchor=%d\r\n", desired->hasLock ? (desired->lockTracksAnchor ? 1 : 0) : (g_app.guiLockTracksAnchor ? 1 : 0));
+        appendf("lock_mode=%d\r\n", desired->hasLock ? (int)desired->lockMode : (int)g_app.lockMode);
         appendf("mem_offset_mhz=%d\r\n", desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
         appendf("power_limit_pct=%d\r\n", desired->hasPowerLimit ? desired->powerLimitPct : g_app.powerLimitPct);
         appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : get_effective_live_fan_mode()));
@@ -613,6 +643,7 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         appendf("lock_ci=%d\r\n", desired->hasLock ? desired->lockCi : (g_app.lockedCi >= 0 ? g_app.lockedCi : -1));
         appendf("lock_mhz=%u\r\n", desired->hasLock ? desired->lockMHz : g_app.lockedFreq);
         appendf("lock_tracks_anchor=%d\r\n", desired->hasLock ? (desired->lockTracksAnchor ? 1 : 0) : (g_app.guiLockTracksAnchor ? 1 : 0));
+        appendf("lock_mode=%d\r\n", desired->hasLock ? (int)desired->lockMode : (int)g_app.lockMode);
         appendf("mem_offset_mhz=%d\r\n", desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
         appendf("power_limit_pct=%d\r\n", desired->hasPowerLimit ? desired->powerLimitPct : g_app.powerLimitPct);
         appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : get_effective_live_fan_mode()));

@@ -528,8 +528,7 @@ static void update_all_gui_for_service_state() {
     populate_global_controls();
 #else
     if (g_app.numVisible > 0 && !g_app.hEditsMhz[0]) {
-        destroy_edit_controls(g_app.hMainWnd);
-        create_edit_controls(g_app.hMainWnd, g_app.hInst);
+        rebuild_edit_controls();
     } else if (g_app.hEditsMhz[0]) {
         populate_edits();
     } else {
@@ -733,4 +732,11 @@ static void rollback_to_safe_defaults() {
     // display stale values after rollback.
     g_app.appliedGpuOffsetExcludeLowCount = 0;
     g_app.appliedGpuOffsetMHz = 0;
+    // Reset NVML locked clocks (hard lock)
+    if (g_nvml_api.resetGpuLockedClocks && g_app.lockMode == LOCK_MODE_HARD) {
+        if (nvml_ensure_ready()) {
+            nvmlReturn_t r = g_nvml_api.resetGpuLockedClocks(g_app.nvmlDevice);
+            debug_log("rollback: resetGpuLockedClocks → %s\n", r == NVML_SUCCESS ? "ok" : nvml_err_name(r));
+        }
+    }
 }

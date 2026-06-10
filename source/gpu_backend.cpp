@@ -16,14 +16,14 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
             bool fanOnlyApply = desired_is_fan_only_apply_request(desired);
             apply_service_snapshot_to_app(&snapshot);
             if (desired && desired->hasLock && desired->lockCi >= 0 && desired->lockCi < VF_NUM_POINTS && desired->lockMHz > 0) {
-                g_app.lockedCi = desired->lockCi; g_app.lockedFreq = desired->lockMHz; g_app.guiLockTracksAnchor = desired->lockTracksAnchor; g_app.lockedVi = -1;
+                g_app.lockedCi = desired->lockCi; g_app.lockedFreq = desired->lockMHz; g_app.lockMode = desired->lockMode; g_app.guiLockTracksAnchor = desired->lockTracksAnchor; g_app.lockedVi = -1;
                 for (int vi = 0; vi < g_app.numVisible; vi++) {
                     if (g_app.visibleMap[vi] == desired->lockCi) {
                         g_app.lockedVi = vi;
                         break;
                     }
                 }
-                g_app.appliedLockVi = g_app.lockedVi; g_app.appliedLockCi = g_app.lockedCi; g_app.appliedLockFreq = g_app.lockedFreq;
+                g_app.appliedLockVi = g_app.lockedVi; g_app.appliedLockCi = g_app.lockedCi; g_app.appliedLockFreq = g_app.lockedFreq; g_app.appliedLockMode = g_app.lockMode;
                 debug_log("service apply client lock sync: ci=%d requestedMHz=%u trackAnchor=%d\n", g_app.lockedCi, g_app.lockedFreq, g_app.guiLockTracksAnchor ? 1 : 0);
             }
             if (g_app.hMainWnd) {
@@ -716,6 +716,7 @@ static bool restore_locked_tail_from_curve_index_exact(int preferredCi) {
     g_app.lockedVi = preferredVi;
     g_app.lockedCi = preferredCi;
     g_app.lockedFreq = displayed_curve_mhz(lockFreqkHz);
+    g_app.lockMode = LOCK_MODE_FLATTEN;
     g_app.guiLockTracksAnchor = true;
     return true;
 }
@@ -749,6 +750,7 @@ static bool restore_locked_tail_from_curve_index_tolerant(int preferredCi, int m
     g_app.lockedVi = preferredVi;
     g_app.lockedCi = preferredCi;
     g_app.lockedFreq = (summedMHz + (unsigned int)(pointCount / 2)) / (unsigned int)pointCount;
+    g_app.lockMode = LOCK_MODE_FLATTEN;
     g_app.guiLockTracksAnchor = true;
     return true;
 }
@@ -757,6 +759,11 @@ static void sync_applied_lock_state_from_curve() {
         g_app.appliedLockVi = g_app.lockedVi;
         g_app.appliedLockCi = g_app.lockedCi;
         g_app.appliedLockFreq = g_app.lockedFreq;
+        // Keep the intent invariant: detection never creates pending user
+        // intent, so appliedLockMode must track lockMode here.  A divergent
+        // pair (lockMode != appliedLockMode) is reserved for real user intent
+        // and blocks the snapshot lockMode sync (lock_mode_sync_allowed).
+        g_app.appliedLockMode = g_app.lockMode;
     }
 }
 
@@ -771,6 +778,7 @@ static void detect_locked_tail_from_curve() {
     g_app.lockedVi = -1;
     g_app.lockedCi = -1;
     g_app.lockedFreq = 0;
+    g_app.lockMode = LOCK_MODE_NONE;
     g_app.guiLockTracksAnchor = true;
     sync_applied_lock_state_from_curve();
     if (g_app.numVisible < 2) return;
@@ -807,6 +815,7 @@ static void detect_locked_tail_from_curve() {
             g_app.lockedVi = vi;
             g_app.lockedCi = ci;
             g_app.lockedFreq = displayed_curve_mhz(lockFreqkHz);
+            g_app.lockMode = LOCK_MODE_FLATTEN;
             sync_applied_lock_state_from_curve();
             return;
         }

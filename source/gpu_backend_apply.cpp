@@ -97,6 +97,16 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
     bool allowInteractiveStoredLock = interactive && !g_app.isServiceProcess;
     bool hasLock = requestHasLock
         || (allowInteractiveStoredLock && g_app.lockedVi >= 0 && g_app.lockedVi < g_app.numVisible);
+    LockMode lockMode = LOCK_MODE_NONE;
+    if (hasLock) {
+        if (desired->hasLock && desired->lockMode != LOCK_MODE_NONE) {
+            lockMode = desired->lockMode;
+        } else if (g_app.lockMode != LOCK_MODE_NONE) {
+            lockMode = g_app.lockMode;
+        } else {
+            lockMode = LOCK_MODE_FLATTEN;
+        }
+    }
     bool hasCurveEdits = false;
     int lockCi = -1;
     int lockVi = -1;
@@ -408,20 +418,19 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
             // the tail and lets the lock point control the entire region.
             // Use the minimum supported driver offset for this purpose.
             int floorTailOffsetKHz = 0;
-            {
+            if (lockMode == LOCK_MODE_FLATTEN) {
                 int minkHz = 0, maxkHz = 0;
                 bool rangeOk = get_curve_offset_range_khz(&minkHz, &maxkHz);
                 if (rangeOk && minkHz < 0) {
                     floorTailOffsetKHz = minkHz;
                 } else {
-                    floorTailOffsetKHz = -1000000; // conservative fallback
+                    floorTailOffsetKHz = -1000000;
                 }
             }
             for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
                 if (!lockedTailMask[ci]) continue;
                 if (!originalCurvePopulated[ci]) continue;
                 if (ci == lockCi) {
-                    // Lock point: compute per-point offset normally
                     long long base = (long long)originalCurveFreqkHz[ci] - (long long)originalCurveOffsets[ci];
                     if (base < 0) base = 0;
                     long long target = (long long)lockMhz * 1000LL;
@@ -429,15 +438,11 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                     if (diff > INT_MAX) diff = INT_MAX;
                     if (diff < INT_MIN) diff = INT_MIN;
                     targetCurveOffsets[ci] = clamp_freq_delta_khz((int)diff);
-                } else {
-                    // All remaining tail points: use uniform floor offset.
-                    // Per-point deltas are ineffective on Blackwell; the
-                    // driver treats tail points as a group controlled by
-                    // the lock point. A uniform minimum offset floors them
-                    // reliably.
+                    targetCurveMask[ci] = true;
+                } else if (lockMode == LOCK_MODE_FLATTEN) {
                     targetCurveOffsets[ci] = floorTailOffsetKHz;
+                    targetCurveMask[ci] = true;
                 }
-                targetCurveMask[ci] = true;
             }
         } else if (gpuPolicyViaCurveBatch && !hasLock) {
             // When the selective GPU offset is active without a lock, the explicit
@@ -502,13 +507,14 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
             if (hasLock && lockedTailMask[ci]) flattenPoints++;
             else boostPoints++;
         }
-        debug_log("curve strategy: selective=%+d MHz%s boostRegionPoints=%d flattenTarget=%u MHz flattenRegionPoints=%d lockCi=%d%s\n",
+        debug_log("curve strategy: selective=%+d MHz%s boostRegionPoints=%d flattenTarget=%u MHz flattenRegionPoints=%d lockCi=%d lockMode=%s%s\n",
             gpuPolicyViaCurveBatch ? desired->gpuOffsetMHz : 0,
             desiredActiveGpuOffsetExcludeLowCount > 0 ? " excl<N" : "",
             boostPoints,
             (hasLock && lockMhz > 0) ? lockMhz : 0,
             flattenPoints,
             hasLock ? lockCi : -1,
+            lock_mode_name(lockMode),
             (gpuPolicyViaCurveBatch && hasLock) ? " boost-via-selective" : "");
     }
     if (curveBatchNeeded && (curveRequest || memApplied)) {
@@ -692,6 +698,10 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
             }
             auto verify_curve_request = [&](char* detailOut, size_t detailOutSize) -> bool {
                 if (!curveRequest) return true;
+                if (hasLock && lockMode == LOCK_MODE_HARD && lockMhz > 0) {
+                    debug_log("verify: HARD lock mode — skipping tail verification (NVML pins at %u MHz)\n", lockMhz);
+                    return true;
+                }
                 if (gpuPolicyViaCurveBatch && selectiveOffsetApplied > 0 && selectiveOffsetApplied >= selectiveOffsetFailed) {
                     if (hasLock && lockMhz > 0) {
                         bool sawTailPoint = false;
@@ -938,7 +948,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                 // tail target. If the driver cannot keep the user's flat tail, the
                 // apply must fail rather than silently converting the lock into a
                 // higher plateau.
-                if (curveRequestOk && hasLock && lockMhz > 0) {
+                if (curveRequestOk && hasLock && lockMhz > 0 && lockMode != LOCK_MODE_HARD) {
                     unsigned int lastTargetMHz = 0;
                     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
                         if (!g_app.curve[ci].freq_kHz || !verifyDesired.hasCurvePoint[ci]) continue;
@@ -1077,7 +1087,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                         desired->gpuOffsetMHz, userBoostApplied, userBoostApplied + userBoostFailed);
                 }
             }
-            if (hasLock && lockMhz > 0) {
+            if (hasLock && lockMhz > 0 && lockMode == LOCK_MODE_FLATTEN) {
                 if (flattenFailed == 0) {
                     pos += StringCchPrintfA(curveVerifySummary + pos, sizeof(curveVerifySummary) - pos,
                         " Undervolt flatten to %u MHz verified (%d pts).", lockMhz, flattenApplied);
@@ -1086,17 +1096,44 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
                         " Undervolt flatten to %u MHz: %d of %d pts matched.",
                         lockMhz, flattenApplied, flattenApplied + flattenFailed);
                 }
+            } else if (hasLock && lockMhz > 0 && lockMode == LOCK_MODE_HARD) {
+                pos += StringCchPrintfA(curveVerifySummary + pos, sizeof(curveVerifySummary) - pos,
+                    " Hard lock pinned at %u MHz.", lockMhz);
             }
+        }
+    }
+    // If not requesting HARD lock, reset any stale NVML locked clocks.
+    // Idempotent — catches HARD→FLATTEN, HARD→NONE, stale locks.
+    if (lockMode != LOCK_MODE_HARD && g_nvml_api.resetGpuLockedClocks) {
+        char resetDetail[128] = {};
+        if (nvml_reset_gpu_locked_clocks(resetDetail, sizeof(resetDetail))) {
+            debug_log("apply: reset NVML locked clocks (not requesting HARD mode)\n");
+        } else {
+            debug_log("apply: resetGpuLockedClocks failed: %s\n", resetDetail);
         }
     }
     if (hasLock) {
         g_app.lockedVi = lockVi;
         g_app.lockedCi = lockCi;
         g_app.lockedFreq = lockMhz;
+        g_app.lockMode = lockMode;
         g_app.appliedLockVi = lockVi;
         g_app.appliedLockCi = lockCi;
         g_app.appliedLockFreq = lockMhz;
+        g_app.appliedLockMode = lockMode;
         g_app.guiLockTracksAnchor = desired->lockTracksAnchor;
+
+        if (lockMode == LOCK_MODE_HARD) {
+            char lockedClockDetail[128] = {};
+            if (nvml_set_gpu_locked_clocks(lockMhz, lockMhz, lockedClockDetail, sizeof(lockedClockDetail))) {
+                successCount++;
+                debug_log("apply: hard lock pinned at %u MHz via NVML\n", lockMhz);
+            } else {
+                failCount++;
+                partialApplyRisk = true;
+                append_failure("Hard lock at %u MHz failed: %s", lockMhz, lockedClockDetail);
+            }
+        }
     }
     if (desired->hasGpuOffset && !gpuPolicyViaCurveBatch) {
         if (desiredActiveGpuOffsetExcludeLowCount > 0) {
@@ -1164,22 +1201,27 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
         g_app.lockedVi = lockVi;
         g_app.lockedCi = lockCi;
         g_app.lockedFreq = displayedLockMHz;
+        g_app.lockMode = lockMode;
         g_app.appliedLockVi = lockVi;
         g_app.appliedLockCi = lockCi;
         g_app.appliedLockFreq = displayedLockMHz;
+        g_app.appliedLockMode = lockMode;
         g_app.guiLockTracksAnchor = desired->lockTracksAnchor;
-        debug_log("post-apply lock restore: ci=%d requested=%u displayed=%u trackAnchor=%d (preserving requested value)\n",
+        debug_log("post-apply lock restore: ci=%d requested=%u displayed=%u mode=%s trackAnchor=%d (preserving requested value)\n",
             lockCi,
             lockMhz,
             displayedLockMHz,
+            lock_mode_name(lockMode),
             desired->lockTracksAnchor ? 1 : 0);
     } else if (g_app.isServiceProcess && failCount == 0 && (curveTouched || desired->hasGpuOffset || hasCurveEdits)) {
         g_app.lockedVi = -1;
         g_app.lockedCi = -1;
         g_app.lockedFreq = 0;
+        g_app.lockMode = LOCK_MODE_NONE;
         g_app.appliedLockVi = -1;
         g_app.appliedLockCi = -1;
         g_app.appliedLockFreq = 0;
+        g_app.appliedLockMode = LOCK_MODE_NONE;
         g_app.guiLockTracksAnchor = true;
         debug_log("post-apply lock clear: no lock requested; cleared stale service lock markers\n");
     }

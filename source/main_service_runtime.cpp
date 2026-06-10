@@ -986,6 +986,7 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
             mergedActiveDesired.hasLock = true;
             mergedActiveDesired.lockCi = desired->lockCi;
             mergedActiveDesired.lockMHz = desired->lockMHz;
+            mergedActiveDesired.lockMode = desired->lockMode;
             mergedActiveDesired.lockTracksAnchor = desired->lockTracksAnchor;
         }
         if (desired_is_fan_only_apply_request(desired) && g_serviceHasActiveDesired) {
@@ -1105,6 +1106,20 @@ static bool service_reset_all(char* result, size_t resultSize) {
     stop_fan_curve_runtime();
     if (g_app.isServiceProcess && g_serviceFanThread) {
         stop_service_fan_runtime_thread();
+    }
+
+    // Reset NVML locked clocks (hard lock)
+    if (g_nvml_api.resetGpuLockedClocks) {
+        if (nvml_ensure_ready()) {
+            nvmlReturn_t r = g_nvml_api.resetGpuLockedClocks(g_app.nvmlDevice);
+            if (r == NVML_SUCCESS) {
+                successCount++;
+                debug_log("service_reset_all: resetGpuLockedClocks ok\n");
+            } else {
+                // Not a failure if no lock was active
+                debug_log("service_reset_all: resetGpuLockedClocks → %s (may be benign)\n", nvml_err_name(r));
+            }
+        }
     }
 
     if (!g_app.fanIsAuto || g_app.activeFanMode != FAN_MODE_AUTO) {

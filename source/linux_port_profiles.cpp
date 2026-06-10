@@ -17,6 +17,9 @@ void merge_desired_settings(DesiredSettings* base, const DesiredSettings* incomi
         base->hasLock = true;
         base->lockCi = incoming->lockCi;
         base->lockMHz = incoming->lockMHz;
+        // The Linux DesiredSettings has no lockMode (no hard/NVML pin concept);
+        // anchor tracking is the only remaining lock field to merge.
+        base->lockTracksAnchor = incoming->lockTracksAnchor;
     }
     if (incoming->hasMemOffset) {
         base->hasMemOffset = true;

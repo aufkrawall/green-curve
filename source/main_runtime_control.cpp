@@ -36,6 +36,7 @@
         desired->hasLock = true;
         desired->lockCi = lockCi;
         desired->lockMHz = (unsigned int)effectiveLockTargetMHz;
+        desired->lockMode = g_app.lockMode;
         desired->lockTracksAnchor = lockTracksAnchor;
     }
 
@@ -545,10 +546,13 @@ static bool is_startup_task_enabled() {
 }
 
 static bool wait_for_startup_task_state(bool enabled, DWORD timeoutMs) {
+    // Pump the GUI while polling so the window keeps repainting during the wait
+    // (same anti-corruption rationale as the service-readiness wait).
+    UiInputGuard uiGuard;
     ULONGLONG start = GetTickCount64();
     while ((GetTickCount64() - start) < timeoutMs) {
         if (is_startup_task_enabled() == enabled) return true;
-        Sleep(150);
+        wait_object_pumping_ui(nullptr, 150);
     }
     return is_startup_task_enabled() == enabled;
 }

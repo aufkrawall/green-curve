@@ -139,6 +139,17 @@ static void merge_desired_settings(DesiredSettings* base, const DesiredSettings*
         base->gpuOffsetMHz = override->gpuOffsetMHz;
         base->gpuOffsetExcludeLowCount = override->gpuOffsetExcludeLowCount;
     }
+    // Lock state is a single unit: ci + target MHz + mode (none/flatten/hard) +
+    // anchor tracking. Merging it field-by-field here keeps every caller from
+    // having to remember the individual fields. Dropping lockMode was the root
+    // cause of pinned (hard) locks being persisted as flatten on profile save.
+    if (override->hasLock) {
+        base->hasLock = true;
+        base->lockCi = override->lockCi;
+        base->lockMHz = override->lockMHz;
+        base->lockMode = override->lockMode;
+        base->lockTracksAnchor = override->lockTracksAnchor;
+    }
     if (override->hasMemOffset) {
         base->hasMemOffset = true;
         base->memOffsetMHz = override->memOffsetMHz;
@@ -164,7 +175,9 @@ static void merge_desired_settings(DesiredSettings* base, const DesiredSettings*
 
 static bool desired_has_any_action(const DesiredSettings* desired) {
     if (!desired) return false;
-    if (desired->hasGpuOffset || desired->hasMemOffset || desired->hasPowerLimit || desired->hasFan) return true;
+    // hasLock counts: a pin-only (hard lock) profile carries no curve points
+    // or offsets but still demands an NVML locked-clocks apply.
+    if (desired->hasGpuOffset || desired->hasMemOffset || desired->hasPowerLimit || desired->hasFan || desired->hasLock) return true;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (desired->hasCurvePoint[i]) return true;
     }
@@ -281,7 +294,8 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
         for (int vi = 0; vi < g_app.numVisible; vi++) {
             if (g_app.visibleMap[vi] != lockCi) continue;
             set_edit_value(g_app.hEditsMhz[vi], lockMHz);
-            apply_lock(vi);
+            LockMode mode = desired->hasLock ? (desired->lockMode != LOCK_MODE_NONE ? desired->lockMode : LOCK_MODE_FLATTEN) : LOCK_MODE_FLATTEN;
+            apply_lock(vi, mode);
             g_app.guiLockTracksAnchor = desired->hasLock ? desired->lockTracksAnchor : true;
             break;
         }
@@ -290,6 +304,7 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
         g_app.lockedVi = -1;
         g_app.lockedCi = -1;
         g_app.lockedFreq = 0;
+        g_app.lockMode = LOCK_MODE_NONE;
     }
     end_programmatic_edit_update();
     set_gui_state_dirty(preserveDirty);

@@ -502,7 +502,7 @@ static void populate_edits() {
     }
 }
 
-static void apply_lock(int vi) {
+static void apply_lock(int vi, LockMode mode) {
     // Uncheck and re-enable previous lock
     if (g_app.lockedVi >= 0 && g_app.lockedVi < g_app.numVisible) {
         SendMessageA(g_app.hLocks[g_app.lockedVi], BM_SETCHECK, BST_UNCHECKED, 0);
@@ -514,18 +514,19 @@ static void apply_lock(int vi) {
     SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_CHECKED, 0);
     g_app.lockedVi = vi;
     g_app.lockedCi = g_app.visibleMap[vi];
+    g_app.lockMode = mode;
     if (g_app.lockedFreq == 0) {
         g_app.lockedFreq = get_edit_value(g_app.hEditsMhz[vi]);
     }
     g_app.guiLockTracksAnchor = true;
     if (!programmatic_edit_update_active()) {
         set_gui_state_dirty(true);
-        record_ui_action("lock point %d @ %u MHz (track anchor)", g_app.lockedCi, g_app.lockedFreq);
+        record_ui_action("lock point %d @ %u MHz (%s)", g_app.lockedCi, g_app.lockedFreq, lock_mode_name(mode));
     }
     EnableWindow(g_app.hLocks[vi], TRUE);
     InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
 
-    // Disable tail edit boxes and lock checkboxes to indicate locked/flattened
+    // Disable tail edit boxes and lock checkboxes to indicate locked
     // state. Edit boxes keep their live readback values (not overwritten).
     for (int j = vi + 1; j < g_app.numVisible; j++) {
         SendMessageA(g_app.hEditsMhz[j], EM_SETREADONLY, TRUE, 0);
@@ -554,10 +555,14 @@ static void sync_locked_tail_preview_from_anchor() {
 }
 
 static void unlock_all() {
+    // Note: NVML locked clocks reset is handled by the service apply pipeline,
+    // not here — the GUI process does not own the NVML device handle.
+
     begin_programmatic_edit_update();
     g_app.lockedVi = -1;
     g_app.lockedCi = -1;
     g_app.lockedFreq = 0;
+    g_app.lockMode = LOCK_MODE_NONE;
     g_app.guiLockTracksAnchor = true;
     memset(g_app.guiCurvePointExplicit, 0, sizeof(g_app.guiCurvePointExplicit));
     set_gui_state_dirty(false);
@@ -572,6 +577,54 @@ static void unlock_all() {
         InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
     }
     end_programmatic_edit_update();
+}
+
+// Create (or recreate) the hover tooltip that explains the tri-state lock
+// checkboxes. The checkboxes are destroyed/recreated on service-state changes,
+// so the tooltip and its registered tools are rebuilt alongside them. comctl32
+// is loaded dynamically (the GUI does not link it), matching the TaskDialog path.
+static void create_lock_tooltips(HWND hParent) {
+    if (g_app.hLockTooltip) {
+        DestroyWindow(g_app.hLockTooltip);
+        g_app.hLockTooltip = nullptr;
+    }
+    HMODULE comctl = load_system_library_a("comctl32.dll");
+    if (!comctl) return;
+    static bool s_commonControlsInit = false;
+    if (!s_commonControlsInit) {
+        typedef BOOL (WINAPI *InitCommonControlsExFn)(const INITCOMMONCONTROLSEX*);
+        auto initEx = (InitCommonControlsExFn)GetProcAddress(comctl, "InitCommonControlsEx");
+        if (initEx) {
+            INITCOMMONCONTROLSEX icc = {};
+            icc.dwSize = sizeof(icc);
+            icc.dwICC = ICC_BAR_CLASSES;  // registers tooltips_class32
+            initEx(&icc);
+        }
+        s_commonControlsInit = true;
+    }
+    HWND tip = CreateWindowExA(WS_EX_TOPMOST, TOOLTIPS_CLASS, nullptr,
+        WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+        hParent, nullptr, hParent ? (HINSTANCE)GetWindowLongPtrA(hParent, GWLP_HINSTANCE) : g_app.hInst, nullptr);
+    if (!tip) return;
+    SendMessageA(tip, TTM_SETMAXTIPWIDTH, 0, (LPARAM)dp(320));
+    SendMessageA(tip, TTM_SETDELAYTIME, TTDT_AUTOPOP, (LPARAM)MAKELONG(15000, 0));
+    static const char* kLockTip =
+        "Lock this point's GPU clock.\r\n"
+        "Left-click cycles: off -> flatten -> pin.\r\n"
+        "Right-click to choose the mode directly.\r\n"
+        "Flatten (check) caps the tail; Pin (dot) hard-locks via NVML.";
+    for (int vi = 0; vi < g_app.numVisible; vi++) {
+        if (!g_app.hLocks[vi]) continue;
+        TOOLINFOA ti = {};
+        ti.cbSize = sizeof(ti);
+        ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+        ti.hwnd = hParent;
+        ti.uId = (UINT_PTR)g_app.hLocks[vi];
+        ti.lpszText = (LPSTR)kLockTip;
+        SendMessageA(tip, TTM_ADDTOOLA, 0, (LPARAM)&ti);
+    }
+    g_app.hLockTooltip = tip;
 }
 
 static void create_edit_controls(HWND hParent, HINSTANCE hInst) {
@@ -758,6 +811,8 @@ static void create_edit_controls(HWND hParent, HINSTANCE hInst) {
     populate_global_controls();
 
     if (g_app.loaded) populate_edits();
+
+    create_lock_tooltips(hParent);
 
     refresh_profile_controls_from_config();
     end_programmatic_edit_update();

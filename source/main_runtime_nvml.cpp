@@ -349,6 +349,34 @@ static bool nvml_set_clock_offset_domain(unsigned int domain, int offsetMHz, boo
     return true;
 }
 
+static bool nvml_set_gpu_locked_clocks(unsigned int minMHz, unsigned int maxMHz, char* detail, size_t detailSize) {
+    if (!nvml_ensure_ready() || !g_nvml_api.setGpuLockedClocks) {
+        set_message(detail, detailSize, "NVML not ready or setGpuLockedClocks unavailable");
+        return false;
+    }
+    nvmlReturn_t r = g_nvml_api.setGpuLockedClocks(g_app.nvmlDevice, minMHz, maxMHz);
+    if (r != NVML_SUCCESS) {
+        set_message(detail, detailSize, "nvmlDeviceSetGpuLockedClocks(%u, %u): %s", minMHz, maxMHz, nvml_err_name(r));
+        return false;
+    }
+    debug_log("nvml_set_gpu_locked_clocks: min=%u max=%u ok\n", minMHz, maxMHz);
+    return true;
+}
+
+static bool nvml_reset_gpu_locked_clocks(char* detail, size_t detailSize) {
+    if (!nvml_ensure_ready() || !g_nvml_api.resetGpuLockedClocks) {
+        set_message(detail, detailSize, "NVML not ready or resetGpuLockedClocks unavailable");
+        return false;
+    }
+    nvmlReturn_t r = g_nvml_api.resetGpuLockedClocks(g_app.nvmlDevice);
+    if (r != NVML_SUCCESS) {
+        set_message(detail, detailSize, "nvmlDeviceResetGpuLockedClocks: %s", nvml_err_name(r));
+        return false;
+    }
+    debug_log("nvml_reset_gpu_locked_clocks: ok\n");
+    return true;
+}
+
 static bool nvml_read_fans(char* detail, size_t detailSize) {
     if (!nvml_ensure_ready()) {
         set_message(detail, detailSize, "NVML not ready");
@@ -817,6 +845,10 @@ static bool nvml_ensure_ready() {
         nvml_resolve((void**)&g_nvml_api.getTemperature, "nvmlDeviceGetTemperature");
         nvml_resolve((void**)&g_nvml_api.getClock, "nvmlDeviceGetClock");
         nvml_resolve((void**)&g_nvml_api.getMaxClock, "nvmlDeviceGetMaxClock");
+        nvml_resolve((void**)&g_nvml_api.setGpuLockedClocks, "nvmlDeviceSetGpuLockedClocks");
+        nvml_resolve((void**)&g_nvml_api.resetGpuLockedClocks, "nvmlDeviceResetGpuLockedClocks");
+        nvml_resolve((void**)&g_nvml_api.setMemoryLockedClocks, "nvmlDeviceSetMemoryLockedClocks");
+        nvml_resolve((void**)&g_nvml_api.resetMemoryLockedClocks, "nvmlDeviceResetMemoryLockedClocks");
     }
 
     if (!g_nvml_api.init || !g_nvml_api.getHandleByIndex) {

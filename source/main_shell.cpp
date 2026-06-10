@@ -320,7 +320,7 @@ static void set_edit_value(HWND, unsigned int) {
 static void populate_edits() {
 }
 
-static void apply_lock(int) {
+static void apply_lock(int, LockMode) {
 }
 
 static void unlock_all() {
@@ -676,7 +676,8 @@ static void draw_lock_checkbox(const DRAWITEMSTRUCT* dis) {
     RECT rc = dis->rcItem;
     bool disabled = (dis->itemState & ODS_DISABLED) != 0;
     int vi = (int)dis->CtlID - LOCK_BASE_ID;
-    bool checked = (vi >= 0 && vi < g_app.numVisible && vi == g_app.lockedVi);
+    bool isActive = (vi >= 0 && vi < g_app.numVisible && vi == g_app.lockedVi);
+    LockMode mode = isActive ? g_app.lockMode : LOCK_MODE_NONE;
 
     HBRUSH bg = CreateSolidBrush(COL_BG);
     FillRect(hdc, &rc, bg);
@@ -692,7 +693,7 @@ static void draw_lock_checkbox(const DRAWITEMSTRUCT* dis) {
     };
 
     COLORREF border = disabled ? RGB(0x5A, 0x5A, 0x68) : COL_BUTTON_BORDER;
-    COLORREF fill = disabled ? COL_BUTTON_DISABLED : (checked ? COL_BUTTON : COL_PANEL);
+    COLORREF fill = disabled ? COL_BUTTON_DISABLED : (mode != LOCK_MODE_NONE ? COL_BUTTON : COL_PANEL);
     HBRUSH fillBr = CreateSolidBrush(fill);
     FillRect(hdc, &box, fillBr);
     DeleteObject(fillBr);
@@ -701,3 +702,36 @@ static void draw_lock_checkbox(const DRAWITEMSTRUCT* dis) {
     HPEN oldPen = (HPEN)SelectObject(hdc, pen);
     HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
     Rectangle(hdc, box.left, box.top, box.right + 1, box.bottom + 1);
+
+    // Distinct glyphs so the two lock modes are unmistakable at a glance:
+    //   FLATTEN (cap the tail) -> checkmark
+    //   HARD (pin via NVML)    -> filled center dot
+    if (mode == LOCK_MODE_FLATTEN && !disabled) {
+        int penW = boxSize >= dp(14) ? dp(2) : 1;
+        HPEN checkPen = CreatePen(PS_SOLID, penW, COL_TEXT);
+        HPEN oldCheckPen = (HPEN)SelectObject(hdc, checkPen);
+        POINT pts[3] = {
+            { box.left + boxSize * 22 / 100, box.top + boxSize * 52 / 100 },
+            { box.left + boxSize * 42 / 100, box.top + boxSize * 72 / 100 },
+            { box.left + boxSize * 78 / 100, box.top + boxSize * 26 / 100 },
+        };
+        Polyline(hdc, pts, 3);
+        SelectObject(hdc, oldCheckPen);
+        DeleteObject(checkPen);
+    } else if (mode == LOCK_MODE_HARD && !disabled) {
+        int cx = (box.left + box.right) / 2;
+        int cy = (box.top + box.bottom) / 2;
+        int dotR = boxSize / 4;
+        if (dotR < dp(2)) dotR = dp(2);
+        HBRUSH dotBr = CreateSolidBrush(COL_TEXT);
+        HPEN dotPen = CreatePen(PS_SOLID, 1, COL_TEXT);
+        SelectObject(hdc, dotPen);
+        SelectObject(hdc, dotBr);
+        Ellipse(hdc, cx - dotR, cy - dotR, cx + dotR + 1, cy + dotR + 1);
+        DeleteObject(dotBr);
+        DeleteObject(dotPen);
+    }
+
+    SelectObject(hdc, oldPen);
+    SelectObject(hdc, oldBrush);
+    DeleteObject(pen);

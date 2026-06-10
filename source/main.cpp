@@ -347,7 +347,8 @@ static unsigned int get_edit_value(HWND hEdit);
 static void populate_edits();
 static void create_edit_controls(HWND hParent, HINSTANCE hInst);
 static void destroy_edit_controls(HWND hParent);
-static void apply_lock(int vi);
+static void rebuild_edit_controls();
+static void apply_lock(int vi, LockMode mode);
 static void set_edit_value(HWND hEdit, unsigned int value);
 static void unlock_all();
 static int mem_display_mhz_from_driver_khz(int driver_kHz);
@@ -784,8 +785,8 @@ static const UINT FAN_TELEMETRY_INTERVAL_MS = 1000;
     SelectObject(hdc, oldBrush);
     DeleteObject(SelectObject(hdc, oldPen));
 
-    if (checked) {
-        draw_checkbox_tick_smooth(hdc, &box, disabled ? COL_LABEL : RGB(0xE8, 0xF2, 0xFF));
+    if (mode == LOCK_MODE_FLATTEN && !disabled) {
+        draw_checkbox_tick_smooth(hdc, &box, COL_LABEL);
     }
 
     if (dis->itemState & ODS_FOCUS) {

@@ -580,28 +580,101 @@ static bool service_client_write_file_command(DWORD command, const char* path, c
     return response.status == SERVICE_STATUS_OK;
 }
 
+// Keep the GUI window painted and non-"hung" while a service install/start or
+// elevated helper blocks the GUI thread for several seconds (up to
+// ELEVATED_HELPER_TIMEOUT_MS). Without pumping, the window cannot service
+// WM_PAINT, so occlusion-revealed regions show stale/garbage content and the DWM
+// marks the window "not responding" (ghosting) — the visual corruption seen when
+// starting/restarting the service with the window open.
+//
+// UiInputGuard disables the main window for the duration so the pumped messages
+// cannot re-enter command handlers (same pattern a modal dialog uses); the window
+// still repaints while disabled. In the service process (no window) it is inert.
+struct UiInputGuard {
+    HWND hwnd;
+    bool disabled;
+    UiInputGuard() : hwnd(g_app.hMainWnd), disabled(false) {
+        if (hwnd && IsWindow(hwnd) && IsWindowEnabled(hwnd)) {
+            EnableWindow(hwnd, FALSE);
+            disabled = true;
+        }
+    }
+    ~UiInputGuard() {
+        if (disabled && hwnd && IsWindow(hwnd)) {
+            EnableWindow(hwnd, TRUE);
+        }
+    }
+    UiInputGuard(const UiInputGuard&) = delete;
+    UiInputGuard& operator=(const UiInputGuard&) = delete;
+};
+
+// Wait up to timeoutMs for waitObject (optional) to signal while pumping the GUI
+// message queue. Returns true iff the object signaled. With waitObject == nullptr
+// it is a message-pumping sleep (returns false on timeout). Falls back to a plain
+// wait when there is no GUI window (service process).
+static bool wait_object_pumping_ui(HANDLE waitObject, DWORD timeoutMs) {
+    if (!g_app.hMainWnd) {
+        if (waitObject) return WaitForSingleObject(waitObject, timeoutMs) == WAIT_OBJECT_0;
+        Sleep(timeoutMs);
+        return false;
+    }
+    ULONGLONG start = GetTickCount64();
+    for (;;) {
+        ULONGLONG elapsed = GetTickCount64() - start;
+        if (elapsed >= timeoutMs) return false;
+        DWORD remaining = (DWORD)(timeoutMs - elapsed);
+        DWORD count = waitObject ? 1u : 0u;
+        DWORD wr = MsgWaitForMultipleObjectsEx(count, waitObject ? &waitObject : nullptr,
+                                               remaining, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        if (count == 1 && wr == WAIT_OBJECT_0) return true;          // object signaled
+        if (wr == WAIT_OBJECT_0 + count) {                            // messages pending
+            MSG msg;
+            while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                if (msg.message == WM_QUIT) {
+                    PostQuitMessage((int)msg.wParam);                 // re-post; let main loop exit
+                    return false;
+                }
+                TranslateMessage(&msg);
+                DispatchMessageA(&msg);
+            }
+        } else if (wr == WAIT_FAILED) {
+            // Degrade to a plain wait for the remainder rather than spin.
+            if (waitObject) return WaitForSingleObject(waitObject, remaining) == WAIT_OBJECT_0;
+            Sleep(remaining);
+            return false;
+        }
+        // WAIT_TIMEOUT (no object, no messages) loops and re-checks elapsed.
+    }
+}
+
 static bool wait_for_background_service_ready(DWORD timeoutMs, char* err, size_t errSize) {
+    UiInputGuard uiGuard;
     ULONGLONG start = GetTickCount64();
     while ((GetTickCount64() - start) < timeoutMs) {
         refresh_background_service_state();
-        if (g_app.backgroundServiceAvailable) return true;
-        Sleep(200);
+        if (g_app.backgroundServiceAvailable) {
+            debug_log("wait_for_background_service_ready: ready after %llu ms (ui pumped=%d)\n",
+                GetTickCount64() - start, uiGuard.disabled ? 1 : 0);
+            return true;
+        }
+        wait_object_pumping_ui(nullptr, 200);
     }
+    debug_log("wait_for_background_service_ready: timed out after %lu ms\n", (unsigned long)timeoutMs);
     set_message(err, errSize, "Background service installed, but it did not become ready in time");
     return false;
 }
 
 static bool wait_for_helper_process_bounded(HANDLE process, const char* description, char* err, size_t errSize) {
     if (!process) return true;
-    DWORD waitResult = WaitForSingleObject(process, ELEVATED_HELPER_TIMEOUT_MS);
-    if (waitResult == WAIT_TIMEOUT) {
+    // Pump the GUI while the elevated helper runs so the window keeps repainting
+    // (no stale/corrupted content or "not responding" ghosting). The window is
+    // disabled for the duration to block re-entrant input.
+    UiInputGuard uiGuard;
+    bool signaled = wait_object_pumping_ui(process, ELEVATED_HELPER_TIMEOUT_MS);
+    if (!signaled) {
         TerminateProcess(process, 1);
-        WaitForSingleObject(process, 1000);
+        wait_object_pumping_ui(process, 1000);
         set_message(err, errSize, "%s timed out", description ? description : "Elevated helper");
-        return false;
-    }
-    if (waitResult != WAIT_OBJECT_0) {
-        set_message(err, errSize, "Failed waiting for %s (error %lu)", description ? description : "elevated helper", GetLastError());
         return false;
     }
     DWORD exitCode = 0;

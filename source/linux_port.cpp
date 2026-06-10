@@ -580,7 +580,9 @@ void normalize_desired_settings_for_ui(DesiredSettings* desired) {
 
 bool desired_has_any_action(const DesiredSettings* desired) {
     if (!desired) return false;
-    if (desired->hasGpuOffset || desired->hasMemOffset || desired->hasPowerLimit || desired->hasFan) return true;
+    // hasLock counts: a lock-only profile carries no curve points or offsets
+    // but still demands a curve-tail lock apply.
+    if (desired->hasGpuOffset || desired->hasMemOffset || desired->hasPowerLimit || desired->hasFan || desired->hasLock) return true;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (desired->hasCurvePoint[i]) return true;
     }
