@@ -2,6 +2,8 @@
 
 Green Curve is a small NVIDIA tuning tool with a full Windows implementation and a native Linux port (NvAPI + NVML, driven by a root systemd daemon). The app inspects and edits the live NVIDIA voltage/frequency curve on supported GeForce GPUs. Pascal, Turing, Ampere, Lovelace, and Blackwell are treated as tested known families; unrecognized future NVIDIA GPU families use a best-effort fallback backend behind a warning the user can disable.
 
+<img width="1765" height="1518" alt="gc" src="https://github.com/user-attachments/assets/2fac3cce-9c00-4224-ae17-f7d893dd6bfd" />
+
 Version: see the [`VERSION`](VERSION) file at the repository root.
 
 ## What it does
