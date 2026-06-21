@@ -677,13 +677,15 @@ static bool is_themed_button_id(UINT id) {
         case FAN_CURVE_BTN_ID:
         case FAN_DIALOG_OK_ID:
         case FAN_DIALOG_CANCEL_ID:
+        case SHARED_PROFILES_BTN_ID:
             return true;
     }
     return false;
 }
 
 static bool is_themed_checkbox_id(UINT id) {
-    return id == START_ON_LOGON_CHECK_ID || id == SERVICE_ENABLE_CHECK_ID || is_fan_dialog_checkbox_id(id);
+    return id == START_ON_LOGON_CHECK_ID || id == SERVICE_ENABLE_CHECK_ID ||
+           id == SHARE_ALL_USERS_CHECK_ID || is_fan_dialog_checkbox_id(id);
 }
 
 static bool is_fan_dialog_checkbox_id(UINT id) {
@@ -693,6 +695,15 @@ static bool is_fan_dialog_checkbox_id(UINT id) {
 static bool themed_checkbox_checked_state(UINT id, HWND hwnd) {
     if (id == START_ON_LOGON_CHECK_ID) return is_start_on_logon_enabled(g_app.configPath);
     if (id == SERVICE_ENABLE_CHECK_ID) return g_app.backgroundServiceInstalled;
+    if (id == SHARE_ALL_USERS_CHECK_ID) {
+        // Checked when the selected profile slot is BOTH published to the shared
+        // bank AND the current all-users default logon profile (the coherent
+        // "shared" state — see share_profile_slot_for_all_users()).
+        int sel = g_app.hProfileCombo ? (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0) : -1;
+        if (sel < 0 || sel > CONFIG_NUM_SLOTS - 1) sel = CONFIG_DEFAULT_SLOT - 1;
+        int slot = sel + 1;
+        return is_machine_profile_slot_saved(slot) && g_app.machineLogonSlotCache == slot;
+    }
     if (is_fan_dialog_checkbox_id(id)) {
         int pointIndex = (int)id - FAN_DIALOG_ENABLE_BASE;
         if (pointIndex >= 0 && pointIndex < FAN_CURVE_MAX_POINTS) {
@@ -723,7 +734,8 @@ static void draw_themed_button(const DRAWITEMSTRUCT* dis) {
     if (checkbox) {
         char text[64] = {};
         GetWindowTextA(dis->hwndItem, text, ARRAY_COUNT(text));
-        bool labeledCheckbox = is_fan_dialog_checkbox_id(dis->CtlID) && text[0];
+        bool labeledCheckbox = (is_fan_dialog_checkbox_id(dis->CtlID) ||
+                                dis->CtlID == SHARE_ALL_USERS_CHECK_ID) && text[0];
         int controlW = rc.right - rc.left;
         int controlH = rc.bottom - rc.top;
         int boxSize = labeledCheckbox

@@ -3,13 +3,15 @@ static bool show_best_guess_support_warning(HWND parent) {
 
     char message[768] = {};
     StringCchPrintfA(message, ARRAY_COUNT(message),
-        "Detected %s GPU (%s).\n\n"
-        "Green Curve is enabling VF curve read and write support on this family by best guess using the same private backend layout that works on Blackwell and Lovelace. Writes are intentionally enabled, but this architecture is not yet verified on real hardware.\n\n"
-        "Check applied clocks and offsets carefully after changes.",
+        "Detected an unrecognized NVIDIA GPU family (%s, %s).\n\n"
+        "Green Curve will allow best-effort support for a new NVIDIA GPU family using the fallback VF backend layout. Writes stay enabled, but this exact architecture has not been tested yet.\n\n"
+        "Check applied clocks and offsets carefully after changes.\n\n"
+        "Yes continues this time. No continues and disables this warning. Cancel exits.",
         gpu_family_name(g_app.gpuFamily),
         g_app.gpuName[0] ? g_app.gpuName : "NVIDIA GPU");
 
     bool handled = false;
+    bool suppressWarning = false;
     HMODULE comctl = load_system_library_a("comctl32.dll");
     if (comctl) {
         typedef HRESULT (WINAPI *TaskDialogIndirect_t)(const TASKDIALOGCONFIG*, int*, int*, BOOL*);
@@ -20,24 +22,26 @@ static bool show_best_guess_support_warning(HWND parent) {
             config.hwndParent = parent;
             config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
             config.dwCommonButtons = TDCBF_OK_BUTTON | TDCBF_CANCEL_BUTTON;
-            config.pszWindowTitle = L"Green Curve - Experimental GPU Support";
+            config.pszWindowTitle = L"Green Curve - Unrecognized GPU Support";
             config.pszMainIcon = TD_WARNING_ICON;
+            config.pszVerificationText = L"Do not show this warning again for unrecognized GPUs";
 
             WCHAR mainInstruction[128] = {};
-            StringCchPrintfW(mainInstruction, ARRAY_COUNT(mainInstruction), L"Experimental %hs support enabled", gpu_family_name(g_app.gpuFamily));
+            StringCchPrintfW(mainInstruction, ARRAY_COUNT(mainInstruction), L"Best-effort support for an unrecognized GPU");
             config.pszMainInstruction = mainInstruction;
 
             WCHAR content[2048] = {};
             StringCchPrintfW(content, ARRAY_COUNT(content),
-                L"Detected %hs GPU (%hs).\n\n"
-                L"Green Curve is enabling VF curve read and write support on this family by best guess using the same private backend layout that works on Blackwell and Lovelace. Writes are intentionally enabled, but this architecture is not yet verified on real hardware.\n\n"
+                L"Detected an unrecognized NVIDIA GPU family (%hs, %hs).\n\n"
+                L"Green Curve will allow best-effort support for a new NVIDIA GPU family using the fallback VF backend layout. Writes stay enabled, but this exact architecture has not been tested yet.\n\n"
                 L"Check applied clocks and offsets carefully after changes.",
                 gpu_family_name(g_app.gpuFamily),
                 g_app.gpuName[0] ? g_app.gpuName : "NVIDIA GPU");
             config.pszContent = content;
 
             int button = 0;
-            HRESULT hr = taskDialogIndirect(&config, &button, nullptr, nullptr);
+            BOOL verificationChecked = FALSE;
+            HRESULT hr = taskDialogIndirect(&config, &button, nullptr, &verificationChecked);
             if (SUCCEEDED(hr)) {
                 handled = true;
                 if (button == IDCANCEL) {
@@ -45,24 +49,30 @@ static bool show_best_guess_support_warning(HWND parent) {
                     release_single_instance_mutex();
                     return false;
                 }
+                suppressWarning = verificationChecked != FALSE;
             }
         }
         FreeLibrary(comctl);
     }
 
     if (!handled) {
-        int result = MessageBoxA(parent, message, "Green Curve - Experimental GPU Support", MB_OKCANCEL | MB_ICONWARNING);
-        if (result == IDCANCEL) {
+        int result = MessageBoxA(parent, message, "Green Curve - Unrecognized GPU Support", MB_YESNOCANCEL | MB_ICONWARNING);
+        if (result == IDCANCEL || result == 0) {
             remove_tray_icon();
             release_single_instance_mutex();
             return false;
         }
+        suppressWarning = result == IDNO;
     }
 
-    // F-DOM-1: the experimental-hardware warning is no longer permanently
-    // dismissible — suppress it only for the remainder of this session; it
-    // re-shows on the next launch so the user is reminded each run that VF
-    // writes target an unvalidated architecture.
+    if (suppressWarning) {
+        if (set_config_int(g_app.configPath, "warnings", "hide_unrecognized_gpu_warning", 1)) {
+            debug_log("unrecognized GPU warning disabled by user\n");
+        } else {
+            debug_log("unrecognized GPU warning: failed to persist suppression flag\n");
+        }
+    }
+
     g_bestGuessWarningShownThisSession = true;
     return true;
 }
@@ -70,11 +80,11 @@ static bool show_best_guess_support_warning(HWND parent) {
 static bool vf_curve_global_gpu_offset_supported() {
     const VfBackendSpec* backend = g_app.vfBackend;
     if (!backend || !backend->writeSupported) {
-        debug_log("vf_curve_global_gpu_offset_supported: no backend or not writable\n");
+        debug_log_on_change("vf_curve_global_gpu_offset_supported: no backend or not writable\n");
         return false;
     }
     bool supported = backend->family == GPU_FAMILY_BLACKWELL || backend->family == GPU_FAMILY_UNKNOWN;
-    debug_log("vf_curve_global_gpu_offset_supported: family=%d supported=%d\n", backend->family, supported ? 1 : 0);
+    debug_log_on_change("vf_curve_global_gpu_offset_supported: family=%d supported=%d\n", backend->family, supported ? 1 : 0);
     return supported;
 }
 
@@ -761,7 +771,7 @@ static int current_applied_gpu_offset_mhz() {
         return g_app.appliedGpuOffsetMHz;
     }
     if (!g_app.lastApplyUsedGpuOffset) {
-        debug_log("current_applied_gpu_offset_mhz: last apply did not use GPU offset, skipping detection\n");
+        debug_log_on_change("current_applied_gpu_offset_mhz: last apply did not use GPU offset, skipping detection\n");
         g_app.appliedGpuOffsetMHz = 0;
         g_app.appliedGpuOffsetExcludeLowCount = 0;
         return 0;
@@ -821,7 +831,7 @@ static bool current_applied_gpu_offset_excludes_low_points() {
     }
 
     if (!g_app.lastApplyUsedGpuOffset) {
-        debug_log("current_applied_gpu_offset_excludes_low_points: last apply did not use GPU offset, skipping detection\n");
+        debug_log_on_change("current_applied_gpu_offset_excludes_low_points: last apply did not use GPU offset, skipping detection\n");
         g_app.appliedGpuOffsetMHz = 0;
         g_app.appliedGpuOffsetExcludeLowCount = 0;
         return false;

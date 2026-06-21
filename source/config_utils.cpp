@@ -66,10 +66,7 @@ bool parse_cli_point_arg_w(const WCHAR* arg, int* pointIndexOut) {
 }
 
 bool gpu_family_uses_best_guess_backend(GpuFamily family) {
-    return family == GPU_FAMILY_UNKNOWN ||
-        family == GPU_FAMILY_PASCAL ||
-        family == GPU_FAMILY_TURING ||
-        family == GPU_FAMILY_AMPERE;
+    return family == GPU_FAMILY_UNKNOWN;
 }
 
 void set_message(char* dst, size_t dstSize, const char* fmt, ...) {

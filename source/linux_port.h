@@ -11,57 +11,19 @@
 
 #define APP_NAME "Green Curve"
 #ifndef APP_VERSION
-#define APP_VERSION "0.14"
+#define APP_VERSION "0.16"
 #endif
 #define CONFIG_FILE_NAME "config.ini"
 #define APP_LINUX_PROBE_FILE "greencurve_linux_probe.md"
 #define APP_LINUX_ASSETS_DIR "linux-artifacts"
 
-#define VF_NUM_POINTS 128
-#define FAN_CURVE_MAX_POINTS 8
-#define FAN_CURVE_MAX_HYSTERESIS_C 10
-#define CONFIG_NUM_SLOTS 5
-#define CONFIG_DEFAULT_SLOT 1
 #define LINUX_PATH_MAX 4096
 
-enum {
-    FAN_MODE_AUTO = 0,
-    FAN_MODE_FIXED = 1,
-    FAN_MODE_CURVE = 2,
-};
-
-struct FanCurvePoint {
-    bool enabled;
-    int temperatureC;
-    int fanPercent;
-};
-
-struct FanCurveConfig {
-    int pollIntervalMs;
-    int hysteresisC;
-    FanCurvePoint points[FAN_CURVE_MAX_POINTS];
-};
-
-struct DesiredSettings {
-    bool hasCurvePoint[VF_NUM_POINTS];
-    unsigned int curvePointMHz[VF_NUM_POINTS];
-    bool hasLock;
-    int lockCi;
-    unsigned int lockMHz;
-    bool lockTracksAnchor;
-    bool hasGpuOffset;
-    int gpuOffsetMHz;
-    int gpuOffsetExcludeLowCount;
-    bool hasMemOffset;
-    int memOffsetMHz;
-    bool hasPowerLimit;
-    int powerLimitPct;
-    bool hasFan;
-    bool fanAuto;
-    int fanMode;
-    int fanPercent;
-    FanCurveConfig fanCurve;
-};
+// Shared GPU/IPC data model: VF_NUM_POINTS, FAN_CURVE_MAX_*, CONFIG_NUM_SLOTS,
+// CONFIG_DEFAULT_SLOT, FAN_MODE_*, FanCurvePoint, FanCurveConfig, LockMode and
+// DesiredSettings all come from gpu_core.h so the Linux client and the daemon
+// share one definition (and the wire protocol struct).
+#include "gpu_core.h"
 
 struct LinuxCliOptions {
     bool recognized;
@@ -74,6 +36,10 @@ struct LinuxCliOptions {
     bool applyConfig;
     bool writeAssets;
     bool tui;
+    bool daemon;
+    bool serviceInstall;
+    bool serviceRemove;
+    bool selfTest;
     bool hasConfigPath;
     bool hasProbeOutputPath;
     bool hasAssetsDir;

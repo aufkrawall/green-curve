@@ -345,10 +345,33 @@ static bool xml_escape_wide(const WCHAR* text, WCHAR* out, size_t outCount, bool
     return true;
 }
 
+// Override for the current user's SAM name, used ONLY by the elevated
+// startup-task helper so it can register a task scoped to the REQUESTING
+// (often standard/restricted) user instead of the approving admin.  Set from
+// the --for-user CLI flag in parse_cli_options.  Empty = no override.
+static WCHAR g_forcedStartupUserSam[512] = {};
+
+void set_forced_startup_user_sam(const WCHAR* samName) {
+    if (samName && samName[0]) {
+        StringCchCopyW(g_forcedStartupUserSam, ARRAY_COUNT(g_forcedStartupUserSam), samName);
+    } else {
+        g_forcedStartupUserSam[0] = 0;
+    }
+}
+
 static bool get_startup_task_name(WCHAR* out, size_t outCount) {
     if (!out || outCount == 0) return false;
     WCHAR userName[512] = {};
-    if (!get_current_user_sam_name(userName, ARRAY_COUNT(userName))) return false;
+    // g_forcedStartupUserSam is set when the elevated startup-task helper runs
+    // on behalf of a standard/restricted user: the helper process runs as the
+    // approving admin, so get_current_user_sam_name() would stamp the ADMIN's
+    // identity.  The override forces the task to be scoped to the REQUESTING
+    // user instead.  Empty = no override (use the real current user).
+    if (g_forcedStartupUserSam[0]) {
+        StringCchCopyW(userName, ARRAY_COUNT(userName), g_forcedStartupUserSam);
+    } else if (!get_current_user_sam_name(userName, ARRAY_COUNT(userName))) {
+        return false;
+    }
     for (WCHAR* p = userName; *p; ++p) {
         if (*p == L'\\' || *p == L'/' || *p == L':' || *p == L'*' || *p == L'?' ||
             *p == L'"' || *p == L'<' || *p == L'>' || *p == L'|') {
@@ -425,7 +448,11 @@ static bool write_startup_task_xml(const WCHAR* xmlPath, const WCHAR* exePath, c
         L"</Task>\r\n";
 
     WCHAR userName[512] = {};
-    if (!get_current_user_sam_name(userName, ARRAY_COUNT(userName))) {
+    // Honor the forced requesting-user override (elevated helper path) so the
+    // task UserId/Author reflect the standard user, not the approving admin.
+    if (g_forcedStartupUserSam[0]) {
+        StringCchCopyW(userName, ARRAY_COUNT(userName), g_forcedStartupUserSam);
+    } else if (!get_current_user_sam_name(userName, ARRAY_COUNT(userName))) {
         CloseHandle(h);
         DeleteFileW(xmlPath);
         set_message(err, errSize, "Failed to determine current user");
@@ -644,10 +671,17 @@ static void schedule_logon_combo_sync() {
     g_app.hStartupSyncThread = thread;
 }
 
-static bool set_startup_task_enabled(bool enabled, char* err, size_t errSize) {
-    if (!is_elevated()) {
-        return launch_startup_task_admin_helper(enabled, err, errSize);
-    }
+// Register/unregister the per-user logon task via a direct (non-elevated)
+// schtasks call as the current user.  Works for LeastPrivilege tasks (service
+// installed) without elevation.  Returns true on success; on failure fills err.
+// The caller decides whether a failure warrants an elevated-helper fallback.
+// outNeedsElevation (optional) is set true when the direct path failed because
+// the operation requires administrator rights (e.g. deleting a task created by
+// an admin / at HighestAvailable), so the caller can retry via the elevated
+// helper.  nullptr when the caller is already elevated.
+static bool set_startup_task_enabled_direct(bool enabled, bool* outNeedsElevation, char* err, size_t errSize) {
+    if (err && errSize) err[0] = 0;
+    if (outNeedsElevation) *outNeedsElevation = false;
 
     WCHAR taskName[256] = {};
     if (!get_startup_task_name(taskName, ARRAY_COUNT(taskName))) {
@@ -663,16 +697,28 @@ static bool set_startup_task_enabled(bool enabled, char* err, size_t errSize) {
             set_message(err, errSize, "Scheduled task delete command too long");
             return false;
         }
-        if (!run_schtasks_command(deleteArgs, &exitCode, err, errSize)) return false;
-        if (exitCode != 0 && exitCode != 1) {
-            set_message(err, errSize, "Failed deleting startup task (exit %lu)", exitCode);
+        debug_log("startup task: deleting \"%ls\" (direct, elevated=%d)\n", taskName, is_elevated() ? 1 : 0);
+        if (!run_schtasks_command(deleteArgs, &exitCode, err, errSize)) {
+            debug_log("startup task: schtasks /delete failed to launch: %s\n", err[0] ? err : "unknown");
             return false;
         }
-        if (!wait_for_startup_task_state(false, 3000)) {
-            set_message(err, errSize, "Startup task still exists after delete");
-            return false;
+        debug_log("startup task: schtasks /delete exit=%lu\n", exitCode);
+        // Verify by STATE, not the exit code.  schtasks returns non-zero for
+        // BOTH "already absent" and "access denied", so the old accept-exit-1
+        // logic treated an access-denied delete as success, then reported a
+        // dead-end "still exists" error instead of retrying elevated.
+        if (wait_for_startup_task_state(false, 3000)) {
+            debug_log("startup task: confirmed removed\n");
+            return true;
         }
-        return true;
+        // Task still present: almost always because it requires elevation to
+        // delete (created by an admin / at HighestAvailable).  Signal the caller
+        // to retry via the elevated helper rather than failing outright.
+        if (outNeedsElevation) *outNeedsElevation = true;
+        set_message(err, errSize,
+            "Startup task could not be removed without administrator rights (schtasks exit %lu)", exitCode);
+        debug_log("startup task: still present after direct delete (exit %lu); needs elevation\n", exitCode);
+        return false;
     }
 
     if (is_startup_task_enabled()) return true;
@@ -718,17 +764,86 @@ static bool set_startup_task_enabled(bool enabled, char* err, size_t errSize) {
         return false;
     }
 
+    debug_log("startup task: creating \"%ls\" (direct, elevated=%d)\n", taskName, is_elevated() ? 1 : 0);
     bool runOk = run_schtasks_command(createArgs, &exitCode, err, errSize);
     DeleteFileW(xmlPath);
-    if (!runOk) return false;
+    if (!runOk) {
+        debug_log("startup task: schtasks /create failed to launch: %s\n", err[0] ? err : "unknown");
+        return false;
+    }
+    debug_log("startup task: schtasks /create exit=%lu\n", exitCode);
     if (exitCode != 0) {
         set_message(err, errSize, "Failed creating startup task (exit %lu)", exitCode);
         return false;
     }
     if (!wait_for_startup_task_state(true, 3000)) {
+        // A create that ran cleanly but did not persist is most likely an
+        // elevation/registration issue — let the caller retry elevated.
+        if (outNeedsElevation) *outNeedsElevation = true;
         set_message(err, errSize, "Startup task creation did not persist");
         return false;
     }
+    debug_log("startup task: created and confirmed\n");
     return true;
 }
+
+// Heuristic: does an schtasks/CLI error string indicate an access-denied /
+// elevation-required condition (rather than a genuine logic failure)?  When the
+// direct path is denied we fall back to the elevated helper; for all other
+// errors the elevated helper would fail identically, so we surface them.
+static bool err_returned_access_denied(const char* err) {
+    if (!err) return false;
+    // run_schtasks_command surfaces the underlying error in its message; the
+    // schtasks tool and CreateProcess report access-denied as "Access is denied"
+    // or a system error code.  Match the common phrasings.
+    if (strstr(err, "Access is denied")) return true;
+    if (strstr(err, "access denied")) return true;
+    if (strstr(err, "denied")) return true;
+    if (strstr(err, "(0x5)")) return true;     // ERROR_ACCESS_DENIED
+    if (strstr(err, "error 5")) return true;   // ERROR_ACCESS_DENIED
+    if (strstr(err, "elevation")) return true;
+    return false;
+}
+
+static bool set_startup_task_enabled(bool enabled, char* err, size_t errSize) {
+    if (!is_elevated()) {
+        // The logon task is a per-user InteractiveToken task scoped to the
+        // current user.  Windows lets a user register such a task in their OWN
+        // context WITHOUT elevation — IF the task runs at LeastPrivilege (which
+        // is the case when the background service is installed and owns all
+        // hardware control).  Bouncing through a UAC helper here would stamp
+        // the *approving admin's* identity into the task name/UserId/Principal,
+        // so the task would fire at the admin's logon instead of this (often
+        // standard/restricted) user's.  Try the direct path first; only fall
+        // back to the elevated helper when the task needs HighestAvailable
+        // (service not installed) or the direct registration is denied.
+        refresh_background_service_state();
+        bool leastPrivilegeOk = g_app.backgroundServiceInstalled;
+        if (leastPrivilegeOk) {
+            bool needsElevation = false;
+            if (set_startup_task_enabled_direct(enabled, &needsElevation, err, errSize)) {
+                debug_log("startup task: registered via direct (non-elevated) path for the current user\n");
+                return true;
+            }
+            // Fall back to the elevated helper when the direct path needs
+            // elevation (e.g. deleting an admin/HighestAvailable task that a
+            // standard token cannot remove) or was denied.  For other errors
+            // (bad XML, schtasks parse) the elevated helper would fail the same
+            // way — surface them without a pointless UAC prompt.
+            if (!needsElevation && !err_returned_access_denied(err)) {
+                return false;
+            }
+            set_message(err, errSize, "");
+            debug_log("startup task: direct path needs elevation; falling back to elevated helper\n");
+        }
+        return launch_startup_task_admin_helper(enabled, err, errSize);
+    }
+
+    // Elevated: register directly as the current (admin) user.  When invoked
+    // via the elevated helper, the helper must stamp the REQUESTING user, not
+    // the approver — handled by launch_startup_task_admin_helper forwarding the
+    // original user identity (see write_startup_task_xml override path).
+    return set_startup_task_enabled_direct(enabled, nullptr, err, errSize);
+}
+
 

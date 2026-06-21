@@ -243,7 +243,8 @@ static int layout_bottom_panel_bottom_y() {
     int buttonsY = layout_bottom_buttons_y();
     int profileY = buttonsY + dp(40);
     int autoY = profileY + dp(34);
-    int serviceY = autoY + dp(26);
+    int sharedY = autoY + dp(26);
+    int serviceY = sharedY + dp(26);
     int hintY = serviceY + dp(26);
     int statusY = hintY + dp(40);
     return statusY + dp(18);
@@ -358,7 +359,8 @@ static void layout_bottom_buttons(HWND hParent) {
     const int buttonsY = layout_bottom_buttons_y();
     const int profileY = buttonsY + dp(40);
     const int autoY = profileY + dp(34);
-    const int serviceY = autoY + dp(26);
+    const int sharedY = autoY + dp(26);
+    const int serviceY = sharedY + dp(26);
     const int hintY = serviceY + dp(26);
     const int statusY = hintY + dp(40);
 
@@ -398,7 +400,12 @@ static void layout_bottom_buttons(HWND hParent) {
     if (g_app.hStartOnLogonCheck)
         SetWindowPos(g_app.hStartOnLogonCheck, nullptr, margin + dp(760), autoY + dp(4), dp(16), dp(16), SWP_NOZORDER);
     if (g_app.hStartOnLogonLabel)
-        SetWindowPos(g_app.hStartOnLogonLabel, nullptr, margin + dp(784), autoY + dp(3), dp(296), dp(18), SWP_NOZORDER);
+        SetWindowPos(g_app.hStartOnLogonLabel, nullptr, margin + dp(784), autoY + dp(3), dp(200), dp(18), SWP_NOZORDER);
+    // Shared / all-users row.
+    if (g_app.hShareAllUsersCheck)
+        SetWindowPos(g_app.hShareAllUsersCheck, nullptr, margin, sharedY, dp(280), dp(22), SWP_NOZORDER);
+    if (g_app.hSharedProfilesBtn)
+        SetWindowPos(g_app.hSharedProfilesBtn, nullptr, margin + dp(300), sharedY, dp(150), dp(22), SWP_NOZORDER);
     if (g_app.hServiceEnableCheck)
         SetWindowPos(g_app.hServiceEnableCheck, nullptr, margin, serviceY + dp(4), dp(16), dp(16), SWP_NOZORDER);
     if (g_app.hServiceEnableLabel)
@@ -416,6 +423,8 @@ static void layout_bottom_buttons(HWND hParent) {
 #include "main_service_persist.cpp"
 #include "main_service_recovery.cpp"
 #include "main_service_runtime.cpp"
+
+#include "main_service_sessions.cpp"
 
 #include "main_service_ipc.cpp"
 #include "main_service_install.cpp"

@@ -85,6 +85,83 @@ static bool handle_cli(LPWSTR wCmdLine) {
         return true;
     }
 
+    if (opts.setMachineLogonSlot || opts.clearMachineLogonSlot) {
+        char err[256] = {};
+        bool ok = opts.clearMachineLogonSlot
+            ? clear_machine_logon_slot(err, sizeof(err))
+            : set_machine_logon_slot(opts.machineLogonSlotValue, err, sizeof(err));
+        if (ok) {
+            CLI_LOG(opts.clearMachineLogonSlot
+                ? "Cleared the machine-wide default logon profile.\n"
+                : "Set the machine-wide default logon profile to slot %d.\n",
+                opts.machineLogonSlotValue);
+            g_cliExitCode = 0;
+        } else {
+            CLI_LOG("ERROR: %s\n", err[0] ? err : "Machine logon profile update failed");
+            g_cliExitCode = 1;
+        }
+        fclose(logf);
+        return true;
+    }
+
+    if (opts.publishSlotToMachine || opts.clearMachineSlot) {
+        char err[256] = {};
+        bool ok = opts.clearMachineSlot
+            ? clear_machine_profile_slot(opts.machineSlotValue, err, sizeof(err))
+            : copy_profile_slot_to_machine_config(g_app.configPath, opts.machineSlotValue, err, sizeof(err));
+        if (ok) {
+            CLI_LOG(opts.clearMachineSlot
+                ? "Cleared machine-wide profile slot %d.\n"
+                : "Published profile slot %d to the machine-wide profile bank.\n",
+                opts.machineSlotValue);
+            g_cliExitCode = 0;
+        } else {
+            CLI_LOG("ERROR: %s\n", err[0] ? err : "Machine profile bank update failed");
+            g_cliExitCode = 1;
+        }
+        fclose(logf);
+        return true;
+    }
+
+    if (opts.setRestrictPolicy) {
+        char err[256] = {};
+        bool ok = set_machine_restrict_policy(opts.restrictPolicyValue != 0, err, sizeof(err));
+        if (ok) {
+            CLI_LOG(opts.restrictPolicyValue != 0
+                ? "Enabled shared-only policy: standard (non-admin) users may only apply shared profiles.\n"
+                : "Disabled shared-only policy: standard users may apply custom settings again.\n");
+            g_cliExitCode = 0;
+        } else {
+            CLI_LOG("ERROR: %s\n", err[0] ? err : "Shared-only policy update failed");
+            g_cliExitCode = 1;
+        }
+        fclose(logf);
+        return true;
+    }
+
+    // One coherent share/unshare: --share-slot publishes the slot's full profile
+    // data into the shared bank AND sets it as the all-users default logon
+    // profile (so users without their own logon profile receive it). --unshare
+    // reverses both.  This backs the GUI "Share with all users" checkbox.
+    if (opts.shareSlot || opts.unshareSlot) {
+        char err[256] = {};
+        bool ok = opts.unshareSlot
+            ? unshare_profile_slot_for_all_users(opts.shareSlotValue, err, sizeof(err))
+            : share_profile_slot_for_all_users(g_app.configPath, opts.shareSlotValue, err, sizeof(err));
+        if (ok) {
+            CLI_LOG(opts.unshareSlot
+                ? "Unshared profile slot %d (removed from the shared bank and the all-users default).\n"
+                : "Shared profile slot %d with all users (published + set as the all-users default logon profile).\n",
+                opts.shareSlotValue);
+            g_cliExitCode = 0;
+        } else {
+            CLI_LOG("ERROR: %s\n", err[0] ? err : "Share update failed");
+            g_cliExitCode = 1;
+        }
+        fclose(logf);
+        return true;
+    }
+
     if (opts.showHelp) {
         CLI_LOG(APP_NAME " v" APP_VERSION " - NVIDIA VF Curve Editor\n");
         CLI_LOG("Usage:\n");
@@ -97,6 +174,13 @@ static bool handle_cli(LPWSTR wCmdLine) {
         CLI_LOG("  greencurve.exe --apply-config [--config <path>]  Apply logon profile slot\n");
         CLI_LOG("  greencurve.exe --service-install           Install and start background service\n");
         CLI_LOG("  greencurve.exe --service-remove            Stop and remove background service\n");
+        CLI_LOG("  greencurve.exe --set-machine-logon-slot <slot>  Set machine-wide default logon profile (admin only)\n");
+        CLI_LOG("  greencurve.exe --clear-machine-logon-slot       Clear machine-wide default logon profile (admin only)\n");
+        CLI_LOG("  greencurve.exe --share-slot <slot>              Share slot with all users: publish data + set as all-users default (admin only)\n");
+        CLI_LOG("  greencurve.exe --unshare-slot <slot>            Stop sharing slot with all users (admin only)\n");
+        CLI_LOG("  greencurve.exe --set-restrict-shared <0|1>      Restrict standard users to shared profiles only (admin only)\n");
+        CLI_LOG("  greencurve.exe --publish-slot-to-machine <slot> [advanced] Copy profile slot to shared bank without changing the default (admin only)\n");
+        CLI_LOG("  greencurve.exe --clear-machine-slot <slot>      [advanced] Clear a slot from the shared bank (admin only)\n");
         CLI_LOG("  greencurve.exe --save-config [--config <path>]  Save to selected profile slot\n");
         CLI_LOG("  greencurve.exe --reset      Reset curve/global controls to defaults\n");
         CLI_LOG("  greencurve.exe --help       This help\n");
@@ -137,6 +221,67 @@ static bool handle_cli(LPWSTR wCmdLine) {
     if (opts.applyConfig) {
         DesiredSettings cfg = {};
         char err[256] = {};
+        // At Windows logon, a per-user "apply admin shared profile N at logon"
+        // choice (logon_shared_slot) takes precedence and is the only logon apply
+        // that passes the shared-only policy for a restricted user: load the
+        // admin's authoritative bank copy and tag it as a shared-slot apply.
+        if (g_app.launchedFromLogon) {
+            int logonSharedSlot = get_config_int(g_app.configPath, "profiles", "logon_shared_slot", 0);
+            if (logonSharedSlot < 0 || logonSharedSlot > CONFIG_NUM_SLOTS) logonSharedSlot = 0;
+            if (logonSharedSlot > 0) {
+                char machinePath[MAX_PATH] = {};
+                DesiredSettings shared = {};
+                if (resolve_machine_config_path(machinePath, sizeof(machinePath)) &&
+                    is_profile_slot_saved(machinePath, logonSharedSlot) &&
+                    load_profile_from_config(machinePath, logonSharedSlot, &shared, err, sizeof(err)) &&
+                    desired_settings_have_explicit_state(&shared, true, err, sizeof(err))) {
+                    CLI_LOG("Waiting for GPU driver readiness before applying shared profile %d...\n", logonSharedSlot);
+                    bool driverReady = false;
+                    for (int attempt = 0; attempt < 25; attempt++) {
+                        refresh_background_service_state();
+                        if (!g_app.backgroundServiceAvailable) { Sleep(500); continue; }
+                        ServiceSnapshot snapshot = {};
+                        char snapErr[256] = {};
+                        if (service_client_get_snapshot(&snapshot, snapErr, sizeof(snapErr)) &&
+                            snapshot.loaded && snapshot.numPopulated > 0 && snapshot.initialized) {
+                            driverReady = true;
+                            break;
+                        }
+                        Sleep(400);
+                    }
+                    if (!driverReady) {
+                        CLI_LOG("ERROR: GPU driver did not become ready in time. Skipping apply.\n");
+                        fclose(logf);
+                        g_cliExitCode = 1;
+                        return true;
+                    }
+                    Sleep(300);
+                    shared.resetOcBeforeApply = true;
+                    g_app.loadedSharedSlot = logonSharedSlot;
+                    g_app.guiHasUserModifiedValues = false;
+                    char result[512] = {};
+                    set_pending_operation_source("CLI logon shared apply");
+                    CLI_LOG("Applying shared profile %d...\n", logonSharedSlot);
+                    bool ok = apply_desired_settings(&shared, false, result, sizeof(result));
+                    CLI_LOG("%s\n", result);
+                    fclose(logf);
+                    g_cliExitCode = ok ? 0 : 1;
+                    return true;
+                }
+                CLI_LOG("Shared logon profile %d is no longer available; clearing it.\n", logonSharedSlot);
+                set_config_int(g_app.configPath, "profiles", "logon_shared_slot", 0);
+            }
+            // Restricted (shared-only) users cannot apply a custom per-user
+            // logon_slot — the service rejects it.  Skip the doomed apply.
+            bool policyActive = false;
+            get_machine_restrict_policy(&policyActive);
+            if (policyActive && !current_user_is_local_admin()) {
+                CLI_LOG("Shared-only policy active and no shared logon profile chosen; skipping per-user logon apply.\n");
+                fclose(logf);
+                g_cliExitCode = 0;
+                return true;
+            }
+        }
         // Determine which profile slot to apply
         int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
         if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
@@ -662,6 +807,33 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         0, 0, dp(300), dp(18),
         g_app.hMainWnd, (HMENU)(INT_PTR)START_ON_LOGON_LABEL_ID, hInstance, nullptr
     );
+
+    // "Share with all users" checkbox (admin): publishes the SELECTED profile
+    // slot to the shared bank and sets it as the all-users default logon
+    // profile in one action.  Label is set dynamically ("Share slot N with all
+    // users") by update_share_all_users_check_state().  Right-click opens an
+    // advanced menu for managing the shared bank without changing the default.
+    g_app.hShareAllUsersCheck = CreateWindowExA(
+        0, "BUTTON", "Share with all users",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+        0, 0, dp(240), dp(22),
+        g_app.hMainWnd, (HMENU)(INT_PTR)SHARE_ALL_USERS_CHECK_ID, hInstance, nullptr
+    );
+    if (g_app.hShareAllUsersCheck) {
+        SetWindowSubclass(g_app.hShareAllUsersCheck, share_all_users_subclass_proc, 0, 0);
+    }
+    debug_log("main window: share-with-all-users checkbox created (hwnd=%p)\n", (void*)g_app.hShareAllUsersCheck);
+
+    // "Shared profiles" button (any user): lists the admin-published shared
+    // profiles and loads the chosen one into the editor read-only, so a
+    // restricted user can apply the admin's profile on demand (not just on logon).
+    g_app.hSharedProfilesBtn = CreateWindowExA(
+        0, "BUTTON", "Shared profiles...",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+        0, 0, dp(150), dp(22),
+        g_app.hMainWnd, (HMENU)(INT_PTR)SHARED_PROFILES_BTN_ID, hInstance, nullptr
+    );
+    debug_log("main window: shared-profiles button created (hwnd=%p)\n", (void*)g_app.hSharedProfilesBtn);
 
     g_app.hServiceEnableCheck = CreateWindowExA(
         0, "BUTTON", "",

@@ -298,7 +298,7 @@ static void render_ui(TuiState* state) {
     }
 
     int y = 1;
-    printf("\x1b[38;5;114mGreen Curve Linux TUI\x1b[0m  backend scaffold + config editor\n");
+    printf("\x1b[38;5;114mGreen Curve Linux TUI\x1b[0m  daemon-backed config editor\n");
     y++;
     printf("Config: %s\n", state->configPath);
     y++;

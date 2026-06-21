@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 #include "linux_port_internal.h"
+#include "linux_gpu.h"
+#include "linux_daemon.h"
+#include "linux_backend.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -17,17 +20,22 @@
 #include <vector>
 
 static void print_help() {
-    puts("Green Curve Linux scaffold");
+    puts("Green Curve for Linux (NVIDIA VF-curve / OC / UV / fan control)");
     puts("Usage:");
-    puts("  greencurve-x86_64-linux-musl            Launch terminal UI");
-    puts("  greencurve-x86_64-linux-musl --tui      Launch terminal UI");
-    puts("  greencurve-x86_64-linux-musl --dump     Dump selected profile as text");
-    puts("  greencurve-x86_64-linux-musl --json     Dump selected profile as JSON");
-    puts("  greencurve-x86_64-linux-musl --probe [--probe-output path]");
-    puts("  greencurve-x86_64-linux-musl --write-assets [--assets-dir path]");
-    puts("  greencurve-x86_64-linux-musl --save-config [--profile N] [overrides]");
-    puts("  greencurve-x86_64-linux-musl --apply-config [--profile N]");
-    puts("  greencurve-x86_64-linux-musl --config path --profile N");
+    puts("  greencurve                       Launch terminal UI");
+    puts("  greencurve --tui                 Launch terminal UI");
+    puts("  greencurve --dump | --json       Dump selected profile (text / JSON)");
+    puts("  greencurve --probe [--probe-output path]   Probe driver + GPU control surfaces");
+    puts("  greencurve --self-test           Read-only validation of the NvAPI/NVML apply path");
+    puts("  greencurve --apply-config [--profile N]    Apply a profile via the daemon");
+    puts("  greencurve --reset --apply-config          Reset OC/UV to driver defaults");
+    puts("  greencurve --save-config [--profile N] [overrides]");
+    puts("  greencurve --write-assets [--assets-dir path]");
+    puts("  greencurve --config path --profile N");
+    puts("Daemon (root):");
+    puts("  sudo greencurve --service-install   Install + start the systemd daemon");
+    puts("  sudo greencurve --service-remove    Stop + remove the daemon");
+    puts("  greencurve --daemon                 Run the daemon in the foreground");
     puts("Overrides:");
     puts("  --gpu-offset MHZ --mem-offset MHZ --power-limit PCT");
     puts("  --fan auto|PCT --fan-mode auto|fixed|curve --fan-fixed PCT");
@@ -35,9 +43,9 @@ static void print_help() {
     puts("  --fan-curve-enabledN 0|1 --fan-curve-tempN C --fan-curve-pctN PCT");
     puts("  --pointN MHZ for VF points 0-127");
     puts("");
-    puts("Current Linux target status:");
-    puts("  - TUI, config editing, probe collection, and autostart/systemd asset generation are implemented.");
-    puts("  - Verified Linux VF-curve read/write parity is still pending native Linux hardware investigation.");
+    puts("Native NVIDIA control uses NvAPI (libnvidia-api.so.1) + NVML");
+    puts("(libnvidia-ml.so.1); the root daemon applies settings, the client/TUI");
+    puts("talk to it over /run/greencurve/greencurve.sock. Run --probe first.");
 }
 
 bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
@@ -76,6 +84,18 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
         } else if (strcmp(arg, "--tui") == 0) {
             opts->recognized = true;
             opts->tui = true;
+        } else if (strcmp(arg, "--daemon") == 0) {
+            opts->recognized = true;
+            opts->daemon = true;
+        } else if (strcmp(arg, "--service-install") == 0) {
+            opts->recognized = true;
+            opts->serviceInstall = true;
+        } else if (strcmp(arg, "--service-remove") == 0) {
+            opts->recognized = true;
+            opts->serviceRemove = true;
+        } else if (strcmp(arg, "--self-test") == 0) {
+            opts->recognized = true;
+            opts->selfTest = true;
         } else if (strcmp(arg, "--config") == 0) {
             opts->recognized = true;
             if (!argument_requires_value(argc, i)) {
@@ -465,6 +485,8 @@ bool run_linux_probe(const char* outputPath, ProbeSummary* summary, char* err, s
     const char* libraryPatterns[] = {
         "/usr/lib*/libnvidia-ml.so*",
         "/usr/lib*/nvidia*/libnvidia-ml.so*",
+        "/usr/lib*/libnvidia-api.so*",
+        "/usr/lib*/nvidia*/libnvidia-api.so*",
         "/usr/lib*/libXNVCtrl.so*",
         "/usr/lib*/nvidia*/libXNVCtrl.so*",
     };
@@ -480,11 +502,11 @@ bool run_linux_probe(const char* outputPath, ProbeSummary* summary, char* err, s
     }
     report.push_back('\n');
 
-    appendf(&report, "## Next Questions\n\n");
-    appendf(&report, "- Can NVML expose any VF-like clock/voltage control beyond the documented Linux surfaces?\n");
-    appendf(&report, "- Do `nvidia-smi`, sysfs, debugfs, or another Linux-native control plane expose editable VF data?\n");
-    appendf(&report, "- Which operations require root versus CAP_SYS_ADMIN versus a desktop auth helper?\n");
-    appendf(&report, "- Does the target desktop launch this binary inside a visible terminal when `Terminal=true` is used?\n");
+    appendf(&report, "## Runtime Validation\n\n");
+    appendf(&report, "- Run `greencurve --probe` and confirm the console-side native probe reports both NVML and NvAPI available.\n");
+    appendf(&report, "- Run `greencurve --self-test` before first apply on a new architecture; it validates the read/write struct path without changing GPU state.\n");
+    appendf(&report, "- Install the daemon with `sudo greencurve --service-install`; client apply/reset commands require the daemon socket.\n");
+    appendf(&report, "- On unrecognized future GPU families, keep the fallback-warning output and attach this probe report when validating the new architecture.\n");
 
     if (!write_text_file_atomic(resolvedOutput, report, err, errSize)) return false;
     return true;
@@ -523,12 +545,12 @@ bool write_linux_assets(const char* outputDir, const char* execPath, const char*
     std::string service;
     appendf(&service,
         "[Unit]\n"
-        "Description=%s Linux one-shot apply scaffold\n"
-        "After=multi-user.target\n"
+        "Description=%s one-shot profile apply via daemon\n"
+        "After=greencurve.service\n"
+        "Requires=greencurve.service\n"
         "ConditionPathExists=%s\n\n"
         "[Service]\n"
         "Type=oneshot\n"
-        "User=root\n"
         "ExecStart=%s\n"
         "StandardOutput=journal\n"
         "StandardError=journal\n\n"
@@ -544,18 +566,20 @@ bool write_linux_assets(const char* outputDir, const char* execPath, const char*
         "These files were generated by %s %s.\n\n"
         "- `greencurve.desktop`: visible launcher with `Terminal=true` for GNOME/KDE/Wayland sessions\n"
         "- `greencurve-autostart.desktop`: session autostart launcher that still opens a terminal window\n"
-        "- `greencurve-apply.service`: root-owned systemd scaffold for future apply mode\n\n"
+        "- `greencurve-apply.service`: optional one-shot profile apply client that requires the real `greencurve.service` daemon\n\n"
         "Install example:\n\n"
         "```bash\n"
         "install -Dm644 greencurve.desktop ~/.local/share/applications/greencurve.desktop\n"
         "install -Dm644 greencurve-autostart.desktop ~/.config/autostart/greencurve.desktop\n"
+        "sudo %s --service-install\n"
         "sudo install -Dm644 greencurve-apply.service /etc/systemd/system/greencurve-apply.service\n"
         "sudo systemctl daemon-reload\n"
         "sudo systemctl enable greencurve-apply.service\n"
         "```\n\n"
-        "The systemd unit is scaffold-only until the Linux backend can perform verified VF-curve writes on real hardware.\n",
+        "The generated one-shot unit is only a convenience hook; normal live control uses the daemon installed by `--service-install`.\n",
         APP_NAME,
-        APP_VERSION);
+        APP_VERSION,
+        execShell.c_str());
 
     std::string desktopPath = path_join(outputDir, "greencurve.desktop");
     std::string autostartPath = path_join(outputDir, "greencurve-autostart.desktop");
@@ -585,6 +609,42 @@ int main(int argc, char** argv) {
     if (opts.hasConfigPath) snprintf(configPath, sizeof(configPath), "%s", opts.configPath);
     else if (!default_linux_config_path(configPath, sizeof(configPath))) snprintf(configPath, sizeof(configPath), "%s", CONFIG_FILE_NAME);
 
+    // Privileged daemon role (run by systemd as root): owns the GPU and serves
+    // the Unix-socket protocol.  Must run before profile loading.
+    if (opts.daemon) {
+        return linux_daemon_run(configPath);
+    }
+
+    if (opts.selfTest) {
+        // In-process read-only validation of the NvAPI/NVML control surfaces on
+        // this driver/arch (the arm64 pre-flight). Does not touch the daemon and
+        // does not modify GPU state.
+        LinuxGpuState gpu;
+        char initErr[256] = {};
+        if (!linux_backend_init(&gpu, 0, initErr, sizeof(initErr))) {
+            fprintf(stderr, "self-test: cannot initialize GPU backend: %s\n",
+                    initErr[0] ? initErr : "unknown error");
+            return 1;
+        }
+        bool pass = linux_backend_self_test(&gpu, stdout);
+        linux_backend_shutdown(&gpu);
+        return pass ? 0 : 2;
+    }
+
+    if (opts.serviceInstall || opts.serviceRemove) {
+        char svcErr[256] = {};
+        int rc = opts.serviceInstall ? linux_service_install(svcErr, sizeof(svcErr))
+                                     : linux_service_remove(svcErr, sizeof(svcErr));
+        if (rc != 0) {
+            fprintf(stderr, "%s\n", svcErr[0] ? svcErr : "service operation failed");
+            return rc;
+        }
+        printf("%s\n", opts.serviceInstall
+                   ? "Green Curve daemon installed and started (systemctl status greencurve)."
+                   : "Green Curve daemon removed.");
+        return 0;
+    }
+
     int slot = opts.hasProfileSlot ? opts.profileSlot : CONFIG_DEFAULT_SLOT;
     DesiredSettings desired = {};
     char err[256] = {};
@@ -610,6 +670,11 @@ int main(int argc, char** argv) {
         }
         printf("Probe written to %s\n", outputPath);
         printf("%s\n", summary.summary);
+        // Native driver probe: load NVML + NvAPI (libnvidia-api.so.1) and report
+        // the read-only control surfaces (GPU enumeration, family, OC offset
+        // range).  Proves the Linux VF-curve path before any write is attempted.
+        printf("\n");
+        linux_gpu_probe(stdout, nullptr);
     }
 
     if (opts.writeAssets) {
@@ -646,11 +711,23 @@ int main(int argc, char** argv) {
     }
 
     if (opts.applyConfig) {
-        fprintf(stderr,
-            "Linux apply-config is scaffolded but intentionally blocked until native Linux VF-curve parity is proven.\n"
-            "Run --probe on native Linux, inspect %s, and continue backend work there.\n",
-            APP_LINUX_PROBE_FILE);
-        return 3;
+        char result[512] = {};
+        bool ok;
+        if (opts.reset && !opts.hasProfileSlot) {
+            // `--reset --apply-config` releases OC/UV to driver defaults.
+            ok = linux_daemon_reset(result, sizeof(result));
+        } else {
+            ok = linux_daemon_apply(&desired, true, result, sizeof(result));
+        }
+        printf("%s\n", result[0] ? result : (ok ? "Applied" : "Apply failed"));
+        if (!ok) {
+            if (!linux_daemon_available()) {
+                fprintf(stderr,
+                    "The Green Curve daemon is not running. Install/start it with:\n"
+                    "  sudo %s --service-install\n", argv[0]);
+            }
+            return 1;
+        }
     }
 
     if (opts.showHelp || opts.dump || opts.json || opts.probe || opts.writeAssets || opts.saveConfig || opts.applyConfig) {

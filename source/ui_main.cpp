@@ -404,7 +404,7 @@ static void populate_gpu_selector() {
         if (i < g_app.adapterCount && g_app.adapters[i].valid) {
             format_gpu_adapter_label(&g_app.adapters[i], label, sizeof(label));
             if (g_app.adapters[i].vfBestGuess) {
-                StringCchCatA(label, ARRAY_COUNT(label), " - experimental VF write");
+                StringCchCatA(label, ARRAY_COUNT(label), " - best-effort VF write");
             }
         } else {
             StringCchPrintfA(label, ARRAY_COUNT(label), "0: %s", g_app.gpuName[0] ? g_app.gpuName : "NVIDIA GPU");

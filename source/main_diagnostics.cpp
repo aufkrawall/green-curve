@@ -539,9 +539,18 @@ static LONG CALLBACK green_curve_vectored_handler(EXCEPTION_POINTERS* info) {
     if (hK32) {
         FARPROC exitThread = GetProcAddress(hK32, "ExitThread");
         if (exitThread) {
+#if defined(__aarch64__) || defined(_M_ARM64)
+            // ARM64: PC = target, first arg in X0, SP stays 16-byte aligned
+            // (the link register holds the "return" address but ExitThread
+            // never returns).
+            info->ContextRecord->Pc = (ULONG_PTR)exitThread;
+            info->ContextRecord->X[0] = 0; // exit code
+            info->ContextRecord->Sp = info->ContextRecord->Sp & ~(ULONG_PTR)15;
+#else
             info->ContextRecord->Rip = (ULONG_PTR)exitThread;
             info->ContextRecord->Rcx = 0; // exit code
             info->ContextRecord->Rsp = (info->ContextRecord->Rsp & ~(ULONG_PTR)15) - 8;
+#endif
             return EXCEPTION_CONTINUE_EXECUTION;
         }
     }

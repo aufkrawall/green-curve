@@ -108,7 +108,11 @@ static bool set_start_on_logon_enabled(const char* path, bool enabled) {
 static bool should_enable_startup_task_from_config(const char* path) {
     if (!path || !*path) return false;
     if (is_start_on_logon_enabled(path)) return true;
-    return get_config_int(path, "profiles", "logon_slot", 0) > 0;
+    if (get_config_int(path, "profiles", "logon_slot", 0) > 0) return true;
+    // A per-user "apply admin shared profile N at logon" choice also needs the
+    // startup task so the tray client launches at logon (the service router
+    // applies it regardless, but the task keeps the GUI behavior consistent).
+    return get_config_int(path, "profiles", "logon_shared_slot", 0) > 0;
 }
 static bool live_state_has_custom_oc() {
     if (g_app.gpuClockOffsetkHz != 0) return true;

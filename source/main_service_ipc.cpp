@@ -64,6 +64,83 @@ static bool query_background_service_pid(DWORD* pidOut) {
     return true;
 }
 
+static bool get_service_binary_directory_from_scm(WCHAR* out, size_t outCount) {
+    if (out && outCount > 0) out[0] = 0;
+    if (!out || outCount == 0) return false;
+    ScopedServiceHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
+    if (!scm.valid()) return false;
+    ScopedServiceHandle svc(OpenServiceW(scm.get(), L"GreenCurveService", SERVICE_QUERY_CONFIG));
+    if (!svc.valid()) return false;
+    DWORD needed = 0;
+    DWORD alloc = 4096;
+    HeapBuffer buf(alloc);
+    if (!buf) return false;
+    QUERY_SERVICE_CONFIGW* qsc = (QUERY_SERVICE_CONFIGW*)buf.ptr;
+    if (!QueryServiceConfigW(svc.get(), qsc, alloc, &needed)) {
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) return false;
+        alloc = needed;
+        HeapBuffer buf2(alloc);
+        if (!buf2) return false;
+        qsc = (QUERY_SERVICE_CONFIGW*)buf2.ptr;
+        if (!QueryServiceConfigW(svc.get(), qsc, alloc, &needed)) return false;
+    }
+    if (!qsc->lpBinaryPathName || !qsc->lpBinaryPathName[0]) return false;
+
+    // lpBinaryPathName is the service command line, e.g.:
+    //   "C:\Program Files\Green Curve\greencurve-service.exe" --service-run
+    // Strip the surrounding quotes and take only the executable path part.
+    const WCHAR* src = qsc->lpBinaryPathName;
+    while (*src == L' ') src++;
+    bool quoted = (*src == L'"');
+    if (quoted) src++;
+    WCHAR binPath[MAX_PATH] = {};
+    size_t dst = 0;
+    for (; *src && dst + 1 < ARRAY_COUNT(binPath); src++) {
+        if (quoted) {
+            if (*src == L'"') break;
+        } else {
+            if (*src == L' ') break;
+        }
+        binPath[dst++] = *src;
+    }
+    if (!binPath[0]) return false;
+
+    WCHAR fullPath[MAX_PATH] = {};
+    DWORD pathLen = GetFullPathNameW(binPath, MAX_PATH, fullPath, nullptr);
+    if (pathLen == 0 || pathLen >= MAX_PATH) return false;
+    WCHAR* slash = wcsrchr(fullPath, L'\\');
+    if (!slash) slash = wcsrchr(fullPath, L'/');
+    if (!slash) return false;
+    *slash = 0;
+    debug_log_on_change("scm: service binary directory is %ls\n", fullPath);
+    return SUCCEEDED(StringCchCopyW(out, outCount, fullPath));
+}
+
+static bool install_dir_is_under_user_profile_w(const WCHAR* dir);
+
+bool service_install_dir_is_under_user_profile() {
+    WCHAR installDir[MAX_PATH] = {};
+    if (!get_service_binary_directory_from_scm(installDir, ARRAY_COUNT(installDir))) return false;
+    return install_dir_is_under_user_profile_w(installDir);
+}
+
+// True if the RUNNING process's own binary directory sits under a Windows user
+// profile.  Unlike service_install_dir_is_under_user_profile() (which keys off
+// the SCM-registered service dir and therefore needs the service installed),
+// this also fires pre-install / in portable use — the case where a restricted
+// user's admin ran greencurve.exe from inside an admin profile and other users
+// cannot even launch the GUI binary (ERROR_ACCESS_DENIED on execute).
+bool running_exe_dir_is_under_user_profile() {
+    WCHAR exePath[MAX_PATH] = {};
+    DWORD exeLen = GetModuleFileNameW(nullptr, exePath, ARRAY_COUNT(exePath));
+    if (exeLen == 0 || exeLen >= ARRAY_COUNT(exePath)) return false;
+    WCHAR* slash = wcsrchr(exePath, L'\\');
+    if (!slash) slash = wcsrchr(exePath, L'/');
+    if (!slash) return false;
+    *slash = 0;
+    return install_dir_is_under_user_profile_w(exePath);
+}
+
 static bool get_secure_service_install_dir_w(WCHAR* out, size_t outCount, char* err, size_t errSize);
 
 static bool get_process_image_path(DWORD pid, WCHAR* out, size_t outCount) {
@@ -268,6 +345,23 @@ static bool service_pipe_read_exact(HANDLE pipe, void* data, DWORD dataSize, DWO
     return service_pipe_io_exact(pipe, false, data, dataSize, timeoutMs, label, err, errSize);
 }
 
+// Map a service-pipe connect error code to a human-readable reason.  Pure
+// helper (no globals) so it can be unit-tested.  The ACCESS_DENIED case is the
+// important multi-user signal: only the active console/RDP user is granted
+// pipe write access (F-SEC-3), so a different logged-in user's GUI gets denied
+// and should see WHY rather than a generic "service not responding".
+static void describe_service_connect_error(DWORD err, char* out, size_t outSize) {
+    if (!out || outSize == 0) return;
+    if (err == ERROR_ACCESS_DENIED) {
+        StringCchCopyA(out, outSize,
+            "Another user is currently the active GPU controller, so this "
+            "session has read-only access. Controls are disabled until you "
+            "become the active session (switch to / unlock this user).");
+        return;
+    }
+    set_message(out, outSize, "Failed connecting to service pipe (error %lu)", err);
+}
+
 static bool service_send_request(const ServiceRequest* request, ServiceResponse* response, DWORD timeoutMs, char* err, size_t errSize) {
     if (response) memset(response, 0, sizeof(*response));
     if (!request) {
@@ -350,7 +444,7 @@ static bool service_send_request(const ServiceRequest* request, ServiceResponse*
         }
         DWORD e = GetLastError();
         if (e != ERROR_PIPE_BUSY && e != ERROR_FILE_NOT_FOUND) {
-            set_message(err, errSize, "Failed connecting to service pipe (error %lu)", e);
+            describe_service_connect_error(e, err, errSize);
             return false;
         }
         remainingMs = service_remaining_timeout_ms(startTickMs, timeoutMs);
@@ -458,7 +552,15 @@ static bool service_client_apply_desired(const DesiredSettings* desired, const c
     request.magic = SERVICE_PROTOCOL_MAGIC;
     request.version = SERVICE_PROTOCOL_VERSION;
     request.command = SERVICE_CMD_APPLY;
-    request.flags = interactive ? 1u : 0u;
+    request.flags = interactive ? SERVICE_REQUEST_FLAG_INTERACTIVE : 0u;
+    // Shared-only policy: if the editor holds an UNMODIFIED admin shared profile,
+    // tag this as an authoritative "apply shared slot N" so the service applies
+    // its own copy. Required for a non-admin on a restricted machine; a harmless
+    // no-op for admins and unrestricted machines.
+    if (g_app.loadedSharedSlot > 0 && !g_app.guiHasUserModifiedValues) {
+        request.flags |= SERVICE_REQUEST_FLAG_SHARED_SLOT |
+            (((DWORD)g_app.loadedSharedSlot & SERVICE_REQUEST_SHARED_SLOT_MASK) << SERVICE_REQUEST_SHARED_SLOT_SHIFT);
+    }
     request.callerPid = GetCurrentProcessId();
     ProcessIdToSessionId(request.callerPid, &request.callerSessionId);
     if (desired) {
@@ -692,7 +794,27 @@ static bool wait_for_helper_process_bounded(HANDLE process, const char* descript
 static bool launch_service_admin_helper(bool enable, char* err, size_t errSize) {
     WCHAR exePath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exePath, ARRAY_COUNT(exePath));
-    const WCHAR* helperArg = enable ? L"--service-install" : L"--service-remove";
+
+    // Pass the requesting GUI's config path so the elevated helper resolves the
+    // same per-user config as the GUI instead of its own (admin/SYSTEM) path or
+    // a beside-binary fallback. Service install/remove itself does not write the
+    // user config, but a consistent path prevents stray-config regressions and
+    // makes any helper logging reference the correct file.
+    WCHAR cfgPath[MAX_PATH] = {};
+    if (!utf8_to_wide(g_app.configPath, cfgPath, ARRAY_COUNT(cfgPath))) {
+        set_message(err, errSize, "Failed converting config path for service helper");
+        return false;
+    }
+
+    const WCHAR* baseArg = enable ? L"--service-install" : L"--service-remove";
+    WCHAR helperArg[1536] = {};
+    HRESULT hr = StringCchPrintfW(helperArg, ARRAY_COUNT(helperArg),
+        L"%ls --config \"%ls\"", baseArg, cfgPath);
+    if (FAILED(hr)) {
+        set_message(err, errSize, "Service helper command too long");
+        return false;
+    }
+
     SHELLEXECUTEINFOW sei = {};
     sei.cbSize = sizeof(sei);
     sei.lpVerb = L"runas";
@@ -722,12 +844,29 @@ static bool launch_startup_task_admin_helper(bool enable, char* err, size_t errS
         return false;
     }
 
-    WCHAR helperArg[1536] = {};
-    HRESULT hr = StringCchPrintfW(helperArg, ARRAY_COUNT(helperArg),
-        enable
-            ? L"--elevated --startup-task-enable --config \"%ls\""
-            : L"--elevated --startup-task-disable --config \"%ls\"",
-        cfgPath);
+    // Capture the REQUESTING user's SAM name BEFORE elevation.  The elevated
+    // helper will run as the approving admin, so without this override the
+    // task would be scoped to the admin's logon instead of this (often
+    // standard/restricted) user's.  --for-user forces the helper to stamp the
+    // requesting user into the task name/UserId/Principal.
+    WCHAR requestingUser[512] = {};
+    bool haveRequestingUser = get_current_user_sam_name(requestingUser, ARRAY_COUNT(requestingUser));
+
+    WCHAR helperArg[2048] = {};
+    HRESULT hr;
+    if (haveRequestingUser && requestingUser[0]) {
+        hr = StringCchPrintfW(helperArg, ARRAY_COUNT(helperArg),
+            enable
+                ? L"--elevated --startup-task-enable --for-user \"%ls\" --config \"%ls\""
+                : L"--elevated --startup-task-disable --for-user \"%ls\" --config \"%ls\"",
+            requestingUser, cfgPath);
+    } else {
+        hr = StringCchPrintfW(helperArg, ARRAY_COUNT(helperArg),
+            enable
+                ? L"--elevated --startup-task-enable --config \"%ls\""
+                : L"--elevated --startup-task-disable --config \"%ls\"",
+            cfgPath);
+    }
     if (FAILED(hr)) {
         set_message(err, errSize, "Startup task helper command too long");
         return false;
@@ -778,6 +917,45 @@ static bool get_adjacent_service_binary_path(WCHAR* out, size_t outCount, char* 
         return false;
     }
     return true;
+}
+
+
+// True if `dir` is located under a Windows user profile directory (e.g.
+// C:\Users\<name>\...).  This catches the common portable-install mistake of
+// running greencurve.exe from inside an admin's profile, which makes the GUI
+// binary inaccessible to other restricted users on the same machine.
+static bool install_dir_is_under_user_profile_w(const WCHAR* dir) {
+    if (!dir || !dir[0]) return false;
+    WCHAR fullDir[MAX_PATH] = {};
+    if (GetFullPathNameW(dir, MAX_PATH, fullDir, nullptr) == 0) return false;
+    size_t fullDirLen = wcslen(fullDir);
+
+    // Check against the current user's profile path.
+    PWSTR profileDir = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &profileDir)) && profileDir) {
+        size_t profileLen = wcslen(profileDir);
+        if (fullDirLen >= profileLen &&
+            _wcsnicmp(fullDir, profileDir, profileLen) == 0 &&
+            (fullDirLen == profileLen || fullDir[profileLen] == L'\\' || fullDir[profileLen] == L'/')) {
+            CoTaskMemFree(profileDir);
+            return true;
+        }
+        CoTaskMemFree(profileDir);
+    }
+
+    // Also detect any path under C:\Users\ (or the localized equivalent).
+    PWSTR profilesDir = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_UserProfiles, 0, nullptr, &profilesDir)) && profilesDir) {
+        size_t profilesLen = wcslen(profilesDir);
+        if (fullDirLen >= profilesLen &&
+            _wcsnicmp(fullDir, profilesDir, profilesLen) == 0 &&
+            (fullDirLen == profilesLen || fullDir[profilesLen] == L'\\' || fullDir[profilesLen] == L'/')) {
+            CoTaskMemFree(profilesDir);
+            return true;
+        }
+        CoTaskMemFree(profilesDir);
+    }
+    return false;
 }
 
 static bool get_secure_service_install_dir_w(WCHAR* out, size_t outCount, char* err, size_t errSize) {
@@ -890,6 +1068,12 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
             "directory could still permit delete+recreate. Install under %%ProgramFiles%% for full "
             "protection.\n", installDir);
     }
+    if (install_dir_is_under_user_profile_w(installDir)) {
+        debug_log("service install WARNING: install dir \"%ls\" is under a user profile. Other users, "
+            "including restricted/standard accounts, may be unable to read or execute the Green Curve "
+            "GUI binary. Install under %%ProgramFiles%% to make the application available to all users.\n",
+            installDir);
+    }
 
     return SUCCEEDED(StringCchCopyW(out, outCount, targetPath));
 }
@@ -916,5 +1100,282 @@ static void cleanup_secure_service_binary_after_remove() {
     } else {
         debug_log("service uninstall: could not revert service binary DACL: %s\n", aclErr[0] ? aclErr : "unknown");
     }
+}
+
+// Resolve the machine-wide config DIRECTORY: %ProgramData%\Green Curve.
+// %ProgramData% is a fixed known folder, identical for the LocalSystem service
+// and for every user's GUI, all-users-readable, and resolvable WITHOUT querying
+// the SCM (which a restricted user's GUI may not be able to do).  This replaces
+// the old "next to the service binary + parse the SCM command line" scheme.
+static bool resolve_machine_config_dir_w(WCHAR* outW, size_t outCount, char* err, size_t errSize) {
+    if (outW && outCount > 0) outW[0] = 0;
+    if (!outW || outCount == 0) {
+        set_message(err, errSize, "Invalid machine config dir buffer");
+        return false;
+    }
+    PWSTR programData = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_ProgramData, KF_FLAG_DEFAULT, nullptr, &programData)) && programData) {
+        HRESULT hr = StringCchPrintfW(outW, outCount, L"%ls\\Green Curve", programData);
+        CoTaskMemFree(programData);
+        if (FAILED(hr)) {
+            set_message(err, errSize, "Machine config directory path is too long");
+            return false;
+        }
+        return true;
+    }
+    // Fallback to the %ProgramData% environment variable (then the canonical
+    // default) if the known folder cannot be resolved.
+    WCHAR base[MAX_PATH] = {};
+    DWORD n = GetEnvironmentVariableW(L"ProgramData", base, ARRAY_COUNT(base));
+    if (n == 0 || n >= ARRAY_COUNT(base)) {
+        StringCchCopyW(base, ARRAY_COUNT(base), L"C:\\ProgramData");
+    }
+    if (FAILED(StringCchPrintfW(outW, outCount, L"%ls\\Green Curve", base))) {
+        set_message(err, errSize, "Machine config directory path is too long");
+        return false;
+    }
+    return true;
+}
+
+// Resolve the path to the machine-wide config file
+// (%ProgramData%\Green Curve\shared-profiles.ini).
+static bool resolve_machine_config_path_internal(WCHAR* outW, size_t outCount, char* err, size_t errSize) {
+    if (outW && outCount > 0) outW[0] = 0;
+    if (!outW || outCount == 0) {
+        set_message(err, errSize, "Invalid machine config path buffer");
+        return false;
+    }
+    WCHAR dirW[MAX_PATH] = {};
+    if (!resolve_machine_config_dir_w(dirW, ARRAY_COUNT(dirW), err, errSize)) return false;
+    if (FAILED(StringCchPrintfW(outW, outCount, L"%ls\\%hs", dirW, MACHINE_CONFIG_FILE_NAME))) {
+        set_message(err, errSize, "Machine config path is too long");
+        return false;
+    }
+    return true;
+}
+
+bool resolve_machine_config_path(char* out, size_t outSize) {
+    if (out && outSize > 0) out[0] = 0;
+    if (!out || outSize == 0) return false;
+    WCHAR pathW[MAX_PATH] = {};
+    if (!resolve_machine_config_path_internal(pathW, ARRAY_COUNT(pathW), out, outSize)) return false;
+    return copy_wide_to_utf8(pathW, out, (int)outSize);
+}
+
+static bool ensure_machine_config_directory(char* err, size_t errSize) {
+    WCHAR pathW[MAX_PATH] = {};
+    if (!resolve_machine_config_path_internal(pathW, ARRAY_COUNT(pathW), err, errSize)) return false;
+    WCHAR dirW[MAX_PATH] = {};
+    StringCchCopyW(dirW, ARRAY_COUNT(dirW), pathW);
+    WCHAR* slash = wcsrchr(dirW, L'\\');
+    if (!slash) slash = wcsrchr(dirW, L'/');
+    if (!slash) {
+        set_message(err, errSize, "Machine config path has no directory");
+        return false;
+    }
+    *slash = 0;
+    if (!CreateDirectoryW(dirW, nullptr)) {
+        DWORD createErr = GetLastError();
+        if (createErr != ERROR_ALREADY_EXISTS) {
+            set_message(err, errSize, "Failed creating machine config directory (error %lu)", createErr);
+            return false;
+        }
+    }
+    DWORD attrs = GetFileAttributesW(dirW);
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+        (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        set_message(err, errSize, "Machine config directory is unavailable or unsafe");
+        return false;
+    }
+    // Harden the directory so a standard user cannot plant or delete files in
+    // the shared bank (the default %ProgramData% ACL grants users create-file
+    // rights).  Best-effort: requires elevation, which every writer of this dir
+    // already has; on failure the file itself still gets its own protected DACL.
+    char aclErr[256] = {};
+    if (!apply_protected_machine_config_dir_dacl(dirW, aclErr, sizeof(aclErr))) {
+        debug_log("machine config: directory DACL hardening failed: %s\n", aclErr[0] ? aclErr : "unknown");
+    }
+    return true;
+}
+
+// One-time migration from the legacy machine.ini location (next to the
+// installed service binary) to the %ProgramData%\Green Curve\shared-profiles.ini
+// location.  Runs service-side as LocalSystem so it can write %ProgramData% and
+// set DACLs.  No-op once the new file exists or when there is no legacy file.
+static void migrate_legacy_machine_config() {
+    char newPath[MAX_PATH] = {};
+    if (!resolve_machine_config_path(newPath, sizeof(newPath))) return;
+    if (GetFileAttributesA(newPath) != INVALID_FILE_ATTRIBUTES) {
+        return; // already migrated (or freshly created at the new location)
+    }
+    WCHAR installDir[MAX_PATH] = {};
+    if (!get_service_binary_directory_from_scm(installDir, ARRAY_COUNT(installDir))) {
+        return; // service binary dir unknown; nothing legacy to migrate
+    }
+    WCHAR legacyW[MAX_PATH] = {};
+    if (FAILED(StringCchPrintfW(legacyW, ARRAY_COUNT(legacyW), L"%ls\\%hs",
+            installDir, LEGACY_MACHINE_CONFIG_FILE_NAME))) {
+        return;
+    }
+    if (GetFileAttributesW(legacyW) == INVALID_FILE_ATTRIBUTES) {
+        return; // no legacy file to migrate
+    }
+    char dirErr[256] = {};
+    if (!ensure_machine_config_directory(dirErr, sizeof(dirErr))) {
+        debug_log("machine config migration: cannot ensure target directory: %s\n",
+            dirErr[0] ? dirErr : "unknown");
+        return;
+    }
+    WCHAR newW[MAX_PATH] = {};
+    char pathErr[256] = {};
+    if (!resolve_machine_config_path_internal(newW, ARRAY_COUNT(newW), pathErr, sizeof(pathErr))) {
+        debug_log("machine config migration: cannot resolve target path: %s\n",
+            pathErr[0] ? pathErr : "unknown");
+        return;
+    }
+    if (!CopyFileW(legacyW, newW, TRUE)) {
+        debug_log("machine config migration: CopyFile failed (error %lu) from %ls\n",
+            GetLastError(), legacyW);
+        return;
+    }
+    char aclErr[256] = {};
+    if (!apply_protected_machine_config_dacl(newW, aclErr, sizeof(aclErr))) {
+        debug_log("machine config migration: DACL hardening failed: %s\n", aclErr[0] ? aclErr : "unknown");
+    }
+    if (!DeleteFileW(legacyW)) {
+        debug_log("machine config migration: copied to %s but failed deleting legacy file (error %lu)\n",
+            newPath, GetLastError());
+    } else {
+        debug_log("machine config migration: moved legacy %ls -> %s\n", legacyW, newPath);
+    }
+}
+
+// Harden the %ProgramData% shared bank at service start (SYSTEM, before any
+// interactive login).  The default %ProgramData% ACL lets standard users create
+// subfolders, so without this a user could pre-create %ProgramData%\Green Curve
+// (owning it with full control) and plant a malicious shared-profiles.ini before
+// any admin initializes it — which the service would then trust (e.g. apply a
+// hostile "shared default" to other users on logon).  Creating + hardening the
+// directory at boot wins the race; if a squatted directory/file already exists,
+// SYSTEM reclaims the protected DACL (and the file's owner) so the bank is
+// admin-controlled from then on.
+static void secure_shared_bank_at_startup() {
+    char err[256] = {};
+    if (!ensure_machine_config_directory(err, sizeof(err))) {
+        debug_log("shared bank: startup hardening could not ensure directory: %s\n", err[0] ? err : "unknown");
+        return;
+    }
+    WCHAR fileW[MAX_PATH] = {};
+    char perr[256] = {};
+    if (resolve_machine_config_path_internal(fileW, ARRAY_COUNT(fileW), perr, sizeof(perr)) &&
+        GetFileAttributesW(fileW) != INVALID_FILE_ATTRIBUTES) {
+        char aclErr[256] = {};
+        if (!apply_protected_machine_config_dacl(fileW, aclErr, sizeof(aclErr))) {
+            debug_log("shared bank: startup file DACL reclaim failed: %s\n", aclErr[0] ? aclErr : "unknown");
+        } else {
+            debug_log("shared bank: startup hardening verified/reclaimed %ls\n", fileW);
+        }
+    }
+}
+
+bool get_machine_logon_slot(int* slotOut) {
+    if (slotOut) *slotOut = 0;
+    char path[MAX_PATH] = {};
+    if (!resolve_machine_config_path(path, sizeof(path))) return false;
+    int slot = get_config_int(path, "profiles", "logon_slot", 0);
+    if (slot < 0 || slot > CONFIG_NUM_SLOTS) slot = 0;
+    if (slotOut) *slotOut = slot;
+    return true;
+}
+
+bool set_machine_logon_slot(int slot, char* err, size_t errSize) {
+    if (err && errSize) err[0] = 0;
+    if (slot < 1 || slot > CONFIG_NUM_SLOTS) {
+        set_message(err, errSize, "Invalid machine logon slot %d", slot);
+        return false;
+    }
+    if (!is_elevated()) {
+        set_message(err, errSize, "Setting a machine-wide default profile requires administrator rights");
+        return false;
+    }
+    if (!ensure_machine_config_directory(err, errSize)) return false;
+    char path[MAX_PATH] = {};
+    if (!resolve_machine_config_path(path, sizeof(path))) {
+        set_message(err, errSize, "Cannot resolve machine config path");
+        return false;
+    }
+    if (!set_config_int(path, "profiles", "logon_slot", slot)) {
+        set_message(err, errSize, "Failed writing machine config");
+        return false;
+    }
+    WCHAR pathW[MAX_PATH] = {};
+    if (!resolve_machine_config_path_internal(pathW, ARRAY_COUNT(pathW), err, errSize)) return false;
+    char aclErr[256] = {};
+    if (!apply_protected_machine_config_dacl(pathW, aclErr, sizeof(aclErr))) {
+        debug_log("machine config: DACL hardening failed: %s\n", aclErr[0] ? aclErr : "unknown");
+        // Do not fail the whole operation; the config was written.  The install
+        // directory is normally under %ProgramFiles%, which is already admin-only.
+    } else {
+        debug_log("machine config: applied protected DACL to %s\n", path);
+    }
+    g_app.machineLogonSlotCache = slot;
+    debug_log("machine config: set machine-wide logon slot to %d in %s\n", slot, path);
+    return true;
+}
+
+bool clear_machine_logon_slot(char* err, size_t errSize) {
+    if (err && errSize) err[0] = 0;
+    if (!is_elevated()) {
+        set_message(err, errSize, "Clearing the machine-wide default profile requires administrator rights");
+        return false;
+    }
+    char path[MAX_PATH] = {};
+    if (!resolve_machine_config_path(path, sizeof(path))) {
+        set_message(err, errSize, "Cannot resolve machine config path");
+        return false;
+    }
+    if (!set_config_int(path, "profiles", "logon_slot", 0)) {
+        set_message(err, errSize, "Failed clearing machine config");
+        return false;
+    }
+    g_app.machineLogonSlotCache = 0;
+    debug_log("machine config: cleared machine-wide logon slot in %s\n", path);
+    return true;
+}
+
+bool get_machine_restrict_policy(bool* enabledOut) {
+    if (enabledOut) *enabledOut = false;
+    char path[MAX_PATH] = {};
+    if (!resolve_machine_config_path(path, sizeof(path))) return false;
+    int v = get_config_int(path, "policy", "restrict_non_admin_to_shared", 0);
+    if (enabledOut) *enabledOut = (v != 0);
+    return true;
+}
+
+bool set_machine_restrict_policy(bool enable, char* err, size_t errSize) {
+    if (err && errSize) err[0] = 0;
+    if (!is_elevated()) {
+        set_message(err, errSize, "Changing the shared-only policy requires administrator rights");
+        return false;
+    }
+    if (!ensure_machine_config_directory(err, errSize)) return false;
+    char path[MAX_PATH] = {};
+    if (!resolve_machine_config_path(path, sizeof(path))) {
+        set_message(err, errSize, "Cannot resolve machine config path");
+        return false;
+    }
+    if (!set_config_int(path, "policy", "restrict_non_admin_to_shared", enable ? 1 : 0)) {
+        set_message(err, errSize, "Failed writing machine config");
+        return false;
+    }
+    WCHAR pathW[MAX_PATH] = {};
+    if (resolve_machine_config_path_internal(pathW, ARRAY_COUNT(pathW), err, errSize)) {
+        char aclErr[256] = {};
+        if (!apply_protected_machine_config_dacl(pathW, aclErr, sizeof(aclErr))) {
+            debug_log("machine config: DACL hardening failed: %s\n", aclErr[0] ? aclErr : "unknown");
+        }
+    }
+    debug_log("machine config: set restrict_non_admin_to_shared=%d in %s\n", enable ? 1 : 0, path);
+    return true;
 }
 

@@ -147,68 +147,32 @@ static bool service_prepare_requested_gpu(const ServiceRequest* request, char* e
 
 static bool create_restricted_pipe_security_descriptor(PSECURITY_DESCRIPTOR* outSd) {
     *outSd = nullptr;
-    // SYSTEM (full) and Administrators (full) always.
+    // SYSTEM (full), Administrators (full), Authenticated Users (read+write).
     //
-    // F-SEC-3: Authenticated Users (AU) get read+write ONLY as a no-lockout
-    // fallback when we cannot resolve the active console user (at boot before
-    // login, RDP-only sessions, or a transient WTSQueryUserToken failure).  Once
-    // the console user is resolved, AU is downgraded to read-only and read+write
-    // is granted to that user's SID instead — so a *different* local authenticated
-    // user cannot drive GPU OC/RESET through the SYSTEM service.  The unelevated
-    // GUI runs as the console user and keeps full read+write via its SID ACE
-    // (and elevated GUIs are covered by the Administrators ACE).
-    WCHAR userSid[256] = {};
-    DWORD sessionId = WTSGetActiveConsoleSessionId();
-    if (sessionId != 0xFFFFFFFF) {
-        HANDLE hToken = nullptr;
-        if (WTSQueryUserToken(sessionId, &hToken)) {
-            DWORD needed = 0;
-            GetTokenInformation(hToken, TokenUser, nullptr, 0, &needed);
-            if (needed > 0) {
-                TOKEN_USER* tokenUser = (TOKEN_USER*)malloc(needed);
-                if (tokenUser) {
-                    if (GetTokenInformation(hToken, TokenUser, tokenUser, needed, &needed) && tokenUser->User.Sid) {
-                        LPWSTR sidStr = nullptr;
-                        if (ConvertSidToStringSidW(tokenUser->User.Sid, &sidStr)) {
-                            StringCchCopyW(userSid, ARRAY_COUNT(userSid), sidStr);
-                            LocalFree(sidStr);
-                        }
-                    }
-                    free(tokenUser);
-                }
-            }
-            CloseHandle(hToken);
-        }
+    // F-SEC-3 ("only the active interactive session may drive GPU OC/RESET") is
+    // enforced SERVER-SIDE by service_caller_is_authorized(): every request's
+    // caller session is resolved from the pipe handle (GetNamedPipeClientProcessId
+    // → ProcessIdToSessionId — unspoofable) and rejected unless it equals the
+    // active interactive session.  The pipe ACL therefore only needs to admit
+    // authenticated LOCAL users (PIPE_REJECT_REMOTE_CLIENTS blocks the network),
+    // and must NOT bake a specific console-user SID into the ACL:
+    //
+    //   Root cause of "service not responding after switching accounts" — a
+    //   per-user ACL grants write to whoever was the console user when the
+    //   listening instance was created.  After a logoff/login (or fast-user-
+    //   switch) the now-active user is a *different* SID, so their GUI is denied
+    //   at CreateFile and the server's ConnectNamedPipe never completes — the
+    //   stale-ACL instance stays listening and keeps rejecting the new user
+    //   until the service is restarted (reboot).  A user-agnostic ACL lets the
+    //   new active user connect immediately; the server-side check still rejects
+    //   any non-active session with a clear message.
+    const WCHAR* sddl = L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)";
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, outSd, nullptr) == FALSE) {
+        debug_log("pipe_server: failed building pipe security descriptor (error %lu)\n", GetLastError());
+        *outSd = nullptr;
+        return false;
     }
-
-    WCHAR sddl[512] = {};
-    bool built = false;
-    if (userSid[0]) {
-        // Console user resolved: AU read-only, console user read+write.
-        built = SUCCEEDED(StringCchPrintfW(sddl, ARRAY_COUNT(sddl),
-            L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;AU)(A;;GRGW;;;%s)", userSid));
-    }
-    if (!built) {
-        // Fallback: AU read+write so a pre-login / RDP-only / token-failure GUI is
-        // never locked out of the pipe.
-        built = SUCCEEDED(StringCchPrintfW(sddl, ARRAY_COUNT(sddl),
-            L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)"));
-    }
-    if (!built) return false;
-
-    // Log only on transitions — this runs once per pipe instance in the server
-    // loop, so unconditional logging would flood the debug log.
-    static int s_lastAclMode = -1;
-    int mode = userSid[0] ? 1 : 0;
-    if (mode != s_lastAclMode) {
-        s_lastAclMode = mode;
-        debug_log(mode == 1
-            ? "service pipe ACL: write restricted to active console user (AU downgraded to read-only)\n"
-            : "service pipe ACL: AU read+write fallback (console user unresolved — no lockout)\n");
-    }
-
-    return ConvertStringSecurityDescriptorToSecurityDescriptorW(
-        sddl, SDDL_REVISION_1, outSd, nullptr) != FALSE;
+    return true;
 }
 
 // Close a pipe handle owned by the pipe server thread, atomically clearing the
@@ -291,23 +255,46 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
         BOOL connected = ConnectNamedPipe(pipe, &ov);
         DWORD connectErr = connected ? ERROR_SUCCESS : GetLastError();
         if (!connected && connectErr == ERROR_IO_PENDING) {
-            HANDLE waitHandles[3] = { g_serviceStopEvent, g_servicePipeWakeEvent, ov.hEvent };
-            DWORD waitResult = WaitForMultipleObjects(g_servicePipeWakeEvent ? 3 : 2, waitHandles, FALSE, INFINITE);
-            if (waitResult == WAIT_OBJECT_0) {
+            // Build the wait set from the events that actually exist.  Index 0
+            // is always the stop event (breaks the loop).  The pipe-wake and
+            // pipe-recycle events recycle the current instance (close + create a
+            // fresh one).  The recycle event is signaled by
+            // service_handle_session_change() on an active-user change so the
+            // next connect gets a clean instance (the ACL itself is user-agnostic;
+            // active-session enforcement is server-side in
+            // service_caller_is_authorized).
+            HANDLE waitHandles[4] = {};
+            DWORD waitCount = 0;
+            DWORD stopIdx = (DWORD)-1, wakeIdx = (DWORD)-1, recycleIdx = (DWORD)-1;
+            if (g_serviceStopEvent) { stopIdx = waitCount; waitHandles[waitCount++] = g_serviceStopEvent; }
+            if (g_servicePipeWakeEvent) { wakeIdx = waitCount; waitHandles[waitCount++] = g_servicePipeWakeEvent; }
+            if (g_servicePipeRecycleEvent) { recycleIdx = waitCount; waitHandles[waitCount++] = g_servicePipeRecycleEvent; }
+            waitHandles[waitCount++] = ov.hEvent; // always last
+            DWORD ovIdx = waitCount - 1;
+            DWORD waitResult = WaitForMultipleObjects(waitCount, waitHandles, FALSE, INFINITE);
+            if (stopIdx != (DWORD)-1 && waitResult == WAIT_OBJECT_0 + stopIdx) {
                 CancelIoEx(pipe, &ov);
                 CloseHandle(ov.hEvent);
                 DisconnectNamedPipe(pipe);
                 service_close_owned_pipe(pipe);
                 break;
             }
-            if (g_servicePipeWakeEvent && waitResult == WAIT_OBJECT_0 + 1) {
+            auto recycle_current_pipe = [&]() {
                 CancelIoEx(pipe, &ov);
                 CloseHandle(ov.hEvent);
                 DisconnectNamedPipe(pipe);
                 service_close_owned_pipe(pipe);
+            };
+            if (wakeIdx != (DWORD)-1 && waitResult == WAIT_OBJECT_0 + wakeIdx) {
+                recycle_current_pipe();
                 continue;
             }
-            connected = waitResult == WAIT_OBJECT_0 + (g_servicePipeWakeEvent ? 2 : 1);
+            if (recycleIdx != (DWORD)-1 && waitResult == WAIT_OBJECT_0 + recycleIdx) {
+                debug_log("pipe_server: recycling instance for ACL rebuild after session change\n");
+                recycle_current_pipe();
+                continue;
+            }
+            connected = waitResult == WAIT_OBJECT_0 + ovIdx;
         } else if (!connected && connectErr == ERROR_PIPE_CONNECTED) {
             connected = TRUE;
         }
@@ -327,6 +314,7 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
         char callerUser[256] = {};
         DWORD callerSessionId = (DWORD)-1;
         DWORD callerPid = 0;
+        bool callerIsAdmin = false;
         char pipeErr[256] = {};
         if (!service_pipe_read_exact(pipe, &request, sizeof(request), SERVICE_PIPE_SERVER_IO_TIMEOUT_MS, "reading service request", pipeErr, sizeof(pipeErr))) {
             debug_log("service_pipe_server: dropping stalled or invalid client read: %s\n", pipeErr[0] ? pipeErr : "unknown");
@@ -340,7 +328,7 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
         if (request.magic != SERVICE_PROTOCOL_MAGIC || request.version != SERVICE_PROTOCOL_VERSION) {
             response.status = SERVICE_STATUS_VERSION_MISMATCH;
             StringCchCopyA(response.message, ARRAY_COUNT(response.message), "Service protocol mismatch");
-        } else if (!service_caller_is_authorized(pipe, request.source, response.message, ARRAY_COUNT(response.message), callerUser, sizeof(callerUser), &callerSessionId, &callerPid)) {
+        } else if (!service_caller_is_authorized(pipe, request.source, response.message, ARRAY_COUNT(response.message), callerUser, sizeof(callerUser), &callerSessionId, &callerPid, &callerIsAdmin)) {
             response.status = SERVICE_STATUS_ERROR;
         } else {
             if (!g_serviceUserPathsResolved || g_serviceUserPathsSessionId != callerSessionId) {
@@ -417,6 +405,51 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                 }
                 case SERVICE_CMD_APPLY: {
                     char result[512] = {};
+                    // Shared-only policy: a non-admin caller may only apply an
+                    // admin-published shared profile.  The request must name a
+                    // shared slot (SERVICE_REQUEST_FLAG_SHARED_SLOT); the service
+                    // loads its OWN copy of that slot from the bank and applies
+                    // it, ignoring the client-supplied settings — so a restricted
+                    // user cannot smuggle custom OC.  Admins and machines without
+                    // the policy are unaffected.  Checked before the runtime lock,
+                    // so an early reject needs no unlock.
+                    {
+                        bool restrictShared = false;
+                        get_machine_restrict_policy(&restrictShared);
+                        if (restrictShared && !callerIsAdmin) {
+                            if (!(request.flags & SERVICE_REQUEST_FLAG_SHARED_SLOT)) {
+                                debug_log("service APPLY rejected: shared-only policy active; caller %s is not a machine admin and did not request a shared slot\n",
+                                    callerUser[0] ? callerUser : "<unknown>");
+                                response.status = SERVICE_STATUS_ERROR;
+                                StringCchCopyA(response.message, ARRAY_COUNT(response.message),
+                                    "Your administrator restricts this PC to shared profiles. Use \"Shared profiles...\" to load and apply one.");
+                                break;
+                            }
+                            int sharedSlot = (int)((request.flags >> SERVICE_REQUEST_SHARED_SLOT_SHIFT) & SERVICE_REQUEST_SHARED_SLOT_MASK);
+                            char machinePath[MAX_PATH] = {};
+                            DesiredSettings sharedDesired = {};
+                            char loadErr[256] = {};
+                            if (sharedSlot < 1 || sharedSlot > CONFIG_NUM_SLOTS ||
+                                !resolve_machine_config_path(machinePath, sizeof(machinePath)) ||
+                                !is_profile_slot_saved(machinePath, sharedSlot) ||
+                                !load_profile_from_config(machinePath, sharedSlot, &sharedDesired, loadErr, sizeof(loadErr))) {
+                                debug_log("service APPLY rejected: shared slot %d unavailable for restricted caller %s: %s\n",
+                                    sharedSlot, callerUser[0] ? callerUser : "<unknown>", loadErr[0] ? loadErr : "unknown");
+                                response.status = SERVICE_STATUS_ERROR;
+                                StringCchCopyA(response.message, ARRAY_COUNT(response.message),
+                                    "That shared profile is no longer available. Ask your administrator.");
+                                break;
+                            }
+                            // Apply the AUTHORITATIVE admin copy: replace the
+                            // client-supplied settings and fall through to the
+                            // normal validate+apply path.
+                            sharedDesired.resetOcBeforeApply = true;
+                            request.desired = sharedDesired;
+                            request.resetOcBeforeApply = 1u;
+                            debug_log("service APPLY: restricted caller %s applying admin shared slot %d (authoritative copy)\n",
+                                callerUser[0] ? callerUser : "<unknown>", sharedSlot);
+                        }
+                    }
                     // Reject apply while recovering from a GPU device reconnect:
                     // the NVML/NVAPI writes would access-violate on the still-
                     // transitional driver and kill this pipe server thread
@@ -619,6 +652,10 @@ static DWORD WINAPI service_resume_reapply_thread_proc(void*) {
     return 0;
 }
 
+// service_handle_session_change / service_reconcile_active_session_apply are
+// defined in main_service_sessions.cpp (included before this shard).  The SCM
+// SESSIONCHANGE handler routes through service_handle_session_change.
+
 static DWORD WINAPI service_control_handler_ex(DWORD dwControl, DWORD dwEventType, LPVOID, LPVOID lpEventData) {
     if (dwControl == SERVICE_CONTROL_POWEREVENT && dwEventType == PBT_APMRESUMEAUTOMATIC) {
         if (g_serviceHasActiveDesired) {
@@ -695,6 +732,52 @@ static DWORD WINAPI service_control_handler_ex(DWORD dwControl, DWORD dwEventTyp
         return NO_ERROR;
     }
 
+    if (dwControl == SERVICE_CONTROL_SESSIONCHANGE) {
+        // Route every session-change notification through the active-user
+        // policy router.  The router debounces (only re-applies when the
+        // resolved active session identity changes) and handles LOGON, LOGOFF,
+        // and CONSOLE_CONNECT/DISCONNECT so Fast-User-Switching restores the
+        // now-active user's profile.  WTSSESSION_NOTIFICATION carries the
+        // specific session, but the router re-resolves the *active* session
+        // (console-first, RDP fallback) rather than trusting the event session
+        // alone — a logon for a non-active session must not win GPU control.
+        WTSSESSION_NOTIFICATION* sn = (WTSSESSION_NOTIFICATION*)lpEventData;
+        if (sn) {
+            DWORD sessionId = sn->dwSessionId;
+            debug_log("session change: event type=%lu for session %lu\n",
+                (unsigned long)dwEventType, (unsigned long)sessionId);
+
+            // The SCM control handler must return quickly, so dispatch the
+            // (driver-waiting, lock-taking) apply work to a worker thread.
+            struct SessionChangePayload {
+                DWORD eventType;
+                DWORD sessionId;
+            };
+            SessionChangePayload* payload = (SessionChangePayload*)HeapAlloc(GetProcessHeap(), 0, sizeof(SessionChangePayload));
+            if (payload) {
+                payload->eventType = dwEventType;
+                payload->sessionId = sessionId;
+                HANDLE hThread = CreateThread(nullptr, 0, [](LPVOID p) -> DWORD {
+                    SessionChangePayload* pl = (SessionChangePayload*)p;
+                    if (!pl) return 1;
+                    DWORD et = pl->eventType;
+                    DWORD sid = pl->sessionId;
+                    HeapFree(GetProcessHeap(), 0, pl);
+                    service_handle_session_change(et, sid);
+                    return 0;
+                }, payload, 0, nullptr);
+                if (hThread) {
+                    CloseHandle(hThread);
+                } else {
+                    debug_log("session change: failed to create worker thread for session %lu (error=%lu)\n",
+                        (unsigned long)sessionId, GetLastError());
+                    HeapFree(GetProcessHeap(), 0, payload);
+                }
+            }
+        }
+        return NO_ERROR;
+    }
+
     if (dwControl != SERVICE_CONTROL_STOP && dwControl != SERVICE_CONTROL_SHUTDOWN) return NO_ERROR;
     g_serviceStatus.dwCurrentState = SERVICE_STOP_PENDING;
     SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
@@ -728,7 +811,7 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
     g_serviceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
     // SERVICE_ACCEPT_DEVICE_EVENTS required for DBT_DEVICEREMOVEPENDING /
     // DBT_DEVICEARRIVAL notifications to reach service_control_handler_ex.
-    g_serviceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN | SERVICE_ACCEPT_POWEREVENT | SERVICE_ACCEPT_DEVICE_EVENTS;
+    g_serviceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN | SERVICE_ACCEPT_POWEREVENT | SERVICE_ACCEPT_DEVICE_EVENTS | SERVICE_ACCEPT_SESSIONCHANGE;
     g_serviceStatus.dwCurrentState = SERVICE_START_PENDING;
     SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
 
@@ -743,10 +826,19 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
         debug_log_session_marker("BEGIN", "service", "service_main startup");
     }
 
-    // F-SEC-5 / policy: program files live only under %LOCALAPPDATA%\Green Curve.
-    // Remove the legacy %ProgramData%\Green Curve directory used by older builds
-    // (also clears any previously world-readable SYSTEM crash dumps).
+    // F-SEC-5 / policy: SENSITIVE program artifacts (crash dumps, service logs,
+    // restart/reapply state) live only under SYSTEM %LOCALAPPDATA%\Green Curve.
+    // Clear any such legacy artifacts older builds left world-readable in
+    // %ProgramData%\Green Curve (the deliberately-shared shared-profiles.ini is
+    // preserved — see service_cleanup_legacy_programdata).
     service_cleanup_legacy_programdata();
+    // One-time migration of the shared profile bank from the legacy
+    // machine.ini-next-to-binary location to %ProgramData%\Green Curve.  Runs as
+    // LocalSystem so it can write %ProgramData% and apply the protected DACL.
+    migrate_legacy_machine_config();
+    // Harden the %ProgramData% shared bank at boot (before any interactive login)
+    // so a standard user cannot pre-create and squat the directory/file.
+    secure_shared_bank_at_startup();
     // F-REL-2: bound the on-disk VEH minidumps so a restart loop cannot fill the
     // disk (runs once per fresh process = once per restart cycle).
     service_rotate_minidumps(10);
@@ -754,6 +846,9 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
     ensure_service_runtime_lock();
     g_serviceStopEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
     g_servicePipeWakeEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+    // Auto-reset: each SetEvent forces exactly one pipe-instance recycle so the
+    // ACL is rebuilt for the new active user (see service_handle_session_change).
+    g_servicePipeRecycleEvent = CreateEventA(nullptr, FALSE, FALSE, nullptr);
     if (!g_serviceStopEvent) {
         debug_log("service_main: FATAL failed to create stop event\n");
         g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
@@ -775,6 +870,10 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
         if (g_servicePipeWakeEvent) {
             CloseHandle(g_servicePipeWakeEvent);
             g_servicePipeWakeEvent = nullptr;
+        }
+        if (g_servicePipeRecycleEvent) {
+            CloseHandle(g_servicePipeRecycleEvent);
+            g_servicePipeRecycleEvent = nullptr;
         }
         if (g_serviceFanStopEvent) {
             CloseHandle(g_serviceFanStopEvent);
@@ -831,6 +930,21 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
     // re-applies the saved OC/fan settings, and deletes the snapshot on
     // success. On a normal boot (no snapshot) it is a no-op.
     service_launch_startup_reapply();
+
+    // Active-user reconciliation: if a user is already logged into an active
+    // session when the service starts (SCM failure-restart, driver-recovery
+    // restart, or a late auto-start after login), the WTS_SESSION_LOGON for
+    // that session fired before we were accepting controls.  Apply the active
+    // session's resolved profile so the GPU reflects the active user's intent
+    // without a logout/login.  Dispatched on a worker thread because it waits
+    // for the driver and takes the runtime lock.
+    {
+        HANDLE hThread = CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
+            service_reconcile_active_session_apply();
+            return 0;
+        }, nullptr, 0, nullptr);
+        if (hThread) CloseHandle(hThread);
+    }
 
     // Main service loop: wait for stop event, but periodically check if the
     // fan runtime thread or pipe server thread needs restarting (e.g. after a
@@ -945,6 +1059,7 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
     stop_service_fan_runtime_thread();
     if (g_servicePipeThread) {
         if (g_servicePipeWakeEvent) SetEvent(g_servicePipeWakeEvent);
+        if (g_servicePipeRecycleEvent) SetEvent(g_servicePipeRecycleEvent);
         WaitForSingleObject(g_servicePipeThread, INFINITE);
         CloseHandle(g_servicePipeThread);
         g_servicePipeThread = nullptr;
@@ -952,6 +1067,10 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
     if (g_servicePipeWakeEvent) {
         CloseHandle(g_servicePipeWakeEvent);
         g_servicePipeWakeEvent = nullptr;
+    }
+    if (g_servicePipeRecycleEvent) {
+        CloseHandle(g_servicePipeRecycleEvent);
+        g_servicePipeRecycleEvent = nullptr;
     }
     if (g_serviceFanStopEvent) {
         CloseHandle(g_serviceFanStopEvent);

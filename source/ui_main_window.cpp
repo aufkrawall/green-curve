@@ -68,7 +68,8 @@ static void destroy_edit_controls(HWND hParent) {
             && id != LOGON_LABEL_ID && id != PROFILE_STATUS_ID && id != START_ON_LOGON_CHECK_ID
             && id != START_ON_LOGON_LABEL_ID
             && id != SERVICE_ENABLE_CHECK_ID && id != SERVICE_ENABLE_LABEL_ID && id != SERVICE_STATUS_ID
-            && id != LOGON_HINT_ID) {
+            && id != LOGON_HINT_ID
+            && id != SHARE_ALL_USERS_CHECK_ID && id != SHARED_PROFILES_BTN_ID) {
             DestroyWindow(child);
         }
         child = next;
@@ -239,6 +240,235 @@ static void show_lock_context_menu(HWND hwnd, int vi, POINT screenPt) {
             invalidate_main_window();
         }
     }
+}
+
+// Run a short-lived elevated copy of the current executable with `args` and wait
+// for it to finish. Shows its own error/cancel messages. Returns true only if
+// the elevated process was launched and exited with code 0.
+static bool run_elevated_command(const char* args, const char* cancelledStatus, const char* failedPrefix) {
+    char exePath[MAX_PATH] = {};
+    if (GetModuleFileNameA(nullptr, exePath, ARRAY_COUNT(exePath)) == 0) {
+        MessageBoxA(g_app.hMainWnd, "Unable to locate the Green Curve executable.",
+            "Green Curve", MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    SHELLEXECUTEINFOA sei = {};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NO_CONSOLE | SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
+    sei.hwnd = g_app.hMainWnd;
+    sei.lpVerb = "runas";
+    sei.lpFile = exePath;
+    sei.lpParameters = args;
+    sei.nShow = SW_HIDE;
+    if (!ShellExecuteExA(&sei)) {
+        DWORD err = GetLastError();
+        if (err == ERROR_CANCELLED) {
+            set_profile_status_text("%s", cancelledStatus);
+        } else {
+            char errMsg[256] = {};
+            StringCchPrintfA(errMsg, ARRAY_COUNT(errMsg), "Failed to request administrator rights (error %lu).", err);
+            MessageBoxA(g_app.hMainWnd, errMsg, "Green Curve", MB_OK | MB_ICONERROR);
+        }
+        return false;
+    }
+    if (sei.hProcess) {
+        WaitForSingleObject(sei.hProcess, INFINITE);
+        DWORD exitCode = 0;
+        if (GetExitCodeProcess(sei.hProcess, &exitCode) && exitCode != 0) {
+            char errMsg[256] = {};
+            StringCchPrintfA(errMsg, ARRAY_COUNT(errMsg),
+                "%s failed with exit code %lu.\n\nCheck greencurve_cli_log.txt for details.", failedPrefix, exitCode);
+            MessageBoxA(g_app.hMainWnd, errMsg, "Green Curve", MB_OK | MB_ICONERROR);
+            CloseHandle(sei.hProcess);
+            return false;
+        }
+        CloseHandle(sei.hProcess);
+    }
+    return true;
+}
+
+// Right-click on the "All users" machine-logon button: manage the machine-wide
+// profile bank (publish the current slot, clear a machine slot).
+static void show_machine_logon_context_menu(HWND hwnd, POINT screenPt) {
+    refresh_menu_theme_cache();
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+
+    int selectedSlot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
+    if (selectedSlot < 0 || selectedSlot > CONFIG_NUM_SLOTS - 1) selectedSlot = CONFIG_DEFAULT_SLOT - 1;
+    selectedSlot += 1;
+
+    char publishText[64] = {};
+    StringCchPrintfA(publishText, ARRAY_COUNT(publishText),
+        "Publish slot %d to all users", selectedSlot);
+    AppendMenuA(menu, MF_STRING, MACHINE_LOGON_MENU_PUBLISH_ID, publishText);
+
+    char clearText[64] = {};
+    StringCchPrintfA(clearText, ARRAY_COUNT(clearText),
+        "Clear machine-wide slot %d", selectedSlot);
+    AppendMenuA(menu, MF_STRING, MACHINE_LOGON_MENU_CLEAR_MACHINE_SLOT_ID, clearText);
+
+    AppendMenuA(menu, MF_SEPARATOR, 0, nullptr);
+    bool restrictOn = false;
+    get_machine_restrict_policy(&restrictOn);
+    AppendMenuA(menu, MF_STRING | (restrictOn ? MF_CHECKED : MF_UNCHECKED),
+        MACHINE_LOGON_MENU_RESTRICT_ID, "Restrict standard users to shared profiles");
+
+    SetForegroundWindow(hwnd);
+    int cmd = (int)TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, screenPt.x, screenPt.y, 0, hwnd, nullptr);
+    DestroyMenu(menu);
+    if (cmd == 0) return;
+
+    if (cmd == MACHINE_LOGON_MENU_PUBLISH_ID) {
+        bool ok = false;
+        if (!is_elevated()) {
+            char args[MAX_PATH * 2] = {};
+            // --config is REQUIRED here: the elevated helper reads the admin's
+            // profile to publish from g_app.configPath. Without it the helper
+            // resolves its own (wrong) config path and publishes an empty/stale
+            // profile, or creates a stray config.ini beside the binary.
+            StringCchPrintfA(args, ARRAY_COUNT(args),
+                "--publish-slot-to-machine %d --config \"%s\"", selectedSlot, g_app.configPath);
+            ok = run_elevated_command(args,
+                "Administrator consent was cancelled; profile was not published.",
+                "Publish profile to machine-wide bank");
+        } else {
+            char err[256] = {};
+            ok = copy_profile_slot_to_machine_config(g_app.configPath, selectedSlot, err, sizeof(err));
+            if (!ok) {
+                write_error_report_log_for_user_failure("Publish to machine profile bank failed", err[0] ? err : "Unknown error");
+                MessageBoxA(g_app.hMainWnd, err[0] ? err : "Failed to publish profile to machine-wide bank.",
+                    "Green Curve", MB_OK | MB_ICONERROR);
+            }
+        }
+        if (ok) set_profile_status_text("Slot %d published to the shared bank (default unchanged).", selectedSlot);
+        refresh_profile_controls_from_config();
+    } else if (cmd == MACHINE_LOGON_MENU_CLEAR_MACHINE_SLOT_ID) {
+        bool ok = false;
+        if (!is_elevated()) {
+            char args[MAX_PATH * 2] = {};
+            StringCchPrintfA(args, ARRAY_COUNT(args),
+                "--clear-machine-slot %d --config \"%s\"", selectedSlot, g_app.configPath);
+            ok = run_elevated_command(args,
+                "Administrator consent was cancelled; machine-wide profile slot was not cleared.",
+                "Clear machine-wide profile slot");
+        } else {
+            char err[256] = {};
+            ok = clear_machine_profile_slot(selectedSlot, err, sizeof(err));
+            if (!ok) {
+                write_error_report_log_for_user_failure("Clear machine profile slot failed", err[0] ? err : "Unknown error");
+                MessageBoxA(g_app.hMainWnd, err[0] ? err : "Failed to clear machine-wide profile slot.",
+                    "Green Curve", MB_OK | MB_ICONERROR);
+            }
+        }
+        if (ok) set_profile_status_text("Cleared machine-wide profile slot %d.", selectedSlot);
+        refresh_profile_controls_from_config();
+    } else if (cmd == MACHINE_LOGON_MENU_RESTRICT_ID) {
+        bool enable = !restrictOn;
+        bool ok = false;
+        if (!is_elevated()) {
+            char args[MAX_PATH * 2] = {};
+            StringCchPrintfA(args, ARRAY_COUNT(args),
+                "--set-restrict-shared %d --config \"%s\"", enable ? 1 : 0, g_app.configPath);
+            ok = run_elevated_command(args,
+                "Administrator consent was cancelled; the shared-only policy was not changed.",
+                "Shared-only policy update");
+        } else {
+            char err[256] = {};
+            ok = set_machine_restrict_policy(enable, err, sizeof(err));
+            if (!ok) {
+                write_error_report_log_for_user_failure("Shared-only policy update failed", err[0] ? err : "Unknown error");
+                MessageBoxA(g_app.hMainWnd, err[0] ? err : "Failed to update the shared-only policy.",
+                    "Green Curve", MB_OK | MB_ICONERROR);
+            }
+        }
+        if (ok) {
+            set_profile_status_text(enable
+                ? "Shared-only policy enabled: standard users may only apply shared profiles."
+                : "Shared-only policy disabled.");
+        }
+        refresh_profile_controls_from_config();
+    }
+}
+
+// Subclass the owner-draw "Share with all users" checkbox so right-clicking it
+// opens the advanced shared-bank context menu (publish/clear individual slots
+// without changing the all-users default).
+static LRESULT CALLBACK share_all_users_subclass_proc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
+                                                      UINT_PTR /*uIdSubclass*/, DWORD_PTR /*dwRefData*/) {
+    if (uMsg == WM_RBUTTONUP) {
+        POINT pt = { (LONG)(short)LOWORD(lParam), (LONG)(short)HIWORD(lParam) };
+        ClientToScreen(hWnd, &pt);
+        SendMessageA(GetParent(hWnd), WM_CONTEXTMENU, (WPARAM)hWnd, MAKELPARAM(pt.x, pt.y));
+        return 0;
+    }
+    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
+// "Shared profiles" popup: list the admin-published profiles from the shared
+// bank and load the chosen one into the editor (read-only).  Available to every
+// user — reading the shared bank needs no elevation (Users:Read DACL).  The
+// loaded profile is not applied automatically; the user clicks Apply to apply it
+// via the service (the active session is permitted to apply).
+static void show_shared_profiles_menu(HWND hwnd, POINT screenPt) {
+    char machinePath[MAX_PATH] = {};
+    if (!resolve_machine_config_path(machinePath, sizeof(machinePath))) {
+        set_profile_status_text("Could not locate the shared profile store.");
+        return;
+    }
+    refresh_menu_theme_cache();
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+
+    int shared = 0;
+    for (int s = 1; s <= CONFIG_NUM_SLOTS; s++) {
+        if (!is_machine_profile_slot_saved(s)) continue;
+        char text[64] = {};
+        StringCchPrintfA(text, ARRAY_COUNT(text), "Load shared profile %d (read-only)", s);
+        AppendMenuA(menu, MF_STRING, SHARED_PROFILE_MENU_BASE + s, text);
+        shared++;
+    }
+    if (shared == 0) {
+        AppendMenuA(menu, MF_STRING | MF_GRAYED, 0, "No profiles shared by an administrator");
+    } else {
+        // To auto-apply a shared profile at logon, the user picks it in the unified
+        // "Apply profile after user log in:" dropdown (one always-visible control
+        // for the per-account logon choice).  Point them there from here.
+        AppendMenuA(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuA(menu, MF_STRING | MF_GRAYED, 0,
+            "To apply one at logon, use the \"Apply profile after user log in\" list");
+    }
+
+    SetForegroundWindow(hwnd);
+    int cmd = (int)TrackPopupMenu(menu, TPM_LEFTBUTTON | TPM_RETURNCMD, screenPt.x, screenPt.y, 0, hwnd, nullptr);
+    DestroyMenu(menu);
+
+    if (cmd < SHARED_PROFILE_MENU_BASE + 1 || cmd > SHARED_PROFILE_MENU_BASE + CONFIG_NUM_SLOTS) return;
+
+    int slot = cmd - SHARED_PROFILE_MENU_BASE;
+    DesiredSettings desired = {};
+    char err[256] = {};
+    if (!load_profile_from_config(machinePath, slot, &desired, err, sizeof(err))) {
+        write_error_report_log_for_user_failure("Shared profile load failed", err[0] ? err : "Unknown error");
+        MessageBoxA(g_app.hMainWnd, err[0] ? err : "Failed to load the shared profile.",
+            "Green Curve", MB_OK | MB_ICONERROR);
+        return;
+    }
+    // Load into the editor and mark dirty so Apply is enabled.  We intentionally
+    // do NOT touch the user's selected_slot or per-user config — this is the
+    // admin's read-only profile loaded on demand.
+    populate_desired_into_gui(&desired);
+    // Mark the editor as holding this admin shared slot (cleared by populate_*
+    // above, set here AFTER). A clean Apply sends it as an authoritative
+    // "apply shared slot N" so it works under the shared-only policy.
+    g_app.loadedSharedSlot = slot;
+    set_gui_state_dirty(true);
+    populate_global_controls();
+    set_profile_status_text(
+        "Loaded shared profile %d into the editor. Click Apply to apply it; use Save to copy it into one of your own slots.", slot);
+    invalidate_main_window();
+    debug_log("shared profiles: loaded shared slot %d from %s into editor\n", slot, machinePath);
 }
 
 // ============================================================================
@@ -580,6 +810,63 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         : "Program start at Windows logon disabled.",
                         logonSlot);
                 }
+            } else if (LOWORD(wParam) == SHARE_ALL_USERS_CHECK_ID && HIWORD(wParam) == BN_CLICKED) {
+                // Toggle "share with all users" for the SELECTED profile slot.
+                // Sharing publishes the slot's data into the shared bank AND
+                // makes it the all-users default logon profile (one action);
+                // unsharing reverses both.
+                int sel = g_app.hProfileCombo ? (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0) : -1;
+                if (sel < 0 || sel > CONFIG_NUM_SLOTS - 1) sel = CONFIG_DEFAULT_SLOT - 1;
+                int slot = sel + 1;
+                bool currentlyShared = is_machine_profile_slot_saved(slot) && g_app.machineLogonSlotCache == slot;
+
+                // Sharing requires the slot to actually hold a saved profile.
+                if (!currentlyShared && !is_profile_slot_saved(g_app.configPath, slot)) {
+                    MessageBoxA(g_app.hMainWnd,
+                        "The selected profile slot is empty. Save a profile into this slot before sharing it with all users.",
+                        "Green Curve", MB_OK | MB_ICONINFORMATION);
+                    update_share_all_users_check_state();
+                    break;
+                }
+
+                bool ok = false;
+                if (!is_elevated()) {
+                    char args[MAX_PATH * 2] = {};
+                    StringCchPrintfA(args, ARRAY_COUNT(args),
+                        currentlyShared ? "--unshare-slot %d --config \"%s\"" : "--share-slot %d --config \"%s\"",
+                        slot, g_app.configPath);
+                    ok = run_elevated_command(args,
+                        currentlyShared
+                            ? "Administrator consent was cancelled; profile is still shared."
+                            : "Administrator consent was cancelled; profile was not shared.",
+                        currentlyShared ? "Stop sharing profile with all users" : "Share profile with all users");
+                } else {
+                    char err[256] = {};
+                    ok = currentlyShared
+                        ? unshare_profile_slot_for_all_users(slot, err, sizeof(err))
+                        : share_profile_slot_for_all_users(g_app.configPath, slot, err, sizeof(err));
+                    if (!ok) {
+                        write_error_report_log_for_user_failure("Share-with-all-users update failed", err[0] ? err : "Unknown error");
+                        MessageBoxA(g_app.hMainWnd, err[0] ? err : "Failed to update the shared profile.",
+                            "Green Curve", MB_OK | MB_ICONERROR);
+                    }
+                }
+                if (ok) {
+                    if (currentlyShared) {
+                        set_profile_status_text("Slot %d is no longer shared with all users.", slot);
+                    } else {
+                        set_profile_status_text(
+                            "Slot %d is now shared with all users and applied on logon for users without their own profile.", slot);
+                    }
+                }
+                update_share_all_users_check_state();
+                refresh_profile_controls_from_config();
+            } else if (LOWORD(wParam) == SHARED_PROFILES_BTN_ID && HIWORD(wParam) == BN_CLICKED) {
+                // Any user: open the list of admin-published shared profiles.
+                RECT rc = {};
+                GetWindowRect(g_app.hSharedProfilesBtn, &rc);
+                POINT pt = { rc.left, rc.bottom };
+                show_shared_profiles_menu(hwnd, pt);
             } else if ((LOWORD(wParam) == SERVICE_ENABLE_CHECK_ID && HIWORD(wParam) == BN_CLICKED) ||
                        (LOWORD(wParam) == SERVICE_ENABLE_LABEL_ID && HIWORD(wParam) == STN_CLICKED)) {
                 if (g_app.backgroundServiceToggleInFlight) {
@@ -734,43 +1021,77 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 invalidate_main_window();
             } else if (LOWORD(wParam) == APP_LAUNCH_COMBO_ID || LOWORD(wParam) == LOGON_COMBO_ID) {
                 if (HIWORD(wParam) != CBN_SELCHANGE) break;
-                HWND hCombo = g_app.hAppLaunchCombo;
-                const char* key = "app_launch_slot";
                 if (LOWORD(wParam) == LOGON_COMBO_ID) {
-                    hCombo = g_app.hLogonCombo;
-                    key = "logon_slot";
-                }
-                int sel = (int)SendMessageA(hCombo, CB_GETCURSEL, 0, 0);
-                int slot = (sel < 0) ? 0 : sel;  // index 0 = Disabled (slot 0)
-                if (slot > 0 && !is_profile_slot_saved(g_app.configPath, slot)) {
-                    MessageBoxA(g_app.hMainWnd,
-                        "That slot is empty. Save a profile there before using it for automatic actions.",
-                        "Green Curve", MB_OK | MB_ICONINFORMATION);
-                    refresh_profile_controls_from_config();
-                    break;
-                }
-                if (LOWORD(wParam) == LOGON_COMBO_ID) {
+                    // Unified per-account logon selector: decode the selected item's
+                    // CB_SETITEMDATA tag (see refresh_profile_controls_from_config):
+                    // 0 = no personal choice, 1..N = per-user logon_slot,
+                    // LOGON_COMBO_SHARED_FLAG|N = admin shared bank slot N.
+                    int sel = (int)SendMessageA(g_app.hLogonCombo, CB_GETCURSEL, 0, 0);
+                    LRESULT itemData = (sel < 0) ? 0 : SendMessageA(g_app.hLogonCombo, CB_GETITEMDATA, (WPARAM)sel, 0);
+                    if (itemData == CB_ERR || itemData < 0) itemData = 0;
+                    int perUserSlot = (itemData & LOGON_COMBO_SHARED_FLAG) ? 0 : (int)itemData;
+                    int sharedSlot = (itemData & LOGON_COMBO_SHARED_FLAG) ? (int)(itemData & 0xFF) : 0;
+
+                    if (perUserSlot > 0 && !is_profile_slot_saved(g_app.configPath, perUserSlot)) {
+                        MessageBoxA(g_app.hMainWnd,
+                            "That slot is empty. Save a profile there before using it for automatic actions.",
+                            "Green Curve", MB_OK | MB_ICONINFORMATION);
+                        refresh_profile_controls_from_config();
+                        break;
+                    }
+                    if (sharedSlot > 0 && !is_machine_profile_slot_saved(sharedSlot)) {
+                        set_profile_status_text("Shared profile %d is no longer available.", sharedSlot);
+                        refresh_profile_controls_from_config();
+                        break;
+                    }
+
+                    // logon_slot and logon_shared_slot are mutually exclusive for this
+                    // account; set both (one to 0) and roll back together on failure.
                     char err[256] = {};
-                    int previousSlot = get_config_int(g_app.configPath, "profiles", key, 0);
-                    if (previousSlot < 0 || previousSlot > CONFIG_NUM_SLOTS) previousSlot = 0;
-                    bool ok = false;
-                    set_config_int(g_app.configPath, "profiles", key, slot);
-                    ok = set_startup_task_enabled(should_enable_startup_task_from_config(g_app.configPath), err, sizeof(err));
-                    if (!ok) {
-                        set_config_int(g_app.configPath, "profiles", key, previousSlot);
+                    int prevLogon = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
+                    int prevShared = get_config_int(g_app.configPath, "profiles", "logon_shared_slot", 0);
+                    set_config_int(g_app.configPath, "profiles", "logon_slot", perUserSlot);
+                    set_config_int(g_app.configPath, "profiles", "logon_shared_slot", sharedSlot);
+                    if (!set_startup_task_enabled(should_enable_startup_task_from_config(g_app.configPath), err, sizeof(err))) {
+                        set_config_int(g_app.configPath, "profiles", "logon_slot", prevLogon);
+                        set_config_int(g_app.configPath, "profiles", "logon_shared_slot", prevShared);
                         write_error_report_log_for_user_failure("Logon startup task update failed", err);
                         MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
                         refresh_profile_controls_from_config();
                         break;
                     }
                     bool startProgramAtLogon = is_start_on_logon_enabled(g_app.configPath);
-                    set_profile_status_text(slot > 0
-                        ? (startProgramAtLogon
+                    if (sharedSlot > 0) {
+                        set_profile_status_text(
+                            "Shared profile %d (admin) will apply at your logon%s - this overrides the all-users default.",
+                            sharedSlot, startProgramAtLogon ? " and Green Curve will start hidden in the tray" : "");
+                    } else if (perUserSlot > 0) {
+                        set_profile_status_text(startProgramAtLogon
                             ? "At Windows logon, slot %d will be applied and Green Curve will start hidden in the tray."
-                            : "At Windows logon, slot %d will be applied silently without showing the tray icon.")
-                        : "Windows logon auto-apply disabled.", slot);
+                            : "At Windows logon, slot %d will be applied silently without showing the tray icon.", perUserSlot);
+                    } else {
+                        int machineDefault = g_app.machineLogonSlotCache;
+                        if (machineDefault > 0 && is_machine_profile_slot_saved(machineDefault)) {
+                            set_profile_status_text(
+                                "No personal logon profile for this account - the admin all-users default (Shared profile %d) applies.",
+                                machineDefault);
+                        } else {
+                            set_profile_status_text("Windows logon auto-apply disabled for this account.");
+                        }
+                    }
+                    update_share_all_users_check_state();
                 } else {
-                    set_config_int(g_app.configPath, "profiles", key, slot);
+                    // App-launch combo: index 0 = Disabled, 1..N = per-user slot.
+                    int sel = (int)SendMessageA(g_app.hAppLaunchCombo, CB_GETCURSEL, 0, 0);
+                    int slot = (sel < 0) ? 0 : sel;
+                    if (slot > 0 && !is_profile_slot_saved(g_app.configPath, slot)) {
+                        MessageBoxA(g_app.hMainWnd,
+                            "That slot is empty. Save a profile there before using it for automatic actions.",
+                            "Green Curve", MB_OK | MB_ICONINFORMATION);
+                        refresh_profile_controls_from_config();
+                        break;
+                    }
+                    set_config_int(g_app.configPath, "profiles", "app_launch_slot", slot);
                     set_profile_status_text(slot > 0
                         ? "At app start, slot %d will load into the GUI and apply automatically."
                         : "App start auto-load disabled.", slot);
@@ -826,6 +1147,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     pt.y = rc.bottom;
                 }
                 show_lock_context_menu(hwnd, vi, pt);
+                return 0;
+            }
+            // The "Share with all users" checkbox forwards WM_CONTEXTMENU on
+            // right-click so the admin can manage the shared profile bank
+            // (publish/clear individual slots without changing the default).
+            if ((HWND)wParam == g_app.hShareAllUsersCheck) {
+                POINT pt = { (LONG)(short)LOWORD(lParam), (LONG)(short)HIWORD(lParam) };
+                if (pt.x == -1 && pt.y == -1) {
+                    RECT rc = {};
+                    GetWindowRect(g_app.hShareAllUsersCheck, &rc);
+                    pt.x = rc.left;
+                    pt.y = rc.bottom;
+                }
+                show_machine_logon_context_menu(hwnd, pt);
                 return 0;
             }
             break;

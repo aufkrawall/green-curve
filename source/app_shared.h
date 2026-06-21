@@ -11,6 +11,7 @@
 #define _WIN32_IE 0x0600
 #endif
 
+#if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -22,6 +23,13 @@
 #include <shellapi.h>
 #include <strsafe.h>
 #include <wtsapi32.h>
+#else
+// Linux: opaque stand-ins for the few Win32 types/macros in the shared
+// declarations below.  The GPU backend reaches the same nvapi64.dll/NVML logic
+// through libnvidia-api.so.1 / libnvidia-ml.so.1; only the UI/service handle
+// fields of AppData are unused here.
+#include "win32_compat.h"
+#endif
 #include <ctype.h>
 #include <errno.h>
 #include <math.h>
@@ -31,6 +39,46 @@
 #include <string.h>
 
 #define ARRAY_COUNT(a) (sizeof(a) / sizeof((a)[0]))
+
+// Platform-neutral GPU/IPC data model (NVAPI IDs + structs, NVML typedefs,
+// VfBackendSpec, DesiredSettings + IPC validator, ServiceRequest/Response,
+// NvmlApi).  Shared verbatim with the Linux backend.
+#include "gpu_core.h"
+// OS-abstraction shim (dynamic loading, sleep, atomics, threads, bounded
+// strings, subprocess capture) used by the shared backend.
+#include "platform.h"
+
+// Emit a debug line only when its formatted text changes from the previous call
+// AT THIS CALL SITE.  Cuts repetition of high-frequency idempotent state lines
+// (pure capability/cache queries logged on every poll) WITHOUT losing
+// information: the first occurrence and every subsequent change are still
+// logged.  Each call site keeps its own static cache.  Best-effort under
+// threads — a benign race can at most emit a duplicate or drop one line, never
+// overflow (StringCch* is bounded).  Use ONLY for idempotent state lines, never
+// for event/transition logs that must always appear.
+#if defined(_WIN32)
+#define debug_log_on_change(fmt, ...) \
+    do { \
+        static char s_dbgOnChangePrev__[256]; \
+        char dbgOnChangeCur__[256]; \
+        StringCchPrintfA(dbgOnChangeCur__, sizeof(dbgOnChangeCur__), fmt, ##__VA_ARGS__); \
+        if (strcmp(dbgOnChangeCur__, s_dbgOnChangePrev__) != 0) { \
+            StringCchCopyA(s_dbgOnChangePrev__, sizeof(s_dbgOnChangePrev__), dbgOnChangeCur__); \
+            debug_log("%s", dbgOnChangeCur__); \
+        } \
+    } while (0)
+#else
+#define debug_log_on_change(fmt, ...) \
+    do { \
+        static char s_dbgOnChangePrev__[256]; \
+        char dbgOnChangeCur__[256]; \
+        gc_snprintf(dbgOnChangeCur__, sizeof(dbgOnChangeCur__), fmt, ##__VA_ARGS__); \
+        if (strcmp(dbgOnChangeCur__, s_dbgOnChangePrev__) != 0) { \
+            gc_strlcpy(s_dbgOnChangePrev__, sizeof(s_dbgOnChangePrev__), dbgOnChangeCur__); \
+            debug_log("%s", dbgOnChangeCur__); \
+        } \
+    } while (0)
+#endif
 
 int nvmin(int a, int b);
 int nvmax(int a, int b);
@@ -43,14 +91,7 @@ extern CRITICAL_SECTION g_appLock;
 int dp(int px);
 void init_dpi();
 
-#define VF_NUM_POINTS       128
-#define NVAPI_INIT_ID       0x0150E828u
-#define NVAPI_ENUM_GPU_ID   0xE5AC921Fu
-#define NVAPI_GET_NAME_ID   0xCEEE8E9Fu
-#define NVAPI_GET_INTERFACE_VERSION_STRING_ID 0x01053FA5u
-#define NVAPI_GET_ERROR_MESSAGE_ID 0x6C2D048Cu
-#define NVAPI_GPU_GET_PCI_IDENTIFIERS_ID 0x2DDFB66Eu
-#define NVAPI_GPU_GET_ARCH_INFO_ID 0xD8265D24u
+// VF_NUM_POINTS + NVAPI entry-point IDs moved to gpu_core.h
 
 #define WINDOW_WIDTH        1180
 #define WINDOW_HEIGHT       800
@@ -62,7 +103,7 @@ void init_dpi();
 #define TRAY_ICON_OC_FAN_ID 114
 #define APP_NAME            "Green Curve"
 #ifndef APP_VERSION
-#define APP_VERSION         "0.15"
+#define APP_VERSION         "0.16"
 #endif
 #ifndef APP_BUILD_NUMBER
 #define APP_BUILD_NUMBER    0
@@ -97,6 +138,18 @@ void init_dpi();
 #define PROFILE_STATE_ID    2027
 #define APP_LAUNCH_LABEL_ID 2028
 #define LOGON_LABEL_ID      2029
+#define SHARE_ALL_USERS_CHECK_ID 2041
+#define MACHINE_LOGON_MENU_PUBLISH_ID 2042
+#define MACHINE_LOGON_MENU_CLEAR_MACHINE_SLOT_ID 2043
+#define SHARED_PROFILES_BTN_ID 2044
+#define MACHINE_LOGON_MENU_RESTRICT_ID 2045
+// Base for the per-slot items in the "Shared profiles" popup menu (BASE+slot).
+#define SHARED_PROFILE_MENU_BASE 2400
+// CB_SETITEMDATA tag for the unified "Apply profile after user log in:" combo:
+// item data 0 = no personal choice (use admin default if any), 1..CONFIG_NUM_SLOTS
+// = per-user logon_slot, (LOGON_COMBO_SHARED_FLAG | N) = admin shared bank slot N
+// (logon_shared_slot).  The flag sits above the slot range so there is no overlap.
+#define LOGON_COMBO_SHARED_FLAG 0x100
 #define PROFILE_STATUS_ID   2030
 #define START_ON_LOGON_CHECK_ID 2031
 #define FAN_MODE_COMBO_ID   2032
@@ -122,19 +175,20 @@ void init_dpi();
 #define FAN_CURVE_TIMER_ID  1
 #define FAN_TELEMETRY_TIMER_ID 2
 #define SERVICE_RECONNECT_TIMER_ID 3
-#define FAN_CURVE_MAX_POINTS 8
-#define FAN_CURVE_MAX_HYSTERESIS_C 10
-
-#define MAX_GPU_FANS        8
-#define MAX_GPU_ADAPTERS    8
+// FAN_CURVE_MAX_POINTS, FAN_CURVE_MAX_HYSTERESIS_C, MAX_GPU_FANS,
+// MAX_GPU_ADAPTERS moved to gpu_core.h
 #define CONFIG_FILE_NAME    "config.ini"
+// Machine-wide shared profile bank + all-users default logon assignment.
+// Lives under %ProgramData%\Green Curve (a fixed, all-users-readable,
+// admin-write known folder) — see resolve_machine_config_path().
+#define MACHINE_CONFIG_FILE_NAME "shared-profiles.ini"
+// Legacy name/location: older builds stored the bank as "machine.ini" next to
+// the installed service binary. migrate_legacy_machine_config() copies it into
+// the %ProgramData% location on first elevated service start, then removes it.
+#define LEGACY_MACHINE_CONFIG_FILE_NAME "machine.ini"
 #define STARTUP_TASK_PREFIX "Green Curve Startup - "
-#define CONFIG_NUM_SLOTS    5
-#define CONFIG_DEFAULT_SLOT 1
-#define NVML_PERF_STR_LEN   2048
-
-#define MIN_VISIBLE_VOLT_mV 700
-#define MIN_VISIBLE_FREQ_MHz 500
+// CONFIG_NUM_SLOTS, CONFIG_DEFAULT_SLOT, NVML_PERF_STR_LEN,
+// MIN_VISIBLE_VOLT_mV, MIN_VISIBLE_FREQ_MHz moved to gpu_core.h
 
 #define COL_BG              RGB(0x18, 0x18, 0x28)
 #define COL_PANEL           RGB(0x18, 0x18, 0x28)
@@ -150,331 +204,8 @@ void init_dpi();
 #define COL_BUTTON_BORDER   RGB(0x78, 0x9A, 0xD8)
 #define COL_BUTTON_DISABLED RGB(0x2A, 0x2A, 0x38)
 
-// Fixed underlying type so every int bit pattern is a valid enum value. This
-// matters at the IPC trust boundary: validate_desired_settings_for_ipc() reads
-// and clamps lockMode from caller-supplied bytes, and reading an out-of-range
-// value of an enum *without* a fixed underlying type is itself undefined
-// behavior (UBSan flags it), defeating the sanitization.
-enum LockMode : int {
-    LOCK_MODE_NONE = 0,
-    LOCK_MODE_FLATTEN = 1,
-    LOCK_MODE_HARD = 2,
-};
-
-inline const char* lock_mode_name(LockMode m) {
-    switch (m) {
-        case LOCK_MODE_FLATTEN: return "flatten";
-        case LOCK_MODE_HARD: return "hard";
-        default: return "none";
-    }
-}
-
-typedef void* GPU_HANDLE;
-
-typedef void* nvmlDevice_t;
-typedef int nvmlReturn_t;
-
-enum {
-    NVML_SUCCESS = 0,
-    NVML_ERROR_UNINITIALIZED = 1,
-    NVML_ERROR_INVALID_ARGUMENT = 2,
-    NVML_ERROR_NOT_SUPPORTED = 3,
-    NVML_ERROR_NO_PERMISSION = 4,
-    NVML_ERROR_ALREADY_INITIALIZED = 5,
-    NVML_ERROR_NOT_FOUND = 6,
-    NVML_ERROR_INSUFFICIENT_SIZE = 7,
-    NVML_ERROR_FUNCTION_NOT_FOUND = 13,
-    NVML_ERROR_GPU_IS_LOST = 15,
-    NVML_ERROR_ARG_VERSION_MISMATCH = 25,
-    NVML_ERROR_UNKNOWN = 999,
-};
-
-enum {
-    NVML_CLOCK_GRAPHICS = 0,
-    NVML_CLOCK_SM = 1,
-    NVML_CLOCK_MEM = 2,
-    NVML_CLOCK_VIDEO = 3,
-};
-
-enum {
-    NVML_TEMPERATURE_GPU = 0,
-};
-
-enum {
-    NVAPI_GPU_PUBLIC_CLOCK_GRAPHICS = 0,
-    NVAPI_GPU_PUBLIC_CLOCK_MEMORY = 4,
-};
-
-enum {
-    NVAPI_GPU_PERF_PSTATE20_CLOCK_TYPE_SINGLE = 0,
-    NVAPI_GPU_PERF_PSTATE20_CLOCK_TYPE_RANGE = 1,
-};
-
-enum {
-    NVML_PSTATE_0 = 0,
-    NVML_PSTATE_1 = 1,
-    NVML_PSTATE_2 = 2,
-    NVML_PSTATE_3 = 3,
-    NVML_PSTATE_4 = 4,
-    NVML_PSTATE_5 = 5,
-    NVML_PSTATE_6 = 6,
-    NVML_PSTATE_7 = 7,
-    NVML_PSTATE_8 = 8,
-    NVML_PSTATE_9 = 9,
-    NVML_PSTATE_10 = 10,
-    NVML_PSTATE_11 = 11,
-    NVML_PSTATE_12 = 12,
-    NVML_PSTATE_13 = 13,
-    NVML_PSTATE_14 = 14,
-    NVML_PSTATE_15 = 15,
-    NVML_PSTATE_UNKNOWN = 32,
-};
-
-#define NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW 0
-#define NVML_FAN_POLICY_MANUAL 1
-
-#define NVML_THERMAL_COOLER_SIGNAL_NONE 0
-#define NVML_THERMAL_COOLER_SIGNAL_TOGGLE 1
-#define NVML_THERMAL_COOLER_SIGNAL_VARIABLE 2
-
-#define NVML_THERMAL_COOLER_TARGET_NONE (1 << 0)
-#define NVML_THERMAL_COOLER_TARGET_GPU (1 << 1)
-#define NVML_THERMAL_COOLER_TARGET_MEMORY (1 << 2)
-#define NVML_THERMAL_COOLER_TARGET_POWER_SUPPLY (1 << 3)
-
-#define NVML_STRUCT_VERSION(data, ver) (unsigned int)(sizeof(nvml##data##_v##ver##_t) | ((ver) << 24U))
-#define NVAPI_STRUCT_VERSION(type, ver) (unsigned int)(sizeof(type) | ((ver) << 16U))
-
-#define NVAPI_MAX_GPU_PSTATE20_PSTATES 16
-#define NVAPI_MAX_GPU_PSTATE20_CLOCKS 8
-#define NVAPI_MAX_GPU_PSTATE20_BASE_VOLTAGES 4
-
-typedef struct {
-    unsigned int version;
-    unsigned int type;
-    unsigned int pstate;
-    int clockOffsetMHz;
-    int minClockOffsetMHz;
-    int maxClockOffsetMHz;
-} nvmlClockOffset_v1_t;
-typedef nvmlClockOffset_v1_t nvmlClockOffset_t;
-#define nvmlClockOffset_v1 NVML_STRUCT_VERSION(ClockOffset, 1)
-
-typedef struct {
-    unsigned int version;
-    unsigned int fan;
-    unsigned int speed;
-} nvmlFanSpeedInfo_v1_t;
-typedef nvmlFanSpeedInfo_v1_t nvmlFanSpeedInfo_t;
-#define nvmlFanSpeedInfo_v1 NVML_STRUCT_VERSION(FanSpeedInfo, 1)
-
-typedef unsigned int nvmlFanControlPolicy_t;
-
-typedef struct {
-    unsigned int version;
-    unsigned int index;
-    unsigned int signalType;
-    unsigned int target;
-} nvmlCoolerInfo_v1_t;
-typedef nvmlCoolerInfo_v1_t nvmlCoolerInfo_t;
-#define nvmlCoolerInfo_v1 NVML_STRUCT_VERSION(CoolerInfo, 1)
-
-typedef struct {
-    int value;
-    struct {
-        int min;
-        int max;
-    } valueRange;
-} nvapiPstates20ParamDelta_t;
-
-typedef struct {
-    unsigned int freq_kHz;
-} nvapiPstate20SingleClock_t;
-
-typedef struct {
-    unsigned int minFreq_kHz;
-    unsigned int maxFreq_kHz;
-    unsigned int domainId;
-    unsigned int minVoltage_uV;
-    unsigned int maxVoltage_uV;
-} nvapiPstate20RangeClock_t;
-
-typedef union {
-    nvapiPstate20SingleClock_t single;
-    nvapiPstate20RangeClock_t range;
-} nvapiPstate20ClockData_t;
-
-typedef struct {
-    unsigned int domainId;
-    unsigned int typeId;
-    unsigned int bIsEditable:1;
-    unsigned int reserved:31;
-    nvapiPstates20ParamDelta_t freqDelta_kHz;
-    nvapiPstate20ClockData_t data;
-} nvapiPstate20ClockEntry_t;
-
-typedef struct {
-    unsigned int domainId;
-    unsigned int bIsEditable:1;
-    unsigned int reserved:31;
-    unsigned int volt_uV;
-    nvapiPstates20ParamDelta_t voltDelta_uV;
-} nvapiPstate20BaseVoltageEntry_t;
-
-typedef struct {
-    unsigned int pstateId;
-    unsigned int bIsEditable:1;
-    unsigned int reserved:31;
-    nvapiPstate20ClockEntry_t clocks[NVAPI_MAX_GPU_PSTATE20_CLOCKS];
-    nvapiPstate20BaseVoltageEntry_t baseVoltages[NVAPI_MAX_GPU_PSTATE20_BASE_VOLTAGES];
-} nvapiPstate20Entry_t;
-static_assert(sizeof(nvapiPstate20Entry_t) == 456, "nvapiPstate20Entry_t size mismatch");
-
-typedef struct {
-    unsigned int numVoltages;
-    nvapiPstate20BaseVoltageEntry_t voltages[NVAPI_MAX_GPU_PSTATE20_BASE_VOLTAGES];
-} nvapiPstates20Ov_t;
-
-typedef struct {
-    unsigned int version;
-    unsigned int bIsEditable:1;
-    unsigned int reserved:31;
-    unsigned int numPstates;
-    unsigned int numClocks;
-    unsigned int numBaseVoltages;
-    nvapiPstate20Entry_t pstates[NVAPI_MAX_GPU_PSTATE20_PSTATES];
-    nvapiPstates20Ov_t ov;
-} nvapiPerfPstates20Info_t;
-static_assert(sizeof(nvapiPerfPstates20Info_t) == 7416, "nvapiPerfPstates20Info_t size mismatch");
-
-#define NVAPI_PERF_PSTATES20_INFO_VER2 NVAPI_STRUCT_VERSION(nvapiPerfPstates20Info_t, 2)
-#define NVAPI_PERF_PSTATES20_INFO_VER3 NVAPI_STRUCT_VERSION(nvapiPerfPstates20Info_t, 3)
-
-typedef enum {
-    NV_GPU_ARCHITECTURE_UNKNOWN = 0,
-    NV_GPU_ARCHITECTURE_GP100 = 0x00000130,
-    NV_GPU_ARCHITECTURE_TU100 = 0x00000160,
-    NV_GPU_ARCHITECTURE_GA100 = 0x00000170,
-    NV_GPU_ARCHITECTURE_AD100 = 0x00000190,
-    NV_GPU_ARCHITECTURE_GB200 = 0x000001B0,
-} NvGpuArchitectureId;
-
-typedef struct {
-    unsigned int version;
-    unsigned int architecture;
-    unsigned int implementation;
-    unsigned int revision;
-} nvapiGpuArchInfo_t;
-static_assert(sizeof(nvapiGpuArchInfo_t) == 16, "nvapiGpuArchInfo_t size mismatch");
-
-#define NVAPI_GPU_ARCH_INFO_VER2 NVAPI_STRUCT_VERSION(nvapiGpuArchInfo_t, 2)
-
-typedef enum {
-    GPU_FAMILY_UNKNOWN = 0,
-    GPU_FAMILY_PASCAL = 1,
-    GPU_FAMILY_TURING = 2,
-    GPU_FAMILY_AMPERE = 3,
-    GPU_FAMILY_LOVELACE = 4,
-    GPU_FAMILY_BLACKWELL = 5,
-} GpuFamily;
-
-typedef struct {
-    const char* name;
-    GpuFamily family;
-    bool supported;
-    bool readSupported;
-    bool writeSupported;
-    bool bestGuessOnly;
-    unsigned int getStatusId;
-    unsigned int getInfoId;
-    unsigned int getControlId;
-    unsigned int setControlId;
-    unsigned int statusBufferSize;
-    unsigned int statusVersion;
-    unsigned int statusMaskOffset;
-    unsigned int statusNumClocksOffset;
-    unsigned int statusEntriesOffset;
-    unsigned int statusEntryStride;
-    unsigned int infoBufferSize;
-    unsigned int infoVersion;
-    unsigned int infoMaskOffset;
-    unsigned int infoNumClocksOffset;
-    unsigned int controlBufferSize;
-    unsigned int controlVersion;
-    unsigned int controlMaskOffset;
-    unsigned int controlEntryBaseOffset;
-    unsigned int controlEntryStride;
-    unsigned int controlEntryDeltaOffset;
-    unsigned int defaultNumClocks;
-} VfBackendSpec;
-
-struct VFCurvePoint {
-    unsigned int freq_kHz;
-    unsigned int volt_uV;
-};
-
-enum {
-    FAN_MODE_AUTO = 0,
-    FAN_MODE_FIXED = 1,
-    FAN_MODE_CURVE = 2,
-};
-
-enum {
-    TRAY_ICON_STATE_DEFAULT = 0,
-    TRAY_ICON_STATE_OC = 1,
-    TRAY_ICON_STATE_FAN = 2,
-    TRAY_ICON_STATE_OC_FAN = 3,
-};
-
-struct FanCurvePoint {
-    bool enabled;
-    int temperatureC;
-    int fanPercent;
-};
-
-struct FanCurveConfig {
-    FanCurvePoint points[FAN_CURVE_MAX_POINTS];
-    int pollIntervalMs;
-    int hysteresisC;
-};
-
-struct ControlState {
-    bool valid;
-    bool hasGpuOffset;
-    int gpuOffsetMHz;
-    int gpuOffsetExcludeLowCount;
-    bool hasMemOffset;
-    int memOffsetMHz;
-    bool hasPowerLimit;
-    int powerLimitPct;
-    bool hasFan;
-    int fanMode;
-    int fanFixedPercent;
-    int fanCurrentPercent;
-    int fanCurrentTemperatureC;
-    FanCurveConfig fanCurve;
-};
-
-struct GpuAdapterInfo {
-    bool valid;
-    bool pciInfoValid;
-    bool vfReadSupported;
-    bool vfWriteSupported;
-    bool vfBestGuess;
-    unsigned int nvapiIndex;
-    unsigned int nvmlIndex;
-    unsigned int deviceId;
-    unsigned int subSystemId;
-    unsigned int pciRevisionId;
-    unsigned int extDeviceId;
-    unsigned int pciDomain;
-    unsigned int pciBus;
-    unsigned int pciDevice;
-    unsigned int pciFunction;
-    GpuFamily family;
-    char name[128];
-};
-
+// LockMode, NVML/NVAPI types+enums, VfBackendSpec, VFCurvePoint, fan structs,
+// ControlState, GpuAdapterInfo moved to gpu_core.h
 struct AppData {
     HINSTANCE hInst;
     HWND hMainWnd;
@@ -502,6 +233,8 @@ struct AppData {
     HWND hProfileStateLabel;
     HWND hAppLaunchCombo;
     HWND hLogonCombo;
+    HWND hShareAllUsersCheck;
+    HWND hSharedProfilesBtn;
     HWND hAppLaunchLabel;
     HWND hLogonLabel;
     HWND hProfileStatusLabel;
@@ -509,6 +242,16 @@ struct AppData {
     HWND hStartOnLogonLabel;
     HWND hLogonHintLabel;
     HWND hServiceEnableCheck;
+    int machineLogonSlotCache;
+    // Shared-only policy (admin restricts non-admins to admin-published profiles).
+    // restrictPolicyActive: the machine policy flag (cached from the shared bank).
+    // currentUserIsLocalAdmin: whether THIS user is a machine admin (even unelevated).
+    // loadedSharedSlot: the shared bank slot currently loaded into the editor
+    //   (0 = none/custom); a clean apply of it is sent as an authoritative
+    //   "apply shared slot N" so the service applies its own copy under policy.
+    bool restrictPolicyActive;
+    bool currentUserIsLocalAdmin;
+    int loadedSharedSlot;
     HWND hServiceEnableLabel;
     HWND hServiceStatusLabel;
     HWND hGpuSelectCombo;
@@ -673,95 +416,8 @@ struct AppData {
     ULONGLONG backgroundServiceOwnerUtcMs;
 };
 
-struct DesiredSettings {
-    bool hasCurvePoint[VF_NUM_POINTS];
-    unsigned int curvePointMHz[VF_NUM_POINTS];
-    bool hasLock;
-    int lockCi;
-    unsigned int lockMHz;
-    LockMode lockMode;
-    bool lockTracksAnchor;
-    bool hasGpuOffset;
-    int gpuOffsetMHz;
-    int gpuOffsetExcludeLowCount;
-    bool hasMemOffset;
-    int memOffsetMHz;
-    bool hasPowerLimit;
-    int powerLimitPct;
-    bool hasFan;
-    bool fanAuto;
-    int fanMode;
-    int fanPercent;
-    FanCurveConfig fanCurve;
-    bool resetOcBeforeApply;
-};
-
-// Sanitize a DesiredSettings struct received over IPC.  This is the single
-// trust boundary between an unprivileged caller and the LocalSystem service:
-// every numeric field that can reach an array index, a hardware write, or a
-// runtime loop MUST be range-checked here.  Downstream code also guards the
-// index fields, but completing the clamps at the boundary is defense in depth
-// (CWE-20) so a malformed or hostile request can never drive out-of-range
-// behavior even if a future downstream guard is dropped.
-static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
-    if (!d) return;
-    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-        if (d->curvePointMHz[ci] > 5000u) d->curvePointMHz[ci] = 5000u;
-    }
-    if (d->hasPowerLimit && (d->powerLimitPct < 50 || d->powerLimitPct > 150)) {
-        d->powerLimitPct = d->powerLimitPct < 50 ? 50 : 150;
-    }
-    if (d->hasGpuOffset && (d->gpuOffsetMHz < -1000 || d->gpuOffsetMHz > 1000)) {
-        d->gpuOffsetMHz = d->gpuOffsetMHz < -1000 ? -1000 : 1000;
-    }
-    if (d->hasMemOffset && (d->memOffsetMHz < -5000 || d->memOffsetMHz > 5000)) {
-        d->memOffsetMHz = d->memOffsetMHz < -5000 ? -5000 : 5000;
-    }
-    // lockCi indexes VF_NUM_POINTS-sized arrays downstream.  Preserve the -1
-    // "no explicit lock" sentinel but neutralize any out-of-bounds index.
-    if (d->lockCi < -1) d->lockCi = -1;
-    if (d->lockCi >= VF_NUM_POINTS) d->lockCi = VF_NUM_POINTS - 1;
-    if (d->lockMode < LOCK_MODE_NONE) d->lockMode = LOCK_MODE_NONE;
-    if (d->lockMode > LOCK_MODE_HARD) d->lockMode = LOCK_MODE_HARD;
-    // lockMHz feeds NVML locked-clocks and flatten-tail targets; cap it like
-    // the curve points (0 stays 0 = "no target").
-    if (d->lockMHz > 5000u) d->lockMHz = 5000u;
-    // Selective-offset exclude count gates per-point GPU offset application.
-    if (d->gpuOffsetExcludeLowCount < 0) d->gpuOffsetExcludeLowCount = 0;
-    if (d->gpuOffsetExcludeLowCount > VF_NUM_POINTS) d->gpuOffsetExcludeLowCount = VF_NUM_POINTS;
-    if (d->hasFan) {
-        if (d->fanPercent < 0) d->fanPercent = 0;
-        if (d->fanPercent > 100) d->fanPercent = 100;
-        // fanMode selects the runtime policy (auto/fixed/curve); an unknown
-        // value would fall through every branch with undefined effect.
-        if (d->fanMode < FAN_MODE_AUTO) d->fanMode = FAN_MODE_AUTO;
-        if (d->fanMode > FAN_MODE_CURVE) d->fanMode = FAN_MODE_CURVE;
-        // The embedded fan curve feeds fan-speed writes and interpolation.
-        for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
-            if (d->fanCurve.points[i].fanPercent < 0) d->fanCurve.points[i].fanPercent = 0;
-            if (d->fanCurve.points[i].fanPercent > 100) d->fanCurve.points[i].fanPercent = 100;
-            if (d->fanCurve.points[i].temperatureC < 0) d->fanCurve.points[i].temperatureC = 0;
-            if (d->fanCurve.points[i].temperatureC > 150) d->fanCurve.points[i].temperatureC = 150;
-        }
-        if (d->fanCurve.hysteresisC < 0) d->fanCurve.hysteresisC = 0;
-        if (d->fanCurve.hysteresisC > FAN_CURVE_MAX_HYSTERESIS_C) d->fanCurve.hysteresisC = FAN_CURVE_MAX_HYSTERESIS_C;
-        if (d->fanCurve.pollIntervalMs < 1) d->fanCurve.pollIntervalMs = 1;
-    }
-}
-
-// Decide whether the GUI may adopt the service snapshot's lock MODE for an
-// already-matching lock point.  Invariant: `lockMode != appliedLockMode`
-// means the user holds pending, not-yet-applied lock intent (checkbox click
-// FLATTEN->HARD, right-click menu switch, or a loaded profile) — the snapshot
-// still carries the PREVIOUSLY applied mode and must not clobber that intent,
-// or the change becomes un-appliable ("No changes to apply") and gets saved
-// wrong.  Adoption is allowed only when the GUI is clean and holds no
-// divergent intent (e.g. curve-detected FLATTEN while the service
-// authoritatively reports HARD at the same point).
-static inline bool lock_mode_sync_allowed(int guiLockMode, int guiAppliedLockMode, bool guiDirty) {
-    return !guiDirty && guiLockMode == guiAppliedLockMode;
-}
-
+// DesiredSettings, validate_desired_settings_for_ipc(),
+// lock_mode_sync_allowed() moved to gpu_core.h
 struct CliOptions {
     bool recognized;
     bool showHelp;
@@ -777,6 +433,17 @@ struct CliOptions {
     bool serviceRemove;
     bool startupTaskEnable;
     bool startupTaskDisable;
+    bool setMachineLogonSlot;
+    bool clearMachineLogonSlot;
+    int machineLogonSlotValue;
+    bool publishSlotToMachine;
+    bool clearMachineSlot;
+    int machineSlotValue;
+    bool shareSlot;
+    bool unshareSlot;
+    int shareSlotValue;
+    bool setRestrictPolicy;
+    int restrictPolicyValue;
     bool hasConfigPath;
     char configPath[MAX_PATH];
     char probeOutputPath[MAX_PATH];
@@ -784,236 +451,15 @@ struct CliOptions {
     DesiredSettings desired;
 };
 
-enum {
-    SERVICE_PROTOCOL_MAGIC = 0x47535643u,
-    SERVICE_PROTOCOL_VERSION = 7,
-};
-
-enum ServiceCommand {
-    SERVICE_CMD_NONE = 0,
-    SERVICE_CMD_PING = 1,
-    SERVICE_CMD_GET_SNAPSHOT = 2,
-    SERVICE_CMD_GET_TELEMETRY = 3,
-    SERVICE_CMD_APPLY = 4,
-    SERVICE_CMD_RESET = 5,
-    SERVICE_CMD_GET_ACTIVE_DESIRED = 6,
-    SERVICE_CMD_WRITE_LOG_SNAPSHOT = 7,
-    SERVICE_CMD_WRITE_JSON_SNAPSHOT = 8,
-    SERVICE_CMD_WRITE_PROBE_REPORT = 9,
-};
-
-enum ServiceResponseStatus {
-    SERVICE_STATUS_OK = 0,
-    SERVICE_STATUS_ERROR = 1,
-    SERVICE_STATUS_VERSION_MISMATCH = 2,
-};
-
-struct ServiceSnapshot {
-    bool initialized;
-    bool loaded;
-    bool fanSupported;
-    bool fanRangeKnown;
-    bool fanIsAuto;
-    bool fanCurveRuntimeActive;
-    bool fanFixedRuntimeActive;
-    bool gpuOffsetRangeKnown;
-    bool memOffsetRangeKnown;
-    bool curveOffsetRangeKnown;
-    bool gpuTemperatureValid;
-    bool vfReadSupported;
-    bool vfWriteSupported;
-    bool vfBestGuess;
-    bool hasLock;
-    int lockCi;
-    unsigned int lockMHz;
-    int lockMode;
-    bool lockTracksAnchor;
-    unsigned int adapterCount;
-    unsigned int selectedAdapterIndex;
-    bool selectedAdapterOrdinalFallback;
-    GpuAdapterInfo adapters[MAX_GPU_ADAPTERS];
-    GpuFamily gpuFamily;
-    int numPopulated;
-    int gpuClockOffsetkHz;
-    int memClockOffsetkHz;
-    int gpuClockOffsetMinMHz;
-    int gpuClockOffsetMaxMHz;
-    int memOffsetMinMHz;
-    int memOffsetMaxMHz;
-    int curveOffsetMinkHz;
-    int curveOffsetMaxkHz;
-    int powerLimitPct;
-    int powerLimitDefaultmW;
-    int powerLimitCurrentmW;
-    int powerLimitMinmW;
-    int powerLimitMaxmW;
-    int appliedGpuOffsetMHz;
-    int appliedGpuOffsetExcludeLowCount;
-    bool lastApplyUsedGpuOffset;
-    int activeFanMode;
-    int activeFanFixedPercent;
-    int gpuTemperatureC;
-    unsigned int fanCount;
-    unsigned int fanMinPct;
-    unsigned int fanMaxPct;
-    unsigned int fanPercent[MAX_GPU_FANS];
-    unsigned int fanTargetPercent[MAX_GPU_FANS];
-    unsigned int fanRpm[MAX_GPU_FANS];
-    unsigned int fanPolicy[MAX_GPU_FANS];
-    unsigned int fanControlSignal[MAX_GPU_FANS];
-    unsigned int fanTargetMask[MAX_GPU_FANS];
-    VFCurvePoint curve[VF_NUM_POINTS];
-    int freqOffsets[VF_NUM_POINTS];
-    FanCurveConfig activeFanCurve;
-    char gpuName[256];
-    char ownerUser[256];
-    DWORD ownerSessionId;
-    ULONGLONG ownerUtcMs;
-    // GPU recovery status — populated when the service is recovering from
-    // a device reconnect / driver upgrade.  The GUI uses these to show
-    // "GPU reconnecting..." instead of "service not responding".
-    bool serviceInRecovery;
-    ULONGLONG lastRecoveryTickMs;
-    // True when the service has re-applied settings after recovery but not yet
-    // confirmed they stuck — the GUI shows "reapplying..." instead of a
-    // misleading "settings active".
-    bool serviceReapplyInProgress;
-};
-
-struct ServiceRequest {
-    DWORD magic;
-    DWORD version;
-    DWORD command;
-    DWORD flags;
-    DWORD callerPid;
-    DWORD callerSessionId;
-    DWORD resetOcBeforeApply;
-    GpuAdapterInfo targetGpu;
-    DesiredSettings desired;
-    char source[64];
-    char path[MAX_PATH];
-};
-static_assert(sizeof(ServiceRequest) < 65536, "ServiceRequest size sanity check");
-
-struct ServiceResponse {
-    DWORD magic;
-    DWORD version;
-    DWORD status;
-    DWORD reserved;
-    DWORD serviceBuildNumber;
-    char serviceVersion[32];
-    ServiceSnapshot snapshot;
-    DesiredSettings desired;
-    ControlState controlState;
-    char message[512];
-};
-static_assert(sizeof(ServiceResponse) < 262144, "ServiceResponse size sanity check");
-
-enum {
-    GUI_FAN_MODE_UNSET = -1,
-};
-
-typedef nvmlReturn_t (*nvmlInit_v2_t)();
-typedef nvmlReturn_t (*nvmlShutdown_t)();
-typedef nvmlReturn_t (*nvmlDeviceGetHandleByIndex_v2_t)(unsigned int, nvmlDevice_t*);
-typedef nvmlReturn_t (*nvmlDeviceGetCount_v2_t)(unsigned int*);
-struct nvmlPciInfo_t {
-    char busId[32];
-    unsigned int domain;
-    unsigned int bus;
-    unsigned int device;
-    unsigned int pciDeviceId;
-    unsigned int pciSubSystemId;
-    unsigned int reserved0;
-    unsigned int reserved1;
-    unsigned int reserved2;
-    unsigned int reserved3;
-};
-typedef nvmlReturn_t (*nvmlDeviceGetPciInfo_t)(nvmlDevice_t, nvmlPciInfo_t*);
-typedef nvmlReturn_t (*nvmlDeviceGetPowerManagementLimit_t)(nvmlDevice_t, unsigned int*);
-typedef nvmlReturn_t (*nvmlDeviceGetPowerManagementDefaultLimit_t)(nvmlDevice_t, unsigned int*);
-typedef nvmlReturn_t (*nvmlDeviceGetPowerManagementLimitConstraints_t)(nvmlDevice_t, unsigned int*, unsigned int*);
-typedef nvmlReturn_t (*nvmlDeviceSetPowerManagementLimit_t)(nvmlDevice_t, unsigned int);
-typedef nvmlReturn_t (*nvmlDeviceGetClockOffsets_t)(nvmlDevice_t, nvmlClockOffset_t*);
-typedef nvmlReturn_t (*nvmlDeviceSetClockOffsets_t)(nvmlDevice_t, nvmlClockOffset_t*);
-typedef nvmlReturn_t (*nvmlDeviceGetPerformanceState_t)(nvmlDevice_t, unsigned int*);
-typedef nvmlReturn_t (*nvmlDeviceGetGpcClkVfOffset_t)(nvmlDevice_t, int*);
-typedef nvmlReturn_t (*nvmlDeviceGetMemClkVfOffset_t)(nvmlDevice_t, int*);
-typedef nvmlReturn_t (*nvmlDeviceGetGpcClkMinMaxVfOffset_t)(nvmlDevice_t, int*, int*);
-typedef nvmlReturn_t (*nvmlDeviceGetMemClkMinMaxVfOffset_t)(nvmlDevice_t, int*, int*);
-typedef nvmlReturn_t (*nvmlDeviceSetGpcClkVfOffset_t)(nvmlDevice_t, int);
-typedef nvmlReturn_t (*nvmlDeviceSetMemClkVfOffset_t)(nvmlDevice_t, int);
-typedef nvmlReturn_t (*nvmlDeviceGetNumFans_t)(nvmlDevice_t, unsigned int*);
-typedef nvmlReturn_t (*nvmlDeviceGetMinMaxFanSpeed_t)(nvmlDevice_t, unsigned int*, unsigned int*);
-typedef nvmlReturn_t (*nvmlDeviceGetFanControlPolicy_v2_t)(nvmlDevice_t, unsigned int, unsigned int*);
-typedef nvmlReturn_t (*nvmlDeviceSetFanControlPolicy_t)(nvmlDevice_t, unsigned int, unsigned int);
-typedef nvmlReturn_t (*nvmlDeviceGetFanSpeed_v2_t)(nvmlDevice_t, unsigned int, unsigned int*);
-typedef nvmlReturn_t (*nvmlDeviceGetTargetFanSpeed_t)(nvmlDevice_t, unsigned int, unsigned int*);
-typedef nvmlReturn_t (*nvmlDeviceGetFanSpeedRPM_t)(nvmlDevice_t, nvmlFanSpeedInfo_t*);
-typedef nvmlReturn_t (*nvmlDeviceSetFanSpeed_v2_t)(nvmlDevice_t, unsigned int, unsigned int);
-typedef nvmlReturn_t (*nvmlDeviceSetDefaultFanSpeed_v2_t)(nvmlDevice_t, unsigned int);
-typedef nvmlReturn_t (*nvmlDeviceGetCoolerInfo_t)(nvmlDevice_t, nvmlCoolerInfo_t*);
-typedef nvmlReturn_t (*nvmlDeviceGetTemperature_t)(nvmlDevice_t, unsigned int, unsigned int*);
-typedef nvmlReturn_t (*nvmlDeviceSetGpuLockedClocks_t)(nvmlDevice_t, unsigned int, unsigned int);
-typedef nvmlReturn_t (*nvmlDeviceResetGpuLockedClocks_t)(nvmlDevice_t);
-typedef nvmlReturn_t (*nvmlDeviceSetMemoryLockedClocks_t)(nvmlDevice_t, unsigned int, unsigned int);
-typedef nvmlReturn_t (*nvmlDeviceResetMemoryLockedClocks_t)(nvmlDevice_t);
-
-enum {
-    NVML_CLOCK_ID_CURRENT = 0,
-    NVML_CLOCK_ID_APP_CLOCK_TARGET = 1,
-    NVML_CLOCK_ID_APP_CLOCK_DEFAULT = 2,
-    NVML_CLOCK_ID_CUSTOMER_BOOST_MAX = 3,
-};
-
-typedef nvmlReturn_t (*nvmlDeviceGetClock_t)(nvmlDevice_t, unsigned int, unsigned int, unsigned int*);
-typedef nvmlReturn_t (*nvmlDeviceGetMaxClock_t)(nvmlDevice_t, unsigned int, unsigned int*);
-
-struct NvmlApi {
-    nvmlInit_v2_t init;
-    nvmlShutdown_t shutdown;
-    nvmlDeviceGetHandleByIndex_v2_t getHandleByIndex;
-    nvmlDeviceGetCount_v2_t getCount;
-    nvmlDeviceGetPciInfo_t getPciInfo;
-    nvmlDeviceGetPowerManagementLimit_t getPowerLimit;
-    nvmlDeviceGetPowerManagementDefaultLimit_t getPowerDefaultLimit;
-    nvmlDeviceGetPowerManagementLimitConstraints_t getPowerConstraints;
-    nvmlDeviceSetPowerManagementLimit_t setPowerLimit;
-    nvmlDeviceGetClockOffsets_t getClockOffsets;
-    nvmlDeviceSetClockOffsets_t setClockOffsets;
-    nvmlDeviceGetPerformanceState_t getPerformanceState;
-    nvmlDeviceGetGpcClkVfOffset_t getGpcClkVfOffset;
-    nvmlDeviceGetMemClkVfOffset_t getMemClkVfOffset;
-    nvmlDeviceGetGpcClkMinMaxVfOffset_t getGpcClkMinMaxVfOffset;
-    nvmlDeviceGetMemClkMinMaxVfOffset_t getMemClkMinMaxVfOffset;
-    nvmlDeviceSetGpcClkVfOffset_t setGpcClkVfOffset;
-    nvmlDeviceSetMemClkVfOffset_t setMemClkVfOffset;
-    nvmlDeviceGetNumFans_t getNumFans;
-    nvmlDeviceGetMinMaxFanSpeed_t getMinMaxFanSpeed;
-    nvmlDeviceGetFanControlPolicy_v2_t getFanControlPolicy;
-    nvmlDeviceSetFanControlPolicy_t setFanControlPolicy;
-    nvmlDeviceGetFanSpeed_v2_t getFanSpeed;
-    nvmlDeviceGetTargetFanSpeed_t getTargetFanSpeed;
-    nvmlDeviceGetFanSpeedRPM_t getFanSpeedRpm;
-    nvmlDeviceSetFanSpeed_v2_t setFanSpeed;
-    nvmlDeviceSetDefaultFanSpeed_v2_t setDefaultFanSpeed;
-    nvmlDeviceGetCoolerInfo_t getCoolerInfo;
-    nvmlDeviceGetTemperature_t getTemperature;
-    nvmlDeviceGetClock_t getClock;
-    nvmlDeviceGetMaxClock_t getMaxClock;
-    nvmlDeviceSetGpuLockedClocks_t setGpuLockedClocks;
-    nvmlDeviceResetGpuLockedClocks_t resetGpuLockedClocks;
-    nvmlDeviceSetMemoryLockedClocks_t setMemoryLockedClocks;
-    nvmlDeviceResetMemoryLockedClocks_t resetMemoryLockedClocks;
-};
-
+// Service protocol (magic/version/commands), ServiceSnapshot,
+// ServiceRequest/Response, NVML typedefs + NvmlApi moved to gpu_core.h
 extern AppData g_app;
 extern NvmlApi g_nvml_api;
 extern HMODULE g_nvml;
 extern bool g_debug_logging;
-// F-DOM-1: the experimental best-guess-family VF warning re-shows once per GUI
-// session (it must not be permanently dismissible) but should not nag within a
-// run; set once the warning has been acknowledged this session.
+// F-DOM-1: the unrecognized-GPU best-effort VF warning re-shows once per GUI
+// session unless the user disables it persistently; set once the warning has
+// been acknowledged in this process.
 extern bool g_bestGuessWarningShownThisSession;
 // F-REL-2e: set when a telemetry poll detects the service reset to defaults and
 // clears a stale adopted GUI lock — requests the next poll to do the same full
@@ -1103,5 +549,64 @@ bool config_section_has_keys(const char* path, const char* section);
 int get_config_int(const char* path, const char* section, const char* key, int defaultVal);
 bool set_config_int(const char* path, const char* section, const char* key, int value);
 void invalidate_tray_profile_cache();
+
+// Machine-wide default logon profile (admin-configured, applies to all users).
+bool resolve_machine_config_path(char* out, size_t outSize);
+bool get_machine_logon_slot(int* slotOut);
+bool set_machine_logon_slot(int slot, char* err, size_t errSize);
+bool clear_machine_logon_slot(char* err, size_t errSize);
+bool is_machine_profile_slot_saved(int slot);
+bool copy_profile_slot_to_machine_config(const char* srcPath, int slot, char* err, size_t errSize);
+bool clear_machine_profile_slot(int slot, char* err, size_t errSize);
+
+// One coherent "share with all users" operation: publish slot data into the
+// shared bank AND set it as the all-users default logon profile. unshare
+// reverses both (clearing the default only when it points at this slot). Both
+// require elevation. These back the GUI "Share with all users" checkbox.
+bool share_profile_slot_for_all_users(const char* srcPath, int slot, char* err, size_t errSize);
+bool unshare_profile_slot_for_all_users(int slot, char* err, size_t errSize);
+
+// Shared-only policy: when enabled, the service only honors APPLY from a
+// non-admin caller when it names a shared bank slot (the service applies its own
+// copy). Stored in the protected shared bank; admin-only write. Read is open.
+bool get_machine_restrict_policy(bool* enabledOut);
+bool set_machine_restrict_policy(bool enable, char* err, size_t errSize);
+// True if the current process's user is a member of the local Administrators
+// group, even when running unelevated (UAC-filtered tokens carry it deny-only).
+bool current_user_is_local_admin();
+
+// What a session's logon auto-apply should resolve to.  Decoupled from the I/O
+// so the policy decision is pure and unit-testable (see
+// resolve_logon_profile_source).  All logon paths (client + service) share it.
+enum LogonProfileSource {
+    LOGON_PROFILE_SOURCE_NONE = 0,       // nothing to apply
+    LOGON_PROFILE_SOURCE_SHARED_BANK,    // user-chosen logon_shared_slot (authoritative bank copy)
+    LOGON_PROFILE_SOURCE_PER_USER,       // per-user logon_slot content
+    LOGON_PROFILE_SOURCE_MACHINE_DEFAULT // machine-wide default logon profile (authoritative bank copy)
+};
+
+// Pure policy decision for logon auto-apply under restrict_non_admin_to_shared.
+//   policyActive    : the shared-only machine policy is enabled.
+//   isAdmin         : the target user is a machine administrator.
+//   logonSharedSlot : per-user "apply admin shared bank slot N at my logon" (0 = unset).
+//   bankSlotSaved   : logonSharedSlot names a currently-published bank slot.
+//   hasPerUserSlot  : a saved per-user logon_slot profile is available.
+//   hasMachineDefault: a published machine-wide default logon profile is available.
+// A user's explicit shared-bank choice always wins (it is authoritative and
+// policy-safe).  A restricted (policy && !admin) user otherwise gets ONLY the
+// machine-wide shared default — never their own per-user custom OC — which both
+// fixes auto-apply for restricted users and closes the service-router bypass.
+LogonProfileSource resolve_logon_profile_source(bool policyActive, bool isAdmin,
+    int logonSharedSlot, bool bankSlotSaved, bool hasPerUserSlot, bool hasMachineDefault);
+
+// True if the SCM-registered service binary directory is located under a user
+// profile, which means other users may be unable to launch the GUI binary.
+bool service_install_dir_is_under_user_profile();
+
+// True if the RUNNING process's own binary directory is located under a user
+// profile.  Fires pre-install / in portable use (when there is no SCM service
+// dir yet), covering the case where a restricted user cannot even execute the
+// GUI binary because it lives inside another user's profile.
+bool running_exe_dir_is_under_user_profile();
 
 #endif

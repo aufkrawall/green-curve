@@ -666,9 +666,14 @@ static bool vf_backend_is_best_guess(const VfBackendSpec* backend) {
 }
 static bool should_show_best_guess_warning() {
     if (!g_app.vfBackend || !vf_backend_is_best_guess(g_app.vfBackend)) return false;
-    // F-DOM-1: re-show once per session. Writing VF data to an unvalidated
-    // architecture is risky on every run, so the warning is intentionally NOT
-    // permanently dismissible; it just doesn't nag again within the same session.
+    int hideWarning = get_config_int(g_app.configPath, "warnings", "hide_unrecognized_gpu_warning", 0);
+    if (hideWarning != 0) {
+        debug_log_on_change("unrecognized GPU warning suppressed by user config\n");
+        return false;
+    }
+    // Re-show once per session for future/unknown families unless the user has
+    // explicitly disabled it. Known Pascal/Turing/Ampere/Lovelace/Blackwell
+    // backends are not warning-gated.
     if (g_bestGuessWarningShownThisSession) return false;
     return true;
 }

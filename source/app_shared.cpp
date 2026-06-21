@@ -86,3 +86,29 @@ void init_dpi() {
 
     g_scale = (float)g_dpi / 96.0f;
 }
+
+// Pure policy decision shared by every logon auto-apply path (client + service).
+// See app_shared.h for the contract.  Kept free of any I/O so it is exhaustively
+// unit-testable by build.py's regression harness.
+LogonProfileSource resolve_logon_profile_source(bool policyActive, bool isAdmin,
+    int logonSharedSlot, bool bankSlotSaved, bool hasPerUserSlot, bool hasMachineDefault) {
+    // 1) An explicit, currently-published user choice of a shared bank profile
+    //    always wins: it is the admin's authoritative copy, so it is valid for
+    //    everyone and safe under the shared-only policy.
+    if (logonSharedSlot > 0 && bankSlotSaved) return LOGON_PROFILE_SOURCE_SHARED_BANK;
+
+    // 2) A restricted user (policy on AND not a machine admin) may NEVER have
+    //    their own per-user custom OC applied at logon.  They get only the
+    //    machine-wide shared default (authoritative bank copy), if any.  This is
+    //    what closes the service-router bypass.
+    if (policyActive && !isAdmin) {
+        if (hasMachineDefault) return LOGON_PROFILE_SOURCE_MACHINE_DEFAULT;
+        return LOGON_PROFILE_SOURCE_NONE;
+    }
+
+    // 3) Admins / unrestricted machines: per-user logon slot first, then the
+    //    machine-wide default as a fallback (unchanged legacy behavior).
+    if (hasPerUserSlot) return LOGON_PROFILE_SOURCE_PER_USER;
+    if (hasMachineDefault) return LOGON_PROFILE_SOURCE_MACHINE_DEFAULT;
+    return LOGON_PROFILE_SOURCE_NONE;
+}

@@ -244,6 +244,10 @@ static bool copy_wide_to_utf8(LPWSTR text, char* out, int outSize);
 static bool copy_wide_to_ansi(LPWSTR text, char* out, int outSize);
 static bool utf8_to_wide(const char* text, WCHAR* out, int outCount);
 static bool get_current_user_sam_name(WCHAR* out, DWORD outCount);
+// Override the user identity used for the per-user logon task, so the elevated
+// helper registers the task for the REQUESTING (standard/restricted) user
+// instead of the approving admin.  Defined in main_runtime_control.cpp.
+void set_forced_startup_user_sam(const WCHAR* samName);
 static bool hardware_initialize(char* detail, size_t detailSize);
 static void populate_service_snapshot(ServiceSnapshot* snapshot);
 static void populate_control_state(ControlState* state);
@@ -252,8 +256,8 @@ static void apply_service_desired_to_gui(const DesiredSettings* desired);
 static void apply_control_state_to_gui(const ControlState* state);
 static bool get_effective_control_state(ControlState* stateOut);
 static void service_capture_owner_identity(const char* user, DWORD sessionId);
-static bool get_pipe_client_identity(HANDLE pipe, char* userOut, size_t userOutSize, DWORD* sessionIdOut, DWORD* pidOut, char* err, size_t errSize);
-static bool service_caller_is_authorized(HANDLE pipe, const char* source, char* err, size_t errSize, char* callerUserOut, size_t callerUserOutSize, DWORD* callerSessionIdOut, DWORD* callerPidOut);
+static bool get_pipe_client_identity(HANDLE pipe, char* userOut, size_t userOutSize, DWORD* sessionIdOut, DWORD* pidOut, bool* isAdminOut, char* err, size_t errSize);
+static bool service_caller_is_authorized(HANDLE pipe, const char* source, char* err, size_t errSize, char* callerUserOut, size_t callerUserOutSize, DWORD* callerSessionIdOut, DWORD* callerPidOut, bool* callerIsAdminOut);
 static bool get_active_interactive_session_id(DWORD* sessionIdOut);
 static void ensure_service_runtime_lock();
 static void lock_service_runtime();
@@ -420,6 +424,7 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
 static bool clear_profile_from_config(const char* path, int slot, char* err, size_t errSize);
 static bool is_profile_slot_saved(const char* path, int slot);
 static void refresh_profile_controls_from_config();
+static void update_share_all_users_check_state();
 static void migrate_legacy_config_if_needed(const char* path);
 static void merge_desired_settings(DesiredSettings* base, const DesiredSettings* override);
 static bool desired_has_any_action(const DesiredSettings* desired);
@@ -525,189 +530,9 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
 static LRESULT CALLBACK LicenseDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static void layout_license_dialog(HWND hwnd);
 
-static const VfBackendSpec g_vfBackendBlackwell = {
-    "blackwell",
-    GPU_FAMILY_BLACKWELL,
-    true,
-    true,
-    true,
-    false,
-    0x21537AD4u,
-    0x507B4B59u,
-    0x23F1B133u,
-    0x0733E009u,
-    0x1C28,
-    1,
-    0x04,
-    0x24,
-    0x48,
-    0x1C,
-    0x182C,
-    1,
-    0x04,
-    0x14,
-    0x2420,
-    1,
-    0x04,
-    0x44,
-    0x24,
-    0x14,
-    15,
-};
-
-static const VfBackendSpec g_vfBackendLovelace = {
-    "lovelace",
-    GPU_FAMILY_LOVELACE,
-    true,
-    true,
-    true,
-    false,
-    0x21537AD4u,
-    0x507B4B59u,
-    0x23F1B133u,
-    0x0733E009u,
-    0x1C28,
-    1,
-    0x04,
-    0x24,
-    0x48,
-    0x1C,
-    0x182C,
-    1,
-    0x04,
-    0x14,
-    0x2420,
-    1,
-    0x04,
-    0x44,
-    0x24,
-    0x14,
-    15,
-};
-
-static const VfBackendSpec g_vfBackendAmpere = {
-    "ampere",
-    GPU_FAMILY_AMPERE,
-    true,
-    true,
-    true,
-    true,
-    0x21537AD4u,
-    0x507B4B59u,
-    0x23F1B133u,
-    0x0733E009u,
-    0x1C28,
-    1,
-    0x04,
-    0x24,
-    0x48,
-    0x1C,
-    0x182C,
-    1,
-    0x04,
-    0x14,
-    0x2420,
-    1,
-    0x04,
-    0x44,
-    0x24,
-    0x14,
-    15,
-};
-
-static const VfBackendSpec g_vfBackendTuring = {
-    "turing",
-    GPU_FAMILY_TURING,
-    true,
-    true,
-    true,
-    true,
-    0x21537AD4u,
-    0x507B4B59u,
-    0x23F1B133u,
-    0x0733E009u,
-    0x1C28,
-    1,
-    0x04,
-    0x24,
-    0x48,
-    0x1C,
-    0x182C,
-    1,
-    0x04,
-    0x14,
-    0x2420,
-    1,
-    0x04,
-    0x44,
-    0x24,
-    0x14,
-    15,
-};
-
-static const VfBackendSpec g_vfBackendPascal = {
-    "pascal",
-    GPU_FAMILY_PASCAL,
-    true,
-    true,
-    true,
-    true,
-    0x21537AD4u,
-    0x507B4B59u,
-    0x23F1B133u,
-    0x0733E009u,
-    0x1C28,
-    1,
-    0x04,
-    0x24,
-    0x48,
-    0x1C,
-    0x182C,
-    1,
-    0x04,
-    0x14,
-    0x2420,
-    1,
-    0x04,
-    0x44,
-    0x24,
-    0x14,
-    15,
-};
-
-static const VfBackendSpec g_vfBackendFuture = {
-    "future",
-    GPU_FAMILY_UNKNOWN,
-    true,
-    true,
-    true,
-    true,
-    0x21537AD4u,
-    0x507B4B59u,
-    0x23F1B133u,
-    0x0733E009u,
-    0x1C28,
-    1,
-    0x04,
-    0x24,
-    0x48,
-    0x1C,
-    0x182C,
-    1,
-    0x04,
-    0x14,
-    0x2420,
-    1,
-    0x04,
-    0x44,
-    0x24,
-    0x14,
-    15,
-};
-
-static_assert(0x48u + (VF_NUM_POINTS - 1u) * 0x1Cu + 4u <= 0x1C28u, "VF status buffer overflow for shared backend layout");
-static_assert(0x04u + 32u <= 0x182Cu, "VF info buffer overflow for shared backend layout");
-static_assert(0x44u + (VF_NUM_POINTS - 1u) * 0x24u + 4u <= 0x2420u, "VF control buffer overflow for shared backend layout");
+// VfBackendSpec tables (g_vfBackend*) + layout static_asserts moved to
+// vf_backends.cpp (shared with the Linux backend).
+#include "vf_backends.h"
 
 struct FanCurveDialogState {
     HWND hwnd;

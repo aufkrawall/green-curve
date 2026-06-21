@@ -43,6 +43,69 @@ static bool parse_cli_options(LPWSTR cmdLine, CliOptions* opts) {
         } else if (wcscmp(arg, L"--startup-task-disable") == 0) {
             opts->recognized = true;
             opts->startupTaskDisable = true;
+        } else if (wcscmp(arg, L"--set-machine-logon-slot") == 0) {
+            opts->recognized = true;
+            int v = 0;
+            if (i + 1 >= argc || !parse_wide_int_arg(argv[++i], &v)) {
+                set_message(opts->error, sizeof(opts->error), "Invalid --set-machine-logon-slot value");
+                LocalFree(argv);
+                return false;
+            }
+            opts->setMachineLogonSlot = true;
+            opts->machineLogonSlotValue = v;
+        } else if (wcscmp(arg, L"--clear-machine-logon-slot") == 0) {
+            opts->recognized = true;
+            opts->clearMachineLogonSlot = true;
+        } else if (wcscmp(arg, L"--publish-slot-to-machine") == 0) {
+            opts->recognized = true;
+            int v = 0;
+            if (i + 1 >= argc || !parse_wide_int_arg(argv[++i], &v)) {
+                set_message(opts->error, sizeof(opts->error), "Invalid --publish-slot-to-machine value");
+                LocalFree(argv);
+                return false;
+            }
+            opts->publishSlotToMachine = true;
+            opts->machineSlotValue = v;
+        } else if (wcscmp(arg, L"--clear-machine-slot") == 0) {
+            opts->recognized = true;
+            int v = 0;
+            if (i + 1 >= argc || !parse_wide_int_arg(argv[++i], &v)) {
+                set_message(opts->error, sizeof(opts->error), "Invalid --clear-machine-slot value");
+                LocalFree(argv);
+                return false;
+            }
+            opts->clearMachineSlot = true;
+            opts->machineSlotValue = v;
+        } else if (wcscmp(arg, L"--share-slot") == 0) {
+            opts->recognized = true;
+            int v = 0;
+            if (i + 1 >= argc || !parse_wide_int_arg(argv[++i], &v)) {
+                set_message(opts->error, sizeof(opts->error), "Invalid --share-slot value");
+                LocalFree(argv);
+                return false;
+            }
+            opts->shareSlot = true;
+            opts->shareSlotValue = v;
+        } else if (wcscmp(arg, L"--unshare-slot") == 0) {
+            opts->recognized = true;
+            int v = 0;
+            if (i + 1 >= argc || !parse_wide_int_arg(argv[++i], &v)) {
+                set_message(opts->error, sizeof(opts->error), "Invalid --unshare-slot value");
+                LocalFree(argv);
+                return false;
+            }
+            opts->unshareSlot = true;
+            opts->shareSlotValue = v;
+        } else if (wcscmp(arg, L"--set-restrict-shared") == 0) {
+            opts->recognized = true;
+            int v = 0;
+            if (i + 1 >= argc || !parse_wide_int_arg(argv[++i], &v)) {
+                set_message(opts->error, sizeof(opts->error), "Invalid --set-restrict-shared value (use 0 or 1)");
+                LocalFree(argv);
+                return false;
+            }
+            opts->setRestrictPolicy = true;
+            opts->restrictPolicyValue = v;
         } else if (wcscmp(arg, L"--logon-start") == 0) {
             opts->recognized = true;
             opts->logonStart = true;
@@ -54,6 +117,16 @@ static bool parse_cli_options(LPWSTR cmdLine, CliOptions* opts) {
                 return false;
             }
             opts->hasConfigPath = true;
+        } else if (wcscmp(arg, L"--for-user") == 0) {
+            // Elevated helper only: forces the per-user logon task to be scoped
+            // to this requesting user instead of the approving admin.
+            opts->recognized = true;
+            if (i + 1 >= argc) {
+                set_message(opts->error, sizeof(opts->error), "Invalid --for-user value");
+                LocalFree(argv);
+                return false;
+            }
+            set_forced_startup_user_sam(argv[++i]);
         } else if (wcscmp(arg, L"--probe-output") == 0) {
             opts->recognized = true;
             if (i + 1 >= argc || !copy_wide_to_utf8(argv[++i], opts->probeOutputPath, MAX_PATH)) {

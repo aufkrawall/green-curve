@@ -37,3 +37,20 @@ bool service_path_is_under_secure_root(const wchar_t* path);
 // (SE_DACL_PROTECTED) AND no non-admin principal (Everyone / BUILTIN\Users /
 // Authenticated Users / INTERACTIVE) is granted any write/delete/own access.
 bool service_binary_dacl_is_hardened(const wchar_t* path);
+
+// Apply a protected DACL suitable for the machine-wide config file: SYSTEM +
+// Administrators: Full, BUILTIN\Users: Read.  This lets unelevated GUIs read
+// the current machine default while preventing non-admins from changing it.
+bool apply_protected_machine_config_dacl(const wchar_t* path, char* err, size_t errSize);
+
+// Apply a protected DACL to the machine-wide config DIRECTORY (e.g.
+// %ProgramData%\Green Curve): SYSTEM + Administrators: Full, BUILTIN\Users:
+// Read & Execute (list), inheritable to children.  Inheritance is disabled at
+// the directory itself (PROTECTED) so the default %ProgramData% ACL — which
+// grants ordinary users create-file rights — cannot flow in and let a non-admin
+// plant or delete files in the shared bank directory.
+bool apply_protected_machine_config_dir_dacl(const wchar_t* path, char* err, size_t errSize);
+
+// True if `path` carries the machine-config protected DACL: inheritance
+// disabled and no non-admin principal is granted write/delete/own access.
+bool machine_config_dacl_is_hardened(const wchar_t* path);

@@ -440,7 +440,57 @@ static bool get_token_sam_name(HANDLE token, char* out, size_t outSize) {
     return ok;
 }
 
-static bool get_pipe_client_identity(HANDLE pipe, char* userOut, size_t userOutSize, DWORD* sessionIdOut, DWORD* pidOut, char* err, size_t errSize) {
+// True if `token`'s user is a member of BUILTIN\Administrators.  Matches even
+// when the group is USE_FOR_DENY_ONLY (an unelevated admin's UAC-filtered token
+// carries Administrators deny-only), so this answers "is this account a machine
+// administrator" independent of the current elevation state.
+static bool token_is_local_admin(HANDLE token) {
+    if (!token) return false;
+    BYTE adminSid[SECURITY_MAX_SID_SIZE] = {};
+    DWORD sidLen = sizeof(adminSid);
+    if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr, adminSid, &sidLen)) return false;
+    DWORD len = 0;
+    GetTokenInformation(token, TokenGroups, nullptr, 0, &len);
+    if (len == 0) return false;
+    TOKEN_GROUPS* groups = (TOKEN_GROUPS*)malloc(len);
+    if (!groups) return false;
+    bool isAdmin = false;
+    if (GetTokenInformation(token, TokenGroups, groups, len, &len)) {
+        for (DWORD i = 0; i < groups->GroupCount; i++) {
+            if (groups->Groups[i].Sid && EqualSid(groups->Groups[i].Sid, adminSid)) {
+                isAdmin = true;
+                break;
+            }
+        }
+    }
+    free(groups);
+    return isAdmin;
+}
+
+bool current_user_is_local_admin() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+    bool isAdmin = token_is_local_admin(token);
+    CloseHandle(token);
+    return isAdmin;
+}
+
+// Is the interactive user of `sessionId` a machine administrator?  Queries the
+// session's primary token (the SYSTEM service has the privilege) and reuses the
+// deny-only-aware token_is_local_admin.  Used to enforce the shared-only policy
+// on the service-side logon auto-apply, mirroring the SERVICE_CMD_APPLY caller
+// admin check so all apply paths agree on "who is an admin".
+static bool service_session_user_is_local_admin(DWORD sessionId) {
+    if (sessionId == (DWORD)-1) return false;
+    HANDLE token = nullptr;
+    if (!WTSQueryUserToken(sessionId, &token)) return false;
+    bool isAdmin = token_is_local_admin(token);
+    CloseHandle(token);
+    return isAdmin;
+}
+
+static bool get_pipe_client_identity(HANDLE pipe, char* userOut, size_t userOutSize, DWORD* sessionIdOut, DWORD* pidOut, bool* isAdminOut, char* err, size_t errSize) {
+    if (isAdminOut) *isAdminOut = false;
     if (userOut && userOutSize > 0) userOut[0] = 0;
     if (sessionIdOut) *sessionIdOut = (DWORD)-1;
     if (pidOut) *pidOut = 0;
@@ -477,6 +527,7 @@ static bool get_pipe_client_identity(HANDLE pipe, char* userOut, size_t userOutS
     }
 
     bool ok = get_token_sam_name(token, userOut, userOutSize);
+    if (ok && isAdminOut) *isAdminOut = token_is_local_admin(token);
     CloseHandle(token);
     CloseHandle(process);
     if (!ok) {
@@ -486,11 +537,13 @@ static bool get_pipe_client_identity(HANDLE pipe, char* userOut, size_t userOutS
     return true;
 }
 
-static bool service_caller_is_authorized(HANDLE pipe, const char* source, char* err, size_t errSize, char* callerUserOut, size_t callerUserOutSize, DWORD* callerSessionIdOut, DWORD* callerPidOut) {
+static bool service_caller_is_authorized(HANDLE pipe, const char* source, char* err, size_t errSize, char* callerUserOut, size_t callerUserOutSize, DWORD* callerSessionIdOut, DWORD* callerPidOut, bool* callerIsAdminOut) {
+    if (callerIsAdminOut) *callerIsAdminOut = false;
     DWORD callerSessionId = (DWORD)-1;
     DWORD callerPid = 0;
+    bool callerIsAdmin = false;
     char callerUser[256] = {};
-    if (!get_pipe_client_identity(pipe, callerUser, sizeof(callerUser), &callerSessionId, &callerPid, err, errSize)) {
+    if (!get_pipe_client_identity(pipe, callerUser, sizeof(callerUser), &callerSessionId, &callerPid, &callerIsAdmin, err, errSize)) {
         return false;
     }
 
@@ -515,6 +568,7 @@ static bool service_caller_is_authorized(HANDLE pipe, const char* source, char* 
     }
     if (callerSessionIdOut) *callerSessionIdOut = callerSessionId;
     if (callerPidOut) *callerPidOut = callerPid;
+    if (callerIsAdminOut) *callerIsAdminOut = callerIsAdmin;
     return true;
 }
 
@@ -1189,3 +1243,113 @@ static bool service_reset_all(char* result, size_t resultSize) {
     set_message(result, resultSize, "Reset applied %d OK, %d failed: %s", successCount, failCount, failureDetails[0] ? failureDetails : "one or more reset steps failed");
     return false;
 }
+
+static bool service_session_logon_resolve_and_load_profile(DWORD sessionId, DesiredSettings* desired, int* slotOut, bool* usedMachineDefault) {
+    if (!desired || !slotOut || !usedMachineDefault) return false;
+    *slotOut = 0;
+    *usedMachineDefault = false;
+    char pathErr[256] = {};
+    if (!resolve_service_user_data_paths(sessionId, pathErr, sizeof(pathErr))) {
+        debug_log("session logon: failed resolving user paths for session %lu: %s\n",
+            (unsigned long)sessionId, pathErr[0] ? pathErr : "unknown");
+        return false;
+    }
+    if (!g_app.configPath[0]) {
+        set_default_config_path();
+    }
+    char userConfigPath[MAX_PATH] = {};
+    StringCchCopyA(userConfigPath, ARRAY_COUNT(userConfigPath), g_app.configPath);
+
+    char machinePath[MAX_PATH] = {};
+    bool haveMachinePath = resolve_machine_config_path(machinePath, sizeof(machinePath));
+
+    // Gather the inputs for the pure logon-source policy decision.
+    int userSlot = get_config_int(userConfigPath, "profiles", "logon_slot", 0);
+    if (userSlot < 0 || userSlot > CONFIG_NUM_SLOTS) userSlot = 0;
+    bool hasPerUserSlot = (userSlot > 0 && is_profile_slot_saved(userConfigPath, userSlot));
+
+    // Per-user "apply admin shared bank slot N at my logon" choice.
+    int sharedSlot = get_config_int(userConfigPath, "profiles", "logon_shared_slot", 0);
+    if (sharedSlot < 0 || sharedSlot > CONFIG_NUM_SLOTS) sharedSlot = 0;
+    bool bankSlotSaved = haveMachinePath && sharedSlot > 0 && is_profile_slot_saved(machinePath, sharedSlot);
+
+    int machineSlot = 0;
+    bool hasMachineDefault = get_machine_logon_slot(&machineSlot) && machineSlot > 0 &&
+                             haveMachinePath && is_profile_slot_saved(machinePath, machineSlot);
+
+    bool policyActive = false;
+    get_machine_restrict_policy(&policyActive);
+    bool isAdmin = service_session_user_is_local_admin(sessionId);
+
+    LogonProfileSource src = resolve_logon_profile_source(policyActive, isAdmin, sharedSlot,
+        bankSlotSaved, hasPerUserSlot, hasMachineDefault);
+    debug_log("session logon resolve: session=%lu policy=%d admin=%d sharedSlot=%d(bank=%d) perUserSlot=%d(saved=%d) machineDefault=%d(have=%d) -> source=%d\n",
+        (unsigned long)sessionId, policyActive ? 1 : 0, isAdmin ? 1 : 0,
+        sharedSlot, bankSlotSaved ? 1 : 0, userSlot, hasPerUserSlot ? 1 : 0,
+        machineSlot, hasMachineDefault ? 1 : 0, (int)src);
+
+    char err[256] = {};
+    switch (src) {
+        case LOGON_PROFILE_SOURCE_SHARED_BANK:
+            if (load_profile_from_config(machinePath, sharedSlot, desired, err, sizeof(err)) &&
+                desired_settings_have_explicit_state(desired, true, err, sizeof(err))) {
+                *slotOut = sharedSlot;
+                *usedMachineDefault = true;  // authoritative bank copy, not per-user custom OC
+                debug_log("session logon: applying user-chosen shared bank slot %d for session %lu\n",
+                    sharedSlot, (unsigned long)sessionId);
+                return true;
+            }
+            debug_log("session logon: user-chosen shared slot %d failed to load for session %lu: %s\n",
+                sharedSlot, (unsigned long)sessionId, err[0] ? err : "unknown");
+            return false;
+
+        case LOGON_PROFILE_SOURCE_PER_USER:
+            if (load_profile_from_config(userConfigPath, userSlot, desired, err, sizeof(err)) &&
+                desired_settings_have_explicit_state(desired, true, err, sizeof(err))) {
+                *slotOut = userSlot;
+                debug_log("session logon: using per-user logon slot %d for session %lu\n",
+                    userSlot, (unsigned long)sessionId);
+                return true;
+            }
+            // Saved-but-corrupt per-user slot: fall back to the machine default
+            // (legacy resilience).  Only reached for admin/unrestricted users.
+            debug_log("session logon: per-user logon slot %d for session %lu is empty or invalid, checking machine default\n",
+                userSlot, (unsigned long)sessionId);
+            if (hasMachineDefault &&
+                load_profile_from_config(machinePath, machineSlot, desired, err, sizeof(err)) &&
+                desired_settings_have_explicit_state(desired, true, err, sizeof(err))) {
+                *slotOut = machineSlot;
+                *usedMachineDefault = true;
+                debug_log("session logon: per-user invalid; using machine-wide default slot %d for session %lu\n",
+                    machineSlot, (unsigned long)sessionId);
+                return true;
+            }
+            return false;
+
+        case LOGON_PROFILE_SOURCE_MACHINE_DEFAULT:
+            if (load_profile_from_config(machinePath, machineSlot, desired, err, sizeof(err)) &&
+                desired_settings_have_explicit_state(desired, true, err, sizeof(err))) {
+                *slotOut = machineSlot;
+                *usedMachineDefault = true;
+                debug_log("session logon: using machine-wide default logon slot %d for session %lu%s\n",
+                    machineSlot, (unsigned long)sessionId,
+                    (policyActive && !isAdmin) ? " (shared-only policy)" : "");
+                return true;
+            }
+            debug_log("session logon: machine default slot %d failed to load for session %lu: %s\n",
+                machineSlot, (unsigned long)sessionId, err[0] ? err : "unknown");
+            return false;
+
+        case LOGON_PROFILE_SOURCE_NONE:
+        default:
+            debug_log("session logon: nothing to apply for session %lu (policy=%d admin=%d)\n",
+                (unsigned long)sessionId, policyActive ? 1 : 0, isAdmin ? 1 : 0);
+            return false;
+    }
+}
+
+// service_session_logon_thread_proc() was removed: the active-user session
+// router in main_service_sessions.cpp (service_handle_session_change) now owns
+// logon/switch handling and calls service_apply_profile_for_session(), which
+// shares the resolve+driver-wait+apply logic that used to live here.
+

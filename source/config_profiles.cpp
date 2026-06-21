@@ -478,10 +478,15 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
     // Read existing profile preferences
     int appLaunchSlot = get_config_int(path, "profiles", "app_launch_slot", 0);
     int logonSlot = get_config_int(path, "profiles", "logon_slot", 0);
+    // logon_shared_slot references a SHARED BANK slot (not a per-user slot): the
+    // admin-published profile this user wants auto-applied at logon.  It must be
+    // preserved across the full-file rewrite, so read and re-emit it explicitly.
+    int logonSharedSlot = get_config_int(path, "profiles", "logon_shared_slot", 0);
     bool startOnLogon = is_start_on_logon_enabled(path);
     int selectedSlot = slot;
     if (appLaunchSlot < 0 || appLaunchSlot > CONFIG_NUM_SLOTS) appLaunchSlot = 0;
     if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
+    if (logonSharedSlot < 0 || logonSharedSlot > CONFIG_NUM_SLOTS) logonSharedSlot = 0;
 
     // Buffer for building complete config (heap-allocated to avoid large stack usage)
     char* cfg = (char*)calloc(1, CFG_BUFFER_SIZE);
@@ -531,6 +536,7 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
     appendf("selected_slot=%d\r\n", selectedSlot);
     appendf("app_launch_slot=%d\r\n", appLaunchSlot);
     appendf("logon_slot=%d\r\n", logonSlot);
+    appendf("logon_shared_slot=%d\r\n", logonSharedSlot);
     appendf("\r\n");
 
     // Write the target profile section
@@ -711,10 +717,14 @@ static bool clear_profile_from_config(const char* path, int slot, char* err, siz
     // Read existing profile preferences
     int appLaunchSlot = get_config_int(path, "profiles", "app_launch_slot", 0);
     int logonSlot = get_config_int(path, "profiles", "logon_slot", 0);
+    // Preserve logon_shared_slot: it references a SHARED BANK slot, so clearing a
+    // per-user slot must never drop the user's "apply shared profile at logon".
+    int logonSharedSlot = get_config_int(path, "profiles", "logon_shared_slot", 0);
     int selectedSlot = get_config_int(path, "profiles", "selected_slot", CONFIG_DEFAULT_SLOT);
     bool startOnLogon = is_start_on_logon_enabled(path);
     if (appLaunchSlot < 0 || appLaunchSlot > CONFIG_NUM_SLOTS) appLaunchSlot = 0;
     if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
+    if (logonSharedSlot < 0 || logonSharedSlot > CONFIG_NUM_SLOTS) logonSharedSlot = 0;
     if (selectedSlot < 1 || selectedSlot > CONFIG_NUM_SLOTS) selectedSlot = CONFIG_DEFAULT_SLOT;
 
     if (appLaunchSlot == slot) appLaunchSlot = 0;
@@ -769,7 +779,8 @@ static bool clear_profile_from_config(const char* path, int slot, char* err, siz
 
     // Write [meta] and [profiles]
     appendf("[meta]\r\nformat_version=2\r\n\r\n");
-    appendf("[profiles]\r\nselected_slot=%d\r\napp_launch_slot=%d\r\nlogon_slot=%d\r\n\r\n", selectedSlot, appLaunchSlot, logonSlot);
+    appendf("[profiles]\r\nselected_slot=%d\r\napp_launch_slot=%d\r\nlogon_slot=%d\r\nlogon_shared_slot=%d\r\n\r\n",
+        selectedSlot, appLaunchSlot, logonSlot, logonSharedSlot);
 
     // Copy all sections except the cleared ones and managed sections
     const char* p = existingBuf;
@@ -811,5 +822,134 @@ static bool clear_profile_from_config(const char* path, int slot, char* err, siz
     free(cfg);
     free(existingBuf);
     return ok2;
+}
+
+// Machine-wide profile bank helpers.  These operate on the shared bank
+// (%ProgramData%\Green Curve\shared-profiles.ini — see resolve_machine_config_path),
+// letting an admin publish selected profile slots so restricted/standard users
+// can apply them via the service even though they cannot read the admin's own
+// %LOCALAPPDATA% config.ini.
+
+bool is_machine_profile_slot_saved(int slot) {
+    if (slot < 1 || slot > CONFIG_NUM_SLOTS) return false;
+    char machinePath[MAX_PATH] = {};
+    if (!resolve_machine_config_path(machinePath, sizeof(machinePath))) return false;
+    return is_profile_slot_saved(machinePath, slot);
+}
+
+bool copy_profile_slot_to_machine_config(const char* srcPath, int slot, char* err, size_t errSize) {
+    if (err && errSize) err[0] = 0;
+    if (!srcPath || slot < 1 || slot > CONFIG_NUM_SLOTS) {
+        set_message(err, errSize, "Invalid machine profile copy arguments");
+        return false;
+    }
+    if (!is_elevated()) {
+        set_message(err, errSize, "Publishing a profile to the machine-wide bank requires administrator rights");
+        return false;
+    }
+    // The %ProgramData%\Green Curve directory may not exist yet (fresh machine,
+    // or it was swept by the legacy cleanup); create + harden it before writing.
+    if (!ensure_machine_config_directory(err, errSize)) return false;
+    char machinePath[MAX_PATH] = {};
+    if (!resolve_machine_config_path(machinePath, sizeof(machinePath))) {
+        set_message(err, errSize, "Cannot resolve machine config path");
+        return false;
+    }
+    if (!is_profile_slot_saved(srcPath, slot)) {
+        set_message(err, errSize, "Slot %d is empty; there is no profile to publish", slot);
+        return false;
+    }
+    DesiredSettings desired = {};
+    char loadErr[256] = {};
+    if (!load_profile_from_config(srcPath, slot, &desired, loadErr, sizeof(loadErr))) {
+        set_message(err, errSize, "Failed loading source profile: %s", loadErr[0] ? loadErr : "unknown");
+        return false;
+    }
+    char saveErr[256] = {};
+    if (!save_profile_to_config(machinePath, slot, &desired, saveErr, sizeof(saveErr))) {
+        set_message(err, errSize, "Failed saving profile to machine config: %s", saveErr[0] ? saveErr : "unknown");
+        return false;
+    }
+
+    WCHAR machinePathW[MAX_PATH] = {};
+    if (utf8_to_wide(machinePath, machinePathW, ARRAY_COUNT(machinePathW))) {
+        char aclErr[256] = {};
+        if (!apply_protected_machine_config_dacl(machinePathW, aclErr, sizeof(aclErr))) {
+            debug_log("machine profile bank: DACL hardening failed: %s\n", aclErr[0] ? aclErr : "unknown");
+        } else {
+            debug_log("machine profile bank: applied protected DACL to %s\n", machinePath);
+        }
+    }
+    debug_log("machine profile bank: published slot %d from %s to %s\n", slot, srcPath, machinePath);
+    return true;
+}
+
+bool clear_machine_profile_slot(int slot, char* err, size_t errSize) {
+    if (err && errSize) err[0] = 0;
+    if (slot < 1 || slot > CONFIG_NUM_SLOTS) {
+        set_message(err, errSize, "Invalid machine profile slot %d", slot);
+        return false;
+    }
+    if (!is_elevated()) {
+        set_message(err, errSize, "Clearing a machine-wide profile slot requires administrator rights");
+        return false;
+    }
+    char machinePath[MAX_PATH] = {};
+    if (!resolve_machine_config_path(machinePath, sizeof(machinePath))) {
+        set_message(err, errSize, "Cannot resolve machine config path");
+        return false;
+    }
+    char clearErr[256] = {};
+    if (!clear_profile_from_config(machinePath, slot, clearErr, sizeof(clearErr))) {
+        set_message(err, errSize, "Failed clearing machine profile slot: %s", clearErr[0] ? clearErr : "unknown");
+        return false;
+    }
+    debug_log("machine profile bank: cleared slot %d from %s\n", slot, machinePath);
+    return true;
+}
+
+bool share_profile_slot_for_all_users(const char* srcPath, int slot, char* err, size_t errSize) {
+    if (err && errSize) err[0] = 0;
+    if (!srcPath || slot < 1 || slot > CONFIG_NUM_SLOTS) {
+        set_message(err, errSize, "Invalid share arguments");
+        return false;
+    }
+    if (!is_elevated()) {
+        set_message(err, errSize, "Sharing a profile with all users requires administrator rights");
+        return false;
+    }
+    // 1) Publish the FULL profile data into the shared bank, so the service has
+    //    real settings to apply for users who have no config.ini of their own.
+    //    (Setting only the default logon slot without data was the old footgun:
+    //    the service resolved the slot but found no [profileN] section.)
+    if (!copy_profile_slot_to_machine_config(srcPath, slot, err, errSize)) return false;
+    // 2) Record it as the all-users default logon profile so users without a
+    //    per-user logon profile receive it automatically on login.
+    if (!set_machine_logon_slot(slot, err, errSize)) return false;
+    debug_log("share: slot %d published to the shared bank and set as the all-users default logon profile\n", slot);
+    return true;
+}
+
+bool unshare_profile_slot_for_all_users(int slot, char* err, size_t errSize) {
+    if (err && errSize) err[0] = 0;
+    if (slot < 1 || slot > CONFIG_NUM_SLOTS) {
+        set_message(err, errSize, "Invalid unshare slot %d", slot);
+        return false;
+    }
+    if (!is_elevated()) {
+        set_message(err, errSize, "Unsharing a profile requires administrator rights");
+        return false;
+    }
+    // Clear the all-users default first, but only when it points at THIS slot,
+    // so unsharing slot 2 does not silently disable a default that pointed at a
+    // different shared slot.
+    int machineSlot = 0;
+    if (get_machine_logon_slot(&machineSlot) && machineSlot == slot) {
+        if (!clear_machine_logon_slot(err, errSize)) return false;
+    }
+    // Remove the published profile data from the shared bank.
+    if (!clear_machine_profile_slot(slot, err, errSize)) return false;
+    debug_log("unshare: slot %d removed from the shared bank (default cleared if it pointed here)\n", slot);
+    return true;
 }
 

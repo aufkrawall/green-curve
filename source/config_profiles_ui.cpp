@@ -10,11 +10,87 @@ static void resolve_profile_gpu_offset_state_for_save(const DesiredSettings* des
 }
 
 
+static void refresh_machine_logon_slot_cache() {
+    int slot = 0;
+    if (get_machine_logon_slot(&slot)) {
+        g_app.machineLogonSlotCache = slot;
+    }
+}
+
+// Refresh the cached shared-only policy state and whether this user is a machine
+// admin (computed once — admin membership does not change at runtime).
+static void refresh_restrict_policy_state() {
+    bool restrict = false;
+    get_machine_restrict_policy(&restrict);
+    g_app.restrictPolicyActive = restrict;
+    static int s_adminCache = -1;
+    if (s_adminCache < 0) s_adminCache = current_user_is_local_admin() ? 1 : 0;
+    g_app.currentUserIsLocalAdmin = (s_adminCache == 1);
+}
+
+// True when the current user is blocked from applying custom OC (admin policy on
+// AND this user is not a machine admin) — they may only apply shared profiles.
+static bool restricted_to_shared_profiles() {
+    return g_app.restrictPolicyActive && !g_app.currentUserIsLocalAdmin;
+}
+
+static void update_share_all_users_check_state() {
+    refresh_machine_logon_slot_cache();
+    refresh_restrict_policy_state();
+
+    // "Share with all users" checkbox is bound to the SELECTED profile slot.
+    // Checked = that slot is published to the shared bank AND is the all-users
+    // default logon profile (the coherent shared state).
+    int slot = CONFIG_DEFAULT_SLOT;
+    if (g_app.hShareAllUsersCheck) {
+        int sel = g_app.hProfileCombo ? (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0) : -1;
+        if (sel < 0 || sel > CONFIG_NUM_SLOTS - 1) sel = CONFIG_DEFAULT_SLOT - 1;
+        slot = sel + 1;
+        bool shared = is_machine_profile_slot_saved(slot) && g_app.machineLogonSlotCache == slot;
+        char label[64] = {};
+        StringCchPrintfA(label, ARRAY_COUNT(label), "Share slot %d with all users", slot);
+        SetWindowTextA(g_app.hShareAllUsersCheck, label);
+        SendMessageA(g_app.hShareAllUsersCheck, BM_SETCHECK, (WPARAM)(shared ? BST_CHECKED : BST_UNCHECKED), 0);
+        // Always enabled.  When the GUI is not elevated, toggling it requests UAC
+        // for just this operation, so users never start the whole GUI elevated.
+        EnableWindow(g_app.hShareAllUsersCheck, TRUE);
+        ShowWindow(g_app.hShareAllUsersCheck, SW_SHOW);
+        InvalidateRect(g_app.hShareAllUsersCheck, nullptr, TRUE);
+        UpdateWindow(g_app.hShareAllUsersCheck);
+    }
+
+    // "Shared profiles" button is available to every user; it is only enabled
+    // when the admin has published at least one profile to the shared bank.
+    int sharedCount = 0;
+    for (int s = 1; s <= CONFIG_NUM_SLOTS; s++) {
+        if (is_machine_profile_slot_saved(s)) sharedCount++;
+    }
+    if (g_app.hSharedProfilesBtn) {
+        char label[48] = {};
+        if (sharedCount > 0) StringCchPrintfA(label, ARRAY_COUNT(label), "Shared profiles (%d)...", sharedCount);
+        else StringCchCopyA(label, ARRAY_COUNT(label), "Shared profiles...");
+        SetWindowTextA(g_app.hSharedProfilesBtn, label);
+        EnableWindow(g_app.hSharedProfilesBtn, sharedCount > 0 ? TRUE : FALSE);
+        ShowWindow(g_app.hSharedProfilesBtn, SW_SHOW);
+        InvalidateRect(g_app.hSharedProfilesBtn, nullptr, TRUE);
+        UpdateWindow(g_app.hSharedProfilesBtn);
+    }
+    debug_log_on_change("share-all-users controls: refreshed (selSlot=%d machineSlot=%d sharedCount=%d)\n",
+        slot, g_app.machineLogonSlotCache, sharedCount);
+}
+
 static void refresh_profile_controls_from_config() {
     if (!g_app.hProfileCombo) return;
+    refresh_machine_logon_slot_cache();
     int selectedSlot = get_config_int(g_app.configPath, "profiles", "selected_slot", CONFIG_DEFAULT_SLOT);
     int appLaunchSlot = get_config_int(g_app.configPath, "profiles", "app_launch_slot", 0);
     int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
+    // Per-account "apply admin shared profile N at my logon" (overrides logon_slot
+    // and the all-users default for this account).  A stale value (slot no longer
+    // published) is treated as unset for display; the apply path self-heals it.
+    int logonSharedSlot = get_config_int(g_app.configPath, "profiles", "logon_shared_slot", 0);
+    if (logonSharedSlot < 0 || logonSharedSlot > CONFIG_NUM_SLOTS) logonSharedSlot = 0;
+    if (logonSharedSlot > 0 && !is_machine_profile_slot_saved(logonSharedSlot)) logonSharedSlot = 0;
 
     SendMessageA(g_app.hProfileCombo, WM_SETREDRAW, FALSE, 0);
     SendMessageA(g_app.hProfileCombo, CB_RESETCONTENT, 0, 0);
@@ -39,16 +115,60 @@ static void refresh_profile_controls_from_config() {
         SendMessageA(g_app.hAppLaunchCombo, CB_SETDROPPEDWIDTH, (WPARAM)dp(180), 0);
     }
     if (g_app.hLogonCombo) {
+        // Unified per-account logon selector.  Index 0 is "no personal choice" and
+        // surfaces the admin all-users default when one is published; then this
+        // user's own slots (hidden for restricted users — the service ignores a
+        // per-user logon_slot for them under the shared-only policy); then each
+        // admin-published shared profile.  Every item carries CB_SETITEMDATA so the
+        // handler maps a selection to its meaning regardless of ordering:
+        //   0                         -> no personal choice (admin default applies)
+        //   1..CONFIG_NUM_SLOTS       -> per-user logon_slot
+        //   LOGON_COMBO_SHARED_FLAG|N -> admin shared bank slot N (logon_shared_slot)
+        bool restrictedShared = restricted_to_shared_profiles();
+        int machineDefault = g_app.machineLogonSlotCache;
+        if (machineDefault < 0 || machineDefault > CONFIG_NUM_SLOTS) machineDefault = 0;
+        bool haveMachineDefault = machineDefault > 0 && is_machine_profile_slot_saved(machineDefault);
+
         SendMessageA(g_app.hLogonCombo, WM_SETREDRAW, FALSE, 0);
         SendMessageA(g_app.hLogonCombo, CB_RESETCONTENT, 0, 0);
-        SendMessageA(g_app.hLogonCombo, CB_ADDSTRING, 0, (LPARAM)"Disabled");
-        for (int s = 1; s <= CONFIG_NUM_SLOTS; s++) {
-            char label[32] = {};
-            StringCchPrintfA(label, ARRAY_COUNT(label), "Slot %d - %s", s,
-                is_profile_slot_saved(g_app.configPath, s) ? "Saved" : "Empty");
-            SendMessageA(g_app.hLogonCombo, CB_ADDSTRING, 0, (LPARAM)label);
+
+        int logonSelIndex = 0;   // default to "no personal choice"
+        int comboIndex = 0;
+
+        char noneLabel[64] = {};
+        if (haveMachineDefault) {
+            StringCchPrintfA(noneLabel, ARRAY_COUNT(noneLabel), "Admin default: Shared profile %d", machineDefault);
+        } else {
+            StringCchCopyA(noneLabel, ARRAY_COUNT(noneLabel), "Disabled");
         }
-        SendMessageA(g_app.hLogonCombo, CB_SETDROPPEDWIDTH, (WPARAM)dp(180), 0);
+        SendMessageA(g_app.hLogonCombo, CB_ADDSTRING, 0, (LPARAM)noneLabel);
+        SendMessageA(g_app.hLogonCombo, CB_SETITEMDATA, (WPARAM)comboIndex, (LPARAM)0);
+        comboIndex++;
+
+        if (!restrictedShared) {
+            for (int s = 1; s <= CONFIG_NUM_SLOTS; s++) {
+                char label[40] = {};
+                StringCchPrintfA(label, ARRAY_COUNT(label), "Slot %d - %s", s,
+                    is_profile_slot_saved(g_app.configPath, s) ? "Saved" : "Empty");
+                SendMessageA(g_app.hLogonCombo, CB_ADDSTRING, 0, (LPARAM)label);
+                SendMessageA(g_app.hLogonCombo, CB_SETITEMDATA, (WPARAM)comboIndex, (LPARAM)s);
+                if (logonSharedSlot == 0 && logonSlot == s) logonSelIndex = comboIndex;
+                comboIndex++;
+            }
+        }
+
+        for (int s = 1; s <= CONFIG_NUM_SLOTS; s++) {
+            if (!is_machine_profile_slot_saved(s)) continue;
+            char label[48] = {};
+            StringCchPrintfA(label, ARRAY_COUNT(label), "Shared profile %d (admin)", s);
+            SendMessageA(g_app.hLogonCombo, CB_ADDSTRING, 0, (LPARAM)label);
+            SendMessageA(g_app.hLogonCombo, CB_SETITEMDATA, (WPARAM)comboIndex, (LPARAM)(LOGON_COMBO_SHARED_FLAG | s));
+            if (logonSharedSlot == s) logonSelIndex = comboIndex;
+            comboIndex++;
+        }
+
+        SendMessageA(g_app.hLogonCombo, CB_SETCURSEL, (WPARAM)logonSelIndex, 0);
+        SendMessageA(g_app.hLogonCombo, CB_SETDROPPEDWIDTH, (WPARAM)dp(220), 0);
     }
 
     if (appLaunchSlot < 0 || appLaunchSlot > CONFIG_NUM_SLOTS) appLaunchSlot = 0;
@@ -58,8 +178,7 @@ static void refresh_profile_controls_from_config() {
 
     if (appLaunchSlot >= 0 && appLaunchSlot <= CONFIG_NUM_SLOTS)
         SendMessageA(g_app.hAppLaunchCombo, CB_SETCURSEL, (WPARAM)appLaunchSlot, 0);
-    if (logonSlot >= 0 && logonSlot <= CONFIG_NUM_SLOTS)
-        SendMessageA(g_app.hLogonCombo, CB_SETCURSEL, (WPARAM)logonSlot, 0);
+    // The Logon combo selection is set during its (item-data-tagged) population above.
 
     SendMessageA(g_app.hProfileCombo, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(g_app.hProfileCombo, nullptr, TRUE);
@@ -80,6 +199,7 @@ static void refresh_profile_controls_from_config() {
     update_profile_action_buttons();
     refresh_background_service_state();
     update_background_service_controls();
+    update_share_all_users_check_state();
     update_tray_icon();
 }
 
@@ -231,6 +351,9 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
     begin_programmatic_edit_update();
     set_gui_state_dirty(false);
     g_app.guiHasUserModifiedValues = false;
+    // Any populate clears the "loaded shared slot" marker; show_shared_profiles_menu
+    // re-sets it AFTER calling this for a shared load.
+    g_app.loadedSharedSlot = 0;
 
     // Curve points
     for (int vi = 0; vi < g_app.numVisible; vi++) {
@@ -322,6 +445,7 @@ static void set_profile_status_text(const char* fmt, ...) {
 
 static void update_profile_state_label() {
     if (!g_app.hProfileStateLabel || !g_app.hProfileCombo) return;
+    refresh_machine_logon_slot_cache();
     int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
     if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
     slot += 1;
@@ -329,9 +453,23 @@ static void update_profile_state_label() {
     bool saved = is_profile_slot_saved(g_app.configPath, slot);
     bool isAppLaunch = (get_config_int(g_app.configPath, "profiles", "app_launch_slot", 0) == slot);
     bool isLogon = (get_config_int(g_app.configPath, "profiles", "logon_slot", 0) == slot);
+    bool isMachineDefault = (slot == g_app.machineLogonSlotCache && g_app.machineLogonSlotCache > 0);
+    bool isMachineProfileBank = is_machine_profile_slot_saved(slot);
 
-    char roles[64] = {};
-    if (isAppLaunch && isLogon) StringCchCopyA(roles, ARRAY_COUNT(roles), " | app start + logon");
+    char roles[96] = {};
+    if (isAppLaunch && isLogon && isMachineDefault && isMachineProfileBank) StringCchCopyA(roles, ARRAY_COUNT(roles), " | app start + logon + all users + shared");
+    else if (isAppLaunch && isLogon && isMachineDefault) StringCchCopyA(roles, ARRAY_COUNT(roles), " | app start + logon + all users");
+    else if (isAppLaunch && isLogon && isMachineProfileBank) StringCchCopyA(roles, ARRAY_COUNT(roles), " | app start + logon + shared");
+    else if (isAppLaunch && isMachineDefault && isMachineProfileBank) StringCchCopyA(roles, ARRAY_COUNT(roles), " | app start + all users + shared");
+    else if (isLogon && isMachineDefault && isMachineProfileBank) StringCchCopyA(roles, ARRAY_COUNT(roles), " | logon + all users + shared");
+    else if (isMachineDefault && isMachineProfileBank) StringCchCopyA(roles, ARRAY_COUNT(roles), " | all users + shared");
+    else if (isAppLaunch && isLogon) StringCchCopyA(roles, ARRAY_COUNT(roles), " | app start + logon");
+    else if (isAppLaunch && isMachineDefault) StringCchCopyA(roles, ARRAY_COUNT(roles), " | app start + all users");
+    else if (isAppLaunch && isMachineProfileBank) StringCchCopyA(roles, ARRAY_COUNT(roles), " | app start + shared");
+    else if (isLogon && isMachineDefault) StringCchCopyA(roles, ARRAY_COUNT(roles), " | logon + all users");
+    else if (isLogon && isMachineProfileBank) StringCchCopyA(roles, ARRAY_COUNT(roles), " | logon + shared");
+    else if (isMachineDefault) StringCchCopyA(roles, ARRAY_COUNT(roles), " | all users");
+    else if (isMachineProfileBank) StringCchCopyA(roles, ARRAY_COUNT(roles), " | shared");
     else if (isAppLaunch) StringCchCopyA(roles, ARRAY_COUNT(roles), " | app start");
     else if (isLogon) StringCchCopyA(roles, ARRAY_COUNT(roles), " | logon");
 
@@ -394,8 +532,41 @@ static void update_background_service_controls() {
         } else {
             StringCchCopyA(text, ARRAY_COUNT(text), "Background service installed but stopped. Live controls are disabled.");
         }
+        // Shared-only policy notice for restricted (non-admin) users (ASCII only
+        // for the ANSI GUI path).
+        if (restricted_to_shared_profiles()) {
+            const char* note = " | Administrator restricts this PC to shared profiles; use 'Shared profiles...' to apply one.";
+            if (strlen(text) + strlen(note) < ARRAY_COUNT(text)) {
+                StringCchCatA(text, ARRAY_COUNT(text), note);
+            }
+        }
         SetWindowTextA(g_app.hServiceStatusLabel, text);
+        // Surface a user-profile-install warning.  Two triggers cover the same
+        // problem (a restricted/standard user cannot execute the GUI binary):
+        //   1. service_install_dir_is_under_user_profile() — keys off the
+        //      SCM-registered service dir (requires the service installed).
+        //   2. running_exe_dir_is_under_user_profile() — keys off the running
+        //      GUI binary's own dir, so the warning also fires pre-install /
+        //      in portable use, before there is any SCM service dir to check.
+        bool underUserProfile = !g_app.backgroundServiceToggleInFlight &&
+            ((g_app.backgroundServiceInstalled && service_install_dir_is_under_user_profile()) ||
+             running_exe_dir_is_under_user_profile());
+        if (underUserProfile) {
+            char warning[320] = {};
+            StringCchPrintfA(warning, ARRAY_COUNT(warning),
+                " Warning: Green Curve is running from a user account folder, so restricted/standard "
+                "users on this PC cannot launch it. Reinstall under %%ProgramFiles%%\\Green Curve to "
+                "make it available to all users.");
+            // Append to the existing status text if there is room.
+            size_t currentLen = strlen(text);
+            size_t warningLen = strlen(warning);
+            if (currentLen + warningLen < ARRAY_COUNT(text)) {
+                StringCchCatA(text, ARRAY_COUNT(text), warning);
+                SetWindowTextA(g_app.hServiceStatusLabel, text);
+            }
+        }
     }
+    update_share_all_users_check_state();
 }
 
 static bool maybe_confirm_profile_load_replace(int slot) {
@@ -675,6 +846,91 @@ static bool ensure_profile_slot_available_for_auto_action(int slot) {
     return false;
 }
 
+// Wait for the GPU driver to be fully ready before applying an aggressive
+// profile at Windows startup.  A too-early apply (while the driver is still
+// initializing) can cause a TDR / driver crash.  Bounded retry that actually
+// probes the service snapshot each attempt (no blind timing bandaid).
+static bool logon_wait_for_gpu_driver_ready(int slotForLog) {
+    debug_log("apply_logon_startup_behavior: waiting for GPU driver readiness before applying slot %d\n", slotForLog);
+    for (int attempt = 0; attempt < 15; attempt++) {
+        refresh_background_service_state();
+        if (!g_app.backgroundServiceAvailable) {
+            Sleep(500);
+            continue;
+        }
+        ServiceSnapshot snapshot = {};
+        char snapErr[256] = {};
+        if (service_client_get_snapshot(&snapshot, snapErr, sizeof(snapErr))) {
+            if (snapshot.loaded && snapshot.numPopulated > 0 && snapshot.initialized) {
+                debug_log("apply_logon_startup_behavior: driver ready on attempt %d (populated=%d)\n",
+                    attempt + 1, snapshot.numPopulated);
+                return true;
+            }
+        }
+        Sleep(400);
+    }
+    debug_log("apply_logon_startup_behavior: GPU driver did not become ready in time, skipping apply\n");
+    return false;
+}
+
+// Apply a per-user "apply admin shared profile N at logon" choice
+// (logon_shared_slot).  Loads the admin's authoritative bank copy and tags it as
+// a shared-slot apply so the service honors it under the shared-only policy.
+// Returns true if the choice was handled (applied or fatally skipped); false
+// means "no/stale shared choice — fall through to the per-user logon_slot path".
+static bool apply_logon_shared_slot_if_configured(bool startProgramAtLogon) {
+    int logonSharedSlot = get_config_int(g_app.configPath, "profiles", "logon_shared_slot", 0);
+    if (logonSharedSlot < 0 || logonSharedSlot > CONFIG_NUM_SLOTS) logonSharedSlot = 0;
+    if (logonSharedSlot == 0) return false;
+
+    char machinePath[MAX_PATH] = {};
+    DesiredSettings desired = {};
+    char err[256] = {};
+    if (!resolve_machine_config_path(machinePath, sizeof(machinePath)) ||
+        !is_profile_slot_saved(machinePath, logonSharedSlot) ||
+        !load_profile_from_config(machinePath, logonSharedSlot, &desired, err, sizeof(err)) ||
+        !desired_settings_have_explicit_state(&desired, true, err, sizeof(err))) {
+        // The admin unpublished/changed the shared bank: drop the stale choice
+        // and let the caller fall back to the per-user logon_slot path.
+        debug_log("apply_logon_startup_behavior: shared logon slot %d unavailable (%s); clearing it\n",
+            logonSharedSlot, err[0] ? err : "not published");
+        set_config_int(g_app.configPath, "profiles", "logon_shared_slot", 0);
+        return false;
+    }
+
+    if (!logon_wait_for_gpu_driver_ready(logonSharedSlot)) {
+        set_profile_status_text("Logon apply skipped: GPU driver was not ready after waiting.");
+        return true;
+    }
+
+    desired.resetOcBeforeApply = true;
+    // Tag the editor as holding this admin shared slot so the IPC apply carries
+    // SERVICE_REQUEST_FLAG_SHARED_SLOT and the service applies its own copy.
+    g_app.loadedSharedSlot = logonSharedSlot;
+    g_app.guiHasUserModifiedValues = false;
+    char result[512] = {};
+    debug_log("apply_logon_startup_behavior: applying shared bank slot %d at logon (authoritative)\n", logonSharedSlot);
+    bool ok = apply_desired_settings(&desired, false, result, sizeof(result));
+    debug_log("apply_logon_startup_behavior: shared logon apply ok=%d msg=%s\n", ok ? 1 : 0, result);
+    if (ok) {
+        populate_desired_into_gui(&desired);
+        g_app.loadedSharedSlot = logonSharedSlot;  // populate_* clears it; editor keeps showing the shared profile
+        set_profile_status_text(startProgramAtLogon
+            ? "Started the tray client and applied shared profile %d through the background service at Windows logon."
+            : "Applied shared profile %d through the background service at Windows logon.",
+            logonSharedSlot);
+    } else {
+        char detail[128] = {};
+        refresh_global_state(detail, sizeof(detail));
+        populate_global_controls();
+        if (g_app.loaded) populate_edits();
+        invalidate_main_window();
+        set_profile_status_text("Logon apply of shared profile %d failed and live state was reloaded: %s",
+            logonSharedSlot, result);
+    }
+    return true;
+}
+
 static void apply_logon_startup_behavior() {
     if (!g_app.launchedFromLogon) return;
 
@@ -689,6 +945,21 @@ static void apply_logon_startup_behavior() {
 
     bool startProgramAtLogon = is_start_on_logon_enabled(g_app.configPath);
     g_app.startHiddenToTray = startProgramAtLogon;
+
+    // A per-user "apply admin shared profile N at logon" choice takes precedence
+    // over the per-user logon_slot and is the ONLY logon apply that passes the
+    // shared-only policy for a restricted user.
+    if (apply_logon_shared_slot_if_configured(startProgramAtLogon)) return;
+
+    // Restricted (shared-only) users cannot auto-apply a custom per-user
+    // logon_slot — the service rejects it.  Skip the doomed apply and guide them
+    // to choose a shared profile for logon instead of showing a scary error.
+    if (restricted_to_shared_profiles() &&
+        get_config_int(g_app.configPath, "profiles", "logon_slot", 0) > 0) {
+        debug_log("apply_logon_startup_behavior: restricted user, per-user logon_slot set but no shared logon choice; skipping (policy)\n");
+        set_profile_status_text("Your administrator restricts this PC to shared profiles. Use \"Shared profiles...\" to pick one to apply at logon.");
+        return;
+    }
 
     int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
     if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
@@ -722,31 +993,7 @@ static void apply_logon_startup_behavior() {
         return;
     }
 
-    // Wait for the GPU driver to be fully ready before applying an aggressive
-    // profile at Windows startup. A too-early apply (while the driver is still
-    // initializing) can cause a TDR / driver crash.
-    debug_log("apply_logon_startup_behavior: waiting for GPU driver readiness before applying slot %d\n", logonSlot);
-    bool driverReady = false;
-    for (int attempt = 0; attempt < 15; attempt++) {
-        refresh_background_service_state();
-        if (!g_app.backgroundServiceAvailable) {
-            Sleep(500);
-            continue;
-        }
-        ServiceSnapshot snapshot = {};
-        char snapErr[256] = {};
-        if (service_client_get_snapshot(&snapshot, snapErr, sizeof(snapErr))) {
-            if (snapshot.loaded && snapshot.numPopulated > 0 && snapshot.initialized) {
-                driverReady = true;
-                debug_log("apply_logon_startup_behavior: driver ready on attempt %d (populated=%d)\n",
-                    attempt + 1, snapshot.numPopulated);
-                break;
-            }
-        }
-        Sleep(400);
-    }
-    if (!driverReady) {
-        debug_log("apply_logon_startup_behavior: GPU driver did not become ready in time, skipping apply\n");
+    if (!logon_wait_for_gpu_driver_ready(logonSlot)) {
         set_profile_status_text("Logon apply skipped: GPU driver was not ready after waiting.");
         return;
     }

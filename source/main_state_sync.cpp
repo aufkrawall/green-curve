@@ -73,10 +73,13 @@ static const char* cli_log_path() {
 // for service-side artifacts (restart history, reapply snapshot, early debug
 // log, crash dumps).  For the LocalSystem service this is the SYSTEM profile's
 // LocalAppData, which is admin-only, consistent across restarts, and available
-// before any interactive logon.  PROJECT POLICY: never use %ProgramData% for
-// program files — it is user-readable, which would disclose SYSTEM-process crash
-// dumps.  Crash-safe: stack buffers and environment variables only (callable
-// from the vectored exception handler).
+// before any interactive logon.  PROJECT POLICY: never place SENSITIVE program
+// artifacts (crash dumps, service logs, restart/reapply state) under
+// %ProgramData% — it is user-readable, which would disclose SYSTEM-process crash
+// dumps.  %ProgramData% IS the correct home for deliberately-shared, non-
+// sensitive config (the shared profile bank, shared-profiles.ini) protected with
+// an explicit SYSTEM+Admins-Full / Users-Read DACL.  Crash-safe: stack buffers
+// and environment variables only (callable from the vectored exception handler).
 static bool resolve_service_machine_data_dir(char* out, size_t outSize) {
     if (!out || outSize == 0) return false;
     out[0] = 0;
@@ -98,11 +101,13 @@ static bool resolve_service_machine_data_dir(char* out, size_t outSize) {
     return SUCCEEDED(StringCchPrintfA(out, outSize, "%s\\Green Curve", base));
 }
 
-// Best-effort removal of the legacy %ProgramData%\Green Curve directory used by
-// older builds (restart history, reapply snapshot, early debug log, and — most
-// importantly — SYSTEM-process crash dumps that were world-readable there).
-// Honors the LocalAppData-only policy and clears any previously disclosed dumps.
-// Only deletes files inside our own legacy directory; never recurses.
+// Best-effort removal of legacy SENSITIVE artifacts older builds left in
+// %ProgramData%\Green Curve (restart history, reapply snapshot, early debug log,
+// and — most importantly — SYSTEM-process crash dumps that were world-readable
+// there).  Clears any previously disclosed dumps.  The deliberately-shared
+// shared-profiles.ini (MACHINE_CONFIG_FILE_NAME) is PRESERVED — it now lives
+// here on purpose, protected by an explicit Users-Read DACL.  Only deletes files
+// inside our own directory; never recurses.
 static void service_cleanup_legacy_programdata() {
     char programData[MAX_PATH] = {};
     DWORD n = GetEnvironmentVariableA("ProgramData", programData, ARRAY_COUNT(programData));
@@ -121,6 +126,9 @@ static void service_cleanup_legacy_programdata() {
     if (h != INVALID_HANDLE_VALUE) {
         do {
             if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) continue; // skip ., .., subdirs
+            // Preserve the deliberately-shared profile bank; only sweep sensitive
+            // legacy artifacts (dumps/logs/restart state) out of this directory.
+            if (lstrcmpiA(fd.cFileName, MACHINE_CONFIG_FILE_NAME) == 0) continue;
             char filePath[MAX_PATH] = {};
             if (SUCCEEDED(StringCchPrintfA(filePath, ARRAY_COUNT(filePath), "%s\\%s", legacyDir, fd.cFileName))) {
                 DeleteFileA(filePath);
@@ -128,8 +136,10 @@ static void service_cleanup_legacy_programdata() {
         } while (FindNextFileA(h, &fd));
         FindClose(h);
     }
+    // RemoveDirectory fails harmlessly if the shared bank file remains; only log
+    // when the directory was actually empty and got removed.
     if (RemoveDirectoryA(legacyDir)) {
-        debug_log("service: removed legacy ProgramData\\Green Curve directory (migrated to LocalAppData)\n");
+        debug_log("service: removed legacy ProgramData\\Green Curve directory (no shared bank present)\n");
     }
 }
 
@@ -216,17 +226,33 @@ static bool resolve_service_user_data_paths(DWORD sessionId, char* err, size_t e
         CloseHandle(hToken);
         return false;
     }
-    CloseHandle(hToken);
     char profileDir[MAX_PATH] = {};
     if (!copy_wide_to_utf8(profileDirW, profileDir, ARRAY_COUNT(profileDir))) {
         set_message(err, errSize, "Profile path conversion failed");
+        CloseHandle(hToken);
         return false;
     }
     StringCchCopyA(g_serviceUserProfileDir, ARRAY_COUNT(g_serviceUserProfileDir), profileDir);
+
+    // Resolve the user's LocalAppData using the USER'S token, not the service's
+    // own (SYSTEM) token.  SHGetKnownFolderPath with the user token honors
+    // redirected/roaming LocalAppData (folder redirection policies), which the
+    // naive "<profile>\AppData\Local" string concatenation below does not.  The
+    // concatenation is kept as a fallback for the rare case where the known
+    // folder cannot be resolved for the token.
     char localAppData[MAX_PATH] = {};
-    if (FAILED(StringCchPrintfA(localAppData, ARRAY_COUNT(localAppData), "%s\\AppData\\Local", profileDir))) {
-        set_message(err, errSize, "Profile path too long");
-        return false;
+    PWSTR localAppDataW = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, hToken, &localAppDataW)) && localAppDataW) {
+        copy_wide_to_utf8(localAppDataW, localAppData, ARRAY_COUNT(localAppData));
+        CoTaskMemFree(localAppDataW);
+        localAppDataW = nullptr;
+    }
+    CloseHandle(hToken);
+    if (!localAppData[0]) {
+        if (FAILED(StringCchPrintfA(localAppData, ARRAY_COUNT(localAppData), "%s\\AppData\\Local", profileDir))) {
+            set_message(err, errSize, "Profile path too long");
+            return false;
+        }
     }
     if (FAILED(StringCchPrintfA(g_userDataDir, ARRAY_COUNT(g_userDataDir), "%s\\Green Curve", localAppData)) ||
         FAILED(StringCchPrintfA(g_cliLogPath, ARRAY_COUNT(g_cliLogPath), "%s\\%s", g_userDataDir, APP_CLI_LOG_FILE)) ||
@@ -326,34 +352,39 @@ static void set_default_config_path() {
     if (g_app.configPath[0]) return;
 
     char err[256] = {};
-    if (resolve_data_paths(err, sizeof(err))) {
-        StringCchPrintfA(g_app.configPath, ARRAY_COUNT(g_app.configPath), "%s\\%s", g_userDataDir, CONFIG_FILE_NAME);
+    if (!resolve_data_paths(err, sizeof(err))) {
+        // FAIL CLOSED: do NOT fall back to a config.ini next to the executable.
+        // That fallback historically created a stray, dysfunctional config file
+        // beside the binaries (admin/SYSTEM-owned in %ProgramFiles%, or inside an
+        // admin's user profile) that the GUI never reads and that can shadow the
+        // real per-user config via the legacy-import read below. Writing beside
+        // the binary is never correct, so we leave configPath empty and surface
+        // the resolution failure to the caller instead of silently misplacing the
+        // file. Logging/debug-log paths may still resolve independently.
+        debug_log("config path resolution failed, refusing to fall back to a "
+            "config.ini beside the executable: %s\n", err[0] ? err : "unknown");
+        invalidate_tray_profile_cache();
+        return;
+    }
 
-        char exeConfigPath[MAX_PATH] = {};
-        GetModuleFileNameA(nullptr, exeConfigPath, ARRAY_COUNT(exeConfigPath));
-        char* slash = strrchr(exeConfigPath, '\\');
-        if (!slash) slash = strrchr(exeConfigPath, '/');
-        if (slash) {
-            slash[1] = 0;
-            StringCchCatA(exeConfigPath, ARRAY_COUNT(exeConfigPath), CONFIG_FILE_NAME);
-            DWORD legacyAttrs = GetFileAttributesA(exeConfigPath);
-            DWORD currentAttrs = GetFileAttributesA(g_app.configPath);
-            if (legacyAttrs != INVALID_FILE_ATTRIBUTES && currentAttrs == INVALID_FILE_ATTRIBUTES) {
-                CopyFileA(exeConfigPath, g_app.configPath, TRUE);
-            }
+    StringCchPrintfA(g_app.configPath, ARRAY_COUNT(g_app.configPath), "%s\\%s", g_userDataDir, CONFIG_FILE_NAME);
+
+    // Legacy one-time import (READ ONLY): if a config.ini exists beside the
+    // executable from a very old portable install AND the user has no config yet,
+    // copy it into the user's real config location. This branch only ever reads
+    // the beside-binary file; it never creates one.
+    char exeConfigPath[MAX_PATH] = {};
+    GetModuleFileNameA(nullptr, exeConfigPath, ARRAY_COUNT(exeConfigPath));
+    char* slash = strrchr(exeConfigPath, '\\');
+    if (!slash) slash = strrchr(exeConfigPath, '/');
+    if (slash) {
+        slash[1] = 0;
+        StringCchCatA(exeConfigPath, ARRAY_COUNT(exeConfigPath), CONFIG_FILE_NAME);
+        DWORD legacyAttrs = GetFileAttributesA(exeConfigPath);
+        DWORD currentAttrs = GetFileAttributesA(g_app.configPath);
+        if (legacyAttrs != INVALID_FILE_ATTRIBUTES && currentAttrs == INVALID_FILE_ATTRIBUTES) {
+            CopyFileA(exeConfigPath, g_app.configPath, TRUE);
         }
-    } else {
-        char path[MAX_PATH] = {};
-        GetModuleFileNameA(nullptr, path, MAX_PATH);
-        char* slash = strrchr(path, '\\');
-        if (!slash) slash = strrchr(path, '/');
-        if (slash) {
-            slash[1] = 0;
-            StringCchCatA(path, ARRAY_COUNT(path), CONFIG_FILE_NAME);
-        } else {
-            StringCchCopyA(path, ARRAY_COUNT(path), CONFIG_FILE_NAME);
-        }
-        StringCchCopyA(g_app.configPath, ARRAY_COUNT(g_app.configPath), path);
     }
     invalidate_tray_profile_cache();
 }
@@ -986,7 +1017,7 @@ static bool get_effective_control_state(ControlState* stateOut) {
     memset(stateOut, 0, sizeof(*stateOut));
     if (g_app.usingBackgroundService && g_app.serviceControlStateValid && control_state_has_any_meaningful_value(&g_app.serviceControlState)) {
         *stateOut = g_app.serviceControlState;
-        debug_log("get_effective_control_state: using cached service state gpu=%d exclude=%d fanMode=%d\n",
+        debug_log_on_change("get_effective_control_state: using cached service state gpu=%d exclude=%d fanMode=%d\n",
             stateOut->gpuOffsetMHz,
             stateOut->gpuOffsetExcludeLowCount,
             stateOut->fanMode);

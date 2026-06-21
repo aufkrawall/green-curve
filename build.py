@@ -67,6 +67,8 @@ WINDOWS_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "ssp_glue.cpp"),
     os.path.join(SOURCE_DIR, "cfg_glue.cpp"),
     os.path.join(SOURCE_DIR, "service_acl.cpp"),
+    os.path.join(SOURCE_DIR, "platform_win32.cpp"),
+    os.path.join(SOURCE_DIR, "vf_backends.cpp"),
 ]
 
 
@@ -75,6 +77,11 @@ LINUX_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "linux_port.cpp"),
     os.path.join(SOURCE_DIR, "linux_port_profiles.cpp"),
     os.path.join(SOURCE_DIR, "linux_tui.cpp"),
+    os.path.join(SOURCE_DIR, "linux_gpu.cpp"),
+    os.path.join(SOURCE_DIR, "linux_backend.cpp"),
+    os.path.join(SOURCE_DIR, "linux_daemon.cpp"),
+    os.path.join(SOURCE_DIR, "platform_posix.cpp"),
+    os.path.join(SOURCE_DIR, "vf_backends.cpp"),
 ]
 WINDOWS_OUTPUT_EXE = os.path.join(SCRIPT_DIR, "greencurve.exe")
 WINDOWS_TEMP_OUTPUT_EXE = WINDOWS_OUTPUT_EXE + ".new"
@@ -82,7 +89,11 @@ WINDOWS_BACKUP_EXE = WINDOWS_OUTPUT_EXE + ".bak"
 WINDOWS_SERVICE_OUTPUT_EXE = os.path.join(SCRIPT_DIR, "greencurve-service.exe")
 WINDOWS_SERVICE_TEMP_OUTPUT_EXE = WINDOWS_SERVICE_OUTPUT_EXE + ".new"
 WINDOWS_SERVICE_BACKUP_EXE = WINDOWS_SERVICE_OUTPUT_EXE + ".bak"
-LINUX_TARGET = "x86_64-linux-musl"
+# glibc-dynamic, NOT static-musl: the Linux backend dlopen()s the NVIDIA driver
+# libraries (libnvidia-api.so.1 / libnvidia-ml.so.1), which are glibc shared
+# objects.  A fully static musl binary cannot dlopen (musl's static dlopen is a
+# failing stub), so the artifact must be dynamically linked against glibc.
+LINUX_TARGET = "x86_64-linux-gnu"
 LINUX_OUTPUT_BIN = os.path.join(SCRIPT_DIR, f"greencurve-{LINUX_TARGET}")
 LINUX_TEMP_OUTPUT_BIN = LINUX_OUTPUT_BIN + ".new"
 LINUX_BACKUP_BIN = LINUX_OUTPUT_BIN + ".bak"
@@ -173,7 +184,7 @@ COMMON_FLAGS = [
 ]
 
 # C-002: read VERSION and inject it into all compile commands
-APP_VERSION = "0.15"
+APP_VERSION = "0.16"
 APP_BUILD_NUMBER = 0
 _version_path = os.path.join(SCRIPT_DIR, "VERSION")
 if os.path.exists(_version_path):
@@ -208,18 +219,22 @@ WINDOWS_FLAGS = [
 LINUX_FLAGS = [
     "-target",
     LINUX_TARGET,
-    "-static",
+    # Dynamically linked against glibc so the backend can dlopen the NVIDIA
+    # driver libraries at runtime (see LINUX_TARGET note).  Hardening kept.
     "-fPIE",
     "-pie",
     "-Wl,-z,relro,-z,now",
     "-Wl,-z,noexecstack",
     "-s",
     "-fstack-protector-strong",
-    # Enable exceptions and RTTI for the Linux scaffold only, which uses
-    # <string> and <vector> STL containers that depend on exception handling.
-    # These overrides come after the common -fno-exceptions -fno-rtti flags.
+    # Enable exceptions and RTTI for the Linux build, which uses <string> and
+    # <vector> STL containers that depend on exception handling.  These
+    # overrides come after the common -fno-exceptions -fno-rtti flags.
     "-fexceptions",
     "-frtti",
+    # Runtime dynamic loading + threads for the backend/daemon.
+    "-ldl",
+    "-lpthread",
 ]
 
 WINDOWS_LINK_LIBS = [
@@ -232,6 +247,7 @@ WINDOWS_LINK_LIBS = [
     "-luuid",
     "-ldbghelp",
     "-lversion",
+    "-lcomctl32",
 ]
 
 WINDOWS_SERVICE_LINK_LIBS = [
@@ -244,7 +260,61 @@ WINDOWS_SERVICE_LINK_LIBS = [
     "-luuid",
     "-ldbghelp",
     "-lversion",
+    "-lcomctl32",
 ]
+
+# ---------------------------------------------------------------------------
+# Multi-architecture build matrix
+#
+# Default `python build.py` builds Windows + Linux, each for x64 and arm64, and
+# packages every (os, arch) into greencurve-<version>-<os>-<arch>.7z with all
+# files under a greencurve/ subfolder.
+# ---------------------------------------------------------------------------
+WINDOWS_ARM64_TRIPLE = "aarch64-w64-mingw32"
+LINUX_ARM64_TRIPLE = "aarch64-linux-gnu"
+
+
+def windows_flags_for_arch(arch):
+    """WINDOWS_FLAGS adapted for the target architecture.  On arm64, x86 CET
+    (-fcf-protection) is replaced by branch-protection (BTI/PAC) and the
+    x64-tailored CFG override (-mguard=cf / cfg_glue.cpp) is dropped — cfg_glue.cpp
+    still compiles for initialize_process_mitigations()."""
+    if arch != "arm64":
+        return list(WINDOWS_FLAGS)
+    out = ["-target", WINDOWS_ARM64_TRIPLE]
+    for flag in WINDOWS_FLAGS:
+        if flag == "-mguard=cf":
+            continue
+        if flag == "-fcf-protection=full":
+            out.append("-mbranch-protection=standard")
+            continue
+        out.append(flag)
+    return out
+
+
+def linux_flags_for_arch(arch):
+    """LINUX_FLAGS with the cross-compilation triple swapped for the arch."""
+    flags = list(LINUX_FLAGS)
+    if arch == "arm64":
+        flags[flags.index("-target") + 1] = LINUX_ARM64_TRIPLE
+        # Match the Windows arm64 build: -O2 over the common -Oz (avoids the
+        # same arm64 size-opt codegen issue and keeps the two arches uniform),
+        # plus BTI/PAC branch protection (the arm64 analogue of x86 CET).
+        flags.append("-mbranch-protection=standard")
+        flags.append("-O2")
+    return flags
+
+
+# Every (os, arch) build lands in its OWN isolated folder under dist/, using the
+# canonical binary names (no -arch suffixes, no shared root or temp paths):
+#   dist/<os>-<arch>/greencurve/{greencurve.exe, greencurve-service.exe | greencurve}
+# That payload folder is also exactly what the 7z archives (a greencurve/ root).
+DIST_DIR = os.path.join(SCRIPT_DIR, "dist")
+
+
+def target_payload_dir(os_name, arch):
+    """The isolated `greencurve/` payload folder for one (os, arch) target."""
+    return os.path.join(DIST_DIR, f"{os_name}-{arch}", "greencurve")
 
 
 def read_int_file(path, default=0):
@@ -993,12 +1063,18 @@ def finalize_output(temp_output, output_path, backup_path=None):
     print(f"Build successful: {output_path} ({size:,} bytes / {size / 1024:.1f} KB)")
 
 
-def get_windows_gui_compile_command(temp_output):
+def get_windows_gui_compile_command(temp_output, arch="x64"):
     """Return the command array for compiling the Windows GUI executable with llvm-mingw."""
+    # arm64 quirk: the GUI trips llvm-mingw/LLD's "misaligned ldr/str offset"
+    # layout bug.  Earlier GUI code only needed LTO disabled; release-0.16 code
+    # growth also needs -O2 over the common -Oz.  Keep this scoped to arm64 GUI:
+    # x64 keeps Oz+LTO, and the arm64 service has its own O2 workaround below.
+    gui_arch_opt = ["-O2", "-fno-lto"] if arch == "arm64" else []
     return [
         LLVM_MINGW_CLANG,
         *COMMON_FLAGS,
-        *WINDOWS_FLAGS,
+        *windows_flags_for_arch(arch),
+        *gui_arch_opt,
         "-o",
         temp_output,
         *WINDOWS_SOURCE_FILES,
@@ -1007,12 +1083,19 @@ def get_windows_gui_compile_command(temp_output):
     ]
 
 
-def get_windows_service_compile_command(temp_output):
+def get_windows_service_compile_command(temp_output, arch="x64"):
     """Return the command array for compiling the Windows service executable with llvm-mingw."""
+    # arm64 quirk: the service binary trips LLD's "misaligned ldr/str offset" at
+    # -Oz; -O2 (last -O flag wins) is clean.  (The GUI trips the same LLD error
+    # via LTO instead and is handled separately with -fno-lto in
+    # get_windows_gui_compile_command - different lever, same llvm-mingw aarch64
+    # bug family.)
+    service_arch_opt = ["-O2"] if arch == "arm64" else []
     return [
         LLVM_MINGW_CLANG,
         *COMMON_FLAGS,
-        *WINDOWS_FLAGS,
+        *windows_flags_for_arch(arch),
+        *service_arch_opt,
         "-DGREEN_CURVE_SERVICE_BINARY=1",
         "-o",
         temp_output,
@@ -1021,20 +1104,20 @@ def get_windows_service_compile_command(temp_output):
     ]
 
 
-def get_linux_compile_command(temp_output):
+def get_linux_compile_command(temp_output, arch="x64"):
     """Return the command array for compiling the Linux executable."""
     return [
         ZIG_EXE,
         "c++",
         *COMMON_FLAGS,
-        *LINUX_FLAGS,
+        *linux_flags_for_arch(arch),
         "-o",
         temp_output,
         *LINUX_SOURCE_FILES,
     ]
 
 
-def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_TEMP_OUTPUT_EXE, backup_path=WINDOWS_BACKUP_EXE, finalize=True):
+def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_TEMP_OUTPUT_EXE, backup_path=WINDOWS_BACKUP_EXE, finalize=True, arch="x64"):
     """Compile the Windows GUI executable using Zig's bundled clang."""
     missing_sources = [path for path in WINDOWS_SOURCE_FILES if not os.path.exists(path)]
     if missing_sources:
@@ -1049,9 +1132,9 @@ def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_T
     if os.path.exists(temp_output):
         os.remove(temp_output)
 
-    cmd = get_windows_gui_compile_command(temp_output)
+    cmd = get_windows_gui_compile_command(temp_output, arch)
 
-    print(f"Compiling {len(WINDOWS_SOURCE_FILES)} source files -> {os.path.basename(output_path)}")
+    print(f"Compiling {len(WINDOWS_SOURCE_FILES)} source files -> {os.path.basename(output_path)} ({arch})")
     print(f"  Command: {' '.join(cmd)}")
 
     result = subprocess.run(cmd, cwd=SCRIPT_DIR)
@@ -1068,7 +1151,7 @@ def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_T
         print(f"Check build successful: {temp_output} ({size:,} bytes / {size / 1024:.1f} KB)")
 
 
-def compile_windows_service_binary(output_path=WINDOWS_SERVICE_OUTPUT_EXE, temp_output=WINDOWS_SERVICE_TEMP_OUTPUT_EXE, backup_path=WINDOWS_SERVICE_BACKUP_EXE, finalize=True):
+def compile_windows_service_binary(output_path=WINDOWS_SERVICE_OUTPUT_EXE, temp_output=WINDOWS_SERVICE_TEMP_OUTPUT_EXE, backup_path=WINDOWS_SERVICE_BACKUP_EXE, finalize=True, arch="x64"):
     """Compile the dedicated Windows service executable."""
     missing_sources = [path for path in WINDOWS_SOURCE_FILES if not os.path.exists(path)]
     if missing_sources:
@@ -1080,9 +1163,9 @@ def compile_windows_service_binary(output_path=WINDOWS_SERVICE_OUTPUT_EXE, temp_
     if os.path.exists(temp_output):
         os.remove(temp_output)
 
-    cmd = get_windows_service_compile_command(temp_output)
+    cmd = get_windows_service_compile_command(temp_output, arch)
 
-    print(f"Compiling {len(WINDOWS_SOURCE_FILES)} source files -> {os.path.basename(output_path)}")
+    print(f"Compiling {len(WINDOWS_SOURCE_FILES)} source files -> {os.path.basename(output_path)} ({arch})")
     print(f"  Command: {' '.join(cmd)}")
 
     result = subprocess.run(cmd, cwd=SCRIPT_DIR)
@@ -1099,8 +1182,8 @@ def compile_windows_service_binary(output_path=WINDOWS_SERVICE_OUTPUT_EXE, temp_
         print(f"Check build successful: {temp_output} ({size:,} bytes / {size / 1024:.1f} KB)")
 
 
-def compile_linux_binary(output_path=LINUX_OUTPUT_BIN, temp_output=LINUX_TEMP_OUTPUT_BIN, backup_path=LINUX_BACKUP_BIN, finalize=True):
-    """Cross-compile the Linux terminal build as a static musl binary."""
+def compile_linux_binary(output_path=LINUX_OUTPUT_BIN, temp_output=LINUX_TEMP_OUTPUT_BIN, backup_path=LINUX_BACKUP_BIN, finalize=True, arch="x64"):
+    """Cross-compile the Linux glibc-dynamic binary (NvAPI/NVML dlopen)."""
     missing_sources = [path for path in LINUX_SOURCE_FILES if not os.path.exists(path)]
     if missing_sources:
         print("ERROR: Missing Linux source files:")
@@ -1111,9 +1194,9 @@ def compile_linux_binary(output_path=LINUX_OUTPUT_BIN, temp_output=LINUX_TEMP_OU
     if os.path.exists(temp_output):
         os.remove(temp_output)
 
-    cmd = get_linux_compile_command(temp_output)
+    cmd = get_linux_compile_command(temp_output, arch)
 
-    print(f"Compiling {len(LINUX_SOURCE_FILES)} source files -> {os.path.basename(output_path)}")
+    print(f"Compiling {len(LINUX_SOURCE_FILES)} source files -> {os.path.basename(output_path)} ({arch})")
     print(f"  Command: {' '.join(cmd)}")
 
     result = subprocess.run(cmd, cwd=SCRIPT_DIR)
@@ -1128,6 +1211,159 @@ def compile_linux_binary(output_path=LINUX_OUTPUT_BIN, temp_output=LINUX_TEMP_OU
     else:
         size = os.path.getsize(temp_output)
         print(f"Check build successful: {temp_output} ({size:,} bytes / {size / 1024:.1f} KB)")
+
+
+README_MD_PATH = os.path.join(SCRIPT_DIR, "README.md")
+LICENSE_PATH = os.path.join(SCRIPT_DIR, "LICENSE")
+
+
+def find_seven_zip():
+    """Locate a 7-Zip executable (PATH or the standard Windows install dirs)."""
+    on_path = shutil.which("7z") or shutil.which("7za") or shutil.which("7zr")
+    if on_path:
+        return on_path
+    for cand in (r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe"):
+        if os.path.exists(cand):
+            return cand
+    return None
+
+
+def detect_binary_arch(path):
+    """Read the actual machine architecture from a PE (.exe) or ELF binary
+    header.  Returns 'x64', 'arm64', or None if it can't be determined."""
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(64)
+            if head[:2] == b"MZ":  # PE / COFF (Windows)
+                e_lfanew = struct.unpack_from("<I", head, 0x3C)[0]
+                handle.seek(e_lfanew)
+                if handle.read(4) != b"PE\x00\x00":
+                    return None
+                machine = struct.unpack("<H", handle.read(2))[0]
+                return {0x8664: "x64", 0xAA64: "arm64"}.get(machine)
+            if head[:4] == b"\x7fELF":  # ELF (Linux)
+                machine = struct.unpack_from("<H", head, 18)[0]
+                return {0x3E: "x64", 0xB7: "arm64"}.get(machine)
+    except OSError:
+        return None
+    return None
+
+
+def package_release_archive(os_name, arch, binaries):
+    """Archive the target's isolated payload folder (dist/<os>-<arch>/greencurve)
+    into greencurve-<version>-<os>-<arch>.7z.  The binaries were compiled directly
+    into that folder; here we add README + LICENSE and zip it under a greencurve/
+    root.
+
+    Each binary's real PE/ELF machine field is verified to match `arch` before it
+    is bundled, so a cross-arch mix (an arm64 GUI with an x64 service, etc.) is
+    impossible — the build aborts on any mismatch."""
+    payload = target_payload_dir(os_name, arch)
+    for binary in binaries:
+        if not os.path.exists(binary):
+            print(f"WARNING: missing build output {binary}; skipping {os_name}-{arch} archive")
+            return
+        actual_arch = detect_binary_arch(binary)
+        if actual_arch != arch:
+            print(f"ERROR: architecture mismatch packaging {os_name}-{arch}: "
+                  f"{os.path.basename(binary)} is {actual_arch or 'unrecognized'}, expected {arch}. "
+                  f"Aborting to prevent a cross-arch bundle.")
+            sys.exit(1)
+    for extra in (README_MD_PATH, LICENSE_PATH):
+        if os.path.exists(extra):
+            shutil.copy2(extra, os.path.join(payload, os.path.basename(extra)))
+
+    seven = find_seven_zip()
+    if not seven:
+        print(f"WARNING: 7-Zip not found (install from https://www.7-zip.org); "
+              f"built {os_name}-{arch} files at {payload} but produced no archive")
+        return
+    archive = os.path.join(SCRIPT_DIR, f"greencurve-{APP_VERSION}-{os_name}-{arch}.7z")
+    if os.path.exists(archive):
+        os.remove(archive)
+    # Run from the target dir and add the 'greencurve' folder so the archive root
+    # holds greencurve/<files>.
+    result = subprocess.run(
+        [seven, "a", "-t7z", "-mx=9", "-bso0", "-bsp0", archive, "greencurve"],
+        cwd=os.path.dirname(payload),
+    )
+    if result.returncode != 0 or not os.path.exists(archive):
+        print(f"WARNING: 7-Zip archiving failed for {os_name}-{arch}")
+        return
+    size = os.path.getsize(archive)
+    print(f"Archived {os.path.basename(archive)} ({size:,} bytes / {size / 1024:.1f} KB)")
+
+
+def inspect_aarch64_driver(path):
+    """Verify, WITHOUT arm64 hardware, that an aarch64 NVIDIA driver ships the
+    libraries + symbols our backend needs.  `path` is an extracted
+    NVIDIA-Linux-aarch64-<ver>.run directory (run `./<run> --extract-only` first)
+    or a directory containing the .so files.  Reads aarch64 ELF exports with the
+    bundled llvm-nm."""
+    print(f"=== Inspecting aarch64 driver tree: {path} ===")
+    if not os.path.isdir(path):
+        print(f"ERROR: not a directory: {path}")
+        print("Extract the driver first:  ./NVIDIA-Linux-aarch64-<ver>.run --extract-only")
+        return 1
+
+    wanted = {
+        "NVML (libnvidia-ml.so)": (
+            "libnvidia-ml.so",
+            ["nvmlInit_v2", "nvmlDeviceGetCount_v2", "nvmlDeviceSetClockOffsets",
+             "nvmlDeviceSetGpuLockedClocks", "nvmlDeviceGetGpcClkMinMaxVfOffset",
+             "nvmlDeviceSetFanSpeed_v2", "nvmlDeviceSetPowerManagementLimit"]),
+        "NvAPI (libnvidia-api.so)": (
+            "libnvidia-api.so",
+            ["nvapi_QueryInterface"]),
+    }
+    nm = os.path.join(LLVM_MINGW_DIR, "bin", "llvm-nm.exe")
+    if not os.path.exists(nm):
+        nm = shutil.which("llvm-nm") or shutil.which("nm")
+
+    found = {}   # label -> bool (library present AND all required symbols exported)
+    for label, (prefix, symbols) in wanted.items():
+        match = None
+        for root, _dirs, files in os.walk(path):
+            for fn in sorted(files):
+                if fn.startswith(prefix) and ".so" in fn:
+                    match = os.path.join(root, fn)
+                    break
+            if match:
+                break
+        if not match:
+            print(f"  {label}: NOT FOUND")
+            found[label] = False
+            continue
+        print(f"  {label}: {os.path.relpath(match, path)}")
+        if not nm:
+            print("    (no llvm-nm/nm available; cannot verify exported symbols)")
+            found[label] = True  # present, symbols unverified
+            continue
+        try:
+            exported = subprocess.run([nm, "-D", "--defined-only", match],
+                                      capture_output=True, text=True, errors="ignore").stdout
+        except OSError:
+            print("    (symbol read failed)")
+            found[label] = True
+            continue
+        all_syms = True
+        for sym in symbols:
+            present = sym in exported
+            all_syms = all_syms and present
+            print(f"      {'OK     ' if present else 'MISSING'} {sym}")
+        found[label] = all_syms
+
+    have_nvml = found.get("NVML (libnvidia-ml.so)", False)
+    have_nvapi = found.get("NvAPI (libnvidia-api.so)", False)
+    if not have_nvml:
+        verdict = "NVML MISSING — this driver cannot drive the GPU (not a usable target)."
+    elif have_nvapi:
+        verdict = "FULL — NVML + NvAPI present: VF-curve OC/UV expected to work on this driver."
+    else:
+        verdict = ("NVML-ONLY — NvAPI absent: clock offsets / power / fan / locked clocks work, "
+                   "but no VF-curve editing on this driver version.")
+    print("\nVerdict:", verdict)
+    return 0 if have_nvml else 1
 
 
 def run_check_builds(target, generate_lsp=True):
@@ -1241,11 +1477,12 @@ int main(int argc, char** argv) {
     if (parse_cli_point_arg_w(L"--pointabc", &point)) return 24;
     if (parse_cli_point_arg_w(L"--point-1", &point)) return 25;
 
-    if (!gpu_family_uses_best_guess_backend(GPU_FAMILY_PASCAL)) return 26;
-    if (!gpu_family_uses_best_guess_backend(GPU_FAMILY_TURING)) return 27;
-    if (!gpu_family_uses_best_guess_backend(GPU_FAMILY_AMPERE)) return 28;
+    if (gpu_family_uses_best_guess_backend(GPU_FAMILY_PASCAL)) return 26;
+    if (gpu_family_uses_best_guess_backend(GPU_FAMILY_TURING)) return 27;
+    if (gpu_family_uses_best_guess_backend(GPU_FAMILY_AMPERE)) return 28;
     if (gpu_family_uses_best_guess_backend(GPU_FAMILY_LOVELACE)) return 29;
     if (gpu_family_uses_best_guess_backend(GPU_FAMILY_BLACKWELL)) return 30;
+    if (!gpu_family_uses_best_guess_backend(GPU_FAMILY_UNKNOWN)) return 67;
 
     FanCurveConfig cfg = {};
     fan_curve_set_default(&cfg);
@@ -1550,6 +1787,55 @@ int main(int argc, char** argv) {
         DeleteFileW(aclFile);
     }
 
+    // F-SEC-6: machine-wide config DACL round-trip.  The .ini must be readable
+    // by standard users (so the GUI can show the current default) but writable
+    // only by SYSTEM/Administrators.
+    {
+        wchar_t tempDir[MAX_PATH] = {};
+        if (GetTempPathW(MAX_PATH, tempDir) == 0) return 117;
+        wchar_t mcFile[MAX_PATH] = {};
+        StringCchPrintfW(mcFile, MAX_PATH, L"%lsgc_machine_acl_%lu.ini", tempDir, GetCurrentProcessId());
+        HANDLE mh = CreateFileW(mcFile, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (mh == INVALID_HANDLE_VALUE) return 118;
+        CloseHandle(mh);
+        char aclErr[256] = {};
+        if (machine_config_dacl_is_hardened(mcFile)) { DeleteFileW(mcFile); return 119; }
+        if (!apply_protected_machine_config_dacl(mcFile, aclErr, sizeof(aclErr))) { DeleteFileW(mcFile); return 120; }
+        if (!machine_config_dacl_is_hardened(mcFile)) { DeleteFileW(mcFile); return 121; }
+        DeleteFileW(mcFile);
+    }
+
+    // F-15: shared-bank DIRECTORY DACL round-trip.  %ProgramData%\Green Curve
+    // must be standard-user-readable (list) but writable only by SYSTEM /
+    // Administrators, so a non-admin cannot plant or delete shared bank files.
+    {
+        wchar_t tempDir[MAX_PATH] = {};
+        if (GetTempPathW(MAX_PATH, tempDir) == 0) return 130;
+        wchar_t mcDir[MAX_PATH] = {};
+        StringCchPrintfW(mcDir, MAX_PATH, L"%lsgc_machine_acl_dir_%lu", tempDir, GetCurrentProcessId());
+        if (!CreateDirectoryW(mcDir, nullptr)) return 131;
+        char aclErr[256] = {};
+        if (machine_config_dacl_is_hardened(mcDir)) { RemoveDirectoryW(mcDir); return 132; }
+        if (!apply_protected_machine_config_dir_dacl(mcDir, aclErr, sizeof(aclErr))) { RemoveDirectoryW(mcDir); return 133; }
+        if (!machine_config_dacl_is_hardened(mcDir)) { RemoveDirectoryW(mcDir); return 134; }
+        RemoveDirectoryW(mcDir);
+    }
+
+    // Shared-only policy: the "apply shared slot N" request flag must encode the
+    // slot in bits 8..15 and the marker in bit 30, WITHOUT colliding with the
+    // interactive bit (bit 0).  The service uses this to apply its own copy of an
+    // admin shared profile for restricted callers.
+    {
+        DWORD f = SERVICE_REQUEST_FLAG_INTERACTIVE | SERVICE_REQUEST_FLAG_SHARED_SLOT |
+                  ((3u & SERVICE_REQUEST_SHARED_SLOT_MASK) << SERVICE_REQUEST_SHARED_SLOT_SHIFT);
+        if (!(f & SERVICE_REQUEST_FLAG_SHARED_SLOT)) return 135;
+        if (!(f & SERVICE_REQUEST_FLAG_INTERACTIVE)) return 136;
+        if (((f >> SERVICE_REQUEST_SHARED_SLOT_SHIFT) & SERVICE_REQUEST_SHARED_SLOT_MASK) != 3u) return 137;
+        DWORD f2 = SERVICE_REQUEST_FLAG_SHARED_SLOT | ((5u & SERVICE_REQUEST_SHARED_SLOT_MASK) << SERVICE_REQUEST_SHARED_SLOT_SHIFT);
+        if ((f2 & SERVICE_REQUEST_FLAG_INTERACTIVE) != 0) return 138;
+        if (((f2 >> SERVICE_REQUEST_SHARED_SLOT_SHIFT) & SERVICE_REQUEST_SHARED_SLOT_MASK) != 5u) return 139;
+    }
+
     // Pin-bug root-cause guard: the snapshot lockMode sync must NEVER adopt
     // the service's (previously applied) mode while the GUI holds divergent
     // pending lock intent (FLATTEN->HARD click / loaded HARD profile) or
@@ -1558,15 +1844,15 @@ int main(int argc, char** argv) {
     // the pin un-appliable ("No changes to apply") and saving it wrong.
     {
         // Divergent intent (clean): user clicked FLATTEN->HARD, snapshot still FLATTEN.
-        if (lock_mode_sync_allowed(LOCK_MODE_HARD, LOCK_MODE_FLATTEN, false)) return 120;
+        if (lock_mode_sync_allowed(LOCK_MODE_HARD, LOCK_MODE_FLATTEN, false)) return 122;
         // Divergent intent (dirty): same, with other unsaved edits.
-        if (lock_mode_sync_allowed(LOCK_MODE_HARD, LOCK_MODE_FLATTEN, true)) return 121;
+        if (lock_mode_sync_allowed(LOCK_MODE_HARD, LOCK_MODE_FLATTEN, true)) return 123;
         // No divergence but dirty: never resync mid-edit.
-        if (lock_mode_sync_allowed(LOCK_MODE_FLATTEN, LOCK_MODE_FLATTEN, true)) return 122;
+        if (lock_mode_sync_allowed(LOCK_MODE_FLATTEN, LOCK_MODE_FLATTEN, true)) return 124;
         // Clean, no divergence: adoption allowed (e.g. curve-detected FLATTEN
         // while the service authoritatively reports HARD at the same point).
-        if (!lock_mode_sync_allowed(LOCK_MODE_FLATTEN, LOCK_MODE_FLATTEN, false)) return 123;
-        if (!lock_mode_sync_allowed(LOCK_MODE_NONE, LOCK_MODE_NONE, false)) return 124;
+        if (!lock_mode_sync_allowed(LOCK_MODE_FLATTEN, LOCK_MODE_FLATTEN, false)) return 125;
+        if (!lock_mode_sync_allowed(LOCK_MODE_NONE, LOCK_MODE_NONE, false)) return 126;
     }
 
     // lockMHz is clamped at the IPC boundary like the curve points (it feeds
@@ -1575,13 +1861,52 @@ int main(int argc, char** argv) {
         DesiredSettings ds = {};
         ds.lockMHz = 4000000000u;
         validate_desired_settings_for_ipc(&ds);
-        if (ds.lockMHz != 5000u) return 125;
+        if (ds.lockMHz != 5000u) return 127;
         ds.lockMHz = 0u;
         validate_desired_settings_for_ipc(&ds);
-        if (ds.lockMHz != 0u) return 126;
+        if (ds.lockMHz != 0u) return 128;
         ds.lockMHz = 2800u;
         validate_desired_settings_for_ipc(&ds);
-        if (ds.lockMHz != 2800u) return 127;
+        if (ds.lockMHz != 2800u) return 129;
+    }
+
+    // Logon auto-apply policy decision (resolve_logon_profile_source).  This is
+    // the core of the restrict_non_admin_to_shared logon fix: a restricted user
+    // (policy ON && not admin) must NEVER get their per-user custom OC applied at
+    // logon — only an explicit published shared choice or the machine-wide shared
+    // default.  Admins / unrestricted machines keep the legacy per-user-first
+    // behavior.  The "restricted + per-user slot => NOT per-user" cases (142/143)
+    // would have failed before the fix (bypass).
+    {
+        // Explicit, published shared choice always wins (any user).
+        if (resolve_logon_profile_source(true, false, 3, true, true, true) != LOGON_PROFILE_SOURCE_SHARED_BANK) return 140;
+        if (resolve_logon_profile_source(false, true, 2, true, false, false) != LOGON_PROFILE_SOURCE_SHARED_BANK) return 141;
+        // Restricted + only a per-user slot => bypass closed (none, no default).
+        if (resolve_logon_profile_source(true, false, 0, false, true, false) != LOGON_PROFILE_SOURCE_NONE) return 142;
+        // Restricted + per-user slot + machine default => the shared default.
+        if (resolve_logon_profile_source(true, false, 0, false, true, true) != LOGON_PROFILE_SOURCE_MACHINE_DEFAULT) return 143;
+        // Restricted + stale shared choice (unpublished) + default => default.
+        if (resolve_logon_profile_source(true, false, 4, false, false, true) != LOGON_PROFILE_SOURCE_MACHINE_DEFAULT) return 144;
+        // Admin under policy keeps the per-user slot.
+        if (resolve_logon_profile_source(true, true, 0, false, true, true) != LOGON_PROFILE_SOURCE_PER_USER) return 145;
+        // Policy off, non-admin: per-user slot honored.
+        if (resolve_logon_profile_source(false, false, 0, false, true, true) != LOGON_PROFILE_SOURCE_PER_USER) return 146;
+        // Policy off, non-admin, no per-user but machine default => default.
+        if (resolve_logon_profile_source(false, false, 0, false, false, true) != LOGON_PROFILE_SOURCE_MACHINE_DEFAULT) return 147;
+        // Nothing available => none (both unrestricted and restricted).
+        if (resolve_logon_profile_source(false, false, 0, false, false, false) != LOGON_PROFILE_SOURCE_NONE) return 148;
+        if (resolve_logon_profile_source(true, false, 0, false, false, false) != LOGON_PROFILE_SOURCE_NONE) return 149;
+    }
+
+    // logon_shared_slot round-trips through the profile INI like the other
+    // [profiles] keys (the save/clear rewriters must re-emit it; guarded by the
+    // source regression checks for the actual rewrite paths).
+    {
+        if (!set_config_int(argv[1], "profiles", "logon_shared_slot", 3)) return 150;
+        if (get_config_int(argv[1], "profiles", "logon_shared_slot", 0) != 3) return 151;
+        if (!set_config_int(argv[1], "profiles", "logon_shared_slot", 0)) return 152;
+        if (get_config_int(argv[1], "profiles", "logon_shared_slot", -1) != 0) return 153;
+        DeleteFileA(argv[1]);
     }
 
     DeleteCriticalSection(&g_configLock);
@@ -1726,7 +2051,21 @@ def run_source_regression_checks():
     main_service_recovery_cpp = os.path.join(SOURCE_DIR, "main_service_recovery.cpp")
     main_service_install_cpp = os.path.join(SOURCE_DIR, "main_service_install.cpp")
     ui_main_cpp = os.path.join(SOURCE_DIR, "ui_main.cpp")
-    shared_h = os.path.join(SOURCE_DIR, "app_shared.h")
+    gpu_core_h = os.path.join(SOURCE_DIR, "gpu_core.h")
+    # The platform-neutral data model (NVAPI/NVML types, VfBackendSpec,
+    # DesiredSettings + IPC validator, ServiceRequest/Response, NvmlApi) was
+    # split out of app_shared.h into gpu_core.h so the Linux backend can share
+    # it.  The "shared header surface" source checks below assert invariants
+    # that may now live in EITHER header, so point shared_h/app_shared_h at a
+    # concatenation of both files.
+    _shared_surface = os.path.join(BUILD_WORK_DIR, "_shared_header_surface.h")
+    os.makedirs(BUILD_WORK_DIR, exist_ok=True)
+    with open(_shared_surface, "w", encoding="utf-8", errors="ignore") as _sf:
+        for _h in (os.path.join(SOURCE_DIR, "app_shared.h"), gpu_core_h):
+            with open(_h, "r", encoding="utf-8", errors="ignore") as _hf:
+                _sf.write(_hf.read())
+                _sf.write("\n")
+    shared_h = _shared_surface
     app_shared_h = shared_h
     app_shared_cpp = os.path.join(SOURCE_DIR, "app_shared.cpp")
     build_script = os.path.join(SCRIPT_DIR, "build.py")
@@ -1798,13 +2137,17 @@ def run_source_regression_checks():
     require_text(runtime_nvml_cpp, "nvml_select_device_for_selected_gpu", "NVML device is matched to selected GPU")
     require_text(secure_write_cpp, "write_text_file_atomic_service", "service file writes use hardened writer")
     require_text(ui_main_cpp, "gpuSelectY = dp(10)", "GPU selector lives in the graph header gap")
-    require_text(main_gpu_state_cpp, "Writes are intentionally enabled", "best-guess VF writes remain explicitly enabled")
+    require_text(main_gpu_state_cpp, "best-effort support for a new NVIDIA GPU family", "unrecognized GPU warning explains best-effort writes")
     require_text(main_shell_cpp, "preserving requested value", "config memory offsets are not clamped to reported range")
     require_text(runtime_nvml_cpp, "parse_cli_point_arg_w(arg, &idx)", "CLI point parsing is strict")
     require_text(entry_cpp, "set_main_window_title", "window caption helper exists")
     require_text(entry_cpp, "SetWindowTextA", "window caption uses ANSI text write")
     require_text(entry_cpp, "RegisterClassExA", "main window uses ANSI class registration")
     require_text(entry_cpp, "CreateWindowExA", "main window uses ANSI creation path")
+    require_text(entry_cpp, "--set-machine-logon-slot", "CLI supports setting machine default logon slot")
+    require_text(entry_cpp, "--clear-machine-logon-slot", "CLI supports clearing machine default logon slot")
+    require_text(config_profiles_ui_cpp, "update_share_all_users_check_state", "GUI updates the share-with-all-users checkbox state")
+    require_text(config_profiles_ui_cpp, "refresh_machine_logon_slot_cache", "GUI refreshes machine logon slot cache")
     require_text(main_fan_runtime_cpp, "FindWindowA", "single-instance lookup uses ANSI class matching")
     require_text(build_script, "--check", "build check flag exists")
     require_text(build_script, "--test", "test flag exists")
@@ -1818,6 +2161,7 @@ def run_source_regression_checks():
     require_text(build_script, "-fcf-protection=full", "CET/Shadow Stack instrumentation (endbr64) adds hardware-enforced control-flow integrity")
     require_text(build_script, "-flto", "Link-Time Optimization enables cross-module inlining and dead code elimination at link time")
     require_text(build_script, "--icf=safe", "Identical Code Folding merges identical functions to reduce binary size")
+    require_text(build_script, 'gui_arch_opt = ["-O2", "-fno-lto"]', "arm64 GUI uses O2 and disables LTO to dodge the llvm-mingw aarch64 'misaligned ldr/str offset' link bug")
     require_text(build_script, "-ftrivial-auto-var-init=pattern", "auto-var-init pattern flag initializes stack variables")
     require_text(build_script, "-fno-delete-null-pointer-checks", "null pointer check flag prevents deletion of null checks")
     require_text(build_script, "-fPIE", "Linux PIE hardening retained")
@@ -1837,6 +2181,15 @@ def run_source_regression_checks():
     require_text(service_ipc_cpp, "restore_inherited_dacl(targetPath", "service uninstall reverts the binary DACL to inherited")
     require_text(service_acl_cpp, "PROTECTED_DACL_SECURITY_INFORMATION", "binary DACL hardening disables inheritance")
     require_text(service_acl_cpp, "(A;;0x1200a9;;;BU)", "binary DACL grants BUILTIN\\Users read+execute only")
+    # F-SEC-6: machine-wide default logon profile config is admin-writable and
+    # user-readable, so non-admins can read the current default but cannot
+    # tamper with it.
+    require_text(service_acl_cpp, "apply_protected_machine_config_dacl", "machine config DACL helper exists")
+    require_text(service_acl_cpp, "(A;;0x120089;;;BU)", "machine config DACL grants BUILTIN\\Users read only")
+    require_text(service_ipc_cpp, "resolve_machine_config_path", "machine config path resolver exists")
+    require_text(service_ipc_cpp, "get_machine_logon_slot", "machine logon slot reader exists")
+    require_text(service_ipc_cpp, "set_machine_logon_slot", "machine logon slot writer exists")
+    require_text(service_ipc_cpp, "clear_machine_logon_slot", "machine logon slot clearer exists")
     # F-SEC-5 / policy: program files live only under %LOCALAPPDATA%\\Green Curve.
     # The shared resolver and the one-time legacy cleanup are the only places
     # permitted to mention ProgramData; the per-process data/diagnostics paths must
@@ -1848,10 +2201,13 @@ def run_source_regression_checks():
     require_text(service_server_cpp, "service_cleanup_legacy_programdata()", "service startup runs the legacy ProgramData cleanup")
     forbid_text(service_runtime_cpp, "ProgramData", "service runtime stores files under LocalAppData, not ProgramData")
     forbid_text(diagnostics_cpp, "ProgramData", "diagnostics stores files under LocalAppData, not ProgramData")
-    # F-DOM-1: the experimental best-guess-family VF warning re-shows once per
-    # session and is no longer permanently dismissible via a persisted config flag.
-    require_text(os.path.join(SOURCE_DIR, "main_gpu_front.cpp"), "g_bestGuessWarningShownThisSession", "best-guess warning re-shows once per session")
-    forbid_text(os.path.join(SOURCE_DIR, "main_gpu_state.cpp"), "hide_best_guess_warning_", "best-guess warning is not permanently dismissible")
+    # F-DOM-1 / release 0.16: only unrecognized future GPU families are
+    # best-effort.  The warning shows once per GUI session and can be disabled by
+    # the user through a persistent [warnings] flag; Pascal/Turing/Ampere are
+    # now treated as tested known backends.
+    require_text(os.path.join(SOURCE_DIR, "main_gpu_front.cpp"), "hide_unrecognized_gpu_warning", "unrecognized GPU warning can be disabled by the user")
+    require_text(os.path.join(SOURCE_DIR, "main_gpu_state.cpp"), "pszVerificationText", "TaskDialog warning exposes a do-not-show-again checkbox")
+    forbid_text(os.path.join(SOURCE_DIR, "main_gpu_state.cpp"), "hide_best_guess_warning_", "old best-guess warning flag is not resurrected")
 
     # F-04-001: Pipe server identity verification beyond PID
     require_text(service_ipc_cpp, "does not match expected", "pipe server executable path is verified against expected service binary")
@@ -1892,9 +2248,134 @@ def run_source_regression_checks():
     require_text(gpu_backend_cpp, "HeapBuffer buf(", "VF curve offset read uses heap buffer")
     require_text(gpu_backend_cpp, "HeapBuffer buf(", "VF point write uses heap buffer")
 
-    # F-01-003: Pipe ACL restricted to console session user only (no IU fallback)
-    require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "service pipe ACL: write restricted to active console user", "pipe uses restricted session ACL")
-    require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "cannot create restricted ACL, deferring", "pipe ACL fallback removed")
+    # F-01-003 / F-15-012: active-session enforcement is SERVER-SIDE (caller
+    # session resolved from the pipe handle), so the pipe ACL is user-agnostic
+    # (authenticated local users read+write) and must NOT bake a per-user SID —
+    # a baked SID locked the next active user out of connecting after an account
+    # switch until reboot.
+    require_text(service_runtime_cpp, "Service control is restricted to the active interactive session", "service rejects non-active-session callers (F-SEC-3 server-side)")
+    require_text(service_runtime_cpp, "get_pipe_client_identity", "caller session is resolved from the pipe handle, not the payload")
+    require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "(A;;GRGW;;;AU)", "pipe ACL admits authenticated local users read+write")
+    forbid_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "GRGW;;;%s", "pipe ACL must not bake a per-user console SID (stale-ACL lockout)")
+    require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "cannot create restricted ACL, deferring", "pipe creation fails closed when the SD cannot be built")
+    # F-15-003: Service listens for Windows session logon events so it can apply
+    # a machine-wide default profile for users who have no per-user logon slot.
+    require_text(service_server_cpp, "SERVICE_ACCEPT_SESSIONCHANGE", "service accepts session-change notifications")
+    require_text(service_server_cpp, "WTS_SESSION_LOGON", "service handles WTS_SESSION_LOGON")
+    require_text(service_runtime_cpp, "service_session_logon_resolve_and_load_profile", "service resolves per-user or machine default profile on logon")
+    # Active-user session router: the service applies the ACTIVE session's
+    # resolved profile on logon/logoff/console-connect/disconnect and on a
+    # service (re)start when a user is already logged in (FUS-safe, debounced).
+    sessions_cpp = os.path.join(SOURCE_DIR, "main_service_sessions.cpp")
+    require_text(sessions_cpp, "service_handle_session_change", "active-user session-change router exists")
+    require_text(sessions_cpp, "service_reconcile_active_session_apply", "service reconciles the active session on (re)start")
+    require_text(sessions_cpp, "session_event_relevant_for_active_user", "session router filters events that change the active user")
+    require_text(service_server_cpp, "service_handle_session_change", "SESSIONCHANGE handler routes through the active-user router")
+    require_text(service_server_cpp, "g_servicePipeRecycleEvent", "pipe ACL is recycled on active-user change")
+    # Per-user logon task is registered for the REQUESTING user, not the
+    # approving admin, when the elevated helper runs on their behalf.
+    require_text(service_ipc_cpp, "--for-user", "elevated startup-task helper forwards the requesting user")
+    require_text(main_runtime_control_cpp, "set_forced_startup_user_sam", "startup task can be scoped to the requesting user")
+    # F-15-004: The GUI requests UAC elevation for the machine-wide default
+    # operation instead of requiring the whole GUI to be run as administrator.
+    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "lpVerb = \"runas\"", "machine logon button requests UAC elevation")
+    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "ShellExecuteExA", "machine logon button uses ShellExecuteExA")
+    # F-15-005: the shared profile bank lives at a fixed %ProgramData% known
+    # folder (all-users-readable, admin-write), NOT next to the service binary.
+    # The SCM binary-path parser is retained only for the one-time legacy
+    # machine.ini migration and the user-profile install warning.
+    require_text(service_ipc_cpp, "FOLDERID_ProgramData", "shared bank path resolves under %ProgramData%")
+    require_text(service_ipc_cpp, "migrate_legacy_machine_config", "one-time migration from legacy machine.ini location exists")
+    require_text(service_server_cpp, "migrate_legacy_machine_config()", "service startup runs the legacy machine.ini migration")
+    require_text(service_acl_cpp, "apply_protected_machine_config_dir_dacl", "shared bank directory DACL helper exists")
+    # Anti-squat: the default %ProgramData% ACL lets standard users create
+    # subfolders, so the service hardens %ProgramData%\Green Curve at boot (before
+    # any login) to prevent a user pre-creating and planting a hostile bank file.
+    require_text(service_ipc_cpp, "secure_shared_bank_at_startup", "service hardens the shared bank at boot (anti-squat)")
+    require_text(service_server_cpp, "secure_shared_bank_at_startup()", "service runs shared-bank hardening at startup")
+    require_text(service_ipc_cpp, "get_service_binary_directory_from_scm", "SCM binary dir resolver retained for migration/warning")
+    require_text(service_ipc_cpp, "lpBinaryPathName", "SCM binary path parser retained for migration/warning")
+    # F-15-006: Warn when the service is installed under a user profile, because
+    # other users (including restricted/standard accounts) may not be able to
+    # read/execute the GUI binary from another user's profile directory.
+    require_text(service_ipc_cpp, "install_dir_is_under_user_profile_w", "user-profile install path detection exists")
+    require_text(service_ipc_cpp, "service_install_dir_is_under_user_profile", "GUI can detect user-profile install path")
+    require_text(service_ipc_cpp, "Install under %%ProgramFiles%% to make the application available to all users", "user-profile install warning text exists")
+    # F-15-007: Shared profile bank. Full profile sections are copied into the
+    # %ProgramData% shared bank so restricted users without their own config.ini
+    # can still have the admin's saved profiles applied by the service.
+    config_profiles_cpp = os.path.join(SOURCE_DIR, "config_profiles.cpp")
+    require_text(config_profiles_cpp, "copy_profile_slot_to_machine_config", "shared bank copy helper exists")
+    require_text(config_profiles_cpp, "clear_machine_profile_slot", "shared bank clear helper exists")
+    require_text(os.path.join(SOURCE_DIR, "entry.cpp"), "--publish-slot-to-machine", "CLI supports publishing a slot to the shared bank")
+    require_text(os.path.join(SOURCE_DIR, "entry.cpp"), "--clear-machine-slot", "CLI supports clearing a shared bank slot")
+    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "MACHINE_LOGON_MENU_PUBLISH_ID", "GUI advanced menu can publish a bank slot")
+    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "MACHINE_LOGON_MENU_CLEAR_MACHINE_SLOT_ID", "GUI advanced menu can clear a bank slot")
+    # F-15-008: One coherent "share with all users" action couples publishing the
+    # slot data with setting it as the all-users default (the old footgun was
+    # setting a default that resolved to an empty bank slot).
+    require_text(config_profiles_cpp, "share_profile_slot_for_all_users", "coherent share helper publishes data AND sets the default")
+    require_text(config_profiles_cpp, "unshare_profile_slot_for_all_users", "coherent unshare helper clears data AND the default")
+    require_text(os.path.join(SOURCE_DIR, "entry.cpp"), "--share-slot", "CLI supports the coherent share action")
+    require_text(os.path.join(SOURCE_DIR, "entry.cpp"), "--unshare-slot", "CLI supports the coherent unshare action")
+    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "SHARE_ALL_USERS_CHECK_ID", "GUI has the share-with-all-users checkbox handler")
+    # F-15-009: Any user can load the admin-published shared profiles on demand
+    # (read-only) and apply them via the service, not just at logon.
+    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "show_shared_profiles_menu", "GUI surfaces shared profiles for on-demand load")
+
+    # F-15-010: Deleting a logon task that requires elevation (admin-created /
+    # HighestAvailable) must fall back to the elevated helper instead of trusting
+    # the schtasks exit code and reporting a dead-end "still exists" error.
+    require_text(main_runtime_control_cpp, "outNeedsElevation", "direct startup-task path signals when elevation is required")
+    require_text(main_runtime_control_cpp, "needs elevation", "startup-task delete that leaves the task present requests elevation")
+    require_text(main_runtime_control_cpp, "schtasks /delete exit=", "schtasks delete logs its exit code for diagnosis")
+    require_text(main_runtime_control_cpp, "schtasks /create exit=", "schtasks create logs its exit code for diagnosis")
+    forbid_text(main_runtime_control_cpp, "exitCode != 0 && exitCode != 1", "startup-task delete must verify by state, not accept schtasks exit 1 as success")
+    forbid_text(main_runtime_control_cpp, "Startup task still exists after delete", "dead-end delete error replaced by an elevation-aware fallback")
+    # F-15-011: high-frequency idempotent debug lines are deduplicated (logged
+    # only on change) to cut log spam without losing state transitions.
+    require_text(os.path.join(SOURCE_DIR, "app_shared.h"), "debug_log_on_change", "log-on-change dedup helper exists")
+    require_text(main_gpu_state_cpp, "debug_log_on_change(\"vf_curve_global_gpu_offset_supported", "GPU-offset support query is deduplicated")
+    # F-15-013: GUI labels go through the ANSI Win32 path (CreateWindowExA "BUTTON"
+    # / SetWindowTextA / DrawTextA), so a non-ASCII char in a button/label literal
+    # renders as mojibake (e.g. U+2026 "…" -> "â€¦").  Keep the GUI-label files free
+    # of the ellipsis char (use ASCII "..."). (debug_log strings may keep Unicode —
+    # they go to a UTF-8 log file, not a window.)
+    forbid_text(entry_cpp, "…", "shared-profiles button label must be ASCII (use ... not the … char)")
+    forbid_text(config_profiles_ui_cpp, "…", "share/shared-profiles labels must be ASCII (use ... not the … char)")
+    require_text(entry_cpp, "Shared profiles...", "shared-profiles button uses an ASCII ellipsis")
+    # F-15-014: shared-only policy — a non-admin caller may only apply an admin-
+    # published shared profile, enforced SERVER-SIDE (the service applies its own
+    # copy of the named shared slot; the policy lives in the protected shared bank
+    # and admin membership is resolved from the caller token, incl. deny-only).
+    require_text(service_runtime_cpp, "token_is_local_admin", "service resolves caller machine-admin membership (incl. deny-only)")
+    require_text(service_ipc_cpp, "restrict_non_admin_to_shared", "shared-only policy stored in the protected shared bank")
+    require_text(service_ipc_cpp, "set_machine_restrict_policy", "shared-only policy writer is admin-gated")
+    require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "Your administrator restricts this PC to shared profiles", "service rejects non-admin custom OC under the policy")
+    require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "SERVICE_REQUEST_FLAG_SHARED_SLOT", "service applies its own copy of the named shared slot")
+    require_text(service_ipc_cpp, "SERVICE_REQUEST_FLAG_SHARED_SLOT", "GUI tags an unmodified shared-profile apply as authoritative")
+    require_text(entry_cpp, "--set-restrict-shared", "CLI toggles the shared-only policy")
+    require_text(config_profiles_ui_cpp, "restricted_to_shared_profiles", "GUI surfaces the shared-only restriction to affected users")
+    # Restricted-user logon auto-apply: a per-user "apply admin shared profile N
+    # at logon" (logon_shared_slot) must survive the full-file config rewrites,
+    # drive every logon path to the authoritative bank copy, and the service-side
+    # resolver must enforce the policy (no per-user custom OC for non-admins),
+    # closing the prior service-router bypass.
+    require_text(config_profiles_cpp, "logon_shared_slot", "save/clear rewriters re-emit the per-user shared-logon choice")
+    require_text(os.path.join(SOURCE_DIR, "app_shared.cpp"), "resolve_logon_profile_source", "pure logon-source policy decision is unit-testable")
+    require_text(main_service_runtime_cpp, "service_session_user_is_local_admin", "service resolves the logon user's admin status for the policy")
+    require_text(main_service_runtime_cpp, "resolve_logon_profile_source", "service logon resolver uses the shared policy decision")
+    require_text(main_service_runtime_cpp, "logon_shared_slot", "service logon resolver honors the per-user shared-logon choice")
+    require_text(main_service_runtime_cpp, "get_machine_restrict_policy", "service logon resolver checks the shared-only policy")
+    require_text(config_profiles_ui_cpp, "apply_logon_shared_slot_if_configured", "GUI logon apply honors the per-user shared-logon choice")
+    # The per-account logon choice (incl. admin shared profiles) lives in the single
+    # unified "Apply profile after user log in" dropdown, tagged via CB_SETITEMDATA;
+    # picking a shared entry sets logon_shared_slot and clears logon_slot.
+    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "LOGON_COMBO_SHARED_FLAG", "Logon dropdown offers admin shared profiles via item-data tags")
+    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "CB_GETITEMDATA", "Logon dropdown handler decodes the selected item's meaning from item data")
+    require_text(config_profiles_ui_cpp, "Shared profile %d (admin)", "Logon dropdown lists admin-published shared profiles")
+    require_text(config_profiles_ui_cpp, "Admin default: Shared profile %d", "Logon dropdown shows the effective all-users default when the account has no choice")
+    require_text(entry_cpp, "logon_shared_slot", "CLI silent logon apply honors the per-user shared-logon choice")
 
     # F-01-006: Sanitizer build support
     require_text(build_script, "--sanitizer", "sanitizer build flag exists")
@@ -1988,9 +2469,11 @@ def run_source_regression_checks():
     require_text(service_ipc_cpp, "struct UiInputGuard", "GUI input is disabled during pumped service waits to block re-entrancy")
 
     # F-12-001: Backend spec static_assert checks
-    require_text(os.path.join(SOURCE_DIR, "main.cpp"), "static_assert(0x48u + (VF_NUM_POINTS - 1u) * 0x1Cu + 4u <= 0x1C28u", "VF status buffer static_assert exists")
-    require_text(os.path.join(SOURCE_DIR, "main.cpp"), "static_assert(0x04u + 32u <= 0x182Cu", "VF info buffer static_assert exists")
-    require_text(os.path.join(SOURCE_DIR, "main.cpp"), "static_assert(0x44u + (VF_NUM_POINTS - 1u) * 0x24u + 4u <= 0x2420u", "VF control buffer static_assert exists")
+    # VfBackendSpec tables + their layout static_asserts now live in the shared
+    # vf_backends.cpp (compiled on both Windows and Linux).
+    require_text(os.path.join(SOURCE_DIR, "vf_backends.cpp"), "static_assert(0x48u + (VF_NUM_POINTS - 1u) * 0x1Cu + 4u <= 0x1C28u", "VF status buffer static_assert exists")
+    require_text(os.path.join(SOURCE_DIR, "vf_backends.cpp"), "static_assert(0x04u + 32u <= 0x182Cu", "VF info buffer static_assert exists")
+    require_text(os.path.join(SOURCE_DIR, "vf_backends.cpp"), "static_assert(0x44u + (VF_NUM_POINTS - 1u) * 0x24u + 4u <= 0x2420u", "VF control buffer static_assert exists")
 
     # F-11-001: Service event creation integrity check
     require_text(os.path.join(SOURCE_DIR, "main_service_server.cpp"), "g_serviceStopEvent) {", "service stop event creation check exists")
@@ -2002,6 +2485,70 @@ def run_source_regression_checks():
     require_text(config_utils_cpp, "n >= sizeof(buf) - 1", "config int read detects truncation")
     require_text(config_utils_cpp, "errno == ERANGE", "Windows config integer parser rejects C library overflow")
     require_text(os.path.join(SOURCE_DIR, "linux_port.cpp"), "errno == ERANGE", "Linux config integer parser rejects C library overflow")
+
+    # F-LNX: native Linux GPU backend + daemon invariants
+    linux_gpu_cpp = os.path.join(SOURCE_DIR, "linux_gpu.cpp")
+    linux_backend_cpp = os.path.join(SOURCE_DIR, "linux_backend.cpp")
+    linux_daemon_cpp = os.path.join(SOURCE_DIR, "linux_daemon.cpp")
+    linux_main_cpp = os.path.join(SOURCE_DIR, "linux_main.cpp")
+    vf_backends_cpp = os.path.join(SOURCE_DIR, "vf_backends.cpp")
+    # The old --apply-config blocker must be gone (Linux apply is implemented).
+    forbid_text(linux_main_cpp, "intentionally blocked until native Linux VF-curve parity",
+                "Linux --apply-config blocker has been removed (apply implemented)")
+    # NvAPI on Linux: load the proprietary driver's private library + use the
+    # negative-error-aware OK test (Linux NvAPI errors are negative, not 0x8000xxx).
+    require_text(linux_backend_cpp, "status == 0", "Linux nvapi_ok uses status==0 (Linux NvAPI errors are negative)")
+    require_text(linux_gpu_cpp, "libnvidia-api.so", "Linux probe loads NvAPI via libnvidia-api.so")
+    require_text(os.path.join(SOURCE_DIR, "platform.h"), "libnvidia-ml.so.1", "platform shim knows the NVML soname")
+    # Single-bit-mask VF point writes (driver rejects multi-bit masks on Linux).
+    require_text(linux_backend_cpp, "writeMask[i / 8] |= (unsigned char)(1u << (i % 8))",
+                 "Linux VF write builds a per-point control mask")
+    require_text(linux_backend_cpp, "apply_curve_offsets_verified",
+                 "Linux backend ports the verified VF-curve correction loop")
+    # Daemon: IPC validation at the trust boundary + peer-cred audit.
+    require_text(linux_daemon_cpp, "validate_desired_settings_for_ipc",
+                 "Linux daemon clamps requests at the IPC trust boundary")
+    require_text(linux_daemon_cpp, "SO_PEERCRED", "Linux daemon logs peer credentials")
+    require_text(linux_daemon_cpp, "persist_active_desired",
+                 "Linux daemon persists active settings for restart-reapply")
+    require_text(linux_daemon_cpp, "startup reapply", "Linux daemon reapplies settings on (re)start")
+    # F-ARM64: cross-arch robustness (no arm64 hardware to test on).
+    gpu_core_h_path = os.path.join(SOURCE_DIR, "gpu_core.h")
+    require_text(gpu_core_h_path, "offsetof(nvapiPstate20Entry_t, clocks) == 8",
+                 "NVAPI struct field offsets pinned at compile time (arm64 layout proof)")
+    require_text(gpu_core_h_path, "__ORDER_LITTLE_ENDIAN__",
+                 "gpu_core.h asserts a little-endian target")
+    require_text(linux_backend_cpp, "linux_backend_curve_plausible",
+                 "VF curve read is sanity-checked for plausibility")
+    require_text(linux_backend_cpp, "REFUSING VF curve write",
+                 "VF writes are gated off when the read looks implausible (fail-safe)")
+    require_text(linux_backend_cpp, "INCOMPATIBLE_STRUCT_VERSION",
+                 "NvAPI negative-error names mapped for diagnostics")
+    require_text(linux_backend_cpp, "linux_backend_self_test",
+                 "read-only driver/arch self-test exists")
+    require_text(linux_gpu_cpp, "nv_tegra_release",
+                 "probe detects unsupported Tegra/Jetson platform")
+    require_text(build_script, "def inspect_aarch64_driver",
+                 "build.py can inspect an aarch64 driver tree for required libs/symbols")
+    # Shared VfBackendSpec tables compiled on both platforms (one copy).
+    require_text(vf_backends_cpp, "g_vfBackendBlackwell", "shared VfBackendSpec tables define the Blackwell backend")
+    # glibc-dynamic Linux target (static musl can't dlopen the glibc driver libs).
+    require_text(build_script, '"x86_64-linux-gnu"', "Linux target is glibc-dynamic (x86_64-linux-gnu)")
+    # Multi-arch build matrix + release archiving.
+    require_text(build_script, 'default="all"', "default build covers all OSes (windows + linux)")
+    require_text(build_script, 'WINDOWS_ARM64_TRIPLE = "aarch64-w64-mingw32"', "windows arm64 target triple defined")
+    require_text(build_script, 'LINUX_ARM64_TRIPLE = "aarch64-linux-gnu"', "linux arm64 target triple defined")
+    require_text(build_script, "-mbranch-protection=standard", "windows arm64 uses BTI/PAC instead of x86 CET")
+    require_text(build_script, "def package_release_archive", "release archives are produced by build.py")
+    require_text(build_script, 'f"greencurve-{APP_VERSION}-{os_name}-{arch}.7z"', "archive name carries version + os + arch")
+    require_text(build_script, '"a", "-t7z"', "release files are packaged with 7-Zip")
+    require_text(build_script, "def detect_binary_arch", "packaging reads each binary's real PE/ELF machine arch")
+    require_text(build_script, "architecture mismatch packaging", "packaging aborts on a cross-arch bundle mismatch")
+    require_text(build_script, "-mbranch-protection=standard", "arm64 builds enable BTI/PAC branch protection")
+    # ARM64 VEH thread-redirect uses the aarch64 register names.
+    require_text(os.path.join(SOURCE_DIR, "main_diagnostics.cpp"), "ContextRecord->Pc",
+                 "VEH thread-exit redirect supports arm64 (Pc/X0/Sp)")
+
     require_text(fan_curve_cpp, "fan_curve_set_default(config)", "invalid fan curve normalization resets safely to defaults")
     require_text(shared_h, "len > bufSize - offset", "HeapBuffer bounds checks avoid size_t addition overflow")
 
@@ -2207,13 +2754,12 @@ def run_source_regression_checks():
         "service_main verifies the SCM auto-restart safety net at startup")
     require_text(main_service_install_cpp, "auto-restart net is %s",
         "restart-safety verification logs ARMED/NOT ARMED state")
-    # F-SEC-3: once the active console user is resolved, the pipe restricts write
-    # to that user's SID and downgrades Authenticated Users to read-only; AU keeps
-    # read+write only as a no-lockout fallback (pre-login / RDP-only / token fail).
-    require_text(service_server_cpp, "(A;;GR;;;AU)",
-        "pipe ACL downgrades Authenticated Users to read-only when the console user is resolved")
+    # F-SEC-3: the pipe ACL is user-agnostic (authenticated local users
+    # read+write); active-session enforcement is server-side (see F-15-012).  A
+    # per-user pipe ACL would lock the next active user out of connecting after
+    # an account switch until reboot, so it is intentionally NOT used.
     require_text(service_server_cpp, "(A;;GRGW;;;AU)",
-        "pipe ACL keeps an Authenticated-Users read+write fallback to avoid lockout")
+        "pipe ACL grants Authenticated Users read+write (active-session enforced server-side)")
 
     # FP-06-005: a fresh process restores the saved profile via startup reapply,
     # with persisted restart-loop protection so a broken driver cannot loop.
@@ -2384,8 +2930,19 @@ def parse_args():
     parser.add_argument(
         "--target",
         choices=("windows", "linux", "all"),
-        default="windows",
-        help="Which target to build (default: windows)",
+        default="all",
+        help="Which OS to build (default: all = windows + linux)",
+    )
+    parser.add_argument(
+        "--arch",
+        choices=("x64", "arm64", "all"),
+        default="all",
+        help="Which architecture(s) to build (default: all = x64 + arm64)",
+    )
+    parser.add_argument(
+        "--no-package",
+        action="store_true",
+        help="Skip building the per-target 7-Zip release archives",
     )
     parser.add_argument(
         "--check",
@@ -2412,6 +2969,13 @@ def parse_args():
         action="store_true",
         help="Build with AddressSanitizer in addition to UBSan",
     )
+    parser.add_argument(
+        "--inspect-aarch64-driver",
+        metavar="DIR",
+        default=None,
+        help="Verify (no arm64 hardware needed) that an extracted aarch64 NVIDIA "
+             "driver dir ships libnvidia-ml.so / libnvidia-api.so and our symbols",
+    )
     return parser.parse_args()
 
 
@@ -2433,6 +2997,8 @@ def ensure_toolchain(target):
 
 def main():
     args = parse_args()
+    if args.inspect_aarch64_driver:
+        sys.exit(inspect_aarch64_driver(args.inspect_aarch64_driver))
     print("=== Green Curve build ===")
     ensure_toolchain(args.target)
     real_build = not args.lsp and not args.check and not args.test
@@ -2466,11 +3032,35 @@ def main():
             print("=== Done ===")
             return
         generate_lsp_files()
-        if args.target in ("windows", "all"):
-            compile_windows_binary()
-            compile_windows_service_binary()
-        if args.target in ("linux", "all"):
-            compile_linux_binary()
+        oses = ["windows", "linux"] if args.target == "all" else [args.target]
+        arches = ["x64", "arm64"] if args.arch == "all" else [args.arch]
+        built = []  # (os_name, arch, [binary_path, ...])
+
+        def fresh_payload(os_name, arch):
+            # Wipe + recreate the target's isolated folder so each build is clean
+            # and no two targets ever share an output or temp path.
+            payload = target_payload_dir(os_name, arch)
+            shutil.rmtree(os.path.dirname(payload), ignore_errors=True)
+            os.makedirs(payload, exist_ok=True)
+            return payload
+
+        for arch in arches:
+            if "windows" in oses:
+                payload = fresh_payload("windows", arch)
+                gui = os.path.join(payload, "greencurve.exe")
+                svc = os.path.join(payload, "greencurve-service.exe")
+                compile_windows_binary(output_path=gui, temp_output=gui + ".new", backup_path=gui + ".bak", arch=arch)
+                compile_windows_service_binary(output_path=svc, temp_output=svc + ".new", backup_path=svc + ".bak", arch=arch)
+                built.append(("windows", arch, [gui, svc]))
+            if "linux" in oses:
+                payload = fresh_payload("linux", arch)
+                out = os.path.join(payload, "greencurve")
+                compile_linux_binary(output_path=out, temp_output=out + ".new", backup_path=out + ".bak", arch=arch)
+                built.append(("linux", arch, [out]))
+        if not args.no_package and built:
+            print("--- Packaging release archives ---")
+            for os_name, arch, binaries in built:
+                package_release_archive(os_name, arch, binaries)
         print("=== Done ===")
     finally:
         COMMON_FLAGS[:] = _original_common_flags
