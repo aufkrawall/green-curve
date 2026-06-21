@@ -4,8 +4,6 @@ Green Curve is a small NVIDIA tuning tool with a full Windows implementation and
 
 <img width="1765" height="1518" alt="gc" src="https://github.com/user-attachments/assets/2fac3cce-9c00-4224-ae17-f7d893dd6bfd" />
 
-Version: see the [`VERSION`](VERSION) file at the repository root.
-
 ## What it does
 
 - Reads the live VF curve from the NVIDIA driver
