@@ -1,0 +1,58 @@
+{
+  "tool": "Zig",
+  "version": "0.13.0",
+  "archives": [
+    {
+      "host_platform": "windows",
+      "host_arch": "x86_64",
+      "filename": "zig-windows-x86_64-0.13.0.zip",
+      "format": "zip",
+      "size_bytes": 79163968,
+      "sha256": "d859994725ef9402381e557c60bb57497215682e355204d754ee3df75ee3c158",
+      "url": "https://ziglang.org/download/0.13.0/zig-windows-x86_64-0.13.0.zip",
+      "upstream_release_date": "2024-06-07"
+    },
+    {
+      "host_platform": "linux",
+      "host_arch": "x86_64",
+      "filename": "zig-linux-x86_64-0.13.0.tar.xz",
+      "format": "tar.xz",
+      "size_bytes": 47082308,
+      "sha256": "d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea",
+      "url": "https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz",
+      "upstream_release_date": "2024-06-07"
+    }
+  ],
+  "license_file": "LICENSE",
+  "license": "MIT License (Expat) — Copyright (c) Zig contributors",
+  "date_accessed_utc": "2026-06-28T06:35:53Z",
+  "upstream_index_url": "https://ziglang.org/download/index.json",
+  "archive_integrity": {
+    "windows_x86_64": {
+      "downloaded_hash": "d859994725ef9402381e557c60bb57497215682e355204d754ee3df75ee3c158",
+      "expected_from_upstream": "d859994725ef9402381e557c60bb57497215682e355204d754ee3df75ee3c158",
+      "match": true
+    },
+    "linux_x86_64": {
+      "downloaded_hash": "d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea",
+      "expected_from_upstream": "d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea",
+      "match": true
+    }
+  },
+  "extracted_binaries": [
+    {
+      "path": "zig.exe",
+      "platform": "windows",
+      "size_bytes": 157414400,
+      "sha256_sentinel": "2e44af5bbf7a72ef8cbdae370284687c95d65a19affa469d2ad0364d905b8e84",
+      "sha256_reverified": "2e44af5bbf7a72ef8cbdae370284687c95d65a19affa469d2ad0364d905b8e84",
+      "status": "UNCOMPROMISED"
+    },
+    {
+      "path": "zig",
+      "platform": "linux",
+      "note": "Binary verification deferred to Linux host"
+    }
+  ],
+  "overall_verdict": "PASS — all archive checksums match upstream; Windows binary verified uncompromised on disk"
+}

@@ -1,0 +1,55 @@
+{
+  "tool": "llvm-mingw",
+  "version": "20260519",
+  "llvm_version": "22.1.6",
+  "host_platform": "windows",
+  "host_arch": "x86_64",
+  "archives": [
+    {
+      "filename": "llvm-mingw-20260519-ucrt-x86_64.zip",
+      "format": "zip",
+      "size_bytes": 187181771,
+      "sha256": "72dbd6e64614e3b3401998992d1bd9c8ace29e74611d71c80309ea71c3fb26f9",
+      "url": "https://github.com/mstorsjo/llvm-mingw/releases/download/20260519/llvm-mingw-20260519-ucrt-x86_64.zip",
+      "upstream_release_date": "2026-05-19"
+    }
+  ],
+  "license_file": "LICENSE.TXT",
+  "license": "Apache 2.0 with LLVM Exceptions — Copyright (c) LLVM Project / mstorsjo",
+  "date_accessed_utc": "2026-06-28T06:35:53Z",
+  "upstream_url": "https://github.com/mstorsjo/llvm-mingw/releases/tag/20260519",
+  "archive_integrity": {
+    "downloaded_hash": "72dbd6e64614e3b3401998992d1bd9c8ace29e74611d71c80309ea71c3fb26f9",
+    "expected_from_build_py": "72dbd6e64614e3b3401998992d1bd9c8ace29e74611d71c80309ea71c3fb26f9",
+    "match": true
+  },
+  "extracted_binaries": [
+    {
+      "name": "clang++.exe (wrapper)",
+      "path": "bin/clang++.exe",
+      "size_bytes": 17920,
+      "sha256_sentinel": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8",
+      "sha256_reverified": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8",
+      "status": "UNCOMPROMISED"
+    },
+    {
+      "name": "llvm-rc.exe",
+      "path": "bin/llvm-rc.exe",
+      "size_bytes": 158208,
+      "sha256": "19577feb4935c6dc2bca2ada14d928ccede57b2eecf6acdb256bfb837ff0b353"
+    },
+    {
+      "name": "ld.lld.exe",
+      "path": "bin/ld.lld.exe",
+      "size_bytes": 5219328,
+      "sha256": "be1f7705070d67a1ebe8d5555454d031b193987dc7961741fb766cd77a4a0d00"
+    },
+    {
+      "name": "clang-22.exe",
+      "path": "bin/clang-22.exe",
+      "size_bytes": 100352,
+      "sha256": "f34cc8e2462ef097dd98a3f728505a263ed056fa339a91d343a7a225d169bd10"
+    }
+  ],
+  "overall_verdict": "PASS — archive checksum verified; key binary sentinels intact and uncompromised"
+}
