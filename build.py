@@ -38,13 +38,18 @@ else:
     print(f"Unsupported build host: {sys.platform}")
     sys.exit(1)
 
-ZIG_URL = f"https://ziglang.org/download/{ZIG_VERSION}/zig-{_ZIG_PLATFORM}-x86_64-{ZIG_VERSION}{_ZIG_ARCHIVE_EXT}"
+# GitHub release base for pre-packaged toolchain archives
+COMPILERS_REPO_BASE = "https://github.com/aufkrawall/green-curve/releases/download/Compilers-1.0"
+COMPILERS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "compilers")
+
+_ZIG_ARCHIVE_NAME = f"zig-{_ZIG_PLATFORM}-x86_64-{ZIG_VERSION}{_ZIG_ARCHIVE_EXT}"
+ZIG_URL = f"{COMPILERS_REPO_BASE}/{_ZIG_ARCHIVE_NAME}"
 ZIG_SHA256 = _ZIG_SHA256
 
 # llvm-mingw: portable MinGW toolchain for Windows builds with full CFG support
 LLVM_MINGW_VERSION = "20260519"
-LLVM_MINGW_URL = ("https://github.com/mstorsjo/llvm-mingw/releases/download/"
-                  f"{LLVM_MINGW_VERSION}/llvm-mingw-{LLVM_MINGW_VERSION}-ucrt-x86_64.zip")
+LLVM_MINGW_ARCHIVE_NAME = f"llvm-mingw-{LLVM_MINGW_VERSION}-ucrt-x86_64.zip"
+LLVM_MINGW_URL = f"{COMPILERS_REPO_BASE}/{LLVM_MINGW_ARCHIVE_NAME}"
 LLVM_MINGW_SHA256 = "72dbd6e64614e3b3401998992d1bd9c8ace29e74611d71c80309ea71c3fb26f9"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -901,27 +906,79 @@ def cleanup_work_subdir(path):
         shutil.rmtree(target, ignore_errors=True)
 
 
+def _resolve_archive(source_label, archive_name, local_dir, url, sha256):
+    """Return a (path, used_local) tuple for an archive.
+
+    Checks *local_dir* first for *archive_name* (e.g. a vendored
+    ``compilers/`` checkout).  Falls back to downloading from *url*.
+    Always verifies the result against *sha256*.
+    """
+    local_path = os.path.join(local_dir, archive_name)
+    temp_path = os.path.join(SCRIPT_DIR, archive_name)
+
+    if os.path.exists(local_path):
+        print(f"Using local {source_label} archive: {local_path}")
+        shutil.copy2(local_path, temp_path)
+        if sha256 and not verify_sha256(temp_path, sha256):
+            os.remove(temp_path)
+            print(f"ERROR: Local {source_label} archive failed SHA-256 verification")
+            sys.exit(1)
+        return temp_path
+
+    print(f"Downloading {source_label} {archive_name}...")
+    try:
+        urllib.request.urlretrieve(url, temp_path)
+    except Exception as exc:
+        print(f"Failed to download {source_label}: {exc}")
+        print(f"Please obtain from: {url}")
+        sys.exit(1)
+
+    if sha256 and not verify_sha256(temp_path, sha256):
+        os.remove(temp_path)
+        print(f"ERROR: {source_label} archive SHA-256 verification failed")
+        sys.exit(1)
+    return temp_path
+
+
+def _verify_sentinel(binary_path, label):
+    """Verify a binary against its ``.sha256`` sentinel file.
+
+    Returns ``True`` if the sentinel exists and matches the current binary.
+    On mismatch or missing sentinel it prints a warning and returns ``False``
+    so the caller can re-download.
+    """
+    sentinel = binary_path + ".sha256"
+    if not os.path.exists(sentinel):
+        print(f"WARNING: {label} missing integrity sentinel ({sentinel})")
+        return False
+    try:
+        with open(sentinel, "r", encoding="utf-8") as f:
+            expected = f.read().strip()
+    except OSError:
+        print(f"WARNING: {label} cannot read sentinel ({sentinel})")
+        return False
+    h = hashlib.sha256()
+    with open(binary_path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    current = h.hexdigest().lower()
+    if current != expected.lower():
+        print(f"ERROR: {label} SHA-256 mismatch — binary may be compromised")
+        print(f"  expected (sentinel): {expected}")
+        print(f"  actual:              {current}")
+        return False
+    return True
+
+
 def download_zig():
-    """Download and extract Zig compiler."""
-    if os.path.exists(ZIG_EXE):
+    """Download (or copy from local compilers/) and extract Zig compiler."""
+    if os.path.exists(ZIG_EXE) and _verify_sentinel(ZIG_EXE, "zig"):
         print(f"Zig already present at {ZIG_EXE}")
         return
 
-    print(f"Downloading Zig {ZIG_VERSION}...")
-    archive_path = os.path.join(SCRIPT_DIR, f"zig{_ZIG_ARCHIVE_EXT}")
-
-    try:
-        urllib.request.urlretrieve(ZIG_URL, archive_path)
-    except Exception as exc:
-        print(f"Failed to download Zig: {exc}")
-        print(f"Please download manually from: {ZIG_URL}")
-        print(f"Extract to: {ZIG_DIR}")
-        sys.exit(1)
-
-    if ZIG_SHA256 and not verify_sha256(archive_path, ZIG_SHA256):
-        os.remove(archive_path)
-        print("ERROR: Zig archive SHA-256 verification failed")
-        sys.exit(1)
+    zig_local_dir = os.path.join(COMPILERS_DIR, f"zig-{ZIG_VERSION}")
+    archive_path = _resolve_archive(
+        "Zig", _ZIG_ARCHIVE_NAME, zig_local_dir, ZIG_URL, ZIG_SHA256)
 
     print("Extracting Zig...")
     os.makedirs(ZIG_DIR, exist_ok=True)
@@ -974,27 +1031,15 @@ def download_zig():
 
 
 def download_llvm_mingw():
-    """Download and extract llvm-mingw toolchain for Windows builds."""
-    if os.path.exists(LLVM_MINGW_CLANG):
+    """Download (or copy from local compilers/) and extract llvm-mingw toolchain."""
+    if os.path.exists(LLVM_MINGW_CLANG) and _verify_sentinel(LLVM_MINGW_CLANG, "llvm-mingw"):
         print(f"llvm-mingw already present at {LLVM_MINGW_CLANG}")
         return
 
-    print(f"Downloading llvm-mingw {LLVM_MINGW_VERSION}...")
-    archive_name = f"llvm-mingw-{LLVM_MINGW_VERSION}-ucrt-x86_64.zip"
-    archive_path = os.path.join(SCRIPT_DIR, archive_name)
-
-    try:
-        urllib.request.urlretrieve(LLVM_MINGW_URL, archive_path)
-    except Exception as exc:
-        print(f"Failed to download llvm-mingw: {exc}")
-        print(f"Please download manually from: {LLVM_MINGW_URL}")
-        print(f"Extract to: {LLVM_MINGW_DIR}")
-        sys.exit(1)
-
-    if LLVM_MINGW_SHA256 and not verify_sha256(archive_path, LLVM_MINGW_SHA256):
-        os.remove(archive_path)
-        print("ERROR: llvm-mingw archive SHA-256 verification failed")
-        sys.exit(1)
+    llvm_local_dir = os.path.join(COMPILERS_DIR, f"llvm-mingw-{LLVM_MINGW_VERSION}")
+    archive_path = _resolve_archive(
+        "llvm-mingw", LLVM_MINGW_ARCHIVE_NAME, llvm_local_dir,
+        LLVM_MINGW_URL, LLVM_MINGW_SHA256)
 
     print("Extracting llvm-mingw...")
     os.makedirs(LLVM_MINGW_DIR, exist_ok=True)
