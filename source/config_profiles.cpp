@@ -562,7 +562,7 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         appendf("lock_mode=%d\r\n", desired->hasLock ? (int)desired->lockMode : (int)g_app.lockMode);
         appendf("mem_offset_mhz=%d\r\n", desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
         appendf("power_limit_pct=%d\r\n", desired->hasPowerLimit ? desired->powerLimitPct : g_app.powerLimitPct);
-        appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : get_effective_live_fan_mode()));
+        appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : current_green_curve_fan_intent_mode()));
         if (desired->hasFan) {
             if (desired->fanMode == FAN_MODE_AUTO) appendf("fan=auto\r\n");
             else appendf("fan=%d\r\n", desired->fanPercent);
@@ -652,7 +652,7 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         appendf("lock_mode=%d\r\n", desired->hasLock ? (int)desired->lockMode : (int)g_app.lockMode);
         appendf("mem_offset_mhz=%d\r\n", desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
         appendf("power_limit_pct=%d\r\n", desired->hasPowerLimit ? desired->powerLimitPct : g_app.powerLimitPct);
-        appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : get_effective_live_fan_mode()));
+        appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : current_green_curve_fan_intent_mode()));
         if (desired->hasFan) {
             if (desired->fanMode == FAN_MODE_AUTO) appendf("fan=auto\r\n");
             else appendf("fan=%d\r\n", desired->fanPercent);
@@ -873,12 +873,10 @@ bool copy_profile_slot_to_machine_config(const char* srcPath, int slot, char* er
 
     WCHAR machinePathW[MAX_PATH] = {};
     if (utf8_to_wide(machinePath, machinePathW, ARRAY_COUNT(machinePathW))) {
-        char aclErr[256] = {};
-        if (!apply_protected_machine_config_dacl(machinePathW, aclErr, sizeof(aclErr))) {
-            debug_log("machine profile bank: DACL hardening failed: %s\n", aclErr[0] ? aclErr : "unknown");
-        } else {
-            debug_log("machine profile bank: applied protected DACL to %s\n", machinePath);
-        }
+        if (!harden_machine_config_file_required(machinePathW, machinePath, err, errSize)) return false;
+    } else {
+        set_message(err, errSize, "Machine config path conversion failed");
+        return false;
     }
     debug_log("machine profile bank: published slot %d from %s to %s\n", slot, srcPath, machinePath);
     return true;
@@ -894,6 +892,7 @@ bool clear_machine_profile_slot(int slot, char* err, size_t errSize) {
         set_message(err, errSize, "Clearing a machine-wide profile slot requires administrator rights");
         return false;
     }
+    if (!ensure_machine_config_directory(err, errSize)) return false;
     char machinePath[MAX_PATH] = {};
     if (!resolve_machine_config_path(machinePath, sizeof(machinePath))) {
         set_message(err, errSize, "Cannot resolve machine config path");
@@ -904,6 +903,12 @@ bool clear_machine_profile_slot(int slot, char* err, size_t errSize) {
         set_message(err, errSize, "Failed clearing machine profile slot: %s", clearErr[0] ? clearErr : "unknown");
         return false;
     }
+    WCHAR machinePathW[MAX_PATH] = {};
+    if (!utf8_to_wide(machinePath, machinePathW, ARRAY_COUNT(machinePathW))) {
+        set_message(err, errSize, "Machine config path conversion failed");
+        return false;
+    }
+    if (!harden_machine_config_file_required(machinePathW, machinePath, err, errSize)) return false;
     debug_log("machine profile bank: cleared slot %d from %s\n", slot, machinePath);
     return true;
 }

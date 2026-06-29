@@ -37,17 +37,97 @@ static void record_driver_recovery() {
 // restarting the service PROCESS (see launch_recovery_thread / request_service_
 // restart).  Before exiting, the service snapshots the active desired OC/fan
 // profile to disk; the freshly relaunched process loads clean driver DLLs and
-// service_startup_reapply_thread_proc() re-applies the snapshot.  A normal boot
-// without this file still does not auto-apply.
+// service_startup_coordinator_thread_proc() re-applies the snapshot.  A normal
+// boot without this file resets first, then reconciles the active user's
+// resolved profile in the same startup worker.
 
 #define SERVICE_ACTIVE_DESIRED_MAGIC   0x47434144u /* 'GCAD' */
-#define SERVICE_ACTIVE_DESIRED_VERSION ((DWORD)SERVICE_PROTOCOL_VERSION)
+#define SERVICE_ACTIVE_DESIRED_VERSION 2u
+
+struct ServiceRestartReapplySnapshot {
+    DesiredSettings desired;
+    GpuAdapterInfo targetGpu;
+};
 
 static bool service_active_desired_persist_path(char* out, size_t outSize) {
     if (!out || outSize == 0) return false;
     char dir[MAX_PATH] = {};
     if (!resolve_service_machine_data_dir(dir, sizeof(dir))) return false;
     return SUCCEEDED(StringCchPrintfA(out, outSize, "%s\\service_restart_reapply.bin", dir));
+}
+
+static bool service_current_target_gpu_for_snapshot(GpuAdapterInfo* out) {
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    if (g_serviceActiveDesiredGpu.valid) {
+        *out = g_serviceActiveDesiredGpu;
+        return true;
+    }
+    if (g_app.selectedGpu.valid) {
+        *out = g_app.selectedGpu;
+        return true;
+    }
+    if (g_app.selectedGpuIndex < g_app.adapterCount && g_app.adapters[g_app.selectedGpuIndex].valid) {
+        *out = g_app.adapters[g_app.selectedGpuIndex];
+        return true;
+    }
+    return false;
+}
+
+static bool service_select_restart_reapply_gpu(const GpuAdapterInfo* target, char* err, size_t errSize) {
+    if (!target || !target->valid) {
+        set_message(err, errSize, "Restart snapshot has no GPU identity");
+        return false;
+    }
+    if (g_app.adapterCount == 0) {
+        set_message(err, errSize, "No GPU adapters are available");
+        return false;
+    }
+
+    GpuAdapterInfo live = {};
+    bool found = false;
+    if (target->pciInfoValid) {
+        for (unsigned int i = 0; i < g_app.adapterCount && i < MAX_GPU_ADAPTERS; i++) {
+            if (g_app.adapters[i].valid && gpu_adapter_has_same_pci_identity(&g_app.adapters[i], target)) {
+                live = g_app.adapters[i];
+                found = true;
+                break;
+            }
+        }
+    } else if (g_app.adapterCount == 1 && g_app.adapters[0].valid) {
+        live = g_app.adapters[0];
+        found = true;
+    }
+
+    if (!found) {
+        set_message(err, errSize, "Restart snapshot GPU identity is not present");
+        debug_log("restart reapply target: no live adapter matched snapshot nvapi=%u pciValid=%d name=%s\n",
+            target->nvapiIndex,
+            target->pciInfoValid ? 1 : 0,
+            target->name[0] ? target->name : "<unnamed>");
+        return false;
+    }
+
+    bool haveStrongIdentity = target->pciInfoValid && live.pciInfoValid;
+    bool change = !g_app.selectedGpuIdentityValid ||
+        g_app.selectedGpuIndex != live.nvapiIndex ||
+        (haveStrongIdentity && !gpu_adapter_has_same_pci_identity(&g_app.selectedGpu, &live));
+    if (change) {
+        debug_log("restart reapply target: selecting matched nvapi=%u nvml=%u identity=%s name=%s\n",
+            live.nvapiIndex,
+            live.nvmlIndex,
+            haveStrongIdentity ? "pci" : "single-adapter-ordinal",
+            live.name[0] ? live.name : "<unnamed>");
+        reset_gpu_runtime_selection();
+        g_app.selectedGpuIndex = live.nvapiIndex;
+        g_app.selectedNvmlIndex = live.nvmlIndex;
+        g_app.selectedGpuExplicit = true;
+        g_app.selectedGpu = live;
+        g_app.selectedGpuIdentityValid = live.valid;
+        g_app.selectedGpuOrdinalFallback = !haveStrongIdentity;
+    }
+    g_serviceActiveDesiredGpu = live;
+    return true;
 }
 
 // ---- Restart-loop protection (persisted across process restarts) ----
@@ -238,6 +318,15 @@ static void service_write_restart_reapply_snapshot() {
         DeleteFileA(path);
         return;
     }
+    ServiceRestartReapplySnapshot payload = {};
+    payload.desired = g_serviceActiveDesired;
+    if (!service_current_target_gpu_for_snapshot(&payload.targetGpu) || !payload.targetGpu.valid) {
+        debug_log("restart reapply snapshot: no validated target GPU identity; clearing stale snapshot\n");
+        DeleteFileA(path);
+        return;
+    }
+    validate_desired_settings_for_ipc(&payload.desired);
+    validate_gpu_adapter_info_for_ipc(&payload.targetGpu);
     char pathErr[256] = {};
     ensure_parent_directory_for_file(path, pathErr, sizeof(pathErr));
     HANDLE h = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
@@ -248,19 +337,24 @@ static void service_write_restart_reapply_snapshot() {
     }
     DWORD magic = SERVICE_ACTIVE_DESIRED_MAGIC;
     DWORD version = SERVICE_ACTIVE_DESIRED_VERSION;
-    DWORD size = (DWORD)sizeof(g_serviceActiveDesired);
+    DWORD size = (DWORD)sizeof(payload);
     DWORD written = 0;
     bool ok = WriteFile(h, &magic, sizeof(magic), &written, nullptr) && written == sizeof(magic);
     ok = ok && WriteFile(h, &version, sizeof(version), &written, nullptr) && written == sizeof(version);
     ok = ok && WriteFile(h, &size, sizeof(size), &written, nullptr) && written == sizeof(size);
-    ok = ok && WriteFile(h, &g_serviceActiveDesired, size, &written, nullptr) && written == size;
+    ok = ok && WriteFile(h, &payload, size, &written, nullptr) && written == size;
     FlushFileBuffers(h);
     CloseHandle(h);
-    debug_log("restart reapply snapshot: wrote %s (ok=%d)\n", path, ok ? 1 : 0);
+    debug_log("restart reapply snapshot: wrote %s (ok=%d targetNvapi=%u pciValid=%d)\n",
+        path,
+        ok ? 1 : 0,
+        payload.targetGpu.nvapiIndex,
+        payload.targetGpu.pciInfoValid ? 1 : 0);
 }
 
-static bool service_load_restart_reapply_snapshot(DesiredSettings* out) {
+static bool service_load_restart_reapply_snapshot(DesiredSettings* out, GpuAdapterInfo* targetOut) {
     if (!out) return false;
+    if (targetOut) memset(targetOut, 0, sizeof(*targetOut));
     char path[MAX_PATH] = {};
     if (!service_active_desired_persist_path(path, sizeof(path))) return false;
     HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
@@ -272,22 +366,36 @@ static bool service_load_restart_reapply_snapshot(DesiredSettings* out) {
     ok = ok && ReadFile(h, &size, sizeof(size), &read, nullptr) && read == sizeof(size);
     if (ok && (magic != SERVICE_ACTIVE_DESIRED_MAGIC ||
                version != SERVICE_ACTIVE_DESIRED_VERSION ||
-               size != (DWORD)sizeof(*out))) {
-        debug_log("restart reapply load: header mismatch magic=%08lX ver=%lu size=%lu (expected size=%lu)\n",
-            (unsigned long)magic, (unsigned long)version, (unsigned long)size, (unsigned long)sizeof(*out));
+               size != (DWORD)sizeof(ServiceRestartReapplySnapshot))) {
+        debug_log("restart reapply load: header mismatch magic=%08lX ver=%lu size=%lu (expected version=%u size=%lu); clearing old snapshot\n",
+            (unsigned long)magic,
+            (unsigned long)version,
+            (unsigned long)size,
+            (unsigned)SERVICE_ACTIVE_DESIRED_VERSION,
+            (unsigned long)sizeof(ServiceRestartReapplySnapshot));
         ok = false;
     }
-    if (ok) ok = ReadFile(h, out, size, &read, nullptr) && read == size;
+    ServiceRestartReapplySnapshot payload = {};
+    if (ok) ok = ReadFile(h, &payload, size, &read, nullptr) && read == size;
     CloseHandle(h);
     if (!ok) {
         debug_log("restart reapply load: read failed\n");
+        DeleteFileA(path);
         return false;
     }
     // The file lives in the admin-only SYSTEM-profile dir, so this is not a
     // user trust boundary — but a torn/corrupt write would feed raw bytes
     // straight into the apply path.  Clamp every field with the same
     // validator used at the IPC boundary (also keeps lockMode in enum range).
-    validate_desired_settings_for_ipc(out);
+    validate_desired_settings_for_ipc(&payload.desired);
+    validate_gpu_adapter_info_for_ipc(&payload.targetGpu);
+    if (!payload.targetGpu.valid) {
+        debug_log("restart reapply load: missing target GPU identity; clearing snapshot\n");
+        DeleteFileA(path);
+        return false;
+    }
+    *out = payload.desired;
+    if (targetOut) *targetOut = payload.targetGpu;
     return true;
 }
 

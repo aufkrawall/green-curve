@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +24,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef APP_VERSION
@@ -35,13 +37,53 @@
 // ===========================================================================
 // Framed blocking read/write of the fixed-size protocol structs.
 // ===========================================================================
+#define GC_DAEMON_IO_TIMEOUT_MS 2000
+
+static unsigned long long monotonic_ms() {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (unsigned long long)ts.tv_sec * 1000ULL + (unsigned long long)(ts.tv_nsec / 1000000ULL);
+}
+
+static bool set_nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) return false;
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) return false;
+    return true;
+}
+
+static bool wait_fd_ready(int fd, short events, unsigned long long deadlineMs) {
+    for (;;) {
+        unsigned long long now = monotonic_ms();
+        if (now >= deadlineMs) return false;
+        unsigned long long remaining = deadlineMs - now;
+        int timeout = remaining > 2147483647ULL ? 2147483647 : (int)remaining;
+        struct pollfd pfd;
+        memset(&pfd, 0, sizeof(pfd));
+        pfd.fd = fd;
+        pfd.events = events;
+        int r = poll(&pfd, 1, timeout);
+        if (r > 0) {
+            if (pfd.revents & events) return true;
+            if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) return false;
+        } else if (r == 0) {
+            return false;
+        } else if (errno != EINTR) {
+            return false;
+        }
+    }
+}
+
 static bool read_full(int fd, void* buf, size_t len) {
     unsigned char* p = (unsigned char*)buf;
     size_t got = 0;
+    unsigned long long deadline = monotonic_ms() + GC_DAEMON_IO_TIMEOUT_MS;
     while (got < len) {
+        if (!wait_fd_ready(fd, POLLIN, deadline)) return false;
         ssize_t n = read(fd, p + got, len - got);
         if (n > 0) { got += (size_t)n; continue; }
         if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
         return false;
     }
     return true;
@@ -49,10 +91,13 @@ static bool read_full(int fd, void* buf, size_t len) {
 static bool write_full(int fd, const void* buf, size_t len) {
     const unsigned char* p = (const unsigned char*)buf;
     size_t put = 0;
+    unsigned long long deadline = monotonic_ms() + GC_DAEMON_IO_TIMEOUT_MS;
     while (put < len) {
+        if (!wait_fd_ready(fd, POLLOUT, deadline)) return false;
         ssize_t n = write(fd, p + put, len - put);
         if (n > 0) { put += (size_t)n; continue; }
         if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
         return false;
     }
     return true;
@@ -84,6 +129,7 @@ static int client_connect() {
         close(fd);
         return -1;
     }
+    set_nonblocking(fd);
     return fd;
 }
 
@@ -107,6 +153,7 @@ bool linux_daemon_send(const ServiceRequest* req, ServiceResponse* resp,
     close(fd);
     if (!ok) { if (err) gc_strlcpy(err, errSize, "daemon I/O error"); return false; }
     if (resp->magic != SERVICE_PROTOCOL_MAGIC) { if (err) gc_strlcpy(err, errSize, "bad daemon response"); return false; }
+    validate_service_response_for_ipc(resp);
     if (resp->status == SERVICE_STATUS_VERSION_MISMATCH) {
         if (err) gc_snprintf(err, errSize, "daemon protocol mismatch (client %u, daemon %u)",
                              (unsigned)SERVICE_PROTOCOL_VERSION, (unsigned)resp->version);
@@ -151,13 +198,29 @@ static DesiredSettings g_activeDesired;
 static bool g_hasActiveDesired = false;
 static volatile int g_running = 1;
 
-static void persist_active_desired() {
-    if (!g_hasActiveDesired) return;
-    if (mkdir(GC_DAEMON_STATE_DIR, 0755) != 0 && errno != EEXIST) { /* best effort */ }
+static bool persist_active_desired() {
+    if (!g_hasActiveDesired) {
+        if (unlink(GC_DAEMON_STATE_FILE) != 0 && errno != ENOENT) {
+            dlog("daemon: failed deleting stale active state %s: %s\n", GC_DAEMON_STATE_FILE, strerror(errno));
+            return false;
+        }
+        return true;
+    }
+    if (mkdir(GC_DAEMON_STATE_DIR, 0755) != 0 && errno != EEXIST) {
+        dlog("daemon: failed creating state dir %s: %s\n", GC_DAEMON_STATE_DIR, strerror(errno));
+        return false;
+    }
     FILE* f = fopen(GC_DAEMON_STATE_FILE, "wb");
-    if (!f) return;
-    fwrite(&g_activeDesired, sizeof(g_activeDesired), 1, f);
-    fclose(f);
+    if (!f) {
+        dlog("daemon: failed opening active state %s: %s\n", GC_DAEMON_STATE_FILE, strerror(errno));
+        return false;
+    }
+    bool ok = fwrite(&g_activeDesired, sizeof(g_activeDesired), 1, f) == 1;
+    ok = fflush(f) == 0 && ok;
+    ok = fsync(fileno(f)) == 0 && ok;
+    ok = fclose(f) == 0 && ok;
+    if (!ok) dlog("daemon: failed writing active state %s\n", GC_DAEMON_STATE_FILE);
+    return ok;
 }
 static bool load_active_desired(DesiredSettings* out) {
     FILE* f = fopen(GC_DAEMON_STATE_FILE, "rb");
@@ -308,7 +371,10 @@ static void handle_request(const ServiceRequest* req, ServiceResponse* resp) {
             bool ok = linux_backend_apply(&g_gpu, &d, resp->message, sizeof(resp->message));
             g_activeDesired = d;
             g_hasActiveDesired = true;
-            persist_active_desired();
+            if (!persist_active_desired()) {
+                ok = false;
+                gc_strlcpy(resp->message, sizeof(resp->message), "active state persistence failed");
+            }
             populate_snapshot(&resp->snapshot);
             resp->desired = g_activeDesired;
             resp->status = ok ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
@@ -322,7 +388,10 @@ static void handle_request(const ServiceRequest* req, ServiceResponse* resp) {
             }
             bool ok = linux_backend_reset(&g_gpu, resp->message, sizeof(resp->message));
             g_hasActiveDesired = false;
-            persist_active_desired();
+            if (!persist_active_desired()) {
+                ok = false;
+                gc_strlcpy(resp->message, sizeof(resp->message), "failed deleting stale active state");
+            }
             populate_snapshot(&resp->snapshot);
             resp->status = ok ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
             break;
@@ -398,6 +467,7 @@ int linux_daemon_run(const char* configPath) {
     while (g_running) {
         int conn = accept(srv, nullptr, nullptr);
         if (conn < 0) { if (errno == EINTR) continue; break; }
+        set_nonblocking(conn);
         log_peer(conn);
         ServiceRequest req;
         if (read_full(conn, &req, sizeof(req))) {
@@ -420,6 +490,135 @@ int linux_daemon_run(const char* configPath) {
 // systemd install / remove  (requires root)
 // ===========================================================================
 #define GC_UNIT_PATH "/etc/systemd/system/greencurve.service"
+#define GC_INSTALL_DIR "/usr/local/libexec/greencurve"
+#define GC_INSTALL_BIN GC_INSTALL_DIR "/greencurve"
+
+static bool root_owned_nonwritable_path(const char* path, bool wantDir, char* err, size_t errSize) {
+    struct stat st;
+    if (lstat(path, &st) != 0) {
+        gc_snprintf(err, errSize, "cannot inspect %s: %s", path, strerror(errno));
+        return false;
+    }
+    if (S_ISLNK(st.st_mode)) {
+        gc_snprintf(err, errSize, "%s is a symlink", path);
+        return false;
+    }
+    if (wantDir && !S_ISDIR(st.st_mode)) {
+        gc_snprintf(err, errSize, "%s is not a directory", path);
+        return false;
+    }
+    if (!wantDir && !S_ISREG(st.st_mode)) {
+        gc_snprintf(err, errSize, "%s is not a regular file", path);
+        return false;
+    }
+    if (st.st_uid != 0) {
+        gc_snprintf(err, errSize, "%s is not root-owned", path);
+        return false;
+    }
+    if ((st.st_mode & 0022) != 0) {
+        gc_snprintf(err, errSize, "%s is writable by group/other", path);
+        return false;
+    }
+    return true;
+}
+
+static bool ensure_root_owned_dir(const char* path, mode_t mode, char* err, size_t errSize) {
+    if (mkdir(path, mode) != 0) {
+        if (errno == EEXIST) {
+            return root_owned_nonwritable_path(path, true, err, errSize);
+        }
+        gc_snprintf(err, errSize, "cannot create %s: %s", path, strerror(errno));
+        return false;
+    }
+    if (chown(path, 0, 0) != 0) {
+        gc_snprintf(err, errSize, "cannot chown %s: %s", path, strerror(errno));
+        return false;
+    }
+    if (chmod(path, mode) != 0) {
+        gc_snprintf(err, errSize, "cannot chmod %s: %s", path, strerror(errno));
+        return false;
+    }
+    return root_owned_nonwritable_path(path, true, err, errSize);
+}
+
+static bool validate_install_parent_chain(char* err, size_t errSize) {
+    if (!root_owned_nonwritable_path("/usr", true, err, errSize)) return false;
+    if (!root_owned_nonwritable_path("/usr/local", true, err, errSize)) return false;
+    if (!ensure_root_owned_dir("/usr/local/libexec", 0755, err, errSize)) return false;
+    if (!ensure_root_owned_dir(GC_INSTALL_DIR, 0755, err, errSize)) return false;
+    return true;
+}
+
+static bool write_all_file(int fd, const void* buf, size_t len) {
+    const unsigned char* p = (const unsigned char*)buf;
+    size_t done = 0;
+    while (done < len) {
+        ssize_t n = write(fd, p + done, len - done);
+        if (n > 0) {
+            done += (size_t)n;
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        return false;
+    }
+    return true;
+}
+
+static bool stage_service_binary(const char* sourceExe, char* err, size_t errSize) {
+    if (!validate_install_parent_chain(err, errSize)) return false;
+
+    char tempPath[4096] = {};
+    gc_snprintf(tempPath, sizeof(tempPath), "%s.tmp.%ld", GC_INSTALL_BIN, (long)getpid());
+    unlink(tempPath);
+
+    int in = open(sourceExe, O_RDONLY | O_CLOEXEC);
+    if (in < 0) {
+        gc_snprintf(err, errSize, "cannot open source executable %s: %s", sourceExe, strerror(errno));
+        return false;
+    }
+    int out = open(tempPath, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0755);
+    if (out < 0) {
+        gc_snprintf(err, errSize, "cannot create staged executable %s: %s", tempPath, strerror(errno));
+        close(in);
+        return false;
+    }
+
+    bool ok = true;
+    unsigned char buf[65536];
+    for (;;) {
+        ssize_t n = read(in, buf, sizeof(buf));
+        if (n > 0) {
+            if (!write_all_file(out, buf, (size_t)n)) { ok = false; break; }
+            continue;
+        }
+        if (n == 0) break;
+        if (errno == EINTR) continue;
+        ok = false;
+        break;
+    }
+    if (fsync(out) != 0) ok = false;
+    if (fchown(out, 0, 0) != 0) ok = false;
+    if (fchmod(out, 0755) != 0) ok = false;
+    if (close(out) != 0) ok = false;
+    close(in);
+    if (!ok) {
+        gc_snprintf(err, errSize, "failed staging executable %s: %s", tempPath, strerror(errno));
+        unlink(tempPath);
+        return false;
+    }
+    if (rename(tempPath, GC_INSTALL_BIN) != 0) {
+        gc_snprintf(err, errSize, "cannot install %s: %s", GC_INSTALL_BIN, strerror(errno));
+        unlink(tempPath);
+        return false;
+    }
+    if (!root_owned_nonwritable_path(GC_INSTALL_BIN, false, err, errSize)) return false;
+    int dirfd = open(GC_INSTALL_DIR, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dirfd >= 0) {
+        fsync(dirfd);
+        close(dirfd);
+    }
+    return validate_install_parent_chain(err, errSize);
+}
 
 int linux_service_install(char* err, size_t errSize) {
     if (err && errSize) err[0] = 0;
@@ -431,6 +630,7 @@ int linux_service_install(char* err, size_t errSize) {
     ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
     if (n <= 0) { gc_strlcpy(err, errSize, "cannot resolve /proc/self/exe"); return 1; }
     exe[n] = 0;
+    if (!stage_service_binary(exe, err, errSize)) return 1;
 
     // Admin group for socket access (best-effort; ignore "already exists").
     if (system("groupadd -f greencurve >/dev/null 2>&1") != 0)
@@ -451,7 +651,7 @@ int linux_service_install(char* err, size_t errSize) {
         "RuntimeDirectory=greencurve\n\n"
         "[Install]\n"
         "WantedBy=multi-user.target\n",
-        exe);
+        GC_INSTALL_BIN);
     fclose(f);
 
     if (system("systemctl daemon-reload") != 0)

@@ -97,6 +97,43 @@ bool apply_protected_service_binary_dacl(const wchar_t* path, char* err, size_t 
     return ok;
 }
 
+bool apply_protected_service_dir_dacl(const wchar_t* path, char* err, size_t errSize) {
+    if (err && errSize) err[0] = 0;
+    if (!path || !path[0]) {
+        set_acl_err(err, errSize, "Empty service directory path", 0);
+        return false;
+    }
+    const wchar_t* sddl = L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)";
+    PSECURITY_DESCRIPTOR psd = nullptr;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, &psd, nullptr)) {
+        set_acl_err(err, errSize, "Failed building service directory DACL", GetLastError());
+        return false;
+    }
+    BOOL daclPresent = FALSE, daclDefaulted = FALSE;
+    PACL pDacl = nullptr;
+    bool ok = false;
+    if (GetSecurityDescriptorDacl(psd, &daclPresent, &pDacl, &daclDefaulted) && daclPresent) {
+        DWORD rc = SetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            nullptr, nullptr, pDacl, nullptr);
+        if (rc == ERROR_SUCCESS) {
+            ok = true;
+            BYTE adminSid[SECURITY_MAX_SID_SIZE] = {};
+            DWORD adminSidSize = sizeof(adminSid);
+            if (CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr, adminSid, &adminSidSize)) {
+                SetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
+                    OWNER_SECURITY_INFORMATION, adminSid, nullptr, nullptr, nullptr);
+            }
+        } else {
+            set_acl_err(err, errSize, "Failed applying service directory DACL", rc);
+        }
+    } else {
+        set_acl_err(err, errSize, "Service directory DACL missing after build", GetLastError());
+    }
+    LocalFree(psd);
+    return ok;
+}
+
 bool restore_inherited_dacl(const wchar_t* path, char* err, size_t errSize) {
     if (err && errSize) err[0] = 0;
     if (!path || !path[0]) {

@@ -125,22 +125,58 @@ static bool service_verify_written_file_path(const char* path, char* err, size_t
 
 static bool service_prepare_requested_gpu(const ServiceRequest* request, char* err, size_t errSize) {
     if (!request || !request->targetGpu.valid) return true;
-    bool change = !g_app.selectedGpuIdentityValid ||
-        g_app.selectedGpuIndex != request->targetGpu.nvapiIndex ||
-        !gpu_adapter_has_same_pci_identity(&g_app.selectedGpu, &request->targetGpu);
-    if (change) {
-        debug_log("service gpu target: selecting nvapi=%u nvml=%u name=%s\n",
-            request->targetGpu.nvapiIndex,
-            request->targetGpu.nvmlIndex,
-            request->targetGpu.name[0] ? request->targetGpu.name : "<unnamed>");
-        g_app.selectedGpuIndex = request->targetGpu.nvapiIndex;
-        g_app.selectedNvmlIndex = request->targetGpu.nvmlIndex;
-        g_app.selectedGpuExplicit = true;
-        reset_gpu_runtime_selection();
-    }
     if (request->targetGpu.nvapiIndex >= MAX_GPU_ADAPTERS) {
         set_message(err, errSize, "Requested GPU index is invalid");
         return false;
+    }
+
+    char initDetail[256] = {};
+    if (!hardware_initialize(initDetail, sizeof(initDetail))) {
+        set_message(err, errSize, "%s", initDetail[0] ? initDetail : "Hardware initialization failed");
+        return false;
+    }
+    if (request->targetGpu.nvapiIndex >= g_app.adapterCount) {
+        set_message(err, errSize, "Requested GPU is no longer available");
+        debug_log("service gpu target: rejected nvapi=%u outside live adapter count %u\n",
+            request->targetGpu.nvapiIndex, g_app.adapterCount);
+        return false;
+    }
+
+    GpuAdapterInfo live = g_app.adapters[request->targetGpu.nvapiIndex];
+    if (!live.valid) {
+        set_message(err, errSize, "Requested GPU is not valid");
+        return false;
+    }
+    bool haveStrongIdentity = request->targetGpu.pciInfoValid && live.pciInfoValid;
+    if (haveStrongIdentity && !gpu_adapter_has_same_pci_identity(&live, &request->targetGpu)) {
+        set_message(err, errSize, "Requested GPU identity no longer matches");
+        debug_log("service gpu target: rejected nvapi=%u because PCI identity changed\n",
+            request->targetGpu.nvapiIndex);
+        return false;
+    }
+    if (!haveStrongIdentity && g_app.adapterCount > 1) {
+        set_message(err, errSize, "Requested GPU identity is ambiguous");
+        debug_log("service gpu target: rejected nvapi=%u without PCI identity on multi-adapter system\n",
+            request->targetGpu.nvapiIndex);
+        return false;
+    }
+
+    bool change = !g_app.selectedGpuIdentityValid ||
+        g_app.selectedGpuIndex != live.nvapiIndex ||
+        (haveStrongIdentity && !gpu_adapter_has_same_pci_identity(&g_app.selectedGpu, &live));
+    if (change) {
+        debug_log("service gpu target: selecting validated nvapi=%u nvml=%u identity=%s name=%s\n",
+            live.nvapiIndex,
+            live.nvmlIndex,
+            haveStrongIdentity ? "pci" : "single-adapter-ordinal",
+            live.name[0] ? live.name : "<unnamed>");
+        reset_gpu_runtime_selection();
+        g_app.selectedGpuIndex = live.nvapiIndex;
+        g_app.selectedNvmlIndex = live.nvmlIndex;
+        g_app.selectedGpuExplicit = true;
+        g_app.selectedGpu = live;
+        g_app.selectedGpuIdentityValid = live.valid;
+        g_app.selectedGpuOrdinalFallback = !haveStrongIdentity;
     }
     return true;
 }
@@ -328,20 +364,21 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
         if (request.magic != SERVICE_PROTOCOL_MAGIC || request.version != SERVICE_PROTOCOL_VERSION) {
             response.status = SERVICE_STATUS_VERSION_MISMATCH;
             StringCchCopyA(response.message, ARRAY_COUNT(response.message), "Service protocol mismatch");
-        } else if (!service_caller_is_authorized(pipe, request.source, response.message, ARRAY_COUNT(response.message), callerUser, sizeof(callerUser), &callerSessionId, &callerPid, &callerIsAdmin)) {
-            response.status = SERVICE_STATUS_ERROR;
         } else {
-            if (!g_serviceUserPathsResolved || g_serviceUserPathsSessionId != callerSessionId) {
-                char pathErr[256] = {};
-                if (resolve_service_user_data_paths(callerSessionId, pathErr, sizeof(pathErr))) {
+            validate_gpu_adapter_info_for_ipc(&request.targetGpu);
+            validate_desired_settings_for_ipc(&request.desired);
+            if (!service_caller_is_authorized(pipe, request.source, response.message, ARRAY_COUNT(response.message), callerUser, sizeof(callerUser), &callerSessionId, &callerPid, &callerIsAdmin)) {
+                response.status = SERVICE_STATUS_ERROR;
+            } else {
+                char userPathErr[256] = {};
+                if (resolve_service_user_data_paths(callerSessionId, userPathErr, sizeof(userPathErr))) {
                     if (!g_app.configPath[0]) {
                         set_default_config_path();
                     }
                     refresh_service_debug_logging_from_config();
                 } else {
-                    debug_log("service_pipe_server: failed to resolve user data paths: %s\n", pathErr);
+                    debug_log("service_pipe_server: failed to resolve user data paths: %s\n", userPathErr);
                 }
-            }
             service_set_pending_operation_source(request.source[0] ? request.source : "service request");
             switch (request.command) {
                 case SERVICE_CMD_PING:
@@ -350,7 +387,20 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     break;
                 case SERVICE_CMD_GET_SNAPSHOT: {
                     char detail[256] = {};
-                    lock_service_runtime();
+                    // Use a timed lock so the pipe server does not block
+                    // indefinitely when the runtime lock is held by the recovery
+                    // reapply thread.  If the lock is busy, serve cached data
+                    // immediately so PING and other commands are not starved on
+                    // the single-instance pipe.
+                    bool lockAcquired = try_lock_service_runtime(250);
+                    if (!lockAcquired) {
+                        debug_log("service snapshot: runtime lock busy (recovery reapply in progress), serving cached globals\n");
+                        response.status = SERVICE_STATUS_OK;
+                        StringCchCopyA(response.message, ARRAY_COUNT(response.message), "snapshot cached");
+                        populate_service_snapshot(&response.snapshot);
+                        if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
+                        break;
+                    }
                     bool ok = hardware_initialize(detail, sizeof(detail));
                     if (!ok) {
                         debug_log("service snapshot: hardware initialize unavailable: %s\n", detail[0] ? detail : "unknown");
@@ -392,7 +442,15 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                 }
                 case SERVICE_CMD_GET_TELEMETRY: {
                     char detail[256] = {};
-                    lock_service_runtime();
+                    bool lockAcquired = try_lock_service_runtime(250);
+                    if (!lockAcquired) {
+                        debug_log("service telemetry: runtime lock busy (recovery reapply in progress), serving cached telemetry\n");
+                        response.status = SERVICE_STATUS_OK;
+                        StringCchCopyA(response.message, ARRAY_COUNT(response.message), "telemetry cached");
+                        populate_service_snapshot(&response.snapshot);
+                        if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
+                        break;
+                    }
                     if (!service_refresh_telemetry_for_request(detail, sizeof(detail))) {
                         debug_log("service telemetry: hardware initialize unavailable: %s\n", detail[0] ? detail : "unknown");
                     }
@@ -628,6 +686,7 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     StringCchCopyA(response.message, ARRAY_COUNT(response.message), "Unsupported service command");
                     break;
             }
+            }
         }
 
         response.message[ARRAY_COUNT(response.message) - 1] = '\0';
@@ -652,9 +711,8 @@ static DWORD WINAPI service_resume_reapply_thread_proc(void*) {
     return 0;
 }
 
-// service_handle_session_change / service_reconcile_active_session_apply are
-// defined in main_service_sessions.cpp (included before this shard).  The SCM
-// SESSIONCHANGE handler routes through service_handle_session_change.
+// service_handle_session_change is defined in main_service_sessions.cpp
+// (included before this shard).  The SCM SESSIONCHANGE handler routes through it.
 
 static DWORD WINAPI service_control_handler_ex(DWORD dwControl, DWORD dwEventType, LPVOID, LPVOID lpEventData) {
     if (dwControl == SERVICE_CONTROL_POWEREVENT && dwEventType == PBT_APMRESUMEAUTOMATIC) {
@@ -722,6 +780,25 @@ static DWORD WINAPI service_control_handler_ex(DWORD dwControl, DWORD dwEventTyp
                 } else {
                     debug_log("device event: arrival with nothing to restore; no recovery needed\n");
                 }
+                return NO_ERROR;
+            }
+
+            case DBT_DEVNODES_CHANGED: {
+                // Device node state changed (e.g. GPU enabled/disabled in Device
+                // Manager).  This does NOT fire REMOVEPENDING/REMOVECOMPLETE or
+                // ARRIVAL for the device interface — it's a separate notification
+                // for the device node itself.  Check whether OC settings survived
+                // the driver reload and reapply if needed.  Must not block the
+                // SCM control thread, so dispatch to a worker.
+                debug_log("device event: devnode changed — checking OC persistence\n");
+                HANDLE hDevnode = CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
+                    lock_service_runtime();
+                    service_check_oc_persistence(true);
+                    unlock_service_runtime();
+                    return 0;
+                }, nullptr, 0, nullptr);
+                if (hDevnode) CloseHandle(hDevnode);
+                else debug_log("device event: devnode persistence check CreateThread FAILED (error=%lu)\n", GetLastError());
                 return NO_ERROR;
             }
 
@@ -923,28 +1000,12 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
         }
     }
 
-    debug_log("service_main: running; hardware writes only on explicit client request\n");
+    debug_log("service_main: running; hardware writes only on explicit client request, session-change logon/switch, or restart-snapshot recovery\n");
 
-    // If a prior recovery was interrupted by service stop/restart, a reapply
-    // snapshot file exists; this thread waits for the driver to be ready,
-    // re-applies the saved OC/fan settings, and deletes the snapshot on
-    // success. On a normal boot (no snapshot) it is a no-op.
-    service_launch_startup_reapply();
-
-    // Active-user reconciliation: if a user is already logged into an active
-    // session when the service starts (SCM failure-restart, driver-recovery
-    // restart, or a late auto-start after login), the WTS_SESSION_LOGON for
-    // that session fired before we were accepting controls.  Apply the active
-    // session's resolved profile so the GPU reflects the active user's intent
-    // without a logout/login.  Dispatched on a worker thread because it waits
-    // for the driver and takes the runtime lock.
-    {
-        HANDLE hThread = CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
-            service_reconcile_active_session_apply();
-            return 0;
-        }, nullptr, 0, nullptr);
-        if (hThread) CloseHandle(hThread);
-    }
+    // One startup worker owns restart-snapshot recovery.  No-snapshot starts are
+    // intentionally non-mutating so service install/repair/manual start does
+    // not unexpectedly apply a saved logon profile or reset the GPU.
+    service_launch_startup_coordinator();
 
     // Main service loop: wait for stop event, but periodically check if the
     // fan runtime thread or pipe server thread needs restarting (e.g. after a
@@ -980,6 +1041,11 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
             // If VEH kills the reapply thread, it does NOT take down the
             // main loop — the next iteration retries.
             service_check_reapply_thread_health();
+
+            // Check whether the active desired VF curve drifted at runtime.
+            // This only queues the existing reapply worker after confirmed
+            // drift; it does not write to hardware from the watchdog path.
+            service_check_active_vf_drift_monitor("main loop");
 
             // Check fan runtime thread health
             if (g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive) {
@@ -1029,8 +1095,8 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
     //
     // Also skip the normal NVML teardown below (nvml_set_fan_auto / close_nvml can
     // HANG on a dead/transitional driver and wedge the stop).  The fresh process
-    // maps clean driver DLLs and service_launch_startup_reapply() restores the
-    // saved profile.
+    // maps clean driver DLLs and the startup coordinator restores the saved
+    // profile.
     if (InterlockedExchangeAdd(&g_serviceRestartRequested, 0) != 0) {
         debug_log("service_main: restart requested — terminating WITHOUT reporting SERVICE_STOPPED so the SCM SC_ACTION_RESTART failure action fires (default crash-recovery path); SCM will relaunch\n");
         if (g_serviceDeviceNotifyHandle) {
@@ -1089,9 +1155,10 @@ static void WINAPI service_main(DWORD, LPWSTR*) {
         UnregisterDeviceNotification(g_serviceDeviceNotifyHandle);
         g_serviceDeviceNotifyHandle = nullptr;
     }
-    // Return fan control to driver auto on graceful shutdown.
-    char fanDetail[128] = {};
-    nvml_set_fan_auto(fanDetail, sizeof(fanDetail));
+    // Reset GPU to driver defaults on graceful shutdown (GPU offset, memory
+    // offset, power limit, locked clocks, and fan all restored to stock).
+    char resetDetail[256] = {};
+    service_reset_all(resetDetail, sizeof(resetDetail));
     close_nvml();
     if (g_app.hNvApi) {
         FreeLibrary(g_app.hNvApi);

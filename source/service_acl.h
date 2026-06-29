@@ -23,6 +23,12 @@
 // human-readable reason in err) on failure.
 bool apply_protected_service_binary_dacl(const wchar_t* path, char* err, size_t errSize);
 
+// Apply the protected service-install directory DACL: SYSTEM + Administrators:
+// Full, BUILTIN\Users: Read & Execute.  Used before staging the LocalSystem
+// service binary so a writable existing directory cannot keep delete/create
+// rights around the protected file.
+bool apply_protected_service_dir_dacl(const wchar_t* path, char* err, size_t errSize);
+
 // Re-enable inheritance and drop the explicit protected DACL from `path`, so the
 // object inherits its parent directory's ACLs again (used on uninstall).
 bool restore_inherited_dacl(const wchar_t* path, char* err, size_t errSize);

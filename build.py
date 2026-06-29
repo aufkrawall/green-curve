@@ -18,6 +18,7 @@ import subprocess
 import sys
 import urllib.request
 import tarfile
+import time
 import zipfile
 import zlib
 
@@ -45,12 +46,16 @@ COMPILERS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "compil
 _ZIG_ARCHIVE_NAME = f"zig-{_ZIG_PLATFORM}-x86_64-{ZIG_VERSION}{_ZIG_ARCHIVE_EXT}"
 ZIG_URL = f"{COMPILERS_REPO_BASE}/{_ZIG_ARCHIVE_NAME}"
 ZIG_SHA256 = _ZIG_SHA256
+ZIG_EXE_SHA256 = {
+    "windows": "2e44af5bbf7a72ef8cbdae370284687c95d65a19affa469d2ad0364d905b8e84",
+}.get(_ZIG_PLATFORM)
 
 # llvm-mingw: portable MinGW toolchain for Windows builds with full CFG support
 LLVM_MINGW_VERSION = "20260519"
 LLVM_MINGW_ARCHIVE_NAME = f"llvm-mingw-{LLVM_MINGW_VERSION}-ucrt-x86_64.zip"
 LLVM_MINGW_URL = f"{COMPILERS_REPO_BASE}/{LLVM_MINGW_ARCHIVE_NAME}"
 LLVM_MINGW_SHA256 = "72dbd6e64614e3b3401998992d1bd9c8ace29e74611d71c80309ea71c3fb26f9"
+LLVM_MINGW_CLANG_SHA256 = "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ZIG_DIR = os.path.join(SCRIPT_DIR, "zig")
@@ -189,7 +194,7 @@ COMMON_FLAGS = [
 ]
 
 # C-002: read VERSION and inject it into all compile commands
-APP_VERSION = "0.16"
+APP_VERSION = "0.17"
 APP_BUILD_NUMBER = 0
 _version_path = os.path.join(SCRIPT_DIR, "VERSION")
 if os.path.exists(_version_path):
@@ -277,24 +282,6 @@ WINDOWS_SERVICE_LINK_LIBS = [
 # ---------------------------------------------------------------------------
 WINDOWS_ARM64_TRIPLE = "aarch64-w64-mingw32"
 LINUX_ARM64_TRIPLE = "aarch64-linux-gnu"
-
-
-def windows_flags_for_arch(arch):
-    """WINDOWS_FLAGS adapted for the target architecture.  On arm64, x86 CET
-    (-fcf-protection) is replaced by branch-protection (BTI/PAC) and the
-    x64-tailored CFG override (-mguard=cf / cfg_glue.cpp) is dropped — cfg_glue.cpp
-    still compiles for initialize_process_mitigations()."""
-    if arch != "arm64":
-        return list(WINDOWS_FLAGS)
-    out = ["-target", WINDOWS_ARM64_TRIPLE]
-    for flag in WINDOWS_FLAGS:
-        if flag == "-mguard=cf":
-            continue
-        if flag == "-fcf-protection=full":
-            out.append("-mbranch-protection=standard")
-            continue
-        out.append(flag)
-    return out
 
 
 def linux_flags_for_arch(arch):
@@ -940,39 +927,60 @@ def _resolve_archive(source_label, archive_name, local_dir, url, sha256):
     return temp_path
 
 
-def _verify_sentinel(binary_path, label):
-    """Verify a binary against its ``.sha256`` sentinel file.
-
-    Returns ``True`` if the sentinel exists and matches the current binary.
-    On mismatch or missing sentinel it prints a warning and returns ``False``
-    so the caller can re-download.
-    """
-    sentinel = binary_path + ".sha256"
-    if not os.path.exists(sentinel):
-        print(f"WARNING: {label} missing integrity sentinel ({sentinel})")
-        return False
-    try:
-        with open(sentinel, "r", encoding="utf-8") as f:
-            expected = f.read().strip()
-    except OSError:
-        print(f"WARNING: {label} cannot read sentinel ({sentinel})")
-        return False
+def _sha256_file(path):
     h = hashlib.sha256()
-    with open(binary_path, "rb") as f:
+    with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
-    current = h.hexdigest().lower()
-    if current != expected.lower():
-        print(f"ERROR: {label} SHA-256 mismatch — binary may be compromised")
-        print(f"  expected (sentinel): {expected}")
-        print(f"  actual:              {current}")
+    return h.hexdigest().lower()
+
+
+def _write_integrity_sentinel(binary_path, trusted_sha256=None):
+    sentinel = binary_path + ".sha256"
+    digest = (trusted_sha256 or _sha256_file(binary_path)).lower()
+    with open(sentinel, "w", encoding="utf-8") as f:
+        f.write(digest)
+
+
+def _verify_cached_tool_binary(binary_path, label, trusted_sha256):
+    """Verify a cached tool binary against a digest pinned in this script.
+
+    Adjacent ``.sha256`` files are not trusted: an attacker who can replace the
+    binary can replace that sentinel too.  The sentinel is kept only as a
+    post-extraction marker; the authority for cache reuse is the pinned digest.
+    """
+    if not trusted_sha256:
+        print(f"WARNING: {label} has no pinned executable digest for this host; refreshing from pinned archive")
         return False
+    try:
+        current = _sha256_file(binary_path)
+    except OSError as exc:
+        print(f"WARNING: {label} cannot be read for integrity verification: {exc}")
+        return False
+    expected = trusted_sha256.lower()
+    if current != expected:
+        print(f"ERROR: {label} SHA-256 mismatch; cached binary will be refreshed")
+        print(f"  expected (pinned): {expected}")
+        print(f"  actual:            {current}")
+        return False
+    sentinel = binary_path + ".sha256"
+    try:
+        if os.path.exists(sentinel):
+            with open(sentinel, "r", encoding="utf-8") as f:
+                marker = f.read().strip().lower()
+            if marker and marker != expected:
+                print(f"WARNING: {label} sentinel differs from pinned digest; rewriting marker")
+                _write_integrity_sentinel(binary_path, expected)
+        else:
+            _write_integrity_sentinel(binary_path, expected)
+    except OSError as exc:
+        print(f"WARNING: {label} could not update integrity sentinel: {exc}")
     return True
 
 
 def download_zig():
     """Download (or copy from local compilers/) and extract Zig compiler."""
-    if os.path.exists(ZIG_EXE) and _verify_sentinel(ZIG_EXE, "zig"):
+    if os.path.exists(ZIG_EXE) and _verify_cached_tool_binary(ZIG_EXE, "zig", ZIG_EXE_SHA256):
         print(f"Zig already present at {ZIG_EXE}")
         return
 
@@ -1019,20 +1027,15 @@ def download_zig():
         sys.exit(1)
 
     print(f"Zig installed at {ZIG_EXE}")
-
-    # Write integrity sentinel for future builds
-    sentinel = ZIG_EXE + ".sha256"
-    h = hashlib.sha256()
-    with open(ZIG_EXE, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    with open(sentinel, "w", encoding="utf-8") as f:
-        f.write(h.hexdigest().lower())
+    if ZIG_EXE_SHA256 and not _verify_cached_tool_binary(ZIG_EXE, "zig", ZIG_EXE_SHA256):
+        print("ERROR: Extracted Zig binary failed pinned executable digest verification")
+        sys.exit(1)
+    _write_integrity_sentinel(ZIG_EXE, ZIG_EXE_SHA256)
 
 
 def download_llvm_mingw():
     """Download (or copy from local compilers/) and extract llvm-mingw toolchain."""
-    if os.path.exists(LLVM_MINGW_CLANG) and _verify_sentinel(LLVM_MINGW_CLANG, "llvm-mingw"):
+    if os.path.exists(LLVM_MINGW_CLANG) and _verify_cached_tool_binary(LLVM_MINGW_CLANG, "llvm-mingw", LLVM_MINGW_CLANG_SHA256):
         print(f"llvm-mingw already present at {LLVM_MINGW_CLANG}")
         return
 
@@ -1063,19 +1066,19 @@ def download_llvm_mingw():
         sys.exit(1)
 
     print(f"llvm-mingw installed at {LLVM_MINGW_DIR}")
-
-    # Write integrity sentinel for future builds
-    sentinel = LLVM_MINGW_CLANG + ".sha256"
-    h = hashlib.sha256()
-    with open(LLVM_MINGW_CLANG, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    with open(sentinel, "w", encoding="utf-8") as f:
-        f.write(h.hexdigest().lower())
+    if not _verify_cached_tool_binary(LLVM_MINGW_CLANG, "llvm-mingw", LLVM_MINGW_CLANG_SHA256):
+        print("ERROR: Extracted llvm-mingw binary failed pinned executable digest verification")
+        sys.exit(1)
+    _write_integrity_sentinel(LLVM_MINGW_CLANG, LLVM_MINGW_CLANG_SHA256)
 
 
-def finalize_output(temp_output, output_path, backup_path=None):
+def finalize_output(temp_output, output_path, backup_path=None, compile_started_at=None):
     if not os.path.exists(temp_output):
+        if (compile_started_at is not None and os.path.exists(output_path) and
+                os.path.getmtime(output_path) >= compile_started_at - 1.0):
+            size = os.path.getsize(output_path)
+            print(f"Build successful: {output_path} ({size:,} bytes / {size / 1024:.1f} KB; linker wrote final path directly)")
+            return
         print(f"Compilation reported success but {temp_output} is missing")
         sys.exit(1)
 
@@ -1109,17 +1112,32 @@ def finalize_output(temp_output, output_path, backup_path=None):
 
 
 def get_windows_gui_compile_command(temp_output, arch="x64"):
-    """Return the command array for compiling the Windows GUI executable with llvm-mingw."""
-    # arm64 quirk: the GUI trips llvm-mingw/LLD's "misaligned ldr/str offset"
-    # layout bug.  Earlier GUI code only needed LTO disabled; release-0.16 code
-    # growth also needs -O2 over the common -Oz.  Keep this scoped to arm64 GUI:
-    # x64 keeps Oz+LTO, and the arm64 service has its own O2 workaround below.
-    gui_arch_opt = ["-O2", "-fno-lto"] if arch == "arm64" else []
+    """Return the command array for compiling the Windows GUI executable.
+    Uses llvm-mingw for x64 and Zig for arm64 (avoids llvm-mingw/LLD's
+    aarch64 COFF "misaligned ldr/str offset" layout bug)."""
+    if arch == "arm64":
+        return [
+            ZIG_EXE,
+            "c++",
+            *COMMON_FLAGS,
+            "-target", "aarch64-windows-gnu",
+            "-mbranch-protection=standard",
+            "-flto",
+            "-ftrivial-auto-var-init=pattern",
+            "-fno-delete-null-pointer-checks",
+            "-static",
+            "-s",
+            "-Wl,--subsystem,windows,--dynamicbase,--nxcompat,--high-entropy-va",
+            "-o",
+            temp_output,
+            *WINDOWS_SOURCE_FILES,
+            ICON_RES,
+            *WINDOWS_LINK_LIBS,
+        ]
     return [
         LLVM_MINGW_CLANG,
         *COMMON_FLAGS,
-        *windows_flags_for_arch(arch),
-        *gui_arch_opt,
+        *WINDOWS_FLAGS,
         "-o",
         temp_output,
         *WINDOWS_SOURCE_FILES,
@@ -1129,18 +1147,32 @@ def get_windows_gui_compile_command(temp_output, arch="x64"):
 
 
 def get_windows_service_compile_command(temp_output, arch="x64"):
-    """Return the command array for compiling the Windows service executable with llvm-mingw."""
-    # arm64 quirk: the service binary trips LLD's "misaligned ldr/str offset" at
-    # -Oz; -O2 (last -O flag wins) is clean.  (The GUI trips the same LLD error
-    # via LTO instead and is handled separately with -fno-lto in
-    # get_windows_gui_compile_command - different lever, same llvm-mingw aarch64
-    # bug family.)
-    service_arch_opt = ["-O2"] if arch == "arm64" else []
+    """Return the command array for compiling the Windows service executable.
+    Uses llvm-mingw for x64 and Zig for arm64 (avoids llvm-mingw/LLD's
+    aarch64 COFF "misaligned ldr/str offset" layout bug)."""
+    if arch == "arm64":
+        return [
+            ZIG_EXE,
+            "c++",
+            *COMMON_FLAGS,
+            "-target", "aarch64-windows-gnu",
+            "-mbranch-protection=standard",
+            "-flto",
+            "-ftrivial-auto-var-init=pattern",
+            "-fno-delete-null-pointer-checks",
+            "-static",
+            "-s",
+            "-Wl,--subsystem,windows,--dynamicbase,--nxcompat,--high-entropy-va",
+            "-DGREEN_CURVE_SERVICE_BINARY=1",
+            "-o",
+            temp_output,
+            *WINDOWS_SOURCE_FILES,
+            *WINDOWS_SERVICE_LINK_LIBS,
+        ]
     return [
         LLVM_MINGW_CLANG,
         *COMMON_FLAGS,
-        *windows_flags_for_arch(arch),
-        *service_arch_opt,
+        *WINDOWS_FLAGS,
         "-DGREEN_CURVE_SERVICE_BINARY=1",
         "-o",
         temp_output,
@@ -1182,6 +1214,7 @@ def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_T
     print(f"Compiling {len(WINDOWS_SOURCE_FILES)} source files -> {os.path.basename(output_path)} ({arch})")
     print(f"  Command: {' '.join(cmd)}")
 
+    compile_started_at = time.time()
     result = subprocess.run(cmd, cwd=SCRIPT_DIR)
     if result.returncode != 0:
         if os.path.exists(temp_output):
@@ -1190,7 +1223,7 @@ def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_T
         sys.exit(1)
 
     if finalize:
-        finalize_output(temp_output, output_path, backup_path)
+        finalize_output(temp_output, output_path, backup_path, compile_started_at)
     else:
         size = os.path.getsize(temp_output)
         print(f"Check build successful: {temp_output} ({size:,} bytes / {size / 1024:.1f} KB)")
@@ -1213,6 +1246,7 @@ def compile_windows_service_binary(output_path=WINDOWS_SERVICE_OUTPUT_EXE, temp_
     print(f"Compiling {len(WINDOWS_SOURCE_FILES)} source files -> {os.path.basename(output_path)} ({arch})")
     print(f"  Command: {' '.join(cmd)}")
 
+    compile_started_at = time.time()
     result = subprocess.run(cmd, cwd=SCRIPT_DIR)
     if result.returncode != 0:
         if os.path.exists(temp_output):
@@ -1221,7 +1255,7 @@ def compile_windows_service_binary(output_path=WINDOWS_SERVICE_OUTPUT_EXE, temp_
         sys.exit(1)
 
     if finalize:
-        finalize_output(temp_output, output_path, backup_path)
+        finalize_output(temp_output, output_path, backup_path, compile_started_at)
     else:
         size = os.path.getsize(temp_output)
         print(f"Check build successful: {temp_output} ({size:,} bytes / {size / 1024:.1f} KB)")
@@ -1244,6 +1278,7 @@ def compile_linux_binary(output_path=LINUX_OUTPUT_BIN, temp_output=LINUX_TEMP_OU
     print(f"Compiling {len(LINUX_SOURCE_FILES)} source files -> {os.path.basename(output_path)} ({arch})")
     print(f"  Command: {' '.join(cmd)}")
 
+    compile_started_at = time.time()
     result = subprocess.run(cmd, cwd=SCRIPT_DIR)
     if result.returncode != 0:
         if os.path.exists(temp_output):
@@ -1252,7 +1287,7 @@ def compile_linux_binary(output_path=LINUX_OUTPUT_BIN, temp_output=LINUX_TEMP_OU
         sys.exit(1)
 
     if finalize:
-        finalize_output(temp_output, output_path, backup_path)
+        finalize_output(temp_output, output_path, backup_path, compile_started_at)
     else:
         size = os.path.getsize(temp_output)
         print(f"Check build successful: {temp_output} ({size:,} bytes / {size / 1024:.1f} KB)")
@@ -1502,11 +1537,38 @@ def generate_lsp_files():
     print(f"Generated {path}")
 
 
+def run_build_script_regression_tests():
+    tmp = prepare_work_subdir("build_script_regression")
+    try:
+        tool_path = os.path.join(tmp, "tool.bin")
+        with open(tool_path, "wb") as handle:
+            handle.write(b"trusted tool bytes")
+        trusted = _sha256_file(tool_path)
+        _write_integrity_sentinel(tool_path, trusted)
+        if not _verify_cached_tool_binary(tool_path, "test-tool", trusted):
+            print("Build-script regression FAILED: trusted cached tool rejected")
+            sys.exit(1)
+        with open(tool_path, "wb") as handle:
+            handle.write(b"attacker replacement")
+        _write_integrity_sentinel(tool_path, _sha256_file(tool_path))
+        if _verify_cached_tool_binary(tool_path, "test-tool", trusted):
+            print("Build-script regression FAILED: adjacent sentinel trusted over pinned digest")
+            sys.exit(1)
+    finally:
+        cleanup_work_subdir(tmp)
+
+
 def run_regression_tests(extra_flags=None):
     """Run pure regression tests that do not touch GPU hardware."""
+    run_build_script_regression_tests()
     harness = r'''
 #include "fan_curve.h"
 #include "service_acl.h"
+#include "vf_backends.h"
+
+bool is_curve_point_visible_in_gui(int) { return true; }
+void debug_log(const char*, ...) {}
+#include "config_profile_repair.cpp"
 
 void invalidate_tray_profile_cache() {}
 
@@ -1528,6 +1590,17 @@ int main(int argc, char** argv) {
     if (gpu_family_uses_best_guess_backend(GPU_FAMILY_LOVELACE)) return 29;
     if (gpu_family_uses_best_guess_backend(GPU_FAMILY_BLACKWELL)) return 30;
     if (!gpu_family_uses_best_guess_backend(GPU_FAMILY_UNKNOWN)) return 67;
+    {
+        GpuFamily fam = GPU_FAMILY_UNKNOWN;
+        const VfBackendSpec* spec = vf_backend_for_architecture(NV_GPU_ARCHITECTURE_GB200, &fam);
+        if (!spec || fam != GPU_FAMILY_BLACKWELL || spec->bestGuessOnly) return 171;
+        spec = vf_backend_for_architecture(NV_GPU_ARCHITECTURE_AD100, &fam);
+        if (!spec || fam != GPU_FAMILY_LOVELACE || spec->bestGuessOnly) return 172;
+        spec = vf_backend_for_architecture(NV_GPU_ARCHITECTURE_GA100, &fam);
+        if (!spec || fam != GPU_FAMILY_AMPERE || spec->bestGuessOnly) return 173;
+        spec = vf_backend_for_architecture(0xDEADBEEFu, &fam);
+        if (!spec || fam != GPU_FAMILY_UNKNOWN || !spec->bestGuessOnly) return 174;
+    }
 
     FanCurveConfig cfg = {};
     fan_curve_set_default(&cfg);
@@ -1556,7 +1629,7 @@ int main(int argc, char** argv) {
     FanCurveConfig onePointFanCurve = {};
     onePointFanCurve.pollIntervalMs = 500;
     onePointFanCurve.hysteresisC = 1;
-    onePointFanCurve.points[7] = { true, 99, 100 };
+    onePointFanCurve.points[7] = { gc_bool8_from_bool(true), 99, 100 };
     fan_curve_normalize(&onePointFanCurve);
     if (!fan_curve_validate(&onePointFanCurve, err, sizeof(err))) return 11;
 
@@ -1597,15 +1670,21 @@ int main(int argc, char** argv) {
         DesiredSettings ds = {};
         validate_desired_settings_for_ipc(nullptr);
         validate_desired_settings_for_ipc(&ds);
-        ds.hasPowerLimit = true; ds.powerLimitPct = 0;
-        ds.hasGpuOffset = true; ds.gpuOffsetMHz = -50000;
-        ds.hasMemOffset = true; ds.memOffsetMHz = 99999;
-        ds.hasFan = true; ds.fanPercent = -100;
+        ds.hasPowerLimit = 7; ds.powerLimitPct = 0;
+        ds.hasGpuOffset = 9; ds.gpuOffsetMHz = -50000;
+        ds.hasMemOffset = 11; ds.memOffsetMHz = 99999;
+        ds.hasFan = 13; ds.fanPercent = -100;
+        ds.fanAuto = 15;
+        ds.resetOcBeforeApply = 17;
         for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-            ds.hasCurvePoint[ci] = true;
+            ds.hasCurvePoint[ci] = 19;
             ds.curvePointMHz[ci] = 9999999u;
         }
+        ds.fanCurve.points[0].enabled = 21;
         validate_desired_settings_for_ipc(&ds);
+        if (ds.hasPowerLimit != 1 || ds.hasGpuOffset != 1 || ds.hasMemOffset != 1) return 68;
+        if (ds.hasFan != 1 || ds.fanAuto != 1 || ds.resetOcBeforeApply != 1) return 69;
+        if (ds.hasCurvePoint[0] != 1 || ds.fanCurve.points[0].enabled != 1) return 79;
         if (ds.powerLimitPct != 50) return 72;
         if (ds.gpuOffsetMHz != -1000) return 73;
         if (ds.memOffsetMHz != 5000) return 74;
@@ -1618,6 +1697,28 @@ int main(int argc, char** argv) {
         ds.lockMode = (LockMode)(-5);
         validate_desired_settings_for_ipc(&ds);
         if (ds.lockMode != LOCK_MODE_NONE) return 78;
+    }
+
+    // IPC response bool flags are canonicalized before the GUI trusts them.
+    {
+        ServiceResponse resp = {};
+        resp.snapshot.initialized = 99;
+        resp.snapshot.loaded = 88;
+        resp.snapshot.selectedAdapterOrdinalFallback = 77;
+        resp.snapshot.lastApplyUsedGpuOffset = 66;
+        resp.snapshot.serviceInRecovery = 55;
+        resp.snapshot.serviceReapplyInProgress = 44;
+        resp.snapshot.adapterCount = 1;
+        resp.snapshot.adapters[0].valid = 33;
+        resp.snapshot.adapters[0].pciInfoValid = 22;
+        resp.desired.hasGpuOffset = 11;
+        resp.controlState.valid = 10;
+        validate_service_response_for_ipc(&resp);
+        if (resp.snapshot.initialized != 1 || resp.snapshot.loaded != 1) return 154;
+        if (resp.snapshot.selectedAdapterOrdinalFallback != 1 || resp.snapshot.lastApplyUsedGpuOffset != 1) return 155;
+        if (resp.snapshot.serviceInRecovery != 1 || resp.snapshot.serviceReapplyInProgress != 1) return 156;
+        if (resp.snapshot.adapters[0].valid != 1 || resp.snapshot.adapters[0].pciInfoValid != 1) return 157;
+        if (resp.desired.hasGpuOffset != 1 || resp.controlState.valid != 1) return 158;
     }
 
     // F-08-001: IPC magic/version constants unchanged
@@ -1665,8 +1766,8 @@ int main(int argc, char** argv) {
         fan_curve_set_default(&safe);
         if (fan_curve_has_high_temp_low_fan_warning(&safe)) return 44;
         FanCurveConfig danger = {};
-        danger.points[0] = { true, 85, 20 };
-        danger.points[1] = { true, 95, 30 };
+        danger.points[0] = { gc_bool8_from_bool(true), 85, 20 };
+        danger.points[1] = { gc_bool8_from_bool(true), 95, 30 };
         if (!fan_curve_has_high_temp_low_fan_warning(&danger)) return 45;
     }
 
@@ -1832,6 +1933,23 @@ int main(int argc, char** argv) {
         DeleteFileW(aclFile);
     }
 
+    // F-SEC-1b: protected service install directory DACL.  The service binary
+    // is installed adjacent to the GUI; the containing directory must also be
+    // protected so a non-admin cannot delete/recreate the file by
+    // parent-directory rights.
+    {
+        wchar_t tempDir[MAX_PATH] = {};
+        if (GetTempPathW(MAX_PATH, tempDir) == 0) return 166;
+        wchar_t svcDir[MAX_PATH] = {};
+        StringCchPrintfW(svcDir, MAX_PATH, L"%lsgc_service_dir_acl_%lu", tempDir, GetCurrentProcessId());
+        if (!CreateDirectoryW(svcDir, nullptr)) return 167;
+        char aclErr[256] = {};
+        if (service_binary_dacl_is_hardened(svcDir)) { RemoveDirectoryW(svcDir); return 168; }
+        if (!apply_protected_service_dir_dacl(svcDir, aclErr, sizeof(aclErr))) { RemoveDirectoryW(svcDir); return 169; }
+        if (!service_binary_dacl_is_hardened(svcDir)) { RemoveDirectoryW(svcDir); return 170; }
+        RemoveDirectoryW(svcDir);
+    }
+
     // F-SEC-6: machine-wide config DACL round-trip.  The .ini must be readable
     // by standard users (so the GUI can show the current default) but writable
     // only by SYSTEM/Administrators.
@@ -1954,6 +2072,49 @@ int main(int argc, char** argv) {
         DeleteFileA(argv[1]);
     }
 
+    // Profile repair must tolerate INT_MIN offsets without signed overflow.
+    // Under UBSan the old abs(INT_MIN) implementation aborted in this case.
+    {
+        DesiredSettings repair = {};
+        repair.hasLock = true;
+        repair.lockCi = 10;
+        repair.lockMHz = 2000;
+        repair.hasCurvePoint[7] = true;
+        repair.curvePointMHz[7] = 1700;
+        repair.hasCurvePoint[8] = true;
+        repair.curvePointMHz[8] = 1900;
+        repair.hasCurvePoint[9] = true;
+        repair.curvePointMHz[9] = 1950;
+        for (int ci = 10; ci < 14; ci++) {
+            repair.hasCurvePoint[ci] = true;
+            repair.curvePointMHz[ci] = 2000;
+        }
+        DeleteFileA(argv[1]);
+        if (!set_config_int(argv[1], "curve", "point7_offset_khz", (-2147483647 - 1))) return 159;
+        repair_profile_locked_curve_readback_artifacts(argv[1], "curve", 1, &repair);
+        if (!repair.hasCurvePoint[7]) return 160;
+        DeleteFileA(argv[1]);
+    }
+
+    // CommandLineToArgvW-compatible quoting for elevated helper argv.
+#if defined(_WIN32)
+    {
+        WCHAR cmd[512] = {};
+        if (!pl_append_quoted_arg_w(cmd, ARRAY_COUNT(cmd), L"--config")) return 161;
+        if (!pl_append_quoted_arg_w(cmd, ARRAY_COUNT(cmd), L"C:\\Path With Spaces\\quote\\\"tail\\\\config.ini")) return 162;
+        if (!pl_append_quoted_arg_w(cmd, ARRAY_COUNT(cmd), L"--flag")) return 163;
+        int parsedArgc = 0;
+        LPWSTR* parsed = CommandLineToArgvW(cmd, &parsedArgc);
+        if (!parsed) return 164;
+        bool quoteOk = parsedArgc == 3 &&
+            wcscmp(parsed[0], L"--config") == 0 &&
+            wcscmp(parsed[1], L"C:\\Path With Spaces\\quote\\\"tail\\\\config.ini") == 0 &&
+            wcscmp(parsed[2], L"--flag") == 0;
+        LocalFree(parsed);
+        if (!quoteOk) return 165;
+    }
+#endif
+
     DeleteCriticalSection(&g_configLock);
     return 0;
 }
@@ -1984,11 +2145,14 @@ int main(int argc, char** argv) {
             os.path.join(SOURCE_DIR, "config_utils.cpp"),
             os.path.join(SOURCE_DIR, "app_shared.cpp"),
             os.path.join(SOURCE_DIR, "service_acl.cpp"),
+            os.path.join(SOURCE_DIR, "vf_backends.cpp"),
         ])
+        if sys.platform == "win32":
+            cmd.append(os.path.join(SOURCE_DIR, "platform_win32.cpp"))
         if extra_flags:
             cmd.extend(extra_flags)
         if sys.platform == "win32":
-            cmd.extend(["-static", "-luser32", "-lgdi32", "-luuid", "-ladvapi32"])
+            cmd.extend(["-static", "-luser32", "-lgdi32", "-luuid", "-ladvapi32", "-lshell32"])
         print("Compiling pure regression tests")
         result = subprocess.run(cmd, cwd=SCRIPT_DIR)
         if result.returncode != 0:
@@ -2087,15 +2251,20 @@ def run_source_regression_checks():
     main_tail_diagnostics_cpp = os.path.join(SOURCE_DIR, "main_tail_diagnostics.cpp")
     main_shell_cpp = os.path.join(SOURCE_DIR, "main_shell.cpp")
     main_fan_runtime_cpp = os.path.join(SOURCE_DIR, "main_fan_runtime.cpp")
+    main_gpu_front_cpp = os.path.join(SOURCE_DIR, "main_gpu_front.cpp")
     runtime_nvml_cpp = os.path.join(SOURCE_DIR, "main_runtime_nvml.cpp")
     gpu_backend_cpp = os.path.join(SOURCE_DIR, "gpu_backend.cpp")
     main_runtime_control_cpp = os.path.join(SOURCE_DIR, "main_runtime_control.cpp")
     main_runtime_gpu_cpp = os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp")
     main_service_runtime_cpp = os.path.join(SOURCE_DIR, "main_service_runtime.cpp")
+    main_service_vf_drift_cpp = os.path.join(SOURCE_DIR, "main_service_vf_drift.cpp")
     main_service_persist_cpp = os.path.join(SOURCE_DIR, "main_service_persist.cpp")
     main_service_recovery_cpp = os.path.join(SOURCE_DIR, "main_service_recovery.cpp")
+    sessions_cpp = os.path.join(SOURCE_DIR, "main_service_sessions.cpp")
     main_service_install_cpp = os.path.join(SOURCE_DIR, "main_service_install.cpp")
     ui_main_cpp = os.path.join(SOURCE_DIR, "ui_main.cpp")
+    ui_main_window_cpp = os.path.join(SOURCE_DIR, "ui_main_window.cpp")
+    vf_backends_cpp = os.path.join(SOURCE_DIR, "vf_backends.cpp")
     gpu_core_h = os.path.join(SOURCE_DIR, "gpu_core.h")
     # The platform-neutral data model (NVAPI/NVML types, VfBackendSpec,
     # DesiredSettings + IPC validator, ServiceRequest/Response, NvmlApi) was
@@ -2119,7 +2288,10 @@ def run_source_regression_checks():
 
     require_text(shared_h, "APP_DEBUG_DEFAULT_ENABLED 1", "debug logging remains default-on")
     require_text(shared_h, "APP_TITLE           APP_NAME \" v\" APP_VERSION", "plain title macro exists")
-    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 7", "service protocol version bumped")
+    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 8", "service protocol version bumped for fixed-width IPC bools")
+    require_text(shared_h, "typedef gc_u8 gc_bool8", "IPC bool fields use a fixed-width one-byte type")
+    require_text(shared_h, "canonicalize_gc_bool8", "IPC bool fields are canonicalized at trust boundaries")
+    require_text(shared_h, "validate_service_response_for_ipc", "service responses are canonicalized before GUI use")
     require_text(shared_h, "resetOcBeforeApply", "GUI apply reset-before-apply protocol flag exists")
     # F-SEC-4: the IPC trust-boundary validator must clamp every field that can
     # reach an array index, the fan policy switch, or a fan-speed write.
@@ -2151,17 +2323,51 @@ def run_source_regression_checks():
     require_text(service_ipc_cpp, "SetNamedPipeHandleState", "service pipe message mode is checked")
     require_text(service_ipc_cpp, "Service response protocol mismatch", "service responses are validated before use")
     require_text(service_ipc_cpp, "WaitNamedPipeW(pipeName, waitSlice)", "service pipe connect retries on ERROR_PIPE_BUSY")
-    require_text(service_ipc_cpp, "ensure_secure_service_binary_path", "service install uses secure Program Files copy")
+    require_text(service_ipc_cpp, "ensure_secure_service_binary_path", "service install uses hardened adjacent service binary path")
     require_text(service_ipc_cpp, "CopyFileW(sourcePath, tempPath", "service binary is staged before install")
+    require_text(service_ipc_cpp, "get_current_executable_directory_w", "service install resolves the current executable directory")
+    require_text(service_ipc_cpp, "get_service_binary_path_from_scm(expectedPath", "service pipe identity compares against the SCM-registered service binary")
+    require_text(service_ipc_cpp, "apply_protected_service_dir_dacl", "service install hardens the staging directory DACL")
+    require_text(service_ipc_cpp, "service_binary_dacl_is_hardened(targetPath)", "service install verifies the staged binary DACL")
+    require_text(service_ipc_cpp, "restore_inherited_dacl(installDir", "service uninstall restores adjacent directory DACL")
+    require_text(service_ipc_cpp, "directory_path_is_root_or_share_root_w", "service uninstall skips overly broad root/share-root DACL restore")
+    require_text(service_server_cpp, "Requested GPU identity no longer matches", "service validates requested GPU PCI identity before mutation")
+    require_order(service_server_cpp,
+        "if (request->targetGpu.nvapiIndex >= MAX_GPU_ADAPTERS)",
+        "g_app.selectedGpuIndex = live.nvapiIndex",
+        "service validates requested GPU index before mutating selected GPU state")
+    require_text(main_service_persist_cpp, "ServiceRestartReapplySnapshot", "restart-reapply snapshot persists target GPU identity")
+    require_text(main_service_persist_cpp, "targetGpu", "restart-reapply snapshot carries target GPU")
+    require_text(main_service_recovery_cpp, "target GPU unavailable", "restart reapply skips when target GPU cannot be matched")
+    require_text(main_state_sync_cpp, "service_sid_string_from_token", "service user path cache resolves the caller SID")
+    require_text(main_state_sync_cpp, "g_serviceUserPathsSid", "service user path cache keys by session id plus SID")
+    require_text(os.path.join(SOURCE_DIR, "main_service_sessions.cpp"), "g_lastAppliedSessionSid", "session reapply debounce keys by session id plus SID")
+    require_text(os.path.join(SOURCE_DIR, "main_service_sessions.cpp"), "service_last_applied_session_matches", "session reapply debounce compares the full user identity")
+    require_text(diagnostics_cpp, "crash_artifact_data_dir", "service crash artifacts route through a process-appropriate data directory")
+    require_text(diagnostics_cpp, "resolve_service_machine_data_dir", "service crash artifacts use the machine service data directory")
+    require_text(config_profile_repair_cpp, "savedOffsetMagnitude = savedOffset < 0 ? -(long long)savedOffset", "profile repair avoids abs(INT_MIN) overflow")
+    require_text(service_ipc_cpp, "pl_append_quoted_arg_w", "elevated helper command lines use argv-compatible quoting")
+    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "pl_append_quoted_arg_w", "GUI elevated helper command lines use argv-compatible quoting")
+    require_text(build_script, "_verify_cached_tool_binary", "cached tool binaries are verified against trusted pinned digests")
+    require_text(build_script, "LLVM_MINGW_CLANG_SHA256", "llvm-mingw executable digest is pinned")
     require_text(service_ipc_cpp, "wait_for_helper_process_bounded", "elevated helper waits are bounded")
     require_text(config_profiles_ui_cpp, "maybe_load_selected_profile_to_gui_without_apply", "startup restores selected profile into GUI without applying")
     require_text(config_profiles_ui_cpp, "repair needed", "broken installed service advertises repair state")
     require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "Repair and restart the background service", "broken installed service click repairs instead of removing")
     require_text(config_profiles_ui_cpp, "GPU settings were not applied", "startup selected profile restore is GUI-only")
+    require_text(desired_settings_helpers_cpp, "desired_settings_match_active_service_intent", "profile intent can be compared to the service active desired state")
+    require_text(config_profiles_ui_cpp, "already active in background service; skipping reset-before-apply", "app-start auto-load skips disruptive reset/apply when service already owns the same intent")
+    require_order(config_profiles_ui_cpp,
+        "desired_settings_match_active_service_intent(&desired",
+        "desired.resetOcBeforeApply = true;",
+        "app-start active-service match is checked before reset-before-apply")
     require_text(gpu_backend_apply_cpp, "applying anyway by design", "memory offsets outside reported range are still attempted (F-DOM-1: not gated)")
     require_text(main_gpu_state_cpp, "live_selective_gpu_offset_matches_requested_shape", "persisted selective GPU offset is verified against live VF shape")
     require_text(main_gpu_state_cpp, "runtime selective: ignoring persisted request", "stale persisted selective GPU offset is ignored")
     require_text(main_gpu_state_cpp, "non-selective request clears runtime state", "uniform GPU offsets clear runtime selective state")
+    require_text(main_gpu_state_cpp, 'debug_log_on_change("current_applied_gpu_offset_mhz: not Blackwell', "stable non-Blackwell GPU offset diagnostic is change-gated")
+    forbid_text(main_gpu_state_cpp, 'debug_log("current_applied_gpu_offset_mhz: not Blackwell', "stable non-Blackwell GPU offset diagnostic must not spam every poll")
+    require_text(main_runtime_gpu_cpp, 'debug_log_on_change("populate_global_controls: dirty=', "global control refresh diagnostics are change-gated")
     require_text(gpu_backend_apply_cpp, "interactive && !g_app.isServiceProcess", "service apply does not inherit stale GUI lock state")
     require_text(gpu_backend_apply_cpp, "post-apply lock clear: no lock requested", "service no-lock applies clear stale lock markers")
     require_text(gpu_backend_apply_cpp, "reset_oc_before_gui_apply", "GUI OC applies reset stale OC baseline before applying")
@@ -2183,7 +2389,30 @@ def run_source_regression_checks():
     require_text(secure_write_cpp, "write_text_file_atomic_service", "service file writes use hardened writer")
     require_text(ui_main_cpp, "gpuSelectY = dp(10)", "GPU selector lives in the graph header gap")
     require_text(main_gpu_state_cpp, "best-effort support for a new NVIDIA GPU family", "unrecognized GPU warning explains best-effort writes")
+    require_text(main_gpu_front_cpp, "vf_backend_for_architecture(g_app.gpuArchitecture", "Windows backend selection reuses the shared architecture mapping")
+    require_text(main_gpu_front_cpp, "nvapi_read_gpu_metadata: archStatus=", "GPU metadata logging includes NVAPI architecture query status")
+    require_text(main_gpu_front_cpp, "retaining last known backend for same PCI adapter", "transient metadata failures keep the last known backend for the same GPU")
+    require_text(vf_backends_cpp, "case NV_GPU_ARCHITECTURE_GB200: fam = GPU_FAMILY_BLACKWELL", "Blackwell maps to a known non-best-effort backend")
     require_text(main_shell_cpp, "preserving requested value", "config memory offsets are not clamped to reported range")
+    require_text(main_gpu_state_cpp, "current_green_curve_fan_intent_mode", "fan state has a Green Curve-owned intent helper")
+    require_text(main_state_sync_cpp, "external live fan policy observed fanIsAuto=0 gcIntent=Auto", "service snapshots preserve Auto intent when external fan control is manual")
+    require_text(main_state_sync_cpp, "state->fanMode is Green Curve intent", "control-state fan mode is not treated as live driver fan policy")
+    require_text(ui_main_window_cpp, "preserved visible GUI fan intent", "profile Save preserves the visible fan mode over live external policy")
+    require_text(main_fan_runtime_cpp, "external live fan policy is %s while Green Curve intent is Auto", "fan initialization logs external manual policy without adopting it")
+    # GUI lock-checkbox regressions (two user-reported bugs):
+    #  (1) the FLATTEN tick must reuse the anti-aliased renderer shared by the themed
+    #      checkboxes (service install / share-all-users / tray) instead of a jagged
+    #      raw-GDI Polyline, so it does not look corrupted next to them.
+    #  (2) the tri-state WM_COMMAND cycle must be gated on BN_CLICKED: the lock buttons
+    #      are BS_OWNERDRAW + WS_TABSTOP, so an unfocused click first emits BN_SETFOCUS
+    #      (and BN_KILLFOCUS on the old box); without the guard those focus notifications
+    #      ran the cycle a second time, making one click skip FLATTEN straight to HARD.
+    require_text(main_shell_cpp, "draw_checkbox_tick_smooth(hdc, &box, RGB(0xE8, 0xF2, 0xFF))", "lock FLATTEN tick uses the shared anti-aliased checkmark renderer")
+    forbid_text(main_shell_cpp, "Polyline(hdc, pts, 3)", "lock checkbox no longer draws the jagged raw-GDI checkmark")
+    require_text(ui_main_window_cpp, "HIWORD(wParam) == BN_CLICKED &&", "lock tri-state cycle is gated on BN_CLICKED so focus notifications cannot double-advance")
+    require_text(ui_main_window_cpp, "lock checkbox cycle: vi=%d notify=", "lock checkbox cycle logs the notification code + state transition for diagnosis")
+    require_text(ui_main_cpp, "lock_checkbox_subclass_proc", "lock checkbox subclass exists")
+    require_text(ui_main_cpp, "WM_LBUTTONDBLCLK", "lock checkbox double-click cannot advance the tri-state twice")
     require_text(runtime_nvml_cpp, "parse_cli_point_arg_w(arg, &idx)", "CLI point parsing is strict")
     require_text(entry_cpp, "set_main_window_title", "window caption helper exists")
     require_text(entry_cpp, "SetWindowTextA", "window caption uses ANSI text write")
@@ -2206,8 +2435,9 @@ def run_source_regression_checks():
     require_text(build_script, "-fcf-protection=full", "CET/Shadow Stack instrumentation (endbr64) adds hardware-enforced control-flow integrity")
     require_text(build_script, "-flto", "Link-Time Optimization enables cross-module inlining and dead code elimination at link time")
     require_text(build_script, "--icf=safe", "Identical Code Folding merges identical functions to reduce binary size")
-    require_text(build_script, 'gui_arch_opt = ["-O2", "-fno-lto"]', "arm64 GUI uses O2 and disables LTO to dodge the llvm-mingw aarch64 'misaligned ldr/str offset' link bug")
     require_text(build_script, "-ftrivial-auto-var-init=pattern", "auto-var-init pattern flag initializes stack variables")
+    require_text(build_script, 'ZIG_EXE, "c++"', "arm64 Windows uses Zig to dodge the llvm-mingw aarch64 'misaligned ldr/str offset' link bug")
+    require_text(build_script, '"-target", "aarch64-windows-gnu"', "arm64 Windows Zig build targets the correct triple")
     require_text(build_script, "-fno-delete-null-pointer-checks", "null pointer check flag prevents deletion of null checks")
     require_text(build_script, "-fPIE", "Linux PIE hardening retained")
     require_text(build_script, "-Wl,-z,relro,-z,now", "Linux RELRO/BIND_NOW hardening retained")
@@ -2250,7 +2480,7 @@ def run_source_regression_checks():
     # best-effort.  The warning shows once per GUI session and can be disabled by
     # the user through a persistent [warnings] flag; Pascal/Turing/Ampere are
     # now treated as tested known backends.
-    require_text(os.path.join(SOURCE_DIR, "main_gpu_front.cpp"), "hide_unrecognized_gpu_warning", "unrecognized GPU warning can be disabled by the user")
+    require_text(main_gpu_front_cpp, "hide_unrecognized_gpu_warning", "unrecognized GPU warning can be disabled by the user")
     require_text(os.path.join(SOURCE_DIR, "main_gpu_state.cpp"), "pszVerificationText", "TaskDialog warning exposes a do-not-show-again checkbox")
     forbid_text(os.path.join(SOURCE_DIR, "main_gpu_state.cpp"), "hide_best_guess_warning_", "old best-guess warning flag is not resurrected")
 
@@ -2306,15 +2536,16 @@ def run_source_regression_checks():
     # F-15-003: Service listens for Windows session logon events so it can apply
     # a machine-wide default profile for users who have no per-user logon slot.
     require_text(service_server_cpp, "SERVICE_ACCEPT_SESSIONCHANGE", "service accepts session-change notifications")
-    require_text(service_server_cpp, "WTS_SESSION_LOGON", "service handles WTS_SESSION_LOGON")
+    require_text(sessions_cpp, "WTS_SESSION_LOGON", "service handles WTS_SESSION_LOGON")
     require_text(service_runtime_cpp, "service_session_logon_resolve_and_load_profile", "service resolves per-user or machine default profile on logon")
     # Active-user session router: the service applies the ACTIVE session's
-    # resolved profile on logon/logoff/console-connect/disconnect and on a
-    # service (re)start when a user is already logged in (FUS-safe, debounced).
-    sessions_cpp = os.path.join(SOURCE_DIR, "main_service_sessions.cpp")
+    # resolved profile on real logon/logoff/console-connect/disconnect events
+    # (FUS-safe, debounced).  A plain service start while a user is already
+    # logged in must stay non-mutating; installing/repairing the service should
+    # not silently apply that user's logon slot.
     require_text(sessions_cpp, "service_handle_session_change", "active-user session-change router exists")
-    require_text(sessions_cpp, "service_reconcile_active_session_apply", "service reconciles the active session on (re)start")
     require_text(sessions_cpp, "session_event_relevant_for_active_user", "session router filters events that change the active user")
+    forbid_text(sessions_cpp, "service start reconcile", "service start must not synthesize a logon profile apply")
     require_text(service_server_cpp, "service_handle_session_change", "SESSIONCHANGE handler routes through the active-user router")
     require_text(service_server_cpp, "g_servicePipeRecycleEvent", "pipe ACL is recycled on active-user change")
     # Per-user logon task is registered for the REQUESTING user, not the
@@ -2323,8 +2554,8 @@ def run_source_regression_checks():
     require_text(main_runtime_control_cpp, "set_forced_startup_user_sam", "startup task can be scoped to the requesting user")
     # F-15-004: The GUI requests UAC elevation for the machine-wide default
     # operation instead of requiring the whole GUI to be run as administrator.
-    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "lpVerb = \"runas\"", "machine logon button requests UAC elevation")
-    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "ShellExecuteExA", "machine logon button uses ShellExecuteExA")
+    require_text(ui_main_window_cpp, "lpVerb = L\"runas\"", "machine logon button requests UAC elevation")
+    require_text(ui_main_window_cpp, "ShellExecuteExW", "machine logon button uses wide ShellExecute with argv-compatible quoting")
     # F-15-005: the shared profile bank lives at a fixed %ProgramData% known
     # folder (all-users-readable, admin-write), NOT next to the service binary.
     # The SCM binary-path parser is retained only for the one-time legacy
@@ -2354,8 +2585,8 @@ def run_source_regression_checks():
     require_text(config_profiles_cpp, "clear_machine_profile_slot", "shared bank clear helper exists")
     require_text(os.path.join(SOURCE_DIR, "entry.cpp"), "--publish-slot-to-machine", "CLI supports publishing a slot to the shared bank")
     require_text(os.path.join(SOURCE_DIR, "entry.cpp"), "--clear-machine-slot", "CLI supports clearing a shared bank slot")
-    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "MACHINE_LOGON_MENU_PUBLISH_ID", "GUI advanced menu can publish a bank slot")
-    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "MACHINE_LOGON_MENU_CLEAR_MACHINE_SLOT_ID", "GUI advanced menu can clear a bank slot")
+    require_text(ui_main_window_cpp, "MACHINE_LOGON_MENU_PUBLISH_ID", "GUI advanced menu can publish a bank slot")
+    require_text(ui_main_window_cpp, "MACHINE_LOGON_MENU_CLEAR_MACHINE_SLOT_ID", "GUI advanced menu can clear a bank slot")
     # F-15-008: One coherent "share with all users" action couples publishing the
     # slot data with setting it as the all-users default (the old footgun was
     # setting a default that resolved to an empty bank slot).
@@ -2363,10 +2594,10 @@ def run_source_regression_checks():
     require_text(config_profiles_cpp, "unshare_profile_slot_for_all_users", "coherent unshare helper clears data AND the default")
     require_text(os.path.join(SOURCE_DIR, "entry.cpp"), "--share-slot", "CLI supports the coherent share action")
     require_text(os.path.join(SOURCE_DIR, "entry.cpp"), "--unshare-slot", "CLI supports the coherent unshare action")
-    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "SHARE_ALL_USERS_CHECK_ID", "GUI has the share-with-all-users checkbox handler")
+    require_text(ui_main_window_cpp, "SHARE_ALL_USERS_CHECK_ID", "GUI has the share-with-all-users checkbox handler")
     # F-15-009: Any user can load the admin-published shared profiles on demand
     # (read-only) and apply them via the service, not just at logon.
-    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "show_shared_profiles_menu", "GUI surfaces shared profiles for on-demand load")
+    require_text(ui_main_window_cpp, "show_shared_profiles_menu", "GUI surfaces shared profiles for on-demand load")
 
     # F-15-010: Deleting a logon task that requires elevation (admin-created /
     # HighestAvailable) must fall back to the elevated helper instead of trusting
@@ -2448,16 +2679,16 @@ def run_source_regression_checks():
     require_text(gpu_backend_cpp, "ScopedProcess proc", "nvidia-smi power limit uses ScopedProcess")
 
     # F-15-001: Lock state propagated through ServiceSnapshot
-    require_text(shared_h, "bool hasLock", "ServiceSnapshot carries lock state")
+    require_text(shared_h, "gc_bool8 hasLock", "ServiceSnapshot carries lock state as a fixed-width wire flag")
     require_text(shared_h, "int lockCi", "ServiceSnapshot carries lock curve index")
     require_text(shared_h, "unsigned int lockMHz", "ServiceSnapshot carries lock frequency")
-    require_text(shared_h, "bool lockTracksAnchor", "ServiceSnapshot carries lock tracking flag")
+    require_text(shared_h, "gc_bool8 lockTracksAnchor", "ServiceSnapshot carries lock tracking flag as a fixed-width wire flag")
     require_text(main_state_sync_cpp, "adopted service lock ci=", "lock state from snapshot is adopted by GUI")
     require_text(main_state_sync_cpp, "reporting active desired lock", "service snapshots prefer configured lock intent over live tail detection")
     require_text(gpu_backend_cpp, "live lock detection suppressed; preserving intent", "live lock detection does not clear configured lock intent")
     require_text(gpu_backend_cpp, "requestedMHz=", "GUI-side service apply sync preserves requested lock MHz")
     require_text(main_tail_diagnostics_cpp, "curve tail bookends", "telemetry snapshot logs tail bookends to detect post-apply shifts")
-    require_text(main_tail_diagnostics_cpp, "no automatic VF reapply", "runtime tail drift diagnostics do not silently reapply VF settings")
+    require_text(main_tail_diagnostics_cpp, "service monitor may reapply after confirmation", "runtime tail drift diagnostics describe the gated service reapply monitor")
     require_text(main_tail_diagnostics_cpp, "is_curve_point_visible_in_gui(ci)", "tail drift diagnostics skip hidden/unpopulated VF endpoints")
     require_text(ui_main_cpp, "displayed_curve_mhz_for_gui_point", "GUI graph renders curve points from live driver readback")
     require_text(ui_main_cpp, "gui locked tail live readback drift:", "GUI logs live tail readback drift diagnostics (no longer hidden)")
@@ -2498,7 +2729,7 @@ def run_source_regression_checks():
     # Persistence hardening: both the service restart snapshot and INI profile
     # loads route through the IPC validator so corrupt bytes cannot reach the
     # apply path or the GUI-side curve math unclamped.
-    require_text(os.path.join(SOURCE_DIR, "main_service_persist.cpp"), "validate_desired_settings_for_ipc(out);", "restart-reapply snapshot fields are clamped on load")
+    require_text(os.path.join(SOURCE_DIR, "main_service_persist.cpp"), "validate_desired_settings_for_ipc(&payload.desired);", "restart-reapply snapshot fields are clamped on load")
     require_text(os.path.join(SOURCE_DIR, "config_profiles.cpp"), "validate_desired_settings_for_ipc(desired);", "INI profile loads clamp fields before derived curve math")
     require_text(shared_h, "if (d->lockMHz > 5000u)", "IPC validator clamps lockMHz like the curve points")
 
@@ -2557,6 +2788,14 @@ def run_source_regression_checks():
     require_text(linux_daemon_cpp, "persist_active_desired",
                  "Linux daemon persists active settings for restart-reapply")
     require_text(linux_daemon_cpp, "startup reapply", "Linux daemon reapplies settings on (re)start")
+    require_text(linux_daemon_cpp, "GC_DAEMON_IO_TIMEOUT_MS", "Linux daemon socket I/O has bounded deadlines")
+    require_text(linux_daemon_cpp, "wait_fd_ready", "Linux daemon socket reads/writes poll with a deadline")
+    require_text(linux_daemon_cpp, "set_nonblocking(conn)", "Linux daemon accepted clients are nonblocking")
+    require_text(linux_daemon_cpp, "unlink(GC_DAEMON_STATE_FILE)", "Linux reset deletes stale active.bin")
+    require_text(linux_daemon_cpp, "GC_INSTALL_BIN", "Linux systemd unit uses a protected staged daemon binary")
+    require_text(linux_daemon_cpp, "root_owned_nonwritable_path", "Linux service install validates root-owned non-writable parents")
+    require_text(linux_daemon_cpp, "stage_service_binary", "Linux service install stages the daemon binary before writing the unit")
+    require_text(linux_daemon_cpp, "ExecStart=%s --daemon", "Linux systemd unit launches the staged daemon path")
     # F-ARM64: cross-arch robustness (no arm64 hardware to test on).
     gpu_core_h_path = os.path.join(SOURCE_DIR, "gpu_core.h")
     require_text(gpu_core_h_path, "offsetof(nvapiPstate20Entry_t, clocks) == 8",
@@ -2581,7 +2820,7 @@ def run_source_regression_checks():
     require_text(build_script, '"x86_64-linux-gnu"', "Linux target is glibc-dynamic (x86_64-linux-gnu)")
     # Multi-arch build matrix + release archiving.
     require_text(build_script, 'default="all"', "default build covers all OSes (windows + linux)")
-    require_text(build_script, 'WINDOWS_ARM64_TRIPLE = "aarch64-w64-mingw32"', "windows arm64 target triple defined")
+    require_text(build_script, '"-target", "aarch64-windows-gnu"', "windows arm64 Zig build target triple defined")
     require_text(build_script, 'LINUX_ARM64_TRIPLE = "aarch64-linux-gnu"', "linux arm64 target triple defined")
     require_text(build_script, "-mbranch-protection=standard", "windows arm64 uses BTI/PAC instead of x86 CET")
     require_text(build_script, "def package_release_archive", "release archives are produced by build.py")
@@ -2776,10 +3015,10 @@ def run_source_regression_checks():
         "ExitProcess(1);",
         "restart exit terminates the process so the SCM relaunches a fresh one")
     # The restart-exit branch must run BEFORE the normal shutdown NVML teardown
-    # (nvml_set_fan_auto / close_nvml can HANG on a dead/transitional driver).
+    # (service_reset_all / close_nvml can HANG on a dead/transitional driver).
     require_order(service_server_cpp,
         "ExitProcess(1);",
-        "nvml_set_fan_auto(fanDetail",
+        "service_reset_all(resetDetail",
         "restart exit (ExitProcess) precedes the normal NVML teardown")
 
     # FP-06-004: SCM auto-restart failure actions are configured at install AND at
@@ -2806,11 +3045,17 @@ def run_source_regression_checks():
     require_text(service_server_cpp, "(A;;GRGW;;;AU)",
         "pipe ACL grants Authenticated Users read+write (active-session enforced server-side)")
 
-    # FP-06-005: a fresh process restores the saved profile via startup reapply,
-    # with persisted restart-loop protection so a broken driver cannot loop.
+    # FP-06-005 / F-BUG-016/F-BUG-017: a fresh process restores a controlled
+    # recovery profile via the startup coordinator, with persisted restart-loop
+    # protection so a broken driver cannot loop.  A no-snapshot service start is
+    # deliberately idle: it must not race independent reset/apply workers and
+    # must not treat an already logged-in user as a fresh logon.
     require_text(main_service_recovery_cpp,
-        "service_startup_reapply_thread_proc",
-        "startup reapply thread restores the snapshot on a fresh process")
+        "service_startup_coordinator_thread_proc",
+        "startup coordinator restores restart snapshots on a fresh process")
+    require_text(service_server_cpp,
+        "service_launch_startup_coordinator();",
+        "service_main launches one serialized startup coordinator")
     require_text(main_service_persist_cpp,
         "service_write_restart_reapply_snapshot",
         "restart reapply snapshot writer exists")
@@ -2848,15 +3093,23 @@ def run_source_regression_checks():
     # The bound stays only for the dangerous "driver ready but apply fails" case.
     require_text(main_service_recovery_cpp, "NOT counted against the retry budget",
         "reapply worker waits for a driver indefinitely (no time cap on driver readiness)")
-    # F-REL-2d: a startup WITHOUT a pending snapshot (fresh boot or an out-of-band
-    # termination like a Task Manager kill) must NOT auto-reapply; it deliberately
-    # resets the GPU to driver defaults (OC + fan auto) via service_reset_all so the
-    # system is left in a clean, consistent state (and the GUI control state is
-    # repopulated, fixing a stale "fixed custom" fan display).
-    require_text(main_service_recovery_cpp, "service_reset_to_defaults_on_resume();",
-        "no-snapshot startup resets the GPU to driver defaults (does not auto-reapply)")
-    require_text(main_service_recovery_cpp, "reset GPU to driver defaults (OC + fan auto)",
-        "reset-to-defaults-on-resume helper performs a full reset via service_reset_all")
+    # F-REL-2d / F-BUG-017: a startup WITHOUT a pending restart snapshot is not
+    # a proof that Green Curve owns the hardware state.  Installing, repairing,
+    # or manually starting the service while a user is already logged in must
+    # not apply that user's logon slot behind the user's back.
+    # Recovery restarts still use the persisted restart snapshot path above.
+    # However, an unexpected termination (Task Manager kill) may leave stale OC
+    # settings on the GPU; detect and reset them on no-snapshot startup.
+    require_text(main_service_recovery_cpp,
+        "no restart snapshot; checking for stale GPU OC settings",
+        "no-snapshot startup checks for stale GPU OC settings")
+    require_text(main_service_recovery_cpp,
+        "no stale GPU OC settings found",
+        "no-snapshot startup logs when no stale OC settings exist")
+    forbid_text(main_service_recovery_cpp, "service_reconcile_active_session_apply",
+        "no-snapshot startup must not synthesize active-session profile apply")
+    require_text(main_service_recovery_cpp, "final activeDesired=",
+        "startup coordinator logs final active desired state")
     # F-REL-2e: after the service authoritatively resets to no-lock, the GUI clears
     # a stale ADOPTED lock (checkbox / point value / header) when the user is not
     # dirty-editing — otherwise the gate would pin it forever once lockedCi>=0.
@@ -2866,19 +3119,38 @@ def run_source_regression_checks():
         "telemetry poll does a full GUI resync (graph/fields/checkboxes/header) when a reset clears a stale lock")
     # F-REL-2f: while minimized to the tray, keep a slow telemetry poll so the tray
     # icon/tooltip reflect service state changes (e.g. a reset) without opening the window.
-    require_text(os.path.join(SOURCE_DIR, "main_gpu_front.cpp"), "TRAY_HIDDEN_POLL_INTERVAL_MS",
+    require_text(main_gpu_front_cpp, "TRAY_HIDDEN_POLL_INTERVAL_MS",
         "tray icon keeps a slow telemetry poll while the window is hidden")
     # F-REL-2g: the tray icon AND tooltip only report OC/fan/profile as active when
     # the GPU live state is actually available (tray_hardware_live()), so a disabled
     # driver / down service shows the default icon and a "GPU driver unavailable"
     # tooltip instead of a false active state for the merely-pending desired.
-    main_gpu_front_cpp = os.path.join(SOURCE_DIR, "main_gpu_front.cpp")
     require_text(main_gpu_front_cpp, "static bool tray_hardware_live()",
         "shared tray hardware-availability helper exists")
     require_text(main_fan_runtime_cpp, "tray_hardware_live()",
         "tray icon gates OC/fan-active on actual GPU availability (not a pending desired)")
     require_text(main_gpu_front_cpp, "Green Curve - GPU driver unavailable",
         "tray tooltip reports GPU unavailable instead of a false OC/fan/profile-active state")
+    # F-BUG-016b: runtime VF drift is no longer diagnostic-only.  The service
+    # checks active desired VF intent on the existing watchdog cadence, requires
+    # consecutive confirmed drift, caps/backs off queueing, and queues the
+    # existing recovery reapply worker instead of writing from the monitor path.
+    require_text(main_cpp, "SERVICE_VF_DRIFT_CONFIRM_SAMPLES = 2",
+        "VF drift monitor requires consecutive confirmed samples")
+    require_text(main_cpp, "SERVICE_VF_DRIFT_MAX_QUEUES_PER_WINDOW = 3",
+        "VF drift monitor caps repeated reapply queues")
+    require_text(main_service_vf_drift_cpp, "service_active_vf_intent_drifted",
+        "VF drift monitor compares live VF state to active desired intent")
+    require_text(main_service_vf_drift_cpp, "service_queue_recovery_reapply(\"VF drift monitor\", 0)",
+        "VF drift monitor queues the existing reapply worker")
+    require_text(main_shell_cpp, "#ifdef GREEN_CURVE_SERVICE_BINARY\n#include \"main_service_vf_drift.cpp\"",
+        "service VF drift monitor shard is included only in the service binary")
+    require_text(service_server_cpp, "service_check_active_vf_drift_monitor(\"main loop\")",
+        "service main loop invokes the VF drift monitor")
+    require_text(main_tail_diagnostics_cpp, "service monitor may reapply after confirmation",
+        "tail drift diagnostic text reflects the service reapply monitor")
+    require_text(main_tail_diagnostics_cpp, "s_tailDriftLastLoggedValid",
+        "tail drift diagnostics log first/change/reappeared drift instead of every telemetry poll")
     # F-REL-4: OC stabilization window — settings that crash-restart the service
     # within 10 min of being applied are treated as unstable and NOT auto-reapplied
     # (by either reapply method), so an unstable OC cannot loop.  Stamp recorded on

@@ -441,6 +441,37 @@ static bool control_state_has_any_meaningful_value(const ControlState* state) {
         || control_state_has_meaningful_fan(state);
 }
 
+static int current_green_curve_fan_intent_mode() {
+    if (g_app.isServiceProcess && g_serviceHasActiveDesired && g_serviceActiveDesired.hasFan) {
+        return g_serviceActiveDesired.fanMode;
+    }
+    if (g_app.fanCurveRuntimeActive) return FAN_MODE_CURVE;
+    if (g_app.fanFixedRuntimeActive) return FAN_MODE_FIXED;
+    if (g_app.activeFanMode == FAN_MODE_CURVE) return FAN_MODE_CURVE;
+    if (g_app.activeFanMode == FAN_MODE_FIXED && g_app.fanFixedRuntimeActive) return FAN_MODE_FIXED;
+    return FAN_MODE_AUTO;
+}
+
+static int current_green_curve_fan_intent_fixed_percent() {
+    if (g_app.isServiceProcess && g_serviceHasActiveDesired && g_serviceActiveDesired.hasFan) {
+        return g_serviceActiveDesired.fanMode == FAN_MODE_FIXED
+            ? clamp_percent(g_serviceActiveDesired.fanPercent)
+            : 0;
+    }
+    if (current_green_curve_fan_intent_mode() == FAN_MODE_FIXED) {
+        return clamp_percent(g_app.activeFanFixedPercent);
+    }
+    return 0;
+}
+
+static const FanCurveConfig* current_green_curve_fan_intent_curve() {
+    if (g_app.isServiceProcess && g_serviceHasActiveDesired && g_serviceActiveDesired.hasFan
+        && g_serviceActiveDesired.fanMode == FAN_MODE_CURVE) {
+        return &g_serviceActiveDesired.fanCurve;
+    }
+    return &g_app.activeFanCurve;
+}
+
 static void set_gui_state_dirty(bool dirty) {
     if (g_debug_logging && g_app.guiStateDirty != dirty) {
         debug_log("set_gui_state_dirty: %d -> %d (programmaticDepth=%d)\n",
@@ -628,17 +659,23 @@ static void build_full_live_desired_settings(DesiredSettings* desired) {
         ? control.powerLimitPct
         : g_app.powerLimitPct;
     desired->hasFan = true;
-    desired->fanMode = haveControlState && control_state_has_meaningful_fan(&control)
+    int fanIntentMode = haveControlState && control_state_has_meaningful_fan(&control)
         ? control.fanMode
-        : g_app.activeFanMode;
+        : current_green_curve_fan_intent_mode();
+    if (fanIntentMode == FAN_MODE_AUTO && !g_app.fanIsAuto) {
+        debug_log("build_full_live_desired_settings: live fan policy is manual but Green Curve intent is Auto; saving Auto\n");
+    }
+    desired->fanMode = fanIntentMode;
     desired->fanAuto = desired->fanMode == FAN_MODE_AUTO;
-    desired->fanPercent = haveControlState && control_state_has_meaningful_fan(&control)
-        ? control.fanFixedPercent
-        : g_app.activeFanFixedPercent;
+    desired->fanPercent = desired->fanMode == FAN_MODE_FIXED
+        ? (haveControlState && control_state_has_meaningful_fan(&control)
+            ? control.fanFixedPercent
+            : current_green_curve_fan_intent_fixed_percent())
+        : 0;
     copy_fan_curve(&desired->fanCurve,
         haveControlState && control_state_has_meaningful_fan(&control)
             ? &control.fanCurve
-            : &g_app.activeFanCurve);
+            : current_green_curve_fan_intent_curve());
     // Do not save the applied lock or curve points when saving from live state.
     // The VF curve may have been flattened by a previous profile's lock, and saving
     // those frequencies as explicit curve points would cause infer_profile_lock_from_curve
@@ -760,14 +797,14 @@ static bool live_selective_gpu_offset_matches_requested_state(int gpuOffsetMHz) 
 static int current_applied_gpu_offset_mhz() {
     if (!vf_curve_global_gpu_offset_supported()) {
         int offsetMHz = g_app.gpuClockOffsetkHz / 1000;
-        debug_log("current_applied_gpu_offset_mhz: not Blackwell, returning NVML offset=%d kHz -> %d MHz\n", g_app.gpuClockOffsetkHz, offsetMHz);
+        debug_log_on_change("current_applied_gpu_offset_mhz: not Blackwell, returning NVML offset=%d kHz -> %d MHz\n", g_app.gpuClockOffsetkHz, offsetMHz);
         g_app.appliedGpuOffsetMHz = offsetMHz;
         g_app.appliedGpuOffsetExcludeLowCount = 0;
         return g_app.appliedGpuOffsetMHz;
     }
     if (g_app.appliedGpuOffsetExcludeLowCount > 0 && g_app.appliedGpuOffsetMHz != 0
         && live_selective_gpu_offset_matches_requested_shape(g_app.appliedGpuOffsetMHz, g_app.appliedGpuOffsetExcludeLowCount, 12, nullptr)) {
-        debug_log("current_applied_gpu_offset_mhz: preserving session selective value=%d MHz\n", g_app.appliedGpuOffsetMHz);
+        debug_log_on_change("current_applied_gpu_offset_mhz: preserving session selective value=%d MHz\n", g_app.appliedGpuOffsetMHz);
         return g_app.appliedGpuOffsetMHz;
     }
     if (!g_app.lastApplyUsedGpuOffset) {
@@ -779,7 +816,7 @@ static int current_applied_gpu_offset_mhz() {
     int persistedOffsetMHz = 0;
     int persistedExcludeLowCount = 0;
     if (load_matching_runtime_selective_gpu_offset_request(&persistedOffsetMHz, &persistedExcludeLowCount)) {
-        debug_log("current_applied_gpu_offset_mhz: preserving persisted request value=%d MHz exclude=%d\n",
+        debug_log_on_change("current_applied_gpu_offset_mhz: preserving persisted request value=%d MHz exclude=%d\n",
             persistedOffsetMHz, persistedExcludeLowCount);
         g_app.appliedGpuOffsetMHz = persistedOffsetMHz;
         g_app.appliedGpuOffsetExcludeLowCount = persistedExcludeLowCount;
@@ -788,7 +825,7 @@ static int current_applied_gpu_offset_mhz() {
     int detectedSelectiveOffsetMHz = 0;
     int detectedExcludeLowCount = 0;
     if (detect_live_selective_gpu_offset_state(&detectedSelectiveOffsetMHz, nullptr, &detectedExcludeLowCount)) {
-        debug_log("current_applied_gpu_offset_mhz: detected selective offset=%d MHz exclude=%d\n",
+        debug_log_on_change("current_applied_gpu_offset_mhz: detected selective offset=%d MHz exclude=%d\n",
             detectedSelectiveOffsetMHz, detectedExcludeLowCount);
         g_app.appliedGpuOffsetMHz = detectedSelectiveOffsetMHz;
         g_app.appliedGpuOffsetExcludeLowCount = detectedExcludeLowCount;
@@ -797,7 +834,7 @@ static int current_applied_gpu_offset_mhz() {
     int desiredServiceOffsetMHz = 0;
     int desiredServiceExcludeLowCount = 0;
     if (service_active_desired_gpu_offset_fallback(&desiredServiceOffsetMHz, &desiredServiceExcludeLowCount)) {
-        debug_log("current_applied_gpu_offset_mhz: preserving service desired value=%d MHz exclude=%d\n",
+        debug_log_on_change("current_applied_gpu_offset_mhz: preserving service desired value=%d MHz exclude=%d\n",
             desiredServiceOffsetMHz,
             desiredServiceExcludeLowCount);
         g_app.appliedGpuOffsetMHz = desiredServiceOffsetMHz;
@@ -805,7 +842,7 @@ static int current_applied_gpu_offset_mhz() {
         return desiredServiceOffsetMHz;
     }
     int offsetMHz = g_app.gpuClockOffsetkHz / 1000;
-    debug_log("current_applied_gpu_offset_mhz: no selective detected, uniform offset=%d kHz -> %d MHz\n", g_app.gpuClockOffsetkHz, offsetMHz);
+    debug_log_on_change("current_applied_gpu_offset_mhz: no selective detected, uniform offset=%d kHz -> %d MHz\n", g_app.gpuClockOffsetkHz, offsetMHz);
     g_app.appliedGpuOffsetMHz = offsetMHz;
     g_app.appliedGpuOffsetExcludeLowCount = 0;
     return offsetMHz;

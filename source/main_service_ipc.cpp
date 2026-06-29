@@ -64,32 +64,14 @@ static bool query_background_service_pid(DWORD* pidOut) {
     return true;
 }
 
-static bool get_service_binary_directory_from_scm(WCHAR* out, size_t outCount) {
+static bool parse_service_binary_path_from_command_line(const WCHAR* commandLine, WCHAR* out, size_t outCount) {
     if (out && outCount > 0) out[0] = 0;
-    if (!out || outCount == 0) return false;
-    ScopedServiceHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
-    if (!scm.valid()) return false;
-    ScopedServiceHandle svc(OpenServiceW(scm.get(), L"GreenCurveService", SERVICE_QUERY_CONFIG));
-    if (!svc.valid()) return false;
-    DWORD needed = 0;
-    DWORD alloc = 4096;
-    HeapBuffer buf(alloc);
-    if (!buf) return false;
-    QUERY_SERVICE_CONFIGW* qsc = (QUERY_SERVICE_CONFIGW*)buf.ptr;
-    if (!QueryServiceConfigW(svc.get(), qsc, alloc, &needed)) {
-        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) return false;
-        alloc = needed;
-        HeapBuffer buf2(alloc);
-        if (!buf2) return false;
-        qsc = (QUERY_SERVICE_CONFIGW*)buf2.ptr;
-        if (!QueryServiceConfigW(svc.get(), qsc, alloc, &needed)) return false;
-    }
-    if (!qsc->lpBinaryPathName || !qsc->lpBinaryPathName[0]) return false;
+    if (!commandLine || !commandLine[0] || !out || outCount == 0) return false;
 
     // lpBinaryPathName is the service command line, e.g.:
-    //   "C:\Program Files\Green Curve\greencurve-service.exe" --service-run
+    //   "C:\Program Files\greencurve\greencurve-service.exe" --service-run
     // Strip the surrounding quotes and take only the executable path part.
-    const WCHAR* src = qsc->lpBinaryPathName;
+    const WCHAR* src = commandLine;
     while (*src == L' ') src++;
     bool quoted = (*src == L'"');
     if (quoted) src++;
@@ -108,6 +90,35 @@ static bool get_service_binary_directory_from_scm(WCHAR* out, size_t outCount) {
     WCHAR fullPath[MAX_PATH] = {};
     DWORD pathLen = GetFullPathNameW(binPath, MAX_PATH, fullPath, nullptr);
     if (pathLen == 0 || pathLen >= MAX_PATH) return false;
+    return SUCCEEDED(StringCchCopyW(out, outCount, fullPath));
+}
+
+static bool get_service_binary_path_from_scm(WCHAR* out, size_t outCount) {
+    if (out && outCount > 0) out[0] = 0;
+    if (!out || outCount == 0) return false;
+    ScopedServiceHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
+    if (!scm.valid()) return false;
+    ScopedServiceHandle svc(OpenServiceW(scm.get(), L"GreenCurveService", SERVICE_QUERY_CONFIG));
+    if (!svc.valid()) return false;
+    DWORD needed = 0;
+    QueryServiceConfigW(svc.get(), nullptr, 0, &needed);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || needed == 0) return false;
+    HeapBuffer buf(needed);
+    if (!buf) return false;
+    QUERY_SERVICE_CONFIGW* qsc = (QUERY_SERVICE_CONFIGW*)buf.ptr;
+    if (!QueryServiceConfigW(svc.get(), qsc, needed, &needed)) return false;
+    if (!qsc->lpBinaryPathName || !qsc->lpBinaryPathName[0]) return false;
+
+    bool ok = parse_service_binary_path_from_command_line(qsc->lpBinaryPathName, out, outCount);
+    if (ok) debug_log_on_change("scm: service binary path is %ls\n", out);
+    return ok;
+}
+
+static bool get_service_binary_directory_from_scm(WCHAR* out, size_t outCount) {
+    if (out && outCount > 0) out[0] = 0;
+    if (!out || outCount == 0) return false;
+    WCHAR fullPath[MAX_PATH] = {};
+    if (!get_service_binary_path_from_scm(fullPath, ARRAY_COUNT(fullPath))) return false;
     WCHAR* slash = wcsrchr(fullPath, L'\\');
     if (!slash) slash = wcsrchr(fullPath, L'/');
     if (!slash) return false;
@@ -124,6 +135,29 @@ bool service_install_dir_is_under_user_profile() {
     return install_dir_is_under_user_profile_w(installDir);
 }
 
+static bool get_current_executable_directory_w(WCHAR* out, size_t outCount, char* err, size_t errSize) {
+    if (!out || outCount == 0) return false;
+    out[0] = 0;
+    WCHAR exePath[MAX_PATH] = {};
+    DWORD exeLen = GetModuleFileNameW(nullptr, exePath, ARRAY_COUNT(exePath));
+    if (exeLen == 0 || exeLen >= ARRAY_COUNT(exePath) - 1) {
+        set_message(err, errSize, "Current executable path is too long or could not be determined");
+        return false;
+    }
+    WCHAR* slash = wcsrchr(exePath, L'\\');
+    if (!slash) slash = wcsrchr(exePath, L'/');
+    if (!slash) {
+        set_message(err, errSize, "Current executable path has no directory");
+        return false;
+    }
+    *slash = 0;
+    if (FAILED(StringCchCopyW(out, outCount, exePath))) {
+        set_message(err, errSize, "Current executable directory path is too long");
+        return false;
+    }
+    return true;
+}
+
 // True if the RUNNING process's own binary directory sits under a Windows user
 // profile.  Unlike service_install_dir_is_under_user_profile() (which keys off
 // the SCM-registered service dir and therefore needs the service installed),
@@ -131,14 +165,10 @@ bool service_install_dir_is_under_user_profile() {
 // user's admin ran greencurve.exe from inside an admin profile and other users
 // cannot even launch the GUI binary (ERROR_ACCESS_DENIED on execute).
 bool running_exe_dir_is_under_user_profile() {
-    WCHAR exePath[MAX_PATH] = {};
-    DWORD exeLen = GetModuleFileNameW(nullptr, exePath, ARRAY_COUNT(exePath));
-    if (exeLen == 0 || exeLen >= ARRAY_COUNT(exePath)) return false;
-    WCHAR* slash = wcsrchr(exePath, L'\\');
-    if (!slash) slash = wcsrchr(exePath, L'/');
-    if (!slash) return false;
-    *slash = 0;
-    return install_dir_is_under_user_profile_w(exePath);
+    WCHAR exeDir[MAX_PATH] = {};
+    char ignored[64] = {};
+    if (!get_current_executable_directory_w(exeDir, ARRAY_COUNT(exeDir), ignored, sizeof(ignored))) return false;
+    return install_dir_is_under_user_profile_w(exeDir);
 }
 
 static bool get_secure_service_install_dir_w(WCHAR* out, size_t outCount, char* err, size_t errSize);
@@ -178,40 +208,13 @@ static bool validate_service_pipe_server_identity(HANDLE pipe, char* err, size_t
         debug_log("service pipe identity mismatch: pipePid=%lu servicePid=%lu\n", (unsigned long)pipePid, (unsigned long)servicePid);
         return false;
     }
-    // Verify the server process executable is the expected service binary under Program Files.
+    // Verify the server process executable is the SCM-registered service binary.
     WCHAR serverPath[MAX_PATH] = {};
     bool haveServerPath = get_process_image_path(servicePid, serverPath, ARRAY_COUNT(serverPath));
     if (!haveServerPath) {
         // The GUI may not have permission to query the LocalSystem service's image path.
         // Fall back to querying the SCM for the service binary path instead.
-        ScopedServiceHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
-        if (scm.valid()) {
-            ScopedServiceHandle svc(OpenServiceW(scm.get(), L"GreenCurveService", SERVICE_QUERY_STATUS | SERVICE_QUERY_CONFIG));
-            if (svc.valid()) {
-                DWORD bufSize = 0;
-                QueryServiceConfigW(svc.get(), nullptr, 0, &bufSize);
-                if (GetLastError() == ERROR_INSUFFICIENT_BUFFER && bufSize > 0) {
-                    LPQUERY_SERVICE_CONFIGW config = (LPQUERY_SERVICE_CONFIGW)malloc(bufSize);
-                    if (config) {
-                        DWORD needed = 0;
-                        if (QueryServiceConfigW(svc.get(), config, bufSize, &needed)) {
-                            // The SCM binary path includes quotes around the exe path, e.g. "C:\Program Files\...\greencurve-service.exe" --service-run
-                            WCHAR* scmPath = config->lpBinaryPathName;
-                            if (scmPath && scmPath[0]) {
-                                if (scmPath[0] == L'"') {
-                                    scmPath++;
-                                    WCHAR* endQuote = wcschr(scmPath, L'"');
-                                    if (endQuote) *endQuote = 0;
-                                }
-                                StringCchCopyW(serverPath, ARRAY_COUNT(serverPath), scmPath);
-                                haveServerPath = true;
-                            }
-                        }
-                        free(config);
-                    }
-                }
-            }
-        }
+        haveServerPath = get_service_binary_path_from_scm(serverPath, ARRAY_COUNT(serverPath));
     }
     if (!haveServerPath) {
         // Cannot verify the service binary path from an unelevated context.
@@ -221,17 +224,13 @@ static bool validate_service_pipe_server_identity(HANDLE pipe, char* err, size_t
         return true;
     }
     WCHAR expectedPath[MAX_PATH] = {};
-    {
-        WCHAR installDir[MAX_PATH] = {};
-        char ignored[64] = {};
-        if (!get_secure_service_install_dir_w(installDir, ARRAY_COUNT(installDir), ignored, sizeof(ignored))) {
-            set_message(err, errSize, "Cannot determine expected service directory");
-            return false;
-        }
-        if (FAILED(StringCchPrintfW(expectedPath, ARRAY_COUNT(expectedPath), L"%ls\\%ls", installDir, APP_SERVICE_EXE_NAME_W))) {
-            set_message(err, errSize, "Expected service binary path is too long");
-            return false;
-        }
+    if (!get_service_binary_path_from_scm(expectedPath, ARRAY_COUNT(expectedPath))) {
+        // The PID came from the SCM service query. If the service config path is
+        // unavailable from this unelevated GUI, keep the PID boundary and log the
+        // missing secondary check instead of rejecting a valid LocalSystem pipe.
+        debug_log("service pipe identity: cannot query SCM binary path for pid=%lu; accepting PID match\n",
+            (unsigned long)servicePid);
+        return true;
     }
     if (_wcsicmp(serverPath, expectedPath) != 0) {
         set_message(err, errSize, "Service pipe server executable does not match expected service binary");
@@ -438,6 +437,7 @@ static bool service_send_request(const ServiceRequest* request, ServiceResponse*
                         (unsigned long)response->version);
                     return false;
                 }
+                validate_service_response_for_ipc(response);
             }
             CloseHandle(pipe);
             return true;
@@ -808,9 +808,10 @@ static bool launch_service_admin_helper(bool enable, char* err, size_t errSize) 
 
     const WCHAR* baseArg = enable ? L"--service-install" : L"--service-remove";
     WCHAR helperArg[1536] = {};
-    HRESULT hr = StringCchPrintfW(helperArg, ARRAY_COUNT(helperArg),
-        L"%ls --config \"%ls\"", baseArg, cfgPath);
-    if (FAILED(hr)) {
+    bool buildArgs = pl_append_quoted_arg_w(helperArg, ARRAY_COUNT(helperArg), baseArg) &&
+        pl_append_quoted_arg_w(helperArg, ARRAY_COUNT(helperArg), L"--config") &&
+        pl_append_quoted_arg_w(helperArg, ARRAY_COUNT(helperArg), cfgPath);
+    if (!buildArgs) {
         set_message(err, errSize, "Service helper command too long");
         return false;
     }
@@ -853,21 +854,17 @@ static bool launch_startup_task_admin_helper(bool enable, char* err, size_t errS
     bool haveRequestingUser = get_current_user_sam_name(requestingUser, ARRAY_COUNT(requestingUser));
 
     WCHAR helperArg[2048] = {};
-    HRESULT hr;
+    bool buildArgs = pl_append_quoted_arg_w(helperArg, ARRAY_COUNT(helperArg), L"--elevated") &&
+        pl_append_quoted_arg_w(helperArg, ARRAY_COUNT(helperArg), enable ? L"--startup-task-enable" : L"--startup-task-disable");
     if (haveRequestingUser && requestingUser[0]) {
-        hr = StringCchPrintfW(helperArg, ARRAY_COUNT(helperArg),
-            enable
-                ? L"--elevated --startup-task-enable --for-user \"%ls\" --config \"%ls\""
-                : L"--elevated --startup-task-disable --for-user \"%ls\" --config \"%ls\"",
-            requestingUser, cfgPath);
-    } else {
-        hr = StringCchPrintfW(helperArg, ARRAY_COUNT(helperArg),
-            enable
-                ? L"--elevated --startup-task-enable --config \"%ls\""
-                : L"--elevated --startup-task-disable --config \"%ls\"",
-            cfgPath);
+        buildArgs = buildArgs &&
+            pl_append_quoted_arg_w(helperArg, ARRAY_COUNT(helperArg), L"--for-user") &&
+            pl_append_quoted_arg_w(helperArg, ARRAY_COUNT(helperArg), requestingUser);
     }
-    if (FAILED(hr)) {
+    buildArgs = buildArgs &&
+        pl_append_quoted_arg_w(helperArg, ARRAY_COUNT(helperArg), L"--config") &&
+        pl_append_quoted_arg_w(helperArg, ARRAY_COUNT(helperArg), cfgPath);
+    if (!buildArgs) {
         set_message(err, errSize, "Startup task helper command too long");
         return false;
     }
@@ -894,21 +891,9 @@ static bool launch_startup_task_admin_helper(bool enable, char* err, size_t errS
 static bool get_adjacent_service_binary_path(WCHAR* out, size_t outCount, char* err, size_t errSize) {
     if (!out || outCount == 0) return false;
     out[0] = 0;
-    WCHAR exePath[MAX_PATH] = {};
-    DWORD exeLen = GetModuleFileNameW(nullptr, exePath, ARRAY_COUNT(exePath));
-    if (exeLen == 0 || exeLen >= ARRAY_COUNT(exePath) - 1) {
-        set_message(err, errSize, "Current executable path is too long or could not be determined");
-        return false;
-    }
-    WCHAR* slash = wcsrchr(exePath, L'\\');
-    if (!slash) slash = wcsrchr(exePath, L'/');
-    if (!slash) {
-        set_message(err, errSize, "Current executable path has no directory");
-        return false;
-    }
-    slash[1] = 0;
-    if (FAILED(StringCchCatW(exePath, ARRAY_COUNT(exePath), APP_SERVICE_EXE_NAME_W)) ||
-        FAILED(StringCchCopyW(out, outCount, exePath))) {
+    WCHAR exeDir[MAX_PATH] = {};
+    if (!get_current_executable_directory_w(exeDir, ARRAY_COUNT(exeDir), err, errSize)) return false;
+    if (FAILED(StringCchPrintfW(out, outCount, L"%ls\\%ls", exeDir, APP_SERVICE_EXE_NAME_W))) {
         set_message(err, errSize, "Service binary path is too long");
         return false;
     }
@@ -961,30 +946,7 @@ static bool install_dir_is_under_user_profile_w(const WCHAR* dir) {
 static bool get_secure_service_install_dir_w(WCHAR* out, size_t outCount, char* err, size_t errSize) {
     if (!out || outCount == 0) return false;
     out[0] = 0;
-    WCHAR exePath[MAX_PATH] = {};
-    DWORD exeLen = GetModuleFileNameW(nullptr, exePath, ARRAY_COUNT(exePath));
-    if (exeLen == 0 || exeLen >= ARRAY_COUNT(exePath) - 1) {
-        PWSTR programFiles = nullptr;
-        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_ProgramFiles, 0, nullptr, &programFiles)) && programFiles) {
-            StringCchPrintfW(out, outCount, L"%ls\\Green Curve", programFiles);
-            CoTaskMemFree(programFiles);
-        } else {
-            StringCchCopyW(out, outCount, L"C:\\Program Files\\Green Curve");
-        }
-        return true;
-    }
-    WCHAR* slash = wcsrchr(exePath, L'\\');
-    if (!slash) slash = wcsrchr(exePath, L'/');
-    if (!slash) {
-        set_message(err, errSize, "Current executable path has no directory");
-        return false;
-    }
-    slash[0] = 0;
-    if (FAILED(StringCchCopyW(out, outCount, exePath))) {
-        set_message(err, errSize, "Service directory path is too long");
-        return false;
-    }
-    return true;
+    return get_current_executable_directory_w(out, outCount, err, errSize);
 }
 
 static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char* err, size_t errSize) {
@@ -1010,6 +972,15 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
         set_message(err, errSize, "Secure service directory is unavailable or unsafe");
         return false;
     }
+    char dirAclErr[256] = {};
+    if (!apply_protected_service_dir_dacl(installDir, dirAclErr, sizeof(dirAclErr))) {
+        set_message(err, errSize, "Failed securing service directory: %s", dirAclErr[0] ? dirAclErr : "unknown");
+        return false;
+    }
+    if (!machine_config_dacl_is_hardened(installDir)) {
+        set_message(err, errSize, "Service directory DACL did not remain hardened");
+        return false;
+    }
 
     WCHAR targetPath[MAX_PATH] = {};
     if (FAILED(StringCchPrintfW(targetPath, ARRAY_COUNT(targetPath), L"%ls\\%ls", installDir, APP_SERVICE_EXE_NAME_W))) {
@@ -1022,7 +993,9 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
         set_message(err, errSize, "Failed canonicalizing service binary path");
         return false;
     }
-    if (_wcsnicmp(canonicalPath, installDir, wcslen(installDir)) != 0) {
+    size_t installDirLen = wcslen(installDir);
+    if (_wcsnicmp(canonicalPath, installDir, installDirLen) != 0 ||
+        (canonicalPath[installDirLen] != L'\\' && canonicalPath[installDirLen] != L'/' && canonicalPath[installDirLen] != 0)) {
         set_message(err, errSize, "Service binary path escaped the expected installation directory");
         return false;
     }
@@ -1035,13 +1008,13 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
         }
         DeleteFileW(tempPath);
         if (!CopyFileW(sourcePath, tempPath, FALSE)) {
-            set_message(err, errSize, "Failed staging service binary in Program Files (error %lu)", GetLastError());
+            set_message(err, errSize, "Failed staging service binary in target directory (error %lu)", GetLastError());
             return false;
         }
         if (!MoveFileExW(tempPath, targetPath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
             DWORD moveErr = GetLastError();
             DeleteFileW(tempPath);
-            set_message(err, errSize, "Failed installing service binary in Program Files (error %lu)", moveErr);
+            set_message(err, errSize, "Failed installing service binary in target directory (error %lu)", moveErr);
             return false;
         }
     }
@@ -1060,14 +1033,11 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
         set_message(err, errSize, "Failed securing service binary: %s", aclErr[0] ? aclErr : "unknown");
         return false;
     }
-    if (service_path_is_under_secure_root(installDir)) {
-        debug_log("service install: binary DACL hardened; install dir is under an admin-only system root\n");
-    } else {
-        debug_log("service install WARNING: install dir \"%ls\" is not under an admin-only system "
-            "root. The binary DACL is hardened (no non-admin overwrite), but a user-writable parent "
-            "directory could still permit delete+recreate. Install under %%ProgramFiles%% for full "
-            "protection.\n", installDir);
+    if (!service_binary_dacl_is_hardened(targetPath)) {
+        set_message(err, errSize, "Service binary DACL did not remain hardened");
+        return false;
     }
+    debug_log("service install: staged and hardened LocalSystem binary at %ls (directory %ls)\n", targetPath, installDir);
     if (install_dir_is_under_user_profile_w(installDir)) {
         debug_log("service install WARNING: install dir \"%ls\" is under a user profile. Other users, "
             "including restricted/standard accounts, may be unable to read or execute the Green Curve "
@@ -1078,27 +1048,69 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
     return SUCCEEDED(StringCchCopyW(out, outCount, targetPath));
 }
 
-static void cleanup_secure_service_binary_after_remove() {
+static bool directory_path_is_root_or_share_root_w(const WCHAR* dir) {
+    if (!dir || !dir[0]) return true;
+    size_t len = wcslen(dir);
+    if (len <= 3 && len >= 2 && dir[1] == L':') return true;
+    if ((dir[0] == L'\\' || dir[0] == L'/') && (dir[1] == L'\\' || dir[1] == L'/')) {
+        unsigned int components = 0;
+        bool inComponent = false;
+        for (const WCHAR* p = dir + 2; *p; ++p) {
+            bool slash = (*p == L'\\' || *p == L'/');
+            if (slash) {
+                if (inComponent) components++;
+                inComponent = false;
+            } else {
+                inComponent = true;
+            }
+        }
+        if (inComponent) components++;
+        return components <= 2;
+    }
+    return false;
+}
+
+static void cleanup_secure_service_binary_after_remove(const WCHAR* installedServicePath = nullptr) {
     // Service binary removal intentionally does NOT delete the file from disk.
     // With the service installed adjacent to the GUI binary, the user manages
     // the service binary manually. Deleting it on service uninstall would
     // destroy the user's manually-placed binary.
     //
-    // F-SEC-1: we DO revert the protected DACL that install applied, so once the
-    // service is unregistered the user can freely delete or replace the binary
-    // again (the in-place hardening is only meaningful while it is a registered
-    // SYSTEM service).
-    WCHAR installDir[MAX_PATH] = {};
-    char ignored[64] = {};
-    if (!get_secure_service_install_dir_w(installDir, ARRAY_COUNT(installDir), ignored, sizeof(ignored))) return;
+    // F-SEC-1: we DO revert the protected DACLs that install applied, so once
+    // the service is unregistered the user can freely delete or replace the
+    // adjacent payload again (the in-place hardening is only meaningful while it
+    // is a registered SYSTEM service).
     WCHAR targetPath[MAX_PATH] = {};
-    if (FAILED(StringCchPrintfW(targetPath, ARRAY_COUNT(targetPath), L"%ls\\%ls", installDir, APP_SERVICE_EXE_NAME_W))) return;
+    if (installedServicePath && installedServicePath[0]) {
+        if (FAILED(StringCchCopyW(targetPath, ARRAY_COUNT(targetPath), installedServicePath))) return;
+    } else if (!get_service_binary_path_from_scm(targetPath, ARRAY_COUNT(targetPath))) {
+        WCHAR installDir[MAX_PATH] = {};
+        char ignored[64] = {};
+        if (!get_secure_service_install_dir_w(installDir, ARRAY_COUNT(installDir), ignored, sizeof(ignored))) return;
+        if (FAILED(StringCchPrintfW(targetPath, ARRAY_COUNT(targetPath), L"%ls\\%ls", installDir, APP_SERVICE_EXE_NAME_W))) return;
+    }
     if (GetFileAttributesW(targetPath) == INVALID_FILE_ATTRIBUTES) return;
+    WCHAR installDir[MAX_PATH] = {};
+    if (SUCCEEDED(StringCchCopyW(installDir, ARRAY_COUNT(installDir), targetPath))) {
+        WCHAR* slash = wcsrchr(installDir, L'\\');
+        if (!slash) slash = wcsrchr(installDir, L'/');
+        if (slash) *slash = 0;
+    }
     char aclErr[160] = {};
     if (restore_inherited_dacl(targetPath, aclErr, sizeof(aclErr))) {
-        debug_log("service uninstall: reverted service binary DACL to inherited; user can delete/replace it\n");
+        debug_log("service uninstall: reverted service binary DACL to inherited for %ls; user can delete/replace it\n", targetPath);
     } else {
         debug_log("service uninstall: could not revert service binary DACL: %s\n", aclErr[0] ? aclErr : "unknown");
+    }
+    if (installDir[0] && !directory_path_is_root_or_share_root_w(installDir)) {
+        char dirAclErr[160] = {};
+        if (restore_inherited_dacl(installDir, dirAclErr, sizeof(dirAclErr))) {
+            debug_log("service uninstall: reverted service directory DACL to inherited for %ls\n", installDir);
+        } else {
+            debug_log("service uninstall: could not revert service directory DACL: %s\n", dirAclErr[0] ? dirAclErr : "unknown");
+        }
+    } else if (installDir[0]) {
+        debug_log("service uninstall: skipped service directory DACL restore for root-like path %ls\n", installDir);
     }
 }
 
@@ -1189,12 +1201,30 @@ static bool ensure_machine_config_directory(char* err, size_t errSize) {
     }
     // Harden the directory so a standard user cannot plant or delete files in
     // the shared bank (the default %ProgramData% ACL grants users create-file
-    // rights).  Best-effort: requires elevation, which every writer of this dir
-    // already has; on failure the file itself still gets its own protected DACL.
+    // rights).  This is a required postcondition for all machine-bank writers.
     char aclErr[256] = {};
     if (!apply_protected_machine_config_dir_dacl(dirW, aclErr, sizeof(aclErr))) {
-        debug_log("machine config: directory DACL hardening failed: %s\n", aclErr[0] ? aclErr : "unknown");
+        set_message(err, errSize, "Machine config directory DACL hardening failed: %s", aclErr[0] ? aclErr : "unknown");
+        return false;
     }
+    if (!machine_config_dacl_is_hardened(dirW)) {
+        set_message(err, errSize, "Machine config directory DACL verification failed");
+        return false;
+    }
+    return true;
+}
+
+static bool harden_machine_config_file_required(const WCHAR* pathW, const char* pathForLog, char* err, size_t errSize) {
+    char aclErr[256] = {};
+    if (!apply_protected_machine_config_dacl(pathW, aclErr, sizeof(aclErr))) {
+        set_message(err, errSize, "Machine config file DACL hardening failed: %s", aclErr[0] ? aclErr : "unknown");
+        return false;
+    }
+    if (!machine_config_dacl_is_hardened(pathW)) {
+        set_message(err, errSize, "Machine config file DACL verification failed");
+        return false;
+    }
+    debug_log("machine config: verified protected DACL on %s\n", pathForLog ? pathForLog : "<wide path>");
     return true;
 }
 
@@ -1241,6 +1271,13 @@ static void migrate_legacy_machine_config() {
     char aclErr[256] = {};
     if (!apply_protected_machine_config_dacl(newW, aclErr, sizeof(aclErr))) {
         debug_log("machine config migration: DACL hardening failed: %s\n", aclErr[0] ? aclErr : "unknown");
+        DeleteFileW(newW);
+        return;
+    }
+    if (!machine_config_dacl_is_hardened(newW)) {
+        debug_log("machine config migration: DACL verification failed after copy\n");
+        DeleteFileW(newW);
+        return;
     }
     if (!DeleteFileW(legacyW)) {
         debug_log("machine config migration: copied to %s but failed deleting legacy file (error %lu)\n",
@@ -1272,6 +1309,8 @@ static void secure_shared_bank_at_startup() {
         char aclErr[256] = {};
         if (!apply_protected_machine_config_dacl(fileW, aclErr, sizeof(aclErr))) {
             debug_log("shared bank: startup file DACL reclaim failed: %s\n", aclErr[0] ? aclErr : "unknown");
+        } else if (!machine_config_dacl_is_hardened(fileW)) {
+            debug_log("shared bank: startup file DACL verification failed after reclaim\n");
         } else {
             debug_log("shared bank: startup hardening verified/reclaimed %ls\n", fileW);
         }
@@ -1310,14 +1349,7 @@ bool set_machine_logon_slot(int slot, char* err, size_t errSize) {
     }
     WCHAR pathW[MAX_PATH] = {};
     if (!resolve_machine_config_path_internal(pathW, ARRAY_COUNT(pathW), err, errSize)) return false;
-    char aclErr[256] = {};
-    if (!apply_protected_machine_config_dacl(pathW, aclErr, sizeof(aclErr))) {
-        debug_log("machine config: DACL hardening failed: %s\n", aclErr[0] ? aclErr : "unknown");
-        // Do not fail the whole operation; the config was written.  The install
-        // directory is normally under %ProgramFiles%, which is already admin-only.
-    } else {
-        debug_log("machine config: applied protected DACL to %s\n", path);
-    }
+    if (!harden_machine_config_file_required(pathW, path, err, errSize)) return false;
     g_app.machineLogonSlotCache = slot;
     debug_log("machine config: set machine-wide logon slot to %d in %s\n", slot, path);
     return true;
@@ -1329,6 +1361,7 @@ bool clear_machine_logon_slot(char* err, size_t errSize) {
         set_message(err, errSize, "Clearing the machine-wide default profile requires administrator rights");
         return false;
     }
+    if (!ensure_machine_config_directory(err, errSize)) return false;
     char path[MAX_PATH] = {};
     if (!resolve_machine_config_path(path, sizeof(path))) {
         set_message(err, errSize, "Cannot resolve machine config path");
@@ -1338,6 +1371,9 @@ bool clear_machine_logon_slot(char* err, size_t errSize) {
         set_message(err, errSize, "Failed clearing machine config");
         return false;
     }
+    WCHAR pathW[MAX_PATH] = {};
+    if (!resolve_machine_config_path_internal(pathW, ARRAY_COUNT(pathW), err, errSize)) return false;
+    if (!harden_machine_config_file_required(pathW, path, err, errSize)) return false;
     g_app.machineLogonSlotCache = 0;
     debug_log("machine config: cleared machine-wide logon slot in %s\n", path);
     return true;
@@ -1369,12 +1405,8 @@ bool set_machine_restrict_policy(bool enable, char* err, size_t errSize) {
         return false;
     }
     WCHAR pathW[MAX_PATH] = {};
-    if (resolve_machine_config_path_internal(pathW, ARRAY_COUNT(pathW), err, errSize)) {
-        char aclErr[256] = {};
-        if (!apply_protected_machine_config_dacl(pathW, aclErr, sizeof(aclErr))) {
-            debug_log("machine config: DACL hardening failed: %s\n", aclErr[0] ? aclErr : "unknown");
-        }
-    }
+    if (!resolve_machine_config_path_internal(pathW, ARRAY_COUNT(pathW), err, errSize)) return false;
+    if (!harden_machine_config_file_required(pathW, path, err, errSize)) return false;
     debug_log("machine config: set restrict_non_admin_to_shared=%d in %s\n", enable ? 1 : 0, path);
     return true;
 }

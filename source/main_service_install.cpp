@@ -44,7 +44,7 @@ static const GUID GUID_DISPLAY_ADAPTER_DEVINTERFACE = {
 #define DBT_DEVICEREMOVEPENDING      0x0003
 #endif
 #ifndef DBT_DEVICEREMOVECOMPLETE
-#define DBT_DEVICEREMOVECOMPLETE     0x0007
+#define DBT_DEVICEREMOVECOMPLETE     0x0004
 #endif
 #ifndef DBT_DEVICEARRIVAL
 #define DBT_DEVICEARRIVAL            0x0008
@@ -301,10 +301,16 @@ static bool service_install_or_remove(bool enable, char* err, size_t errSize) {
         }
     } else {
         ScopedServiceHandle svc(OpenServiceW(scm.get(), L"GreenCurveService", SERVICE_STOP | DELETE | SERVICE_QUERY_STATUS));
+        WCHAR installedServicePath[MAX_PATH] = {};
+        get_service_binary_path_from_scm(installedServicePath, ARRAY_COUNT(installedServicePath));
         if (!svc.valid()) {
             ok = true;
-            cleanup_secure_service_binary_after_remove();
+            cleanup_secure_service_binary_after_remove(installedServicePath[0] ? installedServicePath : nullptr);
         } else {
+            if (g_app.backgroundServiceAvailable) {
+                char resetResult[256] = {};
+                service_client_reset(resetResult, sizeof(resetResult), nullptr);
+            }
             SERVICE_STATUS status = {};
             ControlService(svc.get(), SERVICE_CONTROL_STOP, &status);
             wait_for_service_state(svc.get(), SERVICE_STOPPED, 10000);
@@ -312,7 +318,7 @@ static bool service_install_or_remove(bool enable, char* err, size_t errSize) {
                 set_message(err, errSize, "Failed removing service (error %lu)", GetLastError());
             } else {
                 ok = true;
-                cleanup_secure_service_binary_after_remove();
+                cleanup_secure_service_binary_after_remove(installedServicePath[0] ? installedServicePath : nullptr);
             }
         }
     }

@@ -151,12 +151,26 @@ static void set_last_apply_phase(const char* phase) {
     debug_log("apply phase: %s\n", g_lastApplyPhase);
 }
 
+static bool crash_artifact_data_dir(char* out, size_t outSize) {
+    if (!out || outSize == 0) return false;
+    out[0] = 0;
+    if (g_app.isServiceProcess) {
+        if (resolve_service_machine_data_dir(out, outSize)) return true;
+        return false;
+    }
+    if (g_userDataDir[0]) {
+        return SUCCEEDED(StringCchCopyA(out, outSize, g_userDataDir));
+    }
+    return SUCCEEDED(StringCchCopyA(out, outSize, "."));
+}
+
 static void write_crash_breadcrumb_direct(const char* text) {
     if (!text || !text[0]) return;
     OutputDebugStringA(text);
 
     char path[MAX_PATH] = {};
-    const char* dataDir = g_userDataDir[0] ? g_userDataDir : ".";
+    char dataDir[MAX_PATH] = {};
+    if (!crash_artifact_data_dir(dataDir, sizeof(dataDir))) return;
     StringCchPrintfA(path, ARRAY_COUNT(path), "%s\\%s", dataDir, "greencurve_crash.txt");
     char pathErr[256] = {};
     ensure_parent_directory_for_file(path, pathErr, sizeof(pathErr));
@@ -237,7 +251,8 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
             // Capture minidump for service crashes in GPU driver DLLs (driver upgrade crashes).
             // Use FILE_FLAG_WRITE_THROUGH for reliability during crashes.
             char dumpPath[MAX_PATH] = {};
-            const char* dataDir = g_userDataDir[0] ? g_userDataDir : ".";
+            char dataDir[MAX_PATH] = {};
+            if (!crash_artifact_data_dir(dataDir, sizeof(dataDir))) return EXCEPTION_EXECUTE_HANDLER;
             StringCchPrintfA(dumpPath, ARRAY_COUNT(dumpPath), "%s\\greencurve_crash_%04u%02u%02u_%02u%02u%02u.dmp",
                 dataDir, now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
             char pathErr[256] = {};
@@ -305,7 +320,8 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
     // without the full overhead of a complete memory dump.
     if (info && info->ExceptionRecord && info->ContextRecord) {
         char dumpPath[MAX_PATH] = {};
-        const char* dataDir = g_userDataDir[0] ? g_userDataDir : ".";
+        char dataDir[MAX_PATH] = {};
+        if (!crash_artifact_data_dir(dataDir, sizeof(dataDir))) return EXCEPTION_EXECUTE_HANDLER;
         StringCchPrintfA(dumpPath, ARRAY_COUNT(dumpPath), "%s\\greencurve_crash_%04u%02u%02u_%02u%02u%02u.dmp",
             dataDir, now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
         char pathErr[256] = {};

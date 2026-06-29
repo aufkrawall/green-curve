@@ -138,6 +138,7 @@ static unsigned int g_serviceRuntimeLockDepth = 0;
 static SERVICE_STATUS_HANDLE g_serviceStatusHandle = nullptr;
 static SERVICE_STATUS g_serviceStatus = {};
 static DesiredSettings g_serviceActiveDesired = {};
+static GpuAdapterInfo g_serviceActiveDesiredGpu = {};
 static bool g_serviceHasActiveDesired = false;
 static ControlState g_serviceControlState = {};
 static bool g_serviceControlStateValid = false;
@@ -145,6 +146,7 @@ static bool g_serviceUserPathsResolved = false;
 static CRITICAL_SECTION g_debugLogLock = {};
 static HANDLE g_debugLogFile = INVALID_HANDLE_VALUE;
 static DWORD g_serviceUserPathsSessionId = (DWORD)-1;
+static char g_serviceUserPathsSid[184] = {};
 static char g_serviceUserProfileDir[MAX_PATH] = {};
 static ULONGLONG g_serviceRuntimeLastPulseLogTickMs = 0;
 static ULONGLONG g_serviceFanThreadLastWaitLogTickMs = 0;
@@ -153,6 +155,14 @@ static bool g_serviceFanThreadLastWaitCurve = false;
 static bool g_serviceFanThreadLastWaitFixed = false;
 static ULONGLONG g_serviceTelemetryLastHardwarePollTickMs = 0;
 static char g_serviceTelemetryLastPollSource[64] = {};
+#ifdef GREEN_CURVE_SERVICE_BINARY
+static ULONGLONG g_serviceVfDriftLastCheckTickMs = 0;
+static ULONGLONG g_serviceVfDriftLastQueueTickMs = 0;
+static ULONGLONG g_serviceVfDriftWindowStartTickMs = 0;
+static unsigned int g_serviceVfDriftConsecutiveSamples = 0;
+static unsigned int g_serviceVfDriftQueueCount = 0;
+static char g_serviceVfDriftLastDetail[256] = {};
+#endif
 
 // Heartbeat written by the fan runtime thread at the START of every pulse
 // attempt (just before any NVML call) and again on completion.  The main-loop
@@ -195,6 +205,14 @@ static const ULONGLONG SERVICE_TELEMETRY_IDLE_REFRESH_INTERVAL_MS = 5000;
 static const ULONGLONG SERVICE_TELEMETRY_RUNTIME_STALE_GRACE_MS = 1000;
 static const DWORD SERVICE_RECOVERY_REAPPLY_RETRY_INTERVAL_MS = 5000;
 static const DWORD SERVICE_RECOVERY_REAPPLY_MAX_ATTEMPTS = 12;
+#ifdef GREEN_CURVE_SERVICE_BINARY
+static const ULONGLONG SERVICE_VF_DRIFT_CHECK_INTERVAL_MS = 5000;
+static const unsigned int SERVICE_VF_DRIFT_CONFIRM_SAMPLES = 2;
+static const unsigned int SERVICE_VF_DRIFT_TOLERANCE_MHZ = 3;
+static const ULONGLONG SERVICE_VF_DRIFT_MIN_REQUEUE_MS = 30000;
+static const ULONGLONG SERVICE_VF_DRIFT_QUEUE_WINDOW_MS = 600000;
+static const unsigned int SERVICE_VF_DRIFT_MAX_QUEUES_PER_WINDOW = 3;
+#endif
 static const DWORD ELEVATED_HELPER_TIMEOUT_MS = 60000;
 
 static void* nvapi_qi(unsigned int id);
@@ -259,8 +277,11 @@ static void service_capture_owner_identity(const char* user, DWORD sessionId);
 static bool get_pipe_client_identity(HANDLE pipe, char* userOut, size_t userOutSize, DWORD* sessionIdOut, DWORD* pidOut, bool* isAdminOut, char* err, size_t errSize);
 static bool service_caller_is_authorized(HANDLE pipe, const char* source, char* err, size_t errSize, char* callerUserOut, size_t callerUserOutSize, DWORD* callerSessionIdOut, DWORD* callerPidOut, bool* callerIsAdminOut);
 static bool get_active_interactive_session_id(DWORD* sessionIdOut);
+static bool service_resolve_session_user_sid(DWORD sessionId, char* sidOut, size_t sidOutSize, char* err, size_t errSize);
+static bool service_user_paths_identity_matches(DWORD sessionId);
 static void ensure_service_runtime_lock();
 static void lock_service_runtime();
+static bool try_lock_service_runtime(DWORD timeoutMs);
 static void unlock_service_runtime();
 static bool service_runtime_lock_held_by_current_thread();
 static void service_set_pending_operation_source(const char* source);
@@ -275,11 +296,12 @@ static void stop_service_fan_runtime_thread();
 static void service_runtime_pulse();
 static void service_write_restart_reapply_snapshot();
 static void service_clear_restart_reapply_snapshot();
-static void service_launch_startup_reapply();
+static void service_launch_startup_coordinator();
 static void service_queue_recovery_reapply(const char* reason, DWORD delayMs);
 static void service_maybe_launch_recovery_from_main_loop(const char* source);
 static void service_maybe_launch_recovery_reapply_thread();
 static void service_check_reapply_thread_health();
+static void service_check_active_vf_drift_monitor(const char* source);
 static void mark_service_telemetry_cache_updated(const char* source);
 static bool service_refresh_telemetry_for_request(char* detail, size_t detailSize);
 static bool service_apply_desired_settings(const DesiredSettings* desired, bool interactive, char* result, size_t resultSize);
@@ -405,6 +427,7 @@ static void set_pending_operation_source(const char* source);
 static void record_ui_action(const char* fmt, ...);
 static void build_recent_ui_actions_text(char* out, size_t outSize);
 static void build_point_list_from_flags(const bool* flags, char* out, size_t outSize, int maxItems = 24);
+static void build_point_list_from_flags(const gc_bool8* flags, char* out, size_t outSize, int maxItems = 24);
 static void log_locked_tail_drift_diagnostics();
 static void describe_live_gpu_offset_state(char* out, size_t outSize);
 static void build_operation_intent_summary(const DesiredSettings* desired, bool interactive, char* out, size_t outSize);
@@ -432,6 +455,7 @@ static int desired_curve_point_count(const DesiredSettings* desired);
 static bool desired_updates_curve_or_gpu_offset_state(const DesiredSettings* desired);
 static bool desired_has_nonfan_apply_fields(const DesiredSettings* desired);
 static bool desired_is_fan_only_apply_request(const DesiredSettings* desired);
+static bool desired_settings_match_active_service_intent(const DesiredSettings* profile, const DesiredSettings* active, char* detail, size_t detailSize);
 static bool capture_gui_apply_settings(DesiredSettings* desired, char* err, size_t errSize);
 static void set_profile_status_text(const char* fmt, ...);
 static void update_profile_state_label();
@@ -489,6 +513,9 @@ static void show_main_window_from_tray();
 static void show_tray_menu(HWND hwnd);
 static bool live_state_has_custom_oc();
 static bool live_state_has_custom_fan();
+static int current_green_curve_fan_intent_mode();
+static int current_green_curve_fan_intent_fixed_percent();
+static const FanCurveConfig* current_green_curve_fan_intent_curve();
 static void stop_fan_curve_runtime(bool restoreFanAutoOnExit = false);
 static void start_fan_curve_runtime();
 static void start_fixed_fan_runtime();
@@ -608,11 +635,7 @@ static const UINT FAN_TELEMETRY_INTERVAL_MS = 1000;
 #include "config_profile_repair.cpp"
 #include "main_shell.cpp"
     SelectObject(hdc, oldBrush);
-    DeleteObject(SelectObject(hdc, oldPen));
-
-    if (mode == LOCK_MODE_FLATTEN && !disabled) {
-        draw_checkbox_tick_smooth(hdc, &box, COL_LABEL);
-    }
+    SelectObject(hdc, oldPen);
 
     if (dis->itemState & ODS_FOCUS) {
         RECT focus = rc;

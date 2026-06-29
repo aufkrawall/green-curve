@@ -99,7 +99,8 @@ static void repair_profile_locked_curve_readback_artifacts(const char* path, con
         unsigned int nextMHz = desired->curvePointMHz[ciMinus2];
         unsigned int candidateMHz = desired->curvePointMHz[ciMinus3];
         bool hasLargeGapToIntent = nextMHz > candidateMHz && (nextMHz - candidateMHz) >= 150;
-        bool hasModerateReadbackOffset = haveOffset && abs(savedOffset) >= 60000 && abs(savedOffset) <= 250000;
+        long long savedOffsetMagnitude = savedOffset < 0 ? -(long long)savedOffset : (long long)savedOffset;
+        bool hasModerateReadbackOffset = haveOffset && savedOffsetMagnitude >= 60000 && savedOffsetMagnitude <= 250000;
         if (hasLargeGapToIntent && hasModerateReadbackOffset && profile_point_saved_visible(path, section, ciMinus3)) {
             debug_log("profile repair: removed non-tail readback artifact slot=%d section=%s ci=%d actual=%u offset=%d lockCi=%d lockMHz=%u\n",
                 slot, section, ciMinus3, candidateMHz, savedOffset, desired->lockCi, desired->lockMHz);

@@ -512,7 +512,7 @@ static void update_background_service_controls() {
             StringCchPrintfA(text, ARRAY_COUNT(text), "%s background service...",
                 g_app.backgroundServiceToggleTargetEnabled ? "Installing and starting" : "Stopping and removing");
         } else if (!g_app.backgroundServiceInstalled) {
-            StringCchCopyA(text, ARRAY_COUNT(text), "Background service required for OC, UV, power, and fan control is not installed.");
+            StringCchCopyA(text, ARRAY_COUNT(text), "Background service not installed. Click checkbox to install it.");
         } else if (g_app.backgroundServiceBroken) {
             if (g_app.backgroundServiceError[0]) {
                 StringCchPrintfA(text, ARRAY_COUNT(text), "Background service needs repair: %s", g_app.backgroundServiceError);
@@ -520,13 +520,7 @@ static void update_background_service_controls() {
                 StringCchCopyA(text, ARRAY_COUNT(text), "Background service is installed but not responding. Live controls are disabled.");
             }
         } else if (g_app.backgroundServiceAvailable) {
-            if (g_app.backgroundServiceOwnerUser[0]) {
-                const char* ownerText = g_app.backgroundServiceOwnerUser;
-                if (strstr(ownerText, "SYSTEM") != nullptr) ownerText = "LocalSystem";
-                StringCchPrintfA(text, ARRAY_COUNT(text), "Background service active. Last machine-wide apply by %s.", ownerText);
-            } else {
-                StringCchCopyA(text, ARRAY_COUNT(text), "Background service active.");
-            }
+            StringCchCopyA(text, ARRAY_COUNT(text), "Background service installed. Click checkbox to uninstall it.");
         } else if (g_app.backgroundServiceRunning) {
             StringCchCopyA(text, ARRAY_COUNT(text), "Background service running, waiting for first successful GPU initialization.");
         } else {
@@ -555,7 +549,7 @@ static void update_background_service_controls() {
             char warning[320] = {};
             StringCchPrintfA(warning, ARRAY_COUNT(warning),
                 " Warning: Green Curve is running from a user account folder, so restricted/standard "
-                "users on this PC cannot launch it. Reinstall under %%ProgramFiles%%\\Green Curve to "
+                "users on this PC cannot launch it. Reinstall under an all-users folder such as %%ProgramFiles%%\\greencurve to "
                 "make it available to all users.");
             // Append to the existing status text if there is room.
             size_t currentLen = strlen(text);
@@ -566,6 +560,7 @@ static void update_background_service_controls() {
             }
         }
     }
+
     update_share_all_users_check_state();
 }
 
@@ -819,6 +814,30 @@ static void maybe_load_app_launch_profile_to_gui() {
     }
     char result[512] = {};
     refresh_background_service_state();
+    if (g_app.usingBackgroundService && g_app.backgroundServiceAvailable) {
+        DesiredSettings activeDesired = {};
+        char snapErr[256] = {};
+        char matchDetail[256] = {};
+        if (refresh_service_snapshot_and_active_desired(snapErr, sizeof(snapErr), &activeDesired)
+            && desired_settings_match_active_service_intent(&desired, &activeDesired, matchDetail, sizeof(matchDetail))) {
+            debug_log("maybe_load_app_launch_profile_to_gui: slot %d already active in background service; skipping reset-before-apply (%s)\n",
+                appLaunchSlot,
+                matchDetail[0] ? matchDetail : "match");
+            populate_desired_into_gui(&desired);
+            set_config_int(g_app.configPath, "profiles", "selected_slot", appLaunchSlot);
+            refresh_profile_controls_from_config();
+            set_profile_status_text("Loaded slot %d into the GUI. Background service already has matching active settings, so app-start apply was skipped.", appLaunchSlot);
+            return;
+        }
+        debug_log("maybe_load_app_launch_profile_to_gui: slot %d needs reset-before-apply; service active intent check=%s\n",
+            appLaunchSlot,
+            matchDetail[0] ? matchDetail : (snapErr[0] ? snapErr : "unavailable"));
+    } else {
+        debug_log("maybe_load_app_launch_profile_to_gui: slot %d cannot use active-service skip (usingService=%d available=%d)\n",
+            appLaunchSlot,
+            g_app.usingBackgroundService ? 1 : 0,
+            g_app.backgroundServiceAvailable ? 1 : 0);
+    }
     debug_log("maybe_load_app_launch_profile_to_gui: applying slot %d with reset-before-apply\n", appLaunchSlot);
     desired.resetOcBeforeApply = true;
     bool ok = apply_desired_settings(&desired, false, result, sizeof(result));

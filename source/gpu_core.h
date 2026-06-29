@@ -43,7 +43,22 @@ typedef unsigned long gc_u32;       // identical to Win32 DWORD
 #else
 typedef uint32_t gc_u32;
 #endif
+typedef uint8_t gc_u8;
 typedef unsigned long long gc_u64;  // identical to Win32 ULONGLONG
+typedef gc_u8 gc_bool8;
+static_assert(sizeof(gc_bool8) == 1, "gc_bool8 must stay a one-byte wire flag");
+
+static inline gc_bool8 gc_bool8_from_bool(bool value) {
+    return value ? (gc_bool8)1u : (gc_bool8)0u;
+}
+
+static inline bool gc_bool8_is_canonical(gc_bool8 value) {
+    return value == 0u || value == 1u;
+}
+
+static inline void canonicalize_gc_bool8(gc_bool8* value) {
+    if (value) *value = *value ? (gc_bool8)1u : (gc_bool8)0u;
+}
 
 // ServiceRequest.path is a fixed 260-byte field (== MAX_PATH on Windows); keep
 // the size constant so the protocol layout is stable across platforms.
@@ -383,7 +398,7 @@ enum {
 };
 
 struct FanCurvePoint {
-    bool enabled;
+    gc_bool8 enabled;
     int temperatureC;
     int fanPercent;
 };
@@ -395,15 +410,15 @@ struct FanCurveConfig {
 };
 
 struct ControlState {
-    bool valid;
-    bool hasGpuOffset;
+    gc_bool8 valid;
+    gc_bool8 hasGpuOffset;
     int gpuOffsetMHz;
     int gpuOffsetExcludeLowCount;
-    bool hasMemOffset;
+    gc_bool8 hasMemOffset;
     int memOffsetMHz;
-    bool hasPowerLimit;
+    gc_bool8 hasPowerLimit;
     int powerLimitPct;
-    bool hasFan;
+    gc_bool8 hasFan;
     int fanMode;
     int fanFixedPercent;
     int fanCurrentPercent;
@@ -412,11 +427,11 @@ struct ControlState {
 };
 
 struct GpuAdapterInfo {
-    bool valid;
-    bool pciInfoValid;
-    bool vfReadSupported;
-    bool vfWriteSupported;
-    bool vfBestGuess;
+    gc_bool8 valid;
+    gc_bool8 pciInfoValid;
+    gc_bool8 vfReadSupported;
+    gc_bool8 vfWriteSupported;
+    gc_bool8 vfBestGuess;
     unsigned int nvapiIndex;
     unsigned int nvmlIndex;
     unsigned int deviceId;
@@ -432,27 +447,53 @@ struct GpuAdapterInfo {
 };
 
 struct DesiredSettings {
-    bool hasCurvePoint[VF_NUM_POINTS];
+    gc_bool8 hasCurvePoint[VF_NUM_POINTS];
     unsigned int curvePointMHz[VF_NUM_POINTS];
-    bool hasLock;
+    gc_bool8 hasLock;
     int lockCi;
     unsigned int lockMHz;
     LockMode lockMode;
-    bool lockTracksAnchor;
-    bool hasGpuOffset;
+    gc_bool8 lockTracksAnchor;
+    gc_bool8 hasGpuOffset;
     int gpuOffsetMHz;
     int gpuOffsetExcludeLowCount;
-    bool hasMemOffset;
+    gc_bool8 hasMemOffset;
     int memOffsetMHz;
-    bool hasPowerLimit;
+    gc_bool8 hasPowerLimit;
     int powerLimitPct;
-    bool hasFan;
-    bool fanAuto;
+    gc_bool8 hasFan;
+    gc_bool8 fanAuto;
     int fanMode;
     int fanPercent;
     FanCurveConfig fanCurve;
-    bool resetOcBeforeApply;
+    gc_bool8 resetOcBeforeApply;
 };
+
+static inline void validate_fan_curve_flags_for_ipc(FanCurveConfig* c) {
+    if (!c) return;
+    for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
+        canonicalize_gc_bool8(&c->points[i].enabled);
+    }
+}
+
+static inline void validate_gpu_adapter_info_for_ipc(GpuAdapterInfo* g) {
+    if (!g) return;
+    canonicalize_gc_bool8(&g->valid);
+    canonicalize_gc_bool8(&g->pciInfoValid);
+    canonicalize_gc_bool8(&g->vfReadSupported);
+    canonicalize_gc_bool8(&g->vfWriteSupported);
+    canonicalize_gc_bool8(&g->vfBestGuess);
+}
+
+static inline void validate_control_state_for_ipc(ControlState* c) {
+    if (!c) return;
+    canonicalize_gc_bool8(&c->valid);
+    canonicalize_gc_bool8(&c->hasGpuOffset);
+    canonicalize_gc_bool8(&c->hasMemOffset);
+    canonicalize_gc_bool8(&c->hasPowerLimit);
+    canonicalize_gc_bool8(&c->hasFan);
+    validate_fan_curve_flags_for_ipc(&c->fanCurve);
+}
 
 // Sanitize a DesiredSettings struct received over IPC.  This is the single
 // trust boundary between an unprivileged caller and the privileged service:
@@ -463,6 +504,18 @@ struct DesiredSettings {
 // behavior even if a future downstream guard is dropped.
 static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
     if (!d) return;
+    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+        canonicalize_gc_bool8(&d->hasCurvePoint[ci]);
+    }
+    canonicalize_gc_bool8(&d->hasLock);
+    canonicalize_gc_bool8(&d->lockTracksAnchor);
+    canonicalize_gc_bool8(&d->hasGpuOffset);
+    canonicalize_gc_bool8(&d->hasMemOffset);
+    canonicalize_gc_bool8(&d->hasPowerLimit);
+    canonicalize_gc_bool8(&d->hasFan);
+    canonicalize_gc_bool8(&d->fanAuto);
+    canonicalize_gc_bool8(&d->resetOcBeforeApply);
+    validate_fan_curve_flags_for_ipc(&d->fanCurve);
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         if (d->curvePointMHz[ci] > 5000u) d->curvePointMHz[ci] = 5000u;
     }
@@ -525,7 +578,7 @@ static inline bool lock_mode_sync_allowed(int guiLockMode, int guiAppliedLockMod
 // ---------------------------------------------------------------------------
 enum {
     SERVICE_PROTOCOL_MAGIC = 0x47535643u,
-    SERVICE_PROTOCOL_VERSION = 7,
+    SERVICE_PROTOCOL_VERSION = 8,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply. Bit 30 marks an
@@ -557,28 +610,28 @@ enum ServiceResponseStatus {
 };
 
 struct ServiceSnapshot {
-    bool initialized;
-    bool loaded;
-    bool fanSupported;
-    bool fanRangeKnown;
-    bool fanIsAuto;
-    bool fanCurveRuntimeActive;
-    bool fanFixedRuntimeActive;
-    bool gpuOffsetRangeKnown;
-    bool memOffsetRangeKnown;
-    bool curveOffsetRangeKnown;
-    bool gpuTemperatureValid;
-    bool vfReadSupported;
-    bool vfWriteSupported;
-    bool vfBestGuess;
-    bool hasLock;
+    gc_bool8 initialized;
+    gc_bool8 loaded;
+    gc_bool8 fanSupported;
+    gc_bool8 fanRangeKnown;
+    gc_bool8 fanIsAuto;
+    gc_bool8 fanCurveRuntimeActive;
+    gc_bool8 fanFixedRuntimeActive;
+    gc_bool8 gpuOffsetRangeKnown;
+    gc_bool8 memOffsetRangeKnown;
+    gc_bool8 curveOffsetRangeKnown;
+    gc_bool8 gpuTemperatureValid;
+    gc_bool8 vfReadSupported;
+    gc_bool8 vfWriteSupported;
+    gc_bool8 vfBestGuess;
+    gc_bool8 hasLock;
     int lockCi;
     unsigned int lockMHz;
     int lockMode;
-    bool lockTracksAnchor;
+    gc_bool8 lockTracksAnchor;
     unsigned int adapterCount;
     unsigned int selectedAdapterIndex;
-    bool selectedAdapterOrdinalFallback;
+    gc_bool8 selectedAdapterOrdinalFallback;
     GpuAdapterInfo adapters[MAX_GPU_ADAPTERS];
     GpuFamily gpuFamily;
     int numPopulated;
@@ -597,7 +650,7 @@ struct ServiceSnapshot {
     int powerLimitMaxmW;
     int appliedGpuOffsetMHz;
     int appliedGpuOffsetExcludeLowCount;
-    bool lastApplyUsedGpuOffset;
+    gc_bool8 lastApplyUsedGpuOffset;
     int activeFanMode;
     int activeFanFixedPercent;
     int gpuTemperatureC;
@@ -620,12 +673,12 @@ struct ServiceSnapshot {
     // GPU recovery status — populated when the service is recovering from
     // a device reconnect / driver upgrade.  The GUI uses these to show
     // "GPU reconnecting..." instead of "service not responding".
-    bool serviceInRecovery;
+    gc_bool8 serviceInRecovery;
     gc_u64 lastRecoveryTickMs;
     // True when the service has re-applied settings after recovery but not yet
     // confirmed they stuck — the GUI shows "reapplying..." instead of a
     // misleading "settings active".
-    bool serviceReapplyInProgress;
+    gc_bool8 serviceReapplyInProgress;
 };
 
 struct ServiceRequest {
@@ -656,6 +709,43 @@ struct ServiceResponse {
     char message[512];
 };
 static_assert(sizeof(ServiceResponse) < 262144, "ServiceResponse size sanity check");
+
+static inline void validate_service_snapshot_for_ipc(ServiceSnapshot* s) {
+    if (!s) return;
+    canonicalize_gc_bool8(&s->initialized);
+    canonicalize_gc_bool8(&s->loaded);
+    canonicalize_gc_bool8(&s->fanSupported);
+    canonicalize_gc_bool8(&s->fanRangeKnown);
+    canonicalize_gc_bool8(&s->fanIsAuto);
+    canonicalize_gc_bool8(&s->fanCurveRuntimeActive);
+    canonicalize_gc_bool8(&s->fanFixedRuntimeActive);
+    canonicalize_gc_bool8(&s->gpuOffsetRangeKnown);
+    canonicalize_gc_bool8(&s->memOffsetRangeKnown);
+    canonicalize_gc_bool8(&s->curveOffsetRangeKnown);
+    canonicalize_gc_bool8(&s->gpuTemperatureValid);
+    canonicalize_gc_bool8(&s->vfReadSupported);
+    canonicalize_gc_bool8(&s->vfWriteSupported);
+    canonicalize_gc_bool8(&s->vfBestGuess);
+    canonicalize_gc_bool8(&s->hasLock);
+    canonicalize_gc_bool8(&s->lockTracksAnchor);
+    canonicalize_gc_bool8(&s->selectedAdapterOrdinalFallback);
+    canonicalize_gc_bool8(&s->lastApplyUsedGpuOffset);
+    canonicalize_gc_bool8(&s->serviceInRecovery);
+    canonicalize_gc_bool8(&s->serviceReapplyInProgress);
+    if (s->adapterCount > MAX_GPU_ADAPTERS) s->adapterCount = MAX_GPU_ADAPTERS;
+    if (s->selectedAdapterIndex >= MAX_GPU_ADAPTERS) s->selectedAdapterIndex = 0;
+    for (unsigned int i = 0; i < s->adapterCount && i < MAX_GPU_ADAPTERS; i++) {
+        validate_gpu_adapter_info_for_ipc(&s->adapters[i]);
+    }
+    validate_fan_curve_flags_for_ipc(&s->activeFanCurve);
+}
+
+static inline void validate_service_response_for_ipc(ServiceResponse* r) {
+    if (!r) return;
+    validate_service_snapshot_for_ipc(&r->snapshot);
+    validate_desired_settings_for_ipc(&r->desired);
+    validate_control_state_for_ipc(&r->controlState);
+}
 
 enum {
     GUI_FAN_MODE_UNSET = -1,

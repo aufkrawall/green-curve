@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 static void log_locked_tail_drift_diagnostics() {
-    // Diagnostics-only during normal runtime; NVUV must not silently reapply
-    // the VF curve outside explicit apply/reset or resume/update recovery flows.
+    // GUI-side diagnostic during normal runtime.  The service-side VF drift
+    // monitor separately queues a conservative reapply only after confirmed
+    // active-desired drift and recovery/backoff gates pass.
     if (g_app.lockedCi < 0 || g_app.lockedFreq == 0 || g_app.lockedCi >= VF_NUM_POINTS) return;
     if (!is_curve_point_visible_in_gui(g_app.lockedCi)) return;
 
@@ -52,16 +53,45 @@ static void log_locked_tail_drift_diagnostics() {
             maxDriftCi = ci;
         }
     }
-    if (driftPoints > 0) {
-        debug_log("apply_service_snapshot_to_app: full tail drift detected target=%u points=%d drift=%d first=ci%d last=ci%d max=ci%d/%uMHz temp=%d valid=%d (diagnostic only; no automatic VF reapply)\n",
-            g_app.lockedFreq,
-            tailPoints,
-            driftPoints,
-            firstDriftCi,
-            lastDriftCi,
-            maxDriftCi,
-            maxDeltaMHz,
-            g_app.gpuTemperatureC,
-            g_app.gpuTemperatureValid ? 1 : 0);
+    static bool s_tailDriftLastLoggedValid = false;
+    static unsigned int s_tailDriftLastTargetMHz = 0;
+    static unsigned int s_tailDriftLastMaxDeltaMHz = 0;
+    static int s_tailDriftLastTailPoints = 0;
+    static int s_tailDriftLastDriftPoints = 0;
+    static int s_tailDriftLastFirstCi = -1;
+    static int s_tailDriftLastLastCi = -1;
+    static int s_tailDriftLastMaxCi = -1;
+    if (driftPoints <= 0) {
+        s_tailDriftLastLoggedValid = false;
+        return;
     }
+
+    bool driftShapeChanged = !s_tailDriftLastLoggedValid
+        || s_tailDriftLastTargetMHz != g_app.lockedFreq
+        || s_tailDriftLastTailPoints != tailPoints
+        || s_tailDriftLastDriftPoints != driftPoints
+        || s_tailDriftLastFirstCi != firstDriftCi
+        || s_tailDriftLastLastCi != lastDriftCi
+        || s_tailDriftLastMaxCi != maxDriftCi
+        || s_tailDriftLastMaxDeltaMHz != maxDeltaMHz;
+    if (!driftShapeChanged) return;
+
+    s_tailDriftLastLoggedValid = true;
+    s_tailDriftLastTargetMHz = g_app.lockedFreq;
+    s_tailDriftLastTailPoints = tailPoints;
+    s_tailDriftLastDriftPoints = driftPoints;
+    s_tailDriftLastFirstCi = firstDriftCi;
+    s_tailDriftLastLastCi = lastDriftCi;
+    s_tailDriftLastMaxCi = maxDriftCi;
+    s_tailDriftLastMaxDeltaMHz = maxDeltaMHz;
+    debug_log("apply_service_snapshot_to_app: full tail drift detected target=%u points=%d drift=%d first=ci%d last=ci%d max=ci%d/%uMHz temp=%d valid=%d (service monitor may reapply after confirmation)\n",
+        g_app.lockedFreq,
+        tailPoints,
+        driftPoints,
+        firstDriftCi,
+        lastDriftCi,
+        maxDriftCi,
+        maxDeltaMHz,
+        g_app.gpuTemperatureC,
+        g_app.gpuTemperatureValid ? 1 : 0);
 }

@@ -31,10 +31,17 @@ static void initialize_gui_fan_settings_from_live_state(bool syncGuiCurve) {
     ensure_valid_fan_curve_config(&g_app.guiFanCurve);
     ensure_valid_fan_curve_config(&g_app.activeFanCurve);
     if (!g_app.serviceSnapshotAuthoritative) {
-        g_app.activeFanMode = get_effective_live_fan_mode();
+        int liveMode = get_effective_live_fan_mode();
+        int intentMode = current_green_curve_fan_intent_mode();
+        if (intentMode == FAN_MODE_AUTO && liveMode != FAN_MODE_AUTO) {
+            debug_log("fan intent: external live fan policy is %s while Green Curve intent is Auto; preserving Auto\n",
+                fan_mode_label(liveMode));
+        }
+        g_app.activeFanMode = intentMode;
     }
     if (g_app.activeFanMode == FAN_MODE_FIXED) {
-        g_app.activeFanFixedPercent = current_manual_fan_target_percent();
+        int intentPct = current_green_curve_fan_intent_fixed_percent();
+        g_app.activeFanFixedPercent = intentPct > 0 ? intentPct : current_manual_fan_target_percent();
     }
     if (g_app.guiFanMode < FAN_MODE_AUTO || g_app.guiFanMode > FAN_MODE_CURVE) {
         g_app.guiFanMode = g_app.activeFanMode;
@@ -124,7 +131,7 @@ static bool live_state_has_custom_oc() {
     return false;
 }
 static bool live_state_has_custom_fan() {
-    return get_effective_live_fan_mode() != FAN_MODE_AUTO;
+    return current_green_curve_fan_intent_mode() != FAN_MODE_AUTO;
 }
 static void refresh_fan_curve_button_text() {
     if (!g_app.hFanCurveBtn) return;
@@ -428,7 +435,11 @@ static void stop_fan_curve_runtime(bool restoreFanAutoOnExit) {
     g_app.fanRuntimeConsecutiveFailures = 0;
     g_app.fanRuntimeLastApplyTickMs = 0;
     if (hadRuntime && (g_app.activeFanMode == FAN_MODE_CURVE || g_app.activeFanMode == FAN_MODE_FIXED)) {
-        g_app.activeFanMode = g_app.fanIsAuto ? FAN_MODE_AUTO : FAN_MODE_FIXED;
+        if (!restoreFanAutoOnExit && !g_app.fanIsAuto) {
+            debug_log("fan intent: runtime stopped while live driver fan is manual; treating it as external policy and returning Green Curve intent to Auto\n");
+        }
+        g_app.activeFanMode = FAN_MODE_AUTO;
+        g_app.activeFanFixedPercent = 0;
     }
     if (g_app.isServiceProcess && hadRuntime) {
         stop_service_fan_runtime_thread();

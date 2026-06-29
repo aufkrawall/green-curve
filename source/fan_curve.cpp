@@ -28,14 +28,14 @@ void fan_curve_set_default(FanCurveConfig* config) {
     config->pollIntervalMs = 1000;
     config->hysteresisC = 2;
 
-    config->points[0] = { true, 30, 20 };
-    config->points[1] = { true, 45, 35 };
-    config->points[2] = { true, 60, 55 };
-    config->points[3] = { true, 72, 72 };
-    config->points[4] = { true, 84, 90 };
-    config->points[5] = { false, 90, 95 };
-    config->points[6] = { false, 95, 100 };
-    config->points[7] = { false, 100, 100 };
+    config->points[0] = { gc_bool8_from_bool(true), 30, 20 };
+    config->points[1] = { gc_bool8_from_bool(true), 45, 35 };
+    config->points[2] = { gc_bool8_from_bool(true), 60, 55 };
+    config->points[3] = { gc_bool8_from_bool(true), 72, 72 };
+    config->points[4] = { gc_bool8_from_bool(true), 84, 90 };
+    config->points[5] = { gc_bool8_from_bool(false), 90, 95 };
+    config->points[6] = { gc_bool8_from_bool(false), 95, 100 };
+    config->points[7] = { gc_bool8_from_bool(false), 100, 100 };
 }
 
 int fan_curve_active_count(const FanCurveConfig* config) {
@@ -87,7 +87,7 @@ void fan_curve_normalize(FanCurveConfig* config) {
         config->points[enabledCount + i].enabled = false;
     }
     for (int i = enabledCount + disabledCount; i < FAN_CURVE_MAX_POINTS; i++) {
-        config->points[i] = { false, 100, 100 };
+        config->points[i] = { gc_bool8_from_bool(false), 100, 100 };
     }
 }
 

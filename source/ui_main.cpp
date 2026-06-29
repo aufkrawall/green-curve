@@ -579,6 +579,22 @@ static void unlock_all() {
     end_programmatic_edit_update();
 }
 
+static LRESULT CALLBACK lock_checkbox_subclass_proc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
+                                                    UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
+    (void)wParam;
+    (void)lParam;
+    (void)dwRefData;
+    if (uMsg == WM_LBUTTONDBLCLK) {
+        int vi = GetDlgCtrlID(hWnd) - LOCK_BASE_ID;
+        debug_log("lock checkbox: ignored double-click notification for vi=%d so one gesture cannot skip FLATTEN\n", vi);
+        return 0;
+    }
+    if (uMsg == WM_NCDESTROY) {
+        RemoveWindowSubclass(hWnd, lock_checkbox_subclass_proc, uIdSubclass);
+    }
+    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
 // Create (or recreate) the hover tooltip that explains the tri-state lock
 // checkboxes. The checkboxes are destroyed/recreated on service-state changes,
 // so the tooltip and its registered tools are rebuilt alongside them. comctl32
@@ -684,6 +700,9 @@ static void create_edit_controls(HWND hParent, HINSTANCE hInst) {
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
             x + labelW, y + dp(1), cbW, rowH - dp(2),
             hParent, (HMENU)(INT_PTR)(LOCK_BASE_ID + vi), hInst, nullptr);
+        if (g_app.hLocks[vi]) {
+            SetWindowSubclass(g_app.hLocks[vi], lock_checkbox_subclass_proc, 0, 0);
+        }
 
         // MHz edit
         g_app.hEditsMhz[vi] = CreateWindowExA(

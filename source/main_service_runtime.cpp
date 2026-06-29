@@ -165,10 +165,10 @@ void service_check_disk_version_on_device_arrival() {
 // stale-handle access violation, a fan-pulse wedge, or an on-disk driver-version
 // change) requests a controlled service restart.  request_service_restart()
 // snapshots the active OC/fan profile, records the restart for loop protection,
-// and exits the process non-zero; the SCM failure action relaunches us and
-// service_launch_startup_reapply() restores the profile on the fresh process —
-// i.e. the known-stable fresh-boot path.  The function keeps its historical name
-// because all four trigger call sites already call it.
+// and exits the process non-zero; the SCM failure action relaunches us and the
+// startup coordinator restores the restart snapshot on the fresh process.
+// The function keeps its historical name because all four trigger call sites
+// already call it.
 static void launch_recovery_thread() {
     request_service_restart("GPU driver recovery (device reconnect / driver upgrade / TDR)");
 }
@@ -349,6 +349,30 @@ static void lock_service_runtime() {
             }
         }
     }
+}
+
+// Timed variant: returns true if the lock was acquired, false on timeout.
+// Same recursive ownership tracking as lock_service_runtime().  Used by the
+// pipe server to avoid blocking the single-instance pipe during recovery
+// reapply, so PING and other lightweight commands are not starved.
+static bool try_lock_service_runtime(DWORD timeoutMs) {
+    ensure_service_runtime_lock();
+    if (!g_serviceRuntimeLock) return false;
+    DWORD waitResult = WaitForSingleObject(g_serviceRuntimeLock, timeoutMs);
+    if (waitResult == WAIT_ABANDONED) {
+        debug_log("warning: service runtime lock was abandoned by previous owner\n");
+    }
+    if (waitResult == WAIT_OBJECT_0 || waitResult == WAIT_ABANDONED) {
+        DWORD currentThreadId = GetCurrentThreadId();
+        if (g_serviceRuntimeLockOwnerThreadId == currentThreadId) {
+            g_serviceRuntimeLockDepth++;
+        } else {
+            g_serviceRuntimeLockOwnerThreadId = currentThreadId;
+            g_serviceRuntimeLockDepth = 1;
+        }
+        return true;
+    }
+    return false;
 }
 
 static void unlock_service_runtime() {
@@ -1018,8 +1042,9 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         // back to the previous profile's selective offset (e.g. 475/60) because
         // g_serviceActiveDesired had not been updated yet and tail points with
         // non-zero flatten offsets satisfied live_curve_has_any_nonzero_offsets().
+        bool hadActiveDesired = g_serviceHasActiveDesired;
         DesiredSettings mergedActiveDesired = {};
-        if (g_serviceHasActiveDesired) {
+        if (hadActiveDesired) {
             mergedActiveDesired = g_serviceActiveDesired;
         } else {
             initialize_desired_settings_defaults(&mergedActiveDesired);
@@ -1051,6 +1076,46 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         }
         g_serviceActiveDesired = mergedActiveDesired;
         g_serviceActiveDesired.resetOcBeforeApply = false;
+        if (g_app.selectedGpu.valid) {
+            g_serviceActiveDesiredGpu = g_app.selectedGpu;
+        } else if (g_app.selectedGpuIndex < g_app.adapterCount && g_app.adapters[g_app.selectedGpuIndex].valid) {
+            g_serviceActiveDesiredGpu = g_app.adapters[g_app.selectedGpuIndex];
+        } else {
+            memset(&g_serviceActiveDesiredGpu, 0, sizeof(g_serviceActiveDesiredGpu));
+        }
+        // When the service was freshly started (no prior active desired), the
+        // incoming request may be partial (e.g., fan-only after a crash restart
+        // where the user's OC settings are still applied on the GPU but unknown
+        // to this service process).  Read the live GPU state to populate any
+        // missing OC fields so the crash-restart snapshot is complete.
+        if (!hadActiveDesired) {
+            bool filledMem = false, filledPower = false;
+            if (nvml_ensure_ready() && g_nvml_api.getMemClkVfOffset &&
+                !g_serviceActiveDesired.hasMemOffset) {
+                int liveMemMhz = 0;
+                if (g_nvml_api.getMemClkVfOffset(g_app.nvmlDevice, &liveMemMhz) == NVML_SUCCESS) {
+                    g_serviceActiveDesired.hasMemOffset = true;
+                    g_serviceActiveDesired.memOffsetMHz = liveMemMhz;
+                    filledMem = true;
+                }
+            }
+            if (nvml_ensure_ready() && g_nvml_api.getPowerLimit &&
+                g_nvml_api.getPowerDefaultLimit && !g_serviceActiveDesired.hasPowerLimit) {
+                unsigned int curMw = 0, defMw = 0;
+                if (g_nvml_api.getPowerLimit(g_app.nvmlDevice, &curMw) == NVML_SUCCESS &&
+                    g_nvml_api.getPowerDefaultLimit(g_app.nvmlDevice, &defMw) == NVML_SUCCESS &&
+                    defMw > 0) {
+                    int livePct = (int)((curMw * 100ULL + defMw / 2) / defMw);
+                    g_serviceActiveDesired.hasPowerLimit = true;
+                    g_serviceActiveDesired.powerLimitPct = livePct;
+                    filledPower = true;
+                }
+            }
+            if (filledMem || filledPower) {
+                debug_log("service apply: fresh service received partial apply; populated missing OC fields from live GPU state (mem=%s power=%s)\n",
+                    filledMem ? "yes" : "no", filledPower ? "yes" : "no");
+            }
+        }
         g_serviceHasActiveDesired = true;
         InterlockedExchange(&g_serviceRecoveryReapplyPending, 0);
         InterlockedExchange(&g_serviceReapplyInProgress, 0); // RC7: reapply confirmed by successful manual apply
@@ -1216,6 +1281,7 @@ static bool service_reset_all(char* result, size_t resultSize) {
     }
     g_serviceHasActiveDesired = false;
     memset(&g_serviceActiveDesired, 0, sizeof(g_serviceActiveDesired));
+    memset(&g_serviceActiveDesiredGpu, 0, sizeof(g_serviceActiveDesiredGpu));
     if (failCount == 0) {
         g_app.appliedGpuOffsetMHz = 0;
         g_app.appliedGpuOffsetExcludeLowCount = 0;

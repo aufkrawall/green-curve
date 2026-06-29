@@ -242,26 +242,36 @@ static void show_lock_context_menu(HWND hwnd, int vi, POINT screenPt) {
     }
 }
 
-// Run a short-lived elevated copy of the current executable with `args` and wait
-// for it to finish. Shows its own error/cancel messages. Returns true only if
-// the elevated process was launched and exited with code 0.
-static bool run_elevated_command(const char* args, const char* cancelledStatus, const char* failedPrefix) {
-    char exePath[MAX_PATH] = {};
-    if (GetModuleFileNameA(nullptr, exePath, ARRAY_COUNT(exePath)) == 0) {
+// Run a short-lived elevated copy of the current executable with argv-like
+// arguments and wait for it to finish. Shows its own error/cancel messages.
+// Returns true only if the elevated process was launched and exited with code 0.
+static bool run_elevated_command(const char* const* argv, const char* cancelledStatus, const char* failedPrefix) {
+    WCHAR exePath[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, exePath, ARRAY_COUNT(exePath)) == 0) {
         MessageBoxA(g_app.hMainWnd, "Unable to locate the Green Curve executable.",
             "Green Curve", MB_OK | MB_ICONERROR);
         return false;
     }
+    WCHAR params[2048] = {};
+    for (int i = 0; argv && argv[i]; i++) {
+        WCHAR warg[MAX_PATH] = {};
+        if (!utf8_to_wide(argv[i], warg, ARRAY_COUNT(warg)) ||
+            !pl_append_quoted_arg_w(params, ARRAY_COUNT(params), warg)) {
+            MessageBoxA(g_app.hMainWnd, "Elevated helper command line is too long.",
+                "Green Curve", MB_OK | MB_ICONERROR);
+            return false;
+        }
+    }
 
-    SHELLEXECUTEINFOA sei = {};
+    SHELLEXECUTEINFOW sei = {};
     sei.cbSize = sizeof(sei);
     sei.fMask = SEE_MASK_NO_CONSOLE | SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
     sei.hwnd = g_app.hMainWnd;
-    sei.lpVerb = "runas";
+    sei.lpVerb = L"runas";
     sei.lpFile = exePath;
-    sei.lpParameters = args;
+    sei.lpParameters = params;
     sei.nShow = SW_HIDE;
-    if (!ShellExecuteExA(&sei)) {
+    if (!ShellExecuteExW(&sei)) {
         DWORD err = GetLastError();
         if (err == ERROR_CANCELLED) {
             set_profile_status_text("%s", cancelledStatus);
@@ -323,14 +333,14 @@ static void show_machine_logon_context_menu(HWND hwnd, POINT screenPt) {
     if (cmd == MACHINE_LOGON_MENU_PUBLISH_ID) {
         bool ok = false;
         if (!is_elevated()) {
-            char args[MAX_PATH * 2] = {};
             // --config is REQUIRED here: the elevated helper reads the admin's
             // profile to publish from g_app.configPath. Without it the helper
             // resolves its own (wrong) config path and publishes an empty/stale
             // profile, or creates a stray config.ini beside the binary.
-            StringCchPrintfA(args, ARRAY_COUNT(args),
-                "--publish-slot-to-machine %d --config \"%s\"", selectedSlot, g_app.configPath);
-            ok = run_elevated_command(args,
+            char slotArg[16] = {};
+            StringCchPrintfA(slotArg, ARRAY_COUNT(slotArg), "%d", selectedSlot);
+            const char* argv[] = { "--publish-slot-to-machine", slotArg, "--config", g_app.configPath, nullptr };
+            ok = run_elevated_command(argv,
                 "Administrator consent was cancelled; profile was not published.",
                 "Publish profile to machine-wide bank");
         } else {
@@ -347,10 +357,10 @@ static void show_machine_logon_context_menu(HWND hwnd, POINT screenPt) {
     } else if (cmd == MACHINE_LOGON_MENU_CLEAR_MACHINE_SLOT_ID) {
         bool ok = false;
         if (!is_elevated()) {
-            char args[MAX_PATH * 2] = {};
-            StringCchPrintfA(args, ARRAY_COUNT(args),
-                "--clear-machine-slot %d --config \"%s\"", selectedSlot, g_app.configPath);
-            ok = run_elevated_command(args,
+            char slotArg[16] = {};
+            StringCchPrintfA(slotArg, ARRAY_COUNT(slotArg), "%d", selectedSlot);
+            const char* argv[] = { "--clear-machine-slot", slotArg, "--config", g_app.configPath, nullptr };
+            ok = run_elevated_command(argv,
                 "Administrator consent was cancelled; machine-wide profile slot was not cleared.",
                 "Clear machine-wide profile slot");
         } else {
@@ -368,10 +378,9 @@ static void show_machine_logon_context_menu(HWND hwnd, POINT screenPt) {
         bool enable = !restrictOn;
         bool ok = false;
         if (!is_elevated()) {
-            char args[MAX_PATH * 2] = {};
-            StringCchPrintfA(args, ARRAY_COUNT(args),
-                "--set-restrict-shared %d --config \"%s\"", enable ? 1 : 0, g_app.configPath);
-            ok = run_elevated_command(args,
+            const char* enableArg = enable ? "1" : "0";
+            const char* argv[] = { "--set-restrict-shared", enableArg, "--config", g_app.configPath, nullptr };
+            ok = run_elevated_command(argv,
                 "Administrator consent was cancelled; the shared-only policy was not changed.",
                 "Shared-only policy update");
         } else {
@@ -671,7 +680,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 if (!g_hInputBr) g_hInputBr = CreateSolidBrush(COL_INPUT);
                 return (LRESULT)g_hInputBr;
             }
-            SetTextColor(hdcStatic, COL_LABEL);
+            if (hCtl == g_app.hServiceEnableLabel || hCtl == g_app.hServiceStatusLabel ||
+                hCtl == g_app.hLogonHintLabel) {
+                COLORREF textColor = (hCtl == g_app.hServiceStatusLabel &&
+                    !g_app.backgroundServiceInstalled && !g_app.backgroundServiceToggleInFlight)
+                    ? RGB(0xFF, 0x60, 0x60) : COL_TEXT;
+                SetTextColor(hdcStatic, textColor);
+            } else {
+                SetTextColor(hdcStatic, COL_LABEL);
+            }
             SetBkColor(hdcStatic, COL_BG);
             if (!g_hStaticBr) g_hStaticBr = CreateSolidBrush(COL_BG);
             return (LRESULT)g_hStaticBr;
@@ -831,11 +848,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
                 bool ok = false;
                 if (!is_elevated()) {
-                    char args[MAX_PATH * 2] = {};
-                    StringCchPrintfA(args, ARRAY_COUNT(args),
-                        currentlyShared ? "--unshare-slot %d --config \"%s\"" : "--share-slot %d --config \"%s\"",
-                        slot, g_app.configPath);
-                    ok = run_elevated_command(args,
+                    char slotArg[16] = {};
+                    StringCchPrintfA(slotArg, ARRAY_COUNT(slotArg), "%d", slot);
+                    const char* argv[] = {
+                        currentlyShared ? "--unshare-slot" : "--share-slot",
+                        slotArg,
+                        "--config",
+                        g_app.configPath,
+                        nullptr
+                    };
+                    ok = run_elevated_command(argv,
                         currentlyShared
                             ? "Administrator consent was cancelled; profile is still shared."
                             : "Administrator consent was cancelled; profile was not shared.",
@@ -980,6 +1002,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         gui_has_pending_curve_or_lock_edits() ? 1 : 0);
                 } else {
                     build_full_live_desired_settings(&desired);
+                    if (desired.hasFan && g_app.guiFanMode >= FAN_MODE_AUTO && g_app.guiFanMode <= FAN_MODE_CURVE) {
+                        int liveCapturedFanMode = desired.fanMode;
+                        desired.fanMode = g_app.guiFanMode;
+                        desired.fanAuto = desired.fanMode == FAN_MODE_AUTO;
+                        desired.fanPercent = desired.fanMode == FAN_MODE_FIXED ? clamp_percent(g_app.guiFanFixedPercent) : 0;
+                        copy_fan_curve(&desired.fanCurve, &g_app.guiFanCurve);
+                        ensure_valid_fan_curve_config(&desired.fanCurve);
+                        if (liveCapturedFanMode != desired.fanMode) {
+                            debug_log("PROFILE_SAVE: preserved visible GUI fan intent %d over live captured fan mode %d\n",
+                                desired.fanMode,
+                                liveCapturedFanMode);
+                        }
+                    }
                     debug_log("PROFILE_SAVE: no user edits, saving live state\n");
                 }
                 if (!save_profile_to_config(g_app.configPath, slot, &desired, err, sizeof(err))) {
@@ -1103,9 +1138,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 show_main_window_from_tray();
             } else if (LOWORD(wParam) == TRAY_MENU_EXIT_ID) {
                 DestroyWindow(hwnd);
-            } else if (LOWORD(wParam) >= LOCK_BASE_ID && LOWORD(wParam) < LOCK_BASE_ID + VF_NUM_POINTS) {
+            } else if (HIWORD(wParam) == BN_CLICKED &&
+                       LOWORD(wParam) >= LOCK_BASE_ID && LOWORD(wParam) < LOCK_BASE_ID + VF_NUM_POINTS) {
                 // Lock checkbox clicked — tri-state cycle: NONE → FLATTEN → HARD → NONE
+                // The BN_CLICKED guard is mandatory: these owner-drawn BUTTONs have
+                // WS_TABSTOP, so clicking/tab-focusing an unfocused box first emits
+                // BN_SETFOCUS (and BN_KILLFOCUS on the old one). Without the guard those
+                // focus notifications also matched here and ran the cycle a second time,
+                // making one physical click skip FLATTEN and jump straight to HARD.
                 int vi = LOWORD(wParam) - LOCK_BASE_ID;
+                debug_log("lock checkbox cycle: vi=%d notify=%u prevMode=%s prevLockedVi=%d\n",
+                          vi, (unsigned)HIWORD(wParam), lock_mode_name(g_app.lockMode), g_app.lockedVi);
                 if (vi == g_app.lockedVi) {
                     if (g_app.lockMode == LOCK_MODE_FLATTEN) {
                         // FLATTEN → HARD

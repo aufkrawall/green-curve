@@ -8,12 +8,12 @@
 // Green Curve controls a single GPU that may be shared by several Windows
 // user accounts on the same machine.  Policy: only the currently-ACTIVE
 // interactive session may drive the GPU, and its resolved profile is applied
-// whenever the active session identity changes.  This preserves the F-SEC-3
-// security boundary (a *different* local user cannot drive OC through the
-// SYSTEM service) while making Fast-User-Switching, RDP, and service restart
-// behave predictably: the active user's profile is applied on logon, on
-// service (re)start when a user is already logged in, and restored when the
-// user switches back to a session.
+// whenever a real Windows session-change event changes the active identity.
+// This preserves the F-SEC-3 security boundary (a *different* local user cannot
+// drive OC through the SYSTEM service) while keeping service install/repair/manual
+// start non-mutating: starting the service while a user is already logged in is
+// not treated as a synthetic logon.  Fast-User-Switching, RDP, and logon events
+// still apply the now-active user's configured profile.
 //
 // This shard is a pure policy/router layer.  It delegates profile resolution
 // to service_session_logon_resolve_and_load_profile() and hardware writes to
@@ -22,8 +22,10 @@
 
 // Last session we successfully applied a profile for in this process lifetime.
 // Used to debounce session-change events: we only re-apply when the resolved
-// active session identity actually changes, never on every event.
+// active session identity actually changes, never on every event.  WTS numeric
+// session IDs can be reused after logoff, so the identity is {sessionId, SID}.
 static DWORD g_lastAppliedSessionId = (DWORD)-1;
+static char g_lastAppliedSessionSid[184] = {};
 static ULONGLONG g_lastAppliedUtcMs = 0;
 
 // Auto-reset event the pipe server loop waits on.  Signaling it recycles the
@@ -41,6 +43,13 @@ static HANDLE g_servicePipeRecycleEvent = nullptr;
 // reasoning funnels through one definition of "active".
 static bool service_get_active_session_for_control(DWORD* sessionIdOut) {
     return get_active_interactive_session_id(sessionIdOut);
+}
+
+static bool service_last_applied_session_matches(DWORD sessionId, const char* sid) {
+    return sid && sid[0] &&
+        g_lastAppliedSessionId == sessionId &&
+        g_lastAppliedSessionSid[0] &&
+        strcmp(g_lastAppliedSessionSid, sid) == 0;
 }
 
 // Shared per-session apply: resolve the user's effective profile (per-user
@@ -113,6 +122,21 @@ static bool service_apply_profile_for_session(DWORD sessionId, const char* reaso
             usedMachineDefault ? "machine-wide default" : "per-user",
             slot, (unsigned long)sessionId, result[0] ? result : "ok");
         g_lastAppliedSessionId = sessionId;
+        if (g_serviceUserPathsResolved &&
+            g_serviceUserPathsSessionId == sessionId &&
+            g_serviceUserPathsSid[0]) {
+            StringCchCopyA(g_lastAppliedSessionSid, ARRAY_COUNT(g_lastAppliedSessionSid), g_serviceUserPathsSid);
+        } else {
+            char sidErr[128] = {};
+            if (!service_resolve_session_user_sid(sessionId, g_lastAppliedSessionSid, sizeof(g_lastAppliedSessionSid), sidErr, sizeof(sidErr))) {
+                g_lastAppliedSessionSid[0] = 0;
+                debug_log("session apply%s%s: applied session %lu but could not record user SID for debounce: %s\n",
+                    reason && reason[0] ? " (" : "",
+                    reason && reason[0] ? reason : "",
+                    (unsigned long)sessionId,
+                    sidErr[0] ? sidErr : "unknown");
+            }
+        }
         FILETIME ft = {};
         GetSystemTimeAsFileTime(&ft);
         ULARGE_INTEGER uli = {};
@@ -168,11 +192,26 @@ static void service_handle_session_change(DWORD eventType, DWORD eventSessionId)
 
     DWORD activeSessionId = (DWORD)-1;
     bool hasActive = service_get_active_session_for_control(&activeSessionId);
-    debug_log("session change: %s for session %lu; resolved active session = %s%lu, last applied = %lu\n",
+    char activeSid[184] = {};
+    char sidErr[128] = {};
+    bool haveActiveSid = false;
+    if (hasActive) {
+        haveActiveSid = service_resolve_session_user_sid(activeSessionId, activeSid, sizeof(activeSid), sidErr, sizeof(sidErr));
+        if (!haveActiveSid) {
+            debug_log("session change: %s for session %lu; active session %lu SID unavailable: %s\n",
+                evtName,
+                (unsigned long)eventSessionId,
+                (unsigned long)activeSessionId,
+                sidErr[0] ? sidErr : "unknown");
+        }
+    }
+    debug_log("session change: %s for session %lu; resolved active identity = %s%lu/%s, last applied = %lu/%s\n",
         evtName, (unsigned long)eventSessionId,
         hasActive ? "" : "<none> ",
         hasActive ? (unsigned long)activeSessionId : 0UL,
-        (unsigned long)g_lastAppliedSessionId);
+        (hasActive && haveActiveSid) ? activeSid : "<unknown>",
+        (unsigned long)g_lastAppliedSessionId,
+        g_lastAppliedSessionSid[0] ? g_lastAppliedSessionSid : "<none>");
 
     // Recycle the listening pipe instance on the active-user change (defensive:
     // the ACL is user-agnostic, so this only hands the next connect a clean
@@ -188,34 +227,14 @@ static void service_handle_session_change(DWORD eventType, DWORD eventSessionId)
         // place; a fresh logon will re-resolve and apply.
         return;
     }
-    if (activeSessionId == g_lastAppliedSessionId) {
-        debug_log("session change: active session %lu unchanged since last apply, skipping re-apply\n",
-            (unsigned long)activeSessionId);
+    if (!haveActiveSid) {
+        return;
+    }
+    if (service_last_applied_session_matches(activeSessionId, activeSid)) {
+        debug_log("session change: active identity %lu/%s unchanged since last apply, skipping re-apply\n",
+            (unsigned long)activeSessionId, activeSid);
         return;
     }
 
     service_apply_profile_for_session(activeSessionId, evtName);
-}
-
-// Service-start reconciliation: if a user is already logged into an active
-// session when the service (re)starts — e.g. SCM failure-restart, driver
-// recovery restart, or a late auto-start after login — the WTS_SESSION_LOGON
-// for that session already fired before we were accepting controls.  Apply
-// the active session's resolved profile so the GPU reflects the active user's
-// intent without requiring a logout/login.  Called from service_main after
-// the service reports RUNNING and the pipe thread is up.
-static void service_reconcile_active_session_apply() {
-    DWORD activeSessionId = (DWORD)-1;
-    if (!service_get_active_session_for_control(&activeSessionId)) {
-        debug_log("session reconcile: no active interactive session at service start, nothing to apply\n");
-        return;
-    }
-    if (g_lastAppliedSessionId == activeSessionId) {
-        debug_log("session reconcile: active session %lu already applied this process lifetime, skipping\n",
-            (unsigned long)activeSessionId);
-        return;
-    }
-    debug_log("session reconcile: service started with active session %lu already logged in; applying its profile\n",
-        (unsigned long)activeSessionId);
-    service_apply_profile_for_session(activeSessionId, "service start reconcile");
 }

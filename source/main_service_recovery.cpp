@@ -7,15 +7,17 @@
 // included after main_service_persist.cpp and before main_service_runtime.cpp
 // (no behavior change; pure move).
 
-static bool service_choose_recovery_reapply_desired(DesiredSettings* out, char* source, size_t sourceSize) {
+static bool service_choose_recovery_reapply_desired(DesiredSettings* out, GpuAdapterInfo* targetOut, char* source, size_t sourceSize) {
     if (!out) return false;
     if (source && sourceSize > 0) source[0] = 0;
+    if (targetOut) memset(targetOut, 0, sizeof(*targetOut));
     if (g_serviceHasActiveDesired) {
         *out = g_serviceActiveDesired;
+        if (targetOut) *targetOut = g_serviceActiveDesiredGpu;
         if (source && sourceSize > 0) StringCchCopyA(source, sourceSize, "active desired");
         return true;
     }
-    if (service_load_restart_reapply_snapshot(out)) {
+    if (service_load_restart_reapply_snapshot(out, targetOut)) {
         if (source && sourceSize > 0) StringCchCopyA(source, sourceSize, "restart snapshot");
         return true;
     }
@@ -34,16 +36,34 @@ static bool service_reapply_desired_preserving_intent(
     }
 
     DesiredSettings savedActive = g_serviceActiveDesired;
+    GpuAdapterInfo savedActiveGpu = g_serviceActiveDesiredGpu;
     bool hadSavedActive = g_serviceHasActiveDesired;
     DesiredSettings request = *desired;
     request.resetOcBeforeApply = true;
+
+    if (g_serviceActiveDesiredGpu.valid) {
+        char targetErr[256] = {};
+        if (!service_select_restart_reapply_gpu(&g_serviceActiveDesiredGpu, targetErr, sizeof(targetErr))) {
+            set_message(result, resultSize, "Target GPU unavailable for recovery reapply: %s",
+                targetErr[0] ? targetErr : "unknown");
+            return false;
+        }
+    }
 
     bool ok = service_apply_desired_settings(&request, false, result, resultSize);
     if (!ok) {
         if (hadSavedActive) {
             g_serviceActiveDesired = savedActive;
+            g_serviceActiveDesiredGpu = savedActiveGpu;
         } else {
             g_serviceActiveDesired = *desired;
+            if (g_app.selectedGpu.valid) {
+                g_serviceActiveDesiredGpu = g_app.selectedGpu;
+            } else if (g_app.selectedGpuIndex < g_app.adapterCount && g_app.adapters[g_app.selectedGpuIndex].valid) {
+                g_serviceActiveDesiredGpu = g_app.adapters[g_app.selectedGpuIndex];
+            } else {
+                memset(&g_serviceActiveDesiredGpu, 0, sizeof(g_serviceActiveDesiredGpu));
+            }
         }
         g_serviceActiveDesired.resetOcBeforeApply = false;
         g_serviceHasActiveDesired = true;
@@ -106,7 +126,9 @@ static DWORD WINAPI service_reapply_thread_proc(void*) {
     // Set in-progress flag so the GUI shows "reapplying..." instead of stale state.
     InterlockedExchange(&g_serviceReapplyInProgress, 1);
 
+    debug_log("reapply thread: acquiring runtime lock\n");
     lock_service_runtime();
+    debug_log("reapply thread: runtime lock acquired\n");
 
     if (g_app.deviceRemoved) {
         debug_log("reapply thread: device removed, aborting\n");
@@ -118,8 +140,9 @@ static DWORD WINAPI service_reapply_thread_proc(void*) {
     }
 
     DesiredSettings desired = {};
+    GpuAdapterInfo targetGpu = {};
     char source[64] = {};
-    if (!service_choose_recovery_reapply_desired(&desired, source, sizeof(source))) {
+    if (!service_choose_recovery_reapply_desired(&desired, &targetGpu, source, sizeof(source))) {
         debug_log("reapply thread: no desired settings found, aborting\n");
         g_serviceRecoveryReapplyAttempts = 0;
         g_serviceRecoveryReapplyNextTickMs = 0;
@@ -175,6 +198,37 @@ static DWORD WINAPI service_reapply_thread_proc(void*) {
         }
     }
 
+    if (!targetGpu.valid) {
+        debug_log("reapply thread: no target GPU identity for %s; skipping recovery reapply\n",
+            source[0] ? source : "active desired");
+        service_clear_restart_reapply_snapshot();
+        g_serviceHasActiveDesired = false;
+        memset(&g_serviceActiveDesired, 0, sizeof(g_serviceActiveDesired));
+        memset(&g_serviceActiveDesiredGpu, 0, sizeof(g_serviceActiveDesiredGpu));
+        unlock_service_runtime();
+        InterlockedExchange(&g_serviceInitInProgress, 0);
+        InterlockedExchange(&g_serviceReapplyInProgress, 0);
+        InterlockedExchange((volatile LONG*)&g_serviceReapplyThreadId, 0);
+        return 0;
+    }
+    {
+        char targetErr[256] = {};
+        if (!service_select_restart_reapply_gpu(&targetGpu, targetErr, sizeof(targetErr))) {
+            debug_log("reapply thread: target GPU unavailable for %s; NOT reapplying: %s\n",
+                source[0] ? source : "active desired",
+                targetErr[0] ? targetErr : "unknown");
+            service_clear_restart_reapply_snapshot();
+            g_serviceHasActiveDesired = false;
+            memset(&g_serviceActiveDesired, 0, sizeof(g_serviceActiveDesired));
+            memset(&g_serviceActiveDesiredGpu, 0, sizeof(g_serviceActiveDesiredGpu));
+            unlock_service_runtime();
+            InterlockedExchange(&g_serviceInitInProgress, 0);
+            InterlockedExchange(&g_serviceReapplyInProgress, 0);
+            InterlockedExchange((volatile LONG*)&g_serviceReapplyThreadId, 0);
+            return 0;
+        }
+    }
+
     char result[256] = {};
     bool ok = service_reapply_desired_preserving_intent(&desired, "recovery reapply", result, sizeof(result));
     InterlockedExchange(&g_serviceInitInProgress, 0);
@@ -214,7 +268,9 @@ static DWORD WINAPI service_reapply_thread_proc(void*) {
         // Don't clear g_serviceReapplyInProgress — the monitor will retry.
     }
 
+    debug_log("reapply thread: releasing runtime lock\n");
     unlock_service_runtime();
+    debug_log("reapply thread: runtime lock released\n");
 
     if (!ok) {
         // Schedule the next retry via the pending flag + next-tick timestamp.
@@ -273,6 +329,7 @@ static DWORD WINAPI service_reapply_thread_proc(void*) {
             InterlockedExchange(&g_serviceReapplyInProgress, 0);
             g_serviceHasActiveDesired = false;
             memset(&g_serviceActiveDesired, 0, sizeof(g_serviceActiveDesired));
+            memset(&g_serviceActiveDesiredGpu, 0, sizeof(g_serviceActiveDesiredGpu));
             // Keep the disk snapshot for a future service restart or manual reapply.
         }
     }
@@ -331,6 +388,7 @@ static void service_maybe_launch_recovery_reapply_thread() {
         // is still available for manual retry.
         g_serviceHasActiveDesired = false;
         memset(&g_serviceActiveDesired, 0, sizeof(g_serviceActiveDesired));
+        memset(&g_serviceActiveDesiredGpu, 0, sizeof(g_serviceActiveDesiredGpu));
         return;
     }
 
@@ -420,6 +478,7 @@ static void service_check_reapply_thread_health() {
                         InterlockedExchange(&g_serviceReapplyInProgress, 0);
                         g_serviceHasActiveDesired = false;
                         memset(&g_serviceActiveDesired, 0, sizeof(g_serviceActiveDesired));
+                        memset(&g_serviceActiveDesiredGpu, 0, sizeof(g_serviceActiveDesiredGpu));
                     }
                 }
             }
@@ -447,63 +506,72 @@ static void service_check_reapply_thread_health() {
 // Forward decl: defined below alongside the on-disk version helpers.
 static bool service_get_module_version(HMODULE mod, DWORD* outMs, DWORD* outLs);
 
-// F-REL-2d: when the service starts WITHOUT a pending reapply snapshot, it was
-// NOT a controlled recovery restart — it is a fresh boot or an out-of-band
-// termination (e.g. the user killed the service process via Task Manager).  The
-// snapshot is only written when WE trigger a restart/recovery, so its absence is
-// the signal that we must NOT auto-reapply the user's profile in this ambiguous
-// situation.  Instead, DELIBERATELY reset the GPU to driver defaults — OC (VF
-// curve offsets, GPU/mem offsets, power) AND fan to auto — so the system is left
-// in a clean, consistent, known state rather than whatever a killed instance left
-// behind (NvAPI offsets and NVML manual fan control persist in the driver after
-// the controlling process dies, and a partial leftover OC + pinned fan is exactly
-// the inconsistent state we want to avoid).  service_reset_all() also repopulates
-// the control state, so the GUI correctly shows default/auto instead of a stale
-// "fixed custom" fan.  On a genuine fresh boot nothing is applied yet, so this is
-// largely a no-op; the per-user logon task re-applies the saved profile after
-// login, and after a manual kill the user (or logon) re-applies explicitly.
-static void service_reset_to_defaults_on_resume() {
-    bool ready = false;
-    for (int attempt = 0; attempt < 20; attempt++) { // up to ~10 s — a steady-state kill has a ready driver immediately
-        char detail[160] = {};
-        lock_service_runtime();
-        bool hw = hardware_initialize(detail, sizeof(detail));
-        bool populated = g_app.numPopulated > 0;
-        unlock_service_runtime();
-        if (hw && populated) { ready = true; break; }
-        Sleep(500);
-    }
-    if (!ready) {
-        debug_log("service startup: no pending reapply; driver not ready quickly — skipping reset-to-defaults (nothing is applied yet on a fresh boot)\n");
-        return;
-    }
-    char result[256] = {};
-    lock_service_runtime();
-    bool ok = service_reset_all(result, sizeof(result));
-    unlock_service_runtime();
-    debug_log("service startup: no pending reapply — reset GPU to driver defaults (OC + fan auto): %s%s%s "
-        "(clean slate after a fresh boot or out-of-band termination; the profile is re-applied explicitly by you or the logon task)\n",
-        ok ? "ok" : "FAILED",
-        result[0] ? " - " : "", result[0] ? result : "");
+static void service_log_startup_coordinator_state(const char* phase) {
+    EnterCriticalSection(&g_appLock);
+    debug_log("service startup coordinator: %s final activeDesired=%d gpu=%d exclude=%d mem=%d power=%d fanMode=%d lockCi=%d lockMHz=%u reapplyPending=%ld reapplyInProgress=%ld\n",
+        phase && phase[0] ? phase : "state",
+        g_serviceHasActiveDesired ? 1 : 0,
+        (g_serviceHasActiveDesired && g_serviceActiveDesired.hasGpuOffset) ? g_serviceActiveDesired.gpuOffsetMHz : 0,
+        (g_serviceHasActiveDesired && g_serviceActiveDesired.hasGpuOffset) ? g_serviceActiveDesired.gpuOffsetExcludeLowCount : 0,
+        (g_serviceHasActiveDesired && g_serviceActiveDesired.hasMemOffset) ? g_serviceActiveDesired.memOffsetMHz : 0,
+        (g_serviceHasActiveDesired && g_serviceActiveDesired.hasPowerLimit) ? g_serviceActiveDesired.powerLimitPct : 0,
+        (g_serviceHasActiveDesired && g_serviceActiveDesired.hasFan) ? g_serviceActiveDesired.fanMode : -1,
+        (g_serviceHasActiveDesired && g_serviceActiveDesired.hasLock) ? g_serviceActiveDesired.lockCi : -1,
+        (g_serviceHasActiveDesired && g_serviceActiveDesired.hasLock) ? g_serviceActiveDesired.lockMHz : 0u,
+        (long)InterlockedExchangeAdd(&g_serviceRecoveryReapplyPending, 0),
+        (long)InterlockedExchangeAdd(&g_serviceReapplyInProgress, 0));
+    LeaveCriticalSection(&g_appLock);
 }
 
-// Startup thread: if a restart-reapply snapshot exists (because a GPU device
+// Startup coordinator: if a restart-reapply snapshot exists (because a GPU device
 // reconnect / driver upgrade / TDR restarted the service process), wait for the
 // GPU driver to be ready, re-apply the saved OC/fan settings, then delete the
 // snapshot.  This is the restore half of the restart-based recovery: a fresh
-// process maps clean driver DLLs and re-applies the profile.
-static DWORD WINAPI service_startup_reapply_thread_proc(void*) {
+// process maps clean driver DLLs and re-applies the profile.  If no snapshot
+// exists, startup is intentionally non-mutating: installing, repairing, or
+// manually starting the background service must not apply a saved logon profile
+// or reset hardware behind the user's back.  Real logon/session-change events
+// still apply the active user's configured profile, and explicit GUI/CLI
+// apply/reset commands still write immediately.
+static DWORD WINAPI service_startup_coordinator_thread_proc(void*) {
     DesiredSettings desired = {};
-    bool haveSnapshot = service_load_restart_reapply_snapshot(&desired);
+    GpuAdapterInfo targetGpu = {};
+    bool haveSnapshot = service_load_restart_reapply_snapshot(&desired, &targetGpu);
     unsigned int recentRestarts = service_count_recent_restarts();
-    debug_log("service startup reapply: boot check — recoveryRestart=%d recentRestarts=%u/%u within %llu ms\n",
+    debug_log("service startup coordinator: boot check - recoveryRestart=%d recentRestarts=%u/%u within %llu ms\n",
         haveSnapshot ? 1 : 0, recentRestarts, (unsigned int)SERVICE_RESTART_LOOP_THRESHOLD,
         (unsigned long long)SERVICE_RESTART_LOOP_WINDOW_MS);
     if (!haveSnapshot) {
-        // Normal boot or out-of-band termination (e.g. Task Manager kill): do NOT
-        // auto-reapply; deliberately reset to driver defaults (clean slate — OC +
-        // fan auto + refreshed control state).
-        service_reset_to_defaults_on_resume();
+        // No restart snapshot means this is either a clean boot, a controlled
+        // stop+start, or an unexpected termination (Task Manager kill).  In the
+        // unexpected-kill case, the GPU may still have OC settings applied from
+        // the previous process that was killed before it could reset them.
+        // Detect this by reading live GPU state; if stale OC settings are
+        // present, reset to driver defaults.
+        debug_log("service startup coordinator: no restart snapshot; checking for stale GPU OC settings\n");
+        bool needsCleanup = false;
+        lock_service_runtime();
+        char hwDetail[160] = {};
+        bool hwOk = hardware_initialize(hwDetail, sizeof(hwDetail)) && g_app.numPopulated > 0;
+        if (hwOk) {
+            if (g_app.gpuClockOffsetkHz != 0 || g_app.memClockOffsetkHz != 0 ||
+                g_app.powerLimitPct != 100 || !g_app.fanIsAuto) {
+                needsCleanup = true;
+            }
+        }
+        if (needsCleanup) {
+            char resetDetail[256] = {};
+            bool resetOk = service_reset_all(resetDetail, sizeof(resetDetail));
+            debug_log("service startup coordinator: stale GPU OC settings detected, %s: %s\n",
+                resetOk ? "reset complete" : "reset FAILED",
+                resetDetail[0] ? resetDetail : "(no detail)");
+        } else {
+            debug_log("service startup coordinator: no stale GPU OC settings found%s%s\n",
+                hwOk ? "" : " (hardware init: ",
+                hwOk ? "" : (hwDetail[0] ? hwDetail : "failed"));
+        }
+        unlock_service_runtime();
+        service_log_startup_coordinator_state("no-snapshot idle");
         return 0;
     }
     // OC stabilization window: if the user applied OC settings less than
@@ -528,6 +596,8 @@ static DWORD WINAPI service_startup_reapply_thread_proc(void*) {
         g_serviceRecoveryReapplyNextTickMs = 0;
         g_serviceHasActiveDesired = false;
         memset(&g_serviceActiveDesired, 0, sizeof(g_serviceActiveDesired));
+        memset(&g_serviceActiveDesiredGpu, 0, sizeof(g_serviceActiveDesiredGpu));
+        service_log_startup_coordinator_state("unstable snapshot dropped");
         return 0;
     }
     // F-REL-2: restart-loop breaker — go DORMANT instead of giving up.
@@ -546,6 +616,7 @@ static DWORD WINAPI service_startup_reapply_thread_proc(void*) {
             "going DORMANT (snapshot retained, not reapplied). Auto-reapply resumes once the restart "
             "window clears or a driver install/arrival re-arms it; you can also apply manually.\n",
             recentRestarts, (unsigned long long)SERVICE_RESTART_LOOP_WINDOW_MS);
+        service_log_startup_coordinator_state("restart-loop dormant");
         return 0;
     }
     debug_log("service startup reapply: restart snapshot found, waiting for GPU driver readiness\n");
@@ -582,11 +653,13 @@ static DWORD WINAPI service_startup_reapply_thread_proc(void*) {
         lock_service_runtime();
         if (!g_serviceHasActiveDesired) {
             g_serviceActiveDesired = desired;
+            g_serviceActiveDesiredGpu = targetGpu;
             g_serviceHasActiveDesired = true;
         }
         unlock_service_runtime();
         service_queue_recovery_reapply("startup reapply: driver not ready in initial wait",
             SERVICE_RECOVERY_REAPPLY_RETRY_INTERVAL_MS);
+        service_log_startup_coordinator_state("snapshot deferred");
         return 0;
     }
     // Log the freshly loaded driver DLL versions for post-mortem correlation
@@ -608,6 +681,21 @@ static DWORD WINAPI service_startup_reapply_thread_proc(void*) {
     // Settle briefly so the driver is fully past its transient post-restart state.
     Sleep(500);
     lock_service_runtime();
+    {
+        char targetErr[256] = {};
+        if (!service_select_restart_reapply_gpu(&targetGpu, targetErr, sizeof(targetErr))) {
+            debug_log("service startup reapply: target GPU unavailable; NOT reapplying snapshot: %s\n",
+                targetErr[0] ? targetErr : "unknown");
+            service_clear_restart_reapply_snapshot();
+            service_clear_restart_history();
+            g_serviceHasActiveDesired = false;
+            memset(&g_serviceActiveDesired, 0, sizeof(g_serviceActiveDesired));
+            memset(&g_serviceActiveDesiredGpu, 0, sizeof(g_serviceActiveDesiredGpu));
+            unlock_service_runtime();
+            service_log_startup_coordinator_state("snapshot target unavailable");
+            return 0;
+        }
+    }
     desired.resetOcBeforeApply = true;
     char result[256] = {};
     bool ok = service_reapply_desired_preserving_intent(&desired, "startup reapply", result, sizeof(result));
@@ -624,10 +712,12 @@ static DWORD WINAPI service_startup_reapply_thread_proc(void*) {
     } else {
         service_queue_recovery_reapply("startup reapply failure", SERVICE_RECOVERY_REAPPLY_RETRY_INTERVAL_MS);
     }
+    service_log_startup_coordinator_state(ok ? "snapshot applied" : "snapshot apply queued");
     return 0;
 }
 
-static void service_launch_startup_reapply() {
-    HANDLE h = CreateThread(nullptr, 0, service_startup_reapply_thread_proc, nullptr, 0, nullptr);
+static void service_launch_startup_coordinator() {
+    HANDLE h = CreateThread(nullptr, 0, service_startup_coordinator_thread_proc, nullptr, 0, nullptr);
     if (h) CloseHandle(h);
+    else debug_log("service startup coordinator CreateThread FAILED (error=%lu)\n", GetLastError());
 }

@@ -198,26 +198,116 @@ static bool resolve_data_paths(char* err, size_t errSize) {
     return true;
 }
 
-static bool resolve_service_user_data_paths(DWORD sessionId, char* err, size_t errSize) {
-    if (g_serviceUserPathsResolved && g_serviceUserPathsSessionId == sessionId) {
-        return true;
+static bool service_sid_string_from_token(HANDLE token, char* sidOut, size_t sidOutSize, char* err, size_t errSize) {
+    if (!sidOut || sidOutSize == 0) return false;
+    sidOut[0] = 0;
+    if (!token) {
+        set_message(err, errSize, "Missing user token");
+        return false;
     }
-    if (g_serviceUserPathsResolved && g_serviceUserPathsSessionId != sessionId) {
-        close_debug_log_file();
-        g_userDataDir[0] = 0;
-        g_cliLogPath[0] = 0;
-        g_debugLogPath[0] = 0;
-        g_jsonPath[0] = 0;
-        g_errorLogPath[0] = 0;
-        g_serviceUserProfileDir[0] = 0;
-        g_app.configPath[0] = 0;
-        g_serviceUserPathsResolved = false;
-        g_serviceUserPathsSessionId = (DWORD)-1;
+
+    DWORD needed = 0;
+    GetTokenInformation(token, TokenUser, nullptr, 0, &needed);
+    if (needed == 0) {
+        set_message(err, errSize, "TokenUser size query failed");
+        return false;
+    }
+    BYTE stackBuf[512] = {};
+    void* buf = needed <= sizeof(stackBuf) ? stackBuf : malloc(needed);
+    if (!buf) {
+        set_message(err, errSize, "TokenUser allocation failed");
+        return false;
+    }
+    DWORD actualNeeded = needed;
+    bool ok = GetTokenInformation(token, TokenUser, buf, needed, &actualNeeded) != FALSE;
+    if (!ok) {
+        set_message(err, errSize, "TokenUser query failed");
+        if (buf != stackBuf) free(buf);
+        return false;
+    }
+    TOKEN_USER* user = (TOKEN_USER*)buf;
+    LPSTR sidText = nullptr;
+    ok = ConvertSidToStringSidA(user->User.Sid, &sidText) != FALSE && sidText && sidText[0];
+    if (ok) {
+        ok = SUCCEEDED(StringCchCopyA(sidOut, sidOutSize, sidText));
+        if (!ok) set_message(err, errSize, "User SID string is too long");
+    } else {
+        set_message(err, errSize, "User SID conversion failed");
+    }
+    if (sidText) LocalFree(sidText);
+    if (buf != stackBuf) free(buf);
+    return ok;
+}
+
+static bool service_resolve_session_user_sid(DWORD sessionId, char* sidOut, size_t sidOutSize, char* err, size_t errSize) {
+    if (!sidOut || sidOutSize == 0) return false;
+    sidOut[0] = 0;
+    HANDLE token = nullptr;
+    if (!WTSQueryUserToken(sessionId, &token)) {
+        set_message(err, errSize, "WTSQueryUserToken failed");
+        return false;
+    }
+    bool ok = service_sid_string_from_token(token, sidOut, sidOutSize, err, errSize);
+    CloseHandle(token);
+    return ok;
+}
+
+static void clear_service_user_data_path_cache() {
+    close_debug_log_file();
+    g_userDataDir[0] = 0;
+    g_cliLogPath[0] = 0;
+    g_debugLogPath[0] = 0;
+    g_jsonPath[0] = 0;
+    g_errorLogPath[0] = 0;
+    g_serviceUserProfileDir[0] = 0;
+    g_app.configPath[0] = 0;
+    g_serviceUserPathsResolved = false;
+    g_serviceUserPathsSessionId = (DWORD)-1;
+    g_serviceUserPathsSid[0] = 0;
+}
+
+static bool service_user_paths_identity_matches(DWORD sessionId) {
+    if (!g_serviceUserPathsResolved || g_serviceUserPathsSessionId != sessionId || !g_serviceUserPathsSid[0]) {
+        return false;
+    }
+    char sid[184] = {};
+    char err[128] = {};
+    if (!service_resolve_session_user_sid(sessionId, sid, sizeof(sid), err, sizeof(err))) {
+        debug_log("service user paths: failed to verify cached session identity for session %lu: %s\n",
+            (unsigned long)sessionId, err[0] ? err : "unknown");
+        return false;
+    }
+    return strcmp(g_serviceUserPathsSid, sid) == 0;
+}
+
+static bool resolve_service_user_data_paths(DWORD sessionId, char* err, size_t errSize) {
+    if (service_user_paths_identity_matches(sessionId)) {
+        return true;
     }
     HANDLE hToken = nullptr;
     if (!WTSQueryUserToken(sessionId, &hToken)) {
         set_message(err, errSize, "WTSQueryUserToken failed");
         return false;
+    }
+    char userSid[184] = {};
+    if (!service_sid_string_from_token(hToken, userSid, sizeof(userSid), err, errSize)) {
+        CloseHandle(hToken);
+        return false;
+    }
+    if (g_serviceUserPathsResolved) {
+        bool sameIdentity = g_serviceUserPathsSessionId == sessionId &&
+            g_serviceUserPathsSid[0] &&
+            strcmp(g_serviceUserPathsSid, userSid) == 0;
+        if (sameIdentity) {
+            CloseHandle(hToken);
+            return true;
+        }
+        debug_log("service user paths: identity changed, clearing cached paths (oldSession=%lu newSession=%lu oldSid=%s newSid=%s)\n",
+            (unsigned long)g_serviceUserPathsSessionId,
+            (unsigned long)sessionId,
+            g_serviceUserPathsSid[0] ? g_serviceUserPathsSid : "<none>",
+            userSid[0] ? userSid : "<none>");
+        clear_service_user_data_path_cache();
     }
     WCHAR profileDirW[MAX_PATH] = {};
     DWORD profileSize = ARRAY_COUNT(profileDirW);
@@ -267,6 +357,7 @@ static bool resolve_service_user_data_paths(DWORD sessionId, char* err, size_t e
     }
     g_serviceUserPathsResolved = true;
     g_serviceUserPathsSessionId = sessionId;
+    StringCchCopyA(g_serviceUserPathsSid, ARRAY_COUNT(g_serviceUserPathsSid), userSid);
     return true;
 }
 
@@ -457,6 +548,7 @@ static bool hardware_initialize(char* detail, size_t detailSize) {
         debug_log("hardware_initialize: preserving existing service active desired state\n");
     } else {
         g_serviceActiveDesired = {};
+        g_serviceActiveDesiredGpu = {};
         g_serviceHasActiveDesired = false;
     }
     // On a fresh service start (no active desired), the NVML memory VF
@@ -579,8 +671,14 @@ static void populate_service_snapshot(ServiceSnapshot* snapshot) {
         snapshot->lockMode = (int)g_app.lockMode;
         snapshot->lockTracksAnchor = g_app.guiLockTracksAnchor;
     }
-    snapshot->activeFanMode = g_app.activeFanMode;
-    snapshot->activeFanFixedPercent = g_app.activeFanFixedPercent;
+    int snapshotFanMode = current_green_curve_fan_intent_mode();
+    int snapshotFanFixedPercent = current_green_curve_fan_intent_fixed_percent();
+    const FanCurveConfig* snapshotFanCurve = current_green_curve_fan_intent_curve();
+    if (snapshotFanMode == FAN_MODE_AUTO && !g_app.fanIsAuto) {
+        debug_log_on_change("fan intent: external live fan policy observed fanIsAuto=0 gcIntent=Auto; preserving Auto in service snapshot\n");
+    }
+    snapshot->activeFanMode = snapshotFanMode;
+    snapshot->activeFanFixedPercent = snapshotFanFixedPercent;
     snapshot->gpuTemperatureC = g_app.gpuTemperatureC;
     snapshot->fanCount = g_app.fanCount;
     snapshot->fanMinPct = g_app.fanMinPct;
@@ -593,7 +691,7 @@ static void populate_service_snapshot(ServiceSnapshot* snapshot) {
     memcpy(snapshot->fanTargetMask, g_app.fanTargetMask, sizeof(snapshot->fanTargetMask));
     memcpy(snapshot->curve, g_app.curve, sizeof(snapshot->curve));
     memcpy(snapshot->freqOffsets, g_app.freqOffsets, sizeof(snapshot->freqOffsets));
-    copy_fan_curve(&snapshot->activeFanCurve, &g_app.activeFanCurve);
+    copy_fan_curve(&snapshot->activeFanCurve, snapshotFanCurve);
     StringCchCopyA(snapshot->gpuName, ARRAY_COUNT(snapshot->gpuName), g_app.gpuName);
     StringCchCopyA(snapshot->ownerUser, ARRAY_COUNT(snapshot->ownerUser), g_app.backgroundServiceOwnerUser);
     snapshot->ownerSessionId = g_app.backgroundServiceOwnerSessionId;
@@ -621,11 +719,11 @@ static void populate_control_state(ControlState* state) {
     state->hasPowerLimit = true;
     state->powerLimitPct = g_app.powerLimitPct;
     state->hasFan = true;
-    state->fanMode = g_app.activeFanMode;
-    state->fanFixedPercent = g_app.activeFanFixedPercent;
+    state->fanMode = current_green_curve_fan_intent_mode();
+    state->fanFixedPercent = current_green_curve_fan_intent_fixed_percent();
     state->fanCurrentPercent = current_displayed_fan_percent();
     state->fanCurrentTemperatureC = g_app.gpuTemperatureValid ? g_app.gpuTemperatureC : 0;
-    copy_fan_curve(&state->fanCurve, &g_app.activeFanCurve);
+    copy_fan_curve(&state->fanCurve, current_green_curve_fan_intent_curve());
     ensure_valid_fan_curve_config(&state->fanCurve);
     LeaveCriticalSection(&g_appLock);
 }
@@ -1006,7 +1104,10 @@ static void apply_control_state_to_gui(const ControlState* state) {
             copy_fan_curve(&g_app.guiFanCurve, &state->fanCurve);
             ensure_valid_fan_curve_config(&g_app.guiFanCurve);
         }
-        g_app.fanIsAuto = state->fanMode == FAN_MODE_AUTO;
+        // state->fanMode is Green Curve intent, not necessarily the live driver
+        // fan policy.  FanControl or another external controller may make NVML
+        // report manual while Green Curve intent remains Auto; keep fanIsAuto
+        // sourced from live snapshots/telemetry.
         g_app.fanCurveRuntimeActive = state->fanMode == FAN_MODE_CURVE;
         g_app.fanFixedRuntimeActive = state->fanMode == FAN_MODE_FIXED;
     }

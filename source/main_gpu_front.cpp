@@ -15,36 +15,21 @@ static const char* gpu_family_name(GpuFamily family) {
     }
 }
 static bool select_vf_backend_for_current_gpu() {
-    g_app.vfBackend = nullptr;
-    g_app.gpuFamily = GPU_FAMILY_UNKNOWN;
-    switch (g_app.gpuArchitecture) {
-        case NV_GPU_ARCHITECTURE_GP100:
-            g_app.gpuFamily = GPU_FAMILY_PASCAL;
-            g_app.vfBackend = &g_vfBackendPascal;
-            return true;
-        case NV_GPU_ARCHITECTURE_TU100:
-            g_app.gpuFamily = GPU_FAMILY_TURING;
-            g_app.vfBackend = &g_vfBackendTuring;
-            return true;
-        case NV_GPU_ARCHITECTURE_GA100:
-            g_app.gpuFamily = GPU_FAMILY_AMPERE;
-            g_app.vfBackend = &g_vfBackendAmpere;
-            return true;
-        case NV_GPU_ARCHITECTURE_AD100:
-            g_app.gpuFamily = GPU_FAMILY_LOVELACE;
-            g_app.vfBackend = &g_vfBackendLovelace;
-            return true;
-        case NV_GPU_ARCHITECTURE_GB200:
-            g_app.gpuFamily = GPU_FAMILY_BLACKWELL;
-            g_app.vfBackend = &g_vfBackendBlackwell;
-            return true;
-        default:
-            debug_log("select_vf_backend_for_current_gpu: unrecognized architecture 0x%08X, using future backend\n",
-                g_app.gpuArchitecture);
-            g_app.gpuFamily = GPU_FAMILY_UNKNOWN;
-            g_app.vfBackend = &g_vfBackendFuture;
-            return true;
+    GpuFamily family = GPU_FAMILY_UNKNOWN;
+    const VfBackendSpec* backend = vf_backend_for_architecture(g_app.gpuArchitecture, &family);
+    g_app.gpuFamily = family;
+    g_app.vfBackend = backend;
+    if (family == GPU_FAMILY_UNKNOWN) {
+        debug_log("select_vf_backend_for_current_gpu: unrecognized architecture 0x%08X, using future backend\n",
+            g_app.gpuArchitecture);
+    } else {
+        debug_log("select_vf_backend_for_current_gpu: arch=0x%08X family=%s backend=%s bestGuess=%d\n",
+            g_app.gpuArchitecture,
+            gpu_family_name(family),
+            backend ? backend->name : "<none>",
+            vf_backend_is_best_guess(backend) ? 1 : 0);
     }
+    return backend != nullptr;
 }
 static const VfBackendSpec* probe_backend_for_current_gpu() {
     if (g_app.vfBackend) return g_app.vfBackend;
@@ -70,6 +55,17 @@ static bool nvapi_get_error_message(int status, char* text, size_t textSize) {
     return true;
 }
 static bool nvapi_read_gpu_metadata() {
+    static bool s_cachedKnownBackendValid = false;
+    static bool s_cachedKnownPciValid = false;
+    static unsigned int s_cachedKnownDeviceId = 0;
+    static unsigned int s_cachedKnownSubSystemId = 0;
+    static unsigned int s_cachedKnownPciRevisionId = 0;
+    static unsigned int s_cachedKnownExtDeviceId = 0;
+    static unsigned int s_cachedKnownArchitecture = 0;
+    static unsigned int s_cachedKnownImplementation = 0;
+    static unsigned int s_cachedKnownChipRevision = 0;
+    static GpuFamily s_cachedKnownFamily = GPU_FAMILY_UNKNOWN;
+    static const VfBackendSpec* s_cachedKnownBackend = nullptr;
     g_app.gpuArchInfoValid = false;
     g_app.gpuPciInfoValid = false;
     g_app.gpuArchitecture = 0;
@@ -81,29 +77,98 @@ static bool nvapi_read_gpu_metadata() {
     g_app.gpuExtDeviceId = 0;
     typedef int (*get_arch_t)(GPU_HANDLE, nvapiGpuArchInfo_t*);
     auto getArchInfo = (get_arch_t)nvapi_qi(NVAPI_GPU_GET_ARCH_INFO_ID);
+    int archStatus = -999999;
     if (getArchInfo) {
         nvapiGpuArchInfo_t info = {};
         info.version = NVAPI_GPU_ARCH_INFO_VER2;
-        if (getArchInfo(g_app.gpuHandle, &info) == 0) {
+        archStatus = getArchInfo(g_app.gpuHandle, &info);
+        if (archStatus == 0) {
             g_app.gpuArchitecture = info.architecture;
             g_app.gpuImplementation = info.implementation;
             g_app.gpuChipRevision = info.revision;
             g_app.gpuArchInfoValid = true;
         }
+    } else {
+        archStatus = -999998;
     }
     typedef int (*get_pci_t)(GPU_HANDLE, unsigned int*, unsigned int*, unsigned int*, unsigned int*);
     auto getPciIdentifiers = (get_pci_t)nvapi_qi(NVAPI_GPU_GET_PCI_IDENTIFIERS_ID);
+    int pciStatus = -999999;
     if (getPciIdentifiers) {
-        if (getPciIdentifiers(
+        pciStatus = getPciIdentifiers(
                 g_app.gpuHandle,
                 &g_app.gpuDeviceId,
                 &g_app.gpuSubSystemId,
                 &g_app.gpuPciRevisionId,
-                &g_app.gpuExtDeviceId) == 0) {
+                &g_app.gpuExtDeviceId);
+        if (pciStatus == 0) {
             g_app.gpuPciInfoValid = true;
         }
+    } else {
+        pciStatus = -999998;
     }
-    return select_vf_backend_for_current_gpu() || g_app.gpuArchInfoValid || g_app.gpuPciInfoValid;
+    char archErr[96] = {};
+    char pciErr[96] = {};
+    if (archStatus != 0 && archStatus != -999998) nvapi_get_error_message(archStatus, archErr, sizeof(archErr));
+    if (pciStatus != 0 && pciStatus != -999998) nvapi_get_error_message(pciStatus, pciErr, sizeof(pciErr));
+    debug_log("nvapi_read_gpu_metadata: archStatus=%d%s%s archValid=%d arch=0x%08X impl=0x%08X rev=0x%08X pciStatus=%d%s%s pciValid=%d dev=0x%08X sub=0x%08X ext=0x%08X name=%s\n",
+        archStatus,
+        archErr[0] ? " " : "",
+        archErr[0] ? archErr : "",
+        g_app.gpuArchInfoValid ? 1 : 0,
+        g_app.gpuArchitecture,
+        g_app.gpuImplementation,
+        g_app.gpuChipRevision,
+        pciStatus,
+        pciErr[0] ? " " : "",
+        pciErr[0] ? pciErr : "",
+        g_app.gpuPciInfoValid ? 1 : 0,
+        g_app.gpuDeviceId,
+        g_app.gpuSubSystemId,
+        g_app.gpuExtDeviceId,
+        g_app.gpuName[0] ? g_app.gpuName : "<unnamed>");
+
+    bool selected = select_vf_backend_for_current_gpu();
+    bool selectedKnown = g_app.gpuFamily != GPU_FAMILY_UNKNOWN && g_app.vfBackend && !vf_backend_is_best_guess(g_app.vfBackend);
+    bool cacheMatchesPci = s_cachedKnownBackendValid && s_cachedKnownPciValid && g_app.gpuPciInfoValid &&
+        s_cachedKnownDeviceId == g_app.gpuDeviceId &&
+        s_cachedKnownSubSystemId == g_app.gpuSubSystemId &&
+        s_cachedKnownPciRevisionId == g_app.gpuPciRevisionId &&
+        s_cachedKnownExtDeviceId == g_app.gpuExtDeviceId;
+    if (!selectedKnown && cacheMatchesPci) {
+        g_app.gpuArchitecture = s_cachedKnownArchitecture;
+        g_app.gpuImplementation = s_cachedKnownImplementation;
+        g_app.gpuChipRevision = s_cachedKnownChipRevision;
+        g_app.gpuArchInfoValid = true;
+        g_app.gpuFamily = s_cachedKnownFamily;
+        g_app.vfBackend = s_cachedKnownBackend;
+        selected = g_app.vfBackend != nullptr;
+        debug_log("nvapi_read_gpu_metadata: retaining last known backend for same PCI adapter arch=0x%08X family=%s backend=%s bestGuess=%d after transient/unknown metadata\n",
+            g_app.gpuArchitecture,
+            gpu_family_name(g_app.gpuFamily),
+            g_app.vfBackend ? g_app.vfBackend->name : "<none>",
+            vf_backend_is_best_guess(g_app.vfBackend) ? 1 : 0);
+    }
+    if (selectedKnown && g_app.gpuArchInfoValid && g_app.gpuPciInfoValid) {
+        s_cachedKnownBackendValid = true;
+        s_cachedKnownPciValid = true;
+        s_cachedKnownDeviceId = g_app.gpuDeviceId;
+        s_cachedKnownSubSystemId = g_app.gpuSubSystemId;
+        s_cachedKnownPciRevisionId = g_app.gpuPciRevisionId;
+        s_cachedKnownExtDeviceId = g_app.gpuExtDeviceId;
+        s_cachedKnownArchitecture = g_app.gpuArchitecture;
+        s_cachedKnownImplementation = g_app.gpuImplementation;
+        s_cachedKnownChipRevision = g_app.gpuChipRevision;
+        s_cachedKnownFamily = g_app.gpuFamily;
+        s_cachedKnownBackend = g_app.vfBackend;
+    }
+    debug_log("nvapi_read_gpu_metadata: selected family=%s backend=%s bestGuess=%d archValid=%d pciValid=%d\n",
+        gpu_family_name(g_app.gpuFamily),
+        g_app.vfBackend ? g_app.vfBackend->name : "<none>",
+        vf_backend_is_best_guess(g_app.vfBackend) ? 1 : 0,
+        g_app.gpuArchInfoValid ? 1 : 0,
+        g_app.gpuPciInfoValid ? 1 : 0);
+    return selected || g_app.gpuArchInfoValid || g_app.gpuPciInfoValid;
 }
 static const char* fan_mode_label(int mode) {
     switch (mode) {
@@ -166,6 +231,35 @@ static void build_recent_ui_actions_text(char* out, size_t outSize) {
     }
 }
 static void build_point_list_from_flags(const bool* flags, char* out, size_t outSize, int maxItems) {
+    if (!out || outSize == 0) return;
+    out[0] = 0;
+    if (!flags) {
+        StringCchCopyA(out, outSize, "none");
+        return;
+    }
+    int count = 0;
+    int omitted = 0;
+    char part[32] = {};
+    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+        if (!flags[ci]) continue;
+        count++;
+        if (count > maxItems) {
+            omitted++;
+            continue;
+        }
+        StringCchPrintfA(part, ARRAY_COUNT(part), "%s%d", out[0] ? ", " : "", ci);
+        StringCchCatA(out, outSize, part);
+    }
+    if (count == 0) {
+        StringCchCopyA(out, outSize, "none");
+        return;
+    }
+    if (omitted > 0) {
+        StringCchPrintfA(part, ARRAY_COUNT(part), ", ... (+%d)", omitted);
+        StringCchCatA(out, outSize, part);
+    }
+}
+static void build_point_list_from_flags(const gc_bool8* flags, char* out, size_t outSize, int maxItems) {
     if (!out || outSize == 0) return;
     out[0] = 0;
     if (!flags) {

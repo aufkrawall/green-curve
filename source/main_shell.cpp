@@ -423,6 +423,11 @@ static void layout_bottom_buttons(HWND hParent) {
 #include "main_service_persist.cpp"
 #include "main_service_recovery.cpp"
 #include "main_service_runtime.cpp"
+#ifdef GREEN_CURVE_SERVICE_BINARY
+#include "main_service_vf_drift.cpp"
+#else
+static void service_check_active_vf_drift_monitor(const char*) {}
+#endif
 
 #include "main_service_sessions.cpp"
 
@@ -716,17 +721,11 @@ static void draw_lock_checkbox(const DRAWITEMSTRUCT* dis) {
     //   FLATTEN (cap the tail) -> checkmark
     //   HARD (pin via NVML)    -> filled center dot
     if (mode == LOCK_MODE_FLATTEN && !disabled) {
-        int penW = boxSize >= dp(14) ? dp(2) : 1;
-        HPEN checkPen = CreatePen(PS_SOLID, penW, COL_TEXT);
-        HPEN oldCheckPen = (HPEN)SelectObject(hdc, checkPen);
-        POINT pts[3] = {
-            { box.left + boxSize * 22 / 100, box.top + boxSize * 52 / 100 },
-            { box.left + boxSize * 42 / 100, box.top + boxSize * 72 / 100 },
-            { box.left + boxSize * 78 / 100, box.top + boxSize * 26 / 100 },
-        };
-        Polyline(hdc, pts, 3);
-        SelectObject(hdc, oldCheckPen);
-        DeleteObject(checkPen);
+        // Share the anti-aliased GDI+ checkmark renderer used by the themed
+        // checkboxes (service install / share-all-users / tray) so the FLATTEN
+        // tick is visually identical to them instead of a jagged raw-GDI Polyline.
+        // Color matches draw_themed_button()'s checked tick (RGB 0xE8,0xF2,0xFF).
+        draw_checkbox_tick_smooth(hdc, &box, RGB(0xE8, 0xF2, 0xFF));
     } else if (mode == LOCK_MODE_HARD && !disabled) {
         int cx = (box.left + box.right) / 2;
         int cy = (box.top + box.bottom) / 2;

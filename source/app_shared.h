@@ -103,7 +103,7 @@ void init_dpi();
 #define TRAY_ICON_OC_FAN_ID 114
 #define APP_NAME            "Green Curve"
 #ifndef APP_VERSION
-#define APP_VERSION         "0.16"
+#define APP_VERSION         "0.17"
 #endif
 #ifndef APP_BUILD_NUMBER
 #define APP_BUILD_NUMBER    0

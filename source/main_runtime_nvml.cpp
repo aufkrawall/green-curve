@@ -173,14 +173,16 @@ static bool parse_cli_options(LPWSTR cmdLine, CliOptions* opts) {
         } else if (wcscmp(arg, L"--fan") == 0) {
             opts->recognized = true;
             char buf[64] = {};
+            bool fanAuto = false;
             if (i + 1 >= argc || !copy_wide_to_utf8(argv[++i], buf, sizeof(buf)) ||
-                !parse_fan_value(buf, &opts->desired.fanAuto, &opts->desired.fanPercent)) {
+                !parse_fan_value(buf, &fanAuto, &opts->desired.fanPercent)) {
                 set_message(opts->error, sizeof(opts->error), "Invalid --fan value, use auto or 0-100");
                 LocalFree(argv);
                 return false;
             }
             opts->desired.hasFan = true;
-            opts->desired.fanMode = opts->desired.fanAuto ? FAN_MODE_AUTO : FAN_MODE_FIXED;
+            opts->desired.fanAuto = fanAuto;
+            opts->desired.fanMode = fanAuto ? FAN_MODE_AUTO : FAN_MODE_FIXED;
         } else if (wcsncmp(arg, L"--point", 7) == 0) {
             opts->recognized = true;
             int idx = -1;

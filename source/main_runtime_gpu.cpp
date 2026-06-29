@@ -213,7 +213,7 @@ static void populate_global_controls() {
         g_app.guiGpuOffsetExcludeLowCount = liveGpuOffsetExcludeLowCount;
         g_app.guiGpuOffsetMHz = liveGpuOffsetMHz;
     }
-    debug_log("populate_global_controls: dirty=%d haveControl=%d liveGpu=%d liveExclude=%d guiGpu=%d guiExclude=%d appliedGpu=%d appliedExclude=%d\n",
+    debug_log_on_change("populate_global_controls: dirty=%d haveControl=%d liveGpu=%d liveExclude=%d guiGpu=%d guiExclude=%d appliedGpu=%d appliedExclude=%d\n",
         gui_state_dirty() ? 1 : 0,
         haveControlState ? 1 : 0,
         liveGpuOffsetMHz,
@@ -229,7 +229,7 @@ static void populate_global_controls() {
         StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d", gpuOffsetToShow);
         SetWindowTextA(g_app.hGpuOffsetEdit, buf);
         EnableWindow(g_app.hGpuOffsetEdit, (serviceReady && g_app.gpuOffsetRangeKnown) ? TRUE : FALSE);
-        debug_log("populate_global_controls: wrote gpu offset edit=%d enabled=%d\n",
+        debug_log_on_change("populate_global_controls: wrote gpu offset edit=%d enabled=%d\n",
             gpuOffsetToShow,
             (serviceReady && g_app.gpuOffsetRangeKnown) ? 1 : 0);
     }
@@ -239,7 +239,7 @@ static void populate_global_controls() {
         StringCchPrintfA(excludeBuf, ARRAY_COUNT(excludeBuf), "%d", excludeToShow);
         SetWindowTextA(g_app.hGpuOffsetExcludeLowEdit, excludeBuf);
         EnableWindow(g_app.hGpuOffsetExcludeLowEdit, (serviceReady && g_app.gpuOffsetRangeKnown) ? TRUE : FALSE);
-        debug_log("populate_global_controls: wrote gpu exclude edit=%d enabled=%d\n",
+        debug_log_on_change("populate_global_controls: wrote gpu exclude edit=%d enabled=%d\n",
             excludeToShow,
             (serviceReady && g_app.gpuOffsetRangeKnown) ? 1 : 0);
     }

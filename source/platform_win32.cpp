@@ -10,16 +10,15 @@
 
 #include <stdlib.h>
 
-namespace {
-
-// Append `arg` to a UTF-16 command line with CommandLineToArgvW-compatible
-// quoting.  Conservative: always quotes and escapes embedded quotes/trailing
-// backslashes so paths with spaces work.
-void append_quoted_arg(WCHAR* cmd, size_t cmdCount, const WCHAR* arg) {
+bool pl_append_quoted_arg_w(WCHAR* cmd, size_t cmdCount, const WCHAR* arg) {
+    if (!cmd || cmdCount == 0 || !arg) return false;
     size_t len = 0;
     while (len + 1 < cmdCount && cmd[len]) len++;
+    if (len + 1 >= cmdCount && cmd[len]) return false;
+    bool ok = true;
     auto put = [&](WCHAR c) {
         if (len + 1 < cmdCount) { cmd[len++] = c; cmd[len] = L'\0'; }
+        else ok = false;
     };
     if (len > 0) put(L' ');
     put(L'"');
@@ -27,19 +26,24 @@ void append_quoted_arg(WCHAR* cmd, size_t cmdCount, const WCHAR* arg) {
     for (const WCHAR* p = arg; *p; p++) {
         if (*p == L'\\') {
             backslashes++;
+            continue;
         } else if (*p == L'"') {
             for (size_t i = 0; i < backslashes * 2 + 1; i++) put(L'\\');
             backslashes = 0;
             put(L'"');
             continue;
         } else {
+            for (size_t i = 0; i < backslashes; i++) put(L'\\');
             backslashes = 0;
         }
         put(*p);
     }
-    for (size_t i = 0; i < backslashes; i++) put(L'\\');
+    for (size_t i = 0; i < backslashes * 2; i++) put(L'\\');
     put(L'"');
+    return ok;
 }
+
+namespace {
 
 bool utf8_to_wide(const char* in, WCHAR* out, int outCount) {
     if (!in || !out || outCount <= 0) return false;
@@ -61,7 +65,7 @@ bool pl_run_capture(const char* const* argv, char* out, size_t outSize,
     for (int i = 0; argv[i]; i++) {
         WCHAR warg[MAX_PATH] = {};
         if (!utf8_to_wide(argv[i], warg, (int)PL_ARRAY_COUNT(warg))) return false;
-        append_quoted_arg(cmd, PL_ARRAY_COUNT(cmd), warg);
+        if (!pl_append_quoted_arg_w(cmd, PL_ARRAY_COUNT(cmd), warg)) return false;
     }
 
     SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };

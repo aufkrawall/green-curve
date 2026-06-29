@@ -271,4 +271,11 @@ static inline void gc_strlcat(char* dst, size_t dstSize, const char* src) {
 bool pl_run_capture(const char* const* argv, char* out, size_t outSize,
                     unsigned int timeoutMs);
 
+#if defined(_WIN32)
+// Append one argument using CommandLineToArgvW-compatible quoting.  The helper
+// always quotes and escapes, so callers can build ShellExecute/CreateProcess
+// parameter strings from argv-like inputs without argument injection.
+bool pl_append_quoted_arg_w(WCHAR* cmd, size_t cmdCount, const WCHAR* arg);
+#endif
+
 #endif // GREEN_CURVE_PLATFORM_H
