@@ -863,8 +863,18 @@ static DWORD WINAPI service_control_handler_ex(DWORD dwControl, DWORD dwEventTyp
     return NO_ERROR;
 }
 
-static void WINAPI service_main(DWORD, LPWSTR*) {
+static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
     g_app.isServiceProcess = true;
+    // A GUI/CLI-initiated start (install / repair / restart) passes --manual via
+    // StartService so the no-snapshot startup coordinator stays non-mutating: the
+    // interactive client drives its own explicit apply.  A boot auto-start by the
+    // SCM passes no args, leaving this false so the coordinator may reconcile the
+    // already-active session's logon profile once (Fast Startup / autologon).
+    for (DWORD i = 1; argv && i < argc; i++) {
+        if (argv[i] && _wcsicmp(argv[i], L"--manual") == 0) {
+            g_serviceManualStart = true;
+        }
+    }
     SetUnhandledExceptionFilter(green_curve_unhandled_exception_filter);
     // Vectored handler catches nvml.dll access violations (driver restart without
     // device removal notification) and lets the fan runtime thread survive.

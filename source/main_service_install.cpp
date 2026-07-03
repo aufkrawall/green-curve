@@ -282,7 +282,14 @@ static bool service_install_or_remove(bool enable, char* err, size_t errSize) {
                 return false;
             }
             if (ssp.dwCurrentState != SERVICE_RUNNING) {
-                if (!StartServiceW(svc.get(), 0, nullptr)) {
+                // Pass --manual so the freshly-started service knows this is a
+                // GUI/CLI-initiated start (install / repair / restart) and stays
+                // non-mutating: the interactive client drives its own apply.  A
+                // boot auto-start by the SCM passes no args, which is what lets
+                // the startup coordinator reconcile the active session's logon
+                // profile (Fast Startup / autologon safety net).
+                LPCWSTR startArgs[] = { L"--manual" };
+                if (!StartServiceW(svc.get(), 1, startArgs)) {
                     DWORD startErr = GetLastError();
                     if (startErr != ERROR_SERVICE_ALREADY_RUNNING) {
                         set_message(err, errSize, "Failed starting service (error %lu)", startErr);

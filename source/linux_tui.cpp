@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 #include "linux_port.h"
+#include "linux_tui_layout.h"
+#include "linux_daemon.h"
 
 #include <signal.h>
 #include <stdio.h>
@@ -14,39 +16,6 @@
 #include <vector>
 
 namespace {
-
-enum ActionType {
-    ACTION_NONE = 0,
-    ACTION_QUIT,
-    ACTION_SAVE,
-    ACTION_LOAD,
-    ACTION_RESET,
-    ACTION_PROBE,
-    ACTION_WRITE_ASSETS,
-    ACTION_SLOT_DELTA,
-    ACTION_VF_PAGE_DELTA,
-    ACTION_GPU_DELTA,
-    ACTION_MEM_DELTA,
-    ACTION_POWER_DELTA,
-    ACTION_FAN_FIXED_DELTA,
-    ACTION_FAN_MODE_SET,
-    ACTION_POLL_DELTA,
-    ACTION_HYST_DELTA,
-    ACTION_FAN_POINT_ENABLE,
-    ACTION_FAN_POINT_TEMP_DELTA,
-    ACTION_FAN_POINT_PCT_DELTA,
-    ACTION_VF_POINT_DELTA,
-};
-
-struct ClickAction {
-    int x1;
-    int y1;
-    int x2;
-    int y2;
-    ActionType type;
-    int index;
-    int value;
-};
 
 struct TerminalGuard;
 static TerminalGuard* g_activeTerminalGuard = nullptr;
@@ -67,10 +36,11 @@ struct TerminalGuard {
         if (tcgetattr(STDIN_FILENO, &original) != 0) return;
         termios raw = original;
         cfmakeraw(&raw);
-        raw.c_oflag |= OPOST;
+        raw.c_oflag |= OPOST;  // keep ONLCR from `original` so '\n' still returns to column 1
         if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0) return;
         active = true;
         g_activeTerminalGuard = this;
+        // Alt screen, hide cursor, SGR mouse tracking (press/release, no motion).
         fputs("\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h", stdout);
         fflush(stdout);
     }
@@ -93,6 +63,7 @@ struct TuiState {
     DesiredSettings desired;
     int currentSlot;
     int vfPage;
+    int focusIndex;  // index into `actions` highlighted for keyboard use; -1 = none
     bool running;
     char configPath[LINUX_PATH_MAX];
     char status[256];
@@ -110,19 +81,6 @@ static int clamp_value(int value, int minimum, int maximum) {
     if (value < minimum) return minimum;
     if (value > maximum) return maximum;
     return value;
-}
-
-static void push_button(TuiState* state, std::string* line, int y, ActionType type, int index, int value, const char* label) {
-    int x1 = (int)line->size() + 1;
-    line->push_back('[');
-    line->append(label);
-    line->push_back(']');
-    int x2 = (int)line->size();
-    state->actions.push_back({ x1, y, x2, y, type, index, value });
-}
-
-static void append_text(std::string* line, const char* text) {
-    line->append(text ? text : "");
 }
 
 static void load_slot(TuiState* state) {
@@ -178,6 +136,30 @@ static void write_assets_from_tui(TuiState* state) {
     }
 }
 
+static void set_daemon_status(TuiState* state, bool ok, const char* result, const char* okFallback, const char* failFallback) {
+    if (ok) {
+        snprintf(state->status, sizeof(state->status), "%s", (result && result[0]) ? result : okFallback);
+    } else if (!linux_daemon_available()) {
+        snprintf(state->status, sizeof(state->status),
+                 "Daemon not running. Install it with: sudo greencurve --service-install");
+    } else {
+        snprintf(state->status, sizeof(state->status), "%s", (result && result[0]) ? result : failFallback);
+    }
+}
+
+static void apply_to_daemon(TuiState* state) {
+    normalize_desired_settings_for_ui(&state->desired);
+    char result[512] = {};
+    bool ok = linux_daemon_apply(&state->desired, true, result, sizeof(result));
+    set_daemon_status(state, ok, result, "Applied current settings to the GPU via the daemon", "Apply failed");
+}
+
+static void reset_gpu_via_daemon(TuiState* state) {
+    char result[512] = {};
+    bool ok = linux_daemon_reset(result, sizeof(result));
+    set_daemon_status(state, ok, result, "GPU reset to driver defaults via the daemon", "GPU reset failed");
+}
+
 static void apply_action(TuiState* state, const ClickAction& action) {
     switch (action.type) {
         case ACTION_QUIT:
@@ -198,13 +180,19 @@ static void apply_action(TuiState* state, const ClickAction& action) {
         case ACTION_WRITE_ASSETS:
             write_assets_from_tui(state);
             break;
+        case ACTION_APPLY:
+            apply_to_daemon(state);
+            break;
+        case ACTION_APPLY_RESET:
+            reset_gpu_via_daemon(state);
+            break;
         case ACTION_SLOT_DELTA:
             state->currentSlot = clamp_value(state->currentSlot + action.value, 1, CONFIG_NUM_SLOTS);
             snprintf(state->status, sizeof(state->status), "Selected profile slot %d", state->currentSlot);
             break;
         case ACTION_VF_PAGE_DELTA:
             state->vfPage = clamp_value(state->vfPage + action.value, 0, (VF_NUM_POINTS / 16) - 1);
-            snprintf(state->status, sizeof(state->status), "VF page %d/8", state->vfPage + 1);
+            snprintf(state->status, sizeof(state->status), "VF page %d/%d", state->vfPage + 1, VF_NUM_POINTS / 16);
             break;
         case ACTION_GPU_DELTA:
             state->desired.hasGpuOffset = true;
@@ -283,196 +271,89 @@ static void apply_action(TuiState* state, const ClickAction& action) {
     normalize_desired_settings_for_ui(&state->desired);
 }
 
+// Print one screen row, clipping to the terminal width (so a long info line can
+// never wrap and push every hitbox below it down by a row) and splicing in a
+// reverse-video highlight for the keyboard-focused button.
+static void print_row(const std::string& lineIn, int width, int rowIndex,
+                      const TuiState* state) {
+    std::string line = lineIn;
+    if (tui_display_columns(line) > width) {
+        int cut = tui_column_to_byte_offset(line, width + 1);
+        line.erase(cut);
+    }
+
+    if (rowIndex == 0) {
+        printf("\x1b[38;5;114m%s\x1b[0m\n", line.c_str());
+        return;
+    }
+
+    if (state->focusIndex >= 0 && state->focusIndex < (int)state->actions.size()) {
+        const ClickAction& f = state->actions[state->focusIndex];
+        int be = f.byteStart + f.byteLen;
+        if (f.y1 - 1 == rowIndex && f.byteStart >= 0 && be <= (int)line.size()) {
+            printf("%s\x1b[7m%s\x1b[27m%s\n",
+                   line.substr(0, f.byteStart).c_str(),
+                   line.substr(f.byteStart, f.byteLen).c_str(),
+                   line.substr(be).c_str());
+            return;
+        }
+    }
+
+    printf("%s\n", line.c_str());
+}
+
 static void render_ui(TuiState* state) {
     winsize ws = {};
     ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws);
     int width = ws.ws_col ? ws.ws_col : 120;
     int height = ws.ws_row ? ws.ws_row : 40;
 
-    state->actions.clear();
+    TuiViewModel vm = {};
+    vm.desired = &state->desired;
+    vm.currentSlot = state->currentSlot;
+    vm.vfPage = state->vfPage;
+    vm.configPath = state->configPath;
+    vm.status = state->status;
+    vm.probeCompleted = state->probe.completed;
+    vm.probeSummary = state->probe.summary;
+    vm.probeReportPath = state->probe.reportPath;
+
+    TuiLayout layout;
+    build_tui_layout(vm, &layout);
+
     fputs("\x1b[H\x1b[2J", stdout);
-    if (width < 110 || height < 38) {
-        printf("Green Curve Linux TUI\n\nTerminal too small. Need at least 110x38, got %dx%d.\nResize the terminal or use CLI mode.\n", width, height);
+
+    if (width < layout.requiredCols || height < layout.requiredRows) {
+        // Content is not drawn, so no hitbox is valid: drop them so a stray
+        // click / focus key cannot act on an off-screen button.
+        state->actions.clear();
+        state->focusIndex = -1;
+        printf("Green Curve Linux TUI\n\nTerminal too small. Need at least %dx%d, got %dx%d.\n"
+               "Resize the terminal or use CLI mode (greencurve --help).\n",
+               layout.requiredCols, layout.requiredRows, width, height);
         fflush(stdout);
         return;
     }
 
-    int y = 1;
-    printf("\x1b[38;5;114mGreen Curve Linux TUI\x1b[0m  daemon-backed config editor\n");
-    y++;
-    printf("Config: %s\n", state->configPath);
-    y++;
-    printf("Status: %s\n", state->status[0] ? state->status : "Ready. Use mouse or hotkeys: q s l p a r [ ] 1-5");
-    y++;
-
-    std::string line;
-    line = "Profile slot: ";
-    push_button(state, &line, y, ACTION_SLOT_DELTA, 0, -1, "<");
-    append_text(&line, " ");
-    char buffer[64] = {};
-    snprintf(buffer, sizeof(buffer), "%d", state->currentSlot);
-    append_text(&line, buffer);
-    append_text(&line, " ");
-    push_button(state, &line, y, ACTION_SLOT_DELTA, 0, 1, ">");
-    append_text(&line, "   ");
-    push_button(state, &line, y, ACTION_LOAD, 0, 0, "Load");
-    append_text(&line, " ");
-    push_button(state, &line, y, ACTION_SAVE, 0, 0, "Save");
-    append_text(&line, " ");
-    push_button(state, &line, y, ACTION_RESET, 0, 0, "Reset");
-    y++;
-    printf("%s\n", line.c_str());
-    y++;
-
-    printf("General controls\n");
-    y++;
-    line = "  GPU offset: ";
-    push_button(state, &line, y, ACTION_GPU_DELTA, 0, -15, "-15");
-    append_text(&line, " ");
-    push_button(state, &line, y, ACTION_GPU_DELTA, 0, 15, "+15");
-    append_text(&line, "   ");
-    snprintf(buffer, sizeof(buffer), "%d MHz", state->desired.gpuOffsetMHz);
-    append_text(&line, buffer);
-    printf("%s\n", line.c_str());
-    y++;
-
-    line = "  Memory offset: ";
-    push_button(state, &line, y, ACTION_MEM_DELTA, 0, -100, "-100");
-    append_text(&line, " ");
-    push_button(state, &line, y, ACTION_MEM_DELTA, 0, 100, "+100");
-    append_text(&line, "   ");
-    snprintf(buffer, sizeof(buffer), "%d MHz", state->desired.memOffsetMHz);
-    append_text(&line, buffer);
-    printf("%s\n", line.c_str());
-    y++;
-
-    line = "  Power limit: ";
-    push_button(state, &line, y, ACTION_POWER_DELTA, 0, -5, "-5");
-    append_text(&line, " ");
-    push_button(state, &line, y, ACTION_POWER_DELTA, 0, 5, "+5");
-    append_text(&line, "   ");
-    snprintf(buffer, sizeof(buffer), "%d%%", state->desired.powerLimitPct);
-    append_text(&line, buffer);
-    printf("%s\n", line.c_str());
-    y++;
-
-    line = "  Fan mode: ";
-    push_button(state, &line, y, ACTION_FAN_MODE_SET, 0, FAN_MODE_AUTO, state->desired.fanMode == FAN_MODE_AUTO ? "*Auto*" : "Auto");
-    append_text(&line, " ");
-    push_button(state, &line, y, ACTION_FAN_MODE_SET, 0, FAN_MODE_FIXED, state->desired.fanMode == FAN_MODE_FIXED ? "*Fixed*" : "Fixed");
-    append_text(&line, " ");
-    push_button(state, &line, y, ACTION_FAN_MODE_SET, 0, FAN_MODE_CURVE, state->desired.fanMode == FAN_MODE_CURVE ? "*Curve*" : "Curve");
-    printf("%s\n", line.c_str());
-    y++;
-
-    line = "  Fan fixed pct: ";
-    push_button(state, &line, y, ACTION_FAN_FIXED_DELTA, 0, -5, "-5");
-    append_text(&line, " ");
-    push_button(state, &line, y, ACTION_FAN_FIXED_DELTA, 0, 5, "+5");
-    append_text(&line, "   ");
-    snprintf(buffer, sizeof(buffer), "%d%%", state->desired.fanPercent);
-    append_text(&line, buffer);
-    printf("%s\n", line.c_str());
-    y += 2;
-
-    printf("Fan curve\n");
-    y++;
-    line = "  Poll interval: ";
-    push_button(state, &line, y, ACTION_POLL_DELTA, 0, -250, "-250");
-    append_text(&line, " ");
-    push_button(state, &line, y, ACTION_POLL_DELTA, 0, 250, "+250");
-    append_text(&line, "   ");
-    snprintf(buffer, sizeof(buffer), "%d ms", state->desired.fanCurve.pollIntervalMs);
-    append_text(&line, buffer);
-    append_text(&line, "    Hysteresis: ");
-    push_button(state, &line, y, ACTION_HYST_DELTA, 0, -1, "-1");
-    append_text(&line, " ");
-    push_button(state, &line, y, ACTION_HYST_DELTA, 0, 1, "+1");
-    append_text(&line, "   ");
-    snprintf(buffer, sizeof(buffer), "%d\xC2\xB0""C", state->desired.fanCurve.hysteresisC);
-    append_text(&line, buffer);
-    printf("%s\n", line.c_str());
-    y++;
-
-    for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
-        line = "  ";
-        snprintf(buffer, sizeof(buffer), "P%d ", i);
-        append_text(&line, buffer);
-        push_button(state, &line, y, ACTION_FAN_POINT_ENABLE, i, 0, state->desired.fanCurve.points[i].enabled ? "On" : "Off");
-        append_text(&line, "  Temp ");
-        push_button(state, &line, y, ACTION_FAN_POINT_TEMP_DELTA, i, -1, "-");
-        append_text(&line, " ");
-        push_button(state, &line, y, ACTION_FAN_POINT_TEMP_DELTA, i, 1, "+");
-        append_text(&line, " ");
-        snprintf(buffer, sizeof(buffer), "%3d\xC2\xB0""C", state->desired.fanCurve.points[i].temperatureC);
-        append_text(&line, buffer);
-        append_text(&line, "   Pct ");
-        push_button(state, &line, y, ACTION_FAN_POINT_PCT_DELTA, i, -1, "-");
-        append_text(&line, " ");
-        push_button(state, &line, y, ACTION_FAN_POINT_PCT_DELTA, i, 1, "+");
-        append_text(&line, " ");
-        snprintf(buffer, sizeof(buffer), "%3d%%", state->desired.fanCurve.points[i].fanPercent);
-        append_text(&line, buffer);
-        printf("%s\n", line.c_str());
-        y++;
-    }
-
-    y++;
-    printf("VF curve page %d/8\n", state->vfPage + 1);
-    y++;
-    line = "  Page: ";
-    push_button(state, &line, y, ACTION_VF_PAGE_DELTA, 0, -1, "Prev");
-    append_text(&line, " ");
-    push_button(state, &line, y, ACTION_VF_PAGE_DELTA, 0, 1, "Next");
-    printf("%s\n", line.c_str());
-    y++;
-
-    int firstPoint = state->vfPage * 16;
-    for (int row = 0; row < 16; row++) {
-        int pointIndex = firstPoint + row;
-        line = "  ";
-        snprintf(buffer, sizeof(buffer), "P%03d ", pointIndex);
-        append_text(&line, buffer);
-        push_button(state, &line, y, ACTION_VF_POINT_DELTA, pointIndex, -100, "-100");
-        append_text(&line, " ");
-        push_button(state, &line, y, ACTION_VF_POINT_DELTA, pointIndex, -15, "-15");
-        append_text(&line, " ");
-        push_button(state, &line, y, ACTION_VF_POINT_DELTA, pointIndex, 15, "+15");
-        append_text(&line, " ");
-        push_button(state, &line, y, ACTION_VF_POINT_DELTA, pointIndex, 100, "+100");
-        append_text(&line, "   ");
-        snprintf(buffer, sizeof(buffer), "%4u MHz", state->desired.curvePointMHz[pointIndex]);
-        append_text(&line, buffer);
-        printf("%s\n", line.c_str());
-        y++;
-    }
-
-    y++;
-    line.clear();
-    push_button(state, &line, y, ACTION_PROBE, 0, 0, "Probe");
-    append_text(&line, " ");
-    push_button(state, &line, y, ACTION_WRITE_ASSETS, 0, 0, "Write Assets");
-    append_text(&line, " ");
-    push_button(state, &line, y, ACTION_SAVE, 0, 0, "Save");
-    append_text(&line, " ");
-    push_button(state, &line, y, ACTION_LOAD, 0, 0, "Load");
-    append_text(&line, " ");
-    push_button(state, &line, y, ACTION_QUIT, 0, 0, "Quit");
-    printf("%s\n", line.c_str());
-    y++;
-
-    if (state->probe.completed) {
-        printf("Probe: %s\n", state->probe.summary);
-        printf("Report: %s\n", state->probe.reportPath);
+    state->actions = layout.actions;
+    int actionCount = (int)state->actions.size();
+    if (actionCount == 0) {
+        state->focusIndex = -1;
     } else {
-        printf("Probe: not run in this session\n");
-        printf("Backend apply note: VF/power/fan writes still need native Linux backend validation.\n");
+        if (state->focusIndex < 0) state->focusIndex = 0;
+        if (state->focusIndex >= actionCount) state->focusIndex = actionCount - 1;
     }
 
+    for (int i = 0; i < (int)layout.lines.size(); i++) {
+        print_row(layout.lines[i], width, i, state);
+    }
     fflush(stdout);
 }
 
-static bool parse_mouse_sequence(const std::string& sequence, int* x, int* y) {
+// Parse an SGR mouse report and accept it only as a left-button *press*.
+// `?1000h` reports wheel scroll as buttons 64/65 (still an 'M' suffix), which
+// must not be treated as a click on whatever button is under the cursor.
+static bool parse_mouse_click(const std::string& sequence, int* x, int* y) {
     if (sequence.size() < 6) return false;
     if (sequence[0] != '\x1b' || sequence[1] != '[' || sequence[2] != '<') return false;
     int button = 0;
@@ -480,7 +361,9 @@ static bool parse_mouse_sequence(const std::string& sequence, int* x, int* y) {
     int parsedY = 0;
     char suffix = 0;
     if (sscanf(sequence.c_str(), "\x1b[<%d;%d;%d%c", &button, &parsedX, &parsedY, &suffix) != 4) return false;
-    if (suffix != 'M') return false;
+    if (suffix != 'M') return false;      // 'M' = press, 'm' = release
+    if (button & 64) return false;        // wheel scroll, not a click
+    if ((button & 3) != 0) return false;  // only the left button activates
     if (x) *x = parsedX;
     if (y) *y = parsedY;
     return true;
@@ -500,6 +383,50 @@ static bool read_input(std::string* input) {
     if (readCount <= 0) return false;
     input->assign(buffer, buffer + readCount);
     return true;
+}
+
+// Move keyboard focus to the previous/next button in natural order.
+static void focus_step_linear(TuiState* state, int dir) {
+    int n = (int)state->actions.size();
+    if (n == 0) return;
+    if (state->focusIndex < 0) {
+        state->focusIndex = dir > 0 ? 0 : n - 1;
+        return;
+    }
+    state->focusIndex = ((state->focusIndex + dir) % n + n) % n;
+}
+
+// Move focus to the nearest button on the closest row above/below, preferring
+// the button whose start column is nearest the current one.
+static void focus_step_vertical(TuiState* state, int dir) {
+    int n = (int)state->actions.size();
+    if (n == 0) return;
+    if (state->focusIndex < 0) {
+        state->focusIndex = 0;
+        return;
+    }
+    const ClickAction& cur = state->actions[state->focusIndex];
+    int best = -1;
+    int bestRow = 0;
+    int bestColDist = 0;
+    for (int i = 0; i < n; i++) {
+        const ClickAction& a = state->actions[i];
+        if (dir > 0 ? (a.y1 <= cur.y1) : (a.y1 >= cur.y1)) continue;
+        int colDist = a.x1 > cur.x1 ? a.x1 - cur.x1 : cur.x1 - a.x1;
+        bool nearerRow = dir > 0 ? (a.y1 < bestRow) : (a.y1 > bestRow);
+        if (best < 0 || nearerRow || (a.y1 == bestRow && colDist < bestColDist)) {
+            best = i;
+            bestRow = a.y1;
+            bestColDist = colDist;
+        }
+    }
+    if (best >= 0) state->focusIndex = best;
+}
+
+static void activate_focus(TuiState* state) {
+    if (state->focusIndex >= 0 && state->focusIndex < (int)state->actions.size()) {
+        apply_action(state, state->actions[state->focusIndex]);
+    }
 }
 
 static void handle_hotkey(TuiState* state, char key) {
@@ -528,11 +455,15 @@ static void handle_hotkey(TuiState* state, char key) {
         case 'R':
             reset_desired(state);
             break;
+        case 'g':
+        case 'G':
+            apply_to_daemon(state);
+            break;
         case '[':
-            apply_action(state, { 0, 0, 0, 0, ACTION_VF_PAGE_DELTA, 0, -1 });
+            apply_action(state, ClickAction{ 0, 0, 0, 0, 0, 0, ACTION_VF_PAGE_DELTA, 0, -1 });
             break;
         case ']':
-            apply_action(state, { 0, 0, 0, 0, ACTION_VF_PAGE_DELTA, 0, 1 });
+            apply_action(state, ClickAction{ 0, 0, 0, 0, 0, 0, ACTION_VF_PAGE_DELTA, 0, 1 });
             break;
         case '1':
         case '2':
@@ -548,8 +479,10 @@ static void handle_hotkey(TuiState* state, char key) {
 }
 
 static void handle_mouse(TuiState* state, int mouseX, int mouseY) {
-    for (const ClickAction& action : state->actions) {
+    for (int i = 0; i < (int)state->actions.size(); i++) {
+        const ClickAction& action = state->actions[i];
         if (mouseX >= action.x1 && mouseX <= action.x2 && mouseY >= action.y1 && mouseY <= action.y2) {
+            state->focusIndex = i;  // let keyboard focus follow the click
             apply_action(state, action);
             return;
         }
@@ -569,8 +502,9 @@ int linux_run_tui(const char* configPath, int initialSlot, DesiredSettings* init
 
     state.currentSlot = initialSlot >= 1 && initialSlot <= CONFIG_NUM_SLOTS ? initialSlot : CONFIG_DEFAULT_SLOT;
     state.vfPage = 0;
+    state.focusIndex = 0;
     state.running = true;
-    snprintf(state.status, sizeof(state.status), "Ready. Left click buttons or use hotkeys.");
+    snprintf(state.status, sizeof(state.status), "Ready. Click a button, or use the keyboard (arrows/Tab/Enter).");
 
     signal(SIGWINCH, on_sigwinch);
     signal(SIGINT, on_fatal_signal);
@@ -592,26 +526,52 @@ int linux_run_tui(const char* configPath, int initialSlot, DesiredSettings* init
         std::string input;
         if (!read_input(&input)) continue;
 
+        // Mouse (SGR) reports.
         if (input.size() >= 6 && input[0] == '\x1b' && input[1] == '[' && input[2] == '<') {
             int mouseX = 0;
             int mouseY = 0;
-            if (parse_mouse_sequence(input, &mouseX, &mouseY)) {
+            if (parse_mouse_click(input, &mouseX, &mouseY)) {
                 handle_mouse(&state, mouseX, mouseY);
-                render_ui(&state);
             }
+            render_ui(&state);
             continue;
         }
 
-        if (input.size() == 1 && input[0] == 27) {
-            state.running = false;
-        } else {
-            for (char ch : input) {
-                if (ch == 3) {
-                    state.running = false;
-                    break;
-                }
-                handle_hotkey(&state, ch);
+        // Arrow keys / navigation escape sequences (CSI or SS3 form).
+        if (input.size() >= 3 && input[0] == '\x1b' && (input[1] == '[' || input[1] == 'O')) {
+            switch (input[2]) {
+                case 'A': focus_step_vertical(&state, -1); break;  // up
+                case 'B': focus_step_vertical(&state, +1); break;  // down
+                case 'C': focus_step_linear(&state, +1); break;    // right
+                case 'D': focus_step_linear(&state, -1); break;    // left
+                case 'Z': focus_step_linear(&state, -1); break;    // shift-tab
+                default: break;
             }
+            render_ui(&state);
+            continue;
+        }
+
+        // Lone ESC quits.
+        if (input.size() == 1 && (unsigned char)input[0] == 27) {
+            state.running = false;
+            render_ui(&state);
+            continue;
+        }
+
+        for (char ch : input) {
+            if (ch == 3) {  // Ctrl-C
+                state.running = false;
+                break;
+            }
+            if (ch == '\t') {
+                focus_step_linear(&state, +1);
+                continue;
+            }
+            if (ch == '\r' || ch == '\n' || ch == ' ') {
+                activate_focus(&state);
+                continue;
+            }
+            handle_hotkey(&state, ch);
         }
         render_ui(&state);
     }

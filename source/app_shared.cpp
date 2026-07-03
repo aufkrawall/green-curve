@@ -112,3 +112,27 @@ LogonProfileSource resolve_logon_profile_source(bool policyActive, bool isAdmin,
     if (hasMachineDefault) return LOGON_PROFILE_SOURCE_MACHINE_DEFAULT;
     return LOGON_PROFILE_SOURCE_NONE;
 }
+
+// Pure gating for the boot-time "reconcile the already-active session" safety net.
+// See app_shared.h for the full contract.  Kept free of any I/O so it is
+// exhaustively unit-testable by build.py's regression harness.
+bool should_reconcile_active_session_at_boot(bool isManualStart,
+    bool bootReconcileAlreadyDone, bool inRestartLoop,
+    bool hasActiveInteractiveSession, bool alreadyAppliedThisSession) {
+    // A GUI/CLI-initiated start (install / repair / restart) must never mutate the
+    // GPU on its own: the interactive client drives its own explicit apply.
+    if (isManualStart) return false;
+    // At-most-once per boot: an SCM crash-restart within the same boot must not
+    // re-drive the apply (that would bypass the OC-stabilization / restart-loop
+    // safety and could re-apply an unstable profile).
+    if (bootReconcileAlreadyDone) return false;
+    // Respect the restart-loop breaker — do not add another apply this round.
+    if (inRestartLoop) return false;
+    // Nothing to reconcile if no one is logged in yet: the service handler is
+    // already registered, so a later real WTS_SESSION_LOGON drives the apply.
+    if (!hasActiveInteractiveSession) return false;
+    // The live logon router already applied for this exact identity (it won the
+    // race) — don't double-apply.
+    if (alreadyAppliedThisSession) return false;
+    return true;
+}

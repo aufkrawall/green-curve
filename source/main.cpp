@@ -143,6 +143,12 @@ static bool g_serviceHasActiveDesired = false;
 static ControlState g_serviceControlState = {};
 static bool g_serviceControlStateValid = false;
 static bool g_serviceUserPathsResolved = false;
+// Set when the service was started by the GUI/CLI (install / repair / restart),
+// which passes --manual on StartService.  A boot auto-start by the SCM passes no
+// args and leaves this false, which lets the no-snapshot startup coordinator
+// reconcile the already-active session's logon profile once (Fast Startup /
+// autologon safety net).  A manual start stays non-mutating.
+static bool g_serviceManualStart = false;
 static CRITICAL_SECTION g_debugLogLock = {};
 static HANDLE g_debugLogFile = INVALID_HANDLE_VALUE;
 static DWORD g_serviceUserPathsSessionId = (DWORD)-1;
@@ -297,6 +303,7 @@ static void service_runtime_pulse();
 static void service_write_restart_reapply_snapshot();
 static void service_clear_restart_reapply_snapshot();
 static void service_launch_startup_coordinator();
+static void service_maybe_reconcile_active_session_at_boot(const char* reason);
 static void service_queue_recovery_reapply(const char* reason, DWORD delayMs);
 static void service_maybe_launch_recovery_from_main_loop(const char* source);
 static void service_maybe_launch_recovery_reapply_thread();

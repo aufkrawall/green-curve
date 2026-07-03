@@ -238,3 +238,78 @@ static void service_handle_session_change(DWORD eventType, DWORD eventSessionId)
 
     service_apply_profile_for_session(activeSessionId, evtName);
 }
+
+// Boot-time safety net for the no-snapshot startup coordinator.  On a boot
+// auto-start where a user is ALREADY logged in when the service comes up, the
+// live WTS_SESSION_LOGON that normally drives the apply was never delivered to
+// us (it fired before service_control_handler_ex registered, or the console
+// session was resumed already-active under Windows Fast Startup).  Without this,
+// the GPU stays at driver defaults until the user opens the GUI (which applies
+// on launch).  Here we resolve+apply that session's logon profile ONCE, reusing
+// service_apply_profile_for_session() so behavior is byte-for-byte identical to a
+// real logon (including the {session,SID} debounce, so a racing real logon event
+// does not double-apply).  Gating is delegated to the pure, unit-tested
+// should_reconcile_active_session_at_boot() so manual (--manual) starts stay
+// non-mutating and an SCM crash-restart within the same boot cannot re-drive it.
+static void service_maybe_reconcile_active_session_at_boot(const char* reason) {
+    const char* label = (reason && reason[0]) ? reason : "boot-active-session";
+
+    DWORD activeSessionId = (DWORD)-1;
+    bool hasActive = service_get_active_session_for_control(&activeSessionId);
+
+    // Enable the user's debug logging as early as possible so this boot decision
+    // and the ensuing apply are captured in the user's log.  Honors the [debug]
+    // enabled opt-out (stays silent if the user disabled logging); before this,
+    // boot-phase service logging is off because no user config has been read yet.
+    if (hasActive) {
+        char pathErr[256] = {};
+        if (resolve_service_user_data_paths(activeSessionId, pathErr, sizeof(pathErr))) {
+            refresh_service_debug_logging_from_config();
+        }
+    }
+
+    bool manual = g_serviceManualStart;
+    bool alreadyDone = service_boot_reconcile_already_done();
+    unsigned int recentRestarts = service_count_recent_restarts();
+    bool inLoop = recentRestarts >= SERVICE_RESTART_LOOP_THRESHOLD;
+
+    // Best-effort: did the live logon router already apply for this exact
+    // identity (it won the race)?  Avoids a redundant second apply.
+    bool alreadyApplied = false;
+    if (hasActive) {
+        char activeSid[184] = {};
+        char sidErr[128] = {};
+        if (service_resolve_session_user_sid(activeSessionId, activeSid, sizeof(activeSid), sidErr, sizeof(sidErr))) {
+            alreadyApplied = service_last_applied_session_matches(activeSessionId, activeSid);
+        }
+    }
+
+    bool doReconcile = should_reconcile_active_session_at_boot(
+        manual, alreadyDone, inLoop, hasActive, alreadyApplied);
+    debug_log("boot reconcile decision (%s): activeSession=%s%lu manual=%d alreadyThisBoot=%d restartLoop=%d(recent=%u) alreadyApplied=%d -> %s\n",
+        label,
+        hasActive ? "" : "<none> ",
+        hasActive ? (unsigned long)activeSessionId : 0UL,
+        manual ? 1 : 0, alreadyDone ? 1 : 0, inLoop ? 1 : 0, recentRestarts,
+        alreadyApplied ? 1 : 0, doReconcile ? "reconcile" : "skip");
+
+    if (!doReconcile) {
+        // If we skipped because the live logon router already applied for this
+        // identity, stamp the marker so a later same-boot restart does not
+        // reconsider.  Other skip reasons (manual / restart-loop / no active
+        // session) intentionally leave the marker unset so the safety net can
+        // still arm later this boot (e.g. once a loop clears or a user logs in
+        // and the live logon event drives the apply).
+        if (hasActive && alreadyApplied) service_mark_boot_reconcile_done();
+        return;
+    }
+
+    bool applied = service_apply_profile_for_session(activeSessionId, label);
+    // Stamp regardless of apply success: at-most-once per boot so an SCM
+    // crash-restart loop cannot re-drive a failing/unstable apply within the same
+    // boot.  A real later session change can still apply, and the next boot
+    // re-arms the safety net (the marker is keyed to this boot's identity).
+    service_mark_boot_reconcile_done();
+    debug_log("boot reconcile: applied=%d for session %lu (marker stamped for this boot)\n",
+        applied ? 1 : 0, (unsigned long)activeSessionId);
+}

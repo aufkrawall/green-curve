@@ -571,6 +571,15 @@ static DWORD WINAPI service_startup_coordinator_thread_proc(void*) {
                 hwOk ? "" : (hwDetail[0] ? hwDetail : "failed"));
         }
         unlock_service_runtime();
+        // Fast Startup / autologon safety net: if the interactive session is
+        // already active by the time the service comes up, the live
+        // WTS_SESSION_LOGON that normally drives the apply was never delivered
+        // (it fired before our handler registered, or the session was resumed
+        // already-active).  Reconcile it once here — but ONLY for a boot
+        // auto-start (a --manual GUI/CLI start stays non-mutating), and at most
+        // once per boot.  Uses the same resolve+apply+debounce path as a real
+        // logon, so behavior is identical.
+        service_maybe_reconcile_active_session_at_boot("no-snapshot boot");
         service_log_startup_coordinator_state("no-snapshot idle");
         return 0;
     }

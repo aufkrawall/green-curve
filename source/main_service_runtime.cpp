@@ -1323,6 +1323,13 @@ static bool service_session_logon_resolve_and_load_profile(DWORD sessionId, Desi
     if (!g_app.configPath[0]) {
         set_default_config_path();
     }
+    // Now that the logging-on user's config path is known, adopt their [debug]
+    // enabled setting.  At boot the service starts with logging off (no user
+    // config was readable yet), so without this the entire logon/boot-reconcile
+    // apply decision goes unlogged — which is exactly what made this class of
+    // "curve not applied after boot" report impossible to diagnose.  Honors the
+    // opt-out: stays silent if the user disabled logging.
+    refresh_service_debug_logging_from_config();
     char userConfigPath[MAX_PATH] = {};
     StringCchCopyA(userConfigPath, ARRAY_COUNT(userConfigPath), g_app.configPath);
 

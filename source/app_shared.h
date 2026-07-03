@@ -103,7 +103,7 @@ void init_dpi();
 #define TRAY_ICON_OC_FAN_ID 114
 #define APP_NAME            "Green Curve"
 #ifndef APP_VERSION
-#define APP_VERSION         "0.17"
+#define APP_VERSION         "0.17.1"
 #endif
 #ifndef APP_BUILD_NUMBER
 #define APP_BUILD_NUMBER    0
@@ -598,6 +598,31 @@ enum LogonProfileSource {
 // fixes auto-apply for restricted users and closes the service-router bypass.
 LogonProfileSource resolve_logon_profile_source(bool policyActive, bool isAdmin,
     int logonSharedSlot, bool bankSlotSaved, bool hasPerUserSlot, bool hasMachineDefault);
+
+// Pure gating decision for the no-snapshot startup coordinator's "apply the
+// already-active session's resolved logon profile once at boot" safety net.
+// This closes the gap where the service comes up AFTER the interactive session
+// is already active (Windows Fast Startup, autologon, fast SSD) and therefore
+// never receives a live WTS_SESSION_LOGON to drive the apply — leaving the GPU
+// at driver defaults until the user opens the GUI.  Kept free of I/O so the
+// boot-vs-manual / at-most-once-per-boot / restart-loop / active-session gating
+// is exhaustively unit-testable; the caller does the actual resolve+apply via
+// the existing session-apply path (identical behavior to a real logon).
+//   isManualStart            : the service was started by the GUI/CLI (install /
+//                              repair / restart), which passes --manual; such a
+//                              start MUST stay non-mutating (the client applies).
+//   bootReconcileAlreadyDone : this boot's reconcile already ran (per-boot marker
+//                              hit) — an SCM crash-restart within the same boot
+//                              must not re-drive the apply.
+//   inRestartLoop            : the persisted restart-loop breaker has tripped.
+//   hasActiveInteractiveSession : a user is already logged in at service start.
+//   alreadyAppliedThisSession : the live logon router already applied for this
+//                              exact {session, SID} identity (won the race).
+// Returns true only when a boot auto-start finds an already-active session that
+// nothing else has applied for yet — otherwise false.
+bool should_reconcile_active_session_at_boot(bool isManualStart,
+    bool bootReconcileAlreadyDone, bool inRestartLoop,
+    bool hasActiveInteractiveSession, bool alreadyAppliedThisSession);
 
 // True if the SCM-registered service binary directory is located under a user
 // profile, which means other users may be unable to launch the GUI binary.

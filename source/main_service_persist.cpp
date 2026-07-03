@@ -38,8 +38,10 @@ static void record_driver_recovery() {
 // restart).  Before exiting, the service snapshots the active desired OC/fan
 // profile to disk; the freshly relaunched process loads clean driver DLLs and
 // service_startup_coordinator_thread_proc() re-applies the snapshot.  A normal
-// boot without this file resets first, then reconciles the active user's
-// resolved profile in the same startup worker.
+// boot without this file resets any stale OC first, then — only for a boot
+// auto-start, at most once per boot — reconciles the already-active session's
+// resolved logon profile in the same startup worker (Fast Startup / autologon
+// safety net; see service_maybe_reconcile_active_session_at_boot).
 
 #define SERVICE_ACTIVE_DESIRED_MAGIC   0x47434144u /* 'GCAD' */
 #define SERVICE_ACTIVE_DESIRED_VERSION 2u
@@ -402,5 +404,77 @@ static bool service_load_restart_reapply_snapshot(DesiredSettings* out, GpuAdapt
 static void service_clear_restart_reapply_snapshot() {
     char path[MAX_PATH] = {};
     if (service_active_desired_persist_path(path, sizeof(path))) DeleteFileA(path);
+}
+
+// ---- Per-boot startup-reconcile marker ----
+//
+// The no-snapshot startup coordinator applies the already-active interactive
+// session's resolved logon profile ONCE per boot (the Fast Startup / autologon
+// safety net — see service_maybe_reconcile_active_session_at_boot).  This marker
+// makes it at-most-once per boot so an SCM crash-restart within the same boot
+// does NOT re-drive the apply (which would bypass the OC-stabilization /
+// restart-loop safety).  Boot identity = the system boot wall-time (now minus
+// uptime), which is stable within a boot and differs across boots by at least a
+// reboot's worth of wall time.  It is bucketed to whole seconds and compared with
+// a small tolerance to absorb tick resolution and any early-boot NTP time step;
+// the tolerance can only cause a harmless re-reconcile (never a missed boot),
+// because two distinct boots are always separated by far more than the tolerance.
+#define SERVICE_BOOT_RECONCILE_MAGIC     0x47434252u /* 'GCBR' */
+#define SERVICE_BOOT_RECONCILE_TOLERANCE 10ULL       /* seconds */
+
+static ULONGLONG service_current_boot_id_seconds() {
+    FILETIME ft = {};
+    GetSystemTimeAsFileTime(&ft);
+    ULARGE_INTEGER uli = {};
+    uli.LowPart = ft.dwLowDateTime;
+    uli.HighPart = ft.dwHighDateTime;
+    ULONGLONG nowMs = uli.QuadPart / 10000ULL; // 100ns ticks -> ms
+    ULONGLONG upMs = GetTickCount64();
+    ULONGLONG bootMs = (nowMs > upMs) ? (nowMs - upMs) : 0;
+    return bootMs / 1000ULL;
+}
+
+static bool service_boot_reconcile_marker_path(char* out, size_t outSize) {
+    if (!out || outSize == 0) return false;
+    char dir[MAX_PATH] = {};
+    if (!resolve_service_machine_data_dir(dir, sizeof(dir))) return false;
+    return SUCCEEDED(StringCchPrintfA(out, outSize, "%s\\service_boot_reconcile.bin", dir));
+}
+
+// True if the boot-reconcile already ran for the CURRENT boot (marker present and
+// stamped with this boot's identity).  A stale marker from a previous boot reads
+// as "not done" so the new boot re-arms the safety net.
+static bool service_boot_reconcile_already_done() {
+    char path[MAX_PATH] = {};
+    if (!service_boot_reconcile_marker_path(path, sizeof(path))) return false;
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    DWORD magic = 0, read = 0;
+    ULONGLONG storedBoot = 0;
+    bool ok = ReadFile(h, &magic, sizeof(magic), &read, nullptr) && read == sizeof(magic);
+    ok = ok && ReadFile(h, &storedBoot, sizeof(storedBoot), &read, nullptr) && read == sizeof(storedBoot);
+    CloseHandle(h);
+    if (!ok || magic != SERVICE_BOOT_RECONCILE_MAGIC) return false;
+    ULONGLONG cur = service_current_boot_id_seconds();
+    ULONGLONG diff = (cur > storedBoot) ? (cur - storedBoot) : (storedBoot - cur);
+    return diff <= SERVICE_BOOT_RECONCILE_TOLERANCE;
+}
+
+static void service_mark_boot_reconcile_done() {
+    char path[MAX_PATH] = {};
+    if (!service_boot_reconcile_marker_path(path, sizeof(path))) return;
+    char pathErr[256] = {};
+    ensure_parent_directory_for_file(path, pathErr, sizeof(pathErr));
+    HANDLE h = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    DWORD magic = SERVICE_BOOT_RECONCILE_MAGIC;
+    ULONGLONG boot = service_current_boot_id_seconds();
+    DWORD written = 0;
+    WriteFile(h, &magic, sizeof(magic), &written, nullptr);
+    WriteFile(h, &boot, sizeof(boot), &written, nullptr);
+    CloseHandle(h);
+    debug_log("boot reconcile: marker stamped bootId=%llu\n", (unsigned long long)boot);
 }
 

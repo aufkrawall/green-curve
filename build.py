@@ -87,6 +87,7 @@ LINUX_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "linux_port.cpp"),
     os.path.join(SOURCE_DIR, "linux_port_profiles.cpp"),
     os.path.join(SOURCE_DIR, "linux_tui.cpp"),
+    os.path.join(SOURCE_DIR, "linux_tui_layout.cpp"),
     os.path.join(SOURCE_DIR, "linux_gpu.cpp"),
     os.path.join(SOURCE_DIR, "linux_backend.cpp"),
     os.path.join(SOURCE_DIR, "linux_daemon.cpp"),
@@ -194,7 +195,7 @@ COMMON_FLAGS = [
 ]
 
 # C-002: read VERSION and inject it into all compile commands
-APP_VERSION = "0.17"
+APP_VERSION = "0.17.1"
 APP_BUILD_NUMBER = 0
 _version_path = os.path.join(SCRIPT_DIR, "VERSION")
 if os.path.exists(_version_path):
@@ -1565,6 +1566,7 @@ def run_regression_tests(extra_flags=None):
 #include "fan_curve.h"
 #include "service_acl.h"
 #include "vf_backends.h"
+#include "linux_tui_layout.cpp"
 
 bool is_curve_point_visible_in_gui(int) { return true; }
 void debug_log(const char*, ...) {}
@@ -2061,6 +2063,31 @@ int main(int argc, char** argv) {
         if (resolve_logon_profile_source(true, false, 0, false, false, false) != LOGON_PROFILE_SOURCE_NONE) return 149;
     }
 
+    // Boot-time "reconcile the already-active session" safety net gating
+    // (should_reconcile_active_session_at_boot).  This closes the Fast Startup /
+    // autologon gap where the service comes up after the session is already
+    // active and never sees a live WTS_SESSION_LOGON.  Args:
+    //   (isManualStart, bootReconcileAlreadyDone, inRestartLoop,
+    //    hasActiveInteractiveSession, alreadyAppliedThisSession)
+    {
+        // Boot auto-start, a user already logged in, nothing applied yet => apply.
+        if (!should_reconcile_active_session_at_boot(false, false, false, true, false)) return 160;
+        // Manual (--manual) GUI/CLI start must stay non-mutating, even with an
+        // active session that has not been applied for.
+        if (should_reconcile_active_session_at_boot(true, false, false, true, false)) return 161;
+        // Already reconciled this boot (SCM crash-restart within the same boot).
+        if (should_reconcile_active_session_at_boot(false, true, false, true, false)) return 162;
+        // Restart-loop breaker tripped => do not add another apply this round.
+        if (should_reconcile_active_session_at_boot(false, false, true, true, false)) return 163;
+        // No one logged in yet => nothing to reconcile (a later real logon drives it).
+        if (should_reconcile_active_session_at_boot(false, false, false, false, false)) return 164;
+        // The live logon router already applied for this identity => no double-apply.
+        if (should_reconcile_active_session_at_boot(false, false, false, true, true)) return 165;
+        // Manual start dominates every other gate (defense in depth).
+        if (should_reconcile_active_session_at_boot(true, false, false, true, true)) return 166;
+        if (should_reconcile_active_session_at_boot(true, true, true, true, true)) return 167;
+    }
+
     // logon_shared_slot round-trips through the profile INI like the other
     // [profiles] keys (the save/clear rewriters must re-emit it; guarded by the
     // source regression checks for the actual rewrite paths).
@@ -2114,6 +2141,56 @@ int main(int argc, char** argv) {
         if (!quoteOk) return 165;
     }
 #endif
+
+    // F-LNX-TUI: the Linux TUI button hitboxes are derived from the same line
+    // list the renderer prints, so a click/focus rectangle can never drift off
+    // the drawn "[label]".  This is the regression guard for the reported "mouse
+    // offset grows the further down you go" bug (a hand-tracked row counter that
+    // fell out of sync with the printed rows) and the byte-vs-display-column X
+    // offset on lines that contain the multibyte degC glyph.
+    {
+        DesiredSettings tuiDesired = {};
+        tuiDesired.fanCurve.points[0].temperatureC = 40;  // exercise the degC column
+        TuiViewModel vm = {};
+        vm.desired = &tuiDesired;
+        vm.currentSlot = 1;
+        vm.vfPage = 0;
+        vm.configPath = "/home/user/.config/greencurve/config.ini";
+        vm.status = "test";
+        vm.probeCompleted = false;
+        TuiLayout layout;
+        build_tui_layout(vm, &layout);
+
+        if (layout.requiredRows != (int)layout.lines.size()) return 200;
+        if (layout.actions.empty()) return 201;
+        if (layout.requiredCols <= 0) return 202;
+
+        bool sawApply = false, sawApplyReset = false, sawQuit = false;
+        for (size_t ai = 0; ai < layout.actions.size(); ai++) {
+            const ClickAction& a = layout.actions[ai];
+            if (a.type == ACTION_APPLY) sawApply = true;
+            if (a.type == ACTION_APPLY_RESET) sawApplyReset = true;
+            if (a.type == ACTION_QUIT) sawQuit = true;
+            if (a.y1 < 1 || a.y1 > (int)layout.lines.size()) return 203;
+            if (a.y1 != a.y2) return 204;
+            const std::string& row = layout.lines[a.y1 - 1];
+            if (a.byteStart < 0 || a.byteLen < 2) return 205;
+            if (a.byteStart + a.byteLen > (int)row.size()) return 206;
+            if (row[a.byteStart] != '[') return 207;                      // hitbox lands on a bracket
+            if (row[a.byteStart + a.byteLen - 1] != ']') return 208;
+            int expectStart = tui_display_columns(row.substr(0, a.byteStart)) + 1;
+            int expectEnd = tui_display_columns(row.substr(0, a.byteStart + a.byteLen));
+            if (a.x1 != expectStart) return 209;                          // display column, not byte offset
+            if (a.x2 != expectEnd) return 210;
+            if (a.x2 > layout.requiredCols) return 211;                   // interactive line never wraps
+        }
+        if (!sawApply || !sawApplyReset || !sawQuit) return 212;
+
+        // Explicit multibyte width proof: '°' (0xC2 0xB0) is one display column.
+        std::string degLine = "ab\xC2\xB0""cd";  // a b ° c d -> 5 columns, 'c' at byte 4
+        if (tui_display_columns(degLine) != 5) return 213;
+        if (tui_column_to_byte_offset(degLine, 4) != 4) return 214;
+    }
 
     DeleteCriticalSection(&g_configLock);
     return 0;
@@ -2203,6 +2280,29 @@ def require_order(path, first, second, label):
         sys.exit(1)
 
 
+def require_app_version_fallback_in_sync():
+    """The compiled version string (Windows title bar, logs, Linux banner) comes
+    from the `#ifndef APP_VERSION` fallback macro in the headers — the build does
+    NOT inject -DAPP_VERSION into the compiler.  A VERSION bump that forgets the
+    header fallbacks therefore ships a binary still showing the old version (the
+    exact 0.17 -> 0.17.1 title-bar drift).  Assert the header fallbacks match the
+    VERSION file so this cannot recur silently.
+    """
+    import re
+    for rel in ("app_shared.h", "linux_port.h"):
+        path = os.path.join(SOURCE_DIR, rel)
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+        match = re.search(r'#define\s+APP_VERSION\s+"([^"]+)"', text)
+        if not match:
+            print(f"Regression source check FAILED: APP_VERSION fallback missing in {rel}")
+            sys.exit(1)
+        if match.group(1) != APP_VERSION:
+            print(f"Regression source check FAILED: {rel} APP_VERSION fallback "
+                  f"'{match.group(1)}' != VERSION '{APP_VERSION}' (bump the header fallback too)")
+            sys.exit(1)
+
+
 def warn_oversized_source_files(soft_limit=800):
     """F-MAINT-1: warn about source files exceeding the ~600-800 line guideline.
 
@@ -2234,6 +2334,7 @@ def warn_oversized_source_files(soft_limit=800):
 
 def run_source_regression_checks():
     warn_oversized_source_files()
+    require_app_version_fallback_in_sync()
     main_cpp = os.path.join(SOURCE_DIR, "main.cpp")
     entry_cpp = os.path.join(SOURCE_DIR, "entry.cpp")
     diagnostics_cpp = os.path.join(SOURCE_DIR, "main_diagnostics.cpp")
@@ -2545,7 +2646,23 @@ def run_source_regression_checks():
     # not silently apply that user's logon slot.
     require_text(sessions_cpp, "service_handle_session_change", "active-user session-change router exists")
     require_text(sessions_cpp, "session_event_relevant_for_active_user", "session router filters events that change the active user")
-    forbid_text(sessions_cpp, "service start reconcile", "service start must not synthesize a logon profile apply")
+    # Fast Startup / autologon safety net: on a BOOT auto-start where the session
+    # is already active (no live WTS_SESSION_LOGON was delivered), the no-snapshot
+    # startup coordinator reconciles that session's logon profile ONCE, reusing the
+    # real logon apply path.  This MUST stay gated so a --manual GUI/CLI start
+    # (install / repair / restart) is non-mutating and an SCM crash-restart within
+    # the same boot cannot re-drive it.  The gating decision is pure + unit-tested
+    # (should_reconcile_active_session_at_boot); the marker makes it at-most-once
+    # per boot; --manual is threaded from StartService through to service_main.
+    require_text(sessions_cpp, "service_maybe_reconcile_active_session_at_boot", "boot reconcile safety net exists for already-active sessions")
+    require_text(sessions_cpp, "should_reconcile_active_session_at_boot", "boot reconcile uses the pure, unit-tested gating decision")
+    require_text(sessions_cpp, "g_serviceManualStart", "boot reconcile is suppressed for --manual (GUI/CLI) starts")
+    require_text(sessions_cpp, "service_apply_profile_for_session", "boot reconcile reuses the real logon apply+debounce path")
+    require_text(main_service_recovery_cpp, "service_maybe_reconcile_active_session_at_boot", "no-snapshot startup coordinator invokes the boot reconcile")
+    require_text(main_service_persist_cpp, "service_boot_reconcile_already_done", "boot reconcile is at-most-once per boot (persisted marker)")
+    require_text(main_service_persist_cpp, "service_mark_boot_reconcile_done", "boot reconcile stamps the per-boot marker")
+    require_text(main_service_install_cpp, "L\"--manual\"", "GUI/CLI service start passes --manual so it stays non-mutating")
+    require_text(service_server_cpp, "--manual", "service_main reads the --manual manual-start signal")
     require_text(service_server_cpp, "service_handle_session_change", "SESSIONCHANGE handler routes through the active-user router")
     require_text(service_server_cpp, "g_servicePipeRecycleEvent", "pipe ACL is recycled on active-user change")
     # Per-user logon task is registered for the REQUESTING user, not the
@@ -2796,6 +2913,25 @@ def run_source_regression_checks():
     require_text(linux_daemon_cpp, "root_owned_nonwritable_path", "Linux service install validates root-owned non-writable parents")
     require_text(linux_daemon_cpp, "stage_service_binary", "Linux service install stages the daemon binary before writing the unit")
     require_text(linux_daemon_cpp, "ExecStart=%s --daemon", "Linux systemd unit launches the staged daemon path")
+    # F-LNX-TUI: root-cause fix for the reported mouse-offset bug + keyboard/daemon parity.
+    linux_tui_cpp = os.path.join(SOURCE_DIR, "linux_tui.cpp")
+    linux_tui_layout_cpp = os.path.join(SOURCE_DIR, "linux_tui_layout.cpp")
+    require_text(linux_tui_layout_cpp, "(int)out->lines.size() + 1",
+                 "TUI button row is derived from the emitted line count (cannot drift)")
+    require_text(linux_tui_layout_cpp, "tui_display_columns",
+                 "TUI hitbox X uses UTF-8 display columns, not byte length")
+    forbid_text(linux_tui_cpp, "int y = 1;",
+                "TUI no longer hand-tracks a row counter that drifts from the printed rows")
+    require_text(linux_tui_cpp, "build_tui_layout",
+                 "TUI renders and hit-tests from the shared pure layout builder")
+    require_text(linux_tui_cpp, "button & 64",
+                 "TUI ignores wheel-scroll mouse reports (no phantom clicks)")
+    require_text(linux_tui_cpp, "(button & 3) != 0",
+                 "TUI mouse activation accepts only the left button")
+    require_text(linux_tui_cpp, "focus_step_vertical",
+                 "TUI has keyboard navigation (arrow/Tab focus model)")
+    require_text(linux_tui_cpp, "linux_daemon_apply",
+                 "TUI can apply settings live to the GPU via the daemon")
     # F-ARM64: cross-arch robustness (no arm64 hardware to test on).
     gpu_core_h_path = os.path.join(SOURCE_DIR, "gpu_core.h")
     require_text(gpu_core_h_path, "offsetof(nvapiPstate20Entry_t, clocks) == 8",
@@ -3095,19 +3231,22 @@ def run_source_regression_checks():
         "reapply worker waits for a driver indefinitely (no time cap on driver readiness)")
     # F-REL-2d / F-BUG-017: a startup WITHOUT a pending restart snapshot is not
     # a proof that Green Curve owns the hardware state.  Installing, repairing,
-    # or manually starting the service while a user is already logged in must
-    # not apply that user's logon slot behind the user's back.
-    # Recovery restarts still use the persisted restart snapshot path above.
-    # However, an unexpected termination (Task Manager kill) may leave stale OC
-    # settings on the GPU; detect and reset them on no-snapshot startup.
+    # or manually starting the service (--manual) while a user is already logged
+    # in must NOT apply that user's logon slot behind the user's back.
+    # Recovery restarts still use the persisted restart snapshot path above, and
+    # an unexpected termination (Task Manager kill) may leave stale OC settings on
+    # the GPU; detect and reset them on no-snapshot startup.  0.17.1: a genuine
+    # BOOT auto-start (no --manual) with an already-active session DOES reconcile
+    # that session's logon profile once (Fast Startup / autologon safety net); the
+    # boot-vs-manual + at-most-once-per-boot gating is enforced by the pure,
+    # unit-tested should_reconcile_active_session_at_boot() (checked above) so this
+    # cannot regress into a manual-start mutation.
     require_text(main_service_recovery_cpp,
         "no restart snapshot; checking for stale GPU OC settings",
         "no-snapshot startup checks for stale GPU OC settings")
     require_text(main_service_recovery_cpp,
         "no stale GPU OC settings found",
         "no-snapshot startup logs when no stale OC settings exist")
-    forbid_text(main_service_recovery_cpp, "service_reconcile_active_session_apply",
-        "no-snapshot startup must not synthesize active-session profile apply")
     require_text(main_service_recovery_cpp, "final activeDesired=",
         "startup coordinator logs final active desired state")
     # F-REL-2e: after the service authoritatively resets to no-lock, the GUI clears
