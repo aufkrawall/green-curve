@@ -718,6 +718,29 @@ static bool profile_mismatches_live_hardware(const DesiredSettings* profile) {
     return false;
 }
 
+// Clear [profiles] applied_slot on startup, before any apply paths run.
+// The persisted value is stale bookkeeping from a previous session — after a
+// driver reset, reboot, or external tool tamper the GPU may be at stock and
+// the slot no longer matches live hardware.  If the service is available we
+// validate against live hardware; if not we clear unconditionally (cannot
+// verify → must assume stale).  Apply paths (app-launch, logon, auto-switch,
+// tray/hotkey, manual Apply) will write applied_slot back when they run.
+static void validate_applied_slot_on_startup() {
+    int applied = get_config_int(g_app.configPath, "profiles", "applied_slot", 0);
+    if (applied < 1 || applied > CONFIG_NUM_SLOTS) return;
+    if (g_app.backgroundServiceAvailable) {
+        DesiredSettings desired = {};
+        char err[256] = {};
+        if (load_profile_from_config(g_app.configPath, applied, &desired, err, sizeof(err)) &&
+            !profile_mismatches_live_hardware(&desired)) {
+            return;  // slot still matches live hardware — keep it
+        }
+    }
+    debug_log("startup applied_slot validation: clearing stale applied_slot=%d%s\n",
+        applied, g_app.backgroundServiceAvailable ? " (live mismatch)" : " (service unavailable)");
+    set_config_int(g_app.configPath, "profiles", "applied_slot", 0);
+}
+
 static bool maybe_load_selected_profile_to_gui_without_apply() {
     int selectedSlot = get_config_int(g_app.configPath, "profiles", "selected_slot", CONFIG_DEFAULT_SLOT);
     if (selectedSlot < 1 || selectedSlot > CONFIG_NUM_SLOTS) {

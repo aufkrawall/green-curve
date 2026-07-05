@@ -25,6 +25,10 @@ static HWINEVENTHOOK g_apForegroundHook = nullptr;
 static bool g_apInitialized = false;
 static bool g_apBackstopRunning = false;
 static bool g_apApplyInFlight = false;
+// Non-zero = a hotkey/tray-pick arrived while g_apApplyInFlight was true.
+// Drained in ap_execute after the current apply completes (latest-wins: only
+// the most recent is kept, earlier queued picks are overwritten).
+static volatile int g_apPendingPickSlot = 0;
 static HotkeyBinding g_apHotkeys[CONFIG_NUM_SLOTS + 1] = {};      // 1-based by slot
 static bool g_apHotkeyRegistered[CONFIG_NUM_SLOTS + 1] = {};
 
@@ -50,7 +54,10 @@ static int ap_resolve_current_target() {
 // auto-load uses (maybe_load_app_launch_profile_to_gui).
 static void ap_do_apply_slot(int slot, bool manual) {
     if (slot < 1 || slot > CONFIG_NUM_SLOTS) return;
-    if (g_apApplyInFlight) return;
+    if (g_apApplyInFlight) {
+        debug_log("auto-profile: apply slot %d SKIPPED (apply in flight)\n", slot);
+        return;
+    }
     if (!is_profile_slot_saved(g_app.configPath, slot)) {
         debug_log("auto-profile: target slot %d is empty; skipping apply\n", slot);
         return;
@@ -115,14 +122,27 @@ static void ap_arm_debounce(HWND hwnd, int delayMs) {
 
 // Dispatch a controller action.  Recursion is bounded: RESUME_AUTO re-resolves
 // and dispatches a follow-up action that is only ever ARM_DEBOUNCE or NONE.
-static void ap_execute(HWND hwnd, AutoProfileAction a) {
+// 'manual' distinguishes user-initiated picks (hotkey, tray) from auto-switch
+// in the apply log and controls whether a deferred pending pick is drained.
+static void ap_execute(HWND hwnd, AutoProfileAction a, bool manual = false) {
     switch (a.kind) {
         case AP_ACTION_ARM_DEBOUNCE:
             ap_arm_debounce(hwnd, a.delayMs);
             break;
         case AP_ACTION_APPLY_SLOT: {
             KillTimer(hwnd, AUTO_PROFILE_DEBOUNCE_TIMER_ID);
-            ap_do_apply_slot(a.slot, false);
+            ap_do_apply_slot(a.slot, manual);
+            // Drain a hotkey/tray pick that arrived while the blocking apply
+            // was running (see auto_profile_pick_slot / auto_profile_on_hotkey).
+            // The full retry re-enters ap_execute with manual=true and then
+            // does its own latest-wins foreground re-check below.
+            int pending = g_apPendingPickSlot;
+            g_apPendingPickSlot = 0;
+            if (pending && pending != a.slot) {
+                debug_log("auto-profile: draining deferred pick of slot %d\n", pending);
+                auto_profile_pick_slot(hwnd, pending);
+                return;  // the inner ap_execute already did the re-check
+            }
             // Latest-wins: the ~3s apply blocked the pump; re-check the current
             // foreground once and arm a follow-up switch if it moved on.
             int t = ap_resolve_current_target();
@@ -133,7 +153,7 @@ static void ap_execute(HWND hwnd, AutoProfileAction a) {
         case AP_ACTION_RESUME_AUTO: {
             int t = ap_resolve_current_target();
             AutoProfileAction re = ap_on_target_resolved(&g_apCtrl, t, ap_now_ms(), ap_suppressed());
-            ap_execute(hwnd, re);
+            ap_execute(hwnd, re, false);
             break;
         }
         case AP_ACTION_NONE:
@@ -171,13 +191,23 @@ void auto_profile_on_backstop_timer(HWND hwnd) {
 void auto_profile_on_hotkey(HWND hwnd, int hotkeyId) {
     int slot = hotkeyId - AUTO_PROFILE_HOTKEY_ID_BASE;
     if (slot < 1 || slot > CONFIG_NUM_SLOTS) return;
-    ap_execute(hwnd, ap_on_hotkey(&g_apCtrl, slot));
+    if (g_apApplyInFlight) {
+        g_apPendingPickSlot = slot;
+        debug_log("auto-profile: deferred hotkey slot %d (apply in flight)\n", slot);
+        return;
+    }
+    ap_execute(hwnd, ap_on_hotkey(&g_apCtrl, slot), true);
     update_tray_icon();
 }
 
 void auto_profile_pick_slot(HWND hwnd, int slot) {
     if (slot < 1 || slot > CONFIG_NUM_SLOTS) return;
-    ap_execute(hwnd, ap_on_hotkey(&g_apCtrl, slot));   // same manual-pin semantics as a hotkey
+    if (g_apApplyInFlight) {
+        g_apPendingPickSlot = slot;
+        debug_log("auto-profile: deferred tray pick of slot %d (apply in flight)\n", slot);
+        return;
+    }
+    ap_execute(hwnd, ap_on_hotkey(&g_apCtrl, slot), true);
     update_tray_icon();
 }
 

@@ -11,7 +11,7 @@
 
 #define APP_NAME "Green Curve"
 #ifndef APP_VERSION
-#define APP_VERSION "0.18"
+#define APP_VERSION "0.18.1"
 #endif
 #define CONFIG_FILE_NAME "config.ini"
 #define APP_LINUX_PROBE_FILE "greencurve_linux_probe.md"

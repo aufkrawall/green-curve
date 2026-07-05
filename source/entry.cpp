@@ -912,6 +912,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         }
     }
     maybe_load_app_launch_profile_to_gui();
+    validate_applied_slot_on_startup();
     invalidate_main_window();
 
     if (g_app.startHiddenToTray) {

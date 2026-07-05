@@ -2668,6 +2668,7 @@ def run_source_regression_checks():
     require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "Repair and restart the background service", "broken installed service click repairs instead of removing")
     require_text(config_profiles_ui_cpp, "GPU settings were not applied", "startup selected profile restore is GUI-only")
     require_text(desired_settings_helpers_cpp, "desired_settings_match_active_service_intent", "profile intent can be compared to the service active desired state")
+    require_text(config_profiles_ui_cpp, "validate_applied_slot_on_startup", "startup clears stale applied_slot that no longer matches live hardware")
     require_text(config_profiles_ui_cpp, "already active in background service; skipping reset-before-apply", "app-start auto-load skips disruptive reset/apply when service already owns the same intent")
     require_order(config_profiles_ui_cpp,
         "desired_settings_match_active_service_intent(&desired",
