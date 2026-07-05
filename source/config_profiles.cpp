@@ -482,11 +482,13 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
     // admin-published profile this user wants auto-applied at logon.  It must be
     // preserved across the full-file rewrite, so read and re-emit it explicitly.
     int logonSharedSlot = get_config_int(path, "profiles", "logon_shared_slot", 0);
+    int appliedSlot = get_config_int(path, "profiles", "applied_slot", 0);
     bool startOnLogon = is_start_on_logon_enabled(path);
     int selectedSlot = slot;
     if (appLaunchSlot < 0 || appLaunchSlot > CONFIG_NUM_SLOTS) appLaunchSlot = 0;
     if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
     if (logonSharedSlot < 0 || logonSharedSlot > CONFIG_NUM_SLOTS) logonSharedSlot = 0;
+    if (appliedSlot < 0 || appliedSlot > CONFIG_NUM_SLOTS) appliedSlot = 0;
 
     // Buffer for building complete config (heap-allocated to avoid large stack usage)
     char* cfg = (char*)calloc(1, CFG_BUFFER_SIZE);
@@ -534,6 +536,7 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
     // Build [profiles] section
     appendf("[profiles]\r\n");
     appendf("selected_slot=%d\r\n", selectedSlot);
+    appendf("applied_slot=%d\r\n", appliedSlot);
     appendf("app_launch_slot=%d\r\n", appLaunchSlot);
     appendf("logon_slot=%d\r\n", logonSlot);
     appendf("logon_shared_slot=%d\r\n", logonSharedSlot);
@@ -721,11 +724,13 @@ static bool clear_profile_from_config(const char* path, int slot, char* err, siz
     // per-user slot must never drop the user's "apply shared profile at logon".
     int logonSharedSlot = get_config_int(path, "profiles", "logon_shared_slot", 0);
     int selectedSlot = get_config_int(path, "profiles", "selected_slot", CONFIG_DEFAULT_SLOT);
+    int appliedSlot = get_config_int(path, "profiles", "applied_slot", 0);
     bool startOnLogon = is_start_on_logon_enabled(path);
     if (appLaunchSlot < 0 || appLaunchSlot > CONFIG_NUM_SLOTS) appLaunchSlot = 0;
     if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
     if (logonSharedSlot < 0 || logonSharedSlot > CONFIG_NUM_SLOTS) logonSharedSlot = 0;
     if (selectedSlot < 1 || selectedSlot > CONFIG_NUM_SLOTS) selectedSlot = CONFIG_DEFAULT_SLOT;
+    if (appliedSlot < 0 || appliedSlot > CONFIG_NUM_SLOTS) appliedSlot = 0;
 
     if (appLaunchSlot == slot) appLaunchSlot = 0;
     if (logonSlot == slot) logonSlot = 0;
@@ -740,6 +745,7 @@ static bool clear_profile_from_config(const char* path, int slot, char* err, siz
             }
         }
     }
+    if (appliedSlot == slot) appliedSlot = 0;
 
     // Read existing file (heap-allocated to avoid large stack usage)
     char* existingBuf = (char*)calloc(1, CFG_BUFFER_SIZE);
@@ -779,8 +785,8 @@ static bool clear_profile_from_config(const char* path, int slot, char* err, siz
 
     // Write [meta] and [profiles]
     appendf("[meta]\r\nformat_version=2\r\n\r\n");
-    appendf("[profiles]\r\nselected_slot=%d\r\napp_launch_slot=%d\r\nlogon_slot=%d\r\nlogon_shared_slot=%d\r\n\r\n",
-        selectedSlot, appLaunchSlot, logonSlot, logonSharedSlot);
+    appendf("[profiles]\r\nselected_slot=%d\r\napplied_slot=%d\r\napp_launch_slot=%d\r\nlogon_slot=%d\r\nlogon_shared_slot=%d\r\n\r\n",
+        selectedSlot, appliedSlot, appLaunchSlot, logonSlot, logonSharedSlot);
 
     // Copy all sections except the cleared ones and managed sections
     const char* p = existingBuf;

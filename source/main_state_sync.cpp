@@ -1030,6 +1030,11 @@ static void apply_service_desired_to_gui(const DesiredSettings* desired) {
             ensure_valid_fan_curve_config(&g_app.guiFanCurve);
         }
     }
+    // Adopt the service's active curve intent as the drift-free baseline, regardless
+    // of GUI dirty state (this is what the hardware is actually set to, not live
+    // readback). Keeps fan-only detection and the editor/graph accurate across
+    // reconnects and telemetry-driven refreshes without importing boost drift.
+    capture_applied_curve_baseline(desired);
 }
 
 static void apply_control_state_to_gui(const ControlState* state) {

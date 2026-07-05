@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
+#include "auto_profile.h"   // auto-profile driver API used by the WndProc
+
 // ============================================================================
 // Main Window
 // ============================================================================
@@ -40,6 +42,10 @@ static void apply_changes() {
         } else {
             populate_desired_into_gui(&desired);
         }
+        int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
+        if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
+        slot += 1;
+        set_config_int(g_app.configPath, "profiles", "applied_slot", slot);
         populate_global_controls();
         invalidate_main_window();
     }
@@ -69,7 +75,8 @@ static void destroy_edit_controls(HWND hParent) {
             && id != START_ON_LOGON_LABEL_ID
             && id != SERVICE_ENABLE_CHECK_ID && id != SERVICE_ENABLE_LABEL_ID && id != SERVICE_STATUS_ID
             && id != LOGON_HINT_ID
-            && id != SHARE_ALL_USERS_CHECK_ID && id != SHARED_PROFILES_BTN_ID) {
+            && id != SHARE_ALL_USERS_CHECK_ID && id != SHARED_PROFILES_BTN_ID
+            && id != AUTO_PROFILE_BTN_ID) {
             DestroyWindow(child);
         }
         child = next;
@@ -164,6 +171,9 @@ static void reset_curve() {
                 g_app.lockedCi = -1;
                 g_app.lockedFreq = 0;
                 g_app.lockMode = LOCK_MODE_NONE;
+                // Reset returns the GPU to stock: drop all owned curve intent so the
+                // editor/graph show live stock values, not stale applied intent.
+                memset(g_app.appliedCurveMHz, 0, sizeof(g_app.appliedCurveMHz));
                 set_gui_state_dirty(false);
             }
             rebuild_edit_controls();
@@ -502,6 +512,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             update_fan_telemetry_timer();
             ensure_main_window_min_size(hwnd);
             layout_bottom_buttons(hwnd);
+            auto_profile_init(hwnd);
             return 0;
 
         default:
@@ -608,7 +619,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
                 return 0;
             }
+            if (wParam == AUTO_PROFILE_DEBOUNCE_TIMER_ID) {
+                auto_profile_on_debounce_timer(hwnd);
+                return 0;
+            }
+            if (wParam == AUTO_PROFILE_BACKSTOP_TIMER_ID) {
+                auto_profile_on_backstop_timer(hwnd);
+                return 0;
+            }
             break;
+
+        case WM_HOTKEY:
+            auto_profile_on_hotkey(hwnd, (int)wParam);
+            return 0;
 
         case WM_PAINT: {
             PAINTSTRUCT ps;
@@ -1138,6 +1161,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 show_main_window_from_tray();
             } else if (LOWORD(wParam) == TRAY_MENU_EXIT_ID) {
                 DestroyWindow(hwnd);
+            } else if (LOWORD(wParam) == AUTO_PROFILE_BTN_ID && HIWORD(wParam) == BN_CLICKED) {
+                show_profiles_popup(hwnd);
+            } else if (LOWORD(wParam) == AUTO_PROFILE_MENU_TOGGLE_ID) {
+                auto_profile_toggle_enabled(hwnd);
+            } else if (LOWORD(wParam) == AUTO_PROFILE_MENU_CONFIGURE_ID) {
+                auto_profile_open_config_dialog(hwnd);
+            } else if (LOWORD(wParam) > AUTO_PROFILE_MENU_SLOT_BASE &&
+                       LOWORD(wParam) <= AUTO_PROFILE_MENU_SLOT_BASE + CONFIG_NUM_SLOTS) {
+                auto_profile_pick_slot(hwnd, LOWORD(wParam) - AUTO_PROFILE_MENU_SLOT_BASE);
             } else if (HIWORD(wParam) == BN_CLICKED &&
                        LOWORD(wParam) >= LOCK_BASE_ID && LOWORD(wParam) < LOCK_BASE_ID + VF_NUM_POINTS) {
                 // Lock checkbox clicked — tri-state cycle: NONE → FLATTEN → HARD → NONE
@@ -1221,6 +1253,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_DESTROY:
             KillTimer(hwnd, FAN_TELEMETRY_TIMER_ID);
+            auto_profile_shutdown(hwnd);
             if (!g_app.usingBackgroundService || g_app.isServiceProcess) {
                 stop_fan_curve_runtime(true);
             }

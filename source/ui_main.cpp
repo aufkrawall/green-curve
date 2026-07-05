@@ -464,7 +464,19 @@ static void populate_edits() {
     memset(g_app.guiCurvePointExplicit, 0, sizeof(g_app.guiCurvePointExplicit));
     for (int vi = 0; vi < g_app.numVisible; vi++) {
         int ci = g_app.visibleMap[vi];
-        set_edit_value(g_app.hEditsMhz[vi], displayed_curve_mhz(g_app.curve[ci].freq_kHz));
+        // Owned points are shown from the drift-free applied-intent baseline, never
+        // from live NVAPI readback. The VF curve legitimately drifts under boost/
+        // temperature; that drift is telemetry only and must not surface as a
+        // configured value in the editor, the graph (via guiCurvePointExplicit +
+        // displayed_curve_mhz_for_gui_point), or a subsequent save. Stock/unowned
+        // points still show live readback.
+        unsigned int ownedMHz = (ci >= 0 && ci < VF_NUM_POINTS) ? g_app.appliedCurveMHz[ci] : 0;
+        if (ownedMHz > 0) {
+            g_app.guiCurvePointExplicit[ci] = true;
+            set_edit_value(g_app.hEditsMhz[vi], ownedMHz);
+        } else {
+            set_edit_value(g_app.hEditsMhz[vi], displayed_curve_mhz(g_app.curve[ci].freq_kHz));
+        }
         set_edit_value(g_app.hEditsMv[vi], g_app.curve[ci].volt_uV / 1000);
         SendMessageA(g_app.hEditsMhz[vi], EM_SETREADONLY, FALSE, 0);
         EnableWindow(g_app.hEditsMhz[vi], serviceReady ? TRUE : FALSE);

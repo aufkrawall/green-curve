@@ -1052,10 +1052,15 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
             // main loop — the next iteration retries.
             service_check_reapply_thread_health();
 
-            // Check whether the active desired VF curve drifted at runtime.
-            // This only queues the existing reapply worker after confirmed
-            // drift; it does not write to hardware from the watchdog path.
-            service_check_active_vf_drift_monitor("main loop");
+            // NOTE: there is deliberately NO continuous VF-drift monitor / auto-reapply
+            // here (removed in 0.18). NVIDIA's VF curve legitimately shifts a few MHz
+            // with temperature/boost; actively "correcting" it meant re-applying the
+            // whole OC (reset-to-stock spike + aggressive rewrite) over and over under
+            // game load — a TDR risk — and it looped forever whenever the flatten target
+            // was below the driver's reachable floor (e.g. 2957 vs a floored 2962). We
+            // now LIVE WITH the drift. Settings are re-applied only on real events that
+            // actually wipe the OC: resume-from-standby, driver/TDR recovery restart,
+            // and session logon (the event-driven reapply worker below/elsewhere).
 
             // Check fan runtime thread health
             if (g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive) {

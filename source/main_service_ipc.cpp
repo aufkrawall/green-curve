@@ -571,7 +571,7 @@ static bool service_client_apply_desired(const DesiredSettings* desired, const c
     StringCchCopyA(request.source, ARRAY_COUNT(request.source), source && source[0] ? source : "service apply");
     ServiceResponse response = {};
     char err[256] = {};
-    if (!service_send_request(&request, &response, 5000, err, sizeof(err))) {
+    if (!service_send_request(&request, &response, SERVICE_APPLY_CLIENT_TIMEOUT_MS, err, sizeof(err))) {
         set_message(result, resultSize, "%s", err);
         return false;
     }
@@ -592,7 +592,7 @@ static bool service_client_reset(char* result, size_t resultSize, ServiceSnapsho
     StringCchCopyA(request.source, ARRAY_COUNT(request.source), "client reset");
     ServiceResponse response = {};
     char err[256] = {};
-    if (!service_send_request(&request, &response, 5000, err, sizeof(err))) {
+    if (!service_send_request(&request, &response, SERVICE_APPLY_CLIENT_TIMEOUT_MS, err, sizeof(err))) {
         set_message(result, resultSize, "%s", err);
         return false;
     }

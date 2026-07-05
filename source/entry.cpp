@@ -835,6 +835,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     );
     debug_log("main window: shared-profiles button created (hwnd=%p)\n", (void*)g_app.hSharedProfilesBtn);
 
+    // "Auto-Profiles" button: opens the same Profiles popup as the tray submenu
+    // (per-slot apply + auto-switch toggle + "Configure auto-profiles...").
+    g_app.hAutoProfilesBtn = CreateWindowExA(
+        0, "BUTTON", "Auto-Profiles...",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+        0, 0, dp(160), dp(22),
+        g_app.hMainWnd, (HMENU)(INT_PTR)AUTO_PROFILE_BTN_ID, hInstance, nullptr
+    );
+
     g_app.hServiceEnableCheck = CreateWindowExA(
         0, "BUTTON", "",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,

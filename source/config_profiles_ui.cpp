@@ -825,6 +825,7 @@ static void maybe_load_app_launch_profile_to_gui() {
                 matchDetail[0] ? matchDetail : "match");
             populate_desired_into_gui(&desired);
             set_config_int(g_app.configPath, "profiles", "selected_slot", appLaunchSlot);
+            set_config_int(g_app.configPath, "profiles", "applied_slot", appLaunchSlot);
             refresh_profile_controls_from_config();
             set_profile_status_text("Loaded slot %d into the GUI. Background service already has matching active settings, so app-start apply was skipped.", appLaunchSlot);
             return;
@@ -844,6 +845,7 @@ static void maybe_load_app_launch_profile_to_gui() {
     if (ok) {
         populate_desired_into_gui(&desired);
         set_config_int(g_app.configPath, "profiles", "selected_slot", appLaunchSlot);
+        set_config_int(g_app.configPath, "profiles", "applied_slot", appLaunchSlot);
         refresh_profile_controls_from_config();
         set_profile_status_text((g_app.backgroundServiceInstalled && g_app.backgroundServiceAvailable)
             ? "Loaded slot %d into the GUI and applied it through the background service on app start."
@@ -1031,6 +1033,7 @@ static void apply_logon_startup_behavior() {
     if (ok) {
         populate_desired_into_gui(&desired);
         set_config_int(g_app.configPath, "profiles", "selected_slot", logonSlot);
+        set_config_int(g_app.configPath, "profiles", "applied_slot", logonSlot);
         refresh_profile_controls_from_config();
         set_profile_status_text(startProgramAtLogon
             ? "Started the tray client and applied slot %d through the background service at Windows logon."

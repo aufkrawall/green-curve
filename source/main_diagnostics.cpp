@@ -143,12 +143,23 @@ static void debug_log_session_marker(const char* phase, const char* kind, const 
 }
 
 static void set_last_apply_phase(const char* phase) {
+    // Per-phase apply timing (logging only, no behaviour change): log how long the
+    // PREVIOUS phase took so profile-apply latency can be attributed precisely
+    // (reset/settle vs each ~1s VF setControl vs correction vs fan) when measuring
+    // and comparing profile-switch speedups. Single applier thread → a static tick
+    // is safe. Reset to 0 on the terminal empty-phase call so a new apply starts fresh.
+    static ULONGLONG s_lastPhaseTickMs = 0;
+    ULONGLONG nowMs = GetTickCount64();
     if (!phase || !phase[0]) {
         g_lastApplyPhase[0] = 0;
+        s_lastPhaseTickMs = 0;
         return;
     }
+    unsigned long long prevPhaseMs = (s_lastPhaseTickMs != 0 && nowMs >= s_lastPhaseTickMs)
+        ? (unsigned long long)(nowMs - s_lastPhaseTickMs) : 0ull;
     StringCchCopyA(g_lastApplyPhase, ARRAY_COUNT(g_lastApplyPhase), phase);
-    debug_log("apply phase: %s\n", g_lastApplyPhase);
+    debug_log("apply phase: %s (previous phase took +%llums)\n", g_lastApplyPhase, prevPhaseMs);
+    s_lastPhaseTickMs = nowMs;
 }
 
 static bool crash_artifact_data_dir(char* out, size_t outSize) {

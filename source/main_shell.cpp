@@ -406,6 +406,8 @@ static void layout_bottom_buttons(HWND hParent) {
         SetWindowPos(g_app.hShareAllUsersCheck, nullptr, margin, sharedY, dp(280), dp(22), SWP_NOZORDER);
     if (g_app.hSharedProfilesBtn)
         SetWindowPos(g_app.hSharedProfilesBtn, nullptr, margin + dp(300), sharedY, dp(150), dp(22), SWP_NOZORDER);
+    if (g_app.hAutoProfilesBtn)
+        SetWindowPos(g_app.hAutoProfilesBtn, nullptr, margin + dp(460), sharedY, dp(160), dp(22), SWP_NOZORDER);
     if (g_app.hServiceEnableCheck)
         SetWindowPos(g_app.hServiceEnableCheck, nullptr, margin, serviceY + dp(4), dp(16), dp(16), SWP_NOZORDER);
     if (g_app.hServiceEnableLabel)
@@ -423,11 +425,10 @@ static void layout_bottom_buttons(HWND hParent) {
 #include "main_service_persist.cpp"
 #include "main_service_recovery.cpp"
 #include "main_service_runtime.cpp"
-#ifdef GREEN_CURVE_SERVICE_BINARY
-#include "main_service_vf_drift.cpp"
-#else
-static void service_check_active_vf_drift_monitor(const char*) {}
-#endif
+// The continuous VF-drift monitor + auto-reapply was removed in 0.18 (it fought
+// NVIDIA's expected temperature/boost curve drift by re-applying the whole OC under
+// game load — a TDR risk — and looped forever on a below-floor flatten target).
+// Settings persist only via the event-driven reapply worker (resume/recovery/logon).
 
 #include "main_service_sessions.cpp"
 

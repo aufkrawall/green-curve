@@ -15,6 +15,11 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
         if (snapshot.initialized || snapshot.loaded) {
             bool fanOnlyApply = desired_is_fan_only_apply_request(desired);
             apply_service_snapshot_to_app(&snapshot);
+            // Record the drift-free curve intent we just applied so the editor/graph,
+            // fan-only detection, and saves use it instead of live boost/temperature
+            // drift. Fan-only requests carry no curve intent, so leave the baseline as
+            // it is (do not clear the curve the service still holds).
+            if (ok && !fanOnlyApply) capture_applied_curve_baseline(desired);
             if (desired && desired->hasLock && desired->lockCi >= 0 && desired->lockCi < VF_NUM_POINTS && desired->lockMHz > 0) {
                 g_app.lockedCi = desired->lockCi; g_app.lockedFreq = desired->lockMHz; g_app.lockMode = desired->lockMode; g_app.guiLockTracksAnchor = desired->lockTracksAnchor; g_app.lockedVi = -1;
                 for (int vi = 0; vi < g_app.numVisible; vi++) {

@@ -84,7 +84,7 @@ static void log_locked_tail_drift_diagnostics() {
     s_tailDriftLastLastCi = lastDriftCi;
     s_tailDriftLastMaxCi = maxDriftCi;
     s_tailDriftLastMaxDeltaMHz = maxDeltaMHz;
-    debug_log("apply_service_snapshot_to_app: full tail drift detected target=%u points=%d drift=%d first=ci%d last=ci%d max=ci%d/%uMHz temp=%d valid=%d (service monitor may reapply after confirmation)\n",
+    debug_log("apply_service_snapshot_to_app: full tail live readback drift target=%u points=%d drift=%d first=ci%d last=ci%d max=ci%d/%uMHz temp=%d valid=%d (expected NVIDIA boost/temperature drift — diagnostic only, NO reapply)\n",
         g_app.lockedFreq,
         tailPoints,
         driftPoints,

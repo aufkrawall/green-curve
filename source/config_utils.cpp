@@ -184,3 +184,43 @@ bool set_config_int(const char* path, const char* section, const char* key, int 
     if (ok) invalidate_tray_profile_cache();
     return ok;
 }
+
+// Read a free-form string value.  Returns true when a non-truncated value was
+// found (out holds the trimmed value); false leaves out set to defaultVal (or
+// empty when defaultVal is null).  Unlike get_config_int this can carry exe
+// names, window-title/class patterns, and hotkey strings for the auto-profile
+// feature, which do not fit the 32-byte integer buffer.
+bool get_config_string(const char* path, const char* section, const char* key,
+                       const char* defaultVal, char* out, size_t outSize) {
+    if (!out || outSize == 0) return false;
+    out[0] = 0;
+    if (defaultVal) StringCchCopyA(out, outSize, defaultVal);
+    if (!path || !section || !key) return false;
+
+    // GetPrivateProfileString truncates silently; read into a generous scratch
+    // buffer and report truncation rather than persisting a half value.
+    char buf[512] = {};
+    HANDLE configMutex = nullptr;
+    if (!enter_config_storage_lock(&configMutex)) return false;
+    DWORD n = GetPrivateProfileStringA(section, key, "", buf, sizeof(buf), path);
+    leave_config_storage_lock(configMutex);
+    if (n == 0) return false;                 // key absent → keep defaultVal
+    if (n >= sizeof(buf) - 1) return false;   // truncated in scratch → treat as absent
+    trim_ascii(buf);
+    if (!buf[0]) return false;
+    if (strlen(buf) >= outSize) return false; // would truncate in caller buffer
+    StringCchCopyA(out, outSize, buf);
+    return true;
+}
+
+bool set_config_string(const char* path, const char* section, const char* key, const char* value) {
+    if (!path || !section || !key) return false;
+    HANDLE configMutex = nullptr;
+    if (!enter_config_storage_lock(&configMutex)) return false;
+    // A null/empty value deletes the key (WritePrivateProfileString with a null
+    // value string removes the entry) so cleared patterns do not linger.
+    bool ok = WritePrivateProfileStringA(section, key, (value && value[0]) ? value : nullptr, path) != FALSE;
+    leave_config_storage_lock(configMutex);
+    if (ok) invalidate_tray_profile_cache();
+    return ok;
+}

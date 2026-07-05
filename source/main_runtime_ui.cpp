@@ -678,6 +678,7 @@ static bool is_themed_button_id(UINT id) {
         case FAN_DIALOG_OK_ID:
         case FAN_DIALOG_CANCEL_ID:
         case SHARED_PROFILES_BTN_ID:
+        case AUTO_PROFILE_BTN_ID:
             return true;
     }
     return false;

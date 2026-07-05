@@ -1574,6 +1574,13 @@ void debug_log(const char*, ...) {}
 
 void invalidate_tray_profile_cache() {}
 
+// Auto-profile pure core (resolver + controller state machine).  Included
+// directly so the coalescing/hysteresis/manual-pin logic and the rule resolver
+// are exercised without a GPU or an interactive desktop.
+#include "auto_profile_rules.cpp"
+#include "auto_profile_controller.cpp"
+#include "hotkeys.cpp"
+
 int main(int argc, char** argv) {
     InitializeCriticalSection(&g_configLock);
 
@@ -2192,6 +2199,211 @@ int main(int argc, char** argv) {
         if (tui_column_to_byte_offset(degLine, 4) != 4) return 214;
     }
 
+    // F-AUTO-PROFILE: the auto-profile rule resolver is a pure, ordered,
+    // first-match-wins decision.  These guard the matching contract (exe /
+    // title / class / fullscreen, require_focus, default fallback) the whole
+    // feature depends on.
+    {
+        // Case-insensitive substring helper.
+        if (!auto_profile_text_contains_ci("Google Chrome", "chrome")) return 220;
+        if (auto_profile_text_contains_ci("Google Chrome", "firefox")) return 221;
+        if (auto_profile_text_contains_ci("abc", "")) return 222;   // empty pattern never matches
+        if (auto_profile_text_contains_ci(nullptr, "x")) return 223;
+
+        // Match-type name round-trip.
+        if (auto_profile_match_type_from_name("exe") != AUTO_MATCH_EXE) return 224;
+        if (auto_profile_match_type_from_name("fullscreen") != AUTO_MATCH_FULLSCREEN) return 225;
+        if (auto_profile_match_type_from_name("bogus") != AUTO_MATCH_NONE) return 226;
+        if (strcmp(auto_profile_match_type_name(AUTO_MATCH_TITLE), "title") != 0) return 227;
+
+        AutoProfileConfig cfg = {};
+        auto_profile_config_set_defaults(&cfg);
+        cfg.enabled = true;
+        cfg.defaultSlot = 1;
+        cfg.ruleCount = 3;
+        cfg.rules[0] = { AUTO_MATCH_EXE, "game.exe", true, 2 };
+        cfg.rules[1] = { AUTO_MATCH_TITLE, "YouTube", true, 3 };
+        cfg.rules[2] = { AUTO_MATCH_FULLSCREEN, "", true, 4 };
+
+        ForegroundInfo fg = {};
+        fg.valid = true;
+        ProcessPresence pres = {};
+
+        // exe focus match (case-insensitive).
+        StringCchCopyA(fg.exeName, sizeof(fg.exeName), "GAME.EXE");
+        StringCchCopyA(fg.title, sizeof(fg.title), "loading");
+        fg.isFullscreen = false;
+        if (resolve_auto_profile_slot(&cfg, &fg, &pres) != 2) return 228;
+
+        // title match when exe does not match.
+        StringCchCopyA(fg.exeName, sizeof(fg.exeName), "chrome.exe");
+        StringCchCopyA(fg.title, sizeof(fg.title), "Cats - YouTube");
+        if (resolve_auto_profile_slot(&cfg, &fg, &pres) != 3) return 229;
+
+        // fullscreen fallback rule.
+        StringCchCopyA(fg.exeName, sizeof(fg.exeName), "someapp.exe");
+        StringCchCopyA(fg.title, sizeof(fg.title), "no keyword");
+        fg.isFullscreen = true;
+        if (resolve_auto_profile_slot(&cfg, &fg, &pres) != 4) return 230;
+
+        // first-match-wins: exe rule outranks the later title + fullscreen rules.
+        StringCchCopyA(fg.exeName, sizeof(fg.exeName), "game.exe");
+        StringCchCopyA(fg.title, sizeof(fg.title), "YouTube");
+        fg.isFullscreen = true;
+        if (resolve_auto_profile_slot(&cfg, &fg, &pres) != 2) return 231;
+
+        // no match → default slot.
+        StringCchCopyA(fg.exeName, sizeof(fg.exeName), "notepad.exe");
+        StringCchCopyA(fg.title, sizeof(fg.title), "Untitled");
+        fg.isFullscreen = false;
+        if (resolve_auto_profile_slot(&cfg, &fg, &pres) != 1) return 232;
+
+        // require_focus honored: a running-but-not-foreground exe does NOT match
+        // a focus-required rule.
+        pres.rulePresent[0] = true;   // pretend game.exe is running in background
+        if (resolve_auto_profile_slot(&cfg, &fg, &pres) != 1) return 233;
+
+        // focus-optional exe rule matches on presence alone.
+        AutoProfileConfig bg = {};
+        auto_profile_config_set_defaults(&bg);
+        bg.enabled = true;
+        bg.defaultSlot = 1;
+        bg.ruleCount = 1;
+        bg.rules[0] = { AUTO_MATCH_EXE, "bg.exe", false, 5 };
+        ForegroundInfo other = {};
+        other.valid = true;
+        StringCchCopyA(other.exeName, sizeof(other.exeName), "explorer.exe");
+        ProcessPresence bgPres = {};
+        bgPres.rulePresent[0] = true;
+        if (resolve_auto_profile_slot(&bg, &other, &bgPres) != 5) return 234;
+        bgPres.rulePresent[0] = false;
+        if (resolve_auto_profile_slot(&bg, &other, &bgPres) != 1) return 235;
+    }
+
+    // F-AUTO-PROFILE: controller state machine — coalescing, cooldown, and the
+    // manual-pin hotkey semantics (same slot twice → back to auto).
+    {
+        AutoProfileConfig cfg = {};
+        auto_profile_config_set_defaults(&cfg);
+        cfg.enabled = true;
+        cfg.defaultSlot = 1;
+        cfg.switchDebounceMs = 800;
+        cfg.minSwitchIntervalMs = 4000;
+
+        AutoProfileController c = {};
+        ap_controller_init(&c, &cfg);
+        c.appliedSlot = 1;   // assume default is applied
+
+        // Coalescing: A(1)->B(2)->A(1) within debounce yields NO switch to B.
+        AutoProfileAction a = ap_on_target_resolved(&c, 2, 0, false);
+        if (a.kind != AP_ACTION_ARM_DEBOUNCE) return 236;
+        a = ap_on_target_resolved(&c, 1, 200, false);
+        if (a.kind != AP_ACTION_NONE) return 237;
+        a = ap_on_debounce_fire(&c, 1, 800, false);
+        if (a.kind != AP_ACTION_NONE || c.appliedSlot != 1) return 238;
+
+        // Sustained B: one apply after debounce.
+        a = ap_on_target_resolved(&c, 2, 1000, false);
+        if (a.kind != AP_ACTION_ARM_DEBOUNCE) return 239;
+        a = ap_on_debounce_fire(&c, 2, 1800, false);
+        if (a.kind != AP_ACTION_APPLY_SLOT || a.slot != 2) return 240;
+        ap_on_applied(&c, 2, 1800);
+        if (c.appliedSlot != 2) return 241;
+
+        // Cooldown: a switch to 3 shortly after must defer until minInterval.
+        a = ap_on_target_resolved(&c, 3, 1900, false);
+        if (a.kind != AP_ACTION_ARM_DEBOUNCE) return 242;
+        a = ap_on_debounce_fire(&c, 3, 2700, false);   // 2700-1800=900 < 4000
+        if (a.kind != AP_ACTION_ARM_DEBOUNCE) return 243;
+        a = ap_on_debounce_fire(&c, 3, 5800, false);   // 5800-1800=4000 >= 4000
+        if (a.kind != AP_ACTION_APPLY_SLOT || a.slot != 3) return 244;
+        ap_on_applied(&c, 3, 5800);
+
+        // Suppression (main window open) → auto does not drive.
+        a = ap_on_target_resolved(&c, 1, 6000, true);
+        if (a.kind != AP_ACTION_NONE) return 245;
+
+        // Manual pin via hotkey.
+        AutoProfileController m = {};
+        ap_controller_init(&m, &cfg);
+        m.appliedSlot = 1;
+        a = ap_on_hotkey(&m, 3);
+        if (a.kind != AP_ACTION_APPLY_SLOT || a.slot != 3 || m.mode != AP_MODE_MANUAL) return 246;
+        ap_on_applied(&m, 3, 100);
+        // While pinned, auto does not drive.
+        a = ap_on_target_resolved(&m, 2, 200, false);
+        if (a.kind != AP_ACTION_NONE) return 247;
+        // Same slot again → back to auto.
+        a = ap_on_hotkey(&m, 3);
+        if (a.kind != AP_ACTION_RESUME_AUTO || m.mode != AP_MODE_AUTO) return 248;
+        // Different slot pins that slot.
+        a = ap_on_hotkey(&m, 2);
+        if (a.kind != AP_ACTION_APPLY_SLOT || a.slot != 2 || m.mode != AP_MODE_MANUAL || m.pinnedSlot != 2) return 249;
+
+        // enter_manual_custom suspends auto.
+        AutoProfileController mc = {};
+        ap_controller_init(&mc, &cfg);
+        ap_enter_manual_custom(&mc);
+        if (ap_controller_is_driving(&mc, false)) return 250;
+
+        // Master toggle: disable reverts to default; enable resumes auto.
+        AutoProfileController t = {};
+        ap_controller_init(&t, &cfg);
+        t.appliedSlot = 2;
+        a = ap_set_enabled(&t, false);
+        if (a.kind != AP_ACTION_APPLY_SLOT || a.slot != 1) return 251;
+        a = ap_set_enabled(&t, true);
+        if (a.kind != AP_ACTION_RESUME_AUTO || !t.autoEnabled || t.mode != AP_MODE_AUTO) return 252;
+    }
+
+    // F-AUTO-PROFILE: auto-profile config INI round-trips through the shared
+    // get/set_config_* helpers (needs the argv[1] temp INI).
+    {
+        DeleteFileA(argv[1]);
+        AutoProfileConfig w = {};
+        auto_profile_config_set_defaults(&w);
+        w.enabled = true;
+        w.defaultSlot = 2;
+        w.switchDebounceMs = 500;
+        w.minSwitchIntervalMs = 5000;
+        w.suppressWhenWindowOpen = false;
+        w.ruleCount = 2;
+        w.rules[0] = { AUTO_MATCH_EXE, "game.exe", true, 3 };
+        w.rules[1] = { AUTO_MATCH_TITLE, "YouTube", true, 4 };
+        if (!auto_profile_config_save(argv[1], &w)) return 256;
+
+        AutoProfileConfig r = {};
+        auto_profile_config_load(argv[1], &r);
+        if (!r.enabled || r.defaultSlot != 2) return 257;
+        if (r.switchDebounceMs != 500 || r.minSwitchIntervalMs != 5000 || r.suppressWhenWindowOpen) return 258;
+        if (r.ruleCount != 2 ||
+            r.rules[0].matchType != AUTO_MATCH_EXE || strcmp(r.rules[0].pattern, "game.exe") != 0 ||
+            !r.rules[0].requireFocus || r.rules[0].slot != 3 ||
+            r.rules[1].matchType != AUTO_MATCH_TITLE || strcmp(r.rules[1].pattern, "YouTube") != 0 ||
+            r.rules[1].slot != 4) return 259;
+        DeleteFileA(argv[1]);
+    }
+
+    // F-AUTO-PROFILE: per-slot hotkey string parse/format round-trip + rejection.
+    {
+        HotkeyBinding b = {};
+        if (!hotkey_parse("ctrl+alt+f2", &b)) return 260;
+        if (b.vk != VK_F2 || b.mods != (MOD_CONTROL | MOD_ALT)) return 261;
+        char text[64] = {};
+        if (!hotkey_format(&b, text, sizeof(text)) || strcmp(text, "ctrl+alt+f2") != 0) return 262;
+
+        HotkeyBinding b2 = {};
+        if (!hotkey_parse("CTRL+SHIFT+A", &b2)) return 263;   // case-insensitive
+        if (b2.vk != 'A' || b2.mods != (MOD_CONTROL | MOD_SHIFT)) return 264;
+
+        HotkeyBinding b3 = {};
+        if (hotkey_parse("ctrl+alt", &b3)) return 265;        // no key
+        if (hotkey_parse("ctrl+bogus", &b3)) return 266;      // unknown key token
+        // A bare key parses (mods==0); the dialog is what rejects modifier-less binds.
+        HotkeyBinding b4 = {};
+        if (!hotkey_parse("f5", &b4) || b4.mods != 0 || b4.vk != VK_F5) return 267;
+    }
+
     DeleteCriticalSection(&g_configLock);
     return 0;
 }
@@ -2358,7 +2570,6 @@ def run_source_regression_checks():
     main_runtime_control_cpp = os.path.join(SOURCE_DIR, "main_runtime_control.cpp")
     main_runtime_gpu_cpp = os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp")
     main_service_runtime_cpp = os.path.join(SOURCE_DIR, "main_service_runtime.cpp")
-    main_service_vf_drift_cpp = os.path.join(SOURCE_DIR, "main_service_vf_drift.cpp")
     main_service_persist_cpp = os.path.join(SOURCE_DIR, "main_service_persist.cpp")
     main_service_recovery_cpp = os.path.join(SOURCE_DIR, "main_service_recovery.cpp")
     sessions_cpp = os.path.join(SOURCE_DIR, "main_service_sessions.cpp")
@@ -2805,7 +3016,7 @@ def run_source_regression_checks():
     require_text(gpu_backend_cpp, "live lock detection suppressed; preserving intent", "live lock detection does not clear configured lock intent")
     require_text(gpu_backend_cpp, "requestedMHz=", "GUI-side service apply sync preserves requested lock MHz")
     require_text(main_tail_diagnostics_cpp, "curve tail bookends", "telemetry snapshot logs tail bookends to detect post-apply shifts")
-    require_text(main_tail_diagnostics_cpp, "service monitor may reapply after confirmation", "runtime tail drift diagnostics describe the gated service reapply monitor")
+    require_text(main_tail_diagnostics_cpp, "diagnostic only, NO reapply", "runtime tail drift is logged as expected NVIDIA drift, NOT actively reapplied (0.18)")
     require_text(main_tail_diagnostics_cpp, "is_curve_point_visible_in_gui(ci)", "tail drift diagnostics skip hidden/unpopulated VF endpoints")
     require_text(ui_main_cpp, "displayed_curve_mhz_for_gui_point", "GUI graph renders curve points from live driver readback")
     require_text(ui_main_cpp, "gui locked tail live readback drift:", "GUI logs live tail readback drift diagnostics (no longer hidden)")
@@ -3021,6 +3232,144 @@ def run_source_regression_checks():
     require_text(os.path.join(SOURCE_DIR, "main_state_sync.cpp"),
         "stale mem VF offset %d kHz detected",
         "stale NVML mem VF offset is detected and cleared on fresh service start")
+
+    # F-DRIFT-1: VF boost/temperature drift is telemetry only and must never leak
+    # into the editor, graph, fan-only apply classification, or a saved profile.
+    # The single source for owned VF points is the drift-free applied-intent
+    # baseline g_app.appliedCurveMHz, populated ONLY from intent (DesiredSettings),
+    # never from live g_app.curve readback.
+    require_text(os.path.join(SOURCE_DIR, "app_shared.h"),
+        "unsigned int appliedCurveMHz[VF_NUM_POINTS];",
+        "F-DRIFT-1: drift-free applied VF curve intent baseline exists in AppState")
+    require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
+        "static void capture_applied_curve_baseline(const DesiredSettings* desired)",
+        "F-DRIFT-1: baseline is captured from intent (DesiredSettings), not live readback")
+    require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
+        "g_app.appliedCurveMHz[i] = desired->curvePointMHz[i];",
+        "F-DRIFT-1: baseline values come from the applied desired curve, not g_app.curve")
+    # Fan-only apply detection compares the editor against the drift-free baseline,
+    # NOT live readback, so expected boost drift on a pre-tail point can no longer
+    # reclassify a fan-only change as a curve edit (the reported bug).
+    require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
+        "unsigned int baselineMHz = g_app.appliedCurveMHz[i];",
+        "F-DRIFT-1: fan-only curve-change detection uses the drift-free baseline")
+    require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
+        "baselineMHz == 0 || full.curvePointMHz[i] != baselineMHz",
+        "F-DRIFT-1: a newly-owned point (no baseline) or an edited value still forces a full apply")
+    # A fan-only apply carries no curve intent, so it must NOT rewrite the baseline
+    # (which would drop the curve the service still holds).
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"),
+        "if (ok && !fanOnlyApply) capture_applied_curve_baseline(desired);",
+        "F-DRIFT-1: baseline is refreshed on a real curve apply, preserved on fan-only apply")
+    # Adopting the service's active desired keeps the baseline drift-free across
+    # reconnects / telemetry refreshes.
+    require_text(os.path.join(SOURCE_DIR, "main_state_sync.cpp"),
+        "capture_applied_curve_baseline(desired);",
+        "F-DRIFT-1: GUI adopts the service active-desired curve as the drift-free baseline")
+    # The editor/graph repaint sources owned points from the baseline, not live
+    # readback, so drift never surfaces as a displayed configured value.
+    require_text(os.path.join(SOURCE_DIR, "ui_main.cpp"),
+        "unsigned int ownedMHz = (ci >= 0 && ci < VF_NUM_POINTS) ? g_app.appliedCurveMHz[ci] : 0;",
+        "F-DRIFT-1: populate_edits shows owned VF points from the drift-free baseline")
+    # Reset-to-stock drops all owned intent so the editor shows live stock values.
+    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"),
+        "memset(g_app.appliedCurveMHz, 0, sizeof(g_app.appliedCurveMHz));",
+        "F-DRIFT-1: reset clears the owned VF curve intent baseline")
+
+    # F-APPLY-SPEED: profile-switch speed levers must be gated with defaults that
+    # preserve the exact current (TDR-safe) behaviour — the fast paths are opt-in and
+    # require GPU validation. reset_settle_ms defaults to the historical 1000ms;
+    # skip_reset_curve_write defaults to 0 (the reset-to-zero write still runs).
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend_apply.cpp"),
+        "get_config_int(g_app.configPath, \"apply\", \"reset_settle_ms\", 1000)",
+        "F-APPLY-SPEED: TDR settle is tunable but defaults to the historical 1000ms")
+    # The reset-curve-write is load-bearing for the delta-based selective/boost apply
+    # (excluded points collapse to originalCurveOffsets[ci], so a skipped reset strands
+    # the previous profile's offset on them). It must NOT be gated/skippable.
+    forbid_text(os.path.join(SOURCE_DIR, "gpu_backend_apply.cpp"),
+        "\"apply\", \"skip_reset_curve_write\"",
+        "F-APPLY-SPEED: the VF-curve reset-to-zero must not be skippable (delta-boost baseline)")
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend_apply.cpp"),
+        "if (hadCurveOffsets && !apply_curve_offsets_verified(resetOffsets, resetMask, 2))",
+        "F-APPLY-SPEED: the VF-curve reset-to-zero always runs when the previous profile had curve offsets")
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend_apply.cpp"),
+        "if (g_app.gpuClockOffsetkHz != 0 && !nvapi_set_gpu_offset(0))",
+        "F-APPLY-SPEED: the TDR-critical GPU-offset reset always runs first")
+
+    # F-NO-INJECT: the auto-profile subsystem observes other processes/windows
+    # strictly read-only (foreground/window-metadata query + a toolhelp process
+    # snapshot + an OUTOFCONTEXT WinEvent hook).  It must NEVER touch another
+    # process: no remote memory/thread writes, no in-process DLL hook, and it does
+    # not even OPEN A HANDLE to another process (the foreground exe name comes from
+    # the global process-list snapshot, not OpenProcess).  Locks the invariant so
+    # the tool cannot trip anti-cheat.
+    auto_detect_cpp = os.path.join(SOURCE_DIR, "auto_profile_detect.cpp")
+    auto_win32_cpp = os.path.join(SOURCE_DIR, "auto_profile_win32.cpp")
+    for _apf in (auto_detect_cpp, auto_win32_cpp):
+        forbid_text(_apf, "WriteProcessMemory", "F-NO-INJECT: auto-profiles must not write another process's memory")
+        forbid_text(_apf, "CreateRemoteThread", "F-NO-INJECT: auto-profiles must not create remote threads")
+        forbid_text(_apf, "VirtualAllocEx", "F-NO-INJECT: auto-profiles must not allocate in another process")
+        forbid_text(_apf, "OpenProcess", "F-NO-INJECT: auto-profiles must not open a handle to another process")
+    require_text(auto_detect_cpp, "CreateToolhelp32Snapshot",
+        "F-NO-INJECT: the foreground exe name comes from the global process snapshot, not OpenProcess")
+    require_text(auto_win32_cpp, "WINEVENT_OUTOFCONTEXT",
+        "F-NO-INJECT: the foreground hook is out-of-context (no DLL injected into other processes)")
+
+    # F-AUTO-PROFILE: the driver is wired into the GUI lifecycle (init/shutdown),
+    # the WM_HOTKEY path, and the unity build.
+    auto_ui_cpp = os.path.join(SOURCE_DIR, "ui_main_window.cpp")
+    require_text(auto_ui_cpp, "auto_profile_init(hwnd);",
+        "F-AUTO-PROFILE: subsystem is initialized on main-window WM_CREATE")
+    require_text(auto_ui_cpp, "auto_profile_shutdown(hwnd);",
+        "F-AUTO-PROFILE: subsystem is torn down on WM_DESTROY (hook/hotkeys/timers)")
+    require_text(auto_ui_cpp, "auto_profile_on_hotkey(hwnd, (int)wParam);",
+        "F-AUTO-PROFILE: global hotkeys route through WM_HOTKEY")
+    require_text(os.path.join(SOURCE_DIR, "main.cpp"), '#include "auto_profile_win32.cpp"',
+        "F-AUTO-PROFILE: the driver is compiled into the GUI unity build")
+
+    # F-DIAG-OFFSET: offset-convergence diagnostics so a driver that accepts a VF
+    # offset write but reports back a different offset (forcing ~1s retry writes,
+    # e.g. the +475 MHz boost tip at point 127) is visible in the debug log.
+    require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
+        "curve batch pass %d unconverged: ci=%d wroteOffset=%dkHz readbackOffset=%dkHz driverDelta=%dkHz",
+        "F-DIAG-OFFSET: per-pass unconverged VF offset points log wrote-vs-readback offset gap")
+    require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
+        "curve offset unconverged (final): ci=%d wroteOffset=%dkHz readbackOffset=%dkHz",
+        "F-DIAG-OFFSET: final unconverged VF offset summary logs the driver-honored offset")
+
+    # F-OFFSET-REFUSAL: a populated-but-placeholder VF point that the driver pins at
+    # offset 0 (wrote non-zero, readback stays exactly 0) is accepted as
+    # non-offsettable instead of being retried across passes + a per-point fallback
+    # (~1s NVAPI setControl each). This is what made a selective-offset+flatten apply
+    # exceed 5s (the +475 boost tip at point 127 could never converge). Mirrors the
+    # existing verify-time "hardware refused offset ... accepting actual" acceptance.
+    require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
+        "bool driverRefused[VF_NUM_POINTS] = {};",
+        "F-OFFSET-REFUSAL: driver-refused VF points are tracked so they are not retried")
+    require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
+        "desiredOffsets[i] != 0 && g_app.freqOffsets[i] == 0",
+        "F-OFFSET-REFUSAL: refusal detected when a non-zero offset write leaves readback pinned at 0")
+    require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
+        "accepting as non-offsettable placeholder",
+        "F-OFFSET-REFUSAL: refused placeholder points are accepted (not retried) to keep apply fast")
+
+    # F-RESET-INTENT: service_reset_all must drop the active-desired intent BEFORE the
+    # post-reset state refresh + control/snapshot population. Otherwise
+    # detect_locked_tail_from_curve() preserves the old lock and
+    # initialize_gui_fan_settings_from_live_state() re-reads the stale desired fan
+    # mode into g_app.activeFanMode, so the RESET reports the old Custom Curve fan
+    # mode / lock and the GUI re-adopts them (regression: reset shows Custom Curve).
+    require_text(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"),
+        "F-RESET-INTENT",
+        "F-RESET-INTENT: reset drops active-desired intent before post-reset refresh")
+    require_order(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"),
+        "F-RESET-INTENT",
+        "Clear persisted runtime state BEFORE refreshing",
+        "F-RESET-INTENT: active-desired is cleared before refresh_global_state in service_reset_all")
+    require_order(os.path.join(SOURCE_DIR, "main_service_runtime.cpp"),
+        "F-RESET-INTENT",
+        "initialize_gui_fan_settings_from_live_state(false)",
+        "F-RESET-INTENT: active-desired is cleared before post-reset fan derivation")
 
     # FP-03-001: nvapi_qi() module-level cache invalidated by close_nvapi()
     require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"),
@@ -3270,24 +3619,23 @@ def run_source_regression_checks():
         "tray icon gates OC/fan-active on actual GPU availability (not a pending desired)")
     require_text(main_gpu_front_cpp, "Green Curve - GPU driver unavailable",
         "tray tooltip reports GPU unavailable instead of a false OC/fan/profile-active state")
-    # F-BUG-016b: runtime VF drift is no longer diagnostic-only.  The service
-    # checks active desired VF intent on the existing watchdog cadence, requires
-    # consecutive confirmed drift, caps/backs off queueing, and queues the
-    # existing recovery reapply worker instead of writing from the monitor path.
-    require_text(main_cpp, "SERVICE_VF_DRIFT_CONFIRM_SAMPLES = 2",
-        "VF drift monitor requires consecutive confirmed samples")
-    require_text(main_cpp, "SERVICE_VF_DRIFT_MAX_QUEUES_PER_WINDOW = 3",
-        "VF drift monitor caps repeated reapply queues")
-    require_text(main_service_vf_drift_cpp, "service_active_vf_intent_drifted",
-        "VF drift monitor compares live VF state to active desired intent")
-    require_text(main_service_vf_drift_cpp, "service_queue_recovery_reapply(\"VF drift monitor\", 0)",
-        "VF drift monitor queues the existing reapply worker")
-    require_text(main_shell_cpp, "#ifdef GREEN_CURVE_SERVICE_BINARY\n#include \"main_service_vf_drift.cpp\"",
-        "service VF drift monitor shard is included only in the service binary")
-    require_text(service_server_cpp, "service_check_active_vf_drift_monitor(\"main loop\")",
-        "service main loop invokes the VF drift monitor")
-    require_text(main_tail_diagnostics_cpp, "service monitor may reapply after confirmation",
-        "tail drift diagnostic text reflects the service reapply monitor")
+    # F-NO-DRIFT-FIGHT (0.18): the continuous VF-drift monitor + auto-reapply was
+    # REMOVED. NVIDIA's VF curve drifts a few MHz with temperature/boost; "correcting"
+    # it meant re-applying the whole OC under game load (reset-to-stock spike +
+    # aggressive rewrite = TDR risk) and it looped forever on a below-floor flatten
+    # target (e.g. 2957 vs a floored 2962). Assert it stays gone. Settings persist ONLY
+    # via the event-driven reapply worker (resume-from-standby / driver-TDR recovery /
+    # session logon) — never a periodic "is the curve still exactly on target" poll.
+    forbid_text(main_cpp, "SERVICE_VF_DRIFT_CHECK_INTERVAL_MS",
+        "continuous VF-drift monitor tuning constants must stay removed")
+    forbid_text(service_server_cpp, "service_check_active_vf_drift_monitor",
+        "service main loop must NOT run a continuous VF-drift monitor / auto-reapply")
+    forbid_text(main_shell_cpp, "main_service_vf_drift.cpp",
+        "the VF-drift monitor shard must stay removed (no include)")
+    require_text(service_server_cpp, "NO continuous VF-drift monitor",
+        "the VF-drift monitor removal is documented at the old service-loop call site")
+    require_text(main_tail_diagnostics_cpp, "diagnostic only, NO reapply",
+        "tail drift diagnostic states drift is expected and NOT reapplied")
     require_text(main_tail_diagnostics_cpp, "s_tailDriftLastLoggedValid",
         "tail drift diagnostics log first/change/reappeared drift instead of every telemetry poll")
     # F-REL-4: OC stabilization window — settings that crash-restart the service

@@ -161,14 +161,7 @@ static bool g_serviceFanThreadLastWaitCurve = false;
 static bool g_serviceFanThreadLastWaitFixed = false;
 static ULONGLONG g_serviceTelemetryLastHardwarePollTickMs = 0;
 static char g_serviceTelemetryLastPollSource[64] = {};
-#ifdef GREEN_CURVE_SERVICE_BINARY
-static ULONGLONG g_serviceVfDriftLastCheckTickMs = 0;
-static ULONGLONG g_serviceVfDriftLastQueueTickMs = 0;
-static ULONGLONG g_serviceVfDriftWindowStartTickMs = 0;
-static unsigned int g_serviceVfDriftConsecutiveSamples = 0;
-static unsigned int g_serviceVfDriftQueueCount = 0;
-static char g_serviceVfDriftLastDetail[256] = {};
-#endif
+// (Removed in 0.18: g_serviceVfDrift* state for the continuous VF-drift monitor.)
 
 // Heartbeat written by the fan runtime thread at the START of every pulse
 // attempt (just before any NVML call) and again on completion.  The main-loop
@@ -200,6 +193,16 @@ static const int SERVICE_DEBUG_DEFAULT_ENABLED = 1; // Service logs are opt-out 
 static const DWORD SERVICE_PIPE_CLIENT_CONNECT_SLICE_MS = 250;
 static const DWORD SERVICE_PIPE_CLIENT_SLEEP_SLICE_MS = 10;
 static const DWORD SERVICE_PIPE_SERVER_IO_TIMEOUT_MS = 2000;
+// A profile APPLY/RESET runs synchronously in the service under the runtime lock and
+// legitimately takes several seconds (reset-before-apply + a 1s TDR settle + 2-3 VF
+// setControl driver writes at ~1s each + optional Blackwell tail correction). The
+// client read timeout must EXCEED the worst-case apply, otherwise the client falsely
+// reports "Timed out during reading service response" AND disconnects mid-apply — the
+// service then fails the response write (error 232) even though the apply SUCCEEDED,
+// which under rapid switching risks a double-apply / inconsistent client view. This
+// is a reliability ceiling (a genuinely wedged apply is caught by the service's own
+// fan-pulse wedge watchdog + restart), not the mechanism for making applies fast.
+static const DWORD SERVICE_APPLY_CLIENT_TIMEOUT_MS = 20000;
 static const DWORD SERVICE_FAN_THREAD_STOP_TIMEOUT_MS = 5000;
 static const DWORD SERVICE_FAN_WATCHDOG_INTERVAL_MS = 3000;
 // A healthy fan pulse completes in well under a second (a few NVML reads/writes
@@ -211,14 +214,7 @@ static const ULONGLONG SERVICE_TELEMETRY_IDLE_REFRESH_INTERVAL_MS = 5000;
 static const ULONGLONG SERVICE_TELEMETRY_RUNTIME_STALE_GRACE_MS = 1000;
 static const DWORD SERVICE_RECOVERY_REAPPLY_RETRY_INTERVAL_MS = 5000;
 static const DWORD SERVICE_RECOVERY_REAPPLY_MAX_ATTEMPTS = 12;
-#ifdef GREEN_CURVE_SERVICE_BINARY
-static const ULONGLONG SERVICE_VF_DRIFT_CHECK_INTERVAL_MS = 5000;
-static const unsigned int SERVICE_VF_DRIFT_CONFIRM_SAMPLES = 2;
-static const unsigned int SERVICE_VF_DRIFT_TOLERANCE_MHZ = 3;
-static const ULONGLONG SERVICE_VF_DRIFT_MIN_REQUEUE_MS = 30000;
-static const ULONGLONG SERVICE_VF_DRIFT_QUEUE_WINDOW_MS = 600000;
-static const unsigned int SERVICE_VF_DRIFT_MAX_QUEUES_PER_WINDOW = 3;
-#endif
+// (Removed in 0.18: SERVICE_VF_DRIFT_* tuning for the continuous VF-drift monitor.)
 static const DWORD ELEVATED_HELPER_TIMEOUT_MS = 60000;
 
 static void* nvapi_qi(unsigned int id);
@@ -308,7 +304,6 @@ static void service_queue_recovery_reapply(const char* reason, DWORD delayMs);
 static void service_maybe_launch_recovery_from_main_loop(const char* source);
 static void service_maybe_launch_recovery_reapply_thread();
 static void service_check_reapply_thread_health();
-static void service_check_active_vf_drift_monitor(const char* source);
 static void mark_service_telemetry_cache_updated(const char* source);
 static bool service_refresh_telemetry_for_request(char* detail, size_t detailSize);
 static bool service_apply_desired_settings(const DesiredSettings* desired, bool interactive, char* result, size_t resultSize);
@@ -464,6 +459,7 @@ static bool desired_has_nonfan_apply_fields(const DesiredSettings* desired);
 static bool desired_is_fan_only_apply_request(const DesiredSettings* desired);
 static bool desired_settings_match_active_service_intent(const DesiredSettings* profile, const DesiredSettings* active, char* detail, size_t detailSize);
 static bool capture_gui_apply_settings(DesiredSettings* desired, char* err, size_t errSize);
+static void capture_applied_curve_baseline(const DesiredSettings* desired);
 static void set_profile_status_text(const char* fmt, ...);
 static void update_profile_state_label();
 static void update_profile_action_buttons();
@@ -656,6 +652,15 @@ static const UINT FAN_TELEMETRY_INTERVAL_MS = 1000;
 #ifndef GREEN_CURVE_SERVICE_BINARY
 #include "ui_main.cpp"
 #include "entry.cpp"
+// Auto-profile subsystem (GUI only).  Pure cores first, then Win32 detection,
+// hotkeys, the driver (which calls the profile-apply/UI statics defined above),
+// and the rule-editor dialog.
+#include "auto_profile_rules.cpp"
+#include "auto_profile_controller.cpp"
+#include "hotkeys.cpp"
+#include "auto_profile_detect.cpp"
+#include "auto_profile_win32.cpp"
+#include "auto_profile_dialog.cpp"
 #else
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     SetProcessDPIAware();

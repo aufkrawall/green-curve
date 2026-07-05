@@ -1,3 +1,5 @@
+#include "auto_profile.h"   // auto-profile driver API used by the tray menu
+
 static void copy_fan_curve(FanCurveConfig* destination, const FanCurveConfig* source) {
     if (!destination || !source) return;
     memcpy(destination, source, sizeof(*destination));
@@ -266,19 +268,60 @@ static void show_main_window_from_tray() {
     SetForegroundWindow(g_app.hMainWnd);
     g_app.startHiddenToTray = false;
 }
+// Build the shared "Profiles" popup: per-slot apply (checkmark on the active
+// slot, greyed when empty) + the auto-switch toggle + "Configure...".  Used by
+// both the tray context menu (as a submenu) and the main-window Profiles button.
+// Menu commands post WM_COMMAND to the main window (handled in ui_main_window).
+static HMENU build_auto_profile_menu() {
+    HMENU sub = CreatePopupMenu();
+    if (!sub) return nullptr;
+    int activeSlot = auto_profile_active_slot();
+    for (int s = 1; s <= CONFIG_NUM_SLOTS; s++) {
+        bool saved = is_profile_slot_saved(g_app.configPath, s);
+        char label[48] = {};
+        StringCchPrintfA(label, ARRAY_COUNT(label), "Apply Slot %d%s", s, saved ? "" : " (empty)");
+        UINT flags = MF_STRING;
+        if (!saved) flags |= MF_GRAYED;
+        if (s == activeSlot) flags |= MF_CHECKED;
+        AppendMenuA(sub, flags, AUTO_PROFILE_MENU_SLOT_BASE + s, label);
+    }
+    AppendMenuA(sub, MF_SEPARATOR, 0, nullptr);
+    UINT toggleFlags = MF_STRING;
+    if (auto_profile_is_enabled()) toggleFlags |= MF_CHECKED;
+    AppendMenuA(sub, toggleFlags, AUTO_PROFILE_MENU_TOGGLE_ID,
+        auto_profile_is_manual_pinned() ? "Auto-switch profiles (manually pinned)" : "Auto-switch profiles");
+    AppendMenuA(sub, MF_STRING, AUTO_PROFILE_MENU_CONFIGURE_ID, "Configure auto-profiles...");
+    return sub;
+}
+
+// Standalone popup for the main-window "Profiles" button.
+static void show_profiles_popup(HWND hwnd) {
+    if (!hwnd) return;
+    refresh_menu_theme_cache();
+    HMENU menu = build_auto_profile_menu();
+    if (!menu) return;
+    POINT pt = {};
+    GetCursorPos(&pt);
+    SetForegroundWindow(hwnd);
+    TrackPopupMenu(menu, TPM_LEFTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
+    DestroyMenu(menu);
+}
+
 static void show_tray_menu(HWND hwnd) {
     if (!hwnd) return;
     refresh_menu_theme_cache();
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
     AppendMenuA(menu, MF_STRING, TRAY_MENU_SHOW_ID, IsWindowVisible(hwnd) ? "Show Window" : "Open Green Curve");
+    HMENU profiles = build_auto_profile_menu();
+    if (profiles) AppendMenuA(menu, MF_POPUP, (UINT_PTR)profiles, "Profiles");
     AppendMenuA(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuA(menu, MF_STRING, TRAY_MENU_EXIT_ID, "Exit");
     POINT pt = {};
     GetCursorPos(&pt);
     SetForegroundWindow(hwnd);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN, pt.x, pt.y, 0, hwnd, nullptr);
-    DestroyMenu(menu);
+    DestroyMenu(menu);   // destroys the attached Profiles submenu too
 }
 static bool activate_existing_instance_window() {
     for (int attempt = 0; attempt < 20; attempt++) {

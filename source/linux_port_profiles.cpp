@@ -520,11 +520,14 @@ bool save_profile_to_config_path(const char* path, int slot, const DesiredSettin
 
     int appLaunchSlot = get_section_int(&doc, "profiles", "app_launch_slot", 0);
     int logonSlot = get_section_int(&doc, "profiles", "logon_slot", 0);
+    int appliedSlot = get_section_int(&doc, "profiles", "applied_slot", 0);
     int startOnLogon = get_section_int(&doc, "startup", "start_program_on_logon", 0);
     if (appLaunchSlot < 0 || appLaunchSlot > CONFIG_NUM_SLOTS) appLaunchSlot = 0;
     if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
+    if (appliedSlot < 0 || appliedSlot > CONFIG_NUM_SLOTS) appliedSlot = 0;
 
     set_section_int(&doc, "profiles", "selected_slot", slot);
+    set_section_int(&doc, "profiles", "applied_slot", appliedSlot);
     set_section_int(&doc, "profiles", "app_launch_slot", appLaunchSlot);
     set_section_int(&doc, "profiles", "logon_slot", logonSlot);
 

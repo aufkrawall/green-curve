@@ -103,7 +103,7 @@ void init_dpi();
 #define TRAY_ICON_OC_FAN_ID 114
 #define APP_NAME            "Green Curve"
 #ifndef APP_VERSION
-#define APP_VERSION         "0.17.1"
+#define APP_VERSION         "0.18"
 #endif
 #ifndef APP_BUILD_NUMBER
 #define APP_BUILD_NUMBER    0
@@ -171,10 +171,22 @@ void init_dpi();
 #define LOCK_CTX_NONE_ID    2110
 #define LOCK_CTX_FLATTEN_ID 2111
 #define LOCK_CTX_PIN_ID     2112
+// Auto-profiles: main-window "Profiles" button + submenu command IDs.
+#define AUTO_PROFILE_BTN_ID 2046
+#define AUTO_PROFILE_MENU_TOGGLE_ID 2120
+#define AUTO_PROFILE_MENU_CONFIGURE_ID 2121
+// Base for the per-slot "apply profile N" items in the Profiles popup / tray
+// submenu (BASE + slot, slot 1..CONFIG_NUM_SLOTS).  2500..2599 is unused.
+#define AUTO_PROFILE_MENU_SLOT_BASE 2500
+// Global hotkey id base (RegisterHotKey ids 0..0xBFFF are app-owned); per-slot
+// id = BASE + slot.  Kept clear of the WM_COMMAND control-id space.
+#define AUTO_PROFILE_HOTKEY_ID_BASE 0xA000
 
 #define FAN_CURVE_TIMER_ID  1
 #define FAN_TELEMETRY_TIMER_ID 2
 #define SERVICE_RECONNECT_TIMER_ID 3
+#define AUTO_PROFILE_DEBOUNCE_TIMER_ID 4
+#define AUTO_PROFILE_BACKSTOP_TIMER_ID 5
 // FAN_CURVE_MAX_POINTS, FAN_CURVE_MAX_HYSTERESIS_C, MAX_GPU_FANS,
 // MAX_GPU_ADAPTERS moved to gpu_core.h
 #define CONFIG_FILE_NAME    "config.ini"
@@ -235,6 +247,7 @@ struct AppData {
     HWND hLogonCombo;
     HWND hShareAllUsersCheck;
     HWND hSharedProfilesBtn;
+    HWND hAutoProfilesBtn;
     HWND hAppLaunchLabel;
     HWND hLogonLabel;
     HWND hProfileStatusLabel;
@@ -367,6 +380,14 @@ struct AppData {
     int appliedLockCi;
     unsigned int appliedLockFreq;
     LockMode appliedLockMode;
+    // Drift-free applied/owned VF curve intent, per point (0 = not owned; show live
+    // readback instead). This is populated EXCLUSIVELY from intent (the applied or
+    // service-active DesiredSettings), never from live g_app.curve readback. The
+    // NVIDIA VF curve legitimately shifts under boost/temperature; that drift is
+    // telemetry only and must never leak into the editor, the graph, fan-only apply
+    // classification, or a saved profile. This baseline is the single source used to
+    // display/compare owned points so expected drift produces no unexpected values.
+    unsigned int appliedCurveMHz[VF_NUM_POINTS];
 
     int guiFanMode;
     int guiFanFixedPercent;
@@ -548,6 +569,9 @@ void leave_config_storage_lock(HANDLE acquiredMutex);
 bool config_section_has_keys(const char* path, const char* section);
 int get_config_int(const char* path, const char* section, const char* key, int defaultVal);
 bool set_config_int(const char* path, const char* section, const char* key, int value);
+bool get_config_string(const char* path, const char* section, const char* key,
+                       const char* defaultVal, char* out, size_t outSize);
+bool set_config_string(const char* path, const char* section, const char* key, const char* value);
 void invalidate_tray_profile_cache();
 
 // Machine-wide default logon profile (admin-configured, applies to all users).

@@ -26,6 +26,7 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
     bool desiredMask[VF_NUM_POINTS] = {};
     int desiredOffsets[VF_NUM_POINTS] = {};
     bool pendingMask[VF_NUM_POINTS] = {};
+    bool driverRefused[VF_NUM_POINTS] = {};
     int desiredCount = 0;
 
     for (int i = 0; i < VF_NUM_POINTS; i++) {
@@ -122,8 +123,36 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
         bool anyPending = false;
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             if (!desiredMask[i]) continue;
-            pendingMask[i] = (g_app.freqOffsets[i] != desiredOffsets[i]);
-            if (pendingMask[i]) anyPending = true;
+            bool converged = (g_app.freqOffsets[i] == desiredOffsets[i]);
+            // Driver-refusal: a populated-but-placeholder VF entry (marked editable in
+            // vfMask, but an idle/non-operating point — e.g. a high-index entry that
+            // reports ~400 MHz, below the operating range) that the driver silently
+            // pins at offset 0 no matter what we write. Retrying it costs a ~1s NVAPI
+            // setControl per pass plus a per-point fallback, and it can never converge
+            // (readback stays exactly 0). Detect the refusal (we asked for a non-zero
+            // offset, the write returned success, but the readback is still exactly 0)
+            // and accept it as non-offsettable instead of looping. Accepting it is a
+            // hardware no-op — the driver was never going to move it.
+            if (!converged && desiredOffsets[i] != 0 && g_app.freqOffsets[i] == 0) {
+                if (!driverRefused[i]) {
+                    driverRefused[i] = true;
+                    debug_log("curve offset: driver refuses point %d (wrote %dkHz, readback pinned at 0, liveFreq=%ukHz); accepting as non-offsettable placeholder\n",
+                        i, desiredOffsets[i], g_app.curve[i].freq_kHz);
+                }
+                pendingMask[i] = false;
+                continue;
+            }
+            pendingMask[i] = !converged;
+            if (pendingMask[i]) {
+                anyPending = true;
+                // Offset-convergence diagnostic: the driver accepted the write (ret=0)
+                // but reports a DIFFERENT offset than we wrote, so this point keeps
+                // being retried (each retry costs a ~1s NVAPI setControl). Log the
+                // exact gap so we can see if the driver snaps/rounds/clamps the offset.
+                debug_log("curve batch pass %d unconverged: ci=%d wroteOffset=%dkHz readbackOffset=%dkHz driverDelta=%dkHz liveFreq=%ukHz\n",
+                    pass + 1, i, desiredOffsets[i], g_app.freqOffsets[i],
+                    g_app.freqOffsets[i] - desiredOffsets[i], g_app.curve[i].freq_kHz);
+            }
             unsigned int deltaOffset = backend->controlEntryBaseOffset + (unsigned int)i * backend->controlEntryStride + backend->controlEntryDeltaOffset;
             if (deltaOffset + sizeof(g_app.freqOffsets[i]) > backend->controlBufferSize) return false;
             memcpy(&baseControl[deltaOffset], &g_app.freqOffsets[i], sizeof(g_app.freqOffsets[i]));
@@ -135,6 +164,7 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
     bool hasPending = false;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (!desiredMask[i]) continue;
+        if (driverRefused[i]) { pendingMask[i] = false; continue; }  // non-offsettable placeholder: don't fall back
         if (g_app.freqOffsets[i] != desiredOffsets[i]) {
             pendingMask[i] = true;
             hasPending = true;
@@ -146,8 +176,12 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
     if (hasPending) {
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             if (!pendingMask[i]) continue;
+            // Points the batch could not converge fall back to per-point writes.
+            // Log the pre-fallback gap so the batch-vs-fallback behaviour is visible.
             bool pointOk = nvapi_set_point(i, desiredOffsets[i]);
-            debug_log("curve fallback point %d target=%d ok=%d\n", i, desiredOffsets[i], pointOk ? 1 : 0);
+            debug_log("curve fallback point %d target=%dkHz ok=%d (batch left readback=%dkHz, driverDelta=%dkHz)\n",
+                i, desiredOffsets[i], pointOk ? 1 : 0,
+                g_app.freqOffsets[i], g_app.freqOffsets[i] - desiredOffsets[i]);
             if (!pointOk) {
                 allOk = false;
             } else {
@@ -173,10 +207,24 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
         rebuild_visible_map();
     }
 
+    // Final offset-convergence summary: which points the driver still refuses to
+    // honor exactly (these are what force the separate correction phase + extra ~1s
+    // driver writes). Distinguishes a driver-rounded offset from a true write miss.
+    int unconvergedCount = 0;
+    int refusedCount = 0;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (!desiredMask[i]) continue;
-        if (g_app.freqOffsets[i] != desiredOffsets[i]) allOk = false;
+        if (driverRefused[i]) { refusedCount++; continue; }  // accepted: driver won't move a placeholder, not a real miss
+        if (g_app.freqOffsets[i] != desiredOffsets[i]) {
+            allOk = false;
+            unconvergedCount++;
+            debug_log("curve offset unconverged (final): ci=%d wroteOffset=%dkHz readbackOffset=%dkHz driverDelta=%dkHz liveFreq=%ukHz\n",
+                i, desiredOffsets[i], g_app.freqOffsets[i],
+                g_app.freqOffsets[i] - desiredOffsets[i], g_app.curve[i].freq_kHz);
+        }
     }
+    debug_log("apply_curve_offsets_verified: done desired=%d unconverged=%d driverRefused=%d allOk=%d (unconverged points force the correction phase's extra ~1s writes; refused placeholders are accepted)\n",
+        desiredCount, unconvergedCount, refusedCount, allOk ? 1 : 0);
 
     return allOk;
 }
@@ -280,6 +328,29 @@ static int displayed_curve_khz(unsigned int rawFreq_kHz) {
     return (int)v;
 }
 
+// Record the drift-free VF curve intent that Green Curve just applied (or that the
+// service reports as active) into g_app.appliedCurveMHz. This baseline is the ONLY
+// source used to display and compare owned VF points, so expected boost/temperature
+// drift in the live curve (g_app.curve) can never leak into the editor, the graph,
+// fan-only apply detection, or a saved profile. Populated exclusively from intent
+// (the DesiredSettings), never from live readback. Call only for real curve applies
+// (skip fan-only requests, which carry no curve intent).
+static void capture_applied_curve_baseline(const DesiredSettings* desired) {
+    if (!desired) return;
+    int owned = 0;
+    for (int i = 0; i < VF_NUM_POINTS; i++) {
+        if (desired->hasCurvePoint[i] && desired->curvePointMHz[i] > 0) {
+            g_app.appliedCurveMHz[i] = desired->curvePointMHz[i];
+            owned++;
+        } else {
+            g_app.appliedCurveMHz[i] = 0;
+        }
+    }
+    debug_log("capture_applied_curve_baseline: owned=%d point74=%u point75=%u point76=%u lockCi=%d lockMHz=%u\n",
+        owned, g_app.appliedCurveMHz[74], g_app.appliedCurveMHz[75], g_app.appliedCurveMHz[76],
+        desired->hasLock ? desired->lockCi : -1, desired->hasLock ? desired->lockMHz : 0u);
+}
+
 static bool capture_gui_apply_settings(DesiredSettings* desired, char* err, size_t errSize) {
     if (!desired) return false;
 
@@ -301,6 +372,14 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, char* err, size
     bool powerUnchanged = !full.hasPowerLimit || (full.powerLimitPct == currentPowerLimitPct);
     bool fanChanged = full.hasFan && !fan_setting_matches_current(full.fanMode, full.fanPercent, &full.fanCurve);
 
+    // A fan-only apply must stay fan-only even when the live VF curve has drifted
+    // under boost/temperature. Compare each captured point against the drift-free
+    // applied-intent baseline (g_app.appliedCurveMHz), NEVER against live readback
+    // (g_app.curve). Otherwise expected boost drift on a pre-tail point would make a
+    // genuine fan-only change look like a curve edit, triggering a full
+    // reset-and-reapply mid-game and reseeding the editor with the drifted value.
+    // A point the editor owns that has no applied baseline (baseline == 0) is a real
+    // change (e.g. a freshly loaded/typed point) and correctly forces a full apply.
     bool curveUnchanged = true;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (!full.hasCurvePoint[i]) continue;
@@ -313,10 +392,12 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, char* err, size
                     break;
                 }
             }
-            if (inLockedTail) continue;
+            if (inLockedTail) continue;  // lock/tail handled by lockChanged below
         }
-        unsigned int currentMHz = displayed_curve_mhz(g_app.curve[i].freq_kHz);
-        if (full.curvePointMHz[i] != currentMHz) {
+        unsigned int baselineMHz = g_app.appliedCurveMHz[i];
+        if (baselineMHz == 0 || full.curvePointMHz[i] != baselineMHz) {
+            debug_log("capture_gui_apply_settings: curve change ci=%d editor=%u baseline=%u (drift-free)\n",
+                i, full.curvePointMHz[i], baselineMHz);
             curveUnchanged = false;
             break;
         }

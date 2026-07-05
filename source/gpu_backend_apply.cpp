@@ -34,6 +34,19 @@ static bool reset_oc_before_gui_apply(char* result, size_t resultSize) {
     // Do NOT reset memory offset here — abruptly dropping from +3000 to 0
     // while VRAM is under game load causes TDRs. The new profile's memory
     // offset will be applied directly in the main apply phase.
+    //
+    // The per-point VF-curve reset-to-zero is REQUIRED, not just a ~1s cost. The
+    // selective-offset / boost apply is deliberately DELTA-based for temperature
+    // independence (see the "blow out to 700+ MHz" note below): each boost point is
+    // written as originalOffset - currentGpuComponent + desiredGpuComponent. For
+    // EXCLUDED / stock points the current & desired GPU components are both 0, so the
+    // target collapses to originalCurveOffsets[ci] — i.e. whatever is CURRENTLY on the
+    // point. This reset-to-zero is what makes that "current" a clean stock baseline;
+    // skipping it leaves the PREVIOUS profile's offset on any point the new profile
+    // doesn't re-boost (e.g. +475 MHz stranded on excluded points 70-75 when switching
+    // to a milder profile — observed 2026-07-04, build 355 `skip_reset_curve_write`
+    // experiment). It cannot be cheaply removed without reworking the boost to absolute
+    // targets, which the delta design exists to avoid. So it always runs.
     if (hadCurveOffsets && !apply_curve_offsets_verified(resetOffsets, resetMask, 2)) {
         append_failure("VF curve offsets did not reset");
     }
@@ -59,8 +72,19 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
     }
     if (desired->resetOcBeforeApply) {
         if (!reset_oc_before_gui_apply(result, resultSize)) return false;
-        Sleep(1000);
-        debug_log("apply_desired_settings: 1s settle at stock baseline complete\n");
+        // TDR settle after reset-to-stock: let VRM/memory controllers stabilize
+        // before the new aggressive clocks (commit 4b225e1). The 1s default is
+        // deliberately conservative; make it tunable so rapid profile-switching can
+        // trade some of it back after GPU verification. Default preserves the exact
+        // current behaviour; clamp to a sane ceiling. Lowering it is a TDR/speed
+        // trade-off that MUST be validated on the real GPU under game load.
+        int settleMs = g_app.configPath[0]
+            ? get_config_int(g_app.configPath, "apply", "reset_settle_ms", 1000)
+            : 1000;
+        if (settleMs < 0) settleMs = 0;
+        if (settleMs > 5000) settleMs = 5000;
+        if (settleMs > 0) Sleep((DWORD)settleMs);
+        debug_log("apply_desired_settings: %dms settle at stock baseline complete\n", settleMs);
     }
     clear_last_operation_details();
     build_operation_intent_summary(desired, interactive, g_lastOperationIntent, sizeof(g_lastOperationIntent));

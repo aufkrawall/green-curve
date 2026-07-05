@@ -1256,6 +1256,17 @@ static bool service_reset_all(char* result, size_t resultSize) {
         }
     }
 
+    // F-RESET-INTENT: drop the active-desired intent NOW, before the post-reset
+    // state refresh + control-state population below. A reset means "stop applying
+    // anything", so lock/fan intent derivation must see NO intent. Clearing it only
+    // afterwards (as this used to) left detect_locked_tail_from_curve() preserving
+    // the old lock and initialize_gui_fan_settings_from_live_state() re-reading the
+    // stale desired fan mode into g_app.activeFanMode — so the RESET snapshot
+    // reported the old Custom Curve fan mode + lock and the GUI re-adopted them.
+    g_serviceHasActiveDesired = false;
+    memset(&g_serviceActiveDesired, 0, sizeof(g_serviceActiveDesired));
+    memset(&g_serviceActiveDesiredGpu, 0, sizeof(g_serviceActiveDesiredGpu));
+
     // Clear persisted runtime state BEFORE refreshing so the refresh sees the
     // true post-reset hardware state rather than the old persisted request.
     if (failCount == 0) {
@@ -1279,9 +1290,8 @@ static bool service_reset_all(char* result, size_t resultSize) {
         fan_curve_set_default(&g_app.guiFanCurve);
         fan_curve_set_default(&g_app.activeFanCurve);
     }
-    g_serviceHasActiveDesired = false;
-    memset(&g_serviceActiveDesired, 0, sizeof(g_serviceActiveDesired));
-    memset(&g_serviceActiveDesiredGpu, 0, sizeof(g_serviceActiveDesiredGpu));
+    // (active-desired intent was cleared above, before refresh_global_state, so the
+    // post-reset lock/fan derivation and control-state snapshot reflect true stock)
     if (failCount == 0) {
         g_app.appliedGpuOffsetMHz = 0;
         g_app.appliedGpuOffsetExcludeLowCount = 0;
