@@ -28,19 +28,78 @@ static bool handle_cli(LPWSTR wCmdLine) {
     if (opts.logonStart) {
         set_default_config_path();
         if (opts.hasConfigPath) StringCchCopyA(g_app.configPath, ARRAY_COUNT(g_app.configPath), opts.configPath);
-        g_app.launchedFromLogon = true;
+        debug_log("logon startup: parsed one-shot scheduled-task handoff (explicitConfig=%d elevated=%d)\n",
+            opts.hasConfigPath ? 1 : 0,
+            is_elevated() ? 1 : 0);
 
-        // Logon startup has two distinct behaviors:
-        // 1. tray startup enabled: launch resident app hidden to tray
-        // 2. tray startup disabled: do a silent one-shot profile apply and exit
-        if (is_start_on_logon_enabled(g_app.configPath)) {
-            g_app.startHiddenToTray = true;
-            return false;
+        // Every scheduled invocation performs the authenticated,
+        // settings-free SERVICE_CMD_LOGON_HANDOFF before a silent exit.  The service
+        // derives the active account and configured profile from the pipe
+        // caller; the command-line config path is never authorization data.
+        char handoffResult[512] = {};
+        if (!service_client_logon_handoff(handoffResult,
+                sizeof(handoffResult))) {
+            char taskLog[768] = {};
+            char timestamp[64] = {};
+            format_log_timestamp_prefix(timestamp, sizeof(timestamp));
+            StringCchPrintfA(taskLog, ARRAY_COUNT(taskLog),
+                "%sGreen Curve logon handoff FAILED: %s\n",
+                timestamp,
+                handoffResult[0] ? handoffResult : "unknown service error");
+            char pathErr[256] = {};
+            char writeErr[256] = {};
+            if (resolve_data_paths(pathErr, sizeof(pathErr))) {
+                write_text_file_atomic(cli_log_path(), taskLog,
+                    strlen(taskLog), writeErr, sizeof(writeErr));
+            }
+            debug_log("logon startup: authenticated handoff failed: %s\n",
+                handoffResult[0] ? handoffResult : "unknown");
+            g_cliExitCode = 1;
+            return true;
         }
+        debug_log("logon startup: authenticated service handoff succeeded: %s\n",
+            handoffResult[0] ? handoffResult : "accepted");
 
-        opts.recognized = true;
-        opts.applyConfig = true;
-        opts.logonStart = false;
+        char taskLog[768] = {};
+        char timestamp[64] = {};
+        format_log_timestamp_prefix(timestamp, sizeof(timestamp));
+        StringCchPrintfA(taskLog, ARRAY_COUNT(taskLog),
+            "%sGreen Curve scheduled logon handoff accepted: automatic profile application is service-owned; elevated=%d config=%s result=%s\n",
+            timestamp,
+            is_elevated() ? 1 : 0,
+            g_app.configPath[0] ? g_app.configPath : "<unset>",
+            handoffResult[0] ? handoffResult : "accepted");
+        char pathErr[256] = {};
+        char writeErr[256] = {};
+        if (resolve_data_paths(pathErr, sizeof(pathErr))) {
+            if (!write_text_file_atomic(cli_log_path(), taskLog, strlen(taskLog), writeErr, sizeof(writeErr))) {
+                debug_log("logon startup: could not write silent handoff status: %s\n",
+                    writeErr[0] ? writeErr : "unknown error");
+            }
+        } else {
+            debug_log("logon startup: could not resolve silent handoff log path: %s\n",
+                pathErr[0] ? pathErr : "unknown error");
+        }
+        debug_log("logon startup: silent task delegated automatic profile application to service\n");
+        g_cliExitCode = 0;
+        return true;
+    }
+    if (opts.trayStart) {
+        set_default_config_path();
+        if (opts.hasConfigPath) StringCchCopyA(g_app.configPath, ARRAY_COUNT(g_app.configPath), opts.configPath);
+        if (!is_start_on_logon_enabled(g_app.configPath)) {
+            // A stale Run value must not resurrect tray residency after the user
+            // disabled it in config.  Normal GUI synchronization removes the
+            // stale value, while this defensive check makes the behavior safe.
+            debug_log("tray autostart: ignored stale --tray-start because start_program_on_logon is disabled\n");
+            g_cliExitCode = 0;
+            return true;
+        }
+        g_app.launchedFromLogon = true;
+        g_app.startHiddenToTray = true;
+        debug_log("tray autostart: accepted independent HKCU Run launch (explicitConfig=%d)\n",
+            opts.hasConfigPath ? 1 : 0);
+        return false;
     }
     if (!opts.recognized) return false;
     set_default_config_path();
@@ -53,6 +112,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
     FILE* logf = fopen(logPath, "w");
     if (!logf) return true;
 
+    // flawfinder: ignore -- private macro; every invocation below has a literal format.
     #define CLI_LOG(...) do { char _gc_ts[64] = {}; format_log_timestamp_prefix(_gc_ts, sizeof(_gc_ts)); fprintf(logf, "%s", _gc_ts); fprintf(logf, __VA_ARGS__); fflush(logf); } while(0)
 
     CLI_LOG("Green Curve CLI mode started\n");
@@ -61,7 +121,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
         char err[256] = {};
         bool ok = service_install_or_remove(opts.serviceInstall, err, sizeof(err));
         if (ok) {
-            CLI_LOG(opts.serviceInstall ? "Background service installed.\n" : "Background service removed.\n");
+            CLI_LOG("%s", opts.serviceInstall ? "Background service installed.\n" : "Background service removed.\n");
             g_cliExitCode = 0;
         } else {
             CLI_LOG("ERROR: %s\n", err[0] ? err : "Background service update failed");
@@ -75,7 +135,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
         char err[256] = {};
         bool ok = set_startup_task_enabled(opts.startupTaskEnable, err, sizeof(err));
         if (ok) {
-            CLI_LOG(opts.startupTaskEnable ? "Startup task enabled.\n" : "Startup task disabled.\n");
+            CLI_LOG("%s", opts.startupTaskEnable ? "Startup task enabled.\n" : "Startup task disabled.\n");
             g_cliExitCode = 0;
         } else {
             CLI_LOG("ERROR: %s\n", err[0] ? err : "Startup task update failed");
@@ -91,10 +151,11 @@ static bool handle_cli(LPWSTR wCmdLine) {
             ? clear_machine_logon_slot(err, sizeof(err))
             : set_machine_logon_slot(opts.machineLogonSlotValue, err, sizeof(err));
         if (ok) {
-            CLI_LOG(opts.clearMachineLogonSlot
-                ? "Cleared the machine-wide default logon profile.\n"
-                : "Set the machine-wide default logon profile to slot %d.\n",
-                opts.machineLogonSlotValue);
+            if (opts.clearMachineLogonSlot)
+                CLI_LOG("Cleared the machine-wide default logon profile.\n");
+            else
+                CLI_LOG("Set the machine-wide default logon profile to slot %d.\n",
+                        opts.machineLogonSlotValue);
             g_cliExitCode = 0;
         } else {
             CLI_LOG("ERROR: %s\n", err[0] ? err : "Machine logon profile update failed");
@@ -110,10 +171,11 @@ static bool handle_cli(LPWSTR wCmdLine) {
             ? clear_machine_profile_slot(opts.machineSlotValue, err, sizeof(err))
             : copy_profile_slot_to_machine_config(g_app.configPath, opts.machineSlotValue, err, sizeof(err));
         if (ok) {
-            CLI_LOG(opts.clearMachineSlot
-                ? "Cleared machine-wide profile slot %d.\n"
-                : "Published profile slot %d to the machine-wide profile bank.\n",
-                opts.machineSlotValue);
+            if (opts.clearMachineSlot)
+                CLI_LOG("Cleared machine-wide profile slot %d.\n", opts.machineSlotValue);
+            else
+                CLI_LOG("Published profile slot %d to the machine-wide profile bank.\n",
+                        opts.machineSlotValue);
             g_cliExitCode = 0;
         } else {
             CLI_LOG("ERROR: %s\n", err[0] ? err : "Machine profile bank update failed");
@@ -127,7 +189,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
         char err[256] = {};
         bool ok = set_machine_restrict_policy(opts.restrictPolicyValue != 0, err, sizeof(err));
         if (ok) {
-            CLI_LOG(opts.restrictPolicyValue != 0
+            CLI_LOG("%s", opts.restrictPolicyValue != 0
                 ? "Enabled shared-only policy: standard (non-admin) users may only apply shared profiles.\n"
                 : "Disabled shared-only policy: standard users may apply custom settings again.\n");
             g_cliExitCode = 0;
@@ -149,10 +211,12 @@ static bool handle_cli(LPWSTR wCmdLine) {
             ? unshare_profile_slot_for_all_users(opts.shareSlotValue, err, sizeof(err))
             : share_profile_slot_for_all_users(g_app.configPath, opts.shareSlotValue, err, sizeof(err));
         if (ok) {
-            CLI_LOG(opts.unshareSlot
-                ? "Unshared profile slot %d (removed from the shared bank and the all-users default).\n"
-                : "Shared profile slot %d with all users (published + set as the all-users default logon profile).\n",
-                opts.shareSlotValue);
+            if (opts.unshareSlot)
+                CLI_LOG("Unshared profile slot %d (removed from the shared bank and the all-users default).\n",
+                        opts.shareSlotValue);
+            else
+                CLI_LOG("Shared profile slot %d with all users (published + set as the all-users default logon profile).\n",
+                        opts.shareSlotValue);
             g_cliExitCode = 0;
         } else {
             CLI_LOG("ERROR: %s\n", err[0] ? err : "Share update failed");
@@ -203,7 +267,6 @@ static bool handle_cli(LPWSTR wCmdLine) {
         g_cliExitCode = 1;
         return true;
     }
-
     if (g_app.backgroundServiceAvailable) {
         ServiceSnapshot snapshot = {};
         char err[256] = {};
@@ -218,70 +281,23 @@ static bool handle_cli(LPWSTR wCmdLine) {
         }
     }
 
+    bool cliNeedsStableGpu = opts.applyConfig ||
+        desired_has_any_action(&opts.desired) || opts.reset || opts.saveConfig;
+    if (cliNeedsStableGpu) {
+        char gpuSelectionErr[256] = {};
+        if (!validate_configured_gpu_selection_for_client(
+                gpuSelectionErr, sizeof(gpuSelectionErr))) {
+            CLI_LOG("ERROR: %s\n", gpuSelectionErr[0] ? gpuSelectionErr :
+                "Configured GPU identity is unavailable");
+            fclose(logf);
+            g_cliExitCode = 1;
+            return true;
+        }
+    }
+
     if (opts.applyConfig) {
         DesiredSettings cfg = {};
         char err[256] = {};
-        // At Windows logon, a per-user "apply admin shared profile N at logon"
-        // choice (logon_shared_slot) takes precedence and is the only logon apply
-        // that passes the shared-only policy for a restricted user: load the
-        // admin's authoritative bank copy and tag it as a shared-slot apply.
-        if (g_app.launchedFromLogon) {
-            int logonSharedSlot = get_config_int(g_app.configPath, "profiles", "logon_shared_slot", 0);
-            if (logonSharedSlot < 0 || logonSharedSlot > CONFIG_NUM_SLOTS) logonSharedSlot = 0;
-            if (logonSharedSlot > 0) {
-                char machinePath[MAX_PATH] = {};
-                DesiredSettings shared = {};
-                if (resolve_machine_config_path(machinePath, sizeof(machinePath)) &&
-                    is_profile_slot_saved(machinePath, logonSharedSlot) &&
-                    load_profile_from_config(machinePath, logonSharedSlot, &shared, err, sizeof(err)) &&
-                    desired_settings_have_explicit_state(&shared, true, err, sizeof(err))) {
-                    CLI_LOG("Waiting for GPU driver readiness before applying shared profile %d...\n", logonSharedSlot);
-                    bool driverReady = false;
-                    for (int attempt = 0; attempt < 25; attempt++) {
-                        refresh_background_service_state();
-                        if (!g_app.backgroundServiceAvailable) { Sleep(500); continue; }
-                        ServiceSnapshot snapshot = {};
-                        char snapErr[256] = {};
-                        if (service_client_get_snapshot(&snapshot, snapErr, sizeof(snapErr)) &&
-                            snapshot.loaded && snapshot.numPopulated > 0 && snapshot.initialized) {
-                            driverReady = true;
-                            break;
-                        }
-                        Sleep(400);
-                    }
-                    if (!driverReady) {
-                        CLI_LOG("ERROR: GPU driver did not become ready in time. Skipping apply.\n");
-                        fclose(logf);
-                        g_cliExitCode = 1;
-                        return true;
-                    }
-                    Sleep(300);
-                    shared.resetOcBeforeApply = true;
-                    g_app.loadedSharedSlot = logonSharedSlot;
-                    g_app.guiHasUserModifiedValues = false;
-                    char result[512] = {};
-                    set_pending_operation_source("CLI logon shared apply");
-                    CLI_LOG("Applying shared profile %d...\n", logonSharedSlot);
-                    bool ok = apply_desired_settings(&shared, false, result, sizeof(result));
-                    CLI_LOG("%s\n", result);
-                    fclose(logf);
-                    g_cliExitCode = ok ? 0 : 1;
-                    return true;
-                }
-                CLI_LOG("Shared logon profile %d is no longer available; clearing it.\n", logonSharedSlot);
-                set_config_int(g_app.configPath, "profiles", "logon_shared_slot", 0);
-            }
-            // Restricted (shared-only) users cannot apply a custom per-user
-            // logon_slot — the service rejects it.  Skip the doomed apply.
-            bool policyActive = false;
-            get_machine_restrict_policy(&policyActive);
-            if (policyActive && !current_user_is_local_admin()) {
-                CLI_LOG("Shared-only policy active and no shared logon profile chosen; skipping per-user logon apply.\n");
-                fclose(logf);
-                g_cliExitCode = 0;
-                return true;
-            }
-        }
         // Determine which profile slot to apply
         int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
         if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
@@ -324,42 +340,15 @@ static bool handle_cli(LPWSTR wCmdLine) {
             profileCurvePoints,
             cfg.hasFan ? cfg.fanMode : -1);
 
-        if (g_app.launchedFromLogon) {
-            CLI_LOG("Waiting for GPU driver readiness before applying profile %d...\n", logonSlot);
-            bool driverReady = false;
-            for (int attempt = 0; attempt < 25; attempt++) {
-                refresh_background_service_state();
-                if (!g_app.backgroundServiceAvailable) {
-                    Sleep(500);
-                    continue;
-                }
-                ServiceSnapshot snapshot = {};
-                char snapErr[256] = {};
-                if (service_client_get_snapshot(&snapshot, snapErr, sizeof(snapErr))) {
-                    if (snapshot.loaded && snapshot.numPopulated > 0 && snapshot.initialized) {
-                        driverReady = true;
-                        CLI_LOG("GPU driver ready on attempt %d (populated=%d)\n", attempt + 1, snapshot.numPopulated);
-                        break;
-                    }
-                }
-                Sleep(400);
-            }
-            if (!driverReady) {
-                CLI_LOG("ERROR: GPU driver did not become ready in time. Skipping apply.\n");
-                fclose(logf);
-                g_cliExitCode = 1;
-                return true;
-            }
-            Sleep(300);
-        }
-
         CLI_LOG("Applying profile %d...\n", logonSlot);
         merge_desired_settings(&cfg, &opts.desired);
         char result[512] = {};
         set_pending_operation_source("CLI apply-config");
         debug_log("CLI apply-config: enabling reset-before-apply\n");
         cfg.resetOcBeforeApply = true;
-        bool ok = apply_desired_settings(&cfg, false, result, sizeof(result));
+        bool ok = apply_desired_settings(&cfg, false,
+            SERVICE_APPLY_ORIGIN_CLI, SERVICE_PROFILE_SOURCE_USER_SLOT, logonSlot,
+            result, sizeof(result));
         CLI_LOG("%s\n", result);
         if (!ok) {
             fclose(logf);
@@ -370,7 +359,9 @@ static bool handle_cli(LPWSTR wCmdLine) {
     } else if (desired_has_any_action(&opts.desired)) {
         char result[512] = {};
         set_pending_operation_source("CLI direct apply");
-        bool ok = apply_desired_settings(&opts.desired, false, result, sizeof(result));
+        bool ok = apply_desired_settings(&opts.desired, false,
+            SERVICE_APPLY_ORIGIN_CLI, SERVICE_PROFILE_SOURCE_AD_HOC, 0,
+            result, sizeof(result));
         CLI_LOG("%s\n", result);
         if (!ok) {
             fclose(logf);
@@ -512,7 +503,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     LPWSTR wCmdLine = GetCommandLineW();
 
     // Initialize the shared config lock before the service handoff path can read config.
-    SetProcessDPIAware();
+    enable_best_process_dpi_awareness();
     init_dpi();
     initialize_process_mitigations();
     InitializeCriticalSection(&g_debugLogLock);
@@ -526,15 +517,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     initialize_dark_mode_support();
 
     refresh_background_service_state();
-    debug_log("startup state: usingService=%d installed=%d running=%d available=%d broken=%d launchedFromLogon=%d hiddenToTray=%d\n",
-        g_app.usingBackgroundService ? 1 : 0,
-        g_app.backgroundServiceInstalled ? 1 : 0,
-        g_app.backgroundServiceRunning ? 1 : 0,
-        g_app.backgroundServiceAvailable ? 1 : 0,
-        g_app.backgroundServiceBroken ? 1 : 0,
-        g_app.launchedFromLogon ? 1 : 0,
-        g_app.startHiddenToTray ? 1 : 0);
-    debug_log("startup config path: %s\n", g_app.configPath[0] ? g_app.configPath : "<unset>");
 
     char debugEnvBuf[16] = {};
     DWORD debugEnvLen = GetEnvironmentVariableA(APP_DEBUG_ENV, debugEnvBuf, ARRAY_COUNT(debugEnvBuf));
@@ -555,6 +537,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
             configDebugEnabled,
             g_app.configPath);
         debug_log_session_marker("BEGIN", "gui", wCmdLine ? "WinMain startup" : nullptr);
+        // The earlier status probe precedes config-controlled debug enable, so
+        // repeat it here for every normal debug log.  This is the diagnostic line
+        // needed to distinguish a task launch from a service-pipe readiness race.
+        debug_log("startup state: usingService=%d installed=%d running=%d available=%d broken=%d elevated=%d config=%s\n",
+            g_app.usingBackgroundService ? 1 : 0,
+            g_app.backgroundServiceInstalled ? 1 : 0,
+            g_app.backgroundServiceRunning ? 1 : 0,
+            g_app.backgroundServiceAvailable ? 1 : 0,
+            g_app.backgroundServiceBroken ? 1 : 0,
+            is_elevated() ? 1 : 0,
+            g_app.configPath[0] ? g_app.configPath : "<unset>");
     }
     SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
 
@@ -646,17 +639,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     }
 
     // Create main window
-    SIZE initialSize = main_window_min_size();
-    int winW = initialSize.cx;
-    int winH = initialSize.cy;
+    SIZE initialSize = main_window_initial_size();
+    bool restoredPlacement = false;
+    RECT initialRect = main_window_initial_rect(initialSize, &restoredPlacement);
+    int winW = initialRect.right - initialRect.left;
+    int winH = initialRect.bottom - initialRect.top;
     g_app.hMainWnd = CreateWindowExA(
         0, APP_CLASS_NAME,
         APP_NAME,
-        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-        CW_USEDEFAULT, CW_USEDEFAULT,
+        main_window_style(),
+        initialRect.left, initialRect.top,
         winW, winH,
         nullptr, nullptr, hInstance, nullptr
     );
+    debug_log("main window created: placement=%s rect=%ld,%ld %dx%d\n",
+        restoredPlacement ? "restored" : "centered",
+        initialRect.left, initialRect.top, winW, winH);
 
     if (!g_app.hMainWnd) {
         MessageBoxA(nullptr, "Failed to create window.", "Green Curve", MB_OK | MB_ICONERROR);
@@ -911,8 +909,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
             return 0;
         }
     }
+    // A successful snapshot already synchronized the personal-slot checkmark
+    // from explicit service metadata.  Without an authoritative service, clear
+    // stale prior-process ownership before an optional app-launch apply can
+    // establish a new active slot.
+    if (!g_app.backgroundServiceAvailable) {
+        sync_applied_profile_from_service_metadata();
+    }
     maybe_load_app_launch_profile_to_gui();
-    validate_applied_slot_on_startup();
     invalidate_main_window();
 
     if (g_app.startHiddenToTray) {

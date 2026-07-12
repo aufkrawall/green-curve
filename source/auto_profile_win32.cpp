@@ -29,6 +29,7 @@ static bool g_apApplyInFlight = false;
 // Drained in ap_execute after the current apply completes (latest-wins: only
 // the most recent is kept, earlier queued picks are overwritten).
 static volatile int g_apPendingPickSlot = 0;
+static volatile LONG g_apPendingPickOrigin = SERVICE_APPLY_ORIGIN_UNSPECIFIED;
 static HotkeyBinding g_apHotkeys[CONFIG_NUM_SLOTS + 1] = {};      // 1-based by slot
 static bool g_apHotkeyRegistered[CONFIG_NUM_SLOTS + 1] = {};
 
@@ -52,10 +53,18 @@ static int ap_resolve_current_target() {
 
 // The actual apply: reuse the same TDR-safe path + idempotency skip the app-start
 // auto-load uses (maybe_load_app_launch_profile_to_gui).
-static void ap_do_apply_slot(int slot, bool manual) {
+static void ap_do_apply_slot(int slot, ServiceApplyOrigin origin) {
+    bool manual = service_apply_origin_is_explicit(origin);
     if (slot < 1 || slot > CONFIG_NUM_SLOTS) return;
     if (g_apApplyInFlight) {
         debug_log("auto-profile: apply slot %d SKIPPED (apply in flight)\n", slot);
+        return;
+    }
+    char gpuSelectionErr[256] = {};
+    if (!validate_configured_gpu_selection_for_client(
+            gpuSelectionErr, sizeof(gpuSelectionErr))) {
+        debug_log("auto-profile: blocked slot %d because durable GPU identity is unresolved: %s\n",
+            slot, gpuSelectionErr[0] ? gpuSelectionErr : "unknown error");
         return;
     }
     if (!is_profile_slot_saved(g_app.configPath, slot)) {
@@ -82,8 +91,11 @@ static void ap_do_apply_slot(int slot, bool manual) {
             debug_log("auto-profile: slot %d already active in service; skipping apply (%s)\n",
                       slot, detail[0] ? detail : "match");
             populate_desired_into_gui(&desired);
-            set_config_int(g_app.configPath, "profiles", "selected_slot", slot);
-            set_config_int(g_app.configPath, "profiles", "applied_slot", slot);
+            if (!set_config_int(g_app.configPath, "profiles", "selected_slot", slot)) {
+                debug_log("auto-profile: slot %d already active but selected_slot persistence failed\n",
+                    slot);
+            }
+            sync_applied_profile_from_service_metadata();
             refresh_profile_controls_from_config();
             ap_on_applied(&g_apCtrl, slot, ap_now_ms());
             update_tray_icon();
@@ -99,13 +111,17 @@ static void ap_do_apply_slot(int slot, bool manual) {
     char result[512] = {};
     HCURSOR prevCursor = SetCursor(LoadCursorA(nullptr, IDC_WAIT));
     g_apApplyInFlight = true;
-    bool ok = apply_desired_settings(&desired, false, result, sizeof(result));
+    bool ok = apply_desired_settings(&desired, false, origin,
+        SERVICE_PROFILE_SOURCE_USER_SLOT, slot, result, sizeof(result));
     g_apApplyInFlight = false;
     SetCursor(prevCursor ? prevCursor : LoadCursorA(nullptr, IDC_ARROW));
     if (ok) {
         populate_desired_into_gui(&desired);
-        set_config_int(g_app.configPath, "profiles", "selected_slot", slot);
-        set_config_int(g_app.configPath, "profiles", "applied_slot", slot);
+        if (!set_config_int(g_app.configPath, "profiles", "selected_slot", slot)) {
+            debug_log("auto-profile: applied slot %d but selected_slot persistence failed\n",
+                slot);
+        }
+        sync_applied_profile_from_service_metadata();
         refresh_profile_controls_from_config();
         ap_on_applied(&g_apCtrl, slot, ap_now_ms());
         update_tray_icon();
@@ -122,25 +138,32 @@ static void ap_arm_debounce(HWND hwnd, int delayMs) {
 
 // Dispatch a controller action.  Recursion is bounded: RESUME_AUTO re-resolves
 // and dispatches a follow-up action that is only ever ARM_DEBOUNCE or NONE.
-// 'manual' distinguishes user-initiated picks (hotkey, tray) from auto-switch
-// in the apply log and controls whether a deferred pending pick is drained.
-static void ap_execute(HWND hwnd, AutoProfileAction a, bool manual = false) {
+// The typed origin keeps hotkey and tray actions distinct while both remain
+// explicit user actions permitted to clear a sticky lockout after success.
+static void ap_execute(HWND hwnd, AutoProfileAction a,
+    ServiceApplyOrigin origin = SERVICE_APPLY_ORIGIN_FOREGROUND) {
     switch (a.kind) {
         case AP_ACTION_ARM_DEBOUNCE:
             ap_arm_debounce(hwnd, a.delayMs);
             break;
         case AP_ACTION_APPLY_SLOT: {
             KillTimer(hwnd, AUTO_PROFILE_DEBOUNCE_TIMER_ID);
-            ap_do_apply_slot(a.slot, manual);
+            ap_do_apply_slot(a.slot, origin);
             // Drain a hotkey/tray pick that arrived while the blocking apply
             // was running (see auto_profile_pick_slot / auto_profile_on_hotkey).
-            // The full retry re-enters ap_execute with manual=true and then
+            // The full retry re-enters ap_execute with its explicit origin and
             // does its own latest-wins foreground re-check below.
             int pending = g_apPendingPickSlot;
+            ServiceApplyOrigin pendingOrigin =
+                (ServiceApplyOrigin)InterlockedExchange(
+                    &g_apPendingPickOrigin,
+                    SERVICE_APPLY_ORIGIN_UNSPECIFIED);
             g_apPendingPickSlot = 0;
             if (pending && pending != a.slot) {
                 debug_log("auto-profile: draining deferred pick of slot %d\n", pending);
-                auto_profile_pick_slot(hwnd, pending);
+                ap_execute(hwnd, ap_on_hotkey(&g_apCtrl, pending),
+                    service_apply_origin_is_explicit(pendingOrigin)
+                        ? pendingOrigin : SERVICE_APPLY_ORIGIN_TRAY);
                 return;  // the inner ap_execute already did the re-check
             }
             // Latest-wins: the ~3s apply blocked the pump; re-check the current
@@ -153,7 +176,7 @@ static void ap_execute(HWND hwnd, AutoProfileAction a, bool manual = false) {
         case AP_ACTION_RESUME_AUTO: {
             int t = ap_resolve_current_target();
             AutoProfileAction re = ap_on_target_resolved(&g_apCtrl, t, ap_now_ms(), ap_suppressed());
-            ap_execute(hwnd, re, false);
+            ap_execute(hwnd, re, SERVICE_APPLY_ORIGIN_FOREGROUND);
             break;
         }
         case AP_ACTION_NONE:
@@ -193,10 +216,13 @@ void auto_profile_on_hotkey(HWND hwnd, int hotkeyId) {
     if (slot < 1 || slot > CONFIG_NUM_SLOTS) return;
     if (g_apApplyInFlight) {
         g_apPendingPickSlot = slot;
+        InterlockedExchange(&g_apPendingPickOrigin,
+            SERVICE_APPLY_ORIGIN_HOTKEY);
         debug_log("auto-profile: deferred hotkey slot %d (apply in flight)\n", slot);
         return;
     }
-    ap_execute(hwnd, ap_on_hotkey(&g_apCtrl, slot), true);
+    ap_execute(hwnd, ap_on_hotkey(&g_apCtrl, slot),
+        SERVICE_APPLY_ORIGIN_HOTKEY);
     update_tray_icon();
 }
 
@@ -204,10 +230,13 @@ void auto_profile_pick_slot(HWND hwnd, int slot) {
     if (slot < 1 || slot > CONFIG_NUM_SLOTS) return;
     if (g_apApplyInFlight) {
         g_apPendingPickSlot = slot;
+        InterlockedExchange(&g_apPendingPickOrigin,
+            SERVICE_APPLY_ORIGIN_TRAY);
         debug_log("auto-profile: deferred tray pick of slot %d (apply in flight)\n", slot);
         return;
     }
-    ap_execute(hwnd, ap_on_hotkey(&g_apCtrl, slot), true);
+    ap_execute(hwnd, ap_on_hotkey(&g_apCtrl, slot),
+        SERVICE_APPLY_ORIGIN_TRAY);
     update_tray_icon();
 }
 
@@ -289,9 +318,21 @@ static void ap_converge_now(HWND hwnd) {
 
 void auto_profile_init(HWND hwnd) {
     if (g_apInitialized) return;
-    auto_profile_config_load(g_app.configPath, &g_apConfig);
+    HANDLE configMutex = nullptr;
+    bool configLocked = enter_config_storage_lock(&configMutex);
+    if (configLocked) {
+        auto_profile_config_load(g_app.configPath, &g_apConfig);
+        ap_load_hotkeys();
+        leave_config_storage_lock(configMutex);
+    } else {
+        // A mixed-generation rules/hotkeys view could register a shortcut for
+        // the wrong profile.  Initialization therefore fails closed to the
+        // disabled defaults if the one coherent read transaction is unavailable.
+        auto_profile_config_set_defaults(&g_apConfig);
+        memset(g_apHotkeys, 0, sizeof(g_apHotkeys));
+        debug_log("auto-profile: coherent config lock unavailable during init; starting disabled\n");
+    }
     ap_controller_init(&g_apCtrl, &g_apConfig);
-    ap_load_hotkeys();
     ap_register_hotkeys(hwnd);
     ap_apply_runtime_state(hwnd);
     g_apInitialized = true;
@@ -317,9 +358,18 @@ void auto_profile_shutdown(HWND hwnd) {
 
 void auto_profile_reload_config(HWND hwnd) {
     if (!g_apInitialized) { auto_profile_init(hwnd); return; }
+    HANDLE configMutex = nullptr;
+    bool configLocked = enter_config_storage_lock(&configMutex);
+    if (!configLocked) {
+        // Keep the last coherent runtime generation rather than partially
+        // replacing it with defaults or independently-read hotkeys.
+        debug_log("auto-profile: coherent config lock unavailable during reload; preserving current runtime generation\n");
+        return;
+    }
     auto_profile_config_load(g_app.configPath, &g_apConfig);
     ap_controller_sync_config(&g_apCtrl, &g_apConfig);
     ap_load_hotkeys();
+    leave_config_storage_lock(configMutex);
     ap_register_hotkeys(hwnd);
     ap_apply_runtime_state(hwnd);
     update_tray_icon();
@@ -330,8 +380,16 @@ void auto_profile_reload_config(HWND hwnd) {
 
 void auto_profile_toggle_enabled(HWND hwnd) {
     bool newEnabled = !g_apConfig.enabled;
+    bool previousEnabled = g_apConfig.enabled;
     g_apConfig.enabled = newEnabled;
-    auto_profile_config_save(g_app.configPath, &g_apConfig);
+    if (!auto_profile_config_save(g_app.configPath, &g_apConfig)) {
+        g_apConfig.enabled = previousEnabled;
+        debug_log("auto-profile: failed to persist enabled=%d; runtime state unchanged\n",
+            newEnabled ? 1 : 0);
+        MessageBoxA(hwnd, "Failed to save the auto-profile enabled state.",
+            "Green Curve", MB_OK | MB_ICONERROR);
+        return;
+    }
     AutoProfileAction a = ap_set_enabled(&g_apCtrl, newEnabled);
     ap_apply_runtime_state(hwnd);   // install/remove hook + backstop for the new state
     ap_execute(hwnd, a);

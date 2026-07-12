@@ -107,7 +107,8 @@ void auto_profile_config_set_defaults(AutoProfileConfig* cfg);
 #if defined(_WIN32)
 // INI persistence (Windows only; uses the get/set_config_* helpers).
 void auto_profile_config_load(const char* path, AutoProfileConfig* cfg);
-bool auto_profile_config_save(const char* path, const AutoProfileConfig* cfg);
+bool auto_profile_config_save(const char* path, const AutoProfileConfig* cfg,
+    const char (*hotkeys)[64] = nullptr);
 #endif
 
 #endif // GREEN_CURVE_AUTO_PROFILE_RULES_H

@@ -10,6 +10,8 @@
 
 #include "linux_daemon.h"
 #include "linux_backend.h"
+#include "linux_daemon_state.h"
+#include "linux_gpu_selection.h"
 #include "platform.h"
 
 #include <errno.h>
@@ -24,11 +26,12 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "0.0"
+#define APP_VERSION "dev"
 #endif
 #ifndef APP_BUILD_NUMBER
 #define APP_BUILD_NUMBER 0
@@ -111,6 +114,7 @@ static void dlog(const char* fmt, ...)
 static void dlog(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
+    // flawfinder: ignore -- private logger; every call site supplies a constant format.
     vfprintf(stderr, fmt, ap);
     va_end(ap);
 }
@@ -118,35 +122,45 @@ static void dlog(const char* fmt, ...) {
 // ===========================================================================
 // Client side
 // ===========================================================================
-static int client_connect() {
+// Connect to the root daemon while preserving the failure reason for the
+// unprivileged CLI/TUI.  In particular, EACCES/EPERM means the daemon may be
+// healthy but the current login session is not in the greencurve admin group.
+static int client_connect(int* connectErrno) {
+    if (connectErrno) *connectErrno = 0;
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) return -1;
+    if (fd < 0) {
+        if (connectErrno) *connectErrno = errno;
+        return -1;
+    }
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     gc_strlcpy(addr.sun_path, sizeof(addr.sun_path), GC_DAEMON_SOCKET_PATH);
     if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
+        int failureErrno = errno;
         close(fd);
+        if (connectErrno) *connectErrno = failureErrno;
         return -1;
     }
     set_nonblocking(fd);
     return fd;
 }
 
-bool linux_daemon_available() {
-    int fd = client_connect();
-    if (fd < 0) return false;
-    close(fd);
-    return true;
-}
-
 bool linux_daemon_send(const ServiceRequest* req, ServiceResponse* resp,
                        char* err, size_t errSize) {
     if (err && errSize) err[0] = 0;
-    int fd = client_connect();
+    int connectErrno = 0;
+    int fd = client_connect(&connectErrno);
     if (fd < 0) {
-        if (err) gc_snprintf(err, errSize, "daemon not reachable at %s (is greencurve.service running?)",
-                             GC_DAEMON_SOCKET_PATH);
+        if (err && (connectErrno == EACCES || connectErrno == EPERM)) {
+            gc_snprintf(err, errSize,
+                        "permission denied accessing %s; add your user to greencurve: "
+                        "sudo usermod -aG greencurve \"$USER\"; then sign out/in or run newgrp greencurve",
+                        GC_DAEMON_SOCKET_PATH);
+        } else if (err) {
+            gc_snprintf(err, errSize, "daemon not reachable at %s: %s (is greencurve.service running?)",
+                        GC_DAEMON_SOCKET_PATH, connectErrno ? strerror(connectErrno) : "unknown error");
+        }
         return false;
     }
     bool ok = write_full(fd, req, sizeof(*req)) && read_full(fd, resp, sizeof(*resp));
@@ -163,7 +177,8 @@ bool linux_daemon_send(const ServiceRequest* req, ServiceResponse* resp,
 }
 
 static bool send_simple(unsigned int command, const DesiredSettings* desired,
-                        bool interactive, char* result, size_t resultSize) {
+                         const GpuAdapterInfo* target, bool interactive,
+                         char* result, size_t resultSize) {
     ServiceRequest req;
     memset(&req, 0, sizeof(req));
     req.magic = SERVICE_PROTOCOL_MAGIC;
@@ -172,6 +187,7 @@ static bool send_simple(unsigned int command, const DesiredSettings* desired,
     req.flags = interactive ? SERVICE_REQUEST_FLAG_INTERACTIVE : 0;
     req.callerPid = (gc_u32)getpid();
     if (desired) req.desired = *desired;
+    if (target) req.targetGpu = *target;
     ServiceResponse resp;
     memset(&resp, 0, sizeof(resp));
     char err[256] = {};
@@ -180,12 +196,24 @@ static bool send_simple(unsigned int command, const DesiredSettings* desired,
     return ok;
 }
 
-bool linux_daemon_apply(const DesiredSettings* desired, bool interactive,
-                        char* result, size_t resultSize) {
-    return send_simple(SERVICE_CMD_APPLY, desired, interactive, result, resultSize);
+bool linux_daemon_apply(const GpuAdapterInfo* target, const DesiredSettings* desired, bool interactive,
+                         char* result, size_t resultSize) {
+    return send_simple(SERVICE_CMD_APPLY, desired, target, interactive, result, resultSize);
 }
-bool linux_daemon_reset(char* result, size_t resultSize) {
-    return send_simple(SERVICE_CMD_RESET, nullptr, true, result, resultSize);
+bool linux_daemon_reset(const GpuAdapterInfo* target, char* result, size_t resultSize) {
+    return send_simple(SERVICE_CMD_RESET, nullptr, target, true, result, resultSize);
+}
+
+bool linux_daemon_snapshot(ServiceSnapshot* snapshot, char* err, size_t errSize) {
+    ServiceRequest req = {};
+    ServiceResponse resp = {};
+    req.magic = SERVICE_PROTOCOL_MAGIC;
+    req.version = SERVICE_PROTOCOL_VERSION;
+    req.command = SERVICE_CMD_GET_SNAPSHOT;
+    req.callerPid = (gc_u32)getpid();
+    if (!linux_daemon_send(&req, &resp, err, errSize)) return false;
+    if (snapshot) *snapshot = resp.snapshot;
+    return true;
 }
 
 // ===========================================================================
@@ -196,42 +224,39 @@ static bool g_gpuReady = false;
 static pl_mutex g_lock;
 static DesiredSettings g_activeDesired;
 static bool g_hasActiveDesired = false;
+static GpuAdapterInfo g_activeTarget;
+static bool g_stateUncertain = false;
+static unsigned int g_fanFailureCount = 0;
 static volatile int g_running = 1;
 
-static bool persist_active_desired() {
-    if (!g_hasActiveDesired) {
-        if (unlink(GC_DAEMON_STATE_FILE) != 0 && errno != ENOENT) {
-            dlog("daemon: failed deleting stale active state %s: %s\n", GC_DAEMON_STATE_FILE, strerror(errno));
-            return false;
-        }
-        return true;
-    }
-    if (mkdir(GC_DAEMON_STATE_DIR, 0755) != 0 && errno != EEXIST) {
-        dlog("daemon: failed creating state dir %s: %s\n", GC_DAEMON_STATE_DIR, strerror(errno));
-        return false;
-    }
-    FILE* f = fopen(GC_DAEMON_STATE_FILE, "wb");
-    if (!f) {
-        dlog("daemon: failed opening active state %s: %s\n", GC_DAEMON_STATE_FILE, strerror(errno));
-        return false;
-    }
-    bool ok = fwrite(&g_activeDesired, sizeof(g_activeDesired), 1, f) == 1;
-    ok = fflush(f) == 0 && ok;
-    ok = fsync(fileno(f)) == 0 && ok;
-    ok = fclose(f) == 0 && ok;
-    if (!ok) dlog("daemon: failed writing active state %s\n", GC_DAEMON_STATE_FILE);
-    return ok;
+static bool store_daemon_record(LinuxDaemonRecordState state,
+                                const GpuAdapterInfo* target,
+                                const DesiredSettings* desired,
+                                char* err, size_t errSize) {
+    LinuxDaemonStateRecord record = {};
+    linux_daemon_record_initialize(&record, state, target, desired);
+    return linux_daemon_state_store(GC_DAEMON_STATE_FILE, &record, err, errSize);
 }
-static bool load_active_desired(DesiredSettings* out) {
-    FILE* f = fopen(GC_DAEMON_STATE_FILE, "rb");
-    if (!f) return false;
-    bool ok = fread(out, sizeof(*out), 1, f) == 1;
-    fclose(f);
-    return ok;
+
+static bool restore_committed_record(bool hadPrevious, const GpuAdapterInfo* previousTarget,
+                                     const DesiredSettings* previousDesired) {
+    char err[256] = {};
+    if (!hadPrevious) return linux_daemon_state_remove(GC_DAEMON_STATE_FILE, err, sizeof(err));
+    return store_daemon_record(LINUX_DAEMON_RECORD_ACTIVE, previousTarget,
+                               previousDesired, err, sizeof(err));
 }
 
 static void populate_snapshot(ServiceSnapshot* s) {
     memset(s, 0, sizeof(*s));
+    s->adapterCount = g_gpu.adapterCount;
+    s->selectedAdapterIndex = g_gpu.selectedAdapterIndex;
+    s->selectedAdapterOrdinalFallback = g_gpu.adapterCount == 1 &&
+                                        !linux_gpu_bdf_valid(&g_gpu.selectedGpu);
+    for (unsigned int i = 0; i < g_gpu.adapterCount && i < MAX_GPU_ADAPTERS; ++i)
+        s->adapters[i] = g_gpu.adapters[i];
+    s->autoRestoreLockoutReason = g_stateUncertain
+        ? SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED
+        : SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
     if (!g_gpuReady) return;
     s->initialized = true;
     s->loaded = (g_gpu.numPopulated > 0);
@@ -311,23 +336,51 @@ static pl_thread_ret fan_reassert_thread(void*) {
     while (g_running) {
         pl_sleep_ms(5000);
         pl_mutex_lock(&g_lock);
-        bool active = g_gpuReady && g_hasActiveDesired && g_activeDesired.hasFan &&
+        bool active = g_gpuReady && g_hasActiveDesired && !g_stateUncertain &&
+                      g_activeDesired.hasFan &&
                       g_activeDesired.fanMode == FAN_MODE_CURVE;
-        if (active && g_gpu.nvml.getTemperature && g_gpu.nvml.setFanSpeed) {
+        if (active && g_gpu.nvml.getTemperature) {
             unsigned int t = 0;
             if (g_gpu.nvml.getTemperature(g_gpu.nvmlDevice, NVML_TEMPERATURE_GPU, &t) == NVML_SUCCESS) {
                 int pct = fan_curve_percent_for_temp(&g_activeDesired.fanCurve, (int)t);
                 if (pct < 0) pct = 0; if (pct > 100) pct = 100;
-                unsigned int fans = 0;
-                if (g_gpu.nvml.getNumFans) g_gpu.nvml.getNumFans(g_gpu.nvmlDevice, &fans);
-                if (fans == 0) fans = 1;
-                for (unsigned int f = 0; f < fans; f++)
-                    g_gpu.nvml.setFanSpeed(g_gpu.nvmlDevice, f, (unsigned int)pct);
+                if (linux_backend_set_curve_fan_percent(&g_gpu, (unsigned int)pct)) {
+                    g_fanFailureCount = 0;
+                } else {
+                    ++g_fanFailureCount;
+                    dlog("daemon: fan reassert failed (%u/3) target=%d%%\n", g_fanFailureCount, pct);
+                    if (g_fanFailureCount >= 3) {
+                        bool autoOk = linux_backend_set_fan_auto(&g_gpu);
+                        char stateErr[256] = {};
+                        g_stateUncertain = true;
+                        store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_activeTarget,
+                                            &g_activeDesired, stateErr, sizeof(stateErr));
+                        dlog("daemon: fan runtime locked out after repeated failures; auto=%d state=%s\n",
+                             autoOk ? 1 : 0, stateErr[0] ? stateErr : "persisted");
+                    }
+                }
             }
         }
         pl_mutex_unlock(&g_lock);
     }
     return PL_THREAD_RET_OK;
+}
+
+static bool select_request_gpu(const ServiceRequest* req, char* err, size_t errSize) {
+    if (g_gpu.adapterCount == 1 && (!req || !req->targetGpu.valid)) {
+        if (!g_gpu.writeIdentityResolved) {
+            gc_strlcpy(err, errSize, "single GPU identity is not safe for writes");
+            return false;
+        }
+        return true;
+    }
+    if (!req || !req->targetGpu.valid) {
+        gc_strlcpy(err, errSize, "multiple GPUs detected; select an exact PCI BDF with --gpu");
+        return false;
+    }
+    if (!linux_backend_select_target(&g_gpu, &req->targetGpu, err, errSize)) return false;
+    g_gpuReady = true;
+    return true;
 }
 
 static void handle_request(const ServiceRequest* req, ServiceResponse* resp) {
@@ -366,18 +419,69 @@ static void handle_request(const ServiceRequest* req, ServiceResponse* resp) {
                 gc_strlcpy(resp->message, sizeof(resp->message), "GPU backend not initialized");
                 break;
             }
+            char targetErr[256] = {};
+            if (!select_request_gpu(req, targetErr, sizeof(targetErr))) {
+                resp->status = SERVICE_STATUS_ERROR;
+                gc_strlcpy(resp->message, sizeof(resp->message), targetErr);
+                break;
+            }
             DesiredSettings d = req->desired;
             validate_desired_settings_for_ipc(&d);
-            bool ok = linux_backend_apply(&g_gpu, &d, resp->message, sizeof(resp->message));
-            g_activeDesired = d;
-            g_hasActiveDesired = true;
-            if (!persist_active_desired()) {
-                ok = false;
-                gc_strlcpy(resp->message, sizeof(resp->message), "active state persistence failed");
+            bool hadPrevious = g_hasActiveDesired;
+            DesiredSettings previousDesired = g_activeDesired;
+            GpuAdapterInfo previousTarget = g_activeTarget;
+            LinuxHardwareSnapshot before = {};
+            char stateErr[256] = {};
+            if (!linux_backend_capture_snapshot(&g_gpu, &before, stateErr, sizeof(stateErr)) ||
+                !store_daemon_record(LINUX_DAEMON_RECORD_PREPARED, &g_gpu.selectedGpu,
+                                     &d, stateErr, sizeof(stateErr))) {
+                resp->status = SERVICE_STATUS_ERROR;
+                gc_snprintf(resp->message, sizeof(resp->message),
+                            "Apply aborted before hardware write: %s", stateErr);
+                break;
+            }
+            LinuxMutationResult mutation = linux_backend_apply(&g_gpu, &d,
+                resp->message, sizeof(resp->message));
+            bool committed = false;
+            if (mutation.success) {
+                committed = store_daemon_record(LINUX_DAEMON_RECORD_ACTIVE,
+                    &g_gpu.selectedGpu, &d, stateErr, sizeof(stateErr));
+                if (!committed) {
+                    char rollbackErr[256] = {};
+                    bool rollbackOk = linux_backend_restore_snapshot(&g_gpu, &before,
+                        mutation.attemptedPhases, rollbackErr, sizeof(rollbackErr));
+                    bool recordOk = restore_committed_record(hadPrevious, &previousTarget,
+                                                              &previousDesired);
+                    g_stateUncertain = !rollbackOk || !recordOk;
+                    if (g_stateUncertain)
+                        store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_gpu.selectedGpu,
+                                            &d, stateErr, sizeof(stateErr));
+                    gc_snprintf(resp->message, sizeof(resp->message),
+                        "Apply persistence failed; hardware rollback %s",
+                        rollbackOk ? "succeeded" : "is uncertain");
+                }
+            } else if (mutation.rollbackSucceeded || !mutation.anyWrite) {
+                bool recordOk = restore_committed_record(hadPrevious, &previousTarget, &previousDesired);
+                if (!recordOk) {
+                    g_stateUncertain = true;
+                    store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_gpu.selectedGpu,
+                                        &d, stateErr, sizeof(stateErr));
+                }
+            } else {
+                g_stateUncertain = true;
+                store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_gpu.selectedGpu,
+                                    &d, stateErr, sizeof(stateErr));
+            }
+            if (committed) {
+                g_activeDesired = d;
+                g_activeTarget = g_gpu.selectedGpu;
+                g_hasActiveDesired = true;
+                g_stateUncertain = false;
+                g_fanFailureCount = 0;
             }
             populate_snapshot(&resp->snapshot);
-            resp->desired = g_activeDesired;
-            resp->status = ok ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
+            if (g_hasActiveDesired) resp->desired = g_activeDesired;
+            resp->status = committed ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
             break;
         }
         case SERVICE_CMD_RESET: {
@@ -386,14 +490,59 @@ static void handle_request(const ServiceRequest* req, ServiceResponse* resp) {
                 gc_strlcpy(resp->message, sizeof(resp->message), "GPU backend not initialized");
                 break;
             }
-            bool ok = linux_backend_reset(&g_gpu, resp->message, sizeof(resp->message));
-            g_hasActiveDesired = false;
-            if (!persist_active_desired()) {
-                ok = false;
-                gc_strlcpy(resp->message, sizeof(resp->message), "failed deleting stale active state");
+            char targetErr[256] = {};
+            if (!select_request_gpu(req, targetErr, sizeof(targetErr))) {
+                resp->status = SERVICE_STATUS_ERROR;
+                gc_strlcpy(resp->message, sizeof(resp->message), targetErr);
+                break;
+            }
+            bool hadPrevious = g_hasActiveDesired;
+            DesiredSettings previousDesired = g_activeDesired;
+            GpuAdapterInfo previousTarget = g_activeTarget;
+            LinuxHardwareSnapshot before = {};
+            char stateErr[256] = {};
+            DesiredSettings empty = {};
+            if (!linux_backend_capture_snapshot(&g_gpu, &before, stateErr, sizeof(stateErr)) ||
+                !store_daemon_record(LINUX_DAEMON_RECORD_PREPARED, &g_gpu.selectedGpu,
+                                     &empty, stateErr, sizeof(stateErr))) {
+                resp->status = SERVICE_STATUS_ERROR;
+                gc_snprintf(resp->message, sizeof(resp->message),
+                            "Reset aborted before hardware write: %s", stateErr);
+                break;
+            }
+            LinuxMutationResult mutation = linux_backend_reset(&g_gpu, resp->message, sizeof(resp->message));
+            bool committed = mutation.success &&
+                linux_daemon_state_remove(GC_DAEMON_STATE_FILE, stateErr, sizeof(stateErr));
+            if (mutation.success && !committed) {
+                char rollbackErr[256] = {};
+                bool rollbackOk = linux_backend_restore_snapshot(&g_gpu, &before,
+                    mutation.attemptedPhases, rollbackErr, sizeof(rollbackErr));
+                bool recordOk = restore_committed_record(hadPrevious, &previousTarget, &previousDesired);
+                g_stateUncertain = !rollbackOk || !recordOk;
+                gc_snprintf(resp->message, sizeof(resp->message),
+                    "Reset persistence failed; hardware rollback %s",
+                    rollbackOk ? "succeeded" : "is uncertain");
+            } else if (!mutation.success && !(mutation.rollbackSucceeded || !mutation.anyWrite)) {
+                g_stateUncertain = true;
+                store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_gpu.selectedGpu,
+                                    &empty, stateErr, sizeof(stateErr));
+            } else if (!mutation.success) {
+                bool recordOk = restore_committed_record(hadPrevious, &previousTarget, &previousDesired);
+                if (!recordOk) {
+                    g_stateUncertain = true;
+                    store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_gpu.selectedGpu,
+                                        &empty, stateErr, sizeof(stateErr));
+                }
+            }
+            if (committed) {
+                g_hasActiveDesired = false;
+                memset(&g_activeDesired, 0, sizeof(g_activeDesired));
+                memset(&g_activeTarget, 0, sizeof(g_activeTarget));
+                g_stateUncertain = false;
+                g_fanFailureCount = 0;
             }
             populate_snapshot(&resp->snapshot);
-            resp->status = ok ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
+            resp->status = committed ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
             break;
         }
         default:
@@ -417,22 +566,56 @@ int linux_daemon_run(const char* configPath) {
     pl_mutex_init(&g_lock);
 
     char err[256] = {};
-    if (linux_backend_init(&g_gpu, 0, err, sizeof(err))) {
+    if (linux_backend_init(&g_gpu, nullptr, err, sizeof(err))) {
         g_gpuReady = true;
         dlog("daemon: GPU backend ready (%s, family=%d)\n", g_gpu.gpuName, (int)g_gpu.family);
     } else {
         dlog("daemon: GPU backend init failed: %s (serving telemetry-less)\n", err);
     }
 
-    // Startup restart-reapply: re-apply the last active settings.
-    DesiredSettings saved;
-    if (g_gpuReady && load_active_desired(&saved)) {
-        validate_desired_settings_for_ipc(&saved);
-        char msg[256] = {};
-        linux_backend_apply(&g_gpu, &saved, msg, sizeof(msg));
-        g_activeDesired = saved;
-        g_hasActiveDesired = true;
-        dlog("daemon: startup reapply -> %s\n", msg);
+    // Startup restart-reapply is authorized only by a complete, checksummed
+    // ACTIVE record for the exact physical GPU. Prepared/uncertain/legacy state
+    // never causes an automatic hardware write.
+    LinuxDaemonStateRecord saved = {};
+    LinuxDaemonStateLoadResult loadResult = linux_daemon_state_load(
+        GC_DAEMON_STATE_FILE, &saved, err, sizeof(err));
+    if (loadResult == LINUX_DAEMON_STATE_LEGACY_REMOVED ||
+        loadResult == LINUX_DAEMON_STATE_INVALID_REMOVED) {
+        dlog("daemon: rejected and removed %s daemon state; explicit Apply/Reset required\n",
+             loadResult == LINUX_DAEMON_STATE_LEGACY_REMOVED ? "legacy" : "invalid");
+    } else if (loadResult == LINUX_DAEMON_STATE_IO_ERROR) {
+        g_stateUncertain = true;
+        dlog("daemon: state load failed closed: %s\n", err);
+    } else if (loadResult == LINUX_DAEMON_STATE_LOADED) {
+        if (saved.state != LINUX_DAEMON_RECORD_ACTIVE) {
+            g_stateUncertain = true;
+            dlog("daemon: startup state=%u is not ACTIVE; no automatic write\n", saved.state);
+        } else if (!linux_backend_select_target(&g_gpu, &saved.targetGpu, err, sizeof(err))) {
+            g_stateUncertain = true;
+            store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &saved.targetGpu,
+                                &saved.desired, err, sizeof(err));
+            dlog("daemon: startup GPU identity rejected; no automatic write: %s\n", err);
+        } else {
+            g_gpuReady = true;
+            validate_desired_settings_for_ipc(&saved.desired);
+            char msg[256] = {};
+            LinuxMutationResult mutation = linux_backend_apply(&g_gpu, &saved.desired,
+                                                               msg, sizeof(msg));
+            if (mutation.success) {
+                g_activeDesired = saved.desired;
+                g_activeTarget = g_gpu.selectedGpu;
+                g_hasActiveDesired = true;
+                dlog("daemon: startup reapply committed -> %s\n", msg);
+            } else {
+                // A failed automatic replay is never safe to retry unattended,
+                // even when the hardware rollback was verified.  Require an
+                // explicit user Apply/Reset to reclaim ownership.
+                g_stateUncertain = true;
+                store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &saved.targetGpu,
+                                    &saved.desired, err, sizeof(err));
+                dlog("daemon: startup reapply failed and was locked out -> %s\n", msg);
+            }
+        }
     }
 
     pl_thread fanThread;
@@ -441,10 +624,23 @@ int linux_daemon_run(const char* configPath) {
     // Socket: root-owned, group-accessible (the systemd unit chowns to the
     // greencurve admin group; mode 0660).  Anyone who can connect is authorized;
     // every request is still clamped by validate_desired_settings_for_ipc.
-    if (mkdir(GC_DAEMON_SOCKET_DIR, 0755) != 0 && errno != EEXIST) { /* best effort */ }
-    unlink(GC_DAEMON_SOCKET_PATH);
+    if (mkdir(GC_DAEMON_SOCKET_DIR, 0755) != 0 && errno != EEXIST) {
+        dlog("daemon: cannot create socket directory: %s\n", strerror(errno));
+        return 1;
+    }
+    int socketDir = open(GC_DAEMON_SOCKET_DIR,
+                         O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    struct stat socketDirStat = {};
+    if (socketDir < 0 || fstat(socketDir, &socketDirStat) != 0 ||
+        !S_ISDIR(socketDirStat.st_mode) || socketDirStat.st_uid != 0 ||
+        (socketDirStat.st_mode & 0022) != 0) {
+        dlog("daemon: socket directory is not root-owned and protected\n");
+        if (socketDir >= 0) close(socketDir);
+        return 1;
+    }
+    unlinkat(socketDir, "greencurve.sock", 0);
     int srv = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (srv < 0) { dlog("daemon: socket() failed\n"); return 1; }
+    if (srv < 0) { dlog("daemon: socket() failed\n"); close(socketDir); return 1; }
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
@@ -452,16 +648,20 @@ int linux_daemon_run(const char* configPath) {
     if (bind(srv, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
         dlog("daemon: bind(%s) failed: %s\n", GC_DAEMON_SOCKET_PATH, strerror(errno));
         close(srv);
+        close(socketDir);
         return 1;
     }
     // Grant the greencurve admin group access (created by --service-install);
     // fall back to root-only if the group does not exist.
     struct group* gr = getgrnam("greencurve");
-    if (gr && chown(GC_DAEMON_SOCKET_PATH, 0, gr->gr_gid) != 0)
+    if (gr && fchownat(socketDir, "greencurve.sock", 0, gr->gr_gid,
+                       AT_SYMLINK_NOFOLLOW) != 0)
         dlog("daemon: chown socket to greencurve group failed (non-fatal)\n");
-    if (chmod(GC_DAEMON_SOCKET_PATH, 0660) != 0)
+    if (fchmodat(socketDir, "greencurve.sock", 0660, 0) != 0)
         dlog("daemon: chmod socket failed (non-fatal)\n");
-    if (listen(srv, 8) != 0) { dlog("daemon: listen() failed\n"); close(srv); return 1; }
+    if (listen(srv, 8) != 0) {
+        dlog("daemon: listen() failed\n"); close(srv); close(socketDir); return 1;
+    }
     dlog("daemon: listening on %s\n", GC_DAEMON_SOCKET_PATH);
 
     while (g_running) {
@@ -481,200 +681,10 @@ int linux_daemon_run(const char* configPath) {
     g_running = 0;
     if (fanThreadOk) pl_thread_join(fanThread);
     close(srv);
-    unlink(GC_DAEMON_SOCKET_PATH);
-    if (g_gpuReady) linux_backend_shutdown(&g_gpu);
+    unlinkat(socketDir, "greencurve.sock", 0);
+    close(socketDir);
+    if (g_gpu.nvmlLib || g_gpu.nvapiLib) linux_backend_shutdown(&g_gpu);
     return 0;
 }
 
-// ===========================================================================
-// systemd install / remove  (requires root)
-// ===========================================================================
-#define GC_UNIT_PATH "/etc/systemd/system/greencurve.service"
-#define GC_INSTALL_DIR "/usr/local/libexec/greencurve"
-#define GC_INSTALL_BIN GC_INSTALL_DIR "/greencurve"
-
-static bool root_owned_nonwritable_path(const char* path, bool wantDir, char* err, size_t errSize) {
-    struct stat st;
-    if (lstat(path, &st) != 0) {
-        gc_snprintf(err, errSize, "cannot inspect %s: %s", path, strerror(errno));
-        return false;
-    }
-    if (S_ISLNK(st.st_mode)) {
-        gc_snprintf(err, errSize, "%s is a symlink", path);
-        return false;
-    }
-    if (wantDir && !S_ISDIR(st.st_mode)) {
-        gc_snprintf(err, errSize, "%s is not a directory", path);
-        return false;
-    }
-    if (!wantDir && !S_ISREG(st.st_mode)) {
-        gc_snprintf(err, errSize, "%s is not a regular file", path);
-        return false;
-    }
-    if (st.st_uid != 0) {
-        gc_snprintf(err, errSize, "%s is not root-owned", path);
-        return false;
-    }
-    if ((st.st_mode & 0022) != 0) {
-        gc_snprintf(err, errSize, "%s is writable by group/other", path);
-        return false;
-    }
-    return true;
-}
-
-static bool ensure_root_owned_dir(const char* path, mode_t mode, char* err, size_t errSize) {
-    if (mkdir(path, mode) != 0) {
-        if (errno == EEXIST) {
-            return root_owned_nonwritable_path(path, true, err, errSize);
-        }
-        gc_snprintf(err, errSize, "cannot create %s: %s", path, strerror(errno));
-        return false;
-    }
-    if (chown(path, 0, 0) != 0) {
-        gc_snprintf(err, errSize, "cannot chown %s: %s", path, strerror(errno));
-        return false;
-    }
-    if (chmod(path, mode) != 0) {
-        gc_snprintf(err, errSize, "cannot chmod %s: %s", path, strerror(errno));
-        return false;
-    }
-    return root_owned_nonwritable_path(path, true, err, errSize);
-}
-
-static bool validate_install_parent_chain(char* err, size_t errSize) {
-    if (!root_owned_nonwritable_path("/usr", true, err, errSize)) return false;
-    if (!root_owned_nonwritable_path("/usr/local", true, err, errSize)) return false;
-    if (!ensure_root_owned_dir("/usr/local/libexec", 0755, err, errSize)) return false;
-    if (!ensure_root_owned_dir(GC_INSTALL_DIR, 0755, err, errSize)) return false;
-    return true;
-}
-
-static bool write_all_file(int fd, const void* buf, size_t len) {
-    const unsigned char* p = (const unsigned char*)buf;
-    size_t done = 0;
-    while (done < len) {
-        ssize_t n = write(fd, p + done, len - done);
-        if (n > 0) {
-            done += (size_t)n;
-            continue;
-        }
-        if (n < 0 && errno == EINTR) continue;
-        return false;
-    }
-    return true;
-}
-
-static bool stage_service_binary(const char* sourceExe, char* err, size_t errSize) {
-    if (!validate_install_parent_chain(err, errSize)) return false;
-
-    char tempPath[4096] = {};
-    gc_snprintf(tempPath, sizeof(tempPath), "%s.tmp.%ld", GC_INSTALL_BIN, (long)getpid());
-    unlink(tempPath);
-
-    int in = open(sourceExe, O_RDONLY | O_CLOEXEC);
-    if (in < 0) {
-        gc_snprintf(err, errSize, "cannot open source executable %s: %s", sourceExe, strerror(errno));
-        return false;
-    }
-    int out = open(tempPath, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0755);
-    if (out < 0) {
-        gc_snprintf(err, errSize, "cannot create staged executable %s: %s", tempPath, strerror(errno));
-        close(in);
-        return false;
-    }
-
-    bool ok = true;
-    unsigned char buf[65536];
-    for (;;) {
-        ssize_t n = read(in, buf, sizeof(buf));
-        if (n > 0) {
-            if (!write_all_file(out, buf, (size_t)n)) { ok = false; break; }
-            continue;
-        }
-        if (n == 0) break;
-        if (errno == EINTR) continue;
-        ok = false;
-        break;
-    }
-    if (fsync(out) != 0) ok = false;
-    if (fchown(out, 0, 0) != 0) ok = false;
-    if (fchmod(out, 0755) != 0) ok = false;
-    if (close(out) != 0) ok = false;
-    close(in);
-    if (!ok) {
-        gc_snprintf(err, errSize, "failed staging executable %s: %s", tempPath, strerror(errno));
-        unlink(tempPath);
-        return false;
-    }
-    if (rename(tempPath, GC_INSTALL_BIN) != 0) {
-        gc_snprintf(err, errSize, "cannot install %s: %s", GC_INSTALL_BIN, strerror(errno));
-        unlink(tempPath);
-        return false;
-    }
-    if (!root_owned_nonwritable_path(GC_INSTALL_BIN, false, err, errSize)) return false;
-    int dirfd = open(GC_INSTALL_DIR, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (dirfd >= 0) {
-        fsync(dirfd);
-        close(dirfd);
-    }
-    return validate_install_parent_chain(err, errSize);
-}
-
-int linux_service_install(char* err, size_t errSize) {
-    if (err && errSize) err[0] = 0;
-    if (geteuid() != 0) {
-        gc_strlcpy(err, errSize, "--service-install requires root (use sudo)");
-        return 1;
-    }
-    char exe[4096] = {};
-    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-    if (n <= 0) { gc_strlcpy(err, errSize, "cannot resolve /proc/self/exe"); return 1; }
-    exe[n] = 0;
-    if (!stage_service_binary(exe, err, errSize)) return 1;
-
-    // Admin group for socket access (best-effort; ignore "already exists").
-    if (system("groupadd -f greencurve >/dev/null 2>&1") != 0)
-        dlog("service-install: groupadd greencurve failed (non-fatal)\n");
-
-    FILE* f = fopen(GC_UNIT_PATH, "w");
-    if (!f) { gc_snprintf(err, errSize, "cannot write %s: %s", GC_UNIT_PATH, strerror(errno)); return 1; }
-    fprintf(f,
-        "[Unit]\n"
-        "Description=Green Curve NVIDIA GPU control daemon\n"
-        "After=multi-user.target\n\n"
-        "[Service]\n"
-        "Type=simple\n"
-        "ExecStart=%s --daemon\n"
-        "Restart=on-failure\n"
-        "RestartSec=2\n"
-        "StateDirectory=greencurve\n"
-        "RuntimeDirectory=greencurve\n\n"
-        "[Install]\n"
-        "WantedBy=multi-user.target\n",
-        GC_INSTALL_BIN);
-    fclose(f);
-
-    if (system("systemctl daemon-reload") != 0)
-        dlog("service-install: systemctl daemon-reload failed (non-fatal)\n");
-    if (system("systemctl enable --now greencurve.service") != 0) {
-        gc_strlcpy(err, errSize,
-                   "systemctl enable --now greencurve.service failed "
-                   "(check: journalctl -u greencurve)");
-        return 1;
-    }
-    return 0;
-}
-
-int linux_service_remove(char* err, size_t errSize) {
-    if (err && errSize) err[0] = 0;
-    if (geteuid() != 0) {
-        gc_strlcpy(err, errSize, "--service-remove requires root (use sudo)");
-        return 1;
-    }
-    if (system("systemctl disable --now greencurve.service >/dev/null 2>&1") != 0)
-        dlog("service-remove: disable failed (non-fatal)\n");
-    unlink(GC_UNIT_PATH);
-    if (system("systemctl daemon-reload") != 0)
-        dlog("service-remove: daemon-reload failed (non-fatal)\n");
-    return 0;
-}
+#include "linux_service_install.cpp"

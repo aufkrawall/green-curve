@@ -32,10 +32,13 @@ static void print_help() {
     puts("  greencurve --save-config [--profile N] [overrides]");
     puts("  greencurve --write-assets [--assets-dir path]");
     puts("  greencurve --config path --profile N");
+    puts("  greencurve --gpu DDDD:BB:DD.F       Select and persist an exact PCI GPU");
     puts("Daemon (root):");
     puts("  sudo greencurve --service-install   Install + start the systemd daemon");
     puts("  sudo greencurve --service-remove    Stop + remove the daemon");
     puts("  greencurve --daemon                 Run the daemon in the foreground");
+    puts("  Non-root clients need group access: sudo usermod -aG greencurve \"$USER\"");
+    puts("  Then sign out/in, or run: newgrp greencurve");
     puts("Overrides:");
     puts("  --gpu-offset MHZ --mem-offset MHZ --power-limit PCT");
     puts("  --fan auto|PCT --fan-mode auto|fixed|curve --fan-fixed PCT");
@@ -127,6 +130,15 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
                 return false;
             }
             opts->hasProfileSlot = true;
+        } else if (strcmp(arg, "--gpu") == 0) {
+            opts->recognized = true;
+            if (!argument_requires_value(argc, i) ||
+                !parse_linux_gpu_bdf(argv[++i], &opts->gpuTarget)) {
+                set_message(opts->error, sizeof(opts->error),
+                            "Invalid --gpu value; expected DDDD:BB:DD.F PCI BDF");
+                return false;
+            }
+            opts->hasGpuTarget = true;
         } else if (strcmp(arg, "--gpu-offset") == 0) {
             opts->recognized = true;
             int value = 0;
@@ -305,6 +317,7 @@ static bool command_available(const char* name) {
         std::string part = pathList.substr(start, sep == std::string::npos ? std::string::npos : sep - start);
         if (part.empty()) part = ".";
         std::string candidate = path_join(part, name);
+        // flawfinder: ignore -- read-only probe hint; commands below are fixed constants.
         if (access(candidate.c_str(), X_OK) == 0) {
             struct stat st = {};
             if (stat(candidate.c_str(), &st) == 0 && S_ISREG(st.st_mode)) return true;
@@ -341,6 +354,7 @@ static std::string shell_quote_single(const char* text) {
 
 static std::string capture_command_output(const char* command, size_t maxBytes) {
     std::string output;
+    // flawfinder: ignore -- selected only from fixed probe constants; output is bounded.
     FILE* pipe = popen(command, "r");
     if (!pipe) {
         appendf(&output, "command failed to start: %s\n", command);
@@ -572,6 +586,8 @@ bool write_linux_assets(const char* outputDir, const char* execPath, const char*
         "install -Dm644 greencurve.desktop ~/.local/share/applications/greencurve.desktop\n"
         "install -Dm644 greencurve-autostart.desktop ~/.config/autostart/greencurve.desktop\n"
         "sudo %s --service-install\n"
+        "sudo usermod -aG greencurve \"$USER\"\n"
+        "# Sign out/in, or run: newgrp greencurve\n"
         "sudo install -Dm644 greencurve-apply.service /etc/systemd/system/greencurve-apply.service\n"
         "sudo systemctl daemon-reload\n"
         "sudo systemctl enable greencurve-apply.service\n"
@@ -609,6 +625,13 @@ int main(int argc, char** argv) {
     if (opts.hasConfigPath) snprintf(configPath, sizeof(configPath), "%s", opts.configPath);
     else if (!default_linux_config_path(configPath, sizeof(configPath))) snprintf(configPath, sizeof(configPath), "%s", CONFIG_FILE_NAME);
 
+    GpuAdapterInfo gpuTarget = {};
+    if (opts.hasGpuTarget) {
+        gpuTarget = opts.gpuTarget;
+    } else {
+        load_linux_gpu_selection(configPath, &gpuTarget);
+    }
+
     // Privileged daemon role (run by systemd as root): owns the GPU and serves
     // the Unix-socket protocol.  Must run before profile loading.
     if (opts.daemon) {
@@ -621,7 +644,7 @@ int main(int argc, char** argv) {
         // does not modify GPU state.
         LinuxGpuState gpu;
         char initErr[256] = {};
-        if (!linux_backend_init(&gpu, 0, initErr, sizeof(initErr))) {
+        if (!linux_backend_init(&gpu, gpuTarget.valid ? &gpuTarget : nullptr, initErr, sizeof(initErr))) {
             fprintf(stderr, "self-test: cannot initialize GPU backend: %s\n",
                     initErr[0] ? initErr : "unknown error");
             return 1;
@@ -639,10 +662,46 @@ int main(int argc, char** argv) {
             fprintf(stderr, "%s\n", svcErr[0] ? svcErr : "service operation failed");
             return rc;
         }
-        printf("%s\n", opts.serviceInstall
-                   ? "Green Curve daemon installed and started (systemctl status greencurve)."
-                   : "Green Curve daemon removed.");
+        if (opts.serviceInstall) {
+            printf(
+                "Green Curve daemon installed and started (systemctl status greencurve).\n"
+                "The daemon socket permits root and greencurve group members (mode 0660).\n"
+                "To control the GPU without sudo, add your user:\n"
+                "  sudo usermod -aG greencurve \"$USER\"\n"
+                "Then sign out/in, or run: newgrp greencurve\n");
+        } else {
+            printf("Green Curve daemon removed.\n");
+        }
         return 0;
+    }
+
+    if (opts.hasGpuTarget) {
+        ServiceSnapshot snapshot = {};
+        char selectionErr[256] = {};
+        if (!linux_daemon_snapshot(&snapshot, selectionErr, sizeof(selectionErr))) {
+            fprintf(stderr, "Cannot validate GPU selection: %s\n", selectionErr);
+            return 1;
+        }
+        int match = -1;
+        for (unsigned int i = 0; i < snapshot.adapterCount; ++i) {
+            const GpuAdapterInfo& adapter = snapshot.adapters[i];
+            if (!adapter.valid || adapter.pciDomain != gpuTarget.pciDomain ||
+                adapter.pciBus != gpuTarget.pciBus || adapter.pciDevice != gpuTarget.pciDevice ||
+                adapter.pciFunction != gpuTarget.pciFunction)
+                continue;
+            if (match >= 0) { match = -2; break; }
+            match = (int)i;
+        }
+        if (match < 0 || !snapshot.adapters[match].pciInfoValid) {
+            fprintf(stderr, "Cannot validate GPU selection: exact BDF/PCI identity is %s\n",
+                    match == -2 ? "ambiguous" : "not available");
+            return 1;
+        }
+        gpuTarget = snapshot.adapters[match];
+        if (!save_linux_gpu_selection(configPath, &gpuTarget, selectionErr, sizeof(selectionErr))) {
+            fprintf(stderr, "Cannot persist GPU selection: %s\n", selectionErr);
+            return 1;
+        }
     }
 
     int slot = opts.hasProfileSlot ? opts.profileSlot : CONFIG_DEFAULT_SLOT;
@@ -715,24 +774,19 @@ int main(int argc, char** argv) {
         bool ok;
         if (opts.reset && !opts.hasProfileSlot) {
             // `--reset --apply-config` releases OC/UV to driver defaults.
-            ok = linux_daemon_reset(result, sizeof(result));
+            ok = linux_daemon_reset(gpuTarget.valid ? &gpuTarget : nullptr, result, sizeof(result));
         } else {
-            ok = linux_daemon_apply(&desired, true, result, sizeof(result));
+            ok = linux_daemon_apply(gpuTarget.valid ? &gpuTarget : nullptr,
+                                    &desired, true, result, sizeof(result));
         }
         printf("%s\n", result[0] ? result : (ok ? "Applied" : "Apply failed"));
-        if (!ok) {
-            if (!linux_daemon_available()) {
-                fprintf(stderr,
-                    "The Green Curve daemon is not running. Install/start it with:\n"
-                    "  sudo %s --service-install\n", argv[0]);
-            }
-            return 1;
-        }
+        if (!ok) return 1;
     }
 
     if (opts.showHelp || opts.dump || opts.json || opts.probe || opts.writeAssets || opts.saveConfig || opts.applyConfig) {
         return 0;
     }
 
-    return linux_run_tui(configPath, slot, &desired);
+    return linux_run_tui(configPath, slot, &desired,
+                         gpuTarget.valid ? &gpuTarget : nullptr);
 }

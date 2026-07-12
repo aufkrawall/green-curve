@@ -86,11 +86,11 @@ static void refresh_profile_controls_from_config() {
     int appLaunchSlot = get_config_int(g_app.configPath, "profiles", "app_launch_slot", 0);
     int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
     // Per-account "apply admin shared profile N at my logon" (overrides logon_slot
-    // and the all-users default for this account).  A stale value (slot no longer
-    // published) is treated as unset for display; the apply path self-heals it.
+    // and the all-users default for this account).  Preserve the selector even
+    // while the shared bank is temporarily unavailable; background reads never
+    // have authority to erase an explicit user choice.
     int logonSharedSlot = get_config_int(g_app.configPath, "profiles", "logon_shared_slot", 0);
     if (logonSharedSlot < 0 || logonSharedSlot > CONFIG_NUM_SLOTS) logonSharedSlot = 0;
-    if (logonSharedSlot > 0 && !is_machine_profile_slot_saved(logonSharedSlot)) logonSharedSlot = 0;
 
     SendMessageA(g_app.hProfileCombo, WM_SETREDRAW, FALSE, 0);
     SendMessageA(g_app.hProfileCombo, CB_RESETCONTENT, 0, 0);
@@ -166,6 +166,20 @@ static void refresh_profile_controls_from_config() {
             if (logonSharedSlot == s) logonSelIndex = comboIndex;
             comboIndex++;
         }
+        if (logonSharedSlot > 0 &&
+            !is_machine_profile_slot_saved(logonSharedSlot)) {
+            char label[72] = {};
+            StringCchPrintfA(label, ARRAY_COUNT(label),
+                "Shared profile %d (temporarily unavailable)",
+                logonSharedSlot);
+            SendMessageA(g_app.hLogonCombo, CB_ADDSTRING, 0,
+                (LPARAM)label);
+            SendMessageA(g_app.hLogonCombo, CB_SETITEMDATA,
+                (WPARAM)comboIndex,
+                (LPARAM)(LOGON_COMBO_SHARED_FLAG | logonSharedSlot));
+            logonSelIndex = comboIndex;
+            comboIndex++;
+        }
 
         SendMessageA(g_app.hLogonCombo, CB_SETCURSEL, (WPARAM)logonSelIndex, 0);
         SendMessageA(g_app.hLogonCombo, CB_SETDROPPEDWIDTH, (WPARAM)dp(220), 0);
@@ -202,6 +216,11 @@ static void refresh_profile_controls_from_config() {
     update_share_all_users_check_state();
     update_tray_icon();
 }
+
+#ifndef GREEN_CURVE_SERVICE_BINARY
+static bool set_logon_profile_selection_atomic(const char* path,
+    int perUserSlot, int sharedSlot, char* err, size_t errSize);
+#endif
 
 static void migrate_legacy_config_if_needed(const char* path) {
     if (!path) return;
@@ -243,12 +262,20 @@ static void migrate_legacy_config_if_needed(const char* path) {
         bool wasStartupEnabled = false;
         load_startup_enabled_from_config(path, &wasStartupEnabled);
 
-        save_profile_to_config(path, 1, &desired, err, sizeof(err));
-        if (wasStartupEnabled) {
-            set_config_int(path, "profiles", "logon_slot", 1);
+        if (!save_profile_to_config(path, 1, &desired, err, sizeof(err))) {
+            debug_log("legacy config migration: profile save failed, leaving legacy config retryable: %s\n",
+                err[0] ? err : "unknown error");
+            return;
         }
-        set_config_int(path, "profiles", "selected_slot", 1);
-        set_config_int(path, "profiles", "app_launch_slot", 0);
+        if (wasStartupEnabled) {
+        #ifndef GREEN_CURVE_SERVICE_BINARY
+            if (!set_logon_profile_selection_atomic(path, 1, 0,
+                    err, sizeof(err))) {
+                debug_log("legacy config migration: atomic logon selection failed: %s\n",
+                    err[0] ? err : "unknown error");
+            }
+        #endif
+        }
     }
 }
 
@@ -343,6 +370,101 @@ static void infer_profile_lock_from_curve(const DesiredSettings* desired, int* l
 }
 
 #ifndef GREEN_CURVE_SERVICE_BINARY
+static bool commit_logon_profiles_section(const char* path,
+    const char* profilesSectionText, void*, char* err, size_t errSize) {
+    const char* replacedSections[] = { "profiles" };
+    return write_config_sections_atomic(path, profilesSectionText, replacedSections,
+        ARRAY_COUNT(replacedSections), err, errSize);
+}
+
+// Save the mutually-exclusive account logon choices as one transaction.  The
+// caller synchronizes Task Scheduler only after this succeeds; scheduler repair
+// failure must never roll back an already-saved user choice.
+static bool set_logon_profile_selection_atomic(const char* path, int perUserSlot,
+    int sharedSlot, char* err, size_t errSize) {
+    bool ok = update_logon_profile_selection_transaction(path, perUserSlot,
+        sharedSlot, commit_logon_profiles_section, nullptr, err, errSize);
+    if (ok) {
+        invalidate_tray_profile_cache();
+        debug_log("logon profile selection: committed atomically (perUserSlot=%d sharedSlot=%d)\n",
+            perUserSlot, sharedSlot);
+    }
+    return ok;
+}
+
+static LRESULT logon_combo_item_data_from_slots(int perUserSlot, int sharedSlot) {
+    return (LRESULT)logon_profile_selection_item_data(perUserSlot, sharedSlot);
+}
+
+static bool select_logon_combo_item_by_data(HWND combo, LRESULT itemData) {
+    if (!combo) return false;
+    LRESULT count = SendMessageA(combo, CB_GETCOUNT, 0, 0);
+    if (count == CB_ERR || count < 0) return false;
+    for (LRESULT index = 0; index < count; ++index) {
+        LRESULT candidate = SendMessageA(combo, CB_GETITEMDATA, (WPARAM)index, 0);
+        if (candidate == itemData) {
+            return SendMessageA(combo, CB_SETCURSEL, (WPARAM)index, 0) != CB_ERR;
+        }
+    }
+    return false;
+}
+
+// The service explicitly owns profile identity.  Never infer it by comparing
+// absolute VF MHz against temperature/boost-sensitive live telemetry.  Shared
+// and machine-bank slots intentionally do not masquerade as the same-numbered
+// personal slot in the tray's personal-profile checkmarks.
+static void sync_applied_profile_from_service_metadata() {
+    AppliedProfileSyncCache inputs = current_applied_profile_sync_inputs();
+    if (applied_profile_sync_inputs_unchanged(inputs)) return;
+
+    int appliedSlot = 0;
+    ServiceProfileSource source = SERVICE_PROFILE_SOURCE_NONE;
+    unsigned int sourceSlot = 0;
+    if (g_app.serviceSnapshotAuthoritative) {
+        source = g_app.serviceActiveProfileSource;
+        sourceSlot = g_app.serviceActiveProfileSlot;
+        appliedSlot = applied_user_slot_from_service_profile(source, sourceSlot);
+        if (appliedSlot > 0) {
+            DesiredSettings savedProfile = {};
+            char matchDetail[256] = {};
+            char loadErr[256] = {};
+            bool intentStillMatches = g_app.serviceActiveDesiredValid &&
+                load_profile_from_config(g_app.configPath, appliedSlot,
+                    &savedProfile, loadErr, sizeof(loadErr)) &&
+                desired_settings_match_active_service_intent(
+                    &savedProfile, &g_app.serviceActiveDesired,
+                    matchDetail, sizeof(matchDetail));
+            if (!intentStillMatches) {
+                debug_log("applied profile metadata sync: service owns user slot %d but its saved intent no longer matches (%s); clearing applied indicator only\n",
+                    appliedSlot,
+                    matchDetail[0] ? matchDetail
+                        : (loadErr[0] ? loadErr : "active intent unavailable"));
+                appliedSlot = 0;
+            }
+        }
+    }
+
+    int persisted = get_config_int(g_app.configPath, "profiles", "applied_slot", 0);
+    if (persisted < 0 || persisted > CONFIG_NUM_SLOTS) persisted = 0;
+    if (persisted == appliedSlot) {
+        g_appliedProfileSyncCache = inputs;
+        return;
+    }
+    if (!set_config_int(g_app.configPath, "profiles", "applied_slot", appliedSlot)) {
+        debug_log("applied profile metadata sync: failed to persist applied_slot=%d (source=%u slot=%u authoritative=%d)\n",
+            appliedSlot, (unsigned int)source, sourceSlot,
+            g_app.serviceSnapshotAuthoritative ? 1 : 0);
+        return;
+    }
+    debug_log("applied profile metadata sync: applied_slot %d -> %d from service source=%u slot=%u authoritative=%d (saved selection unchanged)\n",
+        persisted, appliedSlot, (unsigned int)source, sourceSlot,
+        g_app.serviceSnapshotAuthoritative ? 1 : 0);
+    update_tray_icon();
+    // set_config_int() atomically changed the file metadata. Capture the
+    // resulting stamp so the next telemetry snapshot remains a cache hit.
+    g_appliedProfileSyncCache = current_applied_profile_sync_inputs();
+}
+
 static void populate_desired_into_gui(const DesiredSettings* desired) {
     if (!desired) return;
     bool preserveDirty = gui_state_dirty();
@@ -632,447 +754,6 @@ static bool maybe_confirm_profile_load_replace(int slot) {
     return MessageBoxA(g_app.hMainWnd, msg, "Green Curve", MB_YESNO | MB_ICONQUESTION) == IDYES;
 }
 
-// Compare the loaded profile against the current live hardware state to detect
-// if the hardware has been externally modified (e.g., "Reset to Default",
-// driver TDR, or external tool). Returns true if a mismatch is detected that
-// warrants skipping the profile restore.
-//
-// This comparison is unconditional: it compares the profile's saved values
-// directly against live hardware. This catches all cases where the GPU state
-// has changed externally, regardless of whether the service's in-memory
-// "active desired" state is still valid (it may be cleared on service restart).
-static bool profile_mismatches_live_hardware(const DesiredSettings* profile) {
-    if (!profile) return false;
-
-    // Build a DesiredSettings from the current live hardware state.
-    DesiredSettings live = {};
-    build_full_live_desired_settings(&live);
-
-    debug_log("profile_live_mismatch_check: comparing profile against live hardware\n"
-        "  profile:   hasGpu=%d gpu=%d exclude=%d hasMem=%d mem=%d hasPower=%d power=%d hasFan=%d fanMode=%d\n"
-        "  live:      hasGpu=%d gpu=%d exclude=%d hasMem=%d mem=%d hasPower=%d power=%d hasFan=%d fanMode=%d\n",
-        profile->hasGpuOffset ? 1 : 0, profile->gpuOffsetMHz, profile->gpuOffsetExcludeLowCount,
-        profile->hasMemOffset ? 1 : 0, profile->memOffsetMHz,
-        profile->hasPowerLimit ? 1 : 0, profile->powerLimitPct,
-        profile->hasFan ? 1 : 0, profile->fanMode,
-        live.hasGpuOffset ? 1 : 0, live.gpuOffsetMHz, live.gpuOffsetExcludeLowCount,
-        live.hasMemOffset ? 1 : 0, live.memOffsetMHz,
-        live.hasPowerLimit ? 1 : 0, live.powerLimitPct,
-        live.hasFan ? 1 : 0, live.fanMode);
-
-    // Compare each control field that the profile explicitly sets against the live state.
-    // Any difference indicates the hardware has diverged from what the profile expects.
-    if (profile->hasGpuOffset && profile->gpuOffsetMHz != live.gpuOffsetMHz) {
-        debug_log("profile_live_mismatch_check: MISMATCH gpu_offset_mhz profile=%d live=%d\n",
-            profile->gpuOffsetMHz, live.gpuOffsetMHz);
-        return true;
-    }
-    if (profile->hasGpuOffset && profile->gpuOffsetExcludeLowCount != live.gpuOffsetExcludeLowCount) {
-        debug_log("profile_live_mismatch_check: MISMATCH gpu_exclude_low_count profile=%d live=%d\n",
-            profile->gpuOffsetExcludeLowCount, live.gpuOffsetExcludeLowCount);
-        return true;
-    }
-    if (profile->hasMemOffset && profile->memOffsetMHz != live.memOffsetMHz) {
-        debug_log("profile_live_mismatch_check: MISMATCH mem_offset_mhz profile=%d live=%d\n",
-            profile->memOffsetMHz, live.memOffsetMHz);
-        return true;
-    }
-    if (profile->hasPowerLimit && profile->powerLimitPct != live.powerLimitPct) {
-        debug_log("profile_live_mismatch_check: MISMATCH power_limit_pct profile=%d live=%d\n",
-            profile->powerLimitPct, live.powerLimitPct);
-        return true;
-    }
-    if (profile->hasFan && profile->fanMode != live.fanMode) {
-        debug_log("profile_live_mismatch_check: MISMATCH fan_mode profile=%d live=%d\n",
-            profile->fanMode, live.fanMode);
-        return true;
-    }
-    if (profile->hasFan && profile->fanMode == FAN_MODE_FIXED && profile->fanPercent != live.fanPercent) {
-        debug_log("profile_live_mismatch_check: MISMATCH fan_fixed_pct profile=%d live=%d\n",
-            profile->fanPercent, live.fanPercent);
-        return true;
-    }
-
-    // Compare curve points — check visible points that the profile explicitly sets
-    // for any difference from the live hardware curve.
-    int mismatchCurvePoints = 0;
-    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-        if (!profile->hasCurvePoint[ci]) continue;
-        if (!is_curve_point_visible_in_gui(ci)) continue;
-        unsigned int liveMhz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
-        if (profile->curvePointMHz[ci] != liveMhz) {
-            mismatchCurvePoints++;
-            if (mismatchCurvePoints <= 3) {
-                debug_log("profile_live_mismatch_check: MISMATCH curve point %d profile=%u live=%u\n",
-                    ci, profile->curvePointMHz[ci], liveMhz);
-            }
-        }
-    }
-    if (mismatchCurvePoints > 0) {
-        debug_log("profile_live_mismatch_check: MISMATCH %d curve points differ from live\n",
-            mismatchCurvePoints);
-        return true;
-    }
-
-    debug_log("profile_live_mismatch_check: profile matches live hardware, restoring normally\n");
-    return false;
-}
-
-// Clear [profiles] applied_slot on startup, before any apply paths run.
-// The persisted value is stale bookkeeping from a previous session — after a
-// driver reset, reboot, or external tool tamper the GPU may be at stock and
-// the slot no longer matches live hardware.  If the service is available we
-// validate against live hardware; if not we clear unconditionally (cannot
-// verify → must assume stale).  Apply paths (app-launch, logon, auto-switch,
-// tray/hotkey, manual Apply) will write applied_slot back when they run.
-static void validate_applied_slot_on_startup() {
-    int applied = get_config_int(g_app.configPath, "profiles", "applied_slot", 0);
-    if (applied < 1 || applied > CONFIG_NUM_SLOTS) return;
-    if (g_app.backgroundServiceAvailable) {
-        DesiredSettings desired = {};
-        char err[256] = {};
-        if (load_profile_from_config(g_app.configPath, applied, &desired, err, sizeof(err)) &&
-            !profile_mismatches_live_hardware(&desired)) {
-            return;  // slot still matches live hardware — keep it
-        }
-    }
-    debug_log("startup applied_slot validation: clearing stale applied_slot=%d%s\n",
-        applied, g_app.backgroundServiceAvailable ? " (live mismatch)" : " (service unavailable)");
-    set_config_int(g_app.configPath, "profiles", "applied_slot", 0);
-}
-
-static bool maybe_load_selected_profile_to_gui_without_apply() {
-    int selectedSlot = get_config_int(g_app.configPath, "profiles", "selected_slot", CONFIG_DEFAULT_SLOT);
-    if (selectedSlot < 1 || selectedSlot > CONFIG_NUM_SLOTS) {
-        debug_log("startup selected profile restore: selected slot %d is invalid\n", selectedSlot);
-        return false;
-    }
-    if (!is_profile_slot_saved(g_app.configPath, selectedSlot)) {
-        debug_log("startup selected profile restore: slot %d is empty\n", selectedSlot);
-        return false;
-    }
-
-    if (g_app.usingBackgroundService && g_app.backgroundServiceAvailable) {
-        char snapErr[256] = {};
-        if (!refresh_service_snapshot_and_active_desired(snapErr, sizeof(snapErr))) {
-            debug_log("startup selected profile restore: service snapshot refresh failed before GUI restore: %s\n",
-                snapErr[0] ? snapErr : "unknown error");
-        }
-    }
-
-    DesiredSettings desired = {};
-    char err[256] = {};
-    if (!load_profile_from_config(g_app.configPath, selectedSlot, &desired, err, sizeof(err))) {
-        debug_log("startup selected profile restore: slot %d load failed: %s\n",
-            selectedSlot,
-            err[0] ? err : "unknown error");
-        set_profile_status_text("Selected slot %d could not be loaded into the GUI: %s",
-            selectedSlot,
-            err[0] ? err : "unknown error");
-        return false;
-    }
-
-    int curvePoints = 0;
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (desired.hasCurvePoint[i]) curvePoints++;
-    }
-    debug_log("startup selected profile restore: loading slot %d into GUI without apply (curvePoints=%d gpu=%d mem=%d power=%d fanMode=%d)\n",
-        selectedSlot,
-        curvePoints,
-        desired.hasGpuOffset ? desired.gpuOffsetMHz : 0,
-        desired.hasMemOffset ? desired.memOffsetMHz : 0,
-        desired.hasPowerLimit ? desired.powerLimitPct : 0,
-        desired.hasFan ? desired.fanMode : -1);
-
-    // If the loaded profile values don't match the current live hardware, the
-    // hardware was externally modified. Skip the restore to avoid showing
-    // stale values from a previously-applied profile.
-    if (profile_mismatches_live_hardware(&desired)) {
-        debug_log("startup selected profile restore: LIVE HARDWARE MISMATCH detected for slot %d, skipping profile restore\n",
-            selectedSlot);
-        set_profile_status_text("Selected slot %d was not restored because the GPU hardware has been externally modified since the profile was saved.", selectedSlot);
-        return false;
-    }
-
-    populate_desired_into_gui(&desired);
-    refresh_profile_controls_from_config();
-    set_profile_status_text("Loaded selected slot %d into the GUI. GPU settings were not applied.", selectedSlot);
-    return true;
-}
-
-static void maybe_load_app_launch_profile_to_gui() {
-    if (g_app.launchedFromLogon) {
-        set_profile_status_text("Ready. Skipped app-start auto-load for the logon launch.");
-        return;
-    }
-    int appLaunchSlot = get_config_int(g_app.configPath, "profiles", "app_launch_slot", 0);
-    if (appLaunchSlot < 1 || appLaunchSlot > CONFIG_NUM_SLOTS) {
-        if (!maybe_load_selected_profile_to_gui_without_apply()) {
-            set_profile_status_text("Ready. App start auto-load is disabled.");
-        }
-        return;
-    }
-    if (!is_profile_slot_saved(g_app.configPath, appLaunchSlot)) {
-        set_config_int(g_app.configPath, "profiles", "app_launch_slot", 0);
-        set_profile_status_text("App start slot %d was empty and has been disabled.", appLaunchSlot);
-        refresh_profile_controls_from_config();
-        layout_bottom_buttons(g_app.hMainWnd);
-        return;
-    }
-    DesiredSettings desired = {};
-    char err[256] = {};
-    if (!load_profile_from_config(g_app.configPath, appLaunchSlot, &desired, err, sizeof(err))) {
-        set_config_int(g_app.configPath, "profiles", "app_launch_slot", 0);
-        refresh_profile_controls_from_config();
-        write_error_report_log_for_user_failure("App-start profile load failed", err);
-        set_profile_status_text("App start load failed: %s", err[0] ? err : "unknown error");
-        return;
-    }
-    if (!desired_settings_have_explicit_state(&desired, true, err, sizeof(err))) {
-        set_config_int(g_app.configPath, "profiles", "app_launch_slot", 0);
-        refresh_profile_controls_from_config();
-        write_error_report_log_for_user_failure("App-start profile rejected", err);
-        set_profile_status_text("App start slot %d was rejected: %s", appLaunchSlot, err);
-        return;
-    }
-    char result[512] = {};
-    refresh_background_service_state();
-    if (g_app.usingBackgroundService && g_app.backgroundServiceAvailable) {
-        DesiredSettings activeDesired = {};
-        char snapErr[256] = {};
-        char matchDetail[256] = {};
-        if (refresh_service_snapshot_and_active_desired(snapErr, sizeof(snapErr), &activeDesired)
-            && desired_settings_match_active_service_intent(&desired, &activeDesired, matchDetail, sizeof(matchDetail))) {
-            debug_log("maybe_load_app_launch_profile_to_gui: slot %d already active in background service; skipping reset-before-apply (%s)\n",
-                appLaunchSlot,
-                matchDetail[0] ? matchDetail : "match");
-            populate_desired_into_gui(&desired);
-            set_config_int(g_app.configPath, "profiles", "selected_slot", appLaunchSlot);
-            set_config_int(g_app.configPath, "profiles", "applied_slot", appLaunchSlot);
-            refresh_profile_controls_from_config();
-            set_profile_status_text("Loaded slot %d into the GUI. Background service already has matching active settings, so app-start apply was skipped.", appLaunchSlot);
-            return;
-        }
-        debug_log("maybe_load_app_launch_profile_to_gui: slot %d needs reset-before-apply; service active intent check=%s\n",
-            appLaunchSlot,
-            matchDetail[0] ? matchDetail : (snapErr[0] ? snapErr : "unavailable"));
-    } else {
-        debug_log("maybe_load_app_launch_profile_to_gui: slot %d cannot use active-service skip (usingService=%d available=%d)\n",
-            appLaunchSlot,
-            g_app.usingBackgroundService ? 1 : 0,
-            g_app.backgroundServiceAvailable ? 1 : 0);
-    }
-    debug_log("maybe_load_app_launch_profile_to_gui: applying slot %d with reset-before-apply\n", appLaunchSlot);
-    desired.resetOcBeforeApply = true;
-    bool ok = apply_desired_settings(&desired, false, result, sizeof(result));
-    if (ok) {
-        populate_desired_into_gui(&desired);
-        set_config_int(g_app.configPath, "profiles", "selected_slot", appLaunchSlot);
-        set_config_int(g_app.configPath, "profiles", "applied_slot", appLaunchSlot);
-        refresh_profile_controls_from_config();
-        set_profile_status_text((g_app.backgroundServiceInstalled && g_app.backgroundServiceAvailable)
-            ? "Loaded slot %d into the GUI and applied it through the background service on app start."
-            : "Loaded slot %d into the GUI and applied it on app start.", appLaunchSlot);
-    } else {
-        char detail[128] = {};
-        refresh_global_state(detail, sizeof(detail));
-        populate_global_controls();
-        if (g_app.loaded) populate_edits();
-        invalidate_main_window();
-        set_profile_status_text("App start apply for slot %d failed and the GUI was refreshed from live state: %s", appLaunchSlot, result);
-    }
-}
-
-static bool ensure_profile_slot_available_for_auto_action(int slot) {
-    if (slot <= 0) return true;
-    if (is_profile_slot_saved(g_app.configPath, slot)) return true;
-    set_profile_status_text("Slot %d is empty, so that automatic action was disabled.", slot);
-    return false;
-}
-
-// Wait for the GPU driver to be fully ready before applying an aggressive
-// profile at Windows startup.  A too-early apply (while the driver is still
-// initializing) can cause a TDR / driver crash.  Bounded retry that actually
-// probes the service snapshot each attempt (no blind timing bandaid).
-static bool logon_wait_for_gpu_driver_ready(int slotForLog) {
-    debug_log("apply_logon_startup_behavior: waiting for GPU driver readiness before applying slot %d\n", slotForLog);
-    for (int attempt = 0; attempt < 15; attempt++) {
-        refresh_background_service_state();
-        if (!g_app.backgroundServiceAvailable) {
-            Sleep(500);
-            continue;
-        }
-        ServiceSnapshot snapshot = {};
-        char snapErr[256] = {};
-        if (service_client_get_snapshot(&snapshot, snapErr, sizeof(snapErr))) {
-            if (snapshot.loaded && snapshot.numPopulated > 0 && snapshot.initialized) {
-                debug_log("apply_logon_startup_behavior: driver ready on attempt %d (populated=%d)\n",
-                    attempt + 1, snapshot.numPopulated);
-                return true;
-            }
-        }
-        Sleep(400);
-    }
-    debug_log("apply_logon_startup_behavior: GPU driver did not become ready in time, skipping apply\n");
-    return false;
-}
-
-// Apply a per-user "apply admin shared profile N at logon" choice
-// (logon_shared_slot).  Loads the admin's authoritative bank copy and tags it as
-// a shared-slot apply so the service honors it under the shared-only policy.
-// Returns true if the choice was handled (applied or fatally skipped); false
-// means "no/stale shared choice — fall through to the per-user logon_slot path".
-static bool apply_logon_shared_slot_if_configured(bool startProgramAtLogon) {
-    int logonSharedSlot = get_config_int(g_app.configPath, "profiles", "logon_shared_slot", 0);
-    if (logonSharedSlot < 0 || logonSharedSlot > CONFIG_NUM_SLOTS) logonSharedSlot = 0;
-    if (logonSharedSlot == 0) return false;
-
-    char machinePath[MAX_PATH] = {};
-    DesiredSettings desired = {};
-    char err[256] = {};
-    if (!resolve_machine_config_path(machinePath, sizeof(machinePath)) ||
-        !is_profile_slot_saved(machinePath, logonSharedSlot) ||
-        !load_profile_from_config(machinePath, logonSharedSlot, &desired, err, sizeof(err)) ||
-        !desired_settings_have_explicit_state(&desired, true, err, sizeof(err))) {
-        // The admin unpublished/changed the shared bank: drop the stale choice
-        // and let the caller fall back to the per-user logon_slot path.
-        debug_log("apply_logon_startup_behavior: shared logon slot %d unavailable (%s); clearing it\n",
-            logonSharedSlot, err[0] ? err : "not published");
-        set_config_int(g_app.configPath, "profiles", "logon_shared_slot", 0);
-        return false;
-    }
-
-    if (!logon_wait_for_gpu_driver_ready(logonSharedSlot)) {
-        set_profile_status_text("Logon apply skipped: GPU driver was not ready after waiting.");
-        return true;
-    }
-
-    desired.resetOcBeforeApply = true;
-    // Tag the editor as holding this admin shared slot so the IPC apply carries
-    // SERVICE_REQUEST_FLAG_SHARED_SLOT and the service applies its own copy.
-    g_app.loadedSharedSlot = logonSharedSlot;
-    g_app.guiHasUserModifiedValues = false;
-    char result[512] = {};
-    debug_log("apply_logon_startup_behavior: applying shared bank slot %d at logon (authoritative)\n", logonSharedSlot);
-    bool ok = apply_desired_settings(&desired, false, result, sizeof(result));
-    debug_log("apply_logon_startup_behavior: shared logon apply ok=%d msg=%s\n", ok ? 1 : 0, result);
-    if (ok) {
-        populate_desired_into_gui(&desired);
-        g_app.loadedSharedSlot = logonSharedSlot;  // populate_* clears it; editor keeps showing the shared profile
-        set_profile_status_text(startProgramAtLogon
-            ? "Started the tray client and applied shared profile %d through the background service at Windows logon."
-            : "Applied shared profile %d through the background service at Windows logon.",
-            logonSharedSlot);
-    } else {
-        char detail[128] = {};
-        refresh_global_state(detail, sizeof(detail));
-        populate_global_controls();
-        if (g_app.loaded) populate_edits();
-        invalidate_main_window();
-        set_profile_status_text("Logon apply of shared profile %d failed and live state was reloaded: %s",
-            logonSharedSlot, result);
-    }
-    return true;
-}
-
-static void apply_logon_startup_behavior() {
-    if (!g_app.launchedFromLogon) return;
-
-    refresh_background_service_state();
-
-    if (!g_app.backgroundServiceAvailable) {
-        set_profile_status_text(g_app.backgroundServiceInstalled
-            ? "Background service is unavailable at logon. Live GPU apply was skipped."
-            : "Background service is not installed. Live GPU apply was skipped.");
-        return;
-    }
-
-    bool startProgramAtLogon = is_start_on_logon_enabled(g_app.configPath);
-    g_app.startHiddenToTray = startProgramAtLogon;
-
-    // A per-user "apply admin shared profile N at logon" choice takes precedence
-    // over the per-user logon_slot and is the ONLY logon apply that passes the
-    // shared-only policy for a restricted user.
-    if (apply_logon_shared_slot_if_configured(startProgramAtLogon)) return;
-
-    // Restricted (shared-only) users cannot auto-apply a custom per-user
-    // logon_slot — the service rejects it.  Skip the doomed apply and guide them
-    // to choose a shared profile for logon instead of showing a scary error.
-    if (restricted_to_shared_profiles() &&
-        get_config_int(g_app.configPath, "profiles", "logon_slot", 0) > 0) {
-        debug_log("apply_logon_startup_behavior: restricted user, per-user logon_slot set but no shared logon choice; skipping (policy)\n");
-        set_profile_status_text("Your administrator restricts this PC to shared profiles. Use \"Shared profiles...\" to pick one to apply at logon.");
-        return;
-    }
-
-    int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
-    if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
-    if (logonSlot == 0) {
-        set_profile_status_text(startProgramAtLogon
-            ? "Started in the tray at Windows logon."
-            : "Applied Windows logon startup rules without opening the tray app.");
-        return;
-    }
-
-    if (!ensure_profile_slot_available_for_auto_action(logonSlot)) {
-        set_config_int(g_app.configPath, "profiles", "logon_slot", 0);
-        refresh_profile_controls_from_config();
-        return;
-    }
-
-    DesiredSettings desired = {};
-    char err[256] = {};
-    if (!load_profile_from_config(g_app.configPath, logonSlot, &desired, err, sizeof(err))) {
-        set_config_int(g_app.configPath, "profiles", "logon_slot", 0);
-        refresh_profile_controls_from_config();
-        write_error_report_log_for_user_failure("Logon profile load failed", err);
-        set_profile_status_text("Logon apply failed for slot %d: %s", logonSlot, err[0] ? err : "unknown error");
-        return;
-    }
-    if (!desired_settings_have_explicit_state(&desired, true, err, sizeof(err))) {
-        set_config_int(g_app.configPath, "profiles", "logon_slot", 0);
-        refresh_profile_controls_from_config();
-        write_error_report_log_for_user_failure("Logon profile rejected", err);
-        set_profile_status_text("Logon slot %d was rejected: %s", logonSlot, err);
-        return;
-    }
-
-    if (!logon_wait_for_gpu_driver_ready(logonSlot)) {
-        set_profile_status_text("Logon apply skipped: GPU driver was not ready after waiting.");
-        return;
-    }
-
-    char result[512] = {};
-    debug_log("apply_logon_startup_behavior: applying slot %d with reset-before-apply (gpu=%d exclude=%d mem=%d power=%d fanMode=%d)\n",
-        logonSlot,
-        desired.hasGpuOffset ? desired.gpuOffsetMHz : 0,
-        desired.hasGpuOffset ? (desired.gpuOffsetExcludeLowCount ? 1 : 0) : 0,
-        desired.hasMemOffset ? desired.memOffsetMHz : 0,
-        desired.hasPowerLimit ? desired.powerLimitPct : 0,
-        desired.hasFan ? desired.fanMode : -1);
-    desired.resetOcBeforeApply = true;
-    bool ok = apply_desired_settings(&desired, false, result, sizeof(result));
-    debug_log("apply_logon_startup_behavior: apply result ok=%d msg=%s\n", ok ? 1 : 0, result);
-    if (ok) {
-        populate_desired_into_gui(&desired);
-        set_config_int(g_app.configPath, "profiles", "selected_slot", logonSlot);
-        set_config_int(g_app.configPath, "profiles", "applied_slot", logonSlot);
-        refresh_profile_controls_from_config();
-        set_profile_status_text(startProgramAtLogon
-            ? "Started the tray client and applied slot %d through the background service at Windows logon."
-            : "Applied slot %d through the background service at Windows logon without requiring the tray runtime.",
-            logonSlot);
-    } else {
-        char detail[128] = {};
-        refresh_global_state(detail, sizeof(detail));
-        populate_global_controls();
-        if (g_app.loaded) populate_edits();
-        invalidate_main_window();
-        set_profile_status_text(startProgramAtLogon
-            ? "Started in the tray, but slot %d apply failed and live state was reloaded: %s"
-            : "Silent Windows logon apply for slot %d failed and live state was reloaded: %s",
-            logonSlot, result);
-    }
-}
+// GUI startup/logon orchestration is isolated in main_startup_profiles.cpp so
+// profile-control rendering and configuration code stay independently readable.
 #endif
-

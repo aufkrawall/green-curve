@@ -78,6 +78,7 @@ void set_message(char* dst, size_t dstSize, const char* fmt, ...) {
     if (!dst || dstSize == 0) return;
     va_list ap;
     va_start(ap, fmt);
+    // flawfinder: ignore -- declaration carries a printf-format compiler attribute.
     vsnprintf(dst, dstSize, fmt, ap);
     va_end(ap);
     dst[dstSize - 1] = 0;
@@ -88,6 +89,7 @@ void appendf(std::string* text, const char* fmt, ...) {
     char stackBuffer[1024] = {};
     va_list ap;
     va_start(ap, fmt);
+    // flawfinder: ignore -- declaration carries a printf-format compiler attribute.
     int written = vsnprintf(stackBuffer, sizeof(stackBuffer), fmt, ap);
     va_end(ap);
     if (written < 0) return;
@@ -98,6 +100,7 @@ void appendf(std::string* text, const char* fmt, ...) {
 
     std::vector<char> heapBuffer((size_t)written + 1u, 0);
     va_start(ap, fmt);
+    // flawfinder: ignore -- same compiler-checked format used for the sizing pass.
     vsnprintf(heapBuffer.data(), heapBuffer.size(), fmt, ap);
     va_end(ap);
     text->append(heapBuffer.data(), (size_t)written);
@@ -591,6 +594,7 @@ bool desired_has_any_action(const DesiredSettings* desired) {
 
 bool get_executable_path(char* dst, size_t dstSize) {
     if (!dst || dstSize == 0) return false;
+    // flawfinder: ignore -- kernel-owned /proc/self/exe; bounds and NUL termination checked.
     ssize_t readCount = readlink("/proc/self/exe", dst, dstSize);
     if (readCount < 0) return false;
     if (readCount >= (ssize_t)dstSize) return false;

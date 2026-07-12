@@ -11,7 +11,7 @@
 
 #define APP_NAME "Green Curve"
 #ifndef APP_VERSION
-#define APP_VERSION "0.18.1"
+#define APP_VERSION "dev"
 #endif
 #define CONFIG_FILE_NAME "config.ini"
 #define APP_LINUX_PROBE_FILE "greencurve_linux_probe.md"
@@ -44,7 +44,9 @@ struct LinuxCliOptions {
     bool hasProbeOutputPath;
     bool hasAssetsDir;
     bool hasProfileSlot;
+    bool hasGpuTarget;
     int profileSlot;
+    GpuAdapterInfo gpuTarget;
     char configPath[LINUX_PATH_MAX];
     char probeOutputPath[LINUX_PATH_MAX];
     char assetsDir[LINUX_PATH_MAX];
@@ -89,10 +91,16 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts);
 bool load_profile_from_config_path(const char* path, int slot, DesiredSettings* desired, char* err, size_t errSize);
 bool load_default_or_selected_profile(const char* path, int* slot, DesiredSettings* desired, char* err, size_t errSize);
 bool save_profile_to_config_path(const char* path, int slot, const DesiredSettings* desired, char* err, size_t errSize);
+bool parse_linux_gpu_bdf(const char* text, GpuAdapterInfo* target);
+void format_linux_gpu_bdf(const GpuAdapterInfo* target, char* text, size_t textSize);
+bool load_linux_gpu_selection(const char* path, GpuAdapterInfo* target);
+bool save_linux_gpu_selection(const char* path, const GpuAdapterInfo* target,
+                              char* err, size_t errSize);
 bool run_linux_probe(const char* outputPath, ProbeSummary* summary, char* err, size_t errSize);
 bool write_linux_assets(const char* outputDir, const char* execPath, const char* configPath, char* err, size_t errSize);
 void print_desired_settings_text(FILE* out, int slot, const DesiredSettings* desired);
 void print_desired_settings_json(FILE* out, int slot, const DesiredSettings* desired);
-int linux_run_tui(const char* configPath, int initialSlot, DesiredSettings* initialDesired);
+int linux_run_tui(const char* configPath, int initialSlot, DesiredSettings* initialDesired,
+                  const GpuAdapterInfo* initialTarget);
 
 #endif

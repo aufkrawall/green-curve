@@ -32,6 +32,7 @@ enum ActionType {
     ACTION_APPLY,          // push current in-memory settings to the root daemon
     ACTION_APPLY_RESET,    // reset the GPU to driver defaults via the daemon
     ACTION_SLOT_DELTA,
+    ACTION_GPU_SELECT_DELTA,
     ACTION_VF_PAGE_DELTA,
     ACTION_GPU_DELTA,
     ACTION_MEM_DELTA,
@@ -69,6 +70,8 @@ struct TuiViewModel {
     const DesiredSettings* desired;
     int currentSlot;
     int vfPage;
+    const char* selectedGpu;
+    unsigned int gpuCount;
     const char* configPath;
     const char* status;
     bool probeCompleted;

@@ -68,6 +68,8 @@ struct TuiState {
     char configPath[LINUX_PATH_MAX];
     char status[256];
     ProbeSummary probe;
+    ServiceSnapshot daemonSnapshot;
+    GpuAdapterInfo targetGpu;
     std::vector<ClickAction> actions;
 };
 
@@ -139,9 +141,6 @@ static void write_assets_from_tui(TuiState* state) {
 static void set_daemon_status(TuiState* state, bool ok, const char* result, const char* okFallback, const char* failFallback) {
     if (ok) {
         snprintf(state->status, sizeof(state->status), "%s", (result && result[0]) ? result : okFallback);
-    } else if (!linux_daemon_available()) {
-        snprintf(state->status, sizeof(state->status),
-                 "Daemon not running. Install it with: sudo greencurve --service-install");
     } else {
         snprintf(state->status, sizeof(state->status), "%s", (result && result[0]) ? result : failFallback);
     }
@@ -150,13 +149,15 @@ static void set_daemon_status(TuiState* state, bool ok, const char* result, cons
 static void apply_to_daemon(TuiState* state) {
     normalize_desired_settings_for_ui(&state->desired);
     char result[512] = {};
-    bool ok = linux_daemon_apply(&state->desired, true, result, sizeof(result));
+    bool ok = linux_daemon_apply(state->targetGpu.valid ? &state->targetGpu : nullptr,
+                                 &state->desired, true, result, sizeof(result));
     set_daemon_status(state, ok, result, "Applied current settings to the GPU via the daemon", "Apply failed");
 }
 
 static void reset_gpu_via_daemon(TuiState* state) {
     char result[512] = {};
-    bool ok = linux_daemon_reset(result, sizeof(result));
+    bool ok = linux_daemon_reset(state->targetGpu.valid ? &state->targetGpu : nullptr,
+                                 result, sizeof(result));
     set_daemon_status(state, ok, result, "GPU reset to driver defaults via the daemon", "GPU reset failed");
 }
 
@@ -190,6 +191,37 @@ static void apply_action(TuiState* state, const ClickAction& action) {
             state->currentSlot = clamp_value(state->currentSlot + action.value, 1, CONFIG_NUM_SLOTS);
             snprintf(state->status, sizeof(state->status), "Selected profile slot %d", state->currentSlot);
             break;
+        case ACTION_GPU_SELECT_DELTA: {
+            unsigned int count = state->daemonSnapshot.adapterCount;
+            if (count == 0) {
+                snprintf(state->status, sizeof(state->status), "Daemon reported no selectable GPUs");
+                break;
+            }
+            int current = -1;
+            for (unsigned int i = 0; i < count; ++i) {
+                const GpuAdapterInfo& adapter = state->daemonSnapshot.adapters[i];
+                if (adapter.valid && state->targetGpu.valid &&
+                    adapter.pciDomain == state->targetGpu.pciDomain &&
+                    adapter.pciBus == state->targetGpu.pciBus &&
+                    adapter.pciDevice == state->targetGpu.pciDevice &&
+                    adapter.pciFunction == state->targetGpu.pciFunction) {
+                    current = (int)i;
+                    break;
+                }
+            }
+            int next = current < 0 ? 0 : (current + action.value + (int)count) % (int)count;
+            state->targetGpu = state->daemonSnapshot.adapters[next];
+            char persistErr[256] = {};
+            char bdf[32] = {};
+            format_linux_gpu_bdf(&state->targetGpu, bdf, sizeof(bdf));
+            if (save_linux_gpu_selection(state->configPath, &state->targetGpu,
+                                         persistErr, sizeof(persistErr)))
+                snprintf(state->status, sizeof(state->status), "Selected GPU %s (%s)",
+                         bdf, state->targetGpu.name);
+            else
+                snprintf(state->status, sizeof(state->status), "GPU selection save failed: %s", persistErr);
+            break;
+        }
         case ACTION_VF_PAGE_DELTA:
             state->vfPage = clamp_value(state->vfPage + action.value, 0, (VF_NUM_POINTS / 16) - 1);
             snprintf(state->status, sizeof(state->status), "VF page %d/%d", state->vfPage + 1, VF_NUM_POINTS / 16);
@@ -312,6 +344,13 @@ static void render_ui(TuiState* state) {
     vm.desired = &state->desired;
     vm.currentSlot = state->currentSlot;
     vm.vfPage = state->vfPage;
+    char selectedGpu[160] = {};
+    char selectedBdf[32] = {};
+    format_linux_gpu_bdf(&state->targetGpu, selectedBdf, sizeof(selectedBdf));
+    snprintf(selectedGpu, sizeof(selectedGpu), "%s %s", selectedBdf,
+             state->targetGpu.name[0] ? state->targetGpu.name : "");
+    vm.selectedGpu = selectedGpu;
+    vm.gpuCount = state->daemonSnapshot.adapterCount;
     vm.configPath = state->configPath;
     vm.status = state->status;
     vm.probeCompleted = state->probe.completed;
@@ -491,7 +530,8 @@ static void handle_mouse(TuiState* state, int mouseX, int mouseY) {
 
 }  // namespace
 
-int linux_run_tui(const char* configPath, int initialSlot, DesiredSettings* initialDesired) {
+int linux_run_tui(const char* configPath, int initialSlot, DesiredSettings* initialDesired,
+                  const GpuAdapterInfo* initialTarget) {
     TuiState state = {};
     if (configPath && *configPath) snprintf(state.configPath, sizeof(state.configPath), "%s", configPath);
     else default_linux_config_path(state.configPath, sizeof(state.configPath));
@@ -504,7 +544,16 @@ int linux_run_tui(const char* configPath, int initialSlot, DesiredSettings* init
     state.vfPage = 0;
     state.focusIndex = 0;
     state.running = true;
-    snprintf(state.status, sizeof(state.status), "Ready. Click a button, or use the keyboard (arrows/Tab/Enter).");
+    if (initialTarget) state.targetGpu = *initialTarget;
+    char daemonErr[256] = {};
+    if (linux_daemon_snapshot(&state.daemonSnapshot, daemonErr, sizeof(daemonErr))) {
+        if (!state.targetGpu.valid && state.daemonSnapshot.adapterCount == 1)
+            state.targetGpu = state.daemonSnapshot.adapters[0];
+    } else {
+        snprintf(state.status, sizeof(state.status), "%s", daemonErr);
+    }
+    if (!state.status[0])
+        snprintf(state.status, sizeof(state.status), "Ready. Click a button, or use the keyboard (arrows/Tab/Enter).");
 
     signal(SIGWINCH, on_sigwinch);
     signal(SIGINT, on_fatal_signal);

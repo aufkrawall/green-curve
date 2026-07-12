@@ -6,6 +6,7 @@
 // its Windows counterpart in a comment so the two stay in sync.
 
 #include "linux_backend.h"
+#include "linux_gpu_selection.h"
 #include "vf_backends.h"
 
 #include <stdarg.h>
@@ -26,6 +27,7 @@ static void lb_log(const char* fmt, ...) {
     if (!g_lbDebug) return;
     va_list ap;
     va_start(ap, fmt);
+    // flawfinder: ignore -- private logger; every call site supplies a constant format.
     vfprintf(stderr, fmt, ap);
     va_end(ap);
 }
@@ -288,6 +290,8 @@ static void nvml_resolve(LinuxGpuState* g) {
     a->shutdown = sym<nvmlShutdown_t>(h, "nvmlShutdown");
     a->getCount = sym<nvmlDeviceGetCount_v2_t>(h, "nvmlDeviceGetCount_v2");
     a->getHandleByIndex = sym<nvmlDeviceGetHandleByIndex_v2_t>(h, "nvmlDeviceGetHandleByIndex_v2");
+    a->getPciInfo = sym<nvmlDeviceGetPciInfo_t>(h, "nvmlDeviceGetPciInfo_v3");
+    if (!a->getPciInfo) a->getPciInfo = sym<nvmlDeviceGetPciInfo_t>(h, "nvmlDeviceGetPciInfo_v2");
     a->getPowerLimit = sym<nvmlDeviceGetPowerManagementLimit_t>(h, "nvmlDeviceGetPowerManagementLimit");
     a->getPowerDefaultLimit = sym<nvmlDeviceGetPowerManagementDefaultLimit_t>(h, "nvmlDeviceGetPowerManagementDefaultLimit");
     a->getPowerConstraints = sym<nvmlDeviceGetPowerManagementLimitConstraints_t>(h, "nvmlDeviceGetPowerManagementLimitConstraints");
@@ -327,12 +331,28 @@ static bool nvml_set_clock_offset(LinuxGpuState* g, unsigned int domain, int off
         info.type = domain;
         info.pstate = pstate;
         info.clockOffsetMHz = offsetMHz;
-        if (a->setClockOffsets(g->nvmlDevice, &info) == NVML_SUCCESS) return true;
+        if (a->setClockOffsets(g->nvmlDevice, &info) == NVML_SUCCESS) {
+            if (a->getClockOffsets) {
+                nvmlClockOffset_t verify = info;
+                verify.clockOffsetMHz = 0;
+                return a->getClockOffsets(g->nvmlDevice, &verify) == NVML_SUCCESS &&
+                       verify.clockOffsetMHz == offsetMHz;
+            }
+            return true;
+        }
     }
-    if (domain == NVML_CLOCK_GRAPHICS && a->setGpcClkVfOffset)
-        return a->setGpcClkVfOffset(g->nvmlDevice, offsetMHz) == NVML_SUCCESS;
-    if (domain == NVML_CLOCK_MEM && a->setMemClkVfOffset)
-        return a->setMemClkVfOffset(g->nvmlDevice, offsetMHz) == NVML_SUCCESS;
+    if (domain == NVML_CLOCK_GRAPHICS && a->setGpcClkVfOffset) {
+        if (a->setGpcClkVfOffset(g->nvmlDevice, offsetMHz) != NVML_SUCCESS) return false;
+        int verify = 0;
+        return !a->getGpcClkVfOffset ||
+               (a->getGpcClkVfOffset(g->nvmlDevice, &verify) == NVML_SUCCESS && verify == offsetMHz);
+    }
+    if (domain == NVML_CLOCK_MEM && a->setMemClkVfOffset) {
+        if (a->setMemClkVfOffset(g->nvmlDevice, offsetMHz) != NVML_SUCCESS) return false;
+        int verify = 0;
+        return !a->getMemClkVfOffset ||
+               (a->getMemClkVfOffset(g->nvmlDevice, &verify) == NVML_SUCCESS && verify == offsetMHz);
+    }
     return false;
 }
 
@@ -350,28 +370,51 @@ static bool nvml_set_power_limit_pct(LinuxGpuState* g, int pct) {
     if (g->powerLimitMaxmW > 0 && target > g->powerLimitMaxmW) target = g->powerLimitMaxmW;
     nvmlReturn_t r = a->setPowerLimit(g->nvmlDevice, (unsigned int)target);
     lb_log("power: set %d%% -> %ld mW ret=%d\n", pct, target, (int)r);
-    return r == NVML_SUCCESS;
+    if (r != NVML_SUCCESS) return false;
+    unsigned int verify = 0;
+    return !a->getPowerLimit ||
+           (a->getPowerLimit(g->nvmlDevice, &verify) == NVML_SUCCESS && verify == (unsigned int)target);
 }
 
 static bool nvml_set_fan(LinuxGpuState* g, int fanMode, bool fanAuto, int fanPercent) {
     NvmlApi* a = &g->nvml;
     unsigned int numFans = 0;
-    if (a->getNumFans) a->getNumFans(g->nvmlDevice, &numFans);
-    if (numFans == 0) numFans = 1;
+    if (!a->getNumFans || a->getNumFans(g->nvmlDevice, &numFans) != NVML_SUCCESS ||
+        numFans == 0)
+        return false;
+    if (numFans > MAX_GPU_FANS) numFans = MAX_GPU_FANS;
     bool ok = true;
     if (fanAuto || fanMode == FAN_MODE_AUTO) {
         for (unsigned int f = 0; f < numFans; f++) {
-            if (a->setDefaultFanSpeed) ok &= (a->setDefaultFanSpeed(g->nvmlDevice, f) == NVML_SUCCESS);
-            else if (a->setFanControlPolicy) ok &= (a->setFanControlPolicy(g->nvmlDevice, f, NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW) == NVML_SUCCESS);
+            bool fanOk = false;
+            if (a->setDefaultFanSpeed)
+                fanOk = a->setDefaultFanSpeed(g->nvmlDevice, f) == NVML_SUCCESS;
+            else if (a->setFanControlPolicy)
+                fanOk = a->setFanControlPolicy(g->nvmlDevice, f,
+                    NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW) == NVML_SUCCESS;
+            unsigned int policy = 0;
+            fanOk = fanOk && a->getFanControlPolicy &&
+                    a->getFanControlPolicy(g->nvmlDevice, f, &policy) == NVML_SUCCESS &&
+                    policy == NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW;
+            if (!fanOk) lb_log("fan: auto restore failed for fan %u\n", f);
+            ok &= fanOk;
         }
         return ok;
     }
     // Fixed (and the initial set for curve mode; the daemon reasserts curve).
     if (fanPercent < 0) fanPercent = 0;
     if (fanPercent > 100) fanPercent = 100;
-    if (!a->setFanSpeed) return false;
-    for (unsigned int f = 0; f < numFans; f++)
-        ok &= (a->setFanSpeed(g->nvmlDevice, f, (unsigned int)fanPercent) == NVML_SUCCESS);
+    if (!a->setFanSpeed || !a->getFanSpeed) return false;
+    for (unsigned int f = 0; f < numFans; f++) {
+        bool fanOk = a->setFanSpeed(g->nvmlDevice, f, (unsigned int)fanPercent) == NVML_SUCCESS;
+        if (fanOk && a->getFanSpeed) {
+            unsigned int verify = 0;
+            fanOk = a->getFanSpeed(g->nvmlDevice, f, &verify) == NVML_SUCCESS &&
+                    verify == (unsigned int)fanPercent;
+        }
+        if (!fanOk) lb_log("fan: fixed write/readback failed for fan %u\n", f);
+        ok &= fanOk;
+    }
     lb_log("fan: set fixed %d%% across %u fan(s) ok=%d\n", fanPercent, numFans, ok ? 1 : 0);
     return ok;
 }
@@ -405,10 +448,10 @@ static void nvml_query_ranges(LinuxGpuState* g) {
 // Init / shutdown / refresh
 // ===========================================================================
 
-bool linux_backend_init(LinuxGpuState* g, unsigned int index, char* err, size_t errSize) {
+bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
+                        char* err, size_t errSize) {
     memset(g, 0, sizeof(*g));
-    g->nvapiIndex = index;
-    g->nvmlIndex = index;
+    if (err && errSize) err[0] = 0;
 
     // NVML
     g->nvmlLib = pl_open_driver_library(PL_DRIVER_NVML);
@@ -421,14 +464,61 @@ bool linux_backend_init(LinuxGpuState* g, unsigned int index, char* err, size_t 
     if (!g->nvml.getCount || g->nvml.getCount(&count) != NVML_SUCCESS || count == 0) {
         gc_strlcpy(err, errSize, "no NVML devices"); return false;
     }
-    if (index >= count) index = 0;
-    if (!g->nvml.getHandleByIndex || g->nvml.getHandleByIndex(index, &g->nvmlDevice) != NVML_SUCCESS) {
-        gc_strlcpy(err, errSize, "nvmlDeviceGetHandleByIndex failed"); return false;
+    if (!g->nvml.getHandleByIndex) {
+        gc_strlcpy(err, errSize, "nvmlDeviceGetHandleByIndex_v2 unavailable"); return false;
     }
-    g->nvmlReady = true;
     nvmlDeviceGetName_t getName = sym<nvmlDeviceGetName_t>(g->nvmlLib, "nvmlDeviceGetName");
-    if (getName) getName(g->nvmlDevice, g->gpuName, sizeof(g->gpuName));
-    nvml_query_ranges(g);
+
+    nvmlDevice_t nvmlDevices[MAX_GPU_ADAPTERS] = {};
+    unsigned int enumeratedCount = count > MAX_GPU_ADAPTERS ? MAX_GPU_ADAPTERS : count;
+    unsigned int adapterCount = 0;
+    for (unsigned int i = 0; i < enumeratedCount; ++i) {
+        if (g->nvml.getHandleByIndex(i, &nvmlDevices[i]) != NVML_SUCCESS) continue;
+        GpuAdapterInfo* adapter = &g->adapters[adapterCount++];
+        adapter->valid = true;
+        adapter->nvmlIndex = i;
+        adapter->nvapiIndex = MAX_GPU_ADAPTERS;
+        if (getName) getName(nvmlDevices[i], adapter->name, sizeof(adapter->name));
+        if (!adapter->name[0]) gc_strlcpy(adapter->name, sizeof(adapter->name), "NVIDIA GPU");
+        if (g->nvml.getPciInfo) {
+            nvmlPciInfo_t pci = {};
+            if (g->nvml.getPciInfo(nvmlDevices[i], &pci) == NVML_SUCCESS) {
+                adapter->valid = true;
+                adapter->pciInfoValid = pci.pciDeviceId != 0;
+                adapter->deviceId = pci.pciDeviceId;
+                adapter->subSystemId = pci.pciSubSystemId;
+                adapter->pciDomain = pci.domain;
+                adapter->pciBus = pci.bus;
+                adapter->pciDevice = pci.device;
+                unsigned int domain = 0, bus = 0, device = 0, function = 0;
+                if (sscanf(pci.busId, "%x:%x:%x.%x", &domain, &bus, &device, &function) == 4) {
+                    adapter->pciDomain = domain;
+                    adapter->pciBus = bus;
+                    adapter->pciDevice = device;
+                    adapter->pciFunction = function;
+                }
+            }
+        }
+    }
+    g->adapterCount = adapterCount;
+
+    int requestedIndex = -1;
+    if (target && target->valid)
+        requestedIndex = linux_resolve_gpu_identity(target, g->adapters, adapterCount);
+    else if (adapterCount == 1)
+        requestedIndex = 0;
+    if (requestedIndex >= 0) {
+        g->selectedAdapterIndex = (unsigned int)requestedIndex;
+        g->selectedGpu = g->adapters[requestedIndex];
+        g->nvmlIndex = g->selectedGpu.nvmlIndex;
+        g->nvmlDevice = nvmlDevices[g->nvmlIndex];
+        g->writeIdentityResolved = adapterCount == 1 ||
+            (target && linux_gpu_identity_matches(target, &g->selectedGpu));
+    } else if (requestedIndex == -2) {
+        gc_strlcpy(err, errSize, "selected GPU PCI identity is ambiguous");
+    } else if (adapterCount > 1) {
+        gc_strlcpy(err, errSize, "multiple GPUs detected; select one by PCI BDF with --gpu");
+    }
 
     // NvAPI
     g->nvapiLib = pl_open_driver_library(PL_DRIVER_NVAPI);
@@ -442,23 +532,147 @@ bool linux_backend_init(LinuxGpuState* g, unsigned int index, char* err, size_t 
                 GPU_HANDLE handles[64] = {};
                 int n = 0;
                 if (enumGpus && nvapi_ok(enumGpus(handles, &n)) && n > 0) {
-                    if (index >= (unsigned int)n) index = 0;
-                    g->gpuHandle = handles[index];
-                    if (getArch) {
-                        nvapiGpuArchInfo_t ai{};
-                        ai.version = NVAPI_GPU_ARCH_INFO_VER2;
-                        if (nvapi_ok(getArch(g->gpuHandle, &ai))) g->architecture = ai.architecture;
+                    typedef int (*get_pci_t)(GPU_HANDLE, unsigned int*, unsigned int*, unsigned int*, unsigned int*);
+                    typedef int (*bus_id_t)(GPU_HANDLE, unsigned int*);
+                    auto getPci = (get_pci_t)g->nvapiQi(NVAPI_GPU_GET_PCI_IDENTIFIERS_ID);
+                    auto getBus = (bus_id_t)g->nvapiQi(NVAPI_GPU_GET_BUS_ID_ID);
+                    auto getSlot = (bus_id_t)g->nvapiQi(NVAPI_GPU_GET_BUS_SLOT_ID_ID);
+                    bool nvapiAssigned[MAX_GPU_ADAPTERS] = {};
+                    for (int ni = 0; ni < n && ni < (int)MAX_GPU_ADAPTERS; ++ni) {
+                        unsigned int bus = 0, slot = 0;
+                        int match = -1;
+                        if (getBus && getSlot && nvapi_ok(getBus(handles[ni], &bus)) &&
+                            nvapi_ok(getSlot(handles[ni], &slot))) {
+                            for (unsigned int ai = 0; ai < adapterCount; ++ai) {
+                                if (g->adapters[ai].pciBus == bus && g->adapters[ai].pciDevice == slot) {
+                                    if (match >= 0) { match = -2; break; }
+                                    match = (int)ai;
+                                }
+                            }
+                        } else if (adapterCount == 1 && n == 1) {
+                            match = 0;
+                        }
+                        if (match < 0) continue;
+                        GpuAdapterInfo* adapter = &g->adapters[match];
+                        bool pciVerified = false;
+                        unsigned int device = 0, subsystem = 0, revision = 0, extended = 0;
+                        if (getPci && nvapi_ok(getPci(handles[ni], &device, &subsystem, &revision, &extended))) {
+                            if (adapter->pciInfoValid &&
+                                (!linux_gpu_device_id_matches(device, adapter->deviceId) ||
+                                 (subsystem && adapter->subSystemId && subsystem != adapter->subSystemId))) {
+                                adapter->vfReadSupported = false;
+                                adapter->vfWriteSupported = false;
+                                continue;
+                            }
+                            pciVerified = true;
+                            adapter->pciInfoValid = true;
+                            adapter->deviceId = device;
+                            adapter->subSystemId = subsystem;
+                            adapter->pciRevisionId = revision;
+                            adapter->extDeviceId = extended;
+                        }
+                        if (adapterCount > 1 && !pciVerified) continue;
+                        if (nvapiAssigned[match]) {
+                            adapter->nvapiIndex = MAX_GPU_ADAPTERS;
+                            adapter->vfReadSupported = false;
+                            adapter->vfWriteSupported = false;
+                            continue;
+                        }
+                        nvapiAssigned[match] = true;
+                        adapter->nvapiIndex = (unsigned int)ni;
+                        unsigned int architecture = 0;
+                        if (getArch) {
+                            nvapiGpuArchInfo_t ai{};
+                            ai.version = NVAPI_GPU_ARCH_INFO_VER2;
+                            if (nvapi_ok(getArch(handles[ni], &ai))) architecture = ai.architecture;
+                        }
+                        GpuFamily family = GPU_FAMILY_UNKNOWN;
+                        const VfBackendSpec* backend = vf_backend_for_architecture(architecture, &family);
+                        adapter->family = family;
+                        adapter->vfReadSupported = backend && backend->readSupported;
+                        adapter->vfWriteSupported = backend && backend->writeSupported;
+                        adapter->vfBestGuess = backend && backend->bestGuessOnly;
                     }
-                    g->backend = vf_backend_for_architecture(g->architecture, &g->family);
-                    nvapi_read_curve(g);
-                    nvapi_read_offsets(g);
+
+                    int selected = -1;
+                    if (target && target->valid)
+                        selected = linux_resolve_gpu_identity(target, g->adapters, adapterCount);
+                    else if (adapterCount == 1)
+                        selected = 0;
+                    if (selected >= 0) {
+                        GpuAdapterInfo* adapter = &g->adapters[selected];
+                        g->selectedAdapterIndex = (unsigned int)selected;
+                        g->selectedGpu = *adapter;
+                        g->nvmlIndex = adapter->nvmlIndex;
+                        g->nvapiIndex = adapter->nvapiIndex;
+                        g->nvmlDevice = nvmlDevices[g->nvmlIndex];
+                        if (g->nvapiIndex < (unsigned int)n) g->gpuHandle = handles[g->nvapiIndex];
+                        bool stableTarget = adapterCount == 1 ||
+                            (target && linux_gpu_identity_matches(target, adapter));
+                        g->writeIdentityResolved = stableTarget &&
+                            (adapterCount == 1 || g->gpuHandle != nullptr);
+                        if (stableTarget && adapterCount > 1 && !g->gpuHandle)
+                            gc_strlcpy(err, errSize, "selected GPU does not match uniquely across NVML and NvAPI");
+                        if (getArch && g->gpuHandle) {
+                            nvapiGpuArchInfo_t ai{};
+                            ai.version = NVAPI_GPU_ARCH_INFO_VER2;
+                            if (nvapi_ok(getArch(g->gpuHandle, &ai))) g->architecture = ai.architecture;
+                        }
+                        g->backend = vf_backend_for_architecture(g->architecture, &g->family);
+                    } else if (selected == -2) {
+                        gc_strlcpy(err, errSize, "selected GPU PCI identity is ambiguous");
+                    } else if (adapterCount > 1) {
+                        gc_strlcpy(err, errSize, "multiple GPUs detected; select one by PCI BDF with --gpu");
+                    }
                 }
             }
         }
     }
+
+    if (!g->nvmlDevice && adapterCount > 0) {
+        g->selectedAdapterIndex = 0;
+        g->selectedGpu = g->adapters[0];
+        g->nvmlIndex = g->adapters[0].nvmlIndex;
+        g->nvmlDevice = nvmlDevices[g->nvmlIndex];
+        g->writeIdentityResolved = adapterCount == 1;
+    }
+    if (adapterCount > 1 && !g->gpuHandle) {
+        g->writeIdentityResolved = false;
+        if (err && !err[0])
+            gc_strlcpy(err, errSize, "multi-GPU write target is not proven across NVML and NvAPI");
+    }
+    g->nvmlReady = g->nvmlDevice != nullptr;
+    if (g->nvmlReady) {
+        gc_strlcpy(g->gpuName, sizeof(g->gpuName), g->selectedGpu.name);
+        nvml_query_ranges(g);
+    }
+    if (g->gpuHandle && g->backend) {
+        nvapi_read_curve(g);
+        nvapi_read_offsets(g);
+    }
     if (!g->backend) {
         lb_log("linux_backend_init: NvAPI VF surface unavailable; NVML-only mode\n");
     }
+    return g->nvmlReady;
+}
+
+bool linux_backend_select_target(LinuxGpuState* g, const GpuAdapterInfo* target,
+                                 char* err, size_t errSize) {
+    if (!g || !target || !target->valid) {
+        gc_strlcpy(err, errSize, "a stable GPU target is required");
+        return false;
+    }
+    if (linux_gpu_identity_matches(target, &g->selectedGpu) && g->writeIdentityResolved)
+        return true;
+    LinuxGpuState replacement = {};
+    if (!linux_backend_init(&replacement, target, err, errSize) ||
+        !replacement.writeIdentityResolved) {
+        linux_backend_shutdown(&replacement);
+        if (err && !err[0]) gc_strlcpy(err, errSize, "selected GPU could not be resolved uniquely");
+        return false;
+    }
+    linux_backend_shutdown(g);
+    *g = replacement;
     return true;
 }
 
@@ -478,6 +692,160 @@ bool linux_backend_refresh(LinuxGpuState* g) {
 // ===========================================================================
 // Apply / reset  (ports apply_desired_settings_service ordering)
 // ===========================================================================
+
+static bool desired_has_curve_write(const DesiredSettings* d) {
+    if (!d) return false;
+    for (int i = 0; i < VF_NUM_POINTS; ++i)
+        if (d->hasCurvePoint[i]) return true;
+    return d->hasLock && d->lockMode == LOCK_MODE_FLATTEN;
+}
+
+bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* snapshot,
+                                    char* err, size_t errSize) {
+    if (err && errSize) err[0] = 0;
+    if (!g || !snapshot || !g->nvmlReady) {
+        gc_strlcpy(err, errSize, "GPU backend is not ready for snapshot");
+        return false;
+    }
+    memset(snapshot, 0, sizeof(*snapshot));
+    if (g->nvml.getGpcClkVfOffset &&
+        g->nvml.getGpcClkVfOffset(g->nvmlDevice, &snapshot->gpuOffsetMHz) == NVML_SUCCESS)
+        snapshot->gpuOffsetValid = true;
+    if (g->nvml.getMemClkVfOffset &&
+        g->nvml.getMemClkVfOffset(g->nvmlDevice, &snapshot->memOffsetMHz) == NVML_SUCCESS)
+        snapshot->memOffsetValid = true;
+    if (g->nvml.getPowerLimit &&
+        g->nvml.getPowerLimit(g->nvmlDevice, &snapshot->powerLimitmW) == NVML_SUCCESS)
+        snapshot->powerValid = true;
+    if (g->backend && g->backend->writeSupported && g->numPopulated > 0) {
+        snapshot->curveValid = true;
+        for (int i = 0; i < VF_NUM_POINTS; ++i) {
+            snapshot->curveOffsets[i] = g->freqOffsets[i];
+            snapshot->curveMask[i] = g->curve[i].freq_kHz != 0;
+        }
+    }
+    unsigned int fans = 0;
+    if (g->nvml.getNumFans && g->nvml.getNumFans(g->nvmlDevice, &fans) == NVML_SUCCESS) {
+        if (fans > MAX_GPU_FANS) fans = MAX_GPU_FANS;
+        snapshot->fanCount = fans;
+        snapshot->fanValid = fans > 0;
+        for (unsigned int i = 0; i < fans; ++i) {
+            if (!g->nvml.getFanSpeed ||
+                g->nvml.getFanSpeed(g->nvmlDevice, i, &snapshot->fanPercent[i]) != NVML_SUCCESS)
+                snapshot->fanValid = false;
+            if (!g->nvml.getFanControlPolicy ||
+                g->nvml.getFanControlPolicy(g->nvmlDevice, i, &snapshot->fanPolicy[i]) != NVML_SUCCESS)
+                snapshot->fanValid = false;
+        }
+    }
+    snapshot->valid = snapshot->gpuOffsetValid || snapshot->memOffsetValid ||
+                      snapshot->powerValid || snapshot->curveValid || snapshot->fanValid;
+    if (!snapshot->valid) gc_strlcpy(err, errSize, "no rollback-capable GPU state could be captured");
+    return snapshot->valid;
+}
+
+bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapshot* snapshot,
+                                    unsigned int phaseMask, char* err, size_t errSize) {
+    if (err && errSize) err[0] = 0;
+    if (!g || !snapshot || !snapshot->valid) {
+        gc_strlcpy(err, errSize, "rollback snapshot is invalid");
+        return false;
+    }
+    bool ok = true;
+    bool baseline = (phaseMask & LINUX_MUTATION_RESET_BASELINE) != 0;
+    if ((baseline || (phaseMask & LINUX_MUTATION_GPU_OFFSET)) && snapshot->gpuOffsetValid)
+        ok &= nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, snapshot->gpuOffsetMHz);
+    if ((baseline || (phaseMask & LINUX_MUTATION_MEM_OFFSET)) && snapshot->memOffsetValid)
+        ok &= nvml_set_clock_offset(g, NVML_CLOCK_MEM, snapshot->memOffsetMHz);
+    if ((phaseMask & LINUX_MUTATION_POWER) && snapshot->powerValid && g->nvml.setPowerLimit) {
+        bool powerOk = g->nvml.setPowerLimit(g->nvmlDevice, snapshot->powerLimitmW) == NVML_SUCCESS;
+        if (powerOk && g->nvml.getPowerLimit) {
+            unsigned int verify = 0;
+            powerOk = g->nvml.getPowerLimit(g->nvmlDevice, &verify) == NVML_SUCCESS &&
+                      verify == snapshot->powerLimitmW;
+        }
+        ok &= powerOk;
+    }
+    if ((phaseMask & LINUX_MUTATION_CURVE) && snapshot->curveValid)
+        ok &= apply_curve_offsets_verified(g, snapshot->curveOffsets, snapshot->curveMask, 25);
+    if ((phaseMask & LINUX_MUTATION_FAN) && snapshot->fanValid) {
+        for (unsigned int i = 0; i < snapshot->fanCount; ++i) {
+            bool fanOk = false;
+            if (snapshot->fanPolicy[i] == NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW) {
+                if (g->nvml.setDefaultFanSpeed)
+                    fanOk = g->nvml.setDefaultFanSpeed(g->nvmlDevice, i) == NVML_SUCCESS;
+                else if (g->nvml.setFanControlPolicy)
+                    fanOk = g->nvml.setFanControlPolicy(g->nvmlDevice, i,
+                        NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW) == NVML_SUCCESS;
+            } else if (g->nvml.setFanSpeed) {
+                fanOk = g->nvml.setFanSpeed(g->nvmlDevice, i, snapshot->fanPercent[i]) == NVML_SUCCESS;
+            }
+            if (fanOk && snapshot->fanPolicy[i] == NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW) {
+                unsigned int verifyPolicy = 0;
+                fanOk = g->nvml.getFanControlPolicy &&
+                        g->nvml.getFanControlPolicy(g->nvmlDevice, i, &verifyPolicy) == NVML_SUCCESS &&
+                        verifyPolicy == NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW;
+            } else if (fanOk) {
+                unsigned int verifyPercent = 0;
+                fanOk = g->nvml.getFanSpeed &&
+                        g->nvml.getFanSpeed(g->nvmlDevice, i, &verifyPercent) == NVML_SUCCESS &&
+                        verifyPercent == snapshot->fanPercent[i];
+            }
+            if (!fanOk) lb_log("fan: rollback verification failed for fan %u\n", i);
+            ok &= fanOk;
+        }
+    }
+    if (baseline || (phaseMask & LINUX_MUTATION_LOCK)) {
+        // NVML exposes no getter for the configured locked-clock range.  Release
+        // a lock written by this transaction, but never claim that the unknown
+        // pre-transaction lock policy was restored exactly.
+        if (g->nvml.resetGpuLockedClocks)
+            g->nvml.resetGpuLockedClocks(g->nvmlDevice);
+        ok = false;
+    }
+    if (!ok) gc_strlcpy(err, errSize, "one or more GPU rollback phases failed");
+    linux_backend_refresh(g);
+    return ok;
+}
+
+static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
+                                    const LinuxHardwareSnapshot* snapshot,
+                                    char* err, size_t errSize) {
+    if (!g || !d || !g->nvmlReady || !g->writeIdentityResolved) {
+        gc_strlcpy(err, errSize, "GPU write target is unavailable or not uniquely resolved");
+        return false;
+    }
+    bool hardLock = d->hasLock && d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
+    if (d->resetOcBeforeApply && !g->nvml.resetGpuLockedClocks) {
+        gc_strlcpy(err, errSize, "OC baseline reset cannot release locked clocks safely"); return false;
+    }
+    if ((d->hasGpuOffset || d->resetOcBeforeApply) &&
+        (!snapshot->gpuOffsetValid || (!g->nvml.setGpcClkVfOffset && !g->nvml.setClockOffsets))) {
+        gc_strlcpy(err, errSize, "GPU offset cannot be snapshotted and written safely"); return false;
+    }
+    if ((d->hasMemOffset || d->resetOcBeforeApply) &&
+        (!snapshot->memOffsetValid || (!g->nvml.setMemClkVfOffset && !g->nvml.setClockOffsets))) {
+        gc_strlcpy(err, errSize, "memory offset cannot be snapshotted and written safely"); return false;
+    }
+    if (d->hasPowerLimit && (!snapshot->powerValid || !g->nvml.setPowerLimit)) {
+        gc_strlcpy(err, errSize, "power limit cannot be snapshotted and written safely"); return false;
+    }
+    if (desired_has_curve_write(d) && !hardLock) {
+        char why[160] = {};
+        if (!snapshot->curveValid || !g->backend || !g->backend->writeSupported ||
+            !linux_backend_curve_plausible(g, why, sizeof(why))) {
+            gc_snprintf(err, errSize, "VF curve write preflight failed: %s", why[0] ? why : "unsupported");
+            return false;
+        }
+    }
+    if (hardLock && !g->nvml.setGpuLockedClocks) {
+        gc_strlcpy(err, errSize, "hard clock locking is unavailable"); return false;
+    }
+    if (d->hasFan && !snapshot->fanValid) {
+        gc_strlcpy(err, errSize, "fan state cannot be snapshotted safely"); return false;
+    }
+    return true;
+}
 
 // Build per-point absolute-target curve offsets from a DesiredSettings request.
 // offset_kHz = targetMHz*1000 - stockFreq_kHz  (mirrors the Windows correction
@@ -516,100 +884,180 @@ static int build_curve_targets(LinuxGpuState* g, const DesiredSettings* d,
     return n;
 }
 
-bool linux_backend_apply(LinuxGpuState* g, const DesiredSettings* d,
-                         char* result, size_t resultSize) {
-    bool allOk = true;
-    char msg[512] = {};
-    int phases = 0, failed = 0;
+struct LinuxApplyTransactionContext {
+    LinuxGpuState* gpu;
+    const DesiredSettings* desired;
+    const LinuxHardwareSnapshot* snapshot;
+    int curveTargets[VF_NUM_POINTS];
+    bool curveMask[VF_NUM_POINTS];
+};
 
-    // Phase 0: optional reset of the OC baseline before applying.
-    if (d->resetOcBeforeApply) {
-        nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0);
-        nvml_set_clock_offset(g, NVML_CLOCK_MEM, 0);
-        if (g->nvml.resetGpuLockedClocks) g->nvml.resetGpuLockedClocks(g->nvmlDevice);
+static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
+    LinuxApplyTransactionContext* context = (LinuxApplyTransactionContext*)opaque;
+    LinuxGpuState* g = context->gpu;
+    const DesiredSettings* d = context->desired;
+    switch (phase) {
+        case LINUX_MUTATION_RESET_BASELINE:
+            return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0) &&
+                   nvml_set_clock_offset(g, NVML_CLOCK_MEM, 0) &&
+                   g->nvml.resetGpuLockedClocks &&
+                   g->nvml.resetGpuLockedClocks(g->nvmlDevice) == NVML_SUCCESS;
+        case LINUX_MUTATION_GPU_OFFSET:
+            return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, d->gpuOffsetMHz);
+        case LINUX_MUTATION_MEM_OFFSET:
+            return nvml_set_clock_offset(g, NVML_CLOCK_MEM, d->memOffsetMHz);
+        case LINUX_MUTATION_POWER:
+            return nvml_set_power_limit_pct(g, d->powerLimitPct);
+        case LINUX_MUTATION_CURVE:
+            return apply_curve_offsets_verified(g, context->curveTargets,
+                                                context->curveMask, 25);
+        case LINUX_MUTATION_LOCK:
+            if (d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0)
+                return g->nvml.setGpuLockedClocks &&
+                       g->nvml.setGpuLockedClocks(g->nvmlDevice, d->lockMHz,
+                                                  d->lockMHz) == NVML_SUCCESS;
+            return g->nvml.resetGpuLockedClocks &&
+                   g->nvml.resetGpuLockedClocks(g->nvmlDevice) == NVML_SUCCESS;
+        case LINUX_MUTATION_FAN:
+            return nvml_set_fan(g, d->fanMode, d->fanAuto, d->fanPercent);
+        default:
+            return false;
     }
+}
 
-    // Phase 1: GPU clock offset (HARD lock uses NVML locked clocks instead).
+static bool linux_apply_transaction_rollback(void* opaque, unsigned int phases) {
+    LinuxApplyTransactionContext* context = (LinuxApplyTransactionContext*)opaque;
+    char rollback[256] = {};
+    return linux_backend_restore_snapshot(context->gpu, context->snapshot, phases,
+                                          rollback, sizeof(rollback));
+}
+
+static int phase_count(unsigned int phases) {
+    int count = 0;
+    while (phases) { count += (int)(phases & 1u); phases >>= 1; }
+    return count;
+}
+
+LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings* d,
+                                        char* result, size_t resultSize) {
+    LinuxHardwareSnapshot snapshot = {};
+    char preflight[256] = {};
+    if (!linux_backend_capture_snapshot(g, &snapshot, preflight, sizeof(preflight)) ||
+        !linux_backend_preflight(g, d, &snapshot, preflight, sizeof(preflight))) {
+        LinuxMutationResult mutation = {};
+        if (result) gc_strlcpy(result, resultSize, preflight[0] ? preflight : "Apply preflight failed");
+        return mutation;
+    }
     bool hardLock = d->hasLock && d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
-    if (d->hasGpuOffset && !hardLock) {
-        phases++;
-        if (!nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, d->gpuOffsetMHz)) { failed++; allOk = false; }
-    }
-
-    // Phase 2: memory clock offset.
-    if (d->hasMemOffset) {
-        phases++;
-        if (!nvml_set_clock_offset(g, NVML_CLOCK_MEM, d->memOffsetMHz)) { failed++; allOk = false; }
-    }
-
-    // Phase 3: power limit.
-    if (d->hasPowerLimit) {
-        phases++;
-        if (!nvml_set_power_limit_pct(g, d->powerLimitPct)) { failed++; allOk = false; }
-    }
-
-    // Phase 4: VF curve (skipped in HARD mode — the clock is pinned by NVML).
-    // SAFETY GATE: refuse VF writes if the curve READ looks implausible — a
-    // struct-layout/ABI mismatch (e.g. on an unverified driver/arch) would
-    // otherwise let us compute and write garbage offsets to the GPU.  NVML
-    // offset/power/fan still apply.  This is the key arm64 fail-safe.
-    if (g->backend && g->backend->writeSupported && !hardLock) {
-        char why[160] = {};
-        if (!linux_backend_curve_plausible(g, why, sizeof(why))) {
-            lb_log("apply: REFUSING VF curve write — curve read implausible (%s); "
-                   "NVML-only this apply to avoid writing garbage to the GPU\n", why);
-        } else {
-            int targets[VF_NUM_POINTS];
-            bool mask[VF_NUM_POINTS];
-            int n = build_curve_targets(g, d, targets, mask);
-            if (n > 0) {
-                phases++;
-                if (!apply_curve_offsets_verified(g, targets, mask, 25)) { failed++; allOk = false; }
-            }
-        }
-    }
-
-    // Phase 5: locked clocks (HARD lock) or release.
-    if (hardLock && g->nvml.setGpuLockedClocks) {
-        phases++;
-        if (g->nvml.setGpuLockedClocks(g->nvmlDevice, d->lockMHz, d->lockMHz) != NVML_SUCCESS) { failed++; allOk = false; }
-    } else if (!hardLock && g->nvml.resetGpuLockedClocks) {
-        g->nvml.resetGpuLockedClocks(g->nvmlDevice);  // idempotent
-    }
-
-    // Phase 6: fan.
-    if (d->hasFan) {
-        phases++;
-        if (!nvml_set_fan(g, d->fanMode, d->fanAuto, d->fanPercent)) { failed++; allOk = false; }
-    }
-
-    gc_snprintf(msg, sizeof(msg), "%s: %d phase(s), %d failed%s",
-                allOk ? "Applied" : "Applied with errors", phases, failed,
+    LinuxApplyTransactionContext context = {g, d, &snapshot, {}, {}};
+    unsigned int requested = 0;
+    if (d->resetOcBeforeApply) requested |= LINUX_MUTATION_RESET_BASELINE;
+    if (d->hasGpuOffset && !hardLock) requested |= LINUX_MUTATION_GPU_OFFSET;
+    if (d->hasMemOffset) requested |= LINUX_MUTATION_MEM_OFFSET;
+    if (d->hasPowerLimit) requested |= LINUX_MUTATION_POWER;
+    if (desired_has_curve_write(d) && !hardLock &&
+        build_curve_targets(g, d, context.curveTargets, context.curveMask) > 0)
+        requested |= LINUX_MUTATION_CURVE;
+    if (d->hasLock) requested |= LINUX_MUTATION_LOCK;
+    if (d->hasFan) requested |= LINUX_MUTATION_FAN;
+    LinuxMutationResult mutation = linux_execute_transaction(
+        requested, linux_apply_transaction_step, linux_apply_transaction_rollback, &context);
+    char msg[512] = {};
+    gc_snprintf(msg, sizeof(msg), "%s: %d phase(s), %d failed%s%s",
+                mutation.success ? "Applied" : "Apply failed",
+                phase_count(mutation.attemptedPhases), phase_count(mutation.failedPhases),
+                (!mutation.success && mutation.rollbackSucceeded) ? " (rolled back)" :
+                (!mutation.success && mutation.rollbackAttempted) ? " (rollback uncertain)" : "",
                 hardLock ? " (hard clock pin)" : "");
     if (result) gc_strlcpy(result, resultSize, msg);
     lb_log("apply: %s\n", msg);
     linux_backend_refresh(g);
-    return allOk;
+    return mutation;
 }
 
-bool linux_backend_reset(LinuxGpuState* g, char* result, size_t resultSize) {
-    bool ok = true;
-    if (g->nvml.resetGpuLockedClocks) g->nvml.resetGpuLockedClocks(g->nvmlDevice);
-    ok &= nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0);
-    ok &= nvml_set_clock_offset(g, NVML_CLOCK_MEM, 0);
-    if (g->powerLimitDefaultmW > 0 && g->nvml.setPowerLimit)
-        g->nvml.setPowerLimit(g->nvmlDevice, (unsigned int)g->powerLimitDefaultmW);
-    // Zero the VF curve offsets.
-    if (g->backend && g->backend->writeSupported) {
-        int targets[VF_NUM_POINTS] = {};
-        bool mask[VF_NUM_POINTS];
-        for (int i = 0; i < VF_NUM_POINTS; i++) mask[i] = (g->curve[i].freq_kHz != 0);
-        apply_curve_offsets_verified(g, targets, mask, 25);
+struct LinuxResetTransactionContext {
+    LinuxGpuState* gpu;
+    const LinuxHardwareSnapshot* snapshot;
+};
+
+static bool linux_reset_transaction_step(void* opaque, unsigned int phase) {
+    LinuxResetTransactionContext* context = (LinuxResetTransactionContext*)opaque;
+    LinuxGpuState* g = context->gpu;
+    switch (phase) {
+        case LINUX_MUTATION_LOCK:
+            return g->nvml.resetGpuLockedClocks(g->nvmlDevice) == NVML_SUCCESS;
+        case LINUX_MUTATION_GPU_OFFSET:
+            return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0);
+        case LINUX_MUTATION_MEM_OFFSET:
+            return nvml_set_clock_offset(g, NVML_CLOCK_MEM, 0);
+        case LINUX_MUTATION_POWER: {
+            bool ok = g->nvml.setPowerLimit(g->nvmlDevice,
+                (unsigned int)g->powerLimitDefaultmW) == NVML_SUCCESS;
+            unsigned int verify = 0;
+            return ok && g->nvml.getPowerLimit &&
+                   g->nvml.getPowerLimit(g->nvmlDevice, &verify) == NVML_SUCCESS &&
+                   verify == (unsigned int)g->powerLimitDefaultmW;
+        }
+        case LINUX_MUTATION_CURVE: {
+            int targets[VF_NUM_POINTS] = {};
+            bool mask[VF_NUM_POINTS];
+            for (int i = 0; i < VF_NUM_POINTS; ++i)
+                mask[i] = g->curve[i].freq_kHz != 0;
+            return apply_curve_offsets_verified(g, targets, mask, 25);
+        }
+        case LINUX_MUTATION_FAN:
+            return nvml_set_fan(g, FAN_MODE_AUTO, true, 0);
+        default:
+            return false;
     }
-    nvml_set_fan(g, FAN_MODE_AUTO, true, 0);
-    if (result) gc_strlcpy(result, resultSize, ok ? "Reset to defaults" : "Reset completed with errors");
+}
+
+static bool linux_reset_transaction_rollback(void* opaque, unsigned int phases) {
+    LinuxResetTransactionContext* context = (LinuxResetTransactionContext*)opaque;
+    char rollback[256] = {};
+    return linux_backend_restore_snapshot(context->gpu, context->snapshot, phases,
+                                          rollback, sizeof(rollback));
+}
+
+LinuxMutationResult linux_backend_reset(LinuxGpuState* g, char* result, size_t resultSize) {
+    LinuxMutationResult mutation = {};
+    LinuxHardwareSnapshot snapshot = {};
+    char detail[256] = {};
+    if (!linux_backend_capture_snapshot(g, &snapshot, detail, sizeof(detail)) ||
+        !g->writeIdentityResolved) {
+        if (result) gc_strlcpy(result, resultSize, detail[0] ? detail : "Reset preflight failed");
+        return mutation;
+    }
+    if (!snapshot.gpuOffsetValid || !snapshot.memOffsetValid || !snapshot.powerValid ||
+        !snapshot.curveValid || !snapshot.fanValid || !g->nvml.resetGpuLockedClocks ||
+        (!g->nvml.setGpcClkVfOffset && !g->nvml.setClockOffsets) ||
+        (!g->nvml.setMemClkVfOffset && !g->nvml.setClockOffsets) ||
+        !g->nvml.setPowerLimit || g->powerLimitDefaultmW <= 0 ||
+        !g->backend || !g->backend->writeSupported) {
+        gc_strlcpy(detail, sizeof(detail),
+                   "Reset preflight failed: every mutable domain must support snapshot and restore");
+        if (result) gc_strlcpy(result, resultSize, detail);
+        return mutation;
+    }
+    LinuxResetTransactionContext context = {g, &snapshot};
+    const unsigned int requested = LINUX_MUTATION_LOCK | LINUX_MUTATION_GPU_OFFSET |
+        LINUX_MUTATION_MEM_OFFSET | LINUX_MUTATION_POWER | LINUX_MUTATION_CURVE |
+        LINUX_MUTATION_FAN;
+    mutation = linux_execute_transaction(requested, linux_reset_transaction_step,
+                                         linux_reset_transaction_rollback, &context);
+    if (result) gc_strlcpy(result, resultSize, mutation.success ? "Reset to defaults" :
+        mutation.rollbackSucceeded ? "Reset failed and was rolled back" : "Reset failed; rollback uncertain");
     linux_backend_refresh(g);
-    return ok;
+    return mutation;
+}
+
+bool linux_backend_set_curve_fan_percent(LinuxGpuState* g, unsigned int percent) {
+    if (!g || percent > 100) return false;
+    return nvml_set_fan(g, FAN_MODE_FIXED, false, (int)percent);
+}
+
+bool linux_backend_set_fan_auto(LinuxGpuState* g) {
+    return g && nvml_set_fan(g, FAN_MODE_AUTO, true, 0);
 }
 
 // ===========================================================================

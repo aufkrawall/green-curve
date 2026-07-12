@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 #include "gpu_backend_apply.cpp"
-static bool apply_desired_settings(const DesiredSettings* desired, bool interactive, char* result, size_t resultSize) {
+static bool apply_desired_settings(const DesiredSettings* desired, bool interactive,
+    ServiceApplyOrigin origin, ServiceProfileSource profileSource, int profileSlot,
+    char* result, size_t resultSize) {
     if (!g_app.isServiceProcess) {
         refresh_background_service_state();
         if (!g_app.backgroundServiceAvailable) {
@@ -11,7 +13,11 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
                     : "Background service is not installed. Install it to enable live GPU control.");
             return false;
         }
-        ServiceSnapshot snapshot = {}; bool ok = service_client_apply_desired(desired, g_pendingOperationSource[0] ? g_pendingOperationSource : "client apply", interactive, result, resultSize, &snapshot);
+        ServiceSnapshot snapshot = {};
+        bool ok = service_client_apply_desired(desired,
+            g_pendingOperationSource[0] ? g_pendingOperationSource : "client apply",
+            interactive, origin, profileSource, profileSlot,
+            result, resultSize, &snapshot);
         if (snapshot.initialized || snapshot.loaded) {
             bool fanOnlyApply = desired_is_fan_only_apply_request(desired);
             apply_service_snapshot_to_app(&snapshot);
@@ -46,25 +52,11 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
 // ============================================================================
 
 // Module-level cache so close_nvapi() can invalidate it across calls.
-// nvapi_qi() caches the nvapi_QueryInterface function pointer to avoid
-// repeated GetProcAddress lookups.  However, after a GPU driver restart
-// (VEH crash, driver update, TDR), nvml_ensure_ready() calls FreeLibrary
-// on nvapi64.dll which unmaps the DLL.  Without invalidating this cache,
-// the stale pointer causes an access violation on the next call.
+// A driver recovery never attempts to reload NvAPI in the stale process; the
+// nonce-bound helper starts a fresh service process instead.
 static void* (*g_nvapiQi)(unsigned int) = nullptr;
 
 static void* nvapi_qi(unsigned int id) {
-    // During GPU recovery, NvAPI handles are being closed/reloaded — skip
-    // all NvAPI calls until recovery completes.
-    // EXCEPT: when g_serviceInitInProgress is set, the recovery thread itself
-    // is the one calling us (Phase C re-init) and needs the early-return
-    // bypassed so it can obtain fresh module handles.  See the matching
-    // bypass in nvml_ensure_ready() and the long comment in app_shared.h.
-    LONG initInProgress = InterlockedExchangeAdd(&g_serviceInitInProgress, 0);
-    if (InterlockedExchangeAdd(&g_nvapiRecoveryInProgress, 0) != 0 &&
-        initInProgress == 0) {
-        return nullptr;
-    }
     if (!g_nvapiQi) {
         g_app.hNvApi = load_system_library_a("nvapi64.dll");
         if (!g_app.hNvApi) {
@@ -118,13 +110,51 @@ static void close_nvapi() {
     debug_log("nvapi: closed DLL, cleared adapter cache, and invalidated nvapi_qi cache\n");
 }
 
-static bool gpu_adapter_has_same_pci_identity(const GpuAdapterInfo* a, const GpuAdapterInfo* b) {
-    if (!a || !b || !a->valid || !b->valid) return false;
-    if (!a->pciInfoValid || !b->pciInfoValid) return false;
-    return a->deviceId == b->deviceId &&
+static bool gpu_adapter_has_valid_pci_location(const GpuAdapterInfo* adapter) {
+    return adapter && adapter->pciDomain <= 0xFFFFu &&
+        adapter->pciBus <= 255u && adapter->pciDevice <= 31u &&
+        adapter->pciFunction <= 7u &&
+        (adapter->pciDomain != 0 || adapter->pciBus != 0 ||
+         adapter->pciDevice != 0 || adapter->pciFunction != 0);
+}
+
+static bool gpu_adapter_has_same_pci_base_identity(
+    const GpuAdapterInfo* a, const GpuAdapterInfo* b) {
+    return a && b && a->valid && b->valid && a->pciInfoValid &&
+        b->pciInfoValid && a->deviceId == b->deviceId &&
         a->subSystemId == b->subSystemId &&
         a->pciRevisionId == b->pciRevisionId &&
         a->extDeviceId == b->extDeviceId;
+}
+
+static bool gpu_adapter_has_same_pci_identity(const GpuAdapterInfo* a, const GpuAdapterInfo* b) {
+    if (!gpu_adapter_has_same_pci_base_identity(a, b)) return false;
+    bool aHasBdf = gpu_adapter_has_valid_pci_location(a);
+    bool bHasBdf = gpu_adapter_has_valid_pci_location(b);
+    // BDF is a strengthening field, not a wire-compatibility requirement.
+    // Older/current client snapshots can carry the stable PCI IDs without the
+    // service-side NVML/NVAPI location enrichment.  Reject a different BDF
+    // when both sides know it, but do not make ordinary explicit Apply fail
+    // merely because exactly one side has already been enriched.  Durable
+    // recovery still counts all base-ID matches and rejects duplicates.
+    if (!aHasBdf || !bHasBdf) return true;
+    return a->pciDomain == b->pciDomain && a->pciBus == b->pciBus &&
+        a->pciDevice == b->pciDevice &&
+        a->pciFunction == b->pciFunction;
+}
+
+static bool gpu_adapter_pci_base_identity_is_unique(
+    const GpuAdapterInfo* target, const GpuAdapterInfo* adapters,
+    unsigned int adapterCount) {
+    if (!target || !adapters || !target->pciInfoValid) return false;
+    unsigned int matches = 0;
+    for (unsigned int i = 0; i < adapterCount; ++i) {
+        if (adapters[i].valid &&
+            gpu_adapter_has_same_pci_base_identity(target, &adapters[i])) {
+            ++matches;
+        }
+    }
+    return matches == 1;
 }
 
 static void format_gpu_adapter_label(const GpuAdapterInfo* adapter, char* out, size_t outSize) {
@@ -145,15 +175,7 @@ static void format_gpu_adapter_label(const GpuAdapterInfo* adapter, char* out, s
     }
 }
 
-static void load_selected_gpu_from_config() {
-    if (g_app.selectedGpuExplicit) return;
-    int selected = get_config_int(g_app.configPath, "gpu", "selected_index", 0);
-    if (selected < 0) selected = 0;
-    if (selected >= MAX_GPU_ADAPTERS) selected = MAX_GPU_ADAPTERS - 1;
-    g_app.selectedGpuIndex = (unsigned int)selected;
-    g_app.selectedNvmlIndex = (unsigned int)selected;
-    g_app.selectedGpuExplicit = true;
-}
+#include "gpu_selection_config.cpp"
 
 static void reset_gpu_runtime_selection() {
     g_app.gpuHandle = nullptr;
@@ -169,13 +191,18 @@ static void reset_gpu_runtime_selection() {
 
 static bool nvapi_enum_gpu() {
     typedef int (*enum_t)(GPU_HANDLE*, int*);
+    typedef int (*bus_id_t)(GPU_HANDLE, unsigned int*);
     auto enumGpu = (enum_t)nvapi_qi(NVAPI_ENUM_GPU_ID);
     if (!enumGpu) return false;
+    auto getBusId = (bus_id_t)nvapi_qi(NVAPI_GPU_GET_BUS_ID_ID);
+    auto getBusSlotId =
+        (bus_id_t)nvapi_qi(NVAPI_GPU_GET_BUS_SLOT_ID_ID);
     int count = 0;
     GPU_HANDLE handles[64] = {};
     int ret = enumGpu(handles, &count);
     if (ret != 0 || count < 1) return false;
-    load_selected_gpu_from_config();
+    ConfiguredGpuSelection configured = {};
+    bool selectionCoherent = load_selected_gpu_from_config(&configured);
     unsigned int adapterCount = (unsigned int)nvmin(count, MAX_GPU_ADAPTERS);
     memset(g_app.adapters, 0, sizeof(g_app.adapters));
     g_app.adapterCount = adapterCount;
@@ -194,10 +221,53 @@ static bool nvapi_enum_gpu() {
         adapter->subSystemId = g_app.gpuSubSystemId;
         adapter->pciRevisionId = g_app.gpuPciRevisionId;
         adapter->extDeviceId = g_app.gpuExtDeviceId;
+        unsigned int bus = 0;
+        unsigned int slot = 0;
+        if (getBusId && getBusSlotId &&
+            getBusId(handles[i], &bus) == 0 &&
+            getBusSlotId(handles[i], &slot) == 0 &&
+            bus <= 255u && slot <= 31u) {
+            adapter->pciDomain = 0;
+            adapter->pciBus = bus;
+            adapter->pciDevice = slot;
+            adapter->pciFunction = 0;
+            debug_log("gpu enumeration: nvapi=%u PCI location 0000:%02X:%02X.0\n",
+                i, bus, slot);
+        } else {
+            debug_log("gpu enumeration: nvapi=%u PCI location unavailable; identical multi-GPU identity will fail closed\n",
+                i);
+        }
         adapter->family = g_app.gpuFamily;
         adapter->vfReadSupported = g_app.vfBackend && g_app.vfBackend->readSupported;
         adapter->vfWriteSupported = g_app.vfBackend && g_app.vfBackend->writeSupported;
         adapter->vfBestGuess = vf_backend_is_best_guess(g_app.vfBackend);
+    }
+    if (selectionCoherent) {
+        unsigned int resolved = configured.legacyIndex;
+        ConfiguredGpuResolveResult resolution = resolve_configured_gpu_selection(
+            &configured, g_app.adapters, adapterCount, &resolved);
+        if (resolution == CONFIGURED_GPU_RESOLVE_STABLE) {
+            g_app.selectedGpuIndex = resolved;
+            g_app.selectedNvmlIndex = resolved;
+            g_app.configuredGpuSelectionUnresolved = false;
+            debug_log("gpu selection: resolved durable PCI identity to nvapi=%u (saved ordinal=%u)\n",
+                resolved, configured.legacyIndex);
+        } else if (resolution == CONFIGURED_GPU_RESOLVE_LEGACY_ORDINAL &&
+                   adapterCount > 1) {
+            g_app.configuredGpuSelectionUnresolved = true;
+            g_app.selectedGpuExplicit = false;
+            debug_log("gpu selection: legacy ordinal %u is unsafe with %u adapters; automatic writes are blocked until explicit reselection\n",
+                configured.legacyIndex, adapterCount);
+        } else if (resolution == CONFIGURED_GPU_RESOLVE_NOT_FOUND ||
+                   resolution == CONFIGURED_GPU_RESOLVE_AMBIGUOUS) {
+            g_app.configuredGpuSelectionUnresolved = true;
+            g_app.selectedGpuIndex = 0;
+            g_app.selectedNvmlIndex = 0;
+            g_app.selectedGpuExplicit = false;
+            debug_log("gpu selection: durable identity %s; automatic writes are blocked until the user selects a GPU\n",
+                resolution == CONFIGURED_GPU_RESOLVE_AMBIGUOUS
+                    ? "is ambiguous" : "is not present");
+        }
     }
     if (g_app.selectedGpuIndex >= adapterCount) {
         debug_log("gpu selection: requested index %u outside adapter count %u, falling back to 0\n",

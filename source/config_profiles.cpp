@@ -7,9 +7,23 @@
 
 #define CFG_BUFFER_SIZE 131072
 
-struct ConfigLockGuard {
-    ConfigLockGuard() { EnterCriticalSection(&g_configLock); }
-    ~ConfigLockGuard() { LeaveCriticalSection(&g_configLock); }
+// Whole-file profile rewrites are read/modify/write transactions.  Holding only
+// g_configLock protects threads in this process, and acquiring the named mutex
+// for the initial read alone still lets another GUI/service process commit a
+// logon selection before our later atomic rename.  Keep both locks for the
+// complete transaction so stale logon_slot values cannot be written back.
+struct ConfigStorageLockGuard {
+    HANDLE mutex;
+    bool held;
+    ConfigStorageLockGuard() : mutex(nullptr), held(false) {
+        held = enter_config_storage_lock(&mutex);
+    }
+    ~ConfigStorageLockGuard() {
+        if (held) leave_config_storage_lock(mutex);
+    }
+    bool locked() const { return held; }
+    ConfigStorageLockGuard(const ConfigStorageLockGuard&) = delete;
+    ConfigStorageLockGuard& operator=(const ConfigStorageLockGuard&) = delete;
 };
 
 static void infer_profile_lock_from_curve(const DesiredSettings* desired, int* lockCiOut, unsigned int* lockMHzOut);
@@ -44,7 +58,6 @@ static bool curve_section_uses_base_plus_gpu_offset_semantics(const char* path, 
     bool offsetTailMatches = absoluteLockPointMHz == desired->lockMHz;
     return !directTailMatches && offsetTailMatches;
 }
-
 static void restore_curve_points_from_base_plus_gpu_offset(DesiredSettings* desired) {
     if (!desired || !desired->hasGpuOffset || desired->gpuOffsetMHz == 0) return;
 
@@ -68,7 +81,16 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
     }
     initialize_desired_settings_defaults(desired);
 
-    ConfigLockGuard lock;
+    // A profile is one logical record spread across three INI sections.  Hold
+    // the cross-session storage lock for the complete read so another GUI or
+    // the service cannot atomically replace the file between individual field
+    // reads and produce a hybrid profile generation.
+    ConfigStorageLockGuard storageLock;
+    if (!storageLock.locked()) {
+        set_message(err, errSize,
+            "Failed to acquire the cross-session config lock for profile load");
+        return false;
+    }
 
     // Use slot-specific sections if they exist, else legacy sections for slot 1
     char controlsSection[32];
@@ -101,6 +123,12 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
     char fanBuf[64] = {};
     char buf[64] = {};
     bool hasExplicitFanMode = false;
+    char curveFormat[64] = {};
+    GetPrivateProfileStringA(curveSection, "format", "", curveFormat,
+        ARRAY_COUNT(curveFormat), path);
+    trim_ascii(curveFormat);
+    const bool explicitVfPointsFormat =
+        _stricmp(curveFormat, "explicit_vf_points_v1") == 0;
 
     GetPrivateProfileStringA(controlsSection, "gpu_offset_mhz", "", buf, sizeof(buf), path);
     trim_ascii(buf);
@@ -333,12 +361,12 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         }
     }
 
-    // If config explicitly says lock_ci=-1 (no lock), strip any curve points that may
-    // have been erroneously saved by an older build that captured the GPU's current
-    // curve state (which could include flattened tail from a previous profile).
-    // Without strip, load+apply of such a profile would re-apply the flattened curve
-    // even though the user saved "no lock, no custom curve."
-    if (lockCiWasExplicit && desired->lockCi < 0) {
+    // Very old configs could contain a captured live curve next to lock_ci=-1.
+    // Current explicit_vf_points_v1 sections, however, intentionally support an
+    // unlocked custom curve.  Treating lock_ci=-1 alone as a cleanup marker
+    // erased those legitimate points on manual, app-start, and logon loads.
+    if (profile_should_strip_legacy_unlocked_curve(lockCiWasExplicit,
+            desired->lockCi, explicitVfPointsFormat)) {
         bool hadCurvePoints = false;
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             if (desired->hasCurvePoint[i]) {
@@ -475,6 +503,13 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         desired->hasLock ? (desired->lockTracksAnchor ? 1 : 0) : (g_app.guiLockTracksAnchor ? 1 : 0),
         desired->hasLock ? 1 : 0);
 
+    ConfigStorageLockGuard storageLock;
+    if (!storageLock.locked()) {
+        set_message(err, errSize,
+            "Failed to acquire the cross-session config lock for profile save");
+        return false;
+    }
+
     // Read existing profile preferences
     int appLaunchSlot = get_config_int(path, "profiles", "app_launch_slot", 0);
     int logonSlot = get_config_int(path, "profiles", "logon_slot", 0);
@@ -516,19 +551,16 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         if (n > 0) used += (size_t)n;
         else truncated = true;
     };
-    // Read existing file to preserve sections we're not touching
-    // Use the cross-process named mutex so that the GUI and service
-    // do not race on the underlying config file between read and write.
-    HANDLE configMutex = nullptr;
-    if (!enter_config_storage_lock(&configMutex)) {
+    // Read existing file to preserve sections we're not touching. storageLock
+    // remains held through the final atomic replacement and INI-cache flush.
+    DWORD existingLen = GetPrivateProfileStringA(nullptr, nullptr, "", existingBuf, CFG_BUFFER_SIZE, path);
+    if (existingLen >= CFG_BUFFER_SIZE - 2) {
         free(cfg);
         free(existingBuf);
-        set_message(err, errSize, "Failed to acquire config lock for profile save");
+        set_message(err, errSize,
+            "Existing config has too many sections to preserve safely");
         return false;
     }
-    DWORD existingLen = GetPrivateProfileStringA(nullptr, nullptr, "", existingBuf, CFG_BUFFER_SIZE, path);
-    leave_config_storage_lock(configMutex);
-    (void)existingLen;
 
     // Build [meta]
     appendf("[meta]\r\nformat_version=2\r\n\r\n");
@@ -611,9 +643,9 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
             StringCchPrintfA(targetControls, ARRAY_COUNT(targetControls), "profile%d", slot);
             StringCchPrintfA(targetCurve, ARRAY_COUNT(targetCurve), "profile%d_curve", slot);
             StringCchPrintfA(targetFanCurve, ARRAY_COUNT(targetFanCurve), "profile%d_fan_curve", slot);
-            if (strcmp(p, targetControls) == 0 || strcmp(p, targetCurve) == 0 || strcmp(p, targetFanCurve) == 0 ||
-                strcmp(p, "meta") == 0 || strcmp(p, "profiles") == 0 || strcmp(p, "startup") == 0 ||
-                (slot == 1 && (strcmp(p, "controls") == 0 || strcmp(p, "curve") == 0 || strcmp(p, "fan_curve") == 0))) {
+            if (_stricmp(p, targetControls) == 0 || _stricmp(p, targetCurve) == 0 || _stricmp(p, targetFanCurve) == 0 ||
+                _stricmp(p, "meta") == 0 || _stricmp(p, "profiles") == 0 || _stricmp(p, "startup") == 0 ||
+                (slot == 1 && (_stricmp(p, "controls") == 0 || _stricmp(p, "curve") == 0 || _stricmp(p, "fan_curve") == 0))) {
                 skip = true;
             }
             if (!skip) {
@@ -701,9 +733,9 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         ok = write_text_file_atomic(path, cfg, used, err, errSize);
     }
     if (ok) {
-        EnterCriticalSection(&g_configLock);
-        WritePrivateProfileStringA(NULL, NULL, NULL, NULL);
-        LeaveCriticalSection(&g_configLock);
+        // The documented cache-flush form returns zero on a successful flush;
+        // do not mistake that sentinel result for a write failure.
+        (void)WritePrivateProfileStringA(nullptr, nullptr, nullptr, path);
         invalidate_tray_profile_cache();
     }
     free(cfg);
@@ -714,6 +746,13 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
 static bool clear_profile_from_config(const char* path, int slot, char* err, size_t errSize) {
     if (!path || slot < 1 || slot > CONFIG_NUM_SLOTS) {
         set_message(err, errSize, "Invalid profile clear arguments");
+        return false;
+    }
+
+    ConfigStorageLockGuard storageLock;
+    if (!storageLock.locked()) {
+        set_message(err, errSize,
+            "Failed to acquire the cross-session config lock for profile clear");
         return false;
     }
 
@@ -753,9 +792,14 @@ static bool clear_profile_from_config(const char* path, int slot, char* err, siz
         set_message(err, errSize, "Out of memory allocating existing buffer");
         return false;
     }
-    EnterCriticalSection(&g_configLock);
-    GetPrivateProfileStringA(nullptr, nullptr, "", existingBuf, CFG_BUFFER_SIZE, path);
-    LeaveCriticalSection(&g_configLock);
+    DWORD existingLen = GetPrivateProfileStringA(
+        nullptr, nullptr, "", existingBuf, CFG_BUFFER_SIZE, path);
+    if (existingLen >= CFG_BUFFER_SIZE - 2) {
+        free(existingBuf);
+        set_message(err, errSize,
+            "Existing config has too many sections to clear safely");
+        return false;
+    }
 
     char* cfg = (char*)calloc(1, CFG_BUFFER_SIZE);
     if (!cfg) {
@@ -791,9 +835,9 @@ static bool clear_profile_from_config(const char* path, int slot, char* err, siz
     // Copy all sections except the cleared ones and managed sections
     const char* p = existingBuf;
     while (*p) {
-        bool skip = (strcmp(p, targetControls) == 0 || strcmp(p, targetCurve) == 0 || strcmp(p, targetFanCurve) == 0 ||
-                     strcmp(p, "meta") == 0 || strcmp(p, "profiles") == 0 || strcmp(p, "startup") == 0 ||
-                 (slot == 1 && (strcmp(p, "controls") == 0 || strcmp(p, "curve") == 0 || strcmp(p, "fan_curve") == 0)));
+        bool skip = (_stricmp(p, targetControls) == 0 || _stricmp(p, targetCurve) == 0 || _stricmp(p, targetFanCurve) == 0 ||
+                     _stricmp(p, "meta") == 0 || _stricmp(p, "profiles") == 0 || _stricmp(p, "startup") == 0 ||
+                 (slot == 1 && (_stricmp(p, "controls") == 0 || _stricmp(p, "curve") == 0 || _stricmp(p, "fan_curve") == 0)));
         if (!skip) {
             appendf("[%s]\r\n", p);
             char keys[16384] = {};
@@ -814,153 +858,18 @@ static bool clear_profile_from_config(const char* path, int slot, char* err, siz
 
     appendf("[startup]\r\napply_on_launch=%d\r\nstart_program_on_logon=%d\r\n\r\n", logonSlot > 0 ? 1 : 0, startOnLogon ? 1 : 0);
 
-    bool ok2 = write_text_file_atomic(path, cfg, used, err, errSize);
-    if (ok2 && truncated) {
-        ok2 = false;
+    bool ok2 = !truncated;
+    if (truncated) {
         set_message(err, errSize, "Config buffer truncated during clear");
     }
+    if (ok2) ok2 = write_text_file_atomic(path, cfg, used, err, errSize);
     if (ok2) {
-        EnterCriticalSection(&g_configLock);
-        WritePrivateProfileStringA(NULL, NULL, NULL, NULL);
-        LeaveCriticalSection(&g_configLock);
+        // See save_profile_to_config: zero is the successful flush sentinel.
+        (void)WritePrivateProfileStringA(nullptr, nullptr, nullptr, path);
         invalidate_tray_profile_cache();
     }
     free(cfg);
     free(existingBuf);
     return ok2;
-}
-
-// Machine-wide profile bank helpers.  These operate on the shared bank
-// (%ProgramData%\Green Curve\shared-profiles.ini — see resolve_machine_config_path),
-// letting an admin publish selected profile slots so restricted/standard users
-// can apply them via the service even though they cannot read the admin's own
-// %LOCALAPPDATA% config.ini.
-
-bool is_machine_profile_slot_saved(int slot) {
-    if (slot < 1 || slot > CONFIG_NUM_SLOTS) return false;
-    char machinePath[MAX_PATH] = {};
-    if (!resolve_machine_config_path(machinePath, sizeof(machinePath))) return false;
-    return is_profile_slot_saved(machinePath, slot);
-}
-
-bool copy_profile_slot_to_machine_config(const char* srcPath, int slot, char* err, size_t errSize) {
-    if (err && errSize) err[0] = 0;
-    if (!srcPath || slot < 1 || slot > CONFIG_NUM_SLOTS) {
-        set_message(err, errSize, "Invalid machine profile copy arguments");
-        return false;
-    }
-    if (!is_elevated()) {
-        set_message(err, errSize, "Publishing a profile to the machine-wide bank requires administrator rights");
-        return false;
-    }
-    // The %ProgramData%\Green Curve directory may not exist yet (fresh machine,
-    // or it was swept by the legacy cleanup); create + harden it before writing.
-    if (!ensure_machine_config_directory(err, errSize)) return false;
-    char machinePath[MAX_PATH] = {};
-    if (!resolve_machine_config_path(machinePath, sizeof(machinePath))) {
-        set_message(err, errSize, "Cannot resolve machine config path");
-        return false;
-    }
-    if (!is_profile_slot_saved(srcPath, slot)) {
-        set_message(err, errSize, "Slot %d is empty; there is no profile to publish", slot);
-        return false;
-    }
-    DesiredSettings desired = {};
-    char loadErr[256] = {};
-    if (!load_profile_from_config(srcPath, slot, &desired, loadErr, sizeof(loadErr))) {
-        set_message(err, errSize, "Failed loading source profile: %s", loadErr[0] ? loadErr : "unknown");
-        return false;
-    }
-    char saveErr[256] = {};
-    if (!save_profile_to_config(machinePath, slot, &desired, saveErr, sizeof(saveErr))) {
-        set_message(err, errSize, "Failed saving profile to machine config: %s", saveErr[0] ? saveErr : "unknown");
-        return false;
-    }
-
-    WCHAR machinePathW[MAX_PATH] = {};
-    if (utf8_to_wide(machinePath, machinePathW, ARRAY_COUNT(machinePathW))) {
-        if (!harden_machine_config_file_required(machinePathW, machinePath, err, errSize)) return false;
-    } else {
-        set_message(err, errSize, "Machine config path conversion failed");
-        return false;
-    }
-    debug_log("machine profile bank: published slot %d from %s to %s\n", slot, srcPath, machinePath);
-    return true;
-}
-
-bool clear_machine_profile_slot(int slot, char* err, size_t errSize) {
-    if (err && errSize) err[0] = 0;
-    if (slot < 1 || slot > CONFIG_NUM_SLOTS) {
-        set_message(err, errSize, "Invalid machine profile slot %d", slot);
-        return false;
-    }
-    if (!is_elevated()) {
-        set_message(err, errSize, "Clearing a machine-wide profile slot requires administrator rights");
-        return false;
-    }
-    if (!ensure_machine_config_directory(err, errSize)) return false;
-    char machinePath[MAX_PATH] = {};
-    if (!resolve_machine_config_path(machinePath, sizeof(machinePath))) {
-        set_message(err, errSize, "Cannot resolve machine config path");
-        return false;
-    }
-    char clearErr[256] = {};
-    if (!clear_profile_from_config(machinePath, slot, clearErr, sizeof(clearErr))) {
-        set_message(err, errSize, "Failed clearing machine profile slot: %s", clearErr[0] ? clearErr : "unknown");
-        return false;
-    }
-    WCHAR machinePathW[MAX_PATH] = {};
-    if (!utf8_to_wide(machinePath, machinePathW, ARRAY_COUNT(machinePathW))) {
-        set_message(err, errSize, "Machine config path conversion failed");
-        return false;
-    }
-    if (!harden_machine_config_file_required(machinePathW, machinePath, err, errSize)) return false;
-    debug_log("machine profile bank: cleared slot %d from %s\n", slot, machinePath);
-    return true;
-}
-
-bool share_profile_slot_for_all_users(const char* srcPath, int slot, char* err, size_t errSize) {
-    if (err && errSize) err[0] = 0;
-    if (!srcPath || slot < 1 || slot > CONFIG_NUM_SLOTS) {
-        set_message(err, errSize, "Invalid share arguments");
-        return false;
-    }
-    if (!is_elevated()) {
-        set_message(err, errSize, "Sharing a profile with all users requires administrator rights");
-        return false;
-    }
-    // 1) Publish the FULL profile data into the shared bank, so the service has
-    //    real settings to apply for users who have no config.ini of their own.
-    //    (Setting only the default logon slot without data was the old footgun:
-    //    the service resolved the slot but found no [profileN] section.)
-    if (!copy_profile_slot_to_machine_config(srcPath, slot, err, errSize)) return false;
-    // 2) Record it as the all-users default logon profile so users without a
-    //    per-user logon profile receive it automatically on login.
-    if (!set_machine_logon_slot(slot, err, errSize)) return false;
-    debug_log("share: slot %d published to the shared bank and set as the all-users default logon profile\n", slot);
-    return true;
-}
-
-bool unshare_profile_slot_for_all_users(int slot, char* err, size_t errSize) {
-    if (err && errSize) err[0] = 0;
-    if (slot < 1 || slot > CONFIG_NUM_SLOTS) {
-        set_message(err, errSize, "Invalid unshare slot %d", slot);
-        return false;
-    }
-    if (!is_elevated()) {
-        set_message(err, errSize, "Unsharing a profile requires administrator rights");
-        return false;
-    }
-    // Clear the all-users default first, but only when it points at THIS slot,
-    // so unsharing slot 2 does not silently disable a default that pointed at a
-    // different shared slot.
-    int machineSlot = 0;
-    if (get_machine_logon_slot(&machineSlot) && machineSlot == slot) {
-        if (!clear_machine_logon_slot(err, errSize)) return false;
-    }
-    // Remove the published profile data from the shared bank.
-    if (!clear_machine_profile_slot(slot, err, errSize)) return false;
-    debug_log("unshare: slot %d removed from the shared bank (default cleared if it pointed here)\n", slot);
-    return true;
 }
 

@@ -5,7 +5,7 @@
 #define GREEN_CURVE_APP_SHARED_H
 
 #ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0600
+#define _WIN32_WINNT 0x0A00
 #endif
 #ifndef _WIN32_IE
 #define _WIN32_IE 0x0600
@@ -44,6 +44,7 @@
 // VfBackendSpec, DesiredSettings + IPC validator, ServiceRequest/Response,
 // NvmlApi).  Shared verbatim with the Linux backend.
 #include "gpu_core.h"
+#include "service_lifecycle_policy.h"
 // OS-abstraction shim (dynamic loading, sleep, atomics, threads, bounded
 // strings, subprocess capture) used by the shared backend.
 #include "platform.h"
@@ -89,6 +90,7 @@ extern CRITICAL_SECTION g_configLock;
 extern CRITICAL_SECTION g_appLock;
 
 int dp(int px);
+void enable_best_process_dpi_awareness();
 void init_dpi();
 
 // VF_NUM_POINTS + NVAPI entry-point IDs moved to gpu_core.h
@@ -103,7 +105,7 @@ void init_dpi();
 #define TRAY_ICON_OC_FAN_ID 114
 #define APP_NAME            "Green Curve"
 #ifndef APP_VERSION
-#define APP_VERSION         "0.18.1"
+#define APP_VERSION         "dev"
 #endif
 #ifndef APP_BUILD_NUMBER
 #define APP_BUILD_NUMBER    0
@@ -123,6 +125,7 @@ void init_dpi();
 #define APP_WM_TRAYICON     (WM_APP + 2)
 #define APP_WM_SERVICE_STATUS (WM_APP + 3)
 #define APP_WM_DEFERRED_RELAUNCH (WM_APP + 4)
+#define APP_WM_ENSURE_LAYOUT_FOCUS (WM_APP + 5)
 #define APPLY_BTN_ID        2000
 #define REFRESH_BTN_ID      2001
 #define RESET_BTN_ID        2003
@@ -272,6 +275,7 @@ struct AppData {
     HBRUSH hWindowClassBrush;
     HANDLE hStartupSyncThread;
     bool startupSyncInFlight;
+    volatile LONG startupSyncGeneration;
     bool applyInFlight;
     HDC hMemDC;
     HBITMAP hMemBmp;
@@ -290,6 +294,7 @@ struct AppData {
     bool selectedGpuExplicit;
     bool selectedGpuIdentityValid;
     bool selectedGpuOrdinalFallback;
+    bool configuredGpuSelectionUnresolved;
     GpuAdapterInfo adapters[MAX_GPU_ADAPTERS];
     unsigned int adapterCount;
     GpuAdapterInfo selectedGpu;
@@ -411,6 +416,13 @@ struct AppData {
 
     bool launchedFromLogon;
     bool startHiddenToTray;
+    // A scheduled logon launch is only a tray/UI handoff.  The LocalSystem
+    // service exclusively owns automatic profile application; the GUI keeps
+    // this state only while waiting to display its first initialized service
+    // snapshot, rather than treating an early SCM/pipe gap as a failed launch.
+    bool logonServiceReadinessPending;
+    unsigned long long logonServiceReadinessDeadlineTickMs;
+    unsigned int logonServiceReadinessDeferredAttempts;
     bool isServiceProcess;
     bool usingBackgroundService;
     bool backgroundServiceInstalled;
@@ -419,6 +431,13 @@ struct AppData {
     bool backgroundServiceBroken;
     char backgroundServiceError[256];
     bool serviceSnapshotAuthoritative;
+    ServiceProfileSource serviceActiveProfileSource;
+    unsigned int serviceActiveProfileSlot;
+    ServiceLifecycleTrigger serviceLastLifecycleTrigger;
+    ServiceLifecycleResult serviceLastLifecycleResult;
+    ServiceAutoRestoreLockoutReason serviceAutoRestoreLockoutReason;
+    bool serviceActiveDesiredValid;
+    DesiredSettings serviceActiveDesired;
     bool serviceControlStateValid;
     ControlState serviceControlState;
     bool backgroundServiceToggleInFlight;
@@ -450,6 +469,7 @@ struct CliOptions {
     bool saveConfig;
     bool applyConfig;
     bool logonStart;
+    bool trayStart;
     bool serviceInstall;
     bool serviceRemove;
     bool startupTaskEnable;
@@ -472,8 +492,8 @@ struct CliOptions {
     DesiredSettings desired;
 };
 
-// Service protocol (magic/version/commands), ServiceSnapshot,
-// ServiceRequest/Response, NVML typedefs + NvmlApi moved to gpu_core.h
+// Service protocol (magic/version/commands), ServiceSnapshot, and
+// ServiceRequest/Response live in service_protocol.h (included by gpu_core.h).
 extern AppData g_app;
 extern NvmlApi g_nvml_api;
 extern HMODULE g_nvml;
@@ -487,51 +507,6 @@ extern bool g_bestGuessWarningShownThisSession;
 // visual resync the Refresh button does (the poll otherwise skips it so it never
 // wipes in-progress edits).
 extern bool g_guiForceFullRefresh;
-
-// In-process GPU recovery flags — set/read atomically across threads.
-// g_serviceGpuRecovering: 1 while recovery thread is active (close stale
-//   handles, re-init NVML/NvAPI, reapply settings).  Pipe server serves
-//   cached data.  nvml_ensure_ready returns false.
-// g_nvapiRecoveryInProgress: 1 while NvAPI handles are being closed and
-//   reloaded during recovery.  All NvAPI call sites check this and
-//   return early.
-// g_serviceInitInProgress: 1 while the recovery thread is performing the
-//   in-process NVML/NvAPI re-init (Phase C).  nvml_ensure_ready() and
-//   nvapi_qi() check this flag and bypass their normal "crash recovery
-//   in progress, return not-ready" early-return so the re-init can run.
-//   Critically, the broader crash-recovery safety guard
-//   (g_nvmlCrashCount / g_nvmlCrashTickMs) stays SET throughout the
-//   recovery, so hardware_initialize() correctly skips
-//   refresh_global_state() (the dangerous NVML reads on a still-
-//   transitional driver).  Cleared in Phase E after the reapply succeeds.
-extern volatile LONG g_serviceGpuRecovering;
-extern volatile LONG g_nvapiRecoveryInProgress;
-extern volatile LONG g_serviceInitInProgress;
-
-// Recovery thread TID + handle.  Set by launch_recovery_thread() after
-// CreateThread succeeds; cleared by service_recovery_thread_proc() on
-// normal return.  Used by:
-//   - green_curve_vectored_handler (main_diagnostics.cpp) to detect
-//     when the VEH is killing the recovery thread mid-apply and clear
-//     the three stuck recovery flags above.
-//   - launch_recovery_thread (main_service_runtime.cpp) to defensively
-//     detect a dead previous recovery thread (e.g. one that was killed
-//     by a non-nvml/nvapi crash that the VEH did not handle) and clear
-//     the stuck flags before launching a new one.
-// The handle is NOT CloseHandle'd by launch_recovery_thread; it is
-// closed lazily by either the VEH-side cleanup (RC5a) or the
-// launch-side cleanup (RC5b) on the next launch.  This is the same
-// pattern as g_fanRuntimeThreadId (main.cpp:15).
-extern volatile DWORD g_serviceRecoveryThreadId;
-extern volatile HANDLE g_serviceRecoveryThreadHandle;
-
-// Timestamp of the most recent launch_recovery_thread() call (any caller).
-// Used by the wedge watchdog, main-loop monitor, and fan-runtime pulse
-// to bound how often a new recovery can be spawned — without this, a
-// wedged recovery produces a tight ~3 s loop of redundant recoveries
-// that all wedge in the same place.  See
-// SERVICE_RECOVERY_RELAUNCH_INTERVAL_MS in source/main.cpp.
-extern volatile ULONGLONG g_serviceLastRecoveryAttemptMs;
 
 typedef int (*NvApiFunc)(void*, void*);
 
@@ -565,14 +540,38 @@ bool gpu_family_uses_best_guess_backend(GpuFamily family);
 void set_message(char* dst, size_t dstSize, const char* fmt, ...);
 bool parse_fan_value(const char* text, bool* isAuto, int* pct);
 bool enter_config_storage_lock(HANDLE* acquiredMutex);
+bool enter_config_storage_lock_interruptible(HANDLE cancelEvent,
+    HANDLE* acquiredMutex);
 void leave_config_storage_lock(HANDLE acquiredMutex);
 bool config_section_has_keys(const char* path, const char* section);
 int get_config_int(const char* path, const char* section, const char* key, int defaultVal);
 bool set_config_int(const char* path, const char* section, const char* key, int value);
+bool config_section_header_matches_ascii(const char* line, const char* section);
 bool get_config_string(const char* path, const char* section, const char* key,
                        const char* defaultVal, char* out, size_t outSize);
 bool set_config_string(const char* path, const char* section, const char* key, const char* value);
+bool load_configured_gpu_selection(const char* path,
+    ConfiguredGpuSelection* selectionOut, char* err, size_t errSize);
+bool load_configured_gpu_selection_from_section(const char* path,
+    const char* section, ConfiguredGpuSelection* selectionOut,
+    char* err, size_t errSize);
+bool format_configured_gpu_selection_section(const char* section,
+    const ConfiguredGpuSelection* selection, char* out, size_t outSize,
+    char* err, size_t errSize);
 void invalidate_tray_profile_cache();
+
+// Locked read/build/commit/readback transaction used for the mutually-exclusive
+// per-account logon profile keys.  Production supplies an atomic whole-file
+// section committer; tests can inject a deterministic failing committer and
+// verify that neither key is partially changed.
+typedef bool (*ConfigProfilesSectionCommitFn)(const char* path,
+    const char* profilesSectionText, void* context, char* err, size_t errSize);
+bool update_logon_profile_selection_transaction(const char* path,
+    int perUserSlot, int sharedSlot, ConfigProfilesSectionCommitFn commit,
+    void* context, char* err, size_t errSize);
+int logon_profile_selection_item_data(int perUserSlot, int sharedSlot);
+int applied_user_slot_from_service_profile(ServiceProfileSource source,
+    unsigned int slot);
 
 // Machine-wide default logon profile (admin-configured, applies to all users).
 bool resolve_machine_config_path(char* out, size_t outSize);
@@ -582,6 +581,8 @@ bool clear_machine_logon_slot(char* err, size_t errSize);
 bool is_machine_profile_slot_saved(int slot);
 bool copy_profile_slot_to_machine_config(const char* srcPath, int slot, char* err, size_t errSize);
 bool clear_machine_profile_slot(int slot, char* err, size_t errSize);
+bool load_machine_profile_gpu_selection(int slot,
+    ConfiguredGpuSelection* selectionOut, char* err, size_t errSize);
 
 // One coherent "share with all users" operation: publish slot data into the
 // shared bank AND set it as the all-users default logon profile. unshare
@@ -606,7 +607,8 @@ enum LogonProfileSource {
     LOGON_PROFILE_SOURCE_NONE = 0,       // nothing to apply
     LOGON_PROFILE_SOURCE_SHARED_BANK,    // user-chosen logon_shared_slot (authoritative bank copy)
     LOGON_PROFILE_SOURCE_PER_USER,       // per-user logon_slot content
-    LOGON_PROFILE_SOURCE_MACHINE_DEFAULT // machine-wide default logon profile (authoritative bank copy)
+    LOGON_PROFILE_SOURCE_MACHINE_DEFAULT, // machine-wide default logon profile (authoritative bank copy)
+    LOGON_PROFILE_SOURCE_PENDING          // explicit choice exists but its slot is not coherently readable
 };
 
 // Pure policy decision for logon auto-apply under restrict_non_admin_to_shared.
@@ -614,6 +616,7 @@ enum LogonProfileSource {
 //   isAdmin         : the target user is a machine administrator.
 //   logonSharedSlot : per-user "apply admin shared bank slot N at my logon" (0 = unset).
 //   bankSlotSaved   : logonSharedSlot names a currently-published bank slot.
+//   logonUserSlot   : per-user logon_slot selection (0 = unset).
 //   hasPerUserSlot  : a saved per-user logon_slot profile is available.
 //   hasMachineDefault: a published machine-wide default logon profile is available.
 // A user's explicit shared-bank choice always wins (it is authoritative and
@@ -621,32 +624,20 @@ enum LogonProfileSource {
 // machine-wide shared default — never their own per-user custom OC — which both
 // fixes auto-apply for restricted users and closes the service-router bypass.
 LogonProfileSource resolve_logon_profile_source(bool policyActive, bool isAdmin,
-    int logonSharedSlot, bool bankSlotSaved, bool hasPerUserSlot, bool hasMachineDefault);
+    int logonSharedSlot, bool bankSlotSaved, int logonUserSlot,
+    bool hasPerUserSlot, bool hasMachineDefault);
 
-// Pure gating decision for the no-snapshot startup coordinator's "apply the
-// already-active session's resolved logon profile once at boot" safety net.
-// This closes the gap where the service comes up AFTER the interactive session
-// is already active (Windows Fast Startup, autologon, fast SSD) and therefore
-// never receives a live WTS_SESSION_LOGON to drive the apply — leaving the GPU
-// at driver defaults until the user opens the GUI.  Kept free of I/O so the
-// boot-vs-manual / at-most-once-per-boot / restart-loop / active-session gating
-// is exhaustively unit-testable; the caller does the actual resolve+apply via
-// the existing session-apply path (identical behavior to a real logon).
-//   isManualStart            : the service was started by the GUI/CLI (install /
-//                              repair / restart), which passes --manual; such a
-//                              start MUST stay non-mutating (the client applies).
-//   bootReconcileAlreadyDone : this boot's reconcile already ran (per-boot marker
-//                              hit) — an SCM crash-restart within the same boot
-//                              must not re-drive the apply.
-//   inRestartLoop            : the persisted restart-loop breaker has tripped.
-//   hasActiveInteractiveSession : a user is already logged in at service start.
-//   alreadyAppliedThisSession : the live logon router already applied for this
-//                              exact {session, SID} identity (won the race).
-// Returns true only when a boot auto-start finds an already-active session that
-// nothing else has applied for yet — otherwise false.
-bool should_reconcile_active_session_at_boot(bool isManualStart,
-    bool bootReconcileAlreadyDone, bool inRestartLoop,
-    bool hasActiveInteractiveSession, bool alreadyAppliedThisSession);
+// Automatic writes are deliberately narrower than explicit GUI/CLI applies.
+// A configured logon profile is an opt-in. Driver/TDR recovery additionally
+// needs a previously successful setting that survived this proving period;
+// ordinary standby resume is allowed immediately for the active intended
+// settings, but both paths honor a persistent safety lockout (unstable apply,
+// TDR spam, or failed auto-reapply) until a later explicit successful apply.
+static const unsigned long long AUTO_RESTORE_STABILITY_WINDOW_MS = 600000ULL;
+bool should_auto_apply_logon_profile(bool configuredLogonProfile, bool autoRestoreLockedOut);
+bool should_auto_restore_after_standby_resume(bool hasActiveDesiredSettings, bool autoRestoreLockedOut);
+bool should_auto_restore_after_driver_event(bool hasSuccessfulApplyStamp,
+    unsigned long long successfulApplyAgeMs, bool autoRestoreLockedOut);
 
 // True if the SCM-registered service binary directory is located under a user
 // profile, which means other users may be unable to launch the GUI binary.

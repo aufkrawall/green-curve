@@ -264,14 +264,14 @@ void probe_nvapi(FILE* out, LinuxNvapiProbe* result) {
     }
     auto qi = sym<nvapi_QueryInterface_t>(lib, "nvapi_QueryInterface");
     if (!qi) {
-        fprintf(out, "NvAPI: libnvidia-api.so.1 loaded but nvapi_QueryInterface missing\n");
+        fprintf(out, "NvAPI library loaded, but its query entry point is missing\n");
         return;
     }
     result->nvapiLoaded = true;
 
     auto init = (nvapi_init_t)qi(NVAPI_INIT_ID);
     if (!init || !nvapi_ok(init())) {
-        fprintf(out, "NvAPI: QueryInterface OK but Initialize failed\n");
+        fprintf(out, "NvAPI query resolved; initialization failed\n");
         return;
     }
     result->nvapiInitOk = true;

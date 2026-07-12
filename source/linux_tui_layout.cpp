@@ -131,6 +131,16 @@ void build_tui_layout(const TuiViewModel& vm, TuiLayout* out) {
     push_button(out, &line, ACTION_RESET, 0, 0, "Reset");
     emit(out, &line);
 
+    line = "GPU target: ";
+    push_button(out, &line, ACTION_GPU_SELECT_DELTA, 0, -1, "<");
+    append_text(&line, " ");
+    append_text(&line, vm.selectedGpu ? vm.selectedGpu : "unselected");
+    append_text(&line, " ");
+    push_button(out, &line, ACTION_GPU_SELECT_DELTA, 0, 1, ">");
+    snprintf(buffer, sizeof(buffer), "  (%u detected)", vm.gpuCount);
+    append_text(&line, buffer);
+    emit(out, &line);
+
     emit_text(out, "");
     emit_text(out, "General controls");
 

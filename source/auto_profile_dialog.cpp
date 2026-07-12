@@ -11,6 +11,7 @@
 #include "app_shared.h"
 #include "auto_profile.h"
 #include "hotkeys.h"
+#include "ui_checkbox_state.h"
 
 // Dialog-local control ids (its own WndProc, so no clash with main-window ids).
 #define APD_ENABLE_CHECK_ID    4000
@@ -35,7 +36,10 @@ struct AutoProfileDialogState {
     HWND slotCombo[AUTO_PROFILE_MAX_RULES];
     HWND hotkeyEdit[CONFIG_NUM_SLOTS + 1];   // 1-based by slot
     HWND saveButton, cancelButton;
-    HBRUSH hEditBrush, hStaticBrush, hBtnBrush;
+    HBRUSH hEditBrush, hStaticBrush, hBtnBrush, hListBrush;
+    UiCheckboxState enableState;
+    UiCheckboxState suppressState;
+    UiCheckboxState focusState[AUTO_PROFILE_MAX_RULES];
 };
 static AutoProfileDialogState g_apDialog;
 
@@ -65,12 +69,51 @@ static void apd_combo_add(HWND combo, const char* text, int data) {
     SendMessageA(combo, CB_SETITEMDATA, (WPARAM)index, (LPARAM)data);
 }
 
+static UiCheckboxState* apd_checkbox_state_from_hwnd(HWND check) {
+    if (!check) return nullptr;
+    if (check == g_apDialog.enableCheck) return &g_apDialog.enableState;
+    if (check == g_apDialog.suppressCheck) return &g_apDialog.suppressState;
+    for (int i = 0; i < AUTO_PROFILE_MAX_RULES; ++i) {
+        if (check == g_apDialog.focusCheck[i]) {
+            return &g_apDialog.focusState[i];
+        }
+    }
+    return nullptr;
+}
+
 static bool apd_check_get(HWND check) {
-    return check && SendMessageA(check, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    return ui_checkbox_state_get(apd_checkbox_state_from_hwnd(check));
 }
 
 static void apd_check_set(HWND check, bool on) {
-    if (check) SendMessageA(check, BM_SETCHECK, (WPARAM)(on ? BST_CHECKED : BST_UNCHECKED), 0);
+    ui_checkbox_state_set(apd_checkbox_state_from_hwnd(check), on);
+}
+
+static HWND apd_checkbox_from_id(int id) {
+    if (id == APD_ENABLE_CHECK_ID) return g_apDialog.enableCheck;
+    if (id == APD_SUPPRESS_CHECK) return g_apDialog.suppressCheck;
+    if (id >= APD_RULE_FOCUS_BASE &&
+        id < APD_RULE_FOCUS_BASE + AUTO_PROFILE_MAX_RULES) {
+        return g_apDialog.focusCheck[id - APD_RULE_FOCUS_BASE];
+    }
+    return nullptr;
+}
+
+static bool apd_checkbox_is_labeled(int id) {
+    return id == APD_ENABLE_CHECK_ID || id == APD_SUPPRESS_CHECK;
+}
+
+static bool apd_toggle_checkbox(int id) {
+    HWND check = apd_checkbox_from_id(id);
+    if (!check) return false;
+    UiCheckboxState* state = apd_checkbox_state_from_hwnd(check);
+    bool previous = ui_checkbox_state_get(state);
+    bool next = ui_checkbox_state_toggle(state);
+    BOOL redrawn = RedrawWindow(check, nullptr, nullptr,
+        RDW_INVALIDATE | RDW_UPDATENOW);
+    debug_log("auto-profile dialog checkbox: id=%d previous=%d checked=%d redrawn=%d\n",
+        id, previous ? 1 : 0, next ? 1 : 0, redrawn ? 1 : 0);
+    return true;
 }
 
 static void apd_set_edit_int(HWND edit, int value) {
@@ -187,14 +230,9 @@ static bool apd_commit(HWND hwnd) {
         MessageBoxA(hwnd, err, "Green Curve", MB_OK | MB_ICONERROR);
         return false;
     }
-    if (!auto_profile_config_save(g_app.configPath, &cfg)) {
+    if (!auto_profile_config_save(g_app.configPath, &cfg, hotkeys)) {
         MessageBoxA(hwnd, "Failed to save auto-profile configuration.", "Green Curve", MB_OK | MB_ICONERROR);
         return false;
-    }
-    for (int s = 1; s <= CONFIG_NUM_SLOTS; s++) {
-        char key[16] = {};
-        StringCchPrintfA(key, ARRAY_COUNT(key), "slot%d", s);
-        set_config_string(g_app.configPath, "hotkeys", key, hotkeys[s]);   // "" clears
     }
     auto_profile_reload_config(g_app.hMainWnd);
     return true;
@@ -257,7 +295,7 @@ static void apd_create_controls(HWND hwnd) {
     allow_dark_mode_for_window(hwnd);
 
     g_apDialog.enableCheck = CreateWindowExA(0, "BUTTON", "Enable auto-profiles",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
         dp(16), dp(16), dp(200), dp(20), hwnd, (HMENU)(INT_PTR)APD_ENABLE_CHECK_ID, g_app.hInst, nullptr);
 
     apd_label(hwnd, "Default profile:", 240, 17, 100, 18);
@@ -284,7 +322,7 @@ static void apd_create_controls(HWND hwnd) {
     style_input_control(g_apDialog.cooldownEdit);
 
     g_apDialog.suppressCheck = CreateWindowExA(0, "BUTTON", "Pause while this window is open",
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
         dp(410), dp(46), dp(280), dp(20), hwnd, (HMENU)(INT_PTR)APD_SUPPRESS_CHECK, g_app.hInst, nullptr);
 
     apd_label(hwnd, "Rules (evaluated top-down; the first match wins):", 16, 80, 460, 18);
@@ -312,7 +350,7 @@ static void apd_create_controls(HWND hwnd) {
         SendMessageA(g_apDialog.patternEdit[i], EM_SETLIMITTEXT, AUTO_PROFILE_PATTERN_MAX - 1, 0);
 
         g_apDialog.focusCheck[i] = CreateWindowExA(0, "BUTTON", "",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
             dp(566), dp(y), dp(30), dp(22), hwnd, (HMENU)(INT_PTR)(APD_RULE_FOCUS_BASE + i), g_app.hInst, nullptr);
 
         g_apDialog.slotCombo[i] = CreateWindowExA(0, "COMBOBOX", "",
@@ -370,9 +408,13 @@ static LRESULT CALLBACK AutoProfileDialogProc(HWND hwnd, UINT msg, WPARAM wParam
 
         case WM_DRAWITEM: {
             const DRAWITEMSTRUCT* dis = (const DRAWITEMSTRUCT*)lParam;
-            // Only the Save/Cancel buttons are owner-drawn here (checkboxes are
-            // native), so theme any ODT_BUTTON that reaches us.
             if (dis && dis->CtlType == ODT_BUTTON) {
+                HWND check = apd_checkbox_from_id((int)dis->CtlID);
+                if (check) {
+                    draw_themed_checkbox_control(dis, apd_check_get(check),
+                        apd_checkbox_is_labeled((int)dis->CtlID));
+                    return TRUE;
+                }
                 draw_themed_button(dis);
                 return TRUE;
             }
@@ -382,6 +424,7 @@ static LRESULT CALLBACK AutoProfileDialogProc(HWND hwnd, UINT msg, WPARAM wParam
         case WM_COMMAND: {
             int id = LOWORD(wParam);
             int note = HIWORD(wParam);
+            if (note == BN_CLICKED && apd_toggle_checkbox(id)) return 0;
             if (id == APD_SAVE_ID && note == BN_CLICKED) {
                 if (apd_commit(hwnd)) DestroyWindow(hwnd);
                 return 0;
@@ -416,6 +459,15 @@ static LRESULT CALLBACK AutoProfileDialogProc(HWND hwnd, UINT msg, WPARAM wParam
             return (LRESULT)g_apDialog.hBtnBrush;
         }
 
+        case WM_CTLCOLORLISTBOX: {
+            SetTextColor((HDC)wParam, COL_TEXT);
+            SetBkColor((HDC)wParam, COL_INPUT);
+            if (!g_apDialog.hListBrush) {
+                g_apDialog.hListBrush = CreateSolidBrush(COL_INPUT);
+            }
+            return (LRESULT)g_apDialog.hListBrush;
+        }
+
         case WM_CTLCOLORSTATIC: {
             SetTextColor((HDC)wParam, COL_LABEL);
             SetBkColor((HDC)wParam, COL_BG);
@@ -431,6 +483,7 @@ static LRESULT CALLBACK AutoProfileDialogProc(HWND hwnd, UINT msg, WPARAM wParam
             if (g_apDialog.hEditBrush) { DeleteObject(g_apDialog.hEditBrush); g_apDialog.hEditBrush = nullptr; }
             if (g_apDialog.hStaticBrush) { DeleteObject(g_apDialog.hStaticBrush); g_apDialog.hStaticBrush = nullptr; }
             if (g_apDialog.hBtnBrush) { DeleteObject(g_apDialog.hBtnBrush); g_apDialog.hBtnBrush = nullptr; }
+            if (g_apDialog.hListBrush) { DeleteObject(g_apDialog.hListBrush); g_apDialog.hListBrush = nullptr; }
             if (g_app.hMainWnd) {
                 EnableWindow(g_app.hMainWnd, TRUE);
                 SetForegroundWindow(g_app.hMainWnd);
@@ -454,7 +507,7 @@ void auto_profile_open_config_dialog(HWND parent) {
     wc.hInstance = g_app.hInst;
     wc.lpszClassName = "GreenCurveAutoProfileDialog";
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.hbrBackground = g_app.hWindowClassBrush;
     wc.hIcon = (HICON)SendMessageA(parent ? parent : g_app.hMainWnd, WM_GETICON, ICON_SMALL, 0);
     WNDCLASSEXA existing = {};
     if (!GetClassInfoExA(g_app.hInst, wc.lpszClassName, &existing)) {
@@ -469,13 +522,24 @@ void auto_profile_open_config_dialog(HWND parent) {
     HWND owner = parent ? parent : g_app.hMainWnd;
     RECT ownerRect = {};
     if (owner) GetWindowRect(owner, &ownerRect);
-    int x = ownerRect.left + dp(40);
-    int y = ownerRect.top + dp(30);
+    RECT work = owner
+        ? main_window_work_area(owner)
+        : main_window_work_area_for_rect(nullptr);
+    MainLayoutRect anchor = main_layout_rect_from_win32(owner ? ownerRect : work);
+    RECT centered = main_layout_rect_to_win32(
+        main_layout_center_rect(anchor, size.cx, size.cy));
+    RECT target = clamp_window_rect_to_work_area(centered, work);
+    debug_log("auto-profile dialog placement: owner=%ld,%ld-%ld,%ld work=%ld,%ld-%ld,%ld target=%ld,%ld %ldx%ld\n",
+        ownerRect.left, ownerRect.top, ownerRect.right, ownerRect.bottom,
+        work.left, work.top, work.right, work.bottom,
+        target.left, target.top, target.right - target.left,
+        target.bottom - target.top);
 
     g_apDialog.hwnd = CreateWindowExA(WS_EX_DLGMODALFRAME, wc.lpszClassName,
         "Configure Auto-Profiles",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-        x, y, size.cx, size.cy, owner, nullptr, g_app.hInst, nullptr);
+        target.left, target.top, target.right - target.left,
+        target.bottom - target.top, owner, nullptr, g_app.hInst, nullptr);
     if (!g_apDialog.hwnd) return;
 
     if (owner) EnableWindow(owner, FALSE);

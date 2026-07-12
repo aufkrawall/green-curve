@@ -549,6 +549,61 @@ bool save_profile_to_config_path(const char* path, int slot, const DesiredSettin
     return save_ini_document(path, doc, err, errSize);
 }
 
+bool parse_linux_gpu_bdf(const char* text, GpuAdapterInfo* target) {
+    if (!text || !target) return false;
+    unsigned int domain = 0, bus = 0, device = 0, function = 0;
+    char trailing = 0;
+    if (sscanf(text, "%x:%x:%x.%x%c", &domain, &bus, &device, &function, &trailing) != 4 ||
+        domain > 0xFFFFu || bus > 0xFFu || device > 0x1Fu || function > 7u ||
+        (domain == 0 && bus == 0 && device == 0 && function == 0))
+        return false;
+    memset(target, 0, sizeof(*target));
+    target->valid = true;
+    target->pciDomain = domain;
+    target->pciBus = bus;
+    target->pciDevice = device;
+    target->pciFunction = function;
+    return true;
+}
+
+void format_linux_gpu_bdf(const GpuAdapterInfo* target, char* text, size_t textSize) {
+    if (!text || textSize == 0) return;
+    if (!target || !target->valid) { snprintf(text, textSize, "%s", "unselected"); return; }
+    snprintf(text, textSize, "%04x:%02x:%02x.%u", target->pciDomain,
+             target->pciBus, target->pciDevice, target->pciFunction);
+}
+
+bool load_linux_gpu_selection(const char* path, GpuAdapterInfo* target) {
+    if (!path || !target) return false;
+    IniDocument doc;
+    char err[128] = {};
+    if (!load_ini_document(path, &doc, err, sizeof(err))) return false;
+    std::string bdf = get_section_value(&doc, "gpu", "selected_bdf");
+    if (!parse_linux_gpu_bdf(bdf.c_str(), target)) return false;
+    target->pciInfoValid = get_section_int(&doc, "gpu", "pci_info_valid", 0) != 0;
+    target->deviceId = (unsigned int)get_section_int(&doc, "gpu", "device_id", 0);
+    target->subSystemId = (unsigned int)get_section_int(&doc, "gpu", "subsystem_id", 0);
+    return true;
+}
+
+bool save_linux_gpu_selection(const char* path, const GpuAdapterInfo* target,
+                              char* err, size_t errSize) {
+    if (!path || !target || !target->valid) {
+        set_message(err, errSize, "valid GPU selection required");
+        return false;
+    }
+    IniDocument doc;
+    char loadErr[128] = {};
+    if (!load_ini_document(path, &doc, loadErr, sizeof(loadErr))) doc.sections.clear();
+    char bdf[32] = {};
+    format_linux_gpu_bdf(target, bdf, sizeof(bdf));
+    set_section_value(&doc, "gpu", "selected_bdf", bdf);
+    set_section_int(&doc, "gpu", "pci_info_valid", target->pciInfoValid ? 1 : 0);
+    set_section_int(&doc, "gpu", "device_id", (int)target->deviceId);
+    set_section_int(&doc, "gpu", "subsystem_id", (int)target->subSystemId);
+    return save_ini_document(path, doc, err, errSize);
+}
+
 static std::string json_escape(const char* text) {
     std::string out;
     if (!text) return out;

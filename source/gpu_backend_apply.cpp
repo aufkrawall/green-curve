@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
-static bool reset_oc_before_gui_apply(char* result, size_t resultSize) {
+static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
+    char* result, size_t resultSize) {
     int resetOffsets[VF_NUM_POINTS] = {};
     bool resetMask[VF_NUM_POINTS] = {};
     char failures[512] = {};
@@ -25,10 +26,15 @@ static bool reset_oc_before_gui_apply(char* result, size_t resultSize) {
     // points snap to factory base frequencies (~3300+ MHz on modern GPUs) while
     // the GPU offset from the previous profile is still active — that spike
     // (e.g. 3300 base + 475 old offset = 3775 MHz effective) causes TDR/crashes.
-    if (g_app.gpuClockOffsetkHz != 0 && !nvapi_set_gpu_offset(0)) {
+    if (desired && desired->hasGpuOffset &&
+        g_app.gpuClockOffsetkHz != 0 && !nvapi_set_gpu_offset(0)) {
         append_failure("GPU offset did not reset");
     }
-    if (g_app.powerLimitPct != 100 && !nvapi_set_power_limit(100)) {
+    // A reset-to-clean-VF-baseline is not ownership of unrelated controls.
+    // Only reset power when the incoming request itself owns power and will
+    // immediately write its requested target in the apply phase.
+    if (desired && desired->hasPowerLimit &&
+        g_app.powerLimitPct != 100 && !nvapi_set_power_limit(100)) {
         append_failure("Power target did not reset");
     }
     // Do NOT reset memory offset here — abruptly dropping from +3000 to 0
@@ -61,7 +67,10 @@ static bool reset_oc_before_gui_apply(char* result, size_t resultSize) {
     return true;
 }
 
-static bool apply_desired_settings_service(const DesiredSettings* desired, bool interactive, char* result, size_t resultSize) {
+static bool apply_desired_settings_service(const DesiredSettings* desired,
+    bool interactive, char* result, size_t resultSize,
+    bool* hardwareWriteAttemptedOut) {
+    if (hardwareWriteAttemptedOut) *hardwareWriteAttemptedOut = false;
     if (!desired) {
         set_message(result, resultSize, "No desired settings");
         return false;
@@ -70,8 +79,20 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
         debug_log("apply_desired_settings: fan prevalidation failed: %s\n", result && result[0] ? result : "unknown");
         return false;
     }
+#ifdef GREEN_CURVE_SERVICE_BINARY
+    bool proofInvalidatedForWrite = false;
+#endif
     if (desired->resetOcBeforeApply) {
-        if (!reset_oc_before_gui_apply(result, resultSize)) return false;
+#ifdef GREEN_CURVE_SERVICE_BINARY
+        if (!service_invalidate_oc_apply_proof_before_write()) {
+            set_message(result, resultSize,
+                "Could not invalidate the previous stability proof; no hardware write was attempted");
+            return false;
+        }
+        proofInvalidatedForWrite = true;
+#endif
+        if (hardwareWriteAttemptedOut) *hardwareWriteAttemptedOut = true;
+        if (!reset_oc_before_gui_apply(desired, result, resultSize)) return false;
         // TDR settle after reset-to-stock: let VRM/memory controllers stabilize
         // before the new aggressive clocks (commit 4b225e1). The 1s default is
         // deliberately conservative; make it tunable so rapid profile-switching can
@@ -292,6 +313,18 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
             }
         }
     }
+    // All validation that can reject the request without touching hardware is
+    // complete.  From this point, any failing result is conservatively treated
+    // as a real write attempt so automatic restoration is latched off.
+#ifdef GREEN_CURVE_SERVICE_BINARY
+    if (!proofInvalidatedForWrite &&
+        !service_invalidate_oc_apply_proof_before_write()) {
+        set_message(result, resultSize,
+            "Could not invalidate the previous stability proof; no hardware write was attempted");
+        return false;
+    }
+#endif
+    if (hardwareWriteAttemptedOut) *hardwareWriteAttemptedOut = true;
     bool gpuApplied = false;
     // Apply GPU offset first via dedicated path (handles uniform offset reliably).
     // When combined with lock/curve edits, applying the GPU offset separately avoids
@@ -1126,14 +1159,24 @@ static bool apply_desired_settings_service(const DesiredSettings* desired, bool 
             }
         }
     }
-    // If not requesting HARD lock, reset any stale NVML locked clocks.
-    // Idempotent — catches HARD→FLATTEN, HARD→NONE, stale locks.
-    if (lockMode != LOCK_MODE_HARD && g_nvml_api.resetGpuLockedClocks) {
+    // Reset locked clocks only when this request intentionally owns/replaces
+    // the VF/lock domain. A sparse fan/memory/power request must preserve an
+    // external hard lock and an ad-hoc fan update must preserve Green Curve's
+    // existing lock intent. Named HARD->NONE/FLATTEN transitions carry
+    // resetOcBeforeApply, while direct curve/GPU/lock requests own the domain.
+    bool replacesLockDomain =
+        service_request_replaces_lock_domain(desired);
+    if (lockMode != LOCK_MODE_HARD && replacesLockDomain &&
+        g_nvml_api.resetGpuLockedClocks) {
         char resetDetail[128] = {};
         if (nvml_reset_gpu_locked_clocks(resetDetail, sizeof(resetDetail))) {
+            successCount++;
             debug_log("apply: reset NVML locked clocks (not requesting HARD mode)\n");
         } else {
-            debug_log("apply: resetGpuLockedClocks failed: %s\n", resetDetail);
+            failCount++;
+            partialApplyRisk = true;
+            append_failure("NVML locked clocks did not reset: %s",
+                resetDetail[0] ? resetDetail : "unknown error");
         }
     }
     if (hasLock) {

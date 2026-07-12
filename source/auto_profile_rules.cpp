@@ -159,6 +159,8 @@ void auto_profile_config_load(const char* path, AutoProfileConfig* cfg) {
     if (!cfg) return;
     auto_profile_config_set_defaults(cfg);
     if (!path) return;
+    HANDLE configMutex = nullptr;
+    if (!enter_config_storage_lock(&configMutex)) return;
 
     cfg->enabled = get_config_int(path, AUTO_PROFILE_SECTION, "enabled", 0) != 0;
     cfg->defaultSlot = get_config_int(path, AUTO_PROFILE_SECTION, "default_slot", CONFIG_DEFAULT_SLOT);
@@ -186,38 +188,94 @@ void auto_profile_config_load(const char* path, AutoProfileConfig* cfg) {
     }
 
     auto_profile_config_normalize(cfg);
+    leave_config_storage_lock(configMutex);
 }
 
-bool auto_profile_config_save(const char* path, const AutoProfileConfig* cfg) {
+bool auto_profile_config_save(const char* path, const AutoProfileConfig* cfg,
+    const char (*hotkeys)[64]) {
     if (!path || !cfg) return false;
     AutoProfileConfig norm = *cfg;
     auto_profile_config_normalize(&norm);
 
-    bool ok = true;
-    ok &= set_config_int(path, AUTO_PROFILE_SECTION, "enabled", norm.enabled ? 1 : 0);
-    ok &= set_config_int(path, AUTO_PROFILE_SECTION, "default_slot", norm.defaultSlot);
-    ok &= set_config_int(path, AUTO_PROFILE_SECTION, "switch_debounce_ms", norm.switchDebounceMs);
-    ok &= set_config_int(path, AUTO_PROFILE_SECTION, "min_switch_interval_ms", norm.minSwitchIntervalMs);
-    ok &= set_config_int(path, AUTO_PROFILE_SECTION, "suppress_when_window_open", norm.suppressWhenWindowOpen ? 1 : 0);
-    ok &= set_config_int(path, AUTO_PROFILE_SECTION, "rule_count", norm.ruleCount);
-
-    for (int i = 0; i < AUTO_PROFILE_MAX_RULES; i++) {
-        char section[32] = {};
-        ap_rule_section(section, ARRAY_COUNT(section), i + 1);
-        if (i < norm.ruleCount) {
-            const AutoProfileRule* r = &norm.rules[i];
-            ok &= set_config_string(path, section, "match_type", auto_profile_match_type_name(r->matchType));
-            ok &= set_config_string(path, section, "pattern", r->pattern);
-            ok &= set_config_int(path, section, "require_focus", r->requireFocus ? 1 : 0);
-            ok &= set_config_int(path, section, "slot", r->slot);
-        } else {
-            // Clear stale rule sections so a shrunk rule list leaves no residue.
-            set_config_string(path, section, "match_type", "");
-            set_config_string(path, section, "pattern", "");
-            set_config_string(path, section, "require_focus", "");
-            set_config_string(path, section, "slot", "");
+    const size_t sectionsCapacity = 65536;
+    char* sections = (char*)calloc(sectionsCapacity, 1);
+    if (!sections) return false;
+    size_t used = 0;
+    bool built = true;
+    auto append = [&](const char* fmt, ...) {
+        if (!built || used >= sectionsCapacity - 1) {
+            built = false;
+            return;
         }
+        va_list args;
+        va_start(args, fmt);
+        int count = _vsnprintf_s(sections + used, sectionsCapacity - used,
+            _TRUNCATE, fmt, args);
+        va_end(args);
+        if (count < 0) built = false;
+        else used += (size_t)count;
+    };
+    auto safeValue = [](const char* value) {
+        return value && !strchr(value, '\r') && !strchr(value, '\n');
+    };
+
+    append("[%s]\r\n", AUTO_PROFILE_SECTION);
+    append("enabled=%d\r\n", norm.enabled ? 1 : 0);
+    append("default_slot=%d\r\n", norm.defaultSlot);
+    append("switch_debounce_ms=%d\r\n", norm.switchDebounceMs);
+    append("min_switch_interval_ms=%d\r\n", norm.minSwitchIntervalMs);
+    append("suppress_when_window_open=%d\r\n",
+        norm.suppressWhenWindowOpen ? 1 : 0);
+    append("rule_count=%d\r\n\r\n", norm.ruleCount);
+
+    char ruleSectionNames[AUTO_PROFILE_MAX_RULES][32] = {};
+    const char* replaced[AUTO_PROFILE_MAX_RULES + 2] = {};
+    int replaceCount = 0;
+    replaced[replaceCount++] = AUTO_PROFILE_SECTION;
+    for (int i = 0; i < AUTO_PROFILE_MAX_RULES; ++i) {
+        ap_rule_section(ruleSectionNames[i], ARRAY_COUNT(ruleSectionNames[i]), i + 1);
+        replaced[replaceCount++] = ruleSectionNames[i];
+        if (i >= norm.ruleCount) continue;
+        const AutoProfileRule* rule = &norm.rules[i];
+        if (!safeValue(rule->pattern)) {
+            free(sections);
+            return false;
+        }
+        append("[%s]\r\nmatch_type=%s\r\npattern=%s\r\nrequire_focus=%d\r\nslot=%d\r\n\r\n",
+            ruleSectionNames[i], auto_profile_match_type_name(rule->matchType),
+            rule->pattern, rule->requireFocus ? 1 : 0, rule->slot);
     }
+    if (hotkeys) {
+        replaced[replaceCount++] = "hotkeys";
+        append("[hotkeys]\r\n");
+        for (int slot = 1; slot <= CONFIG_NUM_SLOTS; ++slot) {
+            if (!safeValue(hotkeys[slot])) {
+                free(sections);
+                return false;
+            }
+            if (hotkeys[slot][0]) append("slot%d=%s\r\n", slot, hotkeys[slot]);
+        }
+        append("\r\n");
+    }
+    if (!built) {
+        free(sections);
+        return false;
+    }
+
+    HANDLE configMutex = nullptr;
+    if (!enter_config_storage_lock(&configMutex)) {
+        free(sections);
+        return false;
+    }
+    char err[256] = {};
+    bool ok = write_config_sections_atomic(path, sections, replaced,
+        replaceCount, err, sizeof(err));
+    if (ok) {
+        (void)WritePrivateProfileStringA(nullptr, nullptr, nullptr, path);
+        invalidate_tray_profile_cache();
+    }
+    leave_config_storage_lock(configMutex);
+    free(sections);
     return ok;
 }
 #endif // _WIN32

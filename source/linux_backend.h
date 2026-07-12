@@ -18,6 +18,7 @@
 #define GREEN_CURVE_LINUX_BACKEND_H
 
 #include "gpu_core.h"
+#include "linux_transaction.h"
 #include "platform.h"
 
 struct LinuxGpuState {
@@ -39,6 +40,11 @@ struct LinuxGpuState {
     char gpuName[96];
     unsigned int nvapiIndex;
     unsigned int nvmlIndex;
+    unsigned int adapterCount;
+    unsigned int selectedAdapterIndex;
+    GpuAdapterInfo adapters[MAX_GPU_ADAPTERS];
+    GpuAdapterInfo selectedGpu;
+    bool writeIdentityResolved;
 
     // VF curve state
     VFCurvePoint curve[VF_NUM_POINTS];
@@ -60,11 +66,36 @@ struct LinuxGpuState {
     int powerLimitMinmW, powerLimitMaxmW, powerLimitDefaultmW, powerLimitCurrentmW;
 };
 
+struct LinuxHardwareSnapshot {
+    bool valid;
+    bool gpuOffsetValid;
+    bool memOffsetValid;
+    bool powerValid;
+    bool curveValid;
+    bool fanValid;
+    int gpuOffsetMHz;
+    int memOffsetMHz;
+    unsigned int powerLimitmW;
+    int curveOffsets[VF_NUM_POINTS];
+    bool curveMask[VF_NUM_POINTS];
+    unsigned int fanCount;
+    unsigned int fanPolicy[MAX_GPU_FANS];
+    unsigned int fanPercent[MAX_GPU_FANS];
+};
+
 // Load the driver libraries and initialise the selected GPU (ordinal `index`).
 // On success the curve, masks and ranges are read.  Returns false + message on
 // failure (no driver, no GPU, etc.).
-bool linux_backend_init(LinuxGpuState* g, unsigned int index, char* err, size_t errSize);
+bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
+                        char* err, size_t errSize);
 void linux_backend_shutdown(LinuxGpuState* g);
+
+bool linux_backend_select_target(LinuxGpuState* g, const GpuAdapterInfo* target,
+                                 char* err, size_t errSize);
+bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* snapshot,
+                                    char* err, size_t errSize);
+bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapshot* snapshot,
+                                    unsigned int phaseMask, char* err, size_t errSize);
 
 // Refresh the live curve + offsets + ranges from the driver.
 bool linux_backend_refresh(LinuxGpuState* g);
@@ -86,11 +117,13 @@ bool linux_backend_self_test(LinuxGpuState* g, FILE* out);
 // GPU clock offset, memory clock offset, power limit, VF curve, locked clocks,
 // fan.  Writes a human-readable summary to `result`.  Returns true if every
 // requested phase succeeded.
-bool linux_backend_apply(LinuxGpuState* g, const DesiredSettings* d,
-                         char* result, size_t resultSize);
+LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings* d,
+                                        char* result, size_t resultSize);
 
 // Reset OC/UV to driver defaults (curve offsets 0, clock offsets 0, power
 // default, locked clocks released, fan auto).
-bool linux_backend_reset(LinuxGpuState* g, char* result, size_t resultSize);
+LinuxMutationResult linux_backend_reset(LinuxGpuState* g, char* result, size_t resultSize);
+bool linux_backend_set_curve_fan_percent(LinuxGpuState* g, unsigned int percent);
+bool linux_backend_set_fan_auto(LinuxGpuState* g);
 
 #endif // GREEN_CURVE_LINUX_BACKEND_H
