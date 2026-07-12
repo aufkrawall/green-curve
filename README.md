@@ -2,9 +2,9 @@
 
 Green Curve is a small NVIDIA tuning tool with a full Windows implementation and a native Linux port (NvAPI + NVML, driven by a root systemd daemon). The app inspects and edits the live NVIDIA voltage/frequency curve on supported GeForce GPUs. Pascal, Turing, Ampere, Lovelace, and Blackwell are treated as tested known families; unrecognized future NVIDIA GPU families use a best-effort fallback backend behind a warning the user can disable.
 
-<img width="1769" height="1520" alt="gc0 18" src="https://github.com/user-attachments/assets/6d8df71c-e841-42c4-9611-ab4bd0984f9d" />
+Version: see the [`VERSION`](VERSION) file at the repository root.
 
-> ⚠️ **Platform support:** Only the **Windows x64** build is actively used and tested. The **Windows arm64**, **Linux x64**, and **Linux arm64** builds are **100% untested and experimental** — they compile and link cleanly, but have not been validated in real-world use. Use them at your own risk, and expect rough edges.
+> ⚠️ **Platform support:** **Windows x64** is the actively used platform. **Linux x64** has user hardware validation for its VF write path but remains experimental. **Windows arm64** and **Linux arm64** are compile- and binary-inspection-only targets; neither has completed a live GPU-control validation. Use experimental builds at your own risk.
 
 ## What it does
 
@@ -18,14 +18,15 @@ Green Curve is a small NVIDIA tuning tool with a full Windows implementation and
 - Writes a persistent Windows JSON probe report with `--probe --probe-output <path>` for unrecognized GPU families
 - Tray hover text shows the active mode and selected saved profile
 - Windows uses a dedicated elevated background service for OC, UV, power, and long-running fan control while the GUI runs unelevated
+- The Windows GUI adapts its graph and VF-point columns to the monitor work area and current per-monitor DPI; if minimum readable controls cannot fit, the complete interface scrolls instead of being clipped behind the taskbar
 - Per-user Windows config now defaults to `%LOCALAPPDATA%\Green Curve\config.ini`, with one-time import from the legacy beside-exe config when present
-- Logon profiles can still apply silently; long-running custom fan control no longer depends on keeping the tray client running
+- Configured logon profiles are applied by the background service; long-running custom fan control no longer depends on keeping the tray client running
 - Multi-user: an administrator can share a profile with **all users** (applied on logon for accounts without their own profile, and loadable on demand by any user), stored machine-wide in `%ProgramData%\Green Curve\shared-profiles.ini`
 - Native Linux build: NvAPI (`libnvidia-api.so.1`) + NVML VF-curve / clock / power / fan control, driven by a root systemd daemon over a Unix socket, with a dependency-free raw-terminal TUI client
 
 ## Technical notes
 
-- Single-file C++ Win32 application built with `zig c++`
+- Amalgamated/unity-built C++ Win32 application built with `zig c++`
 - Uses dynamically loaded NVIDIA driver interfaces available on the local machine
 - Uses public NVAPI entry points exposed by the installed driver
 - Uses NVML from the local NVIDIA driver install for supported management operations
@@ -41,7 +42,7 @@ Green Curve is a small NVIDIA tuning tool with a full Windows implementation and
 python build.py
 ```
 
-This builds the Windows and Linux x64/arm64 release matrix under `dist/` and packages one `.7z` archive per OS/architecture when 7-Zip is available.
+This builds the Windows and Linux x64/arm64 release matrix under `dist/` and packages one verified `.7z` archive per OS/architecture. Release packaging requires 7-Zip and rejects unexpected payload files.
 
 Additional non-shipping checks:
 
@@ -93,6 +94,7 @@ Windows elevated-service / GUI split.
 ```bash
 greencurve --probe                  # verify NvAPI + NVML, GPU, family, OC range
 greencurve --self-test              # read-only validation of the apply path
+greencurve --gpu 0000:01:00.0 --tui # select a stable PCI target on multi-GPU systems
 sudo greencurve --service-install   # install + start the systemd daemon
 greencurve --tui                    # edit and apply the VF curve / fan / power
 greencurve --apply-config           # apply the selected profile
@@ -100,9 +102,26 @@ greencurve --reset --apply-config   # reset OC/UV to driver defaults
 sudo greencurve --service-remove
 ```
 
+The daemon socket is restricted to `root` and the `greencurve` group
+(`0660 root:greencurve`). To use the TUI or CLI without `sudo`, add your account
+after installation, then start a new group session:
+
+```bash
+sudo usermod -aG greencurve "$USER"
+# sign out and back in, or run: newgrp greencurve
+```
+
 The Linux VF write path is validated on real NVIDIA hardware; the apply pipeline
 verifies each write by reading the curve back. Run `--probe` first to confirm
 the driver libraries and the GPU family are detected.
+
+Linux hardware writes are transactional. The daemon journals a checksummed,
+versioned record before mutation, publishes it as active only after verified
+success, and attempts rollback on any phase or persistence failure. Corrupt,
+legacy, prepared, uncertain, or mismatched-GPU state is never replayed at
+startup. On a multi-GPU system an exact PCI BDF selection is mandatory; stale,
+missing, duplicate, or cross-API-mismatched identities allow telemetry but block
+writes until the user selects a GPU explicitly.
 
 ## Safety warning
 
@@ -129,8 +148,51 @@ This project is provided under the MIT license, without warranty of any kind. Th
 - `greencurve.exe` is the unelevated GUI and tray client.
 - `greencurve-service.exe` is the dedicated elevated service binary. Service install registers the binary **from whichever directory you launched `greencurve.exe`** (the service installs adjacent to the GUI) and hardens that binary's permissions so a standard user cannot replace it.
 - The service is machine-wide, but per-user configs stay per-user. GPU state is machine-global, so the most recent apply wins.
-- Logon tasks stay per-user and run at least privilege; they forward profile applies to the service.
+- Logon tasks stay per-user and normally run immediately at least privilege.
+  They send a settings-free, authenticated logon handoff; the service resolves
+  the session's configured profile and remains the sole automatic writer.
+- Selecting a logon profile keeps that silent handoff task enabled even when
+  **Start program to tray on log in** is off; that checkbox controls only
+  whether the GUI remains resident in the tray. Tray startup uses a separate
+  per-user Windows Run entry, so the handoff task's three-minute safety limit
+  can never terminate the resident GUI. An effective administrator-published
+  all-users default also keeps the handoff task enabled after that account has
+  launched Green Curve.
 - When the service is not installed, stopped, or unresponsive, live OC, UV, power, and fan controls stay disabled in the GUI.
+
+### Automatic apply and restore behavior
+
+Green Curve intentionally does **not** promise that every service start restores
+settings. Automatic writes are limited to real lifecycle events, so a service
+repair, an emergency stop, or normal NVIDIA boost/temperature movement cannot
+silently keep changing the GPU.
+
+| Event | Expected behavior |
+|---|---|
+| Windows user logon | The service applies the account's configured **Apply profile after user log in** profile once. A WTS logon notification and the authenticated scheduled-task handoff are coalesced, so Fast Startup and autologon use the same event-only path. Merely connecting, unlocking, or switching to an already logged-in session is a readiness cue, not a new apply authorization. The tray-start checkbox controls only the GUI tray, not this permission. |
+| Standby resume | Green Curve restores the complete current in-memory intent once (curve, offsets, power, lock, and fan), unless automatic restoration was previously safety-locked. Standby itself does not require a 10-minute proving period. A proof that was already mature before standby remains mature after a successful restore; an immature or unavailable proof restarts from that restore. |
+| Confirmed driver recovery | Green Curve restores once only after the current proof has accumulated 10 minutes of **awake** stability in the current Windows boot. Sleep and hibernation do not advance this proof period, and a successful standby restore does not reset a proof that was already mature. |
+| TDR/restart spam, a failed real hardware write, or driver recovery during the 10-minute proving period | Automatic restoration is disabled persistently. A later automatic action cannot clear this lockout; use a successful explicit **Apply** from the GUI, CLI, hotkey, or tray to acknowledge the condition and re-arm it. |
+| Service install, repair, ordinary/manual start, or Task Manager termination | No automatic restore. In particular, killing `greencurve-service.exe` is treated as an emergency stop: even if the SCM starts it again, it will not replay settings solely because of that termination. |
+| Normal VF curve / boost / temperature drift | Diagnostic-only. Green Curve does not continually monitor and “correct” expected NVIDIA drift. |
+
+The current-boot check uses Windows' per-boot `BootIdentifier`, not a boot time
+derived from the adjustable wall clock. Time synchronization or another clock
+correction therefore cannot invalidate a mature 10-minute proof while Windows
+is still in the same boot.
+
+The service retries only unavailable prerequisites at logon (session identity,
+profile materialization, and driver readiness), not a failed GPU write. It also
+revalidates the Windows login identity and selected GPU immediately before the
+single write. A scheduled task delay, elevation, or repeat policy is neither
+required nor used to decide GPU writes. Compatible tasks created by older Green
+Curve versions (a valid delay, `HighestAvailable`, or the old unlimited
+execution setting with the correct user and command) keep working and are
+normalized best-effort. Disabled, wrong-user/stale-command, extra-trigger,
+battery/idle-gated, scheduler-repeating, too-short, or unsafe
+multiple-instance definitions are repaired and reported if repair fails.
+The saved profile choice is retained, but the warning means logon-event
+redundancy is degraded until the task is repaired.
 
 ## Multi-user setup (Windows)
 
@@ -172,11 +234,14 @@ For managed/multi-user PCs, an admin can require that **standard (non-admin) use
 ## Privacy & Data Handling
 
 - Green Curve does not transmit any data over the network. There is no telemetry, analytics, cloud sync, or remote logging.
-- Debug logs are written locally to `%LOCALAPPDATA%\Green Curve\debug.log` on Windows and `~/.local/share/greencurve/debug.log` on Linux. Log files are size-capped and rotated automatically.
+- Debug logs are written locally to `%LOCALAPPDATA%\Green Curve\greencurve_debug.txt` on Windows and `~/.local/share/greencurve/greencurve_debug.txt` on Linux. Log files are size-capped and rotated automatically.
 - Probe reports (`--probe --probe-output`) are written only to a local file you specify. They contain GPU identifiers, driver capabilities, and VF-curve samples, but no personal data.
 - The Windows background service runs as `LocalSystem` so it can access GPU management interfaces, but per-user configuration and profiles remain in the individual user's local app data.
 - Profiles an administrator explicitly shares with all users are stored machine-wide in `%ProgramData%\Green Curve\shared-profiles.ini` (admin-writable, all-users-readable); nothing from a user's private config is shared unless the admin publishes it.
-- No registry keys outside of the standard uninstall metadata are created.
+- Enabling **Start program to tray on log in** creates one per-user Windows
+  `Run` value for tray startup; disabling the option removes it. Apart from that
+  opt-in value and standard uninstall metadata, Green Curve creates no registry
+  keys.
 
 ## Release readiness notes
 
