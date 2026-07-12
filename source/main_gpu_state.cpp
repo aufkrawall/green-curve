@@ -628,8 +628,16 @@ static bool refresh_service_snapshot_and_active_desired(char* err, size_t errSiz
         // correctly reported hasLock=false.  The snapshot is the authoritative
         // source for the GUI display.  The active desired is only returned to
         // callers that need it (e.g. profile mismatch checks).
+        g_app.serviceActiveDesired = activeDesired;
+        g_app.serviceActiveDesiredValid =
+            g_app.serviceActiveProfileSource != SERVICE_PROFILE_SOURCE_NONE;
         if (activeDesiredOut) *activeDesiredOut = activeDesired;
+#ifndef GREEN_CURVE_SERVICE_BINARY
+        sync_applied_profile_from_service_metadata();
+#endif
     } else if (desiredErr[0]) {
+        g_app.serviceActiveDesiredValid = false;
+        memset(&g_app.serviceActiveDesired, 0, sizeof(g_app.serviceActiveDesired));
         debug_log("refresh_service_snapshot_and_active_desired: active desired unavailable: %s\n", desiredErr);
     }
 

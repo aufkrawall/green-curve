@@ -175,6 +175,23 @@ static bool crash_artifact_data_dir(char* out, size_t outSize) {
     return SUCCEEDED(StringCchCopyA(out, outSize, "."));
 }
 
+static MINIDUMP_TYPE green_curve_actionable_minidump_type() {
+    // Keep dumps bounded (no full process memory), but include the metadata
+    // WinDbg/cdb need for useful postmortems: data and referenced stack memory,
+    // complete thread records, unloaded modules, handles, process/thread data,
+    // and the full virtual-memory map. Matching private PDBs are emitted by the
+    // build into dist/symbols and are deliberately excluded from packages.
+    return (MINIDUMP_TYPE)(
+        MiniDumpWithDataSegs |
+        MiniDumpWithHandleData |
+        MiniDumpScanMemory |
+        MiniDumpWithUnloadedModules |
+        MiniDumpWithIndirectlyReferencedMemory |
+        MiniDumpWithProcessThreadData |
+        MiniDumpWithThreadInfo |
+        MiniDumpWithFullMemoryInfo);
+}
+
 static void write_crash_breadcrumb_direct(const char* text) {
     if (!text || !text[0]) return;
     OutputDebugStringA(text);
@@ -264,8 +281,10 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
             char dumpPath[MAX_PATH] = {};
             char dataDir[MAX_PATH] = {};
             if (!crash_artifact_data_dir(dataDir, sizeof(dataDir))) return EXCEPTION_EXECUTE_HANDLER;
-            StringCchPrintfA(dumpPath, ARRAY_COUNT(dumpPath), "%s\\greencurve_crash_%04u%02u%02u_%02u%02u%02u.dmp",
-                dataDir, now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
+            StringCchPrintfA(dumpPath, ARRAY_COUNT(dumpPath),
+                "%s\\greencurve_crash_%04u%02u%02u_%02u%02u%02u_%03u_pid%lu.dmp",
+                dataDir, now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute,
+                now.wSecond, now.wMilliseconds, (unsigned long)GetCurrentProcessId());
             char pathErr[256] = {};
             ensure_parent_directory_for_file(dumpPath, pathErr, sizeof(pathErr));
 
@@ -280,7 +299,7 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
                     GetCurrentProcess(),
                     GetCurrentProcessId(),
                     hDump,
-                    MiniDumpWithDataSegs,
+                    green_curve_actionable_minidump_type(),
                     &mei,
                     nullptr,
                     nullptr);
@@ -327,19 +346,21 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
     write_crash_breadcrumb_direct(text);
 
     // Write a minidump alongside the text breadcrumb for deeper crash analysis.
-    // Use MiniDumpWithDataSegs to capture stack, thread info, and data segments
-    // without the full overhead of a complete memory dump.
+    // Capture actionable thread/module/handle/memory-map context without the
+    // privacy and size cost of a complete process-memory dump.
     if (info && info->ExceptionRecord && info->ContextRecord) {
         char dumpPath[MAX_PATH] = {};
         char dataDir[MAX_PATH] = {};
         if (!crash_artifact_data_dir(dataDir, sizeof(dataDir))) return EXCEPTION_EXECUTE_HANDLER;
-        StringCchPrintfA(dumpPath, ARRAY_COUNT(dumpPath), "%s\\greencurve_crash_%04u%02u%02u_%02u%02u%02u.dmp",
-            dataDir, now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
+        StringCchPrintfA(dumpPath, ARRAY_COUNT(dumpPath),
+            "%s\\greencurve_crash_%04u%02u%02u_%02u%02u%02u_%03u_pid%lu.dmp",
+            dataDir, now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute,
+            now.wSecond, now.wMilliseconds, (unsigned long)GetCurrentProcessId());
         char pathErr[256] = {};
         ensure_parent_directory_for_file(dumpPath, pathErr, sizeof(pathErr));
 
         HANDLE hDump = CreateFileA(dumpPath, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
         if (hDump != INVALID_HANDLE_VALUE) {
             MINIDUMP_EXCEPTION_INFORMATION mei = {};
             mei.ThreadId = GetCurrentThreadId();
@@ -349,7 +370,7 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
                 GetCurrentProcess(),
                 GetCurrentProcessId(),
                 hDump,
-                MiniDumpWithDataSegs,
+                green_curve_actionable_minidump_type(),
                 &mei,
                 nullptr,
                 nullptr);
@@ -383,10 +404,11 @@ static void write_veh_minidump(EXCEPTION_POINTERS* info, const WCHAR* modPath) {
     char dataDir[MAX_PATH] = {};
     if (!resolve_service_machine_data_dir(dataDir, sizeof(dataDir))) return;
     StringCchPrintfA(dumpPath, ARRAY_COUNT(dumpPath),
-        "%s\\greencurve_veh_%04u%02u%02u_%02u%02u%02u.dmp",
+        "%s\\greencurve_veh_%04u%02u%02u_%02u%02u%02u_%03u_pid%lu.dmp",
         dataDir,
         now.wYear, now.wMonth, now.wDay,
-        now.wHour, now.wMinute, now.wSecond);
+        now.wHour, now.wMinute, now.wSecond, now.wMilliseconds,
+        (unsigned long)GetCurrentProcessId());
     ensure_parent_directory_for_file(dumpPath, nullptr, 0);
 
     HANDLE hDump = CreateFileA(dumpPath, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
@@ -401,7 +423,7 @@ static void write_veh_minidump(EXCEPTION_POINTERS* info, const WCHAR* modPath) {
         GetCurrentProcess(),
         GetCurrentProcessId(),
         hDump,
-        (MINIDUMP_TYPE)(MiniDumpWithDataSegs | MiniDumpWithIndirectlyReferencedMemory),
+        green_curve_actionable_minidump_type(),
         &mei,
         nullptr,
         nullptr);
@@ -520,37 +542,9 @@ static LONG CALLBACK green_curve_vectored_handler(EXCEPTION_POINTERS* info) {
         debug_log_veh(vehMsg);
     }
 
-    // The VEH only marks the crash and kills the faulting thread; the controlled
-    // process restart is orchestrated by the main service loop (which observes
-    // crashCount>0).  We still need the crashing TID for the reapply-thread
-    // cleanup below.
-    DWORD crashingTid = GetCurrentThreadId();
-
-    // RC7: If the VEH kills the reapply thread, clean up its state so the
-    // main-loop monitor can launch a new reapply thread.  The reapply thread
-    // is not critical — losing it means the retry is delayed by one cycle.
-    // RC8a: Also clear g_serviceInitInProgress, which the reapply thread set
-    // at main_service_runtime.cpp:241 to bypass the nvml_crash_recovery_active()
-    // guard.  If we do not clear it here, nvml_ensure_ready() (at
-    // main_runtime_nvml.cpp:771) will skip the crash-recovery guard until the
-    // next recovery's Phase E clears it — leaving a window where the fan pulse
-    // or pipe server can call into NVML without protection.
-    if (crashingTid == (DWORD)g_serviceReapplyThreadId) {
-        InterlockedExchange((volatile LONG*)&g_serviceReapplyThreadId, 0);
-        InterlockedExchange(&g_serviceInitInProgress, 0);
-        HANDLE killedHandle = (HANDLE)InterlockedExchangePointer(
-            (PVOID volatile*)&g_serviceReapplyThread, nullptr);
-        if (killedHandle) {
-            CloseHandle(killedHandle);
-        }
-        // Leave g_serviceReapplyInProgress set so the monitor knows a retry
-        // is needed.  If the pending flag was already cleared by thread entry,
-        // the monitor will see inProgress and set pending again.
-        char vehMsg[160] = {};
-        StringCchPrintfA(vehMsg, sizeof(vehMsg),
-            "VEH: reapply thread (tid=%lu) killed, handle cleaned up for retry\n", crashingTid);
-        debug_log_veh(vehMsg);
-    }
+    // The VEH only marks the crash and kills the faulting thread. The main
+    // service loop observes crashCount>0 and prepares the nonce-bound process
+    // restart. There is no per-event reapply thread to clean up or retry.
 
     // Terminate the crashing thread via ExitThread(0).  Rsp is adjusted to
     // simulate the return address a CALL would have pushed, maintaining

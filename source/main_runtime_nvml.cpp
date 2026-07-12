@@ -109,6 +109,11 @@ static bool parse_cli_options(LPWSTR cmdLine, CliOptions* opts) {
         } else if (wcscmp(arg, L"--logon-start") == 0) {
             opts->recognized = true;
             opts->logonStart = true;
+        } else if (wcscmp(arg, L"--tray-start") == 0) {
+            // Internal per-user HKCU Run entry.  This is intentionally distinct
+            // from the bounded Task Scheduler --logon-start handoff.
+            opts->recognized = true;
+            opts->trayStart = true;
         } else if (wcscmp(arg, L"--config") == 0) {
             opts->recognized = true;
             if (i + 1 >= argc || !copy_wide_to_utf8(argv[++i], opts->configPath, MAX_PATH)) {
@@ -777,6 +782,10 @@ static bool nvml_pci_matches_selected_gpu(const nvmlPciInfo_t* pci) {
     if (!nvml_pci_device_matches_nvapi(g_app.selectedGpu.deviceId, pci->pciDeviceId)) return false;
     if (g_app.selectedGpu.subSystemId && pci->pciSubSystemId &&
         g_app.selectedGpu.subSystemId != pci->pciSubSystemId) return false;
+    if (gpu_adapter_has_valid_pci_location(&g_app.selectedGpu) &&
+        (g_app.selectedGpu.pciDomain != pci->domain ||
+         g_app.selectedGpu.pciBus != pci->bus ||
+         g_app.selectedGpu.pciDevice != pci->device)) return false;
     return true;
 }
 
@@ -784,13 +793,11 @@ static bool nvml_select_device_for_selected_gpu(char* detail, size_t detailSize)
     unsigned int count = 0;
     bool haveCount = g_nvml_api.getCount && g_nvml_api.getCount(&count) == NVML_SUCCESS && count > 0;
     if (!haveCount) count = g_app.adapterCount > 0 ? g_app.adapterCount : 1;
-    // Skip PCI-identity matching while a recovery reapply is in progress
-    // (g_serviceInitInProgress): nvmlDeviceGetPciInfo can access-violate on a
-    // still-transitional kernel driver even though nvmlInit_v2 succeeded.  The
-    // selected ordinal index is preserved from config, so ordinal fallback is
-    // reliable for the single-GPU case.
-    if (g_nvml_api.getPciInfo && g_app.selectedGpu.valid && g_app.selectedGpu.pciInfoValid &&
-        InterlockedExchangeAdd(&g_serviceInitInProgress, 0) == 0) {
+    // Strong PCI identity remains mandatory whenever it is available. A stale
+    // process never executes this as a recovery re-init; only the freshly
+    // validated controlled-recovery service may probe and later write.
+    if (g_nvml_api.getPciInfo && g_app.selectedGpu.valid &&
+        g_app.selectedGpu.pciInfoValid) {
         int matched = -1;
         for (unsigned int i = 0; i < count && i < 64; i++) {
             nvmlDevice_t candidate = nullptr;
@@ -808,6 +815,21 @@ static bool nvml_select_device_for_selected_gpu(char* detail, size_t detailSize)
             g_app.selectedGpu.pciDomain = pci.domain;
             g_app.selectedGpu.pciBus = pci.bus;
             g_app.selectedGpu.pciDevice = pci.device;
+            unsigned int domain = 0, bus = 0, device = 0, function = 0;
+            if (sscanf(pci.busId, "%x:%x:%x.%x", &domain, &bus,
+                    &device, &function) == 4 && function <= 7u) {
+                g_app.selectedGpu.pciFunction = function;
+            }
+            if (g_app.selectedGpuIndex < g_app.adapterCount) {
+                g_app.adapters[g_app.selectedGpuIndex].pciDomain =
+                    g_app.selectedGpu.pciDomain;
+                g_app.adapters[g_app.selectedGpuIndex].pciBus =
+                    g_app.selectedGpu.pciBus;
+                g_app.adapters[g_app.selectedGpuIndex].pciDevice =
+                    g_app.selectedGpu.pciDevice;
+                g_app.adapters[g_app.selectedGpuIndex].pciFunction =
+                    g_app.selectedGpu.pciFunction;
+            }
         }
         if (matched >= 0) {
             g_app.selectedGpuOrdinalFallback = false;
@@ -848,37 +870,13 @@ static bool nvml_ensure_ready() {
     // arrival to re-initialize.
     if (g_app.deviceRemoved) return false;
 
-    // In-process GPU recovery is active — NVML handles are being closed and
-    // re-initialized by the recovery thread.  Return not-ready so callers
-    // serve cached data instead of touching stale handles.
-    // EXCEPT: when g_serviceInitInProgress is set, the recovery thread itself
-    // is the one calling us (Phase C re-init) and needs the early-return
-    // bypassed so it can obtain fresh module handles.  The safety guard
-    // (g_nvmlCrashCount / g_nvmlCrashTickMs) stays set in that case, but
-    // g_serviceInitInProgress tells us we're the recovery's own re-init, not
-    // a stray pipe-server / fan-runtime call.
-    LONG initInProgress = InterlockedExchangeAdd(&g_serviceInitInProgress, 0);
-    LONG recovering = InterlockedExchangeAdd(&g_serviceGpuRecovering, 0);
-    if (recovering != 0 && initInProgress == 0) {
-        return false;
-    }
-
-    // RC7 ROOT CAUSE FIX: check for already-initialized handles BEFORE the
-    // crash recovery guard.  Recovery Phase C sets g_app.nvmlReady=true and
-    // g_app.nvmlDevice=valid, but the guard below runs first and DESTROYS
-    // those fresh handles (sets them to null/return false) during the safety
-    // window.  This breaks EVERY call during the window including GUI Apply
-    // and the reapply thread — both see "NVML not ready" because the handles
-    // were just cleared by the guard.
+    // A healthy initialized handle remains usable. The VEH invalidates these
+    // fields before publishing its crash cue.
     if (g_app.nvmlReady && g_app.nvmlDevice) return true;
 
-    // After a VEH-handled nvml.dll crash (GPU driver restart), the recovery
-    // thread will re-initialize NVML with fresh handles.  Until then, report
-    // not-ready so callers fail gracefully / serve cached data.
-    // g_serviceInitInProgress bypasses this guard for the recovery's own
-    // Phase C re-init — see the comment above.
-    if (initInProgress == 0 &&
-        (g_nvmlVhCrashed || nvml_crash_recovery_active())) {
+    // After a VEH-handled crash, the old process only prepares a controlled
+    // restart. Never load or probe NVML again in that process.
+    if (g_nvmlVhCrashed || nvml_crash_recovery_active()) {
         g_app.nvmlReady = false;
         g_app.nvmlDevice = nullptr;
         return false;

@@ -6,8 +6,14 @@
 
 #include "app_shared.h"
 #include "fan_curve.h"
+#include "lock_checkbox_policy.h"
 #include "win32_raii.h"
+#include "startup_task_definition_policy.h"
+#include "gpu_selection_policy.h"
+#include "profile_persistence_policy.h"
+#include "ui_theme_metrics.h"
 #include <dbghelp.h>
+#include <dxgi1_6.h>
 
 // Global VEH thread-ID tracking — the VEH only kills the fan runtime thread via
 // ExitThread; other threads (pipe server, etc.) also get killed but their
@@ -43,15 +49,6 @@ static volatile LONG g_nvmlCrashCount = 0;
 // excessive user wait.
 #define NVML_CRASH_RECOVERY_WINDOW_MS 15000ULL
 
-// Minimum interval between two consecutive launch_recovery_thread() calls.
-// Without this, the wedge watchdog / main-loop monitor can spawn a new
-// recovery every ~3 s when the previous recovery wedged, producing a
-// visible "recovery loop" in the log.  10 s gives the driver time to
-// actually settle before we try again, and is well below the
-// NVML_CRASH_RECOVERY_WINDOW_MS so it doesn't suppress the legitimate
-// single recovery on a fresh reconnect.
-#define SERVICE_RECOVERY_RELAUNCH_INTERVAL_MS 10000ULL
-
 // True while we are inside the NVML crash recovery window: the VEH has flagged
 // a stale-handle crash (g_nvmlCrashCount > 0) and the GPU kernel driver has not
 // yet had time to settle.  Callers use this to skip NVML reads that would
@@ -63,10 +60,8 @@ static bool nvml_crash_recovery_active() {
     return (GetTickCount64() - tick) < NVML_CRASH_RECOVERY_WINDOW_MS;
 }
 
-// Legacy restart request path retained for service-control fallbacks.  Driver
-// reconnect / upgrade recovery is in-process: stale GPU handles are closed,
-// libraries are reloaded, and the active desired profile is re-applied without
-// restarting the service.
+// Nonzero only after the nonce-bound helper has validated and the service has
+// committed to a controlled driver-recovery restart.
 static volatile LONG g_serviceRestartRequested = 0;
 static void request_service_restart(const char* reason);
 
@@ -110,6 +105,21 @@ static char g_pendingOperationSource[64] = {};
 static char g_lastOperationIntent[4096] = {};
 static char g_lastOperationPlan[4096] = {};
 
+#ifndef GREEN_CURVE_SERVICE_BINARY
+struct LockInputGesture {
+    bool armed;
+    bool consumed;
+    bool suppressNextMouseRelease;
+    int vi;
+    int suppressedVi;
+    UINT sourceMessage;
+    DWORD messageTime;
+    LockUiStateStamp pressState;
+};
+
+static LockInputGesture g_lockInputGesture = {};
+#endif
+
 #ifdef GREEN_CURVE_SERVICE_BINARY
 #define OP_SNAPSHOT_SIZE 4096
 #else
@@ -135,20 +145,45 @@ static HANDLE g_serviceRuntimeLock = nullptr;
 static HANDLE g_servicePipeWakeEvent = nullptr;
 static DWORD g_serviceRuntimeLockOwnerThreadId = 0;
 static unsigned int g_serviceRuntimeLockDepth = 0;
+static DWORD g_serviceMainThreadId = 0;
+// A hardware-call thread can be terminated by the stale-driver VEH while it
+// owns the runtime mutex, or remain wedged inside nvml.dll indefinitely.  Once
+// either condition is corroborated, no thread may acquire the poisoned mutex
+// for another hardware operation; the main thread uses only the durable
+// snapshot/nonce helper path and exits the process.
+static volatile LONG g_serviceRuntimeLockPoisoned = 0;
+static volatile LONG g_serviceRuntimePoisonCorroborated = 0;
 static SERVICE_STATUS_HANDLE g_serviceStatusHandle = nullptr;
 static SERVICE_STATUS g_serviceStatus = {};
 static DesiredSettings g_serviceActiveDesired = {};
 static GpuAdapterInfo g_serviceActiveDesiredGpu = {};
 static bool g_serviceHasActiveDesired = false;
+static ServiceProfileSource g_serviceActiveProfileSource = SERVICE_PROFILE_SOURCE_NONE;
+static unsigned int g_serviceActiveProfileSlot = 0;
+static volatile LONG g_serviceRestartPreparing = 0;
+// Explicit Apply/Reset increments this before superseding lifecycle work. A
+// recovery request that was queued before the explicit action must not commit
+// after waiting for the runtime lock.
+static volatile LONG g_serviceExplicitSupersessionEpoch = 0;
+static HANDLE g_serviceRestartHelperProcess = nullptr;
+// Set only by the SCM control handler.  An external stop/shutdown must win
+// over a concurrently prepared internal recovery restart.
+static volatile LONG g_serviceExternalStopRequested = 0;
+// The pipe listener is created while the service is START_PENDING. Reject
+// clients until controlled-recovery intent (if any) has been armed and every
+// lifecycle prerequisite required before RUNNING is ready.
+static volatile LONG g_serviceClientRequestsReady = 0;
+static bool g_serviceControlledRecoveryValidated = false;
+static DesiredSettings g_serviceControlledRecoveryDesired = {};
+static GpuAdapterInfo g_serviceControlledRecoveryTargetGpu = {};
+static ServiceProfileSource g_serviceControlledRecoveryProfileSource =
+    SERVICE_PROFILE_SOURCE_NONE;
+static unsigned int g_serviceControlledRecoveryProfileSlot = 0;
+static ServiceLifecycleTrigger g_serviceLastLifecycleTrigger = SERVICE_LIFECYCLE_TRIGGER_NONE;
+static ServiceLifecycleResult g_serviceLastLifecycleResult = SERVICE_LIFECYCLE_RESULT_NONE;
 static ControlState g_serviceControlState = {};
 static bool g_serviceControlStateValid = false;
 static bool g_serviceUserPathsResolved = false;
-// Set when the service was started by the GUI/CLI (install / repair / restart),
-// which passes --manual on StartService.  A boot auto-start by the SCM passes no
-// args and leaves this false, which lets the no-snapshot startup coordinator
-// reconcile the already-active session's logon profile once (Fast Startup /
-// autologon safety net).  A manual start stays non-mutating.
-static bool g_serviceManualStart = false;
 static CRITICAL_SECTION g_debugLogLock = {};
 static HANDLE g_debugLogFile = INVALID_HANDLE_VALUE;
 static DWORD g_serviceUserPathsSessionId = (DWORD)-1;
@@ -166,27 +201,13 @@ static char g_serviceTelemetryLastPollSource[64] = {};
 // Heartbeat written by the fan runtime thread at the START of every pulse
 // attempt (just before any NVML call) and again on completion.  The main-loop
 // watchdog uses it to detect a fan thread WEDGED inside nvml.dll on a dead
-// driver (a hang the VEH cannot catch) and launch in-process recovery.
+// driver (a hang the VEH cannot catch) and request controlled process recovery.
 static volatile ULONGLONG g_serviceFanPulseHeartbeatMs = 0;
 static volatile LONG g_serviceFanPulseInFlight = 0;
 
-// Timestamp of the most recent successful in-process GPU recovery completion,
-// or 0 if no recovery has completed.  Read by the snapshot handler to report
-// recovery status to the GUI.
-static ULONGLONG g_serviceLastRecoveryTickMs = 0;
-static volatile LONG g_serviceRecoveryReapplyPending = 0;
-static DWORD g_serviceRecoveryReapplyAttempts = 0;
-static ULONGLONG g_serviceRecoveryReapplyNextTickMs = 0;
-
-// Reapply thread — runs the recovery reapply on a dedicated thread instead of
-// the main service loop.  If VEH kills this thread (NVML/NvAPI crash on a
-// still-transitional driver), the main loop survives and can retry.
-static HANDLE g_serviceReapplyThread = nullptr;
-static volatile DWORD g_serviceReapplyThreadId = 0;
-
-// Set when a reapply is in-flight after recovery and not yet confirmed
-// applied to hardware.  Cleared on successful reapply.  The GUI uses this
-// flag to show "reapplying..." instead of a misleading "settings active".
+// Set while the one lifecycle worker owns a validated controlled-recovery
+// continuation.  Cleared after its sole write succeeds/fails or the
+// continuation is cancelled.  No separate retry/reapply thread exists.
 static volatile LONG g_serviceReapplyInProgress = 0;
 
 static const int SERVICE_DEBUG_DEFAULT_ENABLED = 1; // Service logs are opt-out via [debug] enabled=0 or GREEN_CURVE_DEBUG=0.
@@ -212,18 +233,25 @@ static const ULONGLONG SERVICE_FAN_PULSE_WEDGE_TIMEOUT_MS = 12000;
 static const DWORD SERVICE_RUNTIME_NOISY_LOG_INTERVAL_MS = 5000;
 static const ULONGLONG SERVICE_TELEMETRY_IDLE_REFRESH_INTERVAL_MS = 5000;
 static const ULONGLONG SERVICE_TELEMETRY_RUNTIME_STALE_GRACE_MS = 1000;
-static const DWORD SERVICE_RECOVERY_REAPPLY_RETRY_INTERVAL_MS = 5000;
-static const DWORD SERVICE_RECOVERY_REAPPLY_MAX_ATTEMPTS = 12;
 // (Removed in 0.18: SERVICE_VF_DRIFT_* tuning for the continuous VF-drift monitor.)
 static const DWORD ELEVATED_HELPER_TIMEOUT_MS = 60000;
 
 static void* nvapi_qi(unsigned int id);
 static bool nvapi_init();
-static bool gpu_adapter_has_same_pci_identity(const GpuAdapterInfo* a, const GpuAdapterInfo* b);
+static bool gpu_adapter_has_valid_pci_location(const GpuAdapterInfo* adapter);
+static bool gpu_adapter_has_same_pci_identity(
+    const GpuAdapterInfo* a, const GpuAdapterInfo* b);
+static bool gpu_adapter_pci_base_identity_is_unique(
+    const GpuAdapterInfo* target, const GpuAdapterInfo* adapters,
+    unsigned int adapterCount);
 static void format_gpu_adapter_label(const GpuAdapterInfo* adapter, char* out, size_t outSize);
 static bool nvapi_enum_gpu();
 static bool nvapi_get_name();
 static void reset_gpu_runtime_selection();
+static bool save_configured_gpu_selection_atomic(unsigned int index,
+    char* err, size_t errSize);
+static bool validate_configured_gpu_selection_for_client(
+    char* err, size_t errSize);
 static void populate_gpu_selector();
 static void apply_gpu_selection_from_ui();
 static bool nvapi_read_curve();
@@ -276,12 +304,17 @@ static void apply_service_desired_to_gui(const DesiredSettings* desired);
 static void apply_control_state_to_gui(const ControlState* state);
 static bool get_effective_control_state(ControlState* stateOut);
 static void service_capture_owner_identity(const char* user, DWORD sessionId);
-static bool get_pipe_client_identity(HANDLE pipe, char* userOut, size_t userOutSize, DWORD* sessionIdOut, DWORD* pidOut, bool* isAdminOut, char* err, size_t errSize);
-static bool service_caller_is_authorized(HANDLE pipe, const char* source, char* err, size_t errSize, char* callerUserOut, size_t callerUserOutSize, DWORD* callerSessionIdOut, DWORD* callerPidOut, bool* callerIsAdminOut);
+static bool get_pipe_client_identity(HANDLE pipe, char* userOut, size_t userOutSize,
+    DWORD* sessionIdOut, DWORD* pidOut, bool* isAdminOut,
+    ServiceLifecycleIdentity* lifecycleIdentityOut, char* err, size_t errSize);
+static bool service_caller_is_authorized(HANDLE pipe, const char* source,
+    bool requireActiveSession, char* err, size_t errSize, char* callerUserOut,
+    size_t callerUserOutSize, DWORD* callerSessionIdOut, DWORD* callerPidOut,
+    bool* callerIsAdminOut, ServiceLifecycleIdentity* lifecycleIdentityOut);
 static bool get_active_interactive_session_id(DWORD* sessionIdOut);
 static bool service_resolve_session_user_sid(DWORD sessionId, char* sidOut, size_t sidOutSize, char* err, size_t errSize);
 static bool service_user_paths_identity_matches(DWORD sessionId);
-static void ensure_service_runtime_lock();
+static bool ensure_service_runtime_lock();
 static void lock_service_runtime();
 static bool try_lock_service_runtime(DWORD timeoutMs);
 static void unlock_service_runtime();
@@ -298,19 +331,32 @@ static void stop_service_fan_runtime_thread();
 static void service_runtime_pulse();
 static void service_write_restart_reapply_snapshot();
 static void service_clear_restart_reapply_snapshot();
-static void service_launch_startup_coordinator();
-static void service_maybe_reconcile_active_session_at_boot(const char* reason);
-static void service_queue_recovery_reapply(const char* reason, DWORD delayMs);
+static bool service_auto_restore_is_locked_out(DWORD* reasonOut);
+static bool service_prepare_controlled_restart(const char* reason,
+    char* err, size_t errSize);
+[[noreturn]] static void service_emergency_restart_from_poisoned_runtime(
+    const char* reason, bool corroboratedDriverFailure);
+static void service_abort_controlled_restart(const char* reason);
+static bool service_try_dispatch_controlled_restart_helper(int* exitCodeOut);
+static void service_prepare_controlled_recovery_startup(DWORD argc, LPWSTR* argv);
+static void service_arm_validated_controlled_recovery();
+static bool service_discard_validated_controlled_recovery_locked(
+    const char* reason);
+static bool service_lifecycle_post_validated_driver_recovery();
 static void service_maybe_launch_recovery_from_main_loop(const char* source);
-static void service_maybe_launch_recovery_reapply_thread();
-static void service_check_reapply_thread_health();
+static void service_fail_closed_controlled_restart(const char* reason);
 static void mark_service_telemetry_cache_updated(const char* source);
 static bool service_refresh_telemetry_for_request(char* detail, size_t detailSize);
-static bool service_apply_desired_settings(const DesiredSettings* desired, bool interactive, char* result, size_t resultSize);
-static bool service_reset_all(char* result, size_t resultSize);
+static bool service_apply_desired_settings(const DesiredSettings* desired, bool interactive,
+    char* result, size_t resultSize, bool* writeAttemptedOut = nullptr,
+    bool replaceActiveIntent = false,
+    const DesiredSettings* replacementIntent = nullptr);
+static bool service_reset_all(char* result, size_t resultSize,
+    bool* hardwareWriteAttemptedOut = nullptr);
 // GPU driver-recovery is handled by restarting the service process; record each
 // restart for persisted restart-loop protection (defined in main_service_runtime.cpp).
 static void service_record_restart_event();
+static void service_abandon_current_recovery_evidence();
 static bool background_service_pipe_name(WCHAR* out, size_t outCount);
 static bool service_is_installed();
 static bool service_is_running();
@@ -320,7 +366,10 @@ static bool service_send_request(const ServiceRequest* request, ServiceResponse*
 static bool service_client_ping(char* err, size_t errSize);
 static bool service_client_get_snapshot(ServiceSnapshot* snapshot, char* err, size_t errSize);
 static bool service_client_get_telemetry(ServiceSnapshot* snapshot, char* err, size_t errSize);
-static bool service_client_apply_desired(const DesiredSettings* desired, const char* source, bool interactive, char* result, size_t resultSize, ServiceSnapshot* snapshotOut);
+static bool service_client_apply_desired(const DesiredSettings* desired, const char* source,
+    bool interactive, ServiceApplyOrigin origin, ServiceProfileSource profileSource,
+    int profileSlot, char* result, size_t resultSize, ServiceSnapshot* snapshotOut);
+static bool service_client_logon_handoff(char* result, size_t resultSize);
 static bool service_client_reset(char* result, size_t resultSize, ServiceSnapshot* snapshotOut);
 static bool service_client_get_active_desired(DesiredSettings* desired, ServiceSnapshot* snapshotOut, char* err, size_t errSize);
 static bool service_install_or_remove(bool enable, char* err, size_t errSize);
@@ -356,6 +405,8 @@ static bool is_themed_combo_id(UINT id);
 static void draw_themed_combo_item(const DRAWITEMSTRUCT* dis);
 static void measure_themed_combo_item(MEASUREITEMSTRUCT* mis);
 static void draw_themed_button(const DRAWITEMSTRUCT* dis);
+static void draw_themed_checkbox_control(
+    const DRAWITEMSTRUCT* dis, bool checked, bool labeledCheckbox);
 static bool is_themed_button_id(UINT id);
 static bool is_themed_checkbox_id(UINT id);
 static bool is_fan_dialog_checkbox_id(UINT id);
@@ -399,20 +450,58 @@ static void close_debug_log_file();
 // and let a fresh instance map clean driver DLLs (see launch_recovery_thread).
 // Idempotent (first caller wins).  Snapshots the active OC/fan profile so the
 // fresh process re-applies it, records the restart for persisted loop
-// protection, and signals the main loop to exit non-zero so the SCM failure
-// action relaunches us.  Deliberately does NOT touch NVML/NvAPI here (those
-// calls can hang on a dead/transitional driver); the NVML-free exit happens in
-// the service_main loop's restart branch.
+// protection, launches a nonce-bound helper, and signals the main loop to make
+// the dedicated clean exit that only that helper accepts. Deliberately does
+// NOT touch NVML/NvAPI here (those calls can hang on a dead/transitional
+// driver); the NVML-free exit happens in service_main.
 static void request_service_restart(const char* reason) {
-    if (InterlockedExchange(&g_serviceRestartRequested, 1) != 0) return;
-    debug_log("request_service_restart: %s — exiting for clean driver DLL state, SCM will relaunch\n",
-        reason ? reason : "(unspecified)");
-    // Persist active OC/fan settings so the fresh process re-applies them.
-    service_write_restart_reapply_snapshot();
-    // Record this restart so the fresh process can detect a restart loop (a
-    // genuinely broken driver that crashes every process) and stop reapplying.
-    service_record_restart_event();
+    const LONG observedSupersessionEpoch =
+        InterlockedExchangeAdd(&g_serviceExplicitSupersessionEpoch, 0);
+    lock_service_runtime();
+    if (InterlockedExchangeAdd(&g_serviceExternalStopRequested, 0) != 0) {
+        debug_log("request_service_restart: external SCM stop/shutdown is pending; controlled recovery skipped\n");
+        unlock_service_runtime();
+        return;
+    }
+    if (observedSupersessionEpoch !=
+        InterlockedExchangeAdd(&g_serviceExplicitSupersessionEpoch, 0)) {
+        debug_log("request_service_restart: explicit Apply/Reset superseded the queued recovery before helper preparation\n");
+        service_abandon_current_recovery_evidence();
+        unlock_service_runtime();
+        return;
+    }
+    if (!g_serviceHasActiveDesired || !g_serviceActiveDesiredGpu.valid) {
+        debug_log("request_service_restart: no successful in-process settings intent exists; recovery evidence remains diagnostic and no helper will start\n");
+        EnterCriticalSection(&g_appLock);
+        g_app.pendingDeviceRecovery = false;
+        LeaveCriticalSection(&g_appLock);
+        service_abandon_current_recovery_evidence();
+        unlock_service_runtime();
+        return;
+    }
+    if (InterlockedExchangeAdd(&g_serviceRestartRequested, 0) != 0 ||
+        InterlockedExchangeAdd(&g_serviceRestartPreparing, 0) != 0) {
+        unlock_service_runtime();
+        return;
+    }
+    char err[256] = {};
+    if (!service_prepare_controlled_restart(reason, err, sizeof(err))) {
+        if (InterlockedExchangeAdd(&g_serviceExternalStopRequested, 0) != 0) {
+            debug_log("request_service_restart: external SCM stop/shutdown superseded helper preparation; no automatic restore will run\n");
+            unlock_service_runtime();
+            return;
+        }
+        debug_log("request_service_restart: helper setup failed; service remains running and automatic restore is not authorized: %s\n",
+            err[0] ? err : "unknown");
+        service_fail_closed_controlled_restart(
+            err[0] ? err : "controlled-recovery helper setup failed");
+        unlock_service_runtime();
+        return;
+    }
+    debug_log("request_service_restart: helper validated for %s; committing dedicated clean restart\n",
+        reason ? reason : "GPU driver recovery");
     if (g_serviceStopEvent) SetEvent(g_serviceStopEvent);
+    unlock_service_runtime();
 }
 static HMODULE load_system_library_a(const char* name);
 static bool find_trusted_nvidia_smi_path_w(WCHAR* out, size_t outCount);
@@ -465,7 +554,7 @@ static void update_profile_state_label();
 static void update_profile_action_buttons();
 static void update_background_service_controls();
 static bool maybe_confirm_profile_load_replace(int slot);
-static bool maybe_load_selected_profile_to_gui_without_apply();
+static void sync_applied_profile_from_service_metadata();
 static void maybe_load_app_launch_profile_to_gui();
 // Legacy config constants kept for existing save_desired_to_config_with_startup
 #define CONFIG_STARTUP_PRESERVE (-1)
@@ -475,6 +564,9 @@ static bool capture_gui_config_settings(DesiredSettings* desired, char* err, siz
 static bool set_startup_task_enabled(bool enabled, char* err, size_t errSize);
 static bool load_startup_enabled_from_config(const char* path, bool* enabled);
 static bool is_startup_task_enabled();
+static StartupTaskDefinitionClass startup_task_definition_classify_current(
+    const WCHAR* taskName, const WCHAR* exePath, const WCHAR* cfgPath,
+    char* detail, size_t detailSize);
 static void sync_logon_combo_from_system();
 static void schedule_logon_combo_sync();
 static void destroy_backbuffer();
@@ -486,7 +578,8 @@ static void close_nvml();
 static void close_nvapi();
 static const char* nvml_err_name(nvmlReturn_t r);
 static bool nvml_ensure_ready();
-// Forward declaration for recovery entry point — defined in main_service_runtime.cpp
+// Historical recovery entry-point name; it now requests the nonce-bound clean
+// process restart and is defined in main_service_runtime_identity.cpp.
 static void launch_recovery_thread();
 static bool nvml_set_fan_auto(char* detail, size_t detailSize);
 static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_t detailSize);
@@ -530,8 +623,13 @@ static bool nvml_read_fans(char* detail, size_t detailSize);
 static bool is_start_on_logon_enabled(const char* path);
 static bool set_start_on_logon_enabled(const char* path, bool enabled);
 static bool should_enable_startup_task_from_config(const char* path);
+static bool set_tray_autostart_enabled_for_config(const char* configPath,
+    bool enabled, char* err, size_t errSize);
+static bool sync_tray_autostart_from_config(const char* configPath,
+    char* err, size_t errSize);
+static void invalidate_startup_sync_generation();
 static void apply_logon_startup_behavior();
-static bool ensure_profile_slot_available_for_auto_action(int slot);
+static void retry_pending_logon_service_readiness();
 static bool is_gpu_offset_excluded_low_point(int pointIndex, int gpuOffsetMHz, int excludeLowCount);
 static int gpu_offset_component_mhz_for_point(int pointIndex, int gpuOffsetMHz, int excludeLowCount);
 static bool detect_live_selective_gpu_offset_state(int* gpuOffsetMHzOut, int* representativeOffsetkHzOut = nullptr, int* detectedExcludeLowCountOut = nullptr);
@@ -556,7 +654,12 @@ static int current_applied_gpu_offset_mhz();
 static bool current_applied_gpu_offset_excludes_low_points();
 static void open_fan_curve_dialog();
 static void refresh_fan_curve_button_text();
-static bool apply_desired_settings(const DesiredSettings* desired, bool interactive, char* result, size_t resultSize);
+static bool apply_desired_settings(const DesiredSettings* desired, bool interactive,
+    ServiceApplyOrigin origin, ServiceProfileSource profileSource, int profileSlot,
+    char* result, size_t resultSize);
+static bool apply_desired_settings_service(const DesiredSettings* desired,
+    bool interactive, char* result, size_t resultSize,
+    bool* hardwareWriteAttemptedOut = nullptr);
 static LRESULT CALLBACK LicenseDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static void layout_license_dialog(HWND hwnd);
 
@@ -663,10 +766,26 @@ static const UINT FAN_TELEMETRY_INTERVAL_MS = 1000;
 #include "auto_profile_dialog.cpp"
 #else
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
-    SetProcessDPIAware();
-    init_dpi();
+    // The helper parses inherited handles and launches an SCM operation, so it
+    // receives the same DLL-search and strict-handle defenses as every other
+    // process mode before dispatching any helper work.
     initialize_process_mitigations();
+    // Helper validation and SCM diagnostics use the normal serialized logger.
+    // Initialize it before helper dispatch; the helper enables file logging
+    // only when the active user's existing debug configuration allows it.
     InitializeCriticalSection(&g_debugLogLock);
+    // Helper mode bypasses service_main, so install the unhandled filter here.
+    // A helper crash must leave the same actionable private dump as a normal
+    // service crash instead of only an opaque Windows Error Reporting event.
+    SetUnhandledExceptionFilter(green_curve_unhandled_exception_filter);
+    int helperExitCode = 0;
+    if (service_try_dispatch_controlled_restart_helper(&helperExitCode)) {
+        close_debug_log_file();
+        DeleteCriticalSection(&g_debugLogLock);
+        return helperExitCode;
+    }
+    enable_best_process_dpi_awareness();
+    init_dpi();
     SERVICE_TABLE_ENTRYW table[] = {
         { (LPWSTR)L"GreenCurveService", service_main },
         { nullptr, nullptr },

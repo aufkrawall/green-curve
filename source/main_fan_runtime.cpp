@@ -114,14 +114,105 @@ static bool is_start_on_logon_enabled(const char* path) {
 static bool set_start_on_logon_enabled(const char* path, bool enabled) {
     return set_config_int(path, "startup", "start_program_on_logon", enabled ? 1 : 0);
 }
+
+enum ConfigEnablementState {
+    CONFIG_ENABLEMENT_INDETERMINATE = -1,
+    CONFIG_ENABLEMENT_DISABLED = 0,
+    CONFIG_ENABLEMENT_ENABLED = 1,
+};
+
+// Caller holds the recursive config storage lock.  Unlike get_config_int(),
+// this distinguishes a missing key (coherent default) from malformed/truncated
+// input, which background synchronization must never interpret as permission
+// to delete a task or registry value.
+static bool read_config_int_strict_locked(const char* path,
+    const char* section, const char* key, int defaultValue, int* valueOut) {
+    if (!path || !section || !key || !valueOut) return false;
+    char text[32] = {};
+    DWORD length = GetPrivateProfileStringA(
+        section, key, "", text, ARRAY_COUNT(text), path);
+    if (length >= ARRAY_COUNT(text) - 1) return false;
+    trim_ascii(text);
+    if (!text[0]) {
+        *valueOut = defaultValue;
+        return true;
+    }
+    return parse_int_strict(text, valueOut);
+}
+
+static ConfigEnablementState startup_task_config_state(const char* path) {
+    if (!path || !path[0]) return CONFIG_ENABLEMENT_INDETERMINATE;
+    HANDLE configMutex = nullptr;
+    if (!enter_config_storage_lock(&configMutex)) {
+        return CONFIG_ENABLEMENT_INDETERMINATE;
+    }
+    ConfigEnablementState state = CONFIG_ENABLEMENT_INDETERMINATE;
+    DWORD userAttrs = GetFileAttributesA(path);
+    if (userAttrs != INVALID_FILE_ATTRIBUTES &&
+        (userAttrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+        int perUserSlot = 0;
+        int sharedSlot = 0;
+        if (read_config_int_strict_locked(path, "profiles", "logon_slot", 0,
+                &perUserSlot) &&
+            read_config_int_strict_locked(path, "profiles", "logon_shared_slot", 0,
+                &sharedSlot) &&
+            perUserSlot >= 0 && perUserSlot <= CONFIG_NUM_SLOTS &&
+            sharedSlot >= 0 && sharedSlot <= CONFIG_NUM_SLOTS &&
+            !(perUserSlot > 0 && sharedSlot > 0)) {
+            if (perUserSlot > 0 || sharedSlot > 0) {
+                state = CONFIG_ENABLEMENT_ENABLED;
+            } else {
+                char machinePath[MAX_PATH] = {};
+                if (resolve_machine_config_path(machinePath,
+                        sizeof(machinePath))) {
+                    DWORD machineAttrs = GetFileAttributesA(machinePath);
+                    if (machineAttrs != INVALID_FILE_ATTRIBUTES &&
+                        (machineAttrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+                        int machineSlot = 0;
+                        if (read_config_int_strict_locked(machinePath,
+                                "profiles", "logon_slot", 0,
+                                &machineSlot) && machineSlot >= 0 &&
+                            machineSlot <= CONFIG_NUM_SLOTS) {
+                            state = machineSlot > 0
+                                ? CONFIG_ENABLEMENT_ENABLED
+                                : CONFIG_ENABLEMENT_DISABLED;
+                        }
+                    }
+                    // A temporarily absent shared bank is indeterminate.  An
+                    // explicit profile/default clear synchronizes the task in
+                    // its own successful transaction; background repair must
+                    // preserve an existing task through an atomic rename gap.
+                }
+            }
+        }
+    }
+    leave_config_storage_lock(configMutex);
+    return state;
+}
+
+static ConfigEnablementState tray_autostart_config_state(const char* path) {
+    if (!path || !path[0]) return CONFIG_ENABLEMENT_INDETERMINATE;
+    HANDLE configMutex = nullptr;
+    if (!enter_config_storage_lock(&configMutex)) {
+        return CONFIG_ENABLEMENT_INDETERMINATE;
+    }
+    ConfigEnablementState state = CONFIG_ENABLEMENT_INDETERMINATE;
+    DWORD attrs = GetFileAttributesA(path);
+    int value = 0;
+    if (attrs != INVALID_FILE_ATTRIBUTES &&
+        (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0 &&
+        read_config_int_strict_locked(path, "startup",
+            "start_program_on_logon", 0, &value)) {
+        state = value != 0
+            ? CONFIG_ENABLEMENT_ENABLED
+            : CONFIG_ENABLEMENT_DISABLED;
+    }
+    leave_config_storage_lock(configMutex);
+    return state;
+}
+
 static bool should_enable_startup_task_from_config(const char* path) {
-    if (!path || !*path) return false;
-    if (is_start_on_logon_enabled(path)) return true;
-    if (get_config_int(path, "profiles", "logon_slot", 0) > 0) return true;
-    // A per-user "apply admin shared profile N at logon" choice also needs the
-    // startup task so the tray client launches at logon (the service router
-    // applies it regardless, but the task keeps the GUI behavior consistent).
-    return get_config_int(path, "profiles", "logon_shared_slot", 0) > 0;
+    return startup_task_config_state(path) == CONFIG_ENABLEMENT_ENABLED;
 }
 static bool live_state_has_custom_oc() {
     if (g_app.gpuClockOffsetkHz != 0) return true;

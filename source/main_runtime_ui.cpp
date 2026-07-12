@@ -724,6 +724,14 @@ static void draw_themed_button(const DRAWITEMSTRUCT* dis) {
     bool focused = (dis->itemState & ODS_FOCUS) != 0;
     bool checkbox = is_themed_checkbox_id(dis->CtlID);
     bool checked = checkbox && themed_checkbox_checked_state(dis->CtlID, dis->hwndItem);
+    if (checkbox) {
+        char text[64] = {};
+        GetWindowTextA(dis->hwndItem, text, ARRAY_COUNT(text));
+        bool labeledCheckbox = (is_fan_dialog_checkbox_id(dis->CtlID) ||
+                                dis->CtlID == SHARE_ALL_USERS_CHECK_ID) && text[0];
+        draw_themed_checkbox_control(dis, checked, labeledCheckbox);
+        return;
+    }
     HFONT controlFont = dis->hwndItem ? (HFONT)SendMessageA(dis->hwndItem, WM_GETFONT, 0, 0) : nullptr;
     HFONT oldFont = (HFONT)SelectObject(hdc, controlFont ? controlFont : get_ui_font());
 
@@ -732,72 +740,24 @@ static void draw_themed_button(const DRAWITEMSTRUCT* dis) {
     DeleteObject(bg);
     SetBkMode(hdc, TRANSPARENT);
 
-    if (checkbox) {
-        char text[64] = {};
-        GetWindowTextA(dis->hwndItem, text, ARRAY_COUNT(text));
-        bool labeledCheckbox = (is_fan_dialog_checkbox_id(dis->CtlID) ||
-                                dis->CtlID == SHARE_ALL_USERS_CHECK_ID) && text[0];
-        int controlW = rc.right - rc.left;
-        int controlH = rc.bottom - rc.top;
-        int boxSize = labeledCheckbox
-            ? nvmin(controlH - dp(4), dp(16))
-            : nvmin(controlW, controlH) - dp(2);
-        if (boxSize < dp(12)) boxSize = dp(12);
-        if (boxSize > controlW) boxSize = controlW;
-        if (boxSize > controlH) boxSize = controlH;
-        int boxLeft = labeledCheckbox
-            ? rc.left + dp(2)
-            : rc.left + (controlW - boxSize) / 2;
-        RECT box = {
-            boxLeft,
-            rc.top + (controlH - boxSize) / 2,
-            boxLeft + boxSize,
-            rc.top + (controlH - boxSize) / 2 + boxSize,
-        };
+    COLORREF fill = disabled ? COL_BUTTON_DISABLED : (pressed ? COL_BUTTON_PRESSED : COL_BUTTON);
+    HBRUSH fillBr = CreateSolidBrush(fill);
+    FillRect(hdc, &rc, fillBr);
+    DeleteObject(fillBr);
 
-        COLORREF fill = disabled ? COL_BUTTON_DISABLED : (checked ? COL_BUTTON : COL_PANEL);
-        COLORREF border = disabled ? RGB(0x5A, 0x5A, 0x68) : COL_BUTTON_BORDER;
-        HBRUSH fillBr = CreateSolidBrush(fill);
-        FillRect(hdc, &box, fillBr);
-        DeleteObject(fillBr);
+    HPEN borderPen = CreatePen(PS_SOLID, 1, disabled ? RGB(0x56, 0x56, 0x64) : COL_BUTTON_BORDER);
+    HPEN oldPen = (HPEN)SelectObject(hdc, borderPen);
+    HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
+    Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
+    SelectObject(hdc, oldBrush);
+    DeleteObject(SelectObject(hdc, oldPen));
 
-        HPEN pen = CreatePen(PS_SOLID, 1, border);
-        HPEN oldPen = (HPEN)SelectObject(hdc, pen);
-        HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
-        Rectangle(hdc, box.left, box.top, box.right + 1, box.bottom + 1);
-        SelectObject(hdc, oldBrush);
-        DeleteObject(SelectObject(hdc, oldPen));
-
-        if (checked) {
-            draw_checkbox_tick_smooth(hdc, &box, disabled ? COL_LABEL : RGB(0xE8, 0xF2, 0xFF));
-        }
-
-        if (labeledCheckbox) {
-            RECT textRc = rc;
-            textRc.left = box.right + dp(8);
-            SetTextColor(hdc, disabled ? COL_LABEL : COL_TEXT);
-            DrawTextA(hdc, text, -1, &textRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        }
-    } else {
-        COLORREF fill = disabled ? COL_BUTTON_DISABLED : (pressed ? COL_BUTTON_PRESSED : COL_BUTTON);
-        HBRUSH fillBr = CreateSolidBrush(fill);
-        FillRect(hdc, &rc, fillBr);
-        DeleteObject(fillBr);
-
-        HPEN borderPen = CreatePen(PS_SOLID, 1, disabled ? RGB(0x56, 0x56, 0x64) : COL_BUTTON_BORDER);
-        HPEN oldPen = (HPEN)SelectObject(hdc, borderPen);
-        HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
-        Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
-        SelectObject(hdc, oldBrush);
-        DeleteObject(SelectObject(hdc, oldPen));
-
-        char text[128] = {};
-        GetWindowTextA(dis->hwndItem, text, ARRAY_COUNT(text));
-        RECT textRc = rc;
-        if (pressed) OffsetRect(&textRc, 0, 1);
-        SetTextColor(hdc, disabled ? COL_LABEL : RGB(0xF0, 0xF4, 0xFF));
-        DrawTextA(hdc, text, -1, &textRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    }
+    char text[128] = {};
+    GetWindowTextA(dis->hwndItem, text, ARRAY_COUNT(text));
+    RECT textRc = rc;
+    if (pressed) OffsetRect(&textRc, 0, 1);
+    SetTextColor(hdc, disabled ? COL_LABEL : RGB(0xF0, 0xF4, 0xFF));
+    DrawTextA(hdc, text, -1, &textRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
     if (focused) {
         RECT focus = rc;

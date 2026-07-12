@@ -10,6 +10,15 @@
 static void apply_changes() {
     if (!g_app.backgroundServiceAvailable || !g_app.loaded) return;
     if (g_app.applyInFlight) return;
+    char gpuSelectionErr[256] = {};
+    if (!validate_configured_gpu_selection_for_client(
+            gpuSelectionErr, sizeof(gpuSelectionErr))) {
+        MessageBoxA(g_app.hMainWnd,
+            gpuSelectionErr[0] ? gpuSelectionErr :
+                "Select the intended GPU again before applying settings.",
+            "Green Curve", MB_OK | MB_ICONWARNING);
+        return;
+    }
     g_app.applyInFlight = true;
     if (g_app.hApplyBtn) EnableWindow(g_app.hApplyBtn, FALSE);
     set_pending_operation_source("GUI apply");
@@ -32,7 +41,17 @@ static void apply_changes() {
     }
     char result[512] = {};
     SetCursor(LoadCursor(nullptr, IDC_WAIT));
-    bool ok = apply_desired_settings(&desired, true, result, sizeof(result));
+    int requestedSlot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
+    if (requestedSlot < 0) requestedSlot = CONFIG_DEFAULT_SLOT - 1;
+    requestedSlot += 1;
+    ServiceProfileSource requestedSource = SERVICE_PROFILE_SOURCE_USER_SLOT;
+    if (g_app.loadedSharedSlot >= 1 && g_app.loadedSharedSlot <= CONFIG_NUM_SLOTS) {
+        requestedSource = SERVICE_PROFILE_SOURCE_SHARED_SLOT;
+        requestedSlot = g_app.loadedSharedSlot;
+    }
+    bool ok = apply_desired_settings(&desired, true,
+        SERVICE_APPLY_ORIGIN_GUI, requestedSource, requestedSlot,
+        result, sizeof(result));
     SetCursor(LoadCursor(nullptr, IDC_ARROW));
     if (ok) {
         bool fanOnlyApply = desired_is_fan_only_apply_request(&desired);
@@ -41,11 +60,11 @@ static void apply_changes() {
             debug_log("GUI apply: preserving VF editor intent after fan-only apply\n");
         } else {
             populate_desired_into_gui(&desired);
+            if (requestedSource == SERVICE_PROFILE_SOURCE_SHARED_SLOT) {
+                g_app.loadedSharedSlot = requestedSlot;
+            }
         }
-        int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
-        if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
-        slot += 1;
-        set_config_int(g_app.configPath, "profiles", "applied_slot", slot);
+        sync_applied_profile_from_service_metadata();
         populate_global_controls();
         invalidate_main_window();
     }
@@ -56,64 +75,7 @@ static void apply_changes() {
     if (g_app.hApplyBtn) EnableWindow(g_app.hApplyBtn, TRUE);
 }
 
-static void destroy_edit_controls(HWND hParent) {
-    // The lock tooltip subclasses the lock checkboxes; tear it down before the
-    // checkboxes are destroyed so it is rebuilt cleanly with the new controls.
-    if (g_app.hLockTooltip) {
-        DestroyWindow(g_app.hLockTooltip);
-        g_app.hLockTooltip = nullptr;
-    }
-    HWND child = GetWindow(hParent, GW_CHILD);
-    while (child) {
-        HWND next = GetWindow(child, GW_HWNDNEXT);
-        LONG_PTR id = GetWindowLongPtr(child, GWLP_ID);
-        if (id != APPLY_BTN_ID && id != REFRESH_BTN_ID && id != RESET_BTN_ID && id != LICENSE_BTN_ID
-            && id != PROFILE_COMBO_ID && id != PROFILE_LOAD_ID && id != PROFILE_SAVE_ID && id != PROFILE_CLEAR_ID
-            && id != APP_LAUNCH_COMBO_ID && id != LOGON_COMBO_ID
-            && id != PROFILE_LABEL_ID && id != PROFILE_STATE_ID && id != APP_LAUNCH_LABEL_ID
-            && id != LOGON_LABEL_ID && id != PROFILE_STATUS_ID && id != START_ON_LOGON_CHECK_ID
-            && id != START_ON_LOGON_LABEL_ID
-            && id != SERVICE_ENABLE_CHECK_ID && id != SERVICE_ENABLE_LABEL_ID && id != SERVICE_STATUS_ID
-            && id != LOGON_HINT_ID
-            && id != SHARE_ALL_USERS_CHECK_ID && id != SHARED_PROFILES_BTN_ID
-            && id != AUTO_PROFILE_BTN_ID) {
-            DestroyWindow(child);
-        }
-        child = next;
-    }
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        g_app.hEditsMhz[i] = nullptr;
-        g_app.hEditsMv[i] = nullptr;
-        g_app.hLocks[i] = nullptr;
-    }
-    g_app.hGpuOffsetEdit = nullptr;
-    g_app.hGpuOffsetExcludeLowEdit = nullptr;
-    g_app.hGpuOffsetExcludeLowLabel = nullptr;
-    g_app.hMemOffsetEdit = nullptr;
-    g_app.hPowerLimitEdit = nullptr;
-    g_app.hFanEdit = nullptr;
-    g_app.hFanModeCombo = nullptr;
-    g_app.hFanCurveBtn = nullptr;
-}
-
-// Rebuild the per-point edit controls with painting suppressed. The bulk
-// destroy/recreate of 40+ child windows during a service-state transition
-// (service start/restart, reset) otherwise flashes partially-built or stale
-// content because each CreateWindow/DestroyWindow triggers its own paints.
-// WM_SETREDRAW gates painting off for the whole batch; one full redraw at the
-// end paints the final layout cleanly (children + frame).
-static void rebuild_edit_controls() {
-    HWND hwnd = g_app.hMainWnd;
-    if (!hwnd) return;
-    debug_log("rebuild_edit_controls: redraw-suppressed rebuild (numVisible=%d loaded=%d)\n",
-        g_app.numVisible, g_app.loaded ? 1 : 0);
-    SendMessageA(hwnd, WM_SETREDRAW, FALSE, 0);
-    destroy_edit_controls(hwnd);
-    create_edit_controls(hwnd, g_app.hInst);
-    SendMessageA(hwnd, WM_SETREDRAW, TRUE, 0);
-    RedrawWindow(hwnd, nullptr, nullptr,
-        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_FRAME);
-}
+#include "ui_main_control_lifecycle.cpp"
 
 static void refresh_curve() {
     if (!g_app.backgroundServiceAvailable) {
@@ -134,7 +96,7 @@ static void refresh_curve() {
                 update_all_gui_for_service_state();
             }
             update_background_service_controls();
-            ensure_main_window_min_size(g_app.hMainWnd);
+            ensure_main_window_fits_work_area(g_app.hMainWnd);
             invalidate_main_window();
         } else {
             refresh_background_service_state();
@@ -149,6 +111,15 @@ static void refresh_curve() {
 
 static void reset_curve() {
     if (!g_app.backgroundServiceAvailable || !g_app.loaded) return;
+    char gpuSelectionErr[256] = {};
+    if (!validate_configured_gpu_selection_for_client(
+            gpuSelectionErr, sizeof(gpuSelectionErr))) {
+        MessageBoxA(g_app.hMainWnd,
+            gpuSelectionErr[0] ? gpuSelectionErr :
+                "Select the intended GPU again before resetting settings.",
+            "Green Curve", MB_OK | MB_ICONWARNING);
+        return;
+    }
 
     int confirm = MessageBoxA(g_app.hMainWnd,
         "Reset will restore all GPU settings to their default values.\n\nContinue?",
@@ -497,6 +468,7 @@ static void show_shared_profiles_menu(HWND hwnd, POINT screenPt) {
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE:
+            reset_main_window_dpi_resources(hwnd, main_layout_window_dpi(hwnd));
             create_backbuffer(hwnd);
             if (!g_app.hCachedGridPen) g_app.hCachedGridPen = CreatePen(PS_SOLID, 1, COL_GRID);
             if (!g_app.hCachedAxisPen) g_app.hCachedAxisPen = CreatePen(PS_SOLID, 1, COL_AXIS);
@@ -510,7 +482,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             start_service_reconnect_timer_if_needed();
             update_background_service_controls();
             update_fan_telemetry_timer();
-            ensure_main_window_min_size(hwnd);
+            ensure_main_window_fits_work_area(hwnd);
             layout_bottom_buttons(hwnd);
             auto_profile_init(hwnd);
             return 0;
@@ -533,10 +505,39 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             destroy_backbuffer();
             create_backbuffer(hwnd);
-            layout_bottom_buttons(hwnd);
+            layout_main_window(hwnd);
+            if (wParam == SIZE_RESTORED) main_layout_apply_pending_content_growth(hwnd);
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
+
+        case WM_DPICHANGED: {
+            const RECT* suggested = (const RECT*)lParam;
+            int newDpi = (int)HIWORD(wParam);
+            main_layout_handle_dpi_changed(hwnd, newDpi, suggested);
+            return 0;
+        }
+
+        case WM_VSCROLL:
+            if (main_layout_handle_scroll(hwnd, SB_VERT, LOWORD(wParam))) return 0;
+            break;
+
+        case WM_HSCROLL:
+            if (main_layout_handle_scroll(hwnd, SB_HORZ, LOWORD(wParam))) return 0;
+            break;
+
+        case WM_MOUSEWHEEL:
+            if (main_layout_handle_mouse_wheel(hwnd, GET_WHEEL_DELTA_WPARAM(wParam),
+                    (GetKeyState(VK_SHIFT) & 0x8000) != 0)) return 0;
+            break;
+
+        case WM_MOUSEHWHEEL:
+            if (main_layout_handle_mouse_wheel(hwnd, GET_WHEEL_DELTA_WPARAM(wParam), true)) return 0;
+            break;
+
+        case APP_WM_ENSURE_LAYOUT_FOCUS:
+            main_layout_ensure_child_visible(hwnd, (HWND)wParam);
+            return 0;
 
         case WM_SYSCOMMAND:
             if ((wParam & 0xFFF0) == SC_MINIMIZE) {
@@ -550,6 +551,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 1;
 
         case WM_SETTINGCHANGE:
+            if (wParam == SPI_SETWORKAREA) ensure_main_window_fits_work_area(hwnd);
+            apply_system_titlebar_theme(hwnd);
+            allow_dark_mode_for_window(hwnd);
+            refresh_menu_theme_cache();
+            break;
+
+        case WM_DISPLAYCHANGE:
+            ensure_main_window_fits_work_area(hwnd);
+            return 0;
+
         case WM_THEMECHANGED:
             apply_system_titlebar_theme(hwnd);
             allow_dark_mode_for_window(hwnd);
@@ -557,15 +568,32 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             break;
 
         case APP_WM_SYNC_STARTUP:
+        {
+            LONG completedGeneration = (LONG)wParam;
             close_startup_sync_thread_handle();
             g_app.startupSyncInFlight = false;
-            if (g_app.hLogonCombo) {
-                int slot = (int)wParam;
-                if (slot >= 0 && slot <= CONFIG_NUM_SLOTS)
-                    SendMessageA(g_app.hLogonCombo, CB_SETCURSEL, (WPARAM)slot, 0);
+            LONG currentGeneration = current_startup_sync_generation();
+
+            // Always read current config on the UI thread.  A completed worker
+            // may have captured an older task/config state, but it may never
+            // move the combo back to that older user choice.
+            int logonSlot = 0;
+            int logonSharedSlot = 0;
+            bool selectionReady = load_normalized_logon_selection(
+                &logonSlot, &logonSharedSlot);
+            if (g_app.hLogonCombo && selectionReady) {
+                LRESULT itemData = logon_combo_item_data_from_slots(
+                    logonSlot, logonSharedSlot);
+                select_logon_combo_item_by_data(g_app.hLogonCombo, itemData);
             }
             update_profile_state_label();
+            if (completedGeneration != currentGeneration) {
+                debug_log("startup sync: generation %ld completed stale (current=%ld); scheduling current-state reconciliation\n",
+                    completedGeneration, currentGeneration);
+                schedule_logon_combo_sync();
+            }
             return 0;
+        }
 
         case APP_WM_TRAYICON: {
             UINT trayEvent = LOWORD(lParam);
@@ -596,26 +624,32 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
             if (wParam == SERVICE_RECONNECT_TIMER_ID) {
-                // Auto-reconnect: periodic ping when service is unavailable
-                if (!g_app.backgroundServiceAvailable) {
-                    debug_log("reconnect timer: attempting service ping\n");
+                // Auto-reconnect also owns the scheduled-logon tray handoff.
+                // It waits for a real initialized snapshot to populate the UI;
+                // it never performs or repeats a hardware apply from this timer.
+                if (!g_app.backgroundServiceAvailable || !g_app.loaded || g_app.logonServiceReadinessPending) {
+                    debug_log("reconnect timer: checking service (loaded=%d logonReadinessPending=%d)\n",
+                        g_app.loaded ? 1 : 0,
+                        g_app.logonServiceReadinessPending ? 1 : 0);
                     if (refresh_background_service_state()) {
-                        // Service is back! Update GUI with latest state.
                         update_all_gui_for_service_state();
                         refresh_curve();
-                        // Only stop the timer once the GUI has fully loaded
-                        // curve data from the service.  If recovery is still
-                        // in progress the snapshot has loaded=false — keep
-                        // polling until it succeeds.
-                        if (g_app.loaded) {
-                            KillTimer(hwnd, SERVICE_RECONNECT_TIMER_ID);
-                            debug_log("reconnect timer: GPU snapshot loaded, stopping timer\n");
-                        } else {
-                            debug_log("reconnect timer: snapshot loaded=false, keeping timer alive\n");
+                        if (g_app.logonServiceReadinessPending) {
+                            retry_pending_logon_service_readiness();
                         }
+                        // Only stop once the UI has a snapshot and the logon
+                        // launch is no longer waiting to display one.
+                        if (g_app.loaded && !g_app.logonServiceReadinessPending) {
+                            KillTimer(hwnd, SERVICE_RECONNECT_TIMER_ID);
+                            debug_log("reconnect timer: GPU snapshot loaded and logon handoff complete, stopping timer\n");
+                        } else {
+                            debug_log("reconnect timer: keeping timer (loaded=%d logonReadinessPending=%d)\n",
+                                g_app.loaded ? 1 : 0,
+                                g_app.logonServiceReadinessPending ? 1 : 0);
+                        }
+                    } else {
+                        debug_log("reconnect timer: service still unavailable, keeping timer alive\n");
                     }
-                } else {
-                    KillTimer(hwnd, SERVICE_RECONNECT_TIMER_ID);
                 }
                 return 0;
             }
@@ -647,7 +681,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
 
-            int graphH = dp(GRAPH_HEIGHT);
+            int graphH = main_layout_graph_height();
+            int scrollX = main_layout_scroll_x();
+            int scrollY = main_layout_scroll_y();
 
             HBRUSH bg = CreateSolidBrush(COL_BG);
             FillRect(g_app.hMemDC, &rc, bg);
@@ -657,8 +693,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
             HPEN sepPen = CreatePen(PS_SOLID, 1, COL_GRID);
             HPEN oldPen = (HPEN)SelectObject(g_app.hMemDC, sepPen);
-            MoveToEx(g_app.hMemDC, 0, graphH, nullptr);
-            LineTo(g_app.hMemDC, rc.right, graphH);
+            MoveToEx(g_app.hMemDC, -scrollX, graphH - scrollY, nullptr);
+            LineTo(g_app.hMemDC,
+                main_layout_content_width() - scrollX, graphH - scrollY);
             SelectObject(g_app.hMemDC, oldPen);
             DeleteObject(sepPen);
 
@@ -823,13 +860,47 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
                 if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
                 char err[256] = {};
-                if (!set_start_on_logon_enabled(g_app.configPath, enabled) ||
-                    !set_startup_task_enabled(should_enable_startup_task_from_config(g_app.configPath), err, sizeof(err))) {
-                    set_start_on_logon_enabled(g_app.configPath, previous);
+                invalidate_startup_sync_generation();
+                bool startupConfigSaved = set_start_on_logon_enabled(
+                    g_app.configPath, enabled);
+                if (!startupConfigSaved) {
+                    set_message(err, sizeof(err), "Failed to save start_program_on_logon");
+                }
+                bool trayRegistrationSaved = startupConfigSaved &&
+                    set_tray_autostart_enabled_for_config(g_app.configPath,
+                        enabled, err, sizeof(err));
+                if (!startupConfigSaved || !trayRegistrationSaved) {
+                    if (startupConfigSaved) {
+                        set_start_on_logon_enabled(g_app.configPath, previous);
+                        char rollbackErr[256] = {};
+                        if (!set_tray_autostart_enabled_for_config(g_app.configPath,
+                                previous, rollbackErr, sizeof(rollbackErr))) {
+                            debug_log("tray autostart: rollback after failed toggle also failed: %s\n",
+                                rollbackErr[0] ? rollbackErr : "unknown error");
+                        }
+                    }
                     SendMessageA(g_app.hStartOnLogonCheck, BM_SETCHECK, (WPARAM)(previous ? BST_CHECKED : BST_UNCHECKED), 0);
                     write_error_report_log_for_user_failure("Logon startup update failed", err[0] ? err : "Failed to update logon startup");
                     MessageBoxA(g_app.hMainWnd, err[0] ? err : "Failed to update logon startup", "Green Curve", MB_OK | MB_ICONERROR);
                     break;
+                }
+
+                // Tray residency is independent from the handoff task.  A
+                // configured profile still needs that task, so validate/repair
+                // it separately without rolling back the tray preference.
+                if (!set_startup_task_enabled(
+                        should_enable_startup_task_from_config(g_app.configPath),
+                        err, sizeof(err))) {
+                    const char* taskError = err[0] ? err : "Unknown scheduled-task repair error";
+                    write_error_report_log_for_user_failure(
+                        "Logon startup task synchronization failed", taskError);
+                    char warning[640] = {};
+                    StringCchPrintfA(warning, ARRAY_COUNT(warning),
+                        "Your tray startup preference was saved, but the Windows logon handoff task could not be synchronized. "
+                        "Configured profile auto-apply redundancy is degraded until the task is repaired.\r\n\r\n%s",
+                        taskError);
+                    MessageBoxA(g_app.hMainWnd, warning, "Green Curve",
+                        MB_OK | MB_ICONWARNING);
                 }
                 refresh_profile_controls_from_config();
                 update_background_service_controls();
@@ -906,6 +977,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
                 update_share_all_users_check_state();
                 refresh_profile_controls_from_config();
+                if (ok) {
+                    // The machine default is an effective logon profile for
+                    // this account, so create/remove its authenticated handoff
+                    // task independently of resident tray startup.
+                    schedule_logon_combo_sync();
+                }
             } else if (LOWORD(wParam) == SHARED_PROFILES_BTN_ID && HIWORD(wParam) == BN_CLICKED) {
                 // Any user: open the list of admin-published shared profiles.
                 RECT rc = {};
@@ -975,7 +1052,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
                 if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
                 slot += 1;
-                set_config_int(g_app.configPath, "profiles", "selected_slot", slot);
+                if (!set_config_int(g_app.configPath, "profiles", "selected_slot", slot)) {
+                    MessageBoxA(g_app.hMainWnd,
+                        "Failed to persist the selected profile slot.",
+                        "Green Curve", MB_OK | MB_ICONERROR);
+                    refresh_profile_controls_from_config();
+                    break;
+                }
                 update_profile_state_label();
                 update_profile_action_buttons();
                 update_tray_icon();
@@ -999,7 +1082,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 populate_desired_into_gui(&desired);
                 set_gui_state_dirty(true);
                 populate_global_controls();
-                set_config_int(g_app.configPath, "profiles", "selected_slot", slot);
+                if (!set_config_int(g_app.configPath, "profiles", "selected_slot", slot)) {
+                    write_error_report_log_for_user_failure(
+                        "Selected profile persistence failed",
+                        "The profile loaded into the editor, but selected_slot failed readback");
+                    MessageBoxA(g_app.hMainWnd,
+                        "The profile was loaded, but the selected slot could not be saved.",
+                        "Green Curve", MB_OK | MB_ICONWARNING);
+                }
                 refresh_profile_controls_from_config();
                 set_profile_status_text("Loaded slot %d into the GUI. GPU settings were not applied.", slot);
                 invalidate_main_window();
@@ -1009,6 +1099,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 slot += 1;
                 DesiredSettings desired = {};
                 char err[256] = {};
+                if (!validate_configured_gpu_selection_for_client(
+                        err, sizeof(err))) {
+                    MessageBoxA(g_app.hMainWnd, err[0] ? err :
+                        "Select the intended GPU again before saving a profile.",
+                        "Green Curve", MB_OK | MB_ICONWARNING);
+                    break;
+                }
                 if (!refresh_service_snapshot_and_active_desired(err, sizeof(err))) {
                     write_error_report_log_for_user_failure("Profile save refresh failed", err);
                     MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
@@ -1062,6 +1159,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     "Clear profile %d? Any app start or logon assignment for this slot will also be disabled.", slot);
                 if (MessageBoxA(g_app.hMainWnd, confirm, "Green Curve", MB_YESNO | MB_ICONQUESTION) != IDYES) break;
                 char err[256] = {};
+                invalidate_startup_sync_generation();
                 if (!clear_profile_from_config(g_app.configPath, slot, err, sizeof(err))) {
                     write_error_report_log_for_user_failure("Profile clear failed", err);
                     MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
@@ -1103,20 +1201,34 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         break;
                     }
 
-                    // logon_slot and logon_shared_slot are mutually exclusive for this
-                    // account; set both (one to 0) and roll back together on failure.
+                    // logon_slot and logon_shared_slot are one mutually-exclusive
+                    // account choice.  Commit them atomically, verify them under the
+                    // same lock, then synchronize Task Scheduler as a separate step.
                     char err[256] = {};
-                    int prevLogon = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
-                    int prevShared = get_config_int(g_app.configPath, "profiles", "logon_shared_slot", 0);
-                    set_config_int(g_app.configPath, "profiles", "logon_slot", perUserSlot);
-                    set_config_int(g_app.configPath, "profiles", "logon_shared_slot", sharedSlot);
-                    if (!set_startup_task_enabled(should_enable_startup_task_from_config(g_app.configPath), err, sizeof(err))) {
-                        set_config_int(g_app.configPath, "profiles", "logon_slot", prevLogon);
-                        set_config_int(g_app.configPath, "profiles", "logon_shared_slot", prevShared);
-                        write_error_report_log_for_user_failure("Logon startup task update failed", err);
-                        MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
+                    invalidate_startup_sync_generation();
+                    if (!set_logon_profile_selection_atomic(g_app.configPath, perUserSlot,
+                            sharedSlot, err, sizeof(err))) {
+                        write_error_report_log_for_user_failure("Logon profile selection save failed",
+                            err[0] ? err : "Unknown config transaction error");
+                        MessageBoxA(g_app.hMainWnd,
+                            err[0] ? err : "Failed to save the logon profile selection.",
+                            "Green Curve", MB_OK | MB_ICONERROR);
                         refresh_profile_controls_from_config();
                         break;
+                    }
+                    bool taskSynchronized = set_startup_task_enabled(
+                        should_enable_startup_task_from_config(g_app.configPath), err, sizeof(err));
+                    if (!taskSynchronized) {
+                        const char* taskError = err[0] ? err : "Unknown scheduled-task repair error";
+                        write_error_report_log_for_user_failure(
+                            "Logon startup task synchronization failed", taskError);
+                        char warning[640] = {};
+                        StringCchPrintfA(warning, ARRAY_COUNT(warning),
+                            "Your logon profile choice was saved, but the Windows scheduled task could not be synchronized. "
+                            "Logon auto-apply redundancy is degraded until the task is repaired.\r\n\r\n%s",
+                            taskError);
+                        MessageBoxA(g_app.hMainWnd, warning, "Green Curve",
+                            MB_OK | MB_ICONWARNING);
                     }
                     bool startProgramAtLogon = is_start_on_logon_enabled(g_app.configPath);
                     if (sharedSlot > 0) {
@@ -1149,7 +1261,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         refresh_profile_controls_from_config();
                         break;
                     }
-                    set_config_int(g_app.configPath, "profiles", "app_launch_slot", slot);
+                    if (!set_config_int(g_app.configPath, "profiles",
+                            "app_launch_slot", slot)) {
+                        write_error_report_log_for_user_failure(
+                            "App-start profile selection save failed",
+                            "The app_launch_slot value failed persistence readback");
+                        MessageBoxA(g_app.hMainWnd,
+                            "Failed to save the app-start profile selection.",
+                            "Green Curve", MB_OK | MB_ICONERROR);
+                        refresh_profile_controls_from_config();
+                        break;
+                    }
                     set_profile_status_text(slot > 0
                         ? "At app start, slot %d will load into the GUI and apply automatically."
                         : "App start auto-load disabled.", slot);
@@ -1170,38 +1292,33 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             } else if (LOWORD(wParam) > AUTO_PROFILE_MENU_SLOT_BASE &&
                        LOWORD(wParam) <= AUTO_PROFILE_MENU_SLOT_BASE + CONFIG_NUM_SLOTS) {
                 auto_profile_pick_slot(hwnd, LOWORD(wParam) - AUTO_PROFILE_MENU_SLOT_BASE);
-            } else if (HIWORD(wParam) == BN_CLICKED &&
-                       LOWORD(wParam) >= LOCK_BASE_ID && LOWORD(wParam) < LOCK_BASE_ID + VF_NUM_POINTS) {
-                // Lock checkbox clicked — tri-state cycle: NONE → FLATTEN → HARD → NONE
-                // The BN_CLICKED guard is mandatory: these owner-drawn BUTTONs have
-                // WS_TABSTOP, so clicking/tab-focusing an unfocused box first emits
-                // BN_SETFOCUS (and BN_KILLFOCUS on the old one). Without the guard those
-                // focus notifications also matched here and ran the cycle a second time,
-                // making one physical click skip FLATTEN and jump straight to HARD.
+            } else if (LOWORD(wParam) >= LOCK_BASE_ID && LOWORD(wParam) < LOCK_BASE_ID + VF_NUM_POINTS) {
                 int vi = LOWORD(wParam) - LOCK_BASE_ID;
-                debug_log("lock checkbox cycle: vi=%d notify=%u prevMode=%s prevLockedVi=%d\n",
-                          vi, (unsigned)HIWORD(wParam), lock_mode_name(g_app.lockMode), g_app.lockedVi);
-                if (vi == g_app.lockedVi) {
-                    if (g_app.lockMode == LOCK_MODE_FLATTEN) {
-                        // FLATTEN → HARD
-                        g_app.lockMode = LOCK_MODE_HARD;
-                        SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_CHECKED, 0);
-                        InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
-                        if (g_app.lockedCi >= 0) record_ui_action("hard lock point %d @ %u MHz (pinned)", g_app.lockedCi, g_app.lockedFreq);
-                        set_gui_state_dirty(true);
-                    } else {
-                        // HARD → NONE (or any other → NONE)
-                        SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_UNCHECKED, 0);
-                        InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
-                        if (g_app.lockedCi >= 0) record_ui_action("unlock point %d (was %s)", g_app.lockedCi, lock_mode_name(g_app.lockMode));
-                        unlock_all();
-                        set_gui_state_dirty(true);
-                    }
-                } else {
-                    // New lock point — default to FLATTEN
-                    SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_CHECKED, 0);
-                    InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
-                    apply_lock(vi, LOCK_MODE_FLATTEN);
+                LockUiStateStamp currentState = current_lock_ui_state_stamp();
+                LockActivationDecision decision = decide_lock_activation(
+                    (unsigned int)HIWORD(wParam), (unsigned int)BN_CLICKED,
+                    g_lockInputGesture.armed, g_lockInputGesture.consumed,
+                    g_lockInputGesture.vi, vi,
+                    g_lockInputGesture.pressState, currentState);
+                debug_log("lock checkbox command: vi=%d notify=%u decision=%s msgTime=%lu gesture=(armed=%d consumed=%d vi=%d source=0x%04x pressTime=%lu) pressState=(vi=%d ci=%d mhz=%u mode=%s) currentState=(vi=%d ci=%d mhz=%u mode=%s)\n",
+                          vi, (unsigned)HIWORD(wParam), lock_activation_decision_name(decision),
+                          (unsigned long)(DWORD)GetMessageTime(),
+                          g_lockInputGesture.armed ? 1 : 0,
+                          g_lockInputGesture.consumed ? 1 : 0,
+                          g_lockInputGesture.vi,
+                          (unsigned)g_lockInputGesture.sourceMessage,
+                          (unsigned long)g_lockInputGesture.messageTime,
+                          g_lockInputGesture.pressState.lockedVi,
+                          g_lockInputGesture.pressState.lockedCi,
+                          g_lockInputGesture.pressState.lockedFreq,
+                          lock_mode_name(g_lockInputGesture.pressState.lockMode),
+                          currentState.lockedVi, currentState.lockedCi,
+                          currentState.lockedFreq, lock_mode_name(currentState.lockMode));
+                if (decision == LOCK_ACTIVATION_ACCEPT_ARMED) {
+                    g_lockInputGesture.consumed = true;
+                    activate_lock_checkbox_once(vi);
+                } else if (decision == LOCK_ACTIVATION_ACCEPT_UNARMED) {
+                    activate_lock_checkbox_once(vi);
                 }
             } else if (LOWORD(wParam) == LICENSE_BTN_ID) {
                 show_license_dialog(g_app.hMainWnd);
@@ -1244,7 +1361,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_GETMINMAXINFO: {
             MINMAXINFO* mmi = (MINMAXINFO*)lParam;
             if (mmi) {
-                SIZE minSize = main_window_min_size();
+                SIZE minSize = main_window_min_track_size(hwnd);
                 mmi->ptMinTrackSize.x = minSize.cx;
                 mmi->ptMinTrackSize.y = minSize.cy;
             }
@@ -1252,6 +1369,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_DESTROY:
+            persist_main_window_placement(hwnd);
             KillTimer(hwnd, FAN_TELEMETRY_TIMER_ID);
             auto_profile_shutdown(hwnd);
             if (!g_app.usingBackgroundService || g_app.isServiceProcess) {

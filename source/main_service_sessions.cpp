@@ -2,314 +2,423 @@
 // SPDX-License-Identifier: MIT
 
 // ============================================================================
-// Active-user session model (multi-user support)
+// Immutable interactive-session profile context
 // ============================================================================
 //
-// Green Curve controls a single GPU that may be shared by several Windows
-// user accounts on the same machine.  Policy: only the currently-ACTIVE
-// interactive session may drive the GPU, and its resolved profile is applied
-// whenever a real Windows session-change event changes the active identity.
-// This preserves the F-SEC-3 security boundary (a *different* local user cannot
-// drive OC through the SYSTEM service) while keeping service install/repair/manual
-// start non-mutating: starting the service while a user is already logged in is
-// not treated as a synthetic logon.  Fast-User-Switching, RDP, and logon events
-// still apply the now-active user's configured profile.
-//
-// This shard is a pure policy/router layer.  It delegates profile resolution
-// to service_session_logon_resolve_and_load_profile() and hardware writes to
-// service_apply_desired_settings(), both defined in main_service_runtime.cpp.
-// All gating is event + identity comparison — no sleeps or timing bandaids.
+// A logon authorization is bound to {WTS session, user SID, authentication
+// LUID}.  Profile paths are resolved into this local immutable context; the
+// service never uses mutable g_app.configPath to decide what an account may
+// apply at logon.
 
-// Last session we successfully applied a profile for in this process lifetime.
-// Used to debounce session-change events: we only re-apply when the resolved
-// active session identity actually changes, never on every event.  WTS numeric
-// session IDs can be reused after logoff, so the identity is {sessionId, SID}.
-static DWORD g_lastAppliedSessionId = (DWORD)-1;
-static char g_lastAppliedSessionSid[184] = {};
-static ULONGLONG g_lastAppliedUtcMs = 0;
+struct ServiceSessionConfigContext {
+    ServiceLifecycleIdentity identity;
+    bool isLocalAdmin;
+    unsigned int selectedGpuIndex;
+    ConfiguredGpuSelection configuredGpu;
+    char userConfigPath[MAX_PATH];
+    char machineConfigPath[MAX_PATH];
+};
 
-// Auto-reset event the pipe server loop waits on.  Signaling it recycles the
-// current listening pipe instance on an active-user change.  The pipe ACL is
-// user-agnostic now (active-session enforcement lives server-side in
-// service_caller_is_authorized), so this is defensive only: it drops any
-// half-open ConnectNamedPipe from the previous active user and hands the next
-// connect a clean instance.  Created in service_main.
 static HANDLE g_servicePipeRecycleEvent = nullptr;
 
-// Resolve the single "active controlling" session: the physical console
-// session if one is active, otherwise the first WTSActive session (covers RDP
-// and headless sessions).  Returns false when there is no active interactive
-// session at all (e.g. no one logged in).  Thin wrapper so all session-change
-// reasoning funnels through one definition of "active".
-static bool service_get_active_session_for_control(DWORD* sessionIdOut) {
-    return get_active_interactive_session_id(sessionIdOut);
-}
+// Implemented by the long-lived lifecycle coordinator shard included after
+// this one.  The SCM control handler and authenticated pipe handoff only post
+// compact events; they never allocate a worker or touch hardware.
+static bool service_lifecycle_post_session_event(DWORD eventType, DWORD sessionId);
+static bool service_lifecycle_post_logon_handoff(
+    const ServiceLifecycleIdentity* identity);
+static void service_lifecycle_post_prerequisite_signal(const char* reason);
+static bool service_has_pending_logon_apply();
+static void service_lifecycle_worker_reduce_logoff(
+    const ServiceLifecycleIdentity* identity, DWORD sessionId);
+static void service_lifecycle_worker_note_identity_not_ready(
+    DWORD sessionId, ServiceLifecycleTrigger trigger);
+static void service_lifecycle_worker_queue_logon(
+    const ServiceLifecycleIdentity* identity,
+    ServiceLifecycleTrigger trigger,
+    const char* reason);
 
-static bool service_last_applied_session_matches(DWORD sessionId, const char* sid) {
-    return sid && sid[0] &&
-        g_lastAppliedSessionId == sessionId &&
-        g_lastAppliedSessionSid[0] &&
-        strcmp(g_lastAppliedSessionSid, sid) == 0;
-}
+static bool service_resolve_session_config_context(
+    DWORD sessionId,
+    ServiceSessionConfigContext* context,
+    char* err,
+    size_t errSize)
+{
+    if (!context) return false;
+    memset(context, 0, sizeof(*context));
 
-// Shared per-session apply: resolve the user's effective profile (per-user
-// logon_slot, else machine default), wait for the GPU driver to be ready, and
-// apply under the service runtime lock.  Captures owner identity on success.
-// `reason` is a short label for logging only.  Returns true on a successful
-// apply; returns false (without applying) when there is nothing to apply,
-// the driver is not ready, or NVML crash recovery is in flight.
-static bool service_apply_profile_for_session(DWORD sessionId, const char* reason) {
-    if (sessionId == (DWORD)-1) return false;
+    HANDLE token = nullptr;
+    if (!WTSQueryUserToken(sessionId, &token)) {
+        set_message(err, errSize, "WTSQueryUserToken failed (error %lu)", GetLastError());
+        return false;
+    }
 
-    // Wait briefly for the GPU driver to be ready for this session.  A fresh
-    // logon or a service restart can race with driver setup.  Bounded retry,
-    // not a timing bandaid: each attempt actually probes hardware_initialize.
-    bool driverReady = false;
-    for (int attempt = 0; attempt < 20; attempt++) {
-        char detail[256] = {};
-        if (hardware_initialize(detail, sizeof(detail)) && g_app.numPopulated > 0 && g_app.loaded) {
-            driverReady = true;
-            debug_log("session apply%s%s: driver ready on attempt %d for session %lu\n",
-                reason && reason[0] ? " (" : "",
-                reason && reason[0] ? reason : "",
-                attempt + 1, (unsigned long)sessionId);
-            break;
+    bool ok = service_identity_from_token(token, sessionId,
+        &context->identity, err, errSize);
+    if (!ok) {
+        CloseHandle(token);
+        return false;
+    }
+    context->isLocalAdmin = token_is_local_admin(token);
+
+    char localAppData[MAX_PATH] = {};
+    PWSTR localAppDataW = nullptr;
+    HRESULT folderResult = SHGetKnownFolderPath(
+        FOLDERID_LocalAppData, KF_FLAG_DEFAULT, token, &localAppDataW);
+    if (SUCCEEDED(folderResult) && localAppDataW) {
+        copy_wide_to_utf8(localAppDataW, localAppData, ARRAY_COUNT(localAppData));
+    }
+    if (localAppDataW) CoTaskMemFree(localAppDataW);
+
+    // A profile directory fallback is useful on systems where Known Folders
+    // cannot yet resolve during the first moments of logon.  It is still
+    // derived from this exact token and remains local to the context.
+    if (!localAppData[0]) {
+        WCHAR profileDirW[MAX_PATH] = {};
+        DWORD profileSize = ARRAY_COUNT(profileDirW);
+        char profileDir[MAX_PATH] = {};
+        if (!GetUserProfileDirectoryW(token, profileDirW, &profileSize) ||
+            !copy_wide_to_utf8(profileDirW, profileDir, ARRAY_COUNT(profileDir)) ||
+            FAILED(StringCchPrintfA(localAppData, ARRAY_COUNT(localAppData),
+                "%s\\AppData\\Local", profileDir))) {
+            CloseHandle(token);
+            set_message(err, errSize, "The logging-on user's profile path is not ready");
+            return false;
         }
-        Sleep(500);
     }
-    if (!driverReady) {
-        debug_log("session apply%s%s: GPU driver not ready after waiting; skipping apply for session %lu\n",
-            reason && reason[0] ? " (" : "",
-            reason && reason[0] ? reason : "",
-            (unsigned long)sessionId);
+    CloseHandle(token);
+
+    if (FAILED(StringCchPrintfA(context->userConfigPath,
+            ARRAY_COUNT(context->userConfigPath), "%s\\Green Curve\\%s",
+            localAppData, CONFIG_FILE_NAME))) {
+        set_message(err, errSize, "The logging-on user's config path is too long");
+        memset(context, 0, sizeof(*context));
         return false;
     }
+    resolve_machine_config_path(context->machineConfigPath,
+        ARRAY_COUNT(context->machineConfigPath));
+    // selected_index is intentionally loaded later, under the same watched,
+    // cross-process transaction as the logon selector and profile contents.
+    // Resolving it here used to permit a stale GPU + fresh profile combination.
+    return true;
+}
 
-    DesiredSettings desired = {};
-    int slot = 0;
-    bool usedMachineDefault = false;
-    if (!service_session_logon_resolve_and_load_profile(sessionId, &desired, &slot, &usedMachineDefault)) {
-        return false;
+enum ServiceSessionIdentityCheckResult {
+    SERVICE_SESSION_IDENTITY_MATCH = 0,
+    SERVICE_SESSION_IDENTITY_TRANSIENT,
+    SERVICE_SESSION_IDENTITY_SUPERSEDED,
+};
+
+static ServiceSessionIdentityCheckResult service_verify_active_session_identity(
+    const ServiceLifecycleIdentity* expected,
+    ServiceLifecycleIdentity* currentOut,
+    char* detail,
+    size_t detailSize)
+{
+    if (currentOut) memset(currentOut, 0, sizeof(*currentOut));
+    if (!expected || !expected->valid) {
+        set_message(detail, detailSize, "missing expected session identity");
+        return SERVICE_SESSION_IDENTITY_SUPERSEDED;
     }
 
-    lock_service_runtime();
-    if (nvml_crash_recovery_active()) {
-        debug_log("session apply%s%s: NVML crash recovery active, deferring apply for session %lu\n",
-            reason && reason[0] ? " (" : "",
-            reason && reason[0] ? reason : "",
-            (unsigned long)sessionId);
-        unlock_service_runtime();
-        return false;
+    DWORD activeSessionId = (DWORD)-1;
+    if (!get_active_interactive_session_id(&activeSessionId)) {
+        set_message(detail, detailSize, "no active interactive session");
+        return SERVICE_SESSION_IDENTITY_TRANSIENT;
+    }
+    if (activeSessionId != expected->sessionId) {
+        // A task triggered at logon can run just before Windows marks its WTS
+        // session active, and fast-user switching can temporarily make another
+        // session active. Neither event supersedes this authenticated login.
+        // Retain it until a real readiness signal, matching logoff, or a token
+        // with a different authentication LUID proves that the incarnation was
+        // replaced.
+        ServiceLifecycleIdentity expectedSessionNow = {};
+        char identityDetail[128] = {};
+        if (service_resolve_session_identity(expected->sessionId,
+                &expectedSessionNow, identityDetail,
+                sizeof(identityDetail)) &&
+            !service_lifecycle_identity_equal(expected,
+                &expectedSessionNow)) {
+            set_message(detail, detailSize,
+                "session %lu authentication identity was superseded while inactive",
+                (unsigned long)expected->sessionId);
+            return SERVICE_SESSION_IDENTITY_SUPERSEDED;
+        }
+        set_message(detail, detailSize,
+            "session %lu is not active yet (active session %lu)",
+            (unsigned long)expected->sessionId,
+            (unsigned long)activeSessionId);
+        return SERVICE_SESSION_IDENTITY_TRANSIENT;
     }
 
-    desired.resetOcBeforeApply = true;
-    char result[512] = {};
-    debug_log("session apply%s%s: applying %s slot %d for session %lu (gpu=%d mem=%d power=%d fanMode=%d)\n",
-        reason && reason[0] ? " (" : "",
-        reason && reason[0] ? reason : "",
-        usedMachineDefault ? "machine-wide default" : "per-user",
-        slot, (unsigned long)sessionId,
-        desired.hasGpuOffset ? desired.gpuOffsetMHz : 0,
-        desired.hasMemOffset ? desired.memOffsetMHz : 0,
-        desired.hasPowerLimit ? desired.powerLimitPct : 0,
-        desired.hasFan ? desired.fanMode : -1);
-    bool ok = service_apply_desired_settings(&desired, false, result, sizeof(result));
-    if (ok) {
-        service_capture_owner_identity(usedMachineDefault ? "logon task" : "logon task", sessionId);
-        debug_log("session apply%s%s: applied %s slot %d for session %lu: %s\n",
-            reason && reason[0] ? " (" : "",
-            reason && reason[0] ? reason : "",
-            usedMachineDefault ? "machine-wide default" : "per-user",
-            slot, (unsigned long)sessionId, result[0] ? result : "ok");
-        g_lastAppliedSessionId = sessionId;
-        if (g_serviceUserPathsResolved &&
-            g_serviceUserPathsSessionId == sessionId &&
-            g_serviceUserPathsSid[0]) {
-            StringCchCopyA(g_lastAppliedSessionSid, ARRAY_COUNT(g_lastAppliedSessionSid), g_serviceUserPathsSid);
-        } else {
-            char sidErr[128] = {};
-            if (!service_resolve_session_user_sid(sessionId, g_lastAppliedSessionSid, sizeof(g_lastAppliedSessionSid), sidErr, sizeof(sidErr))) {
-                g_lastAppliedSessionSid[0] = 0;
-                debug_log("session apply%s%s: applied session %lu but could not record user SID for debounce: %s\n",
-                    reason && reason[0] ? " (" : "",
-                    reason && reason[0] ? reason : "",
-                    (unsigned long)sessionId,
-                    sidErr[0] ? sidErr : "unknown");
+    ServiceLifecycleIdentity current = {};
+    if (!service_resolve_session_identity(activeSessionId, &current,
+            detail, detailSize)) {
+        return SERVICE_SESSION_IDENTITY_TRANSIENT;
+    }
+    if (!service_lifecycle_identity_equal(expected, &current)) {
+        set_message(detail, detailSize,
+            "session identity changed (session=%lu expectedAuth=%llu currentAuth=%llu)",
+            (unsigned long)activeSessionId,
+            (unsigned long long)expected->authenticationId,
+            (unsigned long long)current.authenticationId);
+        return SERVICE_SESSION_IDENTITY_SUPERSEDED;
+    }
+    if (currentOut) *currentOut = current;
+    return SERVICE_SESSION_IDENTITY_MATCH;
+}
+
+static bool service_enter_config_storage_lock_interruptible(
+    HANDLE* acquiredMutex) {
+    return enter_config_storage_lock_interruptible(
+        g_serviceStopEvent, acquiredMutex);
+}
+
+static ServiceLogonProfileResolveResult service_load_logon_profile_from_context(
+    ServiceSessionConfigContext* context,
+    DesiredSettings* desired,
+    int* slotOut,
+    ServiceProfileSource* sourceOut)
+{
+    if (!context || !context->identity.valid || !desired || !slotOut || !sourceOut) {
+        return SERVICE_LOGON_PROFILE_INVALID;
+    }
+    memset(desired, 0, sizeof(*desired));
+    *slotOut = 0;
+    *sourceOut = SERVICE_PROFILE_SOURCE_NONE;
+
+    // Read the selector, referenced slots, machine default and policy as one
+    // cross-process config transaction.  Every Green Curve writer holds this
+    // mutex across its atomic rewrite; taking it once here prevents a logon
+    // attempt from combining the old shared selector with the new per-user
+    // selector (or vice versa) and incorrectly concluding that no profile was
+    // configured.  The nested config helpers are intentionally recursive on
+    // both the process critical section and the Win32 mutex.
+    HANDLE configMutex = nullptr;
+    if (!service_enter_config_storage_lock_interruptible(&configMutex)) {
+        debug_log("logon profile context: config transaction lock unavailable; keeping intent pending\n");
+        return SERVICE_LOGON_PROFILE_TRANSIENT;
+    }
+    ServiceLogonProfileResolveResult transactionResult = [&]() {
+
+    DWORD attrs = GetFileAttributesA(context->userConfigPath);
+    bool userConfigPresent = attrs != INVALID_FILE_ATTRIBUTES &&
+        (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+
+    int userSlot = get_config_int(context->userConfigPath,
+        "profiles", "logon_slot", 0);
+    if (userSlot < 0 || userSlot > CONFIG_NUM_SLOTS) userSlot = 0;
+    bool hasPerUser = userSlot > 0 &&
+        is_profile_slot_saved(context->userConfigPath, userSlot);
+    bool perUserPending = userSlot > 0 && !hasPerUser;
+
+    int sharedSlot = get_config_int(context->userConfigPath,
+        "profiles", "logon_shared_slot", 0);
+    if (sharedSlot < 0 || sharedSlot > CONFIG_NUM_SLOTS) sharedSlot = 0;
+    bool haveMachinePath = context->machineConfigPath[0] != 0;
+    bool hasShared = haveMachinePath && sharedSlot > 0 &&
+        is_machine_profile_slot_saved(sharedSlot);
+    bool sharedPending = sharedSlot > 0 && !hasShared;
+
+    int machineSlot = 0;
+    bool hasMachineDefault = get_machine_logon_slot(&machineSlot) &&
+        machineSlot > 0 && haveMachinePath &&
+        is_machine_profile_slot_saved(machineSlot);
+    bool machineDefaultPending = machineSlot > 0 && !hasMachineDefault;
+
+    bool policyActive = false;
+    if (!get_machine_restrict_policy(&policyActive)) {
+        debug_log("logon profile context: protected shared-only policy is unreadable; failing closed until config readiness changes\n");
+        return SERVICE_LOGON_PROFILE_TRANSIENT;
+    }
+    LogonProfileSource selected = resolve_logon_profile_source(
+        policyActive, context->isLocalAdmin, sharedSlot, hasShared, userSlot,
+        hasPerUser, hasMachineDefault);
+    debug_log("logon profile context: session=%lu sid=%s auth=%llu config=%s present=%d policy=%d admin=%d shared=%d/%d user=%d/%d machine=%d/%d source=%d\n",
+        (unsigned long)context->identity.sessionId,
+        context->identity.sid,
+        (unsigned long long)context->identity.authenticationId,
+        context->userConfigPath,
+        userConfigPresent ? 1 : 0, policyActive ? 1 : 0,
+        context->isLocalAdmin ? 1 : 0,
+        sharedSlot, hasShared ? 1 : 0,
+        userSlot, hasPerUser ? 1 : 0,
+        machineSlot, hasMachineDefault ? 1 : 0,
+        (int)selected);
+
+    char loadErr[256] = {};
+    auto load_and_validate = [&](const char* path, int slot) -> bool {
+        return path && path[0] &&
+            load_profile_from_config(path, slot, desired, loadErr, sizeof(loadErr)) &&
+            desired_settings_have_explicit_state(desired, true,
+                loadErr, sizeof(loadErr));
+    };
+    auto bind_user_gpu = [&]() -> bool {
+        char gpuErr[256] = {};
+        if (!userConfigPresent ||
+            !load_configured_gpu_selection(context->userConfigPath,
+                &context->configuredGpu, gpuErr, sizeof(gpuErr))) {
+            debug_log("logon profile context: per-user GPU binding is not coherent for session=%lu: %s\n",
+                (unsigned long)context->identity.sessionId,
+                gpuErr[0] ? gpuErr : "user config is not mounted");
+            return false;
+        }
+        context->selectedGpuIndex = context->configuredGpu.legacyIndex;
+        return true;
+    };
+    auto bind_machine_gpu = [&](int slot) -> bool {
+        char gpuErr[256] = {};
+        if (load_machine_profile_gpu_selection(slot,
+                &context->configuredGpu, gpuErr, sizeof(gpuErr))) {
+            context->selectedGpuIndex = context->configuredGpu.legacyIndex;
+            debug_log("logon profile context: shared slot %d uses published GPU binding legacy=%u stable=%d\n",
+                slot, context->configuredGpu.legacyIndex,
+                context->configuredGpu.stableIdentityPresent ? 1 : 0);
+            return true;
+        }
+        // Compatibility for profiles published by older versions. The later
+        // immutable target resolver accepts this weak ordinal only when the
+        // machine has exactly one adapter; multi-GPU systems fail closed.
+        memset(&context->configuredGpu, 0, sizeof(context->configuredGpu));
+        context->selectedGpuIndex = 0;
+        debug_log("logon profile context: shared slot %d has no coherent GPU binding (%s); allowing legacy ordinal 0 only if hardware proves single-adapter\n",
+            slot, gpuErr[0] ? gpuErr : "missing section");
+        return true;
+    };
+
+    switch (selected) {
+        case LOGON_PROFILE_SOURCE_PENDING:
+            debug_log("logon profile context: explicit selection is not coherently materialized; keeping intent pending\n");
+            return SERVICE_LOGON_PROFILE_TRANSIENT;
+
+        case LOGON_PROFILE_SOURCE_SHARED_BANK:
+            if (load_and_validate(context->machineConfigPath, sharedSlot) &&
+                bind_machine_gpu(sharedSlot)) {
+                *slotOut = sharedSlot;
+                *sourceOut = SERVICE_PROFILE_SOURCE_SHARED_SLOT;
+                return SERVICE_LOGON_PROFILE_RESOLVED;
             }
-        }
-        FILETIME ft = {};
-        GetSystemTimeAsFileTime(&ft);
-        ULARGE_INTEGER uli = {};
-        uli.LowPart = ft.dwLowDateTime;
-        uli.HighPart = ft.dwHighDateTime;
-        g_lastAppliedUtcMs = uli.QuadPart / 10000ULL;
-    } else {
-        debug_log("session apply%s%s: failed to apply %s slot %d for session %lu: %s\n",
-            reason && reason[0] ? " (" : "",
-            reason && reason[0] ? reason : "",
-            usedMachineDefault ? "machine-wide default" : "per-user",
-            slot, (unsigned long)sessionId, result[0] ? result : "unknown");
+            break;
+
+        case LOGON_PROFILE_SOURCE_PER_USER:
+            if (load_and_validate(context->userConfigPath, userSlot) &&
+                bind_user_gpu()) {
+                *slotOut = userSlot;
+                *sourceOut = SERVICE_PROFILE_SOURCE_USER_SLOT;
+                return SERVICE_LOGON_PROFILE_RESOLVED;
+            }
+            break;
+
+        case LOGON_PROFILE_SOURCE_MACHINE_DEFAULT:
+            if (load_and_validate(context->machineConfigPath, machineSlot) &&
+                bind_machine_gpu(machineSlot)) {
+                *slotOut = machineSlot;
+                *sourceOut = SERVICE_PROFILE_SOURCE_MACHINE_SLOT;
+                return SERVICE_LOGON_PROFILE_RESOLVED;
+            }
+            break;
+
+        case LOGON_PROFILE_SOURCE_NONE:
+        default:
+            // A missing account config at early logon normally means the user
+            // profile has not mounted yet.  It is never proof that the user has
+            // no configured profile, so retain the authorization until a real
+            // config/identity signal or logoff.  Likewise, a selector that is
+            // present while its referenced slot is temporarily unreadable is a
+            // prerequisite failure, not a terminal no-profile result.
+            bool eligiblePerUserPending = perUserPending &&
+                (!policyActive || context->isLocalAdmin);
+            if (!userConfigPresent || eligiblePerUserPending || sharedPending ||
+                machineDefaultPending) {
+                return SERVICE_LOGON_PROFILE_TRANSIENT;
+            }
+            return SERVICE_LOGON_PROFILE_NONE;
     }
-    unlock_service_runtime();
-    return ok;
+
+    debug_log("logon profile context: configured profile failed validation: %s\n",
+        loadErr[0] ? loadErr : "unknown");
+    // A selected profile can be temporarily unreadable while another process
+    // atomically replaces the INI or while the user profile finishes mounting.
+    // Treat this as a config prerequisite, never as permission to fall back to
+    // an arbitrary profile or as a terminal hardware failure. The lifecycle
+    // worker arms directory notifications and retries only on a real change.
+    return SERVICE_LOGON_PROFILE_TRANSIENT;
+    }();
+    leave_config_storage_lock(configMutex);
+    return transactionResult;
 }
 
-// Pure policy helper (unit-testable): does a given WTS session-change event
-// type participate in re-resolving the active controlling session?  Logon,
-// logoff, and console connect/disconnect all change who the active user may
-// be.  Lock/unlock and remote connect/disconnect of a non-console session do
-// NOT change the active controlling user (screen lock is not a user switch;
-// remote-control is a session-internal redirect).
-static bool session_event_relevant_for_active_user(DWORD eventType) {
-    return eventType == WTS_SESSION_LOGON ||
-           eventType == WTS_SESSION_LOGOFF ||
-           eventType == WTS_CONSOLE_CONNECT ||
-           eventType == WTS_CONSOLE_DISCONNECT;
-}
+static bool service_logoff_identity_from_cached_state(
+    DWORD sessionId,
+    ServiceLifecycleIdentity* identityOut);
 
-// Policy router invoked from the SCM SERVICE_CONTROL_SESSIONCHANGE handler.
-// Re-resolves the active session; if its identity differs from the last
-// session we applied for, applies that session's profile (or does nothing if
-// no active interactive session remains).  Also forces a pipe-instance
-// recycle so the ACL is rebuilt for the new active user.  Debounced: events
-// that do not change the resolved active session are ignored to avoid apply
-// storms.  Runs on a short-lived worker thread spawned by the handler.
+// Called only by the lifecycle worker.  Only WTS_SESSION_LOGON creates a WTS
+// logon authorization.  Connect/disconnect/unlock events are readiness cues;
+// they must never synthesize a new login for whichever session happens to be
+// active when the worker runs.
 static void service_handle_session_change(DWORD eventType, DWORD eventSessionId) {
-    const char* evtName = "unknown";
+    const char* name = "other";
     switch (eventType) {
-        case WTS_SESSION_LOGON: evtName = "SESSION_LOGON"; break;
-        case WTS_SESSION_LOGOFF: evtName = "SESSION_LOGOFF"; break;
-        case WTS_CONSOLE_CONNECT: evtName = "CONSOLE_CONNECT"; break;
-        case WTS_CONSOLE_DISCONNECT: evtName = "CONSOLE_DISCONNECT"; break;
-        default: evtName = "other"; break;
+        case WTS_SESSION_LOGON: name = "WTS logon"; break;
+        case WTS_SESSION_LOGOFF: name = "WTS logoff"; break;
+        case WTS_CONSOLE_CONNECT: name = "console connect"; break;
+        case WTS_CONSOLE_DISCONNECT: name = "console disconnect"; break;
+        case WTS_SESSION_UNLOCK: name = "session unlock"; break;
+        default: break;
     }
+    debug_log("lifecycle session cue: %s session=%lu\n", name,
+        (unsigned long)eventSessionId);
 
-    if (!session_event_relevant_for_active_user(eventType)) {
-        debug_log("session change: %s for session %lu is not relevant for active-user policy, ignoring\n",
-            evtName, (unsigned long)eventSessionId);
+    if (eventType == WTS_SESSION_UNLOCK ||
+        eventType == WTS_CONSOLE_CONNECT ||
+        eventType == WTS_CONSOLE_DISCONNECT) {
+        service_lifecycle_post_prerequisite_signal(name);
+        if (g_servicePipeRecycleEvent) SetEvent(g_servicePipeRecycleEvent);
         return;
     }
+
+    if (eventType == WTS_SESSION_LOGOFF) {
+        ServiceLifecycleIdentity loggedOff = {};
+        // Prefer the cached incarnation.  By the time the worker processes a
+        // logoff, Windows may already have reused the numeric session and
+        // WTSQueryUserToken would then describe the *new* authentication LUID.
+        if (!service_logoff_identity_from_cached_state(
+                eventSessionId, &loggedOff)) {
+            service_resolve_session_identity(eventSessionId, &loggedOff,
+                nullptr, 0);
+        }
+        service_lifecycle_worker_reduce_logoff(&loggedOff, eventSessionId);
+        if (g_servicePipeRecycleEvent) SetEvent(g_servicePipeRecycleEvent);
+        return;
+    }
+
+    if (eventType != WTS_SESSION_LOGON) return;
 
     DWORD activeSessionId = (DWORD)-1;
-    bool hasActive = service_get_active_session_for_control(&activeSessionId);
-    char activeSid[184] = {};
-    char sidErr[128] = {};
-    bool haveActiveSid = false;
-    if (hasActive) {
-        haveActiveSid = service_resolve_session_user_sid(activeSessionId, activeSid, sizeof(activeSid), sidErr, sizeof(sidErr));
-        if (!haveActiveSid) {
-            debug_log("session change: %s for session %lu; active session %lu SID unavailable: %s\n",
-                evtName,
-                (unsigned long)eventSessionId,
-                (unsigned long)activeSessionId,
-                sidErr[0] ? sidErr : "unknown");
-        }
-    }
-    debug_log("session change: %s for session %lu; resolved active identity = %s%lu/%s, last applied = %lu/%s\n",
-        evtName, (unsigned long)eventSessionId,
-        hasActive ? "" : "<none> ",
-        hasActive ? (unsigned long)activeSessionId : 0UL,
-        (hasActive && haveActiveSid) ? activeSid : "<unknown>",
-        (unsigned long)g_lastAppliedSessionId,
-        g_lastAppliedSessionSid[0] ? g_lastAppliedSessionSid : "<none>");
-
-    // Recycle the listening pipe instance on the active-user change (defensive:
-    // the ACL is user-agnostic, so this only hands the next connect a clean
-    // instance; active-session enforcement is server-side).
-    if (g_servicePipeRecycleEvent) {
-        SetEvent(g_servicePipeRecycleEvent);
-    }
-
-    // Debounce: only apply when the resolved active session identity changed.
-    if (!hasActive) {
-        // No active interactive session remains (e.g. everyone logged off).
-        // Do not reset GPU state here — leave the last applied settings in
-        // place; a fresh logon will re-resolve and apply.
+    if (!get_active_interactive_session_id(&activeSessionId) ||
+        activeSessionId != eventSessionId) {
+        // Bind the pending prerequisite to the session that actually received
+        // the WTS logon.  A later task handoff/connect cue may resolve it once
+        // that exact session becomes active; never apply the old active user's
+        // profile because Windows delivered the notification slightly early.
+        service_lifecycle_worker_note_identity_not_ready(eventSessionId,
+            SERVICE_LIFECYCLE_TRIGGER_WTS_LOGON);
+        debug_log("lifecycle session cue: WTS logon session %lu is not active yet (active=%lu); exact identity remains pending\n",
+            (unsigned long)eventSessionId, (unsigned long)activeSessionId);
         return;
     }
-    if (!haveActiveSid) {
+    ServiceLifecycleIdentity active = {};
+    char identityErr[256] = {};
+    if (!service_resolve_session_identity(eventSessionId, &active,
+            identityErr, sizeof(identityErr))) {
+        debug_log("lifecycle session cue: active identity not ready: %s\n",
+            identityErr[0] ? identityErr : "unknown");
+        service_lifecycle_worker_note_identity_not_ready(eventSessionId,
+            SERVICE_LIFECYCLE_TRIGGER_WTS_LOGON);
         return;
     }
-    if (service_last_applied_session_matches(activeSessionId, activeSid)) {
-        debug_log("session change: active identity %lu/%s unchanged since last apply, skipping re-apply\n",
-            (unsigned long)activeSessionId, activeSid);
-        return;
-    }
-
-    service_apply_profile_for_session(activeSessionId, evtName);
-}
-
-// Boot-time safety net for the no-snapshot startup coordinator.  On a boot
-// auto-start where a user is ALREADY logged in when the service comes up, the
-// live WTS_SESSION_LOGON that normally drives the apply was never delivered to
-// us (it fired before service_control_handler_ex registered, or the console
-// session was resumed already-active under Windows Fast Startup).  Without this,
-// the GPU stays at driver defaults until the user opens the GUI (which applies
-// on launch).  Here we resolve+apply that session's logon profile ONCE, reusing
-// service_apply_profile_for_session() so behavior is byte-for-byte identical to a
-// real logon (including the {session,SID} debounce, so a racing real logon event
-// does not double-apply).  Gating is delegated to the pure, unit-tested
-// should_reconcile_active_session_at_boot() so manual (--manual) starts stay
-// non-mutating and an SCM crash-restart within the same boot cannot re-drive it.
-static void service_maybe_reconcile_active_session_at_boot(const char* reason) {
-    const char* label = (reason && reason[0]) ? reason : "boot-active-session";
-
-    DWORD activeSessionId = (DWORD)-1;
-    bool hasActive = service_get_active_session_for_control(&activeSessionId);
-
-    // Enable the user's debug logging as early as possible so this boot decision
-    // and the ensuing apply are captured in the user's log.  Honors the [debug]
-    // enabled opt-out (stays silent if the user disabled logging); before this,
-    // boot-phase service logging is off because no user config has been read yet.
-    if (hasActive) {
-        char pathErr[256] = {};
-        if (resolve_service_user_data_paths(activeSessionId, pathErr, sizeof(pathErr))) {
-            refresh_service_debug_logging_from_config();
-        }
-    }
-
-    bool manual = g_serviceManualStart;
-    bool alreadyDone = service_boot_reconcile_already_done();
-    unsigned int recentRestarts = service_count_recent_restarts();
-    bool inLoop = recentRestarts >= SERVICE_RESTART_LOOP_THRESHOLD;
-
-    // Best-effort: did the live logon router already apply for this exact
-    // identity (it won the race)?  Avoids a redundant second apply.
-    bool alreadyApplied = false;
-    if (hasActive) {
-        char activeSid[184] = {};
-        char sidErr[128] = {};
-        if (service_resolve_session_user_sid(activeSessionId, activeSid, sizeof(activeSid), sidErr, sizeof(sidErr))) {
-            alreadyApplied = service_last_applied_session_matches(activeSessionId, activeSid);
-        }
-    }
-
-    bool doReconcile = should_reconcile_active_session_at_boot(
-        manual, alreadyDone, inLoop, hasActive, alreadyApplied);
-    debug_log("boot reconcile decision (%s): activeSession=%s%lu manual=%d alreadyThisBoot=%d restartLoop=%d(recent=%u) alreadyApplied=%d -> %s\n",
-        label,
-        hasActive ? "" : "<none> ",
-        hasActive ? (unsigned long)activeSessionId : 0UL,
-        manual ? 1 : 0, alreadyDone ? 1 : 0, inLoop ? 1 : 0, recentRestarts,
-        alreadyApplied ? 1 : 0, doReconcile ? "reconcile" : "skip");
-
-    if (!doReconcile) {
-        // If we skipped because the live logon router already applied for this
-        // identity, stamp the marker so a later same-boot restart does not
-        // reconsider.  Other skip reasons (manual / restart-loop / no active
-        // session) intentionally leave the marker unset so the safety net can
-        // still arm later this boot (e.g. once a loop clears or a user logs in
-        // and the live logon event drives the apply).
-        if (hasActive && alreadyApplied) service_mark_boot_reconcile_done();
-        return;
-    }
-
-    bool applied = service_apply_profile_for_session(activeSessionId, label);
-    // Stamp regardless of apply success: at-most-once per boot so an SCM
-    // crash-restart loop cannot re-drive a failing/unstable apply within the same
-    // boot.  A real later session change can still apply, and the next boot
-    // re-arms the safety net (the marker is keyed to this boot's identity).
-    service_mark_boot_reconcile_done();
-    debug_log("boot reconcile: applied=%d for session %lu (marker stamped for this boot)\n",
-        applied ? 1 : 0, (unsigned long)activeSessionId);
+    service_lifecycle_worker_queue_logon(&active,
+        SERVICE_LIFECYCLE_TRIGGER_WTS_LOGON, name);
+    if (g_servicePipeRecycleEvent) SetEvent(g_servicePipeRecycleEvent);
 }

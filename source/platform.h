@@ -225,6 +225,7 @@ static inline int gc_vsnprintf(char* dst, size_t dstSize, const char* fmt, va_li
     ;
 static inline int gc_vsnprintf(char* dst, size_t dstSize, const char* fmt, va_list ap) {
     if (!dst || dstSize == 0) return -1;
+    // flawfinder: ignore -- gc_vsnprintf has a printf-format compiler attribute.
     int n = vsnprintf(dst, dstSize, fmt, ap);
     if (n < 0) { dst[0] = '\0'; return -1; }
     if ((size_t)n >= dstSize) return (int)(dstSize - 1); // truncated but NUL-terminated

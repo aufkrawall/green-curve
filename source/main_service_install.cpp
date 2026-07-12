@@ -132,14 +132,10 @@ static bool service_configure_failure_actions(SC_HANDLE svc) {
         }
         return false;
     }
-    // Secondary / defense-in-depth: opt into non-crash failure actions so that a
-    // *reported* SERVICE_STOPPED carrying a non-zero dwWin32ExitCode would also
-    // trigger SC_ACTION_RESTART.  The PRIMARY driver-recovery mechanism does NOT
-    // rely on this — service_main's recovery exit terminates WITHOUT reporting
-    // SERVICE_STOPPED, which fires the failure action via the SCM's default path
-    // (no flag needed).  This flag only ever applies on a fresh install (admin);
-    // the LocalSystem service cannot set it at runtime.  A normal stop is exempt
-    // because the graceful-shutdown path reports dwWin32ExitCode == NO_ERROR.
+    // Unexpected-crash availability net only. Controlled driver recovery reports
+    // a clean stop and is restarted exclusively by the nonce-bound helper; it
+    // never relies on SCM failure actions. Any failure-action restart has no
+    // nonce and is therefore strictly non-restoring.
     SERVICE_FAILURE_ACTIONS_FLAG faf = {};
     faf.fFailureActionsOnNonCrashFailures = TRUE;
     if (!ChangeServiceConfig2W(svc, SERVICE_CONFIG_FAILURE_ACTIONS_FLAG, &faf)) {
@@ -150,9 +146,8 @@ static bool service_configure_failure_actions(SC_HANDLE svc) {
 }
 
 // Open our own service and (re)apply the SCM failure actions.  Called from
-// service_main() at startup so the auto-restart actions are guaranteed present
-// even on installs predating this code (the driver-recovery restart depends on
-// them).
+// service_main() at startup so the unexpected-crash availability net remains
+// present even on installs predating this code. It never authorizes restoration.
 static void service_ensure_failure_actions_configured() {
     ScopedServiceHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
     if (!scm.valid()) {
@@ -282,12 +277,10 @@ static bool service_install_or_remove(bool enable, char* err, size_t errSize) {
                 return false;
             }
             if (ssp.dwCurrentState != SERVICE_RUNNING) {
-                // Pass --manual so the freshly-started service knows this is a
-                // GUI/CLI-initiated start (install / repair / restart) and stays
-                // non-mutating: the interactive client drives its own apply.  A
-                // boot auto-start by the SCM passes no args, which is what lets
-                // the startup coordinator reconcile the active session's logon
-                // profile (Fast Startup / autologon safety net).
+                // Keep the legacy --manual argument for installed-version
+                // compatibility. Every ordinary start reason is non-mutating;
+                // Fast Startup/autologon restoration comes only from the real
+                // authenticated scheduled-task handoff (coalesced with WTS).
                 LPCWSTR startArgs[] = { L"--manual" };
                 if (!StartServiceW(svc.get(), 1, startArgs)) {
                     DWORD startErr = GetLastError();

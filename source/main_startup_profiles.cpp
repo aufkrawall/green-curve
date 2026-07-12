@@ -1,0 +1,286 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+// SPDX-License-Identifier: MIT
+
+// ============================================================================
+// GUI startup profile and independent per-user tray startup observer
+// ============================================================================
+
+#include "profile_startup_policy.h"
+
+#ifndef GREEN_CURVE_SERVICE_BINARY
+
+static void show_live_gpu_state_for_disabled_app_launch() {
+    int selectedSlot = get_config_int(
+        g_app.configPath, "profiles", "selected_slot", CONFIG_DEFAULT_SLOT);
+    bool selectedSlotValid = selectedSlot >= 1 && selectedSlot <= CONFIG_NUM_SLOTS;
+    bool selectedSlotSaved = selectedSlotValid
+        && is_profile_slot_saved(g_app.configPath, selectedSlot);
+
+    // Startup is a new editor session. Discard any incidental control-creation
+    // notifications before asking the service for the authoritative live state.
+    set_gui_state_dirty(false);
+    g_app.guiHasUserModifiedValues = false;
+    g_app.loadedSharedSlot = 0;
+
+    char snapshotErr[256] = {};
+    bool refreshed = refresh_service_snapshot_and_active_desired(
+        snapshotErr, sizeof(snapshotErr));
+    update_all_gui_for_service_state();
+
+    ControlState control = {};
+    bool haveControl = get_effective_control_state(&control);
+    debug_log("startup live editor: snapshot=%d selectedSlot=%d saved=%d (saved slot deliberately not loaded) loaded=%d activeSource=%d activeSlot=%d gpu=%d mem=%d power=%d fanMode=%d lockCi=%d lockMHz=%u detail=%s\n",
+        refreshed ? 1 : 0,
+        selectedSlot,
+        selectedSlotSaved ? 1 : 0,
+        g_app.loaded ? 1 : 0,
+        (int)g_app.serviceActiveProfileSource,
+        g_app.serviceActiveProfileSlot,
+        haveControl && control.hasGpuOffset ? control.gpuOffsetMHz : 0,
+        haveControl && control.hasMemOffset ? control.memOffsetMHz : 0,
+        haveControl && control.hasPowerLimit ? control.powerLimitPct : 0,
+        haveControl && control.hasFan ? control.fanMode : -1,
+        g_app.lockedCi,
+        g_app.lockedFreq,
+        snapshotErr[0] ? snapshotErr : "ok");
+
+    if (!refreshed) {
+        set_profile_status_text(
+            "App start auto-load is disabled. Live GPU state is unavailable: %s",
+            snapshotErr[0] ? snapshotErr : "unknown error");
+    } else if (selectedSlotSaved) {
+        set_profile_status_text(
+            "Showing current GPU state. Slot %d is selected and saved; click Load to edit its saved values.",
+            selectedSlot);
+    } else {
+        set_profile_status_text("Showing current GPU state. App start auto-load is disabled.");
+    }
+}
+
+static void maybe_load_app_launch_profile_to_gui() {
+    int appLaunchSlot = get_config_int(g_app.configPath, "profiles", "app_launch_slot", 0);
+    StartupEditorSource editorSource = startup_editor_source(
+        g_app.launchedFromLogon, appLaunchSlot, CONFIG_NUM_SLOTS);
+    if (editorSource == STARTUP_EDITOR_SOURCE_LOGON_SERVICE) {
+        set_profile_status_text("Ready. Skipped app-start auto-load for the logon launch.");
+        return;
+    }
+    if (editorSource == STARTUP_EDITOR_SOURCE_LIVE_SNAPSHOT) {
+        show_live_gpu_state_for_disabled_app_launch();
+        return;
+    }
+    char gpuSelectionErr[256] = {};
+    if (!validate_configured_gpu_selection_for_client(
+            gpuSelectionErr, sizeof(gpuSelectionErr))) {
+        debug_log("app-start profile: blocked because the durable GPU identity is unresolved: %s\n",
+            gpuSelectionErr[0] ? gpuSelectionErr : "unknown error");
+        set_profile_status_text(
+            "App-start apply was blocked because the previously selected GPU is missing or ambiguous. Select the intended GPU again.");
+        return;
+    }
+    if (!is_profile_slot_saved(g_app.configPath, appLaunchSlot)) {
+        bool disabled = set_config_int(g_app.configPath, "profiles", "app_launch_slot", 0);
+        set_profile_status_text(disabled
+            ? "App start slot %d was empty and has been disabled."
+            : "App start slot %d is empty, but disabling its persisted assignment failed.",
+            appLaunchSlot);
+        refresh_profile_controls_from_config();
+        layout_bottom_buttons(g_app.hMainWnd);
+        return;
+    }
+    DesiredSettings desired = {};
+    char err[256] = {};
+    if (!load_profile_from_config(g_app.configPath, appLaunchSlot, &desired, err, sizeof(err))) {
+        if (!set_config_int(g_app.configPath, "profiles", "app_launch_slot", 0)) {
+            debug_log("app-start profile: failed to persist disabling invalid slot %d\n",
+                appLaunchSlot);
+        }
+        refresh_profile_controls_from_config();
+        write_error_report_log_for_user_failure("App-start profile load failed", err);
+        set_profile_status_text("App start load failed: %s", err[0] ? err : "unknown error");
+        return;
+    }
+    if (!desired_settings_have_explicit_state(&desired, true, err, sizeof(err))) {
+        if (!set_config_int(g_app.configPath, "profiles", "app_launch_slot", 0)) {
+            debug_log("app-start profile: failed to persist disabling rejected slot %d\n",
+                appLaunchSlot);
+        }
+        refresh_profile_controls_from_config();
+        write_error_report_log_for_user_failure("App-start profile rejected", err);
+        set_profile_status_text("App start slot %d was rejected: %s", appLaunchSlot, err);
+        return;
+    }
+    char result[512] = {};
+    refresh_background_service_state();
+    if (g_app.usingBackgroundService && g_app.backgroundServiceAvailable) {
+        DesiredSettings activeDesired = {};
+        char snapErr[256] = {};
+        char matchDetail[256] = {};
+        if (refresh_service_snapshot_and_active_desired(snapErr, sizeof(snapErr), &activeDesired)
+            && desired_settings_match_active_service_intent(&desired, &activeDesired, matchDetail, sizeof(matchDetail))) {
+            debug_log("maybe_load_app_launch_profile_to_gui: slot %d already active in background service; skipping reset-before-apply (%s)\n",
+                appLaunchSlot,
+                matchDetail[0] ? matchDetail : "match");
+            populate_desired_into_gui(&desired);
+            if (!set_config_int(g_app.configPath, "profiles", "selected_slot", appLaunchSlot)) {
+                debug_log("app-start profile: matching active slot %d loaded but selected_slot persistence failed\n",
+                    appLaunchSlot);
+            }
+            sync_applied_profile_from_service_metadata();
+            refresh_profile_controls_from_config();
+            set_profile_status_text("Loaded slot %d into the GUI. Background service already has matching active settings, so app-start apply was skipped.", appLaunchSlot);
+            return;
+        }
+        debug_log("maybe_load_app_launch_profile_to_gui: slot %d needs reset-before-apply; service active intent check=%s\n",
+            appLaunchSlot,
+            matchDetail[0] ? matchDetail : (snapErr[0] ? snapErr : "unavailable"));
+    } else {
+        debug_log("maybe_load_app_launch_profile_to_gui: slot %d cannot use active-service skip (usingService=%d available=%d)\n",
+            appLaunchSlot,
+            g_app.usingBackgroundService ? 1 : 0,
+            g_app.backgroundServiceAvailable ? 1 : 0);
+    }
+    debug_log("maybe_load_app_launch_profile_to_gui: applying slot %d with reset-before-apply\n", appLaunchSlot);
+    desired.resetOcBeforeApply = true;
+    bool ok = apply_desired_settings(&desired, false,
+        SERVICE_APPLY_ORIGIN_APP_LAUNCH, SERVICE_PROFILE_SOURCE_USER_SLOT, appLaunchSlot,
+        result, sizeof(result));
+    if (ok) {
+        populate_desired_into_gui(&desired);
+        if (!set_config_int(g_app.configPath, "profiles", "selected_slot", appLaunchSlot)) {
+            debug_log("app-start profile: applied slot %d but selected_slot persistence failed\n",
+                appLaunchSlot);
+        }
+        sync_applied_profile_from_service_metadata();
+        refresh_profile_controls_from_config();
+        set_profile_status_text((g_app.backgroundServiceInstalled && g_app.backgroundServiceAvailable)
+            ? "Loaded slot %d into the GUI and applied it through the background service on app start."
+            : "Loaded slot %d into the GUI and applied it on app start.", appLaunchSlot);
+    } else {
+        char detail[128] = {};
+        refresh_global_state(detail, sizeof(detail));
+        populate_global_controls();
+        if (g_app.loaded) populate_edits();
+        invalidate_main_window();
+        set_profile_status_text("App start apply for slot %d failed and the GUI was refreshed from live state: %s", appLaunchSlot, result);
+    }
+}
+
+// The separate --tray-start GUI may begin before the auto-started service has
+// created its pipe and initialized the GPU.  The service's session coordinator
+// is the sole automatic hardware writer; this state simply keeps the GUI
+// reconnect timer alive until it can show a real service snapshot.
+static const ULONGLONG LOGON_SERVICE_READINESS_MAX_DEFER_MS = 120000ULL;
+
+static void clear_pending_logon_service_readiness(const char* outcome) {
+    if (!g_app.logonServiceReadinessPending) return;
+    debug_log("logon tray client: readiness wait finished (%s), deferredAttempts=%u\n",
+        outcome && outcome[0] ? outcome : "unspecified",
+        g_app.logonServiceReadinessDeferredAttempts);
+    g_app.logonServiceReadinessPending = false;
+    g_app.logonServiceReadinessDeadlineTickMs = 0;
+    g_app.logonServiceReadinessDeferredAttempts = 0;
+}
+
+static bool defer_logon_service_readiness(const char* reason) {
+    const ULONGLONG now = GetTickCount64();
+    if (!g_app.logonServiceReadinessPending) {
+        g_app.logonServiceReadinessPending = true;
+        g_app.logonServiceReadinessDeadlineTickMs = now + LOGON_SERVICE_READINESS_MAX_DEFER_MS;
+        g_app.logonServiceReadinessDeferredAttempts = 0;
+        debug_log("logon tray client: waiting for service snapshot (deadline=%llu ms, reason=%s)\n",
+            g_app.logonServiceReadinessDeadlineTickMs,
+            reason && reason[0] ? reason : "unknown");
+    }
+
+    if (g_app.logonServiceReadinessDeadlineTickMs != 0 && now >= g_app.logonServiceReadinessDeadlineTickMs) {
+        clear_pending_logon_service_readiness("snapshot was not ready within two minutes");
+        set_profile_status_text("The background service has not produced a ready GPU snapshot yet. Automatic logon profile application remains service-owned.");
+        start_service_reconnect_timer_if_needed();
+        return false;
+    }
+
+    g_app.logonServiceReadinessDeferredAttempts++;
+    debug_log_on_change("logon tray client: waiting for service snapshot (installed=%d running=%d available=%d, reason=%s)\n",
+        g_app.backgroundServiceInstalled ? 1 : 0,
+        g_app.backgroundServiceRunning ? 1 : 0,
+        g_app.backgroundServiceAvailable ? 1 : 0,
+        reason && reason[0] ? reason : "unknown");
+    set_profile_status_text("Waiting for the background service and GPU driver before completing tray startup...");
+    start_service_reconnect_timer_if_needed();
+    return true;
+}
+
+// Probe the actual service snapshot, not just SCM's RUNNING state.  A running
+// service has not necessarily created its pipe or initialized NVAPI/NVML yet.
+static bool logon_service_snapshot_ready(char* reason, size_t reasonSize) {
+    if (reason && reasonSize) reason[0] = 0;
+    refresh_background_service_state();
+    if (!g_app.backgroundServiceInstalled) {
+        set_message(reason, reasonSize, "background service is not installed");
+        return false;
+    }
+    if (!g_app.backgroundServiceAvailable) {
+        set_message(reason, reasonSize, "background service pipe is not ready");
+        return false;
+    }
+
+    ServiceSnapshot snapshot = {};
+    char snapshotErr[256] = {};
+    if (!service_client_get_snapshot(&snapshot, snapshotErr, sizeof(snapshotErr))) {
+        set_message(reason, reasonSize, "service snapshot unavailable: %s",
+            snapshotErr[0] ? snapshotErr : "unknown error");
+        return false;
+    }
+    apply_service_snapshot_to_app(&snapshot);
+    if (!snapshot.initialized || !snapshot.loaded || snapshot.numPopulated <= 0) {
+        set_message(reason, reasonSize, "GPU snapshot is not initialized (initialized=%d loaded=%d populated=%d)",
+            snapshot.initialized ? 1 : 0, snapshot.loaded ? 1 : 0, snapshot.numPopulated);
+        return false;
+    }
+    return true;
+}
+
+static void apply_logon_startup_behavior() {
+    if (!g_app.launchedFromLogon) {
+        clear_pending_logon_service_readiness("launch is no longer a logon launch");
+        return;
+    }
+
+    const bool startProgramAtLogon = is_start_on_logon_enabled(g_app.configPath);
+    g_app.startHiddenToTray = startProgramAtLogon;
+
+    char readiness[256] = {};
+    if (!logon_service_snapshot_ready(readiness, sizeof(readiness))) {
+        if (!g_app.backgroundServiceInstalled) {
+            clear_pending_logon_service_readiness("background service is not installed");
+            set_profile_status_text("Background service is not installed. Automatic logon profile application requires the service.");
+            debug_log("logon tray client: service is not installed; no GUI fallback hardware apply will run\n");
+            return;
+        }
+        defer_logon_service_readiness(readiness[0] ? readiness : "service or GPU not ready");
+        return;
+    }
+
+    if (g_app.logonServiceReadinessPending) {
+        debug_log("logon tray client: service snapshot became ready after %u deferred checks\n",
+            g_app.logonServiceReadinessDeferredAttempts);
+        clear_pending_logon_service_readiness("service snapshot ready");
+    }
+    debug_log("logon tray client: initialized service snapshot ready; automatic logon profile application is service-owned\n");
+    set_profile_status_text(startProgramAtLogon
+        ? "Started in the tray at Windows logon. The background service applies the configured logon profile."
+        : "The background service applies the configured logon profile.");
+}
+
+// Called by the GUI reconnect timer.  It retries only UI/service-snapshot
+// readiness; this code path intentionally contains no profile load, reset, or
+// hardware apply.
+static void retry_pending_logon_service_readiness() {
+    if (!g_app.logonServiceReadinessPending) return;
+    debug_log("logon tray client: reconnect timer retrying service snapshot check (attempt=%u)\n",
+        g_app.logonServiceReadinessDeferredAttempts + 1);
+    apply_logon_startup_behavior();
+}
+
+#endif

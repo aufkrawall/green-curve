@@ -227,51 +227,7 @@ static LRESULT CALLBACK LicenseDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LP
     return DefWindowProcA(hwnd, msg, wParam, lParam);
 }
 
-static int layout_rows_per_column() {
-    return (g_app.numVisible + 5) / 6;
-}
-
-static int layout_global_controls_y() {
-    return dp(GRAPH_HEIGHT) + dp(20) + layout_rows_per_column() * dp(20) + dp(6);
-}
-
-static int layout_bottom_buttons_y() {
-    return layout_global_controls_y() + dp(56);
-}
-
-static int layout_bottom_panel_bottom_y() {
-    int buttonsY = layout_bottom_buttons_y();
-    int profileY = buttonsY + dp(40);
-    int autoY = profileY + dp(34);
-    int sharedY = autoY + dp(26);
-    int serviceY = sharedY + dp(26);
-    int hintY = serviceY + dp(26);
-    int statusY = hintY + dp(40);
-    return statusY + dp(18);
-}
-
-static int minimum_client_height() {
-    return nvmax(dp(WINDOW_HEIGHT), layout_bottom_panel_bottom_y() + dp(12));
-}
-
-static SIZE adjusted_window_size_for_client(int clientWidth, int clientHeight, DWORD style, DWORD exStyle) {
-    RECT rc = { 0, 0, clientWidth, clientHeight };
-    typedef BOOL (WINAPI *AdjustWindowRectExForDpi_t)(LPRECT, DWORD, BOOL, DWORD, UINT);
-    static AdjustWindowRectExForDpi_t adjustForDpi = (AdjustWindowRectExForDpi_t)GetProcAddress(GetModuleHandleA("user32.dll"), "AdjustWindowRectExForDpi");
-    if (adjustForDpi) {
-        adjustForDpi(&rc, style, FALSE, exStyle, (UINT)g_dpi);
-    } else {
-        AdjustWindowRectEx(&rc, style, FALSE, exStyle);
-    }
-    SIZE size = {};
-    size.cx = rc.right - rc.left;
-    size.cy = rc.bottom - rc.top;
-    return size;
-}
-
-static SIZE main_window_min_size() {
-    return adjusted_window_size_for_client(dp(WINDOW_WIDTH), minimum_client_height(), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, 0);
-}
+#include "ui_main_layout.cpp"
 
 #ifdef GREEN_CURVE_SERVICE_BINARY
 static void trim_working_set() {
@@ -328,100 +284,9 @@ static void unlock_all() {
 }
 #endif
 
-static void ensure_main_window_min_size(HWND hwnd) {
-    if (!hwnd) return;
-    RECT client = {};
-    GetClientRect(hwnd, &client);
-    int needClientW = dp(WINDOW_WIDTH);
-    int needClientH = minimum_client_height();
-    if (client.right >= needClientW && client.bottom >= needClientH) return;
-
-    RECT window = {};
-    GetWindowRect(hwnd, &window);
-    SIZE needWindow = main_window_min_size();
-    int currentW = window.right - window.left;
-    int currentH = window.bottom - window.top;
-    SetWindowPos(hwnd, nullptr, 0, 0,
-        nvmax(currentW, needWindow.cx),
-        nvmax(currentH, needWindow.cy),
-        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-}
-
-static void layout_bottom_buttons(HWND hParent) {
-    if (!hParent) return;
-    RECT rc = {};
-    GetClientRect(hParent, &rc);
-    const int margin = dp(8);
-    const int gap = dp(6);
-    const int buttonH = dp(30);
-    const int smallButtonW = dp(76);
-    const int comboDropH = dp(220);
-    const int buttonsY = layout_bottom_buttons_y();
-    const int profileY = buttonsY + dp(40);
-    const int autoY = profileY + dp(34);
-    const int sharedY = autoY + dp(26);
-    const int serviceY = sharedY + dp(26);
-    const int hintY = serviceY + dp(26);
-    const int statusY = hintY + dp(40);
-
-    if (g_app.hApplyBtn)
-        SetWindowPos(g_app.hApplyBtn, nullptr, margin, buttonsY, dp(132), buttonH, SWP_NOZORDER);
-    if (g_app.hRefreshBtn)
-        SetWindowPos(g_app.hRefreshBtn, nullptr, margin + dp(144), buttonsY, dp(98), buttonH, SWP_NOZORDER);
-    if (g_app.hResetBtn)
-        SetWindowPos(g_app.hResetBtn, nullptr, margin + dp(254), buttonsY, dp(98), buttonH, SWP_NOZORDER);
-    if (g_app.hLicenseBtn)
-        SetWindowPos(g_app.hLicenseBtn, nullptr, rc.right - margin - dp(118), buttonsY, dp(118), buttonH, SWP_NOZORDER);
-
-    if (g_app.hProfileLabel)
-        SetWindowPos(g_app.hProfileLabel, nullptr, margin, profileY + dp(4), dp(72), dp(18), SWP_NOZORDER);
-    if (g_app.hProfileCombo)
-        SetWindowPos(g_app.hProfileCombo, nullptr, margin + dp(76), profileY, dp(156), comboDropH, SWP_NOZORDER);
-    if (g_app.hProfileLoadBtn)
-        SetWindowPos(g_app.hProfileLoadBtn, nullptr, margin + dp(244), profileY, smallButtonW, dp(28), SWP_NOZORDER);
-    if (g_app.hProfileSaveBtn)
-        SetWindowPos(g_app.hProfileSaveBtn, nullptr, margin + dp(244) + smallButtonW + gap, profileY, smallButtonW, dp(28), SWP_NOZORDER);
-    if (g_app.hProfileClearBtn)
-        SetWindowPos(g_app.hProfileClearBtn, nullptr, margin + dp(244) + (smallButtonW + gap) * 2, profileY, smallButtonW, dp(28), SWP_NOZORDER);
-    if (g_app.hProfileStateLabel) {
-        int stateX = margin + dp(244) + (smallButtonW + gap) * 3 + dp(12);
-        int stateW = nvmax(dp(140), rc.right - stateX - margin);
-        SetWindowPos(g_app.hProfileStateLabel, nullptr, stateX, profileY + dp(4), stateW, dp(18), SWP_NOZORDER);
-    }
-
-    if (g_app.hAppLaunchLabel)
-        SetWindowPos(g_app.hAppLaunchLabel, nullptr, margin, autoY + dp(4), dp(170), dp(18), SWP_NOZORDER);
-    if (g_app.hAppLaunchCombo)
-        SetWindowPos(g_app.hAppLaunchCombo, nullptr, margin + dp(174), autoY, dp(170), comboDropH, SWP_NOZORDER);
-    if (g_app.hLogonLabel)
-        SetWindowPos(g_app.hLogonLabel, nullptr, margin + dp(366), autoY + dp(4), dp(208), dp(18), SWP_NOZORDER);
-    if (g_app.hLogonCombo)
-        SetWindowPos(g_app.hLogonCombo, nullptr, margin + dp(578), autoY, dp(170), comboDropH, SWP_NOZORDER);
-    if (g_app.hStartOnLogonCheck)
-        SetWindowPos(g_app.hStartOnLogonCheck, nullptr, margin + dp(760), autoY + dp(4), dp(16), dp(16), SWP_NOZORDER);
-    if (g_app.hStartOnLogonLabel)
-        SetWindowPos(g_app.hStartOnLogonLabel, nullptr, margin + dp(784), autoY + dp(3), dp(200), dp(18), SWP_NOZORDER);
-    // Shared / all-users row.
-    if (g_app.hShareAllUsersCheck)
-        SetWindowPos(g_app.hShareAllUsersCheck, nullptr, margin, sharedY, dp(280), dp(22), SWP_NOZORDER);
-    if (g_app.hSharedProfilesBtn)
-        SetWindowPos(g_app.hSharedProfilesBtn, nullptr, margin + dp(300), sharedY, dp(150), dp(22), SWP_NOZORDER);
-    if (g_app.hAutoProfilesBtn)
-        SetWindowPos(g_app.hAutoProfilesBtn, nullptr, margin + dp(460), sharedY, dp(160), dp(22), SWP_NOZORDER);
-    if (g_app.hServiceEnableCheck)
-        SetWindowPos(g_app.hServiceEnableCheck, nullptr, margin, serviceY + dp(4), dp(16), dp(16), SWP_NOZORDER);
-    if (g_app.hServiceEnableLabel)
-        SetWindowPos(g_app.hServiceEnableLabel, nullptr, margin + dp(24), serviceY + dp(3), dp(330), dp(18), SWP_NOZORDER);
-    if (g_app.hServiceStatusLabel)
-        SetWindowPos(g_app.hServiceStatusLabel, nullptr, margin + dp(370), serviceY + dp(3), nvmax(dp(220), rc.right - margin - dp(370)), dp(18), SWP_NOZORDER);
-    if (g_app.hLogonHintLabel)
-        SetWindowPos(g_app.hLogonHintLabel, nullptr, margin, hintY, nvmax(dp(320), rc.right - margin * 2), dp(34), SWP_NOZORDER);
-    if (g_app.hProfileStatusLabel)
-        SetWindowPos(g_app.hProfileStatusLabel, nullptr, margin, statusY, nvmax(dp(300), rc.right - margin * 2), dp(18), SWP_NOZORDER);
-}
-
-
 #include "main_state_sync.cpp"
+#include "main_service_recovery_clock.cpp"
+#include "main_service_recovery_ledger.cpp"
 #include "main_service_persist.cpp"
 #include "main_service_recovery.cpp"
 #include "main_service_runtime.cpp"
@@ -430,26 +295,17 @@ static void layout_bottom_buttons(HWND hParent) {
 // game load — a TDR risk — and looped forever on a below-floor flatten target).
 // Settings persist only via the event-driven reapply worker (resume/recovery/logon).
 
+#include "main_service_selected_gpu_pnp.cpp"
 #include "main_service_sessions.cpp"
+#include "main_service_lifecycle_events.cpp"
+#include "main_service_dxgi_readiness.cpp"
+#include "main_service_lifecycle_apply.cpp"
+#include "main_service_logon_coordinator.cpp"
+#include "main_service_controlled_restart.cpp"
 
 #include "main_service_ipc.cpp"
 #include "main_service_install.cpp"
 #include "main_service_server.cpp"
-    switch (r) {
-        case NVML_SUCCESS: return "NVML_SUCCESS";
-        case NVML_ERROR_UNINITIALIZED: return "NVML_ERROR_UNINITIALIZED";
-        case NVML_ERROR_INVALID_ARGUMENT: return "NVML_ERROR_INVALID_ARGUMENT";
-        case NVML_ERROR_NOT_SUPPORTED: return "NVML_ERROR_NOT_SUPPORTED";
-        case NVML_ERROR_NO_PERMISSION: return "NVML_ERROR_NO_PERMISSION";
-        case NVML_ERROR_ALREADY_INITIALIZED: return "NVML_ERROR_ALREADY_INITIALIZED";
-        case NVML_ERROR_NOT_FOUND: return "NVML_ERROR_NOT_FOUND";
-        case NVML_ERROR_INSUFFICIENT_SIZE: return "NVML_ERROR_INSUFFICIENT_SIZE";
-        case NVML_ERROR_FUNCTION_NOT_FOUND: return "NVML_ERROR_FUNCTION_NOT_FOUND";
-        case NVML_ERROR_GPU_IS_LOST: return "NVML_ERROR_GPU_IS_LOST";
-        case NVML_ERROR_ARG_VERSION_MISMATCH: return "NVML_ERROR_ARGUMENT_VERSION_MISMATCH";
-        default: return "NVML_ERROR_OTHER";
-    }
-}
 
 #include "main_diagnostics.cpp"
 #include "main_secure_write.cpp"
@@ -631,7 +487,10 @@ static void layout_bottom_buttons(HWND hParent) {
 }
 
 #include "config_profiles.cpp"
+#include "config_profiles_machine.cpp"
+#include "config_profile_sync_cache.cpp"
 #include "config_profiles_ui.cpp"
+#include "main_startup_profiles.cpp"
 
 #include "fan_curve_dialog.cpp"
 
@@ -682,9 +541,13 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
     int effectiveLockTargetMHz = 0;
     unsigned int currentLockMHz = 0;
 #include "main_runtime_control.cpp"
+#include "main_tray_autostart.cpp"
+#include "main_startup_task_runtime.cpp"
+#include "main_startup_task_definition.cpp"
 #include "main_runtime_nvml.cpp"
 #include "main_runtime_gpu.cpp"
 #include "main_runtime_ui.cpp"
+#include "ui_theme_checkbox.cpp"
 static void draw_lock_checkbox(const DRAWITEMSTRUCT* dis) {
     if (!dis) return;
     HDC hdc = dis->hDC;

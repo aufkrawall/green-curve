@@ -655,15 +655,20 @@ static void update_fan_telemetry_timer() {
     SetTimer(g_app.hMainWnd, FAN_TELEMETRY_TIMER_ID, intervalMs, nullptr);
 }
 
-// Start the auto-reconnect timer if the GUI has a window handle and the
-// service is unavailable.  Polls every 3 seconds until the service responds.
+// Start the auto-reconnect timer if the GUI has a window handle and the service
+// is unavailable, has not produced an initialized snapshot, or a scheduled
+// logon tray launch is waiting to display that snapshot.  The task never owns a
+// hardware retry; automatic logon applies belong exclusively to the service.
 static void start_service_reconnect_timer_if_needed() {
     if (g_app.isServiceProcess) return;
-    if (g_app.backgroundServiceAvailable) return;
+    if (g_app.backgroundServiceAvailable && g_app.loaded && !g_app.logonServiceReadinessPending) return;
     HWND hWnd = g_app.hMainWnd;
     if (!hWnd) return;
     SetTimer(hWnd, SERVICE_RECONNECT_TIMER_ID, 3000, nullptr);
-    debug_log("start_service_reconnect_timer_if_needed: polling every 3s\n");
+    debug_log_on_change("start_service_reconnect_timer_if_needed: polling every 3s (serviceAvailable=%d snapshotLoaded=%d logonReadinessPending=%d)\n",
+        g_app.backgroundServiceAvailable ? 1 : 0,
+        g_app.loaded ? 1 : 0,
+        g_app.logonServiceReadinessPending ? 1 : 0);
 }
 
 static bool fan_manual_control_available(char* detail, size_t detailSize) {

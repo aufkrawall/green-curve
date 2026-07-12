@@ -238,17 +238,10 @@ static bool write_text_file_atomic_service(const char* path, const char* data, s
     return true;
 }
 
-static bool section_name_matches(const char* line, const char* section) {
-    if (!line || line[0] != '[') return false;
-    size_t len = strlen(section);
-    if (strncmp(line + 1, section, len) != 0) return false;
-    return line[1 + len] == ']';
-}
-
 static bool section_should_be_preserved(const char* line, const char* const* replaceSections, int replaceCount) {
     if (!line || line[0] != '[') return true;
     for (int i = 0; i < replaceCount; i++) {
-        if (section_name_matches(line, replaceSections[i])) return false;
+        if (config_section_header_matches_ascii(line, replaceSections[i])) return false;
     }
     return true;
 }
@@ -259,24 +252,71 @@ static bool write_config_sections_atomic(const char* path, const char* newSectio
         return false;
     }
 
-    // Read existing file if present.
+    // Read the existing file if present.  A failed read must abort the
+    // transaction: treating it as an empty file would make a localized section
+    // update silently erase every unrelated setting.
     char* preserved = nullptr;
     size_t preservedSize = 0;
-    HANDLE hExisting = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    DWORD existingAttributes = GetFileAttributesA(path);
+    bool existingFile = existingAttributes != INVALID_FILE_ATTRIBUTES;
+    if (!existingFile) {
+        DWORD attributeError = GetLastError();
+        if (attributeError != ERROR_FILE_NOT_FOUND && attributeError != ERROR_PATH_NOT_FOUND) {
+            set_message(err, errSize,
+                "Could not inspect existing config for atomic update (error %lu)",
+                attributeError);
+            return false;
+        }
+    }
+    if (existingFile && (existingAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        set_message(err, errSize, "Config path names a directory");
+        return false;
+    }
+    HANDLE hExisting = existingFile
+        ? CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)
+        : INVALID_HANDLE_VALUE;
+    if (existingFile && hExisting == INVALID_HANDLE_VALUE) {
+        set_message(err, errSize, "Could not open existing config for atomic update (error %lu)", GetLastError());
+        return false;
+    }
     if (hExisting != INVALID_HANDLE_VALUE) {
-        DWORD fileSize = GetFileSize(hExisting, nullptr);
-        if (fileSize != INVALID_FILE_SIZE && fileSize > 0 && fileSize < 8 * 1024 * 1024) {
-            preserved = (char*)malloc(fileSize + 1);
-            if (preserved) {
-                DWORD read = 0;
-                if (ReadFile(hExisting, preserved, fileSize, &read, nullptr) && read == fileSize) {
-                    preservedSize = fileSize;
-                    preserved[preservedSize] = 0;
-                } else {
-                    free(preserved);
-                    preserved = nullptr;
-                    preservedSize = 0;
-                }
+        LARGE_INTEGER fileSize = {};
+        if (!GetFileSizeEx(hExisting, &fileSize)) {
+            DWORD error = GetLastError();
+            CloseHandle(hExisting);
+            set_message(err, errSize, "Could not read existing config size (error %lu)", error);
+            return false;
+        }
+        if (fileSize.QuadPart < 0 || fileSize.QuadPart >= 8 * 1024 * 1024) {
+            CloseHandle(hExisting);
+            set_message(err, errSize, "Existing config is too large for atomic update");
+            return false;
+        }
+        if (fileSize.QuadPart > 0) {
+            preservedSize = (size_t)fileSize.QuadPart;
+            preserved = (char*)malloc(preservedSize + 1);
+            if (!preserved) {
+                CloseHandle(hExisting);
+                set_message(err, errSize, "Out of memory reading existing config");
+                return false;
+            }
+            DWORD read = 0;
+            if (!ReadFile(hExisting, preserved, (DWORD)preservedSize, &read, nullptr) ||
+                read != preservedSize) {
+                DWORD error = GetLastError();
+                CloseHandle(hExisting);
+                free(preserved);
+                set_message(err, errSize, "Could not read existing config for atomic update (error %lu)", error);
+                return false;
+            }
+            preserved[preservedSize] = 0;
+            if (memchr(preserved, 0, preservedSize)) {
+                CloseHandle(hExisting);
+                free(preserved);
+                set_message(err, errSize,
+                    "Existing config contains embedded NUL data; refusing a lossy update");
+                return false;
             }
         }
         CloseHandle(hExisting);

@@ -244,10 +244,57 @@ static bool service_resolve_session_user_sid(DWORD sessionId, char* sidOut, size
     sidOut[0] = 0;
     HANDLE token = nullptr;
     if (!WTSQueryUserToken(sessionId, &token)) {
-        set_message(err, errSize, "WTSQueryUserToken failed");
+        set_message(err, errSize, "WTSQueryUserToken failed (error %lu)", GetLastError());
         return false;
     }
     bool ok = service_sid_string_from_token(token, sidOut, sidOutSize, err, errSize);
+    CloseHandle(token);
+    return ok;
+}
+
+static bool service_identity_from_token(
+    HANDLE token,
+    DWORD sessionId,
+    ServiceLifecycleIdentity* identityOut,
+    char* err,
+    size_t errSize)
+{
+    if (!identityOut) return false;
+    memset(identityOut, 0, sizeof(*identityOut));
+    if (!service_sid_string_from_token(token, identityOut->sid,
+            ARRAY_COUNT(identityOut->sid), err, errSize)) {
+        return false;
+    }
+    TOKEN_STATISTICS statistics = {};
+    DWORD returned = 0;
+    if (!GetTokenInformation(token, TokenStatistics, &statistics,
+            sizeof(statistics), &returned)) {
+        set_message(err, errSize, "TokenStatistics query failed (error %lu)", GetLastError());
+        memset(identityOut, 0, sizeof(*identityOut));
+        return false;
+    }
+    identityOut->sessionId = sessionId;
+    identityOut->authenticationId =
+        ((gc_u64)(gc_u32)statistics.AuthenticationId.HighPart << 32) |
+        (gc_u64)statistics.AuthenticationId.LowPart;
+    identityOut->valid = true;
+    return true;
+}
+
+static bool service_resolve_session_identity(
+    DWORD sessionId,
+    ServiceLifecycleIdentity* identityOut,
+    char* err,
+    size_t errSize)
+{
+    if (!identityOut) return false;
+    memset(identityOut, 0, sizeof(*identityOut));
+    HANDLE token = nullptr;
+    if (!WTSQueryUserToken(sessionId, &token)) {
+        set_message(err, errSize, "WTSQueryUserToken failed (error %lu)", GetLastError());
+        return false;
+    }
+    bool ok = service_identity_from_token(token, sessionId, identityOut, err, errSize);
     CloseHandle(token);
     return ok;
 }
@@ -286,7 +333,7 @@ static bool resolve_service_user_data_paths(DWORD sessionId, char* err, size_t e
     }
     HANDLE hToken = nullptr;
     if (!WTSQueryUserToken(sessionId, &hToken)) {
-        set_message(err, errSize, "WTSQueryUserToken failed");
+        set_message(err, errSize, "WTSQueryUserToken failed (error %lu)", GetLastError());
         return false;
     }
     char userSid[184] = {};
@@ -410,12 +457,22 @@ static bool config_file_exists() {
 
 static void clear_service_authoritative_state() {
     g_app.serviceSnapshotAuthoritative = false;
+    g_app.serviceActiveProfileSource = SERVICE_PROFILE_SOURCE_NONE;
+    g_app.serviceActiveProfileSlot = 0;
+    g_app.serviceLastLifecycleTrigger = SERVICE_LIFECYCLE_TRIGGER_NONE;
+    g_app.serviceLastLifecycleResult = SERVICE_LIFECYCLE_RESULT_NONE;
+    g_app.serviceAutoRestoreLockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
+    g_app.serviceActiveDesiredValid = false;
+    memset(&g_app.serviceActiveDesired, 0, sizeof(g_app.serviceActiveDesired));
     g_app.serviceControlStateValid = false;
     memset(&g_app.serviceControlState, 0, sizeof(g_app.serviceControlState));
     g_serviceControlStateValid = false;
     memset(&g_serviceControlState, 0, sizeof(g_serviceControlState));
     g_serviceTelemetryLastHardwarePollTickMs = 0;
     g_serviceTelemetryLastPollSource[0] = 0;
+#ifndef GREEN_CURVE_SERVICE_BINARY
+    sync_applied_profile_from_service_metadata();
+#endif
 }
 
 static int format_log_timestamp_prefix(char* out, size_t outSize) {
@@ -551,26 +608,17 @@ static bool hardware_initialize(char* detail, size_t detailSize) {
         g_serviceActiveDesiredGpu = {};
         g_serviceHasActiveDesired = false;
     }
-    // On a fresh service start (no active desired), the NVML memory VF
-    // offset register may retain a stale non-zero value from a previous
-    // session (e.g. after Afterburner reset to defaults, which clears
-    // NvAPI PStates but not the NVML VF offset register).  The stale
-    // register value is not actually effective for memory clocks, but
-    // the GUI would display it as if an OC were active.
-    //
-    // detect_clock_offsets() cross-validates via PState20 vs SMI max
-    // clocks and normally corrects this.  But when nvidia-smi fails
-    // (smiMemMaxMHz == 0) the correction is skipped and the stale NVML
-    // value leaks through.  Since we have no active desired and no
-    // reliable cross-validation, reset the stale register to match the
-    // actual hardware state (no OC).
+    // Initialization, telemetry and lifecycle readiness probes are strictly
+    // read-only.  A stale/non-effective NVML memory-offset register may be
+    // diagnosed and displayed conservatively, but uncertainty is never
+    // "corrected" with a hardware write.  Only APPLY/RESET or an authorized
+    // lifecycle restoration may mutate GPU state.
     if (!g_serviceHasActiveDesired && g_app.memClockOffsetkHz != 0
         && (g_app.smiMemMaxMHz == 0 || g_app.pstateMemMaxMHz == 0))
     {
         debug_log("hardware_initialize: stale mem VF offset %d kHz detected"
-            " (smi=%u pstate=%u); resetting to 0\n",
+            " (smi=%u pstate=%u); diagnostic only, no write\n",
             g_app.memClockOffsetkHz, g_app.smiMemMaxMHz, g_app.pstateMemMaxMHz);
-        nvapi_set_mem_offset(0);
     }
 #ifdef GREEN_CURVE_SERVICE_BINARY
     trim_working_set();
@@ -581,6 +629,8 @@ static bool hardware_initialize(char* detail, size_t detailSize) {
 
 static void populate_service_snapshot(ServiceSnapshot* snapshot) {
     if (!snapshot) return;
+    DWORD snapshotLockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
+    service_auto_restore_is_locked_out(&snapshotLockoutReason);
     EnterCriticalSection(&g_appLock);
     memset(snapshot, 0, sizeof(*snapshot));
     int snapshotGpuOffsetMHz = g_app.appliedGpuOffsetMHz;
@@ -696,13 +746,22 @@ static void populate_service_snapshot(ServiceSnapshot* snapshot) {
     StringCchCopyA(snapshot->ownerUser, ARRAY_COUNT(snapshot->ownerUser), g_app.backgroundServiceOwnerUser);
     snapshot->ownerSessionId = g_app.backgroundServiceOwnerSessionId;
     snapshot->ownerUtcMs = g_app.backgroundServiceOwnerUtcMs;
-    // GPU recovery status
-    snapshot->serviceInRecovery = InterlockedExchangeAdd(&g_serviceGpuRecovering, 0) != 0;
-    snapshot->lastRecoveryTickMs = g_serviceLastRecoveryTickMs;
-    // Reapply-in-progress: set after recovery when the reapply thread is
-    // working on restoring OC/fan settings.  The GUI uses this to show
-    // "reapplying..." instead of a misleading "settings active" indicator.
-    snapshot->serviceReapplyInProgress = InterlockedExchangeAdd(&g_serviceReapplyInProgress, 0) != 0;
+    // Recovery is now a process-bound controlled continuation rather than an
+    // in-process reload/thread.  Keep the legacy snapshot fields meaningful
+    // without reviving the removed cooldown/timestamp state.
+    bool reapplyInProgress =
+        InterlockedExchangeAdd(&g_serviceReapplyInProgress, 0) != 0;
+    snapshot->serviceInRecovery = reapplyInProgress ||
+        g_serviceControlledRecoveryValidated ||
+        InterlockedExchangeAdd(&g_serviceRestartPreparing, 0) != 0 ||
+        InterlockedExchangeAdd(&g_serviceRestartRequested, 0) != 0;
+    snapshot->lastRecoveryTickMs = 0;
+    snapshot->serviceReapplyInProgress = reapplyInProgress;
+    snapshot->activeProfileSource = (gc_u32)g_serviceActiveProfileSource;
+    snapshot->activeProfileSlot = (gc_u32)g_serviceActiveProfileSlot;
+    snapshot->lastLifecycleTrigger = (gc_u32)g_serviceLastLifecycleTrigger;
+    snapshot->lastLifecycleResult = (gc_u32)g_serviceLastLifecycleResult;
+    snapshot->autoRestoreLockoutReason = snapshotLockoutReason;
     LeaveCriticalSection(&g_appLock);
 }
 
@@ -732,6 +791,12 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
     if (!snapshot) return;
     EnterCriticalSection(&g_appLock);
     g_app.serviceSnapshotAuthoritative = true;
+    g_app.serviceActiveProfileSource = (ServiceProfileSource)snapshot->activeProfileSource;
+    g_app.serviceActiveProfileSlot = snapshot->activeProfileSlot;
+    g_app.serviceLastLifecycleTrigger = (ServiceLifecycleTrigger)snapshot->lastLifecycleTrigger;
+    g_app.serviceLastLifecycleResult = (ServiceLifecycleResult)snapshot->lastLifecycleResult;
+    g_app.serviceAutoRestoreLockoutReason =
+        (ServiceAutoRestoreLockoutReason)snapshot->autoRestoreLockoutReason;
     int previousAppliedGpuOffsetMHz = g_app.appliedGpuOffsetMHz;
     int previousAppliedGpuOffsetExcludeLowCount = g_app.appliedGpuOffsetExcludeLowCount;
     ControlState previousServiceControlState = g_app.serviceControlState;
@@ -968,6 +1033,9 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
     log_locked_tail_drift_diagnostics();
     g_app.serviceControlStateValid = true;
     LeaveCriticalSection(&g_appLock);
+#ifndef GREEN_CURVE_SERVICE_BINARY
+    sync_applied_profile_from_service_metadata();
+#endif
 }
 
 static void apply_service_desired_to_gui(const DesiredSettings* desired) {
