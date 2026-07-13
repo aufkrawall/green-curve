@@ -1233,7 +1233,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     bool startProgramAtLogon = is_start_on_logon_enabled(g_app.configPath);
                     if (sharedSlot > 0) {
                         set_profile_status_text(
-                            "Shared profile %d (admin) will apply at your logon%s - this overrides the all-users default.",
+                            "Shared profile %d will apply at your logon%s - this overrides the all-users default.",
                             sharedSlot, startProgramAtLogon ? " and Green Curve will start hidden in the tray" : "");
                     } else if (perUserSlot > 0) {
                         set_profile_status_text(startProgramAtLogon
