@@ -137,7 +137,7 @@ static void refresh_profile_controls_from_config() {
 
         char noneLabel[64] = {};
         if (haveMachineDefault) {
-            StringCchPrintfA(noneLabel, ARRAY_COUNT(noneLabel), "Admin default: Shared profile %d", machineDefault);
+            StringCchPrintfA(noneLabel, ARRAY_COUNT(noneLabel), "Use admin's default (Shared profile %d)", machineDefault);
         } else {
             StringCchCopyA(noneLabel, ARRAY_COUNT(noneLabel), "Disabled");
         }
@@ -160,7 +160,7 @@ static void refresh_profile_controls_from_config() {
         for (int s = 1; s <= CONFIG_NUM_SLOTS; s++) {
             if (!is_machine_profile_slot_saved(s)) continue;
             char label[48] = {};
-            StringCchPrintfA(label, ARRAY_COUNT(label), "Shared profile %d (admin)", s);
+            StringCchPrintfA(label, ARRAY_COUNT(label), "Always use: Shared profile %d", s);
             SendMessageA(g_app.hLogonCombo, CB_ADDSTRING, 0, (LPARAM)label);
             SendMessageA(g_app.hLogonCombo, CB_SETITEMDATA, (WPARAM)comboIndex, (LPARAM)(LOGON_COMBO_SHARED_FLAG | s));
             if (logonSharedSlot == s) logonSelIndex = comboIndex;

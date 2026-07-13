@@ -468,8 +468,9 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         return false;
     }
 
-    if (!refresh_service_snapshot_and_active_desired(err, errSize)) {
-        return false;
+    if (!refresh_service_snapshot_and_active_desired(nullptr, 0, nullptr)) {
+        debug_log("save_profile_to_config: service snapshot refresh failed; "
+            "proceeding with last known state for slot %d\n", slot);
     }
 
     int desiredCurveCount = 0;
@@ -626,7 +627,11 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
             appendf("point%d_mhz=%u\r\n", i, mhz);
             appendf("point%d_mv=%u\r\n", i, voltMv);
             appendf("point%d_offset_khz=%d\r\n", i, offsetKHz);
-            appendf("point%d_visible=%d\r\n", i, is_curve_point_visible_in_gui(i) ? 1 : 0);
+            int pointVisible = is_curve_point_visible_in_gui(i) ? 1 : 0;
+            if (g_app.curve[i].volt_uV == 0) {
+                pointVisible = desired->hasCurvePoint[i] ? 1 : 0;
+            }
+            appendf("point%d_visible=%d\r\n", i, pointVisible);
         }
         appendf("\r\n");
 
@@ -715,7 +720,11 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
             appendf("point%d_mhz=%u\r\n", i, mhz);
             appendf("point%d_mv=%u\r\n", i, voltMv);
             appendf("point%d_offset_khz=%d\r\n", i, offsetKHz);
-            appendf("point%d_visible=%d\r\n", i, is_curve_point_visible_in_gui(i) ? 1 : 0);
+            int pointVisible = is_curve_point_visible_in_gui(i) ? 1 : 0;
+            if (g_app.curve[i].volt_uV == 0) {
+                pointVisible = desired->hasCurvePoint[i] ? 1 : 0;
+            }
+            appendf("point%d_visible=%d\r\n", i, pointVisible);
         }
         appendf("\r\n");
 
