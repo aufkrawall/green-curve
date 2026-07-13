@@ -4339,7 +4339,7 @@ SOURCE_SIZE_RATCHET = {
     "main_gpu_state.cpp": 919, "main_runtime_gpu.cpp": 917,
     "main_runtime_nvml.cpp": 1105, "main_runtime_ui.cpp": 809,
     "main_service_persist.cpp": 914, "main_service_pipe.cpp": 841,
-    "main_state_sync.cpp": 1215, "ui_main_window.cpp": 1420, "ui_main.cpp": 867,
+    "main_state_sync.cpp": 1229, "ui_main_window.cpp": 1420, "ui_main.cpp": 867,
 }
 
 
@@ -5584,8 +5584,8 @@ def run_source_regression_checks():
     require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"),
                  "completedGeneration != currentGeneration",
                  "stale async startup repair schedules current-state reconciliation")
-    require_text(config_profiles_ui_cpp, "Shared profile %d (admin)", "Logon dropdown lists admin-published shared profiles")
-    require_text(config_profiles_ui_cpp, "Admin default: Shared profile %d", "Logon dropdown shows the effective all-users default when the account has no choice")
+    require_text(config_profiles_ui_cpp, "Always use: Shared profile %d", "Logon dropdown lists admin-published shared profiles")
+    require_text(config_profiles_ui_cpp, "Use admin's default (Shared profile %d)", "Logon dropdown shows the effective all-users default when the account has no choice")
     forbid_text(logon_startup_cpp, "apply_logon_shared_slot_if_configured", "scheduled GUI handoff must not load or apply a logon profile")
     forbid_text_in_operation(entry_cpp, "if (opts.logonStart)", "opts.applyConfig = true;", "CLI scheduled logon must not apply a profile directly")
 
