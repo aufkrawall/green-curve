@@ -267,6 +267,7 @@ WINDOWS_LINK_LIBS = [
     "-lcomctl32",
     "-lsetupapi",
     "-lcfgmgr32",
+    "-lbcrypt",
 ]
 
 WINDOWS_SERVICE_LINK_LIBS = [
@@ -282,6 +283,7 @@ WINDOWS_SERVICE_LINK_LIBS = [
     "-lcomctl32",
     "-lsetupapi",
     "-lcfgmgr32",
+    "-lbcrypt",
 ]
 
 # ---------------------------------------------------------------------------
@@ -2059,6 +2061,11 @@ def run_regression_tests(extra_flags=None):
 #include "linux_gpu_selection.h"
 #include "linux_daemon_state.h"
 #include "linux_transaction.h"
+#include "linux_curve_targets.h"
+#include "fan_runtime_policy.h"
+#include "service_operation_tracker.h"
+#include "gui_mutation_queue_policy.h"
+#include "service_health_probe_policy.h"
 #include "profile_persistence_policy.h"
 #include "profile_startup_policy.h"
 #include "startup_task_definition_policy.h"
@@ -2085,7 +2092,7 @@ void invalidate_tray_profile_cache() {}
 static bool write_config_sections_atomic(const char* path,
     const char* newSectionsData, const char* const*, int,
     char* err, size_t errSize) {
-    HANDLE file = CreateFileA(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+    HANDLE file = gc_CreateFileUtf8(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
         FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) {
         set_message(err, errSize, "fixture CreateFile failed");
@@ -2381,7 +2388,11 @@ int main(int argc, char** argv) {
     }
     if (enter_config_storage_lock(nullptr)) return 529;
     if (get_config_int(argv[1], "debug", "enabled", 77) != 77) return 33;
-    if (!set_config_int(argv[1], "debug", "enabled", APP_DEBUG_DEFAULT_ENABLED)) return 34;
+    if (!set_config_int(argv[1], "debug", "enabled", APP_DEBUG_DEFAULT_ENABLED)) {
+        fprintf(stderr, "Unicode config write failed for [%s] (Win32 error %lu)\n",
+            argv[1], (unsigned long)GetLastError());
+        return 34;
+    }
     if (!config_section_has_keys(argv[1], "debug")) return 35;
     if (get_config_int(argv[1], "debug", "enabled", 0) != 1) return 36;
     if (!set_config_int(argv[1], "runtime", "selective_gpu_offset_mhz", 45)) return 37;
@@ -2424,7 +2435,7 @@ int main(int argc, char** argv) {
             loaded.identity.pciBus != 9 || loaded.identity.pciDevice != 3 ||
             loaded.identity.pciFunction != 1) return 734;
     }
-    DeleteFileA(argv[1]);
+    gc_DeleteFileUtf8(argv[1]);
 
     // F-08-001: IPC object size and field layout sanity
     {
@@ -3614,7 +3625,7 @@ int main(int argc, char** argv) {
     // Injected commit failure must leave BOTH old keys intact; successful
     // commit must update both while preserving unrelated [profiles] keys.
     {
-        DeleteFileA(argv[1]);
+    gc_DeleteFileUtf8(argv[1]);
         if (!set_config_int(argv[1], "profiles", "selected_slot", 4)) return 458;
         if (!set_config_int(argv[1], "profiles", "applied_slot", 3)) return 459;
         if (!set_config_int(argv[1], "profiles", "logon_slot", 1)) return 460;
@@ -4104,6 +4115,465 @@ int main(int argc, char** argv) {
         if (linux_resolve_gpu_identity(&requested, &mismatch, 1) != -1) return 618;
     }
 
+    // F-01-001: lifecycle identity — session_and_user matches on sessionId+SID
+    // alone, even when authenticationId (LUID) differs. This guards against the
+    // auth LUID race between OpenProcessToken and WTSQueryUserToken on boot.
+    {
+        ServiceLifecycleIdentity a = {};
+        a.valid = true; a.sessionId = 1;
+        a.authenticationId = 100;
+        strcpy_s(a.sid, sizeof(a.sid), "S-1-5-21-123");
+        ServiceLifecycleIdentity b = {};
+        b.valid = true; b.sessionId = 1;
+        b.authenticationId = 200; // Different LUID!
+        strcpy_s(b.sid, sizeof(b.sid), "S-1-5-21-123");
+        if (!service_lifecycle_identity_equal_session_and_user(&a, &b)) return 738;
+        if (service_lifecycle_identity_equal(&a, &b)) return 739;
+        if (service_lifecycle_identity_equal_session_and_user(nullptr, &b)) return 740;
+        if (service_lifecycle_identity_equal_session_and_user(&a, nullptr)) return 741;
+        ServiceLifecycleIdentity invalid = {};
+        if (service_lifecycle_identity_equal_session_and_user(&invalid, &b)) return 742;
+        if (service_lifecycle_identity_equal_session_and_user(&a, &invalid)) return 743;
+        ServiceLifecycleIdentity noSid = {};
+        noSid.valid = true; noSid.sessionId = 1;
+        noSid.authenticationId = 100;
+        if (service_lifecycle_identity_equal_session_and_user(&noSid, &b)) return 744;
+        ServiceLifecycleIdentity diffSession = {};
+        diffSession.valid = true; diffSession.sessionId = 2;
+        diffSession.authenticationId = 100;
+        strcpy_s(diffSession.sid, sizeof(diffSession.sid), "S-1-5-21-123");
+        if (service_lifecycle_identity_equal_session_and_user(&diffSession, &a)) return 745;
+        ServiceLifecycleIdentity diffSid = {};
+        diffSid.valid = true; diffSid.sessionId = 1;
+        diffSid.authenticationId = 100;
+        strcpy_s(diffSid.sid, sizeof(diffSid.sid), "S-1-5-21-999");
+        if (service_lifecycle_identity_equal_session_and_user(&diffSid, &a)) return 746;
+    }
+
+    // F-01-002: profile point visibility round-trip — curve point visibility
+    // flags must survive save/load through the INI config. Regression for the
+    // "all points written as hidden" bug in machine-config sharing.
+    {
+        if (!set_config_int(argv[1], "vis_test", "point0_visible", 0)) return 747;
+        if (get_config_int(argv[1], "vis_test", "point0_visible", 1) != 0) return 748;
+        if (!set_config_int(argv[1], "vis_test", "point0_visible", 1)) return 749;
+        if (get_config_int(argv[1], "vis_test", "point0_visible", 0) != 1) return 750;
+        if (!set_config_int(argv[1], "vis_test", "point127_visible", 0)) return 751;
+        if (get_config_int(argv[1], "vis_test", "point127_visible", 1) != 0) return 752;
+        if (!set_config_int(argv[1], "vis_test", "point127_visible", 1)) return 753;
+        if (get_config_int(argv[1], "vis_test", "point127_visible", 0) != 1) return 754;
+
+        // GPU section auto-save round-trip: [gpu] section with PCI identity
+        // must survive save/load to enable profile sharing on single-GPU.
+        if (!set_config_int(argv[1], "gpu", "slot", 1)) return 755;
+        if (!set_config_int(argv[1], "gpu", "device_id", 0x268410de)) return 756;
+        if (get_config_int(argv[1], "gpu", "slot", 0) != 1) return 757;
+        if (get_config_int(argv[1], "gpu", "device_id", 0) != 0x268410de) return 758;
+        if (!config_section_has_keys(argv[1], "gpu")) return 759;
+    }
+
+    // F-02-002: controlled recovery SCM stop disposition — STOP_PENDING with
+    // stale/zero PID must be classified as WAIT_FOR_STOPPED (not REJECT), since
+    // QueryServiceStatusEx does not guarantee a valid process ID in that state.
+    {
+        if (service_classify_controlled_recovery_scm_stop_state(
+            true, false, 0, 12345) != SERVICE_CONTROLLED_RECOVERY_SCM_STOPPED) return 760;
+        if (service_classify_controlled_recovery_scm_stop_state(
+            false, true, 0, 12345) != SERVICE_CONTROLLED_RECOVERY_SCM_WAIT_FOR_STOPPED) return 761;
+        if (service_classify_controlled_recovery_scm_stop_state(
+            false, false, 12345, 12345) != SERVICE_CONTROLLED_RECOVERY_SCM_WAIT_FOR_STOPPED) return 762;
+        if (service_classify_controlled_recovery_scm_stop_state(
+            false, false, 99999, 12345) != SERVICE_CONTROLLED_RECOVERY_SCM_REJECT) return 763;
+        if (service_classify_controlled_recovery_scm_stop_state(
+            false, true, 0, 0) != SERVICE_CONTROLLED_RECOVERY_SCM_REJECT) return 764;
+        if (service_classify_controlled_recovery_scm_stop_state(
+            false, false, 0, 0) != SERVICE_CONTROLLED_RECOVERY_SCM_REJECT) return 765;
+        if (service_classify_controlled_recovery_scm_stop_state(
+            false, false, 0, 12345) != SERVICE_CONTROLLED_RECOVERY_SCM_REJECT) return 766;
+    }
+
+    // F-02-002: controlled recovery authorization gate — all 7 fields must be
+    // true for the gate to authorize a controlled recovery start.
+    {
+        ServiceControlledRecoveryStartGate gate = {};
+        if (service_controlled_recovery_start_is_authorized(gate)) return 770;
+        gate.argumentsValid = true;
+        if (service_controlled_recovery_start_is_authorized(gate)) return 771;
+        gate.explicitlyRequested = true;
+        if (service_controlled_recovery_start_is_authorized(gate)) return 772;
+        gate.scmStartReasonKnown = true;
+        if (service_controlled_recovery_start_is_authorized(gate)) return 773;
+        gate.scmDemandStart = true;
+        if (service_controlled_recovery_start_is_authorized(gate)) return 774;
+        gate.authorizationValid = true;
+        if (service_controlled_recovery_start_is_authorized(gate)) return 775;
+        gate.helperValidated = true;
+        if (service_controlled_recovery_start_is_authorized(gate)) return 776;
+        gate.snapshotValid = true;
+        if (!service_controlled_recovery_start_is_authorized(gate)) return 777;
+    }
+
+    // F-02-006: lifecycle event sequencing — different notification orderings
+    // produce expected recovery decisions without races or lockup.
+    {
+        ServiceLifecycleIdentity identity = {};
+        identity.valid = true; identity.sessionId = 1;
+        identity.authenticationId = 100;
+        strcpy_s(identity.sid, sizeof(identity.sid), "S-1-5-21-123");
+
+        // Standby resume followed by driver recovery: driver dominates
+        ServiceLifecycleState state = {};
+        ServiceLifecycleEvent suspend = {};
+        suspend.type = SERVICE_LIFECYCLE_EVENT_SUSPEND;
+        service_lifecycle_reduce(&state, &suspend);
+        ServiceLifecycleEvent standbyResume = {};
+        standbyResume.type = SERVICE_LIFECYCLE_EVENT_RESUME;
+        ServiceLifecycleDecision d1 = service_lifecycle_reduce(&state, &standbyResume);
+        if (d1.trigger != SERVICE_LIFECYCLE_TRIGGER_STANDBY_RESUME) return 780;
+        if (!state.standbyPending) return 781;
+
+        ServiceLifecycleEvent driverRecovery = {};
+        driverRecovery.type = SERVICE_LIFECYCLE_EVENT_DRIVER_RECOVERY;
+        driverRecovery.driverProofReady = true;
+        ServiceLifecycleDecision d2 = service_lifecycle_reduce(&state, &driverRecovery);
+        if (!d2.wakeWorker) return 782;
+        if (d2.trigger != SERVICE_LIFECYCLE_TRIGGER_DRIVER_RECOVERY) return 783;
+        if (state.standbyPending) return 784; // must cancel standby
+
+        // Lockout cancels all pending operations
+        ServiceLifecycleState state2 = {};
+        ServiceLifecycleEvent logon = {};
+        logon.type = SERVICE_LIFECYCLE_EVENT_WTS_LOGON;
+        logon.identity = identity;
+        ServiceLifecycleDecision d3 = service_lifecycle_reduce(&state2, &logon);
+        if (d3.result != SERVICE_LIFECYCLE_RESULT_PENDING) return 785;
+        ServiceLifecycleEvent lockout = {};
+        lockout.type = SERVICE_LIFECYCLE_EVENT_LOCKOUT;
+        ServiceLifecycleDecision d4 = service_lifecycle_reduce(&state2, &lockout);
+        if (!d4.cancelled) return 786;
+        if (d4.result != SERVICE_LIFECYCLE_RESULT_LOCKED_OUT) return 787;
+        if (!state2.lockedOut) return 788;
+
+        // Explicit supersede clears pending logon without applying
+        ServiceLifecycleState state3 = {};
+        ServiceLifecycleEvent taskHandoff = {};
+        taskHandoff.type = SERVICE_LIFECYCLE_EVENT_TASK_HANDOFF;
+        taskHandoff.identity = identity;
+        ServiceLifecycleDecision d5 = service_lifecycle_reduce(&state3, &taskHandoff);
+        if (!state3.logonPending) return 789;
+        ServiceLifecycleEvent supersede = {};
+        supersede.type = SERVICE_LIFECYCLE_EVENT_EXPLICIT_SUPERSEDE;
+        ServiceLifecycleDecision d6 = service_lifecycle_reduce(&state3, &supersede);
+        if (!d6.cancelled) return 790;
+        if (d6.result != SERVICE_LIFECYCLE_RESULT_SUPERSEDED) return 791;
+        if (state3.logonPending) return 792;
+
+        // DEVNODES_CHANGED is diagnostic-only, never sets pending
+        ServiceLifecycleState state4 = {};
+        ServiceLifecycleEvent devnodes = {};
+        devnodes.type = SERVICE_LIFECYCLE_EVENT_DEVNODES_CHANGED;
+        ServiceLifecycleDecision d7 = service_lifecycle_reduce(&state4, &devnodes);
+        if (!d7.readOnlyReenumerate) return 793;
+        if (d7.wakeWorker) return 794;
+    }
+
+    // F-02-002: proof age computation — boundaries and validation
+    {
+        ServiceBootIdentity boot = { 0xABCD, 0x1234 };
+        ServiceOcApplyProofStamp validStamp = {};
+        validStamp.magic = SERVICE_OC_APPLY_STAMP_MAGIC;
+        validStamp.version = SERVICE_OC_APPLY_STAMP_VERSION;
+        validStamp.size = sizeof(ServiceOcApplyProofStamp);
+        validStamp.bootIdentity = boot;
+        validStamp.awakeTime100ns = 10000000; // 1 second
+
+        uint64_t ageMs = 0;
+        bool valid = service_compute_proof_age_ms(
+            &validStamp, boot, 20000000, &ageMs);
+        if (!valid) return 800;
+        if (ageMs != 1000) return 801; // 1 sec awake = 1000ms
+
+        // Wrong boot identity: reject
+        ServiceBootIdentity otherBoot = { 0xFFFF, 0 };
+        if (service_compute_proof_age_ms(
+            &validStamp, otherBoot, 20000000, &ageMs)) return 802;
+
+        // Time underflow: reject
+        if (service_compute_proof_age_ms(
+            &validStamp, boot, 5000000, &ageMs)) return 803;
+
+        // Bad magic: reject
+        ServiceOcApplyProofStamp badMagic = validStamp;
+        badMagic.magic = 0xDEAD;
+        if (service_compute_proof_age_ms(
+            &badMagic, boot, 20000000, &ageMs)) return 804;
+
+        // Zero stamp: reject
+        ServiceOcApplyProofStamp zero = {};
+        if (service_compute_proof_age_ms(
+            &zero, boot, 20000000, &ageMs)) return 805;
+
+        // Null stamp: reject
+        if (service_compute_proof_age_ms(
+            nullptr, boot, 20000000, &ageMs)) return 806;
+    }
+
+    // F-02-002: recovery clock window counting — bounds and boot identity
+    {
+        ServiceBootIdentity boot = { 0xA, 0xB };
+        ServiceBootIdentity otherBoot = { 0xC, 0xD };
+        ServiceRecoveryClockEntry entries[4] = {};
+        entries[0].bootIdentity = boot;
+        entries[0].awakeTime100ns = 10000000;
+        entries[1].bootIdentity = boot;
+        entries[1].awakeTime100ns = 20000000;
+        entries[2].bootIdentity = otherBoot;
+        entries[2].awakeTime100ns = 15000000;
+        entries[3].bootIdentity = boot;
+        entries[3].awakeTime100ns = 0; // zero is skipped
+
+        unsigned int recent = service_count_recent_recovery_clock_entries(
+            entries, 4, boot, 50000000, 60000);
+        if (recent != 2) return 810; // entries 0 and 1 within 60s window
+
+        // Zero current awake time: returns 0
+        if (service_count_recent_recovery_clock_entries(
+            entries, 4, boot, 0, 60000) != 0) return 811;
+
+        // Null entries: returns 0
+        if (service_count_recent_recovery_clock_entries(
+            nullptr, 4, boot, 50000000, 60000) != 0) return 812;
+
+        // Zero entries count: returns 0
+        if (service_count_recent_recovery_clock_entries(
+            entries, 0, boot, 50000000, 60000) != 0) return 813;
+    }
+
+    // F-02-002: recovery evidence dedup
+    {
+        ServiceRecoveryEvidenceKey keys[3] = {};
+        keys[0] = { 1, 2 };
+        keys[1] = { 3, 4 };
+        keys[2] = { 5, 6 };
+        if (!service_recovery_evidence_already_recorded(keys, 3, { 1, 2 })) return 820;
+        if (!service_recovery_evidence_already_recorded(keys, 3, { 3, 4 })) return 821;
+        if (!service_recovery_evidence_already_recorded(keys, 3, { 5, 6 })) return 822;
+        if (service_recovery_evidence_already_recorded(keys, 3, { 7, 8 })) return 823;
+        // Invalid key must not be dedup-checked
+        if (service_recovery_evidence_already_recorded(keys, 3, { 0, 0 })) return 824;
+        // Null keys: returns false
+        if (service_recovery_evidence_already_recorded(nullptr, 3, { 1, 2 })) return 825;
+    }
+
+    // F-02-002: standby proof preservation logic
+    {
+        if (!service_should_preserve_proof_after_standby(true, 600000, 600000)) return 830;
+        // Under required age
+        if (service_should_preserve_proof_after_standby(true, 599999, 600000)) return 831;
+        // Invalid proof
+        if (service_should_preserve_proof_after_standby(false, 600000, 600000)) return 832;
+        // Zero required age (no preservation needed)
+        if (service_should_preserve_proof_after_standby(true, 600000, 0)) return 833;
+    }
+
+    // Protocol-v10 mutations are idempotent and retain a bounded query cache.
+    {
+        ServiceOperationTracker tracker = {};
+        const ServiceOperationRecord* existing = nullptr;
+        if (service_operation_begin(&tracker, 42, &existing) !=
+            SERVICE_OPERATION_BEGIN_STARTED) return 1000;
+        const ServiceOperationRecord* record = service_operation_find(&tracker, 42);
+        if (!record || record->state != SERVICE_OPERATION_IN_PROGRESS) return 1001;
+        if (service_operation_begin(&tracker, 42, &existing) !=
+            SERVICE_OPERATION_BEGIN_DUPLICATE || existing != record) return 1002;
+        if (!service_operation_complete(&tracker, 42, SERVICE_STATUS_OK, "done"))
+            return 1003;
+        record = service_operation_find(&tracker, 42);
+        if (!record || record->state != SERVICE_OPERATION_SUCCEEDED ||
+            strcmp(record->message, "done") != 0) return 1004;
+        if (service_operation_complete(&tracker, 42, SERVICE_STATUS_ERROR,
+                "twice")) return 1005;
+        if (!service_operation_restore(&tracker, 77,
+                SERVICE_OPERATION_OUTCOME_UNKNOWN, SERVICE_STATUS_ERROR,
+                "restart uncertainty")) return 1006;
+        record = service_operation_find(&tracker, 77);
+        if (!record || record->state != SERVICE_OPERATION_OUTCOME_UNKNOWN)
+            return 1007;
+        for (gc_u64 id = 100; id < 116; ++id) {
+            if (service_operation_begin(&tracker, id, nullptr) !=
+                SERVICE_OPERATION_BEGIN_STARTED) return 1008;
+        }
+        if (service_operation_find(&tracker, 42) != nullptr) return 1009;
+    }
+
+    // Linux curve composition matches Windows precedence and never turns a
+    // selective/lock-composed request into an NVML-global offset.
+    {
+        VFCurvePoint curve[VF_NUM_POINTS] = {};
+        int current[VF_NUM_POINTS] = {};
+        for (int i = 0; i < 8; ++i) {
+            curve[i].freq_kHz = 1000000u + (unsigned int)i * 100000u;
+            curve[i].volt_uV = 700000u + (unsigned int)i * 10000u;
+            current[i] = 10000;
+        }
+        int targets[VF_NUM_POINTS] = {};
+        bool mask[VF_NUM_POINTS] = {};
+        DesiredSettings desired = {};
+        desired.hasGpuOffset = true;
+        desired.gpuOffsetMHz = 50;
+        desired.gpuOffsetExcludeLowCount = 2;
+        desired.hasCurvePoint[3] = true;
+        desired.curvePointMHz[3] = 1500;
+        desired.hasLock = true;
+        desired.lockMode = LOCK_MODE_FLATTEN;
+        desired.lockCi = 5;
+        desired.lockMHz = 1600;
+        LinuxCurveTargetBuildResult built = linux_build_curve_targets(
+            curve, current, &desired, -900000, targets, mask);
+        if (!built.composedGpuOffset || !built.lockTail || built.pointCount != 6)
+            return 1010;
+        if (mask[0] || mask[1] || !mask[2] || targets[2] != 50000)
+            return 1011;
+        if (!mask[3] || targets[3] != 210000 || targets[4] != 50000)
+            return 1012;
+        if (targets[5] != 110000 || targets[6] != -900000 ||
+            targets[7] != -900000) return 1013;
+
+        DesiredSettings globalOnly = {};
+        globalOnly.hasGpuOffset = true;
+        globalOnly.gpuOffsetMHz = 75;
+        built = linux_build_curve_targets(curve, current, &globalOnly,
+            -900000, targets, mask);
+        if (built.composedGpuOffset || built.pointCount != 0) return 1014;
+
+        DesiredSettings hard = desired;
+        hard.lockMode = LOCK_MODE_HARD;
+        hard.hasCurvePoint[6] = true;
+        hard.curvePointMHz[6] = 1900;
+        built = linux_build_curve_targets(curve, current, &hard,
+            -900000, targets, mask);
+        if (!built.lockTail || targets[6] != 10000) return 1015;
+
+        VFCurvePoint sparse[VF_NUM_POINTS] = {};
+        int sparseCurrent[VF_NUM_POINTS] = {};
+        sparse[0].freq_kHz = 1000000;
+        sparse[3].freq_kHz = 1300000;
+        sparse[5].freq_kHz = 1500000;
+        DesiredSettings sparseOffset = {};
+        sparseOffset.hasGpuOffset = true;
+        sparseOffset.gpuOffsetMHz = 25;
+        sparseOffset.gpuOffsetExcludeLowCount = 2;
+        built = linux_build_curve_targets(sparse, sparseCurrent,
+            &sparseOffset, -900000, targets, mask);
+        if (mask[0] || mask[3] || !mask[5] || targets[5] != 25000)
+            return 1034;
+    }
+
+    // Fan policy honors configured interval and hysteresis, while explicit
+    // desired-state changes can force an immediate target refresh.
+    {
+        FanCurveConfig curve = {};
+        fan_curve_set_default(&curve);
+        curve.pollIntervalMs = 1250;
+        curve.hysteresisC = 2;
+        FanRuntimeState state = {};
+        FanRuntimeDecision first = fan_runtime_next_action(&state, &curve, 30,
+            false);
+        if (!first.shouldWrite || first.targetPercent != 20 ||
+            first.nextPollMs != 1250) return 1016;
+        FanRuntimeDecision raised = fan_runtime_next_action(&state, &curve, 32,
+            false);
+        if (raised.targetPercent == first.targetPercent) return 1017;
+        FanRuntimeDecision held = fan_runtime_next_action(&state, &curve, 31,
+            false);
+        if (held.targetPercent != raised.targetPercent) return 1018;
+        FanRuntimeDecision cooled = fan_runtime_next_action(&state, &curve, 30,
+            false);
+        if (cooled.targetPercent != first.targetPercent) return 1035;
+        FanRuntimeDecision forced = fan_runtime_next_action(&state, &curve, 31,
+            true);
+        if (forced.targetPercent != fan_curve_interpolate_percent(&curve, 31))
+            return 1019;
+    }
+
+    // One active mutation plus one latest pending request; Reset cannot be
+    // overtaken by a later Apply.
+    {
+        if (gui_mutation_queue_decide(false, false, GUI_MUTATION_APPLY,
+                GUI_MUTATION_APPLY) != GUI_MUTATION_QUEUE_START) return 1020;
+        if (gui_mutation_queue_decide(true, false, GUI_MUTATION_APPLY,
+                GUI_MUTATION_APPLY) != GUI_MUTATION_QUEUE_PENDING) return 1021;
+        if (gui_mutation_queue_decide(true, true, GUI_MUTATION_APPLY,
+                GUI_MUTATION_APPLY) != GUI_MUTATION_QUEUE_REPLACE_PENDING)
+            return 1022;
+        if (gui_mutation_queue_decide(true, true, GUI_MUTATION_APPLY,
+                GUI_MUTATION_RESET) != GUI_MUTATION_QUEUE_REPLACE_PENDING)
+            return 1023;
+        if (gui_mutation_queue_decide(true, true, GUI_MUTATION_RESET,
+                GUI_MUTATION_APPLY) != GUI_MUTATION_QUEUE_KEEP_PENDING_RESET)
+            return 1024;
+    }
+
+    // A pipe timeout caused by this GUI's known long mutation is expected busy,
+    // not service failure. SCM stop/removal and service-process callers still
+    // require a real probe/state transition.
+    {
+        if (!service_health_probe_should_defer(false, true, true, true))
+            return 1040;
+        if (service_health_probe_should_defer(false, false, true, true))
+            return 1041;
+        if (service_health_probe_should_defer(false, true, true, false))
+            return 1042;
+        if (service_health_probe_should_defer(true, true, true, true))
+            return 1043;
+    }
+
+    {
+        LinuxDaemonStateRecord state = {};
+        linux_daemon_record_initialize(&state, LINUX_DAEMON_RECORD_ACTIVE,
+            nullptr, nullptr, 0x123456789ULL, SERVICE_OPERATION_SUCCEEDED);
+        if (!linux_daemon_record_valid(&state) ||
+            state.version != LINUX_DAEMON_RECORD_VERSION ||
+            state.operationId != 0x123456789ULL ||
+            state.operationState != SERVICE_OPERATION_SUCCEEDED) return 1025;
+        LinuxDaemonOperationRecord operation = {};
+        linux_daemon_operation_initialize(&operation, 99,
+            SERVICE_OPERATION_IN_PROGRESS, SERVICE_STATUS_ERROR, "started");
+        if (!linux_daemon_operation_valid(&operation) ||
+            operation.operationId != 99 ||
+            strcmp(operation.message, "started") != 0) return 1032;
+        operation.checksum ^= 1u;
+        if (linux_daemon_operation_valid(&operation)) return 1033;
+    }
+
+#if defined(_WIN32)
+    {
+        Win32Utf8Path invalid("\xC3\x28");
+        if (invalid.valid_for("\xC3\x28")) return 1026;
+    }
+    {
+        std::string unicodePath = argv[1];
+        size_t separator = unicodePath.find_last_of("\\/");
+        if (separator != std::string::npos) unicodePath.resize(separator + 1);
+        unicodePath += u8"配置_тест_😀_profile.ini";
+        gc_DeleteFileUtf8(unicodePath.c_str());
+        if (!set_config_int(unicodePath.c_str(), "unicode", "value", 73))
+            return 1027;
+        if (get_config_int(unicodePath.c_str(), "unicode", "value", 0) != 73)
+            return 1028;
+        char canonical[MAX_PATH] = {};
+        if (!gc_GetFullPathNameUtf8(unicodePath.c_str(), ARRAY_COUNT(canonical),
+                canonical, nullptr) || !strstr(canonical, u8"配置_тест_😀"))
+            return 1029;
+        HANDLE unicodeFile = gc_CreateFileUtf8(unicodePath.c_str(),
+            GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (unicodeFile == INVALID_HANDLE_VALUE) return 1030;
+        CloseHandle(unicodeFile);
+        if (!gc_DeleteFileUtf8(unicodePath.c_str())) return 1031;
+    }
+#endif
+
     DeleteCriticalSection(&g_configLock);
     return 0;
 }
@@ -4336,10 +4806,10 @@ SOURCE_SIZE_RATCHET = {
     "entry.cpp": 960, "gpu_backend_apply.cpp": 1333, "gpu_backend.cpp": 975,
     "linux_backend.cpp": 1154,
     "main_fan_runtime.cpp": 934, "main_gpu_front.cpp": 846,
-    "main_gpu_state.cpp": 919, "main_runtime_gpu.cpp": 917,
+    "main_gpu_state.cpp": 919,
     "main_runtime_nvml.cpp": 1105, "main_runtime_ui.cpp": 809,
     "main_service_persist.cpp": 914, "main_service_pipe.cpp": 841,
-    "main_state_sync.cpp": 1229, "ui_main_window.cpp": 1420, "ui_main.cpp": 867,
+    "ui_main_window.cpp": 1420, "ui_main.cpp": 867,
 }
 
 
@@ -4401,6 +4871,7 @@ def run_source_regression_checks():
     config_profile_repair_cpp = os.path.join(SOURCE_DIR, "config_profile_repair.cpp")
     gpu_backend_apply_cpp = os.path.join(SOURCE_DIR, "gpu_backend_apply.cpp")
     main_gpu_state_cpp = os.path.join(SOURCE_DIR, "main_gpu_state.cpp")
+    main_data_paths_cpp = os.path.join(SOURCE_DIR, "main_data_paths.cpp")
     main_state_sync_cpp = os.path.join(SOURCE_DIR, "main_state_sync.cpp")
     main_tail_diagnostics_cpp = os.path.join(SOURCE_DIR, "main_tail_diagnostics.cpp")
     main_shell_cpp = os.path.join(SOURCE_DIR, "main_shell.cpp")
@@ -4417,6 +4888,7 @@ def run_source_regression_checks():
     gpu_backend_cpp = os.path.join(SOURCE_DIR, "gpu_backend.cpp")
     gpu_selection_config_cpp = os.path.join(SOURCE_DIR, "gpu_selection_config.cpp")
     main_runtime_control_cpp = os.path.join(SOURCE_DIR, "main_runtime_control.cpp")
+    main_runtime_capture_cpp = os.path.join(SOURCE_DIR, "main_runtime_capture.cpp")
     tray_autostart_cpp = os.path.join(SOURCE_DIR, "main_tray_autostart.cpp")
     startup_task_runtime_cpp = os.path.join(SOURCE_DIR, "main_startup_task_runtime.cpp")
     main_runtime_gpu_cpp = os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp")
@@ -4455,7 +4927,9 @@ def run_source_regression_checks():
     logon_coordinator_cpp = _lifecycle_surface
     _service_server_surface = os.path.join(BUILD_WORK_DIR, "_service_server_surface.cpp")
     with open(_service_server_surface, "w", encoding="utf-8", errors="ignore") as _sf:
-        for _cpp in (service_request_policy_cpp, service_pipe_cpp,
+        for _cpp in (service_request_policy_cpp,
+                     os.path.join(SOURCE_DIR, "main_service_pipe_primitives.h"),
+                     service_pipe_cpp,
                      service_host_cpp):
             with open(_cpp, "r", encoding="utf-8", errors="ignore") as _source:
                 _sf.write(_source.read())
@@ -4508,7 +4982,7 @@ def run_source_regression_checks():
 
     require_text(shared_h, "APP_DEBUG_DEFAULT_ENABLED 1", "debug logging remains default-on")
     require_text(shared_h, "APP_TITLE           APP_NAME \" v\" APP_VERSION", "plain title macro exists")
-    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 9", "service protocol version includes typed apply origins and lifecycle metadata")
+    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 10", "service protocol version includes retry-safe mutation operation identities")
     require_text(shared_h, "typedef gc_u8 gc_bool8", "IPC bool fields use a fixed-width one-byte type")
     require_text(shared_h, "canonicalize_gc_bool8", "IPC bool fields are canonicalized at trust boundaries")
     require_text(shared_h, "validate_service_response_for_ipc", "service responses are canonicalized before GUI use")
@@ -4584,8 +5058,8 @@ def run_source_regression_checks():
     require_text(main_service_persist_cpp, "ServiceRestartReapplySnapshot", "restart-reapply snapshot persists target GPU identity")
     require_text(main_service_persist_cpp, "targetGpu", "restart-reapply snapshot carries target GPU")
     require_text(main_service_persist_cpp, "Restart snapshot GPU identity is not present", "controlled restart restore skips when its owned target GPU cannot be matched")
-    require_text(main_state_sync_cpp, "service_sid_string_from_token", "service user path cache resolves the caller SID")
-    require_text(main_state_sync_cpp, "g_serviceUserPathsSid", "service user path cache keys by session id plus SID")
+    require_text(main_data_paths_cpp, "service_sid_string_from_token", "service user path cache resolves the caller SID")
+    require_text(main_data_paths_cpp, "g_serviceUserPathsSid", "service user path cache keys by session id plus SID")
     require_text(os.path.join(SOURCE_DIR, "service_lifecycle_policy.h"), "authenticationId", "session debounce identity includes authentication LUID")
     require_text(os.path.join(SOURCE_DIR, "service_lifecycle_policy.h"), "service_lifecycle_identity_equal", "session debounce compares session, SID, and authentication LUID")
     require_text(selected_gpu_pnp_policy_h, "selected_gpu_pnp_resolve_match_count",
@@ -4789,7 +5263,7 @@ def run_source_regression_checks():
     require_text(main_gpu_state_cpp, "non-selective request clears runtime state", "uniform GPU offsets clear runtime selective state")
     require_text(main_gpu_state_cpp, 'debug_log_on_change("current_applied_gpu_offset_mhz: not Blackwell', "stable non-Blackwell GPU offset diagnostic is change-gated")
     forbid_text(main_gpu_state_cpp, 'debug_log("current_applied_gpu_offset_mhz: not Blackwell', "stable non-Blackwell GPU offset diagnostic must not spam every poll")
-    require_text(main_runtime_gpu_cpp, 'debug_log_on_change("populate_global_controls: dirty=', "global control refresh diagnostics are change-gated")
+    require_text(main_runtime_capture_cpp, 'debug_log_on_change("populate_global_controls: dirty=', "global control refresh diagnostics are change-gated")
     require_text(gpu_backend_apply_cpp, "interactive && !g_app.isServiceProcess", "service apply does not inherit stale GUI lock state")
     require_text(gpu_backend_apply_cpp, "post-apply lock clear: no lock requested", "service no-lock applies clear stale lock markers")
     require_text(gpu_backend_apply_cpp, "reset_oc_before_gui_apply", "GUI OC applies reset stale OC baseline before applying")
@@ -4955,10 +5429,10 @@ def run_source_regression_checks():
     # The shared resolver and the one-time legacy cleanup are the only places
     # permitted to mention ProgramData; the per-process data/diagnostics paths must
     # not. (Service LocalAppData = SYSTEM profile, which is admin-only.)
-    state_sync_cpp = os.path.join(SOURCE_DIR, "main_state_sync.cpp")
+    state_sync_cpp = main_state_sync_cpp
     service_runtime_cpp = main_service_runtime_cpp
-    require_text(state_sync_cpp, "resolve_service_machine_data_dir", "service machine data dir resolves under LocalAppData")
-    require_text(state_sync_cpp, "service_cleanup_legacy_programdata", "legacy ProgramData directory cleanup exists")
+    require_text(main_data_paths_cpp, "resolve_service_machine_data_dir", "service machine data dir resolves under LocalAppData")
+    require_text(main_data_paths_cpp, "service_cleanup_legacy_programdata", "legacy ProgramData directory cleanup exists")
     require_text(service_server_cpp, "service_cleanup_legacy_programdata()", "service startup runs the legacy ProgramData cleanup")
     forbid_text(service_runtime_cpp, "ProgramData", "service runtime stores files under LocalAppData, not ProgramData")
     forbid_text(diagnostics_cpp, "ProgramData", "diagnostics stores files under LocalAppData, not ProgramData")
@@ -4975,7 +5449,7 @@ def run_source_regression_checks():
     require_text(service_ipc_cpp, "cannot verify server binary path", "pipe server identity accepts PID match when image path cannot be queried")
 
     # F-04-002: LocalSystem file-write parent directory verification
-    require_text(secure_write_cpp, "parent dir verified", "service file-write verifies parent directory before temp creation")
+    require_text(secure_write_cpp, "caller-scoped parent directory verified", "service file-write verifies parent directory under the authenticated caller token")
     require_text(secure_write_cpp, "FILE_FLAG_OPEN_REPARSE_POINT", "service file-write opens parent without following reparse points")
 
     # F-01-002: Fan failure triggers rollback of earlier hardware writes
@@ -5354,7 +5828,7 @@ def run_source_regression_checks():
                  "service has a pure coalesced lifecycle state")
     require_text(logon_coordinator_cpp, "service_lifecycle_thread_proc",
                  "service uses one long-lived logon/lifecycle worker")
-    require_text(lifecycle_events_cpp, "FindFirstChangeNotificationA(",
+    require_text(lifecycle_events_cpp, "gc_FindFirstChangeNotificationUtf8(",
                  "transient profile materialization arms a real config-directory readiness watch")
     require_text(lifecycle_events_cpp, "FindNextChangeNotification(",
                  "lifecycle worker rearms config readiness notifications after each change")
@@ -5401,7 +5875,7 @@ def run_source_regression_checks():
                  "applied_profile_sync_inputs_unchanged(inputs)",
                  "routine telemetry cannot repeatedly reload an unchanged saved profile from INI")
     require_text(os.path.join(SOURCE_DIR, "config_profile_sync_cache.cpp"),
-                 "GetFileAttributesExA(path, GetFileExInfoStandard",
+                 "gc_GetFileAttributesExUtf8(path, GetFileExInfoStandard",
                  "profile ownership cache invalidates on an external config-file change without reading its contents")
     require_text(lifecycle_events_cpp, "logonSessionEventPending",
                  "real WTS logon is preserved separately from generic session readiness cues")
@@ -5427,9 +5901,9 @@ def run_source_regression_checks():
                 "service logon coordinator uses readiness signals instead of blind sleeps")
     require_text(logon_coordinator_cpp, "unresolvedLogonPending",
                  "session router queues a logon even when the SID/token is temporarily unavailable")
-    require_text(os.path.join(SOURCE_DIR, "main_state_sync.cpp"), "TokenStatistics",
+    require_text(main_data_paths_cpp, "TokenStatistics",
                  "session identity includes the authentication LUID")
-    require_text(os.path.join(SOURCE_DIR, "main_state_sync.cpp"), "AuthenticationId",
+    require_text(main_data_paths_cpp, "AuthenticationId",
                  "session identity stores TokenStatistics.AuthenticationId")
     require_text(sessions_cpp, "WTS_SESSION_LOGOFF",
                  "logoff cancels matching pending/debounce state")
@@ -5546,7 +6020,7 @@ def run_source_regression_checks():
                  "config lock creation/open failure fails closed")
     require_text_in_operation(config_utils_cpp,
                               "bool update_logon_profile_selection_transaction",
-                              "WritePrivateProfileStringA(nullptr, nullptr, nullptr, path)",
+                              "gc_WritePrivateProfileStringUtf8(nullptr, nullptr, nullptr, path)",
                               "atomic logon selection flushes the Win32 INI cache before readback")
     require_text(secure_write_cpp, "config_section_header_matches_ascii",
                  "atomic section replacement follows case-insensitive Win32 INI semantics")
@@ -5632,11 +6106,11 @@ def run_source_regression_checks():
     require_text(desired_settings_helpers_cpp, "desired_updates_curve_or_gpu_offset_state", "memory/power-only applies do not replace sparse curve intent")
     require_text(main_service_runtime_cpp, "merged fan-only request into active desired", "service fan-only applies preserve active curve intent")
     require_text(gpu_backend_cpp, "skipped VF edit repaint for fan-only apply", "GUI client fan-only applies do not clear sparse curve masks")
-    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "preserving VF editor intent after fan-only apply", "main apply handler preserves VF editor after fan-only apply")
+    require_text(os.path.join(SOURCE_DIR, "ui_mutation_completion.cpp"), "preserving VF editor intent after fan-only apply", "main apply handler preserves VF editor after fan-only apply")
     require_text(main_runtime_control_cpp, "curvePoints=%d (%s)", "GUI capture logs sparse curve point list")
     require_text(os.path.join(SOURCE_DIR, "config_profiles.cpp"), "point74=%d/%u point75=%d/%u point76=%d/%u", "profile save logs edited pre-tail VF points")
-    require_text(main_runtime_gpu_cpp, "capture_gui_desired_settings(&resetFull, true, true, false", "apply capture keeps sparse VF curve intent")
-    require_text(main_runtime_gpu_cpp, "capture_gui_desired_settings(&guiDesired, true, true, false", "profile save capture keeps sparse VF curve intent")
+    require_text(main_runtime_capture_cpp, "capture_gui_desired_settings(&resetFull, true, true, false", "apply capture keeps sparse VF curve intent")
+    require_text(main_runtime_capture_cpp, "capture_gui_desired_settings(&guiDesired, true, true, false", "profile save capture keeps sparse VF curve intent")
     require_text(config_profile_repair_cpp, "profile repair: removed non-tail readback artifact", "profile load repairs logged non-tail readback artifacts")
     require_text(main_gpu_state_cpp, "skippedLockedTail ? 4 : 3", "selective GPU offset detection rejects two-point high-edit false positives")
 
@@ -5645,8 +6119,8 @@ def run_source_regression_checks():
     # and capture_gui_config_settings forgot lockMode. These would fail before the fix.
     require_text(config_profiles_ui_cpp, "base->lockMode = override->lockMode", "Windows merge_desired_settings carries lock mode")
     require_text(os.path.join(SOURCE_DIR, "linux_port_profiles.cpp"), "base->lockTracksAnchor = incoming->lockTracksAnchor", "Linux merge_desired_settings carries lock anchor tracking")
-    require_text(main_runtime_gpu_cpp, "full.lockMode = guiDesired.lockMode", "profile-save capture preserves lock mode from GUI")
-    require_text(main_runtime_gpu_cpp, "full.lockMode = g_app.lockMode", "profile-save capture preserves live lock mode")
+    require_text(main_runtime_capture_cpp, "full.lockMode = guiDesired.lockMode", "profile-save capture preserves lock mode from GUI")
+    require_text(main_runtime_capture_cpp, "full.lockMode = g_app.lockMode", "profile-save capture preserves live lock mode")
     require_text(os.path.join(SOURCE_DIR, "config_profiles.cpp"), "lock writing ci=", "profile save logs the lock ci/mhz/mode being written")
     require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "show_lock_context_menu", "lock checkbox right-click mode menu exists")
     require_text(os.path.join(SOURCE_DIR, "ui_main.cpp"), "create_lock_tooltips", "lock checkbox hover tooltip is registered")
@@ -5731,7 +6205,14 @@ def run_source_regression_checks():
 
     # F-LNX: native Linux GPU backend + daemon invariants
     linux_gpu_cpp = os.path.join(SOURCE_DIR, "linux_gpu.cpp")
-    linux_backend_cpp = os.path.join(SOURCE_DIR, "linux_backend.cpp")
+    _linux_backend_surface = os.path.join(BUILD_WORK_DIR, "_linux_backend_surface.cpp")
+    with open(_linux_backend_surface, "w", encoding="utf-8", errors="ignore") as _lf:
+        for _cpp in (os.path.join(SOURCE_DIR, "linux_backend.cpp"),
+                     os.path.join(SOURCE_DIR, "linux_backend_mutation.cpp")):
+            with open(_cpp, "r", encoding="utf-8", errors="ignore") as _source:
+                _lf.write(_source.read())
+                _lf.write("\n")
+    linux_backend_cpp = _linux_backend_surface
     linux_daemon_cpp = os.path.join(SOURCE_DIR, "linux_daemon.cpp")
     linux_daemon_state_cpp = os.path.join(SOURCE_DIR, "linux_daemon_state.cpp")
     linux_service_install_cpp = os.path.join(SOURCE_DIR, "linux_service_install.cpp")
@@ -5798,6 +6279,126 @@ def run_source_regression_checks():
     require_text(linux_daemon_cpp, "sudo usermod -aG greencurve", "Linux socket permission denial explains group enrollment")
     require_text(linux_main_cpp, "The daemon socket permits root and greencurve group members", "Linux service install explains socket authorization")
     require_text(linux_main_cpp, "sudo usermod -aG greencurve", "Linux help and generated assets document group enrollment")
+
+    # Protocol-v10 retry safety and GUI-thread ownership.
+    operation_tracker_h = os.path.join(SOURCE_DIR, "service_operation_tracker.h")
+    gui_mutation_worker_cpp = os.path.join(SOURCE_DIR, "gui_mutation_worker.cpp")
+    gui_mutation_policy_h = os.path.join(SOURCE_DIR, "gui_mutation_queue_policy.h")
+    require_text(service_protocol_h, "SERVICE_CMD_GET_OPERATION_RESULT",
+                 "protocol exposes a read-only operation-result query")
+    require_text(service_protocol_h, "gc_u64 operationId",
+                 "mutating requests carry a 64-bit operation identity")
+    require_text(operation_tracker_h, "SERVICE_OPERATION_HISTORY_CAPACITY 16",
+                 "services retain the bounded latest-16 mutation cache")
+    require_text(operation_tracker_h, "SERVICE_OPERATION_BEGIN_DUPLICATE",
+                 "operation tracker deduplicates repeated mutation IDs")
+    require_text(os.path.join(SOURCE_DIR, "main_service_operation_persist.cpp"),
+                 "operation outcome became uncertain across service restart",
+                 "Windows in-progress operations restore as outcome-unknown")
+    require_text(main_service_persist_cpp, "SERVICE_ACTIVE_DESIRED_VERSION 5u",
+                 "Windows protected active-state schema is version 5")
+    require_text(main_service_persist_cpp, "SERVICE_ACTIVE_DESIRED_LEGACY_VERSION 4u",
+                 "Windows active-state reader remains compatible with version 4")
+    require_text(os.path.join(SOURCE_DIR, "linux_operation_runtime.h"),
+                 "persist_daemon_operation",
+                 "Linux persists both in-progress and completed correlation")
+    require_text(gui_mutation_worker_cpp, "service_client_execute_mutation_request",
+                 "GUI worker performs transport-only mutation execution")
+    require_text(gui_mutation_worker_cpp, "APP_WM_MUTATION_COMPLETE",
+                 "GUI worker posts completion to the main window")
+    require_text(gui_mutation_worker_cpp, "gui_mutation_work_context_is_current",
+                 "pending mutations revalidate session and GPU epoch")
+    require_text(gui_mutation_policy_h, "GUI_MUTATION_QUEUE_KEEP_PENDING_RESET",
+                 "a pending Reset cannot be overtaken by Apply")
+    forbid_text(gui_mutation_worker_cpp, "apply_service_snapshot_to_app",
+                "mutation worker cannot update application state off the GUI thread")
+    require_text(service_connection_cpp, "service_health_probe_should_defer",
+                 "GUI health checks preserve the last proven service state during an owned mutation")
+    require_text(os.path.join(SOURCE_DIR, "main_fan_telemetry.cpp"), "fan telemetry: deferred while the GUI owns an active GPU mutation",
+                 "fan telemetry cannot misclassify the serialized service pipe during Apply/Reset")
+    require_text(os.path.join(SOURCE_DIR, "ui_mutation_completion.cpp"),
+                 "completion->response.magic == SERVICE_PROTOCOL_MAGIC",
+                 "a validated mutation response re-proves service availability without a redundant ping")
+
+    # Windows identity and privileged output boundary.
+    require_text(main_service_runtime_identity_cpp, "ImpersonateNamedPipeClient(pipe)",
+                 "named-pipe identity comes from the connected client token")
+    require_text(main_service_runtime_identity_cpp, "OpenThreadToken(GetCurrentThread()",
+                 "pipe authorization opens the impersonated thread token")
+    require_text(main_service_runtime_identity_cpp, "DuplicateTokenEx(threadToken",
+                 "pipe authorization retains a stable duplicated token")
+    require_order_in_operation(main_service_runtime_identity_cpp,
+                  "static bool get_pipe_client_identity(",
+                  "OpenThreadToken(GetCurrentThread()",
+                  "impersonation.revert()",
+                  "pipe identity always reverts before token metadata work")
+    require_text(main_service_runtime_identity_cpp,
+                 "class ScopedPipeClientImpersonation",
+                 "pipe-client impersonation is reverted through RAII")
+    require_text(service_server_cpp, "request.callerPid != callerPid",
+                 "payload caller PID must match the pipe-reported PID")
+    require_text(service_server_cpp, "callerIntegrityRid < SECURITY_MANDATORY_MEDIUM_RID",
+                 "control and file-output requests reject low-integrity clients")
+    require_text(service_server_cpp, "ScopedServiceClientImpersonation impersonation(callerToken)",
+                 "privileged file output is written under caller impersonation")
+    require_order(service_server_cpp,
+                  "hardware_initialize(detail, sizeof(detail))",
+                  "ScopedServiceClientImpersonation impersonation(callerToken)",
+                  "hardware capture precedes caller-scoped destination writes")
+    require_text(secure_write_cpp, "BCryptGenRandom",
+                 "Windows secure-write temporary names use the OS CSPRNG")
+    require_text(service_request_policy_cpp, "CompareStringOrdinal",
+                 "Windows canonical containment uses ordinal UTF-16 comparison")
+
+    # UTF-8 is the internal path encoding; all path/profile boundaries use W APIs.
+    win32_utf8_paths_h = os.path.join(SOURCE_DIR, "win32_utf8_paths.h")
+    require_text(win32_utf8_paths_h, "using Win32Utf8Path = GcWideUtf8Arg",
+                 "internal Win32Utf8Path conversion type exists")
+    require_text(win32_utf8_paths_h, "CP_UTF8, MB_ERR_INVALID_CHARS",
+                 "UTF-8 path conversion is strict")
+    require_text(win32_utf8_paths_h, "WritePrivateProfileStringW",
+                 "profile writes cross the UTF-16 Win32 boundary")
+    ansi_path_calls = (
+        "CreateFileA(", "GetFileAttributesA(", "GetFileAttributesExA(",
+        "SetFileAttributesA(", "DeleteFileA(", "MoveFileExA(",
+        "CopyFileA(", "CreateDirectoryA(", "RemoveDirectoryA(",
+        "GetFullPathNameA(", "GetFinalPathNameByHandleA(",
+        "GetModuleFileNameA(", "GetSystemDirectoryA(",
+        "GetPrivateProfileStringA(", "WritePrivateProfileStringA(",
+        "GetPrivateProfileSectionA(", "WritePrivateProfileSectionA(",
+        "FindFirstFileA(", "FindNextFileA(",
+        "FindFirstChangeNotificationA(",
+    )
+    for name in os.listdir(SOURCE_DIR):
+        if not name.endswith((".cpp", ".h")):
+            continue
+        source_path = os.path.join(SOURCE_DIR, name)
+        for call in ansi_path_calls:
+            forbid_text(source_path, call,
+                        f"production path API remains Unicode-safe: {name} has no {call}")
+
+    # Linux runtime boundaries fail closed and fatal TUI exits restore termios.
+    linux_socket_permissions_h = os.path.join(SOURCE_DIR, "linux_socket_permissions.h")
+    linux_tui_cpp = os.path.join(SOURCE_DIR, "linux_tui.cpp")
+    require_text(linux_daemon_cpp, "umask(0077)",
+                 "daemon creates its runtime socket under restrictive umask")
+    require_text(linux_socket_permissions_h, "fchown(socketFd, 0, expectedGroup)",
+                 "socket ownership is set on the bound descriptor")
+    require_text(linux_socket_permissions_h, "group ? 0660 : 0600",
+                 "missing greencurve group deliberately falls back to root-only")
+    require_text(linux_socket_permissions_h, "fstat(socketFd, &status)",
+                 "socket type, owner, group, and mode are verified on the descriptor")
+    require_text(linux_service_install_cpp, "UMask=0077",
+                 "systemd service repeats restrictive umask hardening")
+    require_text(linux_tui_cpp, "pid_t child = fork()",
+                 "Linux TUI runs under a terminal-restoring supervisor")
+    require_text(linux_tui_cpp, "waitpid(child, &childStatus, 0)",
+                 "TUI supervisor observes normal and fatal child termination")
+    require_order(linux_tui_cpp, "waitpid(child, &childStatus, 0)",
+                  "tcsetattr(STDIN_FILENO, TCSAFLUSH, &original)",
+                  "terminal restoration happens in normal parent control flow")
+    forbid_text(linux_tui_cpp, "on_fatal_signal",
+                "fatal signal handlers never call terminal or stdio APIs")
     # F-LNX-TUI: root-cause fix for the reported mouse-offset bug + keyboard/daemon parity.
     linux_tui_cpp = os.path.join(SOURCE_DIR, "linux_tui.cpp")
     linux_tui_layout_cpp = os.path.join(SOURCE_DIR, "linux_tui_layout.cpp")
@@ -5926,19 +6527,19 @@ def run_source_regression_checks():
     require_text(os.path.join(SOURCE_DIR, "app_shared.h"),
         "unsigned int appliedCurveMHz[VF_NUM_POINTS];",
         "F-DRIFT-1: drift-free applied VF curve intent baseline exists in AppState")
-    require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
+    require_text(main_runtime_capture_cpp,
         "static void capture_applied_curve_baseline(const DesiredSettings* desired)",
         "F-DRIFT-1: baseline is captured from intent (DesiredSettings), not live readback")
-    require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
+    require_text(main_runtime_capture_cpp,
         "g_app.appliedCurveMHz[i] = desired->curvePointMHz[i];",
         "F-DRIFT-1: baseline values come from the applied desired curve, not g_app.curve")
     # Fan-only apply detection compares the editor against the drift-free baseline,
     # NOT live readback, so expected boost drift on a pre-tail point can no longer
     # reclassify a fan-only change as a curve edit (the reported bug).
-    require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
+    require_text(main_runtime_capture_cpp,
         "unsigned int baselineMHz = g_app.appliedCurveMHz[i];",
         "F-DRIFT-1: fan-only curve-change detection uses the drift-free baseline")
-    require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
+    require_text(main_runtime_capture_cpp,
         "baselineMHz == 0 || full.curvePointMHz[i] != baselineMHz",
         "F-DRIFT-1: a newly-owned point (no baseline) or an edited value still forces a full apply")
     # A fan-only apply carries no curve intent, so it must NOT rewrite the baseline
@@ -5957,7 +6558,7 @@ def run_source_regression_checks():
         "unsigned int ownedMHz = (ci >= 0 && ci < VF_NUM_POINTS) ? g_app.appliedCurveMHz[ci] : 0;",
         "F-DRIFT-1: populate_edits shows owned VF points from the drift-free baseline")
     # Reset-to-stock drops all owned intent so the editor shows live stock values.
-    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"),
+    require_text(os.path.join(SOURCE_DIR, "ui_mutation_completion.cpp"),
         "memset(g_app.appliedCurveMHz, 0, sizeof(g_app.appliedCurveMHz));",
         "F-DRIFT-1: reset clears the owned VF curve intent baseline")
 
@@ -6314,7 +6915,7 @@ def run_source_regression_checks():
     # dirty-editing — otherwise the gate would pin it forever once lockedCi>=0.
     require_text(state_sync_cpp, "clearing stale adopted GUI lock",
         "GUI clears a stale adopted lock when the service reports authoritative no-lock and the user is not editing")
-    require_text(main_fan_runtime_cpp, "g_guiForceFullRefresh",
+    require_text(os.path.join(SOURCE_DIR, "main_fan_telemetry.cpp"), "g_guiForceFullRefresh",
         "telemetry poll does a full GUI resync (graph/fields/checkboxes/header) when a reset clears a stale lock")
     # F-REL-2f: while minimized to the tray, keep a slow telemetry poll so the tray
     # icon/tooltip reflect service state changes (e.g. a reset) without opening the window.
@@ -6396,7 +6997,7 @@ def run_source_regression_checks():
         "configured logon profiles are subject to persistent auto-restore lockout")
     require_text(main_service_logon_coordinator_cpp, "service_record_oc_apply_stamp();",
         "successful logon apply begins the driver-event proving period")
-    require_text(state_sync_cpp, "service_rotate_minidumps",
+    require_text(main_data_paths_cpp, "service_rotate_minidumps",
         "VEH minidumps are rotated to bound disk usage")
     require_text(service_server_cpp, "service_rotate_minidumps(",
         "service startup rotates VEH minidumps")
@@ -6466,6 +7067,42 @@ def run_source_regression_checks():
     require_text(service_server_cpp,
         "InterlockedCompareExchangePointer",
         "pipe close helper atomically claims handle ownership before closing")
+
+    # F-03-005: service_lifecycle_identity_equal_session_and_user is used in the
+    # sessions layer to handle auth LUID drift between identity sources.
+    require_text(os.path.join(SOURCE_DIR, "main_service_sessions.cpp"),
+        "service_lifecycle_identity_equal_session_and_user",
+        "session code uses LUID-tolerant identity comparison for logon matching")
+
+    # F-03-005: point visibility is preserved in profile save paths. Regression
+    # guard for the "all points written as hidden" machine-config sharing bug.
+    require_text(os.path.join(SOURCE_DIR, "config_profiles.cpp"),
+        "point%d_visible=%d",
+        "profile save emits per-point visibility flags")
+    require_text(os.path.join(SOURCE_DIR, "config_profiles.cpp"),
+        "point%d_visible=%d\\r\\n",
+        "profile save writes point visibility with explicit CRLF line endings")
+
+    # F-03-005: no stale VF drift monitor — the continuous auto-reapply was
+    # removed in 0.18 (was a TDR risk).
+    forbid_text(runtime_nvml_cpp,
+        "g_app.continuousVfDriftCheckRunning",
+        "continuous VF drift monitor was removed (0.18)")
+    forbid_text(runtime_nvml_cpp,
+        "detect_and_correct_vf_drift",
+        "VF drift auto-correction was removed (0.18)")
+
+    # F-03-005: lockMode is propagated through all save paths (profile save
+    # must include lock state to prevent dropped lock on save).
+    require_text(os.path.join(SOURCE_DIR, "config_profiles.cpp"),
+        "lockMode",
+        "lock mode field is serialized in profile save/load")
+    require_text(os.path.join(SOURCE_DIR, "config_profiles.cpp"),
+        "g_app.lockMode",
+        "lock mode field from app state is serialized in profile save path")
+    require_text(os.path.join(SOURCE_DIR, "config_profiles.cpp"),
+        "desired->lockMode",
+        "lock mode field from desired settings is serialized in profile save path")
 
 
 
