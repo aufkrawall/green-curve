@@ -33,7 +33,7 @@ static bool curve_section_uses_base_plus_gpu_offset_semantics(const char* path, 
     if (!path || !section || !desired) return false;
 
     char semanticsBuf[64] = {};
-    GetPrivateProfileStringA(section, "curve_semantics", "", semanticsBuf, sizeof(semanticsBuf), path);
+    gc_GetPrivateProfileStringUtf8(section, "curve_semantics", "", semanticsBuf, sizeof(semanticsBuf), path);
     trim_ascii(semanticsBuf);
     if (_stricmp(semanticsBuf, "base_plus_gpu_offset") == 0) {
         return desired->hasGpuOffset && desired->gpuOffsetMHz != 0;
@@ -124,13 +124,13 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
     char buf[64] = {};
     bool hasExplicitFanMode = false;
     char curveFormat[64] = {};
-    GetPrivateProfileStringA(curveSection, "format", "", curveFormat,
+    gc_GetPrivateProfileStringUtf8(curveSection, "format", "", curveFormat,
         ARRAY_COUNT(curveFormat), path);
     trim_ascii(curveFormat);
     const bool explicitVfPointsFormat =
         _stricmp(curveFormat, "explicit_vf_points_v1") == 0;
 
-    GetPrivateProfileStringA(controlsSection, "gpu_offset_mhz", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8(controlsSection, "gpu_offset_mhz", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
         int v = 0;
@@ -142,7 +142,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         desired->gpuOffsetMHz = v;
     }
 
-    GetPrivateProfileStringA(controlsSection, "gpu_offset_exclude_low_count", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8(controlsSection, "gpu_offset_exclude_low_count", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
         int value = 0;
@@ -152,7 +152,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         }
         desired->gpuOffsetExcludeLowCount = value;
     } else {
-        GetPrivateProfileStringA(controlsSection, "gpu_offset_exclude_low_70", "", buf, sizeof(buf), path);
+        gc_GetPrivateProfileStringUtf8(controlsSection, "gpu_offset_exclude_low_70", "", buf, sizeof(buf), path);
         trim_ascii(buf);
         if (buf[0]) {
             int value = 0;
@@ -164,7 +164,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         }
     }
 
-    GetPrivateProfileStringA(controlsSection, "lock_ci", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8(controlsSection, "lock_ci", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     bool lockCiWasExplicit = buf[0] != '\0';
     if (buf[0]) {
@@ -177,7 +177,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         desired->lockCi = value;
     }
 
-    GetPrivateProfileStringA(controlsSection, "lock_mhz", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8(controlsSection, "lock_mhz", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
         int value = 0;
@@ -191,7 +191,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         }
     }
 
-    GetPrivateProfileStringA(controlsSection, "lock_tracks_anchor", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8(controlsSection, "lock_tracks_anchor", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
         int value = 0;
@@ -202,7 +202,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         desired->lockTracksAnchor = value != 0;
     }
 
-    GetPrivateProfileStringA(controlsSection, "lock_mode", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8(controlsSection, "lock_mode", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
         int value = 0;
@@ -218,7 +218,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         desired->lockMode = LOCK_MODE_FLATTEN;
     }
 
-    GetPrivateProfileStringA(controlsSection, "mem_offset_mhz", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8(controlsSection, "mem_offset_mhz", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
         int v = 0;
@@ -230,7 +230,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         desired->memOffsetMHz = v;
     }
 
-    GetPrivateProfileStringA(controlsSection, "power_limit_pct", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8(controlsSection, "power_limit_pct", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
         int v = 0;
@@ -246,7 +246,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         desired->powerLimitPct = v;
     }
 
-    GetPrivateProfileStringA(controlsSection, "fan_mode", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8(controlsSection, "fan_mode", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
         int fanMode = FAN_MODE_AUTO;
@@ -260,7 +260,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         hasExplicitFanMode = true;
     }
 
-    GetPrivateProfileStringA(controlsSection, "fan", "", fanBuf, sizeof(fanBuf), path);
+    gc_GetPrivateProfileStringUtf8(controlsSection, "fan", "", fanBuf, sizeof(fanBuf), path);
     trim_ascii(fanBuf);
     if (fanBuf[0]) {
         bool fanAuto = false;
@@ -278,7 +278,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         }
     }
 
-    GetPrivateProfileStringA(controlsSection, "fan_fixed_pct", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8(controlsSection, "fan_fixed_pct", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
         int value = 0;
@@ -554,7 +554,7 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
     };
     // Read existing file to preserve sections we're not touching. storageLock
     // remains held through the final atomic replacement and INI-cache flush.
-    DWORD existingLen = GetPrivateProfileStringA(nullptr, nullptr, "", existingBuf, CFG_BUFFER_SIZE, path);
+    DWORD existingLen = gc_GetPrivateProfileStringUtf8(nullptr, nullptr, "", existingBuf, CFG_BUFFER_SIZE, path);
     if (existingLen >= CFG_BUFFER_SIZE - 2) {
         free(cfg);
         free(existingBuf);
@@ -658,10 +658,10 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
                 char keys[16384] = {};
                 char val[4096] = {};
                 EnterCriticalSection(&g_configLock);
-                GetPrivateProfileStringA(p, nullptr, "", keys, sizeof(keys), path);
+                gc_GetPrivateProfileStringUtf8(p, nullptr, "", keys, sizeof(keys), path);
                 const char* kp = keys;
                 while (*kp) {
-                    GetPrivateProfileStringA(p, kp, "", val, sizeof(val), path);
+                    gc_GetPrivateProfileStringUtf8(p, kp, "", val, sizeof(val), path);
                     if (strchr(kp, '\r') || strchr(kp, '\n') || strchr(val, '\r') || strchr(val, '\n')) {
                         kp += strlen(kp) + 1;
                         continue;
@@ -744,7 +744,7 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
     if (ok) {
         // The documented cache-flush form returns zero on a successful flush;
         // do not mistake that sentinel result for a write failure.
-        (void)WritePrivateProfileStringA(nullptr, nullptr, nullptr, path);
+        (void)gc_WritePrivateProfileStringUtf8(nullptr, nullptr, nullptr, path);
         invalidate_tray_profile_cache();
     }
     free(cfg);
@@ -801,7 +801,7 @@ static bool clear_profile_from_config(const char* path, int slot, char* err, siz
         set_message(err, errSize, "Out of memory allocating existing buffer");
         return false;
     }
-    DWORD existingLen = GetPrivateProfileStringA(
+    DWORD existingLen = gc_GetPrivateProfileStringUtf8(
         nullptr, nullptr, "", existingBuf, CFG_BUFFER_SIZE, path);
     if (existingLen >= CFG_BUFFER_SIZE - 2) {
         free(existingBuf);
@@ -852,10 +852,10 @@ static bool clear_profile_from_config(const char* path, int slot, char* err, siz
             char keys[16384] = {};
             char val[4096] = {};
             EnterCriticalSection(&g_configLock);
-            GetPrivateProfileStringA(p, nullptr, "", keys, sizeof(keys), path);
+            gc_GetPrivateProfileStringUtf8(p, nullptr, "", keys, sizeof(keys), path);
             const char* kp = keys;
             while (*kp) {
-                GetPrivateProfileStringA(p, kp, "", val, sizeof(val), path);
+                gc_GetPrivateProfileStringUtf8(p, kp, "", val, sizeof(val), path);
                 appendf("%s=%s\r\n", kp, val);
                 kp += strlen(kp) + 1;
             }
@@ -874,7 +874,7 @@ static bool clear_profile_from_config(const char* path, int slot, char* err, siz
     if (ok2) ok2 = write_text_file_atomic(path, cfg, used, err, errSize);
     if (ok2) {
         // See save_profile_to_config: zero is the successful flush sentinel.
-        (void)WritePrivateProfileStringA(nullptr, nullptr, nullptr, path);
+        (void)gc_WritePrivateProfileStringUtf8(nullptr, nullptr, nullptr, path);
         invalidate_tray_profile_cache();
     }
     free(cfg);

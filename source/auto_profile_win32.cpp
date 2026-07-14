@@ -53,29 +53,28 @@ static int ap_resolve_current_target() {
 
 // The actual apply: reuse the same TDR-safe path + idempotency skip the app-start
 // auto-load uses (maybe_load_app_launch_profile_to_gui).
-static void ap_do_apply_slot(int slot, ServiceApplyOrigin origin) {
-    bool manual = service_apply_origin_is_explicit(origin);
-    if (slot < 1 || slot > CONFIG_NUM_SLOTS) return;
+static bool ap_do_apply_slot(int slot, ServiceApplyOrigin origin) {
+    if (slot < 1 || slot > CONFIG_NUM_SLOTS) return false;
     if (g_apApplyInFlight) {
         debug_log("auto-profile: apply slot %d SKIPPED (apply in flight)\n", slot);
-        return;
+        return false;
     }
     char gpuSelectionErr[256] = {};
     if (!validate_configured_gpu_selection_for_client(
             gpuSelectionErr, sizeof(gpuSelectionErr))) {
         debug_log("auto-profile: blocked slot %d because durable GPU identity is unresolved: %s\n",
             slot, gpuSelectionErr[0] ? gpuSelectionErr : "unknown error");
-        return;
+        return false;
     }
     if (!is_profile_slot_saved(g_app.configPath, slot)) {
         debug_log("auto-profile: target slot %d is empty; skipping apply\n", slot);
-        return;
+        return false;
     }
     DesiredSettings desired = {};
     char err[256] = {};
     if (!load_profile_from_config(g_app.configPath, slot, &desired, err, sizeof(err))) {
         debug_log("auto-profile: load slot %d failed: %s\n", slot, err);
-        return;
+        return false;
     }
 
     // "Don't needlessly re-apply": if the service already owns this exact intent,
@@ -100,36 +99,27 @@ static void ap_do_apply_slot(int slot, ServiceApplyOrigin origin) {
             ap_on_applied(&g_apCtrl, slot, ap_now_ms());
             update_tray_icon();
             invalidate_main_window();
-            return;
+            return false;
         }
     }
 
-    // A real switch runs the ~3s service-side VF apply synchronously on the
-    // message thread (same as the manual Apply button). Show a wait cursor so a
-    // timer-driven or menu-pick switch reads as "busy" rather than a random hang.
+    // Hardware mutation is serialized by the GUI worker; the foreground hook,
+    // timers, and window remain responsive while the service writes the curve.
     desired.resetOcBeforeApply = true;
-    char result[512] = {};
-    HCURSOR prevCursor = SetCursor(LoadCursorA(nullptr, IDC_WAIT));
+    char queueStatus[512] = {};
     g_apApplyInFlight = true;
-    bool ok = apply_desired_settings(&desired, false, origin,
-        SERVICE_PROFILE_SOURCE_USER_SLOT, slot, result, sizeof(result));
-    g_apApplyInFlight = false;
-    SetCursor(prevCursor ? prevCursor : LoadCursorA(nullptr, IDC_ARROW));
-    if (ok) {
-        populate_desired_into_gui(&desired);
-        if (!set_config_int(g_app.configPath, "profiles", "selected_slot", slot)) {
-            debug_log("auto-profile: applied slot %d but selected_slot persistence failed\n",
-                slot);
-        }
-        sync_applied_profile_from_service_metadata();
-        refresh_profile_controls_from_config();
-        ap_on_applied(&g_apCtrl, slot, ap_now_ms());
-        update_tray_icon();
-        invalidate_main_window();
-        debug_log("auto-profile: applied slot %d (%s)\n", slot, manual ? "manual" : "auto");
-    } else {
-        debug_log("auto-profile: apply slot %d FAILED: %s\n", slot, result[0] ? result : "unknown");
+    if (!gui_mutation_queue_apply(&desired, false, origin,
+            SERVICE_PROFILE_SOURCE_USER_SLOT, slot,
+            GUI_MUTATION_CONTEXT_AUTO_PROFILE, "auto-profile apply",
+            queueStatus, sizeof(queueStatus))) {
+        g_apApplyInFlight = false;
+        debug_log("auto-profile: queue slot %d FAILED: %s\n", slot,
+            queueStatus[0] ? queueStatus : "unknown");
+        return false;
     }
+    debug_log("auto-profile: queued slot %d operation (%s)\n", slot,
+        queueStatus[0] ? queueStatus : "started");
+    return true;
 }
 
 static void ap_arm_debounce(HWND hwnd, int delayMs) {
@@ -148,7 +138,7 @@ static void ap_execute(HWND hwnd, AutoProfileAction a,
             break;
         case AP_ACTION_APPLY_SLOT: {
             KillTimer(hwnd, AUTO_PROFILE_DEBOUNCE_TIMER_ID);
-            ap_do_apply_slot(a.slot, origin);
+            if (ap_do_apply_slot(a.slot, origin)) break;
             // Drain a hotkey/tray pick that arrived while the blocking apply
             // was running (see auto_profile_pick_slot / auto_profile_on_hotkey).
             // The full retry re-enters ap_execute with its explicit origin and
@@ -183,6 +173,51 @@ static void ap_execute(HWND hwnd, AutoProfileAction a,
         default:
             break;
     }
+}
+
+static void auto_profile_on_mutation_completed(int slot,
+    ServiceApplyOrigin origin, bool success, const char* result) {
+    bool manual = service_apply_origin_is_explicit(origin);
+    g_apApplyInFlight = false;
+    if (success) {
+        if (!set_config_int(g_app.configPath, "profiles", "selected_slot", slot)) {
+            debug_log("auto-profile: applied slot %d but selected_slot persistence failed\n",
+                slot);
+        }
+        sync_applied_profile_from_service_metadata();
+        refresh_profile_controls_from_config();
+        ap_on_applied(&g_apCtrl, slot, ap_now_ms());
+        update_tray_icon();
+        invalidate_main_window();
+        debug_log("auto-profile: applied slot %d (%s)\n", slot,
+            manual ? "manual" : "auto");
+    } else {
+        debug_log("auto-profile: apply slot %d FAILED: %s\n", slot,
+            result && result[0] ? result : "unknown");
+    }
+
+    int pending = g_apPendingPickSlot;
+    ServiceApplyOrigin pendingOrigin = (ServiceApplyOrigin)InterlockedExchange(
+        &g_apPendingPickOrigin, SERVICE_APPLY_ORIGIN_UNSPECIFIED);
+    g_apPendingPickSlot = 0;
+    if (pending && pending != slot) {
+        debug_log("auto-profile: draining deferred pick of slot %d\n", pending);
+        ap_execute(g_app.hMainWnd, ap_on_hotkey(&g_apCtrl, pending),
+            service_apply_origin_is_explicit(pendingOrigin)
+                ? pendingOrigin : SERVICE_APPLY_ORIGIN_TRAY);
+        return;
+    }
+    int target = ap_resolve_current_target();
+    AutoProfileAction next = ap_on_target_resolved(&g_apCtrl, target,
+        ap_now_ms(), ap_suppressed());
+    if (next.kind == AP_ACTION_ARM_DEBOUNCE)
+        ap_arm_debounce(g_app.hMainWnd, next.delayMs);
+}
+
+static void auto_profile_on_mutation_superseded(int slot) {
+    g_apApplyInFlight = false;
+    debug_log("auto-profile: pending slot %d superseded before hardware dispatch\n",
+        slot);
 }
 
 // ---- Event entry points ----------------------------------------------------

@@ -206,7 +206,7 @@ bool config_section_has_keys(const char* path, const char* section) {
     char keys[256] = {};
     HANDLE configMutex = nullptr;
     if (!enter_config_storage_lock(&configMutex)) return false;
-    DWORD n = GetPrivateProfileStringA(section, nullptr, "", keys, ARRAY_COUNT(keys), path);
+    DWORD n = gc_GetPrivateProfileStringUtf8(section, nullptr, "", keys, ARRAY_COUNT(keys), path);
     leave_config_storage_lock(configMutex);
     return n > 0 && keys[0] != 0;
 }
@@ -217,7 +217,7 @@ int get_config_int(const char* path, const char* section, const char* key, int d
     char buf[32] = {};
     HANDLE configMutex = nullptr;
     if (!enter_config_storage_lock(&configMutex)) return defaultVal;
-    DWORD n = GetPrivateProfileStringA(section, key, "", buf, sizeof(buf), path);
+    DWORD n = gc_GetPrivateProfileStringUtf8(section, key, "", buf, sizeof(buf), path);
     leave_config_storage_lock(configMutex);
     if (n >= sizeof(buf) - 1) return defaultVal;
     trim_ascii(buf);
@@ -235,14 +235,14 @@ bool set_config_int(const char* path, const char* section, const char* key, int 
     StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d", value);
     HANDLE configMutex = nullptr;
     if (!enter_config_storage_lock(&configMutex)) return false;
-    bool ok = WritePrivateProfileStringA(section, key, buf, path) != FALSE;
+    bool ok = gc_WritePrivateProfileStringUtf8(section, key, buf, path) != FALSE;
     if (ok) {
         // Force the Win32 profile cache to the backing file before claiming the
         // preference was saved, then verify the exact value while the
         // cross-session lock still excludes competing writers.
-        (void)WritePrivateProfileStringA(nullptr, nullptr, nullptr, path);
+        (void)gc_WritePrivateProfileStringUtf8(nullptr, nullptr, nullptr, path);
         char readback[32] = {};
-        DWORD length = GetPrivateProfileStringA(
+        DWORD length = gc_GetPrivateProfileStringUtf8(
             section, key, "", readback, ARRAY_COUNT(readback), path);
         int parsed = 0;
         ok = length > 0 && length < ARRAY_COUNT(readback) - 1 &&
@@ -326,7 +326,7 @@ bool update_logon_profile_selection_transaction(const char* path,
         set_message(err, errSize, "Out of memory reading the profiles section");
         return false;
     }
-    DWORD sectionLength = GetPrivateProfileSectionA("profiles", existing, sectionCapacity, path);
+    DWORD sectionLength = gc_GetPrivateProfileSectionUtf8("profiles", existing, sectionCapacity, path);
     if (sectionLength >= sectionCapacity - 2) {
         free(existing);
         leave_config_storage_lock(configMutex);
@@ -386,12 +386,12 @@ bool update_logon_profile_selection_transaction(const char* path,
         // the cache as well as on failure, so its return value is intentionally
         // not interpreted.  The exact two-key readback below is the fail-closed
         // success criterion.
-        (void)WritePrivateProfileStringA(nullptr, nullptr, nullptr, path);
+        (void)gc_WritePrivateProfileStringUtf8(nullptr, nullptr, nullptr, path);
         char perUserText[32] = {};
         char sharedText[32] = {};
-        DWORD perUserLength = GetPrivateProfileStringA(
+        DWORD perUserLength = gc_GetPrivateProfileStringUtf8(
             "profiles", "logon_slot", "", perUserText, ARRAY_COUNT(perUserText), path);
-        DWORD sharedLength = GetPrivateProfileStringA(
+        DWORD sharedLength = gc_GetPrivateProfileStringUtf8(
             "profiles", "logon_shared_slot", "", sharedText, ARRAY_COUNT(sharedText), path);
         int readPerUser = -1;
         int readShared = -1;
@@ -443,7 +443,7 @@ bool get_config_string(const char* path, const char* section, const char* key,
     char buf[512] = {};
     HANDLE configMutex = nullptr;
     if (!enter_config_storage_lock(&configMutex)) return false;
-    DWORD n = GetPrivateProfileStringA(section, key, "", buf, sizeof(buf), path);
+    DWORD n = gc_GetPrivateProfileStringUtf8(section, key, "", buf, sizeof(buf), path);
     leave_config_storage_lock(configMutex);
     if (n == 0) return false;                 // key absent → keep defaultVal
     if (n >= sizeof(buf) - 1) return false;   // truncated in scratch → treat as absent
@@ -461,11 +461,11 @@ bool set_config_string(const char* path, const char* section, const char* key, c
     // A null/empty value deletes the key (WritePrivateProfileString with a null
     // value string removes the entry) so cleared patterns do not linger.
     const char* persistedValue = (value && value[0]) ? value : nullptr;
-    bool ok = WritePrivateProfileStringA(section, key, persistedValue, path) != FALSE;
+    bool ok = gc_WritePrivateProfileStringUtf8(section, key, persistedValue, path) != FALSE;
     if (ok) {
-        (void)WritePrivateProfileStringA(nullptr, nullptr, nullptr, path);
+        (void)gc_WritePrivateProfileStringUtf8(nullptr, nullptr, nullptr, path);
         char readback[512] = {};
-        DWORD length = GetPrivateProfileStringA(
+        DWORD length = gc_GetPrivateProfileStringUtf8(
             section, key, "", readback, ARRAY_COUNT(readback), path);
         ok = persistedValue
             ? (length < ARRAY_COUNT(readback) - 1 && strcmp(readback, persistedValue) == 0)
@@ -480,7 +480,7 @@ static bool parse_config_uint_hex_locked(const char* path, const char* section,
     const char* key, unsigned int* valueOut) {
     if (!path || !section || !key || !valueOut) return false;
     char text[32] = {};
-    DWORD length = GetPrivateProfileStringA(
+    DWORD length = gc_GetPrivateProfileStringUtf8(
         section, key, "", text, ARRAY_COUNT(text), path);
     if (length == 0 || length >= ARRAY_COUNT(text) - 1) return false;
     trim_ascii(text);
@@ -502,7 +502,7 @@ static bool read_config_int_value_locked(const char* path, const char* section,
     const char* key, int defaultValue, int* valueOut) {
     if (!path || !section || !key || !valueOut) return false;
     char text[32] = {};
-    DWORD length = GetPrivateProfileStringA(
+    DWORD length = gc_GetPrivateProfileStringUtf8(
         section, key, "", text, ARRAY_COUNT(text), path);
     if (length >= ARRAY_COUNT(text) - 1) return false;
     trim_ascii(text);

@@ -22,7 +22,7 @@ static void applied_profile_config_stamp(const char* path, bool* presentOut,
     DWORD* sizeHighOut, DWORD* sizeLowOut, FILETIME* lastWriteOut) {
     WIN32_FILE_ATTRIBUTE_DATA data = {};
     bool present = path && path[0] &&
-        GetFileAttributesExA(path, GetFileExInfoStandard, &data) &&
+        gc_GetFileAttributesExUtf8(path, GetFileExInfoStandard, &data) &&
         (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
     *presentOut = present;
     *sizeHighOut = present ? data.nFileSizeHigh : 0;

@@ -18,7 +18,7 @@ bool g_guiForceFullRefresh = false;
 static HMODULE load_system_library_local_a(const char* name) {
     if (!name || !name[0] || strchr(name, '\\') || strchr(name, '/')) return nullptr;
     char systemDir[MAX_PATH] = {};
-    UINT systemLen = GetSystemDirectoryA(systemDir, ARRAY_COUNT(systemDir));
+    UINT systemLen = gc_GetSystemDirectoryUtf8(systemDir, ARRAY_COUNT(systemDir));
     if (systemLen == 0 || systemLen >= ARRAY_COUNT(systemDir)) return nullptr;
     char path[MAX_PATH] = {};
     if (FAILED(StringCchPrintfA(path, ARRAY_COUNT(path), "%s\\%s", systemDir, name))) return nullptr;

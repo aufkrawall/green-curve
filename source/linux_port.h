@@ -78,6 +78,7 @@ const char* fan_mode_label(int mode);
 void fan_curve_set_default(FanCurveConfig* config);
 void fan_curve_normalize(FanCurveConfig* config);
 bool fan_curve_validate(const FanCurveConfig* config, char* err, size_t errSize);
+int fan_curve_interpolate_percent(const FanCurveConfig* config, int temperatureC);
 void fan_curve_format_summary(const FanCurveConfig* config, char* buffer, size_t bufferSize);
 void initialize_desired_settings_defaults(DesiredSettings* desired);
 void normalize_desired_settings_for_ui(DesiredSettings* desired);

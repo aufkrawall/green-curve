@@ -8,7 +8,7 @@ static bool read_profile_point_int(const char* path, const char* section, int po
     char key[64] = {};
     char buf[64] = {};
     StringCchPrintfA(key, ARRAY_COUNT(key), "point%d_%s", pointIndex, suffix);
-    GetPrivateProfileStringA(section, key, "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8(section, key, "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (!buf[0]) return false;
 

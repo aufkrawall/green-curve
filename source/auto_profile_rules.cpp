@@ -271,7 +271,7 @@ bool auto_profile_config_save(const char* path, const AutoProfileConfig* cfg,
     bool ok = write_config_sections_atomic(path, sections, replaced,
         replaceCount, err, sizeof(err));
     if (ok) {
-        (void)WritePrivateProfileStringA(nullptr, nullptr, nullptr, path);
+        (void)gc_WritePrivateProfileStringUtf8(nullptr, nullptr, nullptr, path);
         invalidate_tray_profile_cache();
     }
     leave_config_storage_lock(configMutex);

@@ -69,7 +69,7 @@ static bool save_configured_gpu_selection_atomic(unsigned int index,
     bool ok = write_config_sections_atomic(g_app.configPath, section,
         replaced, ARRAY_COUNT(replaced), err, errSize);
     if (ok) {
-        (void)WritePrivateProfileStringA(nullptr, nullptr, nullptr,
+        (void)gc_WritePrivateProfileStringUtf8(nullptr, nullptr, nullptr,
             g_app.configPath);
         ConfiguredGpuSelection readback = {};
         char verifyErr[256] = {};

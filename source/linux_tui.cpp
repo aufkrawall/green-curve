@@ -11,6 +11,7 @@
 #include <string>
 #include <sys/ioctl.h>
 #include <sys/select.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
 #include <vector>
@@ -21,11 +22,6 @@ struct TerminalGuard;
 static TerminalGuard* g_activeTerminalGuard = nullptr;
 
 static void restore_terminal_mode();
-
-static void on_fatal_signal(int) {
-    restore_terminal_mode();
-    _exit(1);
-}
 
 struct TerminalGuard {
     termios original;
@@ -74,9 +70,14 @@ struct TuiState {
 };
 
 static volatile sig_atomic_t g_resizeRequested = 1;
+static volatile sig_atomic_t g_stopRequested = 0;
 
 static void on_sigwinch(int) {
     g_resizeRequested = 1;
+}
+
+static void on_stop_signal(int) {
+    g_stopRequested = 1;
 }
 
 static int clamp_value(int value, int minimum, int maximum) {
@@ -530,7 +531,8 @@ static void handle_mouse(TuiState* state, int mouseX, int mouseY) {
 
 }  // namespace
 
-int linux_run_tui(const char* configPath, int initialSlot, DesiredSettings* initialDesired,
+static int linux_run_tui_child(const char* configPath, int initialSlot,
+                  DesiredSettings* initialDesired,
                   const GpuAdapterInfo* initialTarget) {
     TuiState state = {};
     if (configPath && *configPath) snprintf(state.configPath, sizeof(state.configPath), "%s", configPath);
@@ -555,18 +557,22 @@ int linux_run_tui(const char* configPath, int initialSlot, DesiredSettings* init
     if (!state.status[0])
         snprintf(state.status, sizeof(state.status), "Ready. Click a button, or use the keyboard (arrows/Tab/Enter).");
 
-    signal(SIGWINCH, on_sigwinch);
-    signal(SIGINT, on_fatal_signal);
-    signal(SIGTERM, on_fatal_signal);
-    signal(SIGSEGV, on_fatal_signal);
-    atexit(restore_terminal_mode);
+    struct sigaction resizeAction = {};
+    resizeAction.sa_handler = on_sigwinch;
+    sigemptyset(&resizeAction.sa_mask);
+    sigaction(SIGWINCH, &resizeAction, nullptr);
+    struct sigaction stopAction = {};
+    stopAction.sa_handler = on_stop_signal;
+    sigemptyset(&stopAction.sa_mask);
+    sigaction(SIGINT, &stopAction, nullptr);
+    sigaction(SIGTERM, &stopAction, nullptr);
     TerminalGuard guard;
     if (!guard.active) {
         fprintf(stderr, "Linux TUI requires an interactive terminal.\n");
         return 1;
     }
 
-    while (state.running) {
+    while (state.running && !g_stopRequested) {
         if (g_resizeRequested) {
             g_resizeRequested = 0;
             render_ui(&state);
@@ -626,4 +632,63 @@ int linux_run_tui(const char* configPath, int initialSlot, DesiredSettings* init
     }
 
     return 0;
+}
+
+int linux_run_tui(const char* configPath, int initialSlot,
+                  DesiredSettings* initialDesired,
+                  const GpuAdapterInfo* initialTarget) {
+    if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) {
+        fprintf(stderr, "Linux TUI requires an interactive terminal.\n");
+        return 1;
+    }
+    termios original = {};
+    if (tcgetattr(STDIN_FILENO, &original) != 0) {
+        fprintf(stderr, "Cannot capture terminal mode: %s\n", strerror(errno));
+        return 1;
+    }
+    pid_t child = fork();
+    if (child < 0) {
+        fprintf(stderr, "Cannot start TUI supervisor: %s\n", strerror(errno));
+        return 1;
+    }
+    if (child == 0) {
+        struct sigaction defaultAction = {};
+        defaultAction.sa_handler = SIG_DFL;
+        sigemptyset(&defaultAction.sa_mask);
+        sigaction(SIGINT, &defaultAction, nullptr);
+        sigaction(SIGTERM, &defaultAction, nullptr);
+        sigaction(SIGSEGV, &defaultAction, nullptr);
+        int status = linux_run_tui_child(configPath, initialSlot,
+            initialDesired, initialTarget);
+        _exit(status);
+    }
+
+    struct sigaction ignoreAction = {};
+    ignoreAction.sa_handler = SIG_IGN;
+    sigemptyset(&ignoreAction.sa_mask);
+    struct sigaction oldInt = {}, oldTerm = {};
+    sigaction(SIGINT, &ignoreAction, &oldInt);
+    sigaction(SIGTERM, &ignoreAction, &oldTerm);
+    int childStatus = 0;
+    while (waitpid(child, &childStatus, 0) < 0) {
+        if (errno == EINTR) continue;
+        childStatus = 1 << 8;
+        break;
+    }
+    sigaction(SIGINT, &oldInt, nullptr);
+    sigaction(SIGTERM, &oldTerm, nullptr);
+
+    // The supervisor never enters raw mode and can use ordinary terminal APIs
+    // even when the child terminates through SIGSEGV or SIGABRT.
+    fputs("\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l", stdout);
+    fflush(stdout);
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, &original);
+    if (WIFSIGNALED(childStatus)) {
+        int signalNumber = WTERMSIG(childStatus);
+        fprintf(stderr,
+            "Green Curve TUI terminated by signal %d; terminal state restored.\n",
+            signalNumber);
+        return 128 + signalNumber;
+    }
+    return WIFEXITED(childStatus) ? WEXITSTATUS(childStatus) : 1;
 }

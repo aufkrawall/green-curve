@@ -19,6 +19,7 @@
 #define GC_DAEMON_SOCKET_PATH "/run/greencurve/greencurve.sock"
 #define GC_DAEMON_STATE_DIR   "/var/lib/greencurve"
 #define GC_DAEMON_STATE_FILE  "/var/lib/greencurve/active.bin"
+#define GC_DAEMON_OPERATION_FILE "/var/lib/greencurve/operation.bin"
 
 // Run the daemon event loop (blocks).  `configPath` is used for the
 // startup restart-reapply fallback.  Returns a process exit code.

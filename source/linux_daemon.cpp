@@ -13,6 +13,8 @@
 #include "linux_daemon_state.h"
 #include "linux_gpu_selection.h"
 #include "platform.h"
+#include "fan_curve.h"
+#include "fan_runtime_policy.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -24,6 +26,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/random.h>
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
@@ -186,12 +189,47 @@ static bool send_simple(unsigned int command, const DesiredSettings* desired,
     req.command = command;
     req.flags = interactive ? SERVICE_REQUEST_FLAG_INTERACTIVE : 0;
     req.callerPid = (gc_u32)getpid();
+    if (command == SERVICE_CMD_APPLY || command == SERVICE_CMD_RESET) {
+        ssize_t randomBytes = -1;
+        do {
+            randomBytes = getrandom(&req.operationId,
+                sizeof(req.operationId), 0);
+        } while (randomBytes < 0 && errno == EINTR);
+        if (randomBytes != (ssize_t)sizeof(req.operationId) ||
+            req.operationId == 0) {
+            if (result) gc_strlcpy(result, resultSize,
+                "failed generating a secure operation ID");
+            return false;
+        }
+    }
     if (desired) req.desired = *desired;
     if (target) req.targetGpu = *target;
     ServiceResponse resp;
     memset(&resp, 0, sizeof(resp));
     char err[256] = {};
     bool ok = linux_daemon_send(&req, &resp, err, sizeof(err));
+    if (!ok && req.operationId != 0) {
+        ServiceRequest query = {};
+        query.magic = SERVICE_PROTOCOL_MAGIC;
+        query.version = SERVICE_PROTOCOL_VERSION;
+        query.command = SERVICE_CMD_GET_OPERATION_RESULT;
+        query.callerPid = (gc_u32)getpid();
+        query.operationId = req.operationId;
+        char queryErr[256] = {};
+        if (linux_daemon_send(&query, &resp, queryErr, sizeof(queryErr)) &&
+            resp.operationState != SERVICE_OPERATION_IN_PROGRESS &&
+            resp.operationState != SERVICE_OPERATION_OUTCOME_UNKNOWN) {
+            ok = resp.status == SERVICE_STATUS_OK;
+            dlog("daemon client: operation=%llu recovered state=%u after transport error\n",
+                (unsigned long long)req.operationId,
+                (unsigned int)resp.operationState);
+        } else {
+            if (result) gc_snprintf(result, resultSize,
+                "operation %llu outcome is pending or unknown after transport timeout; do not retry with a new operation ID",
+                (unsigned long long)req.operationId);
+            return false;
+        }
+    }
     if (result) gc_strlcpy(result, resultSize, resp.message[0] ? resp.message : (ok ? "OK" : err));
     return ok;
 }
@@ -226,15 +264,44 @@ static DesiredSettings g_activeDesired;
 static bool g_hasActiveDesired = false;
 static GpuAdapterInfo g_activeTarget;
 static bool g_stateUncertain = false;
+static ServiceOperationTracker g_operationTracker = {};
+
+static bool persist_daemon_operation(gc_u64 operationId, gc_u32 state,
+    gc_u32 responseStatus, const char* message) {
+    LinuxDaemonOperationRecord record = {};
+    linux_daemon_operation_initialize(&record, operationId, state,
+        responseStatus, message);
+    char err[160] = {};
+    bool ok = linux_daemon_operation_store(GC_DAEMON_OPERATION_FILE,
+        &record, err, sizeof(err));
+    if (!ok) dlog("daemon operation: persistence failed: %s\n",
+        err[0] ? err : "unknown error");
+    return ok;
+}
+
+#include "linux_operation_runtime.h"
 static unsigned int g_fanFailureCount = 0;
 static volatile int g_running = 1;
+static pthread_mutex_t g_fanWakeMutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_fanWakeCondition = PTHREAD_COND_INITIALIZER;
+static unsigned long long g_fanWakeGeneration = 0;
+
+static void wake_fan_runtime() {
+    pthread_mutex_lock(&g_fanWakeMutex);
+    ++g_fanWakeGeneration;
+    pthread_cond_broadcast(&g_fanWakeCondition);
+    pthread_mutex_unlock(&g_fanWakeMutex);
+}
 
 static bool store_daemon_record(LinuxDaemonRecordState state,
                                 const GpuAdapterInfo* target,
                                 const DesiredSettings* desired,
-                                char* err, size_t errSize) {
+                                char* err, size_t errSize,
+                                gc_u64 operationId = 0,
+                                gc_u32 operationState = SERVICE_OPERATION_NONE) {
     LinuxDaemonStateRecord record = {};
-    linux_daemon_record_initialize(&record, state, target, desired);
+    linux_daemon_record_initialize(&record, state, target, desired,
+        operationId, operationState);
     return linux_daemon_state_store(GC_DAEMON_STATE_FILE, &record, err, errSize);
 }
 
@@ -309,63 +376,7 @@ static void populate_snapshot(ServiceSnapshot* s) {
     }
 }
 
-// Linear fan-curve interpolation (curve mode reassertion).
-static int fan_curve_percent_for_temp(const FanCurveConfig* c, int tempC) {
-    int best = -1;
-    int lastEnabled = 0;
-    for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
-        if (!c->points[i].enabled) continue;
-        lastEnabled = c->points[i].fanPercent;
-        if (tempC <= c->points[i].temperatureC) {
-            if (i == 0) return c->points[i].fanPercent;
-            // interpolate between previous enabled point and this one
-            int pPrev = -1;
-            for (int j = i - 1; j >= 0; j--) { if (c->points[j].enabled) { pPrev = j; break; } }
-            if (pPrev < 0) return c->points[i].fanPercent;
-            int t0 = c->points[pPrev].temperatureC, t1 = c->points[i].temperatureC;
-            int p0 = c->points[pPrev].fanPercent, p1 = c->points[i].fanPercent;
-            if (t1 <= t0) return p1;
-            best = p0 + (p1 - p0) * (tempC - t0) / (t1 - t0);
-            return best;
-        }
-    }
-    return lastEnabled;  // above the top point: hold the last percent
-}
-
-static pl_thread_ret fan_reassert_thread(void*) {
-    while (g_running) {
-        pl_sleep_ms(5000);
-        pl_mutex_lock(&g_lock);
-        bool active = g_gpuReady && g_hasActiveDesired && !g_stateUncertain &&
-                      g_activeDesired.hasFan &&
-                      g_activeDesired.fanMode == FAN_MODE_CURVE;
-        if (active && g_gpu.nvml.getTemperature) {
-            unsigned int t = 0;
-            if (g_gpu.nvml.getTemperature(g_gpu.nvmlDevice, NVML_TEMPERATURE_GPU, &t) == NVML_SUCCESS) {
-                int pct = fan_curve_percent_for_temp(&g_activeDesired.fanCurve, (int)t);
-                if (pct < 0) pct = 0; if (pct > 100) pct = 100;
-                if (linux_backend_set_curve_fan_percent(&g_gpu, (unsigned int)pct)) {
-                    g_fanFailureCount = 0;
-                } else {
-                    ++g_fanFailureCount;
-                    dlog("daemon: fan reassert failed (%u/3) target=%d%%\n", g_fanFailureCount, pct);
-                    if (g_fanFailureCount >= 3) {
-                        bool autoOk = linux_backend_set_fan_auto(&g_gpu);
-                        char stateErr[256] = {};
-                        g_stateUncertain = true;
-                        store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_activeTarget,
-                                            &g_activeDesired, stateErr, sizeof(stateErr));
-                        dlog("daemon: fan runtime locked out after repeated failures; auto=%d state=%s\n",
-                             autoOk ? 1 : 0, stateErr[0] ? stateErr : "persisted");
-                    }
-                }
-            }
-        }
-        pl_mutex_unlock(&g_lock);
-    }
-    return PL_THREAD_RET_OK;
-}
-
+#include "linux_fan_runtime.h"
 static bool select_request_gpu(const ServiceRequest* req, char* err, size_t errSize) {
     if (g_gpu.adapterCount == 1 && (!req || !req->targetGpu.valid)) {
         if (!g_gpu.writeIdentityResolved) {
@@ -413,7 +424,33 @@ static void handle_request(const ServiceRequest* req, ServiceResponse* resp) {
             if (g_hasActiveDesired) resp->desired = g_activeDesired;
             resp->status = SERVICE_STATUS_OK;
             break;
+        case SERVICE_CMD_GET_OPERATION_RESULT: {
+            resp->operationId = req->operationId;
+            const ServiceOperationRecord* record = service_operation_find(
+                &g_operationTracker, req->operationId);
+            if (!record) {
+                resp->status = SERVICE_STATUS_ERROR;
+                resp->operationState = SERVICE_OPERATION_OUTCOME_UNKNOWN;
+                gc_strlcpy(resp->message, sizeof(resp->message),
+                    "operation outcome is unknown to this daemon generation");
+            } else {
+                resp->status = record->responseStatus;
+                resp->operationState = record->state;
+                gc_strlcpy(resp->message, sizeof(resp->message),
+                    record->message[0] ? record->message :
+                    "operation result available");
+            }
+            if (g_hasActiveDesired) resp->desired = g_activeDesired;
+            populate_snapshot(&resp->snapshot);
+            break;
+        }
         case SERVICE_CMD_APPLY: {
+            LinuxOperationRequestGuard operation(req, resp, "apply");
+            if (!operation.execute()) {
+                if (g_hasActiveDesired) resp->desired = g_activeDesired;
+                populate_snapshot(&resp->snapshot);
+                break;
+            }
             if (!g_gpuReady) {
                 resp->status = SERVICE_STATUS_ERROR;
                 gc_strlcpy(resp->message, sizeof(resp->message), "GPU backend not initialized");
@@ -427,6 +464,18 @@ static void handle_request(const ServiceRequest* req, ServiceResponse* resp) {
             }
             DesiredSettings d = req->desired;
             validate_desired_settings_for_ipc(&d);
+            if (d.hasFan && d.fanMode == FAN_MODE_CURVE) {
+                fan_curve_normalize(&d.fanCurve);
+                char fanValidation[160] = {};
+                if (!fan_curve_validate(&d.fanCurve, fanValidation,
+                        sizeof(fanValidation))) {
+                    resp->status = SERVICE_STATUS_ERROR;
+                    gc_snprintf(resp->message, sizeof(resp->message),
+                        "fan curve rejected at daemon boundary: %s",
+                        fanValidation[0] ? fanValidation : "invalid curve");
+                    break;
+                }
+            }
             bool hadPrevious = g_hasActiveDesired;
             DesiredSettings previousDesired = g_activeDesired;
             GpuAdapterInfo previousTarget = g_activeTarget;
@@ -434,7 +483,8 @@ static void handle_request(const ServiceRequest* req, ServiceResponse* resp) {
             char stateErr[256] = {};
             if (!linux_backend_capture_snapshot(&g_gpu, &before, stateErr, sizeof(stateErr)) ||
                 !store_daemon_record(LINUX_DAEMON_RECORD_PREPARED, &g_gpu.selectedGpu,
-                                     &d, stateErr, sizeof(stateErr))) {
+                                     &d, stateErr, sizeof(stateErr),
+                                     req->operationId, SERVICE_OPERATION_IN_PROGRESS)) {
                 resp->status = SERVICE_STATUS_ERROR;
                 gc_snprintf(resp->message, sizeof(resp->message),
                             "Apply aborted before hardware write: %s", stateErr);
@@ -445,7 +495,8 @@ static void handle_request(const ServiceRequest* req, ServiceResponse* resp) {
             bool committed = false;
             if (mutation.success) {
                 committed = store_daemon_record(LINUX_DAEMON_RECORD_ACTIVE,
-                    &g_gpu.selectedGpu, &d, stateErr, sizeof(stateErr));
+                    &g_gpu.selectedGpu, &d, stateErr, sizeof(stateErr),
+                    req->operationId, SERVICE_OPERATION_SUCCEEDED);
                 if (!committed) {
                     char rollbackErr[256] = {};
                     bool rollbackOk = linux_backend_restore_snapshot(&g_gpu, &before,
@@ -478,13 +529,21 @@ static void handle_request(const ServiceRequest* req, ServiceResponse* resp) {
                 g_hasActiveDesired = true;
                 g_stateUncertain = false;
                 g_fanFailureCount = 0;
+                wake_fan_runtime();
             }
             populate_snapshot(&resp->snapshot);
             if (g_hasActiveDesired) resp->desired = g_activeDesired;
             resp->status = committed ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
+            if (g_stateUncertain) wake_fan_runtime();
             break;
         }
         case SERVICE_CMD_RESET: {
+            LinuxOperationRequestGuard operation(req, resp, "reset");
+            if (!operation.execute()) {
+                if (g_hasActiveDesired) resp->desired = g_activeDesired;
+                populate_snapshot(&resp->snapshot);
+                break;
+            }
             if (!g_gpuReady) {
                 resp->status = SERVICE_STATUS_ERROR;
                 gc_strlcpy(resp->message, sizeof(resp->message), "GPU backend not initialized");
@@ -504,7 +563,8 @@ static void handle_request(const ServiceRequest* req, ServiceResponse* resp) {
             DesiredSettings empty = {};
             if (!linux_backend_capture_snapshot(&g_gpu, &before, stateErr, sizeof(stateErr)) ||
                 !store_daemon_record(LINUX_DAEMON_RECORD_PREPARED, &g_gpu.selectedGpu,
-                                     &empty, stateErr, sizeof(stateErr))) {
+                                     &empty, stateErr, sizeof(stateErr),
+                                     req->operationId, SERVICE_OPERATION_IN_PROGRESS)) {
                 resp->status = SERVICE_STATUS_ERROR;
                 gc_snprintf(resp->message, sizeof(resp->message),
                             "Reset aborted before hardware write: %s", stateErr);
@@ -540,9 +600,11 @@ static void handle_request(const ServiceRequest* req, ServiceResponse* resp) {
                 memset(&g_activeTarget, 0, sizeof(g_activeTarget));
                 g_stateUncertain = false;
                 g_fanFailureCount = 0;
+                wake_fan_runtime();
             }
             populate_snapshot(&resp->snapshot);
             resp->status = committed ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
+            if (g_stateUncertain) wake_fan_runtime();
             break;
         }
         default:
@@ -561,6 +623,8 @@ static void log_peer(int connFd) {
     }
 }
 
+#include "linux_socket_permissions.h"
+
 int linux_daemon_run(const char* configPath) {
     (void)configPath;
     pl_mutex_init(&g_lock);
@@ -571,6 +635,18 @@ int linux_daemon_run(const char* configPath) {
         dlog("daemon: GPU backend ready (%s, family=%d)\n", g_gpu.gpuName, (int)g_gpu.family);
     } else {
         dlog("daemon: GPU backend init failed: %s (serving telemetry-less)\n", err);
+    }
+
+    LinuxDaemonOperationRecord operation = {};
+    if (linux_daemon_operation_load(GC_DAEMON_OPERATION_FILE, &operation,
+            err, sizeof(err))) {
+        gc_u32 restoredState = operation.state == SERVICE_OPERATION_IN_PROGRESS
+            ? SERVICE_OPERATION_OUTCOME_UNKNOWN : operation.state;
+        service_operation_restore(&g_operationTracker, operation.operationId,
+            restoredState, operation.responseStatus,
+            restoredState == SERVICE_OPERATION_OUTCOME_UNKNOWN
+                ? "operation outcome became uncertain across daemon restart"
+                : operation.message);
     }
 
     // Startup restart-reapply is authorized only by a complete, checksummed
@@ -587,6 +663,20 @@ int linux_daemon_run(const char* configPath) {
         g_stateUncertain = true;
         dlog("daemon: state load failed closed: %s\n", err);
     } else if (loadResult == LINUX_DAEMON_STATE_LOADED) {
+        if (saved.operationId != 0) {
+            gc_u32 restoredState = saved.operationState;
+            if (saved.state != LINUX_DAEMON_RECORD_ACTIVE ||
+                restoredState == SERVICE_OPERATION_IN_PROGRESS) {
+                restoredState = SERVICE_OPERATION_OUTCOME_UNKNOWN;
+            }
+            service_operation_restore(&g_operationTracker,
+                saved.operationId, restoredState,
+                restoredState == SERVICE_OPERATION_SUCCEEDED
+                    ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR,
+                restoredState == SERVICE_OPERATION_SUCCEEDED
+                    ? "operation restored from committed daemon state"
+                    : "operation outcome became uncertain across daemon restart");
+        }
         if (saved.state != LINUX_DAEMON_RECORD_ACTIVE) {
             g_stateUncertain = true;
             dlog("daemon: startup state=%u is not ACTIVE; no automatic write\n", saved.state);
@@ -624,6 +714,7 @@ int linux_daemon_run(const char* configPath) {
     // Socket: root-owned, group-accessible (the systemd unit chowns to the
     // greencurve admin group; mode 0660).  Anyone who can connect is authorized;
     // every request is still clamped by validate_desired_settings_for_ipc.
+    umask(0077);
     if (mkdir(GC_DAEMON_SOCKET_DIR, 0755) != 0 && errno != EEXIST) {
         dlog("daemon: cannot create socket directory: %s\n", strerror(errno));
         return 1;
@@ -631,9 +722,10 @@ int linux_daemon_run(const char* configPath) {
     int socketDir = open(GC_DAEMON_SOCKET_DIR,
                          O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     struct stat socketDirStat = {};
-    if (socketDir < 0 || fstat(socketDir, &socketDirStat) != 0 ||
+    if (socketDir < 0 || fchmod(socketDir, 0755) != 0 ||
+        fstat(socketDir, &socketDirStat) != 0 ||
         !S_ISDIR(socketDirStat.st_mode) || socketDirStat.st_uid != 0 ||
-        (socketDirStat.st_mode & 0022) != 0) {
+        (socketDirStat.st_mode & 0777) != 0755) {
         dlog("daemon: socket directory is not root-owned and protected\n");
         if (socketDir >= 0) close(socketDir);
         return 1;
@@ -651,14 +743,12 @@ int linux_daemon_run(const char* configPath) {
         close(socketDir);
         return 1;
     }
-    // Grant the greencurve admin group access (created by --service-install);
-    // fall back to root-only if the group does not exist.
-    struct group* gr = getgrnam("greencurve");
-    if (gr && fchownat(socketDir, "greencurve.sock", 0, gr->gr_gid,
-                       AT_SYMLINK_NOFOLLOW) != 0)
-        dlog("daemon: chown socket to greencurve group failed (non-fatal)\n");
-    if (fchmodat(socketDir, "greencurve.sock", 0660, 0) != 0)
-        dlog("daemon: chmod socket failed (non-fatal)\n");
+    if (!configure_daemon_socket_permissions(srv)) {
+        close(srv);
+        unlinkat(socketDir, "greencurve.sock", 0);
+        close(socketDir);
+        return 1;
+    }
     if (listen(srv, 8) != 0) {
         dlog("daemon: listen() failed\n"); close(srv); close(socketDir); return 1;
     }
@@ -679,6 +769,7 @@ int linux_daemon_run(const char* configPath) {
     }
 
     g_running = 0;
+    wake_fan_runtime();
     if (fanThreadOk) pl_thread_join(fanThread);
     close(srv);
     unlinkat(socketDir, "greencurve.sock", 0);

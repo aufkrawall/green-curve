@@ -109,7 +109,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
     char pathErr[256] = {};
     resolve_data_paths(pathErr, sizeof(pathErr));
     const char* logPath = cli_log_path();
-    FILE* logf = fopen(logPath, "w");
+    FILE* logf = gc_fopen_utf8(logPath, "w");
     if (!logf) return true;
 
     // flawfinder: ignore -- private macro; every invocation below has a literal format.

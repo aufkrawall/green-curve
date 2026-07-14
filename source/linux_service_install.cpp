@@ -207,6 +207,8 @@ int linux_service_install(char* err, size_t errSize) {
         "ExecStart=%s --daemon\n"
         "Restart=on-failure\n"
         "RestartSec=2\n"
+        "UMask=0077\n"
+        "NoNewPrivileges=true\n"
         "StateDirectory=greencurve\n"
         "RuntimeDirectory=greencurve\n\n"
         "[Install]\n"

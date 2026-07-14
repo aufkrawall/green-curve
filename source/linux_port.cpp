@@ -539,6 +539,40 @@ bool fan_curve_validate(const FanCurveConfig* config, char* err, size_t errSize)
     return true;
 }
 
+int fan_curve_interpolate_percent(const FanCurveConfig* config, int temperatureC) {
+    if (!config) return 0;
+
+    FanCurvePoint active[FAN_CURVE_MAX_POINTS] = {};
+    int activeCount = 0;
+    for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
+        if (config->points[i].enabled) active[activeCount++] = config->points[i];
+    }
+
+    if (activeCount < 1) return 100;
+    sort_enabled_points(active, activeCount);
+    if (activeCount == 1) return clamp_int(active[0].fanPercent, 0, 100);
+
+    temperatureC = clamp_int(temperatureC, 0, 100);
+    if (temperatureC <= active[0].temperatureC) return clamp_int(active[0].fanPercent, 0, 100);
+    if (temperatureC >= active[activeCount - 1].temperatureC) {
+        return clamp_int(active[activeCount - 1].fanPercent, 0, 100);
+    }
+
+    for (int i = 1; i < activeCount; i++) {
+        const FanCurvePoint* left = &active[i - 1];
+        const FanCurvePoint* right = &active[i];
+        if (temperatureC > right->temperatureC) continue;
+        int span = right->temperatureC - left->temperatureC;
+        if (span <= 0) return clamp_int(right->fanPercent, 0, 100);
+        int offset = temperatureC - left->temperatureC;
+        int pct = left->fanPercent +
+            (offset * (right->fanPercent - left->fanPercent) + span / 2) / span;
+        return clamp_int(pct, 0, 100);
+    }
+
+    return clamp_int(active[activeCount - 1].fanPercent, 0, 100);
+}
+
 void fan_curve_format_summary(const FanCurveConfig* config, char* buffer, size_t bufferSize) {
     if (!buffer || bufferSize == 0) return;
     if (!config) {

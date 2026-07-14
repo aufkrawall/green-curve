@@ -23,6 +23,7 @@
 #include <shellapi.h>
 #include <strsafe.h>
 #include <wtsapi32.h>
+#include "win32_utf8_paths.h"
 #else
 // Linux: opaque stand-ins for the few Win32 types/macros in the shared
 // declarations below.  The GPU backend reaches the same nvapi64.dll/NVML logic
@@ -48,6 +49,7 @@
 // OS-abstraction shim (dynamic loading, sleep, atomics, threads, bounded
 // strings, subprocess capture) used by the shared backend.
 #include "platform.h"
+#include "service_operation_tracker.h"
 
 // Emit a debug line only when its formatted text changes from the previous call
 // AT THIS CALL SITE.  Cuts repetition of high-frequency idempotent state lines
@@ -126,6 +128,7 @@ void init_dpi();
 #define APP_WM_SERVICE_STATUS (WM_APP + 3)
 #define APP_WM_DEFERRED_RELAUNCH (WM_APP + 4)
 #define APP_WM_ENSURE_LAYOUT_FOCUS (WM_APP + 5)
+#define APP_WM_MUTATION_COMPLETE (WM_APP + 6)
 #define APPLY_BTN_ID        2000
 #define REFRESH_BTN_ID      2001
 #define RESET_BTN_ID        2003

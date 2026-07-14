@@ -225,10 +225,10 @@ static bool set_logon_profile_selection_atomic(const char* path,
 static void migrate_legacy_config_if_needed(const char* path) {
     if (!path) return;
     char test[8] = {};
-    GetPrivateProfileStringA("meta", "format_version", "_X", test, sizeof(test), path);
+    gc_GetPrivateProfileStringUtf8("meta", "format_version", "_X", test, sizeof(test), path);
     if (strcmp(test, "_X") != 0) return;
 
-    GetPrivateProfileStringA("controls", "gpu_offset_mhz", "_X", test, sizeof(test), path);
+    gc_GetPrivateProfileStringUtf8("controls", "gpu_offset_mhz", "_X", test, sizeof(test), path);
     if (strcmp(test, "_X") == 0) return;
 
     DesiredSettings desired = {};
