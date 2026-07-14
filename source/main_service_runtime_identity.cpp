@@ -510,9 +510,52 @@ static bool service_session_user_is_local_admin(DWORD sessionId) {
     return isAdmin;
 }
 
+static bool token_integrity_level_rid(HANDLE token, DWORD* ridOut) {
+    if (ridOut) *ridOut = 0;
+    if (!token || !ridOut) return false;
+    DWORD needed = 0;
+    GetTokenInformation(token, TokenIntegrityLevel, nullptr, 0, &needed);
+    if (needed == 0) return false;
+    HeapBuffer buffer(needed);
+    if (!buffer) return false;
+    if (!GetTokenInformation(token, TokenIntegrityLevel, buffer, needed,
+            &needed)) {
+        return false;
+    }
+    TOKEN_MANDATORY_LABEL* label = (TOKEN_MANDATORY_LABEL*)(unsigned char*)buffer;
+    DWORD count = *GetSidSubAuthorityCount(label->Label.Sid);
+    if (count == 0) return false;
+    *ridOut = *GetSidSubAuthority(label->Label.Sid, count - 1);
+    return true;
+}
+
+class ScopedPipeClientImpersonation {
+public:
+    explicit ScopedPipeClientImpersonation(HANDLE pipe)
+        : active_(pipe && ImpersonateNamedPipeClient(pipe) != FALSE) {}
+    ~ScopedPipeClientImpersonation() {
+        if (active_ && !RevertToSelf())
+            debug_log("service auth: RAII RevertToSelf failed error=%lu\n",
+                GetLastError());
+    }
+    bool active() const { return active_; }
+    bool revert() {
+        if (!active_) return true;
+        if (!RevertToSelf()) return false;
+        active_ = false;
+        return true;
+    }
+    ScopedPipeClientImpersonation(const ScopedPipeClientImpersonation&) = delete;
+    ScopedPipeClientImpersonation& operator=(
+        const ScopedPipeClientImpersonation&) = delete;
+private:
+    bool active_;
+};
+
 static bool get_pipe_client_identity(HANDLE pipe, char* userOut,
     size_t userOutSize, DWORD* sessionIdOut, DWORD* pidOut, bool* isAdminOut,
-    ServiceLifecycleIdentity* lifecycleIdentityOut, char* err, size_t errSize) {
+    ServiceLifecycleIdentity* lifecycleIdentityOut, DWORD* integrityRidOut,
+    HANDLE* duplicatedTokenOut, char* err, size_t errSize) {
     if (isAdminOut) *isAdminOut = false;
     if (lifecycleIdentityOut) {
         memset(lifecycleIdentityOut, 0, sizeof(*lifecycleIdentityOut));
@@ -520,6 +563,8 @@ static bool get_pipe_client_identity(HANDLE pipe, char* userOut,
     if (userOut && userOutSize > 0) userOut[0] = 0;
     if (sessionIdOut) *sessionIdOut = (DWORD)-1;
     if (pidOut) *pidOut = 0;
+    if (integrityRidOut) *integrityRidOut = 0;
+    if (duplicatedTokenOut) *duplicatedTokenOut = nullptr;
     if (!pipe) {
         set_message(err, errSize, "Invalid service pipe handle");
         return false;
@@ -532,36 +577,75 @@ static bool get_pipe_client_identity(HANDLE pipe, char* userOut,
     }
     if (pidOut) *pidOut = (DWORD)clientPid;
 
-    DWORD sessionId = 0;
-    if (!ProcessIdToSessionId((DWORD)clientPid, &sessionId)) {
-        set_message(err, errSize, "Failed determining service client session");
+    // Bind authorization to the token attached to this exact pipe connection.
+    // Looking the PID up later leaves a lifetime/PID-reuse gap between the pipe
+    // kernel object and OpenProcess/OpenProcessToken.
+    ScopedPipeClientImpersonation impersonation(pipe);
+    if (!impersonation.active()) {
+        set_message(err, errSize,
+            "Failed impersonating the connected service client (error %lu)",
+            GetLastError());
         return false;
     }
-    if (sessionIdOut) *sessionIdOut = sessionId;
-
-    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)clientPid);
-    if (!process) {
-        set_message(err, errSize, "Failed opening service client process");
+    HANDLE threadToken = nullptr;
+    bool opened = OpenThreadToken(GetCurrentThread(),
+        TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE, TRUE,
+        &threadToken) != FALSE;
+    DWORD openError = opened ? ERROR_SUCCESS : GetLastError();
+    if (!impersonation.revert()) {
+        if (threadToken) CloseHandle(threadToken);
+        set_message(err, errSize,
+            "Failed reverting service client impersonation (error %lu)",
+            GetLastError());
+        return false;
+    }
+    if (!opened) {
+        set_message(err, errSize,
+            "Failed opening connected service client token (error %lu)",
+            openError);
         return false;
     }
 
     HANDLE token = nullptr;
-    if (!OpenProcessToken(process, TOKEN_QUERY, &token)) {
-        CloseHandle(process);
-        set_message(err, errSize, "Failed opening service client token");
+    if (!DuplicateTokenEx(threadToken, TOKEN_QUERY | TOKEN_IMPERSONATE,
+            nullptr, SecurityImpersonation, TokenImpersonation, &token)) {
+        DWORD error = GetLastError();
+        CloseHandle(threadToken);
+        set_message(err, errSize,
+            "Failed duplicating connected service client token (error %lu)",
+            error);
         return false;
     }
+    CloseHandle(threadToken);
+
+    DWORD sessionId = (DWORD)-1;
+    DWORD returned = 0;
+    DWORD integrityRid = 0;
+    if (!GetTokenInformation(token, TokenSessionId, &sessionId,
+            sizeof(sessionId), &returned) ||
+        !token_integrity_level_rid(token, &integrityRid)) {
+        CloseHandle(token);
+        set_message(err, errSize,
+            "Failed resolving connected service client token metadata");
+        return false;
+    }
+    if (sessionIdOut) *sessionIdOut = sessionId;
+    if (integrityRidOut) *integrityRidOut = integrityRid;
 
     ServiceLifecycleIdentity lifecycleIdentity = {};
     bool ok = get_token_sam_name(token, userOut, userOutSize) &&
         service_identity_from_token(token, sessionId, &lifecycleIdentity,
             err, errSize);
     if (ok && isAdminOut) *isAdminOut = token_is_local_admin(token);
-    CloseHandle(token);
-    CloseHandle(process);
     if (!ok) {
+        CloseHandle(token);
         set_message(err, errSize, "Failed resolving service client identity");
         return false;
+    }
+    if (duplicatedTokenOut) {
+        *duplicatedTokenOut = token;
+    } else {
+        CloseHandle(token);
     }
     if (lifecycleIdentityOut) *lifecycleIdentityOut = lifecycleIdentity;
     return true;
@@ -570,19 +654,25 @@ static bool get_pipe_client_identity(HANDLE pipe, char* userOut,
 static bool service_caller_is_authorized(HANDLE pipe, const char* source,
     bool requireActiveSession, char* err, size_t errSize, char* callerUserOut,
     size_t callerUserOutSize, DWORD* callerSessionIdOut, DWORD* callerPidOut,
-    bool* callerIsAdminOut, ServiceLifecycleIdentity* lifecycleIdentityOut) {
+    bool* callerIsAdminOut, ServiceLifecycleIdentity* lifecycleIdentityOut,
+    DWORD* integrityRidOut, HANDLE* duplicatedTokenOut) {
     if (callerIsAdminOut) *callerIsAdminOut = false;
     if (lifecycleIdentityOut) {
         memset(lifecycleIdentityOut, 0, sizeof(*lifecycleIdentityOut));
     }
+    if (integrityRidOut) *integrityRidOut = 0;
+    if (duplicatedTokenOut) *duplicatedTokenOut = nullptr;
     DWORD callerSessionId = (DWORD)-1;
     DWORD callerPid = 0;
     bool callerIsAdmin = false;
+    DWORD integrityRid = 0;
+    HANDLE duplicatedToken = nullptr;
     char callerUser[256] = {};
     ServiceLifecycleIdentity lifecycleIdentity = {};
     if (!get_pipe_client_identity(pipe, callerUser, sizeof(callerUser),
             &callerSessionId, &callerPid, &callerIsAdmin,
-            &lifecycleIdentity, err, errSize)) {
+            &lifecycleIdentity, &integrityRid, &duplicatedToken,
+            err, errSize)) {
         return false;
     }
 
@@ -591,6 +681,7 @@ static bool service_caller_is_authorized(HANDLE pipe, const char* source,
         if (!get_active_interactive_session_id(&activeSessionId)) {
             set_message(err, errSize,
                 "Failed determining the active interactive session");
+            CloseHandle(duplicatedToken);
             return false;
         }
         if (callerSessionId != activeSessionId) {
@@ -602,6 +693,7 @@ static bool service_caller_is_authorized(HANDLE pipe, const char* source,
                 callerSessionId,
                 activeSessionId,
                 callerUser[0] ? callerUser : "<unknown>");
+            CloseHandle(duplicatedToken);
             return false;
         }
     } else {
@@ -622,8 +714,30 @@ static bool service_caller_is_authorized(HANDLE pipe, const char* source,
     if (callerPidOut) *callerPidOut = callerPid;
     if (callerIsAdminOut) *callerIsAdminOut = callerIsAdmin;
     if (lifecycleIdentityOut) *lifecycleIdentityOut = lifecycleIdentity;
+    if (integrityRidOut) *integrityRidOut = integrityRid;
+    if (duplicatedTokenOut) {
+        *duplicatedTokenOut = duplicatedToken;
+    } else {
+        CloseHandle(duplicatedToken);
+    }
     return true;
 }
+
+class ScopedServiceClientImpersonation {
+public:
+    explicit ScopedServiceClientImpersonation(HANDLE token)
+        : active_(token && ImpersonateLoggedOnUser(token) != FALSE) {}
+    ~ScopedServiceClientImpersonation() {
+        if (active_ && !RevertToSelf())
+            debug_log("service file command: RAII RevertToSelf failed error=%lu\n",
+                GetLastError());
+    }
+    bool active() const { return active_; }
+    ScopedServiceClientImpersonation(const ScopedServiceClientImpersonation&) = delete;
+    ScopedServiceClientImpersonation& operator=(const ScopedServiceClientImpersonation&) = delete;
+private:
+    bool active_;
+};
 
 static void service_set_pending_operation_source(const char* source) {
     char callerUser[256] = {};

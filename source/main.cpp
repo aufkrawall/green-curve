@@ -12,7 +12,9 @@
 #include "gpu_selection_policy.h"
 #include "profile_persistence_policy.h"
 #include "ui_theme_metrics.h"
+#include "gui_mutation_forward.h"
 #include <dbghelp.h>
+#include <bcrypt.h>
 #include <dxgi1_6.h>
 
 // Global VEH thread-ID tracking — the VEH only kills the fan runtime thread via

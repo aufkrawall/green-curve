@@ -11,7 +11,7 @@
 
 enum {
     SERVICE_PROTOCOL_MAGIC = 0x47535643u,
-    SERVICE_PROTOCOL_VERSION = 9,
+    SERVICE_PROTOCOL_VERSION = 10,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply. Bit 30 marks an
@@ -38,6 +38,15 @@ enum ServiceCommand {
     // task.  The service derives the active session, account and configured
     // profile; no client-supplied profile data is trusted for this command.
     SERVICE_CMD_LOGON_HANDOFF = 10,
+    SERVICE_CMD_GET_OPERATION_RESULT = 11,
+};
+
+enum ServiceOperationState {
+    SERVICE_OPERATION_NONE = 0,
+    SERVICE_OPERATION_IN_PROGRESS = 1,
+    SERVICE_OPERATION_SUCCEEDED = 2,
+    SERVICE_OPERATION_FAILED = 3,
+    SERVICE_OPERATION_OUTCOME_UNKNOWN = 4,
 };
 
 // Every write request carries an origin.  Only the deliberately explicit
@@ -218,11 +227,18 @@ struct ServiceRequest {
     gc_u32 applyOrigin;
     gc_u32 profileSource;
     gc_u32 profileSlot;
+    gc_u64 operationId;
     GpuAdapterInfo targetGpu;
     DesiredSettings desired;
     char source[64];
     char path[GC_REQUEST_PATH_MAX];
 };
+// Static field-offset assertions: these catch accidental ABI breaks when
+// struct fields are reordered, resized, or moved between versions.
+// The magic field must always be at offset 0 for protocol identification.
+static_assert(offsetof(ServiceRequest, magic) == 0, "ServiceRequest.magic must be at offset 0");
+static_assert(offsetof(ServiceRequest, version) == 4, "ServiceRequest.version offset changed");
+static_assert(offsetof(ServiceRequest, command) == 8, "ServiceRequest.command offset changed");
 static_assert(sizeof(ServiceRequest) < 65536, "ServiceRequest size sanity check");
 
 struct ServiceResponse {
@@ -231,12 +247,16 @@ struct ServiceResponse {
     gc_u32 status;
     gc_u32 reserved;
     gc_u32 serviceBuildNumber;
+    gc_u32 operationState;
+    gc_u64 operationId;
     char serviceVersion[32];
     ServiceSnapshot snapshot;
     DesiredSettings desired;
     ControlState controlState;
     char message[512];
 };
+static_assert(offsetof(ServiceResponse, magic) == 0, "ServiceResponse.magic must be at offset 0");
+static_assert(offsetof(ServiceResponse, version) == 4, "ServiceResponse.version offset changed");
 static_assert(sizeof(ServiceResponse) < 262144, "ServiceResponse size sanity check");
 
 static inline void validate_service_snapshot_for_ipc(ServiceSnapshot* s) {
@@ -285,6 +305,9 @@ static inline void validate_service_snapshot_for_ipc(ServiceSnapshot* s) {
 
 static inline void validate_service_response_for_ipc(ServiceResponse* r) {
     if (!r) return;
+    if (r->operationState > SERVICE_OPERATION_OUTCOME_UNKNOWN) {
+        r->operationState = SERVICE_OPERATION_OUTCOME_UNKNOWN;
+    }
     validate_service_snapshot_for_ipc(&r->snapshot);
     validate_desired_settings_for_ipc(&r->desired);
     validate_control_state_for_ipc(&r->controlState);

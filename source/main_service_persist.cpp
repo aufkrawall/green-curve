@@ -15,7 +15,8 @@
 // Ordinary service startup is always non-mutating.
 
 #define SERVICE_ACTIVE_DESIRED_MAGIC   0x47434144u /* 'GCAD' */
-#define SERVICE_ACTIVE_DESIRED_VERSION 4u
+#define SERVICE_ACTIVE_DESIRED_VERSION 5u
+#define SERVICE_ACTIVE_DESIRED_LEGACY_VERSION 4u
 #define SERVICE_CONTROLLED_RECOVERY_MAGIC   0x47434352u /* 'GCCR' */
 #define SERVICE_CONTROLLED_RECOVERY_VERSION 3u
 #define SERVICE_CONTROLLED_RECOVERY_MAX_AGE_MS 300000ULL
@@ -80,16 +81,16 @@ static bool service_commit_controlled_recovery_authorization(
     if (FAILED(StringCchPrintfA(tempPath, ARRAY_COUNT(tempPath), "%s.tmp.%lu.%llu", path,
             (unsigned long)GetCurrentProcessId(),
             (unsigned long long)GetTickCount64()))) return false;
-    HANDLE h = CreateFileA(tempPath, GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+    HANDLE h = gc_CreateFileUtf8(tempPath, GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
     if (h == INVALID_HANDLE_VALUE) return false;
     DWORD written = 0;
     bool ok = WriteFile(h, &authorization, sizeof(authorization), &written, nullptr) &&
         written == sizeof(authorization) && FlushFileBuffers(h) != FALSE;
     CloseHandle(h);
-    if (ok) ok = MoveFileExA(tempPath, path,
+    if (ok) ok = gc_MoveFileExUtf8(tempPath, path,
         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
-    if (!ok) DeleteFileA(tempPath);
+    if (!ok) gc_DeleteFileUtf8(tempPath);
     return ok;
 }
 
@@ -156,7 +157,7 @@ static bool service_fingerprint_restart_snapshot(ULONGLONG* fingerprintOut,
     *sizeOut = 0;
     char path[MAX_PATH] = {};
     if (!service_active_desired_persist_path(path, sizeof(path))) return false;
-    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+    HANDLE h = gc_CreateFileUtf8(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
     if (h == INVALID_HANDLE_VALUE) return false;
     LARGE_INTEGER size = {};
@@ -201,7 +202,7 @@ static bool service_create_controlled_recovery_authorization(const char* reason,
     char path[MAX_PATH] = {};
     if (!service_controlled_recovery_authorization_path(path, sizeof(path))) return false;
     // Never let a failed new restart attempt inherit an older authorization.
-    DeleteFileA(path);
+    gc_DeleteFileUtf8(path);
     ServiceControlledRecoveryAuthorization authorization = {};
     authorization.magic = SERVICE_CONTROLLED_RECOVERY_MAGIC;
     authorization.version = SERVICE_CONTROLLED_RECOVERY_VERSION;
@@ -244,7 +245,7 @@ static bool service_create_controlled_recovery_authorization(const char* reason,
     bool ok = service_commit_controlled_recovery_authorization(authorization);
     SecureZeroMemory(&authorization, sizeof(authorization));
     if (!ok) {
-        DeleteFileA(path);
+        gc_DeleteFileUtf8(path);
         SecureZeroMemory(nonceHexOut, nonceHexOutSize);
         debug_log("controlled recovery authorization: commit failed; recovery restore will be suppressed\n");
         return false;
@@ -258,7 +259,7 @@ static bool service_create_controlled_recovery_authorization(const char* reason,
 
 static void service_clear_controlled_recovery_authorization() {
     char path[MAX_PATH] = {};
-    if (service_controlled_recovery_authorization_path(path, sizeof(path))) DeleteFileA(path);
+    if (service_controlled_recovery_authorization_path(path, sizeof(path))) gc_DeleteFileUtf8(path);
 }
 
 static bool service_read_controlled_recovery_authorization(const char* nonceHex,
@@ -266,7 +267,7 @@ static bool service_read_controlled_recovery_authorization(const char* nonceHex,
     bool consume, ServiceControlledRecoveryAuthorization* out = nullptr) {
     char path[MAX_PATH] = {};
     if (!service_controlled_recovery_authorization_path(path, sizeof(path))) return false;
-    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+    HANDLE h = gc_CreateFileUtf8(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
         DWORD error = GetLastError();
@@ -283,7 +284,7 @@ static bool service_read_controlled_recovery_authorization(const char* nonceHex,
     DWORD trailingRead = 0;
     if (ok) ok = ReadFile(h, &trailing, sizeof(trailing), &trailingRead, nullptr) && trailingRead == 0;
     CloseHandle(h);
-    if (consume) DeleteFileA(path);
+    if (consume) gc_DeleteFileUtf8(path);
 
     BYTE suppliedNonce[SERVICE_CONTROLLED_RECOVERY_NONCE_BYTES] = {};
     ServiceBootIdentity boot = {};
@@ -588,7 +589,7 @@ static bool service_auto_restore_is_locked_out(DWORD* reasonOut = nullptr) {
         service_release_auto_restore_lockout_mutex(mutex);
         return true;
     }
-    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+    HANDLE h = gc_CreateFileUtf8(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
         DWORD error = GetLastError();
@@ -669,7 +670,7 @@ static void service_latch_auto_restore_lockout(DWORD reason, const char* context
                     "%s.tmp.%lu.%llu", path,
                     (unsigned long)GetCurrentProcessId(),
                     (unsigned long long)GetTickCount64()))) break;
-            HANDLE h = CreateFileA(tempPath, GENERIC_WRITE, 0, nullptr,
+            HANDLE h = gc_CreateFileUtf8(tempPath, GENERIC_WRITE, 0, nullptr,
                 CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
                 nullptr);
             if (h == INVALID_HANDLE_VALUE) {
@@ -688,9 +689,9 @@ static void service_latch_auto_restore_lockout(DWORD reason, const char* context
                 nullptr) && written == sizeof(reason);
             if (fileOk) fileOk = FlushFileBuffers(h) != FALSE;
             CloseHandle(h);
-            if (fileOk) fileOk = MoveFileExA(tempPath, path,
+            if (fileOk) fileOk = gc_MoveFileExUtf8(tempPath, path,
                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
-            if (!fileOk) DeleteFileA(tempPath);
+            if (!fileOk) gc_DeleteFileUtf8(tempPath);
         } while (false);
     }
     bool registryOk = service_write_auto_restore_registry_lockout(reason);
@@ -714,12 +715,12 @@ static bool service_clear_auto_restore_lockout() {
         service_release_auto_restore_lockout_mutex(mutex);
         return false;
     }
-    bool cleared = DeleteFileA(path) != FALSE;
+    bool cleared = gc_DeleteFileUtf8(path) != FALSE;
     if (!cleared) {
         DWORD error = GetLastError();
         cleared = error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
     }
-    DWORD attributes = GetFileAttributesA(path);
+    DWORD attributes = gc_GetFileAttributesUtf8(path);
     DWORD attributesError = attributes == INVALID_FILE_ATTRIBUTES
         ? GetLastError() : ERROR_SUCCESS;
     bool registryCleared = service_clear_auto_restore_registry_lockout();
@@ -760,7 +761,7 @@ static void service_write_restart_reapply_snapshot() {
     char path[MAX_PATH] = {};
     if (!service_active_desired_persist_path(path, sizeof(path))) return;
     if (!g_serviceHasActiveDesired) {
-        DeleteFileA(path);
+        gc_DeleteFileUtf8(path);
         return;
     }
     ServiceRestartReapplySnapshot payload = {};
@@ -774,12 +775,12 @@ static void service_write_restart_reapply_snapshot() {
         (slottedProfile && (g_serviceActiveProfileSlot < 1 || g_serviceActiveProfileSlot > 5)) ||
         (!slottedProfile && g_serviceActiveProfileSlot != 0)) {
         debug_log("restart reapply snapshot: active profile metadata is not canonical; clearing stale snapshot\n");
-        DeleteFileA(path);
+        gc_DeleteFileUtf8(path);
         return;
     }
     if (!service_current_target_gpu_for_snapshot(&payload.targetGpu) || !payload.targetGpu.valid) {
         debug_log("restart reapply snapshot: no validated target GPU identity; clearing stale snapshot\n");
-        DeleteFileA(path);
+        gc_DeleteFileUtf8(path);
         return;
     }
     validate_desired_settings_for_ipc(&payload.desired);
@@ -790,7 +791,7 @@ static void service_write_restart_reapply_snapshot() {
     if (FAILED(StringCchPrintfA(tempPath, ARRAY_COUNT(tempPath), "%s.tmp.%lu.%llu", path,
             (unsigned long)GetCurrentProcessId(),
             (unsigned long long)GetTickCount64()))) return;
-    HANDLE h = CreateFileA(tempPath, GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+    HANDLE h = gc_CreateFileUtf8(tempPath, GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
         debug_log("restart reapply snapshot: CreateFile failed (error %lu)\n", GetLastError());
@@ -806,11 +807,11 @@ static void service_write_restart_reapply_snapshot() {
     ok = ok && WriteFile(h, &payload, size, &written, nullptr) && written == size;
     if (ok) ok = FlushFileBuffers(h) != FALSE;
     CloseHandle(h);
-    if (ok) ok = MoveFileExA(tempPath, path,
+    if (ok) ok = gc_MoveFileExUtf8(tempPath, path,
         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
     if (!ok) {
-        DeleteFileA(tempPath);
-        DeleteFileA(path);
+        gc_DeleteFileUtf8(tempPath);
+        gc_DeleteFileUtf8(path);
     }
     debug_log("restart reapply snapshot: wrote %s (ok=%d targetNvapi=%u pciValid=%d)\n",
         path,
@@ -827,7 +828,7 @@ static bool service_load_restart_reapply_snapshot(DesiredSettings* out, GpuAdapt
     if (profileSlotOut) *profileSlotOut = 0;
     char path[MAX_PATH] = {};
     if (!service_active_desired_persist_path(path, sizeof(path))) return false;
-    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+    HANDLE h = gc_CreateFileUtf8(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return false;
     DWORD magic = 0, version = 0, size = 0, read = 0;
@@ -835,7 +836,8 @@ static bool service_load_restart_reapply_snapshot(DesiredSettings* out, GpuAdapt
     ok = ok && ReadFile(h, &version, sizeof(version), &read, nullptr) && read == sizeof(version);
     ok = ok && ReadFile(h, &size, sizeof(size), &read, nullptr) && read == sizeof(size);
     if (ok && (magic != SERVICE_ACTIVE_DESIRED_MAGIC ||
-               version != SERVICE_ACTIVE_DESIRED_VERSION ||
+               (version != SERVICE_ACTIVE_DESIRED_VERSION &&
+                version != SERVICE_ACTIVE_DESIRED_LEGACY_VERSION) ||
                size != (DWORD)sizeof(ServiceRestartReapplySnapshot))) {
         debug_log("restart reapply load: header mismatch magic=%08lX ver=%lu size=%lu (expected version=%u size=%lu); clearing old snapshot\n",
             (unsigned long)magic,
@@ -845,6 +847,9 @@ static bool service_load_restart_reapply_snapshot(DesiredSettings* out, GpuAdapt
             (unsigned long)sizeof(ServiceRestartReapplySnapshot));
         ok = false;
     }
+    if (ok && version == SERVICE_ACTIVE_DESIRED_LEGACY_VERSION) {
+        debug_log("restart reapply load: accepted backward-compatible v4 snapshot\n");
+    }
     ServiceRestartReapplySnapshot payload = {};
     if (ok) ok = ReadFile(h, &payload, size, &read, nullptr) && read == size;
     BYTE trailing = 0;
@@ -853,7 +858,7 @@ static bool service_load_restart_reapply_snapshot(DesiredSettings* out, GpuAdapt
     CloseHandle(h);
     if (!ok) {
         debug_log("restart reapply load: read failed\n");
-        DeleteFileA(path);
+        gc_DeleteFileUtf8(path);
         return false;
     }
     // The file lives in the admin-only SYSTEM-profile dir, so this is not a
@@ -867,12 +872,12 @@ static bool service_load_restart_reapply_snapshot(DesiredSettings* out, GpuAdapt
     if (memcmp(&originalDesired, &payload.desired, sizeof(payload.desired)) != 0 ||
         memcmp(&originalTarget, &payload.targetGpu, sizeof(payload.targetGpu)) != 0) {
         debug_log("restart reapply load: payload fields required sanitization; rejecting corrupt snapshot\n");
-        DeleteFileA(path);
+        gc_DeleteFileUtf8(path);
         return false;
     }
     if (!payload.targetGpu.valid) {
         debug_log("restart reapply load: missing target GPU identity; clearing snapshot\n");
-        DeleteFileA(path);
+        gc_DeleteFileUtf8(path);
         return false;
     }
     ServiceProfileSource profileSource = (ServiceProfileSource)payload.activeProfileSource;
@@ -884,7 +889,7 @@ static bool service_load_restart_reapply_snapshot(DesiredSettings* out, GpuAdapt
         (!slotted && payload.activeProfileSlot != 0) ||
         payload.reserved[0] != 0 || payload.reserved[1] != 0) {
         debug_log("restart reapply load: invalid active profile metadata; rejecting snapshot\n");
-        DeleteFileA(path);
+        gc_DeleteFileUtf8(path);
         return false;
     }
     *out = payload.desired;
@@ -896,19 +901,8 @@ static bool service_load_restart_reapply_snapshot(DesiredSettings* out, GpuAdapt
 
 static void service_clear_restart_reapply_snapshot() {
     char path[MAX_PATH] = {};
-    if (service_active_desired_persist_path(path, sizeof(path))) DeleteFileA(path);
+    if (service_active_desired_persist_path(path, sizeof(path))) gc_DeleteFileUtf8(path);
 }
 
-// Remove artifacts from the retired startup-inference and nonce-less ticket
-// designs. No service-start path can become a synthetic logon/recovery event.
-static void service_cleanup_obsolete_recovery_artifacts() {
-    char dir[MAX_PATH] = {};
-    if (!resolve_service_machine_data_dir(dir, sizeof(dir))) return;
-    char path[MAX_PATH] = {};
-    if (SUCCEEDED(StringCchPrintfA(path, ARRAY_COUNT(path),
-            "%s\\service_boot_reconcile.bin", dir))) DeleteFileA(path);
-    if (SUCCEEDED(StringCchPrintfA(path, ARRAY_COUNT(path),
-            "%s\\service_boot_start.bin", dir))) DeleteFileA(path);
-    if (SUCCEEDED(StringCchPrintfA(path, ARRAY_COUNT(path),
-            "%s\\service_controlled_recovery.bin", dir))) DeleteFileA(path);
-}
+static void service_cleanup_obsolete_recovery_artifacts();
+#include "main_service_obsolete_artifacts.cpp"

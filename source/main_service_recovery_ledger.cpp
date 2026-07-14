@@ -102,16 +102,16 @@ static bool service_commit_recovery_ledger(const ServiceRecoveryLedger& ledger) 
     char tempPath[MAX_PATH] = {};
     if (FAILED(StringCchPrintfA(tempPath, ARRAY_COUNT(tempPath), "%s.tmp.%lu", path,
             (unsigned long)GetCurrentProcessId()))) return false;
-    HANDLE h = CreateFileA(tempPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+    HANDLE h = gc_CreateFileUtf8(tempPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
     if (h == INVALID_HANDLE_VALUE) return false;
     DWORD written = 0;
     bool ok = WriteFile(h, &ledger, sizeof(ledger), &written, nullptr) &&
         written == sizeof(ledger) && FlushFileBuffers(h) != FALSE;
     CloseHandle(h);
-    if (ok) ok = MoveFileExA(tempPath, path,
+    if (ok) ok = gc_MoveFileExUtf8(tempPath, path,
         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
-    if (!ok) DeleteFileA(tempPath);
+    if (!ok) gc_DeleteFileUtf8(tempPath);
     return ok;
 }
 
@@ -120,7 +120,7 @@ static bool service_read_recovery_ledger_file(ServiceRecoveryLedger* out) {
     memset(out, 0, sizeof(*out));
     char path[MAX_PATH] = {};
     if (!service_recovery_ledger_path(path, sizeof(path))) return false;
-    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+    HANDLE h = gc_CreateFileUtf8(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return false;
     DWORD read = 0;
@@ -164,7 +164,7 @@ static bool service_resolve_old_restart_history(ServiceRecoveryLedger* ledger) {
     if (!ledger) return false;
     char oldPath[MAX_PATH] = {};
     if (!service_old_restart_history_path(oldPath, sizeof(oldPath))) return false;
-    HANDLE h = CreateFileA(oldPath, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+    HANDLE h = gc_CreateFileUtf8(oldPath, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
         DWORD error = GetLastError();
@@ -197,7 +197,7 @@ static bool service_resolve_old_restart_history(ServiceRecoveryLedger* ledger) {
         debug_log("recovery ledger: non-empty legacy history has no stable BootIdentifier; failing closed until explicit Apply\n");
         return false;
     }
-    DeleteFileA(oldPath);
+    gc_DeleteFileUtf8(oldPath);
     debug_log("recovery ledger: discarded empty obsolete restart history\n");
     return true;
 }
@@ -206,7 +206,7 @@ static bool service_load_recovery_ledger(ServiceRecoveryLedger* ledger) {
     if (!ledger) return false;
     char path[MAX_PATH] = {};
     if (!service_recovery_ledger_path(path, sizeof(path))) return false;
-    DWORD attrs = GetFileAttributesA(path);
+    DWORD attrs = gc_GetFileAttributesUtf8(path);
     if (attrs != INVALID_FILE_ATTRIBUTES) return service_read_recovery_ledger_file(ledger);
     DWORD error = GetLastError();
     if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
@@ -380,7 +380,7 @@ static bool service_clear_restart_history() {
     bool ledgerPathReady = service_recovery_ledger_path(path, sizeof(path));
     if (!ledgerPathReady) {
         clearOk = false;
-    } else if (!DeleteFileA(path)) {
+    } else if (!gc_DeleteFileUtf8(path)) {
         DWORD error = GetLastError();
         if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
             clearOk = false;
@@ -390,7 +390,7 @@ static bool service_clear_restart_history() {
     bool legacyPathReady = service_old_restart_history_path(path, sizeof(path));
     if (!legacyPathReady) {
         clearOk = false;
-    } else if (!DeleteFileA(path)) {
+    } else if (!gc_DeleteFileUtf8(path)) {
         DWORD error = GetLastError();
         if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
             clearOk = false;

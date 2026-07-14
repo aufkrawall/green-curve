@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
+#include "gui_mutation_worker.cpp"
+
 // ============================================================================
 // UAC Elevation
 // ============================================================================
@@ -449,6 +451,7 @@ static void apply_gpu_selection_from_ui() {
     g_app.selectedNvmlIndex = newIndex;
     g_app.selectedGpuExplicit = true;
     g_app.configuredGpuSelectionUnresolved = false;
+    gui_mutation_advance_gpu_epoch("GPU selector");
     reset_gpu_runtime_selection();
     refresh_background_service_state();
     char detail[256] = {};

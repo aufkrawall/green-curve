@@ -287,7 +287,7 @@ static bool load_startup_enabled_from_config(const char* path, bool* enabled) {
     }
 
     char buf[16] = {};
-    GetPrivateProfileStringA("startup", "apply_on_launch", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8("startup", "apply_on_launch", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (!buf[0]) return false;
 
@@ -320,7 +320,7 @@ static bool load_normalized_logon_selection(
     HANDLE configMutex = nullptr;
     if (!g_app.configPath[0] ||
         !enter_config_storage_lock(&configMutex)) return false;
-    DWORD attrs = GetFileAttributesA(g_app.configPath);
+    DWORD attrs = gc_GetFileAttributesUtf8(g_app.configPath);
     int perUserSlot = 0;
     int sharedSlot = 0;
     bool coherent = attrs != INVALID_FILE_ATTRIBUTES &&

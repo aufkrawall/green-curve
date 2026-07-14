@@ -318,3 +318,5 @@ static bool get_current_user_sam_name(WCHAR* out, DWORD outCount) {
     return ok;
 }
 
+#include "main_runtime_capture.cpp"
+

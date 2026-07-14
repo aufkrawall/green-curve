@@ -118,7 +118,7 @@ static bool harden_machine_config_file_required(const WCHAR* pathW, const char* 
 static void migrate_legacy_machine_config() {
     char newPath[MAX_PATH] = {};
     if (!resolve_machine_config_path(newPath, sizeof(newPath))) return;
-    if (GetFileAttributesA(newPath) != INVALID_FILE_ATTRIBUTES) {
+    if (gc_GetFileAttributesUtf8(newPath) != INVALID_FILE_ATTRIBUTES) {
         return; // already migrated (or freshly created at the new location)
     }
     WCHAR installDir[MAX_PATH] = {};
@@ -268,7 +268,7 @@ bool get_machine_restrict_policy(bool* enabledOut) {
     if (!resolve_machine_config_path(path, sizeof(path))) return false;
     HANDLE configMutex = nullptr;
     if (!enter_config_storage_lock(&configMutex)) return false;
-    HANDLE file = CreateFileA(path, GENERIC_READ,
+    HANDLE file = gc_CreateFileUtf8(path, GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) {

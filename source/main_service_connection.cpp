@@ -288,10 +288,21 @@ static bool validate_service_pipe_server_identity(HANDLE pipe, char* err, size_t
     return true;
 }
 
+#include "service_health_probe_policy.h"
+
 static bool refresh_background_service_state() {
     bool installed = false;
     bool running = false;
     query_background_service_state(&installed, &running);
+    if (service_health_probe_should_defer(g_app.isServiceProcess,
+            g_app.applyInFlight, installed, running)) {
+        g_app.backgroundServiceInstalled = true;
+        g_app.backgroundServiceRunning = true;
+        g_app.usingBackgroundService = true;
+        debug_log_on_change("refresh_background_service_state: deferred pipe probe during owned GPU mutation; preserving available=%d\n",
+            g_app.backgroundServiceAvailable ? 1 : 0);
+        return g_app.backgroundServiceAvailable;
+    }
     g_app.backgroundServiceInstalled = installed;
     g_app.backgroundServiceRunning = running;
     g_app.backgroundServiceAvailable = false;

@@ -7,9 +7,9 @@
 // Main Window
 // ============================================================================
 
+#include "ui_mutation_completion.cpp"
 static void apply_changes() {
     if (!g_app.backgroundServiceAvailable || !g_app.loaded) return;
-    if (g_app.applyInFlight) return;
     char gpuSelectionErr[256] = {};
     if (!validate_configured_gpu_selection_for_client(
             gpuSelectionErr, sizeof(gpuSelectionErr))) {
@@ -19,8 +19,6 @@ static void apply_changes() {
             "Green Curve", MB_OK | MB_ICONWARNING);
         return;
     }
-    g_app.applyInFlight = true;
-    if (g_app.hApplyBtn) EnableWindow(g_app.hApplyBtn, FALSE);
     set_pending_operation_source("GUI apply");
     record_ui_action("Apply clicked");
     DesiredSettings desired = {};
@@ -28,19 +26,13 @@ static void apply_changes() {
     if (g_app.usingBackgroundService && !refresh_service_snapshot_and_active_desired(err, sizeof(err))) {
         write_error_report_log_for_user_failure("GUI apply refresh failed", err);
         MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
-        g_app.applyInFlight = false;
-        if (g_app.hApplyBtn) EnableWindow(g_app.hApplyBtn, TRUE);
         return;
     }
     if (!capture_gui_apply_settings(&desired, err, sizeof(err))) {
         write_error_report_log_for_user_failure("GUI apply validation failed", err);
         MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
-        g_app.applyInFlight = false;
-        if (g_app.hApplyBtn) EnableWindow(g_app.hApplyBtn, TRUE);
         return;
     }
-    char result[512] = {};
-    SetCursor(LoadCursor(nullptr, IDC_WAIT));
     int requestedSlot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
     if (requestedSlot < 0) requestedSlot = CONFIG_DEFAULT_SLOT - 1;
     requestedSlot += 1;
@@ -49,30 +41,15 @@ static void apply_changes() {
         requestedSource = SERVICE_PROFILE_SOURCE_SHARED_SLOT;
         requestedSlot = g_app.loadedSharedSlot;
     }
-    bool ok = apply_desired_settings(&desired, true,
-        SERVICE_APPLY_ORIGIN_GUI, requestedSource, requestedSlot,
-        result, sizeof(result));
-    SetCursor(LoadCursor(nullptr, IDC_ARROW));
-    if (ok) {
-        bool fanOnlyApply = desired_is_fan_only_apply_request(&desired);
-        set_gui_state_dirty(false);
-        if (fanOnlyApply) {
-            debug_log("GUI apply: preserving VF editor intent after fan-only apply\n");
-        } else {
-            populate_desired_into_gui(&desired);
-            if (requestedSource == SERVICE_PROFILE_SOURCE_SHARED_SLOT) {
-                g_app.loadedSharedSlot = requestedSlot;
-            }
-        }
-        sync_applied_profile_from_service_metadata();
-        populate_global_controls();
-        invalidate_main_window();
+    char queueStatus[512] = {};
+    if (!gui_mutation_queue_apply(&desired, true, SERVICE_APPLY_ORIGIN_GUI,
+            requestedSource, requestedSlot, GUI_MUTATION_CONTEXT_MANUAL_APPLY,
+            "GUI apply", queueStatus, sizeof(queueStatus))) {
+        MessageBoxA(g_app.hMainWnd, queueStatus, "Green Curve",
+            MB_OK | MB_ICONWARNING);
+    } else {
+        set_profile_status_text("%s", queueStatus);
     }
-    boost_fan_telemetry_for_ms(3000);
-    refresh_live_fan_telemetry(true);
-    MessageBoxA(g_app.hMainWnd, result, "Green Curve", MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONWARNING));
-    g_app.applyInFlight = false;
-    if (g_app.hApplyBtn) EnableWindow(g_app.hApplyBtn, TRUE);
 }
 
 #include "ui_main_control_lifecycle.cpp"
@@ -90,6 +67,7 @@ static void refresh_curve() {
         int oldNumVisible = g_app.numVisible;
         if (service_client_get_snapshot(&snapshot, detail, sizeof(detail))) {
             apply_service_snapshot_to_app(&snapshot);
+            sync_applied_profile_from_service_metadata();
             if (g_app.numVisible != oldNumVisible) {
                 rebuild_edit_controls();
             } else {
@@ -128,33 +106,13 @@ static void reset_curve() {
     if (confirm != IDYES) return;
 
     if (g_app.usingBackgroundService && !g_app.isServiceProcess) {
-        char result[512] = {};
-        ServiceSnapshot snapshot = {};
-        bool ok = service_client_reset(result, sizeof(result), &snapshot);
-        if (ok && (snapshot.initialized || snapshot.loaded || g_app.fanSupported || snapshot.fanSupported)) {
-            clear_service_authoritative_state();
-            apply_service_snapshot_to_app(&snapshot);
-            if (ok) {
-                g_app.guiFanMode = FAN_MODE_AUTO;
-                g_app.guiFanFixedPercent = 0;
-                fan_curve_set_default(&g_app.guiFanCurve);
-                g_app.lockedVi = -1;
-                g_app.lockedCi = -1;
-                g_app.lockedFreq = 0;
-                g_app.lockMode = LOCK_MODE_NONE;
-                // Reset returns the GPU to stock: drop all owned curve intent so the
-                // editor/graph show live stock values, not stale applied intent.
-                memset(g_app.appliedCurveMHz, 0, sizeof(g_app.appliedCurveMHz));
-                set_gui_state_dirty(false);
-            }
-            rebuild_edit_controls();
-            populate_global_controls();
-            update_background_service_controls();
-            invalidate_main_window();
+        char queueStatus[512] = {};
+        if (!gui_mutation_queue_reset(queueStatus, sizeof(queueStatus))) {
+            MessageBoxA(g_app.hMainWnd, queueStatus, "Green Curve",
+                MB_OK | MB_ICONWARNING);
+        } else {
+            set_profile_status_text("%s", queueStatus);
         }
-        boost_fan_telemetry_for_ms(3000);
-        refresh_live_fan_telemetry(true);
-        MessageBoxA(g_app.hMainWnd, result, "Green Curve", MB_OK | (ok ? MB_ICONINFORMATION : MB_ICONWARNING));
         return;
     }
 
@@ -537,6 +495,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case APP_WM_ENSURE_LAYOUT_FOCUS:
             main_layout_ensure_child_visible(hwnd, (HWND)wParam);
+            return 0;
+
+        case APP_WM_MUTATION_COMPLETE:
+            handle_gui_mutation_completion((GuiMutationCompletion*)lParam);
             return 0;
 
         case WM_SYSCOMMAND:
@@ -1369,6 +1331,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_DESTROY:
+            gui_mutation_shutdown();
             persist_main_window_placement(hwnd);
             KillTimer(hwnd, FAN_TELEMETRY_TIMER_ID);
             auto_profile_shutdown(hwnd);

@@ -5,5 +5,6 @@
 // amalgamated build while the implementation stays in focused shards.
 
 #include "main_service_request_policy.cpp"
+#include "main_service_operation_persist.cpp"
 #include "main_service_pipe.cpp"
 #include "main_service_host.cpp"

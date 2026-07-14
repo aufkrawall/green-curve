@@ -34,12 +34,19 @@ static bool service_lifecycle_logon_still_current(
     gc_u64 generation)
 {
     EnterCriticalSection(&g_appLock);
-    bool current = g_serviceLifecycleState.logonPending &&
-        !g_serviceLifecycleState.logonWriteIssued &&
-        g_serviceLifecycleState.logonGeneration == generation &&
-        service_lifecycle_identity_equal(
-            &g_serviceLifecycleState.pendingLogonIdentity, identity);
+    bool pending = g_serviceLifecycleState.logonPending;
+    bool writeNotIssued = !g_serviceLifecycleState.logonWriteIssued;
+    bool sameGeneration = g_serviceLifecycleState.logonGeneration == generation;
+    bool sameIdentity = service_lifecycle_identity_equal(
+        &g_serviceLifecycleState.pendingLogonIdentity, identity);
+    bool current = pending && writeNotIssued && sameGeneration && sameIdentity;
     LeaveCriticalSection(&g_appLock);
+    if (!current) {
+        debug_log("lifecycle logon: logon_still_current false (pending=%d writeNotIssued=%d sameGeneration=%d sameIdentity=%d gen=%llu)\n",
+            pending ? 1 : 0, writeNotIssued ? 1 : 0,
+            sameGeneration ? 1 : 0, sameIdentity ? 1 : 0,
+            (unsigned long long)generation);
+    }
     return current;
 }
 
@@ -257,9 +264,10 @@ static void service_lifecycle_attempt_logon() {
             &identity, &generation, &trigger, &logoffGeneration)) return;
 
     char detail[256] = {};
+    ServiceLifecycleIdentity currentIdentity = {};
     ServiceSessionIdentityCheckResult identityCheck =
-        service_verify_active_session_identity(&identity, nullptr,
-            detail, sizeof(detail));
+        service_verify_active_session_identity(&identity,
+            &currentIdentity, detail, sizeof(detail));
     if (identityCheck == SERVICE_SESSION_IDENTITY_TRANSIENT) {
         EnterCriticalSection(&g_appLock);
         service_lifecycle_set_result_locked(trigger,
@@ -274,6 +282,22 @@ static void service_lifecycle_attempt_logon() {
         debug_log("lifecycle logon: identity superseded before config resolve: %s\n", detail);
         return;
     }
+    // If the auth LUID drifted between the snapshot (from task/token handoff)
+    // and the live-session identity (from WTSQueryUserToken), update both the
+    // lifecycle state and our local copy.  sessionId + SID are still enforced
+    // by the check above; the auth LUID mismatch is a false-positive race on
+    // early boot, not a real session replacement.
+    if (currentIdentity.valid &&
+        currentIdentity.authenticationId != identity.authenticationId) {
+        EnterCriticalSection(&g_appLock);
+        g_serviceLifecycleState.pendingLogonIdentity.authenticationId =
+            currentIdentity.authenticationId;
+        LeaveCriticalSection(&g_appLock);
+        debug_log("lifecycle logon: pending identity auth LUID updated from %llu to %llu\n",
+            (unsigned long long)identity.authenticationId,
+            (unsigned long long)currentIdentity.authenticationId);
+        identity.authenticationId = currentIdentity.authenticationId;
+    }
 
     ServiceSessionConfigContext context = {};
     if (!service_resolve_session_config_context(identity.sessionId, &context,
@@ -286,6 +310,10 @@ static void service_lifecycle_attempt_logon() {
         return;
     }
     if (!service_lifecycle_identity_equal(&identity, &context.identity)) {
+        debug_log("lifecycle logon: context identity mismatch (session=%lu expectedAuth=%llu contextAuth=%llu)\n",
+            (unsigned long)identity.sessionId,
+            (unsigned long long)identity.authenticationId,
+            (unsigned long long)context.identity.authenticationId);
         service_lifecycle_finish_logon_without_write(&identity, generation, trigger,
             SERVICE_LIFECYCLE_RESULT_SUPERSEDED);
         return;
@@ -684,6 +712,10 @@ static void service_lifecycle_attempt_driver_restore() {
         return;
     }
 
+    ServiceOcApplyProofStamp matureProof = {};
+    ULONGLONG matureProofAgeMs = 0;
+    bool preserveMatureProof = false;
+
     DesiredSettings desired = {};
     service_build_full_restore_request(
         &g_serviceActiveDesired, &desired);
@@ -694,6 +726,10 @@ static void service_lifecycle_attempt_driver_restore() {
         &driverTarget, "driver recovery pre-write target");
     ServiceSelectedGpuWriteEpoch gpuEpoch =
         service_selected_gpu_capture_write_epoch();
+
+    preserveMatureProof = service_capture_mature_oc_apply_proof(
+        &matureProof, &matureProofAgeMs);
+
     bool success = false;
     if (service_selected_gpu_write_epoch_is_current(gpuEpoch)) {
         success = service_apply_desired_settings(&desired, false,
@@ -706,7 +742,11 @@ static void service_lifecycle_attempt_driver_restore() {
         service_refresh_selected_gpu_notification_best_effort(
             &g_serviceActiveDesiredGpu,
             "successful driver recovery target");
-        service_record_oc_apply_stamp();
+        if (preserveMatureProof) {
+            service_restore_mature_oc_apply_proof(matureProof);
+        } else {
+            service_record_oc_apply_stamp();
+        }
         g_serviceActiveProfileSource =
             g_serviceControlledRecoveryProfileSource;
         g_serviceActiveProfileSlot =
@@ -744,8 +784,11 @@ static void service_lifecycle_attempt_driver_restore() {
     service_lifecycle_set_result_locked(
         SERVICE_LIFECYCLE_TRIGGER_DRIVER_RECOVERY, decision.result);
     LeaveCriticalSection(&g_appLock);
-    debug_log("lifecycle driver recovery: full-intent write attempted=%d success=%d detail=%s\n",
+    debug_log("lifecycle driver recovery: full-intent write attempted=%d success=%d proof=%s priorAgeMs=%llu detail=%s\n",
         writeAttempted ? 1 : 0, success ? 1 : 0,
+        !success ? "not-committed" : preserveMatureProof
+            ? "preserved-mature" : "restarted",
+        (unsigned long long)matureProofAgeMs,
         detail[0] ? detail : "none");
     if (success) {
         // Driver recovery has released precedence. Revisit any coalesced logon

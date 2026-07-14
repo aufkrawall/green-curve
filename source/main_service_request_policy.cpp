@@ -43,7 +43,7 @@ static bool service_path_has_reparse_component(const char* absPath, char* err, s
         if (probe[i] != '\\' && probe[i] != '/') continue;
         char saved = probe[i];
         probe[i] = 0;
-        DWORD attrs = GetFileAttributesA(probe);
+        DWORD attrs = gc_GetFileAttributesUtf8(probe);
         probe[i] = saved;
         if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_REPARSE_POINT)) {
             set_message(err, errSize, "Path crosses a reparse point");
@@ -56,13 +56,74 @@ static bool service_path_has_reparse_component(const char* absPath, char* err, s
     if (!slash || (slashAlt && slashAlt > slash)) slash = slashAlt;
     if (slash && (size_t)(slash - probe) >= rootLen) {
         *slash = 0;
-        DWORD attrs = GetFileAttributesA(probe);
+        DWORD attrs = gc_GetFileAttributesUtf8(probe);
         if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_REPARSE_POINT)) {
             set_message(err, errSize, "Path crosses a reparse point");
             return true;
         }
     }
     return false;
+}
+
+static bool normalize_windows_compare_path(const WCHAR* input, WCHAR* output,
+    size_t outputCount) {
+    if (!input || !output || outputCount == 0) return false;
+    output[0] = 0;
+    if (wcsncmp(input, L"\\\\?\\UNC\\", 8) == 0) {
+        return SUCCEEDED(StringCchCopyW(output, outputCount, L"\\\\")) &&
+            SUCCEEDED(StringCchCatW(output, outputCount, input + 8));
+    }
+    const WCHAR* start = wcsncmp(input, L"\\\\?\\", 4) == 0
+        ? input + 4 : input;
+    return SUCCEEDED(StringCchCopyW(output, outputCount, start));
+}
+
+static bool service_path_is_within_resolved_profile(const char* candidateUtf8,
+    char* err, size_t errSize) {
+    if (!candidateUtf8 || !candidateUtf8[0] ||
+        !g_serviceUserProfileDir[0]) {
+        set_message(err, errSize, "User profile path is unavailable");
+        return false;
+    }
+    GcWideUtf8Arg candidate(candidateUtf8);
+    GcWideUtf8Arg profile(g_serviceUserProfileDir);
+    if (!candidate.valid_for(candidateUtf8) ||
+        !profile.valid_for(g_serviceUserProfileDir)) {
+        set_message(err, errSize, "Path contains invalid UTF-8");
+        return false;
+    }
+    WCHAR candidateFull[MAX_PATH] = {};
+    WCHAR profileFull[MAX_PATH] = {};
+    DWORD candidateLength = GetFullPathNameW(candidate.value,
+        ARRAY_COUNT(candidateFull), candidateFull, nullptr);
+    DWORD profileLength = GetFullPathNameW(profile.value,
+        ARRAY_COUNT(profileFull), profileFull, nullptr);
+    if (candidateLength == 0 || candidateLength >= ARRAY_COUNT(candidateFull) ||
+        profileLength == 0 || profileLength >= ARRAY_COUNT(profileFull)) {
+        set_message(err, errSize, "Path cannot be canonicalized");
+        return false;
+    }
+    WCHAR candidateNormalized[MAX_PATH] = {};
+    WCHAR profileNormalized[MAX_PATH] = {};
+    if (!normalize_windows_compare_path(candidateFull, candidateNormalized,
+            ARRAY_COUNT(candidateNormalized)) ||
+        !normalize_windows_compare_path(profileFull, profileNormalized,
+            ARRAY_COUNT(profileNormalized))) {
+        set_message(err, errSize, "Canonical path is too long");
+        return false;
+    }
+    size_t profileChars = wcslen(profileNormalized);
+    size_t candidateChars = wcslen(candidateNormalized);
+    if (candidateChars < profileChars ||
+        CompareStringOrdinal(candidateNormalized, (int)profileChars,
+            profileNormalized, (int)profileChars, TRUE) != CSTR_EQUAL ||
+        (candidateChars > profileChars &&
+         candidateNormalized[profileChars] != L'\\')) {
+        set_message(err, errSize,
+            "Path is outside the caller's profile directory");
+        return false;
+    }
+    return true;
 }
 
 static bool service_validate_file_write_path(const char* path, char* err, size_t errSize) {
@@ -87,7 +148,7 @@ static bool service_validate_file_write_path(const char* path, char* err, size_t
         return false;
     }
     char absPath[MAX_PATH] = {};
-    DWORD len = GetFullPathNameA(path, ARRAY_COUNT(absPath), absPath, nullptr);
+    DWORD len = gc_GetFullPathNameUtf8(path, ARRAY_COUNT(absPath), absPath, nullptr);
     if (len == 0 || len >= ARRAY_COUNT(absPath)) {
         set_message(err, errSize, "Invalid path");
         return false;
@@ -96,12 +157,8 @@ static bool service_validate_file_write_path(const char* path, char* err, size_t
         set_message(err, errSize, "User paths not resolved");
         return false;
     }
-    size_t profileLen = strlen(g_serviceUserProfileDir);
-    if (_strnicmp(absPath, g_serviceUserProfileDir, profileLen) != 0 ||
-        (absPath[profileLen] != '\\' && absPath[profileLen] != '\0')) {
-        set_message(err, errSize, "Path is outside the caller's profile directory");
+    if (!service_path_is_within_resolved_profile(absPath, err, errSize))
         return false;
-    }
     if (service_path_has_reparse_component(absPath, err, errSize)) {
         return false;
     }
@@ -117,7 +174,7 @@ static bool service_verify_written_file_path(const char* path, char* err, size_t
         set_message(err, errSize, "User paths not resolved");
         return false;
     }
-    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    HANDLE h = gc_CreateFileUtf8(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
         // If we cannot open the file for verification, fail closed.
@@ -125,22 +182,13 @@ static bool service_verify_written_file_path(const char* path, char* err, size_t
         return false;
     }
     char finalPath[MAX_PATH] = {};
-    DWORD len = GetFinalPathNameByHandleA(h, finalPath, ARRAY_COUNT(finalPath), FILE_NAME_NORMALIZED);
+    DWORD len = gc_GetFinalPathNameByHandleUtf8(h, finalPath, ARRAY_COUNT(finalPath), FILE_NAME_NORMALIZED);
     CloseHandle(h);
     if (len == 0 || len >= ARRAY_COUNT(finalPath)) {
         set_message(err, errSize, "Cannot resolve written file path");
         return false;
     }
-    // GetFinalPathNameByHandleA may return a \\?\ prefix.
-    const char* comparePath = finalPath;
-    if (strncmp(finalPath, "\\\\?\\", 4) == 0) comparePath = finalPath + 4;
-    size_t profileLen = strlen(g_serviceUserProfileDir);
-    if (_strnicmp(comparePath, g_serviceUserProfileDir, profileLen) != 0 ||
-        (comparePath[profileLen] != '\\' && comparePath[profileLen] != '\0')) {
-        set_message(err, errSize, "Written file resolved outside the caller's profile directory");
-        return false;
-    }
-    return true;
+    return service_path_is_within_resolved_profile(finalPath, err, errSize);
 }
 
 static bool service_resolve_configured_gpu_target(

@@ -60,54 +60,7 @@ static void initialize_gui_fan_settings_from_live_state(bool syncGuiCurve) {
         copy_fan_curve(&g_app.guiFanCurve, &g_app.activeFanCurve);
     }
 }
-static void refresh_live_fan_telemetry(bool redrawControls) {
-    if (!g_app.isServiceProcess) {
-        bool wasAvailable = g_app.backgroundServiceAvailable;
-        char detail[128] = {};
-        ServiceSnapshot snapshot = {};
-        if (!wasAvailable) {
-            // Service was known to be down: do a lightweight health check
-            if (!refresh_background_service_state()) {
-                sync_fan_ui_from_cached_state(redrawControls);
-                return;
-            }
-            // Service is back! Fetch full snapshot and update everything
-            char snapDetail[256] = {};
-            if (!service_client_get_snapshot(&snapshot, snapDetail, sizeof(snapDetail))) {
-                sync_fan_ui_from_cached_state(redrawControls);
-                update_all_gui_for_service_state();
-                return;
-            }
-            apply_service_snapshot_to_app(&snapshot);
-            sync_fan_ui_from_cached_state(redrawControls);
-            update_all_gui_for_service_state();
-            return;
-        }
-        // Service was available: do normal telemetry
-        if (!service_client_get_telemetry(&snapshot, detail, sizeof(detail))) {
-            sync_fan_ui_from_cached_state(redrawControls);
-            if (!g_app.backgroundServiceAvailable) {
-                update_all_gui_for_service_state();
-            }
-            return;
-        }
-        apply_service_snapshot_to_app(&snapshot);
-        sync_fan_ui_from_cached_state(redrawControls);
-        // F-REL-2e: normally the telemetry poll does not resync the editable
-        // curve/lock controls (avoids wiping in-progress edits).  Force a full
-        // resync when first creating the edit controls, OR when a service reset
-        // just cleared a stale adopted lock (so graph/fields/checkboxes/header all
-        // reflect the default state, not just internal state).
-        if ((g_app.numVisible > 0 && !g_app.hEditsMhz[0]) || g_guiForceFullRefresh) {
-            g_guiForceFullRefresh = false;
-            update_all_gui_for_service_state();
-        }
-        return;
-    }
-    char detail[128] = {};
-    if (!nvml_read_fans(detail, sizeof(detail))) return;
-    sync_fan_ui_from_cached_state(redrawControls);
-}
+#include "main_fan_telemetry.cpp"
 static bool is_start_on_logon_enabled(const char* path) {
     return get_config_int(path, "startup", "start_program_on_logon", 0) != 0;
 }
@@ -129,7 +82,7 @@ static bool read_config_int_strict_locked(const char* path,
     const char* section, const char* key, int defaultValue, int* valueOut) {
     if (!path || !section || !key || !valueOut) return false;
     char text[32] = {};
-    DWORD length = GetPrivateProfileStringA(
+    DWORD length = gc_GetPrivateProfileStringUtf8(
         section, key, "", text, ARRAY_COUNT(text), path);
     if (length >= ARRAY_COUNT(text) - 1) return false;
     trim_ascii(text);
@@ -147,7 +100,7 @@ static ConfigEnablementState startup_task_config_state(const char* path) {
         return CONFIG_ENABLEMENT_INDETERMINATE;
     }
     ConfigEnablementState state = CONFIG_ENABLEMENT_INDETERMINATE;
-    DWORD userAttrs = GetFileAttributesA(path);
+    DWORD userAttrs = gc_GetFileAttributesUtf8(path);
     if (userAttrs != INVALID_FILE_ATTRIBUTES &&
         (userAttrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
         int perUserSlot = 0;
@@ -165,7 +118,7 @@ static ConfigEnablementState startup_task_config_state(const char* path) {
                 char machinePath[MAX_PATH] = {};
                 if (resolve_machine_config_path(machinePath,
                         sizeof(machinePath))) {
-                    DWORD machineAttrs = GetFileAttributesA(machinePath);
+                    DWORD machineAttrs = gc_GetFileAttributesUtf8(machinePath);
                     if (machineAttrs != INVALID_FILE_ATTRIBUTES &&
                         (machineAttrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
                         int machineSlot = 0;
@@ -197,7 +150,7 @@ static ConfigEnablementState tray_autostart_config_state(const char* path) {
         return CONFIG_ENABLEMENT_INDETERMINATE;
     }
     ConfigEnablementState state = CONFIG_ENABLEMENT_INDETERMINATE;
-    DWORD attrs = GetFileAttributesA(path);
+    DWORD attrs = gc_GetFileAttributesUtf8(path);
     int value = 0;
     if (attrs != INVALID_FILE_ATTRIBUTES &&
         (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0 &&

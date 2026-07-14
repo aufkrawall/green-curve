@@ -35,7 +35,7 @@ static bool verify_parent_no_reparse_point(const char* path, char* err, size_t e
         if (probe[i] != '\\' && probe[i] != '/') continue;
         char saved = probe[i];
         probe[i] = 0;
-        DWORD attrs = GetFileAttributesA(probe);
+        DWORD attrs = gc_GetFileAttributesUtf8(probe);
         probe[i] = saved;
         if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_REPARSE_POINT)) {
             set_message(err, errSize, "Path crosses a reparse point");
@@ -46,6 +46,21 @@ static bool verify_parent_no_reparse_point(const char* path, char* err, size_t e
 }
 
 static bool write_all_to_handle(HANDLE h, const char* data, size_t dataSize, const char* path, char* err, size_t errSize);
+
+static bool secure_random_temp_suffix(gc_u64* suffixOut, char* err,
+    size_t errSize) {
+    if (!suffixOut) return false;
+    *suffixOut = 0;
+    NTSTATUS status = BCryptGenRandom(nullptr, (PUCHAR)suffixOut,
+        sizeof(*suffixOut), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    if (status < 0) {
+        set_message(err, errSize,
+            "Secure temporary-name generation failed (status 0x%08lx)",
+            (unsigned long)status);
+        return false;
+    }
+    return true;
+}
 
 static bool write_text_file_atomic(const char* path, const char* data, size_t dataSize, char* err, size_t errSize) {
     if (g_app.isServiceProcess && g_serviceUserPathsResolved) {
@@ -66,17 +81,16 @@ static bool write_text_file_atomic(const char* path, const char* data, size_t da
 
     char tempPath[MAX_PATH] = {};
     HANDLE h = INVALID_HANDLE_VALUE;
-    DWORD pid = GetCurrentProcessId();
     for (unsigned int attempt = 0; attempt < 32; attempt++) {
-        if (FAILED(StringCchPrintfA(tempPath, ARRAY_COUNT(tempPath), "%s.tmp.%08lx.%08lx.%02u",
-                path,
-                (unsigned long)pid,
-                (unsigned long)GetTickCount(),
-                attempt))) {
+        gc_u64 suffix = 0;
+        if (!secure_random_temp_suffix(&suffix, err, errSize)) return false;
+        if (FAILED(StringCchPrintfA(tempPath, ARRAY_COUNT(tempPath),
+                "%s.tmp.%016llx", path,
+                (unsigned long long)suffix))) {
             set_message(err, errSize, "Temporary path is too long");
             return false;
         }
-        h = CreateFileA(tempPath, GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, nullptr);
+        h = gc_CreateFileUtf8(tempPath, GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, nullptr);
         if (h != INVALID_HANDLE_VALUE) break;
         if (GetLastError() != ERROR_FILE_EXISTS && GetLastError() != ERROR_ALREADY_EXISTS) {
             set_message(err, errSize, "Cannot create %s (error %lu)", tempPath, GetLastError());
@@ -96,13 +110,13 @@ static bool write_text_file_atomic(const char* path, const char* data, size_t da
     CloseHandle(h);
 
     if (!ok) {
-        DeleteFileA(tempPath);
+        gc_DeleteFileUtf8(tempPath);
         return false;
     }
 
-    if (!MoveFileExA(tempPath, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    if (!gc_MoveFileExUtf8(tempPath, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         set_message(err, errSize, "Failed finalizing %s (error %lu)", path, GetLastError());
-        DeleteFileA(tempPath);
+        gc_DeleteFileUtf8(tempPath);
         return false;
     }
     return true;
@@ -142,7 +156,7 @@ static bool write_text_file_atomic_service(const char* path, const char* data, s
     char* lastSlash = strrchr(parentDir, '\\');
     if (!lastSlash) lastSlash = strrchr(parentDir, '/');
     if (lastSlash) *lastSlash = 0;
-    HANDLE parentHandle = CreateFileA(parentDir,
+    HANDLE parentHandle = gc_CreateFileUtf8(parentDir,
         GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr,
@@ -154,37 +168,32 @@ static bool write_text_file_atomic_service(const char* path, const char* data, s
         return false;
     }
     char parentFinalPath[MAX_PATH] = {};
-    DWORD parentFinalLen = GetFinalPathNameByHandleA(parentHandle, parentFinalPath, ARRAY_COUNT(parentFinalPath), FILE_NAME_NORMALIZED);
+    DWORD parentFinalLen = gc_GetFinalPathNameByHandleUtf8(parentHandle, parentFinalPath, ARRAY_COUNT(parentFinalPath), FILE_NAME_NORMALIZED);
     CloseHandle(parentHandle);
     if (parentFinalLen == 0 || parentFinalLen >= ARRAY_COUNT(parentFinalPath)) {
         set_message(err, errSize, "Cannot resolve parent directory path");
         return false;
     }
-    const char* parentComparePath = parentFinalPath;
-    if (strncmp(parentFinalPath, "\\\\?\\", 4) == 0) parentComparePath = parentFinalPath + 4;
-    size_t profileLen = strlen(g_serviceUserProfileDir);
-    if (_strnicmp(parentComparePath, g_serviceUserProfileDir, profileLen) != 0 ||
-        (parentComparePath[profileLen] != '\\' && parentComparePath[profileLen] != '\0')) {
-        set_message(err, errSize, "Parent directory resolved outside the caller's profile directory");
+    if (!service_path_is_within_resolved_profile(parentFinalPath, err,
+            errSize)) {
         return false;
     }
-    debug_log("write_text_file_atomic_service: parent dir verified \"%s\"\n", parentComparePath);
+    debug_log("write_text_file_atomic_service: caller-scoped parent directory verified\n");
 
     if (!ensure_parent_directory_for_file(path, err, errSize)) return false;
 
     char tempPath[MAX_PATH] = {};
     HANDLE h = INVALID_HANDLE_VALUE;
-    DWORD pid = GetCurrentProcessId();
     for (unsigned int attempt = 0; attempt < 32; attempt++) {
-        if (FAILED(StringCchPrintfA(tempPath, ARRAY_COUNT(tempPath), "%s.tmp.%08lx.%08lx.%02u",
-                path,
-                (unsigned long)pid,
-                (unsigned long)GetTickCount(),
-                attempt))) {
+        gc_u64 suffix = 0;
+        if (!secure_random_temp_suffix(&suffix, err, errSize)) return false;
+        if (FAILED(StringCchPrintfA(tempPath, ARRAY_COUNT(tempPath),
+                "%s.tmp.%016llx", path,
+                (unsigned long long)suffix))) {
             set_message(err, errSize, "Temporary path is too long");
             return false;
         }
-        h = CreateFileA(tempPath,
+        h = gc_CreateFileUtf8(tempPath,
             GENERIC_READ | GENERIC_WRITE,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             nullptr,
@@ -206,7 +215,7 @@ static bool write_text_file_atomic_service(const char* path, const char* data, s
     bool ok = service_verify_written_file_path(tempPath, verifyErr, sizeof(verifyErr));
     if (!ok) {
         CloseHandle(h);
-        DeleteFileA(tempPath);
+        gc_DeleteFileUtf8(tempPath);
         StringCchCopyA(err, errSize, verifyErr[0] ? verifyErr : "Temporary output path failed verification");
         return false;
     }
@@ -218,17 +227,17 @@ static bool write_text_file_atomic_service(const char* path, const char* data, s
     }
     CloseHandle(h);
     if (!ok) {
-        DeleteFileA(tempPath);
+        gc_DeleteFileUtf8(tempPath);
         return false;
     }
     if (!service_verify_written_file_path(tempPath, verifyErr, sizeof(verifyErr))) {
-        DeleteFileA(tempPath);
+        gc_DeleteFileUtf8(tempPath);
         StringCchCopyA(err, errSize, verifyErr[0] ? verifyErr : "Temporary output path failed final verification");
         return false;
     }
-    if (!MoveFileExA(tempPath, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    if (!gc_MoveFileExUtf8(tempPath, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         set_message(err, errSize, "Failed finalizing %s (error %lu)", path, GetLastError());
-        DeleteFileA(tempPath);
+        gc_DeleteFileUtf8(tempPath);
         return false;
     }
     if (!service_verify_written_file_path(path, verifyErr, sizeof(verifyErr))) {
@@ -257,7 +266,7 @@ static bool write_config_sections_atomic(const char* path, const char* newSectio
     // update silently erase every unrelated setting.
     char* preserved = nullptr;
     size_t preservedSize = 0;
-    DWORD existingAttributes = GetFileAttributesA(path);
+    DWORD existingAttributes = gc_GetFileAttributesUtf8(path);
     bool existingFile = existingAttributes != INVALID_FILE_ATTRIBUTES;
     if (!existingFile) {
         DWORD attributeError = GetLastError();
@@ -273,7 +282,7 @@ static bool write_config_sections_atomic(const char* path, const char* newSectio
         return false;
     }
     HANDLE hExisting = existingFile
-        ? CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+        ? gc_CreateFileUtf8(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)
         : INVALID_HANDLE_VALUE;
     if (existingFile && hExisting == INVALID_HANDLE_VALUE) {

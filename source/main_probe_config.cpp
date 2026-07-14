@@ -698,7 +698,7 @@ static bool load_fan_curve_config_from_section(const char* path, const char* sec
     if (!config_section_has_keys(path, section)) return true;
 
     char buf[64] = {};
-    GetPrivateProfileStringA(section, "poll_interval_ms", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8(section, "poll_interval_ms", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
         if (!parse_int_strict(buf, &curve->pollIntervalMs)) {
@@ -707,7 +707,7 @@ static bool load_fan_curve_config_from_section(const char* path, const char* sec
         }
     }
 
-    GetPrivateProfileStringA(section, "hysteresis_c", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8(section, "hysteresis_c", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
         if (!parse_int_strict(buf, &curve->hysteresisC)) {
@@ -720,7 +720,7 @@ static bool load_fan_curve_config_from_section(const char* path, const char* sec
         char key[32] = {};
 
         StringCchPrintfA(key, ARRAY_COUNT(key), "enabled%d", i);
-        GetPrivateProfileStringA(section, key, "", buf, sizeof(buf), path);
+        gc_GetPrivateProfileStringUtf8(section, key, "", buf, sizeof(buf), path);
         trim_ascii(buf);
         if (buf[0]) {
             int value = 0;
@@ -732,7 +732,7 @@ static bool load_fan_curve_config_from_section(const char* path, const char* sec
         }
 
         StringCchPrintfA(key, ARRAY_COUNT(key), "temp%d", i);
-        GetPrivateProfileStringA(section, key, "", buf, sizeof(buf), path);
+        gc_GetPrivateProfileStringUtf8(section, key, "", buf, sizeof(buf), path);
         trim_ascii(buf);
         if (buf[0]) {
             if (!parse_int_strict(buf, &curve->points[i].temperatureC)) {
@@ -742,7 +742,7 @@ static bool load_fan_curve_config_from_section(const char* path, const char* sec
         }
 
         StringCchPrintfA(key, ARRAY_COUNT(key), "pct%d", i);
-        GetPrivateProfileStringA(section, key, "", buf, sizeof(buf), path);
+        gc_GetPrivateProfileStringUtf8(section, key, "", buf, sizeof(buf), path);
         trim_ascii(buf);
         if (buf[0]) {
             if (!parse_int_strict(buf, &curve->points[i].fanPercent)) {

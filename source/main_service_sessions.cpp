@@ -158,6 +158,20 @@ static ServiceSessionIdentityCheckResult service_verify_active_session_identity(
         return SERVICE_SESSION_IDENTITY_TRANSIENT;
     }
     if (!service_lifecycle_identity_equal(expected, &current)) {
+        // auth LUID differs but same session + same user: accept it.
+        // The LUID from OpenProcessToken (handoff) and WTSQueryUserToken
+        // (apply) can legitimately differ on the same session during early
+        // boot.  sessionId + SID remain enforced; the LOGOFF handler and
+        // reducer sequencing guard against genuine session replacement.
+        if (service_lifecycle_identity_equal_session_and_user(
+                expected, &current)) {
+            debug_log("lifecycle auth: authentication LUID refreshed (session=%lu expectedAuth=%llu currentAuth=%llu)\n",
+                (unsigned long)activeSessionId,
+                (unsigned long long)expected->authenticationId,
+                (unsigned long long)current.authenticationId);
+            if (currentOut) *currentOut = current;
+            return SERVICE_SESSION_IDENTITY_MATCH;
+        }
         set_message(detail, detailSize,
             "session identity changed (session=%lu expectedAuth=%llu currentAuth=%llu)",
             (unsigned long)activeSessionId,
@@ -202,7 +216,7 @@ static ServiceLogonProfileResolveResult service_load_logon_profile_from_context(
     }
     ServiceLogonProfileResolveResult transactionResult = [&]() {
 
-    DWORD attrs = GetFileAttributesA(context->userConfigPath);
+    DWORD attrs = gc_GetFileAttributesUtf8(context->userConfigPath);
     bool userConfigPresent = attrs != INVALID_FILE_ATTRIBUTES &&
         (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
 

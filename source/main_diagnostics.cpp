@@ -20,7 +20,7 @@ static HANDLE open_debug_log_file_locked(const char* debugPath) {
     if (!debugPath || !debugPath[0]) return INVALID_HANDLE_VALUE;
     char pathErr[256] = {};
     ensure_parent_directory_for_file(debugPath, pathErr, sizeof(pathErr));
-    HANDLE h = CreateFileA(debugPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+    HANDLE h = gc_CreateFileUtf8(debugPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
         OPEN_ALWAYS, debug_log_file_attributes(), nullptr);
     if (h != INVALID_HANDLE_VALUE) {
         StringCchCopyA(g_debugLogOpenPath, ARRAY_COUNT(g_debugLogOpenPath), debugPath);
@@ -203,7 +203,7 @@ static void write_crash_breadcrumb_direct(const char* text) {
     char pathErr[256] = {};
     ensure_parent_directory_for_file(path, pathErr, sizeof(pathErr));
 
-    HANDLE h = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+    HANDLE h = gc_CreateFileUtf8(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
         OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
     if (h == INVALID_HANDLE_VALUE) return;
     DWORD written = 0;
@@ -288,7 +288,7 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
             char pathErr[256] = {};
             ensure_parent_directory_for_file(dumpPath, pathErr, sizeof(pathErr));
 
-            HANDLE hDump = CreateFileA(dumpPath, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+            HANDLE hDump = gc_CreateFileUtf8(dumpPath, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
                 CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
             if (hDump != INVALID_HANDLE_VALUE) {
                 MINIDUMP_EXCEPTION_INFORMATION mei = {};
@@ -305,7 +305,7 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
                     nullptr);
                 CloseHandle(hDump);
                 if (!dumpOk) {
-                    DeleteFileA(dumpPath);
+                    gc_DeleteFileUtf8(dumpPath);
                 }
             }
         }
@@ -359,7 +359,7 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
         char pathErr[256] = {};
         ensure_parent_directory_for_file(dumpPath, pathErr, sizeof(pathErr));
 
-        HANDLE hDump = CreateFileA(dumpPath, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+        HANDLE hDump = gc_CreateFileUtf8(dumpPath, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
         if (hDump != INVALID_HANDLE_VALUE) {
             MINIDUMP_EXCEPTION_INFORMATION mei = {};
@@ -377,7 +377,7 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
             (void)dumpOk; // best-effort; log would fail inside a crash handler
             CloseHandle(hDump);
             if (!dumpOk) {
-                DeleteFileA(dumpPath);
+                gc_DeleteFileUtf8(dumpPath);
             }
         }
     }
@@ -411,7 +411,7 @@ static void write_veh_minidump(EXCEPTION_POINTERS* info, const WCHAR* modPath) {
         (unsigned long)GetCurrentProcessId());
     ensure_parent_directory_for_file(dumpPath, nullptr, 0);
 
-    HANDLE hDump = CreateFileA(dumpPath, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+    HANDLE hDump = gc_CreateFileUtf8(dumpPath, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
     if (hDump == INVALID_HANDLE_VALUE) return;
 
@@ -429,7 +429,7 @@ static void write_veh_minidump(EXCEPTION_POINTERS* info, const WCHAR* modPath) {
         nullptr);
     CloseHandle(hDump);
     if (!dumpOk) {
-        DeleteFileA(dumpPath);
+        gc_DeleteFileUtf8(dumpPath);
     }
 
     // Write companion breadcrumb with crash context
@@ -445,7 +445,7 @@ static void write_veh_minidump(EXCEPTION_POINTERS* info, const WCHAR* modPath) {
         char breadPath[MAX_PATH] = {};
         StringCchPrintfA(breadPath, ARRAY_COUNT(breadPath),
             "%s\\greencurve_crash.txt", dataDir);
-        HANDLE hBread = CreateFileA(breadPath, FILE_APPEND_DATA,
+        HANDLE hBread = gc_CreateFileUtf8(breadPath, FILE_APPEND_DATA,
             FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
         if (hBread != INVALID_HANDLE_VALUE) {

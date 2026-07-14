@@ -3,6 +3,56 @@
 
 // Typed GUI/CLI service commands, including the settings-free logon handoff.
 
+static bool generate_client_operation_id(gc_u64* operationIdOut) {
+    if (!operationIdOut) return false;
+    *operationIdOut = 0;
+    for (int attempt = 0; attempt < 4 && *operationIdOut == 0; attempt++) {
+        if (BCryptGenRandom(nullptr, (PUCHAR)operationIdOut,
+                sizeof(*operationIdOut),
+                BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0) {
+            *operationIdOut = 0;
+            return false;
+        }
+    }
+    return *operationIdOut != 0;
+}
+
+static bool service_client_query_operation(gc_u64 operationId,
+    ServiceResponse* response, char* err, size_t errSize) {
+    if (!operationId || !response) return false;
+    ServiceRequest request = {};
+    request.magic = SERVICE_PROTOCOL_MAGIC;
+    request.version = SERVICE_PROTOCOL_VERSION;
+    request.command = SERVICE_CMD_GET_OPERATION_RESULT;
+    request.operationId = operationId;
+    request.callerPid = GetCurrentProcessId();
+    ProcessIdToSessionId(request.callerPid, &request.callerSessionId);
+    StringCchCopyA(request.source, ARRAY_COUNT(request.source),
+        "client operation query");
+    return service_send_request(&request, response, 5000, err, errSize);
+}
+
+static bool service_client_recover_operation_result(gc_u64 operationId,
+    ServiceResponse* response, char* result, size_t resultSize) {
+    char queryErr[256] = {};
+    if (!service_client_query_operation(operationId, response, queryErr,
+            sizeof(queryErr))) {
+        set_message(result, resultSize,
+            "Operation %llu outcome is unknown after transport timeout: %s. Do not retry it with a new operation ID.",
+            (unsigned long long)operationId,
+            queryErr[0] ? queryErr : "result query failed");
+        return false;
+    }
+    if (response->operationState == SERVICE_OPERATION_IN_PROGRESS ||
+        response->operationState == SERVICE_OPERATION_OUTCOME_UNKNOWN) {
+        set_message(result, resultSize,
+            "Operation %llu is still pending or its outcome is unknown. Do not retry it with a new operation ID.",
+            (unsigned long long)operationId);
+        return false;
+    }
+    return true;
+}
+
 static bool service_client_ping(char* err, size_t errSize) {
     ServiceRequest request = {};
     request.magic = SERVICE_PROTOCOL_MAGIC;
@@ -82,49 +132,104 @@ static bool service_client_get_telemetry(ServiceSnapshot* snapshot, char* err, s
     return true;
 }
 
+static bool service_client_build_apply_request(const DesiredSettings* desired,
+    const char* source, bool interactive, ServiceApplyOrigin origin,
+    ServiceProfileSource profileSource, int profileSlot,
+    ServiceRequest* request, char* result, size_t resultSize) {
+    if (!request) return false;
+    *request = {};
+    request->magic = SERVICE_PROTOCOL_MAGIC;
+    request->version = SERVICE_PROTOCOL_VERSION;
+    request->command = SERVICE_CMD_APPLY;
+    if (!generate_client_operation_id(&request->operationId)) {
+        set_message(result, resultSize, "Failed generating a secure operation ID");
+        return false;
+    }
+    request->flags = interactive ? SERVICE_REQUEST_FLAG_INTERACTIVE : 0u;
+    request->applyOrigin = (gc_u32)origin;
+    request->profileSource = (gc_u32)profileSource;
+    request->profileSlot = (profileSlot >= 1 && profileSlot <= CONFIG_NUM_SLOTS)
+        ? (gc_u32)profileSlot : 0u;
+    if (g_app.loadedSharedSlot > 0 && !g_app.guiHasUserModifiedValues) {
+        request->flags |= SERVICE_REQUEST_FLAG_SHARED_SLOT |
+            (((DWORD)g_app.loadedSharedSlot & SERVICE_REQUEST_SHARED_SLOT_MASK)
+                << SERVICE_REQUEST_SHARED_SLOT_SHIFT);
+        request->profileSource = SERVICE_PROFILE_SOURCE_SHARED_SLOT;
+        request->profileSlot = (gc_u32)g_app.loadedSharedSlot;
+    }
+    request->callerPid = GetCurrentProcessId();
+    ProcessIdToSessionId(request->callerPid, &request->callerSessionId);
+    if (desired) {
+        request->desired = *desired;
+        request->resetOcBeforeApply = desired->resetOcBeforeApply ? 1u : 0u;
+    }
+    request->targetGpu = g_app.selectedGpu;
+    StringCchCopyA(request->source, ARRAY_COUNT(request->source),
+        source && source[0] ? source : "service apply");
+    return true;
+}
+
+static bool service_client_build_reset_request(ServiceRequest* request,
+    char* result, size_t resultSize) {
+    if (!request) return false;
+    *request = {};
+    request->magic = SERVICE_PROTOCOL_MAGIC;
+    request->version = SERVICE_PROTOCOL_VERSION;
+    request->command = SERVICE_CMD_RESET;
+    if (!generate_client_operation_id(&request->operationId)) {
+        set_message(result, resultSize, "Failed generating a secure operation ID");
+        return false;
+    }
+    request->callerPid = GetCurrentProcessId();
+    ProcessIdToSessionId(request->callerPid, &request->callerSessionId);
+    request->targetGpu = g_app.selectedGpu;
+    StringCchCopyA(request->source, ARRAY_COUNT(request->source), "client reset");
+    return true;
+}
+
+// Transport-only mutation execution. This function never reads or writes
+// AppData and is therefore safe for the GUI mutation worker.
+static bool service_client_execute_mutation_request(const ServiceRequest* request,
+    ServiceResponse* response, char* result, size_t resultSize) {
+    if (!request || !response ||
+        (request->command != SERVICE_CMD_APPLY &&
+         request->command != SERVICE_CMD_RESET)) {
+        set_message(result, resultSize, "Invalid background mutation request");
+        return false;
+    }
+    char err[256] = {};
+    if (!service_send_request(request, response, SERVICE_APPLY_CLIENT_TIMEOUT_MS,
+            err, sizeof(err))) {
+        debug_log("service client mutation: operation=%llu command=%lu initial transport failed: %s\n",
+            (unsigned long long)request->operationId,
+            (unsigned long)request->command,
+            err[0] ? err : "unknown");
+        if (!service_client_recover_operation_result(request->operationId,
+                response, result, resultSize)) return false;
+    }
+    set_message(result, resultSize, "%s",
+        response->message[0] ? response->message :
+        (request->command == SERVICE_CMD_RESET
+            ? "Background service reset failed"
+            : "Background service apply failed"));
+    return response->status == SERVICE_STATUS_OK;
+}
+
 static bool service_client_apply_desired(const DesiredSettings* desired, const char* source,
     bool interactive, ServiceApplyOrigin origin, ServiceProfileSource profileSource,
     int profileSlot, char* result, size_t resultSize, ServiceSnapshot* snapshotOut) {
     ServiceRequest request = {};
-    request.magic = SERVICE_PROTOCOL_MAGIC;
-    request.version = SERVICE_PROTOCOL_VERSION;
-    request.command = SERVICE_CMD_APPLY;
-    request.flags = interactive ? SERVICE_REQUEST_FLAG_INTERACTIVE : 0u;
-    request.applyOrigin = (gc_u32)origin;
-    request.profileSource = (gc_u32)profileSource;
-    request.profileSlot = (profileSlot >= 1 && profileSlot <= CONFIG_NUM_SLOTS)
-        ? (gc_u32)profileSlot : 0u;
-    // Shared-only policy: if the editor holds an UNMODIFIED admin shared profile,
-    // tag this as an authoritative "apply shared slot N" so the service applies
-    // its own copy. Required for a non-admin on a restricted machine; a harmless
-    // no-op for admins and unrestricted machines.
-    if (g_app.loadedSharedSlot > 0 && !g_app.guiHasUserModifiedValues) {
-        request.flags |= SERVICE_REQUEST_FLAG_SHARED_SLOT |
-            (((DWORD)g_app.loadedSharedSlot & SERVICE_REQUEST_SHARED_SLOT_MASK) << SERVICE_REQUEST_SHARED_SLOT_SHIFT);
-        request.profileSource = SERVICE_PROFILE_SOURCE_SHARED_SLOT;
-        request.profileSlot = (gc_u32)g_app.loadedSharedSlot;
-    }
-    request.callerPid = GetCurrentProcessId();
-    ProcessIdToSessionId(request.callerPid, &request.callerSessionId);
-    if (desired) {
-        request.desired = *desired;
-        request.resetOcBeforeApply = desired->resetOcBeforeApply ? 1u : 0u;
-    }
-    request.targetGpu = g_app.selectedGpu;
-    StringCchCopyA(request.source, ARRAY_COUNT(request.source), source && source[0] ? source : "service apply");
+    if (!service_client_build_apply_request(desired, source, interactive, origin,
+            profileSource, profileSlot, &request, result, resultSize)) return false;
     ServiceResponse response = {};
-    char err[256] = {};
-    if (!service_send_request(&request, &response, SERVICE_APPLY_CLIENT_TIMEOUT_MS, err, sizeof(err))) {
-        set_message(result, resultSize, "%s", err);
-        return false;
-    }
+    bool ok = service_client_execute_mutation_request(&request, &response,
+        result, resultSize);
     if (snapshotOut) *snapshotOut = response.snapshot;
     g_app.serviceActiveDesired = response.desired;
     g_app.serviceActiveDesiredValid =
         response.snapshot.activeProfileSource != SERVICE_PROFILE_SOURCE_NONE;
     if (response.controlState.valid) apply_control_state_to_gui(&response.controlState);
-    set_message(result, resultSize, "%s", response.message[0] ? response.message : "Background service apply failed");
-    return response.status == SERVICE_STATUS_OK;
+    return ok;
 }
 
 static VOID CALLBACK service_status_change_callback(PVOID) {
@@ -280,26 +385,17 @@ static bool service_client_logon_handoff(char* result, size_t resultSize) {
 
 static bool service_client_reset(char* result, size_t resultSize, ServiceSnapshot* snapshotOut) {
     ServiceRequest request = {};
-    request.magic = SERVICE_PROTOCOL_MAGIC;
-    request.version = SERVICE_PROTOCOL_VERSION;
-    request.command = SERVICE_CMD_RESET;
-    request.callerPid = GetCurrentProcessId();
-    ProcessIdToSessionId(request.callerPid, &request.callerSessionId);
-    request.targetGpu = g_app.selectedGpu;
-    StringCchCopyA(request.source, ARRAY_COUNT(request.source), "client reset");
-    ServiceResponse response = {};
-    char err[256] = {};
-    if (!service_send_request(&request, &response, SERVICE_APPLY_CLIENT_TIMEOUT_MS, err, sizeof(err))) {
-        set_message(result, resultSize, "%s", err);
+    if (!service_client_build_reset_request(&request, result, resultSize))
         return false;
-    }
+    ServiceResponse response = {};
+    bool ok = service_client_execute_mutation_request(&request, &response,
+        result, resultSize);
     if (snapshotOut) *snapshotOut = response.snapshot;
     g_app.serviceActiveDesired = response.desired;
     g_app.serviceActiveDesiredValid =
         response.snapshot.activeProfileSource != SERVICE_PROFILE_SOURCE_NONE;
     if (response.controlState.valid) apply_control_state_to_gui(&response.controlState);
-    set_message(result, resultSize, "%s", response.message[0] ? response.message : "Background service reset failed");
-    return response.status == SERVICE_STATUS_OK;
+    return ok;
 }
 
 static bool service_client_get_active_desired(DesiredSettings* desired, ServiceSnapshot* snapshotOut, char* err, size_t errSize) {
@@ -343,7 +439,7 @@ static bool is_safe_output_path(const char* path, char* err, size_t errSize) {
         return false;
     }
     char absPath[MAX_PATH] = {};
-    DWORD len = GetFullPathNameA(path, ARRAY_COUNT(absPath), absPath, nullptr);
+    DWORD len = gc_GetFullPathNameUtf8(path, ARRAY_COUNT(absPath), absPath, nullptr);
     if (len == 0 || len >= ARRAY_COUNT(absPath)) {
         set_message(err, errSize, "Output path is invalid or too long");
         return false;

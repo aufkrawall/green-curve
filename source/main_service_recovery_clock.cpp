@@ -81,7 +81,7 @@ static bool service_clear_oc_apply_stamp() {
     InterlockedExchange(&g_serviceOcProofInvalidated, 1);
     char path[MAX_PATH] = {};
     if (!service_oc_apply_stamp_path(path, sizeof(path))) return false;
-    if (DeleteFileA(path)) return true;
+    if (gc_DeleteFileUtf8(path)) return true;
     DWORD error = GetLastError();
     return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
 }
@@ -138,7 +138,7 @@ static bool service_commit_oc_apply_stamp(
             "new stability proof temporary path could not be formed");
         return false;
     }
-    HANDLE h = CreateFileA(tempPath, GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+    HANDLE h = gc_CreateFileUtf8(tempPath, GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
         debug_log("oc stabilization: proof temp create failed (error=%lu)\n", GetLastError());
@@ -153,12 +153,12 @@ static bool service_commit_oc_apply_stamp(
         written == sizeof(stamp) && FlushFileBuffers(h) != FALSE;
     CloseHandle(h);
     if (ok) {
-        ok = MoveFileExA(tempPath, path,
+        ok = gc_MoveFileExUtf8(tempPath, path,
             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
     }
     if (!ok) {
         DWORD error = GetLastError();
-        DeleteFileA(tempPath);
+        gc_DeleteFileUtf8(tempPath);
         service_clear_oc_apply_stamp();
         debug_log("oc stabilization: proof commit failed (error=%lu); no proof retained\n", error);
         service_latch_auto_restore_lockout(
@@ -199,7 +199,7 @@ static bool service_read_oc_apply_proof(ServiceOcApplyProofStamp* out) {
     memset(out, 0, sizeof(*out));
     char path[MAX_PATH] = {};
     if (!service_oc_apply_stamp_path(path, sizeof(path))) return false;
-    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+    HANDLE h = gc_CreateFileUtf8(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
         DWORD error = GetLastError();
@@ -220,7 +220,7 @@ static bool service_read_oc_apply_proof(ServiceOcApplyProofStamp* out) {
         !service_boot_identity_valid(out->bootIdentity) ||
         out->awakeTime100ns == 0) {
         debug_log("oc stabilization: rejected legacy/corrupt proof stamp; a new successful apply is required\n");
-        DeleteFileA(path);
+        gc_DeleteFileUtf8(path);
         memset(out, 0, sizeof(*out));
         return false;
     }

@@ -284,6 +284,7 @@ static void unlock_all() {
 }
 #endif
 
+#include "main_data_paths.cpp"
 #include "main_state_sync.cpp"
 #include "main_service_recovery_clock.cpp"
 #include "main_service_recovery_ledger.cpp"
@@ -317,7 +318,7 @@ static void unlock_all() {
     char buf[64] = {};
     bool hasExplicitFanMode = false;
 
-    GetPrivateProfileStringA("controls", "gpu_offset_mhz", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8("controls", "gpu_offset_mhz", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
         int v = 0;
@@ -336,10 +337,10 @@ static void unlock_all() {
         }
     }
 
-    GetPrivateProfileStringA("controls", "gpu_offset_exclude_low_count", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8("controls", "gpu_offset_exclude_low_count", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (!buf[0]) {
-        GetPrivateProfileStringA("controls", "gpu_offset_exclude_low_70", "", buf, sizeof(buf), path);
+        gc_GetPrivateProfileStringUtf8("controls", "gpu_offset_exclude_low_70", "", buf, sizeof(buf), path);
         trim_ascii(buf);
         if (buf[0]) {
             int value = 0;
@@ -358,7 +359,7 @@ static void unlock_all() {
         desired->gpuOffsetExcludeLowCount = value;
     }
 
-    GetPrivateProfileStringA("controls", "lock_ci", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8("controls", "lock_ci", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
         int value = -1;
@@ -370,7 +371,7 @@ static void unlock_all() {
         desired->lockCi = value;
     }
 
-    GetPrivateProfileStringA("controls", "lock_mhz", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8("controls", "lock_mhz", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
         int value = 0;
@@ -384,7 +385,7 @@ static void unlock_all() {
         }
     }
 
-    GetPrivateProfileStringA("controls", "mem_offset_mhz", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8("controls", "mem_offset_mhz", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
         int v = 0;
@@ -402,7 +403,7 @@ static void unlock_all() {
         }
     }
 
-    GetPrivateProfileStringA("controls", "power_limit_pct", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8("controls", "power_limit_pct", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
         int v = 0;
@@ -418,7 +419,7 @@ static void unlock_all() {
         desired->powerLimitPct = v;
     }
 
-    GetPrivateProfileStringA("controls", "fan_mode", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8("controls", "fan_mode", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
         int fanMode = FAN_MODE_AUTO;
@@ -432,7 +433,7 @@ static void unlock_all() {
         hasExplicitFanMode = true;
     }
 
-    GetPrivateProfileStringA("controls", "fan", "", fanBuf, sizeof(fanBuf), path);
+    gc_GetPrivateProfileStringUtf8("controls", "fan", "", fanBuf, sizeof(fanBuf), path);
     trim_ascii(fanBuf);
     if (fanBuf[0]) {
         bool fanAuto = false;
@@ -450,7 +451,7 @@ static void unlock_all() {
         }
     }
 
-    GetPrivateProfileStringA("controls", "fan_fixed_pct", "", buf, sizeof(buf), path);
+    gc_GetPrivateProfileStringUtf8("controls", "fan_fixed_pct", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
         int value = 0;

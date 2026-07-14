@@ -3,58 +3,7 @@
 
 // Authenticated named-pipe listener and command dispatch.
 
-static bool create_restricted_pipe_security_descriptor(PSECURITY_DESCRIPTOR* outSd) {
-    *outSd = nullptr;
-    // SYSTEM (full), Administrators (full), Authenticated Users (read+write).
-    //
-    // F-SEC-3 ("only the active interactive session may drive GPU OC/RESET") is
-    // enforced SERVER-SIDE by service_caller_is_authorized(): every request's
-    // caller session is resolved from the pipe handle (GetNamedPipeClientProcessId
-    // → ProcessIdToSessionId — unspoofable) and rejected unless it equals the
-    // active interactive session.  The pipe ACL therefore only needs to admit
-    // authenticated LOCAL users (PIPE_REJECT_REMOTE_CLIENTS blocks the network),
-    // and must NOT bake a specific console-user SID into the ACL:
-    //
-    //   Root cause of "service not responding after switching accounts" — a
-    //   per-user ACL grants write to whoever was the console user when the
-    //   listening instance was created.  After a logoff/login (or fast-user-
-    //   switch) the now-active user is a *different* SID, so their GUI is denied
-    //   at CreateFile and the server's ConnectNamedPipe never completes — the
-    //   stale-ACL instance stays listening and keeps rejecting the new user
-    //   until the service is restarted (reboot).  A user-agnostic ACL lets the
-    //   new active user connect immediately; the server-side check still rejects
-    //   any non-active session with a clear message.
-    const WCHAR* sddl = L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)";
-    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, outSd, nullptr) == FALSE) {
-        debug_log("pipe_server: failed building pipe security descriptor (error %lu)\n", GetLastError());
-        *outSd = nullptr;
-        return false;
-    }
-    return true;
-}
-
-// Close a pipe handle owned by the pipe server thread, atomically clearing the
-// shared g_servicePipeHandle slot first so the main-loop watchdog cannot also
-// close it.  A double-close raises STATUS_INVALID_HANDLE (c0000008) under the
-// Strict Handle Check mitigation, which is NOT an access violation so the VEH
-// does not catch it — it reaches the unhandled filter and terminates the whole
-// service process (GUI then sees ERROR_BROKEN_PIPE / error 109).  Exactly one
-// of the pipe thread (here) or the watchdog wins the slot via the atomic CAS
-// and performs the single close.  The pipe thread can only be VEH-terminated
-// while executing NVML/NVAPI inside a command handler — never inside this
-// function — so there is no leak window between the CAS and CloseHandle.
-static void service_close_owned_pipe(HANDLE pipe) {
-    if (pipe == nullptr || pipe == INVALID_HANDLE_VALUE) return;
-    HANDLE prev = (HANDLE)InterlockedCompareExchangePointer(
-        (PVOID volatile*)&g_servicePipeHandle, INVALID_HANDLE_VALUE, pipe);
-    if (prev == pipe) {
-        CloseHandle(pipe);
-    }
-    // else: the watchdog already reclaimed (and will close) this handle.
-}
-
-static HANDLE g_servicePipeReadyEvent = nullptr;
-static volatile LONG g_servicePipeStartupError = ERROR_IO_PENDING;
+#include "main_service_pipe_primitives.h"
 
 static DWORD WINAPI service_pipe_server_thread_proc(void*) {
     WCHAR pipeName[128] = {};
@@ -185,6 +134,8 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
         char callerUser[256] = {};
         DWORD callerSessionId = (DWORD)-1;
         DWORD callerPid = 0;
+        DWORD callerIntegrityRid = 0;
+        HANDLE callerToken = nullptr;
         bool callerIsAdmin = false;
         ServiceLifecycleIdentity callerLifecycleIdentity = {};
         char pipeErr[256] = {};
@@ -215,8 +166,32 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     !settingsFreeHandoff, response.message,
                     ARRAY_COUNT(response.message), callerUser,
                     sizeof(callerUser), &callerSessionId, &callerPid,
-                    &callerIsAdmin, &callerLifecycleIdentity)) {
+                    &callerIsAdmin, &callerLifecycleIdentity,
+                    &callerIntegrityRid, &callerToken)) {
                 response.status = SERVICE_STATUS_ERROR;
+            } else if (request.callerPid != callerPid) {
+                response.status = SERVICE_STATUS_ERROR;
+                StringCchCopyA(response.message, ARRAY_COUNT(response.message),
+                    "Service request caller PID does not match the connected client");
+                debug_log("service auth reject: suppliedPid=%lu connectedPid=%lu command=%u\n",
+                    (unsigned long)request.callerPid,
+                    (unsigned long)callerPid,
+                    (unsigned int)request.command);
+            } else if ((request.command == SERVICE_CMD_APPLY ||
+                        request.command == SERVICE_CMD_RESET ||
+                        request.command == SERVICE_CMD_WRITE_LOG_SNAPSHOT ||
+                        request.command == SERVICE_CMD_WRITE_JSON_SNAPSHOT ||
+                        request.command == SERVICE_CMD_WRITE_PROBE_REPORT ||
+                        request.command == SERVICE_CMD_LOGON_HANDOFF) &&
+                       callerIntegrityRid < SECURITY_MANDATORY_MEDIUM_RID) {
+                response.status = SERVICE_STATUS_ERROR;
+                StringCchCopyA(response.message, ARRAY_COUNT(response.message),
+                    "Service control requires a medium-integrity client");
+                debug_log("service auth reject: low-integrity caller pid=%lu session=%lu command=%u integrityRid=%lu\n",
+                    (unsigned long)callerPid,
+                    (unsigned long)callerSessionId,
+                    (unsigned int)request.command,
+                    (unsigned long)callerIntegrityRid);
             } else {
                 // A logon handoff is settings-free and resolves an immutable
                 // per-session context in the lifecycle worker.  Do not mutate
@@ -346,6 +321,14 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     break;
                 }
                 case SERVICE_CMD_APPLY: {
+                    ServiceOperationRequestGuard operation(&request, &response,
+                        "apply");
+                    if (!operation.execute()) {
+                        populate_service_snapshot(&response.snapshot);
+                        if (g_serviceHasActiveDesired) response.desired = g_serviceActiveDesired;
+                        if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
+                        break;
+                    }
                     char result[512] = {};
                     bool enforcePublishedGpuBinding = false;
                     ConfiguredGpuSelection publishedGpuBinding = {};
@@ -626,6 +609,14 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     break;
                 }
                 case SERVICE_CMD_RESET: {
+                    ServiceOperationRequestGuard operation(&request, &response,
+                        "reset");
+                    if (!operation.execute()) {
+                        populate_service_snapshot(&response.snapshot);
+                        if (g_serviceHasActiveDesired) response.desired = g_serviceActiveDesired;
+                        if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
+                        break;
+                    }
                     char result[512] = {};
                     // Reject reset while recovering from a GPU device reconnect:
                     // service_reset_all() issues NVAPI/NVML writes + refresh
@@ -733,15 +724,33 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
                     unlock_service_runtime();
                     break;
+                case SERVICE_CMD_GET_OPERATION_RESULT: {
+                    ensure_service_operation_tracker_loaded();
+                    response.operationId = request.operationId;
+                    const ServiceOperationRecord* record = service_operation_find(
+                        &g_serviceOperationTracker, request.operationId);
+                    if (!record) {
+                        response.status = SERVICE_STATUS_ERROR;
+                        response.operationState = SERVICE_OPERATION_OUTCOME_UNKNOWN;
+                        StringCchCopyA(response.message,
+                            ARRAY_COUNT(response.message),
+                            "Operation outcome is unknown to this service generation");
+                    } else {
+                        response.status = record->responseStatus;
+                        response.operationState = record->state;
+                        StringCchCopyA(response.message,
+                            ARRAY_COUNT(response.message),
+                            record->message[0] ? record->message :
+                            "Operation result available");
+                    }
+                    populate_service_snapshot(&response.snapshot);
+                    if (g_serviceHasActiveDesired) response.desired = g_serviceActiveDesired;
+                    if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
+                    break;
+                }
                 case SERVICE_CMD_WRITE_LOG_SNAPSHOT:
                 case SERVICE_CMD_WRITE_JSON_SNAPSHOT:
                 case SERVICE_CMD_WRITE_PROBE_REPORT: {
-                    char pathErr[256] = {};
-                    if (!service_validate_file_write_path(request.path, pathErr, sizeof(pathErr))) {
-                        response.status = SERVICE_STATUS_ERROR;
-                        StringCchCopyA(response.message, ARRAY_COUNT(response.message), pathErr);
-                        break;
-                    }
                     char detail[256] = {};
                     lock_service_runtime();
                     bool ok = hardware_initialize(detail, sizeof(detail));
@@ -758,10 +767,23 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                         }
                         char fileErr[256] = {};
                         bool writeOk = false;
-                        if (request.command == SERVICE_CMD_WRITE_LOG_SNAPSHOT) {
-                            writeOk = write_log_snapshot(request.path, fileErr, sizeof(fileErr));
+                        ScopedServiceClientImpersonation impersonation(callerToken);
+                        if (!impersonation.active()) {
+                            set_message(fileErr, sizeof(fileErr),
+                                "Failed impersonating the authenticated client for output write (error %lu)",
+                                GetLastError());
+                        } else if (!service_validate_file_write_path(request.path,
+                                       fileErr, sizeof(fileErr))) {
+                            debug_log("service file command: caller-scoped path validation failed command=%u pid=%lu: %s\n",
+                                (unsigned int)request.command,
+                                (unsigned long)callerPid,
+                                fileErr[0] ? fileErr : "unknown");
+                        } else if (request.command == SERVICE_CMD_WRITE_LOG_SNAPSHOT) {
+                            writeOk = write_log_snapshot(request.path, fileErr,
+                                sizeof(fileErr));
                         } else if (request.command == SERVICE_CMD_WRITE_JSON_SNAPSHOT) {
-                            writeOk = write_json_snapshot(request.path, fileErr, sizeof(fileErr));
+                            writeOk = write_json_snapshot(request.path, fileErr,
+                                sizeof(fileErr));
                         } else {
                             writeOk = write_probe_report(request.path, fileErr, sizeof(fileErr));
                         }
@@ -790,6 +812,11 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     break;
             }
             }
+        }
+
+        if (callerToken) {
+            CloseHandle(callerToken);
+            callerToken = nullptr;
         }
 
         response.message[ARRAY_COUNT(response.message) - 1] = '\0';

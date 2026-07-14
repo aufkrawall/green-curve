@@ -77,7 +77,7 @@ static bool service_lifecycle_config_parent_directory(
     // profile mount.  Watch the nearest existing ancestor so creation/rename
     // becomes a real readiness signal; the next pass moves the watch inward.
     for (;;) {
-        DWORD attributes = GetFileAttributesA(directoryOut);
+        DWORD attributes = gc_GetFileAttributesUtf8(directoryOut);
         if (attributes != INVALID_FILE_ATTRIBUTES &&
             (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
             return true;
@@ -103,7 +103,7 @@ static void service_lifecycle_close_config_watch(
 static ServiceConfigFileStamp service_lifecycle_config_file_stamp(
     const char* path) {
     ServiceConfigFileStamp stamp = {};
-    HANDLE file = CreateFileA(path, FILE_READ_ATTRIBUTES,
+    HANDLE file = gc_CreateFileUtf8(path, FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return stamp;
@@ -148,7 +148,7 @@ static void service_lifecycle_update_config_watch(const char* configPath,
         _stricmp(watchedPath, configPath) == 0) return;
     service_lifecycle_close_config_watch(handle, watchedDirectory,
         watchedPath, stamp);
-    HANDLE change = FindFirstChangeNotificationA(directory, FALSE,
+    HANDLE change = gc_FindFirstChangeNotificationUtf8(directory, FALSE,
         FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_SIZE |
         FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SECURITY);
     if (change == INVALID_HANDLE_VALUE) {

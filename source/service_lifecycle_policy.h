@@ -104,6 +104,35 @@ static inline bool service_lifecycle_identity_equal(
            a->sid[0] && b->sid[0] && strcmp(a->sid, b->sid) == 0;
 }
 
+static inline bool service_lifecycle_identity_equal_session_and_user(
+    const ServiceLifecycleIdentity* a,
+    const ServiceLifecycleIdentity* b)
+{
+    // ------------------------------------------------------------------
+    // Security rationale: ignores authentication LUID deliberately.
+    //
+    // The authenticationId (TOKEN_STATISTICS.AuthenticationId) extracted
+    // from OpenProcessToken at handoff time can differ from the one
+    // obtained via WTSQueryUserToken at apply time on the same session
+    // (early-boot token refresh, Fast Startup, specific Windows configs).
+    //
+    // Comparing only sessionId + user SID is safe because:
+    //   1. WTS_SESSION_LOGOFF already cancels pending logon state when
+    //      the logon session ends — the auth LUID check was redundant.
+    //   2. The reducer's LOGON event sequencing replaces old pending
+    //      state when a new LOGON arrives for the same session/user.
+    //   3. sessionId + SID still prevent cross-user and cross-session
+    //      misapplication (Fast User Switch, different user, etc.).
+    //
+    // Without this relaxed check, scheduled-task handoffs silently fail
+    // on early boot when the task process token and the live session
+    // token report different authentication LUIDs for the same user.
+    // ------------------------------------------------------------------
+    if (!a || !b || !a->valid || !b->valid) return false;
+    return a->sessionId == b->sessionId &&
+           a->sid[0] && b->sid[0] && strcmp(a->sid, b->sid) == 0;
+}
+
 enum ServiceLifecycleEventType {
     SERVICE_LIFECYCLE_EVENT_NONE = 0,
     SERVICE_LIFECYCLE_EVENT_WTS_LOGON,

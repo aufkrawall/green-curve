@@ -110,7 +110,6 @@ static void maybe_load_app_launch_profile_to_gui() {
         set_profile_status_text("App start slot %d was rejected: %s", appLaunchSlot, err);
         return;
     }
-    char result[512] = {};
     refresh_background_service_state();
     if (g_app.usingBackgroundService && g_app.backgroundServiceAvailable) {
         DesiredSettings activeDesired = {};
@@ -142,28 +141,43 @@ static void maybe_load_app_launch_profile_to_gui() {
     }
     debug_log("maybe_load_app_launch_profile_to_gui: applying slot %d with reset-before-apply\n", appLaunchSlot);
     desired.resetOcBeforeApply = true;
-    bool ok = apply_desired_settings(&desired, false,
-        SERVICE_APPLY_ORIGIN_APP_LAUNCH, SERVICE_PROFILE_SOURCE_USER_SLOT, appLaunchSlot,
-        result, sizeof(result));
-    if (ok) {
-        populate_desired_into_gui(&desired);
-        if (!set_config_int(g_app.configPath, "profiles", "selected_slot", appLaunchSlot)) {
+    char queueStatus[512] = {};
+    if (!gui_mutation_queue_apply(&desired, false,
+            SERVICE_APPLY_ORIGIN_APP_LAUNCH,
+            SERVICE_PROFILE_SOURCE_USER_SLOT, appLaunchSlot,
+            GUI_MUTATION_CONTEXT_APP_LAUNCH, "app-launch apply",
+            queueStatus, sizeof(queueStatus))) {
+        set_profile_status_text("App start apply for slot %d could not be queued: %s",
+            appLaunchSlot, queueStatus[0] ? queueStatus : "unknown error");
+        return;
+    }
+    set_profile_status_text("App start slot %d is applying in the background.",
+        appLaunchSlot);
+}
+
+static void app_launch_on_mutation_completed(int slot, bool success,
+    const char* result) {
+    if (success) {
+        if (!set_config_int(g_app.configPath, "profiles", "selected_slot", slot)) {
             debug_log("app-start profile: applied slot %d but selected_slot persistence failed\n",
-                appLaunchSlot);
+                slot);
         }
         sync_applied_profile_from_service_metadata();
         refresh_profile_controls_from_config();
-        set_profile_status_text((g_app.backgroundServiceInstalled && g_app.backgroundServiceAvailable)
-            ? "Loaded slot %d into the GUI and applied it through the background service on app start."
-            : "Loaded slot %d into the GUI and applied it on app start.", appLaunchSlot);
-    } else {
-        char detail[128] = {};
-        refresh_global_state(detail, sizeof(detail));
-        populate_global_controls();
-        if (g_app.loaded) populate_edits();
+        set_profile_status_text(
+            "Loaded slot %d into the GUI and applied it through the background service on app start.",
+            slot);
         invalidate_main_window();
-        set_profile_status_text("App start apply for slot %d failed and the GUI was refreshed from live state: %s", appLaunchSlot, result);
+        return;
     }
+    char detail[128] = {};
+    refresh_global_state(detail, sizeof(detail));
+    populate_global_controls();
+    if (g_app.loaded) populate_edits();
+    invalidate_main_window();
+    set_profile_status_text(
+        "App start apply for slot %d failed and the GUI was refreshed from live state: %s",
+        slot, result && result[0] ? result : "unknown error");
 }
 
 // The separate --tray-start GUI may begin before the auto-started service has

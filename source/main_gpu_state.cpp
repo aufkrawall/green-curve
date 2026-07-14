@@ -327,7 +327,7 @@ static bool load_runtime_selective_gpu_offset_request(int* gpuOffsetMHzOut, int*
     char buf[32] = {};
     HANDLE configMutex = nullptr;
     if (!enter_config_storage_lock(&configMutex)) return false;
-    GetPrivateProfileStringA("runtime", "selective_gpu_offset_mhz", "", buf, sizeof(buf), g_app.configPath);
+    gc_GetPrivateProfileStringUtf8("runtime", "selective_gpu_offset_mhz", "", buf, sizeof(buf), g_app.configPath);
     trim_ascii(buf);
     if (!buf[0]) {
         leave_config_storage_lock(configMutex);
@@ -351,10 +351,10 @@ static bool load_runtime_selective_gpu_offset_request(int* gpuOffsetMHzOut, int*
     // The exclude count may be stored as "selective_gpu_offset_exclude_low_count"
     // (new format) or "selective_gpu_offset_exclude_low_70" (legacy).
     char excludeBuf[32] = {};
-    GetPrivateProfileStringA("runtime", "selective_gpu_offset_exclude_low_count", "", excludeBuf, sizeof(excludeBuf), g_app.configPath);
+    gc_GetPrivateProfileStringUtf8("runtime", "selective_gpu_offset_exclude_low_count", "", excludeBuf, sizeof(excludeBuf), g_app.configPath);
     bool hasExplicitLowCount = excludeBuf[0] != '\0';
     if (!hasExplicitLowCount) {
-        GetPrivateProfileStringA("runtime", "selective_gpu_offset_exclude_low_70", "", excludeBuf, sizeof(excludeBuf), g_app.configPath);
+        gc_GetPrivateProfileStringUtf8("runtime", "selective_gpu_offset_exclude_low_70", "", excludeBuf, sizeof(excludeBuf), g_app.configPath);
     }
     leave_config_storage_lock(configMutex);
 
@@ -533,7 +533,7 @@ static void persist_runtime_selective_gpu_offset_request(int gpuOffsetMHz, int e
         countBuf,
         '\0',
         '\0');
-    WritePrivateProfileSectionA("runtime", section, g_app.configPath);
+    gc_WritePrivateProfileSectionUtf8("runtime", section, g_app.configPath);
     leave_config_storage_lock(configMutex);
 }
 
@@ -542,7 +542,7 @@ static void clear_runtime_selective_gpu_offset_request() {
     HANDLE configMutex = nullptr;
     if (!enter_config_storage_lock(&configMutex)) return;
     debug_log("clear_runtime_selective_gpu_offset_request: clearing runtime selective state\n");
-    WritePrivateProfileStringA("runtime", nullptr, nullptr, g_app.configPath);
+    gc_WritePrivateProfileStringUtf8("runtime", nullptr, nullptr, g_app.configPath);
     leave_config_storage_lock(configMutex);
 }
 
@@ -702,7 +702,7 @@ static bool load_curve_points_explicit_from_section(const char* path, const char
         char key[32] = {};
         char buf[64] = {};
         StringCchPrintfA(key, ARRAY_COUNT(key), "point%d_mhz", i);
-        GetPrivateProfileStringA(section, key, "", buf, sizeof(buf), path);
+        gc_GetPrivateProfileStringUtf8(section, key, "", buf, sizeof(buf), path);
         trim_ascii(buf);
         if (!buf[0]) continue;
 
@@ -719,7 +719,7 @@ static bool load_curve_points_explicit_from_section(const char* path, const char
         char visibleKey[32] = {};
         char visibleBuf[64] = {};
         StringCchPrintfA(visibleKey, ARRAY_COUNT(visibleKey), "point%d_visible", i);
-        GetPrivateProfileStringA(section, visibleKey, "", visibleBuf, sizeof(visibleBuf), path);
+        gc_GetPrivateProfileStringUtf8(section, visibleKey, "", visibleBuf, sizeof(visibleBuf), path);
         trim_ascii(visibleBuf);
         if (visibleBuf[0]) {
             int visibleValue = 0;
@@ -735,7 +735,7 @@ static bool load_curve_points_explicit_from_section(const char* path, const char
             char mvKey[32] = {};
             char mvBuf[64] = {};
             StringCchPrintfA(mvKey, ARRAY_COUNT(mvKey), "point%d_mv", i);
-            GetPrivateProfileStringA(section, mvKey, "", mvBuf, sizeof(mvBuf), path);
+            gc_GetPrivateProfileStringUtf8(section, mvKey, "", mvBuf, sizeof(mvBuf), path);
             trim_ascii(mvBuf);
             int mv = 0;
             if (mvBuf[0] && parse_int_strict(mvBuf, &mv) && mv > 0 && mv < MIN_VISIBLE_VOLT_mV) {
@@ -748,7 +748,7 @@ static bool load_curve_points_explicit_from_section(const char* path, const char
         // load the point so the user can see it in the GUI.
         if (lastCi >= 0 && mhz < lastMHz) {
             char semBuf[64] = {};
-            GetPrivateProfileStringA(section, "curve_semantics", "", semBuf, sizeof(semBuf), path);
+            gc_GetPrivateProfileStringUtf8(section, "curve_semantics", "", semBuf, sizeof(semBuf), path);
             trim_ascii(semBuf);
             bool isBasePlusOffset = (_stricmp(semBuf, "base_plus_gpu_offset") == 0);
             if (isBasePlusOffset) {
