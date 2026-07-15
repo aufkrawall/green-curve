@@ -225,7 +225,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             hasLock = false;
         } else {
             if (lockMhz == 0) {
-                lockMhz = desired->hasCurvePoint[lockCi] ? desired->curvePointMHz[lockCi] : get_edit_value(g_app.hEditsMhz[lockVi]);
+                lockMhz = desired->hasCurvePoint[lockCi] ? desired->curvePointMHz[lockCi] : displayed_curve_mhz(g_app.curve[lockCi].freq_kHz);
             }
             for (int vi = lockVi; vi < g_app.numVisible; vi++) {
                 int ci = g_app.visibleMap[vi];
@@ -1133,28 +1133,28 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             append_failure("Restoring the existing VF curve after the memory offset did not verify");
         }
         if (curveRequestOk) {
-            int pos = 0;
+            size_t pos = 0;
             if (gpuPolicyViaCurveBatch) {
                 if (userBoostFailed == 0) {
-                    pos += StringCchPrintfA(curveVerifySummary + pos, sizeof(curveVerifySummary) - pos,
+                    pos = gc_appendf(curveVerifySummary, sizeof(curveVerifySummary), pos,
                         " %+d MHz selective offset verified.", desired->gpuOffsetMHz);
                 } else {
-                    pos += StringCchPrintfA(curveVerifySummary + pos, sizeof(curveVerifySummary) - pos,
+                    pos = gc_appendf(curveVerifySummary, sizeof(curveVerifySummary), pos,
                         " %+d MHz selective offset: %d of %d boost points matched.",
                         desired->gpuOffsetMHz, userBoostApplied, userBoostApplied + userBoostFailed);
                 }
             }
             if (hasLock && lockMhz > 0 && lockMode == LOCK_MODE_FLATTEN) {
                 if (flattenFailed == 0) {
-                    pos += StringCchPrintfA(curveVerifySummary + pos, sizeof(curveVerifySummary) - pos,
+                    pos = gc_appendf(curveVerifySummary, sizeof(curveVerifySummary), pos,
                         " Undervolt flatten to %u MHz verified (%d pts).", lockMhz, flattenApplied);
                 } else {
-                    pos += StringCchPrintfA(curveVerifySummary + pos, sizeof(curveVerifySummary) - pos,
+                    pos = gc_appendf(curveVerifySummary, sizeof(curveVerifySummary), pos,
                         " Undervolt flatten to %u MHz: %d of %d pts matched.",
                         lockMhz, flattenApplied, flattenApplied + flattenFailed);
                 }
             } else if (hasLock && lockMhz > 0 && lockMode == LOCK_MODE_HARD) {
-                pos += StringCchPrintfA(curveVerifySummary + pos, sizeof(curveVerifySummary) - pos,
+                pos = gc_appendf(curveVerifySummary, sizeof(curveVerifySummary), pos,
                     " Hard lock pinned at %u MHz.", lockMhz);
             }
         }

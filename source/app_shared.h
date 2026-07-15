@@ -45,6 +45,7 @@
 // VfBackendSpec, DesiredSettings + IPC validator, ServiceRequest/Response,
 // NvmlApi).  Shared verbatim with the Linux backend.
 #include "gpu_core.h"
+#include "gui_service_model.h"
 #include "service_lifecycle_policy.h"
 // OS-abstraction shim (dynamic loading, sleep, atomics, threads, bounded
 // strings, subprocess capture) used by the shared backend.
@@ -129,6 +130,9 @@ void init_dpi();
 #define APP_WM_DEFERRED_RELAUNCH (WM_APP + 4)
 #define APP_WM_ENSURE_LAYOUT_FOCUS (WM_APP + 5)
 #define APP_WM_MUTATION_COMPLETE (WM_APP + 6)
+#define APP_WM_SERVICE_IO_COMPLETE (WM_APP + 7)
+#define APP_WM_SELECTED_GPU_PNP (WM_APP + 8)
+#define APP_WM_ACTIVATE_EXISTING_INSTANCE (WM_APP + 9)
 #define APPLY_BTN_ID        2000
 #define REFRESH_BTN_ID      2001
 #define RESET_BTN_ID        2003
@@ -224,6 +228,26 @@ void init_dpi();
 
 // LockMode, NVML/NVAPI types+enums, VfBackendSpec, VFCurvePoint, fan structs,
 // ControlState, GpuAdapterInfo moved to gpu_core.h
+struct GuiDraft {
+    bool attached;
+    bool detached;
+    // A sparse profile can be loaded before the first READY envelope. Keep the
+    // overlay until a live baseline exists, then rebase it once and bind it to
+    // that GPU/topology instead of treating omitted fields as numeric defaults.
+    bool pendingDesiredValid;
+    DesiredSettings pendingDesired;
+    GpuAdapterInfo gpu;
+    gc_u64 topologySignature;
+    unsigned int curveMHz[VF_NUM_POINTS];
+    bool curveValueValid[VF_NUM_POINTS];
+    char curveText[VF_NUM_POINTS][16];
+    char gpuOffsetText[32];
+    char gpuOffsetExcludeLowText[16];
+    char memOffsetText[32];
+    char powerLimitText[32];
+    char fanFixedText[16];
+};
+
 struct AppData {
     HINSTANCE hInst;
     HWND hMainWnd;
@@ -381,6 +405,8 @@ struct AppData {
     bool guiHasUserModifiedValues;
     int guiGpuOffsetMHz;
     int guiGpuOffsetExcludeLowCount;
+    int guiMemOffsetMHz;
+    int guiPowerLimitPct;
     int appliedGpuOffsetMHz;
     int appliedGpuOffsetExcludeLowCount;
     bool lastApplyUsedGpuOffset;
@@ -419,6 +445,12 @@ struct AppData {
 
     bool launchedFromLogon;
     bool startHiddenToTray;
+    // Durable presentation intent. Windows may reconstruct/show top-level
+    // windows while the display driver reconnects; only an explicit user open
+    // clears this and permits the main window to become visible.
+    bool trayWindowHiddenIntent;
+    bool trayUsesNotificationVersion4;
+    bool appLaunchEvaluationPending;
     // A scheduled logon launch is only a tray/UI handoff.  The LocalSystem
     // service exclusively owns automatic profile application; the GUI keeps
     // this state only while waiting to display its first initialized service
@@ -443,6 +475,11 @@ struct AppData {
     DesiredSettings serviceActiveDesired;
     bool serviceControlStateValid;
     ControlState serviceControlState;
+    // Main-thread-owned authority model.  Pipe/SCM workers may only post
+    // immutable completions; HWND, tray, config and these fields are updated by
+    // the window thread.
+    GuiServiceModel guiServiceModel;
+    GuiDraft guiDraft;
     bool backgroundServiceToggleInFlight;
     bool backgroundServiceToggleTargetEnabled;
     bool backgroundServicePendingRelaunch;

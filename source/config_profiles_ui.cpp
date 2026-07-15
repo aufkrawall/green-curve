@@ -5,6 +5,8 @@
 // Profile UI and Startup
 // ============================================================================
 
+#include "ui_control_projection.h"
+
 static void resolve_profile_gpu_offset_state_for_save(const DesiredSettings* desired, int* gpuOffsetMHzOut, int* excludeLowCountOut) {
     resolve_effective_gpu_offset_state_for_config_save(desired, gpuOffsetMHzOut, excludeLowCountOut);
 }
@@ -49,14 +51,20 @@ static void update_share_all_users_check_state() {
         bool shared = is_machine_profile_slot_saved(slot) && g_app.machineLogonSlotCache == slot;
         char label[64] = {};
         StringCchPrintfA(label, ARRAY_COUNT(label), "Share slot %d with all users", slot);
-        SetWindowTextA(g_app.hShareAllUsersCheck, label);
-        SendMessageA(g_app.hShareAllUsersCheck, BM_SETCHECK, (WPARAM)(shared ? BST_CHECKED : BST_UNCHECKED), 0);
+        bool changed = gui_set_window_text_if_changed(
+            g_app.hShareAllUsersCheck, label);
+        changed = gui_set_button_check_if_changed(
+            g_app.hShareAllUsersCheck, shared) || changed;
         // Always enabled.  When the GUI is not elevated, toggling it requests UAC
         // for just this operation, so users never start the whole GUI elevated.
-        EnableWindow(g_app.hShareAllUsersCheck, TRUE);
-        ShowWindow(g_app.hShareAllUsersCheck, SW_SHOW);
-        InvalidateRect(g_app.hShareAllUsersCheck, nullptr, TRUE);
-        UpdateWindow(g_app.hShareAllUsersCheck);
+        changed = gui_set_window_enabled_if_changed(
+            g_app.hShareAllUsersCheck, true) || changed;
+        if (!IsWindowVisible(g_app.hShareAllUsersCheck)) {
+            ShowWindow(g_app.hShareAllUsersCheck, SW_SHOW);
+            changed = true;
+        }
+        if (changed)
+            InvalidateRect(g_app.hShareAllUsersCheck, nullptr, FALSE);
     }
 
     // "Shared profiles" button is available to every user; it is only enabled
@@ -69,11 +77,16 @@ static void update_share_all_users_check_state() {
         char label[48] = {};
         if (sharedCount > 0) StringCchPrintfA(label, ARRAY_COUNT(label), "Shared profiles (%d)...", sharedCount);
         else StringCchCopyA(label, ARRAY_COUNT(label), "Shared profiles...");
-        SetWindowTextA(g_app.hSharedProfilesBtn, label);
-        EnableWindow(g_app.hSharedProfilesBtn, sharedCount > 0 ? TRUE : FALSE);
-        ShowWindow(g_app.hSharedProfilesBtn, SW_SHOW);
-        InvalidateRect(g_app.hSharedProfilesBtn, nullptr, TRUE);
-        UpdateWindow(g_app.hSharedProfilesBtn);
+        bool changed = gui_set_window_text_if_changed(
+            g_app.hSharedProfilesBtn, label);
+        changed = gui_set_window_enabled_if_changed(
+            g_app.hSharedProfilesBtn, sharedCount > 0) || changed;
+        if (!IsWindowVisible(g_app.hSharedProfilesBtn)) {
+            ShowWindow(g_app.hSharedProfilesBtn, SW_SHOW);
+            changed = true;
+        }
+        if (changed)
+            InvalidateRect(g_app.hSharedProfilesBtn, nullptr, FALSE);
     }
     debug_log_on_change("share-all-users controls: refreshed (selSlot=%d machineSlot=%d sharedCount=%d)\n",
         slot, g_app.machineLogonSlotCache, sharedCount);
@@ -211,7 +224,6 @@ static void refresh_profile_controls_from_config() {
 
     update_profile_state_label();
     update_profile_action_buttons();
-    refresh_background_service_state();
     update_background_service_controls();
     update_share_all_users_check_state();
     update_tray_icon();
@@ -501,12 +513,16 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
         }
     }
     // Mem offset
-    if (desired->hasMemOffset && g_app.hMemOffsetEdit) {
-        set_edit_value(g_app.hMemOffsetEdit, desired->memOffsetMHz);
+    if (desired->hasMemOffset) {
+        g_app.guiMemOffsetMHz = desired->memOffsetMHz;
+        if (g_app.hMemOffsetEdit)
+            set_edit_value(g_app.hMemOffsetEdit, desired->memOffsetMHz);
     }
     // Power limit
-    if (desired->hasPowerLimit && g_app.hPowerLimitEdit) {
-        set_edit_value(g_app.hPowerLimitEdit, desired->powerLimitPct);
+    if (desired->hasPowerLimit) {
+        g_app.guiPowerLimitPct = desired->powerLimitPct;
+        if (g_app.hPowerLimitEdit)
+            set_edit_value(g_app.hPowerLimitEdit, desired->powerLimitPct);
     }
     // Fan
     if (desired->hasFan) {
@@ -553,6 +569,7 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
     }
     end_programmatic_edit_update();
     set_gui_state_dirty(preserveDirty);
+    if (preserveDirty) gui_draft_capture_desired(desired);
 }
 
 static void set_profile_status_text(const char* fmt, ...) {
@@ -616,17 +633,21 @@ static void update_background_service_controls() {
         bool checked = g_app.backgroundServiceToggleInFlight
             ? g_app.backgroundServiceToggleTargetEnabled
             : g_app.backgroundServiceInstalled;
-        SendMessageA(g_app.hServiceEnableCheck, BM_SETCHECK, (WPARAM)(checked ? BST_CHECKED : BST_UNCHECKED), 0);
-        InvalidateRect(g_app.hServiceEnableCheck, nullptr, FALSE);
-        UpdateWindow(g_app.hServiceEnableCheck);
-        EnableWindow(g_app.hServiceEnableCheck, g_app.backgroundServiceToggleInFlight ? FALSE : TRUE);
+        bool changed = gui_set_button_check_if_changed(
+            g_app.hServiceEnableCheck, checked);
+        changed = gui_set_window_enabled_if_changed(
+            g_app.hServiceEnableCheck,
+            !g_app.backgroundServiceToggleInFlight) || changed;
+        if (changed)
+            InvalidateRect(g_app.hServiceEnableCheck, nullptr, FALSE);
     }
     if (g_app.hServiceEnableLabel) {
-        SetWindowTextA(g_app.hServiceEnableLabel,
+        gui_set_window_text_if_changed(g_app.hServiceEnableLabel,
             g_app.backgroundServiceInstalled && g_app.backgroundServiceBroken
                 ? "Background service installed (repair needed)"
                 : "Background service installed");
-        EnableWindow(g_app.hServiceEnableLabel, g_app.backgroundServiceToggleInFlight ? FALSE : TRUE);
+        gui_set_window_enabled_if_changed(g_app.hServiceEnableLabel,
+            !g_app.backgroundServiceToggleInFlight);
     }
     if (g_app.hServiceStatusLabel) {
         char text[512] = {};
@@ -635,6 +656,24 @@ static void update_background_service_controls() {
                 g_app.backgroundServiceToggleTargetEnabled ? "Installing and starting" : "Stopping and removing");
         } else if (!g_app.backgroundServiceInstalled) {
             StringCchCopyA(text, ARRAY_COUNT(text), "Background service not installed. Click checkbox to install it.");
+        } else if (g_app.guiServiceModel.phase == GUI_SERVICE_SYNCING) {
+            StringCchCopyA(text, ARRAY_COUNT(text),
+                "Synchronizing a coherent GPU state snapshot...");
+        } else if (g_app.guiServiceModel.phase ==
+                GUI_SERVICE_DEVICE_MISSING) {
+            StringCchCopyA(text, ARRAY_COUNT(text),
+                "Selected GPU disconnected. Waiting for the device to return; unsaved draft preserved.");
+        } else if (g_app.guiServiceModel.phase ==
+                GUI_SERVICE_RECOVERING) {
+            StringCchCopyA(text, ARRAY_COUNT(text),
+                "Selected GPU is reconnecting and being refreshed; unsaved draft preserved.");
+        } else if (g_app.guiServiceModel.phase == GUI_SERVICE_DEGRADED) {
+            StringCchCopyA(text, ARRAY_COUNT(text),
+                "Background service is connected, but coherent live GPU state is unavailable.");
+        } else if (gui_service_model_ready(&g_app.guiServiceModel) &&
+                g_app.guiDraft.detached) {
+            StringCchCopyA(text, ARRAY_COUNT(text),
+                "Live GPU state is ready, but the preserved draft belongs to another GPU/topology. Reselect it or click Refresh to discard the draft.");
         } else if (g_app.backgroundServiceBroken) {
             if (g_app.backgroundServiceError[0]) {
                 StringCchPrintfA(text, ARRAY_COUNT(text), "Background service needs repair: %s", g_app.backgroundServiceError);
@@ -656,7 +695,6 @@ static void update_background_service_controls() {
                 StringCchCatA(text, ARRAY_COUNT(text), note);
             }
         }
-        SetWindowTextA(g_app.hServiceStatusLabel, text);
         // Surface a user-profile-install warning.  Two triggers cover the same
         // problem (a restricted/standard user cannot execute the GUI binary):
         //   1. service_install_dir_is_under_user_profile() — keys off the
@@ -678,23 +716,24 @@ static void update_background_service_controls() {
             size_t warningLen = strlen(warning);
             if (currentLen + warningLen < ARRAY_COUNT(text)) {
                 StringCchCatA(text, ARRAY_COUNT(text), warning);
-                SetWindowTextA(g_app.hServiceStatusLabel, text);
             }
         }
+        gui_set_window_text_if_changed(g_app.hServiceStatusLabel, text);
     }
-
-    update_share_all_users_check_state();
 }
 
 static bool maybe_confirm_profile_load_replace(int slot) {
     DesiredSettings current = {};
     DesiredSettings target = {};
     char err[256] = {};
-    if (!refresh_service_snapshot_and_active_desired(err, sizeof(err))) {
-        debug_log("profile load confirm: refresh_service_snapshot_and_active_desired failed: %s\n", err);
-        // Cannot build a comparison dialog, but the actual load in the handler
-        // will still validate and report errors. Skip the confirmation.
-        return true;
+    if (!gui_service_model_ready(&g_app.guiServiceModel)) {
+        if (!gui_state_dirty()) return true;
+        char reconnectMsg[256] = {};
+        StringCchPrintfA(reconnectMsg, ARRAY_COUNT(reconnectMsg),
+            "Loading slot %d will replace the unsaved draft preserved while the GPU is reconnecting. Continue?",
+            slot);
+        return MessageBoxA(g_app.hMainWnd, reconnectMsg, "Green Curve",
+            MB_YESNO | MB_ICONQUESTION) == IDYES;
     }
     if (!capture_gui_config_settings(&current, err, sizeof(err))) {
         debug_log("profile load confirm: capture_gui_config_settings failed: %s\n", err);
@@ -714,21 +753,21 @@ static bool maybe_confirm_profile_load_replace(int slot) {
     bool haveControlState = get_effective_control_state(&control);
     initialize_desired_settings_defaults(&targetFull);
     targetFull.hasGpuOffset = true;
-    if (haveControlState && control_state_has_meaningful_gpu(&control)) {
+    if (haveControlState && control.hasGpuOffset) {
         targetFull.gpuOffsetMHz = control.gpuOffsetMHz;
         targetFull.gpuOffsetExcludeLowCount = control.gpuOffsetExcludeLowCount;
     } else {
         resolve_displayed_live_gpu_offset_state_for_gui(&targetFull.gpuOffsetMHz, &targetFull.gpuOffsetExcludeLowCount);
     }
     targetFull.hasMemOffset = true;
-    targetFull.memOffsetMHz = haveControlState && control_state_has_meaningful_mem(&control) ? control.memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
+    targetFull.memOffsetMHz = haveControlState && control.hasMemOffset ? control.memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
     targetFull.hasPowerLimit = true;
-    targetFull.powerLimitPct = haveControlState && control_state_has_meaningful_power(&control) ? control.powerLimitPct : g_app.powerLimitPct;
+    targetFull.powerLimitPct = haveControlState && control.hasPowerLimit ? control.powerLimitPct : g_app.powerLimitPct;
     targetFull.hasFan = true;
-    targetFull.fanMode = haveControlState && control_state_has_meaningful_fan(&control) ? control.fanMode : g_app.activeFanMode;
+    targetFull.fanMode = haveControlState && control.hasFan ? control.fanMode : g_app.activeFanMode;
     targetFull.fanAuto = targetFull.fanMode == FAN_MODE_AUTO;
-    targetFull.fanPercent = haveControlState && control_state_has_meaningful_fan(&control) ? control.fanFixedPercent : g_app.activeFanFixedPercent;
-    copy_fan_curve(&targetFull.fanCurve, haveControlState && control_state_has_meaningful_fan(&control) ? &control.fanCurve : &g_app.activeFanCurve);
+    targetFull.fanPercent = haveControlState && control.hasFan ? control.fanFixedPercent : g_app.activeFanFixedPercent;
+    copy_fan_curve(&targetFull.fanCurve, haveControlState && control.hasFan ? &control.fanCurve : &g_app.activeFanCurve);
     for (int vi = 0; vi < g_app.numVisible; vi++) {
         int ci = g_app.visibleMap[vi];
         targetFull.hasCurvePoint[ci] = true;

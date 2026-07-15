@@ -30,11 +30,22 @@ int linux_daemon_run(const char* configPath);
 bool linux_daemon_send(const ServiceRequest* req, ServiceResponse* resp,
                        char* err, size_t errSize);
 bool linux_daemon_snapshot(ServiceSnapshot* snapshot, char* err, size_t errSize);
+bool linux_daemon_get_state(const GpuAdapterInfo* target, ServiceResponse* response,
+                            char* err, size_t errSize);
 
 // Convenience client helpers used by the CLI/TUI.
 bool linux_daemon_apply(const GpuAdapterInfo* target, const DesiredSettings* desired, bool interactive,
                         char* result, size_t resultSize);
 bool linux_daemon_reset(const GpuAdapterInfo* target, char* result, size_t resultSize);
+bool linux_daemon_apply_checked(const GpuAdapterInfo* target,
+                                const DesiredSettings* desired, bool interactive,
+                                const ServiceStateEnvelope* expected,
+                                ServiceResponse* response,
+                                char* result, size_t resultSize);
+bool linux_daemon_reset_checked(const GpuAdapterInfo* target,
+                                const ServiceStateEnvelope* expected,
+                                ServiceResponse* response,
+                                char* result, size_t resultSize);
 
 // Install / remove the systemd unit (greencurve.service running `--daemon`) and
 // the greencurve admin group.  Require root.  Return 0 on success.

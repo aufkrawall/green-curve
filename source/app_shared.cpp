@@ -61,9 +61,12 @@ void init_dpi() {
         typedef UINT (WINAPI *GetDpiForSystem_t)();
         auto pGetDpiForSystem = (GetDpiForSystem_t)GetProcAddress(user32, "GetDpiForSystem");
         if (pGetDpiForSystem) {
-            g_dpi = (int)pGetDpiForSystem();
-            g_scale = (float)g_dpi / 96.0f;
-            return;
+            UINT dpi = pGetDpiForSystem();
+            if (dpi > 0) {
+                g_dpi = (int)dpi;
+                g_scale = (float)g_dpi / 96.0f;
+                return;
+            }
         }
     }
 
@@ -74,7 +77,7 @@ void init_dpi() {
         if (pGetDpiForMonitor) {
             UINT dpiX = 96;
             UINT dpiY = 96;
-            if (pGetDpiForMonitor(nullptr, 0, &dpiX, &dpiY) == 0) {
+            if (pGetDpiForMonitor(nullptr, 0, &dpiX, &dpiY) == 0 && dpiX > 0) {
                 g_dpi = (int)dpiX;
             }
         }
@@ -83,10 +86,14 @@ void init_dpi() {
 
     if (g_dpi == 96) {
         HDC hdc = GetDC(nullptr);
-        g_dpi = GetDeviceCaps(hdc, LOGPIXELSX);
-        ReleaseDC(nullptr, hdc);
+        if (hdc) {
+            int dpi = GetDeviceCaps(hdc, LOGPIXELSX);
+            if (dpi > 0) g_dpi = dpi;
+            ReleaseDC(nullptr, hdc);
+        }
     }
 
+    if (g_dpi <= 0) g_dpi = 96;
     g_scale = (float)g_dpi / 96.0f;
 }
 

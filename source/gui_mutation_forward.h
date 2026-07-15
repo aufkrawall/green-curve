@@ -20,6 +20,11 @@ static bool gui_mutation_queue_apply(const DesiredSettings* desired,
     GuiMutationUiContext context, const char* source,
     char* status, size_t statusSize);
 static void gui_mutation_advance_gpu_epoch(const char* reason);
+static gc_u64 gui_service_io_connection_epoch();
+static bool gui_service_io_queue_full_sync(const char* reason);
+static bool gui_service_io_queue_telemetry(bool redrawControls);
+static bool gui_service_io_queue_admin_toggle(bool enable, bool repair,
+    const char* configPath, char* status, size_t statusSize);
 #endif
 
 #endif

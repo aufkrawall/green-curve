@@ -12,6 +12,7 @@
 #include "linux_backend.h"
 #include "linux_daemon_state.h"
 #include "linux_gpu_selection.h"
+#include "profile_persistence_policy.h"
 #include "platform.h"
 #include "fan_curve.h"
 #include "fan_runtime_policy.h"
@@ -170,7 +171,10 @@ bool linux_daemon_send(const ServiceRequest* req, ServiceResponse* resp,
     close(fd);
     if (!ok) { if (err) gc_strlcpy(err, errSize, "daemon I/O error"); return false; }
     if (resp->magic != SERVICE_PROTOCOL_MAGIC) { if (err) gc_strlcpy(err, errSize, "bad daemon response"); return false; }
-    validate_service_response_for_ipc(resp);
+    if (!validate_service_response_for_ipc(resp)) {
+        if (err) gc_strlcpy(err, errSize, "daemon returned an invalid state envelope");
+        return false;
+    }
     if (resp->status == SERVICE_STATUS_VERSION_MISMATCH) {
         if (err) gc_snprintf(err, errSize, "daemon protocol mismatch (client %u, daemon %u)",
                              (unsigned)SERVICE_PROTOCOL_VERSION, (unsigned)resp->version);
@@ -181,6 +185,8 @@ bool linux_daemon_send(const ServiceRequest* req, ServiceResponse* resp,
 
 static bool send_simple(unsigned int command, const DesiredSettings* desired,
                          const GpuAdapterInfo* target, bool interactive,
+                         const ServiceStateEnvelope* expected,
+                         ServiceResponse* response,
                          char* result, size_t resultSize) {
     ServiceRequest req;
     memset(&req, 0, sizeof(req));
@@ -204,11 +210,20 @@ static bool send_simple(unsigned int command, const DesiredSettings* desired,
     }
     if (desired) req.desired = *desired;
     if (target) req.targetGpu = *target;
+    if (expected) {
+        req.expectedServiceInstanceId = expected->serviceInstanceId;
+        req.expectedGpuGeneration = expected->gpuGeneration;
+        req.expectedTopologySignature = expected->topologySignature;
+    }
     ServiceResponse resp;
     memset(&resp, 0, sizeof(resp));
     char err[256] = {};
     bool ok = linux_daemon_send(&req, &resp, err, sizeof(err));
-    if (!ok && req.operationId != 0) {
+    bool receivedServiceError = !ok &&
+        resp.magic == SERVICE_PROTOCOL_MAGIC &&
+        resp.version == SERVICE_PROTOCOL_VERSION &&
+        resp.status != SERVICE_STATUS_OK;
+    if (!ok && req.operationId != 0 && !receivedServiceError) {
         ServiceRequest query = {};
         query.magic = SERVICE_PROTOCOL_MAGIC;
         query.version = SERVICE_PROTOCOL_VERSION;
@@ -230,27 +245,55 @@ static bool send_simple(unsigned int command, const DesiredSettings* desired,
             return false;
         }
     }
+    if (response) *response = resp;
     if (result) gc_strlcpy(result, resultSize, resp.message[0] ? resp.message : (ok ? "OK" : err));
     return ok;
 }
 
 bool linux_daemon_apply(const GpuAdapterInfo* target, const DesiredSettings* desired, bool interactive,
                          char* result, size_t resultSize) {
-    return send_simple(SERVICE_CMD_APPLY, desired, target, interactive, result, resultSize);
+    return linux_daemon_apply_checked(target, desired, interactive, nullptr,
+                                      nullptr, result, resultSize);
 }
 bool linux_daemon_reset(const GpuAdapterInfo* target, char* result, size_t resultSize) {
-    return send_simple(SERVICE_CMD_RESET, nullptr, target, true, result, resultSize);
+    return linux_daemon_reset_checked(target, nullptr, nullptr, result, resultSize);
+}
+
+bool linux_daemon_apply_checked(const GpuAdapterInfo* target,
+                                const DesiredSettings* desired, bool interactive,
+                                const ServiceStateEnvelope* expected,
+                                ServiceResponse* response,
+                                char* result, size_t resultSize) {
+    return send_simple(SERVICE_CMD_APPLY, desired, target, interactive,
+                       expected, response, result, resultSize);
+}
+
+bool linux_daemon_reset_checked(const GpuAdapterInfo* target,
+                                const ServiceStateEnvelope* expected,
+                                ServiceResponse* response,
+                                char* result, size_t resultSize) {
+    return send_simple(SERVICE_CMD_RESET, nullptr, target, true,
+                       expected, response, result, resultSize);
 }
 
 bool linux_daemon_snapshot(ServiceSnapshot* snapshot, char* err, size_t errSize) {
+    ServiceResponse resp = {};
+    if (!linux_daemon_get_state(nullptr, &resp, err, errSize)) return false;
+    if (snapshot) *snapshot = resp.snapshot;
+    return true;
+}
+
+bool linux_daemon_get_state(const GpuAdapterInfo* target, ServiceResponse* response,
+                            char* err, size_t errSize) {
     ServiceRequest req = {};
     ServiceResponse resp = {};
     req.magic = SERVICE_PROTOCOL_MAGIC;
     req.version = SERVICE_PROTOCOL_VERSION;
     req.command = SERVICE_CMD_GET_SNAPSHOT;
     req.callerPid = (gc_u32)getpid();
+    if (target) req.targetGpu = *target;
     if (!linux_daemon_send(&req, &resp, err, errSize)) return false;
-    if (snapshot) *snapshot = resp.snapshot;
+    if (response) *response = resp;
     return true;
 }
 
@@ -313,110 +356,52 @@ static bool restore_committed_record(bool hadPrevious, const GpuAdapterInfo* pre
                                previousDesired, err, sizeof(err));
 }
 
-static void populate_snapshot(ServiceSnapshot* s) {
-    memset(s, 0, sizeof(*s));
-    s->adapterCount = g_gpu.adapterCount;
-    s->selectedAdapterIndex = g_gpu.selectedAdapterIndex;
-    s->selectedAdapterOrdinalFallback = g_gpu.adapterCount == 1 &&
-                                        !linux_gpu_bdf_valid(&g_gpu.selectedGpu);
-    for (unsigned int i = 0; i < g_gpu.adapterCount && i < MAX_GPU_ADAPTERS; ++i)
-        s->adapters[i] = g_gpu.adapters[i];
-    s->autoRestoreLockoutReason = g_stateUncertain
-        ? SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED
-        : SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
-    if (!g_gpuReady) return;
-    s->initialized = true;
-    s->loaded = (g_gpu.numPopulated > 0);
-    s->gpuFamily = g_gpu.family;
-    s->numPopulated = g_gpu.numPopulated;
-    s->vfReadSupported = g_gpu.backend && g_gpu.backend->readSupported;
-    s->vfWriteSupported = g_gpu.backend && g_gpu.backend->writeSupported;
-    s->vfBestGuess = g_gpu.backend && g_gpu.backend->bestGuessOnly;
-    s->gpuClockOffsetMinMHz = g_gpu.gpuOffsetMinMHz;
-    s->gpuClockOffsetMaxMHz = g_gpu.gpuOffsetMaxMHz;
-    s->memOffsetMinMHz = g_gpu.memOffsetMinMHz;
-    s->memOffsetMaxMHz = g_gpu.memOffsetMaxMHz;
-    s->curveOffsetMinkHz = g_gpu.curveOffsetMinKHz;
-    s->curveOffsetMaxkHz = g_gpu.curveOffsetMaxKHz;
-    s->curveOffsetRangeKnown = g_gpu.curveOffsetRangeKnown;
-    s->powerLimitMinmW = g_gpu.powerLimitMinmW;
-    s->powerLimitMaxmW = g_gpu.powerLimitMaxmW;
-    s->powerLimitDefaultmW = g_gpu.powerLimitDefaultmW;
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        s->curve[i] = g_gpu.curve[i];
-        s->freqOffsets[i] = g_gpu.freqOffsets[i];
-    }
-    gc_strlcpy(s->gpuName, sizeof(s->gpuName), g_gpu.gpuName[0] ? g_gpu.gpuName : "NVIDIA GPU");
-    s->adapterCount = 1;
-    s->adapters[0].valid = true;
-    s->adapters[0].family = g_gpu.family;
-    gc_strlcpy(s->adapters[0].name, sizeof(s->adapters[0].name), s->gpuName);
-    if (g_gpu.nvml.getTemperature) {
-        unsigned int t = 0;
-        if (g_gpu.nvml.getTemperature(g_gpu.nvmlDevice, NVML_TEMPERATURE_GPU, &t) == NVML_SUCCESS) {
-            s->gpuTemperatureC = (int)t;
-            s->gpuTemperatureValid = true;
-        }
-    }
-    if (g_gpu.nvml.getPowerLimit) {
-        unsigned int p = 0;
-        if (g_gpu.nvml.getPowerLimit(g_gpu.nvmlDevice, &p) == NVML_SUCCESS) s->powerLimitCurrentmW = (int)p;
-    }
-    if (g_gpu.nvml.getNumFans) {
-        unsigned int fans = 0;
-        if (g_gpu.nvml.getNumFans(g_gpu.nvmlDevice, &fans) == NVML_SUCCESS) {
-            s->fanCount = fans;
-            s->fanSupported = (fans > 0);
-            for (unsigned int f = 0; f < fans && f < MAX_GPU_FANS; f++) {
-                unsigned int pct = 0;
-                if (g_gpu.nvml.getFanSpeed && g_gpu.nvml.getFanSpeed(g_gpu.nvmlDevice, f, &pct) == NVML_SUCCESS)
-                    s->fanPercent[f] = pct;
-            }
-        }
-    }
-}
+#include "linux_daemon_snapshot_runtime.cpp"
 
-#include "linux_fan_runtime.h"
-static bool select_request_gpu(const ServiceRequest* req, char* err, size_t errSize) {
-    if (g_gpu.adapterCount == 1 && (!req || !req->targetGpu.valid)) {
-        if (!g_gpu.writeIdentityResolved) {
-            gc_strlcpy(err, errSize, "single GPU identity is not safe for writes");
-            return false;
-        }
-        return true;
-    }
-    if (!req || !req->targetGpu.valid) {
-        gc_strlcpy(err, errSize, "multiple GPUs detected; select an exact PCI BDF with --gpu");
-        return false;
-    }
-    if (!linux_backend_select_target(&g_gpu, &req->targetGpu, err, errSize)) return false;
-    g_gpuReady = true;
-    return true;
-}
 
-static void handle_request(const ServiceRequest* req, ServiceResponse* resp) {
+static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp) {
     memset(resp, 0, sizeof(*resp));
     resp->magic = SERVICE_PROTOCOL_MAGIC;
     resp->version = SERVICE_PROTOCOL_VERSION;
     resp->serviceBuildNumber = APP_BUILD_NUMBER;
     gc_strlcpy(resp->serviceVersion, sizeof(resp->serviceVersion), APP_VERSION);
 
-    if (req->magic != SERVICE_PROTOCOL_MAGIC || req->version != SERVICE_PROTOCOL_VERSION) {
-        resp->status = SERVICE_STATUS_VERSION_MISMATCH;
-        gc_strlcpy(resp->message, sizeof(resp->message), "protocol version mismatch");
-        return;
-    }
+    ServiceRequest validatedRequest = *wireReq;
+    const ServiceRequest* req = &validatedRequest;
+    bool protocolMatches = req->magic == SERVICE_PROTOCOL_MAGIC &&
+        req->version == SERVICE_PROTOCOL_VERSION;
+    bool requestValid = protocolMatches &&
+        validate_service_request_for_ipc(&validatedRequest);
 
     pl_mutex_lock(&g_lock);
-    switch (req->command) {
+    if (!protocolMatches) {
+        resp->status = SERVICE_STATUS_VERSION_MISMATCH;
+        gc_strlcpy(resp->message, sizeof(resp->message), "protocol version mismatch");
+    } else if (!requestValid) {
+        resp->status = SERVICE_STATUS_ERROR;
+        gc_strlcpy(resp->message, sizeof(resp->message),
+            "invalid protocol fields");
+    } else if ((req->command == SERVICE_CMD_APPLY ||
+                req->command == SERVICE_CMD_RESET) &&
+               !mutation_preconditions_match(req, resp)) {
+        // State and message were filled by the fail-closed precondition gate.
+    } else switch (req->command) {
         case SERVICE_CMD_PING:
             resp->status = SERVICE_STATUS_OK;
             gc_strlcpy(resp->message, sizeof(resp->message), "pong");
             break;
         case SERVICE_CMD_GET_SNAPSHOT:
         case SERVICE_CMD_GET_TELEMETRY:
+            if (req->targetGpu.valid) {
+                char targetErr[256] = {};
+                if (!select_request_gpu(req, targetErr, sizeof(targetErr))) {
+                    resp->status = SERVICE_STATUS_ERROR;
+                    gc_strlcpy(resp->message, sizeof(resp->message), targetErr);
+                    break;
+                }
+            }
             if (g_gpuReady) linux_backend_refresh(&g_gpu);
-            populate_snapshot(&resp->snapshot);
+            populate_snapshot(&resp->snapshot, &resp->controlState);
             if (g_hasActiveDesired) resp->desired = g_activeDesired;
             resp->status = SERVICE_STATUS_OK;
             break;
@@ -441,14 +426,14 @@ static void handle_request(const ServiceRequest* req, ServiceResponse* resp) {
                     "operation result available");
             }
             if (g_hasActiveDesired) resp->desired = g_activeDesired;
-            populate_snapshot(&resp->snapshot);
+            populate_snapshot(&resp->snapshot, &resp->controlState);
             break;
         }
         case SERVICE_CMD_APPLY: {
             LinuxOperationRequestGuard operation(req, resp, "apply");
             if (!operation.execute()) {
                 if (g_hasActiveDesired) resp->desired = g_activeDesired;
-                populate_snapshot(&resp->snapshot);
+                populate_snapshot(&resp->snapshot, &resp->controlState);
                 break;
             }
             if (!g_gpuReady) {
@@ -464,6 +449,13 @@ static void handle_request(const ServiceRequest* req, ServiceResponse* resp) {
             }
             DesiredSettings d = req->desired;
             validate_desired_settings_for_ipc(&d);
+            if (d.hasLock && d.lockMode == LOCK_MODE_NONE) {
+                resp->status = SERVICE_STATUS_ERROR;
+                gc_strlcpy(resp->message, sizeof(resp->message),
+                    "lock mode is required when a VF lock is enabled");
+                dlog("daemon apply: rejected enabled lock without a mode\n");
+                break;
+            }
             if (d.hasFan && d.fanMode == FAN_MODE_CURVE) {
                 fan_curve_normalize(&d.fanCurve);
                 char fanValidation[160] = {};
@@ -531,7 +523,7 @@ static void handle_request(const ServiceRequest* req, ServiceResponse* resp) {
                 g_fanFailureCount = 0;
                 wake_fan_runtime();
             }
-            populate_snapshot(&resp->snapshot);
+            populate_snapshot(&resp->snapshot, &resp->controlState);
             if (g_hasActiveDesired) resp->desired = g_activeDesired;
             resp->status = committed ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
             if (g_stateUncertain) wake_fan_runtime();
@@ -541,7 +533,7 @@ static void handle_request(const ServiceRequest* req, ServiceResponse* resp) {
             LinuxOperationRequestGuard operation(req, resp, "reset");
             if (!operation.execute()) {
                 if (g_hasActiveDesired) resp->desired = g_activeDesired;
-                populate_snapshot(&resp->snapshot);
+                populate_snapshot(&resp->snapshot, &resp->controlState);
                 break;
             }
             if (!g_gpuReady) {
@@ -602,7 +594,7 @@ static void handle_request(const ServiceRequest* req, ServiceResponse* resp) {
                 g_fanFailureCount = 0;
                 wake_fan_runtime();
             }
-            populate_snapshot(&resp->snapshot);
+            populate_snapshot(&resp->snapshot, &resp->controlState);
             resp->status = committed ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
             if (g_stateUncertain) wake_fan_runtime();
             break;
@@ -612,6 +604,11 @@ static void handle_request(const ServiceRequest* req, ServiceResponse* resp) {
             gc_strlcpy(resp->message, sizeof(resp->message), "unknown command");
             break;
     }
+    // Linux has no interactive GUI recovery surface yet, but it shares the
+    // wire ABI.  Stamp every response as one daemon generation and report its
+    // current payload conservatively as DEGRADED until the Linux frontend grows
+    // the same published-control-state contract.
+    daemon_stamp_state_envelope(resp);
     pl_mutex_unlock(&g_lock);
 }
 
@@ -687,6 +684,13 @@ int linux_daemon_run(const char* configPath) {
             dlog("daemon: startup GPU identity rejected; no automatic write: %s\n", err);
         } else {
             g_gpuReady = true;
+            LockMode storedLockMode = saved.desired.lockMode;
+            saved.desired.lockMode = profile_lock_mode_after_load(
+                saved.desired.hasLock, true, saved.desired.lockMode);
+            if (storedLockMode != saved.desired.lockMode) {
+                dlog("daemon: migrated persisted enabled lock mode %d to %d before startup reapply\n",
+                     (int)storedLockMode, (int)saved.desired.lockMode);
+            }
             validate_desired_settings_for_ipc(&saved.desired);
             char msg[256] = {};
             LinuxMutationResult mutation = linux_backend_apply(&g_gpu, &saved.desired,

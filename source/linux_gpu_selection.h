@@ -47,6 +47,32 @@ static inline bool linux_gpu_identity_matches(const GpuAdapterInfo* requested,
     return linux_gpu_bdf_valid(requested) || requested->pciInfoValid;
 }
 
+// The Linux daemon currently owns one selected backend and one active intent.
+// Switching that backend while an intent belongs to another GPU would make the
+// fan worker and state envelope apply/attribute the old intent to the new GPU.
+// Until per-GPU runtime ownership exists, selection therefore fails closed.
+static inline bool linux_gpu_switch_preserves_active_intent(
+    bool hasActiveDesired, const GpuAdapterInfo* activeTarget,
+    const GpuAdapterInfo* requestedTarget) {
+    return !hasActiveDesired ||
+        linux_gpu_identity_matches(activeTarget, requestedTarget);
+}
+
+// The snapshot index also names the adapter used for read-only telemetry when
+// no multi-GPU write target has been selected. In that state, the first user
+// selection must start at an endpoint instead of treating the telemetry index
+// as an implicit choice.
+static inline int linux_next_gpu_selection_index(
+    bool hasSelectedTarget, unsigned int currentIndex,
+    unsigned int adapterCount, int delta) {
+    if (adapterCount == 0 || adapterCount > MAX_GPU_ADAPTERS) return -1;
+    if (!hasSelectedTarget || currentIndex >= adapterCount)
+        return delta < 0 ? (int)adapterCount - 1 : 0;
+    int count = (int)adapterCount;
+    int normalized = ((int)currentIndex + delta) % count;
+    return normalized < 0 ? normalized + count : normalized;
+}
+
 // Returns the unique matching index, -1 for no match and -2 for ambiguity.
 static inline int linux_resolve_gpu_identity(const GpuAdapterInfo* requested,
                                              const GpuAdapterInfo* adapters,

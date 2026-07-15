@@ -8,6 +8,8 @@ static pl_thread_ret fan_reassert_thread(void*) {
         unsigned int pollMs = 0;
         pl_mutex_lock(&g_lock);
         bool active = g_gpuReady && g_hasActiveDesired && !g_stateUncertain &&
+                      linux_gpu_identity_matches(
+                          &g_activeTarget, &g_gpu.selectedGpu) &&
                       g_activeDesired.hasFan &&
                       g_activeDesired.fanMode == FAN_MODE_CURVE;
         if (active) {
@@ -51,6 +53,8 @@ static pl_thread_ret fan_reassert_thread(void*) {
 
         pl_mutex_lock(&g_lock);
         active = g_gpuReady && g_hasActiveDesired && !g_stateUncertain &&
+                 linux_gpu_identity_matches(
+                     &g_activeTarget, &g_gpu.selectedGpu) &&
                  g_activeDesired.hasFan &&
                  g_activeDesired.fanMode == FAN_MODE_CURVE;
         if (active && g_gpu.nvml.getTemperature) {
@@ -80,4 +84,3 @@ static pl_thread_ret fan_reassert_thread(void*) {
     }
     return PL_THREAD_RET_OK;
 }
-

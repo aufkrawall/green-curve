@@ -911,19 +911,16 @@ static void detect_locked_tail_from_curve() {
 static bool read_live_curve_snapshot_settled(int attempts, DWORD delayMs, bool* lastOffsetsOkOut) {
     if (!g_app.isServiceProcess && g_app.usingBackgroundService) {
         char err[256] = {};
-        ServiceSnapshot snapshot = {};
-        if (!service_client_get_snapshot(&snapshot, err, sizeof(err))) {
+        ServiceResponse stateResponse = {};
+        if (!service_client_get_ready_state(&stateResponse, 2000,
+                "settled curve state", err, sizeof(err))) {
             debug_log("service snapshot failed: %s\n", err);
             if (lastOffsetsOkOut) *lastOffsetsOkOut = false;
             return false;
         }
-        apply_service_snapshot_to_app(&snapshot);
-        DesiredSettings activeDesired = {};
-        if (service_client_get_active_desired(&activeDesired, nullptr, err, sizeof(err))) {
-            apply_service_desired_to_gui(&activeDesired);
-        }
+        apply_ready_service_envelope_to_app(&stateResponse);
         if (lastOffsetsOkOut) *lastOffsetsOkOut = true;
-        return snapshot.loaded;
+        return stateResponse.snapshot.loaded;
     }
     if (lastOffsetsOkOut) *lastOffsetsOkOut = false;
     if (attempts < 1) attempts = 1;

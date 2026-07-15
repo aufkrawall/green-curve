@@ -268,10 +268,11 @@ static bool handle_cli(LPWSTR wCmdLine) {
         return true;
     }
     if (g_app.backgroundServiceAvailable) {
-        ServiceSnapshot snapshot = {};
+        ServiceResponse stateResponse = {};
         char err[256] = {};
-        if (service_client_get_snapshot(&snapshot, err, sizeof(err))) {
-            apply_service_snapshot_to_app(&snapshot);
+        if (service_client_get_ready_state(&stateResponse, 2000,
+                "CLI initial state", err, sizeof(err))) {
+            apply_ready_service_envelope_to_app(&stateResponse);
             CLI_LOG("Green Curve: Background service available. Using service-backed hardware control path.\n");
         } else {
             CLI_LOG("ERROR: %s\n", err[0] ? err : "Failed reading background service snapshot");
@@ -501,10 +502,10 @@ static bool handle_cli(LPWSTR wCmdLine) {
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/, int nCmdShow) {
     LPWSTR wCmdLine = GetCommandLineW();
-
     // Initialize the shared config lock before the service handoff path can read config.
     enable_best_process_dpi_awareness();
     init_dpi();
+    gui_service_model_initialize(&g_app.guiServiceModel);
     initialize_process_mitigations();
     InitializeCriticalSection(&g_debugLogLock);
     SetUnhandledExceptionFilter(green_curve_unhandled_exception_filter);
@@ -564,38 +565,34 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         return 0;
     }
 
-    bool offsetsOk = false;
     bool curveOk = false;
     if (g_app.backgroundServiceInstalled && g_app.backgroundServiceAvailable) {
-        ServiceSnapshot snapshot = {};
-        DesiredSettings activeDesired = {};
+        ServiceResponse stateResponse = {};
         char err[256] = {};
-        if (!service_client_get_snapshot(&snapshot, err, sizeof(err))) {
+        if (!service_client_get_state_envelope(SERVICE_CMD_GET_SNAPSHOT,
+                &stateResponse, 2000, "GUI pre-window state",
+                err, sizeof(err))) {
             g_app.backgroundServiceAvailable = false;
             g_app.backgroundServiceBroken = true;
             clear_service_authoritative_state();
             curveOk = false;
-            offsetsOk = false;
             debug_log("startup service snapshot failed: %s\n", err[0] ? err : "unknown");
             set_profile_status_text("Background service is installed but not responding. Start or reinstall the service to restore GPU control.");
-        }
-        if (g_app.backgroundServiceAvailable) {
-            apply_service_snapshot_to_app(&snapshot);
-            char desiredErr[256] = {};
-            if (service_client_get_active_desired(&activeDesired, nullptr, desiredErr, sizeof(desiredErr))) {
-                apply_service_desired_to_gui(&activeDesired);
-            }
-            curveOk = snapshot.loaded;
-            offsetsOk = curveOk;
+        } else if (stateResponse.state.gpuPhase ==
+                SERVICE_GPU_PHASE_READY) {
+            apply_ready_service_envelope_to_app(&stateResponse);
+            curveOk = stateResponse.snapshot.loaded;
+        } else {
+            clear_service_authoritative_state();
+            debug_log("startup service state is coherent but not READY: phase=%u generation=%llu revision=%llu\n",
+                stateResponse.state.gpuPhase,
+                (unsigned long long)stateResponse.state.gpuGeneration,
+                (unsigned long long)stateResponse.state.stateRevision);
         }
     } else {
         clear_service_authoritative_state();
         curveOk = false;
-        offsetsOk = false;
     }
-
-    // A settled snapshot already rebuilt the visible map and inferred the lock tail.
-    (void)offsetsOk;
 
     if (!curveOk && g_app.usingBackgroundService) {
         g_app.loaded = false;
@@ -876,38 +873,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     // Create edit controls
     create_edit_controls(g_app.hMainWnd, hInstance);
     ensure_tray_icon();
-    refresh_background_service_state();
-    update_background_service_controls();
+    if (!g_app.startHiddenToTray && g_app.backgroundServiceAvailable) {
+        if (!show_best_guess_support_warning(g_app.hMainWnd)) {
+            cleanup_gui_process_runtime(false);
+            return 0;
+        }
+    }
+    gui_service_begin_full_sync("initial window state");
     apply_logon_startup_behavior();
     if (g_app.usingBackgroundService && g_app.backgroundServiceBroken) {
         set_profile_status_text("Background service is installed but not responding. Start or reinstall the service to restore GPU control.");
-    }
-    if (!g_app.startHiddenToTray && g_app.backgroundServiceAvailable) {
-        if (!show_best_guess_support_warning(g_app.hMainWnd)) {
-            remove_tray_icon();
-            release_single_instance_mutex();
-            close_nvml();
-            if (g_app.hNvApi) { FreeLibrary(g_app.hNvApi); g_app.hNvApi = nullptr; }
-            for (int i = 0; i < 4; i++) {
-                if (g_app.trayIcons[i]) {
-                    DestroyIcon(g_app.trayIcons[i]);
-                    g_app.trayIcons[i] = nullptr;
-                }
-            }
-            if (g_app.hWindowClassBrush) {
-                DeleteObject(g_app.hWindowClassBrush);
-                g_app.hWindowClassBrush = nullptr;
-            }
-            if (s_hUiFont) {
-                DeleteObject(s_hUiFont);
-                s_hUiFont = nullptr;
-            }
-            close_debug_log_file();
-            DeleteCriticalSection(&g_configLock);
-            DeleteCriticalSection(&g_appLock);
-            DeleteCriticalSection(&g_debugLogLock);
-            return 0;
-        }
     }
     // A successful snapshot already synchronized the personal-slot checkmark
     // from explicit service metadata.  Without an authoritative service, clear
@@ -916,7 +891,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     if (!g_app.backgroundServiceAvailable) {
         sync_applied_profile_from_service_metadata();
     }
-    maybe_load_app_launch_profile_to_gui();
+    // App-start evaluation needs preconditions from the first READY envelope.
+    g_app.appLaunchEvaluationPending = true;
     invalidate_main_window();
 
     if (g_app.startHiddenToTray) {
@@ -934,27 +910,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         DispatchMessageA(&msg);
     }
 
-    release_single_instance_mutex();
-    close_nvml();
-    if (g_app.hNvApi) { FreeLibrary(g_app.hNvApi); g_app.hNvApi = nullptr; }
-    for (int i = 0; i < 4; i++) {
-        if (g_app.trayIcons[i]) {
-            DestroyIcon(g_app.trayIcons[i]);
-            g_app.trayIcons[i] = nullptr;
-        }
-    }
-    if (g_app.hWindowClassBrush) {
-        DeleteObject(g_app.hWindowClassBrush);
-        g_app.hWindowClassBrush = nullptr;
-    }
-    if (s_hUiFont) {
-        DeleteObject(s_hUiFont);
-        s_hUiFont = nullptr;
-    }
-    close_debug_log_file();
-    DeleteCriticalSection(&g_configLock);
-    DeleteCriticalSection(&g_appLock);
-    DeleteCriticalSection(&g_debugLogLock);
+    cleanup_gui_process_runtime(true);
 
     return (int)msg.wParam;
 }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "linux_port_internal.h"
+#include "profile_persistence_policy.h"
 
 #include <string>
 #include <vector>
@@ -17,8 +18,7 @@ void merge_desired_settings(DesiredSettings* base, const DesiredSettings* incomi
         base->hasLock = true;
         base->lockCi = incoming->lockCi;
         base->lockMHz = incoming->lockMHz;
-        // The Linux DesiredSettings has no lockMode (no hard/NVML pin concept);
-        // anchor tracking is the only remaining lock field to merge.
+        base->lockMode = incoming->lockMode;
         base->lockTracksAnchor = incoming->lockTracksAnchor;
     }
     if (incoming->hasMemOffset) {
@@ -247,6 +247,29 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
         }
     }
 
+    value = get_section_value(doc, controlsSection, "lock_tracks_anchor");
+    if (!value.empty()) {
+        int parsed = 0;
+        if (!parse_int_strict(value.c_str(), &parsed)) {
+            set_message(err, errSize,
+                        "Invalid lock_tracks_anchor in %s", messageContext);
+            return false;
+        }
+        desired->lockTracksAnchor = parsed != 0;
+    }
+
+    value = get_section_value(doc, controlsSection, "lock_mode");
+    bool hasExplicitLockMode = !value.empty();
+    int storedLockMode = LOCK_MODE_NONE;
+    if (hasExplicitLockMode &&
+        (!parse_int_strict(value.c_str(), &storedLockMode) ||
+         storedLockMode < LOCK_MODE_NONE || storedLockMode > LOCK_MODE_HARD)) {
+        set_message(err, errSize, "Invalid lock_mode in %s", messageContext);
+        return false;
+    }
+    desired->lockMode = profile_lock_mode_after_load(
+        desired->hasLock, hasExplicitLockMode, storedLockMode);
+
     value = get_section_value(doc, controlsSection, "mem_offset_mhz");
     if (!value.empty()) {
         if (!parse_int_strict(value.c_str(), &desired->memOffsetMHz)) {
@@ -468,6 +491,11 @@ static void write_profile_sections(IniDocument* doc, const char* controlsSection
     addControl("lock_ci", value);
     snprintf(value, sizeof(value), "%u", desired->hasLock ? desired->lockMHz : 0u);
     addControl("lock_mhz", value);
+    snprintf(value, sizeof(value), "%d",
+             desired->hasLock ? (int)desired->lockMode : (int)LOCK_MODE_NONE);
+    addControl("lock_mode", value);
+    snprintf(value, sizeof(value), "%d", desired->lockTracksAnchor ? 1 : 0);
+    addControl("lock_tracks_anchor", value);
     snprintf(value, sizeof(value), "%d", desired->memOffsetMHz);
     addControl("mem_offset_mhz", value);
     snprintf(value, sizeof(value), "%d", desired->powerLimitPct);
@@ -601,6 +629,53 @@ bool save_linux_gpu_selection(const char* path, const GpuAdapterInfo* target,
     set_section_int(&doc, "gpu", "pci_info_valid", target->pciInfoValid ? 1 : 0);
     set_section_int(&doc, "gpu", "device_id", (int)target->deviceId);
     set_section_int(&doc, "gpu", "subsystem_id", (int)target->subSystemId);
+    return save_ini_document(path, doc, err, errSize);
+}
+
+bool clear_profile_from_config_path(const char* path, int slot,
+                                    char* err, size_t errSize) {
+    if (!path || slot < 1 || slot > CONFIG_NUM_SLOTS) {
+        set_message(err, errSize, "Invalid profile clear arguments");
+        return false;
+    }
+    IniDocument doc;
+    if (!load_ini_document(path, &doc, err, errSize)) return false;
+    char controls[32] = {}, curve[32] = {}, fan[32] = {};
+    snprintf(controls, sizeof(controls), "profile%d", slot);
+    snprintf(curve, sizeof(curve), "profile%d_curve", slot);
+    snprintf(fan, sizeof(fan), "profile%d_fan_curve", slot);
+    std::vector<IniSection> retained;
+    retained.reserve(doc.sections.size());
+    for (const IniSection& section : doc.sections) {
+        bool remove = section.name == controls || section.name == curve ||
+                      section.name == fan;
+        if (slot == 1 && (section.name == "controls" ||
+                          section.name == "curve" ||
+                          section.name == "fan_curve")) remove = true;
+        if (!remove) retained.push_back(section);
+    }
+    doc.sections.swap(retained);
+    int selectedSlot = get_section_int(
+        &doc, "profiles", "selected_slot", CONFIG_DEFAULT_SLOT);
+    int appliedSlot = get_section_int(&doc, "profiles", "applied_slot", 0);
+    int appLaunchSlot = get_section_int(
+        &doc, "profiles", "app_launch_slot", 0);
+    int logonSlot = get_section_int(&doc, "profiles", "logon_slot", 0);
+    if (selectedSlot < 1 || selectedSlot > CONFIG_NUM_SLOTS)
+        selectedSlot = CONFIG_DEFAULT_SLOT;
+    if (appliedSlot < 0 || appliedSlot > CONFIG_NUM_SLOTS) appliedSlot = 0;
+    if (appLaunchSlot < 0 || appLaunchSlot > CONFIG_NUM_SLOTS) appLaunchSlot = 0;
+    if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
+    selectedSlot = profile_slot_reference_after_clear(
+        selectedSlot, slot, CONFIG_DEFAULT_SLOT);
+    appliedSlot = profile_slot_reference_after_clear(appliedSlot, slot, 0);
+    appLaunchSlot = profile_slot_reference_after_clear(appLaunchSlot, slot, 0);
+    logonSlot = profile_slot_reference_after_clear(logonSlot, slot, 0);
+    set_section_int(&doc, "profiles", "selected_slot", selectedSlot);
+    set_section_int(&doc, "profiles", "applied_slot", appliedSlot);
+    set_section_int(&doc, "profiles", "app_launch_slot", appLaunchSlot);
+    set_section_int(&doc, "profiles", "logon_slot", logonSlot);
+    set_section_int(&doc, "startup", "apply_on_launch", logonSlot > 0 ? 1 : 0);
     return save_ini_document(path, doc, err, errSize);
 }
 

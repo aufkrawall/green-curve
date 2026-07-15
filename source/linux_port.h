@@ -30,6 +30,8 @@ struct LinuxCliOptions {
     bool showHelp;
     bool dump;
     bool json;
+    bool dumpLive;
+    bool jsonLive;
     bool probe;
     bool reset;
     bool saveConfig;
@@ -89,9 +91,12 @@ bool default_probe_output_path(const char* configPath, char* dst, size_t dstSize
 bool default_assets_output_dir(const char* configPath, char* dst, size_t dstSize);
 void merge_desired_settings(DesiredSettings* base, const DesiredSettings* incoming);
 bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts);
+void print_linux_help();
 bool load_profile_from_config_path(const char* path, int slot, DesiredSettings* desired, char* err, size_t errSize);
 bool load_default_or_selected_profile(const char* path, int* slot, DesiredSettings* desired, char* err, size_t errSize);
 bool save_profile_to_config_path(const char* path, int slot, const DesiredSettings* desired, char* err, size_t errSize);
+bool clear_profile_from_config_path(const char* path, int slot,
+                                    char* err, size_t errSize);
 bool parse_linux_gpu_bdf(const char* text, GpuAdapterInfo* target);
 void format_linux_gpu_bdf(const GpuAdapterInfo* target, char* text, size_t textSize);
 bool load_linux_gpu_selection(const char* path, GpuAdapterInfo* target);
@@ -101,6 +106,8 @@ bool run_linux_probe(const char* outputPath, ProbeSummary* summary, char* err, s
 bool write_linux_assets(const char* outputDir, const char* execPath, const char* configPath, char* err, size_t errSize);
 void print_desired_settings_text(FILE* out, int slot, const DesiredSettings* desired);
 void print_desired_settings_json(FILE* out, int slot, const DesiredSettings* desired);
+void print_linux_live_state_text(FILE* out, const ServiceResponse* response);
+void print_linux_live_state_json(FILE* out, const ServiceResponse* response);
 int linux_run_tui(const char* configPath, int initialSlot, DesiredSettings* initialDesired,
                   const GpuAdapterInfo* initialTarget);
 

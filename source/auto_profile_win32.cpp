@@ -81,12 +81,11 @@ static bool ap_do_apply_slot(int slot, ServiceApplyOrigin origin) {
     // skip the disruptive reset+reapply and just reflect the slot in the GUI.
     // (Uses the cached service-availability flags — apply_desired_settings() does
     // its own refresh, so we avoid an extra blocking ping on the message thread.)
-    if (g_app.usingBackgroundService && g_app.backgroundServiceAvailable) {
-        DesiredSettings active = {};
-        char snapErr[256] = {};
+    if (gui_service_model_ready(&g_app.guiServiceModel) &&
+        g_app.serviceActiveDesiredValid) {
         char detail[256] = {};
-        if (refresh_service_snapshot_and_active_desired(snapErr, sizeof(snapErr), &active) &&
-            desired_settings_match_active_service_intent(&desired, &active, detail, sizeof(detail))) {
+        if (desired_settings_match_active_service_intent(&desired,
+                &g_app.serviceActiveDesired, detail, sizeof(detail))) {
             debug_log("auto-profile: slot %d already active in service; skipping apply (%s)\n",
                       slot, detail[0] ? detail : "match");
             populate_desired_into_gui(&desired);

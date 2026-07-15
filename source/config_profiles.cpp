@@ -468,11 +468,6 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         return false;
     }
 
-    if (!refresh_service_snapshot_and_active_desired(nullptr, 0, nullptr)) {
-        debug_log("save_profile_to_config: service snapshot refresh failed; "
-            "proceeding with last known state for slot %d\n", slot);
-    }
-
     int desiredCurveCount = 0;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (desired->hasCurvePoint[i]) desiredCurveCount++;
