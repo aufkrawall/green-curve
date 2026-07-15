@@ -85,10 +85,16 @@ WINDOWS_SOURCE_FILES = [
 
 LINUX_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "linux_main.cpp"),
+    os.path.join(SOURCE_DIR, "linux_cli_options.cpp"),
     os.path.join(SOURCE_DIR, "linux_port.cpp"),
     os.path.join(SOURCE_DIR, "linux_port_profiles.cpp"),
+    os.path.join(SOURCE_DIR, "linux_live_output.cpp"),
     os.path.join(SOURCE_DIR, "linux_tui.cpp"),
+    os.path.join(SOURCE_DIR, "linux_tui_actions.cpp"),
+    os.path.join(SOURCE_DIR, "linux_tui_render.cpp"),
     os.path.join(SOURCE_DIR, "linux_tui_layout.cpp"),
+    os.path.join(SOURCE_DIR, "linux_tui_layout_vf.cpp"),
+    os.path.join(SOURCE_DIR, "linux_tui_layout_fan_profiles.cpp"),
     os.path.join(SOURCE_DIR, "linux_gpu.cpp"),
     os.path.join(SOURCE_DIR, "linux_backend.cpp"),
     os.path.join(SOURCE_DIR, "linux_daemon.cpp"),
@@ -1260,7 +1266,7 @@ def _run_compiler(cmd, cwd=SCRIPT_DIR, allow_cfg_collision=False):
 
 def _compile_arm64_objects(sources, object_dir, target, extra_flags=None):
     """Compile ARM64 translation units independently so branch protection is
-    materialized before link.  LTO is deliberately disabled for the 0.19 release.
+    materialized before link.  LTO remains deliberately disabled for release builds.
     """
     os.makedirs(object_dir, exist_ok=True)
     objects = []
@@ -2065,11 +2071,17 @@ def run_regression_tests(extra_flags=None):
 #include "fan_runtime_policy.h"
 #include "service_operation_tracker.h"
 #include "gui_mutation_queue_policy.h"
+#include "gui_service_io_queue_policy.h"
+#include "gui_draft_policy.h"
+#include "gui_tray_callback_policy.h"
+#include "gui_window_redraw_policy.h"
 #include "service_health_probe_policy.h"
 #include "profile_persistence_policy.h"
 #include "profile_startup_policy.h"
 #include "startup_task_definition_policy.h"
 #include "linux_tui_layout.cpp"
+#include "linux_tui_layout_vf.cpp"
+#include "linux_tui_layout_fan_profiles.cpp"
 
 // The task classifier lives in an amalgamated Windows shard.  Supply only the
 // surrounding declarations needed to compile that shard into this fixture;
@@ -2113,9 +2125,56 @@ static bool write_config_sections_atomic(const char* path,
 #include "auto_profile_controller.cpp"
 #include "hotkeys.cpp"
 
+static ServiceResponse fake_ready_service_response(gc_u64 instance,
+    gc_u64 revision, gc_u64 generation) {
+    ServiceResponse response = {};
+    response.magic = SERVICE_PROTOCOL_MAGIC;
+    response.version = SERVICE_PROTOCOL_VERSION;
+    response.status = SERVICE_STATUS_OK;
+    response.state.serviceInstanceId = instance;
+    response.state.stateRevision = revision;
+    response.state.gpuGeneration = generation;
+    response.state.gpuPhase = SERVICE_GPU_PHASE_READY;
+    response.state.validSections = SERVICE_STATE_SECTION_READY_REQUIRED |
+        SERVICE_STATE_SECTION_FAN_TELEMETRY;
+    response.snapshot.initialized = 1;
+    response.snapshot.loaded = 1;
+    response.snapshot.adapterCount = 1;
+    response.snapshot.selectedAdapterIndex = 0;
+    response.snapshot.adapters[0].valid = 1;
+    response.snapshot.adapters[0].pciInfoValid = 1;
+    response.snapshot.adapters[0].nvapiIndex = 0;
+    response.snapshot.adapters[0].deviceId = 0x268410DEu;
+    response.snapshot.adapters[0].subSystemId = 0x17AA3A5Cu;
+    response.snapshot.adapters[0].pciRevisionId = 0xA1u;
+    response.snapshot.adapters[0].extDeviceId = 0x12345678u;
+    response.snapshot.adapters[0].pciBus = 9;
+    response.snapshot.adapters[0].pciDevice = 3;
+    response.snapshot.curve[7].freq_kHz = 1500000;
+    response.snapshot.curve[7].volt_uV = 800000;
+    response.snapshot.curve[11].freq_kHz = 1800000;
+    response.snapshot.curve[11].volt_uV = 900000;
+    response.snapshot.numPopulated = 2;
+    response.snapshot.powerLimitPct = 100;
+    response.snapshot.activeFanMode = FAN_MODE_AUTO;
+    response.controlState.valid = 1;
+    response.controlState.hasGpuOffset = 1;
+    response.controlState.hasMemOffset = 1;
+    response.controlState.hasPowerLimit = 1;
+    response.controlState.powerLimitPct = 100;
+    response.controlState.hasFan = 1;
+    response.controlState.fanMode = FAN_MODE_AUTO;
+    response.state.topologySignature =
+        service_snapshot_topology_signature(&response.snapshot);
+    return response;
+}
+
 #if defined(_WIN32)
 static unsigned int g_nativeLockClickedCount = 0;
 static unsigned int g_nativeLockDoubleClickedCount = 0;
+static bool g_nativeTrayHiddenIntent = false;
+static bool g_nativeTrayHideEnforcementActive = false;
+static unsigned int g_nativeTrayHideEnforcementCount = 0;
 
 static LRESULT CALLBACK native_lock_test_parent_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     (void)lParam;
@@ -2156,6 +2215,159 @@ static bool run_native_ownerdraw_button_notification_test() {
     UnregisterClassA(className, instance);
     return ok;
 }
+
+static LRESULT CALLBACK native_reconnect_test_parent_proc(
+    HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (gui_tray_hidden_intent_requires_rehide(
+            g_nativeTrayHiddenIntent,
+            IsWindowVisible(hwnd) != FALSE,
+            g_nativeTrayHideEnforcementActive)) {
+        g_nativeTrayHideEnforcementActive = true;
+        g_nativeTrayHideEnforcementCount++;
+        ShowWindow(hwnd, SW_HIDE);
+        g_nativeTrayHideEnforcementActive = false;
+    }
+    if (msg == WM_WINDOWPOSCHANGING && lParam) {
+        WINDOWPOS* position = reinterpret_cast<WINDOWPOS*>(lParam);
+        bool showRequested = (position->flags & SWP_SHOWWINDOW) != 0;
+        if (gui_tray_hidden_intent_blocks_show(
+                g_nativeTrayHiddenIntent, showRequested)) {
+            position->flags &= ~SWP_SHOWWINDOW;
+            position->flags |= SWP_HIDEWINDOW | SWP_NOACTIVATE;
+        }
+    }
+    return DefWindowProcA(hwnd, msg, wParam, lParam);
+}
+
+static bool run_native_reconnect_projection_and_dib_test() {
+    HINSTANCE instance = GetModuleHandleA(nullptr);
+    const char* className = "GreenCurveReconnectRegressionWindow";
+    WNDCLASSA wc = {};
+    wc.lpfnWndProc = native_reconnect_test_parent_proc;
+    wc.hInstance = instance;
+    wc.lpszClassName = className;
+    ATOM atom = RegisterClassA(&wc);
+    if (!atom && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+    HWND parent = CreateWindowExA(0, className, "", WS_OVERLAPPED,
+        0, 0, 160, 80, nullptr, nullptr, instance, nullptr);
+    HWND edit = parent ? CreateWindowExA(0, "EDIT", "0", WS_CHILD,
+        0, 0, 80, 20, parent, nullptr, instance, nullptr) : nullptr;
+    HWND apply = parent ? CreateWindowExA(0, "BUTTON", "Apply", WS_CHILD,
+        0, 24, 80, 20, parent, nullptr, instance, nullptr) : nullptr;
+    if (!parent || !edit || !apply) {
+        if (parent) DestroyWindow(parent);
+        UnregisterClassA(className, instance);
+        return false;
+    }
+
+    g_nativeTrayHiddenIntent = true;
+    g_nativeTrayHideEnforcementActive = false;
+    g_nativeTrayHideEnforcementCount = 0;
+    ShowWindow(parent, SW_SHOW);
+    bool ok = IsWindowVisible(parent) == FALSE;
+
+    // Simulate a display-stack visibility reconstruction which bypasses the
+    // SWP_SHOWWINDOW precondition.  The next window message must enforce the
+    // durable postcondition without recursion or a user activation.
+    g_nativeTrayHideEnforcementCount = 0;
+    LONG_PTR hiddenStyle = GetWindowLongPtrA(parent, GWL_STYLE);
+    SetWindowLongPtrA(parent, GWL_STYLE, hiddenStyle | WS_VISIBLE);
+    SendMessageA(parent, WM_NULL, 0, 0);
+    ok = ok && g_nativeTrayHideEnforcementCount > 0 &&
+        IsWindowVisible(parent) == FALSE;
+
+    g_nativeTrayHiddenIntent = false;
+    ShowWindow(parent, SW_SHOW);
+    ok = ok && IsWindowVisible(parent) != FALSE;
+    ShowWindow(parent, SW_HIDE);
+
+    // DefWindowProc's top-level WM_SETREDRAW implementation adds WS_VISIBLE
+    // when redraw is enabled. This is the exact tray-profile ghost-window
+    // mechanism: a raw redraw pair resurrects a hidden owner before WM_PAINT.
+    g_nativeTrayHiddenIntent = true;
+    SendMessageA(parent, WM_SETREDRAW, FALSE, 0);
+    SendMessageA(parent, WM_SETREDRAW, TRUE, 0);
+    ok = ok && IsWindowVisible(parent) != FALSE;
+    SendMessageA(parent, WM_NULL, 0, 0);
+    ok = ok && IsWindowVisible(parent) == FALSE;
+
+    GuiServiceModel model = {};
+    gui_service_model_initialize(&model);
+    ServiceResponse ready = fake_ready_service_response(51, 1, 1);
+    ok = ok && gui_service_model_accept(&model, 1, &ready.state) ==
+        GUI_SERVICE_ENVELOPE_ACCEPTED;
+    EnableWindow(apply, gui_service_phase_actions_enabled(model.phase));
+
+    ServiceStateEnvelope missing = ready.state;
+    missing.stateRevision = 2;
+    missing.gpuGeneration = 2;
+    missing.gpuPhase = SERVICE_GPU_PHASE_DEVICE_MISSING;
+    missing.validSections = SERVICE_STATE_SECTION_ADAPTER_IDENTITY |
+        SERVICE_STATE_SECTION_ACTIVE_INTENT;
+    missing.topologySignature = 0;
+    ok = ok && gui_service_model_accept(&model, 1, &missing) ==
+        GUI_SERVICE_ENVELOPE_ACCEPTED;
+    EnableWindow(apply, gui_service_phase_actions_enabled(model.phase));
+    char preserved[16] = {};
+    GetWindowTextA(edit, preserved, sizeof(preserved));
+    ok = ok && !IsWindowEnabled(apply) && strcmp(preserved, "0") == 0;
+
+    ServiceResponse recovered = fake_ready_service_response(51, 3, 2);
+    ok = ok && gui_service_model_accept(&model, 1, &recovered.state) ==
+        GUI_SERVICE_ENVELOPE_ACCEPTED;
+    bool projectionInitiallyVisible = IsWindowVisible(parent) != FALSE;
+    bool projectionTogglesRedraw =
+        gui_top_level_redraw_uses_wm_setredraw(projectionInitiallyVisible);
+    if (projectionTogglesRedraw)
+        SendMessageA(parent, WM_SETREDRAW, FALSE, 0);
+    SetWindowTextA(edit, "125");
+    EnableWindow(apply, gui_service_phase_actions_enabled(model.phase));
+    if (projectionTogglesRedraw)
+        SendMessageA(parent, WM_SETREDRAW, TRUE, 0);
+    RedrawWindow(parent, nullptr, nullptr,
+        projectionInitiallyVisible
+            ? (RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW)
+            : (RDW_INVALIDATE | RDW_ALLCHILDREN));
+    GetWindowTextA(edit, preserved, sizeof(preserved));
+    ok = ok && IsWindowEnabled(apply) && strcmp(preserved, "125") == 0 &&
+        IsWindowVisible(parent) == FALSE;
+
+    BITMAPINFO info = {};
+    info.bmiHeader.biSize = sizeof(info.bmiHeader);
+    info.bmiHeader.biWidth = 8;
+    info.bmiHeader.biHeight = -8;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    void* sourcePixels = nullptr;
+    void* targetPixels = nullptr;
+    HBITMAP sourceBitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS,
+        &sourcePixels, nullptr, 0);
+    HBITMAP targetBitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS,
+        &targetPixels, nullptr, 0);
+    HDC sourceDc = CreateCompatibleDC(nullptr);
+    HDC targetDc = CreateCompatibleDC(nullptr);
+    HGDIOBJ oldSource = sourceDc && sourceBitmap
+        ? SelectObject(sourceDc, sourceBitmap) : nullptr;
+    HGDIOBJ oldTarget = targetDc && targetBitmap
+        ? SelectObject(targetDc, targetBitmap) : nullptr;
+    if (!sourcePixels || !targetPixels || !oldSource || !oldTarget) {
+        ok = false;
+    } else {
+        ((gc_u32*)sourcePixels)[0] = 0x00112233u;
+        ok = ok && BitBlt(targetDc, 0, 0, 8, 8, sourceDc, 0, 0, SRCCOPY) &&
+            ((gc_u32*)targetPixels)[0] == 0x00112233u;
+    }
+    if (oldSource) SelectObject(sourceDc, oldSource);
+    if (oldTarget) SelectObject(targetDc, oldTarget);
+    if (sourceDc) DeleteDC(sourceDc);
+    if (targetDc) DeleteDC(targetDc);
+    if (sourceBitmap) DeleteObject(sourceBitmap);
+    if (targetBitmap) DeleteObject(targetBitmap);
+    DestroyWindow(parent);
+    UnregisterClassA(className, instance);
+    return ok;
+}
 #endif
 
 struct FakeLinuxTransaction {
@@ -2179,9 +2391,45 @@ static bool fake_linux_transaction_rollback(void* opaque, unsigned int attempted
 }
 
 int main(int argc, char** argv) {
+    if (argc == 2 && strcmp(argv[1], "--capture-success") == 0) {
+        for (int i = 0; i < 4096; ++i) fputs("capture-data-", stdout);
+        return 0;
+    }
+    if (argc == 2 && strcmp(argv[1], "--capture-failure") == 0) {
+        fputs("expected child failure", stderr);
+        return 7;
+    }
+
     InitializeCriticalSection(&g_configLock);
 
     if (APP_DEBUG_DEFAULT_ENABLED != 1) return 20;
+
+    // Bounded append cursors count bytes rather than exposing StringCch's
+    // HRESULT convention, retain prefixes, and saturate safely on truncation.
+    {
+        char combined[16] = {};
+        size_t used = gc_appendf(combined, sizeof(combined), 0, "GPU");
+        used = gc_appendf(combined, sizeof(combined), used, " %d", 42);
+        if (used != 6 || strcmp(combined, "GPU 42") != 0) return 1140;
+        used = gc_appendf(combined, sizeof(combined), used,
+            " verification text is deliberately too long");
+        if (used != sizeof(combined) - 1 || combined[used] != 0 ||
+            strncmp(combined, "GPU 42", 6) != 0) return 1141;
+        if (gc_appendf(combined, sizeof(combined), used, "ignored") != used ||
+            combined[used] != 0) return 1142;
+    }
+
+    // Subprocess capture succeeds only for exit code zero and must continue
+    // draining output after the caller's bounded capture buffer fills.
+    {
+        const char* successArgs[] = { argv[0], "--capture-success", nullptr };
+        char captured[16] = {};
+        if (!pl_run_capture(successArgs, captured, sizeof(captured), 5000) ||
+            strncmp(captured, "capture-data-", 13) != 0) return 1143;
+        const char* failureArgs[] = { argv[0], "--capture-failure", nullptr };
+        if (pl_run_capture(failureArgs, captured, sizeof(captured), 5000) ||
+            strncmp(captured, "expected child", 14) != 0) return 1144;
+    }
 
     // Merely selecting a saved slot must not make saved OC intent look live on
     // the next GUI launch. Only explicit app-launch automation may source the
@@ -2477,32 +2725,294 @@ int main(int argc, char** argv) {
         if (ds.lockMode != LOCK_MODE_NONE) return 78;
     }
 
-    // IPC response bool flags are canonicalized before the GUI trusts them.
+    // Protocol-v11 response envelopes are strict, complete, and generation
+    // stamped. Numeric defaults (0 offsets / 100% power / Auto fan) are valid
+    // authoritative values rather than "missing" sentinels.
     {
-        ServiceResponse resp = {};
-        resp.snapshot.initialized = 99;
-        resp.snapshot.loaded = 88;
-        resp.snapshot.selectedAdapterOrdinalFallback = 77;
-        resp.snapshot.lastApplyUsedGpuOffset = 66;
-        resp.snapshot.serviceInRecovery = 55;
-        resp.snapshot.serviceReapplyInProgress = 44;
-        resp.snapshot.adapterCount = 1;
-        resp.snapshot.adapters[0].valid = 33;
-        resp.snapshot.adapters[0].pciInfoValid = 22;
-        resp.desired.hasGpuOffset = 11;
-        resp.controlState.valid = 10;
-        validate_service_response_for_ipc(&resp);
-        if (resp.snapshot.initialized != 1 || resp.snapshot.loaded != 1) return 154;
-        if (resp.snapshot.selectedAdapterOrdinalFallback != 1 || resp.snapshot.lastApplyUsedGpuOffset != 1) return 155;
-        if (resp.snapshot.serviceInRecovery != 1 || resp.snapshot.serviceReapplyInProgress != 1) return 156;
-        if (resp.snapshot.adapters[0].valid != 1 || resp.snapshot.adapters[0].pciInfoValid != 1) return 157;
-        if (resp.desired.hasGpuOffset != 1 || resp.controlState.valid != 1) return 158;
+        ServiceResponse resp = fake_ready_service_response(7, 1, 1);
+        if (!validate_service_response_for_ipc(&resp)) return 154;
+        if (resp.controlState.gpuOffsetMHz != 0 ||
+            resp.controlState.memOffsetMHz != 0 ||
+            resp.controlState.powerLimitPct != 100 ||
+            resp.controlState.fanMode != FAN_MODE_AUTO) return 155;
+        ServiceResponse malformed = resp;
+        malformed.snapshot.initialized = 99;
+        if (validate_service_response_for_ipc(&malformed)) return 156;
+        malformed = resp;
+        malformed.state.reservedBool[0] = 1;
+        if (validate_service_response_for_ipc(&malformed)) return 157;
+        malformed = resp;
+        malformed.state.serviceInstanceId = 0;
+        if (validate_service_response_for_ipc(&malformed)) return 158;
+        malformed = resp;
+        malformed.state.topologySignature ^= 1;
+        if (validate_service_response_for_ipc(&malformed)) return 1101;
+        malformed = resp;
+        malformed.state.validSections &=
+            ~SERVICE_STATE_SECTION_APPLIED_CONTROLS;
+        if (validate_service_response_for_ipc(&malformed)) return 1102;
+        malformed = resp;
+        malformed.reserved = 1;
+        if (validate_service_response_for_ipc(&malformed)) return 1140;
     }
 
-    // F-08-001: IPC magic/version constants unchanged
+    // Protocol-v11 request validation, mutation preconditions, and field layout.
     {
         if (SERVICE_PROTOCOL_MAGIC != 0x47535643u) return 80;
-        if (SERVICE_PROTOCOL_VERSION < 1) return 81;
+        if (SERVICE_PROTOCOL_VERSION != 11) return 81;
+        if (offsetof(ServiceRequest, expectedServiceInstanceId) <=
+            offsetof(ServiceRequest, operationId) ||
+            offsetof(ServiceResponse, state) <=
+            offsetof(ServiceResponse, serviceVersion)) return 1103;
+        ServiceRequest request = {};
+        request.magic = SERVICE_PROTOCOL_MAGIC;
+        request.version = SERVICE_PROTOCOL_VERSION;
+        request.command = SERVICE_CMD_PING;
+        request.callerPid = 1;
+        if (!validate_service_request_for_ipc(&request)) return 1104;
+        request.command = SERVICE_CMD_APPLY;
+        request.operationId = 55;
+        request.applyOrigin = SERVICE_APPLY_ORIGIN_GUI;
+        request.expectedServiceInstanceId = 7;
+        if (validate_service_request_for_ipc(&request)) return 1105;
+        request.expectedGpuGeneration = 2;
+        request.expectedTopologySignature = 3;
+        if (validate_service_request_for_ipc(&request)) return 1106;
+        request.targetGpu.valid = 1;
+        request.targetGpu.pciInfoValid = 1;
+        if (!validate_service_request_for_ipc(&request)) return 1107;
+        request.flags = 0x80000000u;
+        if (validate_service_request_for_ipc(&request)) return 1108;
+        request.flags = 0;
+        request.desired.hasFan = 2;
+        if (validate_service_request_for_ipc(&request)) return 1109;
+        request.desired.hasFan = 0;
+        memset(request.source, 'x', sizeof(request.source));
+        if (validate_service_request_for_ipc(&request)) return 1110;
+    }
+
+    // Topology is stable across telemetry and adapter ordinal reorder, but
+    // detects every populated-map entry (including same-count map changes).
+    {
+        ServiceResponse base = fake_ready_service_response(8, 1, 1);
+        gc_u64 signature = base.state.topologySignature;
+        ServiceSnapshot telemetry = base.snapshot;
+        telemetry.curve[7].freq_kHz += 500000;
+        if (service_snapshot_topology_signature(&telemetry) != signature)
+            return 1111;
+        ServiceSnapshot changedMap = base.snapshot;
+        changedMap.curve[11] = {};
+        changedMap.curve[12].freq_kHz = 1800000;
+        changedMap.curve[12].volt_uV = 900000;
+        if (service_snapshot_topology_signature(&changedMap) == signature)
+            return 1112;
+        ServiceSnapshot reordered = base.snapshot;
+        reordered.adapterCount = 2;
+        reordered.selectedAdapterIndex = 1;
+        reordered.adapters[1] = reordered.adapters[0];
+        reordered.adapters[1].nvapiIndex = 0;
+        reordered.adapters[0] = {};
+        reordered.adapters[0].valid = 1;
+        reordered.adapters[0].deviceId = 0x999910DEu;
+        if (service_snapshot_topology_signature(&reordered) != signature)
+            return 1113;
+        ServiceResponse empty = base;
+        memset(empty.snapshot.curve, 0, sizeof(empty.snapshot.curve));
+        empty.snapshot.numPopulated = 0;
+        empty.state.topologySignature =
+            service_snapshot_topology_signature(&empty.snapshot);
+        if (validate_service_response_for_ipc(&empty)) return 1114;
+    }
+
+    // Pure GUI reducer: coherent reconnect sequence, stale completion fences,
+    // service restart retirement, partial validity, capabilities, and drafts.
+    {
+        GuiServiceModel model = {};
+        gui_service_model_initialize(&model);
+        if (model.phase != GUI_SERVICE_DISCONNECTED) return 1115;
+        gui_service_model_begin_sync(&model, 1);
+        if (model.phase != GUI_SERVICE_SYNCING) return 1116;
+        ServiceResponse ready = fake_ready_service_response(21, 1, 1);
+        if (gui_service_model_accept(&model, 1, &ready.state) !=
+                GUI_SERVICE_ENVELOPE_ACCEPTED ||
+            model.phase != GUI_SERVICE_READY) return 1117;
+        if (gui_service_model_accept(&model, 1, &ready.state) !=
+                GUI_SERVICE_ENVELOPE_REJECTED_REVISION) return 1118;
+
+        ServiceStateEnvelope missing = ready.state;
+        missing.stateRevision = 2;
+        missing.gpuGeneration = 2;
+        missing.gpuPhase = SERVICE_GPU_PHASE_DEVICE_MISSING;
+        missing.validSections = SERVICE_STATE_SECTION_ADAPTER_IDENTITY |
+            SERVICE_STATE_SECTION_ACTIVE_INTENT;
+        missing.topologySignature = 0;
+        if (gui_service_model_accept(&model, 1, &missing) !=
+                GUI_SERVICE_ENVELOPE_ACCEPTED ||
+            model.phase != GUI_SERVICE_DEVICE_MISSING) return 1119;
+        ServiceStateEnvelope recovering = missing;
+        recovering.stateRevision = 3;
+        recovering.gpuPhase = SERVICE_GPU_PHASE_REAPPLYING;
+        if (gui_service_model_accept(&model, 1, &recovering) !=
+                GUI_SERVICE_ENVELOPE_ACCEPTED ||
+            model.phase != GUI_SERVICE_RECOVERING) return 1120;
+        ServiceResponse recovered = fake_ready_service_response(21, 4, 2);
+        if (gui_service_model_accept(&model, 1, &recovered.state) !=
+                GUI_SERVICE_ENVELOPE_ACCEPTED ||
+            !gui_service_model_ready(&model)) return 1121;
+
+        if (!gui_service_model_require_new_gpu_generation(&model))
+            return 1147;
+        recovered.state.stateRevision = 5;
+        if (gui_service_model_accept(&model, 1, &recovered.state) !=
+                GUI_SERVICE_ENVELOPE_REJECTED_GENERATION) return 1122;
+        recovered.state.stateRevision = 6;
+        recovered.state.gpuGeneration = 3;
+        if (gui_service_model_accept(&model, 1, &recovered.state) !=
+                GUI_SERVICE_ENVELOPE_ACCEPTED) return 1123;
+
+        ServiceStateEnvelope partial = recovered.state;
+        partial.stateRevision = 7;
+        partial.validSections = SERVICE_STATE_SECTION_ADAPTER_IDENTITY;
+        partial.topologySignature = 0;
+        if (gui_service_model_accept(&model, 1, &partial) !=
+                GUI_SERVICE_ENVELOPE_ACCEPTED ||
+            model.phase != GUI_SERVICE_DEGRADED) return 1124;
+
+        gui_service_model_begin_sync(&model, 2);
+        ServiceResponse restarted = fake_ready_service_response(22, 1, 1);
+        if (gui_service_model_accept(&model, 2, &restarted.state) !=
+                GUI_SERVICE_ENVELOPE_ACCEPTED) return 1125;
+        ready.state.stateRevision = 99;
+        if (gui_service_model_accept(&model, 1, &ready.state) !=
+                GUI_SERVICE_ENVELOPE_REJECTED_CONNECTION) return 1126;
+        if (gui_service_model_accept(&model, 2, &ready.state) !=
+                GUI_SERVICE_ENVELOPE_REJECTED_INSTANCE) return 1127;
+
+        // A service restart can be accepted in RECOVERING before Windows posts
+        // the GUI's matching DEVICEINSTANCESTARTED notification. That late
+        // local cue must not demand generation 2 from the fresh instance,
+        // whose generation 1 already represents the new hardware authority.
+        GuiServiceModel restartThenStart = {};
+        gui_service_model_initialize(&restartThenStart);
+        ServiceResponse oldReady = fake_ready_service_response(31, 5, 7);
+        if (gui_service_model_accept(&restartThenStart, 1,
+                &oldReady.state) != GUI_SERVICE_ENVELOPE_ACCEPTED)
+            return 1148;
+        gui_service_model_disconnect(&restartThenStart, 2);
+        ServiceResponse freshRecovering =
+            fake_ready_service_response(32, 1, 1);
+        freshRecovering.state.gpuPhase = SERVICE_GPU_PHASE_RECOVERING;
+        freshRecovering.state.validSections =
+            SERVICE_STATE_SECTION_ACTIVE_INTENT;
+        freshRecovering.state.topologySignature = 0;
+        if (gui_service_model_accept(&restartThenStart, 2,
+                &freshRecovering.state) != GUI_SERVICE_ENVELOPE_ACCEPTED ||
+            restartThenStart.phase != GUI_SERVICE_RECOVERING)
+            return 1149;
+        if (gui_service_model_require_new_gpu_generation(
+                &restartThenStart) ||
+            restartThenStart.minimumGpuGeneration != 0)
+            return 1150;
+        ServiceResponse freshReady = fake_ready_service_response(32, 2, 1);
+        if (gui_service_model_accept(&restartThenStart, 2,
+                &freshReady.state) != GUI_SERVICE_ENVELOPE_ACCEPTED ||
+            !gui_service_model_ready(&restartThenStart))
+            return 1151;
+
+        for (int phase = GUI_SERVICE_DISCONNECTED;
+                phase <= GUI_SERVICE_READY; ++phase) {
+            bool expected = phase == GUI_SERVICE_READY;
+            if (gui_service_phase_actions_enabled((GuiServicePhase)phase) !=
+                    expected) return 1128;
+            if (!gui_service_phase_tray_text((GuiServicePhase)phase)[0])
+                return 1129;
+        }
+        if (gui_draft_reconcile_decide(false, false, false) !=
+                GUI_DRAFT_REBASE_CLEAN ||
+            gui_draft_reconcile_decide(true, true, true) !=
+                GUI_DRAFT_ATTACH_DIRTY ||
+            gui_draft_reconcile_decide(true, false, true) !=
+                GUI_DRAFT_DETACH_DIRTY ||
+            gui_draft_reconcile_decide(true, true, false) !=
+                GUI_DRAFT_DETACH_DIRTY) return 1130;
+        if (!gui_service_completion_context_current(4, 4, 9, 9) ||
+            gui_service_completion_context_current(3, 4, 9, 9) ||
+            gui_service_completion_context_current(4, 4, 8, 9)) return 1141;
+        if (!gui_service_mutation_result_can_commit(true, true, true,
+                GUI_SERVICE_ENVELOPE_ACCEPTED, &model) ||
+            gui_service_mutation_result_can_commit(true, false, true,
+                GUI_SERVICE_ENVELOPE_ACCEPTED, &model) ||
+            gui_service_mutation_result_can_commit(true, true, false,
+                GUI_SERVICE_ENVELOPE_ACCEPTED, &model) ||
+            gui_service_mutation_result_can_commit(true, true, true,
+                GUI_SERVICE_ENVELOPE_REJECTED_GENERATION, &model)) return 1142;
+        if (gui_service_failure_requires_render(
+                GUI_SERVICE_DISCONNECTED, false,
+                false, false, false, false, false, false, false)) return 1147;
+        if (!gui_service_failure_requires_render(
+                GUI_SERVICE_SYNCING, false,
+                false, false, false, false, false, false, false) ||
+            !gui_service_failure_requires_render(
+                GUI_SERVICE_DISCONNECTED, true,
+                false, false, false, false, false, false, false) ||
+            !gui_service_failure_requires_render(
+                GUI_SERVICE_DISCONNECTED, false,
+                false, false, false, true, false, true, false) ||
+            !gui_service_failure_requires_render(
+                GUI_SERVICE_DISCONNECTED, false,
+                true, false, true, true, false, true, true)) return 1148;
+    }
+
+    // Tray callback negotiation: version-4 selection and legacy mouse
+    // notifications are mutually exclusive, so one click cannot enqueue two
+    // reconnect/render transactions.
+    {
+        if (!gui_tray_callback_opens_window(true,
+                GUI_TRAY_CALLBACK_V4_SELECT) ||
+            !gui_tray_callback_opens_window(true,
+                GUI_TRAY_CALLBACK_V4_KEY_SELECT) ||
+            gui_tray_callback_opens_window(true,
+                GUI_TRAY_CALLBACK_LEGACY_PRIMARY_UP) ||
+            gui_tray_callback_opens_window(true,
+                GUI_TRAY_CALLBACK_LEGACY_PRIMARY_DOUBLE) ||
+            !gui_tray_callback_opens_window(false,
+                GUI_TRAY_CALLBACK_LEGACY_PRIMARY_UP) ||
+            gui_tray_callback_opens_window(false,
+                GUI_TRAY_CALLBACK_V4_SELECT)) return 1143;
+        if (!gui_tray_callback_opens_context_menu(true,
+                GUI_TRAY_CALLBACK_V4_CONTEXT) ||
+            gui_tray_callback_opens_context_menu(true,
+                GUI_TRAY_CALLBACK_LEGACY_CONTEXT) ||
+            !gui_tray_callback_opens_context_menu(false,
+                GUI_TRAY_CALLBACK_LEGACY_CONTEXT) ||
+            gui_tray_callback_opens_context_menu(false,
+                GUI_TRAY_CALLBACK_V4_CONTEXT)) return 1144;
+        if (!gui_tray_hidden_intent_blocks_show(true, true) ||
+            gui_tray_hidden_intent_blocks_show(true, false) ||
+            gui_tray_hidden_intent_blocks_show(false, true) ||
+            !gui_tray_hidden_intent_requires_rehide(true, true, false) ||
+            gui_tray_hidden_intent_requires_rehide(true, false, false) ||
+            gui_tray_hidden_intent_requires_rehide(false, true, false) ||
+            gui_tray_hidden_intent_requires_rehide(true, true, true)) return 1149;
+        if (!gui_top_level_redraw_uses_wm_setredraw(true) ||
+            gui_top_level_redraw_uses_wm_setredraw(false)) return 1150;
+    }
+
+    // Stable telemetry is data-only. Authority, active intent, topology,
+    // forced refresh, or missing controls promote it to one full transaction.
+    {
+        if (gui_state_adoption_requires_redraw_suppression(
+                true, false, false, false, false) ||
+            gui_state_adoption_requires_full_render(
+                false, false, false, false, false, false, false)) return 1145;
+        if (!gui_state_adoption_requires_redraw_suppression(
+                true, true, false, false, false) ||
+            !gui_state_adoption_requires_redraw_suppression(
+                true, false, true, false, false) ||
+            !gui_state_adoption_requires_full_render(
+                false, false, false, true, false, false, false) ||
+            !gui_state_adoption_requires_full_render(
+                true, false, false, false, false, false, false)) return 1146;
     }
 
     // F-12-001: Backend spec VF_NUM_POINTS sanity
@@ -2745,6 +3255,7 @@ int main(int argc, char** argv) {
         if (!lock_ui_state_stamp_equal(flatten, flatten) || lock_ui_state_stamp_equal(none, flatten)) return 634;
 #if defined(_WIN32)
         if (!run_native_ownerdraw_button_notification_test()) return 635;
+        if (!run_native_reconnect_projection_and_dib_test()) return 1131;
 #endif
     }
 
@@ -2826,6 +3337,16 @@ int main(int argc, char** argv) {
     // legacy captured-live-curve cleanup marker.
     if (profile_should_strip_legacy_unlocked_curve(true, -1, true)) return 605;
     if (!profile_should_strip_legacy_unlocked_curve(true, -1, false)) return 606;
+    if (profile_lock_mode_after_load(true, false, LOCK_MODE_NONE) !=
+        LOCK_MODE_FLATTEN) return 900;
+    if (profile_lock_mode_after_load(true, true, LOCK_MODE_HARD) !=
+        LOCK_MODE_HARD) return 901;
+    if (profile_lock_mode_after_load(false, true, LOCK_MODE_HARD) !=
+        LOCK_MODE_NONE) return 902;
+    if (profile_slot_reference_after_clear(3, 3, 0) != 0 ||
+        profile_slot_reference_after_clear(2, 3, 0) != 2) return 903;
+    if (profile_lock_mode_after_load(true, true, LOCK_MODE_NONE) !=
+        LOCK_MODE_FLATTEN) return 907;
 
     // Apply origins are security policy, not diagnostic strings.  Only a
     // successful explicit user action may clear a sticky automatic-restore
@@ -3770,54 +4291,131 @@ int main(int argc, char** argv) {
     }
 #endif
 
-    // F-LNX-TUI: the Linux TUI button hitboxes are derived from the same line
-    // list the renderer prints, so a click/focus rectangle can never drift off
-    // the drawn "[label]".  This is the regression guard for the reported "mouse
-    // offset grows the further down you go" bug (a hand-tracked row counter that
-    // fell out of sync with the printed rows) and the byte-vs-display-column X
-    // offset on lines that contain the multibyte degC glyph.
+    // F-LNX-TUI: one cell grid owns painting and hit testing across the full
+    // responsive size/tab matrix. Every action rectangle must remain in bounds
+    // and disjoint at compact, medium and wide breakpoints.
     {
         DesiredSettings tuiDesired = {};
-        tuiDesired.fanCurve.points[0].temperatureC = 40;  // exercise the degC column
+        tuiDesired.hasGpuOffset = true;
+        tuiDesired.gpuOffsetMHz = 475;
+        tuiDesired.gpuOffsetExcludeLowCount = 70;
+        tuiDesired.hasMemOffset = true;
+        tuiDesired.memOffsetMHz = 3000;
+        tuiDesired.hasPowerLimit = true;
+        tuiDesired.powerLimitPct = 100;
+        tuiDesired.hasLock = true;
+        tuiDesired.lockCi = 76;
+        tuiDesired.lockMHz = 2957;
+        tuiDesired.lockMode = LOCK_MODE_FLATTEN;
+        fan_curve_set_default(&tuiDesired.fanCurve);
+        ServiceResponse tuiService = {};
+        tuiService.state.serviceInstanceId = 1;
+        tuiService.state.stateRevision = 1;
+        tuiService.state.gpuGeneration = 1;
+        tuiService.state.topologySignature = 1;
+        tuiService.state.gpuPhase = SERVICE_GPU_PHASE_READY;
+        tuiService.state.activeDesiredValid = true;
+        tuiService.snapshot.initialized = true;
+        tuiService.snapshot.loaded = true;
+        tuiService.snapshot.adapterCount = 1;
+        tuiService.snapshot.adapters[0].valid = true;
+        tuiService.snapshot.selectedAdapterIndex = 0;
+        tuiService.snapshot.numPopulated = VF_NUM_POINTS;
+        for (int i = 0; i < VF_NUM_POINTS; ++i) {
+            tuiService.snapshot.curve[i].volt_uV =
+                (760u + (unsigned)i * 4u) * 1000u;
+            tuiService.snapshot.curve[i].freq_kHz =
+                (600u + (unsigned)i * 18u) * 1000u;
+            tuiService.snapshot.freqOffsets[i] = i >= 70 ? 475000 : 0;
+        }
         TuiViewModel vm = {};
         vm.desired = &tuiDesired;
+        vm.service = &tuiService;
         vm.currentSlot = 1;
-        vm.vfPage = 0;
+        vm.selectedPoint = 76;
+        vm.vfScroll = 68;
+        vm.serviceOnline = true;
+        vm.selectedGpu = "0000:01:00.0 NVIDIA GeForce RTX";
+        vm.gpuCount = 1;
         vm.configPath = "/home/user/.config/greencurve/config.ini";
         vm.status = "test";
-        vm.probeCompleted = false;
-        TuiLayout layout;
-        build_tui_layout(vm, &layout);
-
-        if (layout.requiredRows != (int)layout.lines.size()) return 200;
-        if (layout.actions.empty()) return 201;
-        if (layout.requiredCols <= 0) return 202;
-
-        bool sawApply = false, sawApplyReset = false, sawQuit = false;
-        for (size_t ai = 0; ai < layout.actions.size(); ai++) {
-            const ClickAction& a = layout.actions[ai];
-            if (a.type == ACTION_APPLY) sawApply = true;
-            if (a.type == ACTION_APPLY_RESET) sawApplyReset = true;
-            if (a.type == ACTION_QUIT) sawQuit = true;
-            if (a.y1 < 1 || a.y1 > (int)layout.lines.size()) return 203;
-            if (a.y1 != a.y2) return 204;
-            const std::string& row = layout.lines[a.y1 - 1];
-            if (a.byteStart < 0 || a.byteLen < 2) return 205;
-            if (a.byteStart + a.byteLen > (int)row.size()) return 206;
-            if (row[a.byteStart] != '[') return 207;                      // hitbox lands on a bracket
-            if (row[a.byteStart + a.byteLen - 1] != ']') return 208;
-            int expectStart = tui_display_columns(row.substr(0, a.byteStart)) + 1;
-            int expectEnd = tui_display_columns(row.substr(0, a.byteStart + a.byteLen));
-            if (a.x1 != expectStart) return 209;                          // display column, not byte offset
-            if (a.x2 != expectEnd) return 210;
-            if (a.x2 > layout.requiredCols) return 211;                   // interactive line never wraps
+        const int sizes[][2] = {
+            {72,24}, {80,30}, {99,35}, {100,30}, {120,40},
+            {139,48}, {140,36}, {160,48}, {220,70}
+        };
+        for (const auto& size : sizes) {
+            for (int tab = TUI_TAB_VF; tab <= TUI_TAB_PROFILES; ++tab) {
+                vm.tab = (TuiTab)tab;
+                TuiLayout layout;
+                build_tui_layout(vm, size[0], size[1], &layout);
+                if (layout.tooSmall) return 200;
+                if ((int)layout.cells.size() != size[0] * size[1]) return 201;
+                if (layout.actions.empty()) return 202;
+                if (!tui_layout_actions_valid(layout)) return 203;
+                bool sawApply = false, sawReset = false, sawQuit = false;
+                bool sawCurrentTab = false;
+                for (const ClickAction& action : layout.actions) {
+                    if (action.type == ACTION_APPLY) sawApply = true;
+                    if (action.type == ACTION_APPLY_RESET) sawReset = true;
+                    if (action.type == ACTION_QUIT) sawQuit = true;
+                    if (action.type == ACTION_TAB_SET && action.value == tab)
+                        sawCurrentTab = true;
+                }
+                if (!sawApply || !sawReset || !sawQuit || !sawCurrentTab) {
+                    fprintf(stderr,
+                        "TUI matrix missing action size=%dx%d tab=%d apply=%d reset=%d quit=%d tabAction=%d\n",
+                        size[0], size[1], tab, sawApply, sawReset, sawQuit,
+                        sawCurrentTab);
+                    return 204;
+                }
+                if (size[0] >= 140 && size[1] >= 36 &&
+                    layout.breakpoint != TUI_BREAKPOINT_WIDE) return 205;
+                if (size[0] >= 100 && size[0] < 140 &&
+                    layout.breakpoint != TUI_BREAKPOINT_MEDIUM) return 206;
+            }
         }
-        if (!sawApply || !sawApplyReset || !sawQuit) return 212;
+        TuiLayout tooSmall;
+        build_tui_layout(vm, 71, 23, &tooSmall);
+        if (!tooSmall.tooSmall || !tooSmall.actions.empty()) return 207;
 
-        // Explicit multibyte width proof: '°' (0xC2 0xB0) is one display column.
-        std::string degLine = "ab\xC2\xB0""cd";  // a b ° c d -> 5 columns, 'c' at byte 4
+        vm.tab = TUI_TAB_VF;
+        TuiPointValues excluded = tui_point_values(vm, 69);
+        TuiPointValues offset = tui_point_values(vm, 70);
+        TuiPointValues knee = tui_point_values(vm, 76);
+        TuiPointValues tail = tui_point_values(vm, 77);
+        if (excluded.rule != TUI_POINT_EXCLUDED ||
+            excluded.targetMHz != excluded.liveMHz) return 208;
+        if (offset.rule != TUI_POINT_GPU_OFFSET || offset.deltaMHz != 475)
+            return 209;
+        if (knee.rule != TUI_POINT_FLATTEN_KNEE || knee.targetMHz != 2957)
+            return 210;
+        if (tail.rule != TUI_POINT_FLATTEN_TAIL || tail.targetMHz != 2957)
+            return 211;
+
+        TuiLayout graphLayout;
+        build_tui_layout(vm, 160, 48, &graphLayout);
+        int graphPoint = tui_nearest_graph_point(vm, graphLayout.graphRect,
+            graphLayout.graphRect.x + graphLayout.graphRect.width / 2);
+        if (graphPoint < 50 || graphPoint > 78) return 212;
+
+        std::string degLine = "ab\xC2\xB0""cd";
         if (tui_display_columns(degLine) != 5) return 213;
         if (tui_column_to_byte_offset(degLine, 4) != 4) return 214;
+
+        // A Linux path or driver string can contain malformed/truncated UTF-8.
+        // The cell writer must consume the invalid lead byte once, not jump
+        // beyond the NUL terminator and render unrelated adjacent memory.
+        TuiLayout utf8Layout = {};
+        utf8Layout.width = 4;
+        utf8Layout.height = 1;
+        utf8Layout.cells.resize(4);
+        TuiCanvas utf8Canvas(vm, &utf8Layout);
+        utf8Canvas.clear();
+        char truncatedUtf8[6] = {'A', (char)0xE2, 0, 0, 'X', 0};
+        utf8Canvas.text(1, 1, 4, truncatedUtf8, TUI_STYLE_TEXT);
+        if (strcmp(utf8Layout.cells[0].glyph, "A") != 0 ||
+            (unsigned char)utf8Layout.cells[1].glyph[0] != 0xE2 ||
+            strcmp(utf8Layout.cells[2].glyph, " ") != 0) return 215;
     }
 
     // F-AUTO-PROFILE: the auto-profile rule resolver is a pure, ordered,
@@ -4113,6 +4711,19 @@ int main(int argc, char** argv) {
         GpuAdapterInfo mismatch = requested;
         mismatch.deviceId = 0x999910deu;
         if (linux_resolve_gpu_identity(&requested, &mismatch, 1) != -1) return 618;
+        if (!linux_gpu_switch_preserves_active_intent(
+                false, nullptr, &requested)) return 904;
+        if (!linux_gpu_switch_preserves_active_intent(
+                true, &requested, &adapters[1])) return 905;
+        GpuAdapterInfo otherGpu = requested;
+        otherGpu.pciBus = 4;
+        if (linux_gpu_switch_preserves_active_intent(
+                true, &requested, &otherGpu)) return 906;
+        if (linux_next_gpu_selection_index(false, 0, 2, 1) != 0 ||
+            linux_next_gpu_selection_index(false, 0, 2, -1) != 1 ||
+            linux_next_gpu_selection_index(true, 0, 2, -1) != 1 ||
+            linux_next_gpu_selection_index(true, 1, 2, 1) != 0 ||
+            linux_next_gpu_selection_index(false, 0, 0, 1) != -1) return 908;
     }
 
     // F-01-001: lifecycle identity — session_and_user matches on sessionId+SID
@@ -4514,6 +5125,27 @@ int main(int argc, char** argv) {
             return 1024;
     }
 
+    // Read scheduling is deterministic: full-sync requests coalesce and
+    // telemetry never overtakes writes, admin changes, or full synchronization.
+    {
+        if (gui_full_sync_queue_decide(false) !=
+                GUI_SERVICE_READ_QUEUE_NEW) return 1132;
+        if (gui_full_sync_queue_decide(true) !=
+                GUI_SERVICE_READ_COALESCE) return 1133;
+        if (gui_telemetry_queue_decide(true, false, false, false, false) !=
+                GUI_SERVICE_READ_DROP_BEHIND_PRIORITY_WORK) return 1134;
+        if (gui_telemetry_queue_decide(false, true, false, false, false) !=
+                GUI_SERVICE_READ_DROP_BEHIND_PRIORITY_WORK) return 1135;
+        if (gui_telemetry_queue_decide(false, false, true, false, false) !=
+                GUI_SERVICE_READ_DROP_BEHIND_PRIORITY_WORK) return 1136;
+        if (gui_telemetry_queue_decide(false, false, false, true, false) !=
+                GUI_SERVICE_READ_DROP_BEHIND_PRIORITY_WORK) return 1137;
+        if (gui_telemetry_queue_decide(false, false, false, false, true) !=
+                GUI_SERVICE_READ_COALESCE) return 1138;
+        if (gui_telemetry_queue_decide(false, false, false, false, false) !=
+                GUI_SERVICE_READ_QUEUE_NEW) return 1139;
+    }
+
     // A pipe timeout caused by this GUI's known long mutation is expected busy,
     // not service failure. SCM stop/removal and service-process callers still
     // require a real probe/state transition.
@@ -4901,6 +5533,9 @@ def run_source_regression_checks():
     main_service_recovery_clock_cpp = os.path.join(SOURCE_DIR, "main_service_recovery_clock.cpp")
     main_service_recovery_ledger_cpp = os.path.join(SOURCE_DIR, "main_service_recovery_ledger.cpp")
     main_service_controlled_restart_cpp = os.path.join(SOURCE_DIR, "main_service_controlled_restart.cpp")
+    platform_h = os.path.join(SOURCE_DIR, "platform.h")
+    platform_win32_cpp = os.path.join(SOURCE_DIR, "platform_win32.cpp")
+    platform_posix_cpp = os.path.join(SOURCE_DIR, "platform_posix.cpp")
     main_service_selected_gpu_pnp_cpp = os.path.join(SOURCE_DIR, "main_service_selected_gpu_pnp.cpp")
     selected_gpu_pnp_policy_h = os.path.join(SOURCE_DIR, "selected_gpu_pnp_policy.h")
     sessions_cpp = os.path.join(SOURCE_DIR, "main_service_sessions.cpp")
@@ -4982,7 +5617,7 @@ def run_source_regression_checks():
 
     require_text(shared_h, "APP_DEBUG_DEFAULT_ENABLED 1", "debug logging remains default-on")
     require_text(shared_h, "APP_TITLE           APP_NAME \" v\" APP_VERSION", "plain title macro exists")
-    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 10", "service protocol version includes retry-safe mutation operation identities")
+    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 11", "service protocol publishes reconnect-safe state envelopes")
     require_text(shared_h, "typedef gc_u8 gc_bool8", "IPC bool fields use a fixed-width one-byte type")
     require_text(shared_h, "canonicalize_gc_bool8", "IPC bool fields are canonicalized at trust boundaries")
     require_text(shared_h, "validate_service_response_for_ipc", "service responses are canonicalized before GUI use")
@@ -5243,11 +5878,10 @@ def run_source_regression_checks():
     forbid_text(config_profiles_ui_cpp, "maybe_load_selected_profile_to_gui_without_apply", "startup cannot restore saved selected-slot intent as live GPU state")
     require_text(logon_startup_cpp, "show_live_gpu_state_for_disabled_app_launch", "disabled app-start refreshes the editor from the service snapshot")
     require_text(logon_startup_cpp, "saved slot deliberately not loaded", "startup diagnostics distinguish saved profile intent from live state")
-    require_order_in_operation(logon_startup_cpp,
-        "static void show_live_gpu_state_for_disabled_app_launch()",
-        "refresh_service_snapshot_and_active_desired(",
-        "update_all_gui_for_service_state();",
-        "startup live-state refresh repaints controls only after receiving the service snapshot")
+    require_text_in_operation(logon_startup_cpp,
+        "static void maybe_load_app_launch_profile_to_gui()",
+        "gui_service_model_ready(&g_app.guiServiceModel)",
+        "startup live-state projection waits for an accepted READY envelope")
     require_text(desired_settings_helpers_cpp, "desired_settings_match_active_service_intent", "profile intent can be compared to the service active desired state")
     require_text(config_profiles_ui_cpp, "sync_applied_profile_from_service_metadata", "applied profile indicator follows service ownership metadata")
     require_text(config_profiles_ui_cpp, "Never infer it by comparing", "expected VF drift never invalidates profile ownership")
@@ -5329,7 +5963,7 @@ def run_source_regression_checks():
     require_order_in_operation(os.path.join(SOURCE_DIR, "ui_main_control_lifecycle.cpp"),
         "static void rebuild_edit_controls()",
         "main_layout_grow_window_for_content(",
-        "SendMessageA(hwnd, WM_SETREDRAW, FALSE",
+        "create_edit_controls(hwnd, g_app.hInst)",
         "window grows toward populated VF content before controls are rebuilt")
     require_text(ui_main_window_cpp, "case WM_DPICHANGED:", "main window relayouts on per-monitor DPI changes")
     require_text(ui_main_window_cpp, "case WM_DISPLAYCHANGE:", "main window revalidates work area on display changes")
@@ -5458,8 +6092,13 @@ def run_source_regression_checks():
     # F-01-003: Multi-GPU ordinal fallback blocked
     require_text(runtime_nvml_cpp, "refusing ordinal fallback", "multi-GPU ordinal fallback is blocked when PCI identity is available")
 
-    # F-06-001: Lock capture always reads edit box, not just when lockedFreq <= 0
-    require_text(main_runtime_control_cpp, "get_window_text_safe(g_app.hEditsMhz[g_app.lockedVi]", "lock capture reads edit box unconditionally")
+    # F-06-001: Lock capture always consumes the main-thread draft value, not a
+    # stale lockedFreq fallback or HWND text from a different state generation.
+    require_text(main_runtime_control_cpp,
+        "g_app.guiDraft.curveValueValid[lockCi]",
+        "lock capture validates the independent draft value")
+    forbid_text(main_runtime_control_cpp, "get_window_text_safe(",
+        "runtime apply capture never scrapes HWND text")
 
     # F-02-001: Fan apply validates before mutating runtime state
     require_text(main_fan_runtime_cpp, "fan auto write", "fan auto mode is applied before stopping runtime")
@@ -5623,8 +6262,9 @@ def run_source_regression_checks():
                  "logon tray GUI has an explicit service-observer path")
     require_text(logon_startup_cpp, "start_service_reconnect_timer_if_needed",
                  "logon tray GUI uses the existing service reconnect observer")
-    require_text(logon_startup_cpp, "refresh_background_service_state",
-                 "logon tray GUI observes current service state")
+    require_text(logon_startup_cpp,
+                 "gui_service_model_ready(&g_app.guiServiceModel)",
+                 "logon tray GUI observes only the accepted coherent service state")
     forbid_text_in_operation(logon_startup_cpp,
                              "static void apply_logon_startup_behavior",
                              "apply_desired_settings(",
@@ -5645,12 +6285,12 @@ def run_source_regression_checks():
                  "shared service reconnect observer remains available to the logon GUI path")
     require_text_in_operation(ui_main_window_cpp,
                               "if (wParam == SERVICE_RECONNECT_TIMER_ID)",
-                              "refresh_background_service_state()",
-                              "reconnect timer observes service readiness")
-    require_text_in_operation(ui_main_window_cpp,
-                              "if (wParam == SERVICE_RECONNECT_TIMER_ID)",
-                              "refresh_curve()",
-                              "reconnect timer refreshes GUI state after service readiness")
+                              "gui_service_retry_full_sync(\"reconnect timer\")",
+                              "reconnect timer silently requests one coherent full snapshot")
+    forbid_text_in_operation(ui_main_window_cpp,
+                             "if (wParam == SERVICE_RECONNECT_TIMER_ID)",
+                             "refresh_background_service_state()",
+                             "reconnect timer never blocks the window thread on IPC")
     forbid_text_in_operation(ui_main_window_cpp,
                              "if (wParam == SERVICE_RECONNECT_TIMER_ID)",
                              "apply_desired_settings(",
@@ -6106,7 +6746,9 @@ def run_source_regression_checks():
     require_text(desired_settings_helpers_cpp, "desired_updates_curve_or_gpu_offset_state", "memory/power-only applies do not replace sparse curve intent")
     require_text(main_service_runtime_cpp, "merged fan-only request into active desired", "service fan-only applies preserve active curve intent")
     require_text(gpu_backend_cpp, "skipped VF edit repaint for fan-only apply", "GUI client fan-only applies do not clear sparse curve masks")
-    require_text(os.path.join(SOURCE_DIR, "ui_mutation_completion.cpp"), "preserving VF editor intent after fan-only apply", "main apply handler preserves VF editor after fan-only apply")
+    require_text(os.path.join(SOURCE_DIR, "ui_mutation_completion.cpp"),
+                 "gui_service_accept_response_on_main_thread",
+                 "mutation completion rebases from the service's complete active intent, preserving VF state after fan-only apply")
     require_text(main_runtime_control_cpp, "curvePoints=%d (%s)", "GUI capture logs sparse curve point list")
     require_text(os.path.join(SOURCE_DIR, "config_profiles.cpp"), "point74=%d/%u point75=%d/%u point76=%d/%u", "profile save logs edited pre-tail VF points")
     require_text(main_runtime_capture_cpp, "capture_gui_desired_settings(&resetFull, true, true, false", "apply capture keeps sparse VF curve intent")
@@ -6179,8 +6821,12 @@ def run_source_regression_checks():
     require_text(service_server_cpp, "lifecycle worker startup failed", "lifecycle worker creation failure fails service startup closed and is logged")
 
     # GUI repaint robustness during service start/restart (visual corruption).
-    require_text(os.path.join(SOURCE_DIR, "ui_main_control_lifecycle.cpp"), "WM_SETREDRAW, FALSE", "edit-control rebuild suppresses painting to avoid partial-paint corruption")
-    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "rebuild_edit_controls", "service-state control rebuild routes through redraw-suppressed helper")
+    require_text(os.path.join(SOURCE_DIR, "ui_main_control_lifecycle.cpp"),
+                 "gui_top_level_redraw_begin",
+                 "edit-control rebuild uses the visibility-safe redraw transaction")
+    require_text(os.path.join(SOURCE_DIR, "gui_service_state.cpp"),
+                 "rebuild_edit_controls",
+                 "service-state control rebuild routes through the redraw-suppressed render transaction")
     require_text(service_ipc_cpp, "wait_object_pumping_ui", "blocking service waits pump the GUI so the window keeps repainting")
     require_text(service_ipc_cpp, "MsgWaitForMultipleObjectsEx", "service waits use a message-pumping wait, not a frozen Sleep/WaitForSingleObject")
     require_text(service_ipc_cpp, "struct UiInputGuard", "GUI input is disabled during pumped service waits to block re-entrancy")
@@ -6215,8 +6861,12 @@ def run_source_regression_checks():
     linux_backend_cpp = _linux_backend_surface
     linux_daemon_cpp = os.path.join(SOURCE_DIR, "linux_daemon.cpp")
     linux_daemon_state_cpp = os.path.join(SOURCE_DIR, "linux_daemon_state.cpp")
+    linux_daemon_snapshot_cpp = os.path.join(SOURCE_DIR, "linux_daemon_snapshot_runtime.cpp")
+    linux_fan_runtime_h = os.path.join(SOURCE_DIR, "linux_fan_runtime.h")
     linux_service_install_cpp = os.path.join(SOURCE_DIR, "linux_service_install.cpp")
     linux_gpu_selection_h = os.path.join(SOURCE_DIR, "linux_gpu_selection.h")
+    linux_port_profiles_cpp = os.path.join(SOURCE_DIR, "linux_port_profiles.cpp")
+    linux_tui_actions_cpp = os.path.join(SOURCE_DIR, "linux_tui_actions.cpp")
     linux_transaction_h = os.path.join(SOURCE_DIR, "linux_transaction.h")
     linux_main_cpp = os.path.join(SOURCE_DIR, "linux_main.cpp")
     vf_backends_cpp = os.path.join(SOURCE_DIR, "vf_backends.cpp")
@@ -6257,6 +6907,18 @@ def run_source_regression_checks():
                  "Linux phase failure exposes verified versus uncertain rollback")
     require_text(linux_gpu_selection_h, "Never compare the low vendor word",
                  "Linux PCI matching cannot collapse every NVIDIA device to vendor ID 10DE")
+    require_text(linux_daemon_snapshot_cpp,
+                 "linux_gpu_switch_preserves_active_intent",
+                 "Linux daemon cannot move one active intent onto another selected GPU")
+    require_text(os.path.join(SOURCE_DIR, "linux_daemon_identity.cpp"),
+                 "g_gpu.writeIdentityResolved",
+                 "Linux daemon cannot publish a telemetry fallback as a selected multi-GPU write target")
+    require_text(linux_tui_actions_cpp,
+                 "linux_next_gpu_selection_index",
+                 "Linux TUI requires an explicit first multi-GPU selection")
+    require_text(linux_fan_runtime_h,
+                 "&g_activeTarget, &g_gpu.selectedGpu",
+                 "Linux fan worker verifies active intent ownership before hardware writes")
     require_text(linux_backend_cpp, "nvapiAssigned",
                  "Linux NvAPI handles map at most once to an NVML adapter")
     require_text(linux_backend_cpp, "multi-GPU write target is not proven across NVML and NvAPI",
@@ -6279,11 +6941,34 @@ def run_source_regression_checks():
     require_text(linux_daemon_cpp, "sudo usermod -aG greencurve", "Linux socket permission denial explains group enrollment")
     require_text(linux_main_cpp, "The daemon socket permits root and greencurve group members", "Linux service install explains socket authorization")
     require_text(linux_main_cpp, "sudo usermod -aG greencurve", "Linux help and generated assets document group enrollment")
+    require_text(linux_port_profiles_cpp, 'addControl("lock_mode", value);',
+                 "Linux profiles persist flatten versus hard-pin lock mode")
+    require_text(linux_port_profiles_cpp, '"lock_tracks_anchor"',
+                 "Linux profiles persist lock anchor tracking")
+    require_text(linux_port_profiles_cpp,
+                 "profile_slot_reference_after_clear(appLaunchSlot, slot, 0)",
+                 "Linux profile clear removes stale app-launch references")
+    require_text(linux_port_profiles_cpp,
+                 "profile_slot_reference_after_clear(logonSlot, slot, 0)",
+                 "Linux profile clear removes stale logon references")
 
-    # Protocol-v10 retry safety and GUI-thread ownership.
+    # Protocol-v11 retry safety, coherent state, and GUI-thread ownership.
     operation_tracker_h = os.path.join(SOURCE_DIR, "service_operation_tracker.h")
     gui_mutation_worker_cpp = os.path.join(SOURCE_DIR, "gui_mutation_worker.cpp")
     gui_mutation_policy_h = os.path.join(SOURCE_DIR, "gui_mutation_queue_policy.h")
+    gui_service_io_policy_h = os.path.join(SOURCE_DIR, "gui_service_io_queue_policy.h")
+    gui_service_model_h = os.path.join(SOURCE_DIR, "gui_service_model.h")
+    gui_draft_policy_h = os.path.join(SOURCE_DIR, "gui_draft_policy.h")
+    gui_tray_policy_h = os.path.join(SOURCE_DIR, "gui_tray_callback_policy.h")
+    gui_tray_visibility_cpp = os.path.join(SOURCE_DIR, "gui_tray_visibility.cpp")
+    gui_window_redraw_policy_h = os.path.join(
+        SOURCE_DIR, "gui_window_redraw_policy.h")
+    gui_window_redraw_cpp = os.path.join(SOURCE_DIR, "gui_window_redraw.cpp")
+    gui_service_state_cpp = os.path.join(SOURCE_DIR, "gui_service_state.cpp")
+    gui_selected_gpu_pnp_cpp = os.path.join(SOURCE_DIR, "gui_selected_gpu_pnp.cpp")
+    ui_mutation_completion_cpp = os.path.join(
+        SOURCE_DIR, "ui_mutation_completion.cpp")
+    service_state_envelope_cpp = os.path.join(SOURCE_DIR, "main_service_state_envelope.cpp")
     require_text(service_protocol_h, "SERVICE_CMD_GET_OPERATION_RESULT",
                  "protocol exposes a read-only operation-result query")
     require_text(service_protocol_h, "gc_u64 operationId",
@@ -6310,8 +6995,264 @@ def run_source_regression_checks():
                  "pending mutations revalidate session and GPU epoch")
     require_text(gui_mutation_policy_h, "GUI_MUTATION_QUEUE_KEEP_PENDING_RESET",
                  "a pending Reset cannot be overtaken by Apply")
+    require_text(service_protocol_h, "struct ServiceStateEnvelope",
+                 "every service response carries a generation-stamped envelope")
+    require_text(service_protocol_h, "gc_u64 expectedServiceInstanceId",
+                 "GUI mutations bind to the accepted service instance")
+    require_text(service_protocol_h, "gc_u64 expectedGpuGeneration",
+                 "GUI mutations bind to the accepted GPU generation")
+    require_text(service_protocol_h, "gc_u64 expectedTopologySignature",
+                 "GUI mutations bind to the accepted full topology")
+    require_text(service_protocol_h, "service_snapshot_topology_signature",
+                 "protocol owns one complete topology signature")
+    require_text(service_protocol_h, "for (int i = 0; i < VF_NUM_POINTS; ++i)",
+                 "topology hashing inspects every VF point")
+    require_text(service_state_envelope_cpp, "BCryptGenRandom",
+                 "Windows service instance IDs use the system CSPRNG")
+    require_text(service_state_envelope_cpp, "populate_service_snapshot_locked",
+                 "one lock capture produces the complete service envelope")
+    require_text(service_state_envelope_cpp, "ImmutablePublishedServiceState",
+                 "service publications replace one immutable complete state")
+    require_order_in_operation(service_state_envelope_cpp,
+                 "static void service_publish_gpu_phase(",
+                 "AcquireSRWLockExclusive(&g_servicePublishedStateLock);",
+                 "gc_u64 revision =",
+                 "phase revision allocation is serialized in publication order")
+    require_text(service_state_envelope_cpp,
+                 "READY authority lost while publishing response",
+                 "response-time authority loss advances the GPU generation")
+    require_text(service_state_envelope_cpp,
+                 "state.gpuPhase == SERVICE_GPU_PHASE_READY ? 1 : 0",
+                 "cached adapter identity cannot resurrect live authority during recovery")
+    require_text(os.path.join(SOURCE_DIR, "main_service_snapshot_request.cpp"),
+                 "lostReadyAuthority",
+                 "failed full refreshes retire the previous READY generation")
+    require_text(main_service_selected_gpu_pnp_cpp,
+                 "service_mark_selected_gpu_recovering",
+                 "an arrival cue advances generation when removal was missed")
+    require_text(service_state_envelope_cpp, "selectedIdentityMatches",
+                 "mutation preconditions include the exact selected GPU")
+    require_text(service_pipe_cpp, "SERVICE_STATUS_STALE_STATE",
+                 "stale mutations are rejected rather than crossing reconnect")
+    require_text(service_pipe_cpp, "populate_service_state_response(&response)",
+                 "every Windows service response receives the final envelope")
+    require_text(gui_service_model_h, "minimumGpuGeneration",
+                  "GUI PnP invalidation fences same-generation late responses")
+    require_text(gui_service_model_h, "model->phase != GUI_SERVICE_READY",
+                 "late PnP-start cues cannot fence an already-restarted recovering service")
+    require_text(gui_service_model_h, "GUI_SERVICE_ENVELOPE_REJECTED_REVISION",
+                 "GUI reducer rejects out-of-order completions")
+    require_text(gui_service_model_h, "gui_service_failure_requires_render(",
+                 "stable disconnected failures are presentation-idempotent")
+    require_text(gui_draft_policy_h, "GUI_DRAFT_DETACH_DIRTY",
+                 "dirty drafts detach on GPU/topology mismatch")
+    require_text(gui_mutation_worker_cpp, "LONG presentationEpoch;",
+                 "mutation completions are stamped with the presentation epoch")
+    require_text(os.path.join(SOURCE_DIR, "ui_mutation_completion.cpp"),
+                 "gui_service_completion_context_current(",
+                 "mutation completions revalidate their GPU epoch on the GUI thread")
+    require_order(os.path.join(SOURCE_DIR, "ui_mutation_completion.cpp"),
+                  "GuiServiceModel previewModel",
+                  "set_gui_state_dirty(false);",
+                  "a pure reducer preview proves a mutation result current before the draft is cleared")
+    require_text(os.path.join(SOURCE_DIR, "ui_mutation_completion.cpp"),
+                 "Unsaved draft preserved; synchronizing current state.",
+                 "stale successful mutation completions preserve the independent draft")
+    require_text(gui_service_io_policy_h,
+                 "GUI_SERVICE_READ_DROP_BEHIND_PRIORITY_WORK",
+                 "telemetry drops behind mutations, admin work, and full sync")
+    require_text(gui_service_state_cpp, "gui_top_level_redraw_begin",
+                 "accepted READY state renders in one visibility-safe redraw transaction")
+    require_text(gui_service_state_cpp,
+                 "gui_state_adoption_requires_redraw_suppression(",
+                 "ordinary telemetry never suspends or repaints the whole window")
+    require_text(gui_service_state_cpp, "if (renderChanged) gui_render_service_phase_only();",
+                 "repeated transport failures repaint only when visible state changes")
+    require_text(ui_main_window_cpp, 'gui_service_retry_full_sync("reconnect timer")',
+                 "background reconnect probes preserve the current presentation")
+    forbid_text(ui_main_window_cpp, 'gui_service_begin_full_sync("reconnect timer")',
+                "background reconnect probes cannot flash the syncing presentation")
+    require_text(os.path.join(SOURCE_DIR, "ui_control_projection.h"),
+                 "gui_set_window_text_if_changed",
+                 "service controls update text only when its projection changes")
+    require_text(os.path.join(SOURCE_DIR, "ui_control_projection.h"),
+                 "gui_set_window_enabled_if_changed",
+                 "service controls update enablement only when it changes")
+    forbid_text_in_operation(config_profiles_ui_cpp,
+                "static void update_background_service_controls()", "UpdateWindow",
+                "service status projection cannot force immediate child repaints")
+    forbid_text_in_operation(config_profiles_ui_cpp,
+                "static void update_background_service_controls()",
+                "update_share_all_users_check_state();",
+                "service status changes cannot redraw unrelated sharing controls")
+    forbid_text_in_operation(config_profiles_ui_cpp,
+                "static void update_share_all_users_check_state()", "UpdateWindow",
+                "sharing control projection cannot force immediate child repaints")
+    forbid_text(gui_service_state_cpp,
+                "memcmp(&g_app.serviceActiveDesired",
+                "telemetry projection changes use semantic intent equality rather than struct padding")
+    forbid_text(gui_service_state_cpp, "RDW_ERASE",
+                "coherent state adoption never erases the visible window before repaint")
+    require_text(gui_tray_policy_h, "if (version4)",
+                 "tray activation honors the negotiated shell callback version")
+    require_text(os.path.join(SOURCE_DIR, "main_fan_runtime.cpp"),
+                 "duplicate open ignored while already visible",
+                 "duplicate tray activation is idempotent")
+    require_text(os.path.join(SOURCE_DIR, "main_fan_runtime.cpp"),
+                 "gui_set_window_text_if_changed(g_app.hFanEdit",
+                 "stable fan telemetry does not repaint unchanged edit text")
+    require_text(os.path.join(SOURCE_DIR, "main_fan_runtime.cpp"),
+                 "CB_GETCURSEL",
+                 "stable fan telemetry does not reselect the current combo item")
+    require_text(os.path.join(SOURCE_DIR, "main_fan_runtime.cpp"),
+                 "duplicate tray-autostart process exited without reopening",
+                 "duplicate background tray startup cannot resurrect a hidden window")
+    require_text(os.path.join(SOURCE_DIR, "main_fan_runtime.cpp"),
+                 "APP_WM_ACTIVATE_EXISTING_INSTANCE",
+                 "explicit second-instance activation is routed through the resident GUI thread")
+    forbid_text_in_operation(ui_main_window_cpp, "case WM_PAINT:",
+                "fill_window_background(hwnd, hdc)",
+                "backbuffer paint never clears the physical window before the final blit")
+    require_text(gui_service_state_cpp, "g_app.visibleMap[vi]",
+                 "GUI render topology includes every visible-map entry")
+    require_text(gui_service_state_cpp, "bool canSelectGpu = ready",
+                 "a detached draft can reselect its original GPU while writes stay blocked")
+    require_text(gui_selected_gpu_pnp_cpp, "CM_Register_Notification",
+                 "GUI subscribes to the exact selected-device PnP lifecycle")
+    require_text(gui_selected_gpu_pnp_cpp,
+                 "gui_service_model_require_new_gpu_generation",
+                 "GUI PnP transitions require a newer service GPU generation")
     forbid_text(gui_mutation_worker_cpp, "apply_service_snapshot_to_app",
                 "mutation worker cannot update application state off the GUI thread")
+    forbid_text_in_operation(gui_mutation_worker_cpp,
+                "static DWORD WINAPI gui_mutation_worker_proc(", "g_app.",
+                "service I/O worker never mutates AppData")
+    forbid_text_in_operation(service_connection_cpp,
+                "static bool service_send_request(", "g_app.",
+                "pipe transport never mutates GUI/application state")
+    forbid_text_in_operation(
+                os.path.join(SOURCE_DIR, "main_service_client_commands.cpp"),
+                "static bool service_client_get_state_envelope(", "g_app.",
+                "typed state reads return immutable results without GUI mutation")
+    forbid_text(os.path.join(SOURCE_DIR, "main_service_client_commands.cpp"),
+                "service_client_get_active_desired(",
+                "clients consume active intent from the same full state envelope")
+    require_text(os.path.join(SOURCE_DIR, "main_service_client_commands.cpp"),
+                "g_app.serviceActiveDesiredValid = response.state.activeDesiredValid;",
+                "compatibility mutation clients honor explicit envelope active-intent presence")
+    forbid_text(os.path.join(SOURCE_DIR, "main_service_client_commands.cpp"),
+                "response.snapshot.activeProfileSource != SERVICE_PROFILE_SOURCE_NONE",
+                "clients never infer active-intent validity from profile metadata")
+    for runtime_gui_path in (
+            ui_main_window_cpp,
+            os.path.join(SOURCE_DIR, "main_fan_runtime.cpp"),
+            os.path.join(SOURCE_DIR, "main_fan_telemetry.cpp"),
+            config_profiles_ui_cpp,
+            os.path.join(SOURCE_DIR, "config_profiles.cpp"),
+            os.path.join(SOURCE_DIR, "auto_profile_win32.cpp"),
+            os.path.join(SOURCE_DIR, "main_startup_profiles.cpp")):
+        forbid_text(runtime_gui_path, "refresh_background_service_state(",
+                    "runtime GUI paths cannot synchronously probe the service")
+        forbid_text(runtime_gui_path, "service_client_get_snapshot(",
+                    "runtime GUI paths cannot synchronously fetch snapshots")
+        forbid_text(runtime_gui_path,
+                    "refresh_service_snapshot_and_active_desired(",
+                    "runtime GUI paths consume only accepted coordinator state")
+    forbid_text(ui_main_window_cpp, "service_install_or_remove(",
+                "window procedures cannot block on SCM service changes")
+    forbid_text(ui_main_window_cpp, "launch_service_admin_helper(",
+                "window procedures cannot wait on elevation helpers")
+    forbid_text(gui_mutation_worker_cpp, "SetWindowText",
+                "worker transport code cannot mutate HWND text")
+    forbid_text(gui_mutation_worker_cpp, "EnableWindow",
+                "worker transport code cannot mutate HWND capability state")
+    require_text(ui_main_cpp, "CreateDIBSection(nullptr",
+                 "retained GUI backbuffer lives in process-owned DIB memory")
+    forbid_text(ui_main_cpp, "CreateCompatibleBitmap",
+                "GUI cannot retain a display-driver-compatible bitmap across reconnect")
+    require_text(ui_main_cpp, "g_backbufferGeneration",
+                 "GDI surfaces are tied to an explicit display generation")
+    require_text(ui_main_window_cpp,
+                 "failure cannot leave stale pixels or create a repaint storm",
+                 "BitBlt failure paints a direct fallback without a repaint storm")
+    require_text(ui_main_window_cpp, "WM_DISPLAYCHANGE",
+                 "display changes retire retained GDI state")
+    require_text(ui_main_window_cpp, "WM_DWMCOMPOSITIONCHANGED",
+                 "DWM composition changes retire retained GDI state")
+    require_text(gui_mutation_worker_cpp, "CancelSynchronousIo",
+                 "terminal shutdown cancels coordinator transport waits")
+    require_order(os.path.join(SOURCE_DIR, "main_fan_runtime.cpp"),
+                   "gui_service_io_queue_telemetry(false)",
+                   "ShowWindow(g_app.hMainWnd, SW_RESTORE)",
+                   "tray reopen preserves a coherent cached first frame while refreshing asynchronously")
+    require_text(app_shared_h, "bool trayWindowHiddenIntent;",
+                 "tray-hidden state survives display-driver window reconstruction")
+    require_text(ui_main_window_cpp, "case WM_WINDOWPOSCHANGING:",
+                 "top-level visibility requests are policy-gated before display")
+    require_text(ui_main_window_cpp, "position->flags &= ~SWP_SHOWWINDOW;",
+                 "driver-induced top-level show is suppressed while tray-hidden")
+    require_text(gui_tray_policy_h,
+                 "gui_tray_hidden_intent_requires_rehide",
+                 "tray-hidden policy covers visibility paths without SWP_SHOWWINDOW")
+    require_text(ui_main_window_cpp,
+                 "enforce_main_window_tray_state_from_message(hwnd, msg)",
+                 "every main-window message enforces the durable tray-hidden postcondition")
+    require_text(gui_tray_visibility_cpp,
+                 "g_mainWindowTrayHideEnforcementActive",
+                 "corrective tray hiding is guarded against nested ShowWindow messages")
+    require_text(gui_window_redraw_policy_h,
+                 "gui_top_level_redraw_uses_wm_setredraw",
+                 "top-level redraw policy distinguishes visible from tray-hidden windows")
+    require_text(gui_window_redraw_cpp,
+                 "RDW_INVALIDATE | RDW_ALLCHILDREN",
+                 "hidden top-level redraw transactions defer painting until explicit show")
+    require_order_in_operation(main_runtime_gpu_cpp,
+                 "static void invalidate_main_window()",
+                 "g_app.trayWindowHiddenIntent",
+                 "redraw_window_sync(g_app.hMainWnd);",
+                 "main-window invalidation defers painting while tray-hidden")
+    forbid_text_in_operation(main_runtime_gpu_cpp,
+                 "static void invalidate_main_window()", "RDW_UPDATENOW",
+                 "tray-hidden invalidation cannot synchronously paint the owner")
+    forbid_text(gui_service_state_cpp, "WM_SETREDRAW",
+                "service projection cannot resurrect a hidden top-level window")
+    forbid_text(os.path.join(SOURCE_DIR, "ui_main_control_lifecycle.cpp"),
+                "WM_SETREDRAW",
+                "control rebuild cannot resurrect a hidden top-level window")
+    require_text(gui_selected_gpu_pnp_cpp,
+                 "enforce_main_window_tray_state",
+                 "exact selected-GPU recovery reasserts tray residency")
+    forbid_text_in_operation(os.path.join(SOURCE_DIR, "main_fan_runtime.cpp"),
+                 "static void show_main_window_from_tray()",
+                 'gui_service_begin_full_sync("tray window reopened")',
+                 "tray reopen cannot flash a synchronizing overlay over coherent cached state")
+    require_text(app_shared_h, "struct GuiDraft",
+                 "GUI edits are stored independently from HWND text")
+    require_text(app_shared_h, "bool pendingDesiredValid;",
+                 "pre-READY sparse profile overlays remain explicit draft state")
+    require_order_in_operation(gui_service_state_cpp,
+                 "static void gui_apply_ready_envelope(",
+                 "set_gui_state_dirty(false);",
+                 "populate_desired_into_gui(&pendingDesired);",
+                 "an unkeyed sparse draft rebases over READY before its overlay is restored")
+    require_text(gui_service_state_cpp,
+                 "rebased pre-READY sparse desired overlay on coherent live baseline",
+                 "offline profile rebasing is change-diagnosable")
+    require_order_in_operation(gui_service_state_cpp,
+                 "static void gui_apply_ready_envelope(",
+                 "begin_programmatic_edit_update();",
+                 "apply_service_snapshot_to_app(&response->snapshot);",
+                 "authoritative ready-state adoption suppresses synthetic edit notifications")
+    require_order_in_operation(gui_service_state_cpp,
+                 "static void gui_apply_ready_envelope(",
+                 "gui_selected_gpu_notification_refresh(&g_app.selectedGpu);",
+                 "end_programmatic_edit_update();",
+                 "authoritative ready-state projection closes its programmatic-edit transaction")
+    require_text(gui_service_state_cpp,
+                 "new authority has no active desired intent; clean editor rebased",
+                 "post-recovery no-intent state is explicit and diagnosable")
+    forbid_text(ui_main_cpp, "GetWindowTextA(hEdit",
+                "graph/editor rendering cannot scrape edit-control text")
     require_text(service_connection_cpp, "service_health_probe_should_defer",
                  "GUI health checks preserve the last proven service state during an owned mutation")
     require_text(os.path.join(SOURCE_DIR, "main_fan_telemetry.cpp"), "fan telemetry: deferred while the GUI owns an active GPU mutation",
@@ -6403,22 +7344,31 @@ def run_source_regression_checks():
     linux_tui_cpp = os.path.join(SOURCE_DIR, "linux_tui.cpp")
     linux_tui_layout_cpp = os.path.join(SOURCE_DIR, "linux_tui_layout.cpp")
     forbid_text(linux_tui_cpp, "Daemon not running. Install it with", "Linux TUI preserves detailed daemon errors instead of masking permission denial")
-    require_text(linux_tui_layout_cpp, "(int)out->lines.size() + 1",
-                 "TUI button row is derived from the emitted line count (cannot drift)")
-    require_text(linux_tui_layout_cpp, "tui_display_columns",
-                 "TUI hitbox X uses UTF-8 display columns, not byte length")
+    require_text(linux_tui_layout_cpp, "tui_layout_actions_valid",
+                 "TUI validates disjoint in-bounds hitboxes from its cell grid")
+    require_text(linux_tui_layout_cpp, "register_action",
+                 "TUI hitboxes are registered by the shared cell-grid builder")
     forbid_text(linux_tui_cpp, "int y = 1;",
                 "TUI no longer hand-tracks a row counter that drifts from the printed rows")
-    require_text(linux_tui_cpp, "build_tui_layout",
+    linux_tui_render_cpp = os.path.join(SOURCE_DIR, "linux_tui_render.cpp")
+    linux_tui_actions_cpp = os.path.join(SOURCE_DIR, "linux_tui_actions.cpp")
+    require_text(linux_tui_render_cpp, "build_tui_layout",
                  "TUI renders and hit-tests from the shared pure layout builder")
-    require_text(linux_tui_cpp, "button & 64",
-                 "TUI ignores wheel-scroll mouse reports (no phantom clicks)")
-    require_text(linux_tui_cpp, "(button & 3) != 0",
+    require_text(linux_tui_render_cpp, "event.mouseButton & 64",
+                 "TUI handles wheel scrolling separately from clicks")
+    require_text(linux_tui_render_cpp, "(event.mouseButton & 3) != 0",
                  "TUI mouse activation accepts only the left button")
-    require_text(linux_tui_cpp, "focus_step_vertical",
-                 "TUI has keyboard navigation (arrow/Tab focus model)")
-    require_text(linux_tui_cpp, "linux_daemon_apply",
-                 "TUI can apply settings live to the GPU via the daemon")
+    require_text(linux_tui_render_cpp, "focus_spatial",
+                 "TUI has spatial keyboard navigation")
+    require_text(linux_tui_render_cpp, "renderedRows",
+                 "TUI redraws only changed terminal rows")
+    require_text(linux_tui_actions_cpp, "linux_daemon_apply_checked",
+                 "TUI Apply carries reconnect-safe daemon preconditions")
+    forbid_text(linux_tui_actions_cpp, "memcmp(&left, &right",
+                "TUI dirty-state comparison ignores struct padding")
+    require_order(linux_tui_actions_cpp, "bool flushed = fflush(file) == 0;",
+                  "bool closed = fclose(file) == 0;",
+                  "TUI live export always closes its output after flushing")
     # F-ARM64: cross-arch robustness (no arm64 hardware to test on).
     gpu_core_h_path = os.path.join(SOURCE_DIR, "gpu_core.h")
     require_text(gpu_core_h_path, "offsetof(nvapiPstate20Entry_t, clocks) == 8",
@@ -6559,7 +7509,7 @@ def run_source_regression_checks():
         "F-DRIFT-1: populate_edits shows owned VF points from the drift-free baseline")
     # Reset-to-stock drops all owned intent so the editor shows live stock values.
     require_text(os.path.join(SOURCE_DIR, "ui_mutation_completion.cpp"),
-        "memset(g_app.appliedCurveMHz, 0, sizeof(g_app.appliedCurveMHz));",
+        "memset(g_app.appliedCurveMHz, 0,",
         "F-DRIFT-1: reset clears the owned VF curve intent baseline")
 
     # F-APPLY-SPEED: profile-switch speed levers must be gated with defaults that
@@ -6600,6 +7550,41 @@ def run_source_regression_checks():
         "F-NO-INJECT: the foreground exe name comes from the global process snapshot, not OpenProcess")
     require_text(auto_win32_cpp, "WINEVENT_OUTOFCONTEXT",
         "F-NO-INJECT: the foreground hook is out-of-context (no DLL injected into other processes)")
+
+    # F-PRESENTATION-SILENT: a tray or automatic profile switch is background
+    # work. Its apply and completion paths may update the resident model and
+    # deferred paint state, but must not create/show UI, activate/focus/flash a
+    # window, allocate a console, or launch another process. This prevents both
+    # visible ghost surfaces and focus theft from rule-driven auto-profiles.
+    presentation_surface_tokens = (
+        "MessageBox", "TaskDialog", "DialogBox", "CreateDialog",
+        "CreateWindow", "ShowWindow", "AnimateWindow", "SetWindowPos",
+        "SetForegroundWindow", "SetActiveWindow", "BringWindowToTop",
+        "SetFocus", "AllowSetForegroundWindow", "AttachThreadInput",
+        "SwitchToThisWindow", "FlashWindow", "SWP_SHOWWINDOW",
+        "APP_WM_ACTIVATE_EXISTING_INSTANCE", "ShellExecute", "CreateProcess",
+        "WinExec", "AllocConsole")
+    presentation_silent_operations = (
+        (auto_win32_cpp, "static bool ap_do_apply_slot("),
+        (auto_win32_cpp, "static void auto_profile_on_mutation_completed("),
+        (ui_mutation_completion_cpp,
+         "static void handle_auto_profile_mutation_completion_presentation_silent("))
+    for path, operation in presentation_silent_operations:
+        for token in presentation_surface_tokens:
+            forbid_text_in_operation(
+                path, operation, token,
+                "F-PRESENTATION-SILENT: background profile apply/completion "
+                f"cannot use {token}")
+    require_text_in_operation(
+        ui_mutation_completion_cpp,
+        "static void handle_auto_profile_mutation_completion_presentation_silent(",
+        "auto_profile_on_mutation_completed(",
+        "F-PRESENTATION-SILENT: auto-profile completion is isolated in its guarded handler")
+    require_text_in_operation(
+        ui_mutation_completion_cpp,
+        "static void handle_gui_mutation_completion(",
+        "handle_auto_profile_mutation_completion_presentation_silent(",
+        "F-PRESENTATION-SILENT: background mutation completion uses the guarded handler")
 
     # F-AUTO-PROFILE: the driver is wired into the GUI lifecycle (init/shutdown),
     # the WM_HOTKEY path, and the unity build.
@@ -6825,6 +7810,10 @@ def run_source_regression_checks():
     require_text(main_service_controlled_restart_cpp,
         "SERVICE_CONTROLLED_RECOVERY_EXIT_CODE",
         "helper accepts only the dedicated parent exit code")
+    require_text(main_service_controlled_restart_cpp, "wcsspn(textValue, L\"0123456789\")",
+        "controlled helper accepts only unsigned decimal process and handle values")
+    require_text(main_service_controlled_restart_cpp, "errno == ERANGE",
+        "controlled helper rejects overflowing process and handle values")
     require_text(main_service_controlled_restart_cpp,
         "NotifyServiceStatusChangeW",
         "controlled helper waits for SCM state through status notifications")
@@ -6907,6 +7896,25 @@ def run_source_regression_checks():
         "controlled restart uses synchronization objects, not timing sleeps")
     forbid_text(main_service_controlled_restart_cpp, "SleepEx(",
         "controlled restart uses alertable synchronization, not timing sleeps")
+
+    # Formatting and subprocess helpers must preserve their cursor/exit-status
+    # contracts: both bugs silently discarded diagnostics in past releases.
+    require_text(platform_h, "static inline size_t gc_appendf",
+        "bounded formatted appends return a safe byte cursor")
+    forbid_text(diagnostics_cpp, "+= StringCchPrintf",
+        "crash breadcrumb assembly does not treat HRESULT as a character count")
+    forbid_text(gpu_backend_apply_cpp, "+= StringCchPrintf",
+        "apply summaries do not treat HRESULT as a character count")
+    require_text(platform_win32_cpp, "GetExitCodeProcess",
+        "Windows subprocess capture requires a zero child exit status")
+    require_text(platform_posix_cpp, "WIFEXITED(status)",
+        "POSIX subprocess capture requires a normal child exit")
+    require_text(platform_posix_cpp, "WEXITSTATUS(status) == 0",
+        "POSIX subprocess capture requires a zero child exit status")
+    require_text(app_shared_cpp, "if (hdc)",
+        "DPI fallback validates its screen device context before use")
+    require_text(app_shared_cpp, "== 0 && dpiX > 0",
+        "monitor DPI discovery rejects a zero scale result")
     forbid_text(main_service_recovery_cpp,
         "service_startup_coordinator_thread_proc",
         "retired per-start recovery thread stays removed")
@@ -6915,8 +7923,9 @@ def run_source_regression_checks():
     # dirty-editing — otherwise the gate would pin it forever once lockedCi>=0.
     require_text(state_sync_cpp, "clearing stale adopted GUI lock",
         "GUI clears a stale adopted lock when the service reports authoritative no-lock and the user is not editing")
-    require_text(os.path.join(SOURCE_DIR, "main_fan_telemetry.cpp"), "g_guiForceFullRefresh",
-        "telemetry poll does a full GUI resync (graph/fields/checkboxes/header) when a reset clears a stale lock")
+    require_text(os.path.join(SOURCE_DIR, "gui_service_state.cpp"),
+        "g_guiForceFullRefresh",
+        "accepted telemetry does a full coherent render transaction when reset clears a stale lock")
     # F-REL-2f: while minimized to the tray, keep a slow telemetry poll so the tray
     # icon/tooltip reflect service state changes (e.g. a reset) without opening the window.
     require_text(main_gpu_front_cpp, "TRAY_HIDDEN_POLL_INTERVAL_MS",
@@ -6929,8 +7938,8 @@ def run_source_regression_checks():
         "shared tray hardware-availability helper exists")
     require_text(main_fan_runtime_cpp, "tray_hardware_live()",
         "tray icon gates OC/fan-active on actual GPU availability (not a pending desired)")
-    require_text(main_gpu_front_cpp, "Green Curve - GPU driver unavailable",
-        "tray tooltip reports GPU unavailable instead of a false OC/fan/profile-active state")
+    require_text(main_gpu_front_cpp, "gui_service_phase_tray_text",
+        "tray tooltip reports reducer phase instead of a false OC/fan/profile-active state")
     # F-NO-DRIFT-FIGHT (0.18): the continuous VF-drift monitor + auto-reapply was
     # REMOVED. NVIDIA's VF curve drifts a few MHz with temperature/boost; "correcting"
     # it meant re-applying the whole OC under game load (reset-to-stock spike +
