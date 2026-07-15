@@ -1,8 +1,8 @@
 # Green Curve
 
-Green Curve is a small NVIDIA tuning tool with a full Windows implementation and a native Linux port (NvAPI + NVML, driven by a root systemd daemon). The app inspects and edits the live NVIDIA voltage/frequency curve on supported GeForce GPUs. Pascal, Turing, Ampere, Lovelace, and Blackwell are treated as tested known families; unrecognized future NVIDIA GPU families use a best-effort fallback backend behind a warning the user can disable.
+Green Curve is a small NVIDIA VF-curve tuning tool with a full Windows implementation and a native Linux port (NvAPI + NVML, driven by a root systemd daemon). The app inspects and edits the live NVIDIA voltage/frequency curve on supported GeForce GPUs. Pascal, Turing, Ampere, Lovelace, and Blackwell are treated as tested known families; unrecognized future NVIDIA GPU families use a best-effort fallback backend behind a warning the user can disable.
 
-<img width="903" height="758" alt="gc" src="https://github.com/user-attachments/assets/5af7121d-3bba-4541-898e-5e8c9c4be5d6" />
+Version: see the [`VERSION`](VERSION) file at the repository root.
 
 > ⚠️ **Platform support:** **Windows x64** is the actively used platform. **Linux x64** has user hardware validation for its VF write path but remains experimental. **Windows arm64** and **Linux arm64** are compile- and binary-inspection-only targets; neither has completed a live GPU-control validation. Use experimental builds at your own risk.
 
@@ -10,19 +10,23 @@ Green Curve is a small NVIDIA tuning tool with a full Windows implementation and
 
 - Reads the live VF curve from the NVIDIA driver
 - Lets you edit visible curve points in a simple Win32 GDI UI
-- Supports point locking to flatten the tail of the curve after a chosen voltage point
-- Reads and writes global GPU clock offset, effective VRAM offset, power limit, and manual fan speed where supported
+- Point locking with a tri-state checkbox: one click puts a checkmark and **flattens the curve tail** (caps all points beyond the lock anchor to the same frequency); a second click switches to a filled dot that **pins the GPU clock** via NVML (hard lock, min=max frequency, no dynamic scaling); a third click clears the lock. Right-click opens a menu to pick any mode directly. The tick-versus-dot glyph makes the active mode clear at a glance
+- Reads and writes global GPU clock offset, effective VRAM offset, power limit, and fan control with three modes: driver auto, fixed percentage, or a custom temperature curve
+- Fan curve mode lets you define up to 8 temperature-to-speed points with configurable hysteresis and poll interval; the service reasserts the fan setting periodically
+- 5 saved profile slots per user, with global hotkeys for instant switching (e.g. Ctrl+Alt+F2)
+- Auto-profile switching: Green Curve watches the foreground window and applies a saved profile based on the running application (by executable name, window title, window class, or fullscreen state)
 - Provides CLI modes for dump, JSON export, and probing driver capabilities
 - Detects GPU family via public NVAPI architecture metadata and selects a matching VF backend at runtime
 - Recognizes Pascal, Turing, Ampere, Lovelace, and Blackwell GPUs
 - Writes a persistent Windows JSON probe report with `--probe --probe-output <path>` for unrecognized GPU families
-- Tray hover text shows the active mode and selected saved profile
+- Tray icon changes shape to reflect live GPU state (default, OC active, custom fan active, or both); hover text shows the mode and active profile
 - Windows uses a dedicated elevated background service for OC, UV, power, and long-running fan control while the GUI runs unelevated
 - The Windows GUI adapts its graph and VF-point columns to the monitor work area and current per-monitor DPI; if minimum readable controls cannot fit, the complete interface scrolls instead of being clipped behind the taskbar
 - Per-user Windows config now defaults to `%LOCALAPPDATA%\Green Curve\config.ini`, with one-time import from the legacy beside-exe config when present
 - Configured logon profiles are applied by the background service; long-running custom fan control no longer depends on keeping the tray client running
 - Multi-user: an administrator can share a profile with **all users** (applied on logon for accounts without their own profile, and loadable on demand by any user), stored machine-wide in `%ProgramData%\Green Curve\shared-profiles.ini`
 - Native Linux build: NvAPI (`libnvidia-api.so.1`) + NVML VF-curve / clock / power / fan control, driven by a root systemd daemon over a Unix socket, with a dependency-free raw-terminal TUI client
+- The Linux TUI mirrors the Windows workflow with responsive VF Curve, Fan Curve, and Profiles & Tools tabs; absolute per-point MHz editing; one-click flatten / second-click hard pin; global GPU and memory offsets; low-point exclusion; power control; custom fan curves; profiles; live exports; mouse controls; and complete keyboard navigation
 
 ## Technical notes
 
@@ -32,7 +36,7 @@ Green Curve is a small NVIDIA tuning tool with a full Windows implementation and
 - Uses NVML from the local NVIDIA driver install for supported management operations
 - Windows uses a local named pipe and a machine-wide Windows service running as `LocalSystem`
 - Does not ship NVIDIA driver binaries
-- Debug logging is enabled by default for supportability; log output is size-capped and rotated
+- Debug logging is on by default so issues are easier to diagnose; log files are size-capped and rotated automatically
 - Linux uses a root systemd daemon and a Unix-domain socket (`/run/greencurve/greencurve.sock`, `greencurve` admin group), mirroring the Windows service/pipe split; it is a glibc-dynamic binary because it must `dlopen` the NVIDIA driver libraries
 - Tiny
 
@@ -97,10 +101,26 @@ greencurve --self-test              # read-only validation of the apply path
 greencurve --gpu 0000:01:00.0 --tui # select a stable PCI target on multi-GPU systems
 sudo greencurve --service-install   # install + start the systemd daemon
 greencurve --tui                    # edit and apply the VF curve / fan / power
+greencurve --dump-live              # dump all 128 live/base/target VF values
+greencurve --json-live              # same live state as machine-readable JSON
 greencurve --apply-config           # apply the selected profile
 greencurve --reset --apply-config   # reset OC/UV to driver defaults
 sudo greencurve --service-remove
 ```
+
+Running `greencurve` without arguments also opens the TUI. Its fixed header,
+tabs, status/footer, graphs, tables, and controls reflow at compact, medium, and
+wide terminal breakpoints; the minimum interactive size is 72x24 cells. Click
+buttons, checkboxes, table fields, and either graph with the mouse. The wheel
+scrolls the active table. `Tab`/`Shift+Tab` and the arrow keys move focus,
+`Enter` edits or activates, `Page Up`/`Page Down` scroll by a page,
+`Ctrl+Page Up`/`Ctrl+Page Down` changes tabs, and `Home`/`End` jumps through the
+VF curve. Every mouse operation has a keyboard path.
+
+`--dump` and `--json` describe the selected saved profile. Use `--dump-live` or
+`--json-live` when diagnosing or calculating from the daemon's current absolute
+VF state: every populated point includes its index, voltage, base MHz, live MHz,
+offset, staged target MHz, and the rule producing that target.
 
 The daemon socket is restricted to `root` and the `greencurve` group
 (`0660 root:greencurve`). To use the TUI or CLI without `sudo`, add your account
