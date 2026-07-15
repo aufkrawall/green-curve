@@ -6,5 +6,6 @@
 
 #include "main_service_request_policy.cpp"
 #include "main_service_operation_persist.cpp"
+#include "main_service_snapshot_request.cpp"
 #include "main_service_pipe.cpp"
 #include "main_service_host.cpp"

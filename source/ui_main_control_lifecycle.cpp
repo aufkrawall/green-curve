@@ -48,10 +48,17 @@ static void rebuild_edit_controls() {
         g_app.numVisible, g_app.loaded ? 1 : 0);
     main_layout_grow_window_for_content(
         hwnd, g_app.numVisible, "VF edit-control rebuild");
-    SendMessageA(hwnd, WM_SETREDRAW, FALSE, 0);
+    bool ownsRedrawTransaction = !g_guiRenderTransactionActive;
+    GuiTopLevelRedrawTransaction redrawTransaction = {};
+    if (ownsRedrawTransaction)
+        gui_top_level_redraw_begin(&redrawTransaction, hwnd,
+            "VF edit-control rebuild");
     destroy_edit_controls(hwnd);
     create_edit_controls(hwnd, g_app.hInst);
-    SendMessageA(hwnd, WM_SETREDRAW, TRUE, 0);
-    RedrawWindow(hwnd, nullptr, nullptr,
-        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_FRAME);
+    if (ownsRedrawTransaction) {
+        gui_top_level_redraw_end(&redrawTransaction,
+            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN |
+                RDW_UPDATENOW | RDW_FRAME,
+            "VF edit-control rebuild");
+    }
 }

@@ -12,15 +12,16 @@ static void populate_global_controls() {
         apply_control_state_to_gui(&control);
     }
 
-    bool serviceReady = g_app.backgroundServiceAvailable;
+    bool serviceReady = g_app.isServiceProcess
+        ? g_app.loaded : gui_service_model_ready(&g_app.guiServiceModel);
 #ifndef GREEN_CURVE_SERVICE_BINARY
     populate_gpu_selector();
 #endif
 
-    int liveGpuOffsetExcludeLowCount = haveControlState && control_state_has_meaningful_gpu(&control)
+    int liveGpuOffsetExcludeLowCount = haveControlState && control.hasGpuOffset
         ? control.gpuOffsetExcludeLowCount
         : g_app.appliedGpuOffsetExcludeLowCount;
-    int liveGpuOffsetMHz = haveControlState && control_state_has_meaningful_gpu(&control)
+    int liveGpuOffsetMHz = haveControlState && control.hasGpuOffset
         ? control.gpuOffsetMHz
         : g_app.appliedGpuOffsetMHz;
     g_app.appliedGpuOffsetExcludeLowCount = liveGpuOffsetExcludeLowCount;
@@ -29,6 +30,11 @@ static void populate_global_controls() {
     if (!gui_state_dirty()) {
         g_app.guiGpuOffsetExcludeLowCount = liveGpuOffsetExcludeLowCount;
         g_app.guiGpuOffsetMHz = liveGpuOffsetMHz;
+        g_app.guiMemOffsetMHz = haveControlState && control.hasMemOffset
+            ? control.memOffsetMHz
+            : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
+        g_app.guiPowerLimitPct = haveControlState && control.hasPowerLimit
+            ? control.powerLimitPct : g_app.powerLimitPct;
     }
     debug_log_on_change("populate_global_controls: dirty=%d haveControl=%d liveGpu=%d liveExclude=%d guiGpu=%d guiExclude=%d appliedGpu=%d appliedExclude=%d\n",
         gui_state_dirty() ? 1 : 0,
@@ -61,34 +67,34 @@ static void populate_global_controls() {
             (serviceReady && g_app.gpuOffsetRangeKnown) ? 1 : 0);
     }
     if (g_app.hMemOffsetEdit) {
-        if (!gui_state_dirty()) {
-            char buf[32];
-            int memOffsetToShow = control_state_has_meaningful_mem(&control)
-                ? control.memOffsetMHz
-                : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
-            StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d", memOffsetToShow);
-            SetWindowTextA(g_app.hMemOffsetEdit, buf);
-        }
+        char buf[32];
+        StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d",
+            gui_state_dirty() ? g_app.guiMemOffsetMHz :
+                (control.hasMemOffset ? control.memOffsetMHz :
+                    mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz)));
+        SetWindowTextA(g_app.hMemOffsetEdit, buf);
         EnableWindow(g_app.hMemOffsetEdit, (serviceReady && g_app.memOffsetRangeKnown) ? TRUE : FALSE);
     }
     if (g_app.hPowerLimitEdit) {
-        if (!gui_state_dirty()) {
-            char buf[32];
-            int powerToShow = control_state_has_meaningful_power(&control) ? control.powerLimitPct : g_app.powerLimitPct;
-            StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d", powerToShow);
-            SetWindowTextA(g_app.hPowerLimitEdit, buf);
-        }
+        char buf[32];
+        StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d",
+            gui_state_dirty() ? g_app.guiPowerLimitPct :
+                (control.hasPowerLimit ? control.powerLimitPct :
+                    g_app.powerLimitPct));
+        SetWindowTextA(g_app.hPowerLimitEdit, buf);
         EnableWindow(g_app.hPowerLimitEdit, serviceReady ? TRUE : FALSE);
     }
-    if (g_app.hApplyBtn) EnableWindow(g_app.hApplyBtn, (serviceReady && g_app.loaded) ? TRUE : FALSE);
-    if (g_app.hRefreshBtn) EnableWindow(g_app.hRefreshBtn, serviceReady ? TRUE : FALSE);
-    if (g_app.hResetBtn) EnableWindow(g_app.hResetBtn, (serviceReady && g_app.loaded) ? TRUE : FALSE);
+    bool mutationReady = serviceReady && g_app.loaded &&
+        g_app.guiDraft.attached && !g_app.guiDraft.detached;
+    if (g_app.hApplyBtn) EnableWindow(g_app.hApplyBtn, mutationReady ? TRUE : FALSE);
+    if (g_app.hRefreshBtn) EnableWindow(g_app.hRefreshBtn, TRUE);
+    if (g_app.hResetBtn) EnableWindow(g_app.hResetBtn, mutationReady ? TRUE : FALSE);
     end_programmatic_edit_update();
     if (!preservePendingCurveEdits && !gui_has_pending_global_edits()) {
         detect_locked_tail_from_curve();
     }
     update_fan_controls_enabled_state();
-    if (!g_app.backgroundServiceAvailable || !g_app.loaded) {
+    if (!serviceReady || !g_app.loaded) {
         g_app.serviceSnapshotAuthoritative = false;
     }
 }
@@ -418,4 +424,3 @@ static bool save_desired_to_config_with_startup(const char* path, const DesiredS
     if (ok) invalidate_tray_profile_cache();
     return ok;
 }
-

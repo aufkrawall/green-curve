@@ -245,6 +245,31 @@ static inline int gc_snprintf(char* dst, size_t dstSize, const char* fmt, ...) {
     return n;
 }
 
+// Append formatted text after an already-used prefix and return the new byte
+// count.  Unlike StringCchPrintf*, the return value is deliberately a cursor:
+// callers can safely chain appends without confusing HRESULT success (zero)
+// with the number of characters written.  Truncation advances to the final
+// usable byte and all non-empty destinations remain NUL-terminated.
+static inline size_t gc_appendf(char* dst, size_t dstSize, size_t used,
+    const char* fmt, ...)
+#if defined(__GNUC__)
+    __attribute__((format(printf, 4, 5)))
+#endif
+    ;
+static inline size_t gc_appendf(char* dst, size_t dstSize, size_t used,
+    const char* fmt, ...) {
+    if (!dst || dstSize == 0) return 0;
+    if (used >= dstSize) {
+        dst[dstSize - 1] = '\0';
+        return dstSize - 1;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    int n = fmt ? gc_vsnprintf(dst + used, dstSize - used, fmt, ap) : -1;
+    va_end(ap);
+    return n < 0 ? used : used + (size_t)n;
+}
+
 static inline void gc_strlcpy(char* dst, size_t dstSize, const char* src) {
     if (!dst || dstSize == 0) return;
     if (!src) { dst[0] = '\0'; return; }

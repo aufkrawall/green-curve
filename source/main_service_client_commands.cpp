@@ -94,41 +94,49 @@ static bool service_client_ping(char* err, size_t errSize) {
     return true;
 }
 
-static bool service_client_get_snapshot(ServiceSnapshot* snapshot, char* err, size_t errSize) {
+static bool service_client_get_state_envelope(ServiceCommand command,
+    ServiceResponse* response, DWORD timeoutMs, const char* source,
+    char* err, size_t errSize) {
+    if (!response ||
+        (command != SERVICE_CMD_GET_SNAPSHOT &&
+         command != SERVICE_CMD_GET_TELEMETRY &&
+         command != SERVICE_CMD_GET_ACTIVE_DESIRED)) {
+        set_message(err, errSize, "Invalid service state request");
+        return false;
+    }
     ServiceRequest request = {};
     request.magic = SERVICE_PROTOCOL_MAGIC;
     request.version = SERVICE_PROTOCOL_VERSION;
-    request.command = SERVICE_CMD_GET_SNAPSHOT;
+    request.command = command;
     request.callerPid = GetCurrentProcessId();
     ProcessIdToSessionId(request.callerPid, &request.callerSessionId);
-    StringCchCopyA(request.source, ARRAY_COUNT(request.source), "client snapshot");
-    ServiceResponse response = {};
-    if (!service_send_request(&request, &response, 2000, err, errSize)) return false;
-    if (response.status != SERVICE_STATUS_OK) {
-        set_message(err, errSize, "%s", response.message[0] ? response.message : "Service snapshot failed");
+    StringCchCopyA(request.source, ARRAY_COUNT(request.source),
+        source && source[0] ? source : "client state envelope");
+    *response = {};
+    if (!service_send_request(&request, response, timeoutMs, err, errSize))
+        return false;
+    if (response->status != SERVICE_STATUS_OK) {
+        set_message(err, errSize, "%s",
+            response->message[0] ? response->message :
+            "Service state request failed");
         return false;
     }
-    if (snapshot) *snapshot = response.snapshot;
-    if (response.controlState.valid) apply_control_state_to_gui(&response.controlState);
     return true;
 }
 
-static bool service_client_get_telemetry(ServiceSnapshot* snapshot, char* err, size_t errSize) {
-    ServiceRequest request = {};
-    request.magic = SERVICE_PROTOCOL_MAGIC;
-    request.version = SERVICE_PROTOCOL_VERSION;
-    request.command = SERVICE_CMD_GET_TELEMETRY;
-    request.callerPid = GetCurrentProcessId();
-    ProcessIdToSessionId(request.callerPid, &request.callerSessionId);
-    StringCchCopyA(request.source, ARRAY_COUNT(request.source), "client telemetry");
-    ServiceResponse response = {};
-    if (!service_send_request(&request, &response, 500, err, errSize)) return false;
-    if (response.status != SERVICE_STATUS_OK) {
-        set_message(err, errSize, "%s", response.message[0] ? response.message : "Service telemetry failed");
+static bool service_client_get_ready_state(ServiceResponse* response,
+    DWORD timeoutMs, const char* source, char* err, size_t errSize) {
+    if (!service_client_get_state_envelope(SERVICE_CMD_GET_SNAPSHOT,
+            response, timeoutMs, source, err, errSize)) return false;
+    if (response->state.gpuPhase != SERVICE_GPU_PHASE_READY ||
+        (response->state.validSections &
+            SERVICE_STATE_SECTION_READY_REQUIRED) !=
+                SERVICE_STATE_SECTION_READY_REQUIRED) {
+        set_message(err, errSize,
+            "Selected GPU state is not ready (service phase %u, validity 0x%02X)",
+            response->state.gpuPhase, response->state.validSections);
         return false;
     }
-    if (snapshot) *snapshot = response.snapshot;
-    if (response.controlState.valid) apply_control_state_to_gui(&response.controlState);
     return true;
 }
 
@@ -225,10 +233,15 @@ static bool service_client_apply_desired(const DesiredSettings* desired, const c
     bool ok = service_client_execute_mutation_request(&request, &response,
         result, resultSize);
     if (snapshotOut) *snapshotOut = response.snapshot;
-    g_app.serviceActiveDesired = response.desired;
-    g_app.serviceActiveDesiredValid =
-        response.snapshot.activeProfileSource != SERVICE_PROFILE_SOURCE_NONE;
-    if (response.controlState.valid) apply_control_state_to_gui(&response.controlState);
+    g_app.serviceActiveDesiredValid = response.state.activeDesiredValid;
+    if (response.state.activeDesiredValid)
+        g_app.serviceActiveDesired = response.desired;
+    else
+        memset(&g_app.serviceActiveDesired, 0,
+            sizeof(g_app.serviceActiveDesired));
+    if ((response.state.validSections &
+            SERVICE_STATE_SECTION_APPLIED_CONTROLS) != 0)
+        apply_control_state_to_gui(&response.controlState);
     return ok;
 }
 
@@ -391,34 +404,16 @@ static bool service_client_reset(char* result, size_t resultSize, ServiceSnapsho
     bool ok = service_client_execute_mutation_request(&request, &response,
         result, resultSize);
     if (snapshotOut) *snapshotOut = response.snapshot;
-    g_app.serviceActiveDesired = response.desired;
-    g_app.serviceActiveDesiredValid =
-        response.snapshot.activeProfileSource != SERVICE_PROFILE_SOURCE_NONE;
-    if (response.controlState.valid) apply_control_state_to_gui(&response.controlState);
+    g_app.serviceActiveDesiredValid = response.state.activeDesiredValid;
+    if (response.state.activeDesiredValid)
+        g_app.serviceActiveDesired = response.desired;
+    else
+        memset(&g_app.serviceActiveDesired, 0,
+            sizeof(g_app.serviceActiveDesired));
+    if ((response.state.validSections &
+            SERVICE_STATE_SECTION_APPLIED_CONTROLS) != 0)
+        apply_control_state_to_gui(&response.controlState);
     return ok;
-}
-
-static bool service_client_get_active_desired(DesiredSettings* desired, ServiceSnapshot* snapshotOut, char* err, size_t errSize) {
-    ServiceRequest request = {};
-    request.magic = SERVICE_PROTOCOL_MAGIC;
-    request.version = SERVICE_PROTOCOL_VERSION;
-    request.command = SERVICE_CMD_GET_ACTIVE_DESIRED;
-    request.callerPid = GetCurrentProcessId();
-    ProcessIdToSessionId(request.callerPid, &request.callerSessionId);
-    StringCchCopyA(request.source, ARRAY_COUNT(request.source), "client active desired");
-    ServiceResponse response = {};
-    if (!service_send_request(&request, &response, 5000, err, errSize)) return false;
-    if (response.status != SERVICE_STATUS_OK) {
-        set_message(err, errSize, "%s", response.message[0] ? response.message : "Service desired query failed");
-        return false;
-    }
-    if (desired) *desired = response.desired;
-    g_app.serviceActiveDesired = response.desired;
-    g_app.serviceActiveDesiredValid =
-        response.snapshot.activeProfileSource != SERVICE_PROFILE_SOURCE_NONE;
-    if (snapshotOut) *snapshotOut = response.snapshot;
-    if (response.controlState.valid) apply_control_state_to_gui(&response.controlState);
-    return true;
 }
 
 static bool is_safe_output_path(const char* path, char* err, size_t errSize) {

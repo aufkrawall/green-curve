@@ -255,8 +255,8 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
         BOOL captureDump = g_app.isServiceProcess && info && info->ExceptionRecord && info->ContextRecord;
 
         char text[2048] = {};
-        int len = 0;
-        len += StringCchPrintfA(text + len, ARRAY_COUNT(text) - len,
+        size_t len = 0;
+        len = gc_appendf(text, ARRAY_COUNT(text), len,
             "\r\n%04u-%02u-%02u %02u:%02u:%02u.%03u CRASH pid=%lu tid=%lu exception=0x%08lX address=%p",
             now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds,
             GetCurrentProcessId(),
@@ -264,10 +264,10 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
             code,
             address);
         if (code == 0xC0000005 && faultAddr) {
-            len += StringCchPrintfA(text + len, ARRAY_COUNT(text) - len,
+            len = gc_appendf(text, ARRAY_COUNT(text), len,
                 " fault=%s@%p", faultWrite ? "write" : "read", faultAddr);
         }
-        len += StringCchPrintfA(text + len, ARRAY_COUNT(text) - len,
+        len = gc_appendf(text, ARRAY_COUNT(text), len,
             " source=%s phase=%s serviceProcess=%d deviceRemoved=%d gpuDriverDll=1\r\n",
             g_pendingOperationSource[0] ? g_pendingOperationSource : "<none>",
             g_lastApplyPhase[0] ? g_lastApplyPhase : "<none>",
@@ -314,8 +314,8 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
 
     // Non-GPU-driver-DLL crash: write breadcrumb and dump.
     char text[2048] = {};
-    int len = 0;
-    len += StringCchPrintfA(text + len, ARRAY_COUNT(text) - len,
+    size_t len = 0;
+    len = gc_appendf(text, ARRAY_COUNT(text), len,
         "\r\n%04u-%02u-%02u %02u:%02u:%02u.%03u CRASH pid=%lu tid=%lu exception=0x%08lX address=%p",
         now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds,
         GetCurrentProcessId(),
@@ -323,17 +323,17 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
         code,
         address);
     if (code == 0xC0000005 && faultAddr) {
-        len += StringCchPrintfA(text + len, ARRAY_COUNT(text) - len,
+        len = gc_appendf(text, ARRAY_COUNT(text), len,
             " fault=%s@%p", faultWrite ? "write" : "read", faultAddr);
     }
-    len += StringCchPrintfA(text + len, ARRAY_COUNT(text) - len,
+    len = gc_appendf(text, ARRAY_COUNT(text), len,
         " source=%s phase=%s serviceProcess=%d config=%s\r\n",
         g_pendingOperationSource[0] ? g_pendingOperationSource : "<none>",
         g_lastApplyPhase[0] ? g_lastApplyPhase : "<none>",
         g_app.isServiceProcess ? 1 : 0,
         g_app.configPath[0] ? g_app.configPath : "<unset>");
     if (g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive) {
-        len += StringCchPrintfA(text + len, ARRAY_COUNT(text) - len,
+        len = gc_appendf(text, ARRAY_COUNT(text), len,
             "  fanRuntime: mode=%d curveActive=%d fixedActive=%d fixedPct=%d temp=%d consecutiveFailures=%u lastApplyMs=%llu\r\n",
             g_app.activeFanMode,
             g_app.fanCurveRuntimeActive ? 1 : 0,

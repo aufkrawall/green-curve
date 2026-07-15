@@ -994,11 +994,11 @@ static bool refresh_global_state(char* detail, size_t detailSize) {
                     : "Background service is not installed");
             return false;
         }
-        ServiceSnapshot snapshot = {};
-        if (!service_client_get_snapshot(&snapshot, detail, detailSize)) return false;
-        apply_service_snapshot_to_app(&snapshot);
+        ServiceResponse stateResponse = {};
+        if (!service_client_get_ready_state(&stateResponse, 2000, "global state refresh", detail, detailSize)) return false;
+        apply_ready_service_envelope_to_app(&stateResponse);
         update_tray_icon();
-        return snapshot.loaded;
+        return stateResponse.snapshot.loaded;
     }
     bool ok1 = nvapi_read_pstates();
     bool ok2 = nvml_read_power_limit();

@@ -267,10 +267,6 @@ static void update_background_service_controls() {
 static void apply_system_titlebar_theme(HWND) {
 }
 
-static unsigned int get_edit_value(HWND) {
-    return 0;
-}
-
 static void set_edit_value(HWND, unsigned int) {
 }
 
@@ -499,7 +495,6 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
     if (!desired) return false;
     initialize_desired_settings_defaults(desired);
 
-    char buf[64] = {};
     int parsedCurveMHz[VF_NUM_POINTS] = {};
     bool parsedCurveHave[VF_NUM_POINTS] = {};
     ControlState control = {};
@@ -508,10 +503,10 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
     int currentActiveGpuOffsetExcludeLowCount = haveControlState && control.hasGpuOffset ? control.gpuOffsetExcludeLowCount : (current_applied_gpu_offset_excludes_low_points() ? g_app.appliedGpuOffsetExcludeLowCount : 0);
     int currentGpuOffsetMHz = haveControlState && control.hasGpuOffset ? control.gpuOffsetMHz : current_applied_gpu_offset_mhz();
     int currentGpuOffsetExcludeLowCount = currentActiveGpuOffsetExcludeLowCount;
-    get_window_text_safe(g_app.hGpuOffsetEdit, buf, sizeof(buf));
     int gpuOffsetMHz = currentGpuOffsetMHz;
-    if (buf[0]) {
-        if (!parse_int_strict(buf, &gpuOffsetMHz)) {
+    if (gui_state_dirty()) {
+        if (!parse_int_strict(g_app.guiDraft.gpuOffsetText,
+                &gpuOffsetMHz)) {
             set_message(err, errSize, "Invalid GPU offset");
             return false;
         }

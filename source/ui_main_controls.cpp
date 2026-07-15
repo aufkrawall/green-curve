@@ -171,7 +171,7 @@ static void create_edit_controls(HWND hParent, HINSTANCE hInst) {
     style_combo_control(g_app.hLogonCombo);
     apply_ui_font_to_children(hParent);
     populate_global_controls();
-    if (g_app.loaded) populate_edits();
+    if (g_app.loaded && !g_guiRebuildPreserveDraft) populate_edits();
     create_lock_tooltips(hParent);
     refresh_profile_controls_from_config();
     end_programmatic_edit_update();

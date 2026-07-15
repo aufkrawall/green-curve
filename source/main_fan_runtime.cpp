@@ -1,4 +1,6 @@
 #include "auto_profile.h"   // auto-profile driver API used by the tray menu
+#include "gui_tray_callback_policy.h"
+#include "ui_control_projection.h"
 
 static void copy_fan_curve(FanCurveConfig* destination, const FanCurveConfig* source) {
     if (!destination || !source) return;
@@ -187,37 +189,43 @@ static void refresh_fan_curve_button_text() {
         fan_curve_format_summary(&g_app.guiFanCurve, summary, sizeof(summary));
         char text[128] = {};
         StringCchPrintfA(text, ARRAY_COUNT(text), "Curve: %s", summary);
-        SetWindowTextA(g_app.hFanCurveBtn, text);
+        gui_set_window_text_if_changed(g_app.hFanCurveBtn, text);
     } else {
-        SetWindowTextA(g_app.hFanCurveBtn, "Edit Curve...");
+        gui_set_window_text_if_changed(g_app.hFanCurveBtn, "Edit Curve...");
     }
 }
 static void update_fan_controls_enabled_state() {
-    bool serviceReady = g_app.backgroundServiceAvailable;
+    bool serviceReady = gui_service_model_ready(&g_app.guiServiceModel) &&
+        g_app.guiDraft.attached && !g_app.guiDraft.detached;
     if (g_app.hFanModeCombo) {
         bool dropdownOpen = SendMessageA(g_app.hFanModeCombo, CB_GETDROPPEDSTATE, 0, 0) != 0;
-        if (!dropdownOpen) {
+        if (!dropdownOpen && SendMessageA(g_app.hFanModeCombo,
+                CB_GETCURSEL, 0, 0) != g_app.guiFanMode) {
             SendMessageA(g_app.hFanModeCombo, CB_SETCURSEL, (WPARAM)g_app.guiFanMode, 0);
         }
-        EnableWindow(g_app.hFanModeCombo, (serviceReady && g_app.fanSupported) ? TRUE : FALSE);
+        gui_set_window_enabled_if_changed(g_app.hFanModeCombo,
+            serviceReady && g_app.fanSupported);
     }
     if (g_app.hFanEdit) {
-        char buf[32] = {};
-        StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d", clamp_percent(g_app.guiFanFixedPercent));
-        SetWindowTextA(g_app.hFanEdit, buf);
-        EnableWindow(g_app.hFanEdit, (serviceReady && g_app.fanSupported && g_app.guiFanMode == FAN_MODE_FIXED) ? TRUE : FALSE);
+        if (!gui_state_dirty()) {
+            char buf[32] = {};
+            StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d",
+                clamp_percent(g_app.guiFanFixedPercent));
+            gui_set_window_text_if_changed(g_app.hFanEdit, buf);
+        }
+        gui_set_window_enabled_if_changed(g_app.hFanEdit,
+            serviceReady && g_app.fanSupported &&
+            g_app.guiFanMode == FAN_MODE_FIXED);
     }
     if (g_app.hFanCurveBtn) {
-        EnableWindow(g_app.hFanCurveBtn,
-            (serviceReady && g_app.fanSupported && g_app.guiFanMode == FAN_MODE_CURVE) ? TRUE : FALSE);
+        gui_set_window_enabled_if_changed(g_app.hFanCurveBtn,
+            serviceReady && g_app.fanSupported &&
+            g_app.guiFanMode == FAN_MODE_CURVE);
         refresh_fan_curve_button_text();
     }
 }
 static void update_tray_icon() {
     if (!g_app.hMainWnd) return;
-    if (g_app.usingBackgroundService && !g_app.isServiceProcess) {
-        refresh_background_service_state();
-    }
     // Only report OC/fan as active when the GPU live state is actually available.
     // When the driver is disabled in Device Manager (or the GPU is removed, or the
     // service is down), there is NO OC/fan in effect — the snapshot reflects the
@@ -275,8 +283,11 @@ static bool ensure_tray_icon() {
     StringCchCopyA(nid.szTip, ARRAY_COUNT(nid.szTip), "Green Curve");
     if (!Shell_NotifyIconA(NIM_ADD, &nid)) return false;
     nid.uVersion = NOTIFYICON_VERSION_4;
-    Shell_NotifyIconA(NIM_SETVERSION, &nid);
+    g_app.trayUsesNotificationVersion4 =
+        Shell_NotifyIconA(NIM_SETVERSION, &nid) != FALSE;
     g_app.trayIconAdded = true;
+    debug_log("tray icon: added callbackVersion=%s\n",
+        g_app.trayUsesNotificationVersion4 ? "4" : "legacy");
     update_tray_icon();
     return true;
 }
@@ -288,29 +299,53 @@ static void remove_tray_icon() {
     nid.uID = 1;
     Shell_NotifyIconA(NIM_DELETE, &nid);
     g_app.trayIconAdded = false;
+    g_app.trayUsesNotificationVersion4 = false;
     g_app.trayLastRenderedValid = false;
 }
 static void hide_main_window_to_tray() {
     if (!g_app.hMainWnd) return;
+    g_app.trayWindowHiddenIntent = true;
     ensure_tray_icon();
     ShowWindow(g_app.hMainWnd, SW_HIDE);
+    debug_log_on_change("tray window: hidden (visible=%d intent=%d)\n",
+        IsWindowVisible(g_app.hMainWnd) ? 1 : 0,
+        g_app.trayWindowHiddenIntent ? 1 : 0);
     update_fan_telemetry_timer();
 }
 static void show_main_window_from_tray() {
     if (!g_app.hMainWnd) return;
+    // This function is reached only from a real tray/single-instance user
+    // activation. Clear the durable intent before any ShowWindow request so
+    // WM_WINDOWPOSCHANGING can distinguish it from a driver-induced show.
+    g_app.trayWindowHiddenIntent = false;
+    if (IsWindowVisible(g_app.hMainWnd)) {
+        // Shell notification version changes and double-click sequences can
+        // yield more than one activation callback.  Never restart the sync/GDI
+        // transaction for an already-visible window.
+        SetForegroundWindow(g_app.hMainWnd);
+        debug_log_on_change("tray window: duplicate open ignored while already visible\n");
+        return;
+    }
+#ifndef GREEN_CURVE_SERVICE_BINARY
+    reset_gui_gdi_generation("tray window reopened");
+    if (gui_service_model_ready(&g_app.guiServiceModel)) {
+        // A coherent cached model is sufficient for the first visible frame.
+        // The telemetry response still detects a restarted service, changed GPU
+        // generation, active intent, or topology and promotes that adoption to
+        // a full transaction without first flashing a synchronizing overlay.
+        gui_service_io_queue_telemetry(false);
+    } else {
+        gui_service_retry_full_sync("tray window reopened");
+    }
+#endif
     ShowWindow(g_app.hMainWnd, SW_RESTORE);
     ShowWindow(g_app.hMainWnd, SW_SHOW);
     update_fan_telemetry_timer();
-    bool wasAvailable = g_app.backgroundServiceAvailable;
-    refresh_background_service_state();
-    if (wasAvailable != g_app.backgroundServiceAvailable || (g_app.numVisible > 0 && !g_app.hEditsMhz[0])) {
-        update_all_gui_for_service_state();
-    } else {
-        update_background_service_controls();
-        invalidate_main_window();
-    }
     SetForegroundWindow(g_app.hMainWnd);
     g_app.startHiddenToTray = false;
+    debug_log_on_change("tray window: reopened (visible=%d intent=%d)\n",
+        IsWindowVisible(g_app.hMainWnd) ? 1 : 0,
+        g_app.trayWindowHiddenIntent ? 1 : 0);
 }
 // Build the shared "Profiles" popup: per-slot apply (checkmark on the active
 // slot, greyed when empty) + the auto-switch toggle + "Configure...".  Used by
@@ -373,14 +408,17 @@ static bool activate_existing_instance_window() {
         if (existing && IsWindow(existing)) {
             HWND target = GetLastActivePopup(existing);
             if (!target || !IsWindow(target)) target = existing;
-            ShowWindow(existing, SW_SHOW);
-            ShowWindow(existing, SW_RESTORE);
             if (target != existing) {
                 ShowWindow(target, SW_SHOW);
                 ShowWindow(target, SW_RESTORE);
+                BringWindowToTop(target);
+                SetForegroundWindow(target);
+            } else {
+                // Route main-window activation back through its own GUI thread
+                // so hidden-to-tray state, reconnect sync, and GDI retirement
+                // remain one transaction.
+                PostMessageA(existing, APP_WM_ACTIVATE_EXISTING_INSTANCE, 0, 0);
             }
-            BringWindowToTop(target);
-            SetForegroundWindow(target);
             return true;
         }
         if (attempt + 1 < 20) Sleep(50);
@@ -394,7 +432,11 @@ static bool acquire_single_instance_mutex() {
     if (GetLastError() != ERROR_ALREADY_EXISTS) return true;
     CloseHandle(g_singleInstanceMutex);
     g_singleInstanceMutex = nullptr;
-    activate_existing_instance_window();
+    if (g_app.startHiddenToTray) {
+        debug_log("single instance: duplicate tray-autostart process exited without reopening the resident window\n");
+    } else {
+        activate_existing_instance_window();
+    }
     return false;
 }
 static void release_single_instance_mutex() {

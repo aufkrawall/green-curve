@@ -557,9 +557,8 @@ static void ensure_tray_profile_cache() {
 // the driver is disabled/removed or the service is down.  Shared by the tray icon
 // theme and the tray tooltip so both stay consistent.
 static bool tray_hardware_live() {
-    if (g_app.usingBackgroundService && !g_app.isServiceProcess) {
-        return g_app.backgroundServiceAvailable && g_app.loaded;
-    }
+    if (g_app.usingBackgroundService && !g_app.isServiceProcess)
+        return gui_service_model_ready(&g_app.guiServiceModel) && g_app.loaded;
     return g_app.loaded;
 }
 static void build_tray_tooltip(char* tip, size_t tipSize) {
@@ -568,7 +567,9 @@ static void build_tray_tooltip(char* tip, size_t tipSize) {
     if (!tray_hardware_live()) {
         // GPU live state unavailable: nothing is actually applied, so do not report
         // OC/fan/profile as active (matches the default tray icon theme).
-        StringCchCopyA(tip, tipSize, "Green Curve - GPU driver unavailable");
+        StringCchPrintfA(tip, tipSize, "Green Curve - %s%s",
+            gui_service_phase_tray_text(g_app.guiServiceModel.phase),
+            g_app.guiStateDirty ? " | unsaved draft preserved" : "");
         return;
     }
     char mode[64] = {};
@@ -661,14 +662,12 @@ static void update_fan_telemetry_timer() {
 // hardware retry; automatic logon applies belong exclusively to the service.
 static void start_service_reconnect_timer_if_needed() {
     if (g_app.isServiceProcess) return;
-    if (g_app.backgroundServiceAvailable && g_app.loaded && !g_app.logonServiceReadinessPending) return;
+    if (gui_service_model_ready(&g_app.guiServiceModel) && !g_app.logonServiceReadinessPending) return;
     HWND hWnd = g_app.hMainWnd;
     if (!hWnd) return;
     SetTimer(hWnd, SERVICE_RECONNECT_TIMER_ID, 3000, nullptr);
-    debug_log_on_change("start_service_reconnect_timer_if_needed: polling every 3s (serviceAvailable=%d snapshotLoaded=%d logonReadinessPending=%d)\n",
-        g_app.backgroundServiceAvailable ? 1 : 0,
-        g_app.loaded ? 1 : 0,
-        g_app.logonServiceReadinessPending ? 1 : 0);
+    debug_log_on_change("start_service_reconnect_timer_if_needed: async cadence every 3s (phase=%d logonReadinessPending=%d)\n",
+        (int)g_app.guiServiceModel.phase, g_app.logonServiceReadinessPending ? 1 : 0);
 }
 
 static bool fan_manual_control_available(char* detail, size_t detailSize) {

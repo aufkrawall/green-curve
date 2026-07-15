@@ -4,15 +4,13 @@
         currentLockMHz = displayed_curve_mhz(g_app.curve[lockCi].freq_kHz);
         effectiveLockTargetMHz = (int)g_app.lockedFreq;
         {
-            char lockBuf[32] = {};
-            get_window_text_safe(g_app.hEditsMhz[g_app.lockedVi], lockBuf, sizeof(lockBuf));
-            if (lockBuf[0]) {
-                int parsed = 0;
-                if (!parse_int_strict(lockBuf, &parsed) || parsed <= 0) {
+            if (g_app.guiDraft.attached) {
+                if (!g_app.guiDraft.curveValueValid[lockCi]) {
                     set_message(err, errSize, "Invalid MHz value for point %d", lockCi);
                     return false;
                 }
-                effectiveLockTargetMHz = parsed;
+                effectiveLockTargetMHz =
+                    (int)g_app.guiDraft.curveMHz[lockCi];
             } else if (effectiveLockTargetMHz <= 0 && captureAllCurvePoints) {
                 effectiveLockTargetMHz = (int)currentLockMHz;
             }
@@ -49,11 +47,11 @@
         } else if (hasLock && vi > g_app.lockedVi) {
             continue;
         } else {
-            char pointBuf[32] = {};
-            get_window_text_safe(g_app.hEditsMhz[vi], pointBuf, sizeof(pointBuf));
-            if (!pointBuf[0] && captureAllCurvePoints) {
+            const char* pointText = g_app.guiDraft.curveText[ci];
+            if (!pointText[0] && captureAllCurvePoints) {
                 mhz = (int)currentMHz;
-            } else if (!parse_int_strict(pointBuf, &mhz) || mhz <= 0) {
+            } else if (!g_app.guiDraft.curveValueValid[ci] ||
+                !parse_int_strict(pointText, &mhz) || mhz <= 0) {
                 set_message(err, errSize, "Invalid MHz value for point %d", ci);
                 return false;
             }
@@ -131,10 +129,10 @@
     }
 
     int currentMemOffsetMHz = haveControlState && control.hasMemOffset ? control.memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
-    get_window_text_safe(g_app.hMemOffsetEdit, buf, sizeof(buf));
     int memOffsetMHz = currentMemOffsetMHz;
-    if (buf[0]) {
-        if (!parse_int_strict(buf, &memOffsetMHz)) {
+    if (gui_state_dirty()) {
+        if (!parse_int_strict(g_app.guiDraft.memOffsetText,
+                &memOffsetMHz)) {
             set_message(err, errSize, "Invalid memory offset");
             return false;
         }
@@ -145,10 +143,10 @@
     }
 
     int currentPowerLimitPct = haveControlState && control.hasPowerLimit ? control.powerLimitPct : g_app.powerLimitPct;
-    get_window_text_safe(g_app.hPowerLimitEdit, buf, sizeof(buf));
     int powerLimitPct = currentPowerLimitPct;
-    if (buf[0]) {
-        if (!parse_int_strict(buf, &powerLimitPct)) {
+    if (gui_state_dirty()) {
+        if (!parse_int_strict(g_app.guiDraft.powerLimitText,
+                &powerLimitPct)) {
             set_message(err, errSize, "Invalid power limit");
             return false;
         }
@@ -159,16 +157,10 @@
     }
 
     int selectedFanMode = g_app.guiFanMode;
-    if (g_app.hFanModeCombo) {
-        LRESULT selection = SendMessageA(g_app.hFanModeCombo, CB_GETCURSEL, 0, 0);
-        if (selection >= 0 && selection <= FAN_MODE_CURVE) {
-            selectedFanMode = (int)selection;
-        }
-    }
-    get_window_text_safe(g_app.hFanEdit, buf, sizeof(buf));
     int fanPercent = g_app.guiFanFixedPercent;
     if (selectedFanMode == FAN_MODE_FIXED) {
-        if (!parse_int_strict(buf, &fanPercent)) {
+        if (gui_state_dirty() &&
+            !parse_int_strict(g_app.guiDraft.fanFixedText, &fanPercent)) {
             set_message(err, errSize, "Invalid fixed fan percentage");
             return false;
         }

@@ -130,6 +130,15 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
         debug_log_session_marker("BEGIN", "service", "service_main bootstrap");
         debug_log_session_marker("BEGIN", "service", "service_main startup");
     }
+    if (!service_initialize_state_identity()) {
+        debug_log("service_main: FATAL could not generate protocol-v11 service instance identity\n");
+        g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
+        g_serviceStatus.dwWin32ExitCode = ERROR_GEN_FAILURE;
+        SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
+        return;
+    }
+    debug_log("service state: initialized instance=%llu gpuGeneration=1 phase=STARTING\n",
+        (unsigned long long)g_serviceInstanceId);
 
     // F-SEC-5 / policy: SENSITIVE program artifacts (crash dumps, service logs,
     // restart/reapply state) live only under SYSTEM %LOCALAPPDATA%\Green Curve.

@@ -71,7 +71,11 @@ bool pl_run_capture(const char* const* argv, char* out, size_t outSize,
     SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
     HANDLE hRead = nullptr, hWrite = nullptr;
     if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return false;
-    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+    if (!SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0)) {
+        CloseHandle(hRead);
+        CloseHandle(hWrite);
+        return false;
+    }
 
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
@@ -91,35 +95,65 @@ bool pl_run_capture(const char* const* argv, char* out, size_t outSize,
 
     size_t totalRead = 0;
     bool timedOut = false;
+    bool ioOk = true;
+    bool processExited = false;
+    bool pipeClosed = false;
     ULONGLONG startTickMs = GetTickCount64();
-    while (totalRead < outSize - 1) {
+    for (;;) {
         DWORD available = 0;
-        if (PeekNamedPipe(hRead, nullptr, 0, nullptr, &available, nullptr) && available > 0) {
+        if (!pipeClosed && !PeekNamedPipe(hRead, nullptr, 0, nullptr,
+                &available, nullptr)) {
+            if (GetLastError() == ERROR_BROKEN_PIPE) pipeClosed = true;
+            else { ioOk = false; break; }
+        }
+        if (!pipeClosed && available > 0) {
             size_t room = outSize - 1 - totalRead;
-            DWORD toRead = (available < room) ? available : (DWORD)room;
+            char discard[4096];
+            char* target = room > 0 ? out + totalRead : discard;
+            size_t targetSize = room > 0 ? room : sizeof(discard);
+            if (targetSize > MAXDWORD) targetSize = MAXDWORD;
+            DWORD toRead = available < targetSize ? available : (DWORD)targetSize;
             DWORD n = 0;
-            if (!ReadFile(hRead, out + totalRead, toRead, &n, nullptr) || n == 0) break;
-            totalRead += n;
+            if (!ReadFile(hRead, target, toRead, &n, nullptr) || n == 0) {
+                ioOk = false;
+                break;
+            }
+            if (room > 0) totalRead += n;
             continue;
         }
-        DWORD waitResult = WaitForSingleObject(pi.hProcess, 25);
+
+        DWORD waitResult = WaitForSingleObject(pi.hProcess, 0);
         if (waitResult == WAIT_OBJECT_0) {
-            // Drain any final buffered output before exiting the loop.
-            DWORD tail = 0;
-            if (PeekNamedPipe(hRead, nullptr, 0, nullptr, &tail, nullptr) && tail > 0) continue;
+            processExited = true;
+            if (!pipeClosed && PeekNamedPipe(hRead, nullptr, 0, nullptr,
+                    &available, nullptr) && available > 0) continue;
             break;
         }
-        if (GetTickCount64() - startTickMs >= timeoutMs) {
+        if (waitResult == WAIT_FAILED) { ioOk = false; break; }
+
+        ULONGLONG elapsedMs = GetTickCount64() - startTickMs;
+        if (elapsedMs >= timeoutMs) {
             timedOut = true;
-            TerminateProcess(pi.hProcess, 1);
+            break;
+        }
+        DWORD waitMs = (DWORD)(timeoutMs - elapsedMs);
+        if (waitMs > 25) waitMs = 25;
+        if (WaitForSingleObject(pi.hProcess, waitMs) == WAIT_FAILED) {
+            ioOk = false;
             break;
         }
     }
     out[totalRead] = '\0';
 
-    WaitForSingleObject(pi.hProcess, 1000);
+    if (!processExited) {
+        TerminateProcess(pi.hProcess, 1);
+        processExited = WaitForSingleObject(pi.hProcess, INFINITE) == WAIT_OBJECT_0;
+    }
+    DWORD exitCode = STILL_ACTIVE;
+    bool cleanExit = processExited && GetExitCodeProcess(pi.hProcess, &exitCode) &&
+        exitCode == 0;
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     CloseHandle(hRead);
-    return !timedOut;
+    return !timedOut && ioOk && cleanExit;
 }

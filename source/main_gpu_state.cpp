@@ -479,20 +479,21 @@ static void set_gui_state_dirty(bool dirty) {
             dirty ? 1 : 0,
             g_programmaticEditUpdateDepth);
     }
+#ifndef GREEN_CURVE_SERVICE_BINARY
+    if (dirty && !g_app.guiStateDirty) gui_draft_begin_user_edit();
+#endif
     g_app.guiStateDirty = dirty;
 }
 
 static bool gui_state_dirty() {
     return g_app.guiStateDirty;
 }
-
 static bool should_accept_service_curve_lock_detection() {
     if (!g_app.usingBackgroundService) return true;
     if (gui_state_dirty()) return false;
     if (g_app.lockedCi >= 0 && g_app.lockedCi < VF_NUM_POINTS && g_app.lockedFreq > 0) return false;
     return true;
 }
-
 static bool should_auto_detect_locked_tail_from_live_curve() {
     if (g_app.isServiceProcess
         && g_serviceHasActiveDesired
@@ -506,7 +507,6 @@ static bool should_auto_detect_locked_tail_from_live_curve() {
     }
     return true;
 }
-
 static void persist_runtime_selective_gpu_offset_request(int gpuOffsetMHz, int excludeLowCount) {
     if (!g_app.configPath[0]) return;
     if (gpuOffsetMHz == 0 || excludeLowCount <= 0) {
@@ -612,33 +612,30 @@ static bool refresh_service_snapshot_and_active_desired(char* err, size_t errSiz
         return false;
     }
 
-    ServiceSnapshot snapshot = {};
-    if (!service_client_get_snapshot(&snapshot, err, errSize)) {
+    ServiceResponse stateResponse = {};
+    if (!service_client_get_ready_state(&stateResponse, 2000,
+            "refresh snapshot and active intent", err, errSize)) {
         return false;
     }
-    apply_service_snapshot_to_app(&snapshot);
+    apply_service_snapshot_to_app(&stateResponse.snapshot);
+    if ((stateResponse.state.validSections &
+            SERVICE_STATE_SECTION_APPLIED_CONTROLS) != 0)
+        apply_control_state_to_gui(&stateResponse.controlState);
 
-    DesiredSettings activeDesired = {};
-    char desiredErr[256] = {};
-    if (service_client_get_active_desired(&activeDesired, nullptr, desiredErr, sizeof(desiredErr))) {
-        // RC7 fix: do NOT call apply_service_desired_to_gui() here — that would
-        // overwrite g_app.lockedCi/g_app.lockedFreq with the service's stale
-        // active desired (which may still hold old lock values from before a
-        // GPU device reconnect or reset), even when the just-received snapshot
-        // correctly reported hasLock=false.  The snapshot is the authoritative
-        // source for the GUI display.  The active desired is only returned to
-        // callers that need it (e.g. profile mismatch checks).
-        g_app.serviceActiveDesired = activeDesired;
-        g_app.serviceActiveDesiredValid =
-            g_app.serviceActiveProfileSource != SERVICE_PROFILE_SOURCE_NONE;
-        if (activeDesiredOut) *activeDesiredOut = activeDesired;
+    if (stateResponse.state.activeDesiredValid) {
+        // Keep the accepted snapshot authoritative for the displayed lock. The
+        // atomic envelope's desired payload is retained for profile comparisons
+        // without projecting it over live snapshot lock detection here.
+        g_app.serviceActiveDesired = stateResponse.desired;
+        g_app.serviceActiveDesiredValid = true;
+        if (activeDesiredOut) *activeDesiredOut = stateResponse.desired;
 #ifndef GREEN_CURVE_SERVICE_BINARY
         sync_applied_profile_from_service_metadata();
 #endif
-    } else if (desiredErr[0]) {
+    } else {
         g_app.serviceActiveDesiredValid = false;
         memset(&g_app.serviceActiveDesired, 0, sizeof(g_app.serviceActiveDesired));
-        debug_log("refresh_service_snapshot_and_active_desired: active desired unavailable: %s\n", desiredErr);
+        if (activeDesiredOut) *activeDesiredOut = {};
     }
 
     if (err && errSize > 0) err[0] = 0;

@@ -9,6 +9,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
@@ -57,32 +58,41 @@ bool pl_run_capture(const char* const* argv, char* out, size_t outSize,
 
     size_t totalRead = 0;
     bool timedOut = false;
+    bool ioOk = true;
     unsigned long long startMs = monotonic_ms();
-    while (totalRead < outSize - 1) {
+    for (;;) {
         unsigned long long elapsed = monotonic_ms() - startMs;
         if (elapsed >= timeoutMs) { timedOut = true; break; }
 
-        struct pollfd pfd;
+        struct pollfd pfd = {};
         pfd.fd = pipefd[0];
         pfd.events = POLLIN;
-        int waitMs = (int)(timeoutMs - elapsed);
-        if (waitMs > 100) waitMs = 100; // re-check the deadline at least every 100ms
+        unsigned long long remainingMs = timeoutMs - elapsed;
+        int waitMs = remainingMs > INT_MAX ? INT_MAX : (int)remainingMs;
         int pr = poll(&pfd, 1, waitMs);
         if (pr < 0) {
             if (errno == EINTR) continue;
+            ioOk = false;
             break;
         }
-        if (pr == 0) continue; // timeout slice; loop re-checks the deadline
+        if (pr == 0) { timedOut = true; break; }
         if (pfd.revents & (POLLIN | POLLHUP)) {
-            ssize_t n = read(pipefd[0], out + totalRead, outSize - 1 - totalRead);
+            size_t room = outSize - 1 - totalRead;
+            char discard[4096];
+            char* target = room > 0 ? out + totalRead : discard;
+            size_t targetSize = room > 0 && room < sizeof(discard)
+                ? room : sizeof(discard);
+            ssize_t n = read(pipefd[0], target, targetSize);
             if (n > 0) {
-                totalRead += (size_t)n;
+                if (room > 0) totalRead += (size_t)n;
                 continue;
             }
             if (n == 0) break; // EOF: child closed stdout
             if (errno == EAGAIN || errno == EINTR) continue;
+            ioOk = false;
             break;
         }
+        if (pfd.revents & (POLLERR | POLLNVAL)) { ioOk = false; break; }
     }
     out[totalRead] = '\0';
     close(pipefd[0]);
@@ -92,6 +102,8 @@ bool pl_run_capture(const char* const* argv, char* out, size_t outSize,
     }
     // Reap the child so it does not linger as a zombie.
     int status = 0;
-    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
-    return !timedOut;
+    pid_t waited = 0;
+    do { waited = waitpid(pid, &status, 0); } while (waited < 0 && errno == EINTR);
+    return !timedOut && ioOk && waited == pid && WIFEXITED(status) &&
+        WEXITSTATUS(status) == 0;
 }

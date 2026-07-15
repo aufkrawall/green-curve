@@ -22,15 +22,10 @@ static void show_live_gpu_state_for_disabled_app_launch() {
     g_app.guiHasUserModifiedValues = false;
     g_app.loadedSharedSlot = 0;
 
-    char snapshotErr[256] = {};
-    bool refreshed = refresh_service_snapshot_and_active_desired(
-        snapshotErr, sizeof(snapshotErr));
-    update_all_gui_for_service_state();
-
     ControlState control = {};
     bool haveControl = get_effective_control_state(&control);
     debug_log("startup live editor: snapshot=%d selectedSlot=%d saved=%d (saved slot deliberately not loaded) loaded=%d activeSource=%d activeSlot=%d gpu=%d mem=%d power=%d fanMode=%d lockCi=%d lockMHz=%u detail=%s\n",
-        refreshed ? 1 : 0,
+        gui_service_model_ready(&g_app.guiServiceModel) ? 1 : 0,
         selectedSlot,
         selectedSlotSaved ? 1 : 0,
         g_app.loaded ? 1 : 0,
@@ -42,13 +37,9 @@ static void show_live_gpu_state_for_disabled_app_launch() {
         haveControl && control.hasFan ? control.fanMode : -1,
         g_app.lockedCi,
         g_app.lockedFreq,
-        snapshotErr[0] ? snapshotErr : "ok");
+        "accepted READY envelope");
 
-    if (!refreshed) {
-        set_profile_status_text(
-            "App start auto-load is disabled. Live GPU state is unavailable: %s",
-            snapshotErr[0] ? snapshotErr : "unknown error");
-    } else if (selectedSlotSaved) {
+    if (selectedSlotSaved) {
         set_profile_status_text(
             "Showing current GPU state. Slot %d is selected and saved; click Load to edit its saved values.",
             selectedSlot);
@@ -66,6 +57,11 @@ static void maybe_load_app_launch_profile_to_gui() {
         return;
     }
     if (editorSource == STARTUP_EDITOR_SOURCE_LIVE_SNAPSHOT) {
+        if (!gui_service_model_ready(&g_app.guiServiceModel)) {
+            g_app.appLaunchEvaluationPending = true;
+            set_profile_status_text("Waiting for a coherent GPU snapshot before showing live state...");
+            return;
+        }
         show_live_gpu_state_for_disabled_app_launch();
         return;
     }
@@ -110,13 +106,17 @@ static void maybe_load_app_launch_profile_to_gui() {
         set_profile_status_text("App start slot %d was rejected: %s", appLaunchSlot, err);
         return;
     }
-    refresh_background_service_state();
-    if (g_app.usingBackgroundService && g_app.backgroundServiceAvailable) {
-        DesiredSettings activeDesired = {};
-        char snapErr[256] = {};
+    if (!gui_service_model_ready(&g_app.guiServiceModel)) {
+        g_app.appLaunchEvaluationPending = true;
+        set_profile_status_text("App start slot %d is waiting for GPU reconnection.",
+            appLaunchSlot);
+        return;
+    }
+    if (g_app.serviceActiveDesiredValid) {
         char matchDetail[256] = {};
-        if (refresh_service_snapshot_and_active_desired(snapErr, sizeof(snapErr), &activeDesired)
-            && desired_settings_match_active_service_intent(&desired, &activeDesired, matchDetail, sizeof(matchDetail))) {
+        if (desired_settings_match_active_service_intent(&desired,
+                &g_app.serviceActiveDesired, matchDetail,
+                sizeof(matchDetail))) {
             debug_log("maybe_load_app_launch_profile_to_gui: slot %d already active in background service; skipping reset-before-apply (%s)\n",
                 appLaunchSlot,
                 matchDetail[0] ? matchDetail : "match");
@@ -130,9 +130,9 @@ static void maybe_load_app_launch_profile_to_gui() {
             set_profile_status_text("Loaded slot %d into the GUI. Background service already has matching active settings, so app-start apply was skipped.", appLaunchSlot);
             return;
         }
-        debug_log("maybe_load_app_launch_profile_to_gui: slot %d needs reset-before-apply; service active intent check=%s\n",
+        debug_log("maybe_load_app_launch_profile_to_gui: slot %d needs reset-before-apply; accepted active intent check=%s\n",
             appLaunchSlot,
-            matchDetail[0] ? matchDetail : (snapErr[0] ? snapErr : "unavailable"));
+            matchDetail[0] ? matchDetail : "mismatch");
     } else {
         debug_log("maybe_load_app_launch_profile_to_gui: slot %d cannot use active-service skip (usingService=%d available=%d)\n",
             appLaunchSlot,
@@ -170,13 +170,9 @@ static void app_launch_on_mutation_completed(int slot, bool success,
         invalidate_main_window();
         return;
     }
-    char detail[128] = {};
-    refresh_global_state(detail, sizeof(detail));
-    populate_global_controls();
-    if (g_app.loaded) populate_edits();
-    invalidate_main_window();
+    gui_service_begin_full_sync("app-start mutation failed");
     set_profile_status_text(
-        "App start apply for slot %d failed and the GUI was refreshed from live state: %s",
+        "App start apply for slot %d failed; coherent live state is being resynchronized: %s",
         slot, result && result[0] ? result : "unknown error");
 }
 
@@ -229,30 +225,11 @@ static bool defer_logon_service_readiness(const char* reason) {
 // service has not necessarily created its pipe or initialized NVAPI/NVML yet.
 static bool logon_service_snapshot_ready(char* reason, size_t reasonSize) {
     if (reason && reasonSize) reason[0] = 0;
-    refresh_background_service_state();
-    if (!g_app.backgroundServiceInstalled) {
-        set_message(reason, reasonSize, "background service is not installed");
-        return false;
-    }
-    if (!g_app.backgroundServiceAvailable) {
-        set_message(reason, reasonSize, "background service pipe is not ready");
-        return false;
-    }
-
-    ServiceSnapshot snapshot = {};
-    char snapshotErr[256] = {};
-    if (!service_client_get_snapshot(&snapshot, snapshotErr, sizeof(snapshotErr))) {
-        set_message(reason, reasonSize, "service snapshot unavailable: %s",
-            snapshotErr[0] ? snapshotErr : "unknown error");
-        return false;
-    }
-    apply_service_snapshot_to_app(&snapshot);
-    if (!snapshot.initialized || !snapshot.loaded || snapshot.numPopulated <= 0) {
-        set_message(reason, reasonSize, "GPU snapshot is not initialized (initialized=%d loaded=%d populated=%d)",
-            snapshot.initialized ? 1 : 0, snapshot.loaded ? 1 : 0, snapshot.numPopulated);
-        return false;
-    }
-    return true;
+    if (gui_service_model_ready(&g_app.guiServiceModel)) return true;
+    set_message(reason, reasonSize,
+        "service has not accepted a READY snapshot (phase %d)",
+        (int)g_app.guiServiceModel.phase);
+    return false;
 }
 
 static void apply_logon_startup_behavior() {
@@ -266,12 +243,6 @@ static void apply_logon_startup_behavior() {
 
     char readiness[256] = {};
     if (!logon_service_snapshot_ready(readiness, sizeof(readiness))) {
-        if (!g_app.backgroundServiceInstalled) {
-            clear_pending_logon_service_readiness("background service is not installed");
-            set_profile_status_text("Background service is not installed. Automatic logon profile application requires the service.");
-            debug_log("logon tray client: service is not installed; no GUI fallback hardware apply will run\n");
-            return;
-        }
         defer_logon_service_readiness(readiness[0] ? readiness : "service or GPU not ready");
         return;
     }

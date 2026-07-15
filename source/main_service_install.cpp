@@ -307,7 +307,8 @@ static bool service_install_or_remove(bool enable, char* err, size_t errSize) {
             ok = true;
             cleanup_secure_service_binary_after_remove(installedServicePath[0] ? installedServicePath : nullptr);
         } else {
-            if (g_app.backgroundServiceAvailable) {
+            char probeError[128] = {};
+            if (service_client_ping(probeError, sizeof(probeError))) {
                 char resetResult[256] = {};
                 service_client_reset(resetResult, sizeof(resetResult), nullptr);
             }
@@ -323,7 +324,6 @@ static bool service_install_or_remove(bool enable, char* err, size_t errSize) {
         }
     }
 
-    if (ok) refresh_background_service_state();
     return ok;
 }
 

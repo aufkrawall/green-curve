@@ -3,6 +3,16 @@
 
 // Bounded UI waits, elevation helpers, and protected service-binary staging.
 
+static volatile LONG g_serviceAdminWaitCancelled = 0;
+
+static void service_admin_reset_wait_cancel() {
+    InterlockedExchange(&g_serviceAdminWaitCancelled, 0);
+}
+
+static void service_admin_request_wait_cancel() {
+    InterlockedExchange(&g_serviceAdminWaitCancelled, 1);
+}
+
 static bool wait_object_pumping_ui(HANDLE waitObject, DWORD timeoutMs) {
     if (!g_app.hMainWnd) {
         if (waitObject) return WaitForSingleObject(waitObject, timeoutMs) == WAIT_OBJECT_0;
@@ -38,23 +48,6 @@ static bool wait_object_pumping_ui(HANDLE waitObject, DWORD timeoutMs) {
     }
 }
 
-static bool wait_for_background_service_ready(DWORD timeoutMs, char* err, size_t errSize) {
-    UiInputGuard uiGuard;
-    ULONGLONG start = GetTickCount64();
-    while ((GetTickCount64() - start) < timeoutMs) {
-        refresh_background_service_state();
-        if (g_app.backgroundServiceAvailable) {
-            debug_log("wait_for_background_service_ready: ready after %llu ms (ui pumped=%d)\n",
-                GetTickCount64() - start, uiGuard.disabled ? 1 : 0);
-            return true;
-        }
-        wait_object_pumping_ui(nullptr, 200);
-    }
-    debug_log("wait_for_background_service_ready: timed out after %lu ms\n", (unsigned long)timeoutMs);
-    set_message(err, errSize, "Background service installed, but it did not become ready in time");
-    return false;
-}
-
 static bool wait_for_helper_process_bounded(HANDLE process, const char* description, char* err, size_t errSize) {
     if (!process) return true;
     // Pump the GUI while the elevated helper runs so the window keeps repainting
@@ -80,7 +73,44 @@ static bool wait_for_helper_process_bounded(HANDLE process, const char* descript
     return true;
 }
 
-static bool launch_service_admin_helper(bool enable, char* err, size_t errSize) {
+static bool wait_for_service_admin_helper(HANDLE process, char* err,
+    size_t errSize) {
+    if (!process) return true;
+    ULONGLONG started = GetTickCount64();
+    for (;;) {
+        if (InterlockedExchangeAdd(&g_serviceAdminWaitCancelled, 0) != 0) {
+            set_message(err, errSize,
+                "Elevated service helper wait cancelled during GUI shutdown");
+            return false;
+        }
+        ULONGLONG elapsed = GetTickCount64() - started;
+        if (elapsed >= ELEVATED_HELPER_TIMEOUT_MS) {
+            TerminateProcess(process, 1);
+            set_message(err, errSize, "Elevated service helper timed out");
+            return false;
+        }
+        DWORD remaining = (DWORD)(ELEVATED_HELPER_TIMEOUT_MS - elapsed);
+        DWORD waitResult = WaitForSingleObject(process,
+            (DWORD)nvmin((int)remaining, 250));
+        if (waitResult == WAIT_OBJECT_0) break;
+        if (waitResult == WAIT_FAILED) {
+            set_message(err, errSize,
+                "Failed waiting for elevated service helper (error %lu)",
+                GetLastError());
+            return false;
+        }
+    }
+    DWORD exitCode = 0;
+    if (!GetExitCodeProcess(process, &exitCode) || exitCode != 0) {
+        set_message(err, errSize, "Elevated service helper failed (exit code %lu)",
+            (unsigned long)exitCode);
+        return false;
+    }
+    return true;
+}
+
+static bool launch_service_admin_helper(bool enable, const char* configPath,
+    char* err, size_t errSize) {
     WCHAR exePath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exePath, ARRAY_COUNT(exePath));
 
@@ -90,7 +120,7 @@ static bool launch_service_admin_helper(bool enable, char* err, size_t errSize) 
     // user config, but a consistent path prevents stray-config regressions and
     // makes any helper logging reference the correct file.
     WCHAR cfgPath[MAX_PATH] = {};
-    if (!utf8_to_wide(g_app.configPath, cfgPath, ARRAY_COUNT(cfgPath))) {
+    if (!utf8_to_wide(configPath, cfgPath, ARRAY_COUNT(cfgPath))) {
         set_message(err, errSize, "Failed converting config path for service helper");
         return false;
     }
@@ -118,7 +148,8 @@ static bool launch_service_admin_helper(bool enable, char* err, size_t errSize) 
     }
     if (sei.hProcess) {
         ScopedHandle helperProcess(sei.hProcess);
-        bool ok = wait_for_helper_process_bounded(helperProcess.get(), "Elevated service helper", err, errSize);
+        bool ok = wait_for_service_admin_helper(
+            helperProcess.get(), err, errSize);
         if (!ok) return false;
     }
     return true;

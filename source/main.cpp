@@ -13,6 +13,7 @@
 #include "profile_persistence_policy.h"
 #include "ui_theme_metrics.h"
 #include "gui_mutation_forward.h"
+#include "reconnect_state_forward.h"
 #include <dbghelp.h>
 #include <bcrypt.h>
 #include <dxgi1_6.h>
@@ -304,6 +305,7 @@ static void populate_control_state(ControlState* state);
 static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot);
 static void apply_service_desired_to_gui(const DesiredSettings* desired);
 static void apply_control_state_to_gui(const ControlState* state);
+static void apply_ready_service_envelope_to_app(const ServiceResponse* response);
 static bool get_effective_control_state(ControlState* stateOut);
 static void service_capture_owner_identity(const char* user, DWORD sessionId);
 static bool get_pipe_client_identity(HANDLE pipe, char* userOut, size_t userOutSize,
@@ -366,17 +368,18 @@ static bool query_background_service_state(bool* installedOut, bool* runningOut)
 static bool refresh_background_service_state();
 static bool service_send_request(const ServiceRequest* request, ServiceResponse* response, DWORD timeoutMs, char* err, size_t errSize);
 static bool service_client_ping(char* err, size_t errSize);
-static bool service_client_get_snapshot(ServiceSnapshot* snapshot, char* err, size_t errSize);
-static bool service_client_get_telemetry(ServiceSnapshot* snapshot, char* err, size_t errSize);
+static bool service_client_get_state_envelope(ServiceCommand command, ServiceResponse* response, DWORD timeoutMs, const char* source,
+    char* err, size_t errSize);
+static bool service_client_get_ready_state(ServiceResponse* response,
+    DWORD timeoutMs, const char* source, char* err, size_t errSize);
 static bool service_client_apply_desired(const DesiredSettings* desired, const char* source,
     bool interactive, ServiceApplyOrigin origin, ServiceProfileSource profileSource,
     int profileSlot, char* result, size_t resultSize, ServiceSnapshot* snapshotOut);
 static bool service_client_logon_handoff(char* result, size_t resultSize);
 static bool service_client_reset(char* result, size_t resultSize, ServiceSnapshot* snapshotOut);
-static bool service_client_get_active_desired(DesiredSettings* desired, ServiceSnapshot* snapshotOut, char* err, size_t errSize);
 static bool service_install_or_remove(bool enable, char* err, size_t errSize);
-static bool wait_for_background_service_ready(DWORD timeoutMs, char* err, size_t errSize);
-static bool launch_service_admin_helper(bool enable, char* err, size_t errSize);
+static bool launch_service_admin_helper(bool enable, const char* configPath,
+    char* err, size_t errSize);
 static void begin_background_service_toggle(bool enable);
 static void end_background_service_toggle();
 static bool is_elevated();
@@ -424,7 +427,6 @@ static bool acquire_single_instance_mutex();
 static void release_single_instance_mutex();
 static void rebuild_visible_map();
 static bool read_live_curve_snapshot_settled(int attempts, DWORD delayMs, bool* lastOffsetsOkOut = nullptr);
-static unsigned int get_edit_value(HWND hEdit);
 static void populate_edits();
 static void create_edit_controls(HWND hParent, HINSTANCE hInst);
 static void destroy_edit_controls(HWND hParent);

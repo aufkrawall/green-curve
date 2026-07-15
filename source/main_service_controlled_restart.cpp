@@ -21,18 +21,18 @@ static HANDLE g_serviceControlledHelperAlertableWaitEvent = nullptr;
 
 static bool service_parse_decimal_dword(const WCHAR* textValue, DWORD* out) {
     if (!textValue || !textValue[0] || !out) return false;
-    WCHAR* end = nullptr;
+    WCHAR* end = nullptr; errno = 0;
     unsigned long value = wcstoul(textValue, &end, 10);
-    if (!end || *end != 0 || value == 0 || value > MAXDWORD) return false;
+    if (errno == ERANGE || !end || *end != 0 || wcsspn(textValue, L"0123456789") != wcslen(textValue) || value == 0 || value > MAXDWORD) return false;
     *out = (DWORD)value;
     return true;
 }
 
 static bool service_parse_handle_value(const WCHAR* textValue, HANDLE* out) {
     if (!textValue || !textValue[0] || !out) return false;
-    WCHAR* end = nullptr;
+    WCHAR* end = nullptr; errno = 0;
     unsigned long long value = _wcstoui64(textValue, &end, 10);
-    if (!end || *end != 0 || value == 0 || value > (unsigned long long)UINTPTR_MAX) return false;
+    if (errno == ERANGE || !end || *end != 0 || wcsspn(textValue, L"0123456789") != wcslen(textValue) || value == 0 || value > (unsigned long long)UINTPTR_MAX) return false;
     *out = (HANDLE)(uintptr_t)value;
     return true;
 }

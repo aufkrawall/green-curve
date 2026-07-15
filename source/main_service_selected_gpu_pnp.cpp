@@ -228,11 +228,16 @@ static DWORD CALLBACK service_selected_gpu_notification_callback(
         case CM_NOTIFY_ACTION_DEVICEINSTANCEREMOVED:
             InterlockedExchange(&g_serviceSelectedGpuRemoved, 1);
             InterlockedIncrement64(&g_serviceSelectedGpuEventGeneration);
+            service_mark_selected_gpu_authority_lost(
+                SERVICE_GPU_PHASE_DEVICE_MISSING,
+                "exact selected GPU removed");
             service_lifecycle_post_selected_gpu_removal();
             break;
         case CM_NOTIFY_ACTION_DEVICEINSTANCESTARTED:
             InterlockedExchange(&g_serviceSelectedGpuRemoved, 0);
             InterlockedIncrement64(&g_serviceSelectedGpuEventGeneration);
+            service_mark_selected_gpu_recovering(
+                "exact selected GPU arrived");
             service_lifecycle_post_selected_gpu_arrival();
             break;
         default:

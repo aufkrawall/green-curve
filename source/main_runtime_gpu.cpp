@@ -399,13 +399,24 @@ static int mem_display_mhz_from_driver_mhz(int driverMHz) {
 
 static void invalidate_main_window() {
     if (!g_app.hMainWnd) return;
+    if (g_app.trayWindowHiddenIntent ||
+        !IsWindowVisible(g_app.hMainWnd)) {
+        // Background profile/service changes update the resident control model,
+        // but a tray-hidden owner has no frame to present.  Leave one deferred
+        // invalidation for the next explicit show; an immediate WM_PAINT is
+        // both wasted work and a needless opportunity for hidden-window side
+        // effects in future paint code.
+        RedrawWindow(g_app.hMainWnd, nullptr, nullptr,
+            RDW_INVALIDATE | RDW_ALLCHILDREN);
+        return;
+    }
     redraw_window_sync(g_app.hMainWnd);
 }
 
 static void redraw_window_sync(HWND hwnd) {
     if (!hwnd) return;
     RedrawWindow(hwnd, nullptr, nullptr,
-        RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_ERASE | RDW_FRAME);
+        RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
 }
 
 static void flush_desktop_composition() {

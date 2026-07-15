@@ -79,11 +79,9 @@ static bool hardware_initialize(char* detail, size_t detailSize) {
     return true;
 }
 
-static void populate_service_snapshot(ServiceSnapshot* snapshot) {
+static void populate_service_snapshot_locked(ServiceSnapshot* snapshot,
+    DWORD snapshotLockoutReason) {
     if (!snapshot) return;
-    DWORD snapshotLockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
-    service_auto_restore_is_locked_out(&snapshotLockoutReason);
-    EnterCriticalSection(&g_appLock);
     memset(snapshot, 0, sizeof(*snapshot));
     int snapshotGpuOffsetMHz = g_app.appliedGpuOffsetMHz;
     int snapshotGpuOffsetExcludeLowCount = (g_app.appliedGpuOffsetExcludeLowCount > 0 && snapshotGpuOffsetMHz != 0) ? g_app.appliedGpuOffsetExcludeLowCount : 0;
@@ -214,12 +212,19 @@ static void populate_service_snapshot(ServiceSnapshot* snapshot) {
     snapshot->lastLifecycleTrigger = (gc_u32)g_serviceLastLifecycleTrigger;
     snapshot->lastLifecycleResult = (gc_u32)g_serviceLastLifecycleResult;
     snapshot->autoRestoreLockoutReason = snapshotLockoutReason;
+}
+
+static void populate_service_snapshot(ServiceSnapshot* snapshot) {
+    if (!snapshot) return;
+    DWORD snapshotLockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
+    service_auto_restore_is_locked_out(&snapshotLockoutReason);
+    EnterCriticalSection(&g_appLock);
+    populate_service_snapshot_locked(snapshot, snapshotLockoutReason);
     LeaveCriticalSection(&g_appLock);
 }
 
-static void populate_control_state(ControlState* state) {
+static void populate_control_state_locked(ControlState* state) {
     if (!state) return;
-    EnterCriticalSection(&g_appLock);
     memset(state, 0, sizeof(*state));
     state->valid = true;
     state->hasGpuOffset = true;
@@ -236,8 +241,16 @@ static void populate_control_state(ControlState* state) {
     state->fanCurrentTemperatureC = g_app.gpuTemperatureValid ? g_app.gpuTemperatureC : 0;
     copy_fan_curve(&state->fanCurve, current_green_curve_fan_intent_curve());
     ensure_valid_fan_curve_config(&state->fanCurve);
+}
+
+static void populate_control_state(ControlState* state) {
+    if (!state) return;
+    EnterCriticalSection(&g_appLock);
+    populate_control_state_locked(state);
     LeaveCriticalSection(&g_appLock);
 }
+
+#include "main_service_state_envelope.cpp"
 
 static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
     if (!snapshot) return;
@@ -252,13 +265,6 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
     g_app.serviceLastLifecycleResult = (ServiceLifecycleResult)snapshot->lastLifecycleResult;
     g_app.serviceAutoRestoreLockoutReason =
         (ServiceAutoRestoreLockoutReason)snapshot->autoRestoreLockoutReason;
-    int previousAppliedGpuOffsetMHz = g_app.appliedGpuOffsetMHz;
-    int previousAppliedGpuOffsetExcludeLowCount = g_app.appliedGpuOffsetExcludeLowCount;
-    ControlState previousServiceControlState = g_app.serviceControlState;
-    bool previousServiceGpuMeaningful = g_app.serviceControlStateValid && control_state_has_meaningful_gpu(&g_app.serviceControlState);
-    bool previousServiceMemMeaningful = g_app.serviceControlStateValid && control_state_has_meaningful_mem(&g_app.serviceControlState);
-    bool previousServicePowerMeaningful = g_app.serviceControlStateValid && control_state_has_meaningful_power(&g_app.serviceControlState);
-    bool previousServiceFanMeaningful = g_app.serviceControlStateValid && control_state_has_meaningful_fan(&g_app.serviceControlState);
     g_app.loaded = snapshot->loaded;
     g_app.fanSupported = snapshot->fanSupported;
     g_app.fanRangeKnown = snapshot->fanRangeKnown;
@@ -304,14 +310,10 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
     g_app.powerLimitCurrentmW = snapshot->powerLimitCurrentmW;
     g_app.powerLimitMinmW = snapshot->powerLimitMinmW;
     g_app.powerLimitMaxmW = snapshot->powerLimitMaxmW;
-    bool snapshotGpuMeaningful = snapshot->appliedGpuOffsetMHz != 0 || snapshot->appliedGpuOffsetExcludeLowCount > 0;
-    if (snapshotGpuMeaningful || !previousServiceGpuMeaningful || !snapshot->lastApplyUsedGpuOffset) {
-        g_app.appliedGpuOffsetMHz = snapshot->appliedGpuOffsetMHz;
-        g_app.appliedGpuOffsetExcludeLowCount = snapshot->appliedGpuOffsetExcludeLowCount;
-    } else {
-        g_app.appliedGpuOffsetMHz = previousAppliedGpuOffsetMHz;
-        g_app.appliedGpuOffsetExcludeLowCount = previousAppliedGpuOffsetExcludeLowCount;
-    }
+    g_app.appliedGpuOffsetMHz = snapshot->appliedGpuOffsetMHz;
+    g_app.appliedGpuOffsetExcludeLowCount =
+        snapshot->appliedGpuOffsetMHz != 0
+            ? snapshot->appliedGpuOffsetExcludeLowCount : 0;
     g_app.lastApplyUsedGpuOffset = snapshot->lastApplyUsedGpuOffset;
     g_app.activeFanMode = snapshot->activeFanMode;
     g_app.activeFanFixedPercent = snapshot->activeFanFixedPercent;
@@ -459,43 +461,26 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
     memset(&g_app.serviceControlState, 0, sizeof(g_app.serviceControlState));
     g_app.serviceControlState.valid = true;
     g_app.serviceControlState.hasGpuOffset = true;
-    if (snapshotGpuMeaningful || !previousServiceGpuMeaningful) {
-        g_app.serviceControlState.gpuOffsetMHz = snapshot->appliedGpuOffsetMHz;
-        g_app.serviceControlState.gpuOffsetExcludeLowCount = (snapshot->appliedGpuOffsetExcludeLowCount > 0 && snapshot->appliedGpuOffsetMHz != 0) ? snapshot->appliedGpuOffsetExcludeLowCount : 0;
-    } else if (previousServiceGpuMeaningful) {
-        g_app.serviceControlState.gpuOffsetMHz = previousAppliedGpuOffsetMHz;
-        g_app.serviceControlState.gpuOffsetExcludeLowCount = (previousAppliedGpuOffsetExcludeLowCount > 0 && previousAppliedGpuOffsetMHz != 0) ? previousAppliedGpuOffsetExcludeLowCount : 0;
-    }
+    g_app.serviceControlState.gpuOffsetMHz = snapshot->appliedGpuOffsetMHz;
+    g_app.serviceControlState.gpuOffsetExcludeLowCount =
+        (snapshot->appliedGpuOffsetExcludeLowCount > 0 &&
+         snapshot->appliedGpuOffsetMHz != 0)
+            ? snapshot->appliedGpuOffsetExcludeLowCount : 0;
     g_app.serviceControlState.hasMemOffset = true;
     int snapshotMemOffsetMHz = mem_display_mhz_from_driver_khz(snapshot->memClockOffsetkHz);
-    if (snapshotMemOffsetMHz != 0 || !previousServiceMemMeaningful) {
-        g_app.serviceControlState.memOffsetMHz = snapshotMemOffsetMHz;
-    } else if (previousServiceMemMeaningful) {
-        g_app.serviceControlState.memOffsetMHz = previousServiceControlState.memOffsetMHz;
-    }
+    g_app.serviceControlState.memOffsetMHz = snapshotMemOffsetMHz;
     g_app.serviceControlState.hasPowerLimit = true;
-    if (snapshot->powerLimitPct != 100 || !previousServicePowerMeaningful) {
-        g_app.serviceControlState.powerLimitPct = snapshot->powerLimitPct;
-    } else if (previousServicePowerMeaningful) {
-        g_app.serviceControlState.powerLimitPct = previousServiceControlState.powerLimitPct;
-    }
+    g_app.serviceControlState.powerLimitPct = snapshot->powerLimitPct;
     g_app.serviceControlState.hasFan = true;
-    bool snapshotFanMeaningful = snapshot->activeFanMode != FAN_MODE_AUTO || snapshot->activeFanFixedPercent != 0 || current_displayed_fan_percent() != 0;
-    if (snapshotFanMeaningful || !previousServiceFanMeaningful) {
-        g_app.serviceControlState.fanMode = snapshot->activeFanMode;
-        g_app.serviceControlState.fanFixedPercent = clamp_percent(snapshot->activeFanFixedPercent);
-        g_app.serviceControlState.fanCurrentPercent = current_displayed_fan_percent();
-        g_app.serviceControlState.fanCurrentTemperatureC = snapshot->gpuTemperatureValid ? snapshot->gpuTemperatureC : 0;
-        copy_fan_curve(&g_app.serviceControlState.fanCurve, &snapshot->activeFanCurve);
-        ensure_valid_fan_curve_config(&g_app.serviceControlState.fanCurve);
-    } else if (previousServiceFanMeaningful) {
-        g_app.serviceControlState.fanMode = previousServiceControlState.fanMode;
-        g_app.serviceControlState.fanFixedPercent = previousServiceControlState.fanFixedPercent;
-        g_app.serviceControlState.fanCurrentPercent = previousServiceControlState.fanCurrentPercent;
-        g_app.serviceControlState.fanCurrentTemperatureC = previousServiceControlState.fanCurrentTemperatureC;
-        copy_fan_curve(&g_app.serviceControlState.fanCurve, &previousServiceControlState.fanCurve);
-        ensure_valid_fan_curve_config(&g_app.serviceControlState.fanCurve);
-    }
+    g_app.serviceControlState.fanMode = snapshot->activeFanMode;
+    g_app.serviceControlState.fanFixedPercent =
+        clamp_percent(snapshot->activeFanFixedPercent);
+    g_app.serviceControlState.fanCurrentPercent = current_displayed_fan_percent();
+    g_app.serviceControlState.fanCurrentTemperatureC =
+        snapshot->gpuTemperatureValid ? snapshot->gpuTemperatureC : 0;
+    copy_fan_curve(&g_app.serviceControlState.fanCurve,
+        &snapshot->activeFanCurve);
+    ensure_valid_fan_curve_config(&g_app.serviceControlState.fanCurve);
     log_locked_tail_drift_diagnostics();
     g_app.serviceControlStateValid = true;
     LeaveCriticalSection(&g_appLock);
@@ -589,32 +574,29 @@ static void apply_service_desired_to_gui(const DesiredSettings* desired) {
 
 static void apply_control_state_to_gui(const ControlState* state) {
     if (!state || !state->valid) return;
-    bool meaningfulGpuState = control_state_has_meaningful_gpu(state);
-    bool meaningfulMemState = control_state_has_meaningful_mem(state);
-    bool meaningfulPowerState = control_state_has_meaningful_power(state);
-    bool meaningfulFanState = control_state_has_meaningful_fan(state);
-    if (!control_state_has_any_meaningful_value(state)) {
-        debug_log("apply_control_state_to_gui: ignoring non-meaningful service control update\n");
+    if (!state->hasGpuOffset && !state->hasMemOffset &&
+        !state->hasPowerLimit && !state->hasFan) {
+        debug_log("apply_control_state_to_gui: ignoring empty service control update\n");
         return;
     }
 
     ControlState merged = {};
     if (g_app.serviceControlStateValid) merged = g_app.serviceControlState;
     merged.valid = true;
-    if (state->hasGpuOffset && meaningfulGpuState) {
+    if (state->hasGpuOffset) {
         merged.hasGpuOffset = true;
         merged.gpuOffsetMHz = state->gpuOffsetMHz;
         merged.gpuOffsetExcludeLowCount = (state->gpuOffsetExcludeLowCount > 0 && state->gpuOffsetMHz != 0) ? state->gpuOffsetExcludeLowCount : 0;
     }
-    if (state->hasMemOffset && meaningfulMemState) {
+    if (state->hasMemOffset) {
         merged.hasMemOffset = true;
         merged.memOffsetMHz = state->memOffsetMHz;
     }
-    if (state->hasPowerLimit && meaningfulPowerState) {
+    if (state->hasPowerLimit) {
         merged.hasPowerLimit = true;
         merged.powerLimitPct = state->powerLimitPct;
     }
-    if (state->hasFan && meaningfulFanState) {
+    if (state->hasFan) {
         merged.hasFan = true;
         merged.fanMode = state->fanMode;
         merged.fanFixedPercent = state->fanFixedPercent;
@@ -626,7 +608,7 @@ static void apply_control_state_to_gui(const ControlState* state) {
     g_app.serviceControlStateValid = true;
     g_app.serviceControlState = merged;
     bool updateGui = !gui_state_dirty();
-    if (meaningfulGpuState) {
+    if (state->hasGpuOffset) {
         g_app.appliedGpuOffsetMHz = state->gpuOffsetMHz;
         g_app.appliedGpuOffsetExcludeLowCount = (state->gpuOffsetExcludeLowCount > 0 && state->gpuOffsetMHz != 0) ? state->gpuOffsetExcludeLowCount : 0;
         if (updateGui) {
@@ -634,13 +616,13 @@ static void apply_control_state_to_gui(const ControlState* state) {
             g_app.guiGpuOffsetExcludeLowCount = (state->gpuOffsetExcludeLowCount > 0 && state->gpuOffsetMHz != 0) ? state->gpuOffsetExcludeLowCount : 0;
         }
     }
-    if (meaningfulMemState) {
+    if (state->hasMemOffset) {
         g_app.memClockOffsetkHz = mem_driver_khz_from_display_mhz(state->memOffsetMHz);
     }
-    if (meaningfulPowerState) {
+    if (state->hasPowerLimit) {
         g_app.powerLimitPct = state->powerLimitPct;
     }
-    if (meaningfulFanState) {
+    if (state->hasFan) {
         g_app.activeFanMode = state->fanMode;
         if (updateGui) {
             g_app.guiFanMode = state->fanMode;
@@ -649,7 +631,7 @@ static void apply_control_state_to_gui(const ControlState* state) {
             g_app.activeFanFixedPercent = clamp_percent(state->fanFixedPercent);
             if (updateGui) g_app.guiFanFixedPercent = g_app.activeFanFixedPercent;
         } else {
-            int currentPercent = state->fanCurrentPercent > 0 ? state->fanCurrentPercent : current_displayed_fan_percent();
+            int currentPercent = state->fanCurrentPercent;
             g_app.activeFanFixedPercent = clamp_percent(currentPercent);
             if (updateGui) g_app.guiFanFixedPercent = clamp_percent(currentPercent);
         }
@@ -668,10 +650,38 @@ static void apply_control_state_to_gui(const ControlState* state) {
     }
 }
 
+// Compatibility projection for synchronous CLI and pre-window startup paths.
+// The transport layer returns the complete immutable envelope; this caller-side
+// projection adopts its snapshot, intent and controls together, never through
+// the former snapshot/active-desired request chain. Runtime window paths use
+// GuiServiceModel instead.
+static void apply_ready_service_envelope_to_app(
+    const ServiceResponse* response) {
+    if (!response || response->state.gpuPhase != SERVICE_GPU_PHASE_READY ||
+        (response->state.validSections &
+            SERVICE_STATE_SECTION_READY_REQUIRED) !=
+                SERVICE_STATE_SECTION_READY_REQUIRED) return;
+    apply_service_snapshot_to_app(&response->snapshot);
+    g_app.serviceActiveDesiredValid = response->state.activeDesiredValid;
+    if (response->state.activeDesiredValid) {
+        g_app.serviceActiveDesired = response->desired;
+        apply_service_desired_to_gui(&response->desired);
+    } else {
+        memset(&g_app.serviceActiveDesired, 0,
+            sizeof(g_app.serviceActiveDesired));
+        memset(g_app.appliedCurveMHz, 0,
+            sizeof(g_app.appliedCurveMHz));
+    }
+    if ((response->state.validSections &
+            SERVICE_STATE_SECTION_APPLIED_CONTROLS) != 0)
+        apply_control_state_to_gui(&response->controlState);
+}
+
 static bool get_effective_control_state(ControlState* stateOut) {
     if (!stateOut) return false;
     memset(stateOut, 0, sizeof(*stateOut));
-    if (g_app.usingBackgroundService && g_app.serviceControlStateValid && control_state_has_any_meaningful_value(&g_app.serviceControlState)) {
+    if (g_app.usingBackgroundService && g_app.serviceControlStateValid &&
+        g_app.serviceControlState.valid) {
         *stateOut = g_app.serviceControlState;
         debug_log_on_change("get_effective_control_state: using cached service state gpu=%d exclude=%d fanMode=%d\n",
             stateOut->gpuOffsetMHz,
@@ -679,7 +689,8 @@ static bool get_effective_control_state(ControlState* stateOut) {
             stateOut->fanMode);
         return stateOut->valid;
     }
-    if (g_app.isServiceProcess && g_serviceControlStateValid && control_state_has_any_meaningful_value(&g_serviceControlState)) {
+    if (g_app.isServiceProcess && g_serviceControlStateValid &&
+        g_serviceControlState.valid) {
         *stateOut = g_serviceControlState;
         debug_log("get_effective_control_state: using service-local state gpu=%d exclude=%d fanMode=%d\n",
             stateOut->gpuOffsetMHz,

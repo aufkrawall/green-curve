@@ -145,12 +145,15 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
             service_close_owned_pipe(pipe);
             continue;
         }
-        request.source[ARRAY_COUNT(request.source) - 1] = '\0';
-        request.path[ARRAY_COUNT(request.path) - 1] = '\0';
-
         if (request.magic != SERVICE_PROTOCOL_MAGIC || request.version != SERVICE_PROTOCOL_VERSION) {
             response.status = SERVICE_STATUS_VERSION_MISMATCH;
             StringCchCopyA(response.message, ARRAY_COUNT(response.message), "Service protocol mismatch");
+        } else if (!validate_service_request_for_ipc(&request)) {
+            response.status = SERVICE_STATUS_ERROR;
+            StringCchCopyA(response.message, ARRAY_COUNT(response.message),
+                "Service request contains invalid protocol fields");
+            debug_log("service_pipe_server: rejected malformed v11 request command=%u pid=%u\n",
+                request.command, request.callerPid);
         } else if (InterlockedExchangeAdd(
                 &g_serviceClientRequestsReady, 0) == 0) {
             response.status = SERVICE_STATUS_ERROR;
@@ -158,8 +161,6 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                 "Background service startup is not complete; retry after SCM reports RUNNING");
             debug_log("service_pipe_server: request rejected while lifecycle startup gate is closed\n");
         } else {
-            validate_gpu_adapter_info_for_ipc(&request.targetGpu);
-            validate_desired_settings_for_ipc(&request.desired);
             bool settingsFreeHandoff =
                 request.command == SERVICE_CMD_LOGON_HANDOFF;
             if (!service_caller_is_authorized(pipe, request.source,
@@ -235,62 +236,7 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     populate_service_snapshot(&response.snapshot);
                     break;
                 case SERVICE_CMD_GET_SNAPSHOT: {
-                    char detail[256] = {};
-                    // Use a timed lock so the pipe server does not block
-                    // indefinitely when the runtime lock is held by the recovery
-                    // reapply thread.  If the lock is busy, serve cached data
-                    // immediately so PING and other commands are not starved on
-                    // the single-instance pipe.
-                    bool lockAcquired = try_lock_service_runtime(250);
-                    if (!lockAcquired) {
-                        debug_log("service snapshot: runtime lock busy (recovery reapply in progress), serving cached globals\n");
-                        response.status = SERVICE_STATUS_OK;
-                        StringCchCopyA(response.message, ARRAY_COUNT(response.message), "snapshot cached");
-                        populate_service_snapshot(&response.snapshot);
-                        if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
-                        break;
-                    }
-                    bool ok = hardware_initialize(detail, sizeof(detail));
-                    if (!ok) {
-                        debug_log("service snapshot: hardware initialize unavailable: %s\n", detail[0] ? detail : "unknown");
-                    } else {
-                        bool offsetsOk = false;
-                        if (!read_live_curve_snapshot_settled(3, 20, &offsetsOk)) {
-                            debug_log("service snapshot: live curve refresh failed, returning cached curve\n");
-                        } else if (!offsetsOk) {
-                            debug_log("service snapshot: curve refresh completed without offset readback confirmation\n");
-                        }
-                        // While recovering from a recent nvml.dll crash (GPU
-                        // device reconnect / driver restart), skip
-                        // refresh_global_state() which issues NVML reads
-                        // directly and would access-violate and kill this pipe
-                        // server thread, breaking the GUI connection.  Serve
-                        // cached globals instead.  We check the recovery WINDOW
-                        // (not the consume-once g_nvmlVhCrashed flag) so EVERY
-                        // snapshot during the window is safe, and we leave
-                        // g_nvmlVhCrashed intact for the fan runtime thread's
-                        // nvml_ensure_ready() to drive the actual NVML/NVAPI
-                        // re-init.  The fan thread clears the crash state on a
-                        // successful reapply, ending the window early.
-                        if (nvml_crash_recovery_active()) {
-                            debug_log("service snapshot: NVML crash recovery in progress, using cached globals\n");
-                        } else if (!refresh_global_state(detail, sizeof(detail))) {
-                            debug_log("service snapshot: state refresh failed, returning cached globals%s%s\n",
-                                detail[0] ? ": " : "",
-                                detail[0] ? detail : "");
-                        }
-                        populate_control_state(&g_serviceControlState);
-                        g_serviceControlStateValid = true;
-                    }
-                    response.status = SERVICE_STATUS_OK;
-                    StringCchCopyA(response.message, ARRAY_COUNT(response.message), ok ? "snapshot ready" : (detail[0] ? detail : "snapshot unavailable"));
-                    populate_service_snapshot(&response.snapshot);
-                    if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
-                    unlock_service_runtime();
-                    if (ok) {
-                        service_lifecycle_post_prerequisite_signal(
-                            "serialized snapshot probe confirmed GPU readiness");
-                    }
+                    service_handle_snapshot_request(&response);
                     break;
                 }
                 case SERVICE_CMD_GET_TELEMETRY: {
@@ -330,6 +276,19 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                         break;
                     }
                     char result[512] = {};
+                    if (!service_mutation_preconditions_match(
+                            &request, result, sizeof(result))) {
+                        response.status = SERVICE_STATUS_STALE_STATE;
+                        StringCchCopyA(response.message,
+                            ARRAY_COUNT(response.message), result);
+                        debug_log("service APPLY rejected by reconnect precondition: operation=%llu instance=%llu gpuGeneration=%llu topology=%llu reason=%s\n",
+                            (unsigned long long)request.operationId,
+                            (unsigned long long)request.expectedServiceInstanceId,
+                            (unsigned long long)request.expectedGpuGeneration,
+                            (unsigned long long)request.expectedTopologySignature,
+                            result[0] ? result : "unknown");
+                        break;
+                    }
                     bool enforcePublishedGpuBinding = false;
                     ConfiguredGpuSelection publishedGpuBinding = {};
                     if (!service_request_apply_origin_valid(&request)) {
@@ -417,6 +376,15 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                         request.desired.hasMemOffset ? 1 : 0,
                         request.desired.memOffsetMHz);
                     lock_service_runtime();
+                    result[0] = '\0';
+                    if (!service_mutation_preconditions_match(
+                            &request, result, sizeof(result))) {
+                        response.status = SERVICE_STATUS_STALE_STATE;
+                        StringCchCopyA(response.message,
+                            ARRAY_COUNT(response.message), result);
+                        unlock_service_runtime();
+                        break;
+                    }
                     if (explicitUserApply) {
                         // Serialize supersession with lifecycle writes. If an
                         // automatic write already owns the runtime lock it is
@@ -618,6 +586,19 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                         break;
                     }
                     char result[512] = {};
+                    if (!service_mutation_preconditions_match(
+                            &request, result, sizeof(result))) {
+                        response.status = SERVICE_STATUS_STALE_STATE;
+                        StringCchCopyA(response.message,
+                            ARRAY_COUNT(response.message), result);
+                        debug_log("service RESET rejected by reconnect precondition: operation=%llu instance=%llu gpuGeneration=%llu topology=%llu reason=%s\n",
+                            (unsigned long long)request.operationId,
+                            (unsigned long long)request.expectedServiceInstanceId,
+                            (unsigned long long)request.expectedGpuGeneration,
+                            (unsigned long long)request.expectedTopologySignature,
+                            result[0] ? result : "unknown");
+                        break;
+                    }
                     // Reject reset while recovering from a GPU device reconnect:
                     // service_reset_all() issues NVAPI/NVML writes + refresh
                     // that would access-violate on the transitional driver and
@@ -629,6 +610,15 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     // RC7: block ALL resets during crash recovery (same reason
                     // as APPLY — writes access-violate on the transitional driver).
                     lock_service_runtime();
+                    result[0] = '\0';
+                    if (!service_mutation_preconditions_match(
+                            &request, result, sizeof(result))) {
+                        response.status = SERVICE_STATUS_STALE_STATE;
+                        StringCchCopyA(response.message,
+                            ARRAY_COUNT(response.message), result);
+                        unlock_service_runtime();
+                        break;
+                    }
                     bool unsafeDriverTransition =
                         service_explicit_supersede_automatic_work_locked(
                             callerSessionId, "explicit user Reset");
@@ -820,6 +810,10 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
         }
 
         response.message[ARRAY_COUNT(response.message) - 1] = '\0';
+        // Every response, including errors and mutation outcomes, carries one
+        // coherent authoritative envelope.  This final capture deliberately
+        // replaces any command-local cached copies above.
+        populate_service_state_response(&response);
         pipeErr[0] = 0;
         if (!service_pipe_write_exact(pipe, &response, sizeof(response), SERVICE_PIPE_SERVER_IO_TIMEOUT_MS, "writing service response", pipeErr, sizeof(pipeErr))) {
             debug_log("service_pipe_server: response write failed: %s\n", pipeErr[0] ? pipeErr : "unknown");

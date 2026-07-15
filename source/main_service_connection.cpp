@@ -191,6 +191,7 @@ static bool get_process_image_path(DWORD pid, WCHAR* out, size_t outCount) {
 
 static DWORD g_verifiedServicePipePid = 0;
 static FILETIME g_verifiedServicePipeCreationTime = {};
+static SRWLOCK g_verifiedServicePipeLock = SRWLOCK_INIT;
 
 static bool service_process_creation_time(DWORD pid, FILETIME* creationOut) {
     if (!creationOut) return false;
@@ -206,8 +207,10 @@ static bool service_process_creation_time(DWORD pid, FILETIME* creationOut) {
 
 static void cache_verified_service_pipe_process(DWORD pid,
     const FILETIME& creationTime) {
+    AcquireSRWLockExclusive(&g_verifiedServicePipeLock);
     g_verifiedServicePipePid = pid;
     g_verifiedServicePipeCreationTime = creationTime;
+    ReleaseSRWLockExclusive(&g_verifiedServicePipeLock);
 }
 
 static bool validate_service_pipe_server_identity(HANDLE pipe, char* err, size_t errSize) {
@@ -226,9 +229,14 @@ static bool validate_service_pipe_server_identity(HANDLE pipe, char* err, size_t
     FILETIME pipeProcessCreation = {};
     bool haveCreationTime = service_process_creation_time(
         (DWORD)pipePid, &pipeProcessCreation);
-    if (haveCreationTime && g_verifiedServicePipePid == (DWORD)pipePid &&
+    bool exactCachedProcess = false;
+    AcquireSRWLockShared(&g_verifiedServicePipeLock);
+    exactCachedProcess = haveCreationTime &&
+        g_verifiedServicePipePid == (DWORD)pipePid &&
         CompareFileTime(&pipeProcessCreation,
-            &g_verifiedServicePipeCreationTime) == 0) {
+            &g_verifiedServicePipeCreationTime) == 0;
+    ReleaseSRWLockShared(&g_verifiedServicePipeLock);
+    if (exactCachedProcess) {
         // The initial connection authenticated this exact process generation
         // against SCM and its registered binary. A new named-pipe connection
         // to the same live generation does not need to repeat registry/image
@@ -451,52 +459,40 @@ static bool service_send_request(const ServiceRequest* request, ServiceResponse*
         if (pipe != INVALID_HANDLE_VALUE) {
             if (!validate_service_pipe_server_identity(pipe, err, errSize)) {
                 CloseHandle(pipe);
-                g_app.backgroundServiceAvailable = false;
-                g_app.backgroundServiceBroken = true;
-                clear_service_authoritative_state();
                 return false;
             }
             DWORD mode = PIPE_READMODE_MESSAGE;
             if (!SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr)) {
                 DWORD modeErr = GetLastError();
                 CloseHandle(pipe);
-                g_app.backgroundServiceAvailable = false;
-                g_app.backgroundServiceBroken = true;
-                clear_service_authoritative_state();
                 set_message(err, errSize, "Failed configuring service pipe message mode (error %lu)", modeErr);
                 return false;
             }
             remainingMs = service_remaining_timeout_ms(startTickMs, timeoutMs);
             if (!service_pipe_write_exact(pipe, request, sizeof(*request), remainingMs, "writing service request", err, errSize)) {
                 CloseHandle(pipe);
-                g_app.backgroundServiceAvailable = false;
-                g_app.backgroundServiceBroken = true;
-                clear_service_authoritative_state();
                 return false;
             }
             if (response) {
                 remainingMs = service_remaining_timeout_ms(startTickMs, timeoutMs);
                 if (!service_pipe_read_exact(pipe, response, sizeof(*response), remainingMs, "reading service response", err, errSize)) {
                     CloseHandle(pipe);
-                    g_app.backgroundServiceAvailable = false;
-                    g_app.backgroundServiceBroken = true;
-                    clear_service_authoritative_state();
                     return false;
                 }
-                response->message[ARRAY_COUNT(response->message) - 1] = '\0';
-                response->serviceVersion[ARRAY_COUNT(response->serviceVersion) - 1] = '\0';
                 if (response->magic != SERVICE_PROTOCOL_MAGIC || response->version != SERVICE_PROTOCOL_VERSION) {
                     CloseHandle(pipe);
-                    g_app.backgroundServiceAvailable = false;
-                    g_app.backgroundServiceBroken = true;
-                    clear_service_authoritative_state();
                     set_message(err, errSize,
                         "Service response protocol mismatch (magic=0x%08lX version=%lu)",
                         (unsigned long)response->magic,
                         (unsigned long)response->version);
                     return false;
                 }
-                validate_service_response_for_ipc(response);
+                if (!validate_service_response_for_ipc(response)) {
+                    CloseHandle(pipe);
+                    set_message(err, errSize,
+                        "Service response contains an invalid state envelope");
+                    return false;
+                }
             }
             CloseHandle(pipe);
             return true;

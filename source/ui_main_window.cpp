@@ -9,7 +9,8 @@
 
 #include "ui_mutation_completion.cpp"
 static void apply_changes() {
-    if (!g_app.backgroundServiceAvailable || !g_app.loaded) return;
+    if (!gui_service_model_ready(&g_app.guiServiceModel) ||
+        !g_app.guiDraft.attached || g_app.guiDraft.detached) return;
     char gpuSelectionErr[256] = {};
     if (!validate_configured_gpu_selection_for_client(
             gpuSelectionErr, sizeof(gpuSelectionErr))) {
@@ -23,11 +24,6 @@ static void apply_changes() {
     record_ui_action("Apply clicked");
     DesiredSettings desired = {};
     char err[256] = {};
-    if (g_app.usingBackgroundService && !refresh_service_snapshot_and_active_desired(err, sizeof(err))) {
-        write_error_report_log_for_user_failure("GUI apply refresh failed", err);
-        MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
-        return;
-    }
     if (!capture_gui_apply_settings(&desired, err, sizeof(err))) {
         write_error_report_log_for_user_failure("GUI apply validation failed", err);
         MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
@@ -55,40 +51,22 @@ static void apply_changes() {
 #include "ui_main_control_lifecycle.cpp"
 
 static void refresh_curve() {
-    if (!g_app.backgroundServiceAvailable) {
-        refresh_background_service_state();
-        start_service_reconnect_timer_if_needed();
-        update_all_gui_for_service_state();
-        return;
-    }
     if (g_app.usingBackgroundService && !g_app.isServiceProcess) {
-        char detail[256] = {};
-        ServiceSnapshot snapshot = {};
-        int oldNumVisible = g_app.numVisible;
-        if (service_client_get_snapshot(&snapshot, detail, sizeof(detail))) {
-            apply_service_snapshot_to_app(&snapshot);
-            sync_applied_profile_from_service_metadata();
-            if (g_app.numVisible != oldNumVisible) {
-                rebuild_edit_controls();
-            } else {
-                update_all_gui_for_service_state();
-            }
-            update_background_service_controls();
-            ensure_main_window_fits_work_area(g_app.hMainWnd);
-            invalidate_main_window();
-        } else {
-            refresh_background_service_state();
-            start_service_reconnect_timer_if_needed();
-            clear_service_authoritative_state();
-            update_all_gui_for_service_state();
-            debug_log("Green Curve: Failed to read service snapshot: %s\n", detail);
+        if (g_app.guiDraft.detached && gui_state_dirty()) {
+            int discard = MessageBoxA(g_app.hMainWnd,
+                "The preserved draft belongs to a different GPU or VF topology.\n\nDiscard that draft and refresh this GPU?",
+                "Discard Detached Draft", MB_YESNO | MB_ICONWARNING);
+            if (discard != IDYES) return;
+            gui_draft_discard();
         }
+        gui_service_begin_full_sync("manual refresh");
         return;
     }
 }
 
 static void reset_curve() {
-    if (!g_app.backgroundServiceAvailable || !g_app.loaded) return;
+    if (!gui_service_model_ready(&g_app.guiServiceModel) ||
+        !g_app.guiDraft.attached || g_app.guiDraft.detached) return;
     char gpuSelectionErr[256] = {};
     if (!validate_configured_gpu_selection_for_client(
             gpuSelectionErr, sizeof(gpuSelectionErr))) {
@@ -412,6 +390,7 @@ static void show_shared_profiles_menu(HWND hwnd, POINT screenPt) {
     // "apply shared slot N" so it works under the shared-only policy.
     g_app.loadedSharedSlot = slot;
     set_gui_state_dirty(true);
+    gui_draft_capture_desired(&desired);
     populate_global_controls();
     set_profile_status_text(
         "Loaded shared profile %d into the editor. Click Apply to apply it; use Save to copy it into one of your own slots.", slot);
@@ -424,6 +403,12 @@ static void show_shared_profiles_menu(HWND hwnd, POINT screenPt) {
 // ============================================================================
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // Display-driver reconstruction can restore WS_VISIBLE without issuing a
+    // WINDOWPOS carrying SWP_SHOWWINDOW.  Check the durable postcondition on
+    // every main-window message so the first notification from any such path
+    // synchronously restores tray residency.  Explicit user activation clears
+    // the intent before ShowWindow and therefore bypasses this invariant.
+    enforce_main_window_tray_state_from_message(hwnd, msg);
     switch (msg) {
         case WM_CREATE:
             reset_main_window_dpi_resources(hwnd, main_layout_window_dpi(hwnd));
@@ -436,9 +421,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
             apply_system_titlebar_theme(hwnd);
             allow_dark_mode_for_window(hwnd);
-            refresh_background_service_state();
-            start_service_reconnect_timer_if_needed();
-            update_background_service_controls();
             update_fan_telemetry_timer();
             ensure_main_window_fits_work_area(hwnd);
             layout_bottom_buttons(hwnd);
@@ -448,6 +430,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         default:
             if (g_taskbarCreatedMessage != 0 && msg == g_taskbarCreatedMessage) {
                 g_app.trayIconAdded = false;
+                g_app.trayUsesNotificationVersion4 = false;
                 g_app.trayLastRenderedValid = false;
                 if (!IsWindowVisible(hwnd)) {
                     ensure_tray_icon();
@@ -467,6 +450,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (wParam == SIZE_RESTORED) main_layout_apply_pending_content_growth(hwnd);
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
+        }
+
+        case WM_WINDOWPOSCHANGING: {
+            WINDOWPOS* position = reinterpret_cast<WINDOWPOS*>(lParam);
+            bool showRequested = position &&
+                (position->flags & SWP_SHOWWINDOW) != 0;
+            if (position && gui_tray_hidden_intent_blocks_show(
+                    g_app.trayWindowHiddenIntent, showRequested)) {
+                position->flags &= ~SWP_SHOWWINDOW;
+                position->flags |= SWP_HIDEWINDOW | SWP_NOACTIVATE;
+                debug_log_on_change(
+                    "tray window: blocked unsolicited top-level show while hidden intent is active\n");
+            }
+            break;
         }
 
         case WM_DPICHANGED: {
@@ -501,6 +498,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             handle_gui_mutation_completion((GuiMutationCompletion*)lParam);
             return 0;
 
+        case APP_WM_SERVICE_IO_COMPLETE:
+            handle_gui_service_io_completion((GuiServiceIoCompletion*)lParam);
+            return 0;
+
+        case APP_WM_SELECTED_GPU_PNP:
+            gui_handle_selected_gpu_pnp_event(
+                (GuiSelectedGpuPnpEvent)wParam);
+            return 0;
+
+        case APP_WM_ACTIVATE_EXISTING_INSTANCE:
+            debug_log("single instance: explicit foreground launch requested resident-window activation\n");
+            show_main_window_from_tray();
+            return 0;
+
         case WM_SYSCOMMAND:
             if ((wParam & 0xFFF0) == SC_MINIMIZE) {
                 hide_main_window_to_tray();
@@ -520,8 +531,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             break;
 
         case WM_DISPLAYCHANGE:
+            reset_gui_gdi_generation("WM_DISPLAYCHANGE");
+            enforce_main_window_tray_state("WM_DISPLAYCHANGE");
             ensure_main_window_fits_work_area(hwnd);
             return 0;
+
+        case WM_DWMCOMPOSITIONCHANGED:
+            reset_gui_gdi_generation("WM_DWMCOMPOSITIONCHANGED");
+            return 0;
+
+        case WM_DEVICECHANGE:
+            if (wParam == 0x0007u) { // DBT_DEVNODES_CHANGED
+                reset_gui_gdi_generation("display device tree changed");
+                enforce_main_window_tray_state("DBT_DEVNODES_CHANGED");
+            }
+            break;
 
         case WM_THEMECHANGED:
             apply_system_titlebar_theme(hwnd);
@@ -559,18 +583,35 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case APP_WM_TRAYICON: {
             UINT trayEvent = LOWORD(lParam);
-            switch (trayEvent) {
-                case WM_CONTEXTMENU:
-                case WM_RBUTTONUP:
-                    show_tray_menu(hwnd);
-                    return 0;
-                case WM_LBUTTONUP:
-                case WM_LBUTTONDBLCLK:
-                case NIN_SELECT:
-                case NIN_KEYSELECT:
-                    show_main_window_from_tray();
-                    return 0;
+            GuiTrayCallbackKind kind = GUI_TRAY_CALLBACK_UNKNOWN;
+            if (trayEvent == WM_CONTEXTMENU)
+                kind = GUI_TRAY_CALLBACK_V4_CONTEXT;
+            else if (trayEvent == WM_RBUTTONUP)
+                kind = GUI_TRAY_CALLBACK_LEGACY_CONTEXT;
+            else if (trayEvent == WM_LBUTTONUP)
+                kind = GUI_TRAY_CALLBACK_LEGACY_PRIMARY_UP;
+            else if (trayEvent == WM_LBUTTONDBLCLK)
+                kind = GUI_TRAY_CALLBACK_LEGACY_PRIMARY_DOUBLE;
+            else if (trayEvent == NIN_SELECT)
+                kind = GUI_TRAY_CALLBACK_V4_SELECT;
+            else if (trayEvent == NIN_KEYSELECT)
+                kind = GUI_TRAY_CALLBACK_V4_KEY_SELECT;
+            if (gui_tray_callback_opens_context_menu(
+                    g_app.trayUsesNotificationVersion4, kind)) {
+                show_tray_menu(hwnd);
+                return 0;
             }
+            if (gui_tray_callback_opens_window(
+                    g_app.trayUsesNotificationVersion4, kind)) {
+                debug_log("tray icon: accepted activation callback event=0x%04X kind=%d hiddenIntent=%d visible=%d\n",
+                    trayEvent, (int)kind,
+                    g_app.trayWindowHiddenIntent ? 1 : 0,
+                    IsWindowVisible(hwnd) ? 1 : 0);
+                show_main_window_from_tray();
+                return 0;
+            }
+            debug_log_on_change("tray icon: ignored duplicate/incompatible callback event=0x%04X version4=%d\n",
+                trayEvent, g_app.trayUsesNotificationVersion4 ? 1 : 0);
             break;
         }
 
@@ -589,29 +630,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 // Auto-reconnect also owns the scheduled-logon tray handoff.
                 // It waits for a real initialized snapshot to populate the UI;
                 // it never performs or repeats a hardware apply from this timer.
-                if (!g_app.backgroundServiceAvailable || !g_app.loaded || g_app.logonServiceReadinessPending) {
-                    debug_log("reconnect timer: checking service (loaded=%d logonReadinessPending=%d)\n",
-                        g_app.loaded ? 1 : 0,
+                if (!gui_service_model_ready(&g_app.guiServiceModel) ||
+                    g_app.logonServiceReadinessPending) {
+                    debug_log_on_change("reconnect timer: enqueueing asynchronous full sync (phase=%s logonReadinessPending=%d)\n",
+                        gui_service_phase_name(g_app.guiServiceModel.phase),
                         g_app.logonServiceReadinessPending ? 1 : 0);
-                    if (refresh_background_service_state()) {
-                        update_all_gui_for_service_state();
-                        refresh_curve();
-                        if (g_app.logonServiceReadinessPending) {
-                            retry_pending_logon_service_readiness();
-                        }
-                        // Only stop once the UI has a snapshot and the logon
-                        // launch is no longer waiting to display one.
-                        if (g_app.loaded && !g_app.logonServiceReadinessPending) {
-                            KillTimer(hwnd, SERVICE_RECONNECT_TIMER_ID);
-                            debug_log("reconnect timer: GPU snapshot loaded and logon handoff complete, stopping timer\n");
-                        } else {
-                            debug_log("reconnect timer: keeping timer (loaded=%d logonReadinessPending=%d)\n",
-                                g_app.loaded ? 1 : 0,
-                                g_app.logonServiceReadinessPending ? 1 : 0);
-                        }
-                    } else {
-                        debug_log("reconnect timer: service still unavailable, keeping timer alive\n");
-                    }
+                    gui_service_retry_full_sync("reconnect timer");
                 }
                 return 0;
             }
@@ -634,34 +658,31 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             HDC hdc = BeginPaint(hwnd, &ps);
             RECT rc;
             GetClientRect(hwnd, &rc);
+            int surfaceWidth = nvmax(1, rc.right);
+            int surfaceHeight = nvmax(1, rc.bottom);
 
-            fill_window_background(hwnd, hdc);
-
-            if (!g_app.hMemDC || !g_app.hMemBmp) create_backbuffer(hwnd);
+            if (!g_app.hMemDC || !g_app.hMemBmp ||
+                g_backbufferWidth != surfaceWidth ||
+                g_backbufferHeight != surfaceHeight ||
+                g_backbufferGeneration != g_guiGdiGeneration)
+                create_backbuffer(hwnd);
             if (!g_app.hMemDC) {
+                draw_gui_scene(hdc, &rc);
                 EndPaint(hwnd, &ps);
                 return 0;
             }
 
-            int graphH = main_layout_graph_height();
-            int scrollX = main_layout_scroll_x();
-            int scrollY = main_layout_scroll_y();
+            draw_gui_scene(g_app.hMemDC, &rc);
 
-            HBRUSH bg = CreateSolidBrush(COL_BG);
-            FillRect(g_app.hMemDC, &rc, bg);
-            DeleteObject(bg);
-
-            draw_graph(g_app.hMemDC, &rc);
-
-            HPEN sepPen = CreatePen(PS_SOLID, 1, COL_GRID);
-            HPEN oldPen = (HPEN)SelectObject(g_app.hMemDC, sepPen);
-            MoveToEx(g_app.hMemDC, -scrollX, graphH - scrollY, nullptr);
-            LineTo(g_app.hMemDC,
-                main_layout_content_width() - scrollX, graphH - scrollY);
-            SelectObject(g_app.hMemDC, oldPen);
-            DeleteObject(sepPen);
-
-            BitBlt(hdc, 0, 0, rc.right, rc.bottom, g_app.hMemDC, 0, 0, SRCCOPY);
+            if (!BitBlt(hdc, 0, 0, rc.right, rc.bottom,
+                    g_app.hMemDC, 0, 0, SRCCOPY)) {
+                debug_log_on_change("GUI GDI: final BitBlt failed; retiring backbuffer (error %lu)\n",
+                    GetLastError());
+                destroy_backbuffer();
+                // Complete this paint directly so a persistent display-DC
+                // failure cannot leave stale pixels or create a repaint storm.
+                draw_gui_scene(hdc, &rc);
+            }
             EndPaint(hwnd, &ps);
             return 0;
         }
@@ -747,6 +768,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         }
                         char pointBuf[32] = {};
                         get_window_text_safe(g_app.hEditsMhz[vi], pointBuf, sizeof(pointBuf));
+                        if (!lockTailPreviewPoint)
+                            gui_draft_capture_curve_value(ci, pointBuf);
                         int pointMHz = 0;
                         if (!lockTailPreviewPoint && parse_int_strict(pointBuf, &pointMHz) && pointMHz > 0) {
                             record_ui_action("point %d edited to %d MHz", ci, pointMHz);
@@ -764,7 +787,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 int value = 0;
                 g_app.guiHasUserModifiedValues = true;
                 set_gui_state_dirty(true);
-                if (parse_int_strict(buf, &value)) record_ui_action("GPU offset edited to %d MHz", value);
+                gui_draft_capture_text(g_app.guiDraft.gpuOffsetText,
+                    ARRAY_COUNT(g_app.guiDraft.gpuOffsetText), buf);
+                if (parse_int_strict(buf, &value)) {
+                    g_app.guiGpuOffsetMHz = value;
+                    record_ui_action("GPU offset edited to %d MHz", value);
+                }
             }
             if (HIWORD(wParam) == EN_CHANGE && LOWORD(wParam) == MEM_OFFSET_ID && !programmatic_edit_update_active()) {
                 char buf[32] = {};
@@ -772,7 +800,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 int value = 0;
                 g_app.guiHasUserModifiedValues = true;
                 set_gui_state_dirty(true);
-                if (parse_int_strict(buf, &value)) record_ui_action("Mem offset edited to %d MHz", value);
+                gui_draft_capture_text(g_app.guiDraft.memOffsetText,
+                    ARRAY_COUNT(g_app.guiDraft.memOffsetText), buf);
+                if (parse_int_strict(buf, &value)) {
+                    g_app.guiMemOffsetMHz = value;
+                    record_ui_action("Mem offset edited to %d MHz", value);
+                }
             }
             if (HIWORD(wParam) == EN_CHANGE && LOWORD(wParam) == POWER_LIMIT_ID && !programmatic_edit_update_active()) {
                 char buf[32] = {};
@@ -780,7 +813,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 int value = 0;
                 g_app.guiHasUserModifiedValues = true;
                 set_gui_state_dirty(true);
-                if (parse_int_strict(buf, &value)) record_ui_action("Power limit edited to %d%%", value);
+                gui_draft_capture_text(g_app.guiDraft.powerLimitText,
+                    ARRAY_COUNT(g_app.guiDraft.powerLimitText), buf);
+                if (parse_int_strict(buf, &value)) {
+                    g_app.guiPowerLimitPct = value;
+                    record_ui_action("Power limit edited to %d%%", value);
+                }
             }
             if (LOWORD(wParam) == APPLY_BTN_ID) {
                 apply_changes();
@@ -799,7 +837,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             } else if (LOWORD(wParam) == GPU_SELECT_COMBO_ID && HIWORD(wParam) == CBN_SELCHANGE) {
                 apply_gpu_selection_from_ui();
             } else if (LOWORD(wParam) == GPU_OFFSET_EXCLUDE_LOW_EDIT_ID && HIWORD(wParam) == EN_CHANGE) {
-                if (!g_app.backgroundServiceAvailable || !g_app.gpuOffsetRangeKnown) return 0;
+                if (!gui_service_model_ready(&g_app.guiServiceModel) ||
+                    !g_app.gpuOffsetRangeKnown) return 0;
                 if (!programmatic_edit_update_active()) {
                     char excludeBuf[16] = {};
                     get_window_text_safe(g_app.hGpuOffsetExcludeLowEdit, excludeBuf, sizeof(excludeBuf));
@@ -809,8 +848,25 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         g_app.guiGpuOffsetExcludeLowCount = excludeCount;
                     }
                     set_gui_state_dirty(true);
+                    gui_draft_capture_text(
+                        g_app.guiDraft.gpuOffsetExcludeLowText,
+                        ARRAY_COUNT(g_app.guiDraft.gpuOffsetExcludeLowText),
+                        excludeBuf);
                     g_app.guiHasUserModifiedValues = true;
                 }
+            } else if (LOWORD(wParam) == FAN_CONTROL_ID &&
+                HIWORD(wParam) == EN_CHANGE &&
+                !programmatic_edit_update_active()) {
+                char fanBuf[16] = {};
+                get_window_text_safe(g_app.hFanEdit, fanBuf,
+                    sizeof(fanBuf));
+                set_gui_state_dirty(true);
+                gui_draft_capture_text(g_app.guiDraft.fanFixedText,
+                    ARRAY_COUNT(g_app.guiDraft.fanFixedText), fanBuf);
+                int fanPercent = 0;
+                if (parse_int_strict(fanBuf, &fanPercent))
+                    g_app.guiFanFixedPercent = clamp_percent(fanPercent);
+                g_app.guiHasUserModifiedValues = true;
             } else if (LOWORD(wParam) == FAN_CURVE_BTN_ID && HIWORD(wParam) == BN_CLICKED) {
                 open_fan_curve_dialog();
             } else if ((LOWORD(wParam) == START_ON_LOGON_CHECK_ID && HIWORD(wParam) == BN_CLICKED) ||
@@ -967,49 +1023,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 if (confirm != IDYES) {
                     break;
                 }
-                char err[256] = {};
-                bool ok = false;
+                char status[256] = {};
                 begin_background_service_toggle(enable);
                 update_background_service_controls();
-                if (!is_elevated()) {
-                    ok = launch_service_admin_helper(enable, err, sizeof(err));
-                    if (ok) {
-                        if (enable) {
-                            ok = wait_for_background_service_ready(5000, err, sizeof(err));
-                        } else {
-                            refresh_background_service_state();
-                        }
-                    }
-                } else {
-                    ok = service_install_or_remove(enable, err, sizeof(err));
-                    if (ok && enable) {
-                        ok = wait_for_background_service_ready(15000, err, sizeof(err));
-                    }
-                }
-                if (!ok) {
+                if (!gui_service_io_queue_admin_toggle(enable, repair,
+                        g_app.configPath, status, sizeof(status))) {
                     end_background_service_toggle();
-                    refresh_background_service_state();
                     update_background_service_controls();
-                    MessageBoxA(g_app.hMainWnd, err[0] ? err : "Failed updating background service.", "Green Curve", MB_OK | MB_ICONERROR);
+                    MessageBoxA(g_app.hMainWnd,
+                        status[0] ? status : "Failed queuing the background service change.",
+                        "Green Curve", MB_OK | MB_ICONERROR);
                     break;
                 }
-                end_background_service_toggle();
-                refresh_background_service_state();
-                update_background_service_controls();
-                schedule_logon_combo_sync();
-                if (enable) {
-                    set_profile_status_text(repair
-                        ? "Background service repaired. Live OC, UV, power, and fan control is now available."
-                        : "Background service installed. Live OC, UV, power, and fan control is now available.");
-                    refresh_curve();
-                } else {
-                    set_profile_status_text("Background service removed. Live GPU control is unavailable until the service is installed again.");
-                    refresh_background_service_state();
-                    update_background_service_controls();
-                    populate_global_controls();
-                    if (g_app.loaded) populate_edits();
-                    invalidate_main_window();
-                }
+                set_profile_status_text("%s", status);
+                gui_service_begin_full_sync(enable
+                    ? "background service installation/repair"
+                    : "background service removal");
             } else if (LOWORD(wParam) == PROFILE_COMBO_ID && HIWORD(wParam) == CBN_SELCHANGE) {
                 int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
                 if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
@@ -1043,6 +1072,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
                 populate_desired_into_gui(&desired);
                 set_gui_state_dirty(true);
+                gui_draft_capture_desired(&desired);
                 populate_global_controls();
                 if (!set_config_int(g_app.configPath, "profiles", "selected_slot", slot)) {
                     write_error_report_log_for_user_failure(
@@ -1068,9 +1098,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         "Green Curve", MB_OK | MB_ICONWARNING);
                     break;
                 }
-                if (!refresh_service_snapshot_and_active_desired(err, sizeof(err))) {
-                    write_error_report_log_for_user_failure("Profile save refresh failed", err);
-                    MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
+                if (!gui_service_model_ready(&g_app.guiServiceModel)) {
+                    gui_service_io_queue_full_sync("profile save requested while reconnecting");
+                    MessageBoxA(g_app.hMainWnd,
+                        "Live GPU state is reconnecting. Your draft is preserved; save it after synchronization completes.",
+                        "Green Curve", MB_OK | MB_ICONWARNING);
                     break;
                 }
                 if (g_app.guiHasUserModifiedValues || gui_has_pending_curve_or_lock_edits()) {
@@ -1331,6 +1363,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_DESTROY:
+            gui_selected_gpu_notification_unregister();
             gui_mutation_shutdown();
             persist_main_window_placement(hwnd);
             KillTimer(hwnd, FAN_TELEMETRY_TIMER_ID);
@@ -1362,4 +1395,3 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
     return DefWindowProcA(hwnd, msg, wParam, lParam);
 }
-
