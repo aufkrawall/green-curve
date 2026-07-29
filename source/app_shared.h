@@ -39,13 +39,25 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "ui_checkbox_state.h"
+
 #define ARRAY_COUNT(a) (sizeof(a) / sizeof((a)[0]))
 
 // Platform-neutral GPU/IPC data model (NVAPI IDs + structs, NVML typedefs,
 // VfBackendSpec, DesiredSettings + IPC validator, ServiceRequest/Response,
 // NvmlApi).  Shared verbatim with the Linux backend.
 #include "gpu_core.h"
+#include "gpu_capability_policy.h"
+#include "nvapi_module_policy.h"
+// Protocol-v14 readback provenance carried in AppData below.
+#include "control_readback_policy.h"
+// The identity every APPLY/RESET must name; the window path carries it in
+// GuiServiceModel, the synchronous path in the record below it.
+#include "service_client_precondition_policy.h"
 #include "gui_service_model.h"
+// Which control groups are actionable for a given service/draft state; needs
+// gui_service_model.h above for the phase model the glue below reads.
+#include "gui_service_actionability_policy.h"
 #include "service_lifecycle_policy.h"
 // OS-abstraction shim (dynamic loading, sleep, atomics, threads, bounded
 // strings, subprocess capture) used by the shared backend.
@@ -93,6 +105,11 @@ extern CRITICAL_SECTION g_configLock;
 extern CRITICAL_SECTION g_appLock;
 
 int dp(int px);
+// Themed replacement for MessageBox, declared here so every GUI shard can call
+// it regardless of unity include order. The real implementation lives in
+// ui_message_box.cpp; the service binary gets a no-UI stub in main_shell.cpp.
+int gc_message_box(HWND owner, const char* text, const char* caption,
+                   unsigned int type);
 void enable_best_process_dpi_awareness();
 void init_dpi();
 
@@ -166,9 +183,10 @@ void init_dpi();
 #define FAN_CURVE_BTN_ID    2033
 #define GPU_OFFSET_EXCLUDE_LOW_EDIT_ID 2034
 #define LOGON_HINT_ID       2035
-#define START_ON_LOGON_LABEL_ID 2036
+// 2036 and 2038 were the STATIC captions next to the two checkboxes below. Both
+// captions now live inside their own BUTTON (F-CHECKBOX-HIT), so the ids are
+// retired rather than reused.
 #define SERVICE_ENABLE_CHECK_ID 2037
-#define SERVICE_ENABLE_LABEL_ID 2038
 #define SERVICE_STATUS_ID   2039
 #define GPU_SELECT_COMBO_ID 2040
 #define LOCK_BASE_ID        3000
@@ -212,19 +230,15 @@ void init_dpi();
 // CONFIG_NUM_SLOTS, CONFIG_DEFAULT_SLOT, NVML_PERF_STR_LEN,
 // MIN_VISIBLE_VOLT_mV, MIN_VISIBLE_FREQ_MHz moved to gpu_core.h
 
-#define COL_BG              RGB(0x18, 0x18, 0x28)
-#define COL_PANEL           RGB(0x18, 0x18, 0x28)
-#define COL_INPUT           RGB(0x12, 0x12, 0x1C)
-#define COL_GRID            RGB(0x40, 0x40, 0x55)
-#define COL_AXIS            RGB(0x80, 0x80, 0x90)
-#define COL_CURVE           RGB(0x50, 0xD0, 0x80)
-#define COL_POINT           RGB(0xFF, 0x60, 0x60)
-#define COL_TEXT            RGB(0xE0, 0xE0, 0xE0)
-#define COL_LABEL           RGB(0xA0, 0xA0, 0xB0)
-#define COL_BUTTON          RGB(0x2B, 0x42, 0x66)
-#define COL_BUTTON_PRESSED  RGB(0x23, 0x36, 0x52)
-#define COL_BUTTON_BORDER   RGB(0x78, 0x9A, 0xD8)
-#define COL_BUTTON_DISABLED RGB(0x2A, 0x2A, 0x38)
+// The window palette is shared verbatim with the standalone installer, which
+// cannot include this header, so it lives in its own dependency-free file.
+#include "theme_palette.h"
+
+// Button sets and geometry for the themed message box (gc_message_box below).
+#include "message_box_policy.h"
+// Per-domain "typed but not applied yet" decision shared by the orange field
+// presentation and the Apply enable gate (F-PENDING).
+#include "gui_pending_changes_policy.h"
 
 // LockMode, NVML/NVAPI types+enums, VfBackendSpec, VFCurvePoint, fan structs,
 // ControlState, GpuAdapterInfo moved to gpu_core.h
@@ -246,6 +260,15 @@ struct GuiDraft {
     char memOffsetText[32];
     char powerLimitText[32];
     char fanFixedText[16];
+};
+
+// What the GPU currently has applied, as resolved by capture_gui_apply_settings()
+// while it diffs the editor against live state.  Reported back to the caller so
+// the high-overclock confirmation compares against the same baseline the
+// change-detection used instead of re-deriving it and drifting apart.
+struct OcApplyBaseline {
+    int currentGpuOffsetMHz;
+    int currentMemOffsetMHz;
 };
 
 struct AppData {
@@ -282,10 +305,39 @@ struct AppData {
     HWND hLogonLabel;
     HWND hProfileStatusLabel;
     HWND hStartOnLogonCheck;
-    HWND hStartOnLogonLabel;
     HWND hLogonHintLabel;
     HWND hServiceEnableCheck;
+    // Last tick actually painted for each owner-draw main-window checkbox.
+    // draw_themed_button() writes these; the control projections read them to
+    // decide whether a repaint is owed.  These controls are BS_OWNERDRAW, so
+    // Windows stores no native check state to ask (see ui_checkbox_state.h).
+    UiCheckboxState shareAllUsersPainted;
+    UiCheckboxState serviceEnablePainted;
+    UiCheckboxState startOnLogonPainted;
     int machineLogonSlotCache;
+    // Profile-slot "is saved" state, cached for every slot.  update_profile_
+    // action_buttons() is called from the service-state projection now, which
+    // runs about twice a second while the model is not READY, and
+    // is_profile_slot_saved() costs up to six INI section reads under the
+    // storage lock.  Invalidated on any config write, next to the tray cache.
+    bool profileSlotSavedCache[CONFIG_NUM_SLOTS];
+    bool profileSlotCacheValid;
+    // Whether each service-dependent assignment currently holds a non-default
+    // value. Such a control stays enabled even with no service so the assignment
+    // can be cleared -- a logon assignment keeps a Task Scheduler entry alive,
+    // and clearing the profile does not remove logon_shared_slot.
+    bool logonAssignmentPresentCache;
+    bool appLaunchAssignmentPresentCache;
+    bool startOnLogonPresentCache;
+    // Number of shared-bank slots that hold a profile.  Owned by
+    // update_share_all_users_check_state(), which is where the machine config is
+    // already scanned; the projection re-asserts the shared button from this
+    // rather than rescanning a second config file per tick.
+    int sharedProfileCountCache;
+    // Per-slot shared-bank presence, from the same machine-config scan. Lets the
+    // service-state projection re-assert the share checkbox without reading a
+    // second config file on every tick.
+    bool machineProfileSlotSavedCache[CONFIG_NUM_SLOTS];
     // Shared-only policy (admin restricts non-admins to admin-published profiles).
     // restrictPolicyActive: the machine policy flag (cached from the shared bank).
     // currentUserIsLocalAdmin: whether THIS user is a machine admin (even unelevated).
@@ -295,7 +347,6 @@ struct AppData {
     bool restrictPolicyActive;
     bool currentUserIsLocalAdmin;
     int loadedSharedSlot;
-    HWND hServiceEnableLabel;
     HWND hServiceStatusLabel;
     HWND hGpuSelectCombo;
 
@@ -338,6 +389,11 @@ struct AppData {
     bool gpuPciInfoValid;
     GpuFamily gpuFamily;
     const VfBackendSpec* vfBackend;
+    // Per-domain control-surface capability for the selected adapter, filled by
+    // the read-only probe in main_runtime_nvml.cpp.  Zero-initialized means
+    // "nothing probed", which by construction reports every domain available —
+    // see the core invariant in gpu_capability_policy.h.
+    GpuCapabilityProbe gpuCapability;
 
     bool nvmlReady;
     nvmlDevice_t nvmlDevice;
@@ -369,6 +425,11 @@ struct AppData {
     bool gpuOffsetRangeKnown;
     bool memOffsetRangeKnown;
     bool curveOffsetRangeKnown;
+    // Protocol v14 provenance for the scalars above; see
+    // control_readback_policy.h.  Those values deliberately keep a last-known
+    // or intent fallback so the editor stays populated, which means the number
+    // alone cannot say whether the driver was actually reachable.
+    HardwareReadbackValidity readback;
     int pstateGpuOffsetkHz;
     unsigned int pstateMemMaxMHz;
     int powerLimitPct;
@@ -407,6 +468,14 @@ struct AppData {
     int guiGpuOffsetExcludeLowCount;
     int guiMemOffsetMHz;
     int guiPowerLimitPct;
+    // Provenance of the two offset editors, per field: true while the value on
+    // screen came from a profile population (user/shared/machine slot load, the
+    // pre-READY pending draft, startup, or the post-apply repopulate) and has
+    // not been hand-edited since.  The high-overclock confirmation exempts
+    // profile-sourced values: those are the user's own reviewed intent, so
+    // re-applying them must not nag.  Cleared by the genuine EN_CHANGE edits.
+    bool guiGpuOffsetFromProfileLoad;
+    bool guiMemOffsetFromProfileLoad;
     int appliedGpuOffsetMHz;
     int appliedGpuOffsetExcludeLowCount;
     bool lastApplyUsedGpuOffset;
@@ -504,6 +573,10 @@ struct CliOptions {
     bool dump;
     bool json;
     bool probe;
+    // Read-only in-process driver/arch pre-flight; the Windows counterpart of
+    // the Linux daemon's --self-test.  Never mutates GPU state and needs no
+    // background service.
+    bool selfTest;
     bool hasProbeOutputPath;
     bool reset;
     bool saveConfig;
@@ -526,6 +599,13 @@ struct CliOptions {
     bool setRestrictPolicy;
     int restrictPolicyValue;
     bool hasConfigPath;
+    // Setup/updater support: capture the settings the service currently holds
+    // into a standalone file, and apply such a file back as an explicit CLI
+    // Apply.  Used by the installer to carry a user's live tuning across an
+    // upgrade.  See main_settings_transfer.cpp.
+    bool exportActiveSettings;
+    bool applySettingsFile;
+    char settingsFilePath[MAX_PATH];
     char configPath[MAX_PATH];
     char probeOutputPath[MAX_PATH];
     char error[256];
@@ -535,6 +615,23 @@ struct CliOptions {
 // Service protocol (magic/version/commands), ServiceSnapshot, and
 // ServiceRequest/Response live in service_protocol.h (included by gpu_core.h).
 extern AppData g_app;
+
+// Snapshot the live service/draft state the actionability policy decides from.
+// `static inline` matters: app_shared.h is included by translation units that
+// never define g_app (the fuzz harness, config_utils.cpp, app_shared.cpp), so
+// anything with external linkage here would break their link.
+static inline GuiServiceActionability gui_service_actionability_from_app() {
+    GuiServiceActionability state = {};
+    state.installed = g_app.backgroundServiceInstalled;
+    state.available = g_app.backgroundServiceAvailable;
+    state.toggleInFlight = g_app.backgroundServiceToggleInFlight;
+    state.ready = gui_service_model_ready(&g_app.guiServiceModel);
+    state.draftAttached = g_app.guiDraft.attached;
+    state.draftDetached = g_app.guiDraft.detached;
+    state.loaded = g_app.loaded;
+    return state;
+}
+
 extern NvmlApi g_nvml_api;
 extern HMODULE g_nvml;
 extern bool g_debug_logging;
@@ -542,6 +639,11 @@ extern bool g_debug_logging;
 // session unless the user disables it persistently; set once the warning has
 // been acknowledged in this process.
 extern bool g_bestGuessWarningShownThisSession;
+// F-CAP-1: the limited-control-surface warning (recognized family, incomplete
+// probed control surface — the integrated-SoC case) shows once per GUI session
+// unless the user disables it persistently.  Tracked separately from the
+// unrecognized-family flag above so the two tiers never mask each other.
+extern bool g_limitedControlWarningShownThisSession;
 // F-REL-2e: set when a telemetry poll detects the service reset to defaults and
 // clears a stale adopted GUI lock — requests the next poll to do the same full
 // visual resync the Refresh button does (the poll otherwise skips it so it never
@@ -577,7 +679,15 @@ bool streqi_ascii(const char* a, const char* b);
 bool parse_int_strict(const char* s, int* out);
 bool parse_cli_point_arg_w(const WCHAR* arg, int* pointIndexOut);
 bool gpu_family_uses_best_guess_backend(GpuFamily family);
-void set_message(char* dst, size_t dstSize, const char* fmt, ...);
+bool gpu_requires_limited_control_warning(GpuFamily family,
+                                          const GpuCapabilityProbe* probe);
+// Read-only per-domain control-surface probe; fills g_app.gpuCapability and
+// never writes GPU state.  Defined in the Windows shard gpu_capability_probe.cpp
+// (included after the NVML shard); declared here because its caller
+// hardware_initialize() is compiled earlier in the same translation unit.
+void gpu_probe_control_surface();
+void set_message(char* dst, size_t dstSize, const char* fmt, ...)
+    __attribute__((format(printf, 3, 4)));
 bool parse_fan_value(const char* text, bool* isAuto, int* pct);
 bool enter_config_storage_lock(HANDLE* acquiredMutex);
 bool enter_config_storage_lock_interruptible(HANDLE cancelEvent,

@@ -420,7 +420,7 @@ void auto_profile_toggle_enabled(HWND hwnd) {
         g_apConfig.enabled = previousEnabled;
         debug_log("auto-profile: failed to persist enabled=%d; runtime state unchanged\n",
             newEnabled ? 1 : 0);
-        MessageBoxA(hwnd, "Failed to save the auto-profile enabled state.",
+        gc_message_box(hwnd, "Failed to save the auto-profile enabled state.",
             "Green Curve", MB_OK | MB_ICONERROR);
         return;
     }

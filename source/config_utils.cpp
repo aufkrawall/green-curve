@@ -3,102 +3,12 @@
 
 #include "app_shared.h"
 
-void trim_ascii(char* s) {
-    if (!s) return;
-
-    int len = (int)strlen(s);
-    int start = 0;
-    while (start < len && (unsigned char)s[start] <= ' ') start++;
-    int end = len;
-    while (end > start && (unsigned char)s[end - 1] <= ' ') end--;
-
-    if (start > 0 && end > start) {
-        memmove(s, s + start, (size_t)(end - start));
-    }
-
-    if (end <= start) {
-        s[0] = 0;
-    } else {
-        s[end - start] = 0;
-    }
-}
-
-bool streqi_ascii(const char* a, const char* b) {
-    if (!a || !b) return false;
-    while (*a && *b) {
-        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return false;
-        ++a;
-        ++b;
-    }
-    return *a == 0 && *b == 0;
-}
-
-bool parse_int_strict(const char* s, int* out) {
-    if (!s || !*s || !out) return false;
-
-    char* end = nullptr;
-    errno = 0;
-    long v = strtol(s, &end, 10);
-    if (errno == ERANGE) return false;
-    if (!end || *end != 0) return false;
-    if (v < -2147483647L - 1L || v > 2147483647L) return false;
-
-    *out = (int)v;
-    return true;
-}
-
-bool parse_cli_point_arg_w(const WCHAR* arg, int* pointIndexOut) {
-    if (pointIndexOut) *pointIndexOut = -1;
-    if (!arg || wcsncmp(arg, L"--point", 7) != 0) return false;
-
-    const WCHAR* digits = arg + 7;
-    if (!*digits) return false;
-
-    int value = 0;
-    for (const WCHAR* p = digits; *p; ++p) {
-        if (*p < L'0' || *p > L'9') return false;
-        value = value * 10 + (int)(*p - L'0');
-        if (value >= VF_NUM_POINTS) return false;
-    }
-
-    if (pointIndexOut) *pointIndexOut = value;
-    return true;
-}
-
-bool gpu_family_uses_best_guess_backend(GpuFamily family) {
-    return family == GPU_FAMILY_UNKNOWN;
-}
-
-void set_message(char* dst, size_t dstSize, const char* fmt, ...) {
-    if (!dst || dstSize == 0) return;
-
-    va_list ap;
-    va_start(ap, fmt);
-    StringCchVPrintfA(dst, dstSize, fmt, ap);
-    va_end(ap);
-    dst[dstSize - 1] = 0;
-}
-
-bool parse_fan_value(const char* text, bool* isAuto, int* pct) {
-    if (!isAuto || !pct) return false;
-
-    char buf[64] = {};
-    if (text) StringCchCopyA(buf, ARRAY_COUNT(buf), text);
-    trim_ascii(buf);
-    if (buf[0] == 0 || streqi_ascii(buf, "auto")) {
-        *isAuto = true;
-        *pct = 0;
-        return true;
-    }
-
-    int value = 0;
-    if (!parse_int_strict(buf, &value)) return false;
-    if (value < 0 || value > 100) return false;
-
-    *isAuto = false;
-    *pct = value;
-    return true;
-}
+// trim_ascii, streqi_ascii, parse_int_strict, set_message, parse_cli_point_arg_w,
+// parse_fan_value and config_section_header_matches_ascii moved to
+// config_text_utils.cpp: they are platform-neutral, and this file is a Win32
+// implementation (named-mutex config locking + Unicode INI storage).  Keeping
+// them here made them unreachable from the Linux binary and from the
+// config_strings fuzz target on a Linux host.
 
 static HANDLE g_configInterprocessMutex = nullptr;
 
@@ -288,17 +198,6 @@ static bool profiles_section_entry_has_key(const char* entry, const char* key) {
     size_t actualLength = (size_t)(keyEnd - keyBegin);
     size_t expectedLength = strlen(key);
     return actualLength == expectedLength && _strnicmp(keyBegin, key, expectedLength) == 0;
-}
-
-// Win32 INI section names are case-insensitive.  The direct whole-file
-// rewriter must use the same comparison rule or an existing [Profiles] section
-// will survive beside a newly appended [profiles] section; the profile APIs
-// then continue reading the stale first copy.
-bool config_section_header_matches_ascii(const char* line, const char* section) {
-    if (!line || !section || line[0] != '[') return false;
-    size_t length = strlen(section);
-    if (_strnicmp(line + 1, section, length) != 0) return false;
-    return line[1 + length] == ']';
 }
 
 bool update_logon_profile_selection_transaction(const char* path,

@@ -63,6 +63,50 @@ static int open_state_directory(const char* path, char* name, size_t nameSize,
     return dirfd;
 }
 
+// Shared by the operation and startup records: same-directory temp, file fsync,
+// atomic rename, directory fsync, root-owned 0600 throughout.
+static bool store_record_atomic(const char* path, const void* record,
+                                size_t recordSize, const char* label,
+                                char* err, size_t errSize) {
+    char name[256] = {};
+    int dirfd = open_state_directory(path, name, sizeof(name), err, errSize);
+    if (dirfd < 0) return false;
+    bool stored = false;
+    for (unsigned int attempt = 0; attempt < 16 && !stored; ++attempt) {
+        gc_u64 suffix = 0;
+        if (getrandom(&suffix, sizeof(suffix), 0) != (ssize_t)sizeof(suffix)) {
+            gc_snprintf(err, errSize, "cannot generate daemon %s temp name: %s",
+                        label, strerror(errno));
+            break;
+        }
+        char temporary[320] = {};
+        gc_snprintf(temporary, sizeof(temporary), ".%s.tmp.%016llx",
+                    name, (unsigned long long)suffix);
+        int fd = openat(dirfd, temporary,
+            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (fd < 0) {
+            if (errno == EEXIST) continue;
+            gc_snprintf(err, errSize, "cannot create daemon %s temp: %s",
+                        label, strerror(errno));
+            break;
+        }
+        bool ok = fchmod(fd, 0600) == 0 && fchown(fd, 0, 0) == 0 &&
+            write_all(fd, record, recordSize) && fsync(fd) == 0;
+        if (close(fd) != 0) ok = false;
+        if (ok && renameat(dirfd, temporary, dirfd, name) == 0 &&
+            fsync(dirfd) == 0) {
+            stored = true;
+        } else {
+            if (err && errSize && !err[0])
+                gc_snprintf(err, errSize, "cannot commit daemon %s: %s",
+                            label, strerror(errno));
+            unlinkat(dirfd, temporary, 0);
+        }
+    }
+    close(dirfd);
+    return stored;
+}
+
 LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
                                                    LinuxDaemonStateRecord* out,
                                                    char* err, size_t errSize) {
@@ -192,43 +236,62 @@ bool linux_daemon_operation_store(const char* path,
         gc_strlcpy(err, errSize, "refusing invalid daemon operation record");
         return false;
     }
+    return store_record_atomic(path, record, sizeof(*record), "operation",
+                               err, errSize);
+}
+
+bool linux_daemon_startup_store(const char* path,
+                                const LinuxDaemonStartupRecord* record,
+                                char* err, size_t errSize) {
+    if (err && errSize) err[0] = 0;
+    if (!linux_daemon_startup_valid(record)) {
+        gc_strlcpy(err, errSize, "refusing invalid daemon startup policy record");
+        return false;
+    }
+    return store_record_atomic(path, record, sizeof(*record), "startup policy",
+                               err, errSize);
+}
+
+bool linux_daemon_startup_load(const char* path,
+                               LinuxDaemonStartupRecord* record,
+                               bool* outCorrupt, char* err, size_t errSize) {
+    if (err && errSize) err[0] = 0;
+    if (outCorrupt) *outCorrupt = false;
+    if (record) memset(record, 0, sizeof(*record));
     char name[256] = {};
     int dirfd = open_state_directory(path, name, sizeof(name), err, errSize);
-    if (dirfd < 0) return false;
-    bool stored = false;
-    for (unsigned int attempt = 0; attempt < 16 && !stored; ++attempt) {
-        gc_u64 suffix = 0;
-        if (getrandom(&suffix, sizeof(suffix), 0) != (ssize_t)sizeof(suffix)) {
-            gc_snprintf(err, errSize,
-                "cannot generate daemon operation temp name: %s", strerror(errno));
-            break;
-        }
-        char temporary[320] = {};
-        gc_snprintf(temporary, sizeof(temporary), ".%s.tmp.%016llx",
-            name, (unsigned long long)suffix);
-        int fd = openat(dirfd, temporary,
-            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
-        if (fd < 0) {
-            if (errno == EEXIST) continue;
-            gc_snprintf(err, errSize, "cannot create daemon operation temp: %s",
-                strerror(errno));
-            break;
-        }
-        bool ok = fchmod(fd, 0600) == 0 && fchown(fd, 0, 0) == 0 &&
-            write_all(fd, record, sizeof(*record)) && fsync(fd) == 0;
-        if (close(fd) != 0) ok = false;
-        if (ok && renameat(dirfd, temporary, dirfd, name) == 0 &&
-            fsync(dirfd) == 0) {
-            stored = true;
-        } else {
-            if (err && errSize && !err[0])
-                gc_snprintf(err, errSize, "cannot commit daemon operation: %s",
-                    strerror(errno));
-            unlinkat(dirfd, temporary, 0);
-        }
+    if (dirfd < 0) {
+        if (outCorrupt) *outCorrupt = true;
+        return false;
     }
+    int fd = openat(dirfd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) {
+        int saved = errno;
+        close(dirfd);
+        // Absent is the documented default (RESTORE_LAST), not a failure.
+        if (saved == ENOENT) return false;
+        gc_snprintf(err, errSize, "cannot open daemon startup policy: %s",
+                    strerror(saved));
+        if (outCorrupt) *outCorrupt = true;
+        return false;
+    }
+    LinuxDaemonStartupRecord loaded = {};
+    struct stat status = {};
+    bool ok = fstat(fd, &status) == 0 && S_ISREG(status.st_mode) &&
+        status.st_uid == 0 && status.st_nlink == 1 &&
+        (status.st_mode & 0077) == 0 &&
+        status.st_size == (off_t)sizeof(loaded) &&
+        read(fd, &loaded, sizeof(loaded)) == (ssize_t)sizeof(loaded) &&
+        linux_daemon_startup_valid(&loaded);
+    close(fd);
     close(dirfd);
-    return stored;
+    if (!ok) {
+        gc_strlcpy(err, errSize, "daemon startup policy record is invalid");
+        if (outCorrupt) *outCorrupt = true;
+        return false;
+    }
+    if (record) *record = loaded;
+    return true;
 }
 
 bool linux_daemon_operation_load(const char* path,

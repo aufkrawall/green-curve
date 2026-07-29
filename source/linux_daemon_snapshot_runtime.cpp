@@ -16,14 +16,24 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
     s->autoRestoreLockoutReason = g_stateUncertain
         ? SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED
         : SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
+    s->health = g_gpu.health;
+    if (g_stateUncertain) {
+        s->health.reason = SERVICE_GPU_HEALTH_STATE_UNCERTAIN;
+        s->health.driverStatus = 0;
+        gc_strlcpy(s->health.detail, sizeof(s->health.detail),
+            "previous daemon state or rollback is uncertain; explicit Apply/Reset is required");
+    }
     if (!g_gpuReady) return;
     s->initialized = true;
-    s->loaded = (g_gpu.numPopulated > 0);
+    s->loaded = g_gpu.vfSnapshotFresh && g_gpu.numPopulated > 0;
     s->gpuFamily = g_gpu.family;
-    s->numPopulated = g_gpu.numPopulated;
-    s->vfReadSupported = g_gpu.backend && g_gpu.backend->readSupported;
-    s->vfWriteSupported = g_gpu.backend && g_gpu.backend->writeSupported;
-    s->vfBestGuess = g_gpu.backend && g_gpu.backend->bestGuessOnly;
+    s->numPopulated = s->loaded ? g_gpu.numPopulated : 0;
+    s->vfReadSupported = s->loaded && g_gpu.gpuHandle && g_gpu.backend &&
+        g_gpu.backend->readSupported;
+    s->vfWriteSupported = s->loaded && g_gpu.gpuHandle && g_gpu.backend &&
+        g_gpu.backend->writeSupported;
+    s->vfBestGuess = s->loaded && g_gpu.backend &&
+        g_gpu.backend->bestGuessOnly;
     s->gpuClockOffsetMinMHz = g_gpu.gpuOffsetMinMHz;
     s->gpuClockOffsetMaxMHz = g_gpu.gpuOffsetMaxMHz;
     s->memOffsetMinMHz = g_gpu.memOffsetMinMHz;
@@ -34,9 +44,11 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
     s->powerLimitMinmW = g_gpu.powerLimitMinmW;
     s->powerLimitMaxmW = g_gpu.powerLimitMaxmW;
     s->powerLimitDefaultmW = g_gpu.powerLimitDefaultmW;
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        s->curve[i] = g_gpu.curve[i];
-        s->freqOffsets[i] = g_gpu.freqOffsets[i];
+    if (s->loaded) {
+        for (int i = 0; i < VF_NUM_POINTS; i++) {
+            s->curve[i] = g_gpu.curve[i];
+            s->freqOffsets[i] = g_gpu.freqOffsets[i];
+        }
     }
     gc_strlcpy(s->gpuName, sizeof(s->gpuName), g_gpu.gpuName[0] ? g_gpu.gpuName : "NVIDIA GPU");
 
@@ -56,10 +68,15 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
     char hardwareErr[160] = {};
     bool hardwareAvailable = linux_backend_capture_snapshot(
         &g_gpu, &hardware, hardwareErr, sizeof(hardwareErr));
-    if (!hardwareAvailable) {
-        dlog("daemon snapshot: partial live controls: %s\n",
-             hardwareErr[0] ? hardwareErr : "no readable control domain");
+    s->health = g_gpu.health;
+    if (g_stateUncertain) {
+        s->health.reason = SERVICE_GPU_HEALTH_STATE_UNCERTAIN;
+        s->health.driverStatus = 0;
+        gc_strlcpy(s->health.detail, sizeof(s->health.detail),
+            "previous daemon state or rollback is uncertain; explicit Apply/Reset is required");
     }
+    // Backend health transition logging already records the first loss/recovery
+    // of control domains. Do not repeat the same failure on every telemetry read.
     if (hardware.gpuOffsetValid) {
         s->gpuClockOffsetkHz = hardware.gpuOffsetMHz * 1000;
         s->gpuOffsetRangeKnown = true;
@@ -92,16 +109,23 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
         if (g_gpu.nvml.getNumFans(g_gpu.nvmlDevice, &fans) == NVML_SUCCESS) {
             s->fanCount = fans;
             s->fanSupported = (fans > 0);
+            // Publish the range the driver actually honors.  This used to be
+            // hardcoded 0..100, which let the UI offer duties the driver
+            // silently clamped (an RTX 5070 floors manual control at 30%).
+            // Still gate only on fan presence: fanRangeKnown enables the fan
+            // controls, and a driver without the range getter can still be
+            // driven manually over the full 0..100 span.
             s->fanRangeKnown = (fans > 0);
-            s->fanMinPct = 0;
-            s->fanMaxPct = 100;
+            s->fanMinPct = g_gpu.fanRangeKnown ? (unsigned int)g_gpu.fanMinPct : 0u;
+            s->fanMaxPct = g_gpu.fanRangeKnown ? (unsigned int)g_gpu.fanMaxPct : 100u;
             for (unsigned int f = 0; f < fans && f < MAX_GPU_FANS; f++) {
+                // fanPercent is measured telemetry; fanTargetPercent is intent.
                 unsigned int pct = 0;
                 if (g_gpu.nvml.getFanSpeed && g_gpu.nvml.getFanSpeed(g_gpu.nvmlDevice, f, &pct) == NVML_SUCCESS)
                     s->fanPercent[f] = pct;
                 if (f < hardware.fanCount) {
                     s->fanPolicy[f] = hardware.fanPolicy[f];
-                    s->fanTargetPercent[f] = hardware.fanPercent[f];
+                    s->fanTargetPercent[f] = hardware.fanTargetPercent[f];
                 }
             }
         }
@@ -130,6 +154,7 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
     control->valid = hardwareAvailable || g_hasActiveDesired;
     control->hasGpuOffset = hardware.gpuOffsetValid ||
                             (g_hasActiveDesired && g_activeDesired.hasGpuOffset);
+    control->gpuOffsetReadbackValid = hardware.gpuOffsetValid;
     control->gpuOffsetMHz = hardware.gpuOffsetValid
         ? hardware.gpuOffsetMHz
         : g_activeDesired.gpuOffsetMHz;
@@ -137,16 +162,24 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
         ? g_activeDesired.gpuOffsetExcludeLowCount : 0;
     control->hasMemOffset = hardware.memOffsetValid ||
                             (g_hasActiveDesired && g_activeDesired.hasMemOffset);
+    control->memOffsetReadbackValid = hardware.memOffsetValid;
     control->memOffsetMHz = hardware.memOffsetValid
         ? hardware.memOffsetMHz
         : g_activeDesired.memOffsetMHz;
     control->hasPowerLimit = hardware.powerValid ||
                              (g_hasActiveDesired && g_activeDesired.hasPowerLimit);
+    control->powerLimitReadbackValid = hardware.powerValid;
     control->powerLimitPct = s->powerLimitPct > 0
         ? s->powerLimitPct
         : (g_hasActiveDesired ? g_activeDesired.powerLimitPct : 100);
     control->hasFan = s->fanSupported ||
                       (g_hasActiveDesired && g_activeDesired.hasFan);
+    control->fanPolicyReadbackValid = hardware.fanValid &&
+        hardware.fanCount > 0;
+    bool allFanTargetsKnown = hardware.fanValid && hardware.fanCount > 0;
+    for (unsigned int i = 0; i < hardware.fanCount; ++i)
+        if (!hardware.fanTargetKnown[i]) allFanTargetsKnown = false;
+    control->fanTargetReadbackValid = allFanTargetsKnown;
     control->fanCurrentPercent = s->fanCount > 0 ? (int)s->fanPercent[0] : 0;
     control->fanCurrentTemperatureC = s->gpuTemperatureValid
         ? s->gpuTemperatureC : 0;
@@ -220,14 +253,33 @@ static bool mutation_preconditions_match(const ServiceRequest* req,
     populate_snapshot(&current, &controls);
     gc_u64 topology = current.loaded && current.numPopulated > 0
         ? service_snapshot_topology_signature(&current) : 0;
-    bool identityMatches = current.selectedAdapterIndex < current.adapterCount &&
-        linux_gpu_identity_matches(&req->targetGpu,
-            &current.adapters[current.selectedAdapterIndex]);
-    bool matches = req->expectedServiceInstanceId ==
-                       daemon_service_instance_id() &&
-                   req->expectedGpuGeneration == g_daemonGpuGeneration &&
-                   req->expectedTopologySignature == topology &&
-                   identityMatches;
+    gc_u32 requestedDomains = service_requested_mutation_domains(
+        req->command, &req->desired);
+    gc_u32 unavailableDomains = service_unavailable_mutation_domains(
+        req->command, &req->desired,
+        current.health.availableMutationDomains);
+    if (unavailableDomains != 0) {
+        resp->status = SERVICE_STATUS_ERROR;
+        gc_snprintf(resp->message, sizeof(resp->message),
+            "requested GPU domains unavailable (requested=0x%02x available=0x%02x missing=0x%02x): %s",
+            requestedDomains, current.health.availableMutationDomains,
+            unavailableDomains,
+            current.health.detail[0] ? current.health.detail :
+            service_gpu_health_reason_name(current.health.reason));
+        dlog("daemon mutation rejected before write: requested=0x%02x available=0x%02x missing=0x%02x reason=%u status=%d\n",
+            requestedDomains, current.health.availableMutationDomains,
+            unavailableDomains, current.health.reason,
+            current.health.driverStatus);
+        return false;
+    }
+    const GpuAdapterInfo* currentGpu = current.selectedAdapterIndex <
+            current.adapterCount
+        ? &current.adapters[current.selectedAdapterIndex] : nullptr;
+    bool identityMatches = currentGpu && linux_gpu_identity_matches(
+        &req->targetGpu, currentGpu);
+    bool matches = linux_mutation_authority_matches(
+        req, daemon_service_instance_id(), g_daemonGpuGeneration,
+        topology, currentGpu, requestedDomains);
     if (matches) return true;
 
     resp->status = SERVICE_STATUS_STALE_STATE;

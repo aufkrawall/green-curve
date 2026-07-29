@@ -41,11 +41,10 @@ static SIZE fan_curve_dialog_default_size() {
 static void fan_curve_dialog_sync_controls() {
     for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
         if (g_fanCurveDialog.enableChecks[i]) {
-            SendMessageA(
-                g_fanCurveDialog.enableChecks[i],
-                BM_SETCHECK,
-                (WPARAM)(g_fanCurveDialog.working.points[i].enabled ? BST_CHECKED : BST_UNCHECKED),
-                0);
+            // Owner-draw: the tick is derived from working.points[i].enabled at
+            // paint time, so re-synchronizing the working curve only has to ask
+            // for a repaint.  There is no native check state to write.
+            InvalidateRect(g_fanCurveDialog.enableChecks[i], nullptr, FALSE);
         }
         if (g_fanCurveDialog.tempEdits[i]) {
             char buf[16] = {};
@@ -246,7 +245,7 @@ static void fan_curve_dialog_toggle_point(int pointIndex, HWND hwnd) {
     FanCurveConfig candidate = g_fanCurveDialog.working;
     candidate.points[pointIndex].enabled = !candidate.points[pointIndex].enabled;
     if (fan_curve_active_count(&candidate) < 2) {
-        MessageBoxA(hwnd, "At least two fan curve points must remain enabled.", "Green Curve", MB_OK | MB_ICONINFORMATION);
+        gc_message_box(hwnd, "At least two fan curve points must remain enabled.", "Green Curve", MB_OK | MB_ICONINFORMATION);
         fan_curve_dialog_sync_controls();
         return;
     }
@@ -431,7 +430,7 @@ static bool fan_curve_dialog_commit(HWND hwnd) {
     FanCurveConfig validated = {};
     char err[256] = {};
     if (!fan_curve_dialog_capture_working(true, true, &validated, err, sizeof(err))) {
-        MessageBoxA(hwnd, err, "Green Curve", MB_OK | MB_ICONERROR);
+        gc_message_box(hwnd, err, "Green Curve", MB_OK | MB_ICONERROR);
         return false;
     }
 
@@ -441,6 +440,9 @@ static bool fan_curve_dialog_commit(HWND hwnd) {
     set_gui_state_dirty(true);
     refresh_fan_curve_button_text();
     update_fan_controls_enabled_state();
+    // The fan curve is not part of GuiDraft, so the draft mutators cannot see
+    // this edit; re-evaluate the pending state here instead.
+    gui_pending_changes_refresh();
     return true;
 }
 
@@ -479,6 +481,10 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 style_input_control(g_fanCurveDialog.tempEdits[i]);
                 style_input_control(g_fanCurveDialog.percentEdits[i]);
                 apply_ui_font(g_fanCurveDialog.enableChecks[i]);
+                // F-CHECKBOX-HIT  The "Pn" caption toggles the point too, so the
+                // BUTTON must end with it -- the creation width is only an upper
+                // bound before the UI font is known.
+                fit_themed_checkbox_to_label(g_fanCurveDialog.enableChecks[i]);
                 apply_ui_font(g_fanCurveDialog.tempEdits[i]);
                 apply_ui_font(g_fanCurveDialog.percentEdits[i]);
                 SendMessageA(g_fanCurveDialog.tempEdits[i], EM_SETLIMITTEXT, 3, 0);
@@ -569,11 +575,12 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
             int notification = HIWORD(wParam);
 
             if (id >= FAN_DIALOG_ENABLE_BASE && id < FAN_DIALOG_ENABLE_BASE + FAN_CURVE_MAX_POINTS && notification == BN_CLICKED) {
-                bool enabled = g_fanCurveDialog.working.points[id - FAN_DIALOG_ENABLE_BASE].enabled;
-                SendMessageA(g_fanCurveDialog.enableChecks[id - FAN_DIALOG_ENABLE_BASE], BM_SETCHECK,
-                    (WPARAM)(enabled ? BST_UNCHECKED : BST_CHECKED), 0);
-                InvalidateRect(g_fanCurveDialog.enableChecks[id - FAN_DIALOG_ENABLE_BASE], nullptr, FALSE);
+                // Flip the model first, then repaint from it: the owner-draw
+                // handler reads working.points[].enabled, so repainting before
+                // the toggle would only work by accident of asynchronous
+                // invalidation ordering.
                 fan_curve_dialog_toggle_point(id - FAN_DIALOG_ENABLE_BASE, hwnd);
+                InvalidateRect(g_fanCurveDialog.enableChecks[id - FAN_DIALOG_ENABLE_BASE], nullptr, FALSE);
                 return 0;
             }
             if (((id >= FAN_DIALOG_TEMP_BASE && id < FAN_DIALOG_TEMP_BASE + FAN_CURVE_MAX_POINTS) ||

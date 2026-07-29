@@ -227,11 +227,11 @@ static bool apd_commit(HWND hwnd) {
     char hotkeys[CONFIG_NUM_SLOTS + 1][64] = {};
     char err[256] = {};
     if (!apd_capture(&cfg, hotkeys, err, sizeof(err))) {
-        MessageBoxA(hwnd, err, "Green Curve", MB_OK | MB_ICONERROR);
+        gc_message_box(hwnd, err, "Green Curve", MB_OK | MB_ICONERROR);
         return false;
     }
     if (!auto_profile_config_save(g_app.configPath, &cfg, hotkeys)) {
-        MessageBoxA(hwnd, "Failed to save auto-profile configuration.", "Green Curve", MB_OK | MB_ICONERROR);
+        gc_message_box(hwnd, "Failed to save auto-profile configuration.", "Green Curve", MB_OK | MB_ICONERROR);
         return false;
     }
     auto_profile_reload_config(g_app.hMainWnd);
@@ -391,6 +391,10 @@ static void apd_create_controls(HWND hwnd) {
         dp(600), dp(btnTop), dp(88), dp(28), hwnd, (HMENU)(INT_PTR)APD_CANCEL_ID, g_app.hInst, nullptr);
 
     apply_ui_font_to_children(hwnd);
+    // F-CHECKBOX-HIT  Both dialog checkboxes own their caption, so their hit
+    // rectangle is fitted to it once the UI font is applied.
+    fit_themed_checkbox_to_label(g_apDialog.enableCheck);
+    fit_themed_checkbox_to_label(g_apDialog.suppressCheck);
     apd_populate();
 }
 

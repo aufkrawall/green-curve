@@ -7,6 +7,14 @@
 
 #include "ui_control_projection.h"
 
+#ifndef GREEN_CURVE_SERVICE_BINARY
+// The per-operation UAC helper lands later in the include order
+// (ui_main_window.cpp); handle_share_all_users_toggle() below is its only user
+// outside that shard.
+static bool run_elevated_command(const char* const* argv,
+    const char* cancelledStatus, const char* failedPrefix);
+#endif
+
 static void resolve_profile_gpu_offset_state_for_save(const DesiredSettings* desired, int* gpuOffsetMHzOut, int* excludeLowCountOut) {
     resolve_effective_gpu_offset_state_for_config_save(desired, gpuOffsetMHzOut, excludeLowCountOut);
 }
@@ -39,6 +47,9 @@ static bool restricted_to_shared_profiles() {
 static void update_share_all_users_check_state() {
     refresh_machine_logon_slot_cache();
     refresh_restrict_policy_state();
+    bool sharedState = false;
+    bool sharedPainted = ui_checkbox_state_get(&g_app.shareAllUsersPainted);
+    bool sharedRepaint = false;
 
     // "Share with all users" checkbox is bound to the SELECTED profile slot.
     // Checked = that slot is published to the shared bank AND is the all-users
@@ -53,12 +64,30 @@ static void update_share_all_users_check_state() {
         StringCchPrintfA(label, ARRAY_COUNT(label), "Share slot %d with all users", slot);
         bool changed = gui_set_window_text_if_changed(
             g_app.hShareAllUsersCheck, label);
-        changed = gui_set_button_check_if_changed(
-            g_app.hShareAllUsersCheck, shared) || changed;
-        // Always enabled.  When the GUI is not elevated, toggling it requests UAC
-        // for just this operation, so users never start the whole GUI elevated.
+        // Keep the clickable rectangle on the caption after a slot change
+        // (F-CHECKBOX-HIT); the layout pass does not run for a text change.
+        if (changed) fit_themed_checkbox_to_label(g_app.hShareAllUsersCheck);
+        // The tick is derived by themed_checkbox_checked_state(), so compare
+        // against what was last PAINTED.  Asking the control (BM_GETCHECK on an
+        // owner-draw button) always answered "unchecked" and therefore never
+        // requested the repaint that clears a tick after unsharing.
+        bool repaintTick = ui_checkbox_state_needs_repaint(
+            &g_app.shareAllUsersPainted, shared);
+        changed = repaintTick || changed;
+        sharedState = shared;
+        sharedRepaint = repaintTick;
+        // Elevation is never the gate: when the GUI is not elevated, toggling
+        // this requests UAC for just this operation, so users never start the
+        // whole GUI elevated.  The service is the gate -- publishing a profile to
+        // the shared bank exists so the service can apply it for other users, and
+        // achieves nothing observable without one.  An ALREADY shared slot keeps
+        // the checkbox live so it can be un-shared (F-ACTIONABLE rule 2).
+        GuiServiceActionability shareActionable =
+            gui_service_actionability_from_app();
         changed = gui_set_window_enabled_if_changed(
-            g_app.hShareAllUsersCheck, true) || changed;
+            g_app.hShareAllUsersCheck,
+            gui_service_config_control_actionable(&shareActionable, shared))
+            || changed;
         if (!IsWindowVisible(g_app.hShareAllUsersCheck)) {
             ShowWindow(g_app.hShareAllUsersCheck, SW_SHOW);
             changed = true;
@@ -71,16 +100,31 @@ static void update_share_all_users_check_state() {
     // when the admin has published at least one profile to the shared bank.
     int sharedCount = 0;
     for (int s = 1; s <= CONFIG_NUM_SLOTS; s++) {
-        if (is_machine_profile_slot_saved(s)) sharedCount++;
+        bool slotShared = is_machine_profile_slot_saved(s);
+        g_app.machineProfileSlotSavedCache[s - 1] = slotShared;
+        if (slotShared) sharedCount++;
     }
+    // This function owns the count: it scans the MACHINE config, which the
+    // user-config write hook cannot invalidate.  Cache it so the service-state
+    // projection can re-assert the button without rescanning a second config
+    // file on every tick.
+    g_app.sharedProfileCountCache = sharedCount;
     if (g_app.hSharedProfilesBtn) {
         char label[48] = {};
         if (sharedCount > 0) StringCchPrintfA(label, ARRAY_COUNT(label), "Shared profiles (%d)...", sharedCount);
         else StringCchCopyA(label, ARRAY_COUNT(label), "Shared profiles...");
         bool changed = gui_set_window_text_if_changed(
             g_app.hSharedProfilesBtn, label);
+        // Loading a shared profile writes the editor, so it needs a reachable
+        // service for the same reason Load does.  This runs AFTER
+        // update_profile_action_buttons() in refresh_profile_controls_from_config()
+        // and standalone from the share toggle, so both writers must use this
+        // exact expression or one silently undoes the other.
+        GuiServiceActionability actionable = gui_service_actionability_from_app();
         changed = gui_set_window_enabled_if_changed(
-            g_app.hSharedProfilesBtn, sharedCount > 0) || changed;
+            g_app.hSharedProfilesBtn,
+            sharedCount > 0 && gui_service_capability_enabled(
+                &actionable, GUI_SERVICE_CAP_PROFILE_EDIT)) || changed;
         if (!IsWindowVisible(g_app.hSharedProfilesBtn)) {
             ShowWindow(g_app.hSharedProfilesBtn, SW_SHOW);
             changed = true;
@@ -88,9 +132,86 @@ static void update_share_all_users_check_state() {
         if (changed)
             InvalidateRect(g_app.hSharedProfilesBtn, nullptr, FALSE);
     }
-    debug_log_on_change("share-all-users controls: refreshed (selSlot=%d machineSlot=%d sharedCount=%d)\n",
-        slot, g_app.machineLogonSlotCache, sharedCount);
+    debug_log_on_change("share-all-users controls: refreshed (selSlot=%d machineSlot=%d sharedCount=%d shared=%d lastPainted=%d repaintRequested=%d)\n",
+        slot, g_app.machineLogonSlotCache, sharedCount,
+        sharedState ? 1 : 0, sharedPainted ? 1 : 0, sharedRepaint ? 1 : 0);
 }
+
+#ifndef GREEN_CURVE_SERVICE_BINARY
+// "Share slot N with all users" was clicked.  Sharing publishes the SELECTED
+// slot's data into the machine-wide bank AND makes it the all-users default
+// logon profile in one action; unsharing reverses both.  Elevation is requested
+// per operation so the GUI itself never has to run elevated.
+static void handle_share_all_users_toggle() {
+    int sel = g_app.hProfileCombo
+        ? (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0) : -1;
+    if (sel < 0 || sel > CONFIG_NUM_SLOTS - 1) sel = CONFIG_DEFAULT_SLOT - 1;
+    int slot = sel + 1;
+    bool currentlyShared = is_machine_profile_slot_saved(slot) &&
+        g_app.machineLogonSlotCache == slot;
+
+    // Sharing requires the slot to actually hold a saved profile.
+    if (!currentlyShared && !is_profile_slot_saved(g_app.configPath, slot)) {
+        gc_message_box(g_app.hMainWnd,
+            "The selected profile slot is empty. Save a profile into this slot before sharing it with all users.",
+            "Green Curve", MB_OK | MB_ICONINFORMATION);
+        update_share_all_users_check_state();
+        return;
+    }
+
+    bool ok = false;
+    bool elevated = is_elevated();
+    debug_log("share-all-users click: slot=%d currentlyShared=%d elevated=%d action=%s\n",
+        slot, currentlyShared ? 1 : 0, elevated ? 1 : 0,
+        currentlyShared ? "unshare" : "share");
+    if (!elevated) {
+        char slotArg[16] = {};
+        StringCchPrintfA(slotArg, ARRAY_COUNT(slotArg), "%d", slot);
+        const char* argv[] = {
+            currentlyShared ? "--unshare-slot" : "--share-slot",
+            slotArg,
+            "--config",
+            g_app.configPath,
+            nullptr
+        };
+        ok = run_elevated_command(argv,
+            currentlyShared
+                ? "Administrator consent was cancelled; profile is still shared."
+                : "Administrator consent was cancelled; profile was not shared.",
+            currentlyShared
+                ? "Stop sharing profile with all users"
+                : "Share profile with all users");
+    } else {
+        char err[256] = {};
+        ok = currentlyShared
+            ? unshare_profile_slot_for_all_users(slot, err, sizeof(err))
+            : share_profile_slot_for_all_users(g_app.configPath, slot, err, sizeof(err));
+        if (!ok) {
+            write_error_report_log_for_user_failure(
+                "Share-with-all-users update failed", err[0] ? err : "Unknown error");
+            gc_message_box(g_app.hMainWnd,
+                err[0] ? err : "Failed to update the shared profile.",
+                "Green Curve", MB_OK | MB_ICONERROR);
+        }
+    }
+    if (ok) {
+        set_profile_status_text(currentlyShared
+            ? "Slot %d is no longer shared with all users."
+            : "Slot %d is now shared with all users and applied on logon for users without their own profile.",
+            slot);
+    }
+    debug_log("share-all-users click: slot=%d action=%s ok=%d\n",
+        slot, currentlyShared ? "unshare" : "share", ok ? 1 : 0);
+    update_share_all_users_check_state();
+    refresh_profile_controls_from_config();
+    if (ok) {
+        // The machine default is an effective logon profile for this account, so
+        // create/remove its authenticated handoff task independently of resident
+        // tray startup.
+        schedule_logon_combo_sync();
+    }
+}
+#endif  // GREEN_CURVE_SERVICE_BINARY
 
 static void refresh_profile_controls_from_config() {
     if (!g_app.hProfileCombo) return;
@@ -218,8 +339,13 @@ static void refresh_profile_controls_from_config() {
         InvalidateRect(g_app.hLogonCombo, nullptr, TRUE);
     }
     if (g_app.hStartOnLogonCheck) {
-        SendMessageA(g_app.hStartOnLogonCheck, BM_SETCHECK,
-            (WPARAM)(is_start_on_logon_enabled(g_app.configPath) ? BST_CHECKED : BST_UNCHECKED), 0);
+        // Owner-draw: the tick comes from is_start_on_logon_enabled() at paint
+        // time, so the only thing to do here is request a repaint when the
+        // config no longer matches what is on screen.
+        if (ui_checkbox_state_needs_repaint(&g_app.startOnLogonPainted,
+                is_start_on_logon_enabled(g_app.configPath))) {
+            InvalidateRect(g_app.hStartOnLogonCheck, nullptr, FALSE);
+        }
     }
 
     update_profile_state_label();
@@ -429,6 +555,13 @@ static void sync_applied_profile_from_service_metadata() {
     AppliedProfileSyncCache inputs = current_applied_profile_sync_inputs();
     if (applied_profile_sync_inputs_unchanged(inputs)) return;
 
+    // The tray tooltip names the active profile from applied_slot plus the
+    // service's own view of it. A config write invalidates the tray cache on its
+    // own, but the service view can move without one -- switching between two
+    // shared slots leaves applied_slot at 0 -- so drop the cached label here,
+    // where a genuine identity change has just been established.
+    invalidate_tray_profile_cache();
+
     int appliedSlot = 0;
     ServiceProfileSource source = SERVICE_PROFILE_SOURCE_NONE;
     unsigned int sourceSlot = 0;
@@ -477,321 +610,7 @@ static void sync_applied_profile_from_service_metadata() {
     g_appliedProfileSyncCache = current_applied_profile_sync_inputs();
 }
 
-static void populate_desired_into_gui(const DesiredSettings* desired) {
-    if (!desired) return;
-    bool preserveDirty = gui_state_dirty();
-    unlock_all();
-    if (g_app.loaded) populate_edits();
-    begin_programmatic_edit_update();
-    set_gui_state_dirty(false);
-    g_app.guiHasUserModifiedValues = false;
-    // Any populate clears the "loaded shared slot" marker; show_shared_profiles_menu
-    // re-sets it AFTER calling this for a shared load.
-    g_app.loadedSharedSlot = 0;
-
-    // Curve points
-    for (int vi = 0; vi < g_app.numVisible; vi++) {
-        int ci = g_app.visibleMap[vi];
-        g_app.guiCurvePointExplicit[ci] = desired->hasCurvePoint[ci];
-        if (g_app.hEditsMhz[vi]) {
-            unsigned int mhz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
-            if (desired->hasCurvePoint[ci]) mhz = desired->curvePointMHz[ci];
-            set_edit_value(g_app.hEditsMhz[vi], mhz);
-        }
-    }
-    // GPU offset
-    if (desired->hasGpuOffset) {
-        g_app.guiGpuOffsetMHz = desired->gpuOffsetMHz;
-        g_app.guiGpuOffsetExcludeLowCount = desired->gpuOffsetExcludeLowCount;
-    }
-    if (desired->hasGpuOffset && g_app.hGpuOffsetEdit) {
-        set_edit_value(g_app.hGpuOffsetEdit, desired->gpuOffsetMHz);
-        if (g_app.hGpuOffsetExcludeLowEdit) {
-            char excludeBuf[16] = {};
-            StringCchPrintfA(excludeBuf, ARRAY_COUNT(excludeBuf), "%d", desired->gpuOffsetExcludeLowCount);
-            SetWindowTextA(g_app.hGpuOffsetExcludeLowEdit, excludeBuf);
-        }
-    }
-    // Mem offset
-    if (desired->hasMemOffset) {
-        g_app.guiMemOffsetMHz = desired->memOffsetMHz;
-        if (g_app.hMemOffsetEdit)
-            set_edit_value(g_app.hMemOffsetEdit, desired->memOffsetMHz);
-    }
-    // Power limit
-    if (desired->hasPowerLimit) {
-        g_app.guiPowerLimitPct = desired->powerLimitPct;
-        if (g_app.hPowerLimitEdit)
-            set_edit_value(g_app.hPowerLimitEdit, desired->powerLimitPct);
-    }
-    // Fan
-    if (desired->hasFan) {
-        g_app.guiFanMode = desired->fanMode;
-        if (desired->fanMode == FAN_MODE_FIXED) {
-            g_app.guiFanFixedPercent = clamp_percent(desired->fanPercent);
-        } else {
-            g_app.guiFanFixedPercent = current_displayed_fan_percent();
-        }
-        copy_fan_curve(&g_app.guiFanCurve, &desired->fanCurve);
-        ensure_valid_fan_curve_config(&g_app.guiFanCurve);
-        if (g_app.hFanModeCombo) {
-            SendMessageA(g_app.hFanModeCombo, CB_SETCURSEL, (WPARAM)g_app.guiFanMode, 0);
-        }
-        if (g_app.hFanEdit) {
-            char fanText[16] = {};
-            StringCchPrintfA(fanText, ARRAY_COUNT(fanText), "%d", g_app.guiFanFixedPercent);
-            SetWindowTextA(g_app.hFanEdit, fanText);
-        }
-        refresh_fan_curve_button_text();
-        update_fan_controls_enabled_state();
-    }
-
-    int lockCi = desired->hasLock ? desired->lockCi : -1;
-    unsigned int lockMHz = desired->hasLock ? desired->lockMHz : 0;
-    if (lockCi < 0 || lockMHz == 0) {
-        infer_profile_lock_from_curve(desired, &lockCi, &lockMHz);
-    }
-    if (lockCi >= 0 && lockMHz > 0) {
-        for (int vi = 0; vi < g_app.numVisible; vi++) {
-            if (g_app.visibleMap[vi] != lockCi) continue;
-            set_edit_value(g_app.hEditsMhz[vi], lockMHz);
-            LockMode mode = desired->hasLock ? (desired->lockMode != LOCK_MODE_NONE ? desired->lockMode : LOCK_MODE_FLATTEN) : LOCK_MODE_FLATTEN;
-            apply_lock(vi, mode);
-            g_app.guiLockTracksAnchor = desired->hasLock ? desired->lockTracksAnchor : true;
-            break;
-        }
-    } else if (g_app.lockedVi >= 0) {
-        SendMessageA(g_app.hLocks[g_app.lockedVi], BM_SETCHECK, BST_UNCHECKED, 0);
-        g_app.lockedVi = -1;
-        g_app.lockedCi = -1;
-        g_app.lockedFreq = 0;
-        g_app.lockMode = LOCK_MODE_NONE;
-    }
-    end_programmatic_edit_update();
-    set_gui_state_dirty(preserveDirty);
-    if (preserveDirty) gui_draft_capture_desired(desired);
-}
-
-static void set_profile_status_text(const char* fmt, ...) {
-    if (!g_app.hProfileStatusLabel || !fmt) return;
-    char buf[256] = {};
-    va_list ap;
-    va_start(ap, fmt);
-    StringCchVPrintfA(buf, ARRAY_COUNT(buf), fmt, ap);
-    va_end(ap);
-    SetWindowTextA(g_app.hProfileStatusLabel, buf);
-}
-
-static void update_profile_state_label() {
-    if (!g_app.hProfileStateLabel || !g_app.hProfileCombo) return;
-    refresh_machine_logon_slot_cache();
-    int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
-    if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
-    slot += 1;
-
-    bool saved = is_profile_slot_saved(g_app.configPath, slot);
-    bool isAppLaunch = (get_config_int(g_app.configPath, "profiles", "app_launch_slot", 0) == slot);
-    bool isLogon = (get_config_int(g_app.configPath, "profiles", "logon_slot", 0) == slot);
-    bool isMachineDefault = (slot == g_app.machineLogonSlotCache && g_app.machineLogonSlotCache > 0);
-    bool isMachineProfileBank = is_machine_profile_slot_saved(slot);
-
-    char roles[96] = {};
-    if (isAppLaunch && isLogon && isMachineDefault && isMachineProfileBank) StringCchCopyA(roles, ARRAY_COUNT(roles), " | app start + logon + all users + shared");
-    else if (isAppLaunch && isLogon && isMachineDefault) StringCchCopyA(roles, ARRAY_COUNT(roles), " | app start + logon + all users");
-    else if (isAppLaunch && isLogon && isMachineProfileBank) StringCchCopyA(roles, ARRAY_COUNT(roles), " | app start + logon + shared");
-    else if (isAppLaunch && isMachineDefault && isMachineProfileBank) StringCchCopyA(roles, ARRAY_COUNT(roles), " | app start + all users + shared");
-    else if (isLogon && isMachineDefault && isMachineProfileBank) StringCchCopyA(roles, ARRAY_COUNT(roles), " | logon + all users + shared");
-    else if (isMachineDefault && isMachineProfileBank) StringCchCopyA(roles, ARRAY_COUNT(roles), " | all users + shared");
-    else if (isAppLaunch && isLogon) StringCchCopyA(roles, ARRAY_COUNT(roles), " | app start + logon");
-    else if (isAppLaunch && isMachineDefault) StringCchCopyA(roles, ARRAY_COUNT(roles), " | app start + all users");
-    else if (isAppLaunch && isMachineProfileBank) StringCchCopyA(roles, ARRAY_COUNT(roles), " | app start + shared");
-    else if (isLogon && isMachineDefault) StringCchCopyA(roles, ARRAY_COUNT(roles), " | logon + all users");
-    else if (isLogon && isMachineProfileBank) StringCchCopyA(roles, ARRAY_COUNT(roles), " | logon + shared");
-    else if (isMachineDefault) StringCchCopyA(roles, ARRAY_COUNT(roles), " | all users");
-    else if (isMachineProfileBank) StringCchCopyA(roles, ARRAY_COUNT(roles), " | shared");
-    else if (isAppLaunch) StringCchCopyA(roles, ARRAY_COUNT(roles), " | app start");
-    else if (isLogon) StringCchCopyA(roles, ARRAY_COUNT(roles), " | logon");
-
-    char text[128] = {};
-    StringCchPrintfA(text, ARRAY_COUNT(text), "Slot %d is %s%s", slot,
-        saved ? "saved" : "empty", roles);
-    SetWindowTextA(g_app.hProfileStateLabel, text);
-}
-
-static void update_profile_action_buttons() {
-    if (!g_app.hProfileCombo) return;
-    int slot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
-    if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
-    slot += 1;
-    bool saved = is_profile_slot_saved(g_app.configPath, slot);
-    if (g_app.hProfileLoadBtn) EnableWindow(g_app.hProfileLoadBtn, saved ? TRUE : FALSE);
-    if (g_app.hProfileClearBtn) EnableWindow(g_app.hProfileClearBtn, saved ? TRUE : FALSE);
-}
-
-static void update_background_service_controls() {
-    if (g_app.hServiceEnableCheck) {
-        bool checked = g_app.backgroundServiceToggleInFlight
-            ? g_app.backgroundServiceToggleTargetEnabled
-            : g_app.backgroundServiceInstalled;
-        bool changed = gui_set_button_check_if_changed(
-            g_app.hServiceEnableCheck, checked);
-        changed = gui_set_window_enabled_if_changed(
-            g_app.hServiceEnableCheck,
-            !g_app.backgroundServiceToggleInFlight) || changed;
-        if (changed)
-            InvalidateRect(g_app.hServiceEnableCheck, nullptr, FALSE);
-    }
-    if (g_app.hServiceEnableLabel) {
-        gui_set_window_text_if_changed(g_app.hServiceEnableLabel,
-            g_app.backgroundServiceInstalled && g_app.backgroundServiceBroken
-                ? "Background service installed (repair needed)"
-                : "Background service installed");
-        gui_set_window_enabled_if_changed(g_app.hServiceEnableLabel,
-            !g_app.backgroundServiceToggleInFlight);
-    }
-    if (g_app.hServiceStatusLabel) {
-        char text[512] = {};
-        if (g_app.backgroundServiceToggleInFlight) {
-            StringCchPrintfA(text, ARRAY_COUNT(text), "%s background service...",
-                g_app.backgroundServiceToggleTargetEnabled ? "Installing and starting" : "Stopping and removing");
-        } else if (!g_app.backgroundServiceInstalled) {
-            StringCchCopyA(text, ARRAY_COUNT(text), "Background service not installed. Click checkbox to install it.");
-        } else if (g_app.guiServiceModel.phase == GUI_SERVICE_SYNCING) {
-            StringCchCopyA(text, ARRAY_COUNT(text),
-                "Synchronizing a coherent GPU state snapshot...");
-        } else if (g_app.guiServiceModel.phase ==
-                GUI_SERVICE_DEVICE_MISSING) {
-            StringCchCopyA(text, ARRAY_COUNT(text),
-                "Selected GPU disconnected. Waiting for the device to return; unsaved draft preserved.");
-        } else if (g_app.guiServiceModel.phase ==
-                GUI_SERVICE_RECOVERING) {
-            StringCchCopyA(text, ARRAY_COUNT(text),
-                "Selected GPU is reconnecting and being refreshed; unsaved draft preserved.");
-        } else if (g_app.guiServiceModel.phase == GUI_SERVICE_DEGRADED) {
-            StringCchCopyA(text, ARRAY_COUNT(text),
-                "Background service is connected, but coherent live GPU state is unavailable.");
-        } else if (gui_service_model_ready(&g_app.guiServiceModel) &&
-                g_app.guiDraft.detached) {
-            StringCchCopyA(text, ARRAY_COUNT(text),
-                "Live GPU state is ready, but the preserved draft belongs to another GPU/topology. Reselect it or click Refresh to discard the draft.");
-        } else if (g_app.backgroundServiceBroken) {
-            if (g_app.backgroundServiceError[0]) {
-                StringCchPrintfA(text, ARRAY_COUNT(text), "Background service needs repair: %s", g_app.backgroundServiceError);
-            } else {
-                StringCchCopyA(text, ARRAY_COUNT(text), "Background service is installed but not responding. Live controls are disabled.");
-            }
-        } else if (g_app.backgroundServiceAvailable) {
-            StringCchCopyA(text, ARRAY_COUNT(text), "Background service installed. Click checkbox to uninstall it.");
-        } else if (g_app.backgroundServiceRunning) {
-            StringCchCopyA(text, ARRAY_COUNT(text), "Background service running, waiting for first successful GPU initialization.");
-        } else {
-            StringCchCopyA(text, ARRAY_COUNT(text), "Background service installed but stopped. Live controls are disabled.");
-        }
-        // Shared-only policy notice for restricted (non-admin) users (ASCII only
-        // for the ANSI GUI path).
-        if (restricted_to_shared_profiles()) {
-            const char* note = " | Administrator restricts this PC to shared profiles; use 'Shared profiles...' to apply one.";
-            if (strlen(text) + strlen(note) < ARRAY_COUNT(text)) {
-                StringCchCatA(text, ARRAY_COUNT(text), note);
-            }
-        }
-        // Surface a user-profile-install warning.  Two triggers cover the same
-        // problem (a restricted/standard user cannot execute the GUI binary):
-        //   1. service_install_dir_is_under_user_profile() — keys off the
-        //      SCM-registered service dir (requires the service installed).
-        //   2. running_exe_dir_is_under_user_profile() — keys off the running
-        //      GUI binary's own dir, so the warning also fires pre-install /
-        //      in portable use, before there is any SCM service dir to check.
-        bool underUserProfile = !g_app.backgroundServiceToggleInFlight &&
-            ((g_app.backgroundServiceInstalled && service_install_dir_is_under_user_profile()) ||
-             running_exe_dir_is_under_user_profile());
-        if (underUserProfile) {
-            char warning[320] = {};
-            StringCchPrintfA(warning, ARRAY_COUNT(warning),
-                " Warning: Green Curve is running from a user account folder, so restricted/standard "
-                "users on this PC cannot launch it. Reinstall under an all-users folder such as %%ProgramFiles%%\\greencurve to "
-                "make it available to all users.");
-            // Append to the existing status text if there is room.
-            size_t currentLen = strlen(text);
-            size_t warningLen = strlen(warning);
-            if (currentLen + warningLen < ARRAY_COUNT(text)) {
-                StringCchCatA(text, ARRAY_COUNT(text), warning);
-            }
-        }
-        gui_set_window_text_if_changed(g_app.hServiceStatusLabel, text);
-    }
-}
-
-static bool maybe_confirm_profile_load_replace(int slot) {
-    DesiredSettings current = {};
-    DesiredSettings target = {};
-    char err[256] = {};
-    if (!gui_service_model_ready(&g_app.guiServiceModel)) {
-        if (!gui_state_dirty()) return true;
-        char reconnectMsg[256] = {};
-        StringCchPrintfA(reconnectMsg, ARRAY_COUNT(reconnectMsg),
-            "Loading slot %d will replace the unsaved draft preserved while the GPU is reconnecting. Continue?",
-            slot);
-        return MessageBoxA(g_app.hMainWnd, reconnectMsg, "Green Curve",
-            MB_YESNO | MB_ICONQUESTION) == IDYES;
-    }
-    if (!capture_gui_config_settings(&current, err, sizeof(err))) {
-        debug_log("profile load confirm: capture_gui_config_settings failed: %s\n", err);
-        // Cannot compare current GUI state to profile; skip confirmation and
-        // let the handler perform the actual load (which validates on its own).
-        return true;
-    }
-    if (!load_profile_from_config(g_app.configPath, slot, &target, err, sizeof(err))) {
-        debug_log("profile load confirm: load_profile_from_config failed: %s\n", err);
-        // Cannot read profile for comparison; skip confirmation and let the
-        // handler try the actual load (which reports its own errors).
-        return true;
-    }
-
-    DesiredSettings targetFull = {};
-    ControlState control = {};
-    bool haveControlState = get_effective_control_state(&control);
-    initialize_desired_settings_defaults(&targetFull);
-    targetFull.hasGpuOffset = true;
-    if (haveControlState && control.hasGpuOffset) {
-        targetFull.gpuOffsetMHz = control.gpuOffsetMHz;
-        targetFull.gpuOffsetExcludeLowCount = control.gpuOffsetExcludeLowCount;
-    } else {
-        resolve_displayed_live_gpu_offset_state_for_gui(&targetFull.gpuOffsetMHz, &targetFull.gpuOffsetExcludeLowCount);
-    }
-    targetFull.hasMemOffset = true;
-    targetFull.memOffsetMHz = haveControlState && control.hasMemOffset ? control.memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
-    targetFull.hasPowerLimit = true;
-    targetFull.powerLimitPct = haveControlState && control.hasPowerLimit ? control.powerLimitPct : g_app.powerLimitPct;
-    targetFull.hasFan = true;
-    targetFull.fanMode = haveControlState && control.hasFan ? control.fanMode : g_app.activeFanMode;
-    targetFull.fanAuto = targetFull.fanMode == FAN_MODE_AUTO;
-    targetFull.fanPercent = haveControlState && control.hasFan ? control.fanFixedPercent : g_app.activeFanFixedPercent;
-    copy_fan_curve(&targetFull.fanCurve, haveControlState && control.hasFan ? &control.fanCurve : &g_app.activeFanCurve);
-    for (int vi = 0; vi < g_app.numVisible; vi++) {
-        int ci = g_app.visibleMap[vi];
-        targetFull.hasCurvePoint[ci] = true;
-        targetFull.curvePointMHz[ci] = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
-    }
-    merge_desired_settings(&targetFull, &target);
-
-    bool same = true;
-    if (current.gpuOffsetMHz != targetFull.gpuOffsetMHz) same = false;
-    if (current.gpuOffsetExcludeLowCount != targetFull.gpuOffsetExcludeLowCount) same = false;
-    if (current.memOffsetMHz != targetFull.memOffsetMHz) same = false;
-    if (current.powerLimitPct != targetFull.powerLimitPct) same = false;
-    if (current.fanMode != targetFull.fanMode || current.fanPercent != targetFull.fanPercent || !fan_curve_equals(&current.fanCurve, &targetFull.fanCurve)) same = false;
-    for (int i = 0; same && i < VF_NUM_POINTS; i++) {
-        if (current.hasCurvePoint[i] != targetFull.hasCurvePoint[i]) same = false;
-        else if (current.hasCurvePoint[i] && current.curvePointMHz[i] != targetFull.curvePointMHz[i]) same = false;
-    }
-    if (same) return true;
-
-    char msg[256] = {};
-    StringCchPrintfA(msg, ARRAY_COUNT(msg),
-        "Loading slot %d will replace the values currently typed into the GUI. Continue?", slot);
-    return MessageBoxA(g_app.hMainWnd, msg, "Green Curve", MB_YESNO | MB_ICONQUESTION) == IDYES;
-}
+#include "config_profiles_gui_state.cpp"
 
 // GUI startup/logon orchestration is isolated in main_startup_profiles.cpp so
 // profile-control rendering and configuration code stay independently readable.

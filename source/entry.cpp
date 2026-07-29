@@ -131,6 +131,21 @@ static bool handle_cli(LPWSTR wCmdLine) {
         return true;
     }
 
+    // Upgrade settings transfer.  Both halves need a live service, so they run
+    // after the service-lifecycle commands above and before anything that only
+    // touches config on disk.
+    if (opts.exportActiveSettings || opts.applySettingsFile) {
+        refresh_background_service_state();
+        char result[512] = {};
+        bool ok = opts.exportActiveSettings
+            ? settings_transfer_export(opts.settingsFilePath, result, sizeof(result))
+            : settings_transfer_apply(opts.settingsFilePath, result, sizeof(result));
+        CLI_LOG("%s%s\n", ok ? "" : "ERROR: ", result[0] ? result : "Settings transfer failed");
+        g_cliExitCode = ok ? 0 : 1;
+        fclose(logf);
+        return true;
+    }
+
     if (opts.startupTaskEnable || opts.startupTaskDisable) {
         char err[256] = {};
         bool ok = set_startup_task_enabled(opts.startupTaskEnable, err, sizeof(err));
@@ -145,110 +160,33 @@ static bool handle_cli(LPWSTR wCmdLine) {
         return true;
     }
 
-    if (opts.setMachineLogonSlot || opts.clearMachineLogonSlot) {
-        char err[256] = {};
-        bool ok = opts.clearMachineLogonSlot
-            ? clear_machine_logon_slot(err, sizeof(err))
-            : set_machine_logon_slot(opts.machineLogonSlotValue, err, sizeof(err));
-        if (ok) {
-            if (opts.clearMachineLogonSlot)
-                CLI_LOG("Cleared the machine-wide default logon profile.\n");
-            else
-                CLI_LOG("Set the machine-wide default logon profile to slot %d.\n",
-                        opts.machineLogonSlotValue);
-            g_cliExitCode = 0;
-        } else {
-            CLI_LOG("ERROR: %s\n", err[0] ? err : "Machine logon profile update failed");
-            g_cliExitCode = 1;
+    // The machine-wide administrator commands all report the same way, so they
+    // share one dispatcher (main_cli_admin.cpp) instead of six copies of this.
+    {
+        bool adminOk = false;
+        char adminMessage[512] = {};
+        if (cli_handle_machine_admin_command(&opts, &adminOk, adminMessage, sizeof(adminMessage))) {
+            CLI_LOG("%s%s\n", adminOk ? "" : "ERROR: ", adminMessage);
+            g_cliExitCode = adminOk ? 0 : 1;
+            fclose(logf);
+            return true;
         }
-        fclose(logf);
-        return true;
-    }
-
-    if (opts.publishSlotToMachine || opts.clearMachineSlot) {
-        char err[256] = {};
-        bool ok = opts.clearMachineSlot
-            ? clear_machine_profile_slot(opts.machineSlotValue, err, sizeof(err))
-            : copy_profile_slot_to_machine_config(g_app.configPath, opts.machineSlotValue, err, sizeof(err));
-        if (ok) {
-            if (opts.clearMachineSlot)
-                CLI_LOG("Cleared machine-wide profile slot %d.\n", opts.machineSlotValue);
-            else
-                CLI_LOG("Published profile slot %d to the machine-wide profile bank.\n",
-                        opts.machineSlotValue);
-            g_cliExitCode = 0;
-        } else {
-            CLI_LOG("ERROR: %s\n", err[0] ? err : "Machine profile bank update failed");
-            g_cliExitCode = 1;
-        }
-        fclose(logf);
-        return true;
-    }
-
-    if (opts.setRestrictPolicy) {
-        char err[256] = {};
-        bool ok = set_machine_restrict_policy(opts.restrictPolicyValue != 0, err, sizeof(err));
-        if (ok) {
-            CLI_LOG("%s", opts.restrictPolicyValue != 0
-                ? "Enabled shared-only policy: standard (non-admin) users may only apply shared profiles.\n"
-                : "Disabled shared-only policy: standard users may apply custom settings again.\n");
-            g_cliExitCode = 0;
-        } else {
-            CLI_LOG("ERROR: %s\n", err[0] ? err : "Shared-only policy update failed");
-            g_cliExitCode = 1;
-        }
-        fclose(logf);
-        return true;
-    }
-
-    // One coherent share/unshare: --share-slot publishes the slot's full profile
-    // data into the shared bank AND sets it as the all-users default logon
-    // profile (so users without their own logon profile receive it). --unshare
-    // reverses both.  This backs the GUI "Share with all users" checkbox.
-    if (opts.shareSlot || opts.unshareSlot) {
-        char err[256] = {};
-        bool ok = opts.unshareSlot
-            ? unshare_profile_slot_for_all_users(opts.shareSlotValue, err, sizeof(err))
-            : share_profile_slot_for_all_users(g_app.configPath, opts.shareSlotValue, err, sizeof(err));
-        if (ok) {
-            if (opts.unshareSlot)
-                CLI_LOG("Unshared profile slot %d (removed from the shared bank and the all-users default).\n",
-                        opts.shareSlotValue);
-            else
-                CLI_LOG("Shared profile slot %d with all users (published + set as the all-users default logon profile).\n",
-                        opts.shareSlotValue);
-            g_cliExitCode = 0;
-        } else {
-            CLI_LOG("ERROR: %s\n", err[0] ? err : "Share update failed");
-            g_cliExitCode = 1;
-        }
-        fclose(logf);
-        return true;
     }
 
     if (opts.showHelp) {
-        CLI_LOG(APP_NAME " v" APP_VERSION " - NVIDIA VF Curve Editor\n");
-        CLI_LOG("Usage:\n");
-        CLI_LOG("  greencurve.exe              Launch GUI\n");
-        CLI_LOG("  greencurve.exe --dump       Write VF curve to greencurve_cli_log.txt\n");
-        CLI_LOG("  greencurve.exe --json       Write VF curve to greencurve_curve.json\n");
-        CLI_LOG("  greencurve.exe --probe [--probe-output <path>]  Probe NvAPI/NVML/VF support and write a report\n");
-        CLI_LOG("  greencurve.exe --gpu-offset <mhz> --mem-offset <mhz> --power-limit <pct>\n");
-        CLI_LOG("  greencurve.exe --fan <auto|0-100> --point49 <mhz> ... --point127 <mhz>\n");
-        CLI_LOG("  greencurve.exe --apply-config [--config <path>]  Apply logon profile slot\n");
-        CLI_LOG("  greencurve.exe --service-install           Install and start background service\n");
-        CLI_LOG("  greencurve.exe --service-remove            Stop and remove background service\n");
-        CLI_LOG("  greencurve.exe --set-machine-logon-slot <slot>  Set machine-wide default logon profile (admin only)\n");
-        CLI_LOG("  greencurve.exe --clear-machine-logon-slot       Clear machine-wide default logon profile (admin only)\n");
-        CLI_LOG("  greencurve.exe --share-slot <slot>              Share slot with all users: publish data + set as all-users default (admin only)\n");
-        CLI_LOG("  greencurve.exe --unshare-slot <slot>            Stop sharing slot with all users (admin only)\n");
-        CLI_LOG("  greencurve.exe --set-restrict-shared <0|1>      Restrict standard users to shared profiles only (admin only)\n");
-        CLI_LOG("  greencurve.exe --publish-slot-to-machine <slot> [advanced] Copy profile slot to shared bank without changing the default (admin only)\n");
-        CLI_LOG("  greencurve.exe --clear-machine-slot <slot>      [advanced] Clear a slot from the shared bank (admin only)\n");
-        CLI_LOG("  greencurve.exe --save-config [--config <path>]  Save to selected profile slot\n");
-        CLI_LOG("  greencurve.exe --reset      Reset curve/global controls to defaults\n");
-        CLI_LOG("  greencurve.exe --help       This help\n");
+        cli_print_help(logf);
         fclose(logf);
+        return true;
+    }
+
+    // --self-test runs BEFORE the service gate on purpose: it is strictly
+    // read-only and its whole point is to diagnose a machine where the normal
+    // path does not work yet (new arch, new driver, unvalidated GPU).  Making it
+    // depend on a healthy background service would remove it exactly when it is
+    // needed.
+    if (opts.selfTest) {
+        g_cliExitCode = self_test_report(logf ? logf : stdout);
+        if (logf) fclose(logf);
         return true;
     }
 
@@ -790,17 +728,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         g_app.hMainWnd, (HMENU)(INT_PTR)PROFILE_STATUS_ID, hInstance, nullptr
     );
 
+    // F-CHECKBOX-HIT  The caption lives inside the BUTTON, not in a neighbouring
+    // STATIC that forwards STN_CLICKED.  That split left the gap between box and
+    // text dead, and a disabled STATIC is painted by user32 in the system
+    // grey-text colour regardless of WM_CTLCOLORSTATIC, so the greyed caption did
+    // not match any other label in the dark window.  layout_main_window() then
+    // fits the control to its own text so nothing past the caption is clickable.
     g_app.hStartOnLogonCheck = CreateWindowExA(
-        0, "BUTTON", "",
+        0, "BUTTON", "Start program to tray on log in",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-        0, 0, dp(16), dp(16),
+        0, 0, dp(220), dp(20),
         g_app.hMainWnd, (HMENU)(INT_PTR)START_ON_LOGON_CHECK_ID, hInstance, nullptr
-    );
-    g_app.hStartOnLogonLabel = CreateWindowExA(
-        0, "STATIC", "Start program to tray on log in",
-        WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOTIFY,
-        0, 0, dp(300), dp(18),
-        g_app.hMainWnd, (HMENU)(INT_PTR)START_ON_LOGON_LABEL_ID, hInstance, nullptr
     );
 
     // "Share with all users" checkbox (admin): publishes the SELECTED profile
@@ -839,17 +777,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         g_app.hMainWnd, (HMENU)(INT_PTR)AUTO_PROFILE_BTN_ID, hInstance, nullptr
     );
 
+    // Same F-CHECKBOX-HIT conversion; the caption also switches to
+    // "... (repair needed)", so update_background_service_controls() re-fits it.
     g_app.hServiceEnableCheck = CreateWindowExA(
-        0, "BUTTON", "",
+        0, "BUTTON", "Background service installed",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-        0, 0, dp(16), dp(16),
+        0, 0, dp(300), dp(20),
         g_app.hMainWnd, (HMENU)(INT_PTR)SERVICE_ENABLE_CHECK_ID, hInstance, nullptr
-    );
-    g_app.hServiceEnableLabel = CreateWindowExA(
-        0, "STATIC", "Background service installed",
-        WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOTIFY,
-        0, 0, dp(340), dp(18),
-        g_app.hMainWnd, (HMENU)(INT_PTR)SERVICE_ENABLE_LABEL_ID, hInstance, nullptr
     );
     g_app.hServiceStatusLabel = CreateWindowExA(
         0, "STATIC", "",
@@ -874,7 +808,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     create_edit_controls(g_app.hMainWnd, hInstance);
     ensure_tray_icon();
     if (!g_app.startHiddenToTray && g_app.backgroundServiceAvailable) {
-        if (!show_best_guess_support_warning(g_app.hMainWnd)) {
+        if (!show_gpu_support_warnings(g_app.hMainWnd)) {
             cleanup_gui_process_runtime(false);
             return 0;
         }

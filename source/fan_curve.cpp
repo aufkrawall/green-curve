@@ -114,7 +114,7 @@ bool fan_curve_validate(const FanCurveConfig* config, char* err, size_t errSize)
         return false;
     }
     if (config->hysteresisC < 0 || config->hysteresisC > FAN_CURVE_MAX_HYSTERESIS_C) {
-        set_message(err, errSize, "Fan curve hysteresis must be between 0\xB0""C and %d\xB0""C", FAN_CURVE_MAX_HYSTERESIS_C);
+        set_message(err, errSize, "Fan curve hysteresis must be between 0" GC_DEGREE "C and %d" GC_DEGREE "C", FAN_CURVE_MAX_HYSTERESIS_C);
         return false;
     }
 
@@ -123,7 +123,7 @@ bool fan_curve_validate(const FanCurveConfig* config, char* err, size_t errSize)
     for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
         const FanCurvePoint* point = &config->points[i];
         if (point->temperatureC < 0 || point->temperatureC > 100) {
-            set_message(err, errSize, "Fan curve temperatures must be between 0\xB0""C and 100\xB0""C");
+            set_message(err, errSize, "Fan curve temperatures must be between 0" GC_DEGREE "C and 100" GC_DEGREE "C");
             return false;
         }
         if (point->fanPercent < 0 || point->fanPercent > 100) {
@@ -191,7 +191,9 @@ void fan_curve_format_summary(const FanCurveConfig* config, char* buffer, size_t
         return;
     }
 
-    StringCchPrintfA(buffer, bufferSize, "%d pts | %.2fs | %d\xB0""C hyst",
+    // gc_snprintf, not StringCchPrintfA: fan-curve math is shared platform-
+    // neutral code and is compiled into the Linux regression harness.
+    gc_snprintf(buffer, bufferSize, "%d pts | %.2fs | %d" GC_DEGREE "C hyst",
         fan_curve_active_count(config),
         (double)config->pollIntervalMs / 1000.0,
         config->hysteresisC);

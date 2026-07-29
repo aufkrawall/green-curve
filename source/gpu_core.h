@@ -136,6 +136,20 @@ enum {
 };
 
 enum {
+    NVML_DEVICE_ARCH_KEPLER = 2,
+    NVML_DEVICE_ARCH_MAXWELL = 3,
+    NVML_DEVICE_ARCH_PASCAL = 4,
+    NVML_DEVICE_ARCH_VOLTA = 5,
+    NVML_DEVICE_ARCH_TURING = 6,
+    NVML_DEVICE_ARCH_AMPERE = 7,
+    NVML_DEVICE_ARCH_ADA = 8,
+    NVML_DEVICE_ARCH_HOPPER = 9,
+    NVML_DEVICE_ARCH_BLACKWELL = 10,
+    NVML_DEVICE_ARCH_RUBIN = 13,
+    NVML_DEVICE_ARCH_UNKNOWN = 0xffffffffu,
+};
+
+enum {
     NVML_CLOCK_GRAPHICS = 0,
     NVML_CLOCK_SM = 1,
     NVML_CLOCK_MEM = 2,
@@ -412,15 +426,18 @@ struct FanCurveConfig {
 };
 
 struct ControlState {
-    gc_bool8 valid;
-    gc_bool8 hasGpuOffset;
+    gc_bool8 valid, hasGpuOffset;
+    gc_bool8 gpuOffsetReadbackValid;
     int gpuOffsetMHz;
     int gpuOffsetExcludeLowCount;
-    gc_bool8 hasMemOffset;
+    gc_bool8 hasMemOffset, memOffsetReadbackValid;
     int memOffsetMHz;
     gc_bool8 hasPowerLimit;
+    gc_bool8 powerLimitReadbackValid;
     int powerLimitPct;
     gc_bool8 hasFan;
+    gc_bool8 fanPolicyReadbackValid;
+    gc_bool8 fanTargetReadbackValid;
     int fanMode;
     int fanFixedPercent;
     int fanCurrentPercent;
@@ -496,13 +513,32 @@ static inline void validate_gpu_adapter_info_for_ipc(GpuAdapterInfo* g) {
     canonicalize_gc_bool8(&g->vfBestGuess);
 }
 
+// The one authoritative power-limit range, in percent of the board's default
+// limit.  Above 100% is a normal, supported request: an RTX 5070 defaults to
+// 250 W with a 300 W (120%) ceiling.  Every clamp — the IPC trust boundary, the
+// apply gate, the Win32 spinner and the Linux TUI/normalizer — must use these
+// bounds.  A stray 0..100 clamp silently rewrites a valid 105% request to 100%.
+static const int POWER_LIMIT_MIN_PCT = 50;
+static const int POWER_LIMIT_MAX_PCT = 150;
+
+static inline int clamp_power_limit_pct(int pct) {
+    if (pct < POWER_LIMIT_MIN_PCT) return POWER_LIMIT_MIN_PCT;
+    if (pct > POWER_LIMIT_MAX_PCT) return POWER_LIMIT_MAX_PCT;
+    return pct;
+}
+
 static inline void validate_control_state_for_ipc(ControlState* c) {
     if (!c) return;
     canonicalize_gc_bool8(&c->valid);
     canonicalize_gc_bool8(&c->hasGpuOffset);
+    canonicalize_gc_bool8(&c->gpuOffsetReadbackValid);
     canonicalize_gc_bool8(&c->hasMemOffset);
+    canonicalize_gc_bool8(&c->memOffsetReadbackValid);
     canonicalize_gc_bool8(&c->hasPowerLimit);
+    canonicalize_gc_bool8(&c->powerLimitReadbackValid);
     canonicalize_gc_bool8(&c->hasFan);
+    canonicalize_gc_bool8(&c->fanPolicyReadbackValid);
+    canonicalize_gc_bool8(&c->fanTargetReadbackValid);
     validate_fan_curve_flags_for_ipc(&c->fanCurve);
 }
 
@@ -530,9 +566,7 @@ static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         if (d->curvePointMHz[ci] > 5000u) d->curvePointMHz[ci] = 5000u;
     }
-    if (d->hasPowerLimit && (d->powerLimitPct < 50 || d->powerLimitPct > 150)) {
-        d->powerLimitPct = d->powerLimitPct < 50 ? 50 : 150;
-    }
+    if (d->hasPowerLimit) d->powerLimitPct = clamp_power_limit_pct(d->powerLimitPct);
     if (d->hasGpuOffset && (d->gpuOffsetMHz < -1000 || d->gpuOffsetMHz > 1000)) {
         d->gpuOffsetMHz = d->gpuOffsetMHz < -1000 ? -1000 : 1000;
     }
@@ -597,18 +631,92 @@ typedef nvmlReturn_t (*nvmlInit_v2_t)();
 typedef nvmlReturn_t (*nvmlShutdown_t)();
 typedef nvmlReturn_t (*nvmlDeviceGetHandleByIndex_v2_t)(unsigned int, nvmlDevice_t*);
 typedef nvmlReturn_t (*nvmlDeviceGetCount_v2_t)(unsigned int*);
+// Real NVML ABI. `busIdLegacy` comes FIRST and is 16 bytes; the 32-byte
+// `busId` is appended at the tail by `nvmlDeviceGetPciInfo_v3`. Declaring a
+// leading `busId[32]` instead shifts every integer field by 16 bytes, so
+// `pciDeviceId`/`pciSubSystemId` land inside the trailing bus-id *string* and
+// read back as ASCII (observed on driver 610.43.03: 0x3a37303a ":07:" and
+// 0x302e3030 "00.0"), which fails identity matching closed against NvAPI.
+// Byte-exact against the installed driver: legacy@0, domain@16, bus@20,
+// device@24, pciDeviceId@28, pciSubSystemId@32, busId@36.
+enum {
+    NVML_DEVICE_PCI_BUS_ID_BUFFER_V2_SIZE = 16,
+    NVML_DEVICE_PCI_BUS_ID_BUFFER_SIZE = 32,
+};
 struct nvmlPciInfo_t {
-    char busId[32];
+    char busIdLegacy[NVML_DEVICE_PCI_BUS_ID_BUFFER_V2_SIZE];
     unsigned int domain;
     unsigned int bus;
     unsigned int device;
     unsigned int pciDeviceId;
     unsigned int pciSubSystemId;
-    unsigned int reserved0;
-    unsigned int reserved1;
-    unsigned int reserved2;
-    unsigned int reserved3;
+    char busId[NVML_DEVICE_PCI_BUS_ID_BUFFER_SIZE];
 };
+static_assert(offsetof(nvmlPciInfo_t, domain) == 16, "nvml pci-info layout");
+static_assert(offsetof(nvmlPciInfo_t, bus) == 20, "nvml pci-info layout");
+static_assert(offsetof(nvmlPciInfo_t, device) == 24, "nvml pci-info layout");
+static_assert(offsetof(nvmlPciInfo_t, pciDeviceId) == 28, "nvml pci-info layout");
+static_assert(offsetof(nvmlPciInfo_t, pciSubSystemId) == 32, "nvml pci-info layout");
+static_assert(offsetof(nvmlPciInfo_t, busId) == 36, "nvml pci-info layout");
+static_assert(sizeof(nvmlPciInfo_t) == 68, "nvml pci-info size");
+
+// Only `_v3` fills the trailing `busId`; `_v2` and the v1 entry point stop
+// after the integers, so an older resolution must fall back to the legacy
+// string instead of parsing a zero buffer.
+static inline const char* nvml_pci_bus_id_text(const nvmlPciInfo_t* pci) {
+    if (!pci) return "";
+    if (pci->busId[0]) return pci->busId;
+    return pci->busIdLegacy;
+}
+
+// Resolve the PCI-info entry point in descending preference. This ordering is
+// not cosmetic: `_v2` stops after pciSubSystemId and the v1 name stops after
+// pciDeviceId, so binding the v1 name alone silently discards subsystem
+// identity and leaves the bus-id string empty. Each platform passes its own
+// symbol resolver; the preference order stays in one place.
+typedef bool (*NvmlSymbolResolver)(void** out, const char* name);
+static inline void nvml_resolve_pci_info(NvmlSymbolResolver resolve, void** out) {
+    if (!resolve || !out) return;
+    if (!resolve(out, "nvmlDeviceGetPciInfo_v3") &&
+        !resolve(out, "nvmlDeviceGetPciInfo_v2"))
+        resolve(out, "nvmlDeviceGetPciInfo");
+}
+
+// The driver snaps a clock offset to a per-domain grid and then reports the
+// SNAPPED value, while still returning NVML_SUCCESS for the write. Measured on
+// an RTX 5070 / driver 610.43.03: graphics offsets round-trip exactly, memory
+// offsets land on a 2 MHz grid toward zero (15 -> 14, 1 -> 0, -5 -> -4, -1 -> 0).
+// Demanding an exact readback therefore turns an honoured write into a failed
+// apply; on Linux that rolled the ENTIRE apply back, so every odd memory offset
+// was unusable. Windows already tolerates this and only reports inexactness.
+static inline int nvml_clock_offset_grid_step(unsigned int domain) {
+    return domain == NVML_CLOCK_MEM ? 2 : 1;
+}
+
+// Green Curve exposes one configured offset per clock domain, not one value
+// per transient performance state. NVML's modern offset API is P-state scoped,
+// so reads, writes, verification, and rollback all target the stable P0 slot.
+// Using whichever state happened to be active at idle could successfully write
+// P8 while leaving the performance-state P0 value unchanged.
+static inline unsigned int nvml_configured_clock_offset_pstate() {
+    return NVML_PSTATE_0;
+}
+
+// Accept only a snap toward zero of less than one grid step. A readback that
+// overshoots the request, flips sign, or moves a full step means the driver did
+// not honour the request, and must still fail closed.
+static inline bool nvml_clock_offset_readback_matches(int requested,
+                                                      int readback,
+                                                      int stepMHz) {
+    if (readback == requested) return true;
+    if (stepMHz < 1) stepMHz = 1;
+    long long delta = (long long)requested - (long long)readback;
+    if (delta < 0) delta = -delta;
+    if (delta >= (long long)stepMHz) return false;
+    if (requested >= 0) return readback >= 0 && readback <= requested;
+    return readback <= 0 && readback >= requested;
+}
+
 typedef nvmlReturn_t (*nvmlDeviceGetPciInfo_t)(nvmlDevice_t, nvmlPciInfo_t*);
 typedef nvmlReturn_t (*nvmlDeviceGetPowerManagementLimit_t)(nvmlDevice_t, unsigned int*);
 typedef nvmlReturn_t (*nvmlDeviceGetPowerManagementDefaultLimit_t)(nvmlDevice_t, unsigned int*);
@@ -617,6 +725,7 @@ typedef nvmlReturn_t (*nvmlDeviceSetPowerManagementLimit_t)(nvmlDevice_t, unsign
 typedef nvmlReturn_t (*nvmlDeviceGetClockOffsets_t)(nvmlDevice_t, nvmlClockOffset_t*);
 typedef nvmlReturn_t (*nvmlDeviceSetClockOffsets_t)(nvmlDevice_t, nvmlClockOffset_t*);
 typedef nvmlReturn_t (*nvmlDeviceGetPerformanceState_t)(nvmlDevice_t, unsigned int*);
+typedef nvmlReturn_t (*nvmlDeviceGetArchitecture_t)(nvmlDevice_t, unsigned int*);
 typedef nvmlReturn_t (*nvmlDeviceGetGpcClkVfOffset_t)(nvmlDevice_t, int*);
 typedef nvmlReturn_t (*nvmlDeviceGetMemClkVfOffset_t)(nvmlDevice_t, int*);
 typedef nvmlReturn_t (*nvmlDeviceGetGpcClkMinMaxVfOffset_t)(nvmlDevice_t, int*, int*);
@@ -662,6 +771,7 @@ struct NvmlApi {
     nvmlDeviceGetClockOffsets_t getClockOffsets;
     nvmlDeviceSetClockOffsets_t setClockOffsets;
     nvmlDeviceGetPerformanceState_t getPerformanceState;
+    nvmlDeviceGetArchitecture_t getArchitecture;
     nvmlDeviceGetGpcClkVfOffset_t getGpcClkVfOffset;
     nvmlDeviceGetMemClkVfOffset_t getMemClkVfOffset;
     nvmlDeviceGetGpcClkMinMaxVfOffset_t getGpcClkMinMaxVfOffset;

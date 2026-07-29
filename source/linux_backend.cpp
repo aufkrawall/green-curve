@@ -7,9 +7,15 @@
 
 #include "linux_backend.h"
 #include "linux_gpu_selection.h"
+#include "linux_architecture_policy.h"
+#include "linux_vf_validation.h"
 #include "vf_backends.h"
 #include "fan_curve.h"
+#include "fan_runtime_policy.h"
 #include "linux_curve_targets.h"
+// linux_platform_is_integrated_soc(), used by the capability-probe derivation
+// in linux_backend_mutation.cpp so the Tegra/SoC detection exists exactly once.
+#include "linux_gpu.h"
 
 #include <stdarg.h>
 #include <limits.h>
@@ -71,59 +77,150 @@ static Fn sym(PlLib lib, const char* name) {
 // ===========================================================================
 
 static const unsigned int LB_CONTROL_BUF_SIZE = 0x4000;
+static const int LB_NVAPI_FUNCTION_MISSING = -100001;
+static const int LB_NVAPI_INVALID_DATA = -100002;
 
-// ports nvapi_get_vf_info_cached(): per-point editable mask + active clock count
+struct LinuxVfReadCandidate {
+    VFCurvePoint curve[VF_NUM_POINTS];
+    int offsets[VF_NUM_POINTS];
+    int populated;
+};
+
+// Read current per-point editable mask + active clock count. A cached result is
+// never promoted to fresh: every published VF snapshot proves all three driver
+// calls (info, status and control) in the same refresh transaction.
 static bool nvapi_get_vf_info(LinuxGpuState* g) {
     const VfBackendSpec* b = g->backend;
-    if (!b) return false;
-    if (g->vfInfoCached) return true;
-
-    memset(g->vfMask, 0, sizeof(g->vfMask));
-    memset(g->vfMask, 0xFF, 16);  // default: first 128 bits editable
-    g->vfNumClocks = b->defaultNumClocks;
-
-    auto getInfo = (nvapi_buf_t)g->nvapiQi(b->getInfoId);
-    if (getInfo) {
-        unsigned int infoSize = b->infoBufferSize ? b->infoBufferSize : 0x4000;
-        if (infoSize > 0x4000) infoSize = 0x4000;
-        unsigned char* ibuf = (unsigned char*)calloc(1, infoSize);
-        if (ibuf && b->infoBufferSize <= infoSize) {
-            unsigned int ver = (b->infoVersion << 16) | infoSize;
-            memcpy(ibuf, &ver, sizeof(ver));
-            if (b->infoMaskOffset + sizeof(g->vfMask) <= infoSize)
-                memset(ibuf + b->infoMaskOffset, 0xFF, sizeof(g->vfMask));
-            if (getInfo(g->gpuHandle, ibuf) == 0) {
-                if (b->infoMaskOffset + sizeof(g->vfMask) <= infoSize)
-                    memcpy(g->vfMask, ibuf + b->infoMaskOffset, sizeof(g->vfMask));
-                if (b->infoNumClocksOffset + sizeof(g->vfNumClocks) <= infoSize)
-                    memcpy(&g->vfNumClocks, ibuf + b->infoNumClocksOffset, sizeof(g->vfNumClocks));
-                if (g->vfNumClocks == 0) g->vfNumClocks = b->defaultNumClocks;
-                g->vfInfoCached = true;
-            }
-        }
-        free(ibuf);
+    g->vfInfoFresh = false;
+    if (!b || !g->gpuHandle || !g->nvapiQi) {
+        g->vfInfoStatus = LB_NVAPI_FUNCTION_MISSING;
+        return false;
     }
+    auto getInfo = (nvapi_buf_t)g->nvapiQi(b->getInfoId);
+    if (!getInfo) {
+        g->vfInfoStatus = LB_NVAPI_FUNCTION_MISSING;
+        return false;
+    }
+    unsigned int infoSize = b->infoBufferSize ? b->infoBufferSize : 0x4000;
+    if (infoSize > 0x4000 || b->infoBufferSize > infoSize ||
+        b->infoMaskOffset + sizeof(g->vfMask) > infoSize ||
+        b->infoNumClocksOffset + sizeof(g->vfNumClocks) > infoSize) {
+        g->vfInfoStatus = LB_NVAPI_INVALID_DATA;
+        return false;
+    }
+    unsigned char* ibuf = (unsigned char*)calloc(1, infoSize);
+    if (!ibuf) {
+        g->vfInfoStatus = -1;
+        return false;
+    }
+    unsigned int ver = (b->infoVersion << 16) | infoSize;
+    memcpy(ibuf, &ver, sizeof(ver));
+    memset(ibuf + b->infoMaskOffset, 0xFF, sizeof(g->vfMask));
+    int status = getInfo(g->gpuHandle, ibuf);
+    g->vfInfoStatus = status;
+    if (!nvapi_ok(status)) {
+        free(ibuf);
+        return false;
+    }
+    unsigned int returnedVersion = 0;
+    memcpy(&returnedVersion, ibuf, sizeof(returnedVersion));
+    if (!linux_vf_returned_version_valid(returnedVersion, b->infoVersion,
+                                         infoSize)) {
+        g->vfInfoStatus = LB_NVAPI_INVALID_DATA;
+        free(ibuf);
+        return false;
+    }
+    unsigned char mask[sizeof(g->vfMask)] = {};
+    unsigned int numClocks = 0;
+    memcpy(mask, ibuf + b->infoMaskOffset, sizeof(mask));
+    memcpy(&numClocks, ibuf + b->infoNumClocksOffset, sizeof(numClocks));
+    free(ibuf);
+    bool anyMask = false;
+    for (unsigned char value : mask) anyMask |= value != 0;
+    if (!anyMask || numClocks == 0 || numClocks > 64) {
+        g->vfInfoStatus = LB_NVAPI_INVALID_DATA;
+        return false;
+    }
+    memcpy(g->vfMask, mask, sizeof(mask));
+    g->vfNumClocks = numClocks;
+    g->vfInfoCached = true;
+    g->vfInfoFresh = true;
     return true;
 }
 
-// ports nvapi_read_curve()
-static bool nvapi_read_curve(LinuxGpuState* g) {
+static bool nvapi_read_curve_candidate(LinuxGpuState* g,
+                                       LinuxVfReadCandidate* candidate) {
     const VfBackendSpec* b = g->backend;
-    if (!b || !b->readSupported) return false;
-    if (!nvapi_get_vf_info(g)) return false;
+    g->vfStatusFresh = false;
+    if (!b || !b->readSupported || !candidate || !g->gpuHandle) {
+        g->vfStatusStatus = LB_NVAPI_FUNCTION_MISSING;
+        return false;
+    }
+    if (!g->vfInfoFresh) {
+        g->vfStatusStatus = LB_NVAPI_INVALID_DATA;
+        return false;
+    }
     auto getStatus = (nvapi_buf_t)g->nvapiQi(b->getStatusId);
-    if (!getStatus || b->statusBufferSize == 0 || b->statusBufferSize > 0x4000) return false;
+    if (!getStatus || b->statusBufferSize == 0 || b->statusBufferSize > 0x4000 ||
+        b->statusMaskOffset + sizeof(g->vfMask) > b->statusBufferSize ||
+        b->statusNumClocksOffset + sizeof(g->vfNumClocks) >
+            b->statusBufferSize ||
+        b->statusEntriesOffset + (VF_NUM_POINTS - 1u) *
+            b->statusEntryStride + 8u > b->statusBufferSize) {
+        g->vfStatusStatus = LB_NVAPI_FUNCTION_MISSING;
+        return false;
+    }
     unsigned char* buf = (unsigned char*)calloc(1, b->statusBufferSize);
-    if (!buf) return false;
+    if (!buf) {
+        g->vfStatusStatus = -1;
+        return false;
+    }
     unsigned int ver = (b->statusVersion << 16) | b->statusBufferSize;
     memcpy(buf, &ver, sizeof(ver));
-    if (b->statusMaskOffset + sizeof(g->vfMask) <= b->statusBufferSize)
-        memcpy(buf + b->statusMaskOffset, g->vfMask, sizeof(g->vfMask));
-    if (b->statusNumClocksOffset + sizeof(g->vfNumClocks) <= b->statusBufferSize)
-        memcpy(buf + b->statusNumClocksOffset, &g->vfNumClocks, sizeof(g->vfNumClocks));
-    bool ok = false;
-    if (getStatus(g->gpuHandle, buf) == 0) {
-        g->numPopulated = 0;
+    memcpy(buf + b->statusMaskOffset, g->vfMask, sizeof(g->vfMask));
+    memcpy(buf + b->statusNumClocksOffset, &g->vfNumClocks,
+           sizeof(g->vfNumClocks));
+    int status = getStatus(g->gpuHandle, buf);
+    g->vfStatusStatus = status;
+    bool ok = nvapi_ok(status);
+    if (ok) {
+        unsigned int returnedVersion = 0;
+        unsigned int returnedNumClocks = 0;
+        unsigned char returnedMask[sizeof(g->vfMask)] = {};
+        memcpy(&returnedVersion, buf, sizeof(returnedVersion));
+        if (!linux_vf_returned_version_valid(returnedVersion,
+                b->statusVersion, b->statusBufferSize)) {
+            g->vfStatusStatus = LB_NVAPI_INVALID_DATA;
+            ok = false;
+        }
+        memcpy(returnedMask, buf + b->statusMaskOffset,
+               sizeof(returnedMask));
+        memcpy(&returnedNumClocks, buf + b->statusNumClocksOffset,
+               sizeof(returnedNumClocks));
+        if (ok && (memcmp(returnedMask, g->vfMask,
+                          sizeof(returnedMask)) != 0 ||
+                   returnedNumClocks != g->vfNumClocks)) {
+            g->vfStatusStatus = LB_NVAPI_INVALID_DATA;
+            ok = false;
+        }
+    }
+    if (ok) {
+        // The status table concatenates the VF points of EVERY clock domain
+        // (`numClocks` of them), not just the graphics curve, and the domains
+        // are not padded to a fixed stride. Observed on an RTX 5070 (driver
+        // 610.43.03): the graphics domain is 127 points (180 MHz @ 450 mV ..
+        // 3157 MHz @ 1240 mV), index 127 already belongs to another domain
+        // (405 MHz @ 540 mV), index 128 to a third, and 129..131 are the
+        // ~14 GHz GDDR7 memory domain.
+        //
+        // Reading a fixed VF_NUM_POINTS window therefore drags foreign points
+        // into the curve, where they break the ordered-voltage invariant and
+        // failed the ENTIRE snapshot closed — no VF read and no writes at all
+        // on that GPU. Voltage ascends monotonically within a domain and drops
+        // at a domain boundary, so the graphics curve is the leading
+        // non-decreasing run. Everything past it is zeroed: unpopulated points
+        // are skipped by validation and by apply_curve_offsets_verified(), so
+        // a foreign domain can be neither published nor written.
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             unsigned int freq = 0, volt = 0;
             unsigned int off = b->statusEntriesOffset + (unsigned int)i * b->statusEntryStride;
@@ -131,11 +228,42 @@ static bool nvapi_read_curve(LinuxGpuState* g) {
                 memcpy(&freq, buf + off, 4);
                 memcpy(&volt, buf + off + 4, 4);
             }
-            g->curve[i].freq_kHz = freq;
-            g->curve[i].volt_uV = volt;
-            if (freq > 0) g->numPopulated++;
+            candidate->curve[i].freq_kHz = freq;
+            candidate->curve[i].volt_uV = volt;
         }
-        ok = true;
+        int domainEnd = linux_vf_graphics_domain_length(candidate->curve,
+                                                        VF_NUM_POINTS);
+        candidate->populated = 0;
+        for (int i = 0; i < VF_NUM_POINTS; i++) {
+            if (i >= domainEnd) {
+                candidate->curve[i].freq_kHz = 0;
+                candidate->curve[i].volt_uV = 0;
+            } else if (candidate->curve[i].freq_kHz > 0) {
+                candidate->populated++;
+            }
+        }
+        if (!g->graphicsDomainBoundaryLogged ||
+            g->lastLoggedGraphicsDomainEnd != domainEnd) {
+            if (domainEnd != VF_NUM_POINTS) {
+                lb_log("curve: graphics domain ends at point %d "
+                       "(%d MHz @ %u mV); dropped %d trailing entries "
+                       "belonging to other clock domains\n",
+                       domainEnd - 1,
+                       domainEnd > 0
+                           ? (int)(candidate->curve[domainEnd - 1].freq_kHz /
+                                   1000u) : 0,
+                       domainEnd > 0
+                           ? candidate->curve[domainEnd - 1].volt_uV / 1000u
+                           : 0u,
+                       VF_NUM_POINTS - domainEnd);
+            } else if (g->graphicsDomainBoundaryLogged) {
+                lb_log("curve: graphics domain now spans the full %d-point "
+                       "read window\n", VF_NUM_POINTS);
+            }
+            g->lastLoggedGraphicsDomainEnd = domainEnd;
+            g->graphicsDomainBoundaryLogged = true;
+        }
+        g->vfStatusFresh = true;
     }
     free(buf);
     return ok;
@@ -144,22 +272,61 @@ static bool nvapi_read_curve(LinuxGpuState* g) {
 // ports nvapi_read_control_table()
 static bool nvapi_read_control_table(LinuxGpuState* g, unsigned char* buf, unsigned int bufSize) {
     const VfBackendSpec* b = g->backend;
-    if (!b || !buf || bufSize < b->controlBufferSize) return false;
+    g->vfControlFresh = false;
+    if (!b || !g->gpuHandle || !buf || bufSize < b->controlBufferSize ||
+        b->controlBufferSize == 0 || b->controlBufferSize > 0x4000 ||
+        b->controlMaskOffset + sizeof(g->vfMask) > b->controlBufferSize ||
+        b->controlEntryBaseOffset + (VF_NUM_POINTS - 1u) *
+            b->controlEntryStride + b->controlEntryDeltaOffset +
+            sizeof(int) > b->controlBufferSize) {
+        g->vfControlStatus = LB_NVAPI_FUNCTION_MISSING;
+        return false;
+    }
     auto getFunc = (nvapi_buf_t)g->nvapiQi(b->getControlId);
-    if (!getFunc) return false;
-    if (!nvapi_get_vf_info(g)) return false;
+    if (!getFunc) {
+        g->vfControlStatus = LB_NVAPI_FUNCTION_MISSING;
+        return false;
+    }
+    if (!g->vfInfoFresh) {
+        g->vfControlStatus = LB_NVAPI_INVALID_DATA;
+        return false;
+    }
     memset(buf, 0, b->controlBufferSize);
     unsigned int ver = (b->controlVersion << 16) | b->controlBufferSize;
     memcpy(buf, &ver, sizeof(ver));
-    if (b->controlMaskOffset + sizeof(g->vfMask) > b->controlBufferSize) return false;
     memcpy(buf + b->controlMaskOffset, g->vfMask, sizeof(g->vfMask));
-    return getFunc(g->gpuHandle, buf) == 0;
+    int status = getFunc(g->gpuHandle, buf);
+    g->vfControlStatus = status;
+    g->vfControlFresh = nvapi_ok(status);
+    if (g->vfControlFresh) {
+        unsigned int returnedVersion = 0;
+        unsigned char returnedMask[sizeof(g->vfMask)] = {};
+        memcpy(&returnedVersion, buf, sizeof(returnedVersion));
+        if (!linux_vf_returned_version_valid(returnedVersion,
+                b->controlVersion, b->controlBufferSize)) {
+            g->vfControlStatus = LB_NVAPI_INVALID_DATA;
+            g->vfControlFresh = false;
+        }
+        memcpy(returnedMask, buf + b->controlMaskOffset,
+               sizeof(returnedMask));
+        if (g->vfControlFresh &&
+            memcmp(returnedMask, g->vfMask, sizeof(returnedMask)) != 0) {
+            g->vfControlStatus = LB_NVAPI_INVALID_DATA;
+            g->vfControlFresh = false;
+        }
+    }
+    return g->vfControlFresh;
 }
 
-// ports nvapi_read_offsets()
-static bool nvapi_read_offsets(LinuxGpuState* g) {
+static bool nvapi_read_offsets_candidate(LinuxGpuState* g,
+                                         LinuxVfReadCandidate* candidate) {
     const VfBackendSpec* b = g->backend;
-    if (!b || !b->readSupported || b->controlBufferSize > 0x4000) return false;
+    if (!b || !candidate || !b->readSupported ||
+        b->controlBufferSize == 0 || b->controlBufferSize > 0x4000) {
+        g->vfControlStatus = LB_NVAPI_FUNCTION_MISSING;
+        g->vfControlFresh = false;
+        return false;
+    }
     unsigned char* buf = (unsigned char*)calloc(1, b->controlBufferSize ? b->controlBufferSize : 0x4000);
     if (!buf) return false;
     bool ok = nvapi_read_control_table(g, buf, b->controlBufferSize);
@@ -169,11 +336,73 @@ static bool nvapi_read_offsets(LinuxGpuState* g) {
             unsigned int off = b->controlEntryBaseOffset + (unsigned int)i * b->controlEntryStride + b->controlEntryDeltaOffset;
             if (off + sizeof(delta) <= b->controlBufferSize) memcpy(&delta, buf + off, sizeof(delta));
             else delta = 0;
-            g->freqOffsets[i] = delta;
+            candidate->offsets[i] = delta;
         }
     }
     free(buf);
     return ok;
+}
+
+static bool linux_vf_candidate_structurally_valid(
+    const LinuxGpuState* g, const LinuxVfReadCandidate* candidate,
+    char* why, size_t whySize) {
+    return g && candidate && linux_vf_snapshot_structurally_valid(
+        g->vfInfoFresh, g->vfStatusFresh, g->vfControlFresh,
+        g->vfMask, sizeof(g->vfMask), g->vfNumClocks,
+        candidate->curve, candidate->offsets, candidate->populated,
+        why, whySize);
+}
+
+static bool nvapi_read_vf_snapshot(LinuxGpuState* g, char* why,
+                                   size_t whySize) {
+    if (why && whySize) why[0] = 0;
+    g->vfInfoFresh = false;
+    g->vfStatusFresh = false;
+    g->vfControlFresh = false;
+    g->vfSnapshotFresh = false;
+    g->vfStructureValid = false;
+    g->vfInfoStatus = LB_NVAPI_FUNCTION_MISSING;
+    g->vfStatusStatus = LB_NVAPI_FUNCTION_MISSING;
+    g->vfControlStatus = LB_NVAPI_FUNCTION_MISSING;
+    LinuxVfReadCandidate candidate = {};
+    if (!nvapi_get_vf_info(g)) {
+        if (why) gc_snprintf(why, whySize, "getInfo status=%d (%s)",
+            g->vfInfoStatus, nvapi_status_name(g->vfInfoStatus));
+        return false;
+    }
+    if (!nvapi_read_curve_candidate(g, &candidate)) {
+        if (why) gc_snprintf(why, whySize, "getStatus status=%d (%s)",
+            g->vfStatusStatus, nvapi_status_name(g->vfStatusStatus));
+        return false;
+    }
+    if (!nvapi_read_offsets_candidate(g, &candidate)) {
+        if (why) gc_snprintf(why, whySize, "getControl status=%d (%s)",
+            g->vfControlStatus, nvapi_status_name(g->vfControlStatus));
+        return false;
+    }
+    if (!linux_vf_candidate_structurally_valid(g, &candidate, why, whySize))
+        return false;
+    memcpy(g->curve, candidate.curve, sizeof(g->curve));
+    memcpy(g->freqOffsets, candidate.offsets, sizeof(g->freqOffsets));
+    g->numPopulated = candidate.populated;
+    g->vfStructureValid = true;
+    g->vfSnapshotFresh = true;
+    return true;
+}
+
+// Write verification needs a fresh CONTROL table before the full status read
+// performed at transaction completion.
+static bool nvapi_read_offsets(LinuxGpuState* g) {
+    LinuxVfReadCandidate candidate = {};
+    if (!nvapi_read_offsets_candidate(g, &candidate)) return false;
+    memcpy(g->freqOffsets, candidate.offsets, sizeof(g->freqOffsets));
+    return true;
+}
+
+// ports nvapi_read_curve(); publishes only a complete atomic VF snapshot.
+static bool nvapi_read_curve(LinuxGpuState* g) {
+    char why[160] = {};
+    return nvapi_read_vf_snapshot(g, why, sizeof(why));
 }
 
 // ports get_curve_offset_range_khz() / clamp_freq_delta_khz()
@@ -302,6 +531,7 @@ static void nvml_resolve(LinuxGpuState* g) {
     a->getClockOffsets = sym<nvmlDeviceGetClockOffsets_t>(h, "nvmlDeviceGetClockOffsets");
     a->setClockOffsets = sym<nvmlDeviceSetClockOffsets_t>(h, "nvmlDeviceSetClockOffsets");
     a->getPerformanceState = sym<nvmlDeviceGetPerformanceState_t>(h, "nvmlDeviceGetPerformanceState");
+    a->getArchitecture = sym<nvmlDeviceGetArchitecture_t>(h, "nvmlDeviceGetArchitecture");
     a->getGpcClkVfOffset = sym<nvmlDeviceGetGpcClkVfOffset_t>(h, "nvmlDeviceGetGpcClkVfOffset");
     a->getMemClkVfOffset = sym<nvmlDeviceGetMemClkVfOffset_t>(h, "nvmlDeviceGetMemClkVfOffset");
     a->getGpcClkMinMaxVfOffset = sym<nvmlDeviceGetGpcClkMinMaxVfOffset_t>(h, "nvmlDeviceGetGpcClkMinMaxVfOffset");
@@ -313,6 +543,9 @@ static void nvml_resolve(LinuxGpuState* g) {
     a->getFanControlPolicy = sym<nvmlDeviceGetFanControlPolicy_v2_t>(h, "nvmlDeviceGetFanControlPolicy_v2");
     a->setFanControlPolicy = sym<nvmlDeviceSetFanControlPolicy_t>(h, "nvmlDeviceSetFanControlPolicy");
     a->getFanSpeed = sym<nvmlDeviceGetFanSpeed_v2_t>(h, "nvmlDeviceGetFanSpeed_v2");
+    // The *intended* duty, and the only real readback of a manual fan write.
+    // getFanSpeed is measured telemetry; see fan_manual_write_confirmed().
+    a->getTargetFanSpeed = sym<nvmlDeviceGetTargetFanSpeed_t>(h, "nvmlDeviceGetTargetFanSpeed");
     a->setFanSpeed = sym<nvmlDeviceSetFanSpeed_v2_t>(h, "nvmlDeviceSetFanSpeed_v2");
     a->setDefaultFanSpeed = sym<nvmlDeviceSetDefaultFanSpeed_v2_t>(h, "nvmlDeviceSetDefaultFanSpeed_v2");
     a->getTemperature = sym<nvmlDeviceGetTemperature_t>(h, "nvmlDeviceGetTemperature");
@@ -323,374 +556,9 @@ static void nvml_resolve(LinuxGpuState* g) {
     a->resetMemoryLockedClocks = sym<nvmlDeviceResetMemoryLockedClocks_t>(h, "nvmlDeviceResetMemoryLockedClocks");
 }
 
-// ports nvml_set_clock_offset_domain(): set a clock-domain offset in MHz.
-static bool nvml_set_clock_offset(LinuxGpuState* g, unsigned int domain, int offsetMHz) {
-    NvmlApi* a = &g->nvml;
-    if (a->setClockOffsets && a->getPerformanceState) {
-        unsigned int pstate = NVML_PSTATE_0;
-        a->getPerformanceState(g->nvmlDevice, &pstate);
-        nvmlClockOffset_t info = {};
-        info.version = nvmlClockOffset_v1;
-        info.type = domain;
-        info.pstate = pstate;
-        info.clockOffsetMHz = offsetMHz;
-        if (a->setClockOffsets(g->nvmlDevice, &info) == NVML_SUCCESS) {
-            if (a->getClockOffsets) {
-                nvmlClockOffset_t verify = info;
-                verify.clockOffsetMHz = 0;
-                return a->getClockOffsets(g->nvmlDevice, &verify) == NVML_SUCCESS &&
-                       verify.clockOffsetMHz == offsetMHz;
-            }
-            return true;
-        }
-    }
-    if (domain == NVML_CLOCK_GRAPHICS && a->setGpcClkVfOffset) {
-        if (a->setGpcClkVfOffset(g->nvmlDevice, offsetMHz) != NVML_SUCCESS) return false;
-        int verify = 0;
-        return !a->getGpcClkVfOffset ||
-               (a->getGpcClkVfOffset(g->nvmlDevice, &verify) == NVML_SUCCESS && verify == offsetMHz);
-    }
-    if (domain == NVML_CLOCK_MEM && a->setMemClkVfOffset) {
-        if (a->setMemClkVfOffset(g->nvmlDevice, offsetMHz) != NVML_SUCCESS) return false;
-        int verify = 0;
-        return !a->getMemClkVfOffset ||
-               (a->getMemClkVfOffset(g->nvmlDevice, &verify) == NVML_SUCCESS && verify == offsetMHz);
-    }
-    return false;
-}
+#include "linux_backend_nvml_write.cpp"
 
-static bool nvml_set_power_limit_pct(LinuxGpuState* g, int pct) {
-    NvmlApi* a = &g->nvml;
-    if (!a->setPowerLimit) return false;
-    int defmW = g->powerLimitDefaultmW;
-    if (defmW <= 0 && a->getPowerDefaultLimit) {
-        unsigned int d = 0;
-        if (a->getPowerDefaultLimit(g->nvmlDevice, &d) == NVML_SUCCESS) defmW = (int)d;
-    }
-    if (defmW <= 0) return false;
-    long target = (long)defmW * pct / 100;
-    if (g->powerLimitMinmW > 0 && target < g->powerLimitMinmW) target = g->powerLimitMinmW;
-    if (g->powerLimitMaxmW > 0 && target > g->powerLimitMaxmW) target = g->powerLimitMaxmW;
-    nvmlReturn_t r = a->setPowerLimit(g->nvmlDevice, (unsigned int)target);
-    lb_log("power: set %d%% -> %ld mW ret=%d\n", pct, target, (int)r);
-    if (r != NVML_SUCCESS) return false;
-    unsigned int verify = 0;
-    return !a->getPowerLimit ||
-           (a->getPowerLimit(g->nvmlDevice, &verify) == NVML_SUCCESS && verify == (unsigned int)target);
-}
-
-static bool nvml_set_fan(LinuxGpuState* g, int fanMode, bool fanAuto, int fanPercent) {
-    NvmlApi* a = &g->nvml;
-    unsigned int numFans = 0;
-    if (!a->getNumFans || a->getNumFans(g->nvmlDevice, &numFans) != NVML_SUCCESS ||
-        numFans == 0)
-        return false;
-    if (numFans > MAX_GPU_FANS) numFans = MAX_GPU_FANS;
-    bool ok = true;
-    if (fanAuto || fanMode == FAN_MODE_AUTO) {
-        for (unsigned int f = 0; f < numFans; f++) {
-            bool fanOk = false;
-            if (a->setDefaultFanSpeed)
-                fanOk = a->setDefaultFanSpeed(g->nvmlDevice, f) == NVML_SUCCESS;
-            else if (a->setFanControlPolicy)
-                fanOk = a->setFanControlPolicy(g->nvmlDevice, f,
-                    NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW) == NVML_SUCCESS;
-            unsigned int policy = 0;
-            fanOk = fanOk && a->getFanControlPolicy &&
-                    a->getFanControlPolicy(g->nvmlDevice, f, &policy) == NVML_SUCCESS &&
-                    policy == NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW;
-            if (!fanOk) lb_log("fan: auto restore failed for fan %u\n", f);
-            ok &= fanOk;
-        }
-        return ok;
-    }
-    // Fixed (and the initial set for curve mode; the daemon reasserts curve).
-    if (fanPercent < 0) fanPercent = 0;
-    if (fanPercent > 100) fanPercent = 100;
-    if (!a->setFanSpeed || !a->getFanSpeed) return false;
-    for (unsigned int f = 0; f < numFans; f++) {
-        bool fanOk = a->setFanSpeed(g->nvmlDevice, f, (unsigned int)fanPercent) == NVML_SUCCESS;
-        if (fanOk && a->getFanSpeed) {
-            unsigned int verify = 0;
-            fanOk = a->getFanSpeed(g->nvmlDevice, f, &verify) == NVML_SUCCESS &&
-                    verify == (unsigned int)fanPercent;
-        }
-        if (!fanOk) lb_log("fan: fixed write/readback failed for fan %u\n", f);
-        ok &= fanOk;
-    }
-    lb_log("fan: set fixed %d%% across %u fan(s) ok=%d\n", fanPercent, numFans, ok ? 1 : 0);
-    return ok;
-}
-
-static void nvml_query_ranges(LinuxGpuState* g) {
-    NvmlApi* a = &g->nvml;
-    int mn = 0, mx = 0;
-    if (a->getGpcClkMinMaxVfOffset && a->getGpcClkMinMaxVfOffset(g->nvmlDevice, &mn, &mx) == NVML_SUCCESS) {
-        g->gpuOffsetMinMHz = mn; g->gpuOffsetMaxMHz = mx;
-        if (!g->curveOffsetRangeKnown) {
-            g->curveOffsetMinKHz = mn * 1000; g->curveOffsetMaxKHz = mx * 1000;
-            g->curveOffsetRangeKnown = true;
-        }
-    }
-    if (a->getMemClkMinMaxVfOffset && a->getMemClkMinMaxVfOffset(g->nvmlDevice, &mn, &mx) == NVML_SUCCESS) {
-        g->memOffsetMinMHz = mn; g->memOffsetMaxMHz = mx;
-    }
-    if (a->getPowerConstraints) {
-        unsigned int pmin = 0, pmax = 0;
-        if (a->getPowerConstraints(g->nvmlDevice, &pmin, &pmax) == NVML_SUCCESS) {
-            g->powerLimitMinmW = (int)pmin; g->powerLimitMaxmW = (int)pmax;
-        }
-    }
-    if (a->getPowerDefaultLimit) {
-        unsigned int d = 0;
-        if (a->getPowerDefaultLimit(g->nvmlDevice, &d) == NVML_SUCCESS) g->powerLimitDefaultmW = (int)d;
-    }
-}
-
-// ===========================================================================
-// Init / shutdown / refresh
-// ===========================================================================
-
-bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
-                        char* err, size_t errSize) {
-    memset(g, 0, sizeof(*g));
-    if (err && errSize) err[0] = 0;
-
-    // NVML
-    g->nvmlLib = pl_open_driver_library(PL_DRIVER_NVML);
-    if (!g->nvmlLib) { gc_strlcpy(err, errSize, "libnvidia-ml.so.1 not found"); return false; }
-    nvml_resolve(g);
-    if (!g->nvml.init || g->nvml.init() != NVML_SUCCESS) {
-        gc_strlcpy(err, errSize, "nvmlInit_v2 failed"); return false;
-    }
-    unsigned int count = 0;
-    if (!g->nvml.getCount || g->nvml.getCount(&count) != NVML_SUCCESS || count == 0) {
-        gc_strlcpy(err, errSize, "no NVML devices"); return false;
-    }
-    if (!g->nvml.getHandleByIndex) {
-        gc_strlcpy(err, errSize, "nvmlDeviceGetHandleByIndex_v2 unavailable"); return false;
-    }
-    nvmlDeviceGetName_t getName = sym<nvmlDeviceGetName_t>(g->nvmlLib, "nvmlDeviceGetName");
-
-    nvmlDevice_t nvmlDevices[MAX_GPU_ADAPTERS] = {};
-    unsigned int enumeratedCount = count > MAX_GPU_ADAPTERS ? MAX_GPU_ADAPTERS : count;
-    unsigned int adapterCount = 0;
-    for (unsigned int i = 0; i < enumeratedCount; ++i) {
-        if (g->nvml.getHandleByIndex(i, &nvmlDevices[i]) != NVML_SUCCESS) continue;
-        GpuAdapterInfo* adapter = &g->adapters[adapterCount++];
-        adapter->valid = true;
-        adapter->nvmlIndex = i;
-        adapter->nvapiIndex = MAX_GPU_ADAPTERS;
-        if (getName) getName(nvmlDevices[i], adapter->name, sizeof(adapter->name));
-        if (!adapter->name[0]) gc_strlcpy(adapter->name, sizeof(adapter->name), "NVIDIA GPU");
-        if (g->nvml.getPciInfo) {
-            nvmlPciInfo_t pci = {};
-            if (g->nvml.getPciInfo(nvmlDevices[i], &pci) == NVML_SUCCESS) {
-                adapter->valid = true;
-                adapter->pciInfoValid = pci.pciDeviceId != 0;
-                adapter->deviceId = pci.pciDeviceId;
-                adapter->subSystemId = pci.pciSubSystemId;
-                adapter->pciDomain = pci.domain;
-                adapter->pciBus = pci.bus;
-                adapter->pciDevice = pci.device;
-                unsigned int domain = 0, bus = 0, device = 0, function = 0;
-                if (sscanf(pci.busId, "%x:%x:%x.%x", &domain, &bus, &device, &function) == 4) {
-                    adapter->pciDomain = domain;
-                    adapter->pciBus = bus;
-                    adapter->pciDevice = device;
-                    adapter->pciFunction = function;
-                }
-            }
-        }
-    }
-    g->adapterCount = adapterCount;
-
-    int requestedIndex = -1;
-    if (target && target->valid)
-        requestedIndex = linux_resolve_gpu_identity(target, g->adapters, adapterCount);
-    else if (adapterCount == 1)
-        requestedIndex = 0;
-    if (requestedIndex >= 0) {
-        g->selectedAdapterIndex = (unsigned int)requestedIndex;
-        g->selectedGpu = g->adapters[requestedIndex];
-        g->nvmlIndex = g->selectedGpu.nvmlIndex;
-        g->nvmlDevice = nvmlDevices[g->nvmlIndex];
-        g->writeIdentityResolved = adapterCount == 1 ||
-            (target && linux_gpu_identity_matches(target, &g->selectedGpu));
-    } else if (requestedIndex == -2) {
-        gc_strlcpy(err, errSize, "selected GPU PCI identity is ambiguous");
-    } else if (adapterCount > 1) {
-        gc_strlcpy(err, errSize, "multiple GPUs detected; select one by PCI BDF with --gpu");
-    }
-
-    // NvAPI
-    g->nvapiLib = pl_open_driver_library(PL_DRIVER_NVAPI);
-    if (g->nvapiLib) {
-        g->nvapiQi = (nvapi_qi_t)pl_lib_sym(g->nvapiLib, "nvapi_QueryInterface");
-        if (g->nvapiQi) {
-            auto init = (nvapi_init_t)g->nvapiQi(NVAPI_INIT_ID);
-            if (init && nvapi_ok(init())) {
-                auto enumGpus = (nvapi_enum_t)g->nvapiQi(NVAPI_ENUM_GPU_ID);
-                auto getArch = (nvapi_arch_t)g->nvapiQi(NVAPI_GPU_GET_ARCH_INFO_ID);
-                GPU_HANDLE handles[64] = {};
-                int n = 0;
-                if (enumGpus && nvapi_ok(enumGpus(handles, &n)) && n > 0) {
-                    typedef int (*get_pci_t)(GPU_HANDLE, unsigned int*, unsigned int*, unsigned int*, unsigned int*);
-                    typedef int (*bus_id_t)(GPU_HANDLE, unsigned int*);
-                    auto getPci = (get_pci_t)g->nvapiQi(NVAPI_GPU_GET_PCI_IDENTIFIERS_ID);
-                    auto getBus = (bus_id_t)g->nvapiQi(NVAPI_GPU_GET_BUS_ID_ID);
-                    auto getSlot = (bus_id_t)g->nvapiQi(NVAPI_GPU_GET_BUS_SLOT_ID_ID);
-                    bool nvapiAssigned[MAX_GPU_ADAPTERS] = {};
-                    for (int ni = 0; ni < n && ni < (int)MAX_GPU_ADAPTERS; ++ni) {
-                        unsigned int bus = 0, slot = 0;
-                        int match = -1;
-                        if (getBus && getSlot && nvapi_ok(getBus(handles[ni], &bus)) &&
-                            nvapi_ok(getSlot(handles[ni], &slot))) {
-                            for (unsigned int ai = 0; ai < adapterCount; ++ai) {
-                                if (g->adapters[ai].pciBus == bus && g->adapters[ai].pciDevice == slot) {
-                                    if (match >= 0) { match = -2; break; }
-                                    match = (int)ai;
-                                }
-                            }
-                        } else if (adapterCount == 1 && n == 1) {
-                            match = 0;
-                        }
-                        if (match < 0) continue;
-                        GpuAdapterInfo* adapter = &g->adapters[match];
-                        bool pciVerified = false;
-                        unsigned int device = 0, subsystem = 0, revision = 0, extended = 0;
-                        if (getPci && nvapi_ok(getPci(handles[ni], &device, &subsystem, &revision, &extended))) {
-                            if (adapter->pciInfoValid &&
-                                (!linux_gpu_device_id_matches(device, adapter->deviceId) ||
-                                 (subsystem && adapter->subSystemId && subsystem != adapter->subSystemId))) {
-                                adapter->vfReadSupported = false;
-                                adapter->vfWriteSupported = false;
-                                continue;
-                            }
-                            pciVerified = true;
-                            adapter->pciInfoValid = true;
-                            adapter->deviceId = device;
-                            adapter->subSystemId = subsystem;
-                            adapter->pciRevisionId = revision;
-                            adapter->extDeviceId = extended;
-                        }
-                        if (adapterCount > 1 && !pciVerified) continue;
-                        if (nvapiAssigned[match]) {
-                            adapter->nvapiIndex = MAX_GPU_ADAPTERS;
-                            adapter->vfReadSupported = false;
-                            adapter->vfWriteSupported = false;
-                            continue;
-                        }
-                        nvapiAssigned[match] = true;
-                        adapter->nvapiIndex = (unsigned int)ni;
-                        unsigned int architecture = 0;
-                        if (getArch) {
-                            nvapiGpuArchInfo_t ai{};
-                            ai.version = NVAPI_GPU_ARCH_INFO_VER2;
-                            if (nvapi_ok(getArch(handles[ni], &ai))) architecture = ai.architecture;
-                        }
-                        GpuFamily family = GPU_FAMILY_UNKNOWN;
-                        const VfBackendSpec* backend = vf_backend_for_architecture(architecture, &family);
-                        adapter->family = family;
-                        adapter->vfReadSupported = backend && backend->readSupported;
-                        adapter->vfWriteSupported = backend && backend->writeSupported;
-                        adapter->vfBestGuess = backend && backend->bestGuessOnly;
-                    }
-
-                    int selected = -1;
-                    if (target && target->valid)
-                        selected = linux_resolve_gpu_identity(target, g->adapters, adapterCount);
-                    else if (adapterCount == 1)
-                        selected = 0;
-                    if (selected >= 0) {
-                        GpuAdapterInfo* adapter = &g->adapters[selected];
-                        g->selectedAdapterIndex = (unsigned int)selected;
-                        g->selectedGpu = *adapter;
-                        g->nvmlIndex = adapter->nvmlIndex;
-                        g->nvapiIndex = adapter->nvapiIndex;
-                        g->nvmlDevice = nvmlDevices[g->nvmlIndex];
-                        if (g->nvapiIndex < (unsigned int)n) g->gpuHandle = handles[g->nvapiIndex];
-                        bool stableTarget = adapterCount == 1 ||
-                            (target && linux_gpu_identity_matches(target, adapter));
-                        g->writeIdentityResolved = stableTarget &&
-                            (adapterCount == 1 || g->gpuHandle != nullptr);
-                        if (stableTarget && adapterCount > 1 && !g->gpuHandle)
-                            gc_strlcpy(err, errSize, "selected GPU does not match uniquely across NVML and NvAPI");
-                        if (getArch && g->gpuHandle) {
-                            nvapiGpuArchInfo_t ai{};
-                            ai.version = NVAPI_GPU_ARCH_INFO_VER2;
-                            if (nvapi_ok(getArch(g->gpuHandle, &ai))) g->architecture = ai.architecture;
-                        }
-                        g->backend = vf_backend_for_architecture(g->architecture, &g->family);
-                    } else if (selected == -2) {
-                        gc_strlcpy(err, errSize, "selected GPU PCI identity is ambiguous");
-                    } else if (adapterCount > 1) {
-                        gc_strlcpy(err, errSize, "multiple GPUs detected; select one by PCI BDF with --gpu");
-                    }
-                }
-            }
-        }
-    }
-
-    if (!g->nvmlDevice && adapterCount > 0) {
-        g->selectedAdapterIndex = 0;
-        g->selectedGpu = g->adapters[0];
-        g->nvmlIndex = g->adapters[0].nvmlIndex;
-        g->nvmlDevice = nvmlDevices[g->nvmlIndex];
-        g->writeIdentityResolved = adapterCount == 1;
-    }
-    if (adapterCount > 1 && !g->gpuHandle) {
-        g->writeIdentityResolved = false;
-        if (err && !err[0])
-            gc_strlcpy(err, errSize, "multi-GPU write target is not proven across NVML and NvAPI");
-    }
-    g->nvmlReady = g->nvmlDevice != nullptr;
-    if (g->nvmlReady) {
-        gc_strlcpy(g->gpuName, sizeof(g->gpuName), g->selectedGpu.name);
-        nvml_query_ranges(g);
-    }
-    if (g->gpuHandle && g->backend) {
-        nvapi_read_curve(g);
-        nvapi_read_offsets(g);
-    }
-    if (!g->backend) {
-        lb_log("linux_backend_init: NvAPI VF surface unavailable; NVML-only mode\n");
-    }
-    return g->nvmlReady;
-}
-
-bool linux_backend_select_target(LinuxGpuState* g, const GpuAdapterInfo* target,
-                                 char* err, size_t errSize) {
-    if (!g || !target || !target->valid) {
-        gc_strlcpy(err, errSize, "a stable GPU target is required");
-        return false;
-    }
-    if (linux_gpu_identity_matches(target, &g->selectedGpu) && g->writeIdentityResolved)
-        return true;
-    LinuxGpuState replacement = {};
-    if (!linux_backend_init(&replacement, target, err, errSize) ||
-        !replacement.writeIdentityResolved) {
-        linux_backend_shutdown(&replacement);
-        if (err && !err[0]) gc_strlcpy(err, errSize, "selected GPU could not be resolved uniquely");
-        return false;
-    }
-    linux_backend_shutdown(g);
-    *g = replacement;
-    return true;
-}
-
-void linux_backend_shutdown(LinuxGpuState* g) {
-    if (g->nvml.shutdown) g->nvml.shutdown();
-    if (g->nvmlLib) pl_lib_close(g->nvmlLib);
-    if (g->nvapiLib) pl_lib_close(g->nvapiLib);
-    memset(g, 0, sizeof(*g));
-}
-
-bool linux_backend_refresh(LinuxGpuState* g) {
-    nvml_query_ranges(g);
-    if (g->backend) { nvapi_read_curve(g); nvapi_read_offsets(g); }
-    return true;
-}
+#include "linux_backend_discovery.cpp"
 
 #include "linux_backend_mutation.cpp"
 // ===========================================================================
@@ -699,89 +567,115 @@ bool linux_backend_refresh(LinuxGpuState* g) {
 
 bool linux_backend_curve_plausible(const LinuxGpuState* g, char* why, size_t whySize) {
     if (why && whySize) why[0] = 0;
-    if (!g->backend || !g->backend->readSupported) {
-        if (why) gc_strlcpy(why, whySize, "no NvAPI VF backend");
+    if (!g || !g->gpuHandle || !g->backend || !g->backend->readSupported) {
+        if (why) gc_strlcpy(why, whySize, "no matched NvAPI VF backend");
         return false;
     }
-    // Sane VF-curve envelope: a real GeForce curve sits well inside these.
-    const int MIN_F = 100, MAX_F = 6000;   // MHz
-    const int MIN_V = 400, MAX_V = 1600;   // mV
-    int populated = 0;
-    int prevFreqMHz = 0;
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (g->curve[i].freq_kHz == 0) continue;
-        populated++;
-        int fMHz = (int)(g->curve[i].freq_kHz / 1000u);
-        int vMV = (int)(g->curve[i].volt_uV / 1000u);
-        if (fMHz < MIN_F || fMHz > MAX_F || vMV < MIN_V || vMV > MAX_V) {
-            if (why) gc_snprintf(why, whySize, "point %d out of range (%d MHz @ %d mV)", i, fMHz, vMV);
-            return false;
-        }
-        // VF points are ordered by voltage; frequency should be non-decreasing
-        // (allow small noise).  A scrambled order implies a layout mismatch.
-        if (fMHz + 50 < prevFreqMHz) {
-            if (why) gc_strlcpy(why, whySize, "curve frequency not monotonic (struct layout mismatch?)");
-            return false;
-        }
-        prevFreqMHz = fMHz;
-    }
-    if (populated < 8) {
-        if (why) gc_snprintf(why, whySize, "only %d populated points", populated);
+    if (!g->vfSnapshotFresh || !g->vfStructureValid) {
+        if (why) gc_strlcpy(why, whySize,
+            "VF info/status/control snapshot is not fresh");
         return false;
     }
-    return true;
+    LinuxVfReadCandidate candidate = {};
+    memcpy(candidate.curve, g->curve, sizeof(candidate.curve));
+    memcpy(candidate.offsets, g->freqOffsets, sizeof(candidate.offsets));
+    candidate.populated = g->numPopulated;
+    return linux_vf_candidate_structurally_valid(g, &candidate, why, whySize);
 }
 
 bool linux_backend_self_test(LinuxGpuState* g, FILE* out) {
     if (!out) out = stdout;
     fprintf(out, "=== Green Curve driver/arch self-test (read-only, no GPU changes) ===\n");
-    fprintf(out, "GPU: %s  family=%d\n", g->gpuName[0] ? g->gpuName : "?", (int)g->family);
+    fprintf(out, "GPU: %s  family=%d  pci=%04x:%02x:%02x.%u\n",
+            g->gpuName[0] ? g->gpuName : "?", (int)g->family,
+            g->selectedGpu.pciDomain, g->selectedGpu.pciBus,
+            g->selectedGpu.pciDevice, g->selectedGpu.pciFunction);
 
     bool nvmlOk = g->nvmlReady;
     fprintf(out, "NVML ready             : %s\n", nvmlOk ? "yes" : "NO");
     if (g->curveOffsetRangeKnown)
         fprintf(out, "NVML GPC offset range  : %d .. %d MHz\n", g->gpuOffsetMinMHz, g->gpuOffsetMaxMHz);
 
-    if (!g->backend) {
-        fprintf(out, "NvAPI VF backend       : NOT available (NVML-only mode)\n");
-        fprintf(out, "\nVerdict: NVML-ONLY — clock offsets / power / fan / locked clocks only; "
-                     "VF-curve editing needs libnvidia-api.so.1 on this driver.\n");
+    if (!g->gpuHandle || !g->backend) {
+        fprintf(out, "NvAPI VF binding       : NOT available\n");
+        fprintf(out, "Architecture source    : %s\n",
+                linux_gpu_architecture_source_name(g->architectureSource));
+        fprintf(out, "Health                  : %s%s%s\n",
+                service_gpu_health_reason_name(g->health.reason),
+                g->health.detail[0] ? " — " : "", g->health.detail);
+        fprintf(out, "Available domains       : 0x%08x\n",
+                (unsigned)g->health.availableMutationDomains);
+        fprintf(out, "\nVerdict: DEGRADED — VF editing is unavailable; advertised independent "
+                     "NVML domains remain usable.\n");
         return false;
     }
+    fprintf(out, "NvAPI VF binding       : matched handle=%p\n", g->gpuHandle);
+    fprintf(out, "Binding match method   : %s\n",
+            linux_gpu_match_method_name(g->nvapiMatchMethod));
     fprintf(out, "NvAPI VF backend       : %s%s\n", g->backend->name,
             g->backend->bestGuessOnly ? " (best-effort unrecognized family)" : "");
+    fprintf(out, "Architecture source    : %s\n",
+            linux_gpu_architecture_source_name(g->architectureSource));
     fprintf(out, "expected struct sizes  : pstates20=%u arch=%u (compile-time pinned)\n",
             (unsigned)sizeof(nvapiPerfPstates20Info_t), (unsigned)sizeof(nvapiGpuArchInfo_t));
 
-    bool infoOk = nvapi_get_vf_info(g);
-    fprintf(out, "NvAPI getInfo          : %s (numClocks=%u)\n", infoOk ? "ok" : "FAILED", g->vfNumClocks);
-
-    bool curveOk = nvapi_read_curve(g);
+    LinuxBackendRefreshResult refresh = linux_backend_refresh(g);
+    bool infoOk = g->vfInfoFresh;
+    bool curveOk = g->vfStatusFresh;
+    bool ctrlOk = g->vfControlFresh;
     char why[160] = {};
     bool plausible = linux_backend_curve_plausible(g, why, sizeof(why));
-    fprintf(out, "NvAPI getStatus (curve): %s — %d points; plausible=%s%s\n",
-            curveOk ? "ok" : "FAILED", g->numPopulated,
-            plausible ? "yes" : "NO", plausible ? "" : (why[0] ? why : ""));
+    LinuxHardwareSnapshot hardware = {};
+    char hardwareWhy[160] = {};
+    bool hardwareSnapshotOk = linux_backend_capture_snapshot(
+        g, &hardware, hardwareWhy, sizeof(hardwareWhy));
+    // Capture is the single producer for both availableMutationDomains and the
+    // derived capability probe.  Keep the refresh envelope printed below in
+    // sync with the facts the self-test just captured.
+    refresh.health = g->health;
+    fprintf(out, "NvAPI getInfo          : %s (status=%d numClocks=%u)\n",
+            infoOk ? "ok" : "FAILED", g->vfInfoStatus, g->vfNumClocks);
+    fprintf(out, "NvAPI getStatus (curve): %s (status=%d points=%d)\n",
+            curveOk ? "ok" : "FAILED", g->vfStatusStatus, g->numPopulated);
+    fprintf(out, "NvAPI getControl       : %s (status=%d; write ABI probe)\n",
+            ctrlOk ? "ok" : "FAILED", g->vfControlStatus);
+    fprintf(out, "Structural validation  : %s%s%s\n", plausible ? "ok" : "FAILED",
+            (!plausible && why[0]) ? " — " : "", (!plausible && why[0]) ? why : "");
+    fprintf(out, "Snapshot freshness     : %s (recovery attempted=%s succeeded=%s)\n",
+            refresh.vfFresh ? "fresh" : "STALE",
+            refresh.health.recoveryAttempted ? "yes" : "no",
+            refresh.health.recoverySucceeded ? "yes" : "no");
+    fprintf(out, "Rollback snapshot      : %s%s%s\n",
+            hardwareSnapshotOk ? "available" : "UNAVAILABLE",
+            (!hardwareSnapshotOk && hardwareWhy[0]) ? " — " : "",
+            (!hardwareSnapshotOk && hardwareWhy[0]) ? hardwareWhy : "");
+    fprintf(out, "Health                  : %s%s%s\n",
+            service_gpu_health_reason_name(refresh.health.reason),
+            refresh.health.detail[0] ? " — " : "", refresh.health.detail);
+    fprintf(out, "Available domains       : 0x%08x\n",
+            (unsigned)refresh.health.availableMutationDomains);
 
-    // Read the CONTROL table — the SAME struct version writes use — without
-    // writing anything.  Success here means the write struct version is accepted
-    // by this driver, so the apply (write) path should work.
-    bool ctrlOk = false;
-    if (g->backend->controlBufferSize <= LB_CONTROL_BUF_SIZE) {
-        unsigned char* cbuf = (unsigned char*)calloc(1, LB_CONTROL_BUF_SIZE);
-        if (cbuf) {
-            ctrlOk = nvapi_read_control_table(g, cbuf, LB_CONTROL_BUF_SIZE);
-            free(cbuf);
-        }
+    // Per-domain control surface, in the same shape the Windows --self-test
+    // prints, so a report from either platform reads identically.
+    fprintf(out, "Memory topology        : %s\n",
+            gpu_memory_topology_name(g->capability.memoryTopology));
+    fprintf(out, "Control surface        : %s\n",
+            gpu_control_surface_class_name(gpu_capability_surface_class(&g->capability)));
+    for (int i = 0; i < GPU_CAP_DOMAIN_COUNT; ++i) {
+        gc_u32 mask = gpu_capability_mask_for_index(i);
+        fprintf(out, "  %-18s   : %s\n", gpu_capability_domain_name(i),
+                gpu_capability_name(gpu_capability_get(&g->capability, mask)));
     }
-    fprintf(out, "NvAPI getControl       : %s\n",
-            ctrlOk ? "ok — write struct version accepted by the driver"
-                   : "FAILED — write struct version rejected (INCOMPATIBLE_STRUCT_VERSION?)");
+    if (g->capability.memoryTopology == GPU_MEMORY_TOPOLOGY_UNIFIED) {
+        fprintf(out, "NOTE: memory is unified with the CPU. A memory clock offset here\n"
+                     "targets system RAM, not a separate VRAM pool.\n");
+    }
 
-    bool pass = nvmlOk && infoOk && curveOk && plausible && ctrlOk;
+    bool pass = nvmlOk && infoOk && curveOk && plausible && ctrlOk &&
+                hardwareSnapshotOk;
     fprintf(out, "\nVerdict: %s\n", pass
             ? "PASS — read + write-struct paths validated; VF apply should work on this driver/arch."
-            : "INCOMPLETE — see failures above. VF writes are auto-gated off until the curve reads plausibly; "
-              "NVML features still work.");
+            : "DEGRADED — see exact failure above. VF writes remain gated until a fresh complete "
+              "snapshot validates; advertised independent NVML domains still work.");
     return pass;
 }

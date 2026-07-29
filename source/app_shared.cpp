@@ -13,8 +13,13 @@ NvmlApi g_nvml_api = {};
 HMODULE g_nvml = nullptr;
 bool g_debug_logging = false;
 bool g_bestGuessWarningShownThisSession = false;
+bool g_limitedControlWarningShownThisSession = false;
 bool g_guiForceFullRefresh = false;
 
+// System-library loading and DPI awareness are Win32 process setup. The rest
+// of this file (scale math and the pure logon/auto-restore decisions) is
+// platform-neutral and is compiled into the Linux regression harness.
+#if defined(_WIN32)
 static HMODULE load_system_library_local_a(const char* name) {
     if (!name || !name[0] || strchr(name, '\\') || strchr(name, '/')) return nullptr;
     char systemDir[MAX_PATH] = {};
@@ -24,6 +29,7 @@ static HMODULE load_system_library_local_a(const char* name) {
     if (FAILED(StringCchPrintfA(path, ARRAY_COUNT(path), "%s\\%s", systemDir, name))) return nullptr;
     return LoadLibraryA(path);
 }
+#endif // _WIN32
 
 int nvmin(int a, int b) {
     return a < b ? a : b;
@@ -37,6 +43,7 @@ int dp(int px) {
     return (int)((float)px * g_scale);
 }
 
+#if defined(_WIN32)
 void enable_best_process_dpi_awareness() {
     HMODULE user32 = GetModuleHandleA("user32.dll");
     if (user32) {
@@ -96,6 +103,7 @@ void init_dpi() {
     if (g_dpi <= 0) g_dpi = 96;
     g_scale = (float)g_dpi / 96.0f;
 }
+#endif // _WIN32
 
 // Pure policy decision shared by every logon auto-apply path (client + service).
 // See app_shared.h for the contract.  Kept free of any I/O so it is exhaustively

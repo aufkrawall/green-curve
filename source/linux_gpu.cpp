@@ -345,10 +345,35 @@ void probe_nvapi(FILE* out, LinuxNvapiProbe* result) {
 
 // Tegra/Jetson runs an integrated GPU on the L4T stack where NVML/NvAPI VF
 // control is not supported — distinct from the discrete-GPU aarch64 driver.
-static bool is_tegra_platform() {
+bool linux_platform_is_integrated_soc() {
     FILE* f = fopen("/etc/nv_tegra_release", "r");
     if (f) { fclose(f); return true; }
     return false;
+}
+
+static bool is_tegra_platform() {
+    return linux_platform_is_integrated_soc();
+}
+
+// Integrated Grace/Blackwell modules (GB10 / RTX Spark) are the same shape as
+// the Tegra lineage for our purposes: one physical memory pool shared with the
+// CPU, an SoC-wide power budget rather than a board TGP, and cooling owned by
+// the platform.  Report the consequences per domain rather than a bare
+// "unsupported", so a probe log from real hardware says which controls are
+// expected to be missing and which should still work.
+static void report_integrated_platform_consequences(FILE* out) {
+    fprintf(out,
+        "Memory topology        : unified with CPU (no dedicated memory controller)\n"
+        "  memory-offset        : expected ABSENT — the pool is system RAM the CPU\n"
+        "                         executes from; a memory clock write is not merely\n"
+        "                         likely to be refused, it targets that same DRAM\n"
+        "  power-limit          : expected ABSENT — the budget belongs to the whole\n"
+        "                         SoC, not to a board-level TGP\n"
+        "  fan                  : expected ABSENT — cooling is usually owned by the\n"
+        "                         platform EC, not the NVIDIA driver\n"
+        "  vf-curve / gpu-offset: UNKNOWN — depends on whether this driver exposes\n"
+        "                         the private pstates20 surface on a soldered part\n"
+        "Green Curve still attempts every domain that answers; nothing is hard-blocked.\n\n");
 }
 
 bool linux_gpu_probe(FILE* out, LinuxGpuProbeResult* result) {
@@ -361,6 +386,7 @@ bool linux_gpu_probe(FILE* out, LinuxGpuProbeResult* result) {
         fprintf(out, "Platform: Tegra/Jetson detected (/etc/nv_tegra_release). This is an\n"
                      "integrated-GPU L4T platform; the discrete-GPU NVML/NvAPI control\n"
                      "surfaces Green Curve uses are NOT supported here.\n\n");
+        report_integrated_platform_consequences(out);
     }
     probe_nvml(out, &result->nvml);
     probe_nvapi(out, &result->nvapi);

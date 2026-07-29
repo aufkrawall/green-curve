@@ -13,16 +13,54 @@ static inline bool linux_gpu_bdf_valid(const GpuAdapterInfo* gpu) {
            (gpu->pciDomain || gpu->pciBus || gpu->pciDevice || gpu->pciFunction);
 }
 
-static inline bool linux_gpu_device_id_matches(unsigned int nvapiId,
-                                                unsigned int nvmlId) {
-    if (!nvapiId || !nvmlId) return true;
-    if (nvapiId == nvmlId) return true;
-    // NVML commonly returns the PCI device/vendor pair (DDDD10DE), while
-    // NvAPI variants may return only DDDD.  Never compare the low vendor word:
-    // every NVIDIA adapter would otherwise appear to be the same device.
-    unsigned int nvapiDevice = nvapiId > 0xFFFFu ? (nvapiId >> 16) : nvapiId;
-    unsigned int nvmlDevice = nvmlId > 0xFFFFu ? (nvmlId >> 16) : nvmlId;
-    return nvapiDevice == nvmlDevice;
+static inline bool linux_gpu_extract_nvidia_device_id(
+    unsigned int encoded, unsigned int* deviceId) {
+    const unsigned int nvidiaVendorId = 0x10DEu;
+    if (!encoded || !deviceId) return false;
+    if (encoded <= 0xFFFFu) {
+        if (encoded == nvidiaVendorId) return false;
+        *deviceId = encoded;
+        return true;
+    }
+    unsigned int low = encoded & 0xFFFFu;
+    unsigned int high = (encoded >> 16) & 0xFFFFu;
+    // NvAPI and NVML releases have exposed the 16-bit vendor/device pair in
+    // both word orders. Identify the device by the NVIDIA vendor word instead
+    // of assuming that either the high or low word is always the device.
+    if (low == nvidiaVendorId && high && high != nvidiaVendorId) {
+        *deviceId = high;
+        return true;
+    }
+    if (high == nvidiaVendorId && low && low != nvidiaVendorId) {
+        *deviceId = low;
+        return true;
+    }
+    return false;
+}
+
+static inline bool linux_gpu_device_id_matches(unsigned int left,
+                                                unsigned int right) {
+    if (!left || !right) return true;
+    if (left == right) return true;
+    unsigned int leftDevice = 0, rightDevice = 0;
+    return linux_gpu_extract_nvidia_device_id(left, &leftDevice) &&
+        linux_gpu_extract_nvidia_device_id(right, &rightDevice) &&
+        leftDevice == rightDevice;
+}
+
+static inline bool linux_gpu_subsystem_id_matches(unsigned int left,
+                                                   unsigned int right) {
+    if (!left || !right) return true;
+    if (left == right) return true;
+    unsigned int leftLow = left & 0xFFFFu;
+    unsigned int leftHigh = (left >> 16) & 0xFFFFu;
+    unsigned int rightLow = right & 0xFFFFu;
+    unsigned int rightHigh = (right >> 16) & 0xFFFFu;
+    if (left > 0xFFFFu && right > 0xFFFFu)
+        return leftLow == rightHigh && leftHigh == rightLow;
+    if (left <= 0xFFFFu)
+        return left == rightLow || left == rightHigh;
+    return right == leftLow || right == leftHigh;
 }
 
 static inline bool linux_gpu_identity_matches(const GpuAdapterInfo* requested,
@@ -41,10 +79,34 @@ static inline bool linux_gpu_identity_matches(const GpuAdapterInfo* requested,
         if (!candidate->pciInfoValid ||
             !linux_gpu_device_id_matches(requested->deviceId, candidate->deviceId) ||
             (requested->subSystemId && candidate->subSystemId &&
-             requested->subSystemId != candidate->subSystemId))
+             !linux_gpu_subsystem_id_matches(requested->subSystemId,
+                                             candidate->subSystemId)))
             return false;
     }
     return linux_gpu_bdf_valid(requested) || requested->pciInfoValid;
+}
+
+// Read-only recovery already owns a known PCI GPU and must tolerate a transient
+// loss of optional device/subsystem metadata. Exact BDF remains mandatory when
+// available, and any identifiers present on both sides must not conflict.
+// Mutation attachment intentionally continues using the stricter helper above.
+static inline bool linux_gpu_same_pci_nonconflicting(
+    const GpuAdapterInfo* known, const GpuAdapterInfo* candidate) {
+    if (!known || !candidate || !known->valid || !candidate->valid)
+        return false;
+    if (linux_gpu_bdf_valid(known) && linux_gpu_bdf_valid(candidate)) {
+        if (known->pciDomain != candidate->pciDomain ||
+            known->pciBus != candidate->pciBus ||
+            known->pciDevice != candidate->pciDevice ||
+            known->pciFunction != candidate->pciFunction) return false;
+        return !(known->pciInfoValid && candidate->pciInfoValid) ||
+            (linux_gpu_device_id_matches(known->deviceId,
+                                         candidate->deviceId) &&
+             (!known->subSystemId || !candidate->subSystemId ||
+              linux_gpu_subsystem_id_matches(known->subSystemId,
+                                              candidate->subSystemId)));
+    }
+    return linux_gpu_identity_matches(known, candidate);
 }
 
 // The Linux daemon currently owns one selected backend and one active intent.

@@ -40,4 +40,10 @@ struct LinuxGpuProbeResult {
 // `result` when non-null.  Returns true when both NVML and NvAPI are reachable.
 bool linux_gpu_probe(FILE* out, LinuxGpuProbeResult* result);
 
+// True on an integrated-GPU platform that shares one memory pool with the CPU
+// (Tegra/Jetson L4T today; the GB10 / RTX Spark class is the same shape).  Used
+// both by the probe report and by the daemon's memory-topology classification,
+// so the detection exists exactly once.
+bool linux_platform_is_integrated_soc();
+
 #endif // GREEN_CURVE_LINUX_GPU_H

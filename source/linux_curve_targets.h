@@ -85,4 +85,38 @@ static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
     return result;
 }
 
+// A successful VF-domain Apply replaces that domain's durable intent.  Build
+// the complete committed target, then explicitly release points that the
+// previous curve intent owned but the replacement no longer owns.  Without
+// those zero-offset writes, a sparse replacement could leave an old point
+// active in hardware after it disappeared from durable intent.
+static inline LinuxCurveTargetBuildResult
+linux_build_curve_transition_targets(
+    const VFCurvePoint* curve, const int* currentOffsets,
+    const DesiredSettings* previousIntent,
+    const DesiredSettings* committedIntent, int minimumOffsetKHz,
+    int* targetOffsets, bool* pointMask, int* cleanupPointCountOut) {
+    if (cleanupPointCountOut) *cleanupPointCountOut = 0;
+    LinuxCurveTargetBuildResult result = linux_build_curve_targets(
+        curve, currentOffsets, committedIntent, minimumOffsetKHz,
+        targetOffsets, pointMask);
+    if (!curve || !currentOffsets || !previousIntent || !committedIntent ||
+        !targetOffsets || !pointMask) {
+        return result;
+    }
+
+    int previousTargets[VF_NUM_POINTS] = {};
+    bool previousMask[VF_NUM_POINTS] = {};
+    linux_build_curve_targets(curve, currentOffsets, previousIntent,
+        minimumOffsetKHz, previousTargets, previousMask);
+    for (int i = 0; i < VF_NUM_POINTS; ++i) {
+        if (!previousMask[i] || pointMask[i]) continue;
+        targetOffsets[i] = 0;
+        pointMask[i] = true;
+        ++result.pointCount;
+        if (cleanupPointCountOut) ++*cleanupPointCountOut;
+    }
+    return result;
+}
+
 #endif // GREEN_CURVE_LINUX_CURVE_TARGETS_H

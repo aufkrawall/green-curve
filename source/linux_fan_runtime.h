@@ -32,8 +32,13 @@ static pl_thread_ret fan_reassert_thread(void*) {
             pthread_mutex_unlock(&g_fanWakeMutex);
             continue;
         }
+        // CLOCK_MONOTONIC, paired with pthread_condattr_setclock on
+        // g_fanWakeCondition.  A backwards wall-clock step — NTP correcting a
+        // machine without a battery-backed RTC, a manual date change, a VM
+        // resume — would otherwise stall this wait for the size of the step
+        // while a manual fan duty stays pinned.
         struct timespec deadline = {};
-        clock_gettime(CLOCK_REALTIME, &deadline);
+        clock_gettime(CLOCK_MONOTONIC, &deadline);
         deadline.tv_sec += (time_t)(pollMs / 1000u);
         deadline.tv_nsec += (long)(pollMs % 1000u) * 1000000L;
         if (deadline.tv_nsec >= 1000000000L) {
@@ -57,26 +62,59 @@ static pl_thread_ret fan_reassert_thread(void*) {
                      &g_activeTarget, &g_gpu.selectedGpu) &&
                  g_activeDesired.hasFan &&
                  g_activeDesired.fanMode == FAN_MODE_CURVE;
-        if (active && g_gpu.nvml.getTemperature) {
+        if (active) {
+            // Telemetry loss is escalated exactly like a refused write: either
+            // way the curve stops tracking temperature while a manual duty
+            // stays pinned.  Silently skipping the read left the fan stuck
+            // forever with no journal entry.
+            FanRuntimeOutcome outcome = FAN_RUNTIME_OUTCOME_TELEMETRY_FAILED;
+            int pct = -1;
             unsigned int t = 0;
-            if (g_gpu.nvml.getTemperature(g_gpu.nvmlDevice, NVML_TEMPERATURE_GPU, &t) == NVML_SUCCESS) {
-                FanRuntimeDecision decision = fan_runtime_next_action(&runtime,
-                    &g_activeDesired.fanCurve, (int)t, false);
-                int pct = decision.targetPercent;
-                if (linux_backend_set_curve_fan_percent(&g_gpu, (unsigned int)pct)) {
-                    g_fanFailureCount = 0;
+            const char* reason = "temperature source unavailable";
+            if (!g_gpu.nvml.getTemperature) {
+                reason = "nvmlDeviceGetTemperature is unavailable";
+            } else {
+                nvmlReturn_t tempStatus = g_gpu.nvml.getTemperature(
+                    g_gpu.nvmlDevice, NVML_TEMPERATURE_GPU, &t);
+                if (tempStatus != NVML_SUCCESS) {
+                    reason = "temperature read failed";
+                    dlog("daemon: fan reassert temperature read failed (nvml=%d)\n",
+                         (int)tempStatus);
                 } else {
-                    ++g_fanFailureCount;
-                    dlog("daemon: fan reassert failed (%u/3) target=%d%%\n", g_fanFailureCount, pct);
-                    if (g_fanFailureCount >= 3) {
-                        bool autoOk = linux_backend_set_fan_auto(&g_gpu);
-                        char stateErr[256] = {};
-                        g_stateUncertain = true;
-                        store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_activeTarget,
-                                            &g_activeDesired, stateErr, sizeof(stateErr));
-                        dlog("daemon: fan runtime locked out after repeated failures; auto=%d state=%s\n",
-                             autoOk ? 1 : 0, stateErr[0] ? stateErr : "persisted");
+                    FanRuntimeDecision decision = fan_runtime_next_action(&runtime,
+                        &g_activeDesired.fanCurve, (int)t, false);
+                    pct = decision.targetPercent;
+                    if (linux_backend_set_curve_fan_percent(&g_gpu, (unsigned int)pct)) {
+                        outcome = FAN_RUNTIME_OUTCOME_SUCCESS;
+                    } else {
+                        outcome = FAN_RUNTIME_OUTCOME_WRITE_FAILED;
+                        reason = "fan write failed";
                     }
+                }
+            }
+
+            FanRuntimeFailureDecision failure = fan_runtime_observe_result(
+                g_fanFailureCount, outcome, FAN_RUNTIME_DEFAULT_FAILURE_LIMIT);
+            g_fanFailureCount = failure.failureCount;
+            if (failure.shouldLogFailure) {
+                dlog("daemon: fan reassert failed (%u/%u) target=%d%% temp=%uC: %s\n",
+                     failure.failureCount, FAN_RUNTIME_DEFAULT_FAILURE_LIMIT,
+                     pct, t, reason);
+            }
+            if (failure.escalation == FAN_RUNTIME_ESCALATION_RESTORE_AUTO) {
+                bool autoOk = linux_backend_set_fan_auto(&g_gpu);
+                char stateErr[256] = {};
+                g_stateUncertain = true;
+                store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_activeTarget,
+                                    &g_activeDesired, stateErr, sizeof(stateErr));
+                dlog("daemon: fan runtime locked out after repeated failures; auto=%d state=%s\n",
+                     autoOk ? 1 : 0, stateErr[0] ? stateErr : "persisted");
+                if (fan_runtime_escalation_after_auto_restore(autoOk) ==
+                        FAN_RUNTIME_ESCALATION_EMERGENCY_MAX) {
+                    bool emergencyOk = linux_backend_set_curve_fan_percent(
+                        &g_gpu, (unsigned int)FAN_RUNTIME_EMERGENCY_PERCENT);
+                    dlog("daemon: fan runtime emergency: driver auto restore failed, forced %d%% ok=%d\n",
+                         FAN_RUNTIME_EMERGENCY_PERCENT, emergencyOk ? 1 : 0);
                 }
             }
         }

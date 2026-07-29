@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
+#include "nvapi_loader.cpp"
 #include "gpu_backend_apply.cpp"
 static bool apply_desired_settings(const DesiredSettings* desired, bool interactive,
     ServiceApplyOrigin origin, ServiceProfileSource profileSource, int profileSlot,
@@ -51,23 +52,6 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
 // NvAPI Interface
 // ============================================================================
 
-// Module-level cache so close_nvapi() can invalidate it across calls.
-// A driver recovery never attempts to reload NvAPI in the stale process; the
-// nonce-bound helper starts a fresh service process instead.
-static void* (*g_nvapiQi)(unsigned int) = nullptr;
-
-static void* nvapi_qi(unsigned int id) {
-    if (!g_nvapiQi) {
-        g_app.hNvApi = load_system_library_a("nvapi64.dll");
-        if (!g_app.hNvApi) {
-            g_app.hNvApi = load_system_library_a("nvapi.dll");
-        }
-        if (!g_app.hNvApi) return nullptr;
-        g_nvapiQi = (void* (*)(unsigned int))GetProcAddress(g_app.hNvApi, "nvapi_QueryInterface");
-        if (!g_nvapiQi) return nullptr;
-    }
-    return g_nvapiQi(id);
-}
 static bool nvapi_init() {
     typedef int (*init_t)();
     auto init = (init_t)nvapi_qi(NVAPI_INIT_ID);
@@ -89,8 +73,8 @@ static void close_nvapi() {
         FreeLibrary(g_app.hNvApi);
         g_app.hNvApi = nullptr;
     }
-    // Invalidate the nvapi_qi() module-level cache so the next call
-    // reloads nvapi64.dll with fresh function pointers.  Without this,
+    // Invalidate the nvapi_qi() module-level cache so the next call reloads the
+    // architecture-selected NVAPI module with fresh pointers.  Without this,
     // after a GPU driver restart (VEH crash), the cached pointer points
     // to unmapped memory and causes an access violation.
     g_nvapiQi = nullptr;
@@ -487,9 +471,14 @@ static void detect_clock_offsets() {
         }
     }
     g_app.gpuClockOffsetkHz = gpuOffsetkHz;
+    // Detection replaces the GPU scalar unconditionally, so it owns that
+    // scalar's protocol-v14 provenance; see control_readback_policy.h.
+    g_app.readback.gpuOffset = gpu_offset_readback_after_detection(
+        vf_curve_global_gpu_offset_supported(), g_app.numPopulated, g_app.readback.pstate);
     if (g_app.pstateMemMaxMHz > 0 && g_app.smiMemMaxMHz > 0) {
         int memOffsetkHz = ((int)g_app.pstateMemMaxMHz - (int)g_app.smiMemMaxMHz) * 1000;
         g_app.memClockOffsetkHz = memOffsetkHz;
+        g_app.readback.memOffset = true;  // upgrade only; NVML's read survives
         if (!g_app.memOffsetRangeKnown && memOffsetkHz != 0) {
             int memOffsetMHz = mem_display_mhz_from_driver_khz(memOffsetkHz);
             g_app.memClockOffsetMinMHz = memOffsetMHz;
@@ -549,6 +538,7 @@ static bool nvapi_set_point(int pointIndex, int freqDelta_kHz) {
 // Pstates20 struct size and version for Blackwell
 // NVML-based OC/PL functions
 static bool nvml_read_power_limit() {
+    g_app.readback.powerLimit = false;
     if (!nvml_ensure_ready()) return false;
     if (!g_nvml_api.getPowerLimit || !g_nvml_api.getPowerDefaultLimit) return false;
     unsigned int cur = 0, def = 0;
@@ -556,8 +546,7 @@ static bool nvml_read_power_limit() {
     if (g_nvml_api.getPowerDefaultLimit(g_app.nvmlDevice, &def) != NVML_SUCCESS) def = cur;
     g_app.powerLimitCurrentmW = (int)cur;
     g_app.powerLimitDefaultmW = def > 0 ? (int)def : (int)cur;
-    g_app.powerLimitMinmW = 0;
-    g_app.powerLimitMaxmW = 0;
+    g_app.powerLimitMinmW = g_app.powerLimitMaxmW = 0;
     if (g_nvml_api.getPowerConstraints) {
         unsigned int mn = 0, mx = 0;
         if (g_nvml_api.getPowerConstraints(g_app.nvmlDevice, &mn, &mx) == NVML_SUCCESS) {
@@ -565,11 +554,10 @@ static bool nvml_read_power_limit() {
             g_app.powerLimitMaxmW = (int)mx;
         }
     }
-    if (g_app.powerLimitDefaultmW > 0)
-        g_app.powerLimitPct = (g_app.powerLimitCurrentmW * 100 + g_app.powerLimitDefaultmW / 2) / g_app.powerLimitDefaultmW;
-    else
-        g_app.powerLimitPct = 100;
+    g_app.powerLimitPct = g_app.powerLimitDefaultmW > 0
+        ? (g_app.powerLimitCurrentmW * 100 + g_app.powerLimitDefaultmW / 2) / g_app.powerLimitDefaultmW : 100;
     if (g_app.powerLimitPct < 0) g_app.powerLimitPct = 0;
+    g_app.readback.powerLimit = true;
     return true;
 }
 static bool nvapi_read_pstates() {
@@ -577,6 +565,7 @@ static bool nvapi_read_pstates() {
     auto func = (NvApiFunc)nvapi_qi(0x6FF81213u);
     g_app.pstateGpuOffsetkHz = 0;
     g_app.pstateMemMaxMHz = 0;
+    g_app.readback.pstate = false;
     if (!func) return false;
     nvapiPerfPstates20Info_t info = {};
     info.version = NVAPI_PERF_PSTATES20_INFO_VER3;
@@ -587,16 +576,14 @@ static bool nvapi_read_pstates() {
         ret = func(g_app.gpuHandle, &info);
     }
     if (ret != 0) return false;
+    g_app.readback.pstate = true;
     unsigned int numPstates = info.numPstates;
     if (numPstates > NVAPI_MAX_GPU_PSTATE20_PSTATES) numPstates = NVAPI_MAX_GPU_PSTATE20_PSTATES;
     unsigned int numClocks = info.numClocks;
     if (numClocks > NVAPI_MAX_GPU_PSTATE20_CLOCKS) numClocks = NVAPI_MAX_GPU_PSTATE20_CLOCKS;
-    bool curveRangeAnyFound = false;
-    bool curveRangeP0Found = false;
-    int curveRangeAnyMinkHz = 0;
-    int curveRangeAnyMaxkHz = 0;
-    int curveRangeP0MinkHz = 0;
-    int curveRangeP0MaxkHz = 0;
+    bool curveRangeAnyFound = false, curveRangeP0Found = false;
+    int curveRangeAnyMinkHz = 0, curveRangeAnyMaxkHz = 0;
+    int curveRangeP0MinkHz = 0, curveRangeP0MaxkHz = 0;
     auto update_curve_range = [](bool* found, int* minOut, int* maxOut, int minValue, int maxValue) {
         if (!found || !minOut || !maxOut) return;
         if (!*found) {
@@ -637,11 +624,8 @@ static bool nvapi_read_pstates() {
             }
         }
     }
-    if (curveRangeP0Found) {
-        set_curve_offset_range_khz(curveRangeP0MinkHz, curveRangeP0MaxkHz);
-    } else if (curveRangeAnyFound) {
-        set_curve_offset_range_khz(curveRangeAnyMinkHz, curveRangeAnyMaxkHz);
-    }
+    if (curveRangeP0Found) set_curve_offset_range_khz(curveRangeP0MinkHz, curveRangeP0MaxkHz);
+    else if (curveRangeAnyFound) set_curve_offset_range_khz(curveRangeAnyMinkHz, curveRangeAnyMaxkHz);
     return true;
 }
 static bool nvapi_set_gpu_offset(int offsetkHz) {

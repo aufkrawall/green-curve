@@ -31,16 +31,26 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
         return false;
     }
     memset(snapshot, 0, sizeof(*snapshot));
-    if (g->nvml.getGpcClkVfOffset &&
-        g->nvml.getGpcClkVfOffset(g->nvmlDevice, &snapshot->gpuOffsetMHz) == NVML_SUCCESS)
+    NvmlClockOffsetReadback gpuOffset =
+        nvml_read_clock_offset(g, NVML_CLOCK_GRAPHICS);
+    if (gpuOffset.offsetValid) {
+        snapshot->gpuOffsetMHz = gpuOffset.offsetMHz;
         snapshot->gpuOffsetValid = true;
-    if (g->nvml.getMemClkVfOffset &&
-        g->nvml.getMemClkVfOffset(g->nvmlDevice, &snapshot->memOffsetMHz) == NVML_SUCCESS)
+    }
+    NvmlClockOffsetReadback memOffset =
+        nvml_read_clock_offset(g, NVML_CLOCK_MEM);
+    if (memOffset.offsetValid) {
+        snapshot->memOffsetMHz = memOffset.offsetMHz;
         snapshot->memOffsetValid = true;
+    }
     if (g->nvml.getPowerLimit &&
         g->nvml.getPowerLimit(g->nvmlDevice, &snapshot->powerLimitmW) == NVML_SUCCESS)
         snapshot->powerValid = true;
-    if (g->backend && g->backend->writeSupported && g->numPopulated > 0) {
+    if (g->gpuHandle && g->backend && g->backend->writeSupported &&
+        linux_vf_snapshot_authoritative(
+            g->vfInfoFresh, g->vfStatusFresh, g->vfControlFresh,
+            g->vfStructureValid, g->vfSnapshotFresh) &&
+        g->numPopulated > 0) {
         snapshot->curveValid = true;
         for (int i = 0; i < VF_NUM_POINTS; ++i) {
             snapshot->curveOffsets[i] = g->freqOffsets[i];
@@ -53,16 +63,104 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
         snapshot->fanCount = fans;
         snapshot->fanValid = fans > 0;
         for (unsigned int i = 0; i < fans; ++i) {
-            if (!g->nvml.getFanSpeed ||
-                g->nvml.getFanSpeed(g->nvmlDevice, i, &snapshot->fanPercent[i]) != NVML_SUCCESS)
-                snapshot->fanValid = false;
+            int intended = 0;
+            if (nvml_read_fan_intent(g, i, &intended)) {
+                snapshot->fanTargetPercent[i] = (unsigned int)(intended < 0 ? 0 : intended);
+                snapshot->fanTargetKnown[i] = true;
+            } else {
+                // No intent getter: fall back to the measured duty so rollback
+                // still has something to aim at, but remember it is a guess so
+                // verification does not demand an exact match against telemetry.
+                int measured = nvml_read_fan_measured(g, i);
+                if (measured < 0) snapshot->fanValid = false;
+                else snapshot->fanTargetPercent[i] = (unsigned int)measured;
+                snapshot->fanTargetKnown[i] = false;
+            }
             if (!g->nvml.getFanControlPolicy ||
                 g->nvml.getFanControlPolicy(g->nvmlDevice, i, &snapshot->fanPolicy[i]) != NVML_SUCCESS)
                 snapshot->fanValid = false;
         }
     }
     snapshot->valid = snapshot->gpuOffsetValid || snapshot->memOffsetValid ||
-                      snapshot->powerValid || snapshot->curveValid || snapshot->fanValid;
+                       snapshot->powerValid || snapshot->curveValid || snapshot->fanValid;
+    bool gpuOffsetWritable = g->nvml.setGpcClkVfOffset ||
+        g->nvml.setClockOffsets;
+    bool memOffsetWritable = g->nvml.setMemClkVfOffset ||
+        g->nvml.setClockOffsets;
+    bool fanAutoWritable = g->nvml.setDefaultFanSpeed ||
+        g->nvml.setFanControlPolicy;
+    if (g->writeIdentityResolved) {
+        if (snapshot->gpuOffsetValid && gpuOffsetWritable)
+            snapshot->availableMutationDomains |=
+                SERVICE_MUTATION_DOMAIN_GPU_OFFSET;
+        if (snapshot->memOffsetValid && memOffsetWritable)
+            snapshot->availableMutationDomains |=
+                SERVICE_MUTATION_DOMAIN_MEM_OFFSET;
+        if (snapshot->powerValid && g->nvml.setPowerLimit)
+            snapshot->availableMutationDomains |=
+                SERVICE_MUTATION_DOMAIN_POWER;
+        if (snapshot->curveValid)
+            snapshot->availableMutationDomains |=
+                SERVICE_MUTATION_DOMAIN_VF_CURVE;
+        if (g->nvml.setGpuLockedClocks && g->nvml.resetGpuLockedClocks)
+            snapshot->availableMutationDomains |=
+                SERVICE_MUTATION_DOMAIN_LOCK;
+        if (snapshot->fanValid && g->nvml.setFanSpeed && fanAutoWritable)
+            snapshot->availableMutationDomains |=
+                SERVICE_MUTATION_DOMAIN_FAN;
+        if (snapshot->gpuOffsetValid && snapshot->memOffsetValid &&
+            gpuOffsetWritable && memOffsetWritable &&
+            g->nvml.resetGpuLockedClocks)
+            snapshot->availableMutationDomains |=
+                SERVICE_MUTATION_DOMAIN_RESET_BASELINE;
+    }
+    g->health.availableMutationDomains = snapshot->availableMutationDomains;
+
+    // Mirror the same facts into the per-domain capability probe the Windows
+    // side reports, deriving rather than re-probing so the two cannot diverge.
+    //
+    // The UNPROBED-vs-REFUSED split follows the same conservatism as
+    // gpu_capability_classify(): a domain we could READ but cannot WRITE only
+    // because the driver lacks the setter is an older driver, not absent
+    // hardware, so it stays UNPROBED and raises no warning.  A domain whose
+    // read itself failed is positive evidence and becomes REFUSED.
+    {
+        struct {
+            gc_u32 mask;
+            bool readValid;
+            bool writable;
+        } domains[] = {
+            { SERVICE_MUTATION_DOMAIN_GPU_OFFSET, snapshot->gpuOffsetValid, gpuOffsetWritable },
+            { SERVICE_MUTATION_DOMAIN_MEM_OFFSET, snapshot->memOffsetValid, memOffsetWritable },
+            { SERVICE_MUTATION_DOMAIN_POWER, snapshot->powerValid, g->nvml.setPowerLimit != nullptr },
+            { SERVICE_MUTATION_DOMAIN_VF_CURVE, snapshot->curveValid, true },
+            { SERVICE_MUTATION_DOMAIN_LOCK, true,
+              g->nvml.setGpuLockedClocks != nullptr && g->nvml.resetGpuLockedClocks != nullptr },
+            { SERVICE_MUTATION_DOMAIN_FAN, snapshot->fanValid,
+              g->nvml.setFanSpeed != nullptr && fanAutoWritable },
+        };
+        for (size_t i = 0; i < sizeof(domains) / sizeof(domains[0]); ++i) {
+            gc_u32 cap;
+            if (snapshot->availableMutationDomains & domains[i].mask) {
+                cap = GPU_DOMAIN_CAP_AVAILABLE;
+            } else if (!g->writeIdentityResolved || !domains[i].writable) {
+                cap = GPU_DOMAIN_CAP_UNPROBED;
+            } else {
+                cap = domains[i].readValid ? GPU_DOMAIN_CAP_UNPROBED
+                                           : GPU_DOMAIN_CAP_REFUSED;
+            }
+            gpu_capability_set(&g->capability, domains[i].mask, cap);
+        }
+        g->capability.memoryTopology = linux_platform_is_integrated_soc()
+            ? GPU_MEMORY_TOPOLOGY_UNIFIED
+            : GPU_MEMORY_TOPOLOGY_UNKNOWN;
+    }
+    g->health.capabilityMemoryTopology =
+        (gc_u8)g->capability.memoryTopology;
+    g->health.capabilityDomainsPacked =
+        gpu_capability_pack_domains(&g->capability);
+    linux_backend_publish_health(g, g->health.reason,
+        g->health.driverStatus, g->health.detail);
     if (!snapshot->valid) gc_strlcpy(err, errSize, "no rollback-capable GPU state could be captured");
     return snapshot->valid;
 }
@@ -101,7 +199,7 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
                     fanOk = g->nvml.setFanControlPolicy(g->nvmlDevice, i,
                         NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW) == NVML_SUCCESS;
             } else if (g->nvml.setFanSpeed) {
-                fanOk = g->nvml.setFanSpeed(g->nvmlDevice, i, snapshot->fanPercent[i]) == NVML_SUCCESS;
+                fanOk = g->nvml.setFanSpeed(g->nvmlDevice, i, snapshot->fanTargetPercent[i]) == NVML_SUCCESS;
             }
             if (fanOk && snapshot->fanPolicy[i] == NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW) {
                 unsigned int verifyPolicy = 0;
@@ -109,10 +207,19 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
                         g->nvml.getFanControlPolicy(g->nvmlDevice, i, &verifyPolicy) == NVML_SUCCESS &&
                         verifyPolicy == NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW;
             } else if (fanOk) {
-                unsigned int verifyPercent = 0;
-                fanOk = g->nvml.getFanSpeed &&
-                        g->nvml.getFanSpeed(g->nvmlDevice, i, &verifyPercent) == NVML_SUCCESS &&
-                        verifyPercent == snapshot->fanPercent[i];
+                // Same trap as the forward write: the measured duty is not a
+                // readback.  Confirm the restored *intent* instead.
+                int intended = 0;
+                bool intendedKnown = nvml_read_fan_intent(g, i, &intended);
+                int measured = nvml_read_fan_measured(g, i);
+                fanOk = fan_manual_write_confirmed((int)snapshot->fanTargetPercent[i],
+                    measured < 0 ? 0 : measured, intended, intendedKnown);
+                if (!fanOk) {
+                    lb_log("fan: rollback readback mismatch for fan %u "
+                           "(want=%u intent=%s%d measured=%d)\n",
+                           i, snapshot->fanTargetPercent[i],
+                           intendedKnown ? "" : "unknown:", intended, measured);
+                }
             }
             if (!fanOk) lb_log("fan: rollback verification failed for fan %u\n", i);
             ok &= fanOk;
@@ -136,6 +243,16 @@ static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
                                     char* err, size_t errSize) {
     if (!g || !d || !g->nvmlReady || !g->writeIdentityResolved) {
         gc_strlcpy(err, errSize, "GPU write target is unavailable or not uniquely resolved");
+        return false;
+    }
+    gc_u32 requestedDomains = service_desired_mutation_domains(d);
+    gc_u32 unavailableDomains = service_unavailable_mutation_domains(
+        SERVICE_CMD_APPLY, d, snapshot->availableMutationDomains);
+    if (unavailableDomains != 0) {
+        gc_snprintf(err, errSize,
+            "requested GPU domains are unavailable (requested=0x%02x available=0x%02x missing=0x%02x)",
+            requestedDomains, snapshot->availableMutationDomains,
+            unavailableDomains);
         return false;
     }
     bool hardLock = d->hasLock && d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
@@ -183,6 +300,18 @@ static LinuxCurveTargetBuildResult build_curve_targets(LinuxGpuState* g,
     (void)mx;
     return linux_build_curve_targets(g->curve, g->freqOffsets, d, mn,
         targetOffsets, pointMask);
+}
+
+static LinuxCurveTargetBuildResult build_curve_transition_targets(
+    LinuxGpuState* g, const DesiredSettings* previousIntent,
+    const DesiredSettings* committedIntent, int* targetOffsets,
+    bool* pointMask, int* cleanupPointCountOut) {
+    int mn = 0, mx = 0;
+    curve_offset_range_khz(g, &mn, &mx);
+    (void)mx;
+    return linux_build_curve_transition_targets(
+        g->curve, g->freqOffsets, previousIntent, committedIntent, mn,
+        targetOffsets, pointMask, cleanupPointCountOut);
 }
 
 struct LinuxApplyTransactionContext {
@@ -242,9 +371,12 @@ static int phase_count(unsigned int phases) {
 }
 
 LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings* d,
+                                        const DesiredSettings* previousIntent,
+                                        const DesiredSettings* committedIntent,
                                         char* result, size_t resultSize) {
     LinuxHardwareSnapshot snapshot = {};
     char preflight[256] = {};
+    linux_backend_refresh(g);
     if (!linux_backend_capture_snapshot(g, &snapshot, preflight, sizeof(preflight)) ||
         !linux_backend_preflight(g, d, &snapshot, preflight, sizeof(preflight))) {
         LinuxMutationResult mutation = {};
@@ -254,8 +386,22 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     bool hardLock = d->hasLock && d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
     LinuxApplyTransactionContext context = {g, d, &snapshot, {}, {},
         d->fanPercent};
-    LinuxCurveTargetBuildResult curveBuild = build_curve_targets(g, d,
-        context.curveTargets, context.curveMask);
+    gc_u32 requestedDomains = service_desired_mutation_domains(d);
+    int cleanupPointCount = 0;
+    LinuxCurveTargetBuildResult curveBuild = {};
+    if ((requestedDomains & SERVICE_MUTATION_DOMAIN_VF_CURVE) != 0 &&
+        committedIntent) {
+        curveBuild = build_curve_transition_targets(g, previousIntent,
+            committedIntent, context.curveTargets, context.curveMask,
+            &cleanupPointCount);
+    } else {
+        curveBuild = build_curve_targets(g, d, context.curveTargets,
+            context.curveMask);
+    }
+    if (cleanupPointCount > 0) {
+        lb_log("apply: added %d zero-offset cleanup point(s) for replaced "
+               "VF intent\n", cleanupPointCount);
+    }
     if (d->hasFan && d->fanMode == FAN_MODE_CURVE) {
         FanCurveConfig normalized = d->fanCurve;
         fan_curve_normalize(&normalized);
@@ -346,17 +492,16 @@ LinuxMutationResult linux_backend_reset(LinuxGpuState* g, char* result, size_t r
     LinuxMutationResult mutation = {};
     LinuxHardwareSnapshot snapshot = {};
     char detail[256] = {};
+    linux_backend_refresh(g);
     if (!linux_backend_capture_snapshot(g, &snapshot, detail, sizeof(detail)) ||
         !g->writeIdentityResolved) {
         if (result) gc_strlcpy(result, resultSize, detail[0] ? detail : "Reset preflight failed");
         return mutation;
     }
-    if (!snapshot.gpuOffsetValid || !snapshot.memOffsetValid || !snapshot.powerValid ||
-        !snapshot.curveValid || !snapshot.fanValid || !g->nvml.resetGpuLockedClocks ||
-        (!g->nvml.setGpcClkVfOffset && !g->nvml.setClockOffsets) ||
-        (!g->nvml.setMemClkVfOffset && !g->nvml.setClockOffsets) ||
-        !g->nvml.setPowerLimit || g->powerLimitDefaultmW <= 0 ||
-        !g->backend || !g->backend->writeSupported) {
+    const gc_u32 resetDomains = SERVICE_MUTATION_DOMAIN_ALL;
+    if ((snapshot.availableMutationDomains & resetDomains) != resetDomains ||
+        g->powerLimitDefaultmW <= 0 || !g->backend ||
+        !g->backend->writeSupported) {
         gc_strlcpy(detail, sizeof(detail),
                    "Reset preflight failed: every mutable domain must support snapshot and restore");
         if (result) gc_strlcpy(result, resultSize, detail);
@@ -382,4 +527,3 @@ bool linux_backend_set_curve_fan_percent(LinuxGpuState* g, unsigned int percent)
 bool linux_backend_set_fan_auto(LinuxGpuState* g) {
     return g && nvml_set_fan(g, FAN_MODE_AUTO, true, 0);
 }
-

@@ -4,6 +4,8 @@
 #ifndef GREEN_CURVE_GUI_TRAY_CALLBACK_POLICY_H
 #define GREEN_CURVE_GUI_TRAY_CALLBACK_POLICY_H
 
+#include "platform.h"
+
 // Shell notification version 4 reports activation through NIN_SELECT /
 // NIN_KEYSELECT.  Treating the legacy mouse-up notifications as activation as
 // well can turn one physical click into two window-open transactions.
@@ -51,6 +53,57 @@ static inline bool gui_tray_hidden_intent_blocks_show(
 static inline bool gui_tray_hidden_intent_requires_rehide(
     bool hiddenIntent, bool windowVisible, bool enforcementActive) {
     return hiddenIntent && windowVisible && !enforcementActive;
+}
+
+// The tray tooltip names the profile that is ACTUALLY APPLIED to the GPU, never
+// the one merely selected in the combo or loaded into the editor.  Loading a
+// profile deliberately does not touch hardware, so reporting it as active was a
+// straight lie: with slot 2 applied and slot 1 loaded the tray claimed
+// "Profile 1".
+//
+// `appliedUserSlot` is `[profiles] applied_slot`, the same authority the tray
+// menu checkmark uses (auto_profile_active_slot()), so the tooltip and the tick
+// directly next to it cannot disagree.  It is 0 when no personal slot is active;
+// only then does the service's own view decide the wording.
+//
+// Shared and machine banks must NOT masquerade as the same-numbered personal
+// slot -- they are separate banks with separate contents -- so they are named
+// explicitly instead of being folded into "Profile N".
+enum GuiTrayProfileKind {
+    GUI_TRAY_PROFILE_NONE = 0,
+    GUI_TRAY_PROFILE_USER_SLOT,
+    GUI_TRAY_PROFILE_SHARED_SLOT,
+    GUI_TRAY_PROFILE_MACHINE_SLOT,
+    GUI_TRAY_PROFILE_AD_HOC,
+};
+
+static inline void gui_tray_format_active_profile(char* out, size_t outSize,
+    int appliedUserSlot, GuiTrayProfileKind kind, int sourceSlot,
+    int maxSlots) {
+    if (!out || outSize == 0) return;
+    out[0] = '\0';
+    bool userSlotValid = appliedUserSlot >= 1 && appliedUserSlot <= maxSlots;
+    if (userSlotValid) {
+        gc_appendf(out, outSize, 0, "Profile %d", appliedUserSlot);
+        return;
+    }
+    bool sourceSlotValid = sourceSlot >= 1 && sourceSlot <= maxSlots;
+    if (kind == GUI_TRAY_PROFILE_SHARED_SLOT && sourceSlotValid) {
+        gc_appendf(out, outSize, 0, "Shared profile %d", sourceSlot);
+        return;
+    }
+    if (kind == GUI_TRAY_PROFILE_MACHINE_SLOT && sourceSlotValid) {
+        gc_appendf(out, outSize, 0, "Machine profile %d", sourceSlot);
+        return;
+    }
+    // A hand-typed Apply owns the GPU without belonging to any slot, and so does
+    // a user slot whose saved intent has since been edited away from what is
+    // running (applied_slot is cleared for exactly that case).
+    if (kind == GUI_TRAY_PROFILE_AD_HOC || kind == GUI_TRAY_PROFILE_USER_SLOT) {
+        gc_appendf(out, outSize, 0, "Manual settings");
+        return;
+    }
+    gc_appendf(out, outSize, 0, "No profile");
 }
 
 #endif // GREEN_CURVE_GUI_TRAY_CALLBACK_POLICY_H

@@ -21,6 +21,11 @@ void print_linux_help() {
     puts("  greencurve --write-assets [--assets-dir path]");
     puts("  greencurve --config path --profile N");
     puts("  greencurve --gpu DDDD:BB:DD.F       Select and persist an exact PCI GPU");
+    puts("Startup (what the daemon applies at boot):");
+    puts("  greencurve --show-startup                 Show the current startup policy");
+    puts("  greencurve --startup-profile N            Apply profile N at daemon start");
+    puts("  greencurve --startup-profile last         Re-apply the last applied settings (default)");
+    puts("  greencurve --startup-profile none         Apply nothing at daemon start");
     puts("Daemon (root):");
     puts("  sudo greencurve --service-install   Install + start the systemd daemon");
     puts("  sudo greencurve --service-remove    Stop + remove the daemon");
@@ -93,6 +98,39 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
         } else if (strcmp(arg, "--self-test") == 0) {
             opts->recognized = true;
             opts->selfTest = true;
+        } else if (strcmp(arg, "--from-desktop") == 0) {
+            // Set by the terminal relaunch and by the generated .desktop
+            // entries.  Deliberately does not set `recognized`: on its own it
+            // still means "open the TUI".
+            opts->fromDesktop = true;
+        } else if (strcmp(arg, "--show-startup") == 0) {
+            opts->recognized = true;
+            opts->startupPolicyAction = LINUX_STARTUP_POLICY_ACTION_SHOW;
+        } else if (strcmp(arg, "--startup-profile") == 0) {
+            opts->recognized = true;
+            if (!argument_requires_value(argc, i)) {
+                set_message(opts->error, sizeof(opts->error),
+                    "Missing --startup-profile value (none, last or 1-%d)",
+                    CONFIG_NUM_SLOTS);
+                return false;
+            }
+            const char* value = argv[++i];
+            opts->startupPolicyAction = LINUX_STARTUP_POLICY_ACTION_SET;
+            if (streqi_ascii(value, "none") || streqi_ascii(value, "off")) {
+                opts->startupPolicyMode = SERVICE_STARTUP_POLICY_NONE;
+            } else if (streqi_ascii(value, "last") ||
+                       streqi_ascii(value, "restore-last")) {
+                opts->startupPolicyMode = SERVICE_STARTUP_POLICY_RESTORE_LAST;
+            } else if (parse_int_strict(value, &opts->startupPolicySlot) &&
+                       opts->startupPolicySlot >= 1 &&
+                       opts->startupPolicySlot <= CONFIG_NUM_SLOTS) {
+                opts->startupPolicyMode = SERVICE_STARTUP_POLICY_PROFILE;
+            } else {
+                set_message(opts->error, sizeof(opts->error),
+                    "Invalid --startup-profile value '%s'; use none, last or 1-%d",
+                    value, CONFIG_NUM_SLOTS);
+                return false;
+            }
         } else if (strcmp(arg, "--config") == 0) {
             opts->recognized = true;
             if (!argument_requires_value(argc, i)) {
@@ -174,6 +212,14 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
             int value = 0;
             if (!argument_requires_value(argc, i) || !parse_int_strict(argv[++i], &value)) {
                 set_message(opts->error, sizeof(opts->error), "Invalid --power-limit value");
+                return false;
+            }
+            // Reject rather than clamp: a silent clamp is how a requested 105%
+            // used to become a stored 100%.
+            if (value < POWER_LIMIT_MIN_PCT || value > POWER_LIMIT_MAX_PCT) {
+                set_message(opts->error, sizeof(opts->error),
+                    "--power-limit %d is outside the safe range %d..%d",
+                    value, POWER_LIMIT_MIN_PCT, POWER_LIMIT_MAX_PCT);
                 return false;
             }
             opts->desired.hasPowerLimit = true;

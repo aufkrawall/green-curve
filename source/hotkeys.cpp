@@ -67,12 +67,16 @@ static unsigned int hk_parse_key_token(const char* tok) {
         if (c >= '0' && c <= '9') return (unsigned int)c;   // VK '0'..'9' == ASCII
         return 0;
     }
-    // Function keys f1..f24.
+    // Function keys f1..f24.  The bound is applied inside the loop: this token
+    // comes from user config ([hotkeys] slotN), and accumulating an arbitrary
+    // digit run before range-checking overflows int, which is undefined
+    // behaviour and trips -fno-sanitize-recover under UBSan.
     if (hk_lower(tok[0]) == 'f' && tok[1] >= '0' && tok[1] <= '9') {
         int n = 0;
         for (size_t i = 1; i < len; i++) {
             if (tok[i] < '0' || tok[i] > '9') return 0;
             n = n * 10 + (tok[i] - '0');
+            if (n > 24) return 0;
         }
         if (n >= 1 && n <= 24) return HK_VK_F1 + (unsigned int)(n - 1);
         return 0;
@@ -90,7 +94,10 @@ bool hotkey_parse(const char* text, HotkeyBinding* out) {
     if (out) { out->mods = 0; out->vk = 0; }
     if (!text || !out) return false;
 
+    // Reject rather than truncate: a silently clipped binding can still parse
+    // to a *different* valid hotkey than the one the user configured.
     char buf[128] = {};
+    if (strlen(text) >= sizeof(buf)) return false;
     size_t ti = 0;
     for (const char* p = text; *p && ti + 1 < sizeof(buf); ++p) buf[ti++] = *p;
     buf[ti] = 0;

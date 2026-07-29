@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
-// Main-thread reducer/application layer for protocol-v11 service envelopes.
+// Main-thread reducer/application layer for protocol-v12 service envelopes.
 // This is the only runtime path that turns service responses into AppData/HWND
 // state.  The service-I/O worker above posts immutable completions here.
 
@@ -118,6 +118,9 @@ static void gui_draft_capture_curve_value(int ci, const char* text) {
     g_app.guiDraft.curveMHz[ci] = valid ? (unsigned int)value : 0;
     StringCchCopyA(g_app.guiDraft.curveText[ci],
         ARRAY_COUNT(g_app.guiDraft.curveText[ci]), text ? text : "");
+    // Every genuine editor edit funnels through here and gui_draft_capture_text,
+    // so this is the one place F-PENDING has to re-evaluate for typed input.
+    gui_pending_changes_refresh();
 }
 
 static void gui_draft_capture_text(char* destination,
@@ -125,6 +128,7 @@ static void gui_draft_capture_text(char* destination,
     gui_draft_begin_user_edit();
     if (!destination || destinationCount == 0) return;
     StringCchCopyA(destination, destinationCount, text ? text : "");
+    gui_pending_changes_refresh();
 }
 
 static void gui_draft_capture_desired(const DesiredSettings* desired) {
@@ -171,6 +175,7 @@ static void gui_draft_mark_clean() {
         sizeof(g_app.guiDraft.pendingDesired));
     if (gui_service_model_ready(&g_app.guiServiceModel))
         gui_draft_capture_clean_projection();
+    gui_pending_changes_refresh();
 }
 
 static void gui_draft_discard() {
@@ -189,11 +194,16 @@ static void gui_draft_discard() {
         sizeof(g_app.guiDraft.curveValueValid));
     memset(g_app.guiDraft.curveText, 0, sizeof(g_app.guiDraft.curveText));
     debug_log("GUI draft: explicitly discarded by user\n");
+    gui_pending_changes_refresh();
 }
 
 static void gui_set_editor_enabled(bool ready) {
-    bool allowDraft = ready && g_app.guiDraft.attached &&
-        !g_app.guiDraft.detached;
+    // `ready` is supplied by the caller rather than re-derived, because the
+    // phase-only render path deliberately forces it false.
+    GuiServiceActionability actionable = gui_service_actionability_from_app();
+    actionable.ready = ready;
+    bool allowDraft = gui_service_capability_enabled(
+        &actionable, GUI_SERVICE_CAP_EDITOR);
     for (int vi = 0; vi < g_app.numVisible; ++vi) {
         bool tailDisabled = g_app.lockedVi >= 0 && vi > g_app.lockedVi;
         if (g_app.hEditsMhz[vi])
@@ -207,11 +217,17 @@ static void gui_set_editor_enabled(bool ready) {
         g_app.hGpuOffsetEdit, g_app.hGpuOffsetExcludeLowEdit,
         g_app.hMemOffsetEdit, g_app.hPowerLimitEdit, g_app.hFanEdit,
         g_app.hFanModeCombo, g_app.hFanCurveBtn,
-        g_app.hApplyBtn, g_app.hResetBtn,
+        g_app.hResetBtn,
     };
     for (HWND control : liveControls) {
         if (control) EnableWindow(control, allowDraft ? TRUE : FALSE);
     }
+    // Apply additionally needs something to apply (F-PENDING).  Reset stays
+    // ungated: returning the GPU to stock is meaningful with a clean editor.
+    if (g_app.hApplyBtn)
+        EnableWindow(g_app.hApplyBtn,
+            gui_pending_apply_button_enabled(allowDraft, gui_pending_summary())
+                ? TRUE : FALSE);
     // A detached draft must not make its recovery path unreachable.  Keep GPU
     // selection available for a coherent READY model so the user can reselect
     // the draft's original GPU; editing and hardware mutations remain blocked.
@@ -222,6 +238,11 @@ static void gui_set_editor_enabled(bool ready) {
         EnableWindow(g_app.hGpuSelectCombo, canSelectGpu ? TRUE : FALSE);
     }
     if (g_app.hRefreshBtn) EnableWindow(g_app.hRefreshBtn, TRUE);
+    // The profile row is gated on service reachability, not on readiness, so it
+    // has to be re-projected here: this is the one function every phase change,
+    // transport failure and READY adoption passes through. It reads only cached
+    // state, so running on the non-READY retry cadence costs nothing.
+    update_profile_action_buttons();
 }
 
 static void gui_project_attached_draft_to_controls() {
@@ -235,10 +256,11 @@ static void gui_project_attached_draft_to_controls() {
         if (g_app.hEditsMv[vi])
             set_edit_value(g_app.hEditsMv[vi],
                 g_app.curve[ci].volt_uV / 1000);
-        if (g_app.hLocks[vi]) {
-            SendMessageA(g_app.hLocks[vi], BM_SETCHECK,
-                vi == g_app.lockedVi ? BST_CHECKED : BST_UNCHECKED, 0);
-        }
+        // No lock-checkbox update here on purpose: draw_lock_checkbox() derives
+        // the tick from g_app.lockedVi/lockMode, which this snapshot projection
+        // does not change.  The paths that DO change them repaint themselves,
+        // and invalidating every lock checkbox on each service tick would be the
+        // background-probe flicker this projection exists to avoid.
     }
     if (g_app.hGpuOffsetEdit)
         SetWindowTextA(g_app.hGpuOffsetEdit, g_app.guiDraft.gpuOffsetText);
@@ -551,6 +573,10 @@ static void gui_apply_ready_envelope(const ServiceResponse* response,
         }
         sync_applied_profile_from_service_metadata();
         update_background_service_controls();
+        // After every projection branch above -- clean rebase, attached dirty
+        // draft, and the pre-READY sparse overlay -- so gui_set_editor_enabled
+        // gates Apply on a summary computed from the editor it just wrote.
+        gui_pending_changes_refresh();
         gui_set_editor_enabled(true);
         debug_log("GUI render transaction: reason=%s topologyChanged=%d old=%llu new=%llu dirty=%d attached=%d\n",
             reason && reason[0] ? reason : "state envelope",
@@ -663,6 +689,12 @@ static void gui_service_handle_admin_completion(
     g_app.backgroundServiceBroken = completion->serviceInstalled &&
         !completion->serviceRunning;
     update_background_service_controls();
+    // `available` was just cleared for all three outcomes below, but only the
+    // uninstall branch reaches gui_render_service_phase_only(). Re-gate the
+    // profile row here, before the branch, or a completed install/repair (and a
+    // failed toggle) would leave Load/Save/Shared/Auto-Profiles enabled against
+    // an unreachable service until the queued full sync landed.
+    update_profile_action_buttons();
     if (!completion->transportSuccess) {
         StringCchCopyA(g_app.backgroundServiceError,
             ARRAY_COUNT(g_app.backgroundServiceError),
@@ -670,7 +702,7 @@ static void gui_service_handle_admin_completion(
             "Failed updating the background service");
         set_profile_status_text("Background service change failed: %s",
             g_app.backgroundServiceError);
-        MessageBoxA(g_app.hMainWnd, g_app.backgroundServiceError,
+        gc_message_box(g_app.hMainWnd, g_app.backgroundServiceError,
             "Green Curve", MB_OK | MB_ICONERROR);
     } else if (completion->adminEnable) {
         g_app.backgroundServiceError[0] = '\0';

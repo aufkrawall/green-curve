@@ -16,10 +16,19 @@
 #include "gpu_core.h"
 
 #define GC_DAEMON_SOCKET_DIR  "/run/greencurve"
-#define GC_DAEMON_SOCKET_PATH "/run/greencurve/greencurve.sock"
+#define GC_DAEMON_SOCKET_NAME "greencurve.sock"
+#define GC_DAEMON_SOCKET_PATH GC_DAEMON_SOCKET_DIR "/" GC_DAEMON_SOCKET_NAME
 #define GC_DAEMON_STATE_DIR   "/var/lib/greencurve"
 #define GC_DAEMON_STATE_FILE  "/var/lib/greencurve/active.bin"
 #define GC_DAEMON_OPERATION_FILE "/var/lib/greencurve/operation.bin"
+// Boot-apply policy.  Root-owned and checksummed like the other two records:
+// it decides whether an unattended hardware write happens at daemon start.
+#define GC_DAEMON_STARTUP_FILE "/var/lib/greencurve/startup.bin"
+
+// Pending-connection backlog.  Requests are serviced one at a time under the
+// runtime lock, so this only has to absorb bursts while one request is in
+// flight; poll() keeps a stalled peer from blocking the loop before accept().
+#define GC_DAEMON_LISTEN_BACKLOG 8
 
 // Run the daemon event loop (blocks).  `configPath` is used for the
 // startup restart-reapply fallback.  Returns a process exit code.
@@ -47,9 +56,44 @@ bool linux_daemon_reset_checked(const GpuAdapterInfo* target,
                                 ServiceResponse* response,
                                 char* result, size_t resultSize);
 
+// Record this process's daemon-access context (group membership, socket owner/
+// mode, whether it can actually open the socket) in the debug log, once, before
+// anything can fail. Answers "why can't this user talk to the daemon" even for
+// runs where a later request happened to succeed.
+void linux_daemon_log_client_environment();
+
+// Ask the daemon which exact GPU identity it would write to, preferring
+// `preferred` when it is valid.  Fails closed when no exact identity is
+// published yet (multi-GPU without a selection, or a degraded backend).
+bool linux_daemon_resolve_write_target(const GpuAdapterInfo* preferred,
+                                       GpuAdapterInfo* out,
+                                       char* err, size_t errSize);
+
+// Startup-apply policy: what the daemon writes to the GPU when it starts.
+// The set path snapshots the resolved settings because the daemon runs with
+// ProtectHome=yes and cannot read the caller's config.ini itself.
+bool linux_daemon_get_startup_policy(ServiceResponse* response,
+                                     char* err, size_t errSize);
+bool linux_daemon_set_startup_policy(unsigned int mode, int profileSlot,
+                                     const char* profileName,
+                                     const GpuAdapterInfo* target,
+                                     const DesiredSettings* desired,
+                                     char* result, size_t resultSize);
+// Replace the settings of an already-bound `profile N` policy after slot N was
+// rewritten on disk.  Keeps the stored GPU binding, mode, slot and name, so it
+// is not a re-bind; fails when the daemon holds no such policy.
+bool linux_daemon_refresh_startup_profile(int profileSlot,
+                                          const DesiredSettings* desired,
+                                          char* result, size_t resultSize);
+
 // Install / remove the systemd unit (greencurve.service running `--daemon`) and
 // the greencurve admin group.  Require root.  Return 0 on success.
-int linux_service_install(char* err, size_t errSize);
+int linux_service_install(char* err, size_t errSize,
+                          ServiceResponse* verifiedResponse = nullptr);
 int linux_service_remove(char* err, size_t errSize);
+
+// Group paragraph for the install summary: confirms access when the invoking
+// account is already enrolled, and only prescribes usermod when it is not.
+void linux_describe_group_enrollment(char* out, size_t outSize);
 
 #endif // GREEN_CURVE_LINUX_DAEMON_H

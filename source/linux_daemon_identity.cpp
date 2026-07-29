@@ -24,6 +24,12 @@ static void daemon_stamp_state_envelope(ServiceResponse* response) {
     // Rebuild snapshot and controls together under g_lock.  This keeps the
     // envelope atomic: identity, topology, live controls and active intent all
     // describe the same selected-GPU lifetime.
+    //
+    // This runs at the end of EVERY request, so snapshot, controlState and
+    // desired belong to it alone -- whatever a handler wrote into them is
+    // overwritten here.  A handler with something else to publish needs its own
+    // response member; resp->startupProfile exists because the boot-apply
+    // snapshot was borrowing resp->desired and losing that race silently.
     populate_snapshot(&response->snapshot, &response->controlState);
     if (g_hasActiveDesired) response->desired = g_activeDesired;
     response->state.serviceInstanceId = daemon_service_instance_id();
@@ -32,6 +38,11 @@ static void daemon_stamp_state_envelope(ServiceResponse* response) {
     response->state.gpuPhase = SERVICE_GPU_PHASE_DEVICE_MISSING;
     response->state.validSections = SERVICE_STATE_SECTION_ACTIVE_INTENT;
     response->state.activeDesiredValid = g_hasActiveDesired;
+    // Published on every envelope so a client renders the boot-apply policy
+    // without a second round trip.  The in-memory copy is the record the daemon
+    // committed, so a failed store never advertises a policy it will not honor.
+    response->state.startupPolicyMode = g_startupPolicy.mode;
+    response->state.startupPolicySlot = g_startupPolicy.profileSlot;
     // A multi-GPU backend may use adapter 0 for read-only telemetry before an
     // exact write target is chosen. Do not publish that fallback as selected.
     if (g_gpu.writeIdentityResolved &&
@@ -39,7 +50,11 @@ static void daemon_stamp_state_envelope(ServiceResponse* response) {
         response->snapshot.selectedAdapterIndex <
             response->snapshot.adapterCount &&
         response->snapshot.adapters[
-            response->snapshot.selectedAdapterIndex].valid) {
+            response->snapshot.selectedAdapterIndex].valid &&
+        (linux_gpu_bdf_valid(&response->snapshot.adapters[
+             response->snapshot.selectedAdapterIndex]) ||
+         response->snapshot.adapters[
+             response->snapshot.selectedAdapterIndex].pciInfoValid)) {
         response->state.validSections |= SERVICE_STATE_SECTION_ADAPTER_IDENTITY;
     }
     if (response->snapshot.loaded && response->snapshot.numPopulated > 0) {

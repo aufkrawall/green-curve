@@ -1214,8 +1214,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     if (desired->hasPowerLimit) {
         int currentPowerPct = g_app.powerLimitPct;
         if (desired->powerLimitPct != currentPowerPct) {
-            if (desired->powerLimitPct < 50 || desired->powerLimitPct > 150) {
-                append_failure("Power limit %d%% outside safe range 50..150%%", desired->powerLimitPct);
+            if (desired->powerLimitPct != clamp_power_limit_pct(desired->powerLimitPct)) {
+                append_failure("Power limit %d%% outside safe range %d..%d%%", desired->powerLimitPct, POWER_LIMIT_MIN_PCT, POWER_LIMIT_MAX_PCT);
                 failCount++;
                 partialApplyRisk = true;
             } else {
@@ -1234,9 +1234,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         if (successCount > 0) {
             partialApplyRisk = true;
             rollback_to_safe_defaults();
-            g_app.gpuClockOffsetkHz = 0;
-            g_app.memClockOffsetkHz = 0;
-            g_app.powerLimitPct = 0;
+            g_app.gpuClockOffsetkHz = g_app.memClockOffsetkHz = g_app.powerLimitPct = 0;
+            invalidate_scalar_readbacks(&g_app.readback);
             char rollbackDetail[128] = {};
             refresh_global_state(rollbackDetail, sizeof(rollbackDetail));
             debug_log("apply: fan failure triggered rollback of %d earlier hardware writes\n", successCount);
@@ -1246,9 +1245,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     if (failCount > 0 && successCount > 0) {
         partialApplyRisk = true;
         rollback_to_safe_defaults();
-        g_app.gpuClockOffsetkHz = 0;
-        g_app.memClockOffsetkHz = 0;
-        g_app.powerLimitPct = 0;
+        g_app.gpuClockOffsetkHz = g_app.memClockOffsetkHz = g_app.powerLimitPct = 0;
+        invalidate_scalar_readbacks(&g_app.readback);
         char rollbackDetail[128] = {};
         refresh_global_state(rollbackDetail, sizeof(rollbackDetail));
     }

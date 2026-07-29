@@ -10,9 +10,13 @@
 
 #include "linux_daemon.h"
 #include "linux_backend.h"
+#include "linux_crash_breadcrumb.h"
 #include "linux_daemon_state.h"
+#include "linux_debug_log.h"
 #include "linux_gpu_selection.h"
+#include "linux_mutation_authority.h"
 #include "profile_persistence_policy.h"
+#include "startup_snapshot_policy.h"
 #include "platform.h"
 #include "fan_curve.h"
 #include "fan_runtime_policy.h"
@@ -20,7 +24,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
+#include <pwd.h>  // getpwnam: a primary-group member never appears in gr_mem
 #include <poll.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,150 +47,50 @@
 #define APP_BUILD_NUMBER 0
 #endif
 
-// ===========================================================================
-// Framed blocking read/write of the fixed-size protocol structs.
-// ===========================================================================
-#define GC_DAEMON_IO_TIMEOUT_MS 2000
-
-static unsigned long long monotonic_ms() {
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
-    return (unsigned long long)ts.tv_sec * 1000ULL + (unsigned long long)(ts.tv_nsec / 1000000ULL);
-}
-
-static bool set_nonblocking(int fd) {
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags < 0) return false;
-    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) return false;
-    return true;
-}
-
-static bool wait_fd_ready(int fd, short events, unsigned long long deadlineMs) {
-    for (;;) {
-        unsigned long long now = monotonic_ms();
-        if (now >= deadlineMs) return false;
-        unsigned long long remaining = deadlineMs - now;
-        int timeout = remaining > 2147483647ULL ? 2147483647 : (int)remaining;
-        struct pollfd pfd;
-        memset(&pfd, 0, sizeof(pfd));
-        pfd.fd = fd;
-        pfd.events = events;
-        int r = poll(&pfd, 1, timeout);
-        if (r > 0) {
-            if (pfd.revents & events) return true;
-            if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) return false;
-        } else if (r == 0) {
-            return false;
-        } else if (errno != EINTR) {
-            return false;
-        }
-    }
-}
-
-static bool read_full(int fd, void* buf, size_t len) {
-    unsigned char* p = (unsigned char*)buf;
-    size_t got = 0;
-    unsigned long long deadline = monotonic_ms() + GC_DAEMON_IO_TIMEOUT_MS;
-    while (got < len) {
-        if (!wait_fd_ready(fd, POLLIN, deadline)) return false;
-        ssize_t n = read(fd, p + got, len - got);
-        if (n > 0) { got += (size_t)n; continue; }
-        if (n < 0 && errno == EINTR) continue;
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
-        return false;
-    }
-    return true;
-}
-static bool write_full(int fd, const void* buf, size_t len) {
-    const unsigned char* p = (const unsigned char*)buf;
-    size_t put = 0;
-    unsigned long long deadline = monotonic_ms() + GC_DAEMON_IO_TIMEOUT_MS;
-    while (put < len) {
-        if (!wait_fd_ready(fd, POLLOUT, deadline)) return false;
-        ssize_t n = write(fd, p + put, len - put);
-        if (n > 0) { put += (size_t)n; continue; }
-        if (n < 0 && errno == EINTR) continue;
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue;
-        return false;
-    }
-    return true;
-}
-
+// Every daemon and client-transport diagnostic goes through the shared file
+// sink.  The daemon additionally mirrors to stderr (systemd routes it to the
+// journal); interactive clients do not, because stderr is the terminal the TUI
+// is about to take over and transport chatter used to land on top of the user's
+// shell before the alternate screen was even entered.
 static void dlog(const char* fmt, ...)
 #if defined(__GNUC__)
     __attribute__((format(printf, 1, 2)))
 #endif
     ;
 static void dlog(const char* fmt, ...) {
+    if (!linux_debug_log_is_enabled()) return;
+    char text[1024] = {};
     va_list ap;
     va_start(ap, fmt);
-    // flawfinder: ignore -- private logger; every call site supplies a constant format.
-    vfprintf(stderr, fmt, ap);
+    gc_vsnprintf(text, sizeof(text), fmt, ap);
     va_end(ap);
+    linux_debug_logf("%s", text);
 }
 
-// ===========================================================================
-// Client side
-// ===========================================================================
-// Connect to the root daemon while preserving the failure reason for the
-// unprivileged CLI/TUI.  In particular, EACCES/EPERM means the daemon may be
-// healthy but the current login session is not in the greencurve admin group.
-static int client_connect(int* connectErrno) {
-    if (connectErrno) *connectErrno = 0;
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) {
-        if (connectErrno) *connectErrno = errno;
-        return -1;
-    }
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    gc_strlcpy(addr.sun_path, sizeof(addr.sun_path), GC_DAEMON_SOCKET_PATH);
-    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
-        int failureErrno = errno;
-        close(fd);
-        if (connectErrno) *connectErrno = failureErrno;
-        return -1;
-    }
-    set_nonblocking(fd);
-    return fd;
-}
+#include "linux_daemon_transport.cpp"
 
-bool linux_daemon_send(const ServiceRequest* req, ServiceResponse* resp,
-                       char* err, size_t errSize) {
-    if (err && errSize) err[0] = 0;
-    int connectErrno = 0;
-    int fd = client_connect(&connectErrno);
-    if (fd < 0) {
-        if (err && (connectErrno == EACCES || connectErrno == EPERM)) {
-            gc_snprintf(err, errSize,
-                        "permission denied accessing %s; add your user to greencurve: "
-                        "sudo usermod -aG greencurve \"$USER\"; then sign out/in or run newgrp greencurve",
-                        GC_DAEMON_SOCKET_PATH);
-        } else if (err) {
-            gc_snprintf(err, errSize, "daemon not reachable at %s: %s (is greencurve.service running?)",
-                        GC_DAEMON_SOCKET_PATH, connectErrno ? strerror(connectErrno) : "unknown error");
-        }
-        return false;
-    }
-    bool ok = write_full(fd, req, sizeof(*req)) && read_full(fd, resp, sizeof(*resp));
-    close(fd);
-    if (!ok) { if (err) gc_strlcpy(err, errSize, "daemon I/O error"); return false; }
-    if (resp->magic != SERVICE_PROTOCOL_MAGIC) { if (err) gc_strlcpy(err, errSize, "bad daemon response"); return false; }
-    if (!validate_service_response_for_ipc(resp)) {
-        if (err) gc_strlcpy(err, errSize, "daemon returned an invalid state envelope");
-        return false;
-    }
-    if (resp->status == SERVICE_STATUS_VERSION_MISMATCH) {
-        if (err) gc_snprintf(err, errSize, "daemon protocol mismatch (client %u, daemon %u)",
-                             (unsigned)SERVICE_PROTOCOL_VERSION, (unsigned)resp->version);
-        return false;
-    }
-    return resp->status == SERVICE_STATUS_OK;
+// ===========================================================================
+// Client side convenience requests
+// ===========================================================================
+
+static const GpuAdapterInfo* daemon_response_selected_gpu(
+    const ServiceResponse* response) {
+    if (!response ||
+        (response->state.validSections &
+            SERVICE_STATE_SECTION_ADAPTER_IDENTITY) == 0 ||
+        response->snapshot.selectedAdapterIndex >=
+            response->snapshot.adapterCount ||
+        response->snapshot.selectedAdapterIndex >= MAX_GPU_ADAPTERS)
+        return nullptr;
+    const GpuAdapterInfo* gpu = &response->snapshot.adapters[
+        response->snapshot.selectedAdapterIndex];
+    return gpu->valid &&
+        (linux_gpu_bdf_valid(gpu) || gpu->pciInfoValid) ? gpu : nullptr;
 }
 
 static bool send_simple(unsigned int command, const DesiredSettings* desired,
                          const GpuAdapterInfo* target, bool interactive,
+                         ServiceApplyOrigin applyOrigin,
                          const ServiceStateEnvelope* expected,
                          ServiceResponse* response,
                          char* result, size_t resultSize) {
@@ -193,8 +99,9 @@ static bool send_simple(unsigned int command, const DesiredSettings* desired,
     req.magic = SERVICE_PROTOCOL_MAGIC;
     req.version = SERVICE_PROTOCOL_VERSION;
     req.command = command;
-    req.flags = interactive ? SERVICE_REQUEST_FLAG_INTERACTIVE : 0;
+    req.flags = service_request_flags_for_command(command, interactive);
     req.callerPid = (gc_u32)getpid();
+    if (command == SERVICE_CMD_APPLY) req.applyOrigin = applyOrigin;
     if (command == SERVICE_CMD_APPLY || command == SERVICE_CMD_RESET) {
         ssize_t randomBytes = -1;
         do {
@@ -252,11 +159,42 @@ static bool send_simple(unsigned int command, const DesiredSettings* desired,
 
 bool linux_daemon_apply(const GpuAdapterInfo* target, const DesiredSettings* desired, bool interactive,
                          char* result, size_t resultSize) {
-    return linux_daemon_apply_checked(target, desired, interactive, nullptr,
-                                      nullptr, result, resultSize);
+    ServiceResponse current = {};
+    char error[256] = {};
+    if (!linux_daemon_get_state(target, &current, error, sizeof(error))) {
+        if (result) gc_strlcpy(result, resultSize,
+            error[0] ? error : "cannot attach Apply to live daemon state");
+        return false;
+    }
+    const GpuAdapterInfo* authoritative =
+        daemon_response_selected_gpu(&current);
+    if (!authoritative) {
+        if (result) gc_strlcpy(result, resultSize,
+            "daemon did not publish an exact GPU identity for Apply");
+        return false;
+    }
+    return send_simple(SERVICE_CMD_APPLY, desired, authoritative, interactive,
+                       SERVICE_APPLY_ORIGIN_CLI, &current.state,
+                       nullptr, result, resultSize);
 }
 bool linux_daemon_reset(const GpuAdapterInfo* target, char* result, size_t resultSize) {
-    return linux_daemon_reset_checked(target, nullptr, nullptr, result, resultSize);
+    ServiceResponse current = {};
+    char error[256] = {};
+    if (!linux_daemon_get_state(target, &current, error, sizeof(error))) {
+        if (result) gc_strlcpy(result, resultSize,
+            error[0] ? error : "cannot attach Reset to live daemon state");
+        return false;
+    }
+    const GpuAdapterInfo* authoritative =
+        daemon_response_selected_gpu(&current);
+    if (!authoritative) {
+        if (result) gc_strlcpy(result, resultSize,
+            "daemon did not publish an exact GPU identity for Reset");
+        return false;
+    }
+    return send_simple(SERVICE_CMD_RESET, nullptr, authoritative, true,
+                       SERVICE_APPLY_ORIGIN_UNSPECIFIED, &current.state,
+                       nullptr, result, resultSize);
 }
 
 bool linux_daemon_apply_checked(const GpuAdapterInfo* target,
@@ -264,7 +202,17 @@ bool linux_daemon_apply_checked(const GpuAdapterInfo* target,
                                 const ServiceStateEnvelope* expected,
                                 ServiceResponse* response,
                                 char* result, size_t resultSize) {
+    gc_u32 domains = service_desired_mutation_domains(desired);
+    if (!target || !target->valid || !desired || !expected ||
+        !expected->serviceInstanceId || !expected->gpuGeneration ||
+        (service_mutation_domains_require_vf(domains) &&
+         !expected->topologySignature)) {
+        if (result) gc_strlcpy(result, resultSize,
+            "Apply is not attached to the required daemon/GPU/topology generation");
+        return false;
+    }
     return send_simple(SERVICE_CMD_APPLY, desired, target, interactive,
+                       SERVICE_APPLY_ORIGIN_GUI,
                        expected, response, result, resultSize);
 }
 
@@ -272,7 +220,15 @@ bool linux_daemon_reset_checked(const GpuAdapterInfo* target,
                                 const ServiceStateEnvelope* expected,
                                 ServiceResponse* response,
                                 char* result, size_t resultSize) {
+    if (!target || !target->valid || !expected ||
+        !expected->serviceInstanceId || !expected->gpuGeneration ||
+        !expected->topologySignature) {
+        if (result) gc_strlcpy(result, resultSize,
+            "Reset is not attached to a complete READY daemon/GPU/topology generation");
+        return false;
+    }
     return send_simple(SERVICE_CMD_RESET, nullptr, target, true,
+                       SERVICE_APPLY_ORIGIN_UNSPECIFIED,
                        expected, response, result, resultSize);
 }
 
@@ -297,6 +253,21 @@ bool linux_daemon_get_state(const GpuAdapterInfo* target, ServiceResponse* respo
     return true;
 }
 
+bool linux_daemon_resolve_write_target(const GpuAdapterInfo* preferred,
+                                       GpuAdapterInfo* out,
+                                       char* err, size_t errSize) {
+    ServiceResponse current = {};
+    if (!linux_daemon_get_state(preferred, &current, err, errSize)) return false;
+    const GpuAdapterInfo* authoritative = daemon_response_selected_gpu(&current);
+    if (!authoritative) {
+        gc_strlcpy(err, errSize,
+            "daemon has not published an exact GPU identity yet");
+        return false;
+    }
+    if (out) *out = *authoritative;
+    return true;
+}
+
 // ===========================================================================
 // Daemon side
 // ===========================================================================
@@ -308,6 +279,9 @@ static bool g_hasActiveDesired = false;
 static GpuAdapterInfo g_activeTarget;
 static bool g_stateUncertain = false;
 static ServiceOperationTracker g_operationTracker = {};
+// The committed startup-apply policy.  Zero-initialized means RESTORE_LAST,
+// which is exactly what every build before protocol v13 did.
+static LinuxDaemonStartupRecord g_startupPolicy = {};
 
 static bool persist_daemon_operation(gc_u64 operationId, gc_u32 state,
     gc_u32 responseStatus, const char* message) {
@@ -323,18 +297,7 @@ static bool persist_daemon_operation(gc_u64 operationId, gc_u32 state,
 }
 
 #include "linux_operation_runtime.h"
-static unsigned int g_fanFailureCount = 0;
-static volatile int g_running = 1;
-static pthread_mutex_t g_fanWakeMutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t g_fanWakeCondition = PTHREAD_COND_INITIALIZER;
-static unsigned long long g_fanWakeGeneration = 0;
-
-static void wake_fan_runtime() {
-    pthread_mutex_lock(&g_fanWakeMutex);
-    ++g_fanWakeGeneration;
-    pthread_cond_broadcast(&g_fanWakeCondition);
-    pthread_mutex_unlock(&g_fanWakeMutex);
-}
+#include "linux_daemon_lifecycle.h"
 
 static bool store_daemon_record(LinuxDaemonRecordState state,
                                 const GpuAdapterInfo* target,
@@ -357,12 +320,17 @@ static bool restore_committed_record(bool hadPrevious, const GpuAdapterInfo* pre
 }
 
 #include "linux_daemon_snapshot_runtime.cpp"
+// The whole boot-apply policy feature: client requests, the two daemon request
+// handlers, the startup write, and the once-per-start record load.  Needs
+// store_daemon_record() and populate_snapshot() above it.
+#include "linux_startup_policy.h"
 
 
 static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp) {
     memset(resp, 0, sizeof(*resp));
     resp->magic = SERVICE_PROTOCOL_MAGIC;
     resp->version = SERVICE_PROTOCOL_VERSION;
+    resp->servicePid = (gc_u32)getpid();
     resp->serviceBuildNumber = APP_BUILD_NUMBER;
     gc_strlcpy(resp->serviceVersion, sizeof(resp->serviceVersion), APP_VERSION);
 
@@ -377,10 +345,28 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
     if (!protocolMatches) {
         resp->status = SERVICE_STATUS_VERSION_MISMATCH;
         gc_strlcpy(resp->message, sizeof(resp->message), "protocol version mismatch");
+        // Names the caller, so a stale binary left behind by a partial upgrade
+        // can be found instead of guessed at.
+        dlog("daemon: rejected pid=%u command=%u magic=0x%08x version=%u "
+             "(this daemon is protocol %u); the client binary is out of date\n",
+             (unsigned int)wireReq->callerPid, (unsigned int)wireReq->command,
+             (unsigned int)wireReq->magic, (unsigned int)wireReq->version,
+             (unsigned int)SERVICE_PROTOCOL_VERSION);
     } else if (!requestValid) {
         resp->status = SERVICE_STATUS_ERROR;
         gc_strlcpy(resp->message, sizeof(resp->message),
             "invalid protocol fields");
+        dlog("daemon: rejected malformed request pid=%u command=%u flags=0x%08x "
+             "operationId=%llu applyOrigin=%u profileSlot=%u startupMode=%u "
+             "targetValid=%u preconditions=%llu/%llu/%llu\n",
+             (unsigned int)req->callerPid, (unsigned int)req->command,
+             (unsigned int)req->flags,
+             (unsigned long long)req->operationId,
+             (unsigned int)req->applyOrigin, (unsigned int)req->profileSlot,
+             (unsigned int)req->startupMode, (unsigned int)req->targetGpu.valid,
+             (unsigned long long)req->expectedServiceInstanceId,
+             (unsigned long long)req->expectedGpuGeneration,
+             (unsigned long long)req->expectedTopologySignature);
     } else if ((req->command == SERVICE_CMD_APPLY ||
                 req->command == SERVICE_CMD_RESET) &&
                !mutation_preconditions_match(req, resp)) {
@@ -408,6 +394,11 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
         case SERVICE_CMD_GET_ACTIVE_DESIRED:
             if (g_hasActiveDesired) resp->desired = g_activeDesired;
             resp->status = SERVICE_STATUS_OK;
+            break;
+        case SERVICE_CMD_GET_STARTUP_POLICY:
+        case SERVICE_CMD_SET_STARTUP_POLICY:
+        case SERVICE_CMD_REFRESH_STARTUP_PROFILE:
+            daemon_handle_startup_policy_command(req, resp);
             break;
         case SERVICE_CMD_GET_OPERATION_RESULT: {
             resp->operationId = req->operationId;
@@ -471,11 +462,22 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
             bool hadPrevious = g_hasActiveDesired;
             DesiredSettings previousDesired = g_activeDesired;
             GpuAdapterInfo previousTarget = g_activeTarget;
+            DesiredSettings committedDesired = service_merge_desired_after_mutation(
+                hadPrevious ? &previousDesired : nullptr, &d);
+            if (d.resetOcBeforeApply)
+                dlog("daemon apply: reset baseline intent merge previousCurvePoints=%d requestedCurvePoints=%d "
+                     "committedCurvePoints=%d preservedPower=%d preservedFan=%d\n",
+                     service_desired_curve_point_count(
+                         hadPrevious ? &previousDesired : nullptr),
+                     service_desired_curve_point_count(&d),
+                     service_desired_curve_point_count(&committedDesired),
+                     committedDesired.hasPowerLimit ? 1 : 0,
+                     committedDesired.hasFan ? 1 : 0);
             LinuxHardwareSnapshot before = {};
             char stateErr[256] = {};
             if (!linux_backend_capture_snapshot(&g_gpu, &before, stateErr, sizeof(stateErr)) ||
                 !store_daemon_record(LINUX_DAEMON_RECORD_PREPARED, &g_gpu.selectedGpu,
-                                     &d, stateErr, sizeof(stateErr),
+                                     &committedDesired, stateErr, sizeof(stateErr),
                                      req->operationId, SERVICE_OPERATION_IN_PROGRESS)) {
                 resp->status = SERVICE_STATUS_ERROR;
                 gc_snprintf(resp->message, sizeof(resp->message),
@@ -483,11 +485,13 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 break;
             }
             LinuxMutationResult mutation = linux_backend_apply(&g_gpu, &d,
+                hadPrevious ? &previousDesired : nullptr, &committedDesired,
                 resp->message, sizeof(resp->message));
             bool committed = false;
             if (mutation.success) {
                 committed = store_daemon_record(LINUX_DAEMON_RECORD_ACTIVE,
-                    &g_gpu.selectedGpu, &d, stateErr, sizeof(stateErr),
+                    &g_gpu.selectedGpu, &committedDesired,
+                    stateErr, sizeof(stateErr),
                     req->operationId, SERVICE_OPERATION_SUCCEEDED);
                 if (!committed) {
                     char rollbackErr[256] = {};
@@ -498,7 +502,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                     g_stateUncertain = !rollbackOk || !recordOk;
                     if (g_stateUncertain)
                         store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_gpu.selectedGpu,
-                                            &d, stateErr, sizeof(stateErr));
+                                            &committedDesired, stateErr, sizeof(stateErr));
                     gc_snprintf(resp->message, sizeof(resp->message),
                         "Apply persistence failed; hardware rollback %s",
                         rollbackOk ? "succeeded" : "is uncertain");
@@ -508,15 +512,15 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 if (!recordOk) {
                     g_stateUncertain = true;
                     store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_gpu.selectedGpu,
-                                        &d, stateErr, sizeof(stateErr));
+                                        &committedDesired, stateErr, sizeof(stateErr));
                 }
             } else {
                 g_stateUncertain = true;
                 store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_gpu.selectedGpu,
-                                    &d, stateErr, sizeof(stateErr));
+                                    &committedDesired, stateErr, sizeof(stateErr));
             }
             if (committed) {
-                g_activeDesired = d;
+                g_activeDesired = committedDesired;
                 g_activeTarget = g_gpu.selectedGpu;
                 g_hasActiveDesired = true;
                 g_stateUncertain = false;
@@ -604,10 +608,9 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
             gc_strlcpy(resp->message, sizeof(resp->message), "unknown command");
             break;
     }
-    // Linux has no interactive GUI recovery surface yet, but it shares the
-    // wire ABI.  Stamp every response as one daemon generation and report its
-    // current payload conservatively as DEGRADED until the Linux frontend grows
-    // the same published-control-state contract.
+    // Stamp every response as one daemon/GPU generation. The envelope derives
+    // READY versus DEGRADED from the complete atomic snapshot and advertises
+    // only independently rollback-safe mutation domains.
     daemon_stamp_state_envelope(resp);
     pl_mutex_unlock(&g_lock);
 }
@@ -616,20 +619,52 @@ static void log_peer(int connFd) {
     struct ucred cred;
     socklen_t len = sizeof(cred);
     if (getsockopt(connFd, SOL_SOCKET, SO_PEERCRED, &cred, &len) == 0) {
-        dlog("daemon: connection from pid=%d uid=%d gid=%d\n", (int)cred.pid, (int)cred.uid, (int)cred.gid);
+        dlog("daemon: connection from pid=%d uid=%d primary_gid=%d\n",
+             (int)cred.pid, (int)cred.uid, (int)cred.gid);
     }
 }
 
 #include "linux_socket_permissions.h"
+#include "linux_systemd_notify.cpp"
+#include "linux_daemon_serve.h"
 
 int linux_daemon_run(const char* configPath) {
-    (void)configPath;
     pl_mutex_init(&g_lock);
+    if (!init_fan_wake_condition()) {
+        dlog("daemon: cannot initialize monotonic fan wake condition\n");
+        return 1;
+    }
+    if (!install_daemon_signal_handlers()) {
+        dlog("daemon: cannot install stop signal handlers\n");
+        return 1;
+    }
+    // Re-label the breadcrumbs installed in main(): this process is the root
+    // daemon, and its crashes are the ones that matter most in the journal.
+    linux_install_crash_breadcrumbs("daemon");
+    // Re-published for this translation unit: linux_crash_breadcrumb.h keeps
+    // its state in `static` storage, so the daemon's copy needs the descriptor
+    // too or a daemon crash would only reach the journal.
+    linux_set_crash_log_fd(linux_debug_log_raw_fd());
+    linux_set_crash_phase("daemon-init");
+    dlog("daemon: version=%s build=%u protocol=%u pid=%ld config=%s log=%s\n",
+         APP_VERSION, (unsigned int)APP_BUILD_NUMBER,
+         (unsigned int)SERVICE_PROTOCOL_VERSION, (long)getpid(),
+         configPath && configPath[0] ? configPath : "<none>",
+         linux_debug_log_path());
 
     char err[256] = {};
     if (linux_backend_init(&g_gpu, nullptr, err, sizeof(err))) {
         g_gpuReady = true;
-        dlog("daemon: GPU backend ready (%s, family=%d)\n", g_gpu.gpuName, (int)g_gpu.family);
+        dlog("daemon: GPU backend online (%s family=%d match=%s architectureSource=%s "
+             "vfFresh=%d infoStatus=%d statusStatus=%d controlStatus=%d "
+             "health=%s)\n",
+             g_gpu.gpuName, (int)g_gpu.family,
+             linux_gpu_match_method_name(g_gpu.nvapiMatchMethod),
+             linux_gpu_architecture_source_name(g_gpu.architectureSource),
+             g_gpu.vfSnapshotFresh ? 1 : 0,
+             g_gpu.vfInfoStatus, g_gpu.vfStatusStatus,
+             g_gpu.vfControlStatus,
+             service_gpu_health_reason_name(g_gpu.health.reason));
     } else {
         dlog("daemon: GPU backend init failed: %s (serving telemetry-less)\n", err);
     }
@@ -644,6 +679,12 @@ int linux_daemon_run(const char* configPath) {
             restoredState == SERVICE_OPERATION_OUTCOME_UNKNOWN
                 ? "operation outcome became uncertain across daemon restart"
                 : operation.message);
+    }
+
+    load_startup_policy_at_boot();
+
+    if (g_startupPolicy.mode == SERVICE_STARTUP_POLICY_PROFILE) {
+        apply_startup_profile_policy();
     }
 
     // Startup restart-reapply is authorized only by a complete, checksummed
@@ -674,7 +715,15 @@ int linux_daemon_run(const char* configPath) {
                     ? "operation restored from committed daemon state"
                     : "operation outcome became uncertain across daemon restart");
         }
-        if (saved.state != LINUX_DAEMON_RECORD_ACTIVE) {
+        if (g_startupPolicy.mode != SERVICE_STARTUP_POLICY_RESTORE_LAST) {
+            // The administrator asked for something other than "replay what was
+            // applied last", so the committed record stays on disk untouched
+            // and is simply not written to the GPU.  A later explicit Apply or
+            // a policy change back to restore-last picks it up again.
+            dlog("daemon: committed intent present but startup policy is %s; "
+                 "not replaying it\n",
+                 service_startup_policy_mode_name(g_startupPolicy.mode));
+        } else if (saved.state != LINUX_DAEMON_RECORD_ACTIVE) {
             g_stateUncertain = true;
             dlog("daemon: startup state=%u is not ACTIVE; no automatic write\n", saved.state);
         } else if (!linux_backend_select_target(&g_gpu, &saved.targetGpu, err, sizeof(err))) {
@@ -694,7 +743,7 @@ int linux_daemon_run(const char* configPath) {
             validate_desired_settings_for_ipc(&saved.desired);
             char msg[256] = {};
             LinuxMutationResult mutation = linux_backend_apply(&g_gpu, &saved.desired,
-                                                               msg, sizeof(msg));
+                nullptr, &saved.desired, msg, sizeof(msg));
             if (mutation.success) {
                 g_activeDesired = saved.desired;
                 g_activeTarget = g_gpu.selectedGpu;
@@ -715,71 +764,37 @@ int linux_daemon_run(const char* configPath) {
     pl_thread fanThread;
     bool fanThreadOk = pl_thread_start(&fanThread, fan_reassert_thread, nullptr);
 
-    // Socket: root-owned, group-accessible (the systemd unit chowns to the
-    // greencurve admin group; mode 0660).  Anyone who can connect is authorized;
-    // every request is still clamped by validate_desired_settings_for_ipc.
-    umask(0077);
-    if (mkdir(GC_DAEMON_SOCKET_DIR, 0755) != 0 && errno != EEXIST) {
-        dlog("daemon: cannot create socket directory: %s\n", strerror(errno));
+    DaemonListener listener = {};
+    if (!daemon_open_listener(&listener)) {
+        g_running = 0;
+        wake_fan_runtime();
+        if (fanThreadOk) pl_thread_join(fanThread);
+        if (g_gpu.nvmlLib || g_gpu.nvapiLib) linux_backend_shutdown(&g_gpu);
         return 1;
-    }
-    int socketDir = open(GC_DAEMON_SOCKET_DIR,
-                         O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-    struct stat socketDirStat = {};
-    if (socketDir < 0 || fchmod(socketDir, 0755) != 0 ||
-        fstat(socketDir, &socketDirStat) != 0 ||
-        !S_ISDIR(socketDirStat.st_mode) || socketDirStat.st_uid != 0 ||
-        (socketDirStat.st_mode & 0777) != 0755) {
-        dlog("daemon: socket directory is not root-owned and protected\n");
-        if (socketDir >= 0) close(socketDir);
-        return 1;
-    }
-    unlinkat(socketDir, "greencurve.sock", 0);
-    int srv = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (srv < 0) { dlog("daemon: socket() failed\n"); close(socketDir); return 1; }
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    gc_strlcpy(addr.sun_path, sizeof(addr.sun_path), GC_DAEMON_SOCKET_PATH);
-    if (bind(srv, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
-        dlog("daemon: bind(%s) failed: %s\n", GC_DAEMON_SOCKET_PATH, strerror(errno));
-        close(srv);
-        close(socketDir);
-        return 1;
-    }
-    if (!configure_daemon_socket_permissions(srv)) {
-        close(srv);
-        unlinkat(socketDir, "greencurve.sock", 0);
-        close(socketDir);
-        return 1;
-    }
-    if (listen(srv, 8) != 0) {
-        dlog("daemon: listen() failed\n"); close(srv); close(socketDir); return 1;
-    }
-    dlog("daemon: listening on %s\n", GC_DAEMON_SOCKET_PATH);
-
-    while (g_running) {
-        int conn = accept(srv, nullptr, nullptr);
-        if (conn < 0) { if (errno == EINTR) continue; break; }
-        set_nonblocking(conn);
-        log_peer(conn);
-        ServiceRequest req;
-        if (read_full(conn, &req, sizeof(req))) {
-            ServiceResponse resp;
-            handle_request(&req, &resp);
-            write_full(conn, &resp, sizeof(resp));
-        }
-        close(conn);
     }
 
+    char readinessError[256] = {};
+    ServiceSnapshot readinessSnapshot = {};
+    ControlState readinessControls = {};
+    populate_snapshot(&readinessSnapshot, &readinessControls);
+    bool ready = linux_systemd_notify_ready(&readinessSnapshot.health,
+                                            readinessError,
+                                            sizeof(readinessError));
+    if (!ready) dlog("daemon: startup readiness failed: %s\n", readinessError);
+
+    linux_set_crash_phase("daemon-serving");
+    int exitStatus = ready ? daemon_serve_until_stopped(listener.socketFd) : 1;
+
+    linux_set_crash_phase("daemon-shutdown");
     g_running = 0;
     wake_fan_runtime();
     if (fanThreadOk) pl_thread_join(fanThread);
-    close(srv);
-    unlinkat(socketDir, "greencurve.sock", 0);
-    close(socketDir);
+    daemon_release_fan_to_driver();
+    daemon_close_listener(&listener);
+    close_daemon_shutdown_pipe();
     if (g_gpu.nvmlLib || g_gpu.nvapiLib) linux_backend_shutdown(&g_gpu);
-    return 0;
+    dlog("daemon: exiting with status %d\n", exitStatus);
+    return exitStatus;
 }
 
 #include "linux_service_install.cpp"
