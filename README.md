@@ -2,9 +2,19 @@
 
 Green Curve is a small NVIDIA VF-curve tuning tool with a full Windows implementation and a native Linux port (NvAPI + NVML, driven by a root systemd daemon). The app inspects and edits the live NVIDIA voltage/frequency curve on supported GeForce GPUs. Pascal, Turing, Ampere, Lovelace, and Blackwell are treated as tested known families; unrecognized future NVIDIA GPU families use a best-effort fallback backend behind a warning the user can disable.
 
-<img width="893" height="758" alt="gc020" src="https://github.com/user-attachments/assets/9773e562-97e1-4474-9d18-bc37ca2a14e3" />
+Version: see the [`VERSION`](VERSION) file at the repository root.
 
-> ⚠️ **Platform support:** **Windows x64** is the actively used platform. **Linux x64** has user hardware validation for its VF write path but remains experimental. **Windows arm64** and **Linux arm64** are compile- and binary-inspection-only targets; neither has completed a live GPU-control validation. Use experimental builds at your own risk.
+> ⚠️ **Platform support:** **Windows x64** and **Linux x64** are both tested on real NVIDIA hardware, including VF-curve writes, power, and fan control. **Windows arm64** and **Linux arm64** are compile- and binary-inspection-only targets; neither has completed a live GPU-control validation. Use the arm64 builds at your own risk.
+>
+> **Integrated Grace/Blackwell parts (NVIDIA RTX Spark / GB10):** these report a Blackwell architecture, so the VF backend layout is selected correctly, but they are an SoC rather than a discrete board — memory is unified with the CPU, the power budget is SoC-wide, and the fan is usually owned by the platform. Green Curve probes each control domain read-only at startup, keeps every domain that answers, and shows a dismissible warning naming the ones that did not. Nothing is hard-blocked. No such hardware has been tested yet.
+
+Before trusting an unvalidated GPU, driver, or architecture, run the read-only pre-flight — it changes nothing and needs no background service (run it elevated; the private VF surface is unreadable otherwise):
+
+```bash
+greencurve.exe --self-test
+```
+
+It reports which NVAPI image loaded, whether the VF curve and control structs read back, the memory topology, and each control domain's availability. On Linux the equivalent is `greencurve --self-test`.
 
 ## What it does
 
@@ -46,7 +56,27 @@ Green Curve is a small NVIDIA VF-curve tuning tool with a full Windows implement
 python build.py
 ```
 
-This builds the Windows and Linux x64/arm64 release matrix under `dist/` and packages one verified `.7z` archive per OS/architecture. Release packaging requires 7-Zip and rejects unexpected payload files.
+This builds the Windows and Linux x64/arm64 release matrix under `dist/` and packages one verified archive per OS/architecture — a `.7z` for Windows and a `.tar.xz` for Linux — plus a `greencurve-<version>-windows-<arch>-setup.exe` installer for each Windows architecture. Every archive is read back against an exact manifest and rejects unexpected payload files. Windows packaging requires 7-Zip; the Linux tarball is written by the Python standard library, so that it records the Unix file modes the daemon and its setup script need no matter which host built it. Windows archives extract to a `Green Curve` folder (matching what the installer creates); Linux archives keep the lowercase `greencurve` folder.
+
+## Installing on Windows
+
+Either extract the `.7z` archive anywhere and run `greencurve.exe --service-install` once, or run the setup executable, which does the same thing with a few conveniences:
+
+- Shows the MIT license and the version it is about to install.
+- Lets you choose where the `Green Curve` folder goes (default `%ProgramFiles%\Green Curve`).
+- Detects an existing installation and upgrades it: it reads your currently applied settings, closes the GUI, stops the background service, replaces the files, re-registers the service, and applies those settings again. Choosing a different folder moves the installation and re-points the service registration; the old folder's files are left for you to delete.
+- Optional Start menu and desktop shortcuts, and an option to start the program when setup finishes.
+- Registers an Add/Remove Programs entry with an `uninstall.exe` next to the program.
+
+Setup writes a log file next to itself **only if something fails**; a successful run leaves nothing behind.
+
+For unattended installs and updates:
+
+```powershell
+greencurve-0.21-windows-x64-setup.exe /S
+```
+
+`/S` installs or upgrades with no window (it still needs administrator rights, because it registers a service). `/D=<path>` selects the folder, `--no-start-menu` / `--desktop` / `--launch` override the shortcut and post-install behaviour, and `--uninstall` removes an installation. Exit codes are `0` success, `1` failure, `2` cancelled, `3` bad arguments. Run it with `/?` for the full list.
 
 Additional non-shipping checks:
 
@@ -54,9 +84,56 @@ Additional non-shipping checks:
 python build.py --check
 python build.py --test
 python build.py --lsp
+python build.py --fuzz
+python build.py --check-cet
 ```
 
 `--check` builds the selected target(s) into a temporary workspace without replacing release outputs. `--test` runs pure regression tests that do not touch GPU hardware. `--lsp` regenerates `compile_commands.json` for clangd.
+
+`--fuzz` builds and briefly runs coverage-guided libFuzzer harnesses (ASan + UBSan) over the untrusted-input boundaries — the IPC request validator, the VF snapshot validator, the startup-task XML classifier, the config/INI parsers, and the daemon transport classifiers. The default is a bounded 20000 runs per target; pass `--fuzz-runs` for a longer session and `--fuzz-target` to select one.
+
+`--check-cet` verifies that the `-fcf-protection=full` hardening flag is actually effective, by confirming every address-taken function in a purpose-built unstripped probe begins with `endbr64`.
+
+## Installing on Linux
+
+Extract the `.tar.xz` archive and run the bundled setup script:
+
+```bash
+tar xf greencurve-<version>-linux-<arch>.tar.xz
+```
+
+```bash
+sudo ./greencurve-setup.sh install
+```
+
+It installs and verifies the root daemon (`greencurve.service`), creates the `greencurve` group and adds the account that invoked `sudo` to it, and writes a desktop entry. Group membership only takes effect after a new login — for the current shell, `newgrp greencurve`.
+
+```bash
+./greencurve-setup.sh status      # unit, socket permissions, group, startup policy
+sudo ./greencurve-setup.sh uninstall           # keeps settings and the group
+sudo ./greencurve-setup.sh uninstall --purge   # also removes /var/lib/greencurve
+```
+
+The equivalent manual steps remain `sudo greencurve --service-install` plus `sudo usermod -aG greencurve "$USER"`.
+
+### Launching
+
+`greencurve` with no arguments opens the terminal UI. Launching the binary from a graphical file manager works too: with no controlling terminal but a live display server, it re-execs itself inside the session's terminal emulator (Konsole on KDE, GNOME Console/Terminal on GNOME, and so on down a fallback list). The window closes when you quit with `q`, and stays open if there is an error to read.
+
+### What is applied at daemon start
+
+By default the daemon re-applies whatever was last applied — the behaviour of every earlier release. That is now configurable:
+
+```bash
+greencurve --show-startup            # what happens at the next daemon start
+greencurve --startup-profile 3       # apply saved profile 3
+greencurve --startup-profile last    # re-apply the last applied settings (default)
+greencurve --startup-profile none    # leave the GPU untouched at startup
+```
+
+The same control is on the TUI's **Profiles & Tools** tab. Because the daemon runs with `ProtectHome=yes` and cannot read your `config.ini`, choosing a profile stores a snapshot of that profile together with the exact GPU it is bound to.
+
+That snapshot is kept in step with the profile: saving the slot — in the TUI or with `--save-config` — pushes the new values to the daemon, and clearing the slot switches startup apply off rather than leaving a deleted profile applying at every boot. Editing `config.ini` by hand does not, so the snapshot is also checked against the file: `--show-startup` reports any difference field by field, and the TUI's control reads `PROFILE N STALE`. Save that slot again to bring the two back together.
 
 ## Windows Probe Report
 
@@ -99,7 +176,7 @@ Windows elevated-service / GUI split.
 greencurve --probe                  # verify NvAPI + NVML, GPU, family, OC range
 greencurve --self-test              # read-only validation of the apply path
 greencurve --gpu 0000:01:00.0 --tui # select a stable PCI target on multi-GPU systems
-sudo greencurve --service-install   # install + start the systemd daemon
+sudo ./greencurve --service-install # install/upgrade, restart, and verify daemon
 greencurve --tui                    # edit and apply the VF curve / fan / power
 greencurve --dump-live              # dump all 128 live/base/target VF values
 greencurve --json-live              # same live state as machine-readable JSON
@@ -107,6 +184,16 @@ greencurve --apply-config           # apply the selected profile
 greencurve --reset --apply-config   # reset OC/UV to driver defaults
 sudo greencurve --service-remove
 ```
+
+For an upgrade, run `sudo ./greencurve --service-install` from the newly
+unpacked build. Do **not** uninstall the old service first: the installer safely
+replaces the staged daemon, reloads systemd, unconditionally restarts an already
+running service, verifies the real filesystem socket pathname as
+`root:greencurve 0660`, and verifies the active daemon's version, build, and IPC
+protocol before reporting success. Incorrect socket ownership/mode is an install
+failure; a GPU/VF capability problem is instead reported as a degradation
+warning. No uninstall is needed for an upgrade.
+Use `--service-remove` only when you intend to remove Green Curve entirely.
 
 Running `greencurve` without arguments also opens the TUI. Its fixed header,
 tabs, status/footer, graphs, tables, and controls reflow at compact, medium, and
@@ -130,6 +217,24 @@ after installation, then start a new group session:
 sudo usermod -aG greencurve "$USER"
 # sign out and back in, or run: newgrp greencurve
 ```
+
+Existing group membership normally survives an upgrade. Verify it in the same
+session that launches Green Curve with `id -nG | tr ' ' '\n' | grep -x
+greencurve`. Run the TUI/CLI as your normal account, not with `sudo`; if the
+new membership is not visible, sign out and back in (preferred) or enter a
+`newgrp greencurve` shell first. Connection errors now include the socket's
+actual owner/mode and whether the current process has the supplementary group.
+
+The TUI distinguishes an offline daemon from an online but GPU-degraded daemon.
+If VF data is degraded, it shows the typed driver/binding/read failure instead
+of waiting indefinitely. Fresh independent NVML controls may remain available,
+but VF or mixed requests and full Reset stay blocked until the complete VF
+snapshot recovers. For a report, include `greencurve --probe`,
+`greencurve --json-live`, `systemctl status greencurve.service`,
+`journalctl -u greencurve.service -b`, and
+`stat /run/greencurve/greencurve.sock` output. The probe report records the socket
+pathname's numeric owner/group/mode and both the in-process and daemon-published
+binding health.
 
 The Linux VF write path is validated on real NVIDIA hardware; the apply pipeline
 verifies each write by reading the curve back. Run `--probe` first to confirm
@@ -254,8 +359,9 @@ For managed/multi-user PCs, an admin can require that **standard (non-admin) use
 ## Privacy & Data Handling
 
 - Green Curve does not transmit any data over the network. There is no telemetry, analytics, cloud sync, or remote logging.
-- Debug logs are written locally to `%LOCALAPPDATA%\Green Curve\greencurve_debug.txt` on Windows and `~/.local/share/greencurve/greencurve_debug.txt` on Linux. Log files are size-capped and rotated automatically.
-- Probe reports (`--probe --probe-output`) are written only to a local file you specify. They contain GPU identifiers, driver capabilities, and VF-curve samples, but no personal data.
+- Debug logs are written locally to `%LOCALAPPDATA%\Green Curve\greencurve_debug.txt` on Windows. On Linux the client and TUI write `greencurve_debug.txt` next to `config.ini` (the binary's own folder by default), and the root daemon writes it into `/var/lib/greencurve/` because systemd mounts `/usr` read-only for the unit. Log files are size-capped and rotated automatically (one previous generation is kept as `.1`). Logging is on by default and is turned off with `[debug] enabled=0` in `config.ini` or `GREEN_CURVE_DEBUG=0`; the log records GPU identifiers, config paths and applied settings, so review it before sharing.
+- Green Curve writes a crash *breadcrumb* (role, signal, phase, version) to the debug log and to stderr; it does not write its own dump. On Linux the actual core dump is left to the kernel's `core_pattern`, which on most distributions means `systemd-coredump` (`coredumpctl list greencurve`). Windows additionally writes `greencurve_crash_*.dmp` minidumps next to the binary.
+- Probe reports (`--probe --probe-output`) are written only to a local file you specify. They contain GPU identifiers, driver capabilities, VF-curve samples, and diagnostic host/session data such as `uname` and `id`; review and redact usernames, hostnames, or unique hardware identifiers before sharing publicly.
 - The Windows background service runs as `LocalSystem` so it can access GPU management interfaces, but per-user configuration and profiles remain in the individual user's local app data.
 - Profiles an administrator explicitly shares with all users are stored machine-wide in `%ProgramData%\Green Curve\shared-profiles.ini` (admin-writable, all-users-readable); nothing from a user's private config is shared unless the admin publishes it.
 - Enabling **Start program to tray on log in** creates one per-user Windows

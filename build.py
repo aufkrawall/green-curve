@@ -47,8 +47,12 @@ COMPILERS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "compil
 _ZIG_ARCHIVE_NAME = f"zig-{_ZIG_PLATFORM}-x86_64-{ZIG_VERSION}{_ZIG_ARCHIVE_EXT}"
 ZIG_URL = f"{COMPILERS_REPO_BASE}/{_ZIG_ARCHIVE_NAME}"
 ZIG_SHA256 = _ZIG_SHA256
+# Digest of the extracted zig executable (which came from an archive already
+# verified against _ZIG_SHA256).  A missing per-host entry fails open and
+# re-downloads + re-extracts the whole toolchain on EVERY invocation.
 ZIG_EXE_SHA256 = {
     "windows": "2e44af5bbf7a72ef8cbdae370284687c95d65a19affa469d2ad0364d905b8e84",
+    "linux": "7f9e3a661e909d5188d1b8b14f082b98a19c323a30d43bfdd1b2893ed37273e0",
 }.get(_ZIG_PLATFORM)
 
 # llvm-mingw: portable MinGW toolchain for Windows builds with full CFG support
@@ -59,6 +63,27 @@ LLVM_MINGW_SHA256 = "72dbd6e64614e3b3401998992d1bd9c8ace29e74611d71c80309ea71c3f
 LLVM_MINGW_CLANG_SHA256 = "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Fuzzing and CET gates live in tools/ so this script stays under its size
+# ratchet.  The dependency runs one way: security_gates never imports build.py.
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "tools"))
+import security_gates  # noqa: E402  (needs SCRIPT_DIR on sys.path first)
+import ui_gates  # noqa: E402  (same one-way dependency as security_gates)
+import fan_gates  # noqa: E402  (same one-way dependency as security_gates)
+import linux_gates  # noqa: E402  (same one-way dependency as security_gates)
+import driver_inspect  # noqa: E402  (same one-way dependency as security_gates)
+import static_analysis  # noqa: E402  (same one-way dependency as security_gates)
+from release_manifest import (  # noqa: E402  (one-way dependency)
+    RUNTIME_ARTIFACT_NAMES, check_all as release_manifest_check_all,
+    check_packaging_skip_warning, expected_release_names, find_seven_zip,
+    purge_runtime_artifacts, release_archive_extension, release_archive_paths,
+    release_archive_root, report_packaging_skipped, stage_release_file,
+    validate_payload_file_names, verify_linux_tarball, verify_seven_zip_manifest,
+    write_linux_tarball)
+import installer_build  # noqa: E402  (same one-way dependency as security_gates)
+
+FUZZ_TARGETS = security_gates.FUZZ_TARGETS
+
 ZIG_DIR = os.path.join(SCRIPT_DIR, "zig")
 ZIG_EXE = os.path.join(ZIG_DIR, _ZIG_EXE_NAME)
 LLVM_MINGW_DIR = os.path.join(SCRIPT_DIR, "llvm-mingw")
@@ -74,6 +99,7 @@ WINDOWS_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "main.cpp"),
     os.path.join(SOURCE_DIR, "app_shared.cpp"),
     os.path.join(SOURCE_DIR, "config_utils.cpp"),
+    os.path.join(SOURCE_DIR, "config_text_utils.cpp"),
     os.path.join(SOURCE_DIR, "fan_curve.cpp"),
     os.path.join(SOURCE_DIR, "ssp_glue.cpp"),
     os.path.join(SOURCE_DIR, "cfg_glue.cpp"),
@@ -86,9 +112,14 @@ WINDOWS_SOURCE_FILES = [
 LINUX_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "linux_main.cpp"),
     os.path.join(SOURCE_DIR, "linux_cli_options.cpp"),
+    os.path.join(SOURCE_DIR, "linux_debug_log.cpp"),
+    os.path.join(SOURCE_DIR, "linux_terminal_launch.cpp"),
     os.path.join(SOURCE_DIR, "linux_port.cpp"),
     os.path.join(SOURCE_DIR, "linux_port_profiles.cpp"),
     os.path.join(SOURCE_DIR, "linux_live_output.cpp"),
+    # Client half of the boot-apply snapshot invariant, shared by the TUI and
+    # the CLI so a profile write can never leave the daemon booting old values.
+    os.path.join(SOURCE_DIR, "linux_startup_sync.cpp"),
     os.path.join(SOURCE_DIR, "linux_tui.cpp"),
     os.path.join(SOURCE_DIR, "linux_tui_actions.cpp"),
     os.path.join(SOURCE_DIR, "linux_tui_render.cpp"),
@@ -101,6 +132,10 @@ LINUX_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "linux_daemon_state.cpp"),
     os.path.join(SOURCE_DIR, "platform_posix.cpp"),
     os.path.join(SOURCE_DIR, "vf_backends.cpp"),
+    # Shared text/fan-curve helpers.  linux_port.cpp carried private copies
+    # until 2026-07-28; its fan_curve_normalize wrote past the 8-point array.
+    os.path.join(SOURCE_DIR, "config_text_utils.cpp"),
+    os.path.join(SOURCE_DIR, "fan_curve.cpp"),
 ]
 WINDOWS_OUTPUT_EXE = os.path.join(SCRIPT_DIR, "greencurve.exe")
 WINDOWS_TEMP_OUTPUT_EXE = WINDOWS_OUTPUT_EXE + ".new"
@@ -250,6 +285,17 @@ LINUX_FLAGS = [
     "-Wl,-z,noexecstack",
     "-s",
     "-fstack-protector-strong",
+    # CET: x86-only, so linux_flags_for_arch() drops it for aarch64 (which
+    # gets -mbranch-protection=standard instead).  This marks our own objects
+    # with GNU_PROPERTY_X86_FEATURE_1_{IBT,SHSTK} and emits endbr64; the final
+    # link still drops the note because the bundled Zig CRT objects carry no
+    # property and lld intersects the feature sets.  See llm-wiki/build.md —
+    # forcing it is not available here, `zig cc` rejects both -z shstk and
+    # -z force-ibt as unsupported linker extension flags.
+    "-fcf-protection=full",
+    # Matches the Windows build: uninitialised locals get a pattern rather
+    # than whatever was on the stack.
+    "-ftrivial-auto-var-init=pattern",
     # Enable exceptions and RTTI for the Linux build, which uses <string> and
     # <vector> STL containers that depend on exception handling.  These
     # overrides come after the common -fno-exceptions -fno-rtti flags.
@@ -308,6 +354,10 @@ def linux_flags_for_arch(arch):
     flags = list(LINUX_FLAGS)
     if arch == "arm64":
         flags[flags.index("-target") + 1] = LINUX_ARM64_TRIPLE
+        # -fcf-protection is x86-only; clang hard-errors with "option
+        # 'cf-protection=return' cannot be specified on this target" on
+        # aarch64, so it is removed rather than merely unused.
+        flags.remove("-fcf-protection=full")
         # Match the Windows arm64 build: -O2 over the common -Oz (avoids the
         # same arm64 size-opt codegen issue and keeps the two arches uniform),
         # plus BTI/PAC branch protection (the arm64 analogue of x86 CET).
@@ -971,12 +1021,19 @@ def _write_integrity_sentinel(binary_path, trusted_sha256=None):
         f.write(digest)
 
 
-def _verify_cached_tool_binary(binary_path, label, trusted_sha256):
+def _verify_cached_tool_binary(binary_path, label, trusted_sha256,
+                               mismatch_expected=False):
     """Verify a cached tool binary against a digest pinned in this script.
 
     Adjacent ``.sha256`` files are not trusted: an attacker who can replace the
     binary can replace that sentinel too.  The sentinel is kept only as a
     post-extraction marker; the authority for cache reuse is the pinned digest.
+
+    ``mismatch_expected`` is for the self-test that drives the tamper path on
+    purpose (tools/security_gates.py).  A rejection is the assertion there, not
+    a failure, and printing it as ERROR on an otherwise green run trains
+    everyone -- and every CI log scanner -- to ignore the one line that means a
+    real toolchain was swapped underneath us.
     """
     if not trusted_sha256:
         print(f"WARNING: {label} has no pinned executable digest for this host; refreshing from pinned archive")
@@ -988,6 +1045,9 @@ def _verify_cached_tool_binary(binary_path, label, trusted_sha256):
         return False
     expected = trusted_sha256.lower()
     if current != expected:
+        if mismatch_expected:
+            print(f"  {label}: tampered binary rejected as expected")
+            return False
         print(f"ERROR: {label} SHA-256 mismatch; cached binary will be refreshed")
         print(f"  expected (pinned): {expected}")
         print(f"  actual:            {current}")
@@ -1319,7 +1379,10 @@ def _link_arm64_linux(temp_output, sources):
     try:
         objects = _compile_arm64_objects(
             sources, os.path.join(work, "obj"), LINUX_ARM64_TRIPLE,
-            ["-fPIE", "-fstack-protector-strong", "-fexceptions", "-frtti"])
+            ["-fPIE", "-fstack-protector-strong", "-fexceptions", "-frtti",
+             # This object-first path bypasses linux_flags_for_arch(), so the
+             # flag has to be repeated here or arm64 silently loses it.
+             "-ftrivial-auto-var-init=pattern"])
         cmd = [ZIG_EXE, "c++", "-target", LINUX_ARM64_TRIPLE,
                "-mbranch-protection=standard", "-fno-lto", "-O2", "-pie",
                "-Wl,-z,relro,-z,now", "-Wl,-z,noexecstack", "-s",
@@ -1430,6 +1493,11 @@ def sanitize_pe_codeview_path(binary_path, pdb_basename):
         handle.truncate()
 
 
+# x86 `endbr64`.  Shared with tools/security_gates.py, which does the deeper
+# symbol-attributed analysis; this file only needs the strip-proof byte count.
+_ENDBR64_BYTES = b"\xf3\x0f\x1e\xfa"
+
+
 def _verify_elf_hardening(data):
     if len(data) < 64 or data[:6] != b"\x7fELF\x02\x01":
         raise RuntimeError("not a little-endian ELF64 image")
@@ -1500,6 +1568,17 @@ def verify_release_binary(path, os_name, arch, allow_debug_paths=False):
         if bti == 0 or pac == 0 or aut == 0:
             raise RuntimeError(f"ARM64 branch protection missing (BTI={bti}, PAC={pac}, AUT={aut})")
         print(f"  ARM64 branch protection: BTI={bti}, PAC={pac}, AUT={aut}")
+    elif os_name != "windows":
+        # x86 CET forward edge, the analogue of the arm64 check above and the
+        # tripwire for -fcf-protection=full silently ceasing to apply.  Counted
+        # as instruction bytes so it survives the release -s strip.  This shipped
+        # at zero until 2026-07-28, when the flag was Windows-only.
+        endbr = data.count(_ENDBR64_BYTES)
+        if endbr == 0:
+            raise RuntimeError(
+                "x86 CET instrumentation missing (no endbr64); "
+                "-fcf-protection=full is not reaching the Linux build")
+        print(f"  x86 CET forward edge: endbr64={endbr}")
     print(f"  Verified {os_name}-{arch}: architecture, version, hardening, sections, private paths")
 
 
@@ -1687,17 +1766,8 @@ def compile_linux_binary(output_path=LINUX_OUTPUT_BIN, temp_output=LINUX_TEMP_OU
 
 README_MD_PATH = os.path.join(SCRIPT_DIR, "README.md")
 LICENSE_PATH = os.path.join(SCRIPT_DIR, "LICENSE")
-
-
-def find_seven_zip():
-    """Locate a 7-Zip executable (PATH or the standard Windows install dirs)."""
-    on_path = shutil.which("7z") or shutil.which("7za") or shutil.which("7zr")
-    if on_path:
-        return on_path
-    for cand in (r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe"):
-        if os.path.exists(cand):
-            return cand
-    return None
+# Linux-only: the daemon setup wrapper ships next to the binary it drives.
+LINUX_SETUP_SCRIPT_PATH = os.path.join(SCRIPT_DIR, "tools", "greencurve-setup.sh")
 
 
 def detect_binary_arch(path):
@@ -1721,47 +1791,22 @@ def detect_binary_arch(path):
     return None
 
 
-def expected_release_names(os_name):
-    if os_name == "windows":
-        return {"greencurve.exe", "greencurve-service.exe", "README.md", "LICENSE"}
-    if os_name == "linux":
-        return {"greencurve", "README.md", "LICENSE"}
-    raise ValueError(f"unsupported release OS: {os_name}")
+def package_release_archive(os_name, arch, binaries, seven=None):
+    """Stage and archive an exact per-platform allowlist, then read it back.
 
-
-def validate_payload_file_names(payload, expected_binary_names):
-    """Reject stale/linker side products before any archive is created."""
-    actual = {name for name in os.listdir(payload)
-              if os.path.isfile(os.path.join(payload, name))}
-    unexpected = actual - set(expected_binary_names)
-    missing = set(expected_binary_names) - actual
-    if unexpected or missing:
-        raise RuntimeError(f"payload manifest mismatch: missing={sorted(missing)}, unexpected={sorted(unexpected)}")
-
-
-def _verify_archive_manifest(seven, archive, expected_names):
-    result = subprocess.run([seven, "l", "-slt", archive], text=True, capture_output=True)
-    if result.returncode != 0:
-        raise RuntimeError("7-Zip could not inspect the completed archive")
-    in_entries = False
-    paths = set()
-    for line in result.stdout.splitlines():
-        if line.startswith("----------"):
-            in_entries = True
-            continue
-        if in_entries and line.startswith("Path = "):
-            paths.add(line[7:].replace("\\", "/"))
-    expected_paths = {"greencurve", *(f"greencurve/{name}" for name in expected_names)}
-    if paths != expected_paths:
-        raise RuntimeError(f"archive manifest mismatch: expected={sorted(expected_paths)}, actual={sorted(paths)}")
-
-
-def package_release_archive(os_name, arch, binaries):
-    """Stage and archive an exact per-platform allowlist, then read it back."""
+    main() resolves `seven` up front so a missing 7-Zip becomes one skip for the
+    whole run; reaching this function still means packaging was requested.  Only
+    the Windows container needs it -- the Linux tarball is written by the
+    standard library, which is also the only way a Windows host can record the
+    Unix modes the daemon and its setup script need."""
     payload = target_payload_dir(os_name, arch)
+    purge_runtime_artifacts(payload)
     binary_names = {os.path.basename(path) for path in binaries}
     expected_names = expected_release_names(os_name)
-    if binary_names != expected_names - {"README.md", "LICENSE"}:
+    staged_extras = {"README.md", "LICENSE"}
+    if os_name == "linux":
+        staged_extras.add("greencurve-setup.sh")
+    if binary_names != expected_names - staged_extras:
         raise RuntimeError(f"binary allowlist mismatch for {os_name}: {sorted(binary_names)}")
     for binary in binaries:
         if not os.path.exists(binary):
@@ -1770,32 +1815,54 @@ def package_release_archive(os_name, arch, binaries):
         if actual_arch != arch:
             raise RuntimeError(f"architecture mismatch: {binary} is {actual_arch}, expected {arch}")
     validate_payload_file_names(payload, binary_names)
-    for required in (README_MD_PATH, LICENSE_PATH):
+    required_files = [README_MD_PATH, LICENSE_PATH]
+    if os_name == "linux":
+        required_files.append(LINUX_SETUP_SCRIPT_PATH)
+    for required in required_files:
         if not os.path.isfile(required):
             raise RuntimeError(f"required release file missing: {required}")
 
-    seven = find_seven_zip()
-    if not seven:
-        raise RuntimeError("7-Zip is required to produce verified release archives")
-    archive = os.path.join(SCRIPT_DIR, f"greencurve-{APP_VERSION}-{os_name}-{arch}.7z")
-    if os.path.exists(archive):
-        os.remove(archive)
+    if os_name == "windows":
+        seven = seven or find_seven_zip()
+        if not seven:
+            raise RuntimeError("7-Zip is required to produce verified Windows release archives")
+    archive = os.path.join(
+        SCRIPT_DIR, f"greencurve-{APP_VERSION}-{os_name}-{arch}{release_archive_extension(os_name)}")
+    # Also clears a same-target archive left by an earlier container format, so
+    # a stale and now-known-broken .7z cannot ship beside the current tarball.
+    for stale in release_archive_paths(SCRIPT_DIR, APP_VERSION, os_name, arch):
+        if os.path.exists(stale):
+            os.remove(stale)
     work = prepare_work_subdir(f"package-{os_name}-{arch}")
+    root = release_archive_root(os_name)
     try:
-        staging = os.path.join(work, "greencurve")
+        staging = os.path.join(work, root)
         os.makedirs(staging, exist_ok=True)
         for binary in binaries:
             shutil.copy2(binary, os.path.join(staging, os.path.basename(binary)))
-        for extra in (README_MD_PATH, LICENSE_PATH):
-            shutil.copy2(extra, os.path.join(staging, os.path.basename(extra)))
+        for extra in required_files:
+            # Linux text is rewritten to LF rather than copied: this working
+            # tree is CRLF on a Windows host, and a CRLF greencurve-setup.sh is
+            # an unrunnable script (`#!/usr/bin/env bash\r`).
+            stage_release_file(extra, os.path.join(staging, os.path.basename(extra)),
+                               normalize=(os_name == "linux"))
         validate_payload_file_names(staging, expected_names)
-        result = subprocess.run(
-            [seven, "a", "-t7z", "-mx=9", "-bso0", "-bsp0", archive, "greencurve"],
-            cwd=work,
-        )
-        if result.returncode != 0 or not os.path.exists(archive):
-            raise RuntimeError(f"7-Zip archiving failed for {os_name}-{arch}")
-        _verify_archive_manifest(seven, archive, expected_names)
+        if os_name == "linux":
+            write_linux_tarball(archive, staging, root, expected_names)
+            verify_linux_tarball(archive, expected_names, root)
+        else:
+            result = subprocess.run(
+                [seven, "a", "-t7z", "-mx=9", "-bso0", "-bsp0", archive, root],
+                cwd=work,
+            )
+            if result.returncode != 0 or not os.path.exists(archive):
+                raise RuntimeError(f"7-Zip archiving failed for {os_name}-{arch}")
+            verify_seven_zip_manifest(seven, archive, expected_names, root)
+            # The setup file ships the same verified manifest, plus the
+            # uninstaller, so an archive and an installed copy are the same
+            # bits.  Staged here rather than from dist/ because this folder has
+            # already passed the allowlist and architecture checks above.
+            installer_build.build_setup_executable(_gate_ctx(), arch, staging, expected_names)
     finally:
         cleanup_work_subdir(work)
     size = os.path.getsize(archive)
@@ -1805,76 +1872,8 @@ def package_release_archive(os_name, arch, binaries):
         f.write(f"{_sha256_file(archive)}  {os.path.basename(archive)}\n")
 
 
-def inspect_aarch64_driver(path):
-    """Verify, WITHOUT arm64 hardware, that an aarch64 NVIDIA driver ships the
-    libraries + symbols our backend needs.  `path` is an extracted
-    NVIDIA-Linux-aarch64-<ver>.run directory (run `./<run> --extract-only` first)
-    or a directory containing the .so files.  Reads aarch64 ELF exports with the
-    bundled llvm-nm."""
-    print(f"=== Inspecting aarch64 driver tree: {path} ===")
-    if not os.path.isdir(path):
-        print(f"ERROR: not a directory: {path}")
-        print("Extract the driver first:  ./NVIDIA-Linux-aarch64-<ver>.run --extract-only")
-        return 1
-
-    wanted = {
-        "NVML (libnvidia-ml.so)": (
-            "libnvidia-ml.so",
-            ["nvmlInit_v2", "nvmlDeviceGetCount_v2", "nvmlDeviceSetClockOffsets",
-             "nvmlDeviceSetGpuLockedClocks", "nvmlDeviceGetGpcClkMinMaxVfOffset",
-             "nvmlDeviceSetFanSpeed_v2", "nvmlDeviceSetPowerManagementLimit"]),
-        "NvAPI (libnvidia-api.so)": (
-            "libnvidia-api.so",
-            ["nvapi_QueryInterface"]),
-    }
-    nm = os.path.join(LLVM_MINGW_DIR, "bin", "llvm-nm.exe")
-    if not os.path.exists(nm):
-        nm = shutil.which("llvm-nm") or shutil.which("nm")
-
-    found = {}   # label -> bool (library present AND all required symbols exported)
-    for label, (prefix, symbols) in wanted.items():
-        match = None
-        for root, _dirs, files in os.walk(path):
-            for fn in sorted(files):
-                if fn.startswith(prefix) and ".so" in fn:
-                    match = os.path.join(root, fn)
-                    break
-            if match:
-                break
-        if not match:
-            print(f"  {label}: NOT FOUND")
-            found[label] = False
-            continue
-        print(f"  {label}: {os.path.relpath(match, path)}")
-        if not nm:
-            print("    (no llvm-nm/nm available; cannot verify exported symbols)")
-            found[label] = True  # present, symbols unverified
-            continue
-        try:
-            exported = subprocess.run([nm, "-D", "--defined-only", match],
-                                      capture_output=True, text=True, errors="ignore").stdout
-        except OSError:
-            print("    (symbol read failed)")
-            found[label] = True
-            continue
-        all_syms = True
-        for sym in symbols:
-            present = sym in exported
-            all_syms = all_syms and present
-            print(f"      {'OK     ' if present else 'MISSING'} {sym}")
-        found[label] = all_syms
-
-    have_nvml = found.get("NVML (libnvidia-ml.so)", False)
-    have_nvapi = found.get("NvAPI (libnvidia-api.so)", False)
-    if not have_nvml:
-        verdict = "NVML MISSING — this driver cannot drive the GPU (not a usable target)."
-    elif have_nvapi:
-        verdict = "FULL — NVML + NvAPI present: VF-curve OC/UV expected to work on this driver."
-    else:
-        verdict = ("NVML-ONLY — NvAPI absent: clock offsets / power / fan / locked clocks work, "
-                   "but no VF-curve editing on this driver version.")
-    print("\nVerdict:", verdict)
-    return 0 if have_nvml else 1
+# The hardware-free driver inspectors (Linux aarch64 and Windows on Arm) live in
+# tools/driver_inspect.py; see the import block at the top of this file.
 
 
 def requested_arches(arch):
@@ -1883,6 +1882,33 @@ def requested_arches(arch):
     if arch in ("x64", "arm64"):
         return [arch]
     raise ValueError(f"unsupported architecture: {arch}")
+
+
+# llvm-mingw is a set of Windows PE executables (clang++.exe, llvm-rc.exe), so a
+# Windows build off Windows is impossible, not merely unconfigured.  Bare
+# `python build.py` used to walk into it and die with a PermissionError
+# traceback out of subprocess; resolve_targets() says so up front instead.
+WINDOWS_TOOLCHAIN_NOTE = ("llvm-mingw ships Windows .exe binaries, which cannot "
+                          "run on this host")
+
+
+def resolve_targets(requested, explicit):
+    """OS list to build, or exit with a diagnostic.  `explicit` = user passed
+    --target: the default narrows audibly, an explicit ask is a hard error."""
+    oses = ["windows", "linux"] if requested == "all" else [requested]
+    if sys.platform == "win32":
+        return oses
+    buildable = [name for name in oses if name != "windows"]
+    if len(buildable) == len(oses):
+        return buildable
+    if explicit or not buildable:
+        print(f"ERROR: --target {requested} wants a Windows build, but "
+              f"{WINDOWS_TOOLCHAIN_NOTE}.")
+        print("       Run this on a Windows host, or use --target linux.")
+        sys.exit(1)
+    print(f"Host is {sys.platform}: building Linux targets only "
+          f"({WINDOWS_TOOLCHAIN_NOTE}).")
+    return buildable
 
 
 def run_check_builds(target, arch="all", generate_lsp=True):
@@ -2001,6 +2027,31 @@ def generate_lsp_files():
             "arguments": ["clang++", *windows_flags, "-fsyntax-only", source],
         })
 
+    # The regression harness is a real translation unit now, so give it the
+    # same LSP/clang-tidy coverage as production code. Match the current host:
+    # a Linux clang-tidy cannot parse llvm-mingw-only flags such as -mguard=cf.
+    harness_source = os.path.join(SCRIPT_DIR, "tests", "regression_main.cpp")
+    if os.path.exists(harness_source):
+        if sys.platform == "win32":
+            harness_flags = [*windows_flags, f"-I{SOURCE_DIR}"]
+        else:
+            harness_linux_flags = [
+                flag for flag in linux_flags
+                if flag not in ("-fexceptions", "-frtti")
+            ]
+            harness_flags = [
+                *harness_linux_flags, *zig_linux_analyzer_flags(),
+                "-fno-exceptions", "-fno-rtti",
+                f"-I{SOURCE_DIR}", "-include",
+                os.path.join(SOURCE_DIR, "win32_compat.h"),
+            ]
+        entries.append({
+            "directory": SCRIPT_DIR,
+            "file": harness_source,
+            "arguments": ["clang++", *harness_flags,
+                          "-fsyntax-only", harness_source],
+        })
+
     path = os.path.join(SCRIPT_DIR, "compile_commands.json")
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(entries, handle, indent=2)
@@ -2009,3220 +2060,32 @@ def generate_lsp_files():
 
 
 def run_build_script_regression_tests():
-    tmp = prepare_work_subdir("build_script_regression")
-    try:
-        tool_path = os.path.join(tmp, "tool.bin")
-        with open(tool_path, "wb") as handle:
-            handle.write(b"trusted tool bytes")
-        trusted = _sha256_file(tool_path)
-        _write_integrity_sentinel(tool_path, trusted)
-        if not _verify_cached_tool_binary(tool_path, "test-tool", trusted):
-            print("Build-script regression FAILED: trusted cached tool rejected")
-            sys.exit(1)
-        with open(tool_path, "wb") as handle:
-            handle.write(b"attacker replacement")
-        _write_integrity_sentinel(tool_path, _sha256_file(tool_path))
-        if _verify_cached_tool_binary(tool_path, "test-tool", trusted):
-            print("Build-script regression FAILED: adjacent sentinel trusted over pinned digest")
-            sys.exit(1)
-        if requested_arches("all") != ["x64", "arm64"]:
-            print("Build-script regression FAILED: --arch all does not select both architectures")
-            sys.exit(1)
-        payload = os.path.join(tmp, "payload")
-        os.makedirs(payload)
-        expected = {"greencurve.exe", "greencurve-service.exe"}
-        for name in expected:
-            with open(os.path.join(payload, name), "wb") as handle:
-                handle.write(b"fixture")
-        validate_payload_file_names(payload, expected)
-        with open(os.path.join(payload, "main.lib"), "wb") as handle:
-            handle.write(b"unexpected linker side product")
-        try:
-            validate_payload_file_names(payload, expected)
-        except RuntimeError:
-            pass
-        else:
-            print("Build-script regression FAILED: unexpected package file accepted")
-            sys.exit(1)
-    finally:
-        cleanup_work_subdir(tmp)
+    """Delegate; security_gates owns the build-script self-tests and gates."""
+    return security_gates.run_build_script_regression_tests(_gate_ctx())
+
+
+def _posix_test_compiler(extra_flags):
+    """Delegate to security_gates, which owns sanitizer toolchain resolution."""
+    return security_gates.posix_test_compiler(_gate_ctx(), extra_flags)
 
 
 def run_regression_tests(extra_flags=None):
     """Run pure regression tests that do not touch GPU hardware."""
     run_build_script_regression_tests()
-    harness = r'''
-#include "fan_curve.h"
-#include <string>
-#include "lock_checkbox_policy.h"
-#include "main_layout_policy.h"
-#include "ui_theme_metrics.h"
-#include "ui_checkbox_state.h"
-#include "service_acl.h"
-#include "vf_backends.h"
-#include "service_lifecycle_policy.h"
-#include "service_recovery_policy.h"
-#include "selected_gpu_pnp_policy.h"
-#include "gpu_selection_policy.h"
-#include "linux_gpu_selection.h"
-#include "linux_daemon_state.h"
-#include "linux_transaction.h"
-#include "linux_curve_targets.h"
-#include "fan_runtime_policy.h"
-#include "service_operation_tracker.h"
-#include "gui_mutation_queue_policy.h"
-#include "gui_service_io_queue_policy.h"
-#include "gui_draft_policy.h"
-#include "gui_tray_callback_policy.h"
-#include "gui_window_redraw_policy.h"
-#include "service_health_probe_policy.h"
-#include "profile_persistence_policy.h"
-#include "profile_startup_policy.h"
-#include "startup_task_definition_policy.h"
-#include "linux_tui_layout.cpp"
-#include "linux_tui_layout_vf.cpp"
-#include "linux_tui_layout_fan_profiles.cpp"
-
-// The task classifier lives in an amalgamated Windows shard.  Supply only the
-// surrounding declarations needed to compile that shard into this fixture;
-// executable tests call the pure XML classifier and never query Task Scheduler.
-static char g_userDataDir[MAX_PATH] = {};
-static WCHAR g_forcedStartupUserSam[512] = {};
-bool utf8_to_wide(const char*, WCHAR*, int);
-static bool get_current_user_sam_name(WCHAR*, DWORD) { return false; }
-#include "main_startup_task_definition.cpp"
-
-bool is_curve_point_visible_in_gui(int) { return true; }
-void debug_log(const char*, ...) {}
-#include "config_profile_repair.cpp"
-
-void invalidate_tray_profile_cache() {}
-
-// Production auto-profile persistence uses the amalgamated atomic whole-file
-// section writer.  The pure fixture starts with an empty temporary INI, so this
-// deterministic stand-in only needs to commit the supplied complete sections.
-static bool write_config_sections_atomic(const char* path,
-    const char* newSectionsData, const char* const*, int,
-    char* err, size_t errSize) {
-    HANDLE file = gc_CreateFileUtf8(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) {
-        set_message(err, errSize, "fixture CreateFile failed");
-        return false;
-    }
-    DWORD size = (DWORD)strlen(newSectionsData);
-    DWORD written = 0;
-    bool ok = WriteFile(file, newSectionsData, size, &written, nullptr) &&
-        written == size && FlushFileBuffers(file) != FALSE;
-    CloseHandle(file);
-    return ok;
-}
-
-// Auto-profile pure core (resolver + controller state machine).  Included
-// directly so the coalescing/hysteresis/manual-pin logic and the rule resolver
-// are exercised without a GPU or an interactive desktop.
-#include "auto_profile_rules.cpp"
-#include "auto_profile_controller.cpp"
-#include "hotkeys.cpp"
-
-static ServiceResponse fake_ready_service_response(gc_u64 instance,
-    gc_u64 revision, gc_u64 generation) {
-    ServiceResponse response = {};
-    response.magic = SERVICE_PROTOCOL_MAGIC;
-    response.version = SERVICE_PROTOCOL_VERSION;
-    response.status = SERVICE_STATUS_OK;
-    response.state.serviceInstanceId = instance;
-    response.state.stateRevision = revision;
-    response.state.gpuGeneration = generation;
-    response.state.gpuPhase = SERVICE_GPU_PHASE_READY;
-    response.state.validSections = SERVICE_STATE_SECTION_READY_REQUIRED |
-        SERVICE_STATE_SECTION_FAN_TELEMETRY;
-    response.snapshot.initialized = 1;
-    response.snapshot.loaded = 1;
-    response.snapshot.adapterCount = 1;
-    response.snapshot.selectedAdapterIndex = 0;
-    response.snapshot.adapters[0].valid = 1;
-    response.snapshot.adapters[0].pciInfoValid = 1;
-    response.snapshot.adapters[0].nvapiIndex = 0;
-    response.snapshot.adapters[0].deviceId = 0x268410DEu;
-    response.snapshot.adapters[0].subSystemId = 0x17AA3A5Cu;
-    response.snapshot.adapters[0].pciRevisionId = 0xA1u;
-    response.snapshot.adapters[0].extDeviceId = 0x12345678u;
-    response.snapshot.adapters[0].pciBus = 9;
-    response.snapshot.adapters[0].pciDevice = 3;
-    response.snapshot.curve[7].freq_kHz = 1500000;
-    response.snapshot.curve[7].volt_uV = 800000;
-    response.snapshot.curve[11].freq_kHz = 1800000;
-    response.snapshot.curve[11].volt_uV = 900000;
-    response.snapshot.numPopulated = 2;
-    response.snapshot.powerLimitPct = 100;
-    response.snapshot.activeFanMode = FAN_MODE_AUTO;
-    response.controlState.valid = 1;
-    response.controlState.hasGpuOffset = 1;
-    response.controlState.hasMemOffset = 1;
-    response.controlState.hasPowerLimit = 1;
-    response.controlState.powerLimitPct = 100;
-    response.controlState.hasFan = 1;
-    response.controlState.fanMode = FAN_MODE_AUTO;
-    response.state.topologySignature =
-        service_snapshot_topology_signature(&response.snapshot);
-    return response;
-}
-
-#if defined(_WIN32)
-static unsigned int g_nativeLockClickedCount = 0;
-static unsigned int g_nativeLockDoubleClickedCount = 0;
-static bool g_nativeTrayHiddenIntent = false;
-static bool g_nativeTrayHideEnforcementActive = false;
-static unsigned int g_nativeTrayHideEnforcementCount = 0;
-
-static LRESULT CALLBACK native_lock_test_parent_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    (void)lParam;
-    if (msg == WM_COMMAND && LOWORD(wParam) == 7001) {
-        if (HIWORD(wParam) == BN_CLICKED) g_nativeLockClickedCount++;
-        if (HIWORD(wParam) == BN_DBLCLK) g_nativeLockDoubleClickedCount++;
-        return 0;
-    }
-    if (msg == WM_DRAWITEM) return TRUE;
-    return DefWindowProcA(hwnd, msg, wParam, lParam);
-}
-
-static bool run_native_ownerdraw_button_notification_test() {
-    HINSTANCE instance = GetModuleHandleA(nullptr);
-    const char* className = "GreenCurveLockPolicyRegressionWindow";
-    WNDCLASSA wc = {};
-    wc.lpfnWndProc = native_lock_test_parent_proc;
-    wc.hInstance = instance;
-    wc.lpszClassName = className;
-    ATOM atom = RegisterClassA(&wc);
-    if (!atom && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
-    HWND parent = CreateWindowExA(0, className, "", WS_OVERLAPPED,
-                                  0, 0, 100, 100, nullptr, nullptr, instance, nullptr);
-    if (!parent) return false;
-    HWND button = CreateWindowExA(0, "BUTTON", "",
-                                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                                  0, 0, 30, 20, parent, (HMENU)(INT_PTR)7001, instance, nullptr);
-    if (!button) {
-        DestroyWindow(parent);
-        return false;
-    }
-    g_nativeLockClickedCount = 0;
-    g_nativeLockDoubleClickedCount = 0;
-    SendMessageA(button, BM_CLICK, 0, 0);
-    SendMessageA(button, WM_LBUTTONDBLCLK, MK_LBUTTON, MAKELPARAM(5, 5));
-    bool ok = g_nativeLockClickedCount == 1 && g_nativeLockDoubleClickedCount == 1;
-    DestroyWindow(parent);
-    UnregisterClassA(className, instance);
-    return ok;
-}
-
-static LRESULT CALLBACK native_reconnect_test_parent_proc(
-    HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    if (gui_tray_hidden_intent_requires_rehide(
-            g_nativeTrayHiddenIntent,
-            IsWindowVisible(hwnd) != FALSE,
-            g_nativeTrayHideEnforcementActive)) {
-        g_nativeTrayHideEnforcementActive = true;
-        g_nativeTrayHideEnforcementCount++;
-        ShowWindow(hwnd, SW_HIDE);
-        g_nativeTrayHideEnforcementActive = false;
-    }
-    if (msg == WM_WINDOWPOSCHANGING && lParam) {
-        WINDOWPOS* position = reinterpret_cast<WINDOWPOS*>(lParam);
-        bool showRequested = (position->flags & SWP_SHOWWINDOW) != 0;
-        if (gui_tray_hidden_intent_blocks_show(
-                g_nativeTrayHiddenIntent, showRequested)) {
-            position->flags &= ~SWP_SHOWWINDOW;
-            position->flags |= SWP_HIDEWINDOW | SWP_NOACTIVATE;
-        }
-    }
-    return DefWindowProcA(hwnd, msg, wParam, lParam);
-}
-
-static bool run_native_reconnect_projection_and_dib_test() {
-    HINSTANCE instance = GetModuleHandleA(nullptr);
-    const char* className = "GreenCurveReconnectRegressionWindow";
-    WNDCLASSA wc = {};
-    wc.lpfnWndProc = native_reconnect_test_parent_proc;
-    wc.hInstance = instance;
-    wc.lpszClassName = className;
-    ATOM atom = RegisterClassA(&wc);
-    if (!atom && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
-    HWND parent = CreateWindowExA(0, className, "", WS_OVERLAPPED,
-        0, 0, 160, 80, nullptr, nullptr, instance, nullptr);
-    HWND edit = parent ? CreateWindowExA(0, "EDIT", "0", WS_CHILD,
-        0, 0, 80, 20, parent, nullptr, instance, nullptr) : nullptr;
-    HWND apply = parent ? CreateWindowExA(0, "BUTTON", "Apply", WS_CHILD,
-        0, 24, 80, 20, parent, nullptr, instance, nullptr) : nullptr;
-    if (!parent || !edit || !apply) {
-        if (parent) DestroyWindow(parent);
-        UnregisterClassA(className, instance);
-        return false;
-    }
-
-    g_nativeTrayHiddenIntent = true;
-    g_nativeTrayHideEnforcementActive = false;
-    g_nativeTrayHideEnforcementCount = 0;
-    ShowWindow(parent, SW_SHOW);
-    bool ok = IsWindowVisible(parent) == FALSE;
-
-    // Simulate a display-stack visibility reconstruction which bypasses the
-    // SWP_SHOWWINDOW precondition.  The next window message must enforce the
-    // durable postcondition without recursion or a user activation.
-    g_nativeTrayHideEnforcementCount = 0;
-    LONG_PTR hiddenStyle = GetWindowLongPtrA(parent, GWL_STYLE);
-    SetWindowLongPtrA(parent, GWL_STYLE, hiddenStyle | WS_VISIBLE);
-    SendMessageA(parent, WM_NULL, 0, 0);
-    ok = ok && g_nativeTrayHideEnforcementCount > 0 &&
-        IsWindowVisible(parent) == FALSE;
-
-    g_nativeTrayHiddenIntent = false;
-    ShowWindow(parent, SW_SHOW);
-    ok = ok && IsWindowVisible(parent) != FALSE;
-    ShowWindow(parent, SW_HIDE);
-
-    // DefWindowProc's top-level WM_SETREDRAW implementation adds WS_VISIBLE
-    // when redraw is enabled. This is the exact tray-profile ghost-window
-    // mechanism: a raw redraw pair resurrects a hidden owner before WM_PAINT.
-    g_nativeTrayHiddenIntent = true;
-    SendMessageA(parent, WM_SETREDRAW, FALSE, 0);
-    SendMessageA(parent, WM_SETREDRAW, TRUE, 0);
-    ok = ok && IsWindowVisible(parent) != FALSE;
-    SendMessageA(parent, WM_NULL, 0, 0);
-    ok = ok && IsWindowVisible(parent) == FALSE;
-
-    GuiServiceModel model = {};
-    gui_service_model_initialize(&model);
-    ServiceResponse ready = fake_ready_service_response(51, 1, 1);
-    ok = ok && gui_service_model_accept(&model, 1, &ready.state) ==
-        GUI_SERVICE_ENVELOPE_ACCEPTED;
-    EnableWindow(apply, gui_service_phase_actions_enabled(model.phase));
-
-    ServiceStateEnvelope missing = ready.state;
-    missing.stateRevision = 2;
-    missing.gpuGeneration = 2;
-    missing.gpuPhase = SERVICE_GPU_PHASE_DEVICE_MISSING;
-    missing.validSections = SERVICE_STATE_SECTION_ADAPTER_IDENTITY |
-        SERVICE_STATE_SECTION_ACTIVE_INTENT;
-    missing.topologySignature = 0;
-    ok = ok && gui_service_model_accept(&model, 1, &missing) ==
-        GUI_SERVICE_ENVELOPE_ACCEPTED;
-    EnableWindow(apply, gui_service_phase_actions_enabled(model.phase));
-    char preserved[16] = {};
-    GetWindowTextA(edit, preserved, sizeof(preserved));
-    ok = ok && !IsWindowEnabled(apply) && strcmp(preserved, "0") == 0;
-
-    ServiceResponse recovered = fake_ready_service_response(51, 3, 2);
-    ok = ok && gui_service_model_accept(&model, 1, &recovered.state) ==
-        GUI_SERVICE_ENVELOPE_ACCEPTED;
-    bool projectionInitiallyVisible = IsWindowVisible(parent) != FALSE;
-    bool projectionTogglesRedraw =
-        gui_top_level_redraw_uses_wm_setredraw(projectionInitiallyVisible);
-    if (projectionTogglesRedraw)
-        SendMessageA(parent, WM_SETREDRAW, FALSE, 0);
-    SetWindowTextA(edit, "125");
-    EnableWindow(apply, gui_service_phase_actions_enabled(model.phase));
-    if (projectionTogglesRedraw)
-        SendMessageA(parent, WM_SETREDRAW, TRUE, 0);
-    RedrawWindow(parent, nullptr, nullptr,
-        projectionInitiallyVisible
-            ? (RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW)
-            : (RDW_INVALIDATE | RDW_ALLCHILDREN));
-    GetWindowTextA(edit, preserved, sizeof(preserved));
-    ok = ok && IsWindowEnabled(apply) && strcmp(preserved, "125") == 0 &&
-        IsWindowVisible(parent) == FALSE;
-
-    BITMAPINFO info = {};
-    info.bmiHeader.biSize = sizeof(info.bmiHeader);
-    info.bmiHeader.biWidth = 8;
-    info.bmiHeader.biHeight = -8;
-    info.bmiHeader.biPlanes = 1;
-    info.bmiHeader.biBitCount = 32;
-    info.bmiHeader.biCompression = BI_RGB;
-    void* sourcePixels = nullptr;
-    void* targetPixels = nullptr;
-    HBITMAP sourceBitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS,
-        &sourcePixels, nullptr, 0);
-    HBITMAP targetBitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS,
-        &targetPixels, nullptr, 0);
-    HDC sourceDc = CreateCompatibleDC(nullptr);
-    HDC targetDc = CreateCompatibleDC(nullptr);
-    HGDIOBJ oldSource = sourceDc && sourceBitmap
-        ? SelectObject(sourceDc, sourceBitmap) : nullptr;
-    HGDIOBJ oldTarget = targetDc && targetBitmap
-        ? SelectObject(targetDc, targetBitmap) : nullptr;
-    if (!sourcePixels || !targetPixels || !oldSource || !oldTarget) {
-        ok = false;
-    } else {
-        ((gc_u32*)sourcePixels)[0] = 0x00112233u;
-        ok = ok && BitBlt(targetDc, 0, 0, 8, 8, sourceDc, 0, 0, SRCCOPY) &&
-            ((gc_u32*)targetPixels)[0] == 0x00112233u;
-    }
-    if (oldSource) SelectObject(sourceDc, oldSource);
-    if (oldTarget) SelectObject(targetDc, oldTarget);
-    if (sourceDc) DeleteDC(sourceDc);
-    if (targetDc) DeleteDC(targetDc);
-    if (sourceBitmap) DeleteObject(sourceBitmap);
-    if (targetBitmap) DeleteObject(targetBitmap);
-    DestroyWindow(parent);
-    UnregisterClassA(className, instance);
-    return ok;
-}
-#endif
-
-struct FakeLinuxTransaction {
-    unsigned int failPhase;
-    unsigned int calls[7];
-    unsigned int callCount;
-    unsigned int rollbackMask;
-    bool rollbackOk;
-};
-
-static bool fake_linux_transaction_step(void* opaque, unsigned int phase) {
-    FakeLinuxTransaction* fake = (FakeLinuxTransaction*)opaque;
-    if (fake->callCount < 7) fake->calls[fake->callCount++] = phase;
-    return phase != fake->failPhase;
-}
-
-static bool fake_linux_transaction_rollback(void* opaque, unsigned int attempted) {
-    FakeLinuxTransaction* fake = (FakeLinuxTransaction*)opaque;
-    fake->rollbackMask = attempted;
-    return fake->rollbackOk;
-}
-
-int main(int argc, char** argv) {
-    if (argc == 2 && strcmp(argv[1], "--capture-success") == 0) {
-        for (int i = 0; i < 4096; ++i) fputs("capture-data-", stdout);
-        return 0;
-    }
-    if (argc == 2 && strcmp(argv[1], "--capture-failure") == 0) {
-        fputs("expected child failure", stderr);
-        return 7;
-    }
-
-    InitializeCriticalSection(&g_configLock);
-
-    if (APP_DEBUG_DEFAULT_ENABLED != 1) return 20;
-
-    // Bounded append cursors count bytes rather than exposing StringCch's
-    // HRESULT convention, retain prefixes, and saturate safely on truncation.
-    {
-        char combined[16] = {};
-        size_t used = gc_appendf(combined, sizeof(combined), 0, "GPU");
-        used = gc_appendf(combined, sizeof(combined), used, " %d", 42);
-        if (used != 6 || strcmp(combined, "GPU 42") != 0) return 1140;
-        used = gc_appendf(combined, sizeof(combined), used,
-            " verification text is deliberately too long");
-        if (used != sizeof(combined) - 1 || combined[used] != 0 ||
-            strncmp(combined, "GPU 42", 6) != 0) return 1141;
-        if (gc_appendf(combined, sizeof(combined), used, "ignored") != used ||
-            combined[used] != 0) return 1142;
-    }
-
-    // Subprocess capture succeeds only for exit code zero and must continue
-    // draining output after the caller's bounded capture buffer fills.
-    {
-        const char* successArgs[] = { argv[0], "--capture-success", nullptr };
-        char captured[16] = {};
-        if (!pl_run_capture(successArgs, captured, sizeof(captured), 5000) ||
-            strncmp(captured, "capture-data-", 13) != 0) return 1143;
-        const char* failureArgs[] = { argv[0], "--capture-failure", nullptr };
-        if (pl_run_capture(failureArgs, captured, sizeof(captured), 5000) ||
-            strncmp(captured, "expected child", 14) != 0) return 1144;
-    }
-
-    // Merely selecting a saved slot must not make saved OC intent look live on
-    // the next GUI launch. Only explicit app-launch automation may source the
-    // startup editor from a profile; disabled/invalid assignments show hardware.
-    if (startup_editor_source(false, 0, 5) != STARTUP_EDITOR_SOURCE_LIVE_SNAPSHOT) return 722;
-    if (startup_editor_source(false, -1, 5) != STARTUP_EDITOR_SOURCE_LIVE_SNAPSHOT) return 723;
-    if (startup_editor_source(false, 6, 5) != STARTUP_EDITOR_SOURCE_LIVE_SNAPSHOT) return 724;
-    if (startup_editor_source(false, 2, 5) != STARTUP_EDITOR_SOURCE_APP_LAUNCH_PROFILE) return 725;
-    if (startup_editor_source(true, 2, 5) != STARTUP_EDITOR_SOURCE_LOGON_SERVICE) return 726;
-
-    // Responsive main-window layout: the reported 3440x1440/custom-140% case
-    // must fit by shrinking only the graph, while pathological effective work
-    // areas retain the full content canvas and advertise scroll overflow.
-    {
-        const int dpi = 134; // Windows custom 140% is approximately 134 DPI.
-        const int width = main_layout_scale_px(MAIN_LAYOUT_BASE_WIDTH_LOGICAL, dpi);
-        MainLayoutPlan reported = main_layout_build_plan(width, 1330, dpi, 87);
-        if (reported.columns != 6 || reported.rowsPerColumn != 15) return 700;
-        if (reported.horizontalOverflow || reported.verticalOverflow) return 701;
-        if (reported.contentHeight != reported.viewportHeight) return 702;
-        if (reported.graphHeight < main_layout_scale_px(MAIN_LAYOUT_GRAPH_MIN_HEIGHT_LOGICAL, dpi) ||
-            reported.graphHeight >= main_layout_scale_px(MAIN_LAYOUT_GRAPH_PREFERRED_HEIGHT_LOGICAL, dpi)) return 703;
-
-        MainLayoutPlan expanded = main_layout_build_plan(3000, 1330, dpi, 87);
-        if (expanded.columns != 11 || expanded.rowsPerColumn != 8) return 704;
-        if (expanded.verticalOverflow || expanded.horizontalOverflow) return 705;
-
-        MainLayoutPlan constrained = main_layout_build_plan(1200, 650, 288, 87);
-        if (!constrained.horizontalOverflow || !constrained.verticalOverflow) return 706;
-        if (constrained.graphHeight !=
-            main_layout_scale_px(MAIN_LAYOUT_GRAPH_MIN_HEIGHT_LOGICAL, 288)) return 707;
-
-        MainLayoutPlan empty = main_layout_build_plan(1920, 1000, 144, 0);
-        if (empty.columns != 0 || empty.rowsPerColumn != 0) return 708;
-
-        const int dpis[] = { 96, 110, 120, 134, 144, 168, 192, 216, 240, 288 };
-        const int widths[] = { 720, 960, 1280, 1600, 1920, 2560, 3440, 3840 };
-        const int heights[] = { 480, 650, 720, 900, 1000, 1040, 1330, 1376, 1400, 2120 };
-        for (int testDpi : dpis) {
-            for (int testWidth : widths) {
-                for (int testHeight : heights) {
-                    MainLayoutPlan plan = main_layout_build_plan(
-                        testWidth, testHeight, testDpi, 87);
-                    if (plan.columns < 1 || plan.columns > MAIN_LAYOUT_MAX_COLUMNS ||
-                        plan.rowsPerColumn != (87 + plan.columns - 1) / plan.columns) return 709;
-                    if (plan.graphHeight < main_layout_scale_px(
-                            MAIN_LAYOUT_GRAPH_MIN_HEIGHT_LOGICAL, testDpi) ||
-                        plan.graphHeight > main_layout_scale_px(
-                            MAIN_LAYOUT_GRAPH_MAX_HEIGHT_LOGICAL, testDpi)) return 710;
-                    if (!(plan.graphHeight < plan.pointStartY &&
-                          plan.pointStartY <= plan.globalControlsY &&
-                          plan.globalControlsY < plan.buttonsY &&
-                          plan.buttonsY < plan.profileY &&
-                          plan.profileY < plan.autoY && plan.autoY < plan.sharedY &&
-                          plan.sharedY < plan.serviceY && plan.serviceY < plan.hintY &&
-                          plan.hintY < plan.statusY && plan.statusY < plan.contentHeight)) return 711;
-                    if (plan.horizontalOverflow != (plan.contentWidth > testWidth) ||
-                        plan.verticalOverflow != (plan.contentHeight > testHeight)) return 712;
-                    MainLayoutPointCell previous = {};
-                    for (int vi = 0; vi < 87; ++vi) {
-                        MainLayoutPointCell cell = main_layout_point_cell(plan, vi);
-                        if (cell.left < 0 || cell.top < plan.pointStartY ||
-                            cell.right > plan.contentWidth ||
-                            cell.bottom > plan.globalControlsY -
-                                main_layout_scale_px(6, testDpi)) return 713;
-                        if (vi > 0 && cell.left == previous.left &&
-                            cell.top != previous.bottom) return 714;
-                        if (vi > 0 && cell.left != previous.left &&
-                            (cell.left <= previous.left || cell.top != plan.pointStartY)) return 715;
-                        previous = cell;
-                    }
-                    if (main_layout_scale_px(1006 + 160 + 8, testDpi) >
-                        plan.contentWidth) return 716;
-                    if (plan.graphHeight - main_layout_scale_px(35 + 55, testDpi) <
-                        main_layout_scale_px(160, testDpi)) return 717;
-                }
-            }
-        }
-        MainLayoutSize grown = main_layout_grow_size(
-            1792, 1123, 1792, 1513, 3840, 2080);
-        if (grown.width != 1792 || grown.height != 1513) return 718;
-        MainLayoutSize workClamped = main_layout_grow_size(
-            1792, 1123, 1792, 1513, 3440, 1376);
-        if (workClamped.width != 1792 || workClamped.height != 1376) return 719;
-        MainLayoutSize noShrink = main_layout_grow_size(
-            2200, 1700, 1792, 1513, 3840, 2080);
-        if (noShrink.width != 2200 || noShrink.height != 1700) return 720;
-        // Captured 4K/150% regression: the service populated 78 VF points after
-        // initial empty-state sizing. Growing to the populated preferred height
-        // must restore the full graph and six-column grid without overflow.
-        int populatedHeight = main_layout_preferred_client_height(1770, 144, 78);
-        MainLayoutPlan populated = main_layout_build_plan(1770, populatedHeight, 144, 78);
-        if (populated.columns != 6 || populated.rowsPerColumn != 13
-            || populated.graphHeight != main_layout_scale_px(420, 144)
-            || populated.horizontalOverflow || populated.verticalOverflow) return 721;
-
-        MainLayoutRect work = { 100, 50, 2100, 1250 };
-        MainLayoutRect centered = main_layout_center_rect(work, 1000, 600);
-        if (centered.left != 600 || centered.top != 350 ||
-            centered.right != 1600 || centered.bottom != 950) return 727;
-        MainLayoutRect oversized = main_layout_center_rect(work, 4000, 3000);
-        if (oversized.left != work.left || oversized.top != work.top ||
-            oversized.right != work.right || oversized.bottom != work.bottom) return 728;
-        MainLayoutRect current = { 300, 200, 1300, 800 };
-        MainLayoutRect resized = main_layout_resize_around_center(
-            current, 1200, 800);
-        if (resized.left != 200 || resized.top != 100 ||
-            resized.right != 1400 || resized.bottom != 900) return 729;
-
-        const int checkboxDpi = 144;
-        int unlabeledBox = ui_theme_checkbox_box_size(
-            ui_theme_scale_px(16, checkboxDpi),
-            ui_theme_scale_px(16, checkboxDpi), checkboxDpi);
-        int labeledBox = ui_theme_checkbox_box_size(
-            ui_theme_scale_px(240, checkboxDpi),
-            ui_theme_scale_px(22, checkboxDpi), checkboxDpi);
-        if (unlabeledBox != ui_theme_scale_px(14, checkboxDpi) ||
-            labeledBox != unlabeledBox) return 730;
-
-        UiCheckboxState checkboxState = {};
-        if (ui_checkbox_state_get(&checkboxState)) return 735;
-        ui_checkbox_state_set(&checkboxState, true);
-        if (!ui_checkbox_state_get(&checkboxState)) return 736;
-        if (ui_checkbox_state_toggle(&checkboxState) ||
-            ui_checkbox_state_get(&checkboxState)) return 737;
-    }
-
-    int point = -1;
-    if (!parse_cli_point_arg_w(L"--point0", &point) || point != 0) return 21;
-    if (!parse_cli_point_arg_w(L"--point127", &point) || point != 127) return 22;
-    if (parse_cli_point_arg_w(L"--point128", &point)) return 23;
-    if (parse_cli_point_arg_w(L"--pointabc", &point)) return 24;
-    if (parse_cli_point_arg_w(L"--point-1", &point)) return 25;
-
-    if (gpu_family_uses_best_guess_backend(GPU_FAMILY_PASCAL)) return 26;
-    if (gpu_family_uses_best_guess_backend(GPU_FAMILY_TURING)) return 27;
-    if (gpu_family_uses_best_guess_backend(GPU_FAMILY_AMPERE)) return 28;
-    if (gpu_family_uses_best_guess_backend(GPU_FAMILY_LOVELACE)) return 29;
-    if (gpu_family_uses_best_guess_backend(GPU_FAMILY_BLACKWELL)) return 30;
-    if (!gpu_family_uses_best_guess_backend(GPU_FAMILY_UNKNOWN)) return 67;
-    {
-        GpuFamily fam = GPU_FAMILY_UNKNOWN;
-        const VfBackendSpec* spec = vf_backend_for_architecture(NV_GPU_ARCHITECTURE_GB200, &fam);
-        if (!spec || fam != GPU_FAMILY_BLACKWELL || spec->bestGuessOnly) return 171;
-        spec = vf_backend_for_architecture(NV_GPU_ARCHITECTURE_AD100, &fam);
-        if (!spec || fam != GPU_FAMILY_LOVELACE || spec->bestGuessOnly) return 172;
-        spec = vf_backend_for_architecture(NV_GPU_ARCHITECTURE_GA100, &fam);
-        if (!spec || fam != GPU_FAMILY_AMPERE || spec->bestGuessOnly) return 173;
-        spec = vf_backend_for_architecture(0xDEADBEEFu, &fam);
-        if (!spec || fam != GPU_FAMILY_UNKNOWN || !spec->bestGuessOnly) return 174;
-    }
-
-    FanCurveConfig cfg = {};
-    fan_curve_set_default(&cfg);
-    fan_curve_normalize(&cfg);
-    char err[128] = {};
-    if (!fan_curve_validate(&cfg, err, sizeof(err))) return 1;
-    if (fan_curve_active_count(&cfg) != 5) return 2;
-    if (fan_curve_interpolate_percent(&cfg, 30) != 20) return 3;
-    int mid = fan_curve_interpolate_percent(&cfg, 52);
-    if (mid < 42 || mid > 48) return 4;
-    cfg.points[1].fanPercent = 10;
-    if (fan_curve_validate(&cfg, err, sizeof(err))) return 5;
-    cfg.points[1].fanPercent = 35;
-    cfg.pollIntervalMs = 333;
-    fan_curve_normalize(&cfg);
-    if (cfg.pollIntervalMs != 250) return 6;
-
-    FanCurveConfig invalidFanCurve = {};
-    invalidFanCurve.pollIntervalMs = 333;
-    invalidFanCurve.hysteresisC = 99;
-    fan_curve_normalize(&invalidFanCurve);
-    if (!fan_curve_validate(&invalidFanCurve, err, sizeof(err))) return 7;
-    if (fan_curve_active_count(&invalidFanCurve) != 5) return 8;
-    if (invalidFanCurve.pollIntervalMs != 250) return 9;
-    if (invalidFanCurve.hysteresisC != FAN_CURVE_MAX_HYSTERESIS_C) return 10;
-    FanCurveConfig onePointFanCurve = {};
-    onePointFanCurve.pollIntervalMs = 500;
-    onePointFanCurve.hysteresisC = 1;
-    onePointFanCurve.points[7] = { gc_bool8_from_bool(true), 99, 100 };
-    fan_curve_normalize(&onePointFanCurve);
-    if (!fan_curve_validate(&onePointFanCurve, err, sizeof(err))) return 11;
-
-    int parsedInt = 0;
-    if (!parse_int_strict("2147483647", &parsedInt) || parsedInt != 2147483647) return 12;
-    if (!parse_int_strict("-2147483648", &parsedInt) || parsedInt != (-2147483647 - 1)) return 13;
-    if (parse_int_strict("999999999999999999999999", &parsedInt)) return 14;
-    if (parse_int_strict("-999999999999999999999999", &parsedInt)) return 15;
-
-    if (argc < 2 || !argv[1] || !argv[1][0]) return 31;
-    DeleteFileA(argv[1]);
-    HANDLE configMutex = nullptr;
-    if (!enter_config_storage_lock(&configMutex)) return 32;
-    leave_config_storage_lock(configMutex);
-    HANDLE configPeer = OpenMutexA(SYNCHRONIZE | MUTEX_MODIFY_STATE,
-        FALSE, "Global\\GreenCurveConfigMutex-v2");
-    if (!configPeer) return 522;
-    CloseHandle(configPeer);
-    HANDLE overprivilegedConfigPeer = OpenMutexA(MUTEX_ALL_ACCESS,
-        FALSE, "Global\\GreenCurveConfigMutex-v2");
-    if (overprivilegedConfigPeer) {
-        CloseHandle(overprivilegedConfigPeer);
-        return 528;
-    }
-    if (enter_config_storage_lock(nullptr)) return 529;
-    if (get_config_int(argv[1], "debug", "enabled", 77) != 77) return 33;
-    if (!set_config_int(argv[1], "debug", "enabled", APP_DEBUG_DEFAULT_ENABLED)) {
-        fprintf(stderr, "Unicode config write failed for [%s] (Win32 error %lu)\n",
-            argv[1], (unsigned long)GetLastError());
-        return 34;
-    }
-    if (!config_section_has_keys(argv[1], "debug")) return 35;
-    if (get_config_int(argv[1], "debug", "enabled", 0) != 1) return 36;
-    if (!set_config_int(argv[1], "runtime", "selective_gpu_offset_mhz", 45)) return 37;
-    if (get_config_int(argv[1], "runtime", "selective_gpu_offset_mhz", 0) != 45) return 38;
-    // Lock mode (none/flatten/pin) must round-trip through the profile INI.
-    // Pin (hard) loss on save was the user-reported bug; this guards the
-    // serialize/parse contract the GUI relies on.
-    if (!set_config_int(argv[1], "profile1", "lock_mode", LOCK_MODE_HARD)) return 39;
-    if (get_config_int(argv[1], "profile1", "lock_mode", 0) != LOCK_MODE_HARD) return 46;
-    if (!set_config_int(argv[1], "profile1", "lock_mode", LOCK_MODE_FLATTEN)) return 47;
-    if (get_config_int(argv[1], "profile1", "lock_mode", 0) != LOCK_MODE_FLATTEN) return 48;
-    {
-        ConfiguredGpuSelection published = {};
-        published.stableIdentityPresent = true;
-        published.legacyIndex = 2;
-        published.identity.valid = true;
-        published.identity.pciInfoValid = true;
-        published.identity.deviceId = 0x268410DEu;
-        published.identity.subSystemId = 0x17AA3A5Cu;
-        published.identity.pciRevisionId = 0xA1u;
-        published.identity.extDeviceId = 0x12345678u;
-        published.identity.pciDomain = 0;
-        published.identity.pciBus = 9;
-        published.identity.pciDevice = 3;
-        published.identity.pciFunction = 1;
-        char section[1024] = {};
-        char gpuErr[256] = {};
-        if (!format_configured_gpu_selection_section("profile2_gpu",
-                &published, section, sizeof(section), gpuErr,
-                sizeof(gpuErr))) return 731;
-        const char* replaced[] = { "profile2_gpu" };
-        if (!write_config_sections_atomic(argv[1], section, replaced, 1,
-                gpuErr, sizeof(gpuErr))) return 732;
-        ConfiguredGpuSelection loaded = {};
-        if (!load_configured_gpu_selection_from_section(argv[1],
-                "profile2_gpu", &loaded, gpuErr, sizeof(gpuErr))) return 733;
-        if (!loaded.stableIdentityPresent || loaded.legacyIndex != 2 ||
-            !configured_gpu_base_identity_matches(
-                &published.identity, &loaded.identity) ||
-            loaded.identity.pciBus != 9 || loaded.identity.pciDevice != 3 ||
-            loaded.identity.pciFunction != 1) return 734;
-    }
-    gc_DeleteFileUtf8(argv[1]);
-
-    // F-08-001: IPC object size and field layout sanity
-    {
-        if (sizeof(ServiceRequest) > 65535) return 70;
-        if (sizeof(ServiceResponse) > 262143) return 71;
-    }
-
-    // F-08-001: validate_desired_settings_for_ipc extreme edge cases
-    {
-        DesiredSettings ds = {};
-        validate_desired_settings_for_ipc(nullptr);
-        validate_desired_settings_for_ipc(&ds);
-        ds.hasPowerLimit = 7; ds.powerLimitPct = 0;
-        ds.hasGpuOffset = 9; ds.gpuOffsetMHz = -50000;
-        ds.hasMemOffset = 11; ds.memOffsetMHz = 99999;
-        ds.hasFan = 13; ds.fanPercent = -100;
-        ds.fanAuto = 15;
-        ds.resetOcBeforeApply = 17;
-        for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-            ds.hasCurvePoint[ci] = 19;
-            ds.curvePointMHz[ci] = 9999999u;
-        }
-        ds.fanCurve.points[0].enabled = 21;
-        validate_desired_settings_for_ipc(&ds);
-        if (ds.hasPowerLimit != 1 || ds.hasGpuOffset != 1 || ds.hasMemOffset != 1) return 68;
-        if (ds.hasFan != 1 || ds.fanAuto != 1 || ds.resetOcBeforeApply != 1) return 69;
-        if (ds.hasCurvePoint[0] != 1 || ds.fanCurve.points[0].enabled != 1) return 79;
-        if (ds.powerLimitPct != 50) return 72;
-        if (ds.gpuOffsetMHz != -1000) return 73;
-        if (ds.memOffsetMHz != 5000) return 74;
-        if (ds.fanPercent != 0) return 75;
-        if (ds.curvePointMHz[0] != 5000u) return 76;
-        // Lock mode must clamp to the valid tri-state range at the IPC boundary.
-        ds.lockMode = (LockMode)999;
-        validate_desired_settings_for_ipc(&ds);
-        if (ds.lockMode != LOCK_MODE_HARD) return 77;
-        ds.lockMode = (LockMode)(-5);
-        validate_desired_settings_for_ipc(&ds);
-        if (ds.lockMode != LOCK_MODE_NONE) return 78;
-    }
-
-    // Protocol-v11 response envelopes are strict, complete, and generation
-    // stamped. Numeric defaults (0 offsets / 100% power / Auto fan) are valid
-    // authoritative values rather than "missing" sentinels.
-    {
-        ServiceResponse resp = fake_ready_service_response(7, 1, 1);
-        if (!validate_service_response_for_ipc(&resp)) return 154;
-        if (resp.controlState.gpuOffsetMHz != 0 ||
-            resp.controlState.memOffsetMHz != 0 ||
-            resp.controlState.powerLimitPct != 100 ||
-            resp.controlState.fanMode != FAN_MODE_AUTO) return 155;
-        ServiceResponse malformed = resp;
-        malformed.snapshot.initialized = 99;
-        if (validate_service_response_for_ipc(&malformed)) return 156;
-        malformed = resp;
-        malformed.state.reservedBool[0] = 1;
-        if (validate_service_response_for_ipc(&malformed)) return 157;
-        malformed = resp;
-        malformed.state.serviceInstanceId = 0;
-        if (validate_service_response_for_ipc(&malformed)) return 158;
-        malformed = resp;
-        malformed.state.topologySignature ^= 1;
-        if (validate_service_response_for_ipc(&malformed)) return 1101;
-        malformed = resp;
-        malformed.state.validSections &=
-            ~SERVICE_STATE_SECTION_APPLIED_CONTROLS;
-        if (validate_service_response_for_ipc(&malformed)) return 1102;
-        malformed = resp;
-        malformed.reserved = 1;
-        if (validate_service_response_for_ipc(&malformed)) return 1140;
-    }
-
-    // Protocol-v11 request validation, mutation preconditions, and field layout.
-    {
-        if (SERVICE_PROTOCOL_MAGIC != 0x47535643u) return 80;
-        if (SERVICE_PROTOCOL_VERSION != 11) return 81;
-        if (offsetof(ServiceRequest, expectedServiceInstanceId) <=
-            offsetof(ServiceRequest, operationId) ||
-            offsetof(ServiceResponse, state) <=
-            offsetof(ServiceResponse, serviceVersion)) return 1103;
-        ServiceRequest request = {};
-        request.magic = SERVICE_PROTOCOL_MAGIC;
-        request.version = SERVICE_PROTOCOL_VERSION;
-        request.command = SERVICE_CMD_PING;
-        request.callerPid = 1;
-        if (!validate_service_request_for_ipc(&request)) return 1104;
-        request.command = SERVICE_CMD_APPLY;
-        request.operationId = 55;
-        request.applyOrigin = SERVICE_APPLY_ORIGIN_GUI;
-        request.expectedServiceInstanceId = 7;
-        if (validate_service_request_for_ipc(&request)) return 1105;
-        request.expectedGpuGeneration = 2;
-        request.expectedTopologySignature = 3;
-        if (validate_service_request_for_ipc(&request)) return 1106;
-        request.targetGpu.valid = 1;
-        request.targetGpu.pciInfoValid = 1;
-        if (!validate_service_request_for_ipc(&request)) return 1107;
-        request.flags = 0x80000000u;
-        if (validate_service_request_for_ipc(&request)) return 1108;
-        request.flags = 0;
-        request.desired.hasFan = 2;
-        if (validate_service_request_for_ipc(&request)) return 1109;
-        request.desired.hasFan = 0;
-        memset(request.source, 'x', sizeof(request.source));
-        if (validate_service_request_for_ipc(&request)) return 1110;
-    }
-
-    // Topology is stable across telemetry and adapter ordinal reorder, but
-    // detects every populated-map entry (including same-count map changes).
-    {
-        ServiceResponse base = fake_ready_service_response(8, 1, 1);
-        gc_u64 signature = base.state.topologySignature;
-        ServiceSnapshot telemetry = base.snapshot;
-        telemetry.curve[7].freq_kHz += 500000;
-        if (service_snapshot_topology_signature(&telemetry) != signature)
-            return 1111;
-        ServiceSnapshot changedMap = base.snapshot;
-        changedMap.curve[11] = {};
-        changedMap.curve[12].freq_kHz = 1800000;
-        changedMap.curve[12].volt_uV = 900000;
-        if (service_snapshot_topology_signature(&changedMap) == signature)
-            return 1112;
-        ServiceSnapshot reordered = base.snapshot;
-        reordered.adapterCount = 2;
-        reordered.selectedAdapterIndex = 1;
-        reordered.adapters[1] = reordered.adapters[0];
-        reordered.adapters[1].nvapiIndex = 0;
-        reordered.adapters[0] = {};
-        reordered.adapters[0].valid = 1;
-        reordered.adapters[0].deviceId = 0x999910DEu;
-        if (service_snapshot_topology_signature(&reordered) != signature)
-            return 1113;
-        ServiceResponse empty = base;
-        memset(empty.snapshot.curve, 0, sizeof(empty.snapshot.curve));
-        empty.snapshot.numPopulated = 0;
-        empty.state.topologySignature =
-            service_snapshot_topology_signature(&empty.snapshot);
-        if (validate_service_response_for_ipc(&empty)) return 1114;
-    }
-
-    // Pure GUI reducer: coherent reconnect sequence, stale completion fences,
-    // service restart retirement, partial validity, capabilities, and drafts.
-    {
-        GuiServiceModel model = {};
-        gui_service_model_initialize(&model);
-        if (model.phase != GUI_SERVICE_DISCONNECTED) return 1115;
-        gui_service_model_begin_sync(&model, 1);
-        if (model.phase != GUI_SERVICE_SYNCING) return 1116;
-        ServiceResponse ready = fake_ready_service_response(21, 1, 1);
-        if (gui_service_model_accept(&model, 1, &ready.state) !=
-                GUI_SERVICE_ENVELOPE_ACCEPTED ||
-            model.phase != GUI_SERVICE_READY) return 1117;
-        if (gui_service_model_accept(&model, 1, &ready.state) !=
-                GUI_SERVICE_ENVELOPE_REJECTED_REVISION) return 1118;
-
-        ServiceStateEnvelope missing = ready.state;
-        missing.stateRevision = 2;
-        missing.gpuGeneration = 2;
-        missing.gpuPhase = SERVICE_GPU_PHASE_DEVICE_MISSING;
-        missing.validSections = SERVICE_STATE_SECTION_ADAPTER_IDENTITY |
-            SERVICE_STATE_SECTION_ACTIVE_INTENT;
-        missing.topologySignature = 0;
-        if (gui_service_model_accept(&model, 1, &missing) !=
-                GUI_SERVICE_ENVELOPE_ACCEPTED ||
-            model.phase != GUI_SERVICE_DEVICE_MISSING) return 1119;
-        ServiceStateEnvelope recovering = missing;
-        recovering.stateRevision = 3;
-        recovering.gpuPhase = SERVICE_GPU_PHASE_REAPPLYING;
-        if (gui_service_model_accept(&model, 1, &recovering) !=
-                GUI_SERVICE_ENVELOPE_ACCEPTED ||
-            model.phase != GUI_SERVICE_RECOVERING) return 1120;
-        ServiceResponse recovered = fake_ready_service_response(21, 4, 2);
-        if (gui_service_model_accept(&model, 1, &recovered.state) !=
-                GUI_SERVICE_ENVELOPE_ACCEPTED ||
-            !gui_service_model_ready(&model)) return 1121;
-
-        if (!gui_service_model_require_new_gpu_generation(&model))
-            return 1147;
-        recovered.state.stateRevision = 5;
-        if (gui_service_model_accept(&model, 1, &recovered.state) !=
-                GUI_SERVICE_ENVELOPE_REJECTED_GENERATION) return 1122;
-        recovered.state.stateRevision = 6;
-        recovered.state.gpuGeneration = 3;
-        if (gui_service_model_accept(&model, 1, &recovered.state) !=
-                GUI_SERVICE_ENVELOPE_ACCEPTED) return 1123;
-
-        ServiceStateEnvelope partial = recovered.state;
-        partial.stateRevision = 7;
-        partial.validSections = SERVICE_STATE_SECTION_ADAPTER_IDENTITY;
-        partial.topologySignature = 0;
-        if (gui_service_model_accept(&model, 1, &partial) !=
-                GUI_SERVICE_ENVELOPE_ACCEPTED ||
-            model.phase != GUI_SERVICE_DEGRADED) return 1124;
-
-        gui_service_model_begin_sync(&model, 2);
-        ServiceResponse restarted = fake_ready_service_response(22, 1, 1);
-        if (gui_service_model_accept(&model, 2, &restarted.state) !=
-                GUI_SERVICE_ENVELOPE_ACCEPTED) return 1125;
-        ready.state.stateRevision = 99;
-        if (gui_service_model_accept(&model, 1, &ready.state) !=
-                GUI_SERVICE_ENVELOPE_REJECTED_CONNECTION) return 1126;
-        if (gui_service_model_accept(&model, 2, &ready.state) !=
-                GUI_SERVICE_ENVELOPE_REJECTED_INSTANCE) return 1127;
-
-        // A service restart can be accepted in RECOVERING before Windows posts
-        // the GUI's matching DEVICEINSTANCESTARTED notification. That late
-        // local cue must not demand generation 2 from the fresh instance,
-        // whose generation 1 already represents the new hardware authority.
-        GuiServiceModel restartThenStart = {};
-        gui_service_model_initialize(&restartThenStart);
-        ServiceResponse oldReady = fake_ready_service_response(31, 5, 7);
-        if (gui_service_model_accept(&restartThenStart, 1,
-                &oldReady.state) != GUI_SERVICE_ENVELOPE_ACCEPTED)
-            return 1148;
-        gui_service_model_disconnect(&restartThenStart, 2);
-        ServiceResponse freshRecovering =
-            fake_ready_service_response(32, 1, 1);
-        freshRecovering.state.gpuPhase = SERVICE_GPU_PHASE_RECOVERING;
-        freshRecovering.state.validSections =
-            SERVICE_STATE_SECTION_ACTIVE_INTENT;
-        freshRecovering.state.topologySignature = 0;
-        if (gui_service_model_accept(&restartThenStart, 2,
-                &freshRecovering.state) != GUI_SERVICE_ENVELOPE_ACCEPTED ||
-            restartThenStart.phase != GUI_SERVICE_RECOVERING)
-            return 1149;
-        if (gui_service_model_require_new_gpu_generation(
-                &restartThenStart) ||
-            restartThenStart.minimumGpuGeneration != 0)
-            return 1150;
-        ServiceResponse freshReady = fake_ready_service_response(32, 2, 1);
-        if (gui_service_model_accept(&restartThenStart, 2,
-                &freshReady.state) != GUI_SERVICE_ENVELOPE_ACCEPTED ||
-            !gui_service_model_ready(&restartThenStart))
-            return 1151;
-
-        for (int phase = GUI_SERVICE_DISCONNECTED;
-                phase <= GUI_SERVICE_READY; ++phase) {
-            bool expected = phase == GUI_SERVICE_READY;
-            if (gui_service_phase_actions_enabled((GuiServicePhase)phase) !=
-                    expected) return 1128;
-            if (!gui_service_phase_tray_text((GuiServicePhase)phase)[0])
-                return 1129;
-        }
-        if (gui_draft_reconcile_decide(false, false, false) !=
-                GUI_DRAFT_REBASE_CLEAN ||
-            gui_draft_reconcile_decide(true, true, true) !=
-                GUI_DRAFT_ATTACH_DIRTY ||
-            gui_draft_reconcile_decide(true, false, true) !=
-                GUI_DRAFT_DETACH_DIRTY ||
-            gui_draft_reconcile_decide(true, true, false) !=
-                GUI_DRAFT_DETACH_DIRTY) return 1130;
-        if (!gui_service_completion_context_current(4, 4, 9, 9) ||
-            gui_service_completion_context_current(3, 4, 9, 9) ||
-            gui_service_completion_context_current(4, 4, 8, 9)) return 1141;
-        if (!gui_service_mutation_result_can_commit(true, true, true,
-                GUI_SERVICE_ENVELOPE_ACCEPTED, &model) ||
-            gui_service_mutation_result_can_commit(true, false, true,
-                GUI_SERVICE_ENVELOPE_ACCEPTED, &model) ||
-            gui_service_mutation_result_can_commit(true, true, false,
-                GUI_SERVICE_ENVELOPE_ACCEPTED, &model) ||
-            gui_service_mutation_result_can_commit(true, true, true,
-                GUI_SERVICE_ENVELOPE_REJECTED_GENERATION, &model)) return 1142;
-        if (gui_service_failure_requires_render(
-                GUI_SERVICE_DISCONNECTED, false,
-                false, false, false, false, false, false, false)) return 1147;
-        if (!gui_service_failure_requires_render(
-                GUI_SERVICE_SYNCING, false,
-                false, false, false, false, false, false, false) ||
-            !gui_service_failure_requires_render(
-                GUI_SERVICE_DISCONNECTED, true,
-                false, false, false, false, false, false, false) ||
-            !gui_service_failure_requires_render(
-                GUI_SERVICE_DISCONNECTED, false,
-                false, false, false, true, false, true, false) ||
-            !gui_service_failure_requires_render(
-                GUI_SERVICE_DISCONNECTED, false,
-                true, false, true, true, false, true, true)) return 1148;
-    }
-
-    // Tray callback negotiation: version-4 selection and legacy mouse
-    // notifications are mutually exclusive, so one click cannot enqueue two
-    // reconnect/render transactions.
-    {
-        if (!gui_tray_callback_opens_window(true,
-                GUI_TRAY_CALLBACK_V4_SELECT) ||
-            !gui_tray_callback_opens_window(true,
-                GUI_TRAY_CALLBACK_V4_KEY_SELECT) ||
-            gui_tray_callback_opens_window(true,
-                GUI_TRAY_CALLBACK_LEGACY_PRIMARY_UP) ||
-            gui_tray_callback_opens_window(true,
-                GUI_TRAY_CALLBACK_LEGACY_PRIMARY_DOUBLE) ||
-            !gui_tray_callback_opens_window(false,
-                GUI_TRAY_CALLBACK_LEGACY_PRIMARY_UP) ||
-            gui_tray_callback_opens_window(false,
-                GUI_TRAY_CALLBACK_V4_SELECT)) return 1143;
-        if (!gui_tray_callback_opens_context_menu(true,
-                GUI_TRAY_CALLBACK_V4_CONTEXT) ||
-            gui_tray_callback_opens_context_menu(true,
-                GUI_TRAY_CALLBACK_LEGACY_CONTEXT) ||
-            !gui_tray_callback_opens_context_menu(false,
-                GUI_TRAY_CALLBACK_LEGACY_CONTEXT) ||
-            gui_tray_callback_opens_context_menu(false,
-                GUI_TRAY_CALLBACK_V4_CONTEXT)) return 1144;
-        if (!gui_tray_hidden_intent_blocks_show(true, true) ||
-            gui_tray_hidden_intent_blocks_show(true, false) ||
-            gui_tray_hidden_intent_blocks_show(false, true) ||
-            !gui_tray_hidden_intent_requires_rehide(true, true, false) ||
-            gui_tray_hidden_intent_requires_rehide(true, false, false) ||
-            gui_tray_hidden_intent_requires_rehide(false, true, false) ||
-            gui_tray_hidden_intent_requires_rehide(true, true, true)) return 1149;
-        if (!gui_top_level_redraw_uses_wm_setredraw(true) ||
-            gui_top_level_redraw_uses_wm_setredraw(false)) return 1150;
-    }
-
-    // Stable telemetry is data-only. Authority, active intent, topology,
-    // forced refresh, or missing controls promote it to one full transaction.
-    {
-        if (gui_state_adoption_requires_redraw_suppression(
-                true, false, false, false, false) ||
-            gui_state_adoption_requires_full_render(
-                false, false, false, false, false, false, false)) return 1145;
-        if (!gui_state_adoption_requires_redraw_suppression(
-                true, true, false, false, false) ||
-            !gui_state_adoption_requires_redraw_suppression(
-                true, false, true, false, false) ||
-            !gui_state_adoption_requires_full_render(
-                false, false, false, true, false, false, false) ||
-            !gui_state_adoption_requires_full_render(
-                true, false, false, false, false, false, false)) return 1146;
-    }
-
-    // F-12-001: Backend spec VF_NUM_POINTS sanity
-    {
-        if (VF_NUM_POINTS != 128) return 90;
-    }
-
-    // F-15-002: degenerate/empty fan curve interpolation returns 100 (safe fallback)
-    {
-        FanCurveConfig empty = {};
-        if (fan_curve_interpolate_percent(&empty, 50) != 100) return 40;
-    }
-
-    // fan_curve_clamp_percentages
-    {
-        FanCurveConfig clampCfg = {};
-        fan_curve_set_default(&clampCfg);
-        fan_curve_clamp_percentages(&clampCfg, 40, 80);
-        for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
-            if (clampCfg.points[i].enabled) {
-                if (clampCfg.points[i].fanPercent < 40 || clampCfg.points[i].fanPercent > 80) return 41;
-            }
-        }
-    }
-
-    // fan_curve_equals
-    {
-        FanCurveConfig a = {}, b = {};
-        fan_curve_set_default(&a);
-        fan_curve_set_default(&b);
-        if (!fan_curve_equals(&a, &b)) return 42;
-        a.pollIntervalMs = 999;
-        if (fan_curve_equals(&a, &b)) return 43;
-    }
-
-    // fan_curve_has_high_temp_low_fan_warning
-    {
-        FanCurveConfig safe = {};
-        fan_curve_set_default(&safe);
-        if (fan_curve_has_high_temp_low_fan_warning(&safe)) return 44;
-        FanCurveConfig danger = {};
-        danger.points[0] = { gc_bool8_from_bool(true), 85, 20 };
-        danger.points[1] = { gc_bool8_from_bool(true), 95, 30 };
-        if (!fan_curve_has_high_temp_low_fan_warning(&danger)) return 45;
-    }
-
-    // validate_desired_settings_for_ipc clamps out-of-range values
-    {
-        DesiredSettings ds = {};
-        ds.hasPowerLimit = true;
-        ds.powerLimitPct = 10;
-        ds.hasGpuOffset = true;
-        ds.gpuOffsetMHz = 5000;
-        ds.hasMemOffset = true;
-        ds.memOffsetMHz = -9000;
-        ds.hasFan = true;
-        ds.fanPercent = 200;
-        for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-            ds.hasCurvePoint[ci] = true;
-            ds.curvePointMHz[ci] = 9999u;
-        }
-        validate_desired_settings_for_ipc(&ds);
-        if (ds.powerLimitPct != 50) return 50;
-        if (ds.gpuOffsetMHz != 1000) return 51;
-        if (ds.memOffsetMHz != -5000) return 52;
-        if (ds.fanPercent != 100) return 53;
-        if (ds.curvePointMHz[0] != 5000u) return 54;
-    }
-
-    // F-SEC-4: IPC validator also clamps index/mode/curve fields so a hostile
-    // unprivileged caller cannot drive an out-of-bounds index, an unknown fan
-    // mode, or out-of-range fan-curve values into the LocalSystem service.
-    {
-        DesiredSettings ds = {};
-        ds.lockCi = 9999;
-        validate_desired_settings_for_ipc(&ds);
-        if (ds.lockCi != VF_NUM_POINTS - 1) return 55;
-        ds.lockCi = -42;
-        validate_desired_settings_for_ipc(&ds);
-        if (ds.lockCi != -1) return 56;
-        ds.gpuOffsetExcludeLowCount = -5;
-        validate_desired_settings_for_ipc(&ds);
-        if (ds.gpuOffsetExcludeLowCount != 0) return 57;
-        ds.gpuOffsetExcludeLowCount = 9999;
-        validate_desired_settings_for_ipc(&ds);
-        if (ds.gpuOffsetExcludeLowCount != VF_NUM_POINTS) return 58;
-        ds.hasFan = true;
-        ds.fanMode = 99;
-        validate_desired_settings_for_ipc(&ds);
-        if (ds.fanMode != FAN_MODE_CURVE) return 59;
-        ds.fanMode = -7;
-        validate_desired_settings_for_ipc(&ds);
-        if (ds.fanMode != FAN_MODE_AUTO) return 60;
-        ds.fanCurve.points[0].fanPercent = 250;
-        ds.fanCurve.points[0].temperatureC = 9999;
-        ds.fanCurve.points[1].fanPercent = -30;
-        ds.fanCurve.points[1].temperatureC = -50;
-        ds.fanCurve.hysteresisC = 999;
-        ds.fanCurve.pollIntervalMs = 0;
-        validate_desired_settings_for_ipc(&ds);
-        if (ds.fanCurve.points[0].fanPercent != 100) return 61;
-        if (ds.fanCurve.points[0].temperatureC != 150) return 62;
-        if (ds.fanCurve.points[1].fanPercent != 0) return 63;
-        if (ds.fanCurve.points[1].temperatureC != 0) return 64;
-        if (ds.fanCurve.hysteresisC != FAN_CURVE_MAX_HYSTERESIS_C) return 65;
-        if (ds.fanCurve.pollIntervalMs != 1) return 66;
-    }
-
-    // F-SEC-1: protected service-binary DACL round-trip.  apply_* must produce a
-    // hardened DACL (inheritance disabled, no non-admin write); restore_* must
-    // revert it so the file inherits its parent directory's ACLs again.  This
-    // verifies the exact security property without needing a second identity.
-    {
-        wchar_t tempDir[MAX_PATH] = {};
-        if (GetTempPathW(MAX_PATH, tempDir) == 0) return 110;
-        wchar_t aclFile[MAX_PATH] = {};
-        StringCchPrintfW(aclFile, MAX_PATH, L"%lsgc_acl_%lu.bin", tempDir, GetCurrentProcessId());
-        HANDLE ah = CreateFileW(aclFile, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (ah == INVALID_HANDLE_VALUE) return 111;
-        CloseHandle(ah);
-        char aclErr[160] = {};
-        // A fresh temp file inherits the (non-protected) temp dir ACL.
-        if (service_binary_dacl_is_hardened(aclFile)) { DeleteFileW(aclFile); return 112; }
-        if (!apply_protected_service_binary_dacl(aclFile, aclErr, sizeof(aclErr))) { DeleteFileW(aclFile); return 113; }
-        if (!service_binary_dacl_is_hardened(aclFile)) { DeleteFileW(aclFile); return 114; }
-        if (!restore_inherited_dacl(aclFile, aclErr, sizeof(aclErr))) { DeleteFileW(aclFile); return 115; }
-        if (service_binary_dacl_is_hardened(aclFile)) { DeleteFileW(aclFile); return 116; }
-        DeleteFileW(aclFile);
-    }
-
-    // F-SEC-1b: protected service install directory DACL.  The service binary
-    // is installed adjacent to the GUI; the containing directory must also be
-    // protected so a non-admin cannot delete/recreate the file by
-    // parent-directory rights.
-    {
-        wchar_t tempDir[MAX_PATH] = {};
-        if (GetTempPathW(MAX_PATH, tempDir) == 0) return 166;
-        wchar_t svcDir[MAX_PATH] = {};
-        StringCchPrintfW(svcDir, MAX_PATH, L"%lsgc_service_dir_acl_%lu", tempDir, GetCurrentProcessId());
-        if (!CreateDirectoryW(svcDir, nullptr)) return 167;
-        char aclErr[256] = {};
-        if (service_binary_dacl_is_hardened(svcDir)) { RemoveDirectoryW(svcDir); return 168; }
-        if (!apply_protected_service_dir_dacl(svcDir, aclErr, sizeof(aclErr))) { RemoveDirectoryW(svcDir); return 169; }
-        if (!service_binary_dacl_is_hardened(svcDir)) { RemoveDirectoryW(svcDir); return 170; }
-        RemoveDirectoryW(svcDir);
-    }
-
-    // F-SEC-6: machine-wide config DACL round-trip.  The .ini must be readable
-    // by standard users (so the GUI can show the current default) but writable
-    // only by SYSTEM/Administrators.
-    {
-        wchar_t tempDir[MAX_PATH] = {};
-        if (GetTempPathW(MAX_PATH, tempDir) == 0) return 117;
-        wchar_t mcFile[MAX_PATH] = {};
-        StringCchPrintfW(mcFile, MAX_PATH, L"%lsgc_machine_acl_%lu.ini", tempDir, GetCurrentProcessId());
-        HANDLE mh = CreateFileW(mcFile, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (mh == INVALID_HANDLE_VALUE) return 118;
-        CloseHandle(mh);
-        char aclErr[256] = {};
-        if (machine_config_dacl_is_hardened(mcFile)) { DeleteFileW(mcFile); return 119; }
-        if (!apply_protected_machine_config_dacl(mcFile, aclErr, sizeof(aclErr))) { DeleteFileW(mcFile); return 120; }
-        if (!machine_config_dacl_is_hardened(mcFile)) { DeleteFileW(mcFile); return 121; }
-        DeleteFileW(mcFile);
-    }
-
-    // F-15: shared-bank DIRECTORY DACL round-trip.  %ProgramData%\Green Curve
-    // must be standard-user-readable (list) but writable only by SYSTEM /
-    // Administrators, so a non-admin cannot plant or delete shared bank files.
-    {
-        wchar_t tempDir[MAX_PATH] = {};
-        if (GetTempPathW(MAX_PATH, tempDir) == 0) return 130;
-        wchar_t mcDir[MAX_PATH] = {};
-        StringCchPrintfW(mcDir, MAX_PATH, L"%lsgc_machine_acl_dir_%lu", tempDir, GetCurrentProcessId());
-        if (!CreateDirectoryW(mcDir, nullptr)) return 131;
-        char aclErr[256] = {};
-        if (machine_config_dacl_is_hardened(mcDir)) { RemoveDirectoryW(mcDir); return 132; }
-        if (!apply_protected_machine_config_dir_dacl(mcDir, aclErr, sizeof(aclErr))) { RemoveDirectoryW(mcDir); return 133; }
-        if (!machine_config_dacl_is_hardened(mcDir)) { RemoveDirectoryW(mcDir); return 134; }
-        RemoveDirectoryW(mcDir);
-    }
-
-    // Shared-only policy: the "apply shared slot N" request flag must encode the
-    // slot in bits 8..15 and the marker in bit 30, WITHOUT colliding with the
-    // interactive bit (bit 0).  The service uses this to apply its own copy of an
-    // admin shared profile for restricted callers.
-    {
-        DWORD f = SERVICE_REQUEST_FLAG_INTERACTIVE | SERVICE_REQUEST_FLAG_SHARED_SLOT |
-                  ((3u & SERVICE_REQUEST_SHARED_SLOT_MASK) << SERVICE_REQUEST_SHARED_SLOT_SHIFT);
-        if (!(f & SERVICE_REQUEST_FLAG_SHARED_SLOT)) return 135;
-        if (!(f & SERVICE_REQUEST_FLAG_INTERACTIVE)) return 136;
-        if (((f >> SERVICE_REQUEST_SHARED_SLOT_SHIFT) & SERVICE_REQUEST_SHARED_SLOT_MASK) != 3u) return 137;
-        DWORD f2 = SERVICE_REQUEST_FLAG_SHARED_SLOT | ((5u & SERVICE_REQUEST_SHARED_SLOT_MASK) << SERVICE_REQUEST_SHARED_SLOT_SHIFT);
-        if ((f2 & SERVICE_REQUEST_FLAG_INTERACTIVE) != 0) return 138;
-        if (((f2 >> SERVICE_REQUEST_SHARED_SLOT_SHIFT) & SERVICE_REQUEST_SHARED_SLOT_MASK) != 5u) return 139;
-    }
-
-    // Pin-bug root-cause guard: the snapshot lockMode sync must NEVER adopt
-    // the service's (previously applied) mode while the GUI holds divergent
-    // pending lock intent (FLATTEN->HARD click / loaded HARD profile) or
-    // unsaved edits.  Before this gate existed, the per-second telemetry
-    // snapshot silently reverted a HARD pin to FLATTEN within ~1 s, making
-    // the pin un-appliable ("No changes to apply") and saving it wrong.
-    {
-        // Divergent intent (clean): user clicked FLATTEN->HARD, snapshot still FLATTEN.
-        if (lock_mode_sync_allowed(LOCK_MODE_HARD, LOCK_MODE_FLATTEN, false)) return 122;
-        // Divergent intent (dirty): same, with other unsaved edits.
-        if (lock_mode_sync_allowed(LOCK_MODE_HARD, LOCK_MODE_FLATTEN, true)) return 123;
-        // No divergence but dirty: never resync mid-edit.
-        if (lock_mode_sync_allowed(LOCK_MODE_FLATTEN, LOCK_MODE_FLATTEN, true)) return 124;
-        // Clean, no divergence: adoption allowed (e.g. curve-detected FLATTEN
-        // while the service authoritatively reports HARD at the same point).
-        if (!lock_mode_sync_allowed(LOCK_MODE_FLATTEN, LOCK_MODE_FLATTEN, false)) return 125;
-        if (!lock_mode_sync_allowed(LOCK_MODE_NONE, LOCK_MODE_NONE, false)) return 126;
-    }
-
-    // Lock-checkbox activation policy: one accepted transition per armed
-    // mouse/key gesture, non-click notifications are inert, and a startup or
-    // service synchronization between press and release fails safe instead of
-    // turning the newly arrived FLATTEN state into HARD.
-    {
-        LockUiStateStamp none = {-1, -1, 0u, LOCK_MODE_NONE};
-        LockUiStateStamp flatten = {27, 76, 2957u, LOCK_MODE_FLATTEN};
-        if (lock_mode_after_activation(false, LOCK_MODE_NONE) != LOCK_MODE_FLATTEN) return 624;
-        if (lock_mode_after_activation(true, LOCK_MODE_FLATTEN) != LOCK_MODE_HARD) return 625;
-        if (lock_mode_after_activation(true, LOCK_MODE_HARD) != LOCK_MODE_NONE) return 626;
-        if (decide_lock_activation(BN_SETFOCUS, BN_CLICKED, false, false, -1, 27, none, none)
-                != LOCK_ACTIVATION_IGNORE_NOTIFICATION) return 627;
-        if (decide_lock_activation(BN_DBLCLK, BN_CLICKED, false, false, -1, 27, none, none)
-                != LOCK_ACTIVATION_IGNORE_NOTIFICATION) return 628;
-        if (decide_lock_activation(BN_CLICKED, BN_CLICKED, false, false, -1, 27, none, none)
-                != LOCK_ACTIVATION_ACCEPT_UNARMED) return 629;
-        if (decide_lock_activation(BN_CLICKED, BN_CLICKED, true, false, 27, 27, none, none)
-                != LOCK_ACTIVATION_ACCEPT_ARMED) return 630;
-        if (decide_lock_activation(BN_CLICKED, BN_CLICKED, true, true, 27, 27, none, none)
-                != LOCK_ACTIVATION_REJECT_ALREADY_CONSUMED) return 631;
-        if (decide_lock_activation(BN_CLICKED, BN_CLICKED, true, false, 26, 27, none, none)
-                != LOCK_ACTIVATION_REJECT_WRONG_CONTROL) return 632;
-        if (decide_lock_activation(BN_CLICKED, BN_CLICKED, true, false, 27, 27, none, flatten)
-                != LOCK_ACTIVATION_REJECT_STATE_CHANGED) return 633;
-        if (!lock_ui_state_stamp_equal(flatten, flatten) || lock_ui_state_stamp_equal(none, flatten)) return 634;
-#if defined(_WIN32)
-        if (!run_native_ownerdraw_button_notification_test()) return 635;
-        if (!run_native_reconnect_projection_and_dib_test()) return 1131;
-#endif
-    }
-
-    // lockMHz is clamped at the IPC boundary like the curve points (it feeds
-    // NVML locked-clocks and flatten-tail targets); 0 = "no target" stays 0.
-    {
-        DesiredSettings ds = {};
-        ds.lockMHz = 4000000000u;
-        validate_desired_settings_for_ipc(&ds);
-        if (ds.lockMHz != 5000u) return 127;
-        ds.lockMHz = 0u;
-        validate_desired_settings_for_ipc(&ds);
-        if (ds.lockMHz != 0u) return 128;
-        ds.lockMHz = 2800u;
-        validate_desired_settings_for_ipc(&ds);
-        if (ds.lockMHz != 2800u) return 129;
-    }
-
-    // Logon auto-apply policy decision (resolve_logon_profile_source).  This is
-    // the core of the restrict_non_admin_to_shared logon fix: a restricted user
-    // (policy ON && not admin) must NEVER get their per-user custom OC applied at
-    // logon — only an explicit published shared choice or the machine-wide shared
-    // default.  Admins / unrestricted machines keep the legacy per-user-first
-    // behavior.  The "restricted + per-user slot => NOT per-user" cases (142/143)
-    // would have failed before the fix (bypass).
-    {
-        // Explicit, published shared choice always wins (any user).
-        if (resolve_logon_profile_source(true, false, 3, true, 1, true, true) != LOGON_PROFILE_SOURCE_SHARED_BANK) return 140;
-        if (resolve_logon_profile_source(false, true, 2, true, 0, false, false) != LOGON_PROFILE_SOURCE_SHARED_BANK) return 141;
-        // Restricted + only a per-user slot => bypass closed (none, no default).
-        if (resolve_logon_profile_source(true, false, 0, false, 1, true, false) != LOGON_PROFILE_SOURCE_NONE) return 142;
-        // Restricted + per-user slot + machine default => the shared default.
-        if (resolve_logon_profile_source(true, false, 0, false, 1, true, true) != LOGON_PROFILE_SOURCE_MACHINE_DEFAULT) return 143;
-        // An explicit shared choice never silently degrades to another profile.
-        if (resolve_logon_profile_source(true, false, 4, false, 0, false, true) != LOGON_PROFILE_SOURCE_PENDING) return 144;
-        // Admin under policy keeps the per-user slot.
-        if (resolve_logon_profile_source(true, true, 0, false, 2, true, true) != LOGON_PROFILE_SOURCE_PER_USER) return 145;
-        // Policy off, non-admin: per-user slot honored.
-        if (resolve_logon_profile_source(false, false, 0, false, 2, true, true) != LOGON_PROFILE_SOURCE_PER_USER) return 146;
-        // Policy off, non-admin, no per-user but machine default => default.
-        if (resolve_logon_profile_source(false, false, 0, false, 0, false, true) != LOGON_PROFILE_SOURCE_MACHINE_DEFAULT) return 147;
-        // Nothing available => none (both unrestricted and restricted).
-        if (resolve_logon_profile_source(false, false, 0, false, 0, false, false) != LOGON_PROFILE_SOURCE_NONE) return 148;
-        if (resolve_logon_profile_source(true, false, 0, false, 0, false, false) != LOGON_PROFILE_SOURCE_NONE) return 149;
-        // Unrestricted explicit personal slot that is missing remains pending.
-        if (resolve_logon_profile_source(false, false, 0, false, 3, false, true) != LOGON_PROFILE_SOURCE_PENDING) return 601;
-    }
-
-    // Stable GPU selection survives enumeration reordering and fails closed
-    // when an identical identity is ambiguous or absent.
-    {
-        ConfiguredGpuSelection configured = {};
-        configured.stableIdentityPresent = true;
-        configured.legacyIndex = 0;
-        configured.identity.valid = true;
-        configured.identity.pciInfoValid = true;
-        configured.identity.deviceId = 0x1234;
-        configured.identity.subSystemId = 0x5678;
-        configured.identity.pciRevisionId = 1;
-        configured.identity.extDeviceId = 2;
-        configured.identity.pciBus = 9;
-        configured.identity.pciDevice = 0;
-        GpuAdapterInfo adapters[2] = {};
-        adapters[0] = configured.identity;
-        adapters[0].pciBus = 3;
-        adapters[1] = configured.identity;
-        unsigned int resolved = 99;
-        if (resolve_configured_gpu_selection(&configured, adapters, 2, &resolved) != CONFIGURED_GPU_RESOLVE_STABLE || resolved != 1) return 602;
-        adapters[1].pciBus = 3;
-        if (resolve_configured_gpu_selection(&configured, adapters, 2, &resolved) != CONFIGURED_GPU_RESOLVE_NOT_FOUND) return 603;
-        configured.identity.pciBus = 0;
-        configured.identity.pciDevice = 0;
-        adapters[0] = configured.identity;
-        adapters[1] = configured.identity;
-        if (resolve_configured_gpu_selection(&configured, adapters, 2, &resolved) != CONFIGURED_GPU_RESOLVE_AMBIGUOUS) return 604;
-    }
-
-    // explicit_vf_points_v1 makes lock_ci=-1 an unlocked custom curve, not a
-    // legacy captured-live-curve cleanup marker.
-    if (profile_should_strip_legacy_unlocked_curve(true, -1, true)) return 605;
-    if (!profile_should_strip_legacy_unlocked_curve(true, -1, false)) return 606;
-    if (profile_lock_mode_after_load(true, false, LOCK_MODE_NONE) !=
-        LOCK_MODE_FLATTEN) return 900;
-    if (profile_lock_mode_after_load(true, true, LOCK_MODE_HARD) !=
-        LOCK_MODE_HARD) return 901;
-    if (profile_lock_mode_after_load(false, true, LOCK_MODE_HARD) !=
-        LOCK_MODE_NONE) return 902;
-    if (profile_slot_reference_after_clear(3, 3, 0) != 0 ||
-        profile_slot_reference_after_clear(2, 3, 0) != 2) return 903;
-    if (profile_lock_mode_after_load(true, true, LOCK_MODE_NONE) !=
-        LOCK_MODE_FLATTEN) return 907;
-
-    // Apply origins are security policy, not diagnostic strings.  Only a
-    // successful explicit user action may clear a sticky automatic-restore
-    // lockout.  Every automatic origin, including app-launch/foreground, must
-    // honor it.  Service startup has no apply origin at all.
-    {
-        if (!service_apply_origin_is_explicit(SERVICE_APPLY_ORIGIN_GUI)) return 160;
-        if (!service_apply_origin_is_explicit(SERVICE_APPLY_ORIGIN_CLI)) return 161;
-        if (!service_apply_origin_is_explicit(SERVICE_APPLY_ORIGIN_HOTKEY)) return 162;
-        if (!service_apply_origin_is_explicit(SERVICE_APPLY_ORIGIN_TRAY)) return 163;
-        if (service_apply_origin_is_explicit(SERVICE_APPLY_ORIGIN_APP_LAUNCH)) return 164;
-        if (service_apply_origin_is_explicit(SERVICE_APPLY_ORIGIN_FOREGROUND)) return 165;
-        if (service_apply_origin_is_explicit(SERVICE_APPLY_ORIGIN_LOGON)) return 166;
-        if (service_apply_origin_is_explicit(SERVICE_APPLY_ORIGIN_STANDBY)) return 167;
-        if (service_apply_origin_is_explicit(SERVICE_APPLY_ORIGIN_DRIVER_RECOVERY)) return 168;
-        if (service_apply_origin_is_explicit(SERVICE_APPLY_ORIGIN_UNSPECIFIED)) return 169;
-
-        if (service_apply_origin_is_automatic(SERVICE_APPLY_ORIGIN_GUI)) return 170;
-        if (!service_apply_origin_is_automatic(SERVICE_APPLY_ORIGIN_APP_LAUNCH)) return 171;
-        if (!service_apply_origin_is_automatic(SERVICE_APPLY_ORIGIN_FOREGROUND)) return 172;
-        if (!service_apply_origin_is_automatic(SERVICE_APPLY_ORIGIN_LOGON)) return 173;
-        if (!service_apply_origin_is_automatic(SERVICE_APPLY_ORIGIN_STANDBY)) return 174;
-        if (!service_apply_origin_is_automatic(SERVICE_APPLY_ORIGIN_DRIVER_RECOVERY)) return 175;
-
-        // Client APPLY may carry explicit actions and the two GUI-owned
-        // automation origins only. Logon has a settings-free command, while
-        // standby/driver recovery are authorized only by the lifecycle worker.
-        if (!service_apply_origin_is_client_apply(SERVICE_APPLY_ORIGIN_GUI)) return 555;
-        if (!service_apply_origin_is_client_apply(SERVICE_APPLY_ORIGIN_CLI)) return 556;
-        if (!service_apply_origin_is_client_apply(SERVICE_APPLY_ORIGIN_HOTKEY)) return 557;
-        if (!service_apply_origin_is_client_apply(SERVICE_APPLY_ORIGIN_TRAY)) return 558;
-        if (!service_apply_origin_is_client_apply(SERVICE_APPLY_ORIGIN_APP_LAUNCH)) return 559;
-        if (!service_apply_origin_is_client_apply(SERVICE_APPLY_ORIGIN_FOREGROUND)) return 560;
-        if (service_apply_origin_is_client_apply(SERVICE_APPLY_ORIGIN_LOGON)) return 561;
-        if (service_apply_origin_is_client_apply(SERVICE_APPLY_ORIGIN_STANDBY)) return 562;
-        if (service_apply_origin_is_client_apply(SERVICE_APPLY_ORIGIN_DRIVER_RECOVERY)) return 563;
-        if (service_apply_origin_is_client_apply(SERVICE_APPLY_ORIGIN_UNSPECIFIED)) return 564;
-
-        if (SERVICE_CMD_LOGON_HANDOFF == SERVICE_CMD_APPLY) return 176;
-        if (SERVICE_CMD_LOGON_HANDOFF == SERVICE_CMD_RESET) return 177;
-
-        ServiceSnapshot snapshot = {};
-        snapshot.activeProfileSource = 999;
-        snapshot.activeProfileSlot = 999;
-        snapshot.lastLifecycleTrigger = 999;
-        snapshot.lastLifecycleResult = 999;
-        snapshot.autoRestoreLockoutReason = 999;
-        validate_service_snapshot_for_ipc(&snapshot);
-        if (snapshot.activeProfileSource != SERVICE_PROFILE_SOURCE_NONE) return 178;
-        if (snapshot.activeProfileSlot != 0) return 179;
-        if (snapshot.lastLifecycleTrigger != SERVICE_LIFECYCLE_TRIGGER_NONE) return 180;
-        if (snapshot.lastLifecycleResult != SERVICE_LIFECYCLE_RESULT_NONE) return 181;
-        // Invalid lockout metadata fails closed rather than silently rearming.
-        if (snapshot.autoRestoreLockoutReason != SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED) return 182;
-    }
-
-    // Exact selected-GPU PnP identity policy.  A full PCI hardware ID is
-    // required, NvAPI's combined device/vendor ID layouts are normalized, and
-    // a known BDF must match.  Missing/partial/ambiguous identities fail closed
-    // for PnP recovery authorization without affecting hardware-write policy.
-    {
-        SelectedGpuPciHardwareId parsed = {};
-        const wchar_t* exact =
-            L"PCI\\VEN_10DE&DEV_2684&SUBSYS_17AA3A5C&REV_A1";
-        if (!selected_gpu_pnp_parse_hardware_id(exact, &parsed)) return 500;
-        if (parsed.vendorId != 0x10DEu || parsed.deviceId != 0x2684u ||
-            parsed.subsystemId != 0x17AA3A5Cu || parsed.revisionId != 0xA1u) return 501;
-        if (!selected_gpu_pnp_parse_hardware_id(
-                L"pci\\ven_10de&dev_2684&subsys_17aa3a5c&rev_a1",
-                &parsed)) return 502;
-        if (selected_gpu_pnp_parse_hardware_id(
-                L"PCI\\VEN_10DE&DEV_2684&SUBSYS_17AA3A5C", &parsed)) return 503;
-        if (selected_gpu_pnp_parse_hardware_id(
-                L"PCI\\VEN_10DE&DEV_02684&SUBSYS_17AA3A5C&REV_A1",
-                &parsed)) return 504;
-
-        GpuAdapterInfo target = {};
-        target.valid = 1;
-        target.pciInfoValid = 1;
-        target.deviceId = 0x268410DEu;
-        target.subSystemId = 0x17AA3A5Cu;
-        target.pciRevisionId = 0xA1u;
-        if (!selected_gpu_pnp_parse_hardware_id(exact, &parsed) ||
-            !selected_gpu_pnp_hardware_id_matches_target(
-                &target, &parsed)) return 505;
-        target.deviceId = 0x10DE2684u;
-        if (!selected_gpu_pnp_hardware_id_matches_target(
-                &target, &parsed)) return 506;
-        target.deviceId = 0x2684u;
-        if (!selected_gpu_pnp_hardware_id_matches_target(
-                &target, &parsed)) return 507;
-        target.deviceId = 0x268510DEu;
-        if (selected_gpu_pnp_hardware_id_matches_target(
-                &target, &parsed)) return 508;
-        target.deviceId = 0x268410DEu;
-        target.subSystemId ^= 1u;
-        if (selected_gpu_pnp_hardware_id_matches_target(
-                &target, &parsed)) return 509;
-        target.subSystemId ^= 1u;
-        target.pciRevisionId = 0xA2u;
-        if (selected_gpu_pnp_hardware_id_matches_target(
-                &target, &parsed)) return 510;
-        target.pciRevisionId = 0xA1u;
-        SelectedGpuPciHardwareId wrongVendor = {};
-        if (!selected_gpu_pnp_parse_hardware_id(
-                L"PCI\\VEN_1234&DEV_2684&SUBSYS_17AA3A5C&REV_A1",
-                &wrongVendor)) return 520;
-        if (selected_gpu_pnp_hardware_id_matches_target(
-                &target, &wrongVendor)) return 521;
-
-        const wchar_t ids[] =
-            L"PCI\\VEN_10DE&DEV_2684\0"
-            L"PCI\\VEN_10DE&DEV_2684&SUBSYS_17AA3A5C&REV_A1\0\0";
-        if (!selected_gpu_pnp_hardware_id_list_matches_target(
-                &target, ids, ARRAY_COUNT(ids))) return 511;
-        // GpuAdapterInfo has no historical BDF-valid bit. An all-zero location
-        // must fall back to the unique full hardware ID rather than pretending
-        // that 0000:00:00.0 was independently corroborated.
-        if (selected_gpu_pnp_target_has_bdf(&target)) return 565;
-        target.pciBus = 7;
-        target.pciDevice = 0;
-        target.pciFunction = 0;
-        if (!selected_gpu_pnp_target_has_bdf(&target)) return 512;
-        if (!selected_gpu_pnp_bdf_matches_target(
-                &target, true, 7, 0, 0)) return 513;
-        if (selected_gpu_pnp_bdf_matches_target(
-                &target, true, 8, 0, 0)) return 514;
-        if (selected_gpu_pnp_bdf_matches_target(
-                &target, true, 7, 1, 0)) return 566;
-        if (selected_gpu_pnp_bdf_matches_target(
-                &target, true, 7, 0, 1)) return 567;
-        if (selected_gpu_pnp_bdf_matches_target(
-                &target, false, 0, 0, 0)) return 515;
-        target.pciDomain = 1;
-        if (selected_gpu_pnp_target_has_bdf(&target)) return 516;
-        if (selected_gpu_pnp_resolve_match_count(0) !=
-                SELECTED_GPU_PNP_MATCH_NONE) return 517;
-        if (selected_gpu_pnp_resolve_match_count(1) !=
-                SELECTED_GPU_PNP_MATCH_UNIQUE) return 518;
-        if (selected_gpu_pnp_resolve_match_count(2) !=
-                SELECTED_GPU_PNP_MATCH_AMBIGUOUS) return 519;
-    }
-
-    // Automatic-restore policy: a configured logon profile may be applied at
-    // the user's Windows logon unless safety has been latched off. Standby
-    // restores current active intent immediately (unless locked out); driver
-    // recovery is deliberately stricter and needs a successful apply that
-    // survived the full 10-minute proving period. These boundary cases
-    // must stay independent of scheduler timing and never become a continuous
-    // curve-drift correction policy.
-    {
-        if (!should_auto_apply_logon_profile(true, false)) return 400;
-        if (should_auto_apply_logon_profile(false, false)) return 401;
-        if (should_auto_apply_logon_profile(true, true)) return 402;
-        if (!should_auto_restore_after_standby_resume(true, false)) return 403;
-        if (should_auto_restore_after_standby_resume(false, false)) return 404;
-        if (should_auto_restore_after_standby_resume(true, true)) return 405;
-        if (should_auto_restore_after_driver_event(false, AUTO_RESTORE_STABILITY_WINDOW_MS, false)) return 406;
-        if (should_auto_restore_after_driver_event(true, AUTO_RESTORE_STABILITY_WINDOW_MS - 1, false)) return 407;
-        if (!should_auto_restore_after_driver_event(true, AUTO_RESTORE_STABILITY_WINDOW_MS, false)) return 408;
-        if (should_auto_restore_after_driver_event(true, AUTO_RESTORE_STABILITY_WINDOW_MS + 1, true)) return 409;
-        if (service_should_preserve_proof_after_standby(
-                true, AUTO_RESTORE_STABILITY_WINDOW_MS - 1,
-                AUTO_RESTORE_STABILITY_WINDOW_MS)) return 626;
-        if (!service_should_preserve_proof_after_standby(
-                true, AUTO_RESTORE_STABILITY_WINDOW_MS,
-                AUTO_RESTORE_STABILITY_WINDOW_MS)) return 627;
-        if (service_should_preserve_proof_after_standby(
-                false, AUTO_RESTORE_STABILITY_WINDOW_MS + 1,
-                AUTO_RESTORE_STABILITY_WINDOW_MS)) return 628;
-    }
-
-    // Fake unbiased clock: prove the exact 9:59/10:00 boundary without sleep.
-    // "Wall time spent asleep" is intentionally absent; unchanged awake ticks
-    // leave the proof age unchanged.  Old/cross-boot/ambiguous stamps fail closed.
-    {
-        const ServiceBootIdentity boot = { 0x12345678ULL, 0x9abcdef0ULL };
-        const ServiceBootIdentity anotherBoot = { 0x12345678ULL, 0x9abcdef1ULL };
-        const ServiceBootIdentity anotherHighBoot = { 0x12345679ULL, 0x9abcdef0ULL };
-        const ServiceBootIdentity invalidBoot = {};
-        const uint64_t appliedAwake = 100000000ULL;
-        ServiceOcApplyProofStamp stamp = {};
-        stamp.magic = SERVICE_OC_APPLY_STAMP_MAGIC;
-        stamp.version = SERVICE_OC_APPLY_STAMP_VERSION;
-        stamp.size = sizeof(stamp);
-        stamp.bootIdentity = boot;
-        stamp.awakeTime100ns = appliedAwake;
-        uint64_t ageMs = 0;
-        if (!service_compute_proof_age_ms(&stamp, boot,
-                appliedAwake + 599000ULL * 10000ULL, &ageMs) || ageMs != 599000ULL) return 432;
-        if (should_auto_restore_after_driver_event(true, ageMs, false)) return 433;
-        if (!service_compute_proof_age_ms(&stamp, boot,
-                appliedAwake + 600000ULL * 10000ULL, &ageMs) || ageMs != 600000ULL) return 434;
-        if (!should_auto_restore_after_driver_event(true, ageMs, false)) return 435;
-
-        // Ten minutes of wall-clock standby with no awake-tick progress proves nothing.
-        if (!service_compute_proof_age_ms(&stamp, boot, appliedAwake, &ageMs) || ageMs != 0) return 436;
-        if (should_auto_restore_after_driver_event(true, ageMs, false)) return 437;
-        if (service_compute_proof_age_ms(&stamp, anotherBoot,
-                appliedAwake + 600000ULL * 10000ULL, &ageMs)) return 438;
-        if (service_compute_proof_age_ms(&stamp, anotherHighBoot,
-                appliedAwake + 600000ULL * 10000ULL, &ageMs)) return 624;
-        if (service_compute_proof_age_ms(&stamp, invalidBoot,
-                appliedAwake + 600000ULL * 10000ULL, &ageMs)) return 625;
-        stamp.version = 1;
-        if (service_compute_proof_age_ms(&stamp, boot,
-                appliedAwake + 600000ULL * 10000ULL, &ageMs)) return 439;
-        stamp.version = SERVICE_OC_APPLY_STAMP_VERSION;
-        stamp.reserved = 1;
-        if (service_compute_proof_age_ms(&stamp, boot,
-                appliedAwake + 600000ULL * 10000ULL, &ageMs)) return 440;
-        stamp.reserved = 0;
-
-        // Every successful reapply starts a fresh proof, rather than inheriting
-        // the old application age.
-        stamp.awakeTime100ns = appliedAwake + 600000ULL * 10000ULL;
-        if (!service_compute_proof_age_ms(&stamp, boot, stamp.awakeTime100ns, &ageMs) || ageMs != 0) return 441;
-
-        ServiceRecoveryClockEntry history[] = {
-            { boot, stamp.awakeTime100ns - 10000ULL },
-            { boot, stamp.awakeTime100ns - 20000ULL },
-            { boot, stamp.awakeTime100ns - 30000ULL },
-            { anotherBoot, stamp.awakeTime100ns },
-        };
-        if (service_count_recent_recovery_clock_entries(history, ARRAY_COUNT(history),
-                boot, stamp.awakeTime100ns, 300000ULL) != 3) return 442;
-        // No awake-time progress leaves the persistent spam count intact.
-        if (service_count_recent_recovery_clock_entries(history, ARRAY_COUNT(history),
-                boot, stamp.awakeTime100ns, 300000ULL) != 3) return 443;
-        ServiceRecoveryEvidenceKey evidence[] = {
-            { 0xAAULL, 0x11ULL },
-            { 0xBBULL, 0x22ULL },
-        };
-        ServiceRecoveryEvidenceKey corroborating = { 0xAAULL, 0x11ULL };
-        ServiceRecoveryEvidenceKey distinct = { 0xAAULL, 0x12ULL };
-        if (!service_recovery_evidence_already_recorded(
-                evidence, ARRAY_COUNT(evidence), corroborating)) return 456;
-        if (service_recovery_evidence_already_recorded(
-                evidence, ARRAY_COUNT(evidence), distinct)) return 457;
-
-        // SCM does not guarantee a valid PID while STOP_PENDING. A cleanly
-        // exited, pinned parent may therefore transition through pid=0 or a
-        // stale value without being mistaken for a different generation.
-        if (service_classify_controlled_recovery_scm_stop_state(
-                true, false, 0, 20184) !=
-                SERVICE_CONTROLLED_RECOVERY_SCM_STOPPED) return 650;
-        if (service_classify_controlled_recovery_scm_stop_state(
-                false, true, 0, 20184) !=
-                SERVICE_CONTROLLED_RECOVERY_SCM_WAIT_FOR_STOPPED) return 651;
-        if (service_classify_controlled_recovery_scm_stop_state(
-                false, true, 9999, 20184) !=
-                SERVICE_CONTROLLED_RECOVERY_SCM_WAIT_FOR_STOPPED) return 652;
-        if (service_classify_controlled_recovery_scm_stop_state(
-                false, false, 20184, 20184) !=
-                SERVICE_CONTROLLED_RECOVERY_SCM_WAIT_FOR_STOPPED) return 653;
-        if (service_classify_controlled_recovery_scm_stop_state(
-                false, false, 9999, 20184) !=
-                SERVICE_CONTROLLED_RECOVERY_SCM_REJECT) return 654;
-        if (service_classify_controlled_recovery_scm_stop_state(
-                false, true, 0, 0) !=
-                SERVICE_CONTROLLED_RECOVERY_SCM_REJECT) return 655;
-    }
-
-    // Deterministic lifecycle reducer tests.  Hardware writes are represented
-    // only by incrementing fakeWrites when the reducer issues an authorization;
-    // there are no clocks, sleeps, threads, GPU calls, or timing assumptions.
-    {
-        auto identity = [](gc_u32 session, gc_u64 auth, const char* sid) {
-            ServiceLifecycleIdentity value = {};
-            value.valid = 1;
-            value.sessionId = session;
-            value.authenticationId = auth;
-            StringCchCopyA(value.sid, ARRAY_COUNT(value.sid), sid);
-            return value;
-        };
-        ServiceLifecycleIdentity loginA = identity(7, 1001, "S-1-5-21-test");
-        ServiceLifecycleIdentity loginB = identity(7, 1002, "S-1-5-21-test");
-        int fakeWrites = 0;
-
-        // Task-only profile-2 login: readiness may signal repeatedly, but the
-        // single write transition is authorized exactly once.
-        ServiceLifecycleState state = {};
-        ServiceLifecycleEvent event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_TASK_HANDOFF;
-        event.identity = loginA;
-        ServiceLifecycleDecision decision = service_lifecycle_reduce(&state, &event);
-        if (!state.logonPending || !decision.wakeWorker || !decision.attemptLogonPrerequisites) return 410;
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_PREREQUISITE_SIGNAL;
-        decision = service_lifecycle_reduce(&state, &event);
-        if (!decision.attemptLogonPrerequisites) return 411;
-        decision = service_lifecycle_reduce(&state, &event);
-        if (!decision.attemptLogonPrerequisites || fakeWrites != 0) return 412;
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_LOGON_WRITE_STARTED;
-        event.identity = loginA;
-        decision = service_lifecycle_reduce(&state, &event);
-        if (decision.authorizeLogonWrite) ++fakeWrites;
-        if (fakeWrites != 1) return 413;
-        decision = service_lifecycle_reduce(&state, &event);
-        if (decision.authorizeLogonWrite) ++fakeWrites;
-        if (fakeWrites != 1) return 414;
-        event.type = SERVICE_LIFECYCLE_EVENT_LOGON_WRITE_FINISHED;
-        event.success = 1;
-        event.writeAttempted = 1;
-        decision = service_lifecycle_reduce(&state, &event);
-        if (decision.result != SERVICE_LIFECYCLE_RESULT_APPLIED || state.logonPending) return 415;
-
-        // A racing WTS event for the same login is coalesced.  Reusing session
-        // ID and SID with a new authentication LUID is a distinct login.
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_WTS_LOGON;
-        event.identity = loginA;
-        decision = service_lifecycle_reduce(&state, &event);
-        if (!decision.coalesced || state.logonPending || fakeWrites != 1) return 416;
-        event.identity = loginB;
-        decision = service_lifecycle_reduce(&state, &event);
-        if (decision.coalesced || !state.logonPending || state.logonGeneration != 2) return 417;
-        event.type = SERVICE_LIFECYCLE_EVENT_TASK_HANDOFF;
-        decision = service_lifecycle_reduce(&state, &event);
-        if (!decision.coalesced || state.logonGeneration != 2) return 418;
-        event.type = SERVICE_LIFECYCLE_EVENT_LOGOFF;
-        decision = service_lifecycle_reduce(&state, &event);
-        if (!decision.cancelled || state.logonPending ||
-            decision.result != SERVICE_LIFECYCLE_RESULT_CANCELLED_LOGOFF) return 419;
-
-        // A pending login can be superseded or locked out without authorizing a
-        // write.  A zero-initialized/ordinary-start state is inert.
-        ServiceLifecycleState inert = {};
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_NONE;
-        decision = service_lifecycle_reduce(&inert, &event);
-        if (decision.authorizeLogonWrite || decision.authorizeStandbyWrite ||
-            decision.authorizeDriverWrite || decision.wakeWorker) return 420;
-        event.type = SERVICE_LIFECYCLE_EVENT_TASK_HANDOFF;
-        event.identity = loginA;
-        service_lifecycle_reduce(&inert, &event);
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_EXPLICIT_SUPERSEDE;
-        decision = service_lifecycle_reduce(&inert, &event);
-        if (!decision.cancelled || inert.logonPending) return 421;
-        event.type = SERVICE_LIFECYCLE_EVENT_LOCKOUT;
-        service_lifecycle_reduce(&inert, &event);
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_TASK_HANDOFF;
-        event.identity = loginB;
-        decision = service_lifecycle_reduce(&inert, &event);
-        if (decision.result != SERVICE_LIFECYCLE_RESULT_LOCKED_OUT || inert.logonPending) return 422;
-
-        // A failure before the hardware boundary is a prerequisite failure: it
-        // releases the one-write authorization and keeps intent pending. Once
-        // writeAttempted is true, success or failure is terminal and no later
-        // readiness signal may replay the write.
-        ServiceLifecycleState logonFailure = {};
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_TASK_HANDOFF;
-        event.identity = loginA;
-        service_lifecycle_reduce(&logonFailure, &event);
-        event.type = SERVICE_LIFECYCLE_EVENT_LOGON_WRITE_STARTED;
-        decision = service_lifecycle_reduce(&logonFailure, &event);
-        if (!decision.authorizeLogonWrite) return 580;
-        event.type = SERVICE_LIFECYCLE_EVENT_LOGON_WRITE_FINISHED;
-        event.success = 0;
-        event.writeAttempted = 0;
-        decision = service_lifecycle_reduce(&logonFailure, &event);
-        if (decision.result != SERVICE_LIFECYCLE_RESULT_TRANSIENT_NOT_READY ||
-            !logonFailure.logonPending || logonFailure.logonWriteIssued) return 581;
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_PREREQUISITE_SIGNAL;
-        decision = service_lifecycle_reduce(&logonFailure, &event);
-        if (!decision.wakeWorker || !decision.attemptLogonPrerequisites) return 582;
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_LOGON_WRITE_STARTED;
-        event.identity = loginA;
-        decision = service_lifecycle_reduce(&logonFailure, &event);
-        if (!decision.authorizeLogonWrite) return 583;
-        event.type = SERVICE_LIFECYCLE_EVENT_LOGON_WRITE_FINISHED;
-        event.success = 0;
-        event.writeAttempted = 1;
-        decision = service_lifecycle_reduce(&logonFailure, &event);
-        if (decision.result != SERVICE_LIFECYCLE_RESULT_FAILED ||
-            logonFailure.logonPending) return 584;
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_PREREQUISITE_SIGNAL;
-        decision = service_lifecycle_reduce(&logonFailure, &event);
-        if (decision.wakeWorker || decision.attemptLogonPrerequisites ||
-            decision.authorizeLogonWrite) return 585;
-
-        ServiceLifecycleState standbyFailure = {};
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_SUSPEND;
-        service_lifecycle_reduce(&standbyFailure, &event);
-        event.type = SERVICE_LIFECYCLE_EVENT_RESUME;
-        service_lifecycle_reduce(&standbyFailure, &event);
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_STANDBY_WRITE_STARTED;
-        decision = service_lifecycle_reduce(&standbyFailure, &event);
-        if (!decision.authorizeStandbyWrite) return 586;
-        event.type = SERVICE_LIFECYCLE_EVENT_STANDBY_WRITE_FINISHED;
-        event.success = 0;
-        event.writeAttempted = 0;
-        decision = service_lifecycle_reduce(&standbyFailure, &event);
-        if (decision.result != SERVICE_LIFECYCLE_RESULT_TRANSIENT_NOT_READY ||
-            !standbyFailure.standbyPending || standbyFailure.standbyWriteIssued) return 587;
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_STANDBY_WRITE_STARTED;
-        decision = service_lifecycle_reduce(&standbyFailure, &event);
-        if (!decision.authorizeStandbyWrite) return 588;
-        event.type = SERVICE_LIFECYCLE_EVENT_STANDBY_WRITE_FINISHED;
-        event.success = 0;
-        event.writeAttempted = 1;
-        decision = service_lifecycle_reduce(&standbyFailure, &event);
-        if (decision.result != SERVICE_LIFECYCLE_RESULT_FAILED ||
-            standbyFailure.standbyPending) return 589;
-
-        ServiceLifecycleState driverFailure = {};
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_DRIVER_RECOVERY;
-        event.driverProofReady = 1;
-        service_lifecycle_reduce(&driverFailure, &event);
-        event.type = SERVICE_LIFECYCLE_EVENT_DRIVER_WRITE_STARTED;
-        event.controlledRecoveryValidated = 1;
-        decision = service_lifecycle_reduce(&driverFailure, &event);
-        if (!decision.authorizeDriverWrite) return 590;
-        event.type = SERVICE_LIFECYCLE_EVENT_DRIVER_WRITE_FINISHED;
-        event.success = 0;
-        event.writeAttempted = 0;
-        decision = service_lifecycle_reduce(&driverFailure, &event);
-        if (decision.result != SERVICE_LIFECYCLE_RESULT_TRANSIENT_NOT_READY ||
-            !driverFailure.driverPending || driverFailure.driverWriteIssued) return 591;
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_DRIVER_WRITE_STARTED;
-        event.driverProofReady = 1;
-        event.controlledRecoveryValidated = 1;
-        decision = service_lifecycle_reduce(&driverFailure, &event);
-        if (!decision.authorizeDriverWrite) return 592;
-        event.type = SERVICE_LIFECYCLE_EVENT_DRIVER_WRITE_FINISHED;
-        event.success = 0;
-        event.writeAttempted = 1;
-        decision = service_lifecycle_reduce(&driverFailure, &event);
-        if (decision.result != SERVICE_LIFECYCLE_RESULT_FAILED ||
-            driverFailure.driverPending) return 593;
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_DRIVER_PROOF_SIGNAL;
-        event.driverProofReady = 1;
-        decision = service_lifecycle_reduce(&driverFailure, &event);
-        if (decision.wakeWorker || decision.authorizeDriverWrite) return 594;
-
-        // One full-intent authorization per suspend generation, with no driver
-        // proof input. Duplicate resume/write-start notifications coalesce.
-        ServiceLifecycleState power = {};
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_SUSPEND;
-        service_lifecycle_reduce(&power, &event);
-        event.type = SERVICE_LIFECYCLE_EVENT_RESUME;
-        decision = service_lifecycle_reduce(&power, &event);
-        if (!decision.wakeWorker || !power.standbyPending) return 423;
-        // The later Windows resume notification is a real readiness cue when
-        // the first serialized probe was too early. It wakes the same pending
-        // generation but must not create or authorize another write.
-        decision = service_lifecycle_reduce(&power, &event);
-        if (!decision.wakeWorker || !decision.coalesced ||
-            !power.standbyPending || power.suspendGeneration != 1) return 424;
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_STANDBY_WRITE_STARTED;
-        decision = service_lifecycle_reduce(&power, &event);
-        int standbyWrites = decision.authorizeStandbyWrite ? 1 : 0;
-        decision = service_lifecycle_reduce(&power, &event);
-        if (decision.authorizeStandbyWrite) ++standbyWrites;
-        if (standbyWrites != 1) return 425;
-        event.type = SERVICE_LIFECYCLE_EVENT_STANDBY_WRITE_FINISHED;
-        event.success = 1;
-        event.writeAttempted = 1;
-        decision = service_lifecycle_reduce(&power, &event);
-        if (decision.result != SERVICE_LIFECYCLE_RESULT_APPLIED || power.standbyPending) return 426;
-
-        // Sparse fan/memory/power requests do not own the VF/lock domain and
-        // therefore must never reset an existing hard clock lock. A reset,
-        // curve, GPU-offset, or explicit lock request intentionally replaces it.
-        DesiredSettings lockDomain = {};
-        if (service_request_replaces_lock_domain(&lockDomain)) return 570;
-        lockDomain.hasFan = 1;
-        if (service_request_replaces_lock_domain(&lockDomain)) return 571;
-        lockDomain = {};
-        lockDomain.hasMemOffset = 1;
-        if (service_request_replaces_lock_domain(&lockDomain)) return 572;
-        lockDomain = {};
-        lockDomain.hasPowerLimit = 1;
-        if (service_request_replaces_lock_domain(&lockDomain)) return 573;
-        lockDomain = {};
-        lockDomain.resetOcBeforeApply = 1;
-        if (!service_request_replaces_lock_domain(&lockDomain)) return 574;
-        lockDomain = {};
-        lockDomain.hasGpuOffset = 1;
-        if (!service_request_replaces_lock_domain(&lockDomain)) return 575;
-        lockDomain = {};
-        lockDomain.hasCurvePoint[77] = 1;
-        if (!service_request_replaces_lock_domain(&lockDomain)) return 576;
-        lockDomain = {};
-        lockDomain.hasLock = 1;
-        if (!service_request_replaces_lock_domain(&lockDomain)) return 577;
-
-        // Standby restoration copies the complete in-memory intent.  Sparse
-        // curve-only, lock-only, fan-only and combined requests retain every
-        // owned field.  Reset-to-stock is added only for owned VF/GPU-offset
-        // policy; a lock-only or fan-only restore must not reset unrelated OC.
-        DesiredSettings restoreCases[4] = {};
-        restoreCases[0].hasGpuOffset = 1;
-        restoreCases[0].gpuOffsetMHz = 125;
-        restoreCases[0].hasMemOffset = 1;
-        restoreCases[0].memOffsetMHz = 700;
-        restoreCases[0].hasPowerLimit = 1;
-        restoreCases[0].powerLimitPct = 92;
-        restoreCases[0].hasCurvePoint[77] = 1;
-        restoreCases[0].curvePointMHz[77] = 2460;
-        restoreCases[0].hasLock = 1;
-        restoreCases[0].lockCi = 77;
-        restoreCases[0].lockMHz = 2460;
-        restoreCases[0].hasFan = 1;
-        restoreCases[0].fanMode = FAN_MODE_FIXED;
-        restoreCases[0].fanPercent = 61;
-        restoreCases[1].hasCurvePoint[88] = 1;
-        restoreCases[1].curvePointMHz[88] = 2515;
-        restoreCases[2].hasLock = 1;
-        restoreCases[2].lockCi = 91;
-        restoreCases[2].lockMHz = 2550;
-        restoreCases[2].lockMode = LOCK_MODE_HARD;
-        restoreCases[3].hasFan = 1;
-        restoreCases[3].fanMode = FAN_MODE_FIXED;
-        restoreCases[3].fanPercent = 55;
-        const bool expectReset[4] = { true, true, false, false };
-        for (int restoreCase = 0; restoreCase < 4; ++restoreCase) {
-            DesiredSettings request = {};
-            if (!service_build_full_restore_request(&restoreCases[restoreCase], &request) ||
-                request.resetOcBeforeApply != expectReset[restoreCase]) {
-                return 480 + restoreCase;
-            }
-            request.resetOcBeforeApply = 0;
-            if (memcmp(&request, &restoreCases[restoreCase], sizeof(request)) != 0) {
-                return 484 + restoreCase;
-            }
-        }
-
-        // Named-profile transitions replace ownership instead of inheriting
-        // omitted controls from another account/profile. Hardware cleanup may
-        // write defaults for fields Green Curve previously owned, while the
-        // new ownership declaration itself remains byte-for-byte unchanged.
-        DesiredSettings previousProfile = restoreCases[0];
-        DesiredSettings nextFanOnly = {};
-        nextFanOnly.hasFan = 1;
-        nextFanOnly.fanMode = FAN_MODE_FIXED;
-        nextFanOnly.fanPercent = 47;
-        DesiredSettings transition = {};
-        if (!service_build_profile_transition_request(
-                &previousProfile, &nextFanOnly, &transition)) return 530;
-        if (!transition.resetOcBeforeApply || !transition.hasGpuOffset ||
-            transition.gpuOffsetMHz != 0 || !transition.hasMemOffset ||
-            transition.memOffsetMHz != 0 || !transition.hasPowerLimit ||
-            transition.powerLimitPct != 100 || !transition.hasFan ||
-            transition.fanMode != FAN_MODE_FIXED ||
-            transition.fanPercent != 47) return 531;
-        if (!nextFanOnly.hasFan || nextFanOnly.hasGpuOffset ||
-            nextFanOnly.hasMemOffset || nextFanOnly.hasPowerLimit) return 532;
-
-        DesiredSettings previousFanOnly = nextFanOnly;
-        DesiredSettings nextCurveOnly = {};
-        nextCurveOnly.hasCurvePoint[90] = 1;
-        nextCurveOnly.curvePointMHz[90] = 2505;
-        transition = {};
-        if (!service_build_profile_transition_request(
-                &previousFanOnly, &nextCurveOnly, &transition) ||
-            !transition.resetOcBeforeApply || !transition.hasFan ||
-            !transition.fanAuto || transition.fanMode != FAN_MODE_AUTO ||
-            !transition.hasCurvePoint[90]) return 533;
-
-        DesiredSettings nextLockOnly = {};
-        nextLockOnly.hasLock = 1;
-        nextLockOnly.lockCi = 91;
-        nextLockOnly.lockMHz = 2540;
-        transition = {};
-        if (!service_build_profile_transition_request(
-                nullptr, &nextLockOnly, &transition) ||
-            transition.resetOcBeforeApply) return 534;
-        transition = {};
-        if (!service_build_profile_transition_request(
-                &nextLockOnly, &nextFanOnly, &transition) ||
-            !transition.resetOcBeforeApply || transition.hasGpuOffset) return 535;
-
-        // Driver recovery waits for explicit proof readiness. It dominates a
-        // coincident standby and a duplicate recovery event cannot authorize a
-        // second write after WRITE_STARTED.
-        ServiceLifecycleState recovery = {};
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_SUSPEND;
-        service_lifecycle_reduce(&recovery, &event);
-        event.type = SERVICE_LIFECYCLE_EVENT_RESUME;
-        service_lifecycle_reduce(&recovery, &event);
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_DRIVER_RECOVERY;
-        event.driverProofReady = 0;
-        decision = service_lifecycle_reduce(&recovery, &event);
-        if (decision.wakeWorker || !recovery.driverPending || recovery.standbyPending) return 427;
-        event.type = SERVICE_LIFECYCLE_EVENT_DRIVER_WRITE_STARTED;
-        decision = service_lifecycle_reduce(&recovery, &event);
-        if (decision.authorizeDriverWrite) return 428;
-        event.type = SERVICE_LIFECYCLE_EVENT_DRIVER_PROOF_SIGNAL;
-        event.driverProofReady = 1;
-        decision = service_lifecycle_reduce(&recovery, &event);
-        if (!decision.wakeWorker) return 429;
-        event.type = SERVICE_LIFECYCLE_EVENT_DRIVER_WRITE_STARTED;
-        decision = service_lifecycle_reduce(&recovery, &event);
-        if (decision.authorizeDriverWrite) return 488; // old/non-nonce process
-        event.controlledRecoveryValidated = 1;
-        decision = service_lifecycle_reduce(&recovery, &event);
-        int driverWrites = decision.authorizeDriverWrite ? 1 : 0;
-        event.type = SERVICE_LIFECYCLE_EVENT_DRIVER_RECOVERY;
-        decision = service_lifecycle_reduce(&recovery, &event);
-        event.type = SERVICE_LIFECYCLE_EVENT_DRIVER_WRITE_STARTED;
-        decision = service_lifecycle_reduce(&recovery, &event);
-        if (decision.authorizeDriverWrite) ++driverWrites;
-        if (driverWrites != 1) return 430;
-
-        // Global/null DBT_DEVNODES_CHANGED is read-only and cannot create or
-        // authorize restoration work.
-        ServiceLifecycleState devnodes = {};
-        event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_DEVNODES_CHANGED;
-        decision = service_lifecycle_reduce(&devnodes, &event);
-        if (!decision.readOnlyReenumerate || decision.authorizeLogonWrite ||
-            decision.authorizeStandbyWrite || decision.authorizeDriverWrite ||
-            devnodes.logonPending || devnodes.standbyPending || devnodes.driverPending) return 431;
-    }
-
-    // Executable startup-task XML fixtures.  These call the production pure
-    // classifier and cover Task Scheduler's omitted defaults, SID principals,
-    // quoting, compatible delay/elevation, and broken identity/action state.
-    {
-        const WCHAR* expectedUser = L"TEST\\User";
-        const WCHAR* expectedExe = L"C:\\Program Files\\Green Curve\\greencurve.exe";
-        const WCHAR* expectedConfig = L"C:\\Users\\Test User\\config.ini";
-        const WCHAR* expectedWorkingDir = L"C:\\Program Files\\Green Curve";
-        std::wstring canonical = LR"XML(
-<Task>
-  <Triggers><LogonTrigger><UserId>TEST\User</UserId></LogonTrigger></Triggers>
-  <Principals><Principal><UserId>TEST\User</UserId><LogonType>InteractiveToken</LogonType></Principal></Principals>
-  <Settings><StartWhenAvailable>true</StartWhenAvailable><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT3M</ExecutionTimeLimit></Settings>
-  <Actions><Exec><Command>C:\Program Files\Green Curve\greencurve.exe</Command><Arguments>--logon-start --config &quot;C:\Users\Test User\config.ini&quot;</Arguments><WorkingDirectory>C:\Program Files\Green Curve</WorkingDirectory></Exec></Actions>
-</Task>)XML";
-        auto classify = [&](const std::wstring& xml, const WCHAR* user = nullptr) {
-            char detail[512] = {};
-            return startup_task_definition_classify_xml(xml.c_str(),
-                user ? user : expectedUser, expectedExe, expectedConfig,
-                expectedWorkingDir, detail, sizeof(detail));
-        };
-        auto replace_all = [](std::wstring value, const std::wstring& from,
-                              const std::wstring& to) {
-            size_t pos = 0;
-            while ((pos = value.find(from, pos)) != std::wstring::npos) {
-                value.replace(pos, from.size(), to);
-                pos += to.size();
-            }
-            return value;
-        };
-        auto insert_after = [](std::wstring value, const std::wstring& marker,
-                               const std::wstring& addition) {
-            size_t pos = value.find(marker);
-            if (pos != std::wstring::npos) value.insert(pos + marker.size(), addition);
-            return value;
-        };
-
-        // Enabled and RunLevel are schema defaults and may be omitted or empty.
-        {
-            char canonicalDetail[512] = {};
-            StartupTaskDefinitionClass canonicalClass =
-                startup_task_definition_classify_xml(canonical.c_str(), expectedUser,
-                    expectedExe, expectedConfig, expectedWorkingDir,
-                    canonicalDetail, sizeof(canonicalDetail));
-            if (canonicalClass != STARTUP_TASK_DEFINITION_CANONICAL) {
-                fprintf(stderr, "canonical startup-task fixture classified %d: %s\n",
-                    (int)canonicalClass, canonicalDetail);
-                return 444;
-            }
-        }
-
-        // Mirror the XML emitted by write_startup_task_xml(), including the
-        // explicit values Task Scheduler may preserve in its query output. The
-        // reported regression was caused by generator/verifier drift around
-        // Enabled and LeastPrivilege, so omitted-default fixtures are not enough.
-        std::wstring generatedCanonical = LR"XML(
-<Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Author>TEST\User</Author><Description>Notify the Green Curve service of an authenticated user logon.</Description></RegistrationInfo>
-  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>TEST\User</UserId></LogonTrigger></Triggers>
-  <Principals><Principal id="Author"><UserId>TEST\User</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>true</StartWhenAvailable>
-    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled><Hidden>false</Hidden><RunOnlyIfIdle>false</RunOnlyIfIdle><WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT3M</ExecutionTimeLimit><Priority>7</Priority>
-  </Settings>
-  <Actions Context="Author"><Exec><Command>C:\Program Files\Green Curve\greencurve.exe</Command><WorkingDirectory>C:\Program Files\Green Curve</WorkingDirectory><Arguments>--logon-start --config &quot;C:\Users\Test User\config.ini&quot;</Arguments></Exec></Actions>
-</Task>)XML";
-        {
-            char generatedDetail[512] = {};
-            StartupTaskDefinitionClass generatedClass =
-                startup_task_definition_classify_xml(generatedCanonical.c_str(),
-                    expectedUser, expectedExe, expectedConfig,
-                    expectedWorkingDir, generatedDetail,
-                    sizeof(generatedDetail));
-            if (generatedClass != STARTUP_TASK_DEFINITION_CANONICAL) {
-                fprintf(stderr, "generated startup-task fixture classified %d: %s\n",
-                    (int)generatedClass, generatedDetail);
-                return 600;
-            }
-        }
-        std::wstring emptyDefaults = insert_after(canonical, L"<LogonTrigger>", L"<Enabled/>");
-        emptyDefaults = insert_after(emptyDefaults, L"<Principal>", L"<RunLevel/>");
-        emptyDefaults = insert_after(emptyDefaults, L"<Settings>", L"<Enabled/>");
-        if (classify(emptyDefaults) != STARTUP_TASK_DEFINITION_CANONICAL) return 445;
-
-        std::wstring sidPrincipal = replace_all(canonical, L"TEST\\User", L"S-1-5-18");
-        if (classify(sidPrincipal, L"S-1-5-18") != STARTUP_TASK_DEFINITION_CANONICAL) return 446;
-
-        std::wstring delayed = insert_after(canonical, L"<LogonTrigger>", L"<Delay>PT30S</Delay>");
-        if (classify(delayed) != STARTUP_TASK_DEFINITION_COMPATIBLE_LEGACY) return 447;
-        std::wstring highest = insert_after(canonical, L"<Principal>", L"<RunLevel>HighestAvailable</RunLevel>");
-        if (classify(highest) != STARTUP_TASK_DEFINITION_COMPATIBLE_LEGACY) return 448;
-        std::wstring oldLimit = replace_all(canonical, L"PT3M", L"PT0S");
-        if (classify(oldLimit) != STARTUP_TASK_DEFINITION_COMPATIBLE_LEGACY) return 449;
-        std::wstring omittedSafeDefault = replace_all(canonical,
-            L"<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>", L"");
-        if (classify(omittedSafeDefault) != STARTUP_TASK_DEFINITION_COMPATIBLE_LEGACY) return 540;
-
-        std::wstring triggerDisabled = insert_after(canonical, L"<LogonTrigger>", L"<Enabled>false</Enabled>");
-        if (classify(triggerDisabled) != STARTUP_TASK_DEFINITION_BROKEN) return 450;
-        std::wstring taskDisabled = insert_after(canonical, L"<Settings>", L"<Enabled>false</Enabled>");
-        if (classify(taskDisabled) != STARTUP_TASK_DEFINITION_BROKEN) return 451;
-        std::wstring wrongUser = replace_all(canonical, L"TEST\\User", L"TEST\\Other");
-        if (classify(wrongUser) != STARTUP_TASK_DEFINITION_BROKEN) return 452;
-        std::wstring staleExe = replace_all(canonical,
-            L"C:\\Program Files\\Green Curve\\greencurve.exe",
-            L"C:\\Old\\greencurve.exe");
-        if (classify(staleExe) != STARTUP_TASK_DEFINITION_BROKEN) return 453;
-        std::wstring staleConfig = replace_all(canonical,
-            L"C:\\Users\\Test User\\config.ini", L"C:\\Old\\config.ini");
-        if (classify(staleConfig) != STARTUP_TASK_DEFINITION_BROKEN) return 454;
-        std::wstring staleAction = insert_after(canonical, L"<Actions>",
-            L"<Exec><Command>C:\\Other.exe</Command><Arguments>--bad</Arguments><WorkingDirectory>C:\\</WorkingDirectory></Exec>");
-        if (classify(staleAction) != STARTUP_TASK_DEFINITION_BROKEN) return 455;
-        std::wstring extraTrigger = insert_after(canonical, L"<Triggers>",
-            L"<BootTrigger><Enabled>true</Enabled></BootTrigger>");
-        if (classify(extraTrigger) != STARTUP_TASK_DEFINITION_BROKEN) return 541;
-        std::wstring repeatedTrigger = insert_after(canonical, L"<LogonTrigger>",
-            L"<Repetition><Interval>PT1M</Interval></Repetition>");
-        if (classify(repeatedTrigger) != STARTUP_TASK_DEFINITION_BROKEN) return 542;
-        std::wstring pt1s = replace_all(canonical, L"PT3M", L"PT1S");
-        if (classify(pt1s) != STARTUP_TASK_DEFINITION_BROKEN) return 543;
-        std::wstring queued = replace_all(canonical, L"IgnoreNew", L"Queue");
-        if (classify(queued) != STARTUP_TASK_DEFINITION_BROKEN) return 544;
-        std::wstring parallel = replace_all(canonical, L"IgnoreNew", L"Parallel");
-        if (classify(parallel) != STARTUP_TASK_DEFINITION_BROKEN) return 545;
-        std::wstring stopExisting = replace_all(canonical, L"IgnoreNew", L"StopExisting");
-        if (classify(stopExisting) != STARTUP_TASK_DEFINITION_BROKEN) return 546;
-        std::wstring batteryGated = replace_all(canonical,
-            L"<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
-            L"<DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>");
-        if (classify(batteryGated) != STARTUP_TASK_DEFINITION_BROKEN) return 547;
-        std::wstring idleGated = insert_after(canonical, L"<Settings>",
-            L"<RunOnlyIfIdle>true</RunOnlyIfIdle>");
-        if (classify(idleGated) != STARTUP_TASK_DEFINITION_BROKEN) return 548;
-        std::wstring restartOnFailure = insert_after(canonical, L"<Settings>",
-            L"<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>");
-        if (classify(restartOnFailure) != STARTUP_TASK_DEFINITION_BROKEN) return 549;
-        std::wstring unavailable = replace_all(canonical,
-            L"<StartWhenAvailable>true</StartWhenAvailable>",
-            L"<StartWhenAvailable>false</StartWhenAvailable>");
-        if (classify(unavailable) != STARTUP_TASK_DEFINITION_BROKEN) return 550;
-        std::wstring missingBatteryPolicy = replace_all(canonical,
-            L"<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>", L"");
-        if (classify(missingBatteryPolicy) != STARTUP_TASK_DEFINITION_BROKEN) return 551;
-        std::wstring hiddenTask = insert_after(canonical, L"<Settings>",
-            L"<Hidden>true</Hidden>");
-        if (classify(hiddenTask) != STARTUP_TASK_DEFINITION_BROKEN) return 552;
-        std::wstring wrongPriority = insert_after(canonical, L"<Settings>",
-            L"<Priority>4</Priority>");
-        if (classify(wrongPriority) != STARTUP_TASK_DEFINITION_BROKEN) return 553;
-        std::wstring noHardTerminate = insert_after(canonical, L"<Settings>",
-            L"<AllowHardTerminate>false</AllowHardTerminate>");
-        if (classify(noHardTerminate) != STARTUP_TASK_DEFINITION_BROKEN) return 554;
-    }
-
-    // The mutually-exclusive logon selection is one locked transaction.
-    // Injected commit failure must leave BOTH old keys intact; successful
-    // commit must update both while preserving unrelated [profiles] keys.
-    {
-    gc_DeleteFileUtf8(argv[1]);
-        if (!set_config_int(argv[1], "profiles", "selected_slot", 4)) return 458;
-        if (!set_config_int(argv[1], "profiles", "applied_slot", 3)) return 459;
-        if (!set_config_int(argv[1], "profiles", "logon_slot", 1)) return 460;
-        if (!set_config_int(argv[1], "profiles", "logon_shared_slot", 0)) return 461;
-
-        auto failCommit = +[](const char*, const char*, void*, char* err, size_t errSize) -> bool {
-            set_message(err, errSize, "injected config transaction failure");
-            return false;
-        };
-        char txErr[256] = {};
-        if (update_logon_profile_selection_transaction(argv[1], 0, 3,
-                failCommit, nullptr, txErr, sizeof(txErr))) return 462;
-        if (get_config_int(argv[1], "profiles", "logon_slot", -1) != 1 ||
-            get_config_int(argv[1], "profiles", "logon_shared_slot", -1) != 0) return 463;
-
-        auto commitWholeText = +[](const char* path, const char* text, void*,
-                                   char* err, size_t errSize) -> bool {
-            HANDLE file = CreateFileA(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
-            if (file == INVALID_HANDLE_VALUE) {
-                set_message(err, errSize, "test commit create failed");
-                return false;
-            }
-            DWORD length = (DWORD)strlen(text);
-            DWORD written = 0;
-            bool ok = WriteFile(file, text, length, &written, nullptr) != FALSE &&
-                written == length && FlushFileBuffers(file) != FALSE;
-            CloseHandle(file);
-            if (!ok) set_message(err, errSize, "test commit write failed");
-            return ok;
-        };
-        if (!update_logon_profile_selection_transaction(argv[1], 0, 3,
-                commitWholeText, nullptr, txErr, sizeof(txErr))) return 464;
-        if (get_config_int(argv[1], "profiles", "logon_slot", -1) != 0 ||
-            get_config_int(argv[1], "profiles", "logon_shared_slot", -1) != 3) return 465;
-        if (get_config_int(argv[1], "profiles", "selected_slot", -1) != 4 ||
-            get_config_int(argv[1], "profiles", "applied_slot", -1) != 3) return 466;
-        if (update_logon_profile_selection_transaction(argv[1], 2, 3,
-                commitWholeText, nullptr, txErr, sizeof(txErr))) return 467;
-
-        // Async combo synchronization uses tagged item data, not list index.
-        if (logon_profile_selection_item_data(2, 0) != 2) return 468;
-        if (logon_profile_selection_item_data(0, 3) != (LOGON_COMBO_SHARED_FLAG | 3)) return 469;
-        if (logon_profile_selection_item_data(2, 3) != (LOGON_COMBO_SHARED_FLAG | 3)) return 470;
-        if (logon_profile_selection_item_data(-1, 99) != 0) return 471;
-
-        // Applied ownership is service metadata, never live VF-MHz equality.
-        if (applied_user_slot_from_service_profile(SERVICE_PROFILE_SOURCE_USER_SLOT, 2) != 2) return 472;
-        if (applied_user_slot_from_service_profile(SERVICE_PROFILE_SOURCE_SHARED_SLOT, 2) != 0) return 473;
-        if (applied_user_slot_from_service_profile(SERVICE_PROFILE_SOURCE_MACHINE_SLOT, 2) != 0) return 474;
-        if (applied_user_slot_from_service_profile(SERVICE_PROFILE_SOURCE_AD_HOC, 2) != 0) return 475;
-        if (applied_user_slot_from_service_profile(SERVICE_PROFILE_SOURCE_USER_SLOT, 0) != 0) return 476;
-
-        // Win32 treats INI section names case-insensitively.  The production
-        // direct-file section replacer uses this helper, so a hand-edited
-        // [Profiles] header cannot survive beside a new [profiles] copy.
-        if (!config_section_header_matches_ascii("[profiles]", "profiles")) return 523;
-        if (!config_section_header_matches_ascii("[Profiles]", "profiles")) return 524;
-        if (!config_section_header_matches_ascii("[PROFILES]", "profiles")) return 525;
-        if (config_section_header_matches_ascii("[profiles_old]", "profiles")) return 526;
-        if (config_section_header_matches_ascii("[profile]", "profiles")) return 527;
-    }
-
-    // Stable selected-GPU identity config parsing is coherent and bounded.
-    {
-        DeleteFileA(argv[1]);
-        if (!set_config_int(argv[1], "gpu", "selected_index", 1) ||
-            !set_config_int(argv[1], "gpu", "selected_identity_version", 1) ||
-            !set_config_string(argv[1], "gpu", "selected_device_id", "00001234") ||
-            !set_config_string(argv[1], "gpu", "selected_subsystem_id", "00005678") ||
-            !set_config_string(argv[1], "gpu", "selected_revision_id", "00000001") ||
-            !set_config_string(argv[1], "gpu", "selected_ext_device_id", "00000002") ||
-            !set_config_int(argv[1], "gpu", "selected_bdf_valid", 1) ||
-            !set_config_int(argv[1], "gpu", "selected_pci_domain", 0) ||
-            !set_config_int(argv[1], "gpu", "selected_pci_bus", 9) ||
-            !set_config_int(argv[1], "gpu", "selected_pci_device", 0) ||
-            !set_config_int(argv[1], "gpu", "selected_pci_function", 0)) return 609;
-        ConfiguredGpuSelection configured = {};
-        char configErr[128] = {};
-        if (!load_configured_gpu_selection(argv[1], &configured,
-                configErr, sizeof(configErr)) ||
-            !configured.stableIdentityPresent || configured.legacyIndex != 1 ||
-            configured.identity.deviceId != 0x1234 ||
-            configured.identity.pciBus != 9) return 610;
-        if (!set_config_string(argv[1], "gpu", "selected_device_id", "-1") ||
-            load_configured_gpu_selection(argv[1], &configured,
-                configErr, sizeof(configErr))) return 611;
-        DeleteFileA(argv[1]);
-    }
-
-    // logon_shared_slot round-trips through the profile INI like the other
-    // [profiles] keys (the save/clear rewriters must re-emit it; guarded by the
-    // source regression checks for the actual rewrite paths).
-    {
-        if (!set_config_int(argv[1], "profiles", "logon_shared_slot", 3)) return 150;
-        if (get_config_int(argv[1], "profiles", "logon_shared_slot", 0) != 3) return 151;
-        if (!set_config_int(argv[1], "profiles", "logon_shared_slot", 0)) return 152;
-        if (get_config_int(argv[1], "profiles", "logon_shared_slot", -1) != 0) return 153;
-        DeleteFileA(argv[1]);
-    }
-
-    // Profile repair must tolerate INT_MIN offsets without signed overflow.
-    // Under UBSan the old abs(INT_MIN) implementation aborted in this case.
-    {
-        DesiredSettings repair = {};
-        repair.hasLock = true;
-        repair.lockCi = 10;
-        repair.lockMHz = 2000;
-        repair.hasCurvePoint[7] = true;
-        repair.curvePointMHz[7] = 1700;
-        repair.hasCurvePoint[8] = true;
-        repair.curvePointMHz[8] = 1900;
-        repair.hasCurvePoint[9] = true;
-        repair.curvePointMHz[9] = 1950;
-        for (int ci = 10; ci < 14; ci++) {
-            repair.hasCurvePoint[ci] = true;
-            repair.curvePointMHz[ci] = 2000;
-        }
-        DeleteFileA(argv[1]);
-        if (!set_config_int(argv[1], "curve", "point7_offset_khz", (-2147483647 - 1))) return 159;
-        repair_profile_locked_curve_readback_artifacts(argv[1], "curve", 1, &repair);
-        if (!repair.hasCurvePoint[7]) return 160;
-        DeleteFileA(argv[1]);
-    }
-
-    // CommandLineToArgvW-compatible quoting for elevated helper argv.
-#if defined(_WIN32)
-    {
-        WCHAR cmd[512] = {};
-        if (!pl_append_quoted_arg_w(cmd, ARRAY_COUNT(cmd), L"--config")) return 161;
-        if (!pl_append_quoted_arg_w(cmd, ARRAY_COUNT(cmd), L"C:\\Path With Spaces\\quote\\\"tail\\\\config.ini")) return 162;
-        if (!pl_append_quoted_arg_w(cmd, ARRAY_COUNT(cmd), L"--flag")) return 163;
-        int parsedArgc = 0;
-        LPWSTR* parsed = CommandLineToArgvW(cmd, &parsedArgc);
-        if (!parsed) return 164;
-        bool quoteOk = parsedArgc == 3 &&
-            wcscmp(parsed[0], L"--config") == 0 &&
-            wcscmp(parsed[1], L"C:\\Path With Spaces\\quote\\\"tail\\\\config.ini") == 0 &&
-            wcscmp(parsed[2], L"--flag") == 0;
-        LocalFree(parsed);
-        if (!quoteOk) return 165;
-    }
-#endif
-
-    // F-LNX-TUI: one cell grid owns painting and hit testing across the full
-    // responsive size/tab matrix. Every action rectangle must remain in bounds
-    // and disjoint at compact, medium and wide breakpoints.
-    {
-        DesiredSettings tuiDesired = {};
-        tuiDesired.hasGpuOffset = true;
-        tuiDesired.gpuOffsetMHz = 475;
-        tuiDesired.gpuOffsetExcludeLowCount = 70;
-        tuiDesired.hasMemOffset = true;
-        tuiDesired.memOffsetMHz = 3000;
-        tuiDesired.hasPowerLimit = true;
-        tuiDesired.powerLimitPct = 100;
-        tuiDesired.hasLock = true;
-        tuiDesired.lockCi = 76;
-        tuiDesired.lockMHz = 2957;
-        tuiDesired.lockMode = LOCK_MODE_FLATTEN;
-        fan_curve_set_default(&tuiDesired.fanCurve);
-        ServiceResponse tuiService = {};
-        tuiService.state.serviceInstanceId = 1;
-        tuiService.state.stateRevision = 1;
-        tuiService.state.gpuGeneration = 1;
-        tuiService.state.topologySignature = 1;
-        tuiService.state.gpuPhase = SERVICE_GPU_PHASE_READY;
-        tuiService.state.activeDesiredValid = true;
-        tuiService.snapshot.initialized = true;
-        tuiService.snapshot.loaded = true;
-        tuiService.snapshot.adapterCount = 1;
-        tuiService.snapshot.adapters[0].valid = true;
-        tuiService.snapshot.selectedAdapterIndex = 0;
-        tuiService.snapshot.numPopulated = VF_NUM_POINTS;
-        for (int i = 0; i < VF_NUM_POINTS; ++i) {
-            tuiService.snapshot.curve[i].volt_uV =
-                (760u + (unsigned)i * 4u) * 1000u;
-            tuiService.snapshot.curve[i].freq_kHz =
-                (600u + (unsigned)i * 18u) * 1000u;
-            tuiService.snapshot.freqOffsets[i] = i >= 70 ? 475000 : 0;
-        }
-        TuiViewModel vm = {};
-        vm.desired = &tuiDesired;
-        vm.service = &tuiService;
-        vm.currentSlot = 1;
-        vm.selectedPoint = 76;
-        vm.vfScroll = 68;
-        vm.serviceOnline = true;
-        vm.selectedGpu = "0000:01:00.0 NVIDIA GeForce RTX";
-        vm.gpuCount = 1;
-        vm.configPath = "/home/user/.config/greencurve/config.ini";
-        vm.status = "test";
-        const int sizes[][2] = {
-            {72,24}, {80,30}, {99,35}, {100,30}, {120,40},
-            {139,48}, {140,36}, {160,48}, {220,70}
-        };
-        for (const auto& size : sizes) {
-            for (int tab = TUI_TAB_VF; tab <= TUI_TAB_PROFILES; ++tab) {
-                vm.tab = (TuiTab)tab;
-                TuiLayout layout;
-                build_tui_layout(vm, size[0], size[1], &layout);
-                if (layout.tooSmall) return 200;
-                if ((int)layout.cells.size() != size[0] * size[1]) return 201;
-                if (layout.actions.empty()) return 202;
-                if (!tui_layout_actions_valid(layout)) return 203;
-                bool sawApply = false, sawReset = false, sawQuit = false;
-                bool sawCurrentTab = false;
-                for (const ClickAction& action : layout.actions) {
-                    if (action.type == ACTION_APPLY) sawApply = true;
-                    if (action.type == ACTION_APPLY_RESET) sawReset = true;
-                    if (action.type == ACTION_QUIT) sawQuit = true;
-                    if (action.type == ACTION_TAB_SET && action.value == tab)
-                        sawCurrentTab = true;
-                }
-                if (!sawApply || !sawReset || !sawQuit || !sawCurrentTab) {
-                    fprintf(stderr,
-                        "TUI matrix missing action size=%dx%d tab=%d apply=%d reset=%d quit=%d tabAction=%d\n",
-                        size[0], size[1], tab, sawApply, sawReset, sawQuit,
-                        sawCurrentTab);
-                    return 204;
-                }
-                if (size[0] >= 140 && size[1] >= 36 &&
-                    layout.breakpoint != TUI_BREAKPOINT_WIDE) return 205;
-                if (size[0] >= 100 && size[0] < 140 &&
-                    layout.breakpoint != TUI_BREAKPOINT_MEDIUM) return 206;
-            }
-        }
-        TuiLayout tooSmall;
-        build_tui_layout(vm, 71, 23, &tooSmall);
-        if (!tooSmall.tooSmall || !tooSmall.actions.empty()) return 207;
-
-        vm.tab = TUI_TAB_VF;
-        TuiPointValues excluded = tui_point_values(vm, 69);
-        TuiPointValues offset = tui_point_values(vm, 70);
-        TuiPointValues knee = tui_point_values(vm, 76);
-        TuiPointValues tail = tui_point_values(vm, 77);
-        if (excluded.rule != TUI_POINT_EXCLUDED ||
-            excluded.targetMHz != excluded.liveMHz) return 208;
-        if (offset.rule != TUI_POINT_GPU_OFFSET || offset.deltaMHz != 475)
-            return 209;
-        if (knee.rule != TUI_POINT_FLATTEN_KNEE || knee.targetMHz != 2957)
-            return 210;
-        if (tail.rule != TUI_POINT_FLATTEN_TAIL || tail.targetMHz != 2957)
-            return 211;
-
-        TuiLayout graphLayout;
-        build_tui_layout(vm, 160, 48, &graphLayout);
-        int graphPoint = tui_nearest_graph_point(vm, graphLayout.graphRect,
-            graphLayout.graphRect.x + graphLayout.graphRect.width / 2);
-        if (graphPoint < 50 || graphPoint > 78) return 212;
-
-        std::string degLine = "ab\xC2\xB0""cd";
-        if (tui_display_columns(degLine) != 5) return 213;
-        if (tui_column_to_byte_offset(degLine, 4) != 4) return 214;
-
-        // A Linux path or driver string can contain malformed/truncated UTF-8.
-        // The cell writer must consume the invalid lead byte once, not jump
-        // beyond the NUL terminator and render unrelated adjacent memory.
-        TuiLayout utf8Layout = {};
-        utf8Layout.width = 4;
-        utf8Layout.height = 1;
-        utf8Layout.cells.resize(4);
-        TuiCanvas utf8Canvas(vm, &utf8Layout);
-        utf8Canvas.clear();
-        char truncatedUtf8[6] = {'A', (char)0xE2, 0, 0, 'X', 0};
-        utf8Canvas.text(1, 1, 4, truncatedUtf8, TUI_STYLE_TEXT);
-        if (strcmp(utf8Layout.cells[0].glyph, "A") != 0 ||
-            (unsigned char)utf8Layout.cells[1].glyph[0] != 0xE2 ||
-            strcmp(utf8Layout.cells[2].glyph, " ") != 0) return 215;
-    }
-
-    // F-AUTO-PROFILE: the auto-profile rule resolver is a pure, ordered,
-    // first-match-wins decision.  These guard the matching contract (exe /
-    // title / class / fullscreen, require_focus, default fallback) the whole
-    // feature depends on.
-    {
-        // Case-insensitive substring helper.
-        if (!auto_profile_text_contains_ci("Google Chrome", "chrome")) return 220;
-        if (auto_profile_text_contains_ci("Google Chrome", "firefox")) return 221;
-        if (auto_profile_text_contains_ci("abc", "")) return 222;   // empty pattern never matches
-        if (auto_profile_text_contains_ci(nullptr, "x")) return 223;
-
-        // Match-type name round-trip.
-        if (auto_profile_match_type_from_name("exe") != AUTO_MATCH_EXE) return 224;
-        if (auto_profile_match_type_from_name("fullscreen") != AUTO_MATCH_FULLSCREEN) return 225;
-        if (auto_profile_match_type_from_name("bogus") != AUTO_MATCH_NONE) return 226;
-        if (strcmp(auto_profile_match_type_name(AUTO_MATCH_TITLE), "title") != 0) return 227;
-
-        AutoProfileConfig cfg = {};
-        auto_profile_config_set_defaults(&cfg);
-        cfg.enabled = true;
-        cfg.defaultSlot = 1;
-        cfg.ruleCount = 3;
-        cfg.rules[0] = { AUTO_MATCH_EXE, "game.exe", true, 2 };
-        cfg.rules[1] = { AUTO_MATCH_TITLE, "YouTube", true, 3 };
-        cfg.rules[2] = { AUTO_MATCH_FULLSCREEN, "", true, 4 };
-
-        ForegroundInfo fg = {};
-        fg.valid = true;
-        ProcessPresence pres = {};
-
-        // exe focus match (case-insensitive).
-        StringCchCopyA(fg.exeName, sizeof(fg.exeName), "GAME.EXE");
-        StringCchCopyA(fg.title, sizeof(fg.title), "loading");
-        fg.isFullscreen = false;
-        if (resolve_auto_profile_slot(&cfg, &fg, &pres) != 2) return 228;
-
-        // title match when exe does not match.
-        StringCchCopyA(fg.exeName, sizeof(fg.exeName), "chrome.exe");
-        StringCchCopyA(fg.title, sizeof(fg.title), "Cats - YouTube");
-        if (resolve_auto_profile_slot(&cfg, &fg, &pres) != 3) return 229;
-
-        // fullscreen fallback rule.
-        StringCchCopyA(fg.exeName, sizeof(fg.exeName), "someapp.exe");
-        StringCchCopyA(fg.title, sizeof(fg.title), "no keyword");
-        fg.isFullscreen = true;
-        if (resolve_auto_profile_slot(&cfg, &fg, &pres) != 4) return 230;
-
-        // first-match-wins: exe rule outranks the later title + fullscreen rules.
-        StringCchCopyA(fg.exeName, sizeof(fg.exeName), "game.exe");
-        StringCchCopyA(fg.title, sizeof(fg.title), "YouTube");
-        fg.isFullscreen = true;
-        if (resolve_auto_profile_slot(&cfg, &fg, &pres) != 2) return 231;
-
-        // no match → default slot.
-        StringCchCopyA(fg.exeName, sizeof(fg.exeName), "notepad.exe");
-        StringCchCopyA(fg.title, sizeof(fg.title), "Untitled");
-        fg.isFullscreen = false;
-        if (resolve_auto_profile_slot(&cfg, &fg, &pres) != 1) return 232;
-
-        // require_focus honored: a running-but-not-foreground exe does NOT match
-        // a focus-required rule.
-        pres.rulePresent[0] = true;   // pretend game.exe is running in background
-        if (resolve_auto_profile_slot(&cfg, &fg, &pres) != 1) return 233;
-
-        // focus-optional exe rule matches on presence alone.
-        AutoProfileConfig bg = {};
-        auto_profile_config_set_defaults(&bg);
-        bg.enabled = true;
-        bg.defaultSlot = 1;
-        bg.ruleCount = 1;
-        bg.rules[0] = { AUTO_MATCH_EXE, "bg.exe", false, 5 };
-        ForegroundInfo other = {};
-        other.valid = true;
-        StringCchCopyA(other.exeName, sizeof(other.exeName), "explorer.exe");
-        ProcessPresence bgPres = {};
-        bgPres.rulePresent[0] = true;
-        if (resolve_auto_profile_slot(&bg, &other, &bgPres) != 5) return 234;
-        bgPres.rulePresent[0] = false;
-        if (resolve_auto_profile_slot(&bg, &other, &bgPres) != 1) return 235;
-    }
-
-    // F-AUTO-PROFILE: controller state machine — coalescing, cooldown, and the
-    // manual-pin hotkey semantics (same slot twice → back to auto).
-    {
-        AutoProfileConfig cfg = {};
-        auto_profile_config_set_defaults(&cfg);
-        cfg.enabled = true;
-        cfg.defaultSlot = 1;
-        cfg.switchDebounceMs = 800;
-        cfg.minSwitchIntervalMs = 4000;
-
-        AutoProfileController c = {};
-        ap_controller_init(&c, &cfg);
-        c.appliedSlot = 1;   // assume default is applied
-
-        // Coalescing: A(1)->B(2)->A(1) within debounce yields NO switch to B.
-        AutoProfileAction a = ap_on_target_resolved(&c, 2, 0, false);
-        if (a.kind != AP_ACTION_ARM_DEBOUNCE) return 236;
-        a = ap_on_target_resolved(&c, 1, 200, false);
-        if (a.kind != AP_ACTION_NONE) return 237;
-        a = ap_on_debounce_fire(&c, 1, 800, false);
-        if (a.kind != AP_ACTION_NONE || c.appliedSlot != 1) return 238;
-
-        // Sustained B: one apply after debounce.
-        a = ap_on_target_resolved(&c, 2, 1000, false);
-        if (a.kind != AP_ACTION_ARM_DEBOUNCE) return 239;
-        a = ap_on_debounce_fire(&c, 2, 1800, false);
-        if (a.kind != AP_ACTION_APPLY_SLOT || a.slot != 2) return 240;
-        ap_on_applied(&c, 2, 1800);
-        if (c.appliedSlot != 2) return 241;
-
-        // Cooldown: a switch to 3 shortly after must defer until minInterval.
-        a = ap_on_target_resolved(&c, 3, 1900, false);
-        if (a.kind != AP_ACTION_ARM_DEBOUNCE) return 242;
-        a = ap_on_debounce_fire(&c, 3, 2700, false);   // 2700-1800=900 < 4000
-        if (a.kind != AP_ACTION_ARM_DEBOUNCE) return 243;
-        a = ap_on_debounce_fire(&c, 3, 5800, false);   // 5800-1800=4000 >= 4000
-        if (a.kind != AP_ACTION_APPLY_SLOT || a.slot != 3) return 244;
-        ap_on_applied(&c, 3, 5800);
-
-        // Suppression (main window open) → auto does not drive.
-        a = ap_on_target_resolved(&c, 1, 6000, true);
-        if (a.kind != AP_ACTION_NONE) return 245;
-
-        // Manual pin via hotkey.
-        AutoProfileController m = {};
-        ap_controller_init(&m, &cfg);
-        m.appliedSlot = 1;
-        a = ap_on_hotkey(&m, 3);
-        if (a.kind != AP_ACTION_APPLY_SLOT || a.slot != 3 || m.mode != AP_MODE_MANUAL) return 246;
-        ap_on_applied(&m, 3, 100);
-        // While pinned, auto does not drive.
-        a = ap_on_target_resolved(&m, 2, 200, false);
-        if (a.kind != AP_ACTION_NONE) return 247;
-        // Same slot again → back to auto.
-        a = ap_on_hotkey(&m, 3);
-        if (a.kind != AP_ACTION_RESUME_AUTO || m.mode != AP_MODE_AUTO) return 248;
-        // Different slot pins that slot.
-        a = ap_on_hotkey(&m, 2);
-        if (a.kind != AP_ACTION_APPLY_SLOT || a.slot != 2 || m.mode != AP_MODE_MANUAL || m.pinnedSlot != 2) return 249;
-
-        // enter_manual_custom suspends auto.
-        AutoProfileController mc = {};
-        ap_controller_init(&mc, &cfg);
-        ap_enter_manual_custom(&mc);
-        if (ap_controller_is_driving(&mc, false)) return 250;
-
-        // Master toggle: disable reverts to default; enable resumes auto.
-        AutoProfileController t = {};
-        ap_controller_init(&t, &cfg);
-        t.appliedSlot = 2;
-        a = ap_set_enabled(&t, false);
-        if (a.kind != AP_ACTION_APPLY_SLOT || a.slot != 1) return 251;
-        a = ap_set_enabled(&t, true);
-        if (a.kind != AP_ACTION_RESUME_AUTO || !t.autoEnabled || t.mode != AP_MODE_AUTO) return 252;
-    }
-
-    // F-AUTO-PROFILE: auto-profile config INI round-trips through the shared
-    // get/set_config_* helpers (needs the argv[1] temp INI).
-    {
-        DeleteFileA(argv[1]);
-        AutoProfileConfig w = {};
-        auto_profile_config_set_defaults(&w);
-        w.enabled = true;
-        w.defaultSlot = 2;
-        w.switchDebounceMs = 500;
-        w.minSwitchIntervalMs = 5000;
-        w.suppressWhenWindowOpen = false;
-        w.ruleCount = 2;
-        w.rules[0] = { AUTO_MATCH_EXE, "game.exe", true, 3 };
-        w.rules[1] = { AUTO_MATCH_TITLE, "YouTube", true, 4 };
-        char hotkeys[CONFIG_NUM_SLOTS + 1][64] = {};
-        StringCchCopyA(hotkeys[3], ARRAY_COUNT(hotkeys[3]), "ctrl+alt+f3");
-        if (!auto_profile_config_save(argv[1], &w, hotkeys)) return 256;
-
-        AutoProfileConfig r = {};
-        auto_profile_config_load(argv[1], &r);
-        if (!r.enabled || r.defaultSlot != 2) return 257;
-        if (r.switchDebounceMs != 500 || r.minSwitchIntervalMs != 5000 || r.suppressWhenWindowOpen) return 258;
-        if (r.ruleCount != 2 ||
-            r.rules[0].matchType != AUTO_MATCH_EXE || strcmp(r.rules[0].pattern, "game.exe") != 0 ||
-            !r.rules[0].requireFocus || r.rules[0].slot != 3 ||
-            r.rules[1].matchType != AUTO_MATCH_TITLE || strcmp(r.rules[1].pattern, "YouTube") != 0 ||
-            r.rules[1].slot != 4) return 259;
-        char hotkeyReadback[64] = {};
-        if (!get_config_string(argv[1], "hotkeys", "slot3", "",
-                hotkeyReadback, ARRAY_COUNT(hotkeyReadback)) ||
-            strcmp(hotkeyReadback, "ctrl+alt+f3") != 0) return 607;
-        if (config_section_has_keys(argv[1], "auto_rule3")) return 608;
-        DeleteFileA(argv[1]);
-    }
-
-    // F-AUTO-PROFILE: per-slot hotkey string parse/format round-trip + rejection.
-    {
-        HotkeyBinding b = {};
-        if (!hotkey_parse("ctrl+alt+f2", &b)) return 260;
-        if (b.vk != VK_F2 || b.mods != (MOD_CONTROL | MOD_ALT)) return 261;
-        char text[64] = {};
-        if (!hotkey_format(&b, text, sizeof(text)) || strcmp(text, "ctrl+alt+f2") != 0) return 262;
-
-        HotkeyBinding b2 = {};
-        if (!hotkey_parse("CTRL+SHIFT+A", &b2)) return 263;   // case-insensitive
-        if (b2.vk != 'A' || b2.mods != (MOD_CONTROL | MOD_SHIFT)) return 264;
-
-        HotkeyBinding b3 = {};
-        if (hotkey_parse("ctrl+alt", &b3)) return 265;        // no key
-        if (hotkey_parse("ctrl+bogus", &b3)) return 266;      // unknown key token
-        // A bare key parses (mods==0); the dialog is what rejects modifier-less binds.
-        HotkeyBinding b4 = {};
-        if (!hotkey_parse("f5", &b4) || b4.mods != 0 || b4.vk != VK_F5) return 267;
-    }
-
-    // Linux daemon state records reject corruption, truncation/version drift,
-    // and invalid state before any startup replay can reach hardware.
-    {
-        GpuAdapterInfo target = {};
-        target.valid = true;
-        target.pciInfoValid = true;
-        target.pciBus = 1;
-        target.deviceId = 0x268410deu;
-        DesiredSettings desired = {};
-        LinuxDaemonStateRecord record = {};
-        linux_daemon_record_initialize(&record, LINUX_DAEMON_RECORD_ACTIVE, &target, &desired);
-        if (!linux_daemon_record_valid(&record)) return 609;
-        LinuxDaemonStateRecord corrupt = record;
-        corrupt.desired.gpuOffsetMHz ^= 1;
-        if (linux_daemon_record_valid(&corrupt)) return 610;
-        corrupt = record; corrupt.size--;
-        if (linux_daemon_record_valid(&corrupt)) return 611;
-        corrupt = record; corrupt.version++;
-        if (linux_daemon_record_valid(&corrupt)) return 612;
-        corrupt = record; corrupt.state = 99; corrupt.checksum = linux_daemon_record_checksum(&corrupt);
-        if (linux_daemon_record_valid(&corrupt)) return 613;
-    }
-
-    // The production Linux mutation engine stops at every possible phase
-    // failure, rolls back all attempted (including possibly partial) phases,
-    // and exposes rollback uncertainty without publishing success.
-    {
-        const unsigned int phases[] = {
-            LINUX_MUTATION_RESET_BASELINE, LINUX_MUTATION_GPU_OFFSET,
-            LINUX_MUTATION_MEM_OFFSET, LINUX_MUTATION_POWER,
-            LINUX_MUTATION_CURVE, LINUX_MUTATION_LOCK, LINUX_MUTATION_FAN,
-        };
-        unsigned int requested = 0;
-        for (unsigned int phase : phases) requested |= phase;
-        for (unsigned int failIndex = 0; failIndex < 7; ++failIndex) {
-            FakeLinuxTransaction fake = {};
-            fake.failPhase = phases[failIndex];
-            fake.rollbackOk = true;
-            LinuxMutationResult result = linux_execute_transaction(
-                requested, fake_linux_transaction_step,
-                fake_linux_transaction_rollback, &fake);
-            if (result.success || !result.rollbackAttempted || !result.rollbackSucceeded) return 619;
-            if (result.failedPhases != phases[failIndex] || fake.callCount != failIndex + 1) return 620;
-            if (fake.rollbackMask != result.attemptedPhases ||
-                (result.completedPhases & phases[failIndex])) return 621;
-        }
-        FakeLinuxTransaction rollbackFailure = {};
-        rollbackFailure.failPhase = LINUX_MUTATION_POWER;
-        LinuxMutationResult failed = linux_execute_transaction(
-            requested, fake_linux_transaction_step,
-            fake_linux_transaction_rollback, &rollbackFailure);
-        if (failed.success || failed.rollbackSucceeded || !failed.rollbackAttempted) return 622;
-        FakeLinuxTransaction success = {};
-        success.rollbackOk = true;
-        LinuxMutationResult complete = linux_execute_transaction(
-            requested, fake_linux_transaction_step,
-            fake_linux_transaction_rollback, &success);
-        if (!complete.success || complete.attemptedPhases != requested ||
-            complete.completedPhases != requested || complete.failedPhases) return 623;
-    }
-
-    // Linux PCI identity remains stable across API enumeration reordering and
-    // fails closed for missing, duplicate, or cross-API-mismatched devices.
-    {
-        GpuAdapterInfo requested = {};
-        requested.valid = requested.pciInfoValid = true;
-        requested.pciBus = 2; requested.pciDevice = 3;
-        requested.deviceId = 0x268410deu; requested.subSystemId = 0x1234u;
-        GpuAdapterInfo adapters[2] = {};
-        adapters[0] = requested;
-        adapters[0].pciBus = 1;
-        adapters[1] = requested;
-        if (linux_resolve_gpu_identity(&requested, adapters, 2) != 1) return 614;
-        GpuAdapterInfo reordered[2] = { adapters[1], adapters[0] };
-        if (linux_resolve_gpu_identity(&requested, reordered, 2) != 0) return 615;
-        if (linux_resolve_gpu_identity(&requested, adapters, 1) != -1) return 616;
-        GpuAdapterInfo duplicate[2] = { requested, requested };
-        if (linux_resolve_gpu_identity(&requested, duplicate, 2) != -2) return 617;
-        GpuAdapterInfo mismatch = requested;
-        mismatch.deviceId = 0x999910deu;
-        if (linux_resolve_gpu_identity(&requested, &mismatch, 1) != -1) return 618;
-        if (!linux_gpu_switch_preserves_active_intent(
-                false, nullptr, &requested)) return 904;
-        if (!linux_gpu_switch_preserves_active_intent(
-                true, &requested, &adapters[1])) return 905;
-        GpuAdapterInfo otherGpu = requested;
-        otherGpu.pciBus = 4;
-        if (linux_gpu_switch_preserves_active_intent(
-                true, &requested, &otherGpu)) return 906;
-        if (linux_next_gpu_selection_index(false, 0, 2, 1) != 0 ||
-            linux_next_gpu_selection_index(false, 0, 2, -1) != 1 ||
-            linux_next_gpu_selection_index(true, 0, 2, -1) != 1 ||
-            linux_next_gpu_selection_index(true, 1, 2, 1) != 0 ||
-            linux_next_gpu_selection_index(false, 0, 0, 1) != -1) return 908;
-    }
-
-    // F-01-001: lifecycle identity — session_and_user matches on sessionId+SID
-    // alone, even when authenticationId (LUID) differs. This guards against the
-    // auth LUID race between OpenProcessToken and WTSQueryUserToken on boot.
-    {
-        ServiceLifecycleIdentity a = {};
-        a.valid = true; a.sessionId = 1;
-        a.authenticationId = 100;
-        strcpy_s(a.sid, sizeof(a.sid), "S-1-5-21-123");
-        ServiceLifecycleIdentity b = {};
-        b.valid = true; b.sessionId = 1;
-        b.authenticationId = 200; // Different LUID!
-        strcpy_s(b.sid, sizeof(b.sid), "S-1-5-21-123");
-        if (!service_lifecycle_identity_equal_session_and_user(&a, &b)) return 738;
-        if (service_lifecycle_identity_equal(&a, &b)) return 739;
-        if (service_lifecycle_identity_equal_session_and_user(nullptr, &b)) return 740;
-        if (service_lifecycle_identity_equal_session_and_user(&a, nullptr)) return 741;
-        ServiceLifecycleIdentity invalid = {};
-        if (service_lifecycle_identity_equal_session_and_user(&invalid, &b)) return 742;
-        if (service_lifecycle_identity_equal_session_and_user(&a, &invalid)) return 743;
-        ServiceLifecycleIdentity noSid = {};
-        noSid.valid = true; noSid.sessionId = 1;
-        noSid.authenticationId = 100;
-        if (service_lifecycle_identity_equal_session_and_user(&noSid, &b)) return 744;
-        ServiceLifecycleIdentity diffSession = {};
-        diffSession.valid = true; diffSession.sessionId = 2;
-        diffSession.authenticationId = 100;
-        strcpy_s(diffSession.sid, sizeof(diffSession.sid), "S-1-5-21-123");
-        if (service_lifecycle_identity_equal_session_and_user(&diffSession, &a)) return 745;
-        ServiceLifecycleIdentity diffSid = {};
-        diffSid.valid = true; diffSid.sessionId = 1;
-        diffSid.authenticationId = 100;
-        strcpy_s(diffSid.sid, sizeof(diffSid.sid), "S-1-5-21-999");
-        if (service_lifecycle_identity_equal_session_and_user(&diffSid, &a)) return 746;
-    }
-
-    // F-01-002: profile point visibility round-trip — curve point visibility
-    // flags must survive save/load through the INI config. Regression for the
-    // "all points written as hidden" bug in machine-config sharing.
-    {
-        if (!set_config_int(argv[1], "vis_test", "point0_visible", 0)) return 747;
-        if (get_config_int(argv[1], "vis_test", "point0_visible", 1) != 0) return 748;
-        if (!set_config_int(argv[1], "vis_test", "point0_visible", 1)) return 749;
-        if (get_config_int(argv[1], "vis_test", "point0_visible", 0) != 1) return 750;
-        if (!set_config_int(argv[1], "vis_test", "point127_visible", 0)) return 751;
-        if (get_config_int(argv[1], "vis_test", "point127_visible", 1) != 0) return 752;
-        if (!set_config_int(argv[1], "vis_test", "point127_visible", 1)) return 753;
-        if (get_config_int(argv[1], "vis_test", "point127_visible", 0) != 1) return 754;
-
-        // GPU section auto-save round-trip: [gpu] section with PCI identity
-        // must survive save/load to enable profile sharing on single-GPU.
-        if (!set_config_int(argv[1], "gpu", "slot", 1)) return 755;
-        if (!set_config_int(argv[1], "gpu", "device_id", 0x268410de)) return 756;
-        if (get_config_int(argv[1], "gpu", "slot", 0) != 1) return 757;
-        if (get_config_int(argv[1], "gpu", "device_id", 0) != 0x268410de) return 758;
-        if (!config_section_has_keys(argv[1], "gpu")) return 759;
-    }
-
-    // F-02-002: controlled recovery SCM stop disposition — STOP_PENDING with
-    // stale/zero PID must be classified as WAIT_FOR_STOPPED (not REJECT), since
-    // QueryServiceStatusEx does not guarantee a valid process ID in that state.
-    {
-        if (service_classify_controlled_recovery_scm_stop_state(
-            true, false, 0, 12345) != SERVICE_CONTROLLED_RECOVERY_SCM_STOPPED) return 760;
-        if (service_classify_controlled_recovery_scm_stop_state(
-            false, true, 0, 12345) != SERVICE_CONTROLLED_RECOVERY_SCM_WAIT_FOR_STOPPED) return 761;
-        if (service_classify_controlled_recovery_scm_stop_state(
-            false, false, 12345, 12345) != SERVICE_CONTROLLED_RECOVERY_SCM_WAIT_FOR_STOPPED) return 762;
-        if (service_classify_controlled_recovery_scm_stop_state(
-            false, false, 99999, 12345) != SERVICE_CONTROLLED_RECOVERY_SCM_REJECT) return 763;
-        if (service_classify_controlled_recovery_scm_stop_state(
-            false, true, 0, 0) != SERVICE_CONTROLLED_RECOVERY_SCM_REJECT) return 764;
-        if (service_classify_controlled_recovery_scm_stop_state(
-            false, false, 0, 0) != SERVICE_CONTROLLED_RECOVERY_SCM_REJECT) return 765;
-        if (service_classify_controlled_recovery_scm_stop_state(
-            false, false, 0, 12345) != SERVICE_CONTROLLED_RECOVERY_SCM_REJECT) return 766;
-    }
-
-    // F-02-002: controlled recovery authorization gate — all 7 fields must be
-    // true for the gate to authorize a controlled recovery start.
-    {
-        ServiceControlledRecoveryStartGate gate = {};
-        if (service_controlled_recovery_start_is_authorized(gate)) return 770;
-        gate.argumentsValid = true;
-        if (service_controlled_recovery_start_is_authorized(gate)) return 771;
-        gate.explicitlyRequested = true;
-        if (service_controlled_recovery_start_is_authorized(gate)) return 772;
-        gate.scmStartReasonKnown = true;
-        if (service_controlled_recovery_start_is_authorized(gate)) return 773;
-        gate.scmDemandStart = true;
-        if (service_controlled_recovery_start_is_authorized(gate)) return 774;
-        gate.authorizationValid = true;
-        if (service_controlled_recovery_start_is_authorized(gate)) return 775;
-        gate.helperValidated = true;
-        if (service_controlled_recovery_start_is_authorized(gate)) return 776;
-        gate.snapshotValid = true;
-        if (!service_controlled_recovery_start_is_authorized(gate)) return 777;
-    }
-
-    // F-02-006: lifecycle event sequencing — different notification orderings
-    // produce expected recovery decisions without races or lockup.
-    {
-        ServiceLifecycleIdentity identity = {};
-        identity.valid = true; identity.sessionId = 1;
-        identity.authenticationId = 100;
-        strcpy_s(identity.sid, sizeof(identity.sid), "S-1-5-21-123");
-
-        // Standby resume followed by driver recovery: driver dominates
-        ServiceLifecycleState state = {};
-        ServiceLifecycleEvent suspend = {};
-        suspend.type = SERVICE_LIFECYCLE_EVENT_SUSPEND;
-        service_lifecycle_reduce(&state, &suspend);
-        ServiceLifecycleEvent standbyResume = {};
-        standbyResume.type = SERVICE_LIFECYCLE_EVENT_RESUME;
-        ServiceLifecycleDecision d1 = service_lifecycle_reduce(&state, &standbyResume);
-        if (d1.trigger != SERVICE_LIFECYCLE_TRIGGER_STANDBY_RESUME) return 780;
-        if (!state.standbyPending) return 781;
-
-        ServiceLifecycleEvent driverRecovery = {};
-        driverRecovery.type = SERVICE_LIFECYCLE_EVENT_DRIVER_RECOVERY;
-        driverRecovery.driverProofReady = true;
-        ServiceLifecycleDecision d2 = service_lifecycle_reduce(&state, &driverRecovery);
-        if (!d2.wakeWorker) return 782;
-        if (d2.trigger != SERVICE_LIFECYCLE_TRIGGER_DRIVER_RECOVERY) return 783;
-        if (state.standbyPending) return 784; // must cancel standby
-
-        // Lockout cancels all pending operations
-        ServiceLifecycleState state2 = {};
-        ServiceLifecycleEvent logon = {};
-        logon.type = SERVICE_LIFECYCLE_EVENT_WTS_LOGON;
-        logon.identity = identity;
-        ServiceLifecycleDecision d3 = service_lifecycle_reduce(&state2, &logon);
-        if (d3.result != SERVICE_LIFECYCLE_RESULT_PENDING) return 785;
-        ServiceLifecycleEvent lockout = {};
-        lockout.type = SERVICE_LIFECYCLE_EVENT_LOCKOUT;
-        ServiceLifecycleDecision d4 = service_lifecycle_reduce(&state2, &lockout);
-        if (!d4.cancelled) return 786;
-        if (d4.result != SERVICE_LIFECYCLE_RESULT_LOCKED_OUT) return 787;
-        if (!state2.lockedOut) return 788;
-
-        // Explicit supersede clears pending logon without applying
-        ServiceLifecycleState state3 = {};
-        ServiceLifecycleEvent taskHandoff = {};
-        taskHandoff.type = SERVICE_LIFECYCLE_EVENT_TASK_HANDOFF;
-        taskHandoff.identity = identity;
-        ServiceLifecycleDecision d5 = service_lifecycle_reduce(&state3, &taskHandoff);
-        if (!state3.logonPending) return 789;
-        ServiceLifecycleEvent supersede = {};
-        supersede.type = SERVICE_LIFECYCLE_EVENT_EXPLICIT_SUPERSEDE;
-        ServiceLifecycleDecision d6 = service_lifecycle_reduce(&state3, &supersede);
-        if (!d6.cancelled) return 790;
-        if (d6.result != SERVICE_LIFECYCLE_RESULT_SUPERSEDED) return 791;
-        if (state3.logonPending) return 792;
-
-        // DEVNODES_CHANGED is diagnostic-only, never sets pending
-        ServiceLifecycleState state4 = {};
-        ServiceLifecycleEvent devnodes = {};
-        devnodes.type = SERVICE_LIFECYCLE_EVENT_DEVNODES_CHANGED;
-        ServiceLifecycleDecision d7 = service_lifecycle_reduce(&state4, &devnodes);
-        if (!d7.readOnlyReenumerate) return 793;
-        if (d7.wakeWorker) return 794;
-    }
-
-    // F-02-002: proof age computation — boundaries and validation
-    {
-        ServiceBootIdentity boot = { 0xABCD, 0x1234 };
-        ServiceOcApplyProofStamp validStamp = {};
-        validStamp.magic = SERVICE_OC_APPLY_STAMP_MAGIC;
-        validStamp.version = SERVICE_OC_APPLY_STAMP_VERSION;
-        validStamp.size = sizeof(ServiceOcApplyProofStamp);
-        validStamp.bootIdentity = boot;
-        validStamp.awakeTime100ns = 10000000; // 1 second
-
-        uint64_t ageMs = 0;
-        bool valid = service_compute_proof_age_ms(
-            &validStamp, boot, 20000000, &ageMs);
-        if (!valid) return 800;
-        if (ageMs != 1000) return 801; // 1 sec awake = 1000ms
-
-        // Wrong boot identity: reject
-        ServiceBootIdentity otherBoot = { 0xFFFF, 0 };
-        if (service_compute_proof_age_ms(
-            &validStamp, otherBoot, 20000000, &ageMs)) return 802;
-
-        // Time underflow: reject
-        if (service_compute_proof_age_ms(
-            &validStamp, boot, 5000000, &ageMs)) return 803;
-
-        // Bad magic: reject
-        ServiceOcApplyProofStamp badMagic = validStamp;
-        badMagic.magic = 0xDEAD;
-        if (service_compute_proof_age_ms(
-            &badMagic, boot, 20000000, &ageMs)) return 804;
-
-        // Zero stamp: reject
-        ServiceOcApplyProofStamp zero = {};
-        if (service_compute_proof_age_ms(
-            &zero, boot, 20000000, &ageMs)) return 805;
-
-        // Null stamp: reject
-        if (service_compute_proof_age_ms(
-            nullptr, boot, 20000000, &ageMs)) return 806;
-    }
-
-    // F-02-002: recovery clock window counting — bounds and boot identity
-    {
-        ServiceBootIdentity boot = { 0xA, 0xB };
-        ServiceBootIdentity otherBoot = { 0xC, 0xD };
-        ServiceRecoveryClockEntry entries[4] = {};
-        entries[0].bootIdentity = boot;
-        entries[0].awakeTime100ns = 10000000;
-        entries[1].bootIdentity = boot;
-        entries[1].awakeTime100ns = 20000000;
-        entries[2].bootIdentity = otherBoot;
-        entries[2].awakeTime100ns = 15000000;
-        entries[3].bootIdentity = boot;
-        entries[3].awakeTime100ns = 0; // zero is skipped
-
-        unsigned int recent = service_count_recent_recovery_clock_entries(
-            entries, 4, boot, 50000000, 60000);
-        if (recent != 2) return 810; // entries 0 and 1 within 60s window
-
-        // Zero current awake time: returns 0
-        if (service_count_recent_recovery_clock_entries(
-            entries, 4, boot, 0, 60000) != 0) return 811;
-
-        // Null entries: returns 0
-        if (service_count_recent_recovery_clock_entries(
-            nullptr, 4, boot, 50000000, 60000) != 0) return 812;
-
-        // Zero entries count: returns 0
-        if (service_count_recent_recovery_clock_entries(
-            entries, 0, boot, 50000000, 60000) != 0) return 813;
-    }
-
-    // F-02-002: recovery evidence dedup
-    {
-        ServiceRecoveryEvidenceKey keys[3] = {};
-        keys[0] = { 1, 2 };
-        keys[1] = { 3, 4 };
-        keys[2] = { 5, 6 };
-        if (!service_recovery_evidence_already_recorded(keys, 3, { 1, 2 })) return 820;
-        if (!service_recovery_evidence_already_recorded(keys, 3, { 3, 4 })) return 821;
-        if (!service_recovery_evidence_already_recorded(keys, 3, { 5, 6 })) return 822;
-        if (service_recovery_evidence_already_recorded(keys, 3, { 7, 8 })) return 823;
-        // Invalid key must not be dedup-checked
-        if (service_recovery_evidence_already_recorded(keys, 3, { 0, 0 })) return 824;
-        // Null keys: returns false
-        if (service_recovery_evidence_already_recorded(nullptr, 3, { 1, 2 })) return 825;
-    }
-
-    // F-02-002: standby proof preservation logic
-    {
-        if (!service_should_preserve_proof_after_standby(true, 600000, 600000)) return 830;
-        // Under required age
-        if (service_should_preserve_proof_after_standby(true, 599999, 600000)) return 831;
-        // Invalid proof
-        if (service_should_preserve_proof_after_standby(false, 600000, 600000)) return 832;
-        // Zero required age (no preservation needed)
-        if (service_should_preserve_proof_after_standby(true, 600000, 0)) return 833;
-    }
-
-    // Protocol-v10 mutations are idempotent and retain a bounded query cache.
-    {
-        ServiceOperationTracker tracker = {};
-        const ServiceOperationRecord* existing = nullptr;
-        if (service_operation_begin(&tracker, 42, &existing) !=
-            SERVICE_OPERATION_BEGIN_STARTED) return 1000;
-        const ServiceOperationRecord* record = service_operation_find(&tracker, 42);
-        if (!record || record->state != SERVICE_OPERATION_IN_PROGRESS) return 1001;
-        if (service_operation_begin(&tracker, 42, &existing) !=
-            SERVICE_OPERATION_BEGIN_DUPLICATE || existing != record) return 1002;
-        if (!service_operation_complete(&tracker, 42, SERVICE_STATUS_OK, "done"))
-            return 1003;
-        record = service_operation_find(&tracker, 42);
-        if (!record || record->state != SERVICE_OPERATION_SUCCEEDED ||
-            strcmp(record->message, "done") != 0) return 1004;
-        if (service_operation_complete(&tracker, 42, SERVICE_STATUS_ERROR,
-                "twice")) return 1005;
-        if (!service_operation_restore(&tracker, 77,
-                SERVICE_OPERATION_OUTCOME_UNKNOWN, SERVICE_STATUS_ERROR,
-                "restart uncertainty")) return 1006;
-        record = service_operation_find(&tracker, 77);
-        if (!record || record->state != SERVICE_OPERATION_OUTCOME_UNKNOWN)
-            return 1007;
-        for (gc_u64 id = 100; id < 116; ++id) {
-            if (service_operation_begin(&tracker, id, nullptr) !=
-                SERVICE_OPERATION_BEGIN_STARTED) return 1008;
-        }
-        if (service_operation_find(&tracker, 42) != nullptr) return 1009;
-    }
-
-    // Linux curve composition matches Windows precedence and never turns a
-    // selective/lock-composed request into an NVML-global offset.
-    {
-        VFCurvePoint curve[VF_NUM_POINTS] = {};
-        int current[VF_NUM_POINTS] = {};
-        for (int i = 0; i < 8; ++i) {
-            curve[i].freq_kHz = 1000000u + (unsigned int)i * 100000u;
-            curve[i].volt_uV = 700000u + (unsigned int)i * 10000u;
-            current[i] = 10000;
-        }
-        int targets[VF_NUM_POINTS] = {};
-        bool mask[VF_NUM_POINTS] = {};
-        DesiredSettings desired = {};
-        desired.hasGpuOffset = true;
-        desired.gpuOffsetMHz = 50;
-        desired.gpuOffsetExcludeLowCount = 2;
-        desired.hasCurvePoint[3] = true;
-        desired.curvePointMHz[3] = 1500;
-        desired.hasLock = true;
-        desired.lockMode = LOCK_MODE_FLATTEN;
-        desired.lockCi = 5;
-        desired.lockMHz = 1600;
-        LinuxCurveTargetBuildResult built = linux_build_curve_targets(
-            curve, current, &desired, -900000, targets, mask);
-        if (!built.composedGpuOffset || !built.lockTail || built.pointCount != 6)
-            return 1010;
-        if (mask[0] || mask[1] || !mask[2] || targets[2] != 50000)
-            return 1011;
-        if (!mask[3] || targets[3] != 210000 || targets[4] != 50000)
-            return 1012;
-        if (targets[5] != 110000 || targets[6] != -900000 ||
-            targets[7] != -900000) return 1013;
-
-        DesiredSettings globalOnly = {};
-        globalOnly.hasGpuOffset = true;
-        globalOnly.gpuOffsetMHz = 75;
-        built = linux_build_curve_targets(curve, current, &globalOnly,
-            -900000, targets, mask);
-        if (built.composedGpuOffset || built.pointCount != 0) return 1014;
-
-        DesiredSettings hard = desired;
-        hard.lockMode = LOCK_MODE_HARD;
-        hard.hasCurvePoint[6] = true;
-        hard.curvePointMHz[6] = 1900;
-        built = linux_build_curve_targets(curve, current, &hard,
-            -900000, targets, mask);
-        if (!built.lockTail || targets[6] != 10000) return 1015;
-
-        VFCurvePoint sparse[VF_NUM_POINTS] = {};
-        int sparseCurrent[VF_NUM_POINTS] = {};
-        sparse[0].freq_kHz = 1000000;
-        sparse[3].freq_kHz = 1300000;
-        sparse[5].freq_kHz = 1500000;
-        DesiredSettings sparseOffset = {};
-        sparseOffset.hasGpuOffset = true;
-        sparseOffset.gpuOffsetMHz = 25;
-        sparseOffset.gpuOffsetExcludeLowCount = 2;
-        built = linux_build_curve_targets(sparse, sparseCurrent,
-            &sparseOffset, -900000, targets, mask);
-        if (mask[0] || mask[3] || !mask[5] || targets[5] != 25000)
-            return 1034;
-    }
-
-    // Fan policy honors configured interval and hysteresis, while explicit
-    // desired-state changes can force an immediate target refresh.
-    {
-        FanCurveConfig curve = {};
-        fan_curve_set_default(&curve);
-        curve.pollIntervalMs = 1250;
-        curve.hysteresisC = 2;
-        FanRuntimeState state = {};
-        FanRuntimeDecision first = fan_runtime_next_action(&state, &curve, 30,
-            false);
-        if (!first.shouldWrite || first.targetPercent != 20 ||
-            first.nextPollMs != 1250) return 1016;
-        FanRuntimeDecision raised = fan_runtime_next_action(&state, &curve, 32,
-            false);
-        if (raised.targetPercent == first.targetPercent) return 1017;
-        FanRuntimeDecision held = fan_runtime_next_action(&state, &curve, 31,
-            false);
-        if (held.targetPercent != raised.targetPercent) return 1018;
-        FanRuntimeDecision cooled = fan_runtime_next_action(&state, &curve, 30,
-            false);
-        if (cooled.targetPercent != first.targetPercent) return 1035;
-        FanRuntimeDecision forced = fan_runtime_next_action(&state, &curve, 31,
-            true);
-        if (forced.targetPercent != fan_curve_interpolate_percent(&curve, 31))
-            return 1019;
-    }
-
-    // One active mutation plus one latest pending request; Reset cannot be
-    // overtaken by a later Apply.
-    {
-        if (gui_mutation_queue_decide(false, false, GUI_MUTATION_APPLY,
-                GUI_MUTATION_APPLY) != GUI_MUTATION_QUEUE_START) return 1020;
-        if (gui_mutation_queue_decide(true, false, GUI_MUTATION_APPLY,
-                GUI_MUTATION_APPLY) != GUI_MUTATION_QUEUE_PENDING) return 1021;
-        if (gui_mutation_queue_decide(true, true, GUI_MUTATION_APPLY,
-                GUI_MUTATION_APPLY) != GUI_MUTATION_QUEUE_REPLACE_PENDING)
-            return 1022;
-        if (gui_mutation_queue_decide(true, true, GUI_MUTATION_APPLY,
-                GUI_MUTATION_RESET) != GUI_MUTATION_QUEUE_REPLACE_PENDING)
-            return 1023;
-        if (gui_mutation_queue_decide(true, true, GUI_MUTATION_RESET,
-                GUI_MUTATION_APPLY) != GUI_MUTATION_QUEUE_KEEP_PENDING_RESET)
-            return 1024;
-    }
-
-    // Read scheduling is deterministic: full-sync requests coalesce and
-    // telemetry never overtakes writes, admin changes, or full synchronization.
-    {
-        if (gui_full_sync_queue_decide(false) !=
-                GUI_SERVICE_READ_QUEUE_NEW) return 1132;
-        if (gui_full_sync_queue_decide(true) !=
-                GUI_SERVICE_READ_COALESCE) return 1133;
-        if (gui_telemetry_queue_decide(true, false, false, false, false) !=
-                GUI_SERVICE_READ_DROP_BEHIND_PRIORITY_WORK) return 1134;
-        if (gui_telemetry_queue_decide(false, true, false, false, false) !=
-                GUI_SERVICE_READ_DROP_BEHIND_PRIORITY_WORK) return 1135;
-        if (gui_telemetry_queue_decide(false, false, true, false, false) !=
-                GUI_SERVICE_READ_DROP_BEHIND_PRIORITY_WORK) return 1136;
-        if (gui_telemetry_queue_decide(false, false, false, true, false) !=
-                GUI_SERVICE_READ_DROP_BEHIND_PRIORITY_WORK) return 1137;
-        if (gui_telemetry_queue_decide(false, false, false, false, true) !=
-                GUI_SERVICE_READ_COALESCE) return 1138;
-        if (gui_telemetry_queue_decide(false, false, false, false, false) !=
-                GUI_SERVICE_READ_QUEUE_NEW) return 1139;
-    }
-
-    // A pipe timeout caused by this GUI's known long mutation is expected busy,
-    // not service failure. SCM stop/removal and service-process callers still
-    // require a real probe/state transition.
-    {
-        if (!service_health_probe_should_defer(false, true, true, true))
-            return 1040;
-        if (service_health_probe_should_defer(false, false, true, true))
-            return 1041;
-        if (service_health_probe_should_defer(false, true, true, false))
-            return 1042;
-        if (service_health_probe_should_defer(true, true, true, true))
-            return 1043;
-    }
-
-    {
-        LinuxDaemonStateRecord state = {};
-        linux_daemon_record_initialize(&state, LINUX_DAEMON_RECORD_ACTIVE,
-            nullptr, nullptr, 0x123456789ULL, SERVICE_OPERATION_SUCCEEDED);
-        if (!linux_daemon_record_valid(&state) ||
-            state.version != LINUX_DAEMON_RECORD_VERSION ||
-            state.operationId != 0x123456789ULL ||
-            state.operationState != SERVICE_OPERATION_SUCCEEDED) return 1025;
-        LinuxDaemonOperationRecord operation = {};
-        linux_daemon_operation_initialize(&operation, 99,
-            SERVICE_OPERATION_IN_PROGRESS, SERVICE_STATUS_ERROR, "started");
-        if (!linux_daemon_operation_valid(&operation) ||
-            operation.operationId != 99 ||
-            strcmp(operation.message, "started") != 0) return 1032;
-        operation.checksum ^= 1u;
-        if (linux_daemon_operation_valid(&operation)) return 1033;
-    }
-
-#if defined(_WIN32)
-    {
-        Win32Utf8Path invalid("\xC3\x28");
-        if (invalid.valid_for("\xC3\x28")) return 1026;
-    }
-    {
-        std::string unicodePath = argv[1];
-        size_t separator = unicodePath.find_last_of("\\/");
-        if (separator != std::string::npos) unicodePath.resize(separator + 1);
-        unicodePath += u8"配置_тест_😀_profile.ini";
-        gc_DeleteFileUtf8(unicodePath.c_str());
-        if (!set_config_int(unicodePath.c_str(), "unicode", "value", 73))
-            return 1027;
-        if (get_config_int(unicodePath.c_str(), "unicode", "value", 0) != 73)
-            return 1028;
-        char canonical[MAX_PATH] = {};
-        if (!gc_GetFullPathNameUtf8(unicodePath.c_str(), ARRAY_COUNT(canonical),
-                canonical, nullptr) || !strstr(canonical, u8"配置_тест_😀"))
-            return 1029;
-        HANDLE unicodeFile = gc_CreateFileUtf8(unicodePath.c_str(),
-            GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (unicodeFile == INVALID_HANDLE_VALUE) return 1030;
-        CloseHandle(unicodeFile);
-        if (!gc_DeleteFileUtf8(unicodePath.c_str())) return 1031;
-    }
-#endif
-
-    DeleteCriticalSection(&g_configLock);
-    return 0;
-}
-'''
+    harness_source = os.path.join(SCRIPT_DIR, "tests", "regression_main.cpp")
+    if not os.path.exists(harness_source):
+        print(f"Regression harness missing: {harness_source}")
+        sys.exit(1)
     tmp = prepare_work_subdir("test")
     try:
-        harness_path = os.path.join(tmp, "fan_curve_regression.cpp")
+        # The harness is a real .cpp under tests/ rather than a string literal
+        # in this script, so it gets LSP, clang-format and clang-tidy coverage.
+        harness_path = harness_source
         test_exe = os.path.join(tmp, "fan_curve_regression.exe" if sys.platform == "win32" else "fan_curve_regression")
-        with open(harness_path, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(harness)
-        compiler = LLVM_MINGW_CLANG if sys.platform == "win32" else ZIG_EXE
-        cmd = [
-            compiler,
-        ]
-        # llvm-mingw clang++ takes flags directly; zig c++ needs the subcommand
-        if sys.platform != "win32":
-            cmd.append("c++")
+        # llvm-mingw clang++ takes flags directly; zig needs the c++ subcommand,
+        # and an ASan build needs a host clang instead of Zig entirely.
+        cmd = ([LLVM_MINGW_CLANG] if sys.platform == "win32"
+               else _posix_test_compiler(extra_flags))
         cmd.extend([
             "-std=c++17",
             "-DNDEBUG",
@@ -5234,17 +2097,25 @@ int main(int argc, char** argv) {
             test_exe,
             harness_path,
             os.path.join(SOURCE_DIR, "fan_curve.cpp"),
-            os.path.join(SOURCE_DIR, "config_utils.cpp"),
+            os.path.join(SOURCE_DIR, "config_text_utils.cpp"),
             os.path.join(SOURCE_DIR, "app_shared.cpp"),
-            os.path.join(SOURCE_DIR, "service_acl.cpp"),
             os.path.join(SOURCE_DIR, "vf_backends.cpp"),
         ])
         if sys.platform == "win32":
-            cmd.append(os.path.join(SOURCE_DIR, "platform_win32.cpp"))
+            # Win32-only implementations; the harness #ifdefs out the suites
+            # that exercise them (config INI, DACLs, Task Scheduler XML).
+            for win_only in ("config_utils.cpp", "service_acl.cpp", "platform_win32.cpp"):
+                cmd.append(os.path.join(SOURCE_DIR, win_only))
+        else:
+            # win32_compat.h is force-included, never #included by the harness.
+            cmd.append(os.path.join(SOURCE_DIR, "platform_posix.cpp"))
+            cmd.extend(["-include", os.path.join(SOURCE_DIR, "win32_compat.h")])
         if extra_flags:
             cmd.extend(extra_flags)
         if sys.platform == "win32":
             cmd.extend(["-static", "-luser32", "-lgdi32", "-luuid", "-ladvapi32", "-lshell32"])
+        else:
+            cmd.extend(["-lpthread", "-ldl"])
         print("Compiling pure regression tests")
         result = subprocess.run(cmd, cwd=SCRIPT_DIR)
         if result.returncode != 0:
@@ -5262,10 +2133,74 @@ int main(int argc, char** argv) {
         if result.returncode != 0:
             print(f"Regression tests FAILED ({result.returncode})")
             sys.exit(result.returncode)
+        if sys.platform.startswith("linux"):
+            transport_exe = os.path.join(tmp, "linux_transport_regression")
+            transport_cmd = [
+                *_posix_test_compiler(extra_flags), "-std=c++17", "-DNDEBUG",
+                f'-DAPP_VERSION="{APP_VERSION}"',
+                f"-DAPP_BUILD_NUMBER={APP_BUILD_NUMBER}",
+                "-fno-exceptions", "-fno-rtti",
+                f"-I{SOURCE_DIR}",
+                "-o", transport_exe,
+                os.path.join(SCRIPT_DIR, "tests", "linux_transport_regression.cpp"),
+            ]
+            if extra_flags:
+                transport_cmd.extend(extra_flags)
+            print("Compiling Linux socket transport regression tests")
+            result = subprocess.run(transport_cmd, cwd=SCRIPT_DIR)
+            if result.returncode != 0:
+                print("Linux transport test compilation FAILED")
+                sys.exit(result.returncode)
+            print("Running Linux socket transport regression tests")
+            result = subprocess.run([transport_exe], cwd=SCRIPT_DIR,
+                                    env=test_env)
+            if result.returncode != 0:
+                print(f"Linux transport regression FAILED ({result.returncode})")
+                sys.exit(result.returncode)
+        else:
+            # The fixture needs real Linux filesystem sockets to run, but it
+            # must still compile everywhere or a break in it stays invisible
+            # until someone happens to test on Linux.  Cross-compile only.
+            transport_obj = os.path.join(tmp, "linux_transport_regression.o")
+            transport_cmd = [
+                ZIG_EXE, "c++", "-std=c++17", "-DNDEBUG",
+                f'-DAPP_VERSION="{APP_VERSION}"',
+                f"-DAPP_BUILD_NUMBER={APP_BUILD_NUMBER}",
+                "-fno-exceptions", "-fno-rtti",
+                "-target", "x86_64-linux-gnu",
+                "-Wall", "-Wextra", "-Wno-unused-function",
+                "-Wno-unused-parameter", "-Werror",
+                f"-I{SOURCE_DIR}",
+                "-c", os.path.join(SCRIPT_DIR, "tests",
+                                   "linux_transport_regression.cpp"),
+                "-o", transport_obj,
+            ]
+            print("Cross-compiling Linux socket transport regression tests")
+            result = subprocess.run(transport_cmd, cwd=SCRIPT_DIR)
+            if result.returncode != 0:
+                print("Linux transport test cross-compilation FAILED")
+                sys.exit(result.returncode)
         run_source_regression_checks()
         print("Regression tests passed")
     finally:
         cleanup_work_subdir(tmp)
+
+
+# security_gates reads SCRIPT_DIR, SOURCE_DIR, LLVM_MINGW_DIR,
+# LLVM_MINGW_CLANG, APP_VERSION, APP_BUILD_NUMBER, prepare_work_subdir and
+# cleanup_work_subdir off this module.  Passing the live module rather than a
+# snapshot keeps APP_BUILD_NUMBER current after configure_build_number() runs.
+def _gate_ctx():
+    return sys.modules[__name__]
+
+
+def run_fuzz_targets(runs=None, target_filter=None):
+    return security_gates.run_fuzz_targets(_gate_ctx(), runs=runs,
+                                           target_filter=target_filter)
+
+
+def check_cet_instrumentation(binary_path=None):
+    return security_gates.check_cet_instrumentation(_gate_ctx(), binary_path)
 
 
 def require_text(path, needle, label):
@@ -5282,6 +2217,47 @@ def forbid_text(path, needle, label):
     if needle in text:
         print(f"Regression source check FAILED (must be absent): {label}")
         sys.exit(1)
+
+
+def _tracked_repository_files():
+    """Tracked paths, or None when git is unavailable (tarball/export builds).
+
+    The check that uses this must not fail a legitimate build just because git
+    is missing, so an unavailable index is treated as "cannot assess".
+    """
+    try:
+        result = subprocess.run(["git", "ls-files"], cwd=SCRIPT_DIR,
+                                text=True, capture_output=True)
+    except (OSError, ValueError):
+        return None
+    if result.returncode != 0:
+        return None
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def require_text_in_surface(paths, needle, label):
+    """Assert `needle` appears in at least one shard of a logical surface.
+
+    Splitting an oversized module used to break every guard that named the
+    original file, which discouraged the very splits the size ratchet asks for.
+    A surface is the aggregator plus the shards it `#include`s, so a guard keeps
+    holding when code moves between them.
+    """
+    for path in paths:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            if needle in handle.read():
+                return
+    print(f"Regression source check FAILED: {label}")
+    sys.exit(1)
+
+
+def forbid_text_in_surface(paths, needle, label):
+    """Assert `needle` appears in no shard of a logical surface."""
+    for path in paths:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            if needle in handle.read():
+                print(f"Regression source check FAILED (must be absent): {label}")
+                sys.exit(1)
 
 
 def require_text_count(path, needle, expected, label):
@@ -5434,19 +2410,47 @@ def require_app_version_fallback_in_sync():
 
 
 SOURCE_SIZE_RATCHET = {
-    "config_profiles_ui.cpp": 812, "config_profiles.cpp": 1010,
-    "entry.cpp": 960, "gpu_backend_apply.cpp": 1333, "gpu_backend.cpp": 975,
-    "linux_backend.cpp": 1154,
-    "main_fan_runtime.cpp": 934, "main_gpu_front.cpp": 846,
-    "main_gpu_state.cpp": 919,
-    "main_runtime_nvml.cpp": 1105, "main_runtime_ui.cpp": 809,
-    "main_service_persist.cpp": 914, "main_service_pipe.cpp": 841,
-    "ui_main_window.cpp": 1420, "ui_main.cpp": 867,
+    "config_profiles.cpp": 879,
+    "entry.cpp": 861,
+    "gpu_backend.cpp": 972,
+    "gpu_backend_apply.cpp": 1333,
+    "main_fan_runtime.cpp": 929,
+    "main_gpu_front.cpp": 845,
+    "main_gpu_state.cpp": 916,
+    "main_runtime_nvml.cpp": 901,
+    "main_service_persist.cpp": 908,
+    "main_service_pipe.cpp": 831,
+    "ui_main_window.cpp": 1279,
 }
+
+
+# build.py is by far the largest file in the project and was exempt from the
+# rule it enforces on everything else.  It is ratcheted here so it can only
+# shrink; the target is to get it under the ~800-line guideline by moving the
+# test harness and source guards into real files.
+# 8994 before the harness moved to tests/regression_main.cpp; lower this as the
+# remaining source guards move into a build_checks/ package.
+BUILD_SCRIPT_SIZE_RATCHET = 5648
+
+
+def enforce_build_script_size_ratchet():
+    path = os.path.join(SCRIPT_DIR, "build.py")
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            lines = sum(1 for _ in handle)
+    except OSError:
+        return
+    if lines > BUILD_SCRIPT_SIZE_RATCHET:
+        print("Regression source check FAILED: build.py size ratchet")
+        print(f"  build.py: {lines} lines exceeds ratchet "
+              f"{BUILD_SCRIPT_SIZE_RATCHET}")
+        print("  Move test harness / source guards out rather than raising it.")
+        sys.exit(1)
 
 
 def enforce_source_size_ratchet(soft_limit=800):
     """Reject new oversized modules and growth in grandfathered modules."""
+    enforce_build_script_size_ratchet()
     exempt = {"app_shared.h"}
     oversized = []
     violations = []
@@ -5480,8 +2484,17 @@ def enforce_source_size_ratchet(soft_limit=800):
         sys.exit(1)
 
 
+def check_fuzz_harness_in_sync():
+    """Delegate to tools/security_gates.py, which owns the fuzz target table."""
+    security_gates.check_fuzz_harness_in_sync(_gate_ctx(), require_text, forbid_text)
+
+
 def run_source_regression_checks():
     enforce_source_size_ratchet()
+    check_fuzz_harness_in_sync()
+    check_packaging_skip_warning()
+    security_gates.check_no_developer_profile_paths(
+        _gate_ctx(), _tracked_repository_files())
     require_app_version_fallback_in_sync()
     main_cpp = os.path.join(SOURCE_DIR, "main.cpp")
     entry_cpp = os.path.join(SOURCE_DIR, "entry.cpp")
@@ -5499,6 +2512,8 @@ def run_source_regression_checks():
     config_utils_cpp = os.path.join(SOURCE_DIR, "config_utils.cpp")
     fan_curve_cpp = os.path.join(SOURCE_DIR, "fan_curve.cpp")
     config_profiles_ui_cpp = os.path.join(SOURCE_DIR, "config_profiles_ui.cpp")
+    config_profiles_gui_state_cpp = os.path.join(
+        SOURCE_DIR, "config_profiles_gui_state.cpp")
     desired_settings_helpers_cpp = os.path.join(SOURCE_DIR, "desired_settings_helpers.cpp")
     config_profile_repair_cpp = os.path.join(SOURCE_DIR, "config_profile_repair.cpp")
     gpu_backend_apply_cpp = os.path.join(SOURCE_DIR, "gpu_backend_apply.cpp")
@@ -5517,6 +2532,7 @@ def run_source_regression_checks():
     main_fan_runtime_cpp = os.path.join(SOURCE_DIR, "main_fan_runtime.cpp")
     main_gpu_front_cpp = os.path.join(SOURCE_DIR, "main_gpu_front.cpp")
     runtime_nvml_cpp = os.path.join(SOURCE_DIR, "main_runtime_nvml.cpp")
+    cli_options_cpp = os.path.join(SOURCE_DIR, "main_cli_options.cpp")
     gpu_backend_cpp = os.path.join(SOURCE_DIR, "gpu_backend.cpp")
     gpu_selection_config_cpp = os.path.join(SOURCE_DIR, "gpu_selection_config.cpp")
     main_runtime_control_cpp = os.path.join(SOURCE_DIR, "main_runtime_control.cpp")
@@ -5603,8 +2619,12 @@ def run_source_regression_checks():
     _shared_surface = os.path.join(BUILD_WORK_DIR, "_shared_header_surface.h")
     os.makedirs(BUILD_WORK_DIR, exist_ok=True)
     with open(_shared_surface, "w", encoding="utf-8", errors="ignore") as _sf:
+        # service_protocol_validation.h is the envelope/response half of
+        # service_protocol.h, split out only to stay inside the source-size
+        # ratchet; the guards address the two as one logical surface.
         for _h in (os.path.join(SOURCE_DIR, "app_shared.h"), gpu_core_h,
-                   service_protocol_h):
+                   service_protocol_h,
+                   os.path.join(SOURCE_DIR, "service_protocol_validation.h")):
             with open(_h, "r", encoding="utf-8", errors="ignore") as _hf:
                 _sf.write(_hf.read())
                 _sf.write("\n")
@@ -5617,7 +2637,7 @@ def run_source_regression_checks():
 
     require_text(shared_h, "APP_DEBUG_DEFAULT_ENABLED 1", "debug logging remains default-on")
     require_text(shared_h, "APP_TITLE           APP_NAME \" v\" APP_VERSION", "plain title macro exists")
-    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 11", "service protocol publishes reconnect-safe state envelopes")
+    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 16", "service protocol publishes explicit hardware-readback validity")
     require_text(shared_h, "typedef gc_u8 gc_bool8", "IPC bool fields use a fixed-width one-byte type")
     require_text(shared_h, "canonicalize_gc_bool8", "IPC bool fields are canonicalized at trust boundaries")
     require_text(shared_h, "validate_service_response_for_ipc", "service responses are canonicalized before GUI use")
@@ -5873,7 +2893,7 @@ def run_source_regression_checks():
     require_text(build_script, "_verify_cached_tool_binary", "cached tool binaries are verified against trusted pinned digests")
     require_text(build_script, "LLVM_MINGW_CLANG_SHA256", "llvm-mingw executable digest is pinned")
     require_text(service_ipc_cpp, "wait_for_helper_process_bounded", "elevated helper waits are bounded")
-    require_text(config_profiles_ui_cpp, "repair needed", "broken installed service advertises repair state")
+    require_text(config_profiles_gui_state_cpp, "repair needed", "broken installed service advertises repair state")
     require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "Repair and restart the background service", "broken installed service click repairs instead of removing")
     forbid_text(config_profiles_ui_cpp, "maybe_load_selected_profile_to_gui_without_apply", "startup cannot restore saved selected-slot intent as live GPU state")
     require_text(logon_startup_cpp, "show_live_gpu_state_for_disabled_app_launch", "disabled app-start refreshes the editor from the service snapshot")
@@ -5918,6 +2938,8 @@ def run_source_regression_checks():
     require_text(runtime_nvml_cpp, "nvml_select_device_for_selected_gpu", "NVML device is matched to selected GPU")
     require_text(secure_write_cpp, "write_text_file_atomic_service", "service file writes use hardened writer")
     require_text(ui_main_controls_cpp, "gpuSelectY = dp(10)", "GPU selector lives in the graph header gap")
+    # Main-window Apply gates (origin, range hints, high-overclock confirm).
+    ui_gates.check_all(_gate_ctx(), require_text, forbid_text)
     require_text(main_layout_policy_h, "MAIN_LAYOUT_GRAPH_MIN_HEIGHT_LOGICAL", "main graph has a tested readable minimum")
     require_text(main_layout_policy_h, "horizontalOverflow", "layout policy exposes lossless horizontal overflow")
     require_text(main_layout_policy_h, "verticalOverflow", "layout policy exposes lossless vertical overflow")
@@ -5940,20 +2962,8 @@ def run_source_regression_checks():
         "shared checkbox renderer uses the canonical box metric")
     require_text(auto_profile_dialog_cpp, "WM_CTLCOLORLISTBOX",
         "auto-profile dropdown lists use the dark dialog palette")
-    require_text(auto_profile_dialog_cpp, "draw_themed_checkbox_control",
-        "auto-profile checkboxes use the main-window themed renderer")
-    require_text(auto_profile_dialog_cpp, "BS_OWNERDRAW",
-        "auto-profile checkboxes are owner-drawn")
-    require_text(auto_profile_dialog_cpp, "UiCheckboxState",
-        "auto-profile owner-draw checkboxes keep explicit dialog-model state")
-    require_text(auto_profile_dialog_cpp, "RDW_INVALIDATE | RDW_UPDATENOW",
-        "auto-profile checkbox clicks synchronously repaint their new state")
-    forbid_text(auto_profile_dialog_cpp, "BM_GETCHECK",
-        "owner-draw auto-profile checkboxes do not query unsupported native check state")
-    forbid_text(auto_profile_dialog_cpp, "BM_SETCHECK",
-        "owner-draw auto-profile checkboxes do not write unsupported native check state")
-    forbid_text(auto_profile_dialog_cpp, "BS_AUTOCHECKBOX",
-        "auto-profile dialog no longer uses unmatched native checkboxes")
+    # Every other owner-draw checkbox guard, plus the right-anchored placement
+    # rule, lives in tools/ui_gates.py.
     require_text(ui_main_layout_cpp, "SW_SCROLLCHILDREN | SW_INVALIDATE | SW_ERASE", "scrolling moves children and erases exposed pixels atomically")
     require_order_in_operation(ui_main_layout_cpp,
         "static bool main_layout_set_scroll(HWND hwnd, int x, int y)",
@@ -5978,17 +2988,13 @@ def run_source_regression_checks():
     require_text(main_state_sync_cpp, "state->fanMode is Green Curve intent", "control-state fan mode is not treated as live driver fan policy")
     require_text(ui_main_window_cpp, "preserved visible GUI fan intent", "profile Save preserves the visible fan mode over live external policy")
     require_text(main_fan_runtime_cpp, "external live fan policy is %s while Green Curve intent is Auto", "fan initialization logs external manual policy without adopting it")
-    # GUI lock-checkbox regressions:
-    #  (1) the FLATTEN tick must reuse the anti-aliased renderer shared by the themed
-    #      checkboxes (service install / share-all-users / tray) instead of a jagged
-    #      raw-GDI Polyline, so it does not look corrupted next to them.
-    #  (2) only BN_CLICKED may advance the tri-state. BS_OWNERDRAW emits BN_DBLCLK
-    #      automatically, while focus codes require BS_NOTIFY (which these controls
-    #      do not use). Every notification is logged before the policy filters it.
-    #  (3) an armed gesture is consumed once and rejected if the lock model changes
-    #      between press and release (for example, a startup service snapshot).
-    require_text(main_shell_cpp, "draw_checkbox_tick_smooth(hdc, &box, RGB(0xE8, 0xF2, 0xFF))", "lock FLATTEN tick uses the shared anti-aliased checkmark renderer")
-    forbid_text(main_shell_cpp, "Polyline(hdc, pts, 3)", "lock checkbox no longer draws the jagged raw-GDI checkmark")
+    # GUI lock-checkbox rendering moved to tools/ui_gates.py
+    # (check_lock_checkbox_render).  The remaining rules here cover the tri-state
+    # gesture: only BN_CLICKED may advance it -- BS_OWNERDRAW emits BN_DBLCLK
+    # automatically, while focus codes require BS_NOTIFY (which these controls do
+    # not use) -- every notification is logged before the policy filters it, and
+    # an armed gesture is consumed once and rejected if the lock model changes
+    # between press and release (for example, a startup service snapshot).
     require_text(ui_main_window_cpp, "decide_lock_activation(", "lock tri-state commands use the executable activation policy")
     require_text(ui_main_window_cpp, "lock checkbox command: vi=%d notify=%u decision=", "all lock notifications and decisions are logged")
     require_text(ui_lock_checkbox_cpp, "activate_lock_checkbox_once", "lock tri-state transition is centralized")
@@ -5997,20 +3003,87 @@ def run_source_regression_checks():
     require_text(ui_lock_checkbox_cpp, "paired double-click release suppressed", "double-click paired release cannot become an unarmed click")
     require_text(ui_main_controls_cpp, "lock checkbox subclass install FAILED", "subclass installation failure is diagnosed")
     require_text(ui_main_controls_cpp, "SetLastError(ERROR_SUCCESS);", "subclass failure logging does not report a stale Win32 error")
-    require_text(runtime_nvml_cpp, "parse_cli_point_arg_w(arg, &idx)", "CLI point parsing is strict")
+    require_text(cli_options_cpp, "parse_cli_point_arg_w(arg, &idx)", "CLI point parsing is strict")
     require_text(entry_cpp, "set_main_window_title", "window caption helper exists")
     require_text(entry_cpp, "SetWindowTextA", "window caption uses ANSI text write")
     require_text(entry_cpp, "RegisterClassExA", "main window uses ANSI class registration")
     require_text(entry_cpp, "CreateWindowExA", "main window uses ANSI creation path")
-    require_text(entry_cpp, "--set-machine-logon-slot", "CLI supports setting machine default logon slot")
-    require_text(entry_cpp, "--clear-machine-logon-slot", "CLI supports clearing machine default logon slot")
+    # The usage text moved to main_cli_help.cpp when entry.cpp hit its ratchet.
+    cli_help_cpp = os.path.join(SOURCE_DIR, "main_cli_help.cpp")
+    require_text(cli_help_cpp, "--set-machine-logon-slot", "CLI supports setting machine default logon slot")
+    require_text(cli_help_cpp, "--clear-machine-logon-slot", "CLI supports clearing machine default logon slot")
+    require_text(cli_help_cpp, "--self-test", "the read-only pre-flight is documented in the usage text")
     require_text(config_profiles_ui_cpp, "update_share_all_users_check_state", "GUI updates the share-with-all-users checkbox state")
     require_text(config_profiles_ui_cpp, "refresh_machine_logon_slot_cache", "GUI refreshes machine logon slot cache")
     require_text(main_fan_runtime_cpp, "FindWindowA", "single-instance lookup uses ANSI class matching")
     require_text(build_script, "--check", "build check flag exists")
     require_text(build_script, "--test", "test flag exists")
     require_text(build_script, "compile_commands.json", "LSP database generation exists")
-    require_text(gitignore, "*.7z", "release archives are ignored")
+    require_text(gitignore, "*.7z", "Windows release archives are ignored")
+    require_text(gitignore, "*.tar.xz", "Linux release archives are ignored")
+    require_text(gitignore, "__pycache__/", "generated Python bytecode is ignored")
+
+    # --- Static analysis and CI coverage (audit F-GATES)
+    build_script_path = os.path.join(SCRIPT_DIR, "build.py")
+    static_analysis_path = os.path.join(
+        SCRIPT_DIR, "tools", "static_analysis.py")
+    ci_workflow = os.path.join(SCRIPT_DIR, ".github", "workflows", "ci.yml")
+    require_text(build_script_path, "--tidy",
+                 "build.py exposes the clang-tidy entry point")
+    # The harness lives in tests/ as real C++, not as a string literal in this
+    # script.  Keep it there so it retains LSP/clang-format/clang-tidy coverage.
+    harness_source_path = os.path.join(SCRIPT_DIR, "tests", "regression_main.cpp")
+    require_text(harness_source_path, "int main(int argc, char** argv)",
+                 "the pure regression harness is a real translation unit")
+    # Assembled at runtime so this guard cannot match its own definition.
+    forbid_text(build_script_path, "harness = " + "r" + "'''",
+                "the regression harness must not move back into a build.py string")
+    require_text(build_script_path, 'os.path.join(SCRIPT_DIR, "tests", "regression_main.cpp")',
+                 "build.py compiles the extracted harness from tests/")
+    require_text(static_analysis_path, "clang-analyzer-*",
+                 "clang-tidy runs the static analyzer families, not just style checks")
+    require_text(static_analysis_path,
+                 "return 1 if new_findings or execution_failures",
+                 "clang-tidy fails the build on findings outside the baseline")
+    require_text(static_analysis_path, 'shutil.which("clang-tidy")',
+                 "Linux static analysis selects a host-native clang-tidy")
+    require_text(static_analysis_path, "include\", \"c++\", \"v1",
+                 "clang-tidy is given llvm-mingw's libc++ headers; without them "
+                 "every TU reports clang-diagnostic-error")
+    if os.path.exists(ci_workflow):
+        # tests/linux_transport_regression.cpp needs real Linux filesystem
+        # sockets, so the Linux job is the only place it can ever execute.
+        require_text(ci_workflow, "python build.py --test",
+                     "CI runs the regression suite")
+        require_text(ci_workflow, "actions/cache",
+                     "CI caches the pinned toolchains instead of redownloading them")
+        require_text(ci_workflow, "python build.py --tidy",
+                     "CI enforces the static-analysis ratchet")
+        require_text(ci_workflow, "python build.py --fuzz",
+                     "CI fuzzes untrusted-input boundaries")
+        require_text(ci_workflow, "python build.py --target windows",
+                     "CI builds verified Windows release packages")
+        require_text(ci_workflow, "python build.py --target linux",
+                     "CI builds verified Linux release packages")
+        with open(ci_workflow, "r", encoding="utf-8", errors="replace") as handle:
+            linux_section = handle.read().split("linux:", 1)[-1]
+        if "python build.py --test" not in linux_section:
+            print("Regression source check FAILED: CI Linux job must run the "
+                  "regression suite; it is the only host that can execute the "
+                  "native socket fixture")
+            sys.exit(1)
+    require_text(gitignore, "*.pyc", "compiled Python bytecode is ignored")
+    # A tracked build.cpython-*.pyc previously embedded the developer's absolute
+    # source path.  Generated artifacts must never be under version control.
+    _tracked = _tracked_repository_files()
+    if _tracked is not None:
+        _generated = sorted(p for p in _tracked
+                            if p.endswith((".pyc", ".pyo")) or "__pycache__/" in p)
+        if _generated:
+            print("Regression source check FAILED: generated artifacts are tracked in git")
+            for path in _generated:
+                print(f"  {path}")
+            sys.exit(1)
     # NOTE: ssp_glue.cpp provides the runtime symbols (__stack_chk_guard,
     # __stack_chk_fail) that the MinGW CRT omits on Windows, making stack-
     # protector canaries functional.  Keep the flag at all times.
@@ -6227,8 +3300,8 @@ def run_source_regression_checks():
         "slot-1 fail-closed cleanup also removes legacy profile aliases")
     require_text(config_profiles_machine_cpp, "published GPU identity readback mismatch",
         "published GPU bindings receive locked identity readback verification")
-    require_text(os.path.join(SOURCE_DIR, "entry.cpp"), "--publish-slot-to-machine", "CLI supports publishing a slot to the shared bank")
-    require_text(os.path.join(SOURCE_DIR, "entry.cpp"), "--clear-machine-slot", "CLI supports clearing a shared bank slot")
+    require_text(os.path.join(SOURCE_DIR, "main_cli_help.cpp"), "--publish-slot-to-machine", "CLI supports publishing a slot to the shared bank")
+    require_text(os.path.join(SOURCE_DIR, "main_cli_help.cpp"), "--clear-machine-slot", "CLI supports clearing a shared bank slot")
     require_text(ui_main_window_cpp, "MACHINE_LOGON_MENU_PUBLISH_ID", "GUI advanced menu can publish a bank slot")
     require_text(ui_main_window_cpp, "MACHINE_LOGON_MENU_CLEAR_MACHINE_SLOT_ID", "GUI advanced menu can clear a bank slot")
     # F-15-008: One coherent "share with all users" action couples publishing the
@@ -6236,8 +3309,8 @@ def run_source_regression_checks():
     # setting a default that resolved to an empty bank slot).
     require_text(config_profiles_machine_cpp, "share_profile_slot_for_all_users", "coherent share helper publishes data AND sets the default")
     require_text(config_profiles_machine_cpp, "unshare_profile_slot_for_all_users", "coherent unshare helper clears data AND the default")
-    require_text(os.path.join(SOURCE_DIR, "entry.cpp"), "--share-slot", "CLI supports the coherent share action")
-    require_text(os.path.join(SOURCE_DIR, "entry.cpp"), "--unshare-slot", "CLI supports the coherent unshare action")
+    require_text(os.path.join(SOURCE_DIR, "main_cli_help.cpp"), "--share-slot", "CLI supports the coherent share action")
+    require_text(os.path.join(SOURCE_DIR, "main_cli_help.cpp"), "--unshare-slot", "CLI supports the coherent unshare action")
     require_text(ui_main_window_cpp, "SHARE_ALL_USERS_CHECK_ID", "GUI has the share-with-all-users checkbox handler")
     # F-15-009: Any user can load the admin-published shared profiles on demand
     # (read-only) and apply them via the service, not just at logon.
@@ -6380,8 +3453,6 @@ def run_source_regression_checks():
     require_text(os.path.join(SOURCE_DIR, "auto_profile_win32.cpp"),
                  "SERVICE_APPLY_ORIGIN_TRAY",
                  "tray profile selections use their explicit origin")
-    require_text(ui_main_window_cpp, "SERVICE_APPLY_ORIGIN_GUI",
-                 "GUI Apply uses its explicit origin")
     require_text(entry_cpp, "SERVICE_APPLY_ORIGIN_CLI",
                  "explicit CLI Apply uses its explicit origin")
     require_text(service_request_policy_cpp,
@@ -6627,7 +3698,8 @@ def run_source_regression_checks():
     require_text(service_server_cpp, "Your administrator restricts this PC to shared profiles", "service rejects non-admin custom OC under the policy")
     require_text(service_server_cpp, "SERVICE_REQUEST_FLAG_SHARED_SLOT", "service applies its own copy of the named shared slot")
     require_text(service_ipc_cpp, "SERVICE_REQUEST_FLAG_SHARED_SLOT", "GUI tags an unmodified shared-profile apply as authoritative")
-    require_text(entry_cpp, "--set-restrict-shared", "CLI toggles the shared-only policy")
+    require_text(os.path.join(SOURCE_DIR, "main_cli_help.cpp"),
+                 "--set-restrict-shared", "CLI toggles the shared-only policy")
     require_text(config_profiles_ui_cpp, "restricted_to_shared_profiles", "GUI surfaces the shared-only restriction to affected users")
     # Restricted-user logon auto-apply: a per-user "apply admin shared profile N
     # at logon" (logon_shared_slot) must survive the full-file config rewrites,
@@ -6740,8 +3812,9 @@ def run_source_regression_checks():
     require_text(main_tail_diagnostics_cpp, "curve tail bookends", "telemetry snapshot logs tail bookends to detect post-apply shifts")
     require_text(main_tail_diagnostics_cpp, "diagnostic only, NO reapply", "runtime tail drift is logged as expected NVIDIA drift, NOT actively reapplied (0.18)")
     require_text(main_tail_diagnostics_cpp, "is_curve_point_visible_in_gui(ci)", "tail drift diagnostics skip hidden/unpopulated VF endpoints")
-    require_text(ui_main_cpp, "displayed_curve_mhz_for_gui_point", "GUI graph renders curve points from live driver readback")
-    require_text(ui_main_cpp, "gui locked tail live readback drift:", "GUI logs live tail readback drift diagnostics (no longer hidden)")
+    ui_main_graph_cpp = os.path.join(SOURCE_DIR, "ui_main_graph.cpp")
+    require_text(ui_main_graph_cpp, "displayed_curve_mhz_for_gui_point", "GUI graph renders curve points from live driver readback")
+    require_text(ui_main_graph_cpp, "gui locked tail live readback drift:", "GUI logs live tail readback drift diagnostics (no longer hidden)")
     require_text(desired_settings_helpers_cpp, "desired_is_fan_only_apply_request", "fan-only apply requests are detected without curve/OC fields")
     require_text(desired_settings_helpers_cpp, "desired_updates_curve_or_gpu_offset_state", "memory/power-only applies do not replace sparse curve intent")
     require_text(main_service_runtime_cpp, "merged fan-only request into active desired", "service fan-only applies preserve active curve intent")
@@ -6847,24 +3920,50 @@ def run_source_regression_checks():
     # F-07-001: Config int truncation detection
     require_text(config_utils_cpp, "n >= sizeof(buf) - 1", "config int read detects truncation")
     require_text(config_utils_cpp, "errno == ERANGE", "Windows config integer parser rejects C library overflow")
-    require_text(os.path.join(SOURCE_DIR, "linux_port.cpp"), "errno == ERANGE", "Linux config integer parser rejects C library overflow")
+    # Was pinned to linux_port.cpp's private parse_int_strict; that duplicate is
+    # gone and both platforms now link the config_text_utils.cpp one.
+    require_text(os.path.join(SOURCE_DIR, "config_text_utils.cpp"), "errno == ERANGE",
+                 "the shared config integer parser rejects C library overflow")
 
     # F-LNX: native Linux GPU backend + daemon invariants
     linux_gpu_cpp = os.path.join(SOURCE_DIR, "linux_gpu.cpp")
     _linux_backend_surface = os.path.join(BUILD_WORK_DIR, "_linux_backend_surface.cpp")
     with open(_linux_backend_surface, "w", encoding="utf-8", errors="ignore") as _lf:
         for _cpp in (os.path.join(SOURCE_DIR, "linux_backend.cpp"),
+                     os.path.join(SOURCE_DIR, "linux_backend_nvml_write.cpp"),
+                     os.path.join(SOURCE_DIR, "linux_backend_discovery.cpp"),
                      os.path.join(SOURCE_DIR, "linux_backend_mutation.cpp")):
             with open(_cpp, "r", encoding="utf-8", errors="ignore") as _source:
                 _lf.write(_source.read())
                 _lf.write("\n")
     linux_backend_cpp = _linux_backend_surface
     linux_daemon_cpp = os.path.join(SOURCE_DIR, "linux_daemon.cpp")
+    linux_daemon_lifecycle_h = os.path.join(SOURCE_DIR, "linux_daemon_lifecycle.h")
+    linux_daemon_serve_h = os.path.join(SOURCE_DIR, "linux_daemon_serve.h")
+    linux_fan_runtime_h = os.path.join(SOURCE_DIR, "linux_fan_runtime.h")
+    # Logical daemon surface: the aggregator plus the shards it #includes.
+    linux_daemon_surface = [linux_daemon_cpp, linux_daemon_lifecycle_h,
+                            linux_daemon_serve_h, linux_fan_runtime_h]
+    linux_daemon_transport_cpp = os.path.join(
+        SOURCE_DIR, "linux_daemon_transport.cpp")
+    linux_daemon_transport_policy_h = os.path.join(
+        SOURCE_DIR, "linux_daemon_transport_policy.h")
+    linux_systemd_notify_cpp = os.path.join(
+        SOURCE_DIR, "linux_systemd_notify.cpp")
+    linux_systemd_notify_policy_h = os.path.join(
+        SOURCE_DIR, "linux_systemd_notify_policy.h")
     linux_daemon_state_cpp = os.path.join(SOURCE_DIR, "linux_daemon_state.cpp")
     linux_daemon_snapshot_cpp = os.path.join(SOURCE_DIR, "linux_daemon_snapshot_runtime.cpp")
-    linux_fan_runtime_h = os.path.join(SOURCE_DIR, "linux_fan_runtime.h")
     linux_service_install_cpp = os.path.join(SOURCE_DIR, "linux_service_install.cpp")
     linux_gpu_selection_h = os.path.join(SOURCE_DIR, "linux_gpu_selection.h")
+    linux_gpu_binding_policy_h = os.path.join(
+        SOURCE_DIR, "linux_gpu_binding_policy.h")
+    linux_architecture_policy_h = os.path.join(
+        SOURCE_DIR, "linux_architecture_policy.h")
+    linux_vf_validation_h = os.path.join(
+        SOURCE_DIR, "linux_vf_validation.h")
+    linux_mutation_authority_h = os.path.join(
+        SOURCE_DIR, "linux_mutation_authority.h")
     linux_port_profiles_cpp = os.path.join(SOURCE_DIR, "linux_port_profiles.cpp")
     linux_tui_actions_cpp = os.path.join(SOURCE_DIR, "linux_tui_actions.cpp")
     linux_transaction_h = os.path.join(SOURCE_DIR, "linux_transaction.h")
@@ -6905,8 +4004,10 @@ def run_source_regression_checks():
                  "Linux Apply/Reset use the pure ordered transaction engine")
     require_text(linux_transaction_h, "result.rollbackSucceeded",
                  "Linux phase failure exposes verified versus uncertain rollback")
-    require_text(linux_gpu_selection_h, "Never compare the low vendor word",
-                 "Linux PCI matching cannot collapse every NVIDIA device to vendor ID 10DE")
+    require_text(linux_gpu_selection_h, "low == nvidiaVendorId",
+                 "Linux PCI matching recognizes NVIDIA vendor/device low-word encoding")
+    require_text(linux_gpu_selection_h, "high == nvidiaVendorId",
+                 "Linux PCI matching recognizes NVIDIA vendor/device high-word encoding")
     require_text(linux_daemon_snapshot_cpp,
                  "linux_gpu_switch_preserves_active_intent",
                  "Linux daemon cannot move one active intent onto another selected GPU")
@@ -6921,25 +4022,132 @@ def run_source_regression_checks():
                  "Linux fan worker verifies active intent ownership before hardware writes")
     require_text(linux_backend_cpp, "nvapiAssigned",
                  "Linux NvAPI handles map at most once to an NVML adapter")
-    require_text(linux_backend_cpp, "multi-GPU write target is not proven across NVML and NvAPI",
-                 "Linux multi-GPU cross-API mismatch blocks writes")
+    require_text(linux_backend_cpp, "g->writeIdentityResolved = g->adapterCount == 1 ||",
+                 "Linux multi-GPU NVML writes require an exact selected identity")
+    require_text(linux_backend_cpp, "g->gpuHandle = handles[g->nvapiIndex]",
+                 "Linux VF capability requires a matched NvAPI handle")
     require_text(linux_main_cpp, "Cannot validate GPU selection: exact BDF/PCI identity",
                  "Linux CLI persists only a daemon-enriched stable GPU identity")
     require_text(linux_daemon_cpp, "startup reapply", "Linux daemon reapplies settings on (re)start")
-    require_text(linux_daemon_cpp, "GC_DAEMON_IO_TIMEOUT_MS", "Linux daemon socket I/O has bounded deadlines")
-    require_text(linux_daemon_cpp, "wait_fd_ready", "Linux daemon socket reads/writes poll with a deadline")
-    require_text(linux_daemon_cpp, "set_nonblocking(conn)", "Linux daemon accepted clients are nonblocking")
+    require_text(linux_daemon_transport_cpp, "GC_DAEMON_IO_TIMEOUT_MS", "Linux daemon socket I/O has bounded deadlines")
+    require_text(linux_daemon_transport_cpp, "wait_fd_ready", "Linux daemon socket reads/writes poll with a deadline")
+    require_text_in_surface(linux_daemon_surface, "set_nonblocking(conn)",
+                            "Linux daemon accepted clients are nonblocking")
+
+    # Fan failsafe/lifecycle, manual-write verification and the power-limit
+    # range all live in tools/fan_gates.py.
+    fan_gates.check_all(_gate_ctx(), require_text, forbid_text, require_order,
+                        linux_backend_cpp)
+
+    # Setup program: shared palette, upgrade ordering, and the settings transfer.
+    installer_build.check_all(_gate_ctx(), require_text, forbid_text)
+
+    # accept() failures must be classified; a dead listener must exit non-zero
+    # or Restart=on-failure never restarts the daemon.
+    require_text(linux_daemon_serve_h, "daemon_accept_disposition",
+                 "Linux daemon classifies accept() failures")
+    forbid_text_in_surface(linux_daemon_surface,
+                           "if (errno == EINTR) continue; break;",
+                           "Linux daemon no longer treats every accept() errno as fatal")
+    require_text(linux_daemon_serve_h, "exitStatus = 1",
+                 "a fatal listener failure exits non-zero for Restart=on-failure")
+    require_text(linux_daemon_serve_h, "g_shutdownPipe[0]",
+                 "the accept wait is broken by the shutdown self-pipe, not a timeout")
+    require_text(linux_daemon_transport_policy_h, "DAEMON_ACCEPT_RECLAIM_FD",
+                 "descriptor exhaustion has a dedicated non-spinning recovery")
+
+    # --- Linux crash diagnostics parity (audit F-LNX-DIAG)
+    # Linux builds with -fexceptions and uses std::string in the INI parser, so
+    # bad_alloc/length_error could abort the root daemon with no journal entry.
+    linux_crash_breadcrumb_h = os.path.join(SOURCE_DIR, "linux_crash_breadcrumb.h")
+    linux_main_cpp_path = os.path.join(SOURCE_DIR, "linux_main.cpp")
+    require_text(linux_crash_breadcrumb_h, "std::set_terminate",
+                 "Linux installs a terminate handler for uncaught exceptions/bad_alloc")
+    require_text(linux_crash_breadcrumb_h, "SA_RESETHAND",
+                 "fatal-signal breadcrumbs restore default disposition before re-raising")
+    require_text(linux_crash_breadcrumb_h, "raise(signalNumber)",
+                 "the breadcrumb re-raises instead of suppressing the crash")
+    # Only write(2) is async-signal-safe here; formatting helpers must not creep in.
+    forbid_text(linux_crash_breadcrumb_h, "snprintf",
+                "crash breadcrumb formatting stays async-signal-safe")
+    forbid_text(linux_crash_breadcrumb_h, "fprintf",
+                "crash breadcrumb output stays async-signal-safe")
+    forbid_text(linux_crash_breadcrumb_h, "strsignal",
+                "crash breadcrumb avoids non-async-signal-safe strsignal")
+    require_text(linux_main_cpp_path, "linux_install_crash_breadcrumbs(\"cli\")",
+                 "Linux CLI installs crash breadcrumbs before any work")
+    require_text(linux_daemon_cpp, "linux_install_crash_breadcrumbs(\"daemon\")",
+                 "Linux daemon relabels crash breadcrumbs for the root role")
+    require_text(linux_daemon_cpp, "linux_set_crash_phase(\"daemon-serving\")",
+                 "daemon crash breadcrumbs carry the current lifecycle phase")
+
+    # systemd sandboxing: the daemon has no network path and no business in
+    # /home, but it does need the NVIDIA devices and its own state directories.
+    for directive in ("ProtectSystem=full", "ProtectHome=yes", "PrivateTmp=yes",
+                      "RestrictAddressFamilies=AF_UNIX", "RestrictNamespaces=yes",
+                      "RestrictSUIDSGID=yes", "SystemCallArchitectures=native",
+                      "LockPersonality=yes"):
+        require_text(linux_service_install_cpp, directive,
+                     f"systemd unit applies {directive}")
+    # These would break the NVIDIA user-mode stack; keep them out deliberately.
+    forbid_text(linux_service_install_cpp, "PrivateDevices=yes",
+                "unit must not hide /dev/nvidia* from the daemon")
+    forbid_text(linux_service_install_cpp, "MemoryDenyWriteExecute=yes",
+                "unit must not deny W+X to the NVIDIA user-mode stack")
+    forbid_text(linux_service_install_cpp, "ProtectSystem=strict",
+                "unit must not use strict ProtectSystem; the driver reads /usr and /sys")
     require_text(linux_daemon_cpp, "linux_daemon_state_remove", "Linux reset durably removes committed state")
     require_text(linux_service_install_cpp, "GC_INSTALL_BIN", "Linux systemd unit uses a protected staged daemon binary")
     require_text(linux_service_install_cpp, "root_owned_nonwritable_path", "Linux service install validates root-owned non-writable parents")
     require_text(linux_service_install_cpp, "stage_service_binary", "Linux service install stages the daemon binary before writing the unit")
     require_text(linux_service_install_cpp, "ExecStart=%s --daemon", "Linux systemd unit launches the staged daemon path")
+    require_text(linux_service_install_cpp, "Type=notify", "Linux systemd unit waits for explicit daemon readiness")
+    require_text(linux_service_install_cpp, "linux_service_run_activation", "Linux service activation uses the injected deterministic sequence")
+    require_text(linux_service_install_cpp, "serviceBuildNumber", "Linux install verifies the restarted daemon build")
+    forbid_text(linux_service_install_cpp, "enable\", (char*)\"--now", "Linux service upgrade never leaves an already-running old process resident")
     require_text(linux_service_install_cpp, "run_root_command", "Linux service management avoids shell command execution")
     forbid_text(linux_service_install_cpp, "system(", "Linux service management never invokes a shell")
-    require_text(linux_daemon_cpp, "int connectErrno = 0", "Linux daemon client preserves socket connection errno")
-    require_text(linux_daemon_cpp, "connectErrno == EACCES || connectErrno == EPERM", "Linux daemon client identifies socket permission denial")
-    require_text(linux_daemon_cpp, "sudo usermod -aG greencurve", "Linux socket permission denial explains group enrollment")
-    require_text(linux_main_cpp, "The daemon socket permits root and greencurve group members", "Linux service install explains socket authorization")
+    require_text(linux_daemon_transport_cpp, "int connectErrno = 0", "Linux daemon client preserves socket connection errno")
+    require_text(linux_daemon_transport_cpp, "connectErrno == EACCES || connectErrno == EPERM", "Linux daemon client identifies socket permission denial")
+    require_text(linux_daemon_transport_cpp, "char connectErrorText[128]",
+                 "Linux permission diagnostics copy strerror text into owned storage")
+    require_text(linux_daemon_transport_cpp, "facts.connectError = connectErrorText",
+                 "Linux permission facts never retain strerror static storage")
+    require_text(linux_daemon_transport_policy_h, "sudo usermod -aG greencurve", "Linux socket permission denial explains group enrollment")
+    require_text(linux_daemon_transport_policy_h, "supplementary greencurve", "Linux permission diagnostics report supplementary group membership")
+    require_text(linux_daemon_transport_cpp, "response header read", "Linux transport diagnoses header-first response failures")
+    require_text(linux_daemon_transport_cpp, "protocol mismatch", "Linux transport diagnoses old daemon protocols before reading their body")
+    require_text(linux_systemd_notify_policy_h, "READY=1", "Linux daemon sends systemd readiness only after startup")
+    require_order(linux_daemon_cpp, "startup reapply", "daemon_open_listener(&listener)",
+                  "Linux socket listening follows startup replay")
+    require_text(linux_daemon_serve_h, "listen(srv, GC_DAEMON_LISTEN_BACKLOG)",
+                 "Linux listener uses the named backlog constant")
+    # The native fixture overrides GC_DAEMON_SOCKET_PATH, so it cannot include
+    # linux_daemon.h and mirrors the backlog instead.  Keep the two in sync.
+    linux_daemon_h = os.path.join(SOURCE_DIR, "linux_daemon.h")
+    transport_fixture_cpp = os.path.join(SCRIPT_DIR, "tests",
+                                         "linux_transport_regression.cpp")
+    require_text(linux_daemon_h, "#define GC_DAEMON_LISTEN_BACKLOG 8",
+                 "daemon backlog constant has its pinned value")
+    require_text(transport_fixture_cpp, "#define GC_DAEMON_LISTEN_BACKLOG 8",
+                 "native transport fixture mirrors the daemon backlog constant")
+    require_text(transport_fixture_cpp, "daemon_accept_error_is_fatal",
+                 "native fixture covers accept() failure classification")
+    require_order(linux_daemon_cpp, "daemon_open_listener(&listener)",
+                  "linux_systemd_notify_ready",
+                  "Linux READY notification follows socket listening")
+    require_text(linux_main_cpp, "installed, restarted, and verified", "Linux install success message reflects the deterministic restart and ping")
+    require_text(linux_gpu_binding_policy_h, "LINUX_GPU_MATCH_SOLE_NONCONFLICTING", "Linux sole-GPU NvAPI fallback is explicit and testable")
+    require_text(linux_gpu_binding_policy_h, "observation->extDeviceId",
+                 "Linux binding can corroborate NVML with NvAPI's external PCI device ID")
+    require_text(linux_backend_cpp, "nvapiExtDevice=%08x",
+                 "Linux binding failure logs both internal and external NvAPI device IDs")
+    require_text(linux_architecture_policy_h, "NVML_DEVICE_ARCH_BLACKWELL", "Linux architecture fallback maps documented NVML Blackwell")
+    require_text(linux_vf_validation_h, "Live frequency can legitimately fall", "Linux VF ABI validation does not reject valid non-monotonic live clocks")
+    require_text(linux_mutation_authority_h, "service_mutation_domains_require_vf", "Linux topology attachment is scoped to VF-dependent mutations")
+    require_text(linux_main_cpp,
+                 "The daemon socket pathname was verified root:greencurve mode=0660",
+                 "Linux service install reports verified socket pathname authorization")
     require_text(linux_main_cpp, "sudo usermod -aG greencurve", "Linux help and generated assets document group enrollment")
     require_text(linux_port_profiles_cpp, 'addControl("lock_mode", value);',
                  "Linux profiles persist flatten versus hard-pin lock mode")
@@ -6952,7 +4160,7 @@ def run_source_regression_checks():
                  "profile_slot_reference_after_clear(logonSlot, slot, 0)",
                  "Linux profile clear removes stale logon references")
 
-    # Protocol-v11 retry safety, coherent state, and GUI-thread ownership.
+    # Protocol-v12 retry safety, coherent state, and GUI-thread ownership.
     operation_tracker_h = os.path.join(SOURCE_DIR, "service_operation_tracker.h")
     gui_mutation_worker_cpp = os.path.join(SOURCE_DIR, "gui_mutation_worker.cpp")
     gui_mutation_policy_h = os.path.join(SOURCE_DIR, "gui_mutation_queue_policy.h")
@@ -7034,8 +4242,9 @@ def run_source_regression_checks():
                  "mutation preconditions include the exact selected GPU")
     require_text(service_pipe_cpp, "SERVICE_STATUS_STALE_STATE",
                  "stale mutations are rejected rather than crossing reconnect")
-    require_text(service_pipe_cpp, "populate_service_state_response(&response)",
-                 "every Windows service response receives the final envelope")
+    require_text(service_pipe_cpp,
+                 "if (stateEnvelopeAuthorized) populate_service_state_response(&response);",
+                 "only fully authorized Windows service callers receive the final state envelope")
     require_text(gui_service_model_h, "minimumGpuGeneration",
                   "GUI PnP invalidation fences same-generation late responses")
     require_text(gui_service_model_h, "model->phase != GUI_SERVICE_READY",
@@ -7078,10 +4287,10 @@ def run_source_regression_checks():
     require_text(os.path.join(SOURCE_DIR, "ui_control_projection.h"),
                  "gui_set_window_enabled_if_changed",
                  "service controls update enablement only when it changes")
-    forbid_text_in_operation(config_profiles_ui_cpp,
+    forbid_text_in_operation(config_profiles_gui_state_cpp,
                 "static void update_background_service_controls()", "UpdateWindow",
                 "service status projection cannot force immediate child repaints")
-    forbid_text_in_operation(config_profiles_ui_cpp,
+    forbid_text_in_operation(config_profiles_gui_state_cpp,
                 "static void update_background_service_controls()",
                 "update_share_all_users_check_state();",
                 "service status changes cannot redraw unrelated sharing controls")
@@ -7143,11 +4352,32 @@ def run_source_regression_checks():
     forbid_text(os.path.join(SOURCE_DIR, "main_service_client_commands.cpp"),
                 "response.snapshot.activeProfileSource != SERVICE_PROFILE_SOURCE_NONE",
                 "clients never infer active-intent validity from profile metadata")
+    # F-SYNC-STAMP: the window path stamps mutations from GuiServiceModel; the
+    # synchronous path (CLI, installer restore, --service-remove) carried
+    # nothing and had every APPLY/RESET refused as malformed.
+    client_commands_cpp = os.path.join(SOURCE_DIR, "main_service_client_commands.cpp")
+    require_text(client_commands_cpp, "service_client_stamp_mutation_preconditions(&request,",
+                 "synchronous mutations stamp the service state they name")
+    require_order_in_operation(client_commands_cpp,
+                 "static bool service_client_execute_mutation_request(",
+                 "service_client_mutation_is_stamped(request)", "service_send_request(",
+                 "an unstamped mutation is refused before it reaches the wire")
+    require_text(main_state_sync_cpp, "service_client_identity_adopt(&g_syncClientStateIdentity",
+                 "the synchronous path adopts the READY envelope it projects")
+    require_text(main_state_sync_cpp, "service_client_identity_clear(&g_syncClientStateIdentity);",
+                 "an unusable envelope drops the identity instead of leaving a stale stamp")
+    require_text(os.path.join(SOURCE_DIR, "service_protocol_validation.h"),
+                 "if (r->status != SERVICE_STATUS_OK && service_response_payload_is_absent(r))",
+                 "a refusal that publishes no state reaches the client that caused it")
+    require_text(os.path.join(SOURCE_DIR, "main_service_pipe.cpp"),
+                 "service_request_reject_reason(&request)",
+                 "a refused request names the rule it broke in the service log")
     for runtime_gui_path in (
             ui_main_window_cpp,
             os.path.join(SOURCE_DIR, "main_fan_runtime.cpp"),
             os.path.join(SOURCE_DIR, "main_fan_telemetry.cpp"),
             config_profiles_ui_cpp,
+            config_profiles_gui_state_cpp,
             os.path.join(SOURCE_DIR, "config_profiles.cpp"),
             os.path.join(SOURCE_DIR, "auto_profile_win32.cpp"),
             os.path.join(SOURCE_DIR, "main_startup_profiles.cpp")):
@@ -7320,17 +4550,33 @@ def run_source_regression_checks():
 
     # Linux runtime boundaries fail closed and fatal TUI exits restore termios.
     linux_socket_permissions_h = os.path.join(SOURCE_DIR, "linux_socket_permissions.h")
+    linux_socket_path_permissions_h = os.path.join(
+        SOURCE_DIR, "linux_socket_path_permissions.h")
     linux_tui_cpp = os.path.join(SOURCE_DIR, "linux_tui.cpp")
-    require_text(linux_daemon_cpp, "umask(0077)",
-                 "daemon creates its runtime socket under restrictive umask")
-    require_text(linux_socket_permissions_h, "fchown(socketFd, 0, expectedGroup)",
-                 "socket ownership is set on the bound descriptor")
+    require_text_in_surface(linux_daemon_surface, "umask(0077)",
+                            "daemon creates its runtime socket under restrictive umask")
+    require_text(linux_socket_path_permissions_h,
+                 "fstatat(directoryFd, socketName, &status",
+                 "socket authorization verifies the filesystem pathname")
+    require_text(linux_socket_path_permissions_h,
+                 "fchownat(directoryFd, socketName, expectedOwner, expectedGroup",
+                 "socket pathname ownership is updated relative to the protected directory")
+    require_text(linux_socket_path_permissions_h,
+                 "fchmodat(directoryFd, socketName, expectedMode & 0777, 0)",
+                 "socket pathname mode is updated relative to the protected directory")
     require_text(linux_socket_permissions_h, "group ? 0660 : 0600",
                  "missing greencurve group deliberately falls back to root-only")
-    require_text(linux_socket_permissions_h, "fstat(socketFd, &status)",
-                 "socket type, owner, group, and mode are verified on the descriptor")
+    forbid_text(linux_socket_permissions_h, "fchown(socketFd",
+                "socket descriptor ownership never substitutes for pathname ownership")
+    forbid_text(linux_socket_permissions_h, "fchmod(socketFd",
+                "socket descriptor mode never substitutes for pathname mode")
+    require_text(linux_service_install_cpp,
+                 "LINUX_SERVICE_STEP_VERIFY_SOCKET",
+                 "service installation verifies pathname authorization before protocol ping")
     require_text(linux_service_install_cpp, "UMask=0077",
                  "systemd service repeats restrictive umask hardening")
+    require_text(linux_service_install_cpp, "RuntimeDirectoryMode=0755",
+                 "systemd creates the protected socket directory deterministically")
     require_text(linux_tui_cpp, "pid_t child = fork()",
                  "Linux TUI runs under a terminal-restoring supervisor")
     require_text(linux_tui_cpp, "waitpid(child, &childStatus, 0)",
@@ -7340,35 +4586,9 @@ def run_source_regression_checks():
                   "terminal restoration happens in normal parent control flow")
     forbid_text(linux_tui_cpp, "on_fatal_signal",
                 "fatal signal handlers never call terminal or stdio APIs")
-    # F-LNX-TUI: root-cause fix for the reported mouse-offset bug + keyboard/daemon parity.
-    linux_tui_cpp = os.path.join(SOURCE_DIR, "linux_tui.cpp")
-    linux_tui_layout_cpp = os.path.join(SOURCE_DIR, "linux_tui_layout.cpp")
-    forbid_text(linux_tui_cpp, "Daemon not running. Install it with", "Linux TUI preserves detailed daemon errors instead of masking permission denial")
-    require_text(linux_tui_layout_cpp, "tui_layout_actions_valid",
-                 "TUI validates disjoint in-bounds hitboxes from its cell grid")
-    require_text(linux_tui_layout_cpp, "register_action",
-                 "TUI hitboxes are registered by the shared cell-grid builder")
-    forbid_text(linux_tui_cpp, "int y = 1;",
-                "TUI no longer hand-tracks a row counter that drifts from the printed rows")
-    linux_tui_render_cpp = os.path.join(SOURCE_DIR, "linux_tui_render.cpp")
-    linux_tui_actions_cpp = os.path.join(SOURCE_DIR, "linux_tui_actions.cpp")
-    require_text(linux_tui_render_cpp, "build_tui_layout",
-                 "TUI renders and hit-tests from the shared pure layout builder")
-    require_text(linux_tui_render_cpp, "event.mouseButton & 64",
-                 "TUI handles wheel scrolling separately from clicks")
-    require_text(linux_tui_render_cpp, "(event.mouseButton & 3) != 0",
-                 "TUI mouse activation accepts only the left button")
-    require_text(linux_tui_render_cpp, "focus_spatial",
-                 "TUI has spatial keyboard navigation")
-    require_text(linux_tui_render_cpp, "renderedRows",
-                 "TUI redraws only changed terminal rows")
-    require_text(linux_tui_actions_cpp, "linux_daemon_apply_checked",
-                 "TUI Apply carries reconnect-safe daemon preconditions")
-    forbid_text(linux_tui_actions_cpp, "memcmp(&left, &right",
-                "TUI dirty-state comparison ignores struct padding")
-    require_order(linux_tui_actions_cpp, "bool flushed = fflush(file) == 0;",
-                  "bool closed = fclose(file) == 0;",
-                  "TUI live export always closes its output after flushing")
+    # F-LNX-TUI/EXIT/TERM/DEBUGLOG/STARTUP/PKG all live in tools/linux_gates.py.
+    linux_gates.check_all(_gate_ctx(), require_text, forbid_text, require_order)
+
     # F-ARM64: cross-arch robustness (no arm64 hardware to test on).
     gpu_core_h_path = os.path.join(SOURCE_DIR, "gpu_core.h")
     require_text(gpu_core_h_path, "offsetof(nvapiPstate20Entry_t, clocks) == 8",
@@ -7381,12 +4601,140 @@ def run_source_regression_checks():
                  "implausible VF requests fail during preflight with zero writes")
     require_text(linux_backend_cpp, "INCOMPATIBLE_STRUCT_VERSION",
                  "NvAPI negative-error names mapped for diagnostics")
-    require_text(linux_backend_cpp, "linux_backend_self_test",
-                 "read-only driver/arch self-test exists")
+    require_text(linux_backend_cpp, "bool hardwareSnapshotOk = linux_backend_capture_snapshot",
+                 "Linux self-test populates its capability report from a read-only snapshot")
+    require_text(linux_backend_cpp, "linux_backend_self_test", "read-only driver/arch self-test exists")
+
+    # F-CAP invariants must not regress working x64/discrete setups.
+    capability_h = os.path.join(SOURCE_DIR, "gpu_capability_policy.h")
+    capability_probe_cpp = os.path.join(SOURCE_DIR, "gpu_capability_probe.cpp")
+    vf_backends_cpp_path = os.path.join(SOURCE_DIR, "vf_backends.cpp")
+    require_text(capability_h, "GPU_DOMAIN_CAP_UNPROBED = 0",
+                 "an unprobed domain is the zero value, so a zeroed probe subtracts nothing")
+    require_text(vf_backends_cpp_path,
+                 "gpu_capability_available_domains(nullptr) == SERVICE_MUTATION_DOMAIN_ALL",
+                 "F-CAP core invariant is asserted at compile time")
+    require_text(vf_backends_cpp_path,
+                 "gpu_capability_mask_for_index(0) == SERVICE_MUTATION_DOMAIN_RESET_BASELINE",
+                 "capability bit indices are pinned against the protocol domain bits")
+    # The conservatism that keeps older x64 drivers quiet.
+    require_text(capability_h, "if (!obs->entryPointPresent) return GPU_DOMAIN_CAP_UNPROBED;",
+                 "a missing entry point means an older driver, never absent hardware")
+    # The probe must stay read-only.
+    for _write_api in ("setClockOffsets", "setPowerLimit", "setFanSpeed"):
+        forbid_text(capability_probe_cpp, _write_api,
+                    f"the capability probe never calls {_write_api}")
+    # The legacy getter falsely refused both offset domains on a working RTX 5070.
+    require_text(capability_probe_cpp, "nvml_get_offset_range",
+                 "clock-offset capability is probed via the apply path's resolver")
+    forbid_text(capability_probe_cpp, "g_nvml_api.getGpcClkMinMaxVfOffset(",
+                "the probe must not call the legacy offset getter directly")
+    require_text(capability_probe_cpp, "gpu_memory_topology_from_sizes",
+                 "memory topology is classified from the reported dedicated/shared split")
+    require_text(capability_h, "if (sharedBytes >= GPU_DEDICATED_VRAM_FLOOR_BYTES)",
+                 "an empty/failed memory query stays unknown rather than unified")
+    # Windows read-only pre-flight, the counterpart of the Linux self-test.
+    self_test_cpp = os.path.join(SOURCE_DIR, "main_self_test.cpp")
+    require_text(self_test_cpp, "DriverSelfTestFacts facts",
+                 "the Windows self-test derives its verdict from every required read")
+    require_text(self_test_cpp, "nvapi_read_curve", "the Windows self-test reads VF directly")
+    require_text(self_test_cpp, "is_elevated", "the self-test distinguishes missing privilege")
+    require_text(entry_cpp, "g_cliExitCode = self_test_report", "the Windows self-test publishes a scriptable process exit code")
+    forbid_text(self_test_cpp, "hardware_initialize",
+                "the self-test must not depend on the service-mediated init path")
+    require_text(main_state_sync_cpp, "snapshot->health.capabilityDomainsPacked =",
+                 "the service publishes its capability probe")
+    require_text(main_state_sync_cpp, "gpu_capability_unpack_domains(&g_app.gpuCapability",
+                 "the GUI adopts service capability state for warnings and confirmation")
+    require_text(os.path.join(SOURCE_DIR, "ui_main_apply.cpp"), "gpu_capability_memory_write_is_risky", "unified-memory confirmation is topology-gated")
+    # arm64 needs native nvapia64.dll, not x64 emulation (verified on driver 616.00).
+    require_text(os.path.join(SOURCE_DIR, "nvapi_module_policy.h"), "nvapia64.dll",
+                 "arm64 prefers the native NVAPI image")
+    require_text(os.path.join(SOURCE_DIR, "linux_backend_mutation.cpp"),
+                 "gpu_capability_set(&g->capability",
+                 "the Linux daemon mirrors its domain mask into the capability probe")
+    require_text(os.path.join(SOURCE_DIR, "linux_gpu.cpp"),
+                 "bool linux_platform_is_integrated_soc()",
+                 "integrated-SoC detection exists exactly once and is shared")
+    # Both warning tiers must remain independently suppressible.
+    # A recognized discrete family cannot have a unified pool, so that pairing
+    # is positive evidence of an integrated part even when every domain answers
+    # -- the one way untested silicon could otherwise reach a user in silence.
+    require_text(vf_backends_cpp_path, "gpu_capability_topology_contradicts_discrete",
+                 "an integrated part reporting a discrete family still warns")
+    require_text(os.path.join(SOURCE_DIR, "main_capability_warning.cpp"), "integratedOnly",
+                 "the warning text distinguishes integrated-only from missing domains")
+    require_text(main_gpu_front_cpp, "hide_limited_control_warning",
+                 "limited control-surface warning has its own persistent opt-out")
+    require_text(main_gpu_front_cpp, "g_limitedControlWarningShownThisSession",
+                 "limited control-surface warning re-shows once per GUI session")
+    require_text(os.path.join(SOURCE_DIR, "main_capability_warning.cpp"),
+                 "show_limited_control_surface_warning",
+                 "the second warning tier exists")
+    require_text(os.path.join(SOURCE_DIR, "main_capability_warning.cpp"),
+                 "show_gpu_support_warnings",
+                 "both warning tiers are reached through one GUI startup call site")
+    # Driver-inspection gates (incl. the NvAPI entry-point id scan) live with
+    # the module they check; see tools/driver_inspect.py.
+    driver_inspect.check_source_gates(_gate_ctx(), require_text)
+    require_text(linux_backend_cpp,
+                 "info.pstate = nvml_configured_clock_offset_pstate()",
+                 "Linux modern NVML offsets always target configured P0")
+    require_text(linux_backend_cpp, "NvmlClockOffsetReadback gpuOffset =",
+                 "Linux rollback capture uses modern clock-offset readback")
+    require_text(linux_backend_cpp, "graphicsDomainBoundaryLogged",
+                 "Linux VF domain-boundary logging is transition-deduplicated")
+    require_text(runtime_nvml_cpp,
+                 "info.pstate = nvml_configured_clock_offset_pstate()",
+                 "Windows modern NVML offsets always target configured P0")
+    forbid_text(runtime_nvml_cpp, "statesToTry",
+                "Windows NVML offsets never target a transient current P-state")
+    require_text(os.path.join(SOURCE_DIR, "linux_live_output.cpp"),
+                 "compare_intent_to_readback",
+                 "Linux live exports compare configured intent with hardware")
+    require_text(os.path.join(SOURCE_DIR, "linux_tui_layout.cpp"),
+                 "HARDWARE OVERRIDDEN",
+                 "Linux TUI visibly discloses external hardware overrides")
+    # The v14 readback-validity contract has a producer on BOTH platforms. The
+    # Windows service publishing all-zero bits would silently report every
+    # domain as unavailable while still substituting intent for failed reads.
+    state_sync_cpp = os.path.join(SOURCE_DIR, "main_state_sync.cpp")
+    gpu_state_cpp = os.path.join(SOURCE_DIR, "main_gpu_state.cpp")
+    gpu_backend_cpp_path = os.path.join(SOURCE_DIR, "gpu_backend.cpp")
+    readback_policy_h = os.path.join(SOURCE_DIR, "control_readback_policy.h")
+    require_text(state_sync_cpp, "apply_control_readback_validity(state, &facts);",
+                 "the Windows service publishes per-domain readback validity")
+    require_text(state_sync_cpp, "facts.gpuOffsetFromHardware = gpuOffsetFromHardware;",
+                 "the Windows service publishes GPU offset readback provenance")
+    require_text(state_sync_cpp, "facts.fanPolicyKnown = g_app.readback.fan.policy;",
+                 "the Windows service publishes per-fan readback provenance")
+    require_text(state_sync_cpp,
+                 "merged.gpuOffsetReadbackValid = state->gpuOffsetReadbackValid;",
+                 "the Windows GUI merge carries readback validity with its value")
+    require_text(gpu_state_cpp,
+                 "static int current_applied_gpu_offset_mhz(bool* fromHardware)",
+                 "the Windows applied GPU offset reports whether it is a reading")
+    require_text(gpu_state_cpp, "*fromHardware = false;  // remembered request",
+                 "the persisted selective request is never reported as readback")
+    require_text(gpu_state_cpp, "*fromHardware = false;  // active desired intent",
+                 "the active-desired fallback is never reported as readback")
+    require_text(gpu_backend_cpp_path,
+                 "g_app.readback.gpuOffset = gpu_offset_readback_after_detection(",
+                 "clock-offset detection owns the GPU scalar it overwrites")
+    require_text(gpu_backend_cpp_path, "g_app.readback.powerLimit = true;",
+                 "a Windows power reading records its own provenance")
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend_apply.cpp"),
+                 "invalidate_scalar_readbacks(&g_app.readback);",
+                 "a rollback drops readback validity with the scalars it zeroes")
+    require_text(readback_policy_h, "all_fans_known",
+                 "a partially answering fan set is not a readback")
+    require_text(os.path.join(SOURCE_DIR, "intent_readback_status.h"),
+                 "diverged = true;\n                    continue;",
+                 "a fan policy takeover is disclosed even when the duty getter "
+                 "goes quiet with it")
     require_text(linux_gpu_cpp, "nv_tegra_release",
                  "probe detects unsupported Tegra/Jetson platform")
-    require_text(build_script, "def inspect_aarch64_driver",
-                 "build.py can inspect an aarch64 driver tree for required libs/symbols")
+    # (aarch64 driver-tree inspection is gated in driver_inspect.check_source_gates)
     # Shared VfBackendSpec tables compiled on both platforms (one copy).
     require_text(vf_backends_cpp, "g_vfBackendBlackwell", "shared VfBackendSpec tables define the Blackwell backend")
     # glibc-dynamic Linux target (static musl can't dlopen the glibc driver libs).
@@ -7396,13 +4744,8 @@ def run_source_regression_checks():
     require_text(build_script, '"-target", "aarch64-windows-gnu"', "windows arm64 Zig build target triple defined")
     require_text(build_script, 'LINUX_ARM64_TRIPLE = "aarch64-linux-gnu"', "linux arm64 target triple defined")
     require_text(build_script, "-mbranch-protection=standard", "windows arm64 uses BTI/PAC instead of x86 CET")
-    require_text(build_script, "def package_release_archive", "release archives are produced by build.py")
-    require_text(build_script, 'f"greencurve-{APP_VERSION}-{os_name}-{arch}.7z"', "archive name carries version + os + arch")
-    require_text(build_script, '"a", "-t7z"', "release files are packaged with 7-Zip")
-    require_text(build_script, "def detect_binary_arch", "packaging reads each binary's real PE/ELF machine arch")
-    require_text(build_script, "architecture mismatch:", "packaging aborts on a cross-arch bundle mismatch")
-    require_text(build_script, "def _verify_archive_manifest", "completed release archives are read back against an exact manifest")
-    require_text(build_script, "unexpected linker side product", "packaging regression rejects Zig main.lib")
+    # Archive/manifest/packaging guards live with the manifest they describe.
+    release_manifest_check_all(_gate_ctx(), require_text)
     require_text(build_script, "ARM64 branch protection missing", "final ARM64 binaries must contain BTI and PAC/AUT")
     require_text(build_script, "-mbranch-protection=standard", "arm64 builds enable BTI/PAC branch protection")
     # ARM64 VEH thread-redirect uses the aarch64 register names.
@@ -7557,7 +4900,7 @@ def run_source_regression_checks():
     # window, allocate a console, or launch another process. This prevents both
     # visible ghost surfaces and focus theft from rule-driven auto-profiles.
     presentation_surface_tokens = (
-        "MessageBox", "TaskDialog", "DialogBox", "CreateDialog",
+        "MessageBox", "gc_message_box", "TaskDialog", "DialogBox", "CreateDialog",
         "CreateWindow", "ShowWindow", "AnimateWindow", "SetWindowPos",
         "SetForegroundWindow", "SetActiveWindow", "BringWindowToTop",
         "SetFocus", "AllowSetForegroundWindow", "AttachThreadInput",
@@ -7934,11 +5277,14 @@ def run_source_regression_checks():
     # the GPU live state is actually available (tray_hardware_live()), so a disabled
     # driver / down service shows the default icon and a "GPU driver unavailable"
     # tooltip instead of a false active state for the merely-pending desired.
-    require_text(main_gpu_front_cpp, "static bool tray_hardware_live()",
+    # The tooltip/hardware-availability helpers live in tray_presentation.cpp,
+    # which main_gpu_front.cpp includes; check the surface so the split holds.
+    tray_surface = (main_gpu_front_cpp, os.path.join(SOURCE_DIR, "tray_presentation.cpp"))
+    require_text_in_surface(tray_surface, "static bool tray_hardware_live()",
         "shared tray hardware-availability helper exists")
     require_text(main_fan_runtime_cpp, "tray_hardware_live()",
         "tray icon gates OC/fan-active on actual GPU availability (not a pending desired)")
-    require_text(main_gpu_front_cpp, "gui_service_phase_tray_text",
+    require_text_in_surface(tray_surface, "gui_service_phase_tray_text",
         "tray tooltip reports reducer phase instead of a false OC/fan/profile-active state")
     # F-NO-DRIFT-FIGHT (0.18): the continuous VF-drift monitor + auto-reapply was
     # REMOVED. NVIDIA's VF curve drifts a few MHz with temperature/boost; "correcting"
@@ -8120,8 +5466,10 @@ def parse_args():
     parser.add_argument(
         "--target",
         choices=("windows", "linux", "all"),
-        default="all",
-        help="Which OS to build (default: all = windows + linux)",
+        default=None,
+        help="Which OS to build (default: all = windows + linux; on a "
+             "non-Windows host this narrows to linux, because llvm-mingw is a "
+             "Windows PE toolchain that cannot run there)",
     )
     parser.add_argument(
         "--arch",
@@ -8149,6 +5497,8 @@ def parse_args():
         action="store_true",
         help="Generate compile_commands.json for clangd and exit",
     )
+    static_analysis.add_arguments(parser)
+    security_gates.add_arguments(parser)
     parser.add_argument(
         "--sanitizer",
         action="store_true",
@@ -8166,13 +5516,20 @@ def parse_args():
         help="Verify (no arm64 hardware needed) that an extracted aarch64 NVIDIA "
              "driver dir ships libnvidia-ml.so / libnvidia-api.so and our symbols",
     )
+    parser.add_argument(
+        "--inspect-arm64-windows-driver",
+        metavar="DIR",
+        default=None,
+        help="Verify (no arm64 hardware needed) that an extracted Windows-on-Arm "
+             "NVIDIA driver dir ships arm64 nvapia64.dll / nvml.dll and our entry "
+             "points; extract the setup .exe with 7-Zip first",
+    )
     return parser.parse_args()
 
 
-def generate_version_nsh():
-    _VERSION_NSH_PATH = os.path.join(SCRIPT_DIR, "version.nsh")
-    with open(_VERSION_NSH_PATH, "w", encoding="utf-8") as _vnf:
-        _vnf.write(f'!define VERSION "{APP_VERSION}"\n')
+def run_clang_tidy(write_baseline=False):
+    return static_analysis.run_clang_tidy(
+        _gate_ctx(), write_baseline=write_baseline)
 
 
 def ensure_toolchain(target):
@@ -8188,12 +5545,26 @@ def ensure_toolchain(target):
 def main():
     args = parse_args()
     if args.inspect_aarch64_driver:
-        sys.exit(inspect_aarch64_driver(args.inspect_aarch64_driver))
+        sys.exit(driver_inspect.inspect_aarch64_driver(
+            _gate_ctx(), args.inspect_aarch64_driver))
+    if args.inspect_arm64_windows_driver:
+        sys.exit(driver_inspect.inspect_arm64_windows_driver(
+            _gate_ctx(), args.inspect_arm64_windows_driver))
+    if args.check_cet is not None:
+        # Each host's gate compiles its own probe: the PE path needs llvm-mingw,
+        # the ELF path needs Zig.  Fetching the other one is pure waste.
+        ensure_toolchain("linux" if sys.platform.startswith("linux") else "windows")
+        sys.exit(check_cet_instrumentation(args.check_cet or None))
     print("=== Green Curve build ===")
+    # Resolve --target before anything downloads a toolchain or bumps a build
+    # number, so an impossible request costs nothing and reports cleanly.
+    _target_oses = resolve_targets(args.target or "all", args.target is not None)
+    args.target = "all" if len(_target_oses) > 1 else _target_oses[0]
     ensure_toolchain(args.target)
-    real_build = not args.lsp and not args.check and not args.test
+    real_build = (not args.lsp and not args.check and not args.test
+                  and not args.fuzz and not args.tidy
+                  and not args.tidy_baseline)
     configure_build_number(real_build)
-    generate_version_nsh()
 
     # H-001 fix: avoid permanently mutating the global COMMON_FLAGS list.
     # Save the original flags so sanitizer additions do not leak into
@@ -8206,6 +5577,8 @@ def main():
             generate_lsp_files()
             print("=== Done ===")
             return
+        if args.tidy or args.tidy_baseline:
+            sys.exit(run_clang_tidy(write_baseline=args.tidy_baseline))
         if args.test:
             # Always run with UBSan by default (F-01-001).
             # --sanitizer is accepted for backward compatibility but is now the default behavior.
@@ -8214,6 +5587,11 @@ def main():
                 test_extra_flags.append("-fsanitize=address")
                 test_extra_flags.append("-g")
             run_regression_tests(extra_flags=test_extra_flags)
+            if not args.check and not args.fuzz:
+                print("=== Done ===")
+                return
+        if args.fuzz:
+            run_fuzz_targets(runs=args.fuzz_runs, target_filter=args.fuzz_target)
             if not args.check:
                 print("=== Done ===")
                 return
@@ -8222,7 +5600,7 @@ def main():
             print("=== Done ===")
             return
         generate_lsp_files()
-        oses = ["windows", "linux"] if args.target == "all" else [args.target]
+        oses = _target_oses
         arches = ["x64", "arm64"] if args.arch == "all" else [args.arch]
         built = []  # (os_name, arch, [binary_path, ...])
 
@@ -8248,9 +5626,19 @@ def main():
                 compile_linux_binary(output_path=out, temp_output=out + ".new", backup_path=out + ".bak", arch=arch)
                 built.append(("linux", arch, [out]))
         if not args.no_package and built:
-            print("--- Packaging release archives ---")
-            for os_name, arch, binaries in built:
-                package_release_archive(os_name, arch, binaries)
+            # A missing 7-Zip is not a build failure: the binaries are already
+            # built and verified, so packaging degrades to the --no-package end
+            # state with a loud warning instead of a traceback.  It can only
+            # hold up Windows; the Linux tarball needs no external archiver.
+            seven = find_seven_zip()
+            packaged = [entry for entry in built if seven or entry[0] != "windows"]
+            skipped = [entry for entry in built if entry not in packaged]
+            if packaged:
+                print("--- Packaging release archives ---")
+            for os_name, arch, binaries in packaged:
+                package_release_archive(os_name, arch, binaries, seven=seven)
+            if skipped:
+                report_packaging_skipped(skipped)
         print("=== Done ===")
     finally:
         COMMON_FLAGS[:] = _original_common_flags
