@@ -131,7 +131,7 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
         debug_log_session_marker("BEGIN", "service", "service_main startup");
     }
     if (!service_initialize_state_identity()) {
-        debug_log("service_main: FATAL could not generate protocol-v11 service instance identity\n");
+        debug_log("service_main: FATAL could not generate protocol-v12 service instance identity\n");
         g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
         g_serviceStatus.dwWin32ExitCode = ERROR_GEN_FAILURE;
         SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);

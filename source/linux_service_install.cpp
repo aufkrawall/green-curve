@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // Included by linux_daemon.cpp; do not compile separately.
 
+#include "linux_service_install_policy.h"
+#include "linux_socket_path_permissions.h"
+
 // ===========================================================================
 // systemd install / remove  (requires root)
 // ===========================================================================
@@ -166,7 +169,135 @@ static int run_systemctl(char* const argv[]) {
     return run_root_command("/bin/systemctl", argv);
 }
 
-int linux_service_install(char* err, size_t errSize) {
+struct LinuxServiceActivationContext {
+    ServiceResponse verifiedResponse;
+};
+
+static bool run_service_activation_step(
+    void* opaque, LinuxServiceActivationStep step,
+    char* err, size_t errSize) {
+    LinuxServiceActivationContext* context =
+        (LinuxServiceActivationContext*)opaque;
+    int commandResult = -1;
+    switch (step) {
+        case LINUX_SERVICE_STEP_DAEMON_RELOAD: {
+            char* args[] = {(char*)"systemctl", (char*)"daemon-reload", nullptr};
+            commandResult = run_systemctl(args);
+            break;
+        }
+        case LINUX_SERVICE_STEP_ENABLE: {
+            char* args[] = {(char*)"systemctl", (char*)"enable",
+                            (char*)"greencurve.service", nullptr};
+            commandResult = run_systemctl(args);
+            break;
+        }
+        case LINUX_SERVICE_STEP_RESTART: {
+            // Deliberately unconditional: `enable --now` leaves an already
+            // running old executable/protocol resident after an upgrade.
+            char* args[] = {(char*)"systemctl", (char*)"restart",
+                            (char*)"greencurve.service", nullptr};
+            commandResult = run_systemctl(args);
+            break;
+        }
+        case LINUX_SERVICE_STEP_IS_ACTIVE: {
+            char* args[] = {(char*)"systemctl", (char*)"is-active",
+                            (char*)"--quiet", (char*)"greencurve.service", nullptr};
+            commandResult = run_systemctl(args);
+            break;
+        }
+        case LINUX_SERVICE_STEP_VERIFY_SOCKET: {
+            struct group* serviceGroup = getgrnam("greencurve");
+            if (!serviceGroup) {
+                gc_strlcpy(err, errSize,
+                    "greencurve group disappeared before socket verification");
+                return false;
+            }
+            int directoryFd = open(GC_DAEMON_SOCKET_DIR,
+                O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+            if (directoryFd < 0) {
+                gc_snprintf(err, errSize,
+                    "cannot open daemon socket directory %s: %s",
+                    GC_DAEMON_SOCKET_DIR, strerror(errno));
+                return false;
+            }
+            struct stat directoryStatus = {};
+            if (fstat(directoryFd, &directoryStatus) != 0) {
+                gc_snprintf(err, errSize,
+                    "cannot inspect daemon socket directory %s: %s",
+                    GC_DAEMON_SOCKET_DIR, strerror(errno));
+                close(directoryFd);
+                return false;
+            }
+            bool directoryValid = S_ISDIR(directoryStatus.st_mode) &&
+                directoryStatus.st_uid == 0 &&
+                (directoryStatus.st_mode & 0777) == 0755;
+            if (!directoryValid) {
+                gc_snprintf(err, errSize,
+                    "daemon socket directory has uid=%lu mode=%04o; expected uid=0 mode=0755",
+                    (unsigned long)directoryStatus.st_uid,
+                    (unsigned int)(directoryStatus.st_mode & 0777));
+                close(directoryFd);
+                return false;
+            }
+            bool verified = linux_verify_socket_path_permissions_at(
+                directoryFd, GC_DAEMON_SOCKET_NAME, 0,
+                serviceGroup->gr_gid, 0660, err, errSize);
+            close(directoryFd);
+            if (!verified) return false;
+            dlog("service-install: verified socket pathname %s root:greencurve mode=0660\n",
+                 GC_DAEMON_SOCKET_PATH);
+            return true;
+        }
+        case LINUX_SERVICE_STEP_VERIFY_PROTOCOL: {
+            ServiceRequest request = {};
+            request.magic = SERVICE_PROTOCOL_MAGIC;
+            request.version = SERVICE_PROTOCOL_VERSION;
+            request.command = SERVICE_CMD_PING;
+            request.callerPid = (gc_u32)getpid();
+            ServiceResponse response = {};
+            char transportError[256] = {};
+            if (!linux_daemon_send(&request, &response,
+                                   transportError, sizeof(transportError))) {
+                gc_snprintf(err, errSize,
+                    "daemon ping failed after restart: %s",
+                    transportError[0] ? transportError : "unknown transport failure");
+                return false;
+            }
+            if (response.version != SERVICE_PROTOCOL_VERSION ||
+                response.serviceBuildNumber != (gc_u32)APP_BUILD_NUMBER ||
+                strcmp(response.serviceVersion, APP_VERSION) != 0 ||
+                response.servicePid == 0) {
+                gc_snprintf(err, errSize,
+                    "daemon verification mismatch: expected version=%s build=%u protocol=%u; "
+                    "received version=%s build=%u protocol=%u pid=%u",
+                    APP_VERSION, (unsigned int)APP_BUILD_NUMBER,
+                    (unsigned int)SERVICE_PROTOCOL_VERSION,
+                    response.serviceVersion, response.serviceBuildNumber,
+                    response.version, response.servicePid);
+                return false;
+            }
+            context->verifiedResponse = response;
+            dlog("service-install: verified version=%s build=%u protocol=%u pid=%u phase=%u health=%s\n",
+                 response.serviceVersion, response.serviceBuildNumber,
+                 response.version, response.servicePid,
+                 response.state.gpuPhase,
+                 service_gpu_health_reason_name(response.snapshot.health.reason));
+            return true;
+        }
+        default:
+            gc_strlcpy(err, errSize, "unknown service activation step");
+            return false;
+    }
+    if (commandResult != 0) {
+        gc_snprintf(err, errSize, "%s failed with exit code %d",
+                    linux_service_activation_step_name(step), commandResult);
+        return false;
+    }
+    return true;
+}
+
+int linux_service_install(char* err, size_t errSize,
+                          ServiceResponse* verifiedResponse) {
     if (err && errSize) err[0] = 0;
     if (geteuid() != 0) {
         gc_strlcpy(err, errSize, "--service-install requires root (use sudo)");
@@ -179,13 +310,24 @@ int linux_service_install(char* err, size_t errSize) {
     exe[n] = 0;
     if (!stage_service_binary(exe, err, errSize)) return 1;
 
-    // Admin group for socket access (best-effort; ignore "already exists").
+    // Admin group creation and verification are part of the authorization
+    // boundary. Installation must not claim success without them.
     char* groupArgs[] = {(char*)"groupadd", (char*)"-f", (char*)"greencurve", nullptr};
     int groupResult = run_root_command("/usr/sbin/groupadd", groupArgs);
     if (groupResult == 127)
         groupResult = run_root_command("/sbin/groupadd", groupArgs);
-    if (groupResult != 0)
-        dlog("service-install: groupadd greencurve failed (non-fatal)\n");
+    if (groupResult != 0) {
+        gc_snprintf(err, errSize,
+            "groupadd -f greencurve failed with exit code %d", groupResult);
+        return 1;
+    }
+    struct group* serviceGroup = getgrnam("greencurve");
+    if (!serviceGroup || !serviceGroup->gr_name ||
+        strcmp(serviceGroup->gr_name, "greencurve") != 0) {
+        gc_strlcpy(err, errSize,
+            "greencurve group verification failed after groupadd");
+        return 1;
+    }
 
     int unitFd = open(GC_UNIT_PATH, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0644);
     struct stat unitStat = {};
@@ -203,14 +345,37 @@ int linux_service_install(char* err, size_t errSize) {
         "Description=Green Curve NVIDIA GPU control daemon\n"
         "After=multi-user.target\n\n"
         "[Service]\n"
-        "Type=simple\n"
+        "Type=notify\n"
+        "NotifyAccess=main\n"
         "ExecStart=%s --daemon\n"
         "Restart=on-failure\n"
         "RestartSec=2\n"
         "UMask=0077\n"
         "NoNewPrivileges=true\n"
         "StateDirectory=greencurve\n"
-        "RuntimeDirectory=greencurve\n\n"
+        "RuntimeDirectory=greencurve\n"
+        "RuntimeDirectoryMode=0755\n"
+        // Sandboxing.  The daemon needs root, the NVIDIA character devices, and
+        // its own state/runtime directories -- nothing else.  ProtectSystem is
+        // deliberately "full" rather than "strict": the NVIDIA user-mode stack
+        // resolves libraries and driver state under /usr and /sys at runtime,
+        // and StateDirectory/RuntimeDirectory already remain writable.
+        "ProtectSystem=full\n"
+        "ProtectHome=yes\n"
+        "PrivateTmp=yes\n"
+        "ProtectControlGroups=yes\n"
+        "ProtectKernelLogs=yes\n"
+        "RestrictSUIDSGID=yes\n"
+        "RestrictNamespaces=yes\n"
+        "RestrictRealtime=yes\n"
+        // The control socket is AF_UNIX only; the daemon has no network path.
+        "RestrictAddressFamilies=AF_UNIX\n"
+        "SystemCallArchitectures=native\n"
+        // Deliberately not set: MemoryDenyWriteExecute (the NVIDIA user-mode
+        // stack maps writable-executable pages), ProtectKernelTunables and
+        // ProtectKernelModules (driver state lives under /proc/driver/nvidia),
+        // and PrivateDevices (the daemon needs /dev/nvidia*).
+        "LockPersonality=yes\n\n"
         "[Install]\n"
         "WantedBy=multi-user.target\n",
         GC_INSTALL_BIN);
@@ -218,18 +383,74 @@ int linux_service_install(char* err, size_t errSize) {
     if (fclose(f) != 0) unitOk = false;
     if (!unitOk) { gc_strlcpy(err, errSize, "failed to commit systemd unit"); return 1; }
 
-    char* reloadArgs[] = {(char*)"systemctl", (char*)"daemon-reload", nullptr};
-    if (run_systemctl(reloadArgs) != 0)
-        dlog("service-install: systemctl daemon-reload failed (non-fatal)\n");
-    char* enableArgs[] = {(char*)"systemctl", (char*)"enable", (char*)"--now",
-                          (char*)"greencurve.service", nullptr};
-    if (run_systemctl(enableArgs) != 0) {
-        gc_strlcpy(err, errSize,
-                   "systemctl enable --now greencurve.service failed "
-                   "(check: journalctl -u greencurve)");
+    LinuxServiceActivationContext activation = {};
+    LinuxServiceActivationResult activationResult =
+        linux_service_run_activation(run_service_activation_step,
+                                     &activation, err, errSize);
+    if (!activationResult.success) {
+        if (err && errSize && !err[0]) {
+            gc_snprintf(err, errSize, "%s failed",
+                linux_service_activation_step_name(activationResult.failedStep));
+        }
         return 1;
     }
+    if (verifiedResponse) *verifiedResponse = activation.verifiedResponse;
     return 0;
+}
+
+// Resolves the account the install was performed *for* and reports the group
+// paragraph to print.  Root itself is never the answer: it does not need the
+// group, and naming it would print a command that changes nothing.
+//
+// SUDO_USER is authoritative when present.  getlogin() covers the plain root
+// console / `su -` case, which is precisely where greencurve-setup.sh also
+// cannot resolve an account, so both agree about when to fall back.
+void linux_describe_group_enrollment(char* out, size_t outSize) {
+    if (!out || outSize == 0) return;
+    out[0] = '\0';
+
+    // greencurve-setup.sh enrolls the account itself, but only *after* this
+    // step, because the group does not exist until --service-install creates
+    // it.  Without this the summary would prescribe usermod on the line right
+    // before the script ran it.  Whoever performs the enrollment owns the
+    // message about it; the script sets this when it has resolved an account.
+    const char* deferred = getenv("GREENCURVE_SETUP_OWNS_GROUP");
+    if (deferred && deferred[0] == '1' && deferred[1] == '\0') {
+        dlog("service-install: group advice suppressed; the setup wrapper "
+             "owns enrollment for this run\n");
+        return;
+    }
+
+    char account[256] = {};
+    const char* sudoUser = getenv("SUDO_USER");
+    if (sudoUser && sudoUser[0] && strcmp(sudoUser, "root") != 0) {
+        gc_strlcpy(account, sizeof(account), sudoUser);
+    } else {
+        const char* login = getlogin();
+        if (login && login[0] && strcmp(login, "root") != 0)
+            gc_strlcpy(account, sizeof(account), login);
+    }
+
+    struct group* serviceGroup = getgrnam("greencurve");
+    bool groupExists = serviceGroup && serviceGroup->gr_name;
+    bool member = false;
+    if (groupExists && account[0]) {
+        for (char** m = serviceGroup->gr_mem; m && *m; ++m) {
+            if (strcmp(*m, account) == 0) { member = true; break; }
+        }
+        // A user whose *primary* group is greencurve is a member without
+        // appearing in gr_mem at all.
+        if (!member) {
+            struct passwd* pw = getpwnam(account);
+            if (pw && pw->pw_gid == serviceGroup->gr_gid) member = true;
+        }
+    }
+
+    dlog("service-install: group advice account='%s' groupExists=%d member=%d\n",
+         account[0] ? account : "(unresolved)", (int)groupExists, (int)member);
+    linux_format_group_enrollment_advice(
+        linux_group_enrollment_advice(account, groupExists, member),
+        account, out, outSize);
 }
 
 int linux_service_remove(char* err, size_t errSize) {

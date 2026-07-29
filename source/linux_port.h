@@ -24,10 +24,29 @@
 // DesiredSettings all come from gpu_core.h so the Linux client and the daemon
 // share one definition (and the wire protocol struct).
 #include "gpu_core.h"
+// initialize_desired_settings_defaults() / normalize_desired_settings_for_ui():
+// pure, header-only, and covered by the regression harness.
+#include "desired_settings_ui_policy.h"
+
+// What `--startup-profile` / `--show-startup` asked the client to do with the
+// daemon's boot-apply policy.  The policy modes themselves are the shared
+// SERVICE_STARTUP_POLICY_* values, because the daemon owns the record.
+enum LinuxStartupPolicyAction {
+    LINUX_STARTUP_POLICY_ACTION_NONE = 0,  // not requested on this command line
+    LINUX_STARTUP_POLICY_ACTION_SHOW = 1,
+    LINUX_STARTUP_POLICY_ACTION_SET = 2,
+};
 
 struct LinuxCliOptions {
     bool recognized;
     bool showHelp;
+    // Set by the terminal relaunch (linux_terminal_launch.cpp) and by the
+    // generated .desktop entries.  Guards against relaunching forever and makes
+    // an error hold the window open instead of closing it unread.
+    bool fromDesktop;
+    int startupPolicyAction;  // LinuxStartupPolicyAction
+    int startupPolicyMode;    // ServiceStartupPolicyMode when action == SET
+    int startupPolicySlot;    // 1..CONFIG_NUM_SLOTS when mode == PROFILE
     bool dump;
     bool json;
     bool dumpLive;
@@ -77,13 +96,10 @@ bool parse_int_strict(const char* s, int* out);
 void set_message(char* dst, size_t dstSize, const char* fmt, ...) __attribute__((format(printf, 3, 4)));
 bool parse_fan_value(const char* text, bool* isAuto, int* pct);
 const char* fan_mode_label(int mode);
-void fan_curve_set_default(FanCurveConfig* config);
-void fan_curve_normalize(FanCurveConfig* config);
-bool fan_curve_validate(const FanCurveConfig* config, char* err, size_t errSize);
-int fan_curve_interpolate_percent(const FanCurveConfig* config, int temperatureC);
-void fan_curve_format_summary(const FanCurveConfig* config, char* buffer, size_t bufferSize);
-void initialize_desired_settings_defaults(DesiredSettings* desired);
-void normalize_desired_settings_for_ui(DesiredSettings* desired);
+// The fan-curve math is declared by fan_curve.h and defined once in
+// fan_curve.cpp, which the Linux binary now links.  Redeclaring it here is what
+// let a diverged private copy live in linux_port.cpp unnoticed.
+#include "fan_curve.h"
 bool desired_has_any_action(const DesiredSettings* desired);
 bool get_executable_path(char* dst, size_t dstSize);
 bool default_linux_config_path(char* dst, size_t dstSize);
@@ -97,6 +113,9 @@ bool load_default_or_selected_profile(const char* path, int* slot, DesiredSettin
 bool save_profile_to_config_path(const char* path, int slot, const DesiredSettings* desired, char* err, size_t errSize);
 bool clear_profile_from_config_path(const char* path, int slot,
                                     char* err, size_t errSize);
+// `[debug] enabled` from config.ini; returns `defaultValue` when the file or
+// the key is absent (the config is optional on Linux).
+int load_linux_debug_enabled(const char* configPath, int defaultValue);
 bool parse_linux_gpu_bdf(const char* text, GpuAdapterInfo* target);
 void format_linux_gpu_bdf(const GpuAdapterInfo* target, char* text, size_t textSize);
 bool load_linux_gpu_selection(const char* path, GpuAdapterInfo* target);

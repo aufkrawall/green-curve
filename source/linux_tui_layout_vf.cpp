@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "linux_tui_layout_internal.h"
+#include "linux_tui_authority.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -92,9 +93,23 @@ void draw_vf_graph(TuiCanvas* c, const TuiRect& panel) {
     c->box(panel, "VOLTAGE / FREQUENCY",
            "click selects • preview only");
     if (!vm.serviceOnline || !vm.service || vm.service->snapshot.numPopulated <= 0) {
-        c->text(panel.x + 3, panel.y + panel.height / 2,
-                panel.width - 6, "Waiting for a complete live VF snapshot...",
-                TUI_STYLE_MUTED);
+        int messageY = panel.y + panel.height / 2;
+        if (!vm.serviceOnline || !vm.service) {
+            c->text(panel.x + 3, messageY, panel.width - 6,
+                    "Daemon offline — no authoritative VF snapshot",
+                    TUI_STYLE_RED);
+        } else {
+            char reason[256] = {};
+            const ServiceGpuHealth& health = vm.service->snapshot.health;
+            snprintf(reason, sizeof(reason), "%s%s%s",
+                service_gpu_health_reason_name(health.reason),
+                health.detail[0] ? " — " : "", health.detail);
+            c->text(panel.x + 3, messageY - 1, panel.width - 6,
+                    reason, TUI_STYLE_ORANGE);
+            c->text(panel.x + 3, messageY + 1, panel.width - 6,
+                    linux_tui_health_remediation(health.reason),
+                    TUI_STYLE_MUTED);
+        }
         return;
     }
 
@@ -166,20 +181,27 @@ void draw_vf_graph(TuiCanvas* c, const TuiRect& panel) {
 
 void add_stepper(TuiCanvas* c, int x, int y, int width, const char* label,
                  TuiField field, int context, int value, int delta,
-                 const char* unit) {
+                 const char* unit, bool enabled = true) {
     int labelWidth = width >= 46 ? 24 : 16;
     int unitWidth = unit && unit[0] ? (int)strlen(unit) + 1 : 0;
     int fieldWidth = 10;
     int minusX = x + labelWidth;
     int fieldX = minusX + 4;
     int plusX = fieldX + fieldWidth + 1;
-    c->text(x, y, labelWidth - 1, label, TUI_STYLE_TEXT);
-    int minusAction = c->button(TuiRect{minusX, y, 3, 1}, "−",
-                                ACTION_FIELD_STEP, (int)field, -delta);
-    c->layout()->actions[minusAction].context = context;
+    c->text(x, y, labelWidth - 1, label,
+            enabled ? TUI_STYLE_TEXT : TUI_STYLE_DIM);
     char formatted[32] = {};
     bool sign = field == TUI_FIELD_GPU_OFFSET || field == TUI_FIELD_MEMORY_OFFSET;
     tui_format_int(formatted, sizeof(formatted), value, sign);
+    if (!enabled) {
+        c->text(fieldX, y, fieldWidth, formatted, TUI_STYLE_DIM, true);
+        if (unitWidth > 0)
+            c->text(plusX + 4, y, unitWidth, unit, TUI_STYLE_DIM);
+        return;
+    }
+    int minusAction = c->button(TuiRect{minusX, y, 3, 1}, "−",
+                                 ACTION_FIELD_STEP, (int)field, -delta);
+    c->layout()->actions[minusAction].context = context;
     c->field(TuiRect{fieldX, y, fieldWidth, 1}, formatted, field, context);
     int plusAction = c->button(TuiRect{plusX, y, 3, 1}, "+",
                                ACTION_FIELD_STEP, (int)field, delta);
@@ -191,51 +213,89 @@ void add_stepper(TuiCanvas* c, int x, int y, int width, const char* label,
 void draw_vf_controls(TuiCanvas* c, const TuiRect& panel, bool horizontal) {
     const TuiViewModel& vm = c->view();
     const DesiredSettings& desired = *vm.desired;
-    c->box(panel, "VF TUNING", "absolute fields");
+    bool vfAvailable = vm.serviceOnline && vm.service &&
+        (vm.service->snapshot.health.availableMutationDomains &
+            SERVICE_MUTATION_DOMAIN_VF_CURVE) != 0;
+    gc_u32 available = vm.serviceOnline && vm.service
+        ? vm.service->snapshot.health.availableMutationDomains
+        : SERVICE_MUTATION_DOMAIN_ALL;
+    bool gpuUsesVf = (service_desired_mutation_domains(&desired) &
+        SERVICE_MUTATION_DOMAIN_VF_CURVE) != 0;
+    bool gpuAvailable = gpuUsesVf ? vfAvailable :
+        (available & SERVICE_MUTATION_DOMAIN_GPU_OFFSET) != 0;
+    bool memoryAvailable =
+        (available & SERVICE_MUTATION_DOMAIN_MEM_OFFSET) != 0;
+    bool powerAvailable =
+        (available & SERVICE_MUTATION_DOMAIN_POWER) != 0;
+    char hardware[128] = {};
+    if (vm.serviceOnline && vm.service && vm.service->controlState.valid) {
+        const ControlState& actual = vm.service->controlState;
+        char gpu[16] = "?", memory[16] = "?", power[16] = "?";
+        if (actual.gpuOffsetReadbackValid)
+            snprintf(gpu, sizeof(gpu), "%+d", actual.gpuOffsetMHz);
+        if (actual.memOffsetReadbackValid)
+            snprintf(memory, sizeof(memory), "%+d", actual.memOffsetMHz);
+        if (actual.powerLimitReadbackValid)
+            snprintf(power, sizeof(power), "%d", actual.powerLimitPct);
+        snprintf(hardware, sizeof(hardware),
+                 "actual G %s • M %s • P %s%%%s",
+                 gpu, memory, power,
+                 vm.intentReadback.divergedDomains ? " • OVERRIDDEN" :
+                 vm.intentReadback.unavailableDomains ? " • partial" : "");
+    } else {
+        snprintf(hardware, sizeof(hardware), "hardware readback unavailable");
+    }
+    c->box(panel, "VF TUNING — CONFIGURED INTENT", hardware);
     if (horizontal) {
         int half = (panel.width - 4) / 2;
         add_stepper(c, panel.x + 2, panel.y + 2, half,
-                    "GPU offset", TUI_FIELD_GPU_OFFSET, 0,
-                    desired.gpuOffsetMHz, 15, "MHz");
+                     "GPU target", TUI_FIELD_GPU_OFFSET, 0,
+                     desired.gpuOffsetMHz, 15, "MHz", gpuAvailable);
         add_stepper(c, panel.x + 2 + half, panel.y + 2, half,
-                    "Exclude first", TUI_FIELD_EXCLUDED_POINTS, 0,
-                    desired.gpuOffsetExcludeLowCount, 1, "pts");
+                     "Exclude first", TUI_FIELD_EXCLUDED_POINTS, 0,
+                     desired.gpuOffsetExcludeLowCount, 1, "pts", vfAvailable);
         add_stepper(c, panel.x + 2, panel.y + 4, half,
-                    "Memory offset", TUI_FIELD_MEMORY_OFFSET, 0,
-                    desired.memOffsetMHz, 100, "MHz");
+                     "Memory target", TUI_FIELD_MEMORY_OFFSET, 0,
+                     desired.memOffsetMHz, 100, "MHz", memoryAvailable);
         add_stepper(c, panel.x + 2 + half, panel.y + 4, half,
-                    "Power limit", TUI_FIELD_POWER_LIMIT, 0,
-                    desired.powerLimitPct, 1, "%");
+                     "Power target", TUI_FIELD_POWER_LIMIT, 0,
+                     desired.powerLimitPct, 1, "%", powerAvailable);
     } else {
         add_stepper(c, panel.x + 2, panel.y + 2, panel.width - 4,
-                    "GPU clock offset", TUI_FIELD_GPU_OFFSET, 0,
-                    desired.gpuOffsetMHz, 15, "MHz");
+                     "GPU target offset", TUI_FIELD_GPU_OFFSET, 0,
+                     desired.gpuOffsetMHz, 15, "MHz", gpuAvailable);
         add_stepper(c, panel.x + 2, panel.y + 4, panel.width - 4,
-                    "Exclude first VF", TUI_FIELD_EXCLUDED_POINTS, 0,
-                    desired.gpuOffsetExcludeLowCount, 1, "pts");
+                     "Exclude first VF", TUI_FIELD_EXCLUDED_POINTS, 0,
+                     desired.gpuOffsetExcludeLowCount, 1, "pts", vfAvailable);
         add_stepper(c, panel.x + 2, panel.y + 6, panel.width - 4,
-                    "Memory offset", TUI_FIELD_MEMORY_OFFSET, 0,
-                    desired.memOffsetMHz, 100, "MHz");
+                     "Memory target", TUI_FIELD_MEMORY_OFFSET, 0,
+                     desired.memOffsetMHz, 100, "MHz", memoryAvailable);
         add_stepper(c, panel.x + 2, panel.y + 8, panel.width - 4,
-                    "Power limit", TUI_FIELD_POWER_LIMIT, 0,
-                    desired.powerLimitPct, 1, "%");
+                     "Power target", TUI_FIELD_POWER_LIMIT, 0,
+                     desired.powerLimitPct, 1, "%", powerAvailable);
     }
 
     int modeY = horizontal ? panel.y + 6 : panel.y + 10;
     if (modeY < panel.y + panel.height - 2) {
         c->text(panel.x + 2, modeY, 16, "Curve tail", TUI_STYLE_TEXT);
         int buttonX = panel.x + 18;
-        c->button(TuiRect{buttonX, modeY, 7, 1}, "OFF", ACTION_LOCK_CYCLE,
-                  vm.selectedPoint, LOCK_MODE_NONE, !desired.hasLock);
-        c->button(TuiRect{buttonX + 8, modeY, 12, 1}, "✓ FLATTEN",
-                  ACTION_LOCK_CYCLE, vm.selectedPoint, LOCK_MODE_FLATTEN,
-                  desired.hasLock && desired.lockMode == LOCK_MODE_FLATTEN);
-        c->button(TuiRect{buttonX + 21, modeY, 8, 1}, "• PIN",
-                  ACTION_LOCK_CYCLE, vm.selectedPoint, LOCK_MODE_HARD,
-                  desired.hasLock && desired.lockMode == LOCK_MODE_HARD);
-        if (panel.width >= 58)
-            c->text(buttonX + 30, modeY, panel.width - 50,
-                    "2nd click pins", TUI_STYLE_MUTED);
+        if (vfAvailable) {
+            c->button(TuiRect{buttonX, modeY, 7, 1}, "OFF", ACTION_LOCK_CYCLE,
+                      vm.selectedPoint, LOCK_MODE_NONE, !desired.hasLock);
+            c->button(TuiRect{buttonX + 8, modeY, 12, 1}, "✓ FLATTEN",
+                      ACTION_LOCK_CYCLE, vm.selectedPoint, LOCK_MODE_FLATTEN,
+                      desired.hasLock && desired.lockMode == LOCK_MODE_FLATTEN);
+            c->button(TuiRect{buttonX + 21, modeY, 8, 1}, "• PIN",
+                      ACTION_LOCK_CYCLE, vm.selectedPoint, LOCK_MODE_HARD,
+                      desired.hasLock && desired.lockMode == LOCK_MODE_HARD);
+            if (panel.width >= 58)
+                c->text(buttonX + 30, modeY, panel.width - 50,
+                        "2nd click pins", TUI_STYLE_MUTED);
+        } else {
+            c->text(buttonX, modeY, panel.width - 20,
+                    "unavailable until a fresh VF snapshot validates",
+                    TUI_STYLE_DIM);
+        }
     }
 
     int selectedY = modeY + 2;
@@ -255,8 +315,12 @@ void draw_vf_controls(TuiCanvas* c, const TuiRect& panel, bool horizontal) {
             char target[24] = {};
             tui_format_int(target, sizeof(target), selected.targetMHz);
             c->text(panel.x + 2, selectedY + 1, 12, "Target MHz", TUI_STYLE_TEXT);
-            c->field(TuiRect{panel.x + 14, selectedY + 1, 10, 1}, target,
-                     TUI_FIELD_VF_TARGET, vm.selectedPoint);
+            if (vfAvailable)
+                c->field(TuiRect{panel.x + 14, selectedY + 1, 10, 1}, target,
+                         TUI_FIELD_VF_TARGET, vm.selectedPoint);
+            else
+                c->text(panel.x + 14, selectedY + 1, 10, target,
+                        TUI_STYLE_DIM, true);
             c->text(panel.x + 26, selectedY + 1, panel.width - 28,
                     tui_point_rule_label(selected.rule), TUI_STYLE_GREEN);
         }
@@ -266,9 +330,22 @@ void draw_vf_controls(TuiCanvas* c, const TuiRect& panel, bool horizontal) {
 void draw_vf_table(TuiCanvas* c, const TuiRect& panel) {
     const TuiViewModel& vm = c->view();
     TuiLayout* out = c->layout();
-    c->box(panel, "VF POINTS — ABSOLUTE EDITOR",
-           "wheel / PgUp / PgDn");
+    // The hidden count is stated rather than silently dropped: a list that
+    // starts at point 45 with no explanation is worse than the rows it removes.
+    char hint[64] = {};
+    int hiddenLow = (vm.serviceOnline && vm.service)
+        ? tui_vf_hidden_low_point_count(vm) : 0;
+    if (hiddenLow > 0) {
+        snprintf(hint, sizeof(hint), "%d flat pts hidden • wheel / PgUp / PgDn",
+                 hiddenLow);
+    } else {
+        snprintf(hint, sizeof(hint), "wheel / PgUp / PgDn");
+    }
+    c->box(panel, "VF POINTS — TARGET AND HARDWARE READBACK", hint);
     if (!vm.serviceOnline || !vm.service) return;
+    bool vfAvailable =
+        (vm.service->snapshot.health.availableMutationDomains &
+            SERVICE_MUTATION_DOMAIN_VF_CURVE) != 0;
     int rows = panel.height - 4;
     if (rows < 1) return;
     out->vfVisibleRows = rows;
@@ -296,7 +373,8 @@ void draw_vf_table(TuiCanvas* c, const TuiRect& panel) {
                       "RULE / ACTION", TUI_STYLE_MUTED);
 
     int index = vm.vfScroll;
-    if (index < 0) index = 0;
+    int firstListed = tui_vf_first_listed_point(vm);
+    if (index < firstListed) index = firstListed;
     int drawn = 0;
     for (; index < VF_NUM_POINTS && drawn < rows; ++index) {
         TuiPointValues values = tui_point_values(vm, index);
@@ -320,17 +398,22 @@ void draw_vf_table(TuiCanvas* c, const TuiRect& panel) {
         int mode = 0;
         if (vm.desired->hasLock && vm.desired->lockCi == index)
             mode = vm.desired->lockMode == LOCK_MODE_HARD ? 2 : 1;
-        c->checkbox(modeX, y, mode, mode ? TUI_STYLE_GREEN : TUI_STYLE_BORDER);
-        c->register_action(TuiRect{modeX, y, 3, 1}, ACTION_LOCK_CYCLE,
-                           index, 3);
+        c->checkbox(modeX, y, mode, !vfAvailable ? TUI_STYLE_DIM :
+            (mode ? TUI_STYLE_GREEN : TUI_STYLE_BORDER));
+        if (vfAvailable)
+            c->register_action(TuiRect{modeX, y, 3, 1}, ACTION_LOCK_CYCLE,
+                               index, 3);
         c->text(mvX, y, 6, mv, TUI_STYLE_TEXT, true);
         c->register_action(TuiRect{x, y, modeX - x, 1},
                            ACTION_VF_SELECT, index, 0);
         c->register_action(TuiRect{mvX, y, 7, 1},
                            ACTION_VF_SELECT, index, 0);
         if (wide) c->text(baseX, y, 8, base, TUI_STYLE_MUTED, true);
-        c->field(TuiRect{targetX, y, 10, 1}, target,
-                 TUI_FIELD_VF_TARGET, index);
+        if (vfAvailable)
+            c->field(TuiRect{targetX, y, 10, 1}, target,
+                      TUI_FIELD_VF_TARGET, index);
+        else
+            c->text(targetX, y, 10, target, TUI_STYLE_DIM, true);
         if (medium) {
             c->text(liveX, y, 8, live, TUI_STYLE_CYAN, true);
             c->text(deltaX, y, 7, delta,

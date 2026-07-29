@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "linux_port_internal.h"
+#include "linux_debug_log.h"
 #include "profile_persistence_policy.h"
 
 #include <string>
@@ -574,7 +575,21 @@ bool save_profile_to_config_path(const char* path, int slot, const DesiredSettin
     set_section_int(&doc, "startup", "apply_on_launch", logonSlot > 0 ? 1 : 0);
     set_section_int(&doc, "startup", "start_program_on_logon", startOnLogon ? 1 : 0);
 
+    // Materialize the debug switch so it is discoverable in the file the user
+    // already edits, exactly like the Windows config bank does.  An existing
+    // value is preserved.
+    set_section_int(&doc, "debug", "enabled",
+        get_section_int(&doc, "debug", "enabled", LINUX_DEBUG_DEFAULT_ENABLED) != 0 ? 1 : 0);
+
     return save_ini_document(path, doc, err, errSize);
+}
+
+int load_linux_debug_enabled(const char* configPath, int defaultValue) {
+    if (!configPath || !configPath[0]) return defaultValue;
+    IniDocument doc;
+    char err[128] = {};
+    if (!load_ini_document(configPath, &doc, err, sizeof(err))) return defaultValue;
+    return get_section_int(&doc, "debug", "enabled", defaultValue);
 }
 
 bool parse_linux_gpu_bdf(const char* text, GpuAdapterInfo* target) {

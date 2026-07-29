@@ -13,6 +13,8 @@
 #include <vector>
 
 #include "gpu_core.h"
+#include "intent_readback_status.h"
+#include "startup_snapshot_policy.h"
 
 enum TuiTab {
     TUI_TAB_VF = 0,
@@ -88,6 +90,9 @@ enum ActionType {
     ACTION_WRITE_ASSETS,
     ACTION_EXPORT_LIVE_TEXT,
     ACTION_EXPORT_LIVE_JSON,
+    // Cycles the daemon's boot-apply policy: restore-last -> none ->
+    // profile <current slot> -> restore-last.
+    ACTION_STARTUP_POLICY_CYCLE,
 };
 
 struct TuiRect {
@@ -145,6 +150,7 @@ struct TuiViewModel {
     int focusIndex;
     bool dirty;
     bool serviceOnline;
+    bool draftAttached;
     bool editing;
     TuiField editField;
     int editIndex;
@@ -156,6 +162,17 @@ struct TuiViewModel {
     bool probeCompleted;
     const char* probeSummary;
     const char* probeReportPath;
+    // Daemon boot-apply policy as last published in the state envelope.
+    unsigned int startupPolicyMode;
+    unsigned int startupPolicySlot;
+    // Whether the snapshot the daemon would write at the next boot still equals
+    // the profile it names. Rendered as a warning on the control itself,
+    // because "PROFILE 1" otherwise reads as "profile 1 as it is now".
+    StartupSnapshotState startupSnapshotState;
+    // Comparison of active Green Curve intent with the latest hardware
+    // readback. The editor intentionally keeps showing configured intent;
+    // presentation must separately disclose overrides and unavailable reads.
+    IntentReadbackStatus intentReadback;
 };
 
 struct TuiLayout {
@@ -170,6 +187,9 @@ struct TuiLayout {
     TuiRect graphRect;
     int vfFirstVisible;
     int vfVisibleRows;
+    // Rows the fan-point table can draw; zero when the fan tab is not laid out.
+    // Used to stop wheel/page scrolling at the end of that list too.
+    int fanVisibleRows;
 };
 
 int tui_display_columns(const std::string& text);
@@ -178,6 +198,40 @@ bool tui_rect_contains(const TuiRect& rect, int x, int y);
 bool tui_layout_actions_valid(const TuiLayout& layout);
 const char* tui_point_rule_label(TuiPointRule rule);
 TuiPointValues tui_point_values(const TuiViewModel& vm, int pointIndex);
+// Largest first-visible VF index that still fills `visibleRows` with populated
+// points, i.e. the scroll position showing the end of the list.  Pure, so the
+// wheel/page clamp is covered by the regression harness.
+int tui_vf_max_first_visible(const TuiViewModel& vm, int visibleRows);
+
+// First-visible index that brings `selectedPoint` on screen near the top, with
+// a bounded amount of context above it, clamped to the end of the list.
+int tui_vf_reveal_first_visible(const TuiViewModel& vm, int selectedPoint,
+                                int visibleRows);
+
+// Lowest index the VF table lists. The driver's flat low-voltage floor (45
+// consecutive 180 MHz points on an RTX 5070) is not listed: those rows are
+// identical and any target written there is clamped straight back to the floor.
+// A selection inside the floor lowers the bound, so what the user points at is
+// never invisible.
+// Shortest leading run of equal base MHz that counts as a driver floor rather
+// than an ordinary curve. Real floors are dozens of points (45 on an RTX 5070);
+// this only has to be high enough that a normal rising curve is never trimmed.
+#define TUI_VF_MIN_FLAT_FLOOR_RUN 4
+int tui_vf_first_listed_point(const TuiViewModel& vm);
+// Populated points the bound above hides, for the "N flat pts hidden" note.
+int tui_vf_hidden_low_point_count(const TuiViewModel& vm);
+
+// Reveal-on-select, never reveal-on-render.
+//
+// Scrolling the selected point off screen is exactly what the user asked for by
+// turning the wheel, so the auto-reveal must fire only when the *selection*
+// moved since it was last honoured.  Running it every frame made the wheel
+// unusable: the view walked down a few rows and snapped straight back to the
+// selected point, over and over.
+static inline bool tui_selection_needs_reveal(int selectedPoint,
+                                              int revealedPoint) {
+    return selectedPoint >= 0 && selectedPoint != revealedPoint;
+}
 int tui_nearest_graph_point(const TuiViewModel& vm, const TuiRect& graph,
                             int mouseX);
 void build_tui_layout(const TuiViewModel& vm, int width, int height,

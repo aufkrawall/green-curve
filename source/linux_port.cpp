@@ -35,54 +35,22 @@ static std::string trim_copy(const std::string& value) {
     return value.substr(start, end - start);
 }
 
-void trim_ascii(char* s) {
-    if (!s) return;
-    int len = (int)strlen(s);
-    int start = 0;
-    while (start < len && (unsigned char)s[start] <= ' ') start++;
-    int end = len;
-    while (end > start && (unsigned char)s[end - 1] <= ' ') end--;
-    if (start > 0 && end > start) {
-        memmove(s, s + start, (size_t)(end - start));
-    }
-    if (end <= start) {
-        s[0] = 0;
-    } else {
-        s[end - start] = 0;
-    }
-}
-
-bool streqi_ascii(const char* a, const char* b) {
-    if (!a || !b) return false;
-    while (*a && *b) {
-        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return false;
-        ++a;
-        ++b;
-    }
-    return *a == 0 && *b == 0;
-}
-
-bool parse_int_strict(const char* s, int* out) {
-    if (!s || !*s || !out) return false;
-    char* end = nullptr;
-    errno = 0;
-    long value = strtol(s, &end, 10);
-    if (errno == ERANGE) return false;
-    if (!end || *end != 0) return false;
-    if (value < -2147483647L - 1L || value > 2147483647L) return false;
-    *out = (int)value;
-    return true;
-}
-
-void set_message(char* dst, size_t dstSize, const char* fmt, ...) {
-    if (!dst || dstSize == 0) return;
-    va_list ap;
-    va_start(ap, fmt);
-    // flawfinder: ignore -- declaration carries a printf-format compiler attribute.
-    vsnprintf(dst, dstSize, fmt, ap);
-    va_end(ap);
-    dst[dstSize - 1] = 0;
-}
+// trim_ascii, streqi_ascii, parse_int_strict, set_message and parse_fan_value
+// used to be duplicated here, verbatim, so the shipping Linux binary ran a
+// second copy that no regression test and no fuzz target ever reached.  They
+// now come from config_text_utils.cpp, which is in LINUX_SOURCE_FILES and is
+// compiled on both platforms.  Do not reintroduce local copies -- a source
+// guard fails the build if this file defines any of them again.
+//
+// The fan-curve math (fan_curve_set_default / _normalize / _validate /
+// _interpolate_percent / _format_summary, plus sort_enabled_points) was
+// duplicated here too, and that copy had diverged in two ways that mattered:
+// its fan_curve_normalize wrote past the end of the 8-point array whenever a
+// config had fewer than two enabled points and more than six disabled ones
+// (reachable from the daemon socket, linux_port_profiles.cpp and the TUI), and
+// it rebuilt the degenerate case as a 2-point curve capped at 35% instead of
+// the 5-point default that reaches 90%.  fan_curve.cpp is now linked instead;
+// the same source guard covers these names.
 
 void appendf(std::string* text, const char* fmt, ...) {
     if (!text || !fmt) return;
@@ -377,24 +345,6 @@ bool save_ini_document(const char* path, const IniDocument& doc, char* err, size
     return write_text_file_atomic(path, out, err, errSize);
 }
 
-bool parse_fan_value(const char* text, bool* isAuto, int* pct) {
-    if (!isAuto || !pct) return false;
-    char buffer[64] = {};
-    if (text) snprintf(buffer, sizeof(buffer), "%s", text);
-    trim_ascii(buffer);
-    if (buffer[0] == 0 || streqi_ascii(buffer, "auto")) {
-        *isAuto = true;
-        *pct = 0;
-        return true;
-    }
-    int value = 0;
-    if (!parse_int_strict(buffer, &value)) return false;
-    if (value < 0 || value > 100) return false;
-    *isAuto = false;
-    *pct = value;
-    return true;
-}
-
 const char* fan_mode_label(int mode) {
     switch (mode) {
         case FAN_MODE_FIXED: return "Fixed";
@@ -428,192 +378,9 @@ bool parse_fan_mode_config_value(const char* text, int* mode) {
     return false;
 }
 
-static void sort_enabled_points(FanCurvePoint* points, int count) {
-    for (int i = 1; i < count; i++) {
-        FanCurvePoint key = points[i];
-        int j = i - 1;
-        while (j >= 0 && points[j].temperatureC > key.temperatureC) {
-            points[j + 1] = points[j];
-            j--;
-        }
-        points[j + 1] = key;
-    }
-}
-
-void fan_curve_set_default(FanCurveConfig* config) {
-    if (!config) return;
-    memset(config, 0, sizeof(*config));
-    config->pollIntervalMs = 1000;
-    config->hysteresisC = 2;
-    config->points[0] = { gc_bool8_from_bool(true), 30, 20 };
-    config->points[1] = { gc_bool8_from_bool(true), 45, 35 };
-    config->points[2] = { gc_bool8_from_bool(true), 60, 55 };
-    config->points[3] = { gc_bool8_from_bool(true), 72, 72 };
-    config->points[4] = { gc_bool8_from_bool(true), 84, 90 };
-    config->points[5] = { gc_bool8_from_bool(false), 90, 95 };
-    config->points[6] = { gc_bool8_from_bool(false), 95, 100 };
-    config->points[7] = { gc_bool8_from_bool(false), 100, 100 };
-}
-
-void fan_curve_normalize(FanCurveConfig* config) {
-    if (!config) return;
-
-    config->pollIntervalMs = clamp_int(config->pollIntervalMs, 250, 5000);
-    config->pollIntervalMs = ((config->pollIntervalMs + 125) / 250) * 250;
-    config->hysteresisC = clamp_int(config->hysteresisC, 0, FAN_CURVE_MAX_HYSTERESIS_C);
-
-    FanCurvePoint enabled[FAN_CURVE_MAX_POINTS] = {};
-    FanCurvePoint disabled[FAN_CURVE_MAX_POINTS] = {};
-    int enabledCount = 0;
-    int disabledCount = 0;
-
-    for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
-        config->points[i].temperatureC = clamp_int(config->points[i].temperatureC, 0, 100);
-        config->points[i].fanPercent = clamp_percent(config->points[i].fanPercent);
-        if (config->points[i].enabled) enabled[enabledCount++] = config->points[i];
-        else disabled[disabledCount++] = config->points[i];
-    }
-
-    if (enabledCount < 2) {
-        FanCurveConfig defaults = {};
-        fan_curve_set_default(&defaults);
-        enabled[0] = defaults.points[0];
-        enabled[1] = defaults.points[1];
-        enabledCount = 2;
-    }
-
-    sort_enabled_points(enabled, enabledCount);
-    for (int i = 0; i < enabledCount; i++) {
-        config->points[i] = enabled[i];
-        config->points[i].enabled = true;
-    }
-    for (int i = 0; i < disabledCount; i++) {
-        config->points[enabledCount + i] = disabled[i];
-        config->points[enabledCount + i].enabled = false;
-    }
-}
-
-bool fan_curve_validate(const FanCurveConfig* config, char* err, size_t errSize) {
-    if (!config) {
-        set_message(err, errSize, "No fan curve config");
-        return false;
-    }
-    if (config->pollIntervalMs < 250 || config->pollIntervalMs > 5000 || (config->pollIntervalMs % 250) != 0) {
-        set_message(err, errSize, "Fan curve poll interval must be 250-5000 ms in 250 ms steps");
-        return false;
-    }
-    if (config->hysteresisC < 0 || config->hysteresisC > FAN_CURVE_MAX_HYSTERESIS_C) {
-        set_message(err, errSize, "Fan curve hysteresis must be 0-10 \xC2\xB0""C");
-        return false;
-    }
-
-    FanCurvePoint active[FAN_CURVE_MAX_POINTS] = {};
-    int activeCount = 0;
-    for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
-        const FanCurvePoint* point = &config->points[i];
-        if (point->temperatureC < 0 || point->temperatureC > 100) {
-            set_message(err, errSize, "Fan curve temperatures must be 0-100 \xC2\xB0""C");
-            return false;
-        }
-        if (point->fanPercent < 0 || point->fanPercent > 100) {
-            set_message(err, errSize, "Fan curve percentages must be 0-100");
-            return false;
-        }
-        if (point->enabled) active[activeCount++] = *point;
-    }
-    if (activeCount < 2) {
-        set_message(err, errSize, "Enable at least two fan curve points");
-        return false;
-    }
-    sort_enabled_points(active, activeCount);
-    for (int i = 1; i < activeCount; i++) {
-        if (active[i].temperatureC <= active[i - 1].temperatureC) {
-            set_message(err, errSize, "Enabled fan curve temperatures must be strictly increasing");
-            return false;
-        }
-        if (active[i].fanPercent < active[i - 1].fanPercent) {
-            set_message(err, errSize, "Enabled fan curve percentages must be nondecreasing");
-            return false;
-        }
-    }
-    return true;
-}
-
-int fan_curve_interpolate_percent(const FanCurveConfig* config, int temperatureC) {
-    if (!config) return 0;
-
-    FanCurvePoint active[FAN_CURVE_MAX_POINTS] = {};
-    int activeCount = 0;
-    for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
-        if (config->points[i].enabled) active[activeCount++] = config->points[i];
-    }
-
-    if (activeCount < 1) return 100;
-    sort_enabled_points(active, activeCount);
-    if (activeCount == 1) return clamp_int(active[0].fanPercent, 0, 100);
-
-    temperatureC = clamp_int(temperatureC, 0, 100);
-    if (temperatureC <= active[0].temperatureC) return clamp_int(active[0].fanPercent, 0, 100);
-    if (temperatureC >= active[activeCount - 1].temperatureC) {
-        return clamp_int(active[activeCount - 1].fanPercent, 0, 100);
-    }
-
-    for (int i = 1; i < activeCount; i++) {
-        const FanCurvePoint* left = &active[i - 1];
-        const FanCurvePoint* right = &active[i];
-        if (temperatureC > right->temperatureC) continue;
-        int span = right->temperatureC - left->temperatureC;
-        if (span <= 0) return clamp_int(right->fanPercent, 0, 100);
-        int offset = temperatureC - left->temperatureC;
-        int pct = left->fanPercent +
-            (offset * (right->fanPercent - left->fanPercent) + span / 2) / span;
-        return clamp_int(pct, 0, 100);
-    }
-
-    return clamp_int(active[activeCount - 1].fanPercent, 0, 100);
-}
-
-void fan_curve_format_summary(const FanCurveConfig* config, char* buffer, size_t bufferSize) {
-    if (!buffer || bufferSize == 0) return;
-    if (!config) {
-        buffer[0] = 0;
-        return;
-    }
-    int activeCount = 0;
-    for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
-        if (config->points[i].enabled) activeCount++;
-    }
-    snprintf(buffer, bufferSize, "%d pts | %.2fs | %d\xC2\xB0""C hyst", activeCount, (double)config->pollIntervalMs / 1000.0, config->hysteresisC);
-    buffer[bufferSize - 1] = 0;
-}
-
-void initialize_desired_settings_defaults(DesiredSettings* desired) {
-    if (!desired) return;
-    memset(desired, 0, sizeof(*desired));
-    desired->lockTracksAnchor = true;
-    desired->fanAuto = true;
-    desired->fanMode = FAN_MODE_AUTO;
-    desired->powerLimitPct = 100;
-    fan_curve_set_default(&desired->fanCurve);
-}
-
-void normalize_desired_settings_for_ui(DesiredSettings* desired) {
-    if (!desired) return;
-    desired->hasGpuOffset = true;
-    desired->hasMemOffset = true;
-    desired->hasPowerLimit = true;
-    desired->hasFan = true;
-    if (desired->gpuOffsetMHz == 0) desired->gpuOffsetExcludeLowCount = 0;
-    desired->powerLimitPct = clamp_percent(desired->powerLimitPct == 0 ? 100 : desired->powerLimitPct);
-    desired->fanPercent = clamp_percent(desired->fanPercent <= 0 ? 50 : desired->fanPercent);
-    if (desired->fanMode < FAN_MODE_AUTO || desired->fanMode > FAN_MODE_CURVE) desired->fanMode = FAN_MODE_AUTO;
-    desired->fanAuto = desired->fanMode == FAN_MODE_AUTO;
-    fan_curve_normalize(&desired->fanCurve);
-    char err[128] = {};
-    if (!fan_curve_validate(&desired->fanCurve, err, sizeof(err))) {
-        fan_curve_set_default(&desired->fanCurve);
-    }
-}
+// initialize_desired_settings_defaults() and normalize_desired_settings_for_ui()
+// moved to desired_settings_ui_policy.h so the pure regression harness can pin
+// their clamps; linux_port.cpp is not part of that harness.
 
 bool desired_has_any_action(const DesiredSettings* desired) {
     if (!desired) return false;

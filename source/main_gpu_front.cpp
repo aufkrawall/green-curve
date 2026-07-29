@@ -1,3 +1,4 @@
+#include "fan_runtime_policy.h"   // shared manual-fan write verification
 static UINT fan_telemetry_interval_for_window_state() {
     if (!g_app.backgroundServiceAvailable) return 2000;
     return FAN_TELEMETRY_INTERVAL_MS;
@@ -189,6 +190,11 @@ void invalidate_tray_profile_cache() {
     g_app.trayLastRenderedState = TRAY_ICON_STATE_DEFAULT;
     g_app.trayProfileCacheProfilePart[0] = 0;
     g_app.trayLastRenderedTip[0] = 0;
+    // The per-slot "is saved" cache is derived from the same config file and is
+    // invalidated by exactly the same events (every successful config write
+    // calls this), so it rides along rather than needing a second hook that a
+    // future write path could forget.
+    g_app.profileSlotCacheValid = false;
 }
 static void clear_last_operation_details() {
     g_lastOperationIntent[0] = 0;
@@ -524,63 +530,7 @@ static bool gui_has_pending_curve_or_lock_edits() {
 static bool gui_has_pending_global_edits() {
     return g_app.guiStateDirty;
 }
-static void ensure_tray_profile_cache() {
-    if (g_app.trayProfileCacheValid) return;
-    g_app.trayProfileCacheValid = true;
-    g_app.trayProfileCacheProfilePart[0] = 0;
-    int selectedSlot = CONFIG_DEFAULT_SLOT;
-    bool hasConfigPath = g_app.configPath[0] != '\0';
-    if (hasConfigPath) {
-        selectedSlot = get_config_int(g_app.configPath, "profiles", "selected_slot", CONFIG_DEFAULT_SLOT);
-    }
-    if (selectedSlot < 1 || selectedSlot > CONFIG_NUM_SLOTS) {
-        selectedSlot = CONFIG_DEFAULT_SLOT;
-    }
-    if (!hasConfigPath) {
-        StringCchPrintfA(
-            g_app.trayProfileCacheProfilePart,
-            ARRAY_COUNT(g_app.trayProfileCacheProfilePart),
-            "Profile %d",
-            selectedSlot);
-        return;
-    }
-    bool hasSavedProfile = is_profile_slot_saved(g_app.configPath, selectedSlot);
-    StringCchPrintfA(
-        g_app.trayProfileCacheProfilePart,
-        ARRAY_COUNT(g_app.trayProfileCacheProfilePart),
-        "Profile %d (%s)",
-        selectedSlot,
-        hasSavedProfile ? "saved" : "empty");
-}
-// True when the GPU live state is actually available, so the snapshot's OC/fan
-// reflect real applied hardware state rather than a pending desired profile while
-// the driver is disabled/removed or the service is down.  Shared by the tray icon
-// theme and the tray tooltip so both stay consistent.
-static bool tray_hardware_live() {
-    if (g_app.usingBackgroundService && !g_app.isServiceProcess)
-        return gui_service_model_ready(&g_app.guiServiceModel) && g_app.loaded;
-    return g_app.loaded;
-}
-static void build_tray_tooltip(char* tip, size_t tipSize) {
-    if (!tip || tipSize == 0) return;
-    ensure_tray_profile_cache();
-    if (!tray_hardware_live()) {
-        // GPU live state unavailable: nothing is actually applied, so do not report
-        // OC/fan/profile as active (matches the default tray icon theme).
-        StringCchPrintfA(tip, tipSize, "Green Curve - %s%s",
-            gui_service_phase_tray_text(g_app.guiServiceModel.phase),
-            g_app.guiStateDirty ? " | unsaved draft preserved" : "");
-        return;
-    }
-    char mode[64] = {};
-    bool customOc = live_state_has_custom_oc();
-    bool customFan = live_state_has_custom_fan();
-    StringCchCopyA(mode, ARRAY_COUNT(mode), tray_mode_label(customOc, customFan));
-    const char* profilePart = g_app.trayProfileCacheProfilePart[0]
-        ? g_app.trayProfileCacheProfilePart
-        : "Profile 1";
-    StringCchPrintfA(tip, tipSize, "Green Curve - %s | %s", mode, profilePart);
-}
+#include "tray_presentation.cpp"
 static int clamp_percent(int value) {
     if (value < 0) return 0;
     if (value > 100) return 100;
@@ -736,12 +686,12 @@ static bool validate_fan_curve_for_runtime(const FanCurveConfig* curve, char* de
     }
     return true;
 }
+// Thin adapter over the shared reducer.  `requestedPct` is g_app.fanTargetPercent,
+// which is only refreshed while a fan is under manual policy, so a 0 there means
+// "no intent readback for this fan" rather than "the driver intends 0%".
 static bool manual_fan_readback_matches_target(int wantPct, int actualPct, unsigned int requestedPct) {
-    if (wantPct == 0) return actualPct == 0;
-    if (actualPct >= wantPct - 2 && actualPct <= wantPct + 2) return true;
-    int requested = (int)requestedPct;
-    if (requested <= 0) return false;
-    return requested >= wantPct - 2 && requested <= wantPct + 2;
+    return fan_manual_write_confirmed(wantPct, actualPct, (int)requestedPct,
+                                      requestedPct > 0);
 }
 static bool is_gpu_offset_excluded_low_point(int pointIndex, int gpuOffsetMHz, int excludeLowCount) {
     if (excludeLowCount <= 0) return false;
@@ -773,6 +723,29 @@ static bool should_show_best_guess_warning() {
     // explicitly disabled it. Known Pascal/Turing/Ampere/Lovelace/Blackwell
     // backends are not warning-gated.
     if (g_bestGuessWarningShownThisSession) return false;
+    return true;
+}
+// Second, independent tier: a family we DO recognize (so the VF layout is
+// right and backend selection must not change) whose probed control surface is
+// nevertheless incomplete — the integrated-SoC case, e.g. a GB10-class Grace
+// Blackwell part reporting Blackwell.  Returns false whenever the surface is
+// complete, which covers every validated discrete GPU and every build where the
+// probe found nothing, so this cannot start nagging existing installs.  Its
+// config key is deliberately distinct from the unrecognized-family one:
+// silencing "this GPU is new" must not silence "this GPU cannot do X".
+static bool should_show_limited_control_warning() {
+    if (!g_app.vfBackend) return false;
+    if (!gpu_requires_limited_control_warning(g_app.vfBackend->family,
+                                              &g_app.gpuCapability)) {
+        return false;
+    }
+    int hideWarning = get_config_int(g_app.configPath, "warnings",
+                                     "hide_limited_control_warning", 0);
+    if (hideWarning != 0) {
+        debug_log_on_change("limited control-surface warning suppressed by user config\n");
+        return false;
+    }
+    if (g_limitedControlWarningShownThisSession) return false;
     return true;
 }
 static void rollback_to_safe_defaults() {

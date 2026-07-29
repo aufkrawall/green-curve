@@ -227,6 +227,9 @@ static LRESULT CALLBACK LicenseDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LP
     return DefWindowProcA(hwnd, msg, wParam, lParam);
 }
 
+// Ahead of every shard that lays out or creates a labeled checkbox, so the hit-
+// area fit needs no separate forward declaration (F-CHECKBOX-HIT).
+#include "ui_theme_checkbox.cpp"
 #include "ui_main_layout.cpp"
 
 #ifdef GREEN_CURVE_SERVICE_BINARY
@@ -273,11 +276,49 @@ static void set_edit_value(HWND, unsigned int) {
 static void populate_edits() {
 }
 
+static void refresh_oc_range_hints() {
+}
+
+// The service owns no editor, so nothing is ever pending in it.
+static void gui_pending_changes_refresh() {
+}
+
+static bool gui_pending_edit_is_changed(HWND) {
+    return false;
+}
+
+static bool gui_pending_curve_point_is_changed(int) {
+    return false;
+}
+
+static bool gui_pending_domain_changed(unsigned int) {
+    return false;
+}
+
+static const GuiPendingSummary* gui_pending_summary() {
+    static const GuiPendingSummary empty = {};
+    return &empty;
+}
+
+static bool gui_pending_gpu_offset_projection(int*, int*, int*, int*) {
+    return false;
+}
+
+// The service has no UI. Nothing in the service build should reach a prompt,
+// but if it ever does, answer with the same safe result Escape would give.
+int gc_message_box(HWND, const char*, const char*, unsigned int type) {
+    return message_box_button_set(type).escapeId;
+}
+
 static void apply_lock(int, LockMode) {
 }
 
 static void unlock_all() {
 }
+#endif
+
+#ifndef GREEN_CURVE_SERVICE_BINARY
+#include "ui_message_box.cpp"
 #endif
 
 #include "main_data_paths.cpp"
@@ -541,9 +582,22 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
 #include "main_startup_task_runtime.cpp"
 #include "main_startup_task_definition.cpp"
 #include "main_runtime_nvml.cpp"
+// Must follow the NVML shard: the capability probe uses its file-static
+// nvml_ensure_ready() and the resolved g_nvml_api table.
+#include "gpu_capability_probe.cpp"
+// Both GPU support-warning tiers; must precede entry.cpp, which calls into it.
+#include "main_capability_warning.cpp"
+// Read-only --self-test report; also consumed by entry.cpp.
+#include "main_self_test.cpp"
+// CLI usage text, split out of entry.cpp; must precede it.
+#include "main_cli_help.cpp"
 #include "main_runtime_gpu.cpp"
 #include "main_runtime_ui.cpp"
-#include "ui_theme_checkbox.cpp"
+// CLI shards, both ahead of entry.cpp because handle_cli() dispatches into them:
+// the machine-wide administrator commands, and the upgrade settings transfer
+// that the setup program drives.
+#include "main_cli_admin.cpp"
+#include "main_settings_transfer.cpp"
 static void draw_lock_checkbox(const DRAWITEMSTRUCT* dis) {
     if (!dis) return;
     HDC hdc = dis->hDC;
@@ -568,6 +622,13 @@ static void draw_lock_checkbox(const DRAWITEMSTRUCT* dis) {
 
     COLORREF border = disabled ? RGB(0x5A, 0x5A, 0x68) : COL_BUTTON_BORDER;
     COLORREF fill = disabled ? COL_BUTTON_DISABLED : (mode != LOCK_MODE_NONE ? COL_BUTTON : COL_PANEL);
+    // F-PENDING: a moved, added, or removed lock rewrites the whole tail on
+    // Apply, so the anchor advertises that it is not what the GPU is running.
+    COLORREF tick = RGB(0xE8, 0xF2, 0xFF);
+    if (isActive && gui_pending_domain_changed(GUI_PENDING_LOCK)) {
+        border = disabled ? COL_PENDING_DIM : COL_PENDING;
+        tick = COL_PENDING;
+    }
     HBRUSH fillBr = CreateSolidBrush(fill);
     FillRect(hdc, &box, fillBr);
     DeleteObject(fillBr);
@@ -584,15 +645,17 @@ static void draw_lock_checkbox(const DRAWITEMSTRUCT* dis) {
         // Share the anti-aliased GDI+ checkmark renderer used by the themed
         // checkboxes (service install / share-all-users / tray) so the FLATTEN
         // tick is visually identical to them instead of a jagged raw-GDI Polyline.
-        // Color matches draw_themed_button()'s checked tick (RGB 0xE8,0xF2,0xFF).
-        draw_checkbox_tick_smooth(hdc, &box, RGB(0xE8, 0xF2, 0xFF));
+        // An applied lock matches draw_themed_button()'s checked tick
+        // (RGB 0xE8,0xF2,0xFF); an unapplied one is orange (see `tick` above).
+        draw_checkbox_tick_smooth(hdc, &box, tick);
     } else if (mode == LOCK_MODE_HARD && !disabled) {
         int cx = (box.left + box.right) / 2;
         int cy = (box.top + box.bottom) / 2;
         int dotR = boxSize / 4;
         if (dotR < dp(2)) dotR = dp(2);
-        HBRUSH dotBr = CreateSolidBrush(COL_TEXT);
-        HPEN dotPen = CreatePen(PS_SOLID, 1, COL_TEXT);
+        COLORREF dot = tick == COL_PENDING ? COL_PENDING : COL_TEXT;
+        HBRUSH dotBr = CreateSolidBrush(dot);
+        HPEN dotPen = CreatePen(PS_SOLID, 1, dot);
         SelectObject(hdc, dotPen);
         SelectObject(hdc, dotBr);
         Ellipse(hdc, cx - dotR, cy - dotR, cx + dotR + 1, cy + dotR + 1);

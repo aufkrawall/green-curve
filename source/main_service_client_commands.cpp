@@ -133,8 +133,9 @@ static bool service_client_get_ready_state(ServiceResponse* response,
             SERVICE_STATE_SECTION_READY_REQUIRED) !=
                 SERVICE_STATE_SECTION_READY_REQUIRED) {
         set_message(err, errSize,
-            "Selected GPU state is not ready (service phase %u, validity 0x%02X)",
-            response->state.gpuPhase, response->state.validSections);
+            "Selected GPU state is not ready (service phase %lu, validity 0x%02lX)",
+            (unsigned long)response->state.gpuPhase,
+            (unsigned long)response->state.validSections);
         return false;
     }
     return true;
@@ -205,6 +206,25 @@ static bool service_client_execute_mutation_request(const ServiceRequest* reques
         set_message(result, resultSize, "Invalid background mutation request");
         return false;
     }
+    // The single choke point for every hardware write this process asks for.
+    // An unstamped mutation is refused HERE rather than on the wire: the
+    // service answers a zeroed precondition with a protocol-level refusal that
+    // carries no operation state, which the caller can only read as "outcome
+    // unknown". Failing before the send keeps the outcome knowable — nothing
+    // was attempted — and names the real defect in the log.
+    if (!service_client_mutation_is_stamped(request)) {
+        set_message(result, resultSize,
+            "This request was not bound to a ready GPU state and was not sent. "
+            "Refresh the background service state and retry.");
+        debug_log("service client mutation: refused to send operation=%llu command=%lu "
+            "without reconnect preconditions (instance=%llu generation=%llu topology=%llu)\n",
+            (unsigned long long)request->operationId,
+            (unsigned long)request->command,
+            (unsigned long long)request->expectedServiceInstanceId,
+            (unsigned long long)request->expectedGpuGeneration,
+            (unsigned long long)request->expectedTopologySignature);
+        return false;
+    }
     char err[256] = {};
     if (!service_send_request(request, response, SERVICE_APPLY_CLIENT_TIMEOUT_MS,
             err, sizeof(err))) {
@@ -223,25 +243,43 @@ static bool service_client_execute_mutation_request(const ServiceRequest* reques
     return response->status == SERVICE_STATUS_OK;
 }
 
+// Synchronous apply: CLI verbs, the installer's settings restore, and any other
+// caller without the window's GuiServiceModel. The window path builds the same
+// request but stamps it from that model (gui_mutation_stamp_request) instead.
 static bool service_client_apply_desired(const DesiredSettings* desired, const char* source,
     bool interactive, ServiceApplyOrigin origin, ServiceProfileSource profileSource,
     int profileSlot, char* result, size_t resultSize, ServiceSnapshot* snapshotOut) {
     ServiceRequest request = {};
     if (!service_client_build_apply_request(desired, source, interactive, origin,
             profileSource, profileSlot, &request, result, resultSize)) return false;
+    if (!service_client_stamp_mutation_preconditions(&request,
+            &g_syncClientStateIdentity)) {
+        set_message(result, resultSize,
+            "The background service has not published a ready GPU state for this "
+            "client, so the settings were not applied. Retry once the service reports ready.");
+        debug_log("service client apply: no stamped service state identity; "
+            "the caller must read a READY envelope before applying\n");
+        return false;
+    }
     ServiceResponse response = {};
     bool ok = service_client_execute_mutation_request(&request, &response,
         result, resultSize);
     if (snapshotOut) *snapshotOut = response.snapshot;
-    g_app.serviceActiveDesiredValid = response.state.activeDesiredValid;
-    if (response.state.activeDesiredValid)
-        g_app.serviceActiveDesired = response.desired;
-    else
-        memset(&g_app.serviceActiveDesired, 0,
-            sizeof(g_app.serviceActiveDesired));
-    if ((response.state.validSections &
-            SERVICE_STATE_SECTION_APPLIED_CONTROLS) != 0)
-        apply_control_state_to_gui(&response.controlState);
+    // A refusal answered before authorization publishes no state at all.
+    // Projecting that emptiness would report "the service holds no intent",
+    // wiping the client's view of settings the service is in fact still
+    // holding — so only an answer that carries an envelope updates it.
+    if (response.state.serviceInstanceId != 0) {
+        g_app.serviceActiveDesiredValid = response.state.activeDesiredValid;
+        if (response.state.activeDesiredValid)
+            g_app.serviceActiveDesired = response.desired;
+        else
+            memset(&g_app.serviceActiveDesired, 0,
+                sizeof(g_app.serviceActiveDesired));
+        if ((response.state.validSections &
+                SERVICE_STATE_SECTION_APPLIED_CONTROLS) != 0)
+            apply_control_state_to_gui(&response.controlState);
+    }
     return ok;
 }
 
@@ -396,23 +434,63 @@ static bool service_client_logon_handoff(char* result, size_t resultSize) {
     return ok;
 }
 
+// Read a READY envelope and adopt its identity for the mutations that follow.
+// A single round trip, no retry: callers that must tolerate a service still
+// bringing the GPU up own that wait themselves.
+static bool service_client_refresh_state_identity(const char* source,
+    char* err, size_t errSize) {
+    ServiceResponse stateResponse = {};
+    if (!service_client_get_ready_state(&stateResponse, 5000,
+            source && source[0] ? source : "client state identity",
+            err, errSize)) return false;
+    apply_ready_service_envelope_to_app(&stateResponse);
+    return service_client_identity_complete(&g_syncClientStateIdentity);
+}
+
 static bool service_client_reset(char* result, size_t resultSize, ServiceSnapshot* snapshotOut) {
     ServiceRequest request = {};
     if (!service_client_build_reset_request(&request, result, resultSize))
         return false;
+    // A Reset derives nothing from the published state — it is "return this
+    // GPU to stock" — so unlike an Apply it may fetch the identity it needs
+    // right here.  --service-remove reaches this with no preamble at all, and
+    // without the fetch its reset went out unstamped and was refused, leaving
+    // the GPU overclocked after an uninstall.
+    if (!service_client_identity_complete(&g_syncClientStateIdentity)) {
+        char identityErr[256] = {};
+        if (!service_client_refresh_state_identity("client reset",
+                identityErr, sizeof(identityErr))) {
+            set_message(result, resultSize,
+                "The background service did not report a ready GPU, so nothing was reset: %s",
+                identityErr[0] ? identityErr : "no ready state was published");
+            debug_log("service client reset: no stamped service state identity: %s\n",
+                identityErr[0] ? identityErr : "unknown");
+            return false;
+        }
+    }
+    if (!service_client_stamp_mutation_preconditions(&request,
+            &g_syncClientStateIdentity)) {
+        set_message(result, resultSize,
+            "The background service state could not be bound to this reset, so nothing was reset.");
+        return false;
+    }
     ServiceResponse response = {};
     bool ok = service_client_execute_mutation_request(&request, &response,
         result, resultSize);
     if (snapshotOut) *snapshotOut = response.snapshot;
-    g_app.serviceActiveDesiredValid = response.state.activeDesiredValid;
-    if (response.state.activeDesiredValid)
-        g_app.serviceActiveDesired = response.desired;
-    else
-        memset(&g_app.serviceActiveDesired, 0,
-            sizeof(g_app.serviceActiveDesired));
-    if ((response.state.validSections &
-            SERVICE_STATE_SECTION_APPLIED_CONTROLS) != 0)
-        apply_control_state_to_gui(&response.controlState);
+    // Same rule as the apply path: an answer that publishes no state must not
+    // be projected as "the service holds nothing".
+    if (response.state.serviceInstanceId != 0) {
+        g_app.serviceActiveDesiredValid = response.state.activeDesiredValid;
+        if (response.state.activeDesiredValid)
+            g_app.serviceActiveDesired = response.desired;
+        else
+            memset(&g_app.serviceActiveDesired, 0,
+                sizeof(g_app.serviceActiveDesired));
+        if ((response.state.validSections &
+                SERVICE_STATE_SECTION_APPLIED_CONTROLS) != 0)
+            apply_control_state_to_gui(&response.controlState);
+    }
     return ok;
 }
 

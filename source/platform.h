@@ -210,6 +210,24 @@ static inline void pl_thread_join(pl_thread t) {
 #endif
 
 // ---------------------------------------------------------------------------
+// Degree sign, in the encoding the platform's display layer expects.
+//
+// Windows writes captions and dialog text through the ANSI (CP-1252) GDI/Win32
+// entry points, where U+00B0 is the single byte 0xB0.  The Linux TUI writes
+// UTF-8 straight to a terminal, where the same character is 0xC2 0xB0, and a
+// lone 0xB0 is an invalid continuation byte that renders as a replacement
+// glyph.  fan_curve.cpp is shared by both, so it cannot hardcode either form.
+//
+// Always use it as an adjacent string literal (GC_DEGREE "C"), never inside
+// one: "0\xB0C" would parse as the single hex escape \xB0C.
+// ---------------------------------------------------------------------------
+#if defined(_WIN32)
+#define GC_DEGREE "\xB0"
+#else
+#define GC_DEGREE "\xC2\xB0"
+#endif
+
+// ---------------------------------------------------------------------------
 // Bounded string helpers (portable replacements for StringCch*)
 //
 // All guarantee NUL-termination when dstSize > 0.  gc_snprintf/gc_vsnprintf

@@ -5,6 +5,10 @@
 #include "linux_gpu.h"
 #include "linux_daemon.h"
 #include "linux_backend.h"
+#include "linux_crash_breadcrumb.h"
+#include "linux_debug_log.h"
+#include "linux_terminal_launch.h"
+#include "linux_startup_sync.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -18,28 +22,6 @@
 #include <sys/utsname.h>
 #include <unistd.h>
 #include <vector>
-
-
-static bool command_available(const char* name) {
-    const char* path = getenv("PATH");
-    if (!name || !*name || !path) return false;
-    std::string pathList(path);
-    size_t start = 0;
-    while (start <= pathList.size()) {
-        size_t sep = pathList.find(':', start);
-        std::string part = pathList.substr(start, sep == std::string::npos ? std::string::npos : sep - start);
-        if (part.empty()) part = ".";
-        std::string candidate = path_join(part, name);
-        // flawfinder: ignore -- read-only probe hint; commands below are fixed constants.
-        if (access(candidate.c_str(), X_OK) == 0) {
-            struct stat st = {};
-            if (stat(candidate.c_str(), &st) == 0 && S_ISREG(st.st_mode)) return true;
-        }
-        if (sep == std::string::npos) break;
-        start = sep + 1;
-    }
-    return false;
-}
 
 static bool read_small_file(const char* path, std::string* out, size_t maxBytes) {
     out->clear();
@@ -133,10 +115,10 @@ bool run_linux_probe(const char* outputPath, ProbeSummary* summary, char* err, s
         summary->isRoot = isRoot;
         summary->hasWayland = hasWayland;
         summary->hasDisplay = xDisplay && *xDisplay;
-        summary->hasNvidiaSmi = command_available("nvidia-smi");
-        summary->hasSystemctl = command_available("systemctl");
-        summary->hasSudo = command_available("sudo");
-        summary->hasPkexec = command_available("pkexec");
+        summary->hasNvidiaSmi = linux_command_available("nvidia-smi");
+        summary->hasSystemctl = linux_command_available("systemctl");
+        summary->hasSudo = linux_command_available("sudo");
+        summary->hasPkexec = linux_command_available("pkexec");
         snprintf(summary->sessionType, sizeof(summary->sessionType), "%s", sessionType ? sessionType : "unknown");
         snprintf(summary->currentDesktop, sizeof(summary->currentDesktop), "%s", currentDesktop ? currentDesktop : "unknown");
         snprintf(summary->reportPath, sizeof(summary->reportPath), "%s", resolvedOutput);
@@ -157,13 +139,13 @@ bool run_linux_probe(const char* outputPath, ProbeSummary* summary, char* err, s
     appendf(&report, "- TERM: `%s`\n\n", getenv("TERM") ? getenv("TERM") : "unset");
 
     appendf(&report, "## Tools\n\n");
-    appendf(&report, "- `nvidia-smi`: `%s`\n", command_available("nvidia-smi") ? "yes" : "no");
-    appendf(&report, "- `systemctl`: `%s`\n", command_available("systemctl") ? "yes" : "no");
-    appendf(&report, "- `sudo`: `%s`\n", command_available("sudo") ? "yes" : "no");
-    appendf(&report, "- `pkexec`: `%s`\n", command_available("pkexec") ? "yes" : "no");
-    appendf(&report, "- `journalctl`: `%s`\n", command_available("journalctl") ? "yes" : "no");
-    appendf(&report, "- `modinfo`: `%s`\n", command_available("modinfo") ? "yes" : "no");
-    appendf(&report, "- `lspci`: `%s`\n\n", command_available("lspci") ? "yes" : "no");
+    appendf(&report, "- `nvidia-smi`: `%s`\n", linux_command_available("nvidia-smi") ? "yes" : "no");
+    appendf(&report, "- `systemctl`: `%s`\n", linux_command_available("systemctl") ? "yes" : "no");
+    appendf(&report, "- `sudo`: `%s`\n", linux_command_available("sudo") ? "yes" : "no");
+    appendf(&report, "- `pkexec`: `%s`\n", linux_command_available("pkexec") ? "yes" : "no");
+    appendf(&report, "- `journalctl`: `%s`\n", linux_command_available("journalctl") ? "yes" : "no");
+    appendf(&report, "- `modinfo`: `%s`\n", linux_command_available("modinfo") ? "yes" : "no");
+    appendf(&report, "- `lspci`: `%s`\n\n", linux_command_available("lspci") ? "yes" : "no");
 
     appendf(&report, "## Paths\n\n");
     append_path_state(&report, "/dev/nvidiactl");
@@ -174,7 +156,40 @@ bool run_linux_probe(const char* outputPath, ProbeSummary* summary, char* err, s
     append_path_state(&report, "/sys/kernel/debug");
     append_path_state(&report, "/sys/class/drm");
     append_path_state(&report, "/sys/class/hwmon");
+    struct stat daemonSocketStatus = {};
+    if (lstat(GC_DAEMON_SOCKET_PATH, &daemonSocketStatus) == 0) {
+        appendf(&report,
+            "- Daemon socket pathname: type=`%s`, uid=`%lu`, gid=`%lu`, mode=`%04o`\n",
+            S_ISSOCK(daemonSocketStatus.st_mode) ? "socket" : "unexpected",
+            (unsigned long)daemonSocketStatus.st_uid,
+            (unsigned long)daemonSocketStatus.st_gid,
+            (unsigned int)(daemonSocketStatus.st_mode & 0777));
+    } else {
+        appendf(&report, "- Daemon socket pathname: unavailable (`%s`)\n",
+                strerror(errno));
+    }
     report.push_back('\n');
+
+    appendf(&report, "## Diagnostics\n\n");
+    appendf(&report, "- Debug log: `%s`\n",
+            linux_debug_log_path()[0] ? linux_debug_log_path()
+                                      : "disabled ([debug] enabled=0)");
+    // Green Curve writes a breadcrumb, not a dump: the real core file is
+    // produced by the kernel, so where it lands is the first thing to check
+    // when a crash needs post-mortem analysis.
+    std::string corePattern;
+    if (read_small_file("/proc/sys/kernel/core_pattern", &corePattern, 512)) {
+        while (!corePattern.empty() &&
+               (corePattern.back() == '\n' || corePattern.back() == '\r'))
+            corePattern.pop_back();
+        appendf(&report, "- Kernel core_pattern: `%s`\n", corePattern.c_str());
+        bool systemdCoredump = corePattern.find("systemd-coredump") != std::string::npos;
+        appendf(&report, "- Core dumps: %s\n", systemdCoredump
+            ? "captured by systemd-coredump; list them with `coredumpctl list greencurve`"
+            : "written per the pattern above (see `ulimit -c`)");
+    }
+    appendf(&report, "- `coredumpctl`: `%s`\n\n",
+            linux_command_available("coredumpctl") ? "yes" : "no");
 
     struct utsname systemName = {};
     if (uname(&systemName) == 0) {
@@ -184,10 +199,10 @@ bool run_linux_probe(const char* outputPath, ProbeSummary* summary, char* err, s
     }
 
     append_code_block(&report, "id", capture_command_output("id", 4096));
-    if (command_available("lsmod")) append_code_block(&report, "lsmod | grep nvidia", capture_command_output("lsmod | grep -i nvidia", 8192));
-    if (command_available("lspci")) append_code_block(&report, "lspci | grep -i nvidia", capture_command_output("lspci -nn | grep -i nvidia", 8192));
-    if (command_available("modinfo")) append_code_block(&report, "modinfo nvidia", capture_command_output("modinfo nvidia", 16384));
-    if (command_available("nvidia-smi")) {
+    if (linux_command_available("lsmod")) append_code_block(&report, "lsmod | grep nvidia", capture_command_output("lsmod | grep -i nvidia", 8192));
+    if (linux_command_available("lspci")) append_code_block(&report, "lspci | grep -i nvidia", capture_command_output("lspci -nn | grep -i nvidia", 8192));
+    if (linux_command_available("modinfo")) append_code_block(&report, "modinfo nvidia", capture_command_output("modinfo nvidia", 16384));
+    if (linux_command_available("nvidia-smi")) {
         append_code_block(&report, "nvidia-smi -L", capture_command_output("nvidia-smi -L", 8192));
         append_code_block(&report, "nvidia-smi -q -d POWER,CLOCK,FAN,PERFORMANCE", capture_command_output("nvidia-smi -q -d POWER,CLOCK,FAN,PERFORMANCE", 32768));
     }
@@ -207,6 +222,65 @@ bool run_linux_probe(const char* outputPath, ProbeSummary* summary, char* err, s
         }
     }
     globfree(&gpuInfo);
+
+    appendf(&report, "## Backend Binding and VF Health (read-only)\n\n");
+    LinuxGpuState backend = {};
+    char backendError[256] = {};
+    bool backendReady = linux_backend_init(
+        &backend, nullptr, backendError, sizeof(backendError));
+    appendf(&report, "- NVML backend ready: `%s`\n",
+            backendReady ? "yes" : "no");
+    appendf(&report, "- GPU: `%s`\n",
+            backend.gpuName[0] ? backend.gpuName : "unavailable");
+    appendf(&report, "- Family: `%d`\n", (int)backend.family);
+    appendf(&report, "- Match method: `%s`\n",
+            linux_gpu_match_method_name(backend.nvapiMatchMethod));
+    appendf(&report, "- Architecture source: `%s`\n",
+            linux_gpu_architecture_source_name(backend.architectureSource));
+    appendf(&report,
+            "- Driver statuses: info=`%d`, status=`%d`, control=`%d`\n",
+            backend.vfInfoStatus, backend.vfStatusStatus,
+            backend.vfControlStatus);
+    appendf(&report, "- VF snapshot fresh: `%s` (%d points)\n",
+            backend.vfSnapshotFresh ? "yes" : "no",
+            backend.numPopulated);
+    appendf(&report, "- Health: `%s` (driver status `%d`)\n",
+            service_gpu_health_reason_name(backend.health.reason),
+            backend.health.driverStatus);
+    appendf(&report, "- Detail: `%s`\n",
+            backend.health.detail[0] ? backend.health.detail :
+            (backendError[0] ? backendError : "none"));
+    if (backend.nvmlLib || backend.nvapiLib)
+        linux_backend_shutdown(&backend);
+
+    ServiceResponse daemonState = {};
+    char daemonError[256] = {};
+    bool daemonOnline = linux_daemon_get_state(
+        nullptr, &daemonState, daemonError, sizeof(daemonError));
+    appendf(&report, "\n## Daemon Protocol and Published Health\n\n");
+    appendf(&report, "- Reachable as this user: `%s`\n",
+            daemonOnline ? "yes" : "no");
+    if (daemonOnline) {
+        appendf(&report,
+            "- Version/build/protocol/PID: `%s` / `%u` / `%u` / `%u`\n",
+            daemonState.serviceVersion, daemonState.serviceBuildNumber,
+            daemonState.version, daemonState.servicePid);
+        appendf(&report,
+            "- Phase: `%u`; VF fresh: `%s`; domains: `0x%02x`\n",
+            daemonState.state.gpuPhase,
+            daemonState.snapshot.health.vfSnapshotFresh ? "yes" : "no",
+            daemonState.snapshot.health.availableMutationDomains);
+        appendf(&report, "- Health: `%s` (status `%d`) — `%s`\n",
+            service_gpu_health_reason_name(
+                daemonState.snapshot.health.reason),
+            daemonState.snapshot.health.driverStatus,
+            daemonState.snapshot.health.detail[0]
+                ? daemonState.snapshot.health.detail : "none");
+    } else {
+        appendf(&report, "- Connection detail: `%s`\n",
+            daemonError[0] ? daemonError : "unknown daemon error");
+    }
+    report.push_back('\n');
 
     appendf(&report, "## Library Candidates\n\n");
     const char* libraryPatterns[] = {
@@ -248,7 +322,11 @@ bool write_linux_assets(const char* outputDir, const char* execPath, const char*
 
     std::string execShell = shell_quote_single(execPath);
     std::string configShell = shell_quote_single(configPath);
-    std::string desktopExec = "sh -lc \"exec " + execShell + " --tui --config " + configShell + "\"";
+    // --from-desktop keeps the window open long enough to read an error; on a
+    // clean quit the terminal closes immediately, which is what a launcher
+    // should do.
+    std::string desktopExec = "sh -lc \"exec " + execShell +
+        " --tui --from-desktop --config " + configShell + "\"";
     std::string serviceExec = "/bin/sh -lc \"exec " + execShell + " --apply-config --config " + configShell + "\"";
 
     std::string desktop;
@@ -294,7 +372,13 @@ bool write_linux_assets(const char* outputDir, const char* execPath, const char*
         "- `greencurve.desktop`: visible launcher with `Terminal=true` for GNOME/KDE/Wayland sessions\n"
         "- `greencurve-autostart.desktop`: session autostart launcher that still opens a terminal window\n"
         "- `greencurve-apply.service`: optional one-shot profile apply client that requires the real `greencurve.service` daemon\n\n"
-        "Install example:\n\n"
+        "The release archive also ships `greencurve-setup.sh`, which performs the\n"
+        "install, group enrollment and desktop entry in one step:\n\n"
+        "```bash\n"
+        "sudo ./greencurve-setup.sh install\n"
+        "./greencurve-setup.sh status\n"
+        "```\n\n"
+        "Manual equivalent:\n\n"
         "```bash\n"
         "install -Dm644 greencurve.desktop ~/.local/share/applications/greencurve.desktop\n"
         "install -Dm644 greencurve-autostart.desktop ~/.config/autostart/greencurve.desktop\n"
@@ -323,6 +407,10 @@ bool write_linux_assets(const char* outputDir, const char* execPath, const char*
 }
 
 int main(int argc, char** argv) {
+    // Installed before any parsing or driver work so an early failure is still
+    // diagnosable.  Writes a journal breadcrumb and then re-raises; it never
+    // suppresses the crash.
+    linux_install_crash_breadcrumbs("cli");
     LinuxCliOptions opts = {};
     if (!parse_linux_cli_options(argc, argv, &opts)) {
         fprintf(stderr, "%s\n", opts.error[0] ? opts.error : "Failed to parse CLI");
@@ -337,6 +425,34 @@ int main(int argc, char** argv) {
     char configPath[LINUX_PATH_MAX] = {};
     if (opts.hasConfigPath) snprintf(configPath, sizeof(configPath), "%s", opts.configPath);
     else if (!default_linux_config_path(configPath, sizeof(configPath))) snprintf(configPath, sizeof(configPath), "%s", CONFIG_FILE_NAME);
+
+    // Debug logging is configured before any GPU, daemon or terminal work so an
+    // early failure is still recorded.  The daemon logs into its writable state
+    // directory and mirrors to the journal; clients log next to config.ini and
+    // keep stderr clean for the terminal UI.
+    const char* debugRole = opts.daemon ? "daemon"
+        : (opts.tui || !opts.recognized) ? "tui" : "cli";
+    linux_debug_log_set_enabled(linux_debug_log_enabled_for(
+        getenv(LINUX_DEBUG_LOG_ENV),
+        load_linux_debug_enabled(configPath, LINUX_DEBUG_DEFAULT_ENABLED)));
+    linux_debug_log_set_stderr_mirror(opts.daemon);
+    linux_debug_log_configure(configPath, opts.daemon, debugRole);
+    // A fatal signal now leaves its breadcrumb in the log file as well as on
+    // stderr, which is the only copy a desktop-launched client ever has.
+    linux_set_crash_log_fd(linux_debug_log_raw_fd());
+    // Group membership and socket permissions are the most common reason a
+    // client cannot reach the daemon, so they are recorded up front rather than
+    // only when a request happens to fail.
+    if (!opts.daemon && linux_debug_log_is_enabled())
+        linux_daemon_log_client_environment();
+    linux_debug_logf("cli: argc=%d role=%s recognized=%d applyConfig=%d "
+                     "saveConfig=%d probe=%d selfTest=%d serviceInstall=%d "
+                     "serviceRemove=%d startupPolicy=%d",
+                     argc, debugRole, opts.recognized ? 1 : 0,
+                     opts.applyConfig ? 1 : 0, opts.saveConfig ? 1 : 0,
+                     opts.probe ? 1 : 0, opts.selfTest ? 1 : 0,
+                     opts.serviceInstall ? 1 : 0, opts.serviceRemove ? 1 : 0,
+                     (int)opts.startupPolicyAction);
 
     GpuAdapterInfo gpuTarget = {};
     if (opts.hasGpuTarget) {
@@ -383,19 +499,40 @@ int main(int argc, char** argv) {
 
     if (opts.serviceInstall || opts.serviceRemove) {
         char svcErr[256] = {};
-        int rc = opts.serviceInstall ? linux_service_install(svcErr, sizeof(svcErr))
-                                     : linux_service_remove(svcErr, sizeof(svcErr));
+        ServiceResponse verifiedDaemon = {};
+        int rc = opts.serviceInstall
+            ? linux_service_install(svcErr, sizeof(svcErr), &verifiedDaemon)
+            : linux_service_remove(svcErr, sizeof(svcErr));
         if (rc != 0) {
             fprintf(stderr, "%s\n", svcErr[0] ? svcErr : "service operation failed");
             return rc;
         }
         if (opts.serviceInstall) {
+            // The group paragraph is decided, not assumed: printing "add your
+            // user" to someone who is already enrolled -- or to someone whose
+            // enrollment greencurve-setup.sh is about to perform on the very
+            // next line -- sends them chasing a non-problem.
+            char groupAdvice[512] = {};
+            linux_describe_group_enrollment(groupAdvice, sizeof(groupAdvice));
             printf(
-                "Green Curve daemon installed and started (systemctl status greencurve).\n"
-                "The daemon socket permits root and greencurve group members (mode 0660).\n"
-                "To control the GPU without sudo, add your user:\n"
-                "  sudo usermod -aG greencurve \"$USER\"\n"
-                "Then sign out/in, or run: newgrp greencurve\n");
+                "Green Curve daemon installed, restarted, and verified "
+                "(version %s, build %u, protocol %u, pid %u).\n"
+                "The daemon socket pathname was verified root:greencurve mode=0660.\n"
+                "%s",
+                verifiedDaemon.serviceVersion,
+                verifiedDaemon.serviceBuildNumber,
+                verifiedDaemon.version,
+                verifiedDaemon.servicePid,
+                groupAdvice);
+            if (verifiedDaemon.state.gpuPhase != SERVICE_GPU_PHASE_READY) {
+                const ServiceGpuHealth& health = verifiedDaemon.snapshot.health;
+                fprintf(stderr,
+                    "Warning: daemon protocol is healthy, but GPU state is degraded: %s%s%s "
+                    "(available mutation domains=0x%02x).\n",
+                    service_gpu_health_reason_name(health.reason),
+                    health.detail[0] ? " — " : "", health.detail,
+                    health.availableMutationDomains);
+            }
         } else {
             printf("Green Curve daemon removed.\n");
         }
@@ -486,6 +623,91 @@ int main(int argc, char** argv) {
             return 1;
         }
         printf("Profile %d written to %s\n", targetSlot, configPath);
+        // The daemon holds its own snapshot of a boot-applied profile and
+        // cannot read this file, so writing the slot is only half the update.
+        ServiceResponse policy = {};
+        char policyErr[256] = {};
+        bool policyKnown = linux_daemon_get_startup_policy(&policy, policyErr,
+                                                           sizeof(policyErr));
+        if (!policyKnown) {
+            printf("Note: the daemon is unreachable, so a boot-apply snapshot "
+                   "of this profile (if configured) still holds the previous "
+                   "values.\n");
+        } else {
+            LinuxStartupSyncResult sync = linux_startup_sync_after_profile_write(
+                configPath, targetSlot, true, true,
+                policy.state.startupPolicyMode, policy.state.startupPolicySlot);
+            if (sync.action != STARTUP_SNAPSHOT_SYNC_NONE) {
+                printf("%s%s\n", sync.ok ? "" : "WARNING: ", sync.message);
+                if (!sync.ok) return 1;
+            }
+        }
+    }
+
+    if (opts.startupPolicyAction == LINUX_STARTUP_POLICY_ACTION_SHOW) {
+        ServiceResponse policy = {};
+        char policyErr[256] = {};
+        if (!linux_daemon_get_startup_policy(&policy, policyErr, sizeof(policyErr))) {
+            fprintf(stderr, "Cannot read the startup policy: %s\n",
+                    policyErr[0] ? policyErr : "daemon request failed");
+            return 1;
+        }
+        printf("Startup policy: %s\n",
+               service_startup_policy_mode_name(policy.state.startupPolicyMode));
+        if (policy.state.startupPolicyMode == SERVICE_STARTUP_POLICY_PROFILE)
+            printf("Startup profile slot: %u\n",
+                   (unsigned int)policy.state.startupPolicySlot);
+        if (policy.message[0]) printf("%s\n", policy.message);
+        // "What boots" is the snapshot the daemon holds, not the profile as it
+        // reads today; say so whenever the two have drifted apart.
+        LinuxStartupSnapshotReport report = linux_startup_snapshot_report(
+            configPath, true, policy.state.startupPolicyMode,
+            policy.state.startupPolicySlot);
+        print_startup_snapshot_report(stdout, &report, configPath);
+    }
+
+    if (opts.startupPolicyAction == LINUX_STARTUP_POLICY_ACTION_SET) {
+        char policyResult[512] = {};
+        bool policyOk = false;
+        if (opts.startupPolicyMode == SERVICE_STARTUP_POLICY_PROFILE) {
+            // The daemon cannot read the caller's config.ini (ProtectHome=yes),
+            // so the profile is resolved here and stored as a snapshot bound to
+            // one exact GPU identity.
+            DesiredSettings startupDesired = {};
+            char loadErr[256] = {};
+            if (!load_profile_from_config_path(configPath, opts.startupPolicySlot,
+                                               &startupDesired, loadErr,
+                                               sizeof(loadErr))) {
+                fprintf(stderr, "Cannot load profile %d for the startup policy: %s\n",
+                        opts.startupPolicySlot,
+                        loadErr[0] ? loadErr : "profile unavailable");
+                return 1;
+            }
+            normalize_desired_settings_for_ui(&startupDesired);
+            GpuAdapterInfo startupTarget = {};
+            char targetErr[256] = {};
+            if (!linux_daemon_resolve_write_target(
+                    gpuTarget.valid ? &gpuTarget : nullptr, &startupTarget,
+                    targetErr, sizeof(targetErr))) {
+                fprintf(stderr, "Cannot bind the startup policy to a GPU: %s\n",
+                        targetErr[0] ? targetErr : "no exact GPU identity");
+                return 1;
+            }
+            char label[64] = {};
+            snprintf(label, sizeof(label), "profile %d", opts.startupPolicySlot);
+            policyOk = linux_daemon_set_startup_policy(
+                SERVICE_STARTUP_POLICY_PROFILE, opts.startupPolicySlot, label,
+                &startupTarget, &startupDesired,
+                policyResult, sizeof(policyResult));
+        } else {
+            policyOk = linux_daemon_set_startup_policy(
+                (unsigned int)opts.startupPolicyMode, 0, nullptr, nullptr,
+                nullptr, policyResult, sizeof(policyResult));
+        }
+        printf("%s\n", policyResult[0] ? policyResult
+                                       : (policyOk ? "Startup policy updated"
+                                                   : "Startup policy update failed"));
+        if (!policyOk) return 1;
     }
 
     if (opts.dump) {
@@ -511,12 +733,38 @@ int main(int argc, char** argv) {
     }
 
     if (opts.showHelp || opts.dump || opts.json || opts.dumpLive || opts.jsonLive ||
-        opts.probe || opts.writeAssets || opts.saveConfig || opts.applyConfig) {
+        opts.probe || opts.writeAssets || opts.saveConfig || opts.applyConfig ||
+        opts.startupPolicyAction != LINUX_STARTUP_POLICY_ACTION_NONE) {
         return 0;
+    }
+
+    // Started by double-clicking the binary in a file manager: there is no
+    // terminal to draw the TUI in, so re-exec inside the session's terminal
+    // emulator rather than failing to a stderr nobody can see.
+    if (linux_terminal_relaunch_wanted(opts.fromDesktop)) {
+        char relaunchErr[512] = {};
+        linux_terminal_relaunch(argc, argv, relaunchErr, sizeof(relaunchErr));
+        // Only reached when no terminal could be started; the message is the
+        // actionable one (which terminals were looked for, and what to run).
+        fprintf(stderr, "%s\n", relaunchErr[0] ? relaunchErr
+            : "cannot open a terminal window for the Green Curve TUI");
+        return 1;
     }
 
     // The TUI starts from the daemon's live state.  A selected profile is only
     // staged after the user explicitly activates Load inside the TUI.
-    return linux_run_tui(configPath, slot, nullptr,
-                         gpuTarget.valid ? &gpuTarget : nullptr);
+    int tuiStatus = linux_run_tui(configPath, slot, nullptr,
+                                  gpuTarget.valid ? &gpuTarget : nullptr);
+    linux_debug_logf("tui: exited with status %d fromDesktop=%d",
+                     tuiStatus, opts.fromDesktop ? 1 : 0);
+    if (opts.fromDesktop && tuiStatus != 0) {
+        // The terminal window closes as soon as this process exits, which is
+        // what the user wants after pressing q — but it would also erase the
+        // reason for a failure before it could be read.
+        fprintf(stderr, "\nGreen Curve exited with status %d. "
+                        "Press Enter to close this window.\n", tuiStatus);
+        int discarded = 0;
+        while ((discarded = getchar()) != '\n' && discarded != EOF) {}
+    }
+    return tuiStatus;
 }

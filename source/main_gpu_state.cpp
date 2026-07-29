@@ -56,7 +56,7 @@ static bool show_best_guess_support_warning(HWND parent) {
     }
 
     if (!handled) {
-        int result = MessageBoxA(parent, message, "Green Curve - Unrecognized GPU Support", MB_YESNOCANCEL | MB_ICONWARNING);
+        int result = gc_message_box(parent, message, "Green Curve - Unrecognized GPU Support", MB_YESNOCANCEL | MB_ICONWARNING);
         if (result == IDCANCEL || result == 0) {
             remove_tray_icon();
             release_single_instance_mutex();
@@ -76,6 +76,7 @@ static bool show_best_guess_support_warning(HWND parent) {
     g_bestGuessWarningShownThisSession = true;
     return true;
 }
+
 
 static bool vf_curve_global_gpu_offset_supported() {
     const VfBackendSpec* backend = g_app.vfBackend;
@@ -799,7 +800,11 @@ static bool live_selective_gpu_offset_matches_requested_state(int gpuOffsetMHz) 
     return abs(detectedMHz - gpuOffsetMHz) <= 12;
 }
 
-static int current_applied_gpu_offset_mhz() {
+// `fromHardware` reports whether the answer is a driver reading or remembered
+// intent.  Two branches deliberately answer with intent so the editor stays
+// populated when detection is ambiguous; protocol v14 must not publish those.
+static int current_applied_gpu_offset_mhz(bool* fromHardware) {
+    if (fromHardware) *fromHardware = g_app.readback.gpuOffset;
     if (!vf_curve_global_gpu_offset_supported()) {
         int offsetMHz = g_app.gpuClockOffsetkHz / 1000;
         debug_log_on_change("current_applied_gpu_offset_mhz: not Blackwell, returning NVML offset=%d kHz -> %d MHz\n", g_app.gpuClockOffsetkHz, offsetMHz);
@@ -818,32 +823,27 @@ static int current_applied_gpu_offset_mhz() {
         g_app.appliedGpuOffsetExcludeLowCount = 0;
         return 0;
     }
-    int persistedOffsetMHz = 0;
-    int persistedExcludeLowCount = 0;
+    int persistedOffsetMHz = 0, persistedExcludeLowCount = 0;
     if (load_matching_runtime_selective_gpu_offset_request(&persistedOffsetMHz, &persistedExcludeLowCount)) {
-        debug_log_on_change("current_applied_gpu_offset_mhz: preserving persisted request value=%d MHz exclude=%d\n",
-            persistedOffsetMHz, persistedExcludeLowCount);
+        debug_log_on_change("current_applied_gpu_offset_mhz: preserving persisted request value=%d MHz exclude=%d\n", persistedOffsetMHz, persistedExcludeLowCount);
         g_app.appliedGpuOffsetMHz = persistedOffsetMHz;
         g_app.appliedGpuOffsetExcludeLowCount = persistedExcludeLowCount;
+        if (fromHardware) *fromHardware = false;  // remembered request
         return persistedOffsetMHz;
     }
-    int detectedSelectiveOffsetMHz = 0;
-    int detectedExcludeLowCount = 0;
+    int detectedSelectiveOffsetMHz = 0, detectedExcludeLowCount = 0;
     if (detect_live_selective_gpu_offset_state(&detectedSelectiveOffsetMHz, nullptr, &detectedExcludeLowCount)) {
-        debug_log_on_change("current_applied_gpu_offset_mhz: detected selective offset=%d MHz exclude=%d\n",
-            detectedSelectiveOffsetMHz, detectedExcludeLowCount);
+        debug_log_on_change("current_applied_gpu_offset_mhz: detected selective offset=%d MHz exclude=%d\n", detectedSelectiveOffsetMHz, detectedExcludeLowCount);
         g_app.appliedGpuOffsetMHz = detectedSelectiveOffsetMHz;
         g_app.appliedGpuOffsetExcludeLowCount = detectedExcludeLowCount;
         return detectedSelectiveOffsetMHz;
     }
-    int desiredServiceOffsetMHz = 0;
-    int desiredServiceExcludeLowCount = 0;
+    int desiredServiceOffsetMHz = 0, desiredServiceExcludeLowCount = 0;
     if (service_active_desired_gpu_offset_fallback(&desiredServiceOffsetMHz, &desiredServiceExcludeLowCount)) {
-        debug_log_on_change("current_applied_gpu_offset_mhz: preserving service desired value=%d MHz exclude=%d\n",
-            desiredServiceOffsetMHz,
-            desiredServiceExcludeLowCount);
+        debug_log_on_change("current_applied_gpu_offset_mhz: preserving service desired value=%d MHz exclude=%d\n", desiredServiceOffsetMHz, desiredServiceExcludeLowCount);
         g_app.appliedGpuOffsetMHz = desiredServiceOffsetMHz;
         g_app.appliedGpuOffsetExcludeLowCount = desiredServiceExcludeLowCount;
+        if (fromHardware) *fromHardware = false;  // active desired intent
         return desiredServiceOffsetMHz;
     }
     int offsetMHz = g_app.gpuClockOffsetkHz / 1000;

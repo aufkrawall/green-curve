@@ -79,7 +79,7 @@ static int themed_combo_item_height() {
 }
 
 struct GdpStartupInput { UINT32 ver; void* debugCb; int suppressBg; int suppressExt; };
-enum { GDP_SMOOTH_AA = 4, GDP_UNIT_PX = 2 };
+enum { GDP_SMOOTH_AA = 4, GDP_UNIT_PX = 2, GDP_DASH_STYLE_DASH = 1 };
 
 typedef int  (WINAPI *GdpStartupFn)(ULONG_PTR*, const GdpStartupInput*, void*);
 typedef void (WINAPI *GdpShutdownFn)(ULONG_PTR);
@@ -94,6 +94,7 @@ typedef int  (WINAPI *GdpFillEllipseIFn)(void*, void*, int, int, int, int);
 typedef int  (WINAPI *GdpDrawEllipseIFn)(void*, void*, int, int, int, int);
 typedef int  (WINAPI *GdpMakeBrushFn)(unsigned int, void**);
 typedef int  (WINAPI *GdpDelBrushFn)(void*);
+typedef int  (WINAPI *GdpSetPenDashFn)(void*, int);
 
 static HMODULE       s_gdp_dll = nullptr;
 static ULONG_PTR     s_gdp_token = 0;
@@ -110,6 +111,11 @@ static GdpFillEllipseIFn s_fnFillEllipse;
 static GdpDrawEllipseIFn s_fnDrawEllipse;
 static GdpMakeBrushFn    s_fnMakeBrush;
 static GdpDelBrushFn     s_fnDelBrush;
+// Optional: only the dashed pending curve needs it. Resolved but deliberately
+// NOT required by gdiplus_ensure(), which fails closed on a missing symbol --
+// losing antialiasing everywhere because one entry point is absent would be a
+// far worse trade than falling back to a GDI dashed line.
+static GdpSetPenDashFn   s_fnSetPenDash;
 static GdpShutdownFn     s_fnShutdown;
 
 static unsigned int colorref_to_argb(COLORREF c) {
@@ -135,6 +141,7 @@ static bool gdiplus_ensure() {
     s_fnDrawEllipse = (GdpDrawEllipseIFn)r("GdipDrawEllipseI");
     s_fnMakeBrush   = (GdpMakeBrushFn)r("GdipCreateSolidFill");
     s_fnDelBrush    = (GdpDelBrushFn)r("GdipDeleteBrush");
+    s_fnSetPenDash  = (GdpSetPenDashFn)r("GdipSetPenDashStyle");  // optional
     if (!startup || !s_fnShutdown || !s_fnGfxHDC || !s_fnDelGfx || !s_fnSmooth ||
         !s_fnMakePen || !s_fnDelPen || !s_fnBeziers || !s_fnLines ||
         !s_fnFillEllipse || !s_fnDrawEllipse || !s_fnMakeBrush || !s_fnDelBrush)
@@ -152,15 +159,19 @@ static void shutdown_gdiplus() {
     if (s_gdp_dll) { FreeLibrary(s_gdp_dll); s_gdp_dll = nullptr; }
 }
 
-static void draw_curve_polyline_smooth(HDC hdc, const POINT* pts, int count, int widthPx, COLORREF color) {
+static void draw_curve_polyline_smooth(HDC hdc, const POINT* pts, int count, int widthPx, COLORREF color, bool dashed) {
     if (!hdc || !pts || count < 2) return;
-    if (gdiplus_ensure()) {
+    // A dashed line without GdipSetPenDashStyle would silently come out solid,
+    // which would erase the difference between the applied and the pending
+    // curve. Fall through to the GDI path instead, which can always dash.
+    if (gdiplus_ensure() && (!dashed || s_fnSetPenDash)) {
         void* gfx = nullptr;
         s_fnGfxHDC(hdc, &gfx);
         if (gfx) {
             s_fnSmooth(gfx, GDP_SMOOTH_AA);
             void* pen = nullptr;
             s_fnMakePen(colorref_to_argb(color), (float)nvmax(1, widthPx), GDP_UNIT_PX, &pen);
+            if (pen && dashed) s_fnSetPenDash(pen, GDP_DASH_STYLE_DASH);
             if (pen) {
                 if (count < 3) {
                     s_fnLines(gfx, pen, pts, count);
@@ -193,7 +204,14 @@ static void draw_curve_polyline_smooth(HDC hdc, const POINT* pts, int count, int
         }
         return;
     }
-    HPEN pen = CreatePen(PS_SOLID, nvmax(1, widthPx), color);
+    // PS_DASH is honoured only on a 1px cosmetic pen, so a wide dashed line has
+    // to come from a geometric pen.
+    LOGBRUSH dashBrush = { BS_SOLID, color, 0 };
+    HPEN pen = dashed
+        ? ExtCreatePen(PS_GEOMETRIC | PS_DASH | PS_ENDCAP_FLAT | PS_JOIN_ROUND,
+                       (DWORD)nvmax(1, widthPx), &dashBrush, 0, nullptr)
+        : CreatePen(PS_SOLID, nvmax(1, widthPx), color);
+    if (!pen) pen = CreatePen(PS_SOLID, nvmax(1, widthPx), color);
     HPEN oldPen = (HPEN)SelectObject(hdc, pen);
     int oldMode = SetBkMode(hdc, TRANSPARENT);
     if (count < 3) {
@@ -226,7 +244,8 @@ static void draw_curve_polyline_smooth(HDC hdc, const POINT* pts, int count, int
     DeleteObject(pen);
 }
 
-static void draw_curve_points_ringed(HDC hdc, const POINT* pts, int count, int innerRadiusPx, int outerRadiusPx) {
+static void draw_curve_points_ringed(HDC hdc, const POINT* pts, int count, int innerRadiusPx, int outerRadiusPx,
+                                     COLORREF ringColor, COLORREF fillColor) {
     if (!hdc || !pts || count < 1) return;
     if (gdiplus_ensure()) {
         void* gfx = nullptr;
@@ -234,9 +253,9 @@ static void draw_curve_points_ringed(HDC hdc, const POINT* pts, int count, int i
         if (gfx) {
             s_fnSmooth(gfx, GDP_SMOOTH_AA);
             void* ringPen = nullptr;
-            s_fnMakePen(colorref_to_argb(COL_CURVE), 1.0f, GDP_UNIT_PX, &ringPen);
+            s_fnMakePen(colorref_to_argb(ringColor), 1.0f, GDP_UNIT_PX, &ringPen);
             void* fillBr = nullptr;
-            s_fnMakeBrush(colorref_to_argb(COL_POINT), &fillBr);
+            s_fnMakeBrush(colorref_to_argb(fillColor), &fillBr);
             if (ringPen) {
                 for (int i = 0; i < count; i++) {
                     s_fnDrawEllipse(gfx, ringPen,
@@ -257,8 +276,8 @@ static void draw_curve_points_ringed(HDC hdc, const POINT* pts, int count, int i
         }
         return;
     }
-    HBRUSH fillBrush = CreateSolidBrush(COL_POINT);
-    HPEN ringPen = CreatePen(PS_SOLID, 1, COL_CURVE);
+    HBRUSH fillBrush = CreateSolidBrush(fillColor);
+    HPEN ringPen = CreatePen(PS_SOLID, 1, ringColor);
     HPEN oldPen = (HPEN)SelectObject(hdc, ringPen);
     HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
     for (int i = 0; i < count; i++) {
@@ -365,7 +384,7 @@ static void paint_themed_combo_overlay(HWND hwnd, HDC hdc) {
     DeleteObject(buttonBr);
 
     // Draw separator line between text and button
-    HPEN sepPen = CreatePen(PS_SOLID, 1, disabled ? RGB(0x56, 0x56, 0x64) : COL_BUTTON_BORDER);
+    HPEN sepPen = CreatePen(PS_SOLID, 1, disabled ? COL_DISABLED_BORDER : COL_BUTTON_BORDER);
     HPEN oldSepPen = (HPEN)SelectObject(hdc, sepPen);
     MoveToEx(hdc, buttonRc.left, buttonRc.top + 1, nullptr);
     LineTo(hdc, buttonRc.left, buttonRc.bottom - 1);
@@ -399,7 +418,7 @@ static void paint_themed_combo_overlay(HWND hwnd, HDC hdc) {
     DeleteObject(hOldClip);
 
     // Paint over Windows' default border with our themed border
-    HBRUSH borderBrush = CreateSolidBrush(disabled ? RGB(0x56, 0x56, 0x64) : COL_BUTTON_BORDER);
+    HBRUSH borderBrush = CreateSolidBrush(disabled ? COL_DISABLED_BORDER : COL_BUTTON_BORDER);
     // Top edge
     RECT topEdge = { client.left, client.top, client.right, client.top + 1 };
     FillRect(hdc, &topEdge, borderBrush);
@@ -479,7 +498,7 @@ static void paint_themed_combo_full_custom(HWND hwnd, HDC hdc) {
     }
 
     // Draw separator line between text and button
-    HPEN sepPen = CreatePen(PS_SOLID, 1, disabled ? RGB(0x56, 0x56, 0x64) : COL_BUTTON_BORDER);
+    HPEN sepPen = CreatePen(PS_SOLID, 1, disabled ? COL_DISABLED_BORDER : COL_BUTTON_BORDER);
     HPEN oldSepPen = (HPEN)SelectObject(hdc, sepPen);
     MoveToEx(hdc, buttonRc.left, buttonRc.top + 1, nullptr);
     LineTo(hdc, buttonRc.left, buttonRc.bottom - 1);
@@ -505,7 +524,7 @@ static void paint_themed_combo_full_custom(HWND hwnd, HDC hdc) {
     DeleteObject(arrowBr);
 
     // Draw themed border around entire control
-    HBRUSH borderBrush = CreateSolidBrush(disabled ? RGB(0x56, 0x56, 0x64) : COL_BUTTON_BORDER);
+    HBRUSH borderBrush = CreateSolidBrush(disabled ? COL_DISABLED_BORDER : COL_BUTTON_BORDER);
     // Top edge
     RECT topEdge = { client.left, client.top, client.right, client.top + 1 };
     FillRect(hdc, &topEdge, borderBrush);
@@ -582,7 +601,7 @@ static void draw_themed_combo_item(const DRAWITEMSTRUCT* dis) {
     COLORREF textColor;
     if (selected) {
         bgColor = COL_BUTTON;  // Use button color for selection
-        textColor = RGB(0xF0, 0xF4, 0xFF);  // Bright text for selected
+        textColor = COL_BUTTON_LABEL;  // Bright text for selected
     } else {
         bgColor = COL_INPUT;  // Dark input background
         textColor = COL_TEXT;  // Normal text
@@ -630,140 +649,7 @@ static void measure_themed_combo_item(MEASUREITEMSTRUCT* mis) {
     mis->itemHeight = dp(18);
 }
 
-static void draw_checkbox_tick_smooth(HDC hdc, const RECT* box, COLORREF color) {
-    if (!hdc || !box) return;
-
-    POINT pts[3] = {
-        { box->left + (box->right - box->left) * 22 / 100, box->top + (box->bottom - box->top) * 54 / 100 },
-        { box->left + (box->right - box->left) * 44 / 100, box->top + (box->bottom - box->top) * 74 / 100 },
-        { box->left + (box->right - box->left) * 78 / 100, box->top + (box->bottom - box->top) * 28 / 100 },
-    };
-
-    if (gdiplus_ensure()) {
-        void* gfx = nullptr;
-        s_fnGfxHDC(hdc, &gfx);
-        if (gfx) {
-            s_fnSmooth(gfx, GDP_SMOOTH_AA);
-            void* pen = nullptr;
-            float width = (float)nvmax(2, (box->right - box->left) / 5);
-            s_fnMakePen(colorref_to_argb(color), width, GDP_UNIT_PX, &pen);
-            if (pen) {
-                s_fnLines(gfx, pen, pts, 3);
-                s_fnDelPen(pen);
-            }
-            s_fnDelGfx(gfx);
-            return;
-        }
-    }
-
-    HPEN pen = CreatePen(PS_SOLID, nvmax(2, (box->right - box->left) / 5), color);
-    HPEN oldPen = (HPEN)SelectObject(hdc, pen);
-    MoveToEx(hdc, pts[0].x, pts[0].y, nullptr);
-    LineTo(hdc, pts[1].x, pts[1].y);
-    LineTo(hdc, pts[2].x, pts[2].y);
-    SelectObject(hdc, oldPen);
-    DeleteObject(pen);
-}
-
-static bool is_themed_button_id(UINT id) {
-    switch (id) {
-        case APPLY_BTN_ID:
-        case REFRESH_BTN_ID:
-        case RESET_BTN_ID:
-        case LICENSE_BTN_ID:
-        case PROFILE_LOAD_ID:
-        case PROFILE_SAVE_ID:
-        case PROFILE_CLEAR_ID:
-        case FAN_CURVE_BTN_ID:
-        case FAN_DIALOG_OK_ID:
-        case FAN_DIALOG_CANCEL_ID:
-        case SHARED_PROFILES_BTN_ID:
-        case AUTO_PROFILE_BTN_ID:
-            return true;
-    }
-    return false;
-}
-
-static bool is_themed_checkbox_id(UINT id) {
-    return id == START_ON_LOGON_CHECK_ID || id == SERVICE_ENABLE_CHECK_ID ||
-           id == SHARE_ALL_USERS_CHECK_ID || is_fan_dialog_checkbox_id(id);
-}
-
-static bool is_fan_dialog_checkbox_id(UINT id) {
-    return id >= FAN_DIALOG_ENABLE_BASE && id < FAN_DIALOG_ENABLE_BASE + FAN_CURVE_MAX_POINTS;
-}
-
-static bool themed_checkbox_checked_state(UINT id, HWND hwnd) {
-    if (id == START_ON_LOGON_CHECK_ID) return is_start_on_logon_enabled(g_app.configPath);
-    if (id == SERVICE_ENABLE_CHECK_ID) return g_app.backgroundServiceInstalled;
-    if (id == SHARE_ALL_USERS_CHECK_ID) {
-        // Checked when the selected profile slot is BOTH published to the shared
-        // bank AND the current all-users default logon profile (the coherent
-        // "shared" state — see share_profile_slot_for_all_users()).
-        int sel = g_app.hProfileCombo ? (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0) : -1;
-        if (sel < 0 || sel > CONFIG_NUM_SLOTS - 1) sel = CONFIG_DEFAULT_SLOT - 1;
-        int slot = sel + 1;
-        return is_machine_profile_slot_saved(slot) && g_app.machineLogonSlotCache == slot;
-    }
-    if (is_fan_dialog_checkbox_id(id)) {
-        int pointIndex = (int)id - FAN_DIALOG_ENABLE_BASE;
-        if (pointIndex >= 0 && pointIndex < FAN_CURVE_MAX_POINTS) {
-            return g_fanCurveDialog.working.points[pointIndex].enabled;
-        }
-    }
-    return hwnd && (SendMessageA(hwnd, BM_GETCHECK, 0, 0) == BST_CHECKED);
-}
-
-static void draw_themed_button(const DRAWITEMSTRUCT* dis) {
-    if (!dis) return;
-
-    HDC hdc = dis->hDC;
-    RECT rc = dis->rcItem;
-    bool disabled = (dis->itemState & ODS_DISABLED) != 0;
-    bool pressed = (dis->itemState & ODS_SELECTED) != 0;
-    bool focused = (dis->itemState & ODS_FOCUS) != 0;
-    bool checkbox = is_themed_checkbox_id(dis->CtlID);
-    bool checked = checkbox && themed_checkbox_checked_state(dis->CtlID, dis->hwndItem);
-    if (checkbox) {
-        char text[64] = {};
-        GetWindowTextA(dis->hwndItem, text, ARRAY_COUNT(text));
-        bool labeledCheckbox = (is_fan_dialog_checkbox_id(dis->CtlID) ||
-                                dis->CtlID == SHARE_ALL_USERS_CHECK_ID) && text[0];
-        draw_themed_checkbox_control(dis, checked, labeledCheckbox);
-        return;
-    }
-    HFONT controlFont = dis->hwndItem ? (HFONT)SendMessageA(dis->hwndItem, WM_GETFONT, 0, 0) : nullptr;
-    HFONT oldFont = (HFONT)SelectObject(hdc, controlFont ? controlFont : get_ui_font());
-
-    HBRUSH bg = CreateSolidBrush(COL_BG);
-    FillRect(hdc, &rc, bg);
-    DeleteObject(bg);
-    SetBkMode(hdc, TRANSPARENT);
-
-    COLORREF fill = disabled ? COL_BUTTON_DISABLED : (pressed ? COL_BUTTON_PRESSED : COL_BUTTON);
-    HBRUSH fillBr = CreateSolidBrush(fill);
-    FillRect(hdc, &rc, fillBr);
-    DeleteObject(fillBr);
-
-    HPEN borderPen = CreatePen(PS_SOLID, 1, disabled ? RGB(0x56, 0x56, 0x64) : COL_BUTTON_BORDER);
-    HPEN oldPen = (HPEN)SelectObject(hdc, borderPen);
-    HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
-    Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
-    SelectObject(hdc, oldBrush);
-    DeleteObject(SelectObject(hdc, oldPen));
-
-    char text[128] = {};
-    GetWindowTextA(dis->hwndItem, text, ARRAY_COUNT(text));
-    RECT textRc = rc;
-    if (pressed) OffsetRect(&textRc, 0, 1);
-    SetTextColor(hdc, disabled ? COL_LABEL : RGB(0xF0, 0xF4, 0xFF));
-    DrawTextA(hdc, text, -1, &textRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-
-    if (focused) {
-        RECT focus = rc;
-        InflateRect(&focus, -3, -3);
-        DrawFocusRect(hdc, &focus);
-    }
-    SelectObject(hdc, oldFont);
-}
-
+// Owner-drawn button/checkbox painting and the themed-control id tables live
+// in their own shard (F-MAINT-1).  It lands in this translation unit here so
+// it can use gdiplus_ensure()/get_ui_font() above without forward declarations.
+#include "ui_theme_button.cpp"

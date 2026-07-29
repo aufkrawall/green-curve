@@ -1,210 +1,6 @@
-static bool parse_cli_options(LPWSTR cmdLine, CliOptions* opts) {
-    if (!opts) return false;
-    memset(opts, 0, sizeof(*opts));
-    initialize_desired_settings_defaults(&opts->desired);
-
-    int argc = 0;
-    LPWSTR* argv = CommandLineToArgvW(cmdLine, &argc);
-    if (!argv) return false;
-
-    for (int i = 1; i < argc; i++) {
-        LPWSTR arg = argv[i];
-        if (!arg) continue;
-        if (wcscmp(arg, L"--help") == 0 || wcscmp(arg, L"-h") == 0) {
-            opts->recognized = true;
-            opts->showHelp = true;
-        } else if (wcscmp(arg, L"--dump") == 0) {
-            opts->recognized = true;
-            opts->dump = true;
-        } else if (wcscmp(arg, L"--json") == 0) {
-            opts->recognized = true;
-            opts->json = true;
-        } else if (wcscmp(arg, L"--probe") == 0) {
-            opts->recognized = true;
-            opts->probe = true;
-        } else if (wcscmp(arg, L"--reset") == 0) {
-            opts->recognized = true;
-            opts->reset = true;
-        } else if (wcscmp(arg, L"--save-config") == 0) {
-            opts->recognized = true;
-            opts->saveConfig = true;
-        } else if (wcscmp(arg, L"--apply-config") == 0) {
-            opts->recognized = true;
-            opts->applyConfig = true;
-        } else if (wcscmp(arg, L"--service-install") == 0) {
-            opts->recognized = true;
-            opts->serviceInstall = true;
-        } else if (wcscmp(arg, L"--service-remove") == 0) {
-            opts->recognized = true;
-            opts->serviceRemove = true;
-        } else if (wcscmp(arg, L"--startup-task-enable") == 0) {
-            opts->recognized = true;
-            opts->startupTaskEnable = true;
-        } else if (wcscmp(arg, L"--startup-task-disable") == 0) {
-            opts->recognized = true;
-            opts->startupTaskDisable = true;
-        } else if (wcscmp(arg, L"--set-machine-logon-slot") == 0) {
-            opts->recognized = true;
-            int v = 0;
-            if (i + 1 >= argc || !parse_wide_int_arg(argv[++i], &v)) {
-                set_message(opts->error, sizeof(opts->error), "Invalid --set-machine-logon-slot value");
-                LocalFree(argv);
-                return false;
-            }
-            opts->setMachineLogonSlot = true;
-            opts->machineLogonSlotValue = v;
-        } else if (wcscmp(arg, L"--clear-machine-logon-slot") == 0) {
-            opts->recognized = true;
-            opts->clearMachineLogonSlot = true;
-        } else if (wcscmp(arg, L"--publish-slot-to-machine") == 0) {
-            opts->recognized = true;
-            int v = 0;
-            if (i + 1 >= argc || !parse_wide_int_arg(argv[++i], &v)) {
-                set_message(opts->error, sizeof(opts->error), "Invalid --publish-slot-to-machine value");
-                LocalFree(argv);
-                return false;
-            }
-            opts->publishSlotToMachine = true;
-            opts->machineSlotValue = v;
-        } else if (wcscmp(arg, L"--clear-machine-slot") == 0) {
-            opts->recognized = true;
-            int v = 0;
-            if (i + 1 >= argc || !parse_wide_int_arg(argv[++i], &v)) {
-                set_message(opts->error, sizeof(opts->error), "Invalid --clear-machine-slot value");
-                LocalFree(argv);
-                return false;
-            }
-            opts->clearMachineSlot = true;
-            opts->machineSlotValue = v;
-        } else if (wcscmp(arg, L"--share-slot") == 0) {
-            opts->recognized = true;
-            int v = 0;
-            if (i + 1 >= argc || !parse_wide_int_arg(argv[++i], &v)) {
-                set_message(opts->error, sizeof(opts->error), "Invalid --share-slot value");
-                LocalFree(argv);
-                return false;
-            }
-            opts->shareSlot = true;
-            opts->shareSlotValue = v;
-        } else if (wcscmp(arg, L"--unshare-slot") == 0) {
-            opts->recognized = true;
-            int v = 0;
-            if (i + 1 >= argc || !parse_wide_int_arg(argv[++i], &v)) {
-                set_message(opts->error, sizeof(opts->error), "Invalid --unshare-slot value");
-                LocalFree(argv);
-                return false;
-            }
-            opts->unshareSlot = true;
-            opts->shareSlotValue = v;
-        } else if (wcscmp(arg, L"--set-restrict-shared") == 0) {
-            opts->recognized = true;
-            int v = 0;
-            if (i + 1 >= argc || !parse_wide_int_arg(argv[++i], &v)) {
-                set_message(opts->error, sizeof(opts->error), "Invalid --set-restrict-shared value (use 0 or 1)");
-                LocalFree(argv);
-                return false;
-            }
-            opts->setRestrictPolicy = true;
-            opts->restrictPolicyValue = v;
-        } else if (wcscmp(arg, L"--logon-start") == 0) {
-            opts->recognized = true;
-            opts->logonStart = true;
-        } else if (wcscmp(arg, L"--tray-start") == 0) {
-            // Internal per-user HKCU Run entry.  This is intentionally distinct
-            // from the bounded Task Scheduler --logon-start handoff.
-            opts->recognized = true;
-            opts->trayStart = true;
-        } else if (wcscmp(arg, L"--config") == 0) {
-            opts->recognized = true;
-            if (i + 1 >= argc || !copy_wide_to_utf8(argv[++i], opts->configPath, MAX_PATH)) {
-                set_message(opts->error, sizeof(opts->error), "Invalid --config path");
-                LocalFree(argv);
-                return false;
-            }
-            opts->hasConfigPath = true;
-        } else if (wcscmp(arg, L"--for-user") == 0) {
-            // Elevated helper only: forces the per-user logon task to be scoped
-            // to this requesting user instead of the approving admin.
-            opts->recognized = true;
-            if (i + 1 >= argc) {
-                set_message(opts->error, sizeof(opts->error), "Invalid --for-user value");
-                LocalFree(argv);
-                return false;
-            }
-            set_forced_startup_user_sam(argv[++i]);
-        } else if (wcscmp(arg, L"--probe-output") == 0) {
-            opts->recognized = true;
-            if (i + 1 >= argc || !copy_wide_to_utf8(argv[++i], opts->probeOutputPath, MAX_PATH)) {
-                set_message(opts->error, sizeof(opts->error), "Invalid --probe-output path");
-                LocalFree(argv);
-                return false;
-            }
-            opts->hasProbeOutputPath = true;
-        } else if (wcscmp(arg, L"--gpu-offset") == 0) {
-            opts->recognized = true;
-            int v = 0;
-            if (i + 1 >= argc || !parse_wide_int_arg(argv[++i], &v)) {
-                set_message(opts->error, sizeof(opts->error), "Invalid --gpu-offset value");
-                LocalFree(argv);
-                return false;
-            }
-            opts->desired.hasGpuOffset = true;
-            opts->desired.gpuOffsetMHz = v;
-        } else if (wcscmp(arg, L"--mem-offset") == 0) {
-            opts->recognized = true;
-            int v = 0;
-            if (i + 1 >= argc || !parse_wide_int_arg(argv[++i], &v)) {
-                set_message(opts->error, sizeof(opts->error), "Invalid --mem-offset value");
-                LocalFree(argv);
-                return false;
-            }
-            opts->desired.hasMemOffset = true;
-            opts->desired.memOffsetMHz = v;
-        } else if (wcscmp(arg, L"--power-limit") == 0) {
-            opts->recognized = true;
-            int v = 0;
-            if (i + 1 >= argc || !parse_wide_int_arg(argv[++i], &v)) {
-                set_message(opts->error, sizeof(opts->error), "Invalid --power-limit value");
-                LocalFree(argv);
-                return false;
-            }
-            opts->desired.hasPowerLimit = true;
-            if (v < 50 || v > 150) {
-                set_message(opts->error, sizeof(opts->error), "power_limit_pct %d is outside the safe range 50..150", v);
-                LocalFree(argv);
-                return false;
-            }
-            opts->desired.powerLimitPct = v;
-        } else if (wcscmp(arg, L"--fan") == 0) {
-            opts->recognized = true;
-            char buf[64] = {};
-            bool fanAuto = false;
-            if (i + 1 >= argc || !copy_wide_to_utf8(argv[++i], buf, sizeof(buf)) ||
-                !parse_fan_value(buf, &fanAuto, &opts->desired.fanPercent)) {
-                set_message(opts->error, sizeof(opts->error), "Invalid --fan value, use auto or 0-100");
-                LocalFree(argv);
-                return false;
-            }
-            opts->desired.hasFan = true;
-            opts->desired.fanAuto = fanAuto;
-            opts->desired.fanMode = fanAuto ? FAN_MODE_AUTO : FAN_MODE_FIXED;
-        } else if (wcsncmp(arg, L"--point", 7) == 0) {
-            opts->recognized = true;
-            int idx = -1;
-            int v = 0;
-            if (!parse_cli_point_arg_w(arg, &idx) || i + 1 >= argc || !parse_wide_int_arg(argv[++i], &v) || v <= 0) {
-                set_message(opts->error, sizeof(opts->error), "Invalid --pointN value");
-                LocalFree(argv);
-                return false;
-            }
-            opts->desired.hasCurvePoint[idx] = true;
-            opts->desired.curvePointMHz[idx] = (unsigned int)v;
-        }
-    }
-
-    LocalFree(argv);
-    return true;
-}
+// CLI parsing moved to its own shard; included here so definition order in
+// the amalgamated translation unit is exactly what it was before the split.
+#include "main_cli_options.cpp"
 
 static bool nvml_resolve(void** out, const char* name) {
     if (!g_nvml) return false;
@@ -298,21 +94,18 @@ static bool nvml_get_offset_range(unsigned int domain, int* minMHz, int* maxMHz,
     }
 
     bool ok = false;
-    if (g_nvml_api.getClockOffsets && g_nvml_api.getPerformanceState) {
-        unsigned int pstate = NVML_PSTATE_UNKNOWN;
-        if (g_nvml_api.getPerformanceState(g_app.nvmlDevice, &pstate) == NVML_SUCCESS) {
-            nvmlClockOffset_t info = {};
-            info.version = nvmlClockOffset_v1;
-            info.type = domain;
-            info.pstate = pstate;
-            nvmlReturn_t r = g_nvml_api.getClockOffsets(g_app.nvmlDevice, &info);
-            if (r == NVML_SUCCESS) {
-                if (minMHz) *minMHz = info.minClockOffsetMHz;
-                if (maxMHz) *maxMHz = info.maxClockOffsetMHz;
-                if (currentMHz) *currentMHz = info.clockOffsetMHz;
-                g_app.offsetReadPstate = (int)pstate;
-                ok = true;
-            }
+    if (g_nvml_api.getClockOffsets) {
+        nvmlClockOffset_t info = {};
+        info.version = nvmlClockOffset_v1;
+        info.type = domain;
+        info.pstate = nvml_configured_clock_offset_pstate();
+        nvmlReturn_t r = g_nvml_api.getClockOffsets(g_app.nvmlDevice, &info);
+        if (r == NVML_SUCCESS) {
+            if (minMHz) *minMHz = info.minClockOffsetMHz;
+            if (maxMHz) *maxMHz = info.maxClockOffsetMHz;
+            if (currentMHz) *currentMHz = info.clockOffsetMHz;
+            g_app.offsetReadPstate = (int)info.pstate;
+            ok = true;
         }
     }
 
@@ -327,7 +120,11 @@ static bool nvml_get_offset_range(unsigned int domain, int* minMHz, int* maxMHz,
             if (g_nvml_api.getMemClkMinMaxVfOffset) r1 = g_nvml_api.getMemClkMinMaxVfOffset(g_app.nvmlDevice, &mn, &mx);
             if (g_nvml_api.getMemClkVfOffset) r2 = g_nvml_api.getMemClkVfOffset(g_app.nvmlDevice, &cur);
         }
-        if (r1 == NVML_SUCCESS || r2 == NVML_SUCCESS) {
+        // A range without a current value is not a hardware readback. Requiring
+        // both prevents a missing deprecated offset getter from publishing 0
+        // as if it were the active value; modern getClockOffsets above remains
+        // the preferred path on current drivers.
+        if (r1 == NVML_SUCCESS && r2 == NVML_SUCCESS) {
             if (minMHz) *minMHz = mn;
             if (maxMHz) *maxMHz = mx;
             if (currentMHz) *currentMHz = cur;
@@ -347,12 +144,12 @@ static bool nvml_read_clock_offsets(char* detail, size_t detailSize) {
         g_app.gpuClockOffsetMinMHz = mn;
         g_app.gpuClockOffsetMaxMHz = mx;
         g_app.gpuClockOffsetkHz = cur * 1000;
-        g_app.gpuOffsetRangeKnown = true;
+        g_app.gpuOffsetRangeKnown = g_app.readback.gpuOffset = true;
         if (!g_app.curveOffsetRangeKnown) {
             set_curve_offset_range_khz(mn * 1000, mx * 1000);
         }
     } else {
-        g_app.gpuOffsetRangeKnown = false;
+        g_app.gpuOffsetRangeKnown = g_app.readback.gpuOffset = false;
     }
 
     bool memOk = nvml_get_offset_range(NVML_CLOCK_MEM, &mn, &mx, &cur, detail, detailSize);
@@ -360,9 +157,9 @@ static bool nvml_read_clock_offsets(char* detail, size_t detailSize) {
         g_app.memClockOffsetMinMHz = mem_display_mhz_from_driver_mhz(mn);
         g_app.memClockOffsetMaxMHz = mem_display_mhz_from_driver_mhz(mx);
         g_app.memClockOffsetkHz = (cur * 1000) / 2;
-        g_app.memOffsetRangeKnown = true;
+        g_app.memOffsetRangeKnown = g_app.readback.memOffset = true;
     } else {
-        g_app.memOffsetRangeKnown = false;
+        g_app.memOffsetRangeKnown = g_app.readback.memOffset = false;
     }
 
     return gpuOk || memOk;
@@ -382,22 +179,16 @@ static bool nvml_set_clock_offset_domain(unsigned int domain, int offsetMHz, boo
     }
 
     nvmlReturn_t r = NVML_ERROR_NOT_SUPPORTED;
-    if (g_nvml_api.setClockOffsets && g_nvml_api.getPerformanceState) {
-        unsigned int statesToTry[2] = { NVML_PSTATE_UNKNOWN, NVML_PSTATE_0 };
-        if (g_nvml_api.getPerformanceState(g_app.nvmlDevice, &statesToTry[0]) != NVML_SUCCESS) {
-            statesToTry[0] = NVML_PSTATE_0;
-        }
-        for (int si = 0; si < 2 && r != NVML_SUCCESS; si++) {
-            unsigned int pstate = statesToTry[si];
-            if (pstate == NVML_PSTATE_UNKNOWN) continue;
-            nvmlClockOffset_t info = {};
-            info.version = nvmlClockOffset_v1;
-            info.type = domain;
-            info.pstate = pstate;
-            info.clockOffsetMHz = offsetMHz;
-            r = g_nvml_api.setClockOffsets(g_app.nvmlDevice, &info);
-            if (r == NVML_SUCCESS) g_app.offsetReadPstate = (int)pstate;
-        }
+    if (g_nvml_api.setClockOffsets) {
+        nvmlClockOffset_t info = {};
+        info.version = nvmlClockOffset_v1;
+        info.type = domain;
+        info.pstate = nvml_configured_clock_offset_pstate();
+        info.clockOffsetMHz = offsetMHz;
+        r = g_nvml_api.setClockOffsets(g_app.nvmlDevice, &info);
+        debug_log("NVML offset write: domain=%u pstate=P%u requested=%d "
+                  "result=%d\n", domain, info.pstate, offsetMHz, (int)r);
+        if (r == NVML_SUCCESS) g_app.offsetReadPstate = (int)info.pstate;
     }
 
     if (r != NVML_SUCCESS) {
@@ -406,6 +197,8 @@ static bool nvml_set_clock_offset_domain(unsigned int domain, int offsetMHz, boo
         } else if (domain == NVML_CLOCK_MEM && g_nvml_api.setMemClkVfOffset) {
             r = g_nvml_api.setMemClkVfOffset(g_app.nvmlDevice, offsetMHz);
         }
+        debug_log("NVML offset legacy write: domain=%u pstate=global "
+                  "requested=%d result=%d\n", domain, offsetMHz, (int)r);
     }
 
     if (r != NVML_SUCCESS) {
@@ -414,18 +207,19 @@ static bool nvml_set_clock_offset_domain(unsigned int domain, int offsetMHz, boo
     }
 
     int mn = 0, mx = 0, cur = 0;
-    bool readOk = false;
-    for (int attempt = 0; attempt < 8; attempt++) {
-        if (attempt > 0) Sleep(10);
-        if (!nvml_get_offset_range(domain, &mn, &mx, &cur, detail, detailSize)) continue;
-        readOk = true;
-        if (cur == offsetMHz) break;
-    }
+    bool readOk = nvml_get_offset_range(
+        domain, &mn, &mx, &cur, detail, detailSize);
     if (!readOk) {
         set_message(detail, detailSize, "write OK, readback failed");
         return true;
     }
-    if (exactApplied) *exactApplied = (cur == offsetMHz);
+    bool matched = nvml_clock_offset_readback_matches(
+        offsetMHz, cur, nvml_clock_offset_grid_step(domain));
+    debug_log("NVML offset verify: domain=%u pstate=P%u requested=%d "
+              "readback=%d matched=%d\n", domain,
+              nvml_configured_clock_offset_pstate(), offsetMHz, cur,
+              matched ? 1 : 0);
+    if (exactApplied) *exactApplied = matched;
     return true;
 }
 
@@ -469,6 +263,7 @@ static bool nvml_read_fans(char* detail, size_t detailSize) {
     memset(g_app.fanPolicy, 0, sizeof(g_app.fanPolicy));
     memset(g_app.fanControlSignal, 0, sizeof(g_app.fanControlSignal));
     memset(g_app.fanTargetMask, 0, sizeof(g_app.fanTargetMask));
+    memset(&g_app.readback.fan, 0, sizeof(g_app.readback.fan));
     g_app.fanCount = 0;
     g_app.fanMinPct = 0;
     g_app.fanMaxPct = 100;
@@ -506,7 +301,7 @@ static bool nvml_read_fans(char* detail, size_t detailSize) {
             unsigned int pol = 0;
             if (g_nvml_api.getFanControlPolicy(g_app.nvmlDevice, fan, &pol) == NVML_SUCCESS) {
                 g_app.fanPolicy[fan] = pol;
-                policyKnown = true;
+                g_app.readback.fan.policy[fan] = policyKnown = true;
                 if (pol != NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW) allAuto = false;
             }
         }
@@ -528,6 +323,7 @@ static bool nvml_read_fans(char* detail, size_t detailSize) {
             unsigned int target = 0;
             if (g_nvml_api.getTargetFanSpeed(g_app.nvmlDevice, fan, &target) == NVML_SUCCESS) {
                 g_app.fanTargetPercent[fan] = target;
+                g_app.readback.fan.target[fan] = true;
                 if (!policyKnown && target > 0) allAuto = false;
             }
         }
@@ -816,7 +612,7 @@ static bool nvml_select_device_for_selected_gpu(char* detail, size_t detailSize)
             g_app.selectedGpu.pciBus = pci.bus;
             g_app.selectedGpu.pciDevice = pci.device;
             unsigned int domain = 0, bus = 0, device = 0, function = 0;
-            if (sscanf(pci.busId, "%x:%x:%x.%x", &domain, &bus,
+            if (sscanf(nvml_pci_bus_id_text(&pci), "%x:%x:%x.%x", &domain, &bus,
                     &device, &function) == 4 && function <= 7u) {
                 g_app.selectedGpu.pciFunction = function;
             }
@@ -891,7 +687,7 @@ static bool nvml_ensure_ready() {
         nvml_resolve((void**)&g_nvml_api.shutdown, "nvmlShutdown");
         nvml_resolve((void**)&g_nvml_api.getHandleByIndex, "nvmlDeviceGetHandleByIndex_v2");
         nvml_resolve((void**)&g_nvml_api.getCount, "nvmlDeviceGetCount_v2");
-        nvml_resolve((void**)&g_nvml_api.getPciInfo, "nvmlDeviceGetPciInfo");
+        nvml_resolve_pci_info(nvml_resolve, (void**)&g_nvml_api.getPciInfo);
         nvml_resolve((void**)&g_nvml_api.getPowerLimit, "nvmlDeviceGetPowerManagementLimit");
         nvml_resolve((void**)&g_nvml_api.getPowerDefaultLimit, "nvmlDeviceGetPowerManagementDefaultLimit");
         nvml_resolve((void**)&g_nvml_api.getPowerConstraints, "nvmlDeviceGetPowerManagementLimitConstraints");
@@ -1102,4 +898,3 @@ static bool get_curve_offset_range_khz(int* minkHz, int* maxkHz) {
     if (maxkHz) *maxkHz = maxValue;
     return known;
 }
-

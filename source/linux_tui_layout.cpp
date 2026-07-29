@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "linux_tui_layout_internal.h"
+#include "linux_tui_authority.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -29,6 +30,22 @@ TuiRect action_bar_rect(int width, int height) {
     return TuiRect{1, height - 2, width, 2};
 }
 
+const char* intent_state_label(const TuiViewModel& vm) {
+    if (!vm.serviceOnline || !vm.service) return "● READBACK OFFLINE";
+    if (!vm.service->state.activeDesiredValid) return "● HARDWARE READBACK";
+    if (vm.intentReadback.divergedDomains) return "● HW OVERRIDDEN";
+    if (vm.intentReadback.unavailableDomains) return "● READBACK PARTIAL";
+    return "● INTENT MATCHES HW";
+}
+
+TuiStyle intent_state_style(const TuiViewModel& vm) {
+    if (!vm.serviceOnline || !vm.service) return TUI_STYLE_RED;
+    if (vm.intentReadback.divergedDomains) return TUI_STYLE_RED;
+    if (vm.dirty || vm.intentReadback.unavailableDomains)
+        return TUI_STYLE_ORANGE;
+    return TUI_STYLE_GREEN;
+}
+
 void draw_header(TuiCanvas* c) {
     TuiLayout* out = c->layout();
     const TuiViewModel& vm = c->view();
@@ -36,9 +53,32 @@ void draw_header(TuiCanvas* c) {
     snprintf(title, sizeof(title), " Green Curve Linux v%s", APP_VERSION);
     c->fill(1, 1, out->width, 1, TUI_STYLE_PANEL);
     c->text(1, 1, out->width / 2, title, TUI_STYLE_TITLE);
-    const char* connection = vm.serviceOnline ? "● DAEMON CONNECTED " : "● DAEMON OFFLINE ";
+    const char* connection = "● DAEMON OFFLINE ";
+    TuiStyle connectionStyle = TUI_STYLE_RED;
+    if (vm.serviceOnline && vm.service) {
+        if (vm.service->state.gpuPhase == SERVICE_GPU_PHASE_READY) {
+            if (vm.intentReadback.divergedDomains) {
+                connection = "● DAEMON READY • HARDWARE OVERRIDDEN ";
+                connectionStyle = TUI_STYLE_RED;
+            } else if (vm.intentReadback.unavailableDomains) {
+                connection = "● DAEMON READY • READBACK PARTIAL ";
+                connectionStyle = TUI_STYLE_ORANGE;
+            } else {
+                connection = "● DAEMON READY ";
+                connectionStyle = TUI_STYLE_GREEN;
+            }
+        } else if (vm.service->state.gpuPhase == SERVICE_GPU_PHASE_RECOVERING ||
+                   vm.service->state.gpuPhase == SERVICE_GPU_PHASE_REAPPLYING ||
+                   vm.service->state.gpuPhase == SERVICE_GPU_PHASE_STARTING) {
+            connection = "● DAEMON RECOVERING ";
+            connectionStyle = TUI_STYLE_ORANGE;
+        } else {
+            connection = "● DAEMON ONLINE • GPU DEGRADED ";
+            connectionStyle = TUI_STYLE_ORANGE;
+        }
+    }
     c->text(out->width / 2 + 1, 1, out->width - out->width / 2,
-            connection, vm.serviceOnline ? TUI_STYLE_GREEN : TUI_STYLE_RED, true);
+            connection, connectionStyle, true);
 
     c->fill(1, 2, out->width, 1, TUI_STYLE_PANEL);
     c->text(2, 2, 4, "GPU", TUI_STYLE_MUTED);
@@ -48,8 +88,9 @@ void draw_header(TuiCanvas* c) {
         ? vm.selectedGpu : "unselected GPU", ACTION_GPU_SELECT_DELTA, 0, 1);
     char live[160] = {};
     if (vm.serviceOnline && vm.service) {
-        snprintf(live, sizeof(live), "%d VF pts  •  generation %llu",
+        snprintf(live, sizeof(live), "%d VF pts  •  %s  •  generation %llu",
                  vm.service->snapshot.numPopulated,
+                 linux_tui_gpu_phase_name(vm.service->state.gpuPhase),
                  (unsigned long long)vm.service->state.gpuGeneration);
     } else {
         snprintf(live, sizeof(live), "%u GPU(s) known", vm.gpuCount);
@@ -73,9 +114,16 @@ void draw_header(TuiCanvas* c) {
               ACTION_TAB_SET, 0, TUI_TAB_PROFILES,
               vm.tab == TUI_TAB_PROFILES);
     if (out->breakpoint != TUI_BREAKPOINT_COMPACT) {
-        c->text(out->width - 27, 3, 25,
-                vm.dirty ? "● staged changes" : "● live state",
-                vm.dirty ? TUI_STYLE_ORANGE : TUI_STYLE_GREEN, true);
+        char state[64] = {};
+        if (vm.dirty) {
+            snprintf(state, sizeof(state), "● STAGED • %s",
+                     vm.intentReadback.divergedDomains
+                        ? "HW OVERRIDE" : "INTENT EDIT");
+        } else {
+            snprintf(state, sizeof(state), "%s", intent_state_label(vm));
+        }
+        c->text(out->width - 29, 3, 27, state,
+                intent_state_style(vm), true);
     }
 }
 
@@ -91,7 +139,7 @@ void draw_footer(TuiCanvas* c) {
         c->button(TuiRect{2, y, 12, 1}, "REFRESH", ACTION_REFRESH);
         c->button(TuiRect{15, y, 17, 1}, "RESET GPU", ACTION_APPLY_RESET);
         c->button(TuiRect{out->width - 22, y, 16, 1}, "APPLY",
-                  ACTION_APPLY, 0, 0, vm.dirty);
+                  ACTION_APPLY, 0, 0, vm.dirty && vm.draftAttached);
         c->button(TuiRect{out->width - 5, y, 4, 1}, "Q", ACTION_QUIT);
     } else {
         char profile[64] = {};
@@ -106,13 +154,15 @@ void draw_footer(TuiCanvas* c) {
         c->button(TuiRect{out->width - 35, y, 11, 1}, "REFRESH",
                   ACTION_REFRESH);
         c->button(TuiRect{out->width - 23, y, 18, 1}, "APPLY CHANGES",
-                  ACTION_APPLY, 0, 0, vm.dirty);
+                  ACTION_APPLY, 0, 0, vm.dirty && vm.draftAttached);
         c->button(TuiRect{out->width - 4, y, 3, 1}, "Q", ACTION_QUIT);
     }
 
     const char* status = vm.status && vm.status[0] ? vm.status : "Ready";
-    c->text(2, out->height - 1, out->width - 3, status,
-            vm.serviceOnline ? TUI_STYLE_MUTED : TUI_STYLE_RED);
+    TuiStyle statusStyle = !vm.serviceOnline ? TUI_STYLE_RED :
+        (vm.service && vm.service->state.gpuPhase != SERVICE_GPU_PHASE_READY
+            ? TUI_STYLE_ORANGE : TUI_STYLE_MUTED);
+    c->text(2, out->height - 1, out->width - 3, status, statusStyle);
     const char* help = "Tab/Shift+Tab focus • Enter edit • wheel/PgUp/PgDn scroll • Ctrl+PgUp/PgDn tabs • F1 help";
     if (out->width >= 140)
         c->text(out->width / 2, out->height - 1, out->width / 2 - 2,
@@ -172,6 +222,98 @@ const char* tui_point_rule_label(TuiPointRule rule) {
         case TUI_POINT_HARD_PIN: return "hard pin";
         default: return "live";
     }
+}
+
+int tui_vf_first_listed_point(const TuiViewModel& vm) {
+    // The driver publishes a flat low-voltage floor: on an RTX 5070 points
+    // 0..44 are all 180 MHz at rising voltage. They are 45 identical rows that
+    // cannot be meaningfully edited -- any target written there is clamped back
+    // to the floor -- so the table does not list them and the curve starts
+    // where it actually starts rising.
+    int firstPopulated = -1;
+    int floorBaseMHz = 0;
+    int runLength = 0;
+    int bound = -1;
+    for (int i = 0; i < VF_NUM_POINTS; ++i) {
+        TuiPointValues values = tui_point_values(vm, i);
+        if (!values.populated) continue;
+        if (firstPopulated < 0) {
+            firstPopulated = i;
+            floorBaseMHz = values.baseMHz;
+            runLength = 1;
+            continue;
+        }
+        if (values.baseMHz != floorBaseMHz) { bound = i; break; }
+        ++runLength;
+    }
+    if (firstPopulated < 0) return 0;
+    // A curve with no flat run at all (or a single value throughout) must not
+    // end up with an empty table.
+    if (bound < 0) bound = firstPopulated;
+    // Only a genuine run is a floor. A curve whose very first point merely
+    // differs from the second is an ordinary rising curve, and dropping its
+    // first point would be data loss dressed up as tidiness.
+    if (runLength < TUI_VF_MIN_FLAT_FLOOR_RUN) bound = firstPopulated;
+    // Never hide the point the user is pointing at: a profile lock or a graph
+    // click can legitimately land inside the floor, and an invisible selection
+    // would be worse than the duplicate rows.
+    if (vm.selectedPoint >= 0 && vm.selectedPoint < bound &&
+        tui_point_values(vm, vm.selectedPoint).populated) {
+        bound = vm.selectedPoint;
+    }
+    return bound;
+}
+
+int tui_vf_hidden_low_point_count(const TuiViewModel& vm) {
+    int bound = tui_vf_first_listed_point(vm);
+    int hidden = 0;
+    for (int i = 0; i < bound && i < VF_NUM_POINTS; ++i)
+        if (tui_point_values(vm, i).populated) ++hidden;
+    return hidden;
+}
+
+int tui_vf_max_first_visible(const TuiViewModel& vm, int visibleRows) {
+    if (visibleRows < 1) return 0;
+    int bound = tui_vf_first_listed_point(vm);
+    // The table skips unpopulated indices, so the last useful scroll position is
+    // the index of the `visibleRows`-th populated point counted from the end.
+    // Clamping to VF_NUM_POINTS - 1 instead let the wheel keep "scrolling" into
+    // a progressively emptier table long after the last point was on screen.
+    int remaining = visibleRows;
+    int firstOfLastPage = 0;
+    for (int i = VF_NUM_POINTS - 1; i >= 0; --i) {
+        if (!tui_point_values(vm, i).populated) continue;
+        firstOfLastPage = i;
+        if (--remaining == 0) break;
+    }
+    // Fewer populated points than rows (or none at all): nothing to scroll.
+    if (remaining > 0) return bound;
+    return firstOfLastPage < bound ? bound : firstOfLastPage;
+}
+
+int tui_vf_reveal_first_visible(const TuiViewModel& vm, int selectedPoint,
+                                int visibleRows) {
+    if (visibleRows < 1 || selectedPoint < 0 ||
+        selectedPoint >= VF_NUM_POINTS) return 0;
+    // Show the selection near the TOP with a little context above it.
+    //
+    // The old rule walked back a whole page, which put the selection on the
+    // last row and filled everything above it with the driver's flat
+    // low-voltage floor -- 45 consecutive 180 MHz points on an RTX 5070. The
+    // taller the terminal, the more of the table was that floor, and the part
+    // of the curve the user is actually editing fell off the bottom.
+    int lead = visibleRows / 4;
+    if (lead > visibleRows - 1) lead = visibleRows - 1;
+    int bound = tui_vf_first_listed_point(vm);
+    int first = selectedPoint;
+    for (int i = selectedPoint - 1; i >= bound && lead > 0; --i) {
+        if (!tui_point_values(vm, i).populated) continue;
+        first = i;
+        --lead;
+    }
+    if (first < bound) first = bound;
+    int maximum = tui_vf_max_first_visible(vm, visibleRows);
+    return first > maximum ? maximum : first;
 }
 
 TuiPointValues tui_point_values(const TuiViewModel& vm, int pointIndex) {

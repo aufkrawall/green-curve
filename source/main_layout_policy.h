@@ -10,6 +10,9 @@
 
 enum {
     MAIN_LAYOUT_BASE_WIDTH_LOGICAL = 1180,
+    // One canonical side inset.  Every row starts here on the left, and every
+    // right-anchored control ends the same distance from the right edge.
+    MAIN_LAYOUT_SIDE_MARGIN_LOGICAL = 8,
     MAIN_LAYOUT_MIN_VIEWPORT_WIDTH_LOGICAL = 640,
     MAIN_LAYOUT_MIN_VIEWPORT_HEIGHT_LOGICAL = 480,
     MAIN_LAYOUT_MIN_COLUMNS = 6,
@@ -92,7 +95,8 @@ static inline MainLayoutPlan main_layout_build_plan(
     plan.contentWidth = main_layout_max_int(
         viewportWidth, main_layout_scale_px(MAIN_LAYOUT_BASE_WIDTH_LOGICAL, dpi));
 
-    const int sideAllowance = main_layout_scale_px(16, dpi);
+    const int sideAllowance =
+        2 * main_layout_scale_px(MAIN_LAYOUT_SIDE_MARGIN_LOGICAL, dpi);
     const int columnWidth = main_layout_max_int(
         1, main_layout_scale_px(MAIN_LAYOUT_COLUMN_WIDTH_LOGICAL, dpi));
     int availableColumns = (plan.contentWidth - sideAllowance) / columnWidth;
@@ -141,6 +145,19 @@ static inline int main_layout_preferred_client_height(int contentWidth, int dpi,
     MainLayoutPlan wide = main_layout_build_plan(contentWidth, generousHeight, dpi, pointCount);
     return wide.contentHeight - wide.graphHeight +
         main_layout_scale_px(MAIN_LAYOUT_GRAPH_PREFERRED_HEIGHT_LOGICAL, dpi);
+}
+
+// X for a control whose right edge must sit `margin` from the content right
+// edge, so it lines up with every other right-anchored control and mirrors the
+// left inset.  All arguments and the result are PHYSICAL pixels: runtime callers
+// pass dp() values and tests pass main_layout_scale_px() values, so neither has
+// to care which DPI source the other uses.
+//
+// `minX` is an overlap floor against the control's left neighbour.  At the base
+// content width none of the floors bind; they only matter as a guarantee.
+static inline int main_layout_right_anchored_x(
+    int contentWidth, int controlWidth, int margin, int minX) {
+    return main_layout_max_int(minX, contentWidth - margin - controlWidth);
 }
 
 static inline MainLayoutPointCell main_layout_point_cell(

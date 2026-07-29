@@ -102,6 +102,7 @@ void populate_view_model(const TuiState& state, TuiViewModel* vm,
     vm->focusIndex = state.focusIndex;
     vm->dirty = state.dirty;
     vm->serviceOnline = state.serviceOnline;
+    vm->draftAttached = state.draftAttached;
     vm->editing = state.edit.active;
     vm->editField = state.edit.field;
     vm->editIndex = state.edit.index;
@@ -112,6 +113,17 @@ void populate_view_model(const TuiState& state, TuiViewModel* vm,
     vm->probeCompleted = state.probe.completed;
     vm->probeSummary = state.probe.summary;
     vm->probeReportPath = state.probe.reportPath;
+    // Only an online daemon has a policy; offline the control renders the
+    // default rather than a stale value from a previous connection.
+    vm->startupPolicyMode = state.serviceOnline
+        ? state.service.state.startupPolicyMode
+        : (unsigned int)SERVICE_STARTUP_POLICY_RESTORE_LAST;
+    vm->startupPolicySlot = state.serviceOnline
+        ? state.service.state.startupPolicySlot : 0u;
+    vm->startupSnapshotState = state.serviceOnline
+        ? state.startupSnapshotState : STARTUP_SNAPSHOT_STATE_NOT_APPLICABLE;
+    if (state.serviceOnline)
+        vm->intentReadback = compare_intent_to_readback(&state.service);
     char bdf[32] = {};
     format_linux_gpu_bdf(&state.targetGpu, bdf, sizeof(bdf));
     snprintf(selectedGpu, 192, "%s  %s", bdf,
@@ -131,17 +143,19 @@ bool selected_is_visible(const TuiState& state) {
     return false;
 }
 
-void reveal_selected_point(TuiState* state) {
+// Returns false when the reveal could not be performed (offline, no table laid
+// out yet); the caller must then not record it as done, or the selection would
+// never be brought on screen once the daemon does arrive.
+bool reveal_selected_point(TuiState* state) {
     if (state->selectedPoint < 0 || !state->serviceOnline ||
-        state->layout.vfVisibleRows <= 0 || selected_is_visible(*state)) return;
-    int first = state->selectedPoint;
-    int remaining = state->layout.vfVisibleRows - 1;
-    for (int i = state->selectedPoint - 1; i >= 0 && remaining > 0; --i) {
-        if (state->service.snapshot.curve[i].freq_kHz == 0) continue;
-        first = i;
-        --remaining;
-    }
-    state->vfScroll = first;
+        state->layout.vfVisibleRows <= 0) return false;
+    if (selected_is_visible(*state)) return true;
+    char selectedGpu[192] = {};
+    TuiViewModel vm = {};
+    populate_view_model(*state, &vm, selectedGpu);
+    state->vfScroll = tui_vf_reveal_first_visible(vm, state->selectedPoint,
+                                                  state->layout.vfVisibleRows);
+    return true;
 }
 
 void focus_linear(TuiState* state, int direction) {
@@ -198,14 +212,20 @@ void scroll_current_tab(TuiState* state, int direction, bool page) {
     if (state->tab == TUI_TAB_VF) {
         int amount = page ? state->layout.vfVisibleRows : 3;
         if (amount < 1) amount = 1;
-        state->vfScroll += direction * amount;
-        if (state->vfScroll < 0) state->vfScroll = 0;
-        if (state->vfScroll >= VF_NUM_POINTS) state->vfScroll = VF_NUM_POINTS - 1;
+        // Stops at both ends: the top is index 0 and the bottom is the last
+        // page of populated points, not the raw VF_NUM_POINTS window.
+        state->vfScroll = tui_clamp_vf_scroll(*state,
+            state->vfScroll + direction * amount);
     } else if (state->tab == TUI_TAB_FAN) {
+        // Same rule for the fan list: the last position is the one that still
+        // fills the table, so scrolling cannot walk off the end.
+        int visible = state->layout.fanVisibleRows > 0
+            ? state->layout.fanVisibleRows : FAN_CURVE_MAX_POINTS;
+        int maximum = FAN_CURVE_MAX_POINTS - visible;
+        if (maximum < 0) maximum = 0;
         state->fanScroll += direction * (page ? 4 : 1);
         if (state->fanScroll < 0) state->fanScroll = 0;
-        if (state->fanScroll >= FAN_CURVE_MAX_POINTS)
-            state->fanScroll = FAN_CURVE_MAX_POINTS - 1;
+        if (state->fanScroll > maximum) state->fanScroll = maximum;
     }
 }
 
@@ -215,14 +235,20 @@ void select_curve_end(TuiState* state, bool end) {
         for (int i = VF_NUM_POINTS - 1; i >= 0; --i) {
             if (state->service.snapshot.curve[i].freq_kHz == 0) continue;
             state->selectedPoint = i;
-            state->vfScroll = i;
+            state->vfScroll = tui_clamp_vf_scroll(*state, i);
             return;
         }
     } else {
-        for (int i = 0; i < VF_NUM_POINTS; ++i) {
+        // Home goes to the start of the *listed* curve, not into the flat
+        // low-voltage floor the table deliberately leaves out.
+        char selectedGpu[192] = {};
+        TuiViewModel vm = {};
+        populate_view_model(*state, &vm, selectedGpu);
+        int first = tui_vf_first_listed_point(vm);
+        for (int i = first; i < VF_NUM_POINTS; ++i) {
             if (state->service.snapshot.curve[i].freq_kHz == 0) continue;
             state->selectedPoint = i;
-            state->vfScroll = i;
+            state->vfScroll = tui_clamp_vf_scroll(*state, i);
             return;
         }
     }
@@ -252,6 +278,22 @@ bool parse_mouse_sequence(const std::string& sequence, TuiInputEvent* event) {
 
 }  // namespace
 
+int tui_clamp_vf_scroll(const TuiState& state, int candidate) {
+    // No VF table in the current layout — another tab is showing, or nothing has
+    // been drawn yet. There is no information to clamp against, so leave the
+    // offset alone. Treating "no rows" as a maximum of zero rewound the list to
+    // the start of the curve every time the 1 Hz refresh ticked while the user
+    // was on the Fan or Profiles tab.
+    if (state.layout.vfVisibleRows <= 0) return candidate < 0 ? 0 : candidate;
+    char selectedGpu[192] = {};
+    TuiViewModel vm = {};
+    populate_view_model(state, &vm, selectedGpu);
+    int minimum = tui_vf_first_listed_point(vm);
+    int maximum = tui_vf_max_first_visible(vm, state.layout.vfVisibleRows);
+    if (candidate < minimum) return minimum;
+    return candidate > maximum ? maximum : candidate;
+}
+
 void tui_render(TuiState* state) {
     if (!state) return;
     winsize size = {};
@@ -262,7 +304,13 @@ void tui_render(TuiState* state) {
     TuiViewModel vm = {};
     populate_view_model(*state, &vm, selectedGpu);
     build_tui_layout(vm, width, height, &state->layout);
-    reveal_selected_point(state);
+    // Only when the selection actually moved.  Unconditionally revealing on
+    // every frame silently undid every scroll that pushed the selected point
+    // off screen, so the wheel walked a few rows down and snapped back.
+    if (tui_selection_needs_reveal(state->selectedPoint, state->revealedPoint) &&
+        reveal_selected_point(state)) {
+        state->revealedPoint = state->selectedPoint;
+    }
     if (vm.vfScroll != state->vfScroll) {
         populate_view_model(*state, &vm, selectedGpu);
         build_tui_layout(vm, width, height, &state->layout);
@@ -284,6 +332,23 @@ void tui_render(TuiState* state) {
     std::vector<std::string> rows;
     rows.reserve((size_t)height);
     for (int y = 1; y <= height; ++y) rows.push_back(rendered_row(*state, y));
+
+    // Nothing to repaint: emit no bytes at all rather than an empty
+    // synchronized-update batch.  The live refresh ticks every second and is
+    // usually a no-op, so those batches were the bulk of what the terminal saw
+    // while idle, and the batch that landed last before exit was one of them.
+    bool anyRowChanged = full;
+    for (int y = 0; !anyRowChanged && y < height; ++y) {
+        if (y >= (int)state->renderedRows.size() ||
+            rows[y] != state->renderedRows[y]) anyRowChanged = true;
+    }
+    if (!anyRowChanged) {
+        state->renderedRows.swap(rows);
+        state->renderedWidth = width;
+        state->renderedHeight = height;
+        state->forceFullRender = false;
+        return;
+    }
 
     fputs("\x1b[?2026h", stdout);
     if (full) fputs("\x1b[2J\x1b[H", stdout);

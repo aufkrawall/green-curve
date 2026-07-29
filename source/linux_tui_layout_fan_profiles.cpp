@@ -71,7 +71,25 @@ void draw_fan_graph(TuiCanvas* c, const TuiRect& panel) {
 void draw_fan_settings(TuiCanvas* c, const TuiRect& panel) {
     const TuiViewModel& vm = c->view();
     const DesiredSettings& desired = *vm.desired;
-    c->box(panel, "FAN CONTROL", "live + staged");
+    char actual[96] = {};
+    if (vm.serviceOnline && vm.service &&
+        vm.service->snapshot.fanSupported &&
+        vm.service->snapshot.fanCount > 0 &&
+        vm.service->controlState.fanPolicyReadbackValid) {
+        char target[16] = "?";
+        if (vm.service->controlState.fanTargetReadbackValid)
+            snprintf(target, sizeof(target), "%u",
+                     vm.service->snapshot.fanTargetPercent[0]);
+        snprintf(actual, sizeof(actual), "actual %s • target %s%% • measured %d%%",
+                 vm.service->snapshot.fanPolicy[0] ==
+                    NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW
+                    ? "auto" : "manual",
+                 target,
+                 vm.service->controlState.fanCurrentPercent);
+    } else {
+        snprintf(actual, sizeof(actual), "hardware readback unavailable");
+    }
+    c->box(panel, "FAN CONTROL — CONFIGURED INTENT", actual);
     int x = panel.x + 2;
     int y = panel.y + 2;
     c->text(x, y, 10, "Mode", TUI_STYLE_TEXT);
@@ -101,6 +119,7 @@ void draw_fan_table(TuiCanvas* c, const TuiRect& panel) {
     c->box(panel, "FAN CURVE POINTS", "strict temp ↑ • speed nondecreasing");
     int rows = panel.height - 3;
     if (rows <= 0) return;
+    c->layout()->fanVisibleRows = rows;
     int x = panel.x + 2;
     int tempX = panel.width >= 75 ? x + 18 : x + 12;
     int pctX = tempX + 18;
@@ -166,9 +185,13 @@ void draw_profile_panel(TuiCanvas* c, const TuiRect& panel) {
     c->button(TuiRect{x + 36, y + 2, 15, 1}, "RESET DRAFT",
               ACTION_RESET_DRAFT);
     c->text(x, y + 4, panel.width - 6,
-            vm.dirty ? "● staged values differ from the accepted live state"
-                     : "● editor currently matches accepted live intent",
-            vm.dirty ? TUI_STYLE_ORANGE : TUI_STYLE_GREEN);
+            vm.dirty ? "● staged values differ from accepted intent"
+                     : vm.intentReadback.divergedDomains
+                        ? "● accepted intent differs from hardware readback"
+                        : "● editor matches accepted intent and hardware",
+            vm.dirty ? TUI_STYLE_ORANGE
+                     : vm.intentReadback.divergedDomains
+                        ? TUI_STYLE_RED : TUI_STYLE_GREEN);
     if (panel.height >= 9) {
         c->text(x, y + 6, panel.width - 6, "Config", TUI_STYLE_MUTED);
         c->text(x + 8, y + 6, panel.width - 14,
@@ -178,7 +201,10 @@ void draw_profile_panel(TuiCanvas* c, const TuiRect& panel) {
 
 void draw_tools_panel(TuiCanvas* c, const TuiRect& panel) {
     const TuiViewModel& vm = c->view();
-    c->box(panel, "TOOLS", "read-only exports include all 128 points");
+    // Not "all 128 points": the exports cover every populated point of the
+    // graphics clock domain, which is 127 on an RTX 5070. The read window is
+    // VF_NUM_POINTS, but the domain length comes from the driver's table.
+    c->box(panel, "TOOLS", "read-only exports include every populated point");
     int x = panel.x + 3;
     int y = panel.y + 2;
     c->button(TuiRect{x, y, 12, 1}, "REFRESH", ACTION_REFRESH);
@@ -229,6 +255,41 @@ void draw_service_panel(TuiCanvas* c, const TuiRect& panel) {
     c->text(x, y + 4, panel.width - 6,
             "Resize: layout and hitboxes are rebuilt atomically from terminal cells",
             TUI_STYLE_MUTED);
+    // The boot-apply policy lives here rather than on the PROFILE panel because
+    // it is daemon state, not editor state: it survives this process and is what
+    // the GPU gets at the next boot.
+    if (panel.height >= 9) {
+        c->text(x, y + 6, 16, "Startup apply", TUI_STYLE_TEXT);
+        // The daemon boot-applies a snapshot it took of the profile, not the
+        // profile itself.  When the two have drifted apart, "PROFILE N" alone
+        // would claim something untrue, so the label says so.
+        bool snapshotStale =
+            startup_snapshot_state_is_stale(vm.startupSnapshotState);
+        char label[24] = {};
+        if (vm.startupPolicyMode == SERVICE_STARTUP_POLICY_PROFILE)
+            snprintf(label, sizeof(label), "PROFILE %u%s", vm.startupPolicySlot,
+                     snapshotStale ? " STALE" : "");
+        else
+            snprintf(label, sizeof(label), "%s",
+                     vm.startupPolicyMode == SERVICE_STARTUP_POLICY_NONE
+                         ? "NOTHING" : "LAST APPLIED");
+        c->button(TuiRect{x + 17, y + 6, 16, 1}, label,
+                  ACTION_STARTUP_POLICY_CYCLE);
+        const char* hint =
+            vm.startupPolicyMode == SERVICE_STARTUP_POLICY_PROFILE
+                ? (vm.startupSnapshotState ==
+                       STARTUP_SNAPSHOT_STATE_PROFILE_MISSING
+                       ? "the bound slot no longer loads; re-bind or disable it"
+                       : (snapshotStale
+                              ? "what boots differs from the slot; Save it again"
+                              : "saved profile is applied when the daemon starts"))
+                : (vm.startupPolicyMode == SERVICE_STARTUP_POLICY_NONE
+                       ? "the GPU is left untouched when the daemon starts"
+                       : "the last applied settings are restored at daemon start");
+        if (panel.width > 42)
+            c->text(x + 34, y + 6, panel.width - 40, hint,
+                    snapshotStale ? TUI_STYLE_RED : TUI_STYLE_MUTED);
+    }
 }
 
 }  // namespace

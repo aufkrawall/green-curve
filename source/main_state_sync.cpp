@@ -72,6 +72,12 @@ static bool hardware_initialize(char* detail, size_t detailSize) {
             " (smi=%u pstate=%u); diagnostic only, no write\n",
             g_app.memClockOffsetkHz, g_app.smiMemMaxMHz, g_app.pstateMemMaxMHz);
     }
+    // Read-only per-domain control-surface probe.  Runs last so the VF mask is
+    // already populated; it never writes GPU state and, on hardware where every
+    // domain answers, leaves g_app.gpuCapability reporting a full surface —
+    // i.e. no behavior change on validated discrete GPUs.
+    set_last_apply_phase("hardware initialize: capability probe");
+    gpu_probe_control_surface();
 #ifdef GREEN_CURVE_SERVICE_BINARY
     trim_working_set();
 #endif
@@ -212,6 +218,9 @@ static void populate_service_snapshot_locked(ServiceSnapshot* snapshot,
     snapshot->lastLifecycleTrigger = (gc_u32)g_serviceLastLifecycleTrigger;
     snapshot->lastLifecycleResult = (gc_u32)g_serviceLastLifecycleResult;
     snapshot->autoRestoreLockoutReason = snapshotLockoutReason;
+    snapshot->health.availableMutationDomains = gpu_capability_available_domains(&g_app.gpuCapability);
+    snapshot->health.capabilityMemoryTopology = (gc_u8)g_app.gpuCapability.memoryTopology;
+    snapshot->health.capabilityDomainsPacked = gpu_capability_pack_domains(&g_app.gpuCapability);
 }
 
 static void populate_service_snapshot(ServiceSnapshot* snapshot) {
@@ -227,8 +236,9 @@ static void populate_control_state_locked(ControlState* state) {
     if (!state) return;
     memset(state, 0, sizeof(*state));
     state->valid = true;
+    bool gpuOffsetFromHardware = false;
     state->hasGpuOffset = true;
-    state->gpuOffsetMHz = current_applied_gpu_offset_mhz();
+    state->gpuOffsetMHz = current_applied_gpu_offset_mhz(&gpuOffsetFromHardware);
     state->gpuOffsetExcludeLowCount = (current_applied_gpu_offset_excludes_low_points() && state->gpuOffsetMHz != 0) ? g_app.appliedGpuOffsetExcludeLowCount : 0;
     state->hasMemOffset = true;
     state->memOffsetMHz = mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
@@ -241,6 +251,27 @@ static void populate_control_state_locked(ControlState* state) {
     state->fanCurrentTemperatureC = g_app.gpuTemperatureValid ? g_app.gpuTemperatureC : 0;
     copy_fan_curve(&state->fanCurve, current_green_curve_fan_intent_curve());
     ensure_valid_fan_curve_config(&state->fanCurve);
+
+    // Protocol v14: the values above intentionally keep a last-known or intent
+    // fallback so a degraded read still leaves the editor populated.  These bits
+    // are what stops that fallback from being mistaken for proof that the
+    // hardware still holds Green Curve's settings.  Fan policy/target ride in
+    // the snapshot, so their validity is published here alongside the scalars.
+    ControlReadbackFacts facts = {};
+    facts.gpuOffsetFromHardware = gpuOffsetFromHardware;
+    facts.memOffsetRead = g_app.readback.memOffset;
+    facts.powerRead = g_app.readback.powerLimit;
+    facts.powerDefaultmW = g_app.powerLimitDefaultmW;
+    facts.powerCurrentmW = g_app.powerLimitCurrentmW;
+    facts.fanSupported = g_app.fanSupported;
+    facts.fanCount = g_app.fanCount;
+    facts.fanPolicyKnown = g_app.readback.fan.policy;
+    facts.fanTargetKnown = g_app.readback.fan.target;
+    apply_control_readback_validity(state, &facts);
+    debug_log_on_change("control state readback validity: gpu=%d mem=%d power=%d fanPolicy=%d fanTarget=%d\n",
+        state->gpuOffsetReadbackValid ? 1 : 0, state->memOffsetReadbackValid ? 1 : 0,
+        state->powerLimitReadbackValid ? 1 : 0, state->fanPolicyReadbackValid ? 1 : 0,
+        state->fanTargetReadbackValid ? 1 : 0);
 }
 
 static void populate_control_state(ControlState* state) {
@@ -265,6 +296,19 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
     g_app.serviceLastLifecycleResult = (ServiceLifecycleResult)snapshot->lastLifecycleResult;
     g_app.serviceAutoRestoreLockoutReason =
         (ServiceAutoRestoreLockoutReason)snapshot->autoRestoreLockoutReason;
+    gc_u32 previousCapabilityPacked =
+        gpu_capability_pack_domains(&g_app.gpuCapability);
+    gc_u32 previousMemoryTopology = g_app.gpuCapability.memoryTopology;
+    gpu_capability_unpack_domains(&g_app.gpuCapability,
+        snapshot->health.capabilityDomainsPacked,
+        snapshot->health.capabilityMemoryTopology);
+    if (previousCapabilityPacked !=
+            snapshot->health.capabilityDomainsPacked ||
+        previousMemoryTopology != g_app.gpuCapability.memoryTopology) {
+        debug_log("service snapshot capability: packed=0x%04X topology=%s\n",
+            snapshot->health.capabilityDomainsPacked,
+            gpu_memory_topology_name(g_app.gpuCapability.memoryTopology));
+    }
     g_app.loaded = snapshot->loaded;
     g_app.fanSupported = snapshot->fanSupported;
     g_app.fanRangeKnown = snapshot->fanRangeKnown;
@@ -459,6 +503,11 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
         }
     }
     memset(&g_app.serviceControlState, 0, sizeof(g_app.serviceControlState));
+    // The memset deliberately leaves every protocol-v14 readback-valid bit
+    // clear.  A snapshot cannot establish them: snapshot->appliedGpuOffsetMHz
+    // itself falls back to active desired intent when detection is ambiguous.
+    // The authoritative bits arrive with the response's ControlState, which
+    // apply_control_state_to_gui() merges in immediately after this.
     g_app.serviceControlState.valid = true;
     g_app.serviceControlState.hasGpuOffset = true;
     g_app.serviceControlState.gpuOffsetMHz = snapshot->appliedGpuOffsetMHz;
@@ -583,18 +632,24 @@ static void apply_control_state_to_gui(const ControlState* state) {
     ControlState merged = {};
     if (g_app.serviceControlStateValid) merged = g_app.serviceControlState;
     merged.valid = true;
+    // Each readback-valid bit travels with the value it describes.  Carrying a
+    // stale "true" from the previous merge into a domain this update did not
+    // refresh would be the exact failure protocol v14 exists to prevent.
     if (state->hasGpuOffset) {
         merged.hasGpuOffset = true;
         merged.gpuOffsetMHz = state->gpuOffsetMHz;
+        merged.gpuOffsetReadbackValid = state->gpuOffsetReadbackValid;
         merged.gpuOffsetExcludeLowCount = (state->gpuOffsetExcludeLowCount > 0 && state->gpuOffsetMHz != 0) ? state->gpuOffsetExcludeLowCount : 0;
     }
     if (state->hasMemOffset) {
         merged.hasMemOffset = true;
         merged.memOffsetMHz = state->memOffsetMHz;
+        merged.memOffsetReadbackValid = state->memOffsetReadbackValid;
     }
     if (state->hasPowerLimit) {
         merged.hasPowerLimit = true;
         merged.powerLimitPct = state->powerLimitPct;
+        merged.powerLimitReadbackValid = state->powerLimitReadbackValid;
     }
     if (state->hasFan) {
         merged.hasFan = true;
@@ -602,6 +657,8 @@ static void apply_control_state_to_gui(const ControlState* state) {
         merged.fanFixedPercent = state->fanFixedPercent;
         merged.fanCurrentPercent = state->fanCurrentPercent;
         merged.fanCurrentTemperatureC = state->fanCurrentTemperatureC;
+        merged.fanPolicyReadbackValid = state->fanPolicyReadbackValid;
+        merged.fanTargetReadbackValid = state->fanTargetReadbackValid;
         copy_fan_curve(&merged.fanCurve, &state->fanCurve);
         ensure_valid_fan_curve_config(&merged.fanCurve);
     }
@@ -650,6 +707,14 @@ static void apply_control_state_to_gui(const ControlState* state) {
     }
 }
 
+// What the synchronous path knows about the service state it last read, and
+// therefore what any mutation it builds must name.  This is the non-window
+// counterpart of GuiServiceModel: every CLI verb, the installer's settings
+// restore, and --service-remove's reset stamp their APPLY/RESET from here.
+// Empty means "this client has not seen a READY service", which fails the
+// mutation closed instead of sending zeroed preconditions the service refuses.
+static ServiceClientStateIdentity g_syncClientStateIdentity = {};
+
 // Compatibility projection for synchronous CLI and pre-window startup paths.
 // The transport layer returns the complete immutable envelope; this caller-side
 // projection adopts its snapshot, intent and controls together, never through
@@ -660,7 +725,34 @@ static void apply_ready_service_envelope_to_app(
     if (!response || response->state.gpuPhase != SERVICE_GPU_PHASE_READY ||
         (response->state.validSections &
             SERVICE_STATE_SECTION_READY_REQUIRED) !=
-                SERVICE_STATE_SECTION_READY_REQUIRED) return;
+                SERVICE_STATE_SECTION_READY_REQUIRED) {
+        // Nothing was projected, so nothing may be stamped: a mutation built
+        // after this must not keep naming the last state that was READY.
+        if (service_client_identity_complete(&g_syncClientStateIdentity)) {
+            debug_log("sync client state: dropping the stamped identity "
+                "instance=%llu generation=%llu (envelope phase=%u valid=0x%02X is not usable)\n",
+                (unsigned long long)g_syncClientStateIdentity.serviceInstanceId,
+                (unsigned long long)g_syncClientStateIdentity.gpuGeneration,
+                response ? response->state.gpuPhase : 0u,
+                response ? response->state.validSections : 0u);
+        }
+        service_client_identity_clear(&g_syncClientStateIdentity);
+        return;
+    }
+    if (service_client_identity_adopt(&g_syncClientStateIdentity,
+            &response->state)) {
+        debug_log_on_change("sync client state: stamping mutations with "
+            "instance=%llu generation=%llu topology=%llu\n",
+            (unsigned long long)g_syncClientStateIdentity.serviceInstanceId,
+            (unsigned long long)g_syncClientStateIdentity.gpuGeneration,
+            (unsigned long long)g_syncClientStateIdentity.topologySignature);
+    } else {
+        debug_log("sync client state: READY envelope carried no usable identity "
+            "(instance=%llu generation=%llu topology=%llu); mutations stay refused\n",
+            (unsigned long long)response->state.serviceInstanceId,
+            (unsigned long long)response->state.gpuGeneration,
+            (unsigned long long)response->state.topologySignature);
+    }
     apply_service_snapshot_to_app(&response->snapshot);
     g_app.serviceActiveDesiredValid = response->state.activeDesiredValid;
     if (response->state.activeDesiredValid) {

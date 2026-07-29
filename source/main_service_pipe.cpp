@@ -136,7 +136,7 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
         DWORD callerPid = 0;
         DWORD callerIntegrityRid = 0;
         HANDLE callerToken = nullptr;
-        bool callerIsAdmin = false;
+        bool callerIsAdmin = false, stateEnvelopeAuthorized = false;
         ServiceLifecycleIdentity callerLifecycleIdentity = {};
         char pipeErr[256] = {};
         if (!service_pipe_read_exact(pipe, &request, sizeof(request), SERVICE_PIPE_SERVER_IO_TIMEOUT_MS, "reading service request", pipeErr, sizeof(pipeErr))) {
@@ -152,8 +152,8 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
             response.status = SERVICE_STATUS_ERROR;
             StringCchCopyA(response.message, ARRAY_COUNT(response.message),
                 "Service request contains invalid protocol fields");
-            debug_log("service_pipe_server: rejected malformed v11 request command=%u pid=%u\n",
-                request.command, request.callerPid);
+            debug_log("service_pipe_server: rejected v%u request command=%u pid=%u: %s\n",
+                request.version, request.command, request.callerPid, service_request_reject_reason(&request));
         } else if (InterlockedExchangeAdd(
                 &g_serviceClientRequestsReady, 0) == 0) {
             response.status = SERVICE_STATUS_ERROR;
@@ -194,6 +194,7 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     (unsigned int)request.command,
                     (unsigned long)callerIntegrityRid);
             } else {
+                stateEnvelopeAuthorized = true;
                 // A logon handoff is settings-free and resolves an immutable
                 // per-session context in the lifecycle worker.  Do not mutate
                 // process-global user/config paths as part of its authorization.
@@ -810,10 +811,9 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
         }
 
         response.message[ARRAY_COUNT(response.message) - 1] = '\0';
-        // Every response, including errors and mutation outcomes, carries one
-        // coherent authoritative envelope.  This final capture deliberately
-        // replaces any command-local cached copies above.
-        populate_service_state_response(&response);
+        // The pipe ACL admits every local user; only callers that passed the
+        // active-session, PID, and integrity gates receive authoritative state.
+        if (stateEnvelopeAuthorized) populate_service_state_response(&response);
         pipeErr[0] = 0;
         if (!service_pipe_write_exact(pipe, &response, sizeof(response), SERVICE_PIPE_SERVER_IO_TIMEOUT_MS, "writing service response", pipeErr, sizeof(pipeErr))) {
             debug_log("service_pipe_server: response write failed: %s\n", pipeErr[0] ? pipeErr : "unknown");

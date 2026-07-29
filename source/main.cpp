@@ -14,6 +14,8 @@
 #include "ui_theme_metrics.h"
 #include "gui_mutation_forward.h"
 #include "reconnect_state_forward.h"
+#include "gui_render_forward.h"
+#include "gui_tray_callback_policy.h"
 #include <dbghelp.h>
 #include <bcrypt.h>
 #include <dxgi1_6.h>
@@ -417,8 +419,6 @@ static bool is_themed_checkbox_id(UINT id);
 static bool is_fan_dialog_checkbox_id(UINT id);
 static void draw_checkbox_tick_smooth(HDC hdc, const RECT* box, COLORREF color);
 static void write_error_report_log_for_user_failure(const char* summary, const char* details = nullptr);
-static void draw_curve_polyline_smooth(HDC hdc, const POINT* pts, int count, int widthPx, COLORREF color);
-static void draw_curve_points_ringed(HDC hdc, const POINT* pts, int count, int innerRadiusPx, int outerRadiusPx);
 static bool nvapi_set_gpu_offset(int offsetkHz);
 static bool nvapi_set_mem_offset(int offsetkHz);
 static bool nvapi_set_power_limit(int pct);
@@ -551,7 +551,7 @@ static bool desired_updates_curve_or_gpu_offset_state(const DesiredSettings* des
 static bool desired_has_nonfan_apply_fields(const DesiredSettings* desired);
 static bool desired_is_fan_only_apply_request(const DesiredSettings* desired);
 static bool desired_settings_match_active_service_intent(const DesiredSettings* profile, const DesiredSettings* active, char* detail, size_t detailSize);
-static bool capture_gui_apply_settings(DesiredSettings* desired, char* err, size_t errSize);
+static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline* baselineOut, char* err, size_t errSize);
 static void capture_applied_curve_baseline(const DesiredSettings* desired);
 static void set_profile_status_text(const char* fmt, ...);
 static void update_profile_state_label();
@@ -654,7 +654,7 @@ static int curve_base_khz_for_point(int pointIndex);
 static void persist_runtime_selective_gpu_offset_request(int gpuOffsetMHz, int excludeLowCount);
 static void clear_runtime_selective_gpu_offset_request();
 static void resolve_displayed_live_gpu_offset_state_for_gui(int* gpuOffsetMHzOut, int* excludeLowCountOut);
-static int current_applied_gpu_offset_mhz();
+static int current_applied_gpu_offset_mhz(bool* fromHardware = nullptr);
 static bool current_applied_gpu_offset_excludes_low_points();
 static void open_fan_curve_dialog();
 static void refresh_fan_curve_button_text();

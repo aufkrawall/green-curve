@@ -3,6 +3,7 @@
 
 #include "linux_tui_internal.h"
 
+#include "linux_debug_log.h"
 #include "linux_gpu_selection.h"
 
 #include <errno.h>
@@ -21,6 +22,16 @@ volatile sig_atomic_t g_resizeRequested = 1;
 volatile sig_atomic_t g_stopRequested = 0;
 
 void restore_terminal_mode();
+
+bool terminal_modes_equal(const termios& left, const termios& right) {
+    if (left.c_iflag != right.c_iflag || left.c_oflag != right.c_oflag ||
+        left.c_cflag != right.c_cflag || left.c_lflag != right.c_lflag ||
+        cfgetispeed(&left) != cfgetispeed(&right) ||
+        cfgetospeed(&left) != cfgetospeed(&right)) return false;
+    for (unsigned int i = 0; i < NCCS; ++i)
+        if (left.c_cc[i] != right.c_cc[i]) return false;
+    return true;
+}
 
 struct TerminalGuard {
     termios original;
@@ -47,10 +58,17 @@ struct TerminalGuard {
     }
 };
 
+// Leave the terminal exactly as it was found, then put the cursor on a fresh
+// line.  The trailing newline is not cosmetic: on Konsole a write that ends
+// precisely at the alternate-screen exit leaves the *next* write unpainted
+// until more output arrives, which is why quitting appeared to need one extra
+// keypress before the shell prompt showed up.
+#define TUI_PRESENTATION_RESTORE \
+    "\x1b[?2026l\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l\r\n"
+
 void restore_terminal_mode() {
     if (!g_activeTerminalGuard || !g_activeTerminalGuard->active) return;
-    fputs("\x1b[?2026l\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l",
-          stdout);
+    fputs(TUI_PRESENTATION_RESTORE, stdout);
     fflush(stdout);
     tcsetattr(STDIN_FILENO, TCSAFLUSH,
               &g_activeTerminalGuard->original);
@@ -77,6 +95,7 @@ void initialize_state(TuiState* state, const char* configPath,
         ? initialSlot : CONFIG_DEFAULT_SLOT;
     state->tab = TUI_TAB_VF;
     state->selectedPoint = 0;
+    state->revealedPoint = -1;
     state->vfScroll = 0;
     state->fanScroll = 0;
     state->focusIndex = -1;
@@ -97,6 +116,10 @@ void initialize_state(TuiState* state, const char* configPath,
             serviceLoaded = tui_refresh_service(state, false, initialTarget);
         }
     }
+    // One read-back at start, before any status line is composed: a boot-apply
+    // snapshot that no longer matches its profile is a silent revert at the
+    // next boot, so it has to be visible without the user doing anything.
+    tui_refresh_startup_snapshot(state);
     if (!serviceLoaded) {
         if (initialTarget) state->targetGpu = *initialTarget;
         if (initialDesired) {
@@ -114,6 +137,15 @@ void initialize_state(TuiState* state, const char* configPath,
     } else if (!state->status[0]) {
         snprintf(state->status, sizeof(state->status),
                  "Live GPU state loaded • click a field or use Tab/Enter");
+    }
+    // Outranks the informational lines above: what boots is about to differ
+    // from what the profile says, and the user cannot see that anywhere else.
+    if (startup_snapshot_state_is_stale(state->startupSnapshotState)) {
+        snprintf(state->status, sizeof(state->status),
+            state->startupSnapshotState == STARTUP_SNAPSHOT_STATE_PROFILE_MISSING
+                ? "Startup apply boots profile %u, but that slot no longer loads; re-bind or disable it"
+                : "Startup apply boots a STALE copy of profile %u; Save that slot again to refresh what boots",
+            (unsigned int)state->service.state.startupPolicySlot);
     }
 }
 
@@ -172,7 +204,11 @@ int run_tui_child(const char* configPath, int initialSlot,
         } else {
             state.escapePendingSince = 0;
         }
-        if (handled) tui_render(&state);
+        // Quitting is not a reason to paint another frame; the guard is about to
+        // tear the alternate screen down. The old code rendered here regardless,
+        // so every exit ended with one or two dead frames on the wire.
+        if (handled && state.running) tui_render(&state);
+        if (!state.running) break;
 
         unsigned long long now = tui_monotonic_ms();
         if (!state.edit.active && now >= state.nextTelemetryMs) {
@@ -234,10 +270,24 @@ int linux_run_tui(const char* configPath, int initialSlot,
 
     // The supervisor never enters raw mode and can restore presentation with
     // normal APIs even when the child terminates through SIGSEGV or SIGABRT.
-    fputs("\x1b[?2026l\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l",
-          stdout);
-    fflush(stdout);
-    tcsetattr(STDIN_FILENO, TCSAFLUSH, &original);
+    //
+    // It only does so when the child actually left the terminal modified: the
+    // child is already reaped, so a termios read here races with nobody, and
+    // repeating a restore the child performed correctly would duplicate the
+    // whole escape sequence on the wire for no benefit.
+    termios afterChild = {};
+    bool childRestored = tcgetattr(STDIN_FILENO, &afterChild) == 0 &&
+        terminal_modes_equal(afterChild, original);
+    if (!childRestored) {
+        fputs(TUI_PRESENTATION_RESTORE, stdout);
+        fflush(stdout);
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &original);
+    }
+    linux_debug_logf("tui supervisor: child=%ld childRestoredTerminal=%d "
+                     "signaled=%d status=%d",
+                     (long)child, childRestored ? 1 : 0,
+                     WIFSIGNALED(childStatus) ? 1 : 0,
+                     WIFEXITED(childStatus) ? WEXITSTATUS(childStatus) : -1);
     if (WIFSIGNALED(childStatus)) {
         int signalNumber = WTERMSIG(childStatus);
         fprintf(stderr,

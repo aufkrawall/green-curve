@@ -5,6 +5,15 @@ static void close_startup_sync_thread_handle() {
     }
 }
 
+// Defined later in the GUI translation unit (ui_oc_hints.cpp); the service
+// binary gets the no-op stub in main_shell.cpp instead.
+static void refresh_oc_range_hints();
+
+// Defined later in the translation unit (main_runtime_gpu.cpp). The VF grid step
+// at a point: the apply verification already treats a difference within one step
+// as on target, and the lock diff below has to agree.
+static unsigned int curve_point_verify_tolerance_mhz(int pointIndex);
+
 static void populate_global_controls() {
     ControlState control = {};
     bool haveControlState = get_effective_control_state(&control);
@@ -86,14 +95,23 @@ static void populate_global_controls() {
     }
     bool mutationReady = serviceReady && g_app.loaded &&
         g_app.guiDraft.attached && !g_app.guiDraft.detached;
-    if (g_app.hApplyBtn) EnableWindow(g_app.hApplyBtn, mutationReady ? TRUE : FALSE);
     if (g_app.hRefreshBtn) EnableWindow(g_app.hRefreshBtn, TRUE);
     if (g_app.hResetBtn) EnableWindow(g_app.hResetBtn, mutationReady ? TRUE : FALSE);
     end_programmatic_edit_update();
+    // The advertised ranges live in the same snapshot that just drove the
+    // enable gates above, so refresh them from the same place.  The call is
+    // change-gated inside and is a no-op in the service binary.
+    refresh_oc_range_hints();
     if (!preservePendingCurveEdits && !gui_has_pending_global_edits()) {
         detect_locked_tail_from_curve();
     }
     update_fan_controls_enabled_state();
+    // Last: this function adopts the applied baselines the pending diff compares
+    // against, and detect_locked_tail_from_curve() above can still move the lock,
+    // so evaluating any earlier would leave the mask a step behind. The refresh
+    // owns the Apply enable -- greyed unless something differs (F-PENDING) -- and
+    // is change-gated, so a stable telemetry tick repaints nothing.
+    gui_pending_changes_refresh();
     if (!serviceReady || !g_app.loaded) {
         g_app.serviceSnapshotAuthoritative = false;
     }
@@ -128,8 +146,12 @@ static void capture_applied_curve_baseline(const DesiredSettings* desired) {
         desired->hasLock ? desired->lockCi : -1, desired->hasLock ? desired->lockMHz : 0u);
 }
 
-static bool capture_gui_apply_settings(DesiredSettings* desired, char* err, size_t errSize) {
+static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline* baselineOut, char* err, size_t errSize) {
     if (!desired) return false;
+    if (baselineOut) {
+        OcApplyBaseline empty = {};
+        *baselineOut = empty;
+    }
 
     DesiredSettings full = {};
     if (!capture_gui_desired_settings(&full, false, true, false, err, errSize)) return false;
@@ -143,6 +165,10 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, char* err, size
     int currentGpuOffsetExcludeLowCount = haveControlState && control_state_has_meaningful_gpu(&control) ? control.gpuOffsetExcludeLowCount : (current_applied_gpu_offset_excludes_low_points() ? g_app.appliedGpuOffsetExcludeLowCount : 0);
     int currentMemOffsetMHz = haveControlState && control_state_has_meaningful_mem(&control) ? control.memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
     int currentPowerLimitPct = haveControlState && control_state_has_meaningful_power(&control) ? control.powerLimitPct : g_app.powerLimitPct;
+    if (baselineOut) {
+        baselineOut->currentGpuOffsetMHz = currentGpuOffsetMHz;
+        baselineOut->currentMemOffsetMHz = currentMemOffsetMHz;
+    }
 
     bool gpuUnchanged = !full.hasGpuOffset || (full.gpuOffsetMHz == currentGpuOffsetMHz && full.gpuOffsetExcludeLowCount == currentGpuOffsetExcludeLowCount);
     bool memUnchanged = !full.hasMemOffset || (full.memOffsetMHz == currentMemOffsetMHz);
@@ -182,8 +208,24 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, char* err, size
 
     bool lockWasApplied = g_app.appliedLockCi >= 0 && g_app.appliedLockFreq > 0;
     bool lockNowActive = full.hasLock && full.lockCi >= 0 && full.lockMHz > 0;
-    bool lockChanged = lockNowActive != lockWasApplied
-        || (lockNowActive && (full.lockCi != g_app.appliedLockCi || full.lockMHz != g_app.appliedLockFreq || full.lockMode != g_app.appliedLockMode));
+    // Compared through the same policy the editor's pending diff uses, so the
+    // greyed Apply button and this verdict cannot disagree. The MHz comparison
+    // allows one VF grid step: appliedLockFreq can hold the frequency the
+    // hardware settled on rather than the one that was requested, and an exact
+    // test made a re-applied profile look permanently changed because the GPU
+    // cannot represent the requested value at all.
+    GuiPendingLock lockState = {};
+    lockState.draftActive = lockNowActive;
+    lockState.draftCi = full.lockCi;
+    lockState.draftMHz = full.lockMHz;
+    lockState.draftMode = (int)full.lockMode;
+    lockState.appliedActive = lockWasApplied;
+    lockState.appliedCi = g_app.appliedLockCi;
+    lockState.appliedMHz = g_app.appliedLockFreq;
+    lockState.appliedMode = (int)g_app.appliedLockMode;
+    lockState.toleranceMHz = curve_point_verify_tolerance_mhz(
+        lockNowActive ? full.lockCi : g_app.appliedLockCi);
+    bool lockChanged = gui_pending_lock_changed(lockState);
     debug_log("capture_gui_apply_settings: lockState applied=(ci=%d mhz=%u mode=%s) desired=(has=%d ci=%d mhz=%u mode=%s) changed=%d\n",
         g_app.appliedLockCi,
         g_app.appliedLockFreq,
