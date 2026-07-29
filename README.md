@@ -9,7 +9,7 @@ Linux TUI (elements can be clicked with mouse):
 <img width="1669" height="1386" alt="gclin2" src="https://github.com/user-attachments/assets/ff2e28dd-523d-4c3d-ab9f-05838a387e4f" />
 
 
-> ⚠️ **Platform support:** **Windows x64** and **Linux x64** are both tested on real NVIDIA hardware, including VF-curve writes, power, and fan control. **Windows arm64** and **Linux arm64** are compile- and binary-inspection-only targets; neither has completed a live GPU-control validation. Use the arm64 builds at your own risk (not that the x64 builds wouldn't be on your own risk too).
+> ⚠️ **Platform support:** **Windows x64** and **Linux x64** are both tested on real NVIDIA hardware, including VF-curve writes, power, and fan control. **Windows arm64** and **Linux arm64** are compile- and binary-inspection-only targets; neither has completed a live GPU-control validation. Use the arm64 builds at your own risk (not that the x64 builds wouldn't be at your own risk too).
 >
 > **Integrated Grace/Blackwell parts (NVIDIA RTX Spark / GB10):** these report a Blackwell architecture, so the VF backend layout is selected correctly, but they are an SoC rather than a discrete board — memory is unified with the CPU, the power budget is SoC-wide, and the fan is usually owned by the platform. Green Curve probes each control domain read-only at startup, keeps every domain that answers, and shows a dismissible warning naming the ones that did not. Nothing is hard-blocked. No such hardware has been tested yet.
 
