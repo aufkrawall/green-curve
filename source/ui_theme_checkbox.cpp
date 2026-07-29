@@ -24,7 +24,7 @@ static void draw_themed_checkbox_control(
     int controlH = rc.bottom - rc.top;
     int boxSize = ui_theme_checkbox_box_size(controlW, controlH, g_dpi);
     int boxLeft = labeledCheckbox
-        ? rc.left + dp(2)
+        ? rc.left + ui_theme_checkbox_box_inset(g_dpi)
         : rc.left + (controlW - boxSize) / 2;
     RECT box = {
         boxLeft,
@@ -56,7 +56,12 @@ static void draw_themed_checkbox_control(
         char text[128] = {};
         GetWindowTextA(dis->hwndItem, text, ARRAY_COUNT(text));
         RECT textRect = rc;
-        textRect.left = box.right + dp(8);
+        textRect.left = box.right + ui_theme_checkbox_label_gap(g_dpi);
+        // A disabled label is drawn in the ordinary dimmed label colour, exactly
+        // like every other greyed caption in the window.  Letting a STATIC do it
+        // instead is what this replaced: user32 paints a disabled static in the
+        // system grey-text colour and ignores the WM_CTLCOLORSTATIC palette, so
+        // one caption came out foreign against the dark theme.
         SetTextColor(hdc, disabled ? COL_LABEL : COL_TEXT);
         DrawTextA(hdc, text, -1, &textRect,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -67,4 +72,51 @@ static void draw_themed_checkbox_control(
         DrawFocusRect(hdc, &focus);
     }
     SelectObject(hdc, oldFont);
+}
+
+// F-CHECKBOX-HIT  Measure what ui_theme_labeled_checkbox_width() needs: the
+// label's own extent in the control's font.  Returns 0 when there is no text or
+// the measurement fails, so callers keep their static fallback width.
+static int themed_checkbox_label_fit_width(HWND check, int controlHeight) {
+    if (!check) return 0;
+    char text[128] = {};
+    int length = GetWindowTextA(check, text, ARRAY_COUNT(text));
+    if (length <= 0) return 0;
+    HDC dc = GetDC(check);
+    if (!dc) {
+        debug_log("checkbox fit: GetDC failed for hwnd=%p lastError=%lu\n",
+            (void*)check, (unsigned long)GetLastError());
+        return 0;
+    }
+    HFONT font = (HFONT)SendMessageA(check, WM_GETFONT, 0, 0);
+    if (!font) font = get_ui_font();
+    HFONT oldFont = font ? (HFONT)SelectObject(dc, font) : nullptr;
+    SIZE extent = {};
+    BOOL measured = GetTextExtentPoint32A(dc, text, length, &extent);
+    if (oldFont) SelectObject(dc, oldFont);
+    ReleaseDC(check, dc);
+    if (!measured) {
+        debug_log("checkbox fit: GetTextExtentPoint32 failed for hwnd=%p\n",
+            (void*)check);
+        return 0;
+    }
+    return ui_theme_labeled_checkbox_width(extent.cx, controlHeight, g_dpi);
+}
+
+// Resize a labeled checkbox in place so its clickable rectangle ends with its
+// label.  Position and height are preserved, so this can follow either the
+// layout pass or a label text change.
+static void fit_themed_checkbox_to_label(HWND check) {
+    if (!check) return;
+    RECT rc = {};
+    if (!GetWindowRect(check, &rc)) return;
+    int height = rc.bottom - rc.top;
+    int currentWidth = rc.right - rc.left;
+    int width = themed_checkbox_label_fit_width(check, height);
+    if (width <= 0 || width == currentWidth) return;
+    debug_log("checkbox fit: hwnd=%p id=%ld width %d -> %d (h=%d dpi=%d)\n",
+        (void*)check, (long)GetDlgCtrlID(check), currentWidth, width, height,
+        g_dpi);
+    SetWindowPos(check, nullptr, 0, 0, width, height,
+        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 }

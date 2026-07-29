@@ -11,7 +11,24 @@
 
 enum {
     SERVICE_PROTOCOL_MAGIC = 0x47535643u,
-    SERVICE_PROTOCOL_VERSION = 11,
+    // v13 adds the Linux daemon's startup-apply policy: two commands, the
+    // request's startupMode, and the mode/slot pair published in every state
+    // envelope. Both structs changed size, so old and new ends cannot talk to
+    // each other -- which the header-first prefix reports precisely.
+    //
+    // v15 adds SERVICE_CMD_REFRESH_STARTUP_PROFILE, which keeps a `profile N`
+    // boot-apply snapshot equal to the profile it names after that profile is
+    // edited. The command set grew, so the version moves with it even though no
+    // struct changed size: a v14 daemon must reject the new command outright
+    // rather than fall through its command switch.
+    //
+    // v16 gives that snapshot its own response field. v15 returned it in
+    // `desired`, the member the envelope defines as the ACTIVE intent, so the
+    // daemon's unconditional end-of-request stamp overwrote it and every
+    // staleness check compared the applied settings against the profile
+    // instead. One wire field, one meaning: `desired` is always the active
+    // intent, `startupProfile` is always the boot-apply snapshot.
+    SERVICE_PROTOCOL_VERSION = 16,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply. Bit 30 marks an
@@ -39,7 +56,41 @@ enum ServiceCommand {
     // profile; no client-supplied profile data is trusted for this command.
     SERVICE_CMD_LOGON_HANDOFF = 10,
     SERVICE_CMD_GET_OPERATION_RESULT = 11,
+    // Linux daemon startup-apply policy: what, if anything, the daemon writes
+    // to the GPU when it starts (boot, `systemctl restart`, upgrade). Read is
+    // unauthenticated like any other query; the write is bounded by the same
+    // socket-group authorization as APPLY, because a caller who can set the
+    // boot profile can already apply it directly.
+    SERVICE_CMD_GET_STARTUP_POLICY = 12,
+    SERVICE_CMD_SET_STARTUP_POLICY = 13,
+    // Replace the settings of an EXISTING `profile N` policy after the client
+    // rewrote slot N on disk. It carries only the slot and the new settings:
+    // the stored GPU binding, mode, slot and display name are the daemon's and
+    // stay untouched, so this can never create a policy, move it to another
+    // slot, or re-bind the boot write to a different GPU. Without it, editing
+    // the profile left the daemon writing the snapshot captured when the policy
+    // was first set. See startup_snapshot_policy.h.
+    SERVICE_CMD_REFRESH_STARTUP_PROFILE = 14,
 };
+
+// What the daemon does with the GPU at startup.  RESTORE_LAST is zero so an
+// absent or zero-filled record keeps the behaviour every previous build had:
+// replay the committed active state.
+enum ServiceStartupPolicyMode {
+    SERVICE_STARTUP_POLICY_RESTORE_LAST = 0,
+    SERVICE_STARTUP_POLICY_NONE = 1,
+    SERVICE_STARTUP_POLICY_PROFILE = 2,
+    SERVICE_STARTUP_POLICY_MODE_COUNT = 3,
+};
+
+static inline const char* service_startup_policy_mode_name(unsigned int mode) {
+    switch (mode) {
+        case SERVICE_STARTUP_POLICY_RESTORE_LAST: return "restore-last";
+        case SERVICE_STARTUP_POLICY_NONE:         return "none";
+        case SERVICE_STARTUP_POLICY_PROFILE:      return "profile";
+        default:                                  return "unknown";
+    }
+}
 
 enum ServiceOperationState {
     SERVICE_OPERATION_NONE = 0,
@@ -172,6 +223,163 @@ enum {
         SERVICE_STATE_SECTION_ACTIVE_INTENT,
 };
 
+// Mutation domains are derived from the canonical desired settings by the
+// service.  Clients may use the same pure helper for presentation, but the
+// wire never trusts a client-supplied domain mask.
+enum ServiceMutationDomain : gc_u32 {
+    SERVICE_MUTATION_DOMAIN_RESET_BASELINE = 1u << 0,
+    SERVICE_MUTATION_DOMAIN_GPU_OFFSET = 1u << 1,
+    SERVICE_MUTATION_DOMAIN_MEM_OFFSET = 1u << 2,
+    SERVICE_MUTATION_DOMAIN_POWER = 1u << 3,
+    SERVICE_MUTATION_DOMAIN_VF_CURVE = 1u << 4,
+    SERVICE_MUTATION_DOMAIN_LOCK = 1u << 5,
+    SERVICE_MUTATION_DOMAIN_FAN = 1u << 6,
+};
+
+enum {
+    SERVICE_MUTATION_DOMAIN_ALL =
+        SERVICE_MUTATION_DOMAIN_RESET_BASELINE |
+        SERVICE_MUTATION_DOMAIN_GPU_OFFSET |
+        SERVICE_MUTATION_DOMAIN_MEM_OFFSET |
+        SERVICE_MUTATION_DOMAIN_POWER |
+        SERVICE_MUTATION_DOMAIN_VF_CURVE |
+        SERVICE_MUTATION_DOMAIN_LOCK |
+        SERVICE_MUTATION_DOMAIN_FAN,
+};
+
+// NOTE: the per-domain capability policy (gpu_capability_policy.h) indexes these
+// same bits by position.  The two representations are pinned against each other
+// by static_asserts in vf_backends.cpp — not here, because this header is
+// included from inside gpu_core.h and cannot itself pull in a header that
+// includes gpu_core.h.
+
+static inline bool service_desired_has_curve_point(
+    const DesiredSettings* desired) {
+    if (!desired) return false;
+    for (int i = 0; i < VF_NUM_POINTS; ++i)
+        if (desired->hasCurvePoint[i]) return true;
+    return false;
+}
+
+static inline gc_u32 service_desired_mutation_domains(
+    const DesiredSettings* desired) {
+    if (!desired) return 0;
+    gc_u32 domains = 0;
+    bool hasCurvePoint = service_desired_has_curve_point(desired);
+    bool gpuOffsetUsesCurve = desired->hasGpuOffset &&
+        (desired->gpuOffsetExcludeLowCount > 0 || desired->hasLock ||
+         hasCurvePoint);
+    bool hasCurveWrite = hasCurvePoint ||
+        (desired->hasLock &&
+         (desired->lockMode == LOCK_MODE_FLATTEN ||
+          desired->lockMode == LOCK_MODE_HARD)) ||
+        (desired->hasGpuOffset && desired->gpuOffsetExcludeLowCount > 0);
+    if (desired->resetOcBeforeApply)
+        domains |= SERVICE_MUTATION_DOMAIN_RESET_BASELINE;
+    if (desired->hasGpuOffset && !gpuOffsetUsesCurve)
+        domains |= SERVICE_MUTATION_DOMAIN_GPU_OFFSET;
+    if (desired->hasMemOffset)
+        domains |= SERVICE_MUTATION_DOMAIN_MEM_OFFSET;
+    if (desired->hasPowerLimit)
+        domains |= SERVICE_MUTATION_DOMAIN_POWER;
+    if (hasCurveWrite)
+        domains |= SERVICE_MUTATION_DOMAIN_VF_CURVE;
+    if (desired->hasLock)
+        domains |= SERVICE_MUTATION_DOMAIN_LOCK;
+    if (desired->hasFan)
+        domains |= SERVICE_MUTATION_DOMAIN_FAN;
+    return domains;
+}
+
+static inline bool service_mutation_domains_require_vf(gc_u32 domains) {
+    return (domains & SERVICE_MUTATION_DOMAIN_VF_CURVE) != 0;
+}
+
+static inline gc_u32 service_requested_mutation_domains(
+    gc_u32 command, const DesiredSettings* desired) {
+    return command == SERVICE_CMD_RESET ? SERVICE_MUTATION_DOMAIN_ALL
+        : command == SERVICE_CMD_APPLY
+            ? service_desired_mutation_domains(desired) : 0;
+}
+
+static inline gc_u32 service_unavailable_mutation_domains(
+    gc_u32 command, const DesiredSettings* desired,
+    gc_u32 availableDomains) {
+    return service_requested_mutation_domains(command, desired) &
+        ~availableDomains;
+}
+
+#include "service_desired_mutation_policy.h"
+
+enum ServiceGpuHealthReason : gc_u32 {
+    SERVICE_GPU_HEALTH_NONE = 0,
+    SERVICE_GPU_HEALTH_NVML_UNAVAILABLE = 1,
+    SERVICE_GPU_HEALTH_NVAPI_LIBRARY_UNAVAILABLE = 2,
+    SERVICE_GPU_HEALTH_NVAPI_INIT_FAILED = 3,
+    SERVICE_GPU_HEALTH_NVAPI_ENUM_FAILED = 4,
+    SERVICE_GPU_HEALTH_NVAPI_HANDLE_UNRESOLVED = 5,
+    SERVICE_GPU_HEALTH_ARCHITECTURE_UNAVAILABLE = 6,
+    SERVICE_GPU_HEALTH_VF_INFO_FAILED = 7,
+    SERVICE_GPU_HEALTH_VF_STATUS_FAILED = 8,
+    SERVICE_GPU_HEALTH_VF_CONTROL_FAILED = 9,
+    SERVICE_GPU_HEALTH_VF_STRUCTURE_INVALID = 10,
+    SERVICE_GPU_HEALTH_STATE_UNCERTAIN = 11,
+};
+
+enum ServiceGpuArchitectureSource : gc_u32 {
+    SERVICE_GPU_ARCH_SOURCE_NONE = 0,
+    SERVICE_GPU_ARCH_SOURCE_NVAPI = 1,
+    SERVICE_GPU_ARCH_SOURCE_NVML = 2,
+    SERVICE_GPU_ARCH_SOURCE_CACHED = 3,
+    SERVICE_GPU_ARCH_SOURCE_FUTURE_GUESS = 4,
+};
+
+struct ServiceGpuHealth {
+    gc_u32 reason;
+    int driverStatus;
+    gc_u32 architectureSource;
+    gc_u32 availableMutationDomains;
+    gc_bool8 vfSnapshotFresh;
+    gc_bool8 recoveryAttempted;
+    gc_bool8 recoverySucceeded;
+    // Compact GpuCapabilityProbe carriage.  These consume the previous five
+    // reserved bytes without changing this struct's layout: one topology byte,
+    // followed by seven two-bit domain states in the naturally aligned word.
+    // An older producer leaves both zero, which decodes conservatively as
+    // UNKNOWN topology and every domain UNPROBED.
+    gc_u8 capabilityMemoryTopology;
+    gc_u32 capabilityDomainsPacked;
+    char detail[192];
+};
+enum : gc_u32 {
+    SERVICE_GPU_CAPABILITY_PACKED_MASK = 0x3FFFu,
+    SERVICE_GPU_MEMORY_TOPOLOGY_MAX = 2u,
+};
+static_assert(sizeof(ServiceGpuHealth) == 216,
+              "ServiceGpuHealth wire size changed");
+static_assert(offsetof(ServiceGpuHealth, capabilityMemoryTopology) == 19,
+              "capability topology must reuse the first reserved byte");
+static_assert(offsetof(ServiceGpuHealth, capabilityDomainsPacked) == 20,
+              "packed capabilities must reuse the aligned reserved word");
+
+static inline const char* service_gpu_health_reason_name(gc_u32 reason) {
+    switch (reason) {
+        case SERVICE_GPU_HEALTH_NONE: return "healthy";
+        case SERVICE_GPU_HEALTH_NVML_UNAVAILABLE: return "NVML unavailable";
+        case SERVICE_GPU_HEALTH_NVAPI_LIBRARY_UNAVAILABLE: return "NvAPI library unavailable";
+        case SERVICE_GPU_HEALTH_NVAPI_INIT_FAILED: return "NvAPI initialization failed";
+        case SERVICE_GPU_HEALTH_NVAPI_ENUM_FAILED: return "NvAPI enumeration failed";
+        case SERVICE_GPU_HEALTH_NVAPI_HANDLE_UNRESOLVED: return "NvAPI GPU handle unresolved";
+        case SERVICE_GPU_HEALTH_ARCHITECTURE_UNAVAILABLE: return "GPU architecture unavailable";
+        case SERVICE_GPU_HEALTH_VF_INFO_FAILED: return "VF info read failed";
+        case SERVICE_GPU_HEALTH_VF_STATUS_FAILED: return "VF status read failed";
+        case SERVICE_GPU_HEALTH_VF_CONTROL_FAILED: return "VF control read failed";
+        case SERVICE_GPU_HEALTH_VF_STRUCTURE_INVALID: return "VF data failed structural validation";
+        case SERVICE_GPU_HEALTH_STATE_UNCERTAIN: return "daemon state is uncertain";
+        default: return "unknown GPU health failure";
+    }
+}
+
 struct ServiceSnapshot {
     gc_bool8 initialized;
     gc_bool8 loaded;
@@ -250,6 +458,7 @@ struct ServiceSnapshot {
     gc_u32 lastLifecycleTrigger;
     gc_u32 lastLifecycleResult;
     gc_u32 autoRestoreLockoutReason;
+    ServiceGpuHealth health;
 };
 
 struct ServiceRequest {
@@ -264,12 +473,18 @@ struct ServiceRequest {
     gc_u32 profileSource;
     gc_u32 profileSlot;
     gc_u64 operationId;
-    // GUI mutation preconditions.  Zero preserves CLI/bootstrap compatibility;
-    // an interactive GUI always supplies all three from its accepted READY
-    // envelope so a queued write cannot cross a service/GPU reconnect.
+    // Checked GUI mutation preconditions. Zero preserves CLI/bootstrap
+    // compatibility. Instance + generation + target are always required for a
+    // checked request; topology is additionally required for a VF domain.
     gc_u64 expectedServiceInstanceId;
     gc_u64 expectedGpuGeneration;
     gc_u64 expectedTopologySignature;
+    // ServiceStartupPolicyMode for SERVICE_CMD_SET_STARTUP_POLICY; zero on every
+    // other command, which the validator enforces. When the mode is PROFILE the
+    // command carries the resolved settings in `desired`, the slot in
+    // `profileSlot`, and the display name in `source` -- the daemon cannot read
+    // the user's config.ini itself (ProtectHome=yes).
+    gc_u32 startupMode;
     GpuAdapterInfo targetGpu;
     DesiredSettings desired;
     char source[64];
@@ -315,61 +530,21 @@ static inline bool service_gpu_bool_fields_valid(const GpuAdapterInfo* gpu) {
         gpu->vfBestGuess <= 1;
 }
 
-static inline bool validate_service_request_for_ipc(ServiceRequest* r) {
-    if (!r || r->magic != SERVICE_PROTOCOL_MAGIC ||
-        r->version != SERVICE_PROTOCOL_VERSION ||
-        r->command < SERVICE_CMD_PING ||
-        r->command > SERVICE_CMD_GET_OPERATION_RESULT ||
-        !r->callerPid || r->resetOcBeforeApply > 1u ||
-        r->applyOrigin > SERVICE_APPLY_ORIGIN_DRIVER_RECOVERY ||
-        r->profileSource > SERVICE_PROFILE_SOURCE_AD_HOC ||
-        r->profileSlot > 255u ||
-        !service_wire_string_is_terminated(
-            r->source, (unsigned int)sizeof(r->source)) ||
-        !service_wire_string_is_terminated(
-            r->path, (unsigned int)sizeof(r->path)) ||
-        !service_wire_string_is_terminated(r->targetGpu.name,
-            (unsigned int)sizeof(r->targetGpu.name)) ||
-        !service_gpu_bool_fields_valid(&r->targetGpu) ||
-        !service_desired_bool_fields_valid(&r->desired)) return false;
-    const gc_u32 allowedFlags = SERVICE_REQUEST_FLAG_INTERACTIVE |
-        SERVICE_REQUEST_FLAG_SHARED_SLOT |
-        (SERVICE_REQUEST_SHARED_SLOT_MASK <<
-            SERVICE_REQUEST_SHARED_SLOT_SHIFT);
-    if ((r->flags & ~allowedFlags) != 0) return false;
-    bool anyPrecondition = r->expectedServiceInstanceId ||
-        r->expectedGpuGeneration || r->expectedTopologySignature;
-    bool allPreconditions = r->expectedServiceInstanceId &&
-        r->expectedGpuGeneration && r->expectedTopologySignature;
-    if (anyPrecondition != allPreconditions) return false;
-    if (allPreconditions && !r->targetGpu.valid) return false;
-    if (r->command == SERVICE_CMD_APPLY) {
-        if (!r->operationId ||
-            !service_apply_origin_is_client_apply(
-                (ServiceApplyOrigin)r->applyOrigin)) return false;
-        if ((r->flags & SERVICE_REQUEST_FLAG_SHARED_SLOT) != 0) {
-            gc_u32 encodedSlot = (r->flags >>
-                SERVICE_REQUEST_SHARED_SLOT_SHIFT) &
-                SERVICE_REQUEST_SHARED_SLOT_MASK;
-            if (!encodedSlot ||
-                r->profileSource != SERVICE_PROFILE_SOURCE_SHARED_SLOT ||
-                r->profileSlot != encodedSlot) return false;
-        }
-    } else if (r->command == SERVICE_CMD_RESET) {
-        if (!r->operationId || r->flags || r->resetOcBeforeApply ||
-            r->profileSource || r->profileSlot) return false;
-    } else if (r->command == SERVICE_CMD_GET_OPERATION_RESULT) {
-        if (!r->operationId || r->flags || anyPrecondition) return false;
-    } else if (r->command == SERVICE_CMD_LOGON_HANDOFF) {
-        if (r->applyOrigin != SERVICE_APPLY_ORIGIN_LOGON || r->flags ||
-            r->operationId || anyPrecondition) return false;
-    } else if (r->operationId || r->flags || r->resetOcBeforeApply ||
-        r->applyOrigin || r->profileSource || r->profileSlot ||
-        anyPrecondition) return false;
-    validate_gpu_adapter_info_for_ipc(&r->targetGpu);
-    validate_desired_settings_for_ipc(&r->desired);
-    return true;
+// Flags a client may put on a request. RESET carries none by contract:
+// validate_service_request_for_ipc() rejects any flag on RESET, and the
+// interactive bit is only ever consumed on the APPLY path. Building the flag
+// word here keeps both clients on that contract -- the Linux client used to set
+// the interactive bit unconditionally, which made the daemon reject EVERY
+// Reset with "invalid protocol fields".
+static inline gc_u32 service_request_flags_for_command(unsigned int command,
+                                                       bool interactive) {
+    if (command == SERVICE_CMD_RESET) return 0u;
+    return interactive ? (gc_u32)SERVICE_REQUEST_FLAG_INTERACTIVE : 0u;
 }
+
+// service_request_reject_reason() and validate_service_request_for_ipc() live
+// in service_protocol_validation.h, included at the bottom of this file, next
+// to the response-side rules they mirror.
 
 struct ServiceStateEnvelope {
     gc_u64 serviceInstanceId;
@@ -378,6 +553,11 @@ struct ServiceStateEnvelope {
     gc_u64 topologySignature;
     gc_u32 gpuPhase;
     gc_u32 validSections;
+    // Linux daemon startup-apply policy, published with every envelope so a
+    // client never needs an extra round trip to render it.  Always
+    // RESTORE_LAST/0 on Windows, which has its own logon coordinator.
+    gc_u32 startupPolicyMode;
+    gc_u32 startupPolicySlot;
     gc_bool8 activeDesiredValid;
     gc_bool8 reservedBool[7];
 };
@@ -386,15 +566,30 @@ struct ServiceResponse {
     gc_u32 magic;
     gc_u32 version;
     gc_u32 status;
-    gc_u32 reserved;
+    // Daemon identity diagnostics. This occupied the reserved v11 word, so the
+    // fixed magic/version/status prefix remains stable across the v12 bump.
+    gc_u32 servicePid;
     gc_u32 serviceBuildNumber;
     gc_u32 operationState;
     gc_u64 operationId;
     char serviceVersion[32];
     ServiceStateEnvelope state;
     ServiceSnapshot snapshot;
+    // The service's ACTIVE intent, gated by state.activeDesiredValid. Never
+    // anything else: the daemon stamps it onto every response it sends, so a
+    // handler that borrowed this member for a second meaning had that meaning
+    // silently overwritten on the way out.
     DesiredSettings desired;
     ControlState controlState;
+    // The Linux daemon's boot-apply snapshot -- what it would write to the GPU
+    // at the next start, which is NOT the same thing as what is applied now.
+    // Populated only by the startup-policy commands; startupProfileValid says
+    // whether this response carries it, and it may only be set while the
+    // published policy mode is PROFILE. Always zero on Windows, which has its
+    // own logon coordinator.
+    DesiredSettings startupProfile;
+    gc_bool8 startupProfileValid;
+    gc_bool8 startupProfileReserved[7];
     char message[512];
 };
 static_assert(offsetof(ServiceResponse, magic) == 0, "ServiceResponse.magic must be at offset 0");
@@ -423,6 +618,9 @@ static inline void validate_service_snapshot_for_ipc(ServiceSnapshot* s) {
     canonicalize_gc_bool8(&s->lastApplyUsedGpuOffset);
     canonicalize_gc_bool8(&s->serviceInRecovery);
     canonicalize_gc_bool8(&s->serviceReapplyInProgress);
+    canonicalize_gc_bool8(&s->health.vfSnapshotFresh);
+    canonicalize_gc_bool8(&s->health.recoveryAttempted);
+    canonicalize_gc_bool8(&s->health.recoverySucceeded);
     if (s->activeProfileSource > SERVICE_PROFILE_SOURCE_AD_HOC) {
         s->activeProfileSource = SERVICE_PROFILE_SOURCE_NONE;
         s->activeProfileSlot = 0;
@@ -486,142 +684,9 @@ static inline gc_u64 service_snapshot_topology_signature(
     return hash ? hash : 1;
 }
 
-static inline bool service_snapshot_bool_fields_valid(
-    const ServiceSnapshot* snapshot) {
-    if (!snapshot) return false;
-    const gc_bool8* flags[] = {
-        &snapshot->initialized, &snapshot->loaded, &snapshot->fanSupported,
-        &snapshot->fanRangeKnown, &snapshot->fanIsAuto,
-        &snapshot->fanCurveRuntimeActive, &snapshot->fanFixedRuntimeActive,
-        &snapshot->gpuOffsetRangeKnown, &snapshot->memOffsetRangeKnown,
-        &snapshot->curveOffsetRangeKnown, &snapshot->gpuTemperatureValid,
-        &snapshot->vfReadSupported, &snapshot->vfWriteSupported,
-        &snapshot->vfBestGuess, &snapshot->hasLock,
-        &snapshot->lockTracksAnchor,
-        &snapshot->selectedAdapterOrdinalFallback,
-        &snapshot->lastApplyUsedGpuOffset, &snapshot->serviceInRecovery,
-        &snapshot->serviceReapplyInProgress,
-    };
-    for (const gc_bool8* flag : flags)
-        if (*flag > 1) return false;
-    for (unsigned int i = 0; i < snapshot->adapterCount &&
-            i < MAX_GPU_ADAPTERS; ++i) {
-        const GpuAdapterInfo& gpu = snapshot->adapters[i];
-        if (gpu.valid > 1 || gpu.pciInfoValid > 1 ||
-            gpu.vfReadSupported > 1 || gpu.vfWriteSupported > 1 ||
-            gpu.vfBestGuess > 1) return false;
-    }
-    for (int i = 0; i < FAN_CURVE_MAX_POINTS; ++i)
-        if (snapshot->activeFanCurve.points[i].enabled > 1) return false;
-    return true;
-}
-
-static inline bool service_control_bool_fields_valid(
-    const ControlState* control) {
-    if (!control || control->valid > 1 || control->hasGpuOffset > 1 ||
-        control->hasMemOffset > 1 || control->hasPowerLimit > 1 ||
-        control->hasFan > 1) return false;
-    for (int i = 0; i < FAN_CURVE_MAX_POINTS; ++i)
-        if (control->fanCurve.points[i].enabled > 1) return false;
-    return true;
-}
-
-static inline bool validate_service_state_envelope_for_ipc(
-    ServiceStateEnvelope* state, ServiceSnapshot* snapshot,
-    DesiredSettings* desired, ControlState* controlState) {
-    if (!state || !snapshot || !desired || !controlState) return false;
-    if (state->activeDesiredValid > 1 ||
-        !service_snapshot_bool_fields_valid(snapshot) ||
-        !service_desired_bool_fields_valid(desired) ||
-        !service_control_bool_fields_valid(controlState)) return false;
-    for (unsigned int i = 0; i < sizeof(state->reservedBool); ++i)
-        if (state->reservedBool[i] != 0) return false;
-    if (snapshot->adapterCount > MAX_GPU_ADAPTERS ||
-        snapshot->numPopulated < 0 || snapshot->numPopulated > VF_NUM_POINTS ||
-        snapshot->fanCount > MAX_GPU_FANS ||
-        (snapshot->adapterCount > 0 &&
-         snapshot->selectedAdapterIndex >= snapshot->adapterCount) ||
-        snapshot->gpuFamily < GPU_FAMILY_UNKNOWN ||
-        snapshot->gpuFamily > GPU_FAMILY_BLACKWELL ||
-        snapshot->lockMode < LOCK_MODE_NONE ||
-        snapshot->lockMode > LOCK_MODE_HARD ||
-        snapshot->activeFanMode < FAN_MODE_AUTO ||
-        snapshot->activeFanMode > FAN_MODE_CURVE ||
-        snapshot->activeProfileSource > SERVICE_PROFILE_SOURCE_AD_HOC ||
-        snapshot->activeProfileSlot > 255u ||
-        snapshot->lastLifecycleTrigger >
-            SERVICE_LIFECYCLE_TRIGGER_DRIVER_RECOVERY ||
-        snapshot->lastLifecycleResult > SERVICE_LIFECYCLE_RESULT_FAILED ||
-        snapshot->autoRestoreLockoutReason >
-            SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED ||
-        !service_wire_string_is_terminated(snapshot->gpuName,
-            (unsigned int)sizeof(snapshot->gpuName)) ||
-        !service_wire_string_is_terminated(snapshot->ownerUser,
-            (unsigned int)sizeof(snapshot->ownerUser))) return false;
-    for (unsigned int i = 0; i < snapshot->adapterCount; ++i) {
-        if (!service_wire_string_is_terminated(snapshot->adapters[i].name,
-                (unsigned int)sizeof(snapshot->adapters[i].name)) ||
-            snapshot->adapters[i].family < GPU_FAMILY_UNKNOWN ||
-            snapshot->adapters[i].family > GPU_FAMILY_BLACKWELL) return false;
-    }
-    if ((controlState->hasFan &&
-         (controlState->fanMode < FAN_MODE_AUTO ||
-          controlState->fanMode > FAN_MODE_CURVE ||
-          controlState->fanFixedPercent < 0 ||
-          controlState->fanFixedPercent > 100 ||
-          controlState->fanCurrentPercent < 0 ||
-          controlState->fanCurrentPercent > 100))) return false;
-    canonicalize_gc_bool8(&state->activeDesiredValid);
-    validate_service_snapshot_for_ipc(snapshot);
-    validate_desired_settings_for_ipc(desired);
-    validate_control_state_for_ipc(controlState);
-    if (state->gpuPhase > SERVICE_GPU_PHASE_DEGRADED) return false;
-    if ((state->validSections & ~SERVICE_STATE_SECTION_ALL) != 0) return false;
-    if (state->serviceInstanceId == 0 || state->stateRevision == 0 ||
-        state->gpuGeneration == 0) return false;
-    if (state->gpuPhase == SERVICE_GPU_PHASE_READY &&
-        (state->validSections & SERVICE_STATE_SECTION_READY_REQUIRED) !=
-            SERVICE_STATE_SECTION_READY_REQUIRED) return false;
-    if (state->gpuPhase == SERVICE_GPU_PHASE_READY &&
-        (!snapshot->initialized || !snapshot->loaded ||
-         snapshot->numPopulated <= 0)) return false;
-    if ((state->validSections & SERVICE_STATE_SECTION_CURVE_TOPOLOGY) != 0 &&
-        state->topologySignature == 0) return false;
-    if ((state->validSections & SERVICE_STATE_SECTION_CURVE_TOPOLOGY) == 0 &&
-        state->topologySignature != 0) return false;
-    if (state->activeDesiredValid &&
-        (state->validSections & SERVICE_STATE_SECTION_ACTIVE_INTENT) == 0)
-        return false;
-    if ((state->validSections & SERVICE_STATE_SECTION_APPLIED_CONTROLS) != 0 &&
-        !controlState->valid) return false;
-    if ((state->validSections & SERVICE_STATE_SECTION_ADAPTER_IDENTITY) != 0 &&
-        (snapshot->adapterCount == 0 ||
-         !snapshot->adapters[snapshot->selectedAdapterIndex].valid))
-        return false;
-    if ((state->validSections & SERVICE_STATE_SECTION_CURVE_TOPOLOGY) != 0) {
-        int populated = 0;
-        for (int i = 0; i < VF_NUM_POINTS; ++i)
-            if (snapshot->curve[i].freq_kHz != 0) ++populated;
-        if (populated != snapshot->numPopulated || populated == 0 ||
-            state->topologySignature !=
-                service_snapshot_topology_signature(snapshot)) return false;
-    }
-    return true;
-}
-
-static inline bool validate_service_response_for_ipc(ServiceResponse* r) {
-    if (!r) return false;
-    if (r->magic != SERVICE_PROTOCOL_MAGIC ||
-        r->version != SERVICE_PROTOCOL_VERSION ||
-        r->reserved != 0 ||
-        r->status > SERVICE_STATUS_STALE_STATE ||
-        r->operationState > SERVICE_OPERATION_OUTCOME_UNKNOWN ||
-        !service_wire_string_is_terminated(r->serviceVersion,
-            (unsigned int)sizeof(r->serviceVersion)) ||
-        !service_wire_string_is_terminated(r->message,
-            (unsigned int)sizeof(r->message))) return false;
-    return validate_service_state_envelope_for_ipc(
-        &r->state, &r->snapshot, &r->desired, &r->controlState);
-}
+// Trust-boundary validation for the envelope/response half of the protocol
+// lives in its own header purely to keep this one inside the source-size
+// ratchet; it is included below, so every consumer still gets one header.
+#include "service_protocol_validation.h"
 
 #endif // GREEN_CURVE_SERVICE_PROTOCOL_H

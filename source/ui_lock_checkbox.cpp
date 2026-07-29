@@ -100,7 +100,6 @@ static void activate_lock_checkbox_once(int vi) {
     }
     if (nextMode == LOCK_MODE_HARD) {
         g_app.lockMode = LOCK_MODE_HARD;
-        SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_CHECKED, 0);
         InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
         if (g_app.lockedCi >= 0) {
             record_ui_action("hard lock point %d @ %u MHz (pinned)",
@@ -110,12 +109,12 @@ static void activate_lock_checkbox_once(int vi) {
         return;
     }
 
-    SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_UNCHECKED, 0);
-    InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
     if (g_app.lockedCi >= 0) {
         record_ui_action("unlock point %d (was %s)",
                          g_app.lockedCi, lock_mode_name(g_app.lockMode));
     }
+    // unlock_all() clears g_app.lockedVi and repaints every lock checkbox AFTER
+    // the model change, which is the only ordering that can paint the new tick.
     unlock_all();
     set_gui_state_dirty(true);
 }

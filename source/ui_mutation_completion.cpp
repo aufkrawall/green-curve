@@ -105,11 +105,11 @@ static void handle_gui_mutation_completion(GuiMutationCompletion* completion) {
                 g_app.loadedSharedSlot = work.profileSlot;
             sync_applied_profile_from_service_metadata();
         }
-        MessageBoxA(g_app.hMainWnd, completion->result, "Green Curve",
+        gc_message_box(g_app.hMainWnd, completion->result, "Green Curve",
             MB_OK | (successForUi
                 ? MB_ICONINFORMATION : MB_ICONWARNING));
     } else if (work.context == GUI_MUTATION_CONTEXT_MANUAL_RESET) {
-        MessageBoxA(g_app.hMainWnd, completion->result, "Green Curve",
+        gc_message_box(g_app.hMainWnd, completion->result, "Green Curve",
             MB_OK | (successForUi
                 ? MB_ICONINFORMATION : MB_ICONWARNING));
     } else if (work.context == GUI_MUTATION_CONTEXT_AUTO_PROFILE) {

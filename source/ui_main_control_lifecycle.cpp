@@ -15,8 +15,7 @@ static void destroy_edit_controls(HWND hParent) {
             && id != APP_LAUNCH_COMBO_ID && id != LOGON_COMBO_ID
             && id != PROFILE_LABEL_ID && id != PROFILE_STATE_ID && id != APP_LAUNCH_LABEL_ID
             && id != LOGON_LABEL_ID && id != PROFILE_STATUS_ID && id != START_ON_LOGON_CHECK_ID
-            && id != START_ON_LOGON_LABEL_ID
-            && id != SERVICE_ENABLE_CHECK_ID && id != SERVICE_ENABLE_LABEL_ID && id != SERVICE_STATUS_ID
+            && id != SERVICE_ENABLE_CHECK_ID && id != SERVICE_STATUS_ID
             && id != LOGON_HINT_ID
             && id != SHARE_ALL_USERS_CHECK_ID && id != SHARED_PROFILES_BTN_ID
             && id != AUTO_PROFILE_BTN_ID) {

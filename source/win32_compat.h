@@ -79,6 +79,30 @@ typedef wchar_t  WCHAR;   // never dereferenced on Linux; matches L"" literals
 #define WM_APP 0x8000
 #endif
 
+// Button-notification and virtual-key codes. These are plain wire constants,
+// not behavior: the policies that consume them (lock_checkbox_policy.h and the
+// TUI/GUI key routing) are pure and platform-neutral, so the regression
+// harness can exercise them natively on Linux instead of only on Windows.
+// Values match <winuser.h>.
+#ifndef BN_CLICKED
+#define BN_CLICKED 0
+#endif
+#ifndef BN_DBLCLK
+#define BN_DBLCLK 5
+#endif
+#ifndef BN_SETFOCUS
+#define BN_SETFOCUS 6
+#endif
+#ifndef BN_KILLFOCUS
+#define BN_KILLFOCUS 7
+#endif
+#ifndef VK_F2
+#define VK_F2 0x71
+#endif
+#ifndef VK_F5
+#define VK_F5 0x74
+#endif
+
 // ---- CRITICAL_SECTION backed by a recursive pthread mutex -----------------
 // Real behavior so config-storage locking works in the Linux daemon.
 typedef struct {

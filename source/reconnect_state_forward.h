@@ -4,7 +4,7 @@
 #ifndef GREEN_CURVE_RECONNECT_STATE_FORWARD_H
 #define GREEN_CURVE_RECONNECT_STATE_FORWARD_H
 
-// Protocol-v11 authority stamp. A new service process gets a random identity;
+// Protocol-v12 authority stamp. A new service process gets a random identity;
 // the GPU generation advances whenever selected-device authority is lost.
 static gc_u64 g_serviceInstanceId = 0;
 static volatile LONGLONG g_serviceStateRevision = 0;

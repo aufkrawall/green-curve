@@ -77,9 +77,14 @@ static void create_edit_controls(HWND hParent, HINSTANCE hInst) {
     }
 
     int gpuSelectW = dp(420);
-    int gpuSelectX = dp(WINDOW_WIDTH) - gpuSelectW - dp(12);
     int gpuSelectY = dp(10);
     int gpuLabelW = dp(42);
+    // Placeholder geometry only -- layout_main_window() re-places this against
+    // the real content width immediately.  Use the same right-anchor rule so the
+    // first frame cannot flash at a different inset.
+    int gpuSelectX = main_layout_right_anchored_x(
+        dp(WINDOW_WIDTH), gpuSelectW, dp(MAIN_LAYOUT_SIDE_MARGIN_LOGICAL),
+        dp(MAIN_LAYOUT_SIDE_MARGIN_LOGICAL) + gpuLabelW + dp(6));
     HWND gpuLabel = CreateWindowExA(0, "STATIC", "GPU:",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
         gpuSelectX - gpuLabelW - dp(6), gpuSelectY + dp(3), gpuLabelW, dp(18),
@@ -116,6 +121,9 @@ static void create_edit_controls(HWND hParent, HINSTANCE hInst) {
         0, "STATIC", "VF points", WS_CHILD | WS_VISIBLE | SS_LEFT,
         dp(140), ocY + dp(25), dp(70), dp(18), hParent, nullptr, hInst, nullptr);
     main_layout_register_static(MAIN_STATIC_GPU_EXCLUDE_SUFFIX, excludeSuffix);
+    // The overclock edits below are recreated with this pass, so the range
+    // tooltips bound to the previous generation are stale from here on.
+    oc_range_hints_invalidate();
 
     HWND memOffsetLabel = CreateWindowExA(0, "STATIC", "Mem Offset (MHz):",
         WS_CHILD | WS_VISIBLE | SS_LEFT,

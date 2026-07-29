@@ -24,10 +24,8 @@ static inline bool gui_set_window_enabled_if_changed(HWND hwnd, bool enabled) {
     return true;
 }
 
-static inline bool gui_set_button_check_if_changed(HWND hwnd, bool checked) {
-    if (!hwnd) return false;
-    LRESULT next = checked ? BST_CHECKED : BST_UNCHECKED;
-    if (SendMessageA(hwnd, BM_GETCHECK, 0, 0) == next) return false;
-    SendMessageA(hwnd, BM_SETCHECK, (WPARAM)next, 0);
-    return true;
-}
+// There is deliberately no gui_set_button_check_if_changed() here.  Every
+// checkbox in this program is BS_OWNERDRAW and derives its tick at paint time,
+// so there is no native check state to read or write.  Gate those repaints with
+// ui_checkbox_state_needs_repaint() against the AppState mirror the owner-draw
+// handler writes (see ui_checkbox_state.h).

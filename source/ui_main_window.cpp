@@ -7,94 +7,13 @@
 // Main Window
 // ============================================================================
 
-#include "ui_mutation_completion.cpp"
-static void apply_changes() {
-    if (!gui_service_model_ready(&g_app.guiServiceModel) ||
-        !g_app.guiDraft.attached || g_app.guiDraft.detached) return;
-    char gpuSelectionErr[256] = {};
-    if (!validate_configured_gpu_selection_for_client(
-            gpuSelectionErr, sizeof(gpuSelectionErr))) {
-        MessageBoxA(g_app.hMainWnd,
-            gpuSelectionErr[0] ? gpuSelectionErr :
-                "Select the intended GPU again before applying settings.",
-            "Green Curve", MB_OK | MB_ICONWARNING);
-        return;
-    }
-    set_pending_operation_source("GUI apply");
-    record_ui_action("Apply clicked");
-    DesiredSettings desired = {};
-    char err[256] = {};
-    if (!capture_gui_apply_settings(&desired, err, sizeof(err))) {
-        write_error_report_log_for_user_failure("GUI apply validation failed", err);
-        MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
-        return;
-    }
-    int requestedSlot = (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0);
-    if (requestedSlot < 0) requestedSlot = CONFIG_DEFAULT_SLOT - 1;
-    requestedSlot += 1;
-    ServiceProfileSource requestedSource = SERVICE_PROFILE_SOURCE_USER_SLOT;
-    if (g_app.loadedSharedSlot >= 1 && g_app.loadedSharedSlot <= CONFIG_NUM_SLOTS) {
-        requestedSource = SERVICE_PROFILE_SOURCE_SHARED_SLOT;
-        requestedSlot = g_app.loadedSharedSlot;
-    }
-    char queueStatus[512] = {};
-    if (!gui_mutation_queue_apply(&desired, true, SERVICE_APPLY_ORIGIN_GUI,
-            requestedSource, requestedSlot, GUI_MUTATION_CONTEXT_MANUAL_APPLY,
-            "GUI apply", queueStatus, sizeof(queueStatus))) {
-        MessageBoxA(g_app.hMainWnd, queueStatus, "Green Curve",
-            MB_OK | MB_ICONWARNING);
-    } else {
-        set_profile_status_text("%s", queueStatus);
-    }
-}
+// Apply / Refresh / Reset and the high-overclock confirmation.  Also pulls in
+// ui_mutation_completion.cpp and ui_main_control_lifecycle.cpp at the points
+// they were included from here.
+#include "ui_main_apply.cpp"
 
-#include "ui_main_control_lifecycle.cpp"
-
-static void refresh_curve() {
-    if (g_app.usingBackgroundService && !g_app.isServiceProcess) {
-        if (g_app.guiDraft.detached && gui_state_dirty()) {
-            int discard = MessageBoxA(g_app.hMainWnd,
-                "The preserved draft belongs to a different GPU or VF topology.\n\nDiscard that draft and refresh this GPU?",
-                "Discard Detached Draft", MB_YESNO | MB_ICONWARNING);
-            if (discard != IDYES) return;
-            gui_draft_discard();
-        }
-        gui_service_begin_full_sync("manual refresh");
-        return;
-    }
-}
-
-static void reset_curve() {
-    if (!gui_service_model_ready(&g_app.guiServiceModel) ||
-        !g_app.guiDraft.attached || g_app.guiDraft.detached) return;
-    char gpuSelectionErr[256] = {};
-    if (!validate_configured_gpu_selection_for_client(
-            gpuSelectionErr, sizeof(gpuSelectionErr))) {
-        MessageBoxA(g_app.hMainWnd,
-            gpuSelectionErr[0] ? gpuSelectionErr :
-                "Select the intended GPU again before resetting settings.",
-            "Green Curve", MB_OK | MB_ICONWARNING);
-        return;
-    }
-
-    int confirm = MessageBoxA(g_app.hMainWnd,
-        "Reset will restore all GPU settings to their default values.\n\nContinue?",
-        "Confirm Reset",
-        MB_YESNO | MB_ICONWARNING);
-    if (confirm != IDYES) return;
-
-    if (g_app.usingBackgroundService && !g_app.isServiceProcess) {
-        char queueStatus[512] = {};
-        if (!gui_mutation_queue_reset(queueStatus, sizeof(queueStatus))) {
-            MessageBoxA(g_app.hMainWnd, queueStatus, "Green Curve",
-                MB_OK | MB_ICONWARNING);
-        } else {
-            set_profile_status_text("%s", queueStatus);
-        }
-        return;
-    }
-
-}
+// WM_CTLCOLOR* palette handling, including the F-PENDING field colouring.
+#include "ui_main_ctlcolor.cpp"
 
 // Resolve a lock checkbox HWND back to its visible-point index, or -1.
 static int lock_index_from_hwnd(HWND h) {
@@ -165,7 +84,7 @@ static void show_lock_context_menu(HWND hwnd, int vi, POINT screenPt) {
 static bool run_elevated_command(const char* const* argv, const char* cancelledStatus, const char* failedPrefix) {
     WCHAR exePath[MAX_PATH] = {};
     if (GetModuleFileNameW(nullptr, exePath, ARRAY_COUNT(exePath)) == 0) {
-        MessageBoxA(g_app.hMainWnd, "Unable to locate the Green Curve executable.",
+        gc_message_box(g_app.hMainWnd, "Unable to locate the Green Curve executable.",
             "Green Curve", MB_OK | MB_ICONERROR);
         return false;
     }
@@ -174,7 +93,7 @@ static bool run_elevated_command(const char* const* argv, const char* cancelledS
         WCHAR warg[MAX_PATH] = {};
         if (!utf8_to_wide(argv[i], warg, ARRAY_COUNT(warg)) ||
             !pl_append_quoted_arg_w(params, ARRAY_COUNT(params), warg)) {
-            MessageBoxA(g_app.hMainWnd, "Elevated helper command line is too long.",
+            gc_message_box(g_app.hMainWnd, "Elevated helper command line is too long.",
                 "Green Curve", MB_OK | MB_ICONERROR);
             return false;
         }
@@ -195,7 +114,7 @@ static bool run_elevated_command(const char* const* argv, const char* cancelledS
         } else {
             char errMsg[256] = {};
             StringCchPrintfA(errMsg, ARRAY_COUNT(errMsg), "Failed to request administrator rights (error %lu).", err);
-            MessageBoxA(g_app.hMainWnd, errMsg, "Green Curve", MB_OK | MB_ICONERROR);
+            gc_message_box(g_app.hMainWnd, errMsg, "Green Curve", MB_OK | MB_ICONERROR);
         }
         return false;
     }
@@ -206,7 +125,7 @@ static bool run_elevated_command(const char* const* argv, const char* cancelledS
             char errMsg[256] = {};
             StringCchPrintfA(errMsg, ARRAY_COUNT(errMsg),
                 "%s failed with exit code %lu.\n\nCheck greencurve_cli_log.txt for details.", failedPrefix, exitCode);
-            MessageBoxA(g_app.hMainWnd, errMsg, "Green Curve", MB_OK | MB_ICONERROR);
+            gc_message_box(g_app.hMainWnd, errMsg, "Green Curve", MB_OK | MB_ICONERROR);
             CloseHandle(sei.hProcess);
             return false;
         }
@@ -265,7 +184,7 @@ static void show_machine_logon_context_menu(HWND hwnd, POINT screenPt) {
             ok = copy_profile_slot_to_machine_config(g_app.configPath, selectedSlot, err, sizeof(err));
             if (!ok) {
                 write_error_report_log_for_user_failure("Publish to machine profile bank failed", err[0] ? err : "Unknown error");
-                MessageBoxA(g_app.hMainWnd, err[0] ? err : "Failed to publish profile to machine-wide bank.",
+                gc_message_box(g_app.hMainWnd, err[0] ? err : "Failed to publish profile to machine-wide bank.",
                     "Green Curve", MB_OK | MB_ICONERROR);
             }
         }
@@ -285,7 +204,7 @@ static void show_machine_logon_context_menu(HWND hwnd, POINT screenPt) {
             ok = clear_machine_profile_slot(selectedSlot, err, sizeof(err));
             if (!ok) {
                 write_error_report_log_for_user_failure("Clear machine profile slot failed", err[0] ? err : "Unknown error");
-                MessageBoxA(g_app.hMainWnd, err[0] ? err : "Failed to clear machine-wide profile slot.",
+                gc_message_box(g_app.hMainWnd, err[0] ? err : "Failed to clear machine-wide profile slot.",
                     "Green Curve", MB_OK | MB_ICONERROR);
             }
         }
@@ -305,7 +224,7 @@ static void show_machine_logon_context_menu(HWND hwnd, POINT screenPt) {
             ok = set_machine_restrict_policy(enable, err, sizeof(err));
             if (!ok) {
                 write_error_report_log_for_user_failure("Shared-only policy update failed", err[0] ? err : "Unknown error");
-                MessageBoxA(g_app.hMainWnd, err[0] ? err : "Failed to update the shared-only policy.",
+                gc_message_box(g_app.hMainWnd, err[0] ? err : "Failed to update the shared-only policy.",
                     "Green Curve", MB_OK | MB_ICONERROR);
             }
         }
@@ -377,7 +296,7 @@ static void show_shared_profiles_menu(HWND hwnd, POINT screenPt) {
     char err[256] = {};
     if (!load_profile_from_config(machinePath, slot, &desired, err, sizeof(err))) {
         write_error_report_log_for_user_failure("Shared profile load failed", err[0] ? err : "Unknown error");
-        MessageBoxA(g_app.hMainWnd, err[0] ? err : "Failed to load the shared profile.",
+        gc_message_box(g_app.hMainWnd, err[0] ? err : "Failed to load the shared profile.",
             "Green Curve", MB_OK | MB_ICONERROR);
         return;
     }
@@ -702,57 +621,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return FALSE;
         }
 
-        case WM_CTLCOLORBTN: {
-            HDC hdcBtn = (HDC)wParam;
-            SetBkColor(hdcBtn, COL_BG);
-            if (!g_hBtnBr) g_hBtnBr = CreateSolidBrush(COL_BG);
-            return (LRESULT)g_hBtnBr;
-        }
+        case WM_CTLCOLORBTN:
+            return (LRESULT)gui_main_ctlcolor_btn((HDC)wParam);
 
-        case WM_CTLCOLORSTATIC: {
-            HDC hdcStatic = (HDC)wParam;
-            HWND hCtl = (HWND)lParam;
-            char className[16] = {};
-            if (hCtl) GetClassNameA(hCtl, className, ARRAY_COUNT(className));
-            LONG_PTR style = hCtl ? GetWindowLongPtrA(hCtl, GWL_STYLE) : 0;
-            bool isEditInput = strcmp(className, "Edit") == 0 &&
-                (((style & ES_READONLY) != 0) || !IsWindowEnabled(hCtl));
-            if (hCtl == g_app.hFanModeCombo || hCtl == g_app.hProfileCombo || hCtl == g_app.hAppLaunchCombo || hCtl == g_app.hLogonCombo || isEditInput) {
-                SetTextColor(hdcStatic, IsWindowEnabled(hCtl) ? COL_TEXT : COL_LABEL);
-                SetBkColor(hdcStatic, COL_INPUT);
-                if (!g_hInputBr) g_hInputBr = CreateSolidBrush(COL_INPUT);
-                return (LRESULT)g_hInputBr;
-            }
-            if (hCtl == g_app.hServiceEnableLabel || hCtl == g_app.hServiceStatusLabel ||
-                hCtl == g_app.hLogonHintLabel) {
-                COLORREF textColor = (hCtl == g_app.hServiceStatusLabel &&
-                    !g_app.backgroundServiceInstalled && !g_app.backgroundServiceToggleInFlight)
-                    ? RGB(0xFF, 0x60, 0x60) : COL_TEXT;
-                SetTextColor(hdcStatic, textColor);
-            } else {
-                SetTextColor(hdcStatic, COL_LABEL);
-            }
-            SetBkColor(hdcStatic, COL_BG);
-            if (!g_hStaticBr) g_hStaticBr = CreateSolidBrush(COL_BG);
-            return (LRESULT)g_hStaticBr;
-        }
+        case WM_CTLCOLORSTATIC:
+            return (LRESULT)gui_main_ctlcolor_static((HDC)wParam, (HWND)lParam);
 
-        case WM_CTLCOLORLISTBOX: {
-            HDC hdcList = (HDC)wParam;
-            SetTextColor(hdcList, COL_TEXT);
-            SetBkColor(hdcList, COL_INPUT);
-            if (!g_hListBr) g_hListBr = CreateSolidBrush(COL_INPUT);
-            return (LRESULT)g_hListBr;
-        }
+        case WM_CTLCOLORLISTBOX:
+            return (LRESULT)gui_main_ctlcolor_listbox((HDC)wParam);
 
-        case WM_CTLCOLOREDIT: {
-            HDC hdcEdit = (HDC)wParam;
-            HWND hCtl = (HWND)lParam;
-            SetTextColor(hdcEdit, (hCtl && IsWindowEnabled(hCtl)) ? COL_TEXT : COL_LABEL);
-            SetBkColor(hdcEdit, COL_INPUT);
-            if (!g_hEditBr) g_hEditBr = CreateSolidBrush(COL_INPUT);
-            return (LRESULT)g_hEditBr;
-        }
+        case WM_CTLCOLOREDIT:
+            return (LRESULT)gui_main_ctlcolor_edit((HDC)wParam, (HWND)lParam);
 
         case WM_COMMAND:
             if (HIWORD(wParam) == EN_CHANGE && LOWORD(wParam) >= 1000 && LOWORD(wParam) < 1000 + VF_NUM_POINTS) {
@@ -786,6 +665,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 get_window_text_safe(g_app.hGpuOffsetEdit, buf, sizeof(buf));
                 int value = 0;
                 g_app.guiHasUserModifiedValues = true;
+                g_app.guiGpuOffsetFromProfileLoad = false;  // hand-typed from here on
                 set_gui_state_dirty(true);
                 gui_draft_capture_text(g_app.guiDraft.gpuOffsetText,
                     ARRAY_COUNT(g_app.guiDraft.gpuOffsetText), buf);
@@ -799,6 +679,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 get_window_text_safe(g_app.hMemOffsetEdit, buf, sizeof(buf));
                 int value = 0;
                 g_app.guiHasUserModifiedValues = true;
+                g_app.guiMemOffsetFromProfileLoad = false;  // hand-typed from here on
                 set_gui_state_dirty(true);
                 gui_draft_capture_text(g_app.guiDraft.memOffsetText,
                     ARRAY_COUNT(g_app.guiDraft.memOffsetText), buf);
@@ -833,6 +714,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     g_app.guiHasUserModifiedValues = true;
                     set_gui_state_dirty(true);
                     update_fan_controls_enabled_state();
+                    gui_pending_changes_refresh();
                 }
             } else if (LOWORD(wParam) == GPU_SELECT_COMBO_ID && HIWORD(wParam) == CBN_SELCHANGE) {
                 apply_gpu_selection_from_ui();
@@ -869,11 +751,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 g_app.guiHasUserModifiedValues = true;
             } else if (LOWORD(wParam) == FAN_CURVE_BTN_ID && HIWORD(wParam) == BN_CLICKED) {
                 open_fan_curve_dialog();
-            } else if ((LOWORD(wParam) == START_ON_LOGON_CHECK_ID && HIWORD(wParam) == BN_CLICKED) ||
-                       (LOWORD(wParam) == START_ON_LOGON_LABEL_ID && HIWORD(wParam) == STN_CLICKED)) {
+            } else if (LOWORD(wParam) == START_ON_LOGON_CHECK_ID && HIWORD(wParam) == BN_CLICKED) {
                 bool enabled = !is_start_on_logon_enabled(g_app.configPath);
-                SendMessageA(g_app.hStartOnLogonCheck, BM_SETCHECK, (WPARAM)(enabled ? BST_CHECKED : BST_UNCHECKED), 0);
-                InvalidateRect(g_app.hStartOnLogonCheck, nullptr, FALSE);
                 bool previous = is_start_on_logon_enabled(g_app.configPath);
                 int logonSlot = get_config_int(g_app.configPath, "profiles", "logon_slot", 0);
                 if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
@@ -897,9 +776,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                 rollbackErr[0] ? rollbackErr : "unknown error");
                         }
                     }
-                    SendMessageA(g_app.hStartOnLogonCheck, BM_SETCHECK, (WPARAM)(previous ? BST_CHECKED : BST_UNCHECKED), 0);
+                    // The config is back at `previous`; repaint from that truth.
+                    // The tick is derived at paint time, so this is the whole
+                    // rollback -- there is no native check state to restore.
+                    if (ui_checkbox_state_needs_repaint(&g_app.startOnLogonPainted, previous)) {
+                        InvalidateRect(g_app.hStartOnLogonCheck, nullptr, FALSE);
+                    }
+                    debug_log("start-on-logon: toggle to %d failed and rolled back to %d (err=%s)\n",
+                        enabled ? 1 : 0, previous ? 1 : 0, err[0] ? err : "unknown");
                     write_error_report_log_for_user_failure("Logon startup update failed", err[0] ? err : "Failed to update logon startup");
-                    MessageBoxA(g_app.hMainWnd, err[0] ? err : "Failed to update logon startup", "Green Curve", MB_OK | MB_ICONERROR);
+                    gc_message_box(g_app.hMainWnd, err[0] ? err : "Failed to update logon startup", "Green Curve", MB_OK | MB_ICONERROR);
                     break;
                 }
 
@@ -917,7 +803,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         "Your tray startup preference was saved, but the Windows logon handoff task could not be synchronized. "
                         "Configured profile auto-apply redundancy is degraded until the task is repaired.\r\n\r\n%s",
                         taskError);
-                    MessageBoxA(g_app.hMainWnd, warning, "Green Curve",
+                    gc_message_box(g_app.hMainWnd, warning, "Green Curve",
                         MB_OK | MB_ICONWARNING);
                 }
                 refresh_profile_controls_from_config();
@@ -940,75 +826,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         logonSlot);
                 }
             } else if (LOWORD(wParam) == SHARE_ALL_USERS_CHECK_ID && HIWORD(wParam) == BN_CLICKED) {
-                // Toggle "share with all users" for the SELECTED profile slot.
-                // Sharing publishes the slot's data into the shared bank AND
-                // makes it the all-users default logon profile (one action);
-                // unsharing reverses both.
-                int sel = g_app.hProfileCombo ? (int)SendMessageA(g_app.hProfileCombo, CB_GETCURSEL, 0, 0) : -1;
-                if (sel < 0 || sel > CONFIG_NUM_SLOTS - 1) sel = CONFIG_DEFAULT_SLOT - 1;
-                int slot = sel + 1;
-                bool currentlyShared = is_machine_profile_slot_saved(slot) && g_app.machineLogonSlotCache == slot;
-
-                // Sharing requires the slot to actually hold a saved profile.
-                if (!currentlyShared && !is_profile_slot_saved(g_app.configPath, slot)) {
-                    MessageBoxA(g_app.hMainWnd,
-                        "The selected profile slot is empty. Save a profile into this slot before sharing it with all users.",
-                        "Green Curve", MB_OK | MB_ICONINFORMATION);
-                    update_share_all_users_check_state();
-                    break;
-                }
-
-                bool ok = false;
-                if (!is_elevated()) {
-                    char slotArg[16] = {};
-                    StringCchPrintfA(slotArg, ARRAY_COUNT(slotArg), "%d", slot);
-                    const char* argv[] = {
-                        currentlyShared ? "--unshare-slot" : "--share-slot",
-                        slotArg,
-                        "--config",
-                        g_app.configPath,
-                        nullptr
-                    };
-                    ok = run_elevated_command(argv,
-                        currentlyShared
-                            ? "Administrator consent was cancelled; profile is still shared."
-                            : "Administrator consent was cancelled; profile was not shared.",
-                        currentlyShared ? "Stop sharing profile with all users" : "Share profile with all users");
-                } else {
-                    char err[256] = {};
-                    ok = currentlyShared
-                        ? unshare_profile_slot_for_all_users(slot, err, sizeof(err))
-                        : share_profile_slot_for_all_users(g_app.configPath, slot, err, sizeof(err));
-                    if (!ok) {
-                        write_error_report_log_for_user_failure("Share-with-all-users update failed", err[0] ? err : "Unknown error");
-                        MessageBoxA(g_app.hMainWnd, err[0] ? err : "Failed to update the shared profile.",
-                            "Green Curve", MB_OK | MB_ICONERROR);
-                    }
-                }
-                if (ok) {
-                    if (currentlyShared) {
-                        set_profile_status_text("Slot %d is no longer shared with all users.", slot);
-                    } else {
-                        set_profile_status_text(
-                            "Slot %d is now shared with all users and applied on logon for users without their own profile.", slot);
-                    }
-                }
-                update_share_all_users_check_state();
-                refresh_profile_controls_from_config();
-                if (ok) {
-                    // The machine default is an effective logon profile for
-                    // this account, so create/remove its authenticated handoff
-                    // task independently of resident tray startup.
-                    schedule_logon_combo_sync();
-                }
+                // Lives next to update_share_all_users_check_state() in
+                // config_profiles_ui.cpp, which owns the same shared state.
+                handle_share_all_users_toggle();
             } else if (LOWORD(wParam) == SHARED_PROFILES_BTN_ID && HIWORD(wParam) == BN_CLICKED) {
                 // Any user: open the list of admin-published shared profiles.
                 RECT rc = {};
                 GetWindowRect(g_app.hSharedProfilesBtn, &rc);
                 POINT pt = { rc.left, rc.bottom };
                 show_shared_profiles_menu(hwnd, pt);
-            } else if ((LOWORD(wParam) == SERVICE_ENABLE_CHECK_ID && HIWORD(wParam) == BN_CLICKED) ||
-                       (LOWORD(wParam) == SERVICE_ENABLE_LABEL_ID && HIWORD(wParam) == STN_CLICKED)) {
+            } else if (LOWORD(wParam) == SERVICE_ENABLE_CHECK_ID && HIWORD(wParam) == BN_CLICKED) {
                 if (g_app.backgroundServiceToggleInFlight) {
                     break;
                 }
@@ -1019,7 +846,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     : enable
                     ? "Install the elevated background service to enable live GPU control?"
                     : "Remove the background service? Live GPU control will be unavailable until it is installed again.";
-                int confirm = MessageBoxA(g_app.hMainWnd, confirmText, "Confirm Service Change", MB_YESNO | MB_ICONQUESTION);
+                int confirm = gc_message_box(g_app.hMainWnd, confirmText, "Confirm Service Change", MB_YESNO | MB_ICONQUESTION);
                 if (confirm != IDYES) {
                     break;
                 }
@@ -1030,7 +857,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         g_app.configPath, status, sizeof(status))) {
                     end_background_service_toggle();
                     update_background_service_controls();
-                    MessageBoxA(g_app.hMainWnd,
+                    gc_message_box(g_app.hMainWnd,
                         status[0] ? status : "Failed queuing the background service change.",
                         "Green Curve", MB_OK | MB_ICONERROR);
                     break;
@@ -1044,7 +871,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 if (slot < 0) slot = CONFIG_DEFAULT_SLOT - 1;
                 slot += 1;
                 if (!set_config_int(g_app.configPath, "profiles", "selected_slot", slot)) {
-                    MessageBoxA(g_app.hMainWnd,
+                    gc_message_box(g_app.hMainWnd,
                         "Failed to persist the selected profile slot.",
                         "Green Curve", MB_OK | MB_ICONERROR);
                     refresh_profile_controls_from_config();
@@ -1067,7 +894,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 char err[256] = {};
                 if (!load_profile_from_config(g_app.configPath, slot, &desired, err, sizeof(err))) {
                     write_error_report_log_for_user_failure("Profile load failed", err);
-                    MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
+                    gc_message_box(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
                     break;
                 }
                 populate_desired_into_gui(&desired);
@@ -1078,7 +905,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     write_error_report_log_for_user_failure(
                         "Selected profile persistence failed",
                         "The profile loaded into the editor, but selected_slot failed readback");
-                    MessageBoxA(g_app.hMainWnd,
+                    gc_message_box(g_app.hMainWnd,
                         "The profile was loaded, but the selected slot could not be saved.",
                         "Green Curve", MB_OK | MB_ICONWARNING);
                 }
@@ -1091,24 +918,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 slot += 1;
                 DesiredSettings desired = {};
                 char err[256] = {};
-                if (!validate_configured_gpu_selection_for_client(
-                        err, sizeof(err))) {
-                    MessageBoxA(g_app.hMainWnd, err[0] ? err :
-                        "Select the intended GPU again before saving a profile.",
+                if (!gui_service_model_ready(&g_app.guiServiceModel)) {
+                    gui_service_io_queue_full_sync("profile save requested while reconnecting");
+                    gc_message_box(g_app.hMainWnd,
+                        "Live GPU state is reconnecting. Your draft is preserved; save it after synchronization completes.",
                         "Green Curve", MB_OK | MB_ICONWARNING);
                     break;
                 }
-                if (!gui_service_model_ready(&g_app.guiServiceModel)) {
-                    gui_service_io_queue_full_sync("profile save requested while reconnecting");
-                    MessageBoxA(g_app.hMainWnd,
-                        "Live GPU state is reconnecting. Your draft is preserved; save it after synchronization completes.",
+                if (!validate_configured_gpu_selection_for_client(
+                        err, sizeof(err))) {
+                    gc_message_box(g_app.hMainWnd, err[0] ? err :
+                        "Select the intended GPU again before saving a profile.",
                         "Green Curve", MB_OK | MB_ICONWARNING);
                     break;
                 }
                 if (g_app.guiHasUserModifiedValues || gui_has_pending_curve_or_lock_edits()) {
                     if (!capture_gui_config_settings(&desired, err, sizeof(err))) {
                         write_error_report_log_for_user_failure("Profile save capture failed", err);
-                        MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
+                        gc_message_box(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
                         break;
                     }
                     debug_log("PROFILE_SAVE: saving sparse GUI curve intent (modified=%d curveOrLock=%d)\n",
@@ -1133,7 +960,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
                 if (!save_profile_to_config(g_app.configPath, slot, &desired, err, sizeof(err))) {
                     write_error_report_log_for_user_failure("Profile save failed", err);
-                    MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
+                    gc_message_box(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
                     break;
                 }
                 populate_desired_into_gui(&desired);
@@ -1151,19 +978,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 char confirm[192];
                 StringCchPrintfA(confirm, ARRAY_COUNT(confirm),
                     "Clear profile %d? Any app start or logon assignment for this slot will also be disabled.", slot);
-                if (MessageBoxA(g_app.hMainWnd, confirm, "Green Curve", MB_YESNO | MB_ICONQUESTION) != IDYES) break;
+                if (gc_message_box(g_app.hMainWnd, confirm, "Green Curve", MB_YESNO | MB_ICONQUESTION) != IDYES) break;
                 char err[256] = {};
                 invalidate_startup_sync_generation();
                 if (!clear_profile_from_config(g_app.configPath, slot, err, sizeof(err))) {
                     write_error_report_log_for_user_failure("Profile clear failed", err);
-                    MessageBoxA(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
+                    gc_message_box(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
                     break;
                 }
                 bool taskOk = true;
                 taskOk = set_startup_task_enabled(should_enable_startup_task_from_config(g_app.configPath), err, sizeof(err));
                 if (!taskOk) {
                     write_error_report_log_for_user_failure("Startup task update failed after profile clear", err[0] ? err : "Unknown error");
-                    MessageBoxA(g_app.hMainWnd, err[0] ? err : "Failed to update startup task after profile clear", "Green Curve", MB_OK | MB_ICONWARNING);
+                    gc_message_box(g_app.hMainWnd, err[0] ? err : "Failed to update startup task after profile clear", "Green Curve", MB_OK | MB_ICONWARNING);
                 }
                 refresh_profile_controls_from_config();
                 update_background_service_controls();
@@ -1183,7 +1010,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     int sharedSlot = (itemData & LOGON_COMBO_SHARED_FLAG) ? (int)(itemData & 0xFF) : 0;
 
                     if (perUserSlot > 0 && !is_profile_slot_saved(g_app.configPath, perUserSlot)) {
-                        MessageBoxA(g_app.hMainWnd,
+                        gc_message_box(g_app.hMainWnd,
                             "That slot is empty. Save a profile there before using it for automatic actions.",
                             "Green Curve", MB_OK | MB_ICONINFORMATION);
                         refresh_profile_controls_from_config();
@@ -1204,7 +1031,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                             sharedSlot, err, sizeof(err))) {
                         write_error_report_log_for_user_failure("Logon profile selection save failed",
                             err[0] ? err : "Unknown config transaction error");
-                        MessageBoxA(g_app.hMainWnd,
+                        gc_message_box(g_app.hMainWnd,
                             err[0] ? err : "Failed to save the logon profile selection.",
                             "Green Curve", MB_OK | MB_ICONERROR);
                         refresh_profile_controls_from_config();
@@ -1221,7 +1048,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                             "Your logon profile choice was saved, but the Windows scheduled task could not be synchronized. "
                             "Logon auto-apply redundancy is degraded until the task is repaired.\r\n\r\n%s",
                             taskError);
-                        MessageBoxA(g_app.hMainWnd, warning, "Green Curve",
+                        gc_message_box(g_app.hMainWnd, warning, "Green Curve",
                             MB_OK | MB_ICONWARNING);
                     }
                     bool startProgramAtLogon = is_start_on_logon_enabled(g_app.configPath);
@@ -1249,7 +1076,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     int sel = (int)SendMessageA(g_app.hAppLaunchCombo, CB_GETCURSEL, 0, 0);
                     int slot = (sel < 0) ? 0 : sel;
                     if (slot > 0 && !is_profile_slot_saved(g_app.configPath, slot)) {
-                        MessageBoxA(g_app.hMainWnd,
+                        gc_message_box(g_app.hMainWnd,
                             "That slot is empty. Save a profile there before using it for automatic actions.",
                             "Green Curve", MB_OK | MB_ICONINFORMATION);
                         refresh_profile_controls_from_config();
@@ -1260,7 +1087,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         write_error_report_log_for_user_failure(
                             "App-start profile selection save failed",
                             "The app_launch_slot value failed persistence readback");
-                        MessageBoxA(g_app.hMainWnd,
+                        gc_message_box(g_app.hMainWnd,
                             "Failed to save the app-start profile selection.",
                             "Green Curve", MB_OK | MB_ICONERROR);
                         refresh_profile_controls_from_config();

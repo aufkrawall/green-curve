@@ -6,6 +6,7 @@
 #include "gui_service_state.cpp"
 #include "gui_tray_visibility.cpp"
 #include "gui_selected_gpu_pnp.cpp"
+#include "ui_pending_changes.cpp"
 
 // ============================================================================
 // UAC Elevation
@@ -155,288 +156,7 @@ static void reset_gui_gdi_generation(const char* reason) {
             RDW_INVALIDATE | RDW_ALLCHILDREN);
 }
 
-static unsigned int displayed_curve_mhz_for_gui_point(int ci) {
-    if (ci < 0 || ci >= VF_NUM_POINTS) return 0;
-    // Note: the locked tail override was removed after the uniform floor offset
-    // fix (Build 109) eliminated tail drift. Real driver-reported values now
-    // match the lock target, so no intent-vs-reality substitution is needed.
-    if (g_app.guiDraft.attached && g_app.guiDraft.curveValueValid[ci])
-        return g_app.guiDraft.curveMHz[ci];
-    return displayed_curve_mhz(g_app.curve[ci].freq_kHz);
-}
-
-static void log_gui_locked_tail_display_drift_if_needed() {
-    static int lastLockCi = -2;
-    static unsigned int lastLockMHz = 0;
-    static int lastDriftCount = -1;
-    static int lastMaxDriftCi = -1;
-    static unsigned int lastMaxDeltaMHz = 0;
-
-    if (g_app.lockedCi < 0 || g_app.lockedCi >= VF_NUM_POINTS || g_app.lockedFreq == 0) {
-        lastLockCi = -2;
-        lastLockMHz = 0;
-        lastDriftCount = -1;
-        lastMaxDriftCi = -1;
-        lastMaxDeltaMHz = 0;
-        return;
-    }
-
-    int driftCount = 0;
-    int maxDriftCi = -1;
-    unsigned int maxDeltaMHz = 0;
-    for (int ci = g_app.lockedCi; ci < VF_NUM_POINTS; ci++) {
-        if (!is_curve_point_visible_in_gui(ci)) continue;
-        if (g_app.curve[ci].freq_kHz == 0) continue;
-        unsigned int liveMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
-        unsigned int deltaMHz = liveMHz > g_app.lockedFreq
-            ? liveMHz - g_app.lockedFreq
-            : g_app.lockedFreq - liveMHz;
-        if (deltaMHz <= 2) continue;
-        driftCount++;
-        if (deltaMHz > maxDeltaMHz) {
-            maxDeltaMHz = deltaMHz;
-            maxDriftCi = ci;
-        }
-    }
-
-    if (driftCount > 0
-        && (g_app.lockedCi != lastLockCi
-            || g_app.lockedFreq != lastLockMHz
-            || driftCount != lastDriftCount
-            || maxDriftCi != lastMaxDriftCi
-            || maxDeltaMHz != lastMaxDeltaMHz)) {
-        debug_log("gui locked tail live readback drift: ci=%d lock=%u MHz drifted=%d max=ci%d/%uMHz temp=%d valid=%d\n",
-            g_app.lockedCi,
-            g_app.lockedFreq,
-            driftCount,
-            maxDriftCi,
-            maxDeltaMHz,
-            g_app.gpuTemperatureC,
-            g_app.gpuTemperatureValid ? 1 : 0);
-    }
-
-    lastLockCi = g_app.lockedCi;
-    lastLockMHz = g_app.lockedFreq;
-    lastDriftCount = driftCount;
-    lastMaxDriftCi = maxDriftCi;
-    lastMaxDeltaMHz = maxDeltaMHz;
-}
-
-static void draw_graph(HDC hdc, RECT* rc) {
-    (void)rc;
-    int w = main_layout_content_width();
-    int h = main_layout_graph_height();
-    int savedDc = SaveDC(hdc);
-    SetViewportOrgEx(hdc, -main_layout_scroll_x(), -main_layout_scroll_y(), nullptr);
-
-    // Background
-    HBRUSH bgBrush = CreateSolidBrush(COL_PANEL);
-    RECT graphRc = {0, 0, w, h};
-    FillRect(hdc, &graphRc, bgBrush);
-    DeleteObject(bgBrush);
-
-    if (!g_app.backgroundServiceAvailable) {
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, COL_TEXT);
-        const char* msg = g_app.backgroundServiceInstalled
-            ? "Background service not responding. Live controls disabled."
-            : "Background service not installed. Live controls disabled.";
-        TextOutA(hdc, w / 2 - dp(170), h / 2 - dp(8), msg, (int)strlen(msg));
-        RestoreDC(hdc, savedDc);
-        return;
-    }
-
-    if (!g_app.loaded) {
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, COL_TEXT);
-        const char* msg = "Background service running, waiting for GPU snapshot...";
-        TextOutA(hdc, w / 2 - dp(150), h / 2 - dp(8), msg, (int)strlen(msg));
-        RestoreDC(hdc, savedDc);
-        return;
-    }
-
-    // Axis ranges
-    const int MIN_VOLT_mV = 700;
-    const int MAX_VOLT_mV = 1250;
-    const int MIN_FREQ_MHz = 500;
-    const int MAX_FREQ_MHz = 3400;
-
-    // DPI-scaled margins
-    int ml = dp(70), mr = dp(30), mt = dp(35), mb = dp(55);
-    int pw = w - ml - mr;
-    int ph = h - mt - mb;
-
-    // Helper: map voltage mV to X pixel
-    auto volt_to_x = [&](unsigned int mv) -> int {
-        if (mv < (unsigned)MIN_VOLT_mV) mv = MIN_VOLT_mV;
-        if (mv > (unsigned)MAX_VOLT_mV) mv = MAX_VOLT_mV;
-        return ml + (int)((long long)(mv - MIN_VOLT_mV) * pw / (MAX_VOLT_mV - MIN_VOLT_mV));
-    };
-
-    // Helper: map frequency MHz to Y pixel
-    auto freq_to_y = [&](unsigned int mhz) -> int {
-        if (mhz < (unsigned)MIN_FREQ_MHz) mhz = MIN_FREQ_MHz;
-        if (mhz > (unsigned)MAX_FREQ_MHz) mhz = MAX_FREQ_MHz;
-        return mt + ph - (int)((long long)(mhz - MIN_FREQ_MHz) * ph / (MAX_FREQ_MHz - MIN_FREQ_MHz));
-    };
-
-    // GDI objects (cached in AppData to avoid churn across paint cycles)
-    HPEN gridPen = g_app.hCachedGridPen ? g_app.hCachedGridPen : CreatePen(PS_SOLID, 1, COL_GRID);
-    HPEN axisPen = g_app.hCachedAxisPen ? g_app.hCachedAxisPen : CreatePen(PS_SOLID, 1, COL_AXIS);
-    HPEN oldPen = (HPEN)SelectObject(hdc, gridPen);
-    HFONT hFont = g_app.hCachedFont ? g_app.hCachedFont : CreateFontA(dp(13), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
-    HFONT hFontSmall = g_app.hCachedFontSmall ? g_app.hCachedFontSmall : CreateFontA(dp(11), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
-    HFONT oldFont = (HFONT)SelectObject(hdc, hFont);
-    SetBkMode(hdc, TRANSPARENT);
-
-    // Vertical grid lines (voltage axis, every 50mV, label every 100mV)
-    for (int mv = MIN_VOLT_mV; mv <= MAX_VOLT_mV; mv += 50) {
-            int x = volt_to_x((unsigned int)mv);
-        SelectObject(hdc, gridPen);
-        MoveToEx(hdc, x, mt, nullptr);
-        LineTo(hdc, x, mt + ph);
-
-        if (mv % 100 == 0) {
-            SelectObject(hdc, hFontSmall);
-            SetTextColor(hdc, COL_LABEL);
-            char buf[16];
-            StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d", mv);
-            SIZE sz;
-            GetTextExtentPoint32A(hdc, buf, (int)strlen(buf), &sz);
-            TextOutA(hdc, x - sz.cx / 2, mt + ph + dp(4), buf, (int)strlen(buf));
-        }
-    }
-
-    // Horizontal grid lines (frequency axis, every 500MHz, label every 500MHz)
-    for (int mhz = MIN_FREQ_MHz; mhz <= MAX_FREQ_MHz; mhz += 500) {
-        int y = freq_to_y((unsigned int)mhz);
-        SelectObject(hdc, gridPen);
-        MoveToEx(hdc, ml, y, nullptr);
-        LineTo(hdc, ml + pw, y);
-
-        SelectObject(hdc, hFontSmall);
-        SetTextColor(hdc, COL_LABEL);
-        char buf[16];
-        StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d", mhz);
-        SIZE sz;
-        GetTextExtentPoint32A(hdc, buf, (int)strlen(buf), &sz);
-        TextOutA(hdc, ml - sz.cx - dp(6), y - sz.cy / 2, buf, (int)strlen(buf));
-    }
-
-    // Axes
-    SelectObject(hdc, axisPen);
-    MoveToEx(hdc, ml, mt, nullptr);
-    LineTo(hdc, ml, mt + ph);
-    MoveToEx(hdc, ml, mt + ph, nullptr);
-    LineTo(hdc, ml + pw, mt + ph);
-
-    // Axis titles
-    SelectObject(hdc, hFont);
-    SetTextColor(hdc, COL_TEXT);
-    const char* xTitle = "Voltage (mV)";
-    SIZE sz;
-    GetTextExtentPoint32A(hdc, xTitle, (int)strlen(xTitle), &sz);
-    TextOutA(hdc, ml + pw / 2 - sz.cx / 2, mt + ph + dp(24), xTitle, (int)strlen(xTitle));
-
-    const char* yTitle = "Frequency (MHz)";
-    GetTextExtentPoint32A(hdc, yTitle, (int)strlen(yTitle), &sz);
-    // Rotate for Y axis is hard in GDI, place horizontally left of Y labels
-    TextOutA(hdc, dp(2), mt - dp(4), yTitle, (int)strlen(yTitle));
-
-    log_gui_locked_tail_display_drift_if_needed();
-
-    // Build polyline: sort curve points by voltage, only plot within our ranges
-    POINT pts[VF_NUM_POINTS];
-    int nPts = 0;
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        unsigned int freq_mhz = displayed_curve_mhz_for_gui_point(i);
-        unsigned int volt_mv = g_app.curve[i].volt_uV / 1000;
-        if (freq_mhz == 0 && volt_mv == 0) continue;
-        // Only plot points within our visible range
-        if (volt_mv < (unsigned)MIN_VOLT_mV || volt_mv > (unsigned)MAX_VOLT_mV) continue;
-        if (freq_mhz < (unsigned)MIN_FREQ_MHz || freq_mhz > (unsigned)MAX_FREQ_MHz) continue;
-        pts[nPts].x = volt_to_x(volt_mv);
-        pts[nPts].y = freq_to_y(freq_mhz);
-        nPts++;
-    }
-
-    if (nPts > 1) {
-        draw_curve_polyline_smooth(hdc, pts, nPts, dp(2), COL_CURVE);
-        SelectObject(hdc, oldPen);
-    }
-
-    draw_curve_points_ringed(hdc, pts, nPts, dp(2), dp(4));
-    SelectObject(hdc, oldPen);
-
-    // Frequency labels on curve (every 8 visible points)
-    SelectObject(hdc, hFontSmall);
-    SetTextColor(hdc, COL_TEXT);
-    for (int i = 0; i < nPts; i += nvmax(1, nPts / 10)) {
-        // Find original curve index for this point
-        int visIdx = 0;
-        for (int j = 0; j < VF_NUM_POINTS; j++) {
-            unsigned int freq_mhz = displayed_curve_mhz_for_gui_point(j);
-            unsigned int volt_mv = g_app.curve[j].volt_uV / 1000;
-            if (freq_mhz == 0 && volt_mv == 0) continue;
-            if (volt_mv < (unsigned)MIN_VOLT_mV || volt_mv > (unsigned)MAX_VOLT_mV) continue;
-            if (freq_mhz < (unsigned)MIN_FREQ_MHz || freq_mhz > (unsigned)MAX_FREQ_MHz) continue;
-            if (visIdx == i) {
-                char buf[32];
-                StringCchPrintfA(buf, ARRAY_COUNT(buf), "%u", freq_mhz);
-                SIZE sz2;
-                GetTextExtentPoint32A(hdc, buf, (int)strlen(buf), &sz2);
-                TextOutA(hdc, pts[i].x - sz2.cx / 2, pts[i].y - dp(16), buf, (int)strlen(buf));
-                break;
-            }
-            visIdx++;
-        }
-    }
-
-    // Info line at top: always show live peak from driver readback
-    SelectObject(hdc, hFont);
-    SetTextColor(hdc, COL_TEXT);
-    char info[512];
-    {
-        unsigned int actualMaxFreq = 0;
-        unsigned int actualMaxVolt = 0;
-        for (int i = 0; i < VF_NUM_POINTS; i++) {
-            if (g_app.curve[i].freq_kHz > actualMaxFreq) {
-                actualMaxFreq = g_app.curve[i].freq_kHz;
-                actualMaxVolt = g_app.curve[i].volt_uV;
-            }
-        }
-        if (g_app.lockedVi >= 0 && g_app.lockedCi >= 0 && g_app.lockedFreq > 0) {
-            unsigned int lockVoltMv = g_app.curve[g_app.lockedCi].volt_uV / 1000;
-            StringCchPrintfA(info, ARRAY_COUNT(info), "%s  |  %d pts  |  Lock: %u MHz @ %u mV  |  Live peak: %u MHz @ %u mV",
-                             g_app.gpuName, g_app.numPopulated,
-                             g_app.lockedFreq, lockVoltMv,
-                             displayed_curve_mhz(actualMaxFreq), actualMaxVolt / 1000);
-        } else {
-            StringCchPrintfA(info, ARRAY_COUNT(info), "%s  |  %d pts  |  Peak: %u MHz @ %u mV",
-                             g_app.gpuName, g_app.numPopulated,
-                             displayed_curve_mhz(actualMaxFreq), actualMaxVolt / 1000);
-        }
-        static unsigned int lastPeakMHz = 0, lastPeakMv = 0;
-        unsigned int peakMHz = displayed_curve_mhz(actualMaxFreq);
-        unsigned int peakMv = actualMaxVolt / 1000;
-        if (peakMHz != lastPeakMHz || peakMv != lastPeakMv) {
-            lastPeakMHz = peakMHz;
-            lastPeakMv = peakMv;
-            debug_log("gui live peak: %u MHz @ %u mV\n", peakMHz, peakMv);
-        }
-    }
-    TextOutA(hdc, ml + dp(6), dp(4), info, (int)strlen(info));
-
-    // Cleanup
-    SelectObject(hdc, oldFont);
-    if (!g_app.hCachedFont) DeleteObject(hFont);
-    if (!g_app.hCachedFontSmall) DeleteObject(hFontSmall);
-    if (!g_app.hCachedGridPen) DeleteObject(gridPen);
-    if (!g_app.hCachedAxisPen) DeleteObject(axisPen);
-    RestoreDC(hdc, savedDc);
-}
+#include "ui_main_graph.cpp"
 
 static void draw_gui_scene(HDC hdc, RECT* rc) {
     if (!hdc || !rc) return;
@@ -508,7 +228,7 @@ static void apply_gpu_selection_from_ui() {
             persistErr, sizeof(persistErr))) {
         debug_log("gpu selection: persistence failed for index=%u: %s\n",
             newIndex, persistErr[0] ? persistErr : "unknown error");
-        MessageBoxA(g_app.hMainWnd,
+        gc_message_box(g_app.hMainWnd,
             persistErr[0] ? persistErr : "Failed to save the selected GPU.",
             "Green Curve", MB_OK | MB_ICONERROR);
         populate_gpu_selector();
@@ -537,8 +257,9 @@ static void set_edit_value(HWND hEdit, unsigned int value) {
 static void populate_edits() {
     bool preserveDirty = gui_state_dirty();
     populate_global_controls();
-    bool serviceReady = gui_service_model_ready(&g_app.guiServiceModel) &&
-        g_app.guiDraft.attached && !g_app.guiDraft.detached;
+    GuiServiceActionability actionable = gui_service_actionability_from_app();
+    bool serviceReady = gui_service_capability_enabled(
+        &actionable, GUI_SERVICE_CAP_EDITOR);
     begin_programmatic_edit_update();
     memset(g_app.guiCurvePointExplicit, 0, sizeof(g_app.guiCurvePointExplicit));
     for (int vi = 0; vi < g_app.numVisible; vi++) {
@@ -561,7 +282,6 @@ static void populate_edits() {
         EnableWindow(g_app.hEditsMhz[vi], serviceReady ? TRUE : FALSE);
         SendMessageA(g_app.hEditsMv[vi], EM_SETREADONLY, TRUE, 0);
         EnableWindow(g_app.hEditsMv[vi], FALSE);
-        SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_UNCHECKED, 0);
         EnableWindow(g_app.hLocks[vi], serviceReady ? TRUE : FALSE);
         InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
     }
@@ -570,7 +290,8 @@ static void populate_edits() {
     // locked/flattened state. Live values are shown since the uniform tail
     // floor fix (Build 109) eliminated tail drift; real values equal lockedFreq.
     if (g_app.lockedVi >= 0 && g_app.lockedVi < g_app.numVisible) {
-        SendMessageA(g_app.hLocks[g_app.lockedVi], BM_SETCHECK, BST_CHECKED, 0);
+        // draw_lock_checkbox() derives the tick from g_app.lockedVi/lockMode,
+        // so the repaint request is the whole update.
         InvalidateRect(g_app.hLocks[g_app.lockedVi], nullptr, FALSE);
         set_edit_value(g_app.hEditsMhz[g_app.lockedVi], g_app.lockedFreq);
         for (int j = g_app.lockedVi + 1; j < g_app.numVisible; j++) {
@@ -591,18 +312,19 @@ static void populate_edits() {
         set_gui_state_dirty(false);
         populate_global_controls();
     }
+    gui_pending_changes_refresh();
 }
 
 static void apply_lock(int vi, LockMode mode) {
     // Uncheck and re-enable previous lock
     if (g_app.lockedVi >= 0 && g_app.lockedVi < g_app.numVisible) {
-        SendMessageA(g_app.hLocks[g_app.lockedVi], BM_SETCHECK, BST_UNCHECKED, 0);
         EnableWindow(g_app.hLocks[g_app.lockedVi], TRUE);
         InvalidateRect(g_app.hLocks[g_app.lockedVi], nullptr, FALSE);
     }
 
-    // Check this one
-    SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_CHECKED, 0);
+    // Check this one.  The tick follows g_app.lockedVi/lockMode, so the model
+    // update below IS the state change; the InvalidateRect after the tail loop
+    // setup is what paints it.
     g_app.lockedVi = vi;
     g_app.lockedCi = g_app.visibleMap[vi];
     g_app.lockMode = mode;
@@ -628,6 +350,7 @@ static void apply_lock(int vi, LockMode mode) {
         EnableWindow(g_app.hLocks[j], FALSE);
         InvalidateRect(g_app.hLocks[j], nullptr, FALSE);
     }
+    gui_pending_changes_refresh();
 }
 
 static void sync_locked_tail_preview_from_anchor() {
@@ -645,6 +368,7 @@ static void sync_locked_tail_preview_from_anchor() {
     if (g_app.lockedCi >= 0) record_ui_action("lock anchor point %d edited to %u MHz (absolute)", g_app.lockedCi, g_app.lockedFreq);
     // Note: previously overwrote tail edit boxes with lockedFreq here.
     // Removed after the uniform tail floor fix — real values match the lock target.
+    gui_pending_changes_refresh();
 }
 
 static void unlock_all() {
@@ -665,14 +389,15 @@ static void unlock_all() {
         EnableWindow(g_app.hEditsMhz[vi], TRUE);
         int ci = g_app.visibleMap[vi];
         set_edit_value(g_app.hEditsMhz[vi], displayed_curve_mhz(g_app.curve[ci].freq_kHz));
-        SendMessageA(g_app.hLocks[vi], BM_SETCHECK, BST_UNCHECKED, 0);
         EnableWindow(g_app.hLocks[vi], TRUE);
         InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
     }
     end_programmatic_edit_update();
+    gui_pending_changes_refresh();
 }
 
 #include "ui_lock_checkbox.cpp"
+#include "ui_oc_hints.cpp"
 
 // Create (or recreate) the hover tooltip that explains the tri-state lock
 // checkboxes. The checkboxes are destroyed/recreated on service-state changes,
@@ -704,6 +429,7 @@ static void create_lock_tooltips(HWND hParent) {
     if (!tip) return;
     SendMessageA(tip, TTM_SETMAXTIPWIDTH, 0, (LPARAM)dp(320));
     SendMessageA(tip, TTM_SETDELAYTIME, TTDT_AUTOPOP, (LPARAM)MAKELONG(15000, 0));
+    apply_tooltip_theme(tip);
     static const char* kLockTip =
         "Lock this point's GPU clock.\r\n"
         "Left-click cycles: off -> flatten -> pin.\r\n"
@@ -719,6 +445,10 @@ static void create_lock_tooltips(HWND hParent) {
         ti.lpszText = (LPSTR)kLockTip;
         SendMessageA(tip, TTM_ADDTOOLA, 0, (LPARAM)&ti);
     }
+    // The three overclock edits are recreated in the same pass as the lock
+    // checkboxes, so their range tooltips are registered on the same window and
+    // share its lifetime.
+    register_oc_range_tooltips(tip, hParent);
     g_app.hLockTooltip = tip;
 }
 

@@ -269,6 +269,16 @@ static void main_layout_move(MainLayoutMoveBatch* batch, HWND hwnd,
     }
 }
 
+// F-CHECKBOX-HIT  Width for a labeled owner-draw checkbox: box + gap + its own
+// caption, measured in the control's font.  `fallbackWidth` is used only when
+// the control does not exist yet or the measurement fails, so a rare GDI failure
+// degrades to the previous fixed geometry instead of collapsing the control.
+static int main_layout_labeled_checkbox_width(
+    HWND check, int height, int fallbackWidth) {
+    int fitted = themed_checkbox_label_fit_width(check, height);
+    return fitted > 0 ? fitted : fallbackWidth;
+}
+
 static void main_layout_update_scroll_info(HWND hwnd, const MainLayoutPlan& plan) {
     RECT client = {};
     GetClientRect(hwnd, &client);
@@ -306,6 +316,7 @@ static void main_layout_place_controls(
         forceDirect ? nullptr : BeginDeferWindowPos(420),
         s_mainLayoutScrollX, s_mainLayoutScrollY, false
     };
+    const int margin = dp(MAIN_LAYOUT_SIDE_MARGIN_LOGICAL);
     const int cbW = dp(16);
     const int editW = dp(65);
     const int labelW = dp(32);
@@ -341,9 +352,12 @@ static void main_layout_place_controls(
     }
 
     int gpuSelectW = dp(420);
-    int gpuSelectX = plan.contentWidth - gpuSelectW - dp(12);
     int gpuSelectY = dp(10);
     int gpuLabelW = dp(42);
+    // Right-anchored, sharing one right edge with the fan-curve and License
+    // buttons below it.  The floor keeps the "GPU:" label on screen.
+    int gpuSelectX = main_layout_right_anchored_x(
+        plan.contentWidth, gpuSelectW, margin, margin + gpuLabelW + dp(6));
     main_layout_move(&batch, s_mainLayoutControls.statics[MAIN_STATIC_GPU_LABEL],
         gpuSelectX - gpuLabelW - dp(6), gpuSelectY + dp(3), gpuLabelW, dp(18));
     main_layout_move(&batch, g_app.hGpuSelectCombo,
@@ -377,10 +391,13 @@ static void main_layout_place_controls(
         dp(882), ocY + dp(2), dp(58), dp(18));
     main_layout_move(&batch, g_app.hFanEdit,
         dp(942), ocY, dp(56), dp(20));
+    // Right-anchored like the License button below it, instead of the fixed
+    // dp(1006) that left a growing gap on every window wider than the base.
+    // The floor is its former position, which already clears hFanEdit (dp(998)).
     main_layout_move(&batch, g_app.hFanCurveBtn,
-        dp(1006), ocY - dp(1), dp(160), dp(24));
+        main_layout_right_anchored_x(plan.contentWidth, dp(160), margin, dp(1006)),
+        ocY - dp(1), dp(160), dp(24));
 
-    const int margin = dp(8);
     const int buttonH = dp(30);
     const int smallButtonW = dp(76);
     const int smallGap = dp(6);
@@ -389,7 +406,9 @@ static void main_layout_place_controls(
     main_layout_move(&batch, g_app.hRefreshBtn, margin + dp(144), plan.buttonsY, dp(98), buttonH);
     main_layout_move(&batch, g_app.hResetBtn, margin + dp(254), plan.buttonsY, dp(98), buttonH);
     main_layout_move(&batch, g_app.hLicenseBtn,
-        plan.contentWidth - margin - dp(118), plan.buttonsY, dp(118), buttonH);
+        main_layout_right_anchored_x(plan.contentWidth, dp(118), margin,
+            margin + dp(254) + dp(98) + dp(8)),
+        plan.buttonsY, dp(118), buttonH);
 
     main_layout_move(&batch, g_app.hProfileLabel,
         margin, plan.profileY + dp(4), dp(72), dp(18));
@@ -415,20 +434,29 @@ static void main_layout_place_controls(
         margin + dp(366), plan.autoY + dp(4), dp(208), dp(18));
     main_layout_move(&batch, g_app.hLogonCombo,
         margin + dp(578), plan.autoY, dp(170), comboDropH);
+    // F-CHECKBOX-HIT  Labeled checkboxes are placed at exactly box + gap + label
+    // so the clickable rectangle covers the caption and stops there. The literal
+    // widths are only the fallback for a failed text measurement.
+    const int checkboxH = dp(20);
     main_layout_move(&batch, g_app.hStartOnLogonCheck,
-        margin + dp(760), plan.autoY + dp(4), dp(16), dp(16));
-    main_layout_move(&batch, g_app.hStartOnLogonLabel,
-        margin + dp(784), plan.autoY + dp(3), dp(200), dp(18));
+        margin + dp(758), plan.autoY + dp(2),
+        main_layout_labeled_checkbox_width(
+            g_app.hStartOnLogonCheck, checkboxH, dp(220)),
+        checkboxH);
     main_layout_move(&batch, g_app.hShareAllUsersCheck,
-        margin, plan.sharedY, dp(280), dp(22));
+        margin, plan.sharedY,
+        main_layout_labeled_checkbox_width(
+            g_app.hShareAllUsersCheck, dp(22), dp(280)),
+        dp(22));
     main_layout_move(&batch, g_app.hSharedProfilesBtn,
         margin + dp(300), plan.sharedY, dp(150), dp(22));
     main_layout_move(&batch, g_app.hAutoProfilesBtn,
         margin + dp(460), plan.sharedY, dp(160), dp(22));
     main_layout_move(&batch, g_app.hServiceEnableCheck,
-        margin, plan.serviceY + dp(4), dp(16), dp(16));
-    main_layout_move(&batch, g_app.hServiceEnableLabel,
-        margin + dp(24), plan.serviceY + dp(3), dp(330), dp(18));
+        margin, plan.serviceY + dp(2),
+        main_layout_labeled_checkbox_width(
+            g_app.hServiceEnableCheck, checkboxH, dp(300)),
+        checkboxH);
     main_layout_move(&batch, g_app.hServiceStatusLabel,
         margin + dp(370), plan.serviceY + dp(3),
         main_layout_max_int(dp(220), plan.contentWidth - margin - dp(370)), dp(18));
