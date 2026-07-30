@@ -50,6 +50,15 @@ static void ensure_tray_profile_cache() {
         g_app.serviceSnapshotAuthoritative ? 1 : 0,
         g_app.trayProfileCacheProfilePart);
 }
+// True from the moment a profile switch / Apply is queued until the service's
+// result has been adopted.  `applyInFlight` is owned by the GUI mutation queue
+// (gui_mutation_worker.cpp), which is the single serialization point every
+// apply path -- manual Apply, tray/hotkey profile pick, app-start apply --
+// passes through, so no path can leave this surface behind.  The service binary
+// never queues client mutations, so this is constantly false there.
+static bool tray_apply_in_flight() {
+    return g_app.applyInFlight;
+}
 // True when the GPU live state is actually available, so the snapshot's OC/fan
 // reflect real applied hardware state rather than a pending desired profile while
 // the driver is disabled/removed or the service is down.  Shared by the tray icon
@@ -62,6 +71,13 @@ static bool tray_hardware_live() {
 static void build_tray_tooltip(char* tip, size_t tipSize) {
     if (!tip || tipSize == 0) return;
     ensure_tray_profile_cache();
+    if (tray_apply_in_flight()) {
+        // Same precedence as the icon theme: while the write is in flight the
+        // previous profile is no longer what is being asked for and the new one
+        // is not in effect yet, so name neither.
+        gui_apply_in_flight_tray_tooltip(tip, tipSize);
+        return;
+    }
     if (!tray_hardware_live()) {
         // GPU live state unavailable: nothing is actually applied, so do not report
         // OC/fan/profile as active (matches the default tray icon theme).

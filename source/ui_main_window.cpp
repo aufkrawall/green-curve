@@ -558,6 +558,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
                 return 0;
             }
+            if (wParam == APPLY_IN_FLIGHT_TIMER_ID) {
+                gui_apply_in_flight_on_timer();
+                return 0;
+            }
             if (wParam == AUTO_PROFILE_DEBOUNCE_TIMER_ID) {
                 auto_profile_on_debounce_timer(hwnd);
                 return 0;

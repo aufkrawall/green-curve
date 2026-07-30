@@ -172,7 +172,8 @@ static void draw_graph(HDC hdc, RECT* rc) {
     const int MAX_FREQ_MHz = 3400;
 
     // DPI-scaled margins
-    int ml = dp(70), mr = dp(30), mt = dp(35), mb = dp(55);
+    int ml = dp(70), mr = dp(30),
+        mt = dp(MAIN_LAYOUT_GRAPH_TOP_MARGIN_LOGICAL), mb = dp(55);
     int pw = w - ml - mr;
     int ph = h - mt - mb;
 

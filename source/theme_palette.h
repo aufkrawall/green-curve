@@ -38,6 +38,15 @@
 // locked-tail MHz edits are disabled and must still read as disabled.
 #define COL_PENDING         RGB(0xFF, 0xA8, 0x3D)
 #define COL_PENDING_DIM     RGB(0xB0, 0x74, 0x2A)
+// F-INFLIGHT. A hardware write is running. Neither the applied green nor the
+// unapplied-edit orange is true while it does -- that is exactly the state the
+// user cannot know yet -- so the transitional banner gets its own neutral
+// accent rather than borrowing a colour that already means something. Same
+// reasoning that makes the transitional tray theme greyscale.
+#define COL_INFLIGHT_PANEL  RGB(0x27, 0x29, 0x32)
+#define COL_INFLIGHT_BORDER RGB(0x52, 0x56, 0x67)
+#define COL_INFLIGHT_TRACK  RGB(0x1E, 0x20, 0x2C)
+#define COL_INFLIGHT_SWEEP  RGB(0x78, 0x9A, 0xD8)
 // Hover tooltips. Slightly lighter than COL_BG so a tip reads as a floating
 // element rather than a hole in the window, and nothing like the system
 // info-tip yellow a non-themed tooltip would use by default.

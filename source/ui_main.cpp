@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
+// Before gui_mutation_worker.cpp: the queue drives the in-flight banner's
+// animation at both of its transitions, so the banner has to be defined first.
+#include "gui_apply_in_flight.cpp"
 #include "gui_mutation_worker.cpp"
 #include "gui_window_redraw.cpp"
 #include "gui_service_state.cpp"
@@ -168,6 +171,10 @@ static void draw_gui_scene(HDC hdc, RECT* rc) {
         draw_graph(hdc, rc);
     else
         gui_draw_service_overlay(hdc, rc);
+    // Over the graph, and after the phase overlay: a write can still be in
+    // flight while the model briefly leaves READY, and "the write is running"
+    // is the more urgent of the two things to say.
+    gui_draw_apply_in_flight_banner(hdc, rc);
 
     HPEN separator = CreatePen(PS_SOLID, 1, COL_GRID);
     if (!separator) return;
