@@ -384,6 +384,256 @@ def check_tray_active_profile(ctx, require_text, forbid_text):
                 "the tray tooltip never reports the editing selection as active")
 
 
+def check_auto_profile_enable_is_a_transition(ctx, require_text, forbid_text):
+    """F-AUTO-PROFILE: flipping the master enable is a transition, not a value.
+
+    Enabling auto-switching has to CLEAR whatever manual pin the controller is
+    holding, or `ap_controller_is_driving()` stays false and no rule ever
+    switches anything.  That reset lives in `ap_set_enabled()`, and originally
+    only the tray toggle called it: the configuration dialog persisted
+    `enabled=1` and reached the controller through `auto_profile_reload_config`,
+    which merely synced values.  A profile picked from the tray beforehand
+    therefore survived as a pin and killed auto for the whole session — with no
+    visible symptom beyond "it just does not switch".
+
+    Both surfaces now route through `ap_apply_config_change()`, which owns the
+    comparison and delegates the transition, so a third caller cannot
+    reintroduce the split.  Syncing values without it inside an enable-flipping
+    surface is what regressed, so it is forbidden there by name.
+    """
+    win32_cpp = _p(ctx, "auto_profile_win32.cpp")
+    controller_cpp = _p(ctx, "auto_profile_controller.cpp")
+    enable_surfaces = ("void auto_profile_reload_config(",
+                       "void auto_profile_toggle_enabled(")
+
+    require_text(controller_cpp, "AutoProfileAction ap_apply_config_change(",
+                 "the config-change transition is one pure decision")
+    _require_in_operation(ctx, controller_cpp,
+                          "AutoProfileAction ap_apply_config_change(",
+                          "ap_set_enabled(c, cfg->enabled)",
+                          "a changed master enable delegates to the transition")
+    for surface in enable_surfaces:
+        _require_in_operation(ctx, win32_cpp, surface,
+                              "ap_apply_config_change(&g_apCtrl, &g_apConfig)",
+                              "every surface that flips the master enable "
+                              "performs the enable transition")
+        _forbid_in_operation(ctx, win32_cpp, surface, "ap_controller_sync_config(",
+                             "an enable-flipping surface must not sync config "
+                             "values without the transition")
+
+    # A pick while auto is off must not record a pin that outlives it.
+    _require_in_operation(ctx, controller_cpp,
+                          "AutoProfileAction ap_on_hotkey(",
+                          "if (!c->autoEnabled)",
+                          "a profile pick while auto is disabled records no "
+                          "manual pin")
+
+
+def check_applied_profile_indicator_is_drift_free(ctx, require_text, forbid_text):
+    """The applied-profile tick is decided without live hardware readback.
+
+    Twice now the indicator has been broken by live VF state leaking into it.
+    The direct comparison against readback was removed years ago; it then came
+    back indirectly, because load_profile_from_config() projects a stored
+    profile onto the LIVE curve before returning it (visibility strip, plus a
+    lockTracksAnchor re-derived from curve_base_khz_for_point(), which is
+    readback minus live offsets).  The verdict therefore flipped with ordinary
+    boost drift, and the sync's cache key covered none of it -- so the flip was
+    applied later, by whatever next invalidated the cache.  A plain profile Load
+    does that (it writes selected_slot), which is why "load a profile and the
+    tray tick disappears" was the reported symptom.
+
+    So: the ownership read is explicit, and the decision itself is a pure
+    function with its own unit coverage.
+    """
+    policy_h = _p(ctx, "applied_profile_indicator_policy.h")
+    profiles_ui = _p(ctx, "config_profiles_ui.cpp")
+    profiles_cpp = _p(ctx, "config_profiles.cpp")
+    repair_cpp = _p(ctx, "config_profile_repair.cpp")
+    sync_cache = _p(ctx, "config_profile_sync_cache.cpp")
+
+    require_text(policy_h, "PROFILE_READ_FOR_OWNERSHIP",
+                 "the drift-free read mode is named where the invariant is "
+                 "documented")
+    require_text(policy_h, "applied_profile_indicator_slot",
+                 "the indicator is a pure decision with unit coverage")
+
+    # The one call that matters: the ownership comparison must ask for the
+    # drift-free read.  Anchored to the sync function so an editor-mode read
+    # somewhere else in the same file cannot satisfy it.
+    ctx.require_text_in_operation(
+        profiles_ui,
+        "static void sync_applied_profile_from_service_metadata()",
+        "PROFILE_READ_FOR_OWNERSHIP",
+        "the applied-profile comparison reads the stored profile drift-free")
+    ctx.require_text_in_operation(
+        profiles_ui,
+        "static void sync_applied_profile_from_service_metadata()",
+        "applied_profile_indicator_slot(decision, &reason)",
+        "the applied-profile verdict comes from the pure policy")
+
+    # Both live-readback projections inside the loader must be gated, not
+    # merely commented.  These are the exact two that flipped the verdict.
+    require_text(profiles_cpp,
+                 "const bool projectOntoLiveCurve = mode == PROFILE_READ_FOR_EDITOR;",
+                 "the loader derives one gate for every live-curve projection")
+    require_text(profiles_cpp,
+                 "} else if (projectOntoLiveCurve && desired->hasLock &&",
+                 "the lock-anchor re-derivation is skipped for an ownership read")
+    require_text(profiles_cpp,
+                 "bool haveLiveCurveVisibility = projectOntoLiveCurve &&",
+                 "the live visibility strip is skipped for an ownership read")
+    require_text(repair_cpp,
+                 "if (mode == PROFILE_READ_FOR_OWNERSHIP) return true;",
+                 "the profile repair does not consult the live curve for an "
+                 "ownership read")
+
+    # A cache that omits an input the decision reads is how the last one hid.
+    require_text(sync_cache, "populatedMask",
+                 "the sync cache key covers the VF topology the ownership read "
+                 "still depends on")
+
+
+def check_service_profile_identity_survives_a_delta_apply(ctx, require_text,
+                                                          forbid_text):
+    """A profile applied from the main window keeps its slot identity.
+
+    The service only ever proved a claimed slot against the request PAYLOAD.
+    A GUI Apply is deliberately a delta -- capture_gui_apply_settings() drops
+    domains the editor is not changing, most often the fan, because re-writing
+    an unchanged fan policy would disturb a running curve mid-game -- so it
+    could never equal a complete stored record.  Every Apply from the main
+    window was therefore recorded as SERVICE_PROFILE_SOURCE_AD_HOC, the GUI's
+    indicator saw "not a personal slot", applied_slot was cleared, and the tray
+    menu showed no tick until the profile was re-picked from the tray, the one
+    path that had ever sent a whole record.
+
+    The fix asks the honest question after the write instead: is the profile
+    what is now in force.  Both halves are pinned here -- the post-write
+    re-check must exist, and the record it compares against must still be read
+    drift-free, or this becomes the third incarnation of the boost-drift bug.
+    """
+    policy_h = _p(ctx, "service_profile_identity_policy.h")
+    request_policy = _p(ctx, "main_service_request_policy.cpp")
+    pipe_cpp = _p(ctx, "main_service_pipe.cpp")
+
+    require_text(policy_h, "service_profile_identity_outcome",
+                 "the recorded identity is a pure decision with unit coverage")
+    require_text(policy_h, "SERVICE_PROFILE_IDENTITY_FROM_ACTIVE_INTENT",
+                 "a delta Apply can prove its slot from the resulting intent")
+
+    # The comparison itself, and the read that feeds it.
+    ctx.require_text_in_operation(
+        request_policy,
+        "static bool service_profile_record_describes_intent(",
+        "PROFILE_READ_FOR_OWNERSHIP",
+        "the service compares stored records drift-free, like the GUI does")
+    ctx.require_text_in_operation(
+        request_policy,
+        "static void service_confirm_profile_metadata_from_active_intent(",
+        "g_serviceActiveDesired",
+        "the post-write re-check asks the intent that is actually in force")
+
+    # The success path must go through the recorder; writing the pre-write
+    # verdict straight into the published identity is exactly the defect.
+    require_text(pipe_cpp, "service_record_apply_profile_identity(&request,",
+                 "a successful APPLY records its identity through the "
+                 "two-stage recorder")
+    forbid_text(pipe_cpp, "g_serviceActiveProfileSource = profileSource;",
+                "the pipe handler no longer publishes the pre-write verdict "
+                "directly")
+
+    # Only a whole-record payload may replace ownership.  Treating a delta as a
+    # complete declaration would return every domain it omits to defaults --
+    # which is how an Apply that never mentioned the fan would reset a running
+    # fan curve.
+    require_text(pipe_cpp, "service_profile_identity_replaces_active_intent(",
+                 "intent replacement follows the pure policy, not the "
+                 "recorded source")
+
+
+def check_apply_in_flight_presentation(ctx, require_text, forbid_text):
+    """An apply that is still running says so, on every surface.
+
+    An apply deliberately takes seconds: reset to a stock OC baseline, let the
+    curve settle so expected NVIDIA boost drift cannot be mistaken for a failed
+    write, then write the new intent.  Without a transitional presentation the
+    tray kept showing the OLD profile's theme and tooltip for that whole
+    window, which reads as "nothing happened".
+
+    All three surfaces derive from one policy header, and the state itself is
+    driven from the mutation queue -- the single point every apply path passes
+    through -- so no path can leave one of them stale.
+    """
+    policy_h = _p(ctx, "gui_apply_in_flight_policy.h")
+    fan_runtime = _p(ctx, "main_fan_runtime.cpp")
+    tray_presentation = _p(ctx, "tray_presentation.cpp")
+    gui_state = _p(ctx, "config_profiles_gui_state.cpp")
+    mutation_worker = _p(ctx, "gui_mutation_worker.cpp")
+
+    require_text(policy_h, "GUI_APPLY_IN_FLIGHT_PHRASE",
+                 "one phrase feeds every surface, so they cannot disagree")
+    require_text(policy_h, "TRAY_ICON_STATE_PENDING",
+                 "the transitional theme has its own icon slot")
+
+    ctx.require_text_in_operation(
+        fan_runtime, "static void update_tray_icon()",
+        "gui_apply_in_flight_tray_icon_state(",
+        "the tray theme comes from the pure policy, in-flight state included")
+    ctx.require_text_in_operation(
+        tray_presentation, "static void build_tray_tooltip(",
+        "gui_apply_in_flight_tray_tooltip(",
+        "the tray tooltip reports a write in flight")
+    require_text(gui_state, "gui_apply_in_flight_status_text(",
+                 "the main window reports a write in flight too")
+
+    # The status line alone was reported as invisible: it sits at the bottom
+    # edge of the window, and the tray tooltip only exists while the cursor
+    # hovers the icon. The banner over the graph is the surface that gets
+    # noticed, so it is pinned separately from the text surfaces above.
+    banner_cpp = _p(ctx, "gui_apply_in_flight.cpp")
+    scene_cpp = _p(ctx, "ui_main.cpp")
+    window_cpp = _p(ctx, "ui_main_window.cpp")
+    require_text(policy_h, "gui_apply_in_flight_sweep",
+                 "the sweep geometry is pure and unit-tested")
+    # The banner shipped once pinned to the top of the CLIENT area, straight
+    # over the GPU selector row: child controls paint over their parent, so the
+    # selector appeared to bleed through it. The band is pure and asserted, the
+    # header strip is one shared constant, and the banner is painted under the
+    # graph's own scroll transform so no control can land on it at any scroll
+    # position.
+    require_text(policy_h, "gui_apply_in_flight_banner_band",
+                 "the banner's vertical band is pure and unit-tested")
+    require_text(banner_cpp, "MAIN_LAYOUT_GRAPH_TOP_MARGIN_LOGICAL",
+                 "the banner starts below the strip the GPU selector row owns")
+    require_text(_p(ctx, "ui_main_graph.cpp"),
+                 "mt = dp(MAIN_LAYOUT_GRAPH_TOP_MARGIN_LOGICAL)",
+                 "the graph's top margin is that same shared strip")
+    require_text(banner_cpp, "SetViewportOrgEx(hdc, -main_layout_scroll_x()",
+                 "the banner is painted in the graph's scrolled content space")
+    ctx.require_text_in_operation(
+        scene_cpp, "static void draw_gui_scene(",
+        "gui_draw_apply_in_flight_banner(",
+        "the main window paints the in-flight banner")
+    require_text(banner_cpp, "if (!hdc || !g_app.applyInFlight) return;",
+                 "the banner is drawn only while a write is actually running")
+    require_text(window_cpp, "APPLY_IN_FLIGHT_TIMER_ID",
+                 "the animation timer is dispatched")
+    # Presentation only: the timer must never be the thing that decides state.
+    forbid_text(banner_cpp, "Sleep(",
+                "the banner animates from a timer, never by blocking the pump")
+    require_text(banner_cpp, "if (!g_app.applyInFlight) {",
+                 "a timer that outlived the state it animates stops itself")
+
+    # Both transitions are driven from the queue, not from the apply paths.
+    require_text(mutation_worker,
+                 "gui_apply_in_flight_presentation_changed(true,",
+                 "queueing a mutation enters the transitional presentation")
+    require_text(mutation_worker,
+                 "gui_apply_in_flight_presentation_changed(false,",
+                 "draining the queue leaves it again")
+
+
 def check_lock_checkbox_render(ctx, require_text, forbid_text):
     """The VF lock checkbox shares the themed anti-aliased checkmark renderer.
 
@@ -583,4 +833,9 @@ def check_all(ctx, require_text, forbid_text):
     check_pending_changes(ctx, require_text, forbid_text)
     check_lock_checkbox_render(ctx, require_text, forbid_text)
     check_tray_active_profile(ctx, require_text, forbid_text)
+    check_applied_profile_indicator_is_drift_free(ctx, require_text, forbid_text)
+    check_auto_profile_enable_is_a_transition(ctx, require_text, forbid_text)
+    check_service_profile_identity_survives_a_delta_apply(
+        ctx, require_text, forbid_text)
+    check_apply_in_flight_presentation(ctx, require_text, forbid_text)
     check_service_actionability(ctx, require_text, forbid_text)

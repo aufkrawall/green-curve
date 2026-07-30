@@ -49,6 +49,71 @@ def check_tui_layout(ctx, require_text, forbid_text, require_order):
                   "TUI live export always closes its output after flushing")
 
 
+def check_tui_graph_axes(ctx, require_text, forbid_text):
+    """The VF graph is a scale, not a picture: both axes carry labels.
+
+    The panel used to end with one centred "450-1240 mV - 180-3187 MHz"
+    summary, so the two endpoints were the only numbers on it and nothing
+    between them could be read off the trace.  The clock scale is reserved out
+    of the plot's own width, so a narrow terminal drops the labels rather than
+    the graph, and the voltage ticks share the inverse of the mapping
+    tui_nearest_graph_point() uses so a tick cannot name a different point than
+    a click on that column selects.
+    """
+    vf_cpp = _p(ctx, "linux_tui_layout_vf.cpp")
+    require_text(vf_cpp, "void draw_vf_graph_y_axis(",
+                 "the VF graph labels its clock axis")
+    require_text(vf_cpp, "void draw_vf_graph_x_axis(",
+                 "the VF graph labels its voltage axis")
+    require_text(vf_cpp, "TUI_GRAPH_MIN_PLOT_WIDTH",
+                 "the axis margin is only reserved while the plot keeps its "
+                 "minimum width")
+    require_text(vf_cpp, "graph_column_voltage",
+                 "voltage ticks invert the same mapping the trace and hit "
+                 "testing use")
+    forbid_text(vf_cpp, '"%u–%u mV  •  %d–%d MHz"',
+                "the endpoints-only range summary was replaced by real axes")
+
+
+def check_tui_field_selection(ctx, require_text, forbid_text):
+    """Entering a numeric field pre-selects it; a second click drops that.
+
+    tui_begin_edit() seeds the buffer with the current value, and the character
+    handler used to APPEND unconditionally -- so clicking a field showing 100
+    and typing 50 left 10050 and the value had to be cleared by hand first.
+    The rule is pure and unit-tested; these gates pin that the TUI actually
+    routes through it rather than growing a second copy of the append logic.
+    """
+    policy_h = _p(ctx, "linux_tui_edit_policy.h")
+    actions_cpp = _p(ctx, "linux_tui_actions.cpp")
+    render_cpp = _p(ctx, "linux_tui_render.cpp")
+    layout_cpp = _p(ctx, "linux_tui_layout.cpp")
+
+    require_text(policy_h, "tui_edit_insert_character",
+                 "typing into a field is a pure decision")
+    require_text(policy_h, "tui_edit_click_targets_active_field",
+                 "the second-click rule is a pure decision")
+    require_text(actions_cpp, "state->edit.selectAll = true;",
+                 "opening a field pre-selects its contents")
+    require_text(actions_cpp, "tui_edit_insert_character(state->edit.text",
+                 "the character handler routes through the shared rule")
+    forbid_text(actions_cpp, "state->edit.text[length] = character;",
+                "the append logic is not duplicated next to the shared rule")
+    require_text(render_cpp, "tui_edit_backspace(state->edit.text",
+                 "backspace routes through the shared rule so a selection is "
+                 "cleared as one edit")
+    require_text(render_cpp, "state->edit.selectAll = false;",
+                 "a click into the open field drops the pre-selection")
+    # Committing and reopening would push the value through the field's
+    # clamping and discard a partially typed number, so the second click must
+    # not take the ordinary commit path.
+    require_text(render_cpp, "tui_edit_click_targets_active_field(state->edit.active",
+                 "the second click is recognised before the commit path")
+    require_text(layout_cpp, "TUI_STYLE_FIELD_SELECTED",
+                 "a pre-selected value renders highlighted rather than being "
+                 "discoverable only by typing")
+
+
 def check_tui_exit(ctx, require_text, forbid_text):
     """F-LNX-EXIT: quitting the TUI must hand the terminal back in one step.
 
@@ -373,6 +438,8 @@ def check_setup_script_line_endings(setup_script):
 
 def check_all(ctx, require_text, forbid_text, require_order):
     check_tui_layout(ctx, require_text, forbid_text, require_order)
+    check_tui_graph_axes(ctx, require_text, forbid_text)
+    check_tui_field_selection(ctx, require_text, forbid_text)
     check_tui_exit(ctx, require_text, forbid_text)
     check_scroll_and_reveal(ctx, require_text, forbid_text)
     check_client_diagnostics(ctx, require_text, forbid_text)
