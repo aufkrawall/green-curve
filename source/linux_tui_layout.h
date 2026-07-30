@@ -46,6 +46,10 @@ enum TuiStyle : uint8_t {
     TUI_STYLE_BUTTON_SELECTED,
     TUI_STYLE_FIELD,
     TUI_STYLE_FIELD_ACTIVE,
+    // Pre-selected contents of an open field: the next keystroke replaces them.
+    // Inverted against FIELD_ACTIVE so the state is visible rather than being
+    // something the user only discovers by typing.
+    TUI_STYLE_FIELD_SELECTED,
     TUI_STYLE_ROW_ALT,
     TUI_STYLE_ROW_SELECTED,
     TUI_STYLE_ROW_LOCKED,
@@ -155,6 +159,9 @@ struct TuiViewModel {
     TuiField editField;
     int editIndex;
     const char* editText;
+    // Whole value pre-selected, so it renders highlighted and the next
+    // keystroke replaces it.  See linux_tui_edit_policy.h.
+    bool editSelectAll;
     const char* configPath;
     const char* status;
     const char* selectedGpu;

@@ -87,6 +87,95 @@ void draw_curve_trace(TuiCanvas* c, const TuiRect& plot,
     }
 }
 
+// Widest Y-axis label the plot will reserve room for, plus one separating
+// column.  "3187" is four digits on the RTX 5070; five keeps headroom without
+// eating into a plot that has to survive a 100-column terminal.
+const int TUI_GRAPH_Y_LABEL_WIDTH = 5;
+// Minimum plot width, unchanged from before the axes existed.  The Y labels are
+// only reserved when the plot still clears it afterwards, so a narrow terminal
+// silently loses the labels rather than the graph.
+const int TUI_GRAPH_MIN_PLOT_WIDTH = 12;
+
+// Value shown against plot row `row`.  Row 0 is the top of the range and the
+// last row the bottom, which is how a reader interprets a text-mode chart --
+// the braille cell resolves four sub-rows, but the label is a row-level guide.
+int graph_row_value(int row, int rows, int lowValue, int highValue) {
+    if (rows <= 1) return highValue;
+    long long span = (long long)(highValue - lowValue);
+    return highValue - (int)((span * row) / (rows - 1));
+}
+
+// Inverse of the X mapping the trace and tui_nearest_graph_point() both use, so
+// a tick label names the same voltage a click on that column selects.
+unsigned int graph_column_voltage(int column, int columns, unsigned int minMv,
+                                  unsigned int maxMv) {
+    if (columns <= 1) return minMv;
+    return minMv + (unsigned int)(((long long)column * (maxMv - minMv)) /
+                                  (columns - 1));
+}
+
+// Right-aligned MHz labels down the left margin, on the same rows as the
+// gridlines so the number and the line it names are the same row.
+void draw_vf_graph_y_axis(TuiCanvas* c, const TuiRect& plot, int labelWidth,
+                          int minMHz, int maxMHz) {
+    if (labelWidth <= 1) return;
+    for (int row = 0; row < plot.height; ++row) {
+        // Gridlines every third row, and always the bottom row, so the floor of
+        // the range is stated even when it is not on a gridline.
+        bool gridRow = row % 3 == 0;
+        bool lastRow = row == plot.height - 1;
+        if (!gridRow && !lastRow) continue;
+        char label[16] = {};
+        snprintf(label, sizeof(label), "%d",
+                 graph_row_value(row, plot.height, minMHz, maxMHz));
+        c->text(plot.x - labelWidth, plot.y + row, labelWidth - 1, label,
+                TUI_STYLE_MUTED, true);
+    }
+}
+
+// Voltage ticks under the plot, composed into one row buffer rather than
+// written tick by tick: overlapping c->text() calls would let a wide label
+// silently overwrite its neighbour's digits and read as a wrong number.
+void draw_vf_graph_x_axis(TuiCanvas* c, const TuiRect& plot, int row,
+                          unsigned int minMv, unsigned int maxMv) {
+    if (plot.width < TUI_GRAPH_MIN_PLOT_WIDTH) return;
+    std::string axis((size_t)plot.width, ' ');
+
+    // One tick per ~14 columns: dense enough to read a voltage off the graph,
+    // sparse enough that labels never collide on a 100-column terminal.
+    int tickCount = plot.width / 14;
+    if (tickCount < 2) tickCount = 2;
+    if (tickCount > 8) tickCount = 8;
+    // Right to left, so the highest voltage -- the end of the curve, and the
+    // one number a reader actually looks for -- is placed first and can never
+    // be the tick that gets dropped for want of room.
+    for (int tick = tickCount - 1; tick >= 0; --tick) {
+        int column = (plot.width - 1) * tick / (tickCount - 1);
+        char label[16] = {};
+        // The unit rides on the last tick rather than owning the right edge on
+        // its own: a separate "mV" there collided with the maximum voltage and
+        // silently suppressed it.
+        snprintf(label, sizeof(label), tick == tickCount - 1 ? "%u mV" : "%u",
+                 graph_column_voltage(column, plot.width, minMv, maxMv));
+        size_t length = strlen(label);
+        // Centred on its column, then pulled inside the plot at both ends.
+        int start = column - (int)(length / 2);
+        if (start < 0) start = 0;
+        if (start + (int)length > plot.width) start = plot.width - (int)length;
+        if (start < 0) continue;
+        // One blank column of separation on each side, or the tick is dropped:
+        // a half-printed number is worse than a missing one.
+        bool free_ = true;
+        for (int i = start - 1; i <= start + (int)length && free_; ++i) {
+            if (i < 0 || i >= plot.width) continue;
+            if (axis[(size_t)i] != ' ') free_ = false;
+        }
+        if (!free_) continue;
+        axis.replace((size_t)start, length, label);
+    }
+    c->text(plot.x, row, plot.width, axis.c_str(), TUI_STYLE_MUTED);
+}
+
 void draw_vf_graph(TuiCanvas* c, const TuiRect& panel) {
     const TuiViewModel& vm = c->view();
     TuiLayout* out = c->layout();
@@ -113,9 +202,18 @@ void draw_vf_graph(TuiCanvas* c, const TuiRect& panel) {
         return;
     }
 
+    // Reserve the left margin for the MHz scale, but only while the plot still
+    // clears its own minimum width afterwards: on a narrow terminal the graph
+    // itself matters more than the numbers beside it.
     TuiRect plot{panel.x + 3, panel.y + 2,
                  panel.width - 6, panel.height - 4};
-    if (plot.width < 12 || plot.height < 4) return;
+    int yLabelWidth = 0;
+    if (plot.width - TUI_GRAPH_Y_LABEL_WIDTH >= TUI_GRAPH_MIN_PLOT_WIDTH) {
+        yLabelWidth = TUI_GRAPH_Y_LABEL_WIDTH;
+        plot.x += yLabelWidth;
+        plot.width -= yLabelWidth;
+    }
+    if (plot.width < TUI_GRAPH_MIN_PLOT_WIDTH || plot.height < 4) return;
     out->graphRect = plot;
     c->fill(plot.x, plot.y, plot.width, plot.height, TUI_STYLE_DEFAULT);
     for (int row = 0; row < plot.height; row += 3)
@@ -171,11 +269,17 @@ void draw_vf_graph(TuiCanvas* c, const TuiRect& panel) {
                  vm.selectedPoint, selected.voltageMv, selected.targetMHz);
         c->text(plot.x + 1, plot.y, plot.width - 2, tooltip, TUI_STYLE_CYAN);
     }
-    char axes[96] = {};
-    snprintf(axes, sizeof(axes), "%u–%u mV  •  %d–%d MHz",
-             minMv, maxMv, minMHz, maxMHz);
-    c->text(plot.x, panel.y + panel.height - 2, plot.width,
-            axes, TUI_STYLE_MUTED, true);
+    // Axes replace the single centred "450-1240 mV - 180-3187 MHz" summary the
+    // panel used to end with: the endpoints were the only two numbers on it, so
+    // nothing between them could be read off the trace at all.
+    draw_vf_graph_y_axis(c, plot, yLabelWidth, minMHz, maxMHz);
+    draw_vf_graph_x_axis(c, plot, panel.y + panel.height - 2, minMv, maxMv);
+    // Unit for the Y scale, on the free row between the panel title and the
+    // plot so it cannot cost the graph a row.
+    if (yLabelWidth > 1) {
+        c->text(plot.x - yLabelWidth, panel.y + 1, yLabelWidth - 1, "MHz",
+                TUI_STYLE_MUTED, true);
+    }
     c->register_action(plot, ACTION_VF_SELECT, -1, 0);
 }
 

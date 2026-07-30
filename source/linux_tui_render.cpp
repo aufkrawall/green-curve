@@ -31,6 +31,8 @@ const char* style_escape(TuiStyle style, bool focus) {
         "\x1b[1;38;2;66;211;146;48;2;24;61;52m",
         "\x1b[1;38;2;231;237;247;48;2;8;13;23m",
         "\x1b[1;38;2;98;183;255;48;2;8;25;40m",
+        // FIELD_SELECTED: FIELD_ACTIVE inverted -- dark text on the same cyan.
+        "\x1b[1;38;2;8;25;40;48;2;98;183;255m",
         "\x1b[0;38;2;189;201;220;48;2;14;21;36m",
         "\x1b[1;38;2;231;237;247;48;2;24;51;74m",
         "\x1b[0;38;2;129;144;170;48;2;16;35;31m",
@@ -52,6 +54,10 @@ const char* style_escape(TuiStyle style, bool focus) {
         "\x1b[1;7;38;2;66;211;146;48;2;20;62;86m",
         "\x1b[1;7;38;2;255;255;255;48;2;20;62;86m",
         "\x1b[1;7;38;2;98;183;255;48;2;20;62;86m",
+        // FIELD_SELECTED under focus: a brighter cyan block, no reverse -- the
+        // selection is already an inversion, and reversing it again would make
+        // it indistinguishable from an ordinary focused field.
+        "\x1b[1;38;2;8;25;40;48;2;134;203;255m",
         "\x1b[0;7;38;2;231;237;247;48;2;20;62;86m",
         "\x1b[1;7;38;2;255;255;255;48;2;20;62;86m",
         "\x1b[0;7;38;2;189;201;220;48;2;20;62;86m",
@@ -107,6 +113,7 @@ void populate_view_model(const TuiState& state, TuiViewModel* vm,
     vm->editField = state.edit.field;
     vm->editIndex = state.edit.index;
     vm->editText = state.edit.text;
+    vm->editSelectAll = state.edit.selectAll;
     vm->configPath = state.configPath;
     vm->status = state.status;
     vm->gpuCount = state.service.snapshot.adapterCount;
@@ -428,14 +435,25 @@ bool tui_parse_next_event(std::string* buffer, TuiInputEvent* event) {
     return true;
 }
 
+// Index of the action rectangle under the pointer, or -1.  Shared by the
+// editing and non-editing mouse paths so both consult the exact layout that was
+// rendered, and in the same order.
+static int tui_action_index_at(const TuiState& state, int x, int y) {
+    for (int i = 0; i < (int)state.layout.actions.size(); ++i) {
+        const ClickAction& action = state.layout.actions[i];
+        if (x >= action.x1 && x <= action.x2 &&
+            y >= action.y1 && y <= action.y2) return i;
+    }
+    return -1;
+}
+
 void tui_handle_event(TuiState* state, const TuiInputEvent& event) {
     if (!state || event.type == TUI_INPUT_NONE) return;
     if (state->edit.active) {
         if (event.type == TUI_INPUT_ESCAPE) tui_cancel_edit(state);
         else if (event.type == TUI_INPUT_ENTER) tui_commit_edit(state);
         else if (event.type == TUI_INPUT_BACKSPACE) {
-            size_t length = strlen(state->edit.text);
-            if (length > 0) state->edit.text[length - 1] = 0;
+            tui_edit_backspace(state->edit.text, &state->edit.selectAll);
         } else if (event.type == TUI_INPUT_UP || event.type == TUI_INPUT_DOWN) {
             TuiField field = state->edit.field;
             int index = state->edit.index;
@@ -456,6 +474,23 @@ void tui_handle_event(TuiState* state, const TuiInputEvent& event) {
             tui_handle_character(state, event.character);
         } else if (event.type == TUI_INPUT_MOUSE && event.mousePress &&
                    (event.mouseButton & 64) == 0) {
+            int hit = tui_action_index_at(*state, event.mouseX, event.mouseY);
+            if (hit >= 0) {
+                const ClickAction& action = state->layout.actions[hit];
+                if (action.type == ACTION_FIELD_EDIT &&
+                    tui_edit_click_targets_active_field(state->edit.active,
+                        (int)state->edit.field, state->edit.index,
+                        action.index, action.value)) {
+                    // Clicking again into the field that is already open means
+                    // "let me amend this number", so the pre-selection is
+                    // dropped and the buffer kept.  Deliberately not a
+                    // commit-and-reopen: that would push the value through the
+                    // field's clamping and discard a partially typed number.
+                    state->focusIndex = hit;
+                    state->edit.selectAll = false;
+                    return;
+                }
+            }
             tui_commit_edit(state);
             if (state->edit.active) return;
             tui_handle_event(state, event);
@@ -470,22 +505,19 @@ void tui_handle_event(TuiState* state, const TuiInputEvent& event) {
             return;
         }
         if ((event.mouseButton & 3) != 0) return;
-        for (int i = 0; i < (int)state->layout.actions.size(); ++i) {
-            const ClickAction& action = state->layout.actions[i];
-            if (event.mouseX < action.x1 || event.mouseX > action.x2 ||
-                event.mouseY < action.y1 || event.mouseY > action.y2) continue;
-            state->focusIndex = i;
-            if (action.type == ACTION_VF_SELECT && action.index < 0) {
-                TuiViewModel vm = {};
-                char selectedGpu[192] = {};
-                populate_view_model(*state, &vm, selectedGpu);
-                int point = tui_nearest_graph_point(vm,
-                    state->layout.graphRect, event.mouseX);
-                if (point >= 0) state->selectedPoint = point;
-            } else {
-                tui_apply_action(state, action);
-            }
-            return;
+        int hit = tui_action_index_at(*state, event.mouseX, event.mouseY);
+        if (hit < 0) return;
+        const ClickAction& action = state->layout.actions[hit];
+        state->focusIndex = hit;
+        if (action.type == ACTION_VF_SELECT && action.index < 0) {
+            TuiViewModel vm = {};
+            char selectedGpu[192] = {};
+            populate_view_model(*state, &vm, selectedGpu);
+            int point = tui_nearest_graph_point(vm,
+                state->layout.graphRect, event.mouseX);
+            if (point >= 0) state->selectedPoint = point;
+        } else {
+            tui_apply_action(state, action);
         }
         return;
     }

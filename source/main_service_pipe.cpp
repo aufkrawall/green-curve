@@ -466,11 +466,10 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     ServiceProfileSource profileSource =
                         SERVICE_PROFILE_SOURCE_AD_HOC;
                     unsigned int profileSlot = 0;
-                    service_validate_requested_profile_metadata(&request,
-                        &profileSource, &profileSlot);
                     bool replaceActiveIntent =
-                        profileSource == SERVICE_PROFILE_SOURCE_USER_SLOT ||
-                        profileSource == SERVICE_PROFILE_SOURCE_SHARED_SLOT;
+                        service_profile_identity_replaces_active_intent(
+                            service_validate_requested_profile_metadata(
+                                &request, &profileSource, &profileSlot));
                     DesiredSettings hardwareRequest = request.desired;
                     if (replaceActiveIntent) {
                         service_build_profile_transition_request(
@@ -520,10 +519,8 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                             &g_serviceActiveDesiredGpu,
                             "successful service apply target");
                         service_capture_owner_identity(callerUser, callerSessionId);
-                        EnterCriticalSection(&g_appLock);
-                        g_serviceActiveProfileSource = profileSource;
-                        g_serviceActiveProfileSlot = profileSlot;
-                        LeaveCriticalSection(&g_appLock);
+                        service_record_apply_profile_identity(&request,
+                            profileSource, profileSlot);
                         service_write_restart_reapply_snapshot();
                         // Every successful client Apply starts a fresh awake-
                         // time proving period. Automatic writes never clear history.

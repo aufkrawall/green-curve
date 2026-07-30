@@ -21,6 +21,14 @@ enum {
     MAIN_LAYOUT_GRAPH_MIN_HEIGHT_LOGICAL = 260,
     MAIN_LAYOUT_GRAPH_PREFERRED_HEIGHT_LOGICAL = 420,
     MAIN_LAYOUT_GRAPH_MAX_HEIGHT_LOGICAL = 520,
+    // The strip at the top of the graph area that carries no plot content.  It
+    // is draw_graph()'s top margin AND the row the GPU selector sits in, which
+    // is not a coincidence: the selector is a CHILD window, so it paints OVER
+    // the parent instead of being clipped by it.  Anything the parent draws up
+    // here ends up with the combo sitting inside it -- exactly how the
+    // in-flight banner first shipped, with the GPU selection bleeding through
+    // it.  One constant so the two cannot drift apart.
+    MAIN_LAYOUT_GRAPH_TOP_MARGIN_LOGICAL = 35,
 };
 
 struct MainLayoutPlan {

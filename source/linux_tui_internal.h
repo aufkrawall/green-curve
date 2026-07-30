@@ -7,6 +7,7 @@
 #include "linux_daemon.h"
 #include "linux_port.h"
 #include "linux_tui_authority.h"
+#include "linux_tui_edit_policy.h"
 #include "linux_tui_layout.h"
 #include "linux_tui_diagnostic_policy.h"
 #include "linux_startup_sync.h"
@@ -19,6 +20,10 @@ struct TuiEditState {
     TuiField field;
     int index;
     char text[32];
+    // Whole contents pre-selected, so the next accepted keystroke replaces the
+    // value instead of appending to it.  Set on entry, dropped by a second
+    // click into the same field.  See linux_tui_edit_policy.h.
+    bool selectAll;
 };
 
 struct TuiState {

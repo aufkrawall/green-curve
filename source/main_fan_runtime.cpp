@@ -235,14 +235,10 @@ static void update_tray_icon() {
     bool hardwareLive = tray_hardware_live();
     bool hasCustomOc = hardwareLive && live_state_has_custom_oc();
     bool hasCustomFan = hardwareLive && live_state_has_custom_fan();
-    int state = TRAY_ICON_STATE_DEFAULT;
-    if (hasCustomOc && hasCustomFan) {
-        state = TRAY_ICON_STATE_OC_FAN;
-    } else if (hasCustomOc) {
-        state = TRAY_ICON_STATE_OC;
-    } else if (hasCustomFan) {
-        state = TRAY_ICON_STATE_FAN;
-    }
+    // A write in flight outranks both: until the service reports the result,
+    // neither the old nor the new OC/fan state is truthfully what the GPU has.
+    int state = gui_apply_in_flight_tray_icon_state(tray_apply_in_flight(),
+        hasCustomOc, hasCustomFan);
     g_app.trayIconState = state;
     char tip[128] = {};
     build_tray_tooltip(tip, sizeof(tip));

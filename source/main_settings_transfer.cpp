@@ -28,6 +28,11 @@
 // existing reader/writer without inventing a parallel section name.
 #define SETTINGS_TRANSFER_SLOT 1
 
+// The profile identity travels with the intent.  `[profile1]` is the intent
+// itself, written by the ordinary profile serializer; this is a separate
+// section so it cannot collide with a profile key now or later.
+#define SETTINGS_TRANSFER_IDENTITY_SECTION "transfer"
+
 // Write the settings the service currently holds to `path`.
 //
 // Fails when nothing is applied.  That is a meaningful answer, not an error to
@@ -74,6 +79,20 @@ static bool settings_transfer_export(const char* path, char* result, size_t resu
     if (!save_profile_to_config(path, SETTINGS_TRANSFER_SLOT, &active, err, sizeof(err))) {
         set_message(result, resultSize, "%s", err[0] ? err : "Failed writing the settings snapshot");
         return false;
+    }
+    // Carry the identity, not just the values.  Without it an upgrade silently
+    // demoted a running profile to "manual settings": the restore below applied
+    // the right numbers but claimed no slot, so the tray menu lost its tick and
+    // the tooltip stopped naming the profile until the user applied one by hand.
+    // Best-effort: a snapshot that restores the correct SETTINGS with no slot
+    // name is still far better than failing the upgrade over a label.
+    if (!set_config_int(path, SETTINGS_TRANSFER_IDENTITY_SECTION,
+            "active_profile_source", (int)g_app.serviceActiveProfileSource) ||
+        !set_config_int(path, SETTINGS_TRANSFER_IDENTITY_SECTION,
+            "active_profile_slot", (int)g_app.serviceActiveProfileSlot)) {
+        debug_log("settings transfer: could not record the active profile identity (source=%u slot=%u); the restore will be ad-hoc\n",
+            (unsigned int)g_app.serviceActiveProfileSource,
+            g_app.serviceActiveProfileSlot);
     }
     // Read the snapshot back before reporting success.  The caller (setup) is
     // about to stop this process and every other Green Curve process on the
@@ -209,11 +228,35 @@ static bool settings_transfer_apply(const char* path, char* result, size_t resul
     // service found would compound offsets instead of reproducing the state the
     // user had before the upgrade.
     desired.resetOcBeforeApply = true;
-    // AD_HOC rather than the original slot: the settings are being restored from
-    // a transfer file, and claiming a profile slot here would make the GUI show
-    // a slot as applied when the file may no longer match that slot's contents.
+
+    // Restore the profile identity the export recorded, and let the service
+    // decide whether it is still true.
+    //
+    // This used to be hard-coded to AD_HOC, on the reasoning that the file may
+    // no longer match the slot it came from, so claiming the slot would make the
+    // GUI show a stale profile as applied.  The concern was right; pessimism was
+    // the wrong answer to it, and it cost every upgrade its tray tick. The
+    // service now VERIFIES a claimed slot against its own copy of that slot's
+    // record (service_profile_identity_policy.h) -- so an edited slot lands on
+    // AD_HOC by measurement instead of by assumption, and an untouched one keeps
+    // the name it had before the upgrade.
+    //
+    // A file from an older build carries no identity section; it reads back as
+    // SERVICE_PROFILE_SOURCE_NONE/0, which claims nothing, exactly as before.
+    ServiceProfileSource claimedSource = (ServiceProfileSource)get_config_int(
+        path, SETTINGS_TRANSFER_IDENTITY_SECTION, "active_profile_source",
+        SERVICE_PROFILE_SOURCE_NONE);
+    int claimedSlot = get_config_int(path, SETTINGS_TRANSFER_IDENTITY_SECTION,
+        "active_profile_slot", 0);
+    if (!service_profile_metadata_claims_slot((unsigned int)claimedSource,
+            claimedSlot, CONFIG_NUM_SLOTS)) {
+        claimedSource = SERVICE_PROFILE_SOURCE_AD_HOC;
+        claimedSlot = 0;
+    }
+    debug_log("settings transfer: restoring with profile identity source=%u slot=%d (the service re-verifies it against the stored record)\n",
+        (unsigned int)claimedSource, claimedSlot);
     return apply_desired_settings(&desired, false,
-        SERVICE_APPLY_ORIGIN_CLI, SERVICE_PROFILE_SOURCE_AD_HOC, 0,
+        SERVICE_APPLY_ORIGIN_CLI, claimedSource, claimedSlot,
         result, resultSize);
 }
 

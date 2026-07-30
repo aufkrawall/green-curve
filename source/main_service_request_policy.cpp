@@ -436,43 +436,163 @@ static bool service_request_apply_origin_valid(const ServiceRequest* request) {
     return service_apply_origin_is_client_apply(origin);
 }
 
-static void service_validate_requested_profile_metadata(
+// A client may only be credited with running profile N when profile N's stored
+// record really describes the intent under discussion.  `candidateIntent` is the
+// raw APPLY payload before the write, and the intent the service actually ended
+// up holding after it; both are answered by the same predicate so the two
+// checks cannot drift apart.
+//
+// The record is read with PROFILE_READ_FOR_OWNERSHIP.  The editor projection
+// re-derives lockTracksAnchor and drops points from the LIVE VF curve, so the
+// same file decodes differently as the GPU boosts -- exactly the defect
+// applied_profile_indicator_policy.h documents on the GUI side.  Both sides of
+// an ownership comparison are records, and records do not drift.
+static bool service_profile_record_describes_intent(
+    ServiceProfileSource source, int slot,
+    const DesiredSettings* candidateIntent,
+    char* detail, size_t detailSize)
+{
+    if (!candidateIntent) {
+        set_message(detail, detailSize, "no intent to compare");
+        return false;
+    }
+    if (!service_profile_metadata_claims_slot((unsigned int)source, slot,
+            CONFIG_NUM_SLOTS)) {
+        set_message(detail, detailSize, "not a named profile slot");
+        return false;
+    }
+    char profilePath[MAX_PATH] = {};
+    if (source == SERVICE_PROFILE_SOURCE_USER_SLOT) {
+        if (!g_app.configPath[0]) {
+            set_message(detail, detailSize, "no per-user config path is resolved");
+            return false;
+        }
+        StringCchCopyA(profilePath, ARRAY_COUNT(profilePath), g_app.configPath);
+    } else if (!resolve_machine_config_path(profilePath,
+                   ARRAY_COUNT(profilePath))) {
+        set_message(detail, detailSize, "machine profile bank is unavailable");
+        return false;
+    }
+    DesiredSettings profile = {};
+    if (!load_profile_from_config(profilePath, slot, &profile,
+            detail, detailSize, PROFILE_READ_FOR_OWNERSHIP)) {
+        return false;
+    }
+    return desired_settings_match_active_service_intent(&profile,
+        candidateIntent, detail, detailSize);
+}
+
+// Pre-write check.  A complete profile record arrives verbatim from the tray,
+// hotkey, and app-start paths, which load the slot and send it whole; proving
+// the claim here is what lets the caller replace active ownership outright.
+// Returns the outcome so the caller does not have to re-derive that permission
+// from the source/slot it was handed.
+static ServiceProfileIdentityOutcome
+service_validate_requested_profile_metadata(
     ServiceRequest* request,
     ServiceProfileSource* sourceOut,
     unsigned int* slotOut)
 {
     if (sourceOut) *sourceOut = SERVICE_PROFILE_SOURCE_AD_HOC;
     if (slotOut) *slotOut = 0;
-    if (!request) return;
+    if (!request) return SERVICE_PROFILE_IDENTITY_AD_HOC;
 
     ServiceProfileSource source = (ServiceProfileSource)request->profileSource;
     int slot = (int)request->profileSlot;
-    if (slot < 1 || slot > CONFIG_NUM_SLOTS ||
-        (source != SERVICE_PROFILE_SOURCE_USER_SLOT &&
-         source != SERVICE_PROFILE_SOURCE_SHARED_SLOT)) {
-        return;
+    if (!service_profile_metadata_claims_slot((unsigned int)source, slot,
+            CONFIG_NUM_SLOTS)) {
+        return SERVICE_PROFILE_IDENTITY_AD_HOC;
     }
 
-    char profilePath[MAX_PATH] = {};
-    if (source == SERVICE_PROFILE_SOURCE_USER_SLOT) {
-        if (!g_app.configPath[0]) return;
-        StringCchCopyA(profilePath, ARRAY_COUNT(profilePath), g_app.configPath);
-    } else if (!resolve_machine_config_path(profilePath, ARRAY_COUNT(profilePath))) {
-        return;
-    }
-    DesiredSettings profile = {};
     char detail[256] = {};
-    if (!load_profile_from_config(profilePath, slot, &profile,
-            detail, sizeof(detail)) ||
-        !desired_settings_match_active_service_intent(
-            &profile, &request->desired, detail, sizeof(detail))) {
-        debug_log("service APPLY: ignoring unverified profile metadata source=%u slot=%d: %s\n",
+    bool payloadMatches = service_profile_record_describes_intent(source, slot,
+        &request->desired, detail, sizeof(detail));
+    ServiceProfileIdentityOutcome outcome = service_profile_identity_outcome(
+        (unsigned int)source, slot, CONFIG_NUM_SLOTS, payloadMatches, false);
+    if (outcome != SERVICE_PROFILE_IDENTITY_FROM_REQUEST) {
+        // NOT the end of the story: a GUI Apply is deliberately a delta and is
+        // re-checked against the resulting intent once the write succeeds.
+        debug_log("service APPLY: request payload does not itself prove profile metadata source=%u slot=%d: %s (the resulting intent is re-checked after the write)\n",
             (unsigned int)source, slot,
             detail[0] ? detail : "profile does not match request");
-        return;
+        return outcome;
     }
+    debug_log("service APPLY: profile metadata proven by %s source=%u slot=%d (%s)\n",
+        service_profile_identity_outcome_name(outcome),
+        (unsigned int)source, slot, detail[0] ? detail : "match");
     if (sourceOut) *sourceOut = source;
     if (slotOut) *slotOut = (unsigned int)slot;
+    return outcome;
+}
+
+// Post-write check.  The GUI's Apply omits every domain the editor is not
+// changing -- most often the fan, because re-writing an unchanged fan policy
+// would disturb a running curve mid-game (capture_gui_apply_settings()).  Such
+// a payload can never equal a complete profile record field-for-field, so the
+// pre-write check above refuses it and the slot the user had just applied was
+// recorded as ad-hoc: the tray menu lost its checkmark and the tooltip said
+// "Manual settings" until the same profile was re-picked from the tray.
+//
+// The honest question is not "is the payload the profile" but "is the profile
+// what is now in force".  After a successful write the service holds exactly
+// that -- the delta merged over the intent it already owned -- so ask it there.
+// This is the same predicate the GUI's applied-profile indicator evaluates, so
+// the recorded identity and the displayed tick can no longer disagree.
+//
+// Called with the service runtime lock held, which is what serializes
+// g_serviceActiveDesired against every other writer.
+static void service_confirm_profile_metadata_from_active_intent(
+    const ServiceRequest* request,
+    ServiceProfileSource* sourceInOut,
+    unsigned int* slotInOut)
+{
+    if (!request || !sourceInOut || !slotInOut) return;
+    // Already proven by the payload itself; nothing to upgrade.
+    if (*sourceInOut != SERVICE_PROFILE_SOURCE_AD_HOC) return;
+
+    ServiceProfileSource claimed = (ServiceProfileSource)request->profileSource;
+    int slot = (int)request->profileSlot;
+    if (!service_profile_metadata_claims_slot((unsigned int)claimed, slot,
+            CONFIG_NUM_SLOTS)) {
+        return;
+    }
+    if (!g_serviceHasActiveDesired) {
+        debug_log("service APPLY: cannot confirm claimed profile source=%u slot=%d without an active intent; ownership stays ad-hoc\n",
+            (unsigned int)claimed, slot);
+        return;
+    }
+    DesiredSettings activeIntent = g_serviceActiveDesired;
+    char detail[256] = {};
+    bool activeIntentMatches = service_profile_record_describes_intent(claimed,
+        slot, &activeIntent, detail, sizeof(detail));
+    ServiceProfileIdentityOutcome outcome = service_profile_identity_outcome(
+        (unsigned int)claimed, slot, CONFIG_NUM_SLOTS, false,
+        activeIntentMatches);
+    if (outcome != SERVICE_PROFILE_IDENTITY_FROM_ACTIVE_INTENT) {
+        debug_log("service APPLY: resulting intent does not match claimed profile source=%u slot=%d: %s; ownership stays ad-hoc\n",
+            (unsigned int)claimed, slot,
+            detail[0] ? detail : "profile does not match resulting intent");
+        return;
+    }
+    *sourceInOut = claimed;
+    *slotInOut = (unsigned int)slot;
+    debug_log("service APPLY: profile metadata proven by %s source=%u slot=%d (%s)\n",
+        service_profile_identity_outcome_name(outcome),
+        (unsigned int)claimed, slot, detail[0] ? detail : "match");
+}
+
+// Publish the profile identity of a successful APPLY.  The pre-write proof is
+// whatever the request handler already established; the post-write one is
+// resolved here, so the pipe handler never has to know there are two.  Called
+// with the service runtime lock held.
+static void service_record_apply_profile_identity(const ServiceRequest* request,
+    ServiceProfileSource source, unsigned int slot)
+{
+    service_confirm_profile_metadata_from_active_intent(request, &source, &slot);
+    EnterCriticalSection(&g_appLock);
+    g_serviceActiveProfileSource = source;
+    g_serviceActiveProfileSlot = slot;
+    LeaveCriticalSection(&g_appLock);
 }
 
 // The runtime lock serializes this with lifecycle writes and helper

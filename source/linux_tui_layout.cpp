@@ -503,8 +503,15 @@ int TuiCanvas::field(const TuiRect& rect, const char* value, TuiField fieldValue
     int display = tui_display_columns(shown ? shown : "");
     int start = rect.x + 1 + ((rect.width - 2 - display) > 0
         ? (rect.width - 2 - display) / 2 : 0);
-    text(start, rect.y, rect.width - 2, shown ? shown : "",
-         active ? TUI_STYLE_CYAN : TUI_STYLE_TEXT);
+    // A pre-selected value is drawn highlighted, so "the next digit replaces
+    // this" is something the user can see rather than something they find out
+    // by typing.
+    TuiStyle valueStyle = TUI_STYLE_TEXT;
+    if (active) {
+        valueStyle = vm_.editSelectAll ? TUI_STYLE_FIELD_SELECTED
+                                       : TUI_STYLE_CYAN;
+    }
+    text(start, rect.y, rect.width - 2, shown ? shown : "", valueStyle);
     register_action(rect, ACTION_FIELD_EDIT, (int)fieldValue, index);
     return actionIndex;
 }

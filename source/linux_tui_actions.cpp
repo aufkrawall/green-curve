@@ -524,8 +524,12 @@ void tui_begin_edit(TuiState* state, TuiField field, int index) {
     state->edit.index = index;
     snprintf(state->edit.text, sizeof(state->edit.text), "%d",
              current_field_value(*state, field, index));
+    // Opening a field selects its contents, so the first digit typed replaces
+    // the value rather than being appended to it.  A second click into the same
+    // field drops the selection; see linux_tui_edit_policy.h.
+    state->edit.selectAll = true;
     snprintf(state->status, sizeof(state->status),
-             "Editing numeric value • Enter commits • Esc cancels");
+             "Editing numeric value • typing replaces • click again to append • Enter commits • Esc cancels");
 }
 
 void tui_commit_edit(TuiState* state) {
@@ -551,14 +555,8 @@ void tui_cancel_edit(TuiState* state) {
 void tui_handle_character(TuiState* state, char character) {
     if (!state) return;
     if (state->edit.active) {
-        size_t length = strlen(state->edit.text);
-        if ((character >= '0' && character <= '9') ||
-            ((character == '-' || character == '+') && length == 0)) {
-            if (length + 1 < sizeof(state->edit.text)) {
-                state->edit.text[length] = character;
-                state->edit.text[length + 1] = 0;
-            }
-        }
+        tui_edit_insert_character(state->edit.text, sizeof(state->edit.text),
+                                  &state->edit.selectAll, character);
         return;
     }
     switch (character) {
