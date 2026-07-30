@@ -15,6 +15,17 @@ struct AppliedProfileSyncCache {
     DWORD configSizeLow;
     FILETIME configLastWrite;
     DesiredSettings activeDesired;
+    // Which VF points are populated, as a bitmask.
+    //
+    // The ownership read is drift-free (PROFILE_READ_FOR_OWNERSHIP), but it is
+    // still TOPOLOGY-scoped: a `curve_semantics=base_plus_gpu_offset` profile is
+    // turned back into absolute MHz through is_gpu_offset_excluded_low_point(),
+    // which counts populated points.  Populated-ness does not move with
+    // temperature the way frequency does, but it does move when the GPU or its
+    // VF table changes -- and a cache key that omits an input the decision reads
+    // is exactly how the previous defect stayed invisible until an unrelated
+    // event flushed it out.  So it is part of the key.
+    gc_u64 populatedMask[VF_NUM_POINTS / 64];
 };
 static AppliedProfileSyncCache g_appliedProfileSyncCache = {};
 
@@ -42,10 +53,16 @@ static bool applied_profile_sync_inputs_unchanged(
         cached.configSizeHigh == current.configSizeHigh &&
         cached.configSizeLow == current.configSizeLow &&
         CompareFileTime(&cached.configLastWrite, &current.configLastWrite) == 0 &&
+        memcmp(cached.populatedMask, current.populatedMask,
+            sizeof(current.populatedMask)) == 0 &&
         (!current.activeDesiredValid ||
          memcmp(&cached.activeDesired, &current.activeDesired,
              sizeof(current.activeDesired)) == 0);
 }
+
+// VF_NUM_POINTS must stay a whole number of 64-bit words for the mask above.
+static_assert(VF_NUM_POINTS % 64 == 0,
+    "the populated-point mask assumes VF_NUM_POINTS is a multiple of 64");
 
 static AppliedProfileSyncCache current_applied_profile_sync_inputs() {
     AppliedProfileSyncCache current = {};
@@ -61,6 +78,14 @@ static AppliedProfileSyncCache current_applied_profile_sync_inputs() {
         &current.configLastWrite);
     if (current.activeDesiredValid) {
         current.activeDesired = g_app.serviceActiveDesired;
+    }
+    // g_app.loaded gates whether the curve array holds anything at all; an
+    // all-zero mask is the honest answer while the GPU is reconnecting.
+    if (g_app.loaded) {
+        for (int i = 0; i < VF_NUM_POINTS; ++i) {
+            if (g_app.curve[i].freq_kHz == 0) continue;
+            current.populatedMask[i / 64] |= (gc_u64)1 << (i % 64);
+        }
     }
     return current;
 }

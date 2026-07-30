@@ -551,6 +551,16 @@ static bool select_logon_combo_item_by_data(HWND combo, LRESULT itemData) {
 // absolute VF MHz against temperature/boost-sensitive live telemetry.  Shared
 // and machine-bank slots intentionally do not masquerade as the same-numbered
 // personal slot in the tray's personal-profile checkmarks.
+//
+// The stored profile is read with PROFILE_READ_FOR_OWNERSHIP, which is the
+// whole point of that mode: the ordinary editor read projects the record onto
+// the LIVE curve, so the same file decoded differently as the GPU boosted and
+// this comparison flipped on its own.  Because none of that live state is part
+// of the cache key below, the flip was invisible until the next event that did
+// invalidate the cache -- most often an ordinary profile Load, which writes
+// selected_slot -- at which point the stale verdict was written out as
+// applied_slot=0 and the tray tick vanished until the next Apply.  See
+// applied_profile_indicator_policy.h.
 static void sync_applied_profile_from_service_metadata() {
     AppliedProfileSyncCache inputs = current_applied_profile_sync_inputs();
     if (applied_profile_sync_inputs_unchanged(inputs)) return;
@@ -562,32 +572,48 @@ static void sync_applied_profile_from_service_metadata() {
     // where a genuine identity change has just been established.
     invalidate_tray_profile_cache();
 
-    int appliedSlot = 0;
-    ServiceProfileSource source = SERVICE_PROFILE_SOURCE_NONE;
-    unsigned int sourceSlot = 0;
-    if (g_app.serviceSnapshotAuthoritative) {
-        source = g_app.serviceActiveProfileSource;
-        sourceSlot = g_app.serviceActiveProfileSlot;
-        appliedSlot = applied_user_slot_from_service_profile(source, sourceSlot);
-        if (appliedSlot > 0) {
-            DesiredSettings savedProfile = {};
-            char matchDetail[256] = {};
-            char loadErr[256] = {};
-            bool intentStillMatches = g_app.serviceActiveDesiredValid &&
-                load_profile_from_config(g_app.configPath, appliedSlot,
-                    &savedProfile, loadErr, sizeof(loadErr)) &&
+    AppliedProfileIndicatorInputs decision = {};
+    decision.serviceAuthoritative = g_app.serviceSnapshotAuthoritative;
+    decision.activeDesiredValid = g_app.serviceActiveDesiredValid;
+    decision.profileSource = (unsigned int)g_app.serviceActiveProfileSource;
+    decision.profileSlot = g_app.serviceActiveProfileSlot;
+    decision.maxSlots = CONFIG_NUM_SLOTS;
+
+    char matchDetail[256] = {};
+    char loadErr[256] = {};
+    int candidateSlot = applied_user_slot_from_service_profile(
+        g_app.serviceActiveProfileSource, g_app.serviceActiveProfileSlot);
+    if (decision.serviceAuthoritative && decision.activeDesiredValid &&
+        candidateSlot > 0) {
+        DesiredSettings savedProfile = {};
+        decision.profileReadable = load_profile_from_config(g_app.configPath,
+            candidateSlot, &savedProfile, loadErr, sizeof(loadErr),
+            PROFILE_READ_FOR_OWNERSHIP);
+        if (decision.profileReadable) {
+            decision.intentMatchesProfile =
                 desired_settings_match_active_service_intent(
                     &savedProfile, &g_app.serviceActiveDesired,
                     matchDetail, sizeof(matchDetail));
-            if (!intentStillMatches) {
-                debug_log("applied profile metadata sync: service owns user slot %d but its saved intent no longer matches (%s); clearing applied indicator only\n",
-                    appliedSlot,
-                    matchDetail[0] ? matchDetail
-                        : (loadErr[0] ? loadErr : "active intent unavailable"));
-                appliedSlot = 0;
-            }
         }
     }
+
+    AppliedProfileIndicatorReason reason = APPLIED_PROFILE_REASON_NO_AUTHORITY;
+    int appliedSlot = applied_profile_indicator_slot(decision, &reason);
+
+    // Every evaluation is logged, not only the transitions: "why is my tick
+    // gone" has to be answerable from one run's log, and a decision that keeps
+    // the current value is exactly as interesting as one that changes it.
+    // debug_log_on_change() keeps the 1 Hz telemetry tick from burying it.
+    debug_log_on_change("applied profile metadata sync: verdict slot=%d reason=%s "
+        "(authoritative=%d activeIntent=%d source=%u serviceSlot=%u candidate=%d "
+        "readable=%d matches=%d detail=%s)\n",
+        appliedSlot, applied_profile_indicator_reason_name(reason),
+        decision.serviceAuthoritative ? 1 : 0,
+        decision.activeDesiredValid ? 1 : 0,
+        decision.profileSource, decision.profileSlot, candidateSlot,
+        decision.profileReadable ? 1 : 0,
+        decision.intentMatchesProfile ? 1 : 0,
+        matchDetail[0] ? matchDetail : (loadErr[0] ? loadErr : "-"));
 
     int persisted = get_config_int(g_app.configPath, "profiles", "applied_slot", 0);
     if (persisted < 0 || persisted > CONFIG_NUM_SLOTS) persisted = 0;
@@ -596,14 +622,17 @@ static void sync_applied_profile_from_service_metadata() {
         return;
     }
     if (!set_config_int(g_app.configPath, "profiles", "applied_slot", appliedSlot)) {
-        debug_log("applied profile metadata sync: failed to persist applied_slot=%d (source=%u slot=%u authoritative=%d)\n",
-            appliedSlot, (unsigned int)source, sourceSlot,
-            g_app.serviceSnapshotAuthoritative ? 1 : 0);
+        debug_log("applied profile metadata sync: failed to persist applied_slot=%d (reason=%s source=%u slot=%u authoritative=%d)\n",
+            appliedSlot, applied_profile_indicator_reason_name(reason),
+            decision.profileSource, decision.profileSlot,
+            decision.serviceAuthoritative ? 1 : 0);
         return;
     }
-    debug_log("applied profile metadata sync: applied_slot %d -> %d from service source=%u slot=%u authoritative=%d (saved selection unchanged)\n",
-        persisted, appliedSlot, (unsigned int)source, sourceSlot,
-        g_app.serviceSnapshotAuthoritative ? 1 : 0);
+    debug_log("applied profile metadata sync: applied_slot %d -> %d reason=%s source=%u slot=%u authoritative=%d detail=%s (saved selection unchanged)\n",
+        persisted, appliedSlot, applied_profile_indicator_reason_name(reason),
+        decision.profileSource, decision.profileSlot,
+        decision.serviceAuthoritative ? 1 : 0,
+        matchDetail[0] ? matchDetail : (loadErr[0] ? loadErr : "-"));
     update_tray_icon();
     // set_config_int() atomically changed the file metadata. Capture the
     // resulting stamp so the next telemetry snapshot remains a cache hit.

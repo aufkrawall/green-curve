@@ -290,7 +290,12 @@ static void update_background_service_controls() {
     }
     if (g_app.hServiceStatusLabel) {
         char text[512] = {};
-        if (g_app.backgroundServiceToggleInFlight) {
+        if (g_app.applyInFlight) {
+            // Outranks every steady-state description below for the same reason
+            // the tray icon greys out: none of them is true while the write is
+            // still running.  See gui_apply_in_flight_policy.h.
+            gui_apply_in_flight_status_text(text, ARRAY_COUNT(text));
+        } else if (g_app.backgroundServiceToggleInFlight) {
             StringCchPrintfA(text, ARRAY_COUNT(text), "%s background service...",
                 g_app.backgroundServiceToggleTargetEnabled ? "Installing and starting" : "Stopping and removing");
         } else if (!g_app.backgroundServiceInstalled) {

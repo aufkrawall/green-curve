@@ -105,6 +105,18 @@ void ap_on_applied(AutoProfileController* c, int slot, long long nowMs) {
 
 AutoProfileAction ap_on_hotkey(AutoProfileController* c, int slot) {
     if (!c || !ap_slot_valid(slot)) return ap_action_none();
+    if (!c->autoEnabled) {
+        // Auto is off: a pick is simply "apply this profile now".  Pinning here
+        // would be meaningless (nothing is switching to override) and actively
+        // harmful — the pin outlives the pick, and the next enable would find
+        // the controller in MANUAL and never drive.  "Same slot again resumes
+        // auto" is also unreachable while disabled, so the pin could not even
+        // be released the documented way.
+        c->mode = AP_MODE_AUTO;
+        c->pinnedSlot = 0;
+        c->pendingTarget = 0;
+        return ap_action_apply(slot);
+    }
     if (c->mode == AP_MODE_MANUAL && c->pinnedSlot == slot) {
         // Same slot pressed again → release the pin and return to auto.
         c->mode = AP_MODE_AUTO;
@@ -148,4 +160,15 @@ AutoProfileAction ap_set_enabled(AutoProfileController* c, bool enabled) {
         return ap_action_apply(c->defaultSlot);
     }
     return ap_action_none();
+}
+
+AutoProfileAction ap_apply_config_change(AutoProfileController* c, const AutoProfileConfig* cfg) {
+    if (!c || !cfg) return ap_action_none();
+    bool wasEnabled = c->autoEnabled;
+    // Always adopt the edited values (default slot, debounce, cooldown) — the
+    // same edit that flips the enable may also have changed them, and
+    // ap_set_enabled's revert-to-default must use the NEW default slot.
+    ap_controller_sync_config(c, cfg);
+    if (cfg->enabled == wasEnabled) return ap_action_none();
+    return ap_set_enabled(c, cfg->enabled);
 }

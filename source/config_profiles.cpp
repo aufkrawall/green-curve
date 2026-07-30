@@ -29,57 +29,20 @@ struct ConfigStorageLockGuard {
 static void infer_profile_lock_from_curve(const DesiredSettings* desired, int* lockCiOut, unsigned int* lockMHzOut);
 static void resolve_profile_gpu_offset_state_for_save(const DesiredSettings* desired, int* gpuOffsetMHzOut, int* excludeLowCountOut);
 
-static bool curve_section_uses_base_plus_gpu_offset_semantics(const char* path, const char* section, const DesiredSettings* desired) {
-    if (!path || !section || !desired) return false;
-
-    char semanticsBuf[64] = {};
-    gc_GetPrivateProfileStringUtf8(section, "curve_semantics", "", semanticsBuf, sizeof(semanticsBuf), path);
-    trim_ascii(semanticsBuf);
-    if (_stricmp(semanticsBuf, "base_plus_gpu_offset") == 0) {
-        return desired->hasGpuOffset && desired->gpuOffsetMHz != 0;
-    }
-    if (semanticsBuf[0]) {
-        return false;
-    }
-
-    // Compatibility heuristic for Windows builds that saved base MHz plus
-    // gpu_offset metadata but did not emit curve_semantics yet.
-    if (!desired->hasGpuOffset || desired->gpuOffsetMHz == 0) return false;
-    if (!desired->hasLock || desired->lockCi < 0 || desired->lockCi >= VF_NUM_POINTS || desired->lockMHz == 0) return false;
-    if (!desired->hasCurvePoint[desired->lockCi]) return false;
-
-    int offsetAtLockMHz = gpu_offset_component_mhz_for_point(desired->lockCi, desired->gpuOffsetMHz, desired->gpuOffsetExcludeLowCount);
-    if (offsetAtLockMHz <= 0) return false;
-
-    unsigned int storedLockPointMHz = desired->curvePointMHz[desired->lockCi];
-    unsigned int absoluteLockPointMHz = storedLockPointMHz + (unsigned int)offsetAtLockMHz;
-
-    bool directTailMatches = storedLockPointMHz == desired->lockMHz;
-    bool offsetTailMatches = absoluteLockPointMHz == desired->lockMHz;
-    return !directTailMatches && offsetTailMatches;
-}
-static void restore_curve_points_from_base_plus_gpu_offset(DesiredSettings* desired) {
-    if (!desired || !desired->hasGpuOffset || desired->gpuOffsetMHz == 0) return;
-
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (!desired->hasCurvePoint[i]) continue;
-        int offsetCompMHz = gpu_offset_component_mhz_for_point(i, desired->gpuOffsetMHz, desired->gpuOffsetExcludeLowCount);
-        int absoluteMHz = (int)desired->curvePointMHz[i] + offsetCompMHz;
-        if (absoluteMHz <= 0) {
-            desired->hasCurvePoint[i] = false;
-            desired->curvePointMHz[i] = 0;
-            continue;
-        }
-        desired->curvePointMHz[i] = (unsigned int)absoluteMHz;
-    }
-}
-
-static bool load_profile_from_config(const char* path, int slot, DesiredSettings* desired, char* err, size_t errSize) {
+static bool load_profile_from_config(const char* path, int slot, DesiredSettings* desired, char* err, size_t errSize,
+    ProfileReadMode mode) {
     if (!path || !desired || slot < 1 || slot > CONFIG_NUM_SLOTS) {
         set_message(err, errSize, "Invalid profile load arguments");
         return false;
     }
     initialize_desired_settings_defaults(desired);
+    // PROFILE_READ_FOR_OWNERSHIP answers "does this stored record still
+    // describe what the service is running", so every projection below that
+    // consults the LIVE curve is skipped: those make the same file decode
+    // differently as the GPU boosts, and the applied-profile indicator that
+    // consumes this read would then clear itself over ordinary drift.  See
+    // applied_profile_indicator_policy.h.
+    const bool projectOntoLiveCurve = mode == PROFILE_READ_FOR_EDITOR;
 
     // A profile is one logical record spread across three INI sections.  Hold
     // the cross-session storage lock for the complete read so another GUI or
@@ -316,7 +279,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         restore_curve_points_from_base_plus_gpu_offset(desired);
     }
 
-    repair_profile_locked_curve_readback_artifacts(path, curveSection, slot, desired);
+    repair_profile_locked_curve_readback_artifacts(path, curveSection, slot, desired, mode);
 
     for (int i = 1; i < VF_NUM_POINTS; i++) {
         if (desired->hasCurvePoint[i] && desired->hasCurvePoint[i - 1]) {
@@ -381,7 +344,14 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         desired->hasLock = false;
         desired->lockCi = -1;
         desired->lockMHz = 0;
-    } else if (desired->hasLock && desired->lockCi >= 0 && desired->lockMHz > 0) {
+    } else if (projectOntoLiveCurve && desired->hasLock &&
+               desired->lockCi >= 0 && desired->lockMHz > 0) {
+        // is_curve_point_visible_in_gui() reads curve_base_khz_for_point(),
+        // which is live readback minus the live offsets, so whether the tail
+        // "looks flat" here changes with boost/temperature.  lockTracksAnchor
+        // is compared field-for-field by
+        // desired_settings_match_active_service_intent(), so an ownership read
+        // must keep the value the file stored instead of re-deriving one.
         bool sawVisibleTailPoint = false;
         bool tailMatchesLock = true;
         for (int ci = desired->lockCi; ci < VF_NUM_POINTS; ci++) {
@@ -398,7 +368,14 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         }
     }
 
-    bool haveLiveCurveVisibility = g_app.loaded && g_app.numPopulated > 0;
+    // Points the current GPU cannot show are dropped for the editor: nothing
+    // can type into a row that is not on screen, and applying one would write
+    // to a point the user never saw.  An ownership read keeps them, because
+    // dropping them changes the curve OWNERSHIP mask the comparison tests --
+    // and the gate itself (g_app.loaded) is false during every reconnect, so
+    // the same file decoded two different ways within one session.
+    bool haveLiveCurveVisibility = projectOntoLiveCurve &&
+        g_app.loaded && g_app.numPopulated > 0;
     if (haveLiveCurveVisibility) {
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             if (!desired->hasCurvePoint[i]) continue;

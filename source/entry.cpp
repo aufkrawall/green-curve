@@ -617,6 +617,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     g_app.trayIcons[TRAY_ICON_STATE_OC] = load_tray_icon(TRAY_ICON_OC_ID);
     g_app.trayIcons[TRAY_ICON_STATE_FAN] = load_tray_icon(TRAY_ICON_FAN_ID);
     g_app.trayIcons[TRAY_ICON_STATE_OC_FAN] = load_tray_icon(TRAY_ICON_OC_FAN_ID);
+    g_app.trayIcons[TRAY_ICON_STATE_PENDING] = load_tray_icon(TRAY_ICON_PENDING_ID);
     g_app.trayIconState = TRAY_ICON_STATE_DEFAULT;
 
     // Create buttons (positioned by create_edit_controls)

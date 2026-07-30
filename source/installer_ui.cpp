@@ -289,6 +289,53 @@ static void gc_toggle_checkbox(GcWizard* wizard, HWND control, bool* value) {
     }
 }
 
+// Title-bar / Alt-Tab / taskbar icon.
+//
+// The .rc embeds GC_SETUP_ICON_ID, which is what Explorer shows for the setup
+// file, but a window gets its icon from its class (or WM_SETICON) -- and that
+// was LoadIconW(nullptr, IDI_APPLICATION), the stock Windows executable icon.
+// So the file looked right and the running window did not.
+//
+// Sized per DPI rather than per primary monitor: the window is
+// per-monitor-v2 aware, so GetSystemMetrics() alone would pick the wrong size
+// on a secondary display.  GetSystemMetricsForDpi is resolved dynamically for
+// the same reason gc_dpi_for_window() resolves GetDpiForWindow that way -- the
+// two toolchains disagree about which headers declare it.
+//
+// LR_SHARED: the returned handle belongs to the module's resource, must not be
+// destroyed, and repeated loads of the same size return the same handle.
+static HICON gc_load_setup_icon(HINSTANCE instance, UINT dpi, int metric) {
+    int size = GetSystemMetrics(metric);
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (user32) {
+        typedef int(WINAPI * GetSystemMetricsForDpiFn)(int, UINT);
+        auto forDpi = (GetSystemMetricsForDpiFn)GetProcAddress(user32, "GetSystemMetricsForDpi");
+        if (forDpi) {
+            int scaled = forDpi(metric, dpi);
+            if (scaled > 0) size = scaled;
+        }
+    }
+    HICON icon = (HICON)LoadImageW(instance, MAKEINTRESOURCEW(GC_SETUP_ICON_ID),
+                                   IMAGE_ICON, size, size, LR_SHARED);
+    if (!icon) {
+        gc_log_step("ui: icon %d missing at %dpx (error %lu); falling back to the system icon",
+                    GC_SETUP_ICON_ID, size, GetLastError());
+        icon = LoadIconW(nullptr, IDI_APPLICATION);
+    }
+    return icon;
+}
+
+// Re-derive both icons for `wizard->dpi` and hand them to the window.  Called
+// once at creation and again on WM_DPICHANGED, so dragging setup to a monitor
+// with a different scale does not leave a stretched caption icon behind.
+static void gc_apply_window_icons(GcWizard* wizard) {
+    if (!wizard || !wizard->hwnd) return;
+    HICON large = gc_load_setup_icon(wizard->instance, wizard->dpi, SM_CXICON);
+    HICON small = gc_load_setup_icon(wizard->instance, wizard->dpi, SM_CXSMICON);
+    SendMessageW(wizard->hwnd, WM_SETICON, ICON_BIG, (LPARAM)large);
+    SendMessageW(wizard->hwnd, WM_SETICON, ICON_SMALL, (LPARAM)small);
+}
+
 static LRESULT CALLBACK gc_wizard_proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     GcWizard* wizard = &g_wizard;
     switch (message) {
@@ -368,6 +415,7 @@ static LRESULT CALLBACK gc_wizard_proc(HWND hwnd, UINT message, WPARAM wParam, L
             // metrics the window will actually paint with.
             wizard->dpi = HIWORD(wParam);
             gc_create_theme_fonts(&wizard->fonts, wizard->dpi);
+            gc_apply_window_icons(wizard);
             gc_set_control_font(wizard->licenseEdit, wizard->fonts.monospace);
             gc_set_control_font(wizard->pathEdit, wizard->fonts.body);
             const RECT* suggested = (const RECT*)lParam;
@@ -459,7 +507,11 @@ static bool gc_create_wizard_window(GcWizard* wizard, HINSTANCE instance, const 
     windowClass.lpszClassName = GC_SETUP_WINDOW_CLASS;
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     windowClass.hbrBackground = wizard->backgroundBrush;
-    windowClass.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    // Both slots: hIcon feeds Alt-Tab and the taskbar, hIconSm the caption bar.
+    // Leaving hIconSm null makes Windows down-scale hIcon, which looks muddy at
+    // 16px next to every other caption icon on the desktop.
+    windowClass.hIcon = gc_load_setup_icon(instance, wizard->dpi, SM_CXICON);
+    windowClass.hIconSm = gc_load_setup_icon(instance, wizard->dpi, SM_CXSMICON);
     if (!RegisterClassExW(&windowClass)) {
         gc_log_fail("ui: RegisterClassEx failed (error %lu)", GetLastError());
         return false;
@@ -486,6 +538,9 @@ static bool gc_create_wizard_window(GcWizard* wizard, HINSTANCE instance, const 
         wizard->dpi = actualDpi;
         gc_create_theme_fonts(&wizard->fonts, wizard->dpi);
     }
+    // After the DPI is final, so the caption icon is sized for the monitor the
+    // window actually landed on rather than the primary one.
+    gc_apply_window_icons(wizard);
     gc_apply_titlebar_theme(wizard->hwnd);
     gc_enable_dark_controls(wizard->hwnd);
 

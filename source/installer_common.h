@@ -72,6 +72,13 @@
 #define GC_SETUP_UNINSTALL_EXE_W L"uninstall.exe"
 #define GC_SETUP_SERVICE_NAME L"GreenCurveService"
 #define GC_SETUP_WINDOW_CLASS L"GreenCurveSetupClass"
+// Resource id of the Green Curve icon embedded in both setup binaries.  It must
+// stay equal to the id emitted by INSTALLER_RC in tools/installer_build.py (and
+// to APP_ICON_ID, which the application's own icon.rc uses) -- the shell picks
+// the *lowest-numbered* icon for the file, but a window class has to name one.
+// Without this the title bar, Alt-Tab and the taskbar all showed the stock
+// Windows application icon while the file itself showed the right one.
+#define GC_SETUP_ICON_ID 101
 // Wide spelling of the per-user Run value the resident tray GUI is started
 // from.  The narrow one lives in installer_uninstall_policy.h next to the rule
 // that decides whether a given Run value is ours to delete.

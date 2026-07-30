@@ -406,12 +406,10 @@ enum {
     FAN_MODE_CURVE = 2,
 };
 
-enum {
-    TRAY_ICON_STATE_DEFAULT = 0,
-    TRAY_ICON_STATE_OC = 1,
-    TRAY_ICON_STATE_FAN = 2,
-    TRAY_ICON_STATE_OC_FAN = 3,
-};
+// TRAY_ICON_STATE_* is Windows tray presentation, not GPU data model; it lives
+// in gui_apply_in_flight_policy.h with the rule that selects between the
+// themes.  See this header's own note above: UI state belongs in app_shared.h
+// and its policy headers, not here.
 
 struct FanCurvePoint {
     gc_bool8 enabled;

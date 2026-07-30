@@ -51,6 +51,16 @@
 #include "nvapi_module_policy.h"
 // Protocol-v14 readback provenance carried in AppData below.
 #include "control_readback_policy.h"
+// ProfileReadMode (how a stored profile is decoded) plus the applied-profile
+// tick's decision table.  Needed before the profile I/O declared further down.
+#include "applied_profile_indicator_policy.h"
+// The service-side counterpart: which claimed profile identity a successful
+// APPLY is allowed to record, and which proof of it may replace ownership.
+#include "service_profile_identity_policy.h"
+// Tray icon themes (including the transitional one) plus the tray/main-window
+// wording while a hardware write is in flight.  Needed before the tray icon
+// array declared further down.
+#include "gui_apply_in_flight_policy.h"
 // The identity every APPLY/RESET must name; the window path carries it in
 // GuiServiceModel, the synchronous path in the record below it.
 #include "service_client_precondition_policy.h"
@@ -123,6 +133,7 @@ void init_dpi();
 #define TRAY_ICON_OC_ID     112
 #define TRAY_ICON_FAN_ID    113
 #define TRAY_ICON_OC_FAN_ID 114
+#define TRAY_ICON_PENDING_ID 115
 #define APP_NAME            "Green Curve"
 #ifndef APP_VERSION
 #define APP_VERSION         "dev"
@@ -215,6 +226,10 @@ void init_dpi();
 #define SERVICE_RECONNECT_TIMER_ID 3
 #define AUTO_PROFILE_DEBOUNCE_TIMER_ID 4
 #define AUTO_PROFILE_BACKSTOP_TIMER_ID 5
+// Repaints the F-INFLIGHT banner's indeterminate sweep. Presentation only; it
+// runs solely while a hardware write is in flight. See
+// gui_apply_in_flight_policy.h.
+#define APPLY_IN_FLIGHT_TIMER_ID 6
 // FAN_CURVE_MAX_POINTS, FAN_CURVE_MAX_HYSTERESIS_C, MAX_GPU_FANS,
 // MAX_GPU_ADAPTERS moved to gpu_core.h
 #define CONFIG_FILE_NAME    "config.ini"
@@ -554,7 +569,7 @@ struct AppData {
     bool backgroundServicePendingRelaunch;
     bool trayIconAdded;
     int trayIconState;
-    HICON trayIcons[4];
+    HICON trayIcons[TRAY_ICON_STATE_COUNT];
     bool trayProfileCacheValid;
     bool trayLastRenderedValid;
     int trayLastRenderedState;

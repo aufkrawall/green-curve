@@ -70,6 +70,9 @@ void ap_on_applied(AutoProfileController* c, int slot, long long nowMs);
 
 // A per-slot hotkey / tray profile pick fired.  Same slot while already pinned
 // to it → resume AUTO; otherwise pin the slot and apply it immediately.
+// While auto is DISABLED a pick is just an apply and records no pin: there is
+// no automatic switching to override, and a pin taken then would outlive the
+// pick and suppress auto once it is enabled.
 AutoProfileAction ap_on_hotkey(AutoProfileController* c, int slot);
 
 // A manual GUI Apply of custom (non-slot) editor state — suspend auto without a
@@ -79,5 +82,13 @@ void ap_enter_manual_custom(AutoProfileController* c);
 // Master enable/disable toggle.  Enabling resumes AUTO (re-resolve + converge);
 // disabling reverts to the default slot.
 AutoProfileAction ap_set_enabled(AutoProfileController* c, bool enabled);
+
+// Adopt a freshly loaded/edited configuration.  Values are always synced, and a
+// CHANGE of the master enable additionally performs the enable/disable
+// TRANSITION (ap_set_enabled) rather than only updating the flag.  Every
+// surface that can flip that flag — the tray toggle and the configuration
+// dialog alike — must route through this, so none of them can leave a manual
+// pin behind that keeps ap_controller_is_driving() false after auto is enabled.
+AutoProfileAction ap_apply_config_change(AutoProfileController* c, const AutoProfileConfig* cfg);
 
 #endif // GREEN_CURVE_AUTO_PROFILE_CONTROLLER_H

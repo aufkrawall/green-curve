@@ -43,12 +43,44 @@ static bool ap_suppressed() {
     return false;
 }
 
+// Why auto is not switching, in one idempotent line.  Logged on change only, so
+// a steady desktop costs one line instead of one per 3s backstop tick, while the
+// moment a gate starts or stops blocking is recorded exactly.  This is the line
+// that answers "auto-profiles are enabled but nothing happens": it names the
+// gate (disabled / manual pin / window suppression / apply in flight).
+static void ap_log_not_driving(bool suppressed) {
+    debug_log_on_change(
+        "auto-profile: not driving (enabled=%d mode=%s pinned=%d suppressed=%d inFlight=%d windowVisible=%d suppressWhenOpen=%d)\n",
+        g_apConfig.enabled ? 1 : 0,
+        g_apCtrl.mode == AP_MODE_MANUAL ? "manual-pin" : "auto",
+        g_apCtrl.pinnedSlot,
+        suppressed ? 1 : 0,
+        g_apApplyInFlight ? 1 : 0,
+        (g_app.hMainWnd && IsWindowVisible(g_app.hMainWnd)) ? 1 : 0,
+        g_apConfig.suppressWhenWindowOpen ? 1 : 0);
+}
+
 static int ap_resolve_current_target() {
     ForegroundInfo fg = {};
     auto_profile_get_foreground_info(g_app.hMainWnd, &fg);   // leaves fg.valid=false on desktop/shell
     ProcessPresence pres = {};
     auto_profile_compute_presence(&g_apConfig, &pres);
-    return resolve_auto_profile_slot(&g_apConfig, &fg, &pres);
+    int target = resolve_auto_profile_slot(&g_apConfig, &fg, &pres);
+
+    // What detection actually saw and what the rules made of it — again on
+    // change only, so alt-tabbing logs one line per distinct app rather than
+    // per event, and a focus-optional rule's presence bit is visible even when
+    // the matching process never comes to the foreground.
+    char presenceBits[AUTO_PROFILE_MAX_RULES + 1] = {};
+    int ruleCount = g_apConfig.ruleCount;
+    if (ruleCount < 0) ruleCount = 0;
+    if (ruleCount > AUTO_PROFILE_MAX_RULES) ruleCount = AUTO_PROFILE_MAX_RULES;
+    for (int i = 0; i < ruleCount; i++) presenceBits[i] = pres.rulePresent[i] ? '1' : '0';
+    debug_log_on_change(
+        "auto-profile: resolved target=%d applied=%d fgValid=%d exe='%.40s' class='%.40s' fullscreen=%d present=%s\n",
+        target, g_apCtrl.appliedSlot, fg.valid ? 1 : 0, fg.exeName, fg.className,
+        fg.isFullscreen ? 1 : 0, presenceBits[0] ? presenceBits : "-");
+    return target;
 }
 
 // The actual apply: reuse the same TDR-safe path + idempotency skip the app-start
@@ -223,9 +255,12 @@ static void auto_profile_on_mutation_superseded(int slot) {
 
 void auto_profile_on_foreground_changed(HWND hwnd) {
     if (!g_apInitialized) return;
-    if (!ap_controller_is_driving(&g_apCtrl, ap_suppressed())) return;
+    // One suppression snapshot per decision: the gate check and the controller
+    // must not see different values within the same event.
+    bool suppressed = ap_suppressed();
+    if (!ap_controller_is_driving(&g_apCtrl, suppressed)) { ap_log_not_driving(suppressed); return; }
     int t = ap_resolve_current_target();
-    ap_execute(hwnd, ap_on_target_resolved(&g_apCtrl, t, ap_now_ms(), ap_suppressed()));
+    ap_execute(hwnd, ap_on_target_resolved(&g_apCtrl, t, ap_now_ms(), suppressed));
 }
 
 void auto_profile_on_debounce_timer(HWND hwnd) {
@@ -237,12 +272,13 @@ void auto_profile_on_debounce_timer(HWND hwnd) {
 
 void auto_profile_on_backstop_timer(HWND hwnd) {
     if (!g_apInitialized) return;
-    if (!ap_controller_is_driving(&g_apCtrl, ap_suppressed())) return;
+    bool suppressed = ap_suppressed();
+    if (!ap_controller_is_driving(&g_apCtrl, suppressed)) { ap_log_not_driving(suppressed); return; }
     // Catches game exits and focus-optional presence changes that fired no
     // foreground event.  Feeds the resolver like a foreground change (arms the
     // debounce only when the target actually differs).
     int t = ap_resolve_current_target();
-    ap_execute(hwnd, ap_on_target_resolved(&g_apCtrl, t, ap_now_ms(), ap_suppressed()));
+    ap_execute(hwnd, ap_on_target_resolved(&g_apCtrl, t, ap_now_ms(), suppressed));
 }
 
 void auto_profile_on_hotkey(HWND hwnd, int hotkeyId) {
@@ -288,16 +324,31 @@ static void ap_apply_runtime_state(HWND hwnd) {
         if (!g_apForegroundHook) {
             g_apForegroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
                 nullptr, ap_winevent_proc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+            if (!g_apForegroundHook) {
+                // Not fatal — the backstop tick still converges — but it must
+                // never fail silently, because the symptom (switches only every
+                // few seconds) looks like a rule problem.
+                debug_log("auto-profile: SetWinEventHook FAILED (err=%lu); relying on the %d ms backstop only\n",
+                    (unsigned long)GetLastError(), AUTO_PROFILE_BACKSTOP_INTERVAL_MS);
+            }
         }
         if (!g_apBackstopRunning) {
-            SetTimer(hwnd, AUTO_PROFILE_BACKSTOP_TIMER_ID, AUTO_PROFILE_BACKSTOP_INTERVAL_MS, nullptr);
-            g_apBackstopRunning = true;
+            if (SetTimer(hwnd, AUTO_PROFILE_BACKSTOP_TIMER_ID, AUTO_PROFILE_BACKSTOP_INTERVAL_MS, nullptr)) {
+                g_apBackstopRunning = true;
+            } else {
+                // Recording it as running would strand the flag: the next
+                // reload would skip the retry that could still succeed.
+                debug_log("auto-profile: backstop SetTimer FAILED (err=%lu)\n",
+                    (unsigned long)GetLastError());
+            }
         }
     } else {
         if (g_apForegroundHook) { UnhookWinEvent(g_apForegroundHook); g_apForegroundHook = nullptr; }
         if (g_apBackstopRunning) { KillTimer(hwnd, AUTO_PROFILE_BACKSTOP_TIMER_ID); g_apBackstopRunning = false; }
         KillTimer(hwnd, AUTO_PROFILE_DEBOUNCE_TIMER_ID);
     }
+    debug_log_on_change("auto-profile: runtime state enabled=%d foregroundHook=%d backstop=%d\n",
+        g_apConfig.enabled ? 1 : 0, g_apForegroundHook ? 1 : 0, g_apBackstopRunning ? 1 : 0);
 }
 
 // ---- Hotkeys ---------------------------------------------------------------
@@ -401,14 +452,26 @@ void auto_profile_reload_config(HWND hwnd) {
         return;
     }
     auto_profile_config_load(g_app.configPath, &g_apConfig);
-    ap_controller_sync_config(&g_apCtrl, &g_apConfig);
+    // The dialog's enable checkbox is the same master switch as the tray toggle
+    // and must perform the same TRANSITION, not merely a value sync: a slot
+    // picked from the tray/menu earlier could otherwise leave the controller
+    // pinned, ap_controller_is_driving() false, and auto silently dead for the
+    // rest of the session.  Disabling likewise reverts to the default slot here
+    // instead of stranding whatever profile a rule last switched to.
+    AutoProfileAction transition = ap_apply_config_change(&g_apCtrl, &g_apConfig);
     ap_load_hotkeys();
     leave_config_storage_lock(configMutex);
     ap_register_hotkeys(hwnd);
     ap_apply_runtime_state(hwnd);
     update_tray_icon();
-    debug_log("auto-profile: config reloaded (enabled=%d rules=%d)\n",
-              g_apConfig.enabled ? 1 : 0, g_apConfig.ruleCount);
+    debug_log("auto-profile: config reloaded (enabled=%d rules=%d defaultSlot=%d mode=%s pinned=%d applied=%d transition=%d)\n",
+              g_apConfig.enabled ? 1 : 0, g_apConfig.ruleCount, g_apConfig.defaultSlot,
+              g_apCtrl.mode == AP_MODE_MANUAL ? "manual-pin" : "auto",
+              g_apCtrl.pinnedSlot, g_apCtrl.appliedSlot, (int)transition.kind);
+    if (transition.kind != AP_ACTION_NONE) {
+        ap_execute(hwnd, transition);   // RESUME_AUTO re-resolves and converges itself
+        return;
+    }
     ap_converge_now(hwnd);
 }
 
@@ -424,7 +487,9 @@ void auto_profile_toggle_enabled(HWND hwnd) {
             "Green Curve", MB_OK | MB_ICONERROR);
         return;
     }
-    AutoProfileAction a = ap_set_enabled(&g_apCtrl, newEnabled);
+    // Same single entry point as the configuration dialog, so both surfaces
+    // share one definition of what enabling and disabling mean.
+    AutoProfileAction a = ap_apply_config_change(&g_apCtrl, &g_apConfig);
     ap_apply_runtime_state(hwnd);   // install/remove hook + backstop for the new state
     ap_execute(hwnd, a);
     update_tray_icon();

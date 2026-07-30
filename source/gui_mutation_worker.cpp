@@ -491,6 +491,28 @@ static bool gui_service_io_queue_telemetry(bool redrawControls) {
     return true;
 }
 
+// The single place the "a hardware write is in flight" presentation is driven
+// from, so the tray icon theme, the tray tooltip, and the main window's status
+// line always flip together.  Both transitions happen on the window thread: the
+// enqueue runs from Apply / the tray-profile pick / the app-start apply, and the
+// acknowledge runs from handle_gui_mutation_completion().
+//
+// Driving it here rather than from each apply path is deliberate: the queue is
+// the one point every mutation passes through, including a pending request that
+// is only dispatched once the active one finishes, so the surface cannot be
+// left showing a stale state by a path that forgot to refresh it.
+static void gui_apply_in_flight_presentation_changed(bool inFlight,
+    const char* reason) {
+    debug_log("GUI apply presentation: changes-pending state -> %d (%s)\n",
+        inFlight ? 1 : 0, reason && reason[0] ? reason : "queue transition");
+    update_tray_icon();
+    update_background_service_controls();
+    // The status line alone was reported as invisible -- it sits at the bottom
+    // edge of the window and is easy to miss entirely.  The banner over the
+    // graph is the surface that actually gets noticed.
+    gui_apply_in_flight_set_animation(inFlight);
+}
+
 static bool gui_mutation_enqueue(const GuiMutationWork* work,
     char* status, size_t statusSize) {
     if (!work || !work->notifyWindow) return false;
@@ -535,7 +557,10 @@ static bool gui_mutation_enqueue(const GuiMutationWork* work,
                 : "GPU operation queued behind the active hardware write");
     }
     LeaveCriticalSection(&g_guiMutationLock);
+    bool wasInFlight = g_app.applyInFlight;
     g_app.applyInFlight = true;
+    if (!wasInFlight)
+        gui_apply_in_flight_presentation_changed(true, "mutation queued");
     if (notifySuperseded) {
         gui_mutation_pending_was_superseded(superseded.context,
             superseded.profileSlot, superseded.origin,
@@ -620,7 +645,10 @@ static void gui_mutation_acknowledge_and_dispatch_next() {
         "post-mutation reconciliation");
     gui_worker_signal_if_dispatchable_locked();
     LeaveCriticalSection(&g_guiMutationLock);
-    if (idle) g_app.applyInFlight = false;
+    if (idle && g_app.applyInFlight) {
+        g_app.applyInFlight = false;
+        gui_apply_in_flight_presentation_changed(false, "mutation queue drained");
+    }
 }
 
 static bool gui_mutation_shutdown() {
