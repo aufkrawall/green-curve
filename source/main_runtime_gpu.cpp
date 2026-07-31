@@ -397,15 +397,37 @@ static int mem_display_mhz_from_driver_mhz(int driverMHz) {
     return driverMHz / 2; // NVML memory offset MHz is effective; UI mirrors actual MHz
 }
 
+// Coherent-projection paint suppression.  The depth counter lives beside the
+// invalidation helpers rather than in gui_window_redraw.cpp (which owns the
+// transaction but is GUI-only) because invalidate_main_window() has to honour
+// it and is compiled into the service binary too, where the depth never leaves
+// zero.  gui_window_redraw.cpp is the only writer.
+#include "gui_window_redraw_policy.h"
+static_assert(GUI_REDRAW_STYLE_CHILD == (unsigned int)WS_CHILD,
+    "the pure redraw policy must describe the real WS_CHILD bit");
+static_assert(GUI_REDRAW_STYLE_VISIBLE == (unsigned int)WS_VISIBLE,
+    "the pure redraw policy must describe the real WS_VISIBLE bit");
+static int g_guiTopLevelRedrawDepth = 0;
+
+static bool gui_top_level_paint_suppressed() {
+    return g_guiTopLevelRedrawDepth > 0;
+}
+
 static void invalidate_main_window() {
     if (!g_app.hMainWnd) return;
-    if (g_app.trayWindowHiddenIntent ||
-        !IsWindowVisible(g_app.hMainWnd)) {
+    if (gui_window_invalidation_must_defer(gui_top_level_paint_suppressed(),
+            g_app.trayWindowHiddenIntent,
+            IsWindowVisible(g_app.hMainWnd) != FALSE)) {
         // Background profile/service changes update the resident control model,
         // but a tray-hidden owner has no frame to present.  Leave one deferred
         // invalidation for the next explicit show; an immediate WM_PAINT is
         // both wasted work and a needless opportunity for hidden-window side
         // effects in future paint code.
+        //
+        // The same deferral covers a running projection transaction, which owns
+        // the next frame: it used to be implied by the top-level WM_SETREDRAW
+        // pair making the window read as invisible here, and has to be stated
+        // now that the transaction no longer touches WS_VISIBLE.
         RedrawWindow(g_app.hMainWnd, nullptr, nullptr,
             RDW_INVALIDATE | RDW_ALLCHILDREN);
         return;

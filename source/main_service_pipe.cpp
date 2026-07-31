@@ -4,6 +4,10 @@
 // Authenticated named-pipe listener and command dispatch.
 
 #include "main_service_pipe_primitives.h"
+// The three client-requested file writes, all of which run under the caller's
+// own token.  Included here so its position in the amalgamation is exactly
+// where the case body it replaced used to sit.
+#include "main_service_pipe_file_commands.cpp"
 
 static DWORD WINAPI service_pipe_server_thread_proc(void*) {
     WCHAR pipeName[128] = {};
@@ -503,12 +507,15 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                         StringCchCopyA(result, ARRAY_COUNT(result),
                             "Selected GPU recovery has precedence over Apply; retry explicitly after recovery");
                     }
+                    gc_u32 applySeverity =
+                        (gc_u32)SERVICE_OUTCOME_SEVERITY_ERROR;
                     if (ok) ok = service_apply_desired_settings(
                         &hardwareRequest,
                         (request.flags & SERVICE_REQUEST_FLAG_INTERACTIVE) != 0,
                         result, sizeof(result), &writeAttempted,
                         replaceActiveIntent,
-                        replaceActiveIntent ? &request.desired : nullptr);
+                        replaceActiveIntent ? &request.desired : nullptr,
+                        &applySeverity);
                     if (!writeAttempted && hadPreviousIntent) {
                         service_refresh_selected_gpu_notification_best_effort(
                             &previousRestoreTarget,
@@ -558,12 +565,17 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                                 : "automatic apply hardware write did not complete");
                     }
                     response.status = ok ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
+                    // Only a real apply can report a partial verify; every
+                    // preflight refusal above left the response at its zeroed
+                    // default and is resolved to ERROR by the write-out stamp.
+                    response.outcomeSeverity = applySeverity;
                     StringCchCopyA(response.message, ARRAY_COUNT(response.message), result);
                     populate_service_snapshot(&response.snapshot);
                     if (g_serviceHasActiveDesired) response.desired = g_serviceActiveDesired;
                     if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
-                    debug_log("service response APPLY: ok=%d controlValid=%d gpu=%d exclude=%d mem=%d power=%d fanMode=%d fanPct=%d\n",
+                    debug_log("service response APPLY: ok=%d severity=%s controlValid=%d gpu=%d exclude=%d mem=%d power=%d fanMode=%d fanPct=%d\n",
                         ok ? 1 : 0,
+                        service_outcome_severity_name(applySeverity),
                         response.controlState.valid ? 1 : 0,
                         response.controlState.gpuOffsetMHz,
                         response.controlState.gpuOffsetExcludeLowCount,
@@ -726,6 +738,7 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     } else {
                         response.status = record->responseStatus;
                         response.operationState = record->state;
+                        response.outcomeSeverity = record->outcomeSeverity;
                         StringCchCopyA(response.message,
                             ARRAY_COUNT(response.message),
                             record->message[0] ? record->message :
@@ -738,62 +751,10 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                 }
                 case SERVICE_CMD_WRITE_LOG_SNAPSHOT:
                 case SERVICE_CMD_WRITE_JSON_SNAPSHOT:
-                case SERVICE_CMD_WRITE_PROBE_REPORT: {
-                    char detail[256] = {};
-                    lock_service_runtime();
-                    bool ok = hardware_initialize(detail, sizeof(detail));
-                    if (!ok && request.command != SERVICE_CMD_WRITE_PROBE_REPORT) {
-                        response.status = SERVICE_STATUS_ERROR;
-                        StringCchCopyA(response.message, ARRAY_COUNT(response.message), detail[0] ? detail : "Hardware initialization failed");
-                    } else {
-                        bool offsetsOk = false;
-                        if (ok && !read_live_curve_snapshot_settled(4, 40, &offsetsOk)) {
-                            debug_log("service file command: live curve refresh failed before file write\n");
-                        }
-                        if (ok) {
-                            refresh_global_state(detail, sizeof(detail));
-                        }
-                        char fileErr[256] = {};
-                        bool writeOk = false;
-                        ScopedServiceClientImpersonation impersonation(callerToken);
-                        if (!impersonation.active()) {
-                            set_message(fileErr, sizeof(fileErr),
-                                "Failed impersonating the authenticated client for output write (error %lu)",
-                                GetLastError());
-                        } else if (!service_validate_file_write_path(request.path,
-                                       fileErr, sizeof(fileErr))) {
-                            debug_log("service file command: caller-scoped path validation failed command=%u pid=%lu: %s\n",
-                                (unsigned int)request.command,
-                                (unsigned long)callerPid,
-                                fileErr[0] ? fileErr : "unknown");
-                        } else if (request.command == SERVICE_CMD_WRITE_LOG_SNAPSHOT) {
-                            writeOk = write_log_snapshot(request.path, fileErr,
-                                sizeof(fileErr));
-                        } else if (request.command == SERVICE_CMD_WRITE_JSON_SNAPSHOT) {
-                            writeOk = write_json_snapshot(request.path, fileErr,
-                                sizeof(fileErr));
-                        } else {
-                            writeOk = write_probe_report(request.path, fileErr, sizeof(fileErr));
-                        }
-                        if (writeOk) {
-                            char verifyErr[256] = {};
-                            if (!service_verify_written_file_path(request.path, verifyErr, sizeof(verifyErr))) {
-                                writeOk = false;
-                                StringCchCopyA(fileErr, sizeof(fileErr), verifyErr);
-                            }
-                        }
-                        response.status = writeOk ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
-                        if (writeOk) {
-                            StringCchPrintfA(response.message, ARRAY_COUNT(response.message), "Wrote %s", request.path[0] ? request.path : "requested output file");
-                        } else {
-                            StringCchCopyA(response.message, ARRAY_COUNT(response.message), fileErr[0] ? fileErr : "Failed writing requested file");
-                        }
-                        populate_service_snapshot(&response.snapshot);
-                        if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
-                    }
-                    unlock_service_runtime();
+                case SERVICE_CMD_WRITE_PROBE_REPORT:
+                    service_handle_file_write_command(request, response,
+                        callerToken, callerPid);
                     break;
-                }
                 default:
                     response.status = SERVICE_STATUS_ERROR;
                     StringCchCopyA(response.message, ARRAY_COUNT(response.message), "Unsupported service command");
@@ -808,6 +769,13 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
         }
 
         response.message[ARRAY_COUNT(response.message) - 1] = '\0';
+        // The one place this process writes a response out, and therefore the
+        // one place severity is resolved.  Every branch above -- including the
+        // ones that only set `status` and break -- is covered without having to
+        // remember this field, and a handler that did record a warning cannot
+        // have it survive a status that says the operation failed.
+        response.outcomeSeverity = service_response_resolve_outcome_severity(
+            response.status, response.outcomeSeverity);
         // The pipe ACL admits every local user; only callers that passed the
         // active-session, PID, and integrity gates receive authoritative state.
         if (stateEnvelopeAuthorized) populate_service_state_response(&response);

@@ -201,66 +201,30 @@ static void daemon_handle_startup_policy_command(const ServiceRequest* req,
 // per daemon start, only for the exact GPU identity recorded with the policy,
 // and a failure locks the daemon out of retrying instead of looping.
 static void apply_startup_profile_policy() {
-    if (!g_gpuReady) {
+    const DesiredSettings& desired = g_startupPolicy.desired;
+    // The snapshot's own values are logged before the write, not just
+    // "applied": when a boot-applied profile disagrees with config.ini, this
+    // line is what identifies the stale snapshot without a debugger.
+    dlog("daemon: startup profile %u (%s) requested "
+         "[fanMode=%d fanPct=%d pollMs=%d hysteresisC=%d gpuOffset=%d "
+         "memOffset=%d powerPct=%d]\n",
+         (unsigned int)g_startupPolicy.profileSlot,
+         g_startupPolicy.profileName[0] ? g_startupPolicy.profileName : "-",
+         desired.fanMode, desired.fanPercent,
+         desired.fanCurve.pollIntervalMs, desired.fanCurve.hysteresisC,
+         desired.gpuOffsetMHz, desired.memOffsetMHz, desired.powerLimitPct);
+    // Same unattended-write path as the restore-last replay and the resume
+    // restore: it owns the crash-loop guard, the GPU resolution, the reset-to-
+    // stock baseline that keeps a boot apply from stacking onto whatever the
+    // driver already holds, and the committed record on success.
+    LinuxAutoRestoreOutcome outcome = daemon_automatic_restore_write(
+        LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE,
+        &g_startupPolicy.targetGpu, &g_startupPolicy.desired);
+    if (!outcome.success) {
         g_stateUncertain = true;
-        dlog("daemon: startup profile %u not applied; GPU backend is unavailable\n",
-             (unsigned int)g_startupPolicy.profileSlot);
-        return;
-    }
-    char err[256] = {};
-    if (!linux_backend_select_target(&g_gpu, &g_startupPolicy.targetGpu,
-                                     err, sizeof(err))) {
-        g_stateUncertain = true;
-        dlog("daemon: startup profile %u rejected; its GPU identity did not "
-             "resolve: %s\n", (unsigned int)g_startupPolicy.profileSlot, err);
-        return;
-    }
-    DesiredSettings desired = g_startupPolicy.desired;
-    LockMode storedLockMode = desired.lockMode;
-    desired.lockMode = profile_lock_mode_after_load(desired.hasLock, true,
-                                                    desired.lockMode);
-    if (storedLockMode != desired.lockMode) {
-        dlog("daemon: migrated startup-profile lock mode %d to %d\n",
-             (int)storedLockMode, (int)desired.lockMode);
-    }
-    validate_desired_settings_for_ipc(&desired);
-    char msg[256] = {};
-    LinuxMutationResult mutation = linux_backend_apply(&g_gpu, &desired,
-                                                       nullptr, &desired,
-                                                       msg, sizeof(msg));
-    if (mutation.success) {
-        g_activeDesired = desired;
-        g_activeTarget = g_gpu.selectedGpu;
-        g_hasActiveDesired = true;
-        // Recorded as committed intent so a later restart, a Reset, or the TUI
-        // sees exactly the same ownership it would after a manual Apply.
-        char stateErr[256] = {};
-        if (!store_daemon_record(LINUX_DAEMON_RECORD_ACTIVE, &g_activeTarget,
-                                 &g_activeDesired, stateErr, sizeof(stateErr))) {
-            g_stateUncertain = true;
-            dlog("daemon: startup profile %u applied but could not be recorded: %s\n",
-                 (unsigned int)g_startupPolicy.profileSlot, stateErr);
-        } else {
-            // The snapshot's own values are logged, not just "applied": when a
-            // boot-applied profile disagrees with config.ini, this line is what
-            // identifies the stale snapshot without a debugger.
-            dlog("daemon: startup profile %u (%s) applied -> %s "
-                 "[fanMode=%d fanPct=%d pollMs=%d hysteresisC=%d gpuOffset=%d "
-                 "memOffset=%d powerPct=%d]\n",
-                 (unsigned int)g_startupPolicy.profileSlot,
-                 g_startupPolicy.profileName[0] ? g_startupPolicy.profileName : "-",
-                 msg, desired.fanMode, desired.fanPercent,
-                 desired.fanCurve.pollIntervalMs, desired.fanCurve.hysteresisC,
-                 desired.gpuOffsetMHz, desired.memOffsetMHz,
-                 desired.powerLimitPct);
-        }
-    } else {
-        g_stateUncertain = true;
-        store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN,
-                            &g_startupPolicy.targetGpu, &desired,
-                            err, sizeof(err));
-        dlog("daemon: startup profile %u failed and was locked out -> %s\n",
-             (unsigned int)g_startupPolicy.profileSlot, msg);
+        dlog("daemon: startup profile %u did not commit -> %s\n",
+             (unsigned int)g_startupPolicy.profileSlot,
+             outcome.message[0] ? outcome.message : "unknown reason");
     }
 }
 

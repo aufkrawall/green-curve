@@ -10,6 +10,10 @@
 enum LinuxServiceActivationStep {
     LINUX_SERVICE_STEP_DAEMON_RELOAD = 0,
     LINUX_SERVICE_STEP_ENABLE,
+    // The resume unit is enabled as its own step so a failure names itself.
+    // Folding it into the step above would report a missing standby restore as
+    // "systemctl enable failed" and leave the reader guessing which unit.
+    LINUX_SERVICE_STEP_ENABLE_RESUME,
     LINUX_SERVICE_STEP_RESTART,
     LINUX_SERVICE_STEP_IS_ACTIVE,
     LINUX_SERVICE_STEP_VERIFY_SOCKET,
@@ -32,6 +36,8 @@ static inline const char* linux_service_activation_step_name(
     switch (step) {
         case LINUX_SERVICE_STEP_DAEMON_RELOAD: return "systemctl daemon-reload";
         case LINUX_SERVICE_STEP_ENABLE: return "systemctl enable";
+        case LINUX_SERVICE_STEP_ENABLE_RESUME:
+            return "systemctl enable greencurve-resume.service";
         case LINUX_SERVICE_STEP_RESTART: return "systemctl restart";
         case LINUX_SERVICE_STEP_IS_ACTIVE: return "systemctl is-active";
         case LINUX_SERVICE_STEP_VERIFY_SOCKET:

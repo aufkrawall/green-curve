@@ -327,8 +327,7 @@ static void unlock_service_runtime();
 static bool service_runtime_lock_held_by_current_thread();
 static void service_set_pending_operation_source(const char* source);
 static void set_last_apply_phase(const char* phase);
-static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* info);
-static LONG CALLBACK green_curve_vectored_handler(EXCEPTION_POINTERS* info);
+#include "crash_artifacts_forward.h"
 static bool service_resolve_active_user_paths_for_startup(const char* context);
 static DWORD WINAPI service_fan_runtime_thread_proc(void*);
 static DWORD WINAPI service_pipe_server_thread_proc(void*);
@@ -356,7 +355,7 @@ static bool service_refresh_telemetry_for_request(char* detail, size_t detailSiz
 static bool service_apply_desired_settings(const DesiredSettings* desired, bool interactive,
     char* result, size_t resultSize, bool* writeAttemptedOut = nullptr,
     bool replaceActiveIntent = false,
-    const DesiredSettings* replacementIntent = nullptr);
+    const DesiredSettings* replacementIntent = nullptr, gc_u32* outcomeSeverityOut = nullptr);
 static bool service_reset_all(char* result, size_t resultSize,
     bool* hardwareWriteAttemptedOut = nullptr);
 // GPU driver-recovery is handled by restarting the service process; record each
@@ -610,7 +609,6 @@ static bool ensure_tray_icon();
 static void remove_tray_icon();
 static void hide_main_window_to_tray();
 static void show_main_window_from_tray();
-static void show_tray_menu(HWND hwnd);
 static bool live_state_has_custom_oc();
 static bool live_state_has_custom_fan();
 static int current_green_curve_fan_intent_mode();
@@ -663,7 +661,7 @@ static bool apply_desired_settings(const DesiredSettings* desired, bool interact
     char* result, size_t resultSize);
 static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool interactive, char* result, size_t resultSize,
-    bool* hardwareWriteAttemptedOut = nullptr);
+    bool* hardwareWriteAttemptedOut = nullptr, gc_u32* outcomeSeverityOut = nullptr);
 static LRESULT CALLBACK LicenseDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static void layout_license_dialog(HWND hwnd);
 
@@ -742,6 +740,7 @@ static const UINT FAN_TELEMETRY_INTERVAL_MS = 1000;
 #include "main_gpu_state.cpp"
 #include "main_tail_diagnostics.cpp"
 #include "main_fan_runtime.cpp"
+#include "gui_tray_menu.cpp"
 #include "config_profile_repair.cpp"
 #include "main_shell.cpp"
     SelectObject(hdc, oldBrush);
@@ -778,10 +777,11 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     // Initialize it before helper dispatch; the helper enables file logging
     // only when the active user's existing debug configuration allows it.
     InitializeCriticalSection(&g_debugLogLock);
-    // Helper mode bypasses service_main, so install the unhandled filter here.
-    // A helper crash must leave the same actionable private dump as a normal
-    // service crash instead of only an opaque Windows Error Reporting event.
-    SetUnhandledExceptionFilter(green_curve_unhandled_exception_filter);
+    // Helper mode bypasses service_main, so install the crash handlers here (no
+    // vectored NVML recovery: the helper never touches the driver).  A helper
+    // crash must leave the same actionable private dump as a normal service
+    // crash instead of only an opaque Windows Error Reporting event.
+    install_crash_handlers(false);
     int helperExitCode = 0;
     if (service_try_dispatch_controlled_restart_helper(&helperExitCode)) {
         close_debug_log_file();

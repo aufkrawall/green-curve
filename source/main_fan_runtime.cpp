@@ -382,22 +382,10 @@ static void show_profiles_popup(HWND hwnd) {
     DestroyMenu(menu);
 }
 
-static void show_tray_menu(HWND hwnd) {
-    if (!hwnd) return;
-    refresh_menu_theme_cache();
-    HMENU menu = CreatePopupMenu();
-    if (!menu) return;
-    AppendMenuA(menu, MF_STRING, TRAY_MENU_SHOW_ID, IsWindowVisible(hwnd) ? "Show Window" : "Open Green Curve");
-    HMENU profiles = build_auto_profile_menu();
-    if (profiles) AppendMenuA(menu, MF_POPUP, (UINT_PTR)profiles, "Profiles");
-    AppendMenuA(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuA(menu, MF_STRING, TRAY_MENU_EXIT_ID, "Exit");
-    POINT pt = {};
-    GetCursorPos(&pt);
-    SetForegroundWindow(hwnd);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN, pt.x, pt.y, 0, hwnd, nullptr);
-    DestroyMenu(menu);   // destroys the attached Profiles submenu too
-}
+// show_tray_menu() lives in gui_tray_menu.cpp: unlike this popup, which is
+// opened from a button on the already-foreground main window, the tray menu
+// must not raise that window, so it owns a neutral foreground window instead.
+
 static bool activate_existing_instance_window() {
     for (int attempt = 0; attempt < 20; attempt++) {
         HWND existing = FindWindowA(APP_CLASS_NAME, nullptr);

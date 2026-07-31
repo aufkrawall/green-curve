@@ -60,6 +60,10 @@ struct LinuxCliOptions {
     bool daemon;
     bool serviceInstall;
     bool serviceRemove;
+    // Sent by greencurve-resume.service after the machine wakes up.  Not a
+    // user-facing verb in the same sense as the others; it is listed in --help
+    // so an administrator reading the unit can find out what it does.
+    bool resumeRestore;
     bool selfTest;
     bool hasConfigPath;
     bool hasProbeOutputPath;

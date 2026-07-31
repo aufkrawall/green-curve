@@ -6,6 +6,7 @@
 #include "linux_daemon.h"
 #include "linux_backend.h"
 #include "linux_crash_breadcrumb.h"
+#include "linux_crash_report.h"
 #include "linux_debug_log.h"
 #include "linux_terminal_launch.h"
 #include "linux_startup_sync.h"
@@ -174,7 +175,9 @@ bool run_linux_probe(const char* outputPath, ProbeSummary* summary, char* err, s
     appendf(&report, "- Debug log: `%s`\n",
             linux_debug_log_path()[0] ? linux_debug_log_path()
                                       : "disabled ([debug] enabled=0)");
-    // Green Curve writes a breadcrumb, not a dump: the real core file is
+    appendf(&report, "- Crash report: `%s` (carries its own symbolize command)\n",
+            linux_crash_report_path()[0] ? linux_crash_report_path() : "not armed");
+    // Green Curve writes a text report, not a dump: the real core file is
     // produced by the kernel, so where it lands is the first thing to check
     // when a crash needs post-mortem analysis.
     std::string corePattern;
@@ -440,6 +443,12 @@ int main(int argc, char** argv) {
     // A fatal signal now leaves its breadcrumb in the log file as well as on
     // stderr, which is the only copy a desktop-launched client ever has.
     linux_set_crash_log_fd(linux_debug_log_raw_fd());
+    // ...and in a crash report next to config.ini.  Only the path is published;
+    // the file is created by the handler if and only if a crash writes to it,
+    // so a normal run leaves nothing behind (linux_crash_breadcrumb.h).  One
+    // call arms the whole program, the daemon role included.
+    linux_crash_report_configure(configPath, opts.daemon);
+    linux_set_crash_report_path(linux_crash_report_path());
     // Group membership and socket permissions are the most common reason a
     // client cannot reach the daemon, so they are recorded up front rather than
     // only when a request happens to fail.
@@ -447,12 +456,13 @@ int main(int argc, char** argv) {
         linux_daemon_log_client_environment();
     linux_debug_logf("cli: argc=%d role=%s recognized=%d applyConfig=%d "
                      "saveConfig=%d probe=%d selfTest=%d serviceInstall=%d "
-                     "serviceRemove=%d startupPolicy=%d",
+                     "serviceRemove=%d startupPolicy=%d resumeRestore=%d",
                      argc, debugRole, opts.recognized ? 1 : 0,
                      opts.applyConfig ? 1 : 0, opts.saveConfig ? 1 : 0,
                      opts.probe ? 1 : 0, opts.selfTest ? 1 : 0,
                      opts.serviceInstall ? 1 : 0, opts.serviceRemove ? 1 : 0,
-                     (int)opts.startupPolicyAction);
+                     (int)opts.startupPolicyAction,
+                     opts.resumeRestore ? 1 : 0);
 
     GpuAdapterInfo gpuTarget = {};
     if (opts.hasGpuTarget) {
@@ -479,6 +489,20 @@ int main(int argc, char** argv) {
     // the Unix-socket protocol.  Must run before profile loading.
     if (opts.daemon) {
         return linux_daemon_run(configPath);
+    }
+
+    // The resume edge.  Nothing about the caller's config takes part: the
+    // settings being restored are the ones the daemon is already holding.
+    // Both outcomes are printed because the unit is StandardOutput=journal, and
+    // a restore that silently did nothing is the failure mode that would
+    // otherwise stay invisible until the user noticed stock clocks.
+    if (opts.resumeRestore) {
+        char message[256] = {};
+        bool ok = linux_daemon_resume_restore(message, sizeof(message));
+        fprintf(ok ? stdout : stderr, "Resume restore%s: %s\n",
+                ok ? "" : " failed",
+                message[0] ? message : (ok ? "OK" : "daemon request failed"));
+        return ok ? 0 : 1;
     }
 
     if (opts.selfTest) {

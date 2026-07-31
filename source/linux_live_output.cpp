@@ -3,6 +3,10 @@
 
 #include "linux_port.h"
 #include "intent_readback_status.h"
+// For linux_auto_restore_lockout_reason_name(): a latched automatic-restore
+// lockout is the one daemon state that makes settings silently stop applying at
+// boot, so it belongs in the status a bug report is built from.
+#include "linux_auto_restore_policy.h"
 
 #include <stdio.h>
 
@@ -121,8 +125,14 @@ void print_linux_live_state_text(FILE* out, const ServiceResponse* response) {
             snapshot.health.recoveryAttempted ? "attempted" : "not-attempted",
             snapshot.health.recoverySucceeded ? "succeeded" : "not-succeeded",
             snapshot.health.availableMutationDomains);
-    fprintf(out, "Health detail: %s\n\n",
+    fprintf(out, "Health detail: %s\n",
             snapshot.health.detail[0] ? snapshot.health.detail : "none");
+    fprintf(out, "Automatic restore: %s\n\n",
+            snapshot.autoRestoreLockoutReason ==
+                SERVICE_AUTO_RESTORE_LOCKOUT_NONE
+                ? "armed"
+                : linux_auto_restore_lockout_reason_name(
+                      snapshot.autoRestoreLockoutReason));
     IntentReadbackStatus readback = compare_intent_to_readback(response);
     fprintf(out,
             "Intent/readback: %s | requested=0x%02x | checked=0x%02x | "
@@ -224,6 +234,13 @@ void print_linux_live_state_json(FILE* out, const ServiceResponse* response) {
             snapshot.health.availableMutationDomains);
     json_string(out, snapshot.health.detail);
     IntentReadbackStatus readback = compare_intent_to_readback(response);
+    fputs("\n  },\n  \"auto_restore\": {\n    \"locked_out\": ", out);
+    fprintf(out, "%s,\n    \"lockout_reason_code\": %u,\n    \"lockout_reason\": ",
+            snapshot.autoRestoreLockoutReason ==
+                SERVICE_AUTO_RESTORE_LOCKOUT_NONE ? "false" : "true",
+            snapshot.autoRestoreLockoutReason);
+    json_string(out, linux_auto_restore_lockout_reason_name(
+                         snapshot.autoRestoreLockoutReason));
     fprintf(out,
             "\n  },\n  \"active_intent\": %s,\n"
             "  \"intent_readback\": {\n    \"state\": ",

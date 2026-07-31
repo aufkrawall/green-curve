@@ -143,37 +143,9 @@ static void service_cleanup_legacy_programdata() {
     }
 }
 
-// F-REL-2: cap the number of VEH minidumps kept on disk.  A driver-recovery
-// restart loop writes one greencurve_veh_*.dmp per crash cycle; without a cap a
-// sustained loop (or a poison-pill) could write hundreds and fill the disk.
-// Called once per fresh service process (which is once per restart cycle), so it
-// bounds the dumps across an entire loop.  Deletes the lexicographically-oldest
-// (the filename embeds a YYYYMMDD_HHMMSS timestamp) until at most maxKeep remain.
-static void service_rotate_minidumps(unsigned int maxKeep) {
-    char dir[MAX_PATH] = {};
-    if (!resolve_service_machine_data_dir(dir, sizeof(dir))) return;
-    char pattern[MAX_PATH] = {};
-    if (FAILED(StringCchPrintfA(pattern, ARRAY_COUNT(pattern), "%s\\greencurve_veh_*.dmp", dir))) return;
-    for (;;) {
-        WIN32_FIND_DATAA fd = {};
-        HANDLE h = gc_FindFirstFileUtf8(pattern, &fd);
-        if (h == INVALID_HANDLE_VALUE) return;
-        unsigned int count = 0;
-        char oldest[MAX_PATH] = {};
-        do {
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-            count++;
-            if (oldest[0] == 0 || lstrcmpA(fd.cFileName, oldest) < 0) {
-                StringCchCopyA(oldest, ARRAY_COUNT(oldest), fd.cFileName);
-            }
-        } while (gc_FindNextFileUtf8(h, &fd));
-        FindClose(h);
-        if (count <= maxKeep || oldest[0] == 0) return;
-        char victim[MAX_PATH] = {};
-        if (FAILED(StringCchPrintfA(victim, ARRAY_COUNT(victim), "%s\\%s", dir, oldest))) return;
-        if (!gc_DeleteFileUtf8(victim)) return; // stop on failure to avoid an infinite loop
-    }
-}
+// Crash-artifact rotation lives with the crash handlers it bounds, in
+// main_crash_artifacts.cpp — it needs crash_artifact_data_dir(), which is
+// resolved from the same fail-closed policy the dump writers use.
 
 static bool resolve_data_paths(char* err, size_t errSize) {
     if (g_userDataDir[0] && g_cliLogPath[0] && g_debugLogPath[0] && g_jsonPath[0] && g_errorLogPath[0]) {

@@ -33,7 +33,7 @@ public:
                 commandName_ ? commandName_ : "mutation");
             if (!service_store_operation_record(request_->operationId,
                     SERVICE_OPERATION_IN_PROGRESS, SERVICE_STATUS_ERROR,
-                    "operation started")) {
+                    SERVICE_OUTCOME_SEVERITY_ERROR, "operation started")) {
                 debug_log("service operation: id=%llu could not persist in-progress correlation\n",
                     (unsigned long long)request_->operationId);
             }
@@ -42,6 +42,9 @@ public:
         if (begin == SERVICE_OPERATION_BEGIN_DUPLICATE && existing) {
             response_->operationState = existing->state;
             response_->status = existing->responseStatus;
+            // The replay is the same answer, severity included: a retry after a
+            // lost response must not read as cleaner than the original.
+            response_->outcomeSeverity = existing->outcomeSeverity;
             StringCchCopyA(response_->message, ARRAY_COUNT(response_->message),
                 existing->message[0] ? existing->message :
                 (existing->state == SERVICE_OPERATION_IN_PROGRESS
@@ -60,20 +63,28 @@ public:
 
     ~ServiceOperationRequestGuard() {
         if (!started_ || !request_ || !response_) return;
+        // Resolve here rather than only at the write-out stamp: this is what
+        // gets PERSISTED, so the record a later retry replays has to hold the
+        // same severity the live answer carries.  The resolver is idempotent,
+        // so the write-out stamp still runs harmlessly over it.
+        response_->outcomeSeverity = service_response_resolve_outcome_severity(
+            response_->status, response_->outcomeSeverity);
         service_operation_complete(&g_serviceOperationTracker,
-            request_->operationId, response_->status, response_->message);
+            request_->operationId, response_->status,
+            response_->outcomeSeverity, response_->message);
         response_->operationState = response_->status == SERVICE_STATUS_OK
             ? SERVICE_OPERATION_SUCCEEDED : SERVICE_OPERATION_FAILED;
         if (!service_store_operation_record(request_->operationId,
                 response_->operationState, response_->status,
-                response_->message)) {
+                response_->outcomeSeverity, response_->message)) {
             debug_log("service operation: id=%llu could not persist completion\n",
                 (unsigned long long)request_->operationId);
         }
-        debug_log("service operation: id=%llu command=%s state=%s durationMs=%llu\n",
+        debug_log("service operation: id=%llu command=%s state=%s severity=%s durationMs=%llu\n",
             (unsigned long long)request_->operationId,
             commandName_ ? commandName_ : "mutation",
             response_->status == SERVICE_STATUS_OK ? "succeeded" : "failed",
+            service_outcome_severity_name(response_->outcomeSeverity),
             (unsigned long long)(GetTickCount64() - startedAt_));
     }
 

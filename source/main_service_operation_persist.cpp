@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 #define SERVICE_OPERATION_RECORD_MAGIC 0x47434f50u /* GCOP */
-#define SERVICE_OPERATION_RECORD_VERSION 1u
+// v2 records the answer's ServiceOutcomeSeverity alongside its status. A v1
+// file fails the version check and is discarded, which is the already-handled
+// "no valid persisted result" path: the worst case is one retried operation
+// answered as outcome-unknown, never a wrong answer.
+#define SERVICE_OPERATION_RECORD_VERSION 2u
 
 struct ServicePersistedOperationRecord {
     DWORD magic;
@@ -11,6 +15,7 @@ struct ServicePersistedOperationRecord {
     DWORD state;
     gc_u64 operationId;
     DWORD responseStatus;
+    DWORD outcomeSeverity;
     char message[512];
     DWORD checksum;
 };
@@ -36,7 +41,7 @@ static bool service_operation_record_path(char* out, size_t outSize) {
 }
 
 static bool service_store_operation_record(gc_u64 operationId, DWORD state,
-    DWORD responseStatus, const char* message) {
+    DWORD responseStatus, DWORD outcomeSeverity, const char* message) {
     if (!operationId || state < SERVICE_OPERATION_IN_PROGRESS ||
         state > SERVICE_OPERATION_OUTCOME_UNKNOWN) return false;
     ServicePersistedOperationRecord record = {};
@@ -46,6 +51,8 @@ static bool service_store_operation_record(gc_u64 operationId, DWORD state,
     record.state = state;
     record.operationId = operationId;
     record.responseStatus = responseStatus;
+    record.outcomeSeverity = service_response_resolve_outcome_severity(
+        responseStatus, outcomeSeverity);
     StringCchCopyA(record.message, ARRAY_COUNT(record.message),
         message ? message : "");
     record.checksum = service_operation_record_checksum(&record);
@@ -95,7 +102,7 @@ static bool service_load_operation_record(ServiceOperationTracker* tracker) {
     DWORD restoredState = record.state == SERVICE_OPERATION_IN_PROGRESS
         ? SERVICE_OPERATION_OUTCOME_UNKNOWN : record.state;
     return service_operation_restore(tracker, record.operationId,
-        restoredState, record.responseStatus,
+        restoredState, record.responseStatus, record.outcomeSeverity,
         restoredState == SERVICE_OPERATION_OUTCOME_UNKNOWN
             ? "operation outcome became uncertain across service restart"
             : record.message);

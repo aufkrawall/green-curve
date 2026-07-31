@@ -15,8 +15,12 @@ static bool service_desired_has_owned_intent(const DesiredSettings* desired) {
 static bool service_apply_desired_settings(const DesiredSettings* desired, bool interactive,
     char* result, size_t resultSize, bool* writeAttemptedOut,
     bool replaceActiveIntent,
-    const DesiredSettings* replacementIntent) {
+    const DesiredSettings* replacementIntent,
+    gc_u32* outcomeSeverityOut) {
     if (writeAttemptedOut) *writeAttemptedOut = false;
+    // Same rule as the backend: every early return here is a refusal.
+    if (outcomeSeverityOut)
+        *outcomeSeverityOut = (gc_u32)SERVICE_OUTCOME_SEVERITY_ERROR;
     if (!desired) {
         set_message(result, resultSize, "No desired settings provided");
         return false;
@@ -51,9 +55,11 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         requestedCurvePoints);
     set_last_apply_phase("service apply: apply desired settings");
     bool hardwareWriteAttempted = false;
+    gc_u32 backendSeverity = (gc_u32)SERVICE_OUTCOME_SEVERITY_ERROR;
     bool ok = apply_desired_settings_service(desired, interactive,
-        result, resultSize, &hardwareWriteAttempted);
+        result, resultSize, &hardwareWriteAttempted, &backendSeverity);
     if (writeAttemptedOut) *writeAttemptedOut = hardwareWriteAttempted;
+    if (outcomeSeverityOut) *outcomeSeverityOut = backendSeverity;
     if (ok) {
         set_last_apply_phase("service apply: capture authoritative state");
         // Update the active desired state BEFORE capturing the control state

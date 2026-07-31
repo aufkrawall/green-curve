@@ -91,10 +91,10 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
     // boot, install, repair, demand, or failure-action starts. The legacy
     // --manual argument is accepted but intentionally has no policy effect; a
     // validated nonce-bound controlled recovery is the sole startup exception.
-    SetUnhandledExceptionFilter(green_curve_unhandled_exception_filter);
-    // Vectored handler catches nvml.dll access violations (driver restart without
-    // device removal notification) and lets the fan runtime thread survive.
-    AddVectoredExceptionHandler(1, green_curve_vectored_handler);
+    // Unhandled-exception filter + fast-fail reporter, plus the vectored handler
+    // that catches nvml.dll access violations (driver restart without device
+    // removal notification) and lets the fan runtime thread survive.
+    install_crash_handlers(true);
 
     // Suppress all debug logging until the user's config is read.
     // This guarantees zero file I/O when the user has opted out.
@@ -158,9 +158,11 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
     // Harden the %ProgramData% shared bank at boot (before any interactive login)
     // so a standard user cannot pre-create and squat the directory/file.
     secure_shared_bank_at_startup();
-    // F-REL-2: bound the on-disk VEH minidumps so a restart loop cannot fill the
-    // disk (runs once per fresh process = once per restart cycle).
-    service_rotate_minidumps(10);
+    // F-REL-2: bound the on-disk crash artifacts so a restart loop cannot fill
+    // the disk (runs once per fresh process = once per restart cycle).  Sweeps
+    // the terminal crash dumps and the append-only breadcrumb as well as the VEH
+    // dumps, each against its own budget.
+    rotate_crash_artifacts_for_process();
 
     if (!ensure_service_runtime_lock()) {
         DWORD lockError = GetLastError();

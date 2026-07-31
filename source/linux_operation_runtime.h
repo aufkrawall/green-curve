@@ -19,10 +19,13 @@ public:
                 (unsigned long long)request_->operationId, name_);
             persist_daemon_operation(request_->operationId,
                 SERVICE_OPERATION_IN_PROGRESS, SERVICE_STATUS_ERROR,
-                "operation started");
+                SERVICE_OUTCOME_SEVERITY_ERROR, "operation started");
         } else if (begin == SERVICE_OPERATION_BEGIN_DUPLICATE && existing) {
             response_->operationState = existing->state;
             response_->status = existing->responseStatus;
+            // Same rule as the Windows guard: a replayed answer keeps the
+            // severity the original carried.
+            response_->outcomeSeverity = existing->outcomeSeverity;
             gc_strlcpy(response_->message, sizeof(response_->message),
                 existing->message[0] ? existing->message :
                 "operation result cached");
@@ -38,15 +41,21 @@ public:
     }
     ~LinuxOperationRequestGuard() {
         if (!started_) return;
+        // Resolved before the record is written for the same reason as on
+        // Windows: this record is what a retry replays.
+        response_->outcomeSeverity = service_response_resolve_outcome_severity(
+            response_->status, response_->outcomeSeverity);
         service_operation_complete(&g_operationTracker, request_->operationId,
-            response_->status, response_->message);
+            response_->status, response_->outcomeSeverity, response_->message);
         response_->operationState = response_->status == SERVICE_STATUS_OK
             ? SERVICE_OPERATION_SUCCEEDED : SERVICE_OPERATION_FAILED;
         persist_daemon_operation(request_->operationId,
-            response_->operationState, response_->status, response_->message);
-        dlog("daemon operation: id=%llu command=%s state=%s durationMs=%llu\n",
+            response_->operationState, response_->status,
+            response_->outcomeSeverity, response_->message);
+        dlog("daemon operation: id=%llu command=%s state=%s severity=%s durationMs=%llu\n",
             (unsigned long long)request_->operationId, name_,
             response_->status == SERVICE_STATUS_OK ? "succeeded" : "failed",
+            service_outcome_severity_name(response_->outcomeSeverity),
             monotonic_ms() - startedAt_);
     }
     bool execute() const { return execute_; }
