@@ -37,13 +37,18 @@ static inline bool service_build_full_restore_request(
     *requestOut = *activeIntent;
     // Reset-to-stock is part of replaying Green Curve-owned VF/GPU-offset
     // policy, because those writes are derived from a clean curve baseline.
-    // Never reset unrelated OC state for a sparse lock-, memory-, power-, or
-    // fan-only intent: missing fields may belong to another tool.
-    bool ownsVfPolicy = activeIntent->hasGpuOffset;
-    for (int ci = 0; ci < VF_NUM_POINTS && !ownsVfPolicy; ++ci) {
-        ownsVfPolicy = activeIntent->hasCurvePoint[ci] != 0;
-    }
-    requestOut->resetOcBeforeApply = ownsVfPolicy;
+    // Never reset unrelated OC state for a sparse memory-, power-, or fan-only
+    // intent: missing fields may belong to another tool.
+    //
+    // A lock counts as owned VF policy. Every lock mode composes a VF
+    // anchor/tail write (see service_project_desired_to_available_domains),
+    // so replaying one on top of a curve this process did not write stacks a
+    // pin onto an unknown baseline -- the exact "apply on top of apply" case
+    // that produces drifted boost behaviour. The sibling predicate
+    // service_intent_owns_vf_cleanup() has always counted it; this function
+    // did not, so a lock-only profile reset its baseline when it *replaced*
+    // another profile but not when standby restored it.
+    requestOut->resetOcBeforeApply = service_intent_owns_vf_cleanup(activeIntent);
     return true;
 }
 
@@ -57,10 +62,10 @@ static inline bool service_build_profile_transition_request(
     DesiredSettings* requestOut) {
     if (!nextIntent || !requestOut) return false;
     *requestOut = *nextIntent;
-    bool nextOwnsVf = nextIntent->hasGpuOffset;
-    for (int ci = 0; ci < VF_NUM_POINTS && !nextOwnsVf; ++ci) {
-        nextOwnsVf = nextIntent->hasCurvePoint[ci] != 0;
-    }
+    // Same ownership predicate on both sides of the transition: a lock-only
+    // profile writes a VF anchor/tail just as a curve does, so arriving at one
+    // needs the clean baseline that leaving one already forced.
+    bool nextOwnsVf = service_intent_owns_vf_cleanup(nextIntent);
     bool previousOwnedVf = service_intent_owns_vf_cleanup(previousIntent);
     requestOut->resetOcBeforeApply = nextOwnsVf || previousOwnedVf;
     if (!previousIntent) return true;

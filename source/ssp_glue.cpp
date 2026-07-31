@@ -14,6 +14,8 @@
 #include <windows.h>
 #include <cstdlib>
 
+#include "fatal_dump_hook.h"
+
 extern "C" {
 
 // Canary value: a reasonably unpredictable pointer-sized constant.
@@ -25,6 +27,15 @@ __attribute__((used)) unsigned long long __stack_chk_guard = (unsigned long long
 
 __attribute__((used)) __attribute__((noreturn)) void __stack_chk_fail(void) {
     OutputDebugStringA("*** STACK SMASHING DETECTED: greencurve ***\n");
+    // Write the dump explicitly rather than relying on __debugbreak() below
+    // being caught by the unhandled-exception filter.  That did work — an
+    // unhandled STATUS_BREAKPOINT reaches the filter — but only incidentally,
+    // and not at all when a debugger is attached (it swallows the breakpoint
+    // and the process then dies in abort() with nothing written).  A smashed
+    // stack is the single most valuable dump this program can produce, so it
+    // must not depend on which handler happens to see a breakpoint first.
+    gc_invoke_fatal_dump_hook(GC_FATAL_STACK_SMASH,
+        "stack protector: canary mismatch on function return");
     __debugbreak();
     abort();
 }

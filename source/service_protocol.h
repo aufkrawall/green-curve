@@ -28,7 +28,20 @@ enum {
     // staleness check compared the applied settings against the profile
     // instead. One wire field, one meaning: `desired` is always the active
     // intent, `startupProfile` is always the boot-apply snapshot.
-    SERVICE_PROTOCOL_VERSION = 16,
+    //
+    // v17 adds SERVICE_CMD_RESUME_RESTORE, the Linux counterpart of the Windows
+    // standby-resume restore. No struct changed size; as with v15 the command
+    // set grew, so a v16 daemon must reject the new command outright instead of
+    // falling through its switch and answering "unknown command" to a resume
+    // that silently never restored anything.
+    //
+    // v18 adds ServiceResponse.outcomeSeverity, so a client can tell a CLEAN
+    // success from one the service completed with reservations without parsing
+    // `message`. ServiceResponse changed size, so the ends genuinely cannot talk
+    // to each other and the version has to move: a v17 GUI paired with a v18
+    // service would otherwise read every byte from `operationId` onwards -- the
+    // whole state envelope and the message -- shifted.
+    SERVICE_PROTOCOL_VERSION = 18,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply. Bit 30 marks an
@@ -71,6 +84,12 @@ enum ServiceCommand {
     // the profile left the daemon writing the snapshot captured when the policy
     // was first set. See startup_snapshot_policy.h.
     SERVICE_CMD_REFRESH_STARTUP_PROFILE = 14,
+    // "The machine just came back from suspend; write the intent you already
+    // hold again." Settings-free by construction: like the Windows standby
+    // path it restores the daemon's own in-memory active intent, so a caller
+    // who can reach the socket cannot smuggle an overclock through it. The
+    // Linux resume unit (greencurve-resume.service) is the only sender.
+    SERVICE_CMD_RESUME_RESTORE = 15,
 };
 
 // What the daemon does with the GPU at startup.  RESTORE_LAST is zero so an
@@ -187,6 +206,79 @@ enum ServiceResponseStatus {
     SERVICE_STATUS_VERSION_MISMATCH = 2,
     SERVICE_STATUS_STALE_STATE = 3,
 };
+
+// How much of a success a successful answer actually is.
+//
+// `status` is binary, but a hardware write is not: an apply can verify every
+// requested value, or it can commit while the driver quietly declined some of
+// what was asked for (a VF point that refuses its selective offset, a flatten
+// target the tail will not hold).  Both answer SERVICE_STATUS_OK -- the request
+// was carried out and the service now owns that intent -- yet only the first is
+// a result the user never needs to see.
+//
+// The distinction exists ONLY on the wire because only the service can make it:
+// the counts behind it live in the apply backend, and the client's alternative
+// is scraping `message` for phrases like "3 of 8 boost points matched", which
+// is not a contract anything may depend on.
+enum ServiceOutcomeSeverity : gc_u32 {
+    // Every requested change was carried out and verified.
+    SERVICE_OUTCOME_SEVERITY_SUCCESS = 0,
+    // The operation succeeded and its result is owned, but something in it is
+    // worth telling the user about.  Never used for a failure.
+    SERVICE_OUTCOME_SEVERITY_WARNING = 1,
+    // The operation did not succeed.  Always paired with a non-OK status.
+    SERVICE_OUTCOME_SEVERITY_ERROR = 2,
+};
+
+// The single rule that keeps severity and status from ever contradicting each
+// other, applied at the one point each producer writes a response to the wire.
+// Total by construction: a non-OK status is ERROR regardless of what a handler
+// recorded, and an OK status can only be SUCCESS or WARNING.  A handler that
+// forgets to record anything therefore still ships a truthful severity, which
+// is why this is derived centrally instead of assigned per branch.
+static inline gc_u32 service_response_resolve_outcome_severity(
+    gc_u32 status, gc_u32 recordedSeverity) {
+    if (status != (gc_u32)SERVICE_STATUS_OK)
+        return (gc_u32)SERVICE_OUTCOME_SEVERITY_ERROR;
+    return recordedSeverity == (gc_u32)SERVICE_OUTCOME_SEVERITY_SUCCESS
+        ? (gc_u32)SERVICE_OUTCOME_SEVERITY_SUCCESS
+        : (gc_u32)SERVICE_OUTCOME_SEVERITY_WARNING;
+}
+
+// Exactly what the resolver above guarantees, restated for the validator and
+// for the regression harness: OK carries SUCCESS or WARNING, anything else
+// carries ERROR.
+static inline bool service_outcome_severity_matches_status(gc_u32 status,
+    gc_u32 severity) {
+    return severity == service_response_resolve_outcome_severity(status,
+        severity);
+}
+
+// The producer side of the same distinction, for a hardware apply.
+//
+// `failCount` is the apply's own verdict and outranks everything: any failed
+// step means the request did not succeed.  The two "partial" counts are points
+// the write COMMITTED but the readback did not match -- the backend accepts the
+// live value for them rather than failing the whole apply, because a single
+// stubborn VF point is not a reason to reject a profile.  Accepting them
+// silently is what made an apply that did not do what was asked look identical
+// to one that did, so they become a warning instead.
+static inline gc_u32 service_apply_outcome_severity(int failCount,
+    int partialBoostPoints, int partialFlattenPoints) {
+    if (failCount > 0) return (gc_u32)SERVICE_OUTCOME_SEVERITY_ERROR;
+    if (partialBoostPoints > 0 || partialFlattenPoints > 0)
+        return (gc_u32)SERVICE_OUTCOME_SEVERITY_WARNING;
+    return (gc_u32)SERVICE_OUTCOME_SEVERITY_SUCCESS;
+}
+
+static inline const char* service_outcome_severity_name(gc_u32 severity) {
+    switch (severity) {
+        case SERVICE_OUTCOME_SEVERITY_SUCCESS: return "success";
+        case SERVICE_OUTCOME_SEVERITY_WARNING: return "warning";
+        case SERVICE_OUTCOME_SEVERITY_ERROR:   return "error";
+    }
+    return "unknown";
+}
 
 // A response is useful to an interactive client only when its payload can be
 // tied to one service process and one selected-GPU lifetime.  These phases and
@@ -536,9 +628,12 @@ static inline bool service_gpu_bool_fields_valid(const GpuAdapterInfo* gpu) {
 // word here keeps both clients on that contract -- the Linux client used to set
 // the interactive bit unconditionally, which made the daemon reject EVERY
 // Reset with "invalid protocol fields".
+// RESUME_RESTORE is on the same contract for the same reason: it is a
+// machine-generated edge with no payload, and the daemon rejects any flag on it.
 static inline gc_u32 service_request_flags_for_command(unsigned int command,
                                                        bool interactive) {
-    if (command == SERVICE_CMD_RESET) return 0u;
+    if (command == SERVICE_CMD_RESET ||
+        command == SERVICE_CMD_RESUME_RESTORE) return 0u;
     return interactive ? (gc_u32)SERVICE_REQUEST_FLAG_INTERACTIVE : 0u;
 }
 
@@ -571,6 +666,11 @@ struct ServiceResponse {
     gc_u32 servicePid;
     gc_u32 serviceBuildNumber;
     gc_u32 operationState;
+    // ServiceOutcomeSeverity. Stamped by the one place each producer writes a
+    // response out, never by an individual command handler, so it cannot
+    // contradict `status` and cannot be left behind by a new branch.
+    gc_u32 outcomeSeverity;
+    gc_u32 outcomeSeverityReserved;
     gc_u64 operationId;
     char serviceVersion[32];
     ServiceStateEnvelope state;

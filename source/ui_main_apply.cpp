@@ -167,18 +167,26 @@ static void apply_changes() {
 
 #include "ui_main_control_lifecycle.cpp"
 
+// Refresh re-reads the state of the GPU already on screen.  It is deliberately
+// NOT a presentation transition: tearing live authority down first made the
+// window flash the "Synchronizing GPU state" overlay and the tray icon drop to
+// its neutral theme, i.e. claim for a few hundred milliseconds that no OC/fan
+// was in effect, purely because the user asked to re-read it.  The queued read
+// answers into the normal completion paths, which transition truthfully if the
+// service really has become unreachable or non-READY.
 static void refresh_curve() {
-    if (g_app.usingBackgroundService && !g_app.isServiceProcess) {
-        if (g_app.guiDraft.detached && gui_state_dirty()) {
-            int discard = gc_message_box(g_app.hMainWnd,
-                "The preserved draft belongs to a different GPU or VF topology.\n\nDiscard that draft and refresh this GPU?",
-                "Discard Detached Draft", MB_YESNO | MB_ICONWARNING);
-            if (discard != IDYES) return;
-            gui_draft_discard();
-        }
-        gui_service_begin_full_sync("manual refresh");
-        return;
+    if (!g_app.usingBackgroundService || g_app.isServiceProcess) return;
+    if (g_app.guiDraft.detached && gui_state_dirty()) {
+        int discard = gc_message_box(g_app.hMainWnd,
+            "The preserved draft belongs to a different GPU or VF topology.\n\nDiscard that draft and refresh this GPU?",
+            "Discard Detached Draft", MB_YESNO | MB_ICONWARNING);
+        if (discard != IDYES) return;
+        gui_draft_discard();
     }
+    record_ui_action("Refresh clicked");
+    g_app.guiManualResyncPending = true;
+    set_profile_status_text("Refreshing live GPU state...");
+    gui_service_request_resync("manual refresh", false);
 }
 
 static void reset_curve() {

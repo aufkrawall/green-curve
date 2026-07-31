@@ -346,6 +346,7 @@ static void unlock_all() {
 #include "main_service_server.cpp"
 
 #include "main_diagnostics.cpp"
+#include "main_crash_artifacts.cpp"
 #include "main_secure_write.cpp"
 
 #include "main_probe_config.cpp"

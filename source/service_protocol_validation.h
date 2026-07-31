@@ -30,7 +30,7 @@ static inline const char* service_request_reject_reason(
     if (r->magic != SERVICE_PROTOCOL_MAGIC) return "wrong protocol magic";
     if (r->version != SERVICE_PROTOCOL_VERSION) return "wrong protocol version";
     if (r->command < SERVICE_CMD_PING ||
-        r->command > SERVICE_CMD_REFRESH_STARTUP_PROFILE)
+        r->command > SERVICE_CMD_RESUME_RESTORE)
         return "unknown command";
     if (r->startupMode >= SERVICE_STARTUP_POLICY_MODE_COUNT)
         return "unknown startup policy mode";
@@ -136,6 +136,21 @@ static inline const char* service_request_reject_reason(
             return "startup profile refresh would re-bind the policy";
         if (!r->profileSlot || r->profileSlot > (gc_u32)CONFIG_NUM_SLOTS)
             return "startup profile refresh without a real slot";
+    } else if (r->command == SERVICE_CMD_RESUME_RESTORE) {
+        // A resume notification carries nothing at all. The settings, the write
+        // target and the decision to write are the daemon's; this command is
+        // only the edge that says the machine is back. Accepting a target GPU
+        // or a settings payload here would turn a group-reachable socket
+        // message into an apply nobody typed.
+        if (r->operationId || r->flags || r->resetOcBeforeApply ||
+            r->applyOrigin || r->profileSource || r->profileSlot ||
+            r->startupMode || r->targetGpu.valid || anyPrecondition)
+            return "resume restore carries mutation fields";
+        // The daemon never reads `desired` for this command, but refusing a
+        // populated one keeps the contract checkable at the boundary instead of
+        // resting on a handler that happens not to look.
+        if (service_desired_mutation_domains(&r->desired) != 0)
+            return "resume restore carries settings";
     } else if (r->operationId || r->flags || r->resetOcBeforeApply ||
         r->applyOrigin || r->profileSource || r->profileSlot ||
         r->startupMode || anyPrecondition) {
@@ -349,6 +364,14 @@ static inline bool validate_service_response_for_ipc(ServiceResponse* r) {
         r->version != SERVICE_PROTOCOL_VERSION ||
         r->status > SERVICE_STATUS_STALE_STATE ||
         r->operationState > SERVICE_OPERATION_OUTCOME_UNKNOWN ||
+        // Range AND agreement with `status` in one check: a severity that
+        // disagrees is not a lesser answer to trust selectively, it means the
+        // two fields describe different operations.  Checked before the
+        // payload-free refusal shortcut below so it covers every response,
+        // including one that carries no state at all.
+        !service_outcome_severity_matches_status(r->status,
+            r->outcomeSeverity) ||
+        r->outcomeSeverityReserved != 0 ||
         !service_wire_string_is_terminated(r->serviceVersion,
             (unsigned int)sizeof(r->serviceVersion)) ||
         !service_wire_string_is_terminated(r->message,

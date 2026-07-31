@@ -1,21 +1,74 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
+// Write the outcome of a finished mutation onto the profile status line, and
+// return the severity it was presented at so the caller can decide whether that
+// line is enough.  Setting a resident child label is NOT a presentation
+// transition: no surface is created, nothing takes activation or focus -- which
+// is why the presentation-silent tray/hotkey path is allowed to call it.
+static gc_u32 set_mutation_result_status_line(const GuiMutationWork* work,
+    const GuiMutationCompletion* completion, bool successForUi) {
+    if (!work || !completion) return (gc_u32)SERVICE_OUTCOME_SEVERITY_ERROR;
+    gc_u32 severity = gui_mutation_result_severity(successForUi,
+        completion->response.outcomeSeverity);
+    char label[64] = {};
+    gui_mutation_result_profile_label(label, sizeof(label),
+        (unsigned int)work->profileSource, work->profileSlot, CONFIG_NUM_SLOTS);
+    char status[512] = {};
+    gui_mutation_result_status_text(status, sizeof(status), work->kind,
+        severity, label, completion->result);
+    set_profile_status_text("%s", status);
+    debug_log("mutation result: kind=%d context=%d origin=%u source=%u slot=%d "
+        "successForUi=%d envelopeSeverity=%s presentedSeverity=%s prompt=%d\n",
+        (int)work->kind, (int)work->context, (unsigned int)work->origin,
+        (unsigned int)work->profileSource, work->profileSlot,
+        successForUi ? 1 : 0,
+        service_outcome_severity_name(completion->response.outcomeSeverity),
+        service_outcome_severity_name(severity),
+        gui_mutation_result_needs_prompt(severity) ? 1 : 0);
+    return severity;
+}
+
 // Background and tray-selected profile completion is deliberately isolated in
 // a presentation-silent operation.  It may update the resident GUI's model,
-// controls, tray icon, and deferred paint state, but it must never create/show
-// a surface or take activation/focus.  build.py keeps that contract guarded
-// against future additions of presentation or process-launch APIs here and in
-// the auto-profile apply driver.
+// controls, tray icon, status line, and deferred paint state, but it must never
+// create/show a surface or take activation/focus.  build.py keeps that contract
+// guarded against future additions of presentation or process-launch APIs here
+// and in the auto-profile apply driver.
 static void handle_auto_profile_mutation_completion_presentation_silent(
-    const GuiMutationWork* work, bool successForUi, const char* result) {
-    if (!work) return;
+    const GuiMutationWork* work, const GuiMutationCompletion* completion,
+    bool successForUi) {
+    if (!work || !completion) return;
     if (successForUi) {
         populate_desired_into_gui(&work->desired);
         gui_draft_mark_clean();
     }
+    // An explicit tray/hotkey pick is a user action, so the window says what
+    // came of it exactly as the Apply button does -- it was reported that
+    // switching profiles from the tray left the status line describing whatever
+    // happened before it.  A rule-driven foreground switch stays silent: the
+    // user did not ask for it, and it must not overwrite a line they are
+    // reading.  Written BEFORE the completion callback below, which may queue
+    // the next pick and set its own "Applying ..." line.
+    if (service_apply_origin_is_explicit(work->origin))
+        set_mutation_result_status_line(work, completion, successForUi);
     auto_profile_on_mutation_completed(work->profileSlot, work->origin,
-        successForUi, result);
+        successForUi, completion->result);
+}
+
+// The result of a MANUAL Apply / Reset, i.e. the only two contexts a window is
+// allowed to raise a dialog for.  A clean success is confirmed on the profile
+// status line and nothing else; anything the user has to acknowledge still gets
+// the modal box, with the service's own wording in it.  See
+// gui_mutation_result_policy.h for why the severity is not derived here.
+static void present_manual_mutation_result(const GuiMutationWork* work,
+    const GuiMutationCompletion* completion, bool successForUi) {
+    if (!work || !completion) return;
+    gc_u32 severity = set_mutation_result_status_line(work, completion,
+        successForUi);
+    if (!gui_mutation_result_needs_prompt(severity)) return;
+    gc_message_box(g_app.hMainWnd, completion->result, "Green Curve",
+        MB_OK | MB_ICONWARNING);
 }
 
 static void handle_gui_mutation_completion(GuiMutationCompletion* completion) {
@@ -105,16 +158,12 @@ static void handle_gui_mutation_completion(GuiMutationCompletion* completion) {
                 g_app.loadedSharedSlot = work.profileSlot;
             sync_applied_profile_from_service_metadata();
         }
-        gc_message_box(g_app.hMainWnd, completion->result, "Green Curve",
-            MB_OK | (successForUi
-                ? MB_ICONINFORMATION : MB_ICONWARNING));
+        present_manual_mutation_result(&work, completion, successForUi);
     } else if (work.context == GUI_MUTATION_CONTEXT_MANUAL_RESET) {
-        gc_message_box(g_app.hMainWnd, completion->result, "Green Curve",
-            MB_OK | (successForUi
-                ? MB_ICONINFORMATION : MB_ICONWARNING));
+        present_manual_mutation_result(&work, completion, successForUi);
     } else if (work.context == GUI_MUTATION_CONTEXT_AUTO_PROFILE) {
         handle_auto_profile_mutation_completion_presentation_silent(
-            &work, successForUi, completion->result);
+            &work, completion, successForUi);
     } else if (work.context == GUI_MUTATION_CONTEXT_APP_LAUNCH) {
         if (successForUi) {
             populate_desired_into_gui(&work.desired);

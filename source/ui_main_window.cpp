@@ -439,6 +439,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             break;
 
         case WM_ERASEBKGND:
+            // A coherent projection transaction owns the next frame; erasing
+            // here would expose the window background under controls that are
+            // still being rewritten.  See gui_window_redraw_policy.h.
+            if (gui_top_level_paint_suppressed()) return 1;
             fill_window_background(hwnd, (HDC)wParam);
             return 1;
 
@@ -577,6 +581,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
 
         case WM_PAINT: {
+            if (gui_top_level_paint_suppressed()) {
+                // Validate the region without drawing.  The enclosing
+                // transaction repaints the whole tree once it settles, so
+                // painting a half-projected frame here is exactly what the
+                // suppression exists to prevent -- and skipping BeginPaint
+                // entirely would leave the region invalid and spin WM_PAINT.
+                PAINTSTRUCT suppressed;
+                BeginPaint(hwnd, &suppressed);
+                EndPaint(hwnd, &suppressed);
+                debug_log_on_change("GUI paint: suppressed during a coherent projection transaction\n");
+                return 0;
+            }
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
             RECT rc;
@@ -1209,6 +1225,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 debug_log_session_marker("END", "gui", extra);
             }
             remove_tray_icon();
+            destroy_tray_menu_owner_window();
             close_startup_sync_thread_handle();
             destroy_backbuffer();
             if (g_app.hCachedGridPen) { DeleteObject(g_app.hCachedGridPen); g_app.hCachedGridPen = nullptr; }
