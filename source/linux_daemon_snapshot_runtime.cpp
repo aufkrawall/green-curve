@@ -13,9 +13,15 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
                                         !linux_gpu_bdf_valid(&g_gpu.selectedGpu);
     for (unsigned int i = 0; i < g_gpu.adapterCount && i < MAX_GPU_ADAPTERS; ++i)
         s->adapters[i] = g_gpu.adapters[i];
-    s->autoRestoreLockoutReason = g_stateUncertain
-        ? SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED
-        : SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
+    // The guard is the authority here, not g_stateUncertain.  Deriving this
+    // field from the uncertain flag alone published LOCKOUT_NONE for the whole
+    // crash-loop arm -- three refused start-time replays latch the guard
+    // without ever reaching a hardware write, so the daemon reported a healthy
+    // GPU while having permanently stopped restoring settings at boot, with the
+    // debug log as the only evidence.  Windows has always fed the same field
+    // from its real lockout state (service_auto_restore_is_locked_out).
+    s->autoRestoreLockoutReason = linux_auto_restore_published_lockout_reason(
+        &g_autoRestoreGuard, g_stateUncertain);
     s->health = g_gpu.health;
     if (g_stateUncertain) {
         s->health.reason = SERVICE_GPU_HEALTH_STATE_UNCERTAIN;

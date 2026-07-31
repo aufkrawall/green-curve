@@ -479,6 +479,11 @@ struct AppData {
     bool guiCurvePointExplicit[VF_NUM_POINTS];
     bool guiStateDirty;
     bool guiHasUserModifiedValues;
+    // A manual Refresh is waiting for its full-sync completion.  The refresh no
+    // longer tears the presentation down to announce itself (that flashed the
+    // sync overlay and the neutral tray theme), so this is what turns the
+    // silently queued read back into visible feedback when it lands.
+    bool guiManualResyncPending;
     int guiGpuOffsetMHz;
     int guiGpuOffsetExcludeLowCount;
     int guiMemOffsetMHz;

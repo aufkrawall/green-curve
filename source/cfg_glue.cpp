@@ -30,6 +30,8 @@
 #define _WIN32_WINNT 0x0A00
 #include <windows.h>
 
+#include "fatal_dump_hook.h"
+
 // FAST_FAIL_GUARD_ICALL_OR_TARGET_FAILURE is 0x5 on x64 Windows.
 // MinGW may not define it, so we define it ourselves.
 #ifndef FAST_FAIL_GUARD_ICALL_OR_TARGET_FAILURE
@@ -37,6 +39,33 @@
 #endif
 
 extern "C" {
+
+// ---------------------------------------------------------------------------
+// Fatal-dump hook (see fatal_dump_hook.h)
+//
+// This lives here rather than in the diagnostics code because cfg_glue.cpp is
+// linked into EVERY Windows binary this project produces, including the setup
+// program, which has no diagnostics at all.  A null hook keeps the installer
+// behaving exactly as before.
+// ---------------------------------------------------------------------------
+
+static GcFatalDumpHook g_gcFatalDumpHook = nullptr;
+static volatile LONG g_gcFatalDumpReported = 0;
+
+void gc_set_fatal_dump_hook(GcFatalDumpHook hook) {
+    g_gcFatalDumpHook = hook;
+}
+
+void gc_invoke_fatal_dump_hook(unsigned long reason, const char* label) {
+    GcFatalDumpHook hook = g_gcFatalDumpHook;
+    if (!hook) return;
+    // One-shot.  Guards two distinct hazards: a second thread crashing while the
+    // first is still writing its dump (which would interleave two dumps into one
+    // file), and the unbounded recursion described in fatal_dump_hook.h, where
+    // the hook's own indirect calls re-enter __guard_check_icall_fptr.
+    if (InterlockedCompareExchange(&g_gcFatalDumpReported, 1, 0) != 0) return;
+    hook(reason, label);
+}
 
 // The MinGW compiler emits DIRECT calls to __guard_check_icall_fptr
 // before every indirect call when CFG is enabled (the CRT's dispatch
@@ -59,7 +88,18 @@ __attribute__((used)) void __cdecl __guard_check_icall_fptr(uintptr_t Target) {
 
     // Target does not belong to any loaded module — this is a real CFG
     // violation (e.g. corrupted vtable, ROP gadget, or data-as-code).
-    // Trigger an immediate fast-fail so the OS can capture a crash dump.
+    //
+    // Report BEFORE the fast-fail.  __fastfail is uncatchable by design: it
+    // never reaches the vectored handler or SetUnhandledExceptionFilter, so
+    // this call is the only chance to leave a dump behind.  Relying on Windows
+    // Error Reporting instead does not work here — nothing in this project
+    // registers a WER LocalDumps entry, and the unhandled-exception filter
+    // returns EXCEPTION_EXECUTE_HANDLER elsewhere, so the process has already
+    // opted out of WER's own collection.
+    gc_invoke_fatal_dump_hook(GC_FATAL_CFG_VIOLATION,
+        "control flow guard: indirect call target belongs to no loaded module");
+
+    // Trigger an immediate fast-fail.
 #if defined(_M_IX86) || defined(_M_X64)
     __asm__ volatile("int $0x29" : : "c"(FAST_FAIL_GUARD_ICALL_OR_TARGET_FAILURE) : "memory");
 #else

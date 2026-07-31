@@ -120,6 +120,10 @@ static bool ap_do_apply_slot(int slot, ServiceApplyOrigin origin) {
                 &g_app.serviceActiveDesired, detail, sizeof(detail))) {
             debug_log("auto-profile: slot %d already active in service; skipping apply (%s)\n",
                       slot, detail[0] ? detail : "match");
+            // An explicit pick that turns out to be a no-op still needs an
+            // answer: the user asked for slot N and nothing visibly happened.
+            if (service_apply_origin_is_explicit(origin))
+                set_profile_status_text("Profile %d is already applied.", slot);
             populate_desired_into_gui(&desired);
             if (!set_config_int(g_app.configPath, "profiles", "selected_slot", slot)) {
                 debug_log("auto-profile: slot %d already active but selected_slot persistence failed\n",
@@ -146,8 +150,18 @@ static bool ap_do_apply_slot(int slot, ServiceApplyOrigin origin) {
         g_apApplyInFlight = false;
         debug_log("auto-profile: queue slot %d FAILED: %s\n", slot,
             queueStatus[0] ? queueStatus : "unknown");
+        // A refused explicit pick is reported where the user is looking, not
+        // only in the log.  Still no dialog: this path stays surface-free.
+        if (service_apply_origin_is_explicit(origin) && queueStatus[0])
+            set_profile_status_text("%s", queueStatus);
         return false;
     }
+    // The same "Applying Profile N to the GPU..." line the Apply button shows;
+    // the completion replaces it with the outcome.  Only for an explicit pick,
+    // so a rule-driven foreground switch cannot overwrite what the user is
+    // reading.
+    if (service_apply_origin_is_explicit(origin) && queueStatus[0])
+        set_profile_status_text("%s", queueStatus);
     debug_log("auto-profile: queued slot %d operation (%s)\n", slot,
         queueStatus[0] ? queueStatus : "started");
     return true;

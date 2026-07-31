@@ -294,6 +294,88 @@ bool linux_daemon_startup_load(const char* path,
     return true;
 }
 
+bool linux_read_boot_id(char* out, size_t outSize) {
+    if (!out || outSize == 0) return false;
+    out[0] = 0;
+    int fd = open("/proc/sys/kernel/random/boot_id", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    char raw[64] = {};
+    ssize_t count = -1;
+    do {
+        count = read(fd, raw, sizeof(raw) - 1);
+    } while (count < 0 && errno == EINTR);
+    close(fd);
+    if (count <= 0) return false;
+    raw[count] = 0;
+    // The kernel appends a newline; a boot identity with a stray terminator in
+    // it would compare unequal to itself on the next start.
+    size_t length = 0;
+    while (raw[length] && raw[length] != '\n' && raw[length] != '\r') ++length;
+    if (length == 0 || length >= outSize) return false;
+    memcpy(out, raw, length);
+    out[length] = 0;
+    return true;
+}
+
+bool linux_daemon_guard_store(const char* path,
+                              const LinuxAutoRestoreGuard* guard,
+                              char* err, size_t errSize) {
+    if (err && errSize) err[0] = 0;
+    if (!guard) {
+        gc_strlcpy(err, errSize, "refusing to store a null automatic-restore guard");
+        return false;
+    }
+    LinuxDaemonRestoreGuardRecord record = {};
+    linux_daemon_guard_initialize(&record, guard);
+    if (!linux_daemon_guard_valid(&record)) {
+        gc_strlcpy(err, errSize, "refusing invalid automatic-restore guard record");
+        return false;
+    }
+    return store_record_atomic(path, &record, sizeof(record),
+                               "automatic-restore guard", err, errSize);
+}
+
+bool linux_daemon_guard_load(const char* path, LinuxAutoRestoreGuard* guard,
+                             bool* outCorrupt, char* err, size_t errSize) {
+    if (err && errSize) err[0] = 0;
+    if (outCorrupt) *outCorrupt = false;
+    if (guard) memset(guard, 0, sizeof(*guard));
+    char name[256] = {};
+    int dirfd = open_state_directory(path, name, sizeof(name), err, errSize);
+    if (dirfd < 0) {
+        if (outCorrupt) *outCorrupt = true;
+        return false;
+    }
+    int fd = openat(dirfd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) {
+        int saved = errno;
+        close(dirfd);
+        // Absent is the normal first-run state, not a fault.
+        if (saved == ENOENT) return false;
+        gc_snprintf(err, errSize, "cannot open automatic-restore guard: %s",
+                    strerror(saved));
+        if (outCorrupt) *outCorrupt = true;
+        return false;
+    }
+    LinuxDaemonRestoreGuardRecord loaded = {};
+    struct stat status = {};
+    bool ok = fstat(fd, &status) == 0 && S_ISREG(status.st_mode) &&
+        status.st_uid == 0 && status.st_nlink == 1 &&
+        (status.st_mode & 0077) == 0 &&
+        status.st_size == (off_t)sizeof(loaded) &&
+        read(fd, &loaded, sizeof(loaded)) == (ssize_t)sizeof(loaded) &&
+        linux_daemon_guard_valid(&loaded);
+    close(fd);
+    close(dirfd);
+    if (!ok) {
+        gc_strlcpy(err, errSize, "automatic-restore guard record is invalid");
+        if (outCorrupt) *outCorrupt = true;
+        return false;
+    }
+    if (guard) linux_daemon_guard_to_policy(&loaded, guard);
+    return true;
+}
+
 bool linux_daemon_operation_load(const char* path,
                                  LinuxDaemonOperationRecord* record,
                                  char* err, size_t errSize) {

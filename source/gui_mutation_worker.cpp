@@ -7,6 +7,10 @@
 
 #include "gui_mutation_queue_policy.h"
 #include "gui_service_io_queue_policy.h"
+// Queue wording and completion presentation for the manual Apply / Reset paths.
+// Included here rather than in ui_mutation_completion.cpp because the queue text
+// and the result text share one vocabulary and must not drift apart.
+#include "gui_mutation_result_policy.h"
 
 enum GuiServiceIoKind {
     GUI_SERVICE_IO_FULL_SYNC = 1,
@@ -533,8 +537,18 @@ static bool gui_mutation_enqueue(const GuiMutationWork* work,
         g_guiMutationActive = true;
         g_guiMutationDispatched = false;
         gui_worker_signal_if_dispatchable_locked();
-        set_message(status, statusSize,
-            "GPU operation started in the background");
+        // Names what is being applied and says a result is still coming. The
+        // wording it replaced announced an unnamed operation running somewhere
+        // else, which told the user neither of those. The completion then
+        // overwrites this line with the outcome.
+        char queueLabel[64] = {};
+        gui_mutation_result_profile_label(queueLabel, sizeof(queueLabel),
+            (unsigned int)work->profileSource, work->profileSlot,
+            CONFIG_NUM_SLOTS);
+        char queued[256] = {};
+        gui_mutation_queued_status_text(queued, sizeof(queued), work->kind,
+            queueLabel);
+        set_message(status, statusSize, "%s", queued);
     } else if (decision == GUI_MUTATION_QUEUE_KEEP_PENDING_RESET) {
         set_message(status, statusSize,
             "Reset is already pending and takes precedence over this Apply");

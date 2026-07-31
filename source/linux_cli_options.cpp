@@ -30,6 +30,8 @@ void print_linux_help() {
     puts("  sudo greencurve --service-install   Install + start the systemd daemon");
     puts("  sudo greencurve --service-remove    Stop + remove the daemon");
     puts("  greencurve --daemon                 Run the daemon in the foreground");
+    puts("  greencurve --resume-restore         Re-apply the daemon's active settings after suspend");
+    puts("                                      (run automatically by greencurve-resume.service)");
     puts("  Non-root clients need group access: sudo usermod -aG greencurve \"$USER\"");
     puts("  Then sign out/in, or run: newgrp greencurve");
     puts("Overrides:");
@@ -95,6 +97,9 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
         } else if (strcmp(arg, "--service-remove") == 0) {
             opts->recognized = true;
             opts->serviceRemove = true;
+        } else if (strcmp(arg, "--resume-restore") == 0) {
+            opts->recognized = true;
+            opts->resumeRestore = true;
         } else if (strcmp(arg, "--self-test") == 0) {
             opts->recognized = true;
             opts->selfTest = true;

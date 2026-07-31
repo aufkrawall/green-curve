@@ -24,6 +24,12 @@
 // Boot-apply policy.  Root-owned and checksummed like the other two records:
 // it decides whether an unattended hardware write happens at daemon start.
 #define GC_DAEMON_STARTUP_FILE "/var/lib/greencurve/startup.bin"
+// Automatic-restore guard: how many unattended start-time writes this boot has
+// already spent, and whether automatic restoration is latched off entirely.
+// Same protection as the records above for the same reason -- it is the only
+// thing standing between a setting that hangs the driver and an endless
+// crash / systemd-restart / replay loop.
+#define GC_DAEMON_GUARD_FILE "/var/lib/greencurve/restore-guard.bin"
 
 // Pending-connection backlog.  Requests are serviced one at a time under the
 // runtime lock, so this only has to absorb bursts while one request is in
@@ -55,6 +61,12 @@ bool linux_daemon_reset_checked(const GpuAdapterInfo* target,
                                 const ServiceStateEnvelope* expected,
                                 ServiceResponse* response,
                                 char* result, size_t resultSize);
+
+// Tell the daemon the machine came back from suspend, so it writes the intent
+// it already holds again.  Sent by greencurve-resume.service; carries no
+// settings, no target and no operation id -- the daemon owns all three, exactly
+// as the Windows service owns its standby restore.
+bool linux_daemon_resume_restore(char* result, size_t resultSize);
 
 // Record this process's daemon-access context (group membership, socket owner/
 // mode, whether it can actually open the socket) in the debug log, once, before

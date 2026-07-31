@@ -55,6 +55,29 @@ static inline bool gui_tray_hidden_intent_requires_rehide(
     return hiddenIntent && windowVisible && !enforcementActive;
 }
 
+// A tray popup needs a foreground window in this process before TrackPopupMenu,
+// or the shell leaves the menu on screen after the click that should dismiss it
+// (KB135788).  SetForegroundWindow does not merely move focus, it RAISES its
+// target, so nominating the main window for that role pulled an open but
+// occluded Green Curve window in front of whatever the user was actually
+// looking at, for as long as the menu stayed up.
+//
+// The shell requires *a* foreground window, not that one, so the tray menu owns
+// a dedicated one.  It is neutral only if the user cannot observe it and it can
+// still take the foreground:
+//   - never the main window and never visible -- either one is a visible raise;
+//   - no WS_EX_APPWINDOW and WS_EX_TOOLWINDOW set -- no taskbar button and no
+//     Alt-Tab entry for a window that lives as long as one popup;
+//   - no WS_EX_NOACTIVATE, which would refuse the activation the menu needs and
+//     put the sticky menu straight back.
+static inline bool gui_tray_menu_owner_is_neutral(bool isMainWindow,
+    bool visible, bool appWindowStyle, bool toolWindowStyle,
+    bool noActivateStyle) {
+    if (isMainWindow || visible || appWindowStyle) return false;
+    if (noActivateStyle) return false;
+    return toolWindowStyle;
+}
+
 // The tray tooltip names the profile that is ACTUALLY APPLIED to the GPU, never
 // the one merely selected in the combo or loaded into the editor.  Loading a
 // profile deliberately does not touch hardware, so reporting it as active was a

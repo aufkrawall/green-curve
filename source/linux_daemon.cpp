@@ -16,6 +16,11 @@
 #include "linux_gpu_selection.h"
 #include "linux_mutation_authority.h"
 #include "profile_persistence_policy.h"
+// The platform-neutral "replay the complete active intent" request builder the
+// Windows standby and driver-recovery paths use.  Shared deliberately: it is
+// what decides that a replay resets the OC baseline first, and that decision
+// must not be reimplemented per platform.
+#include "service_lifecycle_policy.h"
 #include "startup_snapshot_policy.h"
 #include "platform.h"
 #include "fan_curve.h"
@@ -73,89 +78,8 @@ static void dlog(const char* fmt, ...) {
 // Client side convenience requests
 // ===========================================================================
 
-static const GpuAdapterInfo* daemon_response_selected_gpu(
-    const ServiceResponse* response) {
-    if (!response ||
-        (response->state.validSections &
-            SERVICE_STATE_SECTION_ADAPTER_IDENTITY) == 0 ||
-        response->snapshot.selectedAdapterIndex >=
-            response->snapshot.adapterCount ||
-        response->snapshot.selectedAdapterIndex >= MAX_GPU_ADAPTERS)
-        return nullptr;
-    const GpuAdapterInfo* gpu = &response->snapshot.adapters[
-        response->snapshot.selectedAdapterIndex];
-    return gpu->valid &&
-        (linux_gpu_bdf_valid(gpu) || gpu->pciInfoValid) ? gpu : nullptr;
-}
+#include "linux_daemon_client.h"
 
-static bool send_simple(unsigned int command, const DesiredSettings* desired,
-                         const GpuAdapterInfo* target, bool interactive,
-                         ServiceApplyOrigin applyOrigin,
-                         const ServiceStateEnvelope* expected,
-                         ServiceResponse* response,
-                         char* result, size_t resultSize) {
-    ServiceRequest req;
-    memset(&req, 0, sizeof(req));
-    req.magic = SERVICE_PROTOCOL_MAGIC;
-    req.version = SERVICE_PROTOCOL_VERSION;
-    req.command = command;
-    req.flags = service_request_flags_for_command(command, interactive);
-    req.callerPid = (gc_u32)getpid();
-    if (command == SERVICE_CMD_APPLY) req.applyOrigin = applyOrigin;
-    if (command == SERVICE_CMD_APPLY || command == SERVICE_CMD_RESET) {
-        ssize_t randomBytes = -1;
-        do {
-            randomBytes = getrandom(&req.operationId,
-                sizeof(req.operationId), 0);
-        } while (randomBytes < 0 && errno == EINTR);
-        if (randomBytes != (ssize_t)sizeof(req.operationId) ||
-            req.operationId == 0) {
-            if (result) gc_strlcpy(result, resultSize,
-                "failed generating a secure operation ID");
-            return false;
-        }
-    }
-    if (desired) req.desired = *desired;
-    if (target) req.targetGpu = *target;
-    if (expected) {
-        req.expectedServiceInstanceId = expected->serviceInstanceId;
-        req.expectedGpuGeneration = expected->gpuGeneration;
-        req.expectedTopologySignature = expected->topologySignature;
-    }
-    ServiceResponse resp;
-    memset(&resp, 0, sizeof(resp));
-    char err[256] = {};
-    bool ok = linux_daemon_send(&req, &resp, err, sizeof(err));
-    bool receivedServiceError = !ok &&
-        resp.magic == SERVICE_PROTOCOL_MAGIC &&
-        resp.version == SERVICE_PROTOCOL_VERSION &&
-        resp.status != SERVICE_STATUS_OK;
-    if (!ok && req.operationId != 0 && !receivedServiceError) {
-        ServiceRequest query = {};
-        query.magic = SERVICE_PROTOCOL_MAGIC;
-        query.version = SERVICE_PROTOCOL_VERSION;
-        query.command = SERVICE_CMD_GET_OPERATION_RESULT;
-        query.callerPid = (gc_u32)getpid();
-        query.operationId = req.operationId;
-        char queryErr[256] = {};
-        if (linux_daemon_send(&query, &resp, queryErr, sizeof(queryErr)) &&
-            resp.operationState != SERVICE_OPERATION_IN_PROGRESS &&
-            resp.operationState != SERVICE_OPERATION_OUTCOME_UNKNOWN) {
-            ok = resp.status == SERVICE_STATUS_OK;
-            dlog("daemon client: operation=%llu recovered state=%u after transport error\n",
-                (unsigned long long)req.operationId,
-                (unsigned int)resp.operationState);
-        } else {
-            if (result) gc_snprintf(result, resultSize,
-                "operation %llu outcome is pending or unknown after transport timeout; do not retry with a new operation ID",
-                (unsigned long long)req.operationId);
-            return false;
-        }
-    }
-    if (response) *response = resp;
-    if (result) gc_strlcpy(result, resultSize, resp.message[0] ? resp.message : (ok ? "OK" : err));
-    return ok;
-}
 
 bool linux_daemon_apply(const GpuAdapterInfo* target, const DesiredSettings* desired, bool interactive,
                          char* result, size_t resultSize) {
@@ -194,6 +118,18 @@ bool linux_daemon_reset(const GpuAdapterInfo* target, char* result, size_t resul
     }
     return send_simple(SERVICE_CMD_RESET, nullptr, authoritative, true,
                        SERVICE_APPLY_ORIGIN_UNSPECIFIED, &current.state,
+                       nullptr, result, resultSize);
+}
+
+bool linux_daemon_resume_restore(char* result, size_t resultSize) {
+    // No live-state attachment on purpose. The reconnect preconditions exist so
+    // a client cannot apply settings it computed against a stale envelope, but
+    // this request carries no settings and names no GPU: the daemon replays the
+    // intent it is holding right now, against the adapter it is holding it for.
+    // Reading state first would only widen the window between the resume edge
+    // and the write.
+    return send_simple(SERVICE_CMD_RESUME_RESTORE, nullptr, nullptr, false,
+                       SERVICE_APPLY_ORIGIN_UNSPECIFIED, nullptr,
                        nullptr, result, resultSize);
 }
 
@@ -282,12 +218,15 @@ static ServiceOperationTracker g_operationTracker = {};
 // The committed startup-apply policy.  Zero-initialized means RESTORE_LAST,
 // which is exactly what every build before protocol v13 did.
 static LinuxDaemonStartupRecord g_startupPolicy = {};
+// Whether an unattended write is still allowed.  See
+// linux_auto_restore_policy.h; the persisted copy lives in GC_DAEMON_GUARD_FILE.
+static LinuxAutoRestoreGuard g_autoRestoreGuard = {};
 
 static bool persist_daemon_operation(gc_u64 operationId, gc_u32 state,
-    gc_u32 responseStatus, const char* message) {
+    gc_u32 responseStatus, gc_u32 outcomeSeverity, const char* message) {
     LinuxDaemonOperationRecord record = {};
     linux_daemon_operation_initialize(&record, operationId, state,
-        responseStatus, message);
+        responseStatus, outcomeSeverity, message);
     char err[160] = {};
     bool ok = linux_daemon_operation_store(GC_DAEMON_OPERATION_FILE,
         &record, err, sizeof(err));
@@ -320,6 +259,11 @@ static bool restore_committed_record(bool hadPrevious, const GpuAdapterInfo* pre
 }
 
 #include "linux_daemon_snapshot_runtime.cpp"
+// The single unattended-write path, shared by both boot-apply modes and the
+// standby-resume restore.  Needs store_daemon_record(), populate_snapshot(),
+// the fan runtime and the guard helpers above it, and must precede the boot
+// policy below, which calls into it.
+#include "linux_auto_restore_runtime.h"
 // The whole boot-apply policy feature: client requests, the two daemon request
 // handlers, the startup write, and the once-per-start record load.  Needs
 // store_daemon_record() and populate_snapshot() above it.
@@ -395,6 +339,9 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
             if (g_hasActiveDesired) resp->desired = g_activeDesired;
             resp->status = SERVICE_STATUS_OK;
             break;
+        case SERVICE_CMD_RESUME_RESTORE:
+            daemon_handle_resume_restore(resp);
+            break;
         case SERVICE_CMD_GET_STARTUP_POLICY:
         case SERVICE_CMD_SET_STARTUP_POLICY:
         case SERVICE_CMD_REFRESH_STARTUP_PROFILE:
@@ -412,6 +359,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
             } else {
                 resp->status = record->responseStatus;
                 resp->operationState = record->state;
+                resp->outcomeSeverity = record->outcomeSeverity;
                 gc_strlcpy(resp->message, sizeof(resp->message),
                     record->message[0] ? record->message :
                     "operation result available");
@@ -525,6 +473,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 g_hasActiveDesired = true;
                 g_stateUncertain = false;
                 g_fanFailureCount = 0;
+                auto_restore_note_explicit_success("apply");
                 wake_fan_runtime();
             }
             populate_snapshot(&resp->snapshot, &resp->controlState);
@@ -596,6 +545,7 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 memset(&g_activeTarget, 0, sizeof(g_activeTarget));
                 g_stateUncertain = false;
                 g_fanFailureCount = 0;
+                auto_restore_note_explicit_success("reset");
                 wake_fan_runtime();
             }
             populate_snapshot(&resp->snapshot, &resp->controlState);
@@ -612,6 +562,14 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
     // READY versus DEGRADED from the complete atomic snapshot and advertises
     // only independently rollback-safe mutation domains.
     daemon_stamp_state_envelope(resp);
+    // The daemon's counterpart of the Windows write-out stamp, and for the same
+    // reason: every branch above sets `status` and breaks, so severity is
+    // derived once here instead of in each of them.  The Linux mutation path is
+    // transactional -- a phase either commits or the whole apply rolls back --
+    // so it has no partial-verify warning class of its own; that is why nothing
+    // here records a WARNING and everything resolves to SUCCESS or ERROR.
+    resp->outcomeSeverity = service_response_resolve_outcome_severity(
+        resp->status, resp->outcomeSeverity);
     pl_mutex_unlock(&g_lock);
 }
 
@@ -642,7 +600,7 @@ int linux_daemon_run(const char* configPath) {
     // daemon, and its crashes are the ones that matter most in the journal.
     linux_install_crash_breadcrumbs("daemon");
     // Re-published for this translation unit: linux_crash_breadcrumb.h keeps
-    // its state in `static` storage, so the daemon's copy needs the descriptor
+    // its state in `static` storage, so the daemon's copy needs the descriptors
     // too or a daemon crash would only reach the journal.
     linux_set_crash_log_fd(linux_debug_log_raw_fd());
     linux_set_crash_phase("daemon-init");
@@ -675,12 +633,13 @@ int linux_daemon_run(const char* configPath) {
         gc_u32 restoredState = operation.state == SERVICE_OPERATION_IN_PROGRESS
             ? SERVICE_OPERATION_OUTCOME_UNKNOWN : operation.state;
         service_operation_restore(&g_operationTracker, operation.operationId,
-            restoredState, operation.responseStatus,
+            restoredState, operation.responseStatus, operation.outcomeSeverity,
             restoredState == SERVICE_OPERATION_OUTCOME_UNKNOWN
                 ? "operation outcome became uncertain across daemon restart"
                 : operation.message);
     }
 
+    load_auto_restore_guard_at_boot();
     load_startup_policy_at_boot();
 
     if (g_startupPolicy.mode == SERVICE_STARTUP_POLICY_PROFILE) {
@@ -707,10 +666,15 @@ int linux_daemon_run(const char* configPath) {
                 restoredState == SERVICE_OPERATION_IN_PROGRESS) {
                 restoredState = SERVICE_OPERATION_OUTCOME_UNKNOWN;
             }
+            // The committed state record carries no severity of its own; the
+            // resolver derives it from the status this restore reconstructs,
+            // which is exactly as much as this record actually knows.
+            gc_u32 restoredStatus = restoredState == SERVICE_OPERATION_SUCCEEDED
+                ? (gc_u32)SERVICE_STATUS_OK : (gc_u32)SERVICE_STATUS_ERROR;
             service_operation_restore(&g_operationTracker,
-                saved.operationId, restoredState,
-                restoredState == SERVICE_OPERATION_SUCCEEDED
-                    ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR,
+                saved.operationId, restoredState, restoredStatus,
+                service_response_resolve_outcome_severity(restoredStatus,
+                    SERVICE_OUTCOME_SEVERITY_SUCCESS),
                 restoredState == SERVICE_OPERATION_SUCCEEDED
                     ? "operation restored from committed daemon state"
                     : "operation outcome became uncertain across daemon restart");
@@ -726,49 +690,43 @@ int linux_daemon_run(const char* configPath) {
         } else if (saved.state != LINUX_DAEMON_RECORD_ACTIVE) {
             g_stateUncertain = true;
             dlog("daemon: startup state=%u is not ACTIVE; no automatic write\n", saved.state);
-        } else if (!linux_backend_select_target(&g_gpu, &saved.targetGpu, err, sizeof(err))) {
-            g_stateUncertain = true;
-            store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &saved.targetGpu,
-                                &saved.desired, err, sizeof(err));
-            dlog("daemon: startup GPU identity rejected; no automatic write: %s\n", err);
         } else {
-            g_gpuReady = true;
-            LockMode storedLockMode = saved.desired.lockMode;
-            saved.desired.lockMode = profile_lock_mode_after_load(
-                saved.desired.hasLock, true, saved.desired.lockMode);
-            if (storedLockMode != saved.desired.lockMode) {
-                dlog("daemon: migrated persisted enabled lock mode %d to %d before startup reapply\n",
-                     (int)storedLockMode, (int)saved.desired.lockMode);
-            }
-            validate_desired_settings_for_ipc(&saved.desired);
-            char msg[256] = {};
-            LinuxMutationResult mutation = linux_backend_apply(&g_gpu, &saved.desired,
-                nullptr, &saved.desired, msg, sizeof(msg));
-            if (mutation.success) {
-                g_activeDesired = saved.desired;
-                g_activeTarget = g_gpu.selectedGpu;
-                g_hasActiveDesired = true;
-                dlog("daemon: startup reapply committed -> %s\n", msg);
-            } else {
-                // A failed automatic replay is never safe to retry unattended,
-                // even when the hardware rollback was verified.  Require an
-                // explicit user Apply/Reset to reclaim ownership.
-                g_stateUncertain = true;
-                store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &saved.targetGpu,
-                                    &saved.desired, err, sizeof(err));
-                dlog("daemon: startup reapply failed and was locked out -> %s\n", msg);
-            }
+            // One unattended-write path for all three automatic origins: it
+            // owns the crash-loop guard, the GPU re-selection, and -- the part
+            // this code used to get wrong -- building the request through
+            // service_build_full_restore_request(), so the replay resets the OC
+            // baseline before laying the stored curve back down instead of
+            // stacking it on whatever the driver currently holds.
+            LinuxAutoRestoreOutcome outcome = daemon_automatic_restore_write(
+                LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST,
+                &saved.targetGpu, &saved.desired);
+            if (!outcome.success)
+                dlog("daemon: startup reapply did not commit -> %s\n",
+                     outcome.message[0] ? outcome.message : "unknown reason");
         }
     }
 
     pl_thread fanThread;
-    bool fanThreadOk = pl_thread_start(&fanThread, fan_reassert_thread, nullptr);
+    if (!pl_thread_start(&fanThread, fan_reassert_thread, nullptr)) {
+        // Fatal, not "degraded".  Without this worker a curve or fixed duty is
+        // written once and never re-asserted, and the driver silently takes the
+        // fan back at the next opportunity -- a running daemon that reports
+        // healthy while quietly not controlling the fan is worse than one that
+        // is visibly absent.  Windows treats lifecycle-worker creation failure
+        // the same way: it stops startup.  Exiting non-zero also lets the unit's
+        // Restart= net make another attempt.
+        dlog("daemon: fan reassertion worker could not be started; refusing to "
+             "serve without it\n");
+        g_running = 0;
+        if (g_gpu.nvmlLib || g_gpu.nvapiLib) linux_backend_shutdown(&g_gpu);
+        return 1;
+    }
 
     DaemonListener listener = {};
     if (!daemon_open_listener(&listener)) {
         g_running = 0;
         wake_fan_runtime();
-        if (fanThreadOk) pl_thread_join(fanThread);
+        pl_thread_join(fanThread);
         if (g_gpu.nvmlLib || g_gpu.nvapiLib) linux_backend_shutdown(&g_gpu);
         return 1;
     }
@@ -787,8 +745,11 @@ int linux_daemon_run(const char* configPath) {
 
     linux_set_crash_phase("daemon-shutdown");
     g_running = 0;
+    // Only an orderly exit reaches this line, which is exactly what makes it
+    // evidence that the starts leading here were not a crash loop.
+    if (exitStatus == 0) clear_auto_restore_attempts_on_clean_stop();
     wake_fan_runtime();
-    if (fanThreadOk) pl_thread_join(fanThread);
+    pl_thread_join(fanThread);
     daemon_release_fan_to_driver();
     daemon_close_listener(&listener);
     close_daemon_shutdown_pipe();

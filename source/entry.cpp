@@ -446,11 +446,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     gui_service_model_initialize(&g_app.guiServiceModel);
     initialize_process_mitigations();
     InitializeCriticalSection(&g_debugLogLock);
-    SetUnhandledExceptionFilter(green_curve_unhandled_exception_filter);
+    // No vectored NVML recovery in the GUI: resuming after an access violation
+    // only makes sense for the service, which restarts itself cleanly afterwards.
+    install_crash_handlers(false);
 
     set_default_config_path();
     char pathErr[256] = {};
     resolve_data_paths(pathErr, sizeof(pathErr));
+    // Bound the GUI's own crash artifacts.  Runs after path resolution so it
+    // sweeps the real user directory rather than the environment fallback.
+    rotate_crash_artifacts_for_process();
 
     // Initialize the remaining GUI-only process state before reading config/UI state.
     initialize_dark_mode_support();

@@ -7,6 +7,7 @@
 
 #include "gui_draft_policy.h"
 #include "gui_service_io_queue_policy.h"
+#include "gui_service_resync_policy.h"
 
 static bool g_guiRenderTransactionActive = false;
 static bool g_guiRebuildPreserveDraft = false;
@@ -377,6 +378,9 @@ static void gui_render_service_phase_only() {
 }
 
 static void gui_service_begin_full_sync(const char* reason) {
+    // A visible transition is its own feedback and supersedes the silent
+    // refresh's pending status line.
+    g_app.guiManualResyncPending = false;
     if (g_app.guiServiceModel.phase != GUI_SERVICE_SYNCING)
         gui_service_advance_presentation_epoch(reason);
     gc_u64 epoch = gui_service_io_connection_epoch();
@@ -392,6 +396,31 @@ static void gui_service_begin_full_sync(const char* reason) {
             "Could not start the background service synchronization worker");
         gui_render_service_phase_only();
     }
+}
+
+// The entry point for a re-read that is NOT a connection-level event: the
+// manual Refresh button.  A coherent READY model with live authority keeps its
+// whole presentation -- overlay, editor, tray theme and taskbar surface -- and
+// only the accepted completion (or a real transport failure) may change it.
+// Anything else falls back to the visible sync transition; see
+// gui_service_resync_policy.h.
+static void gui_service_request_resync(const char* reason,
+    bool identityMayChange) {
+    bool modelReady = gui_service_model_ready(&g_app.guiServiceModel);
+    bool liveAuthority = g_app.serviceSnapshotAuthoritative && g_app.loaded;
+    GuiServiceResyncMode mode = gui_service_resync_decide(
+        modelReady, liveAuthority, identityMayChange);
+    debug_log("GUI service state: resync reason=%s mode=%s ready=%d authoritative=%d loaded=%d identityMayChange=%d\n",
+        reason && reason[0] ? reason : "resync",
+        mode == GUI_SERVICE_RESYNC_PRESERVE_PRESENTATION
+            ? "preserve presentation" : "sync transition",
+        modelReady ? 1 : 0, g_app.serviceSnapshotAuthoritative ? 1 : 0,
+        g_app.loaded ? 1 : 0, identityMayChange ? 1 : 0);
+    // A read the worker cannot take leaves the presentation backed by nothing
+    // that will ever refresh it, so fall through to the transition.
+    if (mode == GUI_SERVICE_RESYNC_PRESERVE_PRESENTATION &&
+        gui_service_io_queue_full_sync(reason)) return;
+    gui_service_begin_full_sync(reason);
 }
 
 static void gui_service_retry_full_sync(const char* reason) {
@@ -426,6 +455,7 @@ static void gui_service_handle_transport_failure(gc_u64 connectionEpoch,
         g_app.backgroundServiceBroken,
         serviceInstalled, serviceRunning, nextBroken,
         visibleErrorChanged);
+    g_app.guiManualResyncPending = false;
     gui_service_model_disconnect(&g_app.guiServiceModel, connectionEpoch);
     if (wasReady) gui_mutation_advance_gpu_epoch("service transport lost");
     if (hadLiveAuthority) gui_invalidate_live_authority(reason);
@@ -598,6 +628,14 @@ static void gui_apply_ready_envelope(const ServiceResponse* response,
     }
     update_tray_icon();
     gui_selected_gpu_notification_refresh(&g_app.selectedGpu);
+    if (g_app.guiManualResyncPending && kind == GUI_SERVICE_IO_FULL_SYNC) {
+        // The silent refresh landed.  This is the only feedback it produces, so
+        // it is set before the more specific messages below, which may replace
+        // it with something the user needs to read instead.
+        g_app.guiManualResyncPending = false;
+        set_profile_status_text("Live GPU state refreshed.");
+        debug_log("GUI service state: manual refresh adopted a coherent READY envelope with no presentation transition\n");
+    }
     if (authorityOrTopologyChanged && !wasDirty &&
         !response->state.activeDesiredValid) {
         set_profile_status_text(
@@ -658,6 +696,9 @@ static bool gui_service_accept_response_on_main_thread(
         response->state.validSections);
 
     if (!gui_service_model_ready(&g_app.guiServiceModel)) {
+        // The refresh got a real answer: it is not READY.  The phase
+        // presentation below says so, so drop the pending "refreshed" line.
+        g_app.guiManualResyncPending = false;
         gui_invalidate_live_authority(gui_service_phase_name(
             g_app.guiServiceModel.phase));
         gui_render_service_phase_only();

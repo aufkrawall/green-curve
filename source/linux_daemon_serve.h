@@ -91,9 +91,15 @@ static void daemon_close_listener(const DaemonListener* listener) {
     }
 }
 
-// Returns the process exit status.  Non-zero matters: the unit uses
-// Restart=on-failure, so a listener that has genuinely failed must not exit
-// zero or systemd leaves the machine without GPU control.
+// Returns the process exit status.  Non-zero matters: the unit restarts on a
+// failed exit, so a listener that has genuinely failed must not exit zero or
+// systemd leaves the machine without GPU control.
+//
+// The loop is event-driven and stays that way.  poll() only grows a timeout
+// when the manager asked for a watchdog (WatchdogSec= in the unit): the ping is
+// a liveness protocol the manager owns the period of, not a poll for work, and
+// with no watchdog configured the timeout is still -1 and nothing wakes this
+// thread but a connection or the shutdown pipe.
 static int daemon_serve_until_stopped(int srv) {
     // Reserved descriptor for the EMFILE/ENFILE recovery idiom: close it,
     // accept the pending connection, close that connection, then reopen the
@@ -107,19 +113,31 @@ static int daemon_serve_until_stopped(int srv) {
     // SIGTERM breaks the wait without a timeout, and one stalled peer cannot
     // hold the loop hostage before it is even accepted.
     set_nonblocking(srv);
+    const unsigned int watchdogIntervalMs = linux_systemd_watchdog_interval_ms();
+    const int pollTimeoutMs = watchdogIntervalMs ? (int)watchdogIntervalMs : -1;
+    // The first ping is sent before the first wait, so a manager that set a
+    // short WatchdogSec cannot time the daemon out during its own first
+    // interval on a machine with no client traffic.
+    linux_systemd_notify_watchdog();
     while (g_running) {
         struct pollfd waiters[2] = {};
         waiters[0].fd = srv;
         waiters[0].events = POLLIN;
         waiters[1].fd = g_shutdownPipe[0];
         waiters[1].events = POLLIN;
-        int ready = poll(waiters, g_shutdownPipe[0] >= 0 ? 2 : 1, -1);
+        int ready = poll(waiters, g_shutdownPipe[0] >= 0 ? 2 : 1, pollTimeoutMs);
         if (ready < 0) {
             if (errno == EINTR) continue;
             dlog("daemon: poll() failed: %s\n", strerror(errno));
             exitStatus = 1;
             break;
         }
+        // Every wakeup pings, not only the timeout: reaching this line at all
+        // is the evidence the watchdog exists to collect, and a busy daemon
+        // would otherwise never hit its timeout branch and would be killed for
+        // doing its job.
+        linux_systemd_notify_watchdog();
+        if (ready == 0) continue;
         if (g_shutdownPipe[0] >= 0 && (waiters[1].revents & POLLIN)) {
             dlog("daemon: stop signal received; shutting down\n");
             break;
