@@ -276,6 +276,113 @@ def check_debug_log(ctx, require_text, forbid_text):
                     "crash breadcrumbs stay async-signal-safe (write(2) only)")
 
 
+def check_crash_report(ctx, require_text, forbid_text, require_order):
+    """F-LNX-CRASH: the Linux crash report, the counterpart of a Windows minidump.
+
+    Linux ships stripped and leaves the core file to the kernel, so the two
+    things that decide whether a crash is diagnosable are (a) a report carrying
+    the fault address, PC/SP and /proc/self/maps, and (b) an extracted .debug
+    file with a matching build-id.  Neither existed before; a Linux crash left a
+    signal number and nothing else.
+    """
+    breadcrumb_h = _p(ctx, "linux_crash_breadcrumb.h")
+    report_h = _p(ctx, "linux_crash_report.h")
+    report_cpp = _p(ctx, "linux_crash_report.cpp")
+    main_cpp = _p(ctx, "linux_main.cpp")
+    daemon_cpp = _p(ctx, "linux_daemon.cpp")
+    policy_h = _p(ctx, "crash_artifact_policy.h")
+
+    # SA_SIGINFO is what makes the report actionable rather than a bare signal
+    # number: si_code, si_addr and the register context all come from it.  The
+    # crash itself is still never suppressed -- SA_RESETHAND + re-raise is
+    # asserted by the pre-existing F-LNX-DIAG gates in build.py.
+    require_text(breadcrumb_h, "SA_RESETHAND | SA_NODEFER | SA_SIGINFO",
+                 "the handler takes siginfo without losing the default-disposition reset")
+    require_text(breadcrumb_h, "gc_fault_registers",
+                 "the report records the PC/SP at the fault")
+    require_text(breadcrumb_h, "gc_signal_safe_write_maps",
+                 "the report records /proc/self/maps so a PIE address is attributable")
+    require_text(breadcrumb_h, "si_addr",
+                 "the report records the faulting address")
+    # Still async-signal-safe after the additions.  build.py forbids the
+    # formatting calls; these are the allocating/unwinding ones a backtrace
+    # helper would drag in.
+    for forbidden in ("malloc(", "backtrace"):
+        forbid_text(breadcrumb_h, forbidden,
+                    "the crash report stays async-signal-safe (write/read/open only)")
+    # RLIMIT_CORE belongs to the user.  Raising it to force a core would be a
+    # side effect this program has no business having, and a rejected approach
+    # is worth a guard so it does not get "fixed" back in.
+    # Forbid the CALL, not the constant: both files discuss the decision in
+    # prose, and a guard that trips on its own rationale is one that gets
+    # deleted rather than obeyed.
+    for path in (report_cpp, breadcrumb_h):
+        forbid_text(path, "setrlimit(",
+                    "the user's own ulimit -c is never overridden")
+
+    # Unlike the per-TU log descriptor, the report state lives in one
+    # program-wide slot, so a translation unit that installs handlers cannot
+    # forget to arm it and silently write nothing on a crash.
+    require_text(breadcrumb_h, "inline volatile sig_atomic_t& gc_crash_report_fd_slot()",
+                 "the report descriptor has a single program-wide instance")
+    require_text(breadcrumb_h, "inline const char* volatile& gc_crash_report_path_slot()",
+                 "the report path has a single program-wide instance")
+    forbid_text(breadcrumb_h, "static volatile sig_atomic_t g_crashReportFd",
+                "the report descriptor is not a per-TU static")
+    forbid_text(daemon_cpp, "linux_set_crash_report_path(",
+                "the daemon inherits the armed report path rather than re-arming")
+
+    # F-LNX-CRASH-LAZY: the report file is created by the crash handler and
+    # NOWHERE else.  Arming used to open it, which meant every run of every role
+    # dropped a 0-byte placeholder next to config.ini -- removed only by
+    # linux_crash_report_close(), which nothing called, and which execve()
+    # (the TUI's terminal relaunch), _exit() and SIGKILL cannot call anyway.
+    # The invariant that replaced it is structural: a report file exists if and
+    # only if a crash wrote bytes into it.  These three guards are what keep an
+    # "arm it earlier so we know it works" change from bringing the spam back.
+    require_text(breadcrumb_h, "gc_crash_report_open_on_demand",
+                 "the report file is created on the first fatal write, not at startup")
+    require_text(breadcrumb_h, "if (!data || length == 0) return;",
+                 "a zero-length emit cannot create a 0-byte report")
+    forbid_text(report_cpp, "O_CREAT",
+                "arming the report must not create the file; only the handler does")
+    require_text(breadcrumb_h, "O_CLOEXEC",
+                 "a forked helper cannot inherit the report descriptor")
+    require_text(breadcrumb_h, "gc_crash_report_reserve_slot",
+                 "a descriptor is reserved up front so a crash under EMFILE can "
+                 "still open its report")
+
+    require_text(report_h, "linux_crash_report_path",
+                 "the report path is reachable from the arming call site")
+    require_text(report_cpp, "gc_linux_crash_dir(",
+                 "the report directory comes from the shared fail-closed policy")
+    require_text(report_cpp, "gc_crash_artifact_is_older",
+                 "report rotation orders by the embedded timestamp")
+    require_text(policy_h, "gc_linux_crash_dir",
+                 "the Linux report directory rule is pure and covered by the harness")
+    require_text(main_cpp, "linux_set_crash_report_path(linux_crash_report_path())",
+                 "the report path is armed at startup")
+    require_order(main_cpp, "linux_crash_report_configure(",
+                  "linux_set_crash_report_path(linux_crash_report_path())",
+                  "the path is resolved before the handler is armed with it")
+
+    # The invariant is only worth as much as the fixture that executes it, and
+    # that fixture needs real fork/signal/file behaviour, so it can only run on
+    # a Linux host.  Guard both halves: that the fixture asserts the two
+    # directions, and that build.py actually compiles and runs it.
+    fixture_cpp = os.path.join(ctx.SCRIPT_DIR, "tests",
+                               "linux_crash_report_regression.cpp")
+    build_script = os.path.join(ctx.SCRIPT_DIR, "build.py")
+    require_text(fixture_cpp, "arming does not create the report file",
+                 "the fixture asserts that a normal run leaves no artifact")
+    require_text(fixture_cpp, "a fatal write creates the report file",
+                 "the fixture asserts that a crash still produces its report")
+    require_text(fixture_cpp, "an execve'd process leaves no report behind",
+                 "the fixture covers the relaunch path that cleanup cannot reach")
+    require_text(build_script, '"linux_crash_report_regression"',
+                 "build.py compiles and runs the crash-report fixture")
+
+
 def check_startup_policy(ctx, require_text, forbid_text):
     """F-LNX-STARTUP: the daemon's boot-apply policy.
 
@@ -289,8 +396,9 @@ def check_startup_policy(ctx, require_text, forbid_text):
     daemon_cpp = _p(ctx, "linux_daemon.cpp")
     policy_h = _p(ctx, "linux_startup_policy.h")
     cli_cpp = _p(ctx, "linux_cli_options.cpp")
-    require_text(protocol_h, "SERVICE_PROTOCOL_VERSION = 16",
-                 "the startup-policy and readback-validity fields have a protocol version bump")
+    require_text(protocol_h, "SERVICE_PROTOCOL_VERSION = 18",
+                 "the startup-policy, readback-validity and outcome-severity "
+                 "fields each moved the protocol version with them")
     # F-LNX-STARTUP-SNAPSHOT: the boot-apply snapshot must travel in its own
     # response member. It used to ride in `desired`, which the end-of-request
     # stamp overwrites, so every staleness check compared the applied settings
@@ -436,6 +544,165 @@ def check_setup_script_line_endings(setup_script):
     sys.exit(1)
 
 
+def check_auto_restore(ctx, require_text, forbid_text, require_order):
+    """F-LNX-AUTORESTORE: unattended writes and the unit that survives them.
+
+    Three things write the GPU without a user asking -- the restore-last
+    replay, the profile boot apply, and the standby-resume restore -- and all
+    three must go through one path, because that path is where the OC baseline
+    is reset first and where the crash-loop guard lives. Both used to be
+    missing: the boot replays applied the persisted DesiredSettings directly
+    (and `resetOcBeforeApply` is stripped before persistence, so every
+    automatic Linux write stacked onto whatever the driver already held), and
+    a setting that hung the driver was replayed by every systemd restart
+    forever."""
+    protocol_h = _p(ctx, "service_protocol.h")
+    lifecycle_h = _p(ctx, "service_lifecycle_policy.h")
+    policy_h = _p(ctx, "linux_auto_restore_policy.h")
+    runtime_h = _p(ctx, "linux_auto_restore_runtime.h")
+    startup_h = _p(ctx, "linux_startup_policy.h")
+    daemon_cpp = _p(ctx, "linux_daemon.cpp")
+    serve_h = _p(ctx, "linux_daemon_serve.h")
+    state_h = _p(ctx, "linux_daemon_state.h")
+    state_cpp = _p(ctx, "linux_daemon_state.cpp")
+    notify_cpp = _p(ctx, "linux_systemd_notify.cpp")
+    install_cpp = _p(ctx, "linux_service_install.cpp")
+    install_policy_h = _p(ctx, "linux_service_install_policy.h")
+    cli_cpp = _p(ctx, "linux_cli_options.cpp")
+    main_cpp = _p(ctx, "linux_main.cpp")
+
+    # --- the reset-before-apply contract -----------------------------------
+    # The shared builder is the ONLY thing allowed to decide this, on either
+    # platform. A lock composes a VF anchor/tail write, so a lock-only intent
+    # owns VF policy exactly as a curve does.
+    require_text(lifecycle_h,
+                 "requestOut->resetOcBeforeApply = service_intent_owns_vf_cleanup(activeIntent);",
+                 "a full restore derives reset-to-stock from the shared ownership predicate")
+    require_text(lifecycle_h,
+                 "bool nextOwnsVf = service_intent_owns_vf_cleanup(nextIntent);",
+                 "a profile transition uses the same ownership predicate on both sides")
+    require_text(runtime_h, "service_build_full_restore_request(&committed, &request)",
+                 "every unattended Linux write is built by the shared restore-request builder")
+    # The three callers must not hand-roll a request around it again.
+    forbid_text(startup_h, "linux_backend_apply(",
+                "the profile boot apply goes through the shared unattended-write path")
+    require_text(startup_h, "LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE",
+                 "the profile boot apply is a typed automatic-restore trigger")
+    require_text(daemon_cpp, "LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST",
+                 "the restore-last replay is a typed automatic-restore trigger")
+    require_text(runtime_h, "LINUX_AUTO_RESTORE_TRIGGER_RESUME",
+                 "the resume restore is a typed automatic-restore trigger")
+
+    # --- the crash-loop guard ----------------------------------------------
+    require_text(policy_h, "LINUX_AUTO_RESTORE_MAX_START_ATTEMPTS = 3",
+                 "the per-boot automatic start-write budget is explicit")
+    require_text(policy_h, "guard->lockedOut = guard->lockedOut ? 1 : 0;",
+                 "a new boot resets the attempt count but never the sticky lockout")
+    require_text(state_h, "linux_daemon_guard_valid",
+                 "the automatic-restore guard has an explicit validity contract")
+    require_text(state_cpp, "store_record_atomic(path, &record, sizeof(record),",
+                 "the guard uses the shared atomic root-owned store")
+    require_text(state_cpp, "/proc/sys/kernel/random/boot_id",
+                 "the per-boot identity comes from the kernel, not from a clock")
+    require_text(runtime_h,
+                 "linux_auto_restore_note_lockout(&g_autoRestoreGuard,\n"
+                 "                SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED);",
+                 "an unreadable guard fails closed to locked out, with a reason")
+
+    # --- the published lockout ---------------------------------------------
+    # The snapshot's autoRestoreLockoutReason used to be derived from
+    # g_stateUncertain alone.  That flag is set by a failed WRITE; the crash-loop
+    # arm latches the guard without issuing one, so a daemon that had
+    # permanently stopped restoring settings at boot published LOCKOUT_NONE and
+    # read as healthy everywhere.  The guard is the authority.
+    snapshot_cpp = _p(ctx, "linux_daemon_snapshot_runtime.cpp")
+    require_text(snapshot_cpp,
+                 "s->autoRestoreLockoutReason = linux_auto_restore_published_lockout_reason(",
+                 "the published lockout comes from the guard, not from a proxy flag")
+    forbid_text(snapshot_cpp,
+                "s->autoRestoreLockoutReason = g_stateUncertain",
+                "the published lockout is never derived from the uncertain flag alone")
+    # A locked-out guard that names no reason would publish LOCKOUT_NONE, which
+    # is the regression itself; both halves are pinned together.
+    require_text(policy_h,
+                 "static inline gc_u32 linux_auto_restore_published_lockout_reason(",
+                 "the published-lockout decision is pure and testable on both hosts")
+    require_text(state_h, "gc_u32 lockoutReason;",
+                 "the lockout reason survives a restart with the flag it explains")
+    require_text(state_h, "LINUX_DAEMON_GUARD_VERSION = 2",
+                 "adding the reason bumped the guard record version")
+    # The attempt is persisted BEFORE the write, or a crash mid-write counts
+    # nothing at all -- which is the exact case the guard exists for.
+    require_order(runtime_h,
+                  "linux_auto_restore_note_start_attempt(&g_autoRestoreGuard);",
+                  "persist_auto_restore_guard(\"start attempt\")",
+                  "the attempt is recorded before it is persisted")
+    ctx.require_order_in_operation(
+        runtime_h, "static bool auto_restore_authorize(",
+        "persist_auto_restore_guard(\"start attempt\")", "return true;",
+        "an attempt that could not be persisted refuses the write")
+    require_text(daemon_cpp, "auto_restore_note_explicit_success(\"apply\");",
+                 "only an explicit Apply re-arms automatic restoration")
+    require_text(daemon_cpp, "auto_restore_note_explicit_success(\"reset\");",
+                 "only an explicit Reset re-arms automatic restoration")
+    require_text(runtime_h, "auto_restore_note_automatic_failure",
+                 "a failed unattended write latches automatic restoration off")
+
+    # --- resume ------------------------------------------------------------
+    require_text(protocol_h, "SERVICE_CMD_RESUME_RESTORE = 15",
+                 "the resume edge has its own command")
+    require_text(_p(ctx, "service_protocol_validation.h"),
+                 "resume restore carries mutation fields",
+                 "a resume request carries no target, id, origin or flags")
+    require_text(_p(ctx, "service_protocol_validation.h"),
+                 "resume restore carries settings",
+                 "a resume request carries no settings either")
+    require_text(install_cpp, "greencurve-resume.service",
+                 "the installer writes the resume unit")
+    # WantedBy + After on the same sleep targets is what makes a unit run on the
+    # way back UP rather than before suspending.
+    require_text(install_cpp,
+                 "\"After=suspend.target hibernate.target hybrid-sleep.target\"",
+                 "the resume unit is ordered after the sleep targets")
+    require_text(install_cpp,
+                 "\"WantedBy=suspend.target hibernate.target hybrid-sleep.target\"",
+                 "the resume unit is wanted by the sleep targets")
+    require_text(install_cpp, "After=nvidia-resume.service",
+                 "the resume restore waits for the driver's own resume unit, not for a delay")
+    require_text(install_policy_h, "LINUX_SERVICE_STEP_ENABLE_RESUME",
+                 "enabling the resume unit is a named install step")
+    require_text(install_cpp, "unlink(GC_RESUME_UNIT_PATH);",
+                 "--service-remove removes the resume unit")
+    require_text(cli_cpp, "--resume-restore",
+                 "the resume edge is reachable from the CLI")
+    require_text(main_cpp, "linux_daemon_resume_restore(",
+                 "the CLI verb sends the resume command")
+
+    # --- the unit's own persistence ----------------------------------------
+    require_text(install_cpp, "\"Restart=always\\n\"",
+                 "an out-of-band kill -TERM does not leave the machine without GPU control")
+    forbid_text(install_cpp, "Restart=on-failure",
+                "the unit no longer declines to restart after a clean-signal exit")
+    require_text(install_cpp, "\"StartLimitIntervalSec=600\\n\"",
+                 "the start limit uses the SCM's ten-minute window, not systemd's 10s default")
+    forbid_text(install_cpp, "\"After=multi-user.target\\n\\n\"",
+                "the daemon is no longer ordered dead last in boot")
+    require_text(install_cpp, "\"WatchdogSec=120\\n\"",
+                 "a wedged daemon is restarted instead of sitting there active")
+    require_text(notify_cpp, "WATCHDOG=1",
+                 "the daemon answers the watchdog it asked for")
+    require_text(notify_cpp, "WATCHDOG_PID",
+                 "watchdog pings are refused when the manager expects another process")
+    # The poll loop must stay event-driven when no watchdog is configured.
+    require_text(serve_h, "watchdogIntervalMs ? (int)watchdogIntervalMs : -1",
+                 "without a watchdog the accept loop still waits forever")
+    require_text(daemon_cpp,
+                 "if (!pl_thread_start(&fanThread, fan_reassert_thread, nullptr)) {",
+                 "a daemon that cannot start its fan worker refuses to serve")
+    require_text(daemon_cpp, "clear_auto_restore_attempts_on_clean_stop();",
+                 "an orderly stop clears the per-boot attempt counter")
+
+
 def check_all(ctx, require_text, forbid_text, require_order):
     check_tui_layout(ctx, require_text, forbid_text, require_order)
     check_tui_graph_axes(ctx, require_text, forbid_text)
@@ -445,5 +712,7 @@ def check_all(ctx, require_text, forbid_text, require_order):
     check_client_diagnostics(ctx, require_text, forbid_text)
     check_terminal_relaunch(ctx, require_text, forbid_text)
     check_debug_log(ctx, require_text, forbid_text)
+    check_crash_report(ctx, require_text, forbid_text, require_order)
     check_startup_policy(ctx, require_text, forbid_text)
+    check_auto_restore(ctx, require_text, forbid_text, require_order)
     check_release_packaging(ctx, require_text, forbid_text)

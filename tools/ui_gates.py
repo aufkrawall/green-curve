@@ -384,6 +384,75 @@ def check_tray_active_profile(ctx, require_text, forbid_text):
                 "the tray tooltip never reports the editing selection as active")
 
 
+def check_tray_menu_does_not_raise_the_main_window(ctx, require_text,
+                                                   forbid_text):
+    """F-TRAY-MENU: opening the tray menu is not a window-state change.
+
+    The shell needs a foreground window in this process before
+    `TrackPopupMenu()`, or the popup survives the click that should dismiss it.
+    Satisfying that with the main window is what made a tray right-click yank an
+    open but occluded Green Curve window in front of whatever the user was
+    working in for as long as the menu was up: `SetForegroundWindow()` raises
+    its target as well as focusing it.
+
+    The requirement is for *a* foreground window, so the menu gets its own --
+    zero-sized, never shown, out of Alt-Tab, and on its own window class so the
+    single-instance `FindWindowA(APP_CLASS_NAME)` lookup cannot land on it.
+    `TPM_RETURNCMD` then carries the pick back to the main window by hand.
+    """
+    policy_h = _p(ctx, "gui_tray_callback_policy.h")
+    menu_cpp = _p(ctx, "gui_tray_menu.cpp")
+    fan_runtime = _p(ctx, "main_fan_runtime.cpp")
+    window_cpp = _p(ctx, "ui_main_window.cpp")
+    show_menu = "static void show_tray_menu(HWND hwnd)"
+
+    require_text(policy_h, "gui_tray_menu_owner_is_neutral",
+                 "the tray menu's foreground owner obeys a pure neutrality "
+                 "rule")
+    require_text(_p(ctx, "main.cpp"), '#include "gui_tray_menu.cpp"',
+                 "the tray-menu shard is compiled into the Windows shell")
+    require_text(menu_cpp, "gui_tray_menu_owner_is_neutral(",
+                 "the created owner window is checked against that rule, not "
+                 "assumed to satisfy it")
+    # One ex-style and nothing else at creation: no WS_EX_APPWINDOW taskbar
+    # button, and no WS_EX_NOACTIVATE, which would refuse the activation the
+    # popup depends on.
+    require_text(menu_cpp, "WS_EX_TOOLWINDOW, TRAY_MENU_OWNER_CLASS_NAME",
+                 "the tray menu owner has no Alt-Tab entry and no other "
+                 "extended style")
+    require_text(menu_cpp, 'define TRAY_MENU_OWNER_CLASS_NAME "GreenCurve',
+                 "the owner keeps its own window class so the single-instance "
+                 "lookup cannot find it instead of the main window")
+    require_text(menu_cpp, "WS_POPUP, 0, 0, 0, 0,",
+                 "the tray menu owner is created zero-sized")
+    forbid_text(menu_cpp, "ShowWindow",
+                "the tray menu owner is never shown")
+    require_text(menu_cpp, "(style & WS_VISIBLE) != 0",
+                 "the neutrality check reads the real visibility bit")
+    require_text(menu_cpp, "(exStyle & WS_EX_APPWINDOW) != 0",
+                 "the neutrality check reads the real taskbar-presence bit")
+    require_text(menu_cpp, "(exStyle & WS_EX_NOACTIVATE) != 0",
+                 "the neutrality check reads the real activation bit")
+    _require_in_operation(ctx, menu_cpp, show_menu, "SetForegroundWindow(owner)",
+                          "the tray menu takes the foreground through its own "
+                          "owner")
+    _forbid_in_operation(ctx, menu_cpp, show_menu, "SetForegroundWindow(hwnd)",
+                         "the tray menu never raises the main window")
+    _require_in_operation(ctx, menu_cpp, show_menu, "TPM_RETURNCMD",
+                          "the pick is returned to this function rather than "
+                          "posted to the owner")
+    _require_in_operation(ctx, menu_cpp, show_menu,
+                          "PostMessageA(hwnd, WM_COMMAND, MAKEWPARAM((WORD)cmd, 0), 0)",
+                          "the returned pick is forwarded to the main window")
+    _require_in_operation(ctx, menu_cpp, show_menu, "allow_dark_mode_for_window(owner)",
+                          "the throwaway owner carries the main window's "
+                          "dark-mode opt-in so the menu keeps its theme")
+    forbid_text(fan_runtime, "TRAY_MENU_EXIT_ID",
+                "the tray menu is built in exactly one place")
+    require_text(window_cpp, "destroy_tray_menu_owner_window();",
+                 "the owner window is released with the rest of the tray state")
+
+
 def check_auto_profile_enable_is_a_transition(ctx, require_text, forbid_text):
     """F-AUTO-PROFILE: flipping the master enable is a transition, not a value.
 
@@ -634,6 +703,125 @@ def check_apply_in_flight_presentation(ctx, require_text, forbid_text):
                  "draining the queue leaves it again")
 
 
+def check_manual_mutation_result_presentation(ctx, require_text, forbid_text):
+    """A manual Apply/Reset interrupts the user only when it has to.
+
+    Every manual mutation used to end in an OK-box, the ordinary success
+    included.  A confirmation that always appears is not information -- it is a
+    click -- and it is exactly how the box that DOES matter becomes something to
+    dismiss unread.  The clean case is now confirmed on the profile status line
+    and raises nothing; a warning or an error still opens the box, carrying the
+    service's own wording.
+
+    The severity behind that decision is service-side and travels on the wire
+    (ServiceOutcomeSeverity), because only the apply backend can tell a fully
+    verified write from one that committed while the driver declined some
+    points -- both of which answer SERVICE_STATUS_OK.  Deriving it in the window
+    would mean parsing `message`, which is prose.  Hence the two rules pinned
+    here: the window reads the field, and it never reconstructs it from text.
+    """
+    policy_h = _p(ctx, "gui_mutation_result_policy.h")
+    completion_cpp = _p(ctx, "ui_mutation_completion.cpp")
+    worker_cpp = _p(ctx, "gui_mutation_worker.cpp")
+    protocol_h = _p(ctx, "service_protocol.h")
+    validation_h = _p(ctx, "service_protocol_validation.h")
+    pipe_cpp = _p(ctx, "main_service_pipe.cpp")
+    daemon_cpp = _p(ctx, "linux_daemon.cpp")
+    apply_cpp = _p(ctx, "gpu_backend_apply.cpp")
+
+    require_text(protocol_h, "SERVICE_OUTCOME_SEVERITY_WARNING",
+                 "the wire distinguishes a clean success from a warned one")
+    require_text(protocol_h, "service_response_resolve_outcome_severity",
+                 "severity is derived from status by one shared pure rule")
+    require_text(validation_h, "service_outcome_severity_matches_status(",
+                 "a response whose severity contradicts its status is damaged")
+    # One stamp per producer, at the single point each writes a response out.
+    # Per-handler assignment is what would eventually ship a branch that forgot.
+    ctx.require_order_in_operation(
+        pipe_cpp, "static DWORD WINAPI service_pipe_server_thread_proc(",
+        "response.outcomeSeverity = service_response_resolve_outcome_severity(",
+        "service_pipe_write_exact(pipe, &response, sizeof(response)",
+        "the Windows service resolves severity before it writes the response")
+    ctx.require_text_in_operation(
+        daemon_cpp, "static void handle_request(",
+        "resp->outcomeSeverity = service_response_resolve_outcome_severity(",
+        "the Linux daemon resolves severity on every response it answers")
+    require_text(apply_cpp, "service_apply_outcome_severity(failCount,",
+                 "the apply backend reports a committed-but-unmatched write as "
+                 "a warning instead of a silent success")
+
+    require_text(policy_h, "gui_mutation_result_needs_prompt",
+                 "whether to interrupt the user is a pure, unit-tested rule")
+    require_text(policy_h, "if (!successForUi) return (gc_u32)SERVICE_OUTCOME_SEVERITY_ERROR;",
+                 "a result the window could not adopt is never presented as a "
+                 "success, whatever the envelope claims")
+    ctx.require_text_in_operation(
+        completion_cpp, "static gc_u32 set_mutation_result_status_line(",
+        "completion->response.outcomeSeverity",
+        "the window reads the severity the service published")
+    ctx.require_text_in_operation(
+        completion_cpp, "static gc_u32 set_mutation_result_status_line(",
+        "set_profile_status_text(",
+        "every reported result reaches the status line, dialog or not")
+    ctx.require_text_in_operation(
+        completion_cpp, "static void present_manual_mutation_result(",
+        "if (!gui_mutation_result_needs_prompt(severity)) return;",
+        "a clean success raises no dialog at all")
+    ctx.require_text_in_operation(
+        completion_cpp, "static void present_manual_mutation_result(",
+        "set_mutation_result_status_line(work, completion,",
+        "a manual result always updates the status line before deciding on a "
+        "dialog")
+    # The status line is the surface that now carries the ordinary case, so the
+    # completion must not be able to leave the queue's wording standing.
+    for context in ("GUI_MUTATION_CONTEXT_MANUAL_APPLY",
+                    "GUI_MUTATION_CONTEXT_MANUAL_RESET"):
+        ctx.require_order_in_operation(
+            completion_cpp, "static void handle_gui_mutation_completion(",
+            context, "present_manual_mutation_result(&work, completion,",
+            f"{context} routes its result through the presentation policy")
+    require_text(worker_cpp, "gui_mutation_queued_status_text(",
+                 "the queued line names what is being applied")
+    forbid_text(worker_cpp, "GPU operation started in the background",
+                "the queue no longer announces an unnamed background operation")
+
+    # A tray/hotkey pick is an explicit user action and reports its outcome on
+    # the same line the Apply button uses -- switching profiles from the tray
+    # was reported as leaving the status line describing something else
+    # entirely.  Writing a resident child label creates no surface and takes no
+    # focus, so this stays inside the presentation-silent contract (the
+    # F-PRESENTATION-SILENT token gate in build.py is what enforces that).
+    # A rule-driven foreground switch must stay silent, hence the origin guard
+    # on all three sites rather than an unconditional write.
+    auto_cpp = _p(ctx, "auto_profile_win32.cpp")
+    ctx.require_text_in_operation(
+        completion_cpp,
+        "static void handle_auto_profile_mutation_completion_presentation_silent(",
+        "if (service_apply_origin_is_explicit(work->origin))",
+        "only an explicit tray/hotkey pick reports its result on the status line")
+    ctx.require_text_in_operation(
+        completion_cpp,
+        "static void handle_auto_profile_mutation_completion_presentation_silent(",
+        "set_mutation_result_status_line(work, completion, successForUi);",
+        "and it reports it through the same formatter the Apply button uses")
+    ctx.require_text_in_operation(
+        auto_cpp, "static bool ap_do_apply_slot(",
+        "if (service_apply_origin_is_explicit(origin) && queueStatus[0])",
+        "an explicit pick shows the queued line, an automatic switch does not")
+    ctx.require_text_in_operation(
+        auto_cpp, "static bool ap_do_apply_slot(",
+        "set_profile_status_text(\"Profile %d is already applied.\", slot)",
+        "an explicit pick that is already applied says so instead of looking "
+        "like nothing happened")
+    # Automation stays presentation-silent: it must not reach the box at all.
+    forbid_text(_p(ctx, "auto_profile_win32.cpp"),
+                "present_manual_mutation_result",
+                "auto-profile applies never present a manual result")
+    forbid_text(_p(ctx, "main_startup_profiles.cpp"),
+                "present_manual_mutation_result",
+                "logon/app-launch applies never present a manual result")
+
+
 def check_lock_checkbox_render(ctx, require_text, forbid_text):
     """The VF lock checkbox shares the themed anti-aliased checkmark renderer.
 
@@ -822,7 +1010,102 @@ def check_right_anchored_controls(ctx, require_text, forbid_text):
         "the GPU selector uses the canonical side inset, not its own 12 px")
 
 
+def check_visibility_neutral_projection(ctx, require_text, forbid_text):
+    """A coherent projection never changes what the shell can observe.
+
+    `DefWindowProc` implements `WM_SETREDRAW` by clearing (FALSE) and setting
+    (TRUE) the target window's `WS_VISIBLE` bit.  On a top-level HWND that bit
+    is what the shell derives the taskbar button, the Alt-Tab entry and its
+    z-order bookkeeping from, so the suppression pair read as a hide followed by
+    a show.  It produced two separate reports: a tray-hidden owner resurrected
+    as a ghost window, and -- because the first fix only skipped the toggle
+    while hidden -- an open window dropping out of the taskbar window list for
+    the length of every structural projection, Refresh included.
+
+    Painting is therefore suppressed internally (a depth gate honoured by
+    `WM_PAINT`/`WM_ERASEBKGND` and by `invalidate_main_window()`), and no window
+    style is touched at all.
+    """
+    policy_h = _p(ctx, "gui_window_redraw_policy.h")
+    redraw_cpp = _p(ctx, "gui_window_redraw.cpp")
+    window_cpp = _p(ctx, "ui_main_window.cpp")
+    runtime_gpu_cpp = _p(ctx, "main_runtime_gpu.cpp")
+    invalidate = "static void invalidate_main_window()"
+
+    require_text(policy_h, "gui_redraw_toggle_is_visibility_safe",
+                 "only a child window's WS_VISIBLE bit may be redraw-toggled")
+    require_text(policy_h, "gui_top_level_redraw_may_paint_synchronously",
+                 "top-level redraw policy distinguishes visible from "
+                 "tray-hidden windows")
+    require_text(redraw_cpp, "RDW_INVALIDATE | RDW_ALLCHILDREN",
+                 "hidden top-level redraw transactions defer painting until "
+                 "explicit show")
+    forbid_text(redraw_cpp, "WM_SETREDRAW",
+                "a coherent projection transaction never redraw-toggles the "
+                "top-level window")
+    require_text(redraw_cpp, "g_guiTopLevelRedrawDepth",
+                 "projection transactions suppress painting through the depth "
+                 "gate, not window styles")
+    _require_in_operation(ctx, window_cpp, "case WM_PAINT:",
+                          "gui_top_level_paint_suppressed()",
+                          "the main window paints no half-projected frame "
+                          "during a transaction")
+    require_text(window_cpp, "if (gui_top_level_paint_suppressed()) return 1;",
+                 "a suppressed transaction never erases the window behind its "
+                 "controls")
+    _require_in_operation(ctx, runtime_gpu_cpp, invalidate,
+                          "gui_window_invalidation_must_defer(",
+                          "invalidation defers while a projection transaction "
+                          "owns the frame")
+    ctx.require_order_in_operation(
+        runtime_gpu_cpp, invalidate, "g_app.trayWindowHiddenIntent",
+        "redraw_window_sync(g_app.hMainWnd);",
+        "main-window invalidation defers painting while tray-hidden")
+    _forbid_in_operation(ctx, runtime_gpu_cpp, invalidate, "RDW_UPDATENOW",
+                         "tray-hidden invalidation cannot synchronously paint "
+                         "the owner")
+    forbid_text(_p(ctx, "gui_service_state.cpp"), "WM_SETREDRAW",
+                "service projection cannot resurrect a hidden top-level window")
+    forbid_text(_p(ctx, "ui_main_control_lifecycle.cpp"), "WM_SETREDRAW",
+                "control rebuild cannot resurrect a hidden top-level window")
+
+
+def check_manual_refresh_preserves_presentation(ctx, require_text, forbid_text):
+    """Refresh re-reads the GPU on screen; it is not a reconnect.
+
+    Routing it through `gui_service_begin_full_sync()` forced the model to
+    SYNCING and threw live authority away before the read had even been sent,
+    so one click flashed the "Synchronizing GPU state" overlay and dropped the
+    tray icon from its OC/fan theme to the neutral one -- claiming for a round
+    trip that no Green Curve settings were in effect.  The completion paths
+    already transition truthfully when the answer really is "not READY".
+    """
+    apply_cpp = _p(ctx, "ui_main_apply.cpp")
+    state_cpp = _p(ctx, "gui_service_state.cpp")
+
+    require_text(apply_cpp,
+                 'gui_service_request_resync("manual refresh", false)',
+                 "manual refresh re-reads without a presentation transition")
+    forbid_text(apply_cpp, 'gui_service_begin_full_sync("manual refresh")',
+                "manual refresh cannot flash the syncing presentation or the "
+                "neutral tray theme")
+    require_text(_p(ctx, "gui_service_resync_policy.h"), "identityMayChange",
+                 "only a read aimed at another GPU/service forces a "
+                 "presentation transition")
+    ctx.require_order_in_operation(
+        state_cpp, "static void gui_service_request_resync(",
+        "gui_service_io_queue_full_sync(reason)",
+        "gui_service_begin_full_sync(reason);",
+        "a preserved-presentation resync falls back to the visible transition "
+        "only if the read cannot be queued")
+    require_text(state_cpp, "g_app.guiManualResyncPending = false;",
+                 "a real presentation transition supersedes the silent "
+                 "refresh's status line")
+
+
 def check_all(ctx, require_text, forbid_text):
+    check_visibility_neutral_projection(ctx, require_text, forbid_text)
+    check_manual_refresh_preserves_presentation(ctx, require_text, forbid_text)
     check_manual_apply_origin(ctx, require_text)
     check_owner_draw_checkbox_repaint(ctx, require_text, forbid_text)
     check_right_anchored_controls(ctx, require_text, forbid_text)
@@ -833,9 +1116,11 @@ def check_all(ctx, require_text, forbid_text):
     check_pending_changes(ctx, require_text, forbid_text)
     check_lock_checkbox_render(ctx, require_text, forbid_text)
     check_tray_active_profile(ctx, require_text, forbid_text)
+    check_tray_menu_does_not_raise_the_main_window(ctx, require_text, forbid_text)
     check_applied_profile_indicator_is_drift_free(ctx, require_text, forbid_text)
     check_auto_profile_enable_is_a_transition(ctx, require_text, forbid_text)
     check_service_profile_identity_survives_a_delta_apply(
         ctx, require_text, forbid_text)
     check_apply_in_flight_presentation(ctx, require_text, forbid_text)
+    check_manual_mutation_result_presentation(ctx, require_text, forbid_text)
     check_service_actionability(ctx, require_text, forbid_text)

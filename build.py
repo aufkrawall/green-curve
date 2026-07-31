@@ -72,6 +72,7 @@ import ui_gates  # noqa: E402  (same one-way dependency as security_gates)
 import fan_gates  # noqa: E402  (same one-way dependency as security_gates)
 import linux_gates  # noqa: E402  (same one-way dependency as security_gates)
 import icon_render  # noqa: E402  (same one-way dependency as security_gates)
+import crash_artifacts  # noqa: E402  (same one-way dependency as security_gates)
 import driver_inspect  # noqa: E402  (same one-way dependency as security_gates)
 import static_analysis  # noqa: E402  (same one-way dependency as security_gates)
 from release_manifest import (  # noqa: E402  (one-way dependency)
@@ -114,6 +115,9 @@ LINUX_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "linux_main.cpp"),
     os.path.join(SOURCE_DIR, "linux_cli_options.cpp"),
     os.path.join(SOURCE_DIR, "linux_debug_log.cpp"),
+    # Startup half of the crash report: path resolution, rotation, and the
+    # descriptor the async-signal-safe handler writes into.
+    os.path.join(SOURCE_DIR, "linux_crash_report.cpp"),
     os.path.join(SOURCE_DIR, "linux_terminal_launch.cpp"),
     os.path.join(SOURCE_DIR, "linux_port.cpp"),
     os.path.join(SOURCE_DIR, "linux_port_profiles.cpp"),
@@ -287,7 +291,19 @@ LINUX_FLAGS = [
     "-pie",
     "-Wl,-z,relro,-z,now",
     "-Wl,-z,noexecstack",
-    "-s",
+    # Debug info is EMITTED here and split out post-link by
+    # crash_artifacts.extract_linux_symbols(); the shipped binary is still fully
+    # stripped.  LINUX_FLAGS used to carry a bare "-s" with no extraction, so a
+    # Linux core — or the crash report's PC — could not be symbolized at all.
+    # The prefix maps keep the private workspace path out of the shipped binary.
+    "-g",
+    "-gdwarf-4",
+    f"-ffile-prefix-map={SCRIPT_DIR}=.",
+    f"-fdebug-prefix-map={SCRIPT_DIR}=.",
+    "-fdebug-compilation-dir=.",
+    # A build-id is what lets coredumpctl/gdb match a core to the .debug file
+    # without being told where it is.
+    "-Wl,--build-id=sha1",
     "-fstack-protector-strong",
     # CET: x86-only, so linux_flags_for_arch() drops it for aarch64 (which
     # gets -mbranch-protection=standard instead).  This marks our own objects
@@ -1047,10 +1063,15 @@ def _link_arm64_linux(temp_output, sources):
             ["-fPIE", "-fstack-protector-strong", "-fexceptions", "-frtti",
              # This object-first path bypasses linux_flags_for_arch(), so the
              # flag has to be repeated here or arm64 silently loses it.
-             "-ftrivial-auto-var-init=pattern"])
+             "-ftrivial-auto-var-init=pattern",
+             # Debug info + prefix maps, same as the x64 path.  Stripped back out
+             # of the shipped binary by extract_linux_symbols().
+             "-g", "-gdwarf-4", f"-ffile-prefix-map={SCRIPT_DIR}=.",
+             f"-fdebug-prefix-map={SCRIPT_DIR}=.", "-fdebug-compilation-dir=."])
         cmd = [ZIG_EXE, "c++", "-target", LINUX_ARM64_TRIPLE,
                "-mbranch-protection=standard", "-fno-lto", "-O2", "-pie",
-               "-Wl,-z,relro,-z,now", "-Wl,-z,noexecstack", "-s",
+               "-Wl,-z,relro,-z,now", "-Wl,-z,noexecstack",
+               "-Wl,--build-id=sha1",
                "-o", temp_output, *objects, "-ldl", "-lpthread"]
         if _run_compiler(cmd, cwd=work) != 0:
             raise RuntimeError("ARM64 Linux link failed")
@@ -1412,6 +1433,10 @@ def compile_linux_binary(output_path=LINUX_OUTPUT_BIN, temp_output=LINUX_TEMP_OU
         else:
             returncode = _run_compiler(cmd)
         if returncode == 0:
+            # Split symbols out and strip BEFORE verification, so every check —
+            # including the private-workspace-path scan, which stays strict —
+            # runs against the exact bytes that ship.
+            crash_artifacts.extract_linux_symbols(_gate_ctx(), temp_output, arch)
             verify_release_binary(temp_output, "linux", arch, "-g" in COMMON_FLAGS)
     except (OSError, RuntimeError) as exc:
         print(f"ERROR: {exc}")
@@ -1798,53 +1823,57 @@ def run_regression_tests(extra_flags=None):
         if result.returncode != 0:
             print(f"Regression tests FAILED ({result.returncode})")
             sys.exit(result.returncode)
-        if sys.platform.startswith("linux"):
-            transport_exe = os.path.join(tmp, "linux_transport_regression")
-            transport_cmd = [
-                *_posix_test_compiler(extra_flags), "-std=c++17", "-DNDEBUG",
-                f'-DAPP_VERSION="{APP_VERSION}"',
-                f"-DAPP_BUILD_NUMBER={APP_BUILD_NUMBER}",
-                "-fno-exceptions", "-fno-rtti",
-                f"-I{SOURCE_DIR}",
-                "-o", transport_exe,
-                os.path.join(SCRIPT_DIR, "tests", "linux_transport_regression.cpp"),
-            ]
-            if extra_flags:
-                transport_cmd.extend(extra_flags)
-            print("Compiling Linux socket transport regression tests")
-            result = subprocess.run(transport_cmd, cwd=SCRIPT_DIR)
-            if result.returncode != 0:
-                print("Linux transport test compilation FAILED")
-                sys.exit(result.returncode)
-            print("Running Linux socket transport regression tests")
-            result = subprocess.run([transport_exe], cwd=SCRIPT_DIR,
-                                    env=test_env)
-            if result.returncode != 0:
-                print(f"Linux transport regression FAILED ({result.returncode})")
-                sys.exit(result.returncode)
-        else:
-            # The fixture needs real Linux filesystem sockets to run, but it
-            # must still compile everywhere or a break in it stays invisible
-            # until someone happens to test on Linux.  Cross-compile only.
-            transport_obj = os.path.join(tmp, "linux_transport_regression.o")
-            transport_cmd = [
-                ZIG_EXE, "c++", "-std=c++17", "-DNDEBUG",
-                f'-DAPP_VERSION="{APP_VERSION}"',
-                f"-DAPP_BUILD_NUMBER={APP_BUILD_NUMBER}",
-                "-fno-exceptions", "-fno-rtti",
-                "-target", "x86_64-linux-gnu",
-                "-Wall", "-Wextra", "-Wno-unused-function",
-                "-Wno-unused-parameter", "-Werror",
-                f"-I{SOURCE_DIR}",
-                "-c", os.path.join(SCRIPT_DIR, "tests",
-                                   "linux_transport_regression.cpp"),
-                "-o", transport_obj,
-            ]
-            print("Cross-compiling Linux socket transport regression tests")
-            result = subprocess.run(transport_cmd, cwd=SCRIPT_DIR)
-            if result.returncode != 0:
-                print("Linux transport test cross-compilation FAILED")
-                sys.exit(result.returncode)
+        # Fixtures that need real Linux kernel behaviour -- filesystem sockets
+        # for the transport, fork/signal delivery and file creation for the
+        # crash report -- so they run natively on Linux and are cross-compiled
+        # everywhere else.  Compiling them on every host is the point: a break
+        # in one would otherwise stay invisible until someone happened to test
+        # on Linux.
+        for stem, label in (("linux_transport_regression", "socket transport"),
+                            ("linux_crash_report_regression", "crash report")):
+            fixture_source = os.path.join(SCRIPT_DIR, "tests", f"{stem}.cpp")
+            if sys.platform.startswith("linux"):
+                fixture_exe = os.path.join(tmp, stem)
+                fixture_cmd = [
+                    *_posix_test_compiler(extra_flags), "-std=c++17", "-DNDEBUG",
+                    f'-DAPP_VERSION="{APP_VERSION}"',
+                    f"-DAPP_BUILD_NUMBER={APP_BUILD_NUMBER}",
+                    "-fno-exceptions", "-fno-rtti",
+                    f"-I{SOURCE_DIR}",
+                    "-o", fixture_exe,
+                    fixture_source,
+                ]
+                if extra_flags:
+                    fixture_cmd.extend(extra_flags)
+                print(f"Compiling Linux {label} regression tests")
+                result = subprocess.run(fixture_cmd, cwd=SCRIPT_DIR)
+                if result.returncode != 0:
+                    print(f"Linux {label} test compilation FAILED")
+                    sys.exit(result.returncode)
+                print(f"Running Linux {label} regression tests")
+                result = subprocess.run([fixture_exe], cwd=SCRIPT_DIR,
+                                        env=test_env)
+                if result.returncode != 0:
+                    print(f"Linux {label} regression FAILED ({result.returncode})")
+                    sys.exit(result.returncode)
+            else:
+                fixture_cmd = [
+                    ZIG_EXE, "c++", "-std=c++17", "-DNDEBUG",
+                    f'-DAPP_VERSION="{APP_VERSION}"',
+                    f"-DAPP_BUILD_NUMBER={APP_BUILD_NUMBER}",
+                    "-fno-exceptions", "-fno-rtti",
+                    "-target", "x86_64-linux-gnu",
+                    "-Wall", "-Wextra", "-Wno-unused-function",
+                    "-Wno-unused-parameter", "-Werror",
+                    f"-I{SOURCE_DIR}",
+                    "-c", fixture_source,
+                    "-o", os.path.join(tmp, f"{stem}.o"),
+                ]
+                print(f"Cross-compiling Linux {label} regression tests")
+                result = subprocess.run(fixture_cmd, cwd=SCRIPT_DIR)
+                if result.returncode != 0:
+                    print(f"Linux {label} test cross-compilation FAILED")
+                    sys.exit(result.returncode)
         run_source_regression_checks()
         print("Regression tests passed")
     finally:
@@ -2078,13 +2107,13 @@ SOURCE_SIZE_RATCHET = {
     "config_profiles.cpp": 879,
     "entry.cpp": 861,
     "gpu_backend.cpp": 972,
-    "gpu_backend_apply.cpp": 1333,
-    "main_fan_runtime.cpp": 929,
+    "gpu_backend_apply.cpp": 1280,  # 1333 before gpu_backend_reset_baseline.cpp
+    "main_fan_runtime.cpp": 913,  # 929 before the tray menu moved to gui_tray_menu.cpp
     "main_gpu_front.cpp": 845,
     "main_gpu_state.cpp": 916,
     "main_runtime_nvml.cpp": 901,
     "main_service_persist.cpp": 908,
-    "main_service_pipe.cpp": 828,
+    "main_service_pipe.cpp": 796,  # 828 before the file-write commands moved out
     "ui_main_window.cpp": 1279,
 }
 
@@ -2165,6 +2194,7 @@ def run_source_regression_checks():
     main_cpp = os.path.join(SOURCE_DIR, "main.cpp")
     entry_cpp = os.path.join(SOURCE_DIR, "entry.cpp")
     diagnostics_cpp = os.path.join(SOURCE_DIR, "main_diagnostics.cpp")
+    crash_artifacts_cpp = os.path.join(SOURCE_DIR, "main_crash_artifacts.cpp")
     secure_write_cpp = os.path.join(SOURCE_DIR, "main_secure_write.cpp")
     service_ipc_aggregate_cpp = os.path.join(SOURCE_DIR, "main_service_ipc.cpp")
     service_connection_cpp = os.path.join(SOURCE_DIR, "main_service_connection.cpp")
@@ -2246,8 +2276,8 @@ def run_source_regression_checks():
     with open(_service_server_surface, "w", encoding="utf-8", errors="ignore") as _sf:
         for _cpp in (service_request_policy_cpp,
                      os.path.join(SOURCE_DIR, "main_service_pipe_primitives.h"),
-                     service_pipe_cpp,
-                     service_host_cpp):
+                     os.path.join(SOURCE_DIR, "main_service_pipe_file_commands.cpp"),
+                     service_pipe_cpp, service_host_cpp):
             with open(_cpp, "r", encoding="utf-8", errors="ignore") as _source:
                 _sf.write(_source.read())
                 _sf.write("\n")
@@ -2303,7 +2333,7 @@ def run_source_regression_checks():
 
     require_text(shared_h, "APP_DEBUG_DEFAULT_ENABLED 1", "debug logging remains default-on")
     require_text(shared_h, "APP_TITLE           APP_NAME \" v\" APP_VERSION", "plain title macro exists")
-    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 16", "service protocol publishes explicit hardware-readback validity")
+    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 18", "service protocol publishes an explicit outcome severity")
     require_text(shared_h, "typedef gc_u8 gc_bool8", "IPC bool fields use a fixed-width one-byte type")
     require_text(shared_h, "canonicalize_gc_bool8", "IPC bool fields are canonicalized at trust boundaries")
     require_text(shared_h, "validate_service_response_for_ipc", "service responses are canonicalized before GUI use")
@@ -2321,16 +2351,9 @@ def run_source_regression_checks():
     require_text(diagnostics_cpp, "build=%lu", "session marker logs build number")
     require_text(diagnostics_cpp, "close_debug_log_file", "debug log file cleanup exists")
     require_text(diagnostics_cpp, "open_debug_log_file_locked", "debug log file open helper exists")
-    require_text(diagnostics_cpp, "green_curve_unhandled_exception_filter", "crash filter exists")
-    require_text(diagnostics_cpp, "MiniDumpWriteDump", "crash filter writes minidump")
-    require_text(diagnostics_cpp, "MiniDumpWithThreadInfo",
-        "crash dumps retain actionable thread records")
-    require_text(diagnostics_cpp, "MiniDumpWithUnloadedModules",
-        "crash dumps retain unloaded-module history")
-    require_order(main_cpp,
-        "SetUnhandledExceptionFilter(green_curve_unhandled_exception_filter);",
-        "service_try_dispatch_controlled_restart_helper(&helperExitCode)",
-        "standalone recovery helper installs crash dumping before dispatch")
+    crash_artifacts.check_windows_crash_artifacts(
+        _gate_ctx(), require_text, forbid_text, require_order, require_text_count)
+    crash_artifacts.check_linux_symbols(_gate_ctx(), require_text)
     require_text(secure_write_cpp, "write_all_to_handle", "file writes use size_t-safe chunked write helper")
     require_text(main_cpp, "SERVICE_PIPE_SERVER_IO_TIMEOUT_MS", "service pipe server I/O timeout exists")
     require_text(service_server_cpp, "CancelIoEx(pipe, &ov)", "stalled pipe operations are cancellable")
@@ -2551,8 +2574,8 @@ def run_source_regression_checks():
         "service_stop_selected_gpu_notification_best_effort",
         "service_shutdown_logon_apply_coordinator",
         "selected-GPU callback is deactivated before the lifecycle worker stops")
-    require_text(diagnostics_cpp, "crash_artifact_data_dir", "service crash artifacts route through a process-appropriate data directory")
-    require_text(diagnostics_cpp, "resolve_service_machine_data_dir", "service crash artifacts use the machine service data directory")
+    require_text(crash_artifacts_cpp, "crash_artifact_data_dir", "service crash artifacts route through a process-appropriate data directory")
+    require_text(crash_artifacts_cpp, "resolve_service_machine_data_dir", "service crash artifacts use the machine service data directory")
     require_text(config_profile_repair_cpp, "savedOffsetMagnitude = savedOffset < 0 ? -(long long)savedOffset", "profile repair avoids abs(INT_MIN) overflow")
     require_text(service_ipc_cpp, "pl_append_quoted_arg_w", "elevated helper command lines use argv-compatible quoting")
     require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "pl_append_quoted_arg_w", "GUI elevated helper command lines use argv-compatible quoting")
@@ -3825,9 +3848,6 @@ def run_source_regression_checks():
     gui_draft_policy_h = os.path.join(SOURCE_DIR, "gui_draft_policy.h")
     gui_tray_policy_h = os.path.join(SOURCE_DIR, "gui_tray_callback_policy.h")
     gui_tray_visibility_cpp = os.path.join(SOURCE_DIR, "gui_tray_visibility.cpp")
-    gui_window_redraw_policy_h = os.path.join(
-        SOURCE_DIR, "gui_window_redraw_policy.h")
-    gui_window_redraw_cpp = os.path.join(SOURCE_DIR, "gui_window_redraw.cpp")
     gui_service_state_cpp = os.path.join(SOURCE_DIR, "gui_service_state.cpp")
     gui_selected_gpu_pnp_cpp = os.path.join(SOURCE_DIR, "gui_selected_gpu_pnp.cpp")
     ui_mutation_completion_cpp = os.path.join(
@@ -4086,25 +4106,8 @@ def run_source_regression_checks():
     require_text(gui_tray_visibility_cpp,
                  "g_mainWindowTrayHideEnforcementActive",
                  "corrective tray hiding is guarded against nested ShowWindow messages")
-    require_text(gui_window_redraw_policy_h,
-                 "gui_top_level_redraw_uses_wm_setredraw",
-                 "top-level redraw policy distinguishes visible from tray-hidden windows")
-    require_text(gui_window_redraw_cpp,
-                 "RDW_INVALIDATE | RDW_ALLCHILDREN",
-                 "hidden top-level redraw transactions defer painting until explicit show")
-    require_order_in_operation(main_runtime_gpu_cpp,
-                 "static void invalidate_main_window()",
-                 "g_app.trayWindowHiddenIntent",
-                 "redraw_window_sync(g_app.hMainWnd);",
-                 "main-window invalidation defers painting while tray-hidden")
-    forbid_text_in_operation(main_runtime_gpu_cpp,
-                 "static void invalidate_main_window()", "RDW_UPDATENOW",
-                 "tray-hidden invalidation cannot synchronously paint the owner")
-    forbid_text(gui_service_state_cpp, "WM_SETREDRAW",
-                "service projection cannot resurrect a hidden top-level window")
-    forbid_text(os.path.join(SOURCE_DIR, "ui_main_control_lifecycle.cpp"),
-                "WM_SETREDRAW",
-                "control rebuild cannot resurrect a hidden top-level window")
+    # The visibility-neutral projection transaction and the presentation-
+    # preserving resync live in tools/ui_gates.py.
     require_text(gui_selected_gpu_pnp_cpp,
                  "enforce_main_window_tray_state",
                  "exact selected-GPU recovery reasserts tray residency")
@@ -4405,8 +4408,6 @@ def run_source_regression_checks():
     require_text(build_script, "ARM64 branch protection missing", "final ARM64 binaries must contain BTI and PAC/AUT")
     require_text(build_script, "-mbranch-protection=standard", "arm64 builds enable BTI/PAC branch protection")
     # ARM64 VEH thread-redirect uses the aarch64 register names.
-    require_text(os.path.join(SOURCE_DIR, "main_diagnostics.cpp"), "ContextRecord->Pc",
-                 "VEH thread-exit redirect supports arm64 (Pc/X0/Sp)")
 
     require_text(fan_curve_cpp, "fan_curve_set_default(config)", "invalid fan curve normalization resets safely to defaults")
     require_text(shared_h, "len > bufSize - offset", "HeapBuffer bounds checks avoid size_t addition overflow")
@@ -4515,19 +4516,19 @@ def run_source_regression_checks():
     # preserve the exact current (TDR-safe) behaviour — the fast paths are opt-in and
     # require GPU validation. reset_settle_ms defaults to the historical 1000ms;
     # skip_reset_curve_write defaults to 0 (the reset-to-zero write still runs).
+    reset_baseline_cpp = os.path.join(SOURCE_DIR, "gpu_backend_reset_baseline.cpp")
     require_text(os.path.join(SOURCE_DIR, "gpu_backend_apply.cpp"),
         "get_config_int(g_app.configPath, \"apply\", \"reset_settle_ms\", 1000)",
         "F-APPLY-SPEED: TDR settle is tunable but defaults to the historical 1000ms")
     # The reset-curve-write is load-bearing for the delta-based selective/boost apply
     # (excluded points collapse to originalCurveOffsets[ci], so a skipped reset strands
-    # the previous profile's offset on them). It must NOT be gated/skippable.
-    forbid_text(os.path.join(SOURCE_DIR, "gpu_backend_apply.cpp"),
-        "\"apply\", \"skip_reset_curve_write\"",
+    # the previous profile's offset on them) and must NOT be gated/skippable.
+    forbid_text(reset_baseline_cpp, "\"apply\", \"skip_reset_curve_write\"",
         "F-APPLY-SPEED: the VF-curve reset-to-zero must not be skippable (delta-boost baseline)")
-    require_text(os.path.join(SOURCE_DIR, "gpu_backend_apply.cpp"),
+    require_text(reset_baseline_cpp,
         "if (hadCurveOffsets && !apply_curve_offsets_verified(resetOffsets, resetMask, 2))",
         "F-APPLY-SPEED: the VF-curve reset-to-zero always runs when the previous profile had curve offsets")
-    require_text(os.path.join(SOURCE_DIR, "gpu_backend_apply.cpp"),
+    require_text(reset_baseline_cpp,
         "g_app.gpuClockOffsetkHz != 0 && !nvapi_set_gpu_offset(0)",
         "F-APPLY-SPEED: an owned GPU-offset transition resets that offset before the VF curve")
 
@@ -5008,20 +5009,19 @@ def run_source_regression_checks():
         "configured logon profiles are subject to persistent auto-restore lockout")
     require_text(main_service_logon_coordinator_cpp, "service_record_oc_apply_stamp();",
         "successful logon apply begins the driver-event proving period")
-    require_text(main_data_paths_cpp, "service_rotate_minidumps",
-        "VEH minidumps are rotated to bound disk usage")
-    require_text(service_server_cpp, "service_rotate_minidumps(",
-        "service startup rotates VEH minidumps")
+    # Needs the generated service-server surface, which only exists here.
+    require_text(service_server_cpp, "rotate_crash_artifacts_for_process();",
+        "service startup rotates crash artifacts")
 
     # FP-06-006: the VEH is the crash DETECTOR only — it invalidates NVML without
     # nvmlShutdown and lets the main loop request the restart.
     require_text(main_service_runtime_cpp,
         "service_close_nvml_without_shutdown",
         "driver-crash recovery has a no-shutdown NVML invalidation helper")
-    require_text(diagnostics_cpp,
+    require_text(crash_artifacts_cpp,
         "service_close_nvml_without_shutdown();",
         "VEH crash path invalidates NVML without nvmlShutdown")
-    forbid_text(diagnostics_cpp,
+    forbid_text(crash_artifacts_cpp,
         "close_nvml();",
         "VEH crash path must not call nvmlShutdown via close_nvml")
     require_text(runtime_nvml_cpp,
