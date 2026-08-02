@@ -37,6 +37,8 @@ import struct
 import subprocess
 import sys
 
+import build_state  # same one-way dependency: it never imports build.py
+
 # Mirrors source/installer_archive_policy.h.  The static assertions in that
 # header and the struct formats here describe the same bytes; changing one
 # without the other is caught by the round-trip verification below.
@@ -309,7 +311,8 @@ def _installer_sources(ctx):
 
 def _write_installer_resources(ctx, work, uninstaller):
     """Emit the .rc/.manifest pair and compile them with llvm-rc."""
-    major, minor, patch, build = ctx._parse_version_parts()
+    major, minor, patch, build = build_state.parse_version_parts(
+        ctx.APP_VERSION, ctx.APP_BUILD_NUMBER)
     version_string = f"{major}.{minor}.{patch}.{build}"
     manifest_name = "greencurve-uninstall.manifest" if uninstaller else "greencurve-setup.manifest"
     manifest = INSTALLER_MANIFEST.replace("VER_STR", version_string)
@@ -362,8 +365,7 @@ def compile_installer_binary(ctx, output_path, arch, uninstaller, work):
     if ctx._run_compiler(cmd, cwd=work, allow_cfg_collision=True) != 0:
         raise RuntimeError(f"installer compilation failed ({arch}, uninstaller={uninstaller})")
     if arch == "arm64":
-        strip = os.path.join(ctx.LLVM_MINGW_DIR, "bin", "llvm-strip.exe")
-        if subprocess.run([strip, "--strip-all", output_path], cwd=work).returncode != 0:
+        if subprocess.run([ctx.LLVM_MINGW_STRIP, "--strip-all", output_path], cwd=work).returncode != 0:
             raise RuntimeError("installer arm64 strip failed")
     if not os.path.exists(output_path):
         raise RuntimeError("installer compilation produced no output")
@@ -426,12 +428,6 @@ def build_setup_executable(ctx, arch, payload_dir, expected_names):
     manifest build.py already validated, so the setup file and the archive can
     never ship different sets of files.
     """
-    if sys.platform != "win32":
-        # The stub links with llvm-mingw/Zig, which do cross-compile, but the
-        # resource compiler and the compression API do not exist off Windows.
-        print(f"  installer: skipping the {arch} setup file (needs a Windows build host)")
-        return None
-
     work = ctx.prepare_work_subdir(f"installer-{arch}")
     try:
         uninstaller_path = os.path.join(work, "uninstall.exe")
@@ -544,6 +540,26 @@ def check_all(ctx, require_text, forbid_text):
                  "a moved-from directory is released so the user can delete it")
     require_text(apply_shard, "CreateProcessWithTokenW",
                  "the installed GUI is started unelevated, not with setup's admin token")
+    # The stop steps must fail closed when a process handle cannot be taken:
+    # "all exited" would otherwise be an assumption while the process still
+    # holds the files the next step replaces.
+    stop_shard = source("installer_stop.cpp")
+    require_text(stop_shard, "F-STOP-GUI-OPENFAIL",
+                 "a GUI process that cannot be opened fails the stop step")
+    require_text(stop_shard, "F-STOP-SVC-OPENFAIL",
+                 "a service process that cannot be opened fails the stop step")
+    require_text(stop_shard, "F-STOP-TERM-WAIT",
+                 "a terminated GUI process that does not exit still fails the stop step")
+    require_text(stop_shard, "F-STOP-GUI-ENUMFAIL",
+                 "failed window enumeration is not mistaken for no GUI")
+    require_text(stop_shard, "F-STOP-GUI-WAITFAIL",
+                 "a multi-process wait API failure fails the stop step")
+    require_text(stop_shard, "F-STOP-GUI-PROBEFAIL",
+                 "an individual process wait API failure fails the stop step")
+    require_text(stop_shard, "wait == WAIT_FAILED",
+                 "service and GUI wait failures have explicit diagnostics")
+    forbid_text(stop_shard, '#include "app_shared.h"',
+                "the stop shard stays independent of the application model")
 
     # The install runs on a worker thread, and CoInitializeEx is per-thread:
     # without its own call, IShellLink creation failed with CO_E_NOTINITIALIZED
@@ -605,6 +621,16 @@ def check_all(ctx, require_text, forbid_text):
                 "the setup window class never registers the stock Windows icon")
     require_text(installer_ui, "MAKEINTRESOURCEW(GC_SETUP_ICON_ID)",
                  "the icon comes from the module's own resource")
+    # A fast double-click on a BS_OWNERDRAW button is BN_CLICKED followed by
+    # BN_DBLCLK (pinned by the native button fixture); filtering to BN_CLICKED
+    # alone swallowed the second click of every fast double-click, so rapid
+    # page navigation felt like the installer ignored the user.
+    require_text(installer_ui, "gc_wizard_notification_is_click(",
+                 "wizard notifications route through the pure click policy")
+    require_text(installer_ui, "F-CLICK-FILTER",
+                 "the fast-double-click handling is marked where it lives")
+    forbid_text(installer_ui, "HIWORD(wParam) != BN_CLICKED",
+                "the click-only filter that dropped fast double-clicks is gone")
     # The id the window asks for and the id the .rc emits are in different
     # files and different languages; a silent disagreement reproduces exactly
     # the bug this gate exists for.

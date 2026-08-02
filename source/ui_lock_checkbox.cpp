@@ -106,6 +106,11 @@ static void activate_lock_checkbox_once(int vi) {
                              g_app.lockedCi, g_app.lockedFreq);
         }
         set_gui_state_dirty(true);
+        // Every editor mutation re-evaluates F-PENDING.  The dirty transition
+        // above re-snapshots GuiDraft from the applied state, and both the
+        // graph preview and the Apply enable are projections of that snapshot,
+        // so skipping this left them describing the previous lock.
+        gui_pending_changes_refresh();
         return;
     }
 
@@ -117,4 +122,7 @@ static void activate_lock_checkbox_once(int vi) {
     // the model change, which is the only ordering that can paint the new tick.
     unlock_all();
     set_gui_state_dirty(true);
+    // unlock_all() refreshes while still CLEAN; the dirty transition after it
+    // captures a fresh draft, so the pending state has to be re-read once more.
+    gui_pending_changes_refresh();
 }

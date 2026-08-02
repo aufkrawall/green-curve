@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
+#include "service_apply_severity_policy.h"
 #include "gpu_backend_reset_baseline.cpp"
-
 static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool interactive, char* result, size_t resultSize,
     bool* hardwareWriteAttemptedOut, gc_u32* outcomeSeverityOut) {
@@ -1243,8 +1243,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     // The verify counters are the only place the difference between "did what
     // was asked" and "committed something close to it" exists; the summary text
     // below already reports it to a human, and this reports it to the client.
-    gc_u32 outcomeSeverity = service_apply_outcome_severity(failCount,
-        userBoostFailed, flattenFailed);
+    gc_u32 outcomeSeverity = service_apply_outcome_severity_for_lock_mode(
+        lockMode == LOCK_MODE_HARD, failCount, userBoostFailed, flattenFailed);
     if (outcomeSeverityOut) *outcomeSeverityOut = outcomeSeverity;
     debug_log("apply outcome: severity=%s failCount=%d successCount=%d boostUnmatched=%d flattenUnmatched=%d\n",
         service_outcome_severity_name(outcomeSeverity), failCount, successCount,

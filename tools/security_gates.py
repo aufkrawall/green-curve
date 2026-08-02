@@ -21,6 +21,7 @@ import tarfile
 
 import release_manifest  # same one-way dependency: it never imports build.py
 import static_analysis  # ditto; owns the clang-tidy ratchet's own self-tests
+import build_scheduler  # ditto; owns the parallel-build self-tests
 
 # Fuzz targets built from tests/fuzz_main.cpp.  The key is the GC_FUZZ_TARGET
 # macro suffix and the corpus directory name; the value is the macro's numeric
@@ -388,6 +389,17 @@ def run_build_script_regression_tests(ctx):
     """
     tmp = ctx.prepare_work_subdir("build_script_regression")
     try:
+        build_scheduler.run_self_tests()
+        build_script = os.path.join(ctx.SCRIPT_DIR, "build.py")
+        with open(build_script, "r", encoding="utf-8", errors="replace") as handle:
+            build_script_text = handle.read()
+        for needle, label in (
+                ('"--jobs"', "--jobs CLI"),
+                ("build_scheduler.run_parallel", "parallel task scheduler wiring"),
+                ("object-first clang x64", "object-first Windows x64 path")):
+            if needle not in build_script_text:
+                print(f"Build-script regression FAILED: {label} missing")
+                sys.exit(1)
         tool_path = os.path.join(tmp, "tool.bin")
         with open(tool_path, "wb") as handle:
             handle.write(b"trusted tool bytes")
@@ -564,12 +576,16 @@ def check_hardening_and_gate_wiring(ctx):
     arm64 = ctx.linux_flags_for_arch("arm64")
     if "-fcf-protection=full" not in x64:
         fail("Linux x64 lost the CET flag")
+    if "-flto" not in x64 or "-flto" not in ctx._linux_object_compile_flags("x64"):
+        fail("Linux x64 lost LTO in its compile or link flags")
     # aarch64 does not merely ignore it -- clang hard-errors with "option
     # 'cf-protection=return' cannot be specified on this target".
     if "-fcf-protection=full" in arm64:
         fail("x86-only CET flag reached aarch64")
     if "-mbranch-protection=standard" not in arm64:
         fail("aarch64 lost branch protection")
+    if "-flto" in arm64 or "-fno-lto" not in arm64:
+        fail("Linux arm64 lost its branch-protection-preserving no-LTO policy")
     for arch, flags in (("x64", x64), ("arm64", arm64)):
         if "-ftrivial-auto-var-init=pattern" not in flags:
             fail(f"Linux {arch} lost auto-var-init")
@@ -609,13 +625,22 @@ def check_hardening_and_gate_wiring(ctx):
     for extra in FUZZ_WIN32_SOURCES:
         if not os.path.exists(os.path.join(ctx.SOURCE_DIR, extra)):
             fail(f"FUZZ_WIN32_SOURCES names a missing file {extra!r}")
-    # resolve_targets() must refuse a Windows build off Windows rather than
-    # walking into a PermissionError from a PE toolchain binary.
-    if ctx.resolve_targets("linux", True) != ["linux"]:
+    # Every supported host owns the full cross-build matrix by default.
+    if ctx.resolve_targets("linux") != ["linux"]:
         fail("resolve_targets rejects an ordinary Linux target")
-    if ctx.resolve_targets("all", False) != (
-            ["windows", "linux"] if sys.platform == "win32" else ["linux"]):
-        fail("resolve_targets does not narrow the default target for this host")
+    if ctx.resolve_targets("windows") != ["windows"]:
+        fail("resolve_targets rejects a Windows cross-build")
+    if ctx.resolve_targets("all") != ["windows", "linux"]:
+        fail("resolve_targets does not preserve the full default matrix")
+    if sys.platform.startswith("linux"):
+        if ctx.LLVM_MINGW_ARCHIVE_EXT != ".tar.xz":
+            fail("Linux host did not select the native llvm-mingw archive")
+        for tool in (ctx.LLVM_MINGW_CLANG, ctx.LLVM_MINGW_RC,
+                     ctx.LLVM_MINGW_OBJCOPY, ctx.LLVM_MINGW_STRIP,
+                     ctx.LLVM_MINGW_READOBJ, ctx.LLVM_MINGW_PDBUTIL,
+                     ctx.LLVM_MINGW_NM):
+            if tool.endswith(".exe"):
+                fail(f"Linux host selected a PE build tool: {tool}")
     # Every extra-source entry must name a real target and a real file.
     for target, extras in FUZZ_LINUX_EXTRA_SOURCES.items():
         if target not in FUZZ_LINUX_TARGETS:
@@ -1051,7 +1076,7 @@ def _analyze_cet(ctx, binary_path):
         print("CET check: Guard CF function table is empty")
         return 1
 
-    nm = os.path.join(ctx.LLVM_MINGW_DIR, "bin", "x86_64-w64-mingw32-nm.exe")
+    nm = ctx.LLVM_MINGW_NM
     symbols = []
     if os.path.exists(nm):
         proc = subprocess.run([nm, "--numeric-sort", "--defined-only", binary_path],

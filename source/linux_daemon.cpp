@@ -473,7 +473,15 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 g_hasActiveDesired = true;
                 g_stateUncertain = false;
                 g_fanFailureCount = 0;
-                auto_restore_note_explicit_success("apply");
+                char guardErr[256] = {};
+                if (!auto_restore_note_explicit_success("apply", guardErr,
+                                                        sizeof(guardErr))) {
+                    resp->outcomeSeverity = SERVICE_OUTCOME_SEVERITY_WARNING;
+                    gc_snprintf(resp->message, sizeof(resp->message),
+                        "Apply committed, but the automatic restore guard "
+                        "could not be cleared durably: %s",
+                        guardErr[0] ? guardErr : "unknown error");
+                }
                 wake_fan_runtime();
             }
             populate_snapshot(&resp->snapshot, &resp->controlState);
@@ -545,7 +553,15 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 memset(&g_activeTarget, 0, sizeof(g_activeTarget));
                 g_stateUncertain = false;
                 g_fanFailureCount = 0;
-                auto_restore_note_explicit_success("reset");
+                char guardErr[256] = {};
+                if (!auto_restore_note_explicit_success("reset", guardErr,
+                                                        sizeof(guardErr))) {
+                    resp->outcomeSeverity = SERVICE_OUTCOME_SEVERITY_WARNING;
+                    gc_snprintf(resp->message, sizeof(resp->message),
+                        "Reset committed, but the automatic restore guard "
+                        "could not be cleared durably: %s",
+                        guardErr[0] ? guardErr : "unknown error");
+                }
                 wake_fan_runtime();
             }
             populate_snapshot(&resp->snapshot, &resp->controlState);
@@ -564,10 +580,10 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
     daemon_stamp_state_envelope(resp);
     // The daemon's counterpart of the Windows write-out stamp, and for the same
     // reason: every branch above sets `status` and breaks, so severity is
-    // derived once here instead of in each of them.  The Linux mutation path is
-    // transactional -- a phase either commits or the whole apply rolls back --
-    // so it has no partial-verify warning class of its own; that is why nothing
-    // here records a WARNING and everything resolves to SUCCESS or ERROR.
+    // derived once here instead of in each of them.  The Linux hardware
+    // mutation path is transactional and has no partial-verify warning class,
+    // but an otherwise committed explicit Apply/Reset warns when its separate
+    // automatic-restore guard cannot be re-armed durably.
     resp->outcomeSeverity = service_response_resolve_outcome_severity(
         resp->status, resp->outcomeSeverity);
     pl_mutex_unlock(&g_lock);

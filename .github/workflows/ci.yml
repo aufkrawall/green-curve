@@ -1,0 +1,81 @@
+name: CI
+
+# Manual-only: run the full Windows/Linux CI gates on demand. There is no
+# automatic trigger, so a push alone never starts these jobs.
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # The toolchains are ~178 MB of llvm-mingw plus Zig, redownloaded on every
+      # job otherwise. build.py verifies them against digests pinned in the
+      # script (not the adjacent .sha256 markers), so a restored cache is still
+      # integrity-checked before use.
+      - name: Cache toolchains
+        uses: actions/cache@v4
+        with:
+          path: |
+            llvm-mingw
+            zig
+          key: toolchain-windows-${{ hashFiles('build.py') }}
+          restore-keys: toolchain-windows-
+      - name: Build and test
+        run: |
+          python build.py --test
+          python build.py --check --target all
+      - name: Build with sanitizers
+        run: python build.py --test --sanitizer
+      - name: Build with AddressSanitizer
+        run: python build.py --test --asan
+      - name: Static analysis ratchet
+        run: python build.py --tidy
+      - name: Fuzz untrusted-input boundaries
+        run: python build.py --fuzz --fuzz-runs 5000
+      - name: Build verified Windows release packages
+        run: python build.py --target windows
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Cache toolchains
+        uses: actions/cache@v4
+        with:
+          path: zig
+          key: toolchain-linux-${{ hashFiles('build.py') }}
+          restore-keys: toolchain-linux-
+      # No p7zip here on purpose: the Linux release is a .tar.xz written by the
+      # standard library, because 7-Zip cannot record Unix file modes when the
+      # archive is produced on a Windows host.  Leaving 7-Zip off this runner
+      # keeps that independence honest -- a reintroduced dependency fails the
+      # packaging step instead of passing unnoticed.
+      - name: Install analysis tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang-tidy
+      - name: Build Linux target
+        run: python build.py --check --target linux
+      # tests/linux_transport_regression.cpp needs real Linux filesystem
+      # sockets, so this job is the only place it can execute. It previously
+      # never ran in CI at all.
+      - name: Test
+        run: python build.py --test
+      - name: Test with AddressSanitizer
+        run: python build.py --test --asan
+      - name: Static analysis ratchet
+        run: python build.py --tidy
+      - name: Fuzz untrusted-input boundaries
+        run: python build.py --fuzz --fuzz-runs 5000
+      - name: Build verified Linux release packages
+        run: python build.py --target linux

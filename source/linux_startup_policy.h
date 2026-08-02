@@ -221,7 +221,11 @@ static void apply_startup_profile_policy() {
         LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE,
         &g_startupPolicy.targetGpu, &g_startupPolicy.desired);
     if (!outcome.success) {
-        g_stateUncertain = true;
+        // Only a failure that reached a hardware write leaves the daemon
+        // uncertain.  A GPU that was not ready before any write disturbed no
+        // state (see F-PREP-NO-UNCERTAIN), so it must not disable fan
+        // reassertion or publish a lockout for the rest of the session.
+        if (outcome.attempted) g_stateUncertain = true;
         dlog("daemon: startup profile %u did not commit -> %s\n",
              (unsigned int)g_startupPolicy.profileSlot,
              outcome.message[0] ? outcome.message : "unknown reason");

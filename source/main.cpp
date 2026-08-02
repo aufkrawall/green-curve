@@ -549,7 +549,7 @@ static int desired_curve_point_count(const DesiredSettings* desired);
 static bool desired_updates_curve_or_gpu_offset_state(const DesiredSettings* desired);
 static bool desired_has_nonfan_apply_fields(const DesiredSettings* desired);
 static bool desired_is_fan_only_apply_request(const DesiredSettings* desired);
-static bool desired_settings_match_active_service_intent(const DesiredSettings* profile, const DesiredSettings* active, char* detail, size_t detailSize);
+static bool desired_settings_match_active_service_intent(const DesiredSettings* profile, const DesiredSettings* active, char* detail, size_t detailSize, bool allowUnclaimedFan = false);
 static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline* baselineOut, char* err, size_t errSize);
 static void capture_applied_curve_baseline(const DesiredSettings* desired);
 static void set_profile_status_text(const char* fmt, ...);

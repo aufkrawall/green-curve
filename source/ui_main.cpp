@@ -261,6 +261,52 @@ static void set_edit_value(HWND hEdit, unsigned int value) {
     end_programmatic_edit_update();
 }
 
+// The VF MHz fields show the same pending values the graph draws, not the
+// applied/live readback F-PENDING marks as changed.  With a pending global GPU
+// offset an unowned point displays stock + the pending offset component (and
+// returns to live readback when the offset is reverted); the locked region
+// displays the resolved flat target.  Owned points are rewritten too when the
+// offset is SELECTIVE: the curve batch re-places them exactly like unowned
+// ones, so leaving their old applied text on screen would disagree with the
+// dashed graph.  Under a uniform offset an owned point remains the absolute
+// draft the user is typing, and a programmatic SetWindowTextA would steal the
+// caret, so that carve-out stays.
+static void sync_vf_curve_field_values() {
+    if (g_app.numVisible <= 0) return;
+    begin_programmatic_edit_update();
+    for (int vi = 0; vi < g_app.numVisible; ++vi) {
+        int ci = g_app.visibleMap[vi];
+        if (ci < 0 || ci >= VF_NUM_POINTS) continue;
+        if (g_app.lockedVi >= 0 && vi >= g_app.lockedVi) {
+            // The whole locked region shows the resolved flat target.  The
+            // flatten anchor is editable, so it is skipped while it still
+            // tracks its anchor and the draft is mid-typing, and once the user
+            // retypes it (absolute) its field IS the draft.
+            if (vi == g_app.lockedVi && g_app.lockMode != LOCK_MODE_HARD &&
+                (!g_app.guiLockTracksAnchor ||
+                 !g_app.guiDraft.curveValueValid[ci]))
+                continue;
+            unsigned int lockTargetMHz = gui_pending_graph_lock_target_mhz();
+            if (lockTargetMHz == 0) continue;
+            set_edit_value(g_app.hEditsMhz[vi], lockTargetMHz);
+            continue;
+        }
+        bool ownedPoint = g_app.guiCurvePointExplicit[ci];
+        // A uniform offset leaves an owned point's field alone; a selective
+        // offset projects it like the graph.  Even then, never rewrite the
+        // field the user is actively typing in.
+        if (ownedPoint &&
+            !gui_pending_offset_mode_is_selective(&g_guiPendingChanges))
+            continue;
+        if (ownedPoint && g_app.hEditsMhz[vi] &&
+            GetFocus() == g_app.hEditsMhz[vi])
+            continue;
+        unsigned int pendingMHz = pending_curve_mhz_for_gui_point(ci);
+        if (pendingMHz > 0) set_edit_value(g_app.hEditsMhz[vi], pendingMHz);
+    }
+    end_programmatic_edit_update();
+}
+
 static void populate_edits() {
     bool preserveDirty = gui_state_dirty();
     populate_global_controls();
@@ -292,10 +338,10 @@ static void populate_edits() {
         EnableWindow(g_app.hLocks[vi], serviceReady ? TRUE : FALSE);
         InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
     }
-    // Re-apply lock state if active — show live driver values in edit boxes
-    // but keep the tail points visually grayed out/disabled to indicate the
-    // locked/flattened state. Live values are shown since the uniform tail
-    // floor fix (Build 109) eliminated tail drift; real values equal lockedFreq.
+    // Re-apply lock state if active: disable the tail boxes (and the HARD
+    // anchor).  The trailing sync_vf_curve_field_values() fills the locked
+    // region with the resolved flat target and projects any pending GPU offset
+    // into the unowned fields.
     if (g_app.lockedVi >= 0 && g_app.lockedVi < g_app.numVisible) {
         // draw_lock_checkbox() derives the tick from g_app.lockedVi/lockMode,
         // so the repaint request is the whole update.
@@ -320,6 +366,10 @@ static void populate_edits() {
         populate_global_controls();
     }
     gui_pending_changes_refresh();
+    // Always after the refresh (not only when it changed): populate_edits has
+    // just written applied/live values into every field, and the pending model
+    // may be identical while those values must still project.
+    sync_vf_curve_field_values();
 }
 
 static void apply_lock(int vi, LockMode mode) {
@@ -349,8 +399,9 @@ static void apply_lock(int vi, LockMode mode) {
     EnableWindow(g_app.hLocks[vi], TRUE);
     InvalidateRect(g_app.hLocks[vi], nullptr, FALSE);
 
-    // Disable tail edit boxes and lock checkboxes to indicate locked
-    // state. Edit boxes keep their live readback values (not overwritten).
+    // Disable tail edit boxes and lock checkboxes to indicate locked state.
+    // The pending refresh below fills the disabled boxes with the resolved flat
+    // target (anchor plus any GPU-offset delta the lock tracks).
     for (int j = vi + 1; j < g_app.numVisible; j++) {
         SendMessageA(g_app.hEditsMhz[j], EM_SETREADONLY, TRUE, 0);
         EnableWindow(g_app.hEditsMhz[j], FALSE);
@@ -373,8 +424,8 @@ static void sync_locked_tail_preview_from_anchor() {
     g_app.guiLockTracksAnchor = false;
     set_gui_state_dirty(true);
     if (g_app.lockedCi >= 0) record_ui_action("lock anchor point %d edited to %u MHz (absolute)", g_app.lockedCi, g_app.lockedFreq);
-    // Note: previously overwrote tail edit boxes with lockedFreq here.
-    // Removed after the uniform tail floor fix — real values match the lock target.
+    // The pending refresh below now fills the disabled tail boxes with the
+    // resolved lock target, so an anchor retype updates the previewed tail.
     gui_pending_changes_refresh();
 }
 

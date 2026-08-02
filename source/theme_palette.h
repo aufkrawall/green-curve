@@ -19,6 +19,10 @@
 #define COL_GRID            RGB(0x40, 0x40, 0x55)
 #define COL_AXIS            RGB(0x80, 0x80, 0x90)
 #define COL_CURVE           RGB(0x50, 0xD0, 0x80)
+// Hard NVML pin. The whole curve runs at one clock, so it gets its own
+// light-blue identity instead of reusing the applied green (which still means
+// "normal curve") or the pending orange (which still means "not applied").
+#define COL_CURVE_PINNED    RGB(0x78, 0xC8, 0xF0)
 #define COL_POINT           RGB(0xFF, 0x60, 0x60)
 #define COL_TEXT            RGB(0xE0, 0xE0, 0xE0)
 #define COL_LABEL           RGB(0xA0, 0xA0, 0xB0)

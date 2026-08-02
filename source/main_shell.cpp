@@ -300,8 +300,9 @@ static const GuiPendingSummary* gui_pending_summary() {
     return &empty;
 }
 
-static bool gui_pending_gpu_offset_projection(int*, int*, int*, int*) {
-    return false;
+static GuiGraphPreviewPoint gui_pending_graph_preview(int) {
+    GuiGraphPreviewPoint empty = {};
+    return empty;
 }
 
 // The service has no UI. Nothing in the service build should reach a prompt,

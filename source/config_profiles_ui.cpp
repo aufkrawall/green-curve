@@ -593,7 +593,7 @@ static void sync_applied_profile_from_service_metadata() {
             decision.intentMatchesProfile =
                 desired_settings_match_active_service_intent(
                     &savedProfile, &g_app.serviceActiveDesired,
-                    matchDetail, sizeof(matchDetail));
+                    matchDetail, sizeof(matchDetail), true);
         }
     }
 

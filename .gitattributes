@@ -1,0 +1,22 @@
+# Line-ending policy.
+#
+# This repository is developed on Windows, where `core.autocrlf=true` rewrites
+# every checked-out text file to CRLF.  That is harmless for the C++ sources and
+# the build script, but `tools/greencurve-setup.sh` is copied verbatim into the
+# Linux release archive: a CRLF checkout shipped `#!/usr/bin/env bash\r`, which
+# Linux resolves as an interpreter literally named `bash\r`
+# ("env: 'bash\r': No such file or directory"), and every heredoc body -- the
+# installed .desktop entry among them -- carried a trailing CR.  The archive was
+# therefore only usable when it happened to be packaged on a Linux host.
+#
+# Pin every shell script to LF in the working tree regardless of host or
+# autocrlf setting.  build.py additionally rewrites Linux release text to LF at
+# packaging time, so the archive is correct even from a working tree that
+# predates this file.
+*.sh text eol=lf
+
+# The Linux release archive is a .tar.xz; the Windows one is a .7z.  Neither is
+# text, and neither is ever tracked, but say so explicitly so no future
+# `text=auto` rule can be tempted to touch them.
+*.7z binary
+*.tar.xz binary

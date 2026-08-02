@@ -32,10 +32,16 @@ struct LinuxAutoRestoreOutcome {
     char message[256];
 };
 
-static bool persist_auto_restore_guard(const char* why) {
+static bool persist_auto_restore_guard(const char* why,
+                                       char* errorOut = nullptr,
+                                       size_t errorSize = 0) {
     char err[256] = {};
     bool ok = linux_daemon_guard_store(GC_DAEMON_GUARD_FILE,
                                        &g_autoRestoreGuard, err, sizeof(err));
+    if (errorOut && errorSize) {
+        gc_strlcpy(errorOut, errorSize,
+                   ok ? "" : (err[0] ? err : "unknown error"));
+    }
     dlog("daemon auto-restore: guard persisted (%s) lockedOut=%d reason=%u (%s) "
          "startAttempts=%u boot=%s ok=%d%s%s\n",
          why ? why : "-", (int)g_autoRestoreGuard.lockedOut,
@@ -56,7 +62,8 @@ static bool persist_auto_restore_guard(const char* why) {
 static bool auto_restore_authorize(LinuxAutoRestoreTrigger trigger,
                                    LinuxAutoRestoreVerdict* verdictOut) {
     LinuxAutoRestoreVerdict verdict =
-        linux_auto_restore_decide(&g_autoRestoreGuard, trigger);
+        linux_auto_restore_decide(&g_autoRestoreGuard, trigger,
+                                  g_stateUncertain);
     // Reported to the caller rather than recomputed by it: latching the lockout
     // below changes what a second call would answer, so "attempts exhausted"
     // would come back as the less specific "locked out".
@@ -105,12 +112,28 @@ static bool auto_restore_authorize(LinuxAutoRestoreTrigger trigger,
 
 // Called after a successful EXPLICIT Apply or Reset only.  Automatic success
 // deliberately does not re-arm: on Windows that is what stops a lockout from
-// being cleared by the very replay that caused it.
-static void auto_restore_note_explicit_success(const char* origin) {
-    if (!linux_auto_restore_note_explicit_success(&g_autoRestoreGuard)) return;
-    dlog("daemon auto-restore: explicit %s succeeded; automatic restoration re-armed\n",
+// being cleared by the very replay that caused it.  The in-memory transition
+// is transactional with its record: otherwise the current response/snapshot
+// would claim re-armed while the old lockout returns on daemon restart.
+static bool auto_restore_note_explicit_success(const char* origin,
+                                               char* errorOut,
+                                               size_t errorSize) {
+    if (errorOut && errorSize) errorOut[0] = 0;
+    LinuxAutoRestoreGuard previous = g_autoRestoreGuard;
+    if (!linux_auto_restore_note_explicit_success(&g_autoRestoreGuard)) return true;
+    if (!persist_auto_restore_guard("explicit success", errorOut, errorSize)) {
+        g_autoRestoreGuard = previous;
+        dlog("daemon auto-restore: explicit %s committed, but automatic "
+             "restoration could not be re-armed durably; previous guard "
+             "restored in memory (%s)\n",
+             origin ? origin : "operation",
+             errorOut && errorOut[0] ? errorOut : "unknown error");
+        return false;
+    }
+    dlog("daemon auto-restore: explicit %s succeeded; automatic restoration "
+         "re-armed durably\n",
          origin ? origin : "operation");
-    persist_auto_restore_guard("explicit success");
+    return true;
 }
 
 // Read the guard once per daemon start, before anything can write.
@@ -185,8 +208,9 @@ static void auto_restore_note_automatic_failure(LinuxAutoRestoreTrigger trigger)
     if (g_autoRestoreGuard.lockedOut) return;
     linux_auto_restore_note_lockout(&g_autoRestoreGuard,
         SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED);
-    dlog("daemon auto-restore: %s failed at the hardware; automatic restoration "
-         "is latched off until an explicit Apply or Reset succeeds\n",
+    dlog("daemon auto-restore: %s failed after reaching hardware or its durable "
+         "state did not commit; automatic restoration is latched off until an "
+         "explicit Apply or Reset succeeds\n",
          linux_auto_restore_trigger_name(trigger));
     persist_auto_restore_guard("automatic write failed");
 }
@@ -254,11 +278,16 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
         // failed write: it does not latch the lockout.  The attempt it consumed
         // is still spent, which is deliberate -- a daemon that cannot reach its
         // GPU on three consecutive starts must stop trying by itself.
+        // F-PREP-NO-UNCERTAIN: it must also NOT set g_stateUncertain.  That
+        // flag says the daemon state or a rollback did not settle; a GPU that
+        // was merely not ready disturbed no state, and setting it here disabled
+        // the fan reassertion thread and published a lockout until an explicit
+        // Apply/Reset -- for a failure that wrote nothing.  The next resume is
+        // allowed to try again.
         gc_snprintf(outcome.message, sizeof(outcome.message),
                     "GPU not available for automatic restore: %s", err);
         dlog("daemon auto-restore: %s aborted before any write: %s\n",
              linux_auto_restore_trigger_name(trigger), err);
-        g_stateUncertain = true;
         return outcome;
     }
 
@@ -279,6 +308,20 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
     if (!service_build_full_restore_request(&committed, &request)) {
         gc_strlcpy(outcome.message, sizeof(outcome.message),
                    "could not build the restore request");
+        return outcome;
+    }
+    LinuxHardwareSnapshot before = {};
+    char captureErr[256] = {};
+    if (!linux_backend_capture_snapshot(&g_gpu, &before, captureErr,
+                                        sizeof(captureErr))) {
+        gc_snprintf(outcome.message, sizeof(outcome.message),
+                    "could not capture hardware state before automatic "
+                    "restore: %s",
+                    captureErr[0] ? captureErr : "unknown error");
+        dlog("daemon auto-restore: %s aborted before any write because the "
+             "rollback snapshot failed: %s\n",
+             linux_auto_restore_trigger_name(trigger),
+             captureErr[0] ? captureErr : "unknown error");
         return outcome;
     }
     dlog("daemon auto-restore: %s writing intent [resetBaseline=%d curvePoints=%d "
@@ -309,22 +352,50 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
         return outcome;
     }
 
-    outcome.success = true;
-    g_activeDesired = committed;
-    g_activeTarget = g_gpu.selectedGpu;
-    g_hasActiveDesired = true;
-    g_fanFailureCount = 0;
     // Re-committed rather than assumed: a lock-mode migration above, or a v1
     // record read back through the compatibility path, would otherwise leave
     // the file disagreeing with what is now on the hardware.
     char stateErr[256] = {};
-    if (!store_daemon_record(LINUX_DAEMON_RECORD_ACTIVE, &g_activeTarget,
-                             &g_activeDesired, stateErr, sizeof(stateErr))) {
+    GpuAdapterInfo committedTarget = g_gpu.selectedGpu;
+    if (!store_daemon_record(LINUX_DAEMON_RECORD_ACTIVE, &committedTarget,
+                             &committed, stateErr, sizeof(stateErr))) {
+        char commitErr[256] = {};
+        gc_strlcpy(commitErr, sizeof(commitErr),
+                   stateErr[0] ? stateErr : "unknown error");
+        char rollbackErr[256] = {};
+        bool rollbackOk = linux_backend_restore_snapshot(
+            &g_gpu, &before, mutation.attemptedPhases,
+            rollbackErr, sizeof(rollbackErr));
         g_stateUncertain = true;
-        dlog("daemon auto-restore: %s applied but could not be recorded: %s\n",
+        char uncertainErr[256] = {};
+        bool uncertaintyRecorded = store_daemon_record(
+            LINUX_DAEMON_RECORD_UNCERTAIN, &committedTarget, &committed,
+            uncertainErr, sizeof(uncertainErr));
+        auto_restore_note_automatic_failure(trigger);
+        gc_snprintf(outcome.message, sizeof(outcome.message),
+                    "automatic restore persistence failed after hardware "
+                    "write; hardware rollback %s: %s",
+                    rollbackOk ? "succeeded" : "is uncertain", commitErr);
+        dlog("daemon auto-restore: %s applied but ACTIVE commit failed: %s; "
+             "hardware rollback=%d%s%s; uncertain record persisted=%d%s%s\n",
              linux_auto_restore_trigger_name(trigger),
-             stateErr[0] ? stateErr : "unknown error");
+             commitErr, rollbackOk ? 1 : 0,
+             rollbackOk ? "" : ": ",
+             rollbackOk ? "" :
+                 (rollbackErr[0] ? rollbackErr : "unknown error"),
+             uncertaintyRecorded ? 1 : 0,
+             uncertaintyRecorded ? "" : ": ",
+             uncertaintyRecorded ? "" :
+                 (uncertainErr[0] ? uncertainErr : "unknown error"));
+        wake_fan_runtime();
+        return outcome;
     }
+    outcome.success = true;
+    g_activeDesired = committed;
+    g_activeTarget = committedTarget;
+    g_hasActiveDesired = true;
+    g_stateUncertain = false;
+    g_fanFailureCount = 0;
     wake_fan_runtime();
     dlog("daemon auto-restore: %s committed -> %s\n",
          linux_auto_restore_trigger_name(trigger), outcome.message);

@@ -169,18 +169,6 @@ static ConfigEnablementState tray_autostart_config_state(const char* path) {
 static bool should_enable_startup_task_from_config(const char* path) {
     return startup_task_config_state(path) == CONFIG_ENABLEMENT_ENABLED;
 }
-static bool live_state_has_custom_oc() {
-    if (g_app.gpuClockOffsetkHz != 0) return true;
-    if (g_app.memClockOffsetkHz != 0) return true;
-    if (g_app.powerLimitPct != 100) return true;
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (g_app.freqOffsets[i] != 0) return true;
-    }
-    return false;
-}
-static bool live_state_has_custom_fan() {
-    return current_green_curve_fan_intent_mode() != FAN_MODE_AUTO;
-}
 static void refresh_fan_curve_button_text() {
     if (!g_app.hFanCurveBtn) return;
     ensure_valid_fan_curve_config(&g_app.guiFanCurve);

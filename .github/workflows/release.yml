@@ -1,0 +1,172 @@
+name: Release
+
+# Manual stable release: build the full Windows + Linux matrix on one Linux
+# runner, attest every artifact to the exact repo commit, then create a new
+# stable tag (<VERSION>, matching the public repo's no-prefix convention) and
+# GitHub Release for the artifacts.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the exact dispatch commit
+        uses: actions/checkout@v4
+
+      - name: Verify clean checkout
+        run: |
+          set -eu
+          dirty="$(git status --porcelain --untracked-files=all)"
+          if [ -n "$dirty" ]; then
+            echo "::error::checkout is not clean; refusing to release modified code"
+            printf '%s\n' "$dirty"
+            exit 1
+          fi
+
+      - name: Resolve version and tag from VERSION
+        id: version
+        run: |
+          set -eu
+          version="$(tr -d '\r\n' < VERSION)"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+            echo "::error::VERSION must be numeric MAJOR.MINOR[.PATCH], got '$version'"
+            exit 1
+          fi
+          tag="${version}"
+          existing="$(git ls-remote --tags origin "refs/tags/${tag}")"
+          if [ -n "$existing" ]; then
+            echo "::error::tag '${tag}' already exists on origin"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache toolchains
+        uses: actions/cache@v4
+        with:
+          path: |
+            zig
+            llvm-mingw-linux
+          key: release-toolchain-linux-${{ hashFiles('build.py') }}
+          restore-keys: release-toolchain-linux-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Unlike the Linux CI job, this release job must produce the Windows
+      # .7z archives and setup executables, so 7-Zip is required here. The
+      # Linux tarballs are still written by the Python standard library.
+      - name: Install 7-Zip for Windows release packaging
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes p7zip-full
+
+      - name: Build all targets (Windows + Linux, x64 + arm64)
+        run: python build.py
+
+      - name: Verify clean tree and all expected release artifacts
+        run: |
+          set -eu
+          dirty="$(git status --porcelain --untracked-files=all)"
+          if [ -n "$dirty" ]; then
+            echo "::error::build modified the tracked checkout"
+            printf '%s\n' "$dirty"
+            exit 1
+          fi
+          for f in \
+            greencurve-${{ steps.version.outputs.version }}-windows-x64.7z \
+            greencurve-${{ steps.version.outputs.version }}-windows-arm64.7z \
+            greencurve-${{ steps.version.outputs.version }}-windows-x64-setup.exe \
+            greencurve-${{ steps.version.outputs.version }}-windows-arm64-setup.exe \
+            greencurve-${{ steps.version.outputs.version }}-linux-x64.tar.xz \
+            greencurve-${{ steps.version.outputs.version }}-linux-arm64.tar.xz \
+            greencurve-${{ steps.version.outputs.version }}-windows-x64.7z.sha256 \
+            greencurve-${{ steps.version.outputs.version }}-windows-arm64.7z.sha256 \
+            greencurve-${{ steps.version.outputs.version }}-windows-x64-setup.exe.sha256 \
+            greencurve-${{ steps.version.outputs.version }}-windows-arm64-setup.exe.sha256 \
+            greencurve-${{ steps.version.outputs.version }}-linux-x64.tar.xz.sha256 \
+            greencurve-${{ steps.version.outputs.version }}-linux-arm64.tar.xz.sha256; do
+            test -s "$f" || { echo "::error::missing or empty release artifact: $f"; exit 1; }
+          done
+
+      - name: Attest artifacts to the exact repo commit
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            greencurve-${{ steps.version.outputs.version }}-windows-*.7z
+            greencurve-${{ steps.version.outputs.version }}-windows-*-setup.exe
+            greencurve-${{ steps.version.outputs.version }}-linux-*.tar.xz
+
+      - name: Write release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          TREE: ${{ steps.version.outputs.tree }}
+          SHA: ${{ github.sha }}
+        run: |
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          ## Green Curve ${VERSION}
+
+          Stable release built manually from commit \`${SHA}\` (source tree
+          \`${TREE}\`) in \`${GITHUB_REPOSITORY}\`.
+
+          Artifacts:
+
+          - Windows x64: \`greencurve-${VERSION}-windows-x64.7z\` + setup executable
+          - Windows ARM64: \`greencurve-${VERSION}-windows-arm64.7z\` + setup executable
+          - Linux x64: \`greencurve-${VERSION}-linux-x64.tar.xz\`
+          - Linux ARM64: \`greencurve-${VERSION}-linux-arm64.tar.xz\`
+
+          All six targets were compiled by \`python build.py\` from this exact
+          commit. The workflow verified a clean checkout before and after the
+          build, so the artifacts correspond 100% to the repository content at
+          \`${SHA}\`. Every artifact carries a GitHub build-provenance
+          attestation for that commit.
+
+          Verify any artifact with:
+
+              gh attestation verify <artifact> --repo ${GITHUB_REPOSITORY}
+          EOF
+
+      - name: Create stable tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -eu
+          gh release create "${TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Green Curve ${VERSION}" \
+            --notes-file "${RUNNER_TEMP}/release-notes.md" \
+            --target "${GITHUB_SHA}" \
+            greencurve-${VERSION}-*
+
+      - name: Verify attestations on released artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -eu
+          for f in \
+            greencurve-${VERSION}-windows-x64.7z \
+            greencurve-${VERSION}-windows-arm64.7z \
+            greencurve-${VERSION}-windows-x64-setup.exe \
+            greencurve-${VERSION}-windows-arm64-setup.exe \
+            greencurve-${VERSION}-linux-x64.tar.xz \
+            greencurve-${VERSION}-linux-arm64.tar.xz; do
+            gh attestation verify "$f" --repo "$GITHUB_REPOSITORY"
+          done

@@ -60,11 +60,20 @@ struct GuiPendingCurvePoint {
     bool liveKnown;
     bool draftValid;
     unsigned int draftMHz;
+    // appliedMHz also carries the APPLIED ownership half: 0 means the applied
+    // state does not own this point. Callers fold an applied HARD NVML pin
+    // into it, because a hard pin owns every visible point even when the
+    // applied curve baseline has no explicit entry there.
     unsigned int appliedMHz;
 };
 
 static inline bool gui_pending_curve_point_changed(GuiPendingCurvePoint in) {
-    if (!in.visible || !in.ownedByEditor || !in.liveKnown) return false;
+    if (!in.visible || !in.liveKnown) return false;
+    // A point the APPLIED state owns but the editor does not is released back
+    // to stock by Apply's reset-before-apply step, so the release is a change
+    // even though the editor typed nothing. appliedMHz != 0 is the applied
+    // ownership half.
+    if (!in.ownedByEditor) return in.appliedMHz != 0;
     if (!in.draftValid) return true;
     // No applied baseline means the editor owns a point the hardware does not,
     // which is exactly what a freshly typed or freshly loaded point looks like.
@@ -77,9 +86,16 @@ static inline bool gui_pending_curve_point_changed(GuiPendingCurvePoint in) {
 // re-places such a point at stock + the new offset component
 // (gpu_backend_apply.cpp), so it is pending exactly when the component moves.
 //
-// Two carve-outs, both matching the apply path:
-//   - a point the editor owns explicitly is written as an ABSOLUTE target, so
-//     the global offset does not stack onto it;
+// The carve-outs match gpu_backend_apply.cpp's two offset paths:
+//   - a UNIFORM global offset (neither side excludes low points) is written
+//     through the dedicated offset control, and a point the editor owns
+//     explicitly is then written as an ABSOLUTE target, so the uniform offset
+//     does not stack onto it;
+//   - a SELECTIVE offset (either side has exclude-low active) is applied
+//     through per-point VF deltas in the curve batch, which re-places every
+//     populated point (gpuPolicyViaCurveBatch) regardless of
+//     guiCurvePointExplicit -- so an applied profile whose decoded curve
+//     points are all "owned" still has to preview the move;
 //   - the locked tail is pinned to the lock target regardless of any offset.
 //
 // Comparing the offset COMPONENTS rather than frequencies keeps this exact and
@@ -87,14 +103,38 @@ static inline bool gui_pending_curve_point_changed(GuiPendingCurvePoint in) {
 struct GuiPendingOffsetShift {
     bool inLockedTail;
     bool ownedByEditor;
+    bool selectiveOffsetActive;
     int appliedOffsetComponentMHz;
     int pendingOffsetComponentMHz;
 };
 
 static inline bool gui_pending_offset_shift_changed(GuiPendingOffsetShift in) {
     if (in.inLockedTail) return false;
-    if (in.ownedByEditor) return false;
+    if (in.ownedByEditor && !in.selectiveOffsetActive) return false;
     return in.appliedOffsetComponentMHz != in.pendingOffsetComponentMHz;
+}
+
+// Whether the GPU-offset apply path is SELECTIVE (per-point VF deltas through
+// the curve batch) rather than the dedicated uniform offset control.  This is
+// the pure mirror of gpu_backend_apply.cpp's gpuPolicyViaCurveBatch gate:
+//   - the APPLIED side is the resolver's effective exclude count
+//     (current_applied_gpu_offset_excludes_low_points()), which already gates
+//     on a nonzero applied offset at every normal source.  Re-gating it here
+//     would diverge in the remembered-request edge where the resolver still
+//     reports an exclude count with a zero offset;
+//   - the PENDING side mirrors the backend's desired-settings normalization
+//     (desired->gpuOffsetExcludeLowCount counts only while
+//     desired->gpuOffsetMHz != 0).
+// The applied offset parameter is part of the contract for the caller's
+// benefit; the applied exclude count is already the effective value.
+static inline bool gui_pending_offset_mode_selective(
+    int appliedGpuOffsetMHz, int appliedExcludeLowCount,
+    int pendingGpuOffsetMHz, int pendingExcludeLowCount) {
+    (void)appliedGpuOffsetMHz;
+    int appliedExcludeLow = appliedExcludeLowCount;
+    int pendingExcludeLow =
+        pendingGpuOffsetMHz != 0 ? pendingExcludeLowCount : 0;
+    return appliedExcludeLow > 0 || pendingExcludeLow > 0;
 }
 
 // toleranceMHz is the VF grid step at the lock point
@@ -133,13 +173,130 @@ static inline bool gui_pending_lock_changed(GuiPendingLock in) {
 // g_app.lockedFreq whenever a draft is attached, so that is what Apply will
 // write and what the preview and the diff must both use. lockedFreq can lag:
 // apply_lock() infers it from the draft, which a profile projection populates
-// only afterwards, and the tail edit controls deliberately keep their previous
-// readback when the anchor is retyped.
+// only afterwards.  (The disabled tail boxes are synced to the resolved target
+// by the pending refresh, so an anchor retype no longer leaves stale numbers
+// on screen.)
+//
+// A lock that TRACKS its anchor is not an absolute target: capture also adds
+// the anchor's global GPU-offset component delta (desired minus current) to
+// the base, because Apply re-places a tracking anchor at stock + the offset
+// component.  The preview used to skip that step, so a freshly ticked flatten
+// lock previewed the tail at the stock anchor while Apply wrote anchor +
+// offset.  tracksAnchor=false means an absolute lock (anchor retyped or a
+// persisted absolute profile): the base is written as-is.  The clamp to 1
+// mirrors capture's `if (effectiveLockTargetMHz <= 0) effectiveLockTargetMHz =
+// 1;`.
 static inline unsigned int gui_pending_lock_target_mhz(
     bool draftAttached, bool draftValidAtAnchor, unsigned int draftMHzAtAnchor,
-    unsigned int lockedFreqMHz) {
-    if (draftAttached && draftValidAtAnchor) return draftMHzAtAnchor;
-    return lockedFreqMHz;
+    unsigned int lockedFreqMHz, bool tracksAnchor,
+    int appliedOffsetComponentMHz, int pendingOffsetComponentMHz) {
+    unsigned int base = draftAttached && draftValidAtAnchor
+        ? draftMHzAtAnchor : lockedFreqMHz;
+    if (!tracksAnchor) return base;
+    if (appliedOffsetComponentMHz == pendingOffsetComponentMHz) return base;
+    long long target = (long long)base + (long long)pendingOffsetComponentMHz
+        - (long long)appliedOffsetComponentMHz;
+    if (target <= 0) target = 1;
+    return (unsigned int)target;
+}
+
+// What the graph plots for one point, reduced to the half the EDITOR
+// determines.  Resolved in the same order as gpu_backend_apply.cpp:
+//
+//   locked tail   -> the lock target, which capture_gui_desired_settings()
+//                    expands over the tail;
+//   point whose global-offset component moved and that the offset path will
+//                    re-place -> stock base plus the PENDING component.  The
+//                    applied component is still baked into the live readback,
+//                    so the finished frequency cannot be reused for such a
+//                    point.  A uniform offset leaves editor-owned points
+//                    alone; a selective offset re-places them too
+//                    (offsetMovesOwnedPoints).
+//   owned point   -> the editor's absolute value, for the uniform-offset case
+//                    where the global offset does not stack onto an
+//                    explicitly written point (a selective offset has already
+//                    answered above);
+//   anything else -> nothing the editor determines; live readback stands.
+//
+// The live half is deliberately NOT part of this record, and that is the whole
+// point of it: the graph's repaint gate compares two of these to learn whether
+// the editor would draw a different pending curve.  g_app.curve drifts under
+// boost and temperature and the live snapshot path already repaints for it, so
+// folding the finished frequency in here would repaint the graph on every
+// telemetry tick.
+//
+// Gating that repaint on the pending MASK and the changed-point SET instead --
+// what this replaces -- missed every edit that moves values without changing
+// WHICH points are pending.  Retyping the global GPU offset from +100 to +150
+// moves every unowned point but marks exactly the same set, so the preview
+// appeared only once something else (a manual Refresh) repainted the window.
+// Changing the exclude-low count does move the set, which is why that one field
+// looked like it worked.
+struct GuiGraphPreviewPoint {
+    unsigned int absoluteMHz;    // the editor asserts this exact frequency
+    bool offsetFromStockBase;    // else: stock base + offsetComponentMHz
+    int offsetComponentMHz;
+};
+
+struct GuiGraphPreviewInput {
+    bool hardPinned;             // hard NVML pin: every plotted point is flat
+    bool releasedToStock;        // applied owns this point; the editor does not
+    bool inLockedTail;
+    unsigned int lockTargetMHz;
+    bool ownedByEditor;
+    bool offsetMovesOwnedPoints;
+    bool offsetProjectionValid;
+    int appliedOffsetComponentMHz;
+    int pendingOffsetComponentMHz;
+    bool draftValid;
+    unsigned int draftMHz;
+};
+
+static inline GuiGraphPreviewPoint gui_graph_preview_point(
+    GuiGraphPreviewInput in) {
+    GuiGraphPreviewPoint out = {};
+    // A hard NVML pin makes the whole curve run at the lock target regardless
+    // of the VF entries below the anchor, so it outranks the locked tail, the
+    // offset projection, and the draft.  A lock target of 0 is unresolved and
+    // falls through exactly like the tail case below.
+    if (in.hardPinned && in.lockTargetMHz > 0) {
+        out.absoluteMHz = in.lockTargetMHz;
+        return out;
+    }
+    // A lock target of 0 is an unresolved lock, not a request to plot 0 MHz:
+    // fall through to the offset/draft resolution exactly as the graph did.
+    if (in.inLockedTail && in.lockTargetMHz > 0) {
+        out.absoluteMHz = in.lockTargetMHz;
+        return out;
+    }
+    if (in.offsetProjectionValid &&
+        (in.offsetMovesOwnedPoints || !in.ownedByEditor) &&
+        in.appliedOffsetComponentMHz != in.pendingOffsetComponentMHz) {
+        out.offsetFromStockBase = true;
+        out.offsetComponentMHz = in.pendingOffsetComponentMHz;
+        return out;
+    }
+    // A point the applied state owns but the editor no longer does is released
+    // back to stock by reset-before-apply. The stale draft still holds the old
+    // applied value, so this must outrank the draft; when an offset projection
+    // is valid the stock base carries the PENDING component for the point.
+    if (in.releasedToStock && !in.ownedByEditor) {
+        out.offsetFromStockBase = true;
+        out.offsetComponentMHz =
+            in.offsetProjectionValid ? in.pendingOffsetComponentMHz : 0;
+        return out;
+    }
+    if (in.draftValid) out.absoluteMHz = in.draftMHz;
+    return out;
+}
+
+// Field-wise, never memcmp: the record has padding between its bool and its
+// int, and a repaint gate that compared padding would fire at random.
+static inline bool gui_graph_preview_point_equal(GuiGraphPreviewPoint a,
+                                                 GuiGraphPreviewPoint b) {
+    return a.absoluteMHz == b.absoluteMHz
+        && a.offsetFromStockBase == b.offsetFromStockBase
+        && a.offsetComponentMHz == b.offsetComponentMHz;
 }
 
 struct GuiPendingSummary {

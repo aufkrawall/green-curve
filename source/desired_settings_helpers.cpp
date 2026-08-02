@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
+#include "profile_ownership_policy.h"
 
 static int desired_curve_point_count(const DesiredSettings* desired) {
     if (!desired) return 0;
@@ -42,7 +43,7 @@ static bool desired_bool_equal(gc_bool8 lhs, gc_bool8 rhs) {
     return (lhs != 0) == (rhs != 0);
 }
 
-static bool desired_settings_match_active_service_intent(const DesiredSettings* profile, const DesiredSettings* active, char* detail, size_t detailSize) {
+static bool desired_settings_match_active_service_intent(const DesiredSettings* profile, const DesiredSettings* active, char* detail, size_t detailSize, bool allowUnclaimedFan) {
     if (!profile || !active) {
         set_message(detail, detailSize, "missing desired settings");
         return false;
@@ -80,11 +81,13 @@ static bool desired_settings_match_active_service_intent(const DesiredSettings* 
         return false;
     }
 
-    if (!desired_bool_equal(profile->hasFan, active->hasFan)) {
+    if (!desired_bool_equal(profile->hasFan, active->hasFan) &&
+        !profile_ownership_fan_mismatch_allowed(allowUnclaimedFan,
+            profile->hasFan, active->hasFan)) {
         set_message(detail, detailSize, "fan ownership differs profile=%d active=%d", profile->hasFan ? 1 : 0, active->hasFan ? 1 : 0);
         return false;
     }
-    if (profile->hasFan) {
+    if (profile->hasFan && active->hasFan) {
         if (profile->fanMode != active->fanMode) {
             set_message(detail, detailSize, "fan intent differs profile=%d active=%d", profile->fanMode, active->fanMode);
             return false;

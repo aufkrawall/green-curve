@@ -13,7 +13,16 @@
 // different worker, which is why both live here.
 
 #include "installer_common.h"
+#include "installer_ui_click_policy.h"
 #include "installer_ui_internal.h"
+
+// The policy header spells the notification codes host-neutrally so the
+// either-host regression harness can compile it; pin them to the real Win32
+// values here, where both are visible.
+static_assert(GC_WIZARD_NOTIFY_CLICKED == BN_CLICKED,
+              "installer click policy must track BN_CLICKED");
+static_assert(GC_WIZARD_NOTIFY_DBLCLK == BN_DBLCLK,
+              "installer click policy must track BN_DBLCLK");
 
 GcWizard g_wizard;
 
@@ -383,8 +392,27 @@ static LRESULT CALLBACK gc_wizard_proc(HWND hwnd, UINT message, WPARAM wParam, L
             }
         }
         case WM_COMMAND: {
-            if (HIWORD(wParam) != BN_CLICKED) break;
-            switch (LOWORD(wParam)) {
+            const int controlId = LOWORD(wParam);
+            const unsigned int notification = HIWORD(wParam);
+            const bool isCheckbox =
+                controlId == GC_ID_ACCEPT || controlId == GC_ID_START_MENU ||
+                controlId == GC_ID_DESKTOP || controlId == GC_ID_LAUNCH;
+            if (!gc_wizard_notification_is_click(notification, isCheckbox)) {
+                // F-CLICK-FILTER: a fast double-click's second half arrives as
+                // BN_DBLCLK; dropping it made rapid page navigation ignore
+                // clicks.  Checkboxes are the one deliberate exception.
+                if (notification == GC_WIZARD_NOTIFY_DBLCLK) {
+                    gc_log_step("ui: ignored BN_DBLCLK on checkbox id=%d "
+                                "(checkboxes stay one toggle per gesture)",
+                                controlId);
+                }
+                break;
+            }
+            if (notification == GC_WIZARD_NOTIFY_DBLCLK) {
+                gc_log_step("ui: accepted BN_DBLCLK on action id=%d "
+                            "(fast double-click advances once more)", controlId);
+            }
+            switch (controlId) {
                 case GC_ID_ACCEPT:      gc_toggle_checkbox(wizard, wizard->acceptCheck, &wizard->accepted); return 0;
                 case GC_ID_START_MENU:  gc_toggle_checkbox(wizard, wizard->startMenuCheck, &wizard->startMenu); return 0;
                 case GC_ID_DESKTOP:     gc_toggle_checkbox(wizard, wizard->desktopCheck, &wizard->desktop); return 0;

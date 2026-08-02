@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
+#include "gui_graph_axis_policy.h"
+
 // VF graph rendering for the GDI main window.  Split out of ui_main.cpp when the
 // applied/pending two-series drawing was added and that file passed the
 // ~800-line guideline.
@@ -18,13 +20,16 @@
 // With nothing pending the two series are identical and only the applied one is
 // drawn, so a clean window looks exactly as it did before the feature.
 
+// The LIVE half of a plotted point: what the driver reports for it right now.
+// Reached only for a point the editor does not determine -- the editor half
+// (draft value, lock target, offset component) is resolved once by
+// gui_pending_resolve_graph_preview() and read back below.
+//
+// Note: the locked tail override was removed after the uniform floor offset
+// fix (Build 109) eliminated tail drift. Real driver-reported values now match
+// the lock target, so no intent-vs-reality substitution is needed.
 static unsigned int displayed_curve_mhz_for_gui_point(int ci) {
     if (ci < 0 || ci >= VF_NUM_POINTS) return 0;
-    // Note: the locked tail override was removed after the uniform floor offset
-    // fix (Build 109) eliminated tail drift. Real driver-reported values now
-    // match the lock target, so no intent-vs-reality substitution is needed.
-    if (g_app.guiDraft.attached && g_app.guiDraft.curveValueValid[ci])
-        return g_app.guiDraft.curveMHz[ci];
     return displayed_curve_mhz(g_app.curve[ci].freq_kHz);
 }
 
@@ -32,45 +37,37 @@ static unsigned int displayed_curve_mhz_for_gui_point(int ci) {
 // intent does not own that point, so live readback is the applied truth there.
 static unsigned int applied_curve_mhz_for_gui_point(int ci) {
     if (ci < 0 || ci >= VF_NUM_POINTS) return 0;
+    // A hard NVML pin runs the whole GPU at one clock, so every plotted point
+    // is the applied lock target, not the (still-shaped) VF readback below the
+    // anchor.  The solid curve then reads as the flat line the pin actually is.
+    if (g_app.appliedLockMode == LOCK_MODE_HARD &&
+        g_app.appliedLockFreq > 0) {
+        return g_app.appliedLockFreq;
+    }
     if (g_app.appliedCurveMHz[ci]) return g_app.appliedCurveMHz[ci];
     return displayed_curve_mhz(g_app.curve[ci].freq_kHz);
 }
 
-// What Apply would write.  Three cases, mirroring gpu_backend_apply.cpp:
-//
-//   locked tail   -> the lock target, which capture_gui_desired_settings()
-//                    expands over the tail; NOT the previous readback the
-//                    disabled tail edit controls deliberately keep showing.
-//   owned point   -> the editor's absolute value (the global offset does not
-//                    stack onto an explicitly written point).
-//   anything else -> stock + the PENDING global offset component. Such a point
-//                    currently displays stock + the APPLIED component, so
-//                    without this the preview silently misses every point a
-//                    changed GPU offset is about to move.
-static unsigned int pending_curve_mhz_for_gui_point(int ci, int vi) {
-    if (vi >= 0 && g_app.lockedVi >= 0 && vi >= g_app.lockedVi) {
-        // Same resolution capture_gui_desired_settings() uses, NOT raw
-        // g_app.lockedFreq: that lags a profile projection and would preview the
-        // tail at the previous stock value instead of the profile's lock target.
-        unsigned int lockTargetMHz = gui_editor_lock_target_mhz();
-        if (lockTargetMHz > 0) return lockTargetMHz;
-    }
-    int appliedOffset = 0, appliedExclude = 0;
-    int pendingOffset = 0, pendingExclude = 0;
-    if (ci >= 0 && ci < VF_NUM_POINTS && !g_app.guiCurvePointExplicit[ci] &&
-        gui_pending_gpu_offset_projection(&appliedOffset, &appliedExclude,
-                                          &pendingOffset, &pendingExclude)) {
-        int appliedComponent = gpu_offset_component_mhz_for_point(
-            ci, appliedOffset, appliedExclude);
-        int pendingComponent = gpu_offset_component_mhz_for_point(
-            ci, pendingOffset, pendingExclude);
-        if (appliedComponent != pendingComponent) {
-            long long targetkHz = (long long)curve_base_khz_for_point(ci)
-                + (long long)pendingComponent * 1000LL;
-            if (targetkHz < 0) targetkHz = 0;
-            if (targetkHz > UINT_MAX) targetkHz = UINT_MAX;
-            return displayed_curve_mhz((unsigned int)targetkHz);
-        }
+// What Apply would write.  The DECISION -- locked tail vs owned point vs a point
+// a changed global offset is about to move -- belongs to
+// gui_pending_resolve_graph_preview(), which mirrors gpu_backend_apply.cpp and
+// is what the repaint gate compares.  Re-deriving it here is what let the graph
+// and the gate disagree: an edit could change the plotted value without
+// changing anything the gate looked at, and the new curve then waited for an
+// unrelated repaint.  All that is left here is materialising the editor's
+// resolved intent against live readback.
+static unsigned int pending_curve_mhz_for_gui_point(int ci) {
+    GuiGraphPreviewPoint preview = gui_pending_graph_preview(ci);
+    if (preview.absoluteMHz) return preview.absoluteMHz;
+    if (preview.offsetFromStockBase) {
+        // Stock + the PENDING offset component. The point currently displays
+        // stock + the APPLIED component, so reusing its displayed value would
+        // silently miss every point a changed GPU offset is about to move.
+        long long targetkHz = (long long)curve_base_khz_for_point(ci)
+            + (long long)preview.offsetComponentMHz * 1000LL;
+        if (targetkHz < 0) targetkHz = 0;
+        if (targetkHz > UINT_MAX) targetkHz = UINT_MAX;
+        return displayed_curve_mhz((unsigned int)targetkHz);
     }
     return displayed_curve_mhz_for_gui_point(ci);
 }
@@ -165,11 +162,68 @@ static void draw_graph(HDC hdc, RECT* rc) {
         return;
     }
 
-    // Axis ranges
-    const int MIN_VOLT_mV = 700;
-    const int MAX_VOLT_mV = 1250;
-    const int MIN_FREQ_MHz = 500;
-    const int MAX_FREQ_MHz = 3400;
+    // Axis ranges.  Both axes are sized from the plotted data, which is
+    // exactly the VISIBLE VF list -- the same points the editor shows -- so
+    // high clocks never hit the ceiling, low clocks do not float in empty
+    // space, and a GPU whose curve begins at 750 mV does not show an empty
+    // 700-750 mV cell on the left.
+    const int VOLT_AXIS_MIN_MV = MIN_VISIBLE_VOLT_mV;
+    const int VOLT_AXIS_MAX_MV = 1250;
+    const int VOLT_AXIS_GRID_STEP_MV = 50;
+    const int VOLT_AXIS_MIN_SPAN_MV = 300;
+    const int VOLT_AXIS_HEADROOM_MV = 10;
+    const int FREQ_AXIS_MIN_MHZ = MIN_VISIBLE_FREQ_MHz;
+    const int FREQ_AXIS_GRID_STEP_MHZ = 500;
+    const int FREQ_AXIS_MIN_SPAN_MHZ = 1000;
+    const int FREQ_AXIS_HEADROOM_MHZ = 200;
+
+    int axisDataMinMHz = INT_MAX;
+    int axisDataMaxMHz = 0;
+    int axisDataMinMv = INT_MAX;
+    int axisDataMaxMv = 0;
+    for (int vi = 0; vi < g_app.numVisible; ++vi) {
+        int ci = g_app.visibleMap[vi];
+        if (ci < 0 || ci >= VF_NUM_POINTS) continue;
+        if (g_app.curve[ci].freq_kHz == 0) continue;
+        unsigned int volt_mv = g_app.curve[ci].volt_uV / 1000;
+        unsigned int appliedMHz = applied_curve_mhz_for_gui_point(ci);
+        unsigned int pendingMHz = pending_curve_mhz_for_gui_point(ci);
+        unsigned int hi = appliedMHz > pendingMHz ? appliedMHz : pendingMHz;
+        unsigned int lo = appliedMHz < pendingMHz ? appliedMHz : pendingMHz;
+        if (hi == 0) continue;
+        if (lo > 0 && (int)lo < axisDataMinMHz) axisDataMinMHz = (int)lo;
+        if ((int)hi > axisDataMaxMHz) axisDataMaxMHz = (int)hi;
+        if ((int)volt_mv < axisDataMinMv) axisDataMinMv = (int)volt_mv;
+        if ((int)volt_mv > axisDataMaxMv) axisDataMaxMv = (int)volt_mv;
+    }
+    if (axisDataMinMHz > axisDataMaxMHz) axisDataMinMHz = axisDataMaxMHz;
+    if (axisDataMinMv > axisDataMaxMv) axisDataMinMv = axisDataMaxMv;
+    GuiGraphAxisRange axisRange = gui_graph_frequency_axis(
+        axisDataMinMHz == INT_MAX ? 0 : axisDataMinMHz, axisDataMaxMHz,
+        FREQ_AXIS_MIN_MHZ, FREQ_AXIS_GRID_STEP_MHZ, FREQ_AXIS_MIN_SPAN_MHZ,
+        FREQ_AXIS_HEADROOM_MHZ);
+    GuiGraphVoltageRange voltRange = gui_graph_voltage_axis(
+        axisDataMinMv == INT_MAX ? 0 : axisDataMinMv, axisDataMaxMv,
+        VOLT_AXIS_MIN_MV, VOLT_AXIS_MAX_MV, VOLT_AXIS_GRID_STEP_MV,
+        VOLT_AXIS_MIN_SPAN_MV, VOLT_AXIS_HEADROOM_MV);
+    const int MIN_FREQ_MHz = axisRange.minMHz;
+    const int MAX_FREQ_MHz = axisRange.maxMHz;
+    const int MIN_VOLT_mV = voltRange.minMv;
+    const int MAX_VOLT_mV = voltRange.maxMv;
+    static int lastAxisMinMHz = -1, lastAxisMaxMHz = -1,
+        lastVoltMinMv = -1, lastVoltMaxMv = -1;
+    if (MIN_FREQ_MHz != lastAxisMinMHz || MAX_FREQ_MHz != lastAxisMaxMHz ||
+        MIN_VOLT_mV != lastVoltMinMv || MAX_VOLT_mV != lastVoltMaxMv) {
+        lastAxisMinMHz = MIN_FREQ_MHz;
+        lastAxisMaxMHz = MAX_FREQ_MHz;
+        lastVoltMinMv = MIN_VOLT_mV;
+        lastVoltMaxMv = MAX_VOLT_mV;
+        debug_log("gui graph frequency axis: %d..%d MHz (data %d..%d) voltage %d..%d mV (data %d..%d)\n",
+            MIN_FREQ_MHz, MAX_FREQ_MHz,
+            axisDataMinMHz == INT_MAX ? 0 : axisDataMinMHz, axisDataMaxMHz,
+            MIN_VOLT_mV, MAX_VOLT_mV,
+            axisDataMinMv == INT_MAX ? 0 : axisDataMinMv, axisDataMaxMv);
+    }
 
     // DPI-scaled margins
     int ml = dp(70), mr = dp(30),
@@ -251,21 +305,25 @@ static void draw_graph(HDC hdc, RECT* rc) {
     GetTextExtentPoint32A(hdc, xTitle, (int)strlen(xTitle), &sz);
     TextOutA(hdc, ml + pw / 2 - sz.cx / 2, mt + ph + dp(24), xTitle, (int)strlen(xTitle));
 
+    // The y-axis title is rotated bottom-to-top (font escapement 900) and
+    // centred beside the labels, so it can never overlap the top clock label
+    // the way the old horizontal title at the top-left did.
     const char* yTitle = "Frequency (MHz)";
-    GetTextExtentPoint32A(hdc, yTitle, (int)strlen(yTitle), &sz);
-    // Rotate for Y axis is hard in GDI, place horizontally left of Y labels
-    TextOutA(hdc, dp(2), mt - dp(4), yTitle, (int)strlen(yTitle));
+    HFONT hFontRot = CreateFontA(dp(13), 0, 900, 900, FW_NORMAL, 0, 0, 0,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
+    if (hFontRot) {
+        HFONT oldRotFont = (HFONT)SelectObject(hdc, hFontRot);
+        GetTextExtentPoint32A(hdc, yTitle, (int)strlen(yTitle), &sz);
+        // With escapement 900 the text runs upward from the origin, so start
+        // it below the vertical centre by half its (horizontal) length.
+        TextOutA(hdc, dp(10), mt + ph / 2 + sz.cx / 2, yTitle,
+            (int)strlen(yTitle));
+        SelectObject(hdc, oldRotFont);
+        DeleteObject(hFontRot);
+    }
 
     log_gui_locked_tail_display_drift_if_needed();
-
-    // Reverse of visibleMap, so the locked-tail expansion can be resolved per
-    // curve index while plotting.
-    int viForCi[VF_NUM_POINTS];
-    for (int i = 0; i < VF_NUM_POINTS; i++) viForCi[i] = -1;
-    for (int vi = 0; vi < g_app.numVisible && vi < VF_NUM_POINTS; vi++) {
-        int ci = g_app.visibleMap[vi];
-        if (ci >= 0 && ci < VF_NUM_POINTS) viForCi[ci] = vi;
-    }
 
     auto plot_point = [&](unsigned int mhz, unsigned int mv, POINT* out) -> bool {
         if (mhz == 0 && mv == 0) return false;
@@ -279,6 +337,12 @@ static void draw_graph(HDC hdc, RECT* rc) {
 
     bool showPending =
         gui_pending_domain_changed(GUI_PENDING_CURVE | GUI_PENDING_LOCK);
+    bool hardPinPending = g_app.lockMode == LOCK_MODE_HARD &&
+        gui_pending_graph_lock_target_mhz() > 0;
+    COLORREF appliedColor =
+        (g_app.appliedLockMode == LOCK_MODE_HARD &&
+         g_app.appliedLockFreq > 0) ? COL_CURVE_PINNED : COL_CURVE;
+    COLORREF pendingColor = hardPinPending ? COL_CURVE_PINNED : COL_PENDING;
 
     // Build both polylines: sorted by voltage, only within our plotted ranges.
     POINT pendingPts[VF_NUM_POINTS];   // the editor's intent; carries the labels
@@ -287,12 +351,15 @@ static void draw_graph(HDC hdc, RECT* rc) {
     POINT appliedPts[VF_NUM_POINTS];
     POINT changedPts[VF_NUM_POINTS];
     int nPending = 0, nApplied = 0, nChanged = 0;
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
+    for (int vi = 0; vi < g_app.numVisible; ++vi) {
+        int i = g_app.visibleMap[vi];
+        if (i < 0 || i >= VF_NUM_POINTS) continue;
         unsigned int volt_mv = g_app.curve[i].volt_uV / 1000;
-        unsigned int pendingMHz = pending_curve_mhz_for_gui_point(i, viForCi[i]);
+        unsigned int pendingMHz = pending_curve_mhz_for_gui_point(i);
         if (plot_point(pendingMHz, volt_mv, &pendingPts[nPending])) {
             pendingMHzForPt[nPending] = pendingMHz;
-            if (showPending && gui_pending_curve_point_is_changed(i)) {
+            if (showPending && (gui_pending_curve_point_is_changed(i) ||
+                                hardPinPending)) {
                 pendingChangedForPt[nPending] = true;
                 changedPts[nChanged++] = pendingPts[nPending];
             }
@@ -303,11 +370,13 @@ static void draw_graph(HDC hdc, RECT* rc) {
     }
 
     if (nApplied > 1) {
-        draw_curve_polyline_smooth(hdc, appliedPts, nApplied, dp(2), COL_CURVE);
+        draw_curve_polyline_smooth(hdc, appliedPts, nApplied, dp(2),
+                                   appliedColor);
         SelectObject(hdc, oldPen);
     }
 
-    draw_curve_points_ringed(hdc, appliedPts, nApplied, dp(2), dp(4));
+    draw_curve_points_ringed(hdc, appliedPts, nApplied, dp(2), dp(4),
+                             appliedColor, COL_POINT);
     SelectObject(hdc, oldPen);
 
     if (showPending) {
@@ -324,7 +393,7 @@ static void draw_graph(HDC hdc, RECT* rc) {
             int runCount = run.drawLast - run.drawFirst + 1;
             if (runCount > 1)
                 draw_curve_polyline_smooth(hdc, pendingPts + run.drawFirst,
-                                           runCount, dp(2), COL_PENDING, true);
+                                           runCount, dp(2), pendingColor, true);
         }
         SelectObject(hdc, oldPen);
         if (nChanged > 0) {
@@ -339,11 +408,14 @@ static void draw_graph(HDC hdc, RECT* rc) {
     // specific point differs from what the GPU has applied.
     SelectObject(hdc, hFontSmall);
     for (int i = 0; i < nPending; i += nvmax(1, nPending / 10)) {
-        SetTextColor(hdc, pendingChangedForPt[i] ? COL_PENDING : COL_TEXT);
+        SetTextColor(hdc, pendingChangedForPt[i] ? pendingColor : COL_TEXT);
         char buf[32];
         StringCchPrintfA(buf, ARRAY_COUNT(buf), "%u", pendingMHzForPt[i]);
         SIZE sz2;
         GetTextExtentPoint32A(hdc, buf, (int)strlen(buf), &sz2);
+        // Skip a label that would spill left of the plot (the first point sits
+        // at the axis floor): it used to waste the left margin.
+        if (pendingPts[i].x - sz2.cx / 2 < ml + dp(4)) continue;
         TextOutA(hdc, pendingPts[i].x - sz2.cx / 2, pendingPts[i].y - dp(16),
                  buf, (int)strlen(buf));
     }
@@ -361,9 +433,10 @@ static void draw_graph(HDC hdc, RECT* rc) {
                 actualMaxVolt = g_app.curve[i].volt_uV;
             }
         }
-        // The headline lock names the same target the tail is drawn at and that
-        // Apply will write, not the possibly stale g_app.lockedFreq.
-        unsigned int lockTargetMHz = gui_editor_lock_target_mhz();
+        // The headline lock names the same cached target the tail is drawn at
+        // (anchor plus any GPU-offset delta the lock tracks) and that Apply
+        // will write, not the possibly stale g_app.lockedFreq.
+        unsigned int lockTargetMHz = gui_pending_graph_lock_target_mhz();
         if (g_app.lockedVi >= 0 && g_app.lockedCi >= 0 && lockTargetMHz > 0) {
             unsigned int lockVoltMv = g_app.curve[g_app.lockedCi].volt_uV / 1000;
             StringCchPrintfA(info, ARRAY_COUNT(info), "%s  |  %d pts  |  Lock: %u MHz @ %u mV  |  Live peak: %u MHz @ %u mV",

@@ -168,7 +168,7 @@ def inspect_aarch64_driver(ctx, path):
             "libnvidia-api.so",
             ["nvapi_QueryInterface"]),
     }
-    nm = os.path.join(ctx.LLVM_MINGW_DIR, "bin", "llvm-nm.exe")
+    nm = ctx.LLVM_MINGW_NM
     if not os.path.exists(nm):
         nm = shutil.which("llvm-nm") or shutil.which("nm")
 

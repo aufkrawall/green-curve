@@ -450,7 +450,7 @@ static bool service_request_apply_origin_valid(const ServiceRequest* request) {
 static bool service_profile_record_describes_intent(
     ServiceProfileSource source, int slot,
     const DesiredSettings* candidateIntent,
-    char* detail, size_t detailSize)
+    char* detail, size_t detailSize, bool allowUnclaimedFan = false)
 {
     if (!candidateIntent) {
         set_message(detail, detailSize, "no intent to compare");
@@ -479,7 +479,7 @@ static bool service_profile_record_describes_intent(
         return false;
     }
     return desired_settings_match_active_service_intent(&profile,
-        candidateIntent, detail, detailSize);
+        candidateIntent, detail, detailSize, allowUnclaimedFan);
 }
 
 // Pre-write check.  A complete profile record arrives verbatim from the tray,
@@ -564,7 +564,7 @@ static void service_confirm_profile_metadata_from_active_intent(
     DesiredSettings activeIntent = g_serviceActiveDesired;
     char detail[256] = {};
     bool activeIntentMatches = service_profile_record_describes_intent(claimed,
-        slot, &activeIntent, detail, sizeof(detail));
+        slot, &activeIntent, detail, sizeof(detail), true);
     ServiceProfileIdentityOutcome outcome = service_profile_identity_outcome(
         (unsigned int)claimed, slot, CONFIG_NUM_SLOTS, false,
         activeIntentMatches);

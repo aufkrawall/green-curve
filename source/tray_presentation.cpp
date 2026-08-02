@@ -10,6 +10,26 @@
 // profile deliberately does not touch hardware, so the combo's selected_slot is
 // an editing selection and must never be reported as active.
 
+static bool live_state_has_custom_oc() {
+    bool curveOffsets = false;
+    for (int i = 0; i < VF_NUM_POINTS; i++) {
+        if (g_app.freqOffsets[i] != 0) {
+            curveOffsets = true;
+            break;
+        }
+    }
+    return gui_tray_live_state_has_custom_oc(
+        g_app.gpuClockOffsetkHz != 0,
+        g_app.memClockOffsetkHz != 0,
+        g_app.powerLimitPct != 100,
+        curveOffsets,
+        g_app.appliedLockMode != LOCK_MODE_NONE &&
+            g_app.appliedLockFreq > 0);
+}
+static bool live_state_has_custom_fan() {
+    return current_green_curve_fan_intent_mode() != FAN_MODE_AUTO;
+}
+
 static GuiTrayProfileKind tray_profile_kind_from_service_source(
     ServiceProfileSource source) {
     switch (source) {

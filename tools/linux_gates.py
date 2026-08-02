@@ -604,10 +604,18 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
                  "the guard uses the shared atomic root-owned store")
     require_text(state_cpp, "/proc/sys/kernel/random/boot_id",
                  "the per-boot identity comes from the kernel, not from a clock")
-    require_text(runtime_h,
-                 "linux_auto_restore_note_lockout(&g_autoRestoreGuard,\n"
-                 "                SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED);",
-                 "an unreadable guard fails closed to locked out, with a reason")
+    # Scoped to the load path and anchored on `if (corrupt)` rather than matched
+    # as a literal two-line span: an indentation-sensitive needle is a gate that
+    # fails on a reformat instead of on a regression.
+    ctx.require_order_in_operation(
+        runtime_h, "static void load_auto_restore_guard_at_boot(",
+        "if (corrupt) {",
+        "linux_auto_restore_note_lockout(&g_autoRestoreGuard,",
+        "an unreadable guard fails closed to locked out, with a reason")
+    ctx.forbid_text_in_operation(
+        runtime_h, "static void load_auto_restore_guard_at_boot(",
+        "g_autoRestoreGuard.lockedOut = 1;",
+        "the fail-closed lockout is latched through the policy, so it names a reason")
 
     # --- the published lockout ---------------------------------------------
     # The snapshot's autoRestoreLockoutReason used to be derived from
@@ -641,12 +649,50 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
         runtime_h, "static bool auto_restore_authorize(",
         "persist_auto_restore_guard(\"start attempt\")", "return true;",
         "an attempt that could not be persisted refuses the write")
-    require_text(daemon_cpp, "auto_restore_note_explicit_success(\"apply\");",
-                 "only an explicit Apply re-arms automatic restoration")
-    require_text(daemon_cpp, "auto_restore_note_explicit_success(\"reset\");",
-                 "only an explicit Reset re-arms automatic restoration")
+    require_text(daemon_cpp,
+                 "if (!auto_restore_note_explicit_success(\"apply\", guardErr,",
+                 "an explicit Apply checks whether re-arming committed")
+    require_text(daemon_cpp,
+                 "if (!auto_restore_note_explicit_success(\"reset\", guardErr,",
+                 "an explicit Reset checks whether re-arming committed")
+    require_text(daemon_cpp, "SERVICE_OUTCOME_SEVERITY_WARNING",
+                 "a committed explicit mutation warns when guard re-arm persistence fails")
+    require_text(runtime_h,
+                 "LinuxAutoRestoreGuard previous = g_autoRestoreGuard;",
+                 "explicit re-arm retains the prior guard until persistence commits")
+    ctx.require_order_in_operation(
+        runtime_h, "static bool auto_restore_note_explicit_success(",
+        "persist_auto_restore_guard(\"explicit success\", errorOut, errorSize)",
+        "g_autoRestoreGuard = previous;",
+        "a failed explicit re-arm persistence restores the truthful prior guard")
     require_text(runtime_h, "auto_restore_note_automatic_failure",
                  "a failed unattended write latches automatic restoration off")
+    # Hardware success is not operation success until the ACTIVE record is
+    # durable.  The old order set outcome.success first, so resume returned OK
+    # while the daemon immediately marked itself uncertain.
+    ctx.require_order_in_operation(
+        runtime_h, "static LinuxAutoRestoreOutcome daemon_automatic_restore_write(",
+        "if (!store_daemon_record(LINUX_DAEMON_RECORD_ACTIVE",
+        "outcome.success = true;",
+        "an unattended write reports success only after its ACTIVE record commits")
+    require_text(runtime_h, "linux_backend_restore_snapshot(\n"
+                 "            &g_gpu, &before, mutation.attemptedPhases,",
+                 "an ACTIVE persistence failure rolls the hardware transaction back")
+    require_text(runtime_h, "uncertain record persisted=%d",
+                 "automatic persistence failure logs whether its fail-closed record committed")
+    # An unsettled rollback/record is a gate, not just a published label: the
+    # resume path used to run even while the snapshot reported a lockout, and
+    # a pre-write "GPU not available" failure set g_stateUncertain even though
+    # it wrote nothing -- which disabled fan reassertion and published a
+    # lockout until an explicit Apply/Reset.
+    require_text(policy_h, "LINUX_AUTO_RESTORE_DENY_STATE_UNCERTAIN",
+                 "an uncertain daemon has its own refusal verdict")
+    require_text(runtime_h,
+                 "linux_auto_restore_decide(&g_autoRestoreGuard, trigger,\n"
+                 "                                  g_stateUncertain);",
+                 "the unattended-write gate consults the uncertain flag, not only the guard")
+    require_text(runtime_h, "F-PREP-NO-UNCERTAIN",
+                 "a pre-write GPU-not-available failure does not poison the daemon state")
 
     # --- resume ------------------------------------------------------------
     require_text(protocol_h, "SERVICE_CMD_RESUME_RESTORE = 15",

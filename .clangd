@@ -1,0 +1,20 @@
+CompileFlags:
+  CompilationDatabase: .
+  Add:
+    - "-fms-extensions"
+    - "-fms-compatibility"
+  Remove:
+    - "-Wl,*"
+    - "-static"
+    - "-pie"
+
+Diagnostics:
+  ClangTidy:
+    Remove:
+      - modernize-use-trailing-return-type
+      - modernize-concat-nested-namespaces
+      - modernize-avoid-c-arrays
+      - cppcoreguidelines-avoid-magic-numbers
+      - cppcoreguidelines-pro-bounds-constant-array-index
+      - cppcoreguidelines-pro-type-vararg
+      - cppcoreguidelines-non-private-member-variables-in-classes

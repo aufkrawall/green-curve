@@ -59,6 +59,9 @@ enum LinuxAutoRestoreVerdict : gc_u32 {
     LINUX_AUTO_RESTORE_DENY_ATTEMPTS_EXHAUSTED = 2,
     // The caller asked about nothing.
     LINUX_AUTO_RESTORE_DENY_NO_TRIGGER = 3,
+    // The daemon state or a rollback did not settle, so no unattended write
+    // may run until an explicit Apply or Reset resolves it.
+    LINUX_AUTO_RESTORE_DENY_STATE_UNCERTAIN = 4,
 };
 
 // Persisted verbatim (see LinuxDaemonRestoreGuardRecord).  Keep POD.
@@ -117,6 +120,8 @@ static inline const char* linux_auto_restore_verdict_name(
             return "refused: automatic restoration is locked out until an explicit Apply or Reset succeeds";
         case LINUX_AUTO_RESTORE_DENY_ATTEMPTS_EXHAUSTED:
             return "refused: this boot already spent its automatic start-time writes";
+        case LINUX_AUTO_RESTORE_DENY_STATE_UNCERTAIN:
+            return "refused: the daemon state is uncertain until an explicit Apply or Reset succeeds";
         default:
             return "refused: no automatic trigger";
     }
@@ -144,10 +149,17 @@ static inline bool linux_auto_restore_guard_adopt_boot(
 }
 
 static inline LinuxAutoRestoreVerdict linux_auto_restore_decide(
-    const LinuxAutoRestoreGuard* guard, LinuxAutoRestoreTrigger trigger) {
+    const LinuxAutoRestoreGuard* guard, LinuxAutoRestoreTrigger trigger,
+    bool stateUncertain) {
     if (!guard || trigger == LINUX_AUTO_RESTORE_TRIGGER_NONE)
         return LINUX_AUTO_RESTORE_DENY_NO_TRIGGER;
     if (guard->lockedOut) return LINUX_AUTO_RESTORE_DENY_LOCKED_OUT;
+    // An unsettled rollback or a record that did not land blocks unattended
+    // writes exactly like a latch: the daemon cannot know what the GPU holds
+    // or what is durable, so a write it issues from that state could compound
+    // an unknown baseline.  The snapshot publishes the same condition as a
+    // lockout reason, so this gate is what makes that label true.
+    if (stateUncertain) return LINUX_AUTO_RESTORE_DENY_STATE_UNCERTAIN;
     // A resume is a user-visible machine event, not a restart: it cannot repeat
     // by itself, so counting it would only make a laptop stop restoring its
     // curve after the third lid open.  Windows treats standby the same way --

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "auto_profile.h"   // auto-profile driver API used by the WndProc
+#include "profile_save_policy.h"
 
 // ============================================================================
 // Main Window
@@ -56,6 +57,10 @@ static void show_lock_context_menu(HWND hwnd, int vi, POINT screenPt) {
             record_ui_action("unlock point %d via menu (was %s)", ci, lock_mode_name(g_app.lockMode));
             unlock_all();
             set_gui_state_dirty(true);
+            // unlock_all() refreshes while still CLEAN; the dirty transition
+            // after it captures a fresh draft, which the graph preview and the
+            // Apply enable are both projections of.
+            gui_pending_changes_refresh();
             invalidate_main_window();
         }
     } else if (cmd == LOCK_CTX_FLATTEN_ID || cmd == LOCK_CTX_PIN_ID) {
@@ -67,6 +72,10 @@ static void show_lock_context_menu(HWND hwnd, int vi, POINT screenPt) {
                 set_gui_state_dirty(true);
                 record_ui_action("%s lock point %d @ %u MHz via menu",
                     target == LOCK_MODE_HARD ? "hard" : "flatten", ci, g_app.lockedFreq);
+                // Same rule as the checkbox path: the dirty transition
+                // re-snapshots GuiDraft, so F-PENDING has to be re-read before
+                // anything paints from it.
+                gui_pending_changes_refresh();
                 invalidate_main_window();
             }
         } else {
@@ -952,15 +961,31 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         "Green Curve", MB_OK | MB_ICONWARNING);
                     break;
                 }
-                if (g_app.guiHasUserModifiedValues || gui_has_pending_curve_or_lock_edits()) {
+                bool appliedCurveOrLock =
+                    (g_app.lockedCi >= 0 && g_app.lockedFreq > 0) ||
+                    (g_app.appliedLockMode != LOCK_MODE_NONE &&
+                     g_app.appliedLockFreq > 0);
+                if (!appliedCurveOrLock) {
+                    for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
+                        if (g_app.appliedCurveMHz[ci]) {
+                            appliedCurveOrLock = true;
+                            break;
+                        }
+                    }
+                }
+                if (profile_save_uses_gui_capture(
+                        g_app.guiHasUserModifiedValues,
+                        gui_has_pending_curve_or_lock_edits(),
+                        appliedCurveOrLock)) {
                     if (!capture_gui_config_settings(&desired, err, sizeof(err))) {
                         write_error_report_log_for_user_failure("Profile save capture failed", err);
                         gc_message_box(g_app.hMainWnd, err, "Green Curve", MB_OK | MB_ICONERROR);
                         break;
                     }
-                    debug_log("PROFILE_SAVE: saving sparse GUI curve intent (modified=%d curveOrLock=%d)\n",
+                    debug_log("PROFILE_SAVE: saving GUI curve intent (modified=%d curveOrLock=%d appliedCurveOrLock=%d)\n",
                         g_app.guiHasUserModifiedValues ? 1 : 0,
-                        gui_has_pending_curve_or_lock_edits() ? 1 : 0);
+                        gui_has_pending_curve_or_lock_edits() ? 1 : 0,
+                        appliedCurveOrLock ? 1 : 0);
                 } else {
                     build_full_live_desired_settings(&desired);
                     if (desired.hasFan && g_app.guiFanMode >= FAN_MODE_AUTO && g_app.guiFanMode <= FAN_MODE_CURVE) {
@@ -984,6 +1009,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     break;
                 }
                 populate_desired_into_gui(&desired);
+                sync_applied_profile_from_service_metadata();
                 refresh_profile_controls_from_config();
                 set_profile_status_text("Saved the current GUI values to slot %d.", slot);
                 invalidate_main_window();

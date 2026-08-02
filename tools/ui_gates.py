@@ -189,7 +189,9 @@ def check_pending_changes(ctx, require_text, forbid_text):
     ctlcolor_cpp = _p(ctx, "ui_main_ctlcolor.cpp")
     graph_cpp = _p(ctx, "ui_main_graph.cpp")
     state_cpp = _p(ctx, "gui_service_state.cpp")
+    lock_checkbox_cpp = _p(ctx, "ui_lock_checkbox.cpp")
     capture_cpp = _p(ctx, "main_runtime_capture.cpp")
+    ui_main_cpp = _p(ctx, "ui_main.cpp")
 
     require_text(policy_h, "if (!in.draftValid) return true;",
                  "unparseable draft text always counts as a pending change, so "
@@ -203,6 +205,20 @@ def check_pending_changes(ctx, require_text, forbid_text):
 
     require_text(pending_cpp, "g_app.appliedCurveMHz[ci]",
                  "curve points are diffed against drift-free applied intent")
+    require_text(policy_h,
+                 "if (!in.ownedByEditor) return in.appliedMHz != 0;",
+                 "a point the applied state owns but the editor releases is a "
+                 "pending change (profile ownership release back to stock)")
+    require_text(pending_cpp, "gui_applied_curve_mhz_for_pending",
+                 "the pending diff folds an applied HARD NVML pin into "
+                 "per-point applied ownership")
+    require_text(pending_cpp, "in.releasedToStock =",
+                 "the graph preview projects released points from the stock "
+                 "base instead of a stale draft/applied value")
+    require_text(policy_h,
+                 "if (in.releasedToStock && !in.ownedByEditor) {",
+                 "release-to-stock outranks the stale draft in the pure graph "
+                 "preview policy")
     # The existence check (freq_kHz != 0) is fine and mirrors the apply diff;
     # what must never appear is the live frequency as a comparable VALUE, which
     # is what displayed_curve_mhz() produces.
@@ -230,14 +246,26 @@ def check_pending_changes(ctx, require_text, forbid_text):
 
     require_text(graph_cpp, "applied_curve_mhz_for_gui_point",
                  "the graph draws the applied curve as its own series")
-    require_text(graph_cpp, "COL_PENDING, true);",
+    require_text(graph_cpp, "pendingColor, true);",
                  "the pending curve is drawn dashed, so the two series stay "
                  "distinguishable without relying on colour alone")
     require_text(graph_cpp, "gui_pending_next_changed_run(pendingChangedForPt",
                  "the pending curve covers only the stretches that differ; "
                  "drawing it full-length hid the applied curve everywhere")
-    require_text(graph_cpp, "pendingChangedForPt[i] ? COL_PENDING : COL_TEXT",
+    require_text(graph_cpp, "pendingChangedForPt[i] ? pendingColor : COL_TEXT",
                  "on-curve MHz labels are coloured per point, not per graph")
+    require_text(graph_cpp, "COL_CURVE_PINNED",
+                 "a hard NVML pin recolours the graph curve so it cannot be "
+                 "mistaken for the normal applied green")
+    require_text(graph_cpp, "appliedLockMode == LOCK_MODE_HARD",
+                 "only an applied hard pin recolours the solid curve; flatten "
+                 "and default keep the normal curve colour")
+    require_text(graph_cpp, "appliedColor, COL_POINT);",
+                 "applied VF point markers keep their red centers; only the "
+                 "ring follows the curve colour")
+    require_text(graph_cpp, "COL_PENDING, COL_PENDING);",
+                 "pending point markers stay orange even when the pending "
+                 "curve itself is drawn in the pinned colour")
 
     # A global GPU offset moves points nobody typed. Apply re-places an unowned
     # point at stock + the new offset component (gpu_backend_apply.cpp), so the
@@ -246,11 +274,74 @@ def check_pending_changes(ctx, require_text, forbid_text):
     require_text(policy_h, "gui_pending_offset_shift_changed",
                  "a changed global GPU offset marks the points it moves, even "
                  "though none of them was typed")
+    require_text(policy_h, "if (in.ownedByEditor && !in.selectiveOffsetActive) return false;",
+                 "the editor-owned carve-out applies only to uniform offsets; "
+                 "a selective offset re-places owned points through the curve "
+                 "batch and must still preview the move")
+    require_text(pending_cpp, "gui_pending_offset_mode_is_selective",
+                 "the pending diff derives the selective/curve-batch offset "
+                 "mode from both applied and pending exclude state")
+    require_text(policy_h, "gui_pending_offset_mode_selective(",
+                 "the selective/curve-batch offset mode is a pure, "
+                 "unit-tested mirror of gpuPolicyViaCurveBatch")
+    require_text(pending_cpp, "return gui_pending_offset_mode_selective(",
+                 "the GUI wrapper delegates the selective mode to the pure "
+                 "policy instead of re-deriving it")
+    require_text(policy_h, "int appliedExcludeLow = appliedExcludeLowCount;",
+                 "the applied side consumes the resolver's effective exclude "
+                 "count instead of re-gating on a nonzero applied offset, "
+                 "matching gpuPolicyViaCurveBatch")
+    require_text(policy_h, "pendingGpuOffsetMHz != 0",
+                 "the pending side normalizes exclude counts like the "
+                 "backend's desired settings")
+    forbid_text(pending_cpp, "out->appliedGpuOffsetMHz != 0",
+                "the applied side of the selective mirror must not re-gate on "
+                "the applied offset; the resolver count is already effective")
+    require_text(pending_cpp, "shift.selectiveOffsetActive = gui_pending_offset_mode_is_selective(out);",
+                 "the changed-point diff marks owned points under a selective "
+                 "offset, matching gpuPolicyViaCurveBatch")
+    require_text(pending_cpp, "in.offsetMovesOwnedPoints = gui_pending_offset_mode_is_selective(out);",
+                 "the graph preview projects owned points through a selective "
+                 "offset, matching the curve batch")
     require_text(pending_cpp, "gui_pending_mark_gpu_offset_shift",
                  "the pending diff accounts for the global GPU offset")
     require_text(graph_cpp, "curve_base_khz_for_point(ci)",
                  "an offset-moved point is projected from stock, matching the "
                  "apply path rather than its current displayed value")
+
+    # The graph repaint gate has to move when the plotted VALUE moves, not only
+    # when the SET of pending points moves.  Retyping the global GPU offset from
+    # +100 to +150 shifts every unowned point while marking exactly the same
+    # ones, so a gate built on the mask and the changed-point set alone never
+    # invalidated the graph and the preview waited for an unrelated repaint.
+    # The fix is structural: the editor half of every plotted point is resolved
+    # once, the graph reads it, and the gate compares it -- so a future preview
+    # input cannot be added to one and forgotten in the other.
+    require_text(policy_h, "gui_graph_preview_point_equal",
+                 "what the graph draws for a point is one comparable record, "
+                 "so the repaint gate cannot drift from the renderer")
+    require_text(pending_cpp, "gui_pending_resolve_graph_preview(out);",
+                 "the graph preview is resolved into the pending model on every "
+                 "evaluation path, including the clean-editor early returns")
+    require_text(pending_cpp, "if (curveOrLockFlipped || previewMoved > 0)",
+                 "the graph repaints when the pending VALUES move, not only "
+                 "when the pending presentation flips")
+    require_text(graph_cpp, "gui_pending_graph_preview(ci)",
+                 "the graph plots the resolved preview instead of re-deriving "
+                 "it behind the repaint gate's back")
+    forbid_text(graph_cpp, "g_app.guiCurvePointExplicit",
+                "point ownership is resolved once into the preview; a second "
+                "copy of that rule in the renderer is what the gate misses")
+
+    # The graph reads a CACHED projection, so the rule that every editor
+    # mutation re-evaluates it is load-bearing, not tidiness.  The two lock
+    # transitions that only flip the mode (or unlock, which refreshes while
+    # still clean and is then marked dirty again) used to return without the
+    # hook, leaving a stale Apply enable -- and, once the graph became a reader,
+    # a stale curve.
+    require_text(lock_checkbox_cpp, "gui_pending_changes_refresh();",
+                 "the lock checkbox re-evaluates the pending state after its "
+                 "dirty transition re-snapshots GuiDraft")
 
     # g_app.lockedFreq lags a profile projection: apply_lock() infers it from
     # GuiDraft, which populate_desired_into_gui() fills in only afterwards. The
@@ -258,6 +349,26 @@ def check_pending_changes(ctx, require_text, forbid_text):
     # way capture_gui_desired_settings() does -- draft anchor first.
     require_text(policy_h, "gui_pending_lock_target_mhz",
                  "the lock target is resolved by one pure decision")
+    require_text(policy_h, "in.hardPinned",
+                 "a hard pin flattens the whole preview, not only the locked "
+                 "tail")
+    require_text(pending_cpp, "hardPinWholeCurve",
+                 "a hard pin marks the whole visible curve pending because "
+                 "min=max locked clocks change every plotted point")
+    # A lock that TRACKS its anchor is not an absolute target: Apply adds the
+    # anchor's GPU-offset component delta (pending minus applied) to the base,
+    # and the preview must do the same or the flat tail draws at stock while
+    # Apply writes stock+offset.  Equal components mean no adjustment, and the
+    # clamp mirrors capture's `<= 0 -> 1`.
+    require_text(policy_h, "appliedOffsetComponentMHz == pendingOffsetComponentMHz",
+                 "a tracking lock adjusts only when the anchor's GPU-offset "
+                 "component actually moved")
+    require_text(policy_h, "if (target <= 0) target = 1;",
+                 "the tracking-lock adjustment clamps to 1 like "
+                 "capture_gui_desired_settings()")
+    require_text(pending_cpp, "g_app.guiLockTracksAnchor",
+                 "the resolved lock target consults tracks-anchor, so the "
+                 "preview matches Apply's offset-adjusted target")
 
     # The apply path and the editor's diff must reach the same lock verdict, or a
     # greyed Apply could hide work the apply path would still do -- and both need
@@ -273,18 +384,51 @@ def check_pending_changes(ctx, require_text, forbid_text):
                  "already treats as on target")
     require_text(pending_cpp, "gui_editor_lock_target_mhz",
                  "the pending lock diff uses the resolved lock target")
-    require_text(graph_cpp, "gui_editor_lock_target_mhz()",
-                 "the previewed locked tail uses the resolved lock target, not "
-                 "the possibly stale g_app.lockedFreq")
+    require_text(graph_cpp, "gui_pending_graph_lock_target_mhz()",
+                 "the headline lock line reads the cached resolved lock target "
+                 "the drawn tail uses, not a re-derived value")
+    forbid_text(graph_cpp, "gui_editor_lock_target_mhz",
+                "the renderer must not re-derive the lock target; it reads the "
+                "cached projection like the rest of the graph")
     # Precise on purpose: the remaining g_app.lockedFreq reads in the graph are
     # the locked-tail DRIFT diagnostic, which legitimately compares live readback
     # against the applied lock. Only returning it as a previewed value is wrong.
     forbid_text(graph_cpp, "return g_app.lockedFreq;",
                 "the previewed tail no longer returns g_app.lockedFreq directly")
+    # The VF MHz boxes show the same pending values the graph draws (offset-
+    # shifted unowned points, the resolved flat lock target).  The pending
+    # refresh is the single hook every editor mutation and lock transition
+    # funnels through, and the helper must live in the control layer that owns
+    # set_edit_value so a programmatic write can never re-enter the draft.
+    require_text(pending_cpp, "sync_vf_curve_field_values();",
+                 "the pending refresh syncs the VF MHz boxes whenever the "
+                 "pending model actually changed")
+    require_text(ui_main_cpp, "static void sync_vf_curve_field_values",
+                 "the VF-field sync is defined once, in the control layer "
+                 "next to set_edit_value")
+    require_text(ui_main_cpp, "pending_curve_mhz_for_gui_point",
+                 "the field sync projects offset-shifted points through the "
+                 "same resolved preview the graph draws, so a pending GPU "
+                 "offset is visible in the fields, not only in the graph")
+    require_text(ui_main_cpp,
+                 "gui_pending_offset_mode_is_selective(&g_guiPendingChanges)",
+                 "owned VF fields are projected too while a selective offset "
+                 "is active, so the numbers agree with the dashed curve")
+    require_text(ui_main_cpp, "sync_vf_curve_field_values();",
+                 "populate_edits re-projects the fields after every full "
+                 "render, even when the pending summary did not change")
     require_text(_p(ctx, "config_profiles_gui_state.cpp"),
                  "g_app.lockedFreq = lockMHz;",
                  "a profile projection states its own lock target instead of "
                  "letting apply_lock() infer a stale one from the draft")
+    ctx.require_order_in_operation(
+        _p(ctx, "config_profiles_gui_state.cpp"),
+        "if (lockCi >= 0 && lockMHz > 0) {",
+        "g_app.guiLockTracksAnchor = desired->hasLock ? desired->lockTracksAnchor : true;",
+        "set_edit_value(g_app.hEditsMhz[vi], lockMHz);",
+        "a profile projection re-states the lock anchor field after "
+        "apply_lock()'s refresh, so the stale previous-profile draft cannot "
+        "stay in the VF MHz box")
 
 
 def check_service_actionability(ctx, require_text, forbid_text):
@@ -644,6 +788,17 @@ def check_apply_in_flight_presentation(ctx, require_text, forbid_text):
                  "one phrase feeds every surface, so they cannot disagree")
     require_text(policy_h, "TRAY_ICON_STATE_PENDING",
                  "the transitional theme has its own icon slot")
+    require_text(policy_h, "gui_tray_live_state_has_custom_oc(",
+                 "the tray's OC domain is a pure, unit-tested rule")
+    require_text(tray_presentation, "gui_tray_live_state_has_custom_oc(",
+                 "the live tray OC classification uses the pure policy")
+    require_text(tray_presentation, "appliedLockMode != LOCK_MODE_NONE",
+                 "an applied lock/pin counts as custom OC for the tray, so a "
+                 "pinned-clock profile with a custom fan reads as OC + Custom "
+                 "Fan rather than plain Custom Fan")
+    require_text(fan_runtime, "live_state_has_custom_oc()",
+                 "the tray theme is driven by the same live-state "
+                 "classification the tooltip uses")
 
     ctx.require_text_in_operation(
         fan_runtime, "static void update_tray_icon()",
@@ -746,9 +901,10 @@ def check_manual_mutation_result_presentation(ctx, require_text, forbid_text):
         daemon_cpp, "static void handle_request(",
         "resp->outcomeSeverity = service_response_resolve_outcome_severity(",
         "the Linux daemon resolves severity on every response it answers")
-    require_text(apply_cpp, "service_apply_outcome_severity(failCount,",
+    require_text(apply_cpp, "service_apply_outcome_severity_for_lock_mode(",
                  "the apply backend reports a committed-but-unmatched write as "
-                 "a warning instead of a silent success")
+                 "a warning instead of a silent success, while a hard NVML pin "
+                 "ignores VF tail readback")
 
     require_text(policy_h, "gui_mutation_result_needs_prompt",
                  "whether to interrupt the user is a pure, unit-tested rule")
@@ -1103,6 +1259,51 @@ def check_manual_refresh_preserves_presentation(ctx, require_text, forbid_text):
                  "refresh's status line")
 
 
+def check_graph_frequency_axis(ctx, require_text, forbid_text):
+    """The VF graph's frequency axis is derived from the plotted data.
+
+    A fixed 500..3400 MHz band clamped high-clock curves (a large GPU offset, a
+    high flatten target, an unsupported GPU's boosted curve) flat against the
+    top edge, while low-clock curves floated in empty space.  The pure rule in
+    gui_graph_axis_policy.h rounds dataMax+headroom up / dataMin-headroom down
+    to the 500 MHz grid with a minimum span; the renderer feeds it from both
+    plotted series and logs the resolved range change-gated.  The voltage axis
+    follows the same idea on the 50 mV grid, and both axes are fed from the
+    VISIBLE VF list only, so hidden low points and their labels cannot appear
+    and a GPU whose curve starts at 750 mV does not waste the 700-750 mV cell.
+    """
+    graph_cpp = _p(ctx, "ui_main_graph.cpp")
+    require_text(graph_cpp, "gui_graph_frequency_axis",
+                 "the VF graph frequency axis is derived from the plotted data")
+    require_text(graph_cpp, "gui_graph_voltage_axis",
+                 "the VF graph voltage axis starts at the first visible point "
+                 "so an empty 700-750 mV cell cannot waste space")
+    require_text(graph_cpp, "g_app.visibleMap[vi]",
+                 "the graph plots exactly the visible VF list, so hidden low "
+                 "points and their labels cannot appear")
+    require_text(graph_cpp, "sz2.cx / 2 < ml",
+                 "on-curve labels that would spill left of the plot are "
+                 "skipped instead of wasting the left margin")
+    forbid_text(graph_cpp, "MAX_FREQ_MHz = 3400",
+                "the fixed 3400 MHz ceiling truncated high-clock curves")
+    require_text(graph_cpp, "gui graph frequency axis:",
+                 "the VF graph logs the resolved frequency axis change-gated")
+    require_text(graph_cpp, "900, 900",
+                 "the y-axis title uses a rotated font so it cannot overlap "
+                 "the top clock label")
+    forbid_text(graph_cpp, "place horizontally left of Y labels",
+                "the horizontal y-axis title overlapped the clock labels")
+    require_text(_p(ctx, "gui_graph_axis_policy.h"),
+                 "if (maxMHz - minMHz < minSpanMHz) maxMHz = minMHz + minSpanMHz;",
+                 "the axis rule enforces a minimum span so tight curves do not "
+                 "fill the whole plot height")
+    require_text(_p(ctx, "gui_graph_axis_policy.h"), "gui_grid_floor(",
+                 "axis floors round down on the grid with true floor "
+                 "semantics, never truncating toward zero")
+    require_text(_p(ctx, "gui_graph_axis_policy.h"), "gui_grid_ceil(",
+                 "axis ceilings round up on the grid with true ceil semantics")
+
+
 def check_all(ctx, require_text, forbid_text):
     check_visibility_neutral_projection(ctx, require_text, forbid_text)
     check_manual_refresh_preserves_presentation(ctx, require_text, forbid_text)
@@ -1114,6 +1315,7 @@ def check_all(ctx, require_text, forbid_text):
     check_overclock_range_hints(ctx, require_text, forbid_text)
     check_high_overclock_confirmation(ctx, require_text, forbid_text)
     check_pending_changes(ctx, require_text, forbid_text)
+    check_graph_frequency_axis(ctx, require_text, forbid_text)
     check_lock_checkbox_render(ctx, require_text, forbid_text)
     check_tray_active_profile(ctx, require_text, forbid_text)
     check_tray_menu_does_not_raise_the_main_window(ctx, require_text, forbid_text)

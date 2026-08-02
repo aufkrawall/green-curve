@@ -29,9 +29,6 @@ static bool gui_pending_edit_is_changed(HWND control);
 static bool gui_pending_curve_point_is_changed(int ci);
 static bool gui_pending_domain_changed(unsigned int mask);
 static const GuiPendingSummary* gui_pending_summary();
-static bool gui_pending_gpu_offset_projection(int* appliedMHz,
-                                              int* appliedExcludeLowCount,
-                                              int* pendingMHz,
-                                              int* pendingExcludeLowCount);
+static GuiGraphPreviewPoint gui_pending_graph_preview(int ci);
 
 #endif // GREEN_CURVE_GUI_RENDER_FORWARD_H

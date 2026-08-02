@@ -45,6 +45,17 @@ enum {
     TRAY_ICON_STATE_COUNT = 5,
 };
 
+// The OC half of the tray's live-state class.  Kept pure so the reported class
+// is unit-tested.  An active lock/pin belongs to the OC domain even when no
+// GPU offset, memory offset, power-limit, or VF curve delta is nonzero: a hard
+// NVML pin owns the clocks without writing a per-point VF offset.
+static inline bool gui_tray_live_state_has_custom_oc(
+    bool gpuClockOffset, bool memClockOffset, bool powerLimitChanged,
+    bool curveOffsets, bool activeLock) {
+    return gpuClockOffset || memClockOffset || powerLimitChanged ||
+           curveOffsets || activeLock;
+}
+
 // The one user-facing phrase, shared by every surface.
 #define GUI_APPLY_IN_FLIGHT_PHRASE "changes pending"
 

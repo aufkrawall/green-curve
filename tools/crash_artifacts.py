@@ -176,8 +176,7 @@ def _verify_linux_private_symbols(ctx, symbol_path, binary_path, arch):
     the shipped binary's is one coredumpctl and gdb silently refuse to use,
     which looks identical to having no symbols at all.
     """
-    readobj = os.path.join(ctx.LLVM_MINGW_DIR, "bin",
-                           "llvm-readobj.exe" if os.name == "nt" else "llvm-readobj")
+    readobj = ctx.LLVM_MINGW_READOBJ
     if not os.path.isfile(readobj):
         # The Linux build must not hard-depend on the Windows toolchain being
         # present; the extraction and size checks above already ran.

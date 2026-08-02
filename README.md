@@ -8,8 +8,9 @@ Windows GDI GUI:
 Linux TUI (elements can be clicked with mouse):
 <img width="1669" height="1386" alt="gclin2" src="https://github.com/user-attachments/assets/ff2e28dd-523d-4c3d-ab9f-05838a387e4f" />
 
+Version: see the [`VERSION`](VERSION) file at the repository root.
 
-> ⚠️ **Platform support:** **Windows x64** and **Linux x64** are both tested on real NVIDIA hardware, including VF-curve writes, power, and fan control. **Windows arm64** and **Linux arm64** are compile- and binary-inspection-only targets; neither has completed a live GPU-control validation. Use the arm64 builds at your own risk (not that the x64 builds wouldn't be at your own risk too).
+> ⚠️ **Platform support:** **Windows x64** and **Linux x64** are both tested on real NVIDIA hardware, including VF-curve writes, power, and fan control. **Windows arm64** and **Linux arm64** are compile- and binary-inspection-only targets; neither has completed a live GPU-control validation. Use the arm64 builds at your own risk.
 >
 > **Integrated Grace/Blackwell parts (NVIDIA RTX Spark / GB10):** these report a Blackwell architecture, so the VF backend layout is selected correctly, but they are an SoC rather than a discrete board — memory is unified with the CPU, the power budget is SoC-wide, and the fan is usually owned by the platform. Green Curve probes each control domain read-only at startup, keeps every domain that answers, and shows a dismissible warning naming the ones that did not. Nothing is hard-blocked. No such hardware has been tested yet.
 
@@ -61,7 +62,7 @@ It reports which NVAPI image loaded, whether the VF curve and control structs re
 python build.py
 ```
 
-This builds the Windows and Linux x64/arm64 release matrix under `dist/` and packages one verified archive per OS/architecture — a `.7z` for Windows and a `.tar.xz` for Linux — plus a `greencurve-<version>-windows-<arch>-setup.exe` installer for each Windows architecture. Every archive is read back against an exact manifest and rejects unexpected payload files. Windows packaging requires 7-Zip; the Linux tarball is written by the Python standard library, so that it records the Unix file modes the daemon and its setup script need no matter which host built it. Windows archives extract to a `Green Curve` folder (matching what the installer creates); Linux archives keep the lowercase `greencurve` folder.
+On either Windows or Linux, this builds the Windows and Linux x64/arm64 release matrix under `dist/` and packages one verified archive per OS/architecture — a `.7z` for Windows and a `.tar.xz` for Linux — plus a `greencurve-<version>-windows-<arch>-setup.exe` installer for each Windows architecture. Linux downloads a pinned native llvm-mingw host bundle for the Windows cross-builds. Both x64 targets use LTO; ARM64 stays object-first without LTO because the pinned toolchain otherwise drops required BTI/PAC branch protection. Every archive is read back against an exact manifest and rejects unexpected payload files. Windows packaging requires 7-Zip; the Linux tarball is written by the Python standard library, so that it records the Unix file modes the daemon and its setup script need no matter which host built it. Windows archives extract to a `Green Curve` folder (matching what the installer creates); Linux archives keep the lowercase `greencurve` folder.
 
 ## Installing on Windows
 
@@ -78,7 +79,7 @@ Setup writes a log file next to itself **only if something fails**; a successful
 For unattended installs and updates:
 
 ```powershell
-greencurve-0.21-windows-x64-setup.exe /S
+greencurve-0.22.2-windows-x64-setup.exe /S
 ```
 
 `/S` installs or upgrades with no window (it still needs administrator rights, because it registers a service). `/D=<path>` selects the folder, `--no-start-menu` / `--desktop` / `--launch` override the shortcut and post-install behaviour, and `--uninstall` removes an installation. Exit codes are `0` success, `1` failure, `2` cancelled, `3` bad arguments. Run it with `/?` for the full list.

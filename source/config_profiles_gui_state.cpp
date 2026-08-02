@@ -10,6 +10,15 @@
 
 static void populate_desired_into_gui(const DesiredSettings* desired) {
     if (!desired) return;
+    // Editor population re-runs live curve detection through populate_edits(),
+    // which can infer only FLATTEN from the VF shape.  The APPLIED lock state
+    // belongs to the service (especially an NVML HARD pin), so save it across
+    // the projection and restore it; otherwise a Save/Load repopulate makes
+    // the applied curve briefly/until-refresh look green instead of pinned.
+    const int savedAppliedLockVi = g_app.appliedLockVi;
+    const int savedAppliedLockCi = g_app.appliedLockCi;
+    const unsigned int savedAppliedLockFreq = g_app.appliedLockFreq;
+    const LockMode savedAppliedLockMode = g_app.appliedLockMode;
     bool preserveDirty = gui_state_dirty();
     unlock_all();
     if (g_app.loaded) populate_edits();
@@ -103,6 +112,23 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
             // profile's own lock MHz is the authority; it is stored absolute.
             g_app.lockedFreq = lockMHz;
             g_app.guiLockTracksAnchor = desired->hasLock ? desired->lockTracksAnchor : true;
+            // apply_lock() ran its pending refresh while GuiDraft still held
+            // the PREVIOUS profile's anchor value, so that refresh may have
+            // written the stale value back into this field. Re-state the
+            // profile's authoritative lock MHz in the field and in the draft;
+            // a later refresh skips an absolute anchor field, so the stale
+            // value would otherwise stay on screen.
+            set_edit_value(g_app.hEditsMhz[vi], lockMHz);
+            if (g_app.guiDraft.attached) {
+                g_app.guiDraft.curveValueValid[lockCi] = true;
+                g_app.guiDraft.curveMHz[lockCi] = lockMHz;
+                StringCchPrintfA(g_app.guiDraft.curveText[lockCi],
+                    ARRAY_COUNT(g_app.guiDraft.curveText[lockCi]), "%u",
+                    lockMHz);
+            }
+            debug_log("profile projection: re-stated lock anchor ci=%d mhz=%u tracks=%d after apply_lock refresh\n",
+                lockCi, lockMHz,
+                desired->hasLock ? (desired->lockTracksAnchor ? 1 : 0) : 1);
             break;
         }
     } else if (g_app.lockedVi >= 0) {
@@ -121,6 +147,10 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
         debug_log("profile projection: cleared lock checkbox for vi=%d (profile carries no lock)\n",
             previousVi);
     }
+    g_app.appliedLockVi = savedAppliedLockVi;
+    g_app.appliedLockCi = savedAppliedLockCi;
+    g_app.appliedLockFreq = savedAppliedLockFreq;
+    g_app.appliedLockMode = savedAppliedLockMode;
     end_programmatic_edit_update();
     set_gui_state_dirty(preserveDirty);
     if (preserveDirty) gui_draft_capture_desired(desired);
