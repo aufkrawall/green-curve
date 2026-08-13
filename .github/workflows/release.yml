@@ -66,7 +66,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12.14'
+          python-version: '3.12.10'
 
       # No toolchain cache on the release path.  A restored cache is writable by
       # other workflow runs in a way a pinned archive is not, so the release
@@ -75,10 +75,13 @@ jobs:
       - name: Fetch the pinned toolchain from our own Compilers release
         run: python build.py --fetch-toolchain
 
+      # Written into the workspace (and gitignored, like every other release
+      # output) so it is attested and uploaded by the same globs as the
+      # binaries rather than needing a path of its own.
       - name: Verify the toolchain and record what it is
         run: |
           python build.py --verify-toolchain \
-            --toolchain-manifest "$RUNNER_TEMP/greencurve-${{ steps.version.outputs.version }}-toolchain.json"
+            --toolchain-manifest "greencurve-${{ steps.version.outputs.version }}-toolchain.json"
 
       # 7-Zip is no longer installed from apt: it writes the Windows .7z
       # archives, so it is pinned and vendored with the compilers instead of
@@ -110,7 +113,7 @@ jobs:
             greencurve-${{ steps.version.outputs.version }}-linux-arm64.tar.xz.sha256; do
             test -s "$f" || { echo "::error::missing or empty release artifact: $f"; exit 1; }
           done
-          test -s "$RUNNER_TEMP/greencurve-${{ steps.version.outputs.version }}-toolchain.json" \
+          test -s "greencurve-${{ steps.version.outputs.version }}-toolchain.json" \
             || { echo "::error::toolchain manifest was not written"; exit 1; }
 
       # The toolchain record is attested alongside the binaries, so a consumer
@@ -122,7 +125,7 @@ jobs:
             greencurve-${{ steps.version.outputs.version }}-windows-*.7z
             greencurve-${{ steps.version.outputs.version }}-windows-*-setup.exe
             greencurve-${{ steps.version.outputs.version }}-linux-*.tar.xz
-            ${{ runner.temp }}/greencurve-${{ steps.version.outputs.version }}-toolchain.json
+            greencurve-${{ steps.version.outputs.version }}-toolchain.json
 
       - name: Write release notes
         env:
@@ -175,8 +178,7 @@ jobs:
             --title "Green Curve ${VERSION}" \
             --notes-file "${RUNNER_TEMP}/release-notes.md" \
             --target "${GITHUB_SHA}" \
-            greencurve-${VERSION}-* \
-            "${RUNNER_TEMP}/greencurve-${VERSION}-toolchain.json"
+            greencurve-${VERSION}-*
 
       - name: Verify attestations on released artifacts
         env:
@@ -191,6 +193,6 @@ jobs:
             greencurve-${VERSION}-windows-arm64-setup.exe \
             greencurve-${VERSION}-linux-x64.tar.xz \
             greencurve-${VERSION}-linux-arm64.tar.xz \
-            "${RUNNER_TEMP}/greencurve-${VERSION}-toolchain.json"; do
+            greencurve-${VERSION}-toolchain.json; do
             gh attestation verify "$f" --repo "$GITHUB_REPOSITORY"
           done

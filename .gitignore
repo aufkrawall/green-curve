@@ -60,6 +60,8 @@ greencurve-setup-error.log
 greencurve_log.txt
 greencurve_cli_log.txt
 greencurve_curve.json
+# Toolchain record written by --toolchain-manifest for the release.
+greencurve-*-toolchain.json
 greencurve-x86_64-linux-musl
 greencurve-x86_64-linux-gnu
 greencurve-aarch64-linux-gnu
