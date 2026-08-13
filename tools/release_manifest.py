@@ -25,6 +25,8 @@ import subprocess
 import sys
 import tarfile
 
+import toolchain
+
 
 # Files the binary legitimately writes beside itself at run time.  A developer
 # who runs the freshly built binary out of dist/ must not have that turn into a
@@ -223,7 +225,17 @@ def validate_payload_file_names(payload, expected_binary_names):
 
 
 def find_seven_zip():
-    """Locate a 7-Zip executable (PATH or the standard Windows install dirs)."""
+    """Locate a 7-Zip executable, preferring the pinned copy in seven-zip/.
+
+    The archiver decides the bytes of a published Windows release, so CI and the
+    release workflow run the version this repository pins rather than whatever
+    the host image happens to ship.  A plain source build on a developer machine
+    still falls back to a system install, which is why packaging degrades
+    gracefully instead of demanding the vendored copy."""
+    pinned = toolchain.find_pinned_seven_zip(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if pinned:
+        return pinned
     on_path = shutil.which("7z") or shutil.which("7za") or shutil.which("7zr")
     if on_path:
         return on_path
@@ -246,15 +258,14 @@ def report_packaging_skipped(skipped):
     for os_name, _, _ in skipped:
         if os_name != "windows":
             raise ValueError(f"only Windows packaging needs an external archiver, got {os_name!r}")
-    install_hint = ("winget install 7zip.7zip" if sys.platform == "win32"
-                    else "sudo apt-get install p7zip-full")
+    install_hint = "python build.py --fetch-toolchain"
     print("")
     print("!!! WARNING: 7-Zip not found -- Windows release archives were NOT built !!!")
     print("    The binaries below are complete and passed every build-time check;")
     print("    only the .7z archives, .sha256 files and the Windows setup .exe were")
     print("    skipped.  Any Linux target in this run was packaged normally.")
-    print(f"    Install an archiver to get them: {install_hint}")
-    print("    Searched: PATH (7z/7za/7zr)"
+    print(f"    Fetch the pinned archiver to get them: {install_hint}")
+    print("    Searched: seven-zip/ (pinned), PATH (7z/7za/7zr)"
           + (r", C:\Program Files\7-Zip\7z.exe" if sys.platform == "win32" else ""))
     print("    Built binaries (under dist/, wiped and rebuilt by the next run):")
     for os_name, arch, binaries in skipped:

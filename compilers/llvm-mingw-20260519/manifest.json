@@ -2,54 +2,2864 @@
   "tool": "llvm-mingw",
   "version": "20260519",
   "llvm_version": "22.1.6",
-  "host_platform": "windows",
-  "host_arch": "x86_64",
   "archives": [
     {
+      "host_platform": "windows",
+      "host_arch": "x86_64",
       "filename": "llvm-mingw-20260519-ucrt-x86_64.zip",
       "format": "zip",
       "size_bytes": 187181771,
       "sha256": "72dbd6e64614e3b3401998992d1bd9c8ace29e74611d71c80309ea71c3fb26f9",
-      "url": "https://github.com/mstorsjo/llvm-mingw/releases/download/20260519/llvm-mingw-20260519-ucrt-x86_64.zip",
+      "url": "https://github.com/aufkrawall/green-curve/releases/download/Compilers-1.0/llvm-mingw-20260519-ucrt-x86_64.zip",
+      "upstream_url": "https://github.com/mstorsjo/llvm-mingw/releases/download/20260519/llvm-mingw-20260519-ucrt-x86_64.zip",
+      "upstream_release_date": "2026-05-19"
+    },
+    {
+      "host_platform": "linux",
+      "host_arch": "x86_64",
+      "filename": "llvm-mingw-20260519-ucrt-ubuntu-22.04-x86_64.tar.xz",
+      "format": "tar.xz",
+      "size_bytes": 82173588,
+      "sha256": "a48f8c2801508272ccde64d87a26747ecc5306623d9a080a42ed80dc61f79fa2",
+      "url": "https://github.com/aufkrawall/green-curve/releases/download/Compilers-1.0/llvm-mingw-20260519-ucrt-ubuntu-22.04-x86_64.tar.xz",
+      "upstream_url": "https://github.com/mstorsjo/llvm-mingw/releases/download/20260519/llvm-mingw-20260519-ucrt-ubuntu-22.04-x86_64.tar.xz",
       "upstream_release_date": "2026-05-19"
     }
   ],
   "license_file": "LICENSE.TXT",
-  "license": "Apache 2.0 with LLVM Exceptions — Copyright (c) LLVM Project / mstorsjo",
-  "date_accessed_utc": "2026-06-28T06:35:53Z",
+  "license": "Apache 2.0 with LLVM Exceptions - Copyright (c) LLVM Project / mstorsjo",
+  "date_accessed_utc": "2026-08-13T00:00:00Z",
   "upstream_url": "https://github.com/mstorsjo/llvm-mingw/releases/tag/20260519",
-  "archive_integrity": {
-    "downloaded_hash": "72dbd6e64614e3b3401998992d1bd9c8ace29e74611d71c80309ea71c3fb26f9",
-    "expected_from_build_py": "72dbd6e64614e3b3401998992d1bd9c8ace29e74611d71c80309ea71c3fb26f9",
-    "match": true
-  },
-  "extracted_binaries": [
-    {
-      "name": "clang++.exe (wrapper)",
-      "path": "bin/clang++.exe",
-      "size_bytes": 17920,
-      "sha256_sentinel": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8",
-      "sha256_reverified": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8",
-      "status": "UNCOMPROMISED"
-    },
-    {
-      "name": "llvm-rc.exe",
-      "path": "bin/llvm-rc.exe",
-      "size_bytes": 158208,
-      "sha256": "19577feb4935c6dc2bca2ada14d928ccede57b2eecf6acdb256bfb837ff0b353"
-    },
-    {
-      "name": "ld.lld.exe",
-      "path": "bin/ld.lld.exe",
-      "size_bytes": 5219328,
-      "sha256": "be1f7705070d67a1ebe8d5555454d031b193987dc7961741fb766cd77a4a0d00"
-    },
-    {
-      "name": "clang-22.exe",
-      "path": "bin/clang-22.exe",
-      "size_bytes": 100352,
-      "sha256": "f34cc8e2462ef097dd98a3f728505a263ed056fa339a91d343a7a225d169bd10"
-    }
-  ],
-  "overall_verdict": "PASS — archive checksum verified; key binary sentinels intact and uncompromised"
+  "checksum_source": "computed on download; upstream publishes no checksum file",
+  "pinned_because": "Newest llvm-mingw that builds the project cleanly. 20260616 and later ship a clang that reports -Wcast-function-type-mismatch on the 20 GetProcAddress casts this codebase relies on, which -Werror turns into build failures; adopting it needs those call sites fixed rather than the diagnostic suppressed.",
+  "extracted_binaries": {
+    "windows": [
+      {
+        "path": "bin/aarch64-pc-windows-gnu.cfg",
+        "size_bytes": 82,
+        "sha256": "21a66091410ee74a6b2e777e6852e848a3dc592b76919e9bfdd13fc48811e2c6"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-addr2line.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-as.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-c++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-clang++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-clang-scan-deps.exe",
+        "size_bytes": 17408,
+        "sha256": "3cbafaa219e7d27f9e6ec7c2ae32294b129cc302f372f5350f33b97d38962f49"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-clang.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-dlltool.exe",
+        "size_bytes": 68608,
+        "sha256": "7acc5c955cf45d9b082057bbc7e9315434efd84821362f29849d71d7c495b88f"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-g++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-gcc.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-ld",
+        "size_bytes": 1472,
+        "sha256": "e4d9e6a4709da716994e90cfb089e159b155d9361fbadc93a4aa7159dc76b21d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-llvm-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-llvm-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-nm.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-objcopy.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-objdump",
+        "size_bytes": 2001,
+        "sha256": "7f90e4d330d2629c72bc8575b50db9bfe9a0c3a1f119a9ae78419c8fb57a563e"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-readelf.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-size.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-strings.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-strip.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-widl.exe",
+        "size_bytes": 563200,
+        "sha256": "912027d212a74bc0c310e056aa9029d9d5ca96814b672f7d885f15d71292d65d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-windres.exe",
+        "size_bytes": 158208,
+        "sha256": "19577feb4935c6dc2bca2ada14d928ccede57b2eecf6acdb256bfb837ff0b353"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-addr2line.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-as.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-c++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-clang++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-clang-scan-deps.exe",
+        "size_bytes": 17408,
+        "sha256": "3cbafaa219e7d27f9e6ec7c2ae32294b129cc302f372f5350f33b97d38962f49"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-clang.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-dlltool.exe",
+        "size_bytes": 68608,
+        "sha256": "7acc5c955cf45d9b082057bbc7e9315434efd84821362f29849d71d7c495b88f"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-g++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-gcc.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-ld",
+        "size_bytes": 1472,
+        "sha256": "e4d9e6a4709da716994e90cfb089e159b155d9361fbadc93a4aa7159dc76b21d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-llvm-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-llvm-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-nm.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-objcopy.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-objdump",
+        "size_bytes": 2001,
+        "sha256": "7f90e4d330d2629c72bc8575b50db9bfe9a0c3a1f119a9ae78419c8fb57a563e"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-readelf.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-size.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-strings.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-strip.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-widl.exe",
+        "size_bytes": 563200,
+        "sha256": "912027d212a74bc0c310e056aa9029d9d5ca96814b672f7d885f15d71292d65d"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-windres.exe",
+        "size_bytes": 158208,
+        "sha256": "19577feb4935c6dc2bca2ada14d928ccede57b2eecf6acdb256bfb837ff0b353"
+      },
+      {
+        "path": "bin/aarch64-w64-windows-gnu.cfg",
+        "size_bytes": 82,
+        "sha256": "21a66091410ee74a6b2e777e6852e848a3dc592b76919e9bfdd13fc48811e2c6"
+      },
+      {
+        "path": "bin/addr2line.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/analyze-build",
+        "size_bytes": 557,
+        "sha256": "4287c2473976e2f4b27b4d6f55dfbf7ea0a477a225798485332ac387acae9ee0"
+      },
+      {
+        "path": "bin/ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-pc-windows-gnu.cfg",
+        "size_bytes": 82,
+        "sha256": "a82ecf48cd952be57e8786d4dbb3e041c28d7318e0284fa4a7ea0f2873030c6a"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-addr2line.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-as.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-c++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-clang++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-clang-scan-deps.exe",
+        "size_bytes": 17408,
+        "sha256": "3cbafaa219e7d27f9e6ec7c2ae32294b129cc302f372f5350f33b97d38962f49"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-clang.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-dlltool.exe",
+        "size_bytes": 68608,
+        "sha256": "7acc5c955cf45d9b082057bbc7e9315434efd84821362f29849d71d7c495b88f"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-g++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-gcc.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-ld",
+        "size_bytes": 1472,
+        "sha256": "e4d9e6a4709da716994e90cfb089e159b155d9361fbadc93a4aa7159dc76b21d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-llvm-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-llvm-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-nm.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-objcopy.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-objdump",
+        "size_bytes": 2001,
+        "sha256": "7f90e4d330d2629c72bc8575b50db9bfe9a0c3a1f119a9ae78419c8fb57a563e"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-readelf.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-size.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-strings.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-strip.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-widl.exe",
+        "size_bytes": 563200,
+        "sha256": "912027d212a74bc0c310e056aa9029d9d5ca96814b672f7d885f15d71292d65d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-windres.exe",
+        "size_bytes": 158208,
+        "sha256": "19577feb4935c6dc2bca2ada14d928ccede57b2eecf6acdb256bfb837ff0b353"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-addr2line.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-as.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-c++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-clang++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-clang-scan-deps.exe",
+        "size_bytes": 17408,
+        "sha256": "3cbafaa219e7d27f9e6ec7c2ae32294b129cc302f372f5350f33b97d38962f49"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-clang.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-dlltool.exe",
+        "size_bytes": 68608,
+        "sha256": "7acc5c955cf45d9b082057bbc7e9315434efd84821362f29849d71d7c495b88f"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-g++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-gcc.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-ld",
+        "size_bytes": 1472,
+        "sha256": "e4d9e6a4709da716994e90cfb089e159b155d9361fbadc93a4aa7159dc76b21d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-llvm-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-llvm-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-nm.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-objcopy.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-objdump",
+        "size_bytes": 2001,
+        "sha256": "7f90e4d330d2629c72bc8575b50db9bfe9a0c3a1f119a9ae78419c8fb57a563e"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-readelf.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-size.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-strings.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-strip.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-widl.exe",
+        "size_bytes": 563200,
+        "sha256": "912027d212a74bc0c310e056aa9029d9d5ca96814b672f7d885f15d71292d65d"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-windres.exe",
+        "size_bytes": 158208,
+        "sha256": "19577feb4935c6dc2bca2ada14d928ccede57b2eecf6acdb256bfb837ff0b353"
+      },
+      {
+        "path": "bin/arm64ec-w64-windows-gnu.cfg",
+        "size_bytes": 82,
+        "sha256": "a82ecf48cd952be57e8786d4dbb3e041c28d7318e0284fa4a7ea0f2873030c6a"
+      },
+      {
+        "path": "bin/armv7-pc-windows-gnu.cfg",
+        "size_bytes": 78,
+        "sha256": "fac4d632d01c5c2f434b878583408343a06ae52f4dc787b8b74794e221686b16"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-addr2line.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-as.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-c++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-clang++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-clang-scan-deps.exe",
+        "size_bytes": 17408,
+        "sha256": "3cbafaa219e7d27f9e6ec7c2ae32294b129cc302f372f5350f33b97d38962f49"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-clang.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-dlltool.exe",
+        "size_bytes": 68608,
+        "sha256": "7acc5c955cf45d9b082057bbc7e9315434efd84821362f29849d71d7c495b88f"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-g++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-gcc.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-ld",
+        "size_bytes": 1472,
+        "sha256": "e4d9e6a4709da716994e90cfb089e159b155d9361fbadc93a4aa7159dc76b21d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-llvm-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-llvm-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-nm.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-objcopy.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-objdump",
+        "size_bytes": 2001,
+        "sha256": "7f90e4d330d2629c72bc8575b50db9bfe9a0c3a1f119a9ae78419c8fb57a563e"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-readelf.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-size.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-strings.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-strip.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-widl.exe",
+        "size_bytes": 563200,
+        "sha256": "912027d212a74bc0c310e056aa9029d9d5ca96814b672f7d885f15d71292d65d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-windres.exe",
+        "size_bytes": 158208,
+        "sha256": "19577feb4935c6dc2bca2ada14d928ccede57b2eecf6acdb256bfb837ff0b353"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-addr2line.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-as.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-c++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-clang++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-clang-scan-deps.exe",
+        "size_bytes": 17408,
+        "sha256": "3cbafaa219e7d27f9e6ec7c2ae32294b129cc302f372f5350f33b97d38962f49"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-clang.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-dlltool.exe",
+        "size_bytes": 68608,
+        "sha256": "7acc5c955cf45d9b082057bbc7e9315434efd84821362f29849d71d7c495b88f"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-g++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-gcc.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-ld",
+        "size_bytes": 1472,
+        "sha256": "e4d9e6a4709da716994e90cfb089e159b155d9361fbadc93a4aa7159dc76b21d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-llvm-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-llvm-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-nm.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-objcopy.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-objdump",
+        "size_bytes": 2001,
+        "sha256": "7f90e4d330d2629c72bc8575b50db9bfe9a0c3a1f119a9ae78419c8fb57a563e"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-readelf.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-size.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-strings.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-strip.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-widl.exe",
+        "size_bytes": 563200,
+        "sha256": "912027d212a74bc0c310e056aa9029d9d5ca96814b672f7d885f15d71292d65d"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-windres.exe",
+        "size_bytes": 158208,
+        "sha256": "19577feb4935c6dc2bca2ada14d928ccede57b2eecf6acdb256bfb837ff0b353"
+      },
+      {
+        "path": "bin/armv7-w64-windows-gnu.cfg",
+        "size_bytes": 78,
+        "sha256": "fac4d632d01c5c2f434b878583408343a06ae52f4dc787b8b74794e221686b16"
+      },
+      {
+        "path": "bin/c++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/c11.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/c99.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/cc.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/clang++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/clang-22.exe",
+        "size_bytes": 100352,
+        "sha256": "f34cc8e2462ef097dd98a3f728505a263ed056fa339a91d343a7a225d169bd10"
+      },
+      {
+        "path": "bin/clang-format.exe",
+        "size_bytes": 89600,
+        "sha256": "4f7da5ce0cfdc8e83f831d09f50392580ca3990bc0beecea5954ca450f9a7591"
+      },
+      {
+        "path": "bin/clang-scan-deps-real.exe",
+        "size_bytes": 168960,
+        "sha256": "a5b97c093dde50c97b8e622250b8813e79108f66750d1c49ce419c97a9feb00f"
+      },
+      {
+        "path": "bin/clang-scan-deps-wrapper.exe",
+        "size_bytes": 17408,
+        "sha256": "3cbafaa219e7d27f9e6ec7c2ae32294b129cc302f372f5350f33b97d38962f49"
+      },
+      {
+        "path": "bin/clang-scan-deps.exe",
+        "size_bytes": 17408,
+        "sha256": "3cbafaa219e7d27f9e6ec7c2ae32294b129cc302f372f5350f33b97d38962f49"
+      },
+      {
+        "path": "bin/clang-target-wrapper.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/clang-target-wrapper.sh",
+        "size_bytes": 2988,
+        "sha256": "c9b86311ade81d53235c93fafabdf98328d094de344ea9a9038e0dab6695ee9f"
+      },
+      {
+        "path": "bin/clang-tidy.exe",
+        "size_bytes": 7547392,
+        "sha256": "4d95ea6290eb89bef04a8eaf84ac3247afc70ed754c140feaf0b3ceb73744114"
+      },
+      {
+        "path": "bin/clang.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/clangd.exe",
+        "size_bytes": 12514816,
+        "sha256": "47bf89ddf4397098c287a6527b7bee13bceefdccad97012951750a57d84b0542"
+      },
+      {
+        "path": "bin/dlltool.exe",
+        "size_bytes": 68608,
+        "sha256": "7acc5c955cf45d9b082057bbc7e9315434efd84821362f29849d71d7c495b88f"
+      },
+      {
+        "path": "bin/g++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/gcc.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/gendef.exe",
+        "size_bytes": 32256,
+        "sha256": "dc9d259549d664bc186c91a137fd6df268e3a2d97590323fd9d218f7cad627b1"
+      },
+      {
+        "path": "bin/git-clang-format",
+        "size_bytes": 28325,
+        "sha256": "02006566f6c063a90cf5e5bc005d409a75a8e8b1948715a677475debdff77aee"
+      },
+      {
+        "path": "bin/i686-pc-windows-gnu.cfg",
+        "size_bytes": 78,
+        "sha256": "77429a99caec3648a7bd0accdf8db9c82c4b8c687d7f8f8201a23a584e9a2d0f"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-addr2line.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-as.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-c++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-clang++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-clang-scan-deps.exe",
+        "size_bytes": 17408,
+        "sha256": "3cbafaa219e7d27f9e6ec7c2ae32294b129cc302f372f5350f33b97d38962f49"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-clang.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-dlltool.exe",
+        "size_bytes": 68608,
+        "sha256": "7acc5c955cf45d9b082057bbc7e9315434efd84821362f29849d71d7c495b88f"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-g++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-gcc.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-ld",
+        "size_bytes": 1472,
+        "sha256": "e4d9e6a4709da716994e90cfb089e159b155d9361fbadc93a4aa7159dc76b21d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-llvm-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-llvm-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-nm.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-objcopy.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-objdump",
+        "size_bytes": 2001,
+        "sha256": "7f90e4d330d2629c72bc8575b50db9bfe9a0c3a1f119a9ae78419c8fb57a563e"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-readelf.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-size.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-strings.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-strip.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-widl.exe",
+        "size_bytes": 563200,
+        "sha256": "912027d212a74bc0c310e056aa9029d9d5ca96814b672f7d885f15d71292d65d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-windres.exe",
+        "size_bytes": 158208,
+        "sha256": "19577feb4935c6dc2bca2ada14d928ccede57b2eecf6acdb256bfb837ff0b353"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-addr2line.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-as.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-c++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-clang++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-clang-scan-deps.exe",
+        "size_bytes": 17408,
+        "sha256": "3cbafaa219e7d27f9e6ec7c2ae32294b129cc302f372f5350f33b97d38962f49"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-clang.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-dlltool.exe",
+        "size_bytes": 68608,
+        "sha256": "7acc5c955cf45d9b082057bbc7e9315434efd84821362f29849d71d7c495b88f"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-g++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-gcc.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-ld",
+        "size_bytes": 1472,
+        "sha256": "e4d9e6a4709da716994e90cfb089e159b155d9361fbadc93a4aa7159dc76b21d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-llvm-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-llvm-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-nm.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-objcopy.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-objdump",
+        "size_bytes": 2001,
+        "sha256": "7f90e4d330d2629c72bc8575b50db9bfe9a0c3a1f119a9ae78419c8fb57a563e"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-readelf.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-size.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-strings.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-strip.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-widl.exe",
+        "size_bytes": 563200,
+        "sha256": "912027d212a74bc0c310e056aa9029d9d5ca96814b672f7d885f15d71292d65d"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-windres.exe",
+        "size_bytes": 158208,
+        "sha256": "19577feb4935c6dc2bca2ada14d928ccede57b2eecf6acdb256bfb837ff0b353"
+      },
+      {
+        "path": "bin/i686-w64-windows-gnu.cfg",
+        "size_bytes": 78,
+        "sha256": "77429a99caec3648a7bd0accdf8db9c82c4b8c687d7f8f8201a23a584e9a2d0f"
+      },
+      {
+        "path": "bin/intercept-build",
+        "size_bytes": 563,
+        "sha256": "ee841b4f161e368b84c4991818369532bb49cb4d4a85deef4d6d5826d736de5f"
+      },
+      {
+        "path": "bin/ld",
+        "size_bytes": 1472,
+        "sha256": "e4d9e6a4709da716994e90cfb089e159b155d9361fbadc93a4aa7159dc76b21d"
+      },
+      {
+        "path": "bin/ld-wrapper.sh",
+        "size_bytes": 1472,
+        "sha256": "e4d9e6a4709da716994e90cfb089e159b155d9361fbadc93a4aa7159dc76b21d"
+      },
+      {
+        "path": "bin/ld.lld.exe",
+        "size_bytes": 5219328,
+        "sha256": "be1f7705070d67a1ebe8d5555454d031b193987dc7961741fb766cd77a4a0d00"
+      },
+      {
+        "path": "bin/libLLVM-22.dll",
+        "size_bytes": 76048384,
+        "sha256": "a1c226f6c9421f12015bbc0171a96b136bc5b50b8f106f2e294bded99c8a2e26"
+      },
+      {
+        "path": "bin/libc++.dll",
+        "size_bytes": 2094080,
+        "sha256": "dde52e6515330f0f34dfd41c625594000d5c9ad2422297319487fe54cf508ff2"
+      },
+      {
+        "path": "bin/libclang-cpp.dll",
+        "size_bytes": 47433216,
+        "sha256": "1e018fb19a30c78ae6f9ed8ec0dea9b30b7e1b16ead342da1447c7fa7082412a"
+      },
+      {
+        "path": "bin/libclang_rt.asan_dynamic-x86_64.dll",
+        "size_bytes": 1483776,
+        "sha256": "adfd2032d5c14f082c0931da25867fabe3901a01aa145341c51c82fee88491cc"
+      },
+      {
+        "path": "bin/libffi-8.dll",
+        "size_bytes": 86528,
+        "sha256": "8fb8eab8fa2c254d6436ef97003d619d8481c4027b280b11db85a75bf2ae2997"
+      },
+      {
+        "path": "bin/liblldb.dll",
+        "size_bytes": 15922176,
+        "sha256": "a075655745932258d2f534f23c3de30787d28d16857941ee9a74126a7f2627da"
+      },
+      {
+        "path": "bin/libomp.dll",
+        "size_bytes": 968704,
+        "sha256": "5aae4ea8d7c5cfa4845ccd7581a61f88047b00f0f5bc1f02bdd3f5706c6e93e2"
+      },
+      {
+        "path": "bin/libpython3.13.dll",
+        "size_bytes": 4746752,
+        "sha256": "04045d67151f9491177976651418887191c4f68d62ad09c2a2231686c1683610"
+      },
+      {
+        "path": "bin/libpython3.dll",
+        "size_bytes": 74752,
+        "sha256": "837ec4e84c0cdea999c949e118f7487cecc9d894e6b17abbca58c0875c614003"
+      },
+      {
+        "path": "bin/libunwind.dll",
+        "size_bytes": 203264,
+        "sha256": "a7f8cfeb0a560f3b90b9d540e0407b310e666e1492bf8f7f0cb5d1bcfcac13e0"
+      },
+      {
+        "path": "bin/libwinpthread-1.dll",
+        "size_bytes": 274944,
+        "sha256": "bdb0c56da7d7bbd9cf8b0d5d6e7f8d8aa84fc755e6dd6324619312a463f6158c"
+      },
+      {
+        "path": "bin/lldb-argdumper.exe",
+        "size_bytes": 20992,
+        "sha256": "6508210fa7df33451ab155d61740571237e941caf5a3a9504712315d8adb6338"
+      },
+      {
+        "path": "bin/lldb-dap.exe",
+        "size_bytes": 705024,
+        "sha256": "73ff1c9f5d3735f306fe852e6844a73837ee46c8a25f5b54fd40a8a78d95ff1e"
+      },
+      {
+        "path": "bin/lldb-instr.exe",
+        "size_bytes": 128512,
+        "sha256": "ca866d23bf365072bba20558fbfb3be17455d2c81eb2966c047cc28e307076ea"
+      },
+      {
+        "path": "bin/lldb-mi.exe",
+        "size_bytes": 787456,
+        "sha256": "64127f92ed35a1ffad7d64b6ba476bb7042106ea455252061300debcce8e6abe"
+      },
+      {
+        "path": "bin/lldb-server.exe",
+        "size_bytes": 2139136,
+        "sha256": "cbbe58e095cf489280fb88ff180e1d0788e293287ba3bed695c265b14f1a3f86"
+      },
+      {
+        "path": "bin/lldb.exe",
+        "size_bytes": 56832,
+        "sha256": "a2c8af4fdbbf9babafe9efa8db9525a2a9300ecd547ab828937e5511af3a2c40"
+      },
+      {
+        "path": "bin/llvm-addr2line.exe",
+        "size_bytes": 66048,
+        "sha256": "0397e5a9b0a3b90979633f45d51e639fb8a0d9831ca672069a6b83fe2c9b9101"
+      },
+      {
+        "path": "bin/llvm-ar.exe",
+        "size_bytes": 68608,
+        "sha256": "7acc5c955cf45d9b082057bbc7e9315434efd84821362f29849d71d7c495b88f"
+      },
+      {
+        "path": "bin/llvm-cov.exe",
+        "size_bytes": 348160,
+        "sha256": "f32e7767aee618ec138a00219ffcea15a8be1895d44ef75f1d34b22e3a9dafb2"
+      },
+      {
+        "path": "bin/llvm-cvtres.exe",
+        "size_bytes": 29696,
+        "sha256": "edec7f90f48f877993da2f2a8e3bee895de45eeb4c216217c3a372cce6325d89"
+      },
+      {
+        "path": "bin/llvm-cxxfilt.exe",
+        "size_bytes": 26624,
+        "sha256": "2fff18b6419100c7eb3ba8e0346463d9a41dd29f46ca2be251966552d1664473"
+      },
+      {
+        "path": "bin/llvm-dlltool.exe",
+        "size_bytes": 68608,
+        "sha256": "7acc5c955cf45d9b082057bbc7e9315434efd84821362f29849d71d7c495b88f"
+      },
+      {
+        "path": "bin/llvm-lib.exe",
+        "size_bytes": 68608,
+        "sha256": "7acc5c955cf45d9b082057bbc7e9315434efd84821362f29849d71d7c495b88f"
+      },
+      {
+        "path": "bin/llvm-ml.exe",
+        "size_bytes": 49152,
+        "sha256": "613b32a6ca184945d94c6e18a150b016fb02d99a74ab5a599f38fd5871acab5e"
+      },
+      {
+        "path": "bin/llvm-nm.exe",
+        "size_bytes": 132096,
+        "sha256": "37eb8716931aaa9c4826cc9f7b6848ae465abfb858c35bc3311a8d19db8e0894"
+      },
+      {
+        "path": "bin/llvm-objcopy.exe",
+        "size_bytes": 195072,
+        "sha256": "0ba94102123ab49c23e2921a0bde8650e97ace186d75873e70cedc086bb60377"
+      },
+      {
+        "path": "bin/llvm-objdump.exe",
+        "size_bytes": 779776,
+        "sha256": "6c168a9a69669290a81c00570b86fc49a6fb5c116cad2178012202a659e910d1"
+      },
+      {
+        "path": "bin/llvm-pdbutil.exe",
+        "size_bytes": 645632,
+        "sha256": "69de84e0bffcedce6460d6520159952813558e6c46ed12839e4ecde45bf1aff4"
+      },
+      {
+        "path": "bin/llvm-profdata.exe",
+        "size_bytes": 324096,
+        "sha256": "a0b7d14be62cd113b9286e8085a19295bc7447683c10048f3f344c2821fef4c5"
+      },
+      {
+        "path": "bin/llvm-ranlib.exe",
+        "size_bytes": 68608,
+        "sha256": "7acc5c955cf45d9b082057bbc7e9315434efd84821362f29849d71d7c495b88f"
+      },
+      {
+        "path": "bin/llvm-rc.exe",
+        "size_bytes": 158208,
+        "sha256": "19577feb4935c6dc2bca2ada14d928ccede57b2eecf6acdb256bfb837ff0b353"
+      },
+      {
+        "path": "bin/llvm-readelf.exe",
+        "size_bytes": 1612288,
+        "sha256": "0dbf02e91a9c78e127a9219ae3807b45e70816f9a7c68fd3cf220845585d7e35"
+      },
+      {
+        "path": "bin/llvm-readobj.exe",
+        "size_bytes": 1612288,
+        "sha256": "0dbf02e91a9c78e127a9219ae3807b45e70816f9a7c68fd3cf220845585d7e35"
+      },
+      {
+        "path": "bin/llvm-size.exe",
+        "size_bytes": 67072,
+        "sha256": "aece61ebef7ed29c51ad4422f92947345329fed00f282f15f7e72cdc6dd1628e"
+      },
+      {
+        "path": "bin/llvm-strings.exe",
+        "size_bytes": 28160,
+        "sha256": "661c1cdee8007b89f804b52bee9c932bd9819a6e7dcfbefac9322041229811bb"
+      },
+      {
+        "path": "bin/llvm-strip.exe",
+        "size_bytes": 195072,
+        "sha256": "0ba94102123ab49c23e2921a0bde8650e97ace186d75873e70cedc086bb60377"
+      },
+      {
+        "path": "bin/llvm-symbolizer.exe",
+        "size_bytes": 66048,
+        "sha256": "0397e5a9b0a3b90979633f45d51e639fb8a0d9831ca672069a6b83fe2c9b9101"
+      },
+      {
+        "path": "bin/llvm-windres.exe",
+        "size_bytes": 158208,
+        "sha256": "19577feb4935c6dc2bca2ada14d928ccede57b2eecf6acdb256bfb837ff0b353"
+      },
+      {
+        "path": "bin/llvm-wrapper.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/mingw32-common.cfg",
+        "size_bytes": 68,
+        "sha256": "0924577cab6fd9256fdd640f0ff5a7382446e968f2401a3df648d3bf4012bde6"
+      },
+      {
+        "path": "bin/mingw32-make.exe",
+        "size_bytes": 263680,
+        "sha256": "6850e88fc58c7b4dd28134ae6868e213863497b5429d104bf86083f22c2f480d"
+      },
+      {
+        "path": "bin/nm.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/objcopy.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/objdump",
+        "size_bytes": 2001,
+        "sha256": "7f90e4d330d2629c72bc8575b50db9bfe9a0c3a1f119a9ae78419c8fb57a563e"
+      },
+      {
+        "path": "bin/objdump-wrapper.sh",
+        "size_bytes": 2001,
+        "sha256": "7f90e4d330d2629c72bc8575b50db9bfe9a0c3a1f119a9ae78419c8fb57a563e"
+      },
+      {
+        "path": "bin/ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/readelf.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/run-clang-tidy",
+        "size_bytes": 26285,
+        "sha256": "a651a6529eefbd12b7845afe6719773ba6578ecca222603d1262b4d2d48e1422"
+      },
+      {
+        "path": "bin/scan-build-py",
+        "size_bytes": 551,
+        "sha256": "be51a886754ac1780eabb929e80eea0239c2dfe1655de4c533ec2e537b128a73"
+      },
+      {
+        "path": "bin/size.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/strings.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/strip.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/widl.exe",
+        "size_bytes": 563200,
+        "sha256": "912027d212a74bc0c310e056aa9029d9d5ca96814b672f7d885f15d71292d65d"
+      },
+      {
+        "path": "bin/windres.exe",
+        "size_bytes": 158208,
+        "sha256": "19577feb4935c6dc2bca2ada14d928ccede57b2eecf6acdb256bfb837ff0b353"
+      },
+      {
+        "path": "bin/x86_64-pc-windows-gnu.cfg",
+        "size_bytes": 80,
+        "sha256": "ee12d9ca9abf3df1bd9312af1175c1751ca23dcbc2c67c70a326ff5679d439f5"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-addr2line.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-as.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-c++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-clang++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-clang-scan-deps.exe",
+        "size_bytes": 17408,
+        "sha256": "3cbafaa219e7d27f9e6ec7c2ae32294b129cc302f372f5350f33b97d38962f49"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-clang.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-dlltool.exe",
+        "size_bytes": 68608,
+        "sha256": "7acc5c955cf45d9b082057bbc7e9315434efd84821362f29849d71d7c495b88f"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-g++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-gcc.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-ld",
+        "size_bytes": 1472,
+        "sha256": "e4d9e6a4709da716994e90cfb089e159b155d9361fbadc93a4aa7159dc76b21d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-llvm-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-llvm-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-nm.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-objcopy.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-objdump",
+        "size_bytes": 2001,
+        "sha256": "7f90e4d330d2629c72bc8575b50db9bfe9a0c3a1f119a9ae78419c8fb57a563e"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-readelf.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-size.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-strings.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-strip.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-widl.exe",
+        "size_bytes": 563200,
+        "sha256": "912027d212a74bc0c310e056aa9029d9d5ca96814b672f7d885f15d71292d65d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-windres.exe",
+        "size_bytes": 158208,
+        "sha256": "19577feb4935c6dc2bca2ada14d928ccede57b2eecf6acdb256bfb837ff0b353"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-addr2line.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-as.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-c++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-clang++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-clang-scan-deps.exe",
+        "size_bytes": 17408,
+        "sha256": "3cbafaa219e7d27f9e6ec7c2ae32294b129cc302f372f5350f33b97d38962f49"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-clang.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-dlltool.exe",
+        "size_bytes": 68608,
+        "sha256": "7acc5c955cf45d9b082057bbc7e9315434efd84821362f29849d71d7c495b88f"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-g++.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-gcc.exe",
+        "size_bytes": 17920,
+        "sha256": "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-ld",
+        "size_bytes": 1472,
+        "sha256": "e4d9e6a4709da716994e90cfb089e159b155d9361fbadc93a4aa7159dc76b21d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-llvm-ar.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-llvm-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-nm.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-objcopy.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-objdump",
+        "size_bytes": 2001,
+        "sha256": "7f90e4d330d2629c72bc8575b50db9bfe9a0c3a1f119a9ae78419c8fb57a563e"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-ranlib.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-readelf.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-size.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-strings.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-strip.exe",
+        "size_bytes": 16384,
+        "sha256": "bff86c9b8b0016ebf7270637bfc7f35521ea486ed81b7ed1565a9375f805153d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-widl.exe",
+        "size_bytes": 563200,
+        "sha256": "912027d212a74bc0c310e056aa9029d9d5ca96814b672f7d885f15d71292d65d"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-windres.exe",
+        "size_bytes": 158208,
+        "sha256": "19577feb4935c6dc2bca2ada14d928ccede57b2eecf6acdb256bfb837ff0b353"
+      },
+      {
+        "path": "bin/x86_64-w64-windows-gnu.cfg",
+        "size_bytes": 80,
+        "sha256": "ee12d9ca9abf3df1bd9312af1175c1751ca23dcbc2c67c70a326ff5679d439f5"
+      }
+    ],
+    "linux": [
+      {
+        "path": "bin/aarch64-pc-windows-gnu.cfg",
+        "symlink": "aarch64-w64-windows-gnu.cfg"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-addr2line",
+        "symlink": "llvm-addr2line"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-as",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-c++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-clang",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-clang++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-clang-scan-deps",
+        "symlink": "clang-scan-deps"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-dlltool",
+        "symlink": "llvm-dlltool"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-g++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-gcc",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-ld",
+        "symlink": "ld-wrapper.sh"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-llvm-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-llvm-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-nm",
+        "symlink": "llvm-nm"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-objcopy",
+        "symlink": "llvm-objcopy"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-objdump",
+        "symlink": "objdump-wrapper.sh"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-readelf",
+        "symlink": "llvm-readelf"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-size",
+        "symlink": "llvm-size"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-strings",
+        "symlink": "llvm-strings"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-strip",
+        "symlink": "llvm-strip"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-widl",
+        "symlink": "i686-w64-mingw32-widl"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32-windres",
+        "symlink": "llvm-windres"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-addr2line",
+        "symlink": "llvm-addr2line"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-as",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-c++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-clang",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-clang++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-clang-scan-deps",
+        "symlink": "clang-scan-deps"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-dlltool",
+        "symlink": "llvm-dlltool"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-g++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-gcc",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-ld",
+        "symlink": "ld-wrapper.sh"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-llvm-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-llvm-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-nm",
+        "symlink": "llvm-nm"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-objcopy",
+        "symlink": "llvm-objcopy"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-objdump",
+        "symlink": "objdump-wrapper.sh"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-readelf",
+        "symlink": "llvm-readelf"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-size",
+        "symlink": "llvm-size"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-strings",
+        "symlink": "llvm-strings"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-strip",
+        "symlink": "llvm-strip"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-widl",
+        "symlink": "i686-w64-mingw32-widl"
+      },
+      {
+        "path": "bin/aarch64-w64-mingw32uwp-windres",
+        "symlink": "llvm-windres"
+      },
+      {
+        "path": "bin/aarch64-w64-windows-gnu.cfg",
+        "size_bytes": 82,
+        "sha256": "21a66091410ee74a6b2e777e6852e848a3dc592b76919e9bfdd13fc48811e2c6"
+      },
+      {
+        "path": "bin/analyze-build",
+        "size_bytes": 557,
+        "sha256": "4287c2473976e2f4b27b4d6f55dfbf7ea0a477a225798485332ac387acae9ee0"
+      },
+      {
+        "path": "bin/arm64ec-pc-windows-gnu.cfg",
+        "symlink": "arm64ec-w64-windows-gnu.cfg"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-addr2line",
+        "symlink": "llvm-addr2line"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-as",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-c++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-clang",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-clang++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-clang-scan-deps",
+        "symlink": "clang-scan-deps"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-dlltool",
+        "symlink": "llvm-dlltool"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-g++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-gcc",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-ld",
+        "symlink": "ld-wrapper.sh"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-llvm-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-llvm-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-nm",
+        "symlink": "llvm-nm"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-objcopy",
+        "symlink": "llvm-objcopy"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-objdump",
+        "symlink": "objdump-wrapper.sh"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-readelf",
+        "symlink": "llvm-readelf"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-size",
+        "symlink": "llvm-size"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-strings",
+        "symlink": "llvm-strings"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-strip",
+        "symlink": "llvm-strip"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-widl",
+        "symlink": "i686-w64-mingw32-widl"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32-windres",
+        "symlink": "llvm-windres"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-addr2line",
+        "symlink": "llvm-addr2line"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-as",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-c++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-clang",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-clang++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-clang-scan-deps",
+        "symlink": "clang-scan-deps"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-dlltool",
+        "symlink": "llvm-dlltool"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-g++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-gcc",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-ld",
+        "symlink": "ld-wrapper.sh"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-llvm-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-llvm-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-nm",
+        "symlink": "llvm-nm"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-objcopy",
+        "symlink": "llvm-objcopy"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-objdump",
+        "symlink": "objdump-wrapper.sh"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-readelf",
+        "symlink": "llvm-readelf"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-size",
+        "symlink": "llvm-size"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-strings",
+        "symlink": "llvm-strings"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-strip",
+        "symlink": "llvm-strip"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-widl",
+        "symlink": "i686-w64-mingw32-widl"
+      },
+      {
+        "path": "bin/arm64ec-w64-mingw32uwp-windres",
+        "symlink": "llvm-windres"
+      },
+      {
+        "path": "bin/arm64ec-w64-windows-gnu.cfg",
+        "size_bytes": 82,
+        "sha256": "a82ecf48cd952be57e8786d4dbb3e041c28d7318e0284fa4a7ea0f2873030c6a"
+      },
+      {
+        "path": "bin/armv7-pc-windows-gnu.cfg",
+        "symlink": "armv7-w64-windows-gnu.cfg"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-addr2line",
+        "symlink": "llvm-addr2line"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-as",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-c++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-clang",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-clang++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-clang-scan-deps",
+        "symlink": "clang-scan-deps"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-dlltool",
+        "symlink": "llvm-dlltool"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-g++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-gcc",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-ld",
+        "symlink": "ld-wrapper.sh"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-llvm-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-llvm-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-nm",
+        "symlink": "llvm-nm"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-objcopy",
+        "symlink": "llvm-objcopy"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-objdump",
+        "symlink": "objdump-wrapper.sh"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-readelf",
+        "symlink": "llvm-readelf"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-size",
+        "symlink": "llvm-size"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-strings",
+        "symlink": "llvm-strings"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-strip",
+        "symlink": "llvm-strip"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-widl",
+        "symlink": "i686-w64-mingw32-widl"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32-windres",
+        "symlink": "llvm-windres"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-addr2line",
+        "symlink": "llvm-addr2line"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-as",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-c++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-clang",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-clang++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-clang-scan-deps",
+        "symlink": "clang-scan-deps"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-dlltool",
+        "symlink": "llvm-dlltool"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-g++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-gcc",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-ld",
+        "symlink": "ld-wrapper.sh"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-llvm-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-llvm-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-nm",
+        "symlink": "llvm-nm"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-objcopy",
+        "symlink": "llvm-objcopy"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-objdump",
+        "symlink": "objdump-wrapper.sh"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-readelf",
+        "symlink": "llvm-readelf"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-size",
+        "symlink": "llvm-size"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-strings",
+        "symlink": "llvm-strings"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-strip",
+        "symlink": "llvm-strip"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-widl",
+        "symlink": "i686-w64-mingw32-widl"
+      },
+      {
+        "path": "bin/armv7-w64-mingw32uwp-windres",
+        "symlink": "llvm-windres"
+      },
+      {
+        "path": "bin/armv7-w64-windows-gnu.cfg",
+        "size_bytes": 78,
+        "sha256": "fac4d632d01c5c2f434b878583408343a06ae52f4dc787b8b74794e221686b16"
+      },
+      {
+        "path": "bin/clang",
+        "symlink": "clang-22"
+      },
+      {
+        "path": "bin/clang++",
+        "symlink": "clang"
+      },
+      {
+        "path": "bin/clang-22",
+        "size_bytes": 111488,
+        "sha256": "eb408127882193c07fe3a32523009ad14d788dc867092840199d533de799f273"
+      },
+      {
+        "path": "bin/clang-cpp",
+        "symlink": "clang"
+      },
+      {
+        "path": "bin/clang-format",
+        "size_bytes": 77440,
+        "sha256": "2c60cedce726e0a4bd09e36754a3a2d00f222952131fc99b611c8a00a362259b"
+      },
+      {
+        "path": "bin/clang-scan-deps",
+        "size_bytes": 168888,
+        "sha256": "a49d0d2ba1a2cbf235d31f40ebd748607abea58f3d08568c9580314633716d9b"
+      },
+      {
+        "path": "bin/clang-scan-deps-wrapper",
+        "size_bytes": 14472,
+        "sha256": "224f950bdbfffb1e35a49108aab3214feeb52c1c396521db485995604047b1b7"
+      },
+      {
+        "path": "bin/clang-target-wrapper",
+        "size_bytes": 14472,
+        "sha256": "4d01b09be5975dc07dc71a77648796d3035e62b8ae3aeff0d853c4bf9009071d"
+      },
+      {
+        "path": "bin/clang-target-wrapper.sh",
+        "size_bytes": 2988,
+        "sha256": "c9b86311ade81d53235c93fafabdf98328d094de344ea9a9038e0dab6695ee9f"
+      },
+      {
+        "path": "bin/clang-tidy",
+        "size_bytes": 8630160,
+        "sha256": "847232f6cf007e5e5f05dc436e13713b4f4a42be5a8b3444223b4f88b1ccdc9a"
+      },
+      {
+        "path": "bin/clangd",
+        "size_bytes": 13702440,
+        "sha256": "513eb04e985151f7511c6e3743da18b37267b98d88fa7b992a9056b041ddb40f"
+      },
+      {
+        "path": "bin/gendef",
+        "size_bytes": 26840,
+        "sha256": "435f0467dc3e4cba8bdb0853a7ea2e3f8a846cb467b5845ec0224da9f1271593"
+      },
+      {
+        "path": "bin/git-clang-format",
+        "size_bytes": 28325,
+        "sha256": "02006566f6c063a90cf5e5bc005d409a75a8e8b1948715a677475debdff77aee"
+      },
+      {
+        "path": "bin/i686-pc-windows-gnu.cfg",
+        "symlink": "i686-w64-windows-gnu.cfg"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-addr2line",
+        "symlink": "llvm-addr2line"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-as",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-c++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-clang",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-clang++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-clang-scan-deps",
+        "symlink": "clang-scan-deps"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-dlltool",
+        "symlink": "llvm-dlltool"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-g++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-gcc",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-ld",
+        "symlink": "ld-wrapper.sh"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-llvm-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-llvm-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-nm",
+        "symlink": "llvm-nm"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-objcopy",
+        "symlink": "llvm-objcopy"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-objdump",
+        "symlink": "objdump-wrapper.sh"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-readelf",
+        "symlink": "llvm-readelf"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-size",
+        "symlink": "llvm-size"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-strings",
+        "symlink": "llvm-strings"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-strip",
+        "symlink": "llvm-strip"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-widl",
+        "size_bytes": 656912,
+        "sha256": "bb233a475ab6a899223c5a8f47813120fa51f681c1e2568406c4734649918f7f"
+      },
+      {
+        "path": "bin/i686-w64-mingw32-windres",
+        "symlink": "llvm-windres"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-addr2line",
+        "symlink": "llvm-addr2line"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-as",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-c++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-clang",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-clang++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-clang-scan-deps",
+        "symlink": "clang-scan-deps"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-dlltool",
+        "symlink": "llvm-dlltool"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-g++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-gcc",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-ld",
+        "symlink": "ld-wrapper.sh"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-llvm-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-llvm-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-nm",
+        "symlink": "llvm-nm"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-objcopy",
+        "symlink": "llvm-objcopy"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-objdump",
+        "symlink": "objdump-wrapper.sh"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-readelf",
+        "symlink": "llvm-readelf"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-size",
+        "symlink": "llvm-size"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-strings",
+        "symlink": "llvm-strings"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-strip",
+        "symlink": "llvm-strip"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-widl",
+        "symlink": "i686-w64-mingw32-widl"
+      },
+      {
+        "path": "bin/i686-w64-mingw32uwp-windres",
+        "symlink": "llvm-windres"
+      },
+      {
+        "path": "bin/i686-w64-windows-gnu.cfg",
+        "size_bytes": 78,
+        "sha256": "77429a99caec3648a7bd0accdf8db9c82c4b8c687d7f8f8201a23a584e9a2d0f"
+      },
+      {
+        "path": "bin/intercept-build",
+        "size_bytes": 563,
+        "sha256": "ee841b4f161e368b84c4991818369532bb49cb4d4a85deef4d6d5826d736de5f"
+      },
+      {
+        "path": "bin/ld-wrapper.sh",
+        "size_bytes": 1472,
+        "sha256": "e4d9e6a4709da716994e90cfb089e159b155d9361fbadc93a4aa7159dc76b21d"
+      },
+      {
+        "path": "bin/ld.lld",
+        "symlink": "lld"
+      },
+      {
+        "path": "bin/lld",
+        "size_bytes": 5999424,
+        "sha256": "3f6a3c627c2faa9ad1ddecb3e8c9f155d38307a9bb90cc73fd2b418f6a8d4e65"
+      },
+      {
+        "path": "bin/lld-link",
+        "symlink": "lld"
+      },
+      {
+        "path": "bin/lldb",
+        "size_bytes": 141968,
+        "sha256": "2d4f653386ea8101407caeed75b3a6157badd3d2df98248cd324717c9c9a1f9e"
+      },
+      {
+        "path": "bin/lldb-argdumper",
+        "size_bytes": 12056,
+        "sha256": "b0c0e6f9c9c260f0cd65c9227012553c6952620b5b0c5faafde2407ddc1431a8"
+      },
+      {
+        "path": "bin/lldb-dap",
+        "size_bytes": 861096,
+        "sha256": "f52689cc4d5f67788ef040a8d9cd74ab191ee37fab25a6d4a8b7e5288b0860d6"
+      },
+      {
+        "path": "bin/lldb-instr",
+        "size_bytes": 137936,
+        "sha256": "11c8265a0a9de6da12d87629f772a25cfa6c577948a91c1115ae09c0078c7919"
+      },
+      {
+        "path": "bin/lldb-mi",
+        "size_bytes": 970112,
+        "sha256": "ed9d5b087051997f3515de14231f564422ec7b230d1518ff0dacacf28b6ac58f"
+      },
+      {
+        "path": "bin/lldb-server",
+        "size_bytes": 2892400,
+        "sha256": "fc9467cf1e80e794c2516806eaf097394243cbc170489da19b8daf074529998f"
+      },
+      {
+        "path": "bin/llvm-addr2line",
+        "symlink": "llvm-symbolizer"
+      },
+      {
+        "path": "bin/llvm-ar",
+        "size_bytes": 71584,
+        "sha256": "9952771e39db50c529c9576bc97d3777060f390128804b77ac6643f7efe5ead6"
+      },
+      {
+        "path": "bin/llvm-cov",
+        "size_bytes": 372472,
+        "sha256": "cf8416fa89b9ad082c943fe2102069de45a570072ee8adb5103e8d2c015d41db"
+      },
+      {
+        "path": "bin/llvm-cvtres",
+        "size_bytes": 22816,
+        "sha256": "1387c04a59f9ac1cd22a18f5a5663284ed98e70aed3b5ff3a5e5f2ee434721ba"
+      },
+      {
+        "path": "bin/llvm-cxxfilt",
+        "size_bytes": 21160,
+        "sha256": "697250d2c24e97b3eae657102f695c05913109247022efbbedf3c188cebac6d1"
+      },
+      {
+        "path": "bin/llvm-dlltool",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/llvm-lib",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/llvm-ml",
+        "size_bytes": 46704,
+        "sha256": "fef55bce89cf3b4ae8afd294abca050db8c61b5e77c61290c43c74ac48755626"
+      },
+      {
+        "path": "bin/llvm-nm",
+        "size_bytes": 133912,
+        "sha256": "ac7ebe6010b710ecd7251dac612328ef444081537a6542fe0fa999054c126a60"
+      },
+      {
+        "path": "bin/llvm-objcopy",
+        "size_bytes": 174304,
+        "sha256": "7f756b0b981c3802094230ef0222e01fc3db70b50b9e2651b0ba2603130db153"
+      },
+      {
+        "path": "bin/llvm-objdump",
+        "size_bytes": 822856,
+        "sha256": "57b791167774fde104dae4c906a5011a7f740975fa2cad44a724f3de3546f4ec"
+      },
+      {
+        "path": "bin/llvm-pdbutil",
+        "size_bytes": 732880,
+        "sha256": "520611e188aa43f7217019c22cf7df4dfa3d740481096e4c5739d393053dc76e"
+      },
+      {
+        "path": "bin/llvm-profdata",
+        "size_bytes": 339056,
+        "sha256": "8b2ba6ee94d461d75ddd8b3e0aff56244518272d4d9123cd87dc348b68bd5dd3"
+      },
+      {
+        "path": "bin/llvm-ranlib",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/llvm-rc",
+        "size_bytes": 173240,
+        "sha256": "1f152b63afb8ee1508b485dea08faa6a01542ca2186812bfe243bb5cc221ba04"
+      },
+      {
+        "path": "bin/llvm-readelf",
+        "symlink": "llvm-readobj"
+      },
+      {
+        "path": "bin/llvm-readobj",
+        "size_bytes": 1928576,
+        "sha256": "930a9ecacfb3dcb2ad18d53d5a1f3a27c823495d6616ab53365f24c9de96d943"
+      },
+      {
+        "path": "bin/llvm-size",
+        "size_bytes": 59272,
+        "sha256": "fa0468f6b10de76e7deedf0793d017985ab42bfaa32595ae90017a0c3807c23f"
+      },
+      {
+        "path": "bin/llvm-strings",
+        "size_bytes": 21544,
+        "sha256": "31fe4bdb2b8c7078c096fc4499dd87d3c397649bce013c61dce9f4c19ea3920b"
+      },
+      {
+        "path": "bin/llvm-strip",
+        "symlink": "llvm-objcopy"
+      },
+      {
+        "path": "bin/llvm-symbolizer",
+        "size_bytes": 63728,
+        "sha256": "0dc1bdbd9671d270b065ca5ea0f8c62b43574276592b273ee7bcfe8f1d37f4c5"
+      },
+      {
+        "path": "bin/llvm-windres",
+        "symlink": "llvm-rc"
+      },
+      {
+        "path": "bin/llvm-wrapper",
+        "size_bytes": 14472,
+        "sha256": "626598a5797d98de97c64a4d902534cf6c4c7713d73f4f115ac0fa2b53d48834"
+      },
+      {
+        "path": "bin/mingw32-common.cfg",
+        "size_bytes": 68,
+        "sha256": "0924577cab6fd9256fdd640f0ff5a7382446e968f2401a3df648d3bf4012bde6"
+      },
+      {
+        "path": "bin/objdump-wrapper.sh",
+        "size_bytes": 2001,
+        "sha256": "7f90e4d330d2629c72bc8575b50db9bfe9a0c3a1f119a9ae78419c8fb57a563e"
+      },
+      {
+        "path": "bin/run-clang-tidy",
+        "size_bytes": 26285,
+        "sha256": "a651a6529eefbd12b7845afe6719773ba6578ecca222603d1262b4d2d48e1422"
+      },
+      {
+        "path": "bin/scan-build-py",
+        "size_bytes": 551,
+        "sha256": "be51a886754ac1780eabb929e80eea0239c2dfe1655de4c533ec2e537b128a73"
+      },
+      {
+        "path": "bin/x86_64-pc-windows-gnu.cfg",
+        "symlink": "x86_64-w64-windows-gnu.cfg"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-addr2line",
+        "symlink": "llvm-addr2line"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-as",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-c++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-clang",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-clang++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-clang-scan-deps",
+        "symlink": "clang-scan-deps"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-dlltool",
+        "symlink": "llvm-dlltool"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-g++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-gcc",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-ld",
+        "symlink": "ld-wrapper.sh"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-llvm-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-llvm-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-nm",
+        "symlink": "llvm-nm"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-objcopy",
+        "symlink": "llvm-objcopy"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-objdump",
+        "symlink": "objdump-wrapper.sh"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-readelf",
+        "symlink": "llvm-readelf"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-size",
+        "symlink": "llvm-size"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-strings",
+        "symlink": "llvm-strings"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-strip",
+        "symlink": "llvm-strip"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-widl",
+        "symlink": "i686-w64-mingw32-widl"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32-windres",
+        "symlink": "llvm-windres"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-addr2line",
+        "symlink": "llvm-addr2line"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-as",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-c++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-clang",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-clang++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-clang-scan-deps",
+        "symlink": "clang-scan-deps"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-dlltool",
+        "symlink": "llvm-dlltool"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-g++",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-gcc",
+        "symlink": "clang-target-wrapper.sh"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-ld",
+        "symlink": "ld-wrapper.sh"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-llvm-ar",
+        "symlink": "llvm-ar"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-llvm-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-nm",
+        "symlink": "llvm-nm"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-objcopy",
+        "symlink": "llvm-objcopy"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-objdump",
+        "symlink": "objdump-wrapper.sh"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-ranlib",
+        "symlink": "llvm-ranlib"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-readelf",
+        "symlink": "llvm-readelf"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-size",
+        "symlink": "llvm-size"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-strings",
+        "symlink": "llvm-strings"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-strip",
+        "symlink": "llvm-strip"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-widl",
+        "symlink": "i686-w64-mingw32-widl"
+      },
+      {
+        "path": "bin/x86_64-w64-mingw32uwp-windres",
+        "symlink": "llvm-windres"
+      },
+      {
+        "path": "bin/x86_64-w64-windows-gnu.cfg",
+        "size_bytes": 80,
+        "sha256": "ee12d9ca9abf3df1bd9312af1175c1751ca23dcbc2c67c70a326ff5679d439f5"
+      }
+    ]
+  }
 }

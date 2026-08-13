@@ -1,0 +1,49 @@
+{
+  "tool": "7-Zip",
+  "version": "26.02",
+  "archives": [
+    {
+      "host_platform": "windows",
+      "host_arch": "x86_64",
+      "filename": "7zr.exe",
+      "format": "raw",
+      "size_bytes": 602112,
+      "sha256": "56b8cc9f4971cef253644fafe54063ed7fdca551d4dee0f8c6baa81b855acd72",
+      "url": "https://github.com/aufkrawall/green-curve/releases/download/Compilers-1.0/7zr.exe",
+      "upstream_url": "https://github.com/ip7z/7zip/releases/download/26.02/7zr.exe",
+      "upstream_release_date": "2026-06-26"
+    },
+    {
+      "host_platform": "linux",
+      "host_arch": "x86_64",
+      "filename": "7z2602-linux-x64.tar.xz",
+      "format": "tar.xz",
+      "size_bytes": 1571416,
+      "sha256": "41aaba7b1235304ab5aa0624530c67ae829496cd29e875925271efdccc28c03e",
+      "url": "https://github.com/aufkrawall/green-curve/releases/download/Compilers-1.0/7z2602-linux-x64.tar.xz",
+      "upstream_url": "https://github.com/ip7z/7zip/releases/download/26.02/7z2602-linux-x64.tar.xz",
+      "upstream_release_date": "2026-06-26"
+    }
+  ],
+  "license_file": "License.txt",
+  "license": "GNU LGPL v2.1+ / BSD 3-clause (unRAR restriction) - Igor Pavlov",
+  "date_accessed_utc": "2026-08-13T00:00:00Z",
+  "upstream_url": "https://github.com/ip7z/7zip/releases/tag/26.02",
+  "checksum_source": "computed on download; upstream publishes no checksum file",
+  "extracted_binaries": {
+    "windows": [
+      {
+        "path": "7zr.exe",
+        "size_bytes": 602112,
+        "sha256": "56b8cc9f4971cef253644fafe54063ed7fdca551d4dee0f8c6baa81b855acd72"
+      }
+    ],
+    "linux": [
+      {
+        "path": "7zz",
+        "size_bytes": 2882112,
+        "sha256": "1676a968815b92e865bc0ffeecee3fa284ba4402bf23dc2bec2412c4b502e922"
+      }
+    ]
+  }
+}

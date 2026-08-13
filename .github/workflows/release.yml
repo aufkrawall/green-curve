@@ -4,6 +4,12 @@ name: Release
 # runner, attest every artifact to the exact repo commit, then create a new
 # stable tag (<VERSION>, matching the public repo's no-prefix convention) and
 # GitHub Release for the artifacts.
+#
+# The toolchain is part of what is being attested here.  Every compiler, linker
+# and archiver is fetched from this repository's own Compilers release, checked
+# against a SHA-256 pinned in compilers/*/manifest.json, and the build then runs
+# with GREENCURVE_TOOLCHAIN_LOCAL_ONLY so that reaching for anything else is a
+# hard failure rather than a silent fallback to whatever the runner shipped.
 on:
   workflow_dispatch:
 
@@ -19,9 +25,14 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      # Refuse any toolchain that did not come out of compilers/.
+      GREENCURVE_TOOLCHAIN_LOCAL_ONLY: "1"
     steps:
+      # Actions are pinned to commit SHAs, not tags: a tag is mutable, and an
+      # attestation is only worth what the workflow that produced it was.
       - name: Checkout the exact dispatch commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Verify clean checkout
         run: |
@@ -52,28 +63,26 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
 
-      - name: Cache toolchains
-        uses: actions/cache@v4
-        with:
-          path: |
-            zig
-            llvm-mingw-linux
-          key: release-toolchain-linux-${{ hashFiles('build.py') }}
-          restore-keys: release-toolchain-linux-
-
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.12.14'
 
-      # Unlike the Linux CI job, this release job must produce the Windows
-      # .7z archives and setup executables, so 7-Zip is required here. The
-      # Linux tarballs are still written by the Python standard library.
-      - name: Install 7-Zip for Windows release packaging
+      # No toolchain cache on the release path.  A restored cache is writable by
+      # other workflow runs in a way a pinned archive is not, so the release
+      # always unpacks the compilers from the archive whose SHA-256 this repo
+      # commits to.  CI keeps its cache; CI does not publish anything.
+      - name: Fetch the pinned toolchain from our own Compilers release
+        run: python build.py --fetch-toolchain
+
+      - name: Verify the toolchain and record what it is
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes p7zip-full
+          python build.py --verify-toolchain \
+            --toolchain-manifest "$RUNNER_TEMP/greencurve-${{ steps.version.outputs.version }}-toolchain.json"
 
+      # 7-Zip is no longer installed from apt: it writes the Windows .7z
+      # archives, so it is pinned and vendored with the compilers instead of
+      # floating with whatever version the runner image happens to carry.
       - name: Build all targets (Windows + Linux, x64 + arm64)
         run: python build.py
 
@@ -101,14 +110,19 @@ jobs:
             greencurve-${{ steps.version.outputs.version }}-linux-arm64.tar.xz.sha256; do
             test -s "$f" || { echo "::error::missing or empty release artifact: $f"; exit 1; }
           done
+          test -s "$RUNNER_TEMP/greencurve-${{ steps.version.outputs.version }}-toolchain.json" \
+            || { echo "::error::toolchain manifest was not written"; exit 1; }
 
+      # The toolchain record is attested alongside the binaries, so a consumer
+      # can verify not only what was built but what built it.
       - name: Attest artifacts to the exact repo commit
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
           subject-path: |
             greencurve-${{ steps.version.outputs.version }}-windows-*.7z
             greencurve-${{ steps.version.outputs.version }}-windows-*-setup.exe
             greencurve-${{ steps.version.outputs.version }}-linux-*.tar.xz
+            ${{ runner.temp }}/greencurve-${{ steps.version.outputs.version }}-toolchain.json
 
       - name: Write release notes
         env:
@@ -129,12 +143,20 @@ jobs:
           - Windows ARM64: \`greencurve-${VERSION}-windows-arm64.7z\` + setup executable
           - Linux x64: \`greencurve-${VERSION}-linux-x64.tar.xz\`
           - Linux ARM64: \`greencurve-${VERSION}-linux-arm64.tar.xz\`
+          - Toolchain record: \`greencurve-${VERSION}-toolchain.json\`
 
           All six targets were compiled by \`python build.py\` from this exact
           commit. The workflow verified a clean checkout before and after the
           build, so the artifacts correspond 100% to the repository content at
           \`${SHA}\`. Every artifact carries a GitHub build-provenance
           attestation for that commit.
+
+          The compilers and the archiver came from this repository's own
+          \`Compilers-1.0\` release, each verified against the SHA-256 pinned in
+          \`compilers/*/manifest.json\`, and the build ran with
+          \`GREENCURVE_TOOLCHAIN_LOCAL_ONLY=1\` so no other toolchain could be
+          substituted. \`greencurve-${VERSION}-toolchain.json\` records exactly
+          which ones were used and is attested along with the binaries.
 
           Verify any artifact with:
 
@@ -153,7 +175,8 @@ jobs:
             --title "Green Curve ${VERSION}" \
             --notes-file "${RUNNER_TEMP}/release-notes.md" \
             --target "${GITHUB_SHA}" \
-            greencurve-${VERSION}-*
+            greencurve-${VERSION}-* \
+            "${RUNNER_TEMP}/greencurve-${VERSION}-toolchain.json"
 
       - name: Verify attestations on released artifacts
         env:
@@ -167,6 +190,7 @@ jobs:
             greencurve-${VERSION}-windows-x64-setup.exe \
             greencurve-${VERSION}-windows-arm64-setup.exe \
             greencurve-${VERSION}-linux-x64.tar.xz \
-            greencurve-${VERSION}-linux-arm64.tar.xz; do
+            greencurve-${VERSION}-linux-arm64.tar.xz \
+            "${RUNNER_TEMP}/greencurve-${VERSION}-toolchain.json"; do
             gh attestation verify "$f" --repo "$GITHUB_REPOSITORY"
           done

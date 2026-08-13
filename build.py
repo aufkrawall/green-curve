@@ -17,13 +17,17 @@ import shutil
 import struct
 import subprocess
 import sys
-import urllib.request
-import tarfile
 import time
-import zipfile
 import zlib
 from contextlib import nullcontext
 
+# 0.13.0 is a compatibility ceiling, not neglect.  Zig compiles the Windows
+# ARM64 target, and from 0.14.1 on its clang reports
+# -Wcast-function-type-mismatch for the GetProcAddress casts throughout the
+# Windows sources, which -Werror turns into build failures.  0.15.1 and later
+# additionally answer "error: unimplemented" for every ELF objcopy operation,
+# which breaks Linux private-symbol extraction (tools/crash_artifacts.py).
+# Moving up means fixing those call sites first; see compilers/README.md.
 ZIG_VERSION = "0.13.0"
 
 # Platform-dependent Zig download settings
@@ -41,7 +45,10 @@ else:
     print(f"Unsupported build host: {sys.platform}")
     sys.exit(1)
 
-# GitHub release base for pre-packaged toolchain archives
+# GitHub release base for pre-packaged toolchain archives.  Every compiler and
+# archiver the build runs comes from here, including the ones upstream also
+# publishes themselves: a release that is attested to this repository should
+# not depend on a third party still serving a byte-identical file.
 COMPILERS_REPO_BASE = "https://github.com/aufkrawall/green-curve/releases/download/Compilers-1.0"
 COMPILERS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "compilers")
 
@@ -56,11 +63,15 @@ ZIG_EXE_SHA256 = {
     "linux": "7f9e3a661e909d5188d1b8b14f082b98a19c323a30d43bfdd1b2893ed37273e0",
 }.get(_ZIG_PLATFORM)
 
-# llvm-mingw: portable MinGW toolchain for Windows builds with full CFG support
+# llvm-mingw: portable MinGW toolchain for Windows builds with full CFG support.
+# 20260519 is the newest release that builds this project cleanly.  20260616 and
+# later ship a clang that reports -Wcast-function-type-mismatch on the 20
+# GetProcAddress casts this codebase relies on, and -Werror turns every one of
+# them into a build failure; moving up means fixing those call sites, not
+# silencing a type-safety diagnostic across the whole build.
 LLVM_MINGW_VERSION = "20260519"
 if sys.platform == "win32":
     LLVM_MINGW_ARCHIVE_NAME = f"llvm-mingw-{LLVM_MINGW_VERSION}-ucrt-x86_64.zip"
-    LLVM_MINGW_URL = f"{COMPILERS_REPO_BASE}/{LLVM_MINGW_ARCHIVE_NAME}"
     LLVM_MINGW_SHA256 = "72dbd6e64614e3b3401998992d1bd9c8ace29e74611d71c80309ea71c3fb26f9"
     LLVM_MINGW_CLANG_SHA256 = "e04c3380970bf64d07074c390f550371dbd12dbb46a263609b11cd164ac1faf8"
     LLVM_MINGW_ARCHIVE_EXT = ".zip"
@@ -69,13 +80,15 @@ if sys.platform == "win32":
 else:
     LLVM_MINGW_ARCHIVE_NAME = \
         f"llvm-mingw-{LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64.tar.xz"
-    LLVM_MINGW_URL = (f"https://github.com/mstorsjo/llvm-mingw/releases/download/"
-                      f"{LLVM_MINGW_VERSION}/{LLVM_MINGW_ARCHIVE_NAME}")
     LLVM_MINGW_SHA256 = "a48f8c2801508272ccde64d87a26747ecc5306623d9a080a42ed80dc61f79fa2"
+    # The Linux driver is a symlink to a 3 KB wrapper script that is unchanged
+    # across upstream releases, so this digest alone cannot tell one llvm-mingw
+    # from another.  toolchain.verify_tree() checks the real binaries too.
     LLVM_MINGW_CLANG_SHA256 = "c9b86311ade81d53235c93fafabdf98328d094de344ea9a9038e0dab6695ee9f"
     LLVM_MINGW_ARCHIVE_EXT = ".tar.xz"
     LLVM_MINGW_TOOL_SUFFIX = ""
     LLVM_MINGW_CLANG_NAME = "x86_64-w64-mingw32-clang++"
+LLVM_MINGW_URL = f"{COMPILERS_REPO_BASE}/{LLVM_MINGW_ARCHIVE_NAME}"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -92,6 +105,7 @@ import driver_inspect  # noqa: E402  (same one-way dependency as security_gates)
 import static_analysis  # noqa: E402  (same one-way dependency as security_gates)
 import build_scheduler  # noqa: E402  (same one-way dependency as security_gates)
 import build_state  # noqa: E402  (same one-way dependency as security_gates)
+import toolchain  # noqa: E402  (same one-way dependency as security_gates)
 from release_manifest import (  # noqa: E402  (one-way dependency)
     RUNTIME_ARTIFACT_NAMES, check_all as release_manifest_check_all,
     check_packaging_skip_warning, expected_release_names, find_seven_zip,
@@ -470,31 +484,6 @@ def compile_resources():
         sys.exit(1)
 
 
-def verify_sha256(path, expected):
-    """Verify file SHA-256 matches expected value."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest().lower() == expected.lower()
-
-
-def safe_extract_target(base_dir, archive_name):
-    """Resolve an archive member under base_dir and reject traversal."""
-    relative = archive_name.replace("\\", "/")
-    parts = relative.split("/", 1)
-    if len(parts) != 2 or not parts[1]:
-        return None
-    relative = os.path.normpath(parts[1])
-    if os.path.isabs(relative) or relative == ".." or relative.startswith(".." + os.sep):
-        raise RuntimeError(f"Unsafe archive member: {archive_name}")
-    base_abs = os.path.abspath(base_dir)
-    target = os.path.abspath(os.path.join(base_abs, relative))
-    if os.path.commonpath([base_abs, target]) != base_abs:
-        raise RuntimeError(f"Unsafe archive member: {archive_name}")
-    return target
-
-
 def prepare_work_subdir(name):
     """Create a clean build scratch subdirectory inside the repository."""
     base_abs = os.path.abspath(BUILD_WORK_DIR)
@@ -517,37 +506,15 @@ def cleanup_work_subdir(path):
 
 
 def _resolve_archive(source_label, archive_name, local_dir, url, sha256):
-    """Return a (path, used_local) tuple for an archive.
+    """Stage a pinned toolchain archive into the repository root.
 
-    Checks *local_dir* first for *archive_name* (e.g. a vendored
-    ``compilers/`` checkout).  Falls back to downloading from *url*.
-    Always verifies the result against *sha256*.
+    The vendored ``compilers/`` copy always wins over the network, and under
+    GREENCURVE_TOOLCHAIN_LOCAL_ONLY there is no network path at all.  See
+    tools/toolchain.py.
     """
-    local_path = os.path.join(local_dir, archive_name)
-    temp_path = os.path.join(SCRIPT_DIR, archive_name)
-
-    if os.path.exists(local_path):
-        print(f"Using local {source_label} archive: {local_path}")
-        shutil.copy2(local_path, temp_path)
-        if sha256 and not verify_sha256(temp_path, sha256):
-            os.remove(temp_path)
-            print(f"ERROR: Local {source_label} archive failed SHA-256 verification")
-            sys.exit(1)
-        return temp_path
-
-    print(f"Downloading {source_label} {archive_name}...")
-    try:
-        urllib.request.urlretrieve(url, temp_path)
-    except Exception as exc:
-        print(f"Failed to download {source_label}: {exc}")
-        print(f"Please obtain from: {url}")
-        sys.exit(1)
-
-    if sha256 and not verify_sha256(temp_path, sha256):
-        os.remove(temp_path)
-        print(f"ERROR: {source_label} archive SHA-256 verification failed")
-        sys.exit(1)
-    return temp_path
+    return toolchain.resolve_archive(
+        source_label, archive_name, local_dir, url, sha256,
+        os.path.join(SCRIPT_DIR, archive_name))
 
 
 def _sha256_file(path):
@@ -622,37 +589,8 @@ def download_zig():
         "Zig", _ZIG_ARCHIVE_NAME, zig_local_dir, ZIG_URL, ZIG_SHA256)
 
     print("Extracting Zig...")
-    os.makedirs(ZIG_DIR, exist_ok=True)
-
-    if _ZIG_ARCHIVE_EXT == ".zip":
-        with zipfile.ZipFile(archive_path, "r") as archive:
-            for member in archive.namelist():
-                target = safe_extract_target(ZIG_DIR, member)
-                if not target:
-                    continue
-                if member.endswith("/"):
-                    os.makedirs(target, exist_ok=True)
-                else:
-                    os.makedirs(os.path.dirname(target), exist_ok=True)
-                    with open(target, "wb") as handle:
-                        handle.write(archive.read(member))
-    else:
-        with tarfile.open(archive_path, "r:xz") as archive:
-            for member in archive.getmembers():
-                target = safe_extract_target(ZIG_DIR, member.name)
-                if not target or member.issym() or member.islnk():
-                    continue
-                if member.isdir():
-                    os.makedirs(target, exist_ok=True)
-                else:
-                    os.makedirs(os.path.dirname(target), exist_ok=True)
-                    src = archive.extractfile(member)
-                    if src:
-                        with src, open(target, "wb") as handle:
-                            handle.write(src.read())
-                        if member.mode:
-                            os.chmod(target, member.mode & 0o777)
-
+    toolchain.extract_archive(archive_path, ZIG_DIR,
+                              is_zip=_ZIG_ARCHIVE_EXT == ".zip")
     os.remove(archive_path)
 
     if not os.path.exists(ZIG_EXE):
@@ -666,9 +604,20 @@ def download_zig():
     _write_integrity_sentinel(ZIG_EXE, ZIG_EXE_SHA256)
 
 
+def _llvm_mingw_manifest():
+    return toolchain.load_manifest(COMPILERS_DIR, "llvm-mingw", LLVM_MINGW_VERSION)
+
+
 def download_llvm_mingw():
     """Download (or copy from local compilers/) and extract llvm-mingw toolchain."""
-    if os.path.exists(LLVM_MINGW_CLANG) and _verify_cached_tool_binary(LLVM_MINGW_CLANG, "llvm-mingw", LLVM_MINGW_CLANG_SHA256):
+    # The driver digest alone is not enough to accept an existing tree: on Linux
+    # it resolves to a wrapper script that never changes between releases, and a
+    # restored CI cache is far easier to tamper with than a pinned archive.  The
+    # manifest covers every binary in bin/, so a swapped linker or resource
+    # compiler is caught here instead of silently shaping a release artifact.
+    if (os.path.exists(LLVM_MINGW_CLANG)
+            and _verify_cached_tool_binary(LLVM_MINGW_CLANG, "llvm-mingw", LLVM_MINGW_CLANG_SHA256)
+            and toolchain.verify_tree("llvm-mingw", LLVM_MINGW_DIR, _llvm_mingw_manifest())):
         print(f"llvm-mingw already present at {LLVM_MINGW_CLANG}")
         return
 
@@ -679,51 +628,9 @@ def download_llvm_mingw():
 
     print("Extracting llvm-mingw...")
     shutil.rmtree(LLVM_MINGW_DIR, ignore_errors=True)
-    os.makedirs(LLVM_MINGW_DIR, exist_ok=True)
-
-    if LLVM_MINGW_ARCHIVE_EXT == ".zip":
-        with zipfile.ZipFile(archive_path, "r") as archive:
-            for member in archive.namelist():
-                target = safe_extract_target(LLVM_MINGW_DIR, member)
-                if not target:
-                    continue
-                if member.endswith("/"):
-                    os.makedirs(target, exist_ok=True)
-                else:
-                    os.makedirs(os.path.dirname(target), exist_ok=True)
-                    with open(target, "wb") as handle:
-                        handle.write(archive.read(member))
-    else:
-        links = []
-        with tarfile.open(archive_path, "r:xz") as archive:
-            for member in archive.getmembers():
-                target = safe_extract_target(LLVM_MINGW_DIR, member.name)
-                if not target:
-                    continue
-                if member.isdir():
-                    os.makedirs(target, exist_ok=True)
-                elif member.isfile():
-                    os.makedirs(os.path.dirname(target), exist_ok=True)
-                    source = archive.extractfile(member)
-                    if source:
-                        with source, open(target, "wb") as handle:
-                            handle.write(source.read())
-                        os.chmod(target, member.mode & 0o777)
-                elif member.issym() or member.islnk():
-                    links.append((member, target))
-            for member, target in links:
-                source = (safe_extract_target(LLVM_MINGW_DIR, member.linkname)
-                          if member.islnk() else
-                          os.path.abspath(os.path.join(os.path.dirname(target), member.linkname)))
-                if (not source or os.path.commonpath(
-                        [os.path.abspath(LLVM_MINGW_DIR), source]) != os.path.abspath(LLVM_MINGW_DIR)):
-                    raise RuntimeError(f"Unsafe archive link: {member.name} -> {member.linkname}")
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                if member.islnk():
-                    os.link(source, target)
-                else:
-                    os.symlink(member.linkname, target)
-
+    toolchain.extract_archive(archive_path, LLVM_MINGW_DIR,
+                              is_zip=LLVM_MINGW_ARCHIVE_EXT == ".zip",
+                              materialize_links=True)
     os.remove(archive_path)
 
     if not os.path.exists(LLVM_MINGW_CLANG):
@@ -733,6 +640,9 @@ def download_llvm_mingw():
     print(f"llvm-mingw installed at {LLVM_MINGW_DIR}")
     if not _verify_cached_tool_binary(LLVM_MINGW_CLANG, "llvm-mingw", LLVM_MINGW_CLANG_SHA256):
         print("ERROR: Extracted llvm-mingw binary failed pinned executable digest verification")
+        sys.exit(1)
+    if not toolchain.verify_tree("llvm-mingw", LLVM_MINGW_DIR, _llvm_mingw_manifest()):
+        print("ERROR: Extracted llvm-mingw failed pinned manifest verification")
         sys.exit(1)
     _write_integrity_sentinel(LLVM_MINGW_CLANG, LLVM_MINGW_CLANG_SHA256)
 
@@ -2505,6 +2415,7 @@ def run_source_regression_checks():
     require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "pl_append_quoted_arg_w", "GUI elevated helper command lines use argv-compatible quoting")
     require_text(build_script, "_verify_cached_tool_binary", "cached tool binaries are verified against trusted pinned digests")
     require_text(build_script, "LLVM_MINGW_CLANG_SHA256", "llvm-mingw executable digest is pinned")
+    check_toolchain_pinning(build_script)
     require_text(service_ipc_cpp, "wait_for_helper_process_bounded", "elevated helper waits are bounded")
     require_text(config_profiles_gui_state_cpp, "repair needed", "broken installed service advertises repair state")
     require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "Repair and restart the background service", "broken installed service click repairs instead of removing")
@@ -5077,6 +4988,22 @@ def parse_args():
         help="Generate compile_commands.json for clangd and exit",
     )
     parser.add_argument(
+        "--fetch-toolchain",
+        action="store_true",
+        help="Download the pinned compiler/archiver archives into compilers/ and exit",
+    )
+    parser.add_argument(
+        "--verify-toolchain",
+        action="store_true",
+        help="Verify the installed toolchain against compilers/*/manifest.json and exit",
+    )
+    parser.add_argument(
+        "--toolchain-manifest",
+        metavar="PATH",
+        default=None,
+        help="Write a JSON record of the toolchain that produced this build",
+    )
+    parser.add_argument(
         "--jobs", "-j",
         type=int,
         default=None,
@@ -5121,14 +5048,101 @@ def run_clang_tidy(write_baseline=False):
         _gate_ctx(), write_baseline=write_baseline)
 
 
-def ensure_toolchain(target):
+def _needs_zig(target, arch):
+    """Zig builds every Linux target, and links Windows ARM64.
+
+    The ARM64 half is easy to miss: a Windows-only build still shells out to
+    Zig for aarch64 (llvm-mingw's aarch64 linker hits a misaligned ldr/str
+    bug), so a run that fetched llvm-mingw alone would fail at link time with
+    no compiler to blame.  It only ever worked because an earlier --target all
+    had already left zig/ on disk.
+    """
+    if target in ("linux", "all"):
+        return True
+    return target == "windows" and "arm64" in requested_arches(arch)
+
+
+def _toolchain_components(target, arch="all"):
+    """The pinned components a given target needs, for verification/reporting."""
+    components = []
+    if target in ("windows", "all"):
+        components.append(("llvm-mingw", LLVM_MINGW_VERSION, LLVM_MINGW_DIR))
+        components.append(("7zip", toolchain.SEVEN_ZIP_VERSION,
+                           toolchain.seven_zip_dir(SCRIPT_DIR)))
+    if _needs_zig(target, arch):
+        components.append(("zig", ZIG_VERSION, ZIG_DIR))
+    return components
+
+
+def fetch_toolchain(target, arch="all"):
+    """Vendor every pinned archive this host needs into compilers/.
+
+    This is the deliberate "go and get the pinned bytes" step, so it is the one
+    path that still reaches the network when the build itself is restricted to
+    local toolchains only.
+    """
+    print("=== Fetching pinned toolchain into compilers/ ===")
+    for tool, version, _root in _toolchain_components(target, arch):
+        print(f"{tool} {version}")
+        toolchain.fetch_into_compilers(COMPILERS_DIR, tool, version)
+    return 0
+
+
+def ensure_toolchain(target, arch="all"):
     """Download and verify the toolchain(s) needed for the given target."""
-    needs_windows = target in ("windows", "all")
-    needs_linux = target in ("linux", "all")
-    if needs_windows:
+    if target in ("windows", "all"):
         download_llvm_mingw()
-    if needs_linux:
+        # 7-Zip writes the Windows release archives, so it shapes a published
+        # artifact just as much as the compiler does.  It is pinned and vendored
+        # with the compilers rather than installed from whatever version the
+        # host distribution happens to ship that week.
+        toolchain.ensure_seven_zip(SCRIPT_DIR, COMPILERS_DIR)
+    if _needs_zig(target, arch):
         download_zig()
+
+
+def check_toolchain_pinning(build_script):
+    """Every tool that can shape a released artifact is pinned and vendored.
+
+    build.py keeps its own copies of a few digests because the gates above
+    assert on them by name; this is what stops those copies from drifting away
+    from compilers/*/manifest.json, which is the real record.
+    """
+    host = toolchain.host_key()
+    toolchain.check_pins(COMPILERS_DIR, {
+        "ZIG_SHA256": ("zig", ZIG_VERSION, host, "archive", ZIG_SHA256),
+        "ZIG_EXE_SHA256": ("zig", ZIG_VERSION, host, _ZIG_EXE_NAME, ZIG_EXE_SHA256),
+        "LLVM_MINGW_SHA256": ("llvm-mingw", LLVM_MINGW_VERSION, host, "archive",
+                              LLVM_MINGW_SHA256),
+        "LLVM_MINGW_CLANG_SHA256": (
+            "llvm-mingw", LLVM_MINGW_VERSION, host,
+            "bin/clang++.exe" if sys.platform == "win32" else "bin/clang-target-wrapper.sh",
+            LLVM_MINGW_CLANG_SHA256),
+    })
+    require_text(build_script, "COMPILERS_REPO_BASE",
+                 "toolchain archives are served from this repository's own release")
+    # Assembled at runtime so this guard cannot match its own definition.
+    forbid_text(build_script, "mstorsjo/llvm-mingw" + "/releases/download",
+                "no toolchain is fetched from a third-party release at build time")
+    workflows = os.path.join(SCRIPT_DIR, ".github", "workflows")
+    release_workflow = os.path.join(workflows, "release.yml")
+    if os.path.exists(release_workflow):
+        require_text(release_workflow, toolchain.LOCAL_ONLY_ENV,
+                     "the attested release build may only use vendored toolchains")
+        require_text(release_workflow, "--fetch-toolchain",
+                     "the release build vendors the pinned toolchain before building")
+        forbid_text(release_workflow, "actions/cache",
+                    "the release build unpacks compilers from the pinned archive, never a cache")
+        forbid_text(release_workflow, "p7zip",
+                    "release packaging uses the pinned 7-Zip, not a distribution package")
+    problems = toolchain.unpinned_actions(
+        [release_workflow, os.path.join(workflows, "ci.yml")])
+    if problems:
+        print("Regression source check FAILED: GitHub Actions must be pinned to "
+              "commit SHAs, not mutable tags")
+        for problem in problems:
+            print(f"  {problem}")
+        sys.exit(1)
 
 
 def main():
@@ -5147,7 +5161,15 @@ def main():
     print("=== Green Curve build ===")
     _target_oses = resolve_targets(args.target or "all")
     args.target = "all" if len(_target_oses) > 1 else _target_oses[0]
-    ensure_toolchain(args.target)
+    if args.fetch_toolchain:
+        sys.exit(fetch_toolchain(args.target, args.arch))
+    ensure_toolchain(args.target, args.arch)
+    if args.verify_toolchain or args.toolchain_manifest:
+        toolchain.report(COMPILERS_DIR,
+                         _toolchain_components(args.target, args.arch),
+                         args.toolchain_manifest)
+        if args.verify_toolchain:
+            sys.exit(0)
     jobs = build_scheduler.resolve_jobs(args.jobs)
     limiter = build_scheduler.JobLimiter(jobs)
     print(f"Using {jobs} parallel build job(s)")

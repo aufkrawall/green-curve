@@ -9,7 +9,8 @@
       "format": "zip",
       "size_bytes": 79163968,
       "sha256": "d859994725ef9402381e557c60bb57497215682e355204d754ee3df75ee3c158",
-      "url": "https://ziglang.org/download/0.13.0/zig-windows-x86_64-0.13.0.zip",
+      "url": "https://github.com/aufkrawall/green-curve/releases/download/Compilers-1.0/zig-windows-x86_64-0.13.0.zip",
+      "upstream_url": "https://ziglang.org/download/0.13.0/zig-windows-x86_64-0.13.0.zip",
       "upstream_release_date": "2024-06-07"
     },
     {
@@ -19,40 +20,31 @@
       "format": "tar.xz",
       "size_bytes": 47082308,
       "sha256": "d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea",
-      "url": "https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz",
+      "url": "https://github.com/aufkrawall/green-curve/releases/download/Compilers-1.0/zig-linux-x86_64-0.13.0.tar.xz",
+      "upstream_url": "https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz",
       "upstream_release_date": "2024-06-07"
     }
   ],
   "license_file": "LICENSE",
-  "license": "MIT License (Expat) — Copyright (c) Zig contributors",
-  "date_accessed_utc": "2026-06-28T06:35:53Z",
+  "license": "MIT License (Expat) - Copyright (c) Zig contributors",
+  "date_accessed_utc": "2026-08-13T00:00:00Z",
   "upstream_index_url": "https://ziglang.org/download/index.json",
-  "archive_integrity": {
-    "windows_x86_64": {
-      "downloaded_hash": "d859994725ef9402381e557c60bb57497215682e355204d754ee3df75ee3c158",
-      "expected_from_upstream": "d859994725ef9402381e557c60bb57497215682e355204d754ee3df75ee3c158",
-      "match": true
-    },
-    "linux_x86_64": {
-      "downloaded_hash": "d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea",
-      "expected_from_upstream": "d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea",
-      "match": true
-    }
-  },
-  "extracted_binaries": [
-    {
-      "path": "zig.exe",
-      "platform": "windows",
-      "size_bytes": 157414400,
-      "sha256_sentinel": "2e44af5bbf7a72ef8cbdae370284687c95d65a19affa469d2ad0364d905b8e84",
-      "sha256_reverified": "2e44af5bbf7a72ef8cbdae370284687c95d65a19affa469d2ad0364d905b8e84",
-      "status": "UNCOMPROMISED"
-    },
-    {
-      "path": "zig",
-      "platform": "linux",
-      "note": "Binary verification deferred to Linux host"
-    }
-  ],
-  "overall_verdict": "PASS — all archive checksums match upstream; Windows binary verified uncompromised on disk"
+  "checksum_source": "SHA-256 published by ziglang.org in download/index.json",
+  "pinned_because": "Newest Zig this codebase compiles with. 0.14.1 and later carry a clang that reports -Wcast-function-type-mismatch on the GetProcAddress casts in the Windows sources, and Zig builds the Windows ARM64 target, so -Werror fails the build. 0.15.1+ additionally answer 'error: unimplemented' for every ELF objcopy operation, breaking Linux private-symbol extraction in tools/crash_artifacts.py.",
+  "extracted_binaries": {
+    "windows": [
+      {
+        "path": "zig.exe",
+        "size_bytes": 157414400,
+        "sha256": "2e44af5bbf7a72ef8cbdae370284687c95d65a19affa469d2ad0364d905b8e84"
+      }
+    ],
+    "linux": [
+      {
+        "path": "zig",
+        "size_bytes": 158473920,
+        "sha256": "7f9e3a661e909d5188d1b8b14f082b98a19c323a30d43bfdd1b2893ed37273e0"
+      }
+    ]
+  }
 }

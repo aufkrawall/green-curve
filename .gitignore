@@ -1,6 +1,8 @@
 zig/
 llvm-mingw/
 llvm-mingw-linux/
+# Unpacked from the pinned archive in compilers/7zip-*/ by build.py.
+seven-zip/
 build-tmp/
 dist/
 external/
@@ -20,6 +22,8 @@ audit/
 *.zip
 *.7z
 *.tar.xz
+# Interrupted toolchain download (build.py --fetch-toolchain).
+*.part
 *.png
 *.res
 *.rc
