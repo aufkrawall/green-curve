@@ -55,7 +55,24 @@
 #define GC_UPDATE_MANIFEST_ASSET "greencurve-update-manifest.txt"
 #define GC_UPDATE_SIGNATURE_ASSET "greencurve-update-manifest.sig"
 
-#define GC_UPDATE_URL_MAX_CHARS 512
+// Long enough for a real GitHub signed asset URL, which is the whole reason
+// this number is not 512.
+//
+// Measured 2026-08-14 against the live 0.23 release: the `releases/latest/
+// download/...` chain is two hops, and while the first Location is 95
+// characters the second is **945** -- `release-assets.githubusercontent.com`
+// plus SAS parameters (`sp`/`sv`/`sr`/`se`/`sig`/`skoid`/...) plus a JWT plus
+// response-content-disposition. At 512 the header was refused as oversized and
+// the failure surfaced as "redirect without a usable Location header", which
+// reads like a server fault rather than a client limit -- the first live run of
+// the updater died on exactly this.
+//
+// 4096 is roughly four times the observed length, so a parameter GitHub adds
+// later does not break every installed client again. The bound stays because
+// an unbounded header is something a hostile server chooses the size of; the
+// trade is a few KB of stack against a hard failure in the field, and those are
+// not comparable costs.
+#define GC_UPDATE_URL_MAX_CHARS 4096
 #define GC_UPDATE_HOST_MAX_CHARS 128
 // Measured against the real chain: releases/latest/download -> the tag's
 // download URL -> the object host.  Five leaves room for GitHub to add a hop

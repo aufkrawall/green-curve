@@ -9737,6 +9737,54 @@ static int run_all_tests(int argc, char** argv) {
         }
         if (gc_update_url_is_acceptable(nullptr)) return 4161;
 
+        // A REAL GitHub signed asset URL must be accepted.
+        //
+        // This is a regression fixture, not a hypothetical.  The first live run
+        // of the updater failed with "redirect without a usable Location
+        // header" because GC_UPDATE_URL_MAX_CHARS was 512 while GitHub's second
+        // redirect hop is ~945 characters -- SAS parameters, a JWT and a
+        // response-content-disposition.  The header was refused as oversized,
+        // and the message read like a server fault rather than a client limit.
+        //
+        // Captured from the live 0.23 release on 2026-08-14 with the signature,
+        // JWT and account identifiers replaced by same-length filler: the
+        // fixture needs the shape and the length, and a real SAS token has no
+        // business in a tracked file.
+        {
+            static const char kSignedAssetUrl[] =
+                "https://release-assets.githubusercontent.com/github-production-relea"
+                "se-asset/1195457404/00000000-0000-0000-0000-000000000000?sp=r&sv=201"
+                "8-11-09&sr=b&spr=https&se=2026-08-14T02%3A42%3A50Z&rscd=attachment%3"
+                "B+filename%3Dgreencurve-update-manifest.txt&rsct=application%2Foctet"
+                "-stream&skoid=000000000000000000000000000000000000&sktid=00000000000"
+                "0000000000000000000000000&skt=2026-08-14T01%3A42%3A16Z&ske=2026-08-1"
+                "4T02%3A42%3A50Z&sks=b&skv=2018-11-09&sig=AAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                "AAAAAAAAAAAAA%3D&jwt=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+                "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+                "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB&re"
+                "sponse-content-disposition=attachment%3B%20filename%3Dgreencurve-upd"
+                "ate-manifest.txt&response-content-type=application%2Foctet-stream";
+            const size_t signedLen = sizeof(kSignedAssetUrl) - 1;
+            // Room to spare, or the next parameter GitHub adds breaks every
+            // installed client again -- which is exactly what happened here.
+            if (signedLen * 2 >= GC_UPDATE_URL_MAX_CHARS) return 4174;
+            if (!gc_update_url_is_acceptable(kSignedAssetUrl)) return 4174;
+
+            // It must survive parsing intact.  The query string carries the
+            // signature, so a parser that dropped or truncated it would build a
+            // URL that fetches nothing.
+            GcUpdateUrl signedUrl;
+            gc_update_url_parse(kSignedAssetUrl, &signedUrl);
+            if (!signedUrl.valid) return 4174;
+            if (strcmp(signedUrl.host, "release-assets.githubusercontent.com") != 0)
+                return 4174;
+            if (strlen(signedUrl.path) !=
+                signedLen - strlen("https://") - strlen(signedUrl.host)) return 4174;
+            // And it must pass as a redirect target at the hop it really
+            // arrives on (the second), not merely in isolation.
+            if (!gc_update_redirect_is_acceptable(kSignedAssetUrl, 1)) return 4174;
+        }
+
         // Redirects: bounded AND filtered.  Both halves matter -- a bounded
         // chain of hostile hops is still hostile.
         if (!gc_update_redirect_is_acceptable("https://objects.githubusercontent.com/a", 0))

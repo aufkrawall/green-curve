@@ -61,9 +61,14 @@ static bool gc_update_http_read_location(HINTERNET request, char* out, size_t ou
     WinHttpQueryHeaders(request, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX,
                         nullptr, &bytes, WINHTTP_NO_HEADER_INDEX);
     if (bytes == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER) return false;
-    // A Location header far longer than any URL we would accept is refused here
-    // rather than truncated -- a truncated URL could parse as a different,
-    // allowlisted one.
+    // A Location header longer than any URL we could store is refused rather
+    // than truncated: a truncated URL could parse as a different, allowlisted
+    // one, which is a far worse outcome than a failed update.
+    //
+    // `bytes` counts UTF-16 including the terminator, so the ceiling is the
+    // UTF-8 buffer size doubled.  Sizing this too tightly is not hypothetical --
+    // GitHub's signed asset URLs are ~945 characters and a 512-char limit
+    // rejected every real redirect (see GC_UPDATE_URL_MAX_CHARS).
     if (bytes > (DWORD)(GC_UPDATE_URL_MAX_CHARS * sizeof(WCHAR))) return false;
 
     WCHAR* wide = (WCHAR*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, bytes + sizeof(WCHAR));
