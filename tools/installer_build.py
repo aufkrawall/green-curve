@@ -85,6 +85,11 @@ INSTALLER_LINK_LIBS = [
     "-loleaut32",
     "-luuid",
     "-luxtheme",
+    # WTSQueryUserToken / WTSGetActiveConsoleSessionId: setup must reach the
+    # interactive session by session id rather than by window, because the
+    # in-app updater launches it from the LocalSystem service (session 0) where
+    # GetShellWindow() returns nothing.
+    "-lwtsapi32",
 ]
 # Deliberately NOT here: -ltaskschd.  The uninstaller talks to Task Scheduler
 # through ITaskService, but mingw's libtaskschd.a is a static UUID archive

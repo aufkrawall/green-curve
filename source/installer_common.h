@@ -35,6 +35,10 @@
 #endif
 
 #include <windows.h>
+// WTSQueryUserToken / WTSGetActiveConsoleSessionId, used to reach the
+// interactive session when setup runs in session 0 (the in-app updater
+// launches it from the LocalSystem service).
+#include <wtsapi32.h>
 #include <shlobj.h>
 #include <objbase.h>
 #include <uxtheme.h>

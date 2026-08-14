@@ -464,7 +464,12 @@ static bool service_update_stop_gui_processes(const char* installDir,
         debug_log("update install: ABORTED, GUI processes still alive\n");
         return false;
     }
-    debug_log("update install: all GUI processes exited\n");
+    // Report how many were closed.  The caller turns this into --launch vs
+    // --no-launch, so leaving it at the zero set on entry silently means "no
+    // GUI was running" and the user's window never comes back -- which is
+    // exactly what shipped in 0.27.
+    if (closedCountOut) *closedCountOut = count;
+    debug_log("update install: all %d GUI process(es) exited\n", count);
     return true;
 }
 

@@ -450,6 +450,43 @@ static void gc_release_previous_directory(const GcInstallContext* context) {
 // Launching the installed program as the interactive user
 // ---------------------------------------------------------------------------
 
+// The active interactive user's primary token, obtained WITHOUT a window.
+//
+// `GetShellWindow()` is session-scoped: it returns the shell of the caller's own
+// session, which is null when setup was launched by the LocalSystem service and
+// is therefore running in session 0.  That is not a corner case -- it is every
+// in-app update, because the updater deliberately drives setup from the service
+// so the install needs no UAC prompt.
+//
+// WTSQueryUserToken answers the same question by session id instead of by
+// window, and works precisely because setup is running as SYSTEM.  Returns null
+// when there is no interactive session (a genuinely headless update), which is
+// a legitimate answer and not an error.
+static HANDLE gc_active_user_primary_token() {
+    DWORD sessionId = WTSGetActiveConsoleSessionId();
+    if (sessionId == 0xFFFFFFFFu) return nullptr;
+
+    HANDLE userToken = nullptr;
+    if (!WTSQueryUserToken(sessionId, &userToken)) {
+        gc_log_step("launch: WTSQueryUserToken(session %lu) failed (error %lu)",
+                    sessionId, GetLastError());
+        return nullptr;
+    }
+    GcScopedHandle scopedUser(userToken);
+    HANDLE primaryToken = nullptr;
+    if (!DuplicateTokenEx(userToken,
+                          TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY |
+                              TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID,
+                          nullptr, SecurityImpersonation, TokenPrimary,
+                          &primaryToken)) {
+        gc_log_step("launch: DuplicateTokenEx for session %lu failed (error %lu)",
+                    sessionId, GetLastError());
+        return nullptr;
+    }
+    gc_log_step("launch: obtained the interactive token for session %lu", sessionId);
+    return primaryToken;
+}
+
 bool gc_launch_installed_gui(const WCHAR* installDirectory) {
     WCHAR exePath[GC_INSTALLER_MAX_PATH_CHARS] = {};
     if (!gc_join_path(installDirectory, GC_SETUP_GUI_EXE_W, exePath, GC_ARRAY_COUNT(exePath))) return false;
@@ -491,6 +528,39 @@ bool gc_launch_installed_gui(const WCHAR* installDirectory) {
                     }
                 }
             }
+        }
+    }
+
+    // No shell window in this session.  That is the normal state when the
+    // updater's service launched setup (session 0), so ask WTS for the
+    // interactive user's token by session id instead of by window.
+    //
+    // CreateProcessAsUser rather than CreateProcessWithTokenW: the latter needs
+    // SE_IMPERSONATE_NAME and starts the process in the CALLER's session, which
+    // from session 0 would produce a GUI nobody can see.  CreateProcessAsUser
+    // honours the token's own session, and SYSTEM holds the privileges it wants.
+    {
+        HANDLE primaryToken = gc_active_user_primary_token();
+        if (primaryToken) {
+            GcScopedHandle scopedPrimary(primaryToken);
+            WCHAR commandLine[GC_INSTALLER_MAX_PATH_CHARS + 8] = {};
+            StringCchPrintfW(commandLine, GC_ARRAY_COUNT(commandLine), L"\"%ls\"", exePath);
+            STARTUPINFOW startup = {};
+            startup.cb = sizeof(startup);
+            // The interactive desktop, or the process starts with no station to
+            // draw on and dies immediately.
+            WCHAR desktop[] = L"winsta0\\default";
+            startup.lpDesktop = desktop;
+            PROCESS_INFORMATION process = {};
+            if (CreateProcessAsUserW(primaryToken, exePath, commandLine, nullptr, nullptr,
+                                     FALSE, CREATE_UNICODE_ENVIRONMENT, nullptr,
+                                     installDirectory, &startup, &process)) {
+                CloseHandle(process.hProcess);
+                CloseHandle(process.hThread);
+                gc_log_step("launch: started %ls in the interactive session", exePath);
+                return true;
+            }
+            gc_log_step("launch: CreateProcessAsUser failed (error %lu)", GetLastError());
         }
     }
 
