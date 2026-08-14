@@ -21,7 +21,8 @@ import tarfile
 
 import release_manifest  # same one-way dependency: it never imports build.py
 import static_analysis  # ditto; owns the clang-tidy ratchet's own self-tests
-import build_scheduler  # ditto; owns the parallel-build self-tests
+import build_scheduler
+import update_signing  # ditto; owns the update signer's RFC 6979 vectors
 
 # Fuzz targets built from tests/fuzz_main.cpp.  The key is the GC_FUZZ_TARGET
 # macro suffix and the corpus directory name; the value is the macro's numeric
@@ -509,6 +510,14 @@ def run_build_script_regression_tests(ctx):
         # rules are covered here rather than only by running clang-tidy itself:
         # these self-tests need no toolchain and run on every host.
         static_analysis.run_self_tests()
+        # The update signer's known-answer vectors.  These run here rather than
+        # only on demand because the signer is one half of a cross-language
+        # agreement -- the other half is the CNG verifier, asserted at 4230-4249
+        # -- and a break in either is invisible until every published update is
+        # refused in the field.  They need no toolchain and no network.
+        if not update_signing.run_self_tests():
+            print("Build-script regression FAILED: update signer self-tests")
+            sys.exit(1)
     finally:
         ctx.cleanup_work_subdir(tmp)
     check_linux_release_packaging(ctx)

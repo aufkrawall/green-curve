@@ -114,6 +114,16 @@ static bool get_current_user_sam_name(WCHAR*, DWORD) { return false; }
 
 bool is_curve_point_visible_in_gui(int) { return true; }
 void debug_log(const char*, ...) {}
+
+#if defined(_WIN32)
+// The real CNG verifier, compiled straight into the harness so the
+// known-answer test below exercises the shipping code rather than a copy.
+// Windows-only because BCrypt is; the pure policy above is asserted on
+// both hosts.
+#include <bcrypt.h>
+#include "update_verify_keys.h"
+#include "main_service_update_verify.cpp"
+#endif
 #if defined(_WIN32)
 // Fixture stand-in for the amalgamation's helper (main_gpu_front.cpp), which
 // resolves the excluded-low set from LIVE VF topology (g_app.populatedOrdinal).
@@ -10024,6 +10034,178 @@ static int run_all_tests(int argc, char** argv) {
             if (validate_service_request_for_ipc(&tampered)) return 4229;
         }
     }
+
+#if defined(_WIN32)
+    // --- The signer and the verifier agree (4230-4249) ----------------
+    //
+    // tools/update_signing.py produces signatures in pure Python; the service
+    // checks them with CNG.  Two independent implementations have to agree on
+    // curve, hash, signature encoding and byte order, and a disagreement is
+    // invisible until it is total: every published update would be refused in
+    // the field with nothing failing here.  So this is a known-answer test
+    // across the boundary, not a round trip within one implementation.
+    //
+    // The key is the RFC 6979 A.2.5 P-256 test vector -- published material,
+    // not a secret -- and the signature below was produced by the Python signer
+    // over the exact manifest bytes below.  If either side changes its format,
+    // this stops verifying.
+    {
+        static const char kManifest[] =
+            "format=1\n"
+            "version=0.23.0\n"
+            "min_from=0.21\n"
+            "x64_file=greencurve-0.23.0-windows-x64-setup.exe\n"
+            "x64_size=200000\n"
+            "x64_sha256=09931428a6e4293292cfc1be8e490d26a52fc9713b61cb84175c40802f2d7cfe\n";
+        static const unsigned char kVectorPublicKey[64] = {
+            0x60, 0xFE, 0xD4, 0xBA, 0x25, 0x5A, 0x9D, 0x31,
+            0xC9, 0x61, 0xEB, 0x74, 0xC6, 0x35, 0x6D, 0x68,
+            0xC0, 0x49, 0xB8, 0x92, 0x3B, 0x61, 0xFA, 0x6C,
+            0xE6, 0x69, 0x62, 0x2E, 0x60, 0xF2, 0x9F, 0xB6,
+            0x79, 0x03, 0xFE, 0x10, 0x08, 0xB8, 0xBC, 0x99,
+            0xA4, 0x1A, 0xE9, 0xE9, 0x56, 0x28, 0xBC, 0x64,
+            0xF2, 0xF1, 0xB2, 0x0C, 0x2D, 0x7E, 0x9F, 0x51,
+            0x77, 0xA3, 0xC2, 0x94, 0xD4, 0x46, 0x22, 0x99,
+        };
+        // Base64 of the same value, as the .sig asset actually carries it.
+        static const char kVectorSignatureB64[] =
+            "0p0hoHC2sgGRNDoeHDsmPuxl+Hzug5Et9n4wilza7IIYqBUGjQZueG9Izi5U/8uE"
+            "6c+hcHY6hS/u3Vsr2GKh5Q==";
+
+        const size_t manifestLen = sizeof(kManifest) - 1;
+
+        unsigned char signature[GC_UPDATE_SIGNATURE_BYTES] = {};
+        size_t signatureLen = 0;
+        if (!gc_update_base64_decode(kVectorSignatureB64,
+                                     sizeof(kVectorSignatureB64) - 1,
+                                     signature, sizeof(signature), &signatureLen))
+            return 4230;
+        if (signatureLen != GC_UPDATE_SIGNATURE_BYTES) return 4231;
+
+        unsigned char digest[32] = {};
+        if (!gc_update_sha256_buffer(kManifest, manifestLen, digest)) return 4232;
+
+        // THE CROSS-IMPLEMENTATION ASSERTION.
+        if (!gc_update_verify_with_key(kVectorPublicKey, digest,
+                                       signature, signatureLen)) return 4233;
+
+        // A single flipped bit anywhere in the manifest must break it.  Checked
+        // at three positions rather than one because a verifier that hashed
+        // only a prefix would pass a test that only edited the start.
+        const size_t flipAt[3] = { 0, manifestLen / 2, manifestLen - 1 };
+        for (size_t i = 0; i < 3; ++i) {
+            char tampered[sizeof(kManifest)];
+            memcpy(tampered, kManifest, sizeof(kManifest));
+            tampered[flipAt[i]] = (char)(tampered[flipAt[i]] ^ 0x01);
+            unsigned char tamperedDigest[32] = {};
+            if (!gc_update_sha256_buffer(tampered, manifestLen, tamperedDigest))
+                return 4234;
+            if (gc_update_verify_with_key(kVectorPublicKey, tamperedDigest,
+                                          signature, signatureLen)) return 4235;
+        }
+        // Truncation must break it too -- a shorter manifest is a different
+        // document, not a prefix of an accepted one.
+        {
+            unsigned char shortDigest[32] = {};
+            if (!gc_update_sha256_buffer(kManifest, manifestLen - 1, shortDigest))
+                return 4236;
+            if (gc_update_verify_with_key(kVectorPublicKey, shortDigest,
+                                          signature, signatureLen)) return 4237;
+        }
+        // A corrupted signature, and a signature under the wrong key.
+        {
+            unsigned char corrupted[GC_UPDATE_SIGNATURE_BYTES];
+            memcpy(corrupted, signature, sizeof(corrupted));
+            corrupted[0] = (unsigned char)(corrupted[0] ^ 0x01);
+            if (gc_update_verify_with_key(kVectorPublicKey, digest,
+                                          corrupted, sizeof(corrupted))) return 4238;
+            memcpy(corrupted, signature, sizeof(corrupted));
+            corrupted[63] = (unsigned char)(corrupted[63] ^ 0x01);
+            if (gc_update_verify_with_key(kVectorPublicKey, digest,
+                                          corrupted, sizeof(corrupted))) return 4239;
+        }
+        // The project's own release key must not verify a signature made with
+        // the test vector key.  This is the arm that would catch the test
+        // fixture accidentally being signed with the real key.
+        if (gc_update_verify_with_key(GC_UPDATE_PUBLIC_KEY_ACTIVE, digest,
+                                      signature, signatureLen)) return 4240;
+        if (gc_update_verify_with_key(GC_UPDATE_PUBLIC_KEY_NEXT, digest,
+                                      signature, signatureLen)) return 4241;
+        // A wrong signature length is refused rather than padded or truncated.
+        if (gc_update_verify_with_key(kVectorPublicKey, digest, signature, 63))
+            return 4242;
+        if (gc_update_verify_with_key(kVectorPublicKey, digest, signature, 0))
+            return 4243;
+        // An all-zero key slot is not a valid point and must be refused as
+        // unpopulated rather than reaching CNG at all.
+        {
+            static const unsigned char kEmpty[64] = {};
+            if (gc_update_key_is_populated(kEmpty)) return 4244;
+            if (gc_update_verify_with_key(kEmpty, digest, signature, signatureLen))
+                return 4245;
+            if (!gc_update_key_is_populated(GC_UPDATE_PUBLIC_KEY_ACTIVE)) return 4246;
+            if (!gc_update_key_is_populated(GC_UPDATE_PUBLIC_KEY_NEXT)) return 4247;
+            // The shipped keys must differ, or "rotation" would be a no-op that
+            // looks like it works.
+            if (memcmp(GC_UPDATE_PUBLIC_KEY_ACTIVE, GC_UPDATE_PUBLIC_KEY_NEXT,
+                       GC_UPDATE_PUBLIC_KEY_BYTES) == 0) return 4248;
+        }
+        // And the manifest the fixture signs must be one the parser accepts,
+        // or this test would be proving agreement about an unusable document.
+        {
+            GcUpdateManifest parsed;
+            gc_update_manifest_parse(kManifest, manifestLen, &parsed);
+            if (!parsed.valid) return 4249;
+        }
+    }
+
+    // --- Base64 decoding (4250-4259) ----------------------------------
+    //
+    // The decoder is strict on purpose: a permissive one accepts several
+    // spellings of a single signature, and "which bytes were signed" must have
+    // exactly one answer.
+    {
+        unsigned char out[GC_UPDATE_SIGNATURE_BYTES] = {};
+        size_t outLen = 0;
+        // A trailing newline is the one benign mutation a text file suffers.
+        static const char kWithNewline[] =
+            "0p0hoHC2sgGRNDoeHDsmPuxl+Hzug5Et9n4wilza7IIYqBUGjQZueG9Izi5U/8uE"
+            "6c+hcHY6hS/u3Vsr2GKh5Q==\r\n";
+        if (!gc_update_base64_decode(kWithNewline, sizeof(kWithNewline) - 1,
+                                     out, sizeof(out), &outLen)) return 4250;
+        if (outLen != GC_UPDATE_SIGNATURE_BYTES) return 4251;
+
+        static const char* const bad[] = {
+            "",                       // empty
+            "AAA",                    // not a multiple of four
+            "AAAAA",                  // ditto
+            "A===",                   // over-padded
+            "====",                   // all padding
+            "AA=A",                   // data after padding
+            "AA A=",                  // embedded space
+            "AAAA\nAAAA",             // embedded newline
+            "-_-_",                   // URL-safe alphabet is a different encoding
+            "AAAA=AAA",               // padding in the middle
+        };
+        for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+            unsigned char scratch[GC_UPDATE_SIGNATURE_BYTES] = {};
+            size_t len = 0;
+            if (gc_update_base64_decode(bad[i], strlen(bad[i]), scratch,
+                                        sizeof(scratch), &len)) return 4252;
+        }
+        // A value that decodes to more than the caller's buffer is refused
+        // rather than truncated -- a truncated signature must never be
+        // presented to the verifier as a complete one.
+        {
+            unsigned char tiny[8] = {};
+            size_t len = 0;
+            if (gc_update_base64_decode(kWithNewline, sizeof(kWithNewline) - 1,
+                                        tiny, sizeof(tiny), &len)) return 4253;
+        }
+        if (gc_update_base64_decode(nullptr, 0, out, sizeof(out), &outLen))
+            return 4254;
+    }
+#endif  // _WIN32
 
     DeleteCriticalSection(&g_configLock);
     return 0;

@@ -491,6 +491,13 @@ def main(argv=None):
         "--pubkey", required=True, help="128 hex characters (X||Y)"
     )
 
+    prepare = subparsers.add_parser(
+        "prepare", help="build + sign the manifest for a finished release")
+    prepare.add_argument("--version", required=True)
+    prepare.add_argument("--dir", default=".")
+    prepare.add_argument("--key", required=True)
+    prepare.add_argument("--min-from", default=None)
+
     subparsers.add_parser("self-test", help="run the built-in vectors")
 
     args = parser.parse_args(argv)
@@ -536,10 +543,58 @@ def main(argv=None):
         print(f"Signed {args.manifest} -> {out}")
         return 0
 
+    if args.command == "prepare":
+        # One step for the whole post-release ritual, because the failure mode
+        # of doing it by hand is publishing a manifest that does not match the
+        # binaries -- which every client then correctly refuses, leaving the
+        # release silently un-updatable.
+        text = build_manifest(args.version, args.dir, args.min_from)
+        manifest_path = os.path.join(args.dir, MANIFEST_ASSET)
+        signature_path = os.path.join(args.dir, SIGNATURE_ASSET)
+        with open(manifest_path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+
+        payload = text.encode("utf-8")
+        key = read_private_key(args.key)
+        signature = sign(key, payload)
+        public_point = public_key_from_private(key)
+        # Verify before writing anything a client could fetch.  A signature this
+        # tool produced but cannot itself check is not one to publish.
+        if not verify(public_point, payload, signature):
+            raise SystemExit("internal error: fresh signature failed to verify")
+        with open(signature_path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(base64.b64encode(signature).decode("ascii") + "\n")
+
+        print(f"\nWrote {manifest_path}")
+        print(f"Wrote {signature_path}")
+        print(f"\nSigned with public key:\n  {public_key_bytes(public_point).hex()}")
+        print("\nCheck that against source/update_verify_keys.h before uploading; "
+              "a manifest signed with a key no shipped build carries is one every "
+              "client will refuse.")
+        # Deliberately does NOT upload.  Publishing is an outward-facing,
+        # hard-to-undo action, and this tool holds the signing key -- the two
+        # should not be one command.
+        print("\nThen publish both files to the release:\n")
+        print(f"  gh release upload {args.version} \\\n"
+              f"      {MANIFEST_ASSET} {SIGNATURE_ASSET} --repo <owner>/<repo>")
+        return 0
+
     if args.command == "verify":
         with open(args.manifest, "rb") as handle:
             payload = handle.read()
-        signature_path = args.sig or (args.manifest + ".sig")
+        # Two spellings exist in the wild: `sign` writes `<manifest>.sig`, while
+        # `prepare` writes the published asset name (the manifest is
+        # `...-manifest.txt`, its signature `...-manifest.sig` -- not
+        # `...-manifest.txt.sig`).  Accept either rather than making the person
+        # doing a release remember which command produced the file.
+        signature_path = args.sig
+        if not signature_path:
+            candidates = [args.manifest + ".sig"]
+            base, extension = os.path.splitext(args.manifest)
+            if extension:
+                candidates.append(base + ".sig")
+            signature_path = next(
+                (c for c in candidates if os.path.exists(c)), candidates[0])
         with open(signature_path, "r", encoding="utf-8") as handle:
             encoded = handle.read().strip()
         try:

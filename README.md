@@ -79,7 +79,7 @@ Setup writes a log file next to itself **only if something fails**; a successful
 For unattended installs and updates:
 
 ```powershell
-greencurve-0.22.2-windows-x64-setup.exe /S
+greencurve-0.23-windows-x64-setup.exe /S
 ```
 
 `/S` installs or upgrades with no window (it still needs administrator rights, because it registers a service). `/D=<path>` selects the folder, `--no-start-menu` / `--desktop` / `--launch` override the shortcut and post-install behaviour, and `--uninstall` removes an installation. Exit codes are `0` success, `1` failure, `2` cancelled, `3` bad arguments. Run it with `/?` for the full list.
@@ -99,6 +99,36 @@ python build.py --check-cet
 `--fuzz` builds and briefly runs coverage-guided libFuzzer harnesses (ASan + UBSan) over the untrusted-input boundaries — the IPC request validator, the VF snapshot validator, the startup-task XML classifier, the config/INI parsers, and the daemon transport classifiers. The default is a bounded 20000 runs per target; pass `--fuzz-runs` for a longer session and `--fuzz-target` to select one.
 
 `--check-cet` verifies that the `-fcf-protection=full` hardening flag is actually effective, by confirming every address-taken function in a purpose-built unstripped probe begins with `endbr64`.
+
+## Updates
+
+Green Curve can check GitHub for a new release, download it, and install it for you. **It is off until you turn it on**, in *Updates* on the main window.
+
+- **Checking** is the only part that can be automatic, and only after you enable it. It is a daily request to `github.com` for two small files.
+- **Downloading** happens automatically once a new version is found, into a folder only administrators can write. Nothing about your system changes.
+- **Installing never happens on its own.** It always takes a click, and it is refused while a settings change is being applied or while a fullscreen application is running — the update briefly stops the background service, which returns your GPU to stock settings for a few seconds before your settings are restored.
+
+There is no UAC prompt: the background service already runs with the rights it needs.
+
+### How a downloaded update is verified
+
+Green Curve is not code-signed with a certificate authority, so it does not rely on one. Instead:
+
+- Each release carries a small manifest listing the exact size and SHA-256 of every setup executable, **signed with a key that never leaves the maintainer's machine and is never present in GitHub's build system**. The matching public key is compiled into Green Curve.
+- The signature is checked *before* the manifest is read at all. Only then is the setup executable downloaded, and it is accepted only if its size and SHA-256 match the signed manifest exactly.
+- The file is verified again immediately before it runs, through a handle that prevents anything replacing it in between.
+- An older release is refused even if it is correctly signed, so a previously-published version cannot be replayed to you.
+- All traffic is HTTPS to a fixed list of GitHub hosts, and every redirect is checked against that list before it is followed.
+
+Every release is additionally published with a GitHub build-provenance attestation, which you can check yourself:
+
+```bash
+gh attestation verify <artifact> --repo aufkrawall/green-curve
+```
+
+That proves the artifact came out of this repository's build workflow. The signing key above is a separate and stronger guarantee for the updater, because a compromise of the GitHub account could produce a valid attestation but not a valid signature.
+
+If you run Green Curve from the extracted `.7z` archive rather than the installer, updates cannot be installed automatically — there is no installer to run. The dialog tells you so and links to the releases page.
 
 ## Installing on Linux
 
@@ -364,7 +394,7 @@ For managed/multi-user PCs, an admin can require that **standard (non-admin) use
 
 ## Privacy & Data Handling
 
-- Green Curve does not transmit any data over the network. There is no telemetry, analytics, cloud sync, or remote logging.
+- Green Curve has **no telemetry, analytics, cloud sync, or remote logging**. The only network feature is the optional update check described under [Updates](#updates), and it is off until you turn it on. When it is on, Green Curve requests two small files from `github.com` on a schedule (daily by default); GitHub sees your IP address, and the request reveals the version and CPU architecture you run. Nothing about your GPU, your settings or your profiles is sent, and there is no account, identifier or cookie involved.
 - Debug logs are written locally to `%LOCALAPPDATA%\Green Curve\greencurve_debug.txt` on Windows. On Linux the client and TUI write `greencurve_debug.txt` next to `config.ini` (the binary's own folder by default), and the root daemon writes it into `/var/lib/greencurve/` because systemd mounts `/usr` read-only for the unit. Log files are size-capped and rotated automatically (one previous generation is kept as `.1`). Logging is on by default and is turned off with `[debug] enabled=0` in `config.ini` or `GREEN_CURVE_DEBUG=0`; the log records GPU identifiers, config paths and applied settings, so review it before sharing.
 - Green Curve writes a crash *breadcrumb* (role, signal, phase, version) to the debug log and to stderr; it does not write its own dump. On Linux the actual core dump is left to the kernel's `core_pattern`, which on most distributions means `systemd-coredump` (`coredumpctl list greencurve`). Windows additionally writes `greencurve_crash_*.dmp` minidumps next to the binary.
 - Probe reports (`--probe --probe-output`) are written only to a local file you specify. They contain GPU identifiers, driver capabilities, VF-curve samples, and diagnostic host/session data such as `uname` and `id`; review and redact usernames, hostnames, or unique hardware identifiers before sharing publicly.

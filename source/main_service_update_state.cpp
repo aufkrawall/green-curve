@@ -112,7 +112,8 @@ static GcUpdateArch service_update_host_arch() {
     HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
     if (kernel) {
         IsWow64Process2Fn isWow64Process2 =
-            (IsWow64Process2Fn)(void*)GetProcAddress(kernel, "IsWow64Process2");
+            reinterpret_cast<IsWow64Process2Fn>(
+                GetProcAddress(kernel, "IsWow64Process2"));
         if (isWow64Process2) {
             USHORT processMachine = 0, nativeMachine = 0;
             if (isWow64Process2(GetCurrentProcess(), &processMachine, &nativeMachine)) {
@@ -207,7 +208,7 @@ static void service_update_save_settings() {
     set_config_int(path, GC_UPDATE_CONFIG_SECTION, "last_check_high",
                    (int)(lastCheck >> 32));
     set_config_int(path, GC_UPDATE_CONFIG_SECTION, "last_check_low",
-                   (int)(unsigned int)(lastCheck & 0xFFFFFFFFll));
+                   (int)(unsigned int)(lastCheck & 0xFFFFFFFFLL));
 
     // The settings file must keep its protected DACL: it is read by the service
     // to decide whether to make outbound requests, so a standard user who could

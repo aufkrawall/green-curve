@@ -164,6 +164,22 @@ jobs:
           Verify any artifact with:
 
               gh attestation verify <artifact> --repo ${GITHUB_REPOSITORY}
+
+          ### In-app updater
+
+          The updater does not trust this attestation as its gate, and neither
+          should you rely on it alone: an attestation proves CI built an
+          artifact from a commit in this repository, so anyone able to push a
+          commit could obtain a valid one. It is provenance and forensics.
+
+          Green Curve's updater instead verifies a manifest signed with a key
+          whose private half never enters GitHub Actions. That manifest
+          (\`greencurve-update-manifest.txt\` and its \`.sig\`) is signed and
+          uploaded **after** this workflow, from the maintainer's machine — see
+          \`llm-wiki/updates.md\`. Until both files are attached to this
+          release, installed copies will report that no update manifest was
+          published and will offer nothing, which is the intended fail-closed
+          behaviour rather than a fault.
           EOF
 
       - name: Create stable tag and release

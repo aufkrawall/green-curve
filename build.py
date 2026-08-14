@@ -1722,7 +1722,10 @@ def run_regression_tests(extra_flags=None):
         if extra_flags:
             cmd.extend(extra_flags)
         if sys.platform == "win32":
-            cmd.extend(["-static", "-luser32", "-lgdi32", "-luuid", "-ladvapi32", "-lshell32"])
+            cmd.extend(["-static", "-luser32", "-lgdi32", "-luuid", "-ladvapi32",
+                        # bcrypt: the harness compiles the real CNG update
+                        # verifier for the signer/verifier known-answer test.
+                        "-lshell32", "-lbcrypt"])
         else:
             cmd.extend(["-lpthread", "-ldl"])
         print("Compiling pure regression tests")

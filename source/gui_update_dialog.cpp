@@ -500,6 +500,11 @@ static LRESULT CALLBACK GuiUpdateDialogProc(HWND hwnd, UINT msg,
             }
             memset(&g_updateDialog, 0, sizeof(g_updateDialog));
             return 0;
+
+        default:
+            // WM_* is an unbounded UINT, not an enum; everything this dialog
+            // does not handle falls through to DefWindowProc below.
+            break;
     }
     return DefWindowProcA(hwnd, msg, wParam, lParam);
 }
