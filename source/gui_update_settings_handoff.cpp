@@ -105,15 +105,34 @@ static bool gui_update_capture_settings_for_restore() {
 // the installer has always used -- so this adds no new apply logic and cannot
 // block the window's startup while the service comes up.
 void gui_update_replay_pending_restore() {
+    // One attempt per process, so this stays safe if it is ever called from a
+    // second place (a later service-ready transition, say) without turning a
+    // failed apply into a retry loop.
+    static bool s_replayConsidered = false;
+    if (s_replayConsidered) return;
+    s_replayConsidered = true;
+
     char pending[MAX_PATH] = {};
     char applying[MAX_PATH] = {};
     if (!gui_update_pending_restore_path(GC_UPDATE_PENDING_RESTORE_NAME,
                                          pending, sizeof(pending)) ||
         !gui_update_pending_restore_path(GC_UPDATE_PENDING_RESTORE_APPLYING,
                                          applying, sizeof(applying))) {
+        // Silence here is what made the first failure undiagnosable: "no log
+        // line" was indistinguishable from "never called".  Every exit from
+        // this function now says something.
+        debug_log("update handoff: no restore attempted; user data dir is "
+                  "unresolved (g_userDataDir=%s)\n",
+                  g_userDataDir[0] ? g_userDataDir : "<empty>");
         return;
     }
-    if (gc_GetFileAttributesUtf8(pending) == INVALID_FILE_ATTRIBUTES) return;
+    DWORD pendingAttrs = gc_GetFileAttributesUtf8(pending);
+    if (pendingAttrs == INVALID_FILE_ATTRIBUTES) {
+        debug_log("update handoff: no pending restore at %s (error %lu)\n",
+                  pending, GetLastError());
+        return;
+    }
+    debug_log("update handoff: found a pending restore at %s\n", pending);
 
     // Rename first: the capture is consumed whether or not the replay works, so
     // a failing apply cannot turn into a restore that runs on every start.

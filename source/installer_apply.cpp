@@ -551,16 +551,36 @@ bool gc_launch_installed_gui(const WCHAR* installDirectory) {
             // draw on and dies immediately.
             WCHAR desktop[] = L"winsta0\\default";
             startup.lpDesktop = desktop;
+            // The user's OWN environment block, not this process's.
+            //
+            // CreateProcessAsUser with lpEnvironment=nullptr hands the child the
+            // CALLER's environment -- and the caller here is a SYSTEM service in
+            // session 0.  The child would then see SYSTEM's %USERPROFILE% and
+            // %LOCALAPPDATA%, so anything that resolves a per-user path can land
+            // in C:\Windows\System32\config\systemprofile instead of the real
+            // user's profile.  CreateEnvironmentBlock builds the correct one from
+            // the token.
+            LPVOID environment = nullptr;
+            BOOL haveEnvironment = CreateEnvironmentBlock(&environment, primaryToken, FALSE);
+            if (!haveEnvironment) {
+                gc_log_step("launch: CreateEnvironmentBlock failed (error %lu); "
+                            "the relaunched GUI would inherit SYSTEM's environment",
+                            GetLastError());
+            }
             PROCESS_INFORMATION process = {};
-            if (CreateProcessAsUserW(primaryToken, exePath, commandLine, nullptr, nullptr,
-                                     FALSE, CREATE_UNICODE_ENVIRONMENT, nullptr,
-                                     installDirectory, &startup, &process)) {
+            BOOL started = CreateProcessAsUserW(
+                primaryToken, exePath, commandLine, nullptr, nullptr, FALSE,
+                CREATE_UNICODE_ENVIRONMENT, haveEnvironment ? environment : nullptr,
+                installDirectory, &startup, &process);
+            DWORD startError = started ? 0 : GetLastError();
+            if (haveEnvironment) DestroyEnvironmentBlock(environment);
+            if (started) {
                 CloseHandle(process.hProcess);
                 CloseHandle(process.hThread);
                 gc_log_step("launch: started %ls in the interactive session", exePath);
                 return true;
             }
-            gc_log_step("launch: CreateProcessAsUser failed (error %lu)", GetLastError());
+            gc_log_step("launch: CreateProcessAsUser failed (error %lu)", startError);
         }
     }
 

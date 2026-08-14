@@ -90,6 +90,8 @@ INSTALLER_LINK_LIBS = [
     # in-app updater launches it from the LocalSystem service (session 0) where
     # GetShellWindow() returns nothing.
     "-lwtsapi32",
+    # CreateEnvironmentBlock / DestroyEnvironmentBlock.
+    "-luserenv",
 ]
 # Deliberately NOT here: -ltaskschd.  The uninstaller talks to Task Scheduler
 # through ITaskService, but mingw's libtaskschd.a is a static UUID archive

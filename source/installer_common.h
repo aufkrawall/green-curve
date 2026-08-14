@@ -39,6 +39,9 @@
 // interactive session when setup runs in session 0 (the in-app updater
 // launches it from the LocalSystem service).
 #include <wtsapi32.h>
+// CreateEnvironmentBlock: the relaunched GUI must get the USER's
+// environment, not the SYSTEM service's that launched setup.
+#include <userenv.h>
 #include <shlobj.h>
 #include <objbase.h>
 #include <uxtheme.h>
