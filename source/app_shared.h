@@ -158,6 +158,9 @@ void init_dpi();
 #define APP_TITLE           APP_NAME " v" APP_VERSION
 #define APP_CLASS_NAME      "GreenCurveClass"
 #define APP_EXE_NAME        "greencurve.exe"
+// Wide form, for the cross-session process match the updater does before an
+// install (see main_service_update_worker.cpp).
+#define APP_EXE_NAME_W      L"greencurve.exe"
 #define APP_SERVICE_EXE_NAME "greencurve-service.exe"
 #define APP_SERVICE_EXE_NAME_W L"greencurve-service.exe"
 #define APP_LOG_FILE        "greencurve_log.txt"

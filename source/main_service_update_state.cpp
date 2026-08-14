@@ -57,6 +57,7 @@ struct GcUpdateRuntimeState {
     bool packageVerified;
     bool installRunning;
     bool workerRunning;
+    bool guiShutdownRequested;
 
     char detail[256];
 };
@@ -342,6 +343,7 @@ static void service_update_populate_response(ServiceUpdateState* out) {
     out->packageVerified = g_updateState.packageVerified ? 1 : 0;
     out->installRunning = g_updateState.installRunning ? 1 : 0;
     out->workerRunning = g_updateState.workerRunning ? 1 : 0;
+    out->guiShutdownRequested = g_updateState.guiShutdownRequested ? 1 : 0;
 
     char installDir[MAX_PATH] = {};
     out->isInstalledCopy = service_update_is_installed_copy(installDir, sizeof(installDir))

@@ -70,6 +70,21 @@ def check_verification_precedes_launch(ctx, require_order, require_text):
         worker, "service_update_run_install",
         "gc_update_staged_file_matches", "CreateProcessW",
         "the staged installer is re-verified before it is launched")
+    # Setup runs in session 0 because the service launched it, and window
+    # enumeration is session-scoped -- so setup cannot see, close, or even
+    # detect a GUI in the user's session.  Left to itself it logs "no running
+    # Green Curve window found" and then fails replacing greencurve.exe with
+    # ERROR_ACCESS_DENIED, half-way through copying files.  The service must
+    # close them first, and must do it before the command line is built, because
+    # how many it closed decides whether setup should start one again.
+    require_order(
+        worker, "service_update_run_install",
+        "service_update_stop_gui_processes", "gc_update_build_installer_command_line",
+        "the GUI is stopped before the installer command line is built")
+    require_order(
+        worker, "service_update_run_install",
+        "service_update_stop_gui_processes", "CreateProcessW",
+        "the GUI is stopped before setup is launched")
     require_text(
         worker, "FILE_SHARE_READ",
         "the staged installer is opened with writes and deletes denied")

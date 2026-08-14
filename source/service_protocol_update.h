@@ -93,7 +93,23 @@ struct ServiceUpdateState {
     // what they are for; the size is unchanged, and a build that predates this
     // reads it as the zero it always was.
     gc_bool8 workerRunning;
-    gc_bool8 updateReserved[3];
+    // "Close yourself now, an install is starting."
+    //
+    // The service launches the setup program, so setup runs in session 0 --
+    // and window enumeration is session-scoped, so it cannot see, close, or
+    // even detect a GUI running in the user's session.  The first real install
+    // logged "no running Green Curve window found" and then failed with
+    // ERROR_ACCESS_DENIED replacing greencurve.exe, which the GUI still had
+    // mapped.
+    //
+    // A service cannot post a window message across sessions either, so the
+    // shutdown request travels the one channel that already crosses them: the
+    // state every GUI polls.  Each GUI sees this and runs its own ordinary Exit
+    // path, releasing the tray icon, the single-instance mutex and the service
+    // connection.  The service then waits for the processes to actually go and
+    // escalates if they do not.
+    gc_bool8 guiShutdownRequested;
+    gc_bool8 updateReserved[2];
     // Why the last operation failed, in the words the GUI shows.  Never carries
     // an attacker-chosen string: a refused redirect names the hop, not the URL,
     // because echoing an attacker-supplied URL into a log and a status line is

@@ -10291,7 +10291,7 @@ static int run_all_tests(int argc, char** argv) {
         char cmd[GC_UPDATE_COMMAND_LINE_MAX_CHARS] = {};
         if (!gc_update_build_installer_command_line(
                 "C:\\ProgramData\\Green Curve\\updates\\setup.exe",
-                "C:\\Program Files\\Green Curve", cmd, sizeof(cmd))) return 4260;
+                "C:\\Program Files\\Green Curve", false, cmd, sizeof(cmd))) return 4260;
         // Both space-bearing paths must be quoted, and the directory must use
         // the `--dir <value>` form: `/D=` is positional by NSIS convention and
         // that convention does not survive argv splitting.
@@ -10303,28 +10303,40 @@ static int run_all_tests(int argc, char** argv) {
         // `/D=` must not reappear: it is the form that broke.
         if (strstr(cmd, "/D=")) return 4265;
 
+        // The relaunch flag is always passed EXPLICITLY rather than left to
+        // silent mode's default, and it follows something the service measured:
+        // how many GUI processes it actually closed before starting setup.
+        char relaunch[GC_UPDATE_COMMAND_LINE_MAX_CHARS] = {};
+        if (!gc_update_build_installer_command_line(
+                "C:\\ProgramData\\Green Curve\\updates\\setup.exe",
+                "C:\\Program Files\\Green Curve", true, relaunch, sizeof(relaunch)))
+            return 4264;
+        if (!strstr(relaunch, " --launch ")) return 4264;
+        if (strstr(relaunch, "--no-launch")) return 4264;
+
         // Paths that cannot be expressed as one argv entry are refused rather
         // than escaped -- this becomes the command line of a SYSTEM process.
         char scratch[GC_UPDATE_COMMAND_LINE_MAX_CHARS] = {};
         if (gc_update_build_installer_command_line(
                 "C:\\a\\setup.exe", "C:\\evil\" --dir C:\\elsewhere",
-                scratch, sizeof(scratch))) return 4266;
+                false, scratch, sizeof(scratch))) return 4266;
         // A trailing backslash would escape the closing quote and swallow the
         // rest of the line.
         if (gc_update_build_installer_command_line(
                 "C:\\a\\setup.exe", "C:\\Program Files\\Green Curve\\",
-                scratch, sizeof(scratch))) return 4266;
-        if (gc_update_build_installer_command_line("C:\\a\\setup.exe", "",
+                false, scratch, sizeof(scratch))) return 4266;
+        if (gc_update_build_installer_command_line("C:\\a\\setup.exe", "", false,
                                                    scratch, sizeof(scratch)))
             return 4266;
-        if (gc_update_build_installer_command_line(nullptr, "C:\\x",
+        if (gc_update_build_installer_command_line(nullptr, "C:\\x", false,
                                                    scratch, sizeof(scratch)))
             return 4266;
         // A buffer too small fails rather than emitting a truncated command.
         char tiny[24] = {};
         if (gc_update_build_installer_command_line(
                 "C:\\ProgramData\\Green Curve\\updates\\setup.exe",
-                "C:\\Program Files\\Green Curve", tiny, sizeof(tiny))) return 4267;
+                "C:\\Program Files\\Green Curve", false, tiny, sizeof(tiny)))
+            return 4267;
         if (tiny[0]) return 4267;
 
 #if defined(_WIN32)

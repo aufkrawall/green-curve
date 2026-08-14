@@ -76,14 +76,25 @@ static inline bool gc_update_command_append(char* out, size_t outSize, size_t* a
 
 // Build `"<setup>" /S --no-launch --dir "<installDir>"`.
 //
-//   /S           silent; the whole point of driving setup from a service.
-//   --no-launch  the service cannot know whether a GUI was running, and
-//                starting one from SYSTEM would run it as the wrong user.
-//   --dir        the CURRENT install directory. Passing it explicitly matters:
-//                without it setup uses its own default and could relocate an
-//                installation the user deliberately put elsewhere.
+//   /S            silent; the whole point of driving setup from a service.
+//   --dir         the CURRENT install directory. Passing it explicitly matters:
+//                 without it setup uses its own default and could relocate an
+//                 installation the user deliberately put elsewhere.
+//   --launch /
+//   --no-launch   whether setup starts the GUI again when it finishes.
+//
+// `relaunchGui` is decided by the caller from something it actually measured:
+// the service closes every running GUI before setup starts (it must -- setup
+// runs in session 0 and cannot reach the user's windows), so it knows whether
+// there was one. If there was, setup brings it back through its own
+// shell-token launch, which is the only participant that can start a process as
+// the interactive user. If there was not, the machine stays as it was.
+//
+// Silent mode defaults `launch` to OFF, so the flag is always passed explicitly
+// rather than relying on that default meaning what we want.
 static inline bool gc_update_build_installer_command_line(const char* setupPath,
                                                           const char* installDir,
+                                                          bool relaunchGui,
                                                           char* out, size_t outSize) {
     if (!out || outSize == 0) return false;
     out[0] = 0;
@@ -92,7 +103,9 @@ static inline bool gc_update_build_installer_command_line(const char* setupPath,
 
     size_t at = 0;
     const char* parts[5] = {
-        "\"", setupPath, "\" /S --no-launch --dir \"", installDir, "\"",
+        "\"", setupPath,
+        relaunchGui ? "\" /S --launch --dir \"" : "\" /S --no-launch --dir \"",
+        installDir, "\"",
     };
     for (int i = 0; i < 5; ++i) {
         if (!gc_update_command_append(out, outSize, &at, parts[i])) {

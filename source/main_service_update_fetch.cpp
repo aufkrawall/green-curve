@@ -36,6 +36,10 @@
 // hop can be validated before the next request is sent.  Included here rather
 // than in main.cpp so the dependency sits with the only code that uses it.
 #include <winhttp.h>
+// Cross-session process enumeration for the pre-install GUI stop in
+// main_service_update_worker.cpp.  Included from the first updater shard so it
+// lands ahead of every consumer in the amalgamation.
+#include <tlhelp32.h>
 
 #define GC_UPDATE_HTTP_TIMEOUT_MS 30000
 #define GC_UPDATE_HTTP_USER_AGENT L"GreenCurve-Updater"
