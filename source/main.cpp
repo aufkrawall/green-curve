@@ -73,28 +73,7 @@ static void request_service_restart(const char* reason);
 // Declared in cfg_glue.cpp — set process-wide security mitigation policies.
 extern "C" void initialize_process_mitigations();
 
-static const char APP_LICENSE_TEXT[] =
-    "MIT License\r\n"
-    "\r\n"
-    "Copyright (c) 2026 aufkrawall\r\n"
-    "\r\n"
-    "Permission is hereby granted, free of charge, to any person obtaining a copy\r\n"
-    "of this software and associated documentation files (the \"Software\"), to deal\r\n"
-    "in the Software without restriction, including without limitation the rights\r\n"
-    "to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\r\n"
-    "copies of the Software, and to permit persons to whom the Software is\r\n"
-    "furnished to do so, subject to the following conditions:\r\n"
-    "\r\n"
-    "The above copyright notice and this permission notice shall be included in all\r\n"
-    "copies or substantial portions of the Software.\r\n"
-    "\r\n"
-    "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\r\n"
-    "IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\r\n"
-    "FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\r\n"
-    "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\r\n"
-    "LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\r\n"
-    "OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\r\n"
-    "SOFTWARE.";
+#include "app_license_text.h"
 
 #ifndef STACK_SIZE_PARAM_IS_A_RESERVATION
 #define STACK_SIZE_PARAM_IS_A_RESERVATION 0x00010000
@@ -740,6 +719,10 @@ static const UINT FAN_TELEMETRY_INTERVAL_MS = 1000;
 #include "main_gpu_state.cpp"
 #include "main_tail_diagnostics.cpp"
 #include "main_fan_runtime.cpp"
+// The updater's shared response cache.  Ahead of the tray menu, which asks
+// it whether to show the update entry, and ahead of main_shell.cpp, whose
+// service_send_request() is the single place that feeds it.
+#include "gui_update_client.cpp"
 #include "gui_tray_menu.cpp"
 #include "config_profile_repair.cpp"
 #include "main_shell.cpp"
@@ -767,6 +750,10 @@ static const UINT FAN_TELEMETRY_INTERVAL_MS = 1000;
 #include "auto_profile_detect.cpp"
 #include "auto_profile_win32.cpp"
 #include "auto_profile_dialog.cpp"
+// The Updates dialog and the commands that drive it.  GUI-only: the
+// service never asks anything of itself, and -Werror turns an unused
+// static into a build failure.
+#include "gui_update_dialog.cpp"
 #else
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     // The helper parses inherited handles and launches an SCM operation, so it

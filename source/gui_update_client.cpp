@@ -1,0 +1,66 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+// SPDX-License-Identifier: MIT
+//
+// The cached ServiceUpdateState, and the two questions the tray asks of it.
+//
+// ## One cache, fed from one place
+//
+// The service stamps ServiceUpdateState onto EVERY response, so this cache is
+// refreshed from `gui_update_note_response()`, called from the single place the
+// client reads a response back (`service_send_request`).  The tray and the main
+// window therefore learn about an available update through polling that already
+// happens -- no extra round trip, and no second code path that could go stale
+// while the first one keeps working.
+//
+// ## Why this is separate from the sending half
+//
+// The tray menu is compiled into both binaries, so the queries below must be
+// too.  The commands that ASK the service to do something live in
+// gui_update_dialog.cpp, which is GUI-only: putting them here would leave the
+// service binary carrying unused senders, and -Werror is on.
+//
+// ## The GUI decides nothing
+//
+// Everything on this side is presentation and triggering.  Nothing here
+// resolves a URL, sees a digest, names a version or touches the staged file --
+// all of that is the service's, because the service is the only participant
+// running as SYSTEM and the only one that can be trusted to gate an installer
+// launch.  If this code were rewritten by an attacker holding the user's
+// account, the worst it could do is ask the service to check, to install
+// something the service itself already verified, or to change a preference the
+// service re-validates.  That is the point of the split.
+
+struct GuiUpdateCache {
+    ServiceUpdateState state;
+    bool valid;
+};
+
+static GuiUpdateCache g_guiUpdate = {};
+
+// Called for every successful service response.  Deliberately does not filter
+// by command: the state is stamped on all of them, and filtering would mean the
+// tray only refreshed when something happened to ask about updates.
+static void gui_update_note_response(const ServiceResponse* response) {
+    if (!response) return;
+    g_guiUpdate.state = response->update;
+    // Wire strings are terminated defensively before anything renders them; a
+    // response that lost its terminator must not walk off the end of a tooltip.
+    g_guiUpdate.state.availableVersion[SERVICE_UPDATE_VERSION_CHARS - 1] = '\0';
+    g_guiUpdate.state.installedVersion[SERVICE_UPDATE_VERSION_CHARS - 1] = '\0';
+    g_guiUpdate.state.detail[ARRAY_COUNT(g_guiUpdate.state.detail) - 1] = '\0';
+    g_guiUpdate.valid = true;
+}
+
+static const ServiceUpdateState* gui_update_state() {
+    return g_guiUpdate.valid ? &g_guiUpdate.state : nullptr;
+}
+
+// True when a newer release is published AND this machine can actually take it.
+// The tray entry is driven from this, so a portable copy or an architecture
+// with no build never advertises an update it could not install.
+static bool gui_update_is_available() {
+    const ServiceUpdateState* state = gui_update_state();
+    if (!state) return false;
+    return state->decision == GC_UPDATE_DECISION_AVAILABLE &&
+           state->availableVersion[0] != '\0';
+}

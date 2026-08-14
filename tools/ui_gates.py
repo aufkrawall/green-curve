@@ -1154,10 +1154,18 @@ def check_right_anchored_controls(ctx, require_text, forbid_text):
         ctx, layout_cpp, place,
         "main_layout_right_anchored_x(plan.contentWidth, dp(160)",
         "the fan-curve button is right-anchored against the content width")
+    # License and Updates share the right edge of the button row.  The widths
+    # are named constants now rather than literals, because Updates is anchored
+    # as the full pair (its width + gap + License) so the two stay adjacent at
+    # every window width instead of drifting apart as the content area grows.
     _require_in_operation(
         ctx, layout_cpp, place,
-        "main_layout_right_anchored_x(plan.contentWidth, dp(118)",
+        "main_layout_right_anchored_x(plan.contentWidth, licenseW",
         "the License button is right-anchored against the content width")
+    _require_in_operation(
+        ctx, layout_cpp, place,
+        "main_layout_right_anchored_x(\n        plan.contentWidth, updateW + dp(8) + licenseW",
+        "the Updates button is right-anchored as the License pair")
     _forbid_in_operation(
         ctx, layout_cpp, place, "dp(1006), ocY - dp(1)",
         "the fan-curve button is right-anchored, not pinned to a fixed x")

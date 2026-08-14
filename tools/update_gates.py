@@ -221,7 +221,39 @@ def check_uninstall_key_agrees_with_setup(ctx, require_text):
                  "writes (a drift here silently disables updates)")
 
 
+def check_gui_cannot_choose_the_target(ctx, require_text, forbid_text):
+    """The GUI triggers and displays; it never names what gets installed.
+
+    The client sends four commands and, on exactly one of them, two integers.
+    If it ever gained a path, a URL or a version field it would stop being a
+    trigger and start being a payload -- and the thing on the other end runs as
+    SYSTEM.  Checked structurally because the happy path looks identical either
+    way.
+    """
+    dialog = _p(ctx, "gui_update_dialog.cpp")
+    client = _p(ctx, "gui_update_client.cpp")
+    for source in (dialog, client):
+        for field in ("request.path", "request.desired", "request.targetGpu",
+                      "request.profileSlot", "request.operationId"):
+            forbid_text(source, field,
+                        "the GUI must not put a target into an update request")
+    require_text(dialog, "SERVICE_CMD_SET_UPDATE_POLICY",
+                 "the policy command is the only one carrying client data")
+
+    # Installing is a button press with a confirmation, never a side effect of
+    # opening the dialog or of a refresh tick.
+    require_text(dialog, "GUD_INSTALL_BTN_ID",
+                 "installing is bound to an explicit button")
+    require_text(dialog, "MB_YESNO",
+                 "installing is confirmed before it is requested")
+    # The tray opens the dialog; it does not install.  A context-menu click must
+    # not be able to stop the service and drop the GPU to stock.
+    forbid_text(_p(ctx, "gui_tray_menu.cpp"), "gui_update_request_install",
+                "the tray must open the dialog rather than install directly")
+
+
 def check_all(ctx, require_text, forbid_text, require_order, harness_source_path):
+    check_gui_cannot_choose_the_target(ctx, require_text, forbid_text)
     check_signature_precedes_parse(ctx, require_order)
     check_verification_precedes_launch(ctx, require_order, require_text)
     check_install_requires_consent(ctx, require_text, forbid_text)

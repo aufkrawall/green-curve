@@ -43,6 +43,11 @@ void auto_profile_compute_presence(const AutoProfileConfig* cfg, ProcessPresence
 // Rule-editor dialog (auto_profile_dialog.cpp).
 void auto_profile_open_config_dialog(HWND parent);
 
+// The Updates dialog (source/gui_update_dialog.cpp).  Declared here for the
+// same reason as the line above: ui_main_window.cpp opens it, and that shard
+// is compiled before the dialog's own translation unit in the amalgamation.
+void gui_update_open_dialog(HWND parent);
+
 #endif // _WIN32
 
 #endif // GREEN_CURVE_AUTO_PROFILE_H

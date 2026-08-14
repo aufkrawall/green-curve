@@ -52,6 +52,7 @@ static bool is_themed_button_id(UINT id) {
         case REFRESH_BTN_ID:
         case RESET_BTN_ID:
         case LICENSE_BTN_ID:
+        case UPDATE_BTN_ID:
         case PROFILE_LOAD_ID:
         case PROFILE_SAVE_ID:
         case PROFILE_CLEAR_ID:

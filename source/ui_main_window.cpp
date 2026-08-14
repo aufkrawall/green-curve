@@ -1187,6 +1187,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 } else if (decision == LOCK_ACTIVATION_ACCEPT_UNARMED) {
                     activate_lock_checkbox_once(vi);
                 }
+            } else if (LOWORD(wParam) == UPDATE_BTN_ID ||
+                       LOWORD(wParam) == TRAY_MENU_UPDATE_ID) {
+                // Both entry points open the same dialog rather than the tray
+                // installing directly: an install stops the service and returns
+                // the GPU to stock for a few seconds, which is not something a
+                // single click in a context menu should be able to start.
+                gui_update_open_dialog(g_app.hMainWnd);
             } else if (LOWORD(wParam) == LICENSE_BTN_ID) {
                 show_license_dialog(g_app.hMainWnd);
             }

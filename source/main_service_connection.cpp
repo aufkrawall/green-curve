@@ -495,6 +495,13 @@ static bool service_send_request(const ServiceRequest* request, ServiceResponse*
                 }
             }
             CloseHandle(pipe);
+            // The single place a response is read back, and therefore the one
+            // place the updater's cache is fed -- the mirror of the service
+            // stamping ServiceUpdateState onto every response it sends.  Doing
+            // it here rather than in each caller means the tray and main window
+            // stay current from polling that already happens, and a new command
+            // cannot forget to refresh it.
+            gui_update_note_response(response);
             return true;
         }
         DWORD e = GetLastError();

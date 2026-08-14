@@ -405,10 +405,22 @@ static void main_layout_place_controls(
     main_layout_move(&batch, g_app.hApplyBtn, margin, plan.buttonsY, dp(132), buttonH);
     main_layout_move(&batch, g_app.hRefreshBtn, margin + dp(144), plan.buttonsY, dp(98), buttonH);
     main_layout_move(&batch, g_app.hResetBtn, margin + dp(254), plan.buttonsY, dp(98), buttonH);
+    // Updates and License share the right edge of the button row.  Updates is
+    // anchored as if it were the full pair (its own width plus the gap plus
+    // License), so the two stay adjacent at every window width instead of
+    // drifting apart as the content area grows -- the same reason the fan-curve
+    // button above is right-anchored rather than placed at a fixed x.
+    const int licenseW = dp(118);
+    const int updateW = dp(84);
+    const int rowFloor = margin + dp(254) + dp(98) + dp(8);
+    const int updateX = main_layout_right_anchored_x(
+        plan.contentWidth, updateW + dp(8) + licenseW, margin, rowFloor);
+    main_layout_move(&batch, g_app.hUpdateBtn, updateX, plan.buttonsY,
+        updateW, buttonH);
     main_layout_move(&batch, g_app.hLicenseBtn,
-        main_layout_right_anchored_x(plan.contentWidth, dp(118), margin,
-            margin + dp(254) + dp(98) + dp(8)),
-        plan.buttonsY, dp(118), buttonH);
+        main_layout_right_anchored_x(plan.contentWidth, licenseW, margin,
+            rowFloor + updateW + dp(8)),
+        plan.buttonsY, licenseW, buttonH);
 
     main_layout_move(&batch, g_app.hProfileLabel,
         margin, plan.profileY + dp(4), dp(72), dp(18));

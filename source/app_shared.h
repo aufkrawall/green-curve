@@ -225,6 +225,12 @@ void init_dpi();
 #define LOCK_CTX_PIN_ID     2112
 // Auto-profiles: main-window "Profiles" button + submenu command IDs.
 #define AUTO_PROFILE_BTN_ID 2046
+// Opens the Updates dialog.  One button rather than inline status text: updates
+// are a rare, deliberate errand, and the main window is already dense.
+#define UPDATE_BTN_ID       2047
+// Shown in the tray menu only while an update is actually installable, so the
+// menu does not grow a permanently disabled entry.
+#define TRAY_MENU_UPDATE_ID 2102
 #define AUTO_PROFILE_MENU_TOGGLE_ID 2120
 #define AUTO_PROFILE_MENU_CONFIGURE_ID 2121
 // Base for the per-slot "apply profile N" items in the Profiles popup / tray
@@ -310,6 +316,7 @@ struct AppData {
     HWND hRefreshBtn;
     HWND hResetBtn;
     HWND hLicenseBtn;
+    HWND hUpdateBtn;
     HWND hGpuOffsetEdit;
     HWND hGpuOffsetExcludeLowEdit;
     HWND hGpuOffsetExcludeLowLabel;

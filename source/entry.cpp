@@ -654,6 +654,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         g_app.hMainWnd, (HMENU)(INT_PTR)LICENSE_BTN_ID, hInstance, nullptr
     );
 
+    g_app.hUpdateBtn = CreateWindowExA(
+        0, "BUTTON", "Updates", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        0, 0, dp(84), dp(30),
+        g_app.hMainWnd, (HMENU)(INT_PTR)UPDATE_BTN_ID, hInstance, nullptr);
+
     g_app.hProfileCombo = CreateWindowExA(
         0, "COMBOBOX", "",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,

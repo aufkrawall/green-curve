@@ -18,7 +18,7 @@ static void destroy_edit_controls(HWND hParent) {
             && id != SERVICE_ENABLE_CHECK_ID && id != SERVICE_STATUS_ID
             && id != LOGON_HINT_ID
             && id != SHARE_ALL_USERS_CHECK_ID && id != SHARED_PROFILES_BTN_ID
-            && id != AUTO_PROFILE_BTN_ID) {
+            && id != AUTO_PROFILE_BTN_ID && id != UPDATE_BTN_ID) {
             DestroyWindow(child);
         }
         child = next;
