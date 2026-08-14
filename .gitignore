@@ -1,3 +1,6 @@
+AGENTS.md
+CLAUDE.md
+llm-wiki/
 zig/
 llvm-mingw/
 llvm-mingw-linux/
@@ -68,9 +71,23 @@ greencurve-aarch64-linux-gnu
 
 greencurve.exe.manifest
 
+# Update-signing PRIVATE keys.  These normally live outside the repository
+# entirely (see llm-wiki/updates.md); these patterns exist so that a copy
+# accidentally dropped in the working tree cannot be staged.  A build gate in
+# tools/security_gates.py additionally hard-fails if key material ever becomes
+# tracked, because .gitignore alone is defeated by `git add -f`.
+*signing-key*
+*update-key*
+*.pem
+*.p8
+# The signed manifest and its detached signature are release outputs, rebuilt
+# by tools/update_signing.py; the signature is public but is not source.
+greencurve-update-manifest.txt
+greencurve-update-manifest.sig
+*.sig
+
 # VF curve comparison baseline data (GPU-specific sensitive data)
 gc_baseline_*
 gc_post_apply_*
 ab_*
 greencurve_baseline.json
-

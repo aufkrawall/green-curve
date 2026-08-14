@@ -20,3 +20,11 @@
 # `text=auto` rule can be tempted to touch them.
 *.7z binary
 *.tar.xz binary
+
+# Fuzz seeds are exact byte strings, not text.  Most existing corpora contain
+# NUL bytes and so are auto-detected as binary, but the update_manifest seeds
+# are printable ASCII -- on a Windows checkout `core.autocrlf` would rewrite
+# their line endings, silently changing what the corpus covers.  One of those
+# seeds exists specifically to carry CRLF, so the normalization would collapse
+# it into a duplicate of the LF seed beside it.
+tests/fuzz-corpus/** binary

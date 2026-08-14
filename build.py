@@ -2024,6 +2024,8 @@ def run_source_regression_checks():
     check_packaging_skip_warning()
     security_gates.check_no_developer_profile_paths(
         _gate_ctx(), _tracked_repository_files())
+    security_gates.check_no_signing_key_material(
+        _gate_ctx(), _tracked_repository_files())
     require_app_version_fallback_in_sync()
     main_cpp = os.path.join(SOURCE_DIR, "main.cpp")
     entry_cpp = os.path.join(SOURCE_DIR, "entry.cpp")
@@ -2563,6 +2565,27 @@ def run_source_regression_checks():
                 "the regression harness must not move back into a build.py string")
     require_text(build_script_path, 'os.path.join(SCRIPT_DIR, "tests", "regression_main.cpp")',
                  "build.py compiles the extracted harness from tests/")
+    # The updater's pure policy gates whether a downloaded executable is run as
+    # SYSTEM, so it must stay asserted on both hosts.  Each of these headers is
+    # unit-tested rather than only exercised through the Windows shards that
+    # consume it; losing that coverage silently is exactly how a downgrade or
+    # redirect check stops being enforced without anything failing.
+    for _policy_header in ("update_version_policy.h", "update_manifest_policy.h",
+                           "update_url_policy.h", "update_schedule_policy.h"):
+        require_text(harness_source_path, '#include "%s"' % _policy_header,
+                     "the regression harness asserts %s" % _policy_header)
+    require_text(harness_source_path, "gc_update_is_newer",
+                 "the downgrade gate is unit-tested (no other control catches "
+                 "a replayed older release)")
+    require_text(harness_source_path, "https://github.com@evil.example/a",
+                 "the URL allowlist is tested against an embedded-credentials "
+                 "authority, which defeats a naive prefix check")
+    # The verifier must consult the public keys through the shared table, so a
+    # rollover key that is added but never consulted fails here rather than in
+    # the field when the active key is retired.
+    update_verify_keys_h = os.path.join(SOURCE_DIR, "update_verify_keys.h")
+    require_text(update_verify_keys_h, "GC_UPDATE_PUBLIC_KEY_NEXT",
+                 "a rollover signing key is published before it is needed")
     # The ratchet's own guards live beside it, in tools/static_analysis.py.
     static_analysis.check_ratchet_wiring(_gate_ctx(), require_text)
     if os.path.exists(ci_workflow):

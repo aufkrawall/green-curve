@@ -1,0 +1,9 @@
+format=1
+version=0.23.0
+min_from=0.21
+x64_file=greencurve-0.23.0-windows-x64-setup.exe
+x64_size=200000
+x64_sha256=09931428a6e4293292cfc1be8e490d26a52fc9713b61cb84175c40802f2d7cfe
+arm64_file=greencurve-0.23.0-windows-arm64-setup.exe
+arm64_size=190000
+arm64_sha256=94cf3d99cd91075f246efa1de0363323e5ebf06859c5eec940b6bacac4f8ec3a

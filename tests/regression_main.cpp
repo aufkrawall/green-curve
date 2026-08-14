@@ -72,6 +72,15 @@
 #include "installer_plan_policy.h"
 #include "installer_uninstall_policy.h"
 #include "installer_ui_click_policy.h"
+// The in-app updater's pure policy: version ordering (which is what refuses a
+// downgrade), the signed manifest grammar and its cross-field bindings, the
+// URL/redirect allowlist, and the check/install schedule.  Every one of these
+// is a gate on running a downloaded executable as SYSTEM, so they are asserted
+// on both hosts rather than only where they ship.
+#include "update_version_policy.h"
+#include "update_manifest_policy.h"
+#include "update_url_policy.h"
+#include "update_schedule_policy.h"
 #include "linux_terminal_policy.h"
 #include "linux_debug_log.h"
 // Where a crash artifact is allowed to go and which ones may be deleted.  Pure
@@ -9390,6 +9399,493 @@ static int run_all_tests(int argc, char** argv) {
         // ("YYYYMMDD_HHMMSS_mmm"), or every name becomes unattributable and
         // rotation silently stops deleting anything.
         if (GC_CRASH_STAMP_LENGTH != 19) return 1958;
+    }
+
+    // ------------------------------------------------------------------
+    // In-app updater policy (4100-4199).
+    //
+    // These are not display helpers.  Each one gates whether a downloaded
+    // executable gets run as SYSTEM, so the negative cases matter more than
+    // the positive ones and are enumerated accordingly.
+    // ------------------------------------------------------------------
+
+    // --- Version parsing and ordering (4100-4119) ---------------------
+    {
+        GcUpdateVersion v;
+        gc_update_version_parse("0.22.2", &v);
+        if (!v.valid || v.major != 0 || v.minor != 22 || v.patch != 2) return 4100;
+        // The raw text is preserved, because the release asset names embed it
+        // verbatim and "0.22" and "0.22.0" are the same version but different
+        // filenames.
+        if (strcmp(v.text, "0.22.2") != 0) return 4101;
+
+        gc_update_version_parse("0.22", &v);
+        if (!v.valid || v.major != 0 || v.minor != 22 || v.patch != 0) return 4102;
+        if (strcmp(v.text, "0.22") != 0) return 4103;
+
+        // Everything that is not exactly MAJOR.MINOR[.PATCH] is refused.  A
+        // version the updater cannot parse must never be treated as "probably
+        // old" -- that would turn a malformed field into a forced upgrade.
+        static const char* const bad[] = {
+            "", "1", "v1.0", "1.2.3.4", "1.2.", ".1.2", "1..2", "1.2.3-beta",
+            " 1.2", "1.2 ", "01.2", "1.02", "1.2.03", "-1.0", "+1.0", "1,2",
+            "1.2.3 ", "abc", "1.a", "9999999.0", "0.0.0.0", ".", "..",
+        };
+        for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+            GcUpdateVersion rejected;
+            gc_update_version_parse(bad[i], &rejected);
+            if (rejected.valid) return 4104;
+        }
+        // A single zero component is legal; a padded one is not.
+        gc_update_version_parse("0.0.1", &v);
+        if (!v.valid) return 4105;
+
+        GcUpdateVersion a, b;
+        gc_update_version_parse("0.9", &a);
+        gc_update_version_parse("0.10", &b);
+        // Numeric ordering, not lexicographic: 0.10 is newer than 0.9.
+        if (gc_update_version_compare(&a, &b) >= 0) return 4106;
+        if (gc_update_version_compare(&b, &a) <= 0) return 4107;
+        if (gc_update_version_compare(&a, &a) != 0) return 4108;
+
+        // "0.22" and "0.22.0" are the same version despite different text.
+        GcUpdateVersion short22, long22;
+        gc_update_version_parse("0.22", &short22);
+        gc_update_version_parse("0.22.0", &long22);
+        if (gc_update_version_compare(&short22, &long22) != 0) return 4109;
+
+        // The downgrade gate: strictly newer, and equal is NOT newer.
+        if (!gc_update_is_newer(&a, &b)) return 4110;
+        if (gc_update_is_newer(&b, &a)) return 4111;
+        if (gc_update_is_newer(&a, &a)) return 4112;
+
+        // An invalid version can never look newer than a real one, in either
+        // position.  This is the arm that keeps a garbage field from being an
+        // upgrade trigger.
+        GcUpdateVersion invalid;
+        gc_update_version_parse("garbage", &invalid);
+        if (gc_update_is_newer(&a, &invalid)) return 4113;
+        if (gc_update_is_newer(&invalid, &a)) return 4114;
+        if (gc_update_version_compare(&a, &invalid) != 0) return 4115;
+
+        // min_from: at or above the floor passes, below it does not, and an
+        // absent floor is not a failure.
+        GcUpdateVersion floor21;
+        gc_update_version_parse("0.21", &floor21);
+        if (!gc_update_meets_minimum_from(&b, nullptr)) return 4116;
+        if (gc_update_meets_minimum_from(&b, &floor21)) return 4117;   // 0.10 < 0.21
+        GcUpdateVersion v22;
+        gc_update_version_parse("0.22", &v22);
+        if (!gc_update_meets_minimum_from(&v22, &floor21)) return 4118;
+        if (!gc_update_meets_minimum_from(&floor21, &floor21)) return 4119;
+    }
+
+    // --- Manifest parsing and binding (4120-4149) ---------------------
+    {
+        static const char kGood[] =
+            "# comment\n"
+            "\n"
+            "format=1\n"
+            "version=0.23.0\n"
+            "min_from=0.21\n"
+            "x64_file=greencurve-0.23.0-windows-x64-setup.exe\n"
+            "x64_size=200000\n"
+            "x64_sha256=09931428a6e4293292cfc1be8e490d26a52fc9713b61cb84175c40802f2d7cfe\n"
+            "arm64_file=greencurve-0.23.0-windows-arm64-setup.exe\n"
+            "arm64_size=190000\n"
+            "arm64_sha256=94cf3d99cd91075f246efa1de0363323e5ebf06859c5eec940b6bacac4f8ec3a\n";
+
+        GcUpdateManifest manifest;
+        gc_update_manifest_parse(kGood, strlen(kGood), &manifest);
+        if (!manifest.valid) return 4120;
+        if (!manifest.x64.present || !manifest.arm64.present) return 4121;
+        if (manifest.x64.size != 200000ULL) return 4122;
+        if (!manifest.hasMinimumFrom) return 4123;
+        if (strcmp(manifest.version.text, "0.23.0") != 0) return 4124;
+
+        // CRLF must parse identically -- the signer writes LF, but a manifest
+        // that survived a text-mode round trip should fail its SIGNATURE, not
+        // confuse the parser into a different reading.
+        static const char kCrlf[] =
+            "format=1\r\n"
+            "version=0.23.0\r\n"
+            "x64_file=greencurve-0.23.0-windows-x64-setup.exe\r\n"
+            "x64_size=200000\r\n"
+            "x64_sha256=09931428a6e4293292cfc1be8e490d26a52fc9713b61cb84175c40802f2d7cfe\r\n";
+        GcUpdateManifest crlf;
+        gc_update_manifest_parse(kCrlf, strlen(kCrlf), &crlf);
+        if (!crlf.valid || !crlf.x64.present) return 4125;
+
+        // Every one of these must be refused outright.  The comment on each
+        // line is the attack or accident it stands for.
+        static const char* const bad[] = {
+            // No format key at all.
+            "version=0.23.0\nx64_file=greencurve-0.23.0-windows-x64-setup.exe\n",
+            // A format this build does not understand: refuse the whole
+            // document rather than half-read it.
+            "format=2\nversion=0.23.0\n",
+            // Unknown key -- rejected, not ignored, exactly like an unknown
+            // installer switch.
+            "format=1\nversion=0.23.0\nx64_extra=1\n",
+            // Duplicate key: "last one wins" is a smuggling primitive.
+            "format=1\nversion=0.23.0\nversion=0.24.0\n",
+            // Partial arch triple: size and hash without a name.
+            "format=1\nversion=0.23.0\nx64_size=200000\n"
+            "x64_sha256=09931428a6e4293292cfc1be8e490d26a52fc9713b61cb84175c40802f2d7cfe\n",
+            // Digest too short.
+            "format=1\nversion=0.23.0\n"
+            "x64_file=greencurve-0.23.0-windows-x64-setup.exe\nx64_size=200000\n"
+            "x64_sha256=0993\n",
+            // Digest uppercase: one canonical spelling only.
+            "format=1\nversion=0.23.0\n"
+            "x64_file=greencurve-0.23.0-windows-x64-setup.exe\nx64_size=200000\n"
+            "x64_sha256=09931428A6E4293292CFC1BE8E490D26A52FC9713B61CB84175C40802F2D7CFE\n",
+            // Zero size.
+            "format=1\nversion=0.23.0\n"
+            "x64_file=greencurve-0.23.0-windows-x64-setup.exe\nx64_size=0\n"
+            "x64_sha256=09931428a6e4293292cfc1be8e490d26a52fc9713b61cb84175c40802f2d7cfe\n",
+            // Absurd size, past the download ceiling.
+            "format=1\nversion=0.23.0\n"
+            "x64_file=greencurve-0.23.0-windows-x64-setup.exe\n"
+            "x64_size=99999999999999\n"
+            "x64_sha256=09931428a6e4293292cfc1be8e490d26a52fc9713b61cb84175c40802f2d7cfe\n",
+            // THE MIX-AND-MATCH CASE: a real, correctly-formed arm64 asset
+            // name sitting in the x64 slot.  Hash and size are internally
+            // consistent; only the name binding catches this.
+            "format=1\nversion=0.23.0\n"
+            "x64_file=greencurve-0.23.0-windows-arm64-setup.exe\nx64_size=200000\n"
+            "x64_sha256=09931428a6e4293292cfc1be8e490d26a52fc9713b61cb84175c40802f2d7cfe\n",
+            // An older asset renamed into a newer release's manifest.
+            "format=1\nversion=0.23.0\n"
+            "x64_file=greencurve-0.22.2-windows-x64-setup.exe\nx64_size=200000\n"
+            "x64_sha256=09931428a6e4293292cfc1be8e490d26a52fc9713b61cb84175c40802f2d7cfe\n",
+            // A path traversal wearing an asset name.
+            "format=1\nversion=0.23.0\n"
+            "x64_file=..\\\\evil.exe\nx64_size=200000\n"
+            "x64_sha256=09931428a6e4293292cfc1be8e490d26a52fc9713b61cb84175c40802f2d7cfe\n",
+            // Describes nothing.
+            "format=1\nversion=0.23.0\n",
+            // Malformed lines.
+            "format=1\nversion\n",
+            "format=1\n=0.23.0\n",
+            "format=1\nversion=\n",
+            // Whitespace around the separator is not tolerated.
+            "format = 1\nversion=0.23.0\n",
+        };
+        for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+            GcUpdateManifest rejected;
+            gc_update_manifest_parse(bad[i], strlen(bad[i]), &rejected);
+            if (rejected.valid) return 4126;
+            // Every refusal must carry a reason; an empty message would make a
+            // field report undiagnosable.
+            if (!rejected.error[0]) return 4127;
+        }
+
+        // Degenerate inputs at the boundary.
+        GcUpdateManifest edge;
+        gc_update_manifest_parse(nullptr, 0, &edge);
+        if (edge.valid) return 4128;
+        gc_update_manifest_parse(kGood, 0, &edge);
+        if (edge.valid) return 4129;
+        gc_update_manifest_parse(kGood, GC_UPDATE_MANIFEST_MAX_BYTES + 1, &edge);
+        if (edge.valid) return 4130;
+        // An embedded NUL would truncate a value the signer never wrote.
+        static const char kNul[] = "format=1\nversion=0.23\0.0\n";
+        gc_update_manifest_parse(kNul, sizeof(kNul) - 1, &edge);
+        if (edge.valid) return 4131;
+
+        // Asset-name acceptance in its own right.
+        if (gc_update_asset_name_is_acceptable("")) return 4132;
+        if (gc_update_asset_name_is_acceptable("a/b.exe")) return 4133;
+        if (gc_update_asset_name_is_acceptable("a\\b.exe")) return 4134;
+        if (gc_update_asset_name_is_acceptable("C:evil.exe")) return 4135;
+        if (gc_update_asset_name_is_acceptable("evil.exe ")) return 4136;
+        if (gc_update_asset_name_is_acceptable("evil.exe.")) return 4137;
+        if (gc_update_asset_name_is_acceptable(".hidden")) return 4138;
+        if (gc_update_asset_name_is_acceptable("a*.exe")) return 4139;
+        if (!gc_update_asset_name_is_acceptable("greencurve-0.23.0-windows-x64-setup.exe"))
+            return 4140;
+
+        // The expected-name builder must agree with what release.yml emits.
+        char expected[GC_UPDATE_ASSET_NAME_MAX_CHARS];
+        if (!gc_update_expected_asset_name("0.23.0", GC_UPDATE_ARCH_X64,
+                                           expected, sizeof(expected))) return 4141;
+        if (strcmp(expected, "greencurve-0.23.0-windows-x64-setup.exe") != 0) return 4142;
+        if (!gc_update_expected_asset_name("0.23.0", GC_UPDATE_ARCH_ARM64,
+                                           expected, sizeof(expected))) return 4143;
+        if (strcmp(expected, "greencurve-0.23.0-windows-arm64-setup.exe") != 0) return 4144;
+        if (gc_update_expected_asset_name("0.23.0", GC_UPDATE_ARCH_UNKNOWN,
+                                          expected, sizeof(expected))) return 4145;
+        char tiny[8];
+        if (gc_update_expected_asset_name("0.23.0", GC_UPDATE_ARCH_X64,
+                                          tiny, sizeof(tiny))) return 4146;
+
+        // --- The decision table --------------------------------------
+        GcUpdateVersion installed;
+        gc_update_version_parse("0.22.2", &installed);
+        if (gc_update_decide(&manifest, &installed, GC_UPDATE_ARCH_X64) !=
+            GC_UPDATE_DECISION_AVAILABLE) return 4147;
+
+        // Same version installed: up to date, and specifically NOT an install.
+        GcUpdateVersion same;
+        gc_update_version_parse("0.23.0", &same);
+        if (gc_update_decide(&manifest, &same, GC_UPDATE_ARCH_X64) !=
+            GC_UPDATE_DECISION_UP_TO_DATE) return 4148;
+
+        // A REPLAY of an older release.  This is the case neither the
+        // attestation nor the published .sha256 can catch, because the old
+        // artifact is genuinely signed, genuinely attested and correctly
+        // hashed.  Only the version comparison refuses it.
+        GcUpdateVersion newer;
+        gc_update_version_parse("1.0.0", &newer);
+        if (gc_update_decide(&manifest, &newer, GC_UPDATE_ARCH_X64) !=
+            GC_UPDATE_DECISION_REJECTED) return 4149;
+    }
+
+    // --- Decision edge cases and URL policy (4150-4174) ---------------
+    {
+        static const char kX64Only[] =
+            "format=1\n"
+            "version=0.23.0\n"
+            "min_from=0.21\n"
+            "x64_file=greencurve-0.23.0-windows-x64-setup.exe\n"
+            "x64_size=200000\n"
+            "x64_sha256=09931428a6e4293292cfc1be8e490d26a52fc9713b61cb84175c40802f2d7cfe\n";
+        GcUpdateManifest manifest;
+        gc_update_manifest_parse(kX64Only, strlen(kX64Only), &manifest);
+        if (!manifest.valid) return 4150;
+
+        GcUpdateVersion installed;
+        gc_update_version_parse("0.22.2", &installed);
+        // No asset for this machine's architecture is its own outcome, not a
+        // silent "up to date".
+        if (gc_update_decide(&manifest, &installed, GC_UPDATE_ARCH_ARM64) !=
+            GC_UPDATE_DECISION_NO_ASSET) return 4151;
+        if (gc_update_decide(&manifest, &installed, GC_UPDATE_ARCH_UNKNOWN) !=
+            GC_UPDATE_DECISION_REJECTED) return 4152;
+
+        // Below the declared floor: the user is sent to a manual install
+        // rather than through a silent upgrade that would lose settings.
+        GcUpdateVersion ancient;
+        gc_update_version_parse("0.20", &ancient);
+        if (gc_update_decide(&manifest, &ancient, GC_UPDATE_ARCH_X64) !=
+            GC_UPDATE_DECISION_MANUAL_REQUIRED) return 4153;
+
+        GcUpdateManifest invalid = {};
+        if (gc_update_decide(&invalid, &installed, GC_UPDATE_ARCH_X64) !=
+            GC_UPDATE_DECISION_REJECTED) return 4154;
+        if (gc_update_decide(&manifest, nullptr, GC_UPDATE_ARCH_X64) !=
+            GC_UPDATE_DECISION_REJECTED) return 4155;
+        if (gc_update_select_asset(&manifest, GC_UPDATE_ARCH_ARM64)) return 4156;
+        if (!gc_update_select_asset(&manifest, GC_UPDATE_ARCH_X64)) return 4157;
+
+        // --- URLs ----------------------------------------------------
+        if (!gc_update_url_is_acceptable(
+                "https://github.com/aufkrawall/green-curve/releases/latest/download/x"))
+            return 4158;
+        if (!gc_update_url_is_acceptable("https://objects.githubusercontent.com/a?b=c"))
+            return 4159;
+
+        static const char* const badUrls[] = {
+            // Plaintext, in every spelling.
+            "http://github.com/a",
+            "HTTPS://github.com/a",
+            "ftp://github.com/a",
+            "//github.com/a",
+            "github.com/a",
+            "",
+            // Credentials in the authority.  This is the one that defeats a
+            // naive "starts with https://github.com" check: the real host is
+            // evil.example.
+            "https://github.com@evil.example/a",
+            "https://user:pass@github.com/a",
+            // Off-allowlist hosts, including lookalikes.
+            "https://evil.example/a",
+            "https://github.com.evil.example/a",
+            "https://notgithub.com/a",
+            "https://raw.githubusercontent.com/a",
+            // An explicit port has one spelling: none.
+            "https://github.com:443/a",
+            "https://github.com:8443/a",
+            // A fragment is never sent on the wire, so its presence means the
+            // caller and the HTTP stack disagree about the request.
+            "https://github.com/a#b",
+            // Control characters and spaces in the path.
+            "https://github.com/a b",
+            "https://github.com/a\tb",
+            // Malformed authority.
+            "https://",
+            "https:///a",
+            "https://.github.com/a",
+            "https://github.com./a",
+        };
+        for (size_t i = 0; i < sizeof(badUrls) / sizeof(badUrls[0]); ++i) {
+            if (gc_update_url_is_acceptable(badUrls[i])) return 4160;
+        }
+        if (gc_update_url_is_acceptable(nullptr)) return 4161;
+
+        // Redirects: bounded AND filtered.  Both halves matter -- a bounded
+        // chain of hostile hops is still hostile.
+        if (!gc_update_redirect_is_acceptable("https://objects.githubusercontent.com/a", 0))
+            return 4162;
+        if (!gc_update_redirect_is_acceptable("https://objects.githubusercontent.com/a",
+                                              GC_UPDATE_MAX_REDIRECTS - 1)) return 4163;
+        if (gc_update_redirect_is_acceptable("https://objects.githubusercontent.com/a",
+                                             GC_UPDATE_MAX_REDIRECTS)) return 4164;
+        if (gc_update_redirect_is_acceptable("https://evil.example/a", 0)) return 4165;
+        if (gc_update_redirect_is_acceptable("http://github.com/a", 0)) return 4166;
+        if (gc_update_redirect_is_acceptable("https://github.com/a", -1)) return 4167;
+
+        // --- URL construction ----------------------------------------
+        char url[GC_UPDATE_URL_MAX_CHARS];
+        if (!gc_update_build_latest_url(GC_UPDATE_MANIFEST_ASSET, url, sizeof(url)))
+            return 4168;
+        if (strcmp(url,
+                   "https://github.com/aufkrawall/green-curve/releases/latest/download/"
+                   "greencurve-update-manifest.txt") != 0) return 4169;
+        if (!gc_update_build_latest_url(GC_UPDATE_SIGNATURE_ASSET, url, sizeof(url)))
+            return 4170;
+
+        if (!gc_update_build_asset_url("0.23.0",
+                                       "greencurve-0.23.0-windows-x64-setup.exe",
+                                       url, sizeof(url))) return 4171;
+        if (strcmp(url,
+                   "https://github.com/aufkrawall/green-curve/releases/download/0.23.0/"
+                   "greencurve-0.23.0-windows-x64-setup.exe") != 0) return 4172;
+        // The builders re-validate their inputs even though callers only pass
+        // signature-checked values, so a future reordering of the steps cannot
+        // quietly produce a URL out of unverified data.
+        if (gc_update_build_asset_url("../evil", "a.exe", url, sizeof(url))) return 4173;
+        if (gc_update_build_asset_url("0.23.0", "../evil.exe", url, sizeof(url)))
+            return 4173;
+        char shortBuf[16];
+        if (gc_update_build_asset_url("0.23.0",
+                                      "greencurve-0.23.0-windows-x64-setup.exe",
+                                      shortBuf, sizeof(shortBuf))) return 4174;
+    }
+
+    // --- Schedule and the install gate (4175-4199) --------------------
+    {
+        if (gc_update_clamp_interval(0) != GC_UPDATE_INTERVAL_MIN_SECONDS) return 4175;
+        if (gc_update_clamp_interval(-1) != GC_UPDATE_INTERVAL_MIN_SECONDS) return 4176;
+        if (gc_update_clamp_interval(1 << 30) != GC_UPDATE_INTERVAL_MAX_SECONDS) return 4177;
+        if (gc_update_clamp_interval(GC_UPDATE_INTERVAL_DEFAULT_SECONDS) !=
+            GC_UPDATE_INTERVAL_DEFAULT_SECONDS) return 4178;
+
+        // No failures means the plain interval.
+        if (gc_update_next_check_delay(GC_UPDATE_INTERVAL_DEFAULT_SECONDS, 0) !=
+            GC_UPDATE_INTERVAL_DEFAULT_SECONDS) return 4179;
+        // The first retry is short so a transient network drop recovers fast.
+        if (gc_update_next_check_delay(GC_UPDATE_INTERVAL_DEFAULT_SECONDS, 1) !=
+            GC_UPDATE_RETRY_BASE_SECONDS) return 4180;
+        // Backoff is monotonic and never exceeds the steady-state interval --
+        // a machine that failed once must not end up checking LESS often than
+        // one that never tried.
+        int previous = 0;
+        for (int failures = 1; failures <= 40; ++failures) {
+            int delay = gc_update_next_check_delay(GC_UPDATE_INTERVAL_DEFAULT_SECONDS,
+                                                   failures);
+            if (delay < previous) return 4181;
+            if (delay > GC_UPDATE_INTERVAL_DEFAULT_SECONDS) return 4182;
+            previous = delay;
+        }
+        if (previous != GC_UPDATE_INTERVAL_DEFAULT_SECONDS) return 4183;
+
+        // Due-ness.  Never checked is due; exactly at the boundary is due.
+        if (!gc_update_check_is_due(0, 1000, 100)) return 4184;
+        if (gc_update_check_is_due(1000, 1050, 100)) return 4185;
+        if (!gc_update_check_is_due(1000, 1100, 100)) return 4186;
+        if (!gc_update_check_is_due(1000, 1101, 100)) return 4187;
+        // A clock that moved BACKWARDS is due rather than waiting forever: a
+        // corrected clock or a restored snapshot would otherwise leave a
+        // future timestamp and a permanently silent updater.
+        if (!gc_update_check_is_due(5000, 1000, 100)) return 4188;
+
+        // The automatic gate is off unless the user said yes.  UNSET is not
+        // consent -- an upgrade from a build without this feature must not
+        // silently start making outbound requests.
+        if (gc_update_auto_check_allowed(GC_UPDATE_AUTO_CHECK_UNSET, 0, 100000,
+                                         GC_UPDATE_INTERVAL_DEFAULT_SECONDS, 0))
+            return 4189;
+        if (gc_update_auto_check_allowed(GC_UPDATE_AUTO_CHECK_OFF, 0, 100000,
+                                         GC_UPDATE_INTERVAL_DEFAULT_SECONDS, 0))
+            return 4190;
+        if (!gc_update_auto_check_allowed(GC_UPDATE_AUTO_CHECK_ON, 0, 100000,
+                                          GC_UPDATE_INTERVAL_DEFAULT_SECONDS, 0))
+            return 4191;
+
+        // Auto-download is allowed to be automatic (it changes nothing about
+        // the running system) but still requires the check setting to be on.
+        if (gc_update_auto_download_allowed(GC_UPDATE_AUTO_CHECK_OFF, true, false))
+            return 4192;
+        if (gc_update_auto_download_allowed(GC_UPDATE_AUTO_CHECK_ON, false, false))
+            return 4193;
+        if (gc_update_auto_download_allowed(GC_UPDATE_AUTO_CHECK_ON, true, true))
+            return 4194;
+        if (!gc_update_auto_download_allowed(GC_UPDATE_AUTO_CHECK_ON, true, false))
+            return 4195;
+
+        // --- The install gate ----------------------------------------
+        // A fully clean, fully consented state is the only ALLOWED one.
+        GcUpdateInstallGate gate = {};
+        gate.userConsented = true;
+        gate.packageStaged = true;
+        gate.packageVerified = true;
+        gate.isInstalledCopy = true;
+        if (gc_update_install_decision(&gate) != GC_UPDATE_INSTALL_ALLOWED) return 4196;
+
+        // Each refusal arm in turn.  Consent is checked first so the log's
+        // first line is never a technical detail when the real answer is that
+        // nobody asked for this.
+        {
+            GcUpdateInstallGate g = gate;
+            g.userConsented = false;
+            if (gc_update_install_decision(&g) != GC_UPDATE_INSTALL_NO_CONSENT) return 4197;
+        }
+        {
+            GcUpdateInstallGate g = gate;
+            g.packageVerified = false;
+            if (gc_update_install_decision(&g) != GC_UPDATE_INSTALL_NOT_VERIFIED) return 4197;
+        }
+        {
+            GcUpdateInstallGate g = gate;
+            g.packageStaged = false;
+            if (gc_update_install_decision(&g) != GC_UPDATE_INSTALL_NO_PACKAGE) return 4197;
+        }
+        {
+            GcUpdateInstallGate g = gate;
+            g.applyInFlight = true;
+            if (gc_update_install_decision(&g) != GC_UPDATE_INSTALL_BUSY_APPLYING) return 4197;
+        }
+        {
+            GcUpdateInstallGate g = gate;
+            g.foregroundAppActive = true;
+            if (gc_update_install_decision(&g) != GC_UPDATE_INSTALL_BUSY_FOREGROUND)
+                return 4197;
+        }
+        {
+            GcUpdateInstallGate g = gate;
+            g.isInstalledCopy = false;
+            if (gc_update_install_decision(&g) != GC_UPDATE_INSTALL_NOT_INSTALLED_COPY)
+                return 4197;
+        }
+        {
+            GcUpdateInstallGate g = gate;
+            g.installAlreadyRunning = true;
+            if (gc_update_install_decision(&g) != GC_UPDATE_INSTALL_ALREADY_RUNNING)
+                return 4197;
+        }
+        // An unverified package is refused even when everything else is set,
+        // and a null gate is a refusal rather than a crash.
+        if (gc_update_install_decision(nullptr) != GC_UPDATE_INSTALL_NO_CONSENT) return 4198;
+
+        // Every refusal has readable text; an empty one would surface to the
+        // user as a status line that says nothing.
+        for (int code = GC_UPDATE_INSTALL_ALLOWED;
+             code <= GC_UPDATE_INSTALL_ALREADY_RUNNING; ++code) {
+            const char* text = gc_update_install_refusal_text((GcUpdateInstallRefusal)code);
+            if (!text || !text[0]) return 4199;
+        }
     }
 
     DeleteCriticalSection(&g_configLock);

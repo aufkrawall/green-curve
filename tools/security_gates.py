@@ -33,6 +33,7 @@ FUZZ_TARGETS = {
     "task_xml": 3,
     "config_strings": 4,
     "wire_prefix": 5,
+    "update_manifest": 6,
 }
 
 # Targets that build on a native Linux host.  The one omission is not an
@@ -44,8 +45,11 @@ FUZZ_TARGETS = {
 # Win32-only config_utils.cpp into config_text_utils.cpp.  That same move
 # deleted linux_port.cpp's private duplicate of parse_fan_value, so this target
 # now fuzzes the code the Linux daemon actually runs.
+#
+# update_manifest is header-only pure policy with no Win32 dependency at all,
+# so it builds and runs on both hosts.
 FUZZ_LINUX_TARGETS = frozenset({"service_request", "vf_snapshot", "wire_prefix",
-                                "config_strings"})
+                                "config_strings", "update_manifest"})
 
 # Extra translation units a Linux fuzz target needs, keyed by target name.  Most
 # resolve entirely inside the harness and its headers; an empty/absent entry
@@ -332,6 +336,69 @@ _ALLOWED_PROFILE_NAMES = frozenset({
 })
 
 _PROFILE_PATH_RE = re.compile(r"[Cc]:[\\/]{1,2}Users[\\/]{1,2}([^\\/\s\"'`)<>]+|<[^>]+>)")
+
+# Update-signing private key material.  Names first, because a filename match
+# has no false positives and catches the file before its contents matter.
+_SIGNING_KEY_NAME_RE = re.compile(
+    r"(signing-key|update-key|private-key)|\.(pem|p8|pfx|p12)$", re.IGNORECASE)
+# A PEM private key block, in any of the spellings OpenSSL emits.
+_PEM_PRIVATE_RE = re.compile(r"-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----")
+# A line that is nothing but 64 hex characters is what a raw P-256 scalar looks
+# like on disk.  Deliberately anchored to the WHOLE line: SHA-256 digests are
+# also 64 hex characters and appear legitimately in the manifest fixtures and
+# in tools/update_signing.py's test vectors, but always with surrounding text.
+_BARE_HEX_KEY_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+def check_no_signing_key_material(ctx, tracked):
+    """Fail if update-signing private key material is tracked by git.
+
+    The updater's whole security model rests on a key GitHub has never held:
+    the build-provenance attestation only proves that CI built an artifact from
+    some commit, so an attacker who can push a commit can mint a valid
+    attestation for hostile code.  A key that never leaves the maintainer's
+    machine is what closes that, and committing it -- once, briefly, then
+    reverted -- destroys the property permanently, because git history is
+    forever and the repository is public.
+
+    `.gitignore` is not sufficient on its own: `git add -f` bypasses it, and so
+    does a rename into a pattern that was never listed.  This gate looks at
+    what is actually tracked.
+
+    `tracked` is build.py's tracked-file list, or None when git is unavailable
+    (tarball/export build), in which case this cannot be assessed."""
+    if tracked is None:
+        return
+    offenders = []
+    for rel in tracked:
+        base = os.path.basename(rel)
+        # The verifier's PUBLIC keys are meant to be in the repository; only
+        # the private halves are forbidden, and they never carry that name.
+        if base == "update_verify_keys.h":
+            continue
+        if _SIGNING_KEY_NAME_RE.search(base):
+            offenders.append(f"{rel}: filename looks like private key material")
+            continue
+        path = os.path.join(ctx.SCRIPT_DIR, rel)
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                text = handle.read()
+        except (OSError, UnicodeDecodeError):
+            continue  # binary fuzz corpora and unreadable files hold no PEM
+        if _PEM_PRIVATE_RE.search(text):
+            offenders.append(f"{rel}: contains a PEM private key block")
+            continue
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if _BARE_HEX_KEY_RE.match(line.strip()):
+                offenders.append(
+                    f"{rel}:{line_no}: bare 64-hex line (raw P-256 scalar?)")
+                break
+    if offenders:
+        print("Regression source check FAILED: update-signing private key "
+              "material must never be tracked (see llm-wiki/updates.md):")
+        for offender in offenders[:20]:
+            print(f"  {offender}")
+        sys.exit(1)
 
 
 def check_no_developer_profile_paths(ctx, tracked):

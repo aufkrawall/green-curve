@@ -35,6 +35,7 @@
 #define GC_FUZZ_TASK_XML        3
 #define GC_FUZZ_CONFIG_STRINGS  4
 #define GC_FUZZ_WIRE_PREFIX     5
+#define GC_FUZZ_UPDATE_MANIFEST 6
 
 #ifndef GC_FUZZ_TARGET
 #error "GC_FUZZ_TARGET must be defined (see FUZZ_TARGETS in build.py)"
@@ -564,3 +565,145 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 }
 
 #endif  // GC_FUZZ_WIRE_PREFIX
+
+// ---------------------------------------------------------------------------
+// Target 6: the signed update manifest, plus the URL/redirect allowlist that
+// decides where the updater is allowed to connect.
+//
+// In production this parser only ever sees bytes whose ECDSA P-256 signature
+// already verified against a key compiled into the binary, so it is not
+// nominally an untrusted boundary at all.  It is fuzzed as one anyway, because
+// "the signature check ran first" is precisely the assumption that must not be
+// load-bearing twice: a bug in the verifier, a future caller that reorders the
+// steps, or a compromised key would each put arbitrary bytes here, and the
+// result of that should be a refusal rather than memory corruption in a
+// LocalSystem process that is about to launch an installer.
+// ---------------------------------------------------------------------------
+#if GC_FUZZ_TARGET == GC_FUZZ_UPDATE_MANIFEST
+
+#include "update_version_policy.h"
+#include "update_manifest_policy.h"
+#include "update_url_policy.h"
+#include "update_schedule_policy.h"
+
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+    FuzzInput in(data, size);
+
+    // --- The manifest parser, over the raw input ------------------------
+    GcUpdateManifest manifest;
+    gc_update_manifest_parse((const char*)data, size, &manifest);
+
+    // The error string is the only channel a refusal has; it must always be
+    // NUL-terminated within its buffer whether the parse succeeded or not.
+    bool terminated = false;
+    for (size_t i = 0; i < sizeof(manifest.error); ++i)
+        if (manifest.error[i] == '\0') { terminated = true; break; }
+    GC_FUZZ_CHECK(terminated, "manifest error string was not NUL-terminated");
+
+    if (manifest.valid) {
+        // A valid manifest carries a parseable version and at least one fully
+        // described asset.  Anything less means `valid` outran the checks.
+        GC_FUZZ_CHECK(manifest.version.valid,
+                      "a valid manifest carried an invalid version");
+        GC_FUZZ_CHECK(manifest.x64.present || manifest.arm64.present,
+                      "a valid manifest described no assets");
+        GC_FUZZ_CHECK(manifest.error[0] == '\0',
+                      "a valid manifest carried an error message");
+
+        const GcUpdateArch arches[2] = { GC_UPDATE_ARCH_X64, GC_UPDATE_ARCH_ARM64 };
+        for (int i = 0; i < 2; ++i) {
+            const GcUpdateAsset* asset = gc_update_select_asset(&manifest, arches[i]);
+            if (!asset) continue;
+            // The size ceiling bounds how much a hostile response can make the
+            // service download before any length check fires.
+            GC_FUZZ_CHECK(asset->size > 0 && asset->size <= GC_UPDATE_ASSET_MAX_BYTES,
+                          "asset size escaped its range");
+            GC_FUZZ_CHECK(strlen(asset->sha256) == GC_UPDATE_SHA256_HEX_CHARS,
+                          "asset digest was not 64 characters");
+            for (size_t c = 0; c < GC_UPDATE_SHA256_HEX_CHARS; ++c)
+                GC_FUZZ_CHECK(gc_update_is_lower_hex(asset->sha256[c]),
+                              "asset digest held a non-hex character");
+            GC_FUZZ_CHECK(gc_update_asset_name_is_acceptable(asset->file),
+                          "an accepted asset name fails its own predicate");
+
+            // The mix-and-match binding: the name a valid manifest carries must
+            // be exactly the one this version and architecture produce.
+            char expected[GC_UPDATE_ASSET_NAME_MAX_CHARS];
+            GC_FUZZ_CHECK(gc_update_expected_asset_name(manifest.version.text,
+                                                        arches[i], expected,
+                                                        sizeof(expected)),
+                          "could not rebuild the expected asset name");
+            GC_FUZZ_CHECK(strcmp(asset->file, expected) == 0,
+                          "asset name was not bound to its version and arch");
+
+            // A URL built from a valid manifest must itself pass the allowlist.
+            char url[GC_UPDATE_URL_MAX_CHARS];
+            if (gc_update_build_asset_url(manifest.version.text, asset->file,
+                                          url, sizeof(url)))
+                GC_FUZZ_CHECK(gc_update_url_is_acceptable(url),
+                              "a constructed asset URL failed the allowlist");
+        }
+
+        // The downgrade gate, driven from the fuzzed manifest against a fixed
+        // installed version: a manifest older than what is installed must never
+        // come back as AVAILABLE, however it is spelled.
+        GcUpdateVersion installed;
+        gc_update_version_parse("0.22.2", &installed);
+        GcUpdateDecision decision =
+            gc_update_decide(&manifest, &installed, GC_UPDATE_ARCH_X64);
+        if (decision == GC_UPDATE_DECISION_AVAILABLE) {
+            GC_FUZZ_CHECK(gc_update_is_newer(&installed, &manifest.version),
+                          "an update was offered that is not newer");
+            GC_FUZZ_CHECK(gc_update_select_asset(&manifest, GC_UPDATE_ARCH_X64) != nullptr,
+                          "an update was offered with no asset for this arch");
+        }
+    }
+
+    // --- The URL allowlist, over a NUL-terminated slice ------------------
+    char url[GC_UPDATE_URL_MAX_CHARS + 32];
+    memset(url, 0x5A, sizeof(url));
+    char scratch[GC_UPDATE_URL_MAX_CHARS];
+    memset(scratch, 0, sizeof(scratch));
+    fuzz_cstring(in, scratch);
+    memcpy(url, scratch, sizeof(scratch));
+    url[sizeof(scratch) - 1] = '\0';
+
+    GcUpdateUrl parsed;
+    gc_update_url_parse(url, &parsed);
+    for (size_t i = sizeof(scratch); i < sizeof(url); ++i)
+        GC_FUZZ_CHECK((unsigned char)url[i] == 0x5Au,
+                      "URL parsing wrote past the input buffer");
+    if (parsed.valid) {
+        // A parse that succeeded must have produced a plausible authority and
+        // a rooted path; the allowlist decision is layered on top of that.
+        GC_FUZZ_CHECK(parsed.host[0] != '\0', "a valid URL had an empty host");
+        GC_FUZZ_CHECK(parsed.path[0] == '/', "a valid URL had an unrooted path");
+        for (size_t i = 0; parsed.host[i]; ++i)
+            GC_FUZZ_CHECK(parsed.host[i] != '@' && parsed.host[i] != ':',
+                          "a valid host kept credentials or a port");
+    }
+    if (gc_update_url_is_acceptable(url)) {
+        GC_FUZZ_CHECK(parsed.valid, "an acceptable URL did not parse");
+        GC_FUZZ_CHECK(gc_update_host_is_allowed(parsed.host),
+                      "an acceptable URL had an off-allowlist host");
+        // Acceptance must never depend on the hop budget being ignored.
+        GC_FUZZ_CHECK(!gc_update_redirect_is_acceptable(url, GC_UPDATE_MAX_REDIRECTS),
+                      "a redirect was accepted past its budget");
+    }
+
+    // --- The schedule, over fuzzed integers ------------------------------
+    const int interval = (int)(in.byte() | (in.byte() << 8) | (in.byte() << 16));
+    const int failures = (int)in.byte();
+    const int clamped = gc_update_clamp_interval(interval);
+    GC_FUZZ_CHECK(clamped >= GC_UPDATE_INTERVAL_MIN_SECONDS &&
+                  clamped <= GC_UPDATE_INTERVAL_MAX_SECONDS,
+                  "clamped interval escaped its range");
+    const int delay = gc_update_next_check_delay(interval, failures);
+    // Backoff must never exceed the steady-state rate: a machine that failed
+    // once must not end up checking less often than one that never tried.
+    GC_FUZZ_CHECK(delay > 0 && delay <= clamped,
+                  "backoff delay escaped its range");
+    return 0;
+}
+
+#endif  // GC_FUZZ_UPDATE_MANIFEST
