@@ -15,6 +15,7 @@
 #include "main_service_update_fetch.cpp"
 #include "main_service_update_verify.cpp"
 #include "main_service_update_worker.cpp"
+#include "main_service_update_worker_thread.cpp"
 #include "main_service_update_commands.cpp"
 #include "main_service_pipe.cpp"
 #include "main_service_host.cpp"

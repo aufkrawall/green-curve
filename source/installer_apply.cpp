@@ -462,8 +462,9 @@ static void gc_release_previous_directory(const GcInstallContext* context) {
 // window, and works precisely because setup is running as SYSTEM.  Returns null
 // when there is no interactive session (a genuinely headless update), which is
 // a legitimate answer and not an error.
-static HANDLE gc_active_user_primary_token() {
-    DWORD sessionId = WTSGetActiveConsoleSessionId();
+static HANDLE gc_active_user_primary_token(DWORD preferredSessionId) {
+    DWORD sessionId = preferredSessionId;
+    if (sessionId == (DWORD)-1) sessionId = WTSGetActiveConsoleSessionId();
     if (sessionId == 0xFFFFFFFFu) return nullptr;
 
     HANDLE userToken = nullptr;
@@ -487,7 +488,8 @@ static HANDLE gc_active_user_primary_token() {
     return primaryToken;
 }
 
-bool gc_launch_installed_gui(const WCHAR* installDirectory) {
+bool gc_launch_installed_gui(const WCHAR* installDirectory,
+                             DWORD preferredSessionId) {
     WCHAR exePath[GC_INSTALLER_MAX_PATH_CHARS] = {};
     if (!gc_join_path(installDirectory, GC_SETUP_GUI_EXE_W, exePath, GC_ARRAY_COUNT(exePath))) return false;
     if (!gc_file_exists(exePath)) return false;
@@ -496,7 +498,7 @@ bool gc_launch_installed_gui(const WCHAR* installDirectory) {
     // administrator token it is not designed to hold (its manifest asks for
     // asInvoker).  Borrowing the desktop shell's token starts it at the
     // interactive user's normal integrity level instead.
-    HWND shell = GetShellWindow();
+    HWND shell = preferredSessionId == (DWORD)-1 ? GetShellWindow() : nullptr;
     if (shell) {
         DWORD shellProcessId = 0;
         GetWindowThreadProcessId(shell, &shellProcessId);
@@ -540,7 +542,7 @@ bool gc_launch_installed_gui(const WCHAR* installDirectory) {
     // from session 0 would produce a GUI nobody can see.  CreateProcessAsUser
     // honours the token's own session, and SYSTEM holds the privileges it wants.
     {
-        HANDLE primaryToken = gc_active_user_primary_token();
+        HANDLE primaryToken = gc_active_user_primary_token(preferredSessionId);
         if (primaryToken) {
             GcScopedHandle scopedPrimary(primaryToken);
             WCHAR commandLine[GC_INSTALLER_MAX_PATH_CHARS + 8] = {};
@@ -564,8 +566,9 @@ bool gc_launch_installed_gui(const WCHAR* installDirectory) {
             BOOL haveEnvironment = CreateEnvironmentBlock(&environment, primaryToken, FALSE);
             if (!haveEnvironment) {
                 gc_log_step("launch: CreateEnvironmentBlock failed (error %lu); "
-                            "the relaunched GUI would inherit SYSTEM's environment",
+                            "refusing to start it with SYSTEM's environment",
                             GetLastError());
+                return false;
             }
             PROCESS_INFORMATION process = {};
             BOOL started = CreateProcessAsUserW(
@@ -584,21 +587,8 @@ bool gc_launch_installed_gui(const WCHAR* installDirectory) {
         }
     }
 
-    // Fallback: ShellExecute from the elevated process.  Less ideal (the GUI
-    // inherits elevation), but far better than not starting at all.
-    SHELLEXECUTEINFOW info = {};
-    info.cbSize = sizeof(info);
-    info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
-    info.lpVerb = L"open";
-    info.lpFile = exePath;
-    info.lpDirectory = installDirectory;
-    info.nShow = SW_SHOWNORMAL;
-    if (ShellExecuteExW(&info)) {
-        if (info.hProcess) CloseHandle(info.hProcess);
-        gc_log_step("launch: started %ls through the shell (elevated fallback)", exePath);
-        return true;
-    }
-    gc_log_step("launch: could not start %ls (error %lu)", exePath, GetLastError());
+    gc_log_step("launch: could not start %ls as an interactive user "
+                "(last error %lu)", exePath, GetLastError());
     return false;
 }
 

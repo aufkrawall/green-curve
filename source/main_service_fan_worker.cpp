@@ -257,6 +257,10 @@ static DWORD WINAPI service_fan_runtime_thread_proc(void*) {
             g_serviceFanPulseHeartbeatMs = GetTickCount64();
             InterlockedExchange(&g_serviceFanPulseInFlight, 1);
             lock_service_runtime();
+            if (service_update_install_blocks_locked()) {
+                InterlockedExchange(&g_serviceFanPulseInFlight, 0);
+                continue;
+            }
             service_runtime_pulse();
             unlock_service_runtime();
             InterlockedExchange(&g_serviceFanPulseInFlight, 0);

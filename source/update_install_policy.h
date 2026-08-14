@@ -63,6 +63,25 @@ static inline bool gc_update_path_is_quotable(const char* path) {
     return true;
 }
 
+static inline bool gc_update_session_id_is_quotable(const char* sessionId) {
+    if (!sessionId || !sessionId[0]) return false;
+    size_t digits = 0;
+    while (sessionId[digits]) {
+        if (sessionId[digits] < '0' || sessionId[digits] > '9') return false;
+        ++digits;
+        if (digits > 10) return false;
+    }
+    if (digits > 1 && sessionId[0] == '0') return false;
+    // ULONG_MAX.  Session ids are well below this; the boundary keeps a hostile
+    // or corrupt value from becoming an integer parser's wraparound problem.
+    static const char* const max = "4294967295";
+    if (digits < 10) return true;
+    for (size_t i = 0; i < digits; ++i) {
+        if (sessionId[i] != max[i]) return sessionId[i] < max[i];
+    }
+    return true;
+}
+
 static inline bool gc_update_command_append(char* out, size_t outSize, size_t* at,
                                             const char* text) {
     if (!out || !at || !text) return false;
@@ -74,7 +93,8 @@ static inline bool gc_update_command_append(char* out, size_t outSize, size_t* a
     return true;
 }
 
-// Build `"<setup>" /S --no-launch --dir "<installDir>"`.
+// Build `"<setup>" /S --no-launch --dir "<installDir>"`, or the relaunch form
+// `"<setup>" /S --launch --launch-session <id> --dir "<installDir>"`.
 //
 //   /S            silent; the whole point of driving setup from a service.
 //   --dir         the CURRENT install directory. Passing it explicitly matters:
@@ -83,41 +103,42 @@ static inline bool gc_update_command_append(char* out, size_t outSize, size_t* a
 //   --launch /
 //   --no-launch   whether setup starts the GUI again when it finishes.
 //
-// `relaunchGui` is decided by the caller from something it actually measured:
-// the service closes every running GUI before setup starts (it must -- setup
-// runs in session 0 and cannot reach the user's windows), so it knows whether
-// there was one. If there was, setup brings it back through its own
-// shell-token launch, which is the only participant that can start a process as
-// the interactive user. If there was not, the machine stays as it was.
+// `relaunchGui` is decided from processes actually closed, and
+// `launchSessionId` is the authenticated pipe session that requested the
+// update. Setup itself lives in session 0 and must not guess between console
+// and RDP users.
 //
 // Silent mode defaults `launch` to OFF, so the flag is always passed explicitly
 // rather than relying on that default meaning what we want.
 static inline bool gc_update_build_installer_command_line(const char* setupPath,
                                                           const char* installDir,
                                                           bool relaunchGui,
+                                                          const char* launchSessionId,
                                                           char* out, size_t outSize) {
     if (!out || outSize == 0) return false;
     out[0] = 0;
     if (!gc_update_path_is_quotable(setupPath)) return false;
     if (!gc_update_path_is_quotable(installDir)) return false;
+    if (relaunchGui && !gc_update_session_id_is_quotable(launchSessionId)) return false;
 
     size_t at = 0;
-    const char* parts[5] = {
-        "\"", setupPath,
-        relaunchGui ? "\" /S --launch --dir \"" : "\" /S --no-launch --dir \"",
-        installDir, "\"",
-    };
-    for (int i = 0; i < 5; ++i) {
-        if (!gc_update_command_append(out, outSize, &at, parts[i])) {
-            // Leave NOTHING behind on failure.  Appending in place means a
-            // partial command line is sitting in the buffer at this point, and
-            // a caller that checked the return value less carefully than it
-            // should would hand a truncated argument list to a process running
-            // as SYSTEM.  Emptying it makes that mistake fail loudly instead.
-            out[0] = 0;
-            return false;
+    if (!gc_update_command_append(out, outSize, &at, "\"")) { out[0] = 0; return false; }
+    if (!gc_update_command_append(out, outSize, &at, setupPath)) { out[0] = 0; return false; }
+    if (!gc_update_command_append(out, outSize, &at,
+                                  relaunchGui ? "\" /S --launch" : "\" /S --no-launch")) {
+        out[0] = 0; return false;
+    }
+    if (relaunchGui) {
+        if (!gc_update_command_append(out, outSize, &at, " --launch-session ")) {
+            out[0] = 0; return false;
+        }
+        if (!gc_update_command_append(out, outSize, &at, launchSessionId)) {
+            out[0] = 0; return false;
         }
     }
+    if (!gc_update_command_append(out, outSize, &at, " --dir \"")) { out[0] = 0; return false; }
+    if (!gc_update_command_append(out, outSize, &at, installDir)) { out[0] = 0; return false; }
+    if (!gc_update_command_append(out, outSize, &at, "\"")) { out[0] = 0; return false; }
     return true;
 }
 

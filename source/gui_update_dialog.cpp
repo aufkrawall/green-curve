@@ -32,7 +32,9 @@
 // ---------------------------------------------------------------------------
 
 static bool gui_update_is_busy() {
-    const ServiceUpdateState* state = gui_update_state();
+    ServiceUpdateState stateValue = {};
+    const ServiceUpdateState* state =
+        gui_update_state(&stateValue) ? &stateValue : nullptr;
     if (!state) return false;
     // `workerRunning` first, and it is the authoritative half.  The service sets
     // it before creating the worker thread, so it is already true in the reply
@@ -55,7 +57,9 @@ static bool gui_update_is_busy() {
 static void gui_update_status_text(char* out, size_t outSize) {
     if (!out || outSize == 0) return;
     out[0] = 0;
-    const ServiceUpdateState* state = gui_update_state();
+    ServiceUpdateState stateValue = {};
+    const ServiceUpdateState* state =
+        gui_update_state(&stateValue) ? &stateValue : nullptr;
     if (!state) {
         StringCchCopyA(out, outSize, "Update status is not available yet.");
         return;
@@ -256,7 +260,9 @@ static void gud_set_text(HWND control, const char* text) {
 // what the dialog looks like for a given state.
 static void gud_refresh_controls() {
     if (!g_updateDialog.hwnd) return;
-    const ServiceUpdateState* state = gui_update_state();
+    ServiceUpdateState stateValue = {};
+    const ServiceUpdateState* state =
+        gui_update_state(&stateValue) ? &stateValue : nullptr;
 
     char status[512] = {};
     gui_update_status_text(status, sizeof(status));
@@ -320,7 +326,9 @@ static void gud_report_error(HWND hwnd, const char* action, const char* err) {
 }
 
 static void gud_apply_auto_check(HWND hwnd) {
-    const ServiceUpdateState* state = gui_update_state();
+    ServiceUpdateState stateValue = {};
+    const ServiceUpdateState* state =
+        gui_update_state(&stateValue) ? &stateValue : nullptr;
     int interval = state && state->intervalSeconds
                        ? (int)state->intervalSeconds
                        : GC_UPDATE_INTERVAL_DEFAULT_SECONDS;
@@ -396,7 +404,9 @@ static void gud_create_controls(HWND hwnd) {
     apply_ui_font_to_children(hwnd);
     fit_themed_checkbox_to_label(g_updateDialog.autoCheck);
 
-    const ServiceUpdateState* state = gui_update_state();
+    ServiceUpdateState stateValue = {};
+    const ServiceUpdateState* state =
+        gui_update_state(&stateValue) ? &stateValue : nullptr;
     gud_check_set(state && state->autoCheck == GC_UPDATE_AUTO_CHECK_ON);
     gud_refresh_controls();
 }
@@ -488,10 +498,11 @@ static LRESULT CALLBACK GuiUpdateDialogProc(HWND hwnd, UINT msg,
                 // already connected, so it does the job itself.  Failure is
                 // ordinary -- it means nothing is applied -- and never blocks
                 // the update.
-                (void)gui_update_capture_settings_for_restore();
+                bool captured = gui_update_capture_settings_for_restore();
 
                 char err[256] = {};
                 if (!gui_update_request_install(err, sizeof(err))) {
+                    if (captured) gui_update_discard_pending_restore();
                     gud_report_error(hwnd, "Installing the update", err);
                 }
                 gud_refresh_controls();

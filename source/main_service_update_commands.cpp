@@ -58,6 +58,10 @@ static void service_handle_update_install_request(ServiceResponse& response,
                                                   DWORD callerSessionId,
                                                   const char* callerUser) {
     char err[256] = {};
+    {
+        GcUpdateStateLock guard;
+        g_updateState.requestingSessionId = callerSessionId;
+    }
     if (service_update_start_worker(GC_UPDATE_WORK_INSTALL, err, sizeof(err))) {
         response.status = SERVICE_STATUS_OK;
         StringCchCopyA(response.message, ARRAY_COUNT(response.message),
@@ -66,6 +70,10 @@ static void service_handle_update_install_request(ServiceResponse& response,
                   (unsigned long)callerPid, (unsigned long)callerSessionId,
                   callerUser && callerUser[0] ? callerUser : "<unknown>");
     } else {
+        {
+            GcUpdateStateLock guard;
+            g_updateState.requestingSessionId = (DWORD)-1;
+        }
         response.status = SERVICE_STATUS_ERROR;
         StringCchCopyA(response.message, ARRAY_COUNT(response.message), err);
     }

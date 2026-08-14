@@ -276,9 +276,21 @@ static bool cli_run_settings_transfer(const CliOptions* opts, char* result,
     // the service-lifecycle commands and before anything that only touches
     // config on disk.
     refresh_background_service_state();
-    return opts->exportActiveSettings
+    bool ok = opts->exportActiveSettings
         ? settings_transfer_export(opts->settingsFilePath, result, resultSize)
         : settings_transfer_apply(opts->settingsFilePath, result, resultSize);
+    if (!opts->exportActiveSettings && opts->settingsFilePath[0]) {
+        // The updater's relaunch helper consumes exactly one attempt.  Delete
+        // the renamed "applying" capture here so a crashed/skipped apply does
+        // not accumulate forever in the user data directory.
+        const char* leaf = strrchr(opts->settingsFilePath, '\\');
+        leaf = leaf ? leaf + 1 : opts->settingsFilePath;
+        if (strcmp(leaf, "pending-update-restore.applying.ini") == 0) {
+            gc_DeleteFileUtf8(opts->settingsFilePath);
+            debug_log("settings transfer: consumed the update-restore capture\n");
+        }
+    }
+    return ok;
 }
 
 #endif // GREEN_CURVE_SERVICE_BINARY

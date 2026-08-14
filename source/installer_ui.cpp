@@ -228,7 +228,7 @@ static void gc_advance(GcWizard* wizard) {
                 WCHAR directory[GC_INSTALLER_MAX_PATH_CHARS] = {};
                 if (gc_utf8_to_wide(wizard->install.plan.targetDirectory, directory,
                                     (int)GC_ARRAY_COUNT(directory))) {
-                    gc_launch_installed_gui(directory);
+                    gc_launch_installed_gui(directory, (DWORD)-1);
                 }
             }
             wizard->exitCode = wizard->workSucceeded ? 0 : 1;

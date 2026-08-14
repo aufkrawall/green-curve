@@ -434,6 +434,32 @@ static inline bool service_response_payload_is_absent(
         r->startupProfileValid == 0;
 }
 
+static inline bool validate_service_update_state_for_ipc(ServiceUpdateState* update) {
+    if (!update) return false;
+    canonicalize_gc_bool8(&update->packageStaged);
+    canonicalize_gc_bool8(&update->packageVerified);
+    canonicalize_gc_bool8(&update->installRunning);
+    canonicalize_gc_bool8(&update->isInstalledCopy);
+    canonicalize_gc_bool8(&update->workerRunning);
+    canonicalize_gc_bool8(&update->guiShutdownRequested);
+    for (unsigned int i = 0; i < sizeof(update->updateReserved); ++i)
+        if (update->updateReserved[i] != 0) return false;
+    if (update->phase > SERVICE_UPDATE_PHASE_FAILED) return false;
+    if (update->decision > GC_UPDATE_DECISION_NO_ASSET) return false;
+    if (update->autoCheck > GC_UPDATE_AUTO_CHECK_ON) return false;
+    if (update->intervalSeconds != 0 &&
+        (update->intervalSeconds < GC_UPDATE_INTERVAL_MIN_SECONDS ||
+         update->intervalSeconds > GC_UPDATE_INTERVAL_MAX_SECONDS)) return false;
+    if (update->lastRefusal > GC_UPDATE_INSTALL_ALREADY_RUNNING) return false;
+    if (!service_wire_string_is_terminated(update->availableVersion,
+            (unsigned int)sizeof(update->availableVersion)) ||
+        !service_wire_string_is_terminated(update->installedVersion,
+            (unsigned int)sizeof(update->installedVersion)) ||
+        !service_wire_string_is_terminated(update->detail,
+            (unsigned int)sizeof(update->detail))) return false;
+    return true;
+}
+
 // The boot-apply snapshot is coherent or the response is damaged: the flag is
 // a boolean, its settings pass the same field checks as any other wire
 // DesiredSettings, and it may only be advertised while the published policy
@@ -471,6 +497,7 @@ static inline bool validate_service_response_for_ipc(ServiceResponse* r) {
             (unsigned int)sizeof(r->serviceVersion)) ||
         !service_wire_string_is_terminated(r->message,
             (unsigned int)sizeof(r->message))) return false;
+    if (!validate_service_update_state_for_ipc(&r->update)) return false;
     // A refusal that publishes no state at all is the service's answer, not a
     // damaged one.  Rejecting it here is what turned every protocol-level and
     // authorization-level refusal into "Service response contains an invalid

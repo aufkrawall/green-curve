@@ -20,6 +20,8 @@
 //                    --desktop           create the desktop shortcut
 //                    --no-launch         do not start Green Curve afterwards
 //                    --launch            start Green Curve afterwards
+//                    --launch-session id the authenticated session to relaunch
+//                                        into (used only by the updater)
 //   /?  -h           --help              usage
 //
 // `/S` and `/D=` keep their NSIS spelling on purpose: the previous releases
@@ -58,6 +60,8 @@ struct GcInstallerOptions {
     GcInstallerToggle startMenuShortcut;
     GcInstallerToggle desktopShortcut;
     GcInstallerToggle launchAfterInstall;
+    bool hasLaunchSession;
+    unsigned int launchSessionId;
     bool valid;
     char error[192];
 };
@@ -217,6 +221,33 @@ static inline void gc_installer_parse_options(int argc, const char* const* argv,
             options->launchAfterInstall = GC_TOGGLE_OFF;
         } else if (gc_installer_arg_equals(arg, "--launch")) {
             options->launchAfterInstall = GC_TOGGLE_ON;
+        } else if (gc_installer_arg_equals(arg, "--launch-session")) {
+            if (i + 1 >= argc) {
+                gc_installer_reject(options, "Missing session id after ", "--launch-session");
+                return;
+            }
+            const char* value = argv[++i];
+            size_t digits = 0;
+            while (value[digits] >= '0' && value[digits] <= '9') {
+                digits++;
+                if (digits > 10) break;
+            }
+            if (digits == 0 || value[digits] != 0 ||
+                (digits > 1 && value[0] == '0')) {
+                gc_installer_reject(options, "Invalid session id after ", "--launch-session");
+                return;
+            }
+            unsigned long long parsed = 0;
+            for (size_t j = 0; j < digits; ++j) {
+                parsed = parsed * 10ULL + (unsigned long long)(value[j] - '0');
+            }
+            if (parsed > 0xFFFFFFFFULL) {
+                gc_installer_reject(options, "Session id is out of range after ",
+                                    "--launch-session");
+                return;
+            }
+            options->hasLaunchSession = true;
+            options->launchSessionId = (unsigned int)parsed;
         } else {
             gc_installer_reject(options, "Unrecognized option: ", arg);
             return;
@@ -224,6 +255,9 @@ static inline void gc_installer_parse_options(int argc, const char* const* argv,
     }
     if (options->mode == GC_INSTALLER_MODE_UNINSTALL && options->hasDirectory) {
         gc_installer_reject(options, "--dir cannot be combined with ", "--uninstall");
+    }
+    if (options->hasLaunchSession && options->launchAfterInstall != GC_TOGGLE_ON) {
+        gc_installer_reject(options, "--launch-session requires ", "--launch");
     }
 }
 

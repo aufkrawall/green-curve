@@ -366,8 +366,8 @@ static void service_lifecycle_attempt_logon() {
         LeaveCriticalSection(&g_appLock);
         return;
     }
-
     lock_service_runtime();
+    if (service_update_install_blocks_locked()) return;
     lockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
     if (service_auto_restore_is_locked_out(&lockoutReason)) {
         unlock_service_runtime();
@@ -523,10 +523,10 @@ static void service_lifecycle_attempt_standby_restore() {
         LeaveCriticalSection(&g_appLock);
         return;
     }
-
     DesiredSettings desired = {};
     GpuAdapterInfo target = {};
     lock_service_runtime();
+    if (service_update_install_blocks_locked()) return;
     lockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
     if (service_auto_restore_is_locked_out(&lockoutReason)) {
         unlock_service_runtime();
@@ -653,6 +653,7 @@ static void service_lifecycle_attempt_driver_restore() {
     // newly successful explicit Apply and erase the intent it just published.
     char detail[512] = {};
     lock_service_runtime();
+    if (service_update_install_blocks_locked()) return;
     // Selected-device removal in the old process only establishes recovery
     // precedence and prepares the nonce-bound restart. It is never permission
     // for that stale-DLL process to write. The fresh service sets this flag

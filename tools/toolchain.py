@@ -21,12 +21,15 @@ fails the build if the two ever drift apart.
 """
 
 import hashlib
+import io
 import json
 import os
 import re
 import shutil
 import sys
 import tarfile
+import tempfile
+from contextlib import redirect_stdout
 import urllib.request
 import zipfile
 
@@ -183,17 +186,43 @@ def verify_tree(label, root, manifest, host=None):
         print(f"WARNING: {label} manifest records no binaries for '{host}'; "
               f"cannot verify the extracted toolchain")
         return False
+    by_path = {entry["path"].replace("/", os.sep): entry for entry in entries}
     checked = 0
+    root_abs = os.path.abspath(root)
     for entry in entries:
-        path = os.path.join(root, entry["path"].replace("/", os.sep))
+        relative = entry["path"].replace("/", os.sep)
+        path = os.path.join(root_abs, relative)
         link = entry.get("symlink")
         if link:
-            # The link itself carries no digest; what matters is that it still
-            # resolves inside the toolchain to the file the manifest names.
-            if not os.path.exists(path):
-                print(f"ERROR: {label} is missing {entry['path']}")
+            if not os.path.islink(path):
+                print(f"ERROR: {label} pinned symlink is not a symlink: {entry['path']}")
                 return False
+            actual_link = None
+            try:
+                actual_link = os.readlink(path)
+            except OSError as exc:
+                print(f"ERROR: {label} cannot read symlink {entry['path']}: {exc}")
+                return False
+            if os.path.normpath(actual_link) != os.path.normpath(link):
+                print(f"ERROR: {label} symlink text mismatch for {entry['path']}")
+                print(f"  pinned: {link}")
+                print(f"  actual: {actual_link}")
+                return False
+            target = os.path.abspath(os.path.join(os.path.dirname(path), actual_link))
+            target_rel = os.path.relpath(target, root_abs)
+            if target_rel.startswith("..") or os.path.isabs(target_rel):
+                print(f"ERROR: {label} symlink escapes the toolchain: {entry['path']}")
+                return False
+            target_entry = by_path.get(target_rel)
+            if not target_entry or target_entry.get("symlink"):
+                print(f"ERROR: {label} symlink target is not independently pinned: "
+                      f"{entry['path']} -> {target_rel}")
+                return False
+            checked += 1
             continue
+        if os.path.islink(path):
+            print(f"ERROR: {label} pinned regular file is a symlink: {entry['path']}")
+            return False
         expected = entry.get("sha256")
         if not expected:
             continue
@@ -475,3 +504,52 @@ def report(compilers_dir, components, path=None):
             handle.write("\n")
         print(f"  manifest written to {path}")
     return doc
+
+
+def run_self_tests():
+    """Regression self-tests for verify_tree's symlink handling.
+
+    The CI-cache threat model depends on every restored tool being the exact
+    pinned file.  A symlink entry must therefore verify the link text, the link
+    type, and the target, and an ordinary file substituted where a symlink was
+    pinned must be rejected.
+    """
+    with tempfile.TemporaryDirectory(prefix="greencurve-toolchain-") as temp:
+        root = os.path.join(temp, "root")
+        os.makedirs(os.path.join(root, "bin"))
+        target = os.path.join(root, "bin", "real.exe")
+        with open(target, "wb") as handle:
+            handle.write(b"pinned bytes")
+        digest = sha256_file(target)
+        manifest = {
+            "extracted_binaries": {
+                "windows": [
+                    {"path": "bin/real.exe", "sha256": digest},
+                    {"path": "bin/tool.exe", "symlink": "real.exe"},
+                ]
+            }
+        }
+        try:
+            os.symlink("real.exe", os.path.join(root, "bin", "tool.exe"))
+        except OSError:
+            # No symlink privilege on this host: still prove the substitution
+            # arm, which is the actual cache-tampering case.
+            with open(os.path.join(root, "bin", "tool.exe"), "wb") as handle:
+                handle.write(b"attacker bytes")
+            with redirect_stdout(io.StringIO()):
+                accepted = verify_tree(
+                    "toolchain-test", root, manifest, host="windows")
+            if accepted:
+                raise RuntimeError("verify_tree accepted a regular file where a "
+                                   "symlink was pinned")
+            return
+        if not verify_tree("toolchain-test", root, manifest, host="windows"):
+            raise RuntimeError("verify_tree rejected a correct pinned symlink")
+        os.remove(os.path.join(root, "bin", "tool.exe"))
+        with open(os.path.join(root, "bin", "tool.exe"), "wb") as handle:
+            handle.write(b"attacker replacement")
+        with redirect_stdout(io.StringIO()):
+            accepted = verify_tree(
+                "toolchain-test", root, manifest, host="windows")
+        if accepted:
+            raise RuntimeError("verify_tree accepted a tampered symlink path")

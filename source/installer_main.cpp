@@ -111,7 +111,9 @@ static int gc_run_silent_install(const GcInstallerOptions* options, const GcPrio
     if (ok && context.plan.launchAfterInstall) {
         WCHAR directory[GC_INSTALLER_MAX_PATH_CHARS] = {};
         if (gc_utf8_to_wide(context.plan.targetDirectory, directory, (int)GC_ARRAY_COUNT(directory))) {
-            gc_launch_installed_gui(directory);
+            gc_launch_installed_gui(
+                directory,
+                options->hasLaunchSession ? options->launchSessionId : (DWORD)-1);
         }
     }
     gc_payload_release(&context.payload);

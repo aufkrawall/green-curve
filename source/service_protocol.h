@@ -15,6 +15,7 @@
 // the wire's accepted range and the policy's clamp from drifting apart.  The
 // wire types are split out for the same size reason as the validation header.
 #include "update_schedule_policy.h"
+#include "update_manifest_policy.h"
 #include "service_protocol_update.h"
 
 enum {

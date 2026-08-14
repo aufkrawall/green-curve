@@ -58,6 +58,10 @@ struct GcUpdateRuntimeState {
     bool installRunning;
     bool workerRunning;
     bool guiShutdownRequested;
+    // The authenticated pipe session that requested this install.  Setup runs
+    // in session 0, so this is the only safe way to tell it which interactive
+    // token should receive the relaunched GUI.
+    DWORD requestingSessionId;
 
     char detail[256];
 };
@@ -73,6 +77,7 @@ static void service_update_state_init() {
     g_updateState.autoCheck = GC_UPDATE_AUTO_CHECK_UNSET;
     g_updateState.intervalSeconds = GC_UPDATE_INTERVAL_DEFAULT_SECONDS;
     g_updateState.lastRefusal = GC_UPDATE_INSTALL_ALLOWED;
+    g_updateState.requestingSessionId = (DWORD)-1;
 }
 
 // Every mutation goes through the lock: the pipe thread reads this state to

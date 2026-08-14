@@ -272,7 +272,8 @@ bool gc_stop_gui_processes(GcInstallContext* context);
 // Shortcuts plus the Add/Remove Programs record (source/installer_register.cpp).
 bool gc_write_shortcuts_and_registration(GcInstallContext* context);
 // Launch the installed GUI as the interactive (unelevated) user.
-bool gc_launch_installed_gui(const WCHAR* installDirectory);
+bool gc_launch_installed_gui(const WCHAR* installDirectory,
+                             DWORD preferredSessionId);
 
 // ---------------------------------------------------------------------------
 // UI (source/installer_ui.cpp)

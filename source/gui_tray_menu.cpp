@@ -132,7 +132,9 @@ static void show_tray_menu(HWND hwnd) {
     // than installing: stopping the service returns the GPU to stock for a few
     // seconds, which one click in a context menu should not be able to start.
     if (gui_update_is_available()) {
-        const ServiceUpdateState* update = gui_update_state();
+        ServiceUpdateState updateValue = {};
+        gui_update_state(&updateValue);
+        const ServiceUpdateState* update = &updateValue;
         char label[96] = {};
         StringCchPrintfA(label, sizeof(label), "Update to %s...",
                          update ? update->availableVersion : "a new version");

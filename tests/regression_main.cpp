@@ -82,6 +82,7 @@
 #include "update_url_policy.h"
 #include "update_schedule_policy.h"
 #include "update_install_policy.h"
+#include "update_restore_policy.h"
 #include "linux_terminal_policy.h"
 #include "linux_debug_log.h"
 // Where a crash artifact is allowed to go and which ones may be deleted.  Pure
@@ -10227,6 +10228,21 @@ static int run_all_tests(int argc, char** argv) {
             gc_update_manifest_parse(kManifest, manifestLen, &parsed);
             if (!parsed.valid) return 4249;
         }
+        // A malleable high-S signature verifies mathematically but violates
+        // the signer's canonical encoding.  The verifier must reject it.
+        {
+            unsigned char highS[GC_UPDATE_SIGNATURE_BYTES];
+            memcpy(highS, signature, sizeof(highS));
+            static const unsigned char complementaryS[32] = {
+                0xE7, 0x57, 0xEA, 0xF8, 0x72, 0xF9, 0x91, 0x88,
+                0x90, 0xB7, 0x31, 0xD1, 0xAB, 0x00, 0x34, 0x7A,
+                0xD3, 0x17, 0x59, 0x3D, 0x30, 0xDD, 0x19, 0x55,
+                0x04, 0xDC, 0x6F, 0x97, 0x24, 0x00, 0x83, 0x6C,
+            };
+            memcpy(highS + 32, complementaryS, sizeof(complementaryS));
+            if (gc_update_verify_with_key(kVectorPublicKey, digest,
+                                          highS, sizeof(highS))) return 4300;
+        }
     }
 
     // --- Base64 decoding (4250-4259) ----------------------------------
@@ -10274,7 +10290,7 @@ static int run_all_tests(int argc, char** argv) {
         }
         if (gc_update_base64_decode(nullptr, 0, out, sizeof(out), &outLen))
             return 4254;
-    }
+        }
 #endif  // _WIN32
 
     // --- The installer command line (4260-4269) -----------------------
@@ -10291,7 +10307,8 @@ static int run_all_tests(int argc, char** argv) {
         char cmd[GC_UPDATE_COMMAND_LINE_MAX_CHARS] = {};
         if (!gc_update_build_installer_command_line(
                 "C:\\ProgramData\\Green Curve\\updates\\setup.exe",
-                "C:\\Program Files\\Green Curve", false, cmd, sizeof(cmd))) return 4260;
+                "C:\\Program Files\\Green Curve", false, nullptr,
+                cmd, sizeof(cmd))) return 4260;
         // Both space-bearing paths must be quoted, and the directory must use
         // the `--dir <value>` form: `/D=` is positional by NSIS convention and
         // that convention does not survive argv splitting.
@@ -10309,9 +10326,11 @@ static int run_all_tests(int argc, char** argv) {
         char relaunch[GC_UPDATE_COMMAND_LINE_MAX_CHARS] = {};
         if (!gc_update_build_installer_command_line(
                 "C:\\ProgramData\\Green Curve\\updates\\setup.exe",
-                "C:\\Program Files\\Green Curve", true, relaunch, sizeof(relaunch)))
+                "C:\\Program Files\\Green Curve", true, "7",
+                relaunch, sizeof(relaunch)))
             return 4264;
         if (!strstr(relaunch, " --launch ")) return 4264;
+        if (!strstr(relaunch, " --launch-session 7 ")) return 4264;
         if (strstr(relaunch, "--no-launch")) return 4264;
 
         // Paths that cannot be expressed as one argv entry are refused rather
@@ -10319,23 +10338,24 @@ static int run_all_tests(int argc, char** argv) {
         char scratch[GC_UPDATE_COMMAND_LINE_MAX_CHARS] = {};
         if (gc_update_build_installer_command_line(
                 "C:\\a\\setup.exe", "C:\\evil\" --dir C:\\elsewhere",
-                false, scratch, sizeof(scratch))) return 4266;
+                false, nullptr, scratch, sizeof(scratch))) return 4266;
         // A trailing backslash would escape the closing quote and swallow the
         // rest of the line.
         if (gc_update_build_installer_command_line(
                 "C:\\a\\setup.exe", "C:\\Program Files\\Green Curve\\",
-                false, scratch, sizeof(scratch))) return 4266;
+                false, nullptr, scratch, sizeof(scratch))) return 4266;
         if (gc_update_build_installer_command_line("C:\\a\\setup.exe", "", false,
-                                                   scratch, sizeof(scratch)))
+                                                    nullptr, scratch, sizeof(scratch)))
             return 4266;
         if (gc_update_build_installer_command_line(nullptr, "C:\\x", false,
-                                                   scratch, sizeof(scratch)))
+                                                    nullptr, scratch, sizeof(scratch)))
             return 4266;
         // A buffer too small fails rather than emitting a truncated command.
         char tiny[24] = {};
         if (gc_update_build_installer_command_line(
                 "C:\\ProgramData\\Green Curve\\updates\\setup.exe",
-                "C:\\Program Files\\Green Curve", false, tiny, sizeof(tiny)))
+                "C:\\Program Files\\Green Curve", false, nullptr,
+                tiny, sizeof(tiny)))
             return 4267;
         if (tiny[0]) return 4267;
 
@@ -10376,9 +10396,73 @@ static int run_all_tests(int argc, char** argv) {
             if (strcmp(options.directory, "C:\\Program Files\\Green Curve") != 0)
                 return 4269;
             if (options.launchAfterInstall != GC_TOGGLE_OFF) return 4269;
+            if (options.hasLaunchSession) return 4269;
             if (options.mode != GC_INSTALLER_MODE_INSTALL) return 4269;
         }
 #endif
+    }
+
+    // --- Update restore transaction and launch-session policy (4270-4289) --
+    {
+        char scratch[GC_UPDATE_COMMAND_LINE_MAX_CHARS] = {};
+        if (gc_update_restore_decide("0.23", "0.23", 0) !=
+            GC_UPDATE_RESTORE_APPLY) return 4270;
+        if (gc_update_restore_decide("0.23", "0.22", 0) !=
+            GC_UPDATE_RESTORE_DISCARD) return 4271;
+        if (gc_update_restore_decide("0.23", "0.23", -1) !=
+            GC_UPDATE_RESTORE_DISCARD) return 4272;
+        if (gc_update_restore_decide(
+                "0.23", "0.23", GC_UPDATE_RESTORE_MAX_AGE_SECONDS + 1) !=
+            GC_UPDATE_RESTORE_DISCARD) return 4273;
+        if (gc_update_restore_decide("bad", "0.23", 0) !=
+            GC_UPDATE_RESTORE_DISCARD) return 4274;
+
+        if (!gc_update_session_id_is_quotable("7")) return 4275;
+        if (gc_update_session_id_is_quotable("07")) return 4276;
+        if (gc_update_session_id_is_quotable("4294967296")) return 4277;
+        if (gc_update_session_id_is_quotable("7a")) return 4278;
+
+        const char* valid[] = {"--launch", "--launch-session", "7"};
+        const char* noLaunch[] = {"--launch-session", "7"};
+        const char* badSession[] = {"--launch", "--launch-session", "7a"};
+        const char* tooHigh[] = {"--launch", "--launch-session", "4294967296"};
+        GcInstallerOptions options;
+        gc_installer_parse_options(3, valid, &options);
+        if (!options.valid || !options.hasLaunchSession ||
+            options.launchSessionId != 7) return 4279;
+        gc_installer_parse_options(2, noLaunch, &options);
+        if (options.valid) return 4280;
+        gc_installer_parse_options(3, badSession, &options);
+        if (options.valid) return 4281;
+        gc_installer_parse_options(3, tooHigh, &options);
+        if (options.valid) return 4282;
+        if (gc_update_build_installer_command_line(
+                "C:\\a\\setup.exe", "C:\\x", true, "bad",
+                scratch, sizeof(scratch))) return 4283;
+    }
+
+    // --- Published update state is a protocol boundary too (4290-4299) ---
+    {
+        ServiceUpdateState update = {};
+        update.intervalSeconds = GC_UPDATE_INTERVAL_DEFAULT_SECONDS;
+        if (!validate_service_update_state_for_ipc(&update)) return 4290;
+        update.phase = SERVICE_UPDATE_PHASE_FAILED + 1;
+        if (validate_service_update_state_for_ipc(&update)) return 4291;
+        update.phase = SERVICE_UPDATE_PHASE_IDLE;
+        update.decision = GC_UPDATE_DECISION_NO_ASSET + 1;
+        if (validate_service_update_state_for_ipc(&update)) return 4292;
+        update.decision = GC_UPDATE_DECISION_REJECTED;
+        update.autoCheck = GC_UPDATE_AUTO_CHECK_ON + 1;
+        if (validate_service_update_state_for_ipc(&update)) return 4293;
+        update.autoCheck = GC_UPDATE_AUTO_CHECK_UNSET;
+        update.intervalSeconds = GC_UPDATE_INTERVAL_MIN_SECONDS - 1;
+        if (validate_service_update_state_for_ipc(&update)) return 4294;
+        update.intervalSeconds = GC_UPDATE_INTERVAL_DEFAULT_SECONDS;
+        update.updateReserved[0] = 1;
+        if (validate_service_update_state_for_ipc(&update)) return 4295;
+        update.updateReserved[0] = 0;
+        memset(update.availableVersion, 'x', sizeof(update.availableVersion));
+        if (validate_service_update_state_for_ipc(&update)) return 4296;
     }
 
     DeleteCriticalSection(&g_configLock);

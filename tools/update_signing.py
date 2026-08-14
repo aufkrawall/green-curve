@@ -42,11 +42,15 @@ the most security-sensitive path of the application.
 import argparse
 import base64
 import binascii
+import ctypes
 import hashlib
-import hmac
 import os
+import hmac
 import secrets
+import stat
+import subprocess
 import sys
+import tempfile
 
 # --------------------------------------------------------------------------
 # NIST P-256 (secp256r1)
@@ -225,6 +229,245 @@ PRIVATE_KEY_HEADER = (
 )
 
 
+def _current_user_sid():
+    """Return the current process token's user SID as raw bytes."""
+    if os.name != "nt":
+        return None
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcessToken.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
+    kernel32.OpenProcessToken.restype = ctypes.c_int
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    advapi32.GetTokenInformation.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong,
+        ctypes.POINTER(ctypes.c_ulong)]
+    advapi32.GetTokenInformation.restype = ctypes.c_int
+    advapi32.GetLengthSid.argtypes = [ctypes.c_void_p]
+    advapi32.GetLengthSid.restype = ctypes.c_ulong
+
+    class SidAndAttributes(ctypes.Structure):
+        _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", ctypes.c_ulong)]
+
+    class TokenUser(ctypes.Structure):
+        _fields_ = [("User", SidAndAttributes)]
+
+    token = ctypes.c_void_p()
+    if not kernel32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008,
+                                     ctypes.byref(token)):
+        raise OSError(ctypes.get_last_error(), "OpenProcessToken failed")
+    try:
+        needed = ctypes.c_ulong()
+        if not advapi32.GetTokenInformation(token, 1, None, 0,
+                                             ctypes.byref(needed)):
+            error = ctypes.get_last_error()
+            if error != 122:  # ERROR_INSUFFICIENT_BUFFER
+                raise OSError(error, "GetTokenInformation sizing failed")
+        buffer = TokenUser()
+        if not advapi32.GetTokenInformation(
+                token, 1, ctypes.byref(buffer), needed.value,
+                ctypes.byref(needed)):
+            raise OSError(ctypes.get_last_error(), "GetTokenInformation failed")
+        sid = buffer.User.Sid
+        if not sid:
+            raise ValueError("token contained no user SID")
+        length = advapi32.GetLengthSid(sid)
+        if not length:
+            raise OSError(ctypes.get_last_error(), "GetLengthSid failed")
+        return ctypes.string_at(sid, length)
+    finally:
+        kernel32.CloseHandle(token)
+
+
+def _harden_private_key_file_windows(path):
+    sid = _current_user_sid()
+    if not sid:
+        return
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32.SetEntriesInAclW.argtypes = [
+        ctypes.c_ulong, ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p)]
+    advapi32.SetEntriesInAclW.restype = ctypes.c_uint32
+    advapi32.SetNamedSecurityInfoW.argtypes = [
+        ctypes.c_wchar_p, ctypes.c_int, ctypes.c_uint32, ctypes.c_void_p,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    advapi32.SetNamedSecurityInfoW.restype = ctypes.c_uint32
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    sid_buffer = ctypes.create_string_buffer(sid, len(sid))
+
+    class TrusteeW(ctypes.Structure):
+        _fields_ = [
+            ("pMultipleTrustee", ctypes.c_void_p),
+            ("MultipleTrusteeOperation", ctypes.c_int),
+            ("TrusteeForm", ctypes.c_int),
+            ("TrusteeType", ctypes.c_int),
+            ("ptstrName", ctypes.c_void_p),
+        ]
+
+    class ExplicitAccessW(ctypes.Structure):
+        _fields_ = [
+            ("grfAccessPermissions", ctypes.c_uint32),
+            ("grfAccessMode", ctypes.c_uint32),
+            ("grfInheritance", ctypes.c_uint32),
+            ("Trustee", TrusteeW),
+        ]
+
+    access = ExplicitAccessW()
+    access.grfAccessPermissions = 0x1F01FF  # FILE_ALL_ACCESS
+    access.grfAccessMode = 1               # GRANT_ACCESS
+    access.grfInheritance = 0              # SUB_CONTAINERS_AND_OBJECTS_INHERIT? none
+    access.Trustee.TrusteeForm = 0         # TRUSTEE_IS_SID
+    access.Trustee.TrusteeType = 1         # TRUSTEE_IS_USER
+    access.Trustee.ptstrName = ctypes.cast(sid_buffer, ctypes.c_void_p)
+
+    acl = ctypes.c_void_p()
+    result = advapi32.SetEntriesInAclW(
+        1, ctypes.byref(access), None, ctypes.byref(acl))
+    if result:
+        raise OSError(result, "SetEntriesInAclW failed")
+    try:
+        # DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION
+        result = advapi32.SetNamedSecurityInfoW(
+            path, 1, 0x4 | 0x80000000, None, None, None, acl)
+        if result:
+            raise OSError(result, "SetNamedSecurityInfoW failed")
+    finally:
+        kernel32.LocalFree(acl)
+    _verify_private_key_permissions(path)
+
+
+def _sid_text(sid_pointer):
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32.ConvertSidToStringSidW.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p)]
+    advapi32.ConvertSidToStringSidW.restype = ctypes.c_int
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    text = ctypes.c_wchar_p()
+    if not advapi32.ConvertSidToStringSidW(
+            sid_pointer, ctypes.byref(text)):
+        raise OSError(ctypes.get_last_error(), "ConvertSidToStringSidW failed")
+    try:
+        return text.value
+    finally:
+        kernel32.LocalFree(text)
+
+
+def _verify_private_key_permissions_windows(path):
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi32.GetNamedSecurityInfoW.argtypes = [
+        ctypes.c_wchar_p, ctypes.c_int, ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)]
+    advapi32.GetNamedSecurityInfoW.restype = ctypes.c_uint32
+    advapi32.GetAclInformation.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int]
+    advapi32.GetAclInformation.restype = ctypes.c_int
+    advapi32.GetAce.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_void_p)]
+    advapi32.GetAce.restype = ctypes.c_int
+    sid = _current_user_sid()
+    owner = ctypes.c_void_p()
+    group = ctypes.c_void_p()
+    dac = ctypes.c_void_p()
+    sacl = ctypes.c_void_p()
+    result = advapi32.GetNamedSecurityInfoW(
+        path, 1, 0x5, ctypes.byref(owner), ctypes.byref(group),
+        ctypes.byref(dac), ctypes.byref(sacl))
+    if result:
+        raise OSError(result, "GetNamedSecurityInfoW failed")
+
+    class AclSizeInformation(ctypes.Structure):
+        _fields_ = [
+            ("AceCount", ctypes.c_uint32),
+            ("AceBytesTotal", ctypes.c_uint32),
+            ("AclBytesInUse", ctypes.c_uint32),
+            ("AclBytesFree", ctypes.c_uint32),
+        ]
+
+    size = AclSizeInformation()
+    if not advapi32.GetAclInformation(
+            dac, ctypes.byref(size), ctypes.sizeof(size), 2):
+        raise OSError(ctypes.get_last_error(), "GetAclInformation failed")
+    expected_buffer = ctypes.create_string_buffer(sid, len(sid))
+    expected = _sid_text(ctypes.cast(expected_buffer, ctypes.c_void_p))
+    owner_text = _sid_text(owner)
+    if owner_text != expected or size.AceCount != 1:
+        raise PermissionError(f"private key has a non-owner-only ACL: {path}")
+
+    ace = ctypes.c_void_p()
+    if not advapi32.GetAce(
+            dac, 0, ctypes.byref(ace)):
+        raise OSError(ctypes.get_last_error(), "GetAce failed")
+    ace_header = ctypes.string_at(ctypes.cast(ace, ctypes.c_void_p).value, 8)
+    if ace_header[0] != 0:  # ACCESS_ALLOWED_ACE_TYPE
+        raise PermissionError(f"private key DACL contains a non-grant ACE: {path}")
+    ace_address = ctypes.cast(ace, ctypes.c_void_p).value
+    ace_sid = ctypes.c_void_p(ace_address + 8)
+    if _sid_text(ace_sid) != expected:
+        raise PermissionError(f"private key DACL grants another principal: {path}")
+
+
+def _current_user_sid_text():
+    sid = _current_user_sid()
+    if not sid:
+        return None
+    buffer = ctypes.create_string_buffer(sid, len(sid))
+    return _sid_text(ctypes.cast(buffer, ctypes.c_void_p))
+
+
+def _harden_private_key_file_icacls(path, sid_text):
+    command = ["icacls", path, "/inheritance:r",
+               "/grant:r", f"*{sid_text}:F"]
+    result = subprocess.run(command, capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        raise PermissionError(f"could not make the private key owner-only: {detail}")
+
+
+def _verify_private_key_permissions_icacls(path, sid_text):
+    query = subprocess.run(["icacls", path], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+    if query.returncode:
+        detail = (query.stderr or query.stdout).strip()
+        raise PermissionError(f"could not inspect the private key ACL: {detail}")
+    if query.stdout.count(":(") != 1:
+        raise PermissionError(f"private key has a non-owner-only ACL: {path}")
+    found = subprocess.run(
+        ["icacls", path, "/findsid", f"*{sid_text}"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if found.returncode:
+        raise PermissionError(f"private key owner is missing from its ACL: {path}")
+
+
+def _harden_private_key_file(path):
+    if os.name == "nt":
+        sid_text = _current_user_sid_text()
+        if not sid_text:
+            raise PermissionError("could not resolve the current user SID")
+        _harden_private_key_file_icacls(path, sid_text)
+    else:
+        os.chmod(path, 0o600)
+
+
+def _verify_private_key_permissions(path):
+    if os.name == "nt":
+        sid_text = _current_user_sid_text()
+        if not sid_text:
+            raise PermissionError("could not resolve the current user SID")
+        _verify_private_key_permissions_icacls(path, sid_text)
+    else:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+        if mode != 0o600:
+            raise PermissionError(
+                f"private key mode is {mode:04o}, expected 0600: {path}")
+
+
 def generate_private_key():
     """A uniform scalar in [1, N-1] via rejection sampling.
 
@@ -247,12 +490,19 @@ def write_private_key(path, private_key):
     # 0o600 before anything is written, so the secret never exists on disk with
     # a wider mode even briefly.
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        _harden_private_key_file(path)
+    except Exception:
+        os.close(descriptor)
+        os.remove(path)
+        raise
     with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(PRIVATE_KEY_HEADER)
         handle.write(f"{private_key:064x}\n")
 
 
 def read_private_key(path):
+    _verify_private_key_permissions(path)
     with open(path, "r", encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
@@ -423,6 +673,18 @@ def run_self_tests():
     sample = "format=1\nversion=0.23.0\n"
     if "\r" in sample or not sample.endswith("\n"):
         failures.append("manifest sample is not LF-terminated")
+
+    # 5b. Key creation must actually produce owner-only storage.  POSIX mode
+    # bits alone do not do that on Windows, so this exercises the explicit ACL
+    # path on the platform where the release key is generated.
+    try:
+        with tempfile.TemporaryDirectory(prefix="greencurve-signing-") as temp:
+            key_path = os.path.join(temp, "release-key")
+            write_private_key(key_path, _VECTOR_KEY)
+            if read_private_key(key_path) != _VECTOR_KEY:
+                failures.append("secure key write/read round trip failed")
+    except Exception as error:  # noqa: BLE001 - permissions must fail loudly here
+        failures.append(f"secure key storage self-test failed: {error}")
 
     # 6. Free second opinion when the library happens to be installed.
     try:

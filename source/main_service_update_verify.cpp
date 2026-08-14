@@ -227,12 +227,33 @@ static bool gc_update_sha256_handle(HANDLE file, char* hexOut, size_t hexOutSize
 #define BCRYPT_ECDSA_PUBLIC_P256_MAGIC 0x31534345
 #endif
 
+// P-256 order / 2.  Signing normalizes s to the lower half; verification must
+// enforce the same canonical spelling, otherwise both s and N-s verify.
+static const unsigned char GC_UPDATE_P256_LOW_S_CEILING[32] = {
+    0x7F, 0xFF, 0xFF, 0xFF, 0x80, 0x00, 0x00, 0x00,
+    0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xDE, 0x73, 0x7D, 0x56, 0xD3, 0x8B, 0xCF, 0x42,
+    0x79, 0xDC, 0xE5, 0x61, 0x7E, 0x31, 0x92, 0xA8,
+};
+
 static bool gc_update_verify_with_key(const unsigned char* publicKey,
                                       const unsigned char* digest,
                                       const unsigned char* signature,
                                       size_t signatureLen) {
     if (!gc_update_key_is_populated(publicKey)) return false;
     if (signatureLen != GC_UPDATE_SIGNATURE_BYTES) return false;
+    unsigned char highS = 0;
+    for (size_t i = 32; i < signatureLen; ++i) {
+        const unsigned char ceiling = GC_UPDATE_P256_LOW_S_CEILING[i - 32];
+        if (signature[i] != ceiling) {
+            highS = signature[i] > ceiling ? 1 : 0;
+            break;
+        }
+    }
+    if (highS) {
+        debug_log("update verify: rejected a non-canonical high-S signature\n");
+        return false;
+    }
 
     unsigned char blob[sizeof(BCRYPT_ECCKEY_BLOB) + GC_UPDATE_PUBLIC_KEY_BYTES] = {};
     BCRYPT_ECCKEY_BLOB* header = (BCRYPT_ECCKEY_BLOB*)blob;

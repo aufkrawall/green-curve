@@ -23,6 +23,7 @@ import release_manifest  # same one-way dependency: it never imports build.py
 import static_analysis  # ditto; owns the clang-tidy ratchet's own self-tests
 import build_scheduler
 import update_signing  # ditto; owns the update signer's RFC 6979 vectors
+import toolchain  # ditto; owns pinned-toolchain verification
 
 # Fuzz targets built from tests/fuzz_main.cpp.  The key is the GC_FUZZ_TARGET
 # macro suffix and the corpus directory name; the value is the macro's numeric
@@ -518,6 +519,7 @@ def run_build_script_regression_tests(ctx):
         if not update_signing.run_self_tests():
             print("Build-script regression FAILED: update signer self-tests")
             sys.exit(1)
+        toolchain.run_self_tests()
     finally:
         ctx.cleanup_work_subdir(tmp)
     check_linux_release_packaging(ctx)

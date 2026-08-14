@@ -297,6 +297,32 @@ static bool service_update_run_download(char* err, size_t errSize) {
     return true;
 }
 
+static bool service_update_staged_package_matches_manifest(
+    const GcUpdateManifest* manifest, char* err, size_t errSize) {
+    if (err && errSize) err[0] = 0;
+    if (!manifest || !manifest->valid) return false;
+    const GcUpdateAsset* asset =
+        gc_update_select_asset(manifest, service_update_host_arch());
+    if (!asset) return false;
+
+    char stagedPath[MAX_PATH] = {};
+    {
+        GcUpdateStateLock guard;
+        StringCchCopyA(stagedPath, sizeof(stagedPath), g_updateState.stagedPath);
+    }
+    if (!stagedPath[0]) return false;
+
+    HANDLE verify = gc_CreateFileUtf8(stagedPath, GENERIC_READ, FILE_SHARE_READ,
+                                      nullptr, OPEN_EXISTING,
+                                      FILE_ATTRIBUTE_NORMAL |
+                                          FILE_FLAG_OPEN_REPARSE_POINT,
+                                      nullptr);
+    if (verify == INVALID_HANDLE_VALUE) return false;
+    bool matches = gc_update_staged_file_matches(verify, asset, err, errSize);
+    CloseHandle(verify);
+    return matches;
+}
+
 // ---------------------------------------------------------------------------
 // The install
 // ---------------------------------------------------------------------------
@@ -353,18 +379,33 @@ static bool service_update_foreground_app_active() {
 // Matched by full image path, not by name: another process called
 // greencurve.exe somewhere else on the machine is not ours to terminate, and
 // this code runs as SYSTEM where that mistake is unrecoverable.
-static int service_update_collect_gui_processes(const char* installDir,
-                                                HANDLE* handles, int maxCount) {
-    if (!handles || maxCount <= 0 || !installDir || !installDir[0]) return 0;
+static bool service_update_collect_gui_processes(const char* installDir,
+                                                 HANDLE* handles, int maxCount,
+                                                 int* countOut) {
+    if (countOut) *countOut = 0;
+    auto fail_closed = [&](DWORD error, const char* reason) {
+        for (int i = 0; i < maxCount; ++i) {
+            if (handles[i]) CloseHandle(handles[i]);
+            handles[i] = nullptr;
+        }
+        if (countOut) *countOut = 0;
+        debug_log("update install: GUI enumeration FAILED at %s (error %lu); "
+                  "refusing to proceed\n", reason, error);
+        return false;
+    };
+
+    if (!handles || maxCount <= 0 || !installDir || !installDir[0])
+        return fail_closed(ERROR_INVALID_PARAMETER, "argument validation");
 
     char wanted[MAX_PATH] = {};
     if (FAILED(StringCchPrintfA(wanted, sizeof(wanted), "%s\\%s",
                                 installDir, APP_EXE_NAME))) {
-        return 0;
+        return fail_closed(GetLastError(), "target path construction");
     }
 
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snapshot == INVALID_HANDLE_VALUE) return 0;
+    if (snapshot == INVALID_HANDLE_VALUE)
+        return fail_closed(GetLastError(), "process snapshot");
 
     int found = 0;
     PROCESSENTRY32W entry = {};
@@ -377,7 +418,8 @@ static int service_update_collect_gui_processes(const char* installDir,
             HANDLE process = OpenProcess(
                 SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
                 FALSE, entry.th32ProcessID);
-            if (!process) continue;
+            if (!process)
+                return fail_closed(GetLastError(), "opening candidate GUI");
 
             WCHAR imageW[MAX_PATH] = {};
             DWORD imageChars = ARRAY_COUNT(imageW);
@@ -393,15 +435,22 @@ static int service_update_collect_gui_processes(const char* installDir,
             }
             if (found >= maxCount) {
                 CloseHandle(process);
-                break;
+                CloseHandle(snapshot);
+                return fail_closed(ERROR_TOO_MANY_CMDS,
+                                   "matching GUI process count");
             }
             handles[found++] = process;
             debug_log("update install: found GUI process pid=%lu session-agnostic path=%s\n",
                       (unsigned long)entry.th32ProcessID, image);
         } while (Process32NextW(snapshot, &entry));
+    } else {
+        DWORD enumError = GetLastError();
+        CloseHandle(snapshot);
+        return fail_closed(enumError, "first process enumeration");
     }
     CloseHandle(snapshot);
-    return found;
+    if (countOut) *countOut = found;
+    return true;
 }
 
 // Ask every GUI to close, then make sure it did.
@@ -415,8 +464,14 @@ static bool service_update_stop_gui_processes(const char* installDir,
                                               char* err, size_t errSize) {
     if (closedCountOut) *closedCountOut = 0;
     HANDLE handles[GC_UPDATE_MAX_GUI_PROCESSES] = {};
-    int count = service_update_collect_gui_processes(installDir, handles,
-                                                     GC_UPDATE_MAX_GUI_PROCESSES);
+    int count = 0;
+    if (!service_update_collect_gui_processes(
+            installDir, handles, GC_UPDATE_MAX_GUI_PROCESSES, &count)) {
+        set_message(err, errSize,
+                    "Could not prove every Green Curve window was closed; "
+                    "the update was not installed");
+        return false;
+    }
     if (count == 0) {
         debug_log("update install: no GUI processes are running\n");
         return true;
@@ -478,6 +533,7 @@ static bool service_update_run_install(char* err, size_t errSize) {
 
     char stagedPath[MAX_PATH] = {};
     char installDir[MAX_PATH] = {};
+    DWORD requestingSessionId = (DWORD)-1;
     GcUpdateInstallGate gate = {};
     // The one and only place userConsented is set, and it is set because this
     // function is reached exclusively from SERVICE_CMD_INSTALL_UPDATE, which a
@@ -488,23 +544,16 @@ static bool service_update_run_install(char* err, size_t errSize) {
         gate.packageStaged = g_updateState.packageStaged;
         gate.packageVerified = g_updateState.packageVerified;
         gate.installAlreadyRunning = g_updateState.installRunning;
+        requestingSessionId = g_updateState.requestingSessionId;
         StringCchCopyA(stagedPath, sizeof(stagedPath), g_updateState.stagedPath);
     }
+    if (service_update_install_reserved()) gate.installAlreadyRunning = true;
     gate.isInstalledCopy = service_update_is_installed_copy(installDir, sizeof(installDir));
     gate.foregroundAppActive = service_update_foreground_app_active();
-
-    // "Is a hardware write running right now" is exactly "is the service
-    // runtime lock held", so ask by trying to take it with a zero timeout and
-    // giving it straight back.  A separate in-flight flag would be a second
-    // source of truth for a fact this mutex already owns, and the two would
-    // eventually disagree -- at which point the update would stop the service
-    // through a half-finished apply.
-    if (try_lock_service_runtime(0)) {
-        unlock_service_runtime();
-        gate.applyInFlight = false;
-    } else {
-        gate.applyInFlight = true;
-    }
+    // The reservation below is acquired while holding the runtime lock.  This
+    // worker blocks behind an already-running apply instead of sampling that
+    // lock at one instant and then racing a queued mutation before launch.
+    gate.applyInFlight = false;
 
     GcUpdateInstallRefusal refusal = gc_update_install_decision(&gate);
     {
@@ -556,6 +605,17 @@ static bool service_update_run_install(char* err, size_t errSize) {
         return false;
     }
 
+    lock_service_runtime();
+    if (service_update_install_reserved()) {
+        unlock_service_runtime();
+        CloseHandle(pinned);
+        set_message(err, errSize, "Update not installed: an install is already reserved");
+        return false;
+    }
+    service_update_set_install_reserved(true);
+    unlock_service_runtime();
+    debug_log("update install: reserved GPU writes for setup launch\n");
+
     service_update_set_phase(SERVICE_UPDATE_PHASE_INSTALLING, nullptr);
     {
         GcUpdateStateLock guard;
@@ -573,6 +633,7 @@ static bool service_update_run_install(char* err, size_t errSize) {
     if (!service_update_stop_gui_processes(installDir, &closedGuiCount,
                                            err, errSize)) {
         CloseHandle(pinned);
+        service_update_set_install_reserved(false);
         GcUpdateStateLock guard;
         g_updateState.installRunning = false;
         return false;
@@ -587,10 +648,15 @@ static bool service_update_run_install(char* err, size_t errSize) {
     // Relaunch the GUI only if one was actually running: the stop above counted
     // them, so this is measured rather than assumed.
     char commandLine[GC_UPDATE_COMMAND_LINE_MAX_CHARS] = {};
+    char launchSessionId[16] = {};
+    StringCchPrintfA(launchSessionId, sizeof(launchSessionId), "%lu",
+                     (unsigned long)requestingSessionId);
     if (!gc_update_build_installer_command_line(stagedPath, installDir,
                                                 closedGuiCount > 0,
+                                                launchSessionId,
                                                 commandLine, sizeof(commandLine))) {
         CloseHandle(pinned);
+        service_update_set_install_reserved(false);
         set_message(err, errSize,
                     "Cannot build a usable installer command line for %s",
                     installDir);
@@ -603,6 +669,7 @@ static bool service_update_run_install(char* err, size_t errSize) {
     Win32Utf8Path wideCommand(commandLine);
     if (!wideCommand.valid_for(commandLine)) {
         CloseHandle(pinned);
+        service_update_set_install_reserved(false);
         GcUpdateStateLock guard;
         g_updateState.installRunning = false;
         set_message(err, errSize, "Cannot encode the installer command line");
@@ -620,6 +687,7 @@ static bool service_update_run_install(char* err, size_t errSize) {
     CloseHandle(pinned);
 
     if (!created) {
+        service_update_set_install_reserved(false);
         GcUpdateStateLock guard;
         g_updateState.installRunning = false;
         set_message(err, errSize, "Cannot start the installer (error %lu)", createError);
@@ -637,7 +705,9 @@ static bool service_update_run_install(char* err, size_t errSize) {
     DWORD waited = WaitForSingleObject(pi.hProcess, GC_UPDATE_INSTALL_TIMEOUT_MS);
     DWORD exitCode = 0;
     bool ok = false;
+    bool processExited = false;
     if (waited == WAIT_OBJECT_0 && GetExitCodeProcess(pi.hProcess, &exitCode)) {
+        processExited = true;
         // Exit codes are the installer's documented contract: 0 success,
         // 1 failure, 2 cancelled, 3 bad arguments.
         ok = exitCode == 0;
@@ -651,6 +721,8 @@ static bool service_update_run_install(char* err, size_t errSize) {
         set_message(err, errSize, "The installer did not finish in time");
     }
     CloseHandle(pi.hProcess);
+
+    if (!ok && processExited) service_update_set_install_reserved(false);
 
     {
         GcUpdateStateLock guard;
@@ -666,132 +738,4 @@ static bool service_update_run_install(char* err, size_t errSize) {
                   (unsigned long)exitCode, (unsigned long)waited);
     }
     return ok;
-}
-
-// ---------------------------------------------------------------------------
-// The worker thread
-// ---------------------------------------------------------------------------
-
-enum GcUpdateWorkKind {
-    // The periodic tick.  Downloads only when the user enabled automatic
-    // checking, because nobody asked for that traffic.
-    GC_UPDATE_WORK_CHECK_AUTOMATIC = 0,
-    // Somebody pressed Check now.  That click is consent to this traffic, so a
-    // found update is downloaded regardless of the automatic-check setting --
-    // otherwise the manual path finds an update and does nothing with it, and
-    // Install stays greyed out with no explanation.
-    GC_UPDATE_WORK_CHECK_MANUAL = 1,
-    GC_UPDATE_WORK_INSTALL = 2,
-};
-
-static void service_update_record_check_result(bool succeeded) {
-    {
-        GcUpdateStateLock guard;
-        g_updateState.lastCheckUnix = service_update_now_unix();
-        if (succeeded) {
-            g_updateState.consecutiveFailures = 0;
-        } else if (g_updateState.consecutiveFailures < 1000) {
-            g_updateState.consecutiveFailures++;
-        }
-    }
-    service_update_save_settings();
-}
-
-static DWORD WINAPI service_update_worker_thread(LPVOID param) {
-    GcUpdateWorkKind kind = (GcUpdateWorkKind)(uintptr_t)param;
-    char err[256] = {};
-
-    if (kind == GC_UPDATE_WORK_INSTALL) {
-        if (!service_update_run_install(err, sizeof(err))) {
-            service_update_set_phase(SERVICE_UPDATE_PHASE_FAILED, err);
-        }
-    } else {
-        bool checked = service_update_run_check(err, sizeof(err));
-        service_update_record_check_result(checked);
-        if (!checked) {
-            service_update_set_phase(SERVICE_UPDATE_PHASE_FAILED, err);
-        } else {
-            GcUpdateDecision decision;
-            GcUpdateAutoCheck autoCheck;
-            bool staged;
-            {
-                GcUpdateStateLock guard;
-                decision = g_updateState.decision;
-                autoCheck = g_updateState.autoCheck;
-                staged = g_updateState.packageStaged;
-            }
-            // Downloading changes nothing about the running system -- the file
-            // lands in a directory a standard user cannot write.  INSTALLING is
-            // still a separate, explicitly-consented step.
-            if (gc_update_download_allowed(
-                    autoCheck, kind == GC_UPDATE_WORK_CHECK_MANUAL,
-                    decision == GC_UPDATE_DECISION_AVAILABLE, staged)) {
-                if (!service_update_run_download(err, sizeof(err))) {
-                    service_update_set_phase(SERVICE_UPDATE_PHASE_FAILED, err);
-                }
-            }
-        }
-    }
-
-    {
-        GcUpdateStateLock guard;
-        g_updateState.workerRunning = false;
-    }
-    return 0;
-}
-
-// Start the worker if one is not already running.  Returns false when a job is
-// already in flight, which the pipe handler reports rather than queueing: two
-// concurrent downloads into one staging directory is not a situation worth
-// supporting, and the GUI's button is disabled while a job runs anyway.
-static bool service_update_start_worker(GcUpdateWorkKind kind, char* err, size_t errSize) {
-    {
-        GcUpdateStateLock guard;
-        if (g_updateState.workerRunning) {
-            set_message(err, errSize, "An update operation is already running");
-            return false;
-        }
-        g_updateState.workerRunning = true;
-    }
-    HANDLE thread = CreateThread(nullptr, 0, service_update_worker_thread,
-                                 (LPVOID)(uintptr_t)kind, 0, nullptr);
-    if (!thread) {
-        GcUpdateStateLock guard;
-        g_updateState.workerRunning = false;
-        set_message(err, errSize, "Cannot start the update worker (error %lu)",
-                    GetLastError());
-        return false;
-    }
-    CloseHandle(thread);
-    return true;
-}
-
-// Called from the service's periodic lifecycle tick.  Does nothing at all
-// unless the user turned automatic checking on AND the interval (or its backoff)
-// has elapsed.
-static void service_update_maybe_auto_check() {
-    GcUpdateAutoCheck setting;
-    long long lastCheck;
-    int interval, failures;
-    bool busy;
-    {
-        GcUpdateStateLock guard;
-        setting = g_updateState.autoCheck;
-        lastCheck = g_updateState.lastCheckUnix;
-        interval = g_updateState.intervalSeconds;
-        failures = g_updateState.consecutiveFailures;
-        busy = g_updateState.workerRunning || g_updateState.installRunning;
-    }
-    if (busy) return;
-    if (!gc_update_auto_check_allowed(setting, lastCheck, service_update_now_unix(),
-                                      interval, failures)) {
-        return;
-    }
-    char err[256] = {};
-    if (!service_update_start_worker(GC_UPDATE_WORK_CHECK_AUTOMATIC, err, sizeof(err))) {
-        debug_log("update auto-check: not started: %s\n", err);
-    } else {
-        debug_log("update auto-check: started (interval=%ds failures=%d)\n",
-                  interval, failures);
-    }
 }

@@ -267,6 +267,33 @@ def check_gui_cannot_choose_the_target(ctx, require_text, forbid_text):
                 "the tray must open the dialog rather than install directly")
 
 
+def check_install_reservation_and_restore_gate(ctx, require_text, require_order):
+    """The apply-in-flight race fix and the stale-restore gate stay structural.
+
+    Both are negative properties: dropping the reservation check makes updates
+    keep working, and dropping the version/freshness gate on the pending restore
+    only misbehaves after a failed install.  Neither would fail a happy-path
+    test, so they are asserted as source order/text here.
+    """
+    worker = _p(ctx, "main_service_update_worker.cpp")
+    require_order(
+        worker, "service_update_run_install",
+        "lock_service_runtime", "service_update_set_install_reserved(true)",
+        "the install reservation is set while the runtime lock is held")
+    require_order(
+        worker, "service_update_run_install",
+        "service_update_set_install_reserved(true)", "CreateProcessW",
+        "the reservation survives until setup is launched")
+    pipe = _p(ctx, "main_service_pipe.cpp")
+    require_text(pipe, "service_update_install_reject_mutation",
+                 "APPLY/RESET refuse GPU writes while an install is reserved")
+    handoff = _p(ctx, "gui_update_settings_handoff.cpp")
+    require_text(handoff, "gc_update_restore_decide",
+                 "a pending restore is only replayed for the exact update")
+    require_text(handoff, "gui_update_pending_restore_age_seconds",
+                 "a stale capture is discarded instead of replayed")
+
+
 def check_all(ctx, require_text, forbid_text, require_order, harness_source_path):
     check_gui_cannot_choose_the_target(ctx, require_text, forbid_text)
     check_signature_precedes_parse(ctx, require_order)
@@ -278,3 +305,4 @@ def check_all(ctx, require_text, forbid_text, require_order, harness_source_path
     check_public_keys_only(ctx, require_text, forbid_text)
     check_policy_stays_unit_tested(ctx, require_text, harness_source_path)
     check_uninstall_key_agrees_with_setup(ctx, require_text)
+    check_install_reservation_and_restore_gate(ctx, require_text, require_order)

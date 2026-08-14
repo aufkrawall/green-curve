@@ -187,7 +187,10 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                         request.command == SERVICE_CMD_WRITE_LOG_SNAPSHOT ||
                         request.command == SERVICE_CMD_WRITE_JSON_SNAPSHOT ||
                         request.command == SERVICE_CMD_WRITE_PROBE_REPORT ||
-                        request.command == SERVICE_CMD_LOGON_HANDOFF) &&
+                        request.command == SERVICE_CMD_LOGON_HANDOFF ||
+                        request.command == SERVICE_CMD_CHECK_FOR_UPDATE ||
+                        request.command == SERVICE_CMD_INSTALL_UPDATE ||
+                        request.command == SERVICE_CMD_SET_UPDATE_POLICY) &&
                        callerIntegrityRid < SECURITY_MANDATORY_MEDIUM_RID) {
                 response.status = SERVICE_STATUS_ERROR;
                 StringCchCopyA(response.message, ARRAY_COUNT(response.message),
@@ -357,6 +360,11 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                         request.desired.hasMemOffset ? 1 : 0,
                         request.desired.memOffsetMHz);
                     lock_service_runtime();
+                    if (service_update_install_reject_mutation(
+                            &response, "APPLY")) {
+                        unlock_service_runtime();
+                        break;
+                    }
                     result[0] = '\0';
                     if (!service_mutation_preconditions_match(
                             &request, result, sizeof(result))) {
@@ -596,6 +604,11 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     // RC7: block ALL resets during crash recovery (same reason
                     // as APPLY — writes access-violate on the transitional driver).
                     lock_service_runtime();
+                    if (service_update_install_reject_mutation(
+                            &response, "RESET")) {
+                        unlock_service_runtime();
+                        break;
+                    }
                     result[0] = '\0';
                     if (!service_mutation_preconditions_match(
                             &request, result, sizeof(result))) {

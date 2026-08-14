@@ -62,6 +62,8 @@
 // every future start.
 #define GC_UPDATE_PENDING_RESTORE_APPLYING "pending-update-restore.applying.ini"
 
+#include "update_restore_policy.h"
+
 static bool gui_update_pending_restore_path(const char* leaf, char* out, size_t outSize) {
     if (out && outSize) out[0] = 0;
     if (!g_userDataDir[0]) return false;
@@ -92,8 +94,54 @@ static bool gui_update_capture_settings_for_restore() {
         gc_DeleteFileUtf8(path);
         return false;
     }
+    ServiceUpdateState updateValue = {};
+    const ServiceUpdateState* update =
+        gui_update_state(&updateValue) ? &updateValue : nullptr;
+    if (!update || !update->availableVersion[0]) {
+        debug_log("update handoff: no authenticated available version; discarding capture\n");
+        gc_DeleteFileUtf8(path);
+        return false;
+    }
+    if (!set_config_string(path, GC_UPDATE_RESTORE_SECTION,
+                           GC_UPDATE_RESTORE_VERSION_KEY,
+                           update->availableVersion)) {
+        debug_log("update handoff: could not bind capture to the update version; discarding\n");
+        gc_DeleteFileUtf8(path);
+        return false;
+    }
     debug_log("update handoff: captured active settings for restore: %s\n",
               result[0] ? result : "ok");
+    return true;
+}
+
+static void gui_update_discard_pending_restore() {
+    char pending[MAX_PATH] = {};
+    if (!gui_update_pending_restore_path(GC_UPDATE_PENDING_RESTORE_NAME,
+                                         pending, sizeof(pending))) {
+        return;
+    }
+    if (gc_DeleteFileUtf8(pending)) {
+        debug_log("update handoff: discarded the pending restore\n");
+    }
+}
+
+static bool gui_update_pending_restore_age_seconds(const char* path,
+                                                   long long* ageOut) {
+    if (ageOut) *ageOut = -1;
+    if (!path || !path[0]) return false;
+    WIN32_FILE_ATTRIBUTE_DATA info = {};
+    if (!gc_GetFileAttributesExUtf8(path, GetFileExInfoStandard, &info))
+        return false;
+    ULARGE_INTEGER written = {};
+    written.LowPart = info.ftLastWriteTime.dwLowDateTime;
+    written.HighPart = info.ftLastWriteTime.dwHighDateTime;
+    FILETIME nowFile = {};
+    GetSystemTimeAsFileTime(&nowFile);
+    ULARGE_INTEGER now = {};
+    now.LowPart = nowFile.dwLowDateTime;
+    now.HighPart = nowFile.dwHighDateTime;
+    if (now.QuadPart < written.QuadPart) return false;
+    *ageOut = (long long)((now.QuadPart - written.QuadPart) / 10000000ULL);
     return true;
 }
 
@@ -133,6 +181,19 @@ void gui_update_replay_pending_restore() {
         return;
     }
     debug_log("update handoff: found a pending restore at %s\n", pending);
+
+    char expectedVersion[GC_UPDATE_VERSION_MAX_CHARS] = {};
+    long long ageSeconds = -1;
+    if (!get_config_string(pending, GC_UPDATE_RESTORE_SECTION,
+                           GC_UPDATE_RESTORE_VERSION_KEY, "",
+                           expectedVersion, sizeof(expectedVersion)) ||
+        !gui_update_pending_restore_age_seconds(pending, &ageSeconds) ||
+        gc_update_restore_decide(expectedVersion, APP_VERSION, ageSeconds) !=
+            GC_UPDATE_RESTORE_APPLY) {
+        debug_log("update handoff: pending restore failed its version/freshness gate; discarding\n");
+        gc_DeleteFileUtf8(pending);
+        return;
+    }
 
     // Rename first: the capture is consumed whether or not the replay works, so
     // a failing apply cannot turn into a restore that runs on every start.

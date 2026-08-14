@@ -36,19 +36,25 @@ struct GuiUpdateCache {
 };
 
 static GuiUpdateCache g_guiUpdate = {};
+static SRWLOCK g_guiUpdateLock = SRWLOCK_INIT;
 
 // Called for every successful service response.  Deliberately does not filter
 // by command: the state is stamped on all of them, and filtering would mean the
 // tray only refreshed when something happened to ask about updates.
 static void gui_update_note_response(const ServiceResponse* response) {
     if (!response) return;
-    g_guiUpdate.state = response->update;
+    ServiceUpdateState received = response->update;
     // Wire strings are terminated defensively before anything renders them; a
     // response that lost its terminator must not walk off the end of a tooltip.
-    g_guiUpdate.state.availableVersion[SERVICE_UPDATE_VERSION_CHARS - 1] = '\0';
-    g_guiUpdate.state.installedVersion[SERVICE_UPDATE_VERSION_CHARS - 1] = '\0';
-    g_guiUpdate.state.detail[ARRAY_COUNT(g_guiUpdate.state.detail) - 1] = '\0';
-    g_guiUpdate.valid = true;
+    received.availableVersion[SERVICE_UPDATE_VERSION_CHARS - 1] = '\0';
+    received.installedVersion[SERVICE_UPDATE_VERSION_CHARS - 1] = '\0';
+    received.detail[ARRAY_COUNT(received.detail) - 1] = '\0';
+    {
+        AcquireSRWLockExclusive(&g_guiUpdateLock);
+        g_guiUpdate.state = received;
+        g_guiUpdate.valid = true;
+        ReleaseSRWLockExclusive(&g_guiUpdateLock);
+    }
 
 #ifndef GREEN_CURVE_SERVICE_BINARY
     // The service is about to run setup and cannot reach across sessions to
@@ -61,7 +67,15 @@ static void gui_update_note_response(const ServiceResponse* response) {
     // One-shot: the flag stays set for the whole shutdown window, and asking
     // twice would post a second Exit into a window that is already going away.
     static bool s_shutdownPosted = false;
-    if (g_guiUpdate.state.guiShutdownRequested && !s_shutdownPosted &&
+    ServiceUpdateState current = {};
+    bool haveCurrent = false;
+    {
+        AcquireSRWLockShared(&g_guiUpdateLock);
+        current = g_guiUpdate.state;
+        haveCurrent = g_guiUpdate.valid;
+        ReleaseSRWLockShared(&g_guiUpdateLock);
+    }
+    if (haveCurrent && current.guiShutdownRequested && !s_shutdownPosted &&
         g_app.hMainWnd) {
         s_shutdownPosted = true;
         debug_log("gui update: service requested shutdown for an install; closing\n");
@@ -71,16 +85,22 @@ static void gui_update_note_response(const ServiceResponse* response) {
 #endif
 }
 
-static const ServiceUpdateState* gui_update_state() {
-    return g_guiUpdate.valid ? &g_guiUpdate.state : nullptr;
+static bool gui_update_state(ServiceUpdateState* out) {
+    if (!out) return false;
+    AcquireSRWLockShared(&g_guiUpdateLock);
+    bool valid = g_guiUpdate.valid;
+    if (valid) *out = g_guiUpdate.state;
+    ReleaseSRWLockShared(&g_guiUpdateLock);
+    return valid;
 }
 
 // True when a newer release is published AND this machine can actually take it.
 // The tray entry is driven from this, so a portable copy or an architecture
 // with no build never advertises an update it could not install.
 static bool gui_update_is_available() {
-    const ServiceUpdateState* state = gui_update_state();
-    if (!state) return false;
+    ServiceUpdateState stateValue = {};
+    if (!gui_update_state(&stateValue)) return false;
+    const ServiceUpdateState* state = &stateValue;
     return state->decision == GC_UPDATE_DECISION_AVAILABLE &&
            state->availableVersion[0] != '\0';
 }
