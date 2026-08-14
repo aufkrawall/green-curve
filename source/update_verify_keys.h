@@ -48,6 +48,21 @@
 #define GC_UPDATE_PUBLIC_KEY_BYTES 64
 #define GC_UPDATE_SIGNATURE_BYTES 64
 
+// The Add/Remove Programs key the installer writes, which is where the updater
+// reads InstallLocation from to answer "is this an installed copy, and which
+// directory does it upgrade".
+//
+// This is a SECOND spelling of `GC_SETUP_UNINSTALL_KEY` in installer_common.h,
+// and that duplication is deliberate: installer.md invariant 11 keeps setup and
+// the application model strictly apart, so neither may include the other's
+// header. A silent disagreement between the two would make the updater decide
+// every installation is a portable copy -- it would simply stop offering
+// updates, with nothing failing anywhere. `check_all()` in build.py asserts the
+// two literals are identical, exactly as it does for the setup icon id, which
+// is the same failure shape.
+#define GC_UPDATE_UNINSTALL_KEY \
+    L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Green Curve"
+
 // Active release-signing key.
 static const unsigned char GC_UPDATE_PUBLIC_KEY_ACTIVE[GC_UPDATE_PUBLIC_KEY_BYTES] = {
     0xA2, 0x8B, 0xA6, 0xC2, 0xE8, 0xD5, 0xD9, 0x90,

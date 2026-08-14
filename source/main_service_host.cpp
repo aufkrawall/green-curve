@@ -158,6 +158,11 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
     // Harden the %ProgramData% shared bank at boot (before any interactive login)
     // so a standard user cannot pre-create and squat the directory/file.
     secure_shared_bank_at_startup();
+    // Read the update policy from that same protected machine-scope file.  It
+    // is loaded AFTER the bank is hardened, so the value that decides whether
+    // this service makes outbound requests is never read from a file a standard
+    // user could still have been able to write.
+    service_update_load_settings();
     // F-REL-2: bound the on-disk crash artifacts so a restart loop cannot fill
     // the disk (runs once per fresh process = once per restart cycle).  Sweeps
     // the terminal crash dumps and the append-only breadcrumb as well as the VEH
@@ -331,6 +336,15 @@ service_watchdog_loop:
         while (true) {
             DWORD wr = WaitForSingleObject(g_serviceStopEvent, SERVICE_FAN_WATCHDOG_INTERVAL_MS);
             if (wr == WAIT_OBJECT_0) break; // stop event signaled
+
+            // Automatic update check.  This is a no-op unless the user turned
+            // auto-check on AND the interval (or its failure backoff) elapsed,
+            // both of which are decided by the pure policy in
+            // update_schedule_policy.h against a real clock reading.  Riding the
+            // existing watchdog tick rather than owning a timer keeps the
+            // service's thread inventory unchanged; the tick's period has no
+            // bearing on the check interval, which is measured in wall time.
+            service_update_maybe_auto_check();
 
             DWORD lifecycleState = g_serviceLifecycleThread
                 ? WaitForSingleObject(g_serviceLifecycleThread, 0)

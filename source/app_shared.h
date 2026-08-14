@@ -49,6 +49,19 @@
 #include "gpu_core.h"
 #include "gpu_capability_policy.h"
 #include "nvapi_module_policy.h"
+// The in-app updater's pure policy and its trust root.  gpu_core.h has already
+// pulled in service_protocol.h, which needs update_schedule_policy.h for the
+// request validator's bounds; the rest are needed by both ends -- the service
+// to fetch/verify/install, the GUI and tray to render what it found.
+//
+// update_verify_keys.h holds PUBLIC keys only.  Their private halves live
+// offline and never enter CI, which is the property that makes them worth more
+// than the build-provenance attestation: an attacker who can push a commit can
+// mint a valid attestation, but cannot sign with a key GitHub has never held.
+#include "update_version_policy.h"
+#include "update_manifest_policy.h"
+#include "update_url_policy.h"
+#include "update_verify_keys.h"
 // Protocol-v14 readback provenance carried in AppData below.
 #include "control_readback_policy.h"
 // ProfileReadMode (how a stored profile is decoded) plus the applied-profile

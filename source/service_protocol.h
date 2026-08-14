@@ -9,6 +9,14 @@
 #ifndef GREEN_CURVE_SERVICE_PROTOCOL_H
 #define GREEN_CURVE_SERVICE_PROTOCOL_H
 
+// Updater policy + wire types.  Both are pure and platform-neutral, so they do
+// not violate this file's "no OS-specific types" rule; the schedule policy is
+// what the request validator's interval bounds come from, so including it keeps
+// the wire's accepted range and the policy's clamp from drifting apart.  The
+// wire types are split out for the same size reason as the validation header.
+#include "update_schedule_policy.h"
+#include "service_protocol_update.h"
+
 enum {
     SERVICE_PROTOCOL_MAGIC = 0x47535643u,
     // v13 adds the Linux daemon's startup-apply policy: two commands, the
@@ -41,7 +49,12 @@ enum {
     // to each other and the version has to move: a v17 GUI paired with a v18
     // service would otherwise read every byte from `operationId` onwards -- the
     // whole state envelope and the message -- shifted.
-    SERVICE_PROTOCOL_VERSION = 18,
+    //
+    // v19 adds the in-app updater: four commands, a ServiceUpdateState on every
+    // response, and two request integers. Both structs changed size, so the
+    // ends genuinely cannot talk to each other. See service_protocol_update.h
+    // for the trust boundary those commands express.
+    SERVICE_PROTOCOL_VERSION = 19,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply. Bit 30 marks an
@@ -90,6 +103,14 @@ enum ServiceCommand {
     // who can reach the socket cannot smuggle an overclock through it. The
     // Linux resume unit (greencurve-resume.service) is the only sender.
     SERVICE_CMD_RESUME_RESTORE = 15,
+    // In-app updater (v19). All four are TRIGGERS, never payloads: none lets
+    // the caller name a URL, version, digest, filename or path, and INSTALL is
+    // additionally gated on a human having asked. service_protocol_update.h
+    // explains why that is the entire security model of this feature.
+    SERVICE_CMD_GET_UPDATE_STATE = 16,
+    SERVICE_CMD_CHECK_FOR_UPDATE = 17,
+    SERVICE_CMD_INSTALL_UPDATE = 18,
+    SERVICE_CMD_SET_UPDATE_POLICY = 19,
 };
 
 // What the daemon does with the GPU at startup.  RESTORE_LAST is zero so an
@@ -577,6 +598,10 @@ struct ServiceRequest {
     // `profileSlot`, and the display name in `source` -- the daemon cannot read
     // the user's config.ini itself (ProtectHome=yes).
     gc_u32 startupMode;
+    // The ENTIRE client-supplied update surface: mode and interval for
+    // SERVICE_CMD_SET_UPDATE_POLICY, zero on every other command (enforced).
+    gc_u32 updateAutoCheck;
+    gc_u32 updateIntervalSeconds;
     GpuAdapterInfo targetGpu;
     DesiredSettings desired;
     char source[64];
@@ -690,58 +715,14 @@ struct ServiceResponse {
     DesiredSettings startupProfile;
     gc_bool8 startupProfileValid;
     gc_bool8 startupProfileReserved[7];
+    // Stamped onto EVERY response by the one place that stamps
+    // outcomeSeverity, so a new command branch cannot leave it behind.
+    ServiceUpdateState update;
     char message[512];
 };
 static_assert(offsetof(ServiceResponse, magic) == 0, "ServiceResponse.magic must be at offset 0");
 static_assert(offsetof(ServiceResponse, version) == 4, "ServiceResponse.version offset changed");
 static_assert(sizeof(ServiceResponse) < 262144, "ServiceResponse size sanity check");
-
-static inline void validate_service_snapshot_for_ipc(ServiceSnapshot* s) {
-    if (!s) return;
-    canonicalize_gc_bool8(&s->initialized);
-    canonicalize_gc_bool8(&s->loaded);
-    canonicalize_gc_bool8(&s->fanSupported);
-    canonicalize_gc_bool8(&s->fanRangeKnown);
-    canonicalize_gc_bool8(&s->fanIsAuto);
-    canonicalize_gc_bool8(&s->fanCurveRuntimeActive);
-    canonicalize_gc_bool8(&s->fanFixedRuntimeActive);
-    canonicalize_gc_bool8(&s->gpuOffsetRangeKnown);
-    canonicalize_gc_bool8(&s->memOffsetRangeKnown);
-    canonicalize_gc_bool8(&s->curveOffsetRangeKnown);
-    canonicalize_gc_bool8(&s->gpuTemperatureValid);
-    canonicalize_gc_bool8(&s->vfReadSupported);
-    canonicalize_gc_bool8(&s->vfWriteSupported);
-    canonicalize_gc_bool8(&s->vfBestGuess);
-    canonicalize_gc_bool8(&s->hasLock);
-    canonicalize_gc_bool8(&s->lockTracksAnchor);
-    canonicalize_gc_bool8(&s->selectedAdapterOrdinalFallback);
-    canonicalize_gc_bool8(&s->lastApplyUsedGpuOffset);
-    canonicalize_gc_bool8(&s->serviceInRecovery);
-    canonicalize_gc_bool8(&s->serviceReapplyInProgress);
-    canonicalize_gc_bool8(&s->health.vfSnapshotFresh);
-    canonicalize_gc_bool8(&s->health.recoveryAttempted);
-    canonicalize_gc_bool8(&s->health.recoverySucceeded);
-    if (s->activeProfileSource > SERVICE_PROFILE_SOURCE_AD_HOC) {
-        s->activeProfileSource = SERVICE_PROFILE_SOURCE_NONE;
-        s->activeProfileSlot = 0;
-    }
-    if (s->activeProfileSlot > 255u) s->activeProfileSlot = 0;
-    if (s->lastLifecycleTrigger > SERVICE_LIFECYCLE_TRIGGER_DRIVER_RECOVERY) {
-        s->lastLifecycleTrigger = SERVICE_LIFECYCLE_TRIGGER_NONE;
-    }
-    if (s->lastLifecycleResult > SERVICE_LIFECYCLE_RESULT_FAILED) {
-        s->lastLifecycleResult = SERVICE_LIFECYCLE_RESULT_NONE;
-    }
-    if (s->autoRestoreLockoutReason > SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED) {
-        s->autoRestoreLockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED;
-    }
-    if (s->adapterCount > MAX_GPU_ADAPTERS) s->adapterCount = MAX_GPU_ADAPTERS;
-    if (s->selectedAdapterIndex >= MAX_GPU_ADAPTERS) s->selectedAdapterIndex = 0;
-    for (unsigned int i = 0; i < s->adapterCount && i < MAX_GPU_ADAPTERS; i++) {
-        validate_gpu_adapter_info_for_ipc(&s->adapters[i]);
-    }
-    validate_fan_curve_flags_for_ipc(&s->activeFanCurve);
-}
 
 static inline gc_u64 service_state_hash_u32(gc_u64 hash, gc_u32 value) {
     for (unsigned int i = 0; i < 4; ++i) {

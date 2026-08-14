@@ -30,7 +30,7 @@ static inline const char* service_request_reject_reason(
     if (r->magic != SERVICE_PROTOCOL_MAGIC) return "wrong protocol magic";
     if (r->version != SERVICE_PROTOCOL_VERSION) return "wrong protocol version";
     if (r->command < SERVICE_CMD_PING ||
-        r->command > SERVICE_CMD_RESUME_RESTORE)
+        r->command > SERVICE_CMD_SET_UPDATE_POLICY)
         return "unknown command";
     if (r->startupMode >= SERVICE_STARTUP_POLICY_MODE_COUNT)
         return "unknown startup policy mode";
@@ -151,9 +151,50 @@ static inline const char* service_request_reject_reason(
         // resting on a handler that happens not to look.
         if (service_desired_mutation_domains(&r->desired) != 0)
             return "resume restore carries settings";
+    } else if (r->command == SERVICE_CMD_GET_UPDATE_STATE ||
+               r->command == SERVICE_CMD_CHECK_FOR_UPDATE ||
+               r->command == SERVICE_CMD_INSTALL_UPDATE ||
+               r->command == SERVICE_CMD_SET_UPDATE_POLICY) {
+        // THE UPDATER'S TRUST BOUNDARY, stated as a wire rule.
+        //
+        // The service ends a successful update by launching an installer with
+        // SYSTEM rights. Everything that decides WHICH file that is -- the URL,
+        // the release version, the asset name, the digest, the staging path --
+        // is resolved by the service from constants compiled into the binary
+        // and from a manifest whose signature it verified against a key that
+        // has never been in GitHub Actions. None of it may come from the
+        // caller, because the caller is an unprivileged GUI: a command that
+        // accepted "which file" would be a local privilege escalation however
+        // carefully the named file were checked afterwards.
+        //
+        // So these commands carry NO path, NO settings, NO GPU, NO profile
+        // identity and NO preconditions. Refusing them here rather than
+        // ignoring them in the handler keeps the contract checkable at the
+        // boundary instead of resting on four handlers that happen not to look.
+        if (r->operationId || r->flags || r->resetOcBeforeApply ||
+            r->applyOrigin || r->profileSource || r->profileSlot ||
+            r->startupMode || r->targetGpu.valid || anyPrecondition)
+            return "update command carries mutation fields";
+        if (service_desired_mutation_domains(&r->desired) != 0)
+            return "update command carries settings";
+        if (r->path[0]) return "update command carries a path";
+        if (r->command == SERVICE_CMD_SET_UPDATE_POLICY) {
+            // The only update command with client data, and it is two integers.
+            // An out-of-range interval is refused rather than clamped: the
+            // clamp exists for a hand-edited config file, whereas a request is
+            // machine-written and a bad one means the client is confused.
+            if (r->updateAutoCheck > GC_UPDATE_AUTO_CHECK_ON)
+                return "unknown update auto-check mode";
+            if (r->updateIntervalSeconds < GC_UPDATE_INTERVAL_MIN_SECONDS ||
+                r->updateIntervalSeconds > GC_UPDATE_INTERVAL_MAX_SECONDS)
+                return "update interval out of range";
+        } else if (r->updateAutoCheck || r->updateIntervalSeconds) {
+            return "update command carries policy fields";
+        }
     } else if (r->operationId || r->flags || r->resetOcBeforeApply ||
         r->applyOrigin || r->profileSource || r->profileSlot ||
-        r->startupMode || anyPrecondition) {
+        r->startupMode || r->updateAutoCheck || r->updateIntervalSeconds ||
+        anyPrecondition) {
         return "read-only command carries mutation fields";
     }
     return nullptr;
@@ -210,6 +251,60 @@ static inline bool service_control_bool_fields_valid(
     for (int i = 0; i < FAN_CURVE_MAX_POINTS; ++i)
         if (control->fanCurve.points[i].enabled > 1) return false;
     return true;
+}
+
+// Canonicalize every boolean and bounded field a published snapshot carries.
+//
+// Moved here from service_protocol.h (2026-08-14) when the v19 updater pushed
+// that file past its size limit.  This is where it belonged anyway: this header
+// is by its own description the trust-boundary validation for a request, the
+// published state envelope, and the response, and a snapshot validator is all
+// three's neighbour rather than a wire declaration.
+static inline void validate_service_snapshot_for_ipc(ServiceSnapshot* s) {
+    if (!s) return;
+    canonicalize_gc_bool8(&s->initialized);
+    canonicalize_gc_bool8(&s->loaded);
+    canonicalize_gc_bool8(&s->fanSupported);
+    canonicalize_gc_bool8(&s->fanRangeKnown);
+    canonicalize_gc_bool8(&s->fanIsAuto);
+    canonicalize_gc_bool8(&s->fanCurveRuntimeActive);
+    canonicalize_gc_bool8(&s->fanFixedRuntimeActive);
+    canonicalize_gc_bool8(&s->gpuOffsetRangeKnown);
+    canonicalize_gc_bool8(&s->memOffsetRangeKnown);
+    canonicalize_gc_bool8(&s->curveOffsetRangeKnown);
+    canonicalize_gc_bool8(&s->gpuTemperatureValid);
+    canonicalize_gc_bool8(&s->vfReadSupported);
+    canonicalize_gc_bool8(&s->vfWriteSupported);
+    canonicalize_gc_bool8(&s->vfBestGuess);
+    canonicalize_gc_bool8(&s->hasLock);
+    canonicalize_gc_bool8(&s->lockTracksAnchor);
+    canonicalize_gc_bool8(&s->selectedAdapterOrdinalFallback);
+    canonicalize_gc_bool8(&s->lastApplyUsedGpuOffset);
+    canonicalize_gc_bool8(&s->serviceInRecovery);
+    canonicalize_gc_bool8(&s->serviceReapplyInProgress);
+    canonicalize_gc_bool8(&s->health.vfSnapshotFresh);
+    canonicalize_gc_bool8(&s->health.recoveryAttempted);
+    canonicalize_gc_bool8(&s->health.recoverySucceeded);
+    if (s->activeProfileSource > SERVICE_PROFILE_SOURCE_AD_HOC) {
+        s->activeProfileSource = SERVICE_PROFILE_SOURCE_NONE;
+        s->activeProfileSlot = 0;
+    }
+    if (s->activeProfileSlot > 255u) s->activeProfileSlot = 0;
+    if (s->lastLifecycleTrigger > SERVICE_LIFECYCLE_TRIGGER_DRIVER_RECOVERY) {
+        s->lastLifecycleTrigger = SERVICE_LIFECYCLE_TRIGGER_NONE;
+    }
+    if (s->lastLifecycleResult > SERVICE_LIFECYCLE_RESULT_FAILED) {
+        s->lastLifecycleResult = SERVICE_LIFECYCLE_RESULT_NONE;
+    }
+    if (s->autoRestoreLockoutReason > SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED) {
+        s->autoRestoreLockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED;
+    }
+    if (s->adapterCount > MAX_GPU_ADAPTERS) s->adapterCount = MAX_GPU_ADAPTERS;
+    if (s->selectedAdapterIndex >= MAX_GPU_ADAPTERS) s->selectedAdapterIndex = 0;
+    for (unsigned int i = 0; i < s->adapterCount && i < MAX_GPU_ADAPTERS; i++) {
+        validate_gpu_adapter_info_for_ipc(&s->adapters[i]);
+    }
+    validate_fan_curve_flags_for_ipc(&s->activeFanCurve);
 }
 
 static inline bool validate_service_state_envelope_for_ipc(

@@ -1820,7 +1820,7 @@ static int run_all_tests(int argc, char** argv) {
     // Protocol-v13 request validation, mutation preconditions, and field layout.
     {
         if (SERVICE_PROTOCOL_MAGIC != 0x47535643u) return 80;
-        if (SERVICE_PROTOCOL_VERSION != 18) return 81;
+        if (SERVICE_PROTOCOL_VERSION != 19) return 81;
         if (offsetof(ServiceRequest, expectedServiceInstanceId) <=
             offsetof(ServiceRequest, operationId) ||
             offsetof(ServiceResponse, state) <=
@@ -5214,8 +5214,11 @@ static int run_all_tests(int argc, char** argv) {
         tampered = resume; tampered.profileSlot = 3;
         if (validate_service_request_for_ipc(&tampered)) return 3187;
         // One past the command set is still unknown, so a future command
-        // cannot fall through this daemon's switch.
-        tampered = resume; tampered.command = SERVICE_CMD_RESUME_RESTORE + 1;
+        // cannot fall through this daemon's switch.  Anchored to the HIGHEST
+        // command rather than to RESUME_RESTORE: the v19 updater commands were
+        // added after it, and an anchor that does not move turns this from a
+        // boundary check into an assertion that a real command is rejected.
+        tampered = resume; tampered.command = SERVICE_CMD_SET_UPDATE_POLICY + 1;
         if (validate_service_request_for_ipc(&tampered)) return 3188;
     }
 
@@ -9885,6 +9888,140 @@ static int run_all_tests(int argc, char** argv) {
              code <= GC_UPDATE_INSTALL_ALREADY_RUNNING; ++code) {
             const char* text = gc_update_install_refusal_text((GcUpdateInstallRefusal)code);
             if (!text || !text[0]) return 4199;
+        }
+    }
+
+    // --- v19 update commands on the wire (4200-4229) ------------------
+    //
+    // The update commands are TRIGGERS, never payloads.  The service ends a
+    // successful update by launching an installer with SYSTEM rights, and it
+    // resolves which file that is entirely from compiled-in constants and a
+    // signature-verified manifest.  A command that let an unprivileged GUI name
+    // a path, a version or a digest would be a local privilege escalation
+    // however carefully the named file were checked afterwards -- so the
+    // validator refuses those fields at the boundary rather than trusting four
+    // handlers to each remember not to look at them.
+    {
+        ServiceRequest base = {};
+        base.magic = SERVICE_PROTOCOL_MAGIC;
+        base.version = SERVICE_PROTOCOL_VERSION;
+        base.callerPid = 4242;
+
+        const gc_u32 readOnly[3] = {
+            SERVICE_CMD_GET_UPDATE_STATE,
+            SERVICE_CMD_CHECK_FOR_UPDATE,
+            SERVICE_CMD_INSTALL_UPDATE,
+        };
+        for (size_t i = 0; i < 3; ++i) {
+            ServiceRequest request = base;
+            request.command = readOnly[i];
+            if (!validate_service_request_for_ipc(&request)) return 4200;
+
+            // Every mutation field is refused, one at a time.  Enumerated
+            // rather than tested in bulk so a future field that stops being
+            // checked names itself.
+            ServiceRequest tampered = request;
+            tampered.path[0] = 'C';
+            if (validate_service_request_for_ipc(&tampered)) return 4201;
+            tampered = request; tampered.operationId = 9;
+            if (validate_service_request_for_ipc(&tampered)) return 4202;
+            tampered = request; tampered.flags = SERVICE_REQUEST_FLAG_INTERACTIVE;
+            if (validate_service_request_for_ipc(&tampered)) return 4203;
+            tampered = request; tampered.targetGpu.valid = 1;
+            if (validate_service_request_for_ipc(&tampered)) return 4204;
+            tampered = request; tampered.profileSlot = 3;
+            if (validate_service_request_for_ipc(&tampered)) return 4205;
+            tampered = request; tampered.profileSource = SERVICE_PROFILE_SOURCE_AD_HOC;
+            if (validate_service_request_for_ipc(&tampered)) return 4206;
+            tampered = request; tampered.applyOrigin = SERVICE_APPLY_ORIGIN_STANDBY;
+            if (validate_service_request_for_ipc(&tampered)) return 4207;
+            tampered = request; tampered.resetOcBeforeApply = 1;
+            if (validate_service_request_for_ipc(&tampered)) return 4208;
+            tampered = request; tampered.startupMode = SERVICE_STARTUP_POLICY_PROFILE;
+            if (validate_service_request_for_ipc(&tampered)) return 4209;
+            tampered = request; tampered.expectedServiceInstanceId = 5;
+            tampered.expectedGpuGeneration = 6; tampered.targetGpu.valid = 1;
+            if (validate_service_request_for_ipc(&tampered)) return 4210;
+            // Settings must not ride along either.  The handlers never read
+            // `desired` for these commands, but refusing it here keeps the
+            // contract checkable at the boundary.
+            tampered = request; tampered.desired.hasGpuOffset = 1;
+            tampered.desired.gpuOffsetMHz = 300;
+            if (validate_service_request_for_ipc(&tampered)) return 4211;
+            // The policy fields belong to SET_UPDATE_POLICY alone.
+            tampered = request; tampered.updateAutoCheck = GC_UPDATE_AUTO_CHECK_ON;
+            if (validate_service_request_for_ipc(&tampered)) return 4212;
+            tampered = request;
+            tampered.updateIntervalSeconds = GC_UPDATE_INTERVAL_DEFAULT_SECONDS;
+            if (validate_service_request_for_ipc(&tampered)) return 4213;
+        }
+
+        // SET_UPDATE_POLICY is the one update command carrying client data, and
+        // it carries exactly two bounded integers.
+        {
+            ServiceRequest policy = base;
+            policy.command = SERVICE_CMD_SET_UPDATE_POLICY;
+            policy.updateAutoCheck = GC_UPDATE_AUTO_CHECK_ON;
+            policy.updateIntervalSeconds = GC_UPDATE_INTERVAL_DEFAULT_SECONDS;
+            if (!validate_service_request_for_ipc(&policy)) return 4214;
+
+            // OFF and UNSET are both legitimate answers; UNSET is how a machine
+            // that has never been asked is distinguished from one that said no.
+            ServiceRequest variant = policy;
+            variant.updateAutoCheck = GC_UPDATE_AUTO_CHECK_OFF;
+            if (!validate_service_request_for_ipc(&variant)) return 4215;
+            variant.updateAutoCheck = GC_UPDATE_AUTO_CHECK_UNSET;
+            if (!validate_service_request_for_ipc(&variant)) return 4216;
+
+            // An out-of-range interval is REFUSED, not clamped.  The clamp
+            // exists for a hand-edited config file; a request is machine-written
+            // and a bad one means the client is confused, which should be loud.
+            variant = policy;
+            variant.updateIntervalSeconds = GC_UPDATE_INTERVAL_MIN_SECONDS - 1;
+            if (validate_service_request_for_ipc(&variant)) return 4217;
+            variant.updateIntervalSeconds = GC_UPDATE_INTERVAL_MAX_SECONDS + 1;
+            if (validate_service_request_for_ipc(&variant)) return 4218;
+            variant.updateIntervalSeconds = 0;
+            if (validate_service_request_for_ipc(&variant)) return 4219;
+            variant = policy; variant.updateAutoCheck = GC_UPDATE_AUTO_CHECK_ON + 1;
+            if (validate_service_request_for_ipc(&variant)) return 4220;
+            // The boundaries themselves are accepted.
+            variant = policy;
+            variant.updateIntervalSeconds = GC_UPDATE_INTERVAL_MIN_SECONDS;
+            if (!validate_service_request_for_ipc(&variant)) return 4221;
+            variant.updateIntervalSeconds = GC_UPDATE_INTERVAL_MAX_SECONDS;
+            if (!validate_service_request_for_ipc(&variant)) return 4222;
+            // And it is still refused a path like every other update command.
+            variant = policy; variant.path[0] = 'C';
+            if (validate_service_request_for_ipc(&variant)) return 4223;
+        }
+
+        // The refusal reason names the field, so a live rejection is
+        // diagnosable from one log line rather than "malformed request".
+        {
+            ServiceRequest tampered = base;
+            tampered.command = SERVICE_CMD_INSTALL_UPDATE;
+            tampered.path[0] = 'C';
+            const char* reason = service_request_reject_reason(&tampered);
+            if (!reason || !strstr(reason, "path")) return 4224;
+        }
+
+        // The wire buffer must hold the longest version the parser accepts, or
+        // a legitimate release would be truncated on its way to the GUI.
+        if (SERVICE_UPDATE_VERSION_CHARS != GC_UPDATE_VERSION_MAX_CHARS) return 4225;
+        {
+            GcUpdateVersion longest;
+            gc_update_version_parse("999999.999999.999999", &longest);
+            if (!longest.valid) return 4226;
+            if (strlen(longest.text) + 1 > SERVICE_UPDATE_VERSION_CHARS) return 4227;
+        }
+        // A command past the end of the v19 set is still unknown.
+        {
+            ServiceRequest tampered = base;
+            tampered.command = SERVICE_CMD_SET_UPDATE_POLICY + 1;
+            if (validate_service_request_for_ipc(&tampered)) return 4228;
+            tampered.command = SERVICE_CMD_NONE;
+            if (validate_service_request_for_ipc(&tampered)) return 4229;
         }
     }
 

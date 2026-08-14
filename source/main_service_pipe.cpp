@@ -244,33 +244,9 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     service_handle_snapshot_request(&response);
                     break;
                 }
-                case SERVICE_CMD_GET_TELEMETRY: {
-                    char detail[256] = {};
-                    bool lockAcquired = try_lock_service_runtime(250);
-                    if (!lockAcquired) {
-                        debug_log("service telemetry: runtime lock busy (recovery reapply in progress), serving cached telemetry\n");
-                        response.status = SERVICE_STATUS_OK;
-                        StringCchCopyA(response.message, ARRAY_COUNT(response.message), "telemetry cached");
-                        populate_service_snapshot(&response.snapshot);
-                        if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
-                        break;
-                    }
-                    bool telemetryReady = service_refresh_telemetry_for_request(
-                        detail, sizeof(detail));
-                    if (!telemetryReady) {
-                        debug_log("service telemetry: hardware initialize unavailable: %s\n", detail[0] ? detail : "unknown");
-                    }
-                    response.status = SERVICE_STATUS_OK;
-                    StringCchCopyA(response.message, ARRAY_COUNT(response.message), detail[0] ? detail : "telemetry ready");
-                    populate_service_snapshot(&response.snapshot);
-                    if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
-                    unlock_service_runtime();
-                    // Routine telemetry is a cached observation, not lifecycle
-                    // readiness authority. The bootstrap hardware probe above
-                    // is reached only before the first initialized snapshot;
-                    // normal snapshot/PnP/config events own prerequisite wakes.
+                case SERVICE_CMD_GET_TELEMETRY:
+                    service_handle_telemetry_request(&response);
                     break;
-                }
                 case SERVICE_CMD_APPLY: {
                     ServiceOperationRequestGuard operation(&request, &response,
                         "apply");
@@ -755,6 +731,14 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                     service_handle_file_write_command(request, response,
                         callerToken, callerPid);
                     break;
+                // v19 updater; see main_service_update_commands.cpp.
+                case SERVICE_CMD_GET_UPDATE_STATE:
+                case SERVICE_CMD_CHECK_FOR_UPDATE:
+                case SERVICE_CMD_INSTALL_UPDATE:
+                case SERVICE_CMD_SET_UPDATE_POLICY:
+                    service_handle_update_command(request, response, callerPid,
+                        callerSessionId, callerUser);
+                    break;
                 default:
                     response.status = SERVICE_STATUS_ERROR;
                     StringCchCopyA(response.message, ARRAY_COUNT(response.message), "Unsupported service command");
@@ -776,6 +760,9 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
         // have it survive a status that says the operation failed.
         response.outcomeSeverity = service_response_resolve_outcome_severity(
             response.status, response.outcomeSeverity);
+        // Same reason as severity above: one place, every branch.  Not gated on
+        // stateEnvelopeAuthorized -- it carries no hardware or session state.
+        service_update_populate_response(&response.update);
         // The pipe ACL admits every local user; only callers that passed the
         // active-session, PID, and integrity gates receive authoritative state.
         if (stateEnvelopeAuthorized) populate_service_state_response(&response);

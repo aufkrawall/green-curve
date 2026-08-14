@@ -99,6 +99,7 @@ import security_gates  # noqa: E402  (needs SCRIPT_DIR on sys.path first)
 import ui_gates  # noqa: E402  (same one-way dependency as security_gates)
 import fan_gates  # noqa: E402  (same one-way dependency as security_gates)
 import linux_gates  # noqa: E402  (same one-way dependency as security_gates)
+import update_gates  # noqa: E402  (same one-way dependency as security_gates)
 import icon_render  # noqa: E402  (same one-way dependency as security_gates)
 import crash_artifacts  # noqa: E402  (same one-way dependency as security_gates)
 import driver_inspect  # noqa: E402  (same one-way dependency as security_gates)
@@ -335,6 +336,9 @@ WINDOWS_LINK_LIBS = [
     "-lsetupapi",
     "-lcfgmgr32",
     "-lbcrypt",
+    # The in-app updater's HTTP client.  Linked into both binaries because they
+    # compile the same translation units; only the service ever runs it.
+    "-lwinhttp",
 ]
 
 WINDOWS_SERVICE_LINK_LIBS = [
@@ -351,6 +355,9 @@ WINDOWS_SERVICE_LINK_LIBS = [
     "-lsetupapi",
     "-lcfgmgr32",
     "-lbcrypt",
+    # The in-app updater's HTTP client.  Linked into both binaries because they
+    # compile the same translation units; only the service ever runs it.
+    "-lwinhttp",
 ]
 
 # ---------------------------------------------------------------------------
@@ -2169,7 +2176,9 @@ def run_source_regression_checks():
 
     require_text(shared_h, "APP_DEBUG_DEFAULT_ENABLED 1", "debug logging remains default-on")
     require_text(shared_h, "APP_TITLE           APP_NAME \" v\" APP_VERSION", "plain title macro exists")
-    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 18", "service protocol publishes an explicit outcome severity")
+    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 19",
+                 "service protocol publishes an explicit outcome severity and "
+                 "the v19 update state")
     require_text(shared_h, "typedef gc_u8 gc_bool8", "IPC bool fields use a fixed-width one-byte type")
     require_text(shared_h, "canonicalize_gc_bool8", "IPC bool fields are canonicalized at trust boundaries")
     require_text(shared_h, "validate_service_response_for_ipc", "service responses are canonicalized before GUI use")
@@ -2565,27 +2574,10 @@ def run_source_regression_checks():
                 "the regression harness must not move back into a build.py string")
     require_text(build_script_path, 'os.path.join(SCRIPT_DIR, "tests", "regression_main.cpp")',
                  "build.py compiles the extracted harness from tests/")
-    # The updater's pure policy gates whether a downloaded executable is run as
-    # SYSTEM, so it must stay asserted on both hosts.  Each of these headers is
-    # unit-tested rather than only exercised through the Windows shards that
-    # consume it; losing that coverage silently is exactly how a downgrade or
-    # redirect check stops being enforced without anything failing.
-    for _policy_header in ("update_version_policy.h", "update_manifest_policy.h",
-                           "update_url_policy.h", "update_schedule_policy.h"):
-        require_text(harness_source_path, '#include "%s"' % _policy_header,
-                     "the regression harness asserts %s" % _policy_header)
-    require_text(harness_source_path, "gc_update_is_newer",
-                 "the downgrade gate is unit-tested (no other control catches "
-                 "a replayed older release)")
-    require_text(harness_source_path, "https://github.com@evil.example/a",
-                 "the URL allowlist is tested against an embedded-credentials "
-                 "authority, which defeats a naive prefix check")
-    # The verifier must consult the public keys through the shared table, so a
-    # rollover key that is added but never consulted fails here rather than in
-    # the field when the active key is retired.
-    update_verify_keys_h = os.path.join(SOURCE_DIR, "update_verify_keys.h")
-    require_text(update_verify_keys_h, "GC_UPDATE_PUBLIC_KEY_NEXT",
-                 "a rollover signing key is published before it is needed")
+    # Every updater gate -- the signature-before-parse ordering, the consent
+    # requirement, the TLS and staging rules -- lives in tools/update_gates.py.
+    update_gates.check_all(_gate_ctx(), require_text, forbid_text,
+                           require_order_in_operation, harness_source_path)
     # The ratchet's own guards live beside it, in tools/static_analysis.py.
     static_analysis.check_ratchet_wiring(_gate_ctx(), require_text)
     if os.path.exists(ci_workflow):
