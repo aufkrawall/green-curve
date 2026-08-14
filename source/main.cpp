@@ -753,6 +753,9 @@ static const UINT FAN_TELEMETRY_INTERVAL_MS = 1000;
 // The Updates dialog and the commands that drive it.  GUI-only: the
 // service never asks anything of itself, and -Werror turns an unused
 // static into a build failure.
+// Carrying applied settings across an update, inside the user's session --
+// setup cannot, because the updater launches it in session 0.
+#include "gui_update_settings_handoff.cpp"
 #include "gui_update_dialog.cpp"
 #else
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {

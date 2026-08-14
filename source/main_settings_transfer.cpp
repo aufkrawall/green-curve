@@ -260,4 +260,25 @@ static bool settings_transfer_apply(const char* path, char* result, size_t resul
         result, resultSize);
 }
 
+// CLI dispatch for the two transfer verbs.
+//
+// The body lived in entry.cpp's handle_cli(), which is at its size ratchet;
+// it belongs here anyway, beside the functions it calls, for the same reason
+// cli_handle_machine_admin_command() lives with the admin verbs.
+//
+// Returns true when `opts` named one of the verbs (and `*okOut` says how it
+// went), false when this is not a settings-transfer invocation at all.
+static bool cli_run_settings_transfer(const CliOptions* opts, char* result,
+                                      size_t resultSize) {
+    if (result && resultSize) result[0] = 0;
+    if (!opts) return false;
+    // Both halves need a live service, which is why the caller runs this after
+    // the service-lifecycle commands and before anything that only touches
+    // config on disk.
+    refresh_background_service_state();
+    return opts->exportActiveSettings
+        ? settings_transfer_export(opts->settingsFilePath, result, resultSize)
+        : settings_transfer_apply(opts->settingsFilePath, result, resultSize);
+}
+
 #endif // GREEN_CURVE_SERVICE_BINARY

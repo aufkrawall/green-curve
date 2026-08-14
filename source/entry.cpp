@@ -131,15 +131,10 @@ static bool handle_cli(LPWSTR wCmdLine) {
         return true;
     }
 
-    // Upgrade settings transfer.  Both halves need a live service, so they run
-    // after the service-lifecycle commands above and before anything that only
-    // touches config on disk.
+    // Upgrade settings transfer; the body lives with the verbs it drives.
     if (opts.exportActiveSettings || opts.applySettingsFile) {
-        refresh_background_service_state();
         char result[512] = {};
-        bool ok = opts.exportActiveSettings
-            ? settings_transfer_export(opts.settingsFilePath, result, sizeof(result))
-            : settings_transfer_apply(opts.settingsFilePath, result, sizeof(result));
+        bool ok = cli_run_settings_transfer(&opts, result, sizeof(result));
         CLI_LOG("%s%s\n", ok ? "" : "ERROR: ", result[0] ? result : "Settings transfer failed");
         g_cliExitCode = ok ? 0 : 1;
         fclose(logf);
@@ -847,6 +842,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     }
 
     schedule_logon_combo_sync();
+
+    // Replay settings captured by an in-app update, if any (detached child).
+    gui_update_replay_pending_restore();
 
     // Message loop
     MSG msg = {};

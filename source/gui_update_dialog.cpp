@@ -481,6 +481,15 @@ static LRESULT CALLBACK GuiUpdateDialogProc(HWND hwnd, UINT msg,
                                    MB_YESNO | MB_ICONQUESTION) != IDYES) {
                     return 0;
                 }
+                // Capture the applied settings BEFORE the install is
+                // requested.  Setup's own capture cannot work here: the
+                // updater launches it in session 0, where the service refuses
+                // its helpers.  This process is in the authorized session and
+                // already connected, so it does the job itself.  Failure is
+                // ordinary -- it means nothing is applied -- and never blocks
+                // the update.
+                (void)gui_update_capture_settings_for_restore();
+
                 char err[256] = {};
                 if (!gui_update_request_install(err, sizeof(err))) {
                     gud_report_error(hwnd, "Installing the update", err);
