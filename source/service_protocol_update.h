@@ -78,7 +78,22 @@ struct ServiceUpdateState {
     // users are pointed at the release page rather than silently upgraded into
     // a layout they did not choose.
     gc_bool8 isInstalledCopy;
-    gc_bool8 updateReserved[4];
+    // A check/download/install job is running.  Set by the service BEFORE it
+    // creates the worker thread, and every response is stamped after that, so
+    // the very first response following a command already reports it.
+    //
+    // This exists because the GUI cannot infer it from `phase`: the reply to
+    // CHECK/INSTALL is sent while the worker may not have run yet, so a client
+    // deciding "should I keep polling?" from the phase alone sees IDLE, stops
+    // refreshing, and shows the user nothing at all -- whatever the service
+    // goes on to do.  That was the first live install: the request succeeded,
+    // the worker refused, and the dialog never displayed the refusal.
+    //
+    // Takes one of the reserved bytes rather than growing the struct, which is
+    // what they are for; the size is unchanged, and a build that predates this
+    // reads it as the zero it always was.
+    gc_bool8 workerRunning;
+    gc_bool8 updateReserved[3];
     // Why the last operation failed, in the words the GUI shows.  Never carries
     // an attacker-chosen string: a refused redirect names the hop, not the URL,
     // because echoing an attacker-supplied URL into a log and a status line is

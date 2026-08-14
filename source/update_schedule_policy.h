@@ -182,12 +182,30 @@ static inline const char* gc_update_install_refusal_text(
 // system, so it is allowed to happen on the automatic path once an update is
 // known.  It still requires the auto-check setting to be ON, because a user who
 // turned checking off has not agreed to background traffic either.
-static inline bool gc_update_auto_download_allowed(GcUpdateAutoCheck setting,
-                                                   bool updateAvailable,
-                                                   bool alreadyStaged) {
-    if (setting != GC_UPDATE_AUTO_CHECK_ON) return false;
+// `userRequested` is the difference between "the timer went off" and "somebody
+// clicked Check now", and it matters here more than it looks.
+//
+// The first version of this rule required the automatic-check setting to be ON
+// for ANY download, reasoning that a user who had not enabled checking had not
+// agreed to the traffic. That reasoning is right for the timer and wrong for a
+// button: pressing Check now IS the agreement, and applying the background rule
+// to it made the manual path find an update and then deliberately do nothing
+// with it -- leaving Install greyed out with no explanation of why. That is
+// exactly what the first live run hit.
+//
+// So: a user-requested check downloads whenever there is something to download.
+// The automatic path still requires the setting, because nobody asked for it.
+// Neither changes anything about the running system -- the file lands in a
+// staging directory a standard user cannot write, and INSTALLING is still a
+// separate, explicitly-consented step.
+static inline bool gc_update_download_allowed(GcUpdateAutoCheck setting,
+                                              bool userRequested,
+                                              bool updateAvailable,
+                                              bool alreadyStaged) {
     if (!updateAvailable) return false;
-    return !alreadyStaged;
+    if (alreadyStaged) return false;
+    if (userRequested) return true;
+    return setting == GC_UPDATE_AUTO_CHECK_ON;
 }
 
 #endif // GREEN_CURVE_UPDATE_SCHEDULE_POLICY_H

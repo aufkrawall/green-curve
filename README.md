@@ -79,7 +79,7 @@ Setup writes a log file next to itself **only if something fails**; a successful
 For unattended installs and updates:
 
 ```powershell
-greencurve-0.24-windows-x64-setup.exe /S
+greencurve-0.25-windows-x64-setup.exe /S
 ```
 
 `/S` installs or upgrades with no window (it still needs administrator rights, because it registers a service). `/D=<path>` selects the folder, `--no-start-menu` / `--desktop` / `--launch` override the shortcut and post-install behaviour, and `--uninstall` removes an installation. Exit codes are `0` success, `1` failure, `2` cancelled, `3` bad arguments. Run it with `/?` for the full list.

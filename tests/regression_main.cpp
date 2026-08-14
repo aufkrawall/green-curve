@@ -9875,16 +9875,37 @@ static int run_all_tests(int argc, char** argv) {
                                           GC_UPDATE_INTERVAL_DEFAULT_SECONDS, 0))
             return 4191;
 
-        // Auto-download is allowed to be automatic (it changes nothing about
-        // the running system) but still requires the check setting to be on.
-        if (gc_update_auto_download_allowed(GC_UPDATE_AUTO_CHECK_OFF, true, false))
+        // Downloading changes nothing about the running system, so it is a
+        // weaker gate than installing -- but the AUTOMATIC path still requires
+        // the setting, because nobody asked for that traffic.
+        if (gc_update_download_allowed(GC_UPDATE_AUTO_CHECK_OFF, false, true, false))
             return 4192;
-        if (gc_update_auto_download_allowed(GC_UPDATE_AUTO_CHECK_ON, false, false))
+        if (gc_update_download_allowed(GC_UPDATE_AUTO_CHECK_UNSET, false, true, false))
+            return 4192;
+        if (gc_update_download_allowed(GC_UPDATE_AUTO_CHECK_ON, false, false, false))
             return 4193;
-        if (gc_update_auto_download_allowed(GC_UPDATE_AUTO_CHECK_ON, true, true))
+        if (gc_update_download_allowed(GC_UPDATE_AUTO_CHECK_ON, false, true, true))
             return 4194;
-        if (!gc_update_auto_download_allowed(GC_UPDATE_AUTO_CHECK_ON, true, false))
+        if (!gc_update_download_allowed(GC_UPDATE_AUTO_CHECK_ON, false, true, false))
             return 4195;
+
+        // A USER-REQUESTED check downloads whatever the setting says.  Pressing
+        // "Check now" is the consent that the setting exists to infer, and the
+        // first live run proved the cost of getting this wrong: the manual path
+        // found an update, declined to download it because auto-check was UNSET,
+        // and left Install greyed out with no explanation.
+        if (!gc_update_download_allowed(GC_UPDATE_AUTO_CHECK_UNSET, true, true, false))
+            return 4196;
+        if (!gc_update_download_allowed(GC_UPDATE_AUTO_CHECK_OFF, true, true, false))
+            return 4196;
+        if (!gc_update_download_allowed(GC_UPDATE_AUTO_CHECK_ON, true, true, false))
+            return 4196;
+        // It does not, however, invent an update that is not there, and it does
+        // not re-download one already staged.
+        if (gc_update_download_allowed(GC_UPDATE_AUTO_CHECK_UNSET, true, false, false))
+            return 4196;
+        if (gc_update_download_allowed(GC_UPDATE_AUTO_CHECK_UNSET, true, true, true))
+            return 4196;
 
         // --- The install gate ----------------------------------------
         // A fully clean, fully consented state is the only ALLOWED one.
@@ -9893,7 +9914,7 @@ static int run_all_tests(int argc, char** argv) {
         gate.packageStaged = true;
         gate.packageVerified = true;
         gate.isInstalledCopy = true;
-        if (gc_update_install_decision(&gate) != GC_UPDATE_INSTALL_ALLOWED) return 4196;
+        if (gc_update_install_decision(&gate) != GC_UPDATE_INSTALL_ALLOWED) return 4190;
 
         // Each refusal arm in turn.  Consent is checked first so the log's
         // first line is never a technical detail when the real answer is that

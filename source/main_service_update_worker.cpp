@@ -304,15 +304,35 @@ static bool service_update_run_download(char* err, size_t errSize) {
 // Whether a fullscreen application owns the foreground.  Stopping the service
 // resets the GPU to stock on the way down, so installing here would yank the
 // overclock out from under a running game.
+// The service CANNOT answer this, and pretending otherwise cost the first live
+// install.
+//
+// SHQueryUserNotificationState reports the state of the caller's own window
+// station.  A LocalSystem service lives in session 0, which has no interactive
+// desktop, so what comes back describes nothing the user can see -- and the
+// original code refused an install on QUNS_BUSY, which is exactly what an
+// answer from a non-interactive session can look like.  The result was an
+// install that was silently refused with the machine completely idle.
+//
+// The check itself is worth keeping: stopping the service returns the GPU to
+// stock for a few seconds, and doing that under a running game is rude.  But
+// the only process that can see the user's session is the GUI, which lives in
+// it, so the check moved there (gui_update_foreground_app_active) and warns
+// before the request is sent.
+//
+// This is a COURTESY gate, not a security one, which is what makes moving it
+// client-side acceptable: a client can only make itself more restrictive.  The
+// gate that actually protects the hardware -- applyInFlight, taken from the
+// runtime mutex -- stays here, where it is answerable.
 static bool service_update_foreground_app_active() {
     QUERY_USER_NOTIFICATION_STATE state = (QUERY_USER_NOTIFICATION_STATE)0;
-    if (SUCCEEDED(SHQueryUserNotificationState(&state))) {
-        if (state == QUNS_RUNNING_D3D_FULL_SCREEN ||
-            state == QUNS_PRESENTATION_MODE ||
-            state == QUNS_BUSY) {
-            return true;
-        }
-    }
+    HRESULT hr = SHQueryUserNotificationState(&state);
+    // Logged, never acted on: recorded so that "why was my install refused" is
+    // answerable from the log, and so the day this moves into a session-aware
+    // helper there is data about what session 0 actually returns.
+    debug_log("update install: session-0 notification state hr=0x%08lX value=%d "
+              "(not used as a gate; the GUI owns this check)\n",
+              (unsigned long)hr, (int)state);
     return false;
 }
 
@@ -492,12 +512,16 @@ static bool service_update_run_install(char* err, size_t errSize) {
 // ---------------------------------------------------------------------------
 
 enum GcUpdateWorkKind {
-    GC_UPDATE_WORK_CHECK = 0,
-    GC_UPDATE_WORK_CHECK_AND_DOWNLOAD = 1,
+    // The periodic tick.  Downloads only when the user enabled automatic
+    // checking, because nobody asked for that traffic.
+    GC_UPDATE_WORK_CHECK_AUTOMATIC = 0,
+    // Somebody pressed Check now.  That click is consent to this traffic, so a
+    // found update is downloaded regardless of the automatic-check setting --
+    // otherwise the manual path finds an update and does nothing with it, and
+    // Install stays greyed out with no explanation.
+    GC_UPDATE_WORK_CHECK_MANUAL = 1,
     GC_UPDATE_WORK_INSTALL = 2,
 };
-
-static GcUpdateWorkKind g_updateWorkKind = GC_UPDATE_WORK_CHECK;
 
 static void service_update_record_check_result(bool succeeded) {
     {
@@ -525,7 +549,7 @@ static DWORD WINAPI service_update_worker_thread(LPVOID param) {
         service_update_record_check_result(checked);
         if (!checked) {
             service_update_set_phase(SERVICE_UPDATE_PHASE_FAILED, err);
-        } else if (kind == GC_UPDATE_WORK_CHECK_AND_DOWNLOAD) {
+        } else {
             GcUpdateDecision decision;
             GcUpdateAutoCheck autoCheck;
             bool staged;
@@ -535,10 +559,12 @@ static DWORD WINAPI service_update_worker_thread(LPVOID param) {
                 autoCheck = g_updateState.autoCheck;
                 staged = g_updateState.packageStaged;
             }
-            // Downloading is allowed on the automatic path because it changes
-            // nothing about the running system; INSTALLING never is.
-            if (gc_update_auto_download_allowed(
-                    autoCheck, decision == GC_UPDATE_DECISION_AVAILABLE, staged)) {
+            // Downloading changes nothing about the running system -- the file
+            // lands in a directory a standard user cannot write.  INSTALLING is
+            // still a separate, explicitly-consented step.
+            if (gc_update_download_allowed(
+                    autoCheck, kind == GC_UPDATE_WORK_CHECK_MANUAL,
+                    decision == GC_UPDATE_DECISION_AVAILABLE, staged)) {
                 if (!service_update_run_download(err, sizeof(err))) {
                     service_update_set_phase(SERVICE_UPDATE_PHASE_FAILED, err);
                 }
@@ -566,7 +592,6 @@ static bool service_update_start_worker(GcUpdateWorkKind kind, char* err, size_t
         }
         g_updateState.workerRunning = true;
     }
-    g_updateWorkKind = kind;
     HANDLE thread = CreateThread(nullptr, 0, service_update_worker_thread,
                                  (LPVOID)(uintptr_t)kind, 0, nullptr);
     if (!thread) {
@@ -602,7 +627,7 @@ static void service_update_maybe_auto_check() {
         return;
     }
     char err[256] = {};
-    if (!service_update_start_worker(GC_UPDATE_WORK_CHECK_AND_DOWNLOAD, err, sizeof(err))) {
+    if (!service_update_start_worker(GC_UPDATE_WORK_CHECK_AUTOMATIC, err, sizeof(err))) {
         debug_log("update auto-check: not started: %s\n", err);
     } else {
         debug_log("update auto-check: started (interval=%ds failures=%d)\n",

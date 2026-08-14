@@ -34,7 +34,7 @@ static void service_handle_update_check_request(ServiceResponse& response,
                                                 DWORD callerPid,
                                                 DWORD callerSessionId) {
     char err[256] = {};
-    if (service_update_start_worker(GC_UPDATE_WORK_CHECK_AND_DOWNLOAD,
+    if (service_update_start_worker(GC_UPDATE_WORK_CHECK_MANUAL,
                                     err, sizeof(err))) {
         response.status = SERVICE_STATUS_OK;
         StringCchCopyA(response.message, ARRAY_COUNT(response.message),

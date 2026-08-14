@@ -34,6 +34,12 @@
 static bool gui_update_is_busy() {
     const ServiceUpdateState* state = gui_update_state();
     if (!state) return false;
+    // `workerRunning` first, and it is the authoritative half.  The service sets
+    // it before creating the worker thread, so it is already true in the reply
+    // to the command that started the job -- whereas `phase` may still say IDLE
+    // at that moment.  Polling driven by phase alone stops immediately after
+    // Install and the user sees nothing happen.
+    if (state->workerRunning) return true;
     switch (state->phase) {
         case SERVICE_UPDATE_PHASE_CHECKING:
         case SERVICE_UPDATE_PHASE_DOWNLOADING:
@@ -143,6 +149,27 @@ static bool gui_update_send(ServiceCommand command, gc_u32 autoCheck,
         return false;
     }
     return true;
+}
+
+// Whether a fullscreen or presentation-mode application owns the foreground.
+//
+// This lives in the GUI because the GUI is the only Green Curve process in the
+// user's session.  The service runs in session 0, which has no interactive
+// desktop, so the same call there describes nothing the user can see -- and
+// acting on it refused the first live install on a completely idle machine.
+// See service_update_foreground_app_active() for that story.
+//
+// Courtesy check, not a security one: installing stops the service, which
+// returns the GPU to stock for a few seconds, and doing that under a running
+// game is rude.  Being client-side is therefore fine -- a client can only make
+// itself more restrictive, and the gate that actually protects the hardware
+// (a hardware apply in flight) stays in the service where it is answerable.
+static bool gui_update_foreground_app_active() {
+    QUERY_USER_NOTIFICATION_STATE state = (QUERY_USER_NOTIFICATION_STATE)0;
+    if (FAILED(SHQueryUserNotificationState(&state))) return false;
+    return state == QUNS_RUNNING_D3D_FULL_SCREEN ||
+           state == QUNS_PRESENTATION_MODE ||
+           state == QUNS_BUSY;
 }
 
 static bool gui_update_request_state(char* err, size_t errSize) {
@@ -255,6 +282,14 @@ static void gud_refresh_controls() {
         StringCchCopyA(detail, sizeof(detail),
             "Installing stops Green Curve briefly and restores your settings "
             "afterwards. Do not install while gaming.");
+    } else if (state && state->decision == GC_UPDATE_DECISION_AVAILABLE &&
+               !state->packageStaged) {
+        // An update is known but nothing is staged, so Install is greyed.  Say
+        // why: the first live run left a user looking at a disabled button with
+        // no explanation, which is a worse failure than an error message.
+        StringCchCopyA(detail, sizeof(detail),
+            "The update has not been downloaded yet. Use Check now to download "
+            "it, then Install update.");
     }
     gud_set_text(g_updateDialog.detailLabel, detail);
 
@@ -426,13 +461,24 @@ static LRESULT CALLBACK GuiUpdateDialogProc(HWND hwnd, UINT msg,
                 // The confirmation states the two consequences that actually
                 // surprise people: the app disappears for a moment, and the GPU
                 // returns to stock while the service is stopped.
-                if (gc_message_box(hwnd,
-                        "Install the update now?\n\n"
-                        "Green Curve will close, the background service will "
-                        "restart, and your settings will be restored "
-                        "afterwards. Your GPU returns to stock settings for a "
-                        "few seconds during the update.",
-                        "Green Curve", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+                const char* prompt =
+                    "Install the update now?\n\n"
+                    "Green Curve will close, the background service will "
+                    "restart, and your settings will be restored afterwards. "
+                    "Your GPU returns to stock settings for a few seconds "
+                    "during the update.";
+                // The service cannot see the user's session, so this check
+                // lives here.  It warns rather than refuses: the user asked,
+                // and a courtesy check is not something to hard-block on.
+                if (gui_update_foreground_app_active()) {
+                    prompt =
+                        "A fullscreen application appears to be running.\n\n"
+                        "Installing now stops the background service, which "
+                        "returns your GPU to stock settings for a few seconds. "
+                        "Install anyway?";
+                }
+                if (gc_message_box(hwnd, prompt, "Green Curve",
+                                   MB_YESNO | MB_ICONQUESTION) != IDYES) {
                     return 0;
                 }
                 char err[256] = {};
