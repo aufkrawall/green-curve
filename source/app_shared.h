@@ -62,6 +62,7 @@
 #include "update_manifest_policy.h"
 #include "update_url_policy.h"
 #include "update_verify_keys.h"
+#include "update_install_policy.h"
 // Protocol-v14 readback provenance carried in AppData below.
 #include "control_readback_policy.h"
 // ProfileReadMode (how a stored profile is decoded) plus the applied-profile

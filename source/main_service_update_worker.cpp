@@ -419,19 +419,21 @@ static bool service_update_run_install(char* err, size_t errSize) {
         return false;
     }
 
-    // /S silent, /D= the CURRENT install directory.  Passing the directory
-    // explicitly matters: without it the installer would use its own default and
-    // could relocate an installation the user deliberately put elsewhere.
-    // --no-launch because the service cannot know whether a GUI was running,
-    // and the installer's own launch step would start one as the wrong user.
-    char commandLine[MAX_PATH * 2 + 64] = {};
-    if (FAILED(StringCchPrintfA(commandLine, sizeof(commandLine),
-                                "\"%s\" /S /D=%s --no-launch",
-                                stagedPath, installDir))) {
+    // Built by update_install_policy.h, which exists because this was four
+    // lines here and shipped an unquoted `/D=<path with spaces>` that setup
+    // correctly refused -- exit 3, before any step, for every default
+    // installation.  The builder is pure so the exact string is asserted
+    // against the real installer parser (4260-4269).
+    char commandLine[GC_UPDATE_COMMAND_LINE_MAX_CHARS] = {};
+    if (!gc_update_build_installer_command_line(stagedPath, installDir,
+                                                commandLine, sizeof(commandLine))) {
         CloseHandle(pinned);
-        set_message(err, errSize, "Installer command line is too long");
+        set_message(err, errSize,
+                    "Cannot build a usable installer command line for %s",
+                    installDir);
         return false;
     }
+    debug_log("update install: command line is %s\n", commandLine);
 
     service_update_set_phase(SERVICE_UPDATE_PHASE_INSTALLING, nullptr);
     {

@@ -81,6 +81,7 @@
 #include "update_manifest_policy.h"
 #include "update_url_policy.h"
 #include "update_schedule_policy.h"
+#include "update_install_policy.h"
 #include "linux_terminal_policy.h"
 #include "linux_debug_log.h"
 // Where a crash artifact is allowed to go and which ones may be deleted.  Pure
@@ -10275,6 +10276,98 @@ static int run_all_tests(int argc, char** argv) {
             return 4254;
     }
 #endif  // _WIN32
+
+    // --- The installer command line (4260-4269) -----------------------
+    //
+    // The updater drives the setup program, so the string it emits and the
+    // parser that reads it have to agree.  Nothing tested that, and the first
+    // real install died on it: an unquoted `/D=C:\Program Files\Green Curve`
+    // was split by CommandLineToArgvW into `/D=C:\Program`, `Files\Green`,
+    // `Curve`, so setup parsed the directory as `C:\Program`, met an unknown
+    // switch, and refused the whole line -- exit 3, before any step, hence not
+    // even a failure log.  The default install directory contains a space, so
+    // this failed for EVERY standard installation.
+    {
+        char cmd[GC_UPDATE_COMMAND_LINE_MAX_CHARS] = {};
+        if (!gc_update_build_installer_command_line(
+                "C:\\ProgramData\\Green Curve\\updates\\setup.exe",
+                "C:\\Program Files\\Green Curve", cmd, sizeof(cmd))) return 4260;
+        // Both space-bearing paths must be quoted, and the directory must use
+        // the `--dir <value>` form: `/D=` is positional by NSIS convention and
+        // that convention does not survive argv splitting.
+        if (!strstr(cmd, "\"C:\\ProgramData\\Green Curve\\updates\\setup.exe\""))
+            return 4261;
+        if (!strstr(cmd, "--dir \"C:\\Program Files\\Green Curve\"")) return 4262;
+        if (!strstr(cmd, " /S ")) return 4263;
+        if (!strstr(cmd, "--no-launch")) return 4264;
+        // `/D=` must not reappear: it is the form that broke.
+        if (strstr(cmd, "/D=")) return 4265;
+
+        // Paths that cannot be expressed as one argv entry are refused rather
+        // than escaped -- this becomes the command line of a SYSTEM process.
+        char scratch[GC_UPDATE_COMMAND_LINE_MAX_CHARS] = {};
+        if (gc_update_build_installer_command_line(
+                "C:\\a\\setup.exe", "C:\\evil\" --dir C:\\elsewhere",
+                scratch, sizeof(scratch))) return 4266;
+        // A trailing backslash would escape the closing quote and swallow the
+        // rest of the line.
+        if (gc_update_build_installer_command_line(
+                "C:\\a\\setup.exe", "C:\\Program Files\\Green Curve\\",
+                scratch, sizeof(scratch))) return 4266;
+        if (gc_update_build_installer_command_line("C:\\a\\setup.exe", "",
+                                                   scratch, sizeof(scratch)))
+            return 4266;
+        if (gc_update_build_installer_command_line(nullptr, "C:\\x",
+                                                   scratch, sizeof(scratch)))
+            return 4266;
+        // A buffer too small fails rather than emitting a truncated command.
+        char tiny[24] = {};
+        if (gc_update_build_installer_command_line(
+                "C:\\ProgramData\\Green Curve\\updates\\setup.exe",
+                "C:\\Program Files\\Green Curve", tiny, sizeof(tiny))) return 4267;
+        if (tiny[0]) return 4267;
+
+#if defined(_WIN32)
+        // THE ROUND TRIP that was missing: split the emitted string exactly as
+        // Windows will, and feed it to the REAL installer parser.  This is the
+        // assertion that would have caught the shipped bug.
+        {
+            WCHAR wide[GC_UPDATE_COMMAND_LINE_MAX_CHARS] = {};
+            if (MultiByteToWideChar(CP_UTF8, 0, cmd, -1, wide,
+                                    (int)ARRAY_COUNT(wide)) <= 0) return 4268;
+            int wideCount = 0;
+            LPWSTR* wideArgv = CommandLineToArgvW(wide, &wideCount);
+            if (!wideArgv || wideCount < 2) { if (wideArgv) LocalFree((HLOCAL)wideArgv); return 4268; }
+
+            static char argBuf[16][512];
+            const char* argv[16];
+            int count = 0;
+            for (int i = 1; i < wideCount && count < 16; ++i) {
+                if (WideCharToMultiByte(CP_UTF8, 0, wideArgv[i], -1, argBuf[count],
+                                        (int)sizeof(argBuf[count]), nullptr, nullptr) <= 0) {
+                    LocalFree((HLOCAL)wideArgv);
+                    return 4268;
+                }
+                argv[count] = argBuf[count];
+                count++;
+            }
+            LocalFree((HLOCAL)wideArgv);
+
+            GcInstallerOptions options;
+            gc_installer_parse_options(count, argv, &options);
+            if (!options.valid) return 4269;
+            if (!options.silent) return 4269;
+            if (!options.hasDirectory) return 4269;
+            // The directory must arrive WHOLE.  `C:\Program` is precisely the
+            // shipped bug, and it is a directory that exists, so a weaker
+            // assertion here would have passed.
+            if (strcmp(options.directory, "C:\\Program Files\\Green Curve") != 0)
+                return 4269;
+            if (options.launchAfterInstall != GC_TOGGLE_OFF) return 4269;
+            if (options.mode != GC_INSTALLER_MODE_INSTALL) return 4269;
+        }
+#endif
+    }
 
     DeleteCriticalSection(&g_configLock);
     return 0;
