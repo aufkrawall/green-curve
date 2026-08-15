@@ -87,6 +87,10 @@
 // rather than only in the window, because the failure mode it exists to fix is
 // silence -- which no build error, no crash and no log line reveals.
 #include "update_presentation_policy.h"
+// The response read loops, behind their transport seam.  The reason this is
+// worth a seam at all is that its central property -- refusing an oversized
+// body BEFORE the chunk is written -- regresses without any visible symptom.
+#include "update_transport_policy.h"
 #include "linux_terminal_policy.h"
 #include "linux_debug_log.h"
 // Where a crash artifact is allowed to go and which ones may be deleted.  Pure
@@ -558,6 +562,74 @@ static bool fake_linux_transaction_rollback(void* opaque, unsigned int attempted
     FakeLinuxTransaction* fake = (FakeLinuxTransaction*)opaque;
     fake->rollbackMask = attempted;
     return fake->rollbackOk;
+}
+
+// A scripted HTTP response body, standing in for WinHTTP.
+//
+// It models the one thing about the real transport that the loops actually
+// depend on: the body arrives in server-chosen chunks, announced by
+// `available` and then handed over by `read`.  The two are separate calls, and
+// a hostile server controls how much it announces -- which is why the loops may
+// never treat an announcement as a bound on anything but their own buffer.
+//
+// `failAvailableAt` / `failReadAt` inject a transport failure at a chosen call,
+// and `shortReadAt` makes one read return zero bytes with data still pending --
+// the "stalled" case, distinct from the zero-available that ends a body.
+struct FakeHttpBody {
+    const unsigned char* bytes;
+    size_t length;
+    size_t offset;
+    size_t announce;        // bytes reported per `available` call (0 = all)
+    int availableCalls;
+    int readCalls;
+    int failAvailableAt;    // 1-based call index, 0 = never
+    int failReadAt;
+    int shortReadAt;
+};
+
+static bool fake_http_available(void* ctx, size_t* bytes) {
+    FakeHttpBody* body = (FakeHttpBody*)ctx;
+    body->availableCalls++;
+    if (body->failAvailableAt == body->availableCalls) return false;
+    size_t remaining = body->length - body->offset;
+    size_t announce = body->announce ? body->announce : remaining;
+    if (announce > remaining) announce = remaining;
+    if (bytes) *bytes = announce;
+    return true;
+}
+
+static bool fake_http_read(void* ctx, void* buffer, size_t want, size_t* got) {
+    FakeHttpBody* body = (FakeHttpBody*)ctx;
+    body->readCalls++;
+    if (body->failReadAt == body->readCalls) return false;
+    if (body->shortReadAt == body->readCalls) {
+        if (got) *got = 0;
+        return true;
+    }
+    size_t remaining = body->length - body->offset;
+    size_t give = want < remaining ? want : remaining;
+    if (give) memcpy(buffer, body->bytes + body->offset, give);
+    body->offset += give;
+    if (got) *got = give;
+    return true;
+}
+
+// Counts what actually reached disk.  `written` is the measurement that proves
+// the oversize abort happened mid-transfer rather than after: a loop that
+// checked the total at the end would leave every offered byte here.
+struct FakeSink {
+    size_t written;
+    int writeCalls;
+    int failWriteAt;
+};
+
+static bool fake_sink_write(void* ctx, const void* buffer, size_t bytes) {
+    FakeSink* sink = (FakeSink*)ctx;
+    (void)buffer;
+    sink->writeCalls++;
+    if (sink->failWriteAt == sink->writeCalls) return false;
+    sink->written += bytes;
+    return true;
 }
 
 #if defined(_WIN32)
@@ -10679,6 +10751,214 @@ static int run_all_tests(int argc, char** argv) {
         if (!gc_update_check_is_due(gc_update_join_timestamp(-1, -1),
                                     1760000000LL,
                                     GC_UPDATE_INTERVAL_DEFAULT_SECONDS)) return 4366;
+    }
+
+    // --- The response read loops (4370-4399) -----------------------------
+    //
+    // Reachable at all only because the transport sits behind a seam.  These
+    // loops run in a LocalSystem service against bytes chosen by whatever the
+    // redirect chain ended at, and their central property -- refusing an
+    // oversized body BEFORE writing it -- has no symptom when it regresses:
+    // a late check still refuses the update, the digest still fails, nothing
+    // logs anything unusual.  It just writes the attacker's whole response to
+    // disk first.
+    {
+        static const unsigned char kBody[] =
+            "format=1\nversion=0.30\nx64_size=1\n";
+        const size_t kBodyLen = sizeof(kBody) - 1;
+
+        // --- Small documents: manifest and signature (4370-4379) ---------
+        {
+            FakeHttpBody body = {};
+            body.bytes = kBody;
+            body.length = kBodyLen;
+            GcUpdateReader reader = {};
+            reader.available = fake_http_available;
+            reader.read = fake_http_read;
+            reader.ctx = &body;
+
+            char out[256] = {};
+            size_t outLen = 0;
+            if (gc_update_read_document(&reader, out, sizeof(out), &outLen) !=
+                GC_UPDATE_FETCH_OK) return 4370;
+            if (outLen != kBodyLen || memcmp(out, kBody, kBodyLen) != 0) return 4371;
+            // Always terminated: every consumer treats this as a C string, and
+            // the signature is verified over exactly `outLen` bytes.
+            if (out[outLen] != '\0') return 4372;
+
+            // Arriving in several server-chosen pieces must produce the same
+            // bytes.  A loop that trusted the first announcement as the whole
+            // body would pass the test above and fail this one.
+            FakeHttpBody chunked = {};
+            chunked.bytes = kBody;
+            chunked.length = kBodyLen;
+            chunked.announce = 7;
+            reader.ctx = &chunked;
+            memset(out, 0, sizeof(out));
+            if (gc_update_read_document(&reader, out, sizeof(out), &outLen) !=
+                GC_UPDATE_FETCH_OK) return 4373;
+            if (outLen != kBodyLen || memcmp(out, kBody, kBodyLen) != 0) return 4374;
+
+            // The ceiling is the CALLER's buffer, never anything the server
+            // said. One byte too large is refused, not truncated -- a truncated
+            // manifest could parse as a valid but different one.
+            FakeHttpBody big = {};
+            big.bytes = kBody;
+            big.length = kBodyLen;
+            reader.ctx = &big;
+            char tight[8] = {};
+            if (gc_update_read_document(&reader, tight, sizeof(tight), &outLen) !=
+                GC_UPDATE_FETCH_TOO_LARGE) return 4375;
+            // Refused before a single byte was copied: the check runs on the
+            // announcement, so `read` is never reached.
+            if (big.readCalls != 0) return 4376;
+            // Exactly filling the buffer, terminator included, still succeeds.
+            char exact[sizeof(kBody)] = {};
+            FakeHttpBody fits = {};
+            fits.bytes = kBody;
+            fits.length = kBodyLen;
+            reader.ctx = &fits;
+            if (gc_update_read_document(&reader, exact, sizeof(exact), &outLen) !=
+                GC_UPDATE_FETCH_OK) return 4377;
+
+            // A 200 with no body is a failure, not an empty manifest.
+            FakeHttpBody empty = {};
+            empty.bytes = kBody;
+            empty.length = 0;
+            reader.ctx = &empty;
+            if (gc_update_read_document(&reader, out, sizeof(out), &outLen) !=
+                GC_UPDATE_FETCH_EMPTY) return 4378;
+
+            // Transport faults are distinguished from each other, because each
+            // is a different sentence in the log and "the update did nothing"
+            // is otherwise undiagnosable.
+            FakeHttpBody queryFails = {};
+            queryFails.bytes = kBody;
+            queryFails.length = kBodyLen;
+            queryFails.failAvailableAt = 1;
+            reader.ctx = &queryFails;
+            if (gc_update_read_document(&reader, out, sizeof(out), &outLen) !=
+                GC_UPDATE_FETCH_QUERY_FAILED) return 4379;
+        }
+
+        // --- Streaming the asset (4380-4399) -----------------------------
+        {
+            unsigned char payload[512] = {};
+            for (size_t i = 0; i < sizeof(payload); ++i)
+                payload[i] = (unsigned char)(i & 0xFF);
+            unsigned char chunk[64] = {};
+
+            FakeHttpBody body = {};
+            body.bytes = payload;
+            body.length = sizeof(payload);
+            body.announce = 100;   // deliberately not a multiple of the chunk
+            GcUpdateReader reader = {};
+            reader.available = fake_http_available;
+            reader.read = fake_http_read;
+            reader.ctx = &body;
+            FakeSink sink = {};
+            GcUpdateSink out = {};
+            out.write = fake_sink_write;
+            out.ctx = &sink;
+
+            unsigned long long total = 0;
+            if (gc_update_stream_asset(&reader, &out, sizeof(payload), chunk,
+                                       sizeof(chunk), &total) !=
+                GC_UPDATE_FETCH_OK) return 4380;
+            if (total != sizeof(payload) || sink.written != sizeof(payload)) return 4381;
+            // An announcement larger than the scratch buffer is split rather
+            // than overrunning it.
+            if (body.readCalls <= (int)(sizeof(payload) / sizeof(chunk)) - 1) return 4382;
+
+            // ***THE ONE THIS SEAM EXISTS FOR***
+            //
+            // The server sends more than the signed manifest declared. The
+            // abort must happen BEFORE the overflowing chunk is written, so
+            // the sink must hold no more than the declared size -- a loop that
+            // checked `total` at the end would have written all 512 bytes here
+            // and still returned a refusal, passing any test that only looked
+            // at the return value.
+            const unsigned long long kDeclared = 200;
+            FakeHttpBody oversize = {};
+            oversize.bytes = payload;
+            oversize.length = sizeof(payload);
+            oversize.announce = 64;
+            reader.ctx = &oversize;
+            FakeSink oversizeSink = {};
+            out.ctx = &oversizeSink;
+            total = 0;
+            if (gc_update_stream_asset(&reader, &out, kDeclared, chunk,
+                                       sizeof(chunk), &total) !=
+                GC_UPDATE_FETCH_TOO_LARGE) return 4383;
+            if (oversizeSink.written > kDeclared) return 4384;
+            // And the stream stopped: the rest of the response was never even
+            // read, so a hostile server cannot spend the service's time either.
+            if (oversize.offset >= sizeof(payload)) return 4385;
+            // The caller logs this to say where the abort happened; zero would
+            // make the diagnostic that proves it worked look like it never ran.
+            if (total != oversizeSink.written) return 4386;
+
+            // Short: fewer bytes than the manifest declared. Caught here rather
+            // than left to the digest, so the log says "the server sent less
+            // than declared" instead of "the hash did not match".
+            FakeHttpBody shortBody = {};
+            shortBody.bytes = payload;
+            shortBody.length = 100;
+            reader.ctx = &shortBody;
+            FakeSink shortSink = {};
+            out.ctx = &shortSink;
+            total = 0;
+            if (gc_update_stream_asset(&reader, &out, sizeof(payload), chunk,
+                                       sizeof(chunk), &total) !=
+                GC_UPDATE_FETCH_SIZE_MISMATCH) return 4387;
+            if (total != 100) return 4388;
+
+            // A signed manifest naming an impossible size is refused before the
+            // body is touched at all.
+            FakeHttpBody untouched = {};
+            untouched.bytes = payload;
+            untouched.length = sizeof(payload);
+            reader.ctx = &untouched;
+            FakeSink noSink = {};
+            out.ctx = &noSink;
+            if (gc_update_stream_asset(&reader, &out, 0, chunk, sizeof(chunk),
+                                       &total) !=
+                GC_UPDATE_FETCH_BAD_EXPECTED_SIZE) return 4389;
+            if (gc_update_stream_asset(&reader, &out, GC_UPDATE_ASSET_MAX_BYTES + 1,
+                                       chunk, sizeof(chunk), &total) !=
+                GC_UPDATE_FETCH_BAD_EXPECTED_SIZE) return 4390;
+            if (untouched.availableCalls != 0) return 4391;
+
+            // A read that returns zero with data still pending is a stall, not
+            // an end of body -- the distinction that keeps a truncated transfer
+            // from being staged as a complete one.
+            FakeHttpBody stalled = {};
+            stalled.bytes = payload;
+            stalled.length = sizeof(payload);
+            stalled.announce = 64;
+            stalled.shortReadAt = 2;
+            reader.ctx = &stalled;
+            FakeSink stalledSink = {};
+            out.ctx = &stalledSink;
+            if (gc_update_stream_asset(&reader, &out, sizeof(payload), chunk,
+                                       sizeof(chunk), &total) !=
+                GC_UPDATE_FETCH_READ_FAILED) return 4392;
+
+            // A failing sink (a full disk mid-download) stops the transfer
+            // rather than being counted as written.
+            FakeHttpBody writeFail = {};
+            writeFail.bytes = payload;
+            writeFail.length = sizeof(payload);
+            writeFail.announce = 64;
+            reader.ctx = &writeFail;
+            FakeSink failing = {};
+            failing.failWriteAt = 3;
+            out.ctx = &failing;
+            if (gc_update_stream_asset(&reader, &out, sizeof(payload), chunk,
+                                       sizeof(chunk), &total) !=
+                GC_UPDATE_FETCH_WRITE_FAILED) return 4393;
+            if (failing.written != 2 * sizeof(chunk)) return 4394;
+        }
     }
 
     DeleteCriticalSection(&g_configLock);

@@ -224,7 +224,7 @@ def check_policy_stays_unit_tested(ctx, require_text, harness_source_path):
     """
     for header in ("update_version_policy.h", "update_manifest_policy.h",
                    "update_url_policy.h", "update_schedule_policy.h",
-                   "update_presentation_policy.h"):
+                   "update_presentation_policy.h", "update_transport_policy.h"):
         require_text(harness_source_path, '#include "%s"' % header,
                      "the regression harness asserts %s" % header)
     require_text(harness_source_path, "gc_update_is_newer",
@@ -409,6 +409,50 @@ def check_cache_is_reverified_not_trusted(ctx, require_text, forbid_text,
                  "the staged file's name comes from the verified manifest")
 
 
+def check_download_is_bounded_before_it_is_written(ctx, require_text, require_order,
+                                                   forbid_text, harness_source_path):
+    """The streamed asset is bounded BEFORE each chunk reaches the sink.
+
+    `gc_update_stream_asset()` compares the running total against the size the
+    signature-verified manifest declared, and does it between the read and the
+    write.  Moving that comparison after the write, or out to the end of the
+    loop, is invisible: the download is still refused, the digest still fails,
+    the update still does not install.  It just writes everything a hostile
+    server chose to send into a directory a LocalSystem process launches
+    executables from.
+
+    Asserted twice over, because neither half is sufficient alone.  The source
+    order below survives a refactor that keeps the calls but drops the test;
+    assertion 4383-4386 measures what the fake sink actually received, which
+    survives a refactor that keeps the test but reorders it.
+    """
+    transport = _p(ctx, "update_transport_policy.h")
+    # The needles name the CALL, not the member: `!sink->write` also appears in
+    # the argument guard above, which legitimately runs first.
+    require_order(
+        transport, "static inline GcUpdateFetchResult gc_update_stream_asset(",
+        "return GC_UPDATE_FETCH_TOO_LARGE", "sink->write(sink->ctx, chunk, got)",
+        "an oversized response is refused before the chunk is written")
+    # The ceiling comes from the signed manifest, never from the transport.  A
+    # Content-Length would be the server telling us how much to trust it.
+    forbid_text(_p(ctx, "main_service_update_fetch.cpp"), "WINHTTP_QUERY_CONTENT_LENGTH",
+                "the download ceiling comes from the signed manifest, not from "
+                "a header the server chooses")
+    # The loops must stay behind the seam; re-inlining WinHTTP into them would
+    # silently take them back out of the harness's reach -- and out of the
+    # Linux host entirely.  Named as the include and the handle type rather
+    # than as "WinHttp", because the header's own comment explains which calls
+    # the seam mirrors and a prose mention is not a coupling.
+    forbid_text(transport, "#include <winhttp.h>",
+                "the read loops stay transport-agnostic and therefore testable")
+    forbid_text(transport, "HINTERNET",
+                "the read loops name no transport handle type")
+    require_text(harness_source_path, '#include "update_transport_policy.h"',
+                 "the read loops are asserted on both hosts")
+    require_text(harness_source_path, "fake_http_available",
+                 "the read loops are driven by a fake transport")
+
+
 def check_update_is_actually_surfaced(ctx, require_text):
     """An available update reaches at least one PASSIVE surface.
 
@@ -457,3 +501,5 @@ def check_all(ctx, require_text, forbid_text, require_order, harness_source_path
     check_cache_is_reverified_not_trusted(ctx, require_text, forbid_text,
                                           require_order)
     check_update_is_actually_surfaced(ctx, require_text)
+    check_download_is_bounded_before_it_is_written(ctx, require_text, require_order,
+                                                   forbid_text, harness_source_path)

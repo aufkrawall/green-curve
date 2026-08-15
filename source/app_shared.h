@@ -63,6 +63,10 @@
 #include "update_url_policy.h"
 #include "update_verify_keys.h"
 #include "update_install_policy.h"
+// The two response read loops, behind a transport seam so the mid-transfer
+// size abort -- which regresses silently, because a late check still refuses
+// the update -- can be driven by a fake.
+#include "update_transport_policy.h"
 // How an available update reaches the user without them going looking for it:
 // the orange Updates button, the tray tooltip suffix, the tray menu caption,
 // and the once-per-machine question that resolves the UNSET auto-check state.

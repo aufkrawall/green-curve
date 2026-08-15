@@ -253,6 +253,75 @@ static bool gc_update_http_open(const char* url, GcUpdateHttpHandles* handles,
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// The transport seam
+// ---------------------------------------------------------------------------
+//
+// The two read loops live in update_transport_policy.h so the mid-transfer size
+// abort can be asserted; these adapters are all that is left of them here.  The
+// pairing is one-to-one with the WinHTTP calls they replaced, so nothing about
+// the sequence changed -- see that header for why a faithful transcription
+// rather than a nicer interface.
+
+static bool gc_update_winhttp_available(void* ctx, size_t* bytes) {
+    DWORD available = 0;
+    if (!WinHttpQueryDataAvailable((HINTERNET)ctx, &available)) return false;
+    if (bytes) *bytes = (size_t)available;
+    return true;
+}
+
+static bool gc_update_winhttp_read(void* ctx, void* buffer, size_t want, size_t* got) {
+    // WinHttpReadData takes a DWORD.  Both callers already clamp -- the
+    // document reader by its buffer, the asset streamer by its chunk -- so this
+    // clamp is a belt-and-braces guard for a 64-bit size_t rather than a
+    // reachable path.
+    DWORD wanted = want > 0xFFFFFFFFull ? 0xFFFFFFFFul : (DWORD)want;
+    DWORD read = 0;
+    if (!WinHttpReadData((HINTERNET)ctx, buffer, wanted, &read)) return false;
+    if (got) *got = (size_t)read;
+    return true;
+}
+
+static bool gc_update_file_sink_write(void* ctx, const void* buffer, size_t bytes) {
+    DWORD written = 0;
+    if (!WriteFile((HANDLE)ctx, buffer, (DWORD)bytes, &written, nullptr)) return false;
+    return written == (DWORD)bytes;
+}
+
+// Turn a pure result back into the sentence this file has always produced.
+// GetLastError() is read here because the pure loops cannot know it, and it is
+// read immediately after the failing call for the same reason.
+static void gc_update_fetch_describe(GcUpdateFetchResult result, char* err, size_t errSize) {
+    switch (result) {
+        case GC_UPDATE_FETCH_QUERY_FAILED:
+            StringCchPrintfA(err, errSize, "download failed (error %lu)", GetLastError());
+            return;
+        case GC_UPDATE_FETCH_READ_FAILED:
+            StringCchPrintfA(err, errSize, "download stalled (error %lu)", GetLastError());
+            return;
+        case GC_UPDATE_FETCH_TOO_LARGE:
+            StringCchCopyA(err, errSize, "the fetched document is larger than allowed");
+            return;
+        case GC_UPDATE_FETCH_EMPTY:
+            StringCchCopyA(err, errSize, "the server returned an empty document");
+            return;
+        case GC_UPDATE_FETCH_WRITE_FAILED:
+            StringCchPrintfA(err, errSize, "cannot write the staged file (error %lu)",
+                             GetLastError());
+            return;
+        case GC_UPDATE_FETCH_BAD_EXPECTED_SIZE:
+            StringCchCopyA(err, errSize, "manifest size is outside the allowed range");
+            return;
+        case GC_UPDATE_FETCH_BAD_ARGUMENTS:
+            StringCchCopyA(err, errSize, "invalid download arguments");
+            return;
+        case GC_UPDATE_FETCH_SIZE_MISMATCH:
+        case GC_UPDATE_FETCH_OK:
+            // SIZE_MISMATCH names both numbers, so its caller writes it.
+            return;
+    }
+}
+
 // Fetch a small document (the manifest or its signature) into a caller buffer.
 // The ceiling is the caller's, never the server's Content-Length.
 static bool gc_update_http_get_small(const char* url, char* out, size_t outSize,
@@ -264,41 +333,15 @@ static bool gc_update_http_get_small(const char* url, char* out, size_t outSize,
     GcUpdateHttpHandles handles = {};
     if (!gc_update_http_open(url, &handles, err, errSize)) return false;
 
-    size_t total = 0;
-    bool ok = true;
-    for (;;) {
-        DWORD available = 0;
-        if (!WinHttpQueryDataAvailable(handles.request, &available)) {
-            StringCchPrintfA(err, errSize, "download failed (error %lu)", GetLastError());
-            ok = false;
-            break;
-        }
-        if (available == 0) break;
-        // Leave room for the terminator; anything that does not fit means the
-        // document is larger than the format permits, which is a refusal.
-        if (total + available + 1 > outSize) {
-            StringCchCopyA(err, errSize, "the fetched document is larger than allowed");
-            ok = false;
-            break;
-        }
-        DWORD read = 0;
-        if (!WinHttpReadData(handles.request, out + total, available, &read) || read == 0) {
-            StringCchPrintfA(err, errSize, "download stalled (error %lu)", GetLastError());
-            ok = false;
-            break;
-        }
-        total += read;
-    }
-    if (ok) {
-        out[total] = 0;
-        if (outLen) *outLen = total;
-        if (total == 0) {
-            StringCchCopyA(err, errSize, "the server returned an empty document");
-            ok = false;
-        }
-    }
+    GcUpdateReader reader = {};
+    reader.available = gc_update_winhttp_available;
+    reader.read = gc_update_winhttp_read;
+    reader.ctx = handles.request;
+
+    GcUpdateFetchResult result = gc_update_read_document(&reader, out, outSize, outLen);
+    if (result != GC_UPDATE_FETCH_OK) gc_update_fetch_describe(result, err, errSize);
     gc_update_http_close(&handles);
-    return ok;
+    return result == GC_UPDATE_FETCH_OK;
 }
 
 // Stream an asset into an already-open destination handle.
@@ -315,15 +358,11 @@ static bool gc_update_http_download_to_handle(const char* url, HANDLE dest,
         StringCchCopyA(err, errSize, "no destination handle");
         return false;
     }
-    if (expectedBytes == 0 || expectedBytes > GC_UPDATE_ASSET_MAX_BYTES) {
-        StringCchCopyA(err, errSize, "manifest size is outside the allowed range");
-        return false;
-    }
 
     GcUpdateHttpHandles handles = {};
     if (!gc_update_http_open(url, &handles, err, errSize)) return false;
 
-    static const DWORD kChunk = 256 * 1024;
+    static const size_t kChunk = 256 * 1024;
     unsigned char* buffer = (unsigned char*)HeapAlloc(GetProcessHeap(), 0, kChunk);
     if (!buffer) {
         StringCchCopyA(err, errSize, "out of memory downloading the update");
@@ -331,54 +370,45 @@ static bool gc_update_http_download_to_handle(const char* url, HANDLE dest,
         return false;
     }
 
+    GcUpdateReader reader = {};
+    reader.available = gc_update_winhttp_available;
+    reader.read = gc_update_winhttp_read;
+    reader.ctx = handles.request;
+    GcUpdateSink sink = {};
+    sink.write = gc_update_file_sink_write;
+    sink.ctx = dest;
+
     unsigned long long total = 0;
-    bool ok = true;
-    for (;;) {
-        DWORD available = 0;
-        if (!WinHttpQueryDataAvailable(handles.request, &available)) {
-            StringCchPrintfA(err, errSize, "download failed (error %lu)", GetLastError());
-            ok = false;
-            break;
-        }
-        if (available == 0) break;
-        DWORD want = available > kChunk ? kChunk : available;
-        DWORD read = 0;
-        if (!WinHttpReadData(handles.request, buffer, want, &read) || read == 0) {
-            StringCchPrintfA(err, errSize, "download stalled (error %lu)", GetLastError());
-            ok = false;
-            break;
-        }
-        if (total + read > expectedBytes) {
-            StringCchCopyA(err, errSize,
-                           "the download is larger than the signed manifest says");
-            debug_log("update fetch: ABORTED oversized download at %llu bytes "
-                      "(manifest says %llu)\n", total + read, expectedBytes);
-            ok = false;
-            break;
-        }
-        DWORD written = 0;
-        if (!WriteFile(dest, buffer, read, &written, nullptr) || written != read) {
-            StringCchPrintfA(err, errSize, "cannot write the staged file (error %lu)",
-                             GetLastError());
-            ok = false;
-            break;
-        }
-        total += read;
-    }
+    GcUpdateFetchResult result = gc_update_stream_asset(
+        &reader, &sink, expectedBytes, buffer, kChunk, &total);
+
     HeapFree(GetProcessHeap(), 0, buffer);
     gc_update_http_close(&handles);
 
-    if (ok && total != expectedBytes) {
+    if (result == GC_UPDATE_FETCH_TOO_LARGE) {
+        // Reported from here rather than from the loop because the loop is the
+        // one thing that must not stop to format a string: it has already
+        // refused, and it refused BEFORE the overflowing chunk reached disk.
+        StringCchCopyA(err, errSize,
+                       "the download is larger than the signed manifest says");
+        debug_log("update fetch: ABORTED oversized download past %llu bytes "
+                  "(manifest says %llu)\n", total, expectedBytes);
+        return false;
+    }
+    if (result == GC_UPDATE_FETCH_SIZE_MISMATCH) {
         StringCchPrintfA(err, errSize,
                          "downloaded %llu bytes; the signed manifest says %llu",
                          total, expectedBytes);
-        ok = false;
+        return false;
     }
-    if (ok) {
-        // Flush before the digest is taken, so the verification reads what is
-        // actually on disk rather than what is still sitting in a cache.
-        FlushFileBuffers(dest);
-        debug_log("update fetch: downloaded %llu bytes\n", total);
+    if (result != GC_UPDATE_FETCH_OK) {
+        gc_update_fetch_describe(result, err, errSize);
+        return false;
     }
-    return ok;
+
+    // Flush before the digest is taken, so the verification reads what is
+    // actually on disk rather than what is still sitting in a cache.
+    FlushFileBuffers(dest);
+    debug_log("update fetch: downloaded %llu bytes\n", total);
+    return true;
 }
