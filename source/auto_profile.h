@@ -48,6 +48,11 @@ void auto_profile_open_config_dialog(HWND parent);
 // is compiled before the dialog's own translation unit in the amalgamation.
 void gui_update_open_dialog(HWND parent);
 
+// The once-per-machine "may Green Curve check for updates?" question
+// (source/gui_update_dialog.cpp).  Driven from the main window's poll tick,
+// which is compiled first, so it needs the same forward declaration.
+void gui_update_maybe_prompt_first_run(HWND parent);
+
 // Replay settings captured by an in-app update (source/
 // gui_update_settings_handoff.cpp).  Declared here for the same reason as
 // the line above: entry.cpp calls it during startup and is compiled before

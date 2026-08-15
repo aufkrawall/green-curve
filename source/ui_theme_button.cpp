@@ -156,6 +156,14 @@ static void draw_themed_button(const DRAWITEMSTRUCT* dis) {
     // the only place its unapplied state can be seen from the main window.
     bool pendingAccent = dis->CtlID == FAN_CURVE_BTN_ID &&
         gui_pending_domain_changed(GUI_PENDING_FAN_CURVE);
+    // The same orange, for the same reason, on the button that opens the other
+    // dialog that owns state the main window cannot show: "there is something
+    // in here you have not dealt with".  Before this the Updates button looked
+    // identical whether the machine was current or had a verified installer
+    // staged and waiting, so the only passive hint an update existed was a tray
+    // menu nobody opens.  Reusing the established colour rather than inventing
+    // one keeps the window down to a single "unfinished business" signal.
+    if (dis->CtlID == UPDATE_BTN_ID && gui_update_is_available()) pendingAccent = true;
     COLORREF border = disabled ? COL_DISABLED_BORDER : COL_BUTTON_BORDER;
     if (pendingAccent) border = disabled ? COL_PENDING_DIM : COL_PENDING;
     HPEN borderPen = CreatePen(PS_SOLID, 1, border);

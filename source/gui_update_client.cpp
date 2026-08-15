@@ -94,13 +94,48 @@ static bool gui_update_state(ServiceUpdateState* out) {
     return valid;
 }
 
-// True when a newer release is published AND this machine can actually take it.
-// The tray entry is driven from this, so a portable copy or an architecture
-// with no build never advertises an update it could not install.
-static bool gui_update_is_available() {
+// What, if anything, the user should be alerted to.  The single source for all
+// three passive surfaces -- the orange Updates button, the tray tooltip suffix
+// and the tray menu entry -- so they cannot disagree about whether there is
+// news.  See update_presentation_policy.h for which decisions qualify and why
+// NO_ASSET deliberately does not.
+//
+// A portable .7z copy is NOT filtered out here even though it cannot install in
+// place.  It used to be described as if it were; it never was, and the code was
+// right and the comment wrong.  Its user still wants to know a new release
+// exists, and both surfaces open the dialog, which explains the portable case
+// and offers the releases page.  Suppressing it would make portable users the
+// only ones who are never told anything at all.
+static GcUpdateAlert gui_update_alert() {
     ServiceUpdateState stateValue = {};
-    if (!gui_update_state(&stateValue)) return false;
-    const ServiceUpdateState* state = &stateValue;
-    return state->decision == GC_UPDATE_DECISION_AVAILABLE &&
-           state->availableVersion[0] != '\0';
+    if (!gui_update_state(&stateValue)) return GC_UPDATE_ALERT_NONE;
+    return gc_update_alert_kind((GcUpdateDecision)stateValue.decision,
+                                stateValue.availableVersion[0] != '\0');
 }
+
+static bool gui_update_is_available() {
+    return gui_update_alert() != GC_UPDATE_ALERT_NONE;
+}
+
+#ifndef GREEN_CURVE_SERVICE_BINARY
+// Repaint the Updates button when the alert flips.
+//
+// The button is owner-drawn from `gui_update_alert()`, and the state behind it
+// changes on a service response rather than on any window message, so nothing
+// would otherwise invalidate it: the orange outline would appear only when
+// something else happened to repaint the button row.  Called from the tray
+// refresh, which already runs on every poll tick, so this costs one integer
+// compare per second and an InvalidateRect only on the transition.
+//
+// The last-painted value is the mirror, not the live one -- the same idiom
+// ui_checkbox_state.h uses for the owner-drawn checkboxes, and for the same
+// reason: an owner-drawn control stores nothing that could be asked instead.
+static void gui_update_refresh_alert_presentation() {
+    GcUpdateAlert alert = gui_update_alert();
+    if ((int)alert == g_app.updateAlertPainted) return;
+    debug_log("gui update: alert changed %d -> %d; repainting the Updates button\n",
+              g_app.updateAlertPainted, (int)alert);
+    g_app.updateAlertPainted = (int)alert;
+    if (g_app.hUpdateBtn) InvalidateRect(g_app.hUpdateBtn, nullptr, TRUE);
+}
+#endif

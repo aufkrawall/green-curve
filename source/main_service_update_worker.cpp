@@ -97,6 +97,14 @@ static bool service_update_is_installed_copy(char* installDirOut, size_t install
 // The check
 // ---------------------------------------------------------------------------
 
+// Persist the two documents a successful check authenticated, so a restart can
+// re-derive what this one found instead of going quiet until the next interval
+// elapses.  Defined in main_service_update_cache.cpp, which is compiled after
+// this shard because it calls back into the staged-package re-verification
+// below.
+static void service_update_cache_store(const char* manifestText, size_t manifestLength,
+                                       const char* signatureText, size_t signatureLength);
+
 // Fetch + verify + decide.  Returns true when the check COMPLETED, regardless of
 // whether it found an update; `false` means the check itself failed and the
 // caller should count a failure for backoff purposes.
@@ -168,6 +176,14 @@ static bool service_update_run_check(char* err, size_t errSize) {
         g_updateState.manifestValid = true;
         g_updateState.decision = decision;
     }
+    // Cached only once the documents have both verified AND parsed, so a
+    // restart never spends its startup re-discovering that a signed manifest
+    // this build cannot read is still unreadable.  The decision itself is NOT
+    // stored: the restore recomputes it against whatever version is running by
+    // then, which is what lets the same cache answer UP_TO_DATE after the
+    // update it advertised has been installed.
+    service_update_cache_store(manifestText, manifestLength,
+                               signatureText, signatureLength);
 
     const char* detail = nullptr;
     switch (decision) {

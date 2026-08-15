@@ -83,6 +83,10 @@
 #include "update_schedule_policy.h"
 #include "update_install_policy.h"
 #include "update_restore_policy.h"
+// How an available update reaches the user passively.  Pure, and asserted here
+// rather than only in the window, because the failure mode it exists to fix is
+// silence -- which no build error, no crash and no log line reveals.
+#include "update_presentation_policy.h"
 #include "linux_terminal_policy.h"
 #include "linux_debug_log.h"
 // Where a crash artifact is allowed to go and which ones may be deleted.  Pure
@@ -10507,6 +10511,174 @@ static int run_all_tests(int argc, char** argv) {
         update.updateReserved[0] = 0;
         memset(update.availableVersion, 'x', sizeof(update.availableVersion));
         if (validate_service_update_state_for_ipc(&update)) return 4296;
+    }
+
+    // --- Telling the user an update exists (4320-4359) -------------------
+    //
+    // The whole feature's failure mode is SILENCE: a user who is never told is
+    // indistinguishable, from inside the program, from one who was told and did
+    // nothing.  Nothing else in the build catches that, so these are the only
+    // assertions standing between "an update was found" and "and nobody
+    // mentioned it".
+    {
+        // --- Which decisions are worth interrupting somebody for (4320-4329)
+        if (gc_update_alert_kind(GC_UPDATE_DECISION_AVAILABLE, true) !=
+            GC_UPDATE_ALERT_AVAILABLE) return 4320;
+        // The case that had NO surface at all before: newer, but below the
+        // release's min_from floor, so the user is stranded until they fetch it
+        // by hand.  It was mentioned only inside a dialog nobody had a reason to
+        // open, which made the update they most needed to act on the quietest.
+        if (gc_update_alert_kind(GC_UPDATE_DECISION_MANUAL_REQUIRED, true) !=
+            GC_UPDATE_ALERT_MANUAL) return 4321;
+        // Unactionable, therefore silent: no build for this architecture is our
+        // packaging fault, and a daily badge the user cannot clear is nagging.
+        if (gc_update_alert_kind(GC_UPDATE_DECISION_NO_ASSET, true) !=
+            GC_UPDATE_ALERT_NONE) return 4322;
+        if (gc_update_alert_kind(GC_UPDATE_DECISION_UP_TO_DATE, true) !=
+            GC_UPDATE_ALERT_NONE) return 4323;
+        // A REJECTED decision is what a service restart used to leave behind
+        // for up to a full interval.  It must never light anything up.
+        if (gc_update_alert_kind(GC_UPDATE_DECISION_REJECTED, true) !=
+            GC_UPDATE_ALERT_NONE) return 4324;
+        // No version text means nothing to render into "Update to ...".
+        if (gc_update_alert_kind(GC_UPDATE_DECISION_AVAILABLE, false) !=
+            GC_UPDATE_ALERT_NONE) return 4325;
+
+        // --- The tray menu caption (4330-4339) ---------------------------
+        char label[96] = {};
+        if (!gc_update_tray_menu_label(GC_UPDATE_ALERT_AVAILABLE, "0.30",
+                                       label, sizeof(label)) ||
+            strcmp(label, "Update to 0.30...") != 0) return 4330;
+        // Different words, because clicking this one cannot install anything.
+        if (!gc_update_tray_menu_label(GC_UPDATE_ALERT_MANUAL, "0.30",
+                                       label, sizeof(label)) ||
+            strcmp(label, "Get update 0.30 (manual install)...") != 0) return 4331;
+        if (gc_update_tray_menu_label(GC_UPDATE_ALERT_NONE, "0.30",
+                                      label, sizeof(label)) || label[0]) return 4332;
+        if (gc_update_tray_menu_label(GC_UPDATE_ALERT_AVAILABLE, "",
+                                      label, sizeof(label)) || label[0]) return 4333;
+        // Refused rather than truncated: half a version number in a menu is
+        // worse than letting the button and the tooltip carry the news.
+        char tiny[8] = {};
+        if (gc_update_tray_menu_label(GC_UPDATE_ALERT_AVAILABLE, "0.30",
+                                      tiny, sizeof(tiny)) || tiny[0]) return 4334;
+        // The longest version the wire can carry still fits the real buffer.
+        if (!gc_update_tray_menu_label(GC_UPDATE_ALERT_MANUAL,
+                                       "999999.999999.999999",
+                                       label, sizeof(label))) return 4335;
+
+        // --- The tooltip (4340-4349) -------------------------------------
+        char suffix[64] = {};
+        if (!gc_update_tray_tooltip_suffix(GC_UPDATE_ALERT_AVAILABLE, "0.30",
+                                           suffix, sizeof(suffix)) ||
+            strcmp(suffix, " | Update 0.30") != 0) return 4340;
+        if (!gc_update_tray_tooltip_suffix(GC_UPDATE_ALERT_MANUAL, "0.30",
+                                           suffix, sizeof(suffix)) ||
+            strcmp(suffix, " | Update 0.30 (manual)") != 0) return 4341;
+        if (gc_update_tray_tooltip_suffix(GC_UPDATE_ALERT_NONE, "0.30",
+                                          suffix, sizeof(suffix)) ||
+            suffix[0]) return 4342;
+
+        // Composition, at the real NOTIFYICONDATA szTip bound.
+        char tip[128] = {};
+        gc_update_compose_tray_tooltip("Green Curve - OC | Profile 1",
+                                       " | Update 0.30", tip, sizeof(tip));
+        if (strcmp(tip, "Green Curve - OC | Profile 1 | Update 0.30") != 0) return 4343;
+        // No update: the tooltip is exactly what it always was, byte for byte.
+        gc_update_compose_tray_tooltip("Green Curve - OC | Profile 1", "",
+                                       tip, sizeof(tip));
+        if (strcmp(tip, "Green Curve - OC | Profile 1") != 0) return 4344;
+        // THE INVERSION.  A user-chosen profile name can fill the tooltip on its
+        // own, and the ordinary text describes a state the window also shows --
+        // whereas the suffix is the only passive notice an update exists.  So
+        // the base is what gets truncated, never the suffix.
+        {
+            char longBase[200] = {};
+            memset(longBase, 'A', sizeof(longBase) - 1);
+            gc_update_compose_tray_tooltip(longBase, " | Update 0.30",
+                                           tip, sizeof(tip));
+            size_t tipLen = strlen(tip);
+            if (tipLen != sizeof(tip) - 1) return 4345;
+            if (strcmp(tip + tipLen - strlen(" | Update 0.30"),
+                       " | Update 0.30") != 0) return 4346;
+        }
+        // Degenerate: a suffix that cannot fit at all still leaves a terminated
+        // tooltip rather than an unterminated one going to Shell_NotifyIcon.
+        {
+            char small[8] = {};
+            gc_update_compose_tray_tooltip("Green Curve", " | Update 0.30",
+                                           small, sizeof(small));
+            if (strlen(small) >= sizeof(small)) return 4347;
+            if (strcmp(small, "Green C") != 0) return 4348;
+        }
+
+        // --- The once-per-machine question (4350-4359) -------------------
+        // Asked exactly when the setting has never been answered, the service
+        // told us so, and there is a window in front of the user to ask in.
+        if (!gc_update_should_prompt_auto_check(GC_UPDATE_AUTO_CHECK_UNSET,
+                                                true, true, false)) return 4350;
+        // Answered already -- either way -- is never asked again.
+        if (gc_update_should_prompt_auto_check(GC_UPDATE_AUTO_CHECK_ON,
+                                               true, true, false)) return 4351;
+        if (gc_update_should_prompt_auto_check(GC_UPDATE_AUTO_CHECK_OFF,
+                                               true, true, false)) return 4352;
+        // No service answer: the question would be one whose answer we cannot
+        // record, which spends the single prompt for nothing.
+        if (gc_update_should_prompt_auto_check(GC_UPDATE_AUTO_CHECK_UNSET,
+                                               false, true, false)) return 4353;
+        // A logon start goes straight to the tray.  Ambushing a user who is
+        // watching their desktop appear is how an updater earns distrust.
+        if (gc_update_should_prompt_auto_check(GC_UPDATE_AUTO_CHECK_UNSET,
+                                               true, false, false)) return 4354;
+        // Already asked in this process: a service that could not save the
+        // answer must not turn the next poll tick into a second dialog.
+        if (gc_update_should_prompt_auto_check(GC_UPDATE_AUTO_CHECK_UNSET,
+                                               true, true, true)) return 4355;
+    }
+
+    // --- The persisted last-check time (4360-4369) -----------------------
+    //
+    // Two 32-bit halves, because the config store is int-valued.  Asserted
+    // because the failure has NO visible symptom: a mis-joined timestamp does
+    // not crash, does not fail a build and does not log -- it just makes the
+    // updater stop checking (a far-future value never comes due) or check on
+    // every tick (a negative one always is).  Either way the first person to
+    // notice is a user who stopped getting updates.
+    {
+        int high = 0, low = 0;
+        const long long kCases[] = {
+            0,                    // never checked
+            1,                    // the epoch's first second
+            1760000000LL,         // a real timestamp, comfortably inside int
+            0x7FFFFFFFLL,         // the last one a signed int holds
+            0x80000000LL,         // 2038: the low half no longer fits an int
+            0xFFFFFFFFLL,         // the low half exactly saturated
+            0x100000000LL,        // the first value needing the high half
+            0x123456789ALL,       // both halves populated
+        };
+        for (size_t i = 0; i < sizeof(kCases) / sizeof(kCases[0]); ++i) {
+            gc_update_split_timestamp(kCases[i], &high, &low);
+            if (gc_update_join_timestamp(high, low) != kCases[i]) return 4360;
+        }
+        // A negative time is not a time, and is normalized at the WRITE end so
+        // a corrupted value cannot round-trip back into itself.
+        gc_update_split_timestamp(-1, &high, &low);
+        if (high != 0 || low != 0) return 4361;
+        if (gc_update_join_timestamp(high, low) != 0) return 4362;
+        // 2038 specifically: the low half is stored as the negative int with
+        // the same bits, which is the whole reason the read reinterprets it as
+        // unsigned rather than sign-extending.
+        gc_update_split_timestamp(0x80000000LL, &high, &low);
+        if (high != 0 || low >= 0) return 4363;
+        if (gc_update_join_timestamp(high, low) != 0x80000000LL) return 4364;
+        // A hand-edited pair naming a time no clock reaches reads as "never",
+        // which is always due -- the safe direction.  The alternative is an
+        // updater that waits for a moment that never arrives.
+        if (gc_update_join_timestamp(-1, -1) != 0) return 4365;
+        // And "never checked" is due, which is what makes that safe.
+        if (!gc_update_check_is_due(gc_update_join_timestamp(-1, -1),
+                                    1760000000LL,
+                                    GC_UPDATE_INTERVAL_DEFAULT_SECONDS)) return 4366;
     }
 
     DeleteCriticalSection(&g_configLock);

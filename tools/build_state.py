@@ -200,6 +200,31 @@ def build_manifest_content(version, build_number):
     return APP_MANIFEST_CONTENT.replace("VER_STR", ver_str)
 
 
+def concatenated_gate_surface(work_dir, source_dir, out_name, source_names):
+    """Join shards that were split ONLY for the size ratchet into one file the
+    source guards can be pointed at.
+
+    A mechanical split moves symbols between files without changing what the
+    program does, so every guard naming one of those symbols would otherwise
+    have to be hunted down and re-pointed -- and a guard that is silently
+    looking at the wrong file still passes for the wrong reason.  Joining the
+    shards back into one surface keeps the guards addressed to the logical
+    unit they were written about.
+
+    Lives here rather than in build.py because build.py is at its own ratchet,
+    which exists to push exactly this kind of helper out of it.
+    """
+    os.makedirs(work_dir, exist_ok=True)
+    path = os.path.join(work_dir, out_name)
+    with open(path, "w", encoding="utf-8", errors="ignore") as out:
+        for name in source_names:
+            with open(os.path.join(source_dir, name), "r",
+                      encoding="utf-8", errors="ignore") as shard:
+                out.write(shard.read())
+                out.write("\n")
+    return path
+
+
 def enforce_build_script_size_ratchet(script_dir):
     path = os.path.join(script_dir, "build.py")
     try:

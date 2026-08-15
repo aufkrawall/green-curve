@@ -127,19 +127,27 @@ static void show_tray_menu(HWND hwnd) {
         IsWindowVisible(hwnd) ? "Show Window" : "Open Green Curve");
     HMENU profiles = build_auto_profile_menu();
     if (profiles) AppendMenuA(menu, MF_POPUP, (UINT_PTR)profiles, "Profiles");
-    // The update entry appears ONLY when there is an installable update, so the
-    // menu never carries a permanently greyed item.  It opens the dialog rather
-    // than installing: stopping the service returns the GPU to stock for a few
+    // The update entry appears ONLY when there is news, so the menu never
+    // carries a permanently greyed item.  It opens the dialog rather than
+    // installing: stopping the service returns the GPU to stock for a few
     // seconds, which one click in a context menu should not be able to start.
-    if (gui_update_is_available()) {
+    //
+    // The caption distinguishes an installable release from one below the
+    // `min_from` floor, which has to be fetched by hand.  Offering "Update to
+    // 0.30..." for something the updater will then refuse to install would be a
+    // worse lie than the silence this entry replaced -- and the manual case was
+    // previously mentioned nowhere outside the dialog, despite being the one
+    // the user is actually stuck on.
+    {
         ServiceUpdateState updateValue = {};
-        gui_update_state(&updateValue);
-        const ServiceUpdateState* update = &updateValue;
+        bool haveUpdate = gui_update_state(&updateValue);
         char label[96] = {};
-        StringCchPrintfA(label, sizeof(label), "Update to %s...",
-                         update ? update->availableVersion : "a new version");
-        AppendMenuA(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuA(menu, MF_STRING, TRAY_MENU_UPDATE_ID, label);
+        if (haveUpdate &&
+            gc_update_tray_menu_label(gui_update_alert(), updateValue.availableVersion,
+                                      label, sizeof(label))) {
+            AppendMenuA(menu, MF_SEPARATOR, 0, nullptr);
+            AppendMenuA(menu, MF_STRING, TRAY_MENU_UPDATE_ID, label);
+        }
     }
     AppendMenuA(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuA(menu, MF_STRING, TRAY_MENU_EXIT_ID, "Exit");

@@ -173,13 +173,12 @@ static void service_update_load_settings() {
         get_config_int(path, GC_UPDATE_CONFIG_SECTION, "interval_seconds",
                        GC_UPDATE_INTERVAL_DEFAULT_SECONDS));
     // Stored as seconds since the epoch in two halves: get_config_int is an
-    // int, and a 64-bit timestamp does not fit one.
-    long long high = (long long)get_config_int(path, GC_UPDATE_CONFIG_SECTION,
-                                               "last_check_high", 0);
-    long long low = (long long)(unsigned int)get_config_int(
-        path, GC_UPDATE_CONFIG_SECTION, "last_check_low", 0);
-    g_updateState.lastCheckUnix = (high << 32) | low;
-    if (g_updateState.lastCheckUnix < 0) g_updateState.lastCheckUnix = 0;
+    // int, and a 64-bit timestamp does not fit one.  The join is pure and
+    // asserted (4360-4369) because getting it wrong silently stops the updater
+    // checking rather than failing anywhere visible.
+    g_updateState.lastCheckUnix = gc_update_join_timestamp(
+        get_config_int(path, GC_UPDATE_CONFIG_SECTION, "last_check_high", 0),
+        get_config_int(path, GC_UPDATE_CONFIG_SECTION, "last_check_low", 0));
     g_updateState.consecutiveFailures = get_config_int(
         path, GC_UPDATE_CONFIG_SECTION, "consecutive_failures", 0);
     if (g_updateState.consecutiveFailures < 0) g_updateState.consecutiveFailures = 0;
@@ -211,10 +210,10 @@ static void service_update_save_settings() {
     set_config_int(path, GC_UPDATE_CONFIG_SECTION, "auto_check", mode);
     set_config_int(path, GC_UPDATE_CONFIG_SECTION, "interval_seconds", interval);
     set_config_int(path, GC_UPDATE_CONFIG_SECTION, "consecutive_failures", failures);
-    set_config_int(path, GC_UPDATE_CONFIG_SECTION, "last_check_high",
-                   (int)(lastCheck >> 32));
-    set_config_int(path, GC_UPDATE_CONFIG_SECTION, "last_check_low",
-                   (int)(unsigned int)(lastCheck & 0xFFFFFFFFLL));
+    int lastCheckHigh = 0, lastCheckLow = 0;
+    gc_update_split_timestamp(lastCheck, &lastCheckHigh, &lastCheckLow);
+    set_config_int(path, GC_UPDATE_CONFIG_SECTION, "last_check_high", lastCheckHigh);
+    set_config_int(path, GC_UPDATE_CONFIG_SECTION, "last_check_low", lastCheckLow);
 
     // The settings file must keep its protected DACL: it is read by the service
     // to decide whether to make outbound requests, so a standard user who could

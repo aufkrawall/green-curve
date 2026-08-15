@@ -77,6 +77,43 @@ static inline int gc_update_next_check_delay(int intervalSeconds,
     return (int)delay;
 }
 
+// ---------------------------------------------------------------------------
+// Persisting the last-check time
+// ---------------------------------------------------------------------------
+//
+// The config store is `int`-valued and a Unix timestamp is not, so the last
+// check time is written as two 32-bit halves.  That split is pure arithmetic
+// with exactly one interesting case, and it lived inline in the Windows shard
+// where nothing could reach it -- so it is here, where the round trip can be
+// asserted.
+//
+// The interesting case is 2038.  A timestamp past 0x7FFFFFFF has a low half
+// that does not fit a signed int, so it is stored as the negative value with
+// the same bit pattern and reinterpreted as unsigned on the way back.  Getting
+// that wrong does not crash and does not fail a build: it makes `lastCheckUnix`
+// read back as a far-future or negative time, and the ONLY symptom is an
+// updater that quietly stops checking (or checks every tick).  Both are
+// invisible until somebody notices they stopped getting updates.
+static inline void gc_update_split_timestamp(long long unixSeconds,
+                                             int* highOut, int* lowOut) {
+    // A negative time is not a time.  Normalized here rather than at the read
+    // end so a corrupted value cannot round-trip back into itself.
+    if (unixSeconds < 0) unixSeconds = 0;
+    unsigned long long value = (unsigned long long)unixSeconds;
+    if (highOut) *highOut = (int)(unsigned int)(value >> 32);
+    if (lowOut) *lowOut = (int)(unsigned int)(value & 0xFFFFFFFFULL);
+}
+
+static inline long long gc_update_join_timestamp(int high, int low) {
+    unsigned long long value = ((unsigned long long)(unsigned int)high << 32) |
+                               (unsigned long long)(unsigned int)low;
+    // A hand-edited or corrupted pair can name a time no clock will reach.
+    // Zero means "never checked", which is always due -- the safe direction,
+    // because the alternative is an updater that waits forever.
+    if (value > 0x7FFFFFFFFFFFFFFFULL) return 0;
+    return (long long)value;
+}
+
 // Whether a check is due.  `lastCheckUnix` of 0 means "never checked", which is
 // always due.
 //

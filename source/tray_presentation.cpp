@@ -88,7 +88,11 @@ static bool tray_hardware_live() {
         return gui_service_model_ready(&g_app.guiServiceModel) && g_app.loaded;
     return g_app.loaded;
 }
-static void build_tray_tooltip(char* tip, size_t tipSize) {
+// The tooltip WITHOUT the update note, which is appended by the caller for
+// every branch below rather than by each of them.  Split out precisely because
+// the branches return early: an update suffix added inside them would have been
+// forgotten by whichever one was written next.
+static void build_tray_tooltip_base(char* tip, size_t tipSize) {
     if (!tip || tipSize == 0) return;
     ensure_tray_profile_cache();
     if (tray_apply_in_flight()) {
@@ -116,4 +120,27 @@ static void build_tray_tooltip(char* tip, size_t tipSize) {
         ? g_app.trayProfileCacheProfilePart
         : "No profile";
     StringCchPrintfA(tip, tipSize, "Green Curve - %s | %s", mode, profilePart);
+}
+
+// The tooltip is one of the three passive surfaces that now carry an available
+// update; it is the only one visible without a click of any kind.  The note is
+// appended to EVERY tooltip shape, including the transitional and
+// service-unavailable ones -- an update does not stop existing because a write
+// is in flight, and those are exactly the states a user lingers on.
+//
+// The suffix wins the space when both do not fit; see
+// gc_update_compose_tray_tooltip() for why that inversion is deliberate.
+static void build_tray_tooltip(char* tip, size_t tipSize) {
+    if (!tip || tipSize == 0) return;
+    char base[128] = {};
+    build_tray_tooltip_base(base, ARRAY_COUNT(base));
+
+    char suffix[64] = {};
+    ServiceUpdateState updateValue = {};
+    if (gui_update_state(&updateValue)) {
+        gc_update_tray_tooltip_suffix(gui_update_alert(),
+                                      updateValue.availableVersion,
+                                      suffix, ARRAY_COUNT(suffix));
+    }
+    gc_update_compose_tray_tooltip(base, suffix, tip, tipSize);
 }

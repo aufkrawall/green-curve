@@ -214,6 +214,13 @@ static void update_fan_controls_enabled_state() {
 }
 static void update_tray_icon() {
     if (!g_app.hMainWnd) return;
+#ifndef GREEN_CURVE_SERVICE_BINARY
+    // The tray refresh is the one thing that already runs on every poll tick in
+    // both window states, so it is where the main window's Updates button
+    // learns that its orange outline is owed.  Deliberately ahead of the early
+    // return below: the button must repaint whether or not a tray icon exists.
+    gui_update_refresh_alert_presentation();
+#endif
     // Only report OC/fan as active when the GPU live state is actually available.
     // When the driver is disabled in Device Manager (or the GPU is removed, or the
     // service is down), there is NO OC/fan in effect — the snapshot reflects the

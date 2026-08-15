@@ -223,7 +223,8 @@ def check_policy_stays_unit_tested(ctx, require_text, harness_source_path):
     is required to keep including them.
     """
     for header in ("update_version_policy.h", "update_manifest_policy.h",
-                   "update_url_policy.h", "update_schedule_policy.h"):
+                   "update_url_policy.h", "update_schedule_policy.h",
+                   "update_presentation_policy.h"):
         require_text(harness_source_path, '#include "%s"' % header,
                      "the regression harness asserts %s" % header)
     require_text(harness_source_path, "gc_update_is_newer",
@@ -358,6 +359,88 @@ def check_install_failure_recovery(ctx, require_text, forbid_text):
                 "install failed")
 
 
+def check_cache_is_reverified_not_trusted(ctx, require_text, forbid_text,
+                                          require_order):
+    """The cached manifest goes through the SAME gate as a fetched one.
+
+    The cache exists so a service restart does not forget that an update was
+    found -- previously it did, while `last_check` survived, so every surface
+    went quiet for up to a full interval on an update that might already be
+    downloaded and verified.
+
+    The tempting shortcut is to cache the CONCLUSION ("0.30 is available") and
+    restore it.  That would make a file in %ProgramData% authoritative over a
+    signature, and it would not fail visibly: the badge would appear, the tray
+    entry would appear, and only the install would refuse -- leaving the user
+    with an alert they cannot act on and no explanation.  So the cache stores
+    the two documents verbatim and the restore re-runs verify -> parse ->
+    decide, in that order, exactly as `service_update_run_check()` does.
+
+    The order is asserted structurally for the same reason the network path's
+    is: both orders produce an identical happy path, so neither fails loudly
+    when it regresses.
+    """
+    cache = _p(ctx, "main_service_update_cache.cpp")
+    require_order(
+        cache, "service_update_restore_from_cache",
+        "gc_update_verify_manifest_signature", "gc_update_manifest_parse",
+        "a cached manifest's signature is verified before it is parsed")
+    require_order(
+        cache, "service_update_restore_from_cache",
+        "gc_update_manifest_parse", "gc_update_decide",
+        "a cached manifest is parsed before a decision is derived from it")
+    # The decision is RECOMPUTED against the running binary, never restored.
+    # This is what makes the cache self-correcting after an install: the same
+    # manifest that advertised 0.30 answers UP_TO_DATE once 0.30 is running.
+    require_text(cache, "gc_update_version_parse(APP_VERSION, &installed)",
+                 "the cached decision is recomputed against the RUNNING "
+                 "version rather than restored from disk")
+    forbid_text(cache, "last_decision",
+                "no conclusion is persisted; only the signed documents are")
+    # A re-adopted package is re-hashed through the same write-denying handle
+    # the download used.  Trusting "we staged it last boot" would mean the one
+    # file the service launches as SYSTEM is the one it never re-measured.
+    require_text(cache, "service_update_staged_package_matches_manifest",
+                 "a staged package left by a previous process is re-verified "
+                 "before it is re-adopted")
+    # And the name is rebuilt from the verified manifest, never read off disk,
+    # so a file the sweep missed cannot be adopted under its own name.
+    require_text(cache, "gc_update_select_asset(manifest,",
+                 "the staged file's name comes from the verified manifest")
+
+
+def check_update_is_actually_surfaced(ctx, require_text):
+    """An available update reaches at least one PASSIVE surface.
+
+    Every other gate in this file protects against doing something unsafe.
+    This one protects against doing nothing at all, which was the state of the
+    feature until the presentation policy landed: the only mention of an
+    available update was a tray context-menu entry, so a user who never
+    right-clicked the tray icon was never told, and the main window looked
+    identical whether the machine was current or had a verified installer
+    staged and waiting.
+
+    That failure is invisible from inside the program -- no crash, no log line,
+    no failing test -- which is exactly the shape of thing that belongs here.
+    """
+    require_text(_p(ctx, "ui_theme_button.cpp"), "dis->CtlID == UPDATE_BTN_ID",
+                 "the Updates button carries the pending accent when an "
+                 "update is available")
+    require_text(_p(ctx, "tray_presentation.cpp"), "gc_update_tray_tooltip_suffix",
+                 "the tray tooltip names an available update")
+    require_text(_p(ctx, "gui_tray_menu.cpp"), "gc_update_tray_menu_label",
+                 "the tray menu entry is built from the shared alert policy")
+    # All three read one decision, so a fourth surface cannot introduce a
+    # disagreement about whether there is news.
+    require_text(_p(ctx, "gui_update_client.cpp"), "gc_update_alert_kind",
+                 "every surface derives its alert from the same policy")
+    # The prompt is what makes UNSET a question rather than a permanent state
+    # in which no check ever runs.
+    require_text(_p(ctx, "gui_update_dialog.cpp"),
+                 "gc_update_should_prompt_auto_check",
+                 "the unset auto-check preference is actually asked about")
+
+
 def check_all(ctx, require_text, forbid_text, require_order, harness_source_path):
     check_gui_cannot_choose_the_target(ctx, require_text, forbid_text)
     check_signature_precedes_parse(ctx, require_order)
@@ -371,3 +454,6 @@ def check_all(ctx, require_text, forbid_text, require_order, harness_source_path
     check_uninstall_key_agrees_with_setup(ctx, require_text)
     check_install_reservation_and_restore_gate(ctx, require_text, require_order)
     check_install_failure_recovery(ctx, require_text, forbid_text)
+    check_cache_is_reverified_not_trusted(ctx, require_text, forbid_text,
+                                          require_order)
+    check_update_is_actually_surfaced(ctx, require_text)

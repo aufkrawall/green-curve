@@ -2149,7 +2149,12 @@ def run_source_regression_checks():
     ui_main_cpp = os.path.join(SOURCE_DIR, "ui_main.cpp")
     ui_main_controls_cpp = os.path.join(SOURCE_DIR, "ui_main_controls.cpp")
     ui_lock_checkbox_cpp = os.path.join(SOURCE_DIR, "ui_lock_checkbox.cpp")
-    ui_main_window_cpp = os.path.join(SOURCE_DIR, "ui_main_window.cpp")
+    # ui_main_context_menus.cpp is the right-click-menu half of
+    # ui_main_window.cpp, split out only to stay inside the source-size ratchet;
+    # the guards address the two as one logical surface.
+    ui_main_window_cpp = build_state.concatenated_gate_surface(
+        BUILD_WORK_DIR, SOURCE_DIR, "_ui_main_window_surface.cpp",
+        ("ui_main_window.cpp", "ui_main_context_menus.cpp"))
     vf_backends_cpp = os.path.join(SOURCE_DIR, "vf_backends.cpp")
     gpu_core_h = os.path.join(SOURCE_DIR, "gpu_core.h")
     service_protocol_h = os.path.join(SOURCE_DIR, "service_protocol.h")
@@ -2426,13 +2431,13 @@ def run_source_regression_checks():
     require_text(crash_artifacts_cpp, "resolve_service_machine_data_dir", "service crash artifacts use the machine service data directory")
     require_text(config_profile_repair_cpp, "savedOffsetMagnitude = savedOffset < 0 ? -(long long)savedOffset", "profile repair avoids abs(INT_MIN) overflow")
     require_text(service_ipc_cpp, "pl_append_quoted_arg_w", "elevated helper command lines use argv-compatible quoting")
-    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "pl_append_quoted_arg_w", "GUI elevated helper command lines use argv-compatible quoting")
+    require_text(ui_main_window_cpp, "pl_append_quoted_arg_w", "GUI elevated helper command lines use argv-compatible quoting")
     require_text(build_script, "_verify_cached_tool_binary", "cached tool binaries are verified against trusted pinned digests")
     require_text(build_script, "LLVM_MINGW_CLANG_SHA256", "llvm-mingw executable digest is pinned")
     check_toolchain_pinning(build_script)
     require_text(service_ipc_cpp, "wait_for_helper_process_bounded", "elevated helper waits are bounded")
     require_text(config_profiles_gui_state_cpp, "repair needed", "broken installed service advertises repair state")
-    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "Repair and restart the background service", "broken installed service click repairs instead of removing")
+    require_text(ui_main_window_cpp, "Repair and restart the background service", "broken installed service click repairs instead of removing")
     forbid_text(config_profiles_ui_cpp, "maybe_load_selected_profile_to_gui_without_apply", "startup cannot restore saved selected-slot intent as live GPU state")
     require_text(logon_startup_cpp, "show_live_gpu_state_for_disabled_app_launch", "disabled app-start refreshes the editor from the service snapshot")
     require_text(logon_startup_cpp, "saved slot deliberately not loaded", "startup diagnostics distinguish saved profile intent from live state")
@@ -3249,8 +3254,8 @@ def run_source_regression_checks():
     # The per-account logon choice (incl. admin shared profiles) lives in the single
     # unified "Apply profile after user log in" dropdown, tagged via CB_SETITEMDATA;
     # picking a shared entry sets logon_shared_slot and clears logon_slot.
-    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "LOGON_COMBO_SHARED_FLAG", "Logon dropdown offers admin shared profiles via item-data tags")
-    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "CB_GETITEMDATA", "Logon dropdown handler decodes the selected item's meaning from item data")
+    require_text(ui_main_window_cpp, "LOGON_COMBO_SHARED_FLAG", "Logon dropdown offers admin shared profiles via item-data tags")
+    require_text(ui_main_window_cpp, "CB_GETITEMDATA", "Logon dropdown handler decodes the selected item's meaning from item data")
     require_text(config_utils_cpp, "update_logon_profile_selection_transaction", "logon slot keys use one locked transaction")
     require_text(config_utils_cpp, '"Global\\\\GreenCurveConfigMutex-v2"',
                  "config lock spans GUI and service WTS sessions")
@@ -3300,7 +3305,7 @@ def run_source_regression_checks():
     require_text(config_profiles_ui_cpp, "select_logon_combo_item_by_data", "logon combo restores selections by item data")
     require_text(startup_task_runtime_cpp, "logon_combo_item_data_from_slots", "async task synchronization preserves shared combo selections")
     require_text(startup_task_runtime_cpp, "startupSyncGeneration", "async startup synchronization is generation-checked")
-    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"),
+    require_text(ui_main_window_cpp,
                  "completedGeneration != currentGeneration",
                  "stale async startup repair schedules current-state reconciliation")
     require_text(config_profiles_ui_cpp, "Always use: Shared profile %d", "Logon dropdown lists admin-published shared profiles")
@@ -3370,7 +3375,7 @@ def run_source_regression_checks():
     require_text(main_runtime_capture_cpp, "full.lockMode = guiDesired.lockMode", "profile-save capture preserves lock mode from GUI")
     require_text(main_runtime_capture_cpp, "full.lockMode = g_app.lockMode", "profile-save capture preserves live lock mode")
     require_text(os.path.join(SOURCE_DIR, "config_profiles.cpp"), "lock writing ci=", "profile save logs the lock ci/mhz/mode being written")
-    require_text(os.path.join(SOURCE_DIR, "ui_main_window.cpp"), "show_lock_context_menu", "lock checkbox right-click mode menu exists")
+    require_text(ui_main_window_cpp, "show_lock_context_menu", "lock checkbox right-click mode menu exists")
     require_text(os.path.join(SOURCE_DIR, "ui_main.cpp"), "create_lock_tooltips", "lock checkbox hover tooltip is registered")
 
     # Pin-bug root cause (snapshot lockMode clobber): the per-second telemetry
@@ -4442,7 +4447,7 @@ def run_source_regression_checks():
 
     # F-AUTO-PROFILE: the driver is wired into the GUI lifecycle (init/shutdown),
     # the WM_HOTKEY path, and the unity build.
-    auto_ui_cpp = os.path.join(SOURCE_DIR, "ui_main_window.cpp")
+    auto_ui_cpp = ui_main_window_cpp
     auto_rules_cpp = os.path.join(SOURCE_DIR, "auto_profile_rules.cpp")
     require_text(auto_ui_cpp, "auto_profile_init(hwnd);",
         "F-AUTO-PROFILE: subsystem is initialized on main-window WM_CREATE")

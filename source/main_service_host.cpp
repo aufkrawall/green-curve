@@ -163,6 +163,13 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
     // this service makes outbound requests is never read from a file a standard
     // user could still have been able to write.
     service_update_load_settings();
+    // And restore what the LAST check found, by re-verifying the manifest it
+    // cached rather than by trusting a stored conclusion.  Without this a
+    // restart forgets that an update exists while `last_check` survives, so the
+    // next automatic check stays up to a full interval away and every UI
+    // surface goes quiet in the meantime -- for an update that may already be
+    // downloaded, verified and sitting in the staging directory.
+    service_update_restore_from_cache();
     // F-REL-2: bound the on-disk crash artifacts so a restart loop cannot fill
     // the disk (runs once per fresh process = once per restart cycle).  Sweeps
     // the terminal crash dumps and the append-only breadcrumb as well as the VEH

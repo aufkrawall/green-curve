@@ -720,15 +720,17 @@ static bool s_uiBaseLogFontReady = false;
 
 static const UINT FAN_FIXED_RUNTIME_INTERVAL_MS = 5000;
 static const UINT FAN_TELEMETRY_INTERVAL_MS = 1000;
+// The updater's shared response cache.  Ahead of everything that RENDERS the
+// alert -- the tray tooltip in tray_presentation.cpp, the tray icon refresh in
+// main_fan_runtime.cpp, the tray menu entry, and the Updates button's orange
+// outline in ui_theme_button.cpp -- and ahead of main_shell.cpp, whose
+// service_send_request() is the single place that feeds it.
+#include "gui_update_client.cpp"
 #include "main_gpu_front.cpp"
 #include "desired_settings_helpers.cpp"
 #include "main_gpu_state.cpp"
 #include "main_tail_diagnostics.cpp"
 #include "main_fan_runtime.cpp"
-// The updater's shared response cache.  Ahead of the tray menu, which asks
-// it whether to show the update entry, and ahead of main_shell.cpp, whose
-// service_send_request() is the single place that feeds it.
-#include "gui_update_client.cpp"
 #include "gui_tray_menu.cpp"
 #include "config_profile_repair.cpp"
 #include "main_shell.cpp"

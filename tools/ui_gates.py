@@ -804,10 +804,20 @@ def check_apply_in_flight_presentation(ctx, require_text, forbid_text):
         fan_runtime, "static void update_tray_icon()",
         "gui_apply_in_flight_tray_icon_state(",
         "the tray theme comes from the pure policy, in-flight state included")
+    # The in-flight branch lives in the BASE builder since the tooltip gained
+    # its update suffix: the base owns the mutually exclusive shapes (in
+    # flight / service down / ordinary), the wrapper appends the update note to
+    # whichever one came back.  Both halves are pinned, because a base nothing
+    # composed from would satisfy the first assertion while the tooltip the
+    # user sees lost the branch entirely.
     ctx.require_text_in_operation(
-        tray_presentation, "static void build_tray_tooltip(",
+        tray_presentation, "static void build_tray_tooltip_base(",
         "gui_apply_in_flight_tray_tooltip(",
         "the tray tooltip reports a write in flight")
+    ctx.require_text_in_operation(
+        tray_presentation, "static void build_tray_tooltip(char* tip",
+        "build_tray_tooltip_base(",
+        "the tooltip the tray actually shows is built from that base")
     require_text(gui_state, "gui_apply_in_flight_status_text(",
                  "the main window reports a write in flight too")
 

@@ -17,6 +17,10 @@
 // Before the worker: the orchestration there calls straight into it.
 #include "main_service_update_gui_stop.cpp"
 #include "main_service_update_worker.cpp"
+// After the worker: the cache re-runs the worker's own verify/parse/decide
+// sequence over the documents the last check stored, and re-adopts a staged
+// package through the worker's re-verification helper.
+#include "main_service_update_cache.cpp"
 #include "main_service_update_worker_thread.cpp"
 #include "main_service_update_commands.cpp"
 #include "main_service_pipe.cpp"

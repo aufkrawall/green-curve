@@ -63,6 +63,10 @@
 #include "update_url_policy.h"
 #include "update_verify_keys.h"
 #include "update_install_policy.h"
+// How an available update reaches the user without them going looking for it:
+// the orange Updates button, the tray tooltip suffix, the tray menu caption,
+// and the once-per-machine question that resolves the UNSET auto-check state.
+#include "update_presentation_policy.h"
 // Protocol-v14 readback provenance carried in AppData below.
 #include "control_readback_policy.h"
 // ProfileReadMode (how a stored profile is decoded) plus the applied-profile
@@ -604,6 +608,12 @@ struct AppData {
     int trayLastRenderedState;
     char trayProfileCacheProfilePart[64];
     char trayLastRenderedTip[128];
+    // GcUpdateAlert last PAINTED onto the Updates button, held as an int so
+    // this header does not have to order itself against the enum's definition.
+    // The button is owner-drawn and stores no state of its own, so the only way
+    // to know a repaint is owed is to remember what was drawn -- the same
+    // mirror ui_checkbox_state.h keeps for the owner-drawn checkboxes.
+    int updateAlertPainted;
     char backgroundServiceOwnerUser[256];
     DWORD backgroundServiceOwnerSessionId;
     ULONGLONG backgroundServiceOwnerUtcMs;
