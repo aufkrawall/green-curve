@@ -9493,6 +9493,50 @@ static int run_all_tests(int argc, char** argv) {
         gc_update_version_parse("0.22", &v22);
         if (!gc_update_meets_minimum_from(&v22, &floor21)) return 4118;
         if (!gc_update_meets_minimum_from(&floor21, &floor21)) return 4119;
+
+        // --- Patch-release ordering and asset naming (4301-4319) ------
+        //
+        // A PATCH release off a two-component version, which is the shape a
+        // hotfix takes: 0.23 -> 0.23.1.  Worth asserting on its own because the
+        // patch component is the only one that can be ABSENT, so this is the
+        // one upgrade direction that compares a parsed field against a default
+        // rather than against another parsed field.  Everything above moves the
+        // minor.
+        GcUpdateVersion base, patch1, patch2;
+        gc_update_version_parse("0.23", &base);
+        gc_update_version_parse("0.23.1", &patch1);
+        gc_update_version_parse("0.23.2", &patch2);
+        if (!base.valid || !patch1.valid || !patch2.valid) return 4301;
+        if (!gc_update_is_newer(&base, &patch1)) return 4302;   // 0.23   -> 0.23.1
+        if (!gc_update_is_newer(&patch1, &patch2)) return 4303; // 0.23.1 -> 0.23.2
+        // And the same gate in reverse: a patch release must never be
+        // downgraded to the version it fixed.
+        if (gc_update_is_newer(&patch1, &base)) return 4304;
+        if (gc_update_is_newer(&patch2, &patch1)) return 4305;
+        // A minor bump still outranks any patch of the older minor.
+        GcUpdateVersion minor24;
+        gc_update_version_parse("0.24", &minor24);
+        if (!gc_update_is_newer(&patch2, &minor24)) return 4306;
+
+        // The text is carried through verbatim, because the release asset
+        // names are built from it: "0.23.1" and "0.23" compare as different
+        // versions AND name different files, and a patch release whose name
+        // was rebuilt from the integers would look for the wrong asset.
+        char patchAsset[GC_UPDATE_ASSET_NAME_MAX_CHARS] = {};
+        if (!gc_update_expected_asset_name(patch1.text, GC_UPDATE_ARCH_X64,
+                                           patchAsset, sizeof(patchAsset)) ||
+            strcmp(patchAsset, "greencurve-0.23.1-windows-x64-setup.exe") != 0) {
+            return 4307;
+        }
+        if (!gc_update_expected_asset_name(patch1.text, GC_UPDATE_ARCH_ARM64,
+                                           patchAsset, sizeof(patchAsset)) ||
+            strcmp(patchAsset, "greencurve-0.23.1-windows-arm64-setup.exe") != 0) {
+            return 4308;
+        }
+        // A patch floor is honoured like any other: 0.23 is BELOW a 0.23.1
+        // floor even though the two share a minor.
+        if (gc_update_meets_minimum_from(&base, &patch1)) return 4309;
+        if (!gc_update_meets_minimum_from(&patch1, &patch1)) return 4310;
     }
 
     // --- Manifest parsing and binding (4120-4149) ---------------------

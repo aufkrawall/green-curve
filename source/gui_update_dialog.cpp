@@ -288,6 +288,17 @@ static void gud_refresh_controls() {
         StringCchCopyA(detail, sizeof(detail),
             "Installing stops Green Curve briefly and restores your settings "
             "afterwards. Do not install while gaming.");
+    } else if (state && state->phase == SERVICE_UPDATE_PHASE_FAILED &&
+               state->packageStaged && state->packageVerified &&
+               state->isInstalledCopy) {
+        // A failed INSTALL does not invalidate the downloaded package, and the
+        // button below is enabled again for it.  Saying so matters: the status
+        // line above reports the failure, and without this the user has no way
+        // to tell whether the retry they are being offered is expected to work
+        // or is the same dead end again.
+        StringCchCopyA(detail, sizeof(detail),
+            "The downloaded package is still verified, so Install update can be "
+            "tried again.");
     } else if (state && state->decision == GC_UPDATE_DECISION_AVAILABLE &&
                !state->packageStaged) {
         // An update is known but nothing is staged, so Install is greyed.  Say
@@ -300,8 +311,22 @@ static void gud_refresh_controls() {
     gud_set_text(g_updateDialog.detailLabel, detail);
 
     bool busy = gui_update_is_busy();
-    bool ready = state && state->phase == SERVICE_UPDATE_PHASE_READY &&
-                 state->packageVerified && state->isInstalledCopy;
+    // Deliberately NOT gated on phase == READY.
+    //
+    // A failed install leaves the phase at FAILED with the verified package
+    // still staged, and gating on the phase left Install permanently greyed
+    // out: the only way back was to press Check now, which the user has no
+    // reason to guess at because nothing on the dialog connects the two.
+    //
+    // The staged-and-verified pair is the real precondition. Both are set only
+    // together, only after a digest match against a signature-verified
+    // manifest, and only ever cleared together -- and the service re-verifies
+    // through a freshly pinned handle before it launches anything, so this is
+    // an enablement rule, not a trust decision. Every phase during which the
+    // package is still being produced (DOWNLOADING, VERIFYING) also reports
+    // `busy`, so dropping the phase test cannot enable the button mid-download.
+    bool ready = state && state->packageStaged && state->packageVerified &&
+                 state->isInstalledCopy;
     EnableWindow(g_updateDialog.checkButton, !busy);
     EnableWindow(g_updateDialog.installButton, ready && !busy);
 

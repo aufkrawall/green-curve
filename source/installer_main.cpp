@@ -108,7 +108,21 @@ static int gc_run_silent_install(const GcInstallerOptions* options, const GcPrio
         return GC_EXIT_FAILED;
     }
     bool ok = gc_install_execute(&context);
-    if (ok && context.plan.launchAfterInstall) {
+    // Relaunch even when the install FAILED, which is why this is no longer
+    // gated on `ok`.
+    //
+    // The updater closes every Green Curve window before starting setup --
+    // setup runs in session 0 and cannot reach across to them itself -- so a
+    // failed silent install used to leave the user with no window, no tray
+    // icon, and nothing on screen to explain why the program had vanished.
+    // Reporting the failure into a GUI that has been closed reports it to
+    // nobody.
+    //
+    // Safe because gc_launch_installed_gui() refuses when greencurve.exe is not
+    // present, so a half-copied installation starts nothing at all rather than
+    // something broken; and because a GUI that no longer matches its service is
+    // a case the protocol version check already handles visibly.
+    if (context.plan.launchAfterInstall) {
         WCHAR directory[GC_INSTALLER_MAX_PATH_CHARS] = {};
         if (gc_utf8_to_wide(context.plan.targetDirectory, directory, (int)GC_ARRAY_COUNT(directory))) {
             gc_launch_installed_gui(

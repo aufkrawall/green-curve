@@ -190,7 +190,14 @@ void gui_update_replay_pending_restore() {
         !gui_update_pending_restore_age_seconds(pending, &ageSeconds) ||
         gc_update_restore_decide(expectedVersion, APP_VERSION, ageSeconds) !=
             GC_UPDATE_RESTORE_APPLY) {
-        debug_log("update handoff: pending restore failed its version/freshness gate; discarding\n");
+        // Named in full, because this line is the answer to "the update ran and
+        // my settings did not come back".  The common cause is not corruption:
+        // it is an update that did NOT complete, leaving a capture bound to a
+        // version this build is not, which is exactly what the gate is for.
+        debug_log("update handoff: discarding the pending restore "
+                  "(captured for version '%s', running %s, age %llds)\n",
+                  expectedVersion[0] ? expectedVersion : "<none>", APP_VERSION,
+                  ageSeconds);
         gc_DeleteFileUtf8(pending);
         return;
     }

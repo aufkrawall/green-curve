@@ -37,6 +37,22 @@
 // UAC prompt at all, because the service is already SYSTEM.
 
 #define GC_UPDATE_INSTALL_TIMEOUT_MS 600000
+// How much longer a setup process that overran its timeout keeps the GPU
+// reserved.  The reservation must not be permanent: it disables the fan runtime
+// pulse, every auto-restore path and every Apply/Reset, so leaving it set for
+// the remaining life of the service process turns one hung installer into fan
+// control that stays dead until somebody restarts the service.
+#define GC_UPDATE_INSTALL_ABANDON_TIMEOUT_MS 120000
+// The exit code forced onto a setup process we had to terminate.  Chosen to sit
+// outside setup's own documented contract (0 success, 1 failure, 2 cancelled,
+// 3 bad arguments) so a log never confuses "we killed it" with "it decided".
+//
+// Spelled here rather than shared with installer_main.cpp's GC_EXIT_*, because
+// installer.md invariant 11 keeps the setup program and the application model
+// from including each other's headers -- the same reason
+// GC_UPDATE_UNINSTALL_KEY is written twice.  Nothing reads this value back, so
+// the duplication carries no drift risk.
+#define GC_UPDATE_INSTALLER_ABANDONED_EXIT_CODE 4
 
 // ---------------------------------------------------------------------------
 // Where this copy is installed
@@ -362,172 +378,6 @@ static bool service_update_foreground_app_active() {
     return false;
 }
 
-// ---------------------------------------------------------------------------
-// Stopping the GUI, across sessions
-// ---------------------------------------------------------------------------
-
-// How long a GUI gets to close itself after seeing guiShutdownRequested, and
-// how long it then gets to die after being terminated.  Both are bounded
-// because this runs before an install that will fail at file replacement if a
-// GUI is still holding greencurve.exe.
-#define GC_UPDATE_GUI_EXIT_TIMEOUT_MS 10000
-#define GC_UPDATE_GUI_KILL_TIMEOUT_MS 5000
-#define GC_UPDATE_MAX_GUI_PROCESSES 32
-
-// Open every greencurve.exe running out of `installDir`, in ANY session.
-//
-// Matched by full image path, not by name: another process called
-// greencurve.exe somewhere else on the machine is not ours to terminate, and
-// this code runs as SYSTEM where that mistake is unrecoverable.
-static bool service_update_collect_gui_processes(const char* installDir,
-                                                 HANDLE* handles, int maxCount,
-                                                 int* countOut) {
-    if (countOut) *countOut = 0;
-    auto fail_closed = [&](DWORD error, const char* reason) {
-        for (int i = 0; i < maxCount; ++i) {
-            if (handles[i]) CloseHandle(handles[i]);
-            handles[i] = nullptr;
-        }
-        if (countOut) *countOut = 0;
-        debug_log("update install: GUI enumeration FAILED at %s (error %lu); "
-                  "refusing to proceed\n", reason, error);
-        return false;
-    };
-
-    if (!handles || maxCount <= 0 || !installDir || !installDir[0])
-        return fail_closed(ERROR_INVALID_PARAMETER, "argument validation");
-
-    char wanted[MAX_PATH] = {};
-    if (FAILED(StringCchPrintfA(wanted, sizeof(wanted), "%s\\%s",
-                                installDir, APP_EXE_NAME))) {
-        return fail_closed(GetLastError(), "target path construction");
-    }
-
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snapshot == INVALID_HANDLE_VALUE)
-        return fail_closed(GetLastError(), "process snapshot");
-
-    int found = 0;
-    PROCESSENTRY32W entry = {};
-    entry.dwSize = sizeof(entry);
-    if (Process32FirstW(snapshot, &entry)) {
-        do {
-            if (entry.th32ProcessID == GetCurrentProcessId()) continue;
-            if (_wcsicmp(entry.szExeFile, APP_EXE_NAME_W) != 0) continue;
-
-            HANDLE process = OpenProcess(
-                SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
-                FALSE, entry.th32ProcessID);
-            if (!process)
-                return fail_closed(GetLastError(), "opening candidate GUI");
-
-            WCHAR imageW[MAX_PATH] = {};
-            DWORD imageChars = ARRAY_COUNT(imageW);
-            char image[MAX_PATH] = {};
-            bool mine = false;
-            if (QueryFullProcessImageNameW(process, 0, imageW, &imageChars) &&
-                copy_wide_to_utf8(imageW, image, (int)sizeof(image))) {
-                mine = _stricmp(image, wanted) == 0;
-            }
-            if (!mine) {
-                CloseHandle(process);
-                continue;
-            }
-            if (found >= maxCount) {
-                CloseHandle(process);
-                CloseHandle(snapshot);
-                return fail_closed(ERROR_TOO_MANY_CMDS,
-                                   "matching GUI process count");
-            }
-            handles[found++] = process;
-            debug_log("update install: found GUI process pid=%lu session-agnostic path=%s\n",
-                      (unsigned long)entry.th32ProcessID, image);
-        } while (Process32NextW(snapshot, &entry));
-    } else {
-        DWORD enumError = GetLastError();
-        CloseHandle(snapshot);
-        return fail_closed(enumError, "first process enumeration");
-    }
-    CloseHandle(snapshot);
-    if (countOut) *countOut = found;
-    return true;
-}
-
-// Ask every GUI to close, then make sure it did.
-//
-// Fails closed: if a GUI is still alive afterwards the install must NOT
-// proceed, because setup would get to the file-replacement step and stop there
-// with ERROR_ACCESS_DENIED -- which is precisely the failure this exists to
-// prevent, and it leaves a half-copied install directory behind.
-static bool service_update_stop_gui_processes(const char* installDir,
-                                              int* closedCountOut,
-                                              char* err, size_t errSize) {
-    if (closedCountOut) *closedCountOut = 0;
-    HANDLE handles[GC_UPDATE_MAX_GUI_PROCESSES] = {};
-    int count = 0;
-    if (!service_update_collect_gui_processes(
-            installDir, handles, GC_UPDATE_MAX_GUI_PROCESSES, &count)) {
-        set_message(err, errSize,
-                    "Could not prove every Green Curve window was closed; "
-                    "the update was not installed");
-        return false;
-    }
-    if (count == 0) {
-        debug_log("update install: no GUI processes are running\n");
-        return true;
-    }
-
-    // Publish the request and let each GUI run its own Exit path.  Graceful
-    // matters: that path releases the tray icon, the single-instance mutex and
-    // the service connection, none of which TerminateProcess would.
-    {
-        GcUpdateStateLock guard;
-        g_updateState.guiShutdownRequested = true;
-    }
-    debug_log("update install: asked %d GUI process(es) to close\n", count);
-
-    DWORD waited = WaitForMultipleObjects((DWORD)count, handles, TRUE,
-                                          GC_UPDATE_GUI_EXIT_TIMEOUT_MS);
-    bool allGone = waited >= WAIT_OBJECT_0 && waited < WAIT_OBJECT_0 + (DWORD)count;
-
-    if (!allGone) {
-        // A GUI that ignored the request (wedged, or not polling) is terminated.
-        // The installer's own stop step does the same escalation for the same
-        // reason; a hung window must not block an update forever.
-        debug_log("update install: GUI did not exit within %d ms; terminating\n",
-                  GC_UPDATE_GUI_EXIT_TIMEOUT_MS);
-        for (int i = 0; i < count; ++i) {
-            if (WaitForSingleObject(handles[i], 0) == WAIT_TIMEOUT) {
-                TerminateProcess(handles[i], 0);
-            }
-        }
-        waited = WaitForMultipleObjects((DWORD)count, handles, TRUE,
-                                        GC_UPDATE_GUI_KILL_TIMEOUT_MS);
-        allGone = waited >= WAIT_OBJECT_0 && waited < WAIT_OBJECT_0 + (DWORD)count;
-    }
-
-    for (int i = 0; i < count; ++i) CloseHandle(handles[i]);
-    {
-        GcUpdateStateLock guard;
-        g_updateState.guiShutdownRequested = false;
-    }
-
-    if (!allGone) {
-        set_message(err, errSize,
-                    "A Green Curve window is still running and could not be "
-                    "closed; the update was not installed");
-        debug_log("update install: ABORTED, GUI processes still alive\n");
-        return false;
-    }
-    // Report how many were closed.  The caller turns this into --launch vs
-    // --no-launch, so leaving it at the zero set on entry silently means "no
-    // GUI was running" and the user's window never comes back -- which is
-    // exactly what shipped in 0.27.
-    if (closedCountOut) *closedCountOut = count;
-    debug_log("update install: all %d GUI process(es) exited\n", count);
-    return true;
-}
-
 static bool service_update_run_install(char* err, size_t errSize) {
     if (err && errSize) err[0] = 0;
 
@@ -622,13 +472,56 @@ static bool service_update_run_install(char* err, size_t errSize) {
         g_updateState.installRunning = true;
     }
 
+    // BOTH command lines are built and encoded HERE, before a single window is
+    // closed, and the measured count below only picks between them.
+    //
+    // Nothing that can fail may happen after the GUIs are gone.  Closing them
+    // is the one destructive step the service takes on the user's behalf, and
+    // it is not undoable from here: the service does not launch processes into
+    // interactive sessions, so a failure after this point used to leave the
+    // user with no window, no tray icon and no way to learn why.  Building the
+    // string and encoding it to UTF-16 are the two fallible steps that used to
+    // sit on the far side of that line; now they cannot.
+    //
+    // The builder is pure (update_install_policy.h) and its output is asserted
+    // against the real installer parser (4260-4269), which is why building an
+    // extra candidate costs nothing but a stack buffer.
+    char launchSessionId[16] = {};
+    StringCchPrintfA(launchSessionId, sizeof(launchSessionId), "%lu",
+                     (unsigned long)requestingSessionId);
+    char relaunchCommand[GC_UPDATE_COMMAND_LINE_MAX_CHARS] = {};
+    char noLaunchCommand[GC_UPDATE_COMMAND_LINE_MAX_CHARS] = {};
+    if (!gc_update_build_installer_command_line(stagedPath, installDir, true,
+                                                launchSessionId, relaunchCommand,
+                                                sizeof(relaunchCommand)) ||
+        !gc_update_build_installer_command_line(stagedPath, installDir, false,
+                                                nullptr, noLaunchCommand,
+                                                sizeof(noLaunchCommand))) {
+        CloseHandle(pinned);
+        service_update_set_install_reserved(false);
+        set_message(err, errSize,
+                    "Cannot build a usable installer command line for %s",
+                    installDir);
+        GcUpdateStateLock guard;
+        g_updateState.installRunning = false;
+        return false;
+    }
+    Win32Utf8Path wideRelaunch(relaunchCommand);
+    Win32Utf8Path wideNoLaunch(noLaunchCommand);
+    if (!wideRelaunch.valid_for(relaunchCommand) ||
+        !wideNoLaunch.valid_for(noLaunchCommand)) {
+        CloseHandle(pinned);
+        service_update_set_install_reserved(false);
+        GcUpdateStateLock guard;
+        g_updateState.installRunning = false;
+        set_message(err, errSize, "Cannot encode the installer command line");
+        return false;
+    }
+
     // Close every GUI BEFORE setup starts.  Setup runs in session 0 (the
     // service launched it) and cannot see, let alone close, a window in the
     // user's session -- so left to itself it reports "no running Green Curve
     // window found" and then fails replacing greencurve.exe with error 5.
-    //
-    // This also has to happen before the command line is built, because how
-    // many GUIs were closed decides whether setup should start one again.
     int closedGuiCount = 0;
     if (!service_update_stop_gui_processes(installDir, &closedGuiCount,
                                            err, errSize)) {
@@ -639,47 +532,17 @@ static bool service_update_run_install(char* err, size_t errSize) {
         return false;
     }
 
-    // Built by update_install_policy.h, which exists because this was four
-    // lines here and shipped an unquoted `/D=<path with spaces>` that setup
-    // correctly refused -- exit 3, before any step, for every default
-    // installation.  The builder is pure so the exact string is asserted
-    // against the real installer parser (4260-4269).
-    //
-    // Relaunch the GUI only if one was actually running: the stop above counted
-    // them, so this is measured rather than assumed.
-    char commandLine[GC_UPDATE_COMMAND_LINE_MAX_CHARS] = {};
-    char launchSessionId[16] = {};
-    StringCchPrintfA(launchSessionId, sizeof(launchSessionId), "%lu",
-                     (unsigned long)requestingSessionId);
-    if (!gc_update_build_installer_command_line(stagedPath, installDir,
-                                                closedGuiCount > 0,
-                                                launchSessionId,
-                                                commandLine, sizeof(commandLine))) {
-        CloseHandle(pinned);
-        service_update_set_install_reserved(false);
-        set_message(err, errSize,
-                    "Cannot build a usable installer command line for %s",
-                    installDir);
-        GcUpdateStateLock guard;
-        g_updateState.installRunning = false;
-        return false;
-    }
-    debug_log("update install: command line is %s\n", commandLine);
-
-    Win32Utf8Path wideCommand(commandLine);
-    if (!wideCommand.valid_for(commandLine)) {
-        CloseHandle(pinned);
-        service_update_set_install_reserved(false);
-        GcUpdateStateLock guard;
-        g_updateState.installRunning = false;
-        set_message(err, errSize, "Cannot encode the installer command line");
-        return false;
-    }
+    // Relaunch the GUI only if one was actually running.  This SELECTION is
+    // what has to follow the stop -- the count is measured, not assumed -- and
+    // selecting between two already-validated strings cannot fail.
+    LPWSTR wideCommand = closedGuiCount > 0 ? wideRelaunch.value : wideNoLaunch.value;
+    debug_log("update install: command line is %s\n",
+              closedGuiCount > 0 ? relaunchCommand : noLaunchCommand);
 
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi = {};
-    BOOL created = CreateProcessW(nullptr, wideCommand.value, nullptr, nullptr,
+    BOOL created = CreateProcessW(nullptr, wideCommand, nullptr, nullptr,
                                   FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
     DWORD createError = created ? 0 : GetLastError();
     // The pin has done its job the moment the image is mapped: from here the
@@ -705,9 +568,10 @@ static bool service_update_run_install(char* err, size_t errSize) {
     DWORD waited = WaitForSingleObject(pi.hProcess, GC_UPDATE_INSTALL_TIMEOUT_MS);
     DWORD exitCode = 0;
     bool ok = false;
-    bool processExited = false;
+    // Set only when the process could NOT be proven dead, which is the sole
+    // remaining reason to keep GPU writes blocked past this function.
+    bool reservationHeld = false;
     if (waited == WAIT_OBJECT_0 && GetExitCodeProcess(pi.hProcess, &exitCode)) {
-        processExited = true;
         // Exit codes are the installer's documented contract: 0 success,
         // 1 failure, 2 cancelled, 3 bad arguments.
         ok = exitCode == 0;
@@ -718,11 +582,64 @@ static bool service_update_run_install(char* err, size_t errSize) {
                             : "The installer reported failure (exit %lu)", exitCode);
         }
     } else {
-        set_message(err, errSize, "The installer did not finish in time");
+        set_message(err, errSize,
+                    "The installer did not finish in time; Green Curve may have "
+                    "to be started by hand");
+        // The reservation's only justification is "setup might be part way
+        // through replacing files", and that is exactly co-extensive with
+        // "the setup process is alive".  So rather than guess a grace period
+        // -- every value of which is wrong in one direction or the other --
+        // make the condition true by ending the process, then wait for it to
+        // actually die before releasing.
+        //
+        // Terminating is the right choice here because setup is OUR binary run
+        // with /S: a silent install that has not returned in ten minutes is not
+        // making progress, and leaving it alive forever is strictly worse.
+        //
+        // It is also very unlikely to be mid-file-replacement: setup copies
+        // files only after gc_stop_service(), and that call is what tears this
+        // process down, so a service thread still executing here has almost
+        // certainly not reached the copy. "Almost" and not "certainly" because
+        // a process can briefly outlive its own service stop -- which is why
+        // the reservation is still held right up to the moment the kill is
+        // confirmed, rather than dropped on the assumption.
+        //
+        // Previously this returned with the reservation still set, which gates
+        // the fan runtime pulse, all three auto-restore paths, Apply, Reset and
+        // the controlled restart: one hung installer disabled GPU and fan
+        // control for the remaining life of the service process, with the
+        // watchdog seeing a healthy heartbeat and never recovering it.
+        if (!TerminateProcess(pi.hProcess,
+                              GC_UPDATE_INSTALLER_ABANDONED_EXIT_CODE)) {
+            debug_log("update install: could not terminate the overrunning "
+                      "setup process (error %lu)\n", GetLastError());
+        }
+        DWORD settled = WaitForSingleObject(pi.hProcess,
+                                            GC_UPDATE_INSTALL_ABANDON_TIMEOUT_MS);
+        // Only WAIT_OBJECT_0 proves it is gone.  Anything else means we could
+        // not establish the precondition, and the reservation is held rather
+        // than released on an assumption -- the one case where the old
+        // behaviour was right, now reached only when the kernel refuses to
+        // kill a process rather than whenever setup is merely slow.
+        if (settled == WAIT_OBJECT_0) {
+            debug_log("update install: overrunning setup terminated; releasing "
+                      "the GPU reservation\n");
+        } else {
+            reservationHeld = true;
+            debug_log("update install: setup could not be terminated (wait=%lu); "
+                      "GPU writes stay reserved because file replacement cannot "
+                      "be ruled out\n", (unsigned long)settled);
+        }
     }
     CloseHandle(pi.hProcess);
 
-    if (!ok && processExited) service_update_set_install_reserved(false);
+    // Released on every path except (a) a SUCCESSFUL install, where setup has
+    // stopped this service and this process must not touch the GPU on its way
+    // out, and (b) a setup process the kernel would not let us kill, where file
+    // replacement genuinely cannot be ruled out.  This used to additionally
+    // require having SEEN the process exit, which is how the timeout path
+    // leaked the reservation for the life of the service.
+    if (!ok && !reservationHeld) service_update_set_install_reserved(false);
 
     {
         GcUpdateStateLock guard;

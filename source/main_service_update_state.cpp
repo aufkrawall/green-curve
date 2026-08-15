@@ -335,6 +335,15 @@ static void service_update_populate_response(ServiceUpdateState* out) {
     *out = blank;
     service_update_state_init();
 
+    // Resolved BEFORE the lock is taken.  This opens a registry key and stats a
+    // directory, and it is stamped onto every single response the service
+    // sends, so doing it under the lock made every response serialize against
+    // the update worker for the length of two round trips to the registry and
+    // the filesystem -- for a value the worker neither reads nor publishes.
+    char installDir[MAX_PATH] = {};
+    bool installedCopy =
+        service_update_is_installed_copy(installDir, sizeof(installDir));
+
     GcUpdateStateLock guard;
     out->phase = (gc_u32)g_updateState.phase;
     out->decision = (gc_u32)g_updateState.decision;
@@ -350,9 +359,7 @@ static void service_update_populate_response(ServiceUpdateState* out) {
     out->workerRunning = g_updateState.workerRunning ? 1 : 0;
     out->guiShutdownRequested = g_updateState.guiShutdownRequested ? 1 : 0;
 
-    char installDir[MAX_PATH] = {};
-    out->isInstalledCopy = service_update_is_installed_copy(installDir, sizeof(installDir))
-                               ? 1 : 0;
+    out->isInstalledCopy = installedCopy ? 1 : 0;
 
     StringCchCopyA(out->installedVersion, sizeof(out->installedVersion), APP_VERSION);
     if (g_updateState.manifestValid && g_updateState.manifest.valid) {

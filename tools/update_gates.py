@@ -77,10 +77,26 @@ def check_verification_precedes_launch(ctx, require_order, require_text):
     # ERROR_ACCESS_DENIED, half-way through copying files.  The service must
     # close them first, and must do it before the command line is built, because
     # how many it closed decides whether setup should start one again.
+    # The command line is built and encoded BEFORE the GUIs are closed, and the
+    # measured count only selects between two already-validated strings.
+    #
+    # This is the reverse of the original ordering, and deliberately so. Closing
+    # the user's windows is the one destructive step the service takes on their
+    # behalf and it cannot be undone from there -- the service does not launch
+    # processes into interactive sessions. So nothing fallible may sit after it.
+    # Building the string and encoding it to UTF-16 both can fail, so both moved
+    # in front; what must stay behind is the SELECTION, because "was a GUI
+    # actually running" has to be measured rather than assumed (assuming it was
+    # not is what shipped in 0.27 and never gave the user their window back).
     require_order(
         worker, "service_update_run_install",
-        "service_update_stop_gui_processes", "gc_update_build_installer_command_line",
-        "the GUI is stopped before the installer command line is built")
+        "gc_update_build_installer_command_line", "service_update_stop_gui_processes",
+        "the installer command line is built and validated before any GUI is "
+        "closed, so no fallible step remains after the windows are gone")
+    require_order(
+        worker, "service_update_run_install",
+        "service_update_stop_gui_processes", "closedGuiCount > 0 ? wideRelaunch",
+        "which command line is used is selected AFTER the GUIs were counted")
     require_order(
         worker, "service_update_run_install",
         "service_update_stop_gui_processes", "CreateProcessW",
@@ -294,6 +310,54 @@ def check_install_reservation_and_restore_gate(ctx, require_text, require_order)
                  "a stale capture is discarded instead of replayed")
 
 
+def check_install_failure_recovery(ctx, require_text, forbid_text):
+    """What happens when an install does NOT succeed.
+
+    Three regressions that a happy-path test cannot see, because in the happy
+    path setup stops this service and none of this code runs at all:
+
+    * The install reservation gates the fan runtime pulse, every auto-restore
+      path, Apply, Reset and the controlled restart. Releasing it only when the
+      installer was *observed to exit* meant a setup process that overran its
+      timeout left GPU and fan control dead for the remaining life of the
+      service process. Every non-success path must release it.
+    * The updater closes every Green Curve window before starting setup, so
+      setup must relaunch on failure too -- otherwise a failed silent install
+      reports itself into a GUI that is no longer running.
+    * The pre-install enumeration must distinguish "that process is already
+      gone" from "that process refused us a handle". greencurve.exe is the CLI
+      binary as well, so a short-lived helper exiting mid-enumeration is normal
+      and must not abort the install; ERROR_ACCESS_DENIED still must.
+    """
+    worker = _p(ctx, "main_service_update_worker.cpp")
+    forbid_text(worker, "processExited",
+                "releasing the reservation must not depend on having observed "
+                "the installer exit (that is how the timeout path leaked it)")
+    # "Setup might be mid-file-replacement" is exactly "the setup process is
+    # alive", so the reservation is ended by ending the process rather than by
+    # guessing a grace period -- every value of which is wrong in one direction.
+    require_text(worker, "TerminateProcess(pi.hProcess,",
+                 "an overrunning setup is ended rather than waited out, so the "
+                 "reservation's precondition is made false instead of assumed")
+    require_text(worker, "if (!ok && !reservationHeld)",
+                 "the reservation is held past this function only when the "
+                 "setup process could not be proven dead")
+    gui_stop = _p(ctx, "main_service_update_gui_stop.cpp")
+    require_text(gui_stop, "if (openError == ERROR_INVALID_PARAMETER) continue;",
+                 "a process that exited during enumeration is gone, not an "
+                 "enumeration failure")
+    require_text(gui_stop, 'return fail_closed(openError, "opening candidate GUI")',
+                 "any other OpenProcess failure still fails closed")
+    require_text(gui_stop, 'return fail_closed(identifyError, "identifying a candidate GUI")',
+                 "a live process we cannot name fails closed rather than being "
+                 "silently treated as somebody else's")
+    # Relaunch is not conditional on the install having succeeded.
+    forbid_text(_p(ctx, "installer_main.cpp"),
+                "if (ok && context.plan.launchAfterInstall)",
+                "setup must relaunch the GUI the updater closed even when the "
+                "install failed")
+
+
 def check_all(ctx, require_text, forbid_text, require_order, harness_source_path):
     check_gui_cannot_choose_the_target(ctx, require_text, forbid_text)
     check_signature_precedes_parse(ctx, require_order)
@@ -306,3 +370,4 @@ def check_all(ctx, require_text, forbid_text, require_order, harness_source_path
     check_policy_stays_unit_tested(ctx, require_text, harness_source_path)
     check_uninstall_key_agrees_with_setup(ctx, require_text)
     check_install_reservation_and_restore_gate(ctx, require_text, require_order)
+    check_install_failure_recovery(ctx, require_text, forbid_text)
