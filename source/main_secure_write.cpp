@@ -141,7 +141,8 @@ static bool write_all_to_handle(HANDLE h, const char* data, size_t dataSize, con
     return true;
 }
 
-static bool write_text_file_atomic_service(const char* path, const char* data, size_t dataSize, char* err, size_t errSize) {
+static bool write_text_file_atomic_service_scoped(const char* path, const char* data,
+    size_t dataSize, GcServiceWriteScope scope, char* err, size_t errSize) {
     if (!path || !data) {
         set_message(err, errSize, "Invalid file write arguments");
         return false;
@@ -174,11 +175,14 @@ static bool write_text_file_atomic_service(const char* path, const char* data, s
         set_message(err, errSize, "Cannot resolve parent directory path");
         return false;
     }
-    if (!service_path_is_within_resolved_profile(parentFinalPath, err,
-            errSize)) {
-        return false;
-    }
-    debug_log("write_text_file_atomic_service: caller-scoped parent directory verified\n");
+    bool parentInScope =
+        scope == GC_SERVICE_WRITE_MACHINE_CONFIG
+            ? service_path_is_within_machine_config(parentFinalPath, err, errSize)
+            : service_path_is_within_resolved_profile(parentFinalPath, err, errSize);
+    if (!parentInScope) return false;
+    debug_log("write_text_file_atomic_service: %s parent directory verified (%s)\n",
+              scope == GC_SERVICE_WRITE_MACHINE_CONFIG ? "machine-scoped" : "caller-scoped",
+              parentFinalPath);
 
     if (!ensure_parent_directory_for_file(path, err, errSize)) return false;
 
@@ -212,7 +216,8 @@ static bool write_text_file_atomic_service(const char* path, const char* data, s
     }
 
     char verifyErr[256] = {};
-    bool ok = service_verify_written_file_path(tempPath, verifyErr, sizeof(verifyErr));
+    bool ok = service_verify_written_file_path_scoped(tempPath, scope, verifyErr,
+                                                      sizeof(verifyErr));
     if (!ok) {
         CloseHandle(h);
         gc_DeleteFileUtf8(tempPath);
@@ -230,7 +235,8 @@ static bool write_text_file_atomic_service(const char* path, const char* data, s
         gc_DeleteFileUtf8(tempPath);
         return false;
     }
-    if (!service_verify_written_file_path(tempPath, verifyErr, sizeof(verifyErr))) {
+    if (!service_verify_written_file_path_scoped(tempPath, scope, verifyErr,
+                                                 sizeof(verifyErr))) {
         gc_DeleteFileUtf8(tempPath);
         StringCchCopyA(err, errSize, verifyErr[0] ? verifyErr : "Temporary output path failed final verification");
         return false;
@@ -240,11 +246,20 @@ static bool write_text_file_atomic_service(const char* path, const char* data, s
         gc_DeleteFileUtf8(tempPath);
         return false;
     }
-    if (!service_verify_written_file_path(path, verifyErr, sizeof(verifyErr))) {
+    if (!service_verify_written_file_path_scoped(path, scope, verifyErr,
+                                                 sizeof(verifyErr))) {
         StringCchCopyA(err, errSize, verifyErr[0] ? verifyErr : "Written file failed final verification");
         return false;
     }
     return true;
+}
+
+// The historical spelling, and still the right default: everything that reaches
+// this helper through a client request is caller-scoped.  Only the service's own
+// machine-scope state passes GC_SERVICE_WRITE_MACHINE_CONFIG explicitly.
+static bool write_text_file_atomic_service(const char* path, const char* data, size_t dataSize, char* err, size_t errSize) {
+    return write_text_file_atomic_service_scoped(
+        path, data, dataSize, GC_SERVICE_WRITE_CALLER_PROFILE, err, errSize);
 }
 
 static bool section_should_be_preserved(const char* line, const char* const* replaceSections, int replaceCount) {

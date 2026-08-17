@@ -183,24 +183,42 @@ void gui_update_replay_pending_restore() {
     debug_log("update handoff: found a pending restore at %s\n", pending);
 
     char expectedVersion[GC_UPDATE_VERSION_MAX_CHARS] = {};
+    // The return value is deliberately ignored: a MISSING key is the signature
+    // of a capture written by a pre-0.23.1 build, and the buffer is left empty
+    // for exactly that case.  Treating "no key" as a read failure is what made
+    // every 0.23 -> newer upgrade drop the user's settings; see
+    // gc_update_restore_is_legacy_capture().
+    (void)get_config_string(pending, GC_UPDATE_RESTORE_SECTION,
+                            GC_UPDATE_RESTORE_VERSION_KEY, "",
+                            expectedVersion, sizeof(expectedVersion));
+    bool legacyCapture = gc_update_restore_is_legacy_capture(expectedVersion);
     long long ageSeconds = -1;
-    if (!get_config_string(pending, GC_UPDATE_RESTORE_SECTION,
-                           GC_UPDATE_RESTORE_VERSION_KEY, "",
-                           expectedVersion, sizeof(expectedVersion)) ||
-        !gui_update_pending_restore_age_seconds(pending, &ageSeconds) ||
-        gc_update_restore_decide(expectedVersion, APP_VERSION, ageSeconds) !=
-            GC_UPDATE_RESTORE_APPLY) {
+    bool haveAge = gui_update_pending_restore_age_seconds(pending, &ageSeconds);
+    if (!haveAge) {
+        debug_log("update handoff: cannot measure the capture's age at %s (error %lu)\n",
+                  pending, GetLastError());
+    }
+    if (!haveAge || gc_update_restore_decide(expectedVersion, APP_VERSION,
+                                             ageSeconds) != GC_UPDATE_RESTORE_APPLY) {
         // Named in full, because this line is the answer to "the update ran and
         // my settings did not come back".  The common cause is not corruption:
         // it is an update that did NOT complete, leaving a capture bound to a
         // version this build is not, which is exactly what the gate is for.
         debug_log("update handoff: discarding the pending restore "
-                  "(captured for version '%s', running %s, age %llds)\n",
+                  "(captured for version '%s', running %s, age %llds, shape=%s, "
+                  "limit=%llds)\n",
                   expectedVersion[0] ? expectedVersion : "<none>", APP_VERSION,
-                  ageSeconds);
+                  ageSeconds, legacyCapture ? "legacy-unversioned" : "version-bound",
+                  legacyCapture ? GC_UPDATE_RESTORE_LEGACY_MAX_AGE_SECONDS
+                                : GC_UPDATE_RESTORE_MAX_AGE_SECONDS);
         gc_DeleteFileUtf8(pending);
         return;
     }
+    debug_log("update handoff: accepting the pending restore "
+              "(shape=%s, captured for version '%s', running %s, age %llds)\n",
+              legacyCapture ? "legacy-unversioned" : "version-bound",
+              expectedVersion[0] ? expectedVersion : "<none>", APP_VERSION,
+              ageSeconds);
 
     // Rename first: the capture is consumed whether or not the replay works, so
     // a failing apply cannot turn into a restore that runs on every start.

@@ -755,6 +755,25 @@ bool config_section_has_keys(const char* path, const char* section);
 int get_config_int(const char* path, const char* section, const char* key, int defaultVal);
 bool set_config_int(const char* path, const char* section, const char* key, int value);
 bool config_section_header_matches_ascii(const char* line, const char* section);
+
+// Which containment root a service-side file write must stay inside.
+//
+// Two roots exist and they are NOT interchangeable.  A path that arrived from a
+// client is confined to that caller's profile, because the service must never
+// be talked into writing outside the account that asked.  A path the service
+// chose for its own machine-scope state is confined to the protected
+// %ProgramData%\Green Curve directory instead.
+//
+// The distinction is not cosmetic: the update-manifest cache is the second kind
+// and was written through the first rule, so every cache write was refused with
+// "Path is outside the caller's profile directory" from the day the cache
+// shipped.  Nothing surfaced, because a cache that never stores behaves exactly
+// like a machine that has not checked yet.  Confirmed live 2026-08-17.
+enum GcServiceWriteScope {
+    GC_SERVICE_WRITE_CALLER_PROFILE = 0,
+    GC_SERVICE_WRITE_MACHINE_CONFIG = 1,
+};
+
 bool get_config_string(const char* path, const char* section, const char* key,
                        const char* defaultVal, char* out, size_t outSize);
 bool set_config_string(const char* path, const char* section, const char* key, const char* value);

@@ -49,10 +49,22 @@
 // between them leaves a new manifest beside an old signature, which fails
 // verification -- and a failed restore deletes both and continues exactly as if
 // no cache existed.  Every torn state is therefore fail-closed into "no cache",
-// so there is nothing for atomicity to buy.  The writes still go through
-// `write_text_file_atomic_service()` because that helper also refuses a
-// reparse-pointed parent, which is worth having on a path the service writes as
-// SYSTEM.
+// so there is nothing for atomicity to buy.  The writes still go through the
+// service writer because it refuses a reparse-pointed parent and re-checks
+// where the handle actually landed, which is worth having on a path the service
+// writes as SYSTEM.
+//
+// They go through it with GC_SERVICE_WRITE_MACHINE_CONFIG, and that argument is
+// load-bearing.  The default scope confines a write to the *calling client's*
+// profile, which is correct for a path a client named and wrong for this one:
+// %ProgramData%\Green Curve is inside no user's profile, so every cache write
+// was refused with "Path is outside the caller's profile directory" from the
+// day the cache shipped until 2026-08-17.  Nothing surfaced -- the restore path
+// is written to treat a missing cache as the ordinary state of a machine that
+// has never checked, so a cache that never stored was indistinguishable from a
+// cache that was never needed.  The machine scope is a different containment
+// root, not an absent one: the write must still land inside the protected
+// machine config directory.
 //
 // ## Where the files live
 //
@@ -141,11 +153,14 @@ static bool service_update_cache_read(const char* path, char* out, size_t outSiz
 static bool service_update_cache_write_one(const char* path, const char* data,
                                            size_t dataSize) {
     char err[256] = {};
-    if (!write_text_file_atomic_service(path, data, dataSize, err, sizeof(err))) {
+    if (!write_text_file_atomic_service_scoped(path, data, dataSize,
+                                               GC_SERVICE_WRITE_MACHINE_CONFIG,
+                                               err, sizeof(err))) {
         debug_log("update cache: cannot write %s: %s\n", path,
                   err[0] ? err : "unknown");
         return false;
     }
+    debug_log("update cache: wrote %s (%zu bytes)\n", path, dataSize);
     Win32Utf8Path widePath(path);
     if (widePath.valid_for(path)) {
         char aclErr[256] = {};

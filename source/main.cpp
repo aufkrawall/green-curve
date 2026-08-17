@@ -497,6 +497,8 @@ static bool find_trusted_nvidia_smi_path_a(char* out, size_t outSize);
 static bool file_is_regular_no_reparse_w(const WCHAR* path);
 static bool write_text_file_atomic(const char* path, const char* data, size_t dataSize, char* err, size_t errSize);
 static bool write_text_file_atomic_service(const char* path, const char* data, size_t dataSize, char* err, size_t errSize);
+static bool write_text_file_atomic_service_scoped(const char* path, const char* data,
+    size_t dataSize, GcServiceWriteScope scope, char* err, size_t errSize);
 static bool write_log_snapshot(const char* path, char* err, size_t errSize);
 static bool write_json_snapshot(const char* path, char* err, size_t errSize);
 static bool write_probe_report(const char* path, char* err, size_t errSize);

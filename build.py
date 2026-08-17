@@ -2694,7 +2694,11 @@ def run_source_regression_checks():
     require_text(service_ipc_cpp, "cannot verify server binary path", "pipe server identity accepts PID match when image path cannot be queried")
 
     # F-04-002: LocalSystem file-write parent directory verification
-    require_text(secure_write_cpp, "caller-scoped parent directory verified", "service file-write verifies parent directory under the authenticated caller token")
+    # Both containment roots named explicitly, so the machine scope added for the
+    # update cache cannot later be "fixed" back into no scope at all.
+    require_text(secure_write_cpp, "parent directory verified", "service file-write verifies the parent directory before writing")
+    require_text(secure_write_cpp, "service_path_is_within_resolved_profile", "caller-scoped writes stay inside the authenticated caller's profile")
+    require_text(secure_write_cpp, "service_path_is_within_machine_config", "machine-scoped writes stay inside the machine config directory")
     require_text(secure_write_cpp, "FILE_FLAG_OPEN_REPARSE_POINT", "service file-write opens parent without following reparse points")
 
     # F-01-002: Fan failure triggers rollback of earlier hardware writes

@@ -266,6 +266,38 @@ static void gud_refresh_controls() {
 
     char status[512] = {};
     gui_update_status_text(status, sizeof(status));
+
+    // Log the line the user is actually looking at, plus every field it was
+    // derived from, whenever it changes.
+    //
+    // "The button is orange but the dialog does not name the new version" was
+    // reported live on 2026-08-17 and could not be diagnosed afterwards,
+    // because this dialog logged nothing at all -- so there was no way to tell
+    // which branch of gui_update_status_text() ran, or whether the state it
+    // read was the one the service held.  Change-gated rather than per tick, so
+    // an open dialog does not write a line every 700 ms.
+    {
+        static char s_lastLogged[512] = {};
+        if (strcmp(s_lastLogged, status) != 0) {
+            StringCchCopyA(s_lastLogged, ARRAY_COUNT(s_lastLogged), status);
+            debug_log("gui update dialog: status=\"%s\" (haveState=%d phase=%u "
+                      "decision=%u available='%s' installed='%s' staged=%d "
+                      "verified=%d installedCopy=%d worker=%d autoCheck=%u "
+                      "failures=%u detail='%s')\n",
+                      status, state ? 1 : 0,
+                      state ? (unsigned)state->phase : 0u,
+                      state ? (unsigned)state->decision : 0u,
+                      state ? state->availableVersion : "",
+                      state ? state->installedVersion : "",
+                      state ? (int)state->packageStaged : 0,
+                      state ? (int)state->packageVerified : 0,
+                      state ? (int)state->isInstalledCopy : 0,
+                      state ? (int)state->workerRunning : 0,
+                      state ? (unsigned)state->autoCheck : 0u,
+                      state ? (unsigned)state->consecutiveFailures : 0u,
+                      state ? state->detail : "");
+        }
+    }
     gud_set_text(g_updateDialog.statusLabel, status);
 
     char detail[512] = {};
@@ -330,14 +362,23 @@ static void gud_refresh_controls() {
     EnableWindow(g_updateDialog.checkButton, !busy);
     EnableWindow(g_updateDialog.installButton, ready && !busy);
 
-    // Poll only while something is actually happening; an idle dialog costs
-    // nothing.
-    if (busy && !g_updateDialog.pollingActive) {
+    // Poll for as long as the dialog is open, not only while the service is
+    // busy.
+    //
+    // The previous rule ("only while something is happening; an idle dialog
+    // costs nothing") assumed the only thing that changes update state is a job
+    // this dialog started.  That is false: an automatic check, a re-adopted
+    // staged package or a service restart all move the state underneath an open
+    // dialog, which then keeps displaying whatever was true when it opened
+    // until the user presses Check now -- and pressing Check now to find out
+    // what the app already knows is precisely the complaint this addresses.
+    //
+    // The cost argument does not survive either: this is one named-pipe round
+    // trip every 700 ms, against the main window's own poll every 1000 ms which
+    // has run all along, and it stops the moment the dialog closes.
+    if (!g_updateDialog.pollingActive) {
         SetTimer(g_updateDialog.hwnd, GUD_REFRESH_TIMER_ID, GUD_REFRESH_INTERVAL_MS, nullptr);
         g_updateDialog.pollingActive = true;
-    } else if (!busy && g_updateDialog.pollingActive) {
-        KillTimer(g_updateDialog.hwnd, GUD_REFRESH_TIMER_ID);
-        g_updateDialog.pollingActive = false;
     }
 }
 

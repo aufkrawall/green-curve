@@ -78,17 +78,23 @@ static bool normalize_windows_compare_path(const WCHAR* input, WCHAR* output,
     return SUCCEEDED(StringCchCopyW(output, outputCount, start));
 }
 
-static bool service_path_is_within_resolved_profile(const char* candidateUtf8,
-    char* err, size_t errSize) {
-    if (!candidateUtf8 || !candidateUtf8[0] ||
-        !g_serviceUserProfileDir[0]) {
-        set_message(err, errSize, "User profile path is unavailable");
+// Containment against an arbitrary root.
+//
+// Both service write scopes need identical canonicalization and identical
+// boundary handling -- equal, or followed by a separator, so `%USERPROFILE%2`
+// is not treated as inside `%USERPROFILE%`.  Only the root and the refusal
+// wording differ, so factoring this out is what lets the machine-config scope
+// exist without a second, subtly different comparison.
+static bool service_path_is_within_directory(const char* candidateUtf8,
+    const char* rootUtf8, const char* outsideMessage, char* err, size_t errSize) {
+    if (!candidateUtf8 || !candidateUtf8[0] || !rootUtf8 || !rootUtf8[0]) {
+        set_message(err, errSize, "Containment root is unavailable");
         return false;
     }
     GcWideUtf8Arg candidate(candidateUtf8);
-    GcWideUtf8Arg profile(g_serviceUserProfileDir);
+    GcWideUtf8Arg profile(rootUtf8);
     if (!candidate.valid_for(candidateUtf8) ||
-        !profile.valid_for(g_serviceUserProfileDir)) {
+        !profile.valid_for(rootUtf8)) {
         set_message(err, errSize, "Path contains invalid UTF-8");
         return false;
     }
@@ -119,11 +125,35 @@ static bool service_path_is_within_resolved_profile(const char* candidateUtf8,
             profileNormalized, (int)profileChars, TRUE) != CSTR_EQUAL ||
         (candidateChars > profileChars &&
          candidateNormalized[profileChars] != L'\\')) {
-        set_message(err, errSize,
-            "Path is outside the caller's profile directory");
+        set_message(err, errSize, "%s", outsideMessage ? outsideMessage
+                                                       : "Path is outside its allowed directory");
         return false;
     }
     return true;
+}
+
+static bool service_path_is_within_resolved_profile(const char* candidateUtf8,
+    char* err, size_t errSize) {
+    if (!g_serviceUserProfileDir[0]) {
+        set_message(err, errSize, "User profile path is unavailable");
+        return false;
+    }
+    return service_path_is_within_directory(candidateUtf8, g_serviceUserProfileDir,
+        "Path is outside the caller's profile directory", err, errSize);
+}
+
+// The service's own machine-scope root.  Resolved on every call rather than
+// cached: it is two registry-free string operations, and a cached root is one
+// more piece of state that can be stale when the service is the thing writing.
+static bool service_path_is_within_machine_config(const char* candidateUtf8,
+    char* err, size_t errSize) {
+    char root[MAX_PATH] = {};
+    if (!resolve_service_machine_data_dir(root, sizeof(root))) {
+        set_message(err, errSize, "Machine configuration directory is unavailable");
+        return false;
+    }
+    return service_path_is_within_directory(candidateUtf8, root,
+        "Path is outside the machine configuration directory", err, errSize);
 }
 
 static bool service_validate_file_write_path(const char* path, char* err, size_t errSize) {
@@ -165,12 +195,21 @@ static bool service_validate_file_write_path(const char* path, char* err, size_t
     return true;
 }
 
-static bool service_verify_written_file_path(const char* path, char* err, size_t errSize) {
+// Re-open the file that was just written and check where the handle actually
+// landed, so a junction planted between the write and the check cannot move the
+// result out of its scope.  The scope selects the containment root; everything
+// else is identical, because the redirect risk is the same either way.
+static bool service_verify_written_file_path_scoped(const char* path,
+    GcServiceWriteScope scope, char* err, size_t errSize) {
     if (!path || !path[0]) {
         set_message(err, errSize, "Empty path");
         return false;
     }
-    if (!g_serviceUserPathsResolved || !g_serviceUserProfileDir[0]) {
+    // Only the caller-profile scope depends on a resolved user; the machine
+    // config directory exists whether or not anyone is logged on, and requiring
+    // a user here is what made the cache unwritable during early service start.
+    if (scope == GC_SERVICE_WRITE_CALLER_PROFILE &&
+        (!g_serviceUserPathsResolved || !g_serviceUserProfileDir[0])) {
         set_message(err, errSize, "User paths not resolved");
         return false;
     }
@@ -188,7 +227,14 @@ static bool service_verify_written_file_path(const char* path, char* err, size_t
         set_message(err, errSize, "Cannot resolve written file path");
         return false;
     }
-    return service_path_is_within_resolved_profile(finalPath, err, errSize);
+    return scope == GC_SERVICE_WRITE_MACHINE_CONFIG
+               ? service_path_is_within_machine_config(finalPath, err, errSize)
+               : service_path_is_within_resolved_profile(finalPath, err, errSize);
+}
+
+static bool service_verify_written_file_path(const char* path, char* err, size_t errSize) {
+    return service_verify_written_file_path_scoped(
+        path, GC_SERVICE_WRITE_CALLER_PROFILE, err, errSize);
 }
 
 static bool service_resolve_configured_gpu_target(

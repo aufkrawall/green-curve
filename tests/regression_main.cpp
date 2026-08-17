@@ -10537,6 +10537,42 @@ static int run_all_tests(int argc, char** argv) {
         if (gc_update_restore_decide("bad", "0.23", 0) !=
             GC_UPDATE_RESTORE_DISCARD) return 4274;
 
+        // The legacy capture: 0.23 had no version binding at all, so the file
+        // its GUI hands to the newer build carries NO expected_version key.
+        // Reading that as an invalid version made every real 0.23 machine lose
+        // its settings on the first update it ever performs (observed live
+        // 2026-08-17 on the 0.23 -> 0.23.1 hop).  Reverting to a plain
+        // `!expected.valid` refusal fails 4279 and 4280.
+        if (!gc_update_restore_is_legacy_capture("")) return 4279;
+        if (!gc_update_restore_is_legacy_capture(nullptr)) return 4279;
+        if (gc_update_restore_is_legacy_capture("0.23")) return 4279;
+        if (gc_update_restore_decide("", "0.23.1", 0) !=
+            GC_UPDATE_RESTORE_APPLY) return 4280;
+        if (gc_update_restore_decide(nullptr, "0.23.1", 30) !=
+            GC_UPDATE_RESTORE_APPLY) return 4280;
+        // ...but freshness is the ENTIRE gate once there is no version to
+        // compare, so the legacy window is an hour, not the version-bound day.
+        if (gc_update_restore_decide(
+                "", "0.23.1", GC_UPDATE_RESTORE_LEGACY_MAX_AGE_SECONDS) !=
+            GC_UPDATE_RESTORE_APPLY) return 4281;
+        if (gc_update_restore_decide(
+                "", "0.23.1", GC_UPDATE_RESTORE_LEGACY_MAX_AGE_SECONDS + 1) !=
+            GC_UPDATE_RESTORE_DISCARD) return 4282;
+        // A version-bound capture keeps the full day, because the running build
+        // already proves the install it was captured for completed.
+        if (gc_update_restore_decide(
+                "0.23.1", "0.23.1", GC_UPDATE_RESTORE_LEGACY_MAX_AGE_SECONDS + 1) !=
+            GC_UPDATE_RESTORE_APPLY) return 4283;
+        // An unmeasurable age is a failure, not a young file, in both shapes.
+        if (gc_update_restore_decide("", "0.23.1", -1) !=
+            GC_UPDATE_RESTORE_DISCARD) return 4284;
+        // Corruption must NOT collapse into the legacy case: present-but-junk
+        // is still refused, which is what keeps the relaxation to one shape.
+        if (gc_update_restore_decide("bad", "0.23.1", 0) !=
+            GC_UPDATE_RESTORE_DISCARD) return 4285;
+        if (gc_update_restore_decide("", "not-a-version", 0) !=
+            GC_UPDATE_RESTORE_DISCARD) return 4286;
+
         if (!gc_update_session_id_is_quotable("7")) return 4275;
         if (gc_update_session_id_is_quotable("07")) return 4276;
         if (gc_update_session_id_is_quotable("4294967296")) return 4277;
@@ -10959,6 +10995,79 @@ static int run_all_tests(int argc, char** argv) {
                 GC_UPDATE_FETCH_WRITE_FAILED) return 4393;
             if (failing.written != 2 * sizeof(chunk)) return 4394;
         }
+    }
+
+    // --- The tray notification (4400-4419) ---------------------------------
+    //
+    // The tray icon carried no unprompted signal at all: the tooltip suffix
+    // needs a hover and the orange button needs the main window open, so a user
+    // running minimised was told nothing unless they right-clicked the icon.
+    // Reported live 2026-08-17.  These assert the edge and the wording.
+    {
+        char title[64] = {};
+        char body[256] = {};
+
+        // Fires on the NONE -> alerting edge, once.
+        if (!gc_update_should_notify(GC_UPDATE_ALERT_NONE,
+                                     GC_UPDATE_ALERT_AVAILABLE, true, false))
+            return 4400;
+        if (!gc_update_should_notify(GC_UPDATE_ALERT_NONE,
+                                     GC_UPDATE_ALERT_MANUAL, true, false))
+            return 4401;
+        // Not on a level, and not on a downward edge.
+        if (gc_update_should_notify(GC_UPDATE_ALERT_AVAILABLE,
+                                    GC_UPDATE_ALERT_AVAILABLE, true, false))
+            return 4402;
+        if (gc_update_should_notify(GC_UPDATE_ALERT_AVAILABLE,
+                                    GC_UPDATE_ALERT_NONE, true, false))
+            return 4403;
+        // Once per process: a check that fails and then succeeds must not
+        // announce the same release twice.
+        if (gc_update_should_notify(GC_UPDATE_ALERT_NONE,
+                                    GC_UPDATE_ALERT_AVAILABLE, true, true))
+            return 4404;
+        // No tray icon: refused, and the caller must be able to try again on a
+        // later tick, which is why this is a separate input from `already`.
+        if (gc_update_should_notify(GC_UPDATE_ALERT_NONE,
+                                    GC_UPDATE_ALERT_AVAILABLE, false, false))
+            return 4405;
+
+        // The wording distinguishes the two alert kinds, because offering
+        // "ready to install" for a MANUAL_REQUIRED release would promise
+        // something the updater then refuses to do.
+        if (!gc_update_compose_notification(GC_UPDATE_ALERT_AVAILABLE, "0.30",
+                                            title, sizeof(title), body,
+                                            sizeof(body))) return 4406;
+        if (!strstr(body, "0.30")) return 4407;
+        if (!strstr(body, "ready to install")) return 4408;
+        if (strstr(body, "manually")) return 4409;
+
+        if (!gc_update_compose_notification(GC_UPDATE_ALERT_MANUAL, "0.30",
+                                            title, sizeof(title), body,
+                                            sizeof(body))) return 4410;
+        if (!strstr(body, "0.30")) return 4411;
+        if (!strstr(body, "manually")) return 4412;
+        if (strstr(body, "ready to install")) return 4413;
+
+        // Nothing to say without an alert or without a version, and the buffers
+        // are emptied rather than left holding the previous call's text.
+        if (gc_update_compose_notification(GC_UPDATE_ALERT_NONE, "0.30", title,
+                                           sizeof(title), body, sizeof(body)))
+            return 4414;
+        if (title[0] || body[0]) return 4415;
+        if (gc_update_compose_notification(GC_UPDATE_ALERT_AVAILABLE, "", title,
+                                           sizeof(title), body, sizeof(body)))
+            return 4416;
+        if (title[0] || body[0]) return 4417;
+
+        // Refused rather than truncated: a half-written version number in a
+        // notification is worse than no notification, and every other surface
+        // still carries the news.
+        char tiny[8] = {};
+        if (gc_update_compose_notification(GC_UPDATE_ALERT_AVAILABLE, "0.30",
+                                           title, sizeof(title), tiny,
+                                           sizeof(tiny))) return 4418;
+        if (tiny[0]) return 4419;
     }
 
     DeleteCriticalSection(&g_configLock);

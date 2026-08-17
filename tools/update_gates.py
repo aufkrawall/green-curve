@@ -483,6 +483,42 @@ def check_update_is_actually_surfaced(ctx, require_text):
     require_text(_p(ctx, "gui_update_dialog.cpp"),
                  "gc_update_should_prompt_auto_check",
                  "the unset auto-check preference is actually asked about")
+    # The passive surfaces above all require the user to be looking at
+    # something: the button needs the window open, the tooltip needs a hover,
+    # the menu needs a right-click.  The balloon is the only one that reaches a
+    # user running minimised, which is how this app is normally run.
+    require_text(_p(ctx, "gui_update_client.cpp"), "gc_update_should_notify",
+                 "an available update raises a tray notification on the edge")
+    require_text(_p(ctx, "gui_update_client.cpp"), "NIF_INFO",
+                 "the tray notification is actually sent to the shell")
+
+
+def check_machine_state_is_machine_scoped(ctx, require_text, forbid_text):
+    """The service's own machine-scope writes use the machine-scope root.
+
+    `write_text_file_atomic_service()` confines a write to the CALLING CLIENT's
+    profile, which is right for a path a client named and wrong for a path the
+    service chose for itself.  The update-manifest cache lives in
+    %ProgramData%\\Green Curve, which is inside no user's profile, so it was
+    refused on every single write from the day the cache shipped until
+    2026-08-17 -- and nothing surfaced, because the restore path treats a
+    missing cache as the ordinary state of a machine that has never checked.
+
+    That is the exact shape this file exists for: a failure with no crash, no
+    failing test, and a log line nobody had reason to read.  The scope argument
+    is one token, so a future edit can drop it without anything else changing.
+    """
+    cache = _p(ctx, "main_service_update_cache.cpp")
+    require_text(cache, "GC_SERVICE_WRITE_MACHINE_CONFIG",
+                 "the manifest cache is written with the machine-scope root")
+    forbid_text(cache, "write_text_file_atomic_service(",
+                "the manifest cache must not use the caller-profile writer")
+    # The machine scope is a DIFFERENT containment root, not an absent one.
+    policy = _p(ctx, "main_service_request_policy.cpp")
+    require_text(policy, "service_path_is_within_machine_config",
+                 "the machine scope still confines the write to a root")
+    require_text(policy, "resolve_service_machine_data_dir",
+                 "the machine-scope root is the machine config directory")
 
 
 def check_all(ctx, require_text, forbid_text, require_order, harness_source_path):
@@ -501,5 +537,6 @@ def check_all(ctx, require_text, forbid_text, require_order, harness_source_path
     check_cache_is_reverified_not_trusted(ctx, require_text, forbid_text,
                                           require_order)
     check_update_is_actually_surfaced(ctx, require_text)
+    check_machine_state_is_machine_scoped(ctx, require_text, forbid_text)
     check_download_is_bounded_before_it_is_written(ctx, require_text, require_order,
                                                    forbid_text, harness_source_path)

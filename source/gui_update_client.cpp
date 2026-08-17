@@ -131,7 +131,51 @@ static bool gui_update_is_available() {
 // ui_checkbox_state.h uses for the owner-drawn checkboxes, and for the same
 // reason: an owner-drawn control stores nothing that could be asked instead.
 static void gui_update_refresh_alert_presentation() {
+    // Per process.  Declared here rather than in g_app because nothing outside
+    // this transition may clear it -- a persisted or externally-resettable flag
+    // is how a "once" notification becomes a recurring one.
+    static bool s_notified = false;
+
     GcUpdateAlert alert = gui_update_alert();
+    GcUpdateAlert previous = (GcUpdateAlert)g_app.updateAlertPainted;
+
+    // The balloon is evaluated BEFORE the paint mirror is updated, because the
+    // edge it needs is exactly the one the mirror is about to erase.  It is also
+    // evaluated on every tick, not only when the mirror changes: a tick where
+    // the alert is already set but no tray icon existed yet must be able to
+    // notify later, and the mirror would have swallowed that transition.
+    if (gc_update_should_notify(previous, alert, g_app.trayIconAdded, s_notified)) {
+        ServiceUpdateState stateValue = {};
+        const char* version =
+            gui_update_state(&stateValue) ? stateValue.availableVersion : "";
+        char title[64] = {};
+        char body[256] = {};
+        if (gc_update_compose_notification(alert, version, title, sizeof(title),
+                                           body, sizeof(body))) {
+            NOTIFYICONDATAA nid = {};
+            nid.cbSize = sizeof(nid);
+            nid.hWnd = g_app.hMainWnd;
+            nid.uID = 1;
+            nid.uFlags = NIF_INFO;
+            // Silent by choice: this app sits in the tray of a machine somebody
+            // is usually playing on, and a chime for "there is a new version"
+            // is how a tray icon earns a right-click and a Quit.
+            nid.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND;
+            StringCchCopyA(nid.szInfoTitle, ARRAY_COUNT(nid.szInfoTitle), title);
+            StringCchCopyA(nid.szInfo, ARRAY_COUNT(nid.szInfo), body);
+            if (Shell_NotifyIconA(NIM_MODIFY, &nid)) {
+                s_notified = true;
+                debug_log("gui update: tray notification shown (\"%s\" / \"%s\")\n",
+                          title, body);
+            } else {
+                // Not consumed: the shell can refuse while the notification
+                // area is busy, and the next tick is a free retry.
+                debug_log("gui update: tray notification refused by the shell "
+                          "(error %lu); will retry\n", GetLastError());
+            }
+        }
+    }
+
     if ((int)alert == g_app.updateAlertPainted) return;
     debug_log("gui update: alert changed %d -> %d; repainting the Updates button\n",
               g_app.updateAlertPainted, (int)alert);

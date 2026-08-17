@@ -158,6 +158,87 @@ static inline void gc_update_compose_tray_tooltip(const char* base,
 }
 
 // ---------------------------------------------------------------------------
+// The tray notification
+// ---------------------------------------------------------------------------
+
+// Why a balloon exists at all, given "no new tray icon theme".
+//
+// That decision stands -- five icon themes already encode fan/OC/pending state
+// and an update axis would multiply them.  But it left the tray with **no**
+// unprompted signal: the tooltip suffix needs a hover and the orange button
+// needs the main window open, and the ordinary way to run this app is minimised
+// to the tray with the window closed.  Reported live 2026-08-17: "the tray icon
+// does not indicate an update is available, only its context menu (the user
+// misses it, unless he right clicks it)".  That is the design working exactly
+// as written, and the design being wrong.
+//
+// A balloon is the one surface that reaches a user who is not looking, costs no
+// icon variants, and is dismissed by the shell rather than by us.  It fires on
+// the NONE -> alerting edge only, and once per process, so it announces news
+// rather than nagging about it.
+//
+// MANUAL_REQUIRED gets its own wording for the same reason the menu entry does:
+// promising "click to update" for something the updater will then refuse to
+// install would be a worse lie than the silence it replaces.
+static inline bool gc_update_compose_notification(GcUpdateAlert alert,
+                                                  const char* version,
+                                                  char* title, size_t titleSize,
+                                                  char* body, size_t bodySize) {
+    if (!title || titleSize == 0 || !body || bodySize == 0) return false;
+    title[0] = '\0';
+    body[0] = '\0';
+    if (alert == GC_UPDATE_ALERT_NONE || !version || !version[0]) return false;
+
+    // Truncation is not acceptable in either field: a half-written version
+    // number is worse than no balloon, and the caller still has the button, the
+    // tooltip and the menu.  szInfoTitle is 64 chars and szInfo is 256, so this
+    // only ever trips on a version string far outside the grammar.
+    const char* titleText = (alert == GC_UPDATE_ALERT_MANUAL)
+                                ? "Green Curve update available"
+                                : "Green Curve update ready";
+    if (strlen(titleText) + 1 > titleSize) return false;
+
+    const char* prefix = "Version ";
+    const char* suffix = (alert == GC_UPDATE_ALERT_MANUAL)
+                             ? " must be installed manually. Open Green Curve "
+                               "to get it."
+                             : " is ready to install. Open Green Curve to "
+                               "install it.";
+    if (strlen(prefix) + strlen(version) + strlen(suffix) + 1 > bodySize) return false;
+
+    size_t at = 0;
+    for (size_t i = 0; prefix[i]; ++i) body[at++] = prefix[i];
+    for (size_t i = 0; version[i]; ++i) body[at++] = version[i];
+    for (size_t i = 0; suffix[i]; ++i) body[at++] = suffix[i];
+    body[at] = '\0';
+
+    at = 0;
+    for (size_t i = 0; titleText[i]; ++i) title[at++] = titleText[i];
+    title[at] = '\0';
+    return true;
+}
+
+// The edge, kept separate from the composition so both halves are testable.
+//
+// `alreadyNotified` is per process rather than persisted: a machine that is
+// rebooted daily should be told again, because the update is still waiting and
+// the user still has not acted on it.  What must not happen is the same process
+// announcing it twice, which is what an alert that flaps (a failed check
+// followed by a successful one) would otherwise produce.
+static inline bool gc_update_should_notify(GcUpdateAlert previous,
+                                           GcUpdateAlert current,
+                                           bool trayIconPresent,
+                                           bool alreadyNotified) {
+    if (alreadyNotified) return false;
+    // No tray icon means Shell_NotifyIcon has nothing to modify.  Returning
+    // false WITHOUT consuming the one-shot is the point: the notification is
+    // deferred until an icon exists rather than silently spent.
+    if (!trayIconPresent) return false;
+    if (current == GC_UPDATE_ALERT_NONE) return false;
+    return previous == GC_UPDATE_ALERT_NONE;
+}
+
+// ---------------------------------------------------------------------------
 // The first-run question
 // ---------------------------------------------------------------------------
 
