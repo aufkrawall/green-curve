@@ -202,8 +202,7 @@ static void gui_update_refresh_alert_presentation() {
                 StringCchCopyA(nid.szInfo, ARRAY_COUNT(nid.szInfo), body);
                 if (Shell_NotifyIconA(NIM_MODIFY, &nid)) {
                     s_channelNotified = true;
-                    debug_log("gui update: channel warning shown (state=%d): %s
-",
+                    debug_log("gui update: channel warning shown (state=%d): %s\n",
                               (int)channel, body);
                 }
             }

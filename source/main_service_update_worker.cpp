@@ -198,8 +198,7 @@ static bool service_update_run_check(char* err, size_t errSize) {
     if (channelRegressed) {
         debug_log("update channel: REGRESSED -- advertised %s is older than the "
                   "highest previously advertised release; replay or a withdrawn "
-                  "release
-", manifest.version.text);
+                  "release\n", manifest.version.text);
     }
     service_update_save_settings();
     // Cached only once the documents have both verified AND parsed, so a
