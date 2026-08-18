@@ -119,6 +119,13 @@ static bool service_path_is_within_directory(const char* candidateUtf8,
         return false;
     }
     size_t profileChars = wcslen(profileNormalized);
+    // A root carrying a trailing separator would make every child fail the
+    // boundary test below -- `candidate[profileChars]` would land on the
+    // child's first character rather than on a separator -- and the result is a
+    // silent refusal that looks exactly like a genuine containment violation.
+    while (profileChars > 0 && profileNormalized[profileChars - 1] == L'\\') {
+        profileNormalized[--profileChars] = L'\0';
+    }
     size_t candidateChars = wcslen(candidateNormalized);
     if (candidateChars < profileChars ||
         CompareStringOrdinal(candidateNormalized, (int)profileChars,
@@ -142,13 +149,27 @@ static bool service_path_is_within_resolved_profile(const char* candidateUtf8,
         "Path is outside the caller's profile directory", err, errSize);
 }
 
-// The service's own machine-scope root.  Resolved on every call rather than
-// cached: it is two registry-free string operations, and a cached root is one
-// more piece of state that can be stale when the service is the thing writing.
+// The service's own machine-scope root: %ProgramData%\Green Curve.
+//
+// `resolve_machine_config_dir_w()`, NOT `resolve_service_machine_data_dir()`.
+// The second one reads like the right function and is not: it returns the
+// SERVICE ACCOUNT's `%LOCALAPPDATA%\Green Curve`, a completely different
+// directory. Using it here refused every cache write a second time, with a
+// different message -- the scope plumbing was correct and the root was simply
+// wrong, which is indistinguishable from the original bug when read from the
+// log. Confirmed live 2026-08-17. Anything comparing against "the machine
+// config directory" must resolve it the same way the writer does.
+//
+// Resolved on every call rather than cached: it is a known-folder lookup, and a
+// cached root is one more piece of state that can be stale.
 static bool service_path_is_within_machine_config(const char* candidateUtf8,
     char* err, size_t errSize) {
+    WCHAR rootW[MAX_PATH] = {};
+    if (!resolve_machine_config_dir_w(rootW, ARRAY_COUNT(rootW), err, errSize)) {
+        return false;
+    }
     char root[MAX_PATH] = {};
-    if (!resolve_service_machine_data_dir(root, sizeof(root))) {
+    if (!gc_wide_to_utf8(rootW, root, (DWORD)sizeof(root))) {
         set_message(err, errSize, "Machine configuration directory is unavailable");
         return false;
     }

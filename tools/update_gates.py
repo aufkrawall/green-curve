@@ -517,8 +517,12 @@ def check_machine_state_is_machine_scoped(ctx, require_text, forbid_text):
     policy = _p(ctx, "main_service_request_policy.cpp")
     require_text(policy, "service_path_is_within_machine_config",
                  "the machine scope still confines the write to a root")
-    require_text(policy, "resolve_service_machine_data_dir",
+    require_text(policy, "resolve_machine_config_dir_w",
                  "the machine-scope root is the machine config directory")
+    # Deliberately NOT a forbid_text on resolve_service_machine_data_dir: the
+    # comment at that call site names the wrong function in order to explain
+    # why it is wrong, and a gate that flags its own rationale gets deleted
+    # rather than fixed. Requiring the correct resolver is the real property.
 
 
 def check_all(ctx, require_text, forbid_text, require_order, harness_source_path):
