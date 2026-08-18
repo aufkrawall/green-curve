@@ -176,6 +176,40 @@ static void gui_update_refresh_alert_presentation() {
         }
     }
 
+    // Independent of the update alert above, and deliberately so: a channel
+    // being replayed at us produces alert == NONE, which is the state that
+    // would otherwise swallow the only warning the user ever gets about it.
+    {
+        static bool s_channelNotified = false;
+        ServiceUpdateState channelValue = {};
+        GcUpdateChannelState channel =
+            gui_update_state(&channelValue)
+                ? (GcUpdateChannelState)channelValue.channelState
+                : GC_UPDATE_CHANNEL_OK;
+        if (gc_update_should_notify_channel(channel, g_app.trayIconAdded,
+                                            s_channelNotified)) {
+            char title[64] = {};
+            char body[256] = {};
+            if (gc_update_compose_channel_notification(channel, title, sizeof(title),
+                                                       body, sizeof(body))) {
+                NOTIFYICONDATAA nid = {};
+                nid.cbSize = sizeof(nid);
+                nid.hWnd = g_app.hMainWnd;
+                nid.uID = 1;
+                nid.uFlags = NIF_INFO;
+                nid.dwInfoFlags = NIIF_WARNING | NIIF_NOSOUND;
+                StringCchCopyA(nid.szInfoTitle, ARRAY_COUNT(nid.szInfoTitle), title);
+                StringCchCopyA(nid.szInfo, ARRAY_COUNT(nid.szInfo), body);
+                if (Shell_NotifyIconA(NIM_MODIFY, &nid)) {
+                    s_channelNotified = true;
+                    debug_log("gui update: channel warning shown (state=%d): %s
+",
+                              (int)channel, body);
+                }
+            }
+        }
+    }
+
     if ((int)alert == g_app.updateAlertPainted) return;
     debug_log("gui update: alert changed %d -> %d; repainting the Updates button\n",
               g_app.updateAlertPainted, (int)alert);

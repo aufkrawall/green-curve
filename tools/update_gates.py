@@ -453,7 +453,7 @@ def check_download_is_bounded_before_it_is_written(ctx, require_text, require_or
                  "the read loops are driven by a fake transport")
 
 
-def check_update_is_actually_surfaced(ctx, require_text):
+def check_update_is_actually_surfaced(ctx, require_text, require_order):
     """An available update reaches at least one PASSIVE surface.
 
     Every other gate in this file protects against doing something unsafe.
@@ -491,6 +491,20 @@ def check_update_is_actually_surfaced(ctx, require_text):
                  "an available update raises a tray notification on the edge")
     require_text(_p(ctx, "gui_update_client.cpp"), "NIF_INFO",
                  "the tray notification is actually sent to the shell")
+    # A replayed manifest verifies, parses and reports "up to date", so the
+    # ordinary alert is NONE and every update surface stays silent. The channel
+    # warning is the only thing that speaks, and it must not be conditioned on
+    # the update alert -- that is the exact state the attack produces.
+    require_text(_p(ctx, "gui_update_client.cpp"), "gc_update_should_notify_channel",
+                 "a suspect update channel raises its own notification")
+    require_text(_p(ctx, "gui_update_dialog.cpp"), "gc_update_channel_warning",
+                 "the dialog says so before it says anything reassuring")
+    require_text(_p(ctx, "main_service_update_worker.cpp"), "gc_update_channel_note_version",
+                 "the high-water mark is raised only from a verified manifest")
+    require_order(
+        _p(ctx, "main_service_update_worker.cpp"), "service_update_run_check",
+        "gc_update_verify_manifest_signature", "gc_update_channel_note_version",
+        "the high-water mark is raised only after the signature verified")
 
 
 def check_machine_state_is_machine_scoped(ctx, require_text, forbid_text):
@@ -540,7 +554,7 @@ def check_all(ctx, require_text, forbid_text, require_order, harness_source_path
     check_install_failure_recovery(ctx, require_text, forbid_text)
     check_cache_is_reverified_not_trusted(ctx, require_text, forbid_text,
                                           require_order)
-    check_update_is_actually_surfaced(ctx, require_text)
+    check_update_is_actually_surfaced(ctx, require_text, require_order)
     check_machine_state_is_machine_scoped(ctx, require_text, forbid_text)
     check_download_is_bounded_before_it_is_written(ctx, require_text, require_order,
                                                    forbid_text, harness_source_path)

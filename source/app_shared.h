@@ -71,6 +71,7 @@
 // the orange Updates button, the tray tooltip suffix, the tray menu caption,
 // and the once-per-machine question that resolves the UNSET auto-check state.
 #include "update_presentation_policy.h"
+#include "update_channel_policy.h"
 // Protocol-v14 readback provenance carried in AppData below.
 #include "control_readback_policy.h"
 // ProfileReadMode (how a stored profile is decoded) plus the applied-profile

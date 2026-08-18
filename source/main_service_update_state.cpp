@@ -51,6 +51,10 @@ struct GcUpdateRuntimeState {
     // already-staged update disappear from the GUI.
     GcUpdateManifest manifest;
     bool manifestValid;
+    // Highest version ever advertised by a signature-verified manifest.
+    // Persisted, because the whole point is to notice a channel that goes
+    // backwards across restarts. See update_channel_policy.h.
+    char highestSeenVersion[GC_UPDATE_VERSION_MAX_CHARS];
 
     char stagedPath[MAX_PATH];
     bool packageStaged;
@@ -181,6 +185,9 @@ static void service_update_load_settings() {
         get_config_int(path, GC_UPDATE_CONFIG_SECTION, "last_check_low", 0));
     g_updateState.consecutiveFailures = get_config_int(
         path, GC_UPDATE_CONFIG_SECTION, "consecutive_failures", 0);
+    get_config_string(path, GC_UPDATE_CONFIG_SECTION, "highest_seen_version", "",
+                      g_updateState.highestSeenVersion,
+                      sizeof(g_updateState.highestSeenVersion));
     if (g_updateState.consecutiveFailures < 0) g_updateState.consecutiveFailures = 0;
 
     debug_log("update settings: autoCheck=%d interval=%ds lastCheck=%lld failures=%d\n",
@@ -210,6 +217,10 @@ static void service_update_save_settings() {
     set_config_int(path, GC_UPDATE_CONFIG_SECTION, "auto_check", mode);
     set_config_int(path, GC_UPDATE_CONFIG_SECTION, "interval_seconds", interval);
     set_config_int(path, GC_UPDATE_CONFIG_SECTION, "consecutive_failures", failures);
+    if (g_updateState.highestSeenVersion[0]) {
+        set_config_string(path, GC_UPDATE_CONFIG_SECTION, "highest_seen_version",
+                          g_updateState.highestSeenVersion);
+    }
     int lastCheckHigh = 0, lastCheckLow = 0;
     gc_update_split_timestamp(lastCheck, &lastCheckHigh, &lastCheckLow);
     set_config_int(path, GC_UPDATE_CONFIG_SECTION, "last_check_high", lastCheckHigh);
@@ -369,4 +380,17 @@ static void service_update_populate_response(ServiceUpdateState* out) {
         out->availableBytes = asset ? (gc_u64)asset->size : 0;
     }
     StringCchCopyA(out->detail, sizeof(out->detail), g_updateState.detail);
+
+    // Computed here rather than in the GUI because the high-water mark is
+    // machine scope and the GUI is per-user: two accounts must not disagree
+    // about whether the channel went backwards.  Takes the second reserved
+    // byte, like workerRunning took the first, so the struct size is unchanged
+    // and an older peer reads it as the zero it always was.
+    out->channelState = (gc_u8)gc_update_channel_state(
+        (GcUpdateAutoCheck)g_updateState.autoCheck,
+        (long long)g_updateState.lastCheckUnix, service_update_now_unix(),
+        g_updateState.highestSeenVersion,
+        g_updateState.manifestValid && g_updateState.manifest.valid
+            ? g_updateState.manifest.version.text
+            : "");
 }

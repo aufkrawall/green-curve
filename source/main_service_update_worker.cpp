@@ -170,12 +170,38 @@ static bool service_update_run_check(char* err, size_t errSize) {
     GcUpdateArch arch = service_update_host_arch();
     GcUpdateDecision decision = gc_update_decide(&manifest, &installed, arch);
 
+    bool channelRegressed = false;
     {
         GcUpdateStateLock guard;
         g_updateState.manifest = manifest;
         g_updateState.manifestValid = true;
         g_updateState.decision = decision;
+        // Folded in AFTER the signature verified and the manifest parsed, so
+        // the mark can only ever be moved by the maintainer.  An attacker who
+        // could raise it would be able to suppress the regression signal by
+        // advertising something enormous once.
+        channelRegressed =
+            gc_update_channel_state((GcUpdateAutoCheck)g_updateState.autoCheck,
+                                    (long long)g_updateState.lastCheckUnix,
+                                    service_update_now_unix(),
+                                    g_updateState.highestSeenVersion,
+                                    manifest.version.text) ==
+            GC_UPDATE_CHANNEL_REGRESSED;
+        char raised[GC_UPDATE_VERSION_MAX_CHARS] = {};
+        if (gc_update_channel_note_version(g_updateState.highestSeenVersion,
+                                           manifest.version.text, raised,
+                                           sizeof(raised))) {
+            StringCchCopyA(g_updateState.highestSeenVersion,
+                           sizeof(g_updateState.highestSeenVersion), raised);
+        }
     }
+    if (channelRegressed) {
+        debug_log("update channel: REGRESSED -- advertised %s is older than the "
+                  "highest previously advertised release; replay or a withdrawn "
+                  "release
+", manifest.version.text);
+    }
+    service_update_save_settings();
     // Cached only once the documents have both verified AND parsed, so a
     // restart never spends its startup re-discovering that a signed manifest
     // this build cannot read is still unreadable.  The decision itself is NOT

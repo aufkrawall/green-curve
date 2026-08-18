@@ -87,6 +87,7 @@
 // rather than only in the window, because the failure mode it exists to fix is
 // silence -- which no build error, no crash and no log line reveals.
 #include "update_presentation_policy.h"
+#include "update_channel_policy.h"
 // The response read loops, behind their transport seam.  The reason this is
 // worth a seam at all is that its central property -- refusing an oversized
 // body BEFORE the chunk is written -- regresses without any visible symptom.
@@ -11068,6 +11069,105 @@ static int run_all_tests(int argc, char** argv) {
                                            title, sizeof(title), tiny,
                                            sizeof(tiny))) return 4418;
         if (tiny[0]) return 4419;
+    }
+
+    // --- Channel trust: replay and suppression (4420-4449) -----------------
+    //
+    // The one attack a signing key cannot answer: an attacker with network
+    // position replays an OLD signed manifest, which verifies, parses and
+    // reports "up to date" while a fixed release exists. Or drops the traffic
+    // entirely, and the user is pinned on a vulnerable build in silence.
+    // A signed `issued=` field would be the textbook fix and is unavailable --
+    // the manifest parser refuses unknown keys, in 0.23 too, so any new field
+    // permanently breaks every deployed client.
+    {
+        char mark[GC_UPDATE_VERSION_MAX_CHARS] = {};
+        char text[256] = {};
+
+        // The high-water mark only ever goes up.
+        if (!gc_update_channel_note_version("", "0.23", mark, sizeof(mark)))
+            return 4420;
+        if (strcmp(mark, "0.23") != 0) return 4421;
+        if (!gc_update_channel_note_version("0.23", "0.30", mark, sizeof(mark)))
+            return 4422;
+        if (strcmp(mark, "0.30") != 0) return 4423;
+        if (!gc_update_channel_note_version("0.30", "0.23", mark, sizeof(mark)))
+            return 4424;
+        if (strcmp(mark, "0.30") != 0) return 4425;
+        // Junk on either side never destroys a good mark.
+        if (!gc_update_channel_note_version("0.30", "nonsense", mark, sizeof(mark)))
+            return 4426;
+        if (strcmp(mark, "0.30") != 0) return 4427;
+        if (gc_update_channel_note_version("", "", mark, sizeof(mark))) return 4428;
+
+        // A channel that goes backwards is the replay signal.
+        if (gc_update_channel_state(GC_UPDATE_AUTO_CHECK_ON, 1000, 1000, "0.30",
+                                    "0.23") != GC_UPDATE_CHANNEL_REGRESSED)
+            return 4429;
+        // ...and it outranks staleness, which would otherwise bury it.
+        if (gc_update_channel_state(GC_UPDATE_AUTO_CHECK_ON, 1,
+                                    1 + GC_UPDATE_CHANNEL_STALE_SECONDS * 2,
+                                    "0.30", "0.23") != GC_UPDATE_CHANNEL_REGRESSED)
+            return 4430;
+        // Equal and newer are both fine.
+        if (gc_update_channel_state(GC_UPDATE_AUTO_CHECK_ON, 1000, 1000, "0.30",
+                                    "0.30") != GC_UPDATE_CHANNEL_OK)
+            return 4431;
+        if (gc_update_channel_state(GC_UPDATE_AUTO_CHECK_ON, 1000, 1000, "0.30",
+                                    "0.31") != GC_UPDATE_CHANNEL_OK)
+            return 4432;
+
+        // Silence, but only when the machine was supposed to be listening.
+        long long now = 10 + GC_UPDATE_CHANNEL_STALE_SECONDS * 2;
+        if (gc_update_channel_state(GC_UPDATE_AUTO_CHECK_ON, 10, now, "", "") !=
+            GC_UPDATE_CHANNEL_STALE) return 4433;
+        if (gc_update_channel_state(GC_UPDATE_AUTO_CHECK_OFF, 10, now, "", "") !=
+            GC_UPDATE_CHANNEL_OK) return 4434;
+        if (gc_update_channel_state(GC_UPDATE_AUTO_CHECK_UNSET, 10, now, "", "") !=
+            GC_UPDATE_CHANNEL_OK) return 4435;
+        // Never checked is new, not stale.
+        if (gc_update_channel_state(GC_UPDATE_AUTO_CHECK_ON, 0, now, "", "") !=
+            GC_UPDATE_CHANNEL_OK) return 4436;
+        // A clock that went backwards is a broken clock, not an attack.
+        if (gc_update_channel_state(GC_UPDATE_AUTO_CHECK_ON, now, 10, "", "") !=
+            GC_UPDATE_CHANNEL_OK) return 4437;
+        // Exactly at the threshold is not yet stale; one second past it is.
+        if (gc_update_channel_state(GC_UPDATE_AUTO_CHECK_ON, 0 + 1,
+                                    1 + GC_UPDATE_CHANNEL_STALE_SECONDS, "", "") !=
+            GC_UPDATE_CHANNEL_OK) return 4438;
+        if (gc_update_channel_state(GC_UPDATE_AUTO_CHECK_ON, 1,
+                                    2 + GC_UPDATE_CHANNEL_STALE_SECONDS, "", "") !=
+            GC_UPDATE_CHANNEL_STALE) return 4439;
+
+        // Wording: describes what was observed, never the inference. Telling a
+        // user they are under attack when the maintainer withdrew a build is
+        // how the next warning gets ignored.
+        if (!gc_update_channel_warning(GC_UPDATE_CHANNEL_REGRESSED, text,
+                                       sizeof(text))) return 4440;
+        if (!strstr(text, "older release")) return 4441;
+        if (strstr(text, "attack")) return 4442;
+        if (!gc_update_channel_warning(GC_UPDATE_CHANNEL_STALE, text, sizeof(text)))
+            return 4443;
+        if (!strstr(text, "month")) return 4444;
+        if (gc_update_channel_warning(GC_UPDATE_CHANNEL_OK, text, sizeof(text)))
+            return 4445;
+        if (text[0]) return 4446;
+
+        // The channel balloon is independent of the update balloon, because a
+        // suppression attack produces alert == NONE and would otherwise be the
+        // one thing the user is never told.
+        if (!gc_update_should_notify_channel(GC_UPDATE_CHANNEL_STALE, true, false))
+            return 4447;
+        if (gc_update_should_notify_channel(GC_UPDATE_CHANNEL_OK, true, false))
+            return 4448;
+        if (gc_update_should_notify_channel(GC_UPDATE_CHANNEL_STALE, false, false))
+            return 4449;
+        char ctitle[64] = {};
+        char cbody[256] = {};
+        if (!gc_update_compose_channel_notification(GC_UPDATE_CHANNEL_REGRESSED,
+                                                    ctitle, sizeof(ctitle), cbody,
+                                                    sizeof(cbody))) return 4420;
+        if (!ctitle[0] || !cbody[0]) return 4421;
     }
 
     DeleteCriticalSection(&g_configLock);

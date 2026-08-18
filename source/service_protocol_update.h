@@ -39,6 +39,9 @@
 #ifndef GREEN_CURVE_SERVICE_PROTOCOL_UPDATE_H
 #define GREEN_CURVE_SERVICE_PROTOCOL_UPDATE_H
 
+// GcUpdateChannelState, carried in ServiceUpdateState below.
+#include "update_channel_policy.h"
+
 // Where the service is in the check -> download -> verify -> install pipeline.
 enum ServiceUpdatePhase {
     SERVICE_UPDATE_PHASE_IDLE = 0,
@@ -109,7 +112,12 @@ struct ServiceUpdateState {
     // connection.  The service then waits for the processes to actually go and
     // escalates if they do not.
     gc_bool8 guiShutdownRequested;
-    gc_bool8 updateReserved[2];
+    // GcUpdateChannelState: whether the channel itself still looks honest.
+    // See update_channel_policy.h -- this is the one property none of the
+    // signature checks can express, because a replayed old manifest is
+    // genuinely signed.
+    gc_u8 channelState;
+    gc_bool8 updateReserved[1];
     // Why the last operation failed, in the words the GUI shows.  Never carries
     // an attacker-chosen string: a refused redirect names the hop, not the URL,
     // because echoing an attacker-supplied URL into a log and a status line is

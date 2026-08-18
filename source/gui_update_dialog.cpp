@@ -295,13 +295,22 @@ static void gud_refresh_controls() {
                       state ? (int)state->workerRunning : 0,
                       state ? (unsigned)state->autoCheck : 0u,
                       state ? (unsigned)state->consecutiveFailures : 0u,
+                      state ? (unsigned)state->channelState : 0u,
                       state ? state->detail : "");
         }
     }
     gud_set_text(g_updateDialog.statusLabel, status);
 
     char detail[512] = {};
-    if (state && !state->isInstalledCopy) {
+    // First, and above the portable/unset/failure notes: those describe how
+    // the feature is configured, this describes whether its answers can be
+    // believed at all.  A user reading "up to date" while the channel is
+    // replaying an old manifest is the one case where the reassuring line is
+    // the dangerous one.
+    if (state && gc_update_channel_warning((GcUpdateChannelState)state->channelState,
+                                           detail, sizeof(detail))) {
+        // nothing further: the warning owns the line
+    } else if (state && !state->isInstalledCopy) {
         // A portable copy has no installer to upgrade and no recorded install
         // directory.  Saying so is better than greying a button with no reason.
         StringCchCopyA(detail, sizeof(detail),

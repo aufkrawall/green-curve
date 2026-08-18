@@ -48,6 +48,7 @@
 
 #include "update_manifest_policy.h"
 #include "update_schedule_policy.h"
+#include "update_channel_policy.h"
 
 enum GcUpdateAlert {
     GC_UPDATE_ALERT_NONE = 0,
@@ -236,6 +237,35 @@ static inline bool gc_update_should_notify(GcUpdateAlert previous,
     if (!trayIconPresent) return false;
     if (current == GC_UPDATE_ALERT_NONE) return false;
     return previous == GC_UPDATE_ALERT_NONE;
+}
+
+// The channel warning gets its own balloon rather than sharing the update one.
+//
+// They answer different questions -- "there is something new" versus "what you
+// are being told may not be true" -- and the second must not be swallowed when
+// the first happens to be NONE, which is exactly the state a suppression attack
+// produces.  Same one-shot discipline, tracked separately.
+static inline bool gc_update_compose_channel_notification(GcUpdateChannelState state,
+                                                          char* title, size_t titleSize,
+                                                          char* body, size_t bodySize) {
+    if (!title || titleSize == 0 || !body || bodySize == 0) return false;
+    title[0] = '\0';
+    body[0] = '\0';
+    if (!gc_update_channel_warning(state, body, bodySize)) return false;
+    const char* titleText = "Green Curve update check";
+    size_t length = 0;
+    while (titleText[length]) length++;
+    if (length + 1 > titleSize) { body[0] = '\0'; return false; }
+    for (size_t i = 0; i <= length; ++i) title[i] = titleText[i];
+    return true;
+}
+
+static inline bool gc_update_should_notify_channel(GcUpdateChannelState state,
+                                                   bool trayIconPresent,
+                                                   bool alreadyNotified) {
+    if (alreadyNotified) return false;
+    if (!trayIconPresent) return false;
+    return state != GC_UPDATE_CHANNEL_OK;
 }
 
 // ---------------------------------------------------------------------------

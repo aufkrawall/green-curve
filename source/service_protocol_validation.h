@@ -451,6 +451,7 @@ static inline bool validate_service_update_state_for_ipc(ServiceUpdateState* upd
         (update->intervalSeconds < GC_UPDATE_INTERVAL_MIN_SECONDS ||
          update->intervalSeconds > GC_UPDATE_INTERVAL_MAX_SECONDS)) return false;
     if (update->lastRefusal > GC_UPDATE_INSTALL_ALREADY_RUNNING) return false;
+    if (update->channelState > GC_UPDATE_CHANNEL_REGRESSED) return false;
     if (!service_wire_string_is_terminated(update->availableVersion,
             (unsigned int)sizeof(update->availableVersion)) ||
         !service_wire_string_is_terminated(update->installedVersion,
