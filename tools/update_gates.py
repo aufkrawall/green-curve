@@ -499,6 +499,16 @@ def check_update_is_actually_surfaced(ctx, require_text, require_order):
                  "a suspect update channel raises its own notification")
     require_text(_p(ctx, "gui_update_dialog.cpp"), "gc_update_channel_warning",
                  "the dialog says so before it says anything reassuring")
+    # The dialog's own window handle must be recorded BEFORE the first refresh.
+    # gud_refresh_controls() early-outs on a null handle, and WM_CREATE is
+    # dispatched from inside CreateWindowExA -- so the assignment made from its
+    # return value comes too late, every label stays empty, and the poll timer
+    # that same function starts never starts. Three live reports, no crash, no
+    # failing test: the state was always right and nothing asked for it.
+    require_order(
+        _p(ctx, "gui_update_dialog.cpp"), "gud_create_controls",
+        "g_updateDialog.hwnd = hwnd", "gud_refresh_controls",
+        "the dialog records its window before it first populates itself")
     require_text(_p(ctx, "main_service_update_worker.cpp"), "gc_update_channel_note_version",
                  "the high-water mark is raised only from a verified manifest")
     require_order(

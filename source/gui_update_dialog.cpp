@@ -446,6 +446,22 @@ static HWND gud_label(HWND hwnd, const char* text, int x, int y, int w, int h) {
 }
 
 static void gud_create_controls(HWND hwnd) {
+    // FIRST, before anything can call gud_refresh_controls().
+    //
+    // This runs from WM_CREATE, which is dispatched from INSIDE
+    // CreateWindowExA -- so the `g_updateDialog.hwnd = CreateWindowExA(...)`
+    // assignment in gui_update_open_dialog() has not happened yet, and
+    // WM_DESTROY memset the struct to zero when the dialog was last closed.
+    // gud_refresh_controls() opens with `if (!g_updateDialog.hwnd) return;`,
+    // so without this line the initial population of every label is a silent
+    // no-op and the poll timer -- which that same function starts -- never
+    // starts either.
+    //
+    // That is the whole of the "open the dialog and the status text is blank
+    // until I press Check now" bug, reported live three times across two test
+    // rounds and misdiagnosed twice as a state-propagation problem. The state
+    // was always correct; nothing ever asked for it.
+    g_updateDialog.hwnd = hwnd;
     apply_system_titlebar_theme(hwnd);
     allow_dark_mode_for_window(hwnd);
 
@@ -483,6 +499,12 @@ static void gud_create_controls(HWND hwnd) {
     const ServiceUpdateState* state =
         gui_update_state(&stateValue) ? &stateValue : nullptr;
     gud_check_set(state && state->autoCheck == GC_UPDATE_AUTO_CHECK_ON);
+    // Unconditional, unlike the change-gated line inside the refresh: the
+    // failure this exists to catch is the refresh not running AT ALL, and a
+    // change-gated log cannot distinguish "same text as last time" from
+    // "never computed".  That is exactly how the blank-dialog bug survived a
+    // round of logging that was added to find it.
+    debug_log("gui update dialog: opened (haveState=%d)\n", state ? 1 : 0);
     gud_refresh_controls();
 }
 
