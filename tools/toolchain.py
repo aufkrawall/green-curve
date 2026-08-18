@@ -33,6 +33,10 @@ from contextlib import redirect_stdout
 import urllib.request
 import zipfile
 
+# Symlink chains in a real toolchain are two or three hops; ten leaves room
+# for an upstream layout change without leaving room for a cycle.
+_MAX_SYMLINK_HOPS = 10
+
 LOCAL_ONLY_ENV = "GREENCURVE_TOOLCHAIN_LOCAL_ONLY"
 
 _MANIFEST_CACHE = {}
@@ -213,11 +217,47 @@ def verify_tree(label, root, manifest, host=None):
             if target_rel.startswith("..") or os.path.isabs(target_rel):
                 print(f"ERROR: {label} symlink escapes the toolchain: {entry['path']}")
                 return False
-            target_entry = by_path.get(target_rel)
-            if not target_entry or target_entry.get("symlink"):
-                print(f"ERROR: {label} symlink target is not independently pinned: "
-                      f"{entry['path']} -> {target_rel}")
-                return False
+            # Follow the chain.  Real toolchains alias in more than one hop --
+            # llvm-mingw's Linux archive has 72 of them, e.g.
+            # aarch64-w64-mingw32-addr2line -> llvm-addr2line -> llvm-symbolizer
+            # -- and demanding that a symlink resolve to a non-symlink in ONE
+            # hop rejects the upstream archive outright.  That is what blocked
+            # the 0.23.1 release: the Windows archive has no symlinks at all, so
+            # only the Linux-hosted CI path ever reached it.
+            #
+            # The security property is unchanged and is the reason this walks
+            # rather than trusts: EVERY hop must itself be a pinned entry whose
+            # link text matches the manifest, and the chain must terminate at a
+            # pinned regular file whose digest is checked by this same loop. A
+            # hop that is missing from the manifest, or that escapes the
+            # toolchain root, is still a hard failure -- so no byte reachable
+            # through a symlink is unpinned.
+            #
+            # The hop budget refuses a cycle as a failure rather than a hang.
+            hops = 0
+            walk_rel = target_rel
+            while True:
+                if hops >= _MAX_SYMLINK_HOPS:
+                    print(f"ERROR: {label} symlink chain is too long (possible cycle): "
+                          f"{entry['path']}")
+                    return False
+                target_entry = by_path.get(walk_rel)
+                if not target_entry:
+                    print(f"ERROR: {label} symlink target is not independently pinned: "
+                          f"{entry['path']} -> {walk_rel}")
+                    return False
+                next_link = target_entry.get("symlink")
+                if not next_link:
+                    break  # a pinned regular file; its digest is verified above
+                next_abs = os.path.abspath(os.path.join(
+                    os.path.dirname(os.path.join(root_abs, walk_rel)), next_link))
+                next_rel = os.path.relpath(next_abs, root_abs)
+                if next_rel.startswith("..") or os.path.isabs(next_rel):
+                    print(f"ERROR: {label} symlink chain escapes the toolchain: "
+                          f"{entry['path']} -> {next_rel}")
+                    return False
+                walk_rel = next_rel
+                hops += 1
             checked += 1
             continue
         if os.path.islink(path):
@@ -553,3 +593,66 @@ def run_self_tests():
                 "toolchain-test", root, manifest, host="windows")
         if accepted:
             raise RuntimeError("verify_tree accepted a tampered symlink path")
+
+    # A CHAIN: alias -> middle -> real. llvm-mingw's Linux archive ships 72 of
+    # these and the release build refused all of them, because the rule was
+    # "resolve to a non-symlink in one hop". Every hop must still be pinned;
+    # what changed is that the walk continues instead of failing.
+    with tempfile.TemporaryDirectory(prefix="greencurve-toolchain-chain-") as temp:
+        root = os.path.join(temp, "root")
+        os.makedirs(os.path.join(root, "bin"))
+        real = os.path.join(root, "bin", "real.exe")
+        with open(real, "wb") as handle:
+            handle.write(b"pinned bytes")
+        digest = sha256_file(real)
+        try:
+            os.symlink("real.exe", os.path.join(root, "bin", "middle.exe"))
+            os.symlink("middle.exe", os.path.join(root, "bin", "alias.exe"))
+        except OSError:
+            return  # no symlink privilege; the one-hop arms above still ran
+        chained = {
+            "extracted_binaries": {
+                "windows": [
+                    {"path": "bin/real.exe", "sha256": digest},
+                    {"path": "bin/middle.exe", "symlink": "real.exe"},
+                    {"path": "bin/alias.exe", "symlink": "middle.exe"},
+                ]
+            }
+        }
+        if not verify_tree("toolchain-test", root, chained, host="windows"):
+            raise RuntimeError("verify_tree rejected a fully pinned symlink chain")
+
+        # The security property the walk must NOT lose: an intermediate hop that
+        # is absent from the manifest is still a hard failure, because its
+        # target is then unpinned.
+        unpinned = {
+            "extracted_binaries": {
+                "windows": [
+                    {"path": "bin/real.exe", "sha256": digest},
+                    {"path": "bin/alias.exe", "symlink": "middle.exe"},
+                ]
+            }
+        }
+        with redirect_stdout(io.StringIO()):
+            accepted = verify_tree("toolchain-test", root, unpinned, host="windows")
+        if accepted:
+            raise RuntimeError("verify_tree accepted a chain through an unpinned hop")
+
+        # A cycle terminates as a refusal rather than a hang.
+        os.remove(os.path.join(root, "bin", "middle.exe"))
+        os.remove(os.path.join(root, "bin", "alias.exe"))
+        os.symlink("alias.exe", os.path.join(root, "bin", "middle.exe"))
+        os.symlink("middle.exe", os.path.join(root, "bin", "alias.exe"))
+        cyclic = {
+            "extracted_binaries": {
+                "windows": [
+                    {"path": "bin/real.exe", "sha256": digest},
+                    {"path": "bin/middle.exe", "symlink": "alias.exe"},
+                    {"path": "bin/alias.exe", "symlink": "middle.exe"},
+                ]
+            }
+        }
+        with redirect_stdout(io.StringIO()):
+            accepted = verify_tree("toolchain-test", root, cyclic, host="windows")
+        if accepted:
+            raise RuntimeError("verify_tree accepted a symlink cycle")
