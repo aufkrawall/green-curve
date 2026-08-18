@@ -88,6 +88,7 @@
 // silence -- which no build error, no crash and no log line reveals.
 #include "update_presentation_policy.h"
 #include "update_channel_policy.h"
+#include "machine_dir_policy.h"
 // The response read loops, behind their transport seam.  The reason this is
 // worth a seam at all is that its central property -- refusing an oversized
 // body BEFORE the chunk is written -- regresses without any visible symptom.
@@ -11168,6 +11169,42 @@ static int run_all_tests(int argc, char** argv) {
                                                     ctitle, sizeof(ctitle), cbody,
                                                     sizeof(cbody))) return 4420;
         if (!ctitle[0] || !cbody[0]) return 4421;
+    }
+
+    // --- What may live in the machine config directory (4450-4469) --------
+    //
+    // service_cleanup_legacy_programdata() sweeps %ProgramData%\Green Curve on
+    // every service start and used to preserve shared-profiles.ini alone, i.e.
+    // "delete every file I do not recognise". The update-manifest cache lives
+    // in that directory by design, so it was deleted on every restart before it
+    // could ever be read -- silently, because a missing cache is the documented
+    // ordinary state. `update cache: restored` had never once appeared in a log
+    // on any machine. Reverting to the single-name check fails 4452.
+    {
+        const char* kConfig = "shared-profiles.ini";
+        if (!gc_machine_dir_file_is_current(kConfig, kConfig)) return 4450;
+        if (!gc_machine_dir_file_is_current("update-manifest.cache", kConfig))
+            return 4451;
+        if (!gc_machine_dir_file_is_current("update-manifest.cache.sig", kConfig))
+            return 4452;
+        // Legacy artifacts are still swept -- that is what the function is for.
+        if (gc_machine_dir_file_is_current("service_boot_start.bin", kConfig))
+            return 4453;
+        if (gc_machine_dir_file_is_current("greencurve_debug.txt", kConfig))
+            return 4454;
+        if (gc_machine_dir_file_is_current("crash.dmp", kConfig)) return 4455;
+        if (gc_machine_dir_file_is_current("", kConfig)) return 4456;
+        if (gc_machine_dir_file_is_current(nullptr, kConfig)) return 4457;
+        // Windows filenames are case-insensitive: a sweeper matching only the
+        // exact case would delete the file it had just written under another.
+        if (!gc_machine_dir_file_is_current("Update-Manifest.Cache", kConfig))
+            return 4458;
+        if (!gc_machine_dir_file_is_current("SHARED-PROFILES.INI", kConfig))
+            return 4459;
+        // A prefix must not be mistaken for the whole name.
+        if (gc_machine_dir_file_is_current("update-manifest.cache.bak", kConfig))
+            return 4460;
+        if (gc_machine_dir_file_is_current("update-manifest", kConfig)) return 4461;
     }
 
     DeleteCriticalSection(&g_configLock);

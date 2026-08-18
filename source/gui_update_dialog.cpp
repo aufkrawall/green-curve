@@ -283,7 +283,7 @@ static void gud_refresh_controls() {
             debug_log("gui update dialog: status=\"%s\" (haveState=%d phase=%u "
                       "decision=%u available='%s' installed='%s' staged=%d "
                       "verified=%d installedCopy=%d worker=%d autoCheck=%u "
-                      "failures=%u detail='%s')\n",
+                      "failures=%u channel=%u detail='%s')\n",
                       status, state ? 1 : 0,
                       state ? (unsigned)state->phase : 0u,
                       state ? (unsigned)state->decision : 0u,

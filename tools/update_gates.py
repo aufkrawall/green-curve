@@ -535,6 +535,11 @@ def check_machine_state_is_machine_scoped(ctx, require_text, forbid_text):
     cache = _p(ctx, "main_service_update_cache.cpp")
     require_text(cache, "GC_SERVICE_WRITE_MACHINE_CONFIG",
                  "the manifest cache is written with the machine-scope root")
+    # ...and having written it, nothing may sweep it away again. The legacy
+    # ProgramData cleanup deleted every file it did not recognise, which is how
+    # a cache that finally wrote still never once got read.
+    require_text(_p(ctx, "main_data_paths.cpp"), "gc_machine_dir_file_is_current",
+                 "the legacy sweep preserves files that currently belong there")
     forbid_text(cache, "write_text_file_atomic_service(",
                 "the manifest cache must not use the caller-profile writer")
     # The machine scope is a DIFFERENT containment root, not an absent one.

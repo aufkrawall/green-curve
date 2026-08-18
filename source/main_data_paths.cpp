@@ -126,9 +126,17 @@ static void service_cleanup_legacy_programdata() {
     if (h != INVALID_HANDLE_VALUE) {
         do {
             if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) continue; // skip ., .., subdirs
-            // Preserve the deliberately-shared profile bank; only sweep sensitive
-            // legacy artifacts (dumps/logs/restart state) out of this directory.
-            if (lstrcmpiA(fd.cFileName, MACHINE_CONFIG_FILE_NAME) == 0) continue;
+            // Preserve everything that CURRENTLY belongs here; only sweep
+            // sensitive legacy artifacts (dumps/logs/restart state).
+            //
+            // This used to name shared-profiles.ini alone, which made the rule
+            // "delete every file I do not recognise" -- so the update-manifest
+            // cache, which lives in this directory by design, was deleted on
+            // every service start before it could be read. See
+            // machine_dir_policy.h; adding a machine-scope file means adding it
+            // there, not here.
+            if (gc_machine_dir_file_is_current(fd.cFileName, MACHINE_CONFIG_FILE_NAME))
+                continue;
             char filePath[MAX_PATH] = {};
             if (SUCCEEDED(StringCchPrintfA(filePath, ARRAY_COUNT(filePath), "%s\\%s", legacyDir, fd.cFileName))) {
                 gc_DeleteFileUtf8(filePath);

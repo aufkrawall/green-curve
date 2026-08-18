@@ -75,8 +75,8 @@
 // is the same one that protects the staged installer, and is re-applied to each
 // file for the same reason `service_update_save_settings()` re-applies it.
 
-#define GC_UPDATE_CACHE_MANIFEST_NAME "update-manifest.cache"
-#define GC_UPDATE_CACHE_SIGNATURE_NAME "update-manifest.cache.sig"
+// Names live in machine_dir_policy.h, shared with the legacy sweeper that
+// would otherwise delete these files on every service start.
 
 static bool service_update_cache_path(const char* leafName, char* out, size_t outSize) {
     if (out && outSize) out[0] = 0;
