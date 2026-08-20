@@ -123,40 +123,72 @@ void gpu_probe_control_surface() {
         GpuDomainObservation obs = {};
         obs.entryPointPresent = (g_app.gpuFamily == GPU_FAMILY_BLACKWELL);
         if (obs.entryPointPresent) {
-            // Wide NVAPI ID scan for XBAR clock domain controls.
-            // The RM command IDs (0x20809019/0x2080901b/0x2080d01c) may not
-            // have NvAPI wrappers.  Scan a range of plausible IDs in the
-            // 0x20809000-0x2080D020 space (RM ClockClient range) plus known
-            // NVAPI IDs from the LACT issue.
+            // Comprehensive NVAPI ID scan for XBAR/clock-domain controls.
+            // Try known IDs first, then scan broad ranges.
             NvApiFunc xbarGetFunc = nullptr;
             unsigned int resolvedId = 0;
-            // Known IDs to try first
+
+            // Phase 1: Known IDs from LACT issue and NVAPI documentation
             unsigned int knownIds[] = {
+                // PropRels (confirmed working on RTX 5070/5090)
+                0xCBFF71D0u, 0xEF3D20EAu, 0xE826E4F0u,
+                // RM ClockClient XBAR commands (may or may not have wrappers)
                 0x20809019u, 0x2080901au, 0x2080901bu, 0x2080901cu,
                 0x2080d019u, 0x2080d01au, 0x2080d01bu, 0x2080d01cu,
-                0xCBFF71D0u, 0xEF3D20EAu, 0xE826E4F0u,
+                // Clock domain info/control (plausible NVAPI wrappers)
+                0x20809006u,  // CLK_MEASURE_FREQ
+                0x20809007u, 0x20809008u, 0x20809009u, 0x2080900au,
+                0x20809010u, 0x20809011u, 0x20809012u, 0x20809013u,
+                0x20809014u, 0x20809015u, 0x20809016u, 0x20809017u,
+                0x20809018u, 0x20809020u, 0x20809021u, 0x20809022u,
+                0x2080d006u, 0x2080d007u, 0x2080d008u, 0x2080d009u,
+                0x2080d010u, 0x2080d011u, 0x2080d012u, 0x2080d013u,
+                // Existing VF curve IDs (already known to work)
+                0x21537AD4u, 0x507B4B59u, 0x23F1B133u, 0x0733E009u,
+                // Other clock-related NVAPI IDs from various sources
+                0xD9A78CFEu,  // NvAPI_GPU_GetClockDomains (undocumented?)
+                0x47F4260Eu, 0x0E7A0FFEu, 0x67E5F176u, 0x1A638226u,
+                0x582023FEu, 0xCEA4C469u, 0x965E58CAu, 0x25B0869Eu,
+                0x1F9B6F4Cu, 0xA5244268u, 0x80D84014u, 0x197C197Cu,
             };
             for (size_t i = 0; i < sizeof(knownIds)/sizeof(knownIds[0]); i++) {
                 NvApiFunc fn = (NvApiFunc)nvapi_qi(knownIds[i]);
                 if (fn) {
-                    debug_log("gpu capability probe: XBAR known ID 0x%08X resolved\n",
+                    debug_log("gpu capability probe: known ID 0x%08X resolved\n",
                         (unsigned)knownIds[i]);
                     if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = knownIds[i]; }
                 }
             }
-            // If nothing resolved, do a broad scan of the RM ClockClient range
+
+            // Phase 2: Scan the RM ClockClient command range more thoroughly
             if (!xbarGetFunc) {
-                debug_log("gpu capability probe: no known XBAR IDs resolved, scanning RM range\n");
-                for (unsigned int id = 0x20809000u; id <= 0x2080D020u; id++) {
+                debug_log("gpu capability probe: scanning RM ClockClient range\n");
+                // Read class: 0x20809000-0x20809FFF, Write class: 0x2080D000-0x2080DFFF
+                for (unsigned int base = 0x20809000u; base <= 0x2080DFFFu; base++) {
+                    NvApiFunc fn = (NvApiFunc)nvapi_qi(base);
+                    if (fn) {
+                        debug_log("gpu capability probe: RM clock ID 0x%08X resolved\n", base);
+                        if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = base; }
+                    }
+                }
+            }
+
+            // Phase 3: Scan broader NVAPI ID space for clock-domain functions
+            if (!xbarGetFunc) {
+                debug_log("gpu capability probe: scanning broad NVAPI range 0x2000-0x3FFF\n");
+                for (unsigned int id = 0x2000u; id <= 0x3FFFu; id++) {
                     NvApiFunc fn = (NvApiFunc)nvapi_qi(id);
                     if (fn) {
-                        debug_log("gpu capability probe: RM range ID 0x%08X resolved\n", id);
+                        debug_log("gpu capability probe: broad ID 0x%08X resolved\n", id);
                         if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = id; }
                     }
                 }
             }
+
             if (xbarGetFunc) {
                 debug_log("gpu capability probe: using XBAR ID 0x%08X\n", resolvedId);
+            } else {
+                debug_log("gpu capability probe: no XBAR clock domain NVAPI functions found\n");
             }
             obs.entryPointPresent = (xbarGetFunc != nullptr);
             if (obs.entryPointPresent) {
@@ -339,40 +371,72 @@ void gpu_probe_control_surface() {
         GpuDomainObservation obs = {};
         obs.entryPointPresent = (g_app.gpuFamily == GPU_FAMILY_BLACKWELL);
         if (obs.entryPointPresent) {
-            // Wide NVAPI ID scan for XBAR clock domain controls.
-            // The RM command IDs (0x20809019/0x2080901b/0x2080d01c) may not
-            // have NvAPI wrappers.  Scan a range of plausible IDs in the
-            // 0x20809000-0x2080D020 space (RM ClockClient range) plus known
-            // NVAPI IDs from the LACT issue.
+            // Comprehensive NVAPI ID scan for XBAR/clock-domain controls.
+            // Try known IDs first, then scan broad ranges.
             NvApiFunc xbarGetFunc = nullptr;
             unsigned int resolvedId = 0;
-            // Known IDs to try first
+
+            // Phase 1: Known IDs from LACT issue and NVAPI documentation
             unsigned int knownIds[] = {
+                // PropRels (confirmed working on RTX 5070/5090)
+                0xCBFF71D0u, 0xEF3D20EAu, 0xE826E4F0u,
+                // RM ClockClient XBAR commands (may or may not have wrappers)
                 0x20809019u, 0x2080901au, 0x2080901bu, 0x2080901cu,
                 0x2080d019u, 0x2080d01au, 0x2080d01bu, 0x2080d01cu,
-                0xCBFF71D0u, 0xEF3D20EAu, 0xE826E4F0u,
+                // Clock domain info/control (plausible NVAPI wrappers)
+                0x20809006u,  // CLK_MEASURE_FREQ
+                0x20809007u, 0x20809008u, 0x20809009u, 0x2080900au,
+                0x20809010u, 0x20809011u, 0x20809012u, 0x20809013u,
+                0x20809014u, 0x20809015u, 0x20809016u, 0x20809017u,
+                0x20809018u, 0x20809020u, 0x20809021u, 0x20809022u,
+                0x2080d006u, 0x2080d007u, 0x2080d008u, 0x2080d009u,
+                0x2080d010u, 0x2080d011u, 0x2080d012u, 0x2080d013u,
+                // Existing VF curve IDs (already known to work)
+                0x21537AD4u, 0x507B4B59u, 0x23F1B133u, 0x0733E009u,
+                // Other clock-related NVAPI IDs from various sources
+                0xD9A78CFEu,  // NvAPI_GPU_GetClockDomains (undocumented?)
+                0x47F4260Eu, 0x0E7A0FFEu, 0x67E5F176u, 0x1A638226u,
+                0x582023FEu, 0xCEA4C469u, 0x965E58CAu, 0x25B0869Eu,
+                0x1F9B6F4Cu, 0xA5244268u, 0x80D84014u, 0x197C197Cu,
             };
             for (size_t i = 0; i < sizeof(knownIds)/sizeof(knownIds[0]); i++) {
                 NvApiFunc fn = (NvApiFunc)nvapi_qi(knownIds[i]);
                 if (fn) {
-                    debug_log("gpu capability probe: XBAR known ID 0x%08X resolved\n",
+                    debug_log("gpu capability probe: known ID 0x%08X resolved\n",
                         (unsigned)knownIds[i]);
                     if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = knownIds[i]; }
                 }
             }
-            // If nothing resolved, do a broad scan of the RM ClockClient range
+
+            // Phase 2: Scan the RM ClockClient command range more thoroughly
             if (!xbarGetFunc) {
-                debug_log("gpu capability probe: no known XBAR IDs resolved, scanning RM range\n");
-                for (unsigned int id = 0x20809000u; id <= 0x2080D020u; id++) {
+                debug_log("gpu capability probe: scanning RM ClockClient range\n");
+                // Read class: 0x20809000-0x20809FFF, Write class: 0x2080D000-0x2080DFFF
+                for (unsigned int base = 0x20809000u; base <= 0x2080DFFFu; base++) {
+                    NvApiFunc fn = (NvApiFunc)nvapi_qi(base);
+                    if (fn) {
+                        debug_log("gpu capability probe: RM clock ID 0x%08X resolved\n", base);
+                        if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = base; }
+                    }
+                }
+            }
+
+            // Phase 3: Scan broader NVAPI ID space for clock-domain functions
+            if (!xbarGetFunc) {
+                debug_log("gpu capability probe: scanning broad NVAPI range 0x2000-0x3FFF\n");
+                for (unsigned int id = 0x2000u; id <= 0x3FFFu; id++) {
                     NvApiFunc fn = (NvApiFunc)nvapi_qi(id);
                     if (fn) {
-                        debug_log("gpu capability probe: RM range ID 0x%08X resolved\n", id);
+                        debug_log("gpu capability probe: broad ID 0x%08X resolved\n", id);
                         if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = id; }
                     }
                 }
             }
+
             if (xbarGetFunc) {
                 debug_log("gpu capability probe: using XBAR ID 0x%08X\n", resolvedId);
+            } else {
+                debug_log("gpu capability probe: no XBAR clock domain NVAPI functions found\n");
             }
             obs.entryPointPresent = (xbarGetFunc != nullptr);
             if (obs.entryPointPresent) {
