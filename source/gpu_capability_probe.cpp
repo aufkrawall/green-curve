@@ -123,101 +123,166 @@ void gpu_probe_control_surface() {
         GpuDomainObservation obs = {};
         obs.entryPointPresent = (g_app.gpuFamily == GPU_FAMILY_BLACKWELL);
         if (obs.entryPointPresent) {
-            // Comprehensive NVAPI ID scan for XBAR/clock-domain controls.
-            // Try known IDs first, then scan broad ranges.
+            // Exhaustive NVAPI ID scan for XBAR/clock-domain controls.
+            // Scan ALL ranges and log EVERY resolved ID.
             NvApiFunc xbarGetFunc = nullptr;
             unsigned int resolvedId = 0;
+            int totalResolved = 0;
 
-            // Phase 1: Known IDs from LACT issue and NVAPI documentation
+            // Phase 1: Known IDs
             unsigned int knownIds[] = {
-                // PropRels (confirmed working on RTX 5070/5090)
                 0xCBFF71D0u, 0xEF3D20EAu, 0xE826E4F0u,
-                // RM ClockClient XBAR commands (may or may not have wrappers)
                 0x20809019u, 0x2080901au, 0x2080901bu, 0x2080901cu,
                 0x2080d019u, 0x2080d01au, 0x2080d01bu, 0x2080d01cu,
-                // Clock domain info/control (plausible NVAPI wrappers)
-                0x20809006u,  // CLK_MEASURE_FREQ
-                0x20809007u, 0x20809008u, 0x20809009u, 0x2080900au,
-                0x20809010u, 0x20809011u, 0x20809012u, 0x20809013u,
-                0x20809014u, 0x20809015u, 0x20809016u, 0x20809017u,
-                0x20809018u, 0x20809020u, 0x20809021u, 0x20809022u,
-                0x2080d006u, 0x2080d007u, 0x2080d008u, 0x2080d009u,
-                0x2080d010u, 0x2080d011u, 0x2080d012u, 0x2080d013u,
-                // Existing VF curve IDs (already known to work)
+                0x20809006u, 0x20809007u, 0x20809008u, 0x20809009u,
+                0x2080900au, 0x20809010u, 0x20809011u, 0x20809012u,
+                0x20809013u, 0x20809014u, 0x20809015u, 0x20809016u,
+                0x20809017u, 0x20809018u, 0x20809020u, 0x20809021u,
+                0x20809022u, 0x2080d006u, 0x2080d007u, 0x2080d008u,
+                0x2080d009u, 0x2080d010u, 0x2080d011u, 0x2080d012u,
+                0x2080d013u,
                 0x21537AD4u, 0x507B4B59u, 0x23F1B133u, 0x0733E009u,
-                // Other clock-related NVAPI IDs from various sources
-                0xD9A78CFEu,  // NvAPI_GPU_GetClockDomains (undocumented?)
-                0x47F4260Eu, 0x0E7A0FFEu, 0x67E5F176u, 0x1A638226u,
-                0x582023FEu, 0xCEA4C469u, 0x965E58CAu, 0x25B0869Eu,
-                0x1F9B6F4Cu, 0xA5244268u, 0x80D84014u, 0x197C197Cu,
+                0xD9A78CFEu, 0x47F4260Eu, 0x0E7A0FFEu, 0x67E5F176u,
+                0x1A638226u, 0x582023FEu, 0xCEA4C469u, 0x965E58CAu,
+                0x25B0869Eu, 0x1F9B6F4Cu, 0xA5244268u, 0x80D84014u,
+                0x197C197Cu,
             };
             for (size_t i = 0; i < sizeof(knownIds)/sizeof(knownIds[0]); i++) {
                 NvApiFunc fn = (NvApiFunc)nvapi_qi(knownIds[i]);
                 if (fn) {
-                    debug_log("gpu capability probe: known ID 0x%08X resolved\n",
-                        (unsigned)knownIds[i]);
+                    debug_log("gpu probe: known 0x%08X OK\n", (unsigned)knownIds[i]);
+                    totalResolved++;
                     if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = knownIds[i]; }
                 }
             }
 
-            // Phase 2: Scan the RM ClockClient command range more thoroughly
-            if (!xbarGetFunc) {
-                debug_log("gpu capability probe: scanning RM ClockClient range\n");
-                // Read class: 0x20809000-0x20809FFF, Write class: 0x2080D000-0x2080DFFF
-                for (unsigned int base = 0x20809000u; base <= 0x2080DFFFu; base++) {
-                    NvApiFunc fn = (NvApiFunc)nvapi_qi(base);
-                    if (fn) {
-                        debug_log("gpu capability probe: RM clock ID 0x%08X resolved\n", base);
-                        if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = base; }
-                    }
+            // Phase 2: Scan RM ClockClient range (0x20809000-0x2080DFFF) - ALL of it
+            debug_log("gpu probe: scanning RM range 0x20809000-0x2080DFFF\n");
+            for (unsigned int id = 0x20809000u; id <= 0x2080DFFFu; id++) {
+                NvApiFunc fn = (NvApiFunc)nvapi_qi(id);
+                if (fn) {
+                    debug_log("gpu probe: RM 0x%08X OK\n", id);
+                    totalResolved++;
+                    if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = id; }
                 }
             }
 
-            // Phase 3: Scan broader NVAPI ID space for clock-domain functions
-            if (!xbarGetFunc) {
-                debug_log("gpu capability probe: scanning broad NVAPI range 0x2000-0x3FFF\n");
-                for (unsigned int id = 0x2000u; id <= 0x3FFFu; id++) {
-                    NvApiFunc fn = (NvApiFunc)nvapi_qi(id);
-                    if (fn) {
-                        debug_log("gpu capability probe: broad ID 0x%08X resolved\n", id);
-                        if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = id; }
-                    }
+            // Phase 3: Scan broad NVAPI space (0x2000-0x3FFF)
+            debug_log("gpu probe: scanning broad range 0x2000-0x3FFF\n");
+            for (unsigned int id = 0x2000u; id <= 0x3FFFu; id++) {
+                NvApiFunc fn = (NvApiFunc)nvapi_qi(id);
+                if (fn) {
+                    debug_log("gpu probe: broad 0x%08X OK\n", id);
+                    totalResolved++;
+                    if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = id; }
                 }
             }
 
+            debug_log("gpu probe: total NVAPI IDs resolved: %d\n", totalResolved);
             if (xbarGetFunc) {
-                debug_log("gpu capability probe: using XBAR ID 0x%08X\n", resolvedId);
+                debug_log("gpu probe: using ID 0x%08X, testing with different buffer sizes\n", resolvedId);
+                // Try calling with different buffer sizes and see what happens
+                for (int trySize = 256; trySize <= 4096; trySize *= 2) {
+                    unsigned char testBuf[4096] = {};
+                    int ret = xbarGetFunc(g_app.gpuHandle, testBuf);
+                    debug_log("gpu probe: ID 0x%08X call with size %d returned %d\n",
+                        resolvedId, trySize, ret);
+                    if (ret == 0) {
+                        // Success! Log the first 64 bytes of the response
+                        char hex[256] = {};
+                        for (int j = 0; j < 64 && j < trySize; j++) {
+                            char byteHex[4];
+                            StringCchPrintfA(byteHex, sizeof(byteHex), "%02X", testBuf[j]);
+                            StringCchCatA(hex, sizeof(hex), byteHex);
+                        }
+                        debug_log("gpu probe: response hex: %s\n", hex);
+                        break;
+                    }
+                }
+                // Try the SHANAjam-confirmed PropRels struct version.
+                // NVAPI convention: first 4 bytes = (version << 16) | structSize
+                // SHANAjam reported version 0x0001075C for PropRels GET_CONTROL.
+                {
+                    unsigned char propRelsBuf[0x1000] = {};
+                    unsigned int verSize = 0x0001075C;
+                    memcpy(propRelsBuf, &verSize, sizeof(verSize));
+                    int ret = xbarGetFunc(g_app.gpuHandle, propRelsBuf);
+                    debug_log("gpu probe: PropRels 0xCBFF71D0 with SHANAjam ver 0x%08X returned %d\n",
+                        verSize, ret);
+                    if (ret == 0) {
+                        char hex[513] = {};
+                        for (int j = 0; j < 256; j++) {
+                            char byteHex[4];
+                            StringCchPrintfA(byteHex, sizeof(byteHex), "%02X", propRelsBuf[j]);
+                            StringCchCatA(hex, sizeof(hex), byteHex);
+                        }
+                        debug_log("gpu probe: PropRels response: %s\n", hex);
+                    }
+                }
+                // Try GET_INFO with the RM-reported size from LACT issue (0x1518).
+                // NVAPI version convention: (version << 16) | structSize
+                NvApiFunc getInfoFunc = (NvApiFunc)nvapi_qi(0xE826E4F0u);
+                if (getInfoFunc) {
+                    // Try version 1 with size 0x1518 (from LACT RM spec)
+                    unsigned char infoBuf[0x2000] = {};
+                    unsigned int vs = (1u << 16) | 0x1518;
+                    memcpy(infoBuf, &vs, sizeof(vs));
+                    int ret = getInfoFunc(g_app.gpuHandle, infoBuf);
+                    debug_log("gpu probe: GET_INFO 0xE826E4F0 v1/size=0x1518 returned %d\n", ret);
+                    if (ret == 0) {
+                        // Log the valid-relation mask at offset 0x04
+                        unsigned int relMask = 0;
+                        memcpy(&relMask, infoBuf + 0x04, sizeof(relMask));
+                        debug_log("gpu probe: GET_INFO valid-relation mask=0x%08X\n", relMask);
+                        // Log first 512 bytes as hex
+                        char hex[1025] = {};
+                        for (int j = 0; j < 512; j++) {
+                            char byteHex[4];
+                            StringCchPrintfA(byteHex, sizeof(byteHex), "%02X", infoBuf[j]);
+                            StringCchCatA(hex, sizeof(hex), byteHex);
+                        }
+                        debug_log("gpu probe: GET_INFO hex: %s\n", hex);
+                    }
+                }
+                // Also try GET_CONTROL with version 1 and size 0x0c18
+                {
+                    unsigned char ctrlBuf[0x2000] = {};
+                    unsigned int vs = (1u << 16) | 0x0c18;
+                    memcpy(ctrlBuf, &vs, sizeof(vs));
+                    int ret = xbarGetFunc(g_app.gpuHandle, ctrlBuf);
+                    debug_log("gpu probe: GET_CONTROL 0xCBFF71D0 v1/size=0x0c18 returned %d\n", ret);
+                    if (ret == 0) {
+                        char hex[1025] = {};
+                        for (int j = 0; j < 512; j++) {
+                            char byteHex[4];
+                            StringCchPrintfA(byteHex, sizeof(byteHex), "%02X", ctrlBuf[j]);
+                            StringCchCatA(hex, sizeof(hex), byteHex);
+                        }
+                        debug_log("gpu probe: GET_CONTROL hex: %s\n", hex);
+                    }
+                }
             } else {
-                debug_log("gpu capability probe: no XBAR clock domain NVAPI functions found\n");
+                debug_log("gpu probe: no clock-domain NVAPI functions found\n");
             }
             obs.entryPointPresent = (xbarGetFunc != nullptr);
             if (obs.entryPointPresent) {
-                XbarControlSnapshot snap = {};
-                typedef int (*rm_buf_fn)(void*, void*);
-                int status = ((rm_buf_fn)xbarGetFunc)(g_app.gpuHandle, snap.buf);
+                // Use PropRels struct version confirmed by SHANAjam
+                unsigned char propRelsBuf2[0x1000] = {};
+                unsigned int verSize2 = 0x0001075C;
+                memcpy(propRelsBuf2, &verSize2, sizeof(verSize2));
+                int status = xbarGetFunc(g_app.gpuHandle, propRelsBuf2);
                 obs.readSucceeded = (status == 0);
+                debug_log("gpu probe: PropRels read returned %d\n", status);
                 if (obs.readSucceeded) {
-                    snap.bufSize = XBAR_BUF_MAX;
-                    snap.valid = true;
-                    bool domainOk = false;
-                    unsigned int base = xbar_domain_base(XBAR_BUF_MAX, &domainOk);
-                    if (domainOk) {
-                        snap.freqOffsetKhz = xbar_parse_freq_offset(snap.buf, base);
-                        snap.msvddOffsetUv = xbar_parse_msvdd_offset(snap.buf, xbar_msvdd_offset(base));
-                    }
-                    xbar_measure_clock((NvApiFunc)xbarGetFunc, g_app.gpuHandle, &snap.measuredKhz);
-                    // Store the snapshot for write/restore later.
-                    memcpy(g_app.xbarSnapshotBuf, snap.buf, XBAR_BUF_MAX);
-                    g_app.xbarSnapshotBufSize = snap.bufSize;
-                    g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
-                    g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
-                    g_app.xbarMeasuredClockKhz = snap.measuredKhz;
+                    // Store the PropRels buffer for write/restore later
+                    memcpy(g_app.xbarSnapshotBuf, propRelsBuf2, 0x1000);
+                    g_app.xbarSnapshotBufSize = 0x1000;
+                    g_app.xbarFreqOffsetKhz = 0;
+                    g_app.xbarMsvddOffsetUv = 0;
+                    g_app.xbarMeasuredClockKhz = 0;
                     g_app.xbarProbeValid = true;
-                    debug_log("gpu capability probe: XBAR control available,"
-                              " freq_offset=%d kHz, msvdd_offset=%d uV,"
-                              " measured=%u kHz\n",
-                              snap.freqOffsetKhz, snap.msvddOffsetUv,
-                              snap.measuredKhz);
+                    debug_log("gpu probe: PropRels control available, stored %d bytes\n",
+                              g_app.xbarSnapshotBufSize);
                 }
             }
         }
@@ -371,101 +436,166 @@ void gpu_probe_control_surface() {
         GpuDomainObservation obs = {};
         obs.entryPointPresent = (g_app.gpuFamily == GPU_FAMILY_BLACKWELL);
         if (obs.entryPointPresent) {
-            // Comprehensive NVAPI ID scan for XBAR/clock-domain controls.
-            // Try known IDs first, then scan broad ranges.
+            // Exhaustive NVAPI ID scan for XBAR/clock-domain controls.
+            // Scan ALL ranges and log EVERY resolved ID.
             NvApiFunc xbarGetFunc = nullptr;
             unsigned int resolvedId = 0;
+            int totalResolved = 0;
 
-            // Phase 1: Known IDs from LACT issue and NVAPI documentation
+            // Phase 1: Known IDs
             unsigned int knownIds[] = {
-                // PropRels (confirmed working on RTX 5070/5090)
                 0xCBFF71D0u, 0xEF3D20EAu, 0xE826E4F0u,
-                // RM ClockClient XBAR commands (may or may not have wrappers)
                 0x20809019u, 0x2080901au, 0x2080901bu, 0x2080901cu,
                 0x2080d019u, 0x2080d01au, 0x2080d01bu, 0x2080d01cu,
-                // Clock domain info/control (plausible NVAPI wrappers)
-                0x20809006u,  // CLK_MEASURE_FREQ
-                0x20809007u, 0x20809008u, 0x20809009u, 0x2080900au,
-                0x20809010u, 0x20809011u, 0x20809012u, 0x20809013u,
-                0x20809014u, 0x20809015u, 0x20809016u, 0x20809017u,
-                0x20809018u, 0x20809020u, 0x20809021u, 0x20809022u,
-                0x2080d006u, 0x2080d007u, 0x2080d008u, 0x2080d009u,
-                0x2080d010u, 0x2080d011u, 0x2080d012u, 0x2080d013u,
-                // Existing VF curve IDs (already known to work)
+                0x20809006u, 0x20809007u, 0x20809008u, 0x20809009u,
+                0x2080900au, 0x20809010u, 0x20809011u, 0x20809012u,
+                0x20809013u, 0x20809014u, 0x20809015u, 0x20809016u,
+                0x20809017u, 0x20809018u, 0x20809020u, 0x20809021u,
+                0x20809022u, 0x2080d006u, 0x2080d007u, 0x2080d008u,
+                0x2080d009u, 0x2080d010u, 0x2080d011u, 0x2080d012u,
+                0x2080d013u,
                 0x21537AD4u, 0x507B4B59u, 0x23F1B133u, 0x0733E009u,
-                // Other clock-related NVAPI IDs from various sources
-                0xD9A78CFEu,  // NvAPI_GPU_GetClockDomains (undocumented?)
-                0x47F4260Eu, 0x0E7A0FFEu, 0x67E5F176u, 0x1A638226u,
-                0x582023FEu, 0xCEA4C469u, 0x965E58CAu, 0x25B0869Eu,
-                0x1F9B6F4Cu, 0xA5244268u, 0x80D84014u, 0x197C197Cu,
+                0xD9A78CFEu, 0x47F4260Eu, 0x0E7A0FFEu, 0x67E5F176u,
+                0x1A638226u, 0x582023FEu, 0xCEA4C469u, 0x965E58CAu,
+                0x25B0869Eu, 0x1F9B6F4Cu, 0xA5244268u, 0x80D84014u,
+                0x197C197Cu,
             };
             for (size_t i = 0; i < sizeof(knownIds)/sizeof(knownIds[0]); i++) {
                 NvApiFunc fn = (NvApiFunc)nvapi_qi(knownIds[i]);
                 if (fn) {
-                    debug_log("gpu capability probe: known ID 0x%08X resolved\n",
-                        (unsigned)knownIds[i]);
+                    debug_log("gpu probe: known 0x%08X OK\n", (unsigned)knownIds[i]);
+                    totalResolved++;
                     if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = knownIds[i]; }
                 }
             }
 
-            // Phase 2: Scan the RM ClockClient command range more thoroughly
-            if (!xbarGetFunc) {
-                debug_log("gpu capability probe: scanning RM ClockClient range\n");
-                // Read class: 0x20809000-0x20809FFF, Write class: 0x2080D000-0x2080DFFF
-                for (unsigned int base = 0x20809000u; base <= 0x2080DFFFu; base++) {
-                    NvApiFunc fn = (NvApiFunc)nvapi_qi(base);
-                    if (fn) {
-                        debug_log("gpu capability probe: RM clock ID 0x%08X resolved\n", base);
-                        if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = base; }
-                    }
+            // Phase 2: Scan RM ClockClient range (0x20809000-0x2080DFFF) - ALL of it
+            debug_log("gpu probe: scanning RM range 0x20809000-0x2080DFFF\n");
+            for (unsigned int id = 0x20809000u; id <= 0x2080DFFFu; id++) {
+                NvApiFunc fn = (NvApiFunc)nvapi_qi(id);
+                if (fn) {
+                    debug_log("gpu probe: RM 0x%08X OK\n", id);
+                    totalResolved++;
+                    if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = id; }
                 }
             }
 
-            // Phase 3: Scan broader NVAPI ID space for clock-domain functions
-            if (!xbarGetFunc) {
-                debug_log("gpu capability probe: scanning broad NVAPI range 0x2000-0x3FFF\n");
-                for (unsigned int id = 0x2000u; id <= 0x3FFFu; id++) {
-                    NvApiFunc fn = (NvApiFunc)nvapi_qi(id);
-                    if (fn) {
-                        debug_log("gpu capability probe: broad ID 0x%08X resolved\n", id);
-                        if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = id; }
-                    }
+            // Phase 3: Scan broad NVAPI space (0x2000-0x3FFF)
+            debug_log("gpu probe: scanning broad range 0x2000-0x3FFF\n");
+            for (unsigned int id = 0x2000u; id <= 0x3FFFu; id++) {
+                NvApiFunc fn = (NvApiFunc)nvapi_qi(id);
+                if (fn) {
+                    debug_log("gpu probe: broad 0x%08X OK\n", id);
+                    totalResolved++;
+                    if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = id; }
                 }
             }
 
+            debug_log("gpu probe: total NVAPI IDs resolved: %d\n", totalResolved);
             if (xbarGetFunc) {
-                debug_log("gpu capability probe: using XBAR ID 0x%08X\n", resolvedId);
+                debug_log("gpu probe: using ID 0x%08X, testing with different buffer sizes\n", resolvedId);
+                // Try calling with different buffer sizes and see what happens
+                for (int trySize = 256; trySize <= 4096; trySize *= 2) {
+                    unsigned char testBuf[4096] = {};
+                    int ret = xbarGetFunc(g_app.gpuHandle, testBuf);
+                    debug_log("gpu probe: ID 0x%08X call with size %d returned %d\n",
+                        resolvedId, trySize, ret);
+                    if (ret == 0) {
+                        // Success! Log the first 64 bytes of the response
+                        char hex[256] = {};
+                        for (int j = 0; j < 64 && j < trySize; j++) {
+                            char byteHex[4];
+                            StringCchPrintfA(byteHex, sizeof(byteHex), "%02X", testBuf[j]);
+                            StringCchCatA(hex, sizeof(hex), byteHex);
+                        }
+                        debug_log("gpu probe: response hex: %s\n", hex);
+                        break;
+                    }
+                }
+                // Try the SHANAjam-confirmed PropRels struct version.
+                // NVAPI convention: first 4 bytes = (version << 16) | structSize
+                // SHANAjam reported version 0x0001075C for PropRels GET_CONTROL.
+                {
+                    unsigned char propRelsBuf[0x1000] = {};
+                    unsigned int verSize = 0x0001075C;
+                    memcpy(propRelsBuf, &verSize, sizeof(verSize));
+                    int ret = xbarGetFunc(g_app.gpuHandle, propRelsBuf);
+                    debug_log("gpu probe: PropRels 0xCBFF71D0 with SHANAjam ver 0x%08X returned %d\n",
+                        verSize, ret);
+                    if (ret == 0) {
+                        char hex[513] = {};
+                        for (int j = 0; j < 256; j++) {
+                            char byteHex[4];
+                            StringCchPrintfA(byteHex, sizeof(byteHex), "%02X", propRelsBuf[j]);
+                            StringCchCatA(hex, sizeof(hex), byteHex);
+                        }
+                        debug_log("gpu probe: PropRels response: %s\n", hex);
+                    }
+                }
+                // Try GET_INFO with the RM-reported size from LACT issue (0x1518).
+                // NVAPI version convention: (version << 16) | structSize
+                NvApiFunc getInfoFunc = (NvApiFunc)nvapi_qi(0xE826E4F0u);
+                if (getInfoFunc) {
+                    // Try version 1 with size 0x1518 (from LACT RM spec)
+                    unsigned char infoBuf[0x2000] = {};
+                    unsigned int vs = (1u << 16) | 0x1518;
+                    memcpy(infoBuf, &vs, sizeof(vs));
+                    int ret = getInfoFunc(g_app.gpuHandle, infoBuf);
+                    debug_log("gpu probe: GET_INFO 0xE826E4F0 v1/size=0x1518 returned %d\n", ret);
+                    if (ret == 0) {
+                        // Log the valid-relation mask at offset 0x04
+                        unsigned int relMask = 0;
+                        memcpy(&relMask, infoBuf + 0x04, sizeof(relMask));
+                        debug_log("gpu probe: GET_INFO valid-relation mask=0x%08X\n", relMask);
+                        // Log first 512 bytes as hex
+                        char hex[1025] = {};
+                        for (int j = 0; j < 512; j++) {
+                            char byteHex[4];
+                            StringCchPrintfA(byteHex, sizeof(byteHex), "%02X", infoBuf[j]);
+                            StringCchCatA(hex, sizeof(hex), byteHex);
+                        }
+                        debug_log("gpu probe: GET_INFO hex: %s\n", hex);
+                    }
+                }
+                // Also try GET_CONTROL with version 1 and size 0x0c18
+                {
+                    unsigned char ctrlBuf[0x2000] = {};
+                    unsigned int vs = (1u << 16) | 0x0c18;
+                    memcpy(ctrlBuf, &vs, sizeof(vs));
+                    int ret = xbarGetFunc(g_app.gpuHandle, ctrlBuf);
+                    debug_log("gpu probe: GET_CONTROL 0xCBFF71D0 v1/size=0x0c18 returned %d\n", ret);
+                    if (ret == 0) {
+                        char hex[1025] = {};
+                        for (int j = 0; j < 512; j++) {
+                            char byteHex[4];
+                            StringCchPrintfA(byteHex, sizeof(byteHex), "%02X", ctrlBuf[j]);
+                            StringCchCatA(hex, sizeof(hex), byteHex);
+                        }
+                        debug_log("gpu probe: GET_CONTROL hex: %s\n", hex);
+                    }
+                }
             } else {
-                debug_log("gpu capability probe: no XBAR clock domain NVAPI functions found\n");
+                debug_log("gpu probe: no clock-domain NVAPI functions found\n");
             }
             obs.entryPointPresent = (xbarGetFunc != nullptr);
             if (obs.entryPointPresent) {
-                XbarControlSnapshot snap = {};
-                typedef int (*rm_buf_fn)(void*, void*);
-                int status = ((rm_buf_fn)xbarGetFunc)(g_app.gpuHandle, snap.buf);
+                // Use PropRels struct version confirmed by SHANAjam
+                unsigned char propRelsBuf2[0x1000] = {};
+                unsigned int verSize2 = 0x0001075C;
+                memcpy(propRelsBuf2, &verSize2, sizeof(verSize2));
+                int status = xbarGetFunc(g_app.gpuHandle, propRelsBuf2);
                 obs.readSucceeded = (status == 0);
+                debug_log("gpu probe: PropRels read returned %d\n", status);
                 if (obs.readSucceeded) {
-                    snap.bufSize = XBAR_BUF_MAX;
-                    snap.valid = true;
-                    bool domainOk = false;
-                    unsigned int base = xbar_domain_base(XBAR_BUF_MAX, &domainOk);
-                    if (domainOk) {
-                        snap.freqOffsetKhz = xbar_parse_freq_offset(snap.buf, base);
-                        snap.msvddOffsetUv = xbar_parse_msvdd_offset(snap.buf, xbar_msvdd_offset(base));
-                    }
-                    xbar_measure_clock((NvApiFunc)xbarGetFunc, g_app.gpuHandle, &snap.measuredKhz);
-                    // Store the snapshot for write/restore later.
-                    memcpy(g_app.xbarSnapshotBuf, snap.buf, XBAR_BUF_MAX);
-                    g_app.xbarSnapshotBufSize = snap.bufSize;
-                    g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
-                    g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
-                    g_app.xbarMeasuredClockKhz = snap.measuredKhz;
+                    // Store the PropRels buffer for write/restore later
+                    memcpy(g_app.xbarSnapshotBuf, propRelsBuf2, 0x1000);
+                    g_app.xbarSnapshotBufSize = 0x1000;
+                    g_app.xbarFreqOffsetKhz = 0;
+                    g_app.xbarMsvddOffsetUv = 0;
+                    g_app.xbarMeasuredClockKhz = 0;
                     g_app.xbarProbeValid = true;
-                    debug_log("gpu capability probe: XBAR control available,"
-                              " freq_offset=%d kHz, msvdd_offset=%d uV,"
-                              " measured=%u kHz\n",
-                              snap.freqOffsetKhz, snap.msvddOffsetUv,
-                              snap.measuredKhz);
+                    debug_log("gpu probe: PropRels control available, stored %d bytes\n",
+                              g_app.xbarSnapshotBufSize);
                 }
             }
         }
