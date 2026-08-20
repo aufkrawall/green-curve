@@ -295,6 +295,7 @@ static inline const char* gpu_capability_domain_name(int index) {
         case 4: return "vf-curve";
         case 5: return "clock-lock";
         case 6: return "fan";
+        case 7: return "xbar";
         default: return "unknown-domain";
     }
 }

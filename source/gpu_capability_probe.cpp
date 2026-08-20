@@ -123,7 +123,24 @@ void gpu_probe_control_surface() {
         GpuDomainObservation obs = {};
         obs.entryPointPresent = (g_app.gpuFamily == GPU_FAMILY_BLACKWELL);
         if (obs.entryPointPresent) {
-            NvApiFunc xbarGetFunc = (NvApiFunc)nvapi_qi(XBAR_RM_CLK_DOMAINS_GET_CONTROL);
+            // Try multiple NVAPI ID candidates.  The RM command IDs from the
+            // LACT demo are 0x2080901b/0x2080d01c.  The SHANAjam Windows
+            // reference uses 0xCBFF71D0/0xEF3D20EA for PropRels GET/SET.
+            // Try all known candidates.
+            NvApiFunc xbarGetFunc = nullptr;
+            unsigned int tryIds[] = {
+                XBAR_RM_CLK_DOMAINS_GET_CONTROL,  // 0x2080901b (RM native)
+                0xCBFF71D0u,                       // SHANAjam PropRels GET
+                0xE826E4F0u,                       // SHANAjam PropRels GET_INFO
+            };
+            for (size_t i = 0; i < sizeof(tryIds)/sizeof(tryIds[0]); i++) {
+                xbarGetFunc = (NvApiFunc)nvapi_qi(tryIds[i]);
+                if (xbarGetFunc) {
+                    debug_log("gpu capability probe: XBAR candidate 0x%08X resolved OK\n",
+                        (unsigned)tryIds[i]);
+                    break;
+                }
+            }
             obs.entryPointPresent = (xbarGetFunc != nullptr);
             if (obs.entryPointPresent) {
                 XbarControlSnapshot snap = {};
@@ -305,7 +322,24 @@ void gpu_probe_control_surface() {
         GpuDomainObservation obs = {};
         obs.entryPointPresent = (g_app.gpuFamily == GPU_FAMILY_BLACKWELL);
         if (obs.entryPointPresent) {
-            NvApiFunc xbarGetFunc = (NvApiFunc)nvapi_qi(XBAR_RM_CLK_DOMAINS_GET_CONTROL);
+            // Try multiple NVAPI ID candidates.  The RM command IDs from the
+            // LACT demo are 0x2080901b/0x2080d01c.  The SHANAjam Windows
+            // reference uses 0xCBFF71D0/0xEF3D20EA for PropRels GET/SET.
+            // Try all known candidates.
+            NvApiFunc xbarGetFunc = nullptr;
+            unsigned int tryIds[] = {
+                XBAR_RM_CLK_DOMAINS_GET_CONTROL,  // 0x2080901b (RM native)
+                0xCBFF71D0u,                       // SHANAjam PropRels GET
+                0xE826E4F0u,                       // SHANAjam PropRels GET_INFO
+            };
+            for (size_t i = 0; i < sizeof(tryIds)/sizeof(tryIds[0]); i++) {
+                xbarGetFunc = (NvApiFunc)nvapi_qi(tryIds[i]);
+                if (xbarGetFunc) {
+                    debug_log("gpu capability probe: XBAR candidate 0x%08X resolved OK\n",
+                        (unsigned)tryIds[i]);
+                    break;
+                }
+            }
             obs.entryPointPresent = (xbarGetFunc != nullptr);
             if (obs.entryPointPresent) {
                 XbarControlSnapshot snap = {};
