@@ -123,23 +123,40 @@ void gpu_probe_control_surface() {
         GpuDomainObservation obs = {};
         obs.entryPointPresent = (g_app.gpuFamily == GPU_FAMILY_BLACKWELL);
         if (obs.entryPointPresent) {
-            // Try multiple NVAPI ID candidates.  The RM command IDs from the
-            // LACT demo are 0x2080901b/0x2080d01c.  The SHANAjam Windows
-            // reference uses 0xCBFF71D0/0xEF3D20EA for PropRels GET/SET.
-            // Try all known candidates.
+            // Wide NVAPI ID scan for XBAR clock domain controls.
+            // The RM command IDs (0x20809019/0x2080901b/0x2080d01c) may not
+            // have NvAPI wrappers.  Scan a range of plausible IDs in the
+            // 0x20809000-0x2080D020 space (RM ClockClient range) plus known
+            // NVAPI IDs from the LACT issue.
             NvApiFunc xbarGetFunc = nullptr;
-            unsigned int tryIds[] = {
-                XBAR_RM_CLK_DOMAINS_GET_CONTROL,  // 0x2080901b (RM native)
-                0xCBFF71D0u,                       // SHANAjam PropRels GET
-                0xE826E4F0u,                       // SHANAjam PropRels GET_INFO
+            unsigned int resolvedId = 0;
+            // Known IDs to try first
+            unsigned int knownIds[] = {
+                0x20809019u, 0x2080901au, 0x2080901bu, 0x2080901cu,
+                0x2080d019u, 0x2080d01au, 0x2080d01bu, 0x2080d01cu,
+                0xCBFF71D0u, 0xEF3D20EAu, 0xE826E4F0u,
             };
-            for (size_t i = 0; i < sizeof(tryIds)/sizeof(tryIds[0]); i++) {
-                xbarGetFunc = (NvApiFunc)nvapi_qi(tryIds[i]);
-                if (xbarGetFunc) {
-                    debug_log("gpu capability probe: XBAR candidate 0x%08X resolved OK\n",
-                        (unsigned)tryIds[i]);
-                    break;
+            for (size_t i = 0; i < sizeof(knownIds)/sizeof(knownIds[0]); i++) {
+                NvApiFunc fn = (NvApiFunc)nvapi_qi(knownIds[i]);
+                if (fn) {
+                    debug_log("gpu capability probe: XBAR known ID 0x%08X resolved\n",
+                        (unsigned)knownIds[i]);
+                    if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = knownIds[i]; }
                 }
+            }
+            // If nothing resolved, do a broad scan of the RM ClockClient range
+            if (!xbarGetFunc) {
+                debug_log("gpu capability probe: no known XBAR IDs resolved, scanning RM range\n");
+                for (unsigned int id = 0x20809000u; id <= 0x2080D020u; id++) {
+                    NvApiFunc fn = (NvApiFunc)nvapi_qi(id);
+                    if (fn) {
+                        debug_log("gpu capability probe: RM range ID 0x%08X resolved\n", id);
+                        if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = id; }
+                    }
+                }
+            }
+            if (xbarGetFunc) {
+                debug_log("gpu capability probe: using XBAR ID 0x%08X\n", resolvedId);
             }
             obs.entryPointPresent = (xbarGetFunc != nullptr);
             if (obs.entryPointPresent) {
@@ -322,23 +339,40 @@ void gpu_probe_control_surface() {
         GpuDomainObservation obs = {};
         obs.entryPointPresent = (g_app.gpuFamily == GPU_FAMILY_BLACKWELL);
         if (obs.entryPointPresent) {
-            // Try multiple NVAPI ID candidates.  The RM command IDs from the
-            // LACT demo are 0x2080901b/0x2080d01c.  The SHANAjam Windows
-            // reference uses 0xCBFF71D0/0xEF3D20EA for PropRels GET/SET.
-            // Try all known candidates.
+            // Wide NVAPI ID scan for XBAR clock domain controls.
+            // The RM command IDs (0x20809019/0x2080901b/0x2080d01c) may not
+            // have NvAPI wrappers.  Scan a range of plausible IDs in the
+            // 0x20809000-0x2080D020 space (RM ClockClient range) plus known
+            // NVAPI IDs from the LACT issue.
             NvApiFunc xbarGetFunc = nullptr;
-            unsigned int tryIds[] = {
-                XBAR_RM_CLK_DOMAINS_GET_CONTROL,  // 0x2080901b (RM native)
-                0xCBFF71D0u,                       // SHANAjam PropRels GET
-                0xE826E4F0u,                       // SHANAjam PropRels GET_INFO
+            unsigned int resolvedId = 0;
+            // Known IDs to try first
+            unsigned int knownIds[] = {
+                0x20809019u, 0x2080901au, 0x2080901bu, 0x2080901cu,
+                0x2080d019u, 0x2080d01au, 0x2080d01bu, 0x2080d01cu,
+                0xCBFF71D0u, 0xEF3D20EAu, 0xE826E4F0u,
             };
-            for (size_t i = 0; i < sizeof(tryIds)/sizeof(tryIds[0]); i++) {
-                xbarGetFunc = (NvApiFunc)nvapi_qi(tryIds[i]);
-                if (xbarGetFunc) {
-                    debug_log("gpu capability probe: XBAR candidate 0x%08X resolved OK\n",
-                        (unsigned)tryIds[i]);
-                    break;
+            for (size_t i = 0; i < sizeof(knownIds)/sizeof(knownIds[0]); i++) {
+                NvApiFunc fn = (NvApiFunc)nvapi_qi(knownIds[i]);
+                if (fn) {
+                    debug_log("gpu capability probe: XBAR known ID 0x%08X resolved\n",
+                        (unsigned)knownIds[i]);
+                    if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = knownIds[i]; }
                 }
+            }
+            // If nothing resolved, do a broad scan of the RM ClockClient range
+            if (!xbarGetFunc) {
+                debug_log("gpu capability probe: no known XBAR IDs resolved, scanning RM range\n");
+                for (unsigned int id = 0x20809000u; id <= 0x2080D020u; id++) {
+                    NvApiFunc fn = (NvApiFunc)nvapi_qi(id);
+                    if (fn) {
+                        debug_log("gpu capability probe: RM range ID 0x%08X resolved\n", id);
+                        if (!xbarGetFunc) { xbarGetFunc = fn; resolvedId = id; }
+                    }
+                }
+            }
+            if (xbarGetFunc) {
+                debug_log("gpu capability probe: using XBAR ID 0x%08X\n", resolvedId);
             }
             obs.entryPointPresent = (xbarGetFunc != nullptr);
             if (obs.entryPointPresent) {
