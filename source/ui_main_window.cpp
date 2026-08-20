@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+﻿// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
 #include "auto_profile.h"   // auto-profile driver API used by the WndProc
@@ -486,6 +486,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 g_app.guiHasUserModifiedValues = true;
             } else if (LOWORD(wParam) == FAN_CURVE_BTN_ID && HIWORD(wParam) == BN_CLICKED) {
                 open_fan_curve_dialog();
+            } else if (LOWORD(wParam) == XBAR_ADVANCED_BTN_ID && HIWORD(wParam) == BN_CLICKED) {
+                open_xbar_dialog();
             } else if (LOWORD(wParam) == START_ON_LOGON_CHECK_ID && HIWORD(wParam) == BN_CLICKED) {
                 bool enabled = !is_start_on_logon_enabled(g_app.configPath);
                 bool previous = is_start_on_logon_enabled(g_app.configPath);

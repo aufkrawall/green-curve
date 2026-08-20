@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+﻿// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
 static void destroy_edit_controls(HWND hParent) {
@@ -37,6 +37,7 @@ static void destroy_edit_controls(HWND hParent) {
     g_app.hFanEdit = nullptr;
     g_app.hFanModeCombo = nullptr;
     g_app.hFanCurveBtn = nullptr;
+    g_app.hXbarAdvancedBtn = nullptr;
     g_app.hGpuSelectCombo = nullptr;
 }
 

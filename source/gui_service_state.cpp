@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+﻿// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
 // Main-thread reducer/application layer for protocol-v12 service envelopes.

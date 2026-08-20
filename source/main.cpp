@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+﻿// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
 // Green Curve v0.8 - NVIDIA VF Curve Editor
@@ -642,6 +642,7 @@ static void resolve_displayed_live_gpu_offset_state_for_gui(int* gpuOffsetMHzOut
 static int current_applied_gpu_offset_mhz(bool* fromHardware = nullptr);
 static bool current_applied_gpu_offset_excludes_low_points();
 static void open_fan_curve_dialog();
+static void open_xbar_dialog();
 static void refresh_fan_curve_button_text();
 static bool apply_desired_settings(const DesiredSettings* desired, bool interactive,
     ServiceApplyOrigin origin, ServiceProfileSource profileSource, int profileSlot,

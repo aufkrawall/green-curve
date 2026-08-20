@@ -1,4 +1,4 @@
-static void start_fan_curve_runtime() {
+﻿static void start_fan_curve_runtime() {
     if (!g_app.fanSupported) return;
     fan_curve_normalize(&g_app.activeFanCurve);
     char err[256] = {};
@@ -533,6 +533,7 @@ static void unlock_all() {
 #include "main_startup_profiles.cpp"
 
 #include "fan_curve_dialog.cpp"
+#include "xbar_dialog.cpp"
 
 static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeCurrentGlobals, bool expandLockedTail, bool captureAllCurvePoints, char* err, size_t errSize) {
     if (!desired) return false;

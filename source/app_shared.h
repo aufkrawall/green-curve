@@ -219,6 +219,7 @@ void init_dpi();
 #define START_ON_LOGON_CHECK_ID 2031
 #define FAN_MODE_COMBO_ID   2032
 #define FAN_CURVE_BTN_ID    2033
+#define XBAR_ADVANCED_BTN_ID 2036
 #define GPU_OFFSET_EXCLUDE_LOW_EDIT_ID 2034
 #define LOGON_HINT_ID       2035
 // 2036 and 2038 were the STATIC captions next to the two checkboxes below. Both
@@ -339,6 +340,7 @@ struct AppData {
     HWND hFanEdit;
     HWND hFanModeCombo;
     HWND hFanCurveBtn;
+    HWND hXbarAdvancedBtn;
     HWND hProfileCombo;
     HWND hProfileLoadBtn;
     HWND hProfileSaveBtn;
