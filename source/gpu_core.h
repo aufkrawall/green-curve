@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+﻿// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 //
 // gpu_core.h — platform-neutral GPU control data model shared by the Windows
@@ -441,6 +441,12 @@ struct ControlState {
     int fanCurrentPercent;
     int fanCurrentTemperatureC;
     FanCurveConfig fanCurve;
+    gc_bool8 hasXbarOffset;
+    gc_bool8 xbarOffsetReadbackValid;
+    int xbarOffsetKhz;
+    gc_bool8 hasXbarMsvddOffset;
+    gc_bool8 xbarMsvddOffsetReadbackValid;
+    int xbarMsvddOffsetUv;
 };
 
 struct GpuAdapterInfo {
@@ -493,6 +499,10 @@ struct DesiredSettings {
     int fanPercent;
     FanCurveConfig fanCurve;
     gc_bool8 resetOcBeforeApply;
+    gc_bool8 hasXbarOffsetKhz;
+    int xbarOffsetKhz;
+    gc_bool8 hasXbarMsvddOffsetUv;
+    int xbarMsvddOffsetUv;
 };
 
 static inline void validate_fan_curve_flags_for_ipc(FanCurveConfig* c) {
@@ -538,6 +548,10 @@ static inline void validate_control_state_for_ipc(ControlState* c) {
     canonicalize_gc_bool8(&c->fanPolicyReadbackValid);
     canonicalize_gc_bool8(&c->fanTargetReadbackValid);
     validate_fan_curve_flags_for_ipc(&c->fanCurve);
+    canonicalize_gc_bool8(&c->hasXbarOffset);
+    canonicalize_gc_bool8(&c->xbarOffsetReadbackValid);
+    canonicalize_gc_bool8(&c->hasXbarMsvddOffset);
+    canonicalize_gc_bool8(&c->xbarMsvddOffsetReadbackValid);
 }
 
 // Sanitize a DesiredSettings struct received over IPC.  This is the single
@@ -560,6 +574,14 @@ static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
     canonicalize_gc_bool8(&d->hasFan);
     canonicalize_gc_bool8(&d->fanAuto);
     canonicalize_gc_bool8(&d->resetOcBeforeApply);
+    canonicalize_gc_bool8(&d->hasXbarOffsetKhz);
+    canonicalize_gc_bool8(&d->hasXbarMsvddOffsetUv);
+    if (d->hasXbarOffsetKhz && (d->xbarOffsetKhz < -1000000 || d->xbarOffsetKhz > 1000000)) {
+        d->xbarOffsetKhz = d->xbarOffsetKhz < -1000000 ? -1000000 : 1000000;
+    }
+    if (d->hasXbarMsvddOffsetUv && (d->xbarMsvddOffsetUv < -100000 || d->xbarMsvddOffsetUv > 100000)) {
+        d->xbarMsvddOffsetUv = d->xbarMsvddOffsetUv < -100000 ? -100000 : 100000;
+    }
     validate_fan_curve_flags_for_ipc(&d->fanCurve);
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         if (d->curvePointMHz[ci] > 5000u) d->curvePointMHz[ci] = 5000u;

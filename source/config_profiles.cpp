@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+﻿// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
 // ============================================================================
@@ -255,6 +255,29 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
             desired->fanAuto = false;
             desired->fanPercent = clamp_percent(value);
         }
+    }
+
+    gc_GetPrivateProfileStringUtf8(controlsSection, "xbar_offset_khz", "", buf, sizeof(buf), path);
+    trim_ascii(buf);
+    if (buf[0]) {
+        int v = 0;
+        if (!parse_int_strict(buf, &v)) {
+            set_message(err, errSize, "Invalid xbar_offset_khz in profile %d", slot);
+            return false;
+        }
+        desired->hasXbarOffsetKhz = true;
+        desired->xbarOffsetKhz = v;
+    }
+    gc_GetPrivateProfileStringUtf8(controlsSection, "xbar_msvdd_offset_uv", "", buf, sizeof(buf), path);
+    trim_ascii(buf);
+    if (buf[0]) {
+        int v = 0;
+        if (!parse_int_strict(buf, &v)) {
+            set_message(err, errSize, "Invalid xbar_msvdd_offset_uv in profile %d", slot);
+            return false;
+        }
+        desired->hasXbarMsvddOffsetUv = true;
+        desired->xbarMsvddOffsetUv = v;
     }
 
     if (!load_fan_curve_config_from_section(path, fanCurveSection, &desired->fanCurve, err, errSize)) return false;
@@ -570,6 +593,10 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         appendf("lock_mode=%d\r\n", desired->hasLock ? (int)desired->lockMode : (int)g_app.lockMode);
         appendf("mem_offset_mhz=%d\r\n", desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
         appendf("power_limit_pct=%d\r\n", desired->hasPowerLimit ? desired->powerLimitPct : g_app.powerLimitPct);
+        appendf("xbar_offset_khz=%d\r\n", desired->hasXbarOffsetKhz ? desired->xbarOffsetKhz : 0);
+        appendf("xbar_msvdd_offset_uv=%d\r\n", desired->hasXbarMsvddOffsetUv ? desired->xbarMsvddOffsetUv : 0);
+        appendf("xbar_offset_khz=%d\r\n", desired->hasXbarOffsetKhz ? desired->xbarOffsetKhz : 0);
+        appendf("xbar_msvdd_offset_uv=%d\r\n", desired->hasXbarMsvddOffsetUv ? desired->xbarMsvddOffsetUv : 0);
         appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : current_green_curve_fan_intent_mode()));
         if (desired->hasFan) {
             if (desired->fanMode == FAN_MODE_AUTO) appendf("fan=auto\r\n");

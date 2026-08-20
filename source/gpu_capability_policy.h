@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+﻿// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 //
 // Pure per-domain control-surface capability classification, shared by the
@@ -38,7 +38,7 @@
 // header's prerequisites rather than the other way round.  The bit positions
 // are part of the wire protocol and are mirrored here as indices so this header
 // stays free of protocol dependencies.
-#define GPU_CAP_DOMAIN_COUNT 7
+#define GPU_CAP_DOMAIN_COUNT 8
 
 enum GpuDomainCapability : gc_u32 {
     // Never asked.  Treated as available — see the core invariant above.

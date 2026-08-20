@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+﻿// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 //
 // The reset-to-stock-baseline step every profile-switching Apply runs first.
@@ -66,6 +66,31 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
     if (failures[0]) {
         set_message(result, resultSize, "Reset before apply failed: %s", failures);
         return false;
+    }
+    // Restore XBAR offsets to the probe-captured baseline (Blackwell only).
+    // Independent of the VF/clock reset above; failure is logged but does
+    // not abort the overall reset.
+    if (g_app.xbarProbeValid && (g_app.xbarFreqOffsetKhz != 0 || g_app.xbarMsvddOffsetUv != 0)) {
+        typedef void* (*NvApiQiFn)(unsigned int);
+NvApiQiFn qi = (NvApiQiFn)nvapi_qi;
+        NvApiFunc xbarGetFunc = qi ? (NvApiFunc)qi(XBAR_RM_CLK_DOMAINS_GET_CONTROL) : nullptr;
+        NvApiFunc xbarSetFunc = qi ? (NvApiFunc)qi(XBAR_RM_CLK_DOMAINS_SET_CONTROL) : nullptr;
+        if (xbarGetFunc && xbarSetFunc) {
+            XbarControlSnapshot snap = {};
+            memcpy(snap.buf, g_app.xbarSnapshotBuf, g_app.xbarSnapshotBufSize);
+            snap.bufSize = g_app.xbarSnapshotBufSize;
+            snap.valid = true;
+            if (xbar_restore((NvApiFunc)xbarGetFunc, (NvApiFunc)xbarSetFunc,
+                    g_app.gpuHandle, &snap)) {
+                g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
+                g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
+                g_app.xbarMeasuredClockKhz = snap.measuredKhz;
+                debug_log("reset-before-apply: XBAR restored to %d kHz, %d uV, measured %u kHz\n",
+                    snap.freqOffsetKhz, snap.msvddOffsetUv, snap.measuredKhz);
+            } else {
+                append_failure("XBAR offset did not reset");
+            }
+        }
     }
     g_app.lastApplyUsedGpuOffset = false;
     read_live_curve_snapshot_settled(4, 25, nullptr);

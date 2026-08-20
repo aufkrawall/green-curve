@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+﻿// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 //
 // vf_backends.cpp — definitions of the per-family VF-curve backend tables.
@@ -31,6 +31,8 @@ static_assert(gpu_capability_mask_for_index(5) == SERVICE_MUTATION_DOMAIN_LOCK,
               "capability index 5 must be clock-lock");
 static_assert(gpu_capability_mask_for_index(6) == SERVICE_MUTATION_DOMAIN_FAN,
               "capability index 6 must be fan");
+static_assert(gpu_capability_mask_for_index(7) == SERVICE_MUTATION_DOMAIN_XBAR,
+              "capability index 7 must be xbar");
 // The core invariant, enforced at compile time: an unprobed capability set
 // subtracts no domain, so this layer cannot regress a working GPU.
 static_assert(gpu_capability_available_domains(nullptr) == SERVICE_MUTATION_DOMAIN_ALL,

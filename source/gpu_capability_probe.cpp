@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+﻿// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 //
 // Read-only control-surface probe for the selected adapter (Windows).
@@ -16,6 +16,7 @@
 // an older driver.  A GPU where everything works therefore probes complete and
 // every dependent path stays inert.
 
+#include "gpu_backend_xbar.h"
 // Included by main_shell.cpp AFTER main_runtime_nvml.cpp, so the NVML shard's
 // static nvml_ensure_ready() and the debug_log helpers are already in scope.
 // hardware_initialize() (main_state_sync.cpp) is included earlier and reaches
@@ -113,7 +114,54 @@ void gpu_probe_control_surface() {
     if (!nvml_ensure_ready() || !g_app.nvmlDevice) {
         // Leave every domain UNPROBED: without NVML we have no evidence, and
         // absence of evidence must not subtract a capability.
-        g_app.gpuCapability = probe;
+    
+    // --- XBAR clock domain (Blackwell only) --------------------------------
+    // Probed via the RM ClockClient GET_CONTROL command.  Read-only: the
+    // complete control block is captured for restore on reset/shutdown.
+    // Only Blackwell GPUs (GB200+) have the XBAR clock domain.
+    {
+        GpuDomainObservation obs = {};
+        obs.entryPointPresent = (g_app.gpuFamily == GPU_FAMILY_BLACKWELL);
+        if (obs.entryPointPresent) {
+            NvApiFunc xbarGetFunc = (NvApiFunc)nvapi_qi(XBAR_RM_CLK_DOMAINS_GET_CONTROL);
+            obs.entryPointPresent = (xbarGetFunc != nullptr);
+            if (obs.entryPointPresent) {
+                XbarControlSnapshot snap = {};
+                typedef int (*rm_buf_fn)(void*, void*);
+                int status = ((rm_buf_fn)xbarGetFunc)(g_app.gpuHandle, snap.buf);
+                obs.readSucceeded = (status == 0);
+                if (obs.readSucceeded) {
+                    snap.bufSize = XBAR_BUF_MAX;
+                    snap.valid = true;
+                    bool domainOk = false;
+                    unsigned int base = xbar_domain_base(XBAR_BUF_MAX, &domainOk);
+                    if (domainOk) {
+                        snap.freqOffsetKhz = xbar_parse_freq_offset(snap.buf, base);
+                        snap.msvddOffsetUv = xbar_parse_msvdd_offset(snap.buf, xbar_msvdd_offset(base));
+                    }
+                    xbar_measure_clock((NvApiFunc)xbarGetFunc, g_app.gpuHandle, &snap.measuredKhz);
+                    // Store the snapshot for write/restore later.
+                    memcpy(g_app.xbarSnapshotBuf, snap.buf, XBAR_BUF_MAX);
+                    g_app.xbarSnapshotBufSize = snap.bufSize;
+                    g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
+                    g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
+                    g_app.xbarMeasuredClockKhz = snap.measuredKhz;
+                    g_app.xbarProbeValid = true;
+                    debug_log("gpu capability probe: XBAR control available,"
+                              " freq_offset=%d kHz, msvdd_offset=%d uV,"
+                              " measured=%u kHz\n",
+                              snap.freqOffsetKhz, snap.msvddOffsetUv,
+                              snap.measuredKhz);
+                }
+            }
+        }
+        gc_u32 cap = gpu_capability_classify(&obs);
+        gpu_capability_set(&probe, SERVICE_MUTATION_DOMAIN_XBAR, cap);
+        probe_log_domain(SERVICE_MUTATION_DOMAIN_XBAR, cap,
+                         obs.entryPointPresent ? "RM CLK_DOMAINS GET_CONTROL"
+                                               : "not Blackwell or RM entry point absent");
+    }
+    g_app.gpuCapability = probe;
         debug_log("gpu capability probe: NVML not ready, leaving all domains unprobed"
                   " (reports full surface by design)\n");
         return;
@@ -248,6 +296,53 @@ void gpu_probe_control_surface() {
     // confirmation dormant rather than guessing.
     probe.memoryTopology = probe_memory_topology_via_dxgi();
 
+
+    // --- XBAR clock domain (Blackwell only) --------------------------------
+    // Probed via the RM ClockClient GET_CONTROL command.  Read-only: the
+    // complete control block is captured for restore on reset/shutdown.
+    // Only Blackwell GPUs (GB200+) have the XBAR clock domain.
+    {
+        GpuDomainObservation obs = {};
+        obs.entryPointPresent = (g_app.gpuFamily == GPU_FAMILY_BLACKWELL);
+        if (obs.entryPointPresent) {
+            NvApiFunc xbarGetFunc = (NvApiFunc)nvapi_qi(XBAR_RM_CLK_DOMAINS_GET_CONTROL);
+            obs.entryPointPresent = (xbarGetFunc != nullptr);
+            if (obs.entryPointPresent) {
+                XbarControlSnapshot snap = {};
+                typedef int (*rm_buf_fn)(void*, void*);
+                int status = ((rm_buf_fn)xbarGetFunc)(g_app.gpuHandle, snap.buf);
+                obs.readSucceeded = (status == 0);
+                if (obs.readSucceeded) {
+                    snap.bufSize = XBAR_BUF_MAX;
+                    snap.valid = true;
+                    bool domainOk = false;
+                    unsigned int base = xbar_domain_base(XBAR_BUF_MAX, &domainOk);
+                    if (domainOk) {
+                        snap.freqOffsetKhz = xbar_parse_freq_offset(snap.buf, base);
+                        snap.msvddOffsetUv = xbar_parse_msvdd_offset(snap.buf, xbar_msvdd_offset(base));
+                    }
+                    xbar_measure_clock((NvApiFunc)xbarGetFunc, g_app.gpuHandle, &snap.measuredKhz);
+                    // Store the snapshot for write/restore later.
+                    memcpy(g_app.xbarSnapshotBuf, snap.buf, XBAR_BUF_MAX);
+                    g_app.xbarSnapshotBufSize = snap.bufSize;
+                    g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
+                    g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
+                    g_app.xbarMeasuredClockKhz = snap.measuredKhz;
+                    g_app.xbarProbeValid = true;
+                    debug_log("gpu capability probe: XBAR control available,"
+                              " freq_offset=%d kHz, msvdd_offset=%d uV,"
+                              " measured=%u kHz\n",
+                              snap.freqOffsetKhz, snap.msvddOffsetUv,
+                              snap.measuredKhz);
+                }
+            }
+        }
+        gc_u32 cap = gpu_capability_classify(&obs);
+        gpu_capability_set(&probe, SERVICE_MUTATION_DOMAIN_XBAR, cap);
+        probe_log_domain(SERVICE_MUTATION_DOMAIN_XBAR, cap,
+                         obs.entryPointPresent ? "RM CLK_DOMAINS GET_CONTROL"
+                                               : "not Blackwell or RM entry point absent");
+    }
     g_app.gpuCapability = probe;
 
     gc_u32 missing = gpu_capability_missing_domains(&probe);

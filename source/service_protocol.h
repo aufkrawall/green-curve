@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+﻿// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 //
 // Binary service protocol shared by the Windows named-pipe and Linux Unix-
@@ -348,6 +348,7 @@ enum ServiceMutationDomain : gc_u32 {
     SERVICE_MUTATION_DOMAIN_VF_CURVE = 1u << 4,
     SERVICE_MUTATION_DOMAIN_LOCK = 1u << 5,
     SERVICE_MUTATION_DOMAIN_FAN = 1u << 6,
+    SERVICE_MUTATION_DOMAIN_XBAR = 1u << 7,
 };
 
 enum {
@@ -358,7 +359,8 @@ enum {
         SERVICE_MUTATION_DOMAIN_POWER |
         SERVICE_MUTATION_DOMAIN_VF_CURVE |
         SERVICE_MUTATION_DOMAIN_LOCK |
-        SERVICE_MUTATION_DOMAIN_FAN,
+        SERVICE_MUTATION_DOMAIN_FAN |
+        SERVICE_MUTATION_DOMAIN_XBAR,
 };
 
 // NOTE: the per-domain capability policy (gpu_capability_policy.h) indexes these
@@ -402,6 +404,8 @@ static inline gc_u32 service_desired_mutation_domains(
         domains |= SERVICE_MUTATION_DOMAIN_LOCK;
     if (desired->hasFan)
         domains |= SERVICE_MUTATION_DOMAIN_FAN;
+    if (desired->hasXbarOffsetKhz || desired->hasXbarMsvddOffsetUv)
+        domains |= SERVICE_MUTATION_DOMAIN_XBAR;
     return domains;
 }
 
@@ -466,7 +470,7 @@ struct ServiceGpuHealth {
     char detail[192];
 };
 enum : gc_u32 {
-    SERVICE_GPU_CAPABILITY_PACKED_MASK = 0x3FFFu,
+    SERVICE_GPU_CAPABILITY_PACKED_MASK = 0xFFFFu,
     SERVICE_GPU_MEMORY_TOPOLOGY_MAX = 2u,
 };
 static_assert(sizeof(ServiceGpuHealth) == 216,
@@ -572,6 +576,12 @@ struct ServiceSnapshot {
     gc_u32 lastLifecycleTrigger;
     gc_u32 lastLifecycleResult;
     gc_u32 autoRestoreLockoutReason;
+    gc_bool8 xbarSupported;
+    gc_bool8 xbarOffsetReadbackValid;
+    int xbarOffsetKhz;
+    gc_bool8 xbarMsvddOffsetReadbackValid;
+    int xbarMsvddOffsetUv;
+    unsigned int xbarMeasuredClockKhz;
     ServiceGpuHealth health;
 };
 
@@ -634,6 +644,7 @@ static inline bool service_desired_bool_fields_valid(
         &desired->hasGpuOffset, &desired->hasMemOffset,
         &desired->hasPowerLimit, &desired->hasFan, &desired->fanAuto,
         &desired->resetOcBeforeApply,
+        &desired->hasXbarOffsetKhz, &desired->hasXbarMsvddOffsetUv,
     };
     for (const gc_bool8* flag : flags)
         if (*flag > 1) return false;

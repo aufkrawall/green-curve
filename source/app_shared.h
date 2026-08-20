@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+﻿// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
 #ifndef GREEN_CURVE_APP_SHARED_H
@@ -443,6 +443,12 @@ struct AppData {
     // "nothing probed", which by construction reports every domain available —
     // see the core invariant in gpu_capability_policy.h.
     GpuCapabilityProbe gpuCapability;
+    bool xbarProbeValid;
+    unsigned char xbarSnapshotBuf[0x2000];
+    unsigned int xbarSnapshotBufSize;
+    int xbarFreqOffsetKhz;
+    int xbarMsvddOffsetUv;
+    unsigned int xbarMeasuredClockKhz;
 
     bool nvmlReady;
     nvmlDevice_t nvmlDevice;

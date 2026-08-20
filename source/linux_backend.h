@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+﻿// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 //
 // linux_backend.h — native Linux GPU control backend.
@@ -84,6 +84,12 @@ struct LinuxGpuState {
     // transition only, so a 1 Hz refresh cannot flood the journal.
     int lastLoggedGraphicsDomainEnd;
     bool graphicsDomainBoundaryLogged;
+    bool xbarProbeValid;
+    unsigned char xbarSnapshotBuf[0x2000];
+    unsigned int xbarSnapshotBufSize;
+    int xbarFreqOffsetKhz;
+    int xbarMsvddOffsetUv;
+    unsigned int xbarMeasuredClockKhz;
 
     // Offset ranges (kHz for curve; MHz for clock domains)
     int curveOffsetMinKHz;
