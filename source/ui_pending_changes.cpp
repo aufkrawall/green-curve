@@ -34,6 +34,12 @@ struct GuiPendingChanges {
     int appliedGpuOffsetExcludeLowCount;
     int pendingGpuOffsetMHz;
     int pendingGpuOffsetExcludeLowCount;
+    // XBAR offset: single scalar domain (freq + voltage treated as one pending unit).
+    bool xbarValid;
+    int appliedXbarOffsetKhz;
+    int pendingXbarOffsetKhz;
+    int appliedXbarMsvddOffsetUv;
+    int pendingXbarMsvddOffsetUv;
     // The editor half of every point the graph plots, resolved from everything
     // above.  The graph is a pure reader of this; the repaint gate compares it.
     // Both facts matter: what the graph would draw and what triggers a repaint
@@ -360,6 +366,56 @@ static void gui_pending_evaluate_editor_diff(GuiPendingChanges* out) {
     if (gui_pending_scalar_changed(powerLimit))
         out->summary.domainMask |= GUI_PENDING_POWER_LIMIT;
 
+    // XBAR offsets: draft stores MHz / mV text, applied comes from ControlState
+    // or live snapshot. Treat freq and voltage as one domain: either change marks
+    // the Advanced button pending. Unparseable text keeps Apply reachable.
+    {
+        int appliedKhz = 0;
+        int appliedUv = 0;
+        if (haveControl) {
+            if (control.hasXbarOffset) appliedKhz = control.xbarOffsetKhz;
+            if (control.hasXbarMsvddOffset) appliedUv = control.xbarMsvddOffsetUv;
+        } else {
+            appliedKhz = g_app.xbarFreqOffsetKhz;
+            appliedUv = g_app.xbarMsvddOffsetUv;
+        }
+        int draftKhz = appliedKhz;
+        int draftUv = appliedUv;
+        bool draftKhzValid = false;
+        bool draftUvValid = false;
+        if (g_app.guiDraft.xbarOffsetText[0]) {
+            int vMhz = 0;
+            draftKhzValid = parse_int_strict(g_app.guiDraft.xbarOffsetText, &vMhz);
+            if (draftKhzValid) draftKhz = vMhz * 1000;
+        } else {
+            draftKhzValid = true;
+            draftKhz = g_app.guiXbarOffsetKhz;
+        }
+        if (g_app.guiDraft.xbarMsvddOffsetText[0]) {
+            int vMv = 0;
+            draftUvValid = parse_int_strict(g_app.guiDraft.xbarMsvddOffsetText, &vMv);
+            if (draftUvValid) draftUv = vMv * 1000;
+        } else {
+            draftUvValid = true;
+            draftUv = g_app.guiXbarMsvddOffsetUv;
+        }
+        GuiPendingScalar xbarFreq = {};
+        xbarFreq.draftValid = draftKhzValid;
+        xbarFreq.draftValue = draftKhz;
+        xbarFreq.appliedValue = appliedKhz;
+        GuiPendingScalar xbarVolt = {};
+        xbarVolt.draftValid = draftUvValid;
+        xbarVolt.draftValue = draftUv;
+        xbarVolt.appliedValue = appliedUv;
+        out->xbarValid = true;
+        out->appliedXbarOffsetKhz = appliedKhz;
+        out->appliedXbarMsvddOffsetUv = appliedUv;
+        out->pendingXbarOffsetKhz = draftKhzValid ? draftKhz : appliedKhz;
+        out->pendingXbarMsvddOffsetUv = draftUvValid ? draftUv : appliedUv;
+        if (gui_pending_scalar_changed(xbarFreq) || gui_pending_scalar_changed(xbarVolt))
+            out->summary.domainMask |= GUI_PENDING_XBAR;
+    }
+
     gui_pending_evaluate_fan(out);
 }
 
@@ -384,6 +440,12 @@ static bool gui_pending_changes_equal(const GuiPendingChanges* a,
         a->appliedGpuOffsetExcludeLowCount != b->appliedGpuOffsetExcludeLowCount ||
         a->pendingGpuOffsetMHz != b->pendingGpuOffsetMHz ||
         a->pendingGpuOffsetExcludeLowCount != b->pendingGpuOffsetExcludeLowCount)
+        return false;
+    if (a->xbarValid != b->xbarValid ||
+        a->appliedXbarOffsetKhz != b->appliedXbarOffsetKhz ||
+        a->pendingXbarOffsetKhz != b->pendingXbarOffsetKhz ||
+        a->appliedXbarMsvddOffsetUv != b->appliedXbarMsvddOffsetUv ||
+        a->pendingXbarMsvddOffsetUv != b->pendingXbarMsvddOffsetUv)
         return false;
     if (gui_pending_graph_preview_moved_count(a, b, nullptr) != 0) return false;
     return memcmp(a->curvePoint, b->curvePoint, sizeof(a->curvePoint)) == 0;
@@ -518,6 +580,8 @@ static void gui_pending_changes_refresh() {
             GUI_PENDING_FAN_FIXED, beforeMask, afterMask);
         gui_pending_invalidate_domain(g_app.hFanCurveBtn,
             GUI_PENDING_FAN_CURVE, beforeMask, afterMask);
+        gui_pending_invalidate_domain(g_app.hXbarAdvancedBtn,
+            GUI_PENDING_XBAR, beforeMask, afterMask);
 
         // Two independent reasons to repaint the graph, and both are needed:
         //   - the pending PRESENTATION flipped (dashed runs and orange markers

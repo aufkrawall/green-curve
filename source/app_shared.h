@@ -309,6 +309,8 @@ struct GuiDraft {
     char memOffsetText[32];
     char powerLimitText[32];
     char fanFixedText[16];
+    char xbarOffsetText[32];
+    char xbarMsvddOffsetText[32];
 };
 
 // What the GPU currently has applied, as resolved by capture_gui_apply_settings()
@@ -557,6 +559,10 @@ struct AppData {
     int guiFanMode;
     int guiFanFixedPercent;
     FanCurveConfig guiFanCurve;
+    int guiXbarOffsetKhz;
+    int guiXbarMsvddOffsetUv;
+    bool guiXbarOffsetFromProfileLoad;
+    bool guiXbarMsvddOffsetFromProfileLoad;
 
     int activeFanMode;
     int activeFanFixedPercent;

@@ -221,6 +221,12 @@ static void populate_service_snapshot_locked(ServiceSnapshot* snapshot,
     snapshot->health.availableMutationDomains = gpu_capability_available_domains(&g_app.gpuCapability);
     snapshot->health.capabilityMemoryTopology = (gc_u8)g_app.gpuCapability.memoryTopology;
     snapshot->health.capabilityDomainsPacked = gpu_capability_pack_domains(&g_app.gpuCapability);
+    snapshot->xbarSupported = g_app.xbarProbeValid;
+    snapshot->xbarOffsetReadbackValid = g_app.xbarProbeValid;
+    snapshot->xbarOffsetKhz = g_app.xbarFreqOffsetKhz;
+    snapshot->xbarMsvddOffsetReadbackValid = g_app.xbarProbeValid;
+    snapshot->xbarMsvddOffsetUv = g_app.xbarMsvddOffsetUv;
+    snapshot->xbarMeasuredClockKhz = g_app.xbarMeasuredClockKhz;
 }
 
 static void populate_service_snapshot(ServiceSnapshot* snapshot) {
@@ -251,6 +257,12 @@ static void populate_control_state_locked(ControlState* state) {
     state->fanCurrentTemperatureC = g_app.gpuTemperatureValid ? g_app.gpuTemperatureC : 0;
     copy_fan_curve(&state->fanCurve, current_green_curve_fan_intent_curve());
     ensure_valid_fan_curve_config(&state->fanCurve);
+    state->hasXbarOffset = g_app.xbarProbeValid;
+    state->xbarOffsetReadbackValid = g_app.xbarProbeValid;
+    state->xbarOffsetKhz = g_app.xbarFreqOffsetKhz;
+    state->hasXbarMsvddOffset = g_app.xbarProbeValid;
+    state->xbarMsvddOffsetReadbackValid = g_app.xbarProbeValid;
+    state->xbarMsvddOffsetUv = g_app.xbarMsvddOffsetUv;
 
     // Protocol v14: the values above intentionally keep a last-known or intent
     // fallback so a degraded read still leaves the editor populated.  These bits
@@ -340,6 +352,10 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
         previousSelectedGpu.pciFunction != g_app.selectedGpu.pciFunction;
 #endif
     g_app.gpuFamily = snapshot->gpuFamily;
+    g_app.xbarProbeValid = snapshot->xbarSupported;
+    g_app.xbarFreqOffsetKhz = snapshot->xbarOffsetKhz;
+    g_app.xbarMsvddOffsetUv = snapshot->xbarMsvddOffsetUv;
+    g_app.xbarMeasuredClockKhz = snapshot->xbarMeasuredClockKhz;
     g_app.numPopulated = snapshot->numPopulated;
     g_app.gpuClockOffsetkHz = snapshot->gpuClockOffsetkHz;
     g_app.memClockOffsetkHz = snapshot->memClockOffsetkHz;
@@ -530,6 +546,12 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
     copy_fan_curve(&g_app.serviceControlState.fanCurve,
         &snapshot->activeFanCurve);
     ensure_valid_fan_curve_config(&g_app.serviceControlState.fanCurve);
+    g_app.serviceControlState.hasXbarOffset = snapshot->xbarSupported;
+    g_app.serviceControlState.xbarOffsetReadbackValid = snapshot->xbarOffsetReadbackValid;
+    g_app.serviceControlState.xbarOffsetKhz = snapshot->xbarOffsetKhz;
+    g_app.serviceControlState.hasXbarMsvddOffset = snapshot->xbarSupported;
+    g_app.serviceControlState.xbarMsvddOffsetReadbackValid = snapshot->xbarMsvddOffsetReadbackValid;
+    g_app.serviceControlState.xbarMsvddOffsetUv = snapshot->xbarMsvddOffsetUv;
     log_locked_tail_drift_diagnostics();
     g_app.serviceControlStateValid = true;
     LeaveCriticalSection(&g_appLock);
@@ -614,6 +636,25 @@ static void apply_service_desired_to_gui(const DesiredSettings* desired) {
             ensure_valid_fan_curve_config(&g_app.guiFanCurve);
         }
     }
+    if (desired->hasXbarOffsetKhz || desired->hasXbarMsvddOffsetUv) {
+        if (!gui_state_dirty()) {
+            if (desired->hasXbarOffsetKhz) g_app.guiXbarOffsetKhz = desired->xbarOffsetKhz;
+            if (desired->hasXbarMsvddOffsetUv) g_app.guiXbarMsvddOffsetUv = desired->xbarMsvddOffsetUv;
+        }
+        // Also update draft text if attached clean projection? Keep pending draft in sync when clean.
+        if (g_app.guiDraft.attached && !gui_state_dirty()) {
+            if (desired->hasXbarOffsetKhz) {
+                char buf[32] = {};
+                StringCchPrintfA(buf, 32, "%d", desired->xbarOffsetKhz / 1000);
+                StringCchCopyA(g_app.guiDraft.xbarOffsetText, 32, buf);
+            }
+            if (desired->hasXbarMsvddOffsetUv) {
+                char buf[32] = {};
+                StringCchPrintfA(buf, 32, "%d", desired->xbarMsvddOffsetUv / 1000);
+                StringCchCopyA(g_app.guiDraft.xbarMsvddOffsetText, 32, buf);
+            }
+        }
+    }
     // Adopt the service's active curve intent as the drift-free baseline, regardless
     // of GUI dirty state (this is what the hardware is actually set to, not live
     // readback). Keeps fan-only detection and the editor/graph accurate across
@@ -662,6 +703,16 @@ static void apply_control_state_to_gui(const ControlState* state) {
         copy_fan_curve(&merged.fanCurve, &state->fanCurve);
         ensure_valid_fan_curve_config(&merged.fanCurve);
     }
+    if (state->hasXbarOffset) {
+        merged.hasXbarOffset = true;
+        merged.xbarOffsetKhz = state->xbarOffsetKhz;
+        merged.xbarOffsetReadbackValid = state->xbarOffsetReadbackValid;
+    }
+    if (state->hasXbarMsvddOffset) {
+        merged.hasXbarMsvddOffset = true;
+        merged.xbarMsvddOffsetUv = state->xbarMsvddOffsetUv;
+        merged.xbarMsvddOffsetReadbackValid = state->xbarMsvddOffsetReadbackValid;
+    }
     g_app.serviceControlStateValid = true;
     g_app.serviceControlState = merged;
     bool updateGui = !gui_state_dirty();
@@ -697,6 +748,14 @@ static void apply_control_state_to_gui(const ControlState* state) {
         if (updateGui) {
             copy_fan_curve(&g_app.guiFanCurve, &state->fanCurve);
             ensure_valid_fan_curve_config(&g_app.guiFanCurve);
+        }
+        if (state->hasXbarOffset) {
+            g_app.xbarFreqOffsetKhz = state->xbarOffsetKhz;
+            if (updateGui) g_app.guiXbarOffsetKhz = state->xbarOffsetKhz;
+        }
+        if (state->hasXbarMsvddOffset) {
+            g_app.xbarMsvddOffsetUv = state->xbarMsvddOffsetUv;
+            if (updateGui) g_app.guiXbarMsvddOffsetUv = state->xbarMsvddOffsetUv;
         }
         // state->fanMode is Green Curve intent, not necessarily the live driver
         // fan policy.  FanControl or another external controller may make NVML

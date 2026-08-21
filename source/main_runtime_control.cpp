@@ -183,6 +183,58 @@
         copy_fan_curve(&desired->fanCurve, &guiCurve);
     }
 
+    // XBAR clock and voltage offsets (Blackwell only). Draft stores MHz / mV text.
+    {
+        int currentXbarOffsetKhz = 0;
+        int currentXbarMsvddUv = 0;
+        if (haveControlState) {
+            if (control.hasXbarOffset) currentXbarOffsetKhz = control.xbarOffsetKhz;
+            if (control.hasXbarMsvddOffset) currentXbarMsvddUv = control.xbarMsvddOffsetUv;
+        } else {
+            currentXbarOffsetKhz = g_app.xbarFreqOffsetKhz;
+            currentXbarMsvddUv = g_app.xbarMsvddOffsetUv;
+        }
+        int xbarOffsetKhz = currentXbarOffsetKhz;
+        int xbarMsvddUv = currentXbarMsvddUv;
+        if (gui_state_dirty()) {
+            if (g_app.guiDraft.xbarOffsetText[0]) {
+                int vMhz = 0;
+                if (!parse_int_strict(g_app.guiDraft.xbarOffsetText, &vMhz)) {
+                    set_message(err, errSize, "Invalid XBAR clock offset");
+                    return false;
+                }
+                xbarOffsetKhz = vMhz * 1000;
+            } else {
+                xbarOffsetKhz = g_app.guiXbarOffsetKhz;
+            }
+            if (g_app.guiDraft.xbarMsvddOffsetText[0]) {
+                int vMv = 0;
+                if (!parse_int_strict(g_app.guiDraft.xbarMsvddOffsetText, &vMv)) {
+                    set_message(err, errSize, "Invalid XBAR voltage offset");
+                    return false;
+                }
+                xbarMsvddUv = vMv * 1000;
+            } else {
+                xbarMsvddUv = g_app.guiXbarMsvddOffsetUv;
+            }
+        }
+        g_app.guiXbarOffsetKhz = xbarOffsetKhz;
+        g_app.guiXbarMsvddOffsetUv = xbarMsvddUv;
+        bool xbarFreqChanged = xbarOffsetKhz != currentXbarOffsetKhz;
+        bool xbarVoltChanged = xbarMsvddUv != currentXbarMsvddUv;
+        if (includeCurrentGlobals || forceExplicitGlobals || xbarFreqChanged) {
+            desired->hasXbarOffsetKhz = true;
+            desired->xbarOffsetKhz = xbarOffsetKhz;
+        }
+        if (includeCurrentGlobals || forceExplicitGlobals || xbarVoltChanged) {
+            desired->hasXbarMsvddOffsetUv = true;
+            desired->xbarMsvddOffsetUv = xbarMsvddUv;
+        }
+        debug_log("capture_gui: xbar current=%d kHz / %d uV -> desired=%d kHz / %d uV hasFreq=%d hasVolt=%d\n",
+            currentXbarOffsetKhz, currentXbarMsvddUv, xbarOffsetKhz, xbarMsvddUv,
+            desired->hasXbarOffsetKhz ? 1 : 0, desired->hasXbarMsvddOffsetUv ? 1 : 0);
+    }
+
     char capturedCurvePoints[256] = {};
     build_point_list_from_flags(desired->hasCurvePoint, capturedCurvePoints, sizeof(capturedCurvePoints));
     debug_log("capture_gui_desired_settings: serviceMode=%d includeCurrent=%d forceExplicit=%d hasGpu=%d gpu=%d exclude=%d hasMem=%d mem=%d hasPower=%d power=%d hasFan=%d fanMode=%d fanPct=%d hasLock=%d lockCi=%d lockMHz=%u curvePoints=%d (%s)\n",

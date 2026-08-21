@@ -72,6 +72,17 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
         if (g_app.hPowerLimitEdit)
             set_edit_value(g_app.hPowerLimitEdit, desired->powerLimitPct);
     }
+    // XBAR (Blackwell)
+    if (desired->hasXbarOffsetKhz) {
+        g_app.guiXbarOffsetKhz = desired->xbarOffsetKhz;
+        g_app.guiXbarOffsetFromProfileLoad = true;
+        StringCchPrintfA(g_app.guiDraft.xbarOffsetText, 32, "%d", desired->xbarOffsetKhz / 1000);
+    }
+    if (desired->hasXbarMsvddOffsetUv) {
+        g_app.guiXbarMsvddOffsetUv = desired->xbarMsvddOffsetUv;
+        g_app.guiXbarMsvddOffsetFromProfileLoad = true;
+        StringCchPrintfA(g_app.guiDraft.xbarMsvddOffsetText, 32, "%d", desired->xbarMsvddOffsetUv / 1000);
+    }
     // Fan
     if (desired->hasFan) {
         g_app.guiFanMode = desired->fanMode;

@@ -36,6 +36,7 @@ enum {
     GUI_PENDING_FAN_MODE    = 1u << 6,
     GUI_PENDING_FAN_FIXED   = 1u << 7,
     GUI_PENDING_FAN_CURVE   = 1u << 8,
+    GUI_PENDING_XBAR        = 1u << 9,
 };
 
 // Any field the editor holds as text: GPU offset, exclude-low count, memory

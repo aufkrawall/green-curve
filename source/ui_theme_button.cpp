@@ -157,6 +157,8 @@ static void draw_themed_button(const DRAWITEMSTRUCT* dis) {
     // the only place its unapplied state can be seen from the main window.
     bool pendingAccent = dis->CtlID == FAN_CURVE_BTN_ID &&
         gui_pending_domain_changed(GUI_PENDING_FAN_CURVE);
+    if (dis->CtlID == XBAR_ADVANCED_BTN_ID && gui_pending_domain_changed(GUI_PENDING_XBAR))
+        pendingAccent = true;
     // The same orange, for the same reason, on the button that opens the other
     // dialog that owns state the main window cannot show: "there is something
     // in here you have not dealt with".  Before this the Updates button looked
