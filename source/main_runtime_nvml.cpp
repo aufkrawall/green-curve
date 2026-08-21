@@ -1,6 +1,7 @@
 // CLI parsing moved to its own shard; included here so definition order in
 // the amalgamated translation unit is exactly what it was before the split.
 #include "main_cli_options.cpp"
+#include "xbar_telemetry.h"
 
 static bool nvml_resolve(void** out, const char* name) {
     if (!g_nvml) return false;
@@ -800,6 +801,7 @@ static bool refresh_global_state(char* detail, size_t detailSize) {
     bool ok2 = nvml_read_power_limit();
     bool ok3 = nvml_read_clock_offsets(detail, detailSize);
     bool ok4 = nvml_read_fans(detail, detailSize);
+    bool okXbar = xbar_refresh_live_state();
     if (!ok3 && !ok1) ok1 = nvapi_read_pstates();
     detect_clock_offsets();
     detect_locked_tail_from_curve();
@@ -810,7 +812,7 @@ static bool refresh_global_state(char* detail, size_t detailSize) {
         mark_service_telemetry_cache_updated("global refresh");
     }
     update_tray_icon();
-    return ok1 || ok2 || ok3 || ok4;
+    return ok1 || ok2 || ok3 || ok4 || okXbar;
 }
 
 static bool nvapi_get_vf_info_cached(unsigned char* maskOut, unsigned int* numClocksOut) {

@@ -3,6 +3,8 @@
 
 // Service-owned settings apply/reset and authoritative in-memory intent.
 
+#include "gpu_backend_xbar.h"
+
 static bool service_desired_has_owned_intent(const DesiredSettings* desired) {
     if (!desired) return false;
     if (desired->hasLock || desired->hasGpuOffset || desired->hasMemOffset ||
@@ -231,6 +233,34 @@ static bool service_reset_all(char* result, size_t resultSize,
         else {
             failCount++;
             append_failure("Power limit did not reset to default");
+        }
+    }
+
+    // Explicit Reset owns the XBAR domain too.  Without this, a successful
+    // "reset to stock" left the private Blackwell clock/voltage offsets active.
+    if (g_app.xbarProbeValid &&
+        (g_app.xbarFreqOffsetKhz != 0 || g_app.xbarMsvddOffsetUv != 0)) {
+        auto xbarGet = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
+        auto xbarSet = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
+        auto xbarMeasure = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_MEASURE);
+        if (xbarGet && xbarSet && xbarMeasure) {
+            XbarControlSnapshot snap{};
+            if (xbar_reset_to_stock(xbarGet, xbarSet, xbarMeasure,
+                                    g_app.gpuHandle, &snap)) {
+                g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
+                g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
+                g_app.xbarMeasuredClockKhz = snap.measuredKhz;
+                successCount++;
+                debug_log("service_reset_all: XBAR reset to %d kHz, %d uV,"
+                          " measured %u kHz\n", snap.freqOffsetKhz,
+                          snap.msvddOffsetUv, snap.measuredKhz);
+            } else {
+                failCount++;
+                append_failure("XBAR offsets did not reset to stock");
+            }
+        } else {
+            failCount++;
+            append_failure("XBAR reset interface unavailable");
         }
     }
 

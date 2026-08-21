@@ -222,11 +222,13 @@
         g_app.guiXbarMsvddOffsetUv = xbarMsvddUv;
         bool xbarFreqChanged = xbarOffsetKhz != currentXbarOffsetKhz;
         bool xbarVoltChanged = xbarMsvddUv != currentXbarMsvddUv;
-        if (includeCurrentGlobals || forceExplicitGlobals || xbarFreqChanged) {
+        // The hardware transaction owns both fields as one domain.  Emitting
+        // only the changed side would make the backend preserve that side while
+        // silently resetting its sibling.
+        if (includeCurrentGlobals || forceExplicitGlobals ||
+            xbarFreqChanged || xbarVoltChanged) {
             desired->hasXbarOffsetKhz = true;
             desired->xbarOffsetKhz = xbarOffsetKhz;
-        }
-        if (includeCurrentGlobals || forceExplicitGlobals || xbarVoltChanged) {
             desired->hasXbarMsvddOffsetUv = true;
             desired->xbarMsvddOffsetUv = xbarMsvddUv;
         }

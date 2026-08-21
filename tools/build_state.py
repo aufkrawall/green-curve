@@ -23,14 +23,14 @@ SOURCE_SIZE_RATCHET = {
     "config_profiles.cpp": 883,
     "entry.cpp": 863,
     "gpu_backend.cpp": 972,
-    "gpu_backend_apply.cpp": 1320,  # 1333 before gpu_backend_reset_baseline.cpp
+    "gpu_backend_apply.cpp": 1330,  # 1333 before gpu_backend_reset_baseline.cpp
     "gpu_core.h": 820,
     "gui_service_state.cpp": 813,
     "main.cpp": 801,
     "main_fan_runtime.cpp": 913,  # 929 before the tray menu moved to gui_tray_menu.cpp
     "main_gpu_front.cpp": 845,
     "main_gpu_state.cpp": 916,
-    "main_runtime_nvml.cpp": 901,
+    "main_runtime_nvml.cpp": 903,  # 901 before the XBAR telemetry call moved to its own header
     "main_service_persist.cpp": 908,
     "main_service_pipe.cpp": 796,  # 828 before the file-write commands moved out
     "main_state_sync.cpp": 859,

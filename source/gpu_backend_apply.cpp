@@ -1191,43 +1191,44 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         refresh_global_state(rollbackDetail, sizeof(rollbackDetail));
     }
     // XBAR clock domain offset apply (Blackwell only).  Independent of the
-    // main VF/clock/fan apply; a failure here does not trigger rollback.
+    // main VF/clock/fan apply; a failure is reported rather than silently skipped.
     if (desired && (desired->hasXbarOffsetKhz || desired->hasXbarMsvddOffsetUv)) {
-        if (g_app.xbarProbeValid) {
-            // nvapi_qi resolves RM function pointers through nvapi_QueryInterface.
-// The returned pointer has signature void*(*)(unsigned int) but the actual
-// RM functions use int(*)(void*, void*).  The calling convention matches;
-// we cast the resolved pointer through NvApiFunc for the two-argument calls.
-typedef void* (*NvApiQiFn)(unsigned int);
-NvApiQiFn qi = (NvApiQiFn)nvapi_qi;
-            NvApiFunc xbarGetCtrl = qi ? (NvApiFunc)qi(PROPRELS_GET_CONTROL_ID) : nullptr;
-            NvApiFunc xbarSetCtrl = qi ? (NvApiFunc)qi(PROPRELS_SET_CONTROL_ID) : nullptr;
-            if (xbarGetCtrl && xbarSetCtrl) {
-                XbarControlSnapshot snap = {};
-                memcpy(snap.buf, g_app.xbarSnapshotBuf, g_app.xbarSnapshotBufSize);
-                snap.bufSize = g_app.xbarSnapshotBufSize;
-                snap.valid = true;
-                int targetFreqKhz = desired->hasXbarOffsetKhz ? desired->xbarOffsetKhz : 0;
-                int targetMsvddUv = desired->hasXbarMsvddOffsetUv ? desired->xbarMsvddOffsetUv : 0;
-                if (xbar_write((NvApiFunc)xbarGetCtrl, (NvApiFunc)xbarSetCtrl,
-                        g_app.gpuHandle, &snap, targetFreqKhz, targetMsvddUv)) {
-                    g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
-                    g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
-                    g_app.xbarMeasuredClockKhz = snap.measuredKhz;
-                    successCount++;
-                    debug_log("apply: XBAR offset %d kHz, MSVDD %d uV, measured %u kHz\n",
-                        snap.freqOffsetKhz, snap.msvddOffsetUv, snap.measuredKhz);
-                } else {
-                    failCount++;
-                    StringCchCatA(failureDetails, ARRAY_COUNT(failureDetails),
-                        failureDetails[0] ? "; XBAR offset" : "XBAR offset");
-                    debug_log("apply: XBAR offset write FAILED\n");
-                }
+        auto xbarGetCtrl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
+        auto xbarSetCtrl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
+        auto xbarMeasure = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_MEASURE);
+        bool functionsAvailable = xbarGetCtrl && xbarSetCtrl && xbarMeasure;
+        if (g_app.xbarProbeValid && functionsAvailable) {
+            XbarControlSnapshot snap{};
+            int targetFreqKhz = desired->hasXbarOffsetKhz
+                ? desired->xbarOffsetKhz : g_app.xbarFreqOffsetKhz;
+            int targetMsvddUv = desired->hasXbarMsvddOffsetUv
+                ? desired->xbarMsvddOffsetUv : g_app.xbarMsvddOffsetUv;
+            if (xbar_write(xbarGetCtrl, xbarSetCtrl, xbarMeasure,
+                           g_app.gpuHandle, &snap, targetFreqKhz, targetMsvddUv,
+                           true, true)) {
+                g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
+                g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
+                g_app.xbarMeasuredClockKhz = snap.measuredKhz;
+                successCount++;
+                debug_log("apply: XBAR offset %d kHz, MSVDD %d uV, measured %u kHz\n",
+                          snap.freqOffsetKhz, snap.msvddOffsetUv,
+                          snap.measuredKhz);
             } else {
-                debug_log("apply: XBAR RM functions not available; skipping\n");
+                failCount++;
+                partialApplyRisk = true;
+                StringCchCatA(failureDetails, ARRAY_COUNT(failureDetails),
+                              failureDetails[0] ? "; XBAR offset" : "XBAR offset");
+                debug_log("apply: XBAR offset write FAILED requested=(%d kHz, %d uV)"
+                          " probeValid=%d\n", targetFreqKhz, targetMsvddUv,
+                          g_app.xbarProbeValid ? 1 : 0);
             }
         } else {
-            debug_log("apply: XBAR not probed; skipping XBAR offset\n");
+            failCount++;
+            partialApplyRisk = true;
+            StringCchCatA(failureDetails, ARRAY_COUNT(failureDetails),
+                          failureDetails[0] ? "; XBAR unavailable" : "XBAR unavailable");
+            debug_log("apply: XBAR requested but unavailable probeValid=%d functions=%d\n",
+                      g_app.xbarProbeValid ? 1 : 0, functionsAvailable ? 1 : 0);
         }
     }
     char detail[128] = {};

@@ -126,6 +126,10 @@ static bool get_current_user_sam_name(WCHAR*, DWORD) { return false; }
 
 bool is_curve_point_visible_in_gui(int) { return true; }
 void debug_log(const char*, ...) {}
+// The XBAR transaction/layout header is included after the harness's host-side
+// NvAPI seam declarations, so fake get/set/measure functions can pin readback.
+typedef int (*NvApiFunc)(void*, void*);
+#include "gpu_backend_xbar.h"
 
 #if defined(_WIN32)
 // The real CNG verifier, compiled straight into the harness so the
@@ -11205,6 +11209,77 @@ static int run_all_tests(int argc, char** argv) {
         if (gc_machine_dir_file_is_current("update-manifest.cache.bak", kConfig))
             return 4460;
         if (gc_machine_dir_file_is_current("update-manifest", kConfig)) return 4461;
+    }
+
+    // --- Blackwell XBAR ClkDomains V2 (4500-4519) --------------------------
+    {
+        static unsigned char templateBuf[XBAR_CONTROL_BUF_SIZE];
+        static unsigned char stockTemplate[XBAR_CONTROL_BUF_SIZE];
+        static unsigned char lastWrite[XBAR_CONTROL_BUF_SIZE];
+        static int setCalls = 0;
+        static bool corruptReadback = false;
+        memset(templateBuf, 0, sizeof(templateBuf));
+        xbar_put_u32(templateBuf, 0, XBAR_NVAPI_CLK_DOMAINS_VERSION);
+        xbar_put_u32(templateBuf, XBAR_CONTROL_MASK_OFFSET,
+                     XBAR_CONTROL_DOMAIN_MASK);
+        const unsigned int base = 0x124;
+        const unsigned int stride = 0x304;
+        for (unsigned int i = 0; i < 8; ++i)
+            xbar_put_u32(templateBuf, base + i * stride, XBAR_DOMAIN_MARKER);
+        xbar_put_i32(templateBuf, base + stride + XBAR_FREQ_OFFSET_FIELD, 60000);
+        xbar_put_i32(templateBuf, base + stride + XBAR_MSVDD_OFFSET_FIELD, 20000);
+        memcpy(stockTemplate, templateBuf, sizeof(stockTemplate));
+        auto fakeGet = [](void*, void* payload) -> int {
+            if (!payload) return -1;
+            memcpy(payload, templateBuf, sizeof(templateBuf));
+            if (corruptReadback)
+                xbar_put_i32((unsigned char*)payload,
+                             base + stride + XBAR_FREQ_OFFSET_FIELD, 1);
+            return 0;
+        };
+        auto fakeSet = [](void*, void* payload) -> int {
+            if (!payload) return -1;
+            memcpy(lastWrite, payload, sizeof(lastWrite));
+            // Model the driver retaining the complete submitted block.
+            memcpy(templateBuf, payload, sizeof(templateBuf));
+            ++setCalls;
+            return 0;
+        };
+        auto fakeMeasure = [](void*, void* payload) -> int {
+            if (!payload) return -1;
+            unsigned int* p = (unsigned int*)payload;
+            p[2] = 1530832;
+            return 0;
+        };
+        NvApiFunc get = (NvApiFunc)+fakeGet;
+        NvApiFunc set = (NvApiFunc)+fakeSet;
+        NvApiFunc measure = (NvApiFunc)+fakeMeasure;
+        int fakeGpuHandle = 0;
+        void* gpu = &fakeGpuHandle;
+        XbarControlSnapshot snap{};
+        if (!xbar_probe(get, measure, gpu, &snap)) return 4500;
+        if (snap.entryBase != base || snap.entryStride != stride) return 4501;
+        if (snap.domainIndex != 1 || snap.freqOffsetKhz != 60000 ||
+            snap.msvddOffsetUv != 20000 || snap.measuredKhz != 1530832)
+            return 4502;
+        setCalls = 0;
+        corruptReadback = false;
+        if (!xbar_write(get, set, measure, gpu, &snap,
+                        450000, 10000, true, true)) return 4503;
+        if (setCalls != 1 || snap.freqOffsetKhz != 450000 ||
+            snap.msvddOffsetUv != 10000) return 4504;
+        unsigned int writtenBase = snap.entryBase +
+            snap.domainIndex * snap.entryStride;
+        if ((int)xbar_get_u32(lastWrite, writtenBase + XBAR_FREQ_OFFSET_FIELD) != 450000 ||
+            (int)xbar_get_u32(lastWrite, writtenBase + XBAR_MSVDD_OFFSET_FIELD) != 10000)
+            return 4505;
+        xbar_put_i32(lastWrite, writtenBase + XBAR_FREQ_OFFSET_FIELD, 60000);
+        xbar_put_i32(lastWrite, writtenBase + XBAR_MSVDD_OFFSET_FIELD, 20000);
+        if (memcmp(lastWrite, stockTemplate, sizeof(stockTemplate)) != 0) return 4506;
+        corruptReadback = true;
+        if (xbar_write(get, set, measure, gpu, &snap,
+                       450000, 10000, true, true)) return 4507;
+        corruptReadback = false;
     }
 
     DeleteCriticalSection(&g_configLock);

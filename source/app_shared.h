@@ -448,8 +448,6 @@ struct AppData {
     // see the core invariant in gpu_capability_policy.h.
     GpuCapabilityProbe gpuCapability;
     bool xbarProbeValid;
-    unsigned char xbarSnapshotBuf[0x2000];
-    unsigned int xbarSnapshotBufSize;
     int xbarFreqOffsetKhz;
     int xbarMsvddOffsetUv;
     unsigned int xbarMeasuredClockKhz;

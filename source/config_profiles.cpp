@@ -595,8 +595,6 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         appendf("power_limit_pct=%d\r\n", desired->hasPowerLimit ? desired->powerLimitPct : g_app.powerLimitPct);
         appendf("xbar_offset_khz=%d\r\n", desired->hasXbarOffsetKhz ? desired->xbarOffsetKhz : 0);
         appendf("xbar_msvdd_offset_uv=%d\r\n", desired->hasXbarMsvddOffsetUv ? desired->xbarMsvddOffsetUv : 0);
-        appendf("xbar_offset_khz=%d\r\n", desired->hasXbarOffsetKhz ? desired->xbarOffsetKhz : 0);
-        appendf("xbar_msvdd_offset_uv=%d\r\n", desired->hasXbarMsvddOffsetUv ? desired->xbarMsvddOffsetUv : 0);
         appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : current_green_curve_fan_intent_mode()));
         if (desired->hasFan) {
             if (desired->fanMode == FAN_MODE_AUTO) appendf("fan=auto\r\n");
