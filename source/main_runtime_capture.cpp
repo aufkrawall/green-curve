@@ -165,6 +165,8 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
     int currentGpuOffsetExcludeLowCount = haveControlState && control_state_has_meaningful_gpu(&control) ? control.gpuOffsetExcludeLowCount : (current_applied_gpu_offset_excludes_low_points() ? g_app.appliedGpuOffsetExcludeLowCount : 0);
     int currentMemOffsetMHz = haveControlState && control_state_has_meaningful_mem(&control) ? control.memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
     int currentPowerLimitPct = haveControlState && control_state_has_meaningful_power(&control) ? control.powerLimitPct : g_app.powerLimitPct;
+    int currentXbarOffsetKhz = haveControlState && control.hasXbarOffset ? control.xbarOffsetKhz : g_app.xbarFreqOffsetKhz;
+    int currentXbarMsvddUv = haveControlState && control.hasXbarMsvddOffset ? control.xbarMsvddOffsetUv : g_app.xbarMsvddOffsetUv;
     if (baselineOut) {
         baselineOut->currentGpuOffsetMHz = currentGpuOffsetMHz;
         baselineOut->currentMemOffsetMHz = currentMemOffsetMHz;
@@ -173,6 +175,16 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
     bool gpuUnchanged = !full.hasGpuOffset || (full.gpuOffsetMHz == currentGpuOffsetMHz && full.gpuOffsetExcludeLowCount == currentGpuOffsetExcludeLowCount);
     bool memUnchanged = !full.hasMemOffset || (full.memOffsetMHz == currentMemOffsetMHz);
     bool powerUnchanged = !full.hasPowerLimit || (full.powerLimitPct == currentPowerLimitPct);
+    bool xbarUnchanged =
+        (!full.hasXbarOffsetKhz || full.xbarOffsetKhz == currentXbarOffsetKhz) &&
+        (!full.hasXbarMsvddOffsetUv || full.xbarMsvddOffsetUv == currentXbarMsvddUv);
+    debug_log("capture_gui_apply_settings: xbar applied=(hasFreq=%d %d kHz hasVolt=%d %d uV)"
+              " desired=(hasFreq=%d %d kHz hasVolt=%d %d uV) unchanged=%d\n",
+        control.hasXbarOffset ? 1 : 0, currentXbarOffsetKhz,
+        control.hasXbarMsvddOffset ? 1 : 0, currentXbarMsvddUv,
+        full.hasXbarOffsetKhz ? 1 : 0, full.xbarOffsetKhz,
+        full.hasXbarMsvddOffsetUv ? 1 : 0, full.xbarMsvddOffsetUv,
+        xbarUnchanged ? 1 : 0);
     bool fanChanged = full.hasFan && !fan_setting_matches_current(full.fanMode, full.fanPercent, &full.fanCurve);
 
     // A fan-only apply must stay fan-only even when the live VF curve has drifted
@@ -236,7 +248,8 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
         lock_mode_name(full.lockMode),
         lockChanged ? 1 : 0);
 
-    if (gpuUnchanged && memUnchanged && powerUnchanged && curveUnchanged && !lockChanged && fanChanged) {
+    if (gpuUnchanged && memUnchanged && powerUnchanged && xbarUnchanged &&
+        curveUnchanged && !lockChanged && fanChanged) {
         debug_log("capture_gui_apply_settings: fan-only apply shortcut taken\n");
         *desired = fanOnly;
         desired->hasFan = true;
@@ -247,7 +260,8 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
         return true;
     }
 
-    if (gpuUnchanged && memUnchanged && powerUnchanged && curveUnchanged && !lockChanged && !fanChanged) {
+    if (gpuUnchanged && memUnchanged && powerUnchanged && xbarUnchanged &&
+        curveUnchanged && !lockChanged && !fanChanged) {
         set_message(err, errSize, "No changes to apply");
         return false;
     }

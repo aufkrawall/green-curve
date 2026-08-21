@@ -22,6 +22,7 @@ def check_xbar_clk_domains(ctx, require_text, forbid_text):
     probe_h = _p(ctx, "gpu_capability_probe.cpp")
     apply_cpp = _p(ctx, "gpu_backend_apply.cpp")
     capture_cpp = _p(ctx, "main_runtime_control.cpp")
+    apply_capture_cpp = _p(ctx, "main_runtime_capture.cpp")
     dialog_cpp = _p(ctx, "xbar_dialog.cpp")
 
     require_text(backend_h,
@@ -56,3 +57,11 @@ def check_xbar_clk_domains(ctx, require_text, forbid_text):
                  "F-XBAR-DIALOG: CreateWindow receives the adjusted frame size")
     forbid_text(dialog_cpp, "x, y, dlgW, dlgH,",
                 "F-XBAR-DIALOG: client dimensions are never passed as outer bounds")
+    # The pending model enabled Apply for XBAR, but the synchronous capture's
+    # "no changes" comparison omitted the domain entirely and rejected it.
+    require_text(apply_capture_cpp,
+                 "bool xbarUnchanged =",
+                 "F-XBAR-V2: manual apply compares captured XBAR intent with hardware")
+    require_text(apply_capture_cpp,
+                 "powerUnchanged && xbarUnchanged &&",
+                 "F-XBAR-V2: no-change and fan-only shortcuts cannot omit XBAR")
