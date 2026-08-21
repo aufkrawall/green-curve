@@ -72,29 +72,22 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
         if (g_app.hPowerLimitEdit)
             set_edit_value(g_app.hPowerLimitEdit, desired->powerLimitPct);
     }
-    // XBAR (Blackwell).  Older profiles omit these keys; project the effective
-    // live value for an omitted field rather than leaving the prior profile's
-    // dialog draft behind.
-    {
-        ControlState projectionControl = {};
-        bool haveProjectionControl = get_effective_control_state(&projectionControl);
-        int projectedXbarFreqKhz = desired->hasXbarOffsetKhz
-            ? desired->xbarOffsetKhz
-            : (haveProjectionControl && projectionControl.hasXbarOffset
-                ? projectionControl.xbarOffsetKhz : g_app.xbarFreqOffsetKhz);
-        int projectedXbarMsvddUv = desired->hasXbarMsvddOffsetUv
-            ? desired->xbarMsvddOffsetUv
-            : (haveProjectionControl && projectionControl.hasXbarMsvddOffset
-                ? projectionControl.xbarMsvddOffsetUv : g_app.xbarMsvddOffsetUv);
-        g_app.guiXbarOffsetKhz = projectedXbarFreqKhz;
-        g_app.guiXbarOffsetFromProfileLoad = desired->hasXbarOffsetKhz;
-        g_app.guiXbarMsvddOffsetUv = projectedXbarMsvddUv;
-        g_app.guiXbarMsvddOffsetFromProfileLoad = desired->hasXbarMsvddOffsetUv;
-        StringCchPrintfA(g_app.guiDraft.xbarOffsetText, 32, "%d",
-                         projectedXbarFreqKhz / 1000);
-        StringCchPrintfA(g_app.guiDraft.xbarMsvddOffsetText, 32, "%d",
-                         projectedXbarMsvddUv / 1000);
-    }
+    // XBAR (Blackwell).  A loaded profile is the editor's declaration: an
+    // omitted field means zero, including records written before this domain
+    // existed. Projecting the hardware value here would turn "no XBAR" into a
+    // preserve-current request and defeat named-profile transition cleanup.
+    int projectedXbarFreqKhz = desired->hasXbarOffsetKhz
+        ? desired->xbarOffsetKhz : 0;
+    int projectedXbarMsvddUv = desired->hasXbarMsvddOffsetUv
+        ? desired->xbarMsvddOffsetUv : 0;
+    g_app.guiXbarOffsetKhz = projectedXbarFreqKhz;
+    g_app.guiXbarOffsetFromProfileLoad = true;
+    g_app.guiXbarMsvddOffsetUv = projectedXbarMsvddUv;
+    g_app.guiXbarMsvddOffsetFromProfileLoad = true;
+    StringCchPrintfA(g_app.guiDraft.xbarOffsetText, 32, "%d",
+                     projectedXbarFreqKhz / 1000);
+    StringCchPrintfA(g_app.guiDraft.xbarMsvddOffsetText, 32, "%d",
+                     projectedXbarMsvddUv / 1000);
     // Fan
     if (desired->hasFan) {
         g_app.guiFanMode = desired->fanMode;

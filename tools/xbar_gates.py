@@ -93,8 +93,8 @@ def check_xbar_profile_contract(ctx, require_text, forbid_text):
                 "desired->hasXbarOffsetKhz ? desired->xbarOffsetKhz : 0",
                 "profile saves must not fabricate XBAR stock ownership")
     require_text(gui_state_cpp,
-                 "projectedXbarFreqKhz = desired->hasXbarOffsetKhz",
-                 "editor projection handles omitted XBAR fields without stale drafts")
+                 "int projectedXbarFreqKhz = desired->hasXbarOffsetKhz",
+                 "loaded profiles make omitted XBAR fields explicit stock intent")
     require_text(live_cpp,
                  "desired->hasXbarOffsetKhz = g_app.xbarProbeValid &&",
                  "live-state profile saves preserve effective XBAR values")
