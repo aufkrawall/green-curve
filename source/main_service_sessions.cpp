@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
+#include "log_redaction_policy.h"
+
 // ============================================================================
 // Immutable interactive-session profile context
 // ============================================================================
@@ -249,11 +251,19 @@ static ServiceLogonProfileResolveResult service_load_logon_profile_from_context(
     LogonProfileSource selected = resolve_logon_profile_source(
         policyActive, context->isLocalAdmin, sharedSlot, hasShared, userSlot,
         hasPerUser, hasMachineDefault);
-    debug_log("logon profile context: session=%lu sid=%s auth=%llu config=%s present=%d policy=%d admin=%d shared=%d/%d user=%d/%d machine=%d/%d source=%d\n",
+    char sidToken[32] = {};
+    char authToken[32] = {};
+    char contextConfigToken[32] = {};
+    gc_log_identifier_token(context->identity.sid, sidToken, sizeof(sidToken));
+    gc_log_u64_token(context->identity.authenticationId, authToken,
+                     sizeof(authToken));
+    gc_log_path_token(context->userConfigPath, contextConfigToken,
+                      sizeof(contextConfigToken));
+    debug_log("logon profile context: session=%lu sid=%s auth=%s config=%s present=%d policy=%d admin=%d shared=%d/%d user=%d/%d machine=%d/%d source=%d\n",
         (unsigned long)context->identity.sessionId,
-        context->identity.sid,
-        (unsigned long long)context->identity.authenticationId,
-        context->userConfigPath,
+        sidToken,
+        authToken,
+        contextConfigToken,
         userConfigPresent ? 1 : 0, policyActive ? 1 : 0,
         context->isLocalAdmin ? 1 : 0,
         sharedSlot, hasShared ? 1 : 0,

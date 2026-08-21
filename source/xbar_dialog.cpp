@@ -166,7 +166,7 @@ static bool xbar_dialog_commit(HWND hwnd) {
     return true;
 }
 
-static void xbar_draw_button(HWND hwnd, const DRAWITEMSTRUCT* dis) {
+static void xbar_draw_button(const DRAWITEMSTRUCT* dis) {
     if (!dis) return;
     HDC hdc = dis->hDC;
     RECT rc = dis->rcItem;
@@ -252,7 +252,7 @@ static LRESULT CALLBACK XbarDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         const DRAWITEMSTRUCT* dis = (const DRAWITEMSTRUCT*)lParam;
         if (dis && dis->CtlType == ODT_BUTTON) {
             if (dis->CtlID == XBAR_OK_BTN_ID || dis->CtlID == XBAR_CANCEL_BTN_ID || dis->CtlID == XBAR_RESET_BTN_ID) {
-                xbar_draw_button(hwnd, dis);
+                xbar_draw_button(dis);
                 return TRUE;
             }
         }
@@ -283,6 +283,10 @@ static LRESULT CALLBACK XbarDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 return 0;
             }
             break;
+        default:
+            // The dialog owns only these three command IDs; native edit/control
+            // notifications fall through to DefWindowProcA.
+            break;
         }
         break;
     case WM_PAINT: {
@@ -296,6 +300,8 @@ static LRESULT CALLBACK XbarDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         EndPaint(hwnd, &ps);
         return 0;
     }
+    default:
+        break;
     }
     return DefWindowProcA(hwnd, msg, wParam, lParam);
 }

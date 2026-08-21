@@ -78,7 +78,8 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
             XbarControlSnapshot snap{};
             if (xbar_reset_to_stock(xbarGetFunc, xbarSetFunc, xbarMeasure,
                                     g_app.gpuHandle, &snap)) {
-                g_app.xbarReadbackValid = true;
+                g_app.xbarFreqReadbackValid = true;
+                g_app.xbarMsvddReadbackValid = true;
                 g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
                 g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
                 g_app.xbarMeasuredClockKhz = snap.measuredKhz;

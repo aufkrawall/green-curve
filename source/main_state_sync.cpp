@@ -222,9 +222,9 @@ static void populate_service_snapshot_locked(ServiceSnapshot* snapshot,
     snapshot->health.capabilityMemoryTopology = (gc_u8)g_app.gpuCapability.memoryTopology;
     snapshot->health.capabilityDomainsPacked = gpu_capability_pack_domains(&g_app.gpuCapability);
     snapshot->xbarSupported = g_app.xbarProbeValid;
-    snapshot->xbarOffsetReadbackValid = g_app.xbarReadbackValid;
+    snapshot->xbarOffsetReadbackValid = g_app.xbarFreqReadbackValid;
     snapshot->xbarOffsetKhz = g_app.xbarFreqOffsetKhz;
-    snapshot->xbarMsvddOffsetReadbackValid = g_app.xbarProbeValid;
+    snapshot->xbarMsvddOffsetReadbackValid = g_app.xbarMsvddReadbackValid;
     snapshot->xbarMsvddOffsetUv = g_app.xbarMsvddOffsetUv;
     snapshot->xbarMeasuredClockKhz = g_app.xbarMeasuredClockKhz;
 }
@@ -258,10 +258,10 @@ static void populate_control_state_locked(ControlState* state) {
     copy_fan_curve(&state->fanCurve, current_green_curve_fan_intent_curve());
     ensure_valid_fan_curve_config(&state->fanCurve);
     state->hasXbarOffset = g_app.xbarProbeValid;
-    state->xbarOffsetReadbackValid = g_app.xbarReadbackValid;
+    state->xbarOffsetReadbackValid = g_app.xbarFreqReadbackValid;
     state->xbarOffsetKhz = g_app.xbarFreqOffsetKhz;
     state->hasXbarMsvddOffset = g_app.xbarProbeValid;
-    state->xbarMsvddOffsetReadbackValid = g_app.xbarProbeValid;
+    state->xbarMsvddOffsetReadbackValid = g_app.xbarMsvddReadbackValid;
     state->xbarMsvddOffsetUv = g_app.xbarMsvddOffsetUv;
 
     // Protocol v14: the values above intentionally keep a last-known or intent
@@ -353,7 +353,8 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
 #endif
     g_app.gpuFamily = snapshot->gpuFamily;
     g_app.xbarProbeValid = snapshot->xbarSupported;
-    g_app.xbarReadbackValid = snapshot->xbarOffsetReadbackValid;
+    g_app.xbarFreqReadbackValid = snapshot->xbarOffsetReadbackValid;
+    g_app.xbarMsvddReadbackValid = snapshot->xbarMsvddOffsetReadbackValid;
     g_app.xbarFreqOffsetKhz = snapshot->xbarOffsetKhz;
     g_app.xbarMsvddOffsetUv = snapshot->xbarMsvddOffsetUv;
     g_app.xbarMeasuredClockKhz = snapshot->xbarMeasuredClockKhz;
@@ -730,6 +731,19 @@ static void apply_control_state_to_gui(const ControlState* state) {
     if (state->hasPowerLimit) {
         g_app.powerLimitPct = state->powerLimitPct;
     }
+    // XBAR and fan are independent control domains.  In particular, a partial
+    // ControlState may prove XBAR without carrying fan telemetry, so XBAR
+    // adoption must not be nested inside the fan branch.
+    if (state->hasXbarOffset) {
+        g_app.xbarFreqOffsetKhz = state->xbarOffsetKhz;
+        g_app.xbarFreqReadbackValid = state->xbarOffsetReadbackValid;
+        if (updateGui) g_app.guiXbarOffsetKhz = state->xbarOffsetKhz;
+    }
+    if (state->hasXbarMsvddOffset) {
+        g_app.xbarMsvddOffsetUv = state->xbarMsvddOffsetUv;
+        g_app.xbarMsvddReadbackValid = state->xbarMsvddOffsetReadbackValid;
+        if (updateGui) g_app.guiXbarMsvddOffsetUv = state->xbarMsvddOffsetUv;
+    }
     if (state->hasFan) {
         g_app.activeFanMode = state->fanMode;
         if (updateGui) {
@@ -748,16 +762,6 @@ static void apply_control_state_to_gui(const ControlState* state) {
         if (updateGui) {
             copy_fan_curve(&g_app.guiFanCurve, &state->fanCurve);
             ensure_valid_fan_curve_config(&g_app.guiFanCurve);
-        }
-        if (state->hasXbarOffset) {
-            g_app.xbarFreqOffsetKhz = state->xbarOffsetKhz;
-            g_app.xbarReadbackValid = state->xbarOffsetReadbackValid;
-            if (updateGui) g_app.guiXbarOffsetKhz = state->xbarOffsetKhz;
-        }
-        if (state->hasXbarMsvddOffset) {
-            g_app.xbarMsvddOffsetUv = state->xbarMsvddOffsetUv;
-            g_app.xbarReadbackValid = state->xbarMsvddOffsetReadbackValid;
-            if (updateGui) g_app.guiXbarMsvddOffsetUv = state->xbarMsvddOffsetUv;
         }
         // state->fanMode is Green Curve intent, not necessarily the live driver
         // fan policy.  FanControl or another external controller may make NVML
@@ -858,4 +862,3 @@ static bool get_effective_control_state(ControlState* stateOut) {
         stateOut->fanMode);
     return stateOut->valid;
 }
-

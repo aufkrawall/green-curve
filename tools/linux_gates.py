@@ -396,9 +396,10 @@ def check_startup_policy(ctx, require_text, forbid_text):
     daemon_cpp = _p(ctx, "linux_daemon.cpp")
     policy_h = _p(ctx, "linux_startup_policy.h")
     cli_cpp = _p(ctx, "linux_cli_options.cpp")
-    require_text(protocol_h, "SERVICE_PROTOCOL_VERSION = 19",
+    require_text(protocol_h, "SERVICE_PROTOCOL_VERSION = 20",
                  "the startup-policy, readback-validity, outcome-severity and "
-                 "update-state fields each moved the protocol version with them")
+                 "update-state/XBAR fields each moved the protocol version with "
+                 "them")
     # F-LNX-STARTUP-SNAPSHOT: the boot-apply snapshot must travel in its own
     # response member. It used to ride in `desired`, which the end-of-request
     # stamp overwrites, so every staleness check compared the applied settings

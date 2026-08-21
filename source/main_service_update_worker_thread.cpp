@@ -6,6 +6,8 @@
 // source-size ratchet; the orchestration functions it calls are statics from
 // that shard and are visible because the amalgamation includes this after it.
 
+#include "update_worker_recovery_policy.h"
+
 enum GcUpdateWorkKind {
     // The periodic tick.  Auto-check must be ON and the interval elapsed.
     GC_UPDATE_WORK_CHECK_AUTOMATIC = 0,
@@ -56,9 +58,16 @@ static DWORD WINAPI service_update_worker_thread(LPVOID param) {
                 currentManifest = g_updateState.manifest;
                 currentManifestValid = g_updateState.manifestValid;
             }
-            if (stagedStillVerified && currentManifestValid &&
+            bool stagedPackageMatches = stagedStillVerified &&
+                currentManifestValid &&
                 service_update_staged_package_matches_manifest(
-                    &currentManifest, err, sizeof(err))) {
+                    &currentManifest, err, sizeof(err));
+            if (gc_update_failed_check_recovery(
+                    stagedStillVerified,
+                    g_updateState.decision == GC_UPDATE_DECISION_AVAILABLE,
+                    currentManifestValid,
+                    stagedPackageMatches) ==
+                GC_UPDATE_FAILED_CHECK_KEEP_READY) {
                 service_update_set_phase(
                     SERVICE_UPDATE_PHASE_READY,
                     "The update check failed, but the verified package is still ready.");
@@ -81,10 +90,12 @@ static DWORD WINAPI service_update_worker_thread(LPVOID param) {
             }
             if (staged) {
                 char verifyErr[256] = {};
-                bool stagedStillVerified = currentManifestValid &&
+                bool stagedPackageMatches = currentManifestValid &&
                     service_update_staged_package_matches_manifest(
                         &currentManifest, verifyErr, sizeof(verifyErr));
-                if (stagedStillVerified) {
+                if (gc_update_staged_check_action(currentManifestValid,
+                                                  stagedPackageMatches) ==
+                    GC_UPDATE_STAGED_KEEP) {
                     service_update_set_phase(SERVICE_UPDATE_PHASE_READY, nullptr);
                     staged = true;
                 } else {

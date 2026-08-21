@@ -8,6 +8,8 @@
 // here reads the request for AT MOST two integers, and never for a path, a
 // version, a digest or a URL.  See service_protocol_update.h for why.
 
+#include "log_redaction_policy.h"
+
 // The single entry point the pipe's switch calls for all four commands.  Kept
 // as one grouped case there because main_service_pipe.cpp is at its size
 // ratchet, and because the four share exactly one property worth stating once:
@@ -66,9 +68,11 @@ static void service_handle_update_install_request(ServiceResponse& response,
         response.status = SERVICE_STATUS_OK;
         StringCchCopyA(response.message, ARRAY_COUNT(response.message),
                        "Installing update");
+        char userToken[32] = {};
+        gc_log_identifier_token(callerUser, userToken, sizeof(userToken));
         debug_log("update: install requested by pid=%lu session=%lu user=%s\n",
                   (unsigned long)callerPid, (unsigned long)callerSessionId,
-                  callerUser && callerUser[0] ? callerUser : "<unknown>");
+                  userToken);
     } else {
         {
             GcUpdateStateLock guard;

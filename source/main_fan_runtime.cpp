@@ -381,29 +381,6 @@ static void show_profiles_popup(HWND hwnd) {
 // opened from a button on the already-foreground main window, the tray menu
 // must not raise that window, so it owns a neutral foreground window instead.
 
-static bool activate_existing_instance_window() {
-    for (int attempt = 0; attempt < 20; attempt++) {
-        HWND existing = FindWindowA(APP_CLASS_NAME, nullptr);
-        if (existing && IsWindow(existing)) {
-            HWND target = GetLastActivePopup(existing);
-            if (!target || !IsWindow(target)) target = existing;
-            if (target != existing) {
-                ShowWindow(target, SW_SHOW);
-                ShowWindow(target, SW_RESTORE);
-                BringWindowToTop(target);
-                SetForegroundWindow(target);
-            } else {
-                // Route main-window activation back through its own GUI thread
-                // so hidden-to-tray state, reconnect sync, and GDI retirement
-                // remain one transaction.
-                PostMessageA(existing, APP_WM_ACTIVATE_EXISTING_INSTANCE, 0, 0);
-            }
-            return true;
-        }
-        if (attempt + 1 < 20) Sleep(50);
-    }
-    return false;
-}
 static bool acquire_single_instance_mutex() {
     if (g_singleInstanceMutex) return true;
     g_singleInstanceMutex = CreateMutexA(nullptr, TRUE, APP_SINGLE_INSTANCE_MUTEX_NAME);
@@ -906,3 +883,4 @@ static bool apply_fan_settings(const DesiredSettings* desired, char* failureDeta
     outFanChanged = fanChanged;
     return true;
 }
+#include "single_instance_win32.cpp"

@@ -2185,9 +2185,8 @@ def run_source_regression_checks():
 
     require_text(shared_h, "APP_DEBUG_DEFAULT_ENABLED 1", "debug logging remains default-on")
     require_text(shared_h, "APP_TITLE           APP_NAME \" v\" APP_VERSION", "plain title macro exists")
-    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 19",
-                 "service protocol publishes an explicit outcome severity and "
-                 "the v19 update state")
+    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 20",
+                 "service protocol publishes outcome severity, update state and XBAR")
     require_text(shared_h, "typedef gc_u8 gc_bool8", "IPC bool fields use a fixed-width one-byte type")
     require_text(shared_h, "canonicalize_gc_bool8", "IPC bool fields are canonicalized at trust boundaries")
     require_text(shared_h, "validate_service_response_for_ipc", "service responses are canonicalized before GUI use")
@@ -2561,7 +2560,8 @@ def run_source_regression_checks():
     require_text(cli_help_cpp, "--self-test", "the read-only pre-flight is documented in the usage text")
     require_text(config_profiles_ui_cpp, "update_share_all_users_check_state", "GUI updates the share-with-all-users checkbox state")
     require_text(config_profiles_ui_cpp, "refresh_machine_logon_slot_cache", "GUI refreshes machine logon slot cache")
-    require_text(main_fan_runtime_cpp, "FindWindowA", "single-instance lookup uses ANSI class matching")
+    require_text(os.path.join(SOURCE_DIR, "single_instance_win32.cpp"),
+                 "FindWindowA", "single-instance lookup uses ANSI class matching")
     require_text(build_script, "--check", "build check flag exists")
     require_text(build_script, "--test", "test flag exists")
     require_text(build_script, "compile_commands.json", "LSP database generation exists")
@@ -3857,7 +3857,7 @@ def run_source_regression_checks():
     require_text(os.path.join(SOURCE_DIR, "main_fan_runtime.cpp"),
                  "duplicate tray-autostart process exited without reopening",
                  "duplicate background tray startup cannot resurrect a hidden window")
-    require_text(os.path.join(SOURCE_DIR, "main_fan_runtime.cpp"),
+    require_text(os.path.join(SOURCE_DIR, "single_instance_win32.cpp"),
                  "APP_WM_ACTIVATE_EXISTING_INSTANCE",
                  "explicit second-instance activation is routed through the resident GUI thread")
     forbid_text_in_operation(ui_main_window_cpp, "case WM_PAINT:",

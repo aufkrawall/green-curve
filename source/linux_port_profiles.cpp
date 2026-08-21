@@ -535,10 +535,17 @@ static void write_profile_sections(IniDocument* doc, const char* controlsSection
     addControl("mem_offset_mhz", value);
     snprintf(value, sizeof(value), "%d", desired->powerLimitPct);
     addControl("power_limit_pct", value);
-    snprintf(value, sizeof(value), "%d", desired->xbarOffsetKhz);
-    addControl("xbar_offset_khz", value);
-    snprintf(value, sizeof(value), "%d", desired->xbarMsvddOffsetUv);
-    addControl("xbar_msvdd_offset_uv", value);
+    // Preserve the record's ownership declaration.  Fabricating explicit zeros
+    // would turn a profile that never owned XBAR into one that resets it after
+    // transfer to a supported Blackwell system.
+    if (desired->hasXbarOffsetKhz) {
+        snprintf(value, sizeof(value), "%d", desired->xbarOffsetKhz);
+        addControl("xbar_offset_khz", value);
+    }
+    if (desired->hasXbarMsvddOffsetUv) {
+        snprintf(value, sizeof(value), "%d", desired->xbarMsvddOffsetUv);
+        addControl("xbar_msvdd_offset_uv", value);
+    }
     addControl("fan_mode", fan_mode_to_config_value(desired->fanMode));
     if (desired->fanMode == FAN_MODE_AUTO) addControl("fan", "auto");
     else {

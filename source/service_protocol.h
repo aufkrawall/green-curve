@@ -55,7 +55,13 @@ enum {
     // response, and two request integers. Both structs changed size, so the
     // ends genuinely cannot talk to each other. See service_protocol_update.h
     // for the trust boundary those commands express.
-    SERVICE_PROTOCOL_VERSION = 19,
+    //
+    // v20 adds the Blackwell XBAR clock/MSVDD domain. ServiceRequest,
+    // ControlState, ServiceSnapshot, and therefore ServiceResponse all changed
+    // size. The fixed-size transports must refuse a mixed pair at the eight-byte
+    // prefix; reusing v19 would make both ends accept the header and then wait
+    // for a different body length.
+    SERVICE_PROTOCOL_VERSION = 20,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply. Bit 30 marks an
@@ -584,6 +590,12 @@ struct ServiceSnapshot {
     unsigned int xbarMeasuredClockKhz;
     ServiceGpuHealth health;
 };
+static_assert(sizeof(ControlState) == 168,
+              "ControlState changed without an IPC protocol-version bump");
+static_assert(sizeof(DesiredSettings) == 816,
+              "DesiredSettings changed without an IPC protocol-version bump");
+static_assert(sizeof(ServiceSnapshot) == 4216,
+              "ServiceSnapshot changed without an IPC protocol-version bump");
 
 struct ServiceRequest {
     gc_u32 magic;
@@ -624,7 +636,8 @@ struct ServiceRequest {
 static_assert(offsetof(ServiceRequest, magic) == 0, "ServiceRequest.magic must be at offset 0");
 static_assert(offsetof(ServiceRequest, version) == 4, "ServiceRequest.version offset changed");
 static_assert(offsetof(ServiceRequest, command) == 8, "ServiceRequest.command offset changed");
-static_assert(sizeof(ServiceRequest) < 65536, "ServiceRequest size sanity check");
+static_assert(sizeof(ServiceRequest) == 1408,
+              "ServiceRequest changed without an IPC protocol-version bump");
 
 static inline bool service_wire_string_is_terminated(
     const char* value, unsigned int count) {
@@ -734,7 +747,8 @@ struct ServiceResponse {
 };
 static_assert(offsetof(ServiceResponse, magic) == 0, "ServiceResponse.magic must be at offset 0");
 static_assert(offsetof(ServiceResponse, version) == 4, "ServiceResponse.version offset changed");
-static_assert(sizeof(ServiceResponse) < 262144, "ServiceResponse size sanity check");
+static_assert(sizeof(ServiceResponse) == 7016,
+              "ServiceResponse changed without an IPC protocol-version bump");
 
 static inline gc_u64 service_state_hash_u32(gc_u64 hash, gc_u32 value) {
     for (unsigned int i = 0; i < 4; ++i) {

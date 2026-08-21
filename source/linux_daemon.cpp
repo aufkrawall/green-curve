@@ -9,6 +9,7 @@
 #endif
 
 #include "linux_daemon.h"
+#include "log_redaction_policy.h"
 #include "linux_backend.h"
 #include "linux_crash_breadcrumb.h"
 #include "linux_daemon_state.h"
@@ -620,11 +621,16 @@ int linux_daemon_run(const char* configPath) {
     // too or a daemon crash would only reach the journal.
     linux_set_crash_log_fd(linux_debug_log_raw_fd());
     linux_set_crash_phase("daemon-init");
+    char daemonConfigToken[32] = {};
+    char daemonLogToken[32] = {};
+    gc_log_path_token(configPath, daemonConfigToken, sizeof(daemonConfigToken));
+    gc_log_path_token(linux_debug_log_path(), daemonLogToken,
+                      sizeof(daemonLogToken));
     dlog("daemon: version=%s build=%u protocol=%u pid=%ld config=%s log=%s\n",
          APP_VERSION, (unsigned int)APP_BUILD_NUMBER,
          (unsigned int)SERVICE_PROTOCOL_VERSION, (long)getpid(),
-         configPath && configPath[0] ? configPath : "<none>",
-         linux_debug_log_path());
+         daemonConfigToken,
+         daemonLogToken);
 
     char err[256] = {};
     if (linux_backend_init(&g_gpu, nullptr, err, sizeof(err))) {

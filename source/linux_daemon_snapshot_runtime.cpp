@@ -58,9 +58,9 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
     }
     // XBAR clock domain state (Blackwell only).
     s->xbarSupported = g_gpu.xbarProbeValid;
-    s->xbarOffsetReadbackValid = g_gpu.xbarReadbackValid;
+    s->xbarOffsetReadbackValid = g_gpu.xbarFreqReadbackValid;
     s->xbarOffsetKhz = g_gpu.xbarFreqOffsetKhz;
-    s->xbarMsvddOffsetReadbackValid = g_gpu.xbarReadbackValid;
+    s->xbarMsvddOffsetReadbackValid = g_gpu.xbarMsvddReadbackValid;
     s->xbarMsvddOffsetUv = g_gpu.xbarMsvddOffsetUv;
     s->xbarMeasuredClockKhz = g_gpu.xbarMeasuredClockKhz;
     gc_strlcpy(s->gpuName, sizeof(s->gpuName), g_gpu.gpuName[0] ? g_gpu.gpuName : "NVIDIA GPU");

@@ -130,6 +130,8 @@ void debug_log(const char*, ...) {}
 // NvAPI seam declarations, so fake get/set/measure functions can pin readback.
 typedef int (*NvApiFunc)(void*, void*);
 #include "gpu_backend_xbar.h"
+#include "log_redaction_policy.h"
+#include "update_worker_recovery_policy.h"
 
 #if defined(_WIN32)
 // The real CNG verifier, compiled straight into the harness so the
@@ -1914,7 +1916,16 @@ static int run_all_tests(int argc, char** argv) {
     // Protocol-v13 request validation, mutation preconditions, and field layout.
     {
         if (SERVICE_PROTOCOL_MAGIC != 0x47535643u) return 80;
-        if (SERVICE_PROTOCOL_VERSION != 19) return 81;
+        if (SERVICE_PROTOCOL_VERSION != 20) return 81;
+        // These are release gates, not incidental layout observations. A field
+        // addition that changes a fixed-size IPC structure must bump the wire
+        // version; otherwise mixed old/new peers pass the header handshake and
+        // then disagree on the number of body bytes to read.
+        if (sizeof(ServiceRequest) != 1408 ||
+            sizeof(ControlState) != 168 ||
+            sizeof(DesiredSettings) != 816 ||
+            sizeof(ServiceSnapshot) != 4216 ||
+            sizeof(ServiceResponse) != 7016) return 4521;
         if (offsetof(ServiceRequest, expectedServiceInstanceId) <=
             offsetof(ServiceRequest, operationId) ||
             offsetof(ServiceResponse, state) <=
@@ -2216,11 +2227,15 @@ static int run_all_tests(int argc, char** argv) {
     {
         ServiceWirePrefix current = {
             SERVICE_PROTOCOL_MAGIC, SERVICE_PROTOCOL_VERSION};
+        ServiceWirePrefix previous = {
+            SERVICE_PROTOCOL_MAGIC, SERVICE_PROTOCOL_VERSION - 1};
         ServiceWirePrefix old = {SERVICE_PROTOCOL_MAGIC, 8};
         ServiceWirePrefix bad = {0, SERVICE_PROTOCOL_VERSION};
         if (sizeof(ServiceWirePrefix) != 8 ||
             service_wire_prefix_disposition(&current) !=
                 SERVICE_WIRE_PREFIX_CURRENT ||
+            service_wire_prefix_disposition(&previous) !=
+                SERVICE_WIRE_PREFIX_VERSION_MISMATCH ||
             service_wire_prefix_disposition(&old) !=
                 SERVICE_WIRE_PREFIX_VERSION_MISMATCH ||
             service_wire_prefix_disposition(&bad) !=
@@ -11305,8 +11320,75 @@ static int run_all_tests(int argc, char** argv) {
         if (xbar_write(get, set, measure, gpu, &snap,
                        450000, 10000, true, true)) return 4507;
         corruptReadback = false;
+
+        // A future/malformed response with a plausible-looking repeated marker
+        // at another offset must leave XBAR unavailable rather than become a
+        // candidate preimage for a privileged SET_CONTROL transaction.
+        {
+            static unsigned char hostile[XBAR_CONTROL_BUF_SIZE];
+            memset(hostile, 0, sizeof(hostile));
+            xbar_put_u32(hostile, 0, XBAR_NVAPI_CLK_DOMAINS_VERSION);
+            xbar_put_u32(hostile, XBAR_CONTROL_MASK_OFFSET,
+                         XBAR_CONTROL_DOMAIN_MASK);
+            for (unsigned int i = 0; i < 12; ++i)
+                xbar_put_u32(hostile, 0x200 + i * 0x180, XBAR_DOMAIN_MARKER);
+            XbarBufferLayout badLayout{};
+            if (xbar_layout_for_buffer(hostile, &badLayout)) return 4508;
+            xbar_put_u32(templateBuf, base + 5 * stride,
+                         XBAR_DOMAIN_MARKER + 1);
+            if (xbar_layout_for_buffer(templateBuf, &badLayout)) return 4509;
+            xbar_put_u32(templateBuf, base + 5 * stride, XBAR_DOMAIN_MARKER);
+        }
     }
 
     DeleteCriticalSection(&g_configLock);
+    // Privacy redaction is a diagnostic contract: stable enough to correlate
+    // events, opaque enough that default support logs do not carry raw account,
+    // SID/LUID, or user-profile path strings.
+    {
+        // Updater worker recovery: a transport failure cannot erase a package
+        // that is still staged against the latest signed manifest, but any
+        // missing precondition must return to FAILED rather than install.
+        char a[32] = {};
+        char b[32] = {};
+        gc_log_identifier_token("alice", a, sizeof(a));
+        gc_log_identifier_token("alice", b, sizeof(b));
+        if (strcmp(a, b) != 0 || strstr(a, "alice") != nullptr) return 4522;
+        gc_log_identifier_token("bob", b, sizeof(b));
+        if (strcmp(a, b) == 0) return 4523;
+        gc_log_identifier_token("", b, sizeof(b));
+        if (strcmp(b, "-") != 0) return 4524;
+
+        gc_log_path_token("%PROGRAMDATA%\\Green Curve\\config.ini", a, sizeof(a));
+        gc_log_path_token("%PROGRAMDATA%\\Green Curve\\config.ini", b, sizeof(b));
+        if (strcmp(a, b) != 0 || strstr(a, "Green Curve") != nullptr ||
+            strncmp(a, "[path #", 7) != 0) return 4525;
+
+        char low[32] = {};
+        char high[32] = {};
+        gc_log_u64_token(0x1122334455667788ULL, low, sizeof(low));
+        gc_log_u64_token(0x8877665544332211ULL, high, sizeof(high));
+        if (strcmp(low, high) == 0) return 4531;
+        if (strncmp(low, "[id #", 5) != 0) return 4532;
+
+        if (gc_update_failed_check_recovery(true, true, true, true) !=
+            GC_UPDATE_FAILED_CHECK_KEEP_READY) return 4527;
+        if (gc_update_failed_check_recovery(false, true, true, true) !=
+            GC_UPDATE_FAILED_CHECK_MARK_FAILED ||
+            gc_update_failed_check_recovery(true, false, true, true) !=
+                GC_UPDATE_FAILED_CHECK_MARK_FAILED ||
+            gc_update_failed_check_recovery(true, true, false, true) !=
+                GC_UPDATE_FAILED_CHECK_MARK_FAILED ||
+            gc_update_failed_check_recovery(true, true, true, false) !=
+                GC_UPDATE_FAILED_CHECK_MARK_FAILED) return 4528;
+
+        if (gc_update_staged_check_action(true, true) !=
+            GC_UPDATE_STAGED_KEEP) return 4529;
+        if (gc_update_staged_check_action(false, true) !=
+                GC_UPDATE_STAGED_DISCARD ||
+            gc_update_staged_check_action(true, false) !=
+                GC_UPDATE_STAGED_DISCARD) return 4530;
+    }
+
     return 0;
 }

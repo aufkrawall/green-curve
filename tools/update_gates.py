@@ -554,6 +554,22 @@ def check_machine_state_is_machine_scoped(ctx, require_text, forbid_text):
     # rather than fixed. Requiring the correct resolver is the real property.
 
 
+def check_worker_recovery_is_pure_and_wired(ctx, require_text, harness_source_path):
+    """The failed-check/staged-package recovery decision is executable."""
+    worker = _p(ctx, "main_service_update_worker_thread.cpp")
+    policy = _p(ctx, "update_worker_recovery_policy.h")
+    require_text(worker, "#include \"update_worker_recovery_policy.h\"",
+                 "worker recovery uses the shared pure policy")
+    require_text(worker, "gc_update_failed_check_recovery(",
+                 "failed-check READY preservation goes through one pure decision")
+    require_text(worker, "gc_update_staged_check_action(",
+                 "successful-check staged revalidation goes through one decision")
+    require_text(policy, "packageStaged && decisionAvailable && manifestValid &&",
+                 "READY preservation requires every staged-package precondition")
+    require_text(harness_source_path, "gc_update_failed_check_recovery(true, true, true, true)",
+                 "worker recovery policy has executable coverage")
+
+
 def check_all(ctx, require_text, forbid_text, require_order, harness_source_path):
     check_gui_cannot_choose_the_target(ctx, require_text, forbid_text)
     check_signature_precedes_parse(ctx, require_order)
@@ -571,5 +587,7 @@ def check_all(ctx, require_text, forbid_text, require_order, harness_source_path
                                           require_order)
     check_update_is_actually_surfaced(ctx, require_text, require_order)
     check_machine_state_is_machine_scoped(ctx, require_text, forbid_text)
+    check_worker_recovery_is_pure_and_wired(ctx, require_text,
+                                            harness_source_path)
     check_download_is_bounded_before_it_is_written(ctx, require_text, require_order,
                                                    forbid_text, harness_source_path)

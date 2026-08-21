@@ -1206,7 +1206,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             if (xbar_write(xbarGetCtrl, xbarSetCtrl, xbarMeasure,
                            g_app.gpuHandle, &snap, targetFreqKhz, targetMsvddUv,
                            true, true)) {
-                g_app.xbarReadbackValid = true;
+                g_app.xbarFreqReadbackValid = true;
+                g_app.xbarMsvddReadbackValid = true;
                 g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
                 g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
                 g_app.xbarMeasuredClockKhz = snap.measuredKhz;

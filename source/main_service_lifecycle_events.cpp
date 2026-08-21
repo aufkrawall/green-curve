@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
+#include "log_redaction_policy.h"
+
 // ============================================================================
 // Lifecycle event inbox and readiness/config-watch posting
 // ============================================================================
@@ -479,9 +481,16 @@ static void service_lifecycle_note_explicit_session_supersession(
         g_serviceLastLifecycleTrigger,
         SERVICE_LIFECYCLE_RESULT_SUPERSEDED);
     LeaveCriticalSection(&g_appLock);
-    debug_log("lifecycle: current login %lu/%s auth=%llu satisfied by %s; later WTS/task duplicates will not auto-apply\n",
-        (unsigned long)identity.sessionId, identity.sid,
-        (unsigned long long)identity.authenticationId,
+    char supersessionSidToken[32] = {};
+    char supersessionAuthToken[32] = {};
+    gc_log_identifier_token(identity.sid, supersessionSidToken,
+                            sizeof(supersessionSidToken));
+    gc_log_u64_token(identity.authenticationId, supersessionAuthToken,
+                     sizeof(supersessionAuthToken));
+    debug_log("lifecycle: current login %lu/%s auth=%s satisfied by %s; later WTS/task duplicates will not auto-apply\n",
+        (unsigned long)identity.sessionId,
+        supersessionSidToken,
+        supersessionAuthToken,
         reason && reason[0] ? reason : "explicit action");
 }
 
@@ -569,10 +578,16 @@ static void service_lifecycle_worker_queue_logon(
     EnterCriticalSection(&g_appLock);
     ServiceLifecycleDecision decision = service_lifecycle_reduce_locked(&event);
     LeaveCriticalSection(&g_appLock);
-    debug_log("lifecycle logon: %s session=%lu sid=%s auth=%llu pending=%d coalesced=%d result=%u\n",
+    char sidToken[32] = {};
+    char authToken[32] = {};
+    gc_log_identifier_token(identity->sid, sidToken, sizeof(sidToken));
+    gc_log_u64_token(identity->authenticationId, authToken,
+                     sizeof(authToken));
+    debug_log("lifecycle logon: %s session=%lu sid=%s auth=%s pending=%d coalesced=%d result=%u\n",
         reason && reason[0] ? reason : "logon cue",
-        (unsigned long)identity->sessionId, identity->sid,
-        (unsigned long long)identity->authenticationId,
+        (unsigned long)identity->sessionId,
+        sidToken,
+        authToken,
         decision.attemptLogonPrerequisites ? 1 : 0,
         decision.coalesced ? 1 : 0, (unsigned int)decision.result);
 }

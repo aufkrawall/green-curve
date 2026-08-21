@@ -29,6 +29,13 @@ static const unsigned int XBAR_CONTROL_MASK_OFFSET = 8;
 static const unsigned int XBAR_CONTROL_DOMAIN_MASK = 0xff;
 static const unsigned int XBAR_DOMAIN_MARKER = 0x0f;
 static const unsigned int XBAR_DOMAIN_DEFAULT_INDEX = 1;
+// The only layout validated against the R572..R610 ClkDomains V2 response.
+// A future driver may move it, but guessing a new private layout is unsafe:
+// SET_CONTROL receives the complete block.  An unknown layout therefore leaves
+// the domain unavailable instead of selecting the "most plausible" words.
+static const unsigned int XBAR_PINNED_ENTRY_BASE = 0x124;
+static const unsigned int XBAR_PINNED_ENTRY_STRIDE = 0x304;
+static const unsigned int XBAR_PINNED_DOMAIN_COUNT = 8;
 static const unsigned int XBAR_FREQ_OFFSET_FIELD = 0x114;
 static const unsigned int XBAR_MSVDD_OFFSET_FIELD = 0x11c;
 static const unsigned int XBAR_MEASURE_DOMAIN_XBAR = 2;
@@ -68,72 +75,30 @@ static inline void xbar_put_i32(unsigned char* buf, unsigned int offset,
     xbar_put_u32(buf, offset, (unsigned int)value);
 }
 
-// Find repeated domain records without assuming one driver branch's base or
-// stride.  The marker is the first field observed in every ClkDomains entry.
-// Restricting strides to 0x40..0x1000 rejects unrelated repeated words while
-// covering all validated layouts.
-static inline bool xbar_discover_entry_layout(const unsigned char* buf,
-                                              unsigned int bufSize,
-                                              XbarBufferLayout* layout) {
-    if (!buf || !layout || bufSize < 0x200) return false;
-    unsigned int bestCount = 0;
-    XbarBufferLayout best{};
-    for (unsigned int first = 0x100; first + 4 <= bufSize; first += 4) {
-        if (xbar_get_u32(buf, first) != XBAR_DOMAIN_MARKER) continue;
-        for (unsigned int next = first + 0x40; next + 4 <= bufSize; next += 4) {
-            if (xbar_get_u32(buf, next) != XBAR_DOMAIN_MARKER) continue;
-            unsigned int stride = next - first;
-            if (stride < 0x40 || stride > 0x1000) continue;
-            unsigned int count = 0;
-            for (unsigned int off = first; off + 4 <= bufSize; off += stride) {
-                if (xbar_get_u32(buf, off) == XBAR_DOMAIN_MARKER) ++count;
-            }
-            bool better = count > bestCount ||
-                (count == bestCount && count > 0 &&
-                 (first < best.entryBase ||
-                  (first == best.entryBase && stride < best.entryStride)));
-            if (better) {
-                bestCount = count;
-                best.entryBase = first;
-                best.entryStride = stride;
-            }
-        }
-    }
-    if (bestCount < 2) return false;
-    *layout = best;
-    return true;
-}
-
-// A non-zero offset identifies XBAR after an out-of-band change.  At stock all
-// entries are zero, so fall back to the public NvAPI clock-domain enum value.
-static inline unsigned int xbar_select_domain_index(
-    const unsigned char* buf, const XbarBufferLayout& layout) {
-    unsigned int candidate = XBAR_DOMAIN_DEFAULT_INDEX;
-    unsigned int candidates = 0;
-    for (unsigned int index = 0; index < 32; ++index) {
-        unsigned long long base =
-            (unsigned long long)layout.entryBase +
-            (unsigned long long)index * layout.entryStride;
-        if (base + XBAR_MSVDD_OFFSET_FIELD + 4 > XBAR_CONTROL_BUF_SIZE) break;
-        if (xbar_get_u32(buf, (unsigned int)base + XBAR_FREQ_OFFSET_FIELD) != 0 ||
-            xbar_get_u32(buf, (unsigned int)base + XBAR_MSVDD_OFFSET_FIELD) != 0) {
-            candidate = index;
-            ++candidates;
-        }
-    }
-    return candidates == 1 ? candidate : XBAR_DOMAIN_DEFAULT_INDEX;
-}
-
+// Accept only the exact validated repeated-entry schema.  This is deliberately
+// not a "find the most plausible pattern" scanner: hostile or malformed driver
+// bytes can otherwise select a decoy stride, and SET_CONTROL sends the complete
+// buffer back to privileged hardware state.
 static inline bool xbar_layout_for_buffer(const unsigned char* buf,
                                           XbarBufferLayout* layout) {
     if (!buf || !layout) return false;
-    if (!xbar_discover_entry_layout(buf, XBAR_CONTROL_BUF_SIZE, layout))
-        return false;
-    layout->domainIndex = xbar_select_domain_index(buf, *layout);
+    for (unsigned int index = 0; index < XBAR_PINNED_DOMAIN_COUNT; ++index) {
+        unsigned long long markerOffset =
+            (unsigned long long)XBAR_PINNED_ENTRY_BASE +
+            (unsigned long long)index * XBAR_PINNED_ENTRY_STRIDE;
+        if (markerOffset + sizeof(unsigned int) > XBAR_CONTROL_BUF_SIZE ||
+            xbar_get_u32(buf, (unsigned int)markerOffset) !=
+                XBAR_DOMAIN_MARKER) {
+            return false;
+        }
+    }
+    layout->entryBase = XBAR_PINNED_ENTRY_BASE;
+    layout->entryStride = XBAR_PINNED_ENTRY_STRIDE;
+    layout->domainIndex = XBAR_DOMAIN_DEFAULT_INDEX;
     unsigned long long fieldEnd =
         (unsigned long long)layout->entryBase +
         (unsigned long long)layout->domainIndex * layout->entryStride +
-        XBAR_MSVDD_OFFSET_FIELD + 4;
+        XBAR_MSVDD_OFFSET_FIELD + sizeof(unsigned int);
     return fieldEnd <= XBAR_CONTROL_BUF_SIZE;
 }
 
@@ -187,7 +152,7 @@ static inline bool xbar_read_control(NvApiFunc getControl, void* gpuHandle,
     }
     XbarBufferLayout layout{};
     if (!xbar_layout_for_buffer(snap->buf, &layout)) {
-        debug_log("xbar_read: no plausible repeated domain layout\n");
+        debug_log("xbar_read: pinned ClkDomains V2 schema did not match\n");
         return false;
     }
     snap->entryBase = layout.entryBase;

@@ -3,6 +3,7 @@
 
 // Authenticated named-pipe listener and command dispatch.
 
+#include "log_redaction_policy.h"
 #include "main_service_pipe_primitives.h"
 // The three client-requested file writes, all of which run under the caller's
 // own token.  Included here so its position in the amalgamation is exactly
@@ -237,9 +238,12 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
                         StringCchPrintfA(response.message, ARRAY_COUNT(response.message),
                             "Logon handoff accepted for session %lu",
                             (unsigned long)callerSessionId);
+                        char handoffUserToken[32] = {};
+                        gc_log_identifier_token(callerUser, handoffUserToken,
+                                                sizeof(handoffUserToken));
                         debug_log("service logon handoff: authenticated caller pid=%lu session=%lu user=%s; profile/settings payload ignored\n",
                             (unsigned long)callerPid, (unsigned long)callerSessionId,
-                            callerUser[0] ? callerUser : "<unknown>");
+                            handoffUserToken);
                     }
                     populate_service_snapshot(&response.snapshot);
                     break;

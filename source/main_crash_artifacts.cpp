@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
+
+#include "log_redaction_policy.h"
 //
 // main_crash_artifacts.cpp — where a Windows crash leaves evidence.
 //
@@ -321,6 +323,9 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
         len = gc_appendf(text, ARRAY_COUNT(text), len,
             " fault=%s@%p", faultWrite ? "write" : "read", faultAddr);
     }
+    char crashConfigToken[32] = {};
+    gc_log_path_token(g_app.configPath, crashConfigToken,
+                      sizeof(crashConfigToken));
     len = gc_appendf(text, ARRAY_COUNT(text), len,
         " source=%s phase=%s serviceProcess=%d deviceRemoved=%d gpuDriverDll=%d config=%s",
         g_pendingOperationSource[0] ? g_pendingOperationSource : "<none>",
@@ -328,7 +333,7 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
         g_app.isServiceProcess ? 1 : 0,
         g_app.deviceRemoved ? 1 : 0,
         isGpuDriverDll ? 1 : 0,
-        g_app.configPath[0] ? g_app.configPath : "<unset>");
+        crashConfigToken);
     len = gc_appendf(text, ARRAY_COUNT(text), len,
         " version=%s build=%lu dump=%s\r\n",
         APP_VERSION,

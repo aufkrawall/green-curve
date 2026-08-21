@@ -269,7 +269,8 @@ static bool service_reset_all(char* result, size_t resultSize,
             XbarControlSnapshot snap{};
             if (xbar_reset_to_stock(xbarGet, xbarSet, xbarMeasure,
                                     g_app.gpuHandle, &snap)) {
-                g_app.xbarReadbackValid = true;
+                g_app.xbarFreqReadbackValid = true;
+                g_app.xbarMsvddReadbackValid = true;
                 g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
                 g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
                 g_app.xbarMeasuredClockKhz = snap.measuredKhz;

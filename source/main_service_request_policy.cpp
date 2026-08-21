@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
+#include "log_redaction_policy.h"
+
 // Service request validation, target binding, and explicit-supersession policy.
 
 struct ServicePolicyConfigLockGuard {
@@ -324,19 +326,21 @@ static bool service_apply_shared_only_policy(ServiceRequest* request,
         return false;
     }
     if (callerIsAdmin) return true;
+    char callerToken[32] = {};
+    gc_log_identifier_token(callerUser, callerToken, sizeof(callerToken));
     ServicePolicyConfigLockGuard policyLock;
     if (!policyLock.locked()) {
         set_message(err, errSize,
             "The machine profile policy is temporarily unavailable; no settings were applied.");
         debug_log("service APPLY rejected: shared-only policy transaction lock unavailable for non-admin caller %s\n",
-            callerUser && callerUser[0] ? callerUser : "<unknown>");
+            callerToken);
         return false;
     }
     bool restrictShared = false;
     bool policyReadable = get_machine_restrict_policy(&restrictShared);
     if (!policyReadable) {
         debug_log("service APPLY rejected: protected shared-only policy is unreadable for non-admin caller %s\n",
-            callerUser && callerUser[0] ? callerUser : "<unknown>");
+            callerToken);
         set_message(err, errSize,
             "The machine profile policy is temporarily unavailable; no settings were applied.");
         return false;
@@ -344,7 +348,7 @@ static bool service_apply_shared_only_policy(ServiceRequest* request,
     if (!restrictShared) return true;
     if (!(request->flags & SERVICE_REQUEST_FLAG_SHARED_SLOT)) {
         debug_log("service APPLY rejected: shared-only policy active; caller %s is not a machine admin and did not request a shared slot\n",
-            callerUser && callerUser[0] ? callerUser : "<unknown>");
+            callerToken);
         set_message(err, errSize,
             "Your administrator restricts this PC to shared profiles. Use \"Shared profiles...\" to load and apply one.");
         return false;
@@ -361,7 +365,7 @@ static bool service_apply_shared_only_policy(ServiceRequest* request,
         !load_profile_from_config(machinePath, sharedSlot, &sharedDesired,
             loadErr, sizeof(loadErr))) {
         debug_log("service APPLY rejected: shared slot %d unavailable for restricted caller %s: %s\n",
-            sharedSlot, callerUser && callerUser[0] ? callerUser : "<unknown>",
+            sharedSlot, callerToken,
             loadErr[0] ? loadErr : "unknown");
         set_message(err, errSize,
             "That shared profile is no longer available. Ask your administrator.");
@@ -375,7 +379,7 @@ static bool service_apply_shared_only_policy(ServiceRequest* request,
         !load_machine_profile_gpu_selection(sharedSlot,
             publishedGpuBinding, loadErr, sizeof(loadErr))) {
         debug_log("service APPLY rejected: shared slot %d has malformed published GPU binding for restricted caller %s: %s\n",
-            sharedSlot, callerUser && callerUser[0] ? callerUser : "<unknown>",
+            sharedSlot, callerToken,
             loadErr[0] ? loadErr : "unknown");
         set_message(err, errSize,
             "That shared profile has an invalid GPU binding. Ask your administrator to republish it.");
@@ -393,7 +397,7 @@ static bool service_apply_shared_only_policy(ServiceRequest* request,
     request->profileSlot = (gc_u32)sharedSlot;
     *enforcePublishedGpuBinding = true;
     debug_log("service APPLY: restricted caller %s applying admin shared slot %d (authoritative settings and GPU binding)\n",
-        callerUser && callerUser[0] ? callerUser : "<unknown>", sharedSlot);
+        callerToken, sharedSlot);
     return true;
 }
 

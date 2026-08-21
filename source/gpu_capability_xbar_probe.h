@@ -30,7 +30,8 @@ static void probe_xbar_control_surface(GpuCapabilityProbe* probe) {
     obs.readSucceeded = xbar_probe(getControl, measure, g_app.gpuHandle, &snap);
     if (obs.readSucceeded) {
         g_app.xbarProbeValid = true;
-        g_app.xbarReadbackValid = true;
+        g_app.xbarFreqReadbackValid = true;
+        g_app.xbarMsvddReadbackValid = true;
         g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
         g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
         g_app.xbarMeasuredClockKhz = snap.measuredKhz;

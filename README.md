@@ -52,7 +52,7 @@ It reports which NVAPI image loaded, whether the VF curve and control structs re
 - Uses NVML from the local NVIDIA driver install for supported management operations
 - Windows uses a local named pipe and a machine-wide Windows service running as `LocalSystem`
 - Does not ship NVIDIA driver binaries
-- Debug logging is on by default so issues are easier to diagnose; log files are size-capped and rotated automatically
+- Debug logging is on by default so issues are easier to diagnose. Logs are size-capped and rotated automatically; account names, SIDs, authentication IDs, and filesystem paths are reduced to opaque fingerprints, while GPU identifiers and applied settings remain useful for diagnosis
 - Linux uses a root systemd daemon and a Unix-domain socket (`/run/greencurve/greencurve.sock`, `greencurve` admin group), mirroring the Windows service/pipe split; it is a glibc-dynamic binary because it must `dlopen` the NVIDIA driver libraries
 - Tiny
 
@@ -79,7 +79,7 @@ Setup writes a log file next to itself **only if something fails**; a successful
 For unattended installs and updates:
 
 ```powershell
-greencurve-0.23.1-windows-x64-setup.exe /S
+greencurve-0.24.0-windows-x64-setup.exe /S
 ```
 
 `/S` installs or upgrades with no window (it still needs administrator rights, because it registers a service). `/D=<path>` selects the folder, `--no-start-menu` / `--desktop` / `--launch` override the shortcut and post-install behaviour, and `--uninstall` removes an installation. Exit codes are `0` success, `1` failure, `2` cancelled, `3` bad arguments. Run it with `/?` for the full list.

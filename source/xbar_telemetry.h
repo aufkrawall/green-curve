@@ -16,11 +16,13 @@ static bool xbar_refresh_live_state() {
     XbarControlSnapshot snap{};
     if (!xbar_read_control(getControl, g_app.gpuHandle, &snap)) {
         // Keep the last-known scalar for the editor, but stop claiming proof.
-        g_app.xbarReadbackValid = false;
+        g_app.xbarFreqReadbackValid = false;
+        g_app.xbarMsvddReadbackValid = false;
         return false;
     }
     xbar_measure_clock(measure, g_app.gpuHandle, &snap.measuredKhz);
-    g_app.xbarReadbackValid = true;
+    g_app.xbarFreqReadbackValid = true;
+    g_app.xbarMsvddReadbackValid = true;
     bool changed = g_app.xbarFreqOffsetKhz != snap.freqOffsetKhz ||
         g_app.xbarMsvddOffsetUv != snap.msvddOffsetUv ||
         g_app.xbarMeasuredClockKhz != snap.measuredKhz;

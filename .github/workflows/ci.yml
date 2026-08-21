@@ -1,7 +1,8 @@
 name: CI
 
-# Manual-only: run the full Windows/Linux CI gates on demand. There is no
-# automatic trigger, so a push alone never starts these jobs.
+# Run the full Windows/Linux merge gates automatically for main and pull
+# requests; expensive stable-release publication remains a separate manual
+# workflow.
 #
 # Actions are pinned to commit SHAs rather than tags, and the compilers come
 # from this repository's own Compilers release with SHA-256 pins in
@@ -9,6 +10,10 @@ name: CI
 # toolchain cache: it publishes nothing, and every restored tree is re-verified
 # against the manifest before it is used.
 on:
+  push:
+    branches:
+      - main
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -79,10 +84,14 @@ jobs:
       # runner image.  Neither can touch a release artifact: they only run in
       # this job, which publishes nothing.  Pinning them would mean vendoring a
       # full ~2 GB LLVM for Linux, since llvm-mingw ships no Linux ASan runtime.
-      - name: Install analysis tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes clang-tidy
+- name: Install analysis tools
+  run: |
+    sudo apt-get update
+    sudo apt-get install --yes clang-tidy-18
+    # build.py intentionally resolves one stable analyzer name. Pin it to the
+    # same major version as the documented ratchet instead of whatever the
+    # runner image happens to ship this month.
+    sudo ln -sf /usr/bin/clang-tidy-18 /usr/local/bin/clang-tidy
       - name: Verify the pinned toolchain
         run: python build.py --verify-toolchain
       - name: Build Linux target

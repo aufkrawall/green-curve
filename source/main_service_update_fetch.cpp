@@ -362,7 +362,7 @@ static bool gc_update_http_download_to_handle(const char* url, HANDLE dest,
     GcUpdateHttpHandles handles = {};
     if (!gc_update_http_open(url, &handles, err, errSize)) return false;
 
-    static const size_t kChunk = 256 * 1024;
+    static constexpr size_t kChunk = static_cast<size_t>(256) * 1024;
     unsigned char* buffer = (unsigned char*)HeapAlloc(GetProcessHeap(), 0, kChunk);
     if (!buffer) {
         StringCchCopyA(err, errSize, "out of memory downloading the update");

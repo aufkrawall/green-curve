@@ -6,6 +6,7 @@
 #include "linux_debug_log.h"
 
 #include "linux_daemon.h"
+#include "log_redaction_policy.h"
 #include "platform.h"
 
 #include <errno.h>
@@ -179,16 +180,21 @@ void linux_debug_logf(const char* fmt, ...) {
 void linux_debug_log_session(const char* role, const char* configPath,
                              const char* detail) {
     if (!g_enabled) return;
+    char sessionConfigToken[32] = {};
+    char sessionLogToken[32] = {};
+    gc_log_path_token(configPath, sessionConfigToken,
+                      sizeof(sessionConfigToken));
+    gc_log_path_token(g_path, sessionLogToken, sizeof(sessionLogToken));
     linux_debug_logf("===== SESSION BEGIN role=%s =====", role ? role : "unknown");
     linux_debug_logf(
         "version=%s build=%u protocol=%u pid=%ld uid=%u euid=%u config=%s log=%s",
         APP_VERSION, (unsigned int)APP_BUILD_NUMBER,
         (unsigned int)SERVICE_PROTOCOL_VERSION, (long)getpid(),
         (unsigned int)getuid(), (unsigned int)geteuid(),
-        configPath && configPath[0] ? configPath : "<none>", g_path);
+        sessionConfigToken, sessionLogToken);
     linux_debug_logf(
         "debug logging is enabled by default; it records GPU identifiers, "
-        "config paths and applied settings. Set %s=0 or [debug] enabled=0 to "
+        "path fingerprints and applied settings. Set %s=0 or [debug] enabled=0 to "
         "disable it.", LINUX_DEBUG_LOG_ENV);
     if (detail && detail[0]) linux_debug_logf("details=%s", detail);
 }

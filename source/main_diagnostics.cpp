@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
+#include "log_redaction_policy.h"
+
 static void close_debug_log_file() {
     EnterCriticalSection(&g_debugLogLock);
     if (g_debugLogFile != INVALID_HANDLE_VALUE) {
@@ -118,7 +120,8 @@ static void debug_log_session_marker(const char* phase, const char* kind, const 
     DWORD pid = GetCurrentProcessId();
     DWORD sessionId = 0;
     ProcessIdToSessionId(pid, &sessionId);
-    const char* configPath = g_app.configPath[0] ? g_app.configPath : "<unset>";
+    char configToken[32] = {};
+    gc_log_path_token(g_app.configPath, configToken, sizeof(configToken));
     debug_log("\n===== SESSION %s =====\n", phase ? phase : "MARK");
     debug_log("time=%04u-%02u-%02u %02u:%02u:%02u.%03u pid=%lu session=%lu kind=%s version=%s build=%lu protocol=%lu elevated=%d serviceProcess=%d serviceInstalled=%d serviceRunning=%d serviceAvailable=%d config=%s\n",
         now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds,
@@ -133,8 +136,8 @@ static void debug_log_session_marker(const char* phase, const char* kind, const 
         g_app.backgroundServiceInstalled ? 1 : 0,
         g_app.backgroundServiceRunning ? 1 : 0,
         g_app.backgroundServiceAvailable ? 1 : 0,
-        configPath);
-    debug_log("debug logging is enabled by default. This log may contain GPU identifiers, config paths, and applied settings.\n");
+        configToken);
+    debug_log("debug logging is enabled by default. This log may contain GPU identifiers, path fingerprints, and applied settings.\n");
     debug_log("Set GREEN_CURVE_DEBUG=0 or [debug] enabled=0 to disable logging.\n");
     if (extra && extra[0]) {
         debug_log("details=%s\n", extra);

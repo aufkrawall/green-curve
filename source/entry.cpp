@@ -1,6 +1,10 @@
 ﻿// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
+#include "log_redaction_policy.h"
+#include "single_instance_ready.h"
+#include "logon_handoff_status.h"
+
 // ============================================================================
 // Entry Point
 // ============================================================================
@@ -60,26 +64,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
         debug_log("logon startup: authenticated service handoff succeeded: %s\n",
             handoffResult[0] ? handoffResult : "accepted");
 
-        char taskLog[768] = {};
-        char timestamp[64] = {};
-        format_log_timestamp_prefix(timestamp, sizeof(timestamp));
-        StringCchPrintfA(taskLog, ARRAY_COUNT(taskLog),
-            "%sGreen Curve scheduled logon handoff accepted: automatic profile application is service-owned; elevated=%d config=%s result=%s\n",
-            timestamp,
-            is_elevated() ? 1 : 0,
-            g_app.configPath[0] ? g_app.configPath : "<unset>",
-            handoffResult[0] ? handoffResult : "accepted");
-        char pathErr[256] = {};
-        char writeErr[256] = {};
-        if (resolve_data_paths(pathErr, sizeof(pathErr))) {
-            if (!write_text_file_atomic(cli_log_path(), taskLog, strlen(taskLog), writeErr, sizeof(writeErr))) {
-                debug_log("logon startup: could not write silent handoff status: %s\n",
-                    writeErr[0] ? writeErr : "unknown error");
-            }
-        } else {
-            debug_log("logon startup: could not resolve silent handoff log path: %s\n",
-                pathErr[0] ? pathErr : "unknown error");
-        }
+        write_logon_handoff_accepted_status(handoffResult);
         debug_log("logon startup: silent task delegated automatic profile application to service\n");
         g_cliExitCode = 0;
         return true;
@@ -470,15 +455,20 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     }
     if (g_debug_logging) {
         g_debugSessionStartTickMs = GetTickCount64();
+        char configToken[32] = {};
+        gc_log_path_token(g_app.configPath, configToken, sizeof(configToken));
         debug_log("debug enabled: env=%d configExists=%d configDebug=%d path=%s\n",
             debugEnvEnabled ? 1 : 0,
             configExists ? 1 : 0,
             configDebugEnabled,
-            g_app.configPath);
+            configToken);
         debug_log_session_marker("BEGIN", "gui", wCmdLine ? "WinMain startup" : nullptr);
         // The earlier status probe precedes config-controlled debug enable, so
         // repeat it here for every normal debug log.  This is the diagnostic line
         // needed to distinguish a task launch from a service-pipe readiness race.
+        char startupConfigToken[32] = {};
+        gc_log_path_token(g_app.configPath, startupConfigToken,
+                          sizeof(startupConfigToken));
         debug_log("startup state: usingService=%d installed=%d running=%d available=%d broken=%d elevated=%d config=%s\n",
             g_app.usingBackgroundService ? 1 : 0,
             g_app.backgroundServiceInstalled ? 1 : 0,
@@ -486,7 +476,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
             g_app.backgroundServiceAvailable ? 1 : 0,
             g_app.backgroundServiceBroken ? 1 : 0,
             is_elevated() ? 1 : 0,
-            g_app.configPath[0] ? g_app.configPath : "<unset>");
+            startupConfigToken);
     }
     SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
 
@@ -590,6 +580,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     debug_log("main window created: placement=%s rect=%ld,%ld %dx%d\n",
         restoredPlacement ? "restored" : "centered",
         initialRect.left, initialRect.top, winW, winH);
+
+    signal_single_instance_window_ready();
 
     if (!g_app.hMainWnd) {
         MessageBoxA(nullptr, "Failed to create window.", "Green Curve", MB_OK | MB_ICONERROR);

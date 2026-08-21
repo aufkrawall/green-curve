@@ -37,6 +37,17 @@ def check_xbar_clk_domains(ctx, require_text, forbid_text):
     require_text(backend_h,
                  "XBAR_NVAPI_CLK_MEASURE             0x527FC458u",
                  "F-XBAR-V2: physical clock measurement ID is pinned")
+    require_text(backend_h,
+                 "XBAR_PINNED_ENTRY_BASE = 0x124",
+                 "F-XBAR-V2-SCHEMA: the validated ClkDomains entry base is pinned")
+    require_text(backend_h,
+                 "XBAR_PINNED_ENTRY_STRIDE = 0x304",
+                 "F-XBAR-V2-SCHEMA: the validated ClkDomains entry stride is pinned")
+    require_text(backend_h,
+                 "XBAR_PINNED_DOMAIN_COUNT = 8",
+                 "F-XBAR-V2-SCHEMA: every validated domain marker is required")
+    forbid_text(backend_h, "xbar_discover_entry_layout(",
+                "F-XBAR-V2-SCHEMA: ambiguous repeated-pattern discovery must not return")
     require_text(probe_h, "probe_xbar_control_surface(&probe);",
                  "F-XBAR-V2: capability probe uses one focused helper")
     forbid_text(probe_h, "0x20809019u",
@@ -119,8 +130,11 @@ def check_xbar_profile_contract(ctx, require_text, forbid_text):
                  "Linux writes portable XBAR MSVDD profile fields")
 
     require_text(telemetry_h,
-                 "g_app.xbarReadbackValid = false;",
-                 "failed XBAR telemetry does not retain stale proof")
+                 "g_app.xbarFreqReadbackValid = false;",
+                 "failed XBAR telemetry does not retain stale clock proof")
+    require_text(telemetry_h,
+                 "g_app.xbarMsvddReadbackValid = false;",
+                 "failed XBAR telemetry does not retain stale voltage proof")
     require_text(_p(ctx, "main_runtime_control.cpp"),
                  "if (g_app.xbarProbeValid) {",
                  "capture owns XBAR only when the selected surface answered")
@@ -128,7 +142,11 @@ def check_xbar_profile_contract(ctx, require_text, forbid_text):
                  "ignored portable XBAR fields; surface unavailable",
                  "portable profiles do not make an unsupported GPU fail")
     require_text(sync_cpp,
-                 "snapshot->xbarOffsetReadbackValid = g_app.xbarReadbackValid;",
+                 "snapshot->xbarOffsetReadbackValid = g_app.xbarFreqReadbackValid;",
+                 "service snapshots carry truthful XBAR clock provenance")
+    require_text(sync_cpp,
+                 "snapshot->xbarMsvddOffsetReadbackValid = "
+                 "g_app.xbarMsvddReadbackValid;",
                  "service snapshots carry truthful XBAR readback provenance")
 
 

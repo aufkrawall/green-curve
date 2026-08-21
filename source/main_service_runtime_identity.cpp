@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
+#include "log_redaction_policy.h"
+
 // Driver-recovery monitoring, runtime serialization, and caller/session identity.
 
 // ---- NVML close helper (used by the VEH) ----
@@ -687,12 +689,14 @@ static bool service_caller_is_authorized(HANDLE pipe, const char* source,
         if (callerSessionId != activeSessionId) {
             set_message(err, errSize,
                 "Service control is restricted to the active interactive session");
+            char userToken[32] = {};
+            gc_log_identifier_token(callerUser, userToken, sizeof(userToken));
             debug_log("service auth reject: source=%s pid=%lu session=%lu activeSession=%lu user=%s\n",
                 source ? source : "<none>",
                 callerPid,
                 callerSessionId,
                 activeSessionId,
-                callerUser[0] ? callerUser : "<unknown>");
+                userToken);
             CloseHandle(duplicatedToken);
             return false;
         }
@@ -701,10 +705,16 @@ static bool service_caller_is_authorized(HANDLE pipe, const char* source,
         // transition to ACTIVE. The lifecycle worker retains this exact token
         // identity and rechecks active-session ownership immediately before any
         // write, so rejecting it here would recreate the startup timing bug.
+        char lifecycleUserToken[32] = {};
+        char lifecycleAuthToken[32] = {};
+        gc_log_identifier_token(callerUser, lifecycleUserToken,
+                                sizeof(lifecycleUserToken));
+        gc_log_u64_token(lifecycleIdentity.authenticationId,
+                         lifecycleAuthToken, sizeof(lifecycleAuthToken));
         debug_log("service auth: accepted settings-free lifecycle handoff before active-session gating pid=%lu session=%lu user=%s auth=%llu\n",
             (unsigned long)callerPid, (unsigned long)callerSessionId,
-            callerUser[0] ? callerUser : "<unknown>",
-            (unsigned long long)lifecycleIdentity.authenticationId);
+            lifecycleUserToken,
+            lifecycleAuthToken);
     }
 
     if (callerUserOut && callerUserOutSize > 0) {
@@ -768,10 +778,12 @@ static bool service_resolve_active_user_paths_for_startup(const char* context) {
         set_default_config_path();
     }
     refresh_service_debug_logging_from_config();
+    char readyConfigToken[32] = {};
+    gc_log_path_token(g_app.configPath, readyConfigToken, sizeof(readyConfigToken));
     debug_log("service user paths ready%s%s: session=%lu config=%s\n",
         context && context[0] ? " for " : "",
         context && context[0] ? context : "",
         sessionId,
-        g_app.configPath[0] ? g_app.configPath : "<unset>");
+        readyConfigToken);
     return true;
 }
