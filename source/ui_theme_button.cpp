@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+﻿// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
 // Owner-drawn button and checkbox painting for the main window and the fan
@@ -52,6 +52,7 @@ static bool is_themed_button_id(UINT id) {
         case REFRESH_BTN_ID:
         case RESET_BTN_ID:
         case LICENSE_BTN_ID:
+        case XBAR_ADVANCED_BTN_ID:
         case UPDATE_BTN_ID:
         case PROFILE_LOAD_ID:
         case PROFILE_SAVE_ID:

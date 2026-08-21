@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+﻿// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
 // ============================================================================
@@ -653,6 +653,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         0, "BUTTON", "Updates", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
         0, 0, dp(84), dp(30),
         g_app.hMainWnd, (HMENU)(INT_PTR)UPDATE_BTN_ID, hInstance, nullptr);
+    g_app.hXbarAdvancedBtn = CreateWindowExA(
+        0, "BUTTON", "Advanced...", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        0, 0, dp(100), dp(30),
+        g_app.hMainWnd, (HMENU)(INT_PTR)XBAR_ADVANCED_BTN_ID, hInstance, nullptr);
 
     g_app.hProfileCombo = CreateWindowExA(
         0, "COMBOBOX", "",

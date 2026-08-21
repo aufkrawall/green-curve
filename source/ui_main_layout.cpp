@@ -415,6 +415,11 @@ static void main_layout_place_controls(
     const int rowFloor = margin + dp(254) + dp(98) + dp(8);
     const int updateX = main_layout_right_anchored_x(
         plan.contentWidth, updateW + dp(8) + licenseW, margin, rowFloor);
+        const int xbarW = dp(100);
+    const int xbarX = main_layout_right_anchored_x(
+        plan.contentWidth, xbarW + dp(8) + updateW + dp(8) + licenseW, margin, rowFloor);
+    main_layout_move(&batch, g_app.hXbarAdvancedBtn, xbarX, plan.buttonsY,
+        xbarW, buttonH);
     main_layout_move(&batch, g_app.hUpdateBtn, updateX, plan.buttonsY,
         updateW, buttonH);
     main_layout_move(&batch, g_app.hLicenseBtn,

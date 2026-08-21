@@ -172,11 +172,7 @@ static void create_edit_controls(HWND hParent, HINSTANCE hInst) {
         0, "BUTTON", "Edit Curve...", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
         dp(1006), ocY - dp(1), dp(160), dp(24),
         hParent, (HMENU)(INT_PTR)FAN_CURVE_BTN_ID, hInst, nullptr);
-    // XBAR "Advanced..." button: only visible for Blackwell GPUs with XBAR support.
-    g_app.hXbarAdvancedBtn = CreateWindowExA(
-        0, "BUTTON", "Advanced...", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-        dp(1172), ocY - dp(1), dp(120), dp(24),
-        hParent, (HMENU)(INT_PTR)XBAR_ADVANCED_BTN_ID, hInst, nullptr);
+
 
     layout_bottom_buttons(hParent);
     style_combo_control(g_app.hProfileCombo);
