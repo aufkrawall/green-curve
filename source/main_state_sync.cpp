@@ -222,7 +222,7 @@ static void populate_service_snapshot_locked(ServiceSnapshot* snapshot,
     snapshot->health.capabilityMemoryTopology = (gc_u8)g_app.gpuCapability.memoryTopology;
     snapshot->health.capabilityDomainsPacked = gpu_capability_pack_domains(&g_app.gpuCapability);
     snapshot->xbarSupported = g_app.xbarProbeValid;
-    snapshot->xbarOffsetReadbackValid = g_app.xbarProbeValid;
+    snapshot->xbarOffsetReadbackValid = g_app.xbarReadbackValid;
     snapshot->xbarOffsetKhz = g_app.xbarFreqOffsetKhz;
     snapshot->xbarMsvddOffsetReadbackValid = g_app.xbarProbeValid;
     snapshot->xbarMsvddOffsetUv = g_app.xbarMsvddOffsetUv;
@@ -258,7 +258,7 @@ static void populate_control_state_locked(ControlState* state) {
     copy_fan_curve(&state->fanCurve, current_green_curve_fan_intent_curve());
     ensure_valid_fan_curve_config(&state->fanCurve);
     state->hasXbarOffset = g_app.xbarProbeValid;
-    state->xbarOffsetReadbackValid = g_app.xbarProbeValid;
+    state->xbarOffsetReadbackValid = g_app.xbarReadbackValid;
     state->xbarOffsetKhz = g_app.xbarFreqOffsetKhz;
     state->hasXbarMsvddOffset = g_app.xbarProbeValid;
     state->xbarMsvddOffsetReadbackValid = g_app.xbarProbeValid;
@@ -353,6 +353,7 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
 #endif
     g_app.gpuFamily = snapshot->gpuFamily;
     g_app.xbarProbeValid = snapshot->xbarSupported;
+    g_app.xbarReadbackValid = snapshot->xbarOffsetReadbackValid;
     g_app.xbarFreqOffsetKhz = snapshot->xbarOffsetKhz;
     g_app.xbarMsvddOffsetUv = snapshot->xbarMsvddOffsetUv;
     g_app.xbarMeasuredClockKhz = snapshot->xbarMeasuredClockKhz;
@@ -636,23 +637,22 @@ static void apply_service_desired_to_gui(const DesiredSettings* desired) {
             ensure_valid_fan_curve_config(&g_app.guiFanCurve);
         }
     }
-    if (desired->hasXbarOffsetKhz || desired->hasXbarMsvddOffsetUv) {
-        if (!gui_state_dirty()) {
-            if (desired->hasXbarOffsetKhz) g_app.guiXbarOffsetKhz = desired->xbarOffsetKhz;
-            if (desired->hasXbarMsvddOffsetUv) g_app.guiXbarMsvddOffsetUv = desired->xbarMsvddOffsetUv;
+    {
+        bool updateGui = !gui_state_dirty();
+        int adoptedXbarFreqKhz = desired->hasXbarOffsetKhz
+            ? desired->xbarOffsetKhz : g_app.xbarFreqOffsetKhz;
+        int adoptedXbarMsvddUv = desired->hasXbarMsvddOffsetUv
+            ? desired->xbarMsvddOffsetUv : g_app.xbarMsvddOffsetUv;
+        if (updateGui) {
+            g_app.guiXbarOffsetKhz = adoptedXbarFreqKhz;
+            g_app.guiXbarMsvddOffsetUv = adoptedXbarMsvddUv;
         }
-        // Also update draft text if attached clean projection? Keep pending draft in sync when clean.
-        if (g_app.guiDraft.attached && !gui_state_dirty()) {
-            if (desired->hasXbarOffsetKhz) {
-                char buf[32] = {};
-                StringCchPrintfA(buf, 32, "%d", desired->xbarOffsetKhz / 1000);
-                StringCchCopyA(g_app.guiDraft.xbarOffsetText, 32, buf);
-            }
-            if (desired->hasXbarMsvddOffsetUv) {
-                char buf[32] = {};
-                StringCchPrintfA(buf, 32, "%d", desired->xbarMsvddOffsetUv / 1000);
-                StringCchCopyA(g_app.guiDraft.xbarMsvddOffsetText, 32, buf);
-            }
+        if (g_app.guiDraft.attached && updateGui) {
+            char buf[32] = {};
+            StringCchPrintfA(buf, 32, "%d", adoptedXbarFreqKhz / 1000);
+            StringCchCopyA(g_app.guiDraft.xbarOffsetText, 32, buf);
+            StringCchPrintfA(buf, 32, "%d", adoptedXbarMsvddUv / 1000);
+            StringCchCopyA(g_app.guiDraft.xbarMsvddOffsetText, 32, buf);
         }
     }
     // Adopt the service's active curve intent as the drift-free baseline, regardless
@@ -751,10 +751,12 @@ static void apply_control_state_to_gui(const ControlState* state) {
         }
         if (state->hasXbarOffset) {
             g_app.xbarFreqOffsetKhz = state->xbarOffsetKhz;
+            g_app.xbarReadbackValid = state->xbarOffsetReadbackValid;
             if (updateGui) g_app.guiXbarOffsetKhz = state->xbarOffsetKhz;
         }
         if (state->hasXbarMsvddOffset) {
             g_app.xbarMsvddOffsetUv = state->xbarMsvddOffsetUv;
+            g_app.xbarReadbackValid = state->xbarMsvddOffsetReadbackValid;
             if (updateGui) g_app.guiXbarMsvddOffsetUv = state->xbarMsvddOffsetUv;
         }
         // state->fanMode is Green Curve intent, not necessarily the live driver

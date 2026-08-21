@@ -154,12 +154,12 @@ LINUX_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "linux_main.cpp"),
     os.path.join(SOURCE_DIR, "linux_cli_options.cpp"),
     os.path.join(SOURCE_DIR, "linux_debug_log.cpp"),
-    # Startup half of the crash report: path resolution, rotation, and the
-    # descriptor the async-signal-safe handler writes into.
+    # Startup half of the crash report: path resolution/rotation/descriptor.
     os.path.join(SOURCE_DIR, "linux_crash_report.cpp"),
     os.path.join(SOURCE_DIR, "linux_terminal_launch.cpp"),
     os.path.join(SOURCE_DIR, "linux_port.cpp"),
     os.path.join(SOURCE_DIR, "linux_port_profiles.cpp"),
+    os.path.join(SOURCE_DIR, "linux_profile_output.cpp"),
     os.path.join(SOURCE_DIR, "linux_live_output.cpp"),
     # Client half of the boot-apply snapshot invariant, shared by the TUI and
     # the CLI so a profile write can never leave the daemon booting old values.
@@ -2456,7 +2456,7 @@ def run_source_regression_checks():
         "desired.resetOcBeforeApply = true;",
         "app-start active-service match is checked before reset-before-apply")
     require_text(gpu_backend_apply_cpp, "applying anyway by design", "memory offsets outside reported range are still attempted (F-DOM-1: not gated)")
-    xbar_gates.check_xbar_clk_domains(_gate_ctx(), require_text, forbid_text)
+    xbar_gates.check_all(_gate_ctx(), require_text, forbid_text)
     require_text(main_gpu_state_cpp, "live_selective_gpu_offset_matches_requested_shape", "persisted selective GPU offset is verified against live VF shape")
     require_text(main_gpu_state_cpp, "runtime selective: ignoring persisted request", "stale persisted selective GPU offset is ignored")
     require_text(main_gpu_state_cpp, "non-selective request clears runtime state", "uniform GPU offsets clear runtime selective state")

@@ -8,7 +8,8 @@
 static bool service_desired_has_owned_intent(const DesiredSettings* desired) {
     if (!desired) return false;
     if (desired->hasLock || desired->hasGpuOffset || desired->hasMemOffset ||
-        desired->hasPowerLimit || desired->hasFan) return true;
+        desired->hasPowerLimit || desired->hasFan ||
+        desired->hasXbarOffsetKhz || desired->hasXbarMsvddOffsetUv) return true;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
         if (desired->hasCurvePoint[ci]) return true;
     }
@@ -26,6 +27,21 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
     if (!desired) {
         set_message(result, resultSize, "No desired settings provided");
         return false;
+    }
+    DesiredSettings sanitizedRequest = {};
+    if (!g_app.xbarProbeValid &&
+        (desired->hasXbarOffsetKhz || desired->hasXbarMsvddOffsetUv)) {
+        int requestedXbarFreqKhz = desired->xbarOffsetKhz;
+        int requestedXbarMsvddUv = desired->xbarMsvddOffsetUv;
+        sanitizedRequest = *desired;
+        sanitizedRequest.hasXbarOffsetKhz = false;
+        sanitizedRequest.xbarOffsetKhz = 0;
+        sanitizedRequest.hasXbarMsvddOffsetUv = false;
+        sanitizedRequest.xbarMsvddOffsetUv = 0;
+        desired = &sanitizedRequest;
+        debug_log("service apply: ignored portable XBAR fields; surface unavailable"
+                  " requestedFreq=%d requestedMsvdd=%d\n",
+                  requestedXbarFreqKhz, requestedXbarMsvddUv);
     }
     if (!service_desired_has_owned_intent(desired)) {
         set_message(result, resultSize,
@@ -114,6 +130,12 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
                 mergedActiveDesired.hasLock ? mergedActiveDesired.lockCi : -1,
                 mergedActiveDesired.hasLock ? mergedActiveDesired.lockMHz : 0u,
                 desired_curve_point_count(&mergedActiveDesired));
+        }
+        if (!g_app.xbarProbeValid) {
+            mergedActiveDesired.hasXbarOffsetKhz = false;
+            mergedActiveDesired.xbarOffsetKhz = 0;
+            mergedActiveDesired.hasXbarMsvddOffsetUv = false;
+            mergedActiveDesired.xbarMsvddOffsetUv = 0;
         }
         g_serviceActiveDesired = mergedActiveDesired;
         g_serviceActiveDesired.resetOcBeforeApply = false;
@@ -247,6 +269,7 @@ static bool service_reset_all(char* result, size_t resultSize,
             XbarControlSnapshot snap{};
             if (xbar_reset_to_stock(xbarGet, xbarSet, xbarMeasure,
                                     g_app.gpuHandle, &snap)) {
+                g_app.xbarReadbackValid = true;
                 g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
                 g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
                 g_app.xbarMeasuredClockKhz = snap.measuredKhz;

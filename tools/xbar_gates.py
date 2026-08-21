@@ -65,3 +65,74 @@ def check_xbar_clk_domains(ctx, require_text, forbid_text):
     require_text(apply_capture_cpp,
                  "powerUnchanged && xbarUnchanged &&",
                  "F-XBAR-V2: no-change and fan-only shortcuts cannot omit XBAR")
+
+
+def check_xbar_profile_contract(ctx, require_text, forbid_text):
+    """F-XBAR-PROFILE: saved intent and active ownership cover both fields."""
+    record_io_h = _p(ctx, "config_profile_xbar_io.h")
+    profiles_cpp = _p(ctx, "config_profiles.cpp")
+    gui_state_cpp = _p(ctx, "config_profiles_gui_state.cpp")
+    live_cpp = _p(ctx, "main_gpu_state.cpp")
+    sync_cpp = _p(ctx, "main_state_sync.cpp")
+    helpers_cpp = _p(ctx, "desired_settings_helpers.cpp")
+    lifecycle_h = _p(ctx, "service_lifecycle_policy.h")
+    windows_merge_cpp = _p(ctx, "config_profiles_ui.cpp")
+    linux_profiles_cpp = _p(ctx, "linux_port_profiles.cpp")
+    telemetry_h = _p(ctx, "xbar_telemetry.h")
+
+    require_text(record_io_h,
+                 "load_profile_xbar_settings(",
+                 "profile XBAR parsing is centralized and range-checked")
+    require_text(profiles_cpp,
+                 "load_profile_xbar_settings(path, controlsSection, slot, desired,",
+                 "slot profiles use the shared XBAR record parser")
+    require_text(profiles_cpp,
+                 "resolve_profile_xbar_save_values(desired, &saveControl, haveSaveControl,",
+                 "sparse desired records save the effective XBAR baseline")
+    forbid_text(profiles_cpp,
+                "desired->hasXbarOffsetKhz ? desired->xbarOffsetKhz : 0",
+                "profile saves must not fabricate XBAR stock ownership")
+    require_text(gui_state_cpp,
+                 "projectedXbarFreqKhz = desired->hasXbarOffsetKhz",
+                 "editor projection handles omitted XBAR fields without stale drafts")
+    require_text(live_cpp,
+                 "desired->hasXbarOffsetKhz = g_app.xbarProbeValid &&",
+                 "live-state profile saves preserve effective XBAR values")
+
+    require_text(helpers_cpp,
+                 "xbar clock ownership differs profile=%d active=%d",
+                 "profile identity compares XBAR clock ownership")
+    require_text(helpers_cpp,
+                 "xbar MSVDD differs profile=%d active=%d",
+                 "profile identity compares XBAR MSVDD values")
+    require_text(lifecycle_h,
+                 "previousIntent->hasXbarOffsetKhz && !nextIntent->hasXbarOffsetKhz",
+                 "named-profile transitions clean up omitted owned XBAR fields")
+    require_text(windows_merge_cpp,
+                 "base->hasXbarOffsetKhz = true;",
+                 "Windows sparse merging carries XBAR clock ownership")
+    require_text(linux_profiles_cpp,
+                 'value = get_section_value(doc, controlsSection, "xbar_offset_khz");',
+                 "Linux reads portable XBAR clock profile fields")
+    require_text(linux_profiles_cpp,
+                 'addControl("xbar_msvdd_offset_uv", value);',
+                 "Linux writes portable XBAR MSVDD profile fields")
+
+    require_text(telemetry_h,
+                 "g_app.xbarReadbackValid = false;",
+                 "failed XBAR telemetry does not retain stale proof")
+    require_text(_p(ctx, "main_runtime_control.cpp"),
+                 "if (g_app.xbarProbeValid) {",
+                 "capture owns XBAR only when the selected surface answered")
+    require_text(_p(ctx, "main_service_apply_runtime.cpp"),
+                 "ignored portable XBAR fields; surface unavailable",
+                 "portable profiles do not make an unsupported GPU fail")
+    require_text(sync_cpp,
+                 "snapshot->xbarOffsetReadbackValid = g_app.xbarReadbackValid;",
+                 "service snapshots carry truthful XBAR readback provenance")
+
+
+
+def check_all(ctx, require_text, forbid_text):
+    check_xbar_clk_domains(ctx, require_text, forbid_text)
+    check_xbar_profile_contract(ctx, require_text, forbid_text)

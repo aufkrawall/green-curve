@@ -29,11 +29,11 @@ SOURCE_SIZE_RATCHET = {
     "main.cpp": 801,
     "main_fan_runtime.cpp": 913,  # 929 before the tray menu moved to gui_tray_menu.cpp
     "main_gpu_front.cpp": 845,
-    "main_gpu_state.cpp": 916,
+    "main_gpu_state.cpp": 925,  # 916 before XBAR live-state capture
     "main_runtime_nvml.cpp": 903,  # 901 before the XBAR telemetry call moved to its own header
     "main_service_persist.cpp": 908,
     "main_service_pipe.cpp": 796,  # 828 before the file-write commands moved out
-    "main_state_sync.cpp": 859,
+    "main_state_sync.cpp": 865,  # 859 before truthful XBAR readback validity
     "ui_main_window.cpp": 1279,
 }
 

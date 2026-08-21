@@ -664,6 +664,14 @@ static void build_full_live_desired_settings(DesiredSettings* desired) {
     desired->powerLimitPct = haveControlState && control_state_has_meaningful_power(&control)
         ? control.powerLimitPct
         : g_app.powerLimitPct;
+    desired->hasXbarOffsetKhz = g_app.xbarProbeValid &&
+        haveControlState && control.hasXbarOffset;
+    desired->xbarOffsetKhz = desired->hasXbarOffsetKhz
+        ? control.xbarOffsetKhz : g_app.xbarFreqOffsetKhz;
+    desired->hasXbarMsvddOffsetUv = g_app.xbarProbeValid &&
+        haveControlState && control.hasXbarMsvddOffset;
+    desired->xbarMsvddOffsetUv = desired->hasXbarMsvddOffsetUv
+        ? control.xbarMsvddOffsetUv : g_app.xbarMsvddOffsetUv;
     desired->hasFan = true;
     int fanIntentMode = haveControlState && control_state_has_meaningful_fan(&control)
         ? control.fanMode

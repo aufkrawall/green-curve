@@ -443,6 +443,14 @@ static void merge_desired_settings(DesiredSettings* base, const DesiredSettings*
         base->hasPowerLimit = true;
         base->powerLimitPct = override->powerLimitPct;
     }
+    if (override->hasXbarOffsetKhz) {
+        base->hasXbarOffsetKhz = true;
+        base->xbarOffsetKhz = override->xbarOffsetKhz;
+    }
+    if (override->hasXbarMsvddOffsetUv) {
+        base->hasXbarMsvddOffsetUv = true;
+        base->xbarMsvddOffsetUv = override->xbarMsvddOffsetUv;
+    }
     if (override->hasFan) {
         base->hasFan = true;
         base->fanMode = override->fanMode;
@@ -462,7 +470,9 @@ static bool desired_has_any_action(const DesiredSettings* desired) {
     if (!desired) return false;
     // hasLock counts: a pin-only (hard lock) profile carries no curve points
     // or offsets but still demands an NVML locked-clocks apply.
-    if (desired->hasGpuOffset || desired->hasMemOffset || desired->hasPowerLimit || desired->hasFan || desired->hasLock) return true;
+    if (desired->hasGpuOffset || desired->hasMemOffset || desired->hasPowerLimit ||
+        desired->hasFan || desired->hasLock || desired->hasXbarOffsetKhz ||
+        desired->hasXbarMsvddOffsetUv) return true;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (desired->hasCurvePoint[i]) return true;
     }

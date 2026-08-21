@@ -85,6 +85,7 @@ struct LinuxGpuState {
     int lastLoggedGraphicsDomainEnd;
     bool graphicsDomainBoundaryLogged;
     bool xbarProbeValid;
+    bool xbarReadbackValid;
     int xbarFreqOffsetKhz;
     int xbarMsvddOffsetUv;
     unsigned int xbarMeasuredClockKhz;

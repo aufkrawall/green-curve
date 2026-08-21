@@ -3889,6 +3889,10 @@ static int run_all_tests(int argc, char** argv) {
         // write defaults for fields Green Curve previously owned, while the
         // new ownership declaration itself remains byte-for-byte unchanged.
         DesiredSettings previousProfile = restoreCases[0];
+        previousProfile.hasXbarOffsetKhz = 1;
+        previousProfile.xbarOffsetKhz = 120000;
+        previousProfile.hasXbarMsvddOffsetUv = 1;
+        previousProfile.xbarMsvddOffsetUv = 20000;
         DesiredSettings nextFanOnly = {};
         nextFanOnly.hasFan = 1;
         nextFanOnly.fanMode = FAN_MODE_FIXED;
@@ -3901,9 +3905,30 @@ static int run_all_tests(int argc, char** argv) {
             transition.memOffsetMHz != 0 || !transition.hasPowerLimit ||
             transition.powerLimitPct != 100 || !transition.hasFan ||
             transition.fanMode != FAN_MODE_FIXED ||
-            transition.fanPercent != 47) return 531;
+            transition.fanPercent != 47 ||
+            !transition.hasXbarOffsetKhz || transition.xbarOffsetKhz != 0 ||
+            !transition.hasXbarMsvddOffsetUv ||
+            transition.xbarMsvddOffsetUv != 0) return 531;
         if (!nextFanOnly.hasFan || nextFanOnly.hasGpuOffset ||
-            nextFanOnly.hasMemOffset || nextFanOnly.hasPowerLimit) return 532;
+            nextFanOnly.hasMemOffset || nextFanOnly.hasPowerLimit ||
+            nextFanOnly.hasXbarOffsetKhz ||
+            nextFanOnly.hasXbarMsvddOffsetUv) return 532;
+
+        // A partial XBAR declaration preserves only the sibling it omits.
+        DesiredSettings previousClockOnly = {};
+        previousClockOnly.hasXbarOffsetKhz = 1;
+        previousClockOnly.xbarOffsetKhz = 90000;
+        previousClockOnly.hasXbarMsvddOffsetUv = 1;
+        previousClockOnly.xbarMsvddOffsetUv = 15000;
+        DesiredSettings nextClockOnly = {};
+        nextClockOnly.hasXbarOffsetKhz = 1;
+        nextClockOnly.xbarOffsetKhz = -30000;
+        transition = {};
+        if (!service_build_profile_transition_request(
+                &previousClockOnly, &nextClockOnly, &transition) ||
+            !transition.hasXbarOffsetKhz || transition.xbarOffsetKhz != -30000 ||
+            !transition.hasXbarMsvddOffsetUv ||
+            transition.xbarMsvddOffsetUv != 0) return 4520;
 
         DesiredSettings previousFanOnly = nextFanOnly;
         DesiredSettings nextCurveOnly = {};

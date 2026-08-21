@@ -72,16 +72,28 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
         if (g_app.hPowerLimitEdit)
             set_edit_value(g_app.hPowerLimitEdit, desired->powerLimitPct);
     }
-    // XBAR (Blackwell)
-    if (desired->hasXbarOffsetKhz) {
-        g_app.guiXbarOffsetKhz = desired->xbarOffsetKhz;
-        g_app.guiXbarOffsetFromProfileLoad = true;
-        StringCchPrintfA(g_app.guiDraft.xbarOffsetText, 32, "%d", desired->xbarOffsetKhz / 1000);
-    }
-    if (desired->hasXbarMsvddOffsetUv) {
-        g_app.guiXbarMsvddOffsetUv = desired->xbarMsvddOffsetUv;
-        g_app.guiXbarMsvddOffsetFromProfileLoad = true;
-        StringCchPrintfA(g_app.guiDraft.xbarMsvddOffsetText, 32, "%d", desired->xbarMsvddOffsetUv / 1000);
+    // XBAR (Blackwell).  Older profiles omit these keys; project the effective
+    // live value for an omitted field rather than leaving the prior profile's
+    // dialog draft behind.
+    {
+        ControlState projectionControl = {};
+        bool haveProjectionControl = get_effective_control_state(&projectionControl);
+        int projectedXbarFreqKhz = desired->hasXbarOffsetKhz
+            ? desired->xbarOffsetKhz
+            : (haveProjectionControl && projectionControl.hasXbarOffset
+                ? projectionControl.xbarOffsetKhz : g_app.xbarFreqOffsetKhz);
+        int projectedXbarMsvddUv = desired->hasXbarMsvddOffsetUv
+            ? desired->xbarMsvddOffsetUv
+            : (haveProjectionControl && projectionControl.hasXbarMsvddOffset
+                ? projectionControl.xbarMsvddOffsetUv : g_app.xbarMsvddOffsetUv);
+        g_app.guiXbarOffsetKhz = projectedXbarFreqKhz;
+        g_app.guiXbarOffsetFromProfileLoad = desired->hasXbarOffsetKhz;
+        g_app.guiXbarMsvddOffsetUv = projectedXbarMsvddUv;
+        g_app.guiXbarMsvddOffsetFromProfileLoad = desired->hasXbarMsvddOffsetUv;
+        StringCchPrintfA(g_app.guiDraft.xbarOffsetText, 32, "%d",
+                         projectedXbarFreqKhz / 1000);
+        StringCchPrintfA(g_app.guiDraft.xbarMsvddOffsetText, 32, "%d",
+                         projectedXbarMsvddUv / 1000);
     }
     // Fan
     if (desired->hasFan) {
@@ -465,6 +477,17 @@ static bool maybe_confirm_profile_load_replace(int slot) {
     if (current.gpuOffsetExcludeLowCount != targetFull.gpuOffsetExcludeLowCount) same = false;
     if (current.memOffsetMHz != targetFull.memOffsetMHz) same = false;
     if (current.powerLimitPct != targetFull.powerLimitPct) same = false;
+    if (current.hasXbarOffsetKhz != targetFull.hasXbarOffsetKhz ||
+        (current.hasXbarOffsetKhz &&
+         current.xbarOffsetKhz != targetFull.xbarOffsetKhz)) same = false;
+    if (current.hasXbarMsvddOffsetUv != targetFull.hasXbarMsvddOffsetUv ||
+        (current.hasXbarMsvddOffsetUv &&
+         current.xbarMsvddOffsetUv != targetFull.xbarMsvddOffsetUv)) same = false;
+    if (current.hasLock != targetFull.hasLock ||
+        (current.hasLock && (current.lockCi != targetFull.lockCi ||
+                             current.lockMHz != targetFull.lockMHz ||
+                             current.lockMode != targetFull.lockMode ||
+                             current.lockTracksAnchor != targetFull.lockTracksAnchor))) same = false;
     if (current.fanMode != targetFull.fanMode || current.fanPercent != targetFull.fanPercent || !fan_curve_equals(&current.fanCurve, &targetFull.fanCurve)) same = false;
     for (int i = 0; same && i < VF_NUM_POINTS; i++) {
         if (current.hasCurvePoint[i] != targetFull.hasCurvePoint[i] ||

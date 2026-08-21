@@ -184,7 +184,9 @@
     }
 
     // XBAR clock and voltage offsets (Blackwell only). Draft stores MHz / mV text.
-    {
+    // On an unavailable surface, own nothing: otherwise every unrelated Apply
+    // or saved profile would carry a zero request the backend must refuse.
+    if (g_app.xbarProbeValid) {
         int currentXbarOffsetKhz = 0;
         int currentXbarMsvddUv = 0;
         if (haveControlState) {

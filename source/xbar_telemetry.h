@@ -14,8 +14,13 @@ static bool xbar_refresh_live_state() {
     auto measure = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_MEASURE);
     if (!getControl || !measure) return false;
     XbarControlSnapshot snap{};
-    if (!xbar_read_control(getControl, g_app.gpuHandle, &snap)) return false;
+    if (!xbar_read_control(getControl, g_app.gpuHandle, &snap)) {
+        // Keep the last-known scalar for the editor, but stop claiming proof.
+        g_app.xbarReadbackValid = false;
+        return false;
+    }
     xbar_measure_clock(measure, g_app.gpuHandle, &snap.measuredKhz);
+    g_app.xbarReadbackValid = true;
     bool changed = g_app.xbarFreqOffsetKhz != snap.freqOffsetKhz ||
         g_app.xbarMsvddOffsetUv != snap.msvddOffsetUv ||
         g_app.xbarMeasuredClockKhz != snap.measuredKhz;

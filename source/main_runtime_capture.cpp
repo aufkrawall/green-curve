@@ -364,6 +364,14 @@ static bool save_desired_to_config_with_startup(const char* path, const DesiredS
     }
     int memOffset = desired && desired->hasMemOffset ? desired->memOffsetMHz : (haveControlState && control_state_has_meaningful_mem(&control) ? control.memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
     int powerPct = desired && desired->hasPowerLimit ? desired->powerLimitPct : (haveControlState && control_state_has_meaningful_power(&control) ? control.powerLimitPct : g_app.powerLimitPct);
+    int xbarFreqKhz = desired && desired->hasXbarOffsetKhz
+        ? desired->xbarOffsetKhz
+        : (haveControlState && control.hasXbarOffset
+            ? control.xbarOffsetKhz : g_app.xbarFreqOffsetKhz);
+    int xbarMsvddUv = desired && desired->hasXbarMsvddOffsetUv
+        ? desired->xbarMsvddOffsetUv
+        : (haveControlState && control.hasXbarMsvddOffset
+            ? control.xbarMsvddOffsetUv : g_app.xbarMsvddOffsetUv);
     int fanMode = desired && desired->hasFan ? desired->fanMode : (haveControlState && control_state_has_meaningful_fan(&control) ? control.fanMode : g_app.activeFanMode);
     int fanPct = desired && desired->hasFan ? clamp_percent(desired->fanPercent) : (haveControlState && control_state_has_meaningful_fan(&control) ? clamp_percent(control.fanFixedPercent) : g_app.activeFanFixedPercent);
     const FanCurveConfig* fanCurve = desired && desired->hasFan ? &desired->fanCurve : (haveControlState && control_state_has_meaningful_fan(&control) ? &control.fanCurve : &g_app.activeFanCurve);
@@ -418,6 +426,10 @@ static bool save_desired_to_config_with_startup(const char* path, const DesiredS
     buildOk = buildOk && appendf("lock_tracks_anchor=%d\r\n", desired && desired->hasLock ? (desired->lockTracksAnchor ? 1 : 0) : (g_app.guiLockTracksAnchor ? 1 : 0));
     buildOk = buildOk && appendf("mem_offset_mhz=%d\r\n", memOffset);
     buildOk = buildOk && appendf("power_limit_pct=%d\r\n", powerPct);
+    if (g_app.xbarProbeValid) {
+        buildOk = buildOk && appendf("xbar_offset_khz=%d\r\n", xbarFreqKhz);
+        buildOk = buildOk && appendf("xbar_msvdd_offset_uv=%d\r\n", xbarMsvddUv);
+    }
     StringCchPrintfA(buf, ARRAY_COUNT(buf), "%d", fanPct);
     buildOk = buildOk && appendf("fan_mode=%s\r\n", fan_mode_to_config_value(fanMode));
     buildOk = buildOk && appendf("fan_fixed_pct=%d\r\n", fanPct);

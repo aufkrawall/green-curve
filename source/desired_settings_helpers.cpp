@@ -23,7 +23,9 @@ static bool desired_has_nonfan_apply_fields(const DesiredSettings* desired) {
     if (!desired) return false;
     return desired_updates_curve_or_gpu_offset_state(desired)
         || desired->hasMemOffset
-        || desired->hasPowerLimit;
+        || desired->hasPowerLimit
+        || desired->hasXbarOffsetKhz
+        || desired->hasXbarMsvddOffsetUv;
 }
 
 static bool desired_is_fan_only_apply_request(const DesiredSettings* desired) {
@@ -78,6 +80,37 @@ static bool desired_settings_match_active_service_intent(const DesiredSettings* 
     }
     if (profile->hasPowerLimit && profile->powerLimitPct != active->powerLimitPct) {
         set_message(detail, detailSize, "power differs profile=%d active=%d", profile->powerLimitPct, active->powerLimitPct);
+        return false;
+    }
+
+    if (!desired_bool_equal(profile->hasXbarOffsetKhz,
+                            active->hasXbarOffsetKhz)) {
+        set_message(detail, detailSize,
+                    "xbar clock ownership differs profile=%d active=%d",
+                    profile->hasXbarOffsetKhz ? 1 : 0,
+                    active->hasXbarOffsetKhz ? 1 : 0);
+        return false;
+    }
+    if (profile->hasXbarOffsetKhz &&
+        profile->xbarOffsetKhz != active->xbarOffsetKhz) {
+        set_message(detail, detailSize,
+                    "xbar clock differs profile=%d active=%d",
+                    profile->xbarOffsetKhz, active->xbarOffsetKhz);
+        return false;
+    }
+    if (!desired_bool_equal(profile->hasXbarMsvddOffsetUv,
+                            active->hasXbarMsvddOffsetUv)) {
+        set_message(detail, detailSize,
+                    "xbar MSVDD ownership differs profile=%d active=%d",
+                    profile->hasXbarMsvddOffsetUv ? 1 : 0,
+                    active->hasXbarMsvddOffsetUv ? 1 : 0);
+        return false;
+    }
+    if (profile->hasXbarMsvddOffsetUv &&
+        profile->xbarMsvddOffsetUv != active->xbarMsvddOffsetUv) {
+        set_message(detail, detailSize,
+                    "xbar MSVDD differs profile=%d active=%d",
+                    profile->xbarMsvddOffsetUv, active->xbarMsvddOffsetUv);
         return false;
     }
 

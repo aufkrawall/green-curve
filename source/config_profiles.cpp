@@ -26,6 +26,8 @@ struct ConfigStorageLockGuard {
     ConfigStorageLockGuard& operator=(const ConfigStorageLockGuard&) = delete;
 };
 
+#include "config_profile_xbar_io.h"
+
 static void infer_profile_lock_from_curve(const DesiredSettings* desired, int* lockCiOut, unsigned int* lockMHzOut);
 static void resolve_profile_gpu_offset_state_for_save(const DesiredSettings* desired, int* gpuOffsetMHzOut, int* excludeLowCountOut);
 
@@ -257,28 +259,8 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         }
     }
 
-    gc_GetPrivateProfileStringUtf8(controlsSection, "xbar_offset_khz", "", buf, sizeof(buf), path);
-    trim_ascii(buf);
-    if (buf[0]) {
-        int v = 0;
-        if (!parse_int_strict(buf, &v)) {
-            set_message(err, errSize, "Invalid xbar_offset_khz in profile %d", slot);
-            return false;
-        }
-        desired->hasXbarOffsetKhz = true;
-        desired->xbarOffsetKhz = v;
-    }
-    gc_GetPrivateProfileStringUtf8(controlsSection, "xbar_msvdd_offset_uv", "", buf, sizeof(buf), path);
-    trim_ascii(buf);
-    if (buf[0]) {
-        int v = 0;
-        if (!parse_int_strict(buf, &v)) {
-            set_message(err, errSize, "Invalid xbar_msvdd_offset_uv in profile %d", slot);
-            return false;
-        }
-        desired->hasXbarMsvddOffsetUv = true;
-        desired->xbarMsvddOffsetUv = v;
-    }
+    if (!load_profile_xbar_settings(path, controlsSection, slot, desired,
+                                    err, errSize)) return false;
 
     if (!load_fan_curve_config_from_section(path, fanCurveSection, &desired->fanCurve, err, errSize)) return false;
 
@@ -474,6 +456,12 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
     }
     char desiredCurvePoints[256] = {};
     build_point_list_from_flags(desired->hasCurvePoint, desiredCurvePoints, sizeof(desiredCurvePoints));
+    ControlState saveControl = {};
+    bool haveSaveControl = get_effective_control_state(&saveControl);
+    int savedXbarFreqKhz = 0;
+    int savedXbarMsvddUv = 0;
+    resolve_profile_xbar_save_values(desired, &saveControl, haveSaveControl,
+                                     &savedXbarFreqKhz, &savedXbarMsvddUv);
     debug_log("save_profile_to_config: slot=%d visible=%d populated=%d desiredCurveCount=%d points=%s point74=%d/%u point75=%d/%u point76=%d/%u point126=%d/%u point127=%d/%u service=%d dirty=%d\n",
         slot,
         g_app.numVisible,
@@ -593,8 +581,10 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         appendf("lock_mode=%d\r\n", desired->hasLock ? (int)desired->lockMode : (int)g_app.lockMode);
         appendf("mem_offset_mhz=%d\r\n", desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
         appendf("power_limit_pct=%d\r\n", desired->hasPowerLimit ? desired->powerLimitPct : g_app.powerLimitPct);
-        appendf("xbar_offset_khz=%d\r\n", desired->hasXbarOffsetKhz ? desired->xbarOffsetKhz : 0);
-        appendf("xbar_msvdd_offset_uv=%d\r\n", desired->hasXbarMsvddOffsetUv ? desired->xbarMsvddOffsetUv : 0);
+        if (profile_xbar_keys_should_be_written()) {
+            appendf("xbar_offset_khz=%d\r\n", savedXbarFreqKhz);
+            appendf("xbar_msvdd_offset_uv=%d\r\n", savedXbarMsvddUv);
+        }
         appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : current_green_curve_fan_intent_mode()));
         if (desired->hasFan) {
             if (desired->fanMode == FAN_MODE_AUTO) appendf("fan=auto\r\n");
@@ -689,6 +679,10 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         appendf("lock_mode=%d\r\n", desired->hasLock ? (int)desired->lockMode : (int)g_app.lockMode);
         appendf("mem_offset_mhz=%d\r\n", desired->hasMemOffset ? desired->memOffsetMHz : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz));
         appendf("power_limit_pct=%d\r\n", desired->hasPowerLimit ? desired->powerLimitPct : g_app.powerLimitPct);
+        if (profile_xbar_keys_should_be_written()) {
+            appendf("xbar_offset_khz=%d\r\n", savedXbarFreqKhz);
+            appendf("xbar_msvdd_offset_uv=%d\r\n", savedXbarMsvddUv);
+        }
         appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : current_green_curve_fan_intent_mode()));
         if (desired->hasFan) {
             if (desired->fanMode == FAN_MODE_AUTO) appendf("fan=auto\r\n");

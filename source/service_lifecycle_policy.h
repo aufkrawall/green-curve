@@ -89,6 +89,18 @@ static inline bool service_build_profile_transition_request(
         requestOut->fanPercent = 0;
         memset(&requestOut->fanCurve, 0, sizeof(requestOut->fanCurve));
     }
+    // XBAR clock and MSVDD are independently owned scalar fields.  Clean up
+    // exactly the fields the previous profile owned and the next one omits; a
+    // partial next declaration preserves the other live field.
+    if (previousIntent->hasXbarOffsetKhz && !nextIntent->hasXbarOffsetKhz) {
+        requestOut->hasXbarOffsetKhz = true;
+        requestOut->xbarOffsetKhz = 0;
+    }
+    if (previousIntent->hasXbarMsvddOffsetUv &&
+        !nextIntent->hasXbarMsvddOffsetUv) {
+        requestOut->hasXbarMsvddOffsetUv = true;
+        requestOut->xbarMsvddOffsetUv = 0;
+    }
     return true;
 }
 
