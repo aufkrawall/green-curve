@@ -1200,8 +1200,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
 // we cast the resolved pointer through NvApiFunc for the two-argument calls.
 typedef void* (*NvApiQiFn)(unsigned int);
 NvApiQiFn qi = (NvApiQiFn)nvapi_qi;
-            NvApiFunc xbarGetCtrl = qi ? (NvApiFunc)qi(XBAR_RM_CLK_DOMAINS_GET_CONTROL) : nullptr;
-            NvApiFunc xbarSetCtrl = qi ? (NvApiFunc)qi(XBAR_RM_CLK_DOMAINS_SET_CONTROL) : nullptr;
+            NvApiFunc xbarGetCtrl = qi ? (NvApiFunc)qi(PROPRELS_GET_CONTROL_ID) : nullptr;
+            NvApiFunc xbarSetCtrl = qi ? (NvApiFunc)qi(PROPRELS_SET_CONTROL_ID) : nullptr;
             if (xbarGetCtrl && xbarSetCtrl) {
                 XbarControlSnapshot snap = {};
                 memcpy(snap.buf, g_app.xbarSnapshotBuf, g_app.xbarSnapshotBufSize);

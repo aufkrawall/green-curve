@@ -15,6 +15,12 @@
 #define XBAR_RM_CLK_DOMAINS_SET_CONTROL 0x2080d01cu
 #define XBAR_RM_CLK_MEASURE_FREQ        0x20809006u
 
+// PropRels NVAPI IDs (confirmed on RTX 5070/5090 driver 610.x)
+#define PROPRELS_GET_CONTROL_ID  0xCBFF71D0u
+#define PROPRELS_SET_CONTROL_ID  0xEF3D20EAu
+#define PROPRELS_GET_INFO_ID     0xE826E4F0u
+#define PROPRELS_STRUCT_VERSION  0x0001075Cu
+
 static const unsigned int XBAR_CONTROL_BUF_SIZE_MIN = 0x83c;
 static const unsigned int XBAR_DOMAIN_MASK_OFFSET = 0x04;
 static const unsigned int XBAR_DOMAIN_HEADER_SIZE = 0x3c;
