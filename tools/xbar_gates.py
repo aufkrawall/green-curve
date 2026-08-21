@@ -22,6 +22,7 @@ def check_xbar_clk_domains(ctx, require_text, forbid_text):
     probe_h = _p(ctx, "gpu_capability_probe.cpp")
     apply_cpp = _p(ctx, "gpu_backend_apply.cpp")
     capture_cpp = _p(ctx, "main_runtime_control.cpp")
+    dialog_cpp = _p(ctx, "xbar_dialog.cpp")
 
     require_text(backend_h,
                  "XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL 0xF58938F5u",
@@ -46,3 +47,12 @@ def check_xbar_clk_domains(ctx, require_text, forbid_text):
     require_text(capture_cpp,
                  "xbarFreqChanged || xbarVoltChanged) {",
                  "F-XBAR-V2: one-sided edits emit both fields to avoid sibling reset")
+    # The old Advanced dialog passed its desired client height as the outer
+    # CreateWindowExA height, so the caption/border consumed the bottom row.
+    require_text(dialog_cpp,
+                 "SIZE outerSize = adjusted_window_size_for_client(",
+                 "F-XBAR-DIALOG: client size is converted to an outer window frame")
+    require_text(dialog_cpp, "(int)outerSize.cx, (int)outerSize.cy,",
+                 "F-XBAR-DIALOG: CreateWindow receives the adjusted frame size")
+    forbid_text(dialog_cpp, "x, y, dlgW, dlgH,",
+                "F-XBAR-DIALOG: client dimensions are never passed as outer bounds")

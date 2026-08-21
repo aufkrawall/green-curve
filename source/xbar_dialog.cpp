@@ -316,20 +316,27 @@ static void open_xbar_dialog() {
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     RegisterClassExA(&wc);
 
-    int dlgW = dp(420);
-    int dlgH = dp(320);
+    // dlgW/dlgH below are CLIENT coordinates.  CreateWindowExA takes the outer
+    // frame size; passing the client height directly cut off the bottom row by
+    // exactly the caption plus border.
+    int clientW = dp(420);
+    int clientH = dp(320);
+    const DWORD dialogStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
+    const DWORD dialogExStyle = WS_EX_DLGMODALFRAME;
+    SIZE outerSize = adjusted_window_size_for_client(
+        clientW, clientH, dialogStyle, dialogExStyle);
     RECT work = {};
     SystemParametersInfoA(SPI_GETWORKAREA, 0, &work, 0);
-    int x = work.left + (work.right - work.left - dlgW) / 2;
-    int y = work.top + (work.bottom - work.top - dlgH) / 2;
+    int x = work.left + (work.right - work.left - (int)outerSize.cx) / 2;
+    int y = work.top + (work.bottom - work.top - (int)outerSize.cy) / 2;
 
     // Disable main window while dialog is open (modal-like) to match license dialog behavior.
     if (g_app.hMainWnd) EnableWindow(g_app.hMainWnd, FALSE);
 
     g_xbarDialog.hwnd = CreateWindowExA(
-        WS_EX_DLGMODALFRAME, XBAR_DIALOG_CLASS, "Advanced",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-        x, y, dlgW, dlgH,
+        dialogExStyle, XBAR_DIALOG_CLASS, "Advanced",
+        dialogStyle,
+        x, y, (int)outerSize.cx, (int)outerSize.cy,
         g_app.hMainWnd, nullptr, g_app.hInst, nullptr);
     if (!g_xbarDialog.hwnd) {
         if (g_app.hMainWnd) EnableWindow(g_app.hMainWnd, TRUE);
@@ -367,12 +374,12 @@ static void open_xbar_dialog() {
     int y2 = y1 + rowH + dp(16);
     g_xbarDialog.hCurrentLabel = CreateWindowExA(0, "STATIC", "Current: ---",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
-        margin, y2, dlgW - margin*2, dp(18),
+        margin, y2, clientW - margin*2, dp(18),
         g_xbarDialog.hwnd, (HMENU)(INT_PTR)XBAR_CURRENT_LABEL_ID, g_app.hInst, nullptr);
     int y3 = y2 + dp(20);
     g_xbarDialog.hMeasuredLabel = CreateWindowExA(0, "STATIC", "Measured XBAR: ---",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
-        margin, y3, dlgW - margin*2, dp(18),
+        margin, y3, clientW - margin*2, dp(18),
         g_xbarDialog.hwnd, (HMENU)(INT_PTR)XBAR_MEASURED_LABEL_ID, g_app.hInst, nullptr);
 
     int y4 = y3 + dp(24);
@@ -386,21 +393,21 @@ static void open_xbar_dialog() {
     for (int i = 0; i < 5; i++) {
         CreateWindowExA(0, "STATIC", hintLines[i],
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            margin, y4 + i*dp(16), dlgW - margin*2, dp(16),
+            margin, y4 + i*dp(16), clientW - margin*2, dp(16),
             g_xbarDialog.hwnd, nullptr, g_app.hInst, nullptr);
     }
 
     // Buttons at bottom
     int btnW = dp(80);
     int btnH = dp(26);
-    int btnY = dlgH - dp(48);
+    int btnY = clientH - dp(48);
     g_xbarDialog.hOkBtn = CreateWindowExA(0, "BUTTON", "OK",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-        dlgW - margin - btnW*2 - dp(8), btnY, btnW, btnH,
+        clientW - margin - btnW*2 - dp(8), btnY, btnW, btnH,
         g_xbarDialog.hwnd, (HMENU)(INT_PTR)XBAR_OK_BTN_ID, g_app.hInst, nullptr);
     g_xbarDialog.hCancelBtn = CreateWindowExA(0, "BUTTON", "Cancel",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-        dlgW - margin - btnW, btnY, btnW, btnH,
+        clientW - margin - btnW, btnY, btnW, btnH,
         g_xbarDialog.hwnd, (HMENU)(INT_PTR)XBAR_CANCEL_BTN_ID, g_app.hInst, nullptr);
     g_xbarDialog.hResetBtn = CreateWindowExA(0, "BUTTON", "Reset",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
