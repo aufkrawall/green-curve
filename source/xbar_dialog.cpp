@@ -5,6 +5,8 @@
 // Properly themed dialog integrated with the service pending model.
 // Included by main_shell.cpp after fan_curve_dialog.cpp.
 
+#include "xbar_fallback.h"
+
 #define XBAR_DIALOG_CLASS "GreenCurveXbarDialog"
 #define XBAR_OFFSET_EDIT_ID    3200
 #define XBAR_MSVDD_EDIT_ID     3201
@@ -79,6 +81,10 @@ static void xbar_dialog_sync_controls() {
         if (pendingUv == 0 && appliedUv != 0) pendingUv = appliedUv;
     }
 
+    // Fallback direct NVAPI PropRels read when service has no XBAR yet
+    if ((!xbarSupported || (appliedKhz == 0 && appliedUv == 0 && measuredKhz == 0)) && g_app.gpuHandle) {
+        if (xbar_fallback_proprels_available()) xbarSupported = true;
+    }
     char buf[128] = {};
     if (!xbarSupported) {
         StringCchPrintfA(buf, 128, "XBAR not available on this GPU / driver");
