@@ -24,6 +24,9 @@
 // daemon state directory.  Deliberately identical to the Windows name.
 #define LINUX_DEBUG_LOG_FILE_NAME "greencurve_debug.txt"
 #define LINUX_DEBUG_LOG_ENV       "GREEN_CURVE_DEBUG"
+// Logs carry applied settings and diagnostic fingerprints, so they are never
+// group/world readable even when the process inherits a permissive umask.
+#define LINUX_DEBUG_LOG_FILE_MODE 0600
 // Opt-out, matching APP_DEBUG_DEFAULT_ENABLED on Windows: the log is the first
 // thing asked for in a bug report, so it must exist without being turned on.
 #define LINUX_DEBUG_DEFAULT_ENABLED 1

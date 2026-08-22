@@ -9,6 +9,8 @@ name: CI
 # compilers/*/manifest.json.  Unlike the release workflow, CI does keep a
 # toolchain cache: it publishes nothing, and every restored tree is re-verified
 # against the manifest before it is used.
+permissions:
+  contents: read
 on:
   push:
     branches:
@@ -84,14 +86,14 @@ jobs:
       # runner image.  Neither can touch a release artifact: they only run in
       # this job, which publishes nothing.  Pinning them would mean vendoring a
       # full ~2 GB LLVM for Linux, since llvm-mingw ships no Linux ASan runtime.
-- name: Install analysis tools
-  run: |
-    sudo apt-get update
-    sudo apt-get install --yes clang-tidy-18
-    # build.py intentionally resolves one stable analyzer name. Pin it to the
-    # same major version as the documented ratchet instead of whatever the
-    # runner image happens to ship this month.
-    sudo ln -sf /usr/bin/clang-tidy-18 /usr/local/bin/clang-tidy
+      - name: Install analysis tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes clang-tidy-18
+          # build.py intentionally resolves one stable analyzer name. Pin it to the
+          # same major version as the documented ratchet instead of whatever the
+          # runner image happens to ship this month.
+          sudo ln -sf /usr/bin/clang-tidy-18 /usr/local/bin/clang-tidy
       - name: Verify the pinned toolchain
         run: python build.py --verify-toolchain
       - name: Build Linux target

@@ -262,6 +262,10 @@ def check_debug_log(ctx, require_text, forbid_text):
                  "the debug enable rule is pure and covered by the harness")
     require_text(log_cpp, "dup2(fresh, g_fd)",
                  "log rotation preserves the descriptor the crash handler writes to")
+    require_text(log_h, "#define LINUX_DEBUG_LOG_FILE_MODE 0600",
+                 "debug logs containing settings and identifiers are owner-only")
+    require_text(log_cpp, "if (fchmod(",
+                 "pre-existing permissive debug logs are tightened on open")
     require_text(main_cpp, "linux_debug_log_enabled_for(",
                  "debug logging honours [debug] enabled and GREEN_CURVE_DEBUG")
     require_text(main_cpp, "linux_set_crash_log_fd(linux_debug_log_raw_fd())",
@@ -381,6 +385,28 @@ def check_crash_report(ctx, require_text, forbid_text, require_order):
                  "the fixture covers the relaunch path that cleanup cannot reach")
     require_text(build_script, '"linux_crash_report_regression"',
                  "build.py compiles and runs the crash-report fixture")
+
+
+def check_ini_limits(ctx):
+    """Malformed INI input must be rejected, not turned into unbounded objects."""
+    internal_h = _p(ctx, "linux_port_internal.h")
+    port_cpp = _p(ctx, "linux_port.cpp")
+    with open(internal_h, "r", encoding="utf-8", errors="replace") as handle:
+        header = handle.read()
+    with open(port_cpp, "r", encoding="utf-8", errors="replace") as handle:
+        source = handle.read()
+    for needle in ("LINUX_INI_MAX_BYTES = 1024 * 1024",
+                   "LINUX_INI_MAX_SECTIONS = 256",
+                   "LINUX_INI_MAX_ENTRIES_PER_SECTION = 4096"):
+        if needle not in header:
+            print(f"Regression source check FAILED: Linux INI bound missing: {needle}")
+            sys.exit(1)
+    for needle in ("exceeds the %lld-byte INI limit",
+                   "INI has too many sections",
+                   "INI section has too many entries"):
+        if needle not in source:
+            print(f"Regression source check FAILED: Linux INI limit not enforced: {needle}")
+            sys.exit(1)
 
 
 def check_startup_policy(ctx, require_text, forbid_text):
@@ -760,6 +786,7 @@ def check_all(ctx, require_text, forbid_text, require_order):
     check_terminal_relaunch(ctx, require_text, forbid_text)
     check_debug_log(ctx, require_text, forbid_text)
     check_crash_report(ctx, require_text, forbid_text, require_order)
+    check_ini_limits(ctx)
     check_startup_policy(ctx, require_text, forbid_text)
     check_auto_restore(ctx, require_text, forbid_text, require_order)
     check_release_packaging(ctx, require_text, forbid_text)

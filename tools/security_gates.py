@@ -449,6 +449,57 @@ def check_no_developer_profile_paths(ctx, tracked):
         sys.exit(1)
 
 
+def _workflow_structure_errors(path, text):
+    """Return structural errors that would make a GitHub workflow unloadable.
+
+    GitHub Actions is not exercised when this repository runs locally, and the
+    project deliberately avoids a YAML dependency in the release toolchain.
+    This gate is intentionally narrow: it pins the step-list indentation used
+    by both workflows and catches the concrete failure mode where a step is
+    accidentally emitted at file scope, which makes the entire CI workflow
+    unavailable and silently disables every merge gate.
+    """
+    errors = []
+    if "\t" in text:
+        errors.append(f"{path}: tab characters are not allowed")
+    for line_number, line in enumerate(text.splitlines(), 1):
+        match = re.match(r"^(\s*)- name:", line)
+        if match and len(match.group(1)) != 6:
+            errors.append(
+                f"{path}:{line_number}: workflow step must be indented exactly "
+                "six spaces")
+    return errors
+
+
+def check_workflow_structure(ctx):
+    """Keep the security/test merge workflows loadable."""
+    all_errors = []
+    for name in ("ci.yml", "release.yml"):
+        path = os.path.join(ctx.SCRIPT_DIR, ".github", "workflows", name)
+        with open(path, "r", encoding="utf-8") as handle:
+            all_errors.extend(_workflow_structure_errors(path, handle.read()))
+    ci_path = os.path.join(ctx.SCRIPT_DIR, ".github", "workflows", "ci.yml")
+    with open(ci_path, "r", encoding="utf-8") as handle:
+        ci_text = handle.read()
+    if "permissions:\n  contents: read\n" not in ci_text:
+        all_errors.append(f"{ci_path}: CI must explicitly request contents:read")
+
+    # Exercise the checker itself with the exact malformed indentation that
+    # previously made the whole CI workflow unparsable.
+    malformed = "jobs:\n  job:\n    steps:\n- name: Broken\n      run: true\n"
+    if not any(":4:" in error for error in
+               _workflow_structure_errors("fixture.yml", malformed)):
+        print("Build-script regression FAILED: workflow indentation checker "
+              "accepted a file-scope step")
+        sys.exit(1)
+
+    if all_errors:
+        print("Workflow structure regression FAILED:")
+        for error in all_errors:
+            print(f"  {error}")
+        sys.exit(1)
+
+
 def run_build_script_regression_tests(ctx):
     """Self-tests for build.py's own invariants.
 
@@ -458,6 +509,7 @@ def run_build_script_regression_tests(ctx):
     """
     tmp = ctx.prepare_work_subdir("build_script_regression")
     try:
+        check_workflow_structure(ctx)
         build_scheduler.run_self_tests()
         build_script = os.path.join(ctx.SCRIPT_DIR, "build.py")
         with open(build_script, "r", encoding="utf-8", errors="replace") as handle:
@@ -507,6 +559,7 @@ def run_build_script_regression_tests(ctx):
             print("Build-script regression FAILED: unexpected package file accepted")
             sys.exit(1)
         check_hardening_and_gate_wiring(ctx)
+        check_windows_pipe_hardening(ctx)
         # The clang-tidy ratchet decides whether a build fails, so its matching
         # rules are covered here rather than only by running clang-tidy itself:
         # these self-tests need no toolchain and run on every host.
@@ -726,6 +779,30 @@ def check_hardening_and_gate_wiring(ctx):
         for extra in extras:
             if not os.path.exists(os.path.join(ctx.SOURCE_DIR, extra)):
                 fail(f"fuzz target {target!r} lists a missing source {extra!r}")
+
+
+def check_windows_pipe_hardening(ctx):
+    """The listener must narrow exposure without recreating stale-ACL lockout."""
+    surface = ""
+    for name in ("service_pipe_acl_policy.h",
+                 "main_service_pipe_primitives.h", "main_service_pipe.cpp"):
+        path = os.path.join(ctx.SOURCE_DIR, name)
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            surface += handle.read()
+
+    def require(needle, label):
+        if needle not in surface:
+            print(f"Regression source check FAILED: {label}")
+            sys.exit(1)
+
+    require("service_pipe_acl_sddl_for_session",
+            "pipe listener does not use the active-session SDDL policy")
+    require("(A;;GRGW;;;AU)",
+            "boot-time pipe fallback for authenticated local users is missing")
+    require("ConvertSidToStringSidW",
+            "active-session pipe ACE is not derived from the canonical token SID")
+    require("service_preauth_connection_is_admissible",
+            "low-integrity pipe connections are not rejected before request I/O")
 
 
 def check_fuzz_harness_in_sync(ctx, require_text, forbid_text):

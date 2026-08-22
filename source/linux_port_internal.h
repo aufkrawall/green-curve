@@ -23,6 +23,13 @@ struct IniDocument {
     std::vector<IniSection> sections;
 };
 
+// INI files are small control documents, not data-exchange formats.  These
+// bounds keep a malformed file from turning unbounded input into unbounded
+// object construction while leaving ample room for profiles and curve points.
+static const off_t LINUX_INI_MAX_BYTES = 1024 * 1024;
+static const size_t LINUX_INI_MAX_SECTIONS = 256;
+static const size_t LINUX_INI_MAX_ENTRIES_PER_SECTION = 4096;
+
 int clamp_percent(int value);
 bool starts_with(const char* text, const char* prefix);
 std::string path_dirname(const std::string& path);

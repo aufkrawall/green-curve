@@ -145,10 +145,27 @@ static bool read_text_file(const char* path, std::string* text, char* err, size_
         return false;
     }
 
+    struct stat status = {};
+    if (fstat(fileno(file), &status) == 0 &&
+        status.st_size > LINUX_INI_MAX_BYTES) {
+        set_message(err, errSize, "%s exceeds the %lld-byte INI limit",
+                    path, (long long)LINUX_INI_MAX_BYTES);
+        fclose(file);
+        return false;
+    }
+
     char buffer[4096] = {};
     for (;;) {
         size_t readCount = fread(buffer, 1, sizeof(buffer), file);
-        if (readCount > 0) text->append(buffer, readCount);
+        if (readCount > 0) {
+            if (text->size() + readCount > (size_t)LINUX_INI_MAX_BYTES) {
+                set_message(err, errSize, "%s exceeds the %lld-byte INI limit",
+                            path, (long long)LINUX_INI_MAX_BYTES);
+                fclose(file);
+                return false;
+            }
+            text->append(buffer, readCount);
+        }
         if (readCount < sizeof(buffer)) {
             if (ferror(file)) {
                 set_message(err, errSize, "Failed to read %s (%s)", path, strerror(errno));
@@ -272,11 +289,29 @@ bool load_ini_document(const char* path, IniDocument* doc, char* err, size_t err
         if (!line.empty() && line[0] != ';' && line[0] != '#') {
             if (line.size() >= 2 && line[0] == '[' && line[line.size() - 1] == ']') {
                 std::string name = trim_copy(line.substr(1, line.size() - 2));
+                if (!find_section(doc, name.c_str()) &&
+                    doc->sections.size() >= LINUX_INI_MAX_SECTIONS) {
+                    set_message(err, errSize, "INI has too many sections");
+                    return false;
+                }
                 current = get_or_create_section(doc, name.c_str());
             } else {
                 size_t eq = line.find('=');
                 if (eq != std::string::npos) {
-                    if (!current) current = get_or_create_section(doc, "");
+                    if (!current) {
+                        if (!find_section(doc, "") &&
+                            doc->sections.size() >= LINUX_INI_MAX_SECTIONS) {
+                            set_message(err, errSize, "INI has too many sections");
+                            return false;
+                        }
+                        current = get_or_create_section(doc, "");
+                    }
+                    if (current->entries.size() >=
+                        LINUX_INI_MAX_ENTRIES_PER_SECTION) {
+                        set_message(err, errSize,
+                                    "INI section has too many entries");
+                        return false;
+                    }
                     IniEntry entry;
                     entry.key = trim_copy(line.substr(0, eq));
                     entry.value = trim_copy(line.substr(eq + 1));

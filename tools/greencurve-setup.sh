@@ -163,6 +163,10 @@ install_desktop_entries() {
 
     local apps="$home/.local/share/applications"
     local entry="$apps/greencurve.desktop"
+    # Desktop Exec is not a shell command line.  Quote and escape the archive
+    # path so ordinary paths containing spaces or quotes remain one argv entry.
+    local exec_binary="${BINARY//\\/\\\\}"
+    exec_binary="${exec_binary//\"/\\\"}"
     command -v runuser >/dev/null 2>&1 ||
         { warn "runuser is unavailable; skipping desktop entry"; return 0; }
     # Everything below runs with the target account's privileges. The desktop
@@ -187,7 +191,7 @@ Type=Application
 Version=1.0
 Name=Green Curve
 Comment=NVIDIA VF curve, overclock, undervolt and fan control
-Exec=$BINARY --tui --from-desktop
+Exec="$exec_binary" --tui --from-desktop
 Terminal=true
 Categories=Utility;System;Settings;
 StartupNotify=false

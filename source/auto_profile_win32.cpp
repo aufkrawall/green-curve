@@ -16,6 +16,7 @@
 #include "app_shared.h"
 #include "auto_profile.h"
 #include "hotkeys.h"
+#include "log_redaction_policy.h"
 
 #define AUTO_PROFILE_BACKSTOP_INTERVAL_MS 3000
 
@@ -76,9 +77,14 @@ static int ap_resolve_current_target() {
     if (ruleCount < 0) ruleCount = 0;
     if (ruleCount > AUTO_PROFILE_MAX_RULES) ruleCount = AUTO_PROFILE_MAX_RULES;
     for (int i = 0; i < ruleCount; i++) presenceBits[i] = pres.rulePresent[i] ? '1' : '0';
+    char exeToken[32] = {};
+    char classToken[32] = {};
+    gc_log_identifier_token(fg.exeName, exeToken, sizeof(exeToken));
+    gc_log_identifier_token(fg.className, classToken, sizeof(classToken));
     debug_log_on_change(
-        "auto-profile: resolved target=%d applied=%d fgValid=%d exe='%.40s' class='%.40s' fullscreen=%d present=%s\n",
-        target, g_apCtrl.appliedSlot, fg.valid ? 1 : 0, fg.exeName, fg.className,
+        "auto-profile: resolved target=%d applied=%d fgValid=%d exe=%s class=%s "
+        "fullscreen=%d present=%s\n",
+        target, g_apCtrl.appliedSlot, fg.valid ? 1 : 0, exeToken, classToken,
         fg.isFullscreen ? 1 : 0, presenceBits[0] ? presenceBits : "-");
     return target;
 }

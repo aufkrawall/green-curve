@@ -130,6 +130,26 @@ extern "C" void initialize_process_mitigations() {
     SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS);
     SetDllDirectoryW(L"");
 
+    // The application has no JIT or in-process generator, so writable+executable
+    // memory has no legitimate use.  Extension-point DLLs are likewise not part
+    // of any supported plugin model.  These policies apply before NVIDIA runtime
+    // libraries load and do not restrict the separate child installer/update
+    // processes.
+    PROCESS_MITIGATION_DYNAMIC_CODE_POLICY dynamicCode = {};
+    dynamicCode.ProhibitDynamicCode = 1;
+    if (!SetProcessMitigationPolicy(ProcessDynamicCodePolicy, &dynamicCode,
+                                    sizeof(dynamicCode))) {
+        OutputDebugStringA("[GreenCurve] dynamic-code mitigation was refused\n");
+    }
+
+    PROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY extensionPoints = {};
+    extensionPoints.DisableExtensionPoints = 1;
+    if (!SetProcessMitigationPolicy(ProcessExtensionPointDisablePolicy,
+                                    &extensionPoints,
+                                    sizeof(extensionPoints))) {
+        OutputDebugStringA("[GreenCurve] extension-point mitigation was refused\n");
+    }
+
     // Enable strict handle checking: any use of an invalid handle
     // (double-close, use-after-close, bogus value) raises an exception
     // instead of silently succeeding with unpredictable behavior.

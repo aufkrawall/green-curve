@@ -2655,6 +2655,8 @@ def run_source_regression_checks():
     cfg_glue_cpp = os.path.join(SOURCE_DIR, "cfg_glue.cpp")
     require_text(cfg_glue_cpp, "SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32", "startup hardens the DLL search path against planting")
     require_text(cfg_glue_cpp, "SetDllDirectoryW(L\"\")", "startup removes the CWD from the DLL search path")
+    require_text(cfg_glue_cpp, "ProcessDynamicCodePolicy", "process startup prohibits JIT-style writable executable code")
+    require_text(cfg_glue_cpp, "ProcessExtensionPointDisablePolicy", "process startup rejects extension-point DLL injection")
     # F-SEC-1: service install hardens the installed binary DACL (no non-admin
     # overwrite of a SYSTEM service binary) and uninstall reverts it so the user
     # can delete/replace the unregistered binary again.
@@ -2739,15 +2741,8 @@ def run_source_regression_checks():
     require_text(gpu_backend_cpp, "HeapBuffer buf(", "VF curve offset read uses heap buffer")
     require_text(gpu_backend_cpp, "HeapBuffer buf(", "VF point write uses heap buffer")
 
-    # F-01-003 / F-15-012: active-session enforcement is SERVER-SIDE (caller
-    # session resolved from the pipe handle), so the pipe ACL is user-agnostic
-    # (authenticated local users read+write) and must NOT bake a per-user SID —
-    # a baked SID locked the next active user out of connecting after an account
-    # switch until reboot.
     require_text(service_runtime_cpp, "Service control is restricted to the active interactive session", "service rejects non-active-session callers (F-SEC-3 server-side)")
     require_text(service_runtime_cpp, "get_pipe_client_identity", "caller session is resolved from the pipe handle, not the payload")
-    require_text(service_server_cpp, "(A;;GRGW;;;AU)", "pipe ACL admits authenticated local users read+write")
-    forbid_text(service_server_cpp, "GRGW;;;%s", "pipe ACL must not bake a per-user console SID (stale-ACL lockout)")
     require_text(service_server_cpp, "cannot create restricted ACL, failing listener closed", "pipe creation fails closed when the SD cannot be built")
     # F-15-003: Service listens for Windows session logon events so it can apply
     # a machine-wide default profile for users who have no per-user logon slot.
@@ -4653,13 +4648,6 @@ def run_source_regression_checks():
         "service_main verifies the SCM auto-restart safety net at startup")
     require_text(main_service_install_cpp, "auto-restart net is %s",
         "restart-safety verification logs ARMED/NOT ARMED state")
-    # F-SEC-3: the pipe ACL is user-agnostic (authenticated local users
-    # read+write); active-session enforcement is server-side (see F-15-012).  A
-    # per-user pipe ACL would lock the next active user out of connecting after
-    # an account switch until reboot, so it is intentionally NOT used.
-    require_text(service_server_cpp, "(A;;GRGW;;;AU)",
-        "pipe ACL grants Authenticated Users read+write (active-session enforced server-side)")
-
     # FP-06-005 / F-BUG-016/F-BUG-017: process-bound recovery requires a nonce-
     # bound helper and the old service's dedicated clean exit.  Snapshot-only,
     # ordinary SCM, Task Manager, crash, and stale-nonce starts stay idle.

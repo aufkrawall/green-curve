@@ -121,7 +121,24 @@ def check_manual_apply_origin(ctx, require_text):
                  "GUI Apply uses its explicit origin")
     require_text(_p(ctx, "ui_main_apply.cpp"),
                  "GUI_MUTATION_CONTEXT_MANUAL_APPLY",
-                 "GUI Apply queues under the manual UI context")
+                "GUI Apply queues under the manual UI context")
+
+
+def check_auto_profile_log_privacy(ctx):
+    """Auto-profile diagnostics must not become a window/application ledger."""
+    auto_cpp = _p(ctx, "auto_profile_win32.cpp")
+    with open(auto_cpp, "r", encoding="utf-8", errors="replace") as handle:
+        text = handle.read()
+    for needle in ("gc_log_identifier_token(fg.exeName",
+                   "gc_log_identifier_token(fg.className"):
+        if needle not in text:
+            print("Regression source check FAILED: "
+                  "auto-profile foreground identity is not fingerprinted")
+            sys.exit(1)
+    if "exe='%.40s'" in text or "class='%.40s'" in text:
+        print("Regression source check FAILED: "
+              "auto-profile logs raw foreground application identity")
+        sys.exit(1)
 
 
 def check_themed_message_box(ctx, require_text, forbid_text):
@@ -1326,6 +1343,7 @@ def check_all(ctx, require_text, forbid_text):
     check_visibility_neutral_projection(ctx, require_text, forbid_text)
     check_manual_refresh_preserves_presentation(ctx, require_text, forbid_text)
     check_manual_apply_origin(ctx, require_text)
+    check_auto_profile_log_privacy(ctx)
     check_owner_draw_checkbox_repaint(ctx, require_text, forbid_text)
     check_right_anchored_controls(ctx, require_text, forbid_text)
     check_labeled_checkbox_hit_area(ctx, require_text, forbid_text)

@@ -73,8 +73,14 @@ void rotate_if_oversized_locked() {
         if (ftruncate(g_fd, 0) == 0) lseek(g_fd, 0, SEEK_SET);
         return;
     }
-    int fresh = open(g_path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0644);
+    int fresh = open(g_path,
+        O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW,
+        LINUX_DEBUG_LOG_FILE_MODE);
     if (fresh < 0) return;  // keep writing to the rotated file; never lose the fd
+    if (fchmod(fresh, LINUX_DEBUG_LOG_FILE_MODE) != 0) {
+        close(fresh);
+        return;
+    }
     // On failure the original descriptor still points at the rotated file,
     // which remains a safe logging destination.
     (void)dup2(fresh, g_fd);
@@ -83,8 +89,15 @@ void rotate_if_oversized_locked() {
 
 void open_locked() {
     if (g_fd >= 0 || !g_path[0]) return;
-    g_fd = open(g_path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0644);
+    g_fd = open(g_path,
+        O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW,
+        LINUX_DEBUG_LOG_FILE_MODE);
     if (g_fd < 0) return;
+    // Also tighten logs created by older releases under a more permissive mode.
+    if (fchmod(g_fd, LINUX_DEBUG_LOG_FILE_MODE) != 0) {
+        close(g_fd);
+        g_fd = -1;
+    }
     rotate_if_oversized_locked();
 }
 

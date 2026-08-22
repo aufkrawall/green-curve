@@ -57,13 +57,9 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
             if (g_servicePipeReadyEvent) SetEvent(g_servicePipeReadyEvent);
             return 1;
         }
-        // Publish the pipe handle so the main-loop watchdog can reclaim it if
-        // the VEH terminates this thread inside a command handler.  The slot
-        // is INVALID here (every close path clears it via service_close_owned_pipe
-        // / the watchdog), so this is a clean publish — we must NOT close the
-        // previous value (it was the just-freed handle from the prior iteration;
-        // closing it double-closes and the Strict Handle Check mitigation turns
-        // that into a process-killing STATUS_INVALID_HANDLE).
+        // Clean publish: every prior close path cleared this slot.  Double-close
+        // is fatal under Strict Handle Check; ownership arbitration belongs to
+        // service_close_owned_pipe and the watchdog.
         InterlockedExchangePointer((PVOID volatile*)&g_servicePipeHandle, pipe);
 
         OVERLAPPED ov = {};
@@ -80,14 +76,9 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
             if (g_servicePipeReadyEvent) SetEvent(g_servicePipeReadyEvent);
         }
         if (!connected && connectErr == ERROR_IO_PENDING) {
-            // Build the wait set from the events that actually exist.  Index 0
-            // is always the stop event (breaks the loop).  The pipe-wake and
-            // pipe-recycle events recycle the current instance (close + create a
-            // fresh one).  The recycle event is signaled by
-            // service_handle_session_change() on an active-user change so the
-            // next connect gets a clean instance (the ACL itself is user-agnostic;
-            // active-session enforcement is server-side in
-            // service_caller_is_authorized).
+            // Stop/wake/recycle events are optional and always precede ov.hEvent;
+            // session changes recycle this instance so its active-session ACL is
+            // rebuilt before the next client connects.
             HANDLE waitHandles[4] = {};
             DWORD waitCount = 0;
             DWORD stopIdx = (DWORD)-1, wakeIdx = (DWORD)-1, recycleIdx = (DWORD)-1;
@@ -125,6 +116,11 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
         }
         CloseHandle(ov.hEvent);
         if (!connected) {
+            DisconnectNamedPipe(pipe);
+            service_close_owned_pipe(pipe);
+            continue;
+        }
+        if (!service_preauth_connection_is_admissible(pipe)) {
             DisconnectNamedPipe(pipe);
             service_close_owned_pipe(pipe);
             continue;
