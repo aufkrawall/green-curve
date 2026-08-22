@@ -559,7 +559,6 @@ def run_build_script_regression_tests(ctx):
             print("Build-script regression FAILED: unexpected package file accepted")
             sys.exit(1)
         check_hardening_and_gate_wiring(ctx)
-        check_windows_pipe_hardening(ctx)
         # The clang-tidy ratchet decides whether a build fails, so its matching
         # rules are covered here rather than only by running clang-tidy itself:
         # these self-tests need no toolchain and run on every host.
@@ -779,30 +778,6 @@ def check_hardening_and_gate_wiring(ctx):
         for extra in extras:
             if not os.path.exists(os.path.join(ctx.SOURCE_DIR, extra)):
                 fail(f"fuzz target {target!r} lists a missing source {extra!r}")
-
-
-def check_windows_pipe_hardening(ctx):
-    """The listener must narrow exposure without recreating stale-ACL lockout."""
-    surface = ""
-    for name in ("service_pipe_acl_policy.h",
-                 "main_service_pipe_primitives.h", "main_service_pipe.cpp"):
-        path = os.path.join(ctx.SOURCE_DIR, name)
-        with open(path, "r", encoding="utf-8", errors="replace") as handle:
-            surface += handle.read()
-
-    def require(needle, label):
-        if needle not in surface:
-            print(f"Regression source check FAILED: {label}")
-            sys.exit(1)
-
-    require("service_pipe_acl_sddl_for_session",
-            "pipe listener does not use the active-session SDDL policy")
-    require("(A;;GRGW;;;AU)",
-            "boot-time pipe fallback for authenticated local users is missing")
-    require("ConvertSidToStringSidW",
-            "active-session pipe ACE is not derived from the canonical token SID")
-    require("service_preauth_connection_is_admissible",
-            "low-integrity pipe connections are not rejected before request I/O")
 
 
 def check_fuzz_harness_in_sync(ctx, require_text, forbid_text):

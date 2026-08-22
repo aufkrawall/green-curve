@@ -1,10 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
-// Included after the runtime-identity shard, which owns the active-session
-// lookup this policy consumes.
-#include "service_pipe_acl_policy.h"
-
 static ServiceOperationTracker g_serviceOperationTracker = {};
 static bool g_serviceOperationTrackerLoaded = false;
 
@@ -105,66 +101,13 @@ private:
 
 static bool create_restricted_pipe_security_descriptor(PSECURITY_DESCRIPTOR* outSd) {
     *outSd = nullptr;
-    // SYSTEM/Administrators always retain full control.  For normal clients the
-    // ACL is narrowed to the active session's exact user SID.  This shrinks
-    // pre-authentication exposure: a process in another local account cannot
-    // hold a listener instance while waiting for server-side authorization.
-    //
-    // The old stale-ACL failure is avoided by the existing auto-reset recycle
-    // event, not by widening the DACL to every authenticated account.  Session
-    // transitions signal that event; the next listener instance resolves the
-    // newly active token.  If no active session can be resolved (for example at
-    // boot), the fallback admits authenticated local users but the per-request
-    // active-session check still refuses them.  PIPE_REJECT_REMOTE_CLIENTS
-    // keeps this local-only.
-    DWORD activeSessionId = (DWORD)-1;
-    const bool activeSessionKnown =
-        get_active_interactive_session_id(&activeSessionId);
-    wchar_t activeSessionSid[128] = {};
-    bool activeSidKnown = false;
-    if (activeSessionKnown) {
-        HANDLE sessionToken = nullptr;
-        if (WTSQueryUserToken(activeSessionId, &sessionToken)) {
-            DWORD returned = 0;
-            GetTokenInformation(sessionToken, TokenUser, nullptr, 0, &returned);
-            DWORD error = GetLastError();
-            if (error == ERROR_INSUFFICIENT_BUFFER && returned > 0) {
-                TOKEN_USER* user = (TOKEN_USER*)HeapAlloc(
-                    GetProcessHeap(), HEAP_ZERO_MEMORY, returned);
-                if (user && GetTokenInformation(sessionToken, TokenUser, user,
-                            returned, &returned)) {
-                    PWSTR sidText = nullptr;
-                    if (ConvertSidToStringSidW(user->User.Sid, &sidText) &&
-                        sidText) {
-                        HRESULT copied = StringCchCopyW(
-                            activeSessionSid, ARRAY_COUNT(activeSessionSid),
-                            sidText);
-                        activeSidKnown = SUCCEEDED(copied);
-                        if (!activeSidKnown) {
-                            debug_log("pipe_server: active-session SID text "
-                                      "was too long; using boot fallback ACL\n");
-                        }
-                    }
-                    if (sidText) LocalFree(sidText);
-                }
-                if (user) HeapFree(GetProcessHeap(), 0, user);
-            }
-            CloseHandle(sessionToken);
-        }
-        if (!activeSidKnown) {
-            debug_log("pipe_server: active-session token/SID unavailable; "
-                      "using authenticated-users fallback until next recycle\n");
-        }
-    }
-
-    WCHAR sddl[SERVICE_PIPE_ACL_SDDL_CHARS] = {};
-    if (!service_pipe_acl_sddl_for_session(
-            activeSessionKnown && activeSidKnown,
-            activeSidKnown ? activeSessionSid : nullptr,
-            sddl, ARRAY_COUNT(sddl))) {
-        debug_log("pipe_server: failed building active-session pipe SDDL\n");
-        return false;
-    }
+    // SYSTEM/Administrators have full access and authenticated local users may
+    // connect.  Authorization remains server-side after reading the request:
+    // session/PID/integrity checks own the security decision.  A transition-
+    // scoped or rate-limited listener must not depend on resolving an SID
+    // before this point; the 2026-08-22 live regression showed that turning
+    // availability into a prerequisite makes every GUI request unreliable.
+    const WCHAR* sddl = L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)";
     if (ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, outSd, nullptr) == FALSE) {
         debug_log("pipe_server: failed building pipe security descriptor (error %lu)\n", GetLastError());
         *outSd = nullptr;
@@ -201,29 +144,3 @@ static volatile LONG g_servicePipeStartupError = ERROR_IO_PENDING;
 // session is WTS-active, so active-session state intentionally remains a
 // per-command decision; medium integrity, however, is required by every command
 // and can be checked without trusting any payload bytes.
-static bool service_preauth_connection_is_admissible(HANDLE pipe) {
-    char error[256] = {};
-    char callerUser[256] = {};
-    DWORD sessionId = (DWORD)-1;
-    DWORD pid = 0;
-    DWORD integrityRid = 0;
-    ServiceLifecycleIdentity identity = {};
-    if (!get_pipe_client_identity(pipe, callerUser, ARRAY_COUNT(callerUser),
-            &sessionId, &pid, nullptr, &identity, &integrityRid, nullptr,
-            error, sizeof(error))) {
-        debug_log("service_pipe_server: pre-auth identity rejected pid=%lu: %s\n",
-            (unsigned long)pid,
-            error[0] ? error : "unknown");
-        return false;
-    }
-    if (integrityRid < SECURITY_MANDATORY_MEDIUM_RID) {
-        char userToken[32] = {};
-        gc_log_identifier_token(callerUser, userToken, sizeof(userToken));
-        debug_log("service auth reject: low-integrity pre-auth pid=%lu session=%lu "
-                  "integrity=%lu user=%s\n",
-            (unsigned long)pid, (unsigned long)sessionId,
-            (unsigned long)integrityRid, userToken);
-        return false;
-    }
-    return true;
-}

@@ -120,12 +120,6 @@ static DWORD WINAPI service_pipe_server_thread_proc(void*) {
             service_close_owned_pipe(pipe);
             continue;
         }
-        if (!service_preauth_connection_is_admissible(pipe)) {
-            DisconnectNamedPipe(pipe);
-            service_close_owned_pipe(pipe);
-            continue;
-        }
-
         ServiceRequest request = {};
         ServiceResponse response = {};
         response.magic = SERVICE_PROTOCOL_MAGIC;

@@ -18,7 +18,6 @@
 #include "nvapi_module_policy.h"
 #include "service_lifecycle_policy.h"
 #include "service_recovery_policy.h"
-#include "service_pipe_acl_policy.h"
 #include "selected_gpu_pnp_policy.h"
 #include "gpu_selection_policy.h"
 #include "linux_gpu_selection.h"
@@ -11371,25 +11370,6 @@ static int run_all_tests(int argc, char** argv) {
         gc_log_u64_token(0x8877665544332211ULL, high, sizeof(high));
         if (strcmp(low, high) == 0) return 4531;
         if (strncmp(low, "[id #", 5) != 0) return 4532;
-
-        // The listener narrows ordinary clients to the exact active-session SID
-        // while retaining a boot fallback.  Validate the pure SDDL boundary and
-        // reject malformed token-derived text before it reaches SDDL conversion.
-        wchar_t pipeSddl[SERVICE_PIPE_ACL_SDDL_CHARS] = {};
-        if (!service_pipe_acl_sddl_for_session(false, nullptr, pipeSddl,
-                SERVICE_PIPE_ACL_SDDL_CHARS)) return 4533;
-        if (wcsstr(pipeSddl, L"(A;;GRGW;;;AU)") == nullptr) return 4534;
-        const wchar_t* sessionSid = L"S-1-5-21-100-200-300-500";
-        if (!service_pipe_acl_sddl_for_session(true, sessionSid, pipeSddl,
-                SERVICE_PIPE_ACL_SDDL_CHARS)) return 4535;
-        if (wcsstr(pipeSddl, L"(A;;GRGW;;;AU)") != nullptr ||
-            wcsstr(pipeSddl, L"(A;;GRGW;;;S-1-5-21-100-200-300-500)") == nullptr)
-            return 4536;
-        if (service_pipe_acl_sddl_for_session(true, L"S-1-X",
-                pipeSddl, SERVICE_PIPE_ACL_SDDL_CHARS)) return 4537;
-        wchar_t smallPipeSddl[8] = {};
-        if (service_pipe_acl_sddl_for_session(false, nullptr, smallPipeSddl,
-                ARRAY_COUNT(smallPipeSddl))) return 4538;
 
         if (gc_update_failed_check_recovery(true, true, true, true) !=
             GC_UPDATE_FAILED_CHECK_KEEP_READY) return 4527;
