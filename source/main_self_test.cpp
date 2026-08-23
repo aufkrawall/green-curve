@@ -275,10 +275,6 @@ static void self_test_clk_domain_survey(FILE* out) {
         // Layout (V1): header = version, flags, numPstates, numClocks,
         // numBaseVoltages.  Each pstate entry = pstateId(4), flags(4),
         // numClocks × clockEntry(0x1C), numBaseVoltages × voltEntry.
-        unsigned int flags = xbar_get_u32(pbuf, 4);
-        unsigned int numPstates = xbar_get_u32(pbuf, 8);
-        unsigned int numClocks = xbar_get_u32(pbuf, 12);
-        unsigned int numVolts = xbar_get_u32(pbuf, 16);
         fprintf(out, "pstates20             : flags=%u numPstates=%u"
                      " numClocks=%u numVoltages=%u\n",
                 xbar_get_u32(pbuf, 4), xbar_get_u32(pbuf, 8),
