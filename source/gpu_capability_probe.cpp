@@ -253,8 +253,8 @@ void gpu_probe_control_surface() {
     probe.memoryTopology = probe_memory_topology_via_dxgi();
 
 
-    // --- XBAR clock domain (Blackwell only) ----------------------------
-    // One read-only ClkDomains V2 probe, after NVML-backed domains have run.
+    // --- XBAR clock domain (schema-version decided) --------------------
+    // One read-only ClkDomains probe, after NVML-backed domains have run.
     probe_xbar_control_surface(&probe);
 
     // Publish BEFORE the diagnostics read back from the stored state, so the

@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 //
-// xbar_dialog.cpp -- Advanced XBAR clock domain controls (Blackwell only).
+// xbar_dialog.cpp -- Advanced XBAR clock domain controls.  Availability is
+// decided by the driver's reported ClkDomains schema, not by GPU family.
 // Properly themed dialog integrated with the service pending model.
 // Included by main_shell.cpp after fan_curve_dialog.cpp.
 
@@ -400,7 +401,7 @@ static void open_xbar_dialog() {
 
     int y4 = y3 + dp(24);
     const char* hintLines[] = {
-        "Blackwell only. Requires the background service.",
+        "Requires driver support (validated schema). Service required.",
         "Clock offset moves the XBAR domain; voltage offset",
         "adjusts its MSVDD rail. Start with small values",
         "(e.g. +50 MHz / +10 mV) and test stability.",

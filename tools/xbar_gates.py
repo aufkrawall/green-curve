@@ -1,4 +1,4 @@
-"""Source gates for the Blackwell XBAR ClkDomains V2 surface.
+"""Source gates for the version-checked XBAR ClkDomains surface.
 
 Split out of build.py to keep the build script under its size ratchet.  The
 dependency is one-way: this module never imports build.py.
@@ -46,10 +46,32 @@ def check_xbar_clk_domains(ctx, require_text, forbid_text):
     require_text(backend_h,
                  "XBAR_PINNED_DOMAIN_COUNT = 8",
                  "F-XBAR-V2-SCHEMA: every validated domain marker is required")
+    # Generation independence (unwinder guidance): the .domains structure is
+    # versioned per generation and the driver reports which schema it answered
+    # with.  Selection must key off that reported version word through a pinned
+    # schema table — never off a GPU family whitelist or a fixed-offset read.
+    require_text(backend_h, "g_xbarSchemas[] = {",
+                 "F-XBAR-SCHEMA-TABLE: schemas live in a version-keyed table")
+    require_text(backend_h, "xbar_schema_for_version_word(",
+                 "F-XBAR-SCHEMA-TABLE: dispatch keys on the reported version")
+    require_text(backend_h, "unvalidated ClkDomains response version",
+                 "F-XBAR-DIAGNOSTICS: unknown schema versions log decoded words")
+    require_text(backend_h, "snap->valid = false;",
+                 "F-XBAR-STALE-PROOF: failed reads invalidate stale snapshots")
+    forbid_text(backend_h, "+ XBAR_FREQ_OFFSET_FIELD",
+                "F-XBAR-SCHEMA-TABLE: field offsets come from the snapshot,"\
+                " not recomputed geometry")
+    forbid_text(backend_h, "+ XBAR_MSVDD_OFFSET_FIELD",
+                "F-XBAR-SCHEMA-TABLE: field offsets come from the snapshot,"\
+                " not recomputed geometry")
+    forbid_text(backend_h, "GPU_FAMILY_BLACKWELL",
+                "F-XBAR-FAMILY-BLIND: availability is version-decided, not family-gated")
     forbid_text(backend_h, "xbar_discover_entry_layout(",
                 "F-XBAR-V2-SCHEMA: ambiguous repeated-pattern discovery must not return")
     require_text(probe_h, "probe_xbar_control_surface(&probe);",
                  "F-XBAR-V2: capability probe uses one focused helper")
+    forbid_text(probe_h, "GPU_FAMILY_BLACKWELL",
+                "F-XBAR-FAMILY-BLIND: the probe must attempt every adapter")
     forbid_text(probe_h, "0x20809019u",
                 "F-XBAR-V2: Linux RM GET_INFO must not be scanned on Windows")
     forbid_text(probe_h, "0xCBFF71D0u",

@@ -56,7 +56,7 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
             s->freqOffsets[i] = g_gpu.freqOffsets[i];
         }
     }
-    // XBAR clock domain state (Blackwell only).
+    // XBAR clock domain state (schema-gated on Windows).
     s->xbarSupported = g_gpu.xbarProbeValid;
     s->xbarOffsetReadbackValid = g_gpu.xbarFreqReadbackValid;
     s->xbarOffsetKhz = g_gpu.xbarFreqOffsetKhz;

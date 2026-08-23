@@ -11253,7 +11253,7 @@ static int run_all_tests(int argc, char** argv) {
         if (gc_machine_dir_file_is_current("update-manifest", kConfig)) return 4461;
     }
 
-    // --- Blackwell XBAR ClkDomains V2 (4500-4519) --------------------------
+    // --- XBAR ClkDomains version-checked schema (4500-4519) ----------------
     {
         static unsigned char templateBuf[XBAR_CONTROL_BUF_SIZE];
         static unsigned char stockTemplate[XBAR_CONTROL_BUF_SIZE];
@@ -11304,6 +11304,12 @@ static int run_all_tests(int argc, char** argv) {
         if (snap.domainIndex != 1 || snap.freqOffsetKhz != 60000 ||
             snap.msvddOffsetUv != 20000 || snap.measuredKhz != 1530832)
             return 4502;
+        if (snap.versionWord != XBAR_NVAPI_CLK_DOMAINS_VERSION ||
+            snap.schemaStatus != XBAR_SCHEMA_STATUS_OK)
+            return 4520;
+        if (snap.freqFieldOffset != base + stride + XBAR_FREQ_OFFSET_FIELD ||
+            snap.msvddFieldOffset != base + stride + XBAR_MSVDD_OFFSET_FIELD)
+            return 4521;
         setCalls = 0;
         corruptReadback = false;
         if (!xbar_write(get, set, measure, gpu, &snap,
@@ -11321,6 +11327,12 @@ static int run_all_tests(int argc, char** argv) {
         corruptReadback = true;
         if (xbar_write(get, set, measure, gpu, &snap,
                        450000, 10000, true, true)) return 4507;
+        // The corruption makes the post-set READBACK succeed with a wrong
+        // value, so the write refuses at the exact-readback comparison: the
+        // snapshot stays valid with OK schema status and carries the driver's
+        // actual (corrupted) value.
+        if (!snap.valid || snap.schemaStatus != XBAR_SCHEMA_STATUS_OK ||
+            snap.freqOffsetKhz != 1) return 4522;
         corruptReadback = false;
 
         // A future/malformed response with a plausible-looking repeated marker
@@ -11335,11 +11347,95 @@ static int run_all_tests(int argc, char** argv) {
             for (unsigned int i = 0; i < 12; ++i)
                 xbar_put_u32(hostile, 0x200 + i * 0x180, XBAR_DOMAIN_MARKER);
             XbarBufferLayout badLayout{};
-            if (xbar_layout_for_buffer(hostile, &badLayout)) return 4508;
+            if (xbar_layout_for_buffer(hostile, &g_xbarSchemas[0], &badLayout))
+                return 4508;
             xbar_put_u32(templateBuf, base + 5 * stride,
                          XBAR_DOMAIN_MARKER + 1);
-            if (xbar_layout_for_buffer(templateBuf, &badLayout)) return 4509;
+            if (xbar_layout_for_buffer(templateBuf, &g_xbarSchemas[0],
+                                       &badLayout)) return 4509;
             xbar_put_u32(templateBuf, base + 5 * stride, XBAR_DOMAIN_MARKER);
+        }
+
+        // Schema dispatch is keyed by the REPORTED version word.  The pinned
+        // V2 row must resolve with its exact validated geometry, and any other
+        // word must resolve to nothing.
+        {
+            const XbarClkDomainsSchema* known =
+                xbar_schema_for_version_word(XBAR_NVAPI_CLK_DOMAINS_VERSION);
+            if (!known) return 4516;
+            if (known->versionWord != 0x000261A4u ||
+                known->entryBase != base || known->entryStride != stride ||
+                known->domainCount != 8 || known->entryIndex != 1 ||
+                known->entryMarker != XBAR_DOMAIN_MARKER ||
+                known->freqOffsetField != XBAR_FREQ_OFFSET_FIELD ||
+                known->msvddOffsetField != XBAR_MSVDD_OFFSET_FIELD ||
+                known->requestMask != XBAR_CONTROL_DOMAIN_MASK) return 4517;
+            if (xbar_schema_for_version_word(0x00011234u) != nullptr)
+                return 4518;
+            if (xbar_schema_for_version_word(0) != nullptr) return 4519;
+        }
+
+        // An older-generation driver that answers with its own unknown schema
+        // version must be refused for reads AND never reach SET_CONTROL for a
+        // write: the fresh-preimage read inside xbar_write refuses first.
+        {
+            static unsigned char unknownVer[XBAR_CONTROL_BUF_SIZE];
+            memset(unknownVer, 0, sizeof(unknownVer));
+            // Plausible-looking V2-shaped body under a hypothetical older
+            // version word: the version check alone must refuse it.
+            xbar_put_u32(unknownVer, 0, 0x00011234u);
+            xbar_put_u32(unknownVer, XBAR_CONTROL_MASK_OFFSET,
+                         XBAR_CONTROL_DOMAIN_MASK);
+            for (unsigned int i = 0; i < 8; ++i)
+                xbar_put_u32(unknownVer, base + i * stride,
+                             XBAR_DOMAIN_MARKER);
+            xbar_put_i32(unknownVer, base + stride + XBAR_FREQ_OFFSET_FIELD,
+                         60000);
+            xbar_put_i32(unknownVer, base + stride + XBAR_MSVDD_OFFSET_FIELD,
+                         20000);
+            auto unknownGet = [](void*, void* payload) -> int {
+                if (!payload) return -1;
+                memcpy(payload, unknownVer, sizeof(unknownVer));
+                return 0;
+            };
+            NvApiFunc uget = (NvApiFunc)+unknownGet;
+            // Snapshots carry the full 0x13000 control buffer: keep them
+            // static so several in one function cannot overflow the stack.
+            static XbarControlSnapshot usnap;
+            memset(&usnap, 0, sizeof(usnap));
+            if (xbar_read_control(uget, gpu, &usnap)) return 4510;
+            if (usnap.valid) return 4511;
+            if (usnap.schemaStatus != XBAR_SCHEMA_STATUS_UNKNOWN_VERSION)
+                return 4523;
+            static int unknownSetCalls;
+            unknownSetCalls = 0;
+            auto countingSet = [](void*, void*) -> int {
+                ++unknownSetCalls;
+                return 0;
+            };
+            NvApiFunc uset = (NvApiFunc)+countingSet;
+            static XbarControlSnapshot wsnap;
+            memset(&wsnap, 0, sizeof(wsnap));
+            if (xbar_write(uget, uset, measure, gpu, &wsnap,
+                           450000, 10000, true, true)) return 4512;
+            if (unknownSetCalls != 0) return 4513;
+        }
+
+        // A driver that rejects the requested struct version outright must
+        // fail the read cleanly and leave the snapshot invalid.
+        {
+            auto rejectingGet = [](void*, void*) -> int { return -9; };
+            NvApiFunc rget = (NvApiFunc)+rejectingGet;
+            static XbarControlSnapshot rsnap;
+            memset(&rsnap, 0, sizeof(rsnap));
+            rsnap.valid = true;  // stale proof must not survive a failed read
+            rsnap.schemaStatus = XBAR_SCHEMA_STATUS_OK;
+            if (xbar_read_control(rget, gpu, &rsnap)) return 4514;
+            if (rsnap.valid) return 4515;
+            // -9 is the driver rejecting our struct-version vocabulary: that
+            // is unknown-tooling-knowledge, not a domain refusal.
+            if (rsnap.schemaStatus != XBAR_SCHEMA_STATUS_UNKNOWN_VERSION)
+                return 4524;
         }
     }
 

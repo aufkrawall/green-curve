@@ -183,7 +183,7 @@
         copy_fan_curve(&desired->fanCurve, &guiCurve);
     }
 
-    // XBAR clock and voltage offsets (Blackwell only). Draft stores MHz / mV text.
+    // XBAR clock and voltage offsets (schema-gated). Draft stores MHz / mV text.
     // On an unavailable surface, own nothing: otherwise every unrelated Apply
     // or saved profile would carry a zero request the backend must refuse.
     if (g_app.xbarProbeValid) {

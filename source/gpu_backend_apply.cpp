@@ -1190,7 +1190,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         char rollbackDetail[128] = {};
         refresh_global_state(rollbackDetail, sizeof(rollbackDetail));
     }
-    // XBAR clock domain offset apply (Blackwell only).  Independent of the
+    // XBAR clock domain offset apply (wherever the driver reports a pinned
+    // ClkDomains schema).  Independent of the
     // main VF/clock/fan apply; a failure is reported rather than silently skipped.
     if (desired && (desired->hasXbarOffsetKhz || desired->hasXbarMsvddOffsetUv)) {
         auto xbarGetCtrl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
