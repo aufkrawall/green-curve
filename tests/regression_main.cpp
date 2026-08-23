@@ -19,6 +19,7 @@
 #include "service_lifecycle_policy.h"
 #include "service_recovery_policy.h"
 #include "service_ipc_throttle_policy.h"
+#include "debug_log_rotation_policy.h"
 #include "selected_gpu_pnp_policy.h"
 #include "gpu_selection_policy.h"
 #include "linux_gpu_selection.h"
@@ -11606,6 +11607,44 @@ static int run_all_tests(int argc, char** argv) {
             // The anonymous budget itself is bounded and refills slowly.
             if (table.anonymousBucket.tokensMilli >
                 SERVICE_IPC_ANON_BUDGET_MAX * 1000ULL) return 4640;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Debug log size-cap rotation (debug_log_rotation_policy.h). Pure
+    // boundaries for the unbounded-log fix: rotate at/after the cap only,
+    // never below it, and never on a misconfigured non-positive cap.
+    // ------------------------------------------------------------------
+    {
+        // The compiled-in cap must stay sane: large enough to be useful
+        // history, small enough to bound disk usage.
+        if (gc_debug_log_rotation::kRotateBytes < 1 * 1024 * 1024)
+            return 4700;
+        if (gc_debug_log_rotation::kRotateBytes > 256 * 1024 * 1024)
+            return 4701;
+
+        const long long cap = (long long)gc_debug_log_rotation::kRotateBytes;
+
+        // Boundary: below the cap no rotation, exactly at the cap rotates.
+        if (gc_debug_log_rotation::should_rotate(cap - 1)) return 4702;
+        if (!gc_debug_log_rotation::should_rotate(cap)) return 4703;
+        if (!gc_debug_log_rotation::should_rotate(cap + 1)) return 4704;
+        if (!gc_debug_log_rotation::should_rotate(cap * 1000)) return 4705;
+
+        // Zero/negative sizes never rotate; a non-positive cap must disable
+        // rotation rather than turn into "always rotate".
+        if (gc_debug_log_rotation::should_rotate(0, cap)) return 4706;
+        if (gc_debug_log_rotation::should_rotate(-1, cap)) return 4707;
+        if (gc_debug_log_rotation::should_rotate(cap - 1, 0)) return 4708;
+        if (gc_debug_log_rotation::should_rotate(cap, -1)) return 4709;
+
+        // The marker a rotated file opens with: present, newline-terminated,
+        // and free of format specifiers so it can never be misread as one.
+        {
+            const char* marker = gc_debug_log_rotation::marker_line();
+            if (!marker || !marker[0]) return 4710;
+            if (marker[strlen(marker) - 1] != '\n') return 4711;
+            if (strchr(marker, '%') != nullptr) return 4712;
         }
     }
 

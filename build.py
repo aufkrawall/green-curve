@@ -2213,6 +2213,17 @@ def run_source_regression_checks():
     require_text(diagnostics_cpp, "build=%lu", "session marker logs build number")
     require_text(diagnostics_cpp, "close_debug_log_file", "debug log file cleanup exists")
     require_text(diagnostics_cpp, "open_debug_log_file_locked", "debug log file open helper exists")
+    # Debug logs are size-capped: every append passes the rotation check, and a
+    # rotated file opens with an explanatory marker (2026-08 unbounded-growth fix).
+    require_text(diagnostics_cpp, '#include "debug_log_rotation_policy.h"',
+                 "debug log size-cap policy is compiled into the diagnostics shard")
+    require_order_in_operation(diagnostics_cpp,
+        "static void debug_log(const char* fmt, ...)",
+        "gc_debug_log_rotation::should_rotate(",
+        "WriteFile(g_debugLogFile",
+        "debug log lines append only after the size-cap rotation check")
+    require_text(diagnostics_cpp, "gc_debug_log_rotation::marker_line",
+                 "a truncated debug log opens with an explanatory marker")
     crash_artifacts.check_windows_crash_artifacts(
         _gate_ctx(), require_text, forbid_text, require_order, require_text_count)
     crash_artifacts.check_linux_symbols(_gate_ctx(), require_text)

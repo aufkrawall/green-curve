@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
+#include "debug_log_rotation_policy.h"
 #include "log_redaction_policy.h"
 
 static void close_debug_log_file() {
@@ -91,6 +92,32 @@ static void debug_log(const char* fmt, ...) {
 
     if (g_debugLogFile == INVALID_HANDLE_VALUE) {
         g_debugLogFile = open_debug_log_file_locked(debugPath);
+    }
+
+    // Size-cap rotation. The GUI and service can share one user-side log via
+    // append-only handles, so truncation (not rename) is what keeps every
+    // writer valid: FILE_APPEND_DATA writes always land at EOF, and a
+    // cooperative truncate simply moves that EOF for everyone.
+    if (g_debugLogFile != INVALID_HANDLE_VALUE) {
+        LARGE_INTEGER logSize = {};
+        if (GetFileSizeEx(g_debugLogFile, &logSize) &&
+            gc_debug_log_rotation::should_rotate(logSize.QuadPart)) {
+            FlushFileBuffers(g_debugLogFile);
+            CloseHandle(g_debugLogFile);
+            g_debugLogFile = INVALID_HANDLE_VALUE;
+            g_debugLogOpenPath[0] = 0;
+            HANDLE fresh = gc_CreateFileUtf8(debugPath, GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS,
+                debug_log_file_attributes(), nullptr);
+            if (fresh != INVALID_HANDLE_VALUE) {
+                const char* marker = gc_debug_log_rotation::marker_line();
+                DWORD markerWritten = 0;
+                WriteFile(fresh, marker, (DWORD)strlen(marker),
+                          &markerWritten, nullptr);
+                CloseHandle(fresh);
+            }
+            g_debugLogFile = open_debug_log_file_locked(debugPath);
+        }
     }
 
     if (g_debugLogFile != INVALID_HANDLE_VALUE) {
