@@ -486,6 +486,7 @@ static void open_xbar_dialog() {
 
     // Apply fonts
     HWND ctrls[] = { lblOffset, g_xbarDialog.hOffsetEdit, lblMsvdd, g_xbarDialog.hMsvddEdit,
+        lblSys, g_xbarDialog.hSysEdit,
         g_xbarDialog.hCurrentLabel, g_xbarDialog.hMeasuredLabel, g_xbarDialog.hOkBtn, g_xbarDialog.hCancelBtn, g_xbarDialog.hResetBtn };
     for (HWND c : ctrls) if (c) SendMessageA(c, WM_SETFONT, (WPARAM)hFont, TRUE);
 
@@ -494,6 +495,7 @@ static void open_xbar_dialog() {
     // Ensure edits are styled like other inputs (border etc.)
     if (g_xbarDialog.hOffsetEdit) style_input_control(g_xbarDialog.hOffsetEdit);
     if (g_xbarDialog.hMsvddEdit) style_input_control(g_xbarDialog.hMsvddEdit);
+    if (g_xbarDialog.hSysEdit) style_input_control(g_xbarDialog.hSysEdit);
 
     xbar_dialog_sync_controls();
     ShowWindow(g_xbarDialog.hwnd, SW_SHOW);

@@ -669,6 +669,18 @@ static void apply_service_desired_to_gui(const DesiredSettings* desired) {
             StringCchPrintfA(buf, 32, "%d", adoptedXbarMsvddUv / 1000);
             StringCchCopyA(g_app.guiDraft.xbarMsvddOffsetText, 32, buf);
         }
+        // SYS clock adopts the same not-dirty rule as XBAR: the editor keeps
+        // its pending text when dirty, otherwise tracks applied intent.
+        int adoptedSysClkKhz = desired->hasSysClkOffsetKhz
+            ? desired->sysClkOffsetKhz : g_app.sysClkFreqOffsetKhz;
+        if (updateGui) {
+            g_app.guiSysClkOffsetKhz = adoptedSysClkKhz;
+        }
+        if (g_app.guiDraft.attached && updateGui) {
+            char buf[32] = {};
+            StringCchPrintfA(buf, 32, "%d", adoptedSysClkKhz / 1000);
+            StringCchCopyA(g_app.guiDraft.sysClkOffsetText, 32, buf);
+        }
     }
     // Adopt the service's active curve intent as the drift-free baseline, regardless
     // of GUI dirty state (this is what the hardware is actually set to, not live

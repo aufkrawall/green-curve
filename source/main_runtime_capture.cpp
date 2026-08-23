@@ -167,6 +167,7 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
     int currentPowerLimitPct = haveControlState && control_state_has_meaningful_power(&control) ? control.powerLimitPct : g_app.powerLimitPct;
     int currentXbarOffsetKhz = haveControlState && control.hasXbarOffset ? control.xbarOffsetKhz : g_app.xbarFreqOffsetKhz;
     int currentXbarMsvddUv = haveControlState && control.hasXbarMsvddOffset ? control.xbarMsvddOffsetUv : g_app.xbarMsvddOffsetUv;
+    int currentSysClkKhz = haveControlState && control.hasSysClkOffset ? control.sysClkOffsetKhz : g_app.sysClkFreqOffsetKhz;
     if (baselineOut) {
         baselineOut->currentGpuOffsetMHz = currentGpuOffsetMHz;
         baselineOut->currentMemOffsetMHz = currentMemOffsetMHz;
@@ -178,6 +179,13 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
     bool xbarUnchanged =
         (!full.hasXbarOffsetKhz || full.xbarOffsetKhz == currentXbarOffsetKhz) &&
         (!full.hasXbarMsvddOffsetUv || full.xbarMsvddOffsetUv == currentXbarMsvddUv);
+    bool sysClkUnchanged =
+        !full.hasSysClkOffsetKhz || full.sysClkOffsetKhz == currentSysClkKhz;
+    debug_log("capture_gui_apply_settings: sys applied=(has=%d %d kHz)"
+              " desired=(has=%d %d kHz) unchanged=%d\n",
+        control.hasSysClkOffset ? 1 : 0, currentSysClkKhz,
+        full.hasSysClkOffsetKhz ? 1 : 0, full.sysClkOffsetKhz,
+        sysClkUnchanged ? 1 : 0);
     debug_log("capture_gui_apply_settings: xbar applied=(hasFreq=%d %d kHz hasVolt=%d %d uV)"
               " desired=(hasFreq=%d %d kHz hasVolt=%d %d uV) unchanged=%d\n",
         control.hasXbarOffset ? 1 : 0, currentXbarOffsetKhz,
@@ -249,7 +257,7 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
         lockChanged ? 1 : 0);
 
     if (gpuUnchanged && memUnchanged && powerUnchanged && xbarUnchanged &&
-        curveUnchanged && !lockChanged && fanChanged) {
+        sysClkUnchanged && curveUnchanged && !lockChanged && fanChanged) {
         debug_log("capture_gui_apply_settings: fan-only apply shortcut taken\n");
         *desired = fanOnly;
         desired->hasFan = true;
@@ -261,7 +269,7 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
     }
 
     if (gpuUnchanged && memUnchanged && powerUnchanged && xbarUnchanged &&
-        curveUnchanged && !lockChanged && !fanChanged) {
+        sysClkUnchanged && curveUnchanged && !lockChanged && !fanChanged) {
         set_message(err, errSize, "No changes to apply");
         return false;
     }

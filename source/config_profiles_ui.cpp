@@ -451,6 +451,10 @@ static void merge_desired_settings(DesiredSettings* base, const DesiredSettings*
         base->hasXbarMsvddOffsetUv = true;
         base->xbarMsvddOffsetUv = override->xbarMsvddOffsetUv;
     }
+    if (override->hasSysClkOffsetKhz) {
+        base->hasSysClkOffsetKhz = true;
+        base->sysClkOffsetKhz = override->sysClkOffsetKhz;
+    }
     if (override->hasFan) {
         base->hasFan = true;
         base->fanMode = override->fanMode;

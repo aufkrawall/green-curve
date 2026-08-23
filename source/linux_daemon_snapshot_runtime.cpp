@@ -63,6 +63,10 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
     s->xbarMsvddOffsetReadbackValid = g_gpu.xbarMsvddReadbackValid;
     s->xbarMsvddOffsetUv = g_gpu.xbarMsvddOffsetUv;
     s->xbarMeasuredClockKhz = g_gpu.xbarMeasuredClockKhz;
+    s->sysClkSupported = false;
+    s->sysClkOffsetReadbackValid = false;
+    s->sysClkOffsetKhz = 0;
+    s->sysClkMeasuredClockKhz = 0;
     gc_strlcpy(s->gpuName, sizeof(s->gpuName), g_gpu.gpuName[0] ? g_gpu.gpuName : "NVIDIA GPU");
 
     // Preserve the backend's complete adapter list and exact selected index.

@@ -104,6 +104,9 @@ static void gui_draft_capture_clean_projection() {
     StringCchPrintfA(g_app.guiDraft.xbarMsvddOffsetText,
         ARRAY_COUNT(g_app.guiDraft.xbarMsvddOffsetText), "%d",
         g_app.guiXbarMsvddOffsetUv / 1000);
+    StringCchPrintfA(g_app.guiDraft.sysClkOffsetText,
+        ARRAY_COUNT(g_app.guiDraft.sysClkOffsetText), "%d",
+        g_app.guiSysClkOffsetKhz / 1000);
     gui_draft_bind_current_ready_state();
 }
 
@@ -181,6 +184,10 @@ static void gui_draft_capture_desired(const DesiredSettings* desired) {
         StringCchPrintfA(g_app.guiDraft.xbarMsvddOffsetText,
             ARRAY_COUNT(g_app.guiDraft.xbarMsvddOffsetText), "%d",
             desired->xbarMsvddOffsetUv / 1000);
+    if (desired->hasSysClkOffsetKhz)
+        StringCchPrintfA(g_app.guiDraft.sysClkOffsetText,
+            ARRAY_COUNT(g_app.guiDraft.sysClkOffsetText), "%d",
+            desired->sysClkOffsetKhz / 1000);
 }
 
 static void gui_draft_mark_clean() {

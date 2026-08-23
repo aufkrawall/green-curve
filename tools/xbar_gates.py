@@ -112,6 +112,8 @@ def check_xbar_clk_domains(ctx, require_text, forbid_text):
     require_text(apply_capture_cpp,
                  "powerUnchanged && xbarUnchanged &&",
                  "F-XBAR-V2: no-change and fan-only shortcuts cannot omit XBAR")
+    require_text(apply_capture_cpp, "sysClkUnchanged",
+                 "F-XBAR-SYS: the no-change/fan-only shortcuts must include SYS")
 
 
 def check_xbar_profile_contract(ctx, require_text, forbid_text):
@@ -124,6 +126,7 @@ def check_xbar_profile_contract(ctx, require_text, forbid_text):
     helpers_cpp = _p(ctx, "desired_settings_helpers.cpp")
     lifecycle_h = _p(ctx, "service_lifecycle_policy.h")
     windows_merge_cpp = _p(ctx, "config_profiles_ui.cpp")
+    helpers_cpp = _p(ctx, "desired_settings_helpers.cpp")
     linux_profiles_cpp = _p(ctx, "linux_port_profiles.cpp")
     telemetry_h = _p(ctx, "xbar_telemetry.h")
 
@@ -164,6 +167,25 @@ def check_xbar_profile_contract(ctx, require_text, forbid_text):
     require_text(linux_profiles_cpp,
                  'addControl("xbar_msvdd_offset_uv", value);',
                  "Linux writes portable XBAR MSVDD profile fields")
+
+    require_text(sync_cpp,
+                 "snapshot->sysClkSupported = g_app.sysClkProbeValid;",
+                 "service snapshots carry truthful SYS clock provenance")
+    require_text(sync_cpp,
+                 "snapshot->sysClkOffsetReadbackValid = g_app.sysClkFreqReadbackValid;",
+                 "service snapshots carry truthful SYS readback provenance")
+    require_text(windows_merge_cpp,
+                 "base->hasSysClkOffsetKhz = true;",
+                 "Windows sparse merging carries SYS clock ownership")
+    require_text(gui_state_cpp,
+                 "projectedSysClkKhz",
+                 "loaded profiles make omitted SYS fields explicit stock intent")
+    require_text(helpers_cpp,
+                 "sys clock ownership differs profile=%d active=%d",
+                 "profile identity compares SYS clock ownership")
+    require_text(lifecycle_h,
+                 "previousIntent->hasSysClkOffsetKhz && !nextIntent->hasSysClkOffsetKhz",
+                 "named-profile transitions clean up omitted owned SYS fields")
 
     require_text(telemetry_h,
                  "g_app.xbarFreqReadbackValid = false;",
