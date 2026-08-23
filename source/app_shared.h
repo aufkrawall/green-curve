@@ -313,6 +313,7 @@ struct GuiDraft {
     char xbarOffsetText[32];
     char xbarMsvddOffsetText[32];
     char sysClkOffsetText[32];
+    char videoClkOffsetText[32];
 };
 
 // What the GPU currently has applied, as resolved by capture_gui_apply_settings()
@@ -459,6 +460,14 @@ struct AppData {
     bool sysClkFreqReadbackValid;
     int sysClkFreqOffsetKhz;
     unsigned int sysClkMeasuredClockKhz;
+    // Experimental VIDEO clock knob.  The ClkDomains entry it binds to is
+    // configurable ([debug] video_clk_entry, default 2) because no entry has
+    // been proven to move the video domain on any tested board.
+    bool videoClkProbeValid;
+    bool videoClkFreqReadbackValid;
+    int videoClkFreqOffsetKhz;
+    unsigned int videoClkMeasuredClockKhz;
+    int videoClkEntryIndex;
 
     bool nvmlReady;
     nvmlDevice_t nvmlDevice;
@@ -571,6 +580,8 @@ struct AppData {
     bool guiXbarMsvddOffsetFromProfileLoad;
     int guiSysClkOffsetKhz;
     bool guiSysClkOffsetFromProfileLoad;
+    int guiVideoClkOffsetKhz;
+    bool guiVideoClkOffsetFromProfileLoad;
 
     int activeFanMode;
     int activeFanFixedPercent;

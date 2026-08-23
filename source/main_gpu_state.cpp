@@ -676,6 +676,10 @@ static void build_full_live_desired_settings(DesiredSettings* desired) {
         haveControlState && control.hasSysClkOffset;
     desired->sysClkOffsetKhz = desired->hasSysClkOffsetKhz
         ? control.sysClkOffsetKhz : g_app.sysClkFreqOffsetKhz;
+    desired->hasVideoClkOffsetKhz = g_app.videoClkProbeValid &&
+        haveControlState && control.hasVideoClkOffset;
+    desired->videoClkOffsetKhz = desired->hasVideoClkOffsetKhz
+        ? control.videoClkOffsetKhz : g_app.videoClkFreqOffsetKhz;
     desired->hasFan = true;
     int fanIntentMode = haveControlState && control_state_has_meaningful_fan(&control)
         ? control.fanMode

@@ -38,7 +38,7 @@
 // header's prerequisites rather than the other way round.  The bit positions
 // are part of the wire protocol and are mirrored here as indices so this header
 // stays free of protocol dependencies.
-#define GPU_CAP_DOMAIN_COUNT 9
+#define GPU_CAP_DOMAIN_COUNT 10
 
 enum GpuDomainCapability : gc_u32 {
     // Never asked.  Treated as available — see the core invariant above.
@@ -297,6 +297,7 @@ static inline const char* gpu_capability_domain_name(int index) {
         case 6: return "fan";
         case 7: return "xbar";
         case 8: return "sys-clk";
+        case 9: return "video-clk";
         default: return "unknown-domain";
     }
 }

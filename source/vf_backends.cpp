@@ -35,6 +35,8 @@ static_assert(gpu_capability_mask_for_index(7) == SERVICE_MUTATION_DOMAIN_XBAR,
               "capability index 7 must be xbar");
 static_assert(gpu_capability_mask_for_index(8) == SERVICE_MUTATION_DOMAIN_SYS_CLK,
               "capability index 8 must be sys-clk");
+static_assert(gpu_capability_mask_for_index(9) == SERVICE_MUTATION_DOMAIN_VIDEO_CLK,
+              "capability index 9 must be video-clk");
 // The core invariant, enforced at compile time: an unprobed capability set
 // subtracts no domain, so this layer cannot regress a working GPU.
 static_assert(gpu_capability_available_domains(nullptr) == SERVICE_MUTATION_DOMAIN_ALL,

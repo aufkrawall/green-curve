@@ -44,6 +44,10 @@ struct GuiPendingChanges {
     bool sysClkValid;
     int appliedSysClkOffsetKhz;
     int pendingSysClkOffsetKhz;
+    // EXPERIMENTAL video clock offset.
+    bool videoClkValid;
+    int appliedVideoClkOffsetKhz;
+    int pendingVideoClkOffsetKhz;
     // The editor half of every point the graph plots, resolved from everything
     // above.  The graph is a pure reader of this; the repaint gate compares it.
     // Both facts matter: what the graph would draw and what triggers a repaint
@@ -449,6 +453,35 @@ static void gui_pending_evaluate_editor_diff(GuiPendingChanges* out) {
             out->summary.domainMask |= GUI_PENDING_SYS_CLK;
     }
 
+    // EXPERIMENTAL video clock: same shape again.
+    {
+        int appliedKhz = 0;
+        if (haveControl) {
+            if (control.hasVideoClkOffset) appliedKhz = control.videoClkOffsetKhz;
+        } else {
+            appliedKhz = g_app.videoClkFreqOffsetKhz;
+        }
+        int draftKhz = appliedKhz;
+        bool draftValid = false;
+        if (g_app.guiDraft.videoClkOffsetText[0]) {
+            int vMhz = 0;
+            draftValid = parse_int_strict(g_app.guiDraft.videoClkOffsetText, &vMhz);
+            if (draftValid) draftKhz = vMhz * 1000;
+        } else {
+            draftValid = true;
+            draftKhz = g_app.guiVideoClkOffsetKhz;
+        }
+        GuiPendingScalar videoScalar = {};
+        videoScalar.draftValid = draftValid;
+        videoScalar.draftValue = draftKhz;
+        videoScalar.appliedValue = appliedKhz;
+        out->videoClkValid = true;
+        out->appliedVideoClkOffsetKhz = appliedKhz;
+        out->pendingVideoClkOffsetKhz = draftValid ? draftKhz : appliedKhz;
+        if (gui_pending_scalar_changed(videoScalar))
+            out->summary.domainMask |= GUI_PENDING_VIDEO_CLK;
+    }
+
     gui_pending_evaluate_fan(out);
 }
 
@@ -483,6 +516,10 @@ static bool gui_pending_changes_equal(const GuiPendingChanges* a,
     if (a->sysClkValid != b->sysClkValid ||
         a->appliedSysClkOffsetKhz != b->appliedSysClkOffsetKhz ||
         a->pendingSysClkOffsetKhz != b->pendingSysClkOffsetKhz)
+        return false;
+    if (a->videoClkValid != b->videoClkValid ||
+        a->appliedVideoClkOffsetKhz != b->appliedVideoClkOffsetKhz ||
+        a->pendingVideoClkOffsetKhz != b->pendingVideoClkOffsetKhz)
         return false;
     if (gui_pending_graph_preview_moved_count(a, b, nullptr) != 0) return false;
     return memcmp(a->curvePoint, b->curvePoint, sizeof(a->curvePoint)) == 0;
@@ -619,6 +656,10 @@ static void gui_pending_changes_refresh() {
             GUI_PENDING_FAN_CURVE, beforeMask, afterMask);
         gui_pending_invalidate_domain(g_app.hXbarAdvancedBtn,
             GUI_PENDING_XBAR, beforeMask, afterMask);
+        gui_pending_invalidate_domain(g_app.hXbarAdvancedBtn,
+            GUI_PENDING_SYS_CLK, beforeMask, afterMask);
+        gui_pending_invalidate_domain(g_app.hXbarAdvancedBtn,
+            GUI_PENDING_VIDEO_CLK, beforeMask, afterMask);
 
         // Two independent reasons to repaint the graph, and both are needed:
         //   - the pending PRESENTATION flipped (dashed runs and orange markers

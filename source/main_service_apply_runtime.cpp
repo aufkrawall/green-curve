@@ -4,6 +4,7 @@
 // Service-owned settings apply/reset and authoritative in-memory intent.
 
 #include "gpu_backend_xbar.h"
+#include "clk_video_binding.h"
 
 static bool service_desired_has_owned_intent(const DesiredSettings* desired) {
     if (!desired) return false;
@@ -140,6 +141,10 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         if (!g_app.sysClkProbeValid) {
             mergedActiveDesired.hasSysClkOffsetKhz = false;
             mergedActiveDesired.sysClkOffsetKhz = 0;
+        }
+        if (!g_app.videoClkProbeValid) {
+            mergedActiveDesired.hasVideoClkOffsetKhz = false;
+            mergedActiveDesired.videoClkOffsetKhz = 0;
         }
         g_serviceActiveDesired = mergedActiveDesired;
         g_serviceActiveDesired.resetOcBeforeApply = false;
@@ -314,6 +319,29 @@ static bool service_reset_all(char* result, size_t resultSize,
         } else {
             failCount++;
             append_failure("SYS clock reset interface unavailable");
+        }
+    }
+    // Explicit Reset also zeroes the experimental VIDEO knob.
+    if (g_app.videoClkProbeValid && g_app.videoClkFreqOffsetKhz != 0) {
+        auto vidGet = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
+        auto vidSet = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
+        int videoEntry = clk_video_entry_index(g_app.configPath);
+        if (vidGet && vidSet && videoEntry >= 0) {
+            XbarControlSnapshot snap{};
+            if (xbar_write_entry_freq(vidGet, vidSet, g_app.gpuHandle, &snap,
+                                      (unsigned int)videoEntry, 0)) {
+                unsigned int videoField = snap.entryBase +
+                    (unsigned int)videoEntry * snap.entryStride +
+                    g_xbarSchemas[0].freqOffsetField;
+                g_app.videoClkFreqReadbackValid = true;
+                g_app.videoClkFreqOffsetKhz = (int)xbar_get_u32(snap.buf, videoField);
+                successCount++;
+                debug_log("service_reset_all: VIDEO clock reset to %d kHz\n",
+                          g_app.videoClkFreqOffsetKhz);
+            } else {
+                failCount++;
+                append_failure("VIDEO clock offset did not reset to stock");
+            }
         }
     }
 

@@ -16,6 +16,7 @@
 #define GREEN_CURVE_GPU_CAPABILITY_XBAR_PROBE_H
 
 #include "gpu_backend_xbar.h"
+#include "clk_video_binding.h"
 
 static void probe_xbar_control_surface(GpuCapabilityProbe* probe) {
     if (!probe) return;
@@ -28,6 +29,8 @@ static void probe_xbar_control_surface(GpuCapabilityProbe* probe) {
     g_app.xbarMsvddReadbackValid = false;
     g_app.sysClkProbeValid = false;
     g_app.sysClkFreqReadbackValid = false;
+    g_app.videoClkProbeValid = false;
+    g_app.videoClkFreqReadbackValid = false;
     obs.entryPointPresent = g_app.gpuHandle != nullptr;
     if (!obs.entryPointPresent) {
         gpu_capability_set(probe, SERVICE_MUTATION_DOMAIN_XBAR,
@@ -71,6 +74,27 @@ static void probe_xbar_control_surface(GpuCapabilityProbe* probe) {
             debug_log("gpu capability probe: sys-clk entry %u offset=%d kHz\n",
                       XBAR_PINNED_SYS_ENTRY_INDEX, g_app.sysClkFreqOffsetKhz);
         }
+        // Experimental VIDEO knob: same block, configurable entry binding.
+        int videoEntry = clk_video_entry_index(g_app.configPath);
+        g_app.videoClkEntryIndex = videoEntry;
+        if (videoEntry >= 0) {
+            unsigned long long videoField =
+                (unsigned long long)snap.entryBase +
+                (unsigned long long)videoEntry * snap.entryStride +
+                g_xbarSchemas[0].freqOffsetField;
+            if (videoField + sizeof(unsigned int) <= XBAR_CONTROL_BUF_SIZE) {
+                g_app.videoClkProbeValid = true;
+                g_app.videoClkFreqReadbackValid = true;
+                g_app.videoClkFreqOffsetKhz =
+                    (int)xbar_get_u32(snap.buf, (unsigned int)videoField);
+                debug_log("gpu capability probe: video-clk EXPERIMENTAL entry %u"
+                          " offset=%d kHz\n", videoEntry,
+                          g_app.videoClkFreqOffsetKhz);
+            }
+        } else {
+            debug_log("gpu capability probe: video-clk experimental knob"
+                      " disabled by config\n");
+        }
     } else if (snap.schemaStatus == XBAR_SCHEMA_STATUS_UNKNOWN_VERSION) {
         // The driver speaks a ClkDomains schema this build has not pinned.
         // That is incomplete tooling knowledge, NOT positive evidence that the
@@ -89,6 +113,11 @@ static void probe_xbar_control_surface(GpuCapabilityProbe* probe) {
     // Same evidence grades the SYS domain: it shares the validated block, so
     // it is exactly as available as XBAR itself.
     gpu_capability_set(probe, SERVICE_MUTATION_DOMAIN_SYS_CLK,
+                       gpu_capability_classify(&obs));
+    // The experimental VIDEO knob shares the validated block; grade it with
+    // the same evidence.  "Available" here means the write path is sound, not
+    // that a clock response has been observed.
+    gpu_capability_set(probe, SERVICE_MUTATION_DOMAIN_VIDEO_CLK,
                        gpu_capability_classify(&obs));
 }
 #endif

@@ -168,6 +168,7 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
     int currentXbarOffsetKhz = haveControlState && control.hasXbarOffset ? control.xbarOffsetKhz : g_app.xbarFreqOffsetKhz;
     int currentXbarMsvddUv = haveControlState && control.hasXbarMsvddOffset ? control.xbarMsvddOffsetUv : g_app.xbarMsvddOffsetUv;
     int currentSysClkKhz = haveControlState && control.hasSysClkOffset ? control.sysClkOffsetKhz : g_app.sysClkFreqOffsetKhz;
+    int currentVideoClkKhz = haveControlState && control.hasVideoClkOffset ? control.videoClkOffsetKhz : g_app.videoClkFreqOffsetKhz;
     if (baselineOut) {
         baselineOut->currentGpuOffsetMHz = currentGpuOffsetMHz;
         baselineOut->currentMemOffsetMHz = currentMemOffsetMHz;
@@ -181,6 +182,8 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
         (!full.hasXbarMsvddOffsetUv || full.xbarMsvddOffsetUv == currentXbarMsvddUv);
     bool sysClkUnchanged =
         !full.hasSysClkOffsetKhz || full.sysClkOffsetKhz == currentSysClkKhz;
+    bool videoClkUnchanged =
+        !full.hasVideoClkOffsetKhz || full.videoClkOffsetKhz == currentVideoClkKhz;
     debug_log("capture_gui_apply_settings: sys applied=(has=%d %d kHz)"
               " desired=(has=%d %d kHz) unchanged=%d\n",
         control.hasSysClkOffset ? 1 : 0, currentSysClkKhz,
@@ -257,7 +260,8 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
         lockChanged ? 1 : 0);
 
     if (gpuUnchanged && memUnchanged && powerUnchanged && xbarUnchanged &&
-        sysClkUnchanged && curveUnchanged && !lockChanged && fanChanged) {
+        sysClkUnchanged && videoClkUnchanged && curveUnchanged &&
+        !lockChanged && fanChanged) {
         debug_log("capture_gui_apply_settings: fan-only apply shortcut taken\n");
         *desired = fanOnly;
         desired->hasFan = true;
@@ -269,7 +273,8 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
     }
 
     if (gpuUnchanged && memUnchanged && powerUnchanged && xbarUnchanged &&
-        sysClkUnchanged && curveUnchanged && !lockChanged && !fanChanged) {
+        sysClkUnchanged && videoClkUnchanged && curveUnchanged &&
+        !lockChanged && !fanChanged) {
         set_message(err, errSize, "No changes to apply");
         return false;
     }

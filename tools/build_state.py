@@ -28,20 +28,20 @@ SOURCE_SIZE_RATCHET = {
     "config_profiles.cpp": 889,  # 883 before the SYS profile save key
     "entry.cpp": 863,
     "gpu_backend.cpp": 972,
-    "gpu_backend_apply.cpp": 1364,  # 1330 before the SYS clock apply block
-    "gpu_core.h": 831,  # 820 before the SYS clock domain (v21)
+    "gpu_backend_apply.cpp": 1407,  # 1364 before the VIDEO clock apply block
+    "gpu_core.h": 842,  # 831 before the video clock domain fields (v22)
     "gui_service_state.cpp": 820,  # 813 before the SYS draft projection
     "main.cpp": 801,
     "main_fan_runtime.cpp": 913,  # 929 before the tray menu moved to gui_tray_menu.cpp
     "main_gpu_front.cpp": 845,
-    "main_gpu_state.cpp": 928,  # 925 before SYS live-state ownership
+    "main_gpu_state.cpp": 932,  # 928 before VIDEO live-state ownership
     "main_runtime_nvml.cpp": 903,  # 901 before the XBAR telemetry call moved to its own header
     "main_service_persist.cpp": 908,
     "main_service_pipe.cpp": 796,  # 828 before the file-write commands moved out
-    "main_state_sync.cpp": 890,  # 878 before the SYS GUI adoption block
+    "main_state_sync.cpp": 915,  # 890 before the VIDEO GUI adoption block
      # 859 before truthful XBAR readback validity
         "ui_main_window.cpp": 1279,
-    "service_protocol.h": 818,  # new entrant: v21 SYS clock offset carriage
+    "service_protocol.h": 837,  # 818 before v22 video-clk carriage
 }
 
 

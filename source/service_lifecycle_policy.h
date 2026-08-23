@@ -106,6 +106,13 @@ static inline bool service_build_profile_transition_request(
         requestOut->hasSysClkOffsetKhz = true;
         requestOut->sysClkOffsetKhz = 0;
     }
+    // EXPERIMENTAL video knob is never part of profiles, so ANY profile
+    // selection clears it - an experiment must never survive into a named
+    // profile's ownership.
+    if (previousIntent->hasVideoClkOffsetKhz && !nextIntent->hasVideoClkOffsetKhz) {
+        requestOut->hasVideoClkOffsetKhz = true;
+        requestOut->videoClkOffsetKhz = 0;
+    }
     return true;
 }
 

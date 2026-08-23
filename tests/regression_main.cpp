@@ -1918,16 +1918,16 @@ static int run_all_tests(int argc, char** argv) {
     // Protocol-v13 request validation, mutation preconditions, and field layout.
     {
         if (SERVICE_PROTOCOL_MAGIC != 0x47535643u) return 80;
-        if (SERVICE_PROTOCOL_VERSION != 21) return 81;
+        if (SERVICE_PROTOCOL_VERSION != 22) return 81;
         // These are release gates, not incidental layout observations. A field
         // addition that changes a fixed-size IPC structure must bump the wire
         // version; otherwise mixed old/new peers pass the header handshake and
         // then disagree on the number of body bytes to read.
-        if (sizeof(ServiceRequest) != 1416 ||
-            sizeof(ControlState) != 176 ||
-            sizeof(DesiredSettings) != 824 ||
-            sizeof(ServiceSnapshot) != 4224 ||
-            sizeof(ServiceResponse) != 7048) return 4521;
+        if (sizeof(ServiceRequest) != 1424 ||
+            sizeof(ControlState) != 184 ||
+            sizeof(DesiredSettings) != 832 ||
+            sizeof(ServiceSnapshot) != 4240 ||
+            sizeof(ServiceResponse) != 7088) return 4521;
         if (offsetof(ServiceRequest, expectedServiceInstanceId) <=
             offsetof(ServiceRequest, operationId) ||
             offsetof(ServiceResponse, state) <=
@@ -2007,6 +2007,11 @@ static int run_all_tests(int argc, char** argv) {
         desired.sysClkOffsetKhz = 50000;
         if (service_desired_mutation_domains(&desired) !=
                 SERVICE_MUTATION_DOMAIN_SYS_CLK) return 4530;
+        desired = {};
+        desired.hasVideoClkOffsetKhz = true;
+        desired.videoClkOffsetKhz = 25000;
+        if (service_desired_mutation_domains(&desired) !=
+                SERVICE_MUTATION_DOMAIN_VIDEO_CLK) return 4535;
         desired = {};
         desired.hasLock = true;
         desired.lockMode = LOCK_MODE_HARD;
@@ -3973,6 +3978,14 @@ static int run_all_tests(int argc, char** argv) {
             // same request; only the omitted SYS field is rewritten to stock.
             if (!sysTransition.hasXbarOffsetKhz ||
                 sysTransition.xbarOffsetKhz != 10000) return 4533;
+            // The EXPERIMENTAL video knob never belongs to profiles: any
+            // profile selection must clear it.
+            prevSys.hasVideoClkOffsetKhz = 1;
+            prevSys.videoClkOffsetKhz = 40000;
+            if (!service_build_profile_transition_request(
+                    &prevSys, &nextNoSys, &sysTransition)) return 4536;
+            if (!sysTransition.hasVideoClkOffsetKhz ||
+                sysTransition.videoClkOffsetKhz != 0) return 4537;
         }
 
         DesiredSettings previousFanOnly = nextFanOnly;

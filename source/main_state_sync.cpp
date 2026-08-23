@@ -231,6 +231,10 @@ static void populate_service_snapshot_locked(ServiceSnapshot* snapshot,
     snapshot->sysClkOffsetReadbackValid = g_app.sysClkFreqReadbackValid;
     snapshot->sysClkOffsetKhz = g_app.sysClkFreqOffsetKhz;
     snapshot->sysClkMeasuredClockKhz = g_app.sysClkMeasuredClockKhz;
+    snapshot->videoClkSupported = g_app.videoClkProbeValid;
+    snapshot->videoClkOffsetReadbackValid = g_app.videoClkFreqReadbackValid;
+    snapshot->videoClkOffsetKhz = g_app.videoClkFreqOffsetKhz;
+    snapshot->videoClkMeasuredClockKhz = g_app.videoClkMeasuredClockKhz;
 }
 
 static void populate_service_snapshot(ServiceSnapshot* snapshot) {
@@ -270,6 +274,9 @@ static void populate_control_state_locked(ControlState* state) {
     state->hasSysClkOffset = g_app.sysClkProbeValid;
     state->sysClkOffsetReadbackValid = g_app.sysClkFreqReadbackValid;
     state->sysClkOffsetKhz = g_app.sysClkFreqOffsetKhz;
+    state->hasVideoClkOffset = g_app.videoClkProbeValid;
+    state->videoClkOffsetReadbackValid = g_app.videoClkFreqReadbackValid;
+    state->videoClkOffsetKhz = g_app.videoClkFreqOffsetKhz;
 
     // Protocol v14: the values above intentionally keep a last-known or intent
     // fallback so a degraded read still leaves the editor populated.  These bits
@@ -369,6 +376,10 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
     g_app.sysClkFreqReadbackValid = snapshot->sysClkOffsetReadbackValid;
     g_app.sysClkFreqOffsetKhz = snapshot->sysClkOffsetKhz;
     g_app.sysClkMeasuredClockKhz = snapshot->sysClkMeasuredClockKhz;
+    g_app.videoClkProbeValid = snapshot->videoClkSupported;
+    g_app.videoClkFreqReadbackValid = snapshot->videoClkOffsetReadbackValid;
+    g_app.videoClkFreqOffsetKhz = snapshot->videoClkOffsetKhz;
+    g_app.videoClkMeasuredClockKhz = snapshot->videoClkMeasuredClockKhz;
     g_app.numPopulated = snapshot->numPopulated;
     g_app.gpuClockOffsetkHz = snapshot->gpuClockOffsetkHz;
     g_app.memClockOffsetkHz = snapshot->memClockOffsetkHz;
@@ -568,6 +579,9 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
     g_app.serviceControlState.hasSysClkOffset = snapshot->sysClkSupported;
     g_app.serviceControlState.sysClkOffsetReadbackValid = snapshot->sysClkOffsetReadbackValid;
     g_app.serviceControlState.sysClkOffsetKhz = snapshot->sysClkOffsetKhz;
+    g_app.serviceControlState.hasVideoClkOffset = snapshot->videoClkSupported;
+    g_app.serviceControlState.videoClkOffsetReadbackValid = snapshot->videoClkOffsetReadbackValid;
+    g_app.serviceControlState.videoClkOffsetKhz = snapshot->videoClkOffsetKhz;
     log_locked_tail_drift_diagnostics();
     g_app.serviceControlStateValid = true;
     LeaveCriticalSection(&g_appLock);
@@ -680,6 +694,17 @@ static void apply_service_desired_to_gui(const DesiredSettings* desired) {
             char buf[32] = {};
             StringCchPrintfA(buf, 32, "%d", adoptedSysClkKhz / 1000);
             StringCchCopyA(g_app.guiDraft.sysClkOffsetText, 32, buf);
+        }
+        // EXPERIMENTAL VIDEO clock adopts the same not-dirty rule.
+        int adoptedVideoClkKhz = desired->hasVideoClkOffsetKhz
+            ? desired->videoClkOffsetKhz : g_app.videoClkFreqOffsetKhz;
+        if (updateGui) {
+            g_app.guiVideoClkOffsetKhz = adoptedVideoClkKhz;
+        }
+        if (g_app.guiDraft.attached && updateGui) {
+            char buf[32] = {};
+            StringCchPrintfA(buf, 32, "%d", adoptedVideoClkKhz / 1000);
+            StringCchCopyA(g_app.guiDraft.videoClkOffsetText, 32, buf);
         }
     }
     // Adopt the service's active curve intent as the drift-free baseline, regardless

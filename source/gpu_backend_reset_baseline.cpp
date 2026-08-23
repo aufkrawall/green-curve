@@ -114,6 +114,27 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
             append_failure("SYS clock reset functions unavailable");
         }
     }
+    // Experimental VIDEO clock entry rides the same validated block.
+    if (g_app.videoClkProbeValid && g_app.videoClkFreqOffsetKhz != 0) {
+        auto vidGetFunc = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
+        auto vidSetFunc = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
+        int videoEntry = clk_video_entry_index(g_app.configPath);
+        if (vidGetFunc && vidSetFunc && videoEntry >= 0) {
+            XbarControlSnapshot snap{};
+            if (xbar_write_entry_freq(vidGetFunc, vidSetFunc, g_app.gpuHandle,
+                                      &snap, (unsigned int)videoEntry, 0)) {
+                unsigned int videoField = snap.entryBase +
+                    (unsigned int)videoEntry * snap.entryStride +
+                    g_xbarSchemas[0].freqOffsetField;
+                g_app.videoClkFreqReadbackValid = true;
+                g_app.videoClkFreqOffsetKhz = (int)xbar_get_u32(snap.buf, videoField);
+                debug_log("reset-before-apply: VIDEO clock reset to %d kHz\n",
+                          g_app.videoClkFreqOffsetKhz);
+            } else {
+                append_failure("VIDEO clock offset did not reset");
+            }
+        }
+    }
     g_app.lastApplyUsedGpuOffset = false;
     read_live_curve_snapshot_settled(4, 25, nullptr);
     refresh_global_state(result, resultSize);

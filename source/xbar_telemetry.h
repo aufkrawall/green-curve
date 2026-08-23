@@ -7,6 +7,7 @@
 #define GREEN_CURVE_XBAR_TELEMETRY_H
 
 #include "gpu_backend_xbar.h"
+#include "clk_video_binding.h"
 
 static bool xbar_refresh_live_state() {
     if (!g_app.xbarProbeValid || !g_app.gpuHandle) return false;
@@ -19,6 +20,7 @@ static bool xbar_refresh_live_state() {
         g_app.xbarFreqReadbackValid = false;
         g_app.xbarMsvddReadbackValid = false;
         g_app.sysClkFreqReadbackValid = false;
+        g_app.videoClkFreqReadbackValid = false;
         return false;
     }
     xbar_measure_clock(measure, g_app.gpuHandle, &snap.measuredKhz);
@@ -40,6 +42,19 @@ static bool xbar_refresh_live_state() {
         changed = changed || g_app.sysClkFreqOffsetKhz != sysOffset;
         g_app.sysClkFreqReadbackValid = true;
         g_app.sysClkFreqOffsetKhz = sysOffset;
+    }
+    int videoEntry = clk_video_entry_index(g_app.configPath);
+    if (videoEntry >= 0) {
+        unsigned long long videoField =
+            (unsigned long long)snap.entryBase +
+            (unsigned long long)videoEntry * snap.entryStride +
+            g_xbarSchemas[0].freqOffsetField;
+        if (videoField + sizeof(unsigned int) <= XBAR_CONTROL_BUF_SIZE) {
+            int videoOffset = (int)xbar_get_u32(snap.buf, (unsigned int)videoField);
+            changed = changed || g_app.videoClkFreqOffsetKhz != videoOffset;
+            g_app.videoClkFreqReadbackValid = true;
+            g_app.videoClkFreqOffsetKhz = videoOffset;
+        }
     }
     if (changed) {
         debug_log("xbar refresh: offset=%d kHz msvdd=%d uV measured=%u kHz\n",

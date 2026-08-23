@@ -450,6 +450,9 @@ struct ControlState {
     gc_bool8 hasSysClkOffset;
     gc_bool8 sysClkOffsetReadbackValid;
     int sysClkOffsetKhz;
+    gc_bool8 hasVideoClkOffset;
+    gc_bool8 videoClkOffsetReadbackValid;
+    int videoClkOffsetKhz;
 };
 
 struct GpuAdapterInfo {
@@ -508,6 +511,8 @@ struct DesiredSettings {
     int xbarMsvddOffsetUv;
     gc_bool8 hasSysClkOffsetKhz;
     int sysClkOffsetKhz;
+    gc_bool8 hasVideoClkOffsetKhz;
+    int videoClkOffsetKhz;
 };
 
 static inline void validate_fan_curve_flags_for_ipc(FanCurveConfig* c) {
@@ -559,6 +564,8 @@ static inline void validate_control_state_for_ipc(ControlState* c) {
     canonicalize_gc_bool8(&c->xbarMsvddOffsetReadbackValid);
     canonicalize_gc_bool8(&c->hasSysClkOffset);
     canonicalize_gc_bool8(&c->sysClkOffsetReadbackValid);
+    canonicalize_gc_bool8(&c->hasVideoClkOffset);
+    canonicalize_gc_bool8(&c->videoClkOffsetReadbackValid);
 }
 
 // Sanitize a DesiredSettings struct received over IPC.  This is the single
@@ -584,6 +591,7 @@ static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
     canonicalize_gc_bool8(&d->hasXbarOffsetKhz);
     canonicalize_gc_bool8(&d->hasXbarMsvddOffsetUv);
     canonicalize_gc_bool8(&d->hasSysClkOffsetKhz);
+    canonicalize_gc_bool8(&d->hasVideoClkOffsetKhz);
     if (d->hasXbarOffsetKhz && (d->xbarOffsetKhz < -1000000 || d->xbarOffsetKhz > 1000000)) {
         d->xbarOffsetKhz = d->xbarOffsetKhz < -1000000 ? -1000000 : 1000000;
     }
@@ -592,6 +600,9 @@ static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
     }
     if (d->hasSysClkOffsetKhz && (d->sysClkOffsetKhz < -1000000 || d->sysClkOffsetKhz > 1000000)) {
         d->sysClkOffsetKhz = d->sysClkOffsetKhz < -1000000 ? -1000000 : 1000000;
+    }
+    if (d->hasVideoClkOffsetKhz && (d->videoClkOffsetKhz < -1000000 || d->videoClkOffsetKhz > 1000000)) {
+        d->videoClkOffsetKhz = d->videoClkOffsetKhz < -1000000 ? -1000000 : 1000000;
     }
     validate_fan_curve_flags_for_ipc(&d->fanCurve);
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {

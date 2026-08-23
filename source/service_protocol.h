@@ -65,7 +65,11 @@ enum {
     // v21 adds the SYS clock offset (second ClkDomains aux entry, identified
     // empirically on RTX 5070 / 610.88). ControlState, DesiredSettings,
     // ServiceSnapshot, and therefore ServiceResponse all changed size again.
-    SERVICE_PROTOCOL_VERSION = 21,
+    //
+    // v22 adds the EXPERIMENTAL video clock offset (best-effort knob on the
+    // same ClkDomains block; entry binding is configurable and may not have
+    // any effect on a given board/driver). Sizes changed again.
+    SERVICE_PROTOCOL_VERSION = 22,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply. Bit 30 marks an
@@ -360,6 +364,7 @@ enum ServiceMutationDomain : gc_u32 {
     SERVICE_MUTATION_DOMAIN_FAN = 1u << 6,
     SERVICE_MUTATION_DOMAIN_XBAR = 1u << 7,
     SERVICE_MUTATION_DOMAIN_SYS_CLK = 1u << 8,
+    SERVICE_MUTATION_DOMAIN_VIDEO_CLK = 1u << 9,
 };
 
 enum {
@@ -372,7 +377,8 @@ enum {
         SERVICE_MUTATION_DOMAIN_LOCK |
         SERVICE_MUTATION_DOMAIN_FAN |
         SERVICE_MUTATION_DOMAIN_XBAR |
-        SERVICE_MUTATION_DOMAIN_SYS_CLK,
+        SERVICE_MUTATION_DOMAIN_SYS_CLK |
+        SERVICE_MUTATION_DOMAIN_VIDEO_CLK,
 };
 
 // NOTE: the per-domain capability policy (gpu_capability_policy.h) indexes these
@@ -420,6 +426,8 @@ static inline gc_u32 service_desired_mutation_domains(
         domains |= SERVICE_MUTATION_DOMAIN_XBAR;
     if (desired->hasSysClkOffsetKhz)
         domains |= SERVICE_MUTATION_DOMAIN_SYS_CLK;
+    if (desired->hasVideoClkOffsetKhz)
+        domains |= SERVICE_MUTATION_DOMAIN_VIDEO_CLK;
     return domains;
 }
 
@@ -484,8 +492,8 @@ struct ServiceGpuHealth {
     char detail[192];
 };
 enum : gc_u32 {
-    // 2 bits per domain x 9 domains (v21 adds sys-clk at index 8).
-    SERVICE_GPU_CAPABILITY_PACKED_MASK = 0x3FFFFu,
+    // 2 bits per domain x 10 domains (v22 adds video-clk at index 9).
+    SERVICE_GPU_CAPABILITY_PACKED_MASK = 0xFFFFFu,
     SERVICE_GPU_MEMORY_TOPOLOGY_MAX = 2u,
 };
 
@@ -600,6 +608,10 @@ struct ServiceSnapshot {
     gc_bool8 sysClkOffsetReadbackValid;
     int sysClkOffsetKhz;
     unsigned int sysClkMeasuredClockKhz;
+    gc_bool8 videoClkSupported;
+    gc_bool8 videoClkOffsetReadbackValid;
+    int videoClkOffsetKhz;
+    unsigned int videoClkMeasuredClockKhz;
     ServiceGpuHealth health;
 };
 
@@ -639,8 +651,7 @@ struct ServiceRequest {
     char source[64];
     char path[GC_REQUEST_PATH_MAX];
 };
-static_assert(sizeof(ServiceRequest) == 1416,
-              "ServiceRequest changed without an IPC protocol-version bump");
+
 // Static field-offset assertions: these catch accidental ABI breaks when
 // struct fields are reordered, resized, or moved between versions.
 // The magic field must always be at offset 0 for protocol identification.
@@ -649,12 +660,18 @@ static_assert(offsetof(ServiceRequest, version) == 4, "ServiceRequest.version of
 static_assert(offsetof(ServiceRequest, command) == 8, "ServiceRequest.command offset changed");
 
 
-static_assert(sizeof(ControlState) == 176,
+
+
+
+
+static_assert(sizeof(ControlState) == 184,
               "ControlState changed without an IPC protocol-version bump");
-static_assert(sizeof(DesiredSettings) == 824,
+static_assert(sizeof(DesiredSettings) == 832,
               "DesiredSettings changed without an IPC protocol-version bump");
-static_assert(sizeof(ServiceSnapshot) == 4224,
+static_assert(sizeof(ServiceSnapshot) == 4240,
               "ServiceSnapshot changed without an IPC protocol-version bump");
+static_assert(sizeof(ServiceRequest) == 1424,
+              "ServiceRequest changed without an IPC protocol-version bump");
 
 static inline bool service_wire_string_is_terminated(
     const char* value, unsigned int count) {
@@ -676,6 +693,7 @@ static inline bool service_desired_bool_fields_valid(
         &desired->resetOcBeforeApply,
         &desired->hasXbarOffsetKhz, &desired->hasXbarMsvddOffsetUv,
         &desired->hasSysClkOffsetKhz,
+        &desired->hasVideoClkOffsetKhz,
     };
     for (const gc_bool8* flag : flags)
         if (*flag > 1) return false;
@@ -763,8 +781,9 @@ struct ServiceResponse {
     ServiceUpdateState update;
     char message[512];
 };
-static_assert(sizeof(ServiceResponse) == 7048,
+static_assert(sizeof(ServiceResponse) == 7088,
               "ServiceResponse changed without an IPC protocol-version bump");
+
 static_assert(offsetof(ServiceResponse, magic) == 0, "ServiceResponse.magic must be at offset 0");
 static_assert(offsetof(ServiceResponse, version) == 4, "ServiceResponse.version offset changed");
 

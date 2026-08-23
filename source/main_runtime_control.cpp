@@ -272,6 +272,38 @@
             currentSysKhz, sysKhz, desired->hasSysClkOffsetKhz ? 1 : 0);
     }
 
+    // EXPERIMENTAL VIDEO clock offset capture.  Owns nothing when the knob
+    // is disabled or the surface did not answer.
+    if (g_app.videoClkProbeValid && g_app.videoClkEntryIndex >= 0) {
+        int currentVideoKhz = 0;
+        if (haveControlState) {
+            if (control.hasVideoClkOffset) currentVideoKhz = control.videoClkOffsetKhz;
+        } else {
+            currentVideoKhz = g_app.videoClkFreqOffsetKhz;
+        }
+        int videoKhz = currentVideoKhz;
+        if (gui_state_dirty()) {
+            if (g_app.guiDraft.videoClkOffsetText[0]) {
+                int vMhz = 0;
+                if (!parse_int_strict(g_app.guiDraft.videoClkOffsetText, &vMhz)) {
+                    set_message(err, errSize, "Invalid VIDEO clock offset");
+                    return false;
+                }
+                videoKhz = vMhz * 1000;
+            } else {
+                videoKhz = g_app.guiVideoClkOffsetKhz;
+            }
+        }
+        g_app.guiVideoClkOffsetKhz = videoKhz;
+        bool videoChanged = videoKhz != currentVideoKhz;
+        if (includeCurrentGlobals || forceExplicitGlobals || videoChanged) {
+            desired->hasVideoClkOffsetKhz = true;
+            desired->videoClkOffsetKhz = videoKhz;
+        }
+        debug_log("capture_gui: video current=%d kHz -> desired=%d kHz has=%d\n",
+            currentVideoKhz, videoKhz, desired->hasVideoClkOffsetKhz ? 1 : 0);
+    }
+
     char capturedCurvePoints[256] = {};
     build_point_list_from_flags(desired->hasCurvePoint, capturedCurvePoints, sizeof(capturedCurvePoints));
     debug_log("capture_gui_desired_settings: serviceMode=%d includeCurrent=%d forceExplicit=%d hasGpu=%d gpu=%d exclude=%d hasMem=%d mem=%d hasPower=%d power=%d hasFan=%d fanMode=%d fanPct=%d hasLock=%d lockCi=%d lockMHz=%u curvePoints=%d (%s)\n",

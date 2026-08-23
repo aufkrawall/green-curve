@@ -11,6 +11,7 @@
 #define XBAR_OFFSET_EDIT_ID    3200
 #define XBAR_MSVDD_EDIT_ID     3201
 #define XBAR_SYS_EDIT_ID       3208
+#define XBAR_VIDEO_EDIT_ID     3209
 #define XBAR_OK_BTN_ID         3202
 #define XBAR_CANCEL_BTN_ID     3203
 #define XBAR_RESET_BTN_ID      3204
@@ -23,6 +24,7 @@ struct XbarDialogState {
     HWND hOffsetEdit;
     HWND hMsvddEdit;
     HWND hSysEdit;
+    HWND hVideoEdit;
     HWND hCurrentLabel;
     HWND hMeasuredLabel;
     HWND hHintLabel;
@@ -90,6 +92,7 @@ static void xbar_dialog_sync_controls() {
         EnableWindow(g_xbarDialog.hOffsetEdit, FALSE);
         EnableWindow(g_xbarDialog.hMsvddEdit, FALSE);
         if (g_xbarDialog.hSysEdit) EnableWindow(g_xbarDialog.hSysEdit, FALSE);
+        if (g_xbarDialog.hVideoEdit) EnableWindow(g_xbarDialog.hVideoEdit, FALSE);
         EnableWindow(g_xbarDialog.hOkBtn, FALSE);
         EnableWindow(g_xbarDialog.hResetBtn, FALSE);
         return;
@@ -97,6 +100,10 @@ static void xbar_dialog_sync_controls() {
     EnableWindow(g_xbarDialog.hOffsetEdit, TRUE);
     EnableWindow(g_xbarDialog.hMsvddEdit, TRUE);
     EnableWindow(g_xbarDialog.hSysEdit, TRUE);
+    if (g_xbarDialog.hVideoEdit) {
+        bool videoEnabled = g_app.videoClkProbeValid && g_app.videoClkEntryIndex >= 0;
+        EnableWindow(g_xbarDialog.hVideoEdit, videoEnabled ? TRUE : FALSE);
+    }
     EnableWindow(g_xbarDialog.hOkBtn, TRUE);
     EnableWindow(g_xbarDialog.hResetBtn, TRUE);
 
@@ -127,6 +134,26 @@ static void xbar_dialog_sync_controls() {
     StringCchPrintfA(buf, 32, "%d", pendingSysKhz / 1000);
     SetWindowTextA(g_xbarDialog.hSysEdit, buf);
     end_programmatic_edit_update();
+
+    // EXPERIMENTAL VIDEO clock pending value (same rules as SYS).
+    if (g_xbarDialog.hVideoEdit) {
+        int appliedVideoKhz = g_app.videoClkProbeValid ? g_app.videoClkFreqOffsetKhz : 0;
+        if (haveControl && control.hasVideoClkOffset) appliedVideoKhz = control.videoClkOffsetKhz;
+        int pendingVideoKhz = appliedVideoKhz;
+        if (gui_state_dirty()) {
+            if (g_app.guiDraft.videoClkOffsetText[0]) {
+                int v = 0;
+                if (parse_int_strict(g_app.guiDraft.videoClkOffsetText, &v)) pendingVideoKhz = v * 1000;
+            } else {
+                pendingVideoKhz = g_app.guiVideoClkOffsetKhz;
+            }
+        }
+        char vbuf[32] = {};
+        begin_programmatic_edit_update();
+        StringCchPrintfA(vbuf, 32, "%d", pendingVideoKhz / 1000);
+        SetWindowTextA(g_xbarDialog.hVideoEdit, vbuf);
+        end_programmatic_edit_update();
+    }
 
     // Current applied label
     if (appliedKhz == 0 && appliedUv == 0) {
@@ -188,6 +215,24 @@ static bool xbar_dialog_commit(HWND hwnd) {
     int offsetKhz = offsetMhz * 1000;
     int msvddUv = msvddMv * 1000;
     int sysKhz = sysMhz * 1000;
+    if (g_xbarDialog.hVideoEdit && IsWindowEnabled(g_xbarDialog.hVideoEdit)) {
+        char videoBuf[64] = {};
+        GetWindowTextA(g_xbarDialog.hVideoEdit, videoBuf, 64);
+        trim_ascii(videoBuf);
+        if (!videoBuf[0]) StringCchCopyA(videoBuf, 64, "0");
+        int videoMhz = 0;
+        if (!parse_int_strict(videoBuf, &videoMhz)) {
+            gc_message_box(hwnd, "Invalid VIDEO clock offset. Use integer MHz.", "Green Curve", MB_OK | MB_ICONERROR);
+            return false;
+        }
+        if (videoMhz < -1000 || videoMhz > 1000) {
+            gc_message_box(hwnd, "VIDEO clock offset must be between -1000 and 1000 MHz.", "Green Curve", MB_OK | MB_ICONERROR);
+            return false;
+        }
+        g_app.guiVideoClkOffsetKhz = videoMhz * 1000;
+        g_app.guiVideoClkOffsetFromProfileLoad = false;
+        StringCchPrintfA(g_app.guiDraft.videoClkOffsetText, 32, "%d", videoMhz);
+    }
 
     // Write into draft and gui fields. This marks the editor dirty and makes
     // the Advanced button show pending orange until the user presses Apply.
@@ -321,6 +366,7 @@ static LRESULT CALLBACK XbarDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 SetWindowTextA(g_xbarDialog.hOffsetEdit, "0");
                 SetWindowTextA(g_xbarDialog.hMsvddEdit, "0");
                 if (g_xbarDialog.hSysEdit) SetWindowTextA(g_xbarDialog.hSysEdit, "0");
+                if (g_xbarDialog.hVideoEdit) SetWindowTextA(g_xbarDialog.hVideoEdit, "0");
                 end_programmatic_edit_update();
                 return 0;
             }
@@ -379,7 +425,7 @@ static void open_xbar_dialog() {
     // frame size; passing the client height directly cut off the bottom row by
     // exactly the caption plus border.
     int clientW = dp(420);
-    int clientH = dp(354);
+    int clientH = dp(388);
     const DWORD dialogStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
     const DWORD dialogExStyle = WS_EX_DLGMODALFRAME;
     SIZE outerSize = adjusted_window_size_for_client(
@@ -441,7 +487,17 @@ static void open_xbar_dialog() {
         g_xbarDialog.hwnd, (HMENU)(INT_PTR)XBAR_SYS_EDIT_ID, g_app.hInst, nullptr);
     (void)lblSys;
 
-    int y3 = y2 + rowH + dp(16);
+    int y2b = y2 + rowH + dp(12);
+    HWND lblVideo = CreateWindowExA(0, "STATIC", "VIDEO Clock Offset (MHz) [exp.]:",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        margin, y2b + dp(2), labelW + dp(30), dp(18),
+        g_xbarDialog.hwnd, (HMENU)(INT_PTR)XBAR_HINT_LABEL_ID, g_app.hInst, nullptr);
+    g_xbarDialog.hVideoEdit = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "0",
+        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+        margin + labelW + dp(38), y2b, editW, rowH,
+        g_xbarDialog.hwnd, (HMENU)(INT_PTR)XBAR_VIDEO_EDIT_ID, g_app.hInst, nullptr);
+
+    int y3 = y2b + rowH + dp(16);
     g_xbarDialog.hCurrentLabel = CreateWindowExA(0, "STATIC", "Current: ---",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
         margin, y3, clientW - margin*2, dp(18),
@@ -486,7 +542,7 @@ static void open_xbar_dialog() {
 
     // Apply fonts
     HWND ctrls[] = { lblOffset, g_xbarDialog.hOffsetEdit, lblMsvdd, g_xbarDialog.hMsvddEdit,
-        lblSys, g_xbarDialog.hSysEdit,
+        lblSys, g_xbarDialog.hSysEdit, lblVideo, g_xbarDialog.hVideoEdit,
         g_xbarDialog.hCurrentLabel, g_xbarDialog.hMeasuredLabel, g_xbarDialog.hOkBtn, g_xbarDialog.hCancelBtn, g_xbarDialog.hResetBtn };
     for (HWND c : ctrls) if (c) SendMessageA(c, WM_SETFONT, (WPARAM)hFont, TRUE);
 
@@ -496,6 +552,7 @@ static void open_xbar_dialog() {
     if (g_xbarDialog.hOffsetEdit) style_input_control(g_xbarDialog.hOffsetEdit);
     if (g_xbarDialog.hMsvddEdit) style_input_control(g_xbarDialog.hMsvddEdit);
     if (g_xbarDialog.hSysEdit) style_input_control(g_xbarDialog.hSysEdit);
+    if (g_xbarDialog.hVideoEdit) style_input_control(g_xbarDialog.hVideoEdit);
 
     xbar_dialog_sync_controls();
     ShowWindow(g_xbarDialog.hwnd, SW_SHOW);
