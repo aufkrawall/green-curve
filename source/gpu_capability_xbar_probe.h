@@ -26,6 +26,8 @@ static void probe_xbar_control_surface(GpuCapabilityProbe* probe) {
     g_app.xbarProbeValid = false;
     g_app.xbarFreqReadbackValid = false;
     g_app.xbarMsvddReadbackValid = false;
+    g_app.sysClkProbeValid = false;
+    g_app.sysClkFreqReadbackValid = false;
     obs.entryPointPresent = g_app.gpuHandle != nullptr;
     if (!obs.entryPointPresent) {
         gpu_capability_set(probe, SERVICE_MUTATION_DOMAIN_XBAR,
@@ -55,6 +57,20 @@ static void probe_xbar_control_surface(GpuCapabilityProbe* probe) {
                   snap.versionWord, snap.entryBase, snap.entryStride,
                   snap.domainIndex, snap.freqOffsetKhz, snap.msvddOffsetUv,
                   snap.measuredKhz);
+        // The same validated block carries the SYS entry: extraction is
+        // read-only and rides the exact-readback proof already established.
+        unsigned long long sysField =
+            (unsigned long long)snap.entryBase +
+            XBAR_PINNED_SYS_ENTRY_INDEX * snap.entryStride +
+            g_xbarSchemas[0].freqOffsetField;
+        if (sysField + sizeof(unsigned int) <= XBAR_CONTROL_BUF_SIZE) {
+            g_app.sysClkProbeValid = true;
+            g_app.sysClkFreqReadbackValid = true;
+            g_app.sysClkFreqOffsetKhz =
+                (int)xbar_get_u32(snap.buf, (unsigned int)sysField);
+            debug_log("gpu capability probe: sys-clk entry %u offset=%d kHz\n",
+                      XBAR_PINNED_SYS_ENTRY_INDEX, g_app.sysClkFreqOffsetKhz);
+        }
     } else if (snap.schemaStatus == XBAR_SCHEMA_STATUS_UNKNOWN_VERSION) {
         // The driver speaks a ClkDomains schema this build has not pinned.
         // That is incomplete tooling knowledge, NOT positive evidence that the
@@ -69,6 +85,10 @@ static void probe_xbar_control_surface(GpuCapabilityProbe* probe) {
                   " validation failed\n");
     }
     gpu_capability_set(probe, SERVICE_MUTATION_DOMAIN_XBAR,
+                       gpu_capability_classify(&obs));
+    // Same evidence grades the SYS domain: it shares the validated block, so
+    // it is exactly as available as XBAR itself.
+    gpu_capability_set(probe, SERVICE_MUTATION_DOMAIN_SYS_CLK,
                        gpu_capability_classify(&obs));
 }
 #endif

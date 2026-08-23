@@ -17,11 +17,12 @@
 
 static const char* self_test_yes_no(bool value) { return value ? "yes" : "NO"; }
 
-// Public NvAPI clock ids used to label measured physical domains (gpu_core.h
-// carries only the two the VF path needs; the size ratchet keeps these local).
+static const unsigned int CLK_PROBE_MAX_DOMAINS = 32;
+
+// Public NvAPI clock ids used to label measured physical domains.  Only
+// PROCESSOR/VIDEO are new here: gpu_core.h already carries GRAPHICS/MEMORY
+// for the VF path.
 enum {
-    NVAPI_GPU_PUBLIC_CLOCK_GRAPHICS = 0,
-    NVAPI_GPU_PUBLIC_CLOCK_MEMORY = 4,
     NVAPI_GPU_PUBLIC_CLOCK_PROCESSOR = 7,
     NVAPI_GPU_PUBLIC_CLOCK_VIDEO = 8,
 };
@@ -114,7 +115,7 @@ static void self_test_clk_domain_survey(FILE* out) {
 
     auto measure = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_MEASURE);
     if (measure) {
-        for (unsigned int id = 0; id <= 15; ++id) {
+        for (unsigned int id = 0; id < CLK_PROBE_MAX_DOMAINS; ++id) {
             unsigned int khz = 0;
             if (self_test_measure_domain(measure, gpu, id, &khz))
                 fprintf(out, "CLK_MEASURE domain %2u : %u kHz\n", id, khz);
@@ -150,7 +151,7 @@ static void self_test_clk_domain_survey(FILE* out) {
     unsigned int measuredKhz[16] = {};
     bool measuredValid[16] = {};
     if (measure) {
-        for (unsigned int id = 0; id <= 15; ++id)
+        for (unsigned int id = 0; id < CLK_PROBE_MAX_DOMAINS; ++id)
             measuredValid[id] =
                 self_test_measure_domain(measure, gpu, id, &measuredKhz[id]);
     }
@@ -163,7 +164,7 @@ static void self_test_clk_domain_survey(FILE* out) {
                     xbar_get_u32(snap.buf, entry + entryWords[w]));
         }
         fprintf(out, "\n");
-        for (unsigned int id = 0; id <= 15; ++id) {
+        for (unsigned int id = 0; id < CLK_PROBE_MAX_DOMAINS; ++id) {
             if (!measuredValid[id]) continue;
             unsigned long long low = measuredKhz[id] - measuredKhz[id] / 50;
             unsigned long long high = measuredKhz[id] + measuredKhz[id] / 50;
@@ -280,43 +281,14 @@ static void self_test_clk_domain_survey(FILE* out) {
         unsigned int numVolts = xbar_get_u32(pbuf, 16);
         fprintf(out, "pstates20             : flags=%u numPstates=%u"
                      " numClocks=%u numVoltages=%u\n",
-                flags, numPstates, numClocks, numVolts);
-        if (numPstates > 16) numPstates = 16;
-        if (numClocks > 8) numClocks = 8;
-        const unsigned int kClockSize = 0x1C;
-        const unsigned int kVoltSize = 0x14;
-        const unsigned int kEntryHeaderSize = 8;
-        unsigned int entryBase = 0x14;
-        for (unsigned int ps = 0; ps < numPstates; ++ps) {
-            unsigned int pstateId = xbar_get_u32(pbuf, entryBase);
-            unsigned int entryFlags = xbar_get_u32(pbuf, entryBase + 4);
-            for (unsigned int c = 0; c < numClocks; ++c) {
-                unsigned int ce = entryBase + kEntryHeaderSize +
-                                  c * kClockSize;
-                unsigned int domainId = xbar_get_u32(pbuf, ce);
-                unsigned int clockFlags = xbar_get_u32(pbuf, ce + 4);
-                unsigned int kind = xbar_get_u32(pbuf, ce + 8);
-                if (kind == 0) {
-                    fprintf(out,
-                            "pstate %2u id=0x%02X flags=%u: domain %u"
-                            " editable=%u single=%u kHz\n",
-                            ps, pstateId, entryFlags, domainId,
-                            clockFlags & 1u ? 1 : 0,
-                            xbar_get_u32(pbuf, ce + 12));
-                } else {
-                    fprintf(out,
-                            "pstate %2u id=0x%02X flags=%u: domain %u"
-                            " editable=%u range=[%u..%u] kHz\n",
-                            ps, pstateId, entryFlags, domainId,
-                            clockFlags & 1u ? 1 : 0,
-                            xbar_get_u32(pbuf, ce + 12),
-                    xbar_get_u32(pbuf, ce + 16));
-                }
-            }
-            entryBase += kEntryHeaderSize + numClocks * kClockSize +
-                         numVolts * kVoltSize;
-            if (entryBase + 64 > 0x2000) break;
-        }
+                xbar_get_u32(pbuf, 4), xbar_get_u32(pbuf, 8),
+                xbar_get_u32(pbuf, 12), xbar_get_u32(pbuf, 16));
+        // Entry layout not yet pinned from evidence: dump bounded raw words
+        // instead of shipping an interpretation we cannot defend.
+        fprintf(out, "pstates20 raw:");
+        for (unsigned int w = 5; w < 40; ++w)
+            fprintf(out, " %08X", xbar_get_u32(pbuf, w * 4));
+        fprintf(out, "\n");
     }
 }
 
@@ -455,13 +427,36 @@ static int self_test_report(FILE* out) {
 // restored independently, refusing entries are skipped harmlessly, and the
 // user's applied offsets (e.g. XBAR) live in untouched entries and survive.
 
-static const unsigned int CLK_PROBE_MAX_DOMAINS = 16;
 
 static void self_test_measure_all(NvApiFunc measureFunc, void* gpuHandle,
                                   unsigned int* khzOut, bool* okOut) {
+    // Median of 5 samples per phase: single shots were contaminated by
+    // ordinary DVFS state transitions (idle<->boost swings of 1.5 GHz).
+    const int kSamples = 5;
     for (unsigned int id = 0; id < CLK_PROBE_MAX_DOMAINS; ++id) {
-        okOut[id] = self_test_measure_domain(measureFunc, gpuHandle, id,
-                                             &khzOut[id]);
+        unsigned int samples[kSamples] = {};
+        int validCount = 0;
+        for (int s = 0; s < kSamples; ++s) {
+            if (self_test_measure_domain(measureFunc, gpuHandle, id,
+                                         &samples[s]))
+                validCount++;
+        }
+        okOut[id] = validCount > 0;
+        if (!okOut[id]) {
+            khzOut[id] = 0;
+            continue;
+        }
+        // Insertion sort of the few valid samples, then take the median.
+        for (int a = 1; a < validCount; ++a) {
+            unsigned int v = samples[a];
+            int b = a - 1;
+            while (b >= 0 && samples[b] > v) {
+                samples[b + 1] = samples[b];
+                --b;
+            }
+            samples[b + 1] = v;
+        }
+        khzOut[id] = samples[validCount / 2];
     }
 }
 
@@ -470,14 +465,48 @@ static void self_test_print_measure_deltas(FILE* out,
                                            const bool* baseOk,
                                            const unsigned int* nowKhz,
                                            const bool* nowOk) {
+    // Public clocks alongside: parks the physical ids against labeled
+    // domains (video/engine clocks only move while their engine is active).
+    unsigned int publicKhz[16] = {};
+    bool publicOk[16] = {};
+    auto getAllClocks = (NvApiFunc)nvapi_qi(0xDCB616C3u);
+    if (getAllClocks && g_app.gpuHandle) {
+        static SelfTestClockFrequencies freqs;
+        memset(&freqs, 0, sizeof(freqs));
+        freqs.version =
+            (3u << 16) | (unsigned int)sizeof(SelfTestClockFrequencies);
+        if (getAllClocks(g_app.gpuHandle, &freqs) == 0) {
+            publicOk[NVAPI_GPU_PUBLIC_CLOCK_GRAPHICS] = true;
+            publicKhz[NVAPI_GPU_PUBLIC_CLOCK_GRAPHICS] =
+                freqs.domain[NVAPI_GPU_PUBLIC_CLOCK_GRAPHICS].frequency;
+            publicOk[NVAPI_GPU_PUBLIC_CLOCK_MEMORY] = true;
+            publicKhz[NVAPI_GPU_PUBLIC_CLOCK_MEMORY] =
+                freqs.domain[NVAPI_GPU_PUBLIC_CLOCK_MEMORY].frequency;
+            if (freqs.domain[NVAPI_GPU_PUBLIC_CLOCK_PROCESSOR].present) {
+                publicOk[NVAPI_GPU_PUBLIC_CLOCK_PROCESSOR] = true;
+                publicKhz[NVAPI_GPU_PUBLIC_CLOCK_PROCESSOR] =
+                    freqs.domain[NVAPI_GPU_PUBLIC_CLOCK_PROCESSOR].frequency;
+            }
+            if (freqs.domain[NVAPI_GPU_PUBLIC_CLOCK_VIDEO].present) {
+                publicOk[NVAPI_GPU_PUBLIC_CLOCK_VIDEO] = true;
+                publicKhz[NVAPI_GPU_PUBLIC_CLOCK_VIDEO] =
+                    freqs.domain[NVAPI_GPU_PUBLIC_CLOCK_VIDEO].frequency;
+            }
+        }
+    }
+    fprintf(out, "    [public] graphics=%u memory=%u processor=%u"
+                 " video=%u kHz\n",
+            publicKhz[NVAPI_GPU_PUBLIC_CLOCK_GRAPHICS],
+            publicKhz[NVAPI_GPU_PUBLIC_CLOCK_MEMORY],
+            publicKhz[NVAPI_GPU_PUBLIC_CLOCK_PROCESSOR],
+            publicKhz[NVAPI_GPU_PUBLIC_CLOCK_VIDEO]);
     for (unsigned int id = 0; id < CLK_PROBE_MAX_DOMAINS; ++id) {
         if (!baseOk[id] || !nowOk[id]) continue;
         int delta = (int)nowKhz[id] - (int)baseKhz[id];
-        // Flag anything that moved beyond measurement noise (~25 MHz).
-        if (delta > 25000 || delta < -25000) {
-            fprintf(out, "    measure %2u: %u -> %u kHz (%+d)\n", id,
-                    baseKhz[id], nowKhz[id], delta);
-        }
+        // Print every measurable domain; flag anything beyond ~noise.
+        fprintf(out, "    measure %2u: %u -> %u kHz (%+d)%s\n", id,
+                baseKhz[id], nowKhz[id], delta,
+                (delta > 150000 || delta < -150000) ? "  <<< MOVED" : "");
     }
 }
 
@@ -497,17 +526,19 @@ static int clk_domain_probe_report(FILE* out);
 
 // Dispatches the direct-NvAPI pre-flight/identification commands shared by
 // --self-test and --clk-domain-probe.  Returns true when a flag was handled
-// (the caller owns closing the log handle).
-static bool self_test_cli_dispatch(const CliOptions& opts, FILE* out) {
+// and stores the process exit code; the caller owns closing the log handle
+// (g_cliExitCode is entry.cpp-local, so the code crosses as a parameter).
+static bool self_test_cli_dispatch(const CliOptions& opts, FILE* out,
+                                   int* exitCodeOut) {
     if (opts.selfTest) {
-        g_cliExitCode = self_test_report(out);
+        *exitCodeOut = self_test_report(out);
         return true;
     }
     // --clk-domain-probe also drives NvAPI directly.  Unlike --self-test it
     // transiently mutates GPU clock state (small, restored offsets) to map
     // ClkDomains entries to physical domains; it is strictly opt-in.
     if (opts.clkDomainProbe) {
-        g_cliExitCode = clk_domain_probe_report(out);
+        *exitCodeOut = clk_domain_probe_report(out);
         return true;
     }
     return false;
@@ -516,9 +547,10 @@ static bool self_test_cli_dispatch(const CliOptions& opts, FILE* out) {
 static int clk_domain_probe_report(FILE* out) {
     if (!out) out = stdout;
     fprintf(out, "=== Green Curve ClkDomains entry probe ===\n");
-    fprintf(out, "Writes a small +50 MHz clock offset into each candidate\n");
-    fprintf(out, "control-block entry, measures which physical clock moves,\n");
-    fprintf(out, "then restores the original value. Run elevated.\n\n");
+    fprintf(out, "Writes a +50 MHz clock offset into each candidate\n");
+    fprintf(out, "control-block entry, median-measures which physical clock\n");
+    fprintf(out, "moves, then restores the original value. Run elevated\n");
+    fprintf(out, "with steady GPU load for unambiguous results.\n\n");
     if (!self_test_prepare_direct_nvapi(out)) {
         fprintf(out, "\nVerdict: UNUSABLE - NvAPI did not initialize.\n");
         return 2;
@@ -543,8 +575,38 @@ static int clk_domain_probe_report(FILE* out) {
 
     const unsigned int kProbeDeltaKhz = 50000;
     const unsigned int kFreqField = g_xbarSchemas[0].freqOffsetField;
+    // Optional single-entry targeting for follow-up experiments while a
+    // specific engine is loaded (GC_CLK_PROBE_ENTRY env var, or a
+    // clk_probe_entry.txt marker beside the INI for elevated launches, which
+    // do not inherit caller environments), e.g. video offsets only show
+    // while the video engine is decoding.
+    int onlyEntry = -1;
+    {
+        char envBuf[16] = {};
+        size_t envLen = 0;
+        if (getenv_s(&envLen, envBuf, sizeof(envBuf), "GC_CLK_PROBE_ENTRY") ==
+                0 &&
+            envLen > 0) {
+            onlyEntry = atoi(envBuf);
+        } else {
+            const char* base = getenv("LOCALAPPDATA");
+            if (base && base[0]) {
+                char path[MAX_PATH] = {};
+                snprintf(path, sizeof(path),
+                         "%s\\Green Curve\\clk_probe_entry.txt", base);
+                FILE* f = gc_fopen_utf8(path, "r");
+                if (f) {
+                    char line[16] = {};
+                    if (fgets(line, sizeof(line), f)) onlyEntry = atoi(line);
+                    fclose(f);
+                    remove(path);
+                }
+            }
+        }
+    }
     for (unsigned int k = 0; k < g_xbarSchemas[0].domainCount; ++k) {
-        if (k == g_xbarSchemas[0].entryIndex) {
+        if (onlyEntry >= 0 && (unsigned int)onlyEntry != k) continue;
+        if (k == g_xbarSchemas[0].entryIndex && onlyEntry < 0) {
             fprintf(out, "entry %u: XBAR (known owner, skipped)\n", k);
             continue;
         }

@@ -10,6 +10,7 @@
 #define XBAR_DIALOG_CLASS "GreenCurveXbarDialog"
 #define XBAR_OFFSET_EDIT_ID    3200
 #define XBAR_MSVDD_EDIT_ID     3201
+#define XBAR_SYS_EDIT_ID       3208
 #define XBAR_OK_BTN_ID         3202
 #define XBAR_CANCEL_BTN_ID     3203
 #define XBAR_RESET_BTN_ID      3204
@@ -21,6 +22,7 @@ struct XbarDialogState {
     HWND hwnd;
     HWND hOffsetEdit;
     HWND hMsvddEdit;
+    HWND hSysEdit;
     HWND hCurrentLabel;
     HWND hMeasuredLabel;
     HWND hHintLabel;
@@ -87,12 +89,14 @@ static void xbar_dialog_sync_controls() {
         SetWindowTextA(g_xbarDialog.hMeasuredLabel, "");
         EnableWindow(g_xbarDialog.hOffsetEdit, FALSE);
         EnableWindow(g_xbarDialog.hMsvddEdit, FALSE);
+        if (g_xbarDialog.hSysEdit) EnableWindow(g_xbarDialog.hSysEdit, FALSE);
         EnableWindow(g_xbarDialog.hOkBtn, FALSE);
         EnableWindow(g_xbarDialog.hResetBtn, FALSE);
         return;
     }
     EnableWindow(g_xbarDialog.hOffsetEdit, TRUE);
     EnableWindow(g_xbarDialog.hMsvddEdit, TRUE);
+    EnableWindow(g_xbarDialog.hSysEdit, TRUE);
     EnableWindow(g_xbarDialog.hOkBtn, TRUE);
     EnableWindow(g_xbarDialog.hResetBtn, TRUE);
 
@@ -102,6 +106,26 @@ static void xbar_dialog_sync_controls() {
     SetWindowTextA(g_xbarDialog.hOffsetEdit, buf);
     StringCchPrintfA(buf, 32, "%d", pendingUv / 1000);
     SetWindowTextA(g_xbarDialog.hMsvddEdit, buf);
+    end_programmatic_edit_update();
+
+    // SYS clock pending value: applied side from control/live, draft text wins
+    // when dirty.  Mirrors the XBAR population above.
+    int appliedSysKhz = g_app.sysClkProbeValid ? g_app.sysClkFreqOffsetKhz : 0;
+    if (haveControl && control.hasSysClkOffset) appliedSysKhz = control.sysClkOffsetKhz;
+    int pendingSysKhz = appliedSysKhz;
+    if (gui_state_dirty()) {
+        if (g_app.guiDraft.sysClkOffsetText[0]) {
+            int v = 0;
+            if (parse_int_strict(g_app.guiDraft.sysClkOffsetText, &v)) pendingSysKhz = v * 1000;
+        } else {
+            pendingSysKhz = g_app.guiSysClkOffsetKhz;
+        }
+    } else if (pendingSysKhz == 0 && appliedSysKhz != 0) {
+        pendingSysKhz = appliedSysKhz;
+    }
+    begin_programmatic_edit_update();
+    StringCchPrintfA(buf, 32, "%d", pendingSysKhz / 1000);
+    SetWindowTextA(g_xbarDialog.hSysEdit, buf);
     end_programmatic_edit_update();
 
     // Current applied label
@@ -148,8 +172,22 @@ static bool xbar_dialog_commit(HWND hwnd) {
         gc_message_box(hwnd, "XBAR voltage offset must be between -100 and 100 mV.", "Green Curve", MB_OK | MB_ICONERROR);
         return false;
     }
+    char sysBuf[64] = {};
+    GetWindowTextA(g_xbarDialog.hSysEdit, sysBuf, 64);
+    trim_ascii(sysBuf);
+    if (!sysBuf[0]) StringCchCopyA(sysBuf, 64, "0");
+    int sysMhz = 0;
+    if (!parse_int_strict(sysBuf, &sysMhz)) {
+        gc_message_box(hwnd, "Invalid SYS clock offset. Use integer MHz.", "Green Curve", MB_OK | MB_ICONERROR);
+        return false;
+    }
+    if (sysMhz < -1000 || sysMhz > 1000) {
+        gc_message_box(hwnd, "SYS clock offset must be between -1000 and 1000 MHz.", "Green Curve", MB_OK | MB_ICONERROR);
+        return false;
+    }
     int offsetKhz = offsetMhz * 1000;
     int msvddUv = msvddMv * 1000;
+    int sysKhz = sysMhz * 1000;
 
     // Write into draft and gui fields. This marks the editor dirty and makes
     // the Advanced button show pending orange until the user presses Apply.
@@ -161,6 +199,9 @@ static bool xbar_dialog_commit(HWND hwnd) {
     set_gui_state_dirty(true);
     StringCchPrintfA(g_app.guiDraft.xbarOffsetText, 32, "%d", offsetMhz);
     StringCchPrintfA(g_app.guiDraft.xbarMsvddOffsetText, 32, "%d", msvddMv);
+    g_app.guiSysClkOffsetKhz = sysKhz;
+    g_app.guiSysClkOffsetFromProfileLoad = false;
+    StringCchPrintfA(g_app.guiDraft.sysClkOffsetText, 32, "%d", sysMhz);
     debug_log("xbar dialog: committed offset %d MHz (%d kHz) msvdd %d mV (%d uV)\n", offsetMhz, offsetKhz, msvddMv, msvddUv);
     gui_pending_changes_refresh();
     return true;
@@ -279,6 +320,7 @@ static LRESULT CALLBACK XbarDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 begin_programmatic_edit_update();
                 SetWindowTextA(g_xbarDialog.hOffsetEdit, "0");
                 SetWindowTextA(g_xbarDialog.hMsvddEdit, "0");
+                if (g_xbarDialog.hSysEdit) SetWindowTextA(g_xbarDialog.hSysEdit, "0");
                 end_programmatic_edit_update();
                 return 0;
             }
@@ -337,7 +379,7 @@ static void open_xbar_dialog() {
     // frame size; passing the client height directly cut off the bottom row by
     // exactly the caption plus border.
     int clientW = dp(420);
-    int clientH = dp(320);
+    int clientH = dp(354);
     const DWORD dialogStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
     const DWORD dialogExStyle = WS_EX_DLGMODALFRAME;
     SIZE outerSize = adjusted_window_size_for_client(
@@ -388,18 +430,29 @@ static void open_xbar_dialog() {
         margin + labelW + dp(8), y1, editW, rowH,
         g_xbarDialog.hwnd, (HMENU)(INT_PTR)XBAR_MSVDD_EDIT_ID, g_app.hInst, nullptr);
 
-    int y2 = y1 + rowH + dp(16);
+    int y2 = y1 + rowH + dp(12);
+    HWND lblSys = CreateWindowExA(0, "STATIC", "SYS Clock Offset (MHz):",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        margin, y2 + dp(2), labelW, dp(18),
+        g_xbarDialog.hwnd, (HMENU)(INT_PTR)XBAR_HINT_LABEL_ID, g_app.hInst, nullptr);
+    g_xbarDialog.hSysEdit = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "0",
+        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+        margin + labelW + dp(8), y2, editW, rowH,
+        g_xbarDialog.hwnd, (HMENU)(INT_PTR)XBAR_SYS_EDIT_ID, g_app.hInst, nullptr);
+    (void)lblSys;
+
+    int y3 = y2 + rowH + dp(16);
     g_xbarDialog.hCurrentLabel = CreateWindowExA(0, "STATIC", "Current: ---",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
-        margin, y2, clientW - margin*2, dp(18),
+        margin, y3, clientW - margin*2, dp(18),
         g_xbarDialog.hwnd, (HMENU)(INT_PTR)XBAR_CURRENT_LABEL_ID, g_app.hInst, nullptr);
-    int y3 = y2 + dp(20);
+    int y3b = y3 + dp(20);
     g_xbarDialog.hMeasuredLabel = CreateWindowExA(0, "STATIC", "Measured XBAR: ---",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
-        margin, y3, clientW - margin*2, dp(18),
+        margin, y3b, clientW - margin*2, dp(18),
         g_xbarDialog.hwnd, (HMENU)(INT_PTR)XBAR_MEASURED_LABEL_ID, g_app.hInst, nullptr);
 
-    int y4 = y3 + dp(24);
+    int y4 = y3b + dp(24);
     const char* hintLines[] = {
         "Requires driver support (validated schema). Service required.",
         "Clock offset moves the XBAR domain; voltage offset",

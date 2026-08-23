@@ -312,6 +312,7 @@ struct GuiDraft {
     char fanFixedText[16];
     char xbarOffsetText[32];
     char xbarMsvddOffsetText[32];
+    char sysClkOffsetText[32];
 };
 
 // What the GPU currently has applied, as resolved by capture_gui_apply_settings()
@@ -454,6 +455,10 @@ struct AppData {
     int xbarFreqOffsetKhz;
     int xbarMsvddOffsetUv;
     unsigned int xbarMeasuredClockKhz;
+    bool sysClkProbeValid;
+    bool sysClkFreqReadbackValid;
+    int sysClkFreqOffsetKhz;
+    unsigned int sysClkMeasuredClockKhz;
 
     bool nvmlReady;
     nvmlDevice_t nvmlDevice;
@@ -564,6 +569,8 @@ struct AppData {
     int guiXbarMsvddOffsetUv;
     bool guiXbarOffsetFromProfileLoad;
     bool guiXbarMsvddOffsetFromProfileLoad;
+    int guiSysClkOffsetKhz;
+    bool guiSysClkOffsetFromProfileLoad;
 
     int activeFanMode;
     int activeFanFixedPercent;

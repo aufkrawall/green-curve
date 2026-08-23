@@ -422,7 +422,7 @@ def check_startup_policy(ctx, require_text, forbid_text):
     daemon_cpp = _p(ctx, "linux_daemon.cpp")
     policy_h = _p(ctx, "linux_startup_policy.h")
     cli_cpp = _p(ctx, "linux_cli_options.cpp")
-    require_text(protocol_h, "SERVICE_PROTOCOL_VERSION = 20",
+    require_text(protocol_h, "SERVICE_PROTOCOL_VERSION = 21",
                  "the startup-policy, readback-validity, outcome-severity and "
                  "update-state/XBAR fields each moved the protocol version with "
                  "them")

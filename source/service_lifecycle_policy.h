@@ -101,6 +101,11 @@ static inline bool service_build_profile_transition_request(
         requestOut->hasXbarMsvddOffsetUv = true;
         requestOut->xbarMsvddOffsetUv = 0;
     }
+    // SYS clock cleanup mirrors XBAR: omitted owned field restores stock.
+    if (previousIntent->hasSysClkOffsetKhz && !nextIntent->hasSysClkOffsetKhz) {
+        requestOut->hasSysClkOffsetKhz = true;
+        requestOut->sysClkOffsetKhz = 0;
+    }
     return true;
 }
 

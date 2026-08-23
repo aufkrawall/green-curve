@@ -18,6 +18,7 @@ static bool xbar_refresh_live_state() {
         // Keep the last-known scalar for the editor, but stop claiming proof.
         g_app.xbarFreqReadbackValid = false;
         g_app.xbarMsvddReadbackValid = false;
+        g_app.sysClkFreqReadbackValid = false;
         return false;
     }
     xbar_measure_clock(measure, g_app.gpuHandle, &snap.measuredKhz);
@@ -29,6 +30,17 @@ static bool xbar_refresh_live_state() {
     g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
     g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
     g_app.xbarMeasuredClockKhz = snap.measuredKhz;
+    // The same validated block carries the SYS entry — refresh it too.
+    unsigned long long sysField =
+        (unsigned long long)snap.entryBase +
+        XBAR_PINNED_SYS_ENTRY_INDEX * snap.entryStride +
+        g_xbarSchemas[0].freqOffsetField;
+    if (sysField + sizeof(unsigned int) <= XBAR_CONTROL_BUF_SIZE) {
+        int sysOffset = (int)xbar_get_u32(snap.buf, (unsigned int)sysField);
+        changed = changed || g_app.sysClkFreqOffsetKhz != sysOffset;
+        g_app.sysClkFreqReadbackValid = true;
+        g_app.sysClkFreqOffsetKhz = sysOffset;
+    }
     if (changed) {
         debug_log("xbar refresh: offset=%d kHz msvdd=%d uV measured=%u kHz\n",
                   snap.freqOffsetKhz, snap.msvddOffsetUv, snap.measuredKhz);

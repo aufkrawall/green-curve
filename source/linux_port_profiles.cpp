@@ -38,6 +38,10 @@ void merge_desired_settings(DesiredSettings* base, const DesiredSettings* incomi
         base->hasXbarMsvddOffsetUv = true;
         base->xbarMsvddOffsetUv = incoming->xbarMsvddOffsetUv;
     }
+    if (incoming->hasSysClkOffsetKhz) {
+        base->hasSysClkOffsetKhz = true;
+        base->sysClkOffsetKhz = incoming->sysClkOffsetKhz;
+    }
     if (incoming->hasFan) {
         base->hasFan = true;
         base->fanAuto = incoming->fanAuto;
@@ -323,6 +327,19 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
         desired->hasXbarMsvddOffsetUv = true;
     }
 
+    value = get_section_value(doc, controlsSection, "sys_clk_offset_khz");
+    if (!value.empty()) {
+        if (!parse_int_strict(value.c_str(), &desired->sysClkOffsetKhz) ||
+            desired->sysClkOffsetKhz < -1000000 ||
+            desired->sysClkOffsetKhz > 1000000) {
+            set_message(err, errSize,
+                        "Invalid or out-of-range sys_clk_offset_khz in %s",
+                        messageContext);
+            return false;
+        }
+        desired->hasSysClkOffsetKhz = true;
+    }
+
     value = get_section_value(doc, controlsSection, "fan_mode");
     if (!value.empty()) {
         if (!parse_fan_mode_config_value(value.c_str(), &desired->fanMode)) {
@@ -545,6 +562,10 @@ static void write_profile_sections(IniDocument* doc, const char* controlsSection
     if (desired->hasXbarMsvddOffsetUv) {
         snprintf(value, sizeof(value), "%d", desired->xbarMsvddOffsetUv);
         addControl("xbar_msvdd_offset_uv", value);
+    }
+    if (desired->hasSysClkOffsetKhz) {
+        snprintf(value, sizeof(value), "%d", desired->sysClkOffsetKhz);
+        addControl("sys_clk_offset_khz", value);
     }
     addControl("fan_mode", fan_mode_to_config_value(desired->fanMode));
     if (desired->fanMode == FAN_MODE_AUTO) addControl("fan", "auto");

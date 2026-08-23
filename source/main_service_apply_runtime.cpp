@@ -137,6 +137,10 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
             mergedActiveDesired.hasXbarMsvddOffsetUv = false;
             mergedActiveDesired.xbarMsvddOffsetUv = 0;
         }
+        if (!g_app.sysClkProbeValid) {
+            mergedActiveDesired.hasSysClkOffsetKhz = false;
+            mergedActiveDesired.sysClkOffsetKhz = 0;
+        }
         g_serviceActiveDesired = mergedActiveDesired;
         g_serviceActiveDesired.resetOcBeforeApply = false;
         if (g_app.selectedGpu.valid) {
@@ -285,6 +289,31 @@ static bool service_reset_all(char* result, size_t resultSize,
         } else {
             failCount++;
             append_failure("XBAR reset interface unavailable");
+        }
+    }
+    // Explicit Reset owns the SYS clock domain too.
+    if (g_app.sysClkProbeValid && g_app.sysClkFreqOffsetKhz != 0) {
+        auto sysGet = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
+        auto sysSet = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
+        if (sysGet && sysSet) {
+            XbarControlSnapshot snap{};
+            if (xbar_write_entry_freq(sysGet, sysSet, g_app.gpuHandle, &snap,
+                                      XBAR_PINNED_SYS_ENTRY_INDEX, 0)) {
+                unsigned int sysField = snap.entryBase +
+                    XBAR_PINNED_SYS_ENTRY_INDEX * snap.entryStride +
+                    g_xbarSchemas[0].freqOffsetField;
+                g_app.sysClkFreqReadbackValid = true;
+                g_app.sysClkFreqOffsetKhz = (int)xbar_get_u32(snap.buf, sysField);
+                successCount++;
+                debug_log("service_reset_all: SYS clock reset to %d kHz\n",
+                          g_app.sysClkFreqOffsetKhz);
+            } else {
+                failCount++;
+                append_failure("SYS clock offset did not reset to stock");
+            }
+        } else {
+            failCount++;
+            append_failure("SYS clock reset interface unavailable");
         }
     }
 

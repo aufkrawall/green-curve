@@ -585,6 +585,13 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
             appendf("xbar_offset_khz=%d\r\n", savedXbarFreqKhz);
             appendf("xbar_msvdd_offset_uv=%d\r\n", savedXbarMsvddUv);
         }
+        if (g_app.sysClkProbeValid) {
+            int savedSysClkKhz = desired && desired->hasSysClkOffsetKhz
+                ? desired->sysClkOffsetKhz
+                : (haveSaveControl && saveControl.hasSysClkOffset
+                    ? saveControl.sysClkOffsetKhz : g_app.sysClkFreqOffsetKhz);
+            appendf("sys_clk_offset_khz=%d\r\n", savedSysClkKhz);
+        }
         appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : current_green_curve_fan_intent_mode()));
         if (desired->hasFan) {
             if (desired->fanMode == FAN_MODE_AUTO) appendf("fan=auto\r\n");
@@ -682,6 +689,13 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         if (profile_xbar_keys_should_be_written()) {
             appendf("xbar_offset_khz=%d\r\n", savedXbarFreqKhz);
             appendf("xbar_msvdd_offset_uv=%d\r\n", savedXbarMsvddUv);
+        }
+        if (g_app.sysClkProbeValid) {
+            int savedSysClkKhz = desired && desired->hasSysClkOffsetKhz
+                ? desired->sysClkOffsetKhz
+                : (haveSaveControl && saveControl.hasSysClkOffset
+                    ? saveControl.sysClkOffsetKhz : g_app.sysClkFreqOffsetKhz);
+            appendf("sys_clk_offset_khz=%d\r\n", savedSysClkKhz);
         }
         appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : current_green_curve_fan_intent_mode()));
         if (desired->hasFan) {

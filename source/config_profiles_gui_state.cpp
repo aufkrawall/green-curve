@@ -88,6 +88,13 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
                      projectedXbarFreqKhz / 1000);
     StringCchPrintfA(g_app.guiDraft.xbarMsvddOffsetText, 32, "%d",
                      projectedXbarMsvddUv / 1000);
+    // SYS clock rides the same profile-load projection rules as XBAR.
+    int projectedSysClkKhz = desired->hasSysClkOffsetKhz
+        ? desired->sysClkOffsetKhz : 0;
+    g_app.guiSysClkOffsetKhz = projectedSysClkKhz;
+    g_app.guiSysClkOffsetFromProfileLoad = true;
+    StringCchPrintfA(g_app.guiDraft.sysClkOffsetText, 32, "%d",
+                     projectedSysClkKhz / 1000);
     // Fan
     if (desired->hasFan) {
         g_app.guiFanMode = desired->fanMode;
@@ -476,6 +483,9 @@ static bool maybe_confirm_profile_load_replace(int slot) {
     if (current.hasXbarMsvddOffsetUv != targetFull.hasXbarMsvddOffsetUv ||
         (current.hasXbarMsvddOffsetUv &&
          current.xbarMsvddOffsetUv != targetFull.xbarMsvddOffsetUv)) same = false;
+    if (current.hasSysClkOffsetKhz != targetFull.hasSysClkOffsetKhz ||
+        (current.hasSysClkOffsetKhz &&
+         current.sysClkOffsetKhz != targetFull.sysClkOffsetKhz)) same = false;
     if (current.hasLock != targetFull.hasLock ||
         (current.hasLock && (current.lockCi != targetFull.lockCi ||
                              current.lockMHz != targetFull.lockMHz ||

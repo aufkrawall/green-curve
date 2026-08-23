@@ -1234,6 +1234,46 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                       g_app.xbarProbeValid ? 1 : 0, functionsAvailable ? 1 : 0);
         }
     }
+    // SYS clock domain offset apply (second ClkDomains aux entry, identified
+    // empirically).  Same full-block transaction discipline as XBAR; a
+    // failure is reported rather than silently skipped.
+    if (desired && desired->hasSysClkOffsetKhz) {
+        auto sysGetCtrl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
+        auto sysSetCtrl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
+        if (g_app.sysClkProbeValid && sysGetCtrl && sysSetCtrl) {
+            XbarControlSnapshot snap{};
+            if (xbar_write_entry_freq(sysGetCtrl, sysSetCtrl, g_app.gpuHandle,
+                                      &snap, XBAR_PINNED_SYS_ENTRY_INDEX,
+                                      desired->sysClkOffsetKhz)) {
+                unsigned int sysField = snap.entryBase +
+                    XBAR_PINNED_SYS_ENTRY_INDEX * snap.entryStride +
+                    g_xbarSchemas[0].freqOffsetField;
+                g_app.sysClkFreqReadbackValid = true;
+                g_app.sysClkFreqOffsetKhz =
+                    (int)xbar_get_u32(snap.buf, sysField);
+                successCount++;
+                debug_log("apply: SYS clock offset %d kHz\n",
+                          g_app.sysClkFreqOffsetKhz);
+            } else {
+                failCount++;
+                partialApplyRisk = true;
+                StringCchCatA(failureDetails, ARRAY_COUNT(failureDetails),
+                              failureDetails[0] ? "; SYS clock offset"
+                                                : "SYS clock offset");
+                debug_log("apply: SYS clock offset write FAILED requested=%d kHz"
+                          " probeValid=%d\n", desired->sysClkOffsetKhz,
+                          g_app.sysClkProbeValid ? 1 : 0);
+            }
+        } else {
+            failCount++;
+            partialApplyRisk = true;
+            StringCchCatA(failureDetails, ARRAY_COUNT(failureDetails),
+                          failureDetails[0] ? "; SYS clock unavailable"
+                                            : "SYS clock unavailable");
+            debug_log("apply: SYS clock requested but unavailable probeValid=%d\n",
+                      g_app.sysClkProbeValid ? 1 : 0);
+        }
+    }
     char detail[128] = {};
     if (memApplied || powerChanged || fanChanged) {
         refresh_global_state(detail, sizeof(detail));

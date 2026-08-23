@@ -1918,16 +1918,16 @@ static int run_all_tests(int argc, char** argv) {
     // Protocol-v13 request validation, mutation preconditions, and field layout.
     {
         if (SERVICE_PROTOCOL_MAGIC != 0x47535643u) return 80;
-        if (SERVICE_PROTOCOL_VERSION != 20) return 81;
+        if (SERVICE_PROTOCOL_VERSION != 21) return 81;
         // These are release gates, not incidental layout observations. A field
         // addition that changes a fixed-size IPC structure must bump the wire
         // version; otherwise mixed old/new peers pass the header handshake and
         // then disagree on the number of body bytes to read.
-        if (sizeof(ServiceRequest) != 1408 ||
-            sizeof(ControlState) != 168 ||
-            sizeof(DesiredSettings) != 816 ||
-            sizeof(ServiceSnapshot) != 4216 ||
-            sizeof(ServiceResponse) != 7016) return 4521;
+        if (sizeof(ServiceRequest) != 1416 ||
+            sizeof(ControlState) != 176 ||
+            sizeof(DesiredSettings) != 824 ||
+            sizeof(ServiceSnapshot) != 4224 ||
+            sizeof(ServiceResponse) != 7048) return 4521;
         if (offsetof(ServiceRequest, expectedServiceInstanceId) <=
             offsetof(ServiceRequest, operationId) ||
             offsetof(ServiceResponse, state) <=
@@ -2002,6 +2002,11 @@ static int run_all_tests(int argc, char** argv) {
         desired.gpuOffsetExcludeLowCount = 8;
         if (service_desired_mutation_domains(&desired) !=
                 SERVICE_MUTATION_DOMAIN_VF_CURVE) return 1202;
+        desired = {};
+        desired.hasSysClkOffsetKhz = true;
+        desired.sysClkOffsetKhz = 50000;
+        if (service_desired_mutation_domains(&desired) !=
+                SERVICE_MUTATION_DOMAIN_SYS_CLK) return 4530;
         desired = {};
         desired.hasLock = true;
         desired.lockMode = LOCK_MODE_HARD;
@@ -3946,6 +3951,29 @@ static int run_all_tests(int argc, char** argv) {
             !transition.hasXbarOffsetKhz || transition.xbarOffsetKhz != -30000 ||
             !transition.hasXbarMsvddOffsetUv ||
             transition.xbarMsvddOffsetUv != 0) return 4520;
+
+        // A previous profile owning a SYS offset and a next profile omitting it
+        // must emit an explicit stock reset for exactly that field.
+        {
+            DesiredSettings prevSys = {};
+            prevSys.hasSysClkOffsetKhz = 1;
+            prevSys.sysClkOffsetKhz = 75000;
+            DesiredSettings nextNoSys = {};
+            nextNoSys.hasXbarOffsetKhz = 1;
+            nextNoSys.xbarOffsetKhz = 10000;
+            DesiredSettings sysTransition = {};
+            if (!service_build_profile_transition_request(
+                    &prevSys, &nextNoSys, &sysTransition)) return 4531;
+            // SYS-only transitions do not own VF policy, so they must not
+            // force the full OC baseline reset (same rule as XBAR).
+            if (sysTransition.resetOcBeforeApply ||
+                !sysTransition.hasSysClkOffsetKhz ||
+                sysTransition.sysClkOffsetKhz != 0) return 4532;
+            // The next profile's owned XBAR intent travels unchanged in the
+            // same request; only the omitted SYS field is rewritten to stock.
+            if (!sysTransition.hasXbarOffsetKhz ||
+                sysTransition.xbarOffsetKhz != 10000) return 4533;
+        }
 
         DesiredSettings previousFanOnly = nextFanOnly;
         DesiredSettings nextCurveOnly = {};

@@ -227,6 +227,10 @@ static void populate_service_snapshot_locked(ServiceSnapshot* snapshot,
     snapshot->xbarMsvddOffsetReadbackValid = g_app.xbarMsvddReadbackValid;
     snapshot->xbarMsvddOffsetUv = g_app.xbarMsvddOffsetUv;
     snapshot->xbarMeasuredClockKhz = g_app.xbarMeasuredClockKhz;
+    snapshot->sysClkSupported = g_app.sysClkProbeValid;
+    snapshot->sysClkOffsetReadbackValid = g_app.sysClkFreqReadbackValid;
+    snapshot->sysClkOffsetKhz = g_app.sysClkFreqOffsetKhz;
+    snapshot->sysClkMeasuredClockKhz = g_app.sysClkMeasuredClockKhz;
 }
 
 static void populate_service_snapshot(ServiceSnapshot* snapshot) {
@@ -263,6 +267,9 @@ static void populate_control_state_locked(ControlState* state) {
     state->hasXbarMsvddOffset = g_app.xbarProbeValid;
     state->xbarMsvddOffsetReadbackValid = g_app.xbarMsvddReadbackValid;
     state->xbarMsvddOffsetUv = g_app.xbarMsvddOffsetUv;
+    state->hasSysClkOffset = g_app.sysClkProbeValid;
+    state->sysClkOffsetReadbackValid = g_app.sysClkFreqReadbackValid;
+    state->sysClkOffsetKhz = g_app.sysClkFreqOffsetKhz;
 
     // Protocol v14: the values above intentionally keep a last-known or intent
     // fallback so a degraded read still leaves the editor populated.  These bits
@@ -358,6 +365,10 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
     g_app.xbarFreqOffsetKhz = snapshot->xbarOffsetKhz;
     g_app.xbarMsvddOffsetUv = snapshot->xbarMsvddOffsetUv;
     g_app.xbarMeasuredClockKhz = snapshot->xbarMeasuredClockKhz;
+    g_app.sysClkProbeValid = snapshot->sysClkSupported;
+    g_app.sysClkFreqReadbackValid = snapshot->sysClkOffsetReadbackValid;
+    g_app.sysClkFreqOffsetKhz = snapshot->sysClkOffsetKhz;
+    g_app.sysClkMeasuredClockKhz = snapshot->sysClkMeasuredClockKhz;
     g_app.numPopulated = snapshot->numPopulated;
     g_app.gpuClockOffsetkHz = snapshot->gpuClockOffsetkHz;
     g_app.memClockOffsetkHz = snapshot->memClockOffsetkHz;
@@ -554,6 +565,9 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
     g_app.serviceControlState.hasXbarMsvddOffset = snapshot->xbarSupported;
     g_app.serviceControlState.xbarMsvddOffsetReadbackValid = snapshot->xbarMsvddOffsetReadbackValid;
     g_app.serviceControlState.xbarMsvddOffsetUv = snapshot->xbarMsvddOffsetUv;
+    g_app.serviceControlState.hasSysClkOffset = snapshot->sysClkSupported;
+    g_app.serviceControlState.sysClkOffsetReadbackValid = snapshot->sysClkOffsetReadbackValid;
+    g_app.serviceControlState.sysClkOffsetKhz = snapshot->sysClkOffsetKhz;
     log_locked_tail_drift_diagnostics();
     g_app.serviceControlStateValid = true;
     LeaveCriticalSection(&g_appLock);

@@ -164,9 +164,13 @@ static bool handle_cli(LPWSTR wCmdLine) {
     // where the normal path does not work yet.  (--clk-domain-probe is opt-in
     // and transiently writes/restores small clock offsets.)
     if (opts.selfTest || opts.clkDomainProbe) {
-        g_cliExitCode = self_test_cli_dispatch(opts, logf ? logf : stdout);
-        if (logf) fclose(logf);
-        return true;
+        int probeExitCode = 0;
+        if (self_test_cli_dispatch(opts, logf ? logf : stdout,
+                                   &probeExitCode)) {
+            g_cliExitCode = probeExitCode;
+            if (logf) fclose(logf);
+            return true;
+        }
     }
 
     refresh_background_service_state();

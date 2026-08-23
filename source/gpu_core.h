@@ -447,6 +447,9 @@ struct ControlState {
     gc_bool8 hasXbarMsvddOffset;
     gc_bool8 xbarMsvddOffsetReadbackValid;
     int xbarMsvddOffsetUv;
+    gc_bool8 hasSysClkOffset;
+    gc_bool8 sysClkOffsetReadbackValid;
+    int sysClkOffsetKhz;
 };
 
 struct GpuAdapterInfo {
@@ -503,6 +506,8 @@ struct DesiredSettings {
     int xbarOffsetKhz;
     gc_bool8 hasXbarMsvddOffsetUv;
     int xbarMsvddOffsetUv;
+    gc_bool8 hasSysClkOffsetKhz;
+    int sysClkOffsetKhz;
 };
 
 static inline void validate_fan_curve_flags_for_ipc(FanCurveConfig* c) {
@@ -552,6 +557,8 @@ static inline void validate_control_state_for_ipc(ControlState* c) {
     canonicalize_gc_bool8(&c->xbarOffsetReadbackValid);
     canonicalize_gc_bool8(&c->hasXbarMsvddOffset);
     canonicalize_gc_bool8(&c->xbarMsvddOffsetReadbackValid);
+    canonicalize_gc_bool8(&c->hasSysClkOffset);
+    canonicalize_gc_bool8(&c->sysClkOffsetReadbackValid);
 }
 
 // Sanitize a DesiredSettings struct received over IPC.  This is the single
@@ -576,11 +583,15 @@ static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
     canonicalize_gc_bool8(&d->resetOcBeforeApply);
     canonicalize_gc_bool8(&d->hasXbarOffsetKhz);
     canonicalize_gc_bool8(&d->hasXbarMsvddOffsetUv);
+    canonicalize_gc_bool8(&d->hasSysClkOffsetKhz);
     if (d->hasXbarOffsetKhz && (d->xbarOffsetKhz < -1000000 || d->xbarOffsetKhz > 1000000)) {
         d->xbarOffsetKhz = d->xbarOffsetKhz < -1000000 ? -1000000 : 1000000;
     }
     if (d->hasXbarMsvddOffsetUv && (d->xbarMsvddOffsetUv < -100000 || d->xbarMsvddOffsetUv > 100000)) {
         d->xbarMsvddOffsetUv = d->xbarMsvddOffsetUv < -100000 ? -100000 : 100000;
+    }
+    if (d->hasSysClkOffsetKhz && (d->sysClkOffsetKhz < -1000000 || d->sysClkOffsetKhz > 1000000)) {
+        d->sysClkOffsetKhz = d->sysClkOffsetKhz < -1000000 ? -1000000 : 1000000;
     }
     validate_fan_curve_flags_for_ipc(&d->fanCurve);
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {

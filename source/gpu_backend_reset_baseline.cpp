@@ -92,6 +92,28 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
             append_failure("XBAR reset functions unavailable");
         }
     }
+    // SYS clock entry rides the same validated block.
+    if (g_app.sysClkProbeValid && g_app.sysClkFreqOffsetKhz != 0) {
+        auto sysGetFunc = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
+        auto sysSetFunc = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
+        if (sysGetFunc && sysSetFunc) {
+            XbarControlSnapshot snap{};
+            if (xbar_write_entry_freq(sysGetFunc, sysSetFunc, g_app.gpuHandle,
+                                      &snap, XBAR_PINNED_SYS_ENTRY_INDEX, 0)) {
+                unsigned int sysField = snap.entryBase +
+                    XBAR_PINNED_SYS_ENTRY_INDEX * snap.entryStride +
+                    g_xbarSchemas[0].freqOffsetField;
+                g_app.sysClkFreqReadbackValid = true;
+                g_app.sysClkFreqOffsetKhz = (int)xbar_get_u32(snap.buf, sysField);
+                debug_log("reset-before-apply: SYS clock reset to %d kHz\n",
+                          g_app.sysClkFreqOffsetKhz);
+            } else {
+                append_failure("SYS clock offset did not reset");
+            }
+        } else {
+            append_failure("SYS clock reset functions unavailable");
+        }
+    }
     g_app.lastApplyUsedGpuOffset = false;
     read_live_curve_snapshot_settled(4, 25, nullptr);
     refresh_global_state(result, resultSize);

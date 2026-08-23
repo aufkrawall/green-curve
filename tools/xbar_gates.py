@@ -24,6 +24,8 @@ def check_xbar_clk_domains(ctx, require_text, forbid_text):
     capture_cpp = _p(ctx, "main_runtime_control.cpp")
     apply_capture_cpp = _p(ctx, "main_runtime_capture.cpp")
     dialog_cpp = _p(ctx, "xbar_dialog.cpp")
+    protocol_header = _p(ctx, "service_protocol.h")
+    record_io_h = _p(ctx, "config_profile_xbar_io.h")
 
     require_text(backend_h,
                  "XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL 0xF58938F5u",
@@ -54,6 +56,18 @@ def check_xbar_clk_domains(ctx, require_text, forbid_text):
                  "F-XBAR-SCHEMA-TABLE: schemas live in a version-keyed table")
     require_text(backend_h, "xbar_schema_for_version_word(",
                  "F-XBAR-SCHEMA-TABLE: dispatch keys on the reported version")
+    # F-XBAR-SYS: the second aux clock entry ships behind the same validated
+    # schema and family-blind probe as XBAR itself.
+    require_text(backend_h, "XBAR_PINNED_SYS_ENTRY_INDEX = 3",
+                 "F-XBAR-SYS: the empirically identified SYS entry is pinned")
+    require_text(backend_h, "xbar_write_entry_freq(",
+                 "F-XBAR-SYS: SYS writes reuse the audited single-entry transaction")
+    require_text(protocol_header, "SERVICE_MUTATION_DOMAIN_SYS_CLK = 1u << 8",
+                 "F-XBAR-SYS: the SYS domain has its own mutation bit")
+    require_text(record_io_h, "sys_clk_offset_khz",
+                 "F-XBAR-SYS: portable profiles carry the SYS clock key")
+    require_text(capture_cpp, "g_app.sysClkProbeValid) {",
+                 "F-XBAR-SYS: capture owns SYS only when its surface answered")
     require_text(backend_h, "unvalidated ClkDomains response version",
                  "F-XBAR-DIAGNOSTICS: unknown schema versions log decoded words")
     require_text(backend_h, "snap->valid = false;",

@@ -239,6 +239,39 @@
             desired->hasXbarOffsetKhz ? 1 : 0, desired->hasXbarMsvddOffsetUv ? 1 : 0);
     }
 
+    // SYS clock offset capture (same ClkDomains block; frequency only).
+    // On an unavailable surface, own nothing: otherwise every unrelated Apply
+    // or saved profile would carry a zero request the backend must refuse.
+    if (g_app.sysClkProbeValid) {
+        int currentSysKhz = 0;
+        if (haveControlState) {
+            if (control.hasSysClkOffset) currentSysKhz = control.sysClkOffsetKhz;
+        } else {
+            currentSysKhz = g_app.sysClkFreqOffsetKhz;
+        }
+        int sysKhz = currentSysKhz;
+        if (gui_state_dirty()) {
+            if (g_app.guiDraft.sysClkOffsetText[0]) {
+                int vMhz = 0;
+                if (!parse_int_strict(g_app.guiDraft.sysClkOffsetText, &vMhz)) {
+                    set_message(err, errSize, "Invalid SYS clock offset");
+                    return false;
+                }
+                sysKhz = vMhz * 1000;
+            } else {
+                sysKhz = g_app.guiSysClkOffsetKhz;
+            }
+        }
+        g_app.guiSysClkOffsetKhz = sysKhz;
+        bool sysChanged = sysKhz != currentSysKhz;
+        if (includeCurrentGlobals || forceExplicitGlobals || sysChanged) {
+            desired->hasSysClkOffsetKhz = true;
+            desired->sysClkOffsetKhz = sysKhz;
+        }
+        debug_log("capture_gui: sys current=%d kHz -> desired=%d kHz has=%d\n",
+            currentSysKhz, sysKhz, desired->hasSysClkOffsetKhz ? 1 : 0);
+    }
+
     char capturedCurvePoints[256] = {};
     build_point_list_from_flags(desired->hasCurvePoint, capturedCurvePoints, sizeof(capturedCurvePoints));
     debug_log("capture_gui_desired_settings: serviceMode=%d includeCurrent=%d forceExplicit=%d hasGpu=%d gpu=%d exclude=%d hasMem=%d mem=%d hasPower=%d power=%d hasFan=%d fanMode=%d fanPct=%d hasLock=%d lockCi=%d lockMHz=%u curvePoints=%d (%s)\n",

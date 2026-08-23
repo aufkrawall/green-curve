@@ -54,6 +54,11 @@ static const unsigned int XBAR_PINNED_ENTRY_BASE = 0x124;
 static const unsigned int XBAR_PINNED_ENTRY_STRIDE = 0x304;
 static const unsigned int XBAR_PINNED_DOMAIN_COUNT = 8;
 static const unsigned int XBAR_PINNED_XBAR_ENTRY_INDEX = 1;
+// Second aux clock entry, identified empirically on RTX 5070 / 610.88:
+// writing +50 kHz-MHz here moves physical CLK_MEASURE domain 2 by the same
+// amount (reproduced across idle and load states), while entry 1 drives
+// measure domain 1.  The community labels these two knobs XBAR and SYS.
+static const unsigned int XBAR_PINNED_SYS_ENTRY_INDEX = 3;
 static const unsigned int XBAR_FREQ_OFFSET_FIELD = 0x114;
 static const unsigned int XBAR_MSVDD_OFFSET_FIELD = 0x11c;
 static const unsigned int XBAR_MEASURE_DOMAIN_XBAR = 2;
@@ -353,6 +358,42 @@ static inline bool xbar_write(NvApiFunc getControl, NvApiFunc setControl,
               snap->versionWord, snap->entryBase, snap->entryStride,
               snap->domainIndex, snap->freqOffsetKhz, snap->msvddOffsetUv,
               snap->measuredKhz);
+    return true;
+}
+
+// Generic single-field transaction for any pinned entry of the validated
+// schema: fresh full-block preimage, one dword change, exact readback.  Used
+// for the SYS domain (entry 3); the XBAR path additionally owns an MSVDD
+// field and lives in xbar_write below.
+static inline bool xbar_write_entry_freq(NvApiFunc getControl,
+                                         NvApiFunc setControl, void* gpuHandle,
+                                         XbarControlSnapshot* snap,
+                                         unsigned int entryIndex,
+                                         int freqKhz) {
+    if (!snap || !getControl || !setControl || !gpuHandle) return false;
+    if (entryIndex >= g_xbarSchemas[0].domainCount) return false;
+    if (!xbar_read_control(getControl, gpuHandle, snap)) return false;
+    unsigned long long field =
+        (unsigned long long)snap->entryBase + entryIndex * snap->entryStride +
+        g_xbarSchemas[0].freqOffsetField;
+    if (field + sizeof(unsigned int) > XBAR_CONTROL_BUF_SIZE) return false;
+    xbar_put_i32(snap->buf, (unsigned int)field, freqKhz);
+    int setStatus = setControl(gpuHandle, snap->buf);
+    if (setStatus != 0) {
+        xbar_log_control_status("SET_CONTROL", setStatus);
+        return false;
+    }
+    if (!xbar_read_control(getControl, gpuHandle, snap)) {
+        debug_log("clk entry write: post-set GET_CONTROL failed\n");
+        return false;
+    }
+    int readback = (int)xbar_get_u32(snap->buf, (unsigned int)field);
+    if (readback != freqKhz) {
+        debug_log("clk entry %u write: readback mismatch requested=%d"
+                  " got=%d\n", entryIndex, freqKhz, readback);
+        return false;
+    }
+    debug_log("clk entry %u write: ok offset=%d kHz\n", entryIndex, freqKhz);
     return true;
 }
 

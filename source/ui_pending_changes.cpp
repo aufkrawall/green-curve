@@ -40,6 +40,10 @@ struct GuiPendingChanges {
     int pendingXbarOffsetKhz;
     int appliedXbarMsvddOffsetUv;
     int pendingXbarMsvddOffsetUv;
+    // SYS clock offset: single scalar domain (frequency only).
+    bool sysClkValid;
+    int appliedSysClkOffsetKhz;
+    int pendingSysClkOffsetKhz;
     // The editor half of every point the graph plots, resolved from everything
     // above.  The graph is a pure reader of this; the repaint gate compares it.
     // Both facts matter: what the graph would draw and what triggers a repaint
@@ -416,6 +420,35 @@ static void gui_pending_evaluate_editor_diff(GuiPendingChanges* out) {
             out->summary.domainMask |= GUI_PENDING_XBAR;
     }
 
+    // SYS clock offset: same shape as the XBAR frequency scalar.
+    {
+        int appliedKhz = 0;
+        if (haveControl) {
+            if (control.hasSysClkOffset) appliedKhz = control.sysClkOffsetKhz;
+        } else {
+            appliedKhz = g_app.sysClkFreqOffsetKhz;
+        }
+        int draftKhz = appliedKhz;
+        bool draftValid = false;
+        if (g_app.guiDraft.sysClkOffsetText[0]) {
+            int vMhz = 0;
+            draftValid = parse_int_strict(g_app.guiDraft.sysClkOffsetText, &vMhz);
+            if (draftValid) draftKhz = vMhz * 1000;
+        } else {
+            draftValid = true;
+            draftKhz = g_app.guiSysClkOffsetKhz;
+        }
+        GuiPendingScalar sysScalar = {};
+        sysScalar.draftValid = draftValid;
+        sysScalar.draftValue = draftKhz;
+        sysScalar.appliedValue = appliedKhz;
+        out->sysClkValid = true;
+        out->appliedSysClkOffsetKhz = appliedKhz;
+        out->pendingSysClkOffsetKhz = draftValid ? draftKhz : appliedKhz;
+        if (gui_pending_scalar_changed(sysScalar))
+            out->summary.domainMask |= GUI_PENDING_SYS_CLK;
+    }
+
     gui_pending_evaluate_fan(out);
 }
 
@@ -446,6 +479,10 @@ static bool gui_pending_changes_equal(const GuiPendingChanges* a,
         a->pendingXbarOffsetKhz != b->pendingXbarOffsetKhz ||
         a->appliedXbarMsvddOffsetUv != b->appliedXbarMsvddOffsetUv ||
         a->pendingXbarMsvddOffsetUv != b->pendingXbarMsvddOffsetUv)
+        return false;
+    if (a->sysClkValid != b->sysClkValid ||
+        a->appliedSysClkOffsetKhz != b->appliedSysClkOffsetKhz ||
+        a->pendingSysClkOffsetKhz != b->pendingSysClkOffsetKhz)
         return false;
     if (gui_pending_graph_preview_moved_count(a, b, nullptr) != 0) return false;
     return memcmp(a->curvePoint, b->curvePoint, sizeof(a->curvePoint)) == 0;

@@ -25,21 +25,23 @@ import sys
 BUILD_SCRIPT_SIZE_RATCHET = 5321
 
 SOURCE_SIZE_RATCHET = {
-    "config_profiles.cpp": 883,
+    "config_profiles.cpp": 889,  # 883 before the SYS profile save key
     "entry.cpp": 863,
     "gpu_backend.cpp": 972,
-    "gpu_backend_apply.cpp": 1330,  # 1333 before gpu_backend_reset_baseline.cpp
-    "gpu_core.h": 820,
+    "gpu_backend_apply.cpp": 1364,  # 1330 before the SYS clock apply block
+    "gpu_core.h": 831,  # 820 before the SYS clock domain (v21)
     "gui_service_state.cpp": 813,
     "main.cpp": 801,
     "main_fan_runtime.cpp": 913,  # 929 before the tray menu moved to gui_tray_menu.cpp
     "main_gpu_front.cpp": 845,
-    "main_gpu_state.cpp": 925,  # 916 before XBAR live-state capture
+    "main_gpu_state.cpp": 928,  # 925 before SYS live-state ownership
     "main_runtime_nvml.cpp": 903,  # 901 before the XBAR telemetry call moved to its own header
     "main_service_persist.cpp": 908,
     "main_service_pipe.cpp": 796,  # 828 before the file-write commands moved out
-    "main_state_sync.cpp": 865,  # 859 before truthful XBAR readback validity
-    "ui_main_window.cpp": 1279,
+    "main_state_sync.cpp": 878,  # 865 before SYS snapshot carriage
+     # 859 before truthful XBAR readback validity
+        "ui_main_window.cpp": 1279,
+    "service_protocol.h": 818,  # new entrant: v21 SYS clock offset carriage
 }
 
 

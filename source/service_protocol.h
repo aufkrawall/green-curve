@@ -61,7 +61,11 @@ enum {
     // size. The fixed-size transports must refuse a mixed pair at the eight-byte
     // prefix; reusing v19 would make both ends accept the header and then wait
     // for a different body length.
-    SERVICE_PROTOCOL_VERSION = 20,
+    //
+    // v21 adds the SYS clock offset (second ClkDomains aux entry, identified
+    // empirically on RTX 5070 / 610.88). ControlState, DesiredSettings,
+    // ServiceSnapshot, and therefore ServiceResponse all changed size again.
+    SERVICE_PROTOCOL_VERSION = 21,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply. Bit 30 marks an
@@ -355,6 +359,7 @@ enum ServiceMutationDomain : gc_u32 {
     SERVICE_MUTATION_DOMAIN_LOCK = 1u << 5,
     SERVICE_MUTATION_DOMAIN_FAN = 1u << 6,
     SERVICE_MUTATION_DOMAIN_XBAR = 1u << 7,
+    SERVICE_MUTATION_DOMAIN_SYS_CLK = 1u << 8,
 };
 
 enum {
@@ -366,7 +371,8 @@ enum {
         SERVICE_MUTATION_DOMAIN_VF_CURVE |
         SERVICE_MUTATION_DOMAIN_LOCK |
         SERVICE_MUTATION_DOMAIN_FAN |
-        SERVICE_MUTATION_DOMAIN_XBAR,
+        SERVICE_MUTATION_DOMAIN_XBAR |
+        SERVICE_MUTATION_DOMAIN_SYS_CLK,
 };
 
 // NOTE: the per-domain capability policy (gpu_capability_policy.h) indexes these
@@ -412,6 +418,8 @@ static inline gc_u32 service_desired_mutation_domains(
         domains |= SERVICE_MUTATION_DOMAIN_FAN;
     if (desired->hasXbarOffsetKhz || desired->hasXbarMsvddOffsetUv)
         domains |= SERVICE_MUTATION_DOMAIN_XBAR;
+    if (desired->hasSysClkOffsetKhz)
+        domains |= SERVICE_MUTATION_DOMAIN_SYS_CLK;
     return domains;
 }
 
@@ -476,11 +484,11 @@ struct ServiceGpuHealth {
     char detail[192];
 };
 enum : gc_u32 {
-    SERVICE_GPU_CAPABILITY_PACKED_MASK = 0xFFFFu,
+    // 2 bits per domain x 9 domains (v21 adds sys-clk at index 8).
+    SERVICE_GPU_CAPABILITY_PACKED_MASK = 0x3FFFFu,
     SERVICE_GPU_MEMORY_TOPOLOGY_MAX = 2u,
 };
-static_assert(sizeof(ServiceGpuHealth) == 216,
-              "ServiceGpuHealth wire size changed");
+
 static_assert(offsetof(ServiceGpuHealth, capabilityMemoryTopology) == 19,
               "capability topology must reuse the first reserved byte");
 static_assert(offsetof(ServiceGpuHealth, capabilityDomainsPacked) == 20,
@@ -588,14 +596,15 @@ struct ServiceSnapshot {
     gc_bool8 xbarMsvddOffsetReadbackValid;
     int xbarMsvddOffsetUv;
     unsigned int xbarMeasuredClockKhz;
+    gc_bool8 sysClkSupported;
+    gc_bool8 sysClkOffsetReadbackValid;
+    int sysClkOffsetKhz;
+    unsigned int sysClkMeasuredClockKhz;
     ServiceGpuHealth health;
 };
-static_assert(sizeof(ControlState) == 168,
-              "ControlState changed without an IPC protocol-version bump");
-static_assert(sizeof(DesiredSettings) == 816,
-              "DesiredSettings changed without an IPC protocol-version bump");
-static_assert(sizeof(ServiceSnapshot) == 4216,
-              "ServiceSnapshot changed without an IPC protocol-version bump");
+
+
+
 
 struct ServiceRequest {
     gc_u32 magic;
@@ -630,14 +639,22 @@ struct ServiceRequest {
     char source[64];
     char path[GC_REQUEST_PATH_MAX];
 };
+static_assert(sizeof(ServiceRequest) == 1416,
+              "ServiceRequest changed without an IPC protocol-version bump");
 // Static field-offset assertions: these catch accidental ABI breaks when
 // struct fields are reordered, resized, or moved between versions.
 // The magic field must always be at offset 0 for protocol identification.
 static_assert(offsetof(ServiceRequest, magic) == 0, "ServiceRequest.magic must be at offset 0");
 static_assert(offsetof(ServiceRequest, version) == 4, "ServiceRequest.version offset changed");
 static_assert(offsetof(ServiceRequest, command) == 8, "ServiceRequest.command offset changed");
-static_assert(sizeof(ServiceRequest) == 1408,
-              "ServiceRequest changed without an IPC protocol-version bump");
+
+
+static_assert(sizeof(ControlState) == 176,
+              "ControlState changed without an IPC protocol-version bump");
+static_assert(sizeof(DesiredSettings) == 824,
+              "DesiredSettings changed without an IPC protocol-version bump");
+static_assert(sizeof(ServiceSnapshot) == 4224,
+              "ServiceSnapshot changed without an IPC protocol-version bump");
 
 static inline bool service_wire_string_is_terminated(
     const char* value, unsigned int count) {
@@ -658,6 +675,7 @@ static inline bool service_desired_bool_fields_valid(
         &desired->hasPowerLimit, &desired->hasFan, &desired->fanAuto,
         &desired->resetOcBeforeApply,
         &desired->hasXbarOffsetKhz, &desired->hasXbarMsvddOffsetUv,
+        &desired->hasSysClkOffsetKhz,
     };
     for (const gc_bool8* flag : flags)
         if (*flag > 1) return false;
@@ -745,10 +763,11 @@ struct ServiceResponse {
     ServiceUpdateState update;
     char message[512];
 };
+static_assert(sizeof(ServiceResponse) == 7048,
+              "ServiceResponse changed without an IPC protocol-version bump");
 static_assert(offsetof(ServiceResponse, magic) == 0, "ServiceResponse.magic must be at offset 0");
 static_assert(offsetof(ServiceResponse, version) == 4, "ServiceResponse.version offset changed");
-static_assert(sizeof(ServiceResponse) == 7016,
-              "ServiceResponse changed without an IPC protocol-version bump");
+
 
 static inline gc_u64 service_state_hash_u32(gc_u64 hash, gc_u32 value) {
     for (unsigned int i = 0; i < 4; ++i) {

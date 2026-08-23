@@ -48,6 +48,25 @@ static inline bool load_profile_xbar_settings(const char* path,
         desired->hasXbarMsvddOffsetUv = true;
         desired->xbarMsvddOffsetUv = value;
     }
+
+    gc_GetPrivateProfileStringUtf8(section, "sys_clk_offset_khz", "", buf,
+        ARRAY_COUNT(buf), path);
+    trim_ascii(buf);
+    if (buf[0]) {
+        int value = 0;
+        if (!parse_int_strict(buf, &value)) {
+            set_message(err, errSize, "Invalid sys_clk_offset_khz in profile %d", slot);
+            return false;
+        }
+        if (value < -1000000 || value > 1000000) {
+            set_message(err, errSize,
+                "sys_clk_offset_khz %d is outside the safe range -1000000..1000000 in profile %d",
+                value, slot);
+            return false;
+        }
+        desired->hasSysClkOffsetKhz = true;
+        desired->sysClkOffsetKhz = value;
+    }
     return true;
 }
 

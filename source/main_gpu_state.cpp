@@ -672,6 +672,10 @@ static void build_full_live_desired_settings(DesiredSettings* desired) {
         haveControlState && control.hasXbarMsvddOffset;
     desired->xbarMsvddOffsetUv = desired->hasXbarMsvddOffsetUv
         ? control.xbarMsvddOffsetUv : g_app.xbarMsvddOffsetUv;
+    desired->hasSysClkOffsetKhz = g_app.sysClkProbeValid &&
+        haveControlState && control.hasSysClkOffset;
+    desired->sysClkOffsetKhz = desired->hasSysClkOffsetKhz
+        ? control.sysClkOffsetKhz : g_app.sysClkFreqOffsetKhz;
     desired->hasFan = true;
     int fanIntentMode = haveControlState && control_state_has_meaningful_fan(&control)
         ? control.fanMode

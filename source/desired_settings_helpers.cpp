@@ -113,6 +113,21 @@ static bool desired_settings_match_active_service_intent(const DesiredSettings* 
                     profile->xbarMsvddOffsetUv, active->xbarMsvddOffsetUv);
         return false;
     }
+    if (!desired_bool_equal(profile->hasSysClkOffsetKhz,
+                            active->hasSysClkOffsetKhz)) {
+        set_message(detail, detailSize,
+                    "sys clock ownership differs profile=%d active=%d",
+                    profile->hasSysClkOffsetKhz ? 1 : 0,
+                    active->hasSysClkOffsetKhz ? 1 : 0);
+        return false;
+    }
+    if (profile->hasSysClkOffsetKhz &&
+        profile->sysClkOffsetKhz != active->sysClkOffsetKhz) {
+        set_message(detail, detailSize,
+                    "sys clock differs profile=%d active=%d",
+                    profile->sysClkOffsetKhz, active->sysClkOffsetKhz);
+        return false;
+    }
 
     if (!desired_bool_equal(profile->hasFan, active->hasFan) &&
         !profile_ownership_fan_mismatch_allowed(allowUnclaimedFan,
