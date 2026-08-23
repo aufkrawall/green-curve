@@ -46,6 +46,9 @@ static bool parse_cli_options(LPWSTR cmdLine, CliOptions* opts) {
         } else if (wcscmp(arg, L"--self-test") == 0) {
             opts->recognized = true;
             opts->selfTest = true;
+        } else if (wcscmp(arg, L"--clk-domain-probe") == 0) {
+            opts->recognized = true;
+            opts->clkDomainProbe = true;
         } else if (wcscmp(arg, L"--reset") == 0) {
             opts->recognized = true;
             opts->reset = true;

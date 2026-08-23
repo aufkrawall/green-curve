@@ -159,13 +159,12 @@ static bool handle_cli(LPWSTR wCmdLine) {
         return true;
     }
 
-    // --self-test runs BEFORE the service gate on purpose: it is strictly
-    // read-only and its whole point is to diagnose a machine where the normal
-    // path does not work yet (new arch, new driver, unvalidated GPU).  Making it
-    // depend on a healthy background service would remove it exactly when it is
-    // needed.
-    if (opts.selfTest) {
-        g_cliExitCode = self_test_report(logf ? logf : stdout);
+    // --self-test / --clk-domain-probe run BEFORE the service gate on purpose:
+    // they drive NvAPI directly in-process so they still diagnose a machine
+    // where the normal path does not work yet.  (--clk-domain-probe is opt-in
+    // and transiently writes/restores small clock offsets.)
+    if (opts.selfTest || opts.clkDomainProbe) {
+        g_cliExitCode = self_test_cli_dispatch(opts, logf ? logf : stdout);
         if (logf) fclose(logf);
         return true;
     }

@@ -25,6 +25,7 @@ static void cli_print_help(FILE* out) {
     HELP_LOG("  greencurve.exe --json       Write VF curve to greencurve_curve.json\n");
     HELP_LOG("  greencurve.exe --probe [--probe-output <path>]  Probe NvAPI/NVML/VF support and write a report\n");
     HELP_LOG("  greencurve.exe --self-test  Read-only driver/arch pre-flight, no service needed (run elevated)\n");
+    HELP_LOG("  greencurve.exe --clk-domain-probe  Identify ClkDomains entries by briefly writing +50 MHz offsets, then restoring (run elevated)\n");
     HELP_LOG("  greencurve.exe --gpu-offset <mhz> --mem-offset <mhz> --power-limit <pct>\n");
     HELP_LOG("  greencurve.exe --fan <auto|0-100> --point49 <mhz> ... --point127 <mhz>\n");
     HELP_LOG("  greencurve.exe --apply-config [--config <path>]  Apply logon profile slot\n");

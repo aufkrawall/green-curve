@@ -4182,7 +4182,7 @@ def run_source_regression_checks():
                  "the Windows self-test derives its verdict from every required read")
     require_text(self_test_cpp, "nvapi_read_curve", "the Windows self-test reads VF directly")
     require_text(self_test_cpp, "is_elevated", "the self-test distinguishes missing privilege")
-    require_text(entry_cpp, "g_cliExitCode = self_test_report", "the Windows self-test publishes a scriptable process exit code")
+    require_text(entry_cpp, "self_test_cli_dispatch(opts,", "the Windows self-test publishes a scriptable process exit code")
     forbid_text(self_test_cpp, "hardware_initialize",
                 "the self-test must not depend on the service-mediated init path")
     require_text(main_state_sync_cpp, "snapshot->health.capabilityDomainsPacked =",

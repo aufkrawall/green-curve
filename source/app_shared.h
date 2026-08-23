@@ -652,6 +652,11 @@ struct CliOptions {
     // the Linux daemon's --self-test.  Never mutates GPU state and needs no
     // background service.
     bool selfTest;
+    // Opt-in ClkDomains identification probe (--clk-domain-probe): writes a
+    // small, immediately-restored offset into each candidate control-block
+    // entry to map entries to physical clock domains.  Transiently mutates
+    // GPU clock state; needs no background service.
+    bool clkDomainProbe;
     bool hasProbeOutputPath;
     bool reset;
     bool saveConfig;
