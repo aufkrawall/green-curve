@@ -53,10 +53,12 @@ enum {
     // no permanent ban and no persisted ban state anywhere.
     SERVICE_IPC_IDLE_EXPIRY_MS = 60 * 1000,
 
-    // Small global budget charged ONLY when impersonation fails after the
-    // mandatory first read (or another unidentifiable fault occurs). Honest
-    // clients never hit this path; it must never poison a real user's
-    // per-identity quota.
+    // Metering-only budget charged when impersonation fails after the
+    // mandatory first read (or another unidentifiable fault occurs). The
+    // transport drops unidentifiable connections regardless of this bucket,
+    // so the bucket records consumption and bounds nothing by itself -- it
+    // exists so unidentifiable traffic can never poison a real user's
+    // per-identity quota. Honest clients never hit this path.
     SERVICE_IPC_ANON_BUDGET_MAX = 32,
     SERVICE_IPC_ANON_REFILL_PER_SECOND_MILLI = 1 * 1000,
 
@@ -341,7 +343,7 @@ inline void service_ipc_charge(ServiceIpcAdmissionTable* table,
                                ServiceIpcRequestClass cls,
                                unsigned int costTokens,
                                unsigned long long nowMs) {
-    if (!table) return;
+    if (!table || costTokens == 0) return;
     unsigned long long costMilli = (unsigned long long)costTokens * 1000ULL;
     if (!key.valid) {
         table->anonymousBucket.refill(nowMs,
@@ -362,6 +364,56 @@ inline void service_ipc_charge(ServiceIpcAdmissionTable* table,
             SERVICE_IPC_REFILL_PER_SECOND_MILLI);
         slot->normalBucket.spend(costMilli);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Connection-outcome costing. Every finished pipe connection charges its
+// identity EXACTLY ONCE, derived from how the exchange ended. This is the
+// contract the runtime glue implements; keeping the mapping pure makes the
+// charge model executable on every host.
+//
+// Historical defect this table pins down: the first transition-safe build
+// charged some refusal branches mid-flight AND again after the response
+// write (protocol mismatch paid twice), refunded admission-refused
+// connections with a SUCCESS charge after their refusal was delivered, and
+// charged an immediate anon-budget token that the final charge duplicated.
+// One outcome -> one cost, applied once.
+// ---------------------------------------------------------------------------
+enum ServiceIpcConnectionOutcome {
+    // Admitted request/response exchange completed.
+    SERVICE_IPC_CONNECTION_EXCHANGED = 0,
+    // Wrong magic/version answered with the payload-free mismatch form.
+    SERVICE_IPC_CONNECTION_PROTOCOL_MISMATCH = 1,
+    // Command classified UNKNOWN (dropped pre-dispatch).
+    SERVICE_IPC_CONNECTION_UNKNOWN_COMMAND = 2,
+    // Identity capture failed after the mandatory first read; routed to the
+    // anonymous metering bucket because the throttle key is invalid.
+    SERVICE_IPC_CONNECTION_IDENTITY_UNKNOWN = 3,
+    // Admission refused. No charge: the bucket state that produced the
+    // refusal is the punishment, and refunding refused connections would
+    // let a flooder harvest tokens from its own refusals.
+    SERVICE_IPC_CONNECTION_ADMISSION_REFUSED = 4,
+    // A body/read/write deadline or fault anywhere in the exchange.
+    SERVICE_IPC_CONNECTION_TRANSPORT_FAULT = 5,
+};
+
+inline unsigned int service_ipc_connection_cost_tokens(
+        ServiceIpcConnectionOutcome outcome) {
+    switch (outcome) {
+        case SERVICE_IPC_CONNECTION_EXCHANGED:
+            return SERVICE_IPC_COST_SUCCESS;
+        case SERVICE_IPC_CONNECTION_PROTOCOL_MISMATCH:
+            return SERVICE_IPC_COST_BAD_COMMAND;
+        case SERVICE_IPC_CONNECTION_UNKNOWN_COMMAND:
+            return SERVICE_IPC_COST_BAD_COMMAND;
+        case SERVICE_IPC_CONNECTION_IDENTITY_UNKNOWN:
+            return SERVICE_IPC_COST_TRANSPORT_FAULT;
+        case SERVICE_IPC_CONNECTION_ADMISSION_REFUSED:
+            return 0;
+        case SERVICE_IPC_CONNECTION_TRANSPORT_FAULT:
+            return SERVICE_IPC_COST_TRANSPORT_FAULT;
+    }
+    return SERVICE_IPC_COST_TRANSPORT_FAULT;
 }
 
 #endif // GREEN_CURVE_SERVICE_IPC_THROTTLE_POLICY_H

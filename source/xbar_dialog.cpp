@@ -48,7 +48,6 @@ static void xbar_dialog_sync_controls() {
     if (haveControl) {
         appliedKhz = control.hasXbarOffset ? control.xbarOffsetKhz : 0;
         appliedUv = control.hasXbarMsvddOffset ? control.xbarMsvddOffsetUv : 0;
-        measuredKhz = control.hasXbarOffset ? g_app.xbarMeasuredClockKhz : measuredKhz;
         xbarSupported = control.hasXbarOffset || control.hasXbarMsvddOffset || g_app.xbarProbeValid;
     } else {
         appliedKhz = g_app.xbarFreqOffsetKhz;
@@ -313,14 +312,25 @@ static void open_xbar_dialog() {
         xbar_dialog_sync_controls();
         return;
     }
-    WNDCLASSEXA wc = {};
-    wc.cbSize = sizeof(wc);
-    wc.lpfnWndProc = XbarDialogProc;
-    wc.hInstance = g_app.hInst;
-    wc.lpszClassName = XBAR_DIALOG_CLASS;
-    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    RegisterClassExA(&wc);
+    // Register the window class once per process. Re-registering an existing
+    // class fails harmlessly, but a flag keeps every open deterministic and
+    // lets a genuine first-registration failure fail loudly.
+    static bool xbarDialogClassRegistered = false;
+    if (!xbarDialogClassRegistered) {
+        WNDCLASSEXA wc = {};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = XbarDialogProc;
+        wc.hInstance = g_app.hInst;
+        wc.lpszClassName = XBAR_DIALOG_CLASS;
+        wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        if (!RegisterClassExA(&wc)) {
+            debug_log("xbar dialog: RegisterClassExA failed (error %lu)\n",
+                      GetLastError());
+            return;
+        }
+        xbarDialogClassRegistered = true;
+    }
 
     // dlgW/dlgH below are CLIENT coordinates.  CreateWindowExA takes the outer
     // frame size; passing the client height directly cut off the bottom row by

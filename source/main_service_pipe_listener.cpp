@@ -74,9 +74,8 @@ void publish_readiness(DWORD error) {
     }
 }
 
-// Create one server pipe instance. The first-pipe-instance claim flag (see
-// below) is used exactly once per process.
-// exactly once per process so a foreign squatting listener still fails
+// Create one server pipe instance. The first-pipe-instance claim flag is
+// used exactly once per process so a foreign squatting listener still fails
 // startup loudly, while later instances (and respawns) attach regardless.
 HANDLE create_pipe_instance(const WCHAR* pipeName) {
     PSECURITY_DESCRIPTOR securityDescriptor = nullptr;

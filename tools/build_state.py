@@ -20,7 +20,9 @@ import sys
 # 5304 before the transition-safe IPC throttling gates replaced the retired
 # recycle-event/single-thread gates and pinned the worker-slot close contract.
 # 5309 before the debug-log size-cap rotation gates (2026-08-23).
-BUILD_SCRIPT_SIZE_RATCHET = 5320
+# 5321 after the IPC-admission/probe-publication review gates moved into
+# security_gates.check_ipc_transport_and_probe_gates() (one call line remains).
+BUILD_SCRIPT_SIZE_RATCHET = 5321
 
 SOURCE_SIZE_RATCHET = {
     "config_profiles.cpp": 883,

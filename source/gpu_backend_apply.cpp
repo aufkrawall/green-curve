@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 #include "service_apply_severity_policy.h"
 #include "gpu_backend_reset_baseline.cpp"

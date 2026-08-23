@@ -20,6 +20,12 @@
 //   5. one stalled connection does not prevent another from completing;
 //   6. a timed-out probe ends cleanly (no crash, no hang, no leak).
 //
+// Sequencing between server and client threads is event-driven (the server
+// signals instance-ready and client-connected), so there are no blind sleeps;
+// case 5's "healthy beats the stall" property is asserted by ORDERING
+// (the healthy exchange completes strictly before the stalled probe's
+// deadline fires) rather than by a wall-clock bound.
+//
 // Exit code 0 = pass; non-zero identifies the failing assertion.
 
 #include <windows.h>
@@ -38,6 +44,10 @@
 
 static const wchar_t* kFixturePipeName =
     L"\\\\.\\pipe\\greencurve-test-transition-safe";
+
+// Header-probe deadline used by both the fixture server and main's ordering
+// assertion, so the two can never drift apart.
+enum { kFixtureProbeTimeoutMs = 1500 };
 
 struct ClientContext {
     bool stall;           // connect but send nothing
@@ -176,6 +186,16 @@ struct ServerOutcome {
     bool bodyReadExact;
     bool responded;
     bool probeTimedOut;
+    // Signaled once the pipe INSTANCE exists (before ConnectNamedPipe), so
+    // main can deterministically start clients instead of sleeping.
+    HANDLE readyEvent;
+    // Signaled once a CLIENT is fully connected, so main knows a stalled
+    // exchange has actually been established before starting the next one.
+    HANDLE connectedEvent;
+    // Timestamps for the ordering assertion: when the connection was
+    // established and when the header probe finished (timeout or success).
+    ULONGLONG connectedAtMs;
+    ULONGLONG probeEndedMs;
 };
 
 static ServiceResponse make_fixture_response() {
@@ -203,6 +223,7 @@ static DWORD WINAPI serve_one_connection(void* parameter) {
         1000,
         nullptr);
     if (pipe == INVALID_HANDLE_VALUE) return 800;
+    if (outcome->readyEvent) SetEvent(outcome->readyEvent);
 
     OVERLAPPED connectOv = {};
     connectOv.hEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
@@ -226,10 +247,17 @@ static DWORD WINAPI serve_one_connection(void* parameter) {
     }
     CloseHandle(connectOv.hEvent);
 
+    outcome->connectedAtMs = GetTickCount64();
+    if (outcome->connectedEvent) SetEvent(outcome->connectedEvent);
+
     char probeErr[256] = {};
     ServicePipePrefixRead prefix = {};
-    if (!service_pipe_read_request_header(pipe, &prefix, 1500, probeErr,
-                                          sizeof(probeErr))) {
+    BOOL probeOk = service_pipe_read_request_header(pipe, &prefix,
+                                                    kFixtureProbeTimeoutMs,
+                                                    probeErr,
+                                                    sizeof(probeErr));
+    outcome->probeEndedMs = GetTickCount64();
+    if (!probeOk) {
         // Stalled-client case: a clean timeout IS the expected result here.
         outcome->probeTimedOut = true;
         DisconnectNamedPipe(pipe);
@@ -294,11 +322,21 @@ int main() {
     {
         ServerOutcome outcome = {};
         outcome.firstInstance = true;
+        outcome.readyEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+        if (!outcome.readyEvent) return 700;
+        outcome.connectedEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+        if (!outcome.connectedEvent) return 700;
         HANDLE serverThread =
             CreateThread(nullptr, 0, serve_one_connection, &outcome, 0,
                          nullptr);
         if (!serverThread) return 700;
-        Sleep(120); // let the listener post its connect wait
+
+        // Deterministic sequencing: start the client only after the pipe
+        // INSTANCE exists (no sleep guesses). A client that slips in before
+        // the server posts ConnectNamedPipe is handled via ERROR_PIPE_CONNECTED.
+        if (WaitForSingleObject(outcome.readyEvent, 4000) != WAIT_OBJECT_0)
+            return 730;
+
         ClientContext ctx = {};
         ctx.stall = false;
         ctx.extraBodyBytes = 7; // hostile tail beyond the declared structure
@@ -306,71 +344,107 @@ int main() {
             CreateThread(nullptr, 0, client_thread_proc, &ctx, 0, nullptr);
         if (!clientThread) return 701;
 
-        WaitForSingleObject(clientThread, INFINITE);
+        DWORD clientWait = WaitForSingleObject(clientThread, 10000);
         DWORD clientCode = 999;
         GetExitCodeThread(clientThread, &clientCode);
         CloseHandle(clientThread);
-        if (clientCode != 0) return 702;
-        WaitForSingleObject(serverThread, INFINITE);
+        DWORD serverWait = WaitForSingleObject(serverThread, 10000);
         CloseHandle(serverThread);
+        if (clientWait != WAIT_OBJECT_0 || serverWait != WAIT_OBJECT_0)
+            return 702;
+        if (clientCode != 0) return 702;
 
         if (!outcome.probeExpectedPrefix) return 703; // ERROR_MORE_DATA probe
         if (!outcome.impersonated) return 704;        // THE incident check
         if (!outcome.bodyReadExact) return 705;
         if (!outcome.responded) return 706;
+        CloseHandle(outcome.readyEvent);
+        CloseHandle(outcome.connectedEvent);
     }
 
     // ---- Cases 5+6: a stalled client must not block another connection,
-    // and its eventual timeout must be clean. ----
+    // and its eventual timeout must be clean. Sequencing is fully
+    // event-driven: the stalled client is provably CONNECTED AND SILENT
+    // before the healthy exchange even starts, and "healthy beats the
+    // stall" is asserted by ordering against the stalled probe's own
+    // deadline rather than by any wall-clock bound.
     {
         ServerOutcome stalledOutcome = {};
         stalledOutcome.firstInstance = true;
+        stalledOutcome.readyEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+        if (!stalledOutcome.readyEvent) return 720;
+        stalledOutcome.connectedEvent =
+            CreateEventA(nullptr, TRUE, FALSE, nullptr);
+        if (!stalledOutcome.connectedEvent) return 720;
         HANDLE stalledServer =
             CreateThread(nullptr, 0, serve_one_connection, &stalledOutcome, 0,
                          nullptr);
         if (!stalledServer) return 720;
-        Sleep(120);
+        if (WaitForSingleObject(stalledOutcome.readyEvent, 4000) !=
+            WAIT_OBJECT_0)
+            return 731;
         ClientContext stallCtx = {};
         stallCtx.stall = true;
         HANDLE stalledClient =
             CreateThread(nullptr, 0, client_thread_proc, &stallCtx, 0,
                          nullptr);
         if (!stalledClient) return 721;
-        Sleep(150); // stalled client is now connected and silent
+        // The stalled client is now PROVEN connected and silent.
+        if (WaitForSingleObject(stalledOutcome.connectedEvent, 4000) !=
+            WAIT_OBJECT_0)
+            return 732;
 
-        ULONGLONG startedMs = GetTickCount64();
         // A second, healthy exchange proceeds WHILE the first probe pends.
         ServerOutcome healthyOutcome = {};
         healthyOutcome.firstInstance = false;
+        healthyOutcome.readyEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+        if (!healthyOutcome.readyEvent) return 722;
         HANDLE healthyServer =
             CreateThread(nullptr, 0, serve_one_connection, &healthyOutcome, 0,
                          nullptr);
         if (!healthyServer) return 722;
-        Sleep(120);
+        if (WaitForSingleObject(healthyOutcome.readyEvent, 4000) !=
+            WAIT_OBJECT_0)
+            return 733;
         ClientContext healthyCtx = {};
         HANDLE healthyClient =
             CreateThread(nullptr, 0, client_thread_proc, &healthyCtx, 0,
                          nullptr);
         if (!healthyClient) return 723;
-        WaitForSingleObject(healthyClient, 4000);
+
+        DWORD healthyWait = WaitForSingleObject(healthyClient, 10000);
         DWORD healthyCode = 998;
         GetExitCodeThread(healthyClient, &healthyCode);
         CloseHandle(healthyClient);
-        WaitForSingleObject(healthyServer, INFINITE);
+        ULONGLONG healthyDoneMs = GetTickCount64();
+        DWORD healthyServerWait = WaitForSingleObject(healthyServer, 10000);
         CloseHandle(healthyServer);
-        ULONGLONG elapsedMs = GetTickCount64() - startedMs;
+        if (healthyWait != WAIT_OBJECT_0 || healthyServerWait != WAIT_OBJECT_0)
+            return 724;
         if (healthyCode != 0) return 724;
         if (!healthyOutcome.responded || !healthyOutcome.impersonated)
             return 725;
-        if (elapsedMs > 1400) return 726; // must not wait out the stall
+        // The healthy exchange finished strictly BEFORE the stalled probe's
+        // deadline could fire. The probe started when the stalled connection
+        // was established and runs for kFixtureProbeTimeoutMs, so any global
+        // serialization across the two instances (the incident shape) would
+        // push healthyDone past connectedAt + that budget.
+        if (healthyDoneMs >=
+            stalledOutcome.connectedAtMs + (ULONGLONG)kFixtureProbeTimeoutMs)
+            return 726;
 
-        WaitForSingleObject(stalledClient, INFINITE);
-        CloseHandle(stalledClient);
-        WaitForSingleObject(stalledServer, INFINITE);
-        CloseHandle(stalledServer);
         // The stalled probe ended with a clean header-timeout disconnect.
+        DWORD stallClientWait = WaitForSingleObject(stalledClient, 10000);
+        CloseHandle(stalledClient);
+        DWORD stallServerWait = WaitForSingleObject(stalledServer, 10000);
+        CloseHandle(stalledServer);
+        if (stallClientWait != WAIT_OBJECT_0 || stallServerWait != WAIT_OBJECT_0)
+            return 727;
         if (stalledOutcome.probeExpectedPrefix || !stalledOutcome.probeTimedOut)
             return 727;
+        CloseHandle(stalledOutcome.readyEvent);
+        CloseHandle(stalledOutcome.connectedEvent);
+        CloseHandle(healthyOutcome.readyEvent);
     }
 
     printf("windows pipe regression passed\n");

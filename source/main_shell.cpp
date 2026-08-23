@@ -1,4 +1,4 @@
-﻿static void start_fan_curve_runtime() {
+static void start_fan_curve_runtime() {
     if (!g_app.fanSupported) return;
     fan_curve_normalize(&g_app.activeFanCurve);
     char err[256] = {};

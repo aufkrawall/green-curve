@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+// SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 //
 // Read-only control-surface probe for the selected adapter (Windows).
@@ -113,8 +113,11 @@ void gpu_probe_control_surface() {
 
     if (!nvml_ensure_ready() || !g_app.nvmlDevice) {
         // Leave every domain UNPROBED: without NVML we have no evidence, and
-        // absence of evidence must not subtract a capability.
-    
+        // absence of evidence must not subtract a capability. Publish the
+        // explicit no-evidence state -- b544f7d dropped this assignment on
+        // BOTH exits and every snapshot then carried a zeroed (never-probed)
+        // capability projection while the real probe results were discarded.
+        g_app.gpuCapability = probe;
         debug_log("gpu capability probe: NVML not ready, leaving all domains unprobed"
                   " (reports full surface by design)\n");
         return;
@@ -254,9 +257,13 @@ void gpu_probe_control_surface() {
     // One read-only ClkDomains V2 probe, after NVML-backed domains have run.
     probe_xbar_control_surface(&probe);
 
+    // Publish BEFORE the diagnostics read back from the stored state, so the
+    // log can never disagree with what snapshots will carry. The source gate
+    // pins both publication sites in this file.
+    g_app.gpuCapability = probe;
 
-    gc_u32 missing = gpu_capability_missing_domains(&probe);
-    gc_u32 surface = gpu_capability_surface_class(&probe);
+    gc_u32 missing = gpu_capability_missing_domains(&g_app.gpuCapability);
+    gc_u32 surface = gpu_capability_surface_class(&g_app.gpuCapability);
     debug_log("gpu capability probe: family=%d backend=%s surface=%s missingMask=0x%02X"
               " memoryTopology=%s\n",
               (int)g_app.gpuFamily,
@@ -270,7 +277,8 @@ void gpu_probe_control_surface() {
             if (missing & mask) {
                 debug_log("gpu capability probe: MISSING domain %s (%s)\n",
                           gpu_capability_domain_name(i),
-                          gpu_capability_name(gpu_capability_get(&probe, mask)));
+                          gpu_capability_name(gpu_capability_get(
+                              &g_app.gpuCapability, mask)));
             }
         }
     }

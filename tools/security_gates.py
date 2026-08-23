@@ -821,6 +821,47 @@ def check_hardening_and_gate_wiring(ctx):
                 fail(f"fuzz target {target!r} lists a missing source {extra!r}")
 
 
+def check_ipc_transport_and_probe_gates(ctx, require_text, forbid_text,
+                                        require_text_count):
+    """Pins for the transition-safe pipe transport and the capability probe.
+
+    Split out of build.py to keep the build script under its size ratchet.
+    Three review findings (2026-08-23) each escaped every existing gate
+    because they were silent in the happy path:
+
+    - two function-local admission tables made rate limiting inert: decisions
+      read a table no charge ever touched;
+    - the duplicated client token was closed nowhere after the worker-pool
+      refactor dropped the historical explicit close;
+    - b544f7d deleted both g_app.gpuCapability publication sites, so every
+      snapshot carried a zeroed probe while the real results were discarded.
+    """
+    service_pipe_cpp = os.path.join(ctx.SOURCE_DIR, "main_service_pipe.cpp")
+    capability_probe_cpp = os.path.join(ctx.SOURCE_DIR,
+                                        "gpu_capability_probe.cpp")
+
+    # One shared admission table. Decisions and charges must observe the same
+    # bucket state; forbid the historical per-function declaration shape.
+    require_text(service_pipe_cpp,
+                 "ServiceIpcAdmissionTable& service_admission_table()",
+                 "admission decisions and charges observe ONE shared bucket table")
+    forbid_text(service_pipe_cpp, "static ServiceIpcAdmissionTable table",
+                "function-local duplicate admission tables must stay removed")
+    # Exactly one charge per connection, derived from its outcome: both the
+    # admitted path and the refusal fall-through go through the cost table.
+    require_text_count(service_pipe_cpp,
+                       "service_ipc_connection_cost_tokens(", 2,
+                       "admitted and refusal paths both charge exactly once by outcome")
+    # The capture runs before magic/admission checks, so EVERY connection owns
+    # a duplicated token handle; only a destructor closes it on all exits.
+    require_text(service_pipe_cpp, "~ServiceClientIdentity()",
+                 "duplicated client tokens are closed on every connection exit path")
+    # The probe publishes on BOTH exits (early NVML-not-ready return included).
+    require_text_count(capability_probe_cpp,
+                       "g_app.gpuCapability = probe;", 2,
+                       "the probe publishes its result on BOTH exit paths")
+
+
 def check_fuzz_harness_in_sync(ctx, require_text, forbid_text):
     """The fuzz target table here must match tests/fuzz_main.cpp.
 

@@ -73,6 +73,26 @@ public:
     ~ScopedAdmissionLock() { LeaveCriticalSection(&g_serviceAdmissionLock); }
 };
 
+// The ONE admission table. Decisions and charges must observe the same
+// bucket state: the first transition-safe build declared two function-local
+// statics (one in the decide glue, one in the charge glue), so decisions
+// read a table that was never written and every charge landed in a table
+// nobody consulted -- rate limiting silently never refused anything.
+// Function-local static initialization is thread-safe; callers serialize
+// access with g_serviceAdmissionLock.
+inline ServiceIpcAdmissionTable& service_admission_table() {
+    // The local static here is deliberately not declared with the historical
+    // per-function shape the source gate forbids (a function-local admission
+    // table named "table"), because that shape silently split decisions from
+    // charges when it existed twice.
+    static ServiceIpcAdmissionTable shared = []() {
+        ServiceIpcAdmissionTable t;
+        t.reset(GetTickCount64());
+        return t;
+    }();
+    return shared;
+}
+
 } // namespace gc_pipe_dispatch
 
 // Per-connection client context. Captured ONCE, immediately after the header
@@ -102,6 +122,17 @@ struct ServiceClientIdentity {
         throttleKey.clear();
     }
 
+    // Owns the duplicated impersonation token from the capture step. The
+    // historical single-thread loop closed it explicitly after dispatch;
+    // the worker-pool refactor dropped that close and leaked one SYSTEM-held
+    // token handle per served connection (capture runs BEFORE magic or
+    // admission checks, so even refused/mismatched connections leaked). A
+    // destructor closes it on every exit path instead of relying on each
+    // return site remembering. No copies of this struct exist.
+    ~ServiceClientIdentity() {
+        if (token) CloseHandle(token);
+    }
+
     void buildThrottleKey() {
         if (!lifecycle.valid || !lifecycle.sid[0]) {
             throttleKey.clear();
@@ -113,17 +144,13 @@ struct ServiceClientIdentity {
 };
 
 // Admission controller glue. The policy module is pure; runtime supplies the
-// clock reading and serializes table access.
+// clock reading and serializes table access against the SHARED table above.
 static ServiceIpcAdmissionDecision service_admission_decide(
         const ServiceIpcThrottleKey& key, ServiceIpcRequestClass cls) {
     ULONGLONG nowMs = GetTickCount64();
     gc_pipe_dispatch::ScopedAdmissionLock lock;
-    static ServiceIpcAdmissionTable table = []() {
-        ServiceIpcAdmissionTable t;
-        t.reset(GetTickCount64());
-        return t;
-    }();
-    return service_ipc_decide_admission(&table, key, cls, nowMs);
+    return service_ipc_decide_admission(
+        &gc_pipe_dispatch::service_admission_table(), key, cls, nowMs);
 }
 
 static void service_admission_charge(const ServiceIpcThrottleKey& key,
@@ -131,12 +158,8 @@ static void service_admission_charge(const ServiceIpcThrottleKey& key,
                                      unsigned int costTokens) {
     ULONGLONG nowMs = GetTickCount64();
     gc_pipe_dispatch::ScopedAdmissionLock lock;
-    static ServiceIpcAdmissionTable table = []() {
-        ServiceIpcAdmissionTable t;
-        t.reset(GetTickCount64());
-        return t;
-    }();
-    service_ipc_charge(&table, key, cls, costTokens, nowMs);
+    service_ipc_charge(&gc_pipe_dispatch::service_admission_table(), key, cls,
+                       costTokens, nowMs);
 }
 
 static const char* service_ipc_decision_name(ServiceIpcAdmissionDecision d) {
@@ -290,18 +313,18 @@ static bool service_finish_admitted_connection(HANDLE pipe,
     // hardware command.
     service_execute_checked_request(&request, caller, response);
 
+    // Exactly one charge for this connection: the outcome of the exchange.
+    ServiceIpcConnectionOutcome outcome = SERVICE_IPC_CONNECTION_EXCHANGED;
     if (!service_pipe_write_exact(pipe, response, sizeof(*response),
             SERVICE_PIPE_SERVER_IO_TIMEOUT_MS, "writing service response",
             pipeErr, sizeof(pipeErr))) {
         debug_log("service_pipe_server: response write failed class=%s: %s\n",
             service_ipc_class_name(requestClass),
             pipeErr[0] ? pipeErr : "unknown");
-        service_admission_charge(caller->throttleKey, requestClass,
-            SERVICE_IPC_COST_TRANSPORT_FAULT);
-    } else {
-        service_admission_charge(caller->throttleKey, requestClass,
-            SERVICE_IPC_COST_SUCCESS);
+        outcome = SERVICE_IPC_CONNECTION_TRANSPORT_FAULT;
     }
+    service_admission_charge(caller->throttleKey, requestClass,
+        service_ipc_connection_cost_tokens(outcome));
     DisconnectNamedPipe(pipe);
     return true;
 }
@@ -355,17 +378,25 @@ static bool service_serve_pipe_connection(HANDLE pipe) {
         if (identityKnown) {
             caller.buildThrottleKey();
         } else {
-            // Rare after a successful read; charge only the small global
-            // anonymous budget so it can never poison a real user's quota.
+            // Rare after a successful read. No charge here: every connection
+            // is charged exactly once from its outcome below, and an invalid
+            // key routes that charge into the anonymous metering bucket so it
+            // can never poison a real user's quota.
             debug_log("service_pipe_server: post-header identity capture failed: %s\n",
                 identityErr[0] ? identityErr : "unknown");
-            service_admission_charge(caller.throttleKey,
-                SERVICE_IPC_CLASS_NORMAL, SERVICE_IPC_COST_SUCCESS);
         }
     }
 
     ServiceIpcRequestClass requestClass =
         service_ipc_classify_command(command);
+
+    // Exactly one charge per finished connection, derived from its outcome
+    // (service_ipc_connection_cost_tokens). Refused connections charge
+    // nothing -- the refusal itself is the punishment, and refunding them
+    // would let a flooder harvest tokens from its own refusals. A failed
+    // response write supersedes whatever the branch outcome was.
+    ServiceIpcConnectionOutcome connectionOutcome =
+        SERVICE_IPC_CONNECTION_EXCHANGED;
 
     if ((identityKnown && magic != SERVICE_PROTOCOL_MAGIC) ||
         (identityKnown && magic == SERVICE_PROTOCOL_MAGIC &&
@@ -384,12 +415,12 @@ static bool service_serve_pipe_connection(HANDLE pipe) {
             "Service protocol mismatch");
         debug_log("service_pipe_server: protocol mismatch header magic=0x%08x version=%u class=%s\n",
             magic, version, service_ipc_class_name(requestClass));
-        service_admission_charge(caller.throttleKey, requestClass,
-            SERVICE_IPC_COST_BAD_COMMAND);
+        connectionOutcome = SERVICE_IPC_CONNECTION_PROTOCOL_MISMATCH;
     } else if (!identityKnown ||
                requestClass == SERVICE_IPC_CLASS_UNKNOWN) {
         // Unknown commands are dropped before dispatch; unidentifiable
-        // connections are dropped outright. Both are charged.
+        // connections are dropped outright. The invalid-key charge routes to
+        // the anonymous metering bucket.
         if (!prefix.messageComplete) {
             service_pipe_drain_inbound_message(pipe,
                 SERVICE_PIPE_SERVER_DRAIN_TIMEOUT_MS, nullptr, 0);
@@ -399,13 +430,9 @@ static bool service_serve_pipe_connection(HANDLE pipe) {
             "Unsupported service command");
         debug_log("service_pipe_server: dropping pre-dispatch connection identityKnown=%d command=%u\n",
             identityKnown ? 1 : 0, command);
-        service_admission_charge(caller.throttleKey,
-            requestClass == SERVICE_IPC_CLASS_UNKNOWN
-                ? SERVICE_IPC_CLASS_UNKNOWN
-                : SERVICE_IPC_CLASS_NORMAL,
-            requestClass == SERVICE_IPC_CLASS_UNKNOWN
-                ? SERVICE_IPC_COST_BAD_COMMAND
-                : SERVICE_IPC_COST_TRANSPORT_FAULT);
+        connectionOutcome = identityKnown
+            ? SERVICE_IPC_CONNECTION_UNKNOWN_COMMAND
+            : SERVICE_IPC_CONNECTION_IDENTITY_UNKNOWN;
     } else {
         ServiceIpcAdmissionDecision decision =
             service_admission_decide(caller.throttleKey, requestClass);
@@ -428,6 +455,7 @@ static bool service_serve_pipe_connection(HANDLE pipe) {
                 (unsigned long)caller.pid,
                 (unsigned long)caller.sessionId,
                 userToken);
+            connectionOutcome = SERVICE_IPC_CONNECTION_ADMISSION_REFUSED;
         } else {
             return service_finish_admitted_connection(pipe, &caller,
                 &prefix, &response, requestClass);
@@ -442,12 +470,10 @@ static bool service_serve_pipe_connection(HANDLE pipe) {
             pipeErr, sizeof(pipeErr))) {
         debug_log("service_pipe_server: refusal write failed: %s\n",
             pipeErr[0] ? pipeErr : "unknown");
-        service_admission_charge(caller.throttleKey, requestClass,
-            SERVICE_IPC_COST_TRANSPORT_FAULT);
-    } else {
-        service_admission_charge(caller.throttleKey, requestClass,
-            SERVICE_IPC_COST_SUCCESS);
+        connectionOutcome = SERVICE_IPC_CONNECTION_TRANSPORT_FAULT;
     }
+    service_admission_charge(caller.throttleKey, requestClass,
+        service_ipc_connection_cost_tokens(connectionOutcome));
     DisconnectNamedPipe(pipe);
     return true;
 }

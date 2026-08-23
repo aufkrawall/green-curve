@@ -11608,6 +11608,54 @@ static int run_all_tests(int argc, char** argv) {
             if (table.anonymousBucket.tokensMilli >
                 SERVICE_IPC_ANON_BUDGET_MAX * 1000ULL) return 4640;
         }
+
+        // Exactly ONE charge per finished connection. The runtime glue maps
+        // how an exchange ended through service_ipc_connection_cost_tokens();
+        // the mapping must be total and refusal-free-of-charge, or refused
+        // connections would harvest tokens from their own refusals.
+        {
+            struct OutcomeCostCase {
+                ServiceIpcConnectionOutcome outcome;
+                unsigned int costTokens;
+            };
+            const OutcomeCostCase outcomeCosts[] = {
+                {SERVICE_IPC_CONNECTION_EXCHANGED,
+                 SERVICE_IPC_COST_SUCCESS},
+                {SERVICE_IPC_CONNECTION_PROTOCOL_MISMATCH,
+                 SERVICE_IPC_COST_BAD_COMMAND},
+                {SERVICE_IPC_CONNECTION_UNKNOWN_COMMAND,
+                 SERVICE_IPC_COST_BAD_COMMAND},
+                {SERVICE_IPC_CONNECTION_IDENTITY_UNKNOWN,
+                 SERVICE_IPC_COST_TRANSPORT_FAULT},
+                {SERVICE_IPC_CONNECTION_ADMISSION_REFUSED, 0},
+                {SERVICE_IPC_CONNECTION_TRANSPORT_FAULT,
+                 SERVICE_IPC_COST_TRANSPORT_FAULT},
+            };
+            for (size_t i = 0;
+                 i < sizeof(outcomeCosts) / sizeof(outcomeCosts[0]); ++i) {
+                if (service_ipc_connection_cost_tokens(
+                        outcomeCosts[i].outcome) !=
+                    outcomeCosts[i].costTokens) return 4641;
+            }
+
+            // A refused connection leaves its bucket untouched: charging the
+            // zero refusal cost is a strict no-op, not a hidden refill.
+            table.reset(1500000);
+            service_ipc_charge(&table, key, SERVICE_IPC_CLASS_NORMAL,
+                SERVICE_IPC_COST_SUCCESS, 1500000);
+            ServiceIpcIdentitySlot* chargedSlot = table.find(
+                key, service_ipc_key_hash(key));
+            if (!chargedSlot) return 4642;
+            unsigned long long balanceAfterSuccess =
+                chargedSlot->normalBucket.tokensMilli;
+            service_ipc_charge(&table, key, SERVICE_IPC_CLASS_NORMAL,
+                service_ipc_connection_cost_tokens(
+                    SERVICE_IPC_CONNECTION_ADMISSION_REFUSED), 1500000);
+            chargedSlot = table.find(key, service_ipc_key_hash(key));
+            if (!chargedSlot ||
+                chargedSlot->normalBucket.tokensMilli != balanceAfterSuccess)
+                return 4643;
+        }
     }
 
     // ------------------------------------------------------------------
