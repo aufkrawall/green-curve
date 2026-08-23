@@ -32,7 +32,6 @@ source/main_service_controlled_restart.cpp	bugprone-implicit-widening-of-multipl
 source/main_service_controlled_restart.cpp	bugprone-multi-level-implicit-pointer-conversion
 source/main_service_controlled_restart.cpp	clang-analyzer-deadcode.DeadStores
 source/main_service_fan_worker.cpp	bugprone-implicit-widening-of-multiplication-result
-source/main_service_host.cpp	bugprone-implicit-widening-of-multiplication-result
 source/main_service_lifecycle_apply.cpp	bugprone-suspicious-memory-comparison,cert-exp42-c,cert-flp37-c
 source/main_service_logon_coordinator.cpp	bugprone-branch-clone
 source/main_service_persist.cpp	bugprone-implicit-widening-of-multiplication-result

@@ -1,790 +1,454 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
-// Authenticated named-pipe listener and command dispatch.
+// Authenticated named-pipe connection pipeline and command dispatch.
+//
+// Transport concurrency lives in main_service_pipe_listener.cpp (a bounded,
+// fixed-size worker pool). This shard serves ONE connection end to end:
+//
+//   12-byte header probe -> brief impersonation -> stable logon identity ->
+//   classification + admission -> body read -> SERIALIZED dispatch ->
+//   response snapshot -> out-of-lock response write.
+//
+// The header-probe-first order is mandatory: ImpersonateNamedPipeClient()
+// requires at least one completed read on the connected pipe (the 2026-08-22
+// live regression failed every GUI request with error 1368 when impersonation
+// moved before the first read). Probing the pinned 12-byte header satisfies
+// that requirement while keeping stalled connections off the dispatch path.
+//
+// Command execution remains strictly serialized (one hardware/service mutation
+// at a time) via g_serviceDispatchLock -- the exact invariant the historical
+// single pipe thread provided. Only transport I/O overlaps now, which also
+// means a client that stops reading its response can no longer stall the next
+// hardware command.
 
 #include "log_redaction_policy.h"
 #include "main_service_pipe_primitives.h"
+#include "service_ipc_throttle_policy.h"
+#include "service_pipe_prefix_read.h"
 // The three client-requested file writes, all of which run under the caller's
 // own token.  Included here so its position in the amalgamation is exactly
 // where the case body it replaced used to sit.
 #include "main_service_pipe_file_commands.cpp"
 
-static DWORD WINAPI service_pipe_server_thread_proc(void*) {
-    WCHAR pipeName[128] = {};
-    if (!background_service_pipe_name(pipeName, ARRAY_COUNT(pipeName))) return 1;
+// Deadlines. Header/body/write bounds keep one stalled connection from
+// occupying a worker indefinitely; the body bound intentionally matches the
+// long-standing request-read timeout.
+#ifndef SERVICE_PIPE_SERVER_HEADER_TIMEOUT_MS
+#define SERVICE_PIPE_SERVER_HEADER_TIMEOUT_MS 1000
+#endif
+#ifndef SERVICE_PIPE_SERVER_DRAIN_TIMEOUT_MS
+#define SERVICE_PIPE_SERVER_DRAIN_TIMEOUT_MS 1500
+#endif
 
-    while (!g_serviceStopEvent || WaitForSingleObject(g_serviceStopEvent, 0) != WAIT_OBJECT_0) {
-        PSECURITY_DESCRIPTOR securityDescriptor = nullptr;
-        SECURITY_ATTRIBUTES sa = {};
-        sa.nLength = sizeof(sa);
-        if (create_restricted_pipe_security_descriptor(&securityDescriptor)) {
-            sa.lpSecurityDescriptor = securityDescriptor;
-        } else {
-            debug_log("pipe_server: cannot create restricted ACL, failing listener closed\n");
-            if (securityDescriptor) {
-                LocalFree(securityDescriptor);
-                securityDescriptor = nullptr;
-            }
-            InterlockedExchange(&g_servicePipeStartupError, ERROR_INVALID_SECURITY_DESCR);
-            if (g_servicePipeReadyEvent) SetEvent(g_servicePipeReadyEvent);
-            return 1;
-        }
-        if (!securityDescriptor) {
-            debug_log("pipe_server: restricted ACL creation returned no descriptor, failing listener closed\n");
-            InterlockedExchange(&g_servicePipeStartupError, ERROR_INVALID_SECURITY_DESCR);
-            if (g_servicePipeReadyEvent) SetEvent(g_servicePipeReadyEvent);
-            return 1;
-        }
+namespace gc_pipe_dispatch {
 
-        HANDLE pipe = CreateNamedPipeW(
-            pipeName,
-            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
-            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            4,
-            sizeof(ServiceResponse),
-            sizeof(ServiceRequest),
-            1000,
-            sa.lpSecurityDescriptor ? &sa : nullptr);
-        if (securityDescriptor) {
-            LocalFree(securityDescriptor);
-            securityDescriptor = nullptr;
-        }
-        if (pipe == INVALID_HANDLE_VALUE) {
-            DWORD pipeError = GetLastError();
-            debug_log("pipe_server: CreateNamedPipe failed (error=%lu)\n", pipeError);
-            InterlockedExchange(&g_servicePipeStartupError, (LONG)pipeError);
-            if (g_servicePipeReadyEvent) SetEvent(g_servicePipeReadyEvent);
-            return 1;
-        }
-        // Clean publish: every prior close path cleared this slot.  Double-close
-        // is fatal under Strict Handle Check; ownership arbitration belongs to
-        // service_close_owned_pipe and the watchdog.
-        InterlockedExchangePointer((PVOID volatile*)&g_servicePipeHandle, pipe);
+// Serializes ALL command validation/authorization/execution. Initialized once
+// via InitOnceExecuteOnce so neither the host nor the listener needs to care
+// about initialization order.
+INIT_ONCE g_dispatchInitOnce = INIT_ONCE_STATIC_INIT;
+CRITICAL_SECTION g_serviceDispatchLock;
+CRITICAL_SECTION g_serviceAdmissionLock;
 
-        OVERLAPPED ov = {};
-        ov.hEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
-        if (!ov.hEvent) {
-            service_close_owned_pipe(pipe);
-            continue;
-        }
-        BOOL connected = ConnectNamedPipe(pipe, &ov);
-        DWORD connectErr = connected ? ERROR_SUCCESS : GetLastError();
-        if (connected || connectErr == ERROR_IO_PENDING ||
-            connectErr == ERROR_PIPE_CONNECTED) {
-            InterlockedExchange(&g_servicePipeStartupError, ERROR_SUCCESS);
-            if (g_servicePipeReadyEvent) SetEvent(g_servicePipeReadyEvent);
-        }
-        if (!connected && connectErr == ERROR_IO_PENDING) {
-            // Stop/wake/recycle events are optional and always precede ov.hEvent;
-            // session changes recycle this instance so its active-session ACL is
-            // rebuilt before the next client connects.
-            HANDLE waitHandles[4] = {};
-            DWORD waitCount = 0;
-            DWORD stopIdx = (DWORD)-1, wakeIdx = (DWORD)-1, recycleIdx = (DWORD)-1;
-            if (g_serviceStopEvent) { stopIdx = waitCount; waitHandles[waitCount++] = g_serviceStopEvent; }
-            if (g_servicePipeWakeEvent) { wakeIdx = waitCount; waitHandles[waitCount++] = g_servicePipeWakeEvent; }
-            if (g_servicePipeRecycleEvent) { recycleIdx = waitCount; waitHandles[waitCount++] = g_servicePipeRecycleEvent; }
-            waitHandles[waitCount++] = ov.hEvent; // always last
-            DWORD ovIdx = waitCount - 1;
-            DWORD waitResult = WaitForMultipleObjects(waitCount, waitHandles, FALSE, INFINITE);
-            if (stopIdx != (DWORD)-1 && waitResult == WAIT_OBJECT_0 + stopIdx) {
-                CancelIoEx(pipe, &ov);
-                CloseHandle(ov.hEvent);
-                DisconnectNamedPipe(pipe);
-                service_close_owned_pipe(pipe);
-                break;
-            }
-            auto recycle_current_pipe = [&]() {
-                CancelIoEx(pipe, &ov);
-                CloseHandle(ov.hEvent);
-                DisconnectNamedPipe(pipe);
-                service_close_owned_pipe(pipe);
-            };
-            if (wakeIdx != (DWORD)-1 && waitResult == WAIT_OBJECT_0 + wakeIdx) {
-                recycle_current_pipe();
-                continue;
-            }
-            if (recycleIdx != (DWORD)-1 && waitResult == WAIT_OBJECT_0 + recycleIdx) {
-                debug_log("pipe_server: recycling instance for ACL rebuild after session change\n");
-                recycle_current_pipe();
-                continue;
-            }
-            connected = waitResult == WAIT_OBJECT_0 + ovIdx;
-        } else if (!connected && connectErr == ERROR_PIPE_CONNECTED) {
-            connected = TRUE;
-        }
-        CloseHandle(ov.hEvent);
-        if (!connected) {
-            DisconnectNamedPipe(pipe);
-            service_close_owned_pipe(pipe);
-            continue;
-        }
-        ServiceRequest request = {};
-        ServiceResponse response = {};
-        response.magic = SERVICE_PROTOCOL_MAGIC;
-        response.version = SERVICE_PROTOCOL_VERSION;
-        response.serviceBuildNumber = (DWORD)APP_BUILD_NUMBER;
-        StringCchCopyA(response.serviceVersion, ARRAY_COUNT(response.serviceVersion), APP_VERSION);
-        char callerUser[256] = {};
-        DWORD callerSessionId = (DWORD)-1;
-        DWORD callerPid = 0;
-        DWORD callerIntegrityRid = 0;
-        HANDLE callerToken = nullptr;
-        bool callerIsAdmin = false, stateEnvelopeAuthorized = false;
-        ServiceLifecycleIdentity callerLifecycleIdentity = {};
-        char pipeErr[256] = {};
-        if (!service_pipe_read_exact(pipe, &request, sizeof(request), SERVICE_PIPE_SERVER_IO_TIMEOUT_MS, "reading service request", pipeErr, sizeof(pipeErr))) {
-            debug_log("service_pipe_server: dropping stalled or invalid client read: %s\n", pipeErr[0] ? pipeErr : "unknown");
-            DisconnectNamedPipe(pipe);
-            service_close_owned_pipe(pipe);
-            continue;
-        }
-        if (request.magic != SERVICE_PROTOCOL_MAGIC || request.version != SERVICE_PROTOCOL_VERSION) {
-            response.status = SERVICE_STATUS_VERSION_MISMATCH;
-            StringCchCopyA(response.message, ARRAY_COUNT(response.message), "Service protocol mismatch");
-        } else if (!validate_service_request_for_ipc(&request)) {
-            response.status = SERVICE_STATUS_ERROR;
-            StringCchCopyA(response.message, ARRAY_COUNT(response.message),
-                "Service request contains invalid protocol fields");
-            debug_log("service_pipe_server: rejected v%u request command=%u pid=%u: %s\n",
-                request.version, request.command, request.callerPid, service_request_reject_reason(&request));
-        } else if (InterlockedExchangeAdd(
-                &g_serviceClientRequestsReady, 0) == 0) {
-            response.status = SERVICE_STATUS_ERROR;
-            StringCchCopyA(response.message, ARRAY_COUNT(response.message),
-                "Background service startup is not complete; retry after SCM reports RUNNING");
-            debug_log("service_pipe_server: request rejected while lifecycle startup gate is closed\n");
-        } else {
-            bool settingsFreeHandoff =
-                request.command == SERVICE_CMD_LOGON_HANDOFF;
-            if (!service_caller_is_authorized(pipe, request.source,
-                    !settingsFreeHandoff, response.message,
-                    ARRAY_COUNT(response.message), callerUser,
-                    sizeof(callerUser), &callerSessionId, &callerPid,
-                    &callerIsAdmin, &callerLifecycleIdentity,
-                    &callerIntegrityRid, &callerToken)) {
-                response.status = SERVICE_STATUS_ERROR;
-            } else if (request.callerPid != callerPid) {
-                response.status = SERVICE_STATUS_ERROR;
-                StringCchCopyA(response.message, ARRAY_COUNT(response.message),
-                    "Service request caller PID does not match the connected client");
-                debug_log("service auth reject: suppliedPid=%lu connectedPid=%lu command=%u\n",
-                    (unsigned long)request.callerPid,
-                    (unsigned long)callerPid,
-                    (unsigned int)request.command);
-            } else if ((request.command == SERVICE_CMD_APPLY ||
-                        request.command == SERVICE_CMD_RESET ||
-                        request.command == SERVICE_CMD_WRITE_LOG_SNAPSHOT ||
-                        request.command == SERVICE_CMD_WRITE_JSON_SNAPSHOT ||
-                        request.command == SERVICE_CMD_WRITE_PROBE_REPORT ||
-                        request.command == SERVICE_CMD_LOGON_HANDOFF ||
-                        request.command == SERVICE_CMD_CHECK_FOR_UPDATE ||
-                        request.command == SERVICE_CMD_INSTALL_UPDATE ||
-                        request.command == SERVICE_CMD_SET_UPDATE_POLICY) &&
-                       callerIntegrityRid < SECURITY_MANDATORY_MEDIUM_RID) {
-                response.status = SERVICE_STATUS_ERROR;
-                StringCchCopyA(response.message, ARRAY_COUNT(response.message),
-                    "Service control requires a medium-integrity client");
-                debug_log("service auth reject: low-integrity caller pid=%lu session=%lu command=%u integrityRid=%lu\n",
-                    (unsigned long)callerPid,
-                    (unsigned long)callerSessionId,
-                    (unsigned int)request.command,
-                    (unsigned long)callerIntegrityRid);
-            } else {
-                stateEnvelopeAuthorized = true;
-                // A logon handoff is settings-free and resolves an immutable
-                // per-session context in the lifecycle worker.  Do not mutate
-                // process-global user/config paths as part of its authorization.
-                if (request.command != SERVICE_CMD_LOGON_HANDOFF) {
-                    char userPathErr[256] = {};
-                    if (resolve_service_user_data_paths(callerSessionId, userPathErr, sizeof(userPathErr))) {
-                        if (!g_app.configPath[0]) {
-                            set_default_config_path();
-                        }
-                        refresh_service_debug_logging_from_config();
-                    } else {
-                        debug_log("service_pipe_server: failed to resolve user data paths: %s\n", userPathErr);
-                    }
-                }
-            service_set_pending_operation_source(request.source[0] ? request.source : "service request");
-            switch (request.command) {
-                case SERVICE_CMD_PING:
-                    response.status = SERVICE_STATUS_OK;
-                    StringCchCopyA(response.message, ARRAY_COUNT(response.message), "pong");
-                    break;
-                case SERVICE_CMD_LOGON_HANDOFF:
-                    if (request.applyOrigin != SERVICE_APPLY_ORIGIN_LOGON) {
-                        response.status = SERVICE_STATUS_ERROR;
-                        StringCchCopyA(response.message, ARRAY_COUNT(response.message),
-                            "Invalid logon handoff origin");
-                    } else if (!service_lifecycle_post_logon_handoff(
-                                   &callerLifecycleIdentity)) {
-                        response.status = SERVICE_STATUS_ERROR;
-                        StringCchCopyA(response.message, ARRAY_COUNT(response.message),
-                            "Lifecycle coordinator is not accepting logon handoffs");
-                    } else {
-                        response.status = SERVICE_STATUS_OK;
-                        StringCchPrintfA(response.message, ARRAY_COUNT(response.message),
-                            "Logon handoff accepted for session %lu",
-                            (unsigned long)callerSessionId);
-                        char handoffUserToken[32] = {};
-                        gc_log_identifier_token(callerUser, handoffUserToken,
-                                                sizeof(handoffUserToken));
-                        debug_log("service logon handoff: authenticated caller pid=%lu session=%lu user=%s; profile/settings payload ignored\n",
-                            (unsigned long)callerPid, (unsigned long)callerSessionId,
-                            handoffUserToken);
-                    }
-                    populate_service_snapshot(&response.snapshot);
-                    break;
-                case SERVICE_CMD_GET_SNAPSHOT: {
-                    service_handle_snapshot_request(&response);
-                    break;
-                }
-                case SERVICE_CMD_GET_TELEMETRY:
-                    service_handle_telemetry_request(&response);
-                    break;
-                case SERVICE_CMD_APPLY: {
-                    ServiceOperationRequestGuard operation(&request, &response,
-                        "apply");
-                    if (!operation.execute()) {
-                        populate_service_snapshot(&response.snapshot);
-                        if (g_serviceHasActiveDesired) response.desired = g_serviceActiveDesired;
-                        if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
-                        break;
-                    }
-                    char result[512] = {};
-                    if (!service_mutation_preconditions_match(
-                            &request, result, sizeof(result))) {
-                        response.status = SERVICE_STATUS_STALE_STATE;
-                        StringCchCopyA(response.message,
-                            ARRAY_COUNT(response.message), result);
-                        debug_log("service APPLY rejected by reconnect precondition: operation=%llu instance=%llu gpuGeneration=%llu topology=%llu reason=%s\n",
-                            (unsigned long long)request.operationId,
-                            (unsigned long long)request.expectedServiceInstanceId,
-                            (unsigned long long)request.expectedGpuGeneration,
-                            (unsigned long long)request.expectedTopologySignature,
-                            result[0] ? result : "unknown");
-                        break;
-                    }
-                    bool enforcePublishedGpuBinding = false;
-                    ConfiguredGpuSelection publishedGpuBinding = {};
-                    if (!service_request_apply_origin_valid(&request)) {
-                        response.status = SERVICE_STATUS_ERROR;
-                        StringCchCopyA(response.message, ARRAY_COUNT(response.message),
-                            "Apply request is missing a valid typed origin");
-                        debug_log("service APPLY rejected: invalid origin=%u source=%s\n",
-                            request.applyOrigin,
-                            request.source[0] ? request.source : "<none>");
-                        break;
-                    }
-                    ServiceApplyOrigin applyOrigin =
-                        (ServiceApplyOrigin)request.applyOrigin;
-                    bool explicitUserApply =
-                        service_apply_origin_is_explicit(applyOrigin);
-                    if (!explicitUserApply) {
-                        DWORD lockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
-                        if (service_auto_restore_is_locked_out(&lockoutReason)) {
-                            response.status = SERVICE_STATUS_ERROR;
-                            StringCchPrintfA(response.message,
-                                ARRAY_COUNT(response.message),
-                                "Automatic apply is disabled: %s",
-                                service_auto_restore_lockout_reason_name(
-                                    lockoutReason));
-                            debug_log("service APPLY rejected: automatic origin=%u honors sticky lockout=%s\n",
-                                (unsigned int)applyOrigin,
-                                service_auto_restore_lockout_reason_name(
-                                    lockoutReason));
-                            break;
-                        }
-                    }
-                    // A restricted caller may apply only an authoritative
-                    // machine-bank profile, including its published GPU target.
-                    // This check precedes the runtime lock, so rejection performs
-                    // no hardware work and requires no unlock.
-                    if (!service_apply_shared_only_policy(&request,
-                            callerIsAdmin, callerUser,
-                            &enforcePublishedGpuBinding,
-                            &publishedGpuBinding, result, sizeof(result))) {
-                        response.status = SERVICE_STATUS_ERROR;
-                        StringCchCopyA(response.message,
-                            ARRAY_COUNT(response.message), result);
-                        break;
-                    }
-                    // Reject apply while recovering from a GPU device reconnect:
-                    // the NVML/NVAPI writes would access-violate on the still-
-                    // transitional driver and kill this pipe server thread
-                    // (GUI sees ERROR_BROKEN_PIPE).  The fan runtime thread
-                    // auto-reapplies the active profile once the driver settles.
-                    //
-                    // Allow apply if GPU data is already loaded (g_app.loaded
-                    // is true) — the crash window was restored by recovery as a
-                    // safety measure, but the handles are fresh and valid.
-                    // RC7: block ALL GUI applies during crash recovery, even if
-                    // g_app.loaded is true.  NVML writes (mem offset, fan speed)
-                    // access-violate on the transitional driver and kill the pipe
-                    // server thread (GUI sees ERROR_BROKEN_PIPE).  The dedicated
-                    // reapply thread handles writes during the recovery window and
-                    // survives VEH crashes via the health-check monitor.
-                    if (!explicitUserApply && nvml_crash_recovery_active()) {
-                        debug_log("service APPLY rejected: NVML crash recovery in progress (loaded=%d)\n",
-                            g_app.loaded ? 1 : 0);
-                        response.status = SERVICE_STATUS_ERROR;
-                        StringCchCopyA(response.message, ARRAY_COUNT(response.message),
-                            "GPU driver is recovering after a device reconnect; please retry in a few seconds.");
-                        populate_service_snapshot(&response.snapshot);
-                        if (g_serviceHasActiveDesired) response.desired = g_serviceActiveDesired;
-                        if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
-                        break;
-                    }
-                    debug_log("ipc raw: hasMem=%d memRaw=%d hasGpu=%d gpuRaw=%d exclRaw=%d\n",
-                        request.desired.hasMemOffset ? 1 : 0,
-                        request.desired.memOffsetMHz,
-                        request.desired.hasGpuOffset ? 1 : 0,
-                        request.desired.gpuOffsetMHz,
-                        request.desired.gpuOffsetExcludeLowCount);
-                    int rawGpuMHz = request.desired.gpuOffsetMHz;
-                    validate_desired_settings_for_ipc(&request.desired);
-                    request.desired.resetOcBeforeApply = request.resetOcBeforeApply != 0;
-                    if (request.desired.hasGpuOffset && rawGpuMHz != request.desired.gpuOffsetMHz) {
-                        debug_log("ipc validated: GPU offset clamped from %d to %d MHz (out of [-1000,1000] IPC range)\n",
-                            rawGpuMHz, request.desired.gpuOffsetMHz);
-                    }
-                    debug_log("ipc validated: hasMem=%d mem=%d\n",
-                        request.desired.hasMemOffset ? 1 : 0,
-                        request.desired.memOffsetMHz);
-                    lock_service_runtime();
-                    if (service_update_install_reject_mutation(
-                            &response, "APPLY")) {
-                        unlock_service_runtime();
-                        break;
-                    }
-                    result[0] = '\0';
-                    if (!service_mutation_preconditions_match(
-                            &request, result, sizeof(result))) {
-                        response.status = SERVICE_STATUS_STALE_STATE;
-                        StringCchCopyA(response.message,
-                            ARRAY_COUNT(response.message), result);
-                        unlock_service_runtime();
-                        break;
-                    }
-                    if (explicitUserApply) {
-                        // Serialize supersession with lifecycle writes. If an
-                        // automatic write already owns the runtime lock it is
-                        // already irreversible and completes first; otherwise
-                        // this cancellation wins before it can be authorized.
-                        bool unsafeDriverTransition =
-                            service_explicit_supersede_automatic_work_locked(
-                                callerSessionId, "explicit user Apply");
-                        if (unsafeDriverTransition) {
-                            response.status = SERVICE_STATUS_ERROR;
-                            StringCchCopyA(response.message,
-                                ARRAY_COUNT(response.message),
-                                "GPU driver recovery was superseded, but the driver is still transitional; retry Apply explicitly when it is ready.");
-                            populate_service_snapshot(&response.snapshot);
-                            if (g_serviceHasActiveDesired) {
-                                response.desired = g_serviceActiveDesired;
-                            }
-                            if (g_serviceControlStateValid) {
-                                response.controlState = g_serviceControlState;
-                            }
-                            unlock_service_runtime();
-                            break;
-                        }
-                    } else {
-                        // Authorization is checked again under the same lock as
-                        // the sole write. A failed request ahead of us may have
-                        // latched lockout while this automatic request waited.
-                        DWORD currentLockout = SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
-                        if (service_auto_restore_is_locked_out(&currentLockout)) {
-                            response.status = SERVICE_STATUS_ERROR;
-                            StringCchPrintfA(response.message,
-                                ARRAY_COUNT(response.message),
-                                "Automatic apply is disabled: %s",
-                                service_auto_restore_lockout_reason_name(
-                                    currentLockout));
-                            debug_log("service APPLY rejected under runtime lock: automatic origin=%u lockout=%s\n",
-                                (unsigned int)applyOrigin,
-                                service_auto_restore_lockout_reason_name(
-                                    currentLockout));
-                            unlock_service_runtime();
-                            break;
-                        }
-                        EnterCriticalSection(&g_appLock);
-                        bool driverRecoveryPending =
-                            g_serviceLifecycleState.driverPending;
-                        LeaveCriticalSection(&g_appLock);
-                        if (driverRecoveryPending ||
-                            g_serviceControlledRecoveryValidated ||
-                            InterlockedExchangeAdd(
-                                &g_serviceRestartRequested, 0) != 0 ||
-                            InterlockedExchangeAdd(
-                                &g_serviceRestartPreparing, 0) != 0) {
-                            response.status = SERVICE_STATUS_ERROR;
-                            StringCchCopyA(response.message,
-                                ARRAY_COUNT(response.message),
-                                "Automatic apply is deferred because controlled driver recovery has precedence");
-                            debug_log("service APPLY rejected under runtime lock: automatic origin=%u controlled recovery has precedence\n",
-                                (unsigned int)applyOrigin);
-                            unlock_service_runtime();
-                            break;
-                        }
-                    }
-                    bool ok = true;
-                    if (enforcePublishedGpuBinding) {
-                        GpuAdapterInfo publishedTarget = {};
-                        ok = service_resolve_configured_gpu_target(
-                            &publishedGpuBinding, &publishedTarget,
-                            result, sizeof(result));
-                        if (ok) request.targetGpu = publishedTarget;
-                    }
-                    if (ok) {
-                        ok = service_prepare_requested_gpu(&request, result,
-                            sizeof(result));
-                    }
-                    bool hadPreviousIntent = g_serviceHasActiveDesired;
-                    GpuAdapterInfo previousRestoreTarget =
-                        g_serviceActiveDesiredGpu;
-                    ServiceProfileSource profileSource =
-                        SERVICE_PROFILE_SOURCE_AD_HOC;
-                    unsigned int profileSlot = 0;
-                    bool replaceActiveIntent =
-                        service_profile_identity_replaces_active_intent(
-                            service_validate_requested_profile_metadata(
-                                &request, &profileSource, &profileSlot));
-                    DesiredSettings hardwareRequest = request.desired;
-                    if (replaceActiveIntent) {
-                        service_build_profile_transition_request(
-                            hadPreviousIntent ? &g_serviceActiveDesired : nullptr,
-                            &request.desired, &hardwareRequest);
-                    }
-                    if (ok) {
-                        GpuAdapterInfo applyTarget = g_app.selectedGpu;
-                        if (!applyTarget.valid &&
-                            g_app.selectedGpuIndex < g_app.adapterCount) {
-                            applyTarget =
-                                g_app.adapters[g_app.selectedGpuIndex];
-                        }
-                        service_refresh_selected_gpu_notification_best_effort(
-                            &applyTarget, "service apply pre-write target");
-                    }
-                    bool writeAttempted = false;
-                    ServiceSelectedGpuWriteEpoch gpuEpoch =
-                        service_selected_gpu_capture_write_epoch();
-                    EnterCriticalSection(&g_appLock);
-                    bool exactRecoveryCuePending =
-                        service_lifecycle_selected_gpu_recovery_cue_pending_locked();
-                    LeaveCriticalSection(&g_appLock);
-                    if (ok && !service_selected_gpu_write_epoch_is_current(
-                            gpuEpoch)) {
-                        ok = false;
-                        StringCchCopyA(result, ARRAY_COUNT(result),
-                            "Selected GPU changed or was removed immediately before Apply");
-                    } else if (ok && exactRecoveryCuePending) {
-                        ok = false;
-                        StringCchCopyA(result, ARRAY_COUNT(result),
-                            "Selected GPU recovery has precedence over Apply; retry explicitly after recovery");
-                    }
-                    gc_u32 applySeverity =
-                        (gc_u32)SERVICE_OUTCOME_SEVERITY_ERROR;
-                    if (ok) ok = service_apply_desired_settings(
-                        &hardwareRequest,
-                        (request.flags & SERVICE_REQUEST_FLAG_INTERACTIVE) != 0,
-                        result, sizeof(result), &writeAttempted,
-                        replaceActiveIntent,
-                        replaceActiveIntent ? &request.desired : nullptr,
-                        &applySeverity);
-                    if (!writeAttempted && hadPreviousIntent) {
-                        service_refresh_selected_gpu_notification_best_effort(
-                            &previousRestoreTarget,
-                            "restore prior target after service apply preflight loss");
-                    }
-                    if (ok) {
-                        service_refresh_selected_gpu_notification_best_effort(
-                            &g_serviceActiveDesiredGpu,
-                            "successful service apply target");
-                        service_capture_owner_identity(callerUser, callerSessionId);
-                        service_record_apply_profile_identity(&request,
-                            profileSource, profileSlot);
-                        service_write_restart_reapply_snapshot();
-                        // Every successful client Apply starts a fresh awake-
-                        // time proving period. Automatic writes never clear history.
-                        bool proofRecorded = service_record_oc_apply_stamp();
-                        if (explicitUserApply && proofRecorded) {
-                            // Only a deliberate successful user write with a
-                            // durably published fresh proof acknowledges
-                            // instability/TDR history.
-                            bool lockoutCleared =
-                                service_clear_auto_restore_lockout();
-                            bool historyCleared =
-                                service_clear_restart_history();
-                            if (lockoutCleared && historyCleared) {
-                                EnterCriticalSection(&g_appLock);
-                                g_serviceLifecycleState.lockedOut = false;
-                                LeaveCriticalSection(&g_appLock);
-                            } else {
-                                service_latch_auto_restore_lockout(
-                                    SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED,
-                                    "explicit Apply could not durably re-arm automatic restoration");
-                            }
-                        }
-                    } else if (writeAttempted) {
-                        // A failed real hardware write is terminal. Readiness or
-                        // target validation failures before the write remain
-                        // ordinary request failures and do not invent a lockout.
-                        EnterCriticalSection(&g_appLock);
-                        ServiceLifecycleEvent lockoutEvent = {};
-                        lockoutEvent.type = SERVICE_LIFECYCLE_EVENT_LOCKOUT;
-                        service_lifecycle_reduce_locked(&lockoutEvent);
-                        LeaveCriticalSection(&g_appLock);
-                        service_disable_automatic_restore(SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED,
-                            explicitUserApply
-                                ? "explicit apply hardware write did not complete"
-                                : "automatic apply hardware write did not complete");
-                    }
-                    response.status = ok ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
-                    // Only a real apply can report a partial verify; every
-                    // preflight refusal above left the response at its zeroed
-                    // default and is resolved to ERROR by the write-out stamp.
-                    response.outcomeSeverity = applySeverity;
-                    StringCchCopyA(response.message, ARRAY_COUNT(response.message), result);
-                    populate_service_snapshot(&response.snapshot);
-                    if (g_serviceHasActiveDesired) response.desired = g_serviceActiveDesired;
-                    if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
-                    debug_log("service response APPLY: ok=%d severity=%s controlValid=%d gpu=%d exclude=%d mem=%d power=%d fanMode=%d fanPct=%d\n",
-                        ok ? 1 : 0,
-                        service_outcome_severity_name(applySeverity),
-                        response.controlState.valid ? 1 : 0,
-                        response.controlState.gpuOffsetMHz,
-                        response.controlState.gpuOffsetExcludeLowCount,
-                        response.controlState.memOffsetMHz,
-                        response.controlState.powerLimitPct,
-                        response.controlState.fanMode,
-                        response.controlState.fanFixedPercent);
-                    unlock_service_runtime();
-                    break;
-                }
-                case SERVICE_CMD_RESET: {
-                    ServiceOperationRequestGuard operation(&request, &response,
-                        "reset");
-                    if (!operation.execute()) {
-                        populate_service_snapshot(&response.snapshot);
-                        if (g_serviceHasActiveDesired) response.desired = g_serviceActiveDesired;
-                        if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
-                        break;
-                    }
-                    char result[512] = {};
-                    if (!service_mutation_preconditions_match(
-                            &request, result, sizeof(result))) {
-                        response.status = SERVICE_STATUS_STALE_STATE;
-                        StringCchCopyA(response.message,
-                            ARRAY_COUNT(response.message), result);
-                        debug_log("service RESET rejected by reconnect precondition: operation=%llu instance=%llu gpuGeneration=%llu topology=%llu reason=%s\n",
-                            (unsigned long long)request.operationId,
-                            (unsigned long long)request.expectedServiceInstanceId,
-                            (unsigned long long)request.expectedGpuGeneration,
-                            (unsigned long long)request.expectedTopologySignature,
-                            result[0] ? result : "unknown");
-                        break;
-                    }
-                    // Reject reset while recovering from a GPU device reconnect:
-                    // service_reset_all() issues NVAPI/NVML writes + refresh
-                    // that would access-violate on the transitional driver and
-                    // kill this pipe server thread (GUI sees ERROR_BROKEN_PIPE).
-                    //
-                    // Allow reset if GPU data is already loaded (g_app.loaded is
-                    // true) — the crash window was restored by recovery as a
-                    // safety measure, but the handles are fresh and valid.
-                    // RC7: block ALL resets during crash recovery (same reason
-                    // as APPLY — writes access-violate on the transitional driver).
-                    lock_service_runtime();
-                    if (service_update_install_reject_mutation(
-                            &response, "RESET")) {
-                        unlock_service_runtime();
-                        break;
-                    }
-                    result[0] = '\0';
-                    if (!service_mutation_preconditions_match(
-                            &request, result, sizeof(result))) {
-                        response.status = SERVICE_STATUS_STALE_STATE;
-                        StringCchCopyA(response.message,
-                            ARRAY_COUNT(response.message), result);
-                        unlock_service_runtime();
-                        break;
-                    }
-                    bool unsafeDriverTransition =
-                        service_explicit_supersede_automatic_work_locked(
-                            callerSessionId, "explicit user Reset");
-                    if (unsafeDriverTransition) {
-                        response.status = SERVICE_STATUS_ERROR;
-                        StringCchCopyA(response.message,
-                            ARRAY_COUNT(response.message),
-                            "GPU driver recovery was superseded, but the driver is still transitional; retry Reset explicitly when it is ready.");
-                        populate_service_snapshot(&response.snapshot);
-                        if (g_serviceHasActiveDesired) {
-                            response.desired = g_serviceActiveDesired;
-                        }
-                        if (g_serviceControlStateValid) {
-                            response.controlState = g_serviceControlState;
-                        }
-                        unlock_service_runtime();
-                        break;
-                    }
-                    bool ok = service_prepare_requested_gpu(&request, result, sizeof(result));
-                    if (ok) {
-                        GpuAdapterInfo resetTarget = g_app.selectedGpu;
-                        if (!resetTarget.valid &&
-                            g_app.selectedGpuIndex < g_app.adapterCount) {
-                            resetTarget =
-                                g_app.adapters[g_app.selectedGpuIndex];
-                        }
-                        service_refresh_selected_gpu_notification_best_effort(
-                            &resetTarget, "explicit reset pre-write target");
-                    }
-                    bool resetWriteAttempted = false;
-                    ServiceSelectedGpuWriteEpoch resetEpoch =
-                        service_selected_gpu_capture_write_epoch();
-                    EnterCriticalSection(&g_appLock);
-                    bool exactResetRecoveryCuePending =
-                        service_lifecycle_selected_gpu_recovery_cue_pending_locked();
-                    LeaveCriticalSection(&g_appLock);
-                    if (ok && !service_selected_gpu_write_epoch_is_current(
-                            resetEpoch)) {
-                        ok = false;
-                        StringCchCopyA(result, ARRAY_COUNT(result),
-                            "Selected GPU changed or was removed immediately before Reset");
-                    } else if (ok && exactResetRecoveryCuePending) {
-                        ok = false;
-                        StringCchCopyA(result, ARRAY_COUNT(result),
-                            "Selected GPU recovery has precedence over Reset; retry explicitly after recovery");
-                    }
-                    if (ok) ok = service_reset_all(result, sizeof(result),
-                        &resetWriteAttempted);
-                    if (ok) {
-                        GpuAdapterInfo resetTarget = g_app.selectedGpu;
-                        if (!resetTarget.valid &&
-                            g_app.selectedGpuIndex < g_app.adapterCount) {
-                            resetTarget = g_app.adapters[g_app.selectedGpuIndex];
-                        }
-                        service_refresh_selected_gpu_notification_best_effort(
-                            &resetTarget, "successful explicit reset target");
-                        service_capture_owner_identity(callerUser, callerSessionId);
-                        EnterCriticalSection(&g_appLock);
-                        g_serviceActiveProfileSource = SERVICE_PROFILE_SOURCE_NONE;
-                        g_serviceActiveProfileSlot = 0;
-                        LeaveCriticalSection(&g_appLock);
-                        // OC reset to defaults — clear the stabilization window stamp.
-                        service_clear_oc_apply_stamp();
-                    } else if (resetWriteAttempted) {
-                        EnterCriticalSection(&g_appLock);
-                        ServiceLifecycleEvent lockoutEvent = {};
-                        lockoutEvent.type = SERVICE_LIFECYCLE_EVENT_LOCKOUT;
-                        service_lifecycle_reduce_locked(&lockoutEvent);
-                        LeaveCriticalSection(&g_appLock);
-                        service_disable_automatic_restore(
-                            SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED,
-                            "explicit Reset hardware write did not complete");
-                    }
-                    response.status = ok ? SERVICE_STATUS_OK : SERVICE_STATUS_ERROR;
-                    StringCchCopyA(response.message, ARRAY_COUNT(response.message), result);
-                    populate_service_snapshot(&response.snapshot);
-                    if (g_serviceHasActiveDesired) response.desired = g_serviceActiveDesired;
-                    if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
-                    debug_log("service response RESET: ok=%d gpu=%d exclude=%d fanMode=%d fanPct=%d\n",
-                        ok ? 1 : 0,
-                        response.controlState.gpuOffsetMHz,
-                        response.controlState.gpuOffsetExcludeLowCount,
-                        response.controlState.fanMode,
-                        response.controlState.fanFixedPercent);
-                    unlock_service_runtime();
-                    break;
-                }
-                case SERVICE_CMD_GET_ACTIVE_DESIRED:
-                    lock_service_runtime();
-                    response.status = SERVICE_STATUS_OK;
-                    if (g_serviceHasActiveDesired) response.desired = g_serviceActiveDesired;
-                    populate_service_snapshot(&response.snapshot);
-                    if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
-                    unlock_service_runtime();
-                    break;
-                case SERVICE_CMD_GET_OPERATION_RESULT: {
-                    ensure_service_operation_tracker_loaded();
-                    response.operationId = request.operationId;
-                    const ServiceOperationRecord* record = service_operation_find(
-                        &g_serviceOperationTracker, request.operationId);
-                    if (!record) {
-                        response.status = SERVICE_STATUS_ERROR;
-                        response.operationState = SERVICE_OPERATION_OUTCOME_UNKNOWN;
-                        StringCchCopyA(response.message,
-                            ARRAY_COUNT(response.message),
-                            "Operation outcome is unknown to this service generation");
-                    } else {
-                        response.status = record->responseStatus;
-                        response.operationState = record->state;
-                        response.outcomeSeverity = record->outcomeSeverity;
-                        StringCchCopyA(response.message,
-                            ARRAY_COUNT(response.message),
-                            record->message[0] ? record->message :
-                            "Operation result available");
-                    }
-                    populate_service_snapshot(&response.snapshot);
-                    if (g_serviceHasActiveDesired) response.desired = g_serviceActiveDesired;
-                    if (g_serviceControlStateValid) response.controlState = g_serviceControlState;
-                    break;
-                }
-                case SERVICE_CMD_WRITE_LOG_SNAPSHOT:
-                case SERVICE_CMD_WRITE_JSON_SNAPSHOT:
-                case SERVICE_CMD_WRITE_PROBE_REPORT:
-                    service_handle_file_write_command(request, response,
-                        callerToken, callerPid);
-                    break;
-                // v19 updater; see main_service_update_commands.cpp.
-                case SERVICE_CMD_GET_UPDATE_STATE:
-                case SERVICE_CMD_CHECK_FOR_UPDATE:
-                case SERVICE_CMD_INSTALL_UPDATE:
-                case SERVICE_CMD_SET_UPDATE_POLICY:
-                    service_handle_update_command(request, response, callerPid,
-                        callerSessionId, callerUser);
-                    break;
-                default:
-                    response.status = SERVICE_STATUS_ERROR;
-                    StringCchCopyA(response.message, ARRAY_COUNT(response.message), "Unsupported service command");
-                    break;
-            }
-            }
-        }
-
-        if (callerToken) {
-            CloseHandle(callerToken);
-            callerToken = nullptr;
-        }
-
-        response.message[ARRAY_COUNT(response.message) - 1] = '\0';
-        // The one place this process writes a response out, and therefore the
-        // one place severity is resolved.  Every branch above -- including the
-        // ones that only set `status` and break -- is covered without having to
-        // remember this field, and a handler that did record a warning cannot
-        // have it survive a status that says the operation failed.
-        response.outcomeSeverity = service_response_resolve_outcome_severity(
-            response.status, response.outcomeSeverity);
-        // Same reason as severity above: one place, every branch.  Not gated on
-        // stateEnvelopeAuthorized -- it carries no hardware or session state.
-        service_update_populate_response(&response.update);
-        // The pipe ACL admits every local user; only callers that passed the
-        // active-session, PID, and integrity gates receive authoritative state.
-        if (stateEnvelopeAuthorized) populate_service_state_response(&response);
-        pipeErr[0] = 0;
-        if (!service_pipe_write_exact(pipe, &response, sizeof(response), SERVICE_PIPE_SERVER_IO_TIMEOUT_MS, "writing service response", pipeErr, sizeof(pipeErr))) {
-            debug_log("service_pipe_server: response write failed: %s\n", pipeErr[0] ? pipeErr : "unknown");
-        }
-        DisconnectNamedPipe(pipe);
-        service_close_owned_pipe(pipe);
-    }
-    return 0;
+BOOL CALLBACK init_transport_locks(PINIT_ONCE, PVOID, PVOID*) {
+    InitializeCriticalSection(&g_serviceDispatchLock);
+    InitializeCriticalSection(&g_serviceAdmissionLock);
+    return TRUE;
 }
 
-static HANDLE g_servicePipeThread = nullptr;
-static HANDLE g_serviceDeviceNotifyHandle = nullptr;
+void ensure_transport_locks() {
+    InitOnceExecuteOnce(&g_dispatchInitOnce, init_transport_locks,
+                        nullptr, nullptr);
+}
 
-// service_handle_session_change is defined in main_service_sessions.cpp
-// (included before this shard).  The SCM SESSIONCHANGE handler routes through it.
+class ScopedDispatchLock {
+public:
+    ScopedDispatchLock() { ensure_transport_locks(); EnterCriticalSection(&g_serviceDispatchLock); }
+    ~ScopedDispatchLock() { LeaveCriticalSection(&g_serviceDispatchLock); }
+};
+
+class ScopedAdmissionLock {
+public:
+    ScopedAdmissionLock() { ensure_transport_locks(); EnterCriticalSection(&g_serviceAdmissionLock); }
+    ~ScopedAdmissionLock() { LeaveCriticalSection(&g_serviceAdmissionLock); }
+};
+
+} // namespace gc_pipe_dispatch
+
+// Per-connection client context. Captured ONCE, immediately after the header
+// probe's mandatory first read, by briefly impersonating the verified client.
+// Everything downstream (session rule, PID match, integrity gate, command
+// policy) consumes this snapshot; authorization semantics are unchanged.
+struct ServiceClientIdentity {
+    char user[256];
+    DWORD sessionId;
+    DWORD pid;
+    bool isAdmin;
+    DWORD integrityRid;
+    ServiceLifecycleIdentity lifecycle;
+    HANDLE token;
+    bool stateEnvelopeAuthorized;
+    ServiceIpcThrottleKey throttleKey;
+
+    void reset() {
+        memset(user, 0, sizeof(user));
+        sessionId = (DWORD)-1;
+        pid = 0;
+        isAdmin = false;
+        integrityRid = 0;
+        memset(&lifecycle, 0, sizeof(lifecycle));
+        token = nullptr;
+        stateEnvelopeAuthorized = false;
+        throttleKey.clear();
+    }
+
+    void buildThrottleKey() {
+        if (!lifecycle.valid || !lifecycle.sid[0]) {
+            throttleKey.clear();
+            return;
+        }
+        throttleKey.fill(lifecycle.sessionId, lifecycle.authenticationId,
+                         lifecycle.sid);
+    }
+};
+
+// Admission controller glue. The policy module is pure; runtime supplies the
+// clock reading and serializes table access.
+static ServiceIpcAdmissionDecision service_admission_decide(
+        const ServiceIpcThrottleKey& key, ServiceIpcRequestClass cls) {
+    ULONGLONG nowMs = GetTickCount64();
+    gc_pipe_dispatch::ScopedAdmissionLock lock;
+    static ServiceIpcAdmissionTable table = []() {
+        ServiceIpcAdmissionTable t;
+        t.reset(GetTickCount64());
+        return t;
+    }();
+    return service_ipc_decide_admission(&table, key, cls, nowMs);
+}
+
+static void service_admission_charge(const ServiceIpcThrottleKey& key,
+                                     ServiceIpcRequestClass cls,
+                                     unsigned int costTokens) {
+    ULONGLONG nowMs = GetTickCount64();
+    gc_pipe_dispatch::ScopedAdmissionLock lock;
+    static ServiceIpcAdmissionTable table = []() {
+        ServiceIpcAdmissionTable t;
+        t.reset(GetTickCount64());
+        return t;
+    }();
+    service_ipc_charge(&table, key, cls, costTokens, nowMs);
+}
+
+static const char* service_ipc_decision_name(ServiceIpcAdmissionDecision d) {
+    switch (d) {
+        case SERVICE_IPC_ADMITTED: return "admitted";
+        case SERVICE_IPC_REJECTED_RATE: return "rate";
+        case SERVICE_IPC_REJECTED_CAPACITY: return "capacity";
+    }
+    return "unknown";
+}
+
+static const char* service_ipc_class_name(ServiceIpcRequestClass c) {
+    switch (c) {
+        case SERVICE_IPC_CLASS_NORMAL: return "normal";
+        case SERVICE_IPC_CLASS_HANDOFF: return "handoff";
+        case SERVICE_IPC_CLASS_LIFECYCLE: return "lifecycle";
+        case SERVICE_IPC_CLASS_BULK_OUTPUT: return "bulk-output";
+        case SERVICE_IPC_CLASS_UNKNOWN: return "unknown";
+    }
+    return "unknown";
+}
+
+// ---------------------------------------------------------------------------
+// Serialized command execution. This is the historical single-pipe-thread
+// dispatch body, extracted verbatim behind a lock. Behavior-preserving: same
+// checks in the same order, same refusal texts, same response stamps.
+// ---------------------------------------------------------------------------
+static void service_execute_checked_request(ServiceRequest* request,
+        ServiceClientIdentity* caller, ServiceResponse* response) {
+    gc_pipe_dispatch::ScopedDispatchLock dispatchLock;
+    bool stateEnvelopeAuthorized = false;
+
+    if (!validate_service_request_for_ipc(request)) {
+        response->status = SERVICE_STATUS_ERROR;
+        StringCchCopyA(response->message, ARRAY_COUNT(response->message),
+            "Service request contains invalid protocol fields");
+        debug_log("service_pipe_server: rejected v%u request command=%u pid=%u: %s\n",
+            request->version, request->command, request->callerPid, service_request_reject_reason(request));
+    } else if (InterlockedExchangeAdd(
+            &g_serviceClientRequestsReady, 0) == 0) {
+        response->status = SERVICE_STATUS_ERROR;
+        StringCchCopyA(response->message, ARRAY_COUNT(response->message),
+            "Background service startup is not complete; retry after SCM reports RUNNING");
+        debug_log("service_pipe_server: request rejected while lifecycle startup gate is closed\n");
+    } else {
+        bool settingsFreeHandoff =
+            request->command == SERVICE_CMD_LOGON_HANDOFF;
+        if (!service_captured_identity_passes_session_rule(
+                &caller->lifecycle, caller->sessionId, !settingsFreeHandoff,
+                request->source, response->message,
+                ARRAY_COUNT(response->message))) {
+            response->status = SERVICE_STATUS_ERROR;
+        } else if (request->callerPid != caller->pid) {
+            response->status = SERVICE_STATUS_ERROR;
+            StringCchCopyA(response->message, ARRAY_COUNT(response->message),
+                "Service request caller PID does not match the connected client");
+            debug_log("service auth reject: suppliedPid=%lu connectedPid=%lu command=%u\n",
+                (unsigned long)request->callerPid,
+                (unsigned long)caller->pid,
+                (unsigned int)request->command);
+        } else if ((request->command == SERVICE_CMD_APPLY ||
+                    request->command == SERVICE_CMD_RESET ||
+                    request->command == SERVICE_CMD_WRITE_LOG_SNAPSHOT ||
+                    request->command == SERVICE_CMD_WRITE_JSON_SNAPSHOT ||
+                    request->command == SERVICE_CMD_WRITE_PROBE_REPORT ||
+                    request->command == SERVICE_CMD_LOGON_HANDOFF ||
+                    request->command == SERVICE_CMD_CHECK_FOR_UPDATE ||
+                    request->command == SERVICE_CMD_INSTALL_UPDATE ||
+                    request->command == SERVICE_CMD_SET_UPDATE_POLICY) &&
+                   caller->integrityRid < SECURITY_MANDATORY_MEDIUM_RID) {
+            response->status = SERVICE_STATUS_ERROR;
+            StringCchCopyA(response->message, ARRAY_COUNT(response->message),
+                "Service control requires a medium-integrity client");
+            debug_log("service auth reject: low-integrity caller pid=%lu session=%lu command=%u integrityRid=%lu\n",
+                (unsigned long)caller->pid,
+                (unsigned long)caller->sessionId,
+                (unsigned int)request->command,
+                (unsigned long)caller->integrityRid);
+        } else {
+            stateEnvelopeAuthorized = true;
+            // A logon handoff is settings-free and resolves an immutable
+            // per-session context in the lifecycle worker.  Do not mutate
+            // process-global user/config paths as part of its authorization.
+            if (request->command != SERVICE_CMD_LOGON_HANDOFF) {
+                char userPathErr[256] = {};
+                if (resolve_service_user_data_paths(caller->sessionId, userPathErr, sizeof(userPathErr))) {
+                    if (!g_app.configPath[0]) {
+                        set_default_config_path();
+                    }
+                    refresh_service_debug_logging_from_config();
+                } else {
+                    debug_log("service_pipe_server: failed to resolve user data paths: %s\n", userPathErr);
+                }
+            }
+            service_set_pending_operation_source(request->source[0] ? request->source : "service request");
+
+#include "main_service_pipe_switch.cpp"
+        }
+    }
+
+    caller->stateEnvelopeAuthorized = stateEnvelopeAuthorized;
+    response->message[ARRAY_COUNT(response->message) - 1] = '\0';
+    // The one place this process resolves response severity, and therefore the
+    // one place every branch above -- including the ones that only set
+    // `status` and break -- is covered without having to remember the field.
+    response->outcomeSeverity = service_response_resolve_outcome_severity(
+        response->status, response->outcomeSeverity);
+    // Same reason as severity above: one place, every branch.  Not gated on
+    // stateEnvelopeAuthorized -- it carries no hardware or session state.
+    service_update_populate_response(&response->update);
+    // The pipe ACL admits every local user; only callers that passed the
+    // active-session, PID, and integrity gates receive authoritative state.
+    if (stateEnvelopeAuthorized) populate_service_state_response(response);
+}
+
+// ---------------------------------------------------------------------------
+// Admitted path: read the remaining fixed-size body, run the serialized
+// dispatch, and hand back the response snapshot. Transport faults here cost
+// the identity far more than a completed request.
+// ---------------------------------------------------------------------------
+static bool service_finish_admitted_connection(HANDLE pipe,
+        ServiceClientIdentity* caller, const ServicePipePrefixRead* prefix,
+        ServiceResponse* response, ServiceIpcRequestClass requestClass) {
+    ServiceRequest request = {};
+    char pipeErr[256] = {};
+
+    // Stage 2: finish the message into the pinned wire structure. A
+    // same-version client sends exactly sizeof(ServiceRequest) bytes, so the
+    // remainder is exactly the body length after the 12-byte probe.
+    bool bodyComplete = prefix->messageComplete;
+    if (!bodyComplete) {
+        if (!service_pipe_read_exact(pipe,
+                reinterpret_cast<unsigned char*>(&request) +
+                    SERVICE_REQUEST_HEADER_BYTES,
+                (DWORD)sizeof(request) - SERVICE_REQUEST_HEADER_BYTES,
+                SERVICE_PIPE_SERVER_IO_TIMEOUT_MS,
+                "reading service request body", pipeErr, sizeof(pipeErr))) {
+            debug_log("service_pipe_server: dropping stalled or truncated request body class=%s: %s\n",
+                service_ipc_class_name(requestClass),
+                pipeErr[0] ? pipeErr : "unknown");
+            service_admission_charge(caller->throttleKey, requestClass,
+                SERVICE_IPC_COST_TRANSPORT_FAULT);
+            DisconnectNamedPipe(pipe);
+            return false;
+        }
+    }
+    memcpy(&request, prefix->bytes, SERVICE_REQUEST_HEADER_BYTES);
+
+    // Full dispatch under the serialization lock; the response write happens
+    // AFTER the lock is released so a slow reader cannot stall the next
+    // hardware command.
+    service_execute_checked_request(&request, caller, response);
+
+    if (!service_pipe_write_exact(pipe, response, sizeof(*response),
+            SERVICE_PIPE_SERVER_IO_TIMEOUT_MS, "writing service response",
+            pipeErr, sizeof(pipeErr))) {
+        debug_log("service_pipe_server: response write failed class=%s: %s\n",
+            service_ipc_class_name(requestClass),
+            pipeErr[0] ? pipeErr : "unknown");
+        service_admission_charge(caller->throttleKey, requestClass,
+            SERVICE_IPC_COST_TRANSPORT_FAULT);
+    } else {
+        service_admission_charge(caller->throttleKey, requestClass,
+            SERVICE_IPC_COST_SUCCESS);
+    }
+    DisconnectNamedPipe(pipe);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// One connection, end to end, on a bounded transport worker. Every failure
+// path disconnects; the LISTENER owns connect/disconnect lifecycle and handle
+// reuse, this function only ever talks to an already-connected pipe.
+// Returns true when a full request/response exchange completed (used for
+// diagnostics only).
+// ---------------------------------------------------------------------------
+static bool service_serve_pipe_connection(HANDLE pipe) {
+    ServiceResponse response = {};
+    response.magic = SERVICE_PROTOCOL_MAGIC;
+    response.version = SERVICE_PROTOCOL_VERSION;
+    response.serviceBuildNumber = (DWORD)APP_BUILD_NUMBER;
+    StringCchCopyA(response.serviceVersion,
+        ARRAY_COUNT(response.serviceVersion), APP_VERSION);
+
+    ServiceClientIdentity caller;
+    caller.reset();
+    char pipeErr[256] = {};
+
+    // Stage 1: the mandatory-first-read boundary. Read exactly the pinned
+    // 12-byte header; impersonation is legal only after this succeeds.
+    ServicePipePrefixRead prefix = {};
+    if (!service_pipe_read_request_header(pipe, &prefix,
+            SERVICE_PIPE_SERVER_HEADER_TIMEOUT_MS, pipeErr,
+            sizeof(pipeErr))) {
+        debug_log("service_pipe_server: dropping stalled client before header: %s\n",
+            pipeErr[0] ? pipeErr : "unknown");
+        DisconnectNamedPipe(pipe);
+        return false;
+    }
+
+    unsigned int magic = 0, version = 0, command = 0;
+    memcpy(&magic, prefix.bytes + offsetof(ServiceRequest, magic), sizeof(magic));
+    memcpy(&version, prefix.bytes + offsetof(ServiceRequest, version), sizeof(version));
+    memcpy(&command, prefix.bytes + offsetof(ServiceRequest, command), sizeof(command));
+
+    // Impersonate briefly and capture the stable logon identity NOW, before
+    // spending body-read time on this client.
+    bool identityKnown = false;
+    {
+        char identityErr[256] = {};
+        identityKnown = service_capture_pipe_client_identity(pipe,
+            caller.user, sizeof(caller.user), &caller.sessionId,
+            &caller.pid, &caller.isAdmin, &caller.lifecycle,
+            &caller.integrityRid, &caller.token, identityErr,
+            sizeof(identityErr));
+        if (identityKnown) {
+            caller.buildThrottleKey();
+        } else {
+            // Rare after a successful read; charge only the small global
+            // anonymous budget so it can never poison a real user's quota.
+            debug_log("service_pipe_server: post-header identity capture failed: %s\n",
+                identityErr[0] ? identityErr : "unknown");
+            service_admission_charge(caller.throttleKey,
+                SERVICE_IPC_CLASS_NORMAL, SERVICE_IPC_COST_SUCCESS);
+        }
+    }
+
+    ServiceIpcRequestClass requestClass =
+        service_ipc_classify_command(command);
+
+    if ((identityKnown && magic != SERVICE_PROTOCOL_MAGIC) ||
+        (identityKnown && magic == SERVICE_PROTOCOL_MAGIC &&
+         version != SERVICE_PROTOCOL_VERSION)) {
+        // Wrong magic/version: the declared body length cannot be trusted.
+        // Drain the remainder in bounded chunks so the mismatch response can
+        // actually be delivered (the old code silently timed out for 2s
+        // against old-version clients), then answer with the existing
+        // payload-free protocol-mismatch form.
+        if (!prefix.messageComplete) {
+            service_pipe_drain_inbound_message(pipe,
+                SERVICE_PIPE_SERVER_DRAIN_TIMEOUT_MS, nullptr, 0);
+        }
+        response.status = SERVICE_STATUS_VERSION_MISMATCH;
+        StringCchCopyA(response.message, ARRAY_COUNT(response.message),
+            "Service protocol mismatch");
+        debug_log("service_pipe_server: protocol mismatch header magic=0x%08x version=%u class=%s\n",
+            magic, version, service_ipc_class_name(requestClass));
+        service_admission_charge(caller.throttleKey, requestClass,
+            SERVICE_IPC_COST_BAD_COMMAND);
+    } else if (!identityKnown ||
+               requestClass == SERVICE_IPC_CLASS_UNKNOWN) {
+        // Unknown commands are dropped before dispatch; unidentifiable
+        // connections are dropped outright. Both are charged.
+        if (!prefix.messageComplete) {
+            service_pipe_drain_inbound_message(pipe,
+                SERVICE_PIPE_SERVER_DRAIN_TIMEOUT_MS, nullptr, 0);
+        }
+        response.status = SERVICE_STATUS_ERROR;
+        StringCchCopyA(response.message, ARRAY_COUNT(response.message),
+            "Unsupported service command");
+        debug_log("service_pipe_server: dropping pre-dispatch connection identityKnown=%d command=%u\n",
+            identityKnown ? 1 : 0, command);
+        service_admission_charge(caller.throttleKey,
+            requestClass == SERVICE_IPC_CLASS_UNKNOWN
+                ? SERVICE_IPC_CLASS_UNKNOWN
+                : SERVICE_IPC_CLASS_NORMAL,
+            requestClass == SERVICE_IPC_CLASS_UNKNOWN
+                ? SERVICE_IPC_COST_BAD_COMMAND
+                : SERVICE_IPC_COST_TRANSPORT_FAULT);
+    } else {
+        ServiceIpcAdmissionDecision decision =
+            service_admission_decide(caller.throttleKey, requestClass);
+        if (decision != SERVICE_IPC_ADMITTED) {
+            // Refuse with the generic payload-free error form. No charge:
+            // the bucket state that produced the refusal is the punishment.
+            if (!prefix.messageComplete) {
+                service_pipe_drain_inbound_message(pipe,
+                    SERVICE_PIPE_SERVER_DRAIN_TIMEOUT_MS, nullptr, 0);
+            }
+            response.status = SERVICE_STATUS_ERROR;
+            StringCchCopyA(response.message, ARRAY_COUNT(response.message),
+                "Service is busy handling other requests; retry shortly");
+            char userToken[32] = {};
+            gc_log_identifier_token(caller.user, userToken,
+                                    sizeof(userToken));
+            debug_log("service_pipe_server: admission refused decision=%s class=%s pid=%lu session=%lu user=%s\n",
+                service_ipc_decision_name(decision),
+                service_ipc_class_name(requestClass),
+                (unsigned long)caller.pid,
+                (unsigned long)caller.sessionId,
+                userToken);
+        } else {
+            return service_finish_admitted_connection(pipe, &caller,
+                &prefix, &response, requestClass);
+        }
+    }
+
+    response.message[ARRAY_COUNT(response.message) - 1] = '\0';
+    response.outcomeSeverity = service_response_resolve_outcome_severity(
+        response.status, response.outcomeSeverity);
+    if (!service_pipe_write_exact(pipe, &response, sizeof(response),
+            SERVICE_PIPE_SERVER_IO_TIMEOUT_MS, "writing service response",
+            pipeErr, sizeof(pipeErr))) {
+        debug_log("service_pipe_server: refusal write failed: %s\n",
+            pipeErr[0] ? pipeErr : "unknown");
+        service_admission_charge(caller.throttleKey, requestClass,
+            SERVICE_IPC_COST_TRANSPORT_FAULT);
+    } else {
+        service_admission_charge(caller.throttleKey, requestClass,
+            SERVICE_IPC_COST_SUCCESS);
+    }
+    DisconnectNamedPipe(pipe);
+    return true;
+}
+

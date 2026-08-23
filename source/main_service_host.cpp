@@ -76,7 +76,6 @@ static DWORD WINAPI service_control_handler_ex(DWORD dwControl, DWORD dwEventTyp
     g_serviceStatus.dwCurrentState = SERVICE_STOP_PENDING;
     SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
     if (g_serviceStopEvent) SetEvent(g_serviceStopEvent);
-    if (g_servicePipeWakeEvent) SetEvent(g_servicePipeWakeEvent);
     return NO_ERROR;
 }
 
@@ -188,13 +187,11 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
         return;
     }
     g_serviceStopEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
-    g_servicePipeWakeEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
-    // Auto-reset: each SetEvent forces exactly one pipe-instance recycle so the
-    // ACL is rebuilt for the new active user (see service_handle_session_change).
-    g_servicePipeRecycleEvent = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+    // The retired pre-read experiment's wake/recycle events are gone: the
+    // broad transition-safe ACL is never rebuilt, and the stop event alone
+    // wakes every pipe worker's connect wait.
     g_servicePipeReadyEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
-    if (!g_serviceStopEvent || !g_servicePipeWakeEvent ||
-        !g_servicePipeRecycleEvent || !g_servicePipeReadyEvent) {
+    if (!g_serviceStopEvent || !g_servicePipeReadyEvent) {
         debug_log("service_main: FATAL failed to create required service events (error=%lu)\n",
             GetLastError());
         g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
@@ -219,19 +216,15 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
     }
 
     DWORD threadId = 0;
-    g_servicePipeThread = CreateThread(nullptr, 1024 * 1024, service_pipe_server_thread_proc, nullptr, STACK_SIZE_PARAM_IS_A_RESERVATION, &threadId);
-    if (!g_servicePipeThread) {
-        debug_log("service_main: FATAL failed to create pipe server thread (error %lu)\n", GetLastError());
+    (void)threadId;
+    if (!service_pipe_listener_start()) {
+        debug_log("service_main: FATAL failed to create pipe listener pool\n");
         if (g_serviceStopEvent) SetEvent(g_serviceStopEvent);
         service_shutdown_logon_apply_coordinator();
         stop_service_fan_runtime_thread();
-        if (g_servicePipeWakeEvent) {
-            CloseHandle(g_servicePipeWakeEvent);
-            g_servicePipeWakeEvent = nullptr;
-        }
-        if (g_servicePipeRecycleEvent) {
-            CloseHandle(g_servicePipeRecycleEvent);
-            g_servicePipeRecycleEvent = nullptr;
+        if (g_servicePipeReadyEvent) {
+            CloseHandle(g_servicePipeReadyEvent);
+            g_servicePipeReadyEvent = nullptr;
         }
         if (g_serviceFanStopEvent) {
             CloseHandle(g_serviceFanStopEvent);
@@ -250,19 +243,16 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
         return;
     }
 
-    HANDLE pipeReadyOrExited[2] = { g_servicePipeReadyEvent, g_servicePipeThread };
-    DWORD pipeReadyWait = WaitForMultipleObjects(2, pipeReadyOrExited, FALSE, INFINITE);
+    HANDLE pipeReadyOrPrimary[2] = { g_servicePipeReadyEvent,
+        gc_pipe_listener_primary_thread() };
+    DWORD pipeReadyWait = WaitForMultipleObjects(2, pipeReadyOrPrimary, FALSE, INFINITE);
     LONG pipeStartupError = InterlockedExchangeAdd(&g_servicePipeStartupError, 0);
     if (pipeReadyWait != WAIT_OBJECT_0 || pipeStartupError != ERROR_SUCCESS) {
         debug_log("service_main: FATAL pipe listener failed before readiness (wait=%lu error=%ld)\n",
             pipeReadyWait, (long)pipeStartupError);
         if (g_serviceStopEvent) SetEvent(g_serviceStopEvent);
         service_shutdown_logon_apply_coordinator();
-        if (g_servicePipeThread) {
-            WaitForSingleObject(g_servicePipeThread, INFINITE);
-            CloseHandle(g_servicePipeThread);
-            g_servicePipeThread = nullptr;
-        }
+        service_pipe_listener_stop_and_join();
         g_serviceStatus.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
         g_serviceStatus.dwServiceSpecificExitCode =
             pipeStartupError == ERROR_SUCCESS ? ERROR_PIPE_NOT_CONNECTED : (DWORD)pipeStartupError;
@@ -299,12 +289,7 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
                 notifyError);
             if (g_serviceStopEvent) SetEvent(g_serviceStopEvent);
             service_shutdown_logon_apply_coordinator();
-            if (g_servicePipeWakeEvent) SetEvent(g_servicePipeWakeEvent);
-            if (g_servicePipeThread) {
-                WaitForSingleObject(g_servicePipeThread, INFINITE);
-                CloseHandle(g_servicePipeThread);
-                g_servicePipeThread = nullptr;
-            }
+            service_pipe_listener_stop_and_join();
             g_serviceStatus.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
             g_serviceStatus.dwServiceSpecificExitCode = notifyError;
             g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
@@ -408,27 +393,10 @@ service_watchdog_loop:
                 ensure_service_fan_runtime_thread();
             }
 
-            // Check pipe server thread health
-            if (g_servicePipeThread && WaitForSingleObject(g_servicePipeThread, 0) == WAIT_OBJECT_0) {
-                debug_log("service_main: pipe server thread died, recreating\n");
-                // Reclaim the orphaned pipe handle atomically: take the slot to
-                // INVALID and close only if we won the real handle, so we never
-                // double-close one the dead thread already released (which would
-                // hard-crash the process under Strict Handle Checks).
-                HANDLE orphanPipe = (HANDLE)InterlockedExchangePointer(
-                    (PVOID volatile*)&g_servicePipeHandle, INVALID_HANDLE_VALUE);
-                if (orphanPipe != INVALID_HANDLE_VALUE) {
-                    CloseHandle(orphanPipe);
-                }
-                CloseHandle(g_servicePipeThread);
-                g_servicePipeThread = nullptr;
-                DWORD pipeThreadId = 0;
-                g_servicePipeThread = CreateThread(nullptr, 1024 * 1024,
-                    service_pipe_server_thread_proc, nullptr,
-                    STACK_SIZE_PARAM_IS_A_RESERVATION, &pipeThreadId);
-                debug_log("service_main: pipe server thread recreated=%d\n",
-                    g_servicePipeThread ? 1 : 0);
-            }
+            // Check pipe worker health. A VEH-killed worker (stuck in NVML on
+            // a transitional driver) has its instance handle reclaimed via the
+            // same CAS-slot contract as before, and the slot is respawned.
+            service_pipe_listener_reap_and_respawn();
         }
     }
 
@@ -524,21 +492,7 @@ service_watchdog_loop:
     bool hadOwnedIntentForShutdown = g_serviceHasActiveDesired;
     unlock_service_runtime();
     stop_service_fan_runtime_thread();
-    if (g_servicePipeThread) {
-        if (g_servicePipeWakeEvent) SetEvent(g_servicePipeWakeEvent);
-        if (g_servicePipeRecycleEvent) SetEvent(g_servicePipeRecycleEvent);
-        WaitForSingleObject(g_servicePipeThread, INFINITE);
-        CloseHandle(g_servicePipeThread);
-        g_servicePipeThread = nullptr;
-    }
-    if (g_servicePipeWakeEvent) {
-        CloseHandle(g_servicePipeWakeEvent);
-        g_servicePipeWakeEvent = nullptr;
-    }
-    if (g_servicePipeRecycleEvent) {
-        CloseHandle(g_servicePipeRecycleEvent);
-        g_servicePipeRecycleEvent = nullptr;
-    }
+    service_pipe_listener_stop_and_join();
     if (g_servicePipeReadyEvent) {
         CloseHandle(g_servicePipeReadyEvent);
         g_servicePipeReadyEvent = nullptr;

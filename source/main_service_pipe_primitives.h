@@ -116,25 +116,11 @@ static bool create_restricted_pipe_security_descriptor(PSECURITY_DESCRIPTOR* out
     return true;
 }
 
-// Close a pipe handle owned by the pipe server thread, atomically clearing the
-// shared g_servicePipeHandle slot first so the main-loop watchdog cannot also
-// close it.  A double-close raises STATUS_INVALID_HANDLE (c0000008) under the
-// Strict Handle Check mitigation, which is NOT an access violation so the VEH
-// does not catch it — it reaches the unhandled filter and terminates the whole
-// service process (GUI then sees ERROR_BROKEN_PIPE / error 109).  Exactly one
-// of the pipe thread (here) or the watchdog wins the slot via the atomic CAS
-// and performs the single close.  The pipe thread can only be VEH-terminated
-// while executing NVML/NVAPI inside a command handler — never inside this
-// function — so there is no leak window between the CAS and CloseHandle.
-static void service_close_owned_pipe(HANDLE pipe) {
-    if (pipe == nullptr || pipe == INVALID_HANDLE_VALUE) return;
-    HANDLE prev = (HANDLE)InterlockedCompareExchangePointer(
-        (PVOID volatile*)&g_servicePipeHandle, INVALID_HANDLE_VALUE, pipe);
-    if (prev == pipe) {
-        CloseHandle(pipe);
-    }
-    // else: the watchdog already reclaimed (and will close) this handle.
-}
+// The historical single-handle CAS-close helper (service_close_owned_pipe)
+// was replaced by the fixed per-worker slot scheme in
+// main_service_pipe_listener.cpp: every worker atomically publishes its current
+// instance handle, unpublishes before closing, and the watchdog reclaims the
+// slot of a VEH-killed worker. Exactly one side ever wins the close.
 
 static HANDLE g_servicePipeReadyEvent = nullptr;
 static volatile LONG g_servicePipeStartupError = ERROR_IO_PENDING;

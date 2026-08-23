@@ -653,82 +653,64 @@ static bool get_pipe_client_identity(HANDLE pipe, char* userOut,
     return true;
 }
 
-static bool service_caller_is_authorized(HANDLE pipe, const char* source,
-    bool requireActiveSession, char* err, size_t errSize, char* callerUserOut,
-    size_t callerUserOutSize, DWORD* callerSessionIdOut, DWORD* callerPidOut,
-    bool* callerIsAdminOut, ServiceLifecycleIdentity* lifecycleIdentityOut,
-    DWORD* integrityRidOut, HANDLE* duplicatedTokenOut) {
-    if (callerIsAdminOut) *callerIsAdminOut = false;
-    if (lifecycleIdentityOut) {
-        memset(lifecycleIdentityOut, 0, sizeof(*lifecycleIdentityOut));
-    }
-    if (integrityRidOut) *integrityRidOut = 0;
-    if (duplicatedTokenOut) *duplicatedTokenOut = nullptr;
-    DWORD callerSessionId = (DWORD)-1;
-    DWORD callerPid = 0;
-    bool callerIsAdmin = false;
-    DWORD integrityRid = 0;
-    HANDLE duplicatedToken = nullptr;
-    char callerUser[256] = {};
-    ServiceLifecycleIdentity lifecycleIdentity = {};
-    if (!get_pipe_client_identity(pipe, callerUser, sizeof(callerUser),
-            &callerSessionId, &callerPid, &callerIsAdmin,
-            &lifecycleIdentity, &integrityRid, &duplicatedToken,
-            err, errSize)) {
-        return false;
-    }
+// Capture the connected client's identity by impersonating it briefly and
+// duplicating its token. Legal ONLY after at least one completed read on the
+// pipe -- pre-read impersonation fails with ERROR_CANNOT_IMPERSONATE (1368),
+// which is exactly what the 2026-08-22 live regression demonstrated. The
+// transport's header probe provides that mandatory first read. No
+// authorization decision happens here: callers run the session rule below and
+// all command policy after the full request has been read and validated.
+static bool service_capture_pipe_client_identity(HANDLE pipe,
+    char* callerUserOut, size_t callerUserOutSize, DWORD* callerSessionIdOut,
+    DWORD* callerPidOut, bool* callerIsAdminOut,
+    ServiceLifecycleIdentity* lifecycleIdentityOut, DWORD* integrityRidOut,
+    HANDLE* duplicatedTokenOut, char* err, size_t errSize) {
+    return get_pipe_client_identity(pipe, callerUserOut, callerUserOutSize,
+        callerSessionIdOut, callerPidOut, callerIsAdminOut,
+        lifecycleIdentityOut, integrityRidOut, duplicatedTokenOut, err,
+        errSize);
+}
 
-    if (requireActiveSession) {
-        DWORD activeSessionId = (DWORD)-1;
-        if (!get_active_interactive_session_id(&activeSessionId)) {
-            set_message(err, errSize,
-                "Failed determining the active interactive session");
-            CloseHandle(duplicatedToken);
-            return false;
-        }
-        if (callerSessionId != activeSessionId) {
-            set_message(err, errSize,
-                "Service control is restricted to the active interactive session");
-            char userToken[32] = {};
-            gc_log_identifier_token(callerUser, userToken, sizeof(userToken));
-            debug_log("service auth reject: source=%s pid=%lu session=%lu activeSession=%lu user=%s\n",
-                source ? source : "<none>",
-                callerPid,
-                callerSessionId,
-                activeSessionId,
-                userToken);
-            CloseHandle(duplicatedToken);
-            return false;
-        }
-    } else {
-        // The settings-free scheduled-task handoff may race the session's
-        // transition to ACTIVE. The lifecycle worker retains this exact token
-        // identity and rechecks active-session ownership immediately before any
-        // write, so rejecting it here would recreate the startup timing bug.
+// Active-session rule for a captured identity. The scheduled settings-free
+// handoff may arrive before its session is WTS-active; the lifecycle worker
+// retains this exact token identity and rechecks active-session ownership
+// immediately before any write, so that path intentionally skips this rule
+// (requireActiveSession == false). Rejecting it here would recreate the
+// startup timing bug.
+static bool service_captured_identity_passes_session_rule(
+    const ServiceLifecycleIdentity* lifecycleIdentity, DWORD callerSessionId,
+    bool requireActiveSession, const char* source, char* err, size_t errSize) {
+    if (!requireActiveSession) {
         char lifecycleUserToken[32] = {};
         char lifecycleAuthToken[32] = {};
-        gc_log_identifier_token(callerUser, lifecycleUserToken,
+        gc_log_identifier_token(lifecycleIdentity->sid, lifecycleUserToken,
                                 sizeof(lifecycleUserToken));
-        gc_log_u64_token(lifecycleIdentity.authenticationId,
+        gc_log_u64_token(lifecycleIdentity->authenticationId,
                          lifecycleAuthToken, sizeof(lifecycleAuthToken));
-        debug_log("service auth: accepted settings-free lifecycle handoff before active-session gating pid=%lu session=%lu user=%s auth=%llu\n",
-            (unsigned long)callerPid, (unsigned long)callerSessionId,
+        debug_log("service auth: accepted settings-free lifecycle handoff before active-session gating session=%lu user=%s auth=%llu\n",
+            (unsigned long)callerSessionId,
             lifecycleUserToken,
             lifecycleAuthToken);
+        return true;
     }
-
-    if (callerUserOut && callerUserOutSize > 0) {
-        StringCchCopyA(callerUserOut, callerUserOutSize, callerUser);
+    DWORD activeSessionId = (DWORD)-1;
+    if (!get_active_interactive_session_id(&activeSessionId)) {
+        set_message(err, errSize,
+            "Failed determining the active interactive session");
+        return false;
     }
-    if (callerSessionIdOut) *callerSessionIdOut = callerSessionId;
-    if (callerPidOut) *callerPidOut = callerPid;
-    if (callerIsAdminOut) *callerIsAdminOut = callerIsAdmin;
-    if (lifecycleIdentityOut) *lifecycleIdentityOut = lifecycleIdentity;
-    if (integrityRidOut) *integrityRidOut = integrityRid;
-    if (duplicatedTokenOut) {
-        *duplicatedTokenOut = duplicatedToken;
-    } else {
-        CloseHandle(duplicatedToken);
+    if (callerSessionId != activeSessionId) {
+        set_message(err, errSize,
+            "Service control is restricted to the active interactive session");
+        char userToken[32] = {};
+        gc_log_identifier_token(lifecycleIdentity->sid, userToken,
+                                sizeof(userToken));
+        debug_log("service auth reject: source=%s session=%lu activeSession=%lu user=%s\n",
+            source ? source : "<none>",
+            (unsigned long)callerSessionId,
+            (unsigned long)activeSessionId,
+            userToken);
+        return false;
     }
     return true;
 }

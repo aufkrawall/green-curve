@@ -24,4 +24,5 @@
 #include "main_service_update_worker_thread.cpp"
 #include "main_service_update_commands.cpp"
 #include "main_service_pipe.cpp"
+#include "main_service_pipe_listener.cpp"
 #include "main_service_host.cpp"

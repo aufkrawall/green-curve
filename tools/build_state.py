@@ -17,7 +17,9 @@ import sys
 # 8994 before the harness moved to tests/regression_main.cpp; lower this as the
 # remaining source guards move into a build_checks/ package.
 # 5648 before the deterministic icon renderer moved to tools/icon_render.py.
-BUILD_SCRIPT_SIZE_RATCHET = 5304
+# 5304 before the transition-safe IPC throttling gates replaced the retired
+# recycle-event/single-thread gates and pinned the worker-slot close contract.
+BUILD_SCRIPT_SIZE_RATCHET = 5309
 
 SOURCE_SIZE_RATCHET = {
     "config_profiles.cpp": 883,

@@ -766,10 +766,11 @@ def check_service_profile_identity_survives_a_delta_apply(ctx, require_text,
 
     # The success path must go through the recorder; writing the pre-write
     # verdict straight into the published identity is exactly the defect.
-    require_text(pipe_cpp, "service_record_apply_profile_identity(&request,",
+    switch_cpp = _p(ctx, "main_service_pipe_switch.cpp")
+    require_text(switch_cpp, "service_record_apply_profile_identity(request,",
                  "a successful APPLY records its identity through the "
                  "two-stage recorder")
-    forbid_text(pipe_cpp, "g_serviceActiveProfileSource = profileSource;",
+    forbid_text(switch_cpp, "g_serviceActiveProfileSource = profileSource;",
                 "the pipe handler no longer publishes the pre-write verdict "
                 "directly")
 
@@ -777,7 +778,7 @@ def check_service_profile_identity_survives_a_delta_apply(ctx, require_text,
     # complete declaration would return every domain it omits to defaults --
     # which is how an Apply that never mentioned the fan would reset a running
     # fan curve.
-    require_text(pipe_cpp, "service_profile_identity_replaces_active_intent(",
+    require_text(switch_cpp, "service_profile_identity_replaces_active_intent(",
                  "intent replacement follows the pure policy, not the "
                  "recorded source")
 
@@ -920,9 +921,9 @@ def check_manual_mutation_result_presentation(ctx, require_text, forbid_text):
     # One stamp per producer, at the single point each writes a response out.
     # Per-handler assignment is what would eventually ship a branch that forgot.
     ctx.require_order_in_operation(
-        pipe_cpp, "static DWORD WINAPI service_pipe_server_thread_proc(",
-        "response.outcomeSeverity = service_response_resolve_outcome_severity(",
-        "service_pipe_write_exact(pipe, &response, sizeof(response)",
+        pipe_cpp, "static bool service_finish_admitted_connection(",
+        "service_execute_checked_request(&request, caller, response);",
+        'service_pipe_write_exact(pipe, response, sizeof(*response)',
         "the Windows service resolves severity before it writes the response")
     ctx.require_text_in_operation(
         daemon_cpp, "static void handle_request(",

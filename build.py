@@ -1797,6 +1797,8 @@ def run_regression_tests(extra_flags=None):
                 if result.returncode != 0:
                     print(f"Linux {label} test cross-compilation FAILED")
                     sys.exit(result.returncode)
+        # Native named-pipe incident regression; details live in security_gates.
+        security_gates.run_windows_pipe_fixture(_gate_ctx(), tmp, extra_flags)
         run_source_regression_checks()
         print("Regression tests passed")
     finally:
@@ -2051,6 +2053,8 @@ def run_source_regression_checks():
     service_server_aggregate_cpp = os.path.join(SOURCE_DIR, "main_service_server.cpp")
     service_request_policy_cpp = os.path.join(SOURCE_DIR, "main_service_request_policy.cpp")
     service_pipe_cpp = os.path.join(SOURCE_DIR, "main_service_pipe.cpp")
+    service_pipe_switch_cpp = os.path.join(SOURCE_DIR, "main_service_pipe_switch.cpp")
+    service_pipe_listener_cpp = os.path.join(SOURCE_DIR, "main_service_pipe_listener.cpp")
     service_host_cpp = os.path.join(SOURCE_DIR, "main_service_host.cpp")
     config_utils_cpp = os.path.join(SOURCE_DIR, "config_utils.cpp")
     fan_curve_cpp = os.path.join(SOURCE_DIR, "fan_curve.cpp")
@@ -2124,7 +2128,12 @@ def run_source_regression_checks():
         for _cpp in (service_request_policy_cpp,
                      os.path.join(SOURCE_DIR, "main_service_pipe_primitives.h"),
                      os.path.join(SOURCE_DIR, "main_service_pipe_file_commands.cpp"),
-                     service_pipe_cpp, service_host_cpp):
+                     service_pipe_cpp,
+                     os.path.join(SOURCE_DIR, "service_ipc_throttle_policy.h"),
+                     os.path.join(SOURCE_DIR, "service_pipe_prefix_read.h"),
+                     service_pipe_switch_cpp,
+                     service_pipe_listener_cpp,
+                     service_host_cpp):
             with open(_cpp, "r", encoding="utf-8", errors="ignore") as _source:
                 _sf.write(_source.read())
                 _sf.write("\n")
@@ -2212,7 +2221,7 @@ def run_source_regression_checks():
     require_text(service_server_cpp, "CancelIoEx(pipe, &ov)", "stalled pipe operations are cancellable")
     require_text(service_server_cpp, "response.serviceBuildNumber", "service responses include build number")
     require_text(service_server_cpp, "restricted ACL creation returned no descriptor", "service pipe creation fails closed without ACL")
-    require_text(service_server_cpp, "FATAL failed to create pipe server thread", "service fails closed when pipe server thread cannot start")
+    require_text(service_server_cpp, "FATAL failed to create pipe listener pool", "service fails closed when the pipe listener pool cannot start")
     require_text(main_service_install_cpp, "stop_service_for_binary_update", "service repair stops old service before replacing binary")
     require_text(main_service_install_cpp, "SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_STOP | SERVICE_QUERY_STATUS", "service repair can stop installed service")
     require_text(service_ipc_cpp, "service_client_ping: identity mismatch", "GUI rejects mismatched service version identity")
@@ -2306,10 +2315,10 @@ def run_source_regression_checks():
         "controlled startup validation precedes lifecycle worker startup")
     require_order_in_operation(service_host_cpp, service_main_anchor,
         "service_start_lifecycle_worker(",
-        "WaitForMultipleObjects(2, pipeReadyOrExited",
+        "WaitForMultipleObjects(2, pipeReadyOrPrimary",
         "lifecycle worker is ready before pipe readiness is accepted")
     require_order_in_operation(service_host_cpp, service_main_anchor,
-        "WaitForMultipleObjects(2, pipeReadyOrExited",
+        "WaitForMultipleObjects(2, pipeReadyOrPrimary",
         "RegisterDeviceNotificationW(",
         "pipe listener is ready before device notifications and RUNNING")
     require_order_in_operation(service_host_cpp, service_main_anchor,
@@ -2329,9 +2338,9 @@ def run_source_regression_checks():
         "g_serviceStatus.dwCurrentState = SERVICE_RUNNING;",
         "client startup gate is opened only at the final RUNNING transition")
     require_order_in_operation(service_pipe_cpp,
-        "static DWORD WINAPI service_pipe_server_thread_proc(void*)",
+        "static void service_execute_checked_request(ServiceRequest* request,",
         "&g_serviceClientRequestsReady",
-        "switch (request.command)",
+        '#include "main_service_pipe_switch.cpp"',
         "pipe rejects all commands while lifecycle startup remains gated")
 
     for forbidden, label in (
@@ -2360,11 +2369,11 @@ def run_source_regression_checks():
         '"service apply pre-write target"',
         "&hardwareRequest,",
         "service apply binds the exact selected GPU before its sole write")
-    require_order_in_operation(service_pipe_cpp, "case SERVICE_CMD_APPLY:",
+    require_order_in_operation(service_pipe_switch_cpp, "case SERVICE_CMD_APPLY:",
         "lock_service_runtime();",
         "service_explicit_supersede_automatic_work_locked(",
         "explicit Apply serializes lifecycle/helper supersession under the runtime lock")
-    require_order_in_operation(service_pipe_cpp, "case SERVICE_CMD_APPLY:",
+    require_order_in_operation(service_pipe_switch_cpp, "case SERVICE_CMD_APPLY:",
         "service_auto_restore_is_locked_out(&currentLockout)",
         "&hardwareRequest,",
         "automatic client Apply rechecks sticky lockout immediately before its write")
@@ -2376,10 +2385,10 @@ def run_source_regression_checks():
         "static bool service_launch_controlled_restart_helper",
         "GetExitCodeProcess(process.hProcess, &helperExitCode)",
         "controlled restart parent preserves the helper exit stage in diagnostics")
-    require_text_in_operation(service_pipe_cpp, "case SERVICE_CMD_APPLY:",
+    require_text_in_operation(service_pipe_switch_cpp, "case SERVICE_CMD_APPLY:",
         "if (explicitUserApply && proofRecorded)",
         "only explicit successful Apply enters the durable lockout/history acknowledgement branch")
-    require_order_in_operation(service_pipe_cpp, "case SERVICE_CMD_APPLY:",
+    require_order_in_operation(service_pipe_switch_cpp, "case SERVICE_CMD_APPLY:",
         "if (explicitUserApply && proofRecorded)",
         "service_clear_auto_restore_lockout();",
         "explicit successful Apply gates sticky-lockout clearing")
@@ -2788,7 +2797,10 @@ def run_source_regression_checks():
     forbid_text(main_service_persist_cpp, "service_mark_boot_reconcile_done", "obsolete boot-reconcile authorization API must stay removed")
     forbid_text(main_service_persist_cpp, "service_mark_first_service_start_this_boot", "obsolete first-start authorization API must stay removed")
     require_text(service_server_cpp, "service_lifecycle_post_session_event", "SESSIONCHANGE handler routes through the lifecycle worker")
-    require_text(service_server_cpp, "g_servicePipeRecycleEvent", "pipe ACL is recycled on active-user change")
+    # Retired per-session ACL recycling (removed 2026-08-22); pin the broad ACL.
+    require_text(service_server_cpp, "(A;;GRGW;;;AU)", "broad transition-safe pipe ACL is preserved")
+    require_text_count(service_server_cpp, "FILE_FLAG_FIRST_PIPE_INSTANCE", 1,
+                       "only one listener creation claims first-pipe-instance")
     # Per-user logon task is registered for the REQUESTING user, not the
     # approving admin, when the elevated helper runs on their behalf.
     require_text(service_ipc_cpp, "--for-user", "elevated startup-task helper forwards the requesting user")
@@ -3776,10 +3788,10 @@ def run_source_regression_checks():
                  "an arrival cue advances generation when removal was missed")
     require_text(service_state_envelope_cpp, "selectedIdentityMatches",
                  "mutation preconditions include the exact selected GPU")
-    require_text(service_pipe_cpp, "SERVICE_STATUS_STALE_STATE",
+    require_text(service_pipe_switch_cpp, "SERVICE_STATUS_STALE_STATE",
                  "stale mutations are rejected rather than crossing reconnect")
     require_text(service_pipe_cpp,
-                 "if (stateEnvelopeAuthorized) populate_service_state_response(&response);",
+                 "if (stateEnvelopeAuthorized) populate_service_state_response(response);",
                  "only fully authorized Windows service callers receive the final state envelope")
     require_text(gui_service_model_h, "minimumGpuGeneration",
                   "GUI PnP invalidation fences same-generation late responses")
@@ -3906,7 +3918,7 @@ def run_source_regression_checks():
                  "if (r->status != SERVICE_STATUS_OK && service_response_payload_is_absent(r))",
                  "a refusal that publishes no state reaches the client that caused it")
     require_text(os.path.join(SOURCE_DIR, "main_service_pipe.cpp"),
-                 "service_request_reject_reason(&request)",
+                 "service_request_reject_reason(request)",
                  "a refused request names the rule it broke in the service log")
     for runtime_gui_path in (
             ui_main_window_cpp,
@@ -4025,9 +4037,9 @@ def run_source_regression_checks():
     require_text(main_service_runtime_identity_cpp,
                  "class ScopedPipeClientImpersonation",
                  "pipe-client impersonation is reverted through RAII")
-    require_text(service_server_cpp, "request.callerPid != callerPid",
+    require_text(service_server_cpp, "request->callerPid != caller->pid",
                  "payload caller PID must match the pipe-reported PID")
-    require_text(service_server_cpp, "callerIntegrityRid < SECURITY_MANDATORY_MEDIUM_RID",
+    require_text(service_server_cpp, "caller->integrityRid < SECURITY_MANDATORY_MEDIUM_RID",
                  "control and file-output requests reject low-integrity clients")
     require_text(service_server_cpp, "ScopedServiceClientImpersonation impersonation(callerToken)",
                  "privileged file output is written under caller impersonation")
@@ -4923,14 +4935,19 @@ def run_source_regression_checks():
         "RESET supersedes pending recovery but rejects hardware access while the driver is transitional")
 
     # FP-05-003: race-free pipe handle ownership so a double-close during the
-    # pipe-thread kill/recreate storm can't hard-crash the process via
-    # STATUS_INVALID_HANDLE under Strict Handle Checks.
+    # worker kill/recreate storm can't hard-crash the process via
+    # STATUS_INVALID_HANDLE under Strict Handle Checks. The fixed per-worker
+    # slot scheme publishes/unpublishes each instance handle atomically; only
+    # the slot owner (worker or reaper) ever closes it.
     require_text(service_server_cpp,
-        "static void service_close_owned_pipe(HANDLE pipe)",
-        "pipe server uses race-free single-owner close helper")
+        "void publish_worker_pipe(int index, HANDLE pipe)",
+        "pipe workers atomically publish their instance handle into a fixed slot")
     require_text(service_server_cpp,
-        "InterlockedCompareExchangePointer",
-        "pipe close helper atomically claims handle ownership before closing")
+        "void retire_worker_pipe(int index)",
+        "pipe handle retirement unpublishes the slot before closing")
+    require_text(service_server_cpp,
+        "InterlockedCompareExchange",
+        "first-pipe-instance claim is atomic so a foreign listener fails startup")
 
     # F-03-005: service_lifecycle_identity_equal_session_and_user is used in the
     # sessions layer to handle auth LUID drift between identity sources.

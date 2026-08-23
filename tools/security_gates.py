@@ -183,6 +183,47 @@ def posix_test_compiler(ctx, extra_flags):
     return [clang]
 
 
+def run_windows_pipe_fixture(ctx, tmp_dir, extra_flags):
+    """Build and run the native Windows named-pipe fixture on win32 hosts.
+
+    The 2026-08-22 incident (impersonation moved before the first pipe read,
+    error 1368, plus an active-session SDDL that broke scheduled logon
+    handoffs) is exactly the class of regression a pure test cannot see: it
+    lives in Win32 message-mode read semantics. tests/
+    windows_pipe_regression.cpp drives real named pipes in-process and proves
+    the 12-byte header probe is a valid first read, impersonation succeeds
+    after it, and one stalled client cannot block another.
+    """
+    if sys.platform != "win32":
+        return
+    fixture_source = os.path.join(ctx.SCRIPT_DIR, "tests",
+                                  "windows_pipe_regression.cpp")
+    fixture_exe = os.path.join(tmp_dir, "windows_pipe_regression")
+    cmd = [
+        ctx.LLVM_MINGW_CLANG, "-std=c++17", "-DNDEBUG",
+        f'-DAPP_VERSION="{ctx.APP_VERSION}"',
+        f"-DAPP_BUILD_NUMBER={ctx.APP_BUILD_NUMBER}",
+        "-fno-exceptions", "-fno-rtti",
+        f"-I{ctx.SOURCE_DIR}",
+        "-o", fixture_exe,
+        fixture_source,
+    ]
+    if extra_flags:
+        cmd.extend(extra_flags)
+    print("Compiling Windows named-pipe regression tests")
+    result = subprocess.run(cmd, cwd=ctx.SCRIPT_DIR)
+    if result.returncode != 0:
+        print("Windows named-pipe test compilation FAILED")
+        sys.exit(result.returncode)
+    env = os.environ.copy()
+    env["PATH"] = os.path.dirname(ctx.LLVM_MINGW_CLANG) + os.pathsep +         env.get("PATH", "")
+    print("Running Windows named-pipe regression tests")
+    result = subprocess.run([fixture_exe], cwd=ctx.SCRIPT_DIR, env=env)
+    if result.returncode != 0:
+        print(f"Windows named-pipe regression FAILED ({result.returncode})")
+        sys.exit(result.returncode)
+
+
 def run_fuzz_targets(ctx, runs=None, target_filter=None):
     """Build and briefly exercise every libFuzzer target.
 

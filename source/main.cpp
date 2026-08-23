@@ -25,10 +25,8 @@
 // corresponding watchdogs recreate them.
 static DWORD g_fanRuntimeThreadId = 0;
 
-// The pipe handle created by the pipe server thread.  Stored globally so the
-// main loop's watchdog can close the orphaned handle when the thread is killed
-// by the VEH, before creating a new pipe server thread.
-static HANDLE g_servicePipeHandle = INVALID_HANDLE_VALUE;
+// Pipe worker instance handles live in fixed listener slots
+// (main_service_pipe_listener.cpp) so the watchdog can reclaim orphans.
 
 // Flag set by the VEH when it handles any nvml/nvapi crash.  The snapshot
 // handler checks this flag and skips refresh_global_state() (which calls
@@ -126,7 +124,6 @@ static HANDLE g_serviceStopEvent = nullptr;
 static HANDLE g_serviceFanStopEvent = nullptr;
 static HANDLE g_serviceFanThread = nullptr;
 static HANDLE g_serviceRuntimeLock = nullptr;
-static HANDLE g_servicePipeWakeEvent = nullptr;
 static DWORD g_serviceRuntimeLockOwnerThreadId = 0;
 static unsigned int g_serviceRuntimeLockDepth = 0;
 static DWORD g_serviceMainThreadId = 0;
@@ -292,10 +289,13 @@ static void service_capture_owner_identity(const char* user, DWORD sessionId);
 static bool get_pipe_client_identity(HANDLE pipe, char* userOut, size_t userOutSize,
     DWORD* sessionIdOut, DWORD* pidOut, bool* isAdminOut,
     ServiceLifecycleIdentity* lifecycleIdentityOut, char* err, size_t errSize);
-static bool service_caller_is_authorized(HANDLE pipe, const char* source,
-    bool requireActiveSession, char* err, size_t errSize, char* callerUserOut,
-    size_t callerUserOutSize, DWORD* callerSessionIdOut, DWORD* callerPidOut,
-    bool* callerIsAdminOut, ServiceLifecycleIdentity* lifecycleIdentityOut);
+static bool service_capture_pipe_client_identity(HANDLE pipe, char* userOut,
+    size_t userOutSize, DWORD* sessionIdOut, DWORD* pidOut, bool* adminOut,
+    ServiceLifecycleIdentity* lifecycleOut, DWORD* integrityRidOut,
+    HANDLE* duplicatedTokenOut, char* err, size_t errSize);
+static bool service_captured_identity_passes_session_rule(
+    const ServiceLifecycleIdentity* identity, DWORD callerSessionId,
+    bool requireActiveSession, const char* source, char* err, size_t errSize);
 static bool get_active_interactive_session_id(DWORD* sessionIdOut);
 static bool service_resolve_session_user_sid(DWORD sessionId, char* sidOut, size_t sidOutSize, char* err, size_t errSize);
 static bool service_user_paths_identity_matches(DWORD sessionId);
@@ -309,7 +309,6 @@ static void set_last_apply_phase(const char* phase);
 #include "crash_artifacts_forward.h"
 static bool service_resolve_active_user_paths_for_startup(const char* context);
 static DWORD WINAPI service_fan_runtime_thread_proc(void*);
-static DWORD WINAPI service_pipe_server_thread_proc(void*);
 static bool ensure_service_fan_runtime_thread();
 static void stop_service_fan_runtime_thread();
 static void service_runtime_pulse();

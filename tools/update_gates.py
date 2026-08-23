@@ -301,8 +301,8 @@ def check_install_reservation_and_restore_gate(ctx, require_text, require_order)
         worker, "service_update_run_install",
         "service_update_set_install_reserved(true)", "CreateProcessW",
         "the reservation survives until setup is launched")
-    pipe = _p(ctx, "main_service_pipe.cpp")
-    require_text(pipe, "service_update_install_reject_mutation",
+    pipe_switch = _p(ctx, "main_service_pipe_switch.cpp")
+    require_text(pipe_switch, "service_update_install_reject_mutation",
                  "APPLY/RESET refuse GPU writes while an install is reserved")
     handoff = _p(ctx, "gui_update_settings_handoff.cpp")
     require_text(handoff, "gc_update_restore_decide",

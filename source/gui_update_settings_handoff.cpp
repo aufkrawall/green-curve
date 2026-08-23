@@ -8,9 +8,10 @@
 //
 // Setup normally captures the active settings itself, by running
 // `greencurve.exe --export-active-settings` and, at the end,
-// `--apply-settings-file`.  Both of those talk to the service, and
-// `service_caller_is_authorized()` restricts control to the **active
-// interactive session**.
+// `--apply-settings-file`.  Both of those talk to the service, and the
+// service's captured-identity session rule (see
+// service_captured_identity_passes_session_rule) restricts control to the
+// **active interactive session**.
 //
 // When the user runs setup by hand that is fine -- the helpers inherit the
 // user's session.  When the *updater* runs it, setup was launched by the

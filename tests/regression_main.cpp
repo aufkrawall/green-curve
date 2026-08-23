@@ -18,6 +18,7 @@
 #include "nvapi_module_policy.h"
 #include "service_lifecycle_policy.h"
 #include "service_recovery_policy.h"
+#include "service_ipc_throttle_policy.h"
 #include "selected_gpu_pnp_policy.h"
 #include "gpu_selection_policy.h"
 #include "linux_gpu_selection.h"
@@ -11388,6 +11389,224 @@ static int run_all_tests(int argc, char** argv) {
                 GC_UPDATE_STAGED_DISCARD ||
             gc_update_staged_check_action(true, false) !=
                 GC_UPDATE_STAGED_DISCARD) return 4530;
+    }
+
+    // ------------------------------------------------------------------
+    // Pipe transport admission policy (service_ipc_throttle_policy.h).
+    // Pure boundaries for the transition-safe IPC throttling: classification,
+    // wrap-safe time, bucket refill/spend costs, identity table lifecycle,
+    // handoff reserve isolation, and the no-permanent-lockout guarantee.
+    // All charges inside one section use a fixed timestamp unless a refill
+    // interval is exactly what is being measured.
+    // ------------------------------------------------------------------
+    {
+        // Key capacity must mirror the lifecycle identity's SID storage so
+        // the transport copy can never truncate a real SID.
+        if (ServiceIpcThrottleKey::kSidBytes !=
+            (int)sizeof(((ServiceLifecycleIdentity*)nullptr)->sid)) return 4600;
+
+        // Wrap-safe monotonic comparison.
+        if (!service_ipc_time_at_or_after(5, 5)) return 4601;
+        if (!service_ipc_time_at_or_after(6, 5)) return 4602;
+        if (service_ipc_time_at_or_after(5, 6)) return 4603;
+        // Classic tick-counter wrap: 5 is "after" MAX-10 (signed diff +15),
+        // and MAX-10 is before 5 (signed diff -15).
+        if (!service_ipc_time_at_or_after(5, 0ULL - 10)) return 4604;
+        if (service_ipc_time_at_or_after(0ULL - 10, 5)) return 4605;
+
+        // Classification: every valid command enum maps to its lane; unknown
+        // values (and 0) must never fall into a served class.
+        {
+            struct ClassCase { unsigned int cmd; ServiceIpcRequestClass cls; };
+            const ClassCase cases[] = {
+                {1, SERVICE_IPC_CLASS_NORMAL},       // PING
+                {2, SERVICE_IPC_CLASS_NORMAL},       // GET_SNAPSHOT
+                {3, SERVICE_IPC_CLASS_NORMAL},       // GET_TELEMETRY
+                {4, SERVICE_IPC_CLASS_NORMAL},       // APPLY
+                {5, SERVICE_IPC_CLASS_LIFECYCLE},    // RESET
+                {6, SERVICE_IPC_CLASS_NORMAL},       // GET_ACTIVE_DESIRED
+                {7, SERVICE_IPC_CLASS_BULK_OUTPUT},  // WRITE_LOG_SNAPSHOT
+                {8, SERVICE_IPC_CLASS_BULK_OUTPUT},  // WRITE_JSON_SNAPSHOT
+                {9, SERVICE_IPC_CLASS_BULK_OUTPUT},  // WRITE_PROBE_REPORT
+                {10, SERVICE_IPC_CLASS_HANDOFF},     // LOGON_HANDOFF
+                {11, SERVICE_IPC_CLASS_NORMAL},      // GET_OPERATION_RESULT
+                {12, SERVICE_IPC_CLASS_NORMAL},      // GET_STARTUP_POLICY
+                {13, SERVICE_IPC_CLASS_NORMAL},      // SET_STARTUP_POLICY
+                {14, SERVICE_IPC_CLASS_NORMAL},      // REFRESH_STARTUP_PROFILE
+                {15, SERVICE_IPC_CLASS_NORMAL},      // RESUME_RESTORE
+                {16, SERVICE_IPC_CLASS_NORMAL},      // GET_UPDATE_STATE
+                {17, SERVICE_IPC_CLASS_NORMAL},      // CHECK_FOR_UPDATE
+                {18, SERVICE_IPC_CLASS_LIFECYCLE},   // INSTALL_UPDATE
+                {19, SERVICE_IPC_CLASS_LIFECYCLE},   // SET_UPDATE_POLICY
+            };
+            for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+                if (service_ipc_classify_command(cases[i].cmd) !=
+                    cases[i].cls) return 4610;
+            }
+            if (service_ipc_classify_command(0) !=
+                SERVICE_IPC_CLASS_UNKNOWN) return 4611;
+            if (service_ipc_classify_command(20) !=
+                SERVICE_IPC_CLASS_UNKNOWN) return 4612;
+            if (service_ipc_classify_command(0xFFFFFFFFu) !=
+                SERVICE_IPC_CLASS_UNKNOWN) return 4613;
+        }
+
+        ServiceIpcAdmissionTable table;
+
+        ServiceIpcThrottleKey key;
+        key.fill(7, 0x1122334455667788ULL, "S-1-5-21-1-2-3-1001");
+        if (!key.valid) return 4620;
+
+        // Burst boundary: a fresh identity sustains exactly BURST/COST
+        // completed requests at one instant, then RATE-refuses.
+        table.reset(100000);
+        if (service_ipc_decide_admission(&table, key,
+                SERVICE_IPC_CLASS_NORMAL, 100000) !=
+            SERVICE_IPC_ADMITTED) return 4621;
+        for (unsigned int i = 0;
+             i < SERVICE_IPC_BUCKET_BURST_MILLI / 1000 /
+                 SERVICE_IPC_COST_SUCCESS;
+             ++i) {
+            service_ipc_charge(&table, key, SERVICE_IPC_CLASS_NORMAL,
+                SERVICE_IPC_COST_SUCCESS, 100000);
+        }
+        if (service_ipc_decide_admission(&table, key,
+                SERVICE_IPC_CLASS_NORMAL, 100001) !=
+            SERVICE_IPC_REJECTED_RATE) return 4622;
+
+        // Refill: one second restores exactly RATE milli-tokens (20
+        // requests' worth), so admission recovers -- then refuses again once
+        // everything refilled has been drained.
+        service_ipc_charge(&table, key, SERVICE_IPC_CLASS_NORMAL,
+            SERVICE_IPC_COST_SUCCESS, 101000);
+        if (service_ipc_decide_admission(&table, key,
+                SERVICE_IPC_CLASS_NORMAL, 101001) !=
+            SERVICE_IPC_ADMITTED) return 4623;
+        for (;; ) {
+            if (service_ipc_decide_admission(&table, key,
+                    SERVICE_IPC_CLASS_NORMAL, 101002) !=
+                SERVICE_IPC_ADMITTED) break;
+            service_ipc_charge(&table, key, SERVICE_IPC_CLASS_NORMAL,
+                SERVICE_IPC_COST_SUCCESS, 101002);
+        }
+        if (service_ipc_decide_admission(&table, key,
+                SERVICE_IPC_CLASS_NORMAL, 101003) !=
+            SERVICE_IPC_REJECTED_RATE) return 4624;
+
+        // Transport faults cost COST_TRANSPORT_FAULT x SUCCESS: seven stalled
+        // bodies still leave one request's worth (80 - 70), an eighth does not.
+        table.reset(500000);
+        service_ipc_charge(&table, key, SERVICE_IPC_CLASS_NORMAL,
+            SERVICE_IPC_COST_TRANSPORT_FAULT * 7, 500000);
+        if (service_ipc_decide_admission(&table, key,
+                SERVICE_IPC_CLASS_NORMAL, 500001) ==
+            SERVICE_IPC_REJECTED_RATE) return 4625;
+        service_ipc_charge(&table, key, SERVICE_IPC_CLASS_NORMAL,
+            SERVICE_IPC_COST_TRANSPORT_FAULT, 500000);
+        if (service_ipc_decide_admission(&table, key,
+                SERVICE_IPC_CLASS_NORMAL, 500010) !=
+            SERVICE_IPC_REJECTED_RATE) return 4626;
+
+        // Handoff reserve independence: a drained normal bucket must not
+        // starve the settings-free logon handoff lane.
+        table.reset(700000);
+        for (unsigned int i = 0;
+             i < SERVICE_IPC_BUCKET_BURST_MILLI / 1000 /
+                 SERVICE_IPC_COST_SUCCESS;
+             ++i) {
+            service_ipc_charge(&table, key, SERVICE_IPC_CLASS_NORMAL,
+                SERVICE_IPC_COST_SUCCESS, 700000);
+        }
+        if (service_ipc_decide_admission(&table, key,
+                SERVICE_IPC_CLASS_NORMAL, 700100) !=
+            SERVICE_IPC_REJECTED_RATE) return 4627;
+        if (service_ipc_decide_admission(&table, key,
+                SERVICE_IPC_CLASS_HANDOFF, 700100) !=
+            SERVICE_IPC_ADMITTED) return 4628;
+        // The reserve itself is bounded: HANDOFF_RESERVE/HANDOFF_COST
+        // handoffs at one instant, then refusal until refill.
+        for (unsigned int i = 0;
+             i < SERVICE_IPC_HANDOFF_RESERVE_MILLI / 1000 /
+                 SERVICE_IPC_COST_SUCCESS;
+             ++i) {
+            service_ipc_charge(&table, key, SERVICE_IPC_CLASS_HANDOFF,
+                SERVICE_IPC_COST_SUCCESS, 700100);
+        }
+        if (service_ipc_decide_admission(&table, key,
+                SERVICE_IPC_CLASS_HANDOFF, 700110) !=
+            SERVICE_IPC_REJECTED_RATE) return 4629;
+
+        // A new authentication LUID/session starts with fresh quotas: fast
+        // user switching must not inherit the previous session's penalties.
+        ServiceIpcThrottleKey freshKey;
+        freshKey.fill(9, 0x99AABBCCDDEEFF01ULL, "S-1-5-21-1-2-3-1002");
+        if (service_ipc_decide_admission(&table, freshKey,
+                SERVICE_IPC_CLASS_NORMAL, 700200) !=
+            SERVICE_IPC_ADMITTED) return 4630;
+        ServiceIpcThrottleKey relaunchKey;
+        relaunchKey.fill(7, 0xFEEDFACE00000001ULL, "S-1-5-21-1-2-3-1001");
+        if (relaunchKey.equals(key)) return 4631;
+        if (service_ipc_decide_admission(&table, relaunchKey,
+                SERVICE_IPC_CLASS_HANDOFF, 700200) !=
+            SERVICE_IPC_ADMITTED) return 4632;
+
+        // Idle expiry: an entry unused past the idle window reads as fresh.
+        table.reset(900000);
+        service_ipc_charge(&table, key, SERVICE_IPC_CLASS_NORMAL,
+            SERVICE_IPC_COST_BAD_COMMAND * 16, 900000);
+        if (service_ipc_decide_admission(&table, key,
+                SERVICE_IPC_CLASS_NORMAL, 900001) !=
+            SERVICE_IPC_REJECTED_RATE) return 4633;
+        if (service_ipc_decide_admission(&table, key,
+                SERVICE_IPC_CLASS_NORMAL,
+                900000 + SERVICE_IPC_IDLE_EXPIRY_MS + 1) !=
+            SERVICE_IPC_ADMITTED) return 4634;
+
+        // Full-table behavior: flooding every slot must not lock anybody out
+        // permanently -- the least-recently-seen entry is evicted and a
+        // victim reads as fresh again.
+        table.reset(1000000);
+        char sidText[64];
+        ServiceIpcThrottleKey lastKey;
+        lastKey.fill(1, 1, "S-1-5-21-1-2-3-LAST");
+        service_ipc_charge(&table, lastKey, SERVICE_IPC_CLASS_NORMAL,
+            SERVICE_IPC_BUCKET_BURST_MILLI / 1000 / SERVICE_IPC_COST_SUCCESS,
+            1000000);
+        for (unsigned int i = 0; i < SERVICE_IPC_TABLE_SLOTS + 8; ++i) {
+            ServiceIpcThrottleKey flood;
+            snprintf(sidText, sizeof(sidText), "S-1-5-21-1-2-3-FLOOD%u", i);
+            flood.fill(2 + (i % 5), 0xC0FFEE0000000000ULL + i, sidText);
+            if (flood.equals(lastKey)) return 4637;
+            service_ipc_charge(&table, flood, SERVICE_IPC_CLASS_NORMAL,
+                SERVICE_IPC_COST_TRANSPORT_FAULT, 1000000 + i);
+        }
+        if (service_ipc_decide_admission(&table, lastKey,
+                SERVICE_IPC_CLASS_NORMAL, 1000200) !=
+            SERVICE_IPC_ADMITTED) return 4636;
+
+        // Unknown commands are refused regardless of bucket state.
+        if (service_ipc_decide_admission(&table, key,
+                SERVICE_IPC_CLASS_UNKNOWN, 1100000) !=
+            SERVICE_IPC_REJECTED_CAPACITY) return 4638;
+
+        // Invalid keys bypass identity accounting entirely: admission stays
+        // open (the transport drops unidentifiable connections on other
+        // grounds) while their charges land only in the small anon budget.
+        {
+            ServiceIpcThrottleKey anonKey;
+            anonKey.clear();
+            table.reset(1200000);
+            for (unsigned int i = 0; i < SERVICE_IPC_ANON_BUDGET_MAX * 2; ++i) {
+                service_ipc_charge(&table, anonKey, SERVICE_IPC_CLASS_NORMAL,
+                    SERVICE_IPC_COST_SUCCESS, 1200000 + i);
+            }
+            if (service_ipc_decide_admission(&table, anonKey,
+                    SERVICE_IPC_CLASS_NORMAL, 1200050) !=
+                SERVICE_IPC_ADMITTED) return 4639;
+            // The anonymous budget itself is bounded and refills slowly.
+            if (table.anonymousBucket.tokensMilli >
+                SERVICE_IPC_ANON_BUDGET_MAX * 1000ULL) return 4640;
+        }
     }
 
     return 0;

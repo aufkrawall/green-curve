@@ -21,8 +21,6 @@ struct ServiceSessionConfigContext {
     char machineConfigPath[MAX_PATH];
 };
 
-static HANDLE g_servicePipeRecycleEvent = nullptr;
-
 // Implemented by the long-lived lifecycle coordinator shard included after
 // this one.  The SCM control handler and authenticated pipe handoff only post
 // compact events; they never allocate a worker or touch hardware.
@@ -398,7 +396,6 @@ static void service_handle_session_change(DWORD eventType, DWORD eventSessionId)
         eventType == WTS_CONSOLE_CONNECT ||
         eventType == WTS_CONSOLE_DISCONNECT) {
         service_lifecycle_post_prerequisite_signal(name);
-        if (g_servicePipeRecycleEvent) SetEvent(g_servicePipeRecycleEvent);
         return;
     }
 
@@ -413,7 +410,6 @@ static void service_handle_session_change(DWORD eventType, DWORD eventSessionId)
                 nullptr, 0);
         }
         service_lifecycle_worker_reduce_logoff(&loggedOff, eventSessionId);
-        if (g_servicePipeRecycleEvent) SetEvent(g_servicePipeRecycleEvent);
         return;
     }
 
@@ -444,5 +440,4 @@ static void service_handle_session_change(DWORD eventType, DWORD eventSessionId)
     }
     service_lifecycle_worker_queue_logon(&active,
         SERVICE_LIFECYCLE_TRIGGER_WTS_LOGON, name);
-    if (g_servicePipeRecycleEvent) SetEvent(g_servicePipeRecycleEvent);
 }
