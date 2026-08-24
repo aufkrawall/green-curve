@@ -4,7 +4,6 @@
 // Service-owned settings apply/reset and authoritative in-memory intent.
 
 #include "gpu_backend_xbar.h"
-#include "clk_video_binding.h"
 
 static bool service_desired_has_owned_intent(const DesiredSettings* desired) {
     if (!desired) return false;
@@ -321,17 +320,16 @@ static bool service_reset_all(char* result, size_t resultSize,
             append_failure("SYS clock reset interface unavailable");
         }
     }
-    // Explicit Reset also zeroes the experimental VIDEO knob.
+    // Explicit Reset also zeroes the VIDEO clock knob.
     if (g_app.videoClkProbeValid && g_app.videoClkFreqOffsetKhz != 0) {
         auto vidGet = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
         auto vidSet = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
-        int videoEntry = clk_video_entry_index(g_app.configPath);
-        if (vidGet && vidSet && videoEntry >= 0) {
+        if (vidGet && vidSet) {
             XbarControlSnapshot snap{};
             if (xbar_write_entry_freq(vidGet, vidSet, g_app.gpuHandle, &snap,
-                                      (unsigned int)videoEntry, 0)) {
+                                      (unsigned int)XBAR_PINNED_VIDEO_ENTRY_INDEX, 0)) {
                 unsigned int videoField = snap.entryBase +
-                    (unsigned int)videoEntry * snap.entryStride +
+                    XBAR_PINNED_VIDEO_ENTRY_INDEX * snap.entryStride +
                     g_xbarSchemas[0].freqOffsetField;
                 g_app.videoClkFreqReadbackValid = true;
                 g_app.videoClkFreqOffsetKhz = (int)xbar_get_u32(snap.buf, videoField);

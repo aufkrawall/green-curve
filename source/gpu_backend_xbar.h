@@ -59,6 +59,13 @@ static const unsigned int XBAR_PINNED_XBAR_ENTRY_INDEX = 1;
 // amount (reproduced across idle and load states), while entry 1 drives
 // measure domain 1.  The community labels these two knobs XBAR and SYS.
 static const unsigned int XBAR_PINNED_SYS_ENTRY_INDEX = 3;
+// Video clock entry, identified by differential dump on RTX 5070 / 610.88:
+// with mVolt+ applying a +400 MHz video offset, exactly one dword appeared at
+// entry 4's standard frequency-offset field (0xD34 + 0x114 = 0xE48) and
+// HWiNFO confirmed the physical video clock moved.  Note: the video engine's
+// clock is NOT visible in any CLK_MEASURE domain (0..31), so post-write
+// verification relies on the exact readback, not a measurement.
+static const unsigned int XBAR_PINNED_VIDEO_ENTRY_INDEX = 4;
 static const unsigned int XBAR_FREQ_OFFSET_FIELD = 0x114;
 static const unsigned int XBAR_MSVDD_OFFSET_FIELD = 0x11c;
 static const unsigned int XBAR_MEASURE_DOMAIN_XBAR = 2;

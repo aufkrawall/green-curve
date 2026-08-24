@@ -66,9 +66,10 @@ enum {
     // empirically on RTX 5070 / 610.88). ControlState, DesiredSettings,
     // ServiceSnapshot, and therefore ServiceResponse all changed size again.
     //
-    // v22 adds the EXPERIMENTAL video clock offset (best-effort knob on the
-    // same ClkDomains block; entry binding is configurable and may not have
-    // any effect on a given board/driver). Sizes changed again.
+    // v22 adds the VIDEO clock offset (ClkDomains entry 4, identified by
+    // differential dump against mVolt+ on RTX 5070 / 610.88; the engine's
+    // clock has no CLK_MEASURE id, so exact readback is the proof). Sizes
+    // changed again.
     SERVICE_PROTOCOL_VERSION = 22,
 };
 

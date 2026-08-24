@@ -41,7 +41,7 @@ SOURCE_SIZE_RATCHET = {
     "main_state_sync.cpp": 915,  # 890 before the VIDEO GUI adoption block
      # 859 before truthful XBAR readback validity
         "ui_main_window.cpp": 1279,
-    "service_protocol.h": 837,  # 818 before v22 video-clk carriage
+    "service_protocol.h": 838,  # 818 before v22 video-clk carriage
 }
 
 

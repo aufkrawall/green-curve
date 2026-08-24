@@ -114,17 +114,16 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
             append_failure("SYS clock reset functions unavailable");
         }
     }
-    // Experimental VIDEO clock entry rides the same validated block.
+    // VIDEO clock entry rides the same validated block.
     if (g_app.videoClkProbeValid && g_app.videoClkFreqOffsetKhz != 0) {
         auto vidGetFunc = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
         auto vidSetFunc = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
-        int videoEntry = clk_video_entry_index(g_app.configPath);
-        if (vidGetFunc && vidSetFunc && videoEntry >= 0) {
+        if (vidGetFunc && vidSetFunc) {
             XbarControlSnapshot snap{};
             if (xbar_write_entry_freq(vidGetFunc, vidSetFunc, g_app.gpuHandle,
-                                      &snap, (unsigned int)videoEntry, 0)) {
+                                      &snap, (unsigned int)XBAR_PINNED_VIDEO_ENTRY_INDEX, 0)) {
                 unsigned int videoField = snap.entryBase +
-                    (unsigned int)videoEntry * snap.entryStride +
+                    XBAR_PINNED_VIDEO_ENTRY_INDEX * snap.entryStride +
                     g_xbarSchemas[0].freqOffsetField;
                 g_app.videoClkFreqReadbackValid = true;
                 g_app.videoClkFreqOffsetKhz = (int)xbar_get_u32(snap.buf, videoField);

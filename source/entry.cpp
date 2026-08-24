@@ -163,7 +163,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
     // they drive NvAPI directly in-process so they still diagnose a machine
     // where the normal path does not work yet.  (--clk-domain-probe is opt-in
     // and transiently writes/restores small clock offsets.)
-    if (opts.selfTest || opts.clkDomainProbe) {
+    if (opts.selfTest || opts.clkDomainProbe || opts.clkDomainDump) {
         int probeExitCode = 0;
         if (self_test_cli_dispatch(opts, logf ? logf : stdout,
                                    &probeExitCode)) {

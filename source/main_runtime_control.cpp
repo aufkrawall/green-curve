@@ -272,9 +272,8 @@
             currentSysKhz, sysKhz, desired->hasSysClkOffsetKhz ? 1 : 0);
     }
 
-    // EXPERIMENTAL VIDEO clock offset capture.  Owns nothing when the knob
-    // is disabled or the surface did not answer.
-    if (g_app.videoClkProbeValid && g_app.videoClkEntryIndex >= 0) {
+    // VIDEO clock offset capture (pinned entry 4).
+    if (g_app.videoClkProbeValid) {
         int currentVideoKhz = 0;
         if (haveControlState) {
             if (control.hasVideoClkOffset) currentVideoKhz = control.videoClkOffsetKhz;

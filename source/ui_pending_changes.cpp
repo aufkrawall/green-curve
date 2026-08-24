@@ -44,7 +44,7 @@ struct GuiPendingChanges {
     bool sysClkValid;
     int appliedSysClkOffsetKhz;
     int pendingSysClkOffsetKhz;
-    // EXPERIMENTAL video clock offset.
+    // Video clock offset.
     bool videoClkValid;
     int appliedVideoClkOffsetKhz;
     int pendingVideoClkOffsetKhz;
@@ -453,7 +453,7 @@ static void gui_pending_evaluate_editor_diff(GuiPendingChanges* out) {
             out->summary.domainMask |= GUI_PENDING_SYS_CLK;
     }
 
-    // EXPERIMENTAL video clock: same shape again.
+    // Video clock offset: same shape again.
     {
         int appliedKhz = 0;
         if (haveControl) {

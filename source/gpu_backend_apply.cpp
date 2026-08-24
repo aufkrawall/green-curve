@@ -1274,28 +1274,25 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                       g_app.sysClkProbeValid ? 1 : 0);
         }
     }
-    // EXPERIMENTAL VIDEO clock offset apply.  Best-effort by design: the
-    // entry binding is configurable and may not move any measurable clock.
-    // The transaction itself is the audited one (fresh preimage, single
-    // dword, exact readback), so a no-effect write is still safe.
+    // VIDEO clock offset apply.  Entry 4 identified by differential dump;
+    // the engine's physical clock has no CLK_MEASURE id, so verification is
+    // the exact readback itself.
     if (desired && desired->hasVideoClkOffsetKhz) {
         auto vidGetCtrl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
         auto vidSetCtrl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
-        int videoEntry = clk_video_entry_index(g_app.configPath);
-        if (g_app.videoClkProbeValid && videoEntry >= 0 && vidGetCtrl && vidSetCtrl) {
+        if (g_app.videoClkProbeValid && vidGetCtrl && vidSetCtrl) {
             XbarControlSnapshot snap{};
             if (xbar_write_entry_freq(vidGetCtrl, vidSetCtrl, g_app.gpuHandle,
-                                      &snap, (unsigned int)videoEntry,
+                                      &snap, (unsigned int)XBAR_PINNED_VIDEO_ENTRY_INDEX,
                                       desired->videoClkOffsetKhz)) {
                 unsigned int videoField = snap.entryBase +
-                    (unsigned int)videoEntry * snap.entryStride +
+                    XBAR_PINNED_VIDEO_ENTRY_INDEX * snap.entryStride +
                     g_xbarSchemas[0].freqOffsetField;
                 g_app.videoClkFreqReadbackValid = true;
                 g_app.videoClkFreqOffsetKhz =
                     (int)xbar_get_u32(snap.buf, videoField);
                 successCount++;
-                debug_log("apply: VIDEO clock offset (EXPERIMENTAL entry %d)"
-                          " %d kHz\n", videoEntry,
+                debug_log("apply: VIDEO clock offset %d kHz\n",
                           g_app.videoClkFreqOffsetKhz);
             } else {
                 failCount++;
@@ -1313,8 +1310,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             StringCchCatA(failureDetails, ARRAY_COUNT(failureDetails),
                           failureDetails[0] ? "; VIDEO clock unavailable"
                                             : "VIDEO clock unavailable");
-            debug_log("apply: VIDEO clock requested but unavailable probeValid=%d"
-                      " entry=%d\n", g_app.videoClkProbeValid ? 1 : 0, videoEntry);
+            debug_log("apply: VIDEO clock requested but unavailable probeValid=%d\n",
+                      g_app.videoClkProbeValid ? 1 : 0);
         }
     }
     char detail[128] = {};

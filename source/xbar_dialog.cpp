@@ -100,10 +100,8 @@ static void xbar_dialog_sync_controls() {
     EnableWindow(g_xbarDialog.hOffsetEdit, TRUE);
     EnableWindow(g_xbarDialog.hMsvddEdit, TRUE);
     EnableWindow(g_xbarDialog.hSysEdit, TRUE);
-    if (g_xbarDialog.hVideoEdit) {
-        bool videoEnabled = g_app.videoClkProbeValid && g_app.videoClkEntryIndex >= 0;
-        EnableWindow(g_xbarDialog.hVideoEdit, videoEnabled ? TRUE : FALSE);
-    }
+    if (g_xbarDialog.hVideoEdit)
+        EnableWindow(g_xbarDialog.hVideoEdit, g_app.videoClkProbeValid ? TRUE : FALSE);
     EnableWindow(g_xbarDialog.hOkBtn, TRUE);
     EnableWindow(g_xbarDialog.hResetBtn, TRUE);
 
@@ -135,7 +133,7 @@ static void xbar_dialog_sync_controls() {
     SetWindowTextA(g_xbarDialog.hSysEdit, buf);
     end_programmatic_edit_update();
 
-    // EXPERIMENTAL VIDEO clock pending value (same rules as SYS).
+    // VIDEO clock pending value (same rules as SYS).
     if (g_xbarDialog.hVideoEdit) {
         int appliedVideoKhz = g_app.videoClkProbeValid ? g_app.videoClkFreqOffsetKhz : 0;
         if (haveControl && control.hasVideoClkOffset) appliedVideoKhz = control.videoClkOffsetKhz;
@@ -488,7 +486,7 @@ static void open_xbar_dialog() {
     (void)lblSys;
 
     int y2b = y2 + rowH + dp(12);
-    HWND lblVideo = CreateWindowExA(0, "STATIC", "VIDEO Clock Offset (MHz) [exp.]:",
+    HWND lblVideo = CreateWindowExA(0, "STATIC", "Video Clock Offset (MHz):",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
         margin, y2b + dp(2), labelW + dp(30), dp(18),
         g_xbarDialog.hwnd, (HMENU)(INT_PTR)XBAR_HINT_LABEL_ID, g_app.hInst, nullptr);

@@ -519,6 +519,7 @@ static bool self_test_clk_probe_restore(NvApiFunc getControl,
 }
 
 static int clk_domain_probe_report(FILE* out);
+static int clk_domain_dump_report(FILE* out);
 
 // Dispatches the direct-NvAPI pre-flight/identification commands shared by
 // --self-test and --clk-domain-probe.  Returns true when a flag was handled
@@ -528,6 +529,10 @@ static bool self_test_cli_dispatch(const CliOptions& opts, FILE* out,
                                    int* exitCodeOut) {
     if (opts.selfTest) {
         *exitCodeOut = self_test_report(out);
+        return true;
+    }
+    if (opts.clkDomainDump) {
+        *exitCodeOut = clk_domain_dump_report(out);
         return true;
     }
     // --clk-domain-probe also drives NvAPI directly.  Unlike --self-test it
@@ -664,5 +669,66 @@ static int clk_domain_probe_report(FILE* out) {
     }
     fprintf(out, "\nProbe complete. Map probed entries to the domains whose\n");
     fprintf(out, "measured clock moved by ~+50 MHz above.\n");
+    return 0;
+}
+
+
+// --- --clk-domain-dump: read-only full control-block capture ------------
+//
+// Writes the complete GET_CONTROL response (header, every domain entry,
+// measure table, public clocks) to clkdomains_dump.txt beside the INI so two
+// captures taken under different tool states can be DIFFED offline.  That is
+// the safe way to locate a field another tool (e.g. mVolt's video offset)
+// writes: let it actuate, diff the blocks, pin the offset from evidence.
+static int clk_domain_dump_report(FILE* out) {
+    if (!out) out = stdout;
+    fprintf(out, "=== Green Curve ClkDomains dump (read-only) ===\n");
+    if (!self_test_prepare_direct_nvapi(out)) {
+        fprintf(out, "\nVerdict: UNUSABLE - NvAPI did not initialize.\n");
+        return 2;
+    }
+    void* gpu = g_app.gpuHandle;
+    auto getControl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
+    if (!getControl || !gpu) {
+        fprintf(out, "GET_CONTROL unavailable\n");
+        return 2;
+    }
+    static XbarControlSnapshot snap;  // carries the full 0x13000 block
+    memset(&snap, 0, sizeof(snap));
+    if (!xbar_read_control(getControl, gpu, &snap)) {
+        fprintf(out, "no pinned schema matched (see debug log)\n");
+        return 2;
+    }
+
+    char path[MAX_PATH] = {};
+    {
+        const char* base = getenv("LOCALAPPDATA");
+        if (base && base[0])
+            snprintf(path, sizeof(path),
+                     "%s\\Green Curve\\clkdomains_dump.txt", base);
+    }
+    FILE* f = path[0] ? gc_fopen_utf8(path, "w") : nullptr;
+    if (!f) {
+        fprintf(out, "cannot open %s\n", path[0] ? path : "(no path)");
+        return 2;
+    }
+    fprintf(f, "# Green Curve ClkDomains dump\n");
+    fprintf(f, "# schema_word=0x%08X entry_base=0x%X entry_stride=0x%X"
+               " domains=%u\n", snap.versionWord, snap.entryBase,
+            snap.entryStride, g_xbarSchemas[0].domainCount);
+    for (unsigned int id = 0; id < CLK_PROBE_MAX_DOMAINS; ++id) {
+        unsigned int khz = 0;
+        if (self_test_measure_domain(
+                (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_MEASURE), gpu, id, &khz))
+            fprintf(f, "measure %u %u\n", id, khz);
+    }
+    unsigned int words = XBAR_CONTROL_BUF_SIZE / sizeof(unsigned int);
+    for (unsigned int w = 0; w < words; ++w) {
+        unsigned int v = xbar_get_u32(snap.buf, w * sizeof(unsigned int));
+        if (v) fprintf(f, "+%04X %08X\n", w * 4, v);
+    }
+    fclose(f);
+    fprintf(out, "dump written          : %s\n", path);
+    fprintf(out, "(only non-zero words are listed; offsets are byte offsets)\n");
     return 0;
 }

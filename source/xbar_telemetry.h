@@ -7,7 +7,6 @@
 #define GREEN_CURVE_XBAR_TELEMETRY_H
 
 #include "gpu_backend_xbar.h"
-#include "clk_video_binding.h"
 
 static bool xbar_refresh_live_state() {
     if (!g_app.xbarProbeValid || !g_app.gpuHandle) return false;
@@ -43,7 +42,7 @@ static bool xbar_refresh_live_state() {
         g_app.sysClkFreqReadbackValid = true;
         g_app.sysClkFreqOffsetKhz = sysOffset;
     }
-    int videoEntry = clk_video_entry_index(g_app.configPath);
+    const int videoEntry = XBAR_PINNED_VIDEO_ENTRY_INDEX;
     if (videoEntry >= 0) {
         unsigned long long videoField =
             (unsigned long long)snap.entryBase +

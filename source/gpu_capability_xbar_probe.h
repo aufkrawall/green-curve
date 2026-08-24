@@ -16,7 +16,6 @@
 #define GREEN_CURVE_GPU_CAPABILITY_XBAR_PROBE_H
 
 #include "gpu_backend_xbar.h"
-#include "clk_video_binding.h"
 
 static void probe_xbar_control_surface(GpuCapabilityProbe* probe) {
     if (!probe) return;
@@ -74,26 +73,20 @@ static void probe_xbar_control_surface(GpuCapabilityProbe* probe) {
             debug_log("gpu capability probe: sys-clk entry %u offset=%d kHz\n",
                       XBAR_PINNED_SYS_ENTRY_INDEX, g_app.sysClkFreqOffsetKhz);
         }
-        // Experimental VIDEO knob: same block, configurable entry binding.
-        int videoEntry = clk_video_entry_index(g_app.configPath);
-        g_app.videoClkEntryIndex = videoEntry;
-        if (videoEntry >= 0) {
-            unsigned long long videoField =
-                (unsigned long long)snap.entryBase +
-                (unsigned long long)videoEntry * snap.entryStride +
-                g_xbarSchemas[0].freqOffsetField;
-            if (videoField + sizeof(unsigned int) <= XBAR_CONTROL_BUF_SIZE) {
-                g_app.videoClkProbeValid = true;
-                g_app.videoClkFreqReadbackValid = true;
-                g_app.videoClkFreqOffsetKhz =
-                    (int)xbar_get_u32(snap.buf, (unsigned int)videoField);
-                debug_log("gpu capability probe: video-clk EXPERIMENTAL entry %u"
-                          " offset=%d kHz\n", videoEntry,
-                          g_app.videoClkFreqOffsetKhz);
-            }
-        } else {
-            debug_log("gpu capability probe: video-clk experimental knob"
-                      " disabled by config\n");
+        // VIDEO entry: same validated block, pinned index 4 (differentially
+        // identified against mVolt+ on this board).
+        unsigned long long videoField =
+            (unsigned long long)snap.entryBase +
+            (unsigned long long)XBAR_PINNED_VIDEO_ENTRY_INDEX * snap.entryStride +
+            g_xbarSchemas[0].freqOffsetField;
+        if (videoField + sizeof(unsigned int) <= XBAR_CONTROL_BUF_SIZE) {
+            g_app.videoClkProbeValid = true;
+            g_app.videoClkFreqReadbackValid = true;
+            g_app.videoClkFreqOffsetKhz =
+                (int)xbar_get_u32(snap.buf, (unsigned int)videoField);
+            debug_log("gpu capability probe: video-clk entry %u offset=%d kHz\n",
+                      XBAR_PINNED_VIDEO_ENTRY_INDEX,
+                      g_app.videoClkFreqOffsetKhz);
         }
     } else if (snap.schemaStatus == XBAR_SCHEMA_STATUS_UNKNOWN_VERSION) {
         // The driver speaks a ClkDomains schema this build has not pinned.

@@ -695,7 +695,7 @@ static void apply_service_desired_to_gui(const DesiredSettings* desired) {
             StringCchPrintfA(buf, 32, "%d", adoptedSysClkKhz / 1000);
             StringCchCopyA(g_app.guiDraft.sysClkOffsetText, 32, buf);
         }
-        // EXPERIMENTAL VIDEO clock adopts the same not-dirty rule.
+        // VIDEO clock adopts the same not-dirty rule.
         int adoptedVideoClkKhz = desired->hasVideoClkOffsetKhz
             ? desired->videoClkOffsetKhz : g_app.videoClkFreqOffsetKhz;
         if (updateGui) {

@@ -209,25 +209,23 @@ def check_xbar_profile_contract(ctx, require_text, forbid_text):
 
 
 
-def check_video_experimental(ctx, require_text, forbid_text):
-    """F-XBAR-VIDEO: the best-effort video knob must stay visibly experimental
-    and must reuse the audited transaction.  Its entry binding is configurable
-    ([debug] video_clk_entry) and owned entries are refused."""
-    binding_h = _p(ctx, "clk_video_binding.h")
+def check_video_domain(ctx, require_text, forbid_text):
+    """F-XBAR-VIDEO: video = ClkDomains entry 4, identified by differential
+    dump against mVolt+ (+400 MHz appeared at 0xE48 = entry 4 + 0x114 and
+    HWiNFO confirmed the physical clock).  The engine has no CLK_MEASURE id,
+    so exact readback is the verification.  Profiles never own it; any
+    profile selection clears it."""
+    backend_h = _p(ctx, "gpu_backend_xbar.h")
     apply_cpp = _p(ctx, "gpu_backend_apply.cpp")
     protocol_header = _p(ctx, "service_protocol.h")
     capture_cpp = _p(ctx, "main_runtime_control.cpp")
     lifecycle_h = _p(ctx, "service_lifecycle_policy.h")
-    require_text(binding_h, "video_clk_entry",
-                 "F-XBAR-VIDEO: the experimental entry binding is configurable")
-    require_text(binding_h, "entry == XBAR_PINNED_SYS_ENTRY_INDEX",
-                 "F-XBAR-VIDEO: owned entries must be refused as bindings")
-    require_text(apply_cpp, "VIDEO clock offset (EXPERIMENTAL entry",
-                 "F-XBAR-VIDEO: applies log their experimental nature")
+    require_text(backend_h, "XBAR_PINNED_VIDEO_ENTRY_INDEX = 4",
+                 "F-XBAR-VIDEO: the differentially identified entry is pinned")
     require_text(protocol_header, "SERVICE_MUTATION_DOMAIN_VIDEO_CLK = 1u << 9",
                  "F-XBAR-VIDEO: the video knob has its own mutation bit")
-    require_text(capture_cpp, "g_app.videoClkEntryIndex >= 0",
-                 "F-XBAR-VIDEO: capture owns VIDEO only when a binding exists")
+    require_text(capture_cpp, "g_app.videoClkProbeValid) {",
+                 "F-XBAR-VIDEO: capture owns VIDEO only when its surface answered")
     require_text(lifecycle_h,
                  "previousIntent->hasVideoClkOffsetKhz && !nextIntent->hasVideoClkOffsetKhz",
                  "F-XBAR-VIDEO: profile selection clears the experiment")
@@ -236,4 +234,4 @@ def check_video_experimental(ctx, require_text, forbid_text):
 def check_all(ctx, require_text, forbid_text):
     check_xbar_clk_domains(ctx, require_text, forbid_text)
     check_xbar_profile_contract(ctx, require_text, forbid_text)
-    check_video_experimental(ctx, require_text, forbid_text)
+    check_video_domain(ctx, require_text, forbid_text)

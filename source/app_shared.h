@@ -460,14 +460,12 @@ struct AppData {
     bool sysClkFreqReadbackValid;
     int sysClkFreqOffsetKhz;
     unsigned int sysClkMeasuredClockKhz;
-    // Experimental VIDEO clock knob.  The ClkDomains entry it binds to is
-    // configurable ([debug] video_clk_entry, default 2) because no entry has
-    // been proven to move the video domain on any tested board.
+    // VIDEO clock domain: pinned ClkDomains entry 4 (differentially
+    // identified via mVolt+ +400 MHz with an exact single-dword block diff).
     bool videoClkProbeValid;
     bool videoClkFreqReadbackValid;
     int videoClkFreqOffsetKhz;
     unsigned int videoClkMeasuredClockKhz;
-    int videoClkEntryIndex;
 
     bool nvmlReady;
     nvmlDevice_t nvmlDevice;
@@ -670,6 +668,9 @@ struct CliOptions {
     // the Linux daemon's --self-test.  Never mutates GPU state and needs no
     // background service.
     bool selfTest;
+    // Read-only ClkDomains block dump (--clk-domain-dump) for differential
+    // identification against other tools.
+    bool clkDomainDump;
     // Opt-in ClkDomains identification probe (--clk-domain-probe): writes a
     // small, immediately-restored offset into each candidate control-block
     // entry to map entries to physical clock domains.  Transiently mutates
