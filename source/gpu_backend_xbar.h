@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 //
-// XBAR clock and XBAR-domain MSVDD offsets through the private Windows NvAPI
+// XBAR clock and XBAR-domain MSVDD offsets through the private NvAPI
 // ClkDomains surface.  The interface is old (10+ years) and its .domains
 // sub-structure is versioned per generation: the driver reports which schema
 // it answered with in the response's version word, and that word — not the
@@ -16,15 +16,15 @@
 // version/size words plus a bounded head dump) to add the row from a remote
 // diagnostic report without guessing at privileged-write offsets.
 //
-// References: LACT issue 1147, the R572..R610 NvAPI validation matrix, and
-// the generation-independence guidance for NvAPI_GPU_ClockClkDomainsSetControl.
+// Validated against the R572..R610 NvAPI response family.  The implementation
+// remains generation-independent by dispatching on the returned schema word.
 
 #ifndef GREEN_CURVE_GPU_BACKEND_XBAR_H
 #define GREEN_CURVE_GPU_BACKEND_XBAR_H
 
 #include <string.h>
 
-// These are Windows NvAPI interface IDs, not Linux RM command IDs.  In
+// These are NvAPI interface IDs, not Linux RM command IDs.  In
 // particular, PropRels controls the GPC->XBAR propagation ratio and uses a
 // different structure; it must never be mistaken for ClkDomains.
 #define XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL 0xF58938F5u
@@ -59,12 +59,10 @@ static const unsigned int XBAR_PINNED_XBAR_ENTRY_INDEX = 1;
 // amount (reproduced across idle and load states), while entry 1 drives
 // measure domain 1.  The community labels these two knobs XBAR and SYS.
 static const unsigned int XBAR_PINNED_SYS_ENTRY_INDEX = 3;
-// Video clock entry, identified by differential dump on RTX 5070 / 610.88:
-// with mVolt+ applying a +400 MHz video offset, exactly one dword appeared at
-// entry 4's standard frequency-offset field (0xD34 + 0x114 = 0xE48) and
-// HWiNFO confirmed the physical video clock moved.  Note: the video engine's
-// clock is NOT visible in any CLK_MEASURE domain (0..31), so post-write
-// verification relies on the exact readback, not a measurement.
+// Video clock entry, identified by an exact before/after control-block diff on
+// RTX 5070 / 610.88: a +400 MHz video offset changed only the standard field at
+// 0xE48 (entry 4 + 0x114).  The video engine clock is not visible in a
+// CLK_MEASURE domain, so post-write verification relies on exact readback.
 static const unsigned int XBAR_PINNED_VIDEO_ENTRY_INDEX = 4;
 static const unsigned int XBAR_FREQ_OFFSET_FIELD = 0x114;
 static const unsigned int XBAR_MSVDD_OFFSET_FIELD = 0x11c;
@@ -138,6 +136,14 @@ struct XbarBufferLayout {
     unsigned int msvddFieldOffset;
 };
 
+// The Windows service supplies debug_log; the Linux daemon overrides this
+// before including the shared transaction header so diagnostics reach its
+// journal logger without duplicating the schema or write logic.
+#ifndef XBAR_LOG
+#define XBAR_LOG debug_log
+#define GREEN_CURVE_XBAR_LOG_WAS_DEFAULTED
+#endif
+
 static inline unsigned int xbar_get_u32(const unsigned char* buf,
                                         unsigned int offset) {
     unsigned int value = 0;
@@ -210,11 +216,11 @@ static inline bool xbar_layout_for_buffer(const unsigned char* buf,
 // pinned schema row for their reported version, not a broken install.
 static inline void xbar_log_control_status(const char* what, int status) {
     if (status == XBAR_NVAPI_STATUS_INCOMPATIBLE_STRUCT_VERSION) {
-        debug_log("xbar: %s failed status=%d"
+        XBAR_LOG("xbar: %s failed status=%d"
                   " (NVAPI_INCOMPATIBLE_STRUCT_VERSION: driver rejected the"
                   " requested struct version)\n", what, status);
     } else {
-        debug_log("xbar: %s failed status=0x%X\n", what, (unsigned)status);
+        XBAR_LOG("xbar: %s failed status=0x%X\n", what, (unsigned)status);
     }
 }
 
@@ -224,16 +230,16 @@ static inline void xbar_log_control_status(const char* what, int status) {
 static inline void xbar_log_unknown_response_version(
     const unsigned char* buf, unsigned int requestedWord,
     unsigned int responseWord) {
-    debug_log("xbar_read: unvalidated ClkDomains response version word"
+    XBAR_LOG("xbar_read: unvalidated ClkDomains response version word"
               " 0x%08X (version=%u size=%u bytes), requested 0x%08X;"
               " no pinned schema, refusing read/write access\n",
               responseWord, responseWord >> 16, responseWord & 0xFFFFu,
               requestedWord);
-    debug_log("xbar_read: response head:");
+    XBAR_LOG("xbar_read: response head:");
     for (unsigned int i = 0; i < 16; ++i) {
-        debug_log(" %08X", xbar_get_u32(buf, i * sizeof(unsigned int)));
+        XBAR_LOG(" %08X", xbar_get_u32(buf, i * sizeof(unsigned int)));
     }
-    debug_log("\n");
+    XBAR_LOG("\n");
 }
 
 // NvApiFunc is the project-wide two-argument private-NvAPI entry signature.
@@ -283,7 +289,7 @@ static inline bool xbar_read_control(NvApiFunc getControl, void* gpuHandle,
         snap->schemaStatus = versionRejected
             ? XBAR_SCHEMA_STATUS_UNKNOWN_VERSION
             : XBAR_SCHEMA_STATUS_UNAVAILABLE;
-        debug_log("xbar_read: every pinned ClkDomains request version was"
+        XBAR_LOG("xbar_read: every pinned ClkDomains request version was"
                   " rejected (%u schemas%s)\n", XBAR_SCHEMA_COUNT,
                   versionRejected ? ", incompatible struct version" : "");
         return false;
@@ -301,7 +307,7 @@ static inline bool xbar_read_control(NvApiFunc getControl, void* gpuHandle,
     XbarBufferLayout layout{};
     if (!xbar_layout_for_buffer(snap->buf, responseSchema, &layout)) {
         snap->schemaStatus = XBAR_SCHEMA_STATUS_UNAVAILABLE;
-        debug_log("xbar_read: pinned schema for version word 0x%08X did not"
+        XBAR_LOG("xbar_read: pinned schema for version word 0x%08X did not"
                   " match the response\n", responseWord);
         return false;
     }
@@ -353,28 +359,32 @@ static inline bool xbar_write(NvApiFunc getControl, NvApiFunc setControl,
         return false;
     }
     if (!xbar_read_control(getControl, gpuHandle, snap)) {
-        debug_log("xbar_write: post-set GET_CONTROL failed\n");
+        XBAR_LOG("xbar_write: post-set GET_CONTROL failed\n");
         return false;
     }
     if (writeFreq && snap->freqOffsetKhz != freqKhz) {
-        debug_log("xbar_write: frequency mismatch requested=%d readback=%d\n",
+        XBAR_LOG("xbar_write: frequency mismatch requested=%d readback=%d\n",
                   freqKhz, snap->freqOffsetKhz);
         return false;
     }
     if (writeMsvdd && snap->msvddOffsetUv != msvddUv) {
-        debug_log("xbar_write: MSVDD mismatch requested=%d readback=%d\n",
+        XBAR_LOG("xbar_write: MSVDD mismatch requested=%d readback=%d\n",
                   msvddUv, snap->msvddOffsetUv);
         return false;
     }
     xbar_measure_clock(measureFunc, gpuHandle, XBAR_MEASURE_DOMAIN_XBAR,
                        &snap->measuredKhz);
-    debug_log("xbar_write: ok schema=0x%08X base=0x%03X stride=0x%03X"
+    XBAR_LOG("xbar_write: ok schema=0x%08X base=0x%03X stride=0x%03X"
               " domain=%u freq=%d kHz msvdd=%d uV measured=%u kHz\n",
               snap->versionWord, snap->entryBase, snap->entryStride,
               snap->domainIndex, snap->freqOffsetKhz, snap->msvddOffsetUv,
               snap->measuredKhz);
     return true;
 }
+
+static inline bool xbar_read_entry_freq(const XbarControlSnapshot* snap,
+                                        unsigned int entryIndex,
+                                        int* freqKhz);
 
 // Generic single-field transaction for any pinned entry of the validated
 // schema: fresh full-block preimage, one dword change, exact readback.  Used
@@ -386,11 +396,13 @@ static inline bool xbar_write_entry_freq(NvApiFunc getControl,
                                          unsigned int entryIndex,
                                          int freqKhz) {
     if (!snap || !getControl || !setControl || !gpuHandle) return false;
-    if (entryIndex >= g_xbarSchemas[0].domainCount) return false;
     if (!xbar_read_control(getControl, gpuHandle, snap)) return false;
+    const XbarClkDomainsSchema* schema =
+        xbar_schema_for_version_word(snap->versionWord);
+    if (!schema || entryIndex >= schema->domainCount) return false;
     unsigned long long field =
         (unsigned long long)snap->entryBase + entryIndex * snap->entryStride +
-        g_xbarSchemas[0].freqOffsetField;
+        schema->freqOffsetField;
     if (field + sizeof(unsigned int) > XBAR_CONTROL_BUF_SIZE) return false;
     xbar_put_i32(snap->buf, (unsigned int)field, freqKhz);
     int setStatus = setControl(gpuHandle, snap->buf);
@@ -399,16 +411,36 @@ static inline bool xbar_write_entry_freq(NvApiFunc getControl,
         return false;
     }
     if (!xbar_read_control(getControl, gpuHandle, snap)) {
-        debug_log("clk entry write: post-set GET_CONTROL failed\n");
+        XBAR_LOG("clk entry write: post-set GET_CONTROL failed\n");
         return false;
     }
-    int readback = (int)xbar_get_u32(snap->buf, (unsigned int)field);
-    if (readback != freqKhz) {
-        debug_log("clk entry %u write: readback mismatch requested=%d"
+    int readback = 0;
+    if (!xbar_read_entry_freq(snap, entryIndex, &readback) ||
+        readback != freqKhz) {
+        XBAR_LOG("clk entry %u write: readback mismatch requested=%d"
                   " got=%d\n", entryIndex, freqKhz, readback);
         return false;
     }
-    debug_log("clk entry %u write: ok offset=%d kHz\n", entryIndex, freqKhz);
+    XBAR_LOG("clk entry %u write: ok offset=%d kHz\n", entryIndex, freqKhz);
+    return true;
+}
+
+// Read one pinned entry from an already validated snapshot.  Resolve the
+// field geometry from the RESPONSE schema, never from the first request-ladder
+// row: future schema rows may move the field while retaining the same entry
+// meaning.
+static inline bool xbar_read_entry_freq(const XbarControlSnapshot* snap,
+                                        unsigned int entryIndex,
+                                        int* freqKhz) {
+    if (!snap || !snap->valid || !freqKhz) return false;
+    const XbarClkDomainsSchema* schema =
+        xbar_schema_for_version_word(snap->versionWord);
+    if (!schema || entryIndex >= schema->domainCount) return false;
+    unsigned long long field =
+        (unsigned long long)snap->entryBase + entryIndex * snap->entryStride +
+        schema->freqOffsetField;
+    if (field + sizeof(unsigned int) > XBAR_CONTROL_BUF_SIZE) return false;
+    *freqKhz = (int)xbar_get_u32(snap->buf, (unsigned int)field);
     return true;
 }
 
@@ -422,5 +454,10 @@ static inline bool xbar_reset_to_stock(NvApiFunc getControl,
     return xbar_write(getControl, setControl, measureFunc, gpuHandle, snap,
                       0, 0, true, true);
 }
+
+#ifdef GREEN_CURVE_XBAR_LOG_WAS_DEFAULTED
+#undef GREEN_CURVE_XBAR_LOG_WAS_DEFAULTED
+#undef XBAR_LOG
+#endif
 
 #endif

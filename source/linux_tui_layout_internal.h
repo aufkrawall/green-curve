@@ -36,6 +36,7 @@ private:
 void tui_draw_vf_tab(TuiCanvas* canvas, const TuiRect& content);
 void tui_draw_fan_tab(TuiCanvas* canvas, const TuiRect& content);
 void tui_draw_profiles_tab(TuiCanvas* canvas, const TuiRect& content);
+void tui_draw_advanced_tab(TuiCanvas* canvas, const TuiRect& content);
 
 void tui_format_int(char* buffer, size_t size, int value, bool sign = false);
 void tui_format_gpu_summary(const TuiViewModel& vm, char* buffer, size_t size);

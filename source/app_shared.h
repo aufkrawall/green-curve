@@ -461,7 +461,7 @@ struct AppData {
     int sysClkFreqOffsetKhz;
     unsigned int sysClkMeasuredClockKhz;
     // VIDEO clock domain: pinned ClkDomains entry 4 (differentially
-    // identified via mVolt+ +400 MHz with an exact single-dword block diff).
+    // identified via a +400 MHz exact single-dword control-block diff).
     bool videoClkProbeValid;
     bool videoClkFreqReadbackValid;
     int videoClkFreqOffsetKhz;

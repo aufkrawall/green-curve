@@ -556,7 +556,7 @@ static bool run_native_visible_projection_taskbar_presence_test() {
 
 struct FakeLinuxTransaction {
     unsigned int failPhase;
-    unsigned int calls[7];
+    unsigned int calls[10];
     unsigned int callCount;
     unsigned int rollbackMask;
     bool rollbackOk;
@@ -564,7 +564,8 @@ struct FakeLinuxTransaction {
 
 static bool fake_linux_transaction_step(void* opaque, unsigned int phase) {
     FakeLinuxTransaction* fake = (FakeLinuxTransaction*)opaque;
-    if (fake->callCount < 7) fake->calls[fake->callCount++] = phase;
+    if (fake->callCount < sizeof(fake->calls) / sizeof(fake->calls[0]))
+        fake->calls[fake->callCount++] = phase;
     return phase != fake->failPhase;
 }
 
@@ -1739,6 +1740,52 @@ static int run_all_tests(int argc, char** argv) {
             return 1718;
     }
 
+    // Advanced clock intent uses the same override disclosure as the primary
+    // Linux domains; exact control-block readback is authoritative.
+    {
+        ServiceResponse live = fake_ready_service_response(32, 5, 2);
+        live.state.activeDesiredValid = 1;
+        live.desired.hasXbarOffsetKhz = 1;
+        live.desired.xbarOffsetKhz = 120000;
+        live.desired.hasXbarMsvddOffsetUv = 1;
+        live.desired.xbarMsvddOffsetUv = 5000;
+        live.desired.hasSysClkOffsetKhz = 1;
+        live.desired.sysClkOffsetKhz = 80000;
+        live.desired.hasVideoClkOffsetKhz = 1;
+        live.desired.videoClkOffsetKhz = 40000;
+        live.controlState.valid = 1;
+        live.controlState.hasXbarOffset = 1;
+        live.controlState.xbarOffsetReadbackValid = 1;
+        live.controlState.xbarOffsetKhz = 120000;
+        live.controlState.hasXbarMsvddOffset = 1;
+        live.controlState.xbarMsvddOffsetReadbackValid = 1;
+        live.controlState.xbarMsvddOffsetUv = 5000;
+        live.controlState.hasSysClkOffset = 1;
+        live.controlState.sysClkOffsetReadbackValid = 1;
+        live.controlState.sysClkOffsetKhz = 80000;
+        live.controlState.hasVideoClkOffset = 1;
+        live.controlState.videoClkOffsetReadbackValid = 1;
+        live.controlState.videoClkOffsetKhz = 40000;
+        gc_u32 advanced = SERVICE_MUTATION_DOMAIN_XBAR |
+            SERVICE_MUTATION_DOMAIN_SYS_CLK |
+            SERVICE_MUTATION_DOMAIN_VIDEO_CLK;
+        IntentReadbackStatus status = compare_intent_to_readback(&live);
+        if (status.requestedDomains != advanced ||
+            status.checkedDomains != advanced || status.divergedDomains ||
+            status.unavailableDomains || !intent_readback_matches(&status))
+            return 4545;
+        live.controlState.videoClkOffsetKhz = 0;
+        status = compare_intent_to_readback(&live);
+        if (status.divergedDomains != SERVICE_MUTATION_DOMAIN_VIDEO_CLK ||
+            intent_readback_matches(&status)) return 4546;
+        live.controlState.videoClkOffsetKhz = 40000;
+        live.controlState.sysClkOffsetReadbackValid = 0;
+        status = compare_intent_to_readback(&live);
+        if (status.divergedDomains ||
+            status.unavailableDomains != SERVICE_MUTATION_DOMAIN_SYS_CLK ||
+            intent_readback_matches(&status)) return 4547;
+    }
+
     // F-INTENT-READBACK-FAN: an external controller that puts the fans back on
     // the automatic curve is an override, not an unknown. Windows only reads
     // the target duty while a fan is manual, so requiring a target readback
@@ -2039,13 +2086,24 @@ static int run_all_tests(int argc, char** argv) {
         projected.hasFan = true;
         projected.fanMode = FAN_MODE_FIXED;
         projected.fanPercent = 55;
+        projected.hasXbarOffsetKhz = true;
+        projected.xbarOffsetKhz = 100000;
+        projected.hasXbarMsvddOffsetUv = true;
+        projected.xbarMsvddOffsetUv = 10000;
+        projected.hasSysClkOffsetKhz = true;
+        projected.sysClkOffsetKhz = 50000;
+        projected.hasVideoClkOffsetKhz = true;
+        projected.videoClkOffsetKhz = 25000;
         service_project_desired_to_available_domains(&projected,
             SERVICE_MUTATION_DOMAIN_MEM_OFFSET |
             SERVICE_MUTATION_DOMAIN_POWER);
         if (projected.resetOcBeforeApply || projected.hasGpuOffset ||
             !projected.hasMemOffset || !projected.hasPowerLimit ||
             projected.hasCurvePoint[12] || projected.hasLock ||
-            projected.hasFan ||
+            projected.hasFan || projected.hasXbarOffsetKhz ||
+            projected.hasXbarMsvddOffsetUv ||
+            projected.hasSysClkOffsetKhz ||
+            projected.hasVideoClkOffsetKhz ||
             service_desired_mutation_domains(&projected) !=
                 (SERVICE_MUTATION_DOMAIN_MEM_OFFSET |
                  SERVICE_MUTATION_DOMAIN_POWER)) return 1204;
@@ -2056,6 +2114,14 @@ static int run_all_tests(int argc, char** argv) {
         previous.hasFan = true;
         previous.fanMode = FAN_MODE_FIXED;
         previous.fanPercent = 50;
+        previous.hasXbarOffsetKhz = true;
+        previous.xbarOffsetKhz = 120000;
+        previous.hasXbarMsvddOffsetUv = true;
+        previous.xbarMsvddOffsetUv = 5000;
+        previous.hasSysClkOffsetKhz = true;
+        previous.sysClkOffsetKhz = 80000;
+        previous.hasVideoClkOffsetKhz = true;
+        previous.videoClkOffsetKhz = 40000;
         DesiredSettings powerOnly = {};
         powerOnly.hasPowerLimit = true;
         powerOnly.powerLimitPct = 80;
@@ -2064,6 +2130,10 @@ static int run_all_tests(int argc, char** argv) {
             &previous, &powerOnly);
         if (!merged.hasCurvePoint[20] || merged.curvePointMHz[20] != 2000 ||
             !merged.hasFan || merged.fanPercent != 50 ||
+            !merged.hasXbarOffsetKhz || merged.xbarOffsetKhz != 120000 ||
+            !merged.hasSysClkOffsetKhz || merged.sysClkOffsetKhz != 80000 ||
+            !merged.hasVideoClkOffsetKhz ||
+                merged.videoClkOffsetKhz != 40000 ||
             !merged.hasPowerLimit || merged.powerLimitPct != 80 ||
             merged.resetOcBeforeApply) return 1205;
 
@@ -2084,7 +2154,22 @@ static int run_all_tests(int argc, char** argv) {
         if (resetMerged.hasCurvePoint[20] ||
             resetMerged.curvePointMHz[20] != 0 ||
             !resetMerged.hasFan || resetMerged.fanPercent != 50 ||
+            resetMerged.hasXbarOffsetKhz ||
+            resetMerged.hasXbarMsvddOffsetUv ||
+            resetMerged.hasSysClkOffsetKhz ||
+            resetMerged.hasVideoClkOffsetKhz ||
             resetMerged.resetOcBeforeApply) return 1720;
+        DesiredSettings advancedOnly = {};
+        advancedOnly.hasVideoClkOffsetKhz = true;
+        advancedOnly.videoClkOffsetKhz = 75000;
+        DesiredSettings advancedMerged = service_merge_desired_after_mutation(
+            &previous, &advancedOnly);
+        if (!advancedMerged.hasVideoClkOffsetKhz ||
+            advancedMerged.videoClkOffsetKhz != 75000 ||
+            !advancedMerged.hasXbarOffsetKhz ||
+            advancedMerged.xbarOffsetKhz != 120000 ||
+            !advancedMerged.hasSysClkOffsetKhz ||
+            advancedMerged.sysClkOffsetKhz != 80000) return 4540;
         DesiredSettings mixed = powerOnly;
         mixed.hasCurvePoint[7] = true;
         mixed.curvePointMHz[7] = 1700;
@@ -4430,6 +4515,11 @@ static int run_all_tests(int argc, char** argv) {
         tuiService.snapshot.adapters[0].valid = true;
         tuiService.snapshot.selectedAdapterIndex = 0;
         tuiService.snapshot.numPopulated = VF_NUM_POINTS;
+        tuiService.snapshot.health.availableMutationDomains =
+            SERVICE_MUTATION_DOMAIN_ALL;
+        tuiService.snapshot.xbarSupported = true;
+        tuiService.snapshot.sysClkSupported = true;
+        tuiService.snapshot.videoClkSupported = true;
         for (int i = 0; i < VF_NUM_POINTS; ++i) {
             tuiService.snapshot.curve[i].volt_uV =
                 (760u + (unsigned)i * 4u) * 1000u;
@@ -4453,7 +4543,7 @@ static int run_all_tests(int argc, char** argv) {
             {139,48}, {140,36}, {160,48}, {220,70}
         };
         for (const auto& size : sizes) {
-            for (int tab = TUI_TAB_VF; tab <= TUI_TAB_PROFILES; ++tab) {
+            for (int tab = TUI_TAB_VF; tab <= TUI_TAB_ADVANCED; ++tab) {
                 vm.tab = (TuiTab)tab;
                 TuiLayout layout;
                 build_tui_layout(vm, size[0], size[1], &layout);
@@ -4463,12 +4553,18 @@ static int run_all_tests(int argc, char** argv) {
                 if (!tui_layout_actions_valid(layout)) return 203;
                 bool sawApply = false, sawReset = false, sawQuit = false;
                 bool sawCurrentTab = false;
+                unsigned int advancedFields = 0;
                 for (const ClickAction& action : layout.actions) {
                     if (action.type == ACTION_APPLY) sawApply = true;
                     if (action.type == ACTION_APPLY_RESET) sawReset = true;
                     if (action.type == ACTION_QUIT) sawQuit = true;
                     if (action.type == ACTION_TAB_SET && action.value == tab)
                         sawCurrentTab = true;
+                    if (action.type == ACTION_FIELD_EDIT &&
+                        action.index >= TUI_FIELD_XBAR_OFFSET &&
+                        action.index <= TUI_FIELD_VIDEO_CLK_OFFSET)
+                        advancedFields |= 1u <<
+                            (unsigned)(action.index - TUI_FIELD_XBAR_OFFSET);
                 }
                 if (!sawApply || !sawReset || !sawQuit || !sawCurrentTab) {
                     fprintf(stderr,
@@ -4477,6 +4573,8 @@ static int run_all_tests(int argc, char** argv) {
                         sawCurrentTab);
                     return 204;
                 }
+                if (tab == TUI_TAB_ADVANCED && advancedFields != 0x0fu)
+                    return 4544;
                 if (size[0] >= 140 && size[1] >= 36 &&
                     layout.breakpoint != TUI_BREAKPOINT_WIDE) return 205;
                 if (size[0] >= 100 && size[0] < 140 &&
@@ -4486,6 +4584,49 @@ static int run_all_tests(int argc, char** argv) {
         TuiLayout tooSmall;
         build_tui_layout(vm, 71, 23, &tooSmall);
         if (!tooSmall.tooSmall || !tooSmall.actions.empty()) return 207;
+
+        // Online unsupported rows are truthful and non-interactive; offline
+        // portable-profile editing remains available without claiming a live
+        // readback.
+        vm.tab = TUI_TAB_ADVANCED;
+        tuiService.snapshot.health.availableMutationDomains &=
+            ~(SERVICE_MUTATION_DOMAIN_XBAR |
+              SERVICE_MUTATION_DOMAIN_SYS_CLK |
+              SERVICE_MUTATION_DOMAIN_VIDEO_CLK);
+        TuiLayout unsupportedAdvanced;
+        build_tui_layout(vm, 160, 48, &unsupportedAdvanced);
+        std::string unsupportedAdvancedScreen;
+        bool unsupportedAdvancedAction = false;
+        for (const TuiCell& cell : unsupportedAdvanced.cells)
+            unsupportedAdvancedScreen += cell.glyph;
+        for (const ClickAction& action : unsupportedAdvanced.actions) {
+            if ((action.type == ACTION_FIELD_EDIT ||
+                 action.type == ACTION_FIELD_STEP) &&
+                action.index >= TUI_FIELD_XBAR_OFFSET &&
+                action.index <= TUI_FIELD_VIDEO_CLK_OFFSET)
+                unsupportedAdvancedAction = true;
+        }
+        if (unsupportedAdvancedAction ||
+            unsupportedAdvancedScreen.find("unavailable for this GPU") ==
+                std::string::npos)
+            return 4549;
+        vm.serviceOnline = false;
+        vm.service = nullptr;
+        TuiLayout offlineAdvanced;
+        build_tui_layout(vm, 160, 48, &offlineAdvanced);
+        unsigned int offlineAdvancedFields = 0;
+        for (const ClickAction& action : offlineAdvanced.actions) {
+            if (action.type == ACTION_FIELD_EDIT &&
+                action.index >= TUI_FIELD_XBAR_OFFSET &&
+                action.index <= TUI_FIELD_VIDEO_CLK_OFFSET)
+                offlineAdvancedFields |= 1u <<
+                    (unsigned)(action.index - TUI_FIELD_XBAR_OFFSET);
+        }
+        if (offlineAdvancedFields != 0x0fu) return 4550;
+        vm.serviceOnline = true;
+        vm.service = &tuiService;
+        tuiService.snapshot.health.availableMutationDomains =
+            SERVICE_MUTATION_DOMAIN_ALL;
 
         vm.tab = TUI_TAB_VF;
         TuiPointValues excluded = tui_point_values(vm, 69);
@@ -5406,11 +5547,14 @@ static int run_all_tests(int argc, char** argv) {
         const unsigned int phases[] = {
             LINUX_MUTATION_RESET_BASELINE, LINUX_MUTATION_GPU_OFFSET,
             LINUX_MUTATION_MEM_OFFSET, LINUX_MUTATION_POWER,
+            LINUX_MUTATION_XBAR, LINUX_MUTATION_SYS_CLK,
+            LINUX_MUTATION_VIDEO_CLK,
             LINUX_MUTATION_CURVE, LINUX_MUTATION_LOCK, LINUX_MUTATION_FAN,
         };
         unsigned int requested = 0;
         for (unsigned int phase : phases) requested |= phase;
-        for (unsigned int failIndex = 0; failIndex < 7; ++failIndex) {
+        for (unsigned int failIndex = 0;
+             failIndex < sizeof(phases) / sizeof(phases[0]); ++failIndex) {
             FakeLinuxTransaction fake = {};
             fake.failPhase = phases[failIndex];
             fake.rollbackOk = true;
@@ -5435,6 +5579,17 @@ static int run_all_tests(int argc, char** argv) {
             fake_linux_transaction_rollback, &success);
         if (!complete.success || complete.attemptedPhases != requested ||
             complete.completedPhases != requested || complete.failedPhases) return 623;
+
+        // Optional advanced reset phases are selected from proven writable
+        // domains, not from a merely readable snapshot.  Core-only GPUs must
+        // therefore retain a working Reset path.
+        if (linux_advanced_phases_for_available_domains(0) != 0)
+            return 4551;
+        unsigned int advancedAvailable = SERVICE_MUTATION_DOMAIN_XBAR |
+            SERVICE_MUTATION_DOMAIN_VIDEO_CLK;
+        if (linux_advanced_phases_for_available_domains(advancedAvailable) !=
+            (LINUX_MUTATION_XBAR | LINUX_MUTATION_VIDEO_CLK))
+            return 4552;
     }
 
     // Linux PCI identity remains stable across API enumeration reordering and
@@ -11311,6 +11466,12 @@ static int run_all_tests(int argc, char** argv) {
             xbar_put_u32(templateBuf, base + i * stride, XBAR_DOMAIN_MARKER);
         xbar_put_i32(templateBuf, base + stride + XBAR_FREQ_OFFSET_FIELD, 60000);
         xbar_put_i32(templateBuf, base + stride + XBAR_MSVDD_OFFSET_FIELD, 20000);
+        xbar_put_i32(templateBuf,
+            base + XBAR_PINNED_SYS_ENTRY_INDEX * stride +
+                XBAR_FREQ_OFFSET_FIELD, 75000);
+        xbar_put_i32(templateBuf,
+            base + XBAR_PINNED_VIDEO_ENTRY_INDEX * stride +
+                XBAR_FREQ_OFFSET_FIELD, 40000);
         memcpy(stockTemplate, templateBuf, sizeof(stockTemplate));
         auto fakeGet = [](void*, void* payload) -> int {
             if (!payload) return -1;
@@ -11351,6 +11512,15 @@ static int run_all_tests(int argc, char** argv) {
         if (snap.freqFieldOffset != base + stride + XBAR_FREQ_OFFSET_FIELD ||
             snap.msvddFieldOffset != base + stride + XBAR_MSVDD_OFFSET_FIELD)
             return 4521;
+        int entryValue = 0;
+        if (!xbar_read_entry_freq(&snap, XBAR_PINNED_SYS_ENTRY_INDEX,
+                                  &entryValue) || entryValue != 75000)
+            return 4541;
+        if (!xbar_read_entry_freq(&snap, XBAR_PINNED_VIDEO_ENTRY_INDEX,
+                                  &entryValue) || entryValue != 40000)
+            return 4542;
+        if (xbar_read_entry_freq(&snap, XBAR_PINNED_DOMAIN_COUNT,
+                                 &entryValue)) return 4543;
         setCalls = 0;
         corruptReadback = false;
         if (!xbar_write(get, set, measure, gpu, &snap,

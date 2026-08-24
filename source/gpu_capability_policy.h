@@ -109,7 +109,7 @@ constexpr gc_u32 gpu_capability_get(const GpuCapabilityProbe* probe,
 }
 
 // Compact wire representation carried in ServiceGpuHealth.  Two bits are
-// sufficient for each of the seven GpuDomainCapability values, so the complete
+// sufficient for each of the ten domain capability values, so the complete
 // probe fits in the protocol's existing reserved bytes without changing the
 // ServiceResponse size or forcing an otherwise unnecessary protocol bump.
 constexpr gc_u32 gpu_capability_packed_domain_mask() {
@@ -188,7 +188,10 @@ constexpr gc_u32 gpu_capability_write_domains() {
            gpu_capability_mask_for_index(3) |   // POWER
            gpu_capability_mask_for_index(4) |   // VF_CURVE
            gpu_capability_mask_for_index(5) |   // LOCK
-           gpu_capability_mask_for_index(6);    // FAN
+           gpu_capability_mask_for_index(6) |   // FAN
+           gpu_capability_mask_for_index(7) |   // XBAR
+           gpu_capability_mask_for_index(8) |   // SYS_CLK
+           gpu_capability_mask_for_index(9);    // VIDEO_CLK
 }
 
 constexpr gc_u32 gpu_capability_surface_class(

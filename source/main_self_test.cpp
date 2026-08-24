@@ -678,7 +678,7 @@ static int clk_domain_probe_report(FILE* out) {
 // Writes the complete GET_CONTROL response (header, every domain entry,
 // measure table, public clocks) to clkdomains_dump.txt beside the INI so two
 // captures taken under different tool states can be DIFFED offline.  That is
-// the safe way to locate a field another tool (e.g. mVolt's video offset)
+// the safe way to locate a field changed outside Green Curve
 // writes: let it actuate, diff the blocks, pin the offset from evidence.
 static int clk_domain_dump_report(FILE* out) {
     if (!out) out = stdout;

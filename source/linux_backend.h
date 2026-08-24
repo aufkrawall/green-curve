@@ -85,11 +85,20 @@ struct LinuxGpuState {
     int lastLoggedGraphicsDomainEnd;
     bool graphicsDomainBoundaryLogged;
     bool xbarProbeValid;
+    unsigned int xbarSchemaStatus;
     bool xbarFreqReadbackValid;
     bool xbarMsvddReadbackValid;
     int xbarFreqOffsetKhz;
     int xbarMsvddOffsetUv;
     unsigned int xbarMeasuredClockKhz;
+    bool sysClkProbeValid;
+    bool sysClkFreqReadbackValid;
+    int sysClkFreqOffsetKhz;
+    unsigned int sysClkMeasuredClockKhz;
+    bool videoClkProbeValid;
+    bool videoClkFreqReadbackValid;
+    int videoClkFreqOffsetKhz;
+    unsigned int videoClkMeasuredClockKhz;
 
     // Offset ranges (kHz for curve; MHz for clock domains)
     int curveOffsetMinKHz;
@@ -125,9 +134,16 @@ struct LinuxHardwareSnapshot {
     bool powerValid;
     bool curveValid;
     bool fanValid;
+    bool xbarValid;
+    bool sysClkValid;
+    bool videoClkValid;
     int gpuOffsetMHz;
     int memOffsetMHz;
     unsigned int powerLimitmW;
+    int xbarOffsetKhz;
+    int xbarMsvddOffsetUv;
+    int sysClkOffsetKhz;
+    int videoClkOffsetKhz;
     int curveOffsets[VF_NUM_POINTS];
     bool curveMask[VF_NUM_POINTS];
     unsigned int fanCount;

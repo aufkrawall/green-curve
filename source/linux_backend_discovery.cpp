@@ -98,6 +98,7 @@ static bool linux_backend_bind_nvapi(LinuxGpuState* g, bool recovery,
         return false;
     }
     linux_backend_clear_vf_freshness(g, true);
+    linux_xbar_clear_readback(g);
     g->gpuHandle = nullptr;
     g->backend = nullptr;
     g->architecture = 0;

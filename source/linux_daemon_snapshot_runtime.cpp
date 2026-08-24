@@ -56,21 +56,6 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
             s->freqOffsets[i] = g_gpu.freqOffsets[i];
         }
     }
-    // XBAR clock domain state (schema-gated on Windows).
-    s->xbarSupported = g_gpu.xbarProbeValid;
-    s->xbarOffsetReadbackValid = g_gpu.xbarFreqReadbackValid;
-    s->xbarOffsetKhz = g_gpu.xbarFreqOffsetKhz;
-    s->xbarMsvddOffsetReadbackValid = g_gpu.xbarMsvddReadbackValid;
-    s->xbarMsvddOffsetUv = g_gpu.xbarMsvddOffsetUv;
-    s->xbarMeasuredClockKhz = g_gpu.xbarMeasuredClockKhz;
-    s->sysClkSupported = false;
-    s->sysClkOffsetReadbackValid = false;
-    s->sysClkOffsetKhz = 0;
-    s->sysClkMeasuredClockKhz = 0;
-    s->videoClkSupported = false;
-    s->videoClkOffsetReadbackValid = false;
-    s->videoClkOffsetKhz = 0;
-    s->videoClkMeasuredClockKhz = 0;
     gc_strlcpy(s->gpuName, sizeof(s->gpuName), g_gpu.gpuName[0] ? g_gpu.gpuName : "NVIDIA GPU");
 
     // Preserve the backend's complete adapter list and exact selected index.
@@ -89,6 +74,22 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
     char hardwareErr[160] = {};
     bool hardwareAvailable = linux_backend_capture_snapshot(
         &g_gpu, &hardware, hardwareErr, sizeof(hardwareErr));
+    // capture_snapshot performs the fresh shared ClkDomains read; publish only
+    // after it so this envelope never lags its own availability proof.
+    s->xbarSupported = g_gpu.xbarProbeValid;
+    s->xbarOffsetReadbackValid = g_gpu.xbarFreqReadbackValid;
+    s->xbarOffsetKhz = g_gpu.xbarFreqOffsetKhz;
+    s->xbarMsvddOffsetReadbackValid = g_gpu.xbarMsvddReadbackValid;
+    s->xbarMsvddOffsetUv = g_gpu.xbarMsvddOffsetUv;
+    s->xbarMeasuredClockKhz = g_gpu.xbarMeasuredClockKhz;
+    s->sysClkSupported = g_gpu.sysClkProbeValid;
+    s->sysClkOffsetReadbackValid = g_gpu.sysClkFreqReadbackValid;
+    s->sysClkOffsetKhz = g_gpu.sysClkFreqOffsetKhz;
+    s->sysClkMeasuredClockKhz = g_gpu.sysClkMeasuredClockKhz;
+    s->videoClkSupported = g_gpu.videoClkProbeValid;
+    s->videoClkOffsetReadbackValid = g_gpu.videoClkFreqReadbackValid;
+    s->videoClkOffsetKhz = g_gpu.videoClkFreqOffsetKhz;
+    s->videoClkMeasuredClockKhz = g_gpu.videoClkMeasuredClockKhz;
     s->health = g_gpu.health;
     if (g_stateUncertain) {
         s->health.reason = SERVICE_GPU_HEALTH_STATE_UNCERTAIN;
@@ -218,6 +219,26 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
         control->fanFixedPercent = control->fanCurrentPercent;
         fan_curve_set_default(&control->fanCurve);
     }
+    control->hasXbarOffset = hardware.xbarValid ||
+        (g_hasActiveDesired && g_activeDesired.hasXbarOffsetKhz);
+    control->xbarOffsetReadbackValid = hardware.xbarValid;
+    control->xbarOffsetKhz = hardware.xbarValid
+        ? hardware.xbarOffsetKhz : g_activeDesired.xbarOffsetKhz;
+    control->hasXbarMsvddOffset = hardware.xbarValid ||
+        (g_hasActiveDesired && g_activeDesired.hasXbarMsvddOffsetUv);
+    control->xbarMsvddOffsetReadbackValid = hardware.xbarValid;
+    control->xbarMsvddOffsetUv = hardware.xbarValid
+        ? hardware.xbarMsvddOffsetUv : g_activeDesired.xbarMsvddOffsetUv;
+    control->hasSysClkOffset = hardware.sysClkValid ||
+        (g_hasActiveDesired && g_activeDesired.hasSysClkOffsetKhz);
+    control->sysClkOffsetReadbackValid = hardware.sysClkValid;
+    control->sysClkOffsetKhz = hardware.sysClkValid
+        ? hardware.sysClkOffsetKhz : g_activeDesired.sysClkOffsetKhz;
+    control->hasVideoClkOffset = hardware.videoClkValid ||
+        (g_hasActiveDesired && g_activeDesired.hasVideoClkOffsetKhz);
+    control->videoClkOffsetReadbackValid = hardware.videoClkValid;
+    control->videoClkOffsetKhz = hardware.videoClkValid
+        ? hardware.videoClkOffsetKhz : g_activeDesired.videoClkOffsetKhz;
 }
 
 #include "linux_daemon_identity.cpp"
@@ -276,9 +297,15 @@ static bool mutation_preconditions_match(const ServiceRequest* req,
         ? service_snapshot_topology_signature(&current) : 0;
     gc_u32 requestedDomains = service_requested_mutation_domains(
         req->command, &req->desired);
-    gc_u32 unavailableDomains = service_unavailable_mutation_domains(
-        req->command, &req->desired,
-        current.health.availableMutationDomains);
+    // Reset restores every domain this Linux driver can prove and roll back.
+    // Optional advanced domains must not make Reset impossible on a GPU whose
+    // ClkDomains schema is unknown; when present, they are included and reset.
+    if (req->command == SERVICE_CMD_RESET)
+        requestedDomains = current.health.availableMutationDomains;
+    gc_u32 unavailableDomains = req->command == SERVICE_CMD_RESET ? 0 :
+        service_unavailable_mutation_domains(
+            req->command, &req->desired,
+            current.health.availableMutationDomains);
     if (unavailableDomains != 0) {
         resp->status = SERVICE_STATUS_ERROR;
         gc_snprintf(resp->message, sizeof(resp->message),

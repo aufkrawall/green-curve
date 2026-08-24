@@ -67,7 +67,7 @@ enum {
     // ServiceSnapshot, and therefore ServiceResponse all changed size again.
     //
     // v22 adds the VIDEO clock offset (ClkDomains entry 4, identified by
-    // differential dump against mVolt+ on RTX 5070 / 610.88; the engine's
+    // exact before/after control-block diff on RTX 5070 / 610.88; the engine's
     // clock has no CLK_MEASURE id, so exact readback is the proof). Sizes
     // changed again.
     SERVICE_PROTOCOL_VERSION = 22,

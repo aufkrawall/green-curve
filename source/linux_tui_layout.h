@@ -20,6 +20,8 @@ enum TuiTab {
     TUI_TAB_VF = 0,
     TUI_TAB_FAN = 1,
     TUI_TAB_PROFILES = 2,
+    TUI_TAB_ADVANCED = 3,
+    TUI_TAB_COUNT = 4,
 };
 
 enum TuiBreakpoint {
@@ -68,6 +70,10 @@ enum TuiField {
     TUI_FIELD_FAN_HYSTERESIS,
     TUI_FIELD_FAN_TEMPERATURE,
     TUI_FIELD_FAN_PERCENT,
+    TUI_FIELD_XBAR_OFFSET,
+    TUI_FIELD_XBAR_MSVDD,
+    TUI_FIELD_SYS_CLK_OFFSET,
+    TUI_FIELD_VIDEO_CLK_OFFSET,
 };
 
 enum ActionType {

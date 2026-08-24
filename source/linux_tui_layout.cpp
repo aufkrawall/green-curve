@@ -101,11 +101,13 @@ void draw_header(TuiCanvas* c) {
 
     c->fill(1, 3, out->width, 1, TUI_STYLE_DEFAULT);
     int tabWidth = out->breakpoint == TUI_BREAKPOINT_COMPACT
-        ? (out->width - 3) / 3 : 22;
+        ? (out->width - 4) / TUI_TAB_COUNT : 18;
     const char* vf = out->breakpoint == TUI_BREAKPOINT_COMPACT ? "VF" : "VF CURVE";
     const char* fan = out->breakpoint == TUI_BREAKPOINT_COMPACT ? "FAN" : "FAN CURVE";
     const char* profiles = out->breakpoint == TUI_BREAKPOINT_COMPACT
-        ? "TOOLS" : "PROFILES & TOOLS";
+        ? "TOOLS" : "PROFILES";
+    const char* advanced = out->breakpoint == TUI_BREAKPOINT_COMPACT
+        ? "ADV" : "ADVANCED";
     c->button(TuiRect{2, 3, tabWidth, 1}, vf, ACTION_TAB_SET, 0,
               TUI_TAB_VF, vm.tab == TUI_TAB_VF);
     c->button(TuiRect{3 + tabWidth, 3, tabWidth, 1}, fan, ACTION_TAB_SET, 0,
@@ -113,7 +115,10 @@ void draw_header(TuiCanvas* c) {
     c->button(TuiRect{4 + tabWidth * 2, 3, tabWidth, 1}, profiles,
               ACTION_TAB_SET, 0, TUI_TAB_PROFILES,
               vm.tab == TUI_TAB_PROFILES);
-    if (out->breakpoint != TUI_BREAKPOINT_COMPACT) {
+    c->button(TuiRect{5 + tabWidth * 3, 3, tabWidth, 1}, advanced,
+              ACTION_TAB_SET, 0, TUI_TAB_ADVANCED,
+              vm.tab == TUI_TAB_ADVANCED);
+    if (out->width >= 120) {
         char state[64] = {};
         if (vm.dirty) {
             snprintf(state, sizeof(state), "● STAGED • %s",
@@ -567,6 +572,7 @@ void build_tui_layout(const TuiViewModel& vm, int width, int height,
     TuiRect content{1, 4, width, height - 6};
     if (vm.tab == TUI_TAB_FAN) tui_draw_fan_tab(&canvas, content);
     else if (vm.tab == TUI_TAB_PROFILES) tui_draw_profiles_tab(&canvas, content);
+    else if (vm.tab == TUI_TAB_ADVANCED) tui_draw_advanced_tab(&canvas, content);
     else tui_draw_vf_tab(&canvas, content);
     draw_footer(&canvas);
 }

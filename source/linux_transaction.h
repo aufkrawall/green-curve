@@ -12,7 +12,26 @@ enum LinuxMutationPhase {
     LINUX_MUTATION_CURVE = 1u << 4,
     LINUX_MUTATION_LOCK = 1u << 5,
     LINUX_MUTATION_FAN = 1u << 6,
+    LINUX_MUTATION_XBAR = 1u << 7,
+    LINUX_MUTATION_SYS_CLK = 1u << 8,
+    LINUX_MUTATION_VIDEO_CLK = 1u << 9,
 };
+
+// Optional advanced domains participate in Reset only when the backend has
+// published exact readback plus a writable surface.  A readable-but-not-
+// writable ClkDomains block must never make an otherwise valid core reset
+// fail.
+static inline unsigned int linux_advanced_phases_for_available_domains(
+    unsigned int availableMutationDomains) {
+    unsigned int phases = 0;
+    if (availableMutationDomains & SERVICE_MUTATION_DOMAIN_XBAR)
+        phases |= LINUX_MUTATION_XBAR;
+    if (availableMutationDomains & SERVICE_MUTATION_DOMAIN_SYS_CLK)
+        phases |= LINUX_MUTATION_SYS_CLK;
+    if (availableMutationDomains & SERVICE_MUTATION_DOMAIN_VIDEO_CLK)
+        phases |= LINUX_MUTATION_VIDEO_CLK;
+    return phases;
+}
 
 struct LinuxMutationResult {
     bool success;
@@ -36,7 +55,9 @@ static inline LinuxMutationResult linux_execute_transaction(
     const unsigned int order[] = {
         LINUX_MUTATION_RESET_BASELINE, LINUX_MUTATION_GPU_OFFSET,
         LINUX_MUTATION_MEM_OFFSET, LINUX_MUTATION_POWER,
-        LINUX_MUTATION_CURVE, LINUX_MUTATION_LOCK, LINUX_MUTATION_FAN,
+        LINUX_MUTATION_XBAR, LINUX_MUTATION_SYS_CLK,
+        LINUX_MUTATION_VIDEO_CLK, LINUX_MUTATION_CURVE,
+        LINUX_MUTATION_LOCK, LINUX_MUTATION_FAN,
     };
     if (!step) return result;
     for (unsigned int phase : order) {

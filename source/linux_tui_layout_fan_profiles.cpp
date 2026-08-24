@@ -292,6 +292,117 @@ void draw_service_panel(TuiCanvas* c, const TuiRect& panel) {
     }
 }
 
+void draw_advanced_stepper(TuiCanvas* c, int x, int y, const char* label,
+                           TuiField field, int value, int delta,
+                           const char* unit, bool editable,
+                           const char* live) {
+    c->text(x, y, 18, label,
+            editable ? TUI_STYLE_TEXT : TUI_STYLE_DIM);
+    char formatted[24] = {};
+    tui_format_int(formatted, sizeof(formatted), value, true);
+    if (!editable) {
+        c->text(x + 22, y, 9, formatted, TUI_STYLE_DIM, true);
+        c->text(x + 36, y, 5, unit, TUI_STYLE_DIM);
+        if (live && c->layout()->width >= 100)
+            c->text(x + 43, y, c->layout()->width - x - 47, live,
+                    TUI_STYLE_DIM);
+        return;
+    }
+    int minus = c->button(TuiRect{x + 18, y, 3, 1}, "−",
+                          ACTION_FIELD_STEP, (int)field, -delta);
+    c->layout()->actions[minus].context = 0;
+    c->field(TuiRect{x + 22, y, 9, 1}, formatted, field, 0);
+    int plus = c->button(TuiRect{x + 32, y, 3, 1}, "+",
+                         ACTION_FIELD_STEP, (int)field, delta);
+    c->layout()->actions[plus].context = 0;
+    c->text(x + 36, y, 5, unit, TUI_STYLE_MUTED);
+    if (live && c->layout()->width >= 100)
+        c->text(x + 43, y, c->layout()->width - x - 47, live,
+                TUI_STYLE_CYAN);
+}
+
+void draw_advanced_panel(TuiCanvas* c, const TuiRect& panel) {
+    const TuiViewModel& vm = c->view();
+    const DesiredSettings& desired = *vm.desired;
+    c->box(panel, "ADVANCED CLOCKS",
+           "version-checked full-block writes with exact offset readback");
+    int x = panel.x + 3;
+    int y = panel.y + 2;
+    gc_u32 availableDomains = vm.serviceOnline && vm.service
+        ? vm.service->snapshot.health.availableMutationDomains : 0;
+    const ServiceSnapshot* snap = vm.serviceOnline && vm.service
+        ? &vm.service->snapshot : nullptr;
+    char xbarLive[64] = "offline / saved intent only";
+    char voltageLive[64] = "offline / saved intent only";
+    char sysLive[64] = "offline / saved intent only";
+    char videoLive[64] = "offline / saved intent only";
+    if (snap) {
+        snprintf(xbarLive, sizeof(xbarLive), "%s",
+                 "unavailable for this GPU");
+        snprintf(voltageLive, sizeof(voltageLive), "%s",
+                 "unavailable for this GPU");
+        snprintf(sysLive, sizeof(sysLive), "%s",
+                 "unavailable for this GPU");
+        snprintf(videoLive, sizeof(videoLive), "%s",
+                 "unavailable for this GPU");
+        char xbarNow[16] = "---";
+        char sysNow[16] = "---";
+        char videoNow[16] = "---";
+        if (snap->xbarMeasuredClockKhz)
+            snprintf(xbarNow, sizeof(xbarNow), "%u",
+                     snap->xbarMeasuredClockKhz / 1000);
+        if (snap->sysClkMeasuredClockKhz)
+            snprintf(sysNow, sizeof(sysNow), "%u",
+                     snap->sysClkMeasuredClockKhz / 1000);
+        if (snap->videoClkMeasuredClockKhz)
+            snprintf(videoNow, sizeof(videoNow), "%u",
+                     snap->videoClkMeasuredClockKhz / 1000);
+        if (snap->xbarOffsetReadbackValid)
+            snprintf(xbarLive, sizeof(xbarLive),
+                     "readback %+d MHz • now %s MHz",
+                     snap->xbarOffsetKhz / 1000, xbarNow);
+        if (snap->xbarMsvddOffsetReadbackValid)
+            snprintf(voltageLive, sizeof(voltageLive), "readback %+d mV",
+                     snap->xbarMsvddOffsetUv / 1000);
+        if (snap->sysClkOffsetReadbackValid)
+            snprintf(sysLive, sizeof(sysLive),
+                     "readback %+d MHz • now %s MHz",
+                     snap->sysClkOffsetKhz / 1000, sysNow);
+        if (snap->videoClkOffsetReadbackValid)
+            snprintf(videoLive, sizeof(videoLive),
+                     "readback %+d MHz • now %s MHz",
+                     snap->videoClkOffsetKhz / 1000, videoNow);
+    }
+    bool xbar = (availableDomains & SERVICE_MUTATION_DOMAIN_XBAR) != 0;
+    bool sys = (availableDomains & SERVICE_MUTATION_DOMAIN_SYS_CLK) != 0;
+    bool video = (availableDomains & SERVICE_MUTATION_DOMAIN_VIDEO_CLK) != 0;
+    bool offline = !vm.serviceOnline;
+    draw_advanced_stepper(c, x, y, "XBAR clock", TUI_FIELD_XBAR_OFFSET,
+                          desired.xbarOffsetKhz / 1000, 10, "MHz",
+                          offline || xbar,
+                          xbarLive);
+    draw_advanced_stepper(c, x, y + 2, "XBAR MSVDD", TUI_FIELD_XBAR_MSVDD,
+                          desired.xbarMsvddOffsetUv / 1000, 1, "mV",
+                          offline || xbar,
+                          voltageLive);
+    draw_advanced_stepper(c, x, y + 4, "SYS clock", TUI_FIELD_SYS_CLK_OFFSET,
+                          desired.sysClkOffsetKhz / 1000, 10, "MHz",
+                          offline || sys,
+                          sysLive);
+    draw_advanced_stepper(c, x, y + 6, "Video clock",
+                          TUI_FIELD_VIDEO_CLK_OFFSET,
+                          desired.videoClkOffsetKhz / 1000, 10, "MHz",
+                          offline || video,
+                          videoLive);
+    if (panel.height >= 13) {
+        c->text(x, y + 9, panel.width - 6,
+                vm.serviceOnline
+                    ? "Unavailable rows are retained in portable profiles but cannot be staged for this GPU."
+                    : "Daemon offline: values can be saved locally; Apply remains detached.",
+                TUI_STYLE_MUTED);
+    }
+}
+
 }  // namespace
 
 void tui_draw_fan_tab(TuiCanvas* canvas, const TuiRect& content) {
@@ -342,4 +453,9 @@ void tui_draw_profiles_tab(TuiCanvas* canvas, const TuiRect& content) {
                 TuiRect{2, content.y + profileHeight + toolsHeight,
                         content.width - 2, serviceHeight});
     }
+}
+
+void tui_draw_advanced_tab(TuiCanvas* canvas, const TuiRect& content) {
+    draw_advanced_panel(canvas,
+        TuiRect{2, content.y, content.width - 2, content.height});
 }

@@ -338,7 +338,7 @@ void probe_nvapi(FILE* out, LinuxNvapiProbe* result) {
         }
     }
     fprintf(out, "NvAPI: undocumented VF-curve QueryInterface surface is reachable "
-                 "(same path MSI Afterburner / LACT use)\n");
+                 "(standard driver control path)\n");
 }
 
 } // namespace

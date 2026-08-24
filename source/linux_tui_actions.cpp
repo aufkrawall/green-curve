@@ -22,32 +22,7 @@ const GpuAdapterInfo* selected_adapter(const ServiceResponse& response) {
     return linux_tui_authoritative_gpu(&response);
 }
 
-void desired_from_live_response(const ServiceResponse& response,
-                                DesiredSettings* desired) {
-    if (response.state.activeDesiredValid) {
-        *desired = response.desired;
-    } else {
-        initialize_desired_settings_defaults(desired);
-        const ControlState& controls = response.controlState;
-        if (controls.valid) {
-            desired->hasGpuOffset = controls.hasGpuOffset;
-            desired->gpuOffsetMHz = controls.gpuOffsetMHz;
-            desired->gpuOffsetExcludeLowCount = controls.gpuOffsetExcludeLowCount;
-            desired->hasMemOffset = controls.hasMemOffset;
-            desired->memOffsetMHz = controls.memOffsetMHz;
-            desired->hasPowerLimit = controls.hasPowerLimit;
-            desired->powerLimitPct = controls.powerLimitPct;
-            desired->hasFan = controls.hasFan;
-            desired->fanMode = controls.fanMode;
-            desired->fanAuto = controls.fanMode == FAN_MODE_AUTO;
-            desired->fanPercent = controls.fanFixedPercent;
-            desired->fanCurve = controls.fanCurve;
-        }
-    }
-    normalize_desired_settings_for_ui(desired);
-    service_project_desired_to_available_domains(desired,
-        response.snapshot.health.availableMutationDomains);
-}
+#include "linux_tui_desired_runtime.cpp"
 
 int useful_initial_point(const ServiceResponse& response,
                          const DesiredSettings& desired) {
@@ -102,6 +77,14 @@ int current_field_value(const TuiState& state, TuiField field, int index) {
         case TUI_FIELD_FAN_PERCENT:
             return index >= 0 && index < FAN_CURVE_MAX_POINTS
                 ? state.desired.fanCurve.points[index].fanPercent : 0;
+        case TUI_FIELD_XBAR_OFFSET:
+            return state.desired.xbarOffsetKhz / 1000;
+        case TUI_FIELD_XBAR_MSVDD:
+            return state.desired.xbarMsvddOffsetUv / 1000;
+        case TUI_FIELD_SYS_CLK_OFFSET:
+            return state.desired.sysClkOffsetKhz / 1000;
+        case TUI_FIELD_VIDEO_CLK_OFFSET:
+            return state.desired.videoClkOffsetKhz / 1000;
         case TUI_FIELD_VF_TARGET: {
             TuiViewModel vm = view_for_state(state);
             return tui_point_values(vm, index).targetMHz;
@@ -144,6 +127,22 @@ void set_field_value(TuiState* state, TuiField field, int index, int value) {
         case TUI_FIELD_POWER_LIMIT:
             desired.hasPowerLimit = true;
             desired.powerLimitPct = clamp_power_limit_pct(value);
+            break;
+        case TUI_FIELD_XBAR_OFFSET:
+            desired.hasXbarOffsetKhz = true;
+            desired.xbarOffsetKhz = clamp_int(value, -1000, 1000) * 1000;
+            break;
+        case TUI_FIELD_XBAR_MSVDD:
+            desired.hasXbarMsvddOffsetUv = true;
+            desired.xbarMsvddOffsetUv = clamp_int(value, -100, 100) * 1000;
+            break;
+        case TUI_FIELD_SYS_CLK_OFFSET:
+            desired.hasSysClkOffsetKhz = true;
+            desired.sysClkOffsetKhz = clamp_int(value, -1000, 1000) * 1000;
+            break;
+        case TUI_FIELD_VIDEO_CLK_OFFSET:
+            desired.hasVideoClkOffsetKhz = true;
+            desired.videoClkOffsetKhz = clamp_int(value, -1000, 1000) * 1000;
             break;
         case TUI_FIELD_VF_TARGET: {
             if (index < 0 || index >= VF_NUM_POINTS) return;
@@ -589,7 +588,7 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
             break;
         case ACTION_TAB_SET:
             state->tab = (TuiTab)clamp_int(action.value,
-                                           TUI_TAB_VF, TUI_TAB_PROFILES);
+                                           TUI_TAB_VF, TUI_TAB_ADVANCED);
             state->focusIndex = -1;
             break;
         case ACTION_GPU_SELECT_DELTA: {

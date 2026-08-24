@@ -48,7 +48,7 @@ def check_xbar_clk_domains(ctx, require_text, forbid_text):
     require_text(backend_h,
                  "XBAR_PINNED_DOMAIN_COUNT = 8",
                  "F-XBAR-V2-SCHEMA: every validated domain marker is required")
-    # Generation independence (unwinder guidance): the .domains structure is
+    # Generation independence: the .domains structure is
     # versioned per generation and the driver reports which schema it answered
     # with.  Selection must key off that reported version word through a pinned
     # schema table — never off a GPU family whitelist or a fixed-offset read.
@@ -110,6 +110,12 @@ def check_xbar_clk_domains(ctx, require_text, forbid_text):
                  "F-XBAR-LIVE: the dialog owns a 1 s live-value timer")
     require_text(dialog_cpp, "xbar_dialog_update_live_values",
                  "F-XBAR-LIVE: live values render through one focused helper")
+    telemetry_h = _p(ctx, "xbar_telemetry.h")
+    require_text(telemetry_h,
+                 "clk_read_public_video_clock(g_app.gpuHandle, &videoMeasuredKhz);",
+                 "F-XBAR-LIVE: VIDEO telemetry actually invokes the public clock reader")
+    forbid_text(telemetry_h, "g_xbarSchemas[0].freqOffsetField",
+                "F-XBAR-SCHEMA-TABLE: telemetry resolves entry fields from the response schema")
     require_text(dialog_cpp, "(int)outerSize.cx, (int)outerSize.cy,",
                  "F-XBAR-DIALOG: CreateWindow receives the adjusted frame size")
     forbid_text(dialog_cpp, "x, y, dlgW, dlgH,",
@@ -236,10 +242,10 @@ def check_xbar_profile_contract(ctx, require_text, forbid_text):
 
 def check_video_domain(ctx, require_text, forbid_text):
     """F-XBAR-VIDEO: video = ClkDomains entry 4, identified by differential
-    dump against mVolt+ (+400 MHz appeared at 0xE48 = entry 4 + 0x114 and
-    HWiNFO confirmed the physical clock).  The engine has no CLK_MEASURE id,
-    so exact readback is the verification.  Profiles never own it; any
-    profile selection clears it."""
+    exact before/after dump (+400 MHz appeared only at 0xE48 = entry 4 +
+    0x114).  The engine has no CLK_MEASURE id,
+    so exact readback is the verification.  Profiles own it as a normal
+    portable advanced-clock field."""
     backend_h = _p(ctx, "gpu_backend_xbar.h")
     apply_cpp = _p(ctx, "gpu_backend_apply.cpp")
     protocol_header = _p(ctx, "service_protocol.h")
@@ -253,7 +259,26 @@ def check_video_domain(ctx, require_text, forbid_text):
                  "F-XBAR-VIDEO: capture owns VIDEO only when its surface answered")
     require_text(lifecycle_h,
                  "previousIntent->hasVideoClkOffsetKhz && !nextIntent->hasVideoClkOffsetKhz",
-                 "F-XBAR-VIDEO: profile selection clears the experiment")
+                 "F-XBAR-VIDEO: profile transitions clear omitted VIDEO intent")
+
+    linux_backend = _p(ctx, "linux_backend_xbar.cpp")
+    linux_snapshot = _p(ctx, "linux_daemon_snapshot_runtime.cpp")
+    linux_tui = _p(ctx, "linux_tui_layout_fan_profiles.cpp")
+    linux_mutation = _p(ctx, "linux_backend_mutation.cpp")
+    desired_policy = _p(ctx, "service_desired_mutation_policy.h")
+    require_text(linux_backend, "xbar_write_entry_freq(",
+                 "F-XBAR-LINUX: Linux reuses the audited exact-readback transaction")
+    require_text(linux_snapshot, "s->videoClkSupported = g_gpu.videoClkProbeValid;",
+                 "F-XBAR-LINUX: Linux publishes truthful VIDEO support")
+    require_text(linux_tui, "TUI_FIELD_VIDEO_CLK_OFFSET",
+                 "F-XBAR-LINUX: the Linux TUI exposes VIDEO editing")
+    require_text(desired_policy, "merged.videoClkOffsetKhz = requested->videoClkOffsetKhz;",
+                 "F-XBAR-LINUX: successful sparse applies retain VIDEO intent")
+    require_text(linux_mutation,
+                 "snapshot.availableMutationDomains);",
+                 "F-XBAR-LINUX: Reset selects optional advanced phases from proven writable domains")
+    require_text(linux_tui, '"unavailable for this GPU"',
+                 "F-XBAR-LINUX: unsupported advanced rows never fabricate zero readback")
 
 
 def check_all(ctx, require_text, forbid_text):

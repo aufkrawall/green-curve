@@ -43,6 +43,25 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
         snapshot->memOffsetMHz = memOffset.offsetMHz;
         snapshot->memOffsetValid = true;
     }
+    // An unknown response schema cannot become safe without a rebind/driver
+    // transition.  Avoid repeating the same large diagnostic on every 1 Hz
+    // telemetry snapshot; linux_backend_bind_nvapi() clears this latch.
+    if (g->xbarSchemaStatus != XBAR_SCHEMA_STATUS_UNKNOWN_VERSION)
+        linux_xbar_refresh(g);
+    if (g->xbarProbeValid && g->xbarFreqReadbackValid &&
+        g->xbarMsvddReadbackValid) {
+        snapshot->xbarValid = true;
+        snapshot->xbarOffsetKhz = g->xbarFreqOffsetKhz;
+        snapshot->xbarMsvddOffsetUv = g->xbarMsvddOffsetUv;
+    }
+    if (g->sysClkProbeValid && g->sysClkFreqReadbackValid) {
+        snapshot->sysClkValid = true;
+        snapshot->sysClkOffsetKhz = g->sysClkFreqOffsetKhz;
+    }
+    if (g->videoClkProbeValid && g->videoClkFreqReadbackValid) {
+        snapshot->videoClkValid = true;
+        snapshot->videoClkOffsetKhz = g->videoClkFreqOffsetKhz;
+    }
     if (g->nvml.getPowerLimit &&
         g->nvml.getPowerLimit(g->nvmlDevice, &snapshot->powerLimitmW) == NVML_SUCCESS)
         snapshot->powerValid = true;
@@ -82,13 +101,17 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
         }
     }
     snapshot->valid = snapshot->gpuOffsetValid || snapshot->memOffsetValid ||
-                       snapshot->powerValid || snapshot->curveValid || snapshot->fanValid;
+                       snapshot->powerValid || snapshot->curveValid ||
+                       snapshot->fanValid || snapshot->xbarValid ||
+                       snapshot->sysClkValid || snapshot->videoClkValid;
     bool gpuOffsetWritable = g->nvml.setGpcClkVfOffset ||
         g->nvml.setClockOffsets;
     bool memOffsetWritable = g->nvml.setMemClkVfOffset ||
         g->nvml.setClockOffsets;
     bool fanAutoWritable = g->nvml.setDefaultFanSpeed ||
         g->nvml.setFanControlPolicy;
+    LinuxXbarApi xbarApi = linux_xbar_api(g);
+    bool xbarWritable = xbarApi.getControl && xbarApi.setControl;
     if (g->writeIdentityResolved) {
         if (snapshot->gpuOffsetValid && gpuOffsetWritable)
             snapshot->availableMutationDomains |=
@@ -108,6 +131,15 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
         if (snapshot->fanValid && g->nvml.setFanSpeed && fanAutoWritable)
             snapshot->availableMutationDomains |=
                 SERVICE_MUTATION_DOMAIN_FAN;
+        if (snapshot->xbarValid && xbarWritable)
+            snapshot->availableMutationDomains |=
+                SERVICE_MUTATION_DOMAIN_XBAR;
+        if (snapshot->sysClkValid && xbarWritable)
+            snapshot->availableMutationDomains |=
+                SERVICE_MUTATION_DOMAIN_SYS_CLK;
+        if (snapshot->videoClkValid && xbarWritable)
+            snapshot->availableMutationDomains |=
+                SERVICE_MUTATION_DOMAIN_VIDEO_CLK;
         if (snapshot->gpuOffsetValid && snapshot->memOffsetValid &&
             gpuOffsetWritable && memOffsetWritable &&
             g->nvml.resetGpuLockedClocks)
@@ -138,12 +170,24 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
               g->nvml.setGpuLockedClocks != nullptr && g->nvml.resetGpuLockedClocks != nullptr },
             { SERVICE_MUTATION_DOMAIN_FAN, snapshot->fanValid,
               g->nvml.setFanSpeed != nullptr && fanAutoWritable },
+            { SERVICE_MUTATION_DOMAIN_XBAR, snapshot->xbarValid,
+              xbarWritable },
+            { SERVICE_MUTATION_DOMAIN_SYS_CLK, snapshot->sysClkValid,
+              xbarWritable },
+            { SERVICE_MUTATION_DOMAIN_VIDEO_CLK, snapshot->videoClkValid,
+              xbarWritable },
         };
         for (size_t i = 0; i < sizeof(domains) / sizeof(domains[0]); ++i) {
             gc_u32 cap;
             if (snapshot->availableMutationDomains & domains[i].mask) {
                 cap = GPU_DOMAIN_CAP_AVAILABLE;
-            } else if (!g->writeIdentityResolved || !domains[i].writable) {
+            } else if (!g->writeIdentityResolved || !domains[i].writable ||
+                       (((domains[i].mask &
+                          (SERVICE_MUTATION_DOMAIN_XBAR |
+                           SERVICE_MUTATION_DOMAIN_SYS_CLK |
+                           SERVICE_MUTATION_DOMAIN_VIDEO_CLK)) != 0) &&
+                        g->xbarSchemaStatus ==
+                            XBAR_SCHEMA_STATUS_UNKNOWN_VERSION)) {
                 cap = GPU_DOMAIN_CAP_UNPROBED;
             } else {
                 cap = domains[i].readValid ? GPU_DOMAIN_CAP_UNPROBED
@@ -178,6 +222,28 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
         ok &= nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, snapshot->gpuOffsetMHz);
     if ((baseline || (phaseMask & LINUX_MUTATION_MEM_OFFSET)) && snapshot->memOffsetValid)
         ok &= nvml_set_clock_offset(g, NVML_CLOCK_MEM, snapshot->memOffsetMHz);
+    if (((baseline && (snapshot->availableMutationDomains &
+                       SERVICE_MUTATION_DOMAIN_XBAR)) ||
+         (phaseMask & LINUX_MUTATION_XBAR)) &&
+        snapshot->xbarValid) {
+        ok &= linux_xbar_write_owned(g, snapshot->xbarOffsetKhz,
+                                     snapshot->xbarMsvddOffsetUv,
+                                     true, true);
+    }
+    if (((baseline && (snapshot->availableMutationDomains &
+                       SERVICE_MUTATION_DOMAIN_SYS_CLK)) ||
+         (phaseMask & LINUX_MUTATION_SYS_CLK)) &&
+        snapshot->sysClkValid) {
+        ok &= linux_xbar_write_entry(g, XBAR_PINNED_SYS_ENTRY_INDEX,
+                                     snapshot->sysClkOffsetKhz);
+    }
+    if (((baseline && (snapshot->availableMutationDomains &
+                       SERVICE_MUTATION_DOMAIN_VIDEO_CLK)) ||
+         (phaseMask & LINUX_MUTATION_VIDEO_CLK)) &&
+        snapshot->videoClkValid) {
+        ok &= linux_xbar_write_entry(g, XBAR_PINNED_VIDEO_ENTRY_INDEX,
+                                     snapshot->videoClkOffsetKhz);
+    }
     if ((phaseMask & LINUX_MUTATION_POWER) && snapshot->powerValid && g->nvml.setPowerLimit) {
         bool powerOk = g->nvml.setPowerLimit(g->nvmlDevice, snapshot->powerLimitmW) == NVML_SUCCESS;
         if (powerOk && g->nvml.getPowerLimit) {
@@ -285,6 +351,19 @@ static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
     if (d->hasFan && !snapshot->fanValid) {
         gc_strlcpy(err, errSize, "fan state cannot be snapshotted safely"); return false;
     }
+    if ((d->hasXbarOffsetKhz || d->hasXbarMsvddOffsetUv) &&
+        !snapshot->xbarValid) {
+        gc_strlcpy(err, errSize,
+            "XBAR state cannot be snapshotted safely"); return false;
+    }
+    if (d->hasSysClkOffsetKhz && !snapshot->sysClkValid) {
+        gc_strlcpy(err, errSize,
+            "SYS clock state cannot be snapshotted safely"); return false;
+    }
+    if (d->hasVideoClkOffsetKhz && !snapshot->videoClkValid) {
+        gc_strlcpy(err, errSize,
+            "video clock state cannot be snapshotted safely"); return false;
+    }
     return true;
 }
 
@@ -329,10 +408,23 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
     const DesiredSettings* d = context->desired;
     switch (phase) {
         case LINUX_MUTATION_RESET_BASELINE:
-            return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0) &&
-                   nvml_set_clock_offset(g, NVML_CLOCK_MEM, 0) &&
-                   g->nvml.resetGpuLockedClocks &&
-                   g->nvml.resetGpuLockedClocks(g->nvmlDevice) == NVML_SUCCESS;
+            if (!nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0) ||
+                !nvml_set_clock_offset(g, NVML_CLOCK_MEM, 0) ||
+                !g->nvml.resetGpuLockedClocks ||
+                g->nvml.resetGpuLockedClocks(g->nvmlDevice) != NVML_SUCCESS)
+                return false;
+            if ((context->snapshot->availableMutationDomains &
+                 SERVICE_MUTATION_DOMAIN_XBAR) &&
+                !linux_xbar_write_owned(g, 0, 0, true, true)) return false;
+            if ((context->snapshot->availableMutationDomains &
+                 SERVICE_MUTATION_DOMAIN_SYS_CLK) &&
+                !linux_xbar_write_entry(g, XBAR_PINNED_SYS_ENTRY_INDEX, 0))
+                return false;
+            if ((context->snapshot->availableMutationDomains &
+                 SERVICE_MUTATION_DOMAIN_VIDEO_CLK) &&
+                !linux_xbar_write_entry(g, XBAR_PINNED_VIDEO_ENTRY_INDEX, 0))
+                return false;
+            return true;
         case LINUX_MUTATION_GPU_OFFSET:
             return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, d->gpuOffsetMHz);
         case LINUX_MUTATION_MEM_OFFSET:
@@ -352,6 +444,16 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
         case LINUX_MUTATION_FAN:
             return nvml_set_fan(g, d->fanMode, d->fanAuto,
                 context->fanTargetPercent);
+        case LINUX_MUTATION_XBAR:
+            return linux_xbar_write_owned(g, d->xbarOffsetKhz,
+                d->xbarMsvddOffsetUv, d->hasXbarOffsetKhz,
+                d->hasXbarMsvddOffsetUv);
+        case LINUX_MUTATION_SYS_CLK:
+            return linux_xbar_write_entry(g, XBAR_PINNED_SYS_ENTRY_INDEX,
+                                          d->sysClkOffsetKhz);
+        case LINUX_MUTATION_VIDEO_CLK:
+            return linux_xbar_write_entry(g, XBAR_PINNED_VIDEO_ENTRY_INDEX,
+                                          d->videoClkOffsetKhz);
         default:
             return false;
     }
@@ -429,6 +531,10 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
         requested |= LINUX_MUTATION_CURVE;
     if (d->hasLock) requested |= LINUX_MUTATION_LOCK;
     if (d->hasFan) requested |= LINUX_MUTATION_FAN;
+    if (d->hasXbarOffsetKhz || d->hasXbarMsvddOffsetUv)
+        requested |= LINUX_MUTATION_XBAR;
+    if (d->hasSysClkOffsetKhz) requested |= LINUX_MUTATION_SYS_CLK;
+    if (d->hasVideoClkOffsetKhz) requested |= LINUX_MUTATION_VIDEO_CLK;
     LinuxMutationResult mutation = linux_execute_transaction(
         requested, linux_apply_transaction_step, linux_apply_transaction_rollback, &context);
     char msg[512] = {};
@@ -476,6 +582,12 @@ static bool linux_reset_transaction_step(void* opaque, unsigned int phase) {
         }
         case LINUX_MUTATION_FAN:
             return nvml_set_fan(g, FAN_MODE_AUTO, true, 0);
+        case LINUX_MUTATION_XBAR:
+            return linux_xbar_write_owned(g, 0, 0, true, true);
+        case LINUX_MUTATION_SYS_CLK:
+            return linux_xbar_write_entry(g, XBAR_PINNED_SYS_ENTRY_INDEX, 0);
+        case LINUX_MUTATION_VIDEO_CLK:
+            return linux_xbar_write_entry(g, XBAR_PINNED_VIDEO_ENTRY_INDEX, 0);
         default:
             return false;
     }
@@ -498,7 +610,14 @@ LinuxMutationResult linux_backend_reset(LinuxGpuState* g, char* result, size_t r
         if (result) gc_strlcpy(result, resultSize, detail[0] ? detail : "Reset preflight failed");
         return mutation;
     }
-    const gc_u32 resetDomains = SERVICE_MUTATION_DOMAIN_ALL;
+    const gc_u32 resetDomains =
+        SERVICE_MUTATION_DOMAIN_RESET_BASELINE |
+        SERVICE_MUTATION_DOMAIN_GPU_OFFSET |
+        SERVICE_MUTATION_DOMAIN_MEM_OFFSET |
+        SERVICE_MUTATION_DOMAIN_POWER |
+        SERVICE_MUTATION_DOMAIN_VF_CURVE |
+        SERVICE_MUTATION_DOMAIN_LOCK |
+        SERVICE_MUTATION_DOMAIN_FAN;
     if ((snapshot.availableMutationDomains & resetDomains) != resetDomains ||
         g->powerLimitDefaultmW <= 0 || !g->backend ||
         !g->backend->writeSupported) {
@@ -508,9 +627,11 @@ LinuxMutationResult linux_backend_reset(LinuxGpuState* g, char* result, size_t r
         return mutation;
     }
     LinuxResetTransactionContext context = {g, &snapshot};
-    const unsigned int requested = LINUX_MUTATION_LOCK | LINUX_MUTATION_GPU_OFFSET |
+    unsigned int requested = LINUX_MUTATION_LOCK | LINUX_MUTATION_GPU_OFFSET |
         LINUX_MUTATION_MEM_OFFSET | LINUX_MUTATION_POWER | LINUX_MUTATION_CURVE |
         LINUX_MUTATION_FAN;
+    requested |= linux_advanced_phases_for_available_domains(
+        snapshot.availableMutationDomains);
     mutation = linux_execute_transaction(requested, linux_reset_transaction_step,
                                          linux_reset_transaction_rollback, &context);
     if (result) gc_strlcpy(result, resultSize, mutation.success ? "Reset to defaults" :

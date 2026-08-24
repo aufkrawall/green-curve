@@ -74,7 +74,7 @@ static void probe_xbar_control_surface(GpuCapabilityProbe* probe) {
                       XBAR_PINNED_SYS_ENTRY_INDEX, g_app.sysClkFreqOffsetKhz);
         }
         // VIDEO entry: same validated block, pinned index 4 (differentially
-        // identified against mVolt+ on this board).
+        // identified by an exact before/after control-block diff on this board).
         unsigned long long videoField =
             (unsigned long long)snap.entryBase +
             (unsigned long long)XBAR_PINNED_VIDEO_ENTRY_INDEX * snap.entryStride +

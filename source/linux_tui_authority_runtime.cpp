@@ -57,6 +57,13 @@ gc_u32 field_mutation_domain(const TuiState& state, TuiField field) {
         case TUI_FIELD_FAN_TEMPERATURE:
         case TUI_FIELD_FAN_PERCENT:
             return SERVICE_MUTATION_DOMAIN_FAN;
+        case TUI_FIELD_XBAR_OFFSET:
+        case TUI_FIELD_XBAR_MSVDD:
+            return SERVICE_MUTATION_DOMAIN_XBAR;
+        case TUI_FIELD_SYS_CLK_OFFSET:
+            return SERVICE_MUTATION_DOMAIN_SYS_CLK;
+        case TUI_FIELD_VIDEO_CLK_OFFSET:
+            return SERVICE_MUTATION_DOMAIN_VIDEO_CLK;
         default:
             return 0;
     }

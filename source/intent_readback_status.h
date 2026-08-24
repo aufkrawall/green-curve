@@ -198,6 +198,46 @@ static inline IntentReadbackStatus compare_intent_to_readback(
             status.unavailableDomains |= SERVICE_MUTATION_DOMAIN_FAN;
         }
     }
+    if (status.requestedDomains & SERVICE_MUTATION_DOMAIN_XBAR) {
+        bool freqReadable = !desired->hasXbarOffsetKhz ||
+            (actual->valid && actual->hasXbarOffset &&
+             actual->xbarOffsetReadbackValid);
+        bool voltageReadable = !desired->hasXbarMsvddOffsetUv ||
+            (actual->valid && actual->hasXbarMsvddOffset &&
+             actual->xbarMsvddOffsetReadbackValid);
+        if (freqReadable && voltageReadable) {
+            status.checkedDomains |= SERVICE_MUTATION_DOMAIN_XBAR;
+            if ((desired->hasXbarOffsetKhz &&
+                 desired->xbarOffsetKhz != actual->xbarOffsetKhz) ||
+                (desired->hasXbarMsvddOffsetUv &&
+                 desired->xbarMsvddOffsetUv !=
+                    actual->xbarMsvddOffsetUv)) {
+                status.divergedDomains |= SERVICE_MUTATION_DOMAIN_XBAR;
+            }
+        } else {
+            status.unavailableDomains |= SERVICE_MUTATION_DOMAIN_XBAR;
+        }
+    }
+    if (status.requestedDomains & SERVICE_MUTATION_DOMAIN_SYS_CLK) {
+        if (actual->valid && actual->hasSysClkOffset &&
+            actual->sysClkOffsetReadbackValid) {
+            status.checkedDomains |= SERVICE_MUTATION_DOMAIN_SYS_CLK;
+            if (desired->sysClkOffsetKhz != actual->sysClkOffsetKhz)
+                status.divergedDomains |= SERVICE_MUTATION_DOMAIN_SYS_CLK;
+        } else {
+            status.unavailableDomains |= SERVICE_MUTATION_DOMAIN_SYS_CLK;
+        }
+    }
+    if (status.requestedDomains & SERVICE_MUTATION_DOMAIN_VIDEO_CLK) {
+        if (actual->valid && actual->hasVideoClkOffset &&
+            actual->videoClkOffsetReadbackValid) {
+            status.checkedDomains |= SERVICE_MUTATION_DOMAIN_VIDEO_CLK;
+            if (desired->videoClkOffsetKhz != actual->videoClkOffsetKhz)
+                status.divergedDomains |= SERVICE_MUTATION_DOMAIN_VIDEO_CLK;
+        } else {
+            status.unavailableDomains |= SERVICE_MUTATION_DOMAIN_VIDEO_CLK;
+        }
+    }
     return status;
 }
 

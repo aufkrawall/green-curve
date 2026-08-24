@@ -538,9 +538,12 @@ void tui_handle_event(TuiState* state, const TuiInputEvent& event) {
         case TUI_INPUT_PAGE_UP: scroll_current_tab(state, -1, true); break;
         case TUI_INPUT_PAGE_DOWN: scroll_current_tab(state, 1, true); break;
         case TUI_INPUT_CTRL_PAGE_UP:
-            state->tab = (TuiTab)((state->tab + 2) % 3); state->focusIndex = -1; break;
+            state->tab = (TuiTab)((state->tab + TUI_TAB_COUNT - 1) %
+                                  TUI_TAB_COUNT);
+            state->focusIndex = -1; break;
         case TUI_INPUT_CTRL_PAGE_DOWN:
-            state->tab = (TuiTab)((state->tab + 1) % 3); state->focusIndex = -1; break;
+            state->tab = (TuiTab)((state->tab + 1) % TUI_TAB_COUNT);
+            state->focusIndex = -1; break;
         case TUI_INPUT_HOME: select_curve_end(state, false); break;
         case TUI_INPUT_END: select_curve_end(state, true); break;
         case TUI_INPUT_F1:

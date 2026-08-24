@@ -59,6 +59,20 @@ static inline void service_project_desired_to_available_domains(
     }
     if ((availableDomains & SERVICE_MUTATION_DOMAIN_FAN) == 0)
         desired->hasFan = false;
+    if ((availableDomains & SERVICE_MUTATION_DOMAIN_XBAR) == 0) {
+        desired->hasXbarOffsetKhz = false;
+        desired->xbarOffsetKhz = 0;
+        desired->hasXbarMsvddOffsetUv = false;
+        desired->xbarMsvddOffsetUv = 0;
+    }
+    if ((availableDomains & SERVICE_MUTATION_DOMAIN_SYS_CLK) == 0) {
+        desired->hasSysClkOffsetKhz = false;
+        desired->sysClkOffsetKhz = 0;
+    }
+    if ((availableDomains & SERVICE_MUTATION_DOMAIN_VIDEO_CLK) == 0) {
+        desired->hasVideoClkOffsetKhz = false;
+        desired->videoClkOffsetKhz = 0;
+    }
 }
 
 // Successful sparse Apply operations update only the requested domains of the
@@ -86,6 +100,14 @@ static inline DesiredSettings service_merge_desired_after_mutation(
         merged.lockMHz = 0;
         merged.lockMode = LOCK_MODE_NONE;
         merged.lockTracksAnchor = false;
+        merged.hasXbarOffsetKhz = false;
+        merged.xbarOffsetKhz = 0;
+        merged.hasXbarMsvddOffsetUv = false;
+        merged.xbarMsvddOffsetUv = 0;
+        merged.hasSysClkOffsetKhz = false;
+        merged.sysClkOffsetKhz = 0;
+        merged.hasVideoClkOffsetKhz = false;
+        merged.videoClkOffsetKhz = 0;
     }
     if (requested->hasGpuOffset) {
         merged.hasGpuOffset = true;
@@ -120,6 +142,20 @@ static inline DesiredSettings service_merge_desired_after_mutation(
         merged.fanMode = requested->fanMode;
         merged.fanPercent = requested->fanPercent;
         merged.fanCurve = requested->fanCurve;
+    }
+    if (domains & SERVICE_MUTATION_DOMAIN_XBAR) {
+        merged.hasXbarOffsetKhz = requested->hasXbarOffsetKhz;
+        merged.xbarOffsetKhz = requested->xbarOffsetKhz;
+        merged.hasXbarMsvddOffsetUv = requested->hasXbarMsvddOffsetUv;
+        merged.xbarMsvddOffsetUv = requested->xbarMsvddOffsetUv;
+    }
+    if (domains & SERVICE_MUTATION_DOMAIN_SYS_CLK) {
+        merged.hasSysClkOffsetKhz = requested->hasSysClkOffsetKhz;
+        merged.sysClkOffsetKhz = requested->sysClkOffsetKhz;
+    }
+    if (domains & SERVICE_MUTATION_DOMAIN_VIDEO_CLK) {
+        merged.hasVideoClkOffsetKhz = requested->hasVideoClkOffsetKhz;
+        merged.videoClkOffsetKhz = requested->videoClkOffsetKhz;
     }
     // This is a one-shot transaction instruction, never durable intent.
     merged.resetOcBeforeApply = false;
