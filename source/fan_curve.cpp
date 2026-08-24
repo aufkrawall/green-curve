@@ -54,8 +54,14 @@ void fan_curve_normalize(FanCurveConfig* config) {
     config->pollIntervalMs = clamp_int(config->pollIntervalMs, 250, 5000);
     config->pollIntervalMs = ((config->pollIntervalMs + 125) / 250) * 250;
     config->hysteresisC = clamp_int(config->hysteresisC, 0, FAN_CURVE_MAX_HYSTERESIS_C);
+    config->zeroRpmEnabled = gc_bool8_from_bool(config->zeroRpmEnabled != 0);
+    if (config->zeroRpmEnabled &&
+        config->hysteresisC < FAN_ZERO_RPM_MIN_HYSTERESIS_C)
+        config->hysteresisC = FAN_ZERO_RPM_MIN_HYSTERESIS_C;
+    memset(config->zeroRpmReserved, 0, sizeof(config->zeroRpmReserved));
     int normalizedPollIntervalMs = config->pollIntervalMs;
     int normalizedHysteresisC = config->hysteresisC;
+    gc_bool8 normalizedZeroRpmEnabled = config->zeroRpmEnabled;
 
     FanCurvePoint enabled[FAN_CURVE_MAX_POINTS] = {};
     FanCurvePoint disabled[FAN_CURVE_MAX_POINTS] = {};
@@ -73,6 +79,7 @@ void fan_curve_normalize(FanCurveConfig* config) {
         fan_curve_set_default(config);
         config->pollIntervalMs = normalizedPollIntervalMs;
         config->hysteresisC = normalizedHysteresisC;
+        config->zeroRpmEnabled = normalizedZeroRpmEnabled;
         return;
     }
 
@@ -115,6 +122,10 @@ bool fan_curve_validate(const FanCurveConfig* config, char* err, size_t errSize)
     }
     if (config->hysteresisC < 0 || config->hysteresisC > FAN_CURVE_MAX_HYSTERESIS_C) {
         set_message(err, errSize, "Fan curve hysteresis must be between 0" GC_DEGREE "C and %d" GC_DEGREE "C", FAN_CURVE_MAX_HYSTERESIS_C);
+        return false;
+    }
+    if (config->zeroRpmEnabled > 1) {
+        set_message(err, errSize, "Fan curve native zero-RPM flag is invalid");
         return false;
     }
 
@@ -193,15 +204,27 @@ void fan_curve_format_summary(const FanCurveConfig* config, char* buffer, size_t
 
     // gc_snprintf, not StringCchPrintfA: fan-curve math is shared platform-
     // neutral code and is compiled into the Linux regression harness.
-    gc_snprintf(buffer, bufferSize, "%d pts | %.2fs | %d" GC_DEGREE "C hyst",
-        fan_curve_active_count(config),
-        (double)config->pollIntervalMs / 1000.0,
-        config->hysteresisC);
+    if (config->zeroRpmEnabled) {
+        int startC = fan_curve_first_enabled_temperature(config);
+        int stopC = startC - fan_curve_zero_rpm_hysteresis(config);
+        if (stopC < 0) stopC = 0;
+        gc_snprintf(buffer, bufferSize,
+            "%d pts | zero-RPM off <=%d" GC_DEGREE "C / on >=%d" GC_DEGREE "C | %.2fs",
+            fan_curve_active_count(config),
+            stopC, startC, (double)config->pollIntervalMs / 1000.0);
+    } else {
+        gc_snprintf(buffer, bufferSize, "%d pts | %.2fs | %d" GC_DEGREE "C hyst",
+            fan_curve_active_count(config),
+            (double)config->pollIntervalMs / 1000.0,
+            config->hysteresisC);
+    }
 }
 
 bool fan_curve_equals(const FanCurveConfig* lhs, const FanCurveConfig* rhs) {
     if (!lhs || !rhs) return false;
-    if (lhs->pollIntervalMs != rhs->pollIntervalMs || lhs->hysteresisC != rhs->hysteresisC) return false;
+    if (lhs->pollIntervalMs != rhs->pollIntervalMs ||
+        lhs->hysteresisC != rhs->hysteresisC ||
+        lhs->zeroRpmEnabled != rhs->zeroRpmEnabled) return false;
     for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
         if (lhs->points[i].enabled != rhs->points[i].enabled) return false;
         if (lhs->points[i].temperatureC != rhs->points[i].temperatureC) return false;

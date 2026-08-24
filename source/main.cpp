@@ -662,7 +662,7 @@ struct FanCurveDialogState {
     HWND tempEdits[FAN_CURVE_MAX_POINTS];
     HWND percentEdits[FAN_CURVE_MAX_POINTS];
     HWND intervalCombo;
-    HWND hysteresisCombo;
+    HWND hysteresisCombo, zeroRpmCheck;
     HWND okButton;
     HWND cancelButton;
     FanCurveConfig working;
@@ -697,6 +697,7 @@ enum {
     FAN_DIALOG_HYSTERESIS_ID = 6401,
     FAN_DIALOG_OK_ID = 6402,
     FAN_DIALOG_CANCEL_ID = 6403,
+    FAN_DIALOG_ZERO_RPM_ID = 6404,
     LICENSE_DIALOG_TEXT_ID = 6500,
     LICENSE_DIALOG_CLOSE_ID = 6501,
 };

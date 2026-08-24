@@ -556,7 +556,8 @@ static bool fan_setting_matches_current(int wantMode, int wantPct, const FanCurv
     if (wantMode != g_app.activeFanMode) return false;
     if (wantMode == FAN_MODE_AUTO) return g_app.fanIsAuto;
     if (wantMode == FAN_MODE_CURVE) {
-        return !g_app.fanIsAuto && wantCurve && fan_curve_equals(wantCurve, &g_app.activeFanCurve);
+        return g_app.fanCurveRuntimeActive && wantCurve &&
+            fan_curve_equals(wantCurve, &g_app.activeFanCurve);
     }
     if (g_app.fanIsAuto || g_app.fanCount == 0) return false;
     for (unsigned int fan = 0; fan < g_app.fanCount; fan++) {

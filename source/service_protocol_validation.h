@@ -235,9 +235,7 @@ static inline bool service_snapshot_bool_fields_valid(
             gpu.vfReadSupported > 1 || gpu.vfWriteSupported > 1 ||
             gpu.vfBestGuess > 1) return false;
     }
-    for (int i = 0; i < FAN_CURVE_MAX_POINTS; ++i)
-        if (snapshot->activeFanCurve.points[i].enabled > 1) return false;
-    return true;
+    return fan_curve_wire_flags_valid(&snapshot->activeFanCurve);
 }
 
 static inline bool service_control_bool_fields_valid(
@@ -248,9 +246,7 @@ static inline bool service_control_bool_fields_valid(
         control->hasPowerLimit > 1 || control->powerLimitReadbackValid > 1 ||
         control->hasFan > 1 || control->fanPolicyReadbackValid > 1 ||
         control->fanTargetReadbackValid > 1) return false;
-    for (int i = 0; i < FAN_CURVE_MAX_POINTS; ++i)
-        if (control->fanCurve.points[i].enabled > 1) return false;
-    return true;
+    return fan_curve_wire_flags_valid(&control->fanCurve);
 }
 
 // Canonicalize every boolean and bounded field a published snapshot carries.

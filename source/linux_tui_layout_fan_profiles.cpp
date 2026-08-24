@@ -111,12 +111,34 @@ void draw_fan_settings(TuiCanvas* c, const TuiRect& panel) {
                         0, desired.fanCurve.pollIntervalMs, 250, "ms");
         add_fan_stepper(c, x, y + 6, "Hysteresis", TUI_FIELD_FAN_HYSTERESIS,
                         0, desired.fanCurve.hysteresisC, 1, "°C");
+        if (panel.width >= 68) {
+            int zeroX = panel.x + panel.width - 24;
+            c->checkbox(zeroX, y + 6,
+                desired.fanCurve.zeroRpmEnabled ? 1 : 0,
+                desired.fanCurve.zeroRpmEnabled
+                    ? TUI_STYLE_GREEN : TUI_STYLE_BORDER);
+            c->text(zeroX + 4, y + 6, 18, "Native zero-RPM",
+                TUI_STYLE_TEXT);
+            c->register_action(TuiRect{zeroX, y + 6, 22, 1},
+                ACTION_FAN_ZERO_RPM_TOGGLE);
+        }
     }
 }
 
 void draw_fan_table(TuiCanvas* c, const TuiRect& panel) {
     const TuiViewModel& vm = c->view();
-    c->box(panel, "FAN CURVE POINTS", "strict temp ↑ • speed nondecreasing");
+    char rule[96] = "strict temp ↑ • speed nondecreasing";
+    if (vm.desired->fanCurve.zeroRpmEnabled) {
+        int startC = fan_curve_first_enabled_temperature(
+            &vm.desired->fanCurve);
+        int stopC = startC - fan_curve_zero_rpm_hysteresis(
+            &vm.desired->fanCurve);
+        if (stopC < 0) stopC = 0;
+        snprintf(rule, sizeof(rule),
+            "zero-RPM: OFF <=%d°C • ON >=%d°C • speed >= firmware min",
+            stopC, startC);
+    }
+    c->box(panel, "FAN CURVE POINTS", rule);
     int rows = panel.height - 3;
     if (rows <= 0) return;
     c->layout()->fanVisibleRows = rows;

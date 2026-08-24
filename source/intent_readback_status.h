@@ -10,6 +10,7 @@
 #define GREEN_CURVE_INTENT_READBACK_STATUS_H
 
 #include "gpu_core.h"
+#include "fan_zero_rpm_policy.h"
 
 #define INTENT_VF_READBACK_TOLERANCE_MHZ 30
 
@@ -163,7 +164,31 @@ static inline IntentReadbackStatus compare_intent_to_readback(
                                   desired->fanAuto;
                 bool isAuto = snapshot->fanPolicy[i] ==
                     NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW;
-                if (expectAuto != isAuto) {
+                bool policyExpectationKnown = true;
+                bool policyMatches = expectAuto == isAuto;
+                if (desired->fanMode == FAN_MODE_CURVE &&
+                    desired->fanCurve.zeroRpmEnabled) {
+                    if (!snapshot->gpuTemperatureValid) {
+                        policyExpectationKnown = false;
+                    } else {
+                        int startC = fan_curve_first_enabled_temperature(
+                            &desired->fanCurve);
+                        int stopC = startC - fan_curve_zero_rpm_hysteresis(
+                            &desired->fanCurve);
+                        if (stopC < 0) stopC = 0;
+                        // Both policies are valid inside the hysteresis band:
+                        // auto stays auto until startC, while a running manual
+                        // fan stays manual until stopC.
+                        policyMatches = isAuto
+                            ? snapshot->gpuTemperatureC < startC
+                            : snapshot->gpuTemperatureC > stopC;
+                    }
+                }
+                if (!policyExpectationKnown) {
+                    targetUnreadable = true;
+                    continue;
+                }
+                if (!policyMatches) {
                     // The policy itself was taken over.  Some drivers stop
                     // answering the target getter once a fan is back on the
                     // automatic curve, so demanding a duty readback here would

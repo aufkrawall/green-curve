@@ -4,6 +4,7 @@
 static pl_thread_ret fan_reassert_thread(void*) {
     FanRuntimeState runtime = {};
     unsigned long long observedGeneration = 0;
+    unsigned long long runtimeGeneration = 0;
     while (g_running) {
         unsigned int pollMs = 0;
         pl_mutex_lock(&g_lock);
@@ -22,6 +23,14 @@ static pl_thread_ret fan_reassert_thread(void*) {
 
         pthread_mutex_lock(&g_fanWakeMutex);
         observedGeneration = g_fanWakeGeneration;
+        if (active && runtimeGeneration != observedGeneration) {
+            // A successful Apply already established the new curve's initial
+            // hardware policy/target.  Drop the previous curve's hysteresis
+            // memory so the next poll observes that state instead of
+            // reasserting an old percentage or auto/manual sub-state.
+            memset(&runtime, 0, sizeof(runtime));
+            runtimeGeneration = observedGeneration;
+        }
         if (!g_running) {
             pthread_mutex_unlock(&g_fanWakeMutex);
             break;
@@ -81,14 +90,47 @@ static pl_thread_ret fan_reassert_thread(void*) {
                     dlog("daemon: fan reassert temperature read failed (nvml=%d)\n",
                          (int)tempStatus);
                 } else {
+                    if (!runtime.initialized) {
+                        runtime.initialized = true;
+                        runtime.lastTemperatureC = (int)t;
+                        runtime.lastPercent = fan_curve_interpolate_percent(
+                            &g_activeDesired.fanCurve, (int)t);
+                        runtime.driverAutoActive =
+                            linux_backend_fans_are_auto(&g_gpu);
+                    }
                     FanRuntimeDecision decision = fan_runtime_next_action(&runtime,
                         &g_activeDesired.fanCurve, (int)t, false);
                     pct = decision.targetPercent;
-                    if (linux_backend_set_curve_fan_percent(&g_gpu, (unsigned int)pct)) {
+                    bool writeOk = false;
+                    if (decision.useDriverAuto) {
+                        writeOk = linux_backend_fans_are_auto(&g_gpu) ||
+                            linux_backend_set_fan_auto(&g_gpu);
+                    } else {
+                        writeOk = linux_backend_set_curve_fan_percent(
+                            &g_gpu, (unsigned int)pct);
+                    }
+                    if (writeOk) {
                         outcome = FAN_RUNTIME_OUTCOME_SUCCESS;
+                        if (decision.controlModeChanged) {
+                            dlog("daemon: fan curve transition temp=%uC control=%s "
+                                 "target=%d%% start=%dC stop=%dC\n",
+                                 t,
+                                 decision.useDriverAuto
+                                    ? "driver-auto/native-zero-RPM"
+                                    : "manual",
+                                 pct,
+                                 fan_curve_first_enabled_temperature(
+                                     &g_activeDesired.fanCurve),
+                                 fan_curve_first_enabled_temperature(
+                                     &g_activeDesired.fanCurve) -
+                                     fan_curve_zero_rpm_hysteresis(
+                                         &g_activeDesired.fanCurve));
+                        }
                     } else {
                         outcome = FAN_RUNTIME_OUTCOME_WRITE_FAILED;
-                        reason = "fan write failed";
+                        reason = decision.useDriverAuto
+                            ? "driver auto handback failed"
+                            : "fan write failed";
                     }
                 }
             }

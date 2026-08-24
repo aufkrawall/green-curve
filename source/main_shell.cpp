@@ -15,6 +15,7 @@ static void start_fan_curve_runtime() {
     g_app.activeFanMode = FAN_MODE_CURVE;
     g_app.fanCurveRuntimeActive = true;
     g_app.fanFixedRuntimeActive = false;
+    g_app.fanCurveDriverAutoActive = false;
     g_app.fanCurveHasLastAppliedTemp = false;
     g_app.fanRuntimeConsecutiveFailures = 0;
     g_app.fanRuntimeLastApplyTickMs = 0;
@@ -56,6 +57,7 @@ static void start_fixed_fan_runtime() {
     g_app.activeFanMode = FAN_MODE_FIXED;
     g_app.fanCurveRuntimeActive = false;
     g_app.fanFixedRuntimeActive = true;
+    g_app.fanCurveDriverAutoActive = false;
     g_app.fanCurveHasLastAppliedTemp = false;
     g_app.fanRuntimeConsecutiveFailures = 0;
     g_app.fanRuntimeLastApplyTickMs = 0;

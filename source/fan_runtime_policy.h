@@ -4,10 +4,13 @@
 #ifndef GREEN_CURVE_FAN_RUNTIME_POLICY_H
 #define GREEN_CURVE_FAN_RUNTIME_POLICY_H
 
+#include "fan_zero_rpm_policy.h"
+
 struct FanRuntimeState {
     bool initialized;
     int lastTemperatureC;
     int lastPercent;
+    bool driverAutoActive;
 };
 
 // ---------------------------------------------------------------------------
@@ -132,6 +135,8 @@ static inline FanRuntimeEscalation fan_runtime_escalation_after_auto_restore(
 
 struct FanRuntimeDecision {
     bool shouldWrite;
+    bool useDriverAuto;
+    bool controlModeChanged;
     int targetPercent;
     unsigned int nextPollMs;
 };
@@ -150,11 +155,46 @@ static inline FanRuntimeDecision fan_runtime_next_action(
     int hysteresis = curve->hysteresisC;
     if (hysteresis < 0) hysteresis = 0;
     if (hysteresis > 10) hysteresis = 10;
+    bool wasInitialized = state->initialized;
+    bool previousDriverAuto = state->driverAutoActive;
+    bool useDriverAuto = false;
+    if (curve->zeroRpmEnabled) {
+        int startTemperatureC = fan_curve_first_enabled_temperature(curve);
+        int stopTemperatureC = startTemperatureC -
+            fan_curve_zero_rpm_hysteresis(curve);
+        if (stopTemperatureC < 0) stopTemperatureC = 0;
+        // Enter manual control at the first point.  Once spinning, keep it
+        // until the lower stop threshold is crossed.  This Schmitt trigger is
+        // what prevents a 30C/30C workload from cycling the bearings.
+        useDriverAuto = !state->initialized
+            ? temperatureC < startTemperatureC
+            : state->driverAutoActive
+                ? temperatureC < startTemperatureC
+                : temperatureC <= stopTemperatureC;
+    }
+    decision.useDriverAuto = useDriverAuto;
+    decision.controlModeChanged = !wasInitialized ||
+        previousDriverAuto != useDriverAuto;
+
+    if (useDriverAuto) {
+        state->lastTemperatureC = temperatureC;
+        state->lastPercent = 0;
+        state->driverAutoActive = true;
+        state->initialized = true;
+        // Driver automatic mode owns thermal safety and its native fan-stop
+        // policy.  Write only on entry (or an explicit reassert request), not
+        // every poll, so its internal controller is not continuously reset.
+        decision.shouldWrite = decision.controlModeChanged || forceTargetRefresh;
+        decision.targetPercent = 0;
+        return decision;
+    }
+
+    state->driverAutoActive = false;
     bool temperatureRose = state->initialized &&
         temperatureC > state->lastTemperatureC;
     bool cooledPastHysteresis = state->initialized &&
         temperatureC <= state->lastTemperatureC - hysteresis;
-    if (!state->initialized || forceTargetRefresh || temperatureRose ||
+    if (!state->initialized || previousDriverAuto || forceTargetRefresh || temperatureRose ||
         cooledPastHysteresis) {
         state->lastTemperatureC = temperatureC;
         state->lastPercent = interpolated;

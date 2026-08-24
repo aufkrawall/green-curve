@@ -186,7 +186,9 @@ void set_field_value(TuiState* state, TuiField field, int index, int value) {
         case TUI_FIELD_FAN_HYSTERESIS:
             desired.hasFan = true;
             desired.fanMode = FAN_MODE_CURVE;
-            desired.fanCurve.hysteresisC = clamp_int(value, 0,
+            desired.fanCurve.hysteresisC = clamp_int(value,
+                desired.fanCurve.zeroRpmEnabled
+                    ? FAN_ZERO_RPM_MIN_HYSTERESIS_C : 0,
                 FAN_CURVE_MAX_HYSTERESIS_C);
             break;
         case TUI_FIELD_FAN_TEMPERATURE: {
@@ -676,6 +678,9 @@ void tui_apply_action(TuiState* state, const ClickAction& action) {
                 tui_recompute_dirty(state);
                 bind_current_draft(state);
             }
+            break;
+        case ACTION_FAN_ZERO_RPM_TOGGLE:
+            toggle_fan_zero_rpm(state);
             break;
         case ACTION_SLOT_DELTA:
             state->currentSlot = clamp_int(state->currentSlot + action.value,

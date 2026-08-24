@@ -106,6 +106,8 @@ def check_runtime_failsafe(ctx, require_text, forbid_text, require_order):
                  "Linux fan runtime escalates temperature-read failures")
     require_text(linux_fan_runtime_h, "fan_runtime_escalation_after_auto_restore",
                  "Linux fan runtime forces maximum cooling when auto restore fails")
+    require_text(linux_fan_runtime_h, "runtimeGeneration != observedGeneration",
+                 "a newly applied curve cannot inherit the previous curve's hysteresis state")
     require_text(fan_runtime_policy_h, "FAN_RUNTIME_ESCALATION_EMERGENCY_MAX",
                  "shared fan policy defines the emergency escalation")
 
@@ -152,7 +154,76 @@ def check_power_limit_range(ctx, require_text, forbid_text):
                  "--power-limit rejects out-of-range values instead of clamping silently")
 
 
+def check_native_zero_rpm(ctx, require_text, forbid_text):
+    """F-FAN-ZERO-RPM: fan stop uses driver auto, never a manual 0% write.
+
+    NVIDIA does not expose a portable force-fan-stop switch.  The supported
+    cross-platform operation is to restore the automatic temperature policy;
+    firmware then decides whether this board can stop its fans.  The custom
+    curve takes manual ownership again at its first enabled point, with a
+    Schmitt band to avoid repeated motor starts around that boundary.
+    """
+    gpu_core_h = _p(ctx, "gpu_core.h")
+    zero_policy_h = _p(ctx, "fan_zero_rpm_policy.h")
+    runtime_policy_h = _p(ctx, "fan_runtime_policy.h")
+    win_runtime_cpp = _p(ctx, "main_fan_zero_rpm.cpp")
+    linux_runtime_h = _p(ctx, "linux_fan_runtime.h")
+    linux_mutation_cpp = _p(ctx, "linux_backend_mutation.cpp")
+
+    require_text(gpu_core_h, "zeroRpmEnabled",
+                 "native zero-RPM intent is part of the shared fan-curve model")
+    require_text(zero_policy_h, "fan_curve_zero_rpm_hysteresis",
+                 "the anti-cycle threshold is one shared policy")
+    require_text(zero_policy_h, "hysteresis < FAN_ZERO_RPM_MIN_HYSTERESIS_C",
+                 "native zero-RPM enforces a minimum two-degree Schmitt band")
+    require_text(runtime_policy_h, "useDriverAuto",
+                 "the shared runtime reducer selects policy, not manual 0%")
+
+    require_text(win_runtime_cpp, "fan_runtime_next_action",
+                 "Windows consumes the shared zero-RPM state machine")
+    require_text(win_runtime_cpp, "nvml_set_fan_auto",
+                 "Windows restores NVIDIA automatic fan control below threshold")
+    require_text(linux_runtime_h, "fan_runtime_next_action",
+                 "Linux consumes the shared zero-RPM state machine")
+    require_text(linux_runtime_h, "linux_backend_fans_are_auto",
+                 "Linux verifies the automatic-policy handoff")
+    require_text(linux_mutation_cpp, "fanUseDriverAuto",
+                 "the initial Linux curve transaction can start in driver auto")
+    forbid_text(win_runtime_cpp, "nvml_set_fan_manual(0",
+                "zero-RPM must not bypass a VBIOS minimum with a manual 0% write")
+    forbid_text(linux_runtime_h, "linux_backend_set_curve_fan_percent(&g_gpu, 0",
+                "Linux zero-RPM must not issue a manual 0% write")
+
+    require_text(_p(ctx, "fan_curve_dialog.cpp"), "FAN_DIALOG_ZERO_RPM_ID",
+                 "the Windows fan-curve editor exposes native zero-RPM")
+    require_text(_p(ctx, "fan_curve_dialog.cpp"),
+                 "FAN_ZERO_RPM_GUI_DESCRIPTION",
+                 "the Windows zero-RPM help uses the measured multiline layout")
+    require_text(_p(ctx, "fan_curve_dialog.cpp"),
+                 "SS_LEFTNOWORDWRAP | SS_NOPREFIX",
+                 "the Windows zero-RPM help keeps its explicit three-line layout")
+    require_text(_p(ctx, "ui_theme_button.cpp"),
+                 "id == FAN_DIALOG_ZERO_RPM_ID",
+                 "the Windows zero-RPM checkbox uses the established themed renderer")
+    require_text(_p(ctx, "linux_tui_layout_fan_profiles.cpp"),
+                 "ACTION_FAN_ZERO_RPM_TOGGLE",
+                 "the Linux TUI exposes native zero-RPM")
+    require_text(_p(ctx, "main_probe_config.cpp"), '"zero_rpm_enabled"',
+                 "Windows profiles persist native zero-RPM")
+    require_text(_p(ctx, "linux_port_profiles.cpp"), '"zero_rpm_enabled"',
+                 "Linux profiles persist native zero-RPM")
+    require_text(_p(ctx, "linux_cli_options.cpp"), '"--fan-zero-rpm"',
+                 "Linux scripted profile editing can set native zero-RPM")
+    require_text(_p(ctx, "linux_cli_options.cpp"),
+                 "opts->fanOverrides.zeroRpm = true",
+                 "Linux records zero-RPM as a partial CLI override")
+    require_text(_p(ctx, "linux_main.cpp"),
+                 "merge_linux_cli_desired_settings",
+                 "Linux validates partial fan overrides without replacing a saved curve")
+
+
 def check_all(ctx, require_text, forbid_text, require_order, backend_surface):
     check_manual_write_verification(ctx, require_text, forbid_text, backend_surface)
     check_runtime_failsafe(ctx, require_text, forbid_text, require_order)
     check_power_limit_range(ctx, require_text, forbid_text)
+    check_native_zero_rpm(ctx, require_text, forbid_text)

@@ -80,6 +80,8 @@ void print_desired_settings_json(FILE* out, int slot, const DesiredSettings* des
     fprintf(out, "  \"fan_curve\": {\n");
     fprintf(out, "    \"poll_interval_ms\": %d,\n", desired->fanCurve.pollIntervalMs);
     fprintf(out, "    \"hysteresis_c\": %d,\n", desired->fanCurve.hysteresisC);
+    fprintf(out, "    \"zero_rpm_enabled\": %s,\n",
+            desired->fanCurve.zeroRpmEnabled ? "true" : "false");
     fprintf(out, "    \"points\": [\n");
     for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
         fprintf(out,
@@ -100,4 +102,3 @@ void print_desired_settings_json(FILE* out, int slot, const DesiredSettings* des
     if (!first) fprintf(out, "\n");
     fprintf(out, "  ]\n}\n");
 }
-

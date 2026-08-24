@@ -70,7 +70,10 @@ enum {
     // exact before/after control-block diff on RTX 5070 / 610.88; the engine's
     // clock has no CLK_MEASURE id, so exact readback is the proof). Sizes
     // changed again.
-    SERVICE_PROTOCOL_VERSION = 22,
+    // v23 adds native zero-RPM curve intent to FanCurveConfig.  The field is
+    // carried by requests, active/startup intent, control readback, and the
+    // snapshot, so every wire payload containing fan state changes size.
+    SERVICE_PROTOCOL_VERSION = 23,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply. Bit 30 marks an
@@ -660,16 +663,11 @@ static_assert(offsetof(ServiceRequest, magic) == 0, "ServiceRequest.magic must b
 static_assert(offsetof(ServiceRequest, version) == 4, "ServiceRequest.version offset changed");
 static_assert(offsetof(ServiceRequest, command) == 8, "ServiceRequest.command offset changed");
 
-
-
-
-
-
-static_assert(sizeof(ControlState) == 184,
+static_assert(sizeof(ControlState) == 188,
               "ControlState changed without an IPC protocol-version bump");
-static_assert(sizeof(DesiredSettings) == 832,
+static_assert(sizeof(DesiredSettings) == 836,
               "DesiredSettings changed without an IPC protocol-version bump");
-static_assert(sizeof(ServiceSnapshot) == 4240,
+static_assert(sizeof(ServiceSnapshot) == 4248,
               "ServiceSnapshot changed without an IPC protocol-version bump");
 static_assert(sizeof(ServiceRequest) == 1424,
               "ServiceRequest changed without an IPC protocol-version bump");
@@ -698,9 +696,7 @@ static inline bool service_desired_bool_fields_valid(
     };
     for (const gc_bool8* flag : flags)
         if (*flag > 1) return false;
-    for (int i = 0; i < FAN_CURVE_MAX_POINTS; ++i)
-        if (desired->fanCurve.points[i].enabled > 1) return false;
-    return true;
+    return fan_curve_wire_flags_valid(&desired->fanCurve);
 }
 
 static inline bool service_gpu_bool_fields_valid(const GpuAdapterInfo* gpu) {
@@ -782,7 +778,7 @@ struct ServiceResponse {
     ServiceUpdateState update;
     char message[512];
 };
-static_assert(sizeof(ServiceResponse) == 7088,
+static_assert(sizeof(ServiceResponse) == 7112,
               "ServiceResponse changed without an IPC protocol-version bump");
 
 static_assert(offsetof(ServiceResponse, magic) == 0, "ServiceResponse.magic must be at offset 0");

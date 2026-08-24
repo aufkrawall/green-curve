@@ -603,7 +603,13 @@ int main(int argc, char** argv) {
     if (opts.reset) {
         initialize_desired_settings_defaults(&desired);
     }
-    merge_desired_settings(&desired, &opts.desired);
+    char fanError[192] = {};
+    if (!merge_linux_cli_desired_settings(&desired, &opts, fanError,
+                                          sizeof(fanError))) {
+        fprintf(stderr, "Invalid fan curve overrides: %s\n",
+                fanError[0] ? fanError : "invalid fan settings");
+        return 1;
+    }
     normalize_desired_settings_for_ui(&desired);
 
     if (opts.probe) {

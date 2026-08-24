@@ -716,6 +716,19 @@ static bool load_fan_curve_config_from_section(const char* path, const char* sec
         }
     }
 
+    gc_GetPrivateProfileStringUtf8(section, "zero_rpm_enabled", "", buf,
+        sizeof(buf), path);
+    trim_ascii(buf);
+    if (buf[0]) {
+        int value = 0;
+        if (!parse_int_strict(buf, &value) || (value != 0 && value != 1)) {
+            set_message(err, errSize,
+                "Invalid fan curve native zero-RPM flag in %s", section);
+            return false;
+        }
+        curve->zeroRpmEnabled = gc_bool8_from_bool(value != 0);
+    }
+
     for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
         char key[32] = {};
 
@@ -774,6 +787,7 @@ static void append_fan_curve_section_text(char* cfg, size_t cfgSize, size_t* use
     appendf("[%s]\r\n", sectionName);
     appendf("poll_interval_ms=%d\r\n", curve->pollIntervalMs);
     appendf("hysteresis_c=%d\r\n", curve->hysteresisC);
+    appendf("zero_rpm_enabled=%d\r\n", curve->zeroRpmEnabled ? 1 : 0);
     for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
         appendf("enabled%d=%d\r\n", i, curve->points[i].enabled ? 1 : 0);
         appendf("temp%d=%d\r\n", i, curve->points[i].temperatureC);

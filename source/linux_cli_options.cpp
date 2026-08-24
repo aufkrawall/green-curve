@@ -37,7 +37,7 @@ void print_linux_help() {
     puts("Overrides:");
     puts("  --gpu-offset MHZ --mem-offset MHZ --power-limit PCT");
     puts("  --fan auto|PCT --fan-mode auto|fixed|curve --fan-fixed PCT");
-    puts("  --fan-poll-ms MS --fan-hysteresis C");
+    puts("  --fan-poll-ms MS --fan-hysteresis C --fan-zero-rpm 0|1");
     puts("  --fan-curve-enabledN 0|1 --fan-curve-tempN C --fan-curve-pctN PCT");
     puts("  --pointN MHZ for VF points 0-127");
     puts("");
@@ -241,6 +241,8 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
             opts->desired.fanAuto = isAuto;
             opts->desired.fanMode = isAuto ? FAN_MODE_AUTO : FAN_MODE_FIXED;
             opts->desired.fanPercent = fanPercent;
+            opts->fanOverrides.mode = true;
+            opts->fanOverrides.fixedPercent = true;
         } else if (strcmp(arg, "--fan-mode") == 0) {
             opts->recognized = true;
             int fanMode = FAN_MODE_AUTO;
@@ -251,6 +253,7 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
             opts->desired.hasFan = true;
             opts->desired.fanMode = fanMode;
             opts->desired.fanAuto = fanMode == FAN_MODE_AUTO;
+            opts->fanOverrides.mode = true;
         } else if (strcmp(arg, "--fan-fixed") == 0) {
             opts->recognized = true;
             int value = 0;
@@ -262,6 +265,8 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
             opts->desired.fanMode = FAN_MODE_FIXED;
             opts->desired.fanAuto = false;
             opts->desired.fanPercent = clamp_percent(value);
+            opts->fanOverrides.mode = true;
+            opts->fanOverrides.fixedPercent = true;
         } else if (strcmp(arg, "--fan-poll-ms") == 0) {
             opts->recognized = true;
             int value = 0;
@@ -272,6 +277,8 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
             opts->desired.hasFan = true;
             opts->desired.fanMode = FAN_MODE_CURVE;
             opts->desired.fanCurve.pollIntervalMs = value;
+            opts->fanOverrides.mode = true;
+            opts->fanOverrides.pollInterval = true;
         } else if (strcmp(arg, "--fan-hysteresis") == 0) {
             opts->recognized = true;
             int value = 0;
@@ -282,6 +289,24 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
             opts->desired.hasFan = true;
             opts->desired.fanMode = FAN_MODE_CURVE;
             opts->desired.fanCurve.hysteresisC = value;
+            opts->fanOverrides.mode = true;
+            opts->fanOverrides.hysteresis = true;
+        } else if (strcmp(arg, "--fan-zero-rpm") == 0) {
+            opts->recognized = true;
+            int value = 0;
+            if (!argument_requires_value(argc, i) ||
+                !parse_int_strict(argv[++i], &value) ||
+                (value != 0 && value != 1)) {
+                set_message(opts->error, sizeof(opts->error),
+                    "Invalid --fan-zero-rpm value, use 0 or 1");
+                return false;
+            }
+            opts->desired.hasFan = true;
+            opts->desired.fanMode = FAN_MODE_CURVE;
+            opts->desired.fanCurve.zeroRpmEnabled =
+                gc_bool8_from_bool(value != 0);
+            opts->fanOverrides.mode = true;
+            opts->fanOverrides.zeroRpm = true;
         } else if (starts_with(arg, "--point")) {
             opts->recognized = true;
             int pointIndex = 0;
@@ -312,6 +337,9 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
             opts->desired.fanMode = FAN_MODE_CURVE;
             opts->desired.fanCurve.points[pointIndex].enabled = true;
             opts->desired.fanCurve.points[pointIndex].temperatureC = value;
+            opts->fanOverrides.mode = true;
+            opts->fanOverrides.pointEnabled[pointIndex] = true;
+            opts->fanOverrides.pointTemperature[pointIndex] = true;
         } else if (starts_with(arg, "--fan-curve-pct")) {
             opts->recognized = true;
             int pointIndex = 0;
@@ -328,6 +356,9 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
             opts->desired.fanMode = FAN_MODE_CURVE;
             opts->desired.fanCurve.points[pointIndex].enabled = true;
             opts->desired.fanCurve.points[pointIndex].fanPercent = value;
+            opts->fanOverrides.mode = true;
+            opts->fanOverrides.pointEnabled[pointIndex] = true;
+            opts->fanOverrides.pointPercent[pointIndex] = true;
         } else if (starts_with(arg, "--fan-curve-enabled")) {
             opts->recognized = true;
             int pointIndex = 0;
@@ -343,6 +374,8 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
             opts->desired.hasFan = true;
             opts->desired.fanMode = FAN_MODE_CURVE;
             opts->desired.fanCurve.points[pointIndex].enabled = value != 0;
+            opts->fanOverrides.mode = true;
+            opts->fanOverrides.pointEnabled[pointIndex] = true;
         } else {
             set_message(opts->error, sizeof(opts->error), "Unknown argument: %s", arg);
             return false;
@@ -350,4 +383,15 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
     }
 
     return true;
+}
+
+bool merge_linux_cli_desired_settings(DesiredSettings* base,
+                                      const LinuxCliOptions* opts,
+                                      char* err, size_t errSize) {
+    if (!base || !opts) return false;
+    DesiredSettings nonFanOverrides = opts->desired;
+    nonFanOverrides.hasFan = false;
+    merge_desired_settings(base, &nonFanOverrides);
+    return apply_linux_cli_fan_overrides(base, &opts->desired,
+                                         &opts->fanOverrides, err, errSize);
 }

@@ -421,7 +421,10 @@ struct FanCurveConfig {
     FanCurvePoint points[FAN_CURVE_MAX_POINTS];
     int pollIntervalMs;
     int hysteresisC;
+    gc_bool8 zeroRpmEnabled, zeroRpmReserved[3];
 };
+
+#include "fan_zero_rpm_policy.h"
 
 struct ControlState {
     gc_bool8 valid, hasGpuOffset;
@@ -514,13 +517,6 @@ struct DesiredSettings {
     gc_bool8 hasVideoClkOffsetKhz;
     int videoClkOffsetKhz;
 };
-
-static inline void validate_fan_curve_flags_for_ipc(FanCurveConfig* c) {
-    if (!c) return;
-    for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
-        canonicalize_gc_bool8(&c->points[i].enabled);
-    }
-}
 
 static inline void validate_gpu_adapter_info_for_ipc(GpuAdapterInfo* g) {
     if (!g) return;

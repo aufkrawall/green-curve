@@ -206,5 +206,6 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
 LinuxMutationResult linux_backend_reset(LinuxGpuState* g, char* result, size_t resultSize);
 bool linux_backend_set_curve_fan_percent(LinuxGpuState* g, unsigned int percent);
 bool linux_backend_set_fan_auto(LinuxGpuState* g);
+bool linux_backend_fans_are_auto(LinuxGpuState* g);
 
 #endif // GREEN_CURVE_LINUX_BACKEND_H

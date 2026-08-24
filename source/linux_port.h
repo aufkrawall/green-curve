@@ -27,6 +27,7 @@
 // initialize_desired_settings_defaults() / normalize_desired_settings_for_ui():
 // pure, header-only, and covered by the regression harness.
 #include "desired_settings_ui_policy.h"
+#include "linux_cli_fan_override_policy.h"
 
 // What `--startup-profile` / `--show-startup` asked the client to do with the
 // daemon's boot-apply policy.  The policy modes themselves are the shared
@@ -77,6 +78,7 @@ struct LinuxCliOptions {
     char assetsDir[LINUX_PATH_MAX];
     char error[256];
     DesiredSettings desired;
+    LinuxFanCliOverrideMask fanOverrides;
 };
 
 struct ProbeSummary {
@@ -110,6 +112,9 @@ bool default_linux_config_path(char* dst, size_t dstSize);
 bool default_probe_output_path(const char* configPath, char* dst, size_t dstSize);
 bool default_assets_output_dir(const char* configPath, char* dst, size_t dstSize);
 void merge_desired_settings(DesiredSettings* base, const DesiredSettings* incoming);
+bool merge_linux_cli_desired_settings(DesiredSettings* base,
+                                      const LinuxCliOptions* opts,
+                                      char* err, size_t errSize);
 bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts);
 void print_linux_help();
 bool load_profile_from_config_path(const char* path, int slot, DesiredSettings* desired, char* err, size_t errSize);

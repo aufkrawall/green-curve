@@ -400,6 +400,7 @@ struct LinuxApplyTransactionContext {
     int curveTargets[VF_NUM_POINTS];
     bool curveMask[VF_NUM_POINTS];
     int fanTargetPercent;
+    bool fanUseDriverAuto;
 };
 
 static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
@@ -442,6 +443,10 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
             return g->nvml.resetGpuLockedClocks &&
                    g->nvml.resetGpuLockedClocks(g->nvmlDevice) == NVML_SUCCESS;
         case LINUX_MUTATION_FAN:
+            if (d->fanMode == FAN_MODE_CURVE &&
+                context->fanUseDriverAuto) {
+                return nvml_set_fan(g, FAN_MODE_AUTO, true, 0);
+            }
             return nvml_set_fan(g, d->fanMode, d->fanAuto,
                 context->fanTargetPercent);
         case LINUX_MUTATION_XBAR:
@@ -487,7 +492,7 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     }
     bool hardLock = d->hasLock && d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
     LinuxApplyTransactionContext context = {g, d, &snapshot, {}, {},
-        d->fanPercent};
+        d->fanPercent, false};
     gc_u32 requestedDomains = service_desired_mutation_domains(d);
     int cleanupPointCount = 0;
     LinuxCurveTargetBuildResult curveBuild = {};
@@ -518,8 +523,20 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
                 fanErr[0] ? fanErr : "temperature unavailable");
             return mutation;
         }
-        context.fanTargetPercent = fan_curve_interpolate_percent(&normalized,
-            (int)temperature);
+        FanRuntimeState initialRuntime = {};
+        FanRuntimeDecision initialDecision = fan_runtime_next_action(
+            &initialRuntime, &normalized, (int)temperature, false);
+        context.fanTargetPercent = initialDecision.targetPercent;
+        context.fanUseDriverAuto = initialDecision.useDriverAuto;
+        lb_log("apply: fan curve initial state temp=%uC control=%s target=%d%% "
+               "zeroRpm=%d start=%dC stop=%dC\n",
+               temperature,
+               context.fanUseDriverAuto ? "driver-auto" : "manual",
+               context.fanTargetPercent,
+               normalized.zeroRpmEnabled ? 1 : 0,
+               fan_curve_first_enabled_temperature(&normalized),
+               fan_curve_first_enabled_temperature(&normalized) -
+                   fan_curve_zero_rpm_hysteresis(&normalized));
     }
     unsigned int requested = 0;
     if (d->resetOcBeforeApply) requested |= LINUX_MUTATION_RESET_BASELINE;
@@ -647,4 +664,21 @@ bool linux_backend_set_curve_fan_percent(LinuxGpuState* g, unsigned int percent)
 
 bool linux_backend_set_fan_auto(LinuxGpuState* g) {
     return g && nvml_set_fan(g, FAN_MODE_AUTO, true, 0);
+}
+
+bool linux_backend_fans_are_auto(LinuxGpuState* g) {
+    if (!g || !g->nvml.getNumFans || !g->nvml.getFanControlPolicy) return false;
+    unsigned int fanCount = 0;
+    if (g->nvml.getNumFans(g->nvmlDevice, &fanCount) != NVML_SUCCESS ||
+        fanCount == 0) return false;
+    if (fanCount > MAX_GPU_FANS) fanCount = MAX_GPU_FANS;
+    for (unsigned int fan = 0; fan < fanCount; ++fan) {
+        unsigned int policy = 0;
+        if (g->nvml.getFanControlPolicy(g->nvmlDevice, fan, &policy) !=
+                NVML_SUCCESS ||
+            policy != NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW) {
+            return false;
+        }
+    }
+    return true;
 }

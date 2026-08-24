@@ -75,7 +75,9 @@ static bool is_themed_checkbox_id(UINT id) {
 }
 
 static bool is_fan_dialog_checkbox_id(UINT id) {
-    return id >= FAN_DIALOG_ENABLE_BASE && id < FAN_DIALOG_ENABLE_BASE + FAN_CURVE_MAX_POINTS;
+    return id == FAN_DIALOG_ZERO_RPM_ID ||
+        (id >= FAN_DIALOG_ENABLE_BASE &&
+         id < FAN_DIALOG_ENABLE_BASE + FAN_CURVE_MAX_POINTS);
 }
 
 // The last-painted mirror for the main-window checkboxes whose tick is derived
@@ -103,6 +105,9 @@ static bool themed_checkbox_checked_state(UINT id, HWND hwnd) {
         return is_machine_profile_slot_saved(slot) && g_app.machineLogonSlotCache == slot;
     }
     if (is_fan_dialog_checkbox_id(id)) {
+        if (id == FAN_DIALOG_ZERO_RPM_ID) {
+            return g_fanCurveDialog.working.zeroRpmEnabled != 0;
+        }
         int pointIndex = (int)id - FAN_DIALOG_ENABLE_BASE;
         if (pointIndex >= 0 && pointIndex < FAN_CURVE_MAX_POINTS) {
             return g_fanCurveDialog.working.points[pointIndex].enabled;

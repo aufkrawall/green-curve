@@ -129,6 +129,8 @@ static void check_desired_postconditions(const DesiredSettings& d) {
                   d.hasPowerLimit <= 1 && d.hasFan <= 1 && d.fanAuto <= 1 &&
                   d.resetOcBeforeApply <= 1,
                   "a gc_bool8 field left the IPC boundary non-canonical");
+    GC_FUZZ_CHECK(fan_curve_wire_flags_valid(&d.fanCurve),
+                  "fan curve wire flags/reserved bytes are non-canonical");
 
     // lockCi indexes VF_NUM_POINTS-sized arrays downstream; -1 is the
     // documented "no explicit lock" sentinel.

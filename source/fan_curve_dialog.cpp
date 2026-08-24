@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
+#include "fan_zero_rpm_gui_policy.h"
+
 static int fan_curve_dialog_combo_value(HWND combo, int fallback) {
     if (!combo) return fallback;
     int sel = (int)SendMessageA(combo, CB_GETCURSEL, 0, 0);
@@ -60,6 +62,9 @@ static void fan_curve_dialog_sync_controls() {
 
     fan_curve_dialog_select_combo_value(g_fanCurveDialog.intervalCombo, g_fanCurveDialog.working.pollIntervalMs);
     fan_curve_dialog_select_combo_value(g_fanCurveDialog.hysteresisCombo, g_fanCurveDialog.working.hysteresisC);
+    if (g_fanCurveDialog.zeroRpmCheck) {
+        InvalidateRect(g_fanCurveDialog.zeroRpmCheck, nullptr, FALSE);
+    }
 }
 
 static void fan_curve_dialog_temperature_bounds(const FanCurveConfig* curve, int pointIndex, int* minimumOut, int* maximumOut) {
@@ -522,15 +527,33 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 SendMessageA(g_fanCurveDialog.hysteresisCombo, CB_SETITEMDATA, (WPARAM)index, (LPARAM)value);
             }
 
+            g_fanCurveDialog.zeroRpmCheck = CreateWindowExA(
+                0, "BUTTON", "Native zero-RPM",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                dp(304), dp(FAN_ZERO_RPM_GUI_CHECK_Y), dp(174),
+                dp(FAN_ZERO_RPM_GUI_CHECK_HEIGHT),
+                hwnd, (HMENU)(INT_PTR)FAN_DIALOG_ZERO_RPM_ID,
+                g_app.hInst, nullptr);
+            apply_ui_font(g_fanCurveDialog.zeroRpmCheck);
+            fit_themed_checkbox_to_label(g_fanCurveDialog.zeroRpmCheck);
+            CreateWindowExA(0, "STATIC",
+                FAN_ZERO_RPM_GUI_DESCRIPTION,
+                WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_NOPREFIX,
+                dp(304), dp(FAN_ZERO_RPM_GUI_DESCRIPTION_Y), dp(178),
+                dp(FAN_ZERO_RPM_GUI_DESCRIPTION_HEIGHT), hwnd, nullptr,
+                g_app.hInst, nullptr);
+
             g_fanCurveDialog.okButton = CreateWindowExA(
                 0, "BUTTON", "OK",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                dp(304), dp(406), dp(72), dp(28),
+                dp(304), dp(FAN_ZERO_RPM_GUI_BUTTON_Y), dp(72),
+                dp(FAN_ZERO_RPM_GUI_BUTTON_HEIGHT),
                 hwnd, (HMENU)(INT_PTR)FAN_DIALOG_OK_ID, g_app.hInst, nullptr);
             g_fanCurveDialog.cancelButton = CreateWindowExA(
                 0, "BUTTON", "Close",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-                dp(384), dp(406), dp(72), dp(28),
+                dp(384), dp(FAN_ZERO_RPM_GUI_BUTTON_Y), dp(72),
+                dp(FAN_ZERO_RPM_GUI_BUTTON_HEIGHT),
                 hwnd, (HMENU)(INT_PTR)FAN_DIALOG_CANCEL_ID, g_app.hInst, nullptr);
 
             apply_ui_font_to_children(hwnd);
@@ -552,7 +575,7 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
             const DRAWITEMSTRUCT* dis = (const DRAWITEMSTRUCT*)lParam;
             if (dis && dis->CtlType == ODT_BUTTON) {
                 if (is_themed_button_id(dis->CtlID) ||
-                    (dis->CtlID >= FAN_DIALOG_ENABLE_BASE && dis->CtlID < FAN_DIALOG_ENABLE_BASE + FAN_CURVE_MAX_POINTS)) {
+                    is_fan_dialog_checkbox_id(dis->CtlID)) {
                     draw_themed_button(dis);
                     return TRUE;
                 }
@@ -583,6 +606,19 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 InvalidateRect(g_fanCurveDialog.enableChecks[id - FAN_DIALOG_ENABLE_BASE], nullptr, FALSE);
                 return 0;
             }
+            if (id == FAN_DIALOG_ZERO_RPM_ID && notification == BN_CLICKED) {
+                g_fanCurveDialog.working.zeroRpmEnabled = gc_bool8_from_bool(
+                    !g_fanCurveDialog.working.zeroRpmEnabled);
+                if (g_fanCurveDialog.working.zeroRpmEnabled &&
+                    g_fanCurveDialog.working.hysteresisC <
+                        FAN_ZERO_RPM_MIN_HYSTERESIS_C) {
+                    g_fanCurveDialog.working.hysteresisC =
+                        FAN_ZERO_RPM_MIN_HYSTERESIS_C;
+                }
+                fan_curve_dialog_sync_controls();
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
             if (((id >= FAN_DIALOG_TEMP_BASE && id < FAN_DIALOG_TEMP_BASE + FAN_CURVE_MAX_POINTS) ||
                  (id >= FAN_DIALOG_PERCENT_BASE && id < FAN_DIALOG_PERCENT_BASE + FAN_CURVE_MAX_POINTS)) &&
                 notification == EN_CHANGE) {
@@ -599,6 +635,16 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
             }
             if ((id == FAN_DIALOG_INTERVAL_ID || id == FAN_DIALOG_HYSTERESIS_ID) && notification == CBN_SELCHANGE) {
                 fan_curve_dialog_update_working_from_controls(hwnd);
+                if (id == FAN_DIALOG_HYSTERESIS_ID &&
+                    g_fanCurveDialog.working.zeroRpmEnabled &&
+                    g_fanCurveDialog.working.hysteresisC <
+                        FAN_ZERO_RPM_MIN_HYSTERESIS_C) {
+                    g_fanCurveDialog.working.hysteresisC =
+                        FAN_ZERO_RPM_MIN_HYSTERESIS_C;
+                    fan_curve_dialog_select_combo_value(
+                        g_fanCurveDialog.hysteresisCombo,
+                        FAN_ZERO_RPM_MIN_HYSTERESIS_C);
+                }
                 return 0;
             }
             if (id == FAN_DIALOG_OK_ID && notification == BN_CLICKED) {

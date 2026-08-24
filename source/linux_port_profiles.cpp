@@ -124,6 +124,18 @@ static bool load_fan_curve_config_from_section(const IniDocument* doc, const cha
         return false;
     }
 
+    value = get_section_value(doc, section, "zero_rpm_enabled");
+    if (!value.empty()) {
+        int parsed = 0;
+        if (!parse_int_strict(value.c_str(), &parsed) ||
+            (parsed != 0 && parsed != 1)) {
+            set_message(err, errSize,
+                "Invalid fan curve native zero-RPM flag in %s", section);
+            return false;
+        }
+        curve->zeroRpmEnabled = gc_bool8_from_bool(parsed != 0);
+    }
+
     for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
         char key[32] = {};
         snprintf(key, sizeof(key), "enabled%d", i);
@@ -172,6 +184,11 @@ static void save_fan_curve_section(IniDocument* doc, const char* sectionName, co
     snprintf(value, sizeof(value), "%d", curve->hysteresisC);
     hystEntry.value = value;
     entries.push_back(hystEntry);
+
+    IniEntry zeroRpmEntry;
+    zeroRpmEntry.key = "zero_rpm_enabled";
+    zeroRpmEntry.value = curve->zeroRpmEnabled ? "1" : "0";
+    entries.push_back(zeroRpmEntry);
 
     for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
         IniEntry enabledEntry;

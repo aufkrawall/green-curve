@@ -5,6 +5,7 @@
 #define GREEN_CURVE_FAN_CURVE_H
 
 #include "app_shared.h"
+#include "fan_zero_rpm_policy.h"
 
 void fan_curve_set_default(FanCurveConfig* config);
 void fan_curve_normalize(FanCurveConfig* config);

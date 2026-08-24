@@ -40,6 +40,8 @@
 #include "linux_transaction.h"
 #include "linux_curve_targets.h"
 #include "fan_runtime_policy.h"
+#include "fan_zero_rpm_gui_policy.h"
+#include "linux_cli_fan_override_policy.h"
 #include "desired_settings_ui_policy.h"
 #include "service_operation_tracker.h"
 #include "gui_mutation_queue_policy.h"
@@ -1474,10 +1476,17 @@ static int run_all_tests(int argc, char** argv) {
             ds.curvePointMHz[ci] = 9999999u;
         }
         ds.fanCurve.points[0].enabled = 21;
+        ds.fanCurve.zeroRpmEnabled = 23;
+        memset(ds.fanCurve.zeroRpmReserved, 0xA5,
+               sizeof(ds.fanCurve.zeroRpmReserved));
         validate_desired_settings_for_ipc(&ds);
         if (ds.hasPowerLimit != 1 || ds.hasGpuOffset != 1 || ds.hasMemOffset != 1) return 68;
         if (ds.hasFan != 1 || ds.fanAuto != 1 || ds.resetOcBeforeApply != 1) return 69;
         if (ds.hasCurvePoint[0] != 1 || ds.fanCurve.points[0].enabled != 1) return 79;
+        if (ds.fanCurve.zeroRpmEnabled != 1 ||
+            ds.fanCurve.zeroRpmReserved[0] != 0 ||
+            ds.fanCurve.zeroRpmReserved[1] != 0 ||
+            ds.fanCurve.zeroRpmReserved[2] != 0) return 4720;
         if (ds.powerLimitPct != 50) return 72;
         if (ds.gpuOffsetMHz != -1000) return 73;
         if (ds.memOffsetMHz != 5000) return 74;
@@ -1853,6 +1862,65 @@ static int run_all_tests(int argc, char** argv) {
             !intent_readback_matches(&status)) return 1734;
     }
 
+    // F-FAN-ZERO-RPM-READBACK: a curve with native zero-RPM deliberately
+    // alternates between automatic and manual fan policies.  Readback must
+    // understand the same Schmitt band or it will falsely report Green Curve's
+    // own safe handoff as an external override.
+    {
+        ServiceResponse live = fake_ready_service_response(31, 4, 2);
+        live.state.activeDesiredValid = 1;
+        live.desired.hasFan = 1;
+        live.desired.fanMode = FAN_MODE_CURVE;
+        fan_curve_set_default(&live.desired.fanCurve);
+        live.desired.fanCurve.zeroRpmEnabled = 1;
+        live.snapshot.fanSupported = 1;
+        live.snapshot.fanCount = 1;
+        live.snapshot.gpuTemperatureValid = 1;
+        live.controlState.fanPolicyReadbackValid = 1;
+
+        // 29C lies inside the 28..30C anti-cycle band: either the previous
+        // automatic state or the previous manual state is legitimate.
+        live.snapshot.gpuTemperatureC = 29;
+        live.snapshot.fanPolicy[0] =
+            NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW;
+        IntentReadbackStatus status = compare_intent_to_readback(&live);
+        if (!intent_readback_matches(&status) || status.divergedDomains ||
+            status.unavailableDomains) return 4735;
+        live.snapshot.fanPolicy[0] = NVML_FAN_POLICY_MANUAL;
+        status = compare_intent_to_readback(&live);
+        if (!intent_readback_matches(&status) || status.divergedDomains ||
+            status.unavailableDomains) return 4736;
+
+        // At the start boundary automatic is stale; manual is correct.
+        live.snapshot.gpuTemperatureC = 30;
+        live.snapshot.fanPolicy[0] =
+            NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW;
+        status = compare_intent_to_readback(&live);
+        if (status.divergedDomains != SERVICE_MUTATION_DOMAIN_FAN ||
+            intent_readback_matches(&status)) return 4737;
+        live.snapshot.fanPolicy[0] = NVML_FAN_POLICY_MANUAL;
+        status = compare_intent_to_readback(&live);
+        if (!intent_readback_matches(&status)) return 4738;
+
+        // At the stop boundary manual is stale; automatic is correct.
+        live.snapshot.gpuTemperatureC = 28;
+        status = compare_intent_to_readback(&live);
+        if (status.divergedDomains != SERVICE_MUTATION_DOMAIN_FAN ||
+            intent_readback_matches(&status)) return 4739;
+        live.snapshot.fanPolicy[0] =
+            NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW;
+        status = compare_intent_to_readback(&live);
+        if (!intent_readback_matches(&status)) return 4740;
+
+        // Without current temperature the dynamic policy expectation cannot be
+        // evaluated, and must be reported unavailable rather than matched.
+        live.snapshot.gpuTemperatureValid = 0;
+        status = compare_intent_to_readback(&live);
+        if (status.unavailableDomains != SERVICE_MUTATION_DOMAIN_FAN ||
+            status.divergedDomains || intent_readback_matches(&status))
+            return 4741;
+    }
+
     // F-WIN-READBACK: the Windows ControlState publisher. This is the producer
     // side of the same v14 contract the Linux daemon implements; without it the
     // service ships all-zero validity while still substituting intent for
@@ -1965,16 +2033,16 @@ static int run_all_tests(int argc, char** argv) {
     // Protocol-v13 request validation, mutation preconditions, and field layout.
     {
         if (SERVICE_PROTOCOL_MAGIC != 0x47535643u) return 80;
-        if (SERVICE_PROTOCOL_VERSION != 22) return 81;
+        if (SERVICE_PROTOCOL_VERSION != 23) return 81;
         // These are release gates, not incidental layout observations. A field
         // addition that changes a fixed-size IPC structure must bump the wire
         // version; otherwise mixed old/new peers pass the header handshake and
         // then disagree on the number of body bytes to read.
         if (sizeof(ServiceRequest) != 1424 ||
-            sizeof(ControlState) != 184 ||
-            sizeof(DesiredSettings) != 832 ||
-            sizeof(ServiceSnapshot) != 4240 ||
-            sizeof(ServiceResponse) != 7088) return 4521;
+            sizeof(ControlState) != 188 ||
+            sizeof(DesiredSettings) != 836 ||
+            sizeof(ServiceSnapshot) != 4248 ||
+            sizeof(ServiceResponse) != 7112) return 4521;
         if (offsetof(ServiceRequest, expectedServiceInstanceId) <=
             offsetof(ServiceRequest, operationId) ||
             offsetof(ServiceResponse, state) <=
@@ -4585,6 +4653,27 @@ static int run_all_tests(int argc, char** argv) {
         build_tui_layout(vm, 71, 23, &tooSmall);
         if (!tooSmall.tooSmall || !tooSmall.actions.empty()) return 207;
 
+        // Native zero-RPM is visible and clickable in the Linux fan editor,
+        // not merely a profile/CLI field that TUI users cannot change.
+        tuiDesired.fanCurve.zeroRpmEnabled = 1;
+        vm.tab = TUI_TAB_FAN;
+        TuiLayout zeroRpmLayout;
+        build_tui_layout(vm, 160, 48, &zeroRpmLayout);
+        bool sawZeroRpmToggle = false;
+        std::string zeroRpmScreen;
+        for (const ClickAction& action : zeroRpmLayout.actions) {
+            if (action.type == ACTION_FAN_ZERO_RPM_TOGGLE)
+                sawZeroRpmToggle = true;
+        }
+        for (const TuiCell& cell : zeroRpmLayout.cells)
+            zeroRpmScreen += cell.glyph;
+        if (!sawZeroRpmToggle ||
+            zeroRpmScreen.find("Native zero-RPM") == std::string::npos ||
+            zeroRpmScreen.find("OFF <=28") == std::string::npos ||
+            zeroRpmScreen.find("ON >=30") == std::string::npos)
+            return 4721;
+        tuiDesired.fanCurve.zeroRpmEnabled = 0;
+
         // Online unsupported rows are truthful and non-interactive; offline
         // portable-profile editing remains available without claiming a live
         // readback.
@@ -6543,6 +6632,155 @@ static int run_all_tests(int argc, char** argv) {
             true);
         if (forced.targetPercent != fan_curve_interpolate_percent(&curve, 31))
             return 1019;
+    }
+
+    // F-FAN-ZERO-RPM: below the first curve point, native zero-RPM means
+    // handing control back to NVIDIA's automatic policy.  It must never write
+    // an out-of-range manual 0%, and the start/stop boundary is a Schmitt
+    // trigger so a workload hovering around 30C cannot cycle the fan motor.
+    {
+        FanCurveConfig curve = {};
+        fan_curve_set_default(&curve);
+        curve.zeroRpmEnabled = 1;
+        curve.hysteresisC = 0; // zero-RPM still enforces a 2C anti-cycle band
+        if (fan_curve_first_enabled_temperature(&curve) != 30 ||
+            fan_curve_zero_rpm_hysteresis(&curve) != 2) return 4722;
+        if (!fan_curve_wire_flags_valid(&curve)) return 4742;
+        FanCurveConfig malformedWire = curve;
+        malformedWire.zeroRpmReserved[1] = 1;
+        if (fan_curve_wire_flags_valid(&malformedWire)) return 4743;
+        malformedWire = curve;
+        malformedWire.zeroRpmEnabled = 2;
+        if (fan_curve_wire_flags_valid(&malformedWire)) return 4744;
+
+        FanRuntimeState state = {};
+        FanRuntimeDecision cold = fan_runtime_next_action(
+            &state, &curve, 29, false);
+        if (!cold.useDriverAuto || !cold.shouldWrite ||
+            !cold.controlModeChanged || cold.targetPercent != 0)
+            return 4723;
+        FanRuntimeDecision coldHeld = fan_runtime_next_action(
+            &state, &curve, 29, false);
+        if (!coldHeld.useDriverAuto || coldHeld.shouldWrite ||
+            coldHeld.controlModeChanged) return 4724;
+
+        FanRuntimeDecision start = fan_runtime_next_action(
+            &state, &curve, 30, false);
+        if (start.useDriverAuto || !start.shouldWrite ||
+            !start.controlModeChanged || start.targetPercent != 20)
+            return 4725;
+        // Once started, 29C is inside the band and remains manual.
+        FanRuntimeDecision bandManual = fan_runtime_next_action(
+            &state, &curve, 29, false);
+        if (bandManual.useDriverAuto || bandManual.controlModeChanged ||
+            bandManual.targetPercent != 20) return 4726;
+        FanRuntimeDecision stop = fan_runtime_next_action(
+            &state, &curve, 28, false);
+        if (!stop.useDriverAuto || !stop.shouldWrite ||
+            !stop.controlModeChanged) return 4727;
+        // Coming from automatic, the same 29C band stays automatic.
+        FanRuntimeDecision bandAuto = fan_runtime_next_action(
+            &state, &curve, 29, false);
+        if (!bandAuto.useDriverAuto || bandAuto.shouldWrite ||
+            bandAuto.controlModeChanged) return 4728;
+        FanRuntimeDecision forcedAuto = fan_runtime_next_action(
+            &state, &curve, 29, true);
+        if (!forcedAuto.useDriverAuto || !forcedAuto.shouldWrite)
+            return 4729;
+
+        // Disabling the feature preserves the existing all-manual curve.
+        curve.zeroRpmEnabled = 0;
+        FanRuntimeState manualOnly = {};
+        FanRuntimeDecision legacy = fan_runtime_next_action(
+            &manualOnly, &curve, 20, false);
+        if (legacy.useDriverAuto || legacy.targetPercent != 20)
+            return 4730;
+
+        // Threshold discovery is independent of storage order and ignores
+        // disabled editor rows.
+        curve.zeroRpmEnabled = 1;
+        curve.points[0].temperatureC = 50;
+        curve.points[1].temperatureC = 35;
+        curve.points[7].enabled = 0;
+        curve.points[7].temperatureC = 5;
+        if (fan_curve_first_enabled_temperature(&curve) != 35) return 4731;
+
+        // Normalization and IPC canonicalization preserve one real bool while
+        // clearing reserved wire bytes; equality includes the new setting.
+        FanCurveConfig canonical = curve;
+        canonical.zeroRpmEnabled = 9;
+        memset(canonical.zeroRpmReserved, 0x5A,
+               sizeof(canonical.zeroRpmReserved));
+        fan_curve_normalize(&canonical);
+        if (canonical.zeroRpmEnabled != 1 ||
+            canonical.hysteresisC != FAN_ZERO_RPM_MIN_HYSTERESIS_C ||
+            canonical.zeroRpmReserved[0] != 0 ||
+            canonical.zeroRpmReserved[1] != 0 ||
+            canonical.zeroRpmReserved[2] != 0) return 4732;
+        FanCurveConfig unequal = canonical;
+        unequal.zeroRpmEnabled = 0;
+        if (fan_curve_equals(&canonical, &unequal)) return 4733;
+        char summary[128] = {};
+        fan_curve_format_summary(&canonical, summary, sizeof(summary));
+        if (!strstr(summary, "zero-RPM")) return 4734;
+
+        // Linux fan CLI options are partial overrides.  A zero-RPM toggle
+        // must retain the saved custom curve, including the independently
+        // user-selected ON temperature and OFF hysteresis.
+        DesiredSettings saved = {};
+        initialize_desired_settings_defaults(&saved);
+        saved.hasFan = true;
+        saved.fanMode = FAN_MODE_CURVE;
+        saved.fanAuto = false;
+        saved.fanCurve.pollIntervalMs = 1750;
+        saved.fanCurve.hysteresisC = 6;
+        saved.fanCurve.points[0].temperatureC = 38;
+        saved.fanCurve.points[0].fanPercent = 27;
+
+        DesiredSettings cli = {};
+        initialize_desired_settings_defaults(&cli);
+        cli.hasFan = true;
+        cli.fanMode = FAN_MODE_CURVE;
+        cli.fanAuto = false;
+        cli.fanCurve.zeroRpmEnabled = 1;
+        LinuxFanCliOverrideMask mask = {};
+        mask.mode = true;
+        mask.zeroRpm = true;
+        char cliError[128] = {};
+        if (!apply_linux_cli_fan_overrides(&saved, &cli, &mask, cliError,
+                                           sizeof(cliError)))
+            return 4745;
+        if (!saved.fanCurve.zeroRpmEnabled ||
+            saved.fanCurve.pollIntervalMs != 1750 ||
+            saved.fanCurve.hysteresisC != 6 ||
+            saved.fanCurve.points[0].temperatureC != 38 ||
+            saved.fanCurve.points[0].fanPercent != 27)
+            return 4746;
+
+        // A point override that collides with the next enabled temperature is
+        // rejected transactionally instead of silently resetting the curve.
+        DesiredSettings beforeInvalid = saved;
+        cli.fanCurve.points[0].temperatureC = 45;
+        mask.zeroRpm = false;
+        mask.pointEnabled[0] = true;
+        mask.pointTemperature[0] = true;
+        if (apply_linux_cli_fan_overrides(&saved, &cli, &mask, cliError,
+                                          sizeof(cliError)))
+            return 4747;
+        if (saved.fanCurve.points[0].temperatureC !=
+                beforeInvalid.fanCurve.points[0].temperatureC ||
+            !saved.fanCurve.zeroRpmEnabled || cliError[0] == 0)
+            return 4748;
+
+        // The Windows description used to rely on automatic wrapping inside
+        // a 40px box, clipping the last lines and visually colliding with the
+        // buttons under common DPI/font settings.
+        if (!fan_zero_rpm_gui_layout_is_nonoverlapping()) return 4749;
+        const char* firstBreak = strstr(FAN_ZERO_RPM_GUI_DESCRIPTION, "\r\n");
+        const char* secondBreak = firstBreak
+            ? strstr(firstBreak + 2, "\r\n") : nullptr;
+        if (!firstBreak || !secondBreak || strstr(secondBreak + 2, "\r\n"))
+            return 4750;
     }
 
     // Shared fan failure escalation ladder.  The Linux daemon previously

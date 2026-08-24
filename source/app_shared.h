@@ -586,6 +586,10 @@ struct AppData {
     FanCurveConfig activeFanCurve;
     bool fanCurveRuntimeActive;
     bool fanFixedRuntimeActive;
+    // Curve intent may temporarily hand the hardware to driver automatic mode
+    // for native zero-RPM.  Keep that runtime sub-state separate from
+    // activeFanMode, which remains FAN_MODE_CURVE throughout.
+    bool fanCurveDriverAutoActive;
     int fanCurveLastAppliedPercent;
     int fanCurveLastAppliedTempC;
     bool fanCurveHasLastAppliedTemp;

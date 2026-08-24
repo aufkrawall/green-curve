@@ -516,6 +516,7 @@ static void stop_fan_curve_runtime(bool restoreFanAutoOnExit) {
     bool hadRuntime = g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive;
     g_app.fanCurveRuntimeActive = false;
     g_app.fanFixedRuntimeActive = false;
+    g_app.fanCurveDriverAutoActive = false;
     g_app.fanCurveHasLastAppliedTemp = false;
     g_app.fanRuntimeConsecutiveFailures = 0;
     g_app.fanRuntimeLastApplyTickMs = 0;
@@ -554,6 +555,7 @@ static bool nvml_read_temperature(int* temperatureC, char* detail, size_t detail
     if (temperatureC) *temperatureC = (int)value;
     return true;
 }
+#include "main_fan_zero_rpm.cpp"
 static void apply_fan_curve_tick() {
     // Phase 1: snapshot mode flags and configuration under CS, then release
     // before any NVML calls (which can crash in nvml.dll and kill this thread
@@ -647,6 +649,7 @@ static void apply_fan_curve_tick() {
     int lastAppliedTempC = 0;
     ULONGLONG lastApplyTickMs = 0;
     int consecutiveFailures = 0;
+    bool driverAutoActive = false;
     FanCurveConfig activeCurve = {};
     EnterCriticalSection(&g_appLock);
     if (!g_app.fanCurveRuntimeActive) {
@@ -659,10 +662,18 @@ static void apply_fan_curve_tick() {
     lastAppliedTempC = g_app.fanCurveLastAppliedTempC;
     lastApplyTickMs = g_app.fanRuntimeLastApplyTickMs;
     consecutiveFailures = g_app.fanRuntimeConsecutiveFailures;
+    driverAutoActive = g_app.fanCurveDriverAutoActive;
     LeaveCriticalSection(&g_appLock);
 
+    if (apply_fan_curve_zero_rpm_tick(&activeCurve, currentTempC,
+            hasLastAppliedTemp, lastAppliedTempC, lastAppliedPercent,
+            driverAutoActive, lastApplyTickMs, consecutiveFailures, now,
+            detail, sizeof(detail))) return;
+
     int targetPercent = fan_curve_interpolate_percent(&activeCurve, currentTempC);
-    if (!hasLastAppliedTemp) {
+    if (driverAutoActive) {
+        shouldApply = true;
+    } else if (!hasLastAppliedTemp) {
         shouldApply = true;
     } else if (targetPercent > lastAppliedPercent) {
         shouldApply = true;
@@ -728,7 +739,14 @@ static void apply_fan_curve_tick() {
     g_app.fanCurveLastAppliedPercent = targetPercent;
     g_app.fanCurveLastAppliedTempC = currentTempC;
     g_app.fanCurveHasLastAppliedTemp = true;
+    bool transitionedFromDriverAuto = g_app.fanCurveDriverAutoActive;
+    g_app.fanCurveDriverAutoActive = false;
     mark_fan_runtime_success(now);
+    if (transitionedFromDriverAuto) {
+        debug_log("fan curve transition: temp=%dC control=manual target=%d%% start=%dC\n",
+            currentTempC, targetPercent,
+            fan_curve_first_enabled_temperature(&activeCurve));
+    }
     if (g_app.isServiceProcess) {
         populate_control_state(&g_serviceControlState);
         g_serviceControlStateValid = true;
@@ -841,9 +859,11 @@ static bool apply_fan_settings(const DesiredSettings* desired, char* failureDeta
             } else if (g_app.hMainWnd || g_app.isServiceProcess) {
                 stop_fan_curve_runtime();
                 copy_fan_curve(&g_app.activeFanCurve, &desiredCurve);
-                debug_log("apply fan curve: pollMs=%d hysteresis=%d firstEnabledPct=%d serviceProcess=%d\n",
+                debug_log("apply fan curve: pollMs=%d hysteresis=%d zeroRpm=%d start=%dC firstEnabledPct=%d serviceProcess=%d\n",
                     g_app.activeFanCurve.pollIntervalMs,
                     g_app.activeFanCurve.hysteresisC,
+                    g_app.activeFanCurve.zeroRpmEnabled ? 1 : 0,
+                    fan_curve_first_enabled_temperature(&g_app.activeFanCurve),
                     g_app.activeFanCurve.points[0].enabled ? g_app.activeFanCurve.points[0].fanPercent : 0,
                     g_app.isServiceProcess ? 1 : 0);
                 set_last_apply_phase("apply: fan curve runtime start");
