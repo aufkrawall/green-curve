@@ -178,8 +178,9 @@ def harden_owner_only(path):
     try:
         result = advapi32.SetNamedSecurityInfoW(
             path, SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            None, None, acl, None)
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION |
+            PROTECTED_DACL_SECURITY_INFORMATION,
+            sid_pointer, None, acl, None)
         if result:
             raise OSError(result, "SetNamedSecurityInfoW failed")
     finally:

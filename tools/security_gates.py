@@ -575,6 +575,11 @@ def run_build_script_regression_tests(ctx):
             print("Build-script regression FAILED: TOKEN_USER query lacks its "
                   "variable-length result buffer")
             sys.exit(1)
+        if ("OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION" not in
+                signing_script_text):
+            print("Build-script regression FAILED: signing-key hardener does not "
+                  "set the hosted token user as file owner")
+            sys.exit(1)
         if "buffer = TokenUser()" in signing_script_text:
             print("Build-script regression FAILED: TOKEN_USER query can overflow "
                   "a fixed ctypes structure")
