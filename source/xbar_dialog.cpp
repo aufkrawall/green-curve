@@ -196,18 +196,17 @@ static void xbar_dialog_update_live_values() {
         xbarKhz / 1000, sysKhz / 1000, videoKhz / 1000, xbarUv / 1000);
     SetWindowTextA(g_xbarDialog.hCurrentLabel, buf);
 
+    // All three clocks come from in-app sources now: XBAR/SYS from private
+    // CLK_MEASURE domains, VIDEO from the documented public frequency query.
     unsigned int measuredXbar = g_app.xbarMeasuredClockKhz;
     unsigned int measuredSys = g_app.sysClkMeasuredClockKhz;
-    if (measuredXbar > 0 && measuredSys > 0) {
-        StringCchPrintfA(buf, 128, "Measured now: XBAR %u MHz | SYS %u MHz"
-            " | VIDEO n/a (HWiNFO)", measuredXbar / 1000,
-            measuredSys / 1000);
-    } else if (measuredXbar > 0) {
-        StringCchPrintfA(buf, 128, "Measured now: XBAR %u MHz | SYS ---"
-            " | VIDEO n/a (HWiNFO)", measuredXbar / 1000);
-    } else {
-        StringCchPrintfA(buf, 128, "Measured now: ---");
-    }
+    unsigned int measuredVideo = g_app.videoClkMeasuredClockKhz;
+    char xbarTxt[16] = "---", sysTxt[16] = "---", videoTxt[16] = "---";
+    if (measuredXbar) StringCchPrintfA(xbarTxt, 16, "%u MHz", measuredXbar / 1000);
+    if (measuredSys) StringCchPrintfA(sysTxt, 16, "%u MHz", measuredSys / 1000);
+    if (measuredVideo) StringCchPrintfA(videoTxt, 16, "%u MHz", measuredVideo / 1000);
+    StringCchPrintfA(buf, 128, "Measured now: XBAR %s | SYS %s | VIDEO %s",
+                     xbarTxt, sysTxt, videoTxt);
     SetWindowTextA(g_xbarDialog.hMeasuredLabel, buf);
 
     // Per-row live columns.

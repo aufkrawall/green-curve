@@ -8,6 +8,33 @@
 
 #include "gpu_backend_xbar.h"
 
+// Public clock ids used here: gpu_core.h carries GRAPHICS/MEMORY for the VF
+// path; VIDEO is the one this file needs.
+enum {
+    NVAPI_GPU_PUBLIC_CLOCK_VIDEO = 8,
+};
+
+// The video engine has no CLK_MEASURE domain, but the DOCUMENTED public
+// frequency query reports its current clock.  This is the proper in-app
+// source for the live VIDEO value - no external tool involved.
+static bool clk_read_public_video_clock(void* gpuHandle,
+                                        unsigned int* khzOut) {
+    if (!gpuHandle || !khzOut) return false;
+    auto getAllClocks = (NvApiFunc)nvapi_qi(0xDCB616C3u);
+    if (!getAllClocks) return false;
+    struct {
+        unsigned int version;
+        unsigned int clockType;  // 0 = CURRENT_FREQ
+        struct { unsigned int present; unsigned int frequency; } domain[32];
+    } freqs;
+    memset(&freqs, 0, sizeof(freqs));
+    freqs.version = (3u << 16) | (unsigned int)sizeof(freqs);
+    if (getAllClocks(gpuHandle, &freqs) != 0) return false;
+    if (!freqs.domain[NVAPI_GPU_PUBLIC_CLOCK_VIDEO].present) return false;
+    *khzOut = freqs.domain[NVAPI_GPU_PUBLIC_CLOCK_VIDEO].frequency;
+    return *khzOut != 0;
+}
+
 static bool xbar_refresh_live_state() {
     if (!g_app.xbarProbeValid || !g_app.gpuHandle) return false;
     auto getControl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
@@ -48,18 +75,15 @@ static bool xbar_refresh_live_state() {
         changed = changed || g_app.sysClkMeasuredClockKhz != sysMeasuredKhz;
         g_app.sysClkMeasuredClockKhz = sysMeasuredKhz;
     }
-    const int videoEntry = XBAR_PINNED_VIDEO_ENTRY_INDEX;
-    if (videoEntry >= 0) {
-        unsigned long long videoField =
-            (unsigned long long)snap.entryBase +
-            (unsigned long long)videoEntry * snap.entryStride +
-            g_xbarSchemas[0].freqOffsetField;
-        if (videoField + sizeof(unsigned int) <= XBAR_CONTROL_BUF_SIZE) {
-            int videoOffset = (int)xbar_get_u32(snap.buf, (unsigned int)videoField);
-            changed = changed || g_app.videoClkFreqOffsetKhz != videoOffset;
-            g_app.videoClkFreqReadbackValid = true;
-            g_app.videoClkFreqOffsetKhz = videoOffset;
-        }
+    unsigned long long videoField =
+        (unsigned long long)snap.entryBase +
+        (unsigned long long)XBAR_PINNED_VIDEO_ENTRY_INDEX * snap.entryStride +
+        g_xbarSchemas[0].freqOffsetField;
+    if (videoField + sizeof(unsigned int) <= XBAR_CONTROL_BUF_SIZE) {
+        int videoOffset = (int)xbar_get_u32(snap.buf, (unsigned int)videoField);
+        changed = changed || g_app.videoClkFreqOffsetKhz != videoOffset;
+        g_app.videoClkFreqReadbackValid = true;
+        g_app.videoClkFreqOffsetKhz = videoOffset;
     }
     if (changed) {
         debug_log("xbar refresh: offset=%d kHz msvdd=%d uV measured=%u kHz\n",

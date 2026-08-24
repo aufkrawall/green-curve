@@ -22,9 +22,9 @@ static const unsigned int CLK_PROBE_MAX_DOMAINS = 32;
 // Public NvAPI clock ids used to label measured physical domains.  Only
 // PROCESSOR/VIDEO are new here: gpu_core.h already carries GRAPHICS/MEMORY
 // for the VF path.
+// NVAPI_GPU_PUBLIC_CLOCK_VIDEO comes from xbar_telemetry.h.
 enum {
     NVAPI_GPU_PUBLIC_CLOCK_PROCESSOR = 7,
-    NVAPI_GPU_PUBLIC_CLOCK_VIDEO = 8,
 };
 
 // Shared direct-NvAPI preparation for --self-test / --clk-domain-probe:
