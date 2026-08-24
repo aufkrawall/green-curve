@@ -42,7 +42,6 @@ the most security-sensitive path of the application.
 import argparse
 import base64
 import binascii
-import ctypes
 import hashlib
 import os
 import hmac
@@ -51,6 +50,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+
+import windows_key_acl
 
 # --------------------------------------------------------------------------
 # NIST P-256 (secp256r1)
@@ -229,134 +230,16 @@ PRIVATE_KEY_HEADER = (
 )
 
 
-def _current_user_sid():
-    """Return the current process token's user SID as raw bytes."""
-    if os.name != "nt":
-        return None
-    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.GetCurrentProcess.argtypes = []
-    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
-    kernel32.OpenProcessToken.argtypes = [
-        ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
-    kernel32.OpenProcessToken.restype = ctypes.c_int
-    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-    advapi32.GetTokenInformation.argtypes = [
-        ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong,
-        ctypes.POINTER(ctypes.c_ulong)]
-    advapi32.GetTokenInformation.restype = ctypes.c_int
-    advapi32.GetLengthSid.argtypes = [ctypes.c_void_p]
-    advapi32.GetLengthSid.restype = ctypes.c_ulong
-
-    class SidAndAttributes(ctypes.Structure):
-        _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", ctypes.c_ulong)]
-
-    class TokenUser(ctypes.Structure):
-        _fields_ = [("User", SidAndAttributes)]
-
-    token = ctypes.c_void_p()
-    if not kernel32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008,
-                                     ctypes.byref(token)):
-        raise OSError(ctypes.get_last_error(), "OpenProcessToken failed")
-    try:
-        needed = ctypes.c_ulong()
-        if not advapi32.GetTokenInformation(token, 1, None, 0,
-                                             ctypes.byref(needed)):
-            error = ctypes.get_last_error()
-            if error != 122:  # ERROR_INSUFFICIENT_BUFFER
-                raise OSError(error, "GetTokenInformation sizing failed")
-        # TOKEN_USER ends with a variable-length SID.  The sizing call returns
-        # the bytes required for the complete record, not merely the fixed
-        # ctypes header above.  Passing a TokenUser instance while claiming
-        # that it was ``needed`` bytes large wrote past the Python object and
-        # could terminate the interpreter before buffered CI diagnostics were
-        # flushed (Python 3.12 on windows-latest reproduced that failure).
-        if needed.value < ctypes.sizeof(TokenUser):
-            raise OSError(24, "GetTokenInformation returned a short TOKEN_USER size")
-        buffer = ctypes.create_string_buffer(needed.value)
-        if not advapi32.GetTokenInformation(
-                token, 1, buffer, ctypes.sizeof(buffer),
-                ctypes.byref(needed)):
-            raise OSError(ctypes.get_last_error(), "GetTokenInformation failed")
-        token_user = ctypes.cast(
-            buffer, ctypes.POINTER(TokenUser)).contents
-        sid = token_user.User.Sid
-        if not sid:
-            raise ValueError("token contained no user SID")
-        length = advapi32.GetLengthSid(sid)
-        if not length:
-            raise OSError(ctypes.get_last_error(), "GetLengthSid failed")
-        return ctypes.string_at(sid, length)
-    finally:
-        kernel32.CloseHandle(token)
-
-
-def _sid_text(sid_pointer):
-    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    advapi32.ConvertSidToStringSidW.argtypes = [
-        ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p)]
-    advapi32.ConvertSidToStringSidW.restype = ctypes.c_int
-    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
-    text = ctypes.c_wchar_p()
-    if not advapi32.ConvertSidToStringSidW(
-            sid_pointer, ctypes.byref(text)):
-        raise OSError(ctypes.get_last_error(), "ConvertSidToStringSidW failed")
-    try:
-        return text.value
-    finally:
-        kernel32.LocalFree(text)
-
-
-def _current_user_sid_text():
-    sid = _current_user_sid()
-    if not sid:
-        return None
-    buffer = ctypes.create_string_buffer(sid, len(sid))
-    return _sid_text(ctypes.cast(buffer, ctypes.c_void_p))
-
-
-def _harden_private_key_file_icacls(path, sid_text):
-    command = ["icacls", path, "/inheritance:r",
-               "/grant:r", f"*{sid_text}:F"]
-    result = subprocess.run(command, capture_output=True, text=True,
-                            encoding="utf-8", errors="replace")
-    if result.returncode:
-        detail = (result.stderr or result.stdout).strip()
-        raise PermissionError(f"could not make the private key owner-only: {detail}")
-
-
-def _verify_private_key_permissions_icacls(path, sid_text):
-    query = subprocess.run(["icacls", path], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace")
-    if query.returncode:
-        detail = (query.stderr or query.stdout).strip()
-        raise PermissionError(f"could not inspect the private key ACL: {detail}")
-    if query.stdout.count(":(") != 1:
-        raise PermissionError(f"private key has a non-owner-only ACL: {path}")
-    found = subprocess.run(
-        ["icacls", path, "/findsid", f"*{sid_text}"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if found.returncode:
-        raise PermissionError(f"private key owner is missing from its ACL: {path}")
-
-
 def _harden_private_key_file(path):
     if os.name == "nt":
-        sid_text = _current_user_sid_text()
-        if not sid_text:
-            raise PermissionError("could not resolve the current user SID")
-        _harden_private_key_file_icacls(path, sid_text)
+        windows_key_acl.harden_owner_only(path)
     else:
         os.chmod(path, 0o600)
 
 
 def _verify_private_key_permissions(path):
     if os.name == "nt":
-        sid_text = _current_user_sid_text()
-        if not sid_text:
-            raise PermissionError("could not resolve the current user SID")
-        _verify_private_key_permissions_icacls(path, sid_text)
+        windows_key_acl.verify_owner_only(path)
     else:
         mode = stat.S_IMODE(os.stat(path).st_mode)
         if mode != 0o600:
@@ -579,6 +462,27 @@ def run_self_tests():
             write_private_key(key_path, _VECTOR_KEY)
             if read_private_key(key_path) != _VECTOR_KEY:
                 failures.append("secure key write/read round trip failed")
+            if os.name == "nt":
+                # Reproduce the Actions runner's important distinction:
+                # /grant:r for the owner does not remove another principal's
+                # already-explicit ACE. The hardener must replace the complete
+                # DACL, and the verifier must reject it before that repair.
+                widened = subprocess.run(
+                    ["icacls", key_path, "/grant", "*S-1-1-0:R"],
+                    capture_output=True, text=True,
+                    encoding="utf-8", errors="replace")
+                if widened.returncode:
+                    failures.append("could not create widened Windows ACL fixture")
+                else:
+                    try:
+                        read_private_key(key_path)
+                    except PermissionError:
+                        pass
+                    else:
+                        failures.append("reader accepted an unrelated explicit ACE")
+                    _harden_private_key_file(key_path)
+                    if read_private_key(key_path) != _VECTOR_KEY:
+                        failures.append("explicit-ACE repair round trip failed")
     except Exception as error:  # noqa: BLE001 - permissions must fail loudly here
         failures.append(f"secure key storage self-test failed: {error}")
 

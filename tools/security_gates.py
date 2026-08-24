@@ -568,7 +568,7 @@ def run_build_script_regression_tests(ctx):
         build_script = os.path.join(ctx.SCRIPT_DIR, "build.py")
         with open(build_script, "r", encoding="utf-8", errors="replace") as handle:
             build_script_text = handle.read()
-        signing_script = os.path.join(ctx.SCRIPT_DIR, "tools", "update_signing.py")
+        signing_script = os.path.join(ctx.SCRIPT_DIR, "tools", "windows_key_acl.py")
         with open(signing_script, "r", encoding="utf-8", errors="replace") as handle:
             signing_script_text = handle.read()
         if "ctypes.create_string_buffer(needed.value)" not in signing_script_text:
