@@ -47,7 +47,10 @@ static const wchar_t* kFixturePipeName =
 
 // Header-probe deadline used by both the fixture server and main's ordering
 // assertion, so the two can never drift apart.
-enum { kFixtureProbeTimeoutMs = 1500 };
+enum {
+    kFixtureProbeTimeoutMs = 1500,
+    kFixtureMaxExtraBodyBytes = 64,
+};
 
 struct ClientContext {
     bool stall;           // connect but send nothing
@@ -120,39 +123,35 @@ static DWORD WINAPI client_thread_proc(void* parameter) {
         request.command = SERVICE_CMD_PING;
         StringCchCopyA(request.source, ARRAY_COUNT(request.source),
                        "transition-safe fixture");
-        BOOL started = WriteFile(pipe, &request, sizeof(request), nullptr, &ov);
+        if (ctx->extraBodyBytes > kFixtureMaxExtraBodyBytes) {
+            CloseHandle(ov.hEvent);
+            CloseHandle(pipe);
+            return 903;
+        }
+        // A message-mode pipe treats every WriteFile call as a separate
+        // message. Keep the hostile tail in the SAME message as the request;
+        // separate one-byte writes race the server's drain/response/disconnect
+        // path and test scheduling rather than the production invariant.
+        BYTE wire[sizeof(ServiceRequest) + kFixtureMaxExtraBodyBytes] = {};
+        memcpy(wire, &request, sizeof(request));
+        memset(wire + sizeof(request), 0xAB, ctx->extraBodyBytes);
+        DWORD wireBytes = (DWORD)sizeof(request) + ctx->extraBodyBytes;
+        BOOL started = WriteFile(pipe, wire, wireBytes, nullptr, &ov);
         DWORD err = started ? ERROR_SUCCESS : GetLastError();
         if (!started && err != ERROR_IO_PENDING) {
             CloseHandle(ov.hEvent);
             CloseHandle(pipe);
-            return 903;
+            return 904;
         }
         if (WaitForSingleObject(ov.hEvent, 4000) != WAIT_OBJECT_0) {
             CancelIoEx(pipe, &ov);
             CloseHandle(ov.hEvent);
             CloseHandle(pipe);
-            return 904;
+            return 905;
         }
         DWORD transferred = 0;
         if (!GetOverlappedResult(pipe, &ov, &transferred, FALSE) ||
-            transferred != sizeof(request)) {
-            CancelIoEx(pipe, &ov);
-            CloseHandle(ov.hEvent);
-            CloseHandle(pipe);
-            return 905;
-        }
-        ResetEvent(ov.hEvent);
-        // Extra body bytes beyond the declared structure, as a hostile or
-        // mismatched client might send.
-        for (DWORD i = 0; i < ctx->extraBodyBytes; ++i) {
-            BYTE b = 0xAB;
-            ResetEvent(ov.hEvent);
-            started = WriteFile(pipe, &b, 1, nullptr, &ov);
-            err = started ? ERROR_SUCCESS : GetLastError();
-            if ((started || err == ERROR_IO_PENDING) &&
-                WaitForSingleObject(ov.hEvent, 4000) == WAIT_OBJECT_0) {
-                continue;
-            }
+            transferred != wireBytes) {
             CancelIoEx(pipe, &ov);
             CloseHandle(ov.hEvent);
             CloseHandle(pipe);
@@ -349,10 +348,17 @@ int main() {
         GetExitCodeThread(clientThread, &clientCode);
         CloseHandle(clientThread);
         DWORD serverWait = WaitForSingleObject(serverThread, 10000);
+        DWORD serverCode = 999;
+        GetExitCodeThread(serverThread, &serverCode);
         CloseHandle(serverThread);
-        if (clientWait != WAIT_OBJECT_0 || serverWait != WAIT_OBJECT_0)
+        if (clientWait != WAIT_OBJECT_0 || serverWait != WAIT_OBJECT_0 ||
+            clientCode != 0 || serverCode != 0) {
+            fprintf(stderr,
+                    "full exchange failed: client wait=%lu exit=%lu, "
+                    "server wait=%lu exit=%lu\n",
+                    clientWait, clientCode, serverWait, serverCode);
             return 702;
-        if (clientCode != 0) return 702;
+        }
 
         if (!outcome.probeExpectedPrefix) return 703; // ERROR_MORE_DATA probe
         if (!outcome.impersonated) return 704;        // THE incident check
@@ -418,10 +424,19 @@ int main() {
         CloseHandle(healthyClient);
         ULONGLONG healthyDoneMs = GetTickCount64();
         DWORD healthyServerWait = WaitForSingleObject(healthyServer, 10000);
+        DWORD healthyServerCode = 998;
+        GetExitCodeThread(healthyServer, &healthyServerCode);
         CloseHandle(healthyServer);
-        if (healthyWait != WAIT_OBJECT_0 || healthyServerWait != WAIT_OBJECT_0)
+        if (healthyWait != WAIT_OBJECT_0 ||
+            healthyServerWait != WAIT_OBJECT_0 || healthyCode != 0 ||
+            healthyServerCode != 0) {
+            fprintf(stderr,
+                    "healthy exchange failed: client wait=%lu exit=%lu, "
+                    "server wait=%lu exit=%lu\n",
+                    healthyWait, healthyCode, healthyServerWait,
+                    healthyServerCode);
             return 724;
-        if (healthyCode != 0) return 724;
+        }
         if (!healthyOutcome.responded || !healthyOutcome.impersonated)
             return 725;
         // The healthy exchange finished strictly BEFORE the stalled probe's
@@ -435,11 +450,23 @@ int main() {
 
         // The stalled probe ended with a clean header-timeout disconnect.
         DWORD stallClientWait = WaitForSingleObject(stalledClient, 10000);
+        DWORD stallClientCode = 997;
+        GetExitCodeThread(stalledClient, &stallClientCode);
         CloseHandle(stalledClient);
         DWORD stallServerWait = WaitForSingleObject(stalledServer, 10000);
+        DWORD stallServerCode = 997;
+        GetExitCodeThread(stalledServer, &stallServerCode);
         CloseHandle(stalledServer);
-        if (stallClientWait != WAIT_OBJECT_0 || stallServerWait != WAIT_OBJECT_0)
+        if (stallClientWait != WAIT_OBJECT_0 ||
+            stallServerWait != WAIT_OBJECT_0 || stallClientCode != 0 ||
+            stallServerCode != 0) {
+            fprintf(stderr,
+                    "stalled exchange failed: client wait=%lu exit=%lu, "
+                    "server wait=%lu exit=%lu\n",
+                    stallClientWait, stallClientCode, stallServerWait,
+                    stallServerCode);
             return 727;
+        }
         if (stalledOutcome.probeExpectedPrefix || !stalledOutcome.probeTimedOut)
             return 727;
         CloseHandle(stalledOutcome.readyEvent);
