@@ -1,3 +1,8 @@
+// Forward declaration: xbar_refresh_live_state() is defined later in the
+// shell (xbar_telemetry.h inside the NVML shard); the fan worker's telemetry
+// refresh calls it under the runtime lock.
+static bool xbar_refresh_live_state();
+
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
@@ -126,6 +131,22 @@ static bool service_refresh_telemetry_for_request(char* detail, size_t detailSiz
             debug_log("service telemetry: lightweight refresh failed: %s\n",
                 telemetryDetail[0] ? telemetryDetail : "unknown");
             mark_service_telemetry_cache_updated("idle telemetry failed");
+        }
+    }
+
+    // Live ClkDomains scalars (XBAR clock/MSVDD, SYS, VIDEO): the Advanced
+    // dialog renders these once per second, so refresh them here under the
+    // runtime lock with a >= 1 s throttle.  xbar_refresh_live_state() is a
+    // cheap read (one GET_CONTROL + one CLK_MEASURE) and self-guards on
+    // probe validity.
+    {
+        static ULONGLONG lastClkDomainsReadTickMs = 0;
+        ULONGLONG clkNow = GetTickCount64();
+        if (lastClkDomainsReadTickMs == 0 ||
+            clkNow - lastClkDomainsReadTickMs >= 1000) {
+            if (xbar_refresh_live_state()) {
+                lastClkDomainsReadTickMs = clkNow;
+            }
         }
     }
 

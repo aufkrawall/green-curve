@@ -100,6 +100,16 @@ def check_xbar_clk_domains(ctx, require_text, forbid_text):
     require_text(dialog_cpp,
                  "SIZE outerSize = adjusted_window_size_for_client(",
                  "F-XBAR-DIALOG: client size is converted to an outer window frame")
+    # F-XBAR-LIVE: the Advanced dialog polls live values every second - the
+    # service refreshes the ClkDomains scalars in its 1 Hz telemetry path and
+    # the dialog renders them from the envelope without touching edit fields.
+    fan_worker_cpp = _p(ctx, "main_service_fan_worker.cpp")
+    require_text(fan_worker_cpp, "xbar_refresh_live_state()",
+                 "F-XBAR-LIVE: the 1 Hz telemetry path refreshes ClkDomains scalars")
+    require_text(dialog_cpp, "XBAR_LIVE_TIMER_ID",
+                 "F-XBAR-LIVE: the dialog owns a 1 s live-value timer")
+    require_text(dialog_cpp, "xbar_dialog_update_live_values",
+                 "F-XBAR-LIVE: live values render through one focused helper")
     require_text(dialog_cpp, "(int)outerSize.cx, (int)outerSize.cy,",
                  "F-XBAR-DIALOG: CreateWindow receives the adjusted frame size")
     forbid_text(dialog_cpp, "x, y, dlgW, dlgH,",

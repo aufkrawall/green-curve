@@ -12,6 +12,7 @@
 #define XBAR_MSVDD_EDIT_ID     3201
 #define XBAR_SYS_EDIT_ID       3208
 #define XBAR_VIDEO_EDIT_ID     3209
+#define XBAR_LIVE_TIMER_ID     1
 #define XBAR_OK_BTN_ID         3202
 #define XBAR_CANCEL_BTN_ID     3203
 #define XBAR_RESET_BTN_ID      3204
@@ -25,6 +26,9 @@ struct XbarDialogState {
     HWND hMsvddEdit;
     HWND hSysEdit;
     HWND hVideoEdit;
+    HWND hXbarNowLabel;
+    HWND hSysNowLabel;
+    HWND hVideoNowLabel;
     HWND hCurrentLabel;
     HWND hMeasuredLabel;
     HWND hHintLabel;
@@ -170,6 +174,48 @@ static void xbar_dialog_sync_controls() {
     }
 }
 
+static void xbar_dialog_update_live_values() {
+    if (!g_xbarDialog.hwnd || !g_xbarDialog.hCurrentLabel) return;
+
+    // Applied/active values: service control state when available, otherwise
+    // the live snapshot scalars (both arrive via the ~1 Hz telemetry envelope).
+    ControlState control = {};
+    bool haveControl = get_effective_control_state(&control);
+    int xbarKhz = haveControl && control.hasXbarOffset
+        ? control.xbarOffsetKhz : g_app.xbarFreqOffsetKhz;
+    int xbarUv = haveControl && control.hasXbarMsvddOffset
+        ? control.xbarMsvddOffsetUv : g_app.xbarMsvddOffsetUv;
+    int sysKhz = haveControl && control.hasSysClkOffset
+        ? control.sysClkOffsetKhz : g_app.sysClkFreqOffsetKhz;
+    int videoKhz = haveControl && control.hasVideoClkOffset
+        ? control.videoClkOffsetKhz : g_app.videoClkFreqOffsetKhz;
+
+    char buf[128] = {};
+    StringCchPrintfA(buf, 128,
+        "Now: XBAR %+d MHz | SYS %+d MHz | VIDEO %+d MHz | MSVDD %+d mV",
+        xbarKhz / 1000, sysKhz / 1000, videoKhz / 1000, xbarUv / 1000);
+    SetWindowTextA(g_xbarDialog.hCurrentLabel, buf);
+
+    unsigned int measuredXbar = g_app.xbarMeasuredClockKhz;
+    unsigned int measuredSys = g_app.sysClkMeasuredClockKhz;
+    if (measuredXbar > 0) {
+        StringCchPrintfA(buf, 128, "Measured now: XBAR %u MHz | SYS %s%u MHz"
+            " | VIDEO n/a", measuredXbar / 1000,
+            measuredSys > 0 ? "" : "-", measuredSys > 0 ? measuredSys / 1000 : 0);
+    } else {
+        StringCchPrintfA(buf, 128, "Measured now: ---");
+    }
+    SetWindowTextA(g_xbarDialog.hMeasuredLabel, buf);
+
+    // Per-row live columns.
+    StringCchPrintfA(buf, 32, "%+d MHz", xbarKhz / 1000);
+    SetWindowTextA(g_xbarDialog.hXbarNowLabel, buf);
+    StringCchPrintfA(buf, 32, "%+d MHz", sysKhz / 1000);
+    SetWindowTextA(g_xbarDialog.hSysNowLabel, buf);
+    StringCchPrintfA(buf, 32, "%+d MHz", videoKhz / 1000);
+    SetWindowTextA(g_xbarDialog.hVideoNowLabel, buf);
+}
+
 static bool xbar_dialog_commit(HWND hwnd) {
     char offsetBuf[64] = {};
     char msvddBuf[64] = {};
@@ -293,12 +339,17 @@ static LRESULT CALLBACK XbarDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
     case WM_CREATE: {
         apply_system_titlebar_theme(hwnd);
         allow_dark_mode_for_window(hwnd);
+        SetTimer(hwnd, XBAR_LIVE_TIMER_ID, 1000, nullptr);
         return 0;
     }
+    case WM_TIMER:
+        if (wParam == XBAR_LIVE_TIMER_ID) xbar_dialog_update_live_values();
+        return 0;
     case WM_CLOSE:
         DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:
+        KillTimer(hwnd, XBAR_LIVE_TIMER_ID);
         if (g_xbarDialog.hEditBrush) { DeleteObject(g_xbarDialog.hEditBrush); g_xbarDialog.hEditBrush = nullptr; }
         if (g_xbarDialog.hBgBrush) { DeleteObject(g_xbarDialog.hBgBrush); g_xbarDialog.hBgBrush = nullptr; }
         if (g_xbarDialog.hInputBrush) { DeleteObject(g_xbarDialog.hInputBrush); g_xbarDialog.hInputBrush = nullptr; }
@@ -459,6 +510,11 @@ static void open_xbar_dialog() {
         WS_CHILD | WS_VISIBLE | SS_LEFT,
         margin, y0 + dp(2), labelW, dp(18),
         g_xbarDialog.hwnd, (HMENU)(INT_PTR)XBAR_CURRENT_LABEL_ID, g_app.hInst, nullptr);
+    g_xbarDialog.hXbarNowLabel = CreateWindowExA(0, "STATIC", "---",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        margin + labelW + dp(8) + editW + dp(10), y0 + dp(2),
+        clientW - margin*2 - labelW - editW - dp(18), dp(18),
+        g_xbarDialog.hwnd, nullptr, g_app.hInst, nullptr);
     g_xbarDialog.hOffsetEdit = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "0",
         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
         margin + labelW + dp(8), y0, editW, rowH,
@@ -473,6 +529,11 @@ static void open_xbar_dialog() {
         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
         margin + labelW + dp(8), y1, editW, rowH,
         g_xbarDialog.hwnd, (HMENU)(INT_PTR)XBAR_MSVDD_EDIT_ID, g_app.hInst, nullptr);
+    g_xbarDialog.hSysNowLabel = CreateWindowExA(0, "STATIC", "---",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        margin + labelW + dp(8) + editW + dp(10), y1 + dp(2),
+        clientW - margin*2 - labelW - editW - dp(18), dp(18),
+        g_xbarDialog.hwnd, nullptr, g_app.hInst, nullptr);
 
     int y2 = y1 + rowH + dp(12);
     HWND lblSys = CreateWindowExA(0, "STATIC", "SYS Clock Offset (MHz):",
@@ -494,6 +555,11 @@ static void open_xbar_dialog() {
         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
         margin + labelW + dp(38), y2b, editW, rowH,
         g_xbarDialog.hwnd, (HMENU)(INT_PTR)XBAR_VIDEO_EDIT_ID, g_app.hInst, nullptr);
+    g_xbarDialog.hVideoNowLabel = CreateWindowExA(0, "STATIC", "---",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        margin + labelW + dp(8) + editW + dp(10) + dp(30), y2b + dp(2),
+        clientW - margin*2 - labelW - editW - dp(48), dp(18),
+        g_xbarDialog.hwnd, nullptr, g_app.hInst, nullptr);
 
     int y3 = y2b + rowH + dp(16);
     g_xbarDialog.hCurrentLabel = CreateWindowExA(0, "STATIC", "Current: ---",
@@ -541,6 +607,7 @@ static void open_xbar_dialog() {
     // Apply fonts
     HWND ctrls[] = { lblOffset, g_xbarDialog.hOffsetEdit, lblMsvdd, g_xbarDialog.hMsvddEdit,
         lblSys, g_xbarDialog.hSysEdit, lblVideo, g_xbarDialog.hVideoEdit,
+        g_xbarDialog.hXbarNowLabel, g_xbarDialog.hSysNowLabel, g_xbarDialog.hVideoNowLabel,
         g_xbarDialog.hCurrentLabel, g_xbarDialog.hMeasuredLabel, g_xbarDialog.hOkBtn, g_xbarDialog.hCancelBtn, g_xbarDialog.hResetBtn };
     for (HWND c : ctrls) if (c) SendMessageA(c, WM_SETFONT, (WPARAM)hFont, TRUE);
 
