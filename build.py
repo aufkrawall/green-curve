@@ -5148,12 +5148,7 @@ def ensure_toolchain(target, arch="all"):
 
 
 def check_toolchain_pinning(build_script):
-    """Every tool that can shape a released artifact is pinned and vendored.
-
-    build.py keeps its own copies of a few digests because the gates above
-    assert on them by name; this is what stops those copies from drifting away
-    from compilers/*/manifest.json, which is the real record.
-    """
+    """Keep release-shaping tools pinned to the repository manifests."""
     host = toolchain.host_key()
     toolchain.check_pins(COMPILERS_DIR, {
         "ZIG_SHA256": ("zig", ZIG_VERSION, host, "archive", ZIG_SHA256),
@@ -5181,8 +5176,13 @@ def check_toolchain_pinning(build_script):
                     "the release build unpacks compilers from the pinned archive, never a cache")
         forbid_text(release_workflow, "p7zip",
                     "release packaging uses the pinned 7-Zip, not a distribution package")
-    problems = toolchain.unpinned_actions(
-        [release_workflow, os.path.join(workflows, "ci.yml")])
+        require_text(release_workflow, "' CHANGELOG.md >",
+                     "the release page is sourced from the reviewed changelog")
+        require_text(release_workflow, 'missing ## " version " section in CHANGELOG.md',
+                     "a missing versioned changelog section fails the release")
+        forbid_text(release_workflow, "Stable release built manually from commit",
+                    "release notes lead with human-facing changes, not build metadata")
+    problems = toolchain.unpinned_actions([release_workflow, os.path.join(workflows, "ci.yml")])
     if problems:
         print("Regression source check FAILED: GitHub Actions must be pinned to "
               "commit SHAs, not mutable tags")

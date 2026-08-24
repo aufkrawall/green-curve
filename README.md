@@ -28,7 +28,8 @@ It reports which NVAPI image loaded, whether the VF curve and control structs re
 - Lets you edit visible curve points in a simple Win32 GDI UI
 - Point locking with a tri-state checkbox: one click puts a checkmark and **flattens the curve tail** (caps all points beyond the lock anchor to the same frequency); a second click switches to a filled dot that **pins the GPU clock** via NVML (hard lock, min=max frequency, no dynamic scaling); a third click clears the lock. Right-click opens a menu to pick any mode directly. The tick-versus-dot glyph makes the active mode clear at a glance
 - Reads and writes global GPU clock offset, effective VRAM offset, power limit, and fan control with three modes: driver auto, fixed percentage, or a custom temperature curve
-- Fan curve mode lets you define up to 8 temperature-to-speed points with configurable hysteresis and poll interval; the service reasserts the fan setting periodically
+- Fan curve mode lets you define up to 8 temperature-to-speed points with configurable hysteresis and poll interval; optional native zero-RPM mode hands control back to NVIDIA below a configurable stop threshold so supported cards can stop their fans at idle
+- An Advanced Clocks dialog on Windows and Advanced tab on Linux expose XBAR, SYS, and VIDEO offsets plus XBAR MSVDD voltage when the installed driver reports a validated control schema
 - 5 saved profile slots per user, with global hotkeys for instant switching (e.g. Ctrl+Alt+F2)
 - Auto-profile switching: Green Curve watches the foreground window and applies a saved profile based on the running application (by executable name, window title, window class, or fullscreen state)
 - Provides CLI modes for dump, JSON export, and probing driver capabilities

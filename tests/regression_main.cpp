@@ -4679,13 +4679,26 @@ static int run_all_tests(int argc, char** argv) {
         }
         for (const TuiCell& cell : zeroRpmLayout.cells)
             zeroRpmScreen += cell.glyph;
-        if (!sawZeroRpmToggle || !sawZeroRpmHysteresis ||
-            zeroRpmScreen.find("Native zero-RPM") == std::string::npos ||
-            zeroRpmScreen.find("Curve downshift") == std::string::npos ||
-            zeroRpmScreen.find("Off gap") == std::string::npos ||
-            zeroRpmScreen.find("OFF <=18") == std::string::npos ||
-            zeroRpmScreen.find("ON >=30") == std::string::npos)
+        bool sawNativeLabel =
+            zeroRpmScreen.find("Native zero-RPM") != std::string::npos;
+        bool sawCurveDownshift =
+            zeroRpmScreen.find("Curve downshift") != std::string::npos;
+        bool sawOffGap = zeroRpmScreen.find("Off gap") != std::string::npos;
+        bool sawStopThreshold =
+            zeroRpmScreen.find("fan stop <=18") != std::string::npos;
+        bool sawStartThreshold =
+            zeroRpmScreen.find("start >=30") != std::string::npos;
+        if (!sawZeroRpmToggle || !sawZeroRpmHysteresis || !sawNativeLabel ||
+            !sawCurveDownshift || !sawOffGap || !sawStopThreshold ||
+            !sawStartThreshold) {
+            fprintf(stderr,
+                "zero-RPM TUI missing toggle=%d gapAction=%d label=%d "
+                "downshift=%d gap=%d stop=%d start=%d\n",
+                sawZeroRpmToggle, sawZeroRpmHysteresis, sawNativeLabel,
+                sawCurveDownshift, sawOffGap, sawStopThreshold,
+                sawStartThreshold);
             return 4721;
+        }
         tuiDesired.fanCurve.zeroRpmEnabled = 0;
 
         // Online unsupported rows are truthful and non-interactive; offline
@@ -10164,6 +10177,34 @@ static int run_all_tests(int argc, char** argv) {
         // floor even though the two share a minor.
         if (gc_update_meets_minimum_from(&base, &patch1)) return 4309;
         if (!gc_update_meets_minimum_from(&patch1, &patch1)) return 4310;
+
+        // Exact next stable release shape: the policies embedded in the
+        // public 0.23.1 tag must offer 0.24.0, preserve its three-component
+        // spelling in the setup filename, and support both shipped Windows
+        // architectures. The release manifest intentionally has no min_from
+        // floor, so older updater-capable builds are not needlessly stranded.
+        static const char k024Manifest[] =
+            "format=1\n"
+            "version=0.24.0\n"
+            "x64_file=greencurve-0.24.0-windows-x64-setup.exe\n"
+            "x64_size=200000\n"
+            "x64_sha256=09931428a6e4293292cfc1be8e490d26a52fc9713b61cb84175c40802f2d7cfe\n"
+            "arm64_file=greencurve-0.24.0-windows-arm64-setup.exe\n"
+            "arm64_size=300000\n"
+            "arm64_sha256=94cf3d99cd91075f246efa1de0363323e5ebf06859c5eec940b6bacac4f8ec3a\n";
+        GcUpdateManifest release024;
+        gc_update_manifest_parse(k024Manifest, strlen(k024Manifest),
+                                 &release024);
+        if (!release024.valid || release024.hasMinimumFrom) return 4311;
+        if (gc_update_decide(&release024, &patch1, GC_UPDATE_ARCH_X64) !=
+            GC_UPDATE_DECISION_AVAILABLE) return 4312;
+        if (gc_update_decide(&release024, &patch1, GC_UPDATE_ARCH_ARM64) !=
+            GC_UPDATE_DECISION_AVAILABLE) return 4313;
+        const GcUpdateAsset* release024X64 =
+            gc_update_select_asset(&release024, GC_UPDATE_ARCH_X64);
+        if (!release024X64 ||
+            strcmp(release024X64->file,
+                   "greencurve-0.24.0-windows-x64-setup.exe") != 0) return 4314;
     }
 
     // --- Manifest parsing and binding (4120-4149) ---------------------

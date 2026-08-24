@@ -130,57 +130,26 @@ jobs:
       - name: Write release notes
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          TAG: ${{ steps.version.outputs.tag }}
-          TREE: ${{ steps.version.outputs.tree }}
-          SHA: ${{ github.sha }}
         run: |
-          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
-          ## Green Curve ${VERSION}
-
-          Stable release built manually from commit \`${SHA}\` (source tree
-          \`${TREE}\`) in \`${GITHUB_REPOSITORY}\`.
-
-          Artifacts:
-
-          - Windows x64: \`greencurve-${VERSION}-windows-x64.7z\` + setup executable
-          - Windows ARM64: \`greencurve-${VERSION}-windows-arm64.7z\` + setup executable
-          - Linux x64: \`greencurve-${VERSION}-linux-x64.tar.xz\`
-          - Linux ARM64: \`greencurve-${VERSION}-linux-arm64.tar.xz\`
-          - Toolchain record: \`greencurve-${VERSION}-toolchain.json\`
-
-          All six targets were compiled by \`python build.py\` from this exact
-          commit. The workflow verified a clean checkout before and after the
-          build, so the artifacts correspond 100% to the repository content at
-          \`${SHA}\`. Every artifact carries a GitHub build-provenance
-          attestation for that commit.
-
-          The compilers and the archiver came from this repository's own
-          \`Compilers-1.0\` release, each verified against the SHA-256 pinned in
-          \`compilers/*/manifest.json\`, and the build ran with
-          \`GREENCURVE_TOOLCHAIN_LOCAL_ONLY=1\` so no other toolchain could be
-          substituted. \`greencurve-${VERSION}-toolchain.json\` records exactly
-          which ones were used and is attested along with the binaries.
-
-          Verify any artifact with:
-
-              gh attestation verify <artifact> --repo ${GITHUB_REPOSITORY}
-
-          ### In-app updater
-
-          The updater does not trust this attestation as its gate, and neither
-          should you rely on it alone: an attestation proves CI built an
-          artifact from a commit in this repository, so anyone able to push a
-          commit could obtain a valid one. It is provenance and forensics.
-
-          Green Curve's updater instead verifies a manifest signed with a key
-          whose private half never enters GitHub Actions. That manifest
-          (\`greencurve-update-manifest.txt\` and its \`.sig\`) is signed and
-          uploaded **after** this workflow, from the maintainer's machine — see
-          \`llm-wiki/updates.md\`. Until both files are attached to this
-          release, installed copies will report that no update manifest was
-          published and will offer nothing, which is the intended fail-closed
-          behaviour rather than a fault.
-          EOF
+          set -eu
+          awk -v version="$VERSION" '
+            $0 == "## " version {
+              found = 1
+              next
+            }
+            found && /^## / { exit }
+            found { print }
+            END {
+              if (!found) {
+                print "missing ## " version " section in CHANGELOG.md" > "/dev/stderr"
+                exit 1
+              }
+            }
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          test -s "$RUNNER_TEMP/release-notes.md" || {
+            echo "::error::release notes for ${VERSION} are empty"
+            exit 1
+          }
 
       - name: Create stable tag and release
         env:
