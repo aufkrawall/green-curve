@@ -11,6 +11,10 @@ name: CI
 # against the manifest before it is used.
 permissions:
   contents: read
+env:
+  # Native crashes must not discard the phase markers that identify which
+  # build-system self-test was running.
+  PYTHONUNBUFFERED: "1"
 on:
   push:
     branches:
@@ -43,12 +47,13 @@ jobs:
           restore-keys: toolchain-windows-
       - name: Verify the pinned toolchain
         run: python build.py --verify-toolchain
-      - name: Build and test
-        run: |
-          python build.py --test
-          python build.py --check --target all
-      - name: Build with sanitizers
-        run: python build.py --test --sanitizer
+      # Keep these as separate steps: PowerShell otherwise returns only the
+      # final native command's status and can hide a failed test behind a
+      # successful check build. --test already enables UBSan by default.
+      - name: Test with UndefinedBehaviorSanitizer
+        run: python build.py --test
+      - name: Check-build full target matrix
+        run: python build.py --check --target all
       - name: Build with AddressSanitizer
         run: python build.py --test --asan
       - name: Static analysis ratchet

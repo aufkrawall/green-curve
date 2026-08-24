@@ -524,6 +524,19 @@ def check_workflow_structure(ctx):
         ci_text = handle.read()
     if "permissions:\n  contents: read\n" not in ci_text:
         all_errors.append(f"{ci_path}: CI must explicitly request contents:read")
+    if 'PYTHONUNBUFFERED: "1"' not in ci_text:
+        all_errors.append(f"{ci_path}: CI must flush Python diagnostics immediately")
+    if "python build.py --test --sanitizer" in ci_text:
+        all_errors.append(
+            f"{ci_path}: --test already enables UBSan; do not duplicate the suite")
+    masked_sequence = (
+        "run: |\n"
+        "          python build.py --test\n"
+        "          python build.py --check --target all"
+    )
+    if masked_sequence in ci_text:
+        all_errors.append(
+            f"{ci_path}: test and check must be separate fail-fast steps")
 
     # Exercise the checker itself with the exact malformed indentation that
     # previously made the whole CI workflow unparsable.
@@ -555,6 +568,17 @@ def run_build_script_regression_tests(ctx):
         build_script = os.path.join(ctx.SCRIPT_DIR, "build.py")
         with open(build_script, "r", encoding="utf-8", errors="replace") as handle:
             build_script_text = handle.read()
+        signing_script = os.path.join(ctx.SCRIPT_DIR, "tools", "update_signing.py")
+        with open(signing_script, "r", encoding="utf-8", errors="replace") as handle:
+            signing_script_text = handle.read()
+        if "ctypes.create_string_buffer(needed.value)" not in signing_script_text:
+            print("Build-script regression FAILED: TOKEN_USER query lacks its "
+                  "variable-length result buffer")
+            sys.exit(1)
+        if "buffer = TokenUser()" in signing_script_text:
+            print("Build-script regression FAILED: TOKEN_USER query can overflow "
+                  "a fixed ctypes structure")
+            sys.exit(1)
         for needle, label in (
                 ('"--jobs"', "--jobs CLI"),
                 ("build_scheduler.run_parallel", "parallel task scheduler wiring"),

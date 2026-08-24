@@ -265,12 +265,22 @@ def _current_user_sid():
             error = ctypes.get_last_error()
             if error != 122:  # ERROR_INSUFFICIENT_BUFFER
                 raise OSError(error, "GetTokenInformation sizing failed")
-        buffer = TokenUser()
+        # TOKEN_USER ends with a variable-length SID.  The sizing call returns
+        # the bytes required for the complete record, not merely the fixed
+        # ctypes header above.  Passing a TokenUser instance while claiming
+        # that it was ``needed`` bytes large wrote past the Python object and
+        # could terminate the interpreter before buffered CI diagnostics were
+        # flushed (Python 3.12 on windows-latest reproduced that failure).
+        if needed.value < ctypes.sizeof(TokenUser):
+            raise OSError(24, "GetTokenInformation returned a short TOKEN_USER size")
+        buffer = ctypes.create_string_buffer(needed.value)
         if not advapi32.GetTokenInformation(
-                token, 1, ctypes.byref(buffer), needed.value,
+                token, 1, buffer, ctypes.sizeof(buffer),
                 ctypes.byref(needed)):
             raise OSError(ctypes.get_last_error(), "GetTokenInformation failed")
-        sid = buffer.User.Sid
+        token_user = ctypes.cast(
+            buffer, ctypes.POINTER(TokenUser)).contents
+        sid = token_user.User.Sid
         if not sid:
             raise ValueError("token contained no user SID")
         length = advapi32.GetLengthSid(sid)
@@ -279,65 +289,6 @@ def _current_user_sid():
         return ctypes.string_at(sid, length)
     finally:
         kernel32.CloseHandle(token)
-
-
-def _harden_private_key_file_windows(path):
-    sid = _current_user_sid()
-    if not sid:
-        return
-    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    advapi32.SetEntriesInAclW.argtypes = [
-        ctypes.c_ulong, ctypes.c_void_p, ctypes.c_void_p,
-        ctypes.POINTER(ctypes.c_void_p)]
-    advapi32.SetEntriesInAclW.restype = ctypes.c_uint32
-    advapi32.SetNamedSecurityInfoW.argtypes = [
-        ctypes.c_wchar_p, ctypes.c_int, ctypes.c_uint32, ctypes.c_void_p,
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
-    advapi32.SetNamedSecurityInfoW.restype = ctypes.c_uint32
-    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
-    kernel32.LocalFree.restype = ctypes.c_void_p
-    sid_buffer = ctypes.create_string_buffer(sid, len(sid))
-
-    class TrusteeW(ctypes.Structure):
-        _fields_ = [
-            ("pMultipleTrustee", ctypes.c_void_p),
-            ("MultipleTrusteeOperation", ctypes.c_int),
-            ("TrusteeForm", ctypes.c_int),
-            ("TrusteeType", ctypes.c_int),
-            ("ptstrName", ctypes.c_void_p),
-        ]
-
-    class ExplicitAccessW(ctypes.Structure):
-        _fields_ = [
-            ("grfAccessPermissions", ctypes.c_uint32),
-            ("grfAccessMode", ctypes.c_uint32),
-            ("grfInheritance", ctypes.c_uint32),
-            ("Trustee", TrusteeW),
-        ]
-
-    access = ExplicitAccessW()
-    access.grfAccessPermissions = 0x1F01FF  # FILE_ALL_ACCESS
-    access.grfAccessMode = 1               # GRANT_ACCESS
-    access.grfInheritance = 0              # SUB_CONTAINERS_AND_OBJECTS_INHERIT? none
-    access.Trustee.TrusteeForm = 0         # TRUSTEE_IS_SID
-    access.Trustee.TrusteeType = 1         # TRUSTEE_IS_USER
-    access.Trustee.ptstrName = ctypes.cast(sid_buffer, ctypes.c_void_p)
-
-    acl = ctypes.c_void_p()
-    result = advapi32.SetEntriesInAclW(
-        1, ctypes.byref(access), None, ctypes.byref(acl))
-    if result:
-        raise OSError(result, "SetEntriesInAclW failed")
-    try:
-        # DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION
-        result = advapi32.SetNamedSecurityInfoW(
-            path, 1, 0x4 | 0x80000000, None, None, None, acl)
-        if result:
-            raise OSError(result, "SetNamedSecurityInfoW failed")
-    finally:
-        kernel32.LocalFree(acl)
-    _verify_private_key_permissions(path)
 
 
 def _sid_text(sid_pointer):
@@ -355,61 +306,6 @@ def _sid_text(sid_pointer):
         return text.value
     finally:
         kernel32.LocalFree(text)
-
-
-def _verify_private_key_permissions_windows(path):
-    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-    advapi32.GetNamedSecurityInfoW.argtypes = [
-        ctypes.c_wchar_p, ctypes.c_int, ctypes.c_uint32,
-        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
-        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)]
-    advapi32.GetNamedSecurityInfoW.restype = ctypes.c_uint32
-    advapi32.GetAclInformation.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int]
-    advapi32.GetAclInformation.restype = ctypes.c_int
-    advapi32.GetAce.argtypes = [
-        ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_void_p)]
-    advapi32.GetAce.restype = ctypes.c_int
-    sid = _current_user_sid()
-    owner = ctypes.c_void_p()
-    group = ctypes.c_void_p()
-    dac = ctypes.c_void_p()
-    sacl = ctypes.c_void_p()
-    result = advapi32.GetNamedSecurityInfoW(
-        path, 1, 0x5, ctypes.byref(owner), ctypes.byref(group),
-        ctypes.byref(dac), ctypes.byref(sacl))
-    if result:
-        raise OSError(result, "GetNamedSecurityInfoW failed")
-
-    class AclSizeInformation(ctypes.Structure):
-        _fields_ = [
-            ("AceCount", ctypes.c_uint32),
-            ("AceBytesTotal", ctypes.c_uint32),
-            ("AclBytesInUse", ctypes.c_uint32),
-            ("AclBytesFree", ctypes.c_uint32),
-        ]
-
-    size = AclSizeInformation()
-    if not advapi32.GetAclInformation(
-            dac, ctypes.byref(size), ctypes.sizeof(size), 2):
-        raise OSError(ctypes.get_last_error(), "GetAclInformation failed")
-    expected_buffer = ctypes.create_string_buffer(sid, len(sid))
-    expected = _sid_text(ctypes.cast(expected_buffer, ctypes.c_void_p))
-    owner_text = _sid_text(owner)
-    if owner_text != expected or size.AceCount != 1:
-        raise PermissionError(f"private key has a non-owner-only ACL: {path}")
-
-    ace = ctypes.c_void_p()
-    if not advapi32.GetAce(
-            dac, 0, ctypes.byref(ace)):
-        raise OSError(ctypes.get_last_error(), "GetAce failed")
-    ace_header = ctypes.string_at(ctypes.cast(ace, ctypes.c_void_p).value, 8)
-    if ace_header[0] != 0:  # ACCESS_ALLOWED_ACE_TYPE
-        raise PermissionError(f"private key DACL contains a non-grant ACE: {path}")
-    ace_address = ctypes.cast(ace, ctypes.c_void_p).value
-    ace_sid = ctypes.c_void_p(ace_address + 8)
-    if _sid_text(ace_sid) != expected:
-        raise PermissionError(f"private key DACL grants another principal: {path}")
 
 
 def _current_user_sid_text():
