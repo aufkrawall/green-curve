@@ -554,6 +554,15 @@ def check_workflow_structure(ctx):
         sys.exit(1)
 
 
+def check_diagnostic_probe_gates(ctx, require_text, forbid_text):
+    """Pin fail-closed parsing for the write-capable clock-domain probe."""
+    self_test = os.path.join(ctx.SOURCE_DIR, "main_self_test.cpp")
+    forbid_text(self_test, "atoi(",
+                "the clock probe never maps malformed selectors to entry zero")
+    require_text(self_test, "gc_clk_probe_entry::parse(",
+                 "the clock probe strictly range-checks its entry selector")
+
+
 def run_build_script_regression_tests(ctx):
     """Self-tests for build.py's own invariants.
 

@@ -2026,19 +2026,16 @@ def require_app_version_fallback_in_sync():
             print(f"Regression source check FAILED: {rel} embeds release version "
                   f"'{match.group(1)}' instead of the neutral dev fallback")
             sys.exit(1)
-def check_fuzz_harness_in_sync():
-    """Delegate to tools/security_gates.py, which owns the fuzz target table."""
-    security_gates.check_fuzz_harness_in_sync(_gate_ctx(), require_text, forbid_text)
-
-
 def run_source_regression_checks():
     build_state.enforce_source_size_ratchet(SCRIPT_DIR, SOURCE_DIR)
-    check_fuzz_harness_in_sync()
+    security_gates.check_fuzz_harness_in_sync(
+        _gate_ctx(), require_text, forbid_text)
     check_packaging_skip_warning()
     security_gates.check_no_developer_profile_paths(
         _gate_ctx(), _tracked_repository_files())
     security_gates.check_no_signing_key_material(
         _gate_ctx(), _tracked_repository_files())
+    security_gates.check_diagnostic_probe_gates(_gate_ctx(), require_text, forbid_text)
     require_app_version_fallback_in_sync()
     main_cpp = os.path.join(SOURCE_DIR, "main.cpp")
     entry_cpp = os.path.join(SOURCE_DIR, "entry.cpp")

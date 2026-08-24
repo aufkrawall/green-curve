@@ -14,6 +14,7 @@
 // Included by main_shell.cpp after the capability probe shard.
 
 #include "driver_self_test_policy.h"
+#include "clk_probe_entry_policy.h"
 
 static const char* self_test_yes_no(bool value) { return value ? "yes" : "NO"; }
 
@@ -583,13 +584,10 @@ static int clk_domain_probe_report(FILE* out) {
     // while the video engine is decoding.
     int onlyEntry = -1;
     {
-        char envBuf[16] = {};
-        size_t envLen = 0;
-        if (getenv_s(&envLen, envBuf, sizeof(envBuf), "GC_CLK_PROBE_ENTRY") ==
-                0 &&
-            envLen > 0) {
-            onlyEntry = atoi(envBuf);
-        } else {
+        char selectorBuf[16] = {};
+        const char* selector = getenv("GC_CLK_PROBE_ENTRY");
+        const char* selectorSource = "GC_CLK_PROBE_ENTRY";
+        if (!selector || !selector[0]) {
             const char* base = getenv("LOCALAPPDATA");
             if (base && base[0]) {
                 char path[MAX_PATH] = {};
@@ -597,12 +595,24 @@ static int clk_domain_probe_report(FILE* out) {
                          "%s\\Green Curve\\clk_probe_entry.txt", base);
                 FILE* f = gc_fopen_utf8(path, "r");
                 if (f) {
-                    char line[16] = {};
-                    if (fgets(line, sizeof(line), f)) onlyEntry = atoi(line);
+                    if (fgets(selectorBuf, sizeof(selectorBuf), f))
+                        selector = selectorBuf;
                     fclose(f);
                     remove(path);
+                    selectorSource = "clk_probe_entry.txt";
                 }
             }
+        }
+        if (selector && selector[0]) {
+            unsigned int parsedEntry = 0;
+            if (!gc_clk_probe_entry::parse(
+                    selector, g_xbarSchemas[0].domainCount, &parsedEntry)) {
+                fprintf(out,
+                        "invalid %s selector; expected an entry from 0 to %u\n",
+                        selectorSource, g_xbarSchemas[0].domainCount - 1);
+                return 2;
+            }
+            onlyEntry = (int)parsedEntry;
         }
     }
     for (unsigned int k = 0; k < g_xbarSchemas[0].domainCount; ++k) {

@@ -20,6 +20,7 @@
 #include "service_recovery_policy.h"
 #include "service_ipc_throttle_policy.h"
 #include "debug_log_rotation_policy.h"
+#include "clk_probe_entry_policy.h"
 #include "selected_gpu_pnp_policy.h"
 #include "gpu_selection_policy.h"
 #include "linux_gpu_selection.h"
@@ -12349,6 +12350,26 @@ static int run_all_tests(int argc, char** argv) {
             if (marker[strlen(marker) - 1] != '\n') return 4711;
             if (strchr(marker, '%') != nullptr) return 4712;
         }
+    }
+
+    // ------------------------------------------------------------------
+    // The write-capable ClkDomains probe's opt-in entry selector. Malformed
+    // input must never degrade to entry zero (the old atoi behavior).
+    // ------------------------------------------------------------------
+    {
+        unsigned int entry = 99;
+        if (!gc_clk_probe_entry::parse("0", 32, &entry) || entry != 0)
+            return 4800;
+        if (!gc_clk_probe_entry::parse("31", 32, &entry) || entry != 31)
+            return 4801;
+        if (!gc_clk_probe_entry::parse(" 7\r\n", 32, &entry) || entry != 7)
+            return 4802;
+        if (gc_clk_probe_entry::parse("", 32, &entry)) return 4803;
+        if (gc_clk_probe_entry::parse("-1", 32, &entry)) return 4804;
+        if (gc_clk_probe_entry::parse("+1", 32, &entry)) return 4805;
+        if (gc_clk_probe_entry::parse("32", 32, &entry)) return 4806;
+        if (gc_clk_probe_entry::parse("0junk", 32, &entry)) return 4807;
+        if (gc_clk_probe_entry::parse("0", 0, &entry)) return 4808;
     }
 
     return 0;
