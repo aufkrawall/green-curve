@@ -68,7 +68,12 @@ static const unsigned int XBAR_PINNED_SYS_ENTRY_INDEX = 3;
 static const unsigned int XBAR_PINNED_VIDEO_ENTRY_INDEX = 4;
 static const unsigned int XBAR_FREQ_OFFSET_FIELD = 0x114;
 static const unsigned int XBAR_MSVDD_OFFSET_FIELD = 0x11c;
-static const unsigned int XBAR_MEASURE_DOMAIN_XBAR = 2;
+// Physical-clock ids for verification/display, identified empirically
+// (differential writes): entry 1 drives CLK_MEASURE domain 1, entry 3
+// drives domain 2, entry 4 (video) drives NONE - its engine clock is not
+// measurable through this interface.
+static const unsigned int XBAR_MEASURE_DOMAIN_XBAR = 1;
+static const unsigned int XBAR_MEASURE_DOMAIN_SYS = 2;
 static const unsigned int XBAR_MEASURE_VALUE_OFFSET = 8;
 
 struct XbarClkDomainsSchema {
@@ -233,12 +238,13 @@ static inline void xbar_log_unknown_response_version(
 
 // NvApiFunc is the project-wide two-argument private-NvAPI entry signature.
 static inline bool xbar_measure_clock(NvApiFunc measureFunc, void* gpuHandle,
+                                      unsigned int measureDomain,
                                       unsigned int* measuredKhz) {
     if (!measureFunc || !gpuHandle || !measuredKhz) return false;
     *measuredKhz = 0;
     unsigned int params[3] = {};
     params[0] = XBAR_NVAPI_CLK_MEASURE_VERSION;
-    params[1] = XBAR_MEASURE_DOMAIN_XBAR;
+    params[1] = measureDomain;
     if (measureFunc(gpuHandle, params) != 0) return false;
     *measuredKhz = params[2];
     return *measuredKhz != 0;
@@ -320,7 +326,8 @@ static inline bool xbar_probe(NvApiFunc getControl, NvApiFunc measureFunc,
     if (!snap) return false;
     memset(snap, 0, sizeof(*snap));
     if (!xbar_read_control(getControl, gpuHandle, snap)) return false;
-    xbar_measure_clock(measureFunc, gpuHandle, &snap->measuredKhz);
+    xbar_measure_clock(measureFunc, gpuHandle, XBAR_MEASURE_DOMAIN_XBAR,
+                       &snap->measuredKhz);
     return true;
 }
 
@@ -359,7 +366,8 @@ static inline bool xbar_write(NvApiFunc getControl, NvApiFunc setControl,
                   msvddUv, snap->msvddOffsetUv);
         return false;
     }
-    xbar_measure_clock(measureFunc, gpuHandle, &snap->measuredKhz);
+    xbar_measure_clock(measureFunc, gpuHandle, XBAR_MEASURE_DOMAIN_XBAR,
+                       &snap->measuredKhz);
     debug_log("xbar_write: ok schema=0x%08X base=0x%03X stride=0x%03X"
               " domain=%u freq=%d kHz msvdd=%d uV measured=%u kHz\n",
               snap->versionWord, snap->entryBase, snap->entryStride,

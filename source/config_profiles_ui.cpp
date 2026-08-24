@@ -455,6 +455,10 @@ static void merge_desired_settings(DesiredSettings* base, const DesiredSettings*
         base->hasSysClkOffsetKhz = true;
         base->sysClkOffsetKhz = override->sysClkOffsetKhz;
     }
+    if (override->hasVideoClkOffsetKhz) {
+        base->hasVideoClkOffsetKhz = true;
+        base->videoClkOffsetKhz = override->videoClkOffsetKhz;
+    }
     if (override->hasFan) {
         base->hasFan = true;
         base->fanMode = override->fanMode;

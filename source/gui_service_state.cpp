@@ -107,6 +107,9 @@ static void gui_draft_capture_clean_projection() {
     StringCchPrintfA(g_app.guiDraft.sysClkOffsetText,
         ARRAY_COUNT(g_app.guiDraft.sysClkOffsetText), "%d",
         g_app.guiSysClkOffsetKhz / 1000);
+    StringCchPrintfA(g_app.guiDraft.videoClkOffsetText,
+        ARRAY_COUNT(g_app.guiDraft.videoClkOffsetText), "%d",
+        g_app.guiVideoClkOffsetKhz / 1000);
     gui_draft_bind_current_ready_state();
 }
 
@@ -188,6 +191,10 @@ static void gui_draft_capture_desired(const DesiredSettings* desired) {
         StringCchPrintfA(g_app.guiDraft.sysClkOffsetText,
             ARRAY_COUNT(g_app.guiDraft.sysClkOffsetText), "%d",
             desired->sysClkOffsetKhz / 1000);
+    if (desired->hasVideoClkOffsetKhz)
+        StringCchPrintfA(g_app.guiDraft.videoClkOffsetText,
+            ARRAY_COUNT(g_app.guiDraft.videoClkOffsetText), "%d",
+            desired->videoClkOffsetKhz / 1000);
 }
 
 static void gui_draft_mark_clean() {

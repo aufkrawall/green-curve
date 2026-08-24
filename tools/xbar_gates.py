@@ -197,6 +197,21 @@ def check_xbar_profile_contract(ctx, require_text, forbid_text):
                  "previousIntent->hasSysClkOffsetKhz && !nextIntent->hasSysClkOffsetKhz",
                  "named-profile transitions clean up omitted owned SYS fields")
 
+    # F-XBAR-VIDEO-PROFILE: the video knob is a first-class profile domain.
+    require_text(record_io_h, "video_clk_offset_khz",
+                 "F-XBAR-VIDEO: portable profiles carry the VIDEO clock key")
+    require_text(profiles_cpp, 'appendf("video_clk_offset_khz=%d',
+                 "F-XBAR-VIDEO: slot saves emit the VIDEO clock key")
+    require_text(linux_profiles_cpp, '"video_clk_offset_khz"',
+                 "F-XBAR-VIDEO: Linux parses/emits the portable VIDEO key")
+    require_text(windows_merge_cpp, "base->hasVideoClkOffsetKhz = true;",
+                 "F-XBAR-VIDEO: Windows sparse merging carries VIDEO ownership")
+    require_text(gui_state_cpp, "projectedVideoClkKhz",
+                 "F-XBAR-VIDEO: loaded profiles project explicit VIDEO intent")
+    require_text(helpers_cpp,
+                 "video clock ownership differs profile=%d active=%d",
+                 "profile identity compares VIDEO clock ownership")
+
     require_text(telemetry_h,
                  "g_app.xbarFreqReadbackValid = false;",
                  "failed XBAR telemetry does not retain stale clock proof")

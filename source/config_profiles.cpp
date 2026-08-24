@@ -592,6 +592,13 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
                     ? saveControl.sysClkOffsetKhz : g_app.sysClkFreqOffsetKhz);
             appendf("sys_clk_offset_khz=%d\r\n", savedSysClkKhz);
         }
+        if (g_app.videoClkProbeValid) {
+            int savedVideoClkKhz = desired && desired->hasVideoClkOffsetKhz
+                ? desired->videoClkOffsetKhz
+                : (haveSaveControl && saveControl.hasVideoClkOffset
+                    ? saveControl.videoClkOffsetKhz : g_app.videoClkFreqOffsetKhz);
+            appendf("video_clk_offset_khz=%d\r\n", savedVideoClkKhz);
+        }
         appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : current_green_curve_fan_intent_mode()));
         if (desired->hasFan) {
             if (desired->fanMode == FAN_MODE_AUTO) appendf("fan=auto\r\n");
@@ -696,6 +703,13 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
                 : (haveSaveControl && saveControl.hasSysClkOffset
                     ? saveControl.sysClkOffsetKhz : g_app.sysClkFreqOffsetKhz);
             appendf("sys_clk_offset_khz=%d\r\n", savedSysClkKhz);
+        }
+        if (g_app.videoClkProbeValid) {
+            int savedVideoClkKhz = desired && desired->hasVideoClkOffsetKhz
+                ? desired->videoClkOffsetKhz
+                : (haveSaveControl && saveControl.hasVideoClkOffset
+                    ? saveControl.videoClkOffsetKhz : g_app.videoClkFreqOffsetKhz);
+            appendf("video_clk_offset_khz=%d\r\n", savedVideoClkKhz);
         }
         appendf("fan_mode=%s\r\n", fan_mode_to_config_value(desired->hasFan ? desired->fanMode : current_green_curve_fan_intent_mode()));
         if (desired->hasFan) {

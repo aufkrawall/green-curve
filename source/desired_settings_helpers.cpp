@@ -128,6 +128,21 @@ static bool desired_settings_match_active_service_intent(const DesiredSettings* 
                     profile->sysClkOffsetKhz, active->sysClkOffsetKhz);
         return false;
     }
+    if (!desired_bool_equal(profile->hasVideoClkOffsetKhz,
+                            active->hasVideoClkOffsetKhz)) {
+        set_message(detail, detailSize,
+                    "video clock ownership differs profile=%d active=%d",
+                    profile->hasVideoClkOffsetKhz ? 1 : 0,
+                    active->hasVideoClkOffsetKhz ? 1 : 0);
+        return false;
+    }
+    if (profile->hasVideoClkOffsetKhz &&
+        profile->videoClkOffsetKhz != active->videoClkOffsetKhz) {
+        set_message(detail, detailSize,
+                    "video clock differs profile=%d active=%d",
+                    profile->videoClkOffsetKhz, active->videoClkOffsetKhz);
+        return false;
+    }
 
     if (!desired_bool_equal(profile->hasFan, active->hasFan) &&
         !profile_ownership_fan_mismatch_allowed(allowUnclaimedFan,

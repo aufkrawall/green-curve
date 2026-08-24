@@ -198,10 +198,13 @@ static void xbar_dialog_update_live_values() {
 
     unsigned int measuredXbar = g_app.xbarMeasuredClockKhz;
     unsigned int measuredSys = g_app.sysClkMeasuredClockKhz;
-    if (measuredXbar > 0) {
-        StringCchPrintfA(buf, 128, "Measured now: XBAR %u MHz | SYS %s%u MHz"
-            " | VIDEO n/a", measuredXbar / 1000,
-            measuredSys > 0 ? "" : "-", measuredSys > 0 ? measuredSys / 1000 : 0);
+    if (measuredXbar > 0 && measuredSys > 0) {
+        StringCchPrintfA(buf, 128, "Measured now: XBAR %u MHz | SYS %u MHz"
+            " | VIDEO n/a (HWiNFO)", measuredXbar / 1000,
+            measuredSys / 1000);
+    } else if (measuredXbar > 0) {
+        StringCchPrintfA(buf, 128, "Measured now: XBAR %u MHz | SYS ---"
+            " | VIDEO n/a (HWiNFO)", measuredXbar / 1000);
     } else {
         StringCchPrintfA(buf, 128, "Measured now: ---");
     }
@@ -529,11 +532,7 @@ static void open_xbar_dialog() {
         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
         margin + labelW + dp(8), y1, editW, rowH,
         g_xbarDialog.hwnd, (HMENU)(INT_PTR)XBAR_MSVDD_EDIT_ID, g_app.hInst, nullptr);
-    g_xbarDialog.hSysNowLabel = CreateWindowExA(0, "STATIC", "---",
-        WS_CHILD | WS_VISIBLE | SS_LEFT,
-        margin + labelW + dp(8) + editW + dp(10), y1 + dp(2),
-        clientW - margin*2 - labelW - editW - dp(18), dp(18),
-        g_xbarDialog.hwnd, nullptr, g_app.hInst, nullptr);
+
 
     int y2 = y1 + rowH + dp(12);
     HWND lblSys = CreateWindowExA(0, "STATIC", "SYS Clock Offset (MHz):",
@@ -544,6 +543,11 @@ static void open_xbar_dialog() {
         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
         margin + labelW + dp(8), y2, editW, rowH,
         g_xbarDialog.hwnd, (HMENU)(INT_PTR)XBAR_SYS_EDIT_ID, g_app.hInst, nullptr);
+    g_xbarDialog.hSysNowLabel = CreateWindowExA(0, "STATIC", "---",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        margin + labelW + dp(8) + editW + dp(10), y2 + dp(2),
+        clientW - margin*2 - labelW - editW - dp(18), dp(18),
+        g_xbarDialog.hwnd, nullptr, g_app.hInst, nullptr);
     (void)lblSys;
 
     int y2b = y2 + rowH + dp(12);

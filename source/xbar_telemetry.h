@@ -22,7 +22,11 @@ static bool xbar_refresh_live_state() {
         g_app.videoClkFreqReadbackValid = false;
         return false;
     }
-    xbar_measure_clock(measure, g_app.gpuHandle, &snap.measuredKhz);
+    xbar_measure_clock(measure, g_app.gpuHandle, XBAR_MEASURE_DOMAIN_XBAR,
+                       &snap.measuredKhz);
+    unsigned int sysMeasuredKhz = 0;
+    xbar_measure_clock(measure, g_app.gpuHandle, XBAR_MEASURE_DOMAIN_SYS,
+                       &sysMeasuredKhz);
     g_app.xbarFreqReadbackValid = true;
     g_app.xbarMsvddReadbackValid = true;
     bool changed = g_app.xbarFreqOffsetKhz != snap.freqOffsetKhz ||
@@ -41,6 +45,8 @@ static bool xbar_refresh_live_state() {
         changed = changed || g_app.sysClkFreqOffsetKhz != sysOffset;
         g_app.sysClkFreqReadbackValid = true;
         g_app.sysClkFreqOffsetKhz = sysOffset;
+        changed = changed || g_app.sysClkMeasuredClockKhz != sysMeasuredKhz;
+        g_app.sysClkMeasuredClockKhz = sysMeasuredKhz;
     }
     const int videoEntry = XBAR_PINNED_VIDEO_ENTRY_INDEX;
     if (videoEntry >= 0) {

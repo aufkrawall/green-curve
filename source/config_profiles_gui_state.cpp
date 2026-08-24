@@ -95,6 +95,12 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
     g_app.guiSysClkOffsetFromProfileLoad = true;
     StringCchPrintfA(g_app.guiDraft.sysClkOffsetText, 32, "%d",
                      projectedSysClkKhz / 1000);
+    int projectedVideoClkKhz = desired->hasVideoClkOffsetKhz
+        ? desired->videoClkOffsetKhz : 0;
+    g_app.guiVideoClkOffsetKhz = projectedVideoClkKhz;
+    g_app.guiVideoClkOffsetFromProfileLoad = true;
+    StringCchPrintfA(g_app.guiDraft.videoClkOffsetText, 32, "%d",
+                     projectedVideoClkKhz / 1000);
     // Fan
     if (desired->hasFan) {
         g_app.guiFanMode = desired->fanMode;
@@ -486,6 +492,9 @@ static bool maybe_confirm_profile_load_replace(int slot) {
     if (current.hasSysClkOffsetKhz != targetFull.hasSysClkOffsetKhz ||
         (current.hasSysClkOffsetKhz &&
          current.sysClkOffsetKhz != targetFull.sysClkOffsetKhz)) same = false;
+    if (current.hasVideoClkOffsetKhz != targetFull.hasVideoClkOffsetKhz ||
+        (current.hasVideoClkOffsetKhz &&
+         current.videoClkOffsetKhz != targetFull.videoClkOffsetKhz)) same = false;
     if (current.hasLock != targetFull.hasLock ||
         (current.hasLock && (current.lockCi != targetFull.lockCi ||
                              current.lockMHz != targetFull.lockMHz ||

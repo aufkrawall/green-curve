@@ -25,12 +25,12 @@ import sys
 BUILD_SCRIPT_SIZE_RATCHET = 5321
 
 SOURCE_SIZE_RATCHET = {
-    "config_profiles.cpp": 889,  # 883 before the SYS profile save key
+    "config_profiles.cpp": 903,  # 889 before the VIDEO profile save key  # 883 before the SYS profile save key
     "entry.cpp": 863,
     "gpu_backend.cpp": 972,
     "gpu_backend_apply.cpp": 1407,  # 1364 before the VIDEO clock apply block
     "gpu_core.h": 842,  # 831 before the video clock domain fields (v22)
-    "gui_service_state.cpp": 820,  # 813 before the SYS draft projection
+    "gui_service_state.cpp": 827,  # 820 before the VIDEO draft projection
     "main.cpp": 801,
     "main_fan_runtime.cpp": 913,  # 929 before the tray menu moved to gui_tray_menu.cpp
     "main_gpu_front.cpp": 845,

@@ -39,6 +39,8 @@ void print_desired_settings_text(FILE* out, int slot, const DesiredSettings* des
         fprintf(out, "XBAR MSVDD offset: %d uV\n", desired->xbarMsvddOffsetUv);
     if (desired->hasSysClkOffsetKhz)
         fprintf(out, "SYS clock offset: %d kHz\n", desired->sysClkOffsetKhz);
+    if (desired->hasVideoClkOffsetKhz)
+        fprintf(out, "Video clock offset: %d kHz\n", desired->videoClkOffsetKhz);
     fprintf(out, "Fan mode: %s\n", fan_mode_label(desired->fanMode));
     fprintf(out, "Fan fixed: %d%%\n", desired->fanPercent);
     char fanSummary[96] = {};
@@ -71,6 +73,8 @@ void print_desired_settings_json(FILE* out, int slot, const DesiredSettings* des
     fprintf(out, "  \"xbar_msvdd_offset_uv\": %d,\n", desired->xbarMsvddOffsetUv);
     fprintf(out, "  \"sys_clk_owned\": %s,\n", desired->hasSysClkOffsetKhz ? "true" : "false");
     fprintf(out, "  \"sys_clk_offset_khz\": %d,\n", desired->sysClkOffsetKhz);
+    fprintf(out, "  \"video_clk_owned\": %s,\n", desired->hasVideoClkOffsetKhz ? "true" : "false");
+    fprintf(out, "  \"video_clk_offset_khz\": %d,\n", desired->videoClkOffsetKhz);
     fprintf(out, "  \"fan_mode\": \"%s\",\n", json_escape(fan_mode_to_config_value(desired->fanMode)).c_str());
     fprintf(out, "  \"fan_fixed_pct\": %d,\n", desired->fanPercent);
     fprintf(out, "  \"fan_curve\": {\n");
