@@ -6,6 +6,7 @@
 
 #include "app_shared.h"
 #include "fan_zero_rpm_policy.h"
+#include "fan_zero_rpm_profile_policy.h"
 
 void fan_curve_set_default(FanCurveConfig* config);
 void fan_curve_normalize(FanCurveConfig* config);

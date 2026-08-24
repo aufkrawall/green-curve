@@ -1353,6 +1353,8 @@ static int run_all_tests(int argc, char** argv) {
     char err[128] = {};
     if (!fan_curve_validate(&cfg, err, sizeof(err))) return 1;
     if (fan_curve_active_count(&cfg) != 5) return 2;
+    if (cfg.zeroRpmHysteresisC != FAN_ZERO_RPM_DEFAULT_HYSTERESIS_C)
+        return 4753;
     if (fan_curve_interpolate_percent(&cfg, 30) != 20) return 3;
     int mid = fan_curve_interpolate_percent(&cfg, 52);
     if (mid < 42 || mid > 48) return 4;
@@ -1477,6 +1479,7 @@ static int run_all_tests(int argc, char** argv) {
         }
         ds.fanCurve.points[0].enabled = 21;
         ds.fanCurve.zeroRpmEnabled = 23;
+        ds.fanCurve.zeroRpmHysteresisC = 255;
         memset(ds.fanCurve.zeroRpmReserved, 0xA5,
                sizeof(ds.fanCurve.zeroRpmReserved));
         validate_desired_settings_for_ipc(&ds);
@@ -1484,9 +1487,10 @@ static int run_all_tests(int argc, char** argv) {
         if (ds.hasFan != 1 || ds.fanAuto != 1 || ds.resetOcBeforeApply != 1) return 69;
         if (ds.hasCurvePoint[0] != 1 || ds.fanCurve.points[0].enabled != 1) return 79;
         if (ds.fanCurve.zeroRpmEnabled != 1 ||
+            ds.fanCurve.zeroRpmHysteresisC !=
+                FAN_ZERO_RPM_MAX_HYSTERESIS_C ||
             ds.fanCurve.zeroRpmReserved[0] != 0 ||
-            ds.fanCurve.zeroRpmReserved[1] != 0 ||
-            ds.fanCurve.zeroRpmReserved[2] != 0) return 4720;
+            ds.fanCurve.zeroRpmReserved[1] != 0) return 4720;
         if (ds.powerLimitPct != 50) return 72;
         if (ds.gpuOffsetMHz != -1000) return 73;
         if (ds.memOffsetMHz != 5000) return 74;
@@ -1873,6 +1877,7 @@ static int run_all_tests(int argc, char** argv) {
         live.desired.fanMode = FAN_MODE_CURVE;
         fan_curve_set_default(&live.desired.fanCurve);
         live.desired.fanCurve.zeroRpmEnabled = 1;
+        live.desired.fanCurve.zeroRpmHysteresisC = 2;
         live.snapshot.fanSupported = 1;
         live.snapshot.fanCount = 1;
         live.snapshot.gpuTemperatureValid = 1;
@@ -2033,7 +2038,7 @@ static int run_all_tests(int argc, char** argv) {
     // Protocol-v13 request validation, mutation preconditions, and field layout.
     {
         if (SERVICE_PROTOCOL_MAGIC != 0x47535643u) return 80;
-        if (SERVICE_PROTOCOL_VERSION != 23) return 81;
+        if (SERVICE_PROTOCOL_VERSION != 24) return 81;
         // These are release gates, not incidental layout observations. A field
         // addition that changes a fixed-size IPC structure must bump the wire
         // version; otherwise mixed old/new peers pass the header handshake and
@@ -4656,20 +4661,29 @@ static int run_all_tests(int argc, char** argv) {
         // Native zero-RPM is visible and clickable in the Linux fan editor,
         // not merely a profile/CLI field that TUI users cannot change.
         tuiDesired.fanCurve.zeroRpmEnabled = 1;
+        tuiDesired.fanCurve.hysteresisC = 1;
+        tuiDesired.fanCurve.zeroRpmHysteresisC = 12;
         vm.tab = TUI_TAB_FAN;
         TuiLayout zeroRpmLayout;
         build_tui_layout(vm, 160, 48, &zeroRpmLayout);
         bool sawZeroRpmToggle = false;
+        bool sawZeroRpmHysteresis = false;
         std::string zeroRpmScreen;
         for (const ClickAction& action : zeroRpmLayout.actions) {
             if (action.type == ACTION_FAN_ZERO_RPM_TOGGLE)
                 sawZeroRpmToggle = true;
+            if ((action.type == ACTION_FIELD_EDIT ||
+                 action.type == ACTION_FIELD_STEP) &&
+                action.index == TUI_FIELD_FAN_ZERO_RPM_HYSTERESIS)
+                sawZeroRpmHysteresis = true;
         }
         for (const TuiCell& cell : zeroRpmLayout.cells)
             zeroRpmScreen += cell.glyph;
-        if (!sawZeroRpmToggle ||
+        if (!sawZeroRpmToggle || !sawZeroRpmHysteresis ||
             zeroRpmScreen.find("Native zero-RPM") == std::string::npos ||
-            zeroRpmScreen.find("OFF <=28") == std::string::npos ||
+            zeroRpmScreen.find("Curve downshift") == std::string::npos ||
+            zeroRpmScreen.find("Off gap") == std::string::npos ||
+            zeroRpmScreen.find("OFF <=18") == std::string::npos ||
             zeroRpmScreen.find("ON >=30") == std::string::npos)
             return 4721;
         tuiDesired.fanCurve.zeroRpmEnabled = 0;
@@ -6642,9 +6656,10 @@ static int run_all_tests(int argc, char** argv) {
         FanCurveConfig curve = {};
         fan_curve_set_default(&curve);
         curve.zeroRpmEnabled = 1;
-        curve.hysteresisC = 0; // zero-RPM still enforces a 2C anti-cycle band
+        curve.hysteresisC = 1;
+        curve.zeroRpmHysteresisC = 12;
         if (fan_curve_first_enabled_temperature(&curve) != 30 ||
-            fan_curve_zero_rpm_hysteresis(&curve) != 2) return 4722;
+            fan_curve_zero_rpm_hysteresis(&curve) != 12) return 4722;
         if (!fan_curve_wire_flags_valid(&curve)) return 4742;
         FanCurveConfig malformedWire = curve;
         malformedWire.zeroRpmReserved[1] = 1;
@@ -6669,22 +6684,23 @@ static int run_all_tests(int argc, char** argv) {
         if (start.useDriverAuto || !start.shouldWrite ||
             !start.controlModeChanged || start.targetPercent != 20)
             return 4725;
-        // Once started, 29C is inside the band and remains manual.
+        // Once started, 25C is inside the independently configured band and
+        // remains manual even though ordinary downshifts use only 1C.
         FanRuntimeDecision bandManual = fan_runtime_next_action(
-            &state, &curve, 29, false);
+            &state, &curve, 25, false);
         if (bandManual.useDriverAuto || bandManual.controlModeChanged ||
             bandManual.targetPercent != 20) return 4726;
         FanRuntimeDecision stop = fan_runtime_next_action(
-            &state, &curve, 28, false);
+            &state, &curve, 18, false);
         if (!stop.useDriverAuto || !stop.shouldWrite ||
             !stop.controlModeChanged) return 4727;
-        // Coming from automatic, the same 29C band stays automatic.
+        // Coming from automatic, the same 25C band stays automatic.
         FanRuntimeDecision bandAuto = fan_runtime_next_action(
-            &state, &curve, 29, false);
+            &state, &curve, 25, false);
         if (!bandAuto.useDriverAuto || bandAuto.shouldWrite ||
             bandAuto.controlModeChanged) return 4728;
         FanRuntimeDecision forcedAuto = fan_runtime_next_action(
-            &state, &curve, 29, true);
+            &state, &curve, 25, true);
         if (!forcedAuto.useDriverAuto || !forcedAuto.shouldWrite)
             return 4729;
 
@@ -6695,6 +6711,16 @@ static int run_all_tests(int argc, char** argv) {
             &manualOnly, &curve, 20, false);
         if (legacy.useDriverAuto || legacy.targetPercent != 20)
             return 4730;
+
+        // A wide zero-RPM gap must not make ordinary curve updates sluggish.
+        FanRuntimeDecision manualRaised = fan_runtime_next_action(
+            &manualOnly, &curve, 32, false);
+        FanRuntimeDecision manualCooled = fan_runtime_next_action(
+            &manualOnly, &curve, 31, false);
+        if (manualRaised.targetPercent == manualCooled.targetPercent ||
+            manualCooled.targetPercent !=
+                fan_curve_interpolate_percent(&curve, 31))
+            return 4751;
 
         // Threshold discovery is independent of storage order and ignores
         // disabled editor rows.
@@ -6709,20 +6735,40 @@ static int run_all_tests(int argc, char** argv) {
         // clearing reserved wire bytes; equality includes the new setting.
         FanCurveConfig canonical = curve;
         canonical.zeroRpmEnabled = 9;
+        canonical.hysteresisC = 0;
+        canonical.zeroRpmHysteresisC = 99;
         memset(canonical.zeroRpmReserved, 0x5A,
                sizeof(canonical.zeroRpmReserved));
         fan_curve_normalize(&canonical);
         if (canonical.zeroRpmEnabled != 1 ||
-            canonical.hysteresisC != FAN_ZERO_RPM_MIN_HYSTERESIS_C ||
+            canonical.hysteresisC != 0 ||
+            canonical.zeroRpmHysteresisC !=
+                FAN_ZERO_RPM_MAX_HYSTERESIS_C ||
             canonical.zeroRpmReserved[0] != 0 ||
-            canonical.zeroRpmReserved[1] != 0 ||
-            canonical.zeroRpmReserved[2] != 0) return 4732;
+            canonical.zeroRpmReserved[1] != 0) return 4732;
         FanCurveConfig unequal = canonical;
-        unequal.zeroRpmEnabled = 0;
+        unequal.zeroRpmHysteresisC--;
         if (fan_curve_equals(&canonical, &unequal)) return 4733;
         char summary[128] = {};
         fan_curve_format_summary(&canonical, summary, sizeof(summary));
-        if (!strstr(summary, "zero-RPM")) return 4734;
+        if (!strstr(summary, "zero-RPM enabled") ||
+            !strstr(summary, "fan stop") || strstr(summary, "zero-RPM off"))
+            return 4734;
+
+        FanCurveConfig legacyProfile = {};
+        fan_curve_set_default(&legacyProfile);
+        legacyProfile.zeroRpmEnabled = 1;
+        legacyProfile.hysteresisC = 7;
+        if (!fan_curve_migrate_legacy_zero_rpm_hysteresis(
+                &legacyProfile, false) ||
+            legacyProfile.zeroRpmHysteresisC != 7 ||
+            legacyProfile.hysteresisC != 7)
+            return 4754;
+        legacyProfile.zeroRpmHysteresisC = 15;
+        if (fan_curve_migrate_legacy_zero_rpm_hysteresis(
+                &legacyProfile, true) ||
+            legacyProfile.zeroRpmHysteresisC != 15)
+            return 4755;
 
         // Linux fan CLI options are partial overrides.  A zero-RPM toggle
         // must retain the saved custom curve, including the independently
@@ -6733,7 +6779,8 @@ static int run_all_tests(int argc, char** argv) {
         saved.fanMode = FAN_MODE_CURVE;
         saved.fanAuto = false;
         saved.fanCurve.pollIntervalMs = 1750;
-        saved.fanCurve.hysteresisC = 6;
+        saved.fanCurve.hysteresisC = 1;
+        saved.fanCurve.zeroRpmHysteresisC = 12;
         saved.fanCurve.points[0].temperatureC = 38;
         saved.fanCurve.points[0].fanPercent = 27;
 
@@ -6752,16 +6799,34 @@ static int run_all_tests(int argc, char** argv) {
             return 4745;
         if (!saved.fanCurve.zeroRpmEnabled ||
             saved.fanCurve.pollIntervalMs != 1750 ||
-            saved.fanCurve.hysteresisC != 6 ||
+            saved.fanCurve.hysteresisC != 1 ||
+            saved.fanCurve.zeroRpmHysteresisC != 12 ||
             saved.fanCurve.points[0].temperatureC != 38 ||
             saved.fanCurve.points[0].fanPercent != 27)
             return 4746;
+
+        // The dedicated CLI override changes only the fan-off gap.
+        DesiredSettings gapCli = {};
+        initialize_desired_settings_defaults(&gapCli);
+        gapCli.hasFan = true;
+        gapCli.fanMode = FAN_MODE_CURVE;
+        gapCli.fanCurve.zeroRpmHysteresisC = 20;
+        mask = {};
+        mask.mode = true;
+        mask.zeroRpmHysteresis = true;
+        if (!apply_linux_cli_fan_overrides(&saved, &gapCli, &mask, cliError,
+                                           sizeof(cliError)) ||
+            saved.fanCurve.zeroRpmHysteresisC != 20 ||
+            saved.fanCurve.hysteresisC != 1 ||
+            saved.fanCurve.points[0].temperatureC != 38)
+            return 4752;
 
         // A point override that collides with the next enabled temperature is
         // rejected transactionally instead of silently resetting the curve.
         DesiredSettings beforeInvalid = saved;
         cli.fanCurve.points[0].temperatureC = 45;
-        mask.zeroRpm = false;
+        mask = {};
+        mask.mode = true;
         mask.pointEnabled[0] = true;
         mask.pointTemperature[0] = true;
         if (apply_linux_cli_fan_overrides(&saved, &cli, &mask, cliError,
@@ -6772,14 +6837,18 @@ static int run_all_tests(int argc, char** argv) {
             !saved.fanCurve.zeroRpmEnabled || cliError[0] == 0)
             return 4748;
 
-        // The Windows description used to rely on automatic wrapping inside
-        // a 40px box, clipping the last lines and visually colliding with the
-        // buttons under common DPI/font settings.
+        // The Windows description uses two explicit dynamic lines with ample
+        // measured geometry, so DPI/font changes cannot clip a bottom row or
+        // visually collide with the themed buttons.
         if (!fan_zero_rpm_gui_layout_is_nonoverlapping()) return 4749;
-        const char* firstBreak = strstr(FAN_ZERO_RPM_GUI_DESCRIPTION, "\r\n");
-        const char* secondBreak = firstBreak
-            ? strstr(firstBreak + 2, "\r\n") : nullptr;
-        if (!firstBreak || !secondBreak || strstr(secondBreak + 2, "\r\n"))
+        char description[128] = {};
+        fan_zero_rpm_gui_format_description(
+            description, sizeof(description), 30, 12);
+        const char* firstBreak = strstr(description, "\r\n");
+        if (!firstBreak || strstr(firstBreak + 2, "\r\n") ||
+            !strstr(description, "Fan ON: 30") ||
+            !strstr(description, "Fan OFF: 18") ||
+            !strstr(description, "12" GC_DEGREE "C gap"))
             return 4750;
     }
 

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 #include "fan_zero_rpm_gui_policy.h"
-
 static int fan_curve_dialog_combo_value(HWND combo, int fallback) {
     if (!combo) return fallback;
     int sel = (int)SendMessageA(combo, CB_GETCURSEL, 0, 0);
@@ -27,7 +26,7 @@ static void fan_curve_dialog_select_combo_value(HWND combo, int value) {
 static SIZE fan_curve_dialog_min_size() {
     return adjusted_window_size_for_client(
         dp(500),
-        dp(520),
+        dp(FAN_ZERO_RPM_GUI_MIN_CLIENT_HEIGHT),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
         WS_EX_DLGMODALFRAME);
 }
@@ -35,9 +34,18 @@ static SIZE fan_curve_dialog_min_size() {
 static SIZE fan_curve_dialog_default_size() {
     return adjusted_window_size_for_client(
         dp(520),
-        dp(540),
+        dp(600),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
         WS_EX_DLGMODALFRAME);
+}
+
+static void fan_curve_dialog_update_zero_rpm_description() {
+    if (!g_fanCurveDialog.zeroRpmDescription) return;
+    char description[128] = {};
+    int startC = fan_curve_first_enabled_temperature(&g_fanCurveDialog.working);
+    fan_zero_rpm_gui_format_description(description, sizeof(description), startC,
+        fan_curve_zero_rpm_hysteresis(&g_fanCurveDialog.working));
+    SetWindowTextA(g_fanCurveDialog.zeroRpmDescription, description);
 }
 
 static void fan_curve_dialog_sync_controls() {
@@ -62,6 +70,9 @@ static void fan_curve_dialog_sync_controls() {
 
     fan_curve_dialog_select_combo_value(g_fanCurveDialog.intervalCombo, g_fanCurveDialog.working.pollIntervalMs);
     fan_curve_dialog_select_combo_value(g_fanCurveDialog.hysteresisCombo, g_fanCurveDialog.working.hysteresisC);
+    fan_curve_dialog_select_combo_value(g_fanCurveDialog.zeroRpmHysteresisCombo,
+        g_fanCurveDialog.working.zeroRpmHysteresisC);
+    fan_curve_dialog_update_zero_rpm_description();
     if (g_fanCurveDialog.zeroRpmCheck) {
         InvalidateRect(g_fanCurveDialog.zeroRpmCheck, nullptr, FALSE);
     }
@@ -179,6 +190,8 @@ static bool fan_curve_dialog_capture_working(bool strict, bool normalize, FanCur
     FanCurveConfig preview = g_fanCurveDialog.working;
     preview.pollIntervalMs = fan_curve_dialog_combo_value(g_fanCurveDialog.intervalCombo, preview.pollIntervalMs);
     preview.hysteresisC = fan_curve_dialog_combo_value(g_fanCurveDialog.hysteresisCombo, preview.hysteresisC);
+    preview.zeroRpmHysteresisC = (gc_u8)fan_curve_dialog_combo_value(
+        g_fanCurveDialog.zeroRpmHysteresisCombo, preview.zeroRpmHysteresisC);
 
     for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
         char buf[32] = {};
@@ -264,6 +277,7 @@ static void fan_curve_dialog_update_working_from_controls(HWND hwnd) {
     FanCurveConfig preview = {};
     if (!fan_curve_dialog_capture_working(false, false, &preview, nullptr, 0)) return;
     g_fanCurveDialog.working = preview;
+    fan_curve_dialog_update_zero_rpm_description();
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
@@ -512,8 +526,8 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 SendMessageA(g_fanCurveDialog.intervalCombo, CB_SETITEMDATA, (WPARAM)index, (LPARAM)value);
             }
 
-            CreateWindowExA(0, "STATIC", "Hysteresis", WS_CHILD | WS_VISIBLE | SS_LEFT,
-                dp(304), dp(334), dp(90), dp(18), hwnd, nullptr, g_app.hInst, nullptr);
+            CreateWindowExA(0, "STATIC", "Curve downshift", WS_CHILD | WS_VISIBLE | SS_LEFT,
+                dp(304), dp(334), dp(150), dp(18), hwnd, nullptr, g_app.hInst, nullptr);
             g_fanCurveDialog.hysteresisCombo = CreateWindowExA(
                 0, "COMBOBOX", "",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
@@ -536,8 +550,25 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 g_app.hInst, nullptr);
             apply_ui_font(g_fanCurveDialog.zeroRpmCheck);
             fit_themed_checkbox_to_label(g_fanCurveDialog.zeroRpmCheck);
-            CreateWindowExA(0, "STATIC",
-                FAN_ZERO_RPM_GUI_DESCRIPTION,
+
+            CreateWindowExA(0, "STATIC", "Zero-RPM fan-off gap", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX,
+                dp(304), dp(FAN_ZERO_RPM_GUI_GAP_LABEL_Y), dp(178),
+                dp(FAN_ZERO_RPM_GUI_GAP_LABEL_HEIGHT), hwnd, nullptr, g_app.hInst, nullptr);
+            g_fanCurveDialog.zeroRpmHysteresisCombo = CreateWindowExA(
+                0, "COMBOBOX", "", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+                dp(304), dp(FAN_ZERO_RPM_GUI_GAP_COMBO_Y), dp(150), dp(240),
+                hwnd, (HMENU)(INT_PTR)FAN_DIALOG_ZERO_RPM_HYSTERESIS_ID, g_app.hInst, nullptr);
+            style_combo_control(g_fanCurveDialog.zeroRpmHysteresisCombo);
+            for (int value = FAN_ZERO_RPM_MIN_HYSTERESIS_C; value <= FAN_ZERO_RPM_MAX_HYSTERESIS_C; ++value) {
+                char text[16] = {};
+                StringCchPrintfA(text, ARRAY_COUNT(text), "%d\xB0""C", value);
+                int index = (int)SendMessageA(g_fanCurveDialog.zeroRpmHysteresisCombo,
+                    CB_ADDSTRING, 0, (LPARAM)text);
+                SendMessageA(g_fanCurveDialog.zeroRpmHysteresisCombo,
+                    CB_SETITEMDATA, (WPARAM)index, (LPARAM)value);
+            }
+
+            g_fanCurveDialog.zeroRpmDescription = CreateWindowExA(0, "STATIC", "",
                 WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP | SS_NOPREFIX,
                 dp(304), dp(FAN_ZERO_RPM_GUI_DESCRIPTION_Y), dp(178),
                 dp(FAN_ZERO_RPM_GUI_DESCRIPTION_HEIGHT), hwnd, nullptr,
@@ -609,12 +640,6 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
             if (id == FAN_DIALOG_ZERO_RPM_ID && notification == BN_CLICKED) {
                 g_fanCurveDialog.working.zeroRpmEnabled = gc_bool8_from_bool(
                     !g_fanCurveDialog.working.zeroRpmEnabled);
-                if (g_fanCurveDialog.working.zeroRpmEnabled &&
-                    g_fanCurveDialog.working.hysteresisC <
-                        FAN_ZERO_RPM_MIN_HYSTERESIS_C) {
-                    g_fanCurveDialog.working.hysteresisC =
-                        FAN_ZERO_RPM_MIN_HYSTERESIS_C;
-                }
                 fan_curve_dialog_sync_controls();
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
@@ -633,18 +658,11 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 fan_curve_dialog_sanitize_percent_edit(id - FAN_DIALOG_PERCENT_BASE);
                 return 0;
             }
-            if ((id == FAN_DIALOG_INTERVAL_ID || id == FAN_DIALOG_HYSTERESIS_ID) && notification == CBN_SELCHANGE) {
+            if ((id == FAN_DIALOG_INTERVAL_ID ||
+                 id == FAN_DIALOG_HYSTERESIS_ID ||
+                 id == FAN_DIALOG_ZERO_RPM_HYSTERESIS_ID) &&
+                notification == CBN_SELCHANGE) {
                 fan_curve_dialog_update_working_from_controls(hwnd);
-                if (id == FAN_DIALOG_HYSTERESIS_ID &&
-                    g_fanCurveDialog.working.zeroRpmEnabled &&
-                    g_fanCurveDialog.working.hysteresisC <
-                        FAN_ZERO_RPM_MIN_HYSTERESIS_C) {
-                    g_fanCurveDialog.working.hysteresisC =
-                        FAN_ZERO_RPM_MIN_HYSTERESIS_C;
-                    fan_curve_dialog_select_combo_value(
-                        g_fanCurveDialog.hysteresisCombo,
-                        FAN_ZERO_RPM_MIN_HYSTERESIS_C);
-                }
                 return 0;
             }
             if (id == FAN_DIALOG_OK_ID && notification == BN_CLICKED) {
@@ -696,7 +714,9 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
             LONG_PTR style = hCtl ? GetWindowLongPtrA(hCtl, GWL_STYLE) : 0;
             bool isEditInput = strcmp(className, "Edit") == 0 &&
                 (((style & ES_READONLY) != 0) || !IsWindowEnabled(hCtl));
-            if (isEditInput || hCtl == g_fanCurveDialog.intervalCombo || hCtl == g_fanCurveDialog.hysteresisCombo) {
+            if (isEditInput || hCtl == g_fanCurveDialog.intervalCombo ||
+                hCtl == g_fanCurveDialog.hysteresisCombo ||
+                hCtl == g_fanCurveDialog.zeroRpmHysteresisCombo) {
                 SetTextColor(hdcStatic, COL_TEXT);
                 SetBkColor(hdcStatic, COL_INPUT);
                 if (!g_fanCurveDialog.hInputBrush) g_fanCurveDialog.hInputBrush = CreateSolidBrush(COL_INPUT);

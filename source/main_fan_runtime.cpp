@@ -859,10 +859,13 @@ static bool apply_fan_settings(const DesiredSettings* desired, char* failureDeta
             } else if (g_app.hMainWnd || g_app.isServiceProcess) {
                 stop_fan_curve_runtime();
                 copy_fan_curve(&g_app.activeFanCurve, &desiredCurve);
-                debug_log("apply fan curve: pollMs=%d hysteresis=%d zeroRpm=%d start=%dC firstEnabledPct=%d serviceProcess=%d\n",
+                debug_log("apply fan curve: pollMs=%d curveDownshift=%dC "
+                    "zeroRpm=%d zeroRpmGap=%dC start=%dC "
+                    "firstEnabledPct=%d serviceProcess=%d\n",
                     g_app.activeFanCurve.pollIntervalMs,
                     g_app.activeFanCurve.hysteresisC,
                     g_app.activeFanCurve.zeroRpmEnabled ? 1 : 0,
+                    fan_curve_zero_rpm_hysteresis(&g_app.activeFanCurve),
                     fan_curve_first_enabled_temperature(&g_app.activeFanCurve),
                     g_app.activeFanCurve.points[0].enabled ? g_app.activeFanCurve.points[0].fanPercent : 0,
                     g_app.isServiceProcess ? 1 : 0);

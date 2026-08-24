@@ -716,8 +716,23 @@ static bool load_fan_curve_config_from_section(const char* path, const char* sec
         }
     }
 
-    gc_GetPrivateProfileStringUtf8(section, "zero_rpm_enabled", "", buf,
-        sizeof(buf), path);
+    bool hasExplicitZeroRpmHysteresis = false;
+    gc_GetPrivateProfileStringUtf8(section, "zero_rpm_hysteresis_c", "", buf, sizeof(buf), path);
+    trim_ascii(buf);
+    if (buf[0]) {
+        int value = 0;
+        if (!parse_int_strict(buf, &value) || value < FAN_ZERO_RPM_MIN_HYSTERESIS_C ||
+            value > FAN_ZERO_RPM_MAX_HYSTERESIS_C) {
+            set_message(err, errSize,
+                "Zero-RPM fan-off gap in %s must be between %d" GC_DEGREE "C and %d" GC_DEGREE "C", section,
+                FAN_ZERO_RPM_MIN_HYSTERESIS_C,
+                FAN_ZERO_RPM_MAX_HYSTERESIS_C);
+            return false;
+        }
+        curve->zeroRpmHysteresisC = (gc_u8)value; hasExplicitZeroRpmHysteresis = true;
+    }
+
+    gc_GetPrivateProfileStringUtf8(section, "zero_rpm_enabled", "", buf, sizeof(buf), path);
     trim_ascii(buf);
     if (buf[0]) {
         int value = 0;
@@ -727,6 +742,13 @@ static bool load_fan_curve_config_from_section(const char* path, const char* sec
             return false;
         }
         curve->zeroRpmEnabled = gc_bool8_from_bool(value != 0);
+    }
+
+    if (fan_curve_migrate_legacy_zero_rpm_hysteresis(
+            curve, hasExplicitZeroRpmHysteresis)) {
+        debug_log("fan profile migration: section=%s inherited "
+            "zeroRpmGap=%uC from v23 curve hysteresis\n", section,
+            (unsigned)curve->zeroRpmHysteresisC);
     }
 
     for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
@@ -772,28 +794,6 @@ static bool load_fan_curve_config_from_section(const char* path, const char* sec
     return fan_curve_validate(curve, err, errSize);
 }
 
-static void append_fan_curve_section_text(char* cfg, size_t cfgSize, size_t* used, const char* sectionName, const FanCurveConfig* curve) {
-    if (!cfg || !used || !sectionName || !curve) return;
-
-    auto appendf = [&](const char* fmt, ...) {
-        if (*used >= cfgSize - 1) return;
-        va_list ap;
-        va_start(ap, fmt);
-        int n = _vsnprintf_s(cfg + *used, cfgSize - *used, _TRUNCATE, fmt, ap);
-        va_end(ap);
-        if (n > 0) *used += (size_t)n;
-    };
-
-    appendf("[%s]\r\n", sectionName);
-    appendf("poll_interval_ms=%d\r\n", curve->pollIntervalMs);
-    appendf("hysteresis_c=%d\r\n", curve->hysteresisC);
-    appendf("zero_rpm_enabled=%d\r\n", curve->zeroRpmEnabled ? 1 : 0);
-    for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
-        appendf("enabled%d=%d\r\n", i, curve->points[i].enabled ? 1 : 0);
-        appendf("temp%d=%d\r\n", i, curve->points[i].temperatureC);
-        appendf("pct%d=%d\r\n", i, curve->points[i].fanPercent);
-    }
-    appendf("\r\n");
-}
+#include "main_fan_curve_profile_save.cpp"
 
 static bool load_desired_settings_from_ini(const char* path, DesiredSettings* desired, char* err, size_t errSize) {

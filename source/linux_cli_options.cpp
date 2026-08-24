@@ -37,7 +37,9 @@ void print_linux_help() {
     puts("Overrides:");
     puts("  --gpu-offset MHZ --mem-offset MHZ --power-limit PCT");
     puts("  --fan auto|PCT --fan-mode auto|fixed|curve --fan-fixed PCT");
-    puts("  --fan-poll-ms MS --fan-hysteresis C --fan-zero-rpm 0|1");
+    puts("  --fan-poll-ms MS --fan-hysteresis C (curve downshift, 0-10C)");
+    puts("  --fan-zero-rpm 0|1");
+    puts("  --fan-zero-rpm-hysteresis C (independent fan-off gap, 2-30C)");
     puts("  --fan-curve-enabledN 0|1 --fan-curve-tempN C --fan-curve-pctN PCT");
     puts("  --pointN MHZ for VF points 0-127");
     puts("");
@@ -291,6 +293,24 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
             opts->desired.fanCurve.hysteresisC = value;
             opts->fanOverrides.mode = true;
             opts->fanOverrides.hysteresis = true;
+        } else if (strcmp(arg, "--fan-zero-rpm-hysteresis") == 0) {
+            opts->recognized = true;
+            int value = 0;
+            if (!argument_requires_value(argc, i) ||
+                !parse_int_strict(argv[++i], &value) ||
+                value < FAN_ZERO_RPM_MIN_HYSTERESIS_C ||
+                value > FAN_ZERO_RPM_MAX_HYSTERESIS_C) {
+                set_message(opts->error, sizeof(opts->error),
+                    "Invalid --fan-zero-rpm-hysteresis value, use %d-%d",
+                    FAN_ZERO_RPM_MIN_HYSTERESIS_C,
+                    FAN_ZERO_RPM_MAX_HYSTERESIS_C);
+                return false;
+            }
+            opts->desired.hasFan = true;
+            opts->desired.fanMode = FAN_MODE_CURVE;
+            opts->desired.fanCurve.zeroRpmHysteresisC = (gc_u8)value;
+            opts->fanOverrides.mode = true;
+            opts->fanOverrides.zeroRpmHysteresis = true;
         } else if (strcmp(arg, "--fan-zero-rpm") == 0) {
             opts->recognized = true;
             int value = 0;

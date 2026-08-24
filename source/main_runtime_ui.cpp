@@ -347,7 +347,9 @@ static void style_combo_control(HWND hwnd) {
 
 static bool is_themed_combo_id(UINT id) {
     return id == FAN_MODE_COMBO_ID || id == PROFILE_COMBO_ID || id == APP_LAUNCH_COMBO_ID ||
-           id == LOGON_COMBO_ID || id == FAN_DIALOG_INTERVAL_ID || id == FAN_DIALOG_HYSTERESIS_ID;
+           id == LOGON_COMBO_ID || id == FAN_DIALOG_INTERVAL_ID ||
+           id == FAN_DIALOG_HYSTERESIS_ID ||
+           id == FAN_DIALOG_ZERO_RPM_HYSTERESIS_ID;
 }
 
 static void paint_themed_combo_overlay(HWND hwnd, HDC hdc) {

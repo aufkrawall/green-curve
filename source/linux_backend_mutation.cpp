@@ -529,11 +529,14 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
         context.fanTargetPercent = initialDecision.targetPercent;
         context.fanUseDriverAuto = initialDecision.useDriverAuto;
         lb_log("apply: fan curve initial state temp=%uC control=%s target=%d%% "
-               "zeroRpm=%d start=%dC stop=%dC\n",
+               "curveDownshift=%dC zeroRpm=%d zeroRpmGap=%dC "
+               "start=%dC stop=%dC\n",
                temperature,
                context.fanUseDriverAuto ? "driver-auto" : "manual",
                context.fanTargetPercent,
+               normalized.hysteresisC,
                normalized.zeroRpmEnabled ? 1 : 0,
+               fan_curve_zero_rpm_hysteresis(&normalized),
                fan_curve_first_enabled_temperature(&normalized),
                fan_curve_first_enabled_temperature(&normalized) -
                    fan_curve_zero_rpm_hysteresis(&normalized));

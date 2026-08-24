@@ -484,6 +484,8 @@ static bool save_desired_to_config_with_startup(const char* path, const DesiredS
     buildOk = buildOk && appendf("[fan_curve]\r\n");
     buildOk = buildOk && appendf("poll_interval_ms=%d\r\n", fanCurve->pollIntervalMs);
     buildOk = buildOk && appendf("hysteresis_c=%d\r\n", fanCurve->hysteresisC);
+    buildOk = buildOk && appendf("zero_rpm_hysteresis_c=%u\r\n",
+        (unsigned)fanCurve->zeroRpmHysteresisC);
     buildOk = buildOk && appendf("zero_rpm_enabled=%d\r\n",
         fanCurve->zeroRpmEnabled ? 1 : 0);
     for (int i = 0; i < FAN_CURVE_MAX_POINTS && buildOk; i++) {

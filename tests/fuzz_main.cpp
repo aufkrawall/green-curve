@@ -168,6 +168,11 @@ static void check_desired_postconditions(const DesiredSettings& d) {
         GC_FUZZ_CHECK(d.fanCurve.hysteresisC >= 0 &&
                       d.fanCurve.hysteresisC <= FAN_CURVE_MAX_HYSTERESIS_C,
                       "fan curve hysteresis escaped its clamp");
+        GC_FUZZ_CHECK(d.fanCurve.zeroRpmHysteresisC >=
+                          FAN_ZERO_RPM_MIN_HYSTERESIS_C &&
+                      d.fanCurve.zeroRpmHysteresisC <=
+                          FAN_ZERO_RPM_MAX_HYSTERESIS_C,
+                      "zero-RPM fan-off gap escaped its independent clamp");
         GC_FUZZ_CHECK(d.fanCurve.pollIntervalMs >= 1,
                       "fan curve poll interval would spin a runtime loop");
     }

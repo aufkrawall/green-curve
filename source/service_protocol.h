@@ -73,7 +73,10 @@ enum {
     // v23 adds native zero-RPM curve intent to FanCurveConfig.  The field is
     // carried by requests, active/startup intent, control readback, and the
     // snapshot, so every wire payload containing fan state changes size.
-    SERVICE_PROTOCOL_VERSION = 23,
+    // v24 assigns one of v23's reserved bytes to an independent zero-RPM
+    // fan-off hysteresis. Wire sizes remain unchanged, but mixed peers would
+    // disagree about the byte's meaning and must reject each other.
+    SERVICE_PROTOCOL_VERSION = 24,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply. Bit 30 marks an

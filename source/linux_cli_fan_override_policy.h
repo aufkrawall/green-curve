@@ -23,6 +23,7 @@ struct LinuxFanCliOverrideMask {
     bool fixedPercent;
     bool pollInterval;
     bool hysteresis;
+    bool zeroRpmHysteresis;
     bool zeroRpm;
     bool pointEnabled[FAN_CURVE_MAX_POINTS];
     bool pointTemperature[FAN_CURVE_MAX_POINTS];
@@ -45,6 +46,9 @@ static inline void merge_linux_cli_fan_overrides(
         base->fanCurve.pollIntervalMs = incoming->fanCurve.pollIntervalMs;
     if (mask->hysteresis)
         base->fanCurve.hysteresisC = incoming->fanCurve.hysteresisC;
+    if (mask->zeroRpmHysteresis)
+        base->fanCurve.zeroRpmHysteresisC =
+            incoming->fanCurve.zeroRpmHysteresisC;
     if (mask->zeroRpm) {
         base->fanCurve.zeroRpmEnabled = incoming->fanCurve.zeroRpmEnabled;
         memset(base->fanCurve.zeroRpmReserved, 0,

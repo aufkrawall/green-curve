@@ -71,6 +71,8 @@ int current_field_value(const TuiState& state, TuiField field, int index) {
         case TUI_FIELD_FAN_POLL: return state.desired.fanCurve.pollIntervalMs;
         case TUI_FIELD_FAN_HYSTERESIS:
             return state.desired.fanCurve.hysteresisC;
+        case TUI_FIELD_FAN_ZERO_RPM_HYSTERESIS:
+            return state.desired.fanCurve.zeroRpmHysteresisC;
         case TUI_FIELD_FAN_TEMPERATURE:
             return index >= 0 && index < FAN_CURVE_MAX_POINTS
                 ? state.desired.fanCurve.points[index].temperatureC : 0;
@@ -186,10 +188,15 @@ void set_field_value(TuiState* state, TuiField field, int index, int value) {
         case TUI_FIELD_FAN_HYSTERESIS:
             desired.hasFan = true;
             desired.fanMode = FAN_MODE_CURVE;
-            desired.fanCurve.hysteresisC = clamp_int(value,
-                desired.fanCurve.zeroRpmEnabled
-                    ? FAN_ZERO_RPM_MIN_HYSTERESIS_C : 0,
-                FAN_CURVE_MAX_HYSTERESIS_C);
+            desired.fanCurve.hysteresisC = clamp_int(
+                value, 0, FAN_CURVE_MAX_HYSTERESIS_C);
+            break;
+        case TUI_FIELD_FAN_ZERO_RPM_HYSTERESIS:
+            desired.hasFan = true;
+            desired.fanMode = FAN_MODE_CURVE;
+            desired.fanCurve.zeroRpmHysteresisC = (gc_u8)clamp_int(
+                value, FAN_ZERO_RPM_MIN_HYSTERESIS_C,
+                FAN_ZERO_RPM_MAX_HYSTERESIS_C);
             break;
         case TUI_FIELD_FAN_TEMPERATURE: {
             if (index < 0 || index >= FAN_CURVE_MAX_POINTS) return;

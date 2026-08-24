@@ -165,6 +165,7 @@ def check_native_zero_rpm(ctx, require_text, forbid_text):
     """
     gpu_core_h = _p(ctx, "gpu_core.h")
     zero_policy_h = _p(ctx, "fan_zero_rpm_policy.h")
+    zero_profile_policy_h = _p(ctx, "fan_zero_rpm_profile_policy.h")
     runtime_policy_h = _p(ctx, "fan_runtime_policy.h")
     win_runtime_cpp = _p(ctx, "main_fan_zero_rpm.cpp")
     linux_runtime_h = _p(ctx, "linux_fan_runtime.h")
@@ -172,8 +173,17 @@ def check_native_zero_rpm(ctx, require_text, forbid_text):
 
     require_text(gpu_core_h, "zeroRpmEnabled",
                  "native zero-RPM intent is part of the shared fan-curve model")
+    require_text(gpu_core_h, "zeroRpmHysteresisC",
+                 "zero-RPM fan-off hysteresis is independent on the wire")
     require_text(zero_policy_h, "fan_curve_zero_rpm_hysteresis",
                  "the anti-cycle threshold is one shared policy")
+    require_text(zero_policy_h, "config->zeroRpmHysteresisC",
+                 "zero-RPM thresholds use their dedicated value")
+    forbid_text(zero_policy_h, "config->hysteresisC",
+                "ordinary curve downshift hysteresis must not control fan stop")
+    require_text(zero_profile_policy_h,
+                 "fan_curve_migrate_legacy_zero_rpm_hysteresis",
+                 "v23 shared-hysteresis profiles retain their old thresholds")
     require_text(zero_policy_h, "hysteresis < FAN_ZERO_RPM_MIN_HYSTERESIS_C",
                  "native zero-RPM enforces a minimum two-degree Schmitt band")
     require_text(runtime_policy_h, "useDriverAuto",
@@ -197,23 +207,42 @@ def check_native_zero_rpm(ctx, require_text, forbid_text):
     require_text(_p(ctx, "fan_curve_dialog.cpp"), "FAN_DIALOG_ZERO_RPM_ID",
                  "the Windows fan-curve editor exposes native zero-RPM")
     require_text(_p(ctx, "fan_curve_dialog.cpp"),
-                 "FAN_ZERO_RPM_GUI_DESCRIPTION",
-                 "the Windows zero-RPM help uses the measured multiline layout")
+                 "fan_zero_rpm_gui_format_description",
+                 "the Windows help renders the effective zero-RPM thresholds")
     require_text(_p(ctx, "fan_curve_dialog.cpp"),
                  "SS_LEFTNOWORDWRAP | SS_NOPREFIX",
-                 "the Windows zero-RPM help keeps its explicit three-line layout")
+                 "the Windows zero-RPM help keeps its explicit two-line layout")
+    require_text(_p(ctx, "fan_curve_dialog.cpp"),
+                 "FAN_DIALOG_ZERO_RPM_HYSTERESIS_ID",
+                 "the Windows editor exposes an independent fan-off gap")
     require_text(_p(ctx, "ui_theme_button.cpp"),
                  "id == FAN_DIALOG_ZERO_RPM_ID",
                  "the Windows zero-RPM checkbox uses the established themed renderer")
     require_text(_p(ctx, "linux_tui_layout_fan_profiles.cpp"),
                  "ACTION_FAN_ZERO_RPM_TOGGLE",
                  "the Linux TUI exposes native zero-RPM")
-    require_text(_p(ctx, "main_probe_config.cpp"), '"zero_rpm_enabled"',
+    require_text(_p(ctx, "linux_tui_layout_fan_profiles.cpp"),
+                 "TUI_FIELD_FAN_ZERO_RPM_HYSTERESIS",
+                 "the Linux TUI exposes an independent fan-off gap")
+    require_text(_p(ctx, "fan_curve.cpp"), "zero-RPM enabled | fan stop",
+                 "the curve button distinguishes enabled intent from live fan state")
+    forbid_text(_p(ctx, "fan_curve.cpp"), "zero-RPM off <=",
+                "the curve button must not make enabled zero-RPM look disabled")
+    require_text(_p(ctx, "main_fan_curve_profile_save.cpp"), '"zero_rpm_enabled=%d',
                  "Windows profiles persist native zero-RPM")
-    require_text(_p(ctx, "linux_port_profiles.cpp"), '"zero_rpm_enabled"',
+    require_text(_p(ctx, "main_fan_curve_profile_save.cpp"),
+                 '"zero_rpm_hysteresis_c=%u',
+                 "Windows profiles persist the independent fan-off gap")
+    require_text(_p(ctx, "linux_fan_curve_profile_save.h"), '"zero_rpm_enabled"',
                  "Linux profiles persist native zero-RPM")
+    require_text(_p(ctx, "linux_fan_curve_profile_save.h"),
+                 '"zero_rpm_hysteresis_c"',
+                 "Linux profiles persist the independent fan-off gap")
     require_text(_p(ctx, "linux_cli_options.cpp"), '"--fan-zero-rpm"',
                  "Linux scripted profile editing can set native zero-RPM")
+    require_text(_p(ctx, "linux_cli_options.cpp"),
+                 '"--fan-zero-rpm-hysteresis"',
+                 "Linux scripted editing can set the independent fan-off gap")
     require_text(_p(ctx, "linux_cli_options.cpp"),
                  "opts->fanOverrides.zeroRpm = true",
                  "Linux records zero-RPM as a partial CLI override")

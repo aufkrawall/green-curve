@@ -98,6 +98,8 @@ static inline bool desired_settings_equal(const DesiredSettings* left,
         left->fanCurve.hysteresisC != right->fanCurve.hysteresisC ||
         left->fanCurve.zeroRpmEnabled !=
             right->fanCurve.zeroRpmEnabled ||
+        left->fanCurve.zeroRpmHysteresisC !=
+            right->fanCurve.zeroRpmHysteresisC ||
         left->resetOcBeforeApply != right->resetOcBeforeApply) return false;
     for (int i = 0; i < FAN_CURVE_MAX_POINTS; ++i) {
         const FanCurvePoint* a = &left->fanCurve.points[i];

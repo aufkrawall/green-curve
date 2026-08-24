@@ -55,8 +55,10 @@ static bool apply_fan_curve_zero_rpm_tick(const FanCurveConfig* curve,
     mark_fan_runtime_success(now);
     if (transitioned) {
         debug_log("fan curve transition: temp=%dC "
-            "control=driver-auto/native-zero-RPM start=%dC stop=%dC\n",
-            currentTempC, startC, stopC);
+            "control=driver-auto/native-zero-RPM zeroRpmGap=%dC "
+            "start=%dC stop=%dC\n",
+            currentTempC, fan_curve_zero_rpm_hysteresis(curve),
+            startC, stopC);
     }
     if (g_app.isServiceProcess) {
         populate_control_state(&g_serviceControlState);

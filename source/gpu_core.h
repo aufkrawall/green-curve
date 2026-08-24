@@ -80,6 +80,9 @@ static inline void canonicalize_gc_bool8(gc_bool8* value) {
 
 #define FAN_CURVE_MAX_POINTS 8
 #define FAN_CURVE_MAX_HYSTERESIS_C 10
+#define FAN_ZERO_RPM_MIN_HYSTERESIS_C 2
+#define FAN_ZERO_RPM_DEFAULT_HYSTERESIS_C 5
+#define FAN_ZERO_RPM_MAX_HYSTERESIS_C 30
 #define MAX_GPU_FANS        8
 #define MAX_GPU_ADAPTERS    8
 #define CONFIG_NUM_SLOTS    5
@@ -421,10 +424,11 @@ struct FanCurveConfig {
     FanCurvePoint points[FAN_CURVE_MAX_POINTS];
     int pollIntervalMs;
     int hysteresisC;
-    gc_bool8 zeroRpmEnabled, zeroRpmReserved[3];
+    gc_bool8 zeroRpmEnabled; gc_u8 zeroRpmHysteresisC;
+    gc_u8 zeroRpmReserved[2];
 };
 
-#include "fan_zero_rpm_policy.h"
+#include "fan_zero_rpm_wire_policy.h"
 
 struct ControlState {
     gc_bool8 valid, hasGpuOffset;
@@ -639,6 +643,8 @@ static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
         }
         if (d->fanCurve.hysteresisC < 0) d->fanCurve.hysteresisC = 0;
         if (d->fanCurve.hysteresisC > FAN_CURVE_MAX_HYSTERESIS_C) d->fanCurve.hysteresisC = FAN_CURVE_MAX_HYSTERESIS_C;
+        if (d->fanCurve.zeroRpmHysteresisC < FAN_ZERO_RPM_MIN_HYSTERESIS_C) d->fanCurve.zeroRpmHysteresisC = FAN_ZERO_RPM_MIN_HYSTERESIS_C;
+        if (d->fanCurve.zeroRpmHysteresisC > FAN_ZERO_RPM_MAX_HYSTERESIS_C) d->fanCurve.zeroRpmHysteresisC = FAN_ZERO_RPM_MAX_HYSTERESIS_C;
         if (d->fanCurve.pollIntervalMs < 1) d->fanCurve.pollIntervalMs = 1;
     }
 }

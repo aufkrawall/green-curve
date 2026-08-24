@@ -124,6 +124,24 @@ static bool load_fan_curve_config_from_section(const IniDocument* doc, const cha
         return false;
     }
 
+    bool hasExplicitZeroRpmHysteresis = false;
+    value = get_section_value(doc, section, "zero_rpm_hysteresis_c");
+    if (!value.empty()) {
+        int parsed = 0;
+        if (!parse_int_strict(value.c_str(), &parsed) ||
+            parsed < FAN_ZERO_RPM_MIN_HYSTERESIS_C ||
+            parsed > FAN_ZERO_RPM_MAX_HYSTERESIS_C) {
+            set_message(err, errSize,
+                "Zero-RPM fan-off gap in %s must be between %d" GC_DEGREE
+                "C and %d" GC_DEGREE "C", section,
+                FAN_ZERO_RPM_MIN_HYSTERESIS_C,
+                FAN_ZERO_RPM_MAX_HYSTERESIS_C);
+            return false;
+        }
+        curve->zeroRpmHysteresisC = (gc_u8)parsed;
+        hasExplicitZeroRpmHysteresis = true;
+    }
+
     value = get_section_value(doc, section, "zero_rpm_enabled");
     if (!value.empty()) {
         int parsed = 0;
@@ -134,6 +152,13 @@ static bool load_fan_curve_config_from_section(const IniDocument* doc, const cha
             return false;
         }
         curve->zeroRpmEnabled = gc_bool8_from_bool(parsed != 0);
+    }
+
+    if (fan_curve_migrate_legacy_zero_rpm_hysteresis(
+            curve, hasExplicitZeroRpmHysteresis)) {
+        linux_debug_logf("fan profile migration: section=%s inherited "
+            "zeroRpmGap=%uC from v23 curve hysteresis", section,
+            (unsigned)curve->zeroRpmHysteresisC);
     }
 
     for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
@@ -168,53 +193,7 @@ static bool load_fan_curve_config_from_section(const IniDocument* doc, const cha
     return fan_curve_validate(curve, err, errSize);
 }
 
-static void save_fan_curve_section(IniDocument* doc, const char* sectionName, const FanCurveConfig* curve) {
-    std::vector<IniEntry> entries;
-    char key[32] = {};
-    char value[32] = {};
-
-    IniEntry pollEntry;
-    pollEntry.key = "poll_interval_ms";
-    snprintf(value, sizeof(value), "%d", curve->pollIntervalMs);
-    pollEntry.value = value;
-    entries.push_back(pollEntry);
-
-    IniEntry hystEntry;
-    hystEntry.key = "hysteresis_c";
-    snprintf(value, sizeof(value), "%d", curve->hysteresisC);
-    hystEntry.value = value;
-    entries.push_back(hystEntry);
-
-    IniEntry zeroRpmEntry;
-    zeroRpmEntry.key = "zero_rpm_enabled";
-    zeroRpmEntry.value = curve->zeroRpmEnabled ? "1" : "0";
-    entries.push_back(zeroRpmEntry);
-
-    for (int i = 0; i < FAN_CURVE_MAX_POINTS; i++) {
-        IniEntry enabledEntry;
-        snprintf(key, sizeof(key), "enabled%d", i);
-        enabledEntry.key = key;
-        snprintf(value, sizeof(value), "%d", curve->points[i].enabled ? 1 : 0);
-        enabledEntry.value = value;
-        entries.push_back(enabledEntry);
-
-        IniEntry tempEntry;
-        snprintf(key, sizeof(key), "temp%d", i);
-        tempEntry.key = key;
-        snprintf(value, sizeof(value), "%d", curve->points[i].temperatureC);
-        tempEntry.value = value;
-        entries.push_back(tempEntry);
-
-        IniEntry pctEntry;
-        snprintf(key, sizeof(key), "pct%d", i);
-        pctEntry.key = key;
-        snprintf(value, sizeof(value), "%d", curve->points[i].fanPercent);
-        pctEntry.value = value;
-        entries.push_back(pctEntry);
-    }
-
-    replace_section(doc, sectionName, entries);
-}
+#include "linux_fan_curve_profile_save.h"
 
 static bool load_desired_settings_from_sections(const IniDocument* doc,
     const char* controlsSection,

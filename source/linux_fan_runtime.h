@@ -113,12 +113,16 @@ static pl_thread_ret fan_reassert_thread(void*) {
                         outcome = FAN_RUNTIME_OUTCOME_SUCCESS;
                         if (decision.controlModeChanged) {
                             dlog("daemon: fan curve transition temp=%uC control=%s "
-                                 "target=%d%% start=%dC stop=%dC\n",
+                                 "target=%d%% curveDownshift=%dC "
+                                 "zeroRpmGap=%dC start=%dC stop=%dC\n",
                                  t,
                                  decision.useDriverAuto
                                     ? "driver-auto/native-zero-RPM"
                                     : "manual",
                                  pct,
+                                 g_activeDesired.fanCurve.hysteresisC,
+                                 fan_curve_zero_rpm_hysteresis(
+                                     &g_activeDesired.fanCurve),
                                  fan_curve_first_enabled_temperature(
                                      &g_activeDesired.fanCurve),
                                  fan_curve_first_enabled_temperature(

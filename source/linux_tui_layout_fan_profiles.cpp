@@ -109,18 +109,34 @@ void draw_fan_settings(TuiCanvas* c, const TuiRect& panel) {
                         0, desired.fanPercent, 1, "%");
         add_fan_stepper(c, x, y + 4, "Poll interval", TUI_FIELD_FAN_POLL,
                         0, desired.fanCurve.pollIntervalMs, 250, "ms");
-        add_fan_stepper(c, x, y + 6, "Hysteresis", TUI_FIELD_FAN_HYSTERESIS,
+        add_fan_stepper(c, x, y + 6, "Curve downshift", TUI_FIELD_FAN_HYSTERESIS,
                         0, desired.fanCurve.hysteresisC, 1, "°C");
         if (panel.width >= 68) {
             int zeroX = panel.x + panel.width - 24;
-            c->checkbox(zeroX, y + 6,
+            c->checkbox(zeroX, y + 2,
                 desired.fanCurve.zeroRpmEnabled ? 1 : 0,
                 desired.fanCurve.zeroRpmEnabled
                     ? TUI_STYLE_GREEN : TUI_STYLE_BORDER);
-            c->text(zeroX + 4, y + 6, 18, "Native zero-RPM",
+            c->text(zeroX + 4, y + 2, 18, "Native zero-RPM",
                 TUI_STYLE_TEXT);
-            c->register_action(TuiRect{zeroX, y + 6, 22, 1},
+            c->register_action(TuiRect{zeroX, y + 2, 22, 1},
                 ACTION_FAN_ZERO_RPM_TOGGLE);
+
+            c->text(zeroX, y + 4, 7, "Off gap", TUI_STYLE_TEXT);
+            int minus = c->button(TuiRect{zeroX + 8, y + 4, 3, 1}, "−",
+                ACTION_FIELD_STEP,
+                (int)TUI_FIELD_FAN_ZERO_RPM_HYSTERESIS, -1);
+            c->layout()->actions[minus].context = 0;
+            char gap[8] = {};
+            snprintf(gap, sizeof(gap), "%u",
+                (unsigned)desired.fanCurve.zeroRpmHysteresisC);
+            c->field(TuiRect{zeroX + 12, y + 4, 3, 1}, gap,
+                TUI_FIELD_FAN_ZERO_RPM_HYSTERESIS, 0);
+            int plus = c->button(TuiRect{zeroX + 16, y + 4, 3, 1}, "+",
+                ACTION_FIELD_STEP,
+                (int)TUI_FIELD_FAN_ZERO_RPM_HYSTERESIS, 1);
+            c->layout()->actions[plus].context = 0;
+            c->text(zeroX + 20, y + 4, 3, "°C", TUI_STYLE_MUTED);
         }
     }
 }
@@ -135,7 +151,7 @@ void draw_fan_table(TuiCanvas* c, const TuiRect& panel) {
             &vm.desired->fanCurve);
         if (stopC < 0) stopC = 0;
         snprintf(rule, sizeof(rule),
-            "zero-RPM: OFF <=%d°C • ON >=%d°C • speed >= firmware min",
+            "zero-RPM enabled: fan stop <=%d°C • start >=%d°C • speed >= firmware min",
             stopC, startC);
     }
     c->box(panel, "FAN CURVE POINTS", rule);

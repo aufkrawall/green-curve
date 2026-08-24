@@ -54,6 +54,7 @@ gc_u32 field_mutation_domain(const TuiState& state, TuiField field) {
         case TUI_FIELD_FAN_FIXED:
         case TUI_FIELD_FAN_POLL:
         case TUI_FIELD_FAN_HYSTERESIS:
+        case TUI_FIELD_FAN_ZERO_RPM_HYSTERESIS:
         case TUI_FIELD_FAN_TEMPERATURE:
         case TUI_FIELD_FAN_PERCENT:
             return SERVICE_MUTATION_DOMAIN_FAN;
@@ -95,18 +96,13 @@ bool field_edit_available(TuiState* state, TuiField field) {
 }
 
 void toggle_fan_zero_rpm(TuiState* state) {
-    if (!field_edit_available(state, TUI_FIELD_FAN_HYSTERESIS)) return;
+    if (!field_edit_available(state,
+            TUI_FIELD_FAN_ZERO_RPM_HYSTERESIS)) return;
     state->desired.hasFan = true;
     state->desired.fanMode = FAN_MODE_CURVE;
     state->desired.fanAuto = false;
     state->desired.fanCurve.zeroRpmEnabled = gc_bool8_from_bool(
         !state->desired.fanCurve.zeroRpmEnabled);
-    if (state->desired.fanCurve.zeroRpmEnabled &&
-        state->desired.fanCurve.hysteresisC <
-            FAN_ZERO_RPM_MIN_HYSTERESIS_C) {
-        state->desired.fanCurve.hysteresisC =
-            FAN_ZERO_RPM_MIN_HYSTERESIS_C;
-    }
     tui_recompute_dirty(state);
     bind_current_draft(state);
     int startC = fan_curve_first_enabled_temperature(
@@ -116,8 +112,9 @@ void toggle_fan_zero_rpm(TuiState* state) {
     if (stopC < 0) stopC = 0;
     if (state->desired.fanCurve.zeroRpmEnabled) {
         snprintf(state->status, sizeof(state->status),
-            "Native zero-RPM enabled: fan ON at %dC, OFF at %dC",
-            startC, stopC);
+            "Native zero-RPM enabled: fan ON at %dC, OFF at %dC (%dC gap)",
+            startC, stopC,
+            fan_curve_zero_rpm_hysteresis(&state->desired.fanCurve));
     } else {
         snprintf(state->status, sizeof(state->status),
             "Native zero-RPM disabled: the curve remains manual below its first point");
