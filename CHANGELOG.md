@@ -1,9 +1,5 @@
 # Changelog
 
-Release notes focus on changes that affect people using Green Curve. For the
-complete implementation history, follow the comparison link at the end of each
-release.
-
 ## 0.24.0
 
 Green Curve 0.24.0 brings advanced auxiliary-clock tuning, native zero-RPM
