@@ -11305,12 +11305,13 @@ static int run_all_tests(int argc, char** argv) {
         }
         // Degenerate: a suffix that cannot fit at all still leaves a terminated
         // tooltip rather than an unterminated one going to Shell_NotifyIcon.
+        // (Named smallBuf: MSVC's rpcndr.h #defines `small` as `char`.)
         {
-            char small[8] = {};
+            char smallBuf[8] = {};
             gc_update_compose_tray_tooltip("Green Curve", " | Update 0.30",
-                                           small, sizeof(small));
-            if (strlen(small) >= sizeof(small)) return 4347;
-            if (strcmp(small, "Green C") != 0) return 4348;
+                                           smallBuf, sizeof(smallBuf));
+            if (strlen(smallBuf) >= sizeof(smallBuf)) return 4347;
+            if (strcmp(smallBuf, "Green C") != 0) return 4348;
         }
 
         // --- The once-per-machine question (4350-4359) -------------------

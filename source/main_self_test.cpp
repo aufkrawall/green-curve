@@ -149,8 +149,13 @@ static void self_test_clk_domain_survey(FILE* out) {
     // scan the entry's full stride for words matching a measured clock
     // (±2%).  Read-only diagnostics — this maps entries to domains from
     // evidence instead of assuming the entry order means anything.
-    unsigned int measuredKhz[16] = {};
-    bool measuredValid[16] = {};
+    // Both arrays are indexed by domain id across the full CLK_PROBE_MAX_DOMAINS
+    // range below; they were once sized [16], which the fill loop overran by 16
+    // slots.  The MinGW stack layout silently absorbed the corruption; the
+    // clang-cl/MSVC-ABI layout crashed on it.  Size them from the loop bound so
+    // the two can never drift apart again.
+    unsigned int measuredKhz[CLK_PROBE_MAX_DOMAINS] = {};
+    bool measuredValid[CLK_PROBE_MAX_DOMAINS] = {};
     if (measure) {
         for (unsigned int id = 0; id < CLK_PROBE_MAX_DOMAINS; ++id)
             measuredValid[id] =

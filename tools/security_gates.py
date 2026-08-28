@@ -565,6 +565,16 @@ def check_diagnostic_probe_gates(ctx, require_text, forbid_text):
                 "the clock probe never maps malformed selectors to entry zero")
     require_text(self_test, "gc_clk_probe_entry::parse(",
                  "the clock probe strictly range-checks its entry selector")
+    # The ClkDomains correlation arrays were once sized [16] while the fill and
+    # read loops range over CLK_PROBE_MAX_DOMAINS (32): a silent stack overflow
+    # that MinGW's stack layout absorbed and the MSVC-ABI layout crashed on.
+    # Pin both arrays to the loop-bound constant so they cannot drift apart.
+    require_text(self_test, "unsigned int measuredKhz[CLK_PROBE_MAX_DOMAINS]",
+                 "the ClkDomains correlation arrays are sized by the domain loop bound")
+    require_text(self_test, "bool measuredValid[CLK_PROBE_MAX_DOMAINS]",
+                 "the ClkDomains validity flags are sized by the domain loop bound")
+    forbid_text(self_test, "measuredKhz[16]",
+                "the ClkDomains correlation overflow must never return")
 
 
 def run_build_script_regression_tests(ctx):
