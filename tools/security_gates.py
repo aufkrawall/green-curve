@@ -24,6 +24,7 @@ import static_analysis  # ditto; owns the clang-tidy ratchet's own self-tests
 import build_scheduler
 import update_signing  # ditto; owns the update signer's RFC 6979 vectors
 import toolchain  # ditto; owns pinned-toolchain verification
+import zig_cache  # ditto; owns the cross-process Zig link lock + cache repair
 
 # Fuzz targets built from tests/fuzz_main.cpp.  The key is the GC_FUZZ_TARGET
 # macro suffix and the corpus directory name; the value is the macro's numeric
@@ -333,10 +334,13 @@ def run_fuzz_targets(ctx, runs=None, target_filter=None):
                     "-luser32", "-lgdi32", "-luuid", "-ladvapi32", "-lshell32",
                 ])
             print(f"Compiling fuzz target {name}")
-            result = subprocess.run(cmd, cwd=ctx.SCRIPT_DIR)
-            if result.returncode != 0:
+            # Fuzz fixture links may drive Zig on a POSIX host; route them
+            # through the same lock/repair wrapper as every other Zig link.
+            returncode = zig_cache.run_zig_link(
+                cmd, ctx.SCRIPT_DIR, ctx.ZIG_CACHE_ROOTS)
+            if returncode != 0:
                 print(f"Fuzz target {name} FAILED to compile")
-                sys.exit(result.returncode)
+                sys.exit(returncode)
 
             # Seeds are committed, read-only inputs.  libFuzzer writes any new
             # coverage-increasing input to the scratch corpus instead, so a test
@@ -574,9 +578,30 @@ def run_build_script_regression_tests(ctx):
     try:
         check_workflow_structure(ctx)
         build_scheduler.run_self_tests()
+        zig_cache.run_self_tests()
         build_script = os.path.join(ctx.SCRIPT_DIR, "build.py")
         with open(build_script, "r", encoding="utf-8", errors="replace") as handle:
             build_script_text = handle.read()
+        installer_script = os.path.join(ctx.SCRIPT_DIR, "tools", "installer_build.py")
+        with open(installer_script, "r", encoding="utf-8", errors="replace") as handle:
+            installer_script_text = handle.read()
+        # Every Zig link must run under zig_cache's cross-process lock and its
+        # poisoned-cache repair; the 2026-08-28 matrix failure showed a racing
+        # or poisoned shared global cache fails four links at once and never
+        # self-heals.  A future link call site that bypasses the wrapper is
+        # exactly how that returns.
+        if "zig_cache.run_zig_link" not in build_script_text:
+            print("Build-script regression FAILED: build.py Zig links bypass the "
+                  "cross-process zig-cache lock/repair wrapper")
+            sys.exit(1)
+        if "_run_zig_link(cmd, cwd=work)" not in build_script_text:
+            print("Build-script regression FAILED: the ARM64 link paths bypass the "
+                  "cross-process zig-cache lock/repair wrapper")
+            sys.exit(1)
+        if "zig_cache.run_zig_link" not in installer_script_text:
+            print("Build-script regression FAILED: the arm64 installer link bypasses "
+                  "the cross-process zig-cache lock/repair wrapper")
+            sys.exit(1)
         signing_script = os.path.join(ctx.SCRIPT_DIR, "tools", "windows_key_acl.py")
         with open(signing_script, "r", encoding="utf-8", errors="replace") as handle:
             signing_script_text = handle.read()

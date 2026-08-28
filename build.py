@@ -108,6 +108,7 @@ import static_analysis  # noqa: E402  (same one-way dependency as security_gates
 import build_scheduler  # noqa: E402  (same one-way dependency as security_gates)
 import build_state  # noqa: E402  (same one-way dependency as security_gates)
 import toolchain  # noqa: E402  (same one-way dependency as security_gates)
+import zig_cache  # noqa: E402  (same one-way dependency as security_gates)
 from release_manifest import (  # noqa: E402  (one-way dependency)
     RUNTIME_ARTIFACT_NAMES, check_all as release_manifest_check_all,
     check_packaging_skip_warning, expected_release_names, find_seven_zip,
@@ -134,6 +135,8 @@ SOURCE_DIR = os.path.join(SCRIPT_DIR, "source")
 BUILD_WORK_DIR = os.path.join(SCRIPT_DIR, "build-tmp")
 ZIG_GLOBAL_CACHE_DIR = os.path.join(BUILD_WORK_DIR, "zig-global-cache")
 ZIG_LOCAL_CACHE_DIR = os.path.join(BUILD_WORK_DIR, "zig-local-cache")
+# Every Zig cache root this build owns; link repair and diagnosis scan these.
+ZIG_CACHE_ROOTS = (ZIG_GLOBAL_CACHE_DIR, ZIG_LOCAL_CACHE_DIR)
 BUILD_NUMBER_PATH = os.path.join(SCRIPT_DIR, "BUILD_NUMBER")
 BUILD_FINGERPRINT_PATH = os.path.join(SCRIPT_DIR, ".build_fingerprint")
 WINDOWS_SOURCE_FILES = [
@@ -794,15 +797,9 @@ def _compile_only_flags(flags):
             and flag not in ("-static", "-s", "-pie", "-flto")]
 
 
-def _run_compiler(cmd, cwd=SCRIPT_DIR, allow_cfg_collision=False):
-    """Run a compiler and reject every duplicate-symbol diagnostic except the
-    documented llvm-mingw CFG shim collision.  Capturing output makes the broad
-    linker allowance auditable instead of silently accepting unrelated duplicates.
-    """
-    result = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True)
-    combined = (result.stdout or "") + (result.stderr or "")
-    if combined:
-        print(combined, end="" if combined.endswith("\n") else "\n")
+def _audit_compiler_output(combined, allow_cfg_collision=False):
+    """Return 1 when the output carries an unexpected duplicate-symbol
+    diagnostic; the documented llvm-mingw CFG shim collision stays allowed."""
     duplicate_lines = [line for line in combined.splitlines()
                        if "duplicate symbol" in line.lower() or "multiple definition" in line.lower()]
     unexpected = []
@@ -815,7 +812,29 @@ def _run_compiler(cmd, cwd=SCRIPT_DIR, allow_cfg_collision=False):
         for line in unexpected:
             print(f"  {line}")
         return 1
+    return 0
+
+
+def _run_compiler(cmd, cwd=SCRIPT_DIR, allow_cfg_collision=False):
+    """Run a compiler with audited output and poisoned-cache diagnosis.
+    Capturing output makes the broad linker allowance auditable instead of
+    silently accepting unrelated duplicates."""
+    result = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True)
+    combined = (result.stdout or "") + (result.stderr or "")
+    if combined:
+        print(combined, end="" if combined.endswith("\n") else "\n")
+    if _audit_compiler_output(combined, allow_cfg_collision):
+        return 1
+    if result.returncode != 0:
+        zig_cache.diagnose_missing_cache_artifacts(combined, ZIG_CACHE_ROOTS)
     return result.returncode
+
+
+def _run_zig_link(cmd, cwd=SCRIPT_DIR):
+    """Run one Zig link under the cross-process cache lock (see zig_cache)."""
+    return zig_cache.run_zig_link(
+        cmd, cwd, ZIG_CACHE_ROOTS,
+        audit=lambda text, rc: 1 if _audit_compiler_output(text) else rc)
 
 
 def _object_debug_flags(pdb_path):
@@ -890,7 +909,7 @@ def _link_linux_x64(temp_output, objects):
     """Link the Linux x64 objects with the release flag set."""
     cmd = [ZIG_EXE, "c++", *COMMON_FLAGS, *linux_flags_for_arch("x64"),
            "-o", temp_output, *objects]
-    return _run_compiler(cmd)
+    return _run_zig_link(cmd)
 
 
 def _compile_arm64_objects(sources, object_dir, target, extra_flags=None,
@@ -932,7 +951,7 @@ def _link_arm64_windows(temp_output, sources, link_libs, symbol_path, service=Fa
                "-Wl,--subsystem,windows,--dynamicbase,--nxcompat,--high-entropy-va",
                "-o", scratch_output, *objects, ICON_RES, *link_libs]
         with (limiter.slot() if limiter is not None else nullcontext()):
-            if _run_compiler(cmd, cwd=work) != 0:
+            if _run_zig_link(cmd, cwd=work) != 0:
                 raise RuntimeError("ARM64 Windows link failed")
         if subprocess.run([LLVM_MINGW_OBJCOPY, "--only-keep-debug", scratch_output, scratch_symbols],
                           cwd=work).returncode != 0:
@@ -966,7 +985,7 @@ def _link_arm64_linux(temp_output, sources, jobs=1, limiter=None):
                "-Wl,--build-id=sha1",
                "-o", temp_output, *objects, "-ldl", "-lpthread"]
         with (limiter.slot() if limiter is not None else nullcontext()):
-            if _run_compiler(cmd, cwd=work) != 0:
+            if _run_zig_link(cmd, cwd=work) != 0:
                 raise RuntimeError("ARM64 Linux link failed")
     finally:
         cleanup_work_subdir(work)
@@ -1364,7 +1383,7 @@ def compile_linux_binary(output_path=LINUX_OUTPUT_BIN, temp_output=LINUX_TEMP_OU
             finally:
                 cleanup_work_subdir(work)
         else:
-            returncode = _run_compiler(cmd)
+            returncode = _run_zig_link(cmd)
         if returncode == 0:
             # Split symbols out and strip BEFORE verification, so every check —
             # including the private-workspace-path scan, which stays strict —
@@ -1769,10 +1788,11 @@ def run_regression_tests(extra_flags=None):
                 if extra_flags:
                     fixture_cmd.extend(extra_flags)
                 print(f"Compiling Linux {label} regression tests")
-                result = subprocess.run(fixture_cmd, cwd=SCRIPT_DIR)
-                if result.returncode != 0:
+                returncode = zig_cache.run_zig_link(fixture_cmd, SCRIPT_DIR,
+                                                    ZIG_CACHE_ROOTS)
+                if returncode != 0:
                     print(f"Linux {label} test compilation FAILED")
-                    sys.exit(result.returncode)
+                    sys.exit(returncode)
                 print(f"Running Linux {label} regression tests")
                 result = subprocess.run([fixture_exe], cwd=SCRIPT_DIR,
                                         env=test_env)

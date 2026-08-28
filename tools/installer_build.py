@@ -38,6 +38,7 @@ import subprocess
 import sys
 
 import build_state  # same one-way dependency: it never imports build.py
+import zig_cache  # ditto; owns the cross-process Zig link lock + cache repair
 
 # Mirrors source/installer_archive_policy.h.  The static assertions in that
 # header and the struct formats here describe the same bytes; changing one
@@ -369,7 +370,16 @@ def compile_installer_binary(ctx, output_path, arch, uninstaller, work):
     else:
         cmd = [ctx.LLVM_MINGW_CLANG, *ctx.COMMON_FLAGS, *ctx.WINDOWS_FLAGS, *definitions,
                "-o", output_path, *sources, res_path, *INSTALLER_LINK_LIBS]
-    if ctx._run_compiler(cmd, cwd=work, allow_cfg_collision=True) != 0:
+    if arch == "arm64":
+        # Hold the cross-process zig-cache lock: the arm64 installer links via
+        # Zig and must not mutate the shared global cache while a matrix
+        # build's links are running (see zig_cache for the poisoning failure).
+        link_rc = zig_cache.run_zig_link(
+            cmd, work, ctx.ZIG_CACHE_ROOTS, log=print,
+            audit=lambda text, rc: 1 if ctx._audit_compiler_output(text, True) else rc)
+    else:
+        link_rc = ctx._run_compiler(cmd, cwd=work, allow_cfg_collision=True)
+    if link_rc != 0:
         raise RuntimeError(f"installer compilation failed ({arch}, uninstaller={uninstaller})")
     if arch == "arm64":
         if subprocess.run([ctx.LLVM_MINGW_STRIP, "--strip-all", output_path], cwd=work).returncode != 0:
