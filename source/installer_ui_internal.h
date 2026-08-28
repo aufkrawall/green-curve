@@ -13,7 +13,7 @@
 struct GcThemeFonts {
     HFONT body;
     HFONT heading;
-    HFONT small;
+    HFONT small_text;  // not `small`: MSVC's rpcndr.h #defines it as `char`
     HFONT monospace;
     UINT dpi;
 };

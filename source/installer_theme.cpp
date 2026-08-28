@@ -131,9 +131,9 @@ void gc_create_theme_fonts(GcThemeFonts* fonts, UINT dpi) {
     heading.lfWeight = FW_SEMIBOLD;
     fonts->heading = CreateFontIndirectW(&heading);
 
-    LOGFONTW small = base;
-    small.lfHeight = -MulDiv(8, (int)dpi, 72);
-    fonts->small = CreateFontIndirectW(&small);
+    LOGFONTW smallFace = base;
+    smallFace.lfHeight = -MulDiv(8, (int)dpi, 72);
+    fonts->small_text = CreateFontIndirectW(&smallFace);
 
     LOGFONTW monospace = base;
     monospace.lfHeight = -MulDiv(8, (int)dpi, 72);
@@ -147,11 +147,11 @@ void gc_destroy_theme_fonts(GcThemeFonts* fonts) {
     if (!fonts) return;
     if (fonts->body) DeleteObject(fonts->body);
     if (fonts->heading) DeleteObject(fonts->heading);
-    if (fonts->small) DeleteObject(fonts->small);
+    if (fonts->small_text) DeleteObject(fonts->small_text);
     if (fonts->monospace) DeleteObject(fonts->monospace);
     fonts->body = nullptr;
     fonts->heading = nullptr;
-    fonts->small = nullptr;
+    fonts->small_text = nullptr;
     fonts->monospace = nullptr;
 }
 

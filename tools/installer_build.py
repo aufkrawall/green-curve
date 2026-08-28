@@ -38,6 +38,7 @@ import subprocess
 import sys
 
 import build_state  # same one-way dependency: it never imports build.py
+import msvc_toolchain  # same one-way dependency
 import zig_cache  # ditto; owns the cross-process Zig link lock + cache repair
 
 # Mirrors source/installer_archive_policy.h.  The static assertions in that
@@ -313,6 +314,37 @@ def compress_payload(container):
 # Compiling the stub and the uninstaller
 # ---------------------------------------------------------------------------
 
+def _compile_installer_binary_msvc(ctx, output_path, arch, uninstaller, work,
+                                   sources, definitions, res_path):
+    """Object-first clang-cl build of the setup/uninstaller stubs.
+
+    No private symbols are retained for these stubs (the llvm-mingw path
+    strips them via -s), so the build omits -Zi and no PDB is emitted."""
+    toolchain = ctx.MSVC_TOOLCHAIN
+    glue = {"ssp_glue.cpp", "cfg_glue.cpp"}
+    msvc_sources = [path for path in sources
+                    if os.path.basename(path) not in glue]
+    compile_flags = msvc_toolchain.windows_compile_flags(
+        service=False, arch=arch, app_version=ctx.APP_VERSION,
+        build_number=ctx.APP_BUILD_NUMBER, source_dir=ctx.SOURCE_DIR,
+        debug=False)
+    # definitions carries APP_BUILD_NUMBER, which the flag builder already
+    # injects; only the uninstaller toggle is added on top.
+    compile_flags.extend(flag for flag in definitions
+                         if not flag.startswith("-DAPP_BUILD_NUMBER="))
+    object_dir = os.path.join(work, "obj-uninstall" if uninstaller else "obj-setup")
+    objects = msvc_toolchain.compile_windows_objects(
+        toolchain.clang_cl, compile_flags, msvc_sources, object_dir,
+        ctx._run_compiler)
+    link_flags = msvc_toolchain.windows_link_flags("installer.pdb", arch,
+                                                   debug=False)
+    if msvc_toolchain.link_windows(
+            toolchain.lld_link, link_flags, objects, res_path,
+            msvc_toolchain.msvc_link_libs(INSTALLER_LINK_LIBS), output_path,
+            ctx._run_compiler) != 0:
+        raise RuntimeError(f"installer compilation failed ({arch}, uninstaller={uninstaller})")
+
+
 def _installer_sources(ctx):
     return [os.path.join(ctx.SOURCE_DIR, name) for name in INSTALLER_SOURCE_NAMES]
 
@@ -358,6 +390,12 @@ def compile_installer_binary(ctx, output_path, arch, uninstaller, work):
         definitions.append("-DGREEN_CURVE_UNINSTALLER=1")
     res_path = _write_installer_resources(ctx, work, uninstaller)
 
+    if ctx.MSVC_TOOLCHAIN is not None:
+        _compile_installer_binary_msvc(ctx, output_path, arch, uninstaller,
+                                       work, sources, definitions, res_path)
+        if not os.path.exists(output_path):
+            raise RuntimeError("installer compilation produced no output")
+        return output_path
     if arch == "arm64":
         # Same object-first path the application's arm64 build uses, so BTI/PAC
         # survive code generation and the binary passes the same gates.

@@ -36,6 +36,20 @@
 #include <initguid.h>
 #include <taskschd.h>
 
+// MinGW's taskschd.h carries DEFINE_GUID instances that initguid.h turns into
+// definitions.  The Windows SDK's MIDL-generated taskschd.h only *declares*
+// them (its copies live in the taskschd.lib import library, which the
+// llvm-mingw link cannot use), so the MSVC-ABI toolchain must define them
+// here.  clang-cl defines _MSC_VER; the MinGW compiler does not.
+#if defined(_MSC_VER) && !defined(__MINGW32__)
+DEFINE_GUID(CLSID_TaskScheduler,
+            0x0f87369f, 0xa4e5, 0x4cfc,
+            0xbd, 0x13, 0xe7, 0x3c, 0x50, 0xd6, 0x89, 0x22);
+DEFINE_GUID(IID_ITaskService,
+            0x2faba4c7, 0x4da9, 0x4013,
+            0x96, 0xbd, 0x7c, 0xc1, 0xc4, 0x24, 0xa4, 0x9a);
+#endif
+
 // Bounded like every other helper setup runs: a wedged Task Scheduler must not
 // hang an unattended silent uninstall.
 #define GC_SCHTASKS_TIMEOUT_MS 15000

@@ -200,7 +200,7 @@ void gc_paint(GcWizard* wizard, HDC dc, const RECT* client) {
                          "move the installation and leave the old files for you to delete.",
                          wizard->prior.version[0] ? wizard->prior.version : "(unknown version)",
                          wizard->prior.directory);
-                gc_draw_text(dc, wizard->fonts.small, COL_PENDING, note,
+                gc_draw_text(dc, wizard->fonts.small_text, COL_PENDING, note,
                              margin, contentTop + gc_dp(100), contentWidth, gc_dp(72),
                              DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
             }
@@ -212,7 +212,7 @@ void gc_paint(GcWizard* wizard, HDC dc, const RECT* client) {
                          margin, contentTop, contentWidth, gc_dp(22),
                          DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
             if (wizard->prior.present) {
-                gc_draw_text(dc, wizard->fonts.small, COL_LABEL,
+                gc_draw_text(dc, wizard->fonts.small_text, COL_LABEL,
                              "Your current overclock, power, and fan settings are read before the update and "
                              "applied again once the new version is running.",
                              margin, contentTop + gc_dp(140), contentWidth, gc_dp(56),
@@ -247,7 +247,7 @@ void gc_paint(GcWizard* wizard, HDC dc, const RECT* client) {
             gc_draw_progress_bar(dc, &bar, percent);
             char percentText[32] = {};
             snprintf(percentText, sizeof(percentText), "%d%%", percent);
-            gc_draw_text(dc, wizard->fonts.small, COL_LABEL, percentText,
+            gc_draw_text(dc, wizard->fonts.small_text, COL_LABEL, percentText,
                          margin, contentTop + gc_dp(88), contentWidth, gc_dp(18),
                          DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
             break;

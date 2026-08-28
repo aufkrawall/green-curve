@@ -47,7 +47,7 @@ It reports which NVAPI image loaded, whether the VF curve and control structs re
 
 ## Technical notes
 
-- Amalgamated/unity-built C++ Win32 application built with `zig c++`
+- Amalgamated/unity-built C++ Win32 application; Windows targets are built with the MSVC-ABI `clang-cl` toolchain when installed (with real OS-enforced Control Flow Guard, a `/GS` security cookie, `/cetcompat` hardware shadow stacks on x64, and CFG metadata plus PAC/BTI branch protection on ARM64), falling back to the pinned llvm-mingw toolchain otherwise
 - Uses dynamically loaded NVIDIA driver interfaces available on the local machine
 - Uses public NVAPI entry points exposed by the installed driver
 - Uses NVML from the local NVIDIA driver install for supported management operations
@@ -63,7 +63,7 @@ It reports which NVAPI image loaded, whether the VF curve and control structs re
 python build.py
 ```
 
-On either Windows or Linux, this builds the Windows and Linux x64/arm64 release matrix under `dist/` and packages one verified archive per OS/architecture — a `.7z` for Windows and a `.tar.xz` for Linux — plus a `greencurve-<version>-windows-<arch>-setup.exe` installer for each Windows architecture. Linux downloads a pinned native llvm-mingw host bundle for the Windows cross-builds. Both x64 targets use LTO; ARM64 stays object-first without LTO because the pinned toolchain otherwise drops required BTI/PAC branch protection. Every archive is read back against an exact manifest and rejects unexpected payload files. Windows packaging requires 7-Zip; the Linux tarball is written by the Python standard library, so that it records the Unix file modes the daemon and its setup script need no matter which host built it. Windows archives extract to a `Green Curve` folder (matching what the installer creates); Linux archives keep the lowercase `greencurve` folder.
+On either Windows or Linux, this builds the Windows and Linux x64/arm64 release matrix under `dist/` and packages one verified archive per OS/architecture — a `.7z` for Windows and a `.tar.xz` for Linux — plus a `greencurve-<version>-windows-<arch>-setup.exe` installer for each Windows architecture. On a native Windows host with standalone LLVM (clang-cl + lld-link) and Visual Studio Build Tools installed, the Windows binaries — including the setup stubs — are built with the hardened MSVC-ABI toolchain; `python build.py --toolchain llvm-mingw` forces the pinned llvm-mingw path, and the fallback to it is automatic and loud when no verified MSVC-ABI installation is found. Linux hosts cross-build the Windows targets with a pinned native llvm-mingw host bundle and the Linux targets with pinned Zig. Every archive is read back against an exact manifest and rejects unexpected payload files. Windows packaging requires 7-Zip; the Linux tarball is written by the Python standard library, so that it records the Unix file modes the daemon and its setup script need no matter which host built it. Windows archives extract to a `Green Curve` folder (matching what the installer creates); Linux archives keep the lowercase `greencurve` folder.
 
 ## Installing on Windows
 

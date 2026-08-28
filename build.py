@@ -98,6 +98,8 @@ sys.path.insert(0, os.path.join(SCRIPT_DIR, "tools"))
 import security_gates  # noqa: E402  (needs SCRIPT_DIR on sys.path first)
 import ui_gates  # noqa: E402  (same one-way dependency as security_gates)
 import fan_gates  # noqa: E402  (same one-way dependency as security_gates)
+import msvc_toolchain  # noqa: E402  (same one-way dependency as security_gates)
+import pe_verify  # noqa: E402  (same one-way dependency as security_gates)
 import xbar_gates  # noqa: E402  (same one-way dependency as security_gates)
 import linux_gates  # noqa: E402  (same one-way dependency as security_gates)
 import update_gates  # noqa: E402  (same one-way dependency as security_gates)
@@ -147,10 +149,28 @@ WINDOWS_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "fan_curve.cpp"),
     os.path.join(SOURCE_DIR, "ssp_glue.cpp"),
     os.path.join(SOURCE_DIR, "cfg_glue.cpp"),
+    os.path.join(SOURCE_DIR, "process_hardening.cpp"),
     os.path.join(SOURCE_DIR, "service_acl.cpp"),
     os.path.join(SOURCE_DIR, "platform_win32.cpp"),
     os.path.join(SOURCE_DIR, "vf_backends.cpp"),
 ]
+
+# The MSVC-ABI (clang-cl) toolchain compiles the same Windows sources minus the
+# two MinGW-CRT glue files: the /GS cookie replaces ssp_glue.cpp's canary glue
+# and the OS's GFIDS validator replaces cfg_glue.cpp's module-range shim.
+# process_hardening.cpp is their toolchain-neutral half (fatal-dump hook +
+# process mitigation policies) and is linked by BOTH toolchains.
+_WINDOWS_MINGW_ONLY_GLUE = {"ssp_glue.cpp", "cfg_glue.cpp"}
+WINDOWS_MSVC_SOURCE_FILES = [
+    path for path in WINDOWS_SOURCE_FILES
+    if os.path.basename(path) not in _WINDOWS_MINGW_ONLY_GLUE
+]
+
+# Windows toolchain selection (see tools/msvc_toolchain.py).  main() sets these
+# after argument parsing; every caller that bypasses main() (--test,
+# --check-cet, the tidy/LSP paths) keeps the llvm-mingw behavior.
+MSVC_TOOLCHAIN = None
+ACTIVE_WINDOWS_TOOLCHAIN = "llvm-mingw"
 
 
 LINUX_SOURCE_FILES = [
@@ -346,6 +366,10 @@ WINDOWS_LINK_LIBS = [
 ]
 
 WINDOWS_SERVICE_LINK_LIBS = [
+    # The service does call user32 (GetFocus/GetDC DPI probes).  The MinGW
+    # driver appends user32 implicitly to every link, so this was never
+    # spelled out; lld-link has no implicit libraries and needs it named.
+    "-luser32",
     "-lgdi32",
     "-ladvapi32",
     "-lshell32",
@@ -412,7 +436,8 @@ def windows_symbol_output_path(output_path, arch):
     if name.endswith(".new"):
         name = name[:-4]
     stem = os.path.splitext(name)[0]
-    extension = ".pdb" if arch == "x64" else ".debug"
+    # clang-cl emits PDBs for both arches; only the Zig arm64 path yields DWARF.
+    extension = ".debug" if (arch == "arm64" and ACTIVE_WINDOWS_TOOLCHAIN != "clang-cl") else ".pdb"
     return os.path.join(DIST_DIR, "symbols", f"windows-{arch}", stem + extension)
 
 
@@ -697,84 +722,64 @@ def finalize_output(temp_output, output_path, backup_path=None, compile_started_
     print(f"Build successful: {output_path} ({size:,} bytes / {size / 1024:.1f} KB)")
 
 
-def get_windows_gui_compile_command(temp_output, arch="x64", pdb_path=None):
-    """Return the command array for compiling the Windows GUI executable.
-    Uses llvm-mingw for x64 and Zig for arm64 (avoids llvm-mingw/LLD's
-    aarch64 COFF "misaligned ldr/str offset" layout bug)."""
-    if arch == "arm64":
-        return [
-            ZIG_EXE,
-            "c++",
-            *COMMON_FLAGS,
-            "-target", "aarch64-windows-gnu",
-            "-mbranch-protection=standard",
-            "-fno-lto",
-            "-ftrivial-auto-var-init=pattern",
-            "-fno-delete-null-pointer-checks",
-            "-static",
-            "-s",
-            "-Wl,--subsystem,windows,--dynamicbase,--nxcompat,--high-entropy-va",
-            "-o",
-            temp_output,
-            *WINDOWS_SOURCE_FILES,
-            ICON_RES,
-            *WINDOWS_LINK_LIBS,
-        ]
+def _zig_arm64_windows_command(temp_output, libs, service=False):
+    """Shared single-command Zig arm64 build (llvm-mingw/LLD's aarch64 COFF
+    "misaligned ldr/str offset" bug is dodged by using Zig here)."""
     return [
-        LLVM_MINGW_CLANG,
+        ZIG_EXE,
+        "c++",
         *COMMON_FLAGS,
-        *WINDOWS_FLAGS,
-        *(["-gcodeview", f"-ffile-prefix-map={SCRIPT_DIR}=.",
-           f"-fdebug-prefix-map={SCRIPT_DIR}=.", "-fdebug-compilation-dir=.",
-           "-Wl,--pdb=greencurve.pdb"]
-          if pdb_path else []),
+        "-target", "aarch64-windows-gnu",
+        "-mbranch-protection=standard",
+        "-fno-lto",
+        "-ftrivial-auto-var-init=pattern",
+        "-fno-delete-null-pointer-checks",
+        "-static",
+        "-s",
+        "-Wl,--subsystem,windows,--dynamicbase,--nxcompat,--high-entropy-va",
+        *("-DGREEN_CURVE_SERVICE_BINARY=1" if service else []),
         "-o",
         temp_output,
         *WINDOWS_SOURCE_FILES,
         ICON_RES,
-        *WINDOWS_LINK_LIBS,
+        *libs,
     ]
+
+
+def _mingw_x64_windows_command(temp_output, libs, service=False, pdb_path=None):
+    """Shared single-command llvm-mingw x64 build."""
+    return [
+        LLVM_MINGW_CLANG,
+        *COMMON_FLAGS,
+        *WINDOWS_FLAGS,
+        *("-DGREEN_CURVE_SERVICE_BINARY=1" if service else []),
+        *( ["-gcodeview", f"-ffile-prefix-map={SCRIPT_DIR}=.",
+            f"-fdebug-prefix-map={SCRIPT_DIR}=.", "-fdebug-compilation-dir=.",
+            f"-Wl,--pdb={'greencurve-service.pdb' if service else 'greencurve.pdb'}"]
+           if pdb_path else []),
+        "-o",
+        temp_output,
+        *WINDOWS_SOURCE_FILES,
+        ICON_RES,
+        *libs,
+    ]
+
+
+def get_windows_gui_compile_command(temp_output, arch="x64", pdb_path=None):
+    """Command array for the Windows GUI executable (llvm-mingw x64, Zig arm64)."""
+    if arch == "arm64":
+        return _zig_arm64_windows_command(temp_output, WINDOWS_LINK_LIBS)
+    return _mingw_x64_windows_command(temp_output, WINDOWS_LINK_LIBS,
+                                      pdb_path=pdb_path)
 
 
 def get_windows_service_compile_command(temp_output, arch="x64", pdb_path=None):
-    """Return the command array for compiling the Windows service executable.
-    Uses llvm-mingw for x64 and Zig for arm64 (avoids llvm-mingw/LLD's
-    aarch64 COFF "misaligned ldr/str offset" layout bug)."""
+    """Command array for the Windows service executable (llvm-mingw x64, Zig arm64)."""
     if arch == "arm64":
-        return [
-            ZIG_EXE,
-            "c++",
-            *COMMON_FLAGS,
-            "-target", "aarch64-windows-gnu",
-            "-mbranch-protection=standard",
-            "-fno-lto",
-            "-ftrivial-auto-var-init=pattern",
-            "-fno-delete-null-pointer-checks",
-            "-static",
-            "-s",
-            "-Wl,--subsystem,windows,--dynamicbase,--nxcompat,--high-entropy-va",
-            "-DGREEN_CURVE_SERVICE_BINARY=1",
-            "-o",
-            temp_output,
-            *WINDOWS_SOURCE_FILES,
-            ICON_RES,
-            *WINDOWS_SERVICE_LINK_LIBS,
-        ]
-    return [
-        LLVM_MINGW_CLANG,
-        *COMMON_FLAGS,
-        *WINDOWS_FLAGS,
-        *(["-gcodeview", f"-ffile-prefix-map={SCRIPT_DIR}=.",
-           f"-fdebug-prefix-map={SCRIPT_DIR}=.", "-fdebug-compilation-dir=.",
-           "-Wl,--pdb=greencurve-service.pdb"]
-          if pdb_path else []),
-        "-DGREEN_CURVE_SERVICE_BINARY=1",
-        "-o",
-        temp_output,
-        *WINDOWS_SOURCE_FILES,
-        ICON_RES,
-        *WINDOWS_SERVICE_LINK_LIBS,
-    ]
+        return _zig_arm64_windows_command(temp_output, WINDOWS_SERVICE_LINK_LIBS,
+                                          service=True)
+    return _mingw_x64_windows_command(temp_output, WINDOWS_SERVICE_LINK_LIBS,
+                                      service=True, pdb_path=pdb_path)
 
 
 def get_linux_compile_command(temp_output, arch="x64"):
@@ -872,6 +877,56 @@ def _compile_windows_x64_objects(object_dir, pdb_path, service=False, jobs=1, li
         objects.append(obj)
     build_scheduler.compile_objects(compiles, _run_compiler, jobs, limiter)
     return objects
+
+
+def _prepare_windows_symbol_paths(output_path, arch, link_pdb_name):
+    """Fresh private-symbol destination plus the linker's scratch PDB path."""
+    pdb_path = windows_symbol_output_path(output_path, arch)
+    link_pdb_path = os.path.join(SCRIPT_DIR, link_pdb_name)
+    os.makedirs(os.path.dirname(pdb_path), exist_ok=True)
+    stale = [pdb_path] + ([link_pdb_path] if (arch == "x64" or ACTIVE_WINDOWS_TOOLCHAIN == "clang-cl") else [])
+    for path in stale:
+        if os.path.exists(path):
+            os.remove(path)
+    return pdb_path, link_pdb_path
+
+
+def _print_windows_build_header(output_path, arch, jobs, cmd):
+    print(f"Compiling {len(WINDOWS_SOURCE_FILES)} source files -> {os.path.basename(output_path)} ({arch})")
+    if ACTIVE_WINDOWS_TOOLCHAIN == "clang-cl":
+        print(f"  Mode: object-first clang-cl (MSVC ABI), /GS + /guard:cf"
+              f"{' + /cetcompat' if arch == 'x64' else ''}, up to {jobs} parallel jobs")
+    elif arch == "arm64":
+        print("  Mode: object-first Zig ARM64, LTO disabled")
+    elif jobs > 1:
+        print(f"  Mode: object-first clang x64, LTO enabled, up to {jobs} parallel jobs")
+    else:
+        print(f"  Command: {' '.join(cmd)}")
+
+
+def _compile_and_link_windows_msvc(temp_output, service, arch, jobs, limiter):
+    """Object-first clang-cl (MSVC ABI) build: parallel object compiles under
+    the shared job limiter, then one lld-link with the hardened flag set
+    (/GS, real OS CFG via /guard:cf, /cetcompat shadow stacks on x64)."""
+    toolchain = MSVC_TOOLCHAIN
+    work = prepare_work_subdir(f"obj-windows-msvc-{'service' if service else 'gui'}-{arch}")
+    try:
+        compile_flags = msvc_toolchain.windows_compile_flags(
+            service, arch, APP_VERSION, APP_BUILD_NUMBER, SOURCE_DIR)
+        objects = msvc_toolchain.compile_windows_objects(
+            toolchain.clang_cl, compile_flags, WINDOWS_MSVC_SOURCE_FILES, work,
+            _run_compiler, jobs, limiter)
+        link_flags = msvc_toolchain.windows_link_flags(
+            "greencurve-service.pdb" if service else "greencurve.pdb", arch)
+        libs = msvc_toolchain.msvc_link_libs(
+            WINDOWS_SERVICE_LINK_LIBS if service else WINDOWS_LINK_LIBS)
+        with (limiter.slot() if limiter is not None else nullcontext()):
+            returncode = msvc_toolchain.link_windows(
+                toolchain.lld_link, link_flags, objects, ICON_RES, libs,
+                temp_output, _run_compiler)
+    finally:
+        cleanup_work_subdir(work)
+    return returncode
 
 
 def _link_windows_x64(temp_output, objects, pdb_path, service=False):
@@ -991,107 +1046,6 @@ def _link_arm64_linux(temp_output, sources, jobs=1, limiter=None):
         cleanup_work_subdir(work)
 
 
-def _verify_pe_hardening(data, arch):
-    if len(data) < 0x100 or data[:2] != b"MZ":
-        raise RuntimeError("not a PE image")
-    pe = struct.unpack_from("<I", data, 0x3C)[0]
-    if data[pe:pe + 4] != b"PE\x00\x00":
-        raise RuntimeError("invalid PE signature")
-    optional = pe + 24
-    if struct.unpack_from("<H", data, optional)[0] != 0x20B:
-        raise RuntimeError("release PE is not PE32+")
-    dll_chars = struct.unpack_from("<H", data, optional + 70)[0]
-    required = 0x20 | 0x40 | 0x100  # high-entropy VA, ASLR, DEP
-    if dll_chars & required != required:
-        raise RuntimeError(f"PE hardening bits missing (DllCharacteristics=0x{dll_chars:04x})")
-    if arch == "x64" and not dll_chars & 0x4000:
-        raise RuntimeError("Windows x64 CFG metadata is missing")
-    number_of_sections = struct.unpack_from("<H", data, pe + 6)[0]
-    optional_size = struct.unpack_from("<H", data, pe + 20)[0]
-    section_table = optional + optional_size
-
-    def rva_to_offset(rva):
-        for index in range(number_of_sections):
-            section = section_table + index * 40
-            virtual_size, virtual_address, raw_size, raw_pointer = struct.unpack_from(
-                "<IIII", data, section + 8)
-            if virtual_address <= rva < virtual_address + max(virtual_size, raw_size):
-                return raw_pointer + (rva - virtual_address)
-        return None
-
-    for index in range(number_of_sections):
-        section = section_table + index * 40
-        characteristics = struct.unpack_from("<I", data, section + 36)[0]
-        if characteristics & 0xA0000000 == 0xA0000000:
-            raise RuntimeError("PE has a writable/executable section")
-    import_rva, import_size = struct.unpack_from("<II", data, optional + 112 + 8)
-    if not import_rva or not import_size:
-        raise RuntimeError("PE import dependency table is missing")
-    if arch == "x64":
-        load_rva, load_size = struct.unpack_from("<II", data, optional + 112 + 10 * 8)
-        load_off = rva_to_offset(load_rva) if load_rva else None
-        if load_off is None or load_size < 144 or load_off + 144 > len(data):
-            raise RuntimeError("Windows x64 load-config/CFG table is missing")
-        guard_table = struct.unpack_from("<Q", data, load_off + 128)[0]
-        guard_count = struct.unpack_from("<Q", data, load_off + 136)[0]
-        if not guard_table or not guard_count:
-            raise RuntimeError("Windows x64 CFG function table is empty")
-    major, minor, patch, build = build_state.parse_version_parts(
-        APP_VERSION, APP_BUILD_NUMBER)
-    resource_version = f"{major}.{minor}.{patch}.{build}".encode("utf-16le")
-    if resource_version not in data:
-        raise RuntimeError("PE VERSIONINFO does not match VERSION/BUILD_NUMBER")
-
-
-def sanitize_pe_codeview_path(binary_path, pdb_basename):
-    """Replace LLD's absolute RSDS PDB path with a non-private basename."""
-    with open(binary_path, "r+b") as handle:
-        data = bytearray(handle.read())
-        if len(data) < 0x100 or data[:2] != b"MZ":
-            raise RuntimeError("cannot sanitize CodeView path in a non-PE artifact")
-        pe = struct.unpack_from("<I", data, 0x3C)[0]
-        optional = pe + 24
-        debug_rva, debug_size = struct.unpack_from("<II", data, optional + 112 + 6 * 8)
-        section_count = struct.unpack_from("<H", data, pe + 6)[0]
-        optional_size = struct.unpack_from("<H", data, pe + 20)[0]
-        sections = optional + optional_size
-
-        def rva_to_offset(rva):
-            for index in range(section_count):
-                section = sections + index * 40
-                virtual_size, virtual_address, raw_size, raw_pointer = struct.unpack_from(
-                    "<IIII", data, section + 8)
-                if virtual_address <= rva < virtual_address + max(virtual_size, raw_size):
-                    return raw_pointer + (rva - virtual_address)
-            return None
-
-        debug_offset = rva_to_offset(debug_rva) if debug_rva else None
-        replacement = pdb_basename.encode("utf-8") + b"\0"
-        sanitized = 0
-        if debug_offset is not None:
-            for entry in range(debug_offset, debug_offset + debug_size, 28):
-                if entry + 28 > len(data):
-                    break
-                debug_type = struct.unpack_from("<I", data, entry + 12)[0]
-                data_size = struct.unpack_from("<I", data, entry + 16)[0]
-                data_pointer = struct.unpack_from("<I", data, entry + 24)[0]
-                if debug_type != 2 or data_pointer + data_size > len(data):
-                    continue
-                if data[data_pointer:data_pointer + 4] != b"RSDS" or data_size <= 24:
-                    continue
-                old_capacity = data_size - 24
-                if len(replacement) > old_capacity:
-                    raise RuntimeError("sanitized PDB basename exceeds CodeView path capacity")
-                start = data_pointer + 24
-                data[start:start + old_capacity] = replacement + b"\0" * (old_capacity - len(replacement))
-                sanitized += 1
-        if sanitized != 1:
-            raise RuntimeError(f"expected one RSDS CodeView record, found {sanitized}")
-        handle.seek(0)
-        handle.write(data)
-        handle.truncate()
-
-
 # x86 `endbr64`.  Shared with tools/security_gates.py, which does the deeper
 # symbol-attributed analysis; this file only needs the strip-proof byte count.
 _ENDBR64_BYTES = b"\xf3\x0f\x1e\xfa"
@@ -1156,7 +1110,16 @@ def verify_release_binary(path, os_name, arch, allow_debug_paths=False):
     if not allow_debug_paths and any(marker and marker in data for marker in workspace_markers):
         raise RuntimeError("binary embeds the private build workspace path")
     if os_name == "windows":
-        _verify_pe_hardening(data, arch)
+        pe_verify.verify_pe_hardening(data, arch, ACTIVE_WINDOWS_TOOLCHAIN)
+        major, minor, patch, build = build_state.parse_version_parts(
+            APP_VERSION, APP_BUILD_NUMBER)
+        resource_version = f"{major}.{minor}.{patch}.{build}".encode("utf-16le")
+        if resource_version not in data:
+            raise RuntimeError("PE VERSIONINFO does not match VERSION/BUILD_NUMBER")
+        if ACTIVE_WINDOWS_TOOLCHAIN == "clang-cl":
+            ex_chars = pe_verify.debug_dir_ex_dllcharacteristics(data)
+            print(f"  MSVC-ABI hardening: real OS CFG, /GS cookie"
+                  f"{', CETCOMPAT shadow-stack opt-in' if arch == 'x64' and ex_chars and ex_chars & 1 else ''}")
     else:
         _verify_elf_hardening(data)
     if arch == "arm64":
@@ -1182,10 +1145,17 @@ def verify_release_binary(path, os_name, arch, allow_debug_paths=False):
 
 
 def verify_windows_private_symbols(pdb_path, arch):
-    """Require readable private postmortem symbols for every Windows artifact."""
+    """Require readable private postmortem symbols for every Windows artifact.
+
+    The artifact kind is self-describing: PDB files start with the MSF magic,
+    the Zig ARM64 path produces a bare DWARF image.  The clang-cl toolchain
+    emits PDBs for BOTH architectures, so the format — not the arch — decides
+    which structural check applies."""
     if not os.path.isfile(pdb_path) or os.path.getsize(pdb_path) < 4096:
         raise RuntimeError(f"matching Windows {arch} symbols are missing or empty: {pdb_path}")
-    if arch == "arm64":
+    with open(pdb_path, "rb") as handle:
+        is_pdb = handle.read(16).startswith(b"Microsoft C/C++")
+    if not is_pdb and arch == "arm64":
         result = subprocess.run([LLVM_MINGW_READOBJ, "--sections", pdb_path],
                                 text=True, capture_output=True)
         if result.returncode != 0 or ".debug_info" not in result.stdout or \
@@ -1203,8 +1173,7 @@ def verify_windows_private_symbols(pdb_path, arch):
     print(f"  Verified private symbols: {pdb_path} ({os.path.getsize(pdb_path):,} bytes)")
 
 
-def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_TEMP_OUTPUT_EXE, backup_path=WINDOWS_BACKUP_EXE, finalize=True, arch="x64", jobs=1, limiter=None):
-    """Compile the Windows GUI executable using Zig's bundled clang."""
+def _require_windows_sources():
     missing_sources = [path for path in WINDOWS_SOURCE_FILES if not os.path.exists(path)]
     if missing_sources:
         print("ERROR: Missing source files:")
@@ -1212,29 +1181,45 @@ def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_T
             print(f"  {path}")
         sys.exit(1)
 
+
+def _finalize_windows_output(temp_output, output_path, backup_path,
+                             compile_started_at, finalize):
+    if finalize:
+        finalize_output(temp_output, output_path, backup_path, compile_started_at)
+    else:
+        size = os.path.getsize(temp_output)
+        print(f"Check build successful: {temp_output} ({size:,} bytes / {size / 1024:.1f} KB)")
+
+
+def _verify_windows_artifact(temp_output, pdb_path, arch):
+    """Shared artifact tail: sanitize the RSDS record, then run every gate."""
+    if arch == "x64" or ACTIVE_WINDOWS_TOOLCHAIN == "clang-cl":
+        pe_verify.sanitize_pe_codeview_path(temp_output, os.path.basename(pdb_path))
+    verify_release_binary(temp_output, "windows", arch, "-g" in COMMON_FLAGS)
+    verify_windows_private_symbols(pdb_path, arch)
+
+
+def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_TEMP_OUTPUT_EXE, backup_path=WINDOWS_BACKUP_EXE, finalize=True, arch="x64", jobs=1, limiter=None):
+    """Compile the Windows GUI executable using Zig's bundled clang."""
+    _require_windows_sources()
+
     if os.path.exists(temp_output):
         os.remove(temp_output)
 
-    pdb_path = windows_symbol_output_path(output_path, arch)
-    link_pdb_path = os.path.join(SCRIPT_DIR, "greencurve.pdb")
-    os.makedirs(os.path.dirname(pdb_path), exist_ok=True)
-    if os.path.exists(pdb_path):
-        os.remove(pdb_path)
-    if arch == "x64" and os.path.exists(link_pdb_path):
-        os.remove(link_pdb_path)
+    pdb_path, link_pdb_path = _prepare_windows_symbol_paths(
+        output_path, arch, "greencurve.pdb")
     cmd = get_windows_gui_compile_command(temp_output, arch, pdb_path)
 
-    print(f"Compiling {len(WINDOWS_SOURCE_FILES)} source files -> {os.path.basename(output_path)} ({arch})")
-    if arch == "arm64":
-        print("  Mode: object-first Zig ARM64, LTO disabled")
-    elif jobs > 1:
-        print(f"  Mode: object-first clang x64, LTO enabled, up to {jobs} parallel jobs")
-    else:
-        print(f"  Command: {' '.join(cmd)}")
+    _print_windows_build_header(output_path, arch, jobs, cmd)
 
     compile_started_at = time.time()
     try:
-        if arch == "arm64":
+        if ACTIVE_WINDOWS_TOOLCHAIN == "clang-cl":
+            returncode = _compile_and_link_windows_msvc(
+                temp_output, service=False, arch=arch, jobs=jobs, limiter=limiter)
+            if returncode == 0:
+                os.replace(link_pdb_path, pdb_path)
+        elif arch == "arm64":
             _link_arm64_windows(temp_output, WINDOWS_SOURCE_FILES, WINDOWS_LINK_LIBS,
                                 pdb_path, jobs=jobs, limiter=limiter)
             returncode = 0
@@ -1254,10 +1239,7 @@ def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_T
             if returncode == 0:
                 os.replace(link_pdb_path, pdb_path)
         if returncode == 0:
-            if arch == "x64":
-                sanitize_pe_codeview_path(temp_output, os.path.basename(pdb_path))
-            verify_release_binary(temp_output, "windows", arch, "-g" in COMMON_FLAGS)
-            verify_windows_private_symbols(pdb_path, arch)
+            _verify_windows_artifact(temp_output, pdb_path, arch)
     except (OSError, RuntimeError) as exc:
         print(f"ERROR: {exc}")
         returncode = 1
@@ -1267,45 +1249,31 @@ def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_T
         print("Compilation FAILED")
         sys.exit(1)
 
-    if finalize:
-        finalize_output(temp_output, output_path, backup_path, compile_started_at)
-    else:
-        size = os.path.getsize(temp_output)
-        print(f"Check build successful: {temp_output} ({size:,} bytes / {size / 1024:.1f} KB)")
+    _finalize_windows_output(temp_output, output_path, backup_path,
+                             compile_started_at, finalize)
 
 
 def compile_windows_service_binary(output_path=WINDOWS_SERVICE_OUTPUT_EXE, temp_output=WINDOWS_SERVICE_TEMP_OUTPUT_EXE, backup_path=WINDOWS_SERVICE_BACKUP_EXE, finalize=True, arch="x64", jobs=1, limiter=None):
     """Compile the dedicated Windows service executable."""
-    missing_sources = [path for path in WINDOWS_SOURCE_FILES if not os.path.exists(path)]
-    if missing_sources:
-        print("ERROR: Missing source files:")
-        for path in missing_sources:
-            print(f"  {path}")
-        sys.exit(1)
+    _require_windows_sources()
 
     if os.path.exists(temp_output):
         os.remove(temp_output)
 
-    pdb_path = windows_symbol_output_path(output_path, arch)
-    link_pdb_path = os.path.join(SCRIPT_DIR, "greencurve-service.pdb")
-    os.makedirs(os.path.dirname(pdb_path), exist_ok=True)
-    if os.path.exists(pdb_path):
-        os.remove(pdb_path)
-    if arch == "x64" and os.path.exists(link_pdb_path):
-        os.remove(link_pdb_path)
+    pdb_path, link_pdb_path = _prepare_windows_symbol_paths(
+        output_path, arch, "greencurve-service.pdb")
     cmd = get_windows_service_compile_command(temp_output, arch, pdb_path)
 
-    print(f"Compiling {len(WINDOWS_SOURCE_FILES)} source files -> {os.path.basename(output_path)} ({arch})")
-    if arch == "arm64":
-        print("  Mode: object-first Zig ARM64, LTO disabled")
-    elif jobs > 1:
-        print(f"  Mode: object-first clang x64, LTO enabled, up to {jobs} parallel jobs")
-    else:
-        print(f"  Command: {' '.join(cmd)}")
+    _print_windows_build_header(output_path, arch, jobs, cmd)
 
     compile_started_at = time.time()
     try:
-        if arch == "arm64":
+        if ACTIVE_WINDOWS_TOOLCHAIN == "clang-cl":
+            returncode = _compile_and_link_windows_msvc(
+                temp_output, service=True, arch=arch, jobs=jobs, limiter=limiter)
+            if returncode == 0:
+                os.replace(link_pdb_path, pdb_path)
+        elif arch == "arm64":
             _link_arm64_windows(temp_output, WINDOWS_SOURCE_FILES,
                                 WINDOWS_SERVICE_LINK_LIBS, pdb_path, service=True,
                                 jobs=jobs, limiter=limiter)
@@ -1327,10 +1295,7 @@ def compile_windows_service_binary(output_path=WINDOWS_SERVICE_OUTPUT_EXE, temp_
             if returncode == 0:
                 os.replace(link_pdb_path, pdb_path)
         if returncode == 0:
-            if arch == "x64":
-                sanitize_pe_codeview_path(temp_output, os.path.basename(pdb_path))
-            verify_release_binary(temp_output, "windows", arch, "-g" in COMMON_FLAGS)
-            verify_windows_private_symbols(pdb_path, arch)
+            _verify_windows_artifact(temp_output, pdb_path, arch)
     except (OSError, RuntimeError) as exc:
         print(f"ERROR: {exc}")
         returncode = 1
@@ -1340,11 +1305,8 @@ def compile_windows_service_binary(output_path=WINDOWS_SERVICE_OUTPUT_EXE, temp_
         print("Compilation FAILED")
         sys.exit(1)
 
-    if finalize:
-        finalize_output(temp_output, output_path, backup_path, compile_started_at)
-    else:
-        size = os.path.getsize(temp_output)
-        print(f"Check build successful: {temp_output} ({size:,} bytes / {size / 1024:.1f} KB)")
+    _finalize_windows_output(temp_output, output_path, backup_path,
+                             compile_started_at, finalize)
 
 
 def compile_linux_binary(output_path=LINUX_OUTPUT_BIN, temp_output=LINUX_TEMP_OUTPUT_BIN, backup_path=LINUX_BACKUP_BIN, finalize=True, arch="x64", jobs=1, limiter=None):
@@ -1399,11 +1361,8 @@ def compile_linux_binary(output_path=LINUX_OUTPUT_BIN, temp_output=LINUX_TEMP_OU
         print("Compilation FAILED")
         sys.exit(1)
 
-    if finalize:
-        finalize_output(temp_output, output_path, backup_path, compile_started_at)
-    else:
-        size = os.path.getsize(temp_output)
-        print(f"Check build successful: {temp_output} ({size:,} bytes / {size / 1024:.1f} KB)")
+    _finalize_windows_output(temp_output, output_path, backup_path,
+                             compile_started_at, finalize)
 
 
 README_MD_PATH = os.path.join(SCRIPT_DIR, "README.md")
@@ -1690,6 +1649,7 @@ def generate_lsp_files():
 
 def run_build_script_regression_tests():
     """Delegate; security_gates owns the build-script self-tests and gates."""
+    msvc_toolchain.run_self_tests()
     return security_gates.run_build_script_regression_tests(_gate_ctx())
 
 
@@ -2673,6 +2633,12 @@ def run_source_regression_checks():
     require_text(build_script, 'ZIG_EXE, "c++"', "arm64 Windows uses Zig to dodge the llvm-mingw aarch64 'misaligned ldr/str offset' link bug")
     require_text(build_script, '"-target", "aarch64-windows-gnu"', "arm64 Windows Zig build targets the correct triple")
     require_text(build_script, "-fno-delete-null-pointer-checks", "null pointer check flag prevents deletion of null checks")
+    require_text(build_script, "WINDOWS_MSVC_SOURCE_FILES",
+                 "the MSVC-ABI toolchain compiles the shared Windows sources minus the MinGW-only glue")
+    require_text(build_script, "msvc_toolchain.windows_link_flags",
+                 "clang-cl links go through the hardened flag builder, not ad-hoc command lines")
+    require_text(build_script, '"-cetcompat"',
+                 "the MSVC-ABI x64 link opts into CET shadow stacks")
     require_text(build_script, '"-gcodeview"',
         "Windows builds retain CodeView records for actionable crash dumps")
     require_text(build_script, '"-Wl,--pdb=',
@@ -2689,11 +2655,14 @@ def run_source_regression_checks():
     # F-SEC-2: DLL-search hardening runs in initialize_process_mitigations(),
     # which both the GUI (entry.cpp) and service (main.cpp) entry points call
     # before any runtime LoadLibrary — blocks DLL planting of non-KnownDLLs.
-    cfg_glue_cpp = os.path.join(SOURCE_DIR, "cfg_glue.cpp")
-    require_text(cfg_glue_cpp, "SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32", "startup hardens the DLL search path against planting")
-    require_text(cfg_glue_cpp, "SetDllDirectoryW(L\"\")", "startup removes the CWD from the DLL search path")
-    require_text(cfg_glue_cpp, "ProcessDynamicCodePolicy", "process startup prohibits JIT-style writable executable code")
-    require_text(cfg_glue_cpp, "ProcessExtensionPointDisablePolicy", "process startup rejects extension-point DLL injection")
+    # The function lives in process_hardening.cpp: the toolchain-neutral half
+    # of the former cfg_glue.cpp, linked by BOTH Windows toolchains.
+    process_hardening_cpp = os.path.join(SOURCE_DIR, "process_hardening.cpp")
+    require_text(process_hardening_cpp, "SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32", "startup hardens the DLL search path against planting")
+    require_text(process_hardening_cpp, "SetDllDirectoryW(L\"\")", "startup removes the CWD from the DLL search path")
+    require_text(process_hardening_cpp, "ProcessDynamicCodePolicy", "process startup prohibits JIT-style writable executable code")
+    require_text(process_hardening_cpp, "ProcessExtensionPointDisablePolicy", "process startup rejects extension-point DLL injection")
+    require_text(process_hardening_cpp, "void gc_set_fatal_dump_hook(GcFatalDumpHook hook)", "the fatal-dump hook is linked into every Windows binary")
     # F-SEC-1: service install hardens the installed binary DACL (no non-admin
     # overwrite of a SYSTEM service binary) and uninstall reverts it so the user
     # can delete/replace the unregistered binary again.
@@ -5036,6 +5005,14 @@ def parse_args():
         help="Skip building the per-target 7-Zip release archives",
     )
     parser.add_argument(
+        "--toolchain",
+        choices=("auto", "clang-cl", "llvm-mingw"),
+        default="auto",
+        help="Windows toolchain: auto prefers the hardened MSVC-ABI clang-cl "
+             "build when a verified installation exists and falls back loudly "
+             "to llvm-mingw otherwise.  Linux targets always use Zig.",
+    )
+    parser.add_argument(
         "--check",
         action="store_true",
         help="Build selected targets into a temporary directory and generate LSP metadata",
@@ -5112,17 +5089,20 @@ def run_clang_tidy(write_baseline=False):
 
 
 def _needs_zig(target, arch):
-    """Zig builds every Linux target, and links Windows ARM64.
+    """Zig builds every Linux target, and links Windows ARM64 — unless the
+    MSVC-ABI toolchain covers it.
 
     The ARM64 half is easy to miss: a Windows-only build still shells out to
     Zig for aarch64 (llvm-mingw's aarch64 linker hits a misaligned ldr/str
     bug), so a run that fetched llvm-mingw alone would fail at link time with
     no compiler to blame.  It only ever worked because an earlier --target all
-    had already left zig/ on disk.
+    had already left zig/ on disk.  With the clang-cl toolchain active the
+    MSVC path builds arm64 itself, so a Windows-only run needs no Zig at all.
     """
     if target in ("linux", "all"):
         return True
-    return target == "windows" and "arm64" in requested_arches(arch)
+    return (target == "windows" and "arm64" in requested_arches(arch)
+            and ACTIVE_WINDOWS_TOOLCHAIN != "clang-cl")
 
 
 def _toolchain_components(target, arch="all"):
@@ -5224,6 +5204,27 @@ def main():
     print("=== Green Curve build ===")
     _target_oses = resolve_targets(args.target or "all")
     args.target = "all" if len(_target_oses) > 1 else _target_oses[0]
+    global MSVC_TOOLCHAIN, ACTIVE_WINDOWS_TOOLCHAIN
+    # Resolve BEFORE ensure_toolchain: with clang-cl covering both Windows
+    # architectures, a Windows-only run does not need Zig at all.  Modes that
+    # never build a Windows binary (--test/--fuzz/--tidy/--lsp only) keep the
+    # llvm-mingw analysis stack, so they skip discovery entirely by being
+    # resolved against a Linux-only target.
+    builds_windows_binaries = not (args.lsp or args.test or args.fuzz
+                                   or args.tidy or args.tidy_baseline)
+    if args.sanitizer:
+        # The sanitizer stack is llvm-mingw-based (tools/security_gates.py);
+        # the MSVC-ABI flag set does not carry sanitizer instrumentation, so a
+        # sanitizer run must never silently drop it.
+        print("Sanitizer build requested: using the llvm-mingw toolchain")
+        builds_windows_binaries = False
+    MSVC_TOOLCHAIN = msvc_toolchain.resolve_requested(
+        args.toolchain,
+        args.target if builds_windows_binaries else "linux",
+        SCRIPT_DIR)
+    ACTIVE_WINDOWS_TOOLCHAIN = "clang-cl" if MSVC_TOOLCHAIN else "llvm-mingw"
+    if MSVC_TOOLCHAIN:
+        MSVC_TOOLCHAIN.report()
     if args.fetch_toolchain:
         sys.exit(fetch_toolchain(args.target, args.arch))
     ensure_toolchain(args.target, args.arch)

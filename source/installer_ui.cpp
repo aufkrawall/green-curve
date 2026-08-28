@@ -340,9 +340,10 @@ static HICON gc_load_setup_icon(HINSTANCE instance, UINT dpi, int metric) {
 static void gc_apply_window_icons(GcWizard* wizard) {
     if (!wizard || !wizard->hwnd) return;
     HICON large = gc_load_setup_icon(wizard->instance, wizard->dpi, SM_CXICON);
-    HICON small = gc_load_setup_icon(wizard->instance, wizard->dpi, SM_CXSMICON);
+    // Named smallIcon: MSVC's rpcndr.h #defines `small` as `char`.
+    HICON smallIcon = gc_load_setup_icon(wizard->instance, wizard->dpi, SM_CXSMICON);
     SendMessageW(wizard->hwnd, WM_SETICON, ICON_BIG, (LPARAM)large);
-    SendMessageW(wizard->hwnd, WM_SETICON, ICON_SMALL, (LPARAM)small);
+    SendMessageW(wizard->hwnd, WM_SETICON, ICON_SMALL, (LPARAM)smallIcon);
 }
 
 static LRESULT CALLBACK gc_wizard_proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
