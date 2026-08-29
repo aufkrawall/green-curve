@@ -92,3 +92,4 @@ gc_post_apply_*
 ab_*
 greencurve_baseline.json
 temp/transition-safe.md
+/temp/

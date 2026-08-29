@@ -737,7 +737,7 @@ def _zig_arm64_windows_command(temp_output, libs, service=False):
         "-static",
         "-s",
         "-Wl,--subsystem,windows,--dynamicbase,--nxcompat,--high-entropy-va",
-        *("-DGREEN_CURVE_SERVICE_BINARY=1" if service else []),
+        *(["-DGREEN_CURVE_SERVICE_BINARY=1"] if service else []),
         "-o",
         temp_output,
         *WINDOWS_SOURCE_FILES,
@@ -752,7 +752,7 @@ def _mingw_x64_windows_command(temp_output, libs, service=False, pdb_path=None):
         LLVM_MINGW_CLANG,
         *COMMON_FLAGS,
         *WINDOWS_FLAGS,
-        *("-DGREEN_CURVE_SERVICE_BINARY=1" if service else []),
+        *(["-DGREEN_CURVE_SERVICE_BINARY=1"] if service else []),
         *( ["-gcodeview", f"-ffile-prefix-map={SCRIPT_DIR}=.",
             f"-fdebug-prefix-map={SCRIPT_DIR}=.", "-fdebug-compilation-dir=.",
             f"-Wl,--pdb={'greencurve-service.pdb' if service else 'greencurve.pdb'}"]

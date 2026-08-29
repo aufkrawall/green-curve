@@ -18,7 +18,11 @@
 //   4. hostile tail bytes beyond the declared structure are drained without
 //     delaying the refusal response;
 //   5. one stalled connection does not prevent another from completing;
-//   6. a timed-out probe ends cleanly (no crash, no hang, no leak).
+//   6. a timed-out probe ends cleanly (no crash, no hang, no leak);
+//   7. the server disconnects only after the client consumed the response
+//      (DisconnectNamedPipe discards unread buffered data, so an unsequenced
+//      disconnect turns into a spurious client ERROR_BROKEN_PIPE), and the
+//      client verifies the answer it received rather than ignoring it.
 //
 // Sequencing between server and client threads is event-driven (the server
 // signals instance-ready and client-connected), so there are no blind sleeps;
@@ -55,7 +59,21 @@ enum {
 struct ClientContext {
     bool stall;           // connect but send nothing
     DWORD extraBodyBytes; // bytes appended beyond sizeof(ServiceRequest)
+    // Signaled once this client is done with the response (read completed,
+    // read failed, or the client never got that far), so the server never
+    // disconnects while the answer is still buffered. Null for clients that
+    // never read (the stalled case).
+    HANDLE responseConsumedEvent;
 };
+
+// DisconnectNamedPipe discards everything still buffered in the pipe, so a
+// server-side disconnect racing the client's ReadFile would surface as a
+// spurious client ERROR_BROKEN_PIPE (exit 907, 2026-08-29 CI) instead of the
+// fixture's answer. The server therefore waits for this notification before
+// disconnecting; it stays bounded so even a dead client releases it.
+static void notify_response_consumed(ClientContext* ctx) {
+    if (ctx && ctx->responseConsumedEvent) SetEvent(ctx->responseConsumedEvent);
+}
 
 // Deadline-bounded exact I/O with CancelIoEx on every timeout path -- the
 // same contract as the production service_pipe_io_exact() primitive.
@@ -164,15 +182,46 @@ static DWORD WINAPI client_thread_proc(void* parameter) {
     BOOL started = ReadFile(pipe, &response, sizeof(response), nullptr, &ov);
     DWORD err = started ? ERROR_SUCCESS : GetLastError();
     if (!started && err != ERROR_IO_PENDING) {
+        // Log the concrete error: an immediate refusal is the signature of a
+        // response that was discarded by a disconnect before it was read.
+        fprintf(stderr,
+                "pipe fixture client: response ReadFile refused immediately "
+                "(GetLastError=%lu)\n", err);
         CloseHandle(ov.hEvent);
         CloseHandle(pipe);
+        notify_response_consumed(ctx);
         return 907;
     }
     DWORD wait = WaitForSingleObject(ov.hEvent, 4000);
+    // A completed-but-FAILED read also signals the event (e.g. ERROR_BROKEN_PIPE
+    // after the server vanished); GetOverlappedResult is what tells the two
+    // outcomes apart, so a broken or short answer can never pass silently.
+    DWORD transferred = 0;
+    BOOL readOk = wait == WAIT_OBJECT_0 &&
+                  GetOverlappedResult(pipe, &ov, &transferred, FALSE);
     CancelIoEx(pipe, &ov);
     CloseHandle(ov.hEvent);
     CloseHandle(pipe);
+    notify_response_consumed(ctx);
     if (wait != WAIT_OBJECT_0) return 908;
+    if (ctx->stall) {
+        // The stalled exchange expects NO response: any clean END of the
+        // pending read -- in practice the ERROR_BROKEN_PIPE completion when
+        // the server's probe times out and disconnects -- is the expected
+        // terminal state, not a pong. Only the wait bound matters here.
+        return 0;
+    }
+    if (!readOk || transferred != sizeof(response)) return 909;
+    if (response.magic != SERVICE_PROTOCOL_MAGIC ||
+        response.version != SERVICE_PROTOCOL_VERSION ||
+        response.status != SERVICE_STATUS_OK) {
+        fprintf(stderr,
+                "pipe fixture client: response content wrong "
+                "(magic=%u version=%u status=%u)\n",
+                (unsigned)response.magic, (unsigned)response.version,
+                (unsigned)response.status);
+        return 910;
+    }
     return 0;
 }
 
@@ -191,6 +240,9 @@ struct ServerOutcome {
     // Signaled once a CLIENT is fully connected, so main knows a stalled
     // exchange has actually been established before starting the next one.
     HANDLE connectedEvent;
+    // Created by main for servers that answer: the client signals it once the
+    // response is consumed, releasing the server's pre-disconnect wait.
+    HANDLE responseConsumedEvent;
     // Timestamps for the ordering assertion: when the connection was
     // established and when the header probe finished (timeout or success).
     ULONGLONG connectedAtMs;
@@ -310,6 +362,14 @@ static DWORD WINAPI serve_one_connection(void* parameter) {
         outcome->responded =
             fixture_io_exact(pipe, true, &response, (DWORD)sizeof(response),
                              2000);
+        if (outcome->responded && outcome->responseConsumedEvent) {
+            // Never disconnect a delivered-but-unread answer: the disconnect
+            // would discard the buffered response and hand the client a
+            // spurious ERROR_BROKEN_PIPE instead of the pong. Bounded so a
+            // dead client still releases the server (the exchange has already
+            // failed by the client's own exit code in that case).
+            WaitForSingleObject(outcome->responseConsumedEvent, 4000);
+        }
     }
     DisconnectNamedPipe(pipe);
     CloseHandle(pipe);
@@ -325,6 +385,9 @@ int main() {
         if (!outcome.readyEvent) return 700;
         outcome.connectedEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
         if (!outcome.connectedEvent) return 700;
+        outcome.responseConsumedEvent =
+            CreateEventA(nullptr, TRUE, FALSE, nullptr);
+        if (!outcome.responseConsumedEvent) return 700;
         HANDLE serverThread =
             CreateThread(nullptr, 0, serve_one_connection, &outcome, 0,
                          nullptr);
@@ -339,6 +402,7 @@ int main() {
         ClientContext ctx = {};
         ctx.stall = false;
         ctx.extraBodyBytes = 7; // hostile tail beyond the declared structure
+        ctx.responseConsumedEvent = outcome.responseConsumedEvent;
         HANDLE clientThread =
             CreateThread(nullptr, 0, client_thread_proc, &ctx, 0, nullptr);
         if (!clientThread) return 701;
@@ -366,6 +430,7 @@ int main() {
         if (!outcome.responded) return 706;
         CloseHandle(outcome.readyEvent);
         CloseHandle(outcome.connectedEvent);
+        CloseHandle(outcome.responseConsumedEvent);
     }
 
     // ---- Cases 5+6: a stalled client must not block another connection,
@@ -405,6 +470,9 @@ int main() {
         healthyOutcome.firstInstance = false;
         healthyOutcome.readyEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
         if (!healthyOutcome.readyEvent) return 722;
+        healthyOutcome.responseConsumedEvent =
+            CreateEventA(nullptr, TRUE, FALSE, nullptr);
+        if (!healthyOutcome.responseConsumedEvent) return 722;
         HANDLE healthyServer =
             CreateThread(nullptr, 0, serve_one_connection, &healthyOutcome, 0,
                          nullptr);
@@ -413,6 +481,7 @@ int main() {
             WAIT_OBJECT_0)
             return 733;
         ClientContext healthyCtx = {};
+        healthyCtx.responseConsumedEvent = healthyOutcome.responseConsumedEvent;
         HANDLE healthyClient =
             CreateThread(nullptr, 0, client_thread_proc, &healthyCtx, 0,
                          nullptr);
@@ -472,6 +541,7 @@ int main() {
         CloseHandle(stalledOutcome.readyEvent);
         CloseHandle(stalledOutcome.connectedEvent);
         CloseHandle(healthyOutcome.readyEvent);
+        CloseHandle(healthyOutcome.responseConsumedEvent);
     }
 
     printf("windows pipe regression passed\n");

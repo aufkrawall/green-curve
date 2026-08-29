@@ -612,6 +612,32 @@ def run_build_script_regression_tests(ctx):
             print("Build-script regression FAILED: the arm64 installer link bypasses "
                   "the cross-process zig-cache lock/repair wrapper")
             sys.exit(1)
+        # The single-command Windows builders must emit every flag as ONE
+        # argument. A bare `*"-DFOO=1"` conditional explodes the string into
+        # single characters: that corrupted the LSP/clang-tidy database (silent
+        # clang-tidy execution failure on main.cpp on every host) and would
+        # break the legacy jobs==1 llvm-mingw x64 service build
+        # (2026-08-29 toolchain commit).
+        for arch in ("x64", "arm64"):
+            gui_cmd = ctx.get_windows_gui_compile_command(
+                os.path.join(tmp, "lsp-gui.out"), arch)
+            service_cmd = ctx.get_windows_service_compile_command(
+                os.path.join(tmp, "lsp-service.out"), arch)
+            for label, cmd in (("GUI", gui_cmd), ("service", service_cmd)):
+                exploded = [arg for arg in cmd if len(arg) == 1]
+                if exploded:
+                    print(f"Build-script regression FAILED: {label} command "
+                          f"({arch}) contains exploded single-character "
+                          f"arguments {exploded[:8]}")
+                    sys.exit(1)
+            if service_cmd.count("-DGREEN_CURVE_SERVICE_BINARY=1") != 1:
+                print(f"Build-script regression FAILED: service command ({arch}) "
+                      "must carry the service define exactly once")
+                sys.exit(1)
+            if "-DGREEN_CURVE_SERVICE_BINARY=1" in gui_cmd:
+                print(f"Build-script regression FAILED: GUI command ({arch}) "
+                      "must not carry the service define")
+                sys.exit(1)
         signing_script = os.path.join(ctx.SCRIPT_DIR, "tools", "windows_key_acl.py")
         with open(signing_script, "r", encoding="utf-8", errors="replace") as handle:
             signing_script_text = handle.read()
@@ -933,6 +959,25 @@ def check_ipc_transport_and_probe_gates(ctx, require_text, forbid_text,
     require_text_count(capability_probe_cpp,
                        "g_app.gpuCapability = probe;", 2,
                        "the probe publishes its result on BOTH exit paths")
+
+    # The native pipe fixture must stay race-free: the server disconnects only
+    # after the client consumed (or terminally failed to read) the response,
+    # because DisconnectNamedPipe discards unread buffered pipe data and would
+    # hand the client a spurious ERROR_BROKEN_PIPE (2026-08-29 CI, exit 907).
+    # Both client terminal paths release the server, and the client verifies
+    # the answer, so a broken/short/garbage response can never pass as a pong.
+    pipe_fixture_cpp = os.path.join(ctx.SCRIPT_DIR, "tests",
+                                    "windows_pipe_regression.cpp")
+    require_text(pipe_fixture_cpp,
+                 "if (outcome->responded && outcome->responseConsumedEvent)",
+                 "the fixture server waits for response consumption before disconnecting")
+    require_text_count(pipe_fixture_cpp, "notify_response_consumed(ctx);", 2,
+                       "both fixture client terminal paths release the server")
+    require_text(pipe_fixture_cpp,
+                 "if (!readOk || transferred != sizeof(response)) return 909;",
+                 "the fixture client rejects failed or short response reads")
+    require_text(pipe_fixture_cpp, "response.status != SERVICE_STATUS_OK",
+                 "the fixture client verifies the response content")
 
 
 def check_fuzz_harness_in_sync(ctx, require_text, forbid_text):

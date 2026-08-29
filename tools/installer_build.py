@@ -73,6 +73,11 @@ INSTALLER_SOURCE_NAMES = [
     "service_acl.cpp",
     "ssp_glue.cpp",
     "cfg_glue.cpp",
+    # Toolchain-neutral glue: defines gc_invoke_fatal_dump_hook, which
+    # ssp_glue.cpp/cfg_glue.cpp reference. Without it the MinGW link of the
+    # setup/uninstaller stubs fails with an undefined symbol (the function
+    # used to live in cfg_glue.cpp before the MSVC-ABI split).
+    "process_hardening.cpp",
 ]
 
 # The setup program talks to the SCM, the shell (shortcuts, folder picker), and
@@ -552,6 +557,16 @@ def check_all(ctx, require_text, forbid_text):
             continue
         forbid_text(source(name), '#include "app_shared.h"',
                     f"{name} stays independent of the application model")
+
+    # The toolchain-neutral fatal-dump hook definition must link into every
+    # Windows binary, including the setup/uninstaller stubs: ssp_glue.cpp and
+    # cfg_glue.cpp reference gc_invoke_fatal_dump_hook. Dropping it from this
+    # list turns every MinGW stub link into an undefined-symbol failure
+    # (2026-08-29 release-packaging CI).
+    if "process_hardening.cpp" not in INSTALLER_SOURCE_NAMES:
+        raise RuntimeError(
+            "INSTALLER_SOURCE_NAMES must link process_hardening.cpp "
+            "(toolchain-neutral fatal-dump hook referenced by the glue)")
 
     payload = source("installer_payload.cpp")
     # Decompression is an OS service, not a vendored library, and not a
