@@ -267,12 +267,22 @@ static void service_execute_checked_request(ServiceRequest* request,
     // `status` and break -- is covered without having to remember the field.
     response->outcomeSeverity = service_response_resolve_outcome_severity(
         response->status, response->outcomeSeverity);
-    // Same reason as severity above: one place, every branch.  Not gated on
-    // stateEnvelopeAuthorized -- it carries no hardware or session state.
-    service_update_populate_response(&response->update);
     // The pipe ACL admits every local user; only callers that passed the
-    // active-session, PID, and integrity gates receive authoritative state.
-    if (stateEnvelopeAuthorized) populate_service_state_response(response);
+    // active-session, PID, and integrity gates receive authoritative state --
+    // and that includes the update-state envelope.  The envelope carries no
+    // hardware or session state, but it does publish the machine's update
+    // posture (available version, staged/verified flags, install phase),
+    // derived from the release manifest the updater fetched, so a caller the
+    // service refused to authorize has no business reading it.  Stamp both
+    // envelopes in ONE authorized-only place: GUI/CLI callers that pass the
+    // gates are unaffected, and only refused or low-integrity callers lose it.
+    if (stateEnvelopeAuthorized) {
+        populate_service_state_response(response);
+        service_update_populate_response(&response->update);
+    } else {
+        debug_log("service_pipe_server: withheld the state/update envelope from an unauthorized caller command=%u\n",
+            (unsigned int)request->command);
+    }
 }
 
 // ---------------------------------------------------------------------------

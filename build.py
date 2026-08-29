@@ -3788,7 +3788,7 @@ def run_source_regression_checks():
     require_text(service_pipe_switch_cpp, "SERVICE_STATUS_STALE_STATE",
                  "stale mutations are rejected rather than crossing reconnect")
     require_text(service_pipe_cpp,
-                 "if (stateEnvelopeAuthorized) populate_service_state_response(response);",
+                 "if (stateEnvelopeAuthorized) {\n        populate_service_state_response(response);",
                  "only fully authorized Windows service callers receive the final state envelope")
     security_gates.check_ipc_transport_and_probe_gates(_gate_ctx(), require_text, forbid_text, require_text_count)
     require_text(gui_service_model_h, "minimumGpuGeneration",

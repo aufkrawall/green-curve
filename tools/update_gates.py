@@ -25,6 +25,7 @@ None of those has a test that would obviously fail, because the happy path is
 unchanged in all three.  So they are asserted structurally, here.
 """
 import os
+import sys
 
 
 def _p(ctx, name):
@@ -570,6 +571,45 @@ def check_worker_recovery_is_pure_and_wired(ctx, require_text, harness_source_pa
                  "worker recovery policy has executable coverage")
 
 
+def check_update_envelope_is_authorized_only(ctx, require_text, forbid_text):
+    """The update-state envelope is stamped only for authorized pipe callers.
+
+    Every dispatched command funnels through one place that stamps
+    `response->update`.  That stamp used to run unconditionally, so a caller
+    that failed the active-session, PID, or medium-integrity gate still
+    received the machine's update posture (available version, staged/verified
+    flags, install phase) in its response -- contradicting the rule printed
+    right above it, that only authorized callers receive authoritative state.
+    If the stamp ever moves back outside the `stateEnvelopeAuthorized` gate,
+    the disclosure returns silently: the happy path is unchanged in every
+    direction, and no behavior test would notice.
+    """
+    pipe = _p(ctx, "main_service_pipe.cpp")
+    require_text(
+        pipe, "service_update_populate_response(&response->update)",
+        "the dispatch path stamps the update-state envelope for the GUI")
+    require_text(
+        pipe, "if (stateEnvelopeAuthorized) {",
+        "the authoritative state envelopes are gated on stateEnvelopeAuthorized")
+    with open(pipe, "r", encoding="utf-8", errors="replace") as handle:
+        text = handle.read()
+    marker = "service_update_populate_response(&response->update)"
+    occurrences = [i for i in range(len(text)) if text.startswith(marker, i)]
+    if len(occurrences) != 1:
+        print("Regression source check FAILED (update envelope): expected "
+              f"exactly one update-envelope stamp in main_service_pipe.cpp, "
+              f"found {len(occurrences)}")
+        sys.exit(1)
+    stamp = occurrences[0]
+    gate = text.rfind("if (stateEnvelopeAuthorized) {", 0, stamp)
+    if gate == -1 or stamp - gate > 200:
+        print("Regression source check FAILED (update envelope): the "
+              "update-state stamp is not inside the stateEnvelopeAuthorized "
+              "gate in main_service_pipe.cpp; unauthorized pipe callers would "
+              "again receive the machine's update posture")
+        sys.exit(1)
+
+
 def check_all(ctx, require_text, forbid_text, require_order, harness_source_path):
     check_gui_cannot_choose_the_target(ctx, require_text, forbid_text)
     check_signature_precedes_parse(ctx, require_order)
@@ -591,3 +631,4 @@ def check_all(ctx, require_text, forbid_text, require_order, harness_source_path
                                             harness_source_path)
     check_download_is_bounded_before_it_is_written(ctx, require_text, require_order,
                                                    forbid_text, harness_source_path)
+    check_update_envelope_is_authorized_only(ctx, require_text, forbid_text)
