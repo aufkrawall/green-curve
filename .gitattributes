@@ -21,6 +21,8 @@ packaging/** text eol=lf
 # `text=auto` rule can be tempted to touch them.
 *.7z binary
 *.tar.xz binary
+*.pkg.tar.zst binary
+*.pkg.tar.xz binary
 
 # Fuzz seeds are exact byte strings, not text.  Most existing corpora contain
 # NUL bytes and so are auto-detected as binary, but the update_manifest seeds

@@ -26,6 +26,7 @@ import sys
 import tarfile
 
 import toolchain
+from arch_package import build_arch_package
 
 
 # Files the binary legitimately writes beside itself at run time.  A developer

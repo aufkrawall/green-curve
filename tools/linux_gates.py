@@ -579,6 +579,10 @@ def check_release_packaging(ctx, require_text, forbid_text):
                  "Arch sysusers declares greencurve group")
     require_text(os.path.join(arch_dir, "greencurve.desktop"), "Terminal=true",
                  "Arch desktop entry opens in terminal")
+    require_text(manifest, "from arch_package import build_arch_package",
+                 "release manifest connects arch package builder")
+    require_text(build_script, "build_arch_package(SCRIPT_DIR, APP_VERSION, arch, binaries[0])",
+                 "Linux packaging step builds Arch Linux package")
     check_packaging_line_endings(arch_dir)
 
 

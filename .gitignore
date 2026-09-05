@@ -25,6 +25,8 @@ audit/
 *.zip
 *.7z
 *.tar.xz
+*.pkg.tar.zst
+*.pkg.tar.xz
 # Interrupted toolchain download (build.py --fetch-toolchain).
 *.part
 *.png
