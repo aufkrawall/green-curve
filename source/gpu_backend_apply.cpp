@@ -1173,6 +1173,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool fanChanged = false;
     if (!apply_fan_settings(desired, failureDetails, sizeof(failureDetails), successCount, failCount, result, resultSize, fanChanged)) {
         if (successCount > 0) {
+            partialApplyRisk = true;
             rollback_to_safe_defaults();
             g_app.gpuClockOffsetkHz = g_app.memClockOffsetkHz = g_app.powerLimitPct = 0;
             invalidate_scalar_readbacks(&g_app.readback);
