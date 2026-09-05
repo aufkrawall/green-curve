@@ -13,6 +13,7 @@
 #define GC_RESUME_UNIT_PATH "/etc/systemd/system/" GC_RESUME_UNIT_NAME
 #define GC_INSTALL_DIR "/usr/local/libexec/greencurve"
 #define GC_INSTALL_BIN GC_INSTALL_DIR "/greencurve"
+#define GC_SYMLINK_BIN "/usr/local/bin/greencurve"
 
 static bool root_owned_nonwritable_path(const char* path, bool wantDir, char* err, size_t errSize) {
     struct stat st;
@@ -493,6 +494,15 @@ int linux_service_install(char* err, size_t errSize,
         return 1;
     }
     if (verifiedResponse) *verifiedResponse = activation.verifiedResponse;
+
+    unlink(GC_SYMLINK_BIN);
+    if (symlink(GC_INSTALL_BIN, GC_SYMLINK_BIN) != 0) {
+        dlog("service-install: symlink %s -> %s failed: %s (non-fatal)\n",
+             GC_SYMLINK_BIN, GC_INSTALL_BIN, strerror(errno));
+    } else {
+        dlog("service-install: symlinked %s -> %s\n",
+             GC_SYMLINK_BIN, GC_INSTALL_BIN);
+    }
     return 0;
 }
 
@@ -570,6 +580,7 @@ int linux_service_remove(char* err, size_t errSize) {
     if (run_systemctl(disableArgs) != 0)
         dlog("service-remove: disable failed (non-fatal)\n");
     unlink(GC_UNIT_PATH);
+    unlink(GC_SYMLINK_BIN);
     char* reloadArgs[] = {(char*)"systemctl", (char*)"daemon-reload", nullptr};
     if (run_systemctl(reloadArgs) != 0)
         dlog("service-remove: daemon-reload failed (non-fatal)\n");

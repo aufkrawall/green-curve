@@ -1,0 +1,19 @@
+post_install() {
+    cat <<EOF
+==> Green Curve was installed successfully.
+==> Add your user to the greencurve group to allow GPU control without sudo:
+==>   sudo usermod -aG greencurve \$USER
+==> Group membership takes effect on your next login (or run 'newgrp greencurve').
+==> Enable and start the background daemon:
+==>   sudo systemctl enable --now greencurve.service
+==> Then open the terminal UI with:
+==>   greencurve
+EOF
+}
+
+post_upgrade() {
+    cat <<EOF
+==> Green Curve upgraded. Restart the daemon to run the new version:
+==>   sudo systemctl restart greencurve.service
+EOF
+}

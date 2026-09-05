@@ -1,0 +1,16 @@
+[Unit]
+Description=Green Curve settings restore after suspend
+Documentation=https://github.com/aufkrawall/green-curve
+After=suspend.target hibernate.target hybrid-sleep.target suspend-then-hibernate.target
+After=nvidia-resume.service
+After=greencurve.service
+ConditionPathExists=/run/greencurve/greencurve.sock
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/greencurve --resume-restore
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=suspend.target hibernate.target hybrid-sleep.target suspend-then-hibernate.target

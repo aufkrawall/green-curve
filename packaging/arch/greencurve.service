@@ -1,0 +1,33 @@
+[Unit]
+Description=Green Curve NVIDIA GPU control daemon
+Documentation=https://github.com/aufkrawall/green-curve
+After=nvidia-persistenced.service
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/bin/greencurve --daemon
+Restart=always
+RestartSec=2
+WatchdogSec=120
+UMask=0077
+NoNewPrivileges=true
+StateDirectory=greencurve
+RuntimeDirectory=greencurve
+RuntimeDirectoryMode=0755
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

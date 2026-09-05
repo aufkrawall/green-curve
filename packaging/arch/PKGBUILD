@@ -1,0 +1,72 @@
+# Maintainer: aufkrawall <https://github.com/aufkrawall/green-curve>
+
+pkgname=greencurve
+pkgver=0.24.0
+pkgrel=1
+pkgdesc="NVIDIA VF curve, overclock, undervolt and fan control daemon & terminal UI"
+arch=('x86_64' 'aarch64')
+url="https://github.com/aufkrawall/green-curve"
+license=('MIT')
+depends=('glibc')
+optdepends=('nvidia-utils: proprietary NVIDIA driver libraries (libnvidia-api.so.1, libnvidia-ml.so.1)')
+makedepends=('python' 'zig')
+install=greencurve.install
+source=(
+    "$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/$pkgver.tar.gz"
+    "greencurve.service"
+    "greencurve-resume.service"
+    "greencurve.sysusers"
+    "greencurve.desktop"
+)
+sha256sums=(
+    'SKIP'
+    'ab54902d53821b375a471990d515eb38a006971cc2b66352dba9a2d69793726e'
+    'b5a58d0cdf6fd713765b69f470f670c4d8e3283e6862a5a37b92209ce2c3104c'
+    'ea609d86699918483679359aff45bcd5d1344a76fee3b4dac6cf6805b6b272c7'
+    '18128da42df498478b55372b362361b2e8f403872785758e367843b48e024c58'
+)
+
+build() {
+    cd "$pkgname-$pkgver"
+
+    local _gc_arch
+    case "$CARCH" in
+        x86_64)  _gc_arch="x64" ;;
+        aarch64) _gc_arch="arm64" ;;
+        *)       echo "Unsupported architecture: $CARCH" >&2; exit 1 ;;
+    esac
+
+    # If system zig is installed and present in PATH, point build.py to it
+    if command -v zig >/dev/null 2>&1; then
+        export ZIG_EXE="$(command -v zig)"
+    fi
+
+    python build.py --target linux --arch "$_gc_arch" --no-package
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+
+    local _gc_arch
+    case "$CARCH" in
+        x86_64)  _gc_arch="x64" ;;
+        aarch64) _gc_arch="arm64" ;;
+    esac
+
+    # Binary
+    install -Dm755 "dist/linux-${_gc_arch}/greencurve/greencurve" "$pkgdir/usr/bin/greencurve"
+
+    # Systemd service units
+    install -Dm644 "$srcdir/greencurve.service" "$pkgdir/usr/lib/systemd/system/greencurve.service"
+    install -Dm644 "$srcdir/greencurve-resume.service" "$pkgdir/usr/lib/systemd/system/greencurve-resume.service"
+
+    # Declarative group creation via sysusers
+    install -Dm644 "$srcdir/greencurve.sysusers" "$pkgdir/usr/lib/sysusers.d/greencurve.conf"
+
+    # Desktop launcher
+    install -Dm644 "$srcdir/greencurve.desktop" "$pkgdir/usr/share/applications/greencurve.desktop"
+
+    # License and documentation
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

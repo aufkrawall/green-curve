@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 #include "linux_port_internal.h"
+#include "linux_config_path_policy.h"
 
 #include <ctype.h>
 #include <errno.h>
 #include <glob.h>
+#include <pwd.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -441,10 +443,38 @@ bool get_executable_path(char* dst, size_t dstSize) {
 bool default_linux_config_path(char* dst, size_t dstSize) {
     if (!dst || dstSize == 0) return false;
     char exePath[LINUX_PATH_MAX] = {};
-    if (!get_executable_path(exePath, sizeof(exePath))) return false;
-    std::string configPath = path_join(path_dirname(exePath), CONFIG_FILE_NAME);
-    snprintf(dst, dstSize, "%s", configPath.c_str());
-    dst[dstSize - 1] = 0;
+    std::string exeDir;
+    bool hasLocalConfig = false;
+    if (get_executable_path(exePath, sizeof(exePath))) {
+        exeDir = path_dirname(exePath);
+        std::string localCandidate = path_join(exeDir, CONFIG_FILE_NAME);
+        struct stat st = {};
+        if (stat(localCandidate.c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
+            hasLocalConfig = true;
+        }
+    }
+
+    const char* xdgConfig = getenv("XDG_CONFIG_HOME");
+    const char* home = getenv("HOME");
+    if (!home || !home[0]) {
+        struct passwd* pw = getpwuid(getuid());
+        if (pw && pw->pw_dir && pw->pw_dir[0]) home = pw->pw_dir;
+    }
+
+    if (!linux_resolve_default_config_path(exeDir.c_str(), hasLocalConfig,
+                                           xdgConfig, home, dst, dstSize)) {
+        return false;
+    }
+
+    std::string dir = path_dirname(dst);
+    if (!dir.empty() && dir != "." && dir != "/") {
+        std::string parent = path_dirname(dir);
+        if (!parent.empty() && parent != "." && parent != "/") {
+            mkdir(parent.c_str(), 0755);
+        }
+        mkdir(dir.c_str(), 0700);
+    }
+
     return true;
 }
 

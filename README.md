@@ -143,7 +143,7 @@ tar xf greencurve-<version>-linux-<arch>.tar.xz
 sudo ./greencurve-setup.sh install
 ```
 
-It installs and verifies the root daemon (`greencurve.service`), creates the `greencurve` group and adds the account that invoked `sudo` to it, and writes a desktop entry. Group membership only takes effect after a new login — for the current shell, `newgrp greencurve`.
+It installs and verifies the root daemon (`greencurve.service`), creates the `greencurve` group and adds the account that invoked `sudo` to it, symlinks the binary into `/usr/local/bin/greencurve` so running `greencurve` works from any terminal directory, and writes a desktop entry. Group membership only takes effect after a new login — for the current shell, `newgrp greencurve`.
 
 ```bash
 ./greencurve-setup.sh status      # unit, socket permissions, group, startup policy
@@ -152,6 +152,23 @@ sudo ./greencurve-setup.sh uninstall --purge   # also removes /var/lib/greencurv
 ```
 
 The equivalent manual steps remain `sudo greencurve --service-install` plus `sudo usermod -aG greencurve "$USER"`.
+
+### Arch Linux (PKGBUILD)
+
+For Arch Linux users, packaging files are provided under [`packaging/arch/`](packaging/arch/):
+
+- **Build from source (`greencurve`)**:
+  ```bash
+  cd packaging/arch
+  makepkg -si
+  ```
+- **Prebuilt binary package (`greencurve-bin`)**:
+  ```bash
+  cd packaging/arch
+  makepkg -si -p PKGBUILD.bin
+  ```
+
+The package installs `/usr/bin/greencurve`, provisions the `greencurve` group automatically via `systemd-sysusers`, configures the systemd service units (`greencurve.service` and `greencurve-resume.service`), and provides desktop integration.
 
 ### Launching
 

@@ -28,6 +28,8 @@ GROUP_NAME="greencurve"
 UNIT_NAME="greencurve.service"
 UNIT_PATH="/etc/systemd/system/$UNIT_NAME"
 INSTALL_DIR="/usr/local/libexec/greencurve"
+BIN_DIR="/usr/local/bin"
+BIN_PATH="$BIN_DIR/greencurve"
 STATE_DIR="/var/lib/greencurve"
 SOCKET_PATH="/run/greencurve/greencurve.sock"
 
@@ -142,6 +144,11 @@ cmd_install() {
         info "for this session only: newgrp $GROUP_NAME"
     fi
 
+    say "Installing command link to $BIN_PATH..."
+    install -d -m 0755 "$BIN_DIR"
+    ln -sf "$INSTALL_DIR/greencurve" "$BIN_PATH"
+    info "linked $BIN_PATH -> $INSTALL_DIR/greencurve"
+
     install_desktop_entries "$user"
 
     say ""
@@ -163,9 +170,13 @@ install_desktop_entries() {
 
     local apps="$home/.local/share/applications"
     local entry="$apps/greencurve.desktop"
-    # Desktop Exec is not a shell command line.  Quote and escape the archive
-    # path so ordinary paths containing spaces or quotes remain one argv entry.
-    local exec_binary="${BINARY//\\/\\\\}"
+    local target_bin="$INSTALL_DIR/greencurve"
+    if [ -x "$BIN_PATH" ]; then
+        target_bin="$BIN_PATH"
+    elif [ -x "$BINARY" ]; then
+        target_bin="$BINARY"
+    fi
+    local exec_binary="${target_bin//\\/\\\\}"
     exec_binary="${exec_binary//\"/\\\"}"
     command -v runuser >/dev/null 2>&1 ||
         { warn "runuser is unavailable; skipping desktop entry"; return 0; }
@@ -214,9 +225,24 @@ cmd_uninstall() {
     # so that an upgrade does not lose anything.
     rm -f "$UNIT_PATH"
     systemctl daemon-reload 2>/dev/null || true
+    if [ -L "$BIN_PATH" ] || [ -f "$BIN_PATH" ]; then
+        rm -f "$BIN_PATH"
+        info "removed $BIN_PATH"
+    fi
     if [ -d "$INSTALL_DIR" ]; then
         rm -rf "$INSTALL_DIR"
         info "removed $INSTALL_DIR"
+    fi
+
+    local user
+    user="$(target_user)"
+    if [ -n "$user" ]; then
+        local home
+        home="$(getent passwd "$user" 2>/dev/null | cut -d: -f6)"
+        if [ -n "$home" ] && [ -f "$home/.local/share/applications/greencurve.desktop" ]; then
+            rm -f "$home/.local/share/applications/greencurve.desktop"
+            info "removed desktop entry for '$user'"
+        fi
     fi
 
     if [ "$PURGE" -eq 1 ]; then
@@ -245,6 +271,11 @@ cmd_status() {
         info "client binary: $BINARY"
     else
         info "client binary: not found at $BINARY"
+    fi
+    if [ -e "$BIN_PATH" ]; then
+        info "command link: $BIN_PATH -> $(readlink -f "$BIN_PATH" 2>/dev/null || echo "$INSTALL_DIR/greencurve")"
+    else
+        info "command link: not installed at $BIN_PATH"
     fi
     if [ -f "$UNIT_PATH" ]; then
         info "unit: $UNIT_PATH"

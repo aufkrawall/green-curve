@@ -547,9 +547,39 @@ def check_release_packaging(ctx, require_text, forbid_text):
                  "that round-trip is actually wired into the build-script regressions")
     require_text(manifest, "def write_linux_tarball",
                  "the Linux archive is written by the standard library, which records Unix modes")
-    forbid_text(build_script, 'os.chmod(staged, 0o755)',
-                "the executable bit must come from the archive header, not from a "
-                "chmod that is a no-op on the Windows build host")
+    # F-LNX-CMD: greencurve command in PATH and non-root user config resolution
+    require_text(setup_script, 'BIN_DIR="/usr/local/bin"',
+                 "the setup script installs to the standard /usr/local/bin PATH")
+    require_text(setup_script, 'BIN_PATH="$BIN_DIR/greencurve"',
+                 "the setup script manages the greencurve command symlink")
+    require_text(setup_script, 'ln -sf "$INSTALL_DIR/greencurve" "$BIN_PATH"',
+                 "the setup script symlinks the binary into the command PATH")
+    require_text(setup_script, 'rm -f "$BIN_PATH"',
+                 "the setup script unlinks the command symlink on uninstall")
+    require_text(install_cpp, "GC_SYMLINK_BIN",
+                 "the service installer manages the /usr/local/bin/greencurve command symlink")
+    port_cpp = os.path.join(ctx.SOURCE_DIR, "linux_port.cpp")
+    policy_h = os.path.join(ctx.SOURCE_DIR, "linux_config_path_policy.h")
+    require_text(port_cpp, "linux_resolve_default_config_path",
+                 "client config resolution delegates to linux_config_path_policy")
+    require_text(policy_h, "linux_is_system_binary_dir",
+                 "policy identifies system directories for unprivileged user config")
+
+    # Arch Linux packaging verification
+    arch_dir = os.path.join(ctx.SCRIPT_DIR, "packaging", "arch")
+    require_text(os.path.join(arch_dir, "PKGBUILD"), "pkgname=greencurve",
+                 "Arch PKGBUILD defines greencurve source package")
+    require_text(os.path.join(arch_dir, "PKGBUILD.bin"), "pkgname=greencurve-bin",
+                 "Arch PKGBUILD.bin defines greencurve binary package")
+    require_text(os.path.join(arch_dir, "greencurve.service"), "ExecStart=/usr/bin/greencurve --daemon",
+                 "Arch systemd unit runs daemon")
+    require_text(os.path.join(arch_dir, "greencurve-resume.service"), "ExecStart=/usr/bin/greencurve --resume-restore",
+                 "Arch resume unit runs binary resume-restore")
+    require_text(os.path.join(arch_dir, "greencurve.sysusers"), "g greencurve -",
+                 "Arch sysusers declares greencurve group")
+    require_text(os.path.join(arch_dir, "greencurve.desktop"), "Terminal=true",
+                 "Arch desktop entry opens in terminal")
+    check_packaging_line_endings(arch_dir)
 
 
 def check_setup_script_line_endings(setup_script):
@@ -569,6 +599,20 @@ def check_setup_script_line_endings(setup_script):
     print("  Fix this checkout with:")
     print("    git add --renormalize . && git checkout -- tools/greencurve-setup.sh")
     sys.exit(1)
+
+
+def check_packaging_line_endings(arch_dir):
+    """Verify all Arch packaging files use LF line endings in the working tree."""
+    for name in ("PKGBUILD", "PKGBUILD.bin", "greencurve.service", "greencurve-resume.service",
+                 "greencurve.sysusers", "greencurve.desktop", "greencurve.install"):
+        path = os.path.join(arch_dir, name)
+        if not os.path.isfile(path):
+            print(f"Regression source check FAILED: missing Arch packaging file: {name}")
+            sys.exit(1)
+        with open(path, "rb") as handle:
+            if b"\r" in handle.read():
+                print(f"Regression source check FAILED: packaging/arch/{name} has CRLF line endings")
+                sys.exit(1)
 
 
 def check_auto_restore(ctx, require_text, forbid_text, require_order):

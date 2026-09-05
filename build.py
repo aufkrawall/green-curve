@@ -122,8 +122,8 @@ import installer_build  # noqa: E402  (same one-way dependency as security_gates
 
 FUZZ_TARGETS = security_gates.FUZZ_TARGETS
 
-ZIG_DIR = os.path.join(SCRIPT_DIR, "zig")
-ZIG_EXE = os.path.join(ZIG_DIR, _ZIG_EXE_NAME)
+ZIG_DIR = os.environ.get("ZIG_DIR", os.path.join(SCRIPT_DIR, "zig"))
+ZIG_EXE = os.environ.get("ZIG_EXE", os.path.join(ZIG_DIR, _ZIG_EXE_NAME))
 LLVM_MINGW_DIR = os.path.join(
     SCRIPT_DIR, "llvm-mingw" if sys.platform == "win32" else "llvm-mingw-linux")
 LLVM_MINGW_CLANG = os.path.join(LLVM_MINGW_DIR, "bin", LLVM_MINGW_CLANG_NAME)
@@ -615,7 +615,8 @@ def _verify_cached_tool_binary(binary_path, label, trusted_sha256,
 
 
 def download_zig():
-    """Download (or copy from local compilers/) and extract Zig compiler."""
+    if "ZIG_EXE" in os.environ and os.path.exists(ZIG_EXE):
+        return
     if os.path.exists(ZIG_EXE) and _verify_cached_tool_binary(ZIG_EXE, "zig", ZIG_EXE_SHA256):
         print(f"Zig already present at {ZIG_EXE}")
         return

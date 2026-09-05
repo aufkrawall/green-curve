@@ -35,6 +35,7 @@
 #include "control_readback_policy.h"
 #include "service_client_precondition_policy.h"
 #include "linux_service_install_policy.h"
+#include "linux_config_path_policy.h"
 #include "linux_daemon_transport_policy.h"
 #include "linux_systemd_notify_policy.h"
 #include "linux_daemon_state.h"
@@ -12534,6 +12535,66 @@ static int run_all_tests(int argc, char** argv) {
         // No raw SID leakage
         if (strstr(sid1Token, "S-1-5") != nullptr || strstr(sid1Token, "1001") != nullptr)
             return 4855;
+    }
+
+    // ------------------------------------------------------------------
+    // Linux default client config path policy: XDG vs portable vs system dir
+    // ------------------------------------------------------------------
+    {
+        // System directory classification
+        if (!linux_is_system_binary_dir("/usr/bin")) return 4860;
+        if (!linux_is_system_binary_dir("/usr/local/bin")) return 4861;
+        if (!linux_is_system_binary_dir("/usr/local/libexec/greencurve")) return 4862;
+        if (!linux_is_system_binary_dir("/bin")) return 4863;
+        if (!linux_is_system_binary_dir("/sbin")) return 4864;
+        if (!linux_is_system_binary_dir("/opt/greencurve")) return 4865;
+        if (linux_is_system_binary_dir("/home/julian/bin")) return 4866;
+        if (linux_is_system_binary_dir("/tmp/greencurve")) return 4867;
+        if (linux_is_system_binary_dir("")) return 4868;
+        if (linux_is_system_binary_dir(nullptr)) return 4869;
+
+        char path[512] = {};
+
+        // Portable mode: non-system dir with existing local config.ini wins
+        if (!linux_resolve_default_config_path("/home/julian/greencurve", true,
+                                               "/custom/xdg", "/home/julian",
+                                               path, sizeof(path))) return 4870;
+        if (strcmp(path, "/home/julian/greencurve/config.ini") != 0) return 4871;
+
+        // System directory: ignores local config, prefers XDG_CONFIG_HOME
+        if (!linux_resolve_default_config_path("/usr/bin", true,
+                                               "/custom/xdg", "/home/julian",
+                                               path, sizeof(path))) return 4872;
+        if (strcmp(path, "/custom/xdg/greencurve/config.ini") != 0) return 4873;
+
+        // System directory: falls back to HOME/.config/greencurve/config.ini
+        if (!linux_resolve_default_config_path("/usr/local/libexec/greencurve", false,
+                                               nullptr, "/home/julian",
+                                               path, sizeof(path))) return 4874;
+        if (strcmp(path, "/home/julian/.config/greencurve/config.ini") != 0) return 4875;
+
+        // Trailing slash normalization on XDG and HOME
+        if (!linux_resolve_default_config_path("/usr/bin", false,
+                                               "/custom/xdg/", nullptr,
+                                               path, sizeof(path))) return 4876;
+        if (strcmp(path, "/custom/xdg/greencurve/config.ini") != 0) return 4877;
+
+        if (!linux_resolve_default_config_path("/usr/bin", false,
+                                               nullptr, "/home/julian/",
+                                               path, sizeof(path))) return 4878;
+        if (strcmp(path, "/home/julian/.config/greencurve/config.ini") != 0) return 4879;
+
+        // Fallback when both XDG and HOME are unset
+        if (!linux_resolve_default_config_path("/custom/app", false,
+                                               nullptr, nullptr,
+                                               path, sizeof(path))) return 4880;
+        if (strcmp(path, "/custom/app/config.ini") != 0) return 4881;
+
+        // Bounded buffer check: buffer too small must fail safely
+        char smallBuf[10] = {};
+        if (linux_resolve_default_config_path("/usr/bin", false,
+                                              nullptr, "/home/julian",
+                                              smallBuf, sizeof(smallBuf))) return 4882;
     }
 
     return 0;
