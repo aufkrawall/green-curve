@@ -579,6 +579,16 @@ def check_release_packaging(ctx, require_text, forbid_text):
                  "Arch sysusers declares greencurve group")
     require_text(os.path.join(arch_dir, "greencurve.desktop"), "Terminal=true",
                  "Arch desktop entry opens in terminal")
+    require_text(os.path.join(arch_dir, "greencurve.desktop"), "Icon=greencurve",
+                 "Arch desktop entry specifies greencurve icon")
+    require_text(os.path.join(arch_dir, "greencurve.install"), "_setup_group_enrollment",
+                 "Arch install scriptlet automatically enrolls user in greencurve group")
+    require_text(os.path.join(arch_dir, "greencurve.install"), "pre_remove()",
+                 "Arch install scriptlet defines pre_remove lifecycle hook")
+    require_text(os.path.join(arch_dir, "greencurve.install"), "post_upgrade()",
+                 "Arch install scriptlet defines post_upgrade lifecycle hook")
+    require_text(os.path.join(arch_dir, "greencurve.install"), "greencurve-resume.service",
+                 "Arch install scriptlet mentions resume service")
     require_text(manifest, "from arch_package import build_arch_package",
                  "release manifest connects arch package builder")
     require_text(build_script, "build_arch_package(SCRIPT_DIR, APP_VERSION, arch, binaries[0])",

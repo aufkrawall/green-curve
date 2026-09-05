@@ -30,6 +30,7 @@ audit/
 # Interrupted toolchain download (build.py --fetch-toolchain).
 *.part
 *.png
+!packaging/arch/greencurve.png
 *.res
 *.rc
 *.nsh

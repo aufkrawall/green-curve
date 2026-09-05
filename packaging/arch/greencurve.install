@@ -1,19 +1,78 @@
+_setup_group_enrollment() {
+    # Ensure the greencurve group exists (systemd-sysusers pacman hook creates it,
+    # but run defensively in case post_install executes beforehand)
+    if ! getent group greencurve >/dev/null 2>&1; then
+        systemd-sysusers 2>/dev/null || groupadd -r greencurve 2>/dev/null || true
+    fi
+
+    local candidate=""
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        candidate="$SUDO_USER"
+    elif [ -n "${GREENCURVE_USER:-}" ] && [ "$GREENCURVE_USER" != "root" ]; then
+        candidate="$GREENCURVE_USER"
+    else
+        candidate="$(logname 2>/dev/null || true)"
+    fi
+
+    # Verify candidate is a real login user with UID >= 1000
+    if [ -n "$candidate" ] && [ "$candidate" != "root" ]; then
+        local uid
+        uid="$(id -u "$candidate" 2>/dev/null || echo 0)"
+        if [ "$uid" -ge 1000 ] 2>/dev/null; then
+            if id -nG "$candidate" 2>/dev/null | tr ' ' '\n' | grep -qx "greencurve"; then
+                echo "==> User '$candidate' is already in the 'greencurve' group."
+            else
+                if usermod -aG greencurve "$candidate" 2>/dev/null; then
+                    echo "==> Added user '$candidate' to the 'greencurve' group."
+                    echo "==> Group membership takes effect on your next login (or run: newgrp greencurve)."
+                else
+                    echo "==> Could not add user '$candidate' to 'greencurve'. Please run manually:"
+                    echo "==>   sudo usermod -aG greencurve $candidate"
+                fi
+            fi
+            return 0
+        fi
+    fi
+
+    echo "==> Add your user to the greencurve group to allow GPU control without sudo:"
+    echo "==>   sudo usermod -aG greencurve \$USER"
+    echo "==> Group membership takes effect on your next login (or run: newgrp greencurve)."
+}
+
 post_install() {
+    echo "==> Green Curve was installed successfully."
+    _setup_group_enrollment
     cat <<EOF
-==> Green Curve was installed successfully.
-==> Add your user to the greencurve group to allow GPU control without sudo:
-==>   sudo usermod -aG greencurve \$USER
-==> Group membership takes effect on your next login (or run 'newgrp greencurve').
 ==> Enable and start the background daemon:
 ==>   sudo systemctl enable --now greencurve.service
-==> Then open the terminal UI with:
+==> Enable resume-restore after system suspend:
+==>   sudo systemctl enable greencurve-resume.service
+==> Desktop application launcher installed:
+==>   /usr/share/applications/greencurve.desktop
+==> Open the terminal UI anytime with:
 ==>   greencurve
 EOF
 }
 
 post_upgrade() {
-    cat <<EOF
-==> Green Curve upgraded. Restart the daemon to run the new version:
-==>   sudo systemctl restart greencurve.service
-EOF
+    # If daemon was running, reload systemd and restart service
+    if systemctl is-active --quiet greencurve.service 2>/dev/null; then
+        systemctl daemon-reload 2>/dev/null || true
+        systemctl try-restart greencurve.service 2>/dev/null || true
+        echo "==> Green Curve upgraded; restarted running greencurve.service daemon."
+    else
+        echo "==> Green Curve upgraded. Start the daemon with:"
+        echo "==>   sudo systemctl enable --now greencurve.service"
+    fi
+}
+
+pre_remove() {
+    # Stop and disable daemon before pacman removes the binary and units
+    systemctl stop greencurve.service 2>/dev/null || true
+    systemctl disable greencurve.service 2>/dev/null || true
+    systemctl disable greencurve-resume.service 2>/dev/null || true
+}
+
+post_remove() {
+    systemctl daemon-reload 2>/dev/null || true
 }

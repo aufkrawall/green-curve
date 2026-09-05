@@ -17,6 +17,7 @@ source=(
     "greencurve-resume.service"
     "greencurve.sysusers"
     "greencurve.desktop"
+    "greencurve.png"
 )
 source_x86_64=("$url/releases/download/$pkgver/greencurve-$pkgver-linux-x64.tar.xz")
 source_aarch64=("$url/releases/download/$pkgver/greencurve-$pkgver-linux-arm64.tar.xz")
@@ -24,7 +25,8 @@ sha256sums=(
     'ab54902d53821b375a471990d515eb38a006971cc2b66352dba9a2d69793726e'
     'b5a58d0cdf6fd713765b69f470f670c4d8e3283e6862a5a37b92209ce2c3104c'
     'ea609d86699918483679359aff45bcd5d1344a76fee3b4dac6cf6805b6b272c7'
-    '18128da42df498478b55372b362361b2e8f403872785758e367843b48e024c58'
+    '70df9616dbba8cd76600dca962432813f2a4562175a8f322cc0c103a760b82e0'
+    'b834cc7fc3a5614a65b55f2d1c49c73927bf7d512b7ebb4fb9a02c1408ef19d1'
 )
 sha256sums_x86_64=('a3224f88b81c7d1a9b3cf47ccc7f76de78459e276c145e12b12643402cb484a1')
 sha256sums_aarch64=('4f22b24287b99b62da8eb2b6ad5d0ae4c9ec62fafda0a5e8d719097462b5bf82')
@@ -50,6 +52,10 @@ package() {
 
     # Desktop launcher
     install -Dm644 "$srcdir/greencurve.desktop" "$pkgdir/usr/share/applications/greencurve.desktop"
+
+    # Application icons
+    install -Dm644 "$srcdir/greencurve.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/greencurve.png"
+    install -Dm644 "$srcdir/greencurve.png" "$pkgdir/usr/share/pixmaps/greencurve.png"
 
     # License and documentation
     install -Dm644 "$srcdir/$_src/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"

@@ -12,7 +12,9 @@ so a rebuild only rewrites an icon when build.py itself changed.
 """
 
 import math
+import os
 import struct
+import sys
 import zlib
 
 def clamp01(value):
@@ -394,3 +396,29 @@ def write_ico(path, variant, sizes):
         handle.write(header)
         handle.write(directory)
         handle.write(image_data)
+
+
+def write_png(path, variant="app", size=256):
+    """Render a single PNG icon deterministically and write to path."""
+    data = rgba_to_png(render_icon(size, variant), size)
+    with open(path, "wb") as handle:
+        handle.write(data)
+    return data
+
+
+def export_hicolor_icons(share_dir, variant="app"):
+    """Write hicolor icon tree and fallback pixmap into share_dir."""
+    for size in (16, 32, 48, 64, 128, 256):
+        target_dir = os.path.join(share_dir, "icons", "hicolor", f"{size}x{size}", "apps")
+        os.makedirs(target_dir, exist_ok=True)
+        write_png(os.path.join(target_dir, "greencurve.png"), variant=variant, size=size)
+    pixmaps_dir = os.path.join(share_dir, "pixmaps")
+    os.makedirs(pixmaps_dir, exist_ok=True)
+    write_png(os.path.join(pixmaps_dir, "greencurve.png"), variant=variant, size=256)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == "--export-hicolor":
+        export_hicolor_icons(sys.argv[2])
+    elif len(sys.argv) >= 4 and sys.argv[1] == "--png":
+        write_png(sys.argv[2], size=int(sys.argv[3]))

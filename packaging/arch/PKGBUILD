@@ -17,13 +17,15 @@ source=(
     "greencurve-resume.service"
     "greencurve.sysusers"
     "greencurve.desktop"
+    "greencurve.png"
 )
 sha256sums=(
     'SKIP'
     'ab54902d53821b375a471990d515eb38a006971cc2b66352dba9a2d69793726e'
     'b5a58d0cdf6fd713765b69f470f670c4d8e3283e6862a5a37b92209ce2c3104c'
     'ea609d86699918483679359aff45bcd5d1344a76fee3b4dac6cf6805b6b272c7'
-    '18128da42df498478b55372b362361b2e8f403872785758e367843b48e024c58'
+    '70df9616dbba8cd76600dca962432813f2a4562175a8f322cc0c103a760b82e0'
+    'b834cc7fc3a5614a65b55f2d1c49c73927bf7d512b7ebb4fb9a02c1408ef19d1'
 )
 
 build() {
@@ -65,6 +67,11 @@ package() {
 
     # Desktop launcher
     install -Dm644 "$srcdir/greencurve.desktop" "$pkgdir/usr/share/applications/greencurve.desktop"
+
+    # Application icons
+    install -Dm644 "$srcdir/greencurve.png" "$pkgdir/usr/share/pixmaps/greencurve.png"
+    python tools/icon_render.py --export-hicolor "$pkgdir/usr/share" 2>/dev/null || \
+        install -Dm644 "$srcdir/greencurve.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/greencurve.png"
 
     # License and documentation
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"

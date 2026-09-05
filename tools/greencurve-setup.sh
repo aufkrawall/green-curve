@@ -203,6 +203,7 @@ Version=1.0
 Name=Green Curve
 Comment=NVIDIA VF curve, overclock, undervolt and fan control
 Exec="$exec_binary" --tui --from-desktop
+Icon=greencurve
 Terminal=true
 Categories=Utility;System;Settings;
 StartupNotify=false

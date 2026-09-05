@@ -14,6 +14,12 @@ import sys
 import tarfile
 import time
 
+try:
+    from icon_render import render_icon, rgba_to_png
+except ImportError:
+    sys.path.insert(0, os.path.dirname(__file__))
+    from icon_render import render_icon, rgba_to_png
+
 
 def arch_target_carch(arch):
     """Map internal architecture name to Arch Linux architecture name."""
@@ -134,6 +140,16 @@ def build_arch_package(script_dir, app_version, arch, binary_path, pkgrel=1, out
         "usr/share/doc/greencurve/README.md": (readme_data, 0o644),
     }
 
+    # Render application icons deterministically into hicolor tree and pixmaps
+    icon_sizes = (16, 32, 48, 64, 128, 256)
+    for size in icon_sizes:
+        png_data = rgba_to_png(render_icon(size, "app"), size)
+        fs_files[f"usr/share/icons/hicolor/{size}x{size}/apps/greencurve.png"] = (png_data, 0o644)
+    fs_files["usr/share/pixmaps/greencurve.png"] = (
+        rgba_to_png(render_icon(256, "app"), 256),
+        0o644,
+    )
+
     # Explicit directory paths in installation order
     dirs = [
         "usr",
@@ -144,6 +160,21 @@ def build_arch_package(script_dir, app_version, arch, binary_path, pkgrel=1, out
         "usr/lib/sysusers.d",
         "usr/share",
         "usr/share/applications",
+        "usr/share/icons",
+        "usr/share/icons/hicolor",
+        "usr/share/icons/hicolor/16x16",
+        "usr/share/icons/hicolor/16x16/apps",
+        "usr/share/icons/hicolor/32x32",
+        "usr/share/icons/hicolor/32x32/apps",
+        "usr/share/icons/hicolor/48x48",
+        "usr/share/icons/hicolor/48x48/apps",
+        "usr/share/icons/hicolor/64x64",
+        "usr/share/icons/hicolor/64x64/apps",
+        "usr/share/icons/hicolor/128x128",
+        "usr/share/icons/hicolor/128x128/apps",
+        "usr/share/icons/hicolor/256x256",
+        "usr/share/icons/hicolor/256x256/apps",
+        "usr/share/pixmaps",
         "usr/share/licenses",
         "usr/share/licenses/greencurve",
         "usr/share/doc",
@@ -365,6 +396,14 @@ def verify_arch_package(archive_path, fs_files, dirs):
                     text = data.decode("utf-8")
                     if "post_install()" not in text:
                         raise RuntimeError(".INSTALL missing post_install()")
+                    if "pre_remove()" not in text:
+                        raise RuntimeError(".INSTALL missing pre_remove()")
+                    if "post_upgrade()" not in text:
+                        raise RuntimeError(".INSTALL missing post_upgrade()")
+                elif member.name == "usr/share/applications/greencurve.desktop":
+                    text = data.decode("utf-8")
+                    if "Icon=greencurve" not in text:
+                        raise RuntimeError("greencurve.desktop missing Icon=greencurve")
                 elif member.name == ".MTREE":
                     decomp = gzip.decompress(data).decode("utf-8")
                     if "#mtree" not in decomp:
