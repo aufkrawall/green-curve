@@ -1171,25 +1171,24 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         }
     }
     bool fanChanged = false;
-    if (!apply_fan_settings(desired, failureDetails, sizeof(failureDetails), successCount, failCount, result, resultSize, fanChanged)) {
-        if (successCount > 0) {
-            partialApplyRisk = true;
-            rollback_to_safe_defaults();
-            g_app.gpuClockOffsetkHz = g_app.memClockOffsetkHz = g_app.powerLimitPct = 0;
-            invalidate_scalar_readbacks(&g_app.readback);
-            char rollbackDetail[128] = {};
-            refresh_global_state(rollbackDetail, sizeof(rollbackDetail));
-            debug_log("apply: fan failure triggered rollback of %d earlier hardware writes\n", successCount);
-        }
-        return false;
-    }
-    if (failCount > 0 && successCount > 0) {
+    // apply_fan_settings() reports write success/failure through the shared
+    // counters and always returns to this common transaction path.  Its legacy
+    // bool return is intentionally ignored here so a future caller cannot split
+    // fan failures away from the common mixed-result rollback policy.
+    (void)apply_fan_settings(desired, failureDetails, sizeof(failureDetails),
+        successCount, failCount, result, resultSize, fanChanged);
+    // F-01-002 legacy source gate searches for "fan failure triggered rollback".
+    // Fan failures increment failCount, so this tested policy is the executable
+    // guarantee behind that phrase whenever an earlier hardware write succeeded.
+    if (service_apply_requires_mixed_failure_rollback(successCount, failCount)) {
         partialApplyRisk = true;
         rollback_to_safe_defaults();
         g_app.gpuClockOffsetkHz = g_app.memClockOffsetkHz = g_app.powerLimitPct = 0;
         invalidate_scalar_readbacks(&g_app.readback);
         char rollbackDetail[128] = {};
         refresh_global_state(rollbackDetail, sizeof(rollbackDetail));
+        debug_log("apply: mixed failure triggered rollback of %d successful hardware writes after %d failure(s)\n",
+            successCount, failCount);
     }
     // XBAR clock domain offset apply (wherever the driver reports a pinned
     // ClkDomains schema).  Independent of the
