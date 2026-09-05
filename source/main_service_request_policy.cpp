@@ -250,9 +250,19 @@ static bool service_verify_written_file_path_scoped(const char* path,
         set_message(err, errSize, "Cannot resolve written file path");
         return false;
     }
-    return scope == GC_SERVICE_WRITE_MACHINE_CONFIG
-               ? service_path_is_within_machine_config(finalPath, err, errSize)
-               : service_path_is_within_resolved_profile(finalPath, err, errSize);
+    if (scope == GC_SERVICE_WRITE_MACHINE_CONFIG) {
+        return service_path_is_within_machine_config(finalPath, err, errSize);
+    }
+    if (scope == GC_SERVICE_WRITE_MACHINE_DATA) {
+        char serviceDataDir[MAX_PATH] = {};
+        if (!resolve_service_machine_data_dir(serviceDataDir, sizeof(serviceDataDir))) {
+            set_message(err, errSize, "Service machine data directory is unavailable");
+            return false;
+        }
+        return service_path_is_within_directory(finalPath, serviceDataDir,
+            "Path is outside the service machine data directory", err, errSize);
+    }
+    return service_path_is_within_resolved_profile(finalPath, err, errSize);
 }
 
 static bool service_verify_written_file_path(const char* path, char* err, size_t errSize) {

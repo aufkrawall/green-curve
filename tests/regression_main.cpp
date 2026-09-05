@@ -12505,5 +12505,36 @@ static int run_all_tests(int argc, char** argv) {
             return 4841;
     }
 
+    // ------------------------------------------------------------------
+    // Audit regression: SID token redaction and service write scopes
+    // ------------------------------------------------------------------
+    {
+        if (GC_SERVICE_WRITE_CALLER_PROFILE != 0 ||
+            GC_SERVICE_WRITE_MACHINE_CONFIG != 1 ||
+            GC_SERVICE_WRITE_MACHINE_DATA != 2)
+            return 4850;
+
+        char sid1Token[32] = {};
+        char sid2Token[32] = {};
+        char sid3Token[32] = {};
+        const char* sid1 = "S-1-5-21-1111111111-2222222222-3333333333-1001";
+        const char* sid2 = "S-1-5-21-1111111111-2222222222-3333333333-1002";
+        gc_log_identifier_token(sid1, sid1Token, sizeof(sid1Token));
+        gc_log_identifier_token(sid1, sid2Token, sizeof(sid2Token));
+        gc_log_identifier_token(sid2, sid3Token, sizeof(sid3Token));
+
+        // Deterministic and correctly formatted
+        if (strcmp(sid1Token, sid2Token) != 0) return 4851;
+        if (strncmp(sid1Token, "[id #", 5) != 0) return 4852;
+        if (sid1Token[21] != ']') return 4853;
+
+        // Distinct identities must produce distinct tokens
+        if (strcmp(sid1Token, sid3Token) == 0) return 4854;
+
+        // No raw SID leakage
+        if (strstr(sid1Token, "S-1-5") != nullptr || strstr(sid1Token, "1001") != nullptr)
+            return 4855;
+    }
+
     return 0;
 }

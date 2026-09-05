@@ -1,3 +1,5 @@
+#include "log_redaction_policy.h"
+
 static bool ensure_directory_recursive_windows(const char* path, char* err, size_t errSize) {
     if (!path || !*path) return true;
 
@@ -24,7 +26,11 @@ static bool ensure_directory_recursive_windows(const char* path, char* err, size
                     return false;
                 }
                 DWORD attrs = gc_GetFileAttributesUtf8(temp);
-                if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_REPARSE_POINT)) {
+                if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+                    set_message(err, errSize, "Path %s exists but is not a directory", temp);
+                    return false;
+                }
+                if (attrs & FILE_ATTRIBUTE_REPARSE_POINT) {
                     set_message(err, errSize, "Directory %s is a reparse point, refusing to traverse", temp);
                     return false;
                 }
@@ -37,6 +43,15 @@ static bool ensure_directory_recursive_windows(const char* path, char* err, size
         DWORD e = GetLastError();
         if (e != ERROR_ALREADY_EXISTS) {
             set_message(err, errSize, "Failed creating directory %s (error %lu)", temp, e);
+            return false;
+        }
+        DWORD attrs = gc_GetFileAttributesUtf8(temp);
+        if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+            set_message(err, errSize, "Path %s exists but is not a directory", temp);
+            return false;
+        }
+        if (attrs & FILE_ATTRIBUTE_REPARSE_POINT) {
+            set_message(err, errSize, "Directory %s is a reparse point, refusing to use", temp);
             return false;
         }
     }
@@ -330,11 +345,15 @@ static bool resolve_service_user_data_paths(DWORD sessionId, char* err, size_t e
             CloseHandle(hToken);
             return true;
         }
+        char oldSidToken[32] = {};
+        char newSidToken[32] = {};
+        gc_log_identifier_token(g_serviceUserPathsSid, oldSidToken, sizeof(oldSidToken));
+        gc_log_identifier_token(userSid, newSidToken, sizeof(newSidToken));
         debug_log("service user paths: identity changed, clearing cached paths (oldSession=%lu newSession=%lu oldSid=%s newSid=%s)\n",
             (unsigned long)g_serviceUserPathsSessionId,
             (unsigned long)sessionId,
-            g_serviceUserPathsSid[0] ? g_serviceUserPathsSid : "<none>",
-            userSid[0] ? userSid : "<none>");
+            oldSidToken,
+            newSidToken);
         clear_service_user_data_path_cache();
     }
     WCHAR profileDirW[MAX_PATH] = {};

@@ -63,8 +63,22 @@ static bool secure_random_temp_suffix(gc_u64* suffixOut, char* err,
 }
 
 static bool write_text_file_atomic(const char* path, const char* data, size_t dataSize, char* err, size_t errSize) {
-    if (g_app.isServiceProcess && g_serviceUserPathsResolved) {
-        return write_text_file_atomic_service(path, data, dataSize, err, errSize);
+    if (g_app.isServiceProcess) {
+        if (g_serviceUserPathsResolved) {
+            return write_text_file_atomic_service(path, data, dataSize, err, errSize);
+        }
+        if (service_path_is_within_machine_config(path, nullptr, 0)) {
+            return write_text_file_atomic_service_scoped(
+                path, data, dataSize, GC_SERVICE_WRITE_MACHINE_CONFIG, err, errSize);
+        }
+        char serviceDataDir[MAX_PATH] = {};
+        if (resolve_service_machine_data_dir(serviceDataDir, sizeof(serviceDataDir)) &&
+            service_path_is_within_directory(path, serviceDataDir, "Service machine data directory", nullptr, 0)) {
+            return write_text_file_atomic_service_scoped(
+                path, data, dataSize, GC_SERVICE_WRITE_MACHINE_DATA, err, errSize);
+        }
+        set_message(err, errSize, "Service user paths unresolved; un-scoped write refused");
+        return false;
     }
     if (!path || !data) {
         set_message(err, errSize, "Invalid file write arguments");
@@ -148,6 +162,10 @@ static bool write_text_file_atomic_service_scoped(const char* path, const char* 
         return false;
     }
 
+    if (!verify_parent_no_reparse_point(path, err, errSize)) {
+        return false;
+    }
+
     // Verify the parent directory is safe (not a reparse point) before creating any temp file.
     char parentDir[MAX_PATH] = {};
     if (FAILED(StringCchCopyA(parentDir, ARRAY_COUNT(parentDir), path))) {
@@ -157,32 +175,51 @@ static bool write_text_file_atomic_service_scoped(const char* path, const char* 
     char* lastSlash = strrchr(parentDir, '\\');
     if (!lastSlash) lastSlash = strrchr(parentDir, '/');
     if (lastSlash) *lastSlash = 0;
-    HANDLE parentHandle = gc_CreateFileUtf8(parentDir,
+    ScopedHandle parentHandle(gc_CreateFileUtf8(parentDir,
         GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr,
         OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-        nullptr);
-    if (parentHandle == INVALID_HANDLE_VALUE) {
+        nullptr));
+    if (!parentHandle.valid()) {
         set_message(err, errSize, "Cannot open parent directory %s (error %lu)", parentDir, GetLastError());
         return false;
     }
+    BY_HANDLE_FILE_INFORMATION parentInfo = {};
+    if (!GetFileInformationByHandle(parentHandle.get(), &parentInfo)) {
+        set_message(err, errSize, "Cannot query parent directory information for %s", parentDir);
+        return false;
+    }
+    if (parentInfo.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+        set_message(err, errSize, "Parent directory %s is a reparse point", parentDir);
+        return false;
+    }
     char parentFinalPath[MAX_PATH] = {};
-    DWORD parentFinalLen = gc_GetFinalPathNameByHandleUtf8(parentHandle, parentFinalPath, ARRAY_COUNT(parentFinalPath), FILE_NAME_NORMALIZED);
-    CloseHandle(parentHandle);
+    DWORD parentFinalLen = gc_GetFinalPathNameByHandleUtf8(parentHandle.get(), parentFinalPath, ARRAY_COUNT(parentFinalPath), FILE_NAME_NORMALIZED);
     if (parentFinalLen == 0 || parentFinalLen >= ARRAY_COUNT(parentFinalPath)) {
         set_message(err, errSize, "Cannot resolve parent directory path");
         return false;
     }
-    bool parentInScope =
-        scope == GC_SERVICE_WRITE_MACHINE_CONFIG
-            ? service_path_is_within_machine_config(parentFinalPath, err, errSize)
-            : service_path_is_within_resolved_profile(parentFinalPath, err, errSize);
+    bool parentInScope = false;
+    if (scope == GC_SERVICE_WRITE_MACHINE_CONFIG) {
+        parentInScope = service_path_is_within_machine_config(parentFinalPath, err, errSize);
+    } else if (scope == GC_SERVICE_WRITE_MACHINE_DATA) {
+        char serviceDataDir[MAX_PATH] = {};
+        if (!resolve_service_machine_data_dir(serviceDataDir, sizeof(serviceDataDir))) {
+            set_message(err, errSize, "Service machine data directory is unavailable");
+            return false;
+        }
+        parentInScope = service_path_is_within_directory(parentFinalPath, serviceDataDir,
+            "Path is outside the service machine data directory", err, errSize);
+    } else {
+        parentInScope = service_path_is_within_resolved_profile(parentFinalPath, err, errSize);
+    }
     if (!parentInScope) return false;
+    const char* scopeTag = scope == GC_SERVICE_WRITE_MACHINE_CONFIG ? "machine-scoped" :
+                           scope == GC_SERVICE_WRITE_MACHINE_DATA ? "machine-data-scoped" : "caller-scoped";
     debug_log("write_text_file_atomic_service: %s parent directory verified (%s)\n",
-              scope == GC_SERVICE_WRITE_MACHINE_CONFIG ? "machine-scoped" : "caller-scoped",
-              parentFinalPath);
+              scopeTag, parentFinalPath);
 
     if (!ensure_parent_directory_for_file(path, err, errSize)) return false;
 

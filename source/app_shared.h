@@ -818,6 +818,7 @@ bool config_section_header_matches_ascii(const char* line, const char* section);
 enum GcServiceWriteScope {
     GC_SERVICE_WRITE_CALLER_PROFILE = 0,
     GC_SERVICE_WRITE_MACHINE_CONFIG = 1,
+    GC_SERVICE_WRITE_MACHINE_DATA = 2,
 };
 
 bool get_config_string(const char* path, const char* section, const char* key,

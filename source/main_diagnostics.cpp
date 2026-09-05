@@ -51,8 +51,29 @@ static const char* json_snapshot_path() {
     return g_jsonPath[0] ? g_jsonPath : APP_JSON_FILE;
 }
 
-static const char* error_log_path() {
+static char g_errorEarlyLogPath[MAX_PATH] = {};
+
+static const char* service_early_error_log_path() {
+    if (g_errorEarlyLogPath[0]) return g_errorEarlyLogPath;
+
+    char dir[MAX_PATH] = {};
+    if (!resolve_service_machine_data_dir(dir, sizeof(dir))) {
+        return APP_LOG_FILE; // last-resort relative path
+    }
+    StringCchPrintfA(g_errorEarlyLogPath, ARRAY_COUNT(g_errorEarlyLogPath),
+        "%s\\%s", dir, APP_LOG_FILE);
+    return g_errorEarlyLogPath;
+}
+
+static const char* effective_error_log_path() {
+    if (g_app.isServiceProcess && !g_serviceUserPathsResolved) {
+        return service_early_error_log_path();
+    }
     return g_errorLogPath[0] ? g_errorLogPath : APP_LOG_FILE;
+}
+
+static const char* error_log_path() {
+    return effective_error_log_path();
 }
 
 static const char* effective_debug_log_path() {
