@@ -175,9 +175,13 @@ static bool write_text_file_atomic_service_scoped(const char* path, const char* 
     char* lastSlash = strrchr(parentDir, '\\');
     if (!lastSlash) lastSlash = strrchr(parentDir, '/');
     if (lastSlash) *lastSlash = 0;
+    // Keep the verified directory object pinned for the path-based write and
+    // finalize sequence. In particular, do not share DELETE: allowing it would
+    // permit the directory itself to be renamed/replaced while this handle is
+    // supposedly anchoring the verified scope.
     ScopedHandle parentHandle(gc_CreateFileUtf8(parentDir,
         GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
         nullptr,
         OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
@@ -234,9 +238,11 @@ static bool write_text_file_atomic_service_scoped(const char* path, const char* 
             set_message(err, errSize, "Temporary path is too long");
             return false;
         }
+        // Keep the freshly-created object non-delete-shareable while it is
+        // verified and populated. It is closed before the final rename.
         h = gc_CreateFileUtf8(tempPath,
             GENERIC_READ | GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
             nullptr,
             CREATE_NEW,
             FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED,

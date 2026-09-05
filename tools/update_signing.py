@@ -206,7 +206,10 @@ def verify(public_point, message, signature):
         return False
     r = int.from_bytes(signature[:KEY_BYTES], "big")
     s = int.from_bytes(signature[KEY_BYTES:], "big")
-    if not (1 <= r < N and 1 <= s < N):
+    # Match the shipped verifier exactly: signatures are canonical low-S only.
+    # Accepting high-S here would let the maintainer CLI bless an artifact that
+    # every client then correctly refuses.
+    if not (1 <= r < N and 1 <= s <= N // 2):
         return False
     e = _bits_to_int(hashlib.sha256(message).digest())
     w = _inverse(s, N)
@@ -443,6 +446,14 @@ def run_self_tests():
         failures.append("a zero r verified")
     if verify(public, message, signature[:KEY_BYTES] + b"\x00" * KEY_BYTES):
         failures.append("a zero s verified")
+    # The mathematically equivalent high-S form must also be rejected, because
+    # the shipped C++ verifier enforces the same canonical representation.
+    canonical_s = int.from_bytes(signature[KEY_BYTES:], "big")
+    high_s_signature = (
+        signature[:KEY_BYTES] + (N - canonical_s).to_bytes(KEY_BYTES, "big")
+    )
+    if verify(public, message, high_s_signature):
+        failures.append("a non-canonical high-S signature verified")
 
     # 4. Determinism: signing twice must produce identical bytes.
     if sign(key, message) != signature:

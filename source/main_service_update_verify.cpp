@@ -34,10 +34,10 @@
 // Base64
 // ---------------------------------------------------------------------------
 
-// Strict decoder: canonical padding, no whitespace beyond a single trailing
-// newline, no alternate alphabet.  A permissive decoder would accept several
-// spellings of one signature, and "which bytes were actually signed" must have
-// exactly one answer.
+// Strict decoder: canonical padding and pad bits, no whitespace beyond one
+// trailing LF or CRLF, no alternate alphabet. A permissive decoder would accept
+// several spellings of one signature, and "which bytes were actually signed"
+// must have exactly one answer.
 static int gc_update_base64_value(char c) {
     if (c >= 'A' && c <= 'Z') return c - 'A';
     if (c >= 'a' && c <= 'z') return c - 'a' + 26;
@@ -53,10 +53,15 @@ static bool gc_update_base64_decode(const char* text, size_t textLen,
     if (!text || !out || !outLen) return false;
     *outLen = 0;
 
-    // Tolerate exactly one trailing CR/LF pair, because the signature is a text
-    // file and a text-mode round trip is the one benign mutation it can suffer.
-    while (textLen > 0 && (text[textLen - 1] == '\n' || text[textLen - 1] == '\r')) {
+    // Tolerate exactly one conventional text-file line ending. A lone CR or a
+    // second line ending remains in the payload and is rejected by the alphabet
+    // check below instead of silently creating another spelling.
+    if (textLen >= 2 && text[textLen - 2] == '\r' && text[textLen - 1] == '\n') {
+        textLen -= 2;
+    } else if (textLen >= 1 && text[textLen - 1] == '\n') {
         textLen--;
+    } else if (textLen >= 1 && text[textLen - 1] == '\r') {
+        return false;
     }
     if (textLen == 0 || (textLen % 4) != 0) return false;
 
@@ -76,6 +81,12 @@ static bool gc_update_base64_decode(const char* text, size_t textLen,
                 quad[j] = gc_update_base64_value(c);
                 if (quad[j] < 0) return false;
             }
+        }
+        // Canonical Base64 requires the unused low bits before '=' to be zero.
+        // Otherwise distinct text strings decode to the same signature bytes.
+        if ((padding == 2 && (quad[1] & 0x0F) != 0) ||
+            (padding == 1 && (quad[2] & 0x03) != 0)) {
+            return false;
         }
         unsigned int triple = ((unsigned int)quad[0] << 18) |
                               ((unsigned int)quad[1] << 12) |

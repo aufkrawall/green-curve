@@ -170,14 +170,22 @@ static DWORD WINAPI service_pipe_worker_thread_proc(void* parameter) {
                 g_serviceStopEvent ? 2 : 1, waitHandles, FALSE, INFINITE);
             if (stopIdx != (DWORD)-1 &&
                 waitResult == WAIT_OBJECT_0 + stopIdx) {
+                // CancelIoEx is asynchronous. Join the pending connect before
+                // the stack OVERLAPPED/event can be destroyed below.
                 CancelIoEx(pipe, &ov);
+                DWORD cancelled = 0;
+                GetOverlappedResult(pipe, &ov, &cancelled, TRUE);
                 break;
             }
             connected = waitResult ==
                 WAIT_OBJECT_0 + (g_serviceStopEvent ? 1 : 0);
             if (!connected) {
+                DWORD waitError = GetLastError();
+                CancelIoEx(pipe, &ov);
+                DWORD cancelled = 0;
+                GetOverlappedResult(pipe, &ov, &cancelled, TRUE);
                 debug_log("pipe_server: worker %d connect wait failed (error %lu)\n",
-                    index, GetLastError());
+                    index, waitError);
                 break;
             }
         } else if (!connected && connectErr == ERROR_PIPE_CONNECTED) {
@@ -196,7 +204,6 @@ static DWORD WINAPI service_pipe_worker_thread_proc(void* parameter) {
         service_serve_pipe_connection(pipe);
     }
 
-    CancelIoEx(pipe, &ov);
     CloseHandle(ov.hEvent);
     DisconnectNamedPipe(pipe);
     gc_pipe_listener::retire_worker_pipe(index);

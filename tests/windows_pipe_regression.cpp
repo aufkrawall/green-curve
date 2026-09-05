@@ -75,8 +75,18 @@ static void notify_response_consumed(ClientContext* ctx) {
     if (ctx && ctx->responseConsumedEvent) SetEvent(ctx->responseConsumedEvent);
 }
 
-// Deadline-bounded exact I/O with CancelIoEx on every timeout path -- the
-// same contract as the production service_pipe_io_exact() primitive.
+// CancelIoEx only requests cancellation. Keep the OVERLAPPED and event alive
+// until Windows reports the operation complete, matching the production fix
+// this fixture exercises.
+static void fixture_cancel_and_join(HANDLE pipe, OVERLAPPED* ov) {
+    if (!pipe || pipe == INVALID_HANDLE_VALUE || !ov) return;
+    CancelIoEx(pipe, ov);
+    DWORD ignored = 0;
+    GetOverlappedResult(pipe, ov, &ignored, TRUE);
+}
+
+// Deadline-bounded exact I/O with cancellation joined on every timeout path --
+// the same contract as the production service_pipe_io_exact() primitive.
 static bool fixture_io_exact(HANDLE pipe, bool write, void* data,
         DWORD dataSize, DWORD timeoutMs) {
     OVERLAPPED ov = {};
@@ -94,7 +104,7 @@ static bool fixture_io_exact(HANDLE pipe, bool write, void* data,
             ok = ((result || completeErr == ERROR_MORE_DATA) &&
                   transferred == dataSize);
         } else {
-            CancelIoEx(pipe, &ov);
+            fixture_cancel_and_join(pipe, &ov);
         }
     }
     CloseHandle(ov.hEvent);
@@ -162,7 +172,7 @@ static DWORD WINAPI client_thread_proc(void* parameter) {
             return 904;
         }
         if (WaitForSingleObject(ov.hEvent, 4000) != WAIT_OBJECT_0) {
-            CancelIoEx(pipe, &ov);
+            fixture_cancel_and_join(pipe, &ov);
             CloseHandle(ov.hEvent);
             CloseHandle(pipe);
             return 905;
@@ -170,7 +180,6 @@ static DWORD WINAPI client_thread_proc(void* parameter) {
         DWORD transferred = 0;
         if (!GetOverlappedResult(pipe, &ov, &transferred, FALSE) ||
             transferred != wireBytes) {
-            CancelIoEx(pipe, &ov);
             CloseHandle(ov.hEvent);
             CloseHandle(pipe);
             return 906;
@@ -199,7 +208,7 @@ static DWORD WINAPI client_thread_proc(void* parameter) {
     DWORD transferred = 0;
     BOOL readOk = wait == WAIT_OBJECT_0 &&
                   GetOverlappedResult(pipe, &ov, &transferred, FALSE);
-    CancelIoEx(pipe, &ov);
+    if (wait != WAIT_OBJECT_0) fixture_cancel_and_join(pipe, &ov);
     CloseHandle(ov.hEvent);
     CloseHandle(pipe);
     notify_response_consumed(ctx);
@@ -286,7 +295,7 @@ static DWORD WINAPI serve_one_connection(void* parameter) {
     DWORD connectErr = connected ? ERROR_SUCCESS : GetLastError();
     if (!connected && connectErr == ERROR_IO_PENDING) {
         if (WaitForSingleObject(connectOv.hEvent, 4000) != WAIT_OBJECT_0) {
-            CancelIoEx(pipe, &connectOv);
+            fixture_cancel_and_join(pipe, &connectOv);
             CloseHandle(connectOv.hEvent);
             CloseHandle(pipe);
             return 802;

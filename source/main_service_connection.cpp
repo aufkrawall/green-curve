@@ -392,10 +392,18 @@ static bool service_pipe_io_exact(HANDLE pipe, bool writeOp, void* buffer, DWORD
                     bufferSize);
             }
         } else if (waitResult == WAIT_TIMEOUT) {
+            // CancelIoEx only requests cancellation. Join the operation before
+            // the stack OVERLAPPED and its event handle leave scope.
             CancelIoEx(pipe, &ov);
+            DWORD cancelled = 0;
+            GetOverlappedResult(pipe, &ov, &cancelled, TRUE);
             set_message(err, errSize, "Timed out during %s", label ? label : "service pipe I/O");
         } else {
-            set_message(err, errSize, "Failed waiting for %s (error %lu)", label ? label : "service pipe I/O", GetLastError());
+            DWORD waitError = GetLastError();
+            CancelIoEx(pipe, &ov);
+            DWORD cancelled = 0;
+            GetOverlappedResult(pipe, &ov, &cancelled, TRUE);
+            set_message(err, errSize, "Failed waiting for %s (error %lu)", label ? label : "service pipe I/O", waitError);
         }
     } else {
         set_message(err, errSize, "Failed starting %s (error %lu)", label ? label : "service pipe I/O", startErr);

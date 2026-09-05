@@ -63,8 +63,9 @@ inline void set_prefix_err_fmt(char* err, size_t errSize, const char* fmt,
 
 // Read exactly SERVICE_REQUEST_HEADER_BYTES from the front of the inbound
 // message-mode message, tolerating the expected ERROR_MORE_DATA partial
-// completion. Every timeout/failure path cancels the outstanding I/O with
-// CancelIoEx() before returning. Fixed output size; never allocates.
+// completion. Every timeout/failure path cancels AND JOINS the outstanding I/O
+// before returning: CancelIoEx() only requests cancellation, and the stack
+// OVERLAPPED/event must stay alive until its completion has been observed.
 static bool service_pipe_read_request_header(HANDLE pipe,
         ServicePipePrefixRead* out, DWORD timeoutMs, char* err,
         size_t errSize) {
@@ -119,13 +120,18 @@ static bool service_pipe_read_request_header(HANDLE pipe,
             }
         } else if (wait == WAIT_TIMEOUT) {
             CancelIoEx(pipe, &ov);
+            DWORD cancelled = 0;
+            GetOverlappedResult(pipe, &ov, &cancelled, TRUE);
             gc_pipe_prefix_internal::set_prefix_err(err, errSize,
                 "Timed out waiting for the service request header");
         } else {
+            DWORD waitError = GetLastError();
             CancelIoEx(pipe, &ov);
+            DWORD cancelled = 0;
+            GetOverlappedResult(pipe, &ov, &cancelled, TRUE);
             gc_pipe_prefix_internal::set_prefix_err_fmt(err, errSize,
                 "Failed waiting for the service request header (error %lu)",
-                GetLastError());
+                waitError);
         }
     } else {
         gc_pipe_prefix_internal::set_prefix_err_fmt(err, errSize,
@@ -143,7 +149,8 @@ static bool service_pipe_read_request_header(HANDLE pipe,
 // A PeekNamedPipe gate keeps this O(0) for honest clients that sent exactly
 // one message -- they get their refusal immediately instead of after a full
 // deadline -- while a flooding client is drained up to the fixed chunk cap and
-// wall-clock bound. Cancels any still-outstanding chunk read on timeout.
+// wall-clock bound. Cancels and joins any still-outstanding chunk read before
+// its OVERLAPPED/event storage goes out of scope.
 static bool service_pipe_drain_inbound_message(HANDLE pipe, DWORD timeoutMs,
         char* err, size_t errSize) {
     if (err && errSize) err[0] = 0;
@@ -218,9 +225,19 @@ static bool service_pipe_drain_inbound_message(HANDLE pipe, DWORD timeoutMs,
                         completeErr);
                 }
             } else {
+                DWORD waitError = wait == WAIT_TIMEOUT ? ERROR_SUCCESS
+                                                       : GetLastError();
                 CancelIoEx(pipe, &ov);
-                gc_pipe_prefix_internal::set_prefix_err(err, errSize,
-                    "Timed out draining an oversized or stalled service message");
+                DWORD cancelled = 0;
+                GetOverlappedResult(pipe, &ov, &cancelled, TRUE);
+                if (wait == WAIT_TIMEOUT) {
+                    gc_pipe_prefix_internal::set_prefix_err(err, errSize,
+                        "Timed out draining an oversized or stalled service message");
+                } else {
+                    gc_pipe_prefix_internal::set_prefix_err_fmt(err, errSize,
+                        "Failed waiting while draining the service message (error %lu)",
+                        waitError);
+                }
                 fault = true;
             }
         } else if (startErr == ERROR_BROKEN_PIPE) {

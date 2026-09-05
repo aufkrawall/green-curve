@@ -119,17 +119,30 @@ static bool gc_update_http_open(const char* url, GcUpdateHttpHandles* handles,
                          GetLastError());
         return false;
     }
-    WinHttpSetTimeouts(handles->session, GC_UPDATE_HTTP_TIMEOUT_MS,
-                       GC_UPDATE_HTTP_TIMEOUT_MS, GC_UPDATE_HTTP_TIMEOUT_MS,
-                       GC_UPDATE_HTTP_TIMEOUT_MS);
+    if (!WinHttpSetTimeouts(handles->session, GC_UPDATE_HTTP_TIMEOUT_MS,
+                            GC_UPDATE_HTTP_TIMEOUT_MS, GC_UPDATE_HTTP_TIMEOUT_MS,
+                            GC_UPDATE_HTTP_TIMEOUT_MS)) {
+        DWORD error = GetLastError();
+        StringCchPrintfA(err, errSize,
+                         "cannot enforce updater HTTP timeouts (error %lu)", error);
+        gc_update_http_close(handles);
+        return false;
+    }
     // TLS 1.2+ explicitly.  Left at the OS default this would silently follow
-    // whatever an old or policy-modified system still enables.
+    // whatever an old or policy-modified system still enables.  This option is
+    // part of the trust boundary, so a system that refuses it must fail closed.
     DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
 #ifdef WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3
     protocols |= WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
 #endif
-    WinHttpSetOption(handles->session, WINHTTP_OPTION_SECURE_PROTOCOLS,
-                     &protocols, sizeof(protocols));
+    if (!WinHttpSetOption(handles->session, WINHTTP_OPTION_SECURE_PROTOCOLS,
+                          &protocols, sizeof(protocols))) {
+        DWORD error = GetLastError();
+        StringCchPrintfA(err, errSize,
+                         "cannot enforce updater TLS policy (error %lu)", error);
+        gc_update_http_close(handles);
+        return false;
+    }
 
     for (int hop = 0; hop <= GC_UPDATE_MAX_REDIRECTS; ++hop) {
         GcUpdateUrl parsed;
@@ -170,10 +183,18 @@ static bool gc_update_http_open(const char* url, GcUpdateHttpHandles* handles,
             return false;
         }
 
-        // Redirects are ours to validate, so WinHTTP must not chase them.
-        DWORD disable = WINHTTP_DISABLE_REDIRECTS;
-        WinHttpSetOption(handles->request, WINHTTP_OPTION_DISABLE_FEATURE,
-                         &disable, sizeof(disable));
+        // Redirects are ours to validate, so WinHTTP must not chase them.  The
+        // updater is also deliberately stateless: public release fetches have
+        // no reason to accept or replay server-provided cookies.
+        DWORD disable = WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_COOKIES;
+        if (!WinHttpSetOption(handles->request, WINHTTP_OPTION_DISABLE_FEATURE,
+                              &disable, sizeof(disable))) {
+            DWORD error = GetLastError();
+            StringCchPrintfA(err, errSize,
+                             "cannot enforce updater request policy (error %lu)", error);
+            gc_update_http_close(handles);
+            return false;
+        }
 
         if (!WinHttpSendRequest(handles->request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                                 WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
