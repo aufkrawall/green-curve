@@ -141,8 +141,8 @@ static bool service_lifecycle_revalidate_logon_context(
         service_load_logon_profile_from_context(&currentContext,
             &currentDesired, &currentSlot, &currentSource);
     if (resolved == SERVICE_LOGON_PROFILE_RESOLVED &&
-        memcmp(&currentContext.configuredGpu, &originalContext->configuredGpu,
-            sizeof(currentContext.configuredGpu)) != 0) {
+        !configured_gpu_selection_equal(&currentContext.configuredGpu,
+            &originalContext->configuredGpu)) {
         set_message(detail, detailSize,
             "configured target GPU changed before write");
         return false;

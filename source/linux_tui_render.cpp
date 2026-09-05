@@ -271,15 +271,28 @@ int edit_step(TuiField field) {
 }
 
 bool parse_mouse_sequence(const std::string& sequence, TuiInputEvent* event) {
-    int button = 0, x = 0, y = 0;
-    char suffix = 0;
-    if (sscanf(sequence.c_str(), "\x1b[<%d;%d;%d%c",
-               &button, &x, &y, &suffix) != 4) return false;
+    if (!event || sequence.size() < 6) return false;
+    const char* p = sequence.c_str();
+    if (p[0] != '\x1b' || p[1] != '[' || p[2] != '<') return false;
+    p += 3;
+    char* end = nullptr;
+    errno = 0;
+    long button = strtol(p, &end, 10);
+    if (!end || *end != ';' || errno != 0) return false;
+    p = end + 1;
+    errno = 0;
+    long x = strtol(p, &end, 10);
+    if (!end || *end != ';' || errno != 0) return false;
+    p = end + 1;
+    errno = 0;
+    long y = strtol(p, &end, 10);
+    if (!end || (*end != 'M' && *end != 'm') || errno != 0) return false;
+    if (end[1] != '\0') return false;
     event->type = TUI_INPUT_MOUSE;
-    event->mouseX = x;
-    event->mouseY = y;
-    event->mouseButton = button;
-    event->mousePress = suffix == 'M';
+    event->mouseX = (int)x;
+    event->mouseY = (int)y;
+    event->mouseButton = (int)button;
+    event->mousePress = (*end == 'M');
     return true;
 }
 

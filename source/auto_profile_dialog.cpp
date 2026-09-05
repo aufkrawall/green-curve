@@ -286,6 +286,8 @@ static LRESULT CALLBACK apd_hotkey_subclass_proc(HWND hWnd, UINT uMsg, WPARAM wP
         case WM_NCDESTROY:
             RemoveWindowSubclass(hWnd, apd_hotkey_subclass_proc, uIdSubclass);
             break;
+        default:
+            break;
     }
     return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
@@ -494,6 +496,8 @@ static LRESULT CALLBACK AutoProfileDialogProc(HWND hwnd, UINT msg, WPARAM wParam
             }
             memset(&g_apDialog, 0, sizeof(g_apDialog));
             return 0;
+        default:
+            break;
     }
     return DefWindowProcA(hwnd, msg, wParam, lParam);
 }

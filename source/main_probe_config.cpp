@@ -649,15 +649,6 @@ static bool get_window_text_safe(HWND hwnd, char* buf, int bufSize) {
     return true;
 }
 
-static void initialize_desired_settings_defaults(DesiredSettings* desired) {
-    if (!desired) return;
-    memset(desired, 0, sizeof(*desired));
-    desired->lockTracksAnchor = true;
-    desired->fanAuto = true;
-    desired->fanMode = FAN_MODE_AUTO;
-    fan_curve_set_default(&desired->fanCurve);
-}
-
 static void set_desired_fan_from_legacy_value(DesiredSettings* desired, bool fanAuto, int fanPercent) {
     if (!desired) return;
     desired->hasFan = true;

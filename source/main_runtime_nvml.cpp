@@ -487,7 +487,6 @@ static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_
             nvmlReturn_t pr = g_nvml_api.setFanControlPolicy(g_app.nvmlDevice, fan, NVML_FAN_POLICY_MANUAL);
             if (pr == NVML_SUCCESS) {
                 g_app.fanPolicy[fan] = NVML_FAN_POLICY_MANUAL;
-                alreadyManual = true;
             } else {
                 debug_log("nvml_set_fan_manual: setFanControlPolicy fan=%u failed: %s\n", fan, nvml_err_name(pr));
             }
@@ -614,8 +613,8 @@ static bool nvml_select_device_for_selected_gpu(char* detail, size_t detailSize)
             g_app.selectedGpu.pciBus = pci.bus;
             g_app.selectedGpu.pciDevice = pci.device;
             unsigned int domain = 0, bus = 0, device = 0, function = 0;
-            if (sscanf(nvml_pci_bus_id_text(&pci), "%x:%x:%x.%x", &domain, &bus,
-                    &device, &function) == 4 && function <= 7u) {
+            if (parse_pci_bdf_string(nvml_pci_bus_id_text(&pci), &domain, &bus,
+                    &device, &function)) {
                 g_app.selectedGpu.pciFunction = function;
             }
             if (g_app.selectedGpuIndex < g_app.adapterCount) {

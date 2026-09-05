@@ -248,7 +248,7 @@ static bool startup_task_open_query_output(WCHAR* pathOut, size_t pathOutCount, 
 static bool startup_task_decode_query_xml(const BYTE* bytes, size_t byteCount, WCHAR** xmlOut, char* detail, size_t detailSize) {
     if (!xmlOut) return false;
     *xmlOut = nullptr;
-    if (!bytes || byteCount == 0 || byteCount > 128 * 1024) {
+    if (!bytes || byteCount == 0 || byteCount > (size_t)128 * 1024) {
         set_message(detail, detailSize, "Startup-task XML output has an invalid size");
         return false;
     }
@@ -380,7 +380,7 @@ static bool startup_task_query_xml(const WCHAR* taskName, WCHAR** xmlOut, char* 
         return false;
     }
     LARGE_INTEGER size = {};
-    bool sizeOk = GetFileSizeEx(input, &size) != FALSE && size.QuadPart > 0 && size.QuadPart <= 128 * 1024;
+    bool sizeOk = GetFileSizeEx(input, &size) != FALSE && size.QuadPart > 0 && size.QuadPart <= (LONGLONG)128 * 1024;
     if (!sizeOk) {
         CloseHandle(input);
         DeleteFileW(outputPath);
@@ -453,7 +453,7 @@ static bool startup_task_arguments_match(const WCHAR* actual, const WCHAR* expec
         _wcsicmp(argv[0], L"--logon-start") == 0 &&
         _wcsicmp(argv[1], L"--config") == 0 &&
         _wcsicmp(argv[2], expectedConfigPath) == 0;
-    LocalFree(argv);
+    LocalFree((HLOCAL)argv);
     return ok;
 }
 

@@ -368,8 +368,8 @@ static bool linux_backend_reenumerate_same_nvml_gpu(
         candidate.pciBus = pci.bus;
         candidate.pciDevice = pci.device;
         unsigned int domain = 0, bus = 0, slot = 0, function = 0;
-        if (sscanf(nvml_pci_bus_id_text(&pci), "%x:%x:%x.%x", &domain, &bus,
-                   &slot, &function) == 4) {
+        if (parse_pci_bdf_string(nvml_pci_bus_id_text(&pci), &domain, &bus,
+                   &slot, &function)) {
             candidate.pciDomain = domain;
             candidate.pciBus = bus;
             candidate.pciDevice = slot;
@@ -482,8 +482,8 @@ bool linux_backend_init(LinuxGpuState* g, const GpuAdapterInfo* target,
                 adapter->pciBus = pci.bus;
                 adapter->pciDevice = pci.device;
                 unsigned int domain = 0, bus = 0, device = 0, function = 0;
-                if (sscanf(nvml_pci_bus_id_text(&pci), "%x:%x:%x.%x", &domain, &bus,
-                        &device, &function) == 4) {
+                if (parse_pci_bdf_string(nvml_pci_bus_id_text(&pci), &domain, &bus,
+                        &device, &function)) {
                     adapter->pciDomain = domain;
                     adapter->pciBus = bus;
                     adapter->pciDevice = device;

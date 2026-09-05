@@ -47,6 +47,7 @@
 // VfBackendSpec, DesiredSettings + IPC validator, ServiceRequest/Response,
 // NvmlApi).  Shared verbatim with the Linux backend.
 #include "gpu_core.h"
+#include "desired_settings_ui_policy.h"
 #include "gpu_capability_policy.h"
 #include "nvapi_module_policy.h"
 // The in-app updater's pure policy and its trust root.  gpu_core.h has already

@@ -5,6 +5,7 @@
 #define GREEN_CURVE_LINUX_GPU_SELECTION_H
 
 #include "gpu_core.h"
+#include "gpu_selection_policy.h"
 
 static inline bool linux_gpu_bdf_valid(const GpuAdapterInfo* gpu) {
     return gpu && gpu->valid && gpu->pciDomain <= 0xFFFFu &&

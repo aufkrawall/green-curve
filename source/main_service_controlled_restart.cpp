@@ -314,7 +314,7 @@ static bool service_try_dispatch_controlled_restart_helper(int* exitCodeOut) {
     bool helper = argc > 1 && argv[1] &&
         _wcsicmp(argv[1], L"--recovery-restart-helper") == 0;
     if (!helper) {
-        LocalFree(argv);
+        LocalFree((HLOCAL)argv);
         return false;
     }
 
@@ -340,7 +340,7 @@ static bool service_try_dispatch_controlled_restart_helper(int* exitCodeOut) {
     if (parentProcess) CloseHandle(parentProcess);
     if (readyEvent) CloseHandle(readyEvent);
     SecureZeroMemory(nonceHex, sizeof(nonceHex));
-    LocalFree(argv);
+    LocalFree((HLOCAL)argv);
     if (exitCodeOut) *exitCodeOut = exitCode;
     return true;
 }
@@ -404,7 +404,7 @@ static bool service_launch_controlled_restart_helper(const char* nonceHex,
     bool attributesReady = attributes &&
         InitializeProcThreadAttributeList(attributes, 1, 0, &attributeBytes) &&
         UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-            inheritedHandles, sizeof(inheritedHandles), nullptr, nullptr);
+            (PVOID)inheritedHandles, sizeof(inheritedHandles), nullptr, nullptr);
     if (!attributesReady) {
         if (attributes) {
             DeleteProcThreadAttributeList(attributes);
@@ -552,13 +552,11 @@ static bool service_prepare_controlled_restart(const char* reason,
         if (helper) CloseHandle(helper);
         service_abort_controlled_restart(
             "validated helper exited before poisoned-runtime commit");
-        prepared = false;
         set_message(err, sizeof(err),
             "Validated helper exited before poisoned-runtime commit");
     } else if (prepared) {
         service_abort_controlled_restart(
             "external SCM stop superseded poisoned-runtime recovery");
-        prepared = false;
     }
 
     // Continuing this process is unsafe and an ordinary restart must never

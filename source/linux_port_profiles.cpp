@@ -4,6 +4,7 @@
 #include "linux_port_internal.h"
 #include "linux_debug_log.h"
 #include "profile_persistence_policy.h"
+#include "gpu_selection_policy.h"
 
 #include <string>
 #include <vector>
@@ -678,9 +679,7 @@ int load_linux_debug_enabled(const char* configPath, int defaultValue) {
 bool parse_linux_gpu_bdf(const char* text, GpuAdapterInfo* target) {
     if (!text || !target) return false;
     unsigned int domain = 0, bus = 0, device = 0, function = 0;
-    char trailing = 0;
-    if (sscanf(text, "%x:%x:%x.%x%c", &domain, &bus, &device, &function, &trailing) != 4 ||
-        domain > 0xFFFFu || bus > 0xFFu || device > 0x1Fu || function > 7u ||
+    if (!parse_pci_bdf_string(text, &domain, &bus, &device, &function) ||
         (domain == 0 && bus == 0 && device == 0 && function == 0))
         return false;
     memset(target, 0, sizeof(*target));

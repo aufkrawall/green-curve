@@ -1097,6 +1097,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 pos = gc_appendf(curveVerifySummary, sizeof(curveVerifySummary), pos,
                     " Hard lock pinned at %u MHz.", lockMhz);
             }
+            (void)pos;
         }
     }
     // Reset locked clocks only when this request intentionally owns/replaces
@@ -1172,7 +1173,6 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool fanChanged = false;
     if (!apply_fan_settings(desired, failureDetails, sizeof(failureDetails), successCount, failCount, result, resultSize, fanChanged)) {
         if (successCount > 0) {
-            partialApplyRisk = true;
             rollback_to_safe_defaults();
             g_app.gpuClockOffsetkHz = g_app.memClockOffsetkHz = g_app.powerLimitPct = 0;
             invalidate_scalar_readbacks(&g_app.readback);

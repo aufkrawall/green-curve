@@ -12373,5 +12373,137 @@ static int run_all_tests(int argc, char** argv) {
         if (gc_clk_probe_entry::parse("0", 0, &entry)) return 4808;
     }
 
+    // ------------------------------------------------------------------
+    // Audit regression: desired_settings_equal advanced domains
+    // ------------------------------------------------------------------
+    {
+        DesiredSettings s1 = {};
+        s1.hasGpuOffset = true;
+        s1.gpuOffsetMHz = 50;
+        DesiredSettings s2 = s1;
+        if (!desired_settings_equal(&s1, &s2)) return 4810;
+
+        // Verify each of the 8 advanced domain fields breaks equality
+        s2 = s1; s2.hasXbarOffsetKhz = true;
+        if (desired_settings_equal(&s1, &s2)) return 4811;
+
+        s1.hasXbarOffsetKhz = true; s1.xbarOffsetKhz = 1000;
+        s2 = s1; s2.xbarOffsetKhz = 2000;
+        if (desired_settings_equal(&s1, &s2)) return 4812;
+
+        s2 = s1; s2.hasXbarMsvddOffsetUv = true;
+        if (desired_settings_equal(&s1, &s2)) return 4813;
+
+        s1.hasXbarMsvddOffsetUv = true; s1.xbarMsvddOffsetUv = 5000;
+        s2 = s1; s2.xbarMsvddOffsetUv = 10000;
+        if (desired_settings_equal(&s1, &s2)) return 4814;
+
+        s2 = s1; s2.hasSysClkOffsetKhz = true;
+        if (desired_settings_equal(&s1, &s2)) return 4815;
+
+        s1.hasSysClkOffsetKhz = true; s1.sysClkOffsetKhz = 3000;
+        s2 = s1; s2.sysClkOffsetKhz = 4000;
+        if (desired_settings_equal(&s1, &s2)) return 4816;
+
+        s2 = s1; s2.hasVideoClkOffsetKhz = true;
+        if (desired_settings_equal(&s1, &s2)) return 4817;
+
+        s1.hasVideoClkOffsetKhz = true; s1.videoClkOffsetKhz = 1500;
+        s2 = s1; s2.videoClkOffsetKhz = 2500;
+        if (desired_settings_equal(&s1, &s2)) return 4818;
+    }
+
+    // ------------------------------------------------------------------
+    // Audit regression: gpu_adapter_info_equal & configured_gpu_selection_equal
+    // ------------------------------------------------------------------
+    {
+        GpuAdapterInfo a1 = {};
+        a1.valid = true;
+        a1.pciInfoValid = true;
+        a1.deviceId = 0x2684;
+        a1.pciDomain = 0;
+        a1.pciBus = 1;
+        a1.pciDevice = 0;
+        a1.pciFunction = 0;
+        strncpy(a1.name, "RTX 4090", sizeof(a1.name));
+
+        GpuAdapterInfo a2 = a1;
+        if (!gpu_adapter_info_equal(&a1, &a2)) return 4820;
+
+        a2.pciBus = 2;
+        if (gpu_adapter_info_equal(&a1, &a2)) return 4821;
+
+        a2 = a1;
+        strncpy(a2.name, "RTX 4080", sizeof(a2.name));
+        if (gpu_adapter_info_equal(&a1, &a2)) return 4822;
+
+        ConfiguredGpuSelection sel1 = {};
+        sel1.legacyIndex = 1;
+        sel1.stableIdentityPresent = false;
+        ConfiguredGpuSelection sel2 = sel1;
+        if (!configured_gpu_selection_equal(&sel1, &sel2)) return 4823;
+
+        sel2.legacyIndex = 2;
+        if (configured_gpu_selection_equal(&sel1, &sel2)) return 4824;
+
+        sel2 = sel1;
+        sel2.stableIdentityPresent = true;
+        sel2.identity = a1;
+        if (configured_gpu_selection_equal(&sel1, &sel2)) return 4825;
+
+        sel1.stableIdentityPresent = true;
+        sel1.identity = a1;
+        if (!configured_gpu_selection_equal(&sel1, &sel2)) return 4826;
+
+        sel2.identity.deviceId = 0x9999;
+        if (configured_gpu_selection_equal(&sel1, &sel2)) return 4827;
+    }
+
+    // ------------------------------------------------------------------
+    // Audit regression: parse_pci_bdf_string strict parser
+    // ------------------------------------------------------------------
+    {
+        unsigned int domain = 0, bus = 0, device = 0, function = 0;
+        if (!parse_pci_bdf_string("0000:01:00.0", &domain, &bus, &device, &function) ||
+            domain != 0 || bus != 1 || device != 0 || function != 0)
+            return 4830;
+
+        if (!parse_pci_bdf_string("  0000:0a:1f.7 \r\n", &domain, &bus, &device, &function) ||
+            domain != 0 || bus != 10 || device != 31 || function != 7)
+            return 4831;
+
+        if (!parse_pci_bdf_string("0000:FF:00.0", &domain, &bus, &device, &function) ||
+            domain != 0 || bus != 255 || device != 0 || function != 0)
+            return 4832;
+
+        if (!parse_pci_bdf_string("0001:00:00.0", &domain, &bus, &device, &function) ||
+            domain != 1 || bus != 0 || device != 0 || function != 0)
+            return 4833;
+
+        // Out of range bus (> 0xFF)
+        if (parse_pci_bdf_string("0000:100:00.0", &domain, &bus, &device, &function))
+            return 4834;
+
+        // Out of range device (> 0x1F)
+        if (parse_pci_bdf_string("0000:00:20.0", &domain, &bus, &device, &function))
+            return 4835;
+
+        // Out of range function (> 7)
+        if (parse_pci_bdf_string("0000:00:00.8", &domain, &bus, &device, &function))
+            return 4836;
+
+        // Malformed / incomplete
+        if (parse_pci_bdf_string("0000:00:00", &domain, &bus, &device, &function))
+            return 4837;
+        if (parse_pci_bdf_string("0000:00.00.0", &domain, &bus, &device, &function))
+            return 4838;
+        if (parse_pci_bdf_string("0000:00:00.0junk", &domain, &bus, &device, &function))
+            return 4839;
+        if (parse_pci_bdf_string("", &domain, &bus, &device, &function))
+            return 4840;
+        if (parse_pci_bdf_string(nullptr, &domain, &bus, &device, &function))
+            return 4841;
+    }
+
     return 0;
 }

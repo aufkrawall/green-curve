@@ -671,11 +671,7 @@ static void apply_fan_curve_tick() {
             detail, sizeof(detail))) return;
 
     int targetPercent = fan_curve_interpolate_percent(&activeCurve, currentTempC);
-    if (driverAutoActive) {
-        shouldApply = true;
-    } else if (!hasLastAppliedTemp) {
-        shouldApply = true;
-    } else if (targetPercent > lastAppliedPercent) {
+    if (driverAutoActive || !hasLastAppliedTemp || targetPercent > lastAppliedPercent) {
         shouldApply = true;
     } else if (targetPercent < lastAppliedPercent) {
         int minDrop = activeCurve.hysteresisC;
@@ -786,6 +782,8 @@ static bool validate_desired_fan_settings_for_apply(const DesiredSettings* desir
 }
 
 static bool apply_fan_settings(const DesiredSettings* desired, char* failureDetails, size_t failureDetailsSize, int& successCount, int& failCount, char* result, size_t resultSize, bool& outFanChanged) {
+    (void)result;
+    (void)resultSize;
     outFanChanged = false;
     if (!desired->hasFan) return true;
     set_last_apply_phase("apply: fan settings");

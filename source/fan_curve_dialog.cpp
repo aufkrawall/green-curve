@@ -24,19 +24,13 @@ static void fan_curve_dialog_select_combo_value(HWND combo, int value) {
 }
 
 static SIZE fan_curve_dialog_min_size() {
-    return adjusted_window_size_for_client(
-        dp(500),
-        dp(FAN_ZERO_RPM_GUI_MIN_CLIENT_HEIGHT),
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
-        WS_EX_DLGMODALFRAME);
+    return adjusted_window_size_for_client(dp(500), dp(FAN_ZERO_RPM_GUI_MIN_CLIENT_HEIGHT),
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME, WS_EX_DLGMODALFRAME);
 }
 
 static SIZE fan_curve_dialog_default_size() {
-    return adjusted_window_size_for_client(
-        dp(520),
-        dp(600),
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
-        WS_EX_DLGMODALFRAME);
+    return adjusted_window_size_for_client(dp(520), dp(600),
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME, WS_EX_DLGMODALFRAME);
 }
 
 static void fan_curve_dialog_update_zero_rpm_description() {
@@ -744,6 +738,8 @@ static LRESULT CALLBACK FanCurveDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
             }
             memset(&g_fanCurveDialog, 0, sizeof(g_fanCurveDialog));
             return 0;
+        default:
+            break;
     }
 
     return DefWindowProcA(hwnd, msg, wParam, lParam);

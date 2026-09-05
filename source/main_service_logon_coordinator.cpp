@@ -70,12 +70,10 @@ static DWORD WINAPI service_lifecycle_thread_proc(void*) {
         bool configReadinessSignal = false;
         bool dxgiAdapterReadinessSignal = dxgiAdapterWait != MAXDWORD &&
             wait == WAIT_OBJECT_0 + dxgiAdapterWait;
-        if (userConfigWait != MAXDWORD &&
-            wait == WAIT_OBJECT_0 + userConfigWait) {
-            configReadinessSignal =
-                service_lifecycle_consume_config_change_if_signaled();
-        } else if (machineConfigWait != MAXDWORD &&
-            wait == WAIT_OBJECT_0 + machineConfigWait) {
+        if ((userConfigWait != MAXDWORD &&
+             wait == WAIT_OBJECT_0 + userConfigWait) ||
+            (machineConfigWait != MAXDWORD &&
+             wait == WAIT_OBJECT_0 + machineConfigWait)) {
             configReadinessSignal =
                 service_lifecycle_consume_config_change_if_signaled();
         } else if (!dxgiAdapterReadinessSignal && wait != WAIT_OBJECT_0 + 1) {

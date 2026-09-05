@@ -401,8 +401,9 @@ static void read_nvidia_smi_max_clocks() {
             if (strstr(line, "Max Clocks")) { inMaxSection = true; line = nextLine; continue; }
             if (inMaxSection && line[0] == '[') inMaxSection = false;
             if (inMaxSection) {
-                char* vp = nullptr;
-                if ((vp = strstr(line, "Memory")) && (vp = strchr(vp, ':'))) {
+                char* mem = strstr(line, "Memory");
+                char* vp = mem ? strchr(mem, ':') : nullptr;
+                if (vp) {
                     unsigned int parsedMHz = 0;
                     if (parse_mhz_value_prefix(vp + 1, &parsedMHz)) {
                         g_app.smiMemMaxMHz = parsedMHz;

@@ -164,15 +164,25 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
             opts->hasAssetsDir = true;
         } else if (strcmp(arg, "--profile") == 0) {
             opts->recognized = true;
-            if (!argument_requires_value(argc, i) || !parse_int_strict(argv[++i], &opts->profileSlot) || opts->profileSlot < 1 || opts->profileSlot > CONFIG_NUM_SLOTS) {
+            if (!argument_requires_value(argc, i)) {
+                set_message(opts->error, sizeof(opts->error), "Invalid --profile value");
+                return false;
+            }
+            i++;
+            if (!parse_int_strict(argv[i], &opts->profileSlot) || opts->profileSlot < 1 || opts->profileSlot > CONFIG_NUM_SLOTS) {
                 set_message(opts->error, sizeof(opts->error), "Invalid --profile value");
                 return false;
             }
             opts->hasProfileSlot = true;
         } else if (strcmp(arg, "--gpu") == 0) {
             opts->recognized = true;
-            if (!argument_requires_value(argc, i) ||
-                !parse_linux_gpu_bdf(argv[++i], &opts->gpuTarget)) {
+            if (!argument_requires_value(argc, i)) {
+                set_message(opts->error, sizeof(opts->error),
+                            "Invalid --gpu value; expected DDDD:BB:DD.F PCI BDF");
+                return false;
+            }
+            i++;
+            if (!parse_linux_gpu_bdf(argv[i], &opts->gpuTarget)) {
                 set_message(opts->error, sizeof(opts->error),
                             "Invalid --gpu value; expected DDDD:BB:DD.F PCI BDF");
                 return false;
@@ -181,7 +191,12 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
         } else if (strcmp(arg, "--gpu-offset") == 0) {
             opts->recognized = true;
             int value = 0;
-            if (!argument_requires_value(argc, i) || !parse_int_strict(argv[++i], &value)) {
+            if (!argument_requires_value(argc, i)) {
+                set_message(opts->error, sizeof(opts->error), "Invalid --gpu-offset value");
+                return false;
+            }
+            i++;
+            if (!parse_int_strict(argv[i], &value)) {
                 set_message(opts->error, sizeof(opts->error), "Invalid --gpu-offset value");
                 return false;
             }
@@ -191,7 +206,12 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
         } else if (strcmp(arg, "--gpu-offset-exclude-low-count") == 0) {
             opts->recognized = true;
             int countValue = 0;
-            if (!argument_requires_value(argc, i) || !parse_int_strict(argv[++i], &countValue) || countValue < 0) {
+            if (!argument_requires_value(argc, i)) {
+                set_message(opts->error, sizeof(opts->error), "Invalid --gpu-offset-exclude-low-count value");
+                return false;
+            }
+            i++;
+            if (!parse_int_strict(argv[i], &countValue) || countValue < 0) {
                 set_message(opts->error, sizeof(opts->error), "Invalid --gpu-offset-exclude-low-count value");
                 return false;
             }
@@ -208,7 +228,12 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
         } else if (strcmp(arg, "--mem-offset") == 0) {
             opts->recognized = true;
             int value = 0;
-            if (!argument_requires_value(argc, i) || !parse_int_strict(argv[++i], &value)) {
+            if (!argument_requires_value(argc, i)) {
+                set_message(opts->error, sizeof(opts->error), "Invalid --mem-offset value");
+                return false;
+            }
+            i++;
+            if (!parse_int_strict(argv[i], &value)) {
                 set_message(opts->error, sizeof(opts->error), "Invalid --mem-offset value");
                 return false;
             }
@@ -217,7 +242,12 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
         } else if (strcmp(arg, "--power-limit") == 0) {
             opts->recognized = true;
             int value = 0;
-            if (!argument_requires_value(argc, i) || !parse_int_strict(argv[++i], &value)) {
+            if (!argument_requires_value(argc, i)) {
+                set_message(opts->error, sizeof(opts->error), "Invalid --power-limit value");
+                return false;
+            }
+            i++;
+            if (!parse_int_strict(argv[i], &value)) {
                 set_message(opts->error, sizeof(opts->error), "Invalid --power-limit value");
                 return false;
             }
@@ -235,7 +265,12 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
             opts->recognized = true;
             bool isAuto = false;
             int fanPercent = 0;
-            if (!argument_requires_value(argc, i) || !parse_fan_value(argv[++i], &isAuto, &fanPercent)) {
+            if (!argument_requires_value(argc, i)) {
+                set_message(opts->error, sizeof(opts->error), "Invalid --fan value, use auto or 0-100");
+                return false;
+            }
+            i++;
+            if (!parse_fan_value(argv[i], &isAuto, &fanPercent)) {
                 set_message(opts->error, sizeof(opts->error), "Invalid --fan value, use auto or 0-100");
                 return false;
             }
@@ -248,7 +283,12 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
         } else if (strcmp(arg, "--fan-mode") == 0) {
             opts->recognized = true;
             int fanMode = FAN_MODE_AUTO;
-            if (!argument_requires_value(argc, i) || !parse_fan_mode_config_value(argv[++i], &fanMode)) {
+            if (!argument_requires_value(argc, i)) {
+                set_message(opts->error, sizeof(opts->error), "Invalid --fan-mode value");
+                return false;
+            }
+            i++;
+            if (!parse_fan_mode_config_value(argv[i], &fanMode)) {
                 set_message(opts->error, sizeof(opts->error), "Invalid --fan-mode value");
                 return false;
             }
@@ -259,7 +299,12 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
         } else if (strcmp(arg, "--fan-fixed") == 0) {
             opts->recognized = true;
             int value = 0;
-            if (!argument_requires_value(argc, i) || !parse_int_strict(argv[++i], &value)) {
+            if (!argument_requires_value(argc, i)) {
+                set_message(opts->error, sizeof(opts->error), "Invalid --fan-fixed value");
+                return false;
+            }
+            i++;
+            if (!parse_int_strict(argv[i], &value)) {
                 set_message(opts->error, sizeof(opts->error), "Invalid --fan-fixed value");
                 return false;
             }
@@ -272,7 +317,12 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
         } else if (strcmp(arg, "--fan-poll-ms") == 0) {
             opts->recognized = true;
             int value = 0;
-            if (!argument_requires_value(argc, i) || !parse_int_strict(argv[++i], &value)) {
+            if (!argument_requires_value(argc, i)) {
+                set_message(opts->error, sizeof(opts->error), "Invalid --fan-poll-ms value");
+                return false;
+            }
+            i++;
+            if (!parse_int_strict(argv[i], &value)) {
                 set_message(opts->error, sizeof(opts->error), "Invalid --fan-poll-ms value");
                 return false;
             }
@@ -284,7 +334,12 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
         } else if (strcmp(arg, "--fan-hysteresis") == 0) {
             opts->recognized = true;
             int value = 0;
-            if (!argument_requires_value(argc, i) || !parse_int_strict(argv[++i], &value)) {
+            if (!argument_requires_value(argc, i)) {
+                set_message(opts->error, sizeof(opts->error), "Invalid --fan-hysteresis value");
+                return false;
+            }
+            i++;
+            if (!parse_int_strict(argv[i], &value)) {
                 set_message(opts->error, sizeof(opts->error), "Invalid --fan-hysteresis value");
                 return false;
             }
@@ -296,8 +351,15 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
         } else if (strcmp(arg, "--fan-zero-rpm-hysteresis") == 0) {
             opts->recognized = true;
             int value = 0;
-            if (!argument_requires_value(argc, i) ||
-                !parse_int_strict(argv[++i], &value) ||
+            if (!argument_requires_value(argc, i)) {
+                set_message(opts->error, sizeof(opts->error),
+                    "Invalid --fan-zero-rpm-hysteresis value, use %d-%d",
+                    FAN_ZERO_RPM_MIN_HYSTERESIS_C,
+                    FAN_ZERO_RPM_MAX_HYSTERESIS_C);
+                return false;
+            }
+            i++;
+            if (!parse_int_strict(argv[i], &value) ||
                 value < FAN_ZERO_RPM_MIN_HYSTERESIS_C ||
                 value > FAN_ZERO_RPM_MAX_HYSTERESIS_C) {
                 set_message(opts->error, sizeof(opts->error),
@@ -314,8 +376,13 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
         } else if (strcmp(arg, "--fan-zero-rpm") == 0) {
             opts->recognized = true;
             int value = 0;
-            if (!argument_requires_value(argc, i) ||
-                !parse_int_strict(argv[++i], &value) ||
+            if (!argument_requires_value(argc, i)) {
+                set_message(opts->error, sizeof(opts->error),
+                    "Invalid --fan-zero-rpm value, use 0 or 1");
+                return false;
+            }
+            i++;
+            if (!parse_int_strict(argv[i], &value) ||
                 (value != 0 && value != 1)) {
                 set_message(opts->error, sizeof(opts->error),
                     "Invalid --fan-zero-rpm value, use 0 or 1");

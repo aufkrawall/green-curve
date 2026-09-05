@@ -128,7 +128,10 @@ struct ServiceClientIdentity {
     // token handle per served connection (capture runs BEFORE magic or
     // admission checks, so even refused/mismatched connections leaked). A
     // destructor closes it on every exit path instead of relying on each
-    // return site remembering. No copies of this struct exist.
+    ServiceClientIdentity() = default;
+    ServiceClientIdentity(const ServiceClientIdentity&) = delete;
+    ServiceClientIdentity& operator=(const ServiceClientIdentity&) = delete;
+
     ~ServiceClientIdentity() {
         if (token) CloseHandle(token);
     }

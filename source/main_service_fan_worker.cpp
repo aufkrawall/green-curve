@@ -313,7 +313,7 @@ static bool ensure_service_fan_runtime_thread() {
     }
     ResetEvent(g_serviceFanStopEvent);
     DWORD threadId = 0;
-    g_serviceFanThread = CreateThread(nullptr, 64 * 1024, service_fan_runtime_thread_proc, nullptr, STACK_SIZE_PARAM_IS_A_RESERVATION, &threadId);
+    g_serviceFanThread = CreateThread(nullptr, (SIZE_T)64 * 1024, service_fan_runtime_thread_proc, nullptr, STACK_SIZE_PARAM_IS_A_RESERVATION, &threadId);
     g_fanRuntimeThreadId = threadId;
     debug_log("ensure_service_fan_runtime_thread: created=%d threadId=%lu\n", g_serviceFanThread ? 1 : 0, threadId);
     return g_serviceFanThread != nullptr;

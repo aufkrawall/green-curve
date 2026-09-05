@@ -56,8 +56,7 @@ static bool applied_profile_sync_inputs_unchanged(
         memcmp(cached.populatedMask, current.populatedMask,
             sizeof(current.populatedMask)) == 0 &&
         (!current.activeDesiredValid ||
-         memcmp(&cached.activeDesired, &current.activeDesired,
-             sizeof(current.activeDesired)) == 0);
+         desired_settings_equal(&cached.activeDesired, &current.activeDesired));
 }
 
 // VF_NUM_POINTS must stay a whole number of 64-bit words for the mask above.

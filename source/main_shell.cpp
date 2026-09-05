@@ -225,6 +225,8 @@ static LRESULT CALLBACK LicenseDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LP
                 g_licenseDialog.owner = nullptr;
             }
             return 0;
+        default:
+            break;
     }
     return DefWindowProcA(hwnd, msg, wParam, lParam);
 }

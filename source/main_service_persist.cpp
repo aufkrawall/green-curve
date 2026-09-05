@@ -21,7 +21,7 @@
 #define SERVICE_CONTROLLED_RECOVERY_VERSION 3u
 #define SERVICE_CONTROLLED_RECOVERY_MAX_AGE_MS 300000ULL
 #define SERVICE_CONTROLLED_RECOVERY_NONCE_BYTES 32u
-#define SERVICE_CONTROLLED_RECOVERY_NONCE_HEX_CHARS (SERVICE_CONTROLLED_RECOVERY_NONCE_BYTES * 2u)
+#define SERVICE_CONTROLLED_RECOVERY_NONCE_HEX_CHARS ((size_t)SERVICE_CONTROLLED_RECOVERY_NONCE_BYTES * 2ULL)
 #define SERVICE_CONTROLLED_RECOVERY_HELPER_VALIDATION_MAGIC 0x47434856u /* 'GCHV' */
 
 struct ServiceRestartReapplySnapshot {
@@ -110,8 +110,8 @@ static bool service_parse_controlled_recovery_nonce(const char* text, BYTE* nonc
     if (!text || !nonceOut || strlen(text) != SERVICE_CONTROLLED_RECOVERY_NONCE_HEX_CHARS) return false;
     memset(nonceOut, 0, SERVICE_CONTROLLED_RECOVERY_NONCE_BYTES);
     for (size_t i = 0; i < SERVICE_CONTROLLED_RECOVERY_NONCE_BYTES; ++i) {
-        int hi = text[i * 2];
-        int lo = text[i * 2 + 1];
+        int hi = (unsigned char)text[i * 2];
+        int lo = (unsigned char)text[i * 2 + 1];
         hi = (hi >= '0' && hi <= '9') ? hi - '0' :
             (hi >= 'a' && hi <= 'f') ? hi - 'a' + 10 :
             (hi >= 'A' && hi <= 'F') ? hi - 'A' + 10 : -1;
@@ -163,7 +163,7 @@ static bool service_fingerprint_restart_snapshot(ULONGLONG* fingerprintOut,
     LARGE_INTEGER size = {};
     FILETIME lastWrite = {};
     bool ok = GetFileSizeEx(h, &size) != FALSE && size.QuadPart > 0 &&
-        size.QuadPart <= 1024 * 1024 &&
+        size.QuadPart <= 1024LL * 1024 &&
         GetFileTime(h, nullptr, nullptr, &lastWrite) != FALSE;
     ULONGLONG fingerprint = 1469598103934665603ULL; // FNV-1a 64
     BYTE buffer[4096] = {};
@@ -869,8 +869,8 @@ static bool service_load_restart_reapply_snapshot(DesiredSettings* out, GpuAdapt
     GpuAdapterInfo originalTarget = payload.targetGpu;
     validate_desired_settings_for_ipc(&payload.desired);
     validate_gpu_adapter_info_for_ipc(&payload.targetGpu);
-    if (memcmp(&originalDesired, &payload.desired, sizeof(payload.desired)) != 0 ||
-        memcmp(&originalTarget, &payload.targetGpu, sizeof(payload.targetGpu)) != 0) {
+    if (!desired_settings_equal(&originalDesired, &payload.desired) ||
+        !gpu_adapter_info_equal(&originalTarget, &payload.targetGpu)) {
         debug_log("restart reapply load: payload fields required sanitization; rejecting corrupt snapshot\n");
         gc_DeleteFileUtf8(path);
         return false;

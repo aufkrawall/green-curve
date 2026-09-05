@@ -245,7 +245,8 @@ static bool service_identity_from_token(
             ARRAY_COUNT(identityOut->sid), err, errSize)) {
         return false;
     }
-    TOKEN_STATISTICS statistics = {};
+    TOKEN_STATISTICS statistics;
+    memset(&statistics, 0, sizeof(statistics));
     DWORD returned = 0;
     if (!GetTokenInformation(token, TokenStatistics, &statistics,
             sizeof(statistics), &returned)) {
@@ -398,14 +399,13 @@ static bool service_debug_env_override(bool* enabledOut) {
     bool enabled = true;
     if (n >= ARRAY_COUNT(value) || value[0] == 0) {
         enabled = true;
-    } else if (value[0] == '0' && value[1] == 0) {
-        enabled = false;
-    } else if ((value[0] == 'f' || value[0] == 'F') &&
-        (value[1] == 'a' || value[1] == 'A') &&
-        (value[2] == 'l' || value[2] == 'L') &&
-        (value[3] == 's' || value[3] == 'S') &&
-        (value[4] == 'e' || value[4] == 'E') &&
-        value[5] == 0) {
+    } else if ((value[0] == '0' && value[1] == 0) ||
+               ((value[0] == 'f' || value[0] == 'F') &&
+                (value[1] == 'a' || value[1] == 'A') &&
+                (value[2] == 'l' || value[2] == 'L') &&
+                (value[3] == 's' || value[3] == 'S') &&
+                (value[4] == 'e' || value[4] == 'E') &&
+                value[5] == 0)) {
         enabled = false;
     }
     if (enabledOut) *enabledOut = enabled;

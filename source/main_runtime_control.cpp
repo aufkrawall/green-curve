@@ -89,9 +89,7 @@
         if (previousRequestedCurveCi >= 0 && effectiveMHz < previousRequestedCurveMHz) {
             if (lockTailPoint) {
                 effectiveMHz = previousRequestedCurveMHz;
-                if (lockTailPoint) {
-                    effectiveLockTargetMHz = effectiveMHz;
-                }
+                effectiveLockTargetMHz = effectiveMHz;
             } else {
                 set_message(err, errSize,
                     "Curve point %d (%d MHz) is below point %d (%d MHz). The VF curve must remain non-decreasing.",

@@ -576,6 +576,8 @@ static LRESULT CALLBACK themed_combo_wndproc(HWND hwnd, UINT msg, WPARAM wParam,
             RemovePropA(hwnd, "GreenCurveComboOrigProc");
             SetWindowLongPtrA(hwnd, GWLP_WNDPROC, (LONG_PTR)original);
             break;
+        default:
+            break;
     }
 
     return CallWindowProcA(original, hwnd, msg, wParam, lParam);

@@ -21,7 +21,7 @@ extern char** environ;
 static unsigned long long monotonic_ms() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (unsigned long long)ts.tv_sec * 1000ull + (unsigned long long)(ts.tv_nsec / 1000000l);
+    return (unsigned long long)ts.tv_sec * 1000ull + (unsigned long long)(ts.tv_nsec / 1000000LL);
 }
 
 bool pl_run_capture(const char* const* argv, char* out, size_t outSize,

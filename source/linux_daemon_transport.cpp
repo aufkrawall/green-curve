@@ -162,21 +162,26 @@ static void format_io_failure(char* error, size_t errorSize,
 
 static bool process_has_supplementary_group(gid_t groupId, bool* known) {
     if (known) *known = false;
+    gid_t stackGroups[64];
     int count = getgroups(0, nullptr);
-    if (count < 0) return false;
-    gid_t* groups = count > 0
-        ? (gid_t*)malloc((size_t)count * sizeof(gid_t)) : nullptr;
-    if (count > 0 && !groups) return false;
+    if (count < 0 || count > 1024) return false;
+    gid_t* groups = stackGroups;
+    gid_t* heapGroups = nullptr;
+    if (count > (int)(sizeof(stackGroups) / sizeof(stackGroups[0]))) {
+        heapGroups = (gid_t*)malloc((size_t)count * sizeof(gid_t));
+        if (!heapGroups) return false;
+        groups = heapGroups;
+    }
     int received = count > 0 ? getgroups(count, groups) : 0;
     if (received < 0) {
-        free(groups);
+        free(heapGroups);
         return false;
     }
     bool found = false;
     for (int i = 0; i < received; ++i) {
         if (groups[i] == groupId) { found = true; break; }
     }
-    free(groups);
+    free(heapGroups);
     if (known) *known = true;
     return found;
 }

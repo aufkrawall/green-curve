@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <exception>
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -124,39 +125,31 @@ bool run_linux_probe(const char* outputPath, ProbeSummary* summary, char* err, s
         snprintf(summary->currentDesktop, sizeof(summary->currentDesktop), "%s", currentDesktop ? currentDesktop : "unknown");
         snprintf(summary->reportPath, sizeof(summary->reportPath), "%s", resolvedOutput);
         snprintf(summary->summary, sizeof(summary->summary), "root=%s, wayland=%s, nvidia-smi=%s, systemctl=%s",
-            isRoot ? "yes" : "no",
-            hasWayland ? "yes" : "no",
-            summary->hasNvidiaSmi ? "yes" : "no",
-            summary->hasSystemctl ? "yes" : "no");
+            isRoot ? "yes" : "no", hasWayland ? "yes" : "no",
+            summary->hasNvidiaSmi ? "yes" : "no", summary->hasSystemctl ? "yes" : "no");
     }
 
-    appendf(&report, "## Session\n\n");
-    appendf(&report, "- Effective UID: `%d`\n", (int)geteuid());
-    appendf(&report, "- Root: `%s`\n", isRoot ? "yes" : "no");
-    appendf(&report, "- XDG_SESSION_TYPE: `%s`\n", sessionType ? sessionType : "unset");
-    appendf(&report, "- WAYLAND_DISPLAY: `%s`\n", waylandDisplay ? waylandDisplay : "unset");
-    appendf(&report, "- DISPLAY: `%s`\n", xDisplay ? xDisplay : "unset");
-    appendf(&report, "- XDG_CURRENT_DESKTOP: `%s`\n", currentDesktop ? currentDesktop : "unset");
-    appendf(&report, "- TERM: `%s`\n\n", getenv("TERM") ? getenv("TERM") : "unset");
+    appendf(&report, "## Session\n\n"
+        "- Effective UID: `%d`\n- Root: `%s`\n- XDG_SESSION_TYPE: `%s`\n"
+        "- WAYLAND_DISPLAY: `%s`\n- DISPLAY: `%s`\n- XDG_CURRENT_DESKTOP: `%s`\n"
+        "- TERM: `%s`\n\n",
+        (int)geteuid(), isRoot ? "yes" : "no",
+        sessionType ? sessionType : "unset", waylandDisplay ? waylandDisplay : "unset",
+        xDisplay ? xDisplay : "unset", currentDesktop ? currentDesktop : "unset",
+        getenv("TERM") ? getenv("TERM") : "unset");
 
     appendf(&report, "## Tools\n\n");
-    appendf(&report, "- `nvidia-smi`: `%s`\n", linux_command_available("nvidia-smi") ? "yes" : "no");
-    appendf(&report, "- `systemctl`: `%s`\n", linux_command_available("systemctl") ? "yes" : "no");
-    appendf(&report, "- `sudo`: `%s`\n", linux_command_available("sudo") ? "yes" : "no");
-    appendf(&report, "- `pkexec`: `%s`\n", linux_command_available("pkexec") ? "yes" : "no");
-    appendf(&report, "- `journalctl`: `%s`\n", linux_command_available("journalctl") ? "yes" : "no");
-    appendf(&report, "- `modinfo`: `%s`\n", linux_command_available("modinfo") ? "yes" : "no");
-    appendf(&report, "- `lspci`: `%s`\n\n", linux_command_available("lspci") ? "yes" : "no");
+    static const char* const kTools[] = { "nvidia-smi", "systemctl", "sudo", "pkexec", "journalctl", "modinfo", "lspci" };
+    for (const char* t : kTools) appendf(&report, "- `%s`: `%s`\n", t, linux_command_available(t) ? "yes" : "no");
+    appendf(&report, "\n");
 
     appendf(&report, "## Paths\n\n");
-    append_path_state(&report, "/dev/nvidiactl");
-    append_path_state(&report, "/dev/nvidia0");
-    append_path_state(&report, "/dev/nvidia-uvm");
-    append_path_state(&report, "/proc/driver/nvidia/version");
-    append_path_state(&report, "/sys/module/nvidia/version");
-    append_path_state(&report, "/sys/kernel/debug");
-    append_path_state(&report, "/sys/class/drm");
-    append_path_state(&report, "/sys/class/hwmon");
+    static const char* const kReportPaths[] = {
+        "/dev/nvidiactl", "/dev/nvidia0", "/dev/nvidia-uvm",
+        "/proc/driver/nvidia/version", "/sys/module/nvidia/version",
+        "/sys/kernel/debug", "/sys/class/drm", "/sys/class/hwmon"
+    };
+    for (const char* p : kReportPaths) append_path_state(&report, p);
     struct stat daemonSocketStatus = {};
     if (lstat(GC_DAEMON_SOCKET_PATH, &daemonSocketStatus) == 0) {
         appendf(&report,
@@ -343,9 +336,7 @@ bool write_linux_assets(const char* outputDir, const char* execPath, const char*
         "Terminal=true\n"
         "Categories=Utility;System;\n"
         "StartupNotify=false\n",
-        APP_NAME,
-        APP_NAME,
-        desktopExec.c_str());
+        APP_NAME, APP_NAME, desktopExec.c_str());
 
     std::string autostart = desktop;
     autostart += "X-GNOME-Autostart-enabled=true\n";
@@ -402,14 +393,13 @@ bool write_linux_assets(const char* outputDir, const char* execPath, const char*
     std::string servicePath = path_join(outputDir, "greencurve-apply.service");
     std::string readmePath = path_join(outputDir, "README.md");
 
-    if (!write_text_file_atomic(desktopPath.c_str(), desktop, err, errSize)) return false;
-    if (!write_text_file_atomic(autostartPath.c_str(), autostart, err, errSize)) return false;
-    if (!write_text_file_atomic(servicePath.c_str(), service, err, errSize)) return false;
-    if (!write_text_file_atomic(readmePath.c_str(), readme, err, errSize)) return false;
-    return true;
+    return write_text_file_atomic(desktopPath.c_str(), desktop, err, errSize) &&
+        write_text_file_atomic(autostartPath.c_str(), autostart, err, errSize) &&
+        write_text_file_atomic(servicePath.c_str(), service, err, errSize) &&
+        write_text_file_atomic(readmePath.c_str(), readme, err, errSize);
 }
 
-int main(int argc, char** argv) {
+static int linux_main_impl(int argc, char** argv) {
     // Installed before any parsing or driver work so an early failure is still
     // diagnosable.  Writes a journal breadcrumb and then re-raises; it never
     // suppresses the crash.
@@ -797,4 +787,13 @@ int main(int argc, char** argv) {
         while ((discarded = getchar()) != '\n' && discarded != EOF) {}
     }
     return tuiStatus;
+}
+
+int main(int argc, char** argv) {
+    try {
+        return linux_main_impl(argc, argv);
+    } catch (const std::exception& e) {
+        fprintf(stderr, "Fatal error: %s\n", e.what());
+        return 1;
+    } catch (...) { fprintf(stderr, "Fatal error: unknown exception\n"); return 1; }
 }

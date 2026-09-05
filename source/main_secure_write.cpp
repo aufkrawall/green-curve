@@ -312,7 +312,7 @@ static bool write_config_sections_atomic(const char* path, const char* newSectio
             set_message(err, errSize, "Could not read existing config size (error %lu)", error);
             return false;
         }
-        if (fileSize.QuadPart < 0 || fileSize.QuadPart >= 8 * 1024 * 1024) {
+        if (fileSize.QuadPart < 0 || fileSize.QuadPart >= 8LL * 1024 * 1024) {
             CloseHandle(hExisting);
             set_message(err, errSize, "Existing config is too large for atomic update");
             return false;

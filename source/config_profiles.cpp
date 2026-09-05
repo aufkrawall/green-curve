@@ -385,7 +385,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             if (!desired->hasCurvePoint[i]) continue;
             unsigned int volt_mv = g_app.curve[i].volt_uV / 1000;
-            if (volt_mv == 0 || volt_mv < (unsigned)MIN_VISIBLE_VOLT_mV) {
+            if (volt_mv < (unsigned)MIN_VISIBLE_VOLT_mV) {
                 desired->hasCurvePoint[i] = false;
                 desired->curvePointMHz[i] = 0;
             }
