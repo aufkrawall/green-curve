@@ -175,7 +175,10 @@ void probe_nvml(FILE* out, LinuxNvmlProbe* result) {
         int mmin = 0, mmax = 0;
         if (n.api.getMemClkMinMaxVfOffset &&
             n.api.getMemClkMinMaxVfOffset(dev, &mmin, &mmax) == NVML_SUCCESS) {
-            fprintf(out, "      mem offset range : %d .. %d MHz\n", mmin, mmax);
+            // NVML reports effective MHz; print display MHz like the TUI.
+            fprintf(out, "      mem offset range : %d .. %d MHz\n",
+                    nvml_mem_display_mhz_from_effective_mhz(mmin),
+                    nvml_mem_display_mhz_from_effective_mhz(mmax));
         }
         unsigned int fans = 0;
         if (n.api.getNumFans && n.api.getNumFans(dev, &fans) == NVML_SUCCESS)

@@ -610,8 +610,8 @@ static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
     if (d->hasGpuOffset && (d->gpuOffsetMHz < -1000 || d->gpuOffsetMHz > 1000)) {
         d->gpuOffsetMHz = d->gpuOffsetMHz < -1000 ? -1000 : 1000;
     }
-    if (d->hasMemOffset && (d->memOffsetMHz < -5000 || d->memOffsetMHz > 5000)) {
-        d->memOffsetMHz = d->memOffsetMHz < -5000 ? -5000 : 5000;
+    if (d->hasMemOffset && (d->memOffsetMHz < -3000 || d->memOffsetMHz > 3000)) {
+        d->memOffsetMHz = d->memOffsetMHz < -3000 ? -3000 : 3000;
     }
     // lockCi indexes VF_NUM_POINTS-sized arrays downstream.  Preserve the -1
     // "no explicit lock" sentinel but neutralize any out-of-bounds index.
@@ -742,6 +742,26 @@ static inline int nvml_clock_offset_grid_step(unsigned int domain) {
 // P8 while leaving the performance-state P0 value unchanged.
 static inline unsigned int nvml_configured_clock_offset_pstate() {
     return NVML_PSTATE_0;
+}
+
+// NVML memory-clock offsets are EFFECTIVE MHz (twice the actual/display MHz),
+// on both Windows and Linux. The canonical DesiredSettings.memOffsetMHz unit is
+// display/actual MHz (what Windows shows); Linux previously passed NVML MHz
+// through verbatim, halving the effective clock versus Windows. Convert at the
+// semantic boundaries (apply, capture, restore, range publish), never inside the
+// low-level NVML helpers, so the wire unit stays explicit and the 2 MHz grid
+// verification below keeps operating in effective units.
+static inline int nvml_mem_effective_mhz_from_display_mhz(int displayMHz) {
+    long long effective = (long long)displayMHz * 2LL;
+    if (effective > 2147483647LL) return 2147483647;
+    if (effective < -2147483648LL) return -2147483647 - 1;
+    return (int)effective;
+}
+
+static inline int nvml_mem_display_mhz_from_effective_mhz(int effectiveMHz) {
+    // Truncation toward zero matches the Windows helper
+    // mem_display_mhz_from_driver_mhz() for negative values.
+    return effectiveMHz / 2;
 }
 
 // Accept only a snap toward zero of less than one grid step. A readback that

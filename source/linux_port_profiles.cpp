@@ -443,6 +443,17 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
         }
     }
 
+    // IPC trust boundary: clamp hostile or pre-fix (pre effective/display
+    // parity, pre +-3000 cap) stored values on load. Stored mem_offset_mhz is
+    // display MHz; pre-fix Linux profiles may hold up to +-5000.
+    int loadedMemOffsetMHz = desired->memOffsetMHz;
+    validate_desired_settings_for_ipc(desired);
+    if (desired->hasMemOffset && desired->memOffsetMHz != loadedMemOffsetMHz) {
+        linux_debug_logf("profile: mem_offset_mhz=%d clamped to %d on load "
+                         "(limit +-3000 display MHz)\n",
+                         loadedMemOffsetMHz, desired->memOffsetMHz);
+    }
+
     return true;
 }
 

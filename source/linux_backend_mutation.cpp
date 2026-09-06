@@ -40,7 +40,11 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
     NvmlClockOffsetReadback memOffset =
         nvml_read_clock_offset(g, NVML_CLOCK_MEM);
     if (memOffset.offsetValid) {
-        snapshot->memOffsetMHz = memOffset.offsetMHz;
+        // NVML reports effective MHz; the snapshot canonical unit is display
+        // MHz (matches Windows). No log here: capture runs on the telemetry
+        // poll and must stay quiet.
+        snapshot->memOffsetMHz =
+            nvml_mem_display_mhz_from_effective_mhz(memOffset.offsetMHz);
         snapshot->memOffsetValid = true;
     }
     // An unknown response schema cannot become safe without a rebind/driver
@@ -220,8 +224,15 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
     bool baseline = (phaseMask & LINUX_MUTATION_RESET_BASELINE) != 0;
     if ((baseline || (phaseMask & LINUX_MUTATION_GPU_OFFSET)) && snapshot->gpuOffsetValid)
         ok &= nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, snapshot->gpuOffsetMHz);
-    if ((baseline || (phaseMask & LINUX_MUTATION_MEM_OFFSET)) && snapshot->memOffsetValid)
-        ok &= nvml_set_clock_offset(g, NVML_CLOCK_MEM, snapshot->memOffsetMHz);
+    if ((baseline || (phaseMask & LINUX_MUTATION_MEM_OFFSET)) && snapshot->memOffsetValid) {
+        // Snapshot is display MHz; the NVML wire unit is effective MHz.
+        int restoreEffectiveMHz =
+            nvml_mem_effective_mhz_from_display_mhz(snapshot->memOffsetMHz);
+        lb_log("offset: rollback domain=%u display=%d effective=%d\n",
+               (unsigned int)NVML_CLOCK_MEM, snapshot->memOffsetMHz,
+               restoreEffectiveMHz);
+        ok &= nvml_set_clock_offset(g, NVML_CLOCK_MEM, restoreEffectiveMHz);
+    }
     if (((baseline && (snapshot->availableMutationDomains &
                        SERVICE_MUTATION_DOMAIN_XBAR)) ||
          (phaseMask & LINUX_MUTATION_XBAR)) &&
@@ -428,8 +439,16 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
             return true;
         case LINUX_MUTATION_GPU_OFFSET:
             return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, d->gpuOffsetMHz);
-        case LINUX_MUTATION_MEM_OFFSET:
-            return nvml_set_clock_offset(g, NVML_CLOCK_MEM, d->memOffsetMHz);
+        case LINUX_MUTATION_MEM_OFFSET: {
+            // DesiredSettings is display MHz; the NVML wire unit is effective
+            // MHz (matches Windows, which writes (offsetkHz/1000)*2).
+            int applyEffectiveMHz =
+                nvml_mem_effective_mhz_from_display_mhz(d->memOffsetMHz);
+            lb_log("offset: apply domain=%u display=%d effective=%d\n",
+                   (unsigned int)NVML_CLOCK_MEM, d->memOffsetMHz,
+                   applyEffectiveMHz);
+            return nvml_set_clock_offset(g, NVML_CLOCK_MEM, applyEffectiveMHz);
+        }
         case LINUX_MUTATION_POWER:
             return nvml_set_power_limit_pct(g, d->powerLimitPct);
         case LINUX_MUTATION_CURVE:

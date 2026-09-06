@@ -181,7 +181,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             // F-DOM-1: intentionally NOT gated. NVIDIA's reported memory-offset
             // range is frequently conservative and the driver itself clamps or
             // rejects values it cannot honor, so we apply outside the reported
-            // range by design (already absolute-bounded to +/-5000 MHz at the IPC
+            // range by design (already absolute-bounded to +/-3000 MHz at the IPC
             // boundary). Logged explicitly so an auditor sees this is deliberate.
             debug_log("mem offset %d MHz is outside the driver-reported range %d..%d MHz; applying anyway by design (reported memory range is often conservative; the driver clamps/rejects unsupported values)\n",
                 desired->memOffsetMHz, g_app.memClockOffsetMinMHz, g_app.memClockOffsetMaxMHz);

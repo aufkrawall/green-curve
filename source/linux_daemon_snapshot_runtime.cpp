@@ -105,6 +105,8 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
         s->gpuOffsetRangeKnown = true;
     }
     if (hardware.memOffsetValid) {
+        // Hardware snapshot is display MHz, so this is display kHz, matching
+        // Windows (main_state_sync.cpp: memClockOffsetkHz from halved NVML).
         s->memClockOffsetkHz = hardware.memOffsetMHz * 1000;
         s->memOffsetRangeKnown = true;
     }

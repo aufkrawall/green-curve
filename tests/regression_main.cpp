@@ -1495,7 +1495,7 @@ static int run_all_tests(int argc, char** argv) {
             ds.fanCurve.zeroRpmReserved[1] != 0) return 4720;
         if (ds.powerLimitPct != 50) return 72;
         if (ds.gpuOffsetMHz != -1000) return 73;
-        if (ds.memOffsetMHz != 5000) return 74;
+        if (ds.memOffsetMHz != 3000) return 74;
         if (ds.fanPercent != 0) return 75;
         if (ds.curvePointMHz[0] != 5000u) return 76;
         // Lock mode must clamp to the valid tri-state range at the IPC boundary.
@@ -1642,6 +1642,40 @@ static int run_all_tests(int argc, char** argv) {
         if (nvml_clock_offset_readback_matches(1, -1, 2)) return 1708;
         // On the exact graphics grid an odd readback is a real failure.
         if (nvml_clock_offset_readback_matches(15, 14, 1)) return 1709;
+    }
+
+    // F-MEM-PARITY: NVML memory offsets are effective MHz (2x display MHz) on
+    // both platforms. Linux must convert exactly like Windows: display * 2 on
+    // write, effective / 2 on read and range publish, so +3000 display always
+    // means +6000 effective and the same INI yields the same driver write.
+    {
+        if (nvml_mem_effective_mhz_from_display_mhz(3000) != 6000) return 1711;
+        if (nvml_mem_effective_mhz_from_display_mhz(-1500) != -3000) return 1712;
+        if (nvml_mem_effective_mhz_from_display_mhz(0) != 0) return 1713;
+        if (nvml_mem_display_mhz_from_effective_mhz(6000) != 3000) return 1714;
+        if (nvml_mem_display_mhz_from_effective_mhz(-3000) != -1500) return 1715;
+        // Odd display values map to even effective values, so the 2 MHz
+        // effective grid can no longer snap from display rounding.
+        if (nvml_mem_effective_mhz_from_display_mhz(1) != 2) return 1716;
+        if (nvml_mem_display_mhz_from_effective_mhz(2) != 1) return 1717;
+        // Round-trip both directions, signs included.
+        for (int display = -3000; display <= 3000; display += 333) {
+            int effective = nvml_mem_effective_mhz_from_display_mhz(display);
+            if (nvml_mem_display_mhz_from_effective_mhz(effective) != display)
+                return 1718;
+        }
+        // The new universal cap rides on the same IPC validator.
+        DesiredSettings over = {};
+        over.hasMemOffset = true;
+        over.memOffsetMHz = 3500;
+        validate_desired_settings_for_ipc(&over);
+        if (over.memOffsetMHz != 3000) return 1719;
+        over.memOffsetMHz = -4000;
+        validate_desired_settings_for_ipc(&over);
+        if (over.memOffsetMHz != -3000) return 1720;
+        over.memOffsetMHz = 3000;
+        validate_desired_settings_for_ipc(&over);
+        if (over.memOffsetMHz != 3000) return 1721;
     }
 
     // F-INTENT-READBACK: active desired settings are ownership/configuration
@@ -3188,7 +3222,7 @@ static int run_all_tests(int argc, char** argv) {
         validate_desired_settings_for_ipc(&ds);
         if (ds.powerLimitPct != 50) return 50;
         if (ds.gpuOffsetMHz != 1000) return 51;
-        if (ds.memOffsetMHz != -5000) return 52;
+        if (ds.memOffsetMHz != -3000) return 52;
         if (ds.fanPercent != 100) return 53;
         if (ds.curvePointMHz[0] != 5000u) return 54;
     }
@@ -7141,12 +7175,12 @@ static int run_all_tests(int argc, char** argv) {
         in.gpuMinMHz = -2500;      // wider than the +/-1000 IPC bound
         in.gpuMaxMHz = 2500;
         in.memKnown = true;
-        in.memMinMHz = -9000;      // wider than the +/-5000 IPC bound
+        in.memMinMHz = -9000;      // wider than the +/-3000 IPC bound
         in.memMaxMHz = 9000;
         OcRangeBounds gpu = oc_range_gpu_offset(&in);
         if (!gpu.known || gpu.min != -1000 || gpu.max != 1000) return 1400;
         OcRangeBounds mem = oc_range_mem_offset(&in);
-        if (!mem.known || mem.min != -5000 || mem.max != 5000) return 1401;
+        if (!mem.known || mem.min != -3000 || mem.max != 3000) return 1401;
 
         // A narrower driver window is reported as-is, signs included.
         in.gpuMinMHz = -250;

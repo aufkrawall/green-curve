@@ -46,8 +46,8 @@ def check_overclock_range_hints(ctx, require_text, forbid_text):
 
     require_text(policy_h, "OC_RANGE_IPC_GPU_OFFSET_ABS_MHZ",
                  "advertised GPU offset range is capped by the IPC bound")
-    require_text(policy_h, "OC_RANGE_IPC_MEM_OFFSET_ABS_MHZ",
-                 "advertised memory offset range is capped by the IPC bound")
+    require_text(policy_h, "OC_RANGE_IPC_MEM_OFFSET_ABS_MHZ = 3000",
+                 "advertised memory offset range is capped by the +-3000 IPC bound")
     require_text(policy_h, "oc_range_power_pct",
                  "power limit percent range is derived from the driver "
                  "milliwatt constraints")

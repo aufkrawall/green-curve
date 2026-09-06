@@ -42,6 +42,8 @@ def check_tui_layout(ctx, require_text, forbid_text, require_order):
                  "TUI redraws only changed terminal rows")
     require_text(actions_cpp, "linux_daemon_apply_checked",
                  "TUI Apply carries reconnect-safe daemon preconditions")
+    require_text(actions_cpp, "clamp_int(value, -3000, 3000)",
+                 "TUI memory offset matches the +-3000 IPC bound")
     forbid_text(actions_cpp, "memcmp(&left, &right",
                 "TUI dirty-state comparison ignores struct padding")
     require_order(actions_cpp, "bool flushed = fflush(file) == 0;",

@@ -101,9 +101,13 @@ static bool nvml_set_clock_offset(LinuxGpuState* g, unsigned int domain, int off
         info.pstate = nvml_configured_clock_offset_pstate();
         info.clockOffsetMHz = offsetMHz;
         nvmlReturn_t result = a->setClockOffsets(g->nvmlDevice, &info);
-        lb_log("offset: write domain=%u pstate=P%u requested=%d "
+        // Wire units are effective MHz for MEM; also log display MHz so a bug
+        // report reads the same number the TUI shows.
+        int displayMHz = domain == NVML_CLOCK_MEM
+            ? nvml_mem_display_mhz_from_effective_mhz(offsetMHz) : offsetMHz;
+        lb_log("offset: write domain=%u pstate=P%u requested=%d display=%d "
                "via=setClockOffsets nvml=%d\n",
-               domain, info.pstate, offsetMHz, (int)result);
+               domain, info.pstate, offsetMHz, displayMHz, (int)result);
         if (result == NVML_SUCCESS) {
             NvmlClockOffsetReadback verify =
                 nvml_read_clock_offset(g, domain);
@@ -113,9 +117,13 @@ static bool nvml_set_clock_offset(LinuxGpuState* g, unsigned int domain, int off
                        domain, info.pstate, offsetMHz);
                 return false;
             }
+            int verifyDisplayMHz = domain == NVML_CLOCK_MEM
+                ? nvml_mem_display_mhz_from_effective_mhz(verify.offsetMHz)
+                : verify.offsetMHz;
             lb_log("offset: verify domain=%u pstate=P%u requested=%d "
-                   "readback=%d via=%s\n",
+                   "readback=%d display=%d via=%s\n",
                    domain, info.pstate, offsetMHz, verify.offsetMHz,
+                   verifyDisplayMHz,
                    verify.modernApi ? "getClockOffsets" : "legacy");
             return nvml_clock_offset_verified(
                 domain, offsetMHz, verify.offsetMHz, "setClockOffsets");
@@ -135,9 +143,11 @@ static bool nvml_set_clock_offset(LinuxGpuState* g, unsigned int domain, int off
     if (domain == NVML_CLOCK_MEM && a->setMemClkVfOffset) {
         if (a->setMemClkVfOffset(g->nvmlDevice, offsetMHz) != NVML_SUCCESS) return false;
         NvmlClockOffsetReadback verify = nvml_read_clock_offset(g, domain);
-        lb_log("offset: write domain=%u pstate=global requested=%d "
+        lb_log("offset: write domain=%u pstate=global requested=%d display=%d "
                "readback=%s%d via=setMemClkVfOffset\n",
-               domain, offsetMHz, verify.offsetValid ? "" : "unavailable:",
+               domain, offsetMHz,
+               nvml_mem_display_mhz_from_effective_mhz(offsetMHz),
+               verify.offsetValid ? "" : "unavailable:",
                verify.offsetMHz);
         return !verify.offsetValid ||
                nvml_clock_offset_verified(domain, offsetMHz, verify.offsetMHz,
@@ -295,8 +305,19 @@ static void nvml_query_ranges(LinuxGpuState* g) {
     NvmlClockOffsetReadback memory =
         nvml_read_clock_offset(g, NVML_CLOCK_MEM);
     if (memory.rangeValid) {
-        g->memOffsetMinMHz = memory.minMHz;
-        g->memOffsetMaxMHz = memory.maxMHz;
+        // NVML reports effective MHz; the published range is display MHz
+        // (matches Windows, which halves in main_runtime_nvml.cpp).
+        int displayMinMHz =
+            nvml_mem_display_mhz_from_effective_mhz(memory.minMHz);
+        int displayMaxMHz =
+            nvml_mem_display_mhz_from_effective_mhz(memory.maxMHz);
+        if (displayMinMHz != g->memOffsetMinMHz ||
+            displayMaxMHz != g->memOffsetMaxMHz) {
+            lb_log("mem: driver effective range %d..%d -> display %d..%d MHz\n",
+                   memory.minMHz, memory.maxMHz, displayMinMHz, displayMaxMHz);
+        }
+        g->memOffsetMinMHz = displayMinMHz;
+        g->memOffsetMaxMHz = displayMaxMHz;
     }
     if (a->getPowerConstraints) {
         unsigned int pmin = 0, pmax = 0;

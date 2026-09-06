@@ -150,8 +150,8 @@ static void check_desired_postconditions(const DesiredSettings& d) {
         GC_FUZZ_CHECK(d.gpuOffsetMHz >= -1000 && d.gpuOffsetMHz <= 1000,
                       "gpuOffsetMHz escaped the +/-1000 clamp");
     if (d.hasMemOffset)
-        GC_FUZZ_CHECK(d.memOffsetMHz >= -5000 && d.memOffsetMHz <= 5000,
-                      "memOffsetMHz escaped the +/-5000 clamp");
+        GC_FUZZ_CHECK(d.memOffsetMHz >= -3000 && d.memOffsetMHz <= 3000,
+                      "memOffsetMHz escaped the +/-3000 clamp");
     if (d.hasFan) {
         GC_FUZZ_CHECK(d.fanPercent >= 0 && d.fanPercent <= 100,
                       "fanPercent escaped the 0..100 clamp");

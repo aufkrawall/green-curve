@@ -21,7 +21,7 @@
 enum {
     // Mirrors validate_desired_settings_for_ipc(); see source/gpu_core.h.
     OC_RANGE_IPC_GPU_OFFSET_ABS_MHZ = 1000,
-    OC_RANGE_IPC_MEM_OFFSET_ABS_MHZ = 5000,
+    OC_RANGE_IPC_MEM_OFFSET_ABS_MHZ = 3000,
     // Mirrors the power gate in gpu_backend_apply.cpp and the INI loader.
     OC_RANGE_POWER_MIN_PCT = 50,
     OC_RANGE_POWER_MAX_PCT = 150,

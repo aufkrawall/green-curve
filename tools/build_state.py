@@ -31,7 +31,7 @@ SOURCE_SIZE_RATCHET = {
     "entry.cpp": 863,
     "gpu_backend.cpp": 972,
     "gpu_backend_apply.cpp": 1414,  # 1407 before the core/advanced rollback boundary was made explicit
-    "gpu_core.h": 842,  # 831 before the video clock domain fields (v22)
+    "gpu_core.h": 862,  # 842 before the mem effective/display parity helpers
     "gui_service_state.cpp": 827,  # 820 before the VIDEO draft projection
     "main.cpp": 801,
     "main_fan_runtime.cpp": 913,  # 929 before the tray menu moved to gui_tray_menu.cpp

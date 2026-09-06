@@ -101,7 +101,9 @@ struct LinuxGpuState {
     int videoClkFreqOffsetKhz;
     unsigned int videoClkMeasuredClockKhz;
 
-    // Offset ranges (kHz for curve; MHz for clock domains)
+    // Offset ranges (kHz for curve; MHz for clock domains). Memory values are
+    // display/actual MHz: NVML reports effective MHz and the backend halves on
+    // the way in (nvml_query_ranges), matching Windows.
     int curveOffsetMinKHz;
     int curveOffsetMaxKHz;
     bool curveOffsetRangeKnown;
@@ -139,6 +141,7 @@ struct LinuxHardwareSnapshot {
     bool sysClkValid;
     bool videoClkValid;
     int gpuOffsetMHz;
+    // Display/actual MHz (NVML effective MHz halved at capture, as on Windows).
     int memOffsetMHz;
     unsigned int powerLimitmW;
     int xbarOffsetKhz;

@@ -124,7 +124,7 @@ void set_field_value(TuiState* state, TuiField field, int index, int value) {
             break;
         case TUI_FIELD_MEMORY_OFFSET:
             desired.hasMemOffset = true;
-            desired.memOffsetMHz = clamp_int(value, -5000, 5000);
+            desired.memOffsetMHz = clamp_int(value, -3000, 3000);
             break;
         case TUI_FIELD_POWER_LIMIT:
             desired.hasPowerLimit = true;
