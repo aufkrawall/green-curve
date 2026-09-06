@@ -63,6 +63,15 @@ def check_xbar_clk_domains(ctx, require_text, forbid_text):
     # schema and family-blind probe as XBAR itself.
     require_text(backend_h, "XBAR_PINNED_SYS_ENTRY_INDEX = 3",
                  "F-XBAR-SYS: the empirically identified SYS entry is pinned")
+    # F-XBAR-MSVDD-ENTRY: MSVDD voltage lives in a different domain entry
+    # than XBAR frequency.  Confirmed by mVolt.exe validation rules.
+    require_text(backend_h, "XBAR_PINNED_MSVDD_ENTRY_INDEX = 0",
+                 "F-XBAR-MSVDD-ENTRY: MSVDD voltage is pinned to entry 0")
+    require_text(backend_h, "msvddEntryIndex",
+                 "F-XBAR-MSVDD-ENTRY: schema tracks separate MSVDD entry index")
+    require_text(backend_h, "#define XBAR_NVAPI_STATUS_INVALID_USER_PRIVILEGE (-137)",
+                 "F-XBAR-MSVDD-ENTRY: non-elevated SET refusals are decoded as"
+                 " NVAPI_INVALID_USER_PRIVILEGE, not generic errors")
     require_text(backend_h, "xbar_write_entry_freq(",
                  "F-XBAR-SYS: SYS writes reuse the audited single-entry transaction")
     require_text(protocol_header, "SERVICE_MUTATION_DOMAIN_SYS_CLK = 1u << 8",

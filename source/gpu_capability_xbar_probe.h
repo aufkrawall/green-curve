@@ -60,10 +60,13 @@ static void probe_xbar_control_surface(GpuCapabilityProbe* probe) {
             xbar_measure_voltage(getVoltage, g_app.gpuHandle, &g_app.xbarMeasuredVoltageUv);
         }
         debug_log("gpu capability probe: xbar schema version word=0x%08X"
-                  " layout base=0x%03X stride=0x%03X domain=%u offset=%d kHz"
-                  " msvdd=%d uV measured=%u kHz volt=%u uV\n",
+                  " layout base=0x%03X stride=0x%03X"
+                  " freqEntry=%u freqOff=0x%03X msvddEntry=%u msvddOff=0x%03X"
+                  " offset=%d kHz msvdd=%d uV measured=%u kHz volt=%u uV\n",
                   snap.versionWord, snap.entryBase, snap.entryStride,
-                  snap.domainIndex, snap.freqOffsetKhz, snap.msvddOffsetUv,
+                  snap.domainIndex, snap.freqFieldOffset,
+                  snap.msvddDomainIndex, snap.msvddFieldOffset,
+                  snap.freqOffsetKhz, snap.msvddOffsetUv,
                   snap.measuredKhz, g_app.xbarMeasuredVoltageUv);
         // The same validated block carries the SYS entry: extraction is
         // read-only and rides the exact-readback proof already established.

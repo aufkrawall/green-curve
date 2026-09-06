@@ -11816,7 +11816,9 @@ static int run_all_tests(int argc, char** argv) {
         for (unsigned int i = 0; i < 8; ++i)
             xbar_put_u32(templateBuf, base + i * stride, XBAR_DOMAIN_MARKER);
         xbar_put_i32(templateBuf, base + stride + XBAR_FREQ_OFFSET_FIELD, 60000);
-        xbar_put_i32(templateBuf, base + stride + XBAR_MSVDD_OFFSET_FIELD, 20000);
+        // MSVDD voltage lives in entry 0 (msvddEntryIndex), NOT entry 1.
+        xbar_put_i32(templateBuf, base + XBAR_PINNED_MSVDD_ENTRY_INDEX * stride +
+                     XBAR_MSVDD_OFFSET_FIELD, 20000);
         xbar_put_i32(templateBuf,
             base + XBAR_PINNED_SYS_ENTRY_INDEX * stride +
                 XBAR_FREQ_OFFSET_FIELD, 75000);
@@ -11861,8 +11863,10 @@ static int run_all_tests(int argc, char** argv) {
             snap.schemaStatus != XBAR_SCHEMA_STATUS_OK)
             return 4520;
         if (snap.freqFieldOffset != base + stride + XBAR_FREQ_OFFSET_FIELD ||
-            snap.msvddFieldOffset != base + stride + XBAR_MSVDD_OFFSET_FIELD)
+            snap.msvddFieldOffset != base + XBAR_PINNED_MSVDD_ENTRY_INDEX * stride +
+                XBAR_MSVDD_OFFSET_FIELD)
             return 4521;
+        if (snap.msvddDomainIndex != XBAR_PINNED_MSVDD_ENTRY_INDEX) return 4525;
         int entryValue = 0;
         if (!xbar_read_entry_freq(&snap, XBAR_PINNED_SYS_ENTRY_INDEX,
                                   &entryValue) || entryValue != 75000)
@@ -11878,13 +11882,15 @@ static int run_all_tests(int argc, char** argv) {
                         450000, 10000, true, true)) return 4503;
         if (setCalls != 1 || snap.freqOffsetKhz != 450000 ||
             snap.msvddOffsetUv != 10000) return 4504;
-        unsigned int writtenBase = snap.entryBase +
+        unsigned int writtenFreqBase = snap.entryBase +
             snap.domainIndex * snap.entryStride;
-        if ((int)xbar_get_u32(lastWrite, writtenBase + XBAR_FREQ_OFFSET_FIELD) != 450000 ||
-            (int)xbar_get_u32(lastWrite, writtenBase + XBAR_MSVDD_OFFSET_FIELD) != 10000)
+        unsigned int writtenMsvddBase = snap.entryBase +
+            snap.msvddDomainIndex * snap.entryStride;
+        if ((int)xbar_get_u32(lastWrite, writtenFreqBase + XBAR_FREQ_OFFSET_FIELD) != 450000 ||
+            (int)xbar_get_u32(lastWrite, writtenMsvddBase + XBAR_MSVDD_OFFSET_FIELD) != 10000)
             return 4505;
-        xbar_put_i32(lastWrite, writtenBase + XBAR_FREQ_OFFSET_FIELD, 60000);
-        xbar_put_i32(lastWrite, writtenBase + XBAR_MSVDD_OFFSET_FIELD, 20000);
+        xbar_put_i32(lastWrite, writtenFreqBase + XBAR_FREQ_OFFSET_FIELD, 60000);
+        xbar_put_i32(lastWrite, writtenMsvddBase + XBAR_MSVDD_OFFSET_FIELD, 20000);
         if (memcmp(lastWrite, stockTemplate, sizeof(stockTemplate)) != 0) return 4506;
         corruptReadback = true;
         if (xbar_write(get, set, measure, gpu, &snap,
@@ -11930,6 +11936,7 @@ static int run_all_tests(int argc, char** argv) {
                 known->domainCount != 8 || known->entryIndex != 1 ||
                 known->entryMarker != XBAR_DOMAIN_MARKER ||
                 known->freqOffsetField != XBAR_FREQ_OFFSET_FIELD ||
+                known->msvddEntryIndex != XBAR_PINNED_MSVDD_ENTRY_INDEX ||
                 known->msvddOffsetField != XBAR_MSVDD_OFFSET_FIELD ||
                 known->requestMask != XBAR_CONTROL_DOMAIN_MASK) return 4517;
             if (xbar_schema_for_version_word(0x00011234u) != nullptr)
@@ -11953,8 +11960,8 @@ static int run_all_tests(int argc, char** argv) {
                              XBAR_DOMAIN_MARKER);
             xbar_put_i32(unknownVer, base + stride + XBAR_FREQ_OFFSET_FIELD,
                          60000);
-            xbar_put_i32(unknownVer, base + stride + XBAR_MSVDD_OFFSET_FIELD,
-                         20000);
+            xbar_put_i32(unknownVer, base + XBAR_PINNED_MSVDD_ENTRY_INDEX * stride +
+                         XBAR_MSVDD_OFFSET_FIELD, 20000);
             auto unknownGet = [](void*, void* payload) -> int {
                 if (!payload) return -1;
                 memcpy(payload, unknownVer, sizeof(unknownVer));

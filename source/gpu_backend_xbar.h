@@ -22,6 +22,7 @@
 #ifndef GREEN_CURVE_GPU_BACKEND_XBAR_H
 #define GREEN_CURVE_GPU_BACKEND_XBAR_H
 
+#include <stddef.h>
 #include <string.h>
 
 // These are NvAPI interface IDs, not Linux RM command IDs.  In
@@ -49,6 +50,13 @@ static_assert(offsetof(NvApiVoltRailsStatus, value_uV) == 40, "NvApiVoltRailsSta
 // version a caller requested.  Seeing it means the adapter speaks an older
 // ClkDomains schema than every row we currently pin.
 #define XBAR_NVAPI_STATUS_INCOMPATIBLE_STRUCT_VERSION (-9)
+// NvAPI gate for privileged operations: SET_CONTROL from a non-elevated
+// caller is refused before the RM command is even dispatched (verified live:
+// GET succeeds unprivileged, SET returns -137).  GUI and service apply paths
+// run elevated, so end users only see this when invoking off-path tools.
+#define XBAR_NVAPI_STATUS_INVALID_USER_PRIVILEGE (-137)
+static_assert(XBAR_NVAPI_STATUS_INVALID_USER_PRIVILEGE == -137,
+              "NVAPI_INVALID_USER_PRIVILEGE status code");
 
 static const unsigned int XBAR_CONTROL_BUF_SIZE = 0x13000;
 static const unsigned int XBAR_CONTROL_MASK_OFFSET = 8;
@@ -66,6 +74,13 @@ static const unsigned int XBAR_PINNED_ENTRY_BASE = 0x124;
 static const unsigned int XBAR_PINNED_ENTRY_STRIDE = 0x304;
 static const unsigned int XBAR_PINNED_DOMAIN_COUNT = 8;
 static const unsigned int XBAR_PINNED_XBAR_ENTRY_INDEX = 1;
+// MSVDD voltage lives in domain-entry 0, NOT in the XBAR-frequency entry 1.
+// Confirmed by mVolt.exe validation rules at 0x1400ff4e0: the driver validates
+// the voltage field at buffer offset 0x23c = entry 0 (0x124) + 0x118.  Writing
+// to entry 1 + 0x11c (0x544) was rejected by the RM driver with status
+// 0xFFFFFFFF because that offset belongs to the SYS domain's second voltage
+// rail, which Blackwell does not support.
+static const unsigned int XBAR_PINNED_MSVDD_ENTRY_INDEX = 0;
 // Second aux clock entry, identified empirically on RTX 5070 / 610.88:
 // writing +50 kHz-MHz here moves physical CLK_MEASURE domain 2 by the same
 // amount (reproduced across idle and load states), while entry 1 drives
@@ -77,7 +92,9 @@ static const unsigned int XBAR_PINNED_SYS_ENTRY_INDEX = 3;
 // CLK_MEASURE domain, so post-write verification relies on exact readback.
 static const unsigned int XBAR_PINNED_VIDEO_ENTRY_INDEX = 4;
 static const unsigned int XBAR_FREQ_OFFSET_FIELD = 0x114;
-static const unsigned int XBAR_MSVDD_OFFSET_FIELD = 0x11c;
+// MSVDD voltage field offset within its entry.  This is +0x118, NOT +0x11c.
+// mVolt.exe validates buf[0x23c] = entry 0 + 0x118 in [-500000, 500000] uV.
+static const unsigned int XBAR_MSVDD_OFFSET_FIELD = 0x118;
 // Physical-clock ids for verification/display, identified empirically
 // (differential writes): entry 1 drives CLK_MEASURE domain 1, entry 3
 // drives domain 2, entry 4 (video) drives NONE - its engine clock is not
@@ -90,14 +107,17 @@ struct XbarClkDomainsSchema {
     // (schema version << 16) | struct size, as carried at buffer offset 0 of
     // both requests and responses.
     unsigned int versionWord;
-    // Repeated-domain-entry geometry and the two owned field offsets inside
-    // the XBAR entry.
+    // Repeated-domain-entry geometry.
     unsigned int entryBase;
     unsigned int entryStride;
     unsigned int domainCount;
+    // XBAR frequency offset lives in entryIndex (entry 1 on Blackwell).
     unsigned int entryIndex;
     unsigned int entryMarker;
     unsigned int freqOffsetField;
+    // MSVDD voltage offset lives in msvddEntryIndex (entry 0 on Blackwell),
+    // which may differ from the XBAR-frequency entry.
+    unsigned int msvddEntryIndex;
     unsigned int msvddOffsetField;
     // Controllable-domain mask sent in the request header.
     unsigned int requestMask;
@@ -110,7 +130,8 @@ static const XbarClkDomainsSchema g_xbarSchemas[] = {
     { XBAR_NVAPI_CLK_DOMAINS_VERSION,
       XBAR_PINNED_ENTRY_BASE, XBAR_PINNED_ENTRY_STRIDE,
       XBAR_PINNED_DOMAIN_COUNT, XBAR_PINNED_XBAR_ENTRY_INDEX,
-      XBAR_DOMAIN_MARKER, XBAR_FREQ_OFFSET_FIELD, XBAR_MSVDD_OFFSET_FIELD,
+      XBAR_DOMAIN_MARKER, XBAR_FREQ_OFFSET_FIELD,
+      XBAR_PINNED_MSVDD_ENTRY_INDEX, XBAR_MSVDD_OFFSET_FIELD,
       XBAR_CONTROL_DOMAIN_MASK },
 };
 static const unsigned int XBAR_SCHEMA_COUNT =
@@ -132,7 +153,8 @@ struct XbarControlSnapshot {
     unsigned int schemaStatus;
     unsigned int entryBase;
     unsigned int entryStride;
-    unsigned int domainIndex;
+    unsigned int domainIndex;       // XBAR freq entry index
+    unsigned int msvddDomainIndex;  // MSVDD voltage entry index
     unsigned int freqFieldOffset;
     unsigned int msvddFieldOffset;
     int freqOffsetKhz;
@@ -144,6 +166,7 @@ struct XbarBufferLayout {
     unsigned int entryBase;
     unsigned int entryStride;
     unsigned int domainIndex;
+    unsigned int msvddDomainIndex;
     unsigned int freqFieldOffset;
     unsigned int msvddFieldOffset;
 };
@@ -211,10 +234,11 @@ static inline bool xbar_layout_for_buffer(const unsigned char* buf,
     layout->entryBase = schema->entryBase;
     layout->entryStride = schema->entryStride;
     layout->domainIndex = schema->entryIndex;
+    layout->msvddDomainIndex = schema->msvddEntryIndex;
     layout->freqFieldOffset = schema->entryBase +
         schema->entryIndex * schema->entryStride + schema->freqOffsetField;
     layout->msvddFieldOffset = schema->entryBase +
-        schema->entryIndex * schema->entryStride + schema->msvddOffsetField;
+        schema->msvddEntryIndex * schema->entryStride + schema->msvddOffsetField;
     unsigned long long freqEnd = layout->freqFieldOffset;
     freqEnd += sizeof(unsigned int);
     unsigned long long msvddEnd = layout->msvddFieldOffset;
@@ -231,6 +255,11 @@ static inline void xbar_log_control_status(const char* what, int status) {
         XBAR_LOG("xbar: %s failed status=%d"
                   " (NVAPI_INCOMPATIBLE_STRUCT_VERSION: driver rejected the"
                   " requested struct version)\n", what, status);
+    } else if (status == XBAR_NVAPI_STATUS_INVALID_USER_PRIVILEGE) {
+        XBAR_LOG("xbar: %s failed status=%d"
+                  " (NVAPI_INVALID_USER_PRIVILEGE: this operation requires an"
+                  " elevated caller; the app's apply paths run elevated)\n",
+                  what, status);
     } else {
         XBAR_LOG("xbar: %s failed status=0x%X\n", what, (unsigned)status);
     }
@@ -339,6 +368,7 @@ static inline bool xbar_read_control(NvApiFunc getControl, void* gpuHandle,
     snap->entryBase = layout.entryBase;
     snap->entryStride = layout.entryStride;
     snap->domainIndex = layout.domainIndex;
+    snap->msvddDomainIndex = layout.msvddDomainIndex;
     snap->freqFieldOffset = layout.freqFieldOffset;
     snap->msvddFieldOffset = layout.msvddFieldOffset;
     snap->freqOffsetKhz = (int)xbar_get_u32(snap->buf, layout.freqFieldOffset);
@@ -398,9 +428,12 @@ static inline bool xbar_write(NvApiFunc getControl, NvApiFunc setControl,
     xbar_measure_clock(measureFunc, gpuHandle, XBAR_MEASURE_DOMAIN_XBAR,
                        &snap->measuredKhz);
     XBAR_LOG("xbar_write: ok schema=0x%08X base=0x%03X stride=0x%03X"
-              " domain=%u freq=%d kHz msvdd=%d uV measured=%u kHz\n",
+              " freqEntry=%u freqOff=0x%03X msvddEntry=%u msvddOff=0x%03X"
+              " freq=%d kHz msvdd=%d uV measured=%u kHz\n",
               snap->versionWord, snap->entryBase, snap->entryStride,
-              snap->domainIndex, snap->freqOffsetKhz, snap->msvddOffsetUv,
+              snap->domainIndex, snap->freqFieldOffset,
+              snap->msvddDomainIndex, snap->msvddFieldOffset,
+              snap->freqOffsetKhz, snap->msvddOffsetUv,
               snap->measuredKhz);
     return true;
 }
