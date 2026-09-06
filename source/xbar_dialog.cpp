@@ -43,6 +43,7 @@ struct XbarDialogState {
 };
 
 static XbarDialogState g_xbarDialog = {};
+static void xbar_dialog_update_live_values();
 
 static void xbar_dialog_sync_controls() {
     if (!g_xbarDialog.hwnd) return;
@@ -53,7 +54,6 @@ static void xbar_dialog_sync_controls() {
     bool haveControl = get_effective_control_state(&control);
     int appliedKhz = 0;
     int appliedUv = 0;
-    unsigned int measuredKhz = g_app.xbarMeasuredClockKhz;
     bool xbarSupported = false;
     if (haveControl) {
         appliedKhz = control.hasXbarOffset ? control.xbarOffsetKhz : 0;
@@ -158,24 +158,8 @@ static void xbar_dialog_sync_controls() {
         end_programmatic_edit_update();
     }
 
-    // Current applied label
-    if (appliedKhz == 0 && appliedUv == 0) {
-        StringCchPrintfA(buf, 128, "Current: stock (0 MHz / 0 mV)");
-    } else {
-        StringCchPrintfA(buf, 128, "Current: %d MHz / %d mV", appliedKhz / 1000, appliedUv / 1000);
-    }
-    SetWindowTextA(g_xbarDialog.hCurrentLabel, buf);
-
-    // Measured XBAR clock and MSVDD voltage
-    unsigned int measuredVoltUv = g_app.xbarMeasuredVoltageUv;
-    char voltBuf[16] = "---";
-    if (measuredVoltUv > 0) StringCchPrintfA(voltBuf, 16, "%.2fV", (double)measuredVoltUv / 1000000.0);
-    if (measuredKhz > 0) {
-        StringCchPrintfA(buf, 128, "Measured XBAR: %u MHz | MSVDD: %s", measuredKhz / 1000, voltBuf);
-    } else {
-        StringCchPrintfA(buf, 128, "Measured XBAR: --- | MSVDD: %s", voltBuf);
-    }
-    SetWindowTextA(g_xbarDialog.hMeasuredLabel, buf);
+    // Populate live and measured summary labels with the latest state.
+    xbar_dialog_update_live_values();
 }
 
 static void xbar_dialog_update_live_values() {
@@ -488,7 +472,7 @@ static void open_xbar_dialog() {
     // dlgW/dlgH below are CLIENT coordinates.  CreateWindowExA takes the outer
     // frame size; passing the client height directly cut off the bottom row by
     // exactly the caption plus border.
-    int clientW = dp(460);
+    int clientW = dp(540);
     int clientH = dp(388);
     const DWORD dialogStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
     const DWORD dialogExStyle = WS_EX_DLGMODALFRAME;

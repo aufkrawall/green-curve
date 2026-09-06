@@ -115,6 +115,8 @@ def check_xbar_clk_domains(ctx, require_text, forbid_text):
                  "F-XBAR-LIVE: live values render through one focused helper")
     require_text(dialog_cpp, "hMsvddNowLabel",
                  "F-XBAR-LIVE: Advanced dialog includes MSVDD live label")
+    require_text(dialog_cpp, "int clientW = dp(540);",
+                 "F-XBAR-DIALOG: client width accommodates all four measured sensor values without truncation")
     telemetry_h = _p(ctx, "xbar_telemetry.h")
     require_text(telemetry_h,
                  "clk_read_public_video_clock(g_app.gpuHandle, &videoMeasuredKhz);",

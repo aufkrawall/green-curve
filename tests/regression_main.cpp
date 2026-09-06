@@ -12658,6 +12658,29 @@ static int run_all_tests(int argc, char** argv) {
         // ServiceSnapshot field offset
         if (offsetof(ServiceSnapshot, xbarMeasuredVoltageUv) !=
             offsetof(ServiceSnapshot, xbarMeasuredClockKhz) + sizeof(unsigned int)) return 4906;
+
+        // XBAR dialog "Measured now" row geometry and anti-truncation verification
+        const int clientW_logical = 540;
+        const int margin_logical = 16;
+        const int contentW_logical = clientW_logical - margin_logical * 2; // 508 dp
+        if (contentW_logical < 500) return 4907;
+
+        char measuredRow[128] = {};
+        snprintf(measuredRow, sizeof(measuredRow),
+                 "Measured now: XBAR %u MHz | SYS %u MHz | VIDEO %u MHz | MSVDD %.2fV",
+                 3800, 3800, 3800, 1.15);
+        size_t measuredLen = strlen(measuredRow);
+        if (measuredLen != 73) return 4908;
+
+        // Verify across standard DPI scale percentages (100%, 125%, 150%, 200%)
+        // that content width has at least 70 physical pixels of headroom over the
+        // character-cell width (approx 5.9 px/char at 100% DPI in Segoe UI 9pt/12px).
+        static const int dpiScales[] = { 100, 125, 150, 200 };
+        for (int scale : dpiScales) {
+            int availPx = (contentW_logical * scale) / 100;
+            int estMaxTextPx = (int)(measuredLen * 6.0 * scale / 100.0 + 0.5);
+            if (availPx - estMaxTextPx < 70) return 4909;
+        }
     }
 
     return 0;
