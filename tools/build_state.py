@@ -30,7 +30,7 @@ SOURCE_SIZE_RATCHET = {
     "config_profiles.cpp": 903,  # 889 before the VIDEO profile save key  # 883 before the SYS profile save key
     "entry.cpp": 863,
     "gpu_backend.cpp": 972,
-    "gpu_backend_apply.cpp": 1407,  # 1364 before the VIDEO clock apply block
+    "gpu_backend_apply.cpp": 1414,  # 1407 before the core/advanced rollback boundary was made explicit
     "gpu_core.h": 842,  # 831 before the video clock domain fields (v22)
     "gui_service_state.cpp": 827,  # 820 before the VIDEO draft projection
     "main.cpp": 801,
