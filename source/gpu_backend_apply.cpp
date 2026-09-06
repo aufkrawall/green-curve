@@ -1171,28 +1171,36 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         }
     }
     bool fanChanged = false;
-    // apply_fan_settings() reports write success/failure through the shared
-    // counters and always returns to this common transaction path.  Its legacy
-    // bool return is intentionally ignored here so a future caller cannot split
-    // fan failures away from the common mixed-result rollback policy.
-    (void)apply_fan_settings(desired, failureDetails, sizeof(failureDetails),
+    // Fan request validity was checked before any writes.  The helper is void:
+    // attempted fan writes contribute only to the same core success/failure
+    // counters as VF/lock/memory/power, then return here for one rollback decision.
+    apply_fan_settings(desired, failureDetails, sizeof(failureDetails),
         successCount, failCount, result, resultSize, fanChanged);
+
+    // Snapshot the core domain before entering advanced clocks.  The aggregate
+    // counters continue below for final reporting, but XBAR/SYS/VIDEO outcomes
+    // must never become inputs to this core rollback decision.
+    const int coreSuccessCount = successCount;
+    const int coreFailCount = failCount;
     // F-01-002 legacy source gate searches for "fan failure triggered rollback".
-    // Fan failures increment failCount, so this tested policy is the executable
-    // guarantee behind that phrase whenever an earlier hardware write succeeded.
-    if (service_apply_requires_mixed_failure_rollback(successCount, failCount)) {
+    // The executable guarantee is the typed core policy below: any fan or other
+    // core failure after an earlier successful core write enters rollback.
+    if (service_apply_core_requires_mixed_failure_rollback(
+            coreSuccessCount, coreFailCount)) {
         partialApplyRisk = true;
         rollback_to_safe_defaults();
         g_app.gpuClockOffsetkHz = g_app.memClockOffsetkHz = g_app.powerLimitPct = 0;
         invalidate_scalar_readbacks(&g_app.readback);
         char rollbackDetail[128] = {};
         refresh_global_state(rollbackDetail, sizeof(rollbackDetail));
-        debug_log("apply: mixed failure triggered rollback of %d successful hardware writes after %d failure(s)\n",
-            successCount, failCount);
+        debug_log("apply: mixed core failure triggered rollback of %d successful core hardware writes after %d core failure(s)\n",
+            coreSuccessCount, coreFailCount);
     }
-    // XBAR clock domain offset apply (wherever the driver reports a pinned
-    // ClkDomains schema).  Independent of the
-    // main VF/clock/fan apply; a failure is reported rather than silently skipped.
+
+    // Advanced-clock transaction boundary.  XBAR/SYS/VIDEO are independently
+    // verified writes and intentionally live outside rollback_to_safe_defaults().
+    // They still contribute to the aggregate result reported to the caller, but
+    // neither their successes nor their failures trigger another core rollback.
     if (desired && (desired->hasXbarOffsetKhz || desired->hasXbarMsvddOffsetUv)) {
         auto xbarGetCtrl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
         auto xbarSetCtrl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
@@ -1323,9 +1331,11 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     EnterCriticalSection(&g_appLock);
     // A post-apply global refresh may suppress live lock auto-detection (for example
     // on selective GPU offset profiles) and clear the GUI lock markers even though
-    // this apply explicitly requested a lock. Restore the requested lock state so
-    // the VF controls continue to match the just-applied profile.
-    if (hasLock) {
+    // this apply explicitly requested a lock. Restore the requested lock state only
+    // when the core transaction itself had no failures. Advanced-clock failures are
+    // outside the core domain and must not erase a successfully applied core lock;
+    // conversely, a failed or rolled-back core apply must not resurrect lock markers.
+    if (hasLock && coreFailCount == 0) {
         unsigned int displayedLockMHz = lockMhz;
         g_app.lockedVi = lockVi;
         g_app.lockedCi = lockCi;
@@ -1342,7 +1352,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             displayedLockMHz,
             lock_mode_name(lockMode),
             desired->lockTracksAnchor ? 1 : 0);
-    } else if (g_app.isServiceProcess && failCount == 0 && (curveTouched || desired->hasGpuOffset || hasCurveEdits)) {
+    } else if (g_app.isServiceProcess && coreFailCount == 0 && (curveTouched || desired->hasGpuOffset || hasCurveEdits)) {
         g_app.lockedVi = -1;
         g_app.lockedCi = -1;
         g_app.lockedFreq = 0;

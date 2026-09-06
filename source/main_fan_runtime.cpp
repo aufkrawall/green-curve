@@ -781,11 +781,15 @@ static bool validate_desired_fan_settings_for_apply(const DesiredSettings* desir
     return true;
 }
 
-static bool apply_fan_settings(const DesiredSettings* desired, char* failureDetails, size_t failureDetailsSize, int& successCount, int& failCount, char* result, size_t resultSize, bool& outFanChanged) {
+// Prevalidation above owns request validity.  Once this helper is entered, a
+// fan hardware attempt reports its outcome only through successCount/failCount;
+// it always returns control to the caller so the core transaction can make one
+// mixed-result rollback decision across VF/lock/memory/power/fan.
+static void apply_fan_settings(const DesiredSettings* desired, char* failureDetails, size_t failureDetailsSize, int& successCount, int& failCount, char* result, size_t resultSize, bool& outFanChanged) {
     (void)result;
     (void)resultSize;
     outFanChanged = false;
-    if (!desired->hasFan) return true;
+    if (!desired->hasFan) return;
     set_last_apply_phase("apply: fan settings");
     auto append_failure = [&](const char* fmt, ...) {
         char part[256] = {};
@@ -902,6 +906,5 @@ static bool apply_fan_settings(const DesiredSettings* desired, char* failureDeta
         }
     }
     outFanChanged = fanChanged;
-    return true;
 }
 #include "single_instance_win32.cpp"
