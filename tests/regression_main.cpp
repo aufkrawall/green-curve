@@ -10181,32 +10181,35 @@ static int run_all_tests(int argc, char** argv) {
         if (!gc_update_meets_minimum_from(&patch1, &patch1)) return 4310;
 
         // Exact next stable release shape: the policies embedded in the
-        // public 0.23.1 tag must offer 0.24.0, preserve its three-component
+        // public 0.24.0 tag must offer 0.25.0, preserve its three-component
         // spelling in the setup filename, and support both shipped Windows
         // architectures. The release manifest intentionally has no min_from
         // floor, so older updater-capable builds are not needlessly stranded.
-        static const char k024Manifest[] =
+        static const char k025Manifest[] =
             "format=1\n"
-            "version=0.24.0\n"
-            "x64_file=greencurve-0.24.0-windows-x64-setup.exe\n"
+            "version=0.25.0\n"
+            "x64_file=greencurve-0.25.0-windows-x64-setup.exe\n"
             "x64_size=200000\n"
             "x64_sha256=09931428a6e4293292cfc1be8e490d26a52fc9713b61cb84175c40802f2d7cfe\n"
-            "arm64_file=greencurve-0.24.0-windows-arm64-setup.exe\n"
+            "arm64_file=greencurve-0.25.0-windows-arm64-setup.exe\n"
             "arm64_size=300000\n"
             "arm64_sha256=94cf3d99cd91075f246efa1de0363323e5ebf06859c5eec940b6bacac4f8ec3a\n";
-        GcUpdateManifest release024;
-        gc_update_manifest_parse(k024Manifest, strlen(k024Manifest),
-                                 &release024);
-        if (!release024.valid || release024.hasMinimumFrom) return 4311;
-        if (gc_update_decide(&release024, &patch1, GC_UPDATE_ARCH_X64) !=
+        GcUpdateManifest release025;
+        gc_update_manifest_parse(k025Manifest, strlen(k025Manifest),
+                                 &release025);
+        GcUpdateVersion installed024;
+        gc_update_version_parse("0.24.0", &installed024);
+        if (!release025.valid || release025.hasMinimumFrom || !installed024.valid)
+            return 4311;
+        if (gc_update_decide(&release025, &installed024, GC_UPDATE_ARCH_X64) !=
             GC_UPDATE_DECISION_AVAILABLE) return 4312;
-        if (gc_update_decide(&release024, &patch1, GC_UPDATE_ARCH_ARM64) !=
+        if (gc_update_decide(&release025, &installed024, GC_UPDATE_ARCH_ARM64) !=
             GC_UPDATE_DECISION_AVAILABLE) return 4313;
-        const GcUpdateAsset* release024X64 =
-            gc_update_select_asset(&release024, GC_UPDATE_ARCH_X64);
-        if (!release024X64 ||
-            strcmp(release024X64->file,
-                   "greencurve-0.24.0-windows-x64-setup.exe") != 0) return 4314;
+        const GcUpdateAsset* release025X64 =
+            gc_update_select_asset(&release025, GC_UPDATE_ARCH_X64);
+        if (!release025X64 ||
+            strcmp(release025X64->file,
+                   "greencurve-0.25.0-windows-x64-setup.exe") != 0) return 4314;
     }
 
     // --- Manifest parsing and binding (4120-4149) ---------------------

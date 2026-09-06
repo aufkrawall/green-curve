@@ -23,10 +23,11 @@ and shipping ready-to-install Arch Linux packages.
   clock and fan failures now follow an explicit mixed-apply rollback contract,
   with transaction boundaries and partial-apply reporting kept consistent so a
   rolled-back request cannot be republished as live state.
-- **Native Windows builds use the hardened MSVC ABI.** Windows builds prefer
-  verified clang-cl/lld-link toolchains with OS Control Flow Guard, `/GS`, CET
-  on x64 and CFG/PAC/BTI metadata on ARM64, while retaining a loud, verified
-  llvm-mingw fallback.
+- **Windows builds are hardened on both supported toolchain paths.** Stable
+  GitHub release binaries are cross-compiled on Linux with pinned llvm-mingw
+  for x64 and Zig/LLD for ARM64, with verified CFG/CET and PAC/BTI metadata.
+  Native Windows builds additionally prefer verified clang-cl/lld-link and the
+  MSVC ABI, while retaining a loud, verified llvm-mingw fallback.
 - **Updater and service trust paths are harder to subvert.** The update path now
   fails closed when transport security policy cannot be applied, strengthens
   atomic-write and directory-handle pinning against reparse/TOCTOU attacks,
