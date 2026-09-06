@@ -2040,7 +2040,7 @@ static int run_all_tests(int argc, char** argv) {
     // Protocol-v13 request validation, mutation preconditions, and field layout.
     {
         if (SERVICE_PROTOCOL_MAGIC != 0x47535643u) return 80;
-        if (SERVICE_PROTOCOL_VERSION != 24) return 81;
+        if (SERVICE_PROTOCOL_VERSION != 25) return 81;
         // These are release gates, not incidental layout observations. A field
         // addition that changes a fixed-size IPC structure must bump the wire
         // version; otherwise mixed old/new peers pass the header handshake and
@@ -12595,6 +12595,69 @@ static int run_all_tests(int argc, char** argv) {
         if (linux_resolve_default_config_path("/usr/bin", false,
                                               nullptr, "/home/julian",
                                               smallBuf, sizeof(smallBuf))) return 4882;
+    }
+
+    // XBAR voltage measurement and layout assertions (protocol v25)
+    {
+        // Struct wire layout
+        if (sizeof(NvApiVoltRailsStatus) != 76) return 4890;
+        if (offsetof(NvApiVoltRailsStatus, version) != 0) return 4891;
+        if (offsetof(NvApiVoltRailsStatus, value_uV) != 40) return 4892;
+        if (NVAPI_GPU_CLIENT_VOLT_RAILS_GET_STATUS != 0x465F9BCFu) return 4893;
+        if (NVAPI_GPU_CLIENT_VOLT_RAILS_GET_STATUS_VERSION != 0x0001004Cu) return 4894;
+
+        // xbar_measure_voltage happy path
+        static unsigned int lastRequestedVersion = 0;
+        auto fakeVoltApi = [](void*, void* p) -> int {
+            if (!p) return -1;
+            auto* rails = (NvApiVoltRailsStatus*)p;
+            lastRequestedVersion = rails->version;
+            rails->value_uV = 805000;
+            return 0;
+        };
+        NvApiFunc vFunc = (NvApiFunc)+fakeVoltApi;
+        int dummyGpu = 1;
+        unsigned int measuredUv = 0;
+        if (!xbar_measure_voltage(vFunc, &dummyGpu, &measuredUv)) return 4895;
+        if (lastRequestedVersion != NVAPI_GPU_CLIENT_VOLT_RAILS_GET_STATUS_VERSION) return 4896;
+        if (measuredUv != 805000) return 4897;
+
+        // Error conditions
+        auto fakeVoltError = [](void*, void*) -> int { return -1; };
+        NvApiFunc errFunc = (NvApiFunc)+fakeVoltError;
+        if (xbar_measure_voltage(errFunc, &dummyGpu, &measuredUv)) return 4898;
+        if (measuredUv != 0) return 4899;
+
+        auto fakeVoltZero = [](void*, void* p) -> int {
+            if (!p) return -1;
+            auto* rails = (NvApiVoltRailsStatus*)p;
+            rails->value_uV = 0;
+            return 0;
+        };
+        NvApiFunc zeroFunc = (NvApiFunc)+fakeVoltZero;
+        if (xbar_measure_voltage(zeroFunc, &dummyGpu, &measuredUv)) return 4900;
+
+        // Null pointer handling
+        if (xbar_measure_voltage(nullptr, &dummyGpu, &measuredUv)) return 4901;
+        if (xbar_measure_voltage(vFunc, nullptr, &measuredUv)) return 4902;
+        if (xbar_measure_voltage(vFunc, &dummyGpu, nullptr)) return 4903;
+
+        // Formatting verification: "x.xxV" and applied offset
+        char voltText[64] = {};
+        snprintf(voltText, sizeof(voltText), "readback %+d mV • now %.2fV",
+                 15000 / 1000, 805000 / 1000000.0);
+        if (strcmp(voltText, "readback +15 mV • now 0.81V") != 0 &&
+            strcmp(voltText, "readback +15 mV • now 0.80V") != 0) return 4904;
+
+        char rowText[32] = {};
+        snprintf(rowText, sizeof(rowText), "%.2fV (%+d mV)",
+                 805000 / 1000000.0, 0 / 1000);
+        if (strcmp(rowText, "0.81V (+0 mV)") != 0 &&
+            strcmp(rowText, "0.80V (+0 mV)") != 0) return 4905;
+
+        // ServiceSnapshot field offset
+        if (offsetof(ServiceSnapshot, xbarMeasuredVoltageUv) !=
+            offsetof(ServiceSnapshot, xbarMeasuredClockKhz) + sizeof(unsigned int)) return 4906;
     }
 
     return 0;

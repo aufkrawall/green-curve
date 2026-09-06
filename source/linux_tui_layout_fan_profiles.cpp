@@ -386,6 +386,7 @@ void draw_advanced_panel(TuiCanvas* c, const TuiRect& panel) {
         char xbarNow[16] = "---";
         char sysNow[16] = "---";
         char videoNow[16] = "---";
+        char voltageNow[16] = "---";
         if (snap->xbarMeasuredClockKhz)
             snprintf(xbarNow, sizeof(xbarNow), "%u",
                      snap->xbarMeasuredClockKhz / 1000);
@@ -395,13 +396,17 @@ void draw_advanced_panel(TuiCanvas* c, const TuiRect& panel) {
         if (snap->videoClkMeasuredClockKhz)
             snprintf(videoNow, sizeof(videoNow), "%u",
                      snap->videoClkMeasuredClockKhz / 1000);
+        if (snap->xbarMeasuredVoltageUv)
+            snprintf(voltageNow, sizeof(voltageNow), "%.2fV",
+                     (double)snap->xbarMeasuredVoltageUv / 1000000.0);
         if (snap->xbarOffsetReadbackValid)
             snprintf(xbarLive, sizeof(xbarLive),
                      "readback %+d MHz • now %s MHz",
                      snap->xbarOffsetKhz / 1000, xbarNow);
         if (snap->xbarMsvddOffsetReadbackValid)
-            snprintf(voltageLive, sizeof(voltageLive), "readback %+d mV",
-                     snap->xbarMsvddOffsetUv / 1000);
+            snprintf(voltageLive, sizeof(voltageLive),
+                     "readback %+d mV • now %s",
+                     snap->xbarMsvddOffsetUv / 1000, voltageNow);
         if (snap->sysClkOffsetReadbackValid)
             snprintf(sysLive, sizeof(sysLive),
                      "readback %+d MHz • now %s MHz",

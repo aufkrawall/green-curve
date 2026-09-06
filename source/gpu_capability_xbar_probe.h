@@ -26,6 +26,8 @@ static void probe_xbar_control_surface(GpuCapabilityProbe* probe) {
     g_app.xbarProbeValid = false;
     g_app.xbarFreqReadbackValid = false;
     g_app.xbarMsvddReadbackValid = false;
+    g_app.xbarMeasuredClockKhz = 0;
+    g_app.xbarMeasuredVoltageUv = 0;
     g_app.sysClkProbeValid = false;
     g_app.sysClkFreqReadbackValid = false;
     g_app.videoClkProbeValid = false;
@@ -53,12 +55,16 @@ static void probe_xbar_control_surface(GpuCapabilityProbe* probe) {
         g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
         g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
         g_app.xbarMeasuredClockKhz = snap.measuredKhz;
+        auto getVoltage = (NvApiFunc)nvapi_qi(NVAPI_GPU_CLIENT_VOLT_RAILS_GET_STATUS);
+        if (getVoltage) {
+            xbar_measure_voltage(getVoltage, g_app.gpuHandle, &g_app.xbarMeasuredVoltageUv);
+        }
         debug_log("gpu capability probe: xbar schema version word=0x%08X"
                   " layout base=0x%03X stride=0x%03X domain=%u offset=%d kHz"
-                  " msvdd=%d uV measured=%u kHz\n",
+                  " msvdd=%d uV measured=%u kHz volt=%u uV\n",
                   snap.versionWord, snap.entryBase, snap.entryStride,
                   snap.domainIndex, snap.freqOffsetKhz, snap.msvddOffsetUv,
-                  snap.measuredKhz);
+                  snap.measuredKhz, g_app.xbarMeasuredVoltageUv);
         // The same validated block carries the SYS entry: extraction is
         // read-only and rides the exact-readback proof already established.
         unsigned long long sysField =

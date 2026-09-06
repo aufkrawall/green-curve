@@ -27,6 +27,7 @@ struct XbarDialogState {
     HWND hSysEdit;
     HWND hVideoEdit;
     HWND hXbarNowLabel;
+    HWND hMsvddNowLabel;
     HWND hSysNowLabel;
     HWND hVideoNowLabel;
     HWND hCurrentLabel;
@@ -165,13 +166,16 @@ static void xbar_dialog_sync_controls() {
     }
     SetWindowTextA(g_xbarDialog.hCurrentLabel, buf);
 
-    // Measured XBAR clock
+    // Measured XBAR clock and MSVDD voltage
+    unsigned int measuredVoltUv = g_app.xbarMeasuredVoltageUv;
+    char voltBuf[16] = "---";
+    if (measuredVoltUv > 0) StringCchPrintfA(voltBuf, 16, "%.2fV", (double)measuredVoltUv / 1000000.0);
     if (measuredKhz > 0) {
-        StringCchPrintfA(buf, 128, "Measured XBAR: %u MHz", measuredKhz / 1000);
-        SetWindowTextA(g_xbarDialog.hMeasuredLabel, buf);
+        StringCchPrintfA(buf, 128, "Measured XBAR: %u MHz | MSVDD: %s", measuredKhz / 1000, voltBuf);
     } else {
-        SetWindowTextA(g_xbarDialog.hMeasuredLabel, "Measured XBAR: ---");
+        StringCchPrintfA(buf, 128, "Measured XBAR: --- | MSVDD: %s", voltBuf);
     }
+    SetWindowTextA(g_xbarDialog.hMeasuredLabel, buf);
 }
 
 static void xbar_dialog_update_live_values() {
@@ -198,20 +202,29 @@ static void xbar_dialog_update_live_values() {
 
     // All three clocks come from in-app sources now: XBAR/SYS from private
     // CLK_MEASURE domains, VIDEO from the documented public frequency query.
+    // MSVDD voltage comes from private ClientVoltRailsGetStatus.
     unsigned int measuredXbar = g_app.xbarMeasuredClockKhz;
     unsigned int measuredSys = g_app.sysClkMeasuredClockKhz;
     unsigned int measuredVideo = g_app.videoClkMeasuredClockKhz;
-    char xbarTxt[16] = "---", sysTxt[16] = "---", videoTxt[16] = "---";
+    unsigned int measuredVolt = g_app.xbarMeasuredVoltageUv;
+    char xbarTxt[16] = "---", sysTxt[16] = "---", videoTxt[16] = "---", voltTxt[16] = "---";
     if (measuredXbar) StringCchPrintfA(xbarTxt, 16, "%u MHz", measuredXbar / 1000);
     if (measuredSys) StringCchPrintfA(sysTxt, 16, "%u MHz", measuredSys / 1000);
     if (measuredVideo) StringCchPrintfA(videoTxt, 16, "%u MHz", measuredVideo / 1000);
-    StringCchPrintfA(buf, 128, "Measured now: XBAR %s | SYS %s | VIDEO %s",
-                     xbarTxt, sysTxt, videoTxt);
+    if (measuredVolt) StringCchPrintfA(voltTxt, 16, "%.2fV", (double)measuredVolt / 1000000.0);
+    StringCchPrintfA(buf, 128, "Measured now: XBAR %s | SYS %s | VIDEO %s | MSVDD %s",
+                     xbarTxt, sysTxt, videoTxt, voltTxt);
     SetWindowTextA(g_xbarDialog.hMeasuredLabel, buf);
 
     // Per-row live columns.
     StringCchPrintfA(buf, 32, "%+d MHz", xbarKhz / 1000);
     SetWindowTextA(g_xbarDialog.hXbarNowLabel, buf);
+    if (measuredVolt > 0) {
+        StringCchPrintfA(buf, 32, "%.2fV (%+d mV)", (double)measuredVolt / 1000000.0, xbarUv / 1000);
+    } else {
+        StringCchPrintfA(buf, 32, "%+d mV", xbarUv / 1000);
+    }
+    SetWindowTextA(g_xbarDialog.hMsvddNowLabel, buf);
     StringCchPrintfA(buf, 32, "%+d MHz", sysKhz / 1000);
     SetWindowTextA(g_xbarDialog.hSysNowLabel, buf);
     StringCchPrintfA(buf, 32, "%+d MHz", videoKhz / 1000);
@@ -475,7 +488,7 @@ static void open_xbar_dialog() {
     // dlgW/dlgH below are CLIENT coordinates.  CreateWindowExA takes the outer
     // frame size; passing the client height directly cut off the bottom row by
     // exactly the caption plus border.
-    int clientW = dp(420);
+    int clientW = dp(460);
     int clientH = dp(388);
     const DWORD dialogStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
     const DWORD dialogExStyle = WS_EX_DLGMODALFRAME;
@@ -531,6 +544,11 @@ static void open_xbar_dialog() {
         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
         margin + labelW + dp(8), y1, editW, rowH,
         g_xbarDialog.hwnd, (HMENU)(INT_PTR)XBAR_MSVDD_EDIT_ID, g_app.hInst, nullptr);
+    g_xbarDialog.hMsvddNowLabel = CreateWindowExA(0, "STATIC", "---",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        margin + labelW + dp(8) + editW + dp(10), y1 + dp(2),
+        clientW - margin*2 - labelW - editW - dp(18), dp(18),
+        g_xbarDialog.hwnd, nullptr, g_app.hInst, nullptr);
 
 
     int y2 = y1 + rowH + dp(12);
@@ -610,7 +628,7 @@ static void open_xbar_dialog() {
     // Apply fonts
     HWND ctrls[] = { lblOffset, g_xbarDialog.hOffsetEdit, lblMsvdd, g_xbarDialog.hMsvddEdit,
         lblSys, g_xbarDialog.hSysEdit, lblVideo, g_xbarDialog.hVideoEdit,
-        g_xbarDialog.hXbarNowLabel, g_xbarDialog.hSysNowLabel, g_xbarDialog.hVideoNowLabel,
+        g_xbarDialog.hXbarNowLabel, g_xbarDialog.hMsvddNowLabel, g_xbarDialog.hSysNowLabel, g_xbarDialog.hVideoNowLabel,
         g_xbarDialog.hCurrentLabel, g_xbarDialog.hMeasuredLabel, g_xbarDialog.hOkBtn, g_xbarDialog.hCancelBtn, g_xbarDialog.hResetBtn };
     for (HWND c : ctrls) if (c) SendMessageA(c, WM_SETFONT, (WPARAM)hFont, TRUE);
 

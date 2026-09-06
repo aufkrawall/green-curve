@@ -76,7 +76,8 @@ enum {
     // v24 assigns one of v23's reserved bytes to an independent zero-RPM
     // fan-off hysteresis. Wire sizes remain unchanged, but mixed peers would
     // disagree about the byte's meaning and must reject each other.
-    SERVICE_PROTOCOL_VERSION = 24,
+    // v25 adds xbarMeasuredVoltageUv to ServiceSnapshot, changing wire size.
+    SERVICE_PROTOCOL_VERSION = 25,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply. Bit 30 marks an
@@ -611,6 +612,7 @@ struct ServiceSnapshot {
     gc_bool8 xbarMsvddOffsetReadbackValid;
     int xbarMsvddOffsetUv;
     unsigned int xbarMeasuredClockKhz;
+    unsigned int xbarMeasuredVoltageUv;
     gc_bool8 sysClkSupported;
     gc_bool8 sysClkOffsetReadbackValid;
     int sysClkOffsetKhz;
@@ -621,9 +623,6 @@ struct ServiceSnapshot {
     unsigned int videoClkMeasuredClockKhz;
     ServiceGpuHealth health;
 };
-
-
-
 
 struct ServiceRequest {
     gc_u32 magic;

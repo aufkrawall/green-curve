@@ -32,6 +32,18 @@
 #define XBAR_NVAPI_CLK_DOMAINS_VERSION     0x000261A4u
 #define XBAR_NVAPI_CLK_MEASURE             0x527FC458u
 #define XBAR_NVAPI_CLK_MEASURE_VERSION     0x0001000Cu
+#define NVAPI_GPU_CLIENT_VOLT_RAILS_GET_STATUS         0x465F9BCFu
+#define NVAPI_GPU_CLIENT_VOLT_RAILS_GET_STATUS_VERSION 0x0001004Cu
+
+struct NvApiVoltRailsStatus {
+    unsigned int version;
+    unsigned int flags;
+    unsigned int reserved1[8];
+    unsigned int value_uV;
+    unsigned int reserved2[8];
+};
+static_assert(sizeof(NvApiVoltRailsStatus) == 76, "NvApiVoltRailsStatus size");
+static_assert(offsetof(NvApiVoltRailsStatus, value_uV) == 40, "NvApiVoltRailsStatus value_uV offset");
 
 // Standard NvAPI status returned when a driver does not implement the struct
 // version a caller requested.  Seeing it means the adapter speaks an older
@@ -254,6 +266,17 @@ static inline bool xbar_measure_clock(NvApiFunc measureFunc, void* gpuHandle,
     if (measureFunc(gpuHandle, params) != 0) return false;
     *measuredKhz = params[2];
     return *measuredKhz != 0;
+}
+
+static inline bool xbar_measure_voltage(NvApiFunc voltFunc, void* gpuHandle,
+                                        unsigned int* measuredUv) {
+    if (!voltFunc || !gpuHandle || !measuredUv) return false;
+    *measuredUv = 0;
+    NvApiVoltRailsStatus rails = {};
+    rails.version = NVAPI_GPU_CLIENT_VOLT_RAILS_GET_STATUS_VERSION;
+    if (voltFunc(gpuHandle, &rails) != 0) return false;
+    *measuredUv = rails.value_uV;
+    return *measuredUv != 0;
 }
 
 // Reads the complete control block through the request ladder (newest pinned

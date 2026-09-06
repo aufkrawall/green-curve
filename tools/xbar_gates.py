@@ -40,6 +40,9 @@ def check_xbar_clk_domains(ctx, require_text, forbid_text):
                  "XBAR_NVAPI_CLK_MEASURE             0x527FC458u",
                  "F-XBAR-V2: physical clock measurement ID is pinned")
     require_text(backend_h,
+                 "NVAPI_GPU_CLIENT_VOLT_RAILS_GET_STATUS         0x465F9BCFu",
+                 "F-XBAR-V2: voltage measurement ID is pinned")
+    require_text(backend_h,
                  "XBAR_PINNED_ENTRY_BASE = 0x124",
                  "F-XBAR-V2-SCHEMA: the validated ClkDomains entry base is pinned")
     require_text(backend_h,
@@ -110,6 +113,8 @@ def check_xbar_clk_domains(ctx, require_text, forbid_text):
                  "F-XBAR-LIVE: the dialog owns a 1 s live-value timer")
     require_text(dialog_cpp, "xbar_dialog_update_live_values",
                  "F-XBAR-LIVE: live values render through one focused helper")
+    require_text(dialog_cpp, "hMsvddNowLabel",
+                 "F-XBAR-LIVE: Advanced dialog includes MSVDD live label")
     telemetry_h = _p(ctx, "xbar_telemetry.h")
     require_text(telemetry_h,
                  "clk_read_public_video_clock(g_app.gpuHandle, &videoMeasuredKhz);",

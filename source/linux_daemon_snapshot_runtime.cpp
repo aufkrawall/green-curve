@@ -82,6 +82,7 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
     s->xbarMsvddOffsetReadbackValid = g_gpu.xbarMsvddReadbackValid;
     s->xbarMsvddOffsetUv = g_gpu.xbarMsvddOffsetUv;
     s->xbarMeasuredClockKhz = g_gpu.xbarMeasuredClockKhz;
+    s->xbarMeasuredVoltageUv = g_gpu.xbarMeasuredVoltageUv;
     s->sysClkSupported = g_gpu.sysClkProbeValid;
     s->sysClkOffsetReadbackValid = g_gpu.sysClkFreqReadbackValid;
     s->sysClkOffsetKhz = g_gpu.sysClkFreqOffsetKhz;

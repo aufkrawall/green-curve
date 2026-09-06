@@ -227,6 +227,7 @@ static void populate_service_snapshot_locked(ServiceSnapshot* snapshot,
     snapshot->xbarMsvddOffsetReadbackValid = g_app.xbarMsvddReadbackValid;
     snapshot->xbarMsvddOffsetUv = g_app.xbarMsvddOffsetUv;
     snapshot->xbarMeasuredClockKhz = g_app.xbarMeasuredClockKhz;
+    snapshot->xbarMeasuredVoltageUv = g_app.xbarMeasuredVoltageUv;
     snapshot->sysClkSupported = g_app.sysClkProbeValid;
     snapshot->sysClkOffsetReadbackValid = g_app.sysClkFreqReadbackValid;
     snapshot->sysClkOffsetKhz = g_app.sysClkFreqOffsetKhz;
@@ -372,6 +373,7 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
     g_app.xbarFreqOffsetKhz = snapshot->xbarOffsetKhz;
     g_app.xbarMsvddOffsetUv = snapshot->xbarMsvddOffsetUv;
     g_app.xbarMeasuredClockKhz = snapshot->xbarMeasuredClockKhz;
+    g_app.xbarMeasuredVoltageUv = snapshot->xbarMeasuredVoltageUv;
     g_app.sysClkProbeValid = snapshot->sysClkSupported;
     g_app.sysClkFreqReadbackValid = snapshot->sysClkOffsetReadbackValid;
     g_app.sysClkFreqOffsetKhz = snapshot->sysClkOffsetKhz;
@@ -381,12 +383,10 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
     g_app.videoClkFreqOffsetKhz = snapshot->videoClkOffsetKhz;
     g_app.videoClkMeasuredClockKhz = snapshot->videoClkMeasuredClockKhz;
     g_app.numPopulated = snapshot->numPopulated;
-    g_app.gpuClockOffsetkHz = snapshot->gpuClockOffsetkHz;
-    g_app.memClockOffsetkHz = snapshot->memClockOffsetkHz;
+    g_app.gpuClockOffsetkHz = snapshot->gpuClockOffsetkHz; g_app.memClockOffsetkHz = snapshot->memClockOffsetkHz;
     g_app.gpuClockOffsetMinMHz = snapshot->gpuClockOffsetMinMHz;
     g_app.gpuClockOffsetMaxMHz = snapshot->gpuClockOffsetMaxMHz;
-    g_app.memClockOffsetMinMHz = snapshot->memOffsetMinMHz;
-    g_app.memClockOffsetMaxMHz = snapshot->memOffsetMaxMHz;
+    g_app.memClockOffsetMinMHz = snapshot->memOffsetMinMHz; g_app.memClockOffsetMaxMHz = snapshot->memOffsetMaxMHz;
     g_app.curveOffsetMinkHz = snapshot->curveOffsetMinkHz;
     g_app.curveOffsetMaxkHz = snapshot->curveOffsetMaxkHz;
     g_app.powerLimitPct = snapshot->powerLimitPct;

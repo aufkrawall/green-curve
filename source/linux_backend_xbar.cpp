@@ -16,6 +16,7 @@ struct LinuxXbarApi {
     NvApiFunc setControl;
     NvApiFunc measure;
     NvApiFunc getAllClocks;
+    NvApiFunc getVoltage;
 };
 
 static LinuxXbarApi linux_xbar_api(const LinuxGpuState* g) {
@@ -27,6 +28,8 @@ static LinuxXbarApi linux_xbar_api(const LinuxGpuState* g) {
         XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
     api.measure = (NvApiFunc)g->nvapiQi(XBAR_NVAPI_CLK_MEASURE);
     api.getAllClocks = (NvApiFunc)g->nvapiQi(0xDCB616C3u);
+    api.getVoltage = (NvApiFunc)g->nvapiQi(
+        NVAPI_GPU_CLIENT_VOLT_RAILS_GET_STATUS);
     return api;
 }
 
@@ -58,6 +61,7 @@ static void linux_xbar_clear_readback(LinuxGpuState* g) {
     g->videoClkProbeValid = false;
     g->videoClkFreqReadbackValid = false;
     g->xbarMeasuredClockKhz = 0;
+    g->xbarMeasuredVoltageUv = 0;
     g->sysClkMeasuredClockKhz = 0;
     g->videoClkMeasuredClockKhz = 0;
 }
@@ -80,6 +84,10 @@ static bool linux_xbar_refresh(LinuxGpuState* g) {
         xbar_measure_clock(api.measure, g->gpuHandle,
                            XBAR_MEASURE_DOMAIN_XBAR,
                            &g->xbarMeasuredClockKhz);
+        if (api.getVoltage) {
+            xbar_measure_voltage(api.getVoltage, g->gpuHandle,
+                                 &g->xbarMeasuredVoltageUv);
+        }
 
         int value = 0;
         if (xbar_read_entry_freq(snap, XBAR_PINNED_SYS_ENTRY_INDEX, &value)) {

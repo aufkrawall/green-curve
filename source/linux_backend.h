@@ -91,6 +91,7 @@ struct LinuxGpuState {
     int xbarFreqOffsetKhz;
     int xbarMsvddOffsetUv;
     unsigned int xbarMeasuredClockKhz;
+    unsigned int xbarMeasuredVoltageUv;
     bool sysClkProbeValid;
     bool sysClkFreqReadbackValid;
     int sysClkFreqOffsetKhz;

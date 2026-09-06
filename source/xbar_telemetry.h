@@ -39,6 +39,7 @@ static bool xbar_refresh_live_state() {
     if (!g_app.xbarProbeValid || !g_app.gpuHandle) return false;
     auto getControl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
     auto measure = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_MEASURE);
+    auto getVoltage = (NvApiFunc)nvapi_qi(NVAPI_GPU_CLIENT_VOLT_RAILS_GET_STATUS);
     if (!getControl || !measure) return false;
     XbarControlSnapshot snap{};
     if (!xbar_read_control(getControl, g_app.gpuHandle, &snap)) {
@@ -48,6 +49,7 @@ static bool xbar_refresh_live_state() {
         g_app.sysClkFreqReadbackValid = false;
         g_app.videoClkFreqReadbackValid = false;
         g_app.videoClkMeasuredClockKhz = 0;
+        g_app.xbarMeasuredVoltageUv = 0;
         return false;
     }
     xbar_measure_clock(measure, g_app.gpuHandle, XBAR_MEASURE_DOMAIN_XBAR,
@@ -55,14 +57,20 @@ static bool xbar_refresh_live_state() {
     unsigned int sysMeasuredKhz = 0;
     xbar_measure_clock(measure, g_app.gpuHandle, XBAR_MEASURE_DOMAIN_SYS,
                        &sysMeasuredKhz);
+    unsigned int measuredVoltUv = 0;
+    if (getVoltage) {
+        xbar_measure_voltage(getVoltage, g_app.gpuHandle, &measuredVoltUv);
+    }
     g_app.xbarFreqReadbackValid = true;
     g_app.xbarMsvddReadbackValid = true;
     bool changed = g_app.xbarFreqOffsetKhz != snap.freqOffsetKhz ||
         g_app.xbarMsvddOffsetUv != snap.msvddOffsetUv ||
-        g_app.xbarMeasuredClockKhz != snap.measuredKhz;
+        g_app.xbarMeasuredClockKhz != snap.measuredKhz ||
+        g_app.xbarMeasuredVoltageUv != measuredVoltUv;
     g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
     g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
     g_app.xbarMeasuredClockKhz = snap.measuredKhz;
+    g_app.xbarMeasuredVoltageUv = measuredVoltUv;
     // The same validated block carries the SYS entry — refresh it too.
     int sysOffset = 0;
     if (xbar_read_entry_freq(&snap, XBAR_PINNED_SYS_ENTRY_INDEX,
@@ -86,8 +94,8 @@ static bool xbar_refresh_live_state() {
         g_app.videoClkMeasuredClockKhz != videoMeasuredKhz;
     g_app.videoClkMeasuredClockKhz = videoMeasuredKhz;
     if (changed) {
-        debug_log("xbar refresh: offset=%d kHz msvdd=%d uV measured=%u kHz\n",
-                  snap.freqOffsetKhz, snap.msvddOffsetUv, snap.measuredKhz);
+        debug_log("xbar refresh: offset=%d kHz msvdd=%d uV measured=%u kHz volt=%u uV\n",
+                  snap.freqOffsetKhz, snap.msvddOffsetUv, snap.measuredKhz, measuredVoltUv);
     }
     return true;
 }
