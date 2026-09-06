@@ -41,3 +41,4 @@ source/main_shell.cpp	bugprone-switch-missing-default-case
 source/main_startup_task_definition.cpp	bugprone-implicit-widening-of-multiplication-result
 source/main_startup_task_definition.cpp	bugprone-multi-level-implicit-pointer-conversion
 source/platform_posix.cpp	cert-dcl16-c
+tests/regression_main.cpp	bugprone-incorrect-roundings
