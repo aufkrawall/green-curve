@@ -1,5 +1,70 @@
 # Changelog
 
+## 0.25.0
+
+Green Curve 0.25.0 strengthens release packaging, Windows hardening, update
+security, and mixed-apply rollback behavior while extending Blackwell telemetry
+and shipping ready-to-install Arch Linux packages.
+
+### Highlights
+
+- **Ready-to-install Arch Linux packages.** Normal builds now produce native
+  pacman packages for x86_64 and aarch64 alongside the existing Linux tarballs.
+  The package provisions the service/group, desktop integration and icons, and
+  its generated metadata is validated against pacman's accepted `.PKGINFO`
+  keys before it can ship.
+- **Blackwell MSVDD writes and telemetry corrected.** The XBAR MSVDD field is
+  now resolved from its actual domain entry rather than the XBAR frequency
+  entry, fixing rejected voltage-offset writes on Blackwell. Active XBAR
+  voltage plus the applied offset are published on Windows and Linux; the
+  service protocol is now v25. The corrected write/readback path was validated
+  live on an RTX 5070 and restored to its original state afterwards.
+- **Transactional apply rollback is stricter.** Core clock/power, advanced
+  clock and fan failures now follow an explicit mixed-apply rollback contract,
+  with transaction boundaries and partial-apply reporting kept consistent so a
+  rolled-back request cannot be republished as live state.
+- **Native Windows builds use the hardened MSVC ABI.** Windows builds prefer
+  verified clang-cl/lld-link toolchains with OS Control Flow Guard, `/GS`, CET
+  on x64 and CFG/PAC/BTI metadata on ARM64, while retaining a loud, verified
+  llvm-mingw fallback.
+- **Updater and service trust paths are harder to subvert.** The update path now
+  fails closed when transport security policy cannot be applied, strengthens
+  atomic-write and directory-handle pinning against reparse/TOCTOU attacks,
+  tightens signature encoding/verification, and fixes named-pipe lifetime and
+  cancellation races.
+- **Build and diagnostic reliability improved.** Shared Zig-cache poisoning can
+  now be detected and repaired safely, Windows pipe/signer regressions are
+  covered, invalid clock-probe selectors are rejected, and several static
+  analysis findings and self-test defects were fixed.
+
+### Compatibility notes
+
+- **Windows GUI/service protocol is now v25.** Keep the GUI and service from the
+  same release together; mixed-version peers intentionally reject one another.
+- The direct Arch packages are new in this release. ARM64 remains a compile- and
+  binary-inspection-only target; Windows x64 and Linux x64 are the hardware-
+  tested targets.
+- The Blackwell MSVDD correction changes where the private driver control field
+  is written. The corrected path has live RTX 5070 validation with exact
+  readback.
+
+### Downloads and verification
+
+- **Windows:** use the `setup.exe` for a normal install or upgrade; use the
+  `.7z` archive for a portable copy.
+- **Linux:** use the ready-to-install Arch Linux `.pkg.tar.zst` on pacman-based
+  systems, or extract the `.tar.xz` archive and run `greencurve-setup.sh`.
+- x64 and ARM64 packages are attached below. ARM64 remains compile- and
+  binary-inspection-only.
+- Every program package has a matching SHA-256 file and a GitHub
+  build-provenance attestation. Verify an artifact with:
+
+  ```bash
+  gh attestation verify <artifact> --repo aufkrawall/green-curve
+  ```
+
+**Full changelog:** [0.24.0...0.25.0](https://github.com/aufkrawall/green-curve/compare/0.24.0...0.25.0)
+
 ## 0.24.0
 
 Green Curve 0.24.0 brings advanced auxiliary-clock tuning, native zero-RPM
