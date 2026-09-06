@@ -590,6 +590,7 @@ def run_build_script_regression_tests(ctx):
         check_workflow_structure(ctx)
         build_scheduler.run_self_tests()
         zig_cache.run_self_tests()
+        arch_package.run_self_tests()
         build_script = os.path.join(ctx.SCRIPT_DIR, "build.py")
         with open(build_script, "r", encoding="utf-8", errors="replace") as handle:
             build_script_text = handle.read()
@@ -612,6 +613,24 @@ def run_build_script_regression_tests(ctx):
         if "zig_cache.run_zig_link" not in installer_script_text:
             print("Build-script regression FAILED: the arm64 installer link bypasses "
                   "the cross-process zig-cache lock/repair wrapper")
+            sys.exit(1)
+        # The generated .PKGINFO may only carry keys pacman's install-time
+        # parser knows: the first generated packages shipped `makepkgopt` and
+        # an `install` key, and pacman logged "unknown key" for each on every
+        # install.  The self-tests' negative fixtures interpolate these as
+        # format placeholders, so a literal occurrence is always a generator.
+        arch_script = os.path.join(ctx.SCRIPT_DIR, "tools", "arch_package.py")
+        with open(arch_script, "r", encoding="utf-8", errors="replace") as handle:
+            arch_package_text = handle.read()
+        for banned in ("makepkgopt = ", "install = .INSTALL"):
+            if banned in arch_package_text:
+                print(f"Build-script regression FAILED: arch_package.py emits the "
+                      f"invalid .PKGINFO key {banned!r} pacman warns about on "
+                      "every install")
+                sys.exit(1)
+        if "validate_pkginfo_keys(text)" not in arch_package_text:
+            print("Build-script regression FAILED: verify_arch_package does not "
+                  "run the .PKGINFO key allowlist gate")
             sys.exit(1)
         # The single-command Windows builders must emit every flag as ONE
         # argument. A bare `*"-DFOO=1"` conditional explodes the string into
