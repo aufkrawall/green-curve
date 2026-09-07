@@ -50,8 +50,11 @@ static inline const IniSection* linux_mem_migration_find_section(
 
 static inline IniSection* linux_mem_migration_find_section_mutable(
     IniDocument* doc, const char* name) {
-    return const_cast<IniSection*>(
-        linux_mem_migration_find_section(doc, name));
+    if (!doc || !name) return nullptr;
+    for (IniSection& section : doc->sections) {
+        if (section.name == name) return &section;
+    }
+    return nullptr;
 }
 
 static inline const IniEntry* linux_mem_migration_find_entry(
@@ -65,8 +68,11 @@ static inline const IniEntry* linux_mem_migration_find_entry(
 
 static inline IniEntry* linux_mem_migration_find_entry_mutable(
     IniSection* section, const char* key) {
-    return const_cast<IniEntry*>(
-        linux_mem_migration_find_entry(section, key));
+    if (!section || !key) return nullptr;
+    for (IniEntry& entry : section->entries) {
+        if (entry.key == key) return &entry;
+    }
+    return nullptr;
 }
 
 static inline bool linux_mem_migration_marker_set(const IniDocument* doc) {
@@ -74,9 +80,10 @@ static inline bool linux_mem_migration_marker_set(const IniDocument* doc) {
         linux_mem_migration_find_section(
             doc, LINUX_MEM_MIGRATION_MARKER_SECTION),
         LINUX_MEM_MIGRATION_MARKER_KEY);
-    if (!entry) return false;
-    int value = 0;
-    return sscanf(entry->value.c_str(), "%d", &value) == 1 && value != 0;
+    // The writer emits one canonical boolean spelling. Treat anything else as
+    // absent so a malformed/partially edited marker cannot suppress the
+    // safety-critical effective->display conversion.
+    return entry && entry->value == "1";
 }
 
 static inline void linux_mem_migration_stamp_marker(IniDocument* doc) {
