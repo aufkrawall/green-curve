@@ -241,10 +241,28 @@ static void load_startup_policy_at_boot() {
     // intent": a policy the administrator cannot read back is a reason to leave
     // the GPU alone, not a reason to guess.
     bool startupPolicyCorrupt = false;
+    bool startupPolicyMigratedMemUnits = false;
     char startupErr[256] = {};
     if (linux_daemon_startup_load(GC_DAEMON_STARTUP_FILE, &g_startupPolicy,
                                   &startupPolicyCorrupt, startupErr,
-                                  sizeof(startupErr))) {
+                                  sizeof(startupErr),
+                                  &startupPolicyMigratedMemUnits)) {
+        if (startupPolicyMigratedMemUnits) {
+            dlog("daemon: %s\n",
+                 startupErr[0] ? startupErr : "startup policy mem units migrated");
+            // Persist the upgrade so the on-disk generation matches the
+            // in-memory record. Failure is not fatal: the migration is a pure
+            // function of the stored bytes, so the next boot converts the
+            // same record to the same result.
+            char storeErr[128] = {};
+            if (!linux_daemon_startup_store(GC_DAEMON_STARTUP_FILE,
+                                            &g_startupPolicy, storeErr,
+                                            sizeof(storeErr))) {
+                dlog("daemon: startup policy rewrite after mem-unit migration "
+                     "failed (%s); re-migrated identically on next boot\n",
+                     storeErr[0] ? storeErr : "unknown error");
+            }
+        }
         dlog("daemon: startup policy=%s slot=%u name=%s\n",
              service_startup_policy_mode_name(g_startupPolicy.mode),
              (unsigned int)g_startupPolicy.profileSlot,

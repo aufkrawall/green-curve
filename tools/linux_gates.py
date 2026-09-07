@@ -836,6 +836,56 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
                  "an orderly stop clears the per-boot attempt counter")
 
 
+def check_mem_offset_migration(ctx, require_text, forbid_text, require_order):
+    """F-MEM-MIGRATION: the pre-parity Linux VRAM offset stored units must be
+    converted exactly once on load.  Before the effective/display parity fix a
+    stored +2500 was NVML-effective MHz; re-reading it as display MHz and
+    doubling on apply would write +5000 effective, twice the user's choice.
+    The Windows profile code must never see the Linux-only marker: a Windows
+    bank is display MHz end to end, and stamping or reading the marker there
+    would fork the shared INI semantics."""
+    migration_h = _p(ctx, "linux_profile_mem_migration.h")
+    profiles_cpp = _p(ctx, "linux_port_profiles.cpp")
+    state_h = _p(ctx, "linux_daemon_state.h")
+    regression_cpp = os.path.join(ctx.SCRIPT_DIR, "tests", "regression_main.cpp")
+    require_text(migration_h, "LINUX_MEM_MIGRATION_MARKER_KEY[] = \"linux_mem_migrated\"",
+                 "the Linux stored-unit migration carries an explicit "
+                 "[meta] marker instead of guessing from values")
+    require_text(migration_h, "nvml_mem_display_mhz_from_effective_mhz(stored)",
+                 "the stored-unit conversion uses the shared parity helper, "
+                 "never a local /2 with its own rounding rules")
+    forbid_text(migration_h, "/ 2", "the migration must not hand-roll the halving")
+    forbid_text(migration_h, "format_version",
+                "the marker must not fork the Windows-shared format_version")
+    require_text(profiles_cpp, "linux_ini_migrate_mem_offsets_effective_to_display",
+                 "every Linux profile load path runs the stored-unit migration")
+    require_text(profiles_cpp, "linux_mem_migration_stamp_marker(&doc);",
+                 "a Linux save always stamps the marker because everything it "
+                 "writes is display MHz")
+    # The migration must run before the sections are parsed so the IPC clamp
+    # sees post-conversion values (+5000 effective -> +2500 display survives).
+    require_order(profiles_cpp,
+                  "migrate_profile_bank_mem_units(path, &doc, \"load\");",
+                  "load_desired_settings_from_sections(&doc, controlsSection, "
+                  "curveSection, fanCurveSection, desired, context, err, errSize)",
+                  "the stored-unit conversion happens before any parse/clamp")
+    require_text(state_h, "linux_daemon_startup_migrate_pre_display_mem_units",
+                 "the boot-apply startup record converts pre-parity mem units")
+    require_text(state_h, "linux_daemon_state_record_migrate_pre_display_mem_units",
+                 "the committed restore-last record converts pre-parity mem units")
+    require_text(state_h, "LINUX_DAEMON_STARTUP_VERSION = 2",
+                 "the startup record generation moved with the unit change")
+    require_text(state_h, "LINUX_DAEMON_RECORD_VERSION = 3",
+                 "the committed record generation moved with the unit change")
+    for windows_surface in ("config_profiles.cpp", "config_profiles_ui.cpp",
+                            "main_shell.cpp"):
+        forbid_text(_p(ctx, windows_surface), "linux_mem_migrated",
+                    "the Windows profile code must not read or stamp the "
+                    "Linux-only stored-unit marker")
+    require_text(regression_cpp, "F-MEM-MIGRATION",
+                 "the stored-unit migration keeps its regression coverage")
+
+
 def check_all(ctx, require_text, forbid_text, require_order):
     check_tui_layout(ctx, require_text, forbid_text, require_order)
     check_tui_graph_axes(ctx, require_text, forbid_text)
@@ -848,5 +898,6 @@ def check_all(ctx, require_text, forbid_text, require_order):
     check_crash_report(ctx, require_text, forbid_text, require_order)
     check_ini_limits(ctx)
     check_startup_policy(ctx, require_text, forbid_text)
+    check_mem_offset_migration(ctx, require_text, forbid_text, require_order)
     check_auto_restore(ctx, require_text, forbid_text, require_order)
     check_release_packaging(ctx, require_text, forbid_text)

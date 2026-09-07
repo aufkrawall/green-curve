@@ -109,8 +109,10 @@ static bool store_record_atomic(const char* path, const void* record,
 
 LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
                                                    LinuxDaemonStateRecord* out,
-                                                   char* err, size_t errSize) {
+                                                   char* err, size_t errSize,
+                                                   bool* outMigratedMemUnits) {
     if (err && errSize) err[0] = 0;
+    if (outMigratedMemUnits) *outMigratedMemUnits = false;
     if (out) memset(out, 0, sizeof(*out));
     char name[256] = {};
     int dirfd = open_state_directory(path, name, sizeof(name), err, errSize);
@@ -132,6 +134,8 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
             st.st_size == (off_t)sizeof(LinuxDaemonStateRecord)
         ? read(fd, &record, sizeof(record)) : -1;
     bool migratedV1 = false;
+    int migratedOldMemMHz = 0;
+    bool migratedMemConverted = false;
     if (protectedRegular &&
         st.st_size == (off_t)sizeof(LinuxDaemonStateRecordV1)) {
         LinuxDaemonStateRecordV1 legacy = {};
@@ -147,15 +151,30 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
                 legacy.size == sizeof(legacy) && legacy.checksum == hash &&
                 legacy.state >= LINUX_DAEMON_RECORD_PREPARED &&
                 legacy.state <= LINUX_DAEMON_RECORD_UNCERTAIN) {
-                linux_daemon_record_initialize(&record,
-                    (LinuxDaemonRecordState)legacy.state, &legacy.targetGpu,
-                    &legacy.desired);
+                // The v1 desired block stores the memory offset in effective
+                // MHz; adopt it as display MHz in the same step so a legacy
+                // record is never replayed at double strength.
+                migratedMemConverted = linux_daemon_record_initialize_from_v1(
+                    &record, (LinuxDaemonRecordState)legacy.state,
+                    &legacy.targetGpu, &legacy.desired, &migratedOldMemMHz);
                 count = (ssize_t)sizeof(record);
                 migratedV1 = true;
             }
         }
     }
     close(fd);
+    // v2 -> v3: the layout is byte-identical and only the mem units changed,
+    // so an unconverted record upgrades here instead of being discarded as
+    // invalid. The checksum validates over the stored bytes (old version
+    // included) inside the migration helper, before anything mutates. A
+    // current-generation record is untouched by the helper (version check).
+    bool upgradedFromV2 = false;
+    if (!migratedV1 && count == (ssize_t)sizeof(record) &&
+        linux_daemon_state_record_migrate_pre_display_mem_units(
+            &record, &migratedOldMemMHz)) {
+        upgradedFromV2 = true;
+        migratedMemConverted = record.desired.hasMemOffset;
+    }
     LinuxDaemonStateLoadResult result = LINUX_DAEMON_STATE_LOADED;
     if (!protectedRegular || count != (ssize_t)sizeof(record) ||
         !linux_daemon_record_valid(&record)) {
@@ -167,15 +186,35 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
         } else {
             fsync(dirfd);
         }
-    } else if (out) {
-        *out = record;
+    } else {
+        if (out) *out = record;
         if (migratedV1) {
-            // The caller's next state transition rewrites this as v2.  Loading
-            // remains read-only so startup cannot turn a legacy record into a
-            // fresh authorization event.
-            gc_snprintf(err, errSize,
-                "loaded backward-compatible v1 daemon state");
+            // The caller's next state transition rewrites this as the current
+            // version.  Loading remains read-only so startup cannot turn a
+            // legacy record into a fresh authorization event.
+            if (migratedMemConverted) {
+                gc_snprintf(err, errSize,
+                    "loaded backward-compatible v1 daemon state; mem offset "
+                    "%d -> %d display MHz",
+                    migratedOldMemMHz, record.desired.memOffsetMHz);
+            } else {
+                gc_snprintf(err, errSize,
+                    "loaded backward-compatible v1 daemon state");
+            }
+        } else if (upgradedFromV2) {
+            if (migratedMemConverted) {
+                gc_snprintf(err, errSize,
+                    "loaded pre-parity v2 daemon state; mem offset %d -> %d "
+                    "display MHz",
+                    migratedOldMemMHz, record.desired.memOffsetMHz);
+            } else {
+                gc_snprintf(err, errSize,
+                    "loaded pre-parity v2 daemon state; no stored memory "
+                    "offset to convert");
+            }
         }
+        if (outMigratedMemUnits)
+            *outMigratedMemUnits = migratedV1 || upgradedFromV2;
     }
     close(dirfd);
     return result;
@@ -254,9 +293,11 @@ bool linux_daemon_startup_store(const char* path,
 
 bool linux_daemon_startup_load(const char* path,
                                LinuxDaemonStartupRecord* record,
-                               bool* outCorrupt, char* err, size_t errSize) {
+                               bool* outCorrupt, char* err, size_t errSize,
+                               bool* outMigratedMemUnits) {
     if (err && errSize) err[0] = 0;
     if (outCorrupt) *outCorrupt = false;
+    if (outMigratedMemUnits) *outMigratedMemUnits = false;
     if (record) memset(record, 0, sizeof(*record));
     char name[256] = {};
     int dirfd = open_state_directory(path, name, sizeof(name), err, errSize);
@@ -277,18 +318,41 @@ bool linux_daemon_startup_load(const char* path,
     }
     LinuxDaemonStartupRecord loaded = {};
     struct stat status = {};
-    bool ok = fstat(fd, &status) == 0 && S_ISREG(status.st_mode) &&
+    bool parsed = fstat(fd, &status) == 0 && S_ISREG(status.st_mode) &&
         status.st_uid == 0 && status.st_nlink == 1 &&
         (status.st_mode & 0077) == 0 &&
         status.st_size == (off_t)sizeof(loaded) &&
-        read(fd, &loaded, sizeof(loaded)) == (ssize_t)sizeof(loaded) &&
-        linux_daemon_startup_valid(&loaded);
+        read(fd, &loaded, sizeof(loaded)) == (ssize_t)sizeof(loaded);
     close(fd);
     close(dirfd);
-    if (!ok) {
+    // A v1 record (effective mem units) upgrades to the current generation on
+    // read; the migration helper validates the stored checksum first and
+    // refuses anything that is not a structurally sound v1 record.
+    int migratedOldMemMHz = 0;
+    bool migrated = false;
+    if (parsed && !linux_daemon_startup_valid(&loaded) &&
+        linux_daemon_startup_migrate_pre_display_mem_units(
+            &loaded, &migratedOldMemMHz)) {
+        migrated = true;
+    }
+    if (!parsed || (!migrated && !linux_daemon_startup_valid(&loaded))) {
         gc_strlcpy(err, errSize, "daemon startup policy record is invalid");
         if (outCorrupt) *outCorrupt = true;
         return false;
+    }
+    if (migrated) {
+        if (loaded.desired.hasMemOffset) {
+            gc_snprintf(err, errSize,
+                "startup policy record migrated to display mem units: "
+                "%d -> %d MHz",
+                migratedOldMemMHz, loaded.desired.memOffsetMHz);
+        } else {
+            gc_snprintf(err, errSize,
+                "startup policy record upgraded to v%u; no stored memory "
+                "offset to convert",
+                (unsigned int)LINUX_DAEMON_STARTUP_VERSION);
+        }
+        if (outMigratedMemUnits) *outMigratedMemUnits = true;
     }
     if (record) *record = loaded;
     return true;

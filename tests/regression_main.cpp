@@ -39,6 +39,8 @@
 #include "linux_daemon_transport_policy.h"
 #include "linux_systemd_notify_policy.h"
 #include "linux_daemon_state.h"
+#include "linux_port_internal.h"
+#include "linux_profile_mem_migration.h"
 #include "linux_transaction.h"
 #include "linux_curve_targets.h"
 #include "fan_runtime_policy.h"
@@ -1676,6 +1678,247 @@ static int run_all_tests(int argc, char** argv) {
         over.memOffsetMHz = 3000;
         validate_desired_settings_for_ipc(&over);
         if (over.memOffsetMHz != 3000) return 1721;
+    }
+
+    // F-MEM-MIGRATION: one-time stored-unit migration for the Linux VRAM
+    // offset. Pre-parity Linux builds stored mem_offset_mhz in NVML effective
+    // MHz; the parity fix reinterpreted the same field as display MHz, so a
+    // stored +2500 would apply as +5000 effective (2x overdose) without the
+    // halve. The clamp-only predecessor fails every case here.
+    {
+        // INI bank: all slots plus the legacy [controls] mirror in one pass,
+        // unrelated sections preserved.
+        IniDocument doc;
+        IniSection meta; meta.name = "meta";
+        doc.sections.push_back(meta);
+        const char* stored[] = {"2500", "-2501", "5000", "1", "0"};
+        for (int slot = 1; slot <= 5; slot++) {
+            IniSection section;
+            char name[32] = {};
+            snprintf(name, sizeof(name), "profile%d", slot);
+            section.name = name;
+            IniEntry entry;
+            entry.key = "mem_offset_mhz";
+            entry.value = stored[slot - 1];
+            section.entries.push_back(entry);
+            doc.sections.push_back(section);
+        }
+        IniSection controls;
+        controls.name = "controls";
+        IniEntry legacyEntry;
+        legacyEntry.key = "mem_offset_mhz";
+        legacyEntry.value = "2500";
+        controls.entries.push_back(legacyEntry);
+        doc.sections.push_back(controls);
+        IniSection other;
+        other.name = "gpu";
+        IniEntry bdfEntry;
+        bdfEntry.key = "selected_bdf";
+        bdfEntry.value = "0000:07:00.0";
+        other.entries.push_back(bdfEntry);
+        doc.sections.push_back(other);
+
+        bool changed = false;
+        int rewritten =
+            linux_ini_migrate_mem_offsets_effective_to_display(&doc, &changed);
+        // Five strings actually change; the "0" slot parses to the same "0"
+        // and is not counted as a rewrite.
+        if (!changed || rewritten != 5) return 5000;
+        // +2500 -> +1250, -2501 -> -1250 (trunc toward zero), +5000 -> +2500,
+        // +1 -> 0, 0 -> 0, legacy mirror 2500 -> 1250.
+        const char* expected[] = {"1250", "-1250", "2500", "0", "0"};
+        for (int slot = 1; slot <= 5; slot++) {
+            char name[32] = {};
+            snprintf(name, sizeof(name), "profile%d", slot);
+            const IniEntry* entry = linux_mem_migration_find_entry(
+                linux_mem_migration_find_section(&doc, name),
+                "mem_offset_mhz");
+            if (!entry || entry->value != expected[slot - 1]) return 5001;
+        }
+        const IniEntry* legacyMigrated = linux_mem_migration_find_entry(
+            linux_mem_migration_find_section(&doc, "controls"),
+            "mem_offset_mhz");
+        if (!legacyMigrated || legacyMigrated->value != "1250") return 5002;
+        if (!linux_mem_migration_marker_set(&doc)) return 5003;
+        const IniEntry* untouchedBdf = linux_mem_migration_find_entry(
+            linux_mem_migration_find_section(&doc, "gpu"), "selected_bdf");
+        if (!untouchedBdf || untouchedBdf->value != "0000:07:00.0") return 5004;
+
+        // Idempotence: a marked bank is a strict no-op, so an already-display
+        // file can never be halved a second time.
+        changed = true;
+        if (linux_ini_migrate_mem_offsets_effective_to_display(&doc, &changed) != 0)
+            return 5005;
+        if (changed) return 5006;
+        const IniEntry* stillMigrated = linux_mem_migration_find_entry(
+            linux_mem_migration_find_section(&doc, "profile1"),
+            "mem_offset_mhz");
+        if (!stillMigrated || stillMigrated->value != "1250") return 5007;
+
+        // A file already carrying the marker keeps large values untouched:
+        // this is what a post-fix save looks like, and halving it would
+        // destroy the user's stored overclock.
+        IniDocument freshDisplay;
+        IniSection markedMeta; markedMeta.name = "meta";
+        IniEntry markedEntry;
+        markedEntry.key = LINUX_MEM_MIGRATION_MARKER_KEY;
+        markedEntry.value = "1";
+        markedMeta.entries.push_back(markedEntry);
+        freshDisplay.sections.push_back(markedMeta);
+        IniSection markedProfile; markedProfile.name = "profile1";
+        IniEntry markedMem;
+        markedMem.key = "mem_offset_mhz";
+        markedMem.value = "2500";
+        markedProfile.entries.push_back(markedMem);
+        freshDisplay.sections.push_back(markedProfile);
+        changed = true;
+        if (linux_ini_migrate_mem_offsets_effective_to_display(
+                &freshDisplay, &changed) != 0 || changed) return 5008;
+        const IniEntry* preservedMem = linux_mem_migration_find_entry(
+            linux_mem_migration_find_section(&freshDisplay, "profile1"),
+            "mem_offset_mhz");
+        if (!preservedMem || preservedMem->value != "2500") return 5009;
+
+        // A hand-edited unparseable value is left for the load path to report;
+        // the marker still stamps so the bank is not rescanned forever.
+        IniDocument hostile;
+        IniSection hostileProfile; hostileProfile.name = "profile1";
+        IniEntry hostileMem;
+        hostileMem.key = "mem_offset_mhz";
+        hostileMem.value = "not-a-number";
+        hostileProfile.entries.push_back(hostileMem);
+        hostile.sections.push_back(hostileProfile);
+        changed = false;
+        if (linux_ini_migrate_mem_offsets_effective_to_display(
+                &hostile, &changed) != 0) return 5010;
+        if (!changed) return 5011;
+        const IniEntry* hostilePreserved = linux_mem_migration_find_entry(
+            linux_mem_migration_find_section(&hostile, "profile1"),
+            "mem_offset_mhz");
+        if (!hostilePreserved || hostilePreserved->value != "not-a-number")
+            return 5012;
+
+        // A document with no profile bank (e.g. a missing file parsed as
+        // empty) is left completely untouched; a load must not fabricate one.
+        IniDocument empty;
+        changed = true;
+        if (linux_ini_migrate_mem_offsets_effective_to_display(
+                &empty, &changed) != 0 || changed) return 5013;
+        if (!empty.sections.empty()) return 5014;
+
+        // Halve-then-clamp ordering: +5000 effective -> +2500 display, which
+        // survives the +-3000 IPC clamp. Clamp-first would give 3000,
+        // clamp-after-halving-a-clamped-value would give 1500; only the
+        // correct order lands on 2500.
+        DesiredSettings order = {};
+        order.hasMemOffset = true;
+        order.memOffsetMHz = 5000;
+        int orderOld = 0;
+        if (!linux_daemon_migrate_desired_mem_units_to_display(&order, &orderOld))
+            return 5015;
+        if (orderOld != 5000 || order.memOffsetMHz != 2500) return 5016;
+        validate_desired_settings_for_ipc(&order);
+        if (order.memOffsetMHz != 2500) return 5017;
+
+        // Startup record v1 -> v2: same layout, effective mem units, one
+        // conversion on load, then structurally valid at the new version.
+        LinuxDaemonStartupRecord startupV1 = {};
+        startupV1.magic = LINUX_DAEMON_STARTUP_MAGIC;
+        startupV1.version = LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION;
+        startupV1.size = (gc_u32)sizeof(startupV1);
+        startupV1.mode = SERVICE_STARTUP_POLICY_PROFILE;
+        startupV1.profileSlot = 2;
+        gc_strlcpy(startupV1.profileName, sizeof(startupV1.profileName),
+                   "profile 2");
+        GpuAdapterInfo startupTarget = {};
+        startupTarget.valid = true;
+        startupTarget.pciInfoValid = true;
+        startupTarget.pciBus = 7;
+        startupV1.targetGpu = startupTarget;
+        startupV1.desired.hasMemOffset = 1;
+        startupV1.desired.memOffsetMHz = 2500;
+        startupV1.checksum = linux_daemon_startup_checksum(&startupV1);
+        int startupOld = 0;
+        if (!linux_daemon_startup_migrate_pre_display_mem_units(
+                &startupV1, &startupOld)) return 5018;
+        if (startupV1.version != LINUX_DAEMON_STARTUP_VERSION) return 5019;
+        if (startupOld != 2500 || startupV1.desired.memOffsetMHz != 1250)
+            return 5020;
+        if (!linux_daemon_startup_valid(&startupV1)) return 5021;
+        // Second migration attempt must refuse the current generation.
+        if (linux_daemon_startup_migrate_pre_display_mem_units(
+                &startupV1, &startupOld)) return 5022;
+        if (startupV1.desired.memOffsetMHz != 1250) return 5023;
+
+        // A tampered v1 record must be refused, not migrated: the loader maps
+        // a refused migration onto the corrupt path (fail closed).
+        LinuxDaemonStartupRecord tamperedV1 = startupV1;
+        tamperedV1.version = LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION;
+        tamperedV1.desired.memOffsetMHz = 9999;  // checksum deliberately stale
+        if (linux_daemon_startup_migrate_pre_display_mem_units(
+                &tamperedV1, &startupOld)) return 5024;
+
+        // A v1 record without a memory offset still upgrades its version.
+        LinuxDaemonStartupRecord noMemV1 = {};
+        noMemV1.magic = LINUX_DAEMON_STARTUP_MAGIC;
+        noMemV1.version = LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION;
+        noMemV1.size = (gc_u32)sizeof(noMemV1);
+        noMemV1.mode = SERVICE_STARTUP_POLICY_NONE;
+        noMemV1.checksum = linux_daemon_startup_checksum(&noMemV1);
+        if (!linux_daemon_startup_migrate_pre_display_mem_units(
+                &noMemV1, &startupOld)) return 5025;
+        if (noMemV1.version != LINUX_DAEMON_STARTUP_VERSION ||
+            noMemV1.desired.hasMemOffset) return 5026;
+        if (!linux_daemon_startup_valid(&noMemV1)) return 5027;
+
+        // State record v2 -> v3: restore-last replay must not double the
+        // stored offset.
+        LinuxDaemonStateRecord stateV2 = {};
+        stateV2.magic = LINUX_DAEMON_RECORD_MAGIC;
+        stateV2.version = LINUX_DAEMON_RECORD_PRE_DISPLAY_MEM_UNITS_VERSION;
+        stateV2.size = (gc_u32)sizeof(stateV2);
+        stateV2.state = LINUX_DAEMON_RECORD_ACTIVE;
+        stateV2.desired.hasMemOffset = 1;
+        stateV2.desired.memOffsetMHz = -2501;
+        stateV2.operationId = 7;
+        stateV2.operationState = SERVICE_OPERATION_SUCCEEDED;
+        stateV2.checksum = linux_daemon_record_checksum(&stateV2);
+        int stateOld = 0;
+        if (!linux_daemon_state_record_migrate_pre_display_mem_units(
+                &stateV2, &stateOld)) return 5028;
+        if (stateV2.version != LINUX_DAEMON_RECORD_VERSION) return 5029;
+        if (stateOld != -2501 || stateV2.desired.memOffsetMHz != -1250)
+            return 5030;
+        if (!linux_daemon_record_valid(&stateV2)) return 5031;
+        if (linux_daemon_state_record_migrate_pre_display_mem_units(
+                &stateV2, &stateOld)) return 5032;
+
+        // A tampered v2 state record is refused the same way.
+        LinuxDaemonStateRecord tamperedState = stateV2;
+        tamperedState.version = LINUX_DAEMON_RECORD_PRE_DISPLAY_MEM_UNITS_VERSION;
+        tamperedState.desired.memOffsetMHz = 9999;  // checksum deliberately stale
+        if (linux_daemon_state_record_migrate_pre_display_mem_units(
+                &tamperedState, &stateOld)) return 5033;
+
+        // The v1 state-record path builds the current record with the halve
+        // applied before the checksum, so a legacy record is never adopted
+        // with effective units.
+        LinuxDaemonStateRecordV1 legacyState = {};
+        legacyState.magic = LINUX_DAEMON_RECORD_MAGIC;
+        legacyState.version = 1;
+        legacyState.size = (gc_u32)sizeof(legacyState);
+        legacyState.state = LINUX_DAEMON_RECORD_PREPARED;
+        legacyState.desired.hasMemOffset = 1;
+        legacyState.desired.memOffsetMHz = 3000;
+        LinuxDaemonStateRecord fromLegacy = {};
+        int legacyOld = 0;
+        if (!linux_daemon_record_initialize_from_v1(
+                &fromLegacy, LINUX_DAEMON_RECORD_PREPARED, nullptr,
+                &legacyState.desired, &legacyOld)) return 5034;
+        if (legacyOld != 3000 || fromLegacy.desired.memOffsetMHz != 1500)
+            return 5035;
+        if (fromLegacy.version != LINUX_DAEMON_RECORD_VERSION) return 5036;
+        if (!linux_daemon_record_valid(&fromLegacy)) return 5037;
     }
 
     // F-INTENT-READBACK: active desired settings are ownership/configuration

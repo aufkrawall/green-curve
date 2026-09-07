@@ -3,6 +3,7 @@
 
 #include "linux_port_internal.h"
 #include "linux_debug_log.h"
+#include "linux_profile_mem_migration.h"
 #include "profile_persistence_policy.h"
 #include "gpu_selection_policy.h"
 
@@ -443,9 +444,11 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
         }
     }
 
-    // IPC trust boundary: clamp hostile or pre-fix (pre effective/display
-    // parity, pre +-3000 cap) stored values on load. Stored mem_offset_mhz is
-    // display MHz; pre-fix Linux profiles may hold up to +-5000.
+    // IPC trust boundary: clamp hostile stored values on load. Pre-fix
+    // effective-unit values were already halved by the stored-unit migration
+    // (which deliberately runs BEFORE this clamp so +5000 effective becomes
+    // +2500 display and survives), so this is only a backstop for
+    // hand-edited or hostile files.
     int loadedMemOffsetMHz = desired->memOffsetMHz;
     validate_desired_settings_for_ipc(desired);
     if (desired->hasMemOffset && desired->memOffsetMHz != loadedMemOffsetMHz) {
@@ -463,6 +466,28 @@ static int get_selected_profile_slot(const IniDocument* doc) {
     return slot;
 }
 
+// Runs the one-time effective->display stored-unit migration on a loaded
+// profile bank and persists the result. Fail-open by construction: when the
+// rewrite fails, the marker stays absent and the next load converts the same
+// stored values again, which yields the identical result.
+static void migrate_profile_bank_mem_units(const char* path, IniDocument* doc,
+                                           const char* context) {
+    bool changed = false;
+    int rewritten =
+        linux_ini_migrate_mem_offsets_effective_to_display(doc, &changed);
+    if (!changed) return;
+    linux_debug_logf("profile %s: mem-offset stored-unit migration "
+                     "(effective->display) converted %d value(s)",
+                     context ? context : "", rewritten);
+    char saveErr[160] = {};
+    if (!save_ini_document(path, *doc, saveErr, sizeof(saveErr))) {
+        linux_debug_logf("profile %s: migration rewrite of %s failed: %s "
+                         "(retried identically on the next load)",
+                         context ? context : "", path ? path : "",
+                         saveErr[0] ? saveErr : "unknown error");
+    }
+}
+
 bool load_profile_from_config_path(const char* path, int slot, DesiredSettings* desired, char* err, size_t errSize) {
     if (!desired || slot < 1 || slot > CONFIG_NUM_SLOTS) {
         set_message(err, errSize, "Invalid profile load arguments");
@@ -471,6 +496,7 @@ bool load_profile_from_config_path(const char* path, int slot, DesiredSettings* 
 
     IniDocument doc;
     if (!load_ini_document(path, &doc, err, errSize)) return false;
+    migrate_profile_bank_mem_units(path, &doc, "load");
 
     char controlsSection[32] = {};
     char curveSection[32] = {};
@@ -504,6 +530,7 @@ bool load_profile_from_config_path(const char* path, int slot, DesiredSettings* 
 static bool load_legacy_config_path(const char* path, DesiredSettings* desired, char* err, size_t errSize) {
     IniDocument doc;
     if (!load_ini_document(path, &doc, err, errSize)) return false;
+    migrate_profile_bank_mem_units(path, &doc, "legacy-load");
     if (!load_desired_settings_from_sections(&doc, "controls", "curve", "fan_curve", desired, path, err, errSize)) return false;
     normalize_desired_settings_for_ui(desired);
     return true;
@@ -514,6 +541,7 @@ bool load_default_or_selected_profile(const char* path, int* slot, DesiredSettin
 
     IniDocument doc;
     if (!load_ini_document(path, &doc, err, errSize)) return false;
+    migrate_profile_bank_mem_units(path, &doc, "default-load");
 
     int selectedSlot = slot && *slot >= 1 && *slot <= CONFIG_NUM_SLOTS ? *slot : get_selected_profile_slot(&doc);
 
@@ -636,6 +664,24 @@ bool save_profile_to_config_path(const char* path, int slot, const DesiredSettin
 
     IniDocument doc;
     if (!load_ini_document(path, &doc, err, errSize)) return false;
+
+    // Convert pre-fix effective-unit values in every stored slot BEFORE the
+    // save stamps the migration marker: the marker declares the whole file
+    // display-unit, so the slots this save does not rewrite must not keep
+    // their old units underneath it. No intermediate persist here; the single
+    // save at the end carries both the converted values and the marker.
+    bool migrationChanged = false;
+    int migratedValues =
+        linux_ini_migrate_mem_offsets_effective_to_display(&doc, &migrationChanged);
+    if (migrationChanged) {
+        linux_debug_logf("profile save: mem-offset stored-unit migration "
+                         "(effective->display) converted %d stored value(s) "
+                         "in %s", migratedValues, path);
+    }
+    // A fresh bank (no pre-existing sections) gets no stamp from the
+    // migration, but everything this function writes is display-unit, so the
+    // saved file must always carry the marker.
+    linux_mem_migration_stamp_marker(&doc);
 
     DesiredSettings normalized = *desired;
     normalize_desired_settings_for_ui(&normalized);

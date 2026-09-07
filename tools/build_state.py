@@ -28,6 +28,7 @@ BUILD_SCRIPT_SIZE_RATCHET = 5340
 
 SOURCE_SIZE_RATCHET = {
     "config_profiles.cpp": 903,  # 889 before the VIDEO profile save key  # 883 before the SYS profile save key
+    "linux_port_profiles.cpp": 860,  # 788 before the one-time mem stored-unit migration hooks
     "entry.cpp": 863,
     "gpu_backend.cpp": 972,
     "gpu_backend_apply.cpp": 1414,  # 1407 before the core/advanced rollback boundary was made explicit

@@ -672,8 +672,14 @@ int linux_daemon_run(const char* configPath) {
     // ACTIVE record for the exact physical GPU. Prepared/uncertain/legacy state
     // never causes an automatic hardware write.
     LinuxDaemonStateRecord saved = {};
+    bool stateMigratedMemUnits = false;
     LinuxDaemonStateLoadResult loadResult = linux_daemon_state_load(
-        GC_DAEMON_STATE_FILE, &saved, err, sizeof(err));
+        GC_DAEMON_STATE_FILE, &saved, err, sizeof(err), &stateMigratedMemUnits);
+    if (loadResult == LINUX_DAEMON_STATE_LOADED && err[0]) {
+        // Informational migration note from the loader (v1/v2 adoption); the
+        // committed record itself is rewritten by the next state transition.
+        dlog("daemon: %s\n", err);
+    }
     if (loadResult == LINUX_DAEMON_STATE_LEGACY_REMOVED ||
         loadResult == LINUX_DAEMON_STATE_INVALID_REMOVED) {
         dlog("daemon: rejected and removed %s daemon state; explicit Apply/Reset required\n",
