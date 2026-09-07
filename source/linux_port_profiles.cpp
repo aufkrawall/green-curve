@@ -466,26 +466,23 @@ static int get_selected_profile_slot(const IniDocument* doc) {
     return slot;
 }
 
-// Runs the one-time effective->display stored-unit migration on a loaded
-// profile bank and persists the result. Fail-open by construction: when the
-// rewrite fails, the marker stays absent and the next load converts the same
-// stored values again, which yields the identical result.
-static void migrate_profile_bank_mem_units(const char* path, IniDocument* doc,
+// Run the effective->display stored-unit migration only in the loaded copy.
+// A profile read must stay read-only: the INI parser intentionally normalizes
+// the document and drops comments/formatting, so persisting here would rewrite
+// a user's config merely because they viewed or applied a profile. The explicit
+// profile-save path converts the whole bank and persists the marker atomically.
+// Until then, each fresh load repeats the same pure conversion from the
+// unchanged on-disk effective-unit values.
+static void migrate_profile_bank_mem_units(const char* /*path*/, IniDocument* doc,
                                            const char* context) {
     bool changed = false;
     int rewritten =
         linux_ini_migrate_mem_offsets_effective_to_display(doc, &changed);
     if (!changed) return;
     linux_debug_logf("profile %s: mem-offset stored-unit migration "
-                     "(effective->display) converted %d value(s)",
+                     "(effective->display) converted %d value(s) in memory; "
+                     "persisted on the next profile save",
                      context ? context : "", rewritten);
-    char saveErr[160] = {};
-    if (!save_ini_document(path, *doc, saveErr, sizeof(saveErr))) {
-        linux_debug_logf("profile %s: migration rewrite of %s failed: %s "
-                         "(retried identically on the next load)",
-                         context ? context : "", path ? path : "",
-                         saveErr[0] ? saveErr : "unknown error");
-    }
 }
 
 bool load_profile_from_config_path(const char* path, int slot, DesiredSettings* desired, char* err, size_t errSize) {
