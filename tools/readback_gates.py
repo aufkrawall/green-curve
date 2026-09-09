@@ -1,13 +1,13 @@
 """Source gates for the protocol-v14 hardware-readback provenance contract.
 
 Split out of build.py so the build script stays under its size ratchet; build.py
-owns the CLI and passes its paths and check helpers in through `ctx`.  Nothing
+owns the CLI and passes its paths and check helpers in through `ctx`. Nothing
 here imports build.py, so the dependency runs one way only.
 
 Every rule in here guards a NEGATIVE: a published value that silently stops
 carrying its provenance produces no build error, no crash and no log line -- it
 produces a client that reports a confident match against a number the driver
-never gave it.  The power-domain rules are the sharpest case: a fabricated 0%
+never gave it. The power-domain rules are the sharpest case: a fabricated 0%
 power target reads as a real -100% request, and cost an RTX 3060 Laptop GPU
 owner every Apply until it was found (reported 2026-09-07 against 0.25.0).
 
@@ -47,6 +47,7 @@ def check_all(ctx, require_text, forbid_text):
     require_text(gpu_backend_cpp_path,
                  "g_app.readback.gpuOffset = gpu_offset_readback_after_detection(",
                  "clock-offset detection owns the GPU scalar it overwrites")
+
     # The power read/write pair lives in its own shard; see gpu_backend_power.cpp.
     gpu_backend_power_cpp = _p(ctx, "gpu_backend_power.cpp")
     require_text(gpu_backend_power_cpp, "g_app.readback.powerLimit = true;",
@@ -54,10 +55,38 @@ def check_all(ctx, require_text, forbid_text):
     # A board whose driver refuses the power target must publish the neutral
     # board-default percentage, never 0: a fabricated 0% reads as a real -100%
     # request and made reset-before-apply issue a write the driver could only
-    # refuse, failing the whole Apply.  Both unknown exits are gated.
+    # refuse, failing the whole Apply.
     require_text(gpu_backend_power_cpp,
                  "g_app.powerLimitPct = POWER_LIMIT_DEFAULT_PCT;",
                  "an unreadable power target publishes the board default, not 0%")
+    # The percentage surface is a pair: current/default. Neither value may be
+    # synthesized from the other. Otherwise a default-only read can masquerade
+    # as current==default and a current-only read can invent the denominator.
+    require_text(gpu_backend_power_cpp,
+                 "if (!g_nvml_api.getPowerLimit || !g_nvml_api.getPowerDefaultLimit)",
+                 "Windows requires both power-limit getters for a percentage readback")
+    forbid_text(gpu_backend_power_cpp, "if (def == 0) def = cur;",
+                "Windows never fabricates the power default from the current limit")
+    forbid_text(gpu_backend_power_cpp, "if (cur == 0) cur = def;",
+                "Windows never fabricates the current power limit from the default")
+    require_text(gpu_backend_power_cpp,
+                 "if (!power_limit_surface_available(g_app.readback.powerLimit,",
+                 "the Windows power writer refuses calls without complete readback")
+    require_text(gpu_backend_power_cpp,
+                 "post-write readback is unavailable",
+                 "a successful power write is not reported as verified if readback disappears")
+
+    # Capability classification must use the same complete current/default pair
+    # as the runtime producer. A current-only probe marked AVAILABLE while the
+    # runtime marked readback invalid would reintroduce an editable/inert domain.
+    gpu_capability_probe_cpp = _p(ctx, "gpu_capability_probe.cpp")
+    require_text(gpu_capability_probe_cpp,
+                 "obs.readSucceeded = currentRead && defaultRead;",
+                 "the Windows power capability probe requires current and default reads")
+    require_text(gpu_capability_probe_cpp,
+                 "g_nvml_api.getPowerDefaultLimit != nullptr;",
+                 "the Windows power probe includes the default-limit entry point")
+
     require_text(_p(ctx, "gpu_backend_reset_baseline.cpp"),
                  "power_reset_before_apply_required(",
                  "reset-before-apply never writes power on a board with no power "
@@ -67,11 +96,12 @@ def check_all(ctx, require_text, forbid_text):
                  "a rollback drops readback validity with the scalars it zeroes")
     require_text(readback_policy_h, "all_fans_known",
                  "a partially answering fan set is not a readback")
-    # Cross-platform parity for the power control surface.  Linux refused the
+
+    # Cross-platform parity for the power control surface. Linux refused the
     # whole apply -- VF curve included -- when an owned power request met a
     # board that exposes no power target, and a saved profile always carries
     # the mandatory power_limit_pct key, so every profile apply was blocked by
-    # a domain the user never touched.  All three gates in front of the write
+    # a domain the user never touched. All three gates in front of the write
     # must consult the same inertness rule.
     linux_mutation_cpp = _p(ctx, "linux_backend_mutation.cpp")
     require_text(linux_mutation_cpp, "static bool linux_power_request_is_inert(",
