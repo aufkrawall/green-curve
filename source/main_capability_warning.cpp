@@ -61,7 +61,9 @@ static void show_limited_control_surface_warning(HWND parent) {
             "The driver refused or does not expose: %s.\n\n"
             "This is expected on integrated Grace/Blackwell parts, where system memory "
             "is shared with the CPU, the power budget belongs to the whole SoC, and the "
-            "fan is usually owned by the platform rather than the NVIDIA driver.\n\n"
+            "fan is usually owned by the platform rather than the NVIDIA driver. It is "
+            "also common on notebook boards, where the laptop vendor keeps the power "
+            "target (TGP) and often the fan under its own firmware.\n\n"
             "Everything else still works, and Green Curve will attempt the domains that "
             "did answer.\n\n"
             "No disables this warning.",
@@ -108,7 +110,9 @@ static void show_limited_control_surface_warning(HWND parent) {
                     L"This is expected on integrated Grace/Blackwell parts, where system "
                     L"memory is shared with the CPU, the power budget belongs to the whole "
                     L"SoC, and the fan is usually owned by the platform rather than the "
-                    L"NVIDIA driver.\n\n"
+                    L"NVIDIA driver. It is also common on notebook boards, where the laptop "
+                    L"vendor keeps the power target (TGP) and often the fan under its own "
+                    L"firmware.\n\n"
                     L"Everything else still works, and Green Curve will attempt the domains "
                     L"that did answer.",
                     g_app.gpuName[0] ? g_app.gpuName : "NVIDIA GPU", surfaceName, missingList);

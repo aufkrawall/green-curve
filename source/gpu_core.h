@@ -537,6 +537,18 @@ static inline void validate_gpu_adapter_info_for_ipc(GpuAdapterInfo* g) {
 static const int POWER_LIMIT_MIN_PCT = 50;
 static const int POWER_LIMIT_MAX_PCT = 150;
 
+// "The board's own default power target", and simultaneously the value the
+// percentage domain uses for *unknown*.  A board whose default limit the driver
+// refuses to report (some notebook boards leave the TGP entirely to the OEM/EC)
+// has no percentage to publish at all; 100 is the honest stand-in because it
+// names exactly the state Green Curve leaves an unwritable power target in.
+//
+// Zero is NOT that stand-in and must never reach a consumer: 0 reads as a real
+// -100% request.  It used to, and the consequences were a broken Apply on
+// otherwise perfectly writable hardware -- see power_limit_surface_available()
+// in control_readback_policy.h.
+static const int POWER_LIMIT_DEFAULT_PCT = 100;
+
 static inline int clamp_power_limit_pct(int pct) {
     if (pct < POWER_LIMIT_MIN_PCT) return POWER_LIMIT_MIN_PCT;
     if (pct > POWER_LIMIT_MAX_PCT) return POWER_LIMIT_MAX_PCT;
@@ -606,7 +618,14 @@ static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         if (d->curvePointMHz[ci] > 5000u) d->curvePointMHz[ci] = 5000u;
     }
-    if (d->hasPowerLimit) d->powerLimitPct = clamp_power_limit_pct(d->powerLimitPct);
+    // The unknown/unset sentinel is normalized to the board default BEFORE the
+    // range clamp, exactly as normalize_desired_settings_for_ui() does it.  A
+    // bare clamp promotes 0 to the 50% floor, which silently turns "this board
+    // never told us its power target" into a genuine request to halve it.
+    if (d->hasPowerLimit) {
+        d->powerLimitPct = clamp_power_limit_pct(
+            d->powerLimitPct == 0 ? POWER_LIMIT_DEFAULT_PCT : d->powerLimitPct);
+    }
     if (d->hasGpuOffset && (d->gpuOffsetMHz < -1000 || d->gpuOffsetMHz > 1000)) {
         d->gpuOffsetMHz = d->gpuOffsetMHz < -1000 ? -1000 : 1000;
     }

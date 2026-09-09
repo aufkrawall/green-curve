@@ -91,7 +91,22 @@ static void populate_global_controls() {
                 (control.hasPowerLimit ? control.powerLimitPct :
                     g_app.powerLimitPct));
         SetWindowTextA(g_app.hPowerLimitEdit, buf);
-        EnableWindow(g_app.hPowerLimitEdit, serviceReady ? TRUE : FALSE);
+        // Same gate the GPU/memory fields already use: a domain whose control
+        // surface the driver refuses is greyed out rather than left editable
+        // and silently inert.  Boards that never report a power target (some
+        // notebook boards leave the TGP to the OEM/EC) land here.
+        bool powerControlAvailable = power_limit_surface_available(
+            haveControlState ? control.powerLimitReadbackValid != 0
+                             : g_app.readback.powerLimit,
+            g_app.powerLimitDefaultmW, g_app.powerLimitCurrentmW);
+        EnableWindow(g_app.hPowerLimitEdit,
+            (serviceReady && powerControlAvailable) ? TRUE : FALSE);
+        debug_log_on_change("populate_global_controls: power edit enabled=%d"
+            " (readbackValid=%d current=%d mW default=%d mW)\n",
+            (serviceReady && powerControlAvailable) ? 1 : 0,
+            haveControlState ? (control.powerLimitReadbackValid != 0)
+                             : (g_app.readback.powerLimit ? 1 : 0),
+            g_app.powerLimitCurrentmW, g_app.powerLimitDefaultmW);
     }
     bool mutationReady = serviceReady && g_app.loaded &&
         g_app.guiDraft.attached && !g_app.guiDraft.detached;

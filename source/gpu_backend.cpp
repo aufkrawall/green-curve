@@ -538,29 +538,7 @@ static bool nvapi_set_point(int pointIndex, int freqDelta_kHz) {
 }
 // Pstates20 struct size and version for Blackwell
 // NVML-based OC/PL functions
-static bool nvml_read_power_limit() {
-    g_app.readback.powerLimit = false;
-    if (!nvml_ensure_ready()) return false;
-    if (!g_nvml_api.getPowerLimit || !g_nvml_api.getPowerDefaultLimit) return false;
-    unsigned int cur = 0, def = 0;
-    if (g_nvml_api.getPowerLimit(g_app.nvmlDevice, &cur) != NVML_SUCCESS) return false;
-    if (g_nvml_api.getPowerDefaultLimit(g_app.nvmlDevice, &def) != NVML_SUCCESS) def = cur;
-    g_app.powerLimitCurrentmW = (int)cur;
-    g_app.powerLimitDefaultmW = def > 0 ? (int)def : (int)cur;
-    g_app.powerLimitMinmW = g_app.powerLimitMaxmW = 0;
-    if (g_nvml_api.getPowerConstraints) {
-        unsigned int mn = 0, mx = 0;
-        if (g_nvml_api.getPowerConstraints(g_app.nvmlDevice, &mn, &mx) == NVML_SUCCESS) {
-            g_app.powerLimitMinmW = (int)mn;
-            g_app.powerLimitMaxmW = (int)mx;
-        }
-    }
-    g_app.powerLimitPct = g_app.powerLimitDefaultmW > 0
-        ? (g_app.powerLimitCurrentmW * 100 + g_app.powerLimitDefaultmW / 2) / g_app.powerLimitDefaultmW : 100;
-    if (g_app.powerLimitPct < 0) g_app.powerLimitPct = 0;
-    g_app.readback.powerLimit = true;
-    return true;
-}
+#include "gpu_backend_power.cpp"
 static bool nvapi_read_pstates() {
     // Read clock data from public NvAPI Pstates20.
     auto func = (NvApiFunc)nvapi_qi(0x6FF81213u);
@@ -684,57 +662,6 @@ static bool nvapi_set_mem_offset(int offsetkHz) {
     debug_log("nvapi_set_mem_offset: apply ok, readback_driver_kHz=%d verified=%d\n",
         g_app.memClockOffsetkHz, verified ? 1 : 0);
     return verified;
-}
-static bool nvapi_set_power_limit(int pct) {
-    if (pct < 50 || pct > 150) return false;
-    if (g_app.powerLimitDefaultmW <= 0) return false;
-    unsigned int targetmW = (unsigned int)(((long long)g_app.powerLimitDefaultmW * pct + 50) / 100);
-    if (targetmW < 1) return false;
-    if (g_app.powerLimitMinmW > 0 && targetmW < (unsigned int)g_app.powerLimitMinmW) return false;
-    if (g_app.powerLimitMaxmW > 0 && targetmW > (unsigned int)g_app.powerLimitMaxmW) return false;
-    debug_log("set_power_limit: pct=%d defaultmW=%d targetmW=%u\n", pct, g_app.powerLimitDefaultmW, targetmW);
-    if (nvml_ensure_ready() && g_nvml_api.setPowerLimit) {
-        set_last_apply_phase("Power limit NVML write");
-        nvmlReturn_t r = g_nvml_api.setPowerLimit(g_app.nvmlDevice, targetmW);
-        if (r == NVML_SUCCESS) {
-            nvml_read_power_limit();
-            return true;
-        }
-        debug_log("Power limit via NVML failed: %s\n", nvml_err_name(r));
-    }
-    WCHAR exePath[MAX_PATH] = {};
-    if (!find_trusted_nvidia_smi_path_w(exePath, ARRAY_COUNT(exePath))) {
-        debug_log("Power limit via nvidia-smi skipped: trusted executable not found\n");
-        return false;
-    }
-    int watts = (int)((targetmW + 500) / 1000);
-    WCHAR cmdLine[MAX_PATH + 64] = {};
-    StringCchPrintfW(cmdLine, ARRAY_COUNT(cmdLine), L"\"%ls\" -pl %d", exePath, watts);
-    set_last_apply_phase("Power limit nvidia-smi write");
-    STARTUPINFOW si = {};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    PROCESS_INFORMATION pi = {};
-    ScopedProcess proc;
-    if (!CreateProcessW(exePath, cmdLine, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        debug_log("Power limit via nvidia-smi failed to launch (error %lu)\n", GetLastError());
-        return false;
-    }
-    proc.assign(pi.hProcess, pi.hThread);
-    DWORD waitResult = proc.wait(5000);
-    if (waitResult == WAIT_TIMEOUT) {
-        proc.terminate(1);
-        proc.wait(1000);
-        debug_log("Power limit via nvidia-smi timed out and was terminated\n");
-        return false;
-    }
-    DWORD exitCode = proc.exit_code();
-    if (exitCode == 0) {
-        nvml_read_power_limit();
-    }
-    else debug_log("Power limit via nvidia-smi failed with exit code %lu\n", exitCode);
-    return exitCode == 0;
 }
 static void rebuild_visible_map() {
     g_app.numVisible = 0;

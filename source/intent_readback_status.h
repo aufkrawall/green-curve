@@ -10,6 +10,7 @@
 #define GREEN_CURVE_INTENT_READBACK_STATUS_H
 
 #include "gpu_core.h"
+#include "control_readback_policy.h"
 #include "fan_zero_rpm_policy.h"
 
 #define INTENT_VF_READBACK_TOLERANCE_MHZ 30
@@ -113,9 +114,9 @@ static inline IntentReadbackStatus compare_intent_to_readback(
 
     if (status.requestedDomains & SERVICE_MUTATION_DOMAIN_POWER) {
         if (actual->valid && actual->hasPowerLimit &&
-            actual->powerLimitReadbackValid &&
-            snapshot->powerLimitDefaultmW > 0 &&
-            snapshot->powerLimitCurrentmW > 0) {
+            power_limit_surface_available(actual->powerLimitReadbackValid != 0,
+                                          snapshot->powerLimitDefaultmW,
+                                          snapshot->powerLimitCurrentmW)) {
             status.checkedDomains |= SERVICE_MUTATION_DOMAIN_POWER;
             if (desired->powerLimitPct != actual->powerLimitPct)
                 status.divergedDomains |= SERVICE_MUTATION_DOMAIN_POWER;

@@ -172,12 +172,25 @@ void gpu_probe_control_surface() {
     // --- Power limit ------------------------------------------------------
     {
         GpuDomainObservation obs = {};
-        unsigned int mn = 0, mx = 0;
-        obs.entryPointPresent = g_nvml_api.getPowerConstraints != nullptr;
-        if (obs.entryPointPresent) {
-            obs.readSucceeded =
+        unsigned int mn = 0, mx = 0, cur = 0;
+        bool constraintsRead = false, limitRead = false;
+        // The constraints alone are NOT the control surface.  Green Curve
+        // expresses this domain as a percentage of the board default, so an
+        // apply needs the limit itself; a board that answers the window but
+        // refuses the limit (observed 2026-09-07 on an RTX 3060 Laptop GPU)
+        // has a power surface Green Curve cannot drive, and reporting it
+        // "available" is what left the user with an inert 0% editor field and
+        // no explanation.  Either getter answering is enough.
+        obs.entryPointPresent = g_nvml_api.getPowerConstraints != nullptr ||
+                                g_nvml_api.getPowerLimit != nullptr;
+        if (g_nvml_api.getPowerConstraints) {
+            constraintsRead =
                 g_nvml_api.getPowerConstraints(dev, &mn, &mx) == NVML_SUCCESS;
         }
+        if (g_nvml_api.getPowerLimit) {
+            limitRead = g_nvml_api.getPowerLimit(dev, &cur) == NVML_SUCCESS && cur > 0;
+        }
+        obs.readSucceeded = limitRead;
         // Deliberately NOT inferring "absent" from an empty min==max window:
         // fixed-TGP laptop boards that Green Curve supports today report
         // exactly that, and would start raising the limited-surface warning.
@@ -186,11 +199,11 @@ void gpu_probe_control_surface() {
         gc_u32 cap = gpu_capability_classify(&obs);
         gpu_capability_set(&probe, SERVICE_MUTATION_DOMAIN_POWER, cap);
         probe_log_domain(SERVICE_MUTATION_DOMAIN_POWER, cap,
-                         obs.entryPointPresent ? "nvmlDeviceGetPowerManagementLimitConstraints"
+                         obs.entryPointPresent ? "nvmlDeviceGetPowerManagementLimit"
                                                : "entry point absent (older driver)");
-        if (obs.entryPointPresent && obs.readSucceeded) {
-            debug_log("gpu capability probe: power constraints min=%u mW max=%u mW\n", mn, mx);
-        }
+        debug_log("gpu capability probe: power constraints min=%u mW max=%u mW"
+                  " (read=%d) current limit=%u mW (read=%d)\n",
+                  mn, mx, constraintsRead ? 1 : 0, cur, limitRead ? 1 : 0);
     }
 
     // --- Fan --------------------------------------------------------------

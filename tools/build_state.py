@@ -30,9 +30,9 @@ SOURCE_SIZE_RATCHET = {
     "config_profiles.cpp": 903,  # 889 before the VIDEO profile save key  # 883 before the SYS profile save key
     "linux_port_profiles.cpp": 860,  # 788 before the one-time mem stored-unit migration hooks
     "entry.cpp": 863,
-    "gpu_backend.cpp": 972,
-    "gpu_backend_apply.cpp": 1414,  # 1407 before the core/advanced rollback boundary was made explicit
-    "gpu_core.h": 862,  # 842 before the mem effective/display parity helpers
+    "gpu_backend.cpp": 884,  # 972 before the power read/write pair moved to gpu_backend_power.cpp
+    "gpu_backend_apply.cpp": 1424,  # 1414 before power writes name a missing control surface instead of failing anonymously  # 1407 before the core/advanced rollback boundary was made explicit
+    "gpu_core.h": 881,  # 862 before POWER_LIMIT_DEFAULT_PCT and the IPC unknown-power sentinel  # 842 before the mem effective/display parity helpers
     "gui_service_state.cpp": 827,  # 820 before the VIDEO draft projection
     "main.cpp": 801,
     "main_fan_runtime.cpp": 913,  # 929 before the tray menu moved to gui_tray_menu.cpp

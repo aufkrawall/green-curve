@@ -315,6 +315,29 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
     return ok;
 }
 
+// Whether an owned power request asks for nothing this board could do anyway.
+//
+// Same rule the Windows reset baseline applies, and it exists for the same
+// reported failure: a board whose driver refuses the power target (notebook
+// boards whose TGP the OEM/EC owns) cannot have had that target moved by Green
+// Curve, so a request for the board default is a no-op there rather than a
+// refusal.  Refusing it fails the WHOLE apply -- VF curve included -- on
+// hardware whose curve is perfectly writable, and a saved profile always
+// carries the mandatory `power_limit_pct` key, so on such a board every
+// profile apply was blocked by a domain the user never touched.
+//
+// Ownership is deliberately NOT dropped: the request still owns power for
+// profile-equality and active-intent purposes, exactly as on Windows.  Only the
+// write and the gates in front of it are skipped, and a request for anything
+// other than the board default is still a real request that still fails loudly.
+static bool linux_power_request_is_inert(const DesiredSettings* d,
+                                         const LinuxHardwareSnapshot* snapshot,
+                                         const LinuxGpuState* g) {
+    if (!d || !d->hasPowerLimit || !snapshot || !g) return false;
+    bool surfaceAvailable = snapshot->powerValid && g->nvml.setPowerLimit != nullptr;
+    return !surfaceAvailable && d->powerLimitPct == POWER_LIMIT_DEFAULT_PCT;
+}
+
 static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
                                     const LinuxHardwareSnapshot* snapshot,
                                     char* err, size_t errSize) {
@@ -325,6 +348,13 @@ static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
     gc_u32 requestedDomains = service_desired_mutation_domains(d);
     gc_u32 unavailableDomains = service_unavailable_mutation_domains(
         SERVICE_CMD_APPLY, d, snapshot->availableMutationDomains);
+    bool powerInert = linux_power_request_is_inert(d, snapshot, g);
+    if (powerInert && (unavailableDomains & SERVICE_MUTATION_DOMAIN_POWER)) {
+        unavailableDomains &= ~(gc_u32)SERVICE_MUTATION_DOMAIN_POWER;
+        lb_log("power: request is the board default (%d%%) and this board exposes no "
+               "power control surface; not treating it as an unavailable domain\n",
+               d->powerLimitPct);
+    }
     if (unavailableDomains != 0) {
         gc_snprintf(err, errSize,
             "requested GPU domains are unavailable (requested=0x%02x available=0x%02x missing=0x%02x)",
@@ -345,7 +375,8 @@ static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
         (!snapshot->memOffsetValid || (!g->nvml.setMemClkVfOffset && !g->nvml.setClockOffsets))) {
         gc_strlcpy(err, errSize, "memory offset cannot be snapshotted and written safely"); return false;
     }
-    if (d->hasPowerLimit && (!snapshot->powerValid || !g->nvml.setPowerLimit)) {
+    if (d->hasPowerLimit && !powerInert &&
+        (!snapshot->powerValid || !g->nvml.setPowerLimit)) {
         gc_strlcpy(err, errSize, "power limit cannot be snapshotted and written safely"); return false;
     }
     if (desired_has_curve_write(d)) {
@@ -565,7 +596,10 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     if (d->hasGpuOffset && !curveBuild.composedGpuOffset)
         requested |= LINUX_MUTATION_GPU_OFFSET;
     if (d->hasMemOffset) requested |= LINUX_MUTATION_MEM_OFFSET;
-    if (d->hasPowerLimit) requested |= LINUX_MUTATION_POWER;
+    // An inert power request owns the domain but writes nothing; see
+    // linux_power_request_is_inert().
+    if (d->hasPowerLimit && !linux_power_request_is_inert(d, &snapshot, g))
+        requested |= LINUX_MUTATION_POWER;
     if (curveBuild.pointCount > 0)
         requested |= LINUX_MUTATION_CURVE;
     if (d->hasLock) requested |= LINUX_MUTATION_LOCK;

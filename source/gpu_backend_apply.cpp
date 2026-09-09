@@ -1159,6 +1159,16 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 append_failure("Power limit %d%% outside safe range %d..%d%%", desired->powerLimitPct, POWER_LIMIT_MIN_PCT, POWER_LIMIT_MAX_PCT);
                 failCount++;
                 partialApplyRisk = true;
+            } else if (!power_limit_surface_available(g_app.readback.powerLimit,
+                           g_app.powerLimitDefaultmW, g_app.powerLimitCurrentmW)) {
+                // A real request for a target this board has no surface for.
+                // It fails, loudly and by name — the silent-refusal path is the
+                // one this domain was getting wrong, not the refusal itself.
+                append_failure("Power limit %d%% cannot be set: this GPU's driver does not"
+                               " report a power target (constraints %d..%d mW)",
+                    desired->powerLimitPct, g_app.powerLimitMinmW, g_app.powerLimitMaxmW);
+                failCount++;
+                partialApplyRisk = true;
             } else {
                 powerChanged = true;
                 set_last_apply_phase("apply: power limit write");

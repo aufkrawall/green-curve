@@ -102,6 +102,7 @@ import msvc_toolchain  # noqa: E402  (same one-way dependency as security_gates)
 import pe_verify  # noqa: E402  (same one-way dependency as security_gates)
 import xbar_gates  # noqa: E402  (same one-way dependency as security_gates)
 import linux_gates  # noqa: E402  (same one-way dependency as security_gates)
+import readback_gates  # noqa: E402  (same one-way dependency as security_gates)
 import update_gates  # noqa: E402  (same one-way dependency as security_gates)
 import icon_render  # noqa: E402  (same one-way dependency as security_gates)
 import crash_artifacts  # noqa: E402  (same one-way dependency as security_gates)
@@ -4225,39 +4226,10 @@ def run_source_regression_checks():
     require_text(os.path.join(SOURCE_DIR, "linux_tui_layout.cpp"),
                  "HARDWARE OVERRIDDEN",
                  "Linux TUI visibly discloses external hardware overrides")
-    # The v14 readback-validity contract has a producer on BOTH platforms. The
-    # Windows service publishing all-zero bits would silently report every
-    # domain as unavailable while still substituting intent for failed reads.
-    state_sync_cpp = os.path.join(SOURCE_DIR, "main_state_sync.cpp")
-    gpu_state_cpp = os.path.join(SOURCE_DIR, "main_gpu_state.cpp")
-    gpu_backend_cpp_path = os.path.join(SOURCE_DIR, "gpu_backend.cpp")
-    readback_policy_h = os.path.join(SOURCE_DIR, "control_readback_policy.h")
-    require_text(state_sync_cpp, "apply_control_readback_validity(state, &facts);",
-                 "the Windows service publishes per-domain readback validity")
-    require_text(state_sync_cpp, "facts.gpuOffsetFromHardware = gpuOffsetFromHardware;",
-                 "the Windows service publishes GPU offset readback provenance")
-    require_text(state_sync_cpp, "facts.fanPolicyKnown = g_app.readback.fan.policy;",
-                 "the Windows service publishes per-fan readback provenance")
-    require_text(state_sync_cpp,
-                 "merged.gpuOffsetReadbackValid = state->gpuOffsetReadbackValid;",
-                 "the Windows GUI merge carries readback validity with its value")
-    require_text(gpu_state_cpp,
-                 "static int current_applied_gpu_offset_mhz(bool* fromHardware)",
-                 "the Windows applied GPU offset reports whether it is a reading")
-    require_text(gpu_state_cpp, "*fromHardware = false;  // remembered request",
-                 "the persisted selective request is never reported as readback")
-    require_text(gpu_state_cpp, "*fromHardware = false;  // active desired intent",
-                 "the active-desired fallback is never reported as readback")
-    require_text(gpu_backend_cpp_path,
-                 "g_app.readback.gpuOffset = gpu_offset_readback_after_detection(",
-                 "clock-offset detection owns the GPU scalar it overwrites")
-    require_text(gpu_backend_cpp_path, "g_app.readback.powerLimit = true;",
-                 "a Windows power reading records its own provenance")
-    require_text(os.path.join(SOURCE_DIR, "gpu_backend_apply.cpp"),
-                 "invalidate_scalar_readbacks(&g_app.readback);",
-                 "a rollback drops readback validity with the scalars it zeroes")
-    require_text(readback_policy_h, "all_fans_known",
-                 "a partially answering fan set is not a readback")
+    # The v14 readback-validity contract's producer gates on both platforms,
+    # plus the power-domain control-surface rules, live in
+    # tools/readback_gates.py.
+    readback_gates.check_all(_gate_ctx(), require_text, forbid_text)
     require_text(os.path.join(SOURCE_DIR, "intent_readback_status.h"),
                  "diverged = true;\n                    continue;",
                  "a fan policy takeover is disclosed even when the duty getter "

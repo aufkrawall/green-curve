@@ -1495,7 +1495,16 @@ static int run_all_tests(int argc, char** argv) {
                 FAN_ZERO_RPM_MAX_HYSTERESIS_C ||
             ds.fanCurve.zeroRpmReserved[0] != 0 ||
             ds.fanCurve.zeroRpmReserved[1] != 0) return 4720;
-        if (ds.powerLimitPct != 50) return 72;
+        // 0 is the unknown/unset sentinel, not an out-of-range request: it
+        // normalizes to the board default, exactly as the UI normalizer does.
+        // It used to clamp to POWER_LIMIT_MIN_PCT here, which is how a board
+        // that never reported its power target had every Apply silently ask to
+        // halve it.  See F-POWER-SENTINEL below.
+        if (ds.powerLimitPct != POWER_LIMIT_DEFAULT_PCT) return 72;
+        // A genuinely too-low request still clamps to the floor.
+        ds.powerLimitPct = 5;
+        validate_desired_settings_for_ipc(&ds);
+        if (ds.powerLimitPct != POWER_LIMIT_MIN_PCT) return 4756;
         if (ds.gpuOffsetMHz != -1000) return 73;
         if (ds.memOffsetMHz != 3000) return 74;
         if (ds.fanPercent != 0) return 75;
@@ -2279,6 +2288,136 @@ static int run_all_tests(int argc, char** argv) {
         if (!gpu_offset_readback_after_detection(true, 12, false)) return 1749;
         if (!gpu_offset_readback_after_detection(false, 0, true)) return 1750;
         if (gpu_offset_readback_after_detection(false, 12, false)) return 1751;
+    }
+
+    // F-POWER-SURFACE: a board whose driver refuses the power target has no
+    // power *control surface*, and every consumer must see that rather than a
+    // fabricated 0%.  Reported 2026-09-07 against 0.25.0 on an RTX 3060 Laptop
+    // GPU: the driver answered nvmlDeviceGetPowerManagementLimitConstraints
+    // (1000..130000 mW) but not the limit, so the whole read published 0 mW /
+    // 0 mW / 0%.  Reset-before-apply then read 0 != 100, issued a power write
+    // nvapi_set_power_limit() could only refuse for want of a default limit,
+    // and failed the entire Apply with "Power target did not reset" -- on
+    // hardware whose VF curve was perfectly writable.  Each assertion below
+    // fails against the pre-fix behaviour.
+    {
+        // The exact reported hardware state: constraints known, limit unknown.
+        if (power_limit_surface_available(false, 0, 0)) return 5040;
+        // A readback flag alone is not a surface; the mW pair completes it.
+        if (power_limit_surface_available(true, 0, 0)) return 5041;
+        if (power_limit_surface_available(true, 130000, 0)) return 5042;
+        if (power_limit_surface_available(true, 0, 115000)) return 5043;
+        // A fully answered board is unchanged: this must stay inert on every
+        // discrete GPU Green Curve already supports.
+        if (!power_limit_surface_available(true, 130000, 115000)) return 5044;
+
+        // Unknown mW publishes the neutral board default, never 0.  A 0 here is
+        // what the IPC clamp used to promote into a real 50% request.
+        if (power_limit_pct_from_mw(0, 0) != POWER_LIMIT_DEFAULT_PCT) return 5045;
+        if (power_limit_pct_from_mw(115000, 0) != POWER_LIMIT_DEFAULT_PCT) return 5046;
+        if (power_limit_pct_from_mw(0, 130000) != POWER_LIMIT_DEFAULT_PCT) return 5047;
+        if (power_limit_pct_from_mw(130000, 130000) != 100) return 5048;
+        if (power_limit_pct_from_mw(65000, 130000) != 50) return 5049;
+        // Above 100% is a normal request on boards with headroom.
+        if (power_limit_pct_from_mw(300000, 250000) != 120) return 5050;
+        // Rounding is half-up, matching the pre-fix arithmetic exactly.
+        if (power_limit_pct_from_mw(115000, 130000) != 88) return 5051;
+
+        // THE reported bug, pinned directly: owning power on a surfaceless
+        // board must not schedule a reset write.
+        if (power_reset_before_apply_required(true, false, 0)) return 5052;
+        if (power_reset_before_apply_required(true, false, 100)) return 5053;
+        // ... and the pre-fix state that produced it (pct fabricated as 0)
+        // must not be reachable through a surface that is genuinely present
+        // either, because 0 is no longer a value a read can publish.
+        if (!power_reset_before_apply_required(true, true, 80)) return 5054;
+        if (!power_reset_before_apply_required(true, true, 120)) return 5055;
+        // Already stock needs no write.
+        if (power_reset_before_apply_required(true, true, POWER_LIMIT_DEFAULT_PCT))
+            return 5056;
+        // A request that does not own power never resets it: a clean VF
+        // baseline is not ownership of unrelated controls.
+        if (power_reset_before_apply_required(false, true, 80)) return 5057;
+
+        // The ControlState publisher must agree with the shared predicate: a
+        // refused power read cannot become a published readback.
+        ControlState powerState = {};
+        ControlReadbackFacts powerFacts = {};
+        powerFacts.powerRead = false;
+        powerFacts.powerDefaultmW = 0;
+        powerFacts.powerCurrentmW = 0;
+        apply_control_readback_validity(&powerState, &powerFacts);
+        if (powerState.powerLimitReadbackValid) return 5058;
+        powerFacts.powerRead = true;
+        powerFacts.powerDefaultmW = 130000;
+        powerFacts.powerCurrentmW = 115000;
+        apply_control_readback_validity(&powerState, &powerFacts);
+        if (!powerState.powerLimitReadbackValid) return 5059;
+    }
+
+    // F-POWER-SENTINEL: the IPC trust boundary must normalize the unknown
+    // power sentinel to the board default before clamping.  A bare clamp
+    // promoted 0 to POWER_LIMIT_MIN_PCT, silently turning "this board never
+    // told us its power target" into a genuine request to halve it -- which
+    // the GUI then sent on every Apply, because forceExplicitGlobals makes
+    // service-mode captures always own the power field.
+    {
+        DesiredSettings d = {};
+        d.hasPowerLimit = true;
+        d.powerLimitPct = 0;
+        validate_desired_settings_for_ipc(&d);
+        if (d.powerLimitPct != POWER_LIMIT_DEFAULT_PCT) return 5060;
+        // Real requests are untouched, including the >100% ones the clamp
+        // exists to preserve.
+        d.powerLimitPct = 50;
+        validate_desired_settings_for_ipc(&d);
+        if (d.powerLimitPct != 50) return 5061;
+        d.powerLimitPct = 120;
+        validate_desired_settings_for_ipc(&d);
+        if (d.powerLimitPct != 120) return 5062;
+        // Out-of-range values still clamp to the safe bounds.
+        d.powerLimitPct = 5;
+        validate_desired_settings_for_ipc(&d);
+        if (d.powerLimitPct != POWER_LIMIT_MIN_PCT) return 5063;
+        d.powerLimitPct = 900;
+        validate_desired_settings_for_ipc(&d);
+        if (d.powerLimitPct != POWER_LIMIT_MAX_PCT) return 5064;
+        // An unowned power field is left exactly as it came in.
+        DesiredSettings unowned = {};
+        unowned.hasPowerLimit = false;
+        unowned.powerLimitPct = 0;
+        validate_desired_settings_for_ipc(&unowned);
+        if (unowned.powerLimitPct != 0) return 5065;
+    }
+
+    // F-CAP-POWER: the capability probe classifies the power domain from the
+    // limit read, not from the constraints alone.  The reported board answers
+    // the constraints and refuses the limit; reporting that "available" is what
+    // left the user with an editable-but-inert 0% field and no explanation.
+    {
+        GpuDomainObservation obs = {};
+        obs.entryPointPresent = 1;
+        obs.readSucceeded = 0;   // constraints answered, limit refused
+        if (gpu_capability_classify(&obs) != GPU_DOMAIN_CAP_REFUSED) return 5066;
+        obs.readSucceeded = 1;
+        if (gpu_capability_classify(&obs) != GPU_DOMAIN_CAP_AVAILABLE) return 5067;
+        // An older driver that exports neither getter stays UNPROBED, so this
+        // can never subtract a domain from a working discrete GPU.
+        obs.entryPointPresent = 0;
+        if (gpu_capability_classify(&obs) != GPU_DOMAIN_CAP_UNPROBED) return 5068;
+
+        // A refused power domain is a PARTIAL surface, not monitor-only: the
+        // VF curve, offsets and fan remain writable and the Apply must still
+        // run them.  This is the invariant the reported bug violated.
+        GpuCapabilityProbe probe = {};
+        gpu_capability_set(&probe, SERVICE_MUTATION_DOMAIN_POWER,
+                           GPU_DOMAIN_CAP_REFUSED);
+        if (gpu_capability_surface_class(&probe) != GPU_CONTROL_SURFACE_PARTIAL)
+            return 5069;
+        if (gpu_capability_available_domains(&probe) &
+            SERVICE_MUTATION_DOMAIN_POWER) return 5070;
+        if (!(gpu_capability_available_domains(&probe) &
+              SERVICE_MUTATION_DOMAIN_VF_CURVE)) return 5071;
     }
 
     // F-RESET-FLAGS: RESET carries no flags. The interactive bit is only ever

@@ -39,9 +39,25 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
     }
     // A reset-to-clean-VF-baseline is not ownership of unrelated controls.
     // Only reset power when the incoming request itself owns power and will
-    // immediately write its requested target in the apply phase.
-    if (desired && desired->hasPowerLimit &&
-        g_app.powerLimitPct != 100 && !nvapi_set_power_limit(100)) {
+    // immediately write its requested target in the apply phase — and only when
+    // this board actually HAS a power control surface.  A board whose driver
+    // refuses the power limit (notebook boards whose TGP the OEM/EC owns do
+    // this while still answering the constraints) publishes the neutral default
+    // percentage, has never had its power target moved by Green Curve, and
+    // cannot accept a write; issuing one anyway aborted the whole Apply before
+    // the VF curve was touched.  See power_reset_before_apply_required().
+    bool powerSurfaceAvailable = power_limit_surface_available(
+        g_app.readback.powerLimit, g_app.powerLimitDefaultmW, g_app.powerLimitCurrentmW);
+    if (desired && desired->hasPowerLimit && !powerSurfaceAvailable) {
+        debug_log("reset-before-apply: skipping power reset — no power control surface"
+                  " (readback=%d current=%d mW default=%d mW constraints %d..%d mW);"
+                  " Green Curve cannot have moved this board's power target\n",
+            g_app.readback.powerLimit ? 1 : 0, g_app.powerLimitCurrentmW,
+            g_app.powerLimitDefaultmW, g_app.powerLimitMinmW, g_app.powerLimitMaxmW);
+    }
+    if (power_reset_before_apply_required(desired && desired->hasPowerLimit,
+                                          powerSurfaceAvailable, g_app.powerLimitPct) &&
+        !nvapi_set_power_limit(POWER_LIMIT_DEFAULT_PCT)) {
         append_failure("Power target did not reset");
     }
     // Do NOT reset memory offset here — abruptly dropping from +3000 to 0

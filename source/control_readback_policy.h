@@ -69,6 +69,51 @@ static inline bool all_fans_known(const bool* known, unsigned int fanCount) {
     return true;
 }
 
+// Whether Green Curve can read this board's power target AND express it in the
+// percentage unit every one of its surfaces speaks -- the editor field, the
+// profile key, the IPC request, the reset-to-stock baseline, the readback
+// comparison.  The percentage is `current mW / default mW`, so a board that
+// refuses either number has no power *control surface*, not merely a stale
+// reading: there is nothing to compare against and nothing a write could mean.
+//
+// This is the single predicate for that question.  It used to be spelled out
+// inline in three places and, in the two that mattered most, not at all: the
+// reset-to-stock step read the fabricated `powerLimitPct == 0`, concluded the
+// target was 100 percentage points off stock, and issued a write that
+// `nvapi_set_power_limit()` could only refuse for want of a default limit --
+// failing the entire Apply, VF curve included, on hardware whose curve was
+// perfectly writable.  Reported 2026-09-07 against 0.25.0 on an RTX 3060 Laptop
+// GPU, whose driver answers the power *constraints* but not the limit itself.
+static inline bool power_limit_surface_available(bool powerReadbackValid,
+                                                 int powerDefaultmW,
+                                                 int powerCurrentmW) {
+    return powerReadbackValid && powerDefaultmW > 0 && powerCurrentmW > 0;
+}
+
+// The published percentage for a pair of mW readings.  An unusable pair yields
+// the board default rather than 0; see POWER_LIMIT_DEFAULT_PCT.
+static inline int power_limit_pct_from_mw(int currentmW, int defaultmW) {
+    if (defaultmW <= 0 || currentmW <= 0) return POWER_LIMIT_DEFAULT_PCT;
+    int pct = (currentmW * 100 + defaultmW / 2) / defaultmW;
+    return pct > 0 ? pct : POWER_LIMIT_DEFAULT_PCT;
+}
+
+// Whether the reset-to-stock-baseline step must write the power target.
+//
+// All three conditions are load-bearing.  A request that does not own power
+// must not have its power reset (a clean baseline is not ownership of unrelated
+// controls).  A board with no power control surface has nothing to reset --
+// Green Curve cannot have moved a target it cannot write -- and issuing the
+// write anyway is a guaranteed failure that aborts the Apply before the VF
+// curve is ever touched.  And a target already at the board default is already
+// stock.
+static inline bool power_reset_before_apply_required(bool requestOwnsPower,
+                                                     bool surfaceAvailable,
+                                                     int currentPct) {
+    return requestOwnsPower && surfaceAvailable &&
+           currentPct != POWER_LIMIT_DEFAULT_PCT;
+}
+
 struct ControlReadbackFacts {
     // Whether the *published* GPU offset came from a driver reading rather than
     // remembered intent.  Two of the Windows detection branches deliberately
@@ -90,8 +135,8 @@ static inline void apply_control_readback_validity(
     state->gpuOffsetReadbackValid = facts->gpuOffsetFromHardware;
     state->memOffsetReadbackValid = facts->memOffsetRead;
     // A percentage computed from a missing or zero default is not a reading.
-    state->powerLimitReadbackValid = facts->powerRead &&
-        facts->powerDefaultmW > 0 && facts->powerCurrentmW > 0;
+    state->powerLimitReadbackValid = power_limit_surface_available(
+        facts->powerRead, facts->powerDefaultmW, facts->powerCurrentmW);
     bool fansPresent = facts->fanSupported && facts->fanCount > 0;
     state->fanPolicyReadbackValid = fansPresent &&
         all_fans_known(facts->fanPolicyKnown, facts->fanCount);
