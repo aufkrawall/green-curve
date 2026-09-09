@@ -172,38 +172,45 @@ void gpu_probe_control_surface() {
     // --- Power limit ------------------------------------------------------
     {
         GpuDomainObservation obs = {};
-        unsigned int mn = 0, mx = 0, cur = 0;
-        bool constraintsRead = false, limitRead = false;
-        // The constraints alone are NOT the control surface.  Green Curve
-        // expresses this domain as a percentage of the board default, so an
-        // apply needs the limit itself; a board that answers the window but
-        // refuses the limit (observed 2026-09-07 on an RTX 3060 Laptop GPU)
-        // has a power surface Green Curve cannot drive, and reporting it
-        // "available" is what left the user with an inert 0% editor field and
-        // no explanation.  Either getter answering is enough.
+        unsigned int mn = 0, mx = 0, cur = 0, def = 0;
+        bool constraintsRead = false, currentRead = false, defaultRead = false;
+        // The constraints alone are NOT the control surface. Green Curve
+        // expresses this domain as a percentage of the board default, so a
+        // truthful surface requires BOTH the current limit and the default
+        // limit. Fabricating either from the other can advertise a writable
+        // percentage whose denominator/current state the driver never supplied.
+        // The reported RTX 3060 Laptop GPU answers the constraints while
+        // refusing the target, so this must classify as REFUSED/PARTIAL.
         obs.entryPointPresent = g_nvml_api.getPowerConstraints != nullptr ||
-                                g_nvml_api.getPowerLimit != nullptr;
+                                g_nvml_api.getPowerLimit != nullptr ||
+                                g_nvml_api.getPowerDefaultLimit != nullptr;
         if (g_nvml_api.getPowerConstraints) {
             constraintsRead =
                 g_nvml_api.getPowerConstraints(dev, &mn, &mx) == NVML_SUCCESS;
         }
         if (g_nvml_api.getPowerLimit) {
-            limitRead = g_nvml_api.getPowerLimit(dev, &cur) == NVML_SUCCESS && cur > 0;
+            currentRead =
+                g_nvml_api.getPowerLimit(dev, &cur) == NVML_SUCCESS && cur > 0;
         }
-        obs.readSucceeded = limitRead;
+        if (g_nvml_api.getPowerDefaultLimit) {
+            defaultRead =
+                g_nvml_api.getPowerDefaultLimit(dev, &def) == NVML_SUCCESS && def > 0;
+        }
+        obs.readSucceeded = currentRead && defaultRead;
         // Deliberately NOT inferring "absent" from an empty min==max window:
         // fixed-TGP laptop boards that Green Curve supports today report
         // exactly that, and would start raising the limited-surface warning.
-        // Only an outright refused read downgrades this domain; the measured
-        // window is logged below so a real SoC report is still diagnosable.
+        // Only an incomplete required read pair downgrades this domain; the
+        // measured window is logged below so a real SoC report is diagnosable.
         gc_u32 cap = gpu_capability_classify(&obs);
         gpu_capability_set(&probe, SERVICE_MUTATION_DOMAIN_POWER, cap);
         probe_log_domain(SERVICE_MUTATION_DOMAIN_POWER, cap,
-                         obs.entryPointPresent ? "nvmlDeviceGetPowerManagementLimit"
-                                               : "entry point absent (older driver)");
+                         obs.entryPointPresent ? "NVML current/default power-limit pair"
+                                               : "power-limit entry points absent (older driver)");
         debug_log("gpu capability probe: power constraints min=%u mW max=%u mW"
-                  " (read=%d) current limit=%u mW (read=%d)\n",
-                  mn, mx, constraintsRead ? 1 : 0, cur, limitRead ? 1 : 0);
+                  " (read=%d) current=%u mW (read=%d) default=%u mW (read=%d)\n",
+                  mn, mx, constraintsRead ? 1 : 0,
+                  cur, currentRead ? 1 : 0, def, defaultRead ? 1 : 0);
     }
 
     // --- Fan --------------------------------------------------------------
