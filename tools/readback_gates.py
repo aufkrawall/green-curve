@@ -104,8 +104,25 @@ def check_all(ctx, require_text, forbid_text):
     # a domain the user never touched. All three gates in front of the write
     # must consult the same inertness rule.
     linux_mutation_cpp = _p(ctx, "linux_backend_mutation.cpp")
+    require_text(linux_mutation_cpp, "static bool linux_read_power_limit_pair(",
+                 "Linux names the complete current/default power read once")
+    require_text(linux_mutation_cpp, "bool currentRead = g->nvml.getPowerLimit &&",
+                 "Linux requires a positive current power-limit read")
+    require_text(linux_mutation_cpp, "bool defaultRead = g->nvml.getPowerDefaultLimit &&",
+                 "Linux requires a positive default power-limit read")
+    require_text(linux_mutation_cpp,
+                 "return power_limit_surface_available(currentRead && defaultRead,",
+                 "Linux uses the shared complete-pair power surface predicate")
+    require_text(linux_mutation_cpp,
+                 "snapshot->powerValid = linux_read_power_limit_pair(",
+                 "Linux snapshot power validity requires the complete pair")
+    forbid_text(linux_mutation_cpp, "snapshot->powerValid = true;",
+                "Linux never promotes a current-only power read to a valid percentage surface")
     require_text(linux_mutation_cpp, "static bool linux_power_request_is_inert(",
                  "Linux names the inert-power-request rule once")
+    require_text(linux_mutation_cpp,
+                 "surfaceAvailable = power_limit_surface_available(",
+                 "Linux inertness uses the shared complete power-surface rule")
     require_text(linux_mutation_cpp,
                  "unavailableDomains &= ~(gc_u32)SERVICE_MUTATION_DOMAIN_POWER;",
                  "an inert power request is not an unavailable Linux domain")
@@ -115,5 +132,14 @@ def check_all(ctx, require_text, forbid_text):
     require_text(linux_mutation_cpp,
                  "if (d->hasPowerLimit && !linux_power_request_is_inert(d, &snapshot, g))",
                  "an inert power request schedules no Linux power write")
+    require_text(linux_mutation_cpp,
+                 "powerOk = linux_read_power_limit_pair(g, &currentmW, &defaultmW) &&",
+                 "Linux rollback is verified only while complete power readback remains")
+    require_text(linux_mutation_cpp,
+                 "bool pairValid = linux_read_power_limit_pair(g, &currentmW, &defaultmW);",
+                 "Linux forward power writes require complete post-write readback")
+    require_text(linux_mutation_cpp,
+                 "bool pairValid = ok &&\n                linux_read_power_limit_pair(g, &currentmW, &defaultmW);",
+                 "Linux reset-to-default requires complete post-write readback")
 
 

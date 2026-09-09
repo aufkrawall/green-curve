@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
+#include "control_readback_policy.h"
+
 // ===========================================================================
 // Apply / reset  (ports apply_desired_settings_service ordering)
 // ===========================================================================
@@ -21,6 +23,32 @@ static bool desired_gpu_offset_uses_curve(const DesiredSettings* d) {
         if (d->hasCurvePoint[i]) return true;
     }
     return false;
+}
+
+// Green Curve's public power unit is percent of the board default, so a Linux
+// power readback is only complete when NVML supplies BOTH the current target
+// and the default denominator. Preserve whichever raw value answered for
+// diagnostics, but never let one side fabricate the other or advertise a
+// writable percentage surface by itself. This mirrors nvml_read_power_limit()
+// on Windows and feeds the same shared surface predicate.
+static bool linux_read_power_limit_pair(LinuxGpuState* g,
+                                        unsigned int* currentmW,
+                                        unsigned int* defaultmW) {
+    if (currentmW) *currentmW = 0;
+    if (defaultmW) *defaultmW = 0;
+    if (!g) return false;
+    unsigned int current = 0;
+    unsigned int def = 0;
+    bool currentRead = g->nvml.getPowerLimit &&
+        g->nvml.getPowerLimit(g->nvmlDevice, &current) == NVML_SUCCESS &&
+        current > 0;
+    bool defaultRead = g->nvml.getPowerDefaultLimit &&
+        g->nvml.getPowerDefaultLimit(g->nvmlDevice, &def) == NVML_SUCCESS &&
+        def > 0;
+    if (currentmW && currentRead) *currentmW = current;
+    if (defaultmW && defaultRead) *defaultmW = def;
+    return power_limit_surface_available(currentRead && defaultRead,
+                                         (int)def, (int)current);
 }
 
 bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* snapshot,
@@ -66,9 +94,12 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
         snapshot->videoClkValid = true;
         snapshot->videoClkOffsetKhz = g->videoClkFreqOffsetKhz;
     }
-    if (g->nvml.getPowerLimit &&
-        g->nvml.getPowerLimit(g->nvmlDevice, &snapshot->powerLimitmW) == NVML_SUCCESS)
-        snapshot->powerValid = true;
+    unsigned int powerDefaultmW = 0;
+    snapshot->powerValid = linux_read_power_limit_pair(
+        g, &snapshot->powerLimitmW, &powerDefaultmW);
+    g->powerLimitCurrentmW = snapshot->powerLimitmW > 0
+        ? (int)snapshot->powerLimitmW : 0;
+    g->powerLimitDefaultmW = powerDefaultmW > 0 ? (int)powerDefaultmW : 0;
     if (g->gpuHandle && g->backend && g->backend->writeSupported &&
         linux_vf_snapshot_authoritative(
             g->vfInfoFresh, g->vfStatusFresh, g->vfControlFresh,
@@ -257,10 +288,13 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
     }
     if ((phaseMask & LINUX_MUTATION_POWER) && snapshot->powerValid && g->nvml.setPowerLimit) {
         bool powerOk = g->nvml.setPowerLimit(g->nvmlDevice, snapshot->powerLimitmW) == NVML_SUCCESS;
-        if (powerOk && g->nvml.getPowerLimit) {
-            unsigned int verify = 0;
-            powerOk = g->nvml.getPowerLimit(g->nvmlDevice, &verify) == NVML_SUCCESS &&
-                      verify == snapshot->powerLimitmW;
+        if (powerOk) {
+            unsigned int currentmW = 0;
+            unsigned int defaultmW = 0;
+            powerOk = linux_read_power_limit_pair(g, &currentmW, &defaultmW) &&
+                      currentmW == snapshot->powerLimitmW;
+            g->powerLimitCurrentmW = currentmW > 0 ? (int)currentmW : 0;
+            g->powerLimitDefaultmW = defaultmW > 0 ? (int)defaultmW : 0;
         }
         ok &= powerOk;
     }
@@ -334,7 +368,10 @@ static bool linux_power_request_is_inert(const DesiredSettings* d,
                                          const LinuxHardwareSnapshot* snapshot,
                                          const LinuxGpuState* g) {
     if (!d || !d->hasPowerLimit || !snapshot || !g) return false;
-    bool surfaceAvailable = snapshot->powerValid && g->nvml.setPowerLimit != nullptr;
+    bool surfaceAvailable = power_limit_surface_available(
+        snapshot->powerValid, g->powerLimitDefaultmW,
+        (int)snapshot->powerLimitmW) &&
+        g->nvml.setPowerLimit != nullptr;
     return !surfaceAvailable && d->powerLimitPct == POWER_LIMIT_DEFAULT_PCT;
 }
 
@@ -480,8 +517,15 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
                    applyEffectiveMHz);
             return nvml_set_clock_offset(g, NVML_CLOCK_MEM, applyEffectiveMHz);
         }
-        case LINUX_MUTATION_POWER:
-            return nvml_set_power_limit_pct(g, d->powerLimitPct);
+        case LINUX_MUTATION_POWER: {
+            if (!nvml_set_power_limit_pct(g, d->powerLimitPct)) return false;
+            unsigned int currentmW = 0;
+            unsigned int defaultmW = 0;
+            bool pairValid = linux_read_power_limit_pair(g, &currentmW, &defaultmW);
+            g->powerLimitCurrentmW = currentmW > 0 ? (int)currentmW : 0;
+            g->powerLimitDefaultmW = defaultmW > 0 ? (int)defaultmW : 0;
+            return pairValid;
+        }
         case LINUX_MUTATION_CURVE:
             return apply_curve_offsets_verified(g, context->curveTargets,
                                                 context->curveMask, 25);
@@ -639,12 +683,18 @@ static bool linux_reset_transaction_step(void* opaque, unsigned int phase) {
         case LINUX_MUTATION_MEM_OFFSET:
             return nvml_set_clock_offset(g, NVML_CLOCK_MEM, 0);
         case LINUX_MUTATION_POWER: {
-            bool ok = g->nvml.setPowerLimit(g->nvmlDevice,
-                (unsigned int)g->powerLimitDefaultmW) == NVML_SUCCESS;
-            unsigned int verify = 0;
-            return ok && g->nvml.getPowerLimit &&
-                   g->nvml.getPowerLimit(g->nvmlDevice, &verify) == NVML_SUCCESS &&
-                   verify == (unsigned int)g->powerLimitDefaultmW;
+            unsigned int expectedDefaultmW = g->powerLimitDefaultmW > 0
+                ? (unsigned int)g->powerLimitDefaultmW : 0;
+            bool ok = expectedDefaultmW > 0 && g->nvml.setPowerLimit &&
+                g->nvml.setPowerLimit(g->nvmlDevice, expectedDefaultmW) == NVML_SUCCESS;
+            unsigned int currentmW = 0;
+            unsigned int defaultmW = 0;
+            bool pairValid = ok &&
+                linux_read_power_limit_pair(g, &currentmW, &defaultmW);
+            g->powerLimitCurrentmW = currentmW > 0 ? (int)currentmW : 0;
+            g->powerLimitDefaultmW = defaultmW > 0 ? (int)defaultmW : 0;
+            return pairValid && currentmW == expectedDefaultmW &&
+                   defaultmW == expectedDefaultmW;
         }
         case LINUX_MUTATION_CURVE: {
             int targets[VF_NUM_POINTS] = {};
