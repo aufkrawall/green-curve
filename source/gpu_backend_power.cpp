@@ -7,33 +7,32 @@
 //
 // The pair belongs together because they share one fragile contract: Green
 // Curve expresses this domain as a PERCENTAGE OF THE BOARD DEFAULT, so the
-// write is only meaningful once the read has established a default in mW.  A
-// driver that refuses either number leaves the domain with no control surface
-// at all, and every consumer must be able to tell that apart from a measured
-// value -- which is what power_limit_surface_available() in
-// control_readback_policy.h exists to answer.  Getting that wrong is not
+// write is only meaningful once the read has established both the current and
+// default limits in mW. A driver that refuses either number leaves the domain
+// with no control surface at all, and every consumer must be able to tell that
+// apart from a measured value -- which is what power_limit_surface_available()
+// in control_readback_policy.h exists to answer. Getting that wrong is not
 // cosmetic: a fabricated 0% made the reset-to-stock step believe the target was
 // 100 points off stock and issue a write the driver could only refuse, failing
 // the entire Apply (VF curve included) on hardware whose curve was perfectly
-// writable.  Reported 2026-09-07 against 0.25.0 on an RTX 3060 Laptop GPU.
+// writable. Reported 2026-09-07 against 0.25.0 on an RTX 3060 Laptop GPU.
 
-// Read the board's power target.  Three NVML calls, all independently
-// optional, because they are independently refused in the wild: notebook boards
-// whose TGP the OEM/EC owns commonly answer the *constraints* while refusing
-// the limit and/or the default limit.  Every failure path here is logged with
-// the exact NVML status, because the only symptom this used to produce -- the
-// whole Apply refused with "Power target did not reset" -- named neither the
-// call that failed nor the domain that could not answer.
+// Read the board's power target. The constraints read is independent, because
+// it remains diagnostically useful even when the percentage control surface is
+// unavailable. The current and default limit reads are a pair: neither may be
+// fabricated from the other. A percentage without both values is not a
+// readback, and treating it as one can make writes target the wrong wattage or
+// make intent comparison report a value the driver never supplied.
 static bool nvml_read_power_limit() {
     g_app.readback.powerLimit = false;
     if (!nvml_ensure_ready()) {
         debug_log("read_power_limit: NVML not ready\n");
         return false;
     }
-    // Constraints are read FIRST and unconditionally: they drive the advertised
-    // OC range and the write-side bounds, and they stay meaningful even when
-    // the limit read below is refused.  Reading them last used to make every
-    // consumer see 0/0/0 mW on exactly the boards that need them most.
+    // Constraints are read FIRST and unconditionally: they drive diagnostics
+    // and write-side bounds, and they stay meaningful even when the limit read
+    // below is refused. Reading them last used to make every consumer see
+    // 0/0/0 mW on exactly the boards that need the diagnostic most.
     g_app.powerLimitMinmW = g_app.powerLimitMaxmW = 0;
     if (g_nvml_api.getPowerConstraints) {
         unsigned int mn = 0, mx = 0;
@@ -46,51 +45,51 @@ static bool nvml_read_power_limit() {
                 nvml_err_name(conRet));
         }
     }
-    // Either getter alone is enough to establish a usable pair; requiring both
-    // pointers made a driver that simply does not export the default-limit
-    // symbol indistinguishable from one with no power surface at all.
-    if (!g_nvml_api.getPowerLimit && !g_nvml_api.getPowerDefaultLimit) {
+
+    // Green Curve's public power unit is "percent of board default". Both
+    // getters are therefore required for a truthful value: current-only cannot
+    // establish the denominator, and default-only cannot establish the current
+    // target. Missing either entry point is an unavailable percentage surface.
+    if (!g_nvml_api.getPowerLimit || !g_nvml_api.getPowerDefaultLimit) {
         g_app.powerLimitCurrentmW = g_app.powerLimitDefaultmW = 0;
         g_app.powerLimitPct = POWER_LIMIT_DEFAULT_PCT;
-        debug_log("read_power_limit: no power-limit getter exported (getLimit=%d getDefault=%d);"
+        debug_log("read_power_limit: incomplete power-limit getter pair (getLimit=%d getDefault=%d);"
                   " publishing %d%% as unknown\n",
             g_nvml_api.getPowerLimit ? 1 : 0, g_nvml_api.getPowerDefaultLimit ? 1 : 0,
             POWER_LIMIT_DEFAULT_PCT);
         return false;
     }
+
     unsigned int cur = 0, def = 0;
-    nvmlReturn_t curRet = g_nvml_api.getPowerLimit
-        ? g_nvml_api.getPowerLimit(g_app.nvmlDevice, &cur) : NVML_ERROR_NOT_SUPPORTED;
-    nvmlReturn_t defRet = g_nvml_api.getPowerDefaultLimit
-        ? g_nvml_api.getPowerDefaultLimit(g_app.nvmlDevice, &def) : NVML_ERROR_NOT_SUPPORTED;
-    if (curRet != NVML_SUCCESS) {
-        cur = 0;
-        debug_log("read_power_limit: nvmlDeviceGetPowerManagementLimit failed: %s\n",
-            nvml_err_name(curRet));
+    nvmlReturn_t curRet = g_nvml_api.getPowerLimit(g_app.nvmlDevice, &cur);
+    nvmlReturn_t defRet = g_nvml_api.getPowerDefaultLimit(g_app.nvmlDevice, &def);
+    bool curRead = curRet == NVML_SUCCESS && cur > 0;
+    bool defRead = defRet == NVML_SUCCESS && def > 0;
+    if (!curRead) {
+        debug_log("read_power_limit: nvmlDeviceGetPowerManagementLimit failed or returned zero: %s value=%u\n",
+            nvml_err_name(curRet), cur);
     }
-    if (defRet != NVML_SUCCESS) {
-        def = 0;
-        debug_log("read_power_limit: nvmlDeviceGetPowerManagementDefaultLimit failed: %s\n",
-            nvml_err_name(defRet));
+    if (!defRead) {
+        debug_log("read_power_limit: nvmlDeviceGetPowerManagementDefaultLimit failed or returned zero: %s value=%u\n",
+            nvml_err_name(defRet), def);
     }
-    if (cur == 0 && def == 0) {
-        // No usable pair.  Publish the neutral board-default percentage and a
-        // FALSE readback so every consumer -- editor, IPC clamp, reset baseline,
-        // readback comparison -- treats the domain as unknown rather than as a
-        // measured 0%.  See power_limit_surface_available().
-        g_app.powerLimitCurrentmW = g_app.powerLimitDefaultmW = 0;
+    if (!curRead || !defRead) {
+        // Preserve whichever raw value really answered for diagnostics, but do
+        // not synthesize the missing half and do not publish a percentage
+        // readback. In particular, default-only must never become "current =
+        // default", because that would make an unreadable board look writable.
+        g_app.powerLimitCurrentmW = curRead ? (int)cur : 0;
+        g_app.powerLimitDefaultmW = defRead ? (int)def : 0;
         g_app.powerLimitPct = POWER_LIMIT_DEFAULT_PCT;
-        debug_log("read_power_limit: power target unreadable on this board"
-                  " (constraints %d..%d mW); publishing %d%% as unknown,"
-                  " power writes will be refused loudly\n",
-            g_app.powerLimitMinmW, g_app.powerLimitMaxmW, POWER_LIMIT_DEFAULT_PCT);
+        debug_log("read_power_limit: incomplete power target read"
+                  " (current=%d mW default=%d mW constraints %d..%d mW);"
+                  " publishing %d%% as unknown, power writes will be refused\n",
+            g_app.powerLimitCurrentmW, g_app.powerLimitDefaultmW,
+            g_app.powerLimitMinmW, g_app.powerLimitMaxmW,
+            POWER_LIMIT_DEFAULT_PCT);
         return false;
     }
-    // One answered getter still fixes the pair: an unknown default is the
-    // current limit (the board is at its default until proven otherwise), and
-    // an unknown current is the default.
-    if (def == 0) def = cur;
-    if (cur == 0) cur = def;
+
     g_app.powerLimitCurrentmW = (int)cur;
     g_app.powerLimitDefaultmW = (int)def;
     g_app.powerLimitPct = power_limit_pct_from_mw(g_app.powerLimitCurrentmW,
@@ -103,7 +102,8 @@ static bool nvml_read_power_limit() {
     g_app.readback.powerLimit = true;
     return true;
 }
-// Every refusal below is logged.  These are the only silent failures the apply
+
+// Every refusal below is logged. These are the only silent failures the apply
 // and reset paths can hit in this domain, and a silent `false` here surfaced as
 // nothing but a generic "Power target did not reset" three layers up.
 static bool nvapi_set_power_limit(int pct) {
@@ -112,11 +112,14 @@ static bool nvapi_set_power_limit(int pct) {
             pct, POWER_LIMIT_MIN_PCT, POWER_LIMIT_MAX_PCT);
         return false;
     }
-    if (g_app.powerLimitDefaultmW <= 0) {
-        debug_log("set_power_limit: refused pct=%d - this board never reported a default"
-                  " power limit, so there is no percentage base to write against"
-                  " (constraints %d..%d mW)\n",
-            pct, g_app.powerLimitMinmW, g_app.powerLimitMaxmW);
+    if (!power_limit_surface_available(g_app.readback.powerLimit,
+                                       g_app.powerLimitDefaultmW,
+                                       g_app.powerLimitCurrentmW)) {
+        debug_log("set_power_limit: refused pct=%d - no complete power readback"
+                  " (readback=%d current=%d mW default=%d mW constraints %d..%d mW)\n",
+            pct, g_app.readback.powerLimit ? 1 : 0,
+            g_app.powerLimitCurrentmW, g_app.powerLimitDefaultmW,
+            g_app.powerLimitMinmW, g_app.powerLimitMaxmW);
         return false;
     }
     unsigned int targetmW = (unsigned int)(((long long)g_app.powerLimitDefaultmW * pct + 50) / 100);
@@ -140,7 +143,10 @@ static bool nvapi_set_power_limit(int pct) {
         set_last_apply_phase("Power limit NVML write");
         nvmlReturn_t r = g_nvml_api.setPowerLimit(g_app.nvmlDevice, targetmW);
         if (r == NVML_SUCCESS) {
-            nvml_read_power_limit();
+            if (!nvml_read_power_limit()) {
+                debug_log("Power limit via NVML was accepted but post-write readback is unavailable\n");
+                return false;
+            }
             return true;
         }
         debug_log("Power limit via NVML failed: %s\n", nvml_err_name(r));
@@ -173,9 +179,13 @@ static bool nvapi_set_power_limit(int pct) {
         return false;
     }
     DWORD exitCode = proc.exit_code();
-    if (exitCode == 0) {
-        nvml_read_power_limit();
+    if (exitCode != 0) {
+        debug_log("Power limit via nvidia-smi failed with exit code %lu\n", exitCode);
+        return false;
     }
-    else debug_log("Power limit via nvidia-smi failed with exit code %lu\n", exitCode);
-    return exitCode == 0;
+    if (!nvml_read_power_limit()) {
+        debug_log("Power limit via nvidia-smi exited successfully but post-write readback is unavailable\n");
+        return false;
+    }
+    return true;
 }
