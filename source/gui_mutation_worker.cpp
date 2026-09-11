@@ -529,6 +529,11 @@ static void gui_apply_in_flight_presentation_changed(bool inFlight,
         inFlight ? 1 : 0, reason && reason[0] ? reason : "queue transition");
     update_tray_icon();
     update_background_service_controls();
+    // Apply follows the in-flight state, so the button has to be re-asserted at
+    // BOTH transitions. Without this the gate would only flip on the next
+    // unrelated editor change, which for a queued write is never -- the button
+    // stayed live for the whole write and a second click queued a second apply.
+    gui_pending_changes_refresh();
     // The status line alone was reported as invisible -- it sits at the bottom
     // edge of the window and is easy to miss entirely.  The banner over the
     // graph is the surface that actually gets noticed.

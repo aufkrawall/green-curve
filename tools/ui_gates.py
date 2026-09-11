@@ -885,6 +885,27 @@ def check_apply_in_flight_presentation(ctx, require_text, forbid_text):
                  "gui_apply_in_flight_presentation_changed(false,",
                  "draining the queue leaves it again")
 
+    # F-INFLIGHT-APPLY.  The Apply button follows the same in-flight state, and
+    # the enable gate is only re-asserted where something asks for it -- so
+    # without this call the button keeps whatever it had when the write started,
+    # which is "enabled", for the whole multi-second write.  Reported live on
+    # 2026-09-11: a second click queued a second apply the user did not ask for.
+    #
+    # Structural because nothing fails when it regresses: the queue still
+    # serializes correctly, the tray still greys, and only the button lies.
+    ctx.require_text_in_operation(
+        mutation_worker, "gui_apply_in_flight_presentation_changed",
+        "gui_pending_changes_refresh();",
+        "the Apply button's enable gate is re-asserted at both transitions")
+    require_text(_p(ctx, "gui_service_actionability_policy.h"),
+                 "gui_service_hardware_write_idle",
+                 "Apply is gated on the in-flight hardware write")
+    # Reset is the escape hatch from an apply that is going badly, so it must
+    # stay on the EDITOR capability rather than move behind that gate.
+    forbid_text(_p(ctx, "gui_service_actionability_policy.h"),
+                "GUI_SERVICE_CAP_RESET",
+                "Reset stays an editor capability, never an apply-gated one")
+
 
 def check_manual_mutation_result_presentation(ctx, require_text, forbid_text):
     """A manual Apply/Reset interrupts the user only when it has to.

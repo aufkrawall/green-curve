@@ -46,7 +46,8 @@ enum GuiServiceCapability {
     GUI_SERVICE_CAP_AUTOMATION,
     // The VF editor and the per-point controls.
     GUI_SERVICE_CAP_EDITOR,
-    // Apply / Reset: the editor plus a populated snapshot.
+    // Apply: the editor, a populated snapshot, and no hardware write already
+    // running.  Reset is deliberately NOT here -- see the in-flight rule below.
     GUI_SERVICE_CAP_HARDWARE_MUTATION,
 };
 
@@ -60,6 +61,8 @@ struct GuiServiceActionability {
     bool draftAttached;
     bool draftDetached;
     bool loaded;
+    // A hardware write this GUI owns is active or queued (g_app.applyInFlight).
+    bool hardwareWriteInFlight;
 };
 
 // Registered with the SCM AND answering on the pipe, and not mid-install or
@@ -79,6 +82,28 @@ static inline bool gui_service_reachable(const GuiServiceActionability* in) {
 static inline bool gui_service_editor_actionable(
     const GuiServiceActionability* in) {
     return in && in->ready && in->draftAttached && !in->draftDetached;
+}
+
+// Rule 3: Apply is dead while a hardware write this GUI owns is still running.
+//
+// The write is genuinely serialized -- gui_mutation_queue_decide() turns a
+// second Apply into a PENDING one that replaces any earlier pending Apply, so a
+// double click never produced two concurrent writes. What it did produce was a
+// live-looking button during a multi-second write, and then a whole second
+// apply the user did not ask for, against an editor whose baseline the first
+// apply had just moved. F-INFLIGHT already greys the tray icon and says
+// "changes pending" on both surfaces for exactly this state; the button simply
+// was not part of it.
+//
+// RESET IS DELIBERATELY EXEMPT. It is gated by GUI_SERVICE_CAP_EDITOR, not by
+// this capability, because gui_mutation_queue_decide() treats Reset as a safety
+// action that may queue behind an active write and that a later Apply can
+// neither overtake nor discard. Greying it during an apply would remove the one
+// escape hatch from an apply that is going badly -- the same reasoning as
+// rule 1, applied to the hardware rather than to the service.
+static inline bool gui_service_hardware_write_idle(
+    const GuiServiceActionability* in) {
+    return in && !in->hardwareWriteInFlight;
 }
 
 // Rule 2's exemption, for the controls that persist a service-dependent setting:
@@ -102,7 +127,8 @@ static inline bool gui_service_capability_enabled(
         case GUI_SERVICE_CAP_EDITOR:
             return gui_service_editor_actionable(in);
         case GUI_SERVICE_CAP_HARDWARE_MUTATION:
-            return gui_service_editor_actionable(in) && in->loaded;
+            return gui_service_editor_actionable(in) && in->loaded &&
+                gui_service_hardware_write_idle(in);
         default:
             return false;
     }

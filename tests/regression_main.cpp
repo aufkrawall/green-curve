@@ -8310,18 +8310,22 @@ static int run_all_tests(int argc, char** argv) {
     // is capability, not visual consistency: grey out what cannot work, keep what
     // still works and every escape hatch.
     {
-        // The eight states that matter, in the order they occur in practice.
+        // The states that matter, in the order they occur in practice.
         struct ActionabilityCase { const char* name; GuiServiceActionability in; };
         ActionabilityCase cases[] = {
-            // installed, available, toggleInFlight, ready, attached, detached, loaded
-            { "not installed",        { false, false, false, false, false, false, false } },
-            { "installed, stopped",   { true,  false, false, false, false, false, false } },
-            { "toggle in flight",     { true,  true,  true,  false, false, false, false } },
-            { "available, syncing",   { true,  true,  false, false, true,  false, false } },
-            { "ready, attached",      { true,  true,  false, true,  true,  false, true  } },
-            { "ready, detached",      { true,  true,  false, true,  true,  true,  true  } },
-            { "ready, unattached",    { true,  true,  false, true,  false, false, true  } },
-            { "ready, not loaded",    { true,  true,  false, true,  true,  false, false } },
+            // installed, available, toggleInFlight, ready, attached, detached,
+            // loaded, hardwareWriteInFlight
+            { "not installed",        { false, false, false, false, false, false, false, false } },
+            { "installed, stopped",   { true,  false, false, false, false, false, false, false } },
+            { "toggle in flight",     { true,  true,  true,  false, false, false, false, false } },
+            { "available, syncing",   { true,  true,  false, false, true,  false, false, false } },
+            { "ready, attached",      { true,  true,  false, true,  true,  false, true,  false } },
+            { "ready, detached",      { true,  true,  false, true,  true,  true,  true,  false } },
+            { "ready, unattached",    { true,  true,  false, true,  false, false, true,  false } },
+            { "ready, not loaded",    { true,  true,  false, true,  true,  false, false, false } },
+            // F-INFLIGHT: fully actionable in every other respect, but a
+            // hardware write this GUI owns is still running.
+            { "ready, write running", { true,  true,  false, true,  true,  false, true,  true  } },
         };
 
         for (const ActionabilityCase& item : cases) {
@@ -8356,7 +8360,10 @@ static int run_all_tests(int argc, char** argv) {
             if (gui_service_capability_enabled(in, GUI_SERVICE_CAP_EDITOR)
                     != editor) return 1604;
             if (gui_service_capability_enabled(in, GUI_SERVICE_CAP_HARDWARE_MUTATION)
-                    != (editor && in->loaded)) return 1605;
+                    != (editor && in->loaded && !in->hardwareWriteInFlight))
+                return 1605;
+            if (gui_service_hardware_write_idle(in) == in->hardwareWriteInFlight)
+                return 1633;
 
             // Applying is strictly narrower than editing, in every state.
             if (gui_service_capability_enabled(in, GUI_SERVICE_CAP_HARDWARE_MUTATION) &&
@@ -8399,11 +8406,42 @@ static int run_all_tests(int argc, char** argv) {
         if (gui_service_capability_enabled(inFlight, GUI_SERVICE_CAP_PROFILE_EDIT))
             return 1614;
 
+        // F-INFLIGHT-APPLY: Apply is dead while a hardware write this GUI owns
+        // is active or queued. Reported live on 2026-09-11 -- the button stayed
+        // pressable for the whole multi-second write, and a second click queued
+        // a second apply the user did not ask for, against an editor baseline
+        // the first apply had already moved.
+        const GuiServiceActionability* writing = &cases[8].in;
+        if (gui_service_capability_enabled(writing,
+                GUI_SERVICE_CAP_HARDWARE_MUTATION)) return 1634;
+        // ...and the SAME state with the write finished is actionable again, so
+        // the gate is the in-flight flag and nothing else.
+        GuiServiceActionability drained = cases[8].in;
+        drained.hardwareWriteInFlight = false;
+        if (!gui_service_capability_enabled(&drained,
+                GUI_SERVICE_CAP_HARDWARE_MUTATION)) return 1635;
+
+        // RESET MUST SURVIVE THE GATE. It is projected from
+        // GUI_SERVICE_CAP_EDITOR, and gui_mutation_queue_decide() treats a Reset
+        // queued behind an active write as a safety action a later Apply can
+        // neither overtake nor discard -- so greying it during an apply would
+        // remove the only escape hatch from an apply that is going badly.
+        if (!gui_service_capability_enabled(writing, GUI_SERVICE_CAP_EDITOR))
+            return 1636;
+        if (gui_mutation_queue_decide(true, true, GUI_MUTATION_RESET,
+                GUI_MUTATION_APPLY) != GUI_MUTATION_QUEUE_KEEP_PENDING_RESET)
+            return 1637;
+        // Editing and profile work also stay live: neither writes hardware, and
+        // blocking them would strand a user mid-edit for the whole write.
+        if (!gui_service_capability_enabled(writing, GUI_SERVICE_CAP_PROFILE_EDIT))
+            return 1638;
+
         // Null input denies everything rather than crashing a projection pass.
         if (gui_service_capability_enabled(nullptr, GUI_SERVICE_CAP_RECOVERY))
             return 1615;
         if (gui_service_reachable(nullptr)) return 1616;
         if (gui_service_editor_actionable(nullptr)) return 1617;
+        if (gui_service_hardware_write_idle(nullptr)) return 1639;
         // No out-of-range capability case: loading a value outside the enum is
         // itself undefined behaviour and the sanitizer build rejects it. The
         // switch keeps its `default: return false;` as defence for a future

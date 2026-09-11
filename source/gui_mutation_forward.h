@@ -20,6 +20,10 @@ static bool gui_mutation_queue_apply(const DesiredSettings* desired,
     GuiMutationUiContext context, const char* source,
     char* status, size_t statusSize);
 static void gui_mutation_advance_gpu_epoch(const char* reason);
+// Re-asserts the Apply button's enable gate, which follows the in-flight state
+// (gui_service_actionability_policy.h).  Declared here because the queue that
+// drives that state is compiled before ui_pending_changes.cpp defines it.
+static void gui_pending_changes_refresh();
 static gc_u64 gui_service_io_connection_epoch();
 static bool gui_service_io_queue_full_sync(const char* reason);
 static bool gui_service_io_queue_telemetry(bool redrawControls);

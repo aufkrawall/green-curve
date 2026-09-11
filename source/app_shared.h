@@ -743,6 +743,10 @@ static inline GuiServiceActionability gui_service_actionability_from_app() {
     state.draftAttached = g_app.guiDraft.attached;
     state.draftDetached = g_app.guiDraft.detached;
     state.loaded = g_app.loaded;
+    // Set the moment a mutation is queued and cleared when the queue drains
+    // (gui_mutation_worker.cpp), so it covers the pending request as well as
+    // the active one.
+    state.hardwareWriteInFlight = g_app.applyInFlight;
     return state;
 }
 
