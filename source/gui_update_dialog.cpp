@@ -123,37 +123,10 @@ static void gui_update_status_text(char* out, size_t outSize) {
     }
 }
 
-// The shared sender.  `autoCheck` and `intervalSeconds` are meaningful only for
-// SERVICE_CMD_SET_UPDATE_POLICY and are sent only for it -- the service's
-// validator refuses them on the other three, so passing them by accident fails
-// loudly rather than being quietly ignored.
-static bool gui_update_send(ServiceCommand command, gc_u32 autoCheck,
-                            gc_u32 intervalSeconds, char* err, size_t errSize) {
-    ServiceRequest request = {};
-    request.magic = SERVICE_PROTOCOL_MAGIC;
-    request.version = SERVICE_PROTOCOL_VERSION;
-    request.command = (gc_u32)command;
-    request.callerPid = GetCurrentProcessId();
-    ProcessIdToSessionId(request.callerPid, &request.callerSessionId);
-    if (command == SERVICE_CMD_SET_UPDATE_POLICY) {
-        request.updateAutoCheck = autoCheck;
-        request.updateIntervalSeconds = intervalSeconds;
-    }
-    StringCchCopyA(request.source, ARRAY_COUNT(request.source), "gui update");
-
-    ServiceResponse response = {};
-    if (!service_send_request(&request, &response, 5000, err, errSize)) {
-        debug_log("gui update: command %u transport failed: %s\n",
-                  (unsigned)command, err && err[0] ? err : "unknown");
-        return false;
-    }
-    if (response.status != SERVICE_STATUS_OK) {
-        set_message(err, errSize, "%s",
-                    response.message[0] ? response.message : "Update request failed");
-        return false;
-    }
-    return true;
-}
+// The service commands, and the detached worker that runs them. Included here
+// rather than compiled separately because the amalgamation has no place to add
+// another top-level include, and because this is the only consumer.
+#include "gui_update_command_worker.cpp"
 
 // Whether a fullscreen or presentation-mode application owns the foreground.
 //
@@ -176,26 +149,32 @@ static bool gui_update_foreground_app_active() {
            state == QUNS_BUSY;
 }
 
-static bool gui_update_request_state(char* err, size_t errSize) {
-    return gui_update_send(SERVICE_CMD_GET_UPDATE_STATE, 0, 0, err, errSize);
+// A cold-cache fill only. The shared cache is normally kept current by the
+// coordinator's once-per-second read, so this is needed only when the dialog
+// opens before any response has ever arrived.
+static bool gui_update_request_state() {
+    return gui_update_command_begin(SERVICE_CMD_GET_UPDATE_STATE, 0, 0,
+                                    false, false);
 }
 
-static bool gui_update_request_check(char* err, size_t errSize) {
+static bool gui_update_request_check() {
     debug_log("gui update: user requested a check\n");
-    return gui_update_send(SERVICE_CMD_CHECK_FOR_UPDATE, 0, 0, err, errSize);
+    return gui_update_command_begin(SERVICE_CMD_CHECK_FOR_UPDATE, 0, 0,
+                                    true, false);
 }
 
 // The user clicked Install.  This is the only thing in the GUI that can lead to
 // an installer running, and it still cannot choose WHAT runs: the service
 // installs the package it already downloaded and verified against a signed
 // manifest, or it refuses.
-static bool gui_update_request_install(char* err, size_t errSize) {
+static bool gui_update_request_install(bool settingsCaptured) {
     debug_log("gui update: user requested an install\n");
-    return gui_update_send(SERVICE_CMD_INSTALL_UPDATE, 0, 0, err, errSize);
+    return gui_update_command_begin(SERVICE_CMD_INSTALL_UPDATE, 0, 0,
+                                    true, settingsCaptured);
 }
 
 static bool gui_update_set_policy(GcUpdateAutoCheck autoCheck, int intervalSeconds,
-                                  char* err, size_t errSize) {
+                                  bool reportFailure) {
     // Clamped here as well as in the service.  The service REFUSES an
     // out-of-range interval rather than clamping it -- a request is
     // machine-written, so a bad one means the client is confused -- which makes
@@ -203,8 +182,9 @@ static bool gui_update_set_policy(GcUpdateAutoCheck autoCheck, int intervalSecon
     int clamped = gc_update_clamp_interval(intervalSeconds);
     debug_log("gui update: setting policy autoCheck=%d interval=%ds\n",
               (int)autoCheck, clamped);
-    return gui_update_send(SERVICE_CMD_SET_UPDATE_POLICY, (gc_u32)autoCheck,
-                           (gc_u32)clamped, err, errSize);
+    return gui_update_command_begin(SERVICE_CMD_SET_UPDATE_POLICY,
+                                    (gc_u32)autoCheck, (gc_u32)clamped,
+                                    reportFailure, false);
 }
 
 #define GUD_CHECK_BTN_ID     2400
@@ -214,10 +194,10 @@ static bool gui_update_set_policy(GcUpdateAutoCheck autoCheck, int intervalSecon
 #define GUD_RELEASES_BTN_ID  2404
 #define GUD_REFRESH_TIMER_ID 1
 
-// The dialog polls while the service is working.  A poll is a local named-pipe
-// round trip to a service that is already answering the main window's polling,
-// not a network request, so the rate is a UI-responsiveness choice and nothing
-// more.
+// How often the dialog re-projects the shared update cache onto its controls.
+// Purely local work -- no pipe traffic, no network -- so the rate is a
+// presentation choice. Kept slightly faster than the coordinator's
+// once-per-second read so a cache change is never more than one tick stale.
 #define GUD_REFRESH_INTERVAL_MS 700
 
 struct GuiUpdateDialogState {
@@ -232,7 +212,9 @@ struct GuiUpdateDialogState {
     HBRUSH hStaticBrush;
     HBRUSH hBtnBrush;
     UiCheckboxState autoCheckState;
-    bool pollingActive;
+    // Drives the repaint tick below. Named for what it does now: it starts no
+    // I/O, it only re-projects the shared cache onto the controls.
+    bool refreshTimerActive;
 };
 
 static GuiUpdateDialogState g_updateDialog = {};
@@ -351,7 +333,11 @@ static void gud_refresh_controls() {
     }
     gud_set_text(g_updateDialog.detailLabel, detail);
 
-    bool busy = gui_update_is_busy();
+    // Busy is the union of the service's own worker and a command this dialog
+    // dispatched that has not answered yet. Both must grey the buttons: the
+    // click no longer blocks, so without the local half the user could fire a
+    // second Check while the first is still on the wire.
+    bool busy = gui_update_is_busy() || gui_update_command_active();
     // Deliberately NOT gated on phase == READY.
     //
     // A failed install leaves the phase at FAILED with the verified package
@@ -371,25 +357,22 @@ static void gud_refresh_controls() {
     EnableWindow(g_updateDialog.checkButton, !busy);
     EnableWindow(g_updateDialog.installButton, ready && !busy);
 
-    // Poll for as long as the dialog is open, not only while the service is
-    // busy.
+    // Repaint for as long as the dialog is open, not only while the service is
+    // busy: an automatic check, a re-adopted staged package or a service
+    // restart all move the state underneath an open dialog, which would
+    // otherwise keep displaying whatever was true when it opened until the user
+    // pressed Check now -- and pressing Check now to find out what the app
+    // already knows is precisely the complaint this addresses.
     //
-    // The previous rule ("only while something is happening; an idle dialog
-    // costs nothing") assumed the only thing that changes update state is a job
-    // this dialog started.  That is false: an automatic check, a re-adopted
-    // staged package or a service restart all move the state underneath an open
-    // dialog, which then keeps displaying whatever was true when it opened
-    // until the user presses Check now -- and pressing Check now to find out
-    // what the app already knows is precisely the complaint this addresses.
-    //
-    // The cost argument does not survive either: this is one named-pipe round
-    // trip every 700 ms, against the main window's own poll every 1000 ms which
-    // has run all along, and it stops the moment the dialog closes.
-    if (!g_updateDialog.pollingActive) {
+    // This is a repaint tick over the shared cache, NOT a poll: it sends
+    // nothing. gud_set_text() is change-gated, so an idle dialog costs a few
+    // string compares per second and no I/O at all.
+    if (!g_updateDialog.refreshTimerActive) {
         SetTimer(g_updateDialog.hwnd, GUD_REFRESH_TIMER_ID, GUD_REFRESH_INTERVAL_MS, nullptr);
-        g_updateDialog.pollingActive = true;
+        g_updateDialog.refreshTimerActive = true;
     }
 }
+
 
 static void gud_report_error(HWND hwnd, const char* action, const char* err) {
     char message[640] = {};
@@ -398,6 +381,47 @@ static void gud_report_error(HWND hwnd, const char* action, const char* err) {
     debug_log("gui update dialog: %s failed: %s\n", action,
               err && err[0] ? err : "unknown");
     gc_message_box(hwnd, message, "Green Curve", MB_OK | MB_ICONWARNING);
+}
+
+// One posted update-command result, applied on the message thread.
+//
+// Called from gui_update_notify_command_complete(), which owns the allocation
+// and has already released the in-flight claim -- so the refresh at the bottom
+// sees the buttons as idle again.
+static void gui_update_dialog_apply_command_completion(
+        const GuiUpdateCommandCompletion* completion) {
+    if (!completion) return;
+    if (!completion->success) {
+        const char* action = "The update request";
+        switch (completion->command) {
+            case SERVICE_CMD_CHECK_FOR_UPDATE:
+                action = "Checking for updates"; break;
+            case SERVICE_CMD_INSTALL_UPDATE:
+                action = "Installing the update"; break;
+            case SERVICE_CMD_SET_UPDATE_POLICY:
+                action = "Saving the update preference"; break;
+            default: break;
+        }
+        // A refused install must not leave the pre-capture behind: nothing will
+        // ever replay it, and a stale capture is restored by the NEXT update.
+        if (completion->command == SERVICE_CMD_INSTALL_UPDATE &&
+            completion->settingsCaptured) {
+            gui_update_discard_pending_restore();
+        }
+        // The preference toggle is optimistic, so a refusal has to put the
+        // checkbox back to what the service actually holds.
+        if (completion->command == SERVICE_CMD_SET_UPDATE_POLICY &&
+            g_updateDialog.hwnd) {
+            gud_check_set(!gud_check_get());
+        }
+        if (completion->reportFailure && g_updateDialog.hwnd) {
+            gud_report_error(g_updateDialog.hwnd, action, completion->err);
+        } else {
+            debug_log("gui update: %s failed with no dialog to report it: %s\n",
+                      action, completion->err[0] ? completion->err : "unknown");
+        }
+    }
+    gud_refresh_controls();
 }
 
 static void gud_apply_auto_check(HWND hwnd) {
@@ -409,11 +433,12 @@ static void gud_apply_auto_check(HWND hwnd) {
                        : GC_UPDATE_INTERVAL_DEFAULT_SECONDS;
     GcUpdateAutoCheck wanted = gud_check_get() ? GC_UPDATE_AUTO_CHECK_ON
                                                : GC_UPDATE_AUTO_CHECK_OFF;
-    char err[256] = {};
-    if (!gui_update_set_policy(wanted, interval, err, sizeof(err))) {
-        gud_report_error(hwnd, "Saving the update preference", err);
-        // Put the checkbox back: showing it ticked when the service did not
-        // record it would be a lie the next restart silently corrects.
+    // Dispatched, not awaited. The checkbox keeps the user's optimistic value
+    // until the service answers; a refusal puts it back in the completion
+    // handler, because showing it ticked when the service did not record it
+    // would be a lie the next restart silently corrects.
+    (void)hwnd;
+    if (!gui_update_set_policy(wanted, interval, true)) {
         gud_check_set(!gud_check_get());
     }
     gud_refresh_controls();
@@ -523,12 +548,20 @@ static LRESULT CALLBACK GuiUpdateDialogProc(HWND hwnd, UINT msg,
 
         case WM_TIMER:
             if (wParam == GUD_REFRESH_TIMER_ID) {
-                // A poll failure is not reported: the service may legitimately
-                // be stopping (an install does exactly that), and a dialog that
-                // threw a message box every 700 ms during its own update would
-                // be worse than one that just stops refreshing.
-                char err[256] = {};
-                (void)gui_update_request_state(err, sizeof(err));
+                // Repaint only. There is deliberately NO service round trip
+                // here: this runs on the thread that pumps the main window, and
+                // an update command shares the service's one serialized
+                // dispatch lock with a full GET_SNAPSHOT, so the blocking call
+                // that used to sit on this line froze the whole UI for as long
+                // as the service took to answer.
+                //
+                // Nothing is lost by removing it. The service stamps
+                // ServiceUpdateState onto every response and
+                // gui_update_note_response() feeds the shared cache from inside
+                // the transport, so the coordinator's once-per-second read
+                // already keeps this dialog's source of truth current -- an
+                // automatic check, a re-adopted package or a service restart
+                // still appear here without the dialog asking for them.
                 gud_refresh_controls();
                 return 0;
             }
@@ -557,10 +590,11 @@ static LRESULT CALLBACK GuiUpdateDialogProc(HWND hwnd, UINT msg,
                 return 0;
             }
             if (id == GUD_CHECK_BTN_ID) {
-                char err[256] = {};
-                if (!gui_update_request_check(err, sizeof(err))) {
-                    gud_report_error(hwnd, "Checking for updates", err);
-                }
+                // Dispatched off this thread; the result arrives as a posted
+                // completion. A false return means nothing was started at all
+                // (one already in flight, or the thread could not be created),
+                // which the refresh below presents rather than a message box.
+                (void)gui_update_request_check();
                 gud_refresh_controls();
                 return 0;
             }
@@ -597,10 +631,13 @@ static LRESULT CALLBACK GuiUpdateDialogProc(HWND hwnd, UINT msg,
                 // the update.
                 bool captured = gui_update_capture_settings_for_restore();
 
-                char err[256] = {};
-                if (!gui_update_request_install(err, sizeof(err))) {
-                    if (captured) gui_update_discard_pending_restore();
-                    gud_report_error(hwnd, "Installing the update", err);
+                // The capture travels with the request: if the service
+                // refuses the install, the completion handler discards it
+                // again. Doing that here is no longer possible -- the answer
+                // has not arrived yet, and waiting for it is the freeze this
+                // whole path exists to remove.
+                if (!gui_update_request_install(captured) && captured) {
+                    gui_update_discard_pending_restore();
                 }
                 gud_refresh_controls();
                 return 0;
@@ -646,9 +683,14 @@ static LRESULT CALLBACK GuiUpdateDialogProc(HWND hwnd, UINT msg,
             return 0;
 
         case WM_DESTROY:
-            if (g_updateDialog.pollingActive) {
+            if (g_updateDialog.refreshTimerActive) {
                 KillTimer(hwnd, GUD_REFRESH_TIMER_ID);
             }
+            // A command may still be on the wire. Nothing is joined or
+            // cancelled here on purpose: the worker posts to the MAIN window,
+            // which outlives this dialog, and the handler tolerates
+            // g_updateDialog.hwnd being null. Closing the dialog during a
+            // Check therefore costs nothing and waits for nothing.
             if (g_updateDialog.hStaticBrush) {
                 DeleteObject(g_updateDialog.hStaticBrush);
                 g_updateDialog.hStaticBrush = nullptr;
@@ -672,74 +714,6 @@ static LRESULT CALLBACK GuiUpdateDialogProc(HWND hwnd, UINT msg,
     return DefWindowProcA(hwnd, msg, wParam, lParam);
 }
 
-// ---------------------------------------------------------------------------
-// The once-per-machine question
-// ---------------------------------------------------------------------------
-
-// `GC_UPDATE_AUTO_CHECK_UNSET` was designed as a question and shipped as a
-// permanent state, because nothing ever asked it.  The only place it surfaced
-// was a line of body text inside this dialog, so a user who never opened the
-// dialog got no update checks ever and no hint that any existed -- and UNSET is
-// the default, so that was everybody.
-//
-// Asking is what makes the default defensible: the answer is the user's, the
-// outbound request is disclosed in the words before they give it, and "no"
-// is recorded as OFF so it is never asked again on this machine.
-//
-// It is NOT asked from a timer, a tray start or a background window; see
-// gc_update_should_prompt_auto_check() for each gate and why it exists.
-void gui_update_maybe_prompt_first_run(HWND parent) {
-    // Per process, and set BEFORE the modal box opens.  The caller is a poll
-    // tick, so without this a service that cannot record the answer would turn
-    // every subsequent tick into another dialog.
-    static bool s_asked = false;
-
-    ServiceUpdateState stateValue = {};
-    bool haveState = gui_update_state(&stateValue);
-    HWND owner = parent ? parent : g_app.hMainWnd;
-    bool interactive = owner && IsWindowVisible(owner) && IsWindowEnabled(owner) &&
-                       !g_app.applyInFlight;
-    if (!gc_update_should_prompt_auto_check(
-            haveState ? (GcUpdateAutoCheck)stateValue.autoCheck
-                      : GC_UPDATE_AUTO_CHECK_UNSET,
-            haveState, interactive, s_asked)) {
-        return;
-    }
-    s_asked = true;
-    debug_log("gui update: asking for the automatic-check preference (first run)\n");
-
-    int answer = gc_message_box(owner,
-        "Should Green Curve check for updates automatically?\n\n"
-        "It contacts GitHub about once a day and reveals your IP address, "
-        "the installed version and your architecture. Nothing is ever "
-        "installed without you clicking Install.\n\n"
-        "You can change this later under Updates.",
-        "Green Curve", MB_YESNO | MB_ICONQUESTION);
-    // A dismissed dialog (0) is not a "no": it is no answer, and recording one
-    // would consume the single question this machine gets.  Left UNSET so the
-    // next GUI start asks again.
-    if (answer != IDYES && answer != IDNO) {
-        debug_log("gui update: the first-run question was dismissed; leaving the preference unset\n");
-        return;
-    }
-
-    GcUpdateAutoCheck wanted = (answer == IDYES) ? GC_UPDATE_AUTO_CHECK_ON
-                                                 : GC_UPDATE_AUTO_CHECK_OFF;
-    char err[256] = {};
-    if (!gui_update_set_policy(wanted, GC_UPDATE_INTERVAL_DEFAULT_SECONDS,
-                               err, sizeof(err))) {
-        // Not reported to the user: they answered a question they did not ask
-        // for, and a failure box on top of that is noise.  The preference stays
-        // UNSET, so the next start asks again, and the dialog still shows the
-        // state and the toggle.
-        debug_log("gui update: could not record the first-run preference: %s\n",
-                  err[0] ? err : "unknown");
-        return;
-    }
-    debug_log("gui update: first-run preference recorded as %s\n",
-              wanted == GC_UPDATE_AUTO_CHECK_ON ? "ON" : "OFF");
-}
-
 void gui_update_open_dialog(HWND parent) {
     if (g_updateDialog.hwnd) {
         ShowWindow(g_updateDialog.hwnd, SW_SHOW);
@@ -747,13 +721,18 @@ void gui_update_open_dialog(HWND parent) {
         return;
     }
 
-    // Fetch current state before the window exists, so it opens already
-    // populated rather than blank-then-filled.  A failure here is not fatal:
-    // the dialog says the status is unavailable and Check now still works.
-    char err[256] = {};
-    if (!gui_update_request_state(err, sizeof(err))) {
-        debug_log("gui update dialog: initial state fetch failed: %s\n",
-                  err[0] ? err : "unknown");
+    // The shared cache is what the dialog renders, and the coordinator's
+    // once-per-second read has been filling it since startup -- so the window
+    // opens already populated with no round trip at all. Only a genuinely cold
+    // cache (no service response has ever arrived) needs a fetch, and even that
+    // one is dispatched rather than awaited: the dialog shows "unavailable" for
+    // at most one refresh tick instead of opening after a freeze.
+    {
+        ServiceUpdateState cached = {};
+        if (!gui_update_state(&cached)) {
+            debug_log("gui update dialog: cache is cold; dispatching one state fetch\n");
+            (void)gui_update_request_state();
+        }
     }
 
     WNDCLASSEXA wc = {};
@@ -794,3 +773,7 @@ void gui_update_open_dialog(HWND parent) {
     ShowWindow(g_updateDialog.hwnd, SW_SHOW);
     UpdateWindow(g_updateDialog.hwnd);
 }
+
+// The first-run auto-check question. Included last because it calls
+// gui_update_set_policy() above.
+#include "gui_update_first_run.cpp"

@@ -354,8 +354,8 @@ static bool service_send_request(const ServiceRequest* request, ServiceResponse*
 static bool service_client_ping(char* err, size_t errSize);
 static bool service_client_get_state_envelope(ServiceCommand command, ServiceResponse* response, DWORD timeoutMs, const char* source,
     char* err, size_t errSize);
-static bool service_client_get_ready_state(ServiceResponse* response,
-    DWORD timeoutMs, const char* source, char* err, size_t errSize);
+static bool service_client_get_ready_state(ServiceResponse* response, DWORD timeoutMs, const char* source, char* err, size_t errSize);
+static bool service_client_get_ready_state_contracted(ServiceResponse* response, const char* source, char* err, size_t errSize);
 static bool service_client_apply_desired(const DesiredSettings* desired, const char* source,
     bool interactive, ServiceApplyOrigin origin, ServiceProfileSource profileSource,
     int profileSlot, char* result, size_t resultSize, ServiceSnapshot* snapshotOut);

@@ -130,6 +130,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             handle_gui_service_io_completion((GuiServiceIoCompletion*)lParam);
             return 0;
 
+        // Addressed here rather than to the Updates dialog on purpose: this
+        // window outlives every dialog, so a completion can never arrive at a
+        // destroyed or recycled HWND and the dialog may be closed freely while
+        // a command is still on the wire.
+        case APP_WM_UPDATE_COMMAND_COMPLETE:
+            gui_update_notify_command_complete((void*)lParam);
+            return 0;
+
         case APP_WM_SELECTED_GPU_PNP:
             gui_handle_selected_gpu_pnp_event(
                 (GuiSelectedGpuPnpEvent)wParam);

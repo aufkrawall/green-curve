@@ -62,7 +62,14 @@ static bool service_client_ping(char* err, size_t errSize) {
     ProcessIdToSessionId(request.callerPid, &request.callerSessionId);
     StringCchCopyA(request.source, ARRAY_COUNT(request.source), "client ping");
     ServiceResponse response = {};
-    if (!service_send_request(&request, &response, 500, err, errSize)) return false;
+    // Never called from a thread with a window on it (CLI paths plus one
+    // pre-window GUI startup probe), so it takes the service's own contract
+    // rather than a number picked for UI responsiveness. A ping expiring while
+    // the service is merely busy is reported to the user as "installed but not
+    // responding", which is a repair prompt for a healthy machine.
+    if (!service_send_request_split(&request, &response,
+            (DWORD)service_health_probe_response_timeout_ms(), err, errSize))
+        return false;
     if (response.status != SERVICE_STATUS_OK) {
         set_message(err, errSize, "%s", response.message[0] ? response.message : "Service ping failed");
         return false;
@@ -94,27 +101,30 @@ static bool service_client_ping(char* err, size_t errSize) {
     return true;
 }
 
-static bool service_client_get_state_envelope(ServiceCommand command,
-    ServiceResponse* response, DWORD timeoutMs, const char* source,
+static bool service_client_build_state_request(ServiceCommand command,
+    ServiceResponse* response, const char* source, ServiceRequest* request,
     char* err, size_t errSize) {
-    if (!response ||
+    if (!response || !request ||
         (command != SERVICE_CMD_GET_SNAPSHOT &&
          command != SERVICE_CMD_GET_TELEMETRY &&
          command != SERVICE_CMD_GET_ACTIVE_DESIRED)) {
         set_message(err, errSize, "Invalid service state request");
         return false;
     }
-    ServiceRequest request = {};
-    request.magic = SERVICE_PROTOCOL_MAGIC;
-    request.version = SERVICE_PROTOCOL_VERSION;
-    request.command = command;
-    request.callerPid = GetCurrentProcessId();
-    ProcessIdToSessionId(request.callerPid, &request.callerSessionId);
-    StringCchCopyA(request.source, ARRAY_COUNT(request.source),
+    *request = {};
+    request->magic = SERVICE_PROTOCOL_MAGIC;
+    request->version = SERVICE_PROTOCOL_VERSION;
+    request->command = command;
+    request->callerPid = GetCurrentProcessId();
+    ProcessIdToSessionId(request->callerPid, &request->callerSessionId);
+    StringCchCopyA(request->source, ARRAY_COUNT(request->source),
         source && source[0] ? source : "client state envelope");
     *response = {};
-    if (!service_send_request(&request, response, timeoutMs, err, errSize))
-        return false;
+    return true;
+}
+
+static bool service_client_check_state_response(const ServiceResponse* response,
+    char* err, size_t errSize) {
     if (response->status != SERVICE_STATUS_OK) {
         set_message(err, errSize, "%s",
             response->message[0] ? response->message :
@@ -124,10 +134,32 @@ static bool service_client_get_state_envelope(ServiceCommand command,
     return true;
 }
 
-static bool service_client_get_ready_state(ServiceResponse* response,
-    DWORD timeoutMs, const char* source, char* err, size_t errSize) {
-    if (!service_client_get_state_envelope(SERVICE_CMD_GET_SNAPSHOT,
-            response, timeoutMs, source, err, errSize)) return false;
+static bool service_client_get_state_envelope(ServiceCommand command,
+    ServiceResponse* response, DWORD timeoutMs, const char* source,
+    char* err, size_t errSize) {
+    ServiceRequest request = {};
+    if (!service_client_build_state_request(command, response, source,
+            &request, err, errSize)) return false;
+    if (!service_send_request(&request, response, timeoutMs, err, errSize))
+        return false;
+    return service_client_check_state_response(response, err, errSize);
+}
+
+// The same envelope read on the service's own deadline contract instead of a
+// caller-picked number, with availability and turnaround budgeted separately.
+// For callers with no window to freeze; see service_request_deadline_policy.h.
+static bool service_client_get_state_envelope_contracted(ServiceCommand command,
+    ServiceResponse* response, const char* source, char* err, size_t errSize) {
+    ServiceRequest request = {};
+    if (!service_client_build_state_request(command, response, source,
+            &request, err, errSize)) return false;
+    if (!service_send_state_read_request(&request, response,
+            command == SERVICE_CMD_GET_SNAPSHOT, err, errSize)) return false;
+    return service_client_check_state_response(response, err, errSize);
+}
+
+static bool service_client_check_ready_state(const ServiceResponse* response,
+    char* err, size_t errSize) {
     if (response->state.gpuPhase != SERVICE_GPU_PHASE_READY ||
         (response->state.validSections &
             SERVICE_STATE_SECTION_READY_REQUIRED) !=
@@ -139,6 +171,23 @@ static bool service_client_get_ready_state(ServiceResponse* response,
         return false;
     }
     return true;
+}
+
+static bool service_client_get_ready_state(ServiceResponse* response,
+    DWORD timeoutMs, const char* source, char* err, size_t errSize) {
+    if (!service_client_get_state_envelope(SERVICE_CMD_GET_SNAPSHOT,
+            response, timeoutMs, source, err, errSize)) return false;
+    return service_client_check_ready_state(response, err, errSize);
+}
+
+// Ready-state read on the service's deadline contract. Used by the CLI and by
+// the pre-window startup path -- neither has a window to freeze, so neither has
+// any reason to give up before the service's own bound.
+static bool service_client_get_ready_state_contracted(ServiceResponse* response,
+    const char* source, char* err, size_t errSize) {
+    if (!service_client_get_state_envelope_contracted(SERVICE_CMD_GET_SNAPSHOT,
+            response, source, err, errSize)) return false;
+    return service_client_check_ready_state(response, err, errSize);
 }
 
 static bool service_client_build_apply_request(const DesiredSettings* desired,

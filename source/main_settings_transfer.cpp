@@ -143,7 +143,7 @@ static bool settings_transfer_wait_for_ready_service(char* result, size_t result
         if (g_app.backgroundServiceAvailable) {
             ServiceResponse stateResponse = {};
             err[0] = 0;
-            if (service_client_get_ready_state(&stateResponse, 5000,
+            if (service_client_get_ready_state_contracted(&stateResponse,
                     "CLI settings transfer", err, sizeof(err))) {
                 apply_ready_service_envelope_to_app(&stateResponse);
                 if (service_client_identity_complete(&g_syncClientStateIdentity)) {

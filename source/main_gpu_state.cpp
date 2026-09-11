@@ -614,8 +614,8 @@ static bool refresh_service_snapshot_and_active_desired(char* err, size_t errSiz
     }
 
     ServiceResponse stateResponse = {};
-    if (!service_client_get_ready_state(&stateResponse, 2000,
-            "refresh snapshot and active intent", err, errSize)) {
+    // CLI-only: no window to freeze, so it waits out the service's contract.
+    if (!service_client_get_ready_state_contracted(&stateResponse, "refresh snapshot and active intent", err, errSize)) {
         return false;
     }
     apply_service_snapshot_to_app(&stateResponse.snapshot);

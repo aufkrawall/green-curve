@@ -265,13 +265,31 @@ def check_gui_cannot_choose_the_target(ctx, require_text, forbid_text):
     """
     dialog = _p(ctx, "gui_update_dialog.cpp")
     client = _p(ctx, "gui_update_client.cpp")
-    for source in (dialog, client):
+    # The request is BUILT in the command worker (it moved there with the
+    # blocking sender when update commands were taken off the GUI message
+    # thread), so that shard carries this invariant now and the dialog is kept
+    # in the list because it is where a field would most plausibly be added
+    # back.  The first-run shard asks the auto-check question and must stay just
+    # as payload-free.
+    worker = _p(ctx, "gui_update_command_worker.cpp")
+    first_run = _p(ctx, "gui_update_first_run.cpp")
+    for source in (dialog, client, worker, first_run):
         for field in ("request.path", "request.desired", "request.targetGpu",
                       "request.profileSlot", "request.operationId"):
             forbid_text(source, field,
                         "the GUI must not put a target into an update request")
-    require_text(dialog, "SERVICE_CMD_SET_UPDATE_POLICY",
+    require_text(worker, "SERVICE_CMD_SET_UPDATE_POLICY",
                  "the policy command is the only one carrying client data")
+    # Update commands must never run on the thread that pumps the main window:
+    # they share the service's one serialized dispatch lock with a full
+    # GET_SNAPSHOT, so a blocking call from a window procedure freezes the whole
+    # UI for as long as the service takes to answer.  Structural because the
+    # happy path looks identical either way -- the freeze only appears when the
+    # service happens to be busy.
+    require_text(worker, "CreateThread",
+                 "update commands run off the GUI message thread")
+    forbid_text(dialog, "gui_update_send(",
+                "the dialog must dispatch update commands, never send them")
 
     # Installing is a button press with a confirmation, never a side effect of
     # opening the dialog or of a refresh tick.
@@ -481,7 +499,7 @@ def check_update_is_actually_surfaced(ctx, require_text, require_order):
                  "every surface derives its alert from the same policy")
     # The prompt is what makes UNSET a question rather than a permanent state
     # in which no check ever runs.
-    require_text(_p(ctx, "gui_update_dialog.cpp"),
+    require_text(_p(ctx, "gui_update_first_run.cpp"),
                  "gc_update_should_prompt_auto_check",
                  "the unset auto-check preference is actually asked about")
     # The passive surfaces above all require the user to be looking at

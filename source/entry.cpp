@@ -586,6 +586,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
 
     signal_single_instance_window_ready();
 
+    // From here on, this thread pumps the main window. Record it so any
+    // synchronous service IPC that lands on it is loud in the log rather than
+    // showing up as an unexplained stutter in a user report.
+    note_gui_message_thread();
+
     if (!g_app.hMainWnd) {
         MessageBoxA(nullptr, "Failed to create window.", "Green Curve", MB_OK | MB_ICONERROR);
         return 1;

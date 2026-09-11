@@ -53,6 +53,12 @@ void gui_update_open_dialog(HWND parent);
 // which is compiled first, so it needs the same forward declaration.
 void gui_update_maybe_prompt_first_run(HWND parent);
 
+// One finished update command, handed back from the detached worker
+// (source/gui_update_command_worker.cpp).  ui_main_window.cpp receives the
+// posted message and is compiled first, so it needs the declaration here.
+// Takes void* because the completion type is private to that shard.
+void gui_update_notify_command_complete(void* completion);
+
 // Replay settings captured by an in-app update (source/
 // gui_update_settings_handoff.cpp).  Declared here for the same reason as
 // the line above: entry.cpp calls it during startup and is compiled before

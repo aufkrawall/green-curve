@@ -194,6 +194,10 @@ void init_dpi();
 #define APP_WM_SERVICE_IO_COMPLETE (WM_APP + 7)
 #define APP_WM_SELECTED_GPU_PNP (WM_APP + 8)
 #define APP_WM_ACTIVATE_EXISTING_INSTANCE (WM_APP + 9)
+// One finished Updates-dialog service command, posted by the detached worker
+// in gui_update_command_worker.cpp.  Addressed to the MAIN window rather than
+// the dialog so it can never land on a destroyed or recycled dialog HWND.
+#define APP_WM_UPDATE_COMMAND_COMPLETE (WM_APP + 10)
 #define APP_SINGLE_INSTANCE_READY_NAME "Local\\GreenCurveMainWindowReady"
 #define APPLY_BTN_ID        2000
 #define REFRESH_BTN_ID      2001

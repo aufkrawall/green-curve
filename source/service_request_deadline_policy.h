@@ -99,6 +99,17 @@ static constexpr unsigned long service_state_read_connect_timeout_ms() {
     return (unsigned long)SERVICE_ASYNC_CONNECT_TIMEOUT_MS;
 }
 
+// A PING does no hardware work, but it is dispatched under the same serialized
+// lock as everything else, so its turnaround still carries whatever command is
+// already dispatching. Its 500 ms literal was below that from the moment the
+// transport stopped being a single thread, and a ping that expires is reported
+// as "the service is installed but not responding" -- i.e. a repair prompt for
+// a service that was merely busy.
+static constexpr unsigned long service_health_probe_response_timeout_ms() {
+    return service_dispatch_serialization_budget_ms() +
+        (unsigned long)SERVICE_RESPONSE_FRAMING_BUDGET_MS;
+}
+
 // --- Phase arithmetic --------------------------------------------------------
 
 // How long one phase of a request may still run, given how long that phase and
@@ -153,3 +164,8 @@ static_assert(service_state_read_response_timeout_ms(false) >
 static_assert(service_state_read_response_timeout_ms(false) > 500u &&
     service_state_read_response_timeout_ms(true) > 2000u,
     "Deadlines must stay above the 2026-09-11 magic literals they replaced");
+static_assert(service_health_probe_response_timeout_ms() >
+    service_dispatch_serialization_budget_ms(),
+    "A ping must outlast the command it can be queued behind");
+static_assert(service_health_probe_response_timeout_ms() > 500u,
+    "The ping deadline must stay above the literal it replaced");

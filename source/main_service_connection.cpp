@@ -472,9 +472,39 @@ static DWORD service_phase_remaining_ticks_ms(ULONGLONG phaseStartTickMs,
         totalTimeoutMs);
 }
 
+// The GUI thread that pumps the main window's messages, recorded once the
+// window exists. Zero in the service and before the window is created.
+//
+// Blocking IPC on that thread freezes the whole UI for as long as the service
+// takes to answer, which makes any deadline a lose-lose: short enough not to
+// hang gives spurious failures, long enough to be correct gives a visible
+// freeze. There is deliberately no such call left (the Updates dialog's poll
+// was the last one), and this exists so a reintroduced one is LOUD in the log
+// instead of being rediscovered from a user report about a stuttering window.
+static DWORD g_guiMessageThreadId = 0;
+
+static void note_gui_message_thread() {
+    g_guiMessageThreadId = GetCurrentThreadId();
+    debug_log("GUI message thread: id=%lu (synchronous service IPC on this thread is a defect)\n",
+        (unsigned long)g_guiMessageThreadId);
+}
+
+static void warn_if_blocking_gui_message_thread(const ServiceRequest* request,
+        const ServiceRequestDeadlines* deadlines) {
+    if (!g_guiMessageThreadId ||
+        GetCurrentThreadId() != g_guiMessageThreadId) return;
+    debug_log("service IPC: BLOCKING the GUI message thread command=%u source=\"%s\" connectMs=%lu responseMs=%lu totalMs=%lu -- the window cannot repaint until this returns\n",
+        request ? (unsigned int)request->command : 0u,
+        request && request->source[0] ? request->source : "<none>",
+        (unsigned long)(deadlines ? deadlines->connectMs : 0),
+        (unsigned long)(deadlines ? deadlines->responseMs : 0),
+        (unsigned long)(deadlines ? deadlines->totalMs : 0));
+}
+
 static bool service_send_request_deadlines(const ServiceRequest* request,
         ServiceResponse* response, ServiceRequestDeadlines deadlines,
         char* err, size_t errSize) {
+    warn_if_blocking_gui_message_thread(request, &deadlines);
     if (response) memset(response, 0, sizeof(*response));
     if (!request) {
         set_message(err, errSize, "Invalid service request");
@@ -599,17 +629,26 @@ static bool service_send_request(const ServiceRequest* request,
         err, errSize);
 }
 
-// Split-budget form for the GUI's asynchronous coordinator: off the UI thread,
-// coalesced, and the only lane whose failure is presented as a lost connection
-// -- so it trades a longer worst case for never aborting an answer the service
-// is still legitimately producing.
-static bool service_send_state_read_request(const ServiceRequest* request,
-        ServiceResponse* response, bool fullSync, char* err, size_t errSize) {
+// Split-budget form for every caller that is NOT blocking a thread the user is
+// waiting on. Availability is bounded separately, and the answer gets whatever
+// the service is contractually allowed to spend, so a busy-but-healthy service
+// is never mistaken for an absent one.
+static bool service_send_request_split(const ServiceRequest* request,
+        ServiceResponse* response, DWORD responseTimeoutMs,
+        char* err, size_t errSize) {
     ServiceRequestDeadlines deadlines = {
         (DWORD)service_state_read_connect_timeout_ms(),
-        (DWORD)service_state_read_response_timeout_ms(fullSync),
+        responseTimeoutMs,
         0,
     };
     return service_send_request_deadlines(request, response, deadlines,
         err, errSize);
+}
+
+// The GUI's asynchronous coordinator: off the UI thread, coalesced, and the
+// only lane whose failure is presented as a lost connection.
+static bool service_send_state_read_request(const ServiceRequest* request,
+        ServiceResponse* response, bool fullSync, char* err, size_t errSize) {
+    return service_send_request_split(request, response,
+        (DWORD)service_state_read_response_timeout_ms(fullSync), err, errSize);
 }
