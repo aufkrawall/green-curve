@@ -1,6 +1,8 @@
 AGENTS.md
 CLAUDE.md
 llm-wiki/
+# Local-only release operator runbook (machine paths, signing procedure).
+/update-procedure.md
 zig/
 llvm-mingw/
 llvm-mingw-linux/
