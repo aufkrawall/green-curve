@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.25.1
+
+Green Curve 0.25.1 is a bug-fix release for power-limit handling and Linux
+memory-clock-offset profiles after 0.25.0.
+
+### Fixes
+
+- **An unreadable power target is no longer treated as 0%.** Boards whose
+  driver answers the power-limit constraints but refuses to report the limit
+  itself (reported on an RTX 3060 Laptop GPU) could capture `0`, turn it into a
+  silent request to halve the power limit, and then fail every Apply with
+  "Power target did not reset". The power surface is now reported as partial,
+  the untouched field stays neutral, and Apply, reset and rollback require a
+  complete current/default readback pair on both Windows and Linux. A
+  non-default power request on such a board still fails loudly and by name.
+- **Linux memory-clock offsets now match Windows effective/display
+  semantics.** Linux NVML offsets are converted at every boundary and capped at
+  +/-3000 display MHz. Profiles and daemon records written before the change
+  are converted once from stored effective units to display units, with
+  checksum validation before mutation, so a pre-fix +2500 effective is applied
+  as the same effective offset instead of being doubled to +5000.
+- **Linux profile migration hardened.** Migration loads are read-only, and the
+  migration marker parser rejects malformed records instead of guessing.
+
+### Compatibility notes
+
+- Existing profiles remain compatible. Linux profiles written before 0.25.1
+  are migrated once on load; Windows profile handling is unchanged.
+- The unreadable-power-target fix was driven by a reported 0.25.0 debug log and
+  has regression and source-gate coverage, but no live laptop-GPU pass yet.
+- No service-protocol or updater-path change since 0.25.0.
+
+### Downloads and verification
+
+- **Windows:** use the `setup.exe` for a normal install or upgrade; use the
+  `.7z` archive for a portable copy.
+- **Linux:** use the ready-to-install Arch Linux `.pkg.tar.zst` on pacman-based
+  systems, or extract the `.tar.xz` archive and run `greencurve-setup.sh`.
+- x64 and ARM64 packages are attached below. ARM64 remains compile- and
+  binary-inspection-only; Windows x64 and Linux x64 are the hardware-tested
+  targets.
+- Every program package has a matching SHA-256 file and a GitHub
+  build-provenance attestation. Verify an artifact with:
+
+  ```bash
+  gh attestation verify <artifact> --repo aufkrawall/green-curve
+  ```
+
+**Full changelog:** [0.25.0...0.25.1](https://github.com/aufkrawall/green-curve/compare/0.25.0...0.25.1)
+
 ## 0.25.0
 
 Green Curve 0.25.0 strengthens release packaging, Windows hardening, update
