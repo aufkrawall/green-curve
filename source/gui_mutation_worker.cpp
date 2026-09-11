@@ -168,8 +168,14 @@ static bool gui_mutation_work_context_is_current(const GuiMutationWork* work,
 
 static gc_u64 gui_worker_record_connection_result(
     bool success, const ServiceResponse* response) {
-    gc_u64 nextInstance = success && response
-        ? response->state.serviceInstanceId : 0;
+    // An unanswered request proves nothing about which service process is on
+    // the other end, so a failure leaves the tracked instance untouched
+    // (service_request_deadline_policy.h). Zeroing it here made every transient
+    // miss look exactly like a service restart and advance the connection epoch
+    // twice, wiping the model's revision/generation/topology each time.
+    gc_u64 nextInstance = service_client_tracked_instance_after_request(
+        g_guiWorkerServiceInstanceId, success && response != nullptr,
+        response ? response->state.serviceInstanceId : 0);
     if (nextInstance != g_guiWorkerServiceInstanceId) {
         gc_u64 previous = g_guiWorkerServiceInstanceId;
         g_guiWorkerServiceInstanceId = nextInstance;
@@ -194,8 +200,14 @@ static bool gui_worker_send_state_request(GuiServiceIoKind kind,
     StringCchCopyA(request.source, ARRAY_COUNT(request.source),
         kind == GUI_SERVICE_IO_FULL_SYNC
             ? "GUI async full sync" : "GUI async telemetry");
-    return service_send_request(&request, response,
-        kind == GUI_SERVICE_IO_FULL_SYNC ? 2000 : 500, err, errSize);
+    // Availability and turnaround are separate budgets on purpose: a stopped
+    // service is still reported after SERVICE_ASYNC_CONNECT_TIMEOUT_MS, while a
+    // running one gets the full turnaround its own handlers are allowed to
+    // take. The literals that used to sit here (500 / 2000) were below the
+    // service's own bound, so a healthy slow answer presented as a lost
+    // connection -- see service_request_deadline_policy.h.
+    return service_send_state_read_request(&request, response,
+        kind == GUI_SERVICE_IO_FULL_SYNC, err, errSize);
 }
 
 static void gui_worker_release_after_mutation_post_failure() {
@@ -361,9 +373,15 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
                 completion->transportSuccess ? &completion->response : nullptr);
         }
         completion->durationMs = GetTickCount64() - started;
-        debug_log("GUI service I/O: read kind=%d reason=%s durationMs=%llu success=%d epoch=%llu phase=%u revision=%llu error=%s\n",
+        // deadlineMs makes a timeout self-describing: without it a failed read
+        // could not be told apart from a read that was merely slower than a
+        // deadline nobody recorded.
+        debug_log("GUI service I/O: read kind=%d reason=%s durationMs=%llu deadlineMs=%lu success=%d epoch=%llu phase=%u revision=%llu error=%s\n",
             (int)ioKind, completion->reason,
             (unsigned long long)completion->durationMs,
+            ioKind == GUI_SERVICE_IO_ADMIN_TOGGLE ? 0ul
+                : service_state_read_response_timeout_ms(
+                    ioKind == GUI_SERVICE_IO_FULL_SYNC),
             completion->transportSuccess ? 1 : 0,
             (unsigned long long)completion->connectionEpoch,
             completion->response.state.gpuPhase,

@@ -34,6 +34,10 @@
 #include "intent_readback_status.h"
 #include "control_readback_policy.h"
 #include "service_client_precondition_policy.h"
+// The pipe deadline contract. Asserted here because its failure mode is not a
+// build break or a crash: a client deadline below the service's own bound just
+// makes a healthy service intermittently present as a lost connection.
+#include "service_request_deadline_policy.h"
 #include "linux_service_install_policy.h"
 #include "linux_config_path_policy.h"
 #include "linux_daemon_transport_policy.h"
@@ -2418,6 +2422,104 @@ static int run_all_tests(int argc, char** argv) {
             SERVICE_MUTATION_DOMAIN_POWER) return 5070;
         if (!(gpu_capability_available_domains(&probe) &
               SERVICE_MUTATION_DOMAIN_VF_CURVE)) return 5071;
+    }
+
+    // F-PIPE-DEADLINE: the client's request deadline versus the service's own
+    // bound for the same request.
+    //
+    // The 2026-09-11 incident: GET_TELEMETRY carried a hard-coded 500 ms client
+    // deadline while its handler is allowed to wait 250 ms for the runtime lock
+    // and THEN read live hardware, behind a dispatch lock that serializes it
+    // against a full snapshot. 29 of ~36.7k telemetry reads clipped at exactly
+    // 500 ms; each one closed the pipe mid-answer (service response write ->
+    // ERROR_NO_DATA 232) and presented as "service transport lost" with two
+    // connection-epoch advances, a GPU-epoch advance, a wiped model topology and
+    // an applied-profile indicator that dropped to "Manual settings".
+    //
+    // Every assertion below would have failed before the fix.
+    {
+        // The literals that caused the incident are now provably impossible.
+        if (service_state_read_response_timeout_ms(false) <= 500ul) return 5072;
+        if (service_state_read_response_timeout_ms(true) <= 2000ul) return 5073;
+
+        // A deadline must exceed what the service may spend, or an expiry
+        // means nothing about the service's health.
+        if (service_state_read_response_timeout_ms(false) <=
+            service_state_read_server_budget_ms(false)) return 5074;
+        if (service_state_read_response_timeout_ms(true) <=
+            service_state_read_server_budget_ms(true)) return 5075;
+
+        // The handler budget must contain the runtime-lock wait the handler
+        // actually performs, not just the refresh after it.
+        if (service_state_read_handler_budget_ms(false) <=
+            (unsigned long)SERVICE_STATE_READ_RUNTIME_LOCK_WAIT_MS) return 5076;
+        if (service_state_read_handler_budget_ms(true) <=
+            service_state_read_handler_budget_ms(false)) return 5077;
+
+        // Telemetry is dispatched on the same serialized lock as a full
+        // snapshot, so it must survive being queued behind one.
+        if (service_state_read_response_timeout_ms(false) <=
+            service_state_read_handler_budget_ms(true)) return 5078;
+        if (service_dispatch_serialization_budget_ms() <
+            service_state_read_handler_budget_ms(true)) return 5079;
+
+        // Availability and turnaround are separate budgets. Conflating them is
+        // why the response deadline could not be raised: a stopped service
+        // would then be spun on for just as long.
+        if (service_state_read_connect_timeout_ms() >=
+            service_state_read_response_timeout_ms(false)) return 5080;
+        if (service_state_read_connect_timeout_ms() == 0ul) return 5081;
+
+        // An unanswered request carries no evidence about which service
+        // process answered, so it must not move the tracked instance. Zeroing
+        // it there is what made a transient miss indistinguishable from a
+        // restart and advanced the connection epoch twice per incident.
+        const gc_u64 live = 11365545421406645816ull;
+        if (service_client_tracked_instance_after_request(live, false, 0ull) !=
+            live) return 5082;
+        if (service_client_tracked_instance_after_request(live, false, 777ull) !=
+            live) return 5083;
+        // A successful envelope is evidence, and a genuine restart must still
+        // be adopted from it.
+        if (service_client_tracked_instance_after_request(live, true, 777ull) !=
+            777ull) return 5084;
+        if (service_client_tracked_instance_after_request(live, true, live) !=
+            live) return 5085;
+        // First contact still adopts the instance it is told about.
+        if (service_client_tracked_instance_after_request(0ull, true, live) !=
+            live) return 5086;
+        // ...and a failure before first contact leaves "unknown" unknown,
+        // rather than manufacturing an epoch advance out of nothing.
+        if (service_client_tracked_instance_after_request(0ull, false, 0ull) !=
+            0ull) return 5087;
+
+        // Phase arithmetic. Independent phases (totalTimeoutMs == 0) are the
+        // async read lane: time spent finding the service is NOT charged
+        // against the service's turnaround, which is the whole point of the
+        // split.
+        if (service_phase_remaining_ms(0ul, 4000ul, 1900ul, 0ul) != 4000ul)
+            return 5088;
+        if (service_phase_remaining_ms(1500ul, 4000ul, 9999ul, 0ul) != 2500ul)
+            return 5089;
+        if (service_phase_remaining_ms(4000ul, 4000ul, 0ul, 0ul) != 0ul)
+            return 5090;
+        if (service_phase_remaining_ms(9000ul, 4000ul, 0ul, 0ul) != 0ul)
+            return 5091;
+
+        // A capped total is the synchronous contract: the sum of the phases can
+        // never exceed the one number the caller passed, so splitting the
+        // transport did not double any existing caller's worst-case stall.
+        if (service_phase_remaining_ms(0ul, 500ul, 400ul, 500ul) != 100ul)
+            return 5092;
+        if (service_phase_remaining_ms(0ul, 500ul, 500ul, 500ul) != 0ul)
+            return 5093;
+        if (service_phase_remaining_ms(0ul, 500ul, 900ul, 500ul) != 0ul)
+            return 5094;
+        // The tighter of the two always wins, in both directions.
+        if (service_phase_remaining_ms(450ul, 500ul, 100ul, 500ul) != 50ul)
+            return 5095;
+        if (service_phase_remaining_ms(100ul, 500ul, 450ul, 500ul) != 50ul)
+            return 5096;
     }
 
     // F-RESET-FLAGS: RESET carries no flags. The interactive bit is only ever

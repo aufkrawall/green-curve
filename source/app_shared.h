@@ -89,6 +89,11 @@
 // The identity every APPLY/RESET must name; the window path carries it in
 // GuiServiceModel, the synchronous path in the record below it.
 #include "service_client_precondition_policy.h"
+// The single deadline contract shared by both halves of the pipe: what the
+// service may spend answering a state read, and the client deadline derived
+// from it.  Consumed by the service read handlers, the transport, and the GUI
+// coordinator, so none of them can pick a number the others disagree with.
+#include "service_request_deadline_policy.h"
 #include "gui_service_model.h"
 // Which control groups are actionable for a given service/draft state; needs
 // gui_service_model.h above for the phase model the glue below reads.

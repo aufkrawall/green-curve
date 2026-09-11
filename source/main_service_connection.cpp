@@ -436,7 +436,45 @@ static void describe_service_connect_error(DWORD err, char* out, size_t outSize)
     set_message(out, outSize, "Failed connecting to service pipe (error %lu)", err);
 }
 
-static bool service_send_request(const ServiceRequest* request, ServiceResponse* response, DWORD timeoutMs, char* err, size_t errSize) {
+// The two questions a request actually asks, budgeted separately.
+//
+// `connectMs` bounds only the search for a pipe to talk to -- "is the service
+// up?" -- and a stopped service must be reported promptly no matter how patient
+// the rest is.  `responseMs` bounds the turnaround AFTER the service has
+// accepted the request, and must cover what the service is contractually
+// allowed to spend (service_request_deadline_policy.h).  `totalMs` optionally
+// caps their sum, for callers that are blocking a thread the user is waiting
+// on and care about total stall more than about either phase.
+//
+// One conflated budget -- which is all this transport had -- is why the read
+// deadlines could not be raised to match the service: every millisecond
+// granted to a slow answer was also granted to spinning on a pipe that does
+// not exist.
+struct ServiceRequestDeadlines {
+    DWORD connectMs;
+    DWORD responseMs;
+    DWORD totalMs;  // 0 = no cap on the sum
+};
+
+// Tick-clamping wrapper over the pure rule in
+// service_request_deadline_policy.h, so the arithmetic that decides whether a
+// phase is still allowed to run is asserted by the regression suite rather than
+// only exercised live.
+static DWORD service_phase_remaining_ticks_ms(ULONGLONG phaseStartTickMs,
+        DWORD phaseTimeoutMs, ULONGLONG requestStartTickMs, DWORD totalTimeoutMs) {
+    ULONGLONG now = GetTickCount64();
+    ULONGLONG phaseElapsed = now - phaseStartTickMs;
+    ULONGLONG requestElapsed = now - requestStartTickMs;
+    const ULONGLONG cap = 0xFFFFFFFFULL;
+    return (DWORD)service_phase_remaining_ms(
+        (unsigned long)(phaseElapsed > cap ? cap : phaseElapsed), phaseTimeoutMs,
+        (unsigned long)(requestElapsed > cap ? cap : requestElapsed),
+        totalTimeoutMs);
+}
+
+static bool service_send_request_deadlines(const ServiceRequest* request,
+        ServiceResponse* response, ServiceRequestDeadlines deadlines,
+        char* err, size_t errSize) {
     if (response) memset(response, 0, sizeof(*response));
     if (!request) {
         set_message(err, errSize, "Invalid service request");
@@ -450,7 +488,8 @@ static bool service_send_request(const ServiceRequest* request, ServiceResponse*
 
     ULONGLONG startTickMs = GetTickCount64();
     while (true) {
-        DWORD remainingMs = service_remaining_timeout_ms(startTickMs, timeoutMs);
+        DWORD remainingMs = service_phase_remaining_ticks_ms(startTickMs,
+            deadlines.connectMs, startTickMs, deadlines.totalMs);
         if (remainingMs == 0) {
             set_message(err, errSize, "Timed out waiting for the background service");
             return false;
@@ -476,13 +515,21 @@ static bool service_send_request(const ServiceRequest* request, ServiceResponse*
                 set_message(err, errSize, "Failed configuring service pipe message mode (error %lu)", modeErr);
                 return false;
             }
-            remainingMs = service_remaining_timeout_ms(startTickMs, timeoutMs);
+            // The exchange gets its own deadline, started at the moment the
+            // pipe was actually obtained. Time already burned waiting for the
+            // service to become reachable must not be charged against the
+            // service's turnaround: that coupling is what let a busy connect
+            // phase abort an answer the service was still producing.
+            ULONGLONG exchangeStartTickMs = GetTickCount64();
+            remainingMs = service_phase_remaining_ticks_ms(exchangeStartTickMs,
+                deadlines.responseMs, startTickMs, deadlines.totalMs);
             if (!service_pipe_write_exact(pipe, request, sizeof(*request), remainingMs, "writing service request", err, errSize)) {
                 CloseHandle(pipe);
                 return false;
             }
             if (response) {
-                remainingMs = service_remaining_timeout_ms(startTickMs, timeoutMs);
+                remainingMs = service_phase_remaining_ticks_ms(exchangeStartTickMs,
+                    deadlines.responseMs, startTickMs, deadlines.totalMs);
                 if (!service_pipe_read_exact(pipe, response, sizeof(*response), remainingMs, "reading service response", err, errSize)) {
                     CloseHandle(pipe);
                     return false;
@@ -517,7 +564,8 @@ static bool service_send_request(const ServiceRequest* request, ServiceResponse*
             describe_service_connect_error(e, err, errSize);
             return false;
         }
-        remainingMs = service_remaining_timeout_ms(startTickMs, timeoutMs);
+        remainingMs = service_phase_remaining_ticks_ms(startTickMs,
+            deadlines.connectMs, startTickMs, deadlines.totalMs);
         if (remainingMs == 0) {
             set_message(err, errSize, "Timed out waiting for the background service");
             return false;
@@ -536,4 +584,32 @@ static bool service_send_request(const ServiceRequest* request, ServiceResponse*
             }
         }
     }
+}
+
+// Single-budget form for the synchronous callers. Their number is a
+// responsiveness budget on a thread the user is waiting on, not the
+// service-turnaround contract, and they fail into an explicit message rather
+// than a connection teardown -- so they keep ONE total deadline, exactly as
+// before. Capping the sum is what keeps the split above from doubling any
+// existing caller's worst-case stall.
+static bool service_send_request(const ServiceRequest* request,
+        ServiceResponse* response, DWORD timeoutMs, char* err, size_t errSize) {
+    ServiceRequestDeadlines deadlines = { timeoutMs, timeoutMs, timeoutMs };
+    return service_send_request_deadlines(request, response, deadlines,
+        err, errSize);
+}
+
+// Split-budget form for the GUI's asynchronous coordinator: off the UI thread,
+// coalesced, and the only lane whose failure is presented as a lost connection
+// -- so it trades a longer worst case for never aborting an answer the service
+// is still legitimately producing.
+static bool service_send_state_read_request(const ServiceRequest* request,
+        ServiceResponse* response, bool fullSync, char* err, size_t errSize) {
+    ServiceRequestDeadlines deadlines = {
+        (DWORD)service_state_read_connect_timeout_ms(),
+        (DWORD)service_state_read_response_timeout_ms(fullSync),
+        0,
+    };
+    return service_send_request_deadlines(request, response, deadlines,
+        err, errSize);
 }

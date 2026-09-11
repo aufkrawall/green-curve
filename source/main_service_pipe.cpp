@@ -61,10 +61,22 @@ void ensure_transport_locks() {
                         nullptr, nullptr);
 }
 
+// Serialization means every request's turnaround includes whatever command was
+// already dispatching, and nothing used to record that wait -- it was invisible
+// on both halves, which is why a client deadline expiry could not be attributed
+// to it. Measure it here and report it to the caller.
 class ScopedDispatchLock {
 public:
-    ScopedDispatchLock() { ensure_transport_locks(); EnterCriticalSection(&g_serviceDispatchLock); }
+    ScopedDispatchLock() {
+        ensure_transport_locks();
+        ULONGLONG started = GetTickCount64();
+        EnterCriticalSection(&g_serviceDispatchLock);
+        queueWaitMs = GetTickCount64() - started;
+    }
     ~ScopedDispatchLock() { LeaveCriticalSection(&g_serviceDispatchLock); }
+    ULONGLONG waitedMs() const { return queueWaitMs; }
+private:
+    ULONGLONG queueWaitMs = 0;
 };
 
 class ScopedAdmissionLock {
@@ -285,6 +297,15 @@ static void service_execute_checked_request(ServiceRequest* request,
     } else {
         debug_log("service_pipe_server: withheld the state/update envelope from an unauthorized caller command=%u\n",
             (unsigned int)request->command);
+    }
+    // The dispatch queue is the one turnaround component neither half could
+    // see. A read command that waited here is a read that may miss its client
+    // deadline through no fault of its own handler, so say so explicitly.
+    if (dispatchLock.waitedMs() >= 5) {
+        debug_log("service_pipe_server: command=%u waited %llu ms on the serialized dispatch queue (read budget %lu ms)\n",
+            (unsigned int)request->command,
+            (unsigned long long)dispatchLock.waitedMs(),
+            service_dispatch_serialization_budget_ms());
     }
 }
 

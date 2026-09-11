@@ -1,11 +1,49 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
+// Measure the runtime-lock wait the read handlers pay. It is the one component
+// of their turnaround that nothing used to record, so a client-side deadline
+// expiry could not be attributed to lock contention versus hardware I/O.
+static bool service_state_read_lock_runtime(const char* command,
+        ULONGLONG* waitMsOut) {
+    ULONGLONG started = GetTickCount64();
+    bool acquired = try_lock_service_runtime(
+        SERVICE_STATE_READ_RUNTIME_LOCK_WAIT_MS);
+    ULONGLONG waited = GetTickCount64() - started;
+    if (waitMsOut) *waitMsOut = waited;
+    // Anything past a few milliseconds means the fan runtime thread or a
+    // lifecycle write held the lock; that is what pushes a read toward its
+    // deadline, so record it rather than inferring it later from a gap.
+    if (waited >= 5) {
+        debug_log("service state read: %s waited %llu ms for the runtime lock (budget %u ms, acquired=%d)\n",
+            command, (unsigned long long)waited,
+            (unsigned int)SERVICE_STATE_READ_RUNTIME_LOCK_WAIT_MS,
+            acquired ? 1 : 0);
+    }
+    return acquired;
+}
+
+// A read that overruns its own budget is the condition that makes a client
+// deadline fire. Log it from the side that knows why, so the next occurrence is
+// diagnosable from the service half instead of only as a client-side timeout.
+static void service_state_read_report_turnaround(const char* command,
+        bool fullSync, ULONGLONG handlerStartMs, ULONGLONG lockWaitMs) {
+    ULONGLONG elapsed = GetTickCount64() - handlerStartMs;
+    unsigned long budget = service_state_read_handler_budget_ms(fullSync);
+    if (elapsed < budget) return;
+    debug_log("service state read: %s OVERRAN its handler budget elapsedMs=%llu budgetMs=%lu lockWaitMs=%llu clientDeadlineMs=%lu\n",
+        command, (unsigned long long)elapsed, budget,
+        (unsigned long long)lockWaitMs,
+        service_state_read_response_timeout_ms(fullSync));
+}
+
 // Perform a serialized full hardware refresh. READY is published only after
 // curve, offset, global-control, and telemetry reads all succeed in one pass.
 static void service_handle_snapshot_request(ServiceResponse* response) {
     char detail[256] = {};
-    if (!try_lock_service_runtime(250)) {
+    ULONGLONG lockWaitMs = 0;
+    ULONGLONG handlerStartMs = GetTickCount64();
+    if (!service_state_read_lock_runtime("snapshot", &lockWaitMs)) {
         debug_log("service snapshot: runtime lock busy (recovery reapply in progress), serving cached globals\n");
         response->status = SERVICE_STATUS_OK;
         StringCchCopyA(response->message, ARRAY_COUNT(response->message),
@@ -74,6 +112,8 @@ static void service_handle_snapshot_request(ServiceResponse* response) {
     if (g_serviceControlStateValid)
         response->controlState = g_serviceControlState;
     unlock_service_runtime();
+    service_state_read_report_turnaround("snapshot", true, handlerStartMs,
+        lockWaitMs);
     if (authoritativeRefresh) {
         service_lifecycle_post_prerequisite_signal(
             "serialized snapshot probe confirmed GPU readiness");
@@ -89,7 +129,9 @@ static void service_handle_snapshot_request(ServiceResponse* response) {
 // snapshot rather than blocking when a recovery reapply holds the lock.
 static void service_handle_telemetry_request(ServiceResponse* response) {
     char detail[256] = {};
-    bool lockAcquired = try_lock_service_runtime(250);
+    ULONGLONG lockWaitMs = 0;
+    ULONGLONG handlerStartMs = GetTickCount64();
+    bool lockAcquired = service_state_read_lock_runtime("telemetry", &lockWaitMs);
     if (!lockAcquired) {
         debug_log("service telemetry: runtime lock busy (recovery reapply in progress), serving cached telemetry\n");
         response->status = SERVICE_STATUS_OK;
@@ -108,6 +150,8 @@ static void service_handle_telemetry_request(ServiceResponse* response) {
     populate_service_snapshot(&response->snapshot);
     if (g_serviceControlStateValid) response->controlState = g_serviceControlState;
     unlock_service_runtime();
+    service_state_read_report_turnaround("telemetry", false, handlerStartMs,
+        lockWaitMs);
     // Routine telemetry is a cached observation, not lifecycle
     // readiness authority. The bootstrap hardware probe above
     // is reached only before the first initialized snapshot;
