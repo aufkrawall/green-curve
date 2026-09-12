@@ -391,25 +391,26 @@ static void note_exchange_duration(unsigned int command,
          command, (int)commandClass, elapsedMs, budgetMs);
 }
 
-// A deadline expiry on the RESPONSE says the daemon accepted the request and
-// then failed its own contract.  Reporting only "timeout" left the reader
-// unable to tell that from an unreachable daemon, which is the confusion that
-// made a slow apply present as a failed one.
+// A deadline expiry on the RESPONSE says the complete request was submitted to
+// a connected daemon socket and no answer arrived within the derived budget.
+// Reporting only "timeout" left the reader unable to tell that from an
+// unreachable daemon, which is the confusion that made a slow apply present as
+// a failed one.
 static void format_response_timeout(char* error, size_t errorSize,
                                     const char* phase, unsigned int command,
                                     unsigned long budgetMs,
                                     unsigned long long elapsedMs) {
     if (!error || errorSize == 0) return;
     gc_snprintf(error, errorSize,
-        "daemon accepted the request (command %u) but did not answer within "
+        "daemon request (command %u) was submitted but no answer arrived within "
         "%lu ms (%s, waited %llu ms); it is busy or wedged, not absent",
         command, budgetMs, phase, elapsedMs);
 }
 
 // `totalTimeoutMs` bounds the whole request/response exchange, not each
 // transfer.  `outcome` reports what a failure proves about the daemon's
-// existence and whether it was a deadline expiry; see
-// linux_daemon_deadline_policy.h.
+// existence, whether the complete request was submitted, and whether the
+// response deadline expired; see linux_daemon_deadline_policy.h.
 static bool linux_daemon_send_deadline(const ServiceRequest* request,
                                        ServiceResponse* response,
                                        unsigned long totalTimeoutMs,
@@ -419,6 +420,7 @@ static bool linux_daemon_send_deadline(const ServiceRequest* request,
     if (outcome) {
         outcome->reachability = LINUX_DAEMON_REACHABILITY_UNKNOWN;
         outcome->deadlineExpired = false;
+        outcome->requestSubmitted = false;
     }
     if (!request || !response) {
         if (error) gc_strlcpy(error, errorSize, "invalid daemon request buffer");
@@ -481,6 +483,10 @@ static bool linux_daemon_send_deadline(const ServiceRequest* request,
         close(fd);
         return false;
     }
+    // Only now can an idempotency key refer to a request the daemon may execute.
+    // A connect failure or truncated request write is a definite non-submission,
+    // not an unknown mutation outcome.
+    if (outcome) outcome->requestSubmitted = true;
 
     ServiceWirePrefix prefix = {};
     DaemonIoResult prefixResult = daemon_read_exact_until(
