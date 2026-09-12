@@ -34,7 +34,6 @@ SOURCE_SIZE_RATCHET = {
     "gpu_backend_apply.cpp": 1424,  # 1414 before power writes name a missing control surface instead of failing anonymously  # 1407 before the core/advanced rollback boundary was made explicit
     "gpu_core.h": 881,  # 862 before POWER_LIMIT_DEFAULT_PCT and the IPC unknown-power sentinel  # 842 before the mem effective/display parity helpers
     "gui_service_state.cpp": 827,  # 820 before the VIDEO draft projection
-    "main.cpp": 801,
     "main_fan_runtime.cpp": 913,  # 929 before the tray menu moved to gui_tray_menu.cpp
     "main_gpu_front.cpp": 845,
     "main_gpu_state.cpp": 932,  # 928 before VIDEO live-state ownership

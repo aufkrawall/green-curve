@@ -3579,7 +3579,6 @@ def run_source_regression_checks():
     require_text(linux_main_cpp, "Cannot validate GPU selection: exact BDF/PCI identity",
                  "Linux CLI persists only a daemon-enriched stable GPU identity")
     require_text(linux_daemon_cpp, "startup reapply", "Linux daemon reapplies settings on (re)start")
-    require_text(linux_daemon_transport_cpp, "GC_DAEMON_IO_TIMEOUT_MS", "Linux daemon socket I/O has bounded deadlines")
     require_text(linux_daemon_transport_cpp, "wait_fd_ready", "Linux daemon socket reads/writes poll with a deadline")
     require_text_in_surface(linux_daemon_surface, "set_nonblocking(conn)",
                             "Linux daemon accepted clients are nonblocking")
@@ -3900,6 +3899,16 @@ def run_source_regression_checks():
     forbid_text(os.path.join(SOURCE_DIR, "main_service_client_commands.cpp"),
                 "response.snapshot.activeProfileSource != SERVICE_PROFILE_SOURCE_NONE",
                 "clients never infer active-intent validity from profile metadata")
+    # The operation-result query is dispatched under the same serialized lock as
+    # the mutation it recovers, so its deadline is derived from that mutation's
+    # budget rather than picked. A short literal here reports a SUCCEEDED apply
+    # as "outcome unknown, do not retry", which is both wrong and un-actionable.
+    # Matched as the CALL, not the name: the rationale comment beside it
+    # mentions the helper too, so a name-only gate would pass on a reverted
+    # literal.
+    require_text(os.path.join(SOURCE_DIR, "main_service_client_commands.cpp"),
+                "(DWORD)service_operation_recovery_response_timeout_ms(),",
+                "the operation-result query outlasts the mutation it recovers")
     # F-SYNC-STAMP: the window path stamps mutations from GuiServiceModel; the
     # synchronous path (CLI, installer restore, --service-remove) carried
     # nothing and had every APPLY/RESET refused as malformed.

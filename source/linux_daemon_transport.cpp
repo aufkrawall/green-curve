@@ -8,8 +8,10 @@
 // a body that can never arrive.  The server follows the same rule for requests.
 
 #include "linux_daemon_transport_policy.h"
-
-#define GC_DAEMON_IO_TIMEOUT_MS 2000
+// Every deadline below is DERIVED there, per role, instead of being one literal
+// shared by four roles that ask different questions.  See that header for the
+// 2026-09-12 defect this replaced.
+#include "linux_daemon_deadline_policy.h"
 
 static unsigned long long monotonic_ms() {
     struct timespec ts = {};
@@ -57,11 +59,15 @@ static DaemonWaitResult wait_fd_ready(int fd, short events,
     }
 }
 
-static DaemonIoResult daemon_read_exact_with_timeout(
-    int fd, void* buffer, size_t length, unsigned int timeoutMs) {
+// Absolute-deadline I/O.  The deadline, not a per-call timeout, is the unit of
+// budgeting, because one request is several transfers: giving each transfer its
+// own fresh timeout silently multiplies the bound nobody wrote down.  Before
+// this a client response cost "2000 ms" on paper and up to 4000 ms in practice
+// (prefix, then body), and the daemon's per-peer stall bound had the same flaw.
+static DaemonIoResult daemon_read_exact_until(
+    int fd, void* buffer, size_t length, unsigned long long deadline) {
     DaemonIoResult result = {DAEMON_IO_NONE, 0, length, 0};
     unsigned char* bytes = (unsigned char*)buffer;
-    unsigned long long deadline = monotonic_ms() + timeoutMs;
     while (result.transferred < length) {
         int waitError = 0;
         DaemonWaitResult wait = wait_fd_ready(fd, POLLIN, deadline, &waitError);
@@ -92,11 +98,10 @@ static DaemonIoResult daemon_read_exact_with_timeout(
     return result;
 }
 
-static DaemonIoResult daemon_write_exact_with_timeout(
-    int fd, const void* buffer, size_t length, unsigned int timeoutMs) {
+static DaemonIoResult daemon_write_exact_until(
+    int fd, const void* buffer, size_t length, unsigned long long deadline) {
     DaemonIoResult result = {DAEMON_IO_NONE, 0, length, 0};
     const unsigned char* bytes = (const unsigned char*)buffer;
-    unsigned long long deadline = monotonic_ms() + timeoutMs;
     while (result.transferred < length) {
         int waitError = 0;
         DaemonWaitResult wait = wait_fd_ready(fd, POLLOUT, deadline, &waitError);
@@ -129,15 +134,19 @@ static DaemonIoResult daemon_write_exact_with_timeout(
     return result;
 }
 
-static DaemonIoResult daemon_read_exact(int fd, void* buffer, size_t length) {
-    return daemon_read_exact_with_timeout(
-        fd, buffer, length, GC_DAEMON_IO_TIMEOUT_MS);
+// Relative-timeout wrappers.  Kept because one transfer with its own budget is
+// the natural shape for a test fixture; production callers thread a deadline so
+// a multi-transfer exchange stays bounded as a whole.
+static DaemonIoResult daemon_read_exact_with_timeout(
+    int fd, void* buffer, size_t length, unsigned int timeoutMs) {
+    return daemon_read_exact_until(fd, buffer, length,
+                                   monotonic_ms() + timeoutMs);
 }
 
-static DaemonIoResult daemon_write_exact(int fd, const void* buffer,
-                                         size_t length) {
-    return daemon_write_exact_with_timeout(
-        fd, buffer, length, GC_DAEMON_IO_TIMEOUT_MS);
+static DaemonIoResult daemon_write_exact_with_timeout(
+    int fd, const void* buffer, size_t length, unsigned int timeoutMs) {
+    return daemon_write_exact_until(fd, buffer, length,
+                                    monotonic_ms() + timeoutMs);
 }
 
 static void format_io_failure(char* error, size_t errorSize,
@@ -291,9 +300,17 @@ void linux_daemon_log_client_environment() {
 }
 
 // Connect while preserving errno for actionable unprivileged diagnostics.
+//
+// The socket is non-blocking BEFORE connect(), not after.  A blocking AF_UNIX
+// connect() against a full listen backlog waits for the daemon to drain it,
+// with no bound at all -- the one wait in this client that no deadline covered,
+// and precisely the situation a saturated single-threaded daemon produces.
+// Non-blocking turns it into EAGAIN, which is reported as the truthful
+// "daemon is saturated" instead of a hang, and adds no retry loop: the kernel
+// answers AF_UNIX connect() immediately in every other case too.
 static int client_connect(int* connectErrno) {
     if (connectErrno) *connectErrno = 0;
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (fd < 0) {
         if (connectErrno) *connectErrno = errno;
         return -1;
@@ -302,13 +319,28 @@ static int client_connect(int* connectErrno) {
     address.sun_family = AF_UNIX;
     gc_strlcpy(address.sun_path, sizeof(address.sun_path),
                GC_DAEMON_SOCKET_PATH);
-    if (connect(fd, (struct sockaddr*)&address, sizeof(address)) != 0) {
-        int failure = errno;
-        close(fd);
-        if (connectErrno) *connectErrno = failure;
-        return -1;
+    int rc = connect(fd, (struct sockaddr*)&address, sizeof(address));
+    if (rc != 0 && (errno == EINPROGRESS || errno == EINTR)) {
+        // Completion is collected through poll() rather than by retrying
+        // connect(), and it is bounded by the availability budget -- which is
+        // deliberately NOT the turnaround budget: "is the daemon up?" must
+        // still be answered promptly however patient the response deadline is.
+        int waitError = 0;
+        unsigned long long deadline =
+            monotonic_ms() + GC_DAEMON_CONNECT_BUDGET_MS;
+        if (wait_fd_ready(fd, POLLOUT, deadline, &waitError) ==
+                DAEMON_WAIT_READY) {
+            int soError = 0;
+            socklen_t soLength = (socklen_t)sizeof(soError);
+            rc = (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soError, &soLength) == 0 &&
+                  soError == 0) ? 0 : -1;
+            if (rc != 0) errno = soError ? soError : EIO;
+        } else {
+            errno = waitError ? waitError : ETIMEDOUT;
+            rc = -1;
+        }
     }
-    if (!set_nonblocking(fd)) {
+    if (rc != 0) {
         int failure = errno;
         close(fd);
         if (connectErrno) *connectErrno = failure;
@@ -336,19 +368,88 @@ static void log_daemon_identity_transition(const ServiceResponse* response) {
          response->version, response->servicePid);
 }
 
-bool linux_daemon_send(const ServiceRequest* request, ServiceResponse* response,
-                       char* error, size_t errorSize) {
+// One exchange took an unusual share of its own budget.  Logged on a per-class
+// high-water mark so a persistently slow daemon produces a handful of lines
+// rather than one per refresh tick, and so the first occurrence is never buried.
+//
+// This is the instrumentation whose absence is why the Linux deadlines could
+// only be argued about: the 2026-09-11 Windows incident was diagnosable because
+// the log carried real turnaround percentiles, and nothing here recorded any.
+static void note_exchange_duration(unsigned int command,
+                                   unsigned long long elapsedMs,
+                                   unsigned long budgetMs) {
+    static unsigned long long highWater[4] = {};
+    LinuxDaemonDeadlineClass commandClass = linux_daemon_deadline_class(command);
+    unsigned long long& seen = highWater[(int)commandClass];
+    if (budgetMs == 0 || elapsedMs <= seen) return;
+    seen = elapsedMs;
+    // Below half the budget the derivation is comfortably right and the line
+    // would be noise; above it, the number is the evidence a future audit needs.
+    if (elapsedMs * 2ULL < (unsigned long long)budgetMs) return;
+    dlog("daemon client: command=%u class=%d slow exchange %llums of %lums "
+         "budget (new high-water for this class)\n",
+         command, (int)commandClass, elapsedMs, budgetMs);
+}
+
+// A deadline expiry on the RESPONSE says the daemon accepted the request and
+// then failed its own contract.  Reporting only "timeout" left the reader
+// unable to tell that from an unreachable daemon, which is the confusion that
+// made a slow apply present as a failed one.
+static void format_response_timeout(char* error, size_t errorSize,
+                                    const char* phase, unsigned int command,
+                                    unsigned long budgetMs,
+                                    unsigned long long elapsedMs) {
+    if (!error || errorSize == 0) return;
+    gc_snprintf(error, errorSize,
+        "daemon accepted the request (command %u) but did not answer within "
+        "%lu ms (%s, waited %llu ms); it is busy or wedged, not absent",
+        command, budgetMs, phase, elapsedMs);
+}
+
+// `totalTimeoutMs` bounds the whole request/response exchange, not each
+// transfer.  `outcome` reports what a failure proves about the daemon's
+// existence and whether it was a deadline expiry; see
+// linux_daemon_deadline_policy.h.
+static bool linux_daemon_send_deadline(const ServiceRequest* request,
+                                       ServiceResponse* response,
+                                       unsigned long totalTimeoutMs,
+                                       LinuxDaemonSendOutcome* outcome,
+                                       char* error, size_t errorSize) {
     if (error && errorSize) error[0] = 0;
+    if (outcome) {
+        outcome->reachability = LINUX_DAEMON_REACHABILITY_UNKNOWN;
+        outcome->deadlineExpired = false;
+    }
     if (!request || !response) {
         if (error) gc_strlcpy(error, errorSize, "invalid daemon request buffer");
         return false;
     }
     memset(response, 0, sizeof(*response));
+    const unsigned int command = (unsigned int)request->command;
+    if (totalTimeoutMs == 0ul) {
+        // The recovery loop exhausted its total budget. Attempting the exchange
+        // anyway would be a zero-length deadline dressed up as a request.
+        if (error) gc_snprintf(error, errorSize,
+            "daemon request (command %u) has no response budget left", command);
+        log_client_failure("deadline", error);
+        return false;
+    }
     int connectErrno = 0;
     int fd = client_connect(&connectErrno);
     if (fd < 0) {
+        if (outcome)
+            outcome->reachability =
+                linux_daemon_connect_reachability(connectErrno);
         if (connectErrno == EACCES || connectErrno == EPERM) {
             format_permission_diagnostic(error, errorSize, connectErrno);
+        } else if (linux_daemon_connect_is_saturated(connectErrno)) {
+            // Positive evidence of a listening daemon whose backlog is full.
+            // Requests are serviced one at a time, so this is what a long
+            // mutation with several waiting clients looks like from outside.
+            if (error) gc_snprintf(error, errorSize,
+                "daemon at %s is not accepting connections right now "
+                "(backlog of %d full): it is busy, not stopped",
+                GC_DAEMON_SOCKET_PATH, GC_DAEMON_LISTEN_BACKLOG);
         } else if (error) {
             gc_snprintf(error, errorSize,
                 "daemon not reachable at %s: %s (is greencurve.service running?)",
@@ -360,9 +461,19 @@ bool linux_daemon_send(const ServiceRequest* request, ServiceResponse* response,
         log_client_failure("connect", error);
         return false;
     }
+    // Past this point a daemon demonstrably owns the socket.  Nothing that
+    // happens next is evidence that it does not.
+    if (outcome) outcome->reachability = LINUX_DAEMON_REACHABILITY_CONNECTED;
 
-    DaemonIoResult writeResult = daemon_write_exact(
-        fd, request, sizeof(*request));
+    // Availability and turnaround are separate budgets, so the exchange
+    // deadline starts HERE: time spent finding the daemon is not charged
+    // against the daemon's time to answer.  Within the exchange, ONE deadline
+    // covers request write + response header + response body together.
+    const unsigned long long exchangeStart = monotonic_ms();
+    const unsigned long long exchangeDeadline = exchangeStart + totalTimeoutMs;
+
+    DaemonIoResult writeResult = daemon_write_exact_until(
+        fd, request, sizeof(*request), exchangeDeadline);
     if (writeResult.failure != DAEMON_IO_NONE) {
         format_io_failure(error, errorSize, "request write", writeResult,
                           0, sizeof(*request));
@@ -372,10 +483,18 @@ bool linux_daemon_send(const ServiceRequest* request, ServiceResponse* response,
     }
 
     ServiceWirePrefix prefix = {};
-    DaemonIoResult prefixResult = daemon_read_exact(fd, &prefix, sizeof(prefix));
+    DaemonIoResult prefixResult = daemon_read_exact_until(
+        fd, &prefix, sizeof(prefix), exchangeDeadline);
     if (prefixResult.failure != DAEMON_IO_NONE) {
-        format_io_failure(error, errorSize, "response header read", prefixResult,
-                          0, sizeof(prefix));
+        if (prefixResult.failure == DAEMON_IO_TIMEOUT) {
+            if (outcome) outcome->deadlineExpired = true;
+            format_response_timeout(error, errorSize, "response header",
+                                    command, totalTimeoutMs,
+                                    monotonic_ms() - exchangeStart);
+        } else {
+            format_io_failure(error, errorSize, "response header read",
+                              prefixResult, 0, sizeof(prefix));
+        }
         log_client_failure("response header read", error);
         close(fd);
         return false;
@@ -403,16 +522,25 @@ bool linux_daemon_send(const ServiceRequest* request, ServiceResponse* response,
     }
 
     const size_t prefixSize = sizeof(prefix);
-    DaemonIoResult bodyResult = daemon_read_exact(
+    DaemonIoResult bodyResult = daemon_read_exact_until(
         fd, (unsigned char*)response + prefixSize,
-        sizeof(*response) - prefixSize);
+        sizeof(*response) - prefixSize, exchangeDeadline);
     close(fd);
     if (bodyResult.failure != DAEMON_IO_NONE) {
-        format_io_failure(error, errorSize, "response body read", bodyResult,
-                          prefixSize, sizeof(*response));
+        if (bodyResult.failure == DAEMON_IO_TIMEOUT) {
+            if (outcome) outcome->deadlineExpired = true;
+            format_response_timeout(error, errorSize, "response body",
+                                    command, totalTimeoutMs,
+                                    monotonic_ms() - exchangeStart);
+        } else {
+            format_io_failure(error, errorSize, "response body read", bodyResult,
+                              prefixSize, sizeof(*response));
+        }
         log_client_failure("response body read", error);
         return false;
     }
+    note_exchange_duration(command, monotonic_ms() - exchangeStart,
+                           totalTimeoutMs);
     if (!validate_service_response_for_ipc(response)) {
         if (error) gc_strlcpy(error, errorSize,
             "daemon returned an invalid state envelope");
@@ -438,6 +566,19 @@ bool linux_daemon_send(const ServiceRequest* request, ServiceResponse* response,
         return false;
     }
     return true;
+}
+
+// The public entry point derives its deadline from the command, so every
+// existing caller lands in the right lane without naming a number.  That is the
+// point of the policy header: there is no longer a place to pick one.
+bool linux_daemon_send(const ServiceRequest* request, ServiceResponse* response,
+                       char* error, size_t errorSize) {
+    return linux_daemon_send_deadline(request, response,
+        request ? linux_daemon_command_response_timeout_ms(
+                      (unsigned int)request->command)
+                : linux_daemon_response_timeout_ms(
+                      LINUX_DAEMON_DEADLINE_STATE_READ),
+        nullptr, error, errorSize);
 }
 
 bool linux_daemon_get_startup_policy(ServiceResponse* response,
@@ -506,11 +647,20 @@ bool linux_daemon_refresh_startup_profile(int profileSlot,
     return ok && resp.status == SERVICE_STATUS_OK;
 }
 
+// The daemon's own per-peer bound.  Deliberately small, and deliberately NOT a
+// turnaround budget: no honest client pauses between connect() and one
+// fixed-size write, and requests are serviced one at a time, so a generous
+// bound here is a local denial-of-service surface rather than patience.  ONE
+// deadline covers header and body, so a peer cannot buy a second full window by
+// stalling after the prefix.
 static bool daemon_read_request(int fd, ServiceRequest* request) {
     if (!request) return false;
     memset(request, 0, sizeof(*request));
+    const unsigned long long frameDeadline =
+        monotonic_ms() + GC_DAEMON_PEER_STALL_BUDGET_MS;
     ServiceWirePrefix prefix = {};
-    DaemonIoResult prefixResult = daemon_read_exact(fd, &prefix, sizeof(prefix));
+    DaemonIoResult prefixResult = daemon_read_exact_until(
+        fd, &prefix, sizeof(prefix), frameDeadline);
     if (prefixResult.failure != DAEMON_IO_NONE) {
         char detail[192] = {};
         format_io_failure(detail, sizeof(detail), "request header read",
@@ -530,9 +680,9 @@ static bool daemon_read_request(int fd, ServiceRequest* request) {
         return true;
     }
     const size_t prefixSize = sizeof(prefix);
-    DaemonIoResult bodyResult = daemon_read_exact(
+    DaemonIoResult bodyResult = daemon_read_exact_until(
         fd, (unsigned char*)request + prefixSize,
-        sizeof(*request) - prefixSize);
+        sizeof(*request) - prefixSize, frameDeadline);
     if (bodyResult.failure != DAEMON_IO_NONE) {
         char detail[192] = {};
         format_io_failure(detail, sizeof(detail), "request body read",
@@ -544,7 +694,9 @@ static bool daemon_read_request(int fd, ServiceRequest* request) {
 }
 
 static bool daemon_write_response(int fd, const ServiceResponse* response) {
-    DaemonIoResult result = daemon_write_exact(fd, response, sizeof(*response));
+    DaemonIoResult result = daemon_write_exact_until(
+        fd, response, sizeof(*response),
+        monotonic_ms() + GC_DAEMON_PEER_STALL_BUDGET_MS);
     if (result.failure == DAEMON_IO_NONE) return true;
     char detail[192] = {};
     format_io_failure(detail, sizeof(detail), "response write", result,

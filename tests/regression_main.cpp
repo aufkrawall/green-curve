@@ -41,6 +41,11 @@
 #include "linux_service_install_policy.h"
 #include "linux_config_path_policy.h"
 #include "linux_daemon_transport_policy.h"
+// The Linux counterpart of the pipe deadline contract, and it exists for the
+// same reason: a client deadline below the daemon's own bound makes a healthy
+// daemon present as a lost one -- and here it made a COMMITTED apply present as
+// a failed one, because the outcome recovery inherited the same short deadline.
+#include "linux_daemon_deadline_policy.h"
 #include "linux_systemd_notify_policy.h"
 #include "linux_daemon_state.h"
 #include "linux_port_internal.h"
@@ -2520,6 +2525,235 @@ static int run_all_tests(int argc, char** argv) {
             return 5095;
         if (service_phase_remaining_ms(100ul, 500ul, 450ul, 500ul) != 50ul)
             return 5096;
+
+        // The same mistake one lane further on (found 2026-09-12 while auditing
+        // the Linux side). SERVICE_CMD_GET_OPERATION_RESULT -- the query that
+        // recovers a mutation whose response was lost -- carried a hard-coded
+        // 5000 ms while the apply it recovers is allowed 20000. The query is
+        // trivial to answer but shares the serialized dispatch lock with the
+        // mutation it asks about, so a still-running apply made it expire, and
+        // the client reported "outcome is unknown, do not retry" for a write
+        // that had SUCCEEDED.
+        if (service_operation_recovery_response_timeout_ms() <= 5000ul)
+            return 5150;
+        if (service_operation_recovery_response_timeout_ms() <=
+            (unsigned long)SERVICE_APPLY_HANDLER_BUDGET_MS) return 5151;
+        // It is a mutation-class wait, not a read-class one.
+        if (service_operation_recovery_response_timeout_ms() <=
+            service_state_read_response_timeout_ms(true)) return 5152;
+        // And it still carries whatever is already dispatching.
+        if (service_operation_recovery_response_timeout_ms() <=
+            (unsigned long)SERVICE_APPLY_HANDLER_BUDGET_MS +
+            service_dispatch_serialization_budget_ms()) return 5153;
+    }
+
+    // F-DAEMON-DEADLINE: the Linux client's request deadlines versus the
+    // daemon's own bound for the same request (2026-09-12).
+    //
+    // linux_daemon_transport.cpp used ONE literal, GC_DAEMON_IO_TIMEOUT_MS
+    // 2000, for four roles: the daemon reading a request, the daemon writing a
+    // response, the client writing a request, and the client WAITING FOR THE
+    // ANSWER. Only the first two are stall questions a small fixed number
+    // answers. For a mutation the fourth was an order of magnitude short --
+    // Windows gives the same operation 20000 ms for strictly less work, and the
+    // Linux handler additionally fsyncs up to four records inline and performs
+    // a second full hardware pass on the rollback path.
+    //
+    // The recovery was worse than the gap. On a transport timeout the client
+    // queries the original operation ID instead of writing the GPU again, but
+    // that query carried the SAME 2000 ms -- and the daemon is single-threaded,
+    // so while the mutation runs the query cannot be accepted either. It
+    // expired too, in precisely the case the recovery exists for, and the TUI
+    // reported a committed Apply as "Apply failed" with the draft still dirty.
+    //
+    // Every assertion below would have failed before the fix.
+    {
+        // Command classification. A mutation, a durable-record write and a
+        // plain read are three different amounts of work, and the recovery
+        // query is a mutation-class WAIT even though it is trivial to answer.
+        if (linux_daemon_deadline_class(SERVICE_CMD_APPLY) !=
+            LINUX_DAEMON_DEADLINE_MUTATION) return 5097;
+        if (linux_daemon_deadline_class(SERVICE_CMD_RESET) !=
+            LINUX_DAEMON_DEADLINE_MUTATION) return 5098;
+        // The resume unit's write is a hardware write like any other.
+        if (linux_daemon_deadline_class(SERVICE_CMD_RESUME_RESTORE) !=
+            LINUX_DAEMON_DEADLINE_MUTATION) return 5099;
+        if (linux_daemon_deadline_class(SERVICE_CMD_SET_STARTUP_POLICY) !=
+            LINUX_DAEMON_DEADLINE_RECORD_WRITE) return 5100;
+        if (linux_daemon_deadline_class(SERVICE_CMD_REFRESH_STARTUP_PROFILE) !=
+            LINUX_DAEMON_DEADLINE_RECORD_WRITE) return 5101;
+        if (linux_daemon_deadline_class(SERVICE_CMD_GET_OPERATION_RESULT) !=
+            LINUX_DAEMON_DEADLINE_OPERATION_RECOVERY) return 5102;
+        if (linux_daemon_deadline_class(SERVICE_CMD_GET_SNAPSHOT) !=
+            LINUX_DAEMON_DEADLINE_STATE_READ) return 5103;
+        if (linux_daemon_deadline_class(SERVICE_CMD_GET_TELEMETRY) !=
+            LINUX_DAEMON_DEADLINE_STATE_READ) return 5104;
+        if (linux_daemon_deadline_class(SERVICE_CMD_PING) !=
+            LINUX_DAEMON_DEADLINE_STATE_READ) return 5105;
+
+        // The literal that caused it is now provably impossible in every lane.
+        if (linux_daemon_response_timeout_ms(
+                LINUX_DAEMON_DEADLINE_STATE_READ) <= 2000ul) return 5106;
+        if (linux_daemon_response_timeout_ms(
+                LINUX_DAEMON_DEADLINE_RECORD_WRITE) <= 2000ul) return 5107;
+        if (linux_daemon_response_timeout_ms(
+                LINUX_DAEMON_DEADLINE_MUTATION) <= 2000ul) return 5108;
+        if (linux_daemon_response_timeout_ms(
+                LINUX_DAEMON_DEADLINE_OPERATION_RECOVERY) <= 2000ul) return 5109;
+
+        // A deadline must exceed what the daemon may spend, or its expiry says
+        // nothing about the daemon's health.
+        if (linux_daemon_response_timeout_ms(LINUX_DAEMON_DEADLINE_MUTATION) <=
+            linux_daemon_mutation_handler_budget_ms()) return 5110;
+        if (linux_daemon_response_timeout_ms(
+                LINUX_DAEMON_DEADLINE_RECORD_WRITE) <=
+            linux_daemon_record_write_handler_budget_ms()) return 5111;
+        if (linux_daemon_response_timeout_ms(
+                LINUX_DAEMON_DEADLINE_STATE_READ) <=
+            linux_daemon_state_read_handler_budget_ms()) return 5112;
+
+        // Work ordering: a mutation writes the GPU twice on the rollback path
+        // and fsyncs four records; a record write is a read plus one fsync.
+        if (linux_daemon_mutation_handler_budget_ms() <=
+            linux_daemon_record_write_handler_budget_ms()) return 5113;
+        if (linux_daemon_record_write_handler_budget_ms() <=
+            linux_daemon_state_read_handler_budget_ms()) return 5114;
+        // The handler budget contains the fan-thread g_lock hold it waits out,
+        // not just the refresh after it.
+        if (linux_daemon_state_read_handler_budget_ms() <=
+            (unsigned long)GC_DAEMON_FAN_RUNTIME_LOCK_WAIT_MS) return 5115;
+
+        // The accept loop is blocked outright while a handler runs, so a read
+        // must survive being queued behind a whole other dispatch.
+        if (linux_daemon_response_timeout_ms(
+                LINUX_DAEMON_DEADLINE_STATE_READ) <=
+            linux_daemon_state_read_handler_budget_ms() +
+                linux_daemon_serialization_budget_ms()) return 5116;
+
+        // THE defect: the recovery query is queued behind the very mutation it
+        // is asking about. A read-class deadline here could only ever recover
+        // the rare case where the daemon answered fast and the response was
+        // lost -- never the slow mutation the recovery exists for.
+        if (linux_daemon_response_timeout_ms(
+                LINUX_DAEMON_DEADLINE_OPERATION_RECOVERY) <=
+            linux_daemon_mutation_handler_budget_ms()) return 5117;
+        if (linux_daemon_response_timeout_ms(
+                LINUX_DAEMON_DEADLINE_OPERATION_RECOVERY) <=
+            linux_daemon_response_timeout_ms(
+                LINUX_DAEMON_DEADLINE_STATE_READ)) return 5118;
+
+        // Availability is a separate budget from turnaround, in both
+        // directions: finding the daemon stays cheap, and the daemon's per-peer
+        // stall bound stays far below a turnaround budget -- it faces a
+        // single-threaded server, so patience there is a local DoS surface.
+        if ((unsigned long)GC_DAEMON_CONNECT_BUDGET_MS >=
+            linux_daemon_response_timeout_ms(
+                LINUX_DAEMON_DEADLINE_STATE_READ)) return 5119;
+        if ((unsigned long)GC_DAEMON_PEER_STALL_BUDGET_MS >=
+            linux_daemon_response_timeout_ms(
+                LINUX_DAEMON_DEADLINE_MUTATION)) return 5120;
+
+        // Recovery budget arithmetic. The total caps mutation + recovery so
+        // retrying cannot double the client's worst-case wait, and it reaches
+        // exactly zero rather than wrapping.
+        if (linux_daemon_mutation_total_budget_ms() <=
+            linux_daemon_response_timeout_ms(
+                LINUX_DAEMON_DEADLINE_MUTATION)) return 5121;
+        if (linux_daemon_recovery_remaining_ms(0ul) !=
+            linux_daemon_response_timeout_ms(
+                LINUX_DAEMON_DEADLINE_OPERATION_RECOVERY)) return 5122;
+        if (linux_daemon_recovery_remaining_ms(
+                linux_daemon_mutation_total_budget_ms()) != 0ul) return 5123;
+        if (linux_daemon_recovery_remaining_ms(
+                linux_daemon_mutation_total_budget_ms() + 60000ul) != 0ul)
+            return 5124;
+        // Strictly decreasing once the total starts to bite, never increasing.
+        {
+            unsigned long previous = linux_daemon_recovery_remaining_ms(0ul);
+            // Past the total, not merely up to it: the budget is not a
+            // multiple of the step, and "reaches zero" is the property.
+            for (unsigned long spent = 1000ul;
+                 spent <= linux_daemon_mutation_total_budget_ms() + 2000ul;
+                 spent += 1000ul) {
+                unsigned long now = linux_daemon_recovery_remaining_ms(spent);
+                if (now > previous) return 5125;
+                previous = now;
+            }
+            if (previous != 0ul) return 5126;
+        }
+
+        // Reachability. EAGAIN from a non-blocking AF_UNIX connect() is
+        // returned only when the pathname IS a listening socket whose backlog
+        // is full, so it is positive evidence that a daemon exists.
+        if (linux_daemon_connect_reachability(ENOENT) !=
+            LINUX_DAEMON_REACHABILITY_UNREACHABLE) return 5127;
+        if (linux_daemon_connect_reachability(ECONNREFUSED) !=
+            LINUX_DAEMON_REACHABILITY_UNREACHABLE) return 5128;
+        if (linux_daemon_connect_reachability(EACCES) !=
+            LINUX_DAEMON_REACHABILITY_UNREACHABLE) return 5129;
+        if (linux_daemon_connect_reachability(EPERM) !=
+            LINUX_DAEMON_REACHABILITY_UNREACHABLE) return 5130;
+        if (linux_daemon_connect_reachability(EAGAIN) !=
+            LINUX_DAEMON_REACHABILITY_CONNECTED) return 5131;
+        if (linux_daemon_connect_reachability(ETIMEDOUT) !=
+            LINUX_DAEMON_REACHABILITY_CONNECTED) return 5132;
+        if (!linux_daemon_connect_is_saturated(EAGAIN)) return 5133;
+        if (linux_daemon_connect_is_saturated(ENOENT)) return 5134;
+
+        // Only an unreachable daemon is an offline one. A request that was
+        // accepted and then not answered proves the daemon is BUSY -- tearing
+        // down live authority on it is the Linux shape of the Windows incident.
+        if (!linux_daemon_failure_means_offline(
+                LINUX_DAEMON_REACHABILITY_UNREACHABLE)) return 5135;
+        if (linux_daemon_failure_means_offline(
+                LINUX_DAEMON_REACHABILITY_CONNECTED)) return 5136;
+        if (linux_daemon_failure_means_offline(
+                LINUX_DAEMON_REACHABILITY_UNKNOWN)) return 5137;
+
+        // The anti-spin property. Only a deadline expiry against a daemon that
+        // owns the socket justifies asking again: that attempt blocks on a real
+        // descriptor for its slice. Every failure that returns PROMPTLY --
+        // unreachable, saturated backlog, protocol mismatch -- must stop the
+        // loop, or the recovery burns its whole budget in a busy spin.
+        {
+            LinuxDaemonSendOutcome busy = {
+                LINUX_DAEMON_REACHABILITY_CONNECTED, true };
+            if (!linux_daemon_recovery_may_retry(false, busy)) return 5138;
+            // An answered query is final, however it answered.
+            if (linux_daemon_recovery_may_retry(true, busy)) return 5139;
+
+            LinuxDaemonSendOutcome gone = {
+                LINUX_DAEMON_REACHABILITY_UNREACHABLE, false };
+            if (linux_daemon_recovery_may_retry(false, gone)) return 5140;
+            // Backlog full: the daemon exists, but connect() failed
+            // IMMEDIATELY. Retrying that is the spin, so the deadline flag --
+            // not reachability alone -- has to gate the loop.
+            LinuxDaemonSendOutcome saturated = {
+                LINUX_DAEMON_REACHABILITY_CONNECTED, false };
+            if (linux_daemon_recovery_may_retry(false, saturated)) return 5141;
+            LinuxDaemonSendOutcome unknown = {
+                LINUX_DAEMON_REACHABILITY_UNKNOWN, true };
+            if (linux_daemon_recovery_may_retry(false, unknown)) return 5142;
+        }
+
+        // A responsive daemon's answer is final either way: IN_PROGRESS and
+        // OUTCOME_UNKNOWN say nothing about the hardware but everything about
+        // the daemon, and re-asking a responsive daemon is another spin.
+        if (!linux_daemon_recovery_state_is_settled(
+                SERVICE_OPERATION_SUCCEEDED)) return 5143;
+        if (!linux_daemon_recovery_state_is_settled(
+                SERVICE_OPERATION_FAILED)) return 5144;
+        if (linux_daemon_recovery_state_is_settled(
+                SERVICE_OPERATION_IN_PROGRESS)) return 5145;
+        if (linux_daemon_recovery_state_is_settled(
+                SERVICE_OPERATION_OUTCOME_UNKNOWN)) return 5146;
+
+        // "Unknown" is reserved for the case where nothing was ever read back.
+        // A daemon that refused the request gave a known outcome, however the
+        // first attempt failed.
+        if (!linux_daemon_outcome_is_unknown(false, false)) return 5147;
+        if (linux_daemon_outcome_is_unknown(true, false)) return 5148;
+        if (linux_daemon_outcome_is_unknown(false, true)) return 5149;
     }
 
     // F-RESET-FLAGS: RESET carries no flags. The interactive bit is only ever

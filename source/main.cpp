@@ -195,16 +195,11 @@ static const int SERVICE_DEBUG_DEFAULT_ENABLED = 1; // Service logs are opt-out 
 static const DWORD SERVICE_PIPE_CLIENT_CONNECT_SLICE_MS = 250;
 static const DWORD SERVICE_PIPE_CLIENT_SLEEP_SLICE_MS = 10;
 static const DWORD SERVICE_PIPE_SERVER_IO_TIMEOUT_MS = 2000;
-// A profile APPLY/RESET runs synchronously in the service under the runtime lock and
-// legitimately takes several seconds (reset-before-apply + a 1s TDR settle + 2-3 VF
-// setControl driver writes at ~1s each + optional Blackwell tail correction). The
-// client read timeout must EXCEED the worst-case apply, otherwise the client falsely
-// reports "Timed out during reading service response" AND disconnects mid-apply — the
-// service then fails the response write (error 232) even though the apply SUCCEEDED,
-// which under rapid switching risks a double-apply / inconsistent client view. This
-// is a reliability ceiling (a genuinely wedged apply is caught by the service's own
-// fan-pulse wedge watchdog + restart), not the mechanism for making applies fast.
-static const DWORD SERVICE_APPLY_CLIENT_TIMEOUT_MS = 20000;
+// Derived, with its full rationale, in service_request_deadline_policy.h: the
+// operation-result query that recovers a lost apply response depends on it, so
+// it cannot stay a local literal here.
+static const DWORD SERVICE_APPLY_CLIENT_TIMEOUT_MS =
+    (DWORD)SERVICE_APPLY_HANDLER_BUDGET_MS;
 static const DWORD SERVICE_FAN_THREAD_STOP_TIMEOUT_MS = 5000;
 static const DWORD SERVICE_FAN_WATCHDOG_INTERVAL_MS = 3000;
 // A healthy fan pulse completes in well under a second (a few NVML reads/writes

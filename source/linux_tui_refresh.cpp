@@ -11,11 +11,26 @@ bool tui_refresh_service(TuiState* state, bool userRequested,
     if (!target && state->targetGpu.valid) target = &state->targetGpu;
     bool wasOnline = state->serviceOnline;
     ServiceResponse previous = state->service;
-    if (!linux_daemon_get_state(target, &next, error, sizeof(error))) {
+    LinuxDaemonReachability reachability = LINUX_DAEMON_REACHABILITY_UNKNOWN;
+    if (!linux_daemon_get_state_ex(target, &next, &reachability,
+                                   error, sizeof(error))) {
+        state->nextTelemetryMs = tui_monotonic_ms() + 1500;
+        // A read the daemon ACCEPTED and then failed to answer in time proves
+        // it is busy, not absent.  Dropping serviceOnline here is the Linux
+        // shape of the 2026-09-11 Windows incident: a long mutation on another
+        // client would tear down live authority, detach the draft and block
+        // Apply, then restore all of it one second later -- once per slow tick.
+        // One stale frame with an honest status line is the correct
+        // degradation; the daemon's own systemd watchdog resolves a genuinely
+        // wedged daemon, and connect() starts failing when it does.
+        if (wasOnline && !linux_daemon_failure_means_offline(reachability)) {
+            set_daemon_failure(state,
+                "Daemon is busy; showing the last state it published", error);
+            return false;
+        }
         state->serviceOnline = false;
         state->draftAttached = false;
         set_daemon_failure(state, "Daemon refresh failed", error);
-        state->nextTelemetryMs = tui_monotonic_ms() + 1500;
         return false;
     }
 

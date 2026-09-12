@@ -29,7 +29,13 @@ static bool service_client_query_operation(gc_u64 operationId,
     ProcessIdToSessionId(request.callerPid, &request.callerSessionId);
     StringCchCopyA(request.source, ARRAY_COUNT(request.source),
         "client operation query");
-    return service_send_request(&request, response, 5000, err, errSize);
+    // Derived, not picked: this query is dispatched under the same serialized
+    // lock as the mutation it is recovering, so it has to outlast that mutation
+    // rather than merely outlast the framing. See
+    // service_operation_recovery_response_timeout_ms().
+    return service_send_request(&request, response,
+        (DWORD)service_operation_recovery_response_timeout_ms(),
+        err, errSize);
 }
 
 static bool service_client_recover_operation_result(gc_u64 operationId,

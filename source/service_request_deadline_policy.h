@@ -49,6 +49,23 @@
 // lane too.
 #define SERVICE_SNAPSHOT_REFRESH_BUDGET_MS 2500u
 
+// What the service may spend on one hardware mutation before it answers.
+//
+// A profile APPLY/RESET runs synchronously in the service under the runtime
+// lock and legitimately takes several seconds: reset-before-apply, a 1 s TDR
+// settle, 2-3 VF setControl driver writes at ~1 s each, plus the optional
+// Blackwell tail correction. The client read deadline must EXCEED the
+// worst-case apply, or the client reports "Timed out during reading service
+// response" and disconnects MID-APPLY -- the service then fails its response
+// write with error 232 for a write that SUCCEEDED, which under rapid switching
+// risks a double-apply and an inconsistent client view. This is a reliability
+// ceiling (a genuinely wedged apply is caught by the service's own fan-pulse
+// wedge watchdog and restart), not the mechanism for making applies fast.
+//
+// It lives here rather than in main.cpp because a SECOND deadline is derived
+// from it -- see service_operation_recovery_response_timeout_ms() below.
+#define SERVICE_APPLY_HANDLER_BUDGET_MS 20000u
+
 // Request/response framing once the pipe is connected: two message-mode
 // transfers of a fixed-size struct plus the server's post-dispatch snapshot
 // copy. Deliberately generous; it is not where the time goes.
@@ -110,6 +127,25 @@ static constexpr unsigned long service_health_probe_response_timeout_ms() {
         (unsigned long)SERVICE_RESPONSE_FRAMING_BUDGET_MS;
 }
 
+// How long the client may wait for SERVICE_CMD_GET_OPERATION_RESULT, the query
+// that recovers a mutation whose response was lost.
+//
+// It carried a hard-coded 5000 ms (main_service_client_commands.cpp) while the
+// apply it recovers is allowed 20000 -- the same mistake class this header was
+// written for, one lane further on. The query is trivial to answer, but it is
+// dispatched under the SAME serialized lock as the mutation it is asking about,
+// so a still-running apply makes it wait for the apply. Expiring there made the
+// client report "outcome is unknown, do not retry" for a write that had
+// succeeded, which is the worst possible answer: it is both wrong and
+// un-actionable.
+//
+// The recovery deadline must therefore outlast the mutation, not the framing.
+static constexpr unsigned long service_operation_recovery_response_timeout_ms() {
+    return (unsigned long)SERVICE_APPLY_HANDLER_BUDGET_MS +
+        service_dispatch_serialization_budget_ms() +
+        (unsigned long)SERVICE_RESPONSE_FRAMING_BUDGET_MS;
+}
+
 // --- Phase arithmetic --------------------------------------------------------
 
 // How long one phase of a request may still run, given how long that phase and
@@ -118,7 +154,7 @@ static constexpr unsigned long service_health_probe_response_timeout_ms() {
 // worst case for never aborting an answer the service is still producing);
 // a non-zero total caps their sum, which is what keeps the split from doubling
 // the worst-case stall of a synchronous caller blocking the user's thread.
-static inline unsigned long service_phase_remaining_ms(
+static constexpr unsigned long service_phase_remaining_ms(
     unsigned long phaseElapsedMs, unsigned long phaseTimeoutMs,
     unsigned long requestElapsedMs, unsigned long totalTimeoutMs) {
     unsigned long phase = phaseElapsedMs >= phaseTimeoutMs
@@ -169,3 +205,9 @@ static_assert(service_health_probe_response_timeout_ms() >
     "A ping must outlast the command it can be queued behind");
 static_assert(service_health_probe_response_timeout_ms() > 500u,
     "The ping deadline must stay above the literal it replaced");
+static_assert(service_operation_recovery_response_timeout_ms() >
+    (unsigned long)SERVICE_APPLY_HANDLER_BUDGET_MS,
+    "The operation-result query shares the dispatch lock with the mutation it "
+    "recovers, so its deadline must exceed the mutation's own budget");
+static_assert(service_operation_recovery_response_timeout_ms() > 5000u,
+    "The recovery deadline must stay above the 5000 ms literal it replaced");

@@ -40,13 +40,17 @@ def check_tui_layout(ctx, require_text, forbid_text, require_order):
                  "TUI has spatial keyboard navigation")
     require_text(render_cpp, "renderedRows",
                  "TUI redraws only changed terminal rows")
-    require_text(actions_cpp, "linux_daemon_apply_checked",
+    # Apply/Reset and the live exports moved to linux_tui_mutation_actions.cpp
+    # when linux_tui_actions.cpp hit the source-size ratchet; the seam is
+    # "edits a draft in memory" versus "leaves the process".
+    mutation_actions_cpp = _p(ctx, "linux_tui_mutation_actions.cpp")
+    require_text(mutation_actions_cpp, "linux_daemon_apply_checked",
                  "TUI Apply carries reconnect-safe daemon preconditions")
     require_text(actions_cpp, "clamp_int(value, -3000, 3000)",
                  "TUI memory offset matches the +-3000 IPC bound")
     forbid_text(actions_cpp, "memcmp(&left, &right",
                 "TUI dirty-state comparison ignores struct padding")
-    require_order(actions_cpp, "bool flushed = fflush(file) == 0;",
+    require_order(mutation_actions_cpp, "bool flushed = fflush(file) == 0;",
                   "bool closed = fclose(file) == 0;",
                   "TUI live export always closes its output after flushing")
 
@@ -217,6 +221,73 @@ def check_client_diagnostics(ctx, require_text, forbid_text):
                  "the daemon names a rejected caller instead of silently erroring")
     require_text(daemon_cpp, "rejected malformed request pid=%u",
                  "a malformed request is logged with the fields that failed")
+
+
+def check_daemon_deadlines(ctx, require_text, forbid_text, require_order):
+    """F-DAEMON-DEADLINE (2026-09-12): the client's request deadlines versus the
+    daemon's own bound for the same request.
+
+    None of this fails visibly when it regresses.  A client deadline below the
+    daemon's bound does not crash or break the build; it just turns a busy
+    daemon into a failed request -- and the operation recovery that exists to
+    catch exactly that used to inherit the same too-short number, so a COMMITTED
+    Apply was reported to the user as a failed one."""
+    transport = _p(ctx, "linux_daemon_transport.cpp")
+    policy = _p(ctx, "linux_daemon_deadline_policy.h")
+    client = _p(ctx, "linux_daemon_client.h")
+    refresh = _p(ctx, "linux_tui_refresh.cpp")
+    mutation_actions = _p(ctx, "linux_tui_mutation_actions.cpp")
+
+    require_text(transport, "linux_daemon_deadline_policy.h",
+                 "Linux transport derives its deadlines instead of picking them")
+    # The exact shape of the defect: ONE literal serving four roles that ask
+    # different questions.  Deriving per role is the fix, so it must not return.
+    forbid_text(transport, "GC_DAEMON_IO_TIMEOUT_MS",
+                "Linux transport no longer shares one I/O literal across roles")
+    forbid_text(transport, "daemon_read_exact(",
+                "Linux transport reads carry an explicit deadline")
+    forbid_text(transport, "daemon_write_exact(",
+                "Linux transport writes carry an explicit deadline")
+    require_text(transport, "linux_daemon_command_response_timeout_ms",
+                 "Linux client response deadlines are per command class")
+    # One deadline spans request write + response header + response body, so a
+    # budget of N ms cannot silently cost 2N.
+    require_text(transport, "const unsigned long long exchangeDeadline",
+                 "one deadline bounds the whole client exchange")
+    require_text(transport, "const unsigned long long frameDeadline",
+                 "one deadline bounds the daemon's whole request frame")
+    # Non-blocking BEFORE connect(): a blocking AF_UNIX connect() against a full
+    # listen backlog waits for the daemon to drain it, with no bound at all.
+    require_text(transport, "SOCK_NONBLOCK",
+                 "Linux client connects non-blockingly so a full backlog cannot hang it")
+    require_order(transport, "SOCK_NONBLOCK", "connect(fd,",
+                  "Linux client socket is non-blocking before it connects")
+    # Turnaround instrumentation.  Its absence is why the deadlines could only
+    # be argued about rather than measured.
+    require_text(transport, "static void note_exchange_duration(",
+                 "Linux client records slow exchanges against their own budget")
+
+    # The recovery query is queued behind the very mutation it asks about, so it
+    # must outlast it -- and it must never retry a failure that returns promptly.
+    require_text(client, "linux_daemon_recovery_remaining_ms",
+                 "Linux outcome recovery uses the mutation budget, not the read one")
+    require_text(client, "linux_daemon_recovery_may_retry",
+                 "Linux outcome recovery cannot spin on a prompt failure")
+    require_text(client, "SERVICE_OPERATION_OUTCOME_UNKNOWN",
+                 "Linux reports an unrecovered mutation as unknown, not as failed")
+    require_text(policy, "its deadline must exceed the mutation handler budget",
+                 "the recovery deadline contract is asserted at compile time")
+    require_text(policy, "linux_daemon_connect_reachability",
+                 "a failed connect is classified rather than assumed to mean offline")
+
+    # A request the daemon ACCEPTED and then did not answer is evidence that it
+    # is busy, and none at all that it is gone.
+    require_text(refresh, "linux_daemon_failure_means_offline",
+                 "Linux TUI keeps live authority when a busy daemon misses a read")
+    require_text(mutation_actions, "Apply outcome unknown",
+                 "Linux TUI never reports an unrecovered Apply as a failed one")
+    require_text(mutation_actions, "Reset outcome unknown",
+                 "Linux TUI never reports an unrecovered Reset as a failed one")
 
 
 def check_terminal_relaunch(ctx, require_text, forbid_text):
@@ -893,6 +964,7 @@ def check_all(ctx, require_text, forbid_text, require_order):
     check_tui_exit(ctx, require_text, forbid_text)
     check_scroll_and_reveal(ctx, require_text, forbid_text)
     check_client_diagnostics(ctx, require_text, forbid_text)
+    check_daemon_deadlines(ctx, require_text, forbid_text, require_order)
     check_terminal_relaunch(ctx, require_text, forbid_text)
     check_debug_log(ctx, require_text, forbid_text)
     check_crash_report(ctx, require_text, forbid_text, require_order)

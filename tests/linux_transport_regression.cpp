@@ -303,5 +303,125 @@ int main() {
         rmdir(directory);
     }
 
+    // F-DAEMON-DEADLINE (2026-09-12): the deadline is ABSOLUTE and shared by
+    // every transfer of one exchange, not a fresh timeout per call.
+    //
+    // The transport used to take a relative timeout per transfer, so a client
+    // response advertised as "2000 ms" cost up to 4000 ms in practice (prefix,
+    // then body) and the daemon's per-peer stall bound had the same flaw: a
+    // peer that stalled after the header bought itself a second full window
+    // against a server that services requests one at a time.
+    //
+    // Both assertions are deterministic -- an already-expired deadline needs no
+    // sleeping, and the data is queued before the read so nothing waits.
+    {
+        int sockets[2] = {};
+        if (!pair(sockets)) return 50;
+        ServiceWirePrefix prefix = {};
+        prefix.magic = SERVICE_PROTOCOL_MAGIC;
+        prefix.version = SERVICE_PROTOCOL_VERSION;
+        if (!native_write_all(sockets[0], &prefix, sizeof(prefix))) return 51;
+
+        // An expired deadline stops the transfer even though the bytes are
+        // already sitting in the socket.  This is what makes a shared deadline
+        // a real cap on the phases after the first one.
+        ServiceWirePrefix received = {};
+        DaemonIoResult expired = daemon_read_exact_until(
+            sockets[1], &received, sizeof(received), monotonic_ms());
+        if (expired.failure != DAEMON_IO_TIMEOUT || expired.transferred != 0)
+            return 52;
+
+        // The same call against a live deadline reads the same queued bytes, so
+        // the refusal above is the deadline and not a broken read path.
+        DaemonIoResult live = daemon_read_exact_until(
+            sockets[1], &received, sizeof(received),
+            monotonic_ms() + 5000ULL);
+        if (live.failure != DAEMON_IO_NONE ||
+            live.transferred != sizeof(received) ||
+            received.magic != SERVICE_PROTOCOL_MAGIC ||
+            received.version != SERVICE_PROTOCOL_VERSION) return 53;
+
+        // A second phase sharing the FIRST phase's deadline gets whatever is
+        // left of it -- here nothing -- rather than a new window.
+        unsigned char body = 0;
+        DaemonIoResult second = daemon_read_exact_until(
+            sockets[1], &body, sizeof(body), monotonic_ms());
+        if (second.failure != DAEMON_IO_TIMEOUT || second.transferred != 0)
+            return 54;
+        close(sockets[0]);
+        close(sockets[1]);
+    }
+
+    // client_connect() must be non-blocking BEFORE connect(), and a full listen
+    // backlog must be reported as a daemon that is BUSY rather than absent.
+    //
+    // A blocking AF_UNIX connect() against a full backlog waits for the daemon
+    // to drain it, with no bound at all -- the one wait in this client that no
+    // deadline covered.  If that regresses, the loop below never returns and
+    // the fixture hangs instead of failing, which is the point: there is no
+    // wall-clock assumption here, only the requirement that it return.
+    {
+        unlink(GC_DAEMON_SOCKET_PATH);
+        int missingErrno = 0;
+        if (client_connect(&missingErrno) >= 0) return 55;
+        // No socket at the pathname: a definite "not there".
+        if (linux_daemon_connect_reachability(missingErrno) !=
+            LINUX_DAEMON_REACHABILITY_UNREACHABLE) return 56;
+
+        int listener = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if (listener < 0) return 57;
+        struct sockaddr_un address = {};
+        address.sun_family = AF_UNIX;
+        snprintf(address.sun_path, sizeof(address.sun_path), "%s",
+                 GC_DAEMON_SOCKET_PATH);
+        if (bind(listener, (struct sockaddr*)&address, sizeof(address)) != 0) {
+            close(listener);
+            return 58;
+        }
+        if (listen(listener, 1) != 0) {
+            close(listener);
+            unlink(GC_DAEMON_SOCKET_PATH);
+            return 59;
+        }
+
+        // Nothing ever accepts, so the backlog fills.  Bounded iteration: the
+        // kernel refuses long before this, and an unbounded loop here would be
+        // its own bug.
+        int pending[32] = {};
+        int pendingCount = 0;
+        int saturatedErrno = 0;
+        bool sawNonblockingFd = false;
+        for (int i = 0; i < (int)(sizeof(pending) / sizeof(pending[0])); ++i) {
+            int attemptErrno = 0;
+            int fd = client_connect(&attemptErrno);
+            if (fd < 0) {
+                saturatedErrno = attemptErrno;
+                break;
+            }
+            // Every connected descriptor is already non-blocking, which is what
+            // lets the caller bound the transfers that follow.
+            int flags = fcntl(fd, F_GETFL, 0);
+            sawNonblockingFd = flags >= 0 && (flags & O_NONBLOCK) != 0;
+            if (!sawNonblockingFd) {
+                close(fd);
+                break;
+            }
+            pending[pendingCount++] = fd;
+        }
+        for (int i = 0; i < pendingCount; ++i) close(pending[i]);
+        close(listener);
+        unlink(GC_DAEMON_SOCKET_PATH);
+
+        if (!sawNonblockingFd) return 60;
+        if (saturatedErrno == 0) return 61;
+        // The daemon demonstrably exists -- it owns a listening socket -- so a
+        // saturated backlog must never be presented as an offline daemon.
+        if (linux_daemon_connect_reachability(saturatedErrno) !=
+            LINUX_DAEMON_REACHABILITY_CONNECTED) return 62;
+        if (linux_daemon_failure_means_offline(
+                linux_daemon_connect_reachability(saturatedErrno))) return 63;
+        if (!linux_daemon_connect_is_saturated(saturatedErrno)) return 64;
+    }
+
     return socket_path_permission_regression();
 }

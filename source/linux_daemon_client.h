@@ -70,29 +70,99 @@ static bool send_simple(unsigned int command, const DesiredSettings* desired,
     ServiceResponse resp;
     memset(&resp, 0, sizeof(resp));
     char err[256] = {};
-    bool ok = linux_daemon_send(&req, &resp, err, sizeof(err));
+    // The mutation itself gets the mutation lane; see
+    // linux_daemon_deadline_policy.h for why the old shared 2000 ms was an
+    // order of magnitude below what this daemon may legitimately spend.
+    const unsigned long requestBudget =
+        linux_daemon_command_response_timeout_ms(command);
+    const unsigned long long requestStart = monotonic_ms();
+    LinuxDaemonSendOutcome sendOutcome = {};
+    bool ok = linux_daemon_send_deadline(&req, &resp, requestBudget,
+                                         &sendOutcome, err, sizeof(err));
     bool receivedServiceError = !ok &&
         resp.magic == SERVICE_PROTOCOL_MAGIC &&
         resp.version == SERVICE_PROTOCOL_VERSION &&
         resp.status != SERVICE_STATUS_OK;
     if (!ok && req.operationId != 0 && !receivedServiceError) {
-        ServiceRequest query = {};
-        query.magic = SERVICE_PROTOCOL_MAGIC;
-        query.version = SERVICE_PROTOCOL_VERSION;
-        query.command = SERVICE_CMD_GET_OPERATION_RESULT;
-        query.callerPid = (gc_u32)getpid();
-        query.operationId = req.operationId;
-        char queryErr[256] = {};
-        if (linux_daemon_send(&query, &resp, queryErr, sizeof(queryErr)) &&
-            resp.operationState != SERVICE_OPERATION_IN_PROGRESS &&
-            resp.operationState != SERVICE_OPERATION_OUTCOME_UNKNOWN) {
-            ok = resp.status == SERVICE_STATUS_OK;
-            dlog("daemon client: operation=%llu recovered state=%u after transport error\n",
-                (unsigned long long)req.operationId,
-                (unsigned int)resp.operationState);
+        // Recover the outcome instead of issuing a second hardware write.
+        //
+        // This used to be one query carrying the SAME 2000 ms the mutation had
+        // just exceeded -- and the daemon is single-threaded, so while the
+        // mutation is still running the query cannot be accepted either.  It
+        // therefore expired too, and reported "pending or unknown" in exactly
+        // the case it exists to cover: the TUI showed a committed Apply as
+        // "Apply failed" with the draft still dirty.
+        //
+        // The loop is deadline-bounded, not interval-bounded: each attempt
+        // blocks in poll() on a real descriptor for the rest of the budget, and
+        // linux_daemon_recovery_may_retry() stops any failure that returns
+        // promptly (unreachable, saturated backlog, protocol) from spinning.
+        bool recovered = false;
+        unsigned int lastState = SERVICE_OPERATION_OUTCOME_UNKNOWN;
+        int attempts = 0;
+        for (;;) {
+            unsigned long remaining = linux_daemon_recovery_remaining_ms(
+                (unsigned long)(monotonic_ms() - requestStart));
+            if (remaining == 0ul) break;
+            ServiceRequest query = {};
+            query.magic = SERVICE_PROTOCOL_MAGIC;
+            query.version = SERVICE_PROTOCOL_VERSION;
+            query.command = SERVICE_CMD_GET_OPERATION_RESULT;
+            query.callerPid = (gc_u32)getpid();
+            query.operationId = req.operationId;
+            char queryErr[256] = {};
+            LinuxDaemonSendOutcome queryOutcome = {};
+            ++attempts;
+            bool answered = linux_daemon_send_deadline(
+                &query, &resp, remaining, &queryOutcome,
+                queryErr, sizeof(queryErr));
+            if (answered) {
+                lastState = (unsigned int)resp.operationState;
+                // A responsive daemon has given its final word either way;
+                // asking it again would be a spin, not patience.
+                if (linux_daemon_recovery_state_is_settled(lastState)) {
+                    ok = resp.status == SERVICE_STATUS_OK;
+                    recovered = true;
+                }
+                break;
+            }
+            dlog("daemon client: operation=%llu recovery attempt %d did not "
+                 "complete within %lums (reachability=%d deadlineExpired=%d): %s\n",
+                 (unsigned long long)req.operationId, attempts, remaining,
+                 (int)queryOutcome.reachability,
+                 queryOutcome.deadlineExpired ? 1 : 0,
+                 queryErr[0] ? queryErr : "no detail");
+            if (!linux_daemon_recovery_may_retry(answered, queryOutcome)) break;
+        }
+        if (recovered) {
+            dlog("daemon client: operation=%llu recovered state=%u status=%u "
+                 "after %d quer%s and %llums total\n",
+                 (unsigned long long)req.operationId, lastState,
+                 (unsigned int)resp.status, attempts,
+                 attempts == 1 ? "y" : "ies",
+                 monotonic_ms() - requestStart);
         } else {
+            // Report the outcome as UNKNOWN rather than as a failure: the
+            // hardware write may well have committed, and telling the user it
+            // failed is what invited the duplicate Apply the message warns
+            // against.  The stamped fields let the TUI/CLI say so precisely.
+            memset(&resp, 0, sizeof(resp));
+            resp.magic = SERVICE_PROTOCOL_MAGIC;
+            resp.version = SERVICE_PROTOCOL_VERSION;
+            resp.status = SERVICE_STATUS_ERROR;
+            resp.operationId = req.operationId;
+            resp.operationState = SERVICE_OPERATION_OUTCOME_UNKNOWN;
+            dlog("daemon client: operation=%llu outcome UNKNOWN after %d "
+                 "quer%s and %llums (budget %lums); NOT retried\n",
+                 (unsigned long long)req.operationId, attempts,
+                 attempts == 1 ? "y" : "ies",
+                 monotonic_ms() - requestStart,
+                 linux_daemon_mutation_total_budget_ms());
+            if (response) *response = resp;
             if (result) gc_snprintf(result, resultSize,
-                "operation %llu outcome is pending or unknown after transport timeout; do not retry with a new operation ID",
+                "operation %llu was sent but its outcome could not be read back "
+                "(the daemon accepted it and stopped answering); the GPU write "
+                "may have committed -- refresh before applying again",
                 (unsigned long long)req.operationId);
             return false;
         }
