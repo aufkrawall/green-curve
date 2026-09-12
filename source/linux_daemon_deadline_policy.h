@@ -21,9 +21,9 @@
 //
 //   - Windows gives the same operation 20000 ms (SERVICE_APPLY_CLIENT_TIMEOUT_MS
 //     in main.cpp), for strictly LESS work.
-//   - The Linux APPLY handler additionally performs up to four fsync()-ed
-//     temp+rename+dirfsync record writes inline (store_daemon_record /
-//     restore_committed_record in linux_daemon.cpp), which Windows does not.
+//   - The Linux APPLY handler additionally performs multiple fsync()-ed
+//     temp+rename+dirfsync record writes inline, including the durable operation
+//     tracker that brackets every explicit mutation.
 //   - On the persistence-failure path it performs a SECOND full hardware pass
 //     (linux_backend_restore_snapshot) before it answers.
 //
@@ -68,10 +68,15 @@
 // root filesystem is, which on a busy spinning disk is not fast.
 #define GC_DAEMON_DURABLE_RECORD_BUDGET_MS 1000u
 
-// Worst-case record writes inside ONE mutation, counted from linux_daemon.cpp:
-// PREPARED, then ACTIVE, and on the persistence-failure path
-// restore_committed_record() plus an UNCERTAIN marker.
-#define GC_DAEMON_MUTATION_RECORD_WRITES 4u
+// Worst-case durable filesystem operations inside ONE explicit mutation.
+// The persistence-failure APPLY path is the longest: the operation tracker
+// stores IN_PROGRESS, state stores PREPARED, the ACTIVE commit is attempted,
+// restore_committed_record() restores the prior state, an UNCERTAIN marker may
+// follow, and the operation tracker stores the final result.  These all use
+// the same fsync-ed atomic-record machinery (state removal is no more expensive
+// than this allowance).  The successful guard re-arm is on a shorter path, so
+// it does not add a seventh write to the worst case.
+#define GC_DAEMON_MUTATION_RECORD_WRITES 6u
 
 // One full hardware pass: the VF curve, clock offsets, power limit, fan, and
 // the write-verify readback that goes with them.
@@ -111,9 +116,8 @@ enum LinuxDaemonDeadlineClass {
     // Writes the GPU, with durable records around it and a rollback pass on
     // the failure path.
     LINUX_DAEMON_DEADLINE_MUTATION,
-    // The post-timeout operation query.  Trivial to answer, but it is queued
-    // behind the very mutation it is asking about, so its deadline is a
-    // mutation deadline and not a read one.  This distinction is the fix.
+    // The post-timeout operation query.  It is queued behind the very mutation
+    // it asks about and then publishes a fresh hardware snapshot of its own.
     LINUX_DAEMON_DEADLINE_OPERATION_RECOVERY,
 };
 
@@ -165,19 +169,23 @@ static constexpr unsigned long linux_daemon_handler_budget_ms(
 
 // What one request can be queued behind before it is even ACCEPTED.
 //
-// This is where Linux is structurally worse than Windows and the budget has to
-// say so.  Windows serializes dispatch but still accepts the connection and
-// reads the request; the Linux accept loop is blocked outright, so a queued
-// request sees the full handler ahead of it with nothing overlapped.
+// This is where Linux is structurally worse than Windows: the accept loop is
+// blocked outright while a request is handled, so a connected/queued request
+// sees the complete preceding handler with nothing overlapped.
 //
-// A concurrent MUTATION is deliberately excluded from the read and record-write
-// lanes, for the same reason the Windows header excludes a concurrent APPLY: a
-// mutation is bounded by the daemon's own watchdog, and one stale telemetry
-// frame is the correct degradation for it -- provided the client does not
-// mistake the expiry for "the daemon is gone", which is what
-// linux_daemon_failure_means_offline() below is for.
-static constexpr unsigned long linux_daemon_serialization_budget_ms() {
-    return linux_daemon_record_write_handler_budget_ms();
+// A read deliberately does NOT wait a mutation-sized window: one stale
+// telemetry frame is the correct degradation while another client mutates, and
+// linux_daemon_failure_means_offline() prevents that miss from tearing down the
+// live presentation.  A RECORD WRITE or another MUTATION is different: either
+// can commit state after the client returns.  Reporting failure early would let
+// a startup-policy write or GPU write take effect later behind the caller's
+// back, so those lanes must survive one preceding mutation.
+static constexpr unsigned long linux_daemon_serialization_budget_ms(
+    LinuxDaemonDeadlineClass commandClass) {
+    return commandClass == LINUX_DAEMON_DEADLINE_RECORD_WRITE ||
+           commandClass == LINUX_DAEMON_DEADLINE_MUTATION
+        ? linux_daemon_mutation_handler_budget_ms()
+        : linux_daemon_record_write_handler_budget_ms();
 }
 
 // --- Client response deadlines -----------------------------------------------
@@ -188,10 +196,12 @@ static constexpr unsigned long linux_daemon_serialization_budget_ms() {
 static constexpr unsigned long linux_daemon_response_timeout_ms(
     LinuxDaemonDeadlineClass commandClass) {
     return (commandClass == LINUX_DAEMON_DEADLINE_OPERATION_RECOVERY
-                // It must outlast the mutation it is queued behind; answering
-                // it costs nothing once the lock is free.
-                ? linux_daemon_mutation_handler_budget_ms()
-                : linux_daemon_serialization_budget_ms() +
+                // GET_OPERATION_RESULT waits behind the target mutation and
+                // then calls populate_snapshot(), which performs a fresh
+                // hardware capture.  The query is not a zero-cost lookup.
+                ? linux_daemon_mutation_handler_budget_ms() +
+                    linux_daemon_state_read_handler_budget_ms()
+                : linux_daemon_serialization_budget_ms(commandClass) +
                     linux_daemon_handler_budget_ms(commandClass)) +
         (unsigned long)GC_DAEMON_RESPONSE_FRAMING_BUDGET_MS;
 }
@@ -202,12 +212,14 @@ static constexpr unsigned long linux_daemon_command_response_timeout_ms(
 }
 
 // The wall clock a client may spend on ONE mutation including its outcome
-// recovery.  Reaching it means the daemon accepted the request, blew its own
-// mutation budget, and then blew a trivial query's budget too -- i.e. it is
-// wedged, and OUTCOME UNKNOWN is the truthful answer rather than a guess.
-// systemd's WatchdogSec= is what resolves that state, not this client.
+// recovery.  Connect is a separate availability phase in the transport, so the
+// total explicitly reserves one connect budget for the mutation and one for
+// the first recovery query.  Reaching this total means the daemon failed its
+// mutation contract and the client also failed to read back a settled outcome;
+// OUTCOME UNKNOWN is then the truthful answer rather than a guess.
 static constexpr unsigned long linux_daemon_mutation_total_budget_ms() {
-    return linux_daemon_response_timeout_ms(LINUX_DAEMON_DEADLINE_MUTATION) +
+    return 2ul * (unsigned long)GC_DAEMON_CONNECT_BUDGET_MS +
+        linux_daemon_response_timeout_ms(LINUX_DAEMON_DEADLINE_MUTATION) +
         linux_daemon_response_timeout_ms(
             LINUX_DAEMON_DEADLINE_OPERATION_RECOVERY);
 }
@@ -288,16 +300,14 @@ static constexpr bool linux_daemon_connect_is_saturated(
         || connectErrorNumber == ETIMEDOUT;
 }
 
-// What one attempted exchange reported back, beyond success or failure.  Two
-// facts, because they answer different questions and collapsing them is what
-// the Linux client did wrong: whether a daemon exists (presentation), and
-// whether the failure was the daemon running out of time (retry).
+// What one attempted exchange reported back, beyond success or failure.  Three
+// facts answer three different questions: whether a daemon exists
+// (presentation), whether the request was fully submitted (mutation outcome),
+// and whether the response ran out of time (recovery retry).
 struct LinuxDaemonSendOutcome {
     LinuxDaemonReachability reachability;
-    // The daemon accepted the request and did not answer inside the budget.
-    // The ONLY failure that is evidence of ongoing work rather than of a
-    // settled result.
     bool deadlineExpired;
+    bool requestSubmitted;
 };
 
 // Whether the operation-result query may be attempted again.
@@ -336,9 +346,12 @@ static constexpr bool linux_daemon_outcome_is_unknown(bool recovered,
 
 // --- Contract enforcement ----------------------------------------------------
 
+static_assert(GC_DAEMON_MUTATION_RECORD_WRITES >= 6u,
+    "The mutation budget must include the durable operation tracker as well "
+    "as the PREPARED/ACTIVE/rollback state records");
 static_assert(linux_daemon_mutation_handler_budget_ms() >
     linux_daemon_record_write_handler_budget_ms(),
-    "A mutation writes the GPU twice on the rollback path and fsyncs four "
+    "A mutation writes the GPU twice on the rollback path and fsyncs multiple "
     "records; it cannot be budgeted at or below a single record write");
 static_assert(linux_daemon_record_write_handler_budget_ms() >
     linux_daemon_state_read_handler_budget_ms(),
@@ -363,22 +376,32 @@ static_assert(linux_daemon_response_timeout_ms(
 
 static_assert(linux_daemon_response_timeout_ms(
     LINUX_DAEMON_DEADLINE_MUTATION) >
-    linux_daemon_mutation_handler_budget_ms(),
-    "The mutation deadline must exceed what the daemon may spend mutating");
+    2ul * linux_daemon_mutation_handler_budget_ms(),
+    "A mutation must survive one preceding mutation plus its own handler");
+static_assert(linux_daemon_response_timeout_ms(
+    LINUX_DAEMON_DEADLINE_RECORD_WRITE) >
+    linux_daemon_mutation_handler_budget_ms() +
+        linux_daemon_record_write_handler_budget_ms(),
+    "A durable policy write must not report failure while queued behind a "
+    "mutation that can later let it commit");
 static_assert(linux_daemon_response_timeout_ms(
     LINUX_DAEMON_DEADLINE_STATE_READ) >
     linux_daemon_state_read_handler_budget_ms() +
-        linux_daemon_serialization_budget_ms(),
+        linux_daemon_serialization_budget_ms(
+            LINUX_DAEMON_DEADLINE_STATE_READ),
     "A read must survive being queued behind one record-write dispatch");
 
-// The defect this header was written for: the recovery query has to outlast the
-// mutation it is asking about, or it can only ever recover the rare case where
-// the daemon answered fast and the response was lost.
+// The recovery query must outlast both the mutation it is queued behind and its
+// own fresh snapshot.  GET_OPERATION_RESULT calls populate_snapshot(), so
+// treating the answer as a zero-cost lookup recreates the same false-unknown
+// failure at the tail of the recovery exchange.  In source-gate terms: its
+// deadline must exceed the mutation handler budget, plus the query's own read.
 static_assert(linux_daemon_response_timeout_ms(
     LINUX_DAEMON_DEADLINE_OPERATION_RECOVERY) >
-    linux_daemon_mutation_handler_budget_ms(),
-    "The operation-result query is queued behind the mutation it recovers, so "
-    "its deadline must exceed the mutation handler budget");
+    linux_daemon_mutation_handler_budget_ms() +
+        linux_daemon_state_read_handler_budget_ms(),
+    "The operation-result query waits behind the mutation and then publishes "
+    "a fresh hardware snapshot");
 static_assert(linux_daemon_response_timeout_ms(
     LINUX_DAEMON_DEADLINE_OPERATION_RECOVERY) >
     linux_daemon_response_timeout_ms(LINUX_DAEMON_DEADLINE_STATE_READ),
@@ -402,6 +425,13 @@ static_assert(linux_daemon_recovery_remaining_ms(0ul) ==
     linux_daemon_response_timeout_ms(
         LINUX_DAEMON_DEADLINE_OPERATION_RECOVERY),
     "A recovery that starts with nothing spent gets its whole slice");
+static_assert(linux_daemon_recovery_remaining_ms(
+    (unsigned long)GC_DAEMON_CONNECT_BUDGET_MS +
+        linux_daemon_response_timeout_ms(LINUX_DAEMON_DEADLINE_MUTATION)) ==
+    linux_daemon_response_timeout_ms(
+        LINUX_DAEMON_DEADLINE_OPERATION_RECOVERY),
+    "The initial connect phase must not steal time from the first recovery "
+    "response budget");
 static_assert(linux_daemon_recovery_remaining_ms(
     linux_daemon_mutation_total_budget_ms()) == 0ul,
     "An exhausted total budget must stop the recovery loop rather than "

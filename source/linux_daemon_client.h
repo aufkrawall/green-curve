@@ -83,7 +83,12 @@ static bool send_simple(unsigned int command, const DesiredSettings* desired,
         resp.magic == SERVICE_PROTOCOL_MAGIC &&
         resp.version == SERVICE_PROTOCOL_VERSION &&
         resp.status != SERVICE_STATUS_OK;
-    if (!ok && req.operationId != 0 && !receivedServiceError) {
+    // Recovery is meaningful only after the complete mutation request reached
+    // the connected socket.  A connect failure or partial request write cannot
+    // have produced a valid daemon request, so reporting OUTCOME_UNKNOWN there
+    // would turn a definite transport failure into a false "maybe committed".
+    if (!ok && req.operationId != 0 && !receivedServiceError &&
+        sendOutcome.requestSubmitted) {
         // Recover the outcome instead of issuing a second hardware write.
         //
         // This used to be one query carrying the SAME 2000 ms the mutation had
@@ -160,8 +165,8 @@ static bool send_simple(unsigned int command, const DesiredSettings* desired,
                  linux_daemon_mutation_total_budget_ms());
             if (response) *response = resp;
             if (result) gc_snprintf(result, resultSize,
-                "operation %llu was sent but its outcome could not be read back "
-                "(the daemon accepted it and stopped answering); the GPU write "
+                "operation %llu was submitted but its outcome could not be read back "
+                "(the daemon stopped answering after submission); the GPU write "
                 "may have committed -- refresh before applying again",
                 (unsigned long long)req.operationId);
             return false;
