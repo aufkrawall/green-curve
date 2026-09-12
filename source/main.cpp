@@ -424,6 +424,9 @@ static void layout_bottom_buttons(HWND hParent);
 static void debug_log(const char* fmt, ...);
 static void debug_log_session_marker(const char* phase, const char* kind, const char* extra = nullptr);
 static void close_debug_log_file();
+// Debug log writer lifecycle; its producer/crash halves are declared per shard.
+static void debug_log_writer_start();
+static void debug_log_writer_stop();
 
 // Request a controlled service-process restart for GPU driver recovery.
 // This is the single recovery action: in-process NVML/NvAPI reload after a
@@ -773,6 +776,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     // Initialize it before helper dispatch; the helper enables file logging
     // only when the active user's existing debug configuration allows it.
     InitializeCriticalSection(&g_debugLogLock);
+    debug_log_writer_start();
     // Helper mode bypasses service_main, so install the crash handlers here (no
     // vectored NVML recovery: the helper never touches the driver).  A helper
     // crash must leave the same actionable private dump as a normal service
@@ -780,7 +784,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     install_crash_handlers(false);
     int helperExitCode = 0;
     if (service_try_dispatch_controlled_restart_helper(&helperExitCode)) {
-        close_debug_log_file();
+        debug_log_writer_stop();
         DeleteCriticalSection(&g_debugLogLock);
         return helperExitCode;
     }

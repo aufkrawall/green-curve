@@ -263,6 +263,11 @@ static bool write_crash_minidump(EXCEPTION_POINTERS* info, const char* prefix,
 // Unhandled exception filter
 // ---------------------------------------------------------------------------
 
+// Flush whatever the log writer has not drained yet, straight to the crash
+// breadcrumb (main_debug_log_writer.cpp). Lock-free, like everything else on
+// this path.
+static void debug_log_drain_pending_for_crash();
+
 static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* info) {
     SYSTEMTIME now = {};
     GetLocalTime(&now);
@@ -354,6 +359,10 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
             g_app.fanRuntimeLastApplyTickMs);
     }
     write_crash_breadcrumb_direct(text);
+    // Diagnostic lines the log writer had not yet drained would otherwise die
+    // with the process, and the lines immediately before a crash are the ones
+    // worth having.  Lock-free by construction; see the drain's own comment.
+    debug_log_drain_pending_for_crash();
 
     return EXCEPTION_EXECUTE_HANDLER;
 }
@@ -408,6 +417,7 @@ static void green_curve_report_fatal_dump(unsigned long reason, const char* labe
         (unsigned long)APP_BUILD_NUMBER,
         dumped ? dumpPath : "<none>");
     write_crash_breadcrumb_direct(text);
+    debug_log_drain_pending_for_crash();
 }
 
 // Install every crash reporter this process needs.  One entry point so the GUI,
@@ -455,6 +465,7 @@ static void write_veh_minidump(EXCEPTION_POINTERS* info, const WCHAR* modPath) {
         modPath ? modPath : L"<unknown>",
         dumped ? dumpPath : "<none>");
     write_crash_breadcrumb_direct(text);
+    debug_log_drain_pending_for_crash();
 }
 
 // Vectored exception handler — catches nvml.dll access violations at first chance

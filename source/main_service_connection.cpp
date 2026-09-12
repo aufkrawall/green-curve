@@ -424,6 +424,17 @@ static bool service_pipe_read_exact(HANDLE pipe, void* data, DWORD dataSize, DWO
 // important multi-user signal: only the active console/RDP user is granted
 // pipe write access (F-SEC-3), so a different logged-in user's GUI gets denied
 // and should see WHY rather than a generic "service not responding".
+// The reachability contract in service_request_deadline_policy.h spells these
+// out as numbers so it stays unit-testable on the Linux host. This is the one
+// place both spellings are visible, so it is where they are pinned together.
+static_assert(GC_WIN_ERROR_FILE_NOT_FOUND == ERROR_FILE_NOT_FOUND &&
+    GC_WIN_ERROR_PATH_NOT_FOUND == ERROR_PATH_NOT_FOUND &&
+    GC_WIN_ERROR_ACCESS_DENIED == ERROR_ACCESS_DENIED &&
+    GC_WIN_ERROR_SEM_TIMEOUT == ERROR_SEM_TIMEOUT &&
+    GC_WIN_ERROR_PIPE_BUSY == ERROR_PIPE_BUSY,
+    "The pure reachability policy must name the same Win32 errors the "
+    "transport actually observes");
+
 static void describe_service_connect_error(DWORD err, char* out, size_t outSize) {
     if (!out || outSize == 0) return;
     if (err == ERROR_ACCESS_DENIED) {
@@ -503,8 +514,17 @@ static void warn_if_blocking_gui_message_thread(const ServiceRequest* request,
 
 static bool service_send_request_deadlines(const ServiceRequest* request,
         ServiceResponse* response, ServiceRequestDeadlines deadlines,
-        char* err, size_t errSize) {
+        char* err, size_t errSize,
+        ServiceClientSendOutcome* outcome = nullptr) {
     warn_if_blocking_gui_message_thread(request, &deadlines);
+    // Recorded whether or not the caller asked for it, so every exit below can
+    // name what it proved without each one remembering to check the pointer.
+    ServiceClientSendOutcome sendOutcome = service_client_send_outcome_initial();
+    struct OutcomePublisher {
+        ServiceClientSendOutcome* target;
+        const ServiceClientSendOutcome* source;
+        ~OutcomePublisher() { if (target) *target = *source; }
+    } publisher{ outcome, &sendOutcome };
     if (response) memset(response, 0, sizeof(*response));
     if (!request) {
         set_message(err, errSize, "Invalid service request");
@@ -521,6 +541,7 @@ static bool service_send_request_deadlines(const ServiceRequest* request,
         DWORD remainingMs = service_phase_remaining_ticks_ms(startTickMs,
             deadlines.connectMs, startTickMs, deadlines.totalMs);
         if (remainingMs == 0) {
+            sendOutcome.deadlineExpired = true;
             set_message(err, errSize, "Timed out waiting for the background service");
             return false;
         }
@@ -534,6 +555,10 @@ static bool service_send_request_deadlines(const ServiceRequest* request,
             FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
             nullptr);
         if (pipe != INVALID_HANDLE_VALUE) {
+            // An opened instance is the strongest evidence there is: a service
+            // process exists and accepted this connection. Nothing that fails
+            // after this point may be read as "the service is gone".
+            sendOutcome.reachability = SERVICE_CLIENT_REACHABILITY_CONNECTED;
             if (!validate_service_pipe_server_identity(pipe, err, errSize)) {
                 CloseHandle(pipe);
                 return false;
@@ -555,13 +580,21 @@ static bool service_send_request_deadlines(const ServiceRequest* request,
                 deadlines.responseMs, startTickMs, deadlines.totalMs);
             if (!service_pipe_write_exact(pipe, request, sizeof(*request), remainingMs, "writing service request", err, errSize)) {
                 CloseHandle(pipe);
+                sendOutcome.deadlineExpired = remainingMs == 0;
                 return false;
             }
+            // The whole fixed-size request reached the service, so a mutation
+            // in it may have been executed even if no answer comes back.
+            sendOutcome.requestSubmitted = true;
             if (response) {
                 remainingMs = service_phase_remaining_ticks_ms(exchangeStartTickMs,
                     deadlines.responseMs, startTickMs, deadlines.totalMs);
                 if (!service_pipe_read_exact(pipe, response, sizeof(*response), remainingMs, "reading service response", err, errSize)) {
                     CloseHandle(pipe);
+                    // The service accepted and read the request; it simply did
+                    // not answer inside its contract. That is a missed read,
+                    // never evidence of an absent service.
+                    sendOutcome.deadlineExpired = true;
                     return false;
                 }
                 if (response->magic != SERVICE_PROTOCOL_MAGIC || response->version != SERVICE_PROTOCOL_VERSION) {
@@ -590,6 +623,17 @@ static bool service_send_request_deadlines(const ServiceRequest* request,
             return true;
         }
         DWORD e = GetLastError();
+        // ERROR_PIPE_BUSY means the named pipe object exists and every instance
+        // is in use: a running service under load, not an absent one. Record it
+        // so a connect phase that later runs out of time still reports the
+        // service as present (service_request_deadline_policy.h).
+        if (service_client_connect_reachability(e) ==
+                SERVICE_CLIENT_REACHABILITY_CONNECTED) {
+            sendOutcome.reachability = SERVICE_CLIENT_REACHABILITY_CONNECTED;
+        } else if (sendOutcome.reachability ==
+                SERVICE_CLIENT_REACHABILITY_UNKNOWN) {
+            sendOutcome.reachability = SERVICE_CLIENT_REACHABILITY_UNREACHABLE;
+        }
         if (e != ERROR_PIPE_BUSY && e != ERROR_FILE_NOT_FOUND) {
             describe_service_connect_error(e, err, errSize);
             return false;
@@ -597,6 +641,7 @@ static bool service_send_request_deadlines(const ServiceRequest* request,
         remainingMs = service_phase_remaining_ticks_ms(startTickMs,
             deadlines.connectMs, startTickMs, deadlines.totalMs);
         if (remainingMs == 0) {
+            sendOutcome.deadlineExpired = true;
             set_message(err, errSize, "Timed out waiting for the background service");
             return false;
         }
@@ -608,6 +653,10 @@ static bool service_send_request_deadlines(const ServiceRequest* request,
         if (waitSlice > SERVICE_PIPE_CLIENT_CONNECT_SLICE_MS) waitSlice = SERVICE_PIPE_CLIENT_CONNECT_SLICE_MS;
         if (!WaitNamedPipeW(pipeName, waitSlice)) {
             DWORD waitErr = GetLastError();
+            if (service_client_connect_reachability(waitErr) ==
+                    SERVICE_CLIENT_REACHABILITY_CONNECTED) {
+                sendOutcome.reachability = SERVICE_CLIENT_REACHABILITY_CONNECTED;
+            }
             if (waitErr != ERROR_SEM_TIMEOUT && waitErr != ERROR_FILE_NOT_FOUND) {
                 set_message(err, errSize, "Failed waiting for service pipe (error %lu)", waitErr);
                 return false;
@@ -635,20 +684,23 @@ static bool service_send_request(const ServiceRequest* request,
 // is never mistaken for an absent one.
 static bool service_send_request_split(const ServiceRequest* request,
         ServiceResponse* response, DWORD responseTimeoutMs,
-        char* err, size_t errSize) {
+        char* err, size_t errSize,
+        ServiceClientSendOutcome* outcome = nullptr) {
     ServiceRequestDeadlines deadlines = {
         (DWORD)service_state_read_connect_timeout_ms(),
         responseTimeoutMs,
         0,
     };
     return service_send_request_deadlines(request, response, deadlines,
-        err, errSize);
+        err, errSize, outcome);
 }
 
 // The GUI's asynchronous coordinator: off the UI thread, coalesced, and the
 // only lane whose failure is presented as a lost connection.
 static bool service_send_state_read_request(const ServiceRequest* request,
-        ServiceResponse* response, bool fullSync, char* err, size_t errSize) {
+        ServiceResponse* response, bool fullSync, char* err, size_t errSize,
+        ServiceClientSendOutcome* outcome = nullptr) {
     return service_send_request_split(request, response,
-        (DWORD)service_state_read_response_timeout_ms(fullSync), err, errSize);
+        (DWORD)service_state_read_response_timeout_ms(fullSync), err, errSize,
+        outcome);
 }

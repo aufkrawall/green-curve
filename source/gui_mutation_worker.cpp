@@ -57,6 +57,10 @@ struct GuiServiceIoCompletion {
     ULONGLONG durationMs;
     bool adminEnable;
     bool adminRepair;
+    // What the attempt proved about the service's EXISTENCE, as opposed to
+    // whether this particular exchange worked. Only an unreachable pipe means
+    // offline; see service_request_deadline_policy.h.
+    ServiceClientSendOutcome sendOutcome;
     char reason[96];
     char error[256];
 };
@@ -189,7 +193,8 @@ static gc_u64 gui_worker_record_connection_result(
 }
 
 static bool gui_worker_send_state_request(GuiServiceIoKind kind,
-    ServiceResponse* response, char* err, size_t errSize) {
+    ServiceResponse* response, char* err, size_t errSize,
+    ServiceClientSendOutcome* outcome) {
     ServiceRequest request = {};
     request.magic = SERVICE_PROTOCOL_MAGIC;
     request.version = SERVICE_PROTOCOL_VERSION;
@@ -207,7 +212,7 @@ static bool gui_worker_send_state_request(GuiServiceIoKind kind,
     // service's own bound, so a healthy slow answer presented as a lost
     // connection -- see service_request_deadline_policy.h.
     return service_send_state_read_request(&request, response,
-        kind == GUI_SERVICE_IO_FULL_SYNC, err, errSize);
+        kind == GUI_SERVICE_IO_FULL_SYNC, err, errSize, outcome);
 }
 
 static void gui_worker_release_after_mutation_post_failure() {
@@ -367,7 +372,7 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
                 &completion->serviceRunning);
             completion->transportSuccess = gui_worker_send_state_request(ioKind,
                 &completion->response, completion->error,
-                sizeof(completion->error));
+                sizeof(completion->error), &completion->sendOutcome);
             completion->connectionEpoch = gui_worker_record_connection_result(
                 completion->transportSuccess,
                 completion->transportSuccess ? &completion->response : nullptr);
@@ -375,8 +380,11 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
         completion->durationMs = GetTickCount64() - started;
         // deadlineMs makes a timeout self-describing: without it a failed read
         // could not be told apart from a read that was merely slower than a
-        // deadline nobody recorded.
-        debug_log("GUI service I/O: read kind=%d reason=%s durationMs=%llu deadlineMs=%lu success=%d epoch=%llu phase=%u revision=%llu error=%s\n",
+        // deadline nobody recorded.  reachability/deadlineExpired finish the
+        // job: without them a missed answer from a BUSY service and a genuinely
+        // absent one are the same log line, which is the conflation that made a
+        // 19 s volume stall present as a lost connection (2026-09-12).
+        debug_log("GUI service I/O: read kind=%d reason=%s durationMs=%llu deadlineMs=%lu success=%d epoch=%llu phase=%u revision=%llu reachability=%d deadlineExpired=%d error=%s\n",
             (int)ioKind, completion->reason,
             (unsigned long long)completion->durationMs,
             ioKind == GUI_SERVICE_IO_ADMIN_TOGGLE ? 0ul
@@ -386,6 +394,8 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
             (unsigned long long)completion->connectionEpoch,
             completion->response.state.gpuPhase,
             (unsigned long long)completion->response.state.stateRevision,
+            (int)completion->sendOutcome.reachability,
+            completion->sendOutcome.deadlineExpired ? 1 : 0,
             completion->error[0] ? completion->error : "none");
 
         HWND notifyWindow = g_guiServiceNotifyWindow;

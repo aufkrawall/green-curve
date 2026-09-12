@@ -103,6 +103,7 @@ import pe_verify  # noqa: E402  (same one-way dependency as security_gates)
 import xbar_gates  # noqa: E402  (same one-way dependency as security_gates)
 import linux_gates  # noqa: E402  (same one-way dependency as security_gates)
 import readback_gates  # noqa: E402  (same one-way dependency as security_gates)
+import log_gates  # noqa: E402  (same one-way dependency as security_gates)
 import update_gates  # noqa: E402  (same one-way dependency as security_gates)
 import icon_render  # noqa: E402  (same one-way dependency as security_gates)
 import crash_artifacts  # noqa: E402  (same one-way dependency as security_gates)
@@ -2190,19 +2191,10 @@ def run_source_regression_checks():
     require_text(shared_h, "serviceVersion[32]", "service response carries version")
     require_text(diagnostics_cpp, "protocol=%lu", "session marker logs IPC protocol")
     require_text(diagnostics_cpp, "build=%lu", "session marker logs build number")
-    require_text(diagnostics_cpp, "close_debug_log_file", "debug log file cleanup exists")
-    require_text(diagnostics_cpp, "open_debug_log_file_locked", "debug log file open helper exists")
-    # Debug logs are size-capped: every append passes the rotation check, and a
-    # rotated file opens with an explanatory marker (2026-08 unbounded-growth fix).
-    require_text(diagnostics_cpp, '#include "debug_log_rotation_policy.h"',
-                 "debug log size-cap policy is compiled into the diagnostics shard")
-    require_order_in_operation(diagnostics_cpp,
-        "static void debug_log(const char* fmt, ...)",
-        "gc_debug_log_rotation::should_rotate(",
-        "WriteFile(g_debugLogFile",
-        "debug log lines append only after the size-cap rotation check")
-    require_text(diagnostics_cpp, "gc_debug_log_rotation::marker_line",
-                 "a truncated debug log opens with an explanatory marker")
+    # The debug log write path (F-LOG-ASYNC): producing a line must never
+    # block on I/O. Lives in tools/log_gates.py.
+    log_gates.check_all(_gate_ctx(), require_text, require_text_in_operation,
+                        forbid_text_in_operation, require_order_in_operation)
     crash_artifacts.check_windows_crash_artifacts(
         _gate_ctx(), require_text, forbid_text, require_order, require_text_count)
     crash_artifacts.check_linux_symbols(_gate_ctx(), require_text)
@@ -3822,7 +3814,8 @@ def run_source_regression_checks():
     require_text(gui_service_state_cpp,
                  "gui_state_adoption_requires_redraw_suppression(",
                  "ordinary telemetry never suspends or repaints the whole window")
-    require_text(gui_service_state_cpp, "if (renderChanged) gui_render_service_phase_only();",
+    require_text(os.path.join(SOURCE_DIR, "gui_service_stale_read.cpp"),
+                 "if (renderChanged) gui_render_service_phase_only();",
                  "repeated transport failures repaint only when visible state changes")
     require_text(ui_main_window_cpp, 'gui_service_retry_full_sync("reconnect timer")',
                  "background reconnect probes preserve the current presentation")

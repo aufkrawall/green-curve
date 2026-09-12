@@ -7,6 +7,10 @@
 #include "gui_mutation_worker.cpp"
 #include "gui_window_redraw.cpp"
 #include "gui_service_state.cpp"
+// After gui_service_state.cpp, which forward-declares its two entry points:
+// this file owns what a read that did NOT come back means -- a busy service is
+// kept and labelled stale, only an unreachable one is a lost connection.
+#include "gui_service_stale_read.cpp"
 #include "gui_tray_visibility.cpp"
 #include "gui_selected_gpu_pnp.cpp"
 #include "ui_pending_changes.cpp"

@@ -556,7 +556,7 @@ service_watchdog_loop:
         StringCchPrintfA(extra, ARRAY_COUNT(extra), "service_main shutdown uptimeMs=%llu", elapsedMs);
         debug_log_session_marker("END", "service", extra);
     }
-    close_debug_log_file();
+    debug_log_writer_stop();
     DeleteCriticalSection(&g_debugLogLock);
 }
 

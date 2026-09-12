@@ -352,6 +352,10 @@ static void unlock_all() {
 
 #include "main_diagnostics.cpp"
 #include "main_crash_artifacts.cpp"
+// After main_crash_artifacts.cpp: the writer's crash drain hands pending lines
+// to write_crash_breadcrumb_direct(), and after main_diagnostics.cpp because it
+// owns the path resolution and open helpers the writer calls.
+#include "main_debug_log_writer.cpp"
 #include "main_secure_write.cpp"
 
 #include "main_probe_config.cpp"

@@ -359,6 +359,14 @@ static void update_background_service_controls() {
                 g_app.backgroundServiceToggleTargetEnabled ? "Installing and starting" : "Stopping and removing");
         } else if (!g_app.backgroundServiceInstalled) {
             StringCchCopyA(text, ARRAY_COUNT(text), "Background service not installed. Click checkbox to install it.");
+        } else if (g_app.serviceReadStale &&
+                gui_service_model_ready(&g_app.guiServiceModel)) {
+            // F-READ-MISS: the service is reachable but did not answer inside
+            // its contract, so the displayed values are the last coherent ones
+            // rather than current. Say so instead of either pretending they are
+            // live or tearing the presentation down (gui_service_stale_read.cpp).
+            StringCchCopyA(text, ARRAY_COUNT(text),
+                "Background service is busy; showing the last live GPU state. Values will update when it answers again.");
         } else if (g_app.guiServiceModel.phase == GUI_SERVICE_SYNCING) {
             StringCchCopyA(text, ARRAY_COUNT(text),
                 "Synchronizing a coherent GPU state snapshot...");

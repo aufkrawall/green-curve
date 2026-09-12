@@ -180,6 +180,103 @@ static inline gc_u64 service_client_tracked_instance_after_request(
     return success ? responseInstance : trackedInstance;
 }
 
+// --- Reachability evidence ---------------------------------------------------
+
+// What ONE failed exchange proves about the service's existence.
+//
+// The Windows counterpart of linux_daemon_connect_reachability(), and it exists
+// for the same reason, discovered the same way: on 2026-09-12 a C: volume stall
+// (Windows logged Volsnap event 25) blocked a debug-log flush the service was
+// making from inside its serialized dispatch lock for 19.078 seconds.  Three
+// queued reads then recorded 15375 / 10391 / 4735 ms of dispatch-queue wait,
+// the GUI's read deadlines expired -- correctly, the service really had blown
+// its contract -- and the GUI turned that into a LOST CONNECTION: GPU epoch
+// advanced, live authority discarded, the applied-profile indicator dropped to
+// "Manual settings", and the whole window rebuilt.  A 19-second stall is a real
+// defect and is fixed at its root (debug_log_queue_policy.h), but no deadline
+// can be long enough for every stall an OS can produce, so the client's
+// REACTION has to be right too: a service that accepted the connection and then
+// did not answer in time is busy, not gone.  Raising deadlines instead would
+// only change how often this fires, never whether it can.
+enum ServiceClientReachability {
+    // Nothing was attempted, or the exchange succeeded.
+    SERVICE_CLIENT_REACHABILITY_UNKNOWN = 0,
+    // No pipe instance could be opened at all, or this caller may not use it.
+    // Definite, and the ONLY answer that means "offline".
+    SERVICE_CLIENT_REACHABILITY_UNREACHABLE,
+    // A pipe instance was opened, or the pipe was observed to EXIST but be
+    // busy.  Either way a service is there; a later timeout, short read or
+    // protocol failure describes this exchange, not the service's presence.
+    SERVICE_CLIENT_REACHABILITY_CONNECTED,
+};
+
+// Win32 error numbers, spelled as values so this contract stays compilable and
+// unit-testable on the Linux host too (same reason linux_daemon_deadline_policy.h
+// names errno values).  The Windows translation unit static_asserts these
+// against the real <winerror.h> macros, so the two cannot drift.
+enum {
+    GC_WIN_ERROR_FILE_NOT_FOUND = 2,
+    GC_WIN_ERROR_PATH_NOT_FOUND = 3,
+    GC_WIN_ERROR_ACCESS_DENIED = 5,
+    GC_WIN_ERROR_SEM_TIMEOUT = 121,
+    GC_WIN_ERROR_PIPE_BUSY = 231,
+};
+
+static constexpr bool service_client_failure_means_offline(
+    ServiceClientReachability reachability) {
+    return reachability == SERVICE_CLIENT_REACHABILITY_UNREACHABLE;
+}
+
+// What a failed CreateFileW/WaitNamedPipeW on the service pipe proves.
+//
+// ERROR_PIPE_BUSY is the interesting one and the exact analogue of Linux's
+// EAGAIN on a saturated backlog: the named pipe object EXISTS and every
+// instance of it is in use, which is positive evidence of a running service
+// under load.  Reporting that as "service unavailable" is the same conflation
+// this enum exists to stop.  ERROR_SEM_TIMEOUT is WaitNamedPipeW's own way of
+// saying the same thing after waiting for a free instance.
+static constexpr ServiceClientReachability service_client_connect_reachability(
+    unsigned long connectErrorNumber) {
+    switch (connectErrorNumber) {
+        case GC_WIN_ERROR_PIPE_BUSY:
+        case GC_WIN_ERROR_SEM_TIMEOUT:
+            return SERVICE_CLIENT_REACHABILITY_CONNECTED;
+        default:
+            // ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND: nothing is
+            // listening. ERROR_ACCESS_DENIED: another session owns control and
+            // this one is read-only. Both are definite answers, and both are
+            // already presented as such by describe_service_connect_error().
+            return SERVICE_CLIENT_REACHABILITY_UNREACHABLE;
+    }
+}
+
+// What one attempted exchange reported back, beyond success or failure. Three
+// facts answer three different questions: whether a service exists
+// (presentation), whether the request was fully submitted (mutation outcome),
+// and whether a phase ran out of time (a miss versus a hard transport fault).
+struct ServiceClientSendOutcome {
+    ServiceClientReachability reachability;
+    bool deadlineExpired;
+    bool requestSubmitted;
+};
+
+static constexpr ServiceClientSendOutcome service_client_send_outcome_initial() {
+    return ServiceClientSendOutcome{
+        SERVICE_CLIENT_REACHABILITY_UNKNOWN, false, false };
+}
+
+// Whether a failed state read should keep the GUI's live presentation.
+//
+// Keep it whenever a service demonstrably exists: the numbers on screen were
+// true when they were read, they are labelled stale, and the very next
+// successful read replaces them.  Tearing the presentation down instead throws
+// away the applied-profile identity and rebuilds every control -- strictly more
+// destructive, and wrong, for a service that is merely busy.
+static constexpr bool service_client_read_miss_preserves_presentation(
+    const ServiceClientSendOutcome& outcome) {
+    return !service_client_failure_means_offline(outcome.reachability);
+}
+
 // --- Contract enforcement ----------------------------------------------------
 
 static_assert(SERVICE_TELEMETRY_REFRESH_BUDGET_MS > 0u &&

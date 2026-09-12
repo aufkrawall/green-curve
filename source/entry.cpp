@@ -429,6 +429,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     gui_service_model_initialize(&g_app.guiServiceModel);
     initialize_process_mitigations();
     InitializeCriticalSection(&g_debugLogLock);
+    debug_log_writer_start();
     // No vectored NVML recovery in the GUI: resuming after an access violation
     // only makes sense for the service, which restarts itself cleanly afterwards.
     install_crash_handlers(false);
@@ -485,6 +486,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
 
     // CLI mode - handle --dump, --json, --help
     if (handle_cli(wCmdLine)) {
+        debug_log_writer_stop();
         DeleteCriticalSection(&g_debugLogLock);
         return g_cliExitCode;
     }

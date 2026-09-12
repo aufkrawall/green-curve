@@ -307,6 +307,14 @@ static void gui_project_attached_draft_to_controls() {
     gui_set_editor_enabled(true);
 }
 
+// Defined in gui_service_stale_read.cpp, which is included after this file
+// because it needs everything below. It owns the question this file used
+// to answer implicitly: whether a read that did not come back means the
+// service is GONE, or only that it was too busy to answer this one.
+static void gui_service_handle_read_miss(
+    const GuiServiceIoCompletion* completion);
+static void gui_service_note_read_answered();
+
 static void gui_invalidate_live_authority(const char* reason) {
     g_app.serviceSnapshotAuthoritative = false;
     g_app.loaded = false;
@@ -459,46 +467,6 @@ static void gui_service_retry_full_sync(const char* reason) {
         debug_log_on_change("GUI service state: silent retry queue failed (%s)\n",
             reason && reason[0] ? reason : "background retry");
     }
-}
-
-static void gui_service_handle_transport_failure(gc_u64 connectionEpoch,
-    const char* error, const char* reason, bool serviceInstalled,
-    bool serviceRunning) {
-    GuiServicePhase previousPhase = g_app.guiServiceModel.phase;
-    bool wasReady = gui_service_model_ready(&g_app.guiServiceModel);
-    bool hadLiveAuthority = g_app.serviceSnapshotAuthoritative ||
-        g_app.loaded || g_app.serviceControlStateValid ||
-        g_app.serviceActiveDesiredValid || g_app.gpuTemperatureValid;
-    bool nextBroken = serviceInstalled;
-    char nextError[ARRAY_COUNT(g_app.backgroundServiceError)] = {};
-    StringCchCopyA(nextError, ARRAY_COUNT(nextError),
-        error && error[0] ? error : "Background service connection lost");
-    // The disconnected "not installed" presentation deliberately does not
-    // expose transport details, so changing those details must not repaint it.
-    bool visibleErrorChanged = serviceInstalled &&
-        strcmp(g_app.backgroundServiceError, nextError) != 0;
-    bool renderChanged = gui_service_failure_requires_render(
-        previousPhase, hadLiveAuthority,
-        g_app.backgroundServiceInstalled, g_app.backgroundServiceRunning,
-        g_app.backgroundServiceBroken,
-        serviceInstalled, serviceRunning, nextBroken,
-        visibleErrorChanged);
-    g_app.guiManualResyncPending = false;
-    gui_service_model_disconnect(&g_app.guiServiceModel, connectionEpoch);
-    if (wasReady) gui_mutation_advance_gpu_epoch("service transport lost");
-    if (hadLiveAuthority) gui_invalidate_live_authority(reason);
-    g_app.backgroundServiceAvailable = false;
-    g_app.backgroundServiceInstalled = serviceInstalled;
-    g_app.backgroundServiceRunning = serviceRunning;
-    g_app.backgroundServiceBroken = nextBroken;
-    StringCchCopyA(g_app.backgroundServiceError,
-        ARRAY_COUNT(g_app.backgroundServiceError), nextError);
-    debug_log_on_change("GUI service state: transport failure epoch=%llu reason=%s error=%s renderChanged=%d\n",
-        (unsigned long long)connectionEpoch,
-        reason && reason[0] ? reason : "unknown",
-        g_app.backgroundServiceError, renderChanged ? 1 : 0);
-    if (renderChanged) gui_render_service_phase_only();
-    start_service_reconnect_timer_if_needed();
 }
 
 static void gui_apply_ready_envelope(const ServiceResponse* response,
@@ -815,10 +783,12 @@ static void handle_gui_service_io_completion(
         return;
     }
     if (!completion->transportSuccess) {
-        gui_service_handle_transport_failure(completion->connectionEpoch,
-            completion->error, completion->reason,
-            completion->serviceInstalled, completion->serviceRunning);
+        // NOT automatically a lost connection: a service that accepted the
+        // request and then missed its deadline is busy, not gone
+        // (gui_service_stale_read.cpp).
+        gui_service_handle_read_miss(completion);
     } else {
+        gui_service_note_read_answered();
         gui_service_accept_response_on_main_thread(&completion->response,
             completion->connectionEpoch, completion->kind,
             completion->redrawControls, completion->reason);

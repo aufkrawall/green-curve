@@ -275,7 +275,11 @@ def check_daemon_deadlines(ctx, require_text, forbid_text, require_order):
                  "Linux outcome recovery cannot spin on a prompt failure")
     require_text(client, "SERVICE_OPERATION_OUTCOME_UNKNOWN",
                  "Linux reports an unrecovered mutation as unknown, not as failed")
-    require_text(policy, "its deadline must exceed the mutation handler budget",
+    # Match the static_assert's own failure MESSAGE, not the rationale comment
+    # above it: a comment is satisfied by prose, so a gate anchored there passes
+    # against a reverted assertion. Same lesson as the Windows recovery gate.
+    require_text(policy,
+                 "\"Recovery is a mutation-class wait, not a read-class one\"",
                  "the recovery deadline contract is asserted at compile time")
     require_text(policy, "linux_daemon_connect_reachability",
                  "a failed connect is classified rather than assumed to mean offline")

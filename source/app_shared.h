@@ -634,6 +634,14 @@ struct AppData {
     bool backgroundServiceAvailable;
     bool backgroundServiceBroken;
     char backgroundServiceError[256];
+    // A state read that missed its deadline against a service the transport
+    // could still reach (F-READ-MISS).  Distinct from backgroundServiceBroken
+    // on purpose: the live presentation stays up and keeps its last coherent
+    // values, labelled stale, because the service is busy rather than gone.
+    // Cleared by the next successful read.  See
+    // service_request_deadline_policy.h.
+    bool serviceReadStale;
+    unsigned int serviceReadMissStreak;
     bool serviceSnapshotAuthoritative;
     ServiceProfileSource serviceActiveProfileSource;
     unsigned int serviceActiveProfileSlot;

@@ -2,18 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 #include "debug_log_rotation_policy.h"
+#include "debug_log_queue_policy.h"
 #include "log_redaction_policy.h"
 
-static void close_debug_log_file() {
-    EnterCriticalSection(&g_debugLogLock);
-    if (g_debugLogFile != INVALID_HANDLE_VALUE) {
-        FlushFileBuffers(g_debugLogFile);
-        CloseHandle(g_debugLogFile);
-        g_debugLogFile = INVALID_HANDLE_VALUE;
-    }
-    g_debugLogOpenPath[0] = 0;
-    LeaveCriticalSection(&g_debugLogLock);
-}
+// The hand-off into the writer thread (main_debug_log_writer.cpp), which is
+// included after this file because it needs the path helpers below.
+static void debug_log_enqueue(const char* line);
+
+// The handle, the rotation check, the write, the flush and close_debug_log_file()
+// all live in main_debug_log_writer.cpp now, on one dedicated thread. This file
+// keeps only what a PRODUCER may do: resolve the path and format the line.
+// See debug_log_queue_policy.h for why that separation exists.
 
 static DWORD debug_log_file_attributes() {
     return FILE_ATTRIBUTE_NORMAL | (g_app.isServiceProcess ? FILE_FLAG_WRITE_THROUGH : 0);
@@ -90,75 +89,17 @@ static void debug_log(const char* fmt, ...) {
     va_start(ap, fmt);
     StringCchVPrintfA(message, ARRAY_COUNT(message), fmt, ap);
     va_end(ap);
-    char buf[1200] = {};
+    char buf[gc_debug_log_queue::kMaxRecordBytes] = {};
     int prefixLen = format_log_timestamp_prefix(buf, ARRAY_COUNT(buf));
     StringCchCatA(buf + prefixLen, ARRAY_COUNT(buf) - prefixLen, message);
-    OutputDebugStringA(buf);
-
-    EnterCriticalSection(&g_debugLogLock);
-    const char* debugPath = effective_debug_log_path();
-
-    if (!g_app.isServiceProcess && !g_debugLogPath[0]) {
-        char pathErr[256] = {};
-        resolve_data_paths(pathErr, sizeof(pathErr));
-        debugPath = effective_debug_log_path();
-    }
-
-    if (g_debugLogFile != INVALID_HANDLE_VALUE && _stricmp(g_debugLogOpenPath, debugPath) != 0) {
-        FlushFileBuffers(g_debugLogFile);
-        CloseHandle(g_debugLogFile);
-        g_debugLogFile = INVALID_HANDLE_VALUE;
-        g_debugLogOpenPath[0] = 0;
-    }
-
-    if (g_debugLogFile == INVALID_HANDLE_VALUE) {
-        g_debugLogFile = open_debug_log_file_locked(debugPath);
-    }
-
-    // Size-cap rotation. The GUI and service can share one user-side log via
-    // append-only handles, so truncation (not rename) is what keeps every
-    // writer valid: FILE_APPEND_DATA writes always land at EOF, and a
-    // cooperative truncate simply moves that EOF for everyone.
-    if (g_debugLogFile != INVALID_HANDLE_VALUE) {
-        LARGE_INTEGER logSize = {};
-        if (GetFileSizeEx(g_debugLogFile, &logSize) &&
-            gc_debug_log_rotation::should_rotate(logSize.QuadPart)) {
-            FlushFileBuffers(g_debugLogFile);
-            CloseHandle(g_debugLogFile);
-            g_debugLogFile = INVALID_HANDLE_VALUE;
-            g_debugLogOpenPath[0] = 0;
-            HANDLE fresh = gc_CreateFileUtf8(debugPath, GENERIC_WRITE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS,
-                debug_log_file_attributes(), nullptr);
-            if (fresh != INVALID_HANDLE_VALUE) {
-                const char* marker = gc_debug_log_rotation::marker_line();
-                DWORD markerWritten = 0;
-                WriteFile(fresh, marker, (DWORD)strlen(marker),
-                          &markerWritten, nullptr);
-                CloseHandle(fresh);
-            }
-            g_debugLogFile = open_debug_log_file_locked(debugPath);
-        }
-    }
-
-    if (g_debugLogFile != INVALID_HANDLE_VALUE) {
-        DWORD written = 0;
-        if (!WriteFile(g_debugLogFile, buf, (DWORD)strlen(buf), &written, nullptr)) {
-            CloseHandle(g_debugLogFile);
-            g_debugLogFile = INVALID_HANDLE_VALUE;
-            g_debugLogOpenPath[0] = 0;
-
-            g_debugLogFile = open_debug_log_file_locked(debugPath);
-            if (g_debugLogFile != INVALID_HANDLE_VALUE) {
-                WriteFile(g_debugLogFile, buf, (DWORD)strlen(buf), &written, nullptr);
-            }
-        }
-        if (g_app.isServiceProcess && g_debugLogFile != INVALID_HANDLE_VALUE) {
-            FlushFileBuffers(g_debugLogFile);
-        }
-    }
-
-    LeaveCriticalSection(&g_debugLogLock);
+    // Hand the finished line to the writer thread and return.  No file handle,
+    // no size check, no WriteFile, no FlushFileBuffers and no
+    // OutputDebugStringA on this thread: every one of those can block for as
+    // long as the volume or an attached debugger decides to, and this function
+    // is called from inside the service's serialized dispatch lock, where a
+    // stall stops the service answering anything at all.  That is precisely
+    // what happened on 2026-09-12; see debug_log_queue_policy.h.
+    debug_log_enqueue(buf);
 }
 
 static void debug_log_session_marker(const char* phase, const char* kind, const char* extra) {

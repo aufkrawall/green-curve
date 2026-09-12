@@ -1361,6 +1361,60 @@ def check_graph_frequency_axis(ctx, require_text, forbid_text):
                  "axis ceilings round up on the grid with true ceil semantics")
 
 
+def check_read_miss_is_not_a_disconnect(ctx, require_text, forbid_text):
+    """F-READ-MISS: a busy service must not present as an absent one.
+
+    Guards a negative, and an expensive one. On 2026-09-12 a C: volume stall
+    (Windows Volsnap event 25) blocked a debug-log flush the service was making
+    from inside its serialized dispatch lock for 19.078 seconds; the GUI's read
+    deadlines expired and the GUI turned that into a full disconnect -- GPU epoch
+    advanced, live authority discarded, the applied-profile indicator dropped to
+    "Manual settings", every control rebuilt. Nothing about that fails a build or
+    a test: the code keeps working, it is just wrong about what happened. The
+    rules below pin the three halves that have to stay true together -- the
+    transport records reachability, the policy decides from it, and the GUI's
+    completion path asks the policy instead of assuming.
+    """
+    deadline_policy_h = _p(ctx, "service_request_deadline_policy.h")
+    connection_cpp = _p(ctx, "main_service_connection.cpp")
+    stale_read_cpp = _p(ctx, "gui_service_stale_read.cpp")
+    state_cpp = _p(ctx, "gui_service_state.cpp")
+    profiles_gui_cpp = _p(ctx, "config_profiles_gui_state.cpp")
+
+    require_text(deadline_policy_h, "service_client_connect_reachability",
+                 "the pipe client classifies connect failures into reachability")
+    require_text(deadline_policy_h, "service_client_read_miss_preserves_presentation",
+                 "one rule decides whether a missed read keeps the presentation")
+    # ERROR_PIPE_BUSY is the Windows analogue of a saturated Unix backlog: the
+    # pipe exists. Losing this case is what turns "busy" back into "gone".
+    require_text(deadline_policy_h, "case GC_WIN_ERROR_PIPE_BUSY:",
+                 "a busy pipe counts as a service that exists")
+    require_text(connection_cpp,
+                 "sendOutcome.reachability = SERVICE_CLIENT_REACHABILITY_CONNECTED;",
+                 "the transport records that it reached the service")
+    # The completion path must DELEGATE. A direct call to the teardown from
+    # there is the original defect, spelled exactly as it used to be.
+    require_text(state_cpp, "gui_service_handle_read_miss(completion);",
+                 "a failed read is routed through the read-miss decision")
+    forbid_text(state_cpp, "gui_service_handle_transport_failure(completion->connectionEpoch",
+                "the read completion must not tear down the connection directly")
+    require_text(stale_read_cpp, "service_client_read_miss_preserves_presentation(",
+                 "the read-miss router asks the shared policy")
+    # A stale read keeps everything. These are the three teardown steps it must
+    # never reach, named so a future edit cannot quietly reintroduce them.
+    for forbidden in ("gui_mutation_advance_gpu_epoch",
+                      "gui_invalidate_live_authority",
+                      "gui_service_model_disconnect"):
+        _forbid_in_operation(
+            ctx, stale_read_cpp, "static void gui_service_handle_stale_read(",
+            forbidden,
+            "a stale read must not %s" % forbidden)
+    require_text(state_cpp, "gui_service_note_read_answered();",
+                 "a successful read clears the stale label where the values land")
+    require_text(profiles_gui_cpp, "g_app.serviceReadStale &&",
+                 "the status line says the shown values are the last live ones")
+
+
 def check_all(ctx, require_text, forbid_text):
     check_visibility_neutral_projection(ctx, require_text, forbid_text)
     check_manual_refresh_preserves_presentation(ctx, require_text, forbid_text)
@@ -1384,3 +1438,4 @@ def check_all(ctx, require_text, forbid_text):
     check_apply_in_flight_presentation(ctx, require_text, forbid_text)
     check_manual_mutation_result_presentation(ctx, require_text, forbid_text)
     check_service_actionability(ctx, require_text, forbid_text)
+    check_read_miss_is_not_a_disconnect(ctx, require_text, forbid_text)

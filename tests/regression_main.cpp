@@ -20,6 +20,7 @@
 #include "service_recovery_policy.h"
 #include "service_ipc_throttle_policy.h"
 #include "debug_log_rotation_policy.h"
+#include "debug_log_queue_policy.h"
 #include "clk_probe_entry_policy.h"
 #include "selected_gpu_pnp_policy.h"
 #include "gpu_selection_policy.h"
@@ -2545,6 +2546,130 @@ static int run_all_tests(int argc, char** argv) {
         if (service_operation_recovery_response_timeout_ms() <=
             (unsigned long)SERVICE_APPLY_HANDLER_BUDGET_MS +
             service_dispatch_serialization_budget_ms()) return 5153;
+
+        // F-READ-MISS (2026-09-12): a service that answered late must never be
+        // reported as a service that is gone.
+        //
+        // The incident: a C: volume stall (Windows Volsnap event 25) blocked a
+        // debug-log flush the service was making from inside its serialized
+        // dispatch lock for 19.078 s. The client deadlines expired -- correctly,
+        // the service really had blown its contract -- and the GUI turned that
+        // into a full disconnect: GPU epoch advanced, live authority discarded,
+        // the applied-profile indicator dropped to manual, every control
+        // rebuilt. No deadline can be long enough for every stall an OS can
+        // produce, so the REACTION has to be right independently of how the
+        // deadlines are sized.
+        //
+        // An opened pipe, and a pipe observed busy, are both evidence a service
+        // exists. ERROR_PIPE_BUSY is the exact Windows analogue of the Linux
+        // EAGAIN on a saturated backlog.
+        if (service_client_connect_reachability(GC_WIN_ERROR_PIPE_BUSY) !=
+            SERVICE_CLIENT_REACHABILITY_CONNECTED) return 5154;
+        if (service_client_connect_reachability(GC_WIN_ERROR_SEM_TIMEOUT) !=
+            SERVICE_CLIENT_REACHABILITY_CONNECTED) return 5155;
+        // Nothing is listening, or this caller may not use it: definite, and
+        // the only answers that mean offline.
+        if (service_client_connect_reachability(GC_WIN_ERROR_FILE_NOT_FOUND) !=
+            SERVICE_CLIENT_REACHABILITY_UNREACHABLE) return 5156;
+        if (service_client_connect_reachability(GC_WIN_ERROR_PATH_NOT_FOUND) !=
+            SERVICE_CLIENT_REACHABILITY_UNREACHABLE) return 5157;
+        if (service_client_connect_reachability(GC_WIN_ERROR_ACCESS_DENIED) !=
+            SERVICE_CLIENT_REACHABILITY_UNREACHABLE) return 5158;
+        if (!service_client_failure_means_offline(
+                SERVICE_CLIENT_REACHABILITY_UNREACHABLE)) return 5159;
+        if (service_client_failure_means_offline(
+                SERVICE_CLIENT_REACHABILITY_CONNECTED)) return 5160;
+        // UNKNOWN means nothing was attempted. Treating it as offline would
+        // make a queue or allocation failure look like a stopped service.
+        if (service_client_failure_means_offline(
+                SERVICE_CLIENT_REACHABILITY_UNKNOWN)) return 5161;
+
+        // THE regression: the exact incident shape. The request was written,
+        // the service accepted it, and the response deadline expired.
+        {
+            ServiceClientSendOutcome missed = { };
+            missed.reachability = SERVICE_CLIENT_REACHABILITY_CONNECTED;
+            missed.deadlineExpired = true;
+            missed.requestSubmitted = true;
+            if (!service_client_read_miss_preserves_presentation(missed))
+                return 5162;
+            ServiceClientSendOutcome absent = { };
+            absent.reachability = SERVICE_CLIENT_REACHABILITY_UNREACHABLE;
+            absent.deadlineExpired = true;
+            if (service_client_read_miss_preserves_presentation(absent))
+                return 5163;
+            // How long the read took, and whether it expired at all, must not
+            // enter the decision: a saturated pipe fails immediately and is
+            // still a present service.
+            ServiceClientSendOutcome busyFast = { };
+            busyFast.reachability = SERVICE_CLIENT_REACHABILITY_CONNECTED;
+            if (!service_client_read_miss_preserves_presentation(busyFast))
+                return 5164;
+        }
+        if (service_client_send_outcome_initial().reachability !=
+            SERVICE_CLIENT_REACHABILITY_UNKNOWN) return 5165;
+        if (service_client_send_outcome_initial().requestSubmitted) return 5166;
+    }
+
+    // F-LOG-ASYNC: the debug log producer/writer hand-off (2026-09-12).
+    //
+    // Same incident, its other half. debug_log() used to perform the whole file
+    // write inline -- and in the service that write is durable by construction
+    // (FILE_FLAG_WRITE_THROUGH plus FlushFileBuffers after every line) -- from
+    // inside the serialized dispatch lock. One stalled flush therefore stopped
+    // the service answering anything for 19 s. Producing a line must now cost a
+    // bounded memcpy into this ring and nothing else.
+    {
+        using namespace gc_debug_log_queue;
+        const unsigned int cap = 64;
+        // Empty, and the free space is the whole ring.
+        if (used_bytes(0, 0) != 0) return 5170;
+        if (free_bytes(0, 0, cap) != cap) return 5171;
+        // Framing is charged to the producer, so a payload costs more than its
+        // own length; a ring that ignored this would overrun by kHeaderBytes.
+        if (record_bytes(10) != 10u + (unsigned int)kHeaderBytes) return 5172;
+        // Positions are monotonic byte counters, so occupancy is exact and
+        // full is never confused with empty.
+        if (used_bytes(cap, 0) != cap) return 5173;
+        if (free_bytes(cap, 0, cap) != 0) return 5174;
+
+        // A ring too small to hold one maximum-length line refuses everything
+        // rather than half-accepting; the real one is far larger, and this is
+        // the guard that says so.
+        if (fits(0, 0, cap, 4)) return 5175;
+        const unsigned int realCap = (unsigned int)kRingBytes;
+        if (!fits(0, 0, realCap, 4)) return 5176;
+        // Zero-length and over-length payloads are refused, never truncated: a
+        // clipped line reads as a complete one and lies about what happened.
+        if (fits(0, 0, realCap, 0)) return 5177;
+        if (fits(0, 0, realCap, (unsigned int)kMaxRecordBytes + 1)) return 5178;
+        if (!fits(0, 0, realCap, (unsigned int)kMaxRecordBytes)) return 5179;
+        // Exactly full, then one byte too many. This is the overflow boundary
+        // that must DROP rather than make the producer wait for the writer.
+        unsigned long long head = realCap - record_bytes(8);
+        if (!fits(head, 0, realCap, 8)) return 5180;
+        if (fits(head + 1, 0, realCap, 8)) return 5181;
+
+        // Wrapping: a record may straddle the seam, so the second half has to
+        // continue at offset 0 rather than the record being refused or padded.
+        if (offset_of(0, cap) != 0) return 5182;
+        if (offset_of(cap, cap) != 0) return 5183;
+        if (offset_of(cap + 5, cap) != 5) return 5184;
+        if (first_span(cap - 4, cap, 10) != 4) return 5185;
+        if (first_span(0, cap, 10) != 10) return 5186;
+        if (first_span(cap - 4, cap, 3) != 3) return 5187;
+
+        // The crash drain walks the ring with no lock, so a length it cannot
+        // trust must stop it instead of letting it read past the committed
+        // region.
+        if (!record_length_is_valid(8, record_bytes(8), 0)) return 5188;
+        if (record_length_is_valid(8, record_bytes(8) - 1, 0)) return 5189;
+        if (record_length_is_valid(0, 1000, 0)) return 5190;
+        if (record_length_is_valid((unsigned int)kMaxRecordBytes + 1,
+                1000000, 0)) return 5191;
+        // Joining the writer at shutdown is bounded, so a stalled volume cannot
+        // hold the process open; the drain still runs on the shutdown thread.
+        if ((unsigned int)kWriterJoinMs == 0) return 5192;
     }
 
     // F-DAEMON-DEADLINE: the Linux client's request deadlines versus the
@@ -2628,7 +2753,8 @@ static int run_all_tests(int argc, char** argv) {
         if (linux_daemon_response_timeout_ms(
                 LINUX_DAEMON_DEADLINE_STATE_READ) <=
             linux_daemon_state_read_handler_budget_ms() +
-                linux_daemon_serialization_budget_ms()) return 5116;
+                linux_daemon_serialization_budget_ms(
+                    LINUX_DAEMON_DEADLINE_STATE_READ)) return 5116;
 
         // THE defect: the recovery query is queued behind the very mutation it
         // is asking about. A read-class deadline here could only ever recover

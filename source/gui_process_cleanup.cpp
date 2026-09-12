@@ -28,7 +28,9 @@ static void cleanup_gui_process_runtime(bool coordinatorStarted) {
         s_hUiFont = nullptr;
     }
     if (coordinatorStopped) {
-        close_debug_log_file();
+        // Drains and joins the log writer before the ring lock goes away,
+        // so the last lines of the session reach disk.
+        debug_log_writer_stop();
         DeleteCriticalSection(&g_configLock);
         DeleteCriticalSection(&g_appLock);
         DeleteCriticalSection(&g_debugLogLock);
