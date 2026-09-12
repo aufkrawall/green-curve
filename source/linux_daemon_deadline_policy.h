@@ -394,7 +394,8 @@ static_assert(linux_daemon_response_timeout_ms(
 // The recovery query must outlast both the mutation it is queued behind and its
 // own fresh snapshot.  GET_OPERATION_RESULT calls populate_snapshot(), so
 // treating the answer as a zero-cost lookup recreates the same false-unknown
-// failure at the tail of the recovery exchange.
+// failure at the tail of the recovery exchange.  In source-gate terms: its
+// deadline must exceed the mutation handler budget, plus the query's own read.
 static_assert(linux_daemon_response_timeout_ms(
     LINUX_DAEMON_DEADLINE_OPERATION_RECOVERY) >
     linux_daemon_mutation_handler_budget_ms() +
