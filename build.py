@@ -885,7 +885,9 @@ def _compile_windows_x64_objects(object_dir, pdb_path, service=False, jobs=1, li
 def _prepare_windows_symbol_paths(output_path, arch, link_pdb_name):
     """Fresh private-symbol destination plus the linker's scratch PDB path."""
     pdb_path = windows_symbol_output_path(output_path, arch)
-    link_pdb_path = os.path.join(SCRIPT_DIR, link_pdb_name)
+    stem, ext = os.path.splitext(link_pdb_name)
+    scoped_link_pdb_name = f"{stem}-{arch}{ext}" if ACTIVE_WINDOWS_TOOLCHAIN == "clang-cl" else link_pdb_name
+    link_pdb_path = os.path.join(SCRIPT_DIR, scoped_link_pdb_name)
     os.makedirs(os.path.dirname(pdb_path), exist_ok=True)
     stale = [pdb_path] + ([link_pdb_path] if (arch == "x64" or ACTIVE_WINDOWS_TOOLCHAIN == "clang-cl") else [])
     for path in stale:
@@ -907,7 +909,7 @@ def _print_windows_build_header(output_path, arch, jobs, cmd):
         print(f"  Command: {' '.join(cmd)}")
 
 
-def _compile_and_link_windows_msvc(temp_output, service, arch, jobs, limiter):
+def _compile_and_link_windows_msvc(temp_output, service, arch, jobs, limiter, link_pdb_name=None):
     """Object-first clang-cl (MSVC ABI) build: parallel object compiles under
     the shared job limiter, then one lld-link with the hardened flag set
     (/GS, real OS CFG via /guard:cf, /cetcompat shadow stacks on x64)."""
@@ -919,8 +921,9 @@ def _compile_and_link_windows_msvc(temp_output, service, arch, jobs, limiter):
         objects = msvc_toolchain.compile_windows_objects(
             toolchain.clang_cl, compile_flags, WINDOWS_MSVC_SOURCE_FILES, work,
             _run_compiler, jobs, limiter)
-        link_flags = msvc_toolchain.windows_link_flags(
-            "greencurve-service.pdb" if service else "greencurve.pdb", arch)
+        if not link_pdb_name:
+            link_pdb_name = "greencurve-service.pdb" if service else "greencurve.pdb"
+        link_flags = msvc_toolchain.windows_link_flags(link_pdb_name, arch)
         libs = msvc_toolchain.msvc_link_libs(
             WINDOWS_SERVICE_LINK_LIBS if service else WINDOWS_LINK_LIBS)
         with (limiter.slot() if limiter is not None else nullcontext()):
@@ -1219,7 +1222,8 @@ def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_T
     try:
         if ACTIVE_WINDOWS_TOOLCHAIN == "clang-cl":
             returncode = _compile_and_link_windows_msvc(
-                temp_output, service=False, arch=arch, jobs=jobs, limiter=limiter)
+                temp_output, service=False, arch=arch, jobs=jobs, limiter=limiter,
+                link_pdb_name=os.path.basename(link_pdb_path))
             if returncode == 0:
                 os.replace(link_pdb_path, pdb_path)
         elif arch == "arm64":
@@ -1273,7 +1277,8 @@ def compile_windows_service_binary(output_path=WINDOWS_SERVICE_OUTPUT_EXE, temp_
     try:
         if ACTIVE_WINDOWS_TOOLCHAIN == "clang-cl":
             returncode = _compile_and_link_windows_msvc(
-                temp_output, service=True, arch=arch, jobs=jobs, limiter=limiter)
+                temp_output, service=True, arch=arch, jobs=jobs, limiter=limiter,
+                link_pdb_name=os.path.basename(link_pdb_path))
             if returncode == 0:
                 os.replace(link_pdb_path, pdb_path)
         elif arch == "arm64":

@@ -231,11 +231,11 @@ static bool debug_log_dequeue(char* out, size_t outSize) {
             (unsigned int)gc_debug_log_queue::kHeaderBytes);
         if (gc_debug_log_queue::record_length_is_valid(payloadBytes, head,
                 tail)) {
-            char staging[gc_debug_log_queue::kMaxRecordBytes + 1] = {};
+            unsigned int copyBytes = (payloadBytes < outSize)
+                ? payloadBytes : (unsigned int)(outSize - 1);
             debug_log_ring_copy_out(
-                tail + gc_debug_log_queue::kHeaderBytes, staging, payloadBytes);
-            staging[payloadBytes] = 0;
-            StringCchCopyA(out, outSize, staging);
+                tail + gc_debug_log_queue::kHeaderBytes, out, copyBytes);
+            out[copyBytes] = 0;
             InterlockedExchange64(&g_debugLogRingTail,
                 (LONG64)(tail +
                     gc_debug_log_queue::record_bytes(payloadBytes)));
@@ -317,10 +317,14 @@ static void debug_log_writer_ensure_started() {
         return;
     if (!g_debugLogWriterEvent)
         g_debugLogWriterEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (!g_debugLogWriterEvent) return;
-    g_debugLogWriterThread = CreateThread(nullptr, (SIZE_T)64 * 1024,
-        debug_log_writer_thread_proc, nullptr,
-        STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+    if (g_debugLogWriterEvent) {
+        g_debugLogWriterThread = CreateThread(nullptr, (SIZE_T)64 * 1024,
+            debug_log_writer_thread_proc, nullptr,
+            STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+    }
+    if (!g_debugLogWriterThread) {
+        InterlockedExchange(&g_debugLogWriterStartGuard, 0);
+    }
 }
 
 // Called once per process, beside the other lock initialization, so the very

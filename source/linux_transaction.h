@@ -33,6 +33,40 @@ static inline unsigned int linux_advanced_phases_for_available_domains(
     return phases;
 }
 
+// Required core mutation domains that every reset-capable GPU must provide.
+// Power is deliberately optional: mobile/surfaceless GPUs expose no power
+// control surface (or driver refuses power control), but can and should
+// still reset clocks, curve, and fans.
+static inline unsigned int linux_reset_required_mutation_domains() {
+    return SERVICE_MUTATION_DOMAIN_RESET_BASELINE |
+           SERVICE_MUTATION_DOMAIN_GPU_OFFSET |
+           SERVICE_MUTATION_DOMAIN_MEM_OFFSET |
+           SERVICE_MUTATION_DOMAIN_VF_CURVE |
+           SERVICE_MUTATION_DOMAIN_LOCK |
+           SERVICE_MUTATION_DOMAIN_FAN;
+}
+
+static inline bool linux_reset_preflight_domains_supported(
+    unsigned int availableMutationDomains, int powerLimitDefaultmW) {
+    unsigned int required = linux_reset_required_mutation_domains();
+    if ((availableMutationDomains & required) != required) return false;
+    bool hasPower = (availableMutationDomains & SERVICE_MUTATION_DOMAIN_POWER) != 0;
+    if (hasPower && powerLimitDefaultmW <= 0) return false;
+    return true;
+}
+
+static inline unsigned int linux_reset_phases_for_available_domains(
+    unsigned int availableMutationDomains) {
+    unsigned int phases = LINUX_MUTATION_LOCK | LINUX_MUTATION_GPU_OFFSET |
+        LINUX_MUTATION_MEM_OFFSET | LINUX_MUTATION_CURVE | LINUX_MUTATION_FAN;
+    if (availableMutationDomains & SERVICE_MUTATION_DOMAIN_POWER) {
+        phases |= LINUX_MUTATION_POWER;
+    }
+    phases |= linux_advanced_phases_for_available_domains(availableMutationDomains);
+    return phases;
+}
+
+
 struct LinuxMutationResult {
     bool success;
     bool anyWrite;

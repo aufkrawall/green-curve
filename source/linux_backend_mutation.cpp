@@ -733,27 +733,19 @@ LinuxMutationResult linux_backend_reset(LinuxGpuState* g, char* result, size_t r
         if (result) gc_strlcpy(result, resultSize, detail[0] ? detail : "Reset preflight failed");
         return mutation;
     }
-    const gc_u32 resetDomains =
-        SERVICE_MUTATION_DOMAIN_RESET_BASELINE |
-        SERVICE_MUTATION_DOMAIN_GPU_OFFSET |
-        SERVICE_MUTATION_DOMAIN_MEM_OFFSET |
-        SERVICE_MUTATION_DOMAIN_POWER |
-        SERVICE_MUTATION_DOMAIN_VF_CURVE |
-        SERVICE_MUTATION_DOMAIN_LOCK |
-        SERVICE_MUTATION_DOMAIN_FAN;
-    if ((snapshot.availableMutationDomains & resetDomains) != resetDomains ||
-        g->powerLimitDefaultmW <= 0 || !g->backend ||
-        !g->backend->writeSupported) {
+    if (!linux_reset_preflight_domains_supported(
+            snapshot.availableMutationDomains, g->powerLimitDefaultmW) ||
+        !g->backend || !g->backend->writeSupported) {
         gc_strlcpy(detail, sizeof(detail),
                    "Reset preflight failed: every mutable domain must support snapshot and restore");
         if (result) gc_strlcpy(result, resultSize, detail);
         return mutation;
     }
+    if (!(snapshot.availableMutationDomains & SERVICE_MUTATION_DOMAIN_POWER)) {
+        lb_log("reset: skipping power reset — board exposes no power control surface\n");
+    }
     LinuxResetTransactionContext context = {g, &snapshot};
-    unsigned int requested = LINUX_MUTATION_LOCK | LINUX_MUTATION_GPU_OFFSET |
-        LINUX_MUTATION_MEM_OFFSET | LINUX_MUTATION_POWER | LINUX_MUTATION_CURVE |
-        LINUX_MUTATION_FAN;
-    requested |= linux_advanced_phases_for_available_domains(
+    unsigned int requested = linux_reset_phases_for_available_domains(
         snapshot.availableMutationDomains);
     mutation = linux_execute_transaction(requested, linux_reset_transaction_step,
                                          linux_reset_transaction_rollback, &context);

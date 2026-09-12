@@ -6586,6 +6586,49 @@ static int run_all_tests(int argc, char** argv) {
         if (linux_advanced_phases_for_available_domains(advancedAvailable) !=
             (LINUX_MUTATION_XBAR | LINUX_MUTATION_VIDEO_CLK))
             return 4552;
+
+        // Core reset domains must succeed on GPUs without a power control surface
+        // (e.g. mobile/surfaceless GPUs) while skipping LINUX_MUTATION_POWER.
+        unsigned int coreDomainsNoPower =
+            SERVICE_MUTATION_DOMAIN_RESET_BASELINE |
+            SERVICE_MUTATION_DOMAIN_GPU_OFFSET |
+            SERVICE_MUTATION_DOMAIN_MEM_OFFSET |
+            SERVICE_MUTATION_DOMAIN_VF_CURVE |
+            SERVICE_MUTATION_DOMAIN_LOCK |
+            SERVICE_MUTATION_DOMAIN_FAN;
+        if (linux_reset_required_mutation_domains() != coreDomainsNoPower)
+            return 4553;
+        // On a surfaceless board with powerLimitDefaultmW == 0, preflight must succeed.
+        if (!linux_reset_preflight_domains_supported(coreDomainsNoPower, 0))
+            return 4554;
+        // The requested phases must NOT include power when power is absent.
+        unsigned int phasesNoPower =
+            linux_reset_phases_for_available_domains(coreDomainsNoPower);
+        if (phasesNoPower & LINUX_MUTATION_POWER)
+            return 4555;
+        if ((phasesNoPower & (LINUX_MUTATION_LOCK | LINUX_MUTATION_GPU_OFFSET |
+                              LINUX_MUTATION_MEM_OFFSET | LINUX_MUTATION_CURVE |
+                              LINUX_MUTATION_FAN)) !=
+            (LINUX_MUTATION_LOCK | LINUX_MUTATION_GPU_OFFSET |
+             LINUX_MUTATION_MEM_OFFSET | LINUX_MUTATION_CURVE |
+             LINUX_MUTATION_FAN))
+            return 4556;
+
+        // When power is available, preflight requires a positive defaultmW.
+        unsigned int coreWithPower = coreDomainsNoPower | SERVICE_MUTATION_DOMAIN_POWER;
+        if (linux_reset_preflight_domains_supported(coreWithPower, 0))
+            return 4557;
+        if (!linux_reset_preflight_domains_supported(coreWithPower, 250000))
+            return 4558;
+        unsigned int phasesWithPower =
+            linux_reset_phases_for_available_domains(coreWithPower);
+        if (!(phasesWithPower & LINUX_MUTATION_POWER))
+            return 4559;
+
+        // If a required domain (e.g. GPU offset) is missing, preflight must fail.
+        if (linux_reset_preflight_domains_supported(
+                coreDomainsNoPower & ~SERVICE_MUTATION_DOMAIN_GPU_OFFSET, 0))
+            return 4560;
     }
 
     // Linux PCI identity remains stable across API enumeration reordering and

@@ -130,6 +130,9 @@ static DWORD WINAPI gui_update_command_thread_proc(void* param) {
     if (!completion) {
         debug_log("gui update: command %u dropped; completion allocation failed\n",
                   (unsigned int)work.command);
+        if (work.command == SERVICE_CMD_INSTALL_UPDATE && work.settingsCaptured) {
+            gui_update_discard_pending_restore();
+        }
         gui_update_command_release();
         return 1;
     }
@@ -154,6 +157,9 @@ static DWORD WINAPI gui_update_command_thread_proc(void* param) {
                                  (LPARAM)completion)) {
         debug_log("gui update: command %u completion could not be posted; dropping it\n",
                   (unsigned int)work.command);
+        if (work.command == SERVICE_CMD_INSTALL_UPDATE && work.settingsCaptured) {
+            gui_update_discard_pending_restore();
+        }
         HeapFree(GetProcessHeap(), 0, completion);
         gui_update_command_release();
     }
