@@ -1,7 +1,7 @@
 # Maintainer: aufkrawall <https://github.com/aufkrawall/green-curve>
 
 pkgname=greencurve-bin
-pkgver=0.26.0
+pkgver=0.25.2
 pkgrel=1
 pkgdesc="NVIDIA VF curve, overclock, undervolt and fan control daemon & terminal UI (precompiled binary)"
 arch=('x86_64' 'aarch64')

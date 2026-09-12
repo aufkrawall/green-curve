@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.26.0
+## 0.25.2
 
-Green Curve 0.26.0 is a major reliability and hardening release, featuring
+Green Curve 0.25.2 is a reliability and hardening release, featuring
 asynchronous log routing across Windows user sessions, full Linux TUI support
 for surfaceless/laptop GPU reset, role-derived transport deadlines on both
 platforms, and build pipeline enhancements.
