@@ -152,6 +152,16 @@ static void handle_gui_mutation_completion(GuiMutationCompletion* completion) {
             "GPU operation completed, but the service or selected-GPU presentation changed before its result could be adopted. Unsaved draft preserved; synchronizing current state.");
     }
 
+    // The accepted FULL_SYNC envelope above can run the editor-enable pass while
+    // this mutation still owns the queue's in-flight state. That pass predates
+    // the hardware-write gate and can overwrite the Apply enable that
+    // gui_apply_in_flight_presentation_changed() asserted when the write began.
+    // Re-assert the canonical pending/actionability gate before any result
+    // presentation (which may run a nested modal message loop) and before a
+    // queued Reset/Apply is dispatched. The final queue acknowledgement below
+    // performs the opposite transition when the mutation lane actually drains.
+    gui_pending_changes_refresh();
+
     if (work.context == GUI_MUTATION_CONTEXT_MANUAL_APPLY) {
         if (successForUi) {
             if (work.profileSource == SERVICE_PROFILE_SOURCE_SHARED_SLOT)
