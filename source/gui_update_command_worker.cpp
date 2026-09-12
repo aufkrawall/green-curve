@@ -91,10 +91,16 @@ static bool gui_update_send(ServiceCommand command, gc_u32 autoCheck,
     StringCchCopyA(request.source, ARRAY_COUNT(request.source), "gui update");
 
     ServiceResponse response = {};
-    // Off the message thread, so it takes the service's own contract rather
-    // than a number picked to bound a freeze.
+    // Off the message thread, so there is no UI-stall reason to expire while a
+    // legitimate APPLY/RESET already owns the service's one dispatch lock. The
+    // health-probe budget covers the update command's own queue/framing work;
+    // layer the mutation ceiling in front of it so an INSTALL cannot report a
+    // transport failure, discard its captured restore state, and then execute
+    // later when the service finally reaches the already-accepted request.
+    DWORD responseTimeoutMs = SERVICE_APPLY_CLIENT_TIMEOUT_MS +
+        (DWORD)service_health_probe_response_timeout_ms();
     if (!service_send_request_split(&request, &response,
-            (DWORD)service_health_probe_response_timeout_ms(), err, errSize)) {
+            responseTimeoutMs, err, errSize)) {
         debug_log("gui update: command %u transport failed: %s\n",
                   (unsigned)command, err && err[0] ? err : "unknown");
         return false;
