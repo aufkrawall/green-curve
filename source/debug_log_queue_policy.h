@@ -66,7 +66,25 @@ enum {
     // because the failure mode this whole queue was built for -- a volume that
     // stops answering -- would otherwise be able to hold the process open.
     kWriterJoinMs = 5000,
+    // Number of route slots tracked in the generation cache.
+    kMaxRouteSlots = 8,
 };
+
+// Header framing: 16-bit payload length (bounded by kMaxRecordBytes = 1200)
+// plus 16-bit destination route generation, so every queued line is bound to
+// the active log route at the instant it was enqueued rather than resolving
+// whichever path is active when the queue is later drained.
+inline unsigned int pack_header(unsigned int payloadBytes, unsigned int routeGen) {
+    return (payloadBytes & 0xFFFFu) | ((routeGen & 0xFFFFu) << 16);
+}
+
+inline unsigned int unpack_payload_bytes(unsigned int header) {
+    return header & 0xFFFFu;
+}
+
+inline unsigned int unpack_route_generation(unsigned int header) {
+    return (header >> 16) & 0xFFFFu;
+}
 
 // Bytes currently committed and not yet drained. Positions are MONOTONIC byte
 // counters, never wrapped indices: the difference is then always the true

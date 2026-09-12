@@ -86,13 +86,24 @@ void apply_to_gpu(TuiState* state) {
 }
 
 void reset_gpu(TuiState* state) {
-    if (!state->serviceOnline ||
-        state->service.state.gpuPhase != SERVICE_GPU_PHASE_READY ||
-        (state->service.snapshot.health.availableMutationDomains &
-            SERVICE_MUTATION_DOMAIN_ALL) != SERVICE_MUTATION_DOMAIN_ALL) {
+    if (!state->serviceOnline) {
         snprintf(state->status, sizeof(state->status),
-                 "Reset blocked: full atomic Reset requires READY and every mutation domain (available=0x%02x)",
-                 state->service.snapshot.health.availableMutationDomains);
+                 "Reset blocked: daemon is offline");
+        return;
+    }
+    if (state->service.state.gpuPhase != SERVICE_GPU_PHASE_READY) {
+        snprintf(state->status, sizeof(state->status),
+                 "Reset blocked: GPU is not in READY state (phase=%u)",
+                 (unsigned int)state->service.state.gpuPhase);
+        return;
+    }
+    if (!linux_reset_preflight_domains_supported(
+            state->service.snapshot.health.availableMutationDomains,
+            state->service.snapshot.powerLimitDefaultmW)) {
+        snprintf(state->status, sizeof(state->status),
+                 "Reset blocked: core mutation domains unavailable (available=0x%02x required=0x%02x)",
+                 state->service.snapshot.health.availableMutationDomains,
+                 linux_reset_required_mutation_domains());
         return;
     }
     snprintf(state->status, sizeof(state->status), "Resetting GPU controls...");

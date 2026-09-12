@@ -75,6 +75,79 @@ static void close_debug_log_file() {
     if (g_debugLogWriterEvent) SetEvent(g_debugLogWriterEvent);
 }
 
+struct DebugLogRouteSlot {
+    unsigned short generation;
+    bool valid;
+    char path[MAX_PATH];
+};
+
+static unsigned short g_debugLogCurrentRouteGen = 0;
+static DebugLogRouteSlot g_debugLogRoutes[gc_debug_log_queue::kMaxRouteSlots] = {};
+
+// Update the current log destination path and advance the route generation.
+// Callable from any thread (takes g_debugLogLock, never touches disk I/O).
+static void debug_log_set_route_path(const char* path) {
+    if (!path || !path[0]) return;
+    debug_log_initialize_locks();
+    EnterCriticalSection(&g_debugLogLock);
+    unsigned int curSlotIdx = (unsigned int)(g_debugLogCurrentRouteGen % gc_debug_log_queue::kMaxRouteSlots);
+    if (g_debugLogCurrentRouteGen != 0 &&
+        g_debugLogRoutes[curSlotIdx].valid &&
+        g_debugLogRoutes[curSlotIdx].generation == g_debugLogCurrentRouteGen &&
+        _stricmp(g_debugLogRoutes[curSlotIdx].path, path) == 0) {
+        LeaveCriticalSection(&g_debugLogLock);
+        return;
+    }
+    g_debugLogCurrentRouteGen++;
+    if (g_debugLogCurrentRouteGen == 0) g_debugLogCurrentRouteGen = 1;
+    unsigned int newIdx = (unsigned int)(g_debugLogCurrentRouteGen % gc_debug_log_queue::kMaxRouteSlots);
+    g_debugLogRoutes[newIdx].generation = g_debugLogCurrentRouteGen;
+    g_debugLogRoutes[newIdx].valid = true;
+    StringCchCopyA(g_debugLogRoutes[newIdx].path, ARRAY_COUNT(g_debugLogRoutes[newIdx].path), path);
+    LeaveCriticalSection(&g_debugLogLock);
+    if (g_debugLogWriterEvent) SetEvent(g_debugLogWriterEvent);
+}
+
+static HANDLE debug_log_acquire_handle_for_path_locked(const char* targetPath) {
+    if (!targetPath || !targetPath[0]) return INVALID_HANDLE_VALUE;
+    if (InterlockedExchange(&g_debugLogCloseRequested, 0) != 0)
+        debug_log_close_file_locked();
+
+    if (g_debugLogFile != INVALID_HANDLE_VALUE &&
+        _stricmp(g_debugLogOpenPath, targetPath) != 0) {
+        debug_log_close_file_locked();
+    }
+    if (g_debugLogFile == INVALID_HANDLE_VALUE) {
+        g_debugLogFile = open_debug_log_file_locked(targetPath);
+        if (g_debugLogFile != INVALID_HANDLE_VALUE) {
+            StringCchCopyA(g_debugLogOpenPath, ARRAY_COUNT(g_debugLogOpenPath), targetPath);
+        }
+    }
+    if (g_debugLogFile == INVALID_HANDLE_VALUE) return INVALID_HANDLE_VALUE;
+
+    LARGE_INTEGER logSize = {};
+    if (GetFileSizeEx(g_debugLogFile, &logSize) &&
+        gc_debug_log_rotation::should_rotate(logSize.QuadPart)) {
+        debug_log_close_file_locked();
+        HANDLE fresh = gc_CreateFileUtf8(targetPath, GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS,
+            debug_log_file_attributes(), nullptr);
+        if (fresh != INVALID_HANDLE_VALUE) {
+            const char* marker = gc_debug_log_rotation::marker_line();
+            DWORD markerWritten = 0;
+            WriteFile(fresh, marker, (DWORD)strlen(marker), &markerWritten,
+                      nullptr);
+            CloseHandle(fresh);
+        }
+        g_debugLogFile = open_debug_log_file_locked(targetPath);
+        if (g_debugLogFile != INVALID_HANDLE_VALUE) {
+            StringCchCopyA(g_debugLogOpenPath, ARRAY_COUNT(g_debugLogOpenPath), targetPath);
+        }
+        if (g_debugLogFile == INVALID_HANDLE_VALUE) return INVALID_HANDLE_VALUE;
+    }
+    return g_debugLogFile;
+}
+
 // Open (or re-open) the handle for the path that is currently in effect, and
 // honour a pending close request. Returns the handle to write through, or
 // INVALID_HANDLE_VALUE when the log cannot be opened at all.
@@ -121,6 +194,19 @@ static HANDLE debug_log_acquire_handle_locked() {
         if (g_debugLogFile == INVALID_HANDLE_VALUE) return INVALID_HANDLE_VALUE;
     }
     return g_debugLogFile;
+}
+
+static void debug_log_write_line_to_path_locked(const char* text, const char* targetPath) {
+    if (!text || !text[0] || !targetPath || !targetPath[0]) return;
+    HANDLE file = debug_log_acquire_handle_for_path_locked(targetPath);
+    if (file == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    if (!WriteFile(file, text, (DWORD)strlen(text), &written, nullptr)) {
+        debug_log_close_file_locked();
+        file = debug_log_acquire_handle_for_path_locked(targetPath);
+        if (file != INVALID_HANDLE_VALUE)
+            WriteFile(file, text, (DWORD)strlen(text), &written, nullptr);
+    }
 }
 
 // Append one already-formatted line. Caller holds g_debugLogFileLock.
@@ -195,13 +281,25 @@ static void debug_log_enqueue(const char* line) {
 
     bool committed = false;
     EnterCriticalSection(&g_debugLogLock);
+    if (g_debugLogCurrentRouteGen == 0) {
+        const char* initPath = effective_debug_log_path();
+        if (initPath && initPath[0]) {
+            g_debugLogCurrentRouteGen = 1;
+            unsigned int idx = (unsigned int)(1 % gc_debug_log_queue::kMaxRouteSlots);
+            g_debugLogRoutes[idx].generation = 1;
+            g_debugLogRoutes[idx].valid = true;
+            StringCchCopyA(g_debugLogRoutes[idx].path, ARRAY_COUNT(g_debugLogRoutes[idx].path), initPath);
+        }
+    }
+    unsigned short routeGen = g_debugLogCurrentRouteGen;
     unsigned long long head = (unsigned long long)g_debugLogRingHead;
     unsigned long long tail = (unsigned long long)g_debugLogRingTail;
     if (gc_debug_log_queue::fits(head, tail,
             (unsigned int)gc_debug_log_queue::kRingBytes,
             (unsigned int)length)) {
         unsigned int payloadBytes = (unsigned int)length;
-        debug_log_ring_copy_in(head, &payloadBytes,
+        unsigned int header = gc_debug_log_queue::pack_header(payloadBytes, routeGen);
+        debug_log_ring_copy_in(head, &header,
             (unsigned int)gc_debug_log_queue::kHeaderBytes);
         debug_log_ring_copy_in(head + gc_debug_log_queue::kHeaderBytes, line,
             payloadBytes);
@@ -218,17 +316,20 @@ static void debug_log_enqueue(const char* line) {
 }
 
 // Move one record out of the ring. Returns false when the ring is empty.
-static bool debug_log_dequeue(char* out, size_t outSize) {
+static bool debug_log_dequeue(char* out, size_t outSize, char* outPath, size_t outPathSize) {
     if (!out || outSize == 0) return false;
     bool dequeued = false;
+    if (outPath && outPathSize > 0) outPath[0] = 0;
     EnterCriticalSection(&g_debugLogLock);
     unsigned long long head = (unsigned long long)g_debugLogRingHead;
     unsigned long long tail = (unsigned long long)g_debugLogRingTail;
     if (gc_debug_log_queue::used_bytes(head, tail) >
             (unsigned long long)gc_debug_log_queue::kHeaderBytes) {
-        unsigned int payloadBytes = 0;
-        debug_log_ring_copy_out(tail, &payloadBytes,
+        unsigned int header = 0;
+        debug_log_ring_copy_out(tail, &header,
             (unsigned int)gc_debug_log_queue::kHeaderBytes);
+        unsigned int payloadBytes = gc_debug_log_queue::unpack_payload_bytes(header);
+        unsigned int routeGen = gc_debug_log_queue::unpack_route_generation(header);
         if (gc_debug_log_queue::record_length_is_valid(payloadBytes, head,
                 tail)) {
             unsigned int copyBytes = (payloadBytes < outSize)
@@ -236,6 +337,18 @@ static bool debug_log_dequeue(char* out, size_t outSize) {
             debug_log_ring_copy_out(
                 tail + gc_debug_log_queue::kHeaderBytes, out, copyBytes);
             out[copyBytes] = 0;
+            if (outPath && outPathSize > 0) {
+                unsigned int idx = (unsigned int)(routeGen % gc_debug_log_queue::kMaxRouteSlots);
+                if (routeGen != 0 && g_debugLogRoutes[idx].valid &&
+                    g_debugLogRoutes[idx].generation == (unsigned short)routeGen) {
+                    StringCchCopyA(outPath, outPathSize, g_debugLogRoutes[idx].path);
+                } else {
+                    unsigned int curIdx = (unsigned int)(g_debugLogCurrentRouteGen % gc_debug_log_queue::kMaxRouteSlots);
+                    if (g_debugLogRoutes[curIdx].valid) {
+                        StringCchCopyA(outPath, outPathSize, g_debugLogRoutes[curIdx].path);
+                    }
+                }
+            }
             InterlockedExchange64(&g_debugLogRingTail,
                 (LONG64)(tail +
                     gc_debug_log_queue::record_bytes(payloadBytes)));
@@ -252,6 +365,11 @@ static bool debug_log_dequeue(char* out, size_t outSize) {
     return dequeued;
 }
 
+static bool debug_log_dequeue(char* out, size_t outSize) {
+    char targetPath[MAX_PATH] = {};
+    return debug_log_dequeue(out, outSize, targetPath, sizeof(targetPath));
+}
+
 // ---------------------------------------------------------------------------
 // The writer thread.
 // ---------------------------------------------------------------------------
@@ -262,6 +380,7 @@ static bool debug_log_dequeue(char* out, size_t outSize) {
 // crash drain below and by debug_log_writer_stop().
 static void debug_log_writer_drain() {
     char line[gc_debug_log_queue::kMaxRecordBytes + 1] = {};
+    char targetPath[MAX_PATH] = {};
     bool wroteAny = false;
     if (!g_debugLogLocksReady) return;
     EnterCriticalSection(&g_debugLogFileLock);
@@ -280,13 +399,15 @@ static void debug_log_writer_drain() {
         debug_log_write_line_locked(stamped);
         wroteAny = true;
     }
-    while (debug_log_dequeue(line, sizeof(line))) {
+    while (debug_log_dequeue(line, sizeof(line), targetPath, sizeof(targetPath))) {
         // OutputDebugStringA serializes on a system-wide mutex whenever a
         // debugger or DebugView is listening, so it belongs on this thread for
         // the same reason the file write does.
         OutputDebugStringA(line);
-        debug_log_write_line_locked(line);
-        wroteAny = true;
+        if (targetPath[0]) {
+            debug_log_write_line_to_path_locked(line, targetPath);
+            wroteAny = true;
+        }
     }
     if (wroteAny && g_app.isServiceProcess &&
         g_debugLogFile != INVALID_HANDLE_VALUE) {
@@ -332,6 +453,10 @@ static void debug_log_writer_ensure_started() {
 // synchronous fallback.
 static void debug_log_writer_start() {
     debug_log_initialize_locks();
+    const char* initPath = effective_debug_log_path();
+    if (initPath && initPath[0]) {
+        debug_log_set_route_path(initPath);
+    }
     debug_log_writer_ensure_started();
 }
 
@@ -383,9 +508,10 @@ static void debug_log_drain_pending_for_crash() {
     if (gc_debug_log_queue::used_bytes(head, tail) == 0) return;
     while (gc_debug_log_queue::used_bytes(head, tail) >
             (unsigned long long)gc_debug_log_queue::kHeaderBytes) {
-        unsigned int payloadBytes = 0;
-        debug_log_ring_copy_out(tail, &payloadBytes,
+        unsigned int header = 0;
+        debug_log_ring_copy_out(tail, &header,
             (unsigned int)gc_debug_log_queue::kHeaderBytes);
+        unsigned int payloadBytes = gc_debug_log_queue::unpack_payload_bytes(header);
         if (!gc_debug_log_queue::record_length_is_valid(payloadBytes, head,
                 tail))
             break;

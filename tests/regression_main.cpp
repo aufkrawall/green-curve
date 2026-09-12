@@ -2670,6 +2670,17 @@ static int run_all_tests(int argc, char** argv) {
         // Joining the writer at shutdown is bounded, so a stalled volume cannot
         // hold the process open; the drain still runs on the shutdown thread.
         if ((unsigned int)kWriterJoinMs == 0) return 5192;
+
+        // Header framing packs 16-bit payload length and 16-bit route generation.
+        unsigned int hdr1 = pack_header(120, 1);
+        if (unpack_payload_bytes(hdr1) != 120) return 5193;
+        if (unpack_route_generation(hdr1) != 1) return 5194;
+        // Max payload length and max 16-bit generation boundary condition.
+        unsigned int hdrMax = pack_header((unsigned int)kMaxRecordBytes, 0xFFFFu);
+        if (unpack_payload_bytes(hdrMax) != (unsigned int)kMaxRecordBytes) return 5195;
+        if (unpack_route_generation(hdrMax) != 0xFFFFu) return 5196;
+        // Zero generation unpacks cleanly (backwards compatibility).
+        if (unpack_route_generation(pack_header(50, 0)) != 0) return 5197;
     }
 
     // F-DAEMON-DEADLINE: the Linux client's request deadlines versus the
@@ -6629,6 +6640,24 @@ static int run_all_tests(int argc, char** argv) {
         if (linux_reset_preflight_domains_supported(
                 coreDomainsNoPower & ~SERVICE_MUTATION_DOMAIN_GPU_OFFSET, 0))
             return 4560;
+
+        // Core domains without optional XBAR/SYS_CLK/VIDEO_CLK must succeed
+        // (the TUI gate used to fail them by requiring SERVICE_MUTATION_DOMAIN_ALL).
+        unsigned int advancedDomains = SERVICE_MUTATION_DOMAIN_XBAR |
+            SERVICE_MUTATION_DOMAIN_SYS_CLK | SERVICE_MUTATION_DOMAIN_VIDEO_CLK;
+        if (!linux_reset_preflight_domains_supported(coreDomainsNoPower, 0))
+            return 4561;
+        // Having advanced domains present is accepted and included in phases.
+        unsigned int corePlusAdvanced = coreDomainsNoPower | advancedDomains;
+        if (!linux_reset_preflight_domains_supported(corePlusAdvanced, 0))
+            return 4562;
+        unsigned int phasesAdvanced = linux_reset_phases_for_available_domains(corePlusAdvanced);
+        if ((phasesAdvanced & (LINUX_MUTATION_XBAR | LINUX_MUTATION_SYS_CLK | LINUX_MUTATION_VIDEO_CLK)) !=
+            (LINUX_MUTATION_XBAR | LINUX_MUTATION_SYS_CLK | LINUX_MUTATION_VIDEO_CLK))
+            return 4563;
+        // But lacking all advanced domains still passes preflight.
+        if (!linux_reset_preflight_domains_supported(corePlusAdvanced & ~advancedDomains, 0))
+            return 4564;
     }
 
     // Linux PCI identity remains stable across API enumeration reordering and

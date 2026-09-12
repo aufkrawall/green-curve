@@ -424,9 +424,9 @@ static void layout_bottom_buttons(HWND hParent);
 static void debug_log(const char* fmt, ...);
 static void debug_log_session_marker(const char* phase, const char* kind, const char* extra = nullptr);
 static void close_debug_log_file();
+static void debug_log_set_route_path(const char* path);
 // Debug log writer lifecycle; its producer/crash halves are declared per shard.
-static void debug_log_writer_start();
-static void debug_log_writer_stop();
+static void debug_log_writer_start(); static void debug_log_writer_stop();
 
 // Request a controlled service-process restart for GPU driver recovery.
 // This is the single recovery action: in-process NVML/NvAPI reload after a

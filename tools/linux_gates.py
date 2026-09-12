@@ -646,8 +646,17 @@ def check_release_packaging(ctx, require_text, forbid_text):
     arch_dir = os.path.join(ctx.SCRIPT_DIR, "packaging", "arch")
     require_text(os.path.join(arch_dir, "PKGBUILD"), "pkgname=greencurve",
                  "Arch PKGBUILD defines greencurve source package")
+    require_text(os.path.join(arch_dir, "PKGBUILD"), f"pkgver={ctx.APP_VERSION}",
+                 "Arch PKGBUILD version matches APP_VERSION")
     require_text(os.path.join(arch_dir, "PKGBUILD.bin"), "pkgname=greencurve-bin",
                  "Arch PKGBUILD.bin defines greencurve binary package")
+    require_text(os.path.join(arch_dir, "PKGBUILD.bin"), f"pkgver={ctx.APP_VERSION}",
+                 "Arch PKGBUILD.bin version matches APP_VERSION")
+    readme = os.path.join(ctx.SCRIPT_DIR, "README.md")
+    require_text(readme, f"greencurve-{ctx.APP_VERSION}-1-x86_64.pkg.tar.zst",
+                 "README Arch install example matches APP_VERSION")
+    require_text(readme, f"greencurve-{ctx.APP_VERSION}-windows-x64-setup.exe",
+                 "README silent install example matches APP_VERSION")
     require_text(os.path.join(arch_dir, "greencurve.service"), "ExecStart=/usr/bin/greencurve --daemon",
                  "Arch systemd unit runs daemon")
     require_text(os.path.join(arch_dir, "greencurve-resume.service"), "ExecStart=/usr/bin/greencurve --resume-restore",

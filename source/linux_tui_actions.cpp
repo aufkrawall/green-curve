@@ -5,6 +5,7 @@
 
 #include "linux_debug_log.h"
 #include "linux_gpu_selection.h"
+#include "linux_transaction.h"
 
 #include <stdio.h>
 #include <string.h>

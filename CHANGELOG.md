@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.26.0
+
+Green Curve 0.26.0 is a major reliability and hardening release, featuring
+asynchronous log routing across Windows user sessions, full Linux TUI support
+for surfaceless/laptop GPU reset, role-derived transport deadlines on both
+platforms, and build pipeline enhancements.
+
+### Fixes & Hardening
+
+- **Cross-session log isolation (F-LOG-ASYNC).** Debug log records are now
+  bound to their destination route generation upon enqueue. Session transitions
+  advance the route generation and update the target path under thread-safe
+  synchronization, preventing records queued during high I/O latency from
+  spilling into a different user's profile. File path mutation and log draining
+  are decoupled, eliminating data races on session switches.
+- **Linux TUI Reset on surfaceless/laptop and non-Blackwell GPUs (F-POWER-RESET).**
+  Aligned the terminal UI's preflight check with backend mutation policy: Reset
+  now requires only core mutation domains (clocks, VF curve, locks, and fan).
+  Power and advanced clock domains (XBAR, SYS_CLK, VIDEO_CLK) are optional,
+  enabling Reset on mobile GPUs lacking power surfaces and discrete GPUs without
+  auxiliary clock domains.
+- **Linux Unix-socket request deadlines (F-DAEMON-DEADLINE).** Replaced
+  monolithic socket timeouts with role-derived budgets under compile-time static
+  assertions. Operation-result recovery queries now carry mutation-class
+  budgets, eliminating false-positive "Apply failed" reports on lengthy writes.
+- **Windows named-pipe request deadlines (F-PIPE-DEADLINE).** Client deadlines
+  are derived from the background service's serialized dispatch, lock acquisition,
+  and hardware refresh bounds.
+- **Stale-read preservation (F-READ-MISS).** A missed state read from a busy
+  service no longer tears down GUI presentation or treats the service as disconnected.
+- **Updates dialog offloading.** Update commands run on detached worker threads
+  with main-window message posting, preventing message-loop hangs.
+- **Parallel multi-architecture build PDB collision fix.** Architecture-scoped
+  scratch PDB naming in `build.py` eliminates parallel link collisions between
+  x64 and ARM64 MSVC toolchain jobs.
+- **Packaging and documentation templates.** Synchronized Arch Linux `PKGBUILD`,
+  `PKGBUILD.bin`, and `README.md` documentation to current release versions.
+
+### Compatibility notes
+
+- Existing configuration and profiles remain fully compatible.
+- Both Windows and Linux service transports remain on protocol v25.
+
+### Downloads and verification
+
+- **Windows:** use the `setup.exe` for a normal install or upgrade; use the
+  `.7z` archive for a portable copy.
+- **Linux:** use the ready-to-install Arch Linux `.pkg.tar.zst` on pacman-based
+  systems, or extract the `.tar.xz` archive and run `greencurve-setup.sh`.
+- Every program package has a matching SHA-256 file and a GitHub
+  build-provenance attestation. Verify an artifact with:
+
+  ```bash
+  gh attestation verify <artifact> --repo aufkrawall/green-curve
+  ```
+
+**Full changelog:** [0.25.1...0.26.0](https://github.com/aufkrawall/green-curve/compare/0.25.1...0.26.0)
+
 ## 0.25.1
 
 Green Curve 0.25.1 is a bug-fix release for power-limit handling and Linux

@@ -190,6 +190,7 @@ static bool resolve_data_paths(char* err, size_t errSize) {
     }
 
     if (!ensure_directory_recursive_windows(g_userDataDir, err, errSize)) return false;
+    debug_log_set_route_path(g_debugLogPath);
     return true;
 }
 
@@ -307,6 +308,9 @@ static void clear_service_user_data_path_cache() {
     g_serviceUserPathsResolved = false;
     g_serviceUserPathsSessionId = (DWORD)-1;
     g_serviceUserPathsSid[0] = 0;
+    if (g_app.isServiceProcess) {
+        debug_log_set_route_path(service_early_debug_log_path());
+    }
 }
 
 static bool service_user_paths_identity_matches(DWORD sessionId) {
@@ -405,6 +409,7 @@ static bool resolve_service_user_data_paths(DWORD sessionId, char* err, size_t e
     g_serviceUserPathsResolved = true;
     g_serviceUserPathsSessionId = sessionId;
     StringCchCopyA(g_serviceUserPathsSid, ARRAY_COUNT(g_serviceUserPathsSid), userSid);
+    debug_log_set_route_path(g_debugLogPath);
     return true;
 }
 
