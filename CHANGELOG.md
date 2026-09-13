@@ -3,12 +3,20 @@
 ## 0.25.2
 
 Green Curve 0.25.2 is a reliability and hardening release, featuring
-asynchronous log routing across Windows user sessions, full Linux TUI support
-for surfaceless/laptop GPU reset, role-derived transport deadlines on both
-platforms, and build pipeline enhancements.
+a transition clock ceiling during Apply to prevent profile-switch driver
+resets under load, asynchronous log routing across Windows user sessions,
+full Linux TUI support for surfaceless/laptop GPU reset, role-derived transport
+deadlines on both platforms, and build pipeline enhancements.
 
 ### Fixes & Hardening
 
+- **Transition clock ceiling during Apply (F-APPLY-CEILING).** An Apply operation
+  raising the VF curve now arms the request's own lock target as a transition
+  clock clamp before the first clock-affecting write and reset-to-stock baseline,
+  holding the GPU capped across intermediate curve writes until the final lock
+  step completes. This eliminates transient high-clock spikes and driver TDRs
+  when switching to higher or pinned profiles under 3D load. Also adds an
+  apply-clock witness sampling live GPU clock and load across transitions.
 - **Cross-session log isolation (F-LOG-ASYNC).** Debug log records are now
   bound to their destination route generation upon enqueue. Session transitions
   advance the route generation and update the target path under thread-safe
@@ -30,6 +38,9 @@ platforms, and build pipeline enhancements.
   and hardware refresh bounds.
 - **Stale-read preservation (F-READ-MISS).** A missed state read from a busy
   service no longer tears down GUI presentation or treats the service as disconnected.
+- **In-flight Apply button greying (F-INFLIGHT-APPLY).** The Apply button is
+  greyed while hardware writes run, preventing duplicate submissions, while
+  Reset remains immediately accessible as an escape hatch.
 - **Updates dialog offloading.** Update commands run on detached worker threads
   with main-window message posting, preventing message-loop hangs.
 - **Parallel multi-architecture build PDB collision fix.** Architecture-scoped
@@ -56,7 +67,7 @@ platforms, and build pipeline enhancements.
   gh attestation verify <artifact> --repo aufkrawall/green-curve
   ```
 
-**Full changelog:** [0.25.1...0.26.0](https://github.com/aufkrawall/green-curve/compare/0.25.1...0.26.0)
+**Full changelog:** [0.25.1...0.25.2](https://github.com/aufkrawall/green-curve/compare/0.25.1...0.25.2)
 
 ## 0.25.1
 
