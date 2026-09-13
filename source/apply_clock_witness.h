@@ -48,8 +48,13 @@ struct ApplyClockWitness {
     unsigned int ceilingMHz;
     bool clampArmed;
     int samples;
+    // Judged peak: samples taken while the clamp was actually armed. Only this
+    // one reaches the verdict (apply_clock_witness_counts_toward_verdict()).
     unsigned int peakGpcMHz;
     char peakStage[48];
+    // What the outgoing profile was running before the clamp went on. Reported
+    // for context, never judged -- the clamp was not yet in a position to cap it.
+    unsigned int preArmPeakGpcMHz;
     // Peak load seen across the whole apply, so one verdict line answers
     // "was the GPU busy while this ran" without the reader scanning telemetry.
     bool utilKnown;
@@ -102,9 +107,14 @@ static void apply_clock_witness_fold(const ApplyClockSample* s, const char* stag
     ApplyClockWitness* w = &g_applyClockWitness;
     if (!w->active || !s) return;
     w->samples++;
-    if (s->clockValid && s->gpcMHz > w->peakGpcMHz) {
-        w->peakGpcMHz = s->gpcMHz;
-        StringCchCopyA(w->peakStage, ARRAY_COUNT(w->peakStage), stage ? stage : "?");
+    if (s->clockValid) {
+        if (!apply_clock_witness_counts_toward_verdict(w->clampArmed)) {
+            // Pre-arm reading: the outgoing profile's clock, kept for context.
+            if (s->gpcMHz > w->preArmPeakGpcMHz) w->preArmPeakGpcMHz = s->gpcMHz;
+        } else if (s->gpcMHz > w->peakGpcMHz) {
+            w->peakGpcMHz = s->gpcMHz;
+            StringCchCopyA(w->peakStage, ARRAY_COUNT(w->peakStage), stage ? stage : "?");
+        }
     }
     if (s->utilValid) {
         w->utilKnown = true;
@@ -182,10 +192,11 @@ static void apply_clock_witness_end() {
     bool loadMeaningful =
         apply_clock_witness_load_is_meaningful(w->utilKnown, w->peakUtilGpuPct);
     debug_log("apply clock witness verdict: peak gpc=%u MHz (at %s) vs ceiling=%u MHz"
-              " armed=%d -> %s; load peak util=%s%u%% power=%u.%01u W temp=%u C"
-              " loadMeaningful=%d samples=%d\n",
+              " armed=%d -> %s; preArmPeak=%u MHz; load peak util=%s%u%%"
+              " power=%u.%01u W temp=%u C loadMeaningful=%d samples=%d\n",
         w->peakGpcMHz, w->peakStage[0] ? w->peakStage : "-", w->ceilingMHz,
         w->clampArmed ? 1 : 0, apply_clock_witness_verdict_name(verdict),
+        w->preArmPeakGpcMHz,
         w->utilKnown ? "" : "unknown:", w->peakUtilGpuPct,
         w->peakPowerMw / 1000, (w->peakPowerMw % 1000) / 100,
         w->peakTempC, loadMeaningful ? 1 : 0, w->samples);

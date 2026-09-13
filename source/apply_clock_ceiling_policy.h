@@ -109,6 +109,21 @@ enum { APPLY_CLOCK_BIN_TOLERANCE_MHZ = 15 };
 // behaviour.
 enum { APPLY_CLOCK_WITNESS_LOAD_PCT = 20 };
 
+// Which high-water mark a sample belongs to.
+//
+// The witness takes its first sample at `apply entry`, BEFORE the clamp is
+// armed -- deliberately, because the outgoing profile's clock is worth knowing.
+// But that reading says nothing about whether the clamp holds, and folding it
+// into the judged peak makes the verdict lie: switching away from an unpinned
+// profile that was boosting to 3600 MHz would report EXCEEDED against the
+// incoming ceiling for a clock the clamp was never in a position to cap.
+// Observed as a live near-miss on 2026-09-13: two of four under-load runs
+// peaked at `apply entry` (2932 MHz), just under a 2957 MHz ceiling. A slightly
+// higher outgoing profile would have produced a false alarm.
+static inline bool apply_clock_witness_counts_toward_verdict(bool clampArmed) {
+    return clampArmed;
+}
+
 enum ApplyClockWitnessVerdict {
     APPLY_CLOCK_WITNESS_NO_CLAMP = 0,   // none requested; nothing to hold
     APPLY_CLOCK_WITNESS_ARM_FAILED,     // requested, driver refused it

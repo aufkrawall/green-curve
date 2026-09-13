@@ -6656,6 +6656,15 @@ static int run_all_tests(int argc, char** argv) {
         if (apply_clock_witness_verdict(true, true, 0, 3652) !=
             APPLY_CLOCK_WITNESS_NO_CLAMP) return 5234;
 
+        // Pre-arm samples never reach the verdict. The witness takes its first
+        // sample before the clamp is armed, on purpose; folding that into the
+        // judged peak would report EXCEEDED for a clock the clamp was never in a
+        // position to cap. A live near-miss: two of four under-load runs on
+        // 2026-09-13 peaked at `apply entry` (2932 MHz vs a 2957 MHz ceiling),
+        // so a slightly higher outgoing profile would have cried wolf.
+        if (apply_clock_witness_counts_toward_verdict(true) != true) return 5240;
+        if (apply_clock_witness_counts_toward_verdict(false) != false) return 5241;
+
         // The load qualifier. THE reason the 2026-09-13 post-fix run proved
         // nothing: it ran at 34-36 C with no game, which was only discoverable
         // afterwards by inferring from fan telemetry.

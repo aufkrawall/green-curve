@@ -81,6 +81,12 @@ def check_all(ctx, require_text, forbid_text):
                  "the witness is scope-bound so no apply exit leaves it armed")
     require_text(witness_h, "apply_clock_witness_verdict(",
                  "the Windows verdict line uses the shared rule")
+    require_text(policy_h,
+                 "static inline bool apply_clock_witness_counts_toward_verdict(",
+                 "which samples the verdict may judge is a named rule")
+    require_text(witness_h, "apply_clock_witness_counts_toward_verdict(w->clampArmed)",
+                 "a sample taken before the clamp was armed cannot be judged "
+                 "against a ceiling that was not yet in force")
     require_text(apply_cpp, "ApplyClockWitnessScope clockWitness(",
                  "the apply opens a clock witness for its whole duration")
     require_text(apply_cpp, 'apply_clock_witness_record("post-curve-batch (pre-lock)");',
