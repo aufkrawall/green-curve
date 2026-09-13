@@ -554,6 +554,10 @@ static void nvml_resolve(LinuxGpuState* g) {
     a->setDefaultFanSpeed = sym<nvmlDeviceSetDefaultFanSpeed_v2_t>(h, "nvmlDeviceSetDefaultFanSpeed_v2");
     a->getTemperature = sym<nvmlDeviceGetTemperature_t>(h, "nvmlDeviceGetTemperature");
     a->getClock = sym<nvmlDeviceGetClock_t>(h, "nvmlDeviceGetClock");
+    // Read-only load witnesses for the apply-transition trace (F-APPLY-CEILING);
+    // both optional, and a board without them logs the load as unknown.
+    a->getUtilization = sym<nvmlDeviceGetUtilizationRates_t>(h, "nvmlDeviceGetUtilizationRates");
+    a->getPowerUsage = sym<nvmlDeviceGetPowerUsage_t>(h, "nvmlDeviceGetPowerUsage");
     a->setGpuLockedClocks = sym<nvmlDeviceSetGpuLockedClocks_t>(h, "nvmlDeviceSetGpuLockedClocks");
     a->resetGpuLockedClocks = sym<nvmlDeviceResetGpuLockedClocks_t>(h, "nvmlDeviceResetGpuLockedClocks");
     a->setMemoryLockedClocks = sym<nvmlDeviceSetMemoryLockedClocks_t>(h, "nvmlDeviceSetMemoryLockedClocks");

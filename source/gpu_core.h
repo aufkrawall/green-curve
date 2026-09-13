@@ -839,6 +839,18 @@ enum {
 typedef nvmlReturn_t (*nvmlDeviceGetClock_t)(nvmlDevice_t, unsigned int, unsigned int, unsigned int*);
 typedef nvmlReturn_t (*nvmlDeviceGetMaxClock_t)(nvmlDevice_t, unsigned int, unsigned int*);
 
+// Load witnesses for the apply transition (F-APPLY-CEILING).  Both are
+// read-only and exist so a log line can answer "was the GPU actually busy while
+// this apply rewrote the curve" without the reader inferring it from
+// temperature: a driver crash that only reproduces under 3D load cannot be
+// investigated with a trace that does not record the load.
+struct nvmlUtilization_t {
+    unsigned int gpu;
+    unsigned int memory;
+};
+typedef nvmlReturn_t (*nvmlDeviceGetUtilizationRates_t)(nvmlDevice_t, nvmlUtilization_t*);
+typedef nvmlReturn_t (*nvmlDeviceGetPowerUsage_t)(nvmlDevice_t, unsigned int*);
+
 struct NvmlApi {
     nvmlInit_v2_t init;
     nvmlShutdown_t shutdown;
@@ -872,6 +884,8 @@ struct NvmlApi {
     nvmlDeviceGetTemperature_t getTemperature;
     nvmlDeviceGetClock_t getClock;
     nvmlDeviceGetMaxClock_t getMaxClock;
+    nvmlDeviceGetUtilizationRates_t getUtilization;
+    nvmlDeviceGetPowerUsage_t getPowerUsage;
     nvmlDeviceSetGpuLockedClocks_t setGpuLockedClocks;
     nvmlDeviceResetGpuLockedClocks_t resetGpuLockedClocks;
     nvmlDeviceSetMemoryLockedClocks_t setMemoryLockedClocks;

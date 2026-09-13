@@ -593,6 +593,11 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
 #include "main_startup_task_runtime.cpp"
 #include "main_startup_task_definition.cpp"
 #include "main_runtime_nvml.cpp"
+// Must follow the NVML shard for the same reason as the capability probe below:
+// the apply-transition clock witness samples through nvml_ensure_ready() and the
+// resolved g_nvml_api table.  It must precede gpu_backend.cpp, whose settle loop
+// carries the polling hook, and gpu_backend_apply.cpp, which owns the scope.
+#include "apply_clock_witness.h"
 // Must follow the NVML shard: the capability probe uses its file-static
 // nvml_ensure_ready() and the resolved g_nvml_api table.
 #include "gpu_capability_probe.cpp"

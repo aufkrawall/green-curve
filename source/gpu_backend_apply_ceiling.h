@@ -58,8 +58,10 @@ struct ApplyClockCeilingGuard {
         // which caps correctly -- capping is the whole point.
         if (nvml_set_gpu_locked_clocks(0, plan.ceilingMHz, detail, sizeof(detail))) {
             armed = true;
+            apply_clock_witness_set_clamp(plan.ceilingMHz, true);
             debug_log("apply ceiling: armed 0..%u MHz before the first clock write\n",
                 plan.ceilingMHz);
+            apply_clock_witness_record("ceiling armed");
             return;
         }
         debug_log("apply ceiling: open-ended clamp refused (%s); retrying symmetric\n",
@@ -68,8 +70,10 @@ struct ApplyClockCeilingGuard {
         if (nvml_set_gpu_locked_clocks(plan.ceilingMHz, plan.ceilingMHz, detail,
                                        sizeof(detail))) {
             armed = true;
+            apply_clock_witness_set_clamp(plan.ceilingMHz, true);
             debug_log("apply ceiling: armed %u..%u MHz before the first clock write\n",
                 plan.ceilingMHz, plan.ceilingMHz);
+            apply_clock_witness_record("ceiling armed");
             return;
         }
         // Not fatal: the apply is no worse off than it was before this guard

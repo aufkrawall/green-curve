@@ -6619,6 +6619,55 @@ static int run_all_tests(int argc, char** argv) {
         if (apply_clock_ceiling_plan(true, true, LOCK_MODE_HARD, 2957, false).arm)
             return 5211;
 
+        // The witness verdict -- the line a human reads to decide whether a
+        // clean test run means anything.  It exists because the first post-fix
+        // test could only report "nothing crashed", which the pre-fix code did
+        // most of the time too.
+        //
+        // The crashing shape, now clamped: peak below the ceiling is HELD.
+        if (apply_clock_witness_verdict(true, true, 2957, 2940) !=
+            APPLY_CLOCK_WITNESS_HELD) return 5226;
+        if (apply_clock_witness_verdict(true, true, 2957, 2957) !=
+            APPLY_CLOCK_WITNESS_HELD) return 5227;
+        // NVIDIA rounds a locked-clock request up to a supported bin, and the
+        // Blackwell VF table steps in 15 MHz. One bin over is the driver
+        // rounding, not a clamp failure -- but it is reported distinctly rather
+        // than laundered into a plain HELD.
+        if (apply_clock_witness_verdict(true, true, 2957, 2972) !=
+            APPLY_CLOCK_WITNESS_HELD_ROUNDED) return 5228;
+        // One MHz past the tolerance is the failure this witness exists to
+        // catch: the clamp armed and the GPU went over it anyway.
+        if (apply_clock_witness_verdict(true, true, 2957, 2973) !=
+            APPLY_CLOCK_WITNESS_EXCEEDED) return 5229;
+        // The pre-fix reading, for scale: 3652 MHz against a 2957 ceiling.
+        if (apply_clock_witness_verdict(true, true, 2957, 3652) !=
+            APPLY_CLOCK_WITNESS_EXCEEDED) return 5230;
+        // A clamp that was requested but refused must never read as HELD just
+        // because the GPU happened to stay low on an idle run.
+        if (apply_clock_witness_verdict(true, false, 2957, 800) !=
+            APPLY_CLOCK_WITNESS_ARM_FAILED) return 5231;
+        // No clock reading is not a pass either.
+        if (apply_clock_witness_verdict(true, true, 2957, 0) !=
+            APPLY_CLOCK_WITNESS_UNKNOWN) return 5232;
+        // No clamp requested: nothing was supposed to hold, so the verdict must
+        // not imply anything about a ceiling that does not exist.
+        if (apply_clock_witness_verdict(false, false, 0, 3652) !=
+            APPLY_CLOCK_WITNESS_NO_CLAMP) return 5233;
+        if (apply_clock_witness_verdict(true, true, 0, 3652) !=
+            APPLY_CLOCK_WITNESS_NO_CLAMP) return 5234;
+
+        // The load qualifier. THE reason the 2026-09-13 post-fix run proved
+        // nothing: it ran at 34-36 C with no game, which was only discoverable
+        // afterwards by inferring from fan telemetry.
+        if (apply_clock_witness_load_is_meaningful(true, 0)) return 5235;
+        if (apply_clock_witness_load_is_meaningful(true, 19)) return 5236;
+        if (!apply_clock_witness_load_is_meaningful(true, 20)) return 5237;
+        if (!apply_clock_witness_load_is_meaningful(true, 99)) return 5238;
+        // Unknown utilisation is not load. A board whose driver has no
+        // utilisation getter must not silently upgrade an idle run to a
+        // meaningful one.
+        if (apply_clock_witness_load_is_meaningful(false, 99)) return 5239;
+
         // The abandon rule.  Every non-adopting exit in the apply is ahead of
         // the first clock-RAISING write, so an armed-but-unadopted clamp always
         // goes; an adopted one belongs to the final lock step.

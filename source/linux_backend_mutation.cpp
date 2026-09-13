@@ -536,16 +536,17 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
             g->powerLimitDefaultmW = defaultmW > 0 ? (int)defaultmW : 0;
             return pairValid;
         }
-        case LINUX_MUTATION_CURVE:
-            return apply_curve_offsets_verified(g, context->curveTargets,
-                                                context->curveMask, 25);
+        case LINUX_MUTATION_CURVE: {
+            bool curveOk = apply_curve_offsets_verified(g, context->curveTargets,
+                                                        context->curveMask, 25);
+            // The curve is now at its new (raised) shape and LINUX_MUTATION_LOCK
+            // has not run: this is the instant that was uncapped before
+            // F-APPLY-CEILING.
+            linux_apply_log_clock_witness(g, d, "post-curve (pre-lock)");
+            return curveOk;
+        }
         case LINUX_MUTATION_LOCK:
-            if (d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0)
-                return g->nvml.setGpuLockedClocks &&
-                       g->nvml.setGpuLockedClocks(g->nvmlDevice, d->lockMHz,
-                                                  d->lockMHz) == NVML_SUCCESS;
-            return g->nvml.resetGpuLockedClocks &&
-                   g->nvml.resetGpuLockedClocks(g->nvmlDevice) == NVML_SUCCESS;
+            return linux_apply_write_final_lock(g, d);
         case LINUX_MUTATION_FAN:
             if (d->fanMode == FAN_MODE_CURVE &&
                 context->fanUseDriverAuto) {

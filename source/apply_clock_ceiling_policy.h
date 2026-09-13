@@ -87,6 +87,67 @@ static inline ApplyClockCeilingPlan apply_clock_ceiling_plan(
     return plan;
 }
 
+// ---------------------------------------------------------------------------
+// The witness verdict: did the armed clamp actually hold?
+//
+// The first post-fix test run could only report "nothing crashed", and the
+// original crash did not reproduce every time either, so that is not evidence.
+// The backends sample the live GPU clock across the apply and feed the peak
+// here; this is the rule behind the one log line that answers the question.
+// ---------------------------------------------------------------------------
+
+// NVIDIA rounds a locked-clock request to a supported clock bin, so a clamp
+// asked for at 2957 MHz can legitimately settle a bin above it. Blackwell's VF
+// table steps in 15 MHz increments (visible in any curve readback: 2947, 2977,
+// 2992, 3022...), so one bin is the honest tolerance between "the driver
+// rounded" and "the clamp is not holding". A wider fudge factor here would hide
+// exactly the failure this witness exists to catch.
+enum { APPLY_CLOCK_BIN_TOLERANCE_MHZ = 15 };
+
+// A GPU this idle tells you nothing about a crash that needs 3D load. The
+// threshold only decides whether the log says so out loud; it gates no
+// behaviour.
+enum { APPLY_CLOCK_WITNESS_LOAD_PCT = 20 };
+
+enum ApplyClockWitnessVerdict {
+    APPLY_CLOCK_WITNESS_NO_CLAMP = 0,   // none requested; nothing to hold
+    APPLY_CLOCK_WITNESS_ARM_FAILED,     // requested, driver refused it
+    APPLY_CLOCK_WITNESS_UNKNOWN,        // armed, but no clock reading answered
+    APPLY_CLOCK_WITNESS_HELD,           // peak at or below the ceiling
+    APPLY_CLOCK_WITNESS_HELD_ROUNDED,   // one bin above: the driver rounded
+    APPLY_CLOCK_WITNESS_EXCEEDED,       // the clamp did not hold
+};
+
+static inline ApplyClockWitnessVerdict apply_clock_witness_verdict(
+    bool clampRequested, bool clampArmed, unsigned int ceilingMHz,
+    unsigned int peakGpcMHz) {
+    if (!clampRequested || ceilingMHz == 0) return APPLY_CLOCK_WITNESS_NO_CLAMP;
+    if (!clampArmed) return APPLY_CLOCK_WITNESS_ARM_FAILED;
+    if (peakGpcMHz == 0) return APPLY_CLOCK_WITNESS_UNKNOWN;
+    if (peakGpcMHz <= ceilingMHz) return APPLY_CLOCK_WITNESS_HELD;
+    if (peakGpcMHz <= ceilingMHz + (unsigned int)APPLY_CLOCK_BIN_TOLERANCE_MHZ)
+        return APPLY_CLOCK_WITNESS_HELD_ROUNDED;
+    return APPLY_CLOCK_WITNESS_EXCEEDED;
+}
+
+static inline const char* apply_clock_witness_verdict_name(
+    ApplyClockWitnessVerdict v) {
+    switch (v) {
+        case APPLY_CLOCK_WITNESS_NO_CLAMP: return "no clamp requested";
+        case APPLY_CLOCK_WITNESS_ARM_FAILED: return "NO CLAMP (arming failed)";
+        case APPLY_CLOCK_WITNESS_UNKNOWN: return "UNKNOWN (no clock reading)";
+        case APPLY_CLOCK_WITNESS_HELD: return "HELD";
+        case APPLY_CLOCK_WITNESS_HELD_ROUNDED: return "HELD (driver rounded up one bin)";
+        default: return "EXCEEDED";
+    }
+}
+
+// Whether the run carried enough 3D load for a clean verdict to mean anything.
+static inline bool apply_clock_witness_load_is_meaningful(bool utilKnown,
+                                                          unsigned int peakUtilPct) {
+    return utilKnown && peakUtilPct >= (unsigned int)APPLY_CLOCK_WITNESS_LOAD_PCT;
+}
+
 // Whether a guard that was armed but never adopted by the final lock step must
 // be released before the apply returns.
 //

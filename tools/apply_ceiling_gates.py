@@ -34,6 +34,7 @@ def check_all(ctx, require_text, forbid_text):
     transaction_h = _p(ctx, "linux_transaction.h")
     linux_mutation_cpp = _p(ctx, "linux_backend_mutation.cpp")
     linux_ceiling_h = _p(ctx, "linux_apply_ceiling.h")
+
     front_cpp = _p(ctx, "main_gpu_front.cpp")
 
     # One decision, shared. Two independent copies would drift, and the drift
@@ -65,6 +66,38 @@ def check_all(ctx, require_text, forbid_text):
                  "the apply logs the peak the written curve reaches")
     require_text(apply_cpp, "apply_log_curve_peak_after_batch(clockCeiling,",
                  "the apply calls the peak diagnostic after its curve batch")
+
+    # The clock witness. Without it a test run can only report "nothing
+    # crashed", which the pre-fix code also did most of the time -- and the
+    # 2026-09-13 post-fix run turned out to have been idle, which was only
+    # discoverable afterwards by inferring load from fan telemetry.
+    witness_h = _p(ctx, "apply_clock_witness.h")
+    backend_cpp = _p(ctx, "gpu_backend.cpp")
+    require_text(policy_h, "static inline ApplyClockWitnessVerdict apply_clock_witness_verdict(",
+                 "the held/exceeded verdict is one shared pure rule")
+    require_text(policy_h, "static inline bool apply_clock_witness_load_is_meaningful(",
+                 "the log states whether the run carried enough load to mean anything")
+    require_text(witness_h, "struct ApplyClockWitnessScope",
+                 "the witness is scope-bound so no apply exit leaves it armed")
+    require_text(witness_h, "apply_clock_witness_verdict(",
+                 "the Windows verdict line uses the shared rule")
+    require_text(apply_cpp, "ApplyClockWitnessScope clockWitness(",
+                 "the apply opens a clock witness for its whole duration")
+    require_text(apply_cpp, 'apply_clock_witness_record("post-curve-batch (pre-lock)");',
+                 "the apply samples the live clock at the instant that used to be "
+                 "uncapped -- the curve is raised and the lock has not run")
+    require_text(backend_cpp, 'apply_clock_witness_poll("curve settle");',
+                 "the settle loop samples the middle of the post-curve window, not "
+                 "only its two ends")
+    # The witness must never grow a sampling thread: a concurrent NVML reader
+    # alongside an in-flight NvAPI VF write is the exact class of racy behaviour
+    # under investigation here.
+    forbid_text(witness_h, "CreateThread",
+                "the clock witness never samples from another thread")
+    require_text(linux_ceiling_h, "static void linux_apply_log_clock_witness(",
+                 "Linux records the same witness line")
+    require_text(linux_ceiling_h, "apply_clock_witness_verdict(",
+                 "Linux uses the shared verdict rule rather than its own comparison")
 
     # The sibling transient: power must not bounce through the board default.
     require_text(reset_cpp, "power_reset_before_apply_target_pct(",

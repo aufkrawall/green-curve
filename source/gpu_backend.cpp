@@ -845,6 +845,12 @@ static bool read_live_curve_snapshot_settled(int attempts, DWORD delayMs, bool* 
     int bestFreqOffsets[VF_NUM_POINTS] = {};
     for (int attempt = 0; attempt < attempts; attempt++) {
         if (attempt > 0 && delayMs > 0) Sleep(delayMs);
+        // F-APPLY-CEILING witness. Inert unless an apply is in progress; it adds
+        // one NVML read to an iteration this loop was already making, and no
+        // sleep, attempt or branch that can change what the loop returns. This
+        // is the only place that samples the middle of the post-curve-write
+        // window rather than just its two ends.
+        apply_clock_witness_poll("curve settle");
         bool curveOk = nvapi_read_curve();
         bool offsetsOk = nvapi_read_offsets();
         if (!curveOk) continue;

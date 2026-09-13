@@ -29,6 +29,13 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     // on every exit; armed only once the OC stability proof has been
     // invalidated, because arming is itself a hardware write.
     ApplyClockCeilingGuard clockCeiling(desired);
+    // Records the measured clock and the live load across the whole apply, and
+    // ends with the one line the next under-load test needs: did the clamp hold.
+    // Destroyed after the guard is declared, so the verdict is emitted before
+    // the guard's own release/retain line -- the clamp is still whatever the
+    // apply left it as while the verdict is written.
+    ApplyClockWitnessScope clockWitness(clockCeiling.plan.ceilingMHz, false);
+    apply_clock_witness_record("apply entry");
     bool powerTargetWrittenByReset = false;
     if (desired->resetOcBeforeApply) {
 #ifdef GREEN_CURVE_SERVICE_BINARY
@@ -58,6 +65,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         if (settleMs > 5000) settleMs = 5000;
         if (settleMs > 0) Sleep((DWORD)settleMs);
         debug_log("apply_desired_settings: %dms settle at stock baseline complete\n", settleMs);
+        apply_clock_witness_record("post-reset settle");
     }
     clear_last_operation_details();
     build_operation_intent_summary(desired, interactive, g_lastOperationIntent, sizeof(g_lastOperationIntent));
@@ -621,6 +629,12 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 maxAbsOffsetCi,
                 maxAbsOffsetKHz);
             curveBatchOk = apply_curve_offsets_verified(targetCurveOffsets, targetCurveMask, hasLock ? 3 : 2);
+            // THE critical sample. The curve is now at its new (raised) shape and
+            // the final lock step has not run; this is the exact instant that was
+            // uncapped before F-APPLY-CEILING, and the 2026-09-13 TDR landed
+            // roughly a second into it. The settle loop below samples the rest of
+            // the window; this catches its leading edge.
+            apply_clock_witness_record("post-curve-batch (pre-lock)");
             bool settledOffsetsOk = false;
             if (!read_live_curve_snapshot_settled(6, 25, &settledOffsetsOk)) {
                 debug_log("apply curve: settled refresh failed after curve batch\n");
@@ -1177,6 +1191,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     // is released by the destructor.
     if (!clockCeiling.adopted && (curveTouched || gpuApplied))
         clockCeiling.retain("the apply raised the curve without establishing a final lock");
+    if (curveTouched || gpuApplied || hasLock)
+        apply_clock_witness_record("post-lock");
     if (desired->hasGpuOffset && !gpuPolicyViaCurveBatch) {
         if (desiredActiveGpuOffsetExcludeLowCount > 0) {
             persist_runtime_selective_gpu_offset_request(desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount);
