@@ -98,6 +98,22 @@ static inline int power_limit_pct_from_mw(int currentmW, int defaultmW) {
     return pct > 0 ? pct : POWER_LIMIT_DEFAULT_PCT;
 }
 
+// The power target the reset-to-stock-baseline step writes.
+//
+// Power is an ABSOLUTE percentage of the board default, never a delta, so there
+// is no stale baseline to clear and nothing is gained by passing through the
+// board default first.  Writing POWER_LIMIT_DEFAULT_PCT here (what this step
+// used to do) had exactly one observable effect: a profile whose target is
+// BELOW the default ran the whole apply -- reset, the 1 s settle, and the VF
+// curve batch that raises the curve -- at 100% TGP, and only dropped to its own
+// lower target at the very end, after the curve and the lock.  That is the same
+// class of transient as F-APPLY-CEILING and it stacks on top of it.  The reset
+// step therefore writes the target the apply is going to END at.
+static inline int power_reset_before_apply_target_pct(bool requestOwnsPower,
+                                                      int requestedPct) {
+    return requestOwnsPower ? requestedPct : POWER_LIMIT_DEFAULT_PCT;
+}
+
 // Whether the reset-to-stock-baseline step must write the power target.
 //
 // All three conditions are load-bearing.  A request that does not own power
@@ -105,13 +121,13 @@ static inline int power_limit_pct_from_mw(int currentmW, int defaultmW) {
 // controls).  A board with no power control surface has nothing to reset --
 // Green Curve cannot have moved a target it cannot write -- and issuing the
 // write anyway is a guaranteed failure that aborts the Apply before the VF
-// curve is ever touched.  And a target already at the board default is already
-// stock.
+// curve is ever touched.  And a target already AT the value this step would
+// write needs no write at all.
 static inline bool power_reset_before_apply_required(bool requestOwnsPower,
                                                      bool surfaceAvailable,
-                                                     int currentPct) {
-    return requestOwnsPower && surfaceAvailable &&
-           currentPct != POWER_LIMIT_DEFAULT_PCT;
+                                                     int currentPct,
+                                                     int targetPct) {
+    return requestOwnsPower && surfaceAvailable && currentPct != targetPct;
 }
 
 struct ControlReadbackFacts {

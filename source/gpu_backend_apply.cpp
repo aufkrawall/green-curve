@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 #include "service_apply_severity_policy.h"
 #include "gpu_backend_reset_baseline.cpp"
+
+#include "gpu_backend_apply_ceiling.h"
+
 static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool interactive, char* result, size_t resultSize,
     bool* hardwareWriteAttemptedOut, gc_u32* outcomeSeverityOut) {
@@ -22,6 +25,11 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
 #ifdef GREEN_CURVE_SERVICE_BINARY
     bool proofInvalidatedForWrite = false;
 #endif
+    // F-APPLY-CEILING.  Declared before the first hardware write and destroyed
+    // on every exit; armed only once the OC stability proof has been
+    // invalidated, because arming is itself a hardware write.
+    ApplyClockCeilingGuard clockCeiling(desired);
+    bool powerTargetWrittenByReset = false;
     if (desired->resetOcBeforeApply) {
 #ifdef GREEN_CURVE_SERVICE_BINARY
         if (!service_invalidate_oc_apply_proof_before_write()) {
@@ -32,7 +40,11 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         proofInvalidatedForWrite = true;
 #endif
         if (hardwareWriteAttemptedOut) *hardwareWriteAttemptedOut = true;
-        if (!reset_oc_before_gui_apply(desired, result, resultSize)) return false;
+        // BEFORE the reset drops whatever was capping the clocks (a flatten
+        // tail floor, an old pin) and before the settle runs the stock curve.
+        clockCeiling.arm();
+        if (!reset_oc_before_gui_apply(desired, result, resultSize,
+                                       &powerTargetWrittenByReset)) return false;
         // TDR settle after reset-to-stock: let VRM/memory controllers stabilize
         // before the new aggressive clocks (commit 4b225e1). The 1s default is
         // deliberately conservative; make it tunable so rapid profile-switching can
@@ -265,6 +277,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     }
 #endif
     if (hardwareWriteAttemptedOut) *hardwareWriteAttemptedOut = true;
+    // Second arm site: a request without reset-to-stock reaches its first
+    // clock-affecting write here.  Idempotent when the reset path already armed.
+    clockCeiling.arm();
     bool gpuApplied = false;
     // Apply GPU offset first via dedicated path (handles uniform offset reliably).
     // When combined with lock/curve edits, applying the GPU offset separately avoids
@@ -610,6 +625,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             if (!read_live_curve_snapshot_settled(6, 25, &settledOffsetsOk)) {
                 debug_log("apply curve: settled refresh failed after curve batch\n");
             }
+            apply_log_curve_peak_after_batch(clockCeiling, hasLock, lockMhz, lockMode);
             DesiredSettings verifyDesired = *desired;
             for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
                 if (hasLock && lockedTailMask[ci]) continue;
@@ -1112,6 +1128,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         char resetDetail[128] = {};
         if (nvml_reset_gpu_locked_clocks(resetDetail, sizeof(resetDetail))) {
             successCount++;
+            // This IS the release of any F-APPLY-CEILING transition clamp: by
+            // now the flatten tail (or the absence of a lock) is the ceiling.
+            clockCeiling.adopt("released with the locked-clock domain");
             debug_log("apply: reset NVML locked clocks (not requesting HARD mode)\n");
         } else {
             failCount++;
@@ -1133,16 +1152,31 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
 
         if (lockMode == LOCK_MODE_HARD) {
             char lockedClockDetail[128] = {};
+            // With F-APPLY-CEILING armed this is a RE-assertion of the same
+            // ceiling in its final symmetric form, not the first time the clock
+            // is capped in this apply.  It stays unconditional: the guard is
+            // best-effort and the authoritative pin must not depend on it.
             if (nvml_set_gpu_locked_clocks(lockMhz, lockMhz, lockedClockDetail, sizeof(lockedClockDetail))) {
                 successCount++;
+                clockCeiling.adopt("re-asserted as the final hard pin");
                 debug_log("apply: hard lock pinned at %u MHz via NVML\n", lockMhz);
             } else {
                 failCount++;
                 partialApplyRisk = true;
+                clockCeiling.retain("final hard pin was refused by NVML");
                 append_failure("Hard lock at %u MHz failed: %s", lockMhz, lockedClockDetail);
             }
         }
     }
+    // The one fall-through that reaches here with the clamp still armed: the
+    // request named a lock point this GPU's visible map could not resolve, so
+    // `hasLock` was cleared after the plan was made -- while the selective
+    // offset still went through the curve batch.  Dropping the clamp then would
+    // hand over exactly the raised, uncapped curve it was armed against, so it
+    // stays; every other unadopted exit is ahead of the first raising write and
+    // is released by the destructor.
+    if (!clockCeiling.adopted && (curveTouched || gpuApplied))
+        clockCeiling.retain("the apply raised the curve without establishing a final lock");
     if (desired->hasGpuOffset && !gpuPolicyViaCurveBatch) {
         if (desiredActiveGpuOffsetExcludeLowCount > 0) {
             persist_runtime_selective_gpu_offset_request(desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount);
@@ -1152,7 +1186,18 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     } else if (!desired->hasGpuOffset && curveTouched && failCount == 0) {
         clear_runtime_selective_gpu_offset_request();
     }
-    if (desired->hasPowerLimit) {
+    if (desired->hasPowerLimit && powerTargetWrittenByReset) {
+        // The reset-to-stock phase already put the board on this apply's own
+        // power target instead of passing through the board default first, so
+        // the domain is satisfied before the VF curve was ever raised.  It is
+        // still counted and still refreshes state, exactly as the late write
+        // used to -- only the timing moved.
+        successCount++;
+        powerChanged = true;
+        debug_log("apply power limit: %d%% already established by the reset phase"
+                  " (before the curve write), no second write\n",
+            desired->powerLimitPct);
+    } else if (desired->hasPowerLimit) {
         int currentPowerPct = g_app.powerLimitPct;
         if (desired->powerLimitPct != currentPowerPct) {
             if (desired->powerLimitPct != clamp_power_limit_pct(desired->powerLimitPct)) {

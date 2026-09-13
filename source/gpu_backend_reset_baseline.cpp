@@ -8,7 +8,8 @@
 // ordering of these writes, and the fact that the per-point VF reset is NOT
 // optional, are both measured behaviour that has been re-litigated before.
 static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
-    char* result, size_t resultSize) {
+    char* result, size_t resultSize, bool* powerTargetAlreadyWrittenOut) {
+    if (powerTargetAlreadyWrittenOut) *powerTargetAlreadyWrittenOut = false;
     int resetOffsets[VF_NUM_POINTS] = {};
     bool resetMask[VF_NUM_POINTS] = {};
     char failures[512] = {};
@@ -38,9 +39,8 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
         append_failure("GPU offset did not reset");
     }
     // A reset-to-clean-VF-baseline is not ownership of unrelated controls.
-    // Only reset power when the incoming request itself owns power and will
-    // immediately write its requested target in the apply phase — and only when
-    // this board actually HAS a power control surface.  A board whose driver
+    // Only write power when the incoming request itself owns power — and only
+    // when this board actually HAS a power control surface.  A board whose driver
     // refuses the power limit (notebook boards whose TGP the OEM/EC owns do
     // this while still answering the constraints) publishes the neutral default
     // percentage, has never had its power target moved by Green Curve, and
@@ -55,10 +55,30 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
             g_app.readback.powerLimit ? 1 : 0, g_app.powerLimitCurrentmW,
             g_app.powerLimitDefaultmW, g_app.powerLimitMinmW, g_app.powerLimitMaxmW);
     }
-    if (power_reset_before_apply_required(desired && desired->hasPowerLimit,
-                                          powerSurfaceAvailable, g_app.powerLimitPct) &&
-        !nvapi_set_power_limit(POWER_LIMIT_DEFAULT_PCT)) {
-        append_failure("Power target did not reset");
+    // Write the target this apply will END at, not the board default.  See
+    // power_reset_before_apply_target_pct(): passing through 100% first left a
+    // profile that LOWERS the power limit running at full TGP for the entire
+    // apply, including the VF curve batch that raises the curve.
+    bool requestOwnsPower = desired && desired->hasPowerLimit;
+    int powerResetTargetPct = clamp_power_limit_pct(
+        power_reset_before_apply_target_pct(requestOwnsPower,
+            requestOwnsPower ? desired->powerLimitPct : POWER_LIMIT_DEFAULT_PCT));
+    if (power_reset_before_apply_required(requestOwnsPower, powerSurfaceAvailable,
+                                          g_app.powerLimitPct, powerResetTargetPct)) {
+        debug_log("reset-before-apply: power target %d%% -> %d%% (writing the"
+                  " apply's own target, never passing through %d%%)\n",
+            g_app.powerLimitPct, powerResetTargetPct, POWER_LIMIT_DEFAULT_PCT);
+        if (nvapi_set_power_limit(powerResetTargetPct)) {
+            if (powerTargetAlreadyWrittenOut) *powerTargetAlreadyWrittenOut = true;
+        } else {
+            append_failure("Power target did not apply");
+        }
+    } else if (requestOwnsPower && powerSurfaceAvailable) {
+        // Already at the requested target: the apply phase must still count it
+        // as satisfied rather than re-issuing an identical write.
+        if (powerTargetAlreadyWrittenOut) *powerTargetAlreadyWrittenOut = true;
+        debug_log("reset-before-apply: power target already at %d%%; no write needed\n",
+            powerResetTargetPct);
     }
     // Do NOT reset memory offset here — abruptly dropping from +3000 to 0
     // while VRAM is under game load causes TDRs. The new profile's memory

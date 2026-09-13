@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 #include "control_readback_policy.h"
+// F-APPLY-CEILING: the transition clock ceiling this transaction arms
+// before anything that can raise a clock.
+#include "linux_apply_ceiling.h"
 
 // ===========================================================================
 // Apply / reset  (ports apply_desired_settings_service ordering)
@@ -336,10 +339,14 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
             ok &= fanOk;
         }
     }
-    if (baseline || (phaseMask & LINUX_MUTATION_LOCK)) {
+    if (baseline || (phaseMask & LINUX_MUTATION_LOCK) ||
+        (phaseMask & LINUX_MUTATION_LOCK_CEILING)) {
         // NVML exposes no getter for the configured locked-clock range.  Release
         // a lock written by this transaction, but never claim that the unknown
-        // pre-transaction lock policy was restored exactly.
+        // pre-transaction lock policy was restored exactly.  The
+        // F-APPLY-CEILING transition clamp is written by this transaction too,
+        // and the rollback above has just put the curve and offsets back, so it
+        // must not be left standing as an invisible cap.
         if (g->nvml.resetGpuLockedClocks)
             g->nvml.resetGpuLockedClocks(g->nvmlDevice);
         ok = false;
@@ -487,12 +494,14 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
     LinuxGpuState* g = context->gpu;
     const DesiredSettings* d = context->desired;
     switch (phase) {
-        case LINUX_MUTATION_RESET_BASELINE:
+        case LINUX_MUTATION_LOCK_CEILING:
+            return linux_apply_arm_transition_ceiling(g, d);
+        case LINUX_MUTATION_RESET_BASELINE: {
             if (!nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0) ||
                 !nvml_set_clock_offset(g, NVML_CLOCK_MEM, 0) ||
-                !g->nvml.resetGpuLockedClocks ||
-                g->nvml.resetGpuLockedClocks(g->nvmlDevice) != NVML_SUCCESS)
+                !g->nvml.resetGpuLockedClocks)
                 return false;
+            if (!linux_apply_reset_baseline_locked_clocks(g, d)) return false;
             if ((context->snapshot->availableMutationDomains &
                  SERVICE_MUTATION_DOMAIN_XBAR) &&
                 !linux_xbar_write_owned(g, 0, 0, true, true)) return false;
@@ -505,6 +514,7 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
                 !linux_xbar_write_entry(g, XBAR_PINNED_VIDEO_ENTRY_INDEX, 0))
                 return false;
             return true;
+        }
         case LINUX_MUTATION_GPU_OFFSET:
             return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, d->gpuOffsetMHz);
         case LINUX_MUTATION_MEM_OFFSET: {
@@ -636,6 +646,10 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
                    fan_curve_zero_rpm_hysteresis(&normalized));
     }
     unsigned int requested = 0;
+    // F-APPLY-CEILING first, so the clamp exists before the reset drops the old
+    // ceiling and before the curve write installs the new (higher) one.
+    if (linux_apply_clock_ceiling_plan(g, d).arm)
+        requested |= LINUX_MUTATION_LOCK_CEILING;
     if (d->resetOcBeforeApply) requested |= LINUX_MUTATION_RESET_BASELINE;
     if (d->hasGpuOffset && !curveBuild.composedGpuOffset)
         requested |= LINUX_MUTATION_GPU_OFFSET;

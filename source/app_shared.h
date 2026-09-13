@@ -99,6 +99,10 @@
 // gui_service_model.h above for the phase model the glue below reads.
 #include "gui_service_actionability_policy.h"
 #include "service_lifecycle_policy.h"
+// F-APPLY-CEILING: the transition clock ceiling an Apply holds while it
+// rewrites the VF curve, so a profile switch can never run the new (raised)
+// curve uncapped between the curve write and the lock write.
+#include "apply_clock_ceiling_policy.h"
 // OS-abstraction shim (dynamic loading, sleep, atomics, threads, bounded
 // strings, subprocess capture) used by the shared backend.
 #include "platform.h"

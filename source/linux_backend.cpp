@@ -13,6 +13,10 @@
 #include "fan_curve.h"
 #include "fan_runtime_policy.h"
 #include "linux_curve_targets.h"
+// service_request_replaces_lock_domain() plus the F-APPLY-CEILING decision the
+// apply transaction shares with Windows.
+#include "service_lifecycle_policy.h"
+#include "apply_clock_ceiling_policy.h"
 // linux_platform_is_integrated_soc(), used by the capability-probe derivation
 // in linux_backend_mutation.cpp so the Tegra/SoC detection exists exactly once.
 #include "linux_gpu.h"

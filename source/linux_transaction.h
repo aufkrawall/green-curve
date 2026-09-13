@@ -15,6 +15,12 @@ enum LinuxMutationPhase {
     LINUX_MUTATION_XBAR = 1u << 7,
     LINUX_MUTATION_SYS_CLK = 1u << 8,
     LINUX_MUTATION_VIDEO_CLK = 1u << 9,
+    // F-APPLY-CEILING (see apply_clock_ceiling_policy.h).  Arms the requested
+    // lock target as a locked-clock CEILING before anything else runs, so the
+    // reset-to-stock that drops the old ceiling, and the curve write that
+    // raises the new one, both happen under a cap.  LINUX_MUTATION_LOCK stays
+    // last and still establishes the authoritative final state.
+    LINUX_MUTATION_LOCK_CEILING = 1u << 10,
 };
 
 // Optional advanced domains participate in Reset only when the backend has
@@ -87,6 +93,9 @@ static inline LinuxMutationResult linux_execute_transaction(
     LinuxTransactionRollbackFn rollback, void* context) {
     LinuxMutationResult result = {};
     const unsigned int order[] = {
+        // F-APPLY-CEILING must be first: everything after it can raise a clock,
+        // starting with the reset that removes whatever was capping it.
+        LINUX_MUTATION_LOCK_CEILING,
         LINUX_MUTATION_RESET_BASELINE, LINUX_MUTATION_GPU_OFFSET,
         LINUX_MUTATION_MEM_OFFSET, LINUX_MUTATION_POWER,
         LINUX_MUTATION_XBAR, LINUX_MUTATION_SYS_CLK,

@@ -808,11 +808,19 @@ static void rollback_to_safe_defaults() {
     // display stale values after rollback.
     g_app.appliedGpuOffsetExcludeLowCount = 0;
     g_app.appliedGpuOffsetMHz = 0;
-    // Reset NVML locked clocks (hard lock)
-    if (g_nvml_api.resetGpuLockedClocks && g_app.lockMode == LOCK_MODE_HARD) {
+    // Reset NVML locked clocks.  Unconditional, not gated on
+    // g_app.lockMode == LOCK_MODE_HARD: this function has just returned the
+    // curve, both clock offsets, the power target and the fans to stock, and a
+    // locked-clock clamp left standing behind that is an invisible cap on a GPU
+    // whose every other control now says "stock".  The gate also missed the
+    // F-APPLY-CEILING transition clamp, which is armed for FLATTEN requests too
+    // and therefore lives outside LOCK_MODE_HARD by construction.
+    if (g_nvml_api.resetGpuLockedClocks) {
         if (nvml_ensure_ready()) {
             nvmlReturn_t r = g_nvml_api.resetGpuLockedClocks(g_app.nvmlDevice);
-            debug_log("rollback: resetGpuLockedClocks → %s\n", r == NVML_SUCCESS ? "ok" : nvml_err_name(r));
+            debug_log("rollback: resetGpuLockedClocks (lockMode=%s) → %s\n",
+                lock_mode_name(g_app.lockMode),
+                r == NVML_SUCCESS ? "ok" : nvml_err_name(r));
         }
     }
 }

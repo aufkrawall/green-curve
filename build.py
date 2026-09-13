@@ -103,6 +103,7 @@ import pe_verify  # noqa: E402  (same one-way dependency as security_gates)
 import xbar_gates  # noqa: E402  (same one-way dependency as security_gates)
 import linux_gates  # noqa: E402  (same one-way dependency as security_gates)
 import readback_gates  # noqa: E402  (same one-way dependency as security_gates)
+import apply_ceiling_gates  # noqa: E402  (same one-way dependency as security_gates)
 import log_gates  # noqa: E402  (same one-way dependency as security_gates)
 import update_gates  # noqa: E402  (same one-way dependency as security_gates)
 import icon_render  # noqa: E402  (same one-way dependency as security_gates)
@@ -4237,6 +4238,11 @@ def run_source_regression_checks():
     # plus the power-domain control-surface rules, live in
     # tools/readback_gates.py.
     readback_gates.check_all(_gate_ctx(), require_text, forbid_text)
+    # F-APPLY-CEILING: the transition clock ceiling an apply holds while it
+    # rewrites the VF curve, plus the sibling power-target ordering.  Every rule
+    # there guards an ordering whose loss is invisible except as a driver crash
+    # during a profile switch; see tools/apply_ceiling_gates.py.
+    apply_ceiling_gates.check_all(_gate_ctx(), require_text, forbid_text)
     require_text(os.path.join(SOURCE_DIR, "intent_readback_status.h"),
                  "diverged = true;\n                    continue;",
                  "a fan policy takeover is disclosed even when the duty getter "

@@ -52,6 +52,7 @@
 #include "linux_port_internal.h"
 #include "linux_profile_mem_migration.h"
 #include "linux_transaction.h"
+#include "apply_clock_ceiling_policy.h"
 #include "linux_curve_targets.h"
 #include "fan_runtime_policy.h"
 #include "fan_zero_rpm_gui_policy.h"
@@ -572,7 +573,8 @@ static bool run_native_visible_projection_taskbar_presence_test() {
 
 struct FakeLinuxTransaction {
     unsigned int failPhase;
-    unsigned int calls[10];
+    // One slot per LinuxMutationPhase; F-APPLY-CEILING added an eleventh.
+    unsigned int calls[12];
     unsigned int callCount;
     unsigned int rollbackMask;
     bool rollbackOk;
@@ -2335,19 +2337,44 @@ static int run_all_tests(int argc, char** argv) {
 
         // THE reported bug, pinned directly: owning power on a surfaceless
         // board must not schedule a reset write.
-        if (power_reset_before_apply_required(true, false, 0)) return 5052;
-        if (power_reset_before_apply_required(true, false, 100)) return 5053;
+        if (power_reset_before_apply_required(true, false, 0, 85)) return 5052;
+        if (power_reset_before_apply_required(true, false, 100, 85)) return 5053;
         // ... and the pre-fix state that produced it (pct fabricated as 0)
         // must not be reachable through a surface that is genuinely present
         // either, because 0 is no longer a value a read can publish.
-        if (!power_reset_before_apply_required(true, true, 80)) return 5054;
-        if (!power_reset_before_apply_required(true, true, 120)) return 5055;
-        // Already stock needs no write.
-        if (power_reset_before_apply_required(true, true, POWER_LIMIT_DEFAULT_PCT))
+        if (!power_reset_before_apply_required(true, true, 80, 100)) return 5054;
+        if (!power_reset_before_apply_required(true, true, 120, 100)) return 5055;
+        // Already at the value this step would write needs no write.
+        if (power_reset_before_apply_required(true, true, POWER_LIMIT_DEFAULT_PCT,
+                                              POWER_LIMIT_DEFAULT_PCT))
             return 5056;
         // A request that does not own power never resets it: a clean VF
         // baseline is not ownership of unrelated controls.
-        if (power_reset_before_apply_required(false, true, 80)) return 5057;
+        if (power_reset_before_apply_required(false, true, 80, 100)) return 5057;
+
+        // F-APPLY-CEILING sibling: the reset step writes the target the apply
+        // will END at, never the board default first.  The pre-fix behaviour
+        // (always POWER_LIMIT_DEFAULT_PCT) ran a profile whose target is BELOW
+        // the default at full TGP for the whole apply -- the reset, the 1 s
+        // settle, and the VF curve batch that raises the curve -- and only
+        // dropped to the profile's own limit after the lock.
+        if (power_reset_before_apply_target_pct(true, 85) != 85) return 5200;
+        if (power_reset_before_apply_target_pct(true, 120) != 120) return 5201;
+        // A request that does not own power is untouched by the target helper.
+        if (power_reset_before_apply_target_pct(false, 85) != POWER_LIMIT_DEFAULT_PCT)
+            return 5202;
+        // The combination that WAS the transient: currently at the default, a
+        // request asking for less.  It must schedule exactly one write, to 85,
+        // and never a write to 100 first.
+        if (!power_reset_before_apply_required(
+                true, true, POWER_LIMIT_DEFAULT_PCT,
+                power_reset_before_apply_target_pct(true, 85)))
+            return 5203;
+        // Already at the profile's own lower target: no write at all, and in
+        // particular not a bounce up to the default and back down.
+        if (power_reset_before_apply_required(
+                true, true, 85, power_reset_before_apply_target_pct(true, 85)))
+            return 5204;
 
         // The ControlState publisher must agree with the shared predicate: a
         // refused power read cannot become a published readback.
@@ -6545,6 +6572,120 @@ static int run_all_tests(int argc, char** argv) {
         // boundary check into an assertion that a real command is rejected.
         tampered = resume; tampered.command = SERVICE_CMD_SET_UPDATE_POLICY + 1;
         if (validate_service_request_for_ipc(&tampered)) return 3188;
+    }
+
+    // F-APPLY-CEILING -- the transition clock ceiling.  THE regression: a
+    // profile switch from an unpinned profile (FLATTEN holds its ceiling with
+    // the VF curve, so no NVML pin is armed) to a pinned one used to reset the
+    // curve to stock, write the new curve with a +475 MHz selective offset all
+    // the way to point 126, and only THEN pin the clock -- measured 2026-09-13:
+    // the tail read back 2947..3637 MHz for 1.21 s under game load with nothing
+    // capping it, and nvlddmkm logged event 153.  Every assertion below fails
+    // against the pre-fix code, which had no plan at all.
+    {
+        // The crashing shape: FLATTEN -> HARD, both at 2957 MHz.  A ceiling
+        // must be armed, and the final hard pin re-asserts the same number.
+        ApplyClockCeilingPlan hard = apply_clock_ceiling_plan(
+            true, true, LOCK_MODE_HARD, 2957, true);
+        if (!hard.arm || hard.ceilingMHz != 2957 || !hard.finalPinIsCeiling)
+            return 5205;
+
+        // FLATTEN is armed too.  Its own tail floor lands atomically with the
+        // boost in one batch, but the reset that precedes it removes the OLD
+        // ceiling, and the per-point fallback inside the curve writer walks the
+        // points in ascending index order -- boost points before tail points.
+        // The final step releases the clamp rather than re-asserting it.
+        ApplyClockCeilingPlan flatten = apply_clock_ceiling_plan(
+            true, true, LOCK_MODE_FLATTEN, 2957, true);
+        if (!flatten.arm || flatten.ceilingMHz != 2957 || flatten.finalPinIsCeiling)
+            return 5206;
+
+        // No lock declared: there is no ceiling the user has validated, so none
+        // may be invented.  A clamp nobody asked for is an invisible cap.
+        if (apply_clock_ceiling_plan(true, false, LOCK_MODE_NONE, 0, true).arm)
+            return 5207;
+        if (apply_clock_ceiling_plan(true, true, LOCK_MODE_NONE, 2957, true).arm)
+            return 5208;
+        if (apply_clock_ceiling_plan(true, true, LOCK_MODE_HARD, 0, true).arm)
+            return 5209;
+
+        // A sparse fan/memory/power request writes nothing that can raise a
+        // clock and does not own the lock domain, so it installs no clamp.
+        if (apply_clock_ceiling_plan(false, true, LOCK_MODE_HARD, 2957, true).arm)
+            return 5210;
+
+        // Without both NVML entry points the clamp cannot be armed OR released;
+        // arming one that cannot be released would strand the cap.
+        if (apply_clock_ceiling_plan(true, true, LOCK_MODE_HARD, 2957, false).arm)
+            return 5211;
+
+        // The abandon rule.  Every non-adopting exit in the apply is ahead of
+        // the first clock-RAISING write, so an armed-but-unadopted clamp always
+        // goes; an adopted one belongs to the final lock step.
+        if (!apply_clock_ceiling_release_on_abandon(true, false)) return 5212;
+        if (apply_clock_ceiling_release_on_abandon(true, true)) return 5213;
+        if (apply_clock_ceiling_release_on_abandon(false, false)) return 5214;
+        if (apply_clock_ceiling_release_on_abandon(false, true)) return 5215;
+    }
+
+    // F-APPLY-CEILING ordering on Linux: the ceiling phase must execute before
+    // the reset that drops the previous ceiling and before every phase that can
+    // raise a clock.  The pre-fix order ran RESET_BASELINE (which released the
+    // locked clocks outright) first and LOCK last, which is the same uncapped
+    // window the Windows apply had.
+    {
+        FakeLinuxTransaction ordered = {};
+        ordered.rollbackOk = true;
+        unsigned int requested = LINUX_MUTATION_LOCK_CEILING |
+            LINUX_MUTATION_RESET_BASELINE | LINUX_MUTATION_GPU_OFFSET |
+            LINUX_MUTATION_MEM_OFFSET | LINUX_MUTATION_POWER |
+            LINUX_MUTATION_XBAR | LINUX_MUTATION_SYS_CLK |
+            LINUX_MUTATION_VIDEO_CLK | LINUX_MUTATION_CURVE |
+            LINUX_MUTATION_LOCK | LINUX_MUTATION_FAN;
+        LinuxMutationResult all = linux_execute_transaction(
+            requested, fake_linux_transaction_step,
+            fake_linux_transaction_rollback, &ordered);
+        if (!all.success || all.completedPhases != requested) return 5216;
+        if (ordered.callCount != 11) return 5217;
+        if (ordered.calls[0] != LINUX_MUTATION_LOCK_CEILING) return 5218;
+        // ... and it is genuinely before each clock-raising phase, not merely
+        // first in a list that could be reordered around it.
+        int ceilingAt = -1, resetAt = -1, gpuAt = -1, curveAt = -1, lockAt = -1;
+        for (unsigned int i = 0; i < ordered.callCount; ++i) {
+            if (ordered.calls[i] == LINUX_MUTATION_LOCK_CEILING) ceilingAt = (int)i;
+            if (ordered.calls[i] == LINUX_MUTATION_RESET_BASELINE) resetAt = (int)i;
+            if (ordered.calls[i] == LINUX_MUTATION_GPU_OFFSET) gpuAt = (int)i;
+            if (ordered.calls[i] == LINUX_MUTATION_CURVE) curveAt = (int)i;
+            if (ordered.calls[i] == LINUX_MUTATION_LOCK) lockAt = (int)i;
+        }
+        if (ceilingAt < 0 || resetAt < 0 || gpuAt < 0 || curveAt < 0 || lockAt < 0)
+            return 5219;
+        if (!(ceilingAt < resetAt && ceilingAt < gpuAt && ceilingAt < curveAt))
+            return 5220;
+        // LOCK still establishes the authoritative final state, last.
+        if (!(curveAt < lockAt)) return 5221;
+
+        // A request with no ceiling to arm simply omits the phase; the rest of
+        // the order is unchanged, so a lock-less apply is not slowed down.
+        FakeLinuxTransaction noCeiling = {};
+        noCeiling.rollbackOk = true;
+        unsigned int withoutCeiling = requested & ~(unsigned int)LINUX_MUTATION_LOCK_CEILING;
+        LinuxMutationResult plain = linux_execute_transaction(
+            withoutCeiling, fake_linux_transaction_step,
+            fake_linux_transaction_rollback, &noCeiling);
+        if (!plain.success || noCeiling.callCount != 10) return 5222;
+        if (noCeiling.calls[0] != LINUX_MUTATION_RESET_BASELINE) return 5223;
+
+        // A failure in the ceiling phase rolls back nothing else, because
+        // nothing else has run yet.
+        FakeLinuxTransaction ceilingFails = {};
+        ceilingFails.rollbackOk = true;
+        ceilingFails.failPhase = LINUX_MUTATION_LOCK_CEILING;
+        LinuxMutationResult stopped = linux_execute_transaction(
+            requested, fake_linux_transaction_step,
+            fake_linux_transaction_rollback, &ceilingFails);
+        if (stopped.success || stopped.completedPhases != 0) return 5224;
+        if (stopped.attemptedPhases != LINUX_MUTATION_LOCK_CEILING) return 5225;
     }
 
     // The production Linux mutation engine stops at every possible phase
