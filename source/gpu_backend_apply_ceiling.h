@@ -61,7 +61,7 @@ struct ApplyClockCeilingGuard {
             apply_clock_witness_set_clamp(plan.ceilingMHz, true);
             debug_log("apply ceiling: armed 0..%u MHz before the first clock write\n",
                 plan.ceilingMHz);
-            apply_clock_witness_record("ceiling armed");
+            apply_clock_witness_record_at_arming("ceiling armed");
             return;
         }
         debug_log("apply ceiling: open-ended clamp refused (%s); retrying symmetric\n",
@@ -73,7 +73,7 @@ struct ApplyClockCeilingGuard {
             apply_clock_witness_set_clamp(plan.ceilingMHz, true);
             debug_log("apply ceiling: armed %u..%u MHz before the first clock write\n",
                 plan.ceilingMHz, plan.ceilingMHz);
-            apply_clock_witness_record("ceiling armed");
+            apply_clock_witness_record_at_arming("ceiling armed");
             return;
         }
         // Not fatal: the apply is no worse off than it was before this guard

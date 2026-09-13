@@ -111,17 +111,31 @@ enum { APPLY_CLOCK_WITNESS_LOAD_PCT = 20 };
 
 // Which high-water mark a sample belongs to.
 //
-// The witness takes its first sample at `apply entry`, BEFORE the clamp is
-// armed -- deliberately, because the outgoing profile's clock is worth knowing.
-// But that reading says nothing about whether the clamp holds, and folding it
-// into the judged peak makes the verdict lie: switching away from an unpinned
-// profile that was boosting to 3600 MHz would report EXCEEDED against the
-// incoming ceiling for a clock the clamp was never in a position to cap.
-// Observed as a live near-miss on 2026-09-13: two of four under-load runs
-// peaked at `apply entry` (2932 MHz), just under a 2957 MHz ceiling. A slightly
-// higher outgoing profile would have produced a false alarm.
-static inline bool apply_clock_witness_counts_toward_verdict(bool clampArmed) {
-    return clampArmed;
+// A sample may be judged against the ceiling only once the clamp is armed AND
+// the driver has actually been in a position to act on it. Two sample sites
+// fail that, and both were caught by real runs rather than by reasoning:
+//
+//  - `apply entry` is taken before the clamp exists at all, deliberately, so the
+//    outgoing profile's clock is on record. Two of four under-load runs on
+//    2026-09-13 peaked there (2932 MHz against a 2957 MHz ceiling) -- HELD, but
+//    a slightly higher outgoing profile would have reported EXCEEDED for a clock
+//    the clamp was never in a position to cap.
+//  - `ceiling armed` is taken in the same instant the arming call returns. The
+//    clock it reads is still the pre-clamp one; no clamp takes effect in the
+//    microseconds between an NVML write returning and the next statement. Three
+//    of seven full-load runs later the same day were judged on this sample, and
+//    all three read exactly their pre-arm value (2932, 2917, 2902 MHz). They
+//    passed only because the outgoing clocks happened to sit under the incoming
+//    ceiling; a profile switch that LOWERS the ceiling would have cried wolf.
+//
+// The rule is structural, not temporal: it names which sample SITE is
+// simultaneous with the write. A "wait a moment before judging" rule would be a
+// timing assumption, which is exactly what this project refuses -- and it would
+// be wrong anyway, because the honest statement is that the sample is
+// contemporaneous with the arming write, not that it is merely early.
+static inline bool apply_clock_witness_counts_toward_verdict(
+    bool clampArmed, bool sampledAtArmingInstant) {
+    return clampArmed && !sampledAtArmingInstant;
 }
 
 enum ApplyClockWitnessVerdict {

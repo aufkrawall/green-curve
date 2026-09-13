@@ -103,13 +103,15 @@ static ApplyClockSample apply_clock_sample_now() {
     return s;
 }
 
-static void apply_clock_witness_fold(const ApplyClockSample* s, const char* stage) {
+static void apply_clock_witness_fold(const ApplyClockSample* s, const char* stage,
+                                     bool sampledAtArmingInstant) {
     ApplyClockWitness* w = &g_applyClockWitness;
     if (!w->active || !s) return;
     w->samples++;
     if (s->clockValid) {
-        if (!apply_clock_witness_counts_toward_verdict(w->clampArmed)) {
-            // Pre-arm reading: the outgoing profile's clock, kept for context.
+        if (!apply_clock_witness_counts_toward_verdict(w->clampArmed,
+                                                       sampledAtArmingInstant)) {
+            // Pre-clamp reading: the outgoing profile's clock, kept for context.
             if (s->gpcMHz > w->preArmPeakGpcMHz) w->preArmPeakGpcMHz = s->gpcMHz;
         } else if (s->gpcMHz > w->peakGpcMHz) {
             w->peakGpcMHz = s->gpcMHz;
@@ -162,15 +164,32 @@ static void apply_clock_witness_set_clamp(unsigned int ceilingMHz, bool clampArm
 
 // Take one sample, fold it into the high-water marks, and log it.  Used at the
 // named transitions; the critical one is immediately after the curve batch.
-static void apply_clock_witness_record(const char* stage) {
+// `judged=` in the line says whether this reading reaches the verdict, so a
+// reader never has to guess why a high sample did not trip it.
+static void apply_clock_witness_record_ex(const char* stage,
+                                          bool sampledAtArmingInstant) {
     if (!g_applyClockWitness.active) return;
     ApplyClockSample s = apply_clock_sample_now();
-    apply_clock_witness_fold(&s, stage);
+    apply_clock_witness_fold(&s, stage, sampledAtArmingInstant);
     char detail[256] = {};
     apply_clock_witness_format(&s, detail, sizeof(detail));
-    debug_log("apply clock witness [%s]: %s (ceiling=%u MHz armed=%d)\n",
+    debug_log("apply clock witness [%s]: %s (ceiling=%u MHz armed=%d judged=%d)\n",
         stage ? stage : "?", detail, g_applyClockWitness.ceilingMHz,
-        g_applyClockWitness.clampArmed ? 1 : 0);
+        g_applyClockWitness.clampArmed ? 1 : 0,
+        apply_clock_witness_counts_toward_verdict(g_applyClockWitness.clampArmed,
+                                                  sampledAtArmingInstant) ? 1 : 0);
+}
+
+// A sample at a point where the clamp, if armed, has been in force for the
+// whole interval since the previous write.
+static void apply_clock_witness_record(const char* stage) {
+    apply_clock_witness_record_ex(stage, false);
+}
+
+// The sample taken in the same instant the arming call returns: on record for
+// context, never judged.  See apply_clock_witness_counts_toward_verdict().
+static void apply_clock_witness_record_at_arming(const char* stage) {
+    apply_clock_witness_record_ex(stage, true);
 }
 
 // Silent sample, for the existing settle loop: the uncapped window is only
@@ -180,7 +199,7 @@ static void apply_clock_witness_record(const char* stage) {
 static void apply_clock_witness_poll(const char* stage) {
     if (!g_applyClockWitness.active) return;
     ApplyClockSample s = apply_clock_sample_now();
-    apply_clock_witness_fold(&s, stage);
+    apply_clock_witness_fold(&s, stage, false);
 }
 
 // The verdict line: the single fact the next under-load test needs to produce.

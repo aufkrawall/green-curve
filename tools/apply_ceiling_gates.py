@@ -84,9 +84,16 @@ def check_all(ctx, require_text, forbid_text):
     require_text(policy_h,
                  "static inline bool apply_clock_witness_counts_toward_verdict(",
                  "which samples the verdict may judge is a named rule")
-    require_text(witness_h, "apply_clock_witness_counts_toward_verdict(w->clampArmed)",
-                 "a sample taken before the clamp was armed cannot be judged "
-                 "against a ceiling that was not yet in force")
+    require_text(witness_h,
+                 "apply_clock_witness_counts_toward_verdict(w->clampArmed,",
+                 "a sample taken before the clamp was armed, or in the same "
+                 "instant as the arming write, cannot be judged against a "
+                 "ceiling that was not yet in force")
+    require_text(witness_h, "static void apply_clock_witness_record_at_arming(",
+                 "the arming-instant sample has its own named entry point rather "
+                 "than a bool at the call site")
+    require_text(guard_h, 'apply_clock_witness_record_at_arming("ceiling armed")',
+                 "the guard records its arming sample through the unjudged path")
     require_text(apply_cpp, "ApplyClockWitnessScope clockWitness(",
                  "the apply opens a clock witness for its whole duration")
     require_text(apply_cpp, 'apply_clock_witness_record("post-curve-batch (pre-lock)");',

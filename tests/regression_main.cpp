@@ -6662,8 +6662,18 @@ static int run_all_tests(int argc, char** argv) {
         // position to cap. A live near-miss: two of four under-load runs on
         // 2026-09-13 peaked at `apply entry` (2932 MHz vs a 2957 MHz ceiling),
         // so a slightly higher outgoing profile would have cried wolf.
-        if (apply_clock_witness_counts_toward_verdict(true) != true) return 5240;
-        if (apply_clock_witness_counts_toward_verdict(false) != false) return 5241;
+        if (apply_clock_witness_counts_toward_verdict(true, false) != true) return 5240;
+        if (apply_clock_witness_counts_toward_verdict(false, false) != false) return 5241;
+        // ... and the same for the sample taken in the instant the arming call
+        // returns. No clamp takes effect between an NVML write returning and the
+        // next statement, so that reading is still the pre-clamp clock. Three of
+        // seven full-load runs on 2026-09-13 were judged on it, each reading
+        // exactly its pre-arm value (2932, 2917, 2902 MHz); they passed only
+        // because the outgoing clocks happened to sit under the incoming
+        // ceiling. A profile switch that LOWERS the ceiling would have reported
+        // EXCEEDED for a clock the clamp had not yet had any chance to cap.
+        if (apply_clock_witness_counts_toward_verdict(true, true) != false) return 5242;
+        if (apply_clock_witness_counts_toward_verdict(false, true) != false) return 5243;
 
         // The load qualifier. THE reason the 2026-09-13 post-fix run proved
         // nothing: it ran at 34-36 C with no game, which was only discoverable
