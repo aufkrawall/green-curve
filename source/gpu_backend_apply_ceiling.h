@@ -139,6 +139,19 @@ static inline void apply_log_curve_peak_after_batch(
                   " requested lock %u MHz with no clamp armed; this is the"
                   " uncapped-transition shape that produced the 2026-09-13 TDR\n",
             peakMHz, lockMhz);
+    } else if (!ceiling.armed && !hasLock) {
+        // F-03-004: an apply that raises the curve with NO lock requested arms
+        // no clamp -- correctly, because the end state the user asked for is
+        // itself uncapped, so the transition creates no operating point above
+        // their own intent. But the shape on the wire is identical to the one
+        // that produced the TDR, and until now the log went silent for it: the
+        // warning above is gated on hasLock, so the single most useful line
+        // during an unlocked profile switch was the one that was never written.
+        // Stated plainly instead, so a post-mortem can tell "no clamp because
+        // none was needed" from "no clamp because arming failed".
+        debug_log("apply curve peak: no clamp was armed because the request"
+                  " carries no lock target; the curve peaked at %u MHz and the"
+                  " requested end state is uncapped by design\n", peakMHz);
     }
 }
 

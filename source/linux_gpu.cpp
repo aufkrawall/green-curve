@@ -21,6 +21,9 @@
 #include "platform.h"
 #include "vf_backends.h"
 #include "linux_gpu.h"
+// F-02-001/F-04-001: the VF-info and GPU-enumeration rules this file shares
+// with the live backend, so the probe cannot validate them differently.
+#include "linux_vf_validation.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -204,29 +207,38 @@ int read_vf_curve(nvapi_QueryInterface_t qi, GPU_HANDLE handle,
     if (!qi || !b || !b->readSupported) return -1;
 
     // --- VF info: per-point editable mask + active clock count ---
+    //
+    // F-02-001: this used to be a second, more permissive implementation of the
+    // rule in linux_backend.cpp -- it pre-seeded the mask to 0xFF and swapped a
+    // zero clock count for defaultNumClocks, so a driver answer the live
+    // backend refuses as INVALID_DATA was reported here as a readable curve.
+    // Both paths now share linux_vf_info_layout_fits()/_data_usable(), and this
+    // one REFUSES the same answers rather than papering over them: a probe that
+    // cannot predict the control path is worse than no probe.
     unsigned char mask[32];
     memset(mask, 0, sizeof(mask));
-    memset(mask, 0xFF, 16);  // default: first 128 bits editable
-    unsigned int numClocks = b->defaultNumClocks;
+    unsigned int numClocks = 0;
     auto getInfo = (nvapi_buf_t)qi(b->getInfoId);
-    if (getInfo) {
-        unsigned int infoSize = b->infoBufferSize ? b->infoBufferSize : 0x4000;
-        if (infoSize > 0x4000) infoSize = 0x4000;
-        unsigned char* ibuf = (unsigned char*)calloc(1, infoSize);
-        if (ibuf && b->infoBufferSize <= infoSize) {
-            unsigned int ver = (b->infoVersion << 16) | infoSize;
-            memcpy(ibuf, &ver, sizeof(ver));
-            if (b->infoMaskOffset + sizeof(mask) <= infoSize)
-                memset(ibuf + b->infoMaskOffset, 0xFF, sizeof(mask));
-            if (getInfo(handle, ibuf) == 0) {
-                if (b->infoMaskOffset + sizeof(mask) <= infoSize)
-                    memcpy(mask, ibuf + b->infoMaskOffset, sizeof(mask));
-                if (b->infoNumClocksOffset + sizeof(numClocks) <= infoSize)
-                    memcpy(&numClocks, ibuf + b->infoNumClocksOffset, sizeof(numClocks));
-                if (numClocks == 0) numClocks = b->defaultNumClocks;
-            }
-        }
-        free(ibuf);
+    if (!getInfo) return -1;
+    unsigned int infoSize = b->infoBufferSize ? b->infoBufferSize : 0x4000;
+    if (!linux_vf_info_layout_fits(b->infoBufferSize, b->infoMaskOffset,
+            b->infoNumClocksOffset, (unsigned int)sizeof(mask), infoSize)) {
+        return -1;
+    }
+    unsigned char* ibuf = (unsigned char*)calloc(1, infoSize);
+    if (!ibuf) return -1;
+    unsigned int infoVer = (b->infoVersion << 16) | infoSize;
+    memcpy(ibuf, &infoVer, sizeof(infoVer));
+    memset(ibuf + b->infoMaskOffset, 0xFF, sizeof(mask));
+    bool infoOk = getInfo(handle, ibuf) == 0;
+    if (infoOk) {
+        memcpy(mask, ibuf + b->infoMaskOffset, sizeof(mask));
+        memcpy(&numClocks, ibuf + b->infoNumClocksOffset, sizeof(numClocks));
+    }
+    free(ibuf);
+    if (!infoOk ||
+        !linux_vf_info_data_usable(mask, (unsigned int)sizeof(mask), numClocks)) {
+        return -1;
     }
 
     // --- VF status: per-point frequency/voltage ---
@@ -289,7 +301,13 @@ void probe_nvapi(FILE* out, LinuxNvapiProbe* result) {
     GPU_HANDLE handles[64] = {};
     int count = 0;
     int st = enumGpus(handles, &count);
-    if (!nvapi_ok(st) || count < 1) {
+    // F-04-001: `count` is a driver-supplied loop bound over a fixed 64-entry
+    // stack array. linux_backend_discovery.cpp has always clamped it; this copy
+    // checked only `count < 1`, so an over-large count would have walked off
+    // the end of `handles`. Same call, same array, now the same rule.
+    if (!nvapi_ok(st) ||
+        !linux_nvapi_enum_count_is_usable(
+            count, (int)(sizeof(handles) / sizeof(handles[0])))) {
         fprintf(out, "NvAPI: EnumPhysicalGPUs returned status=%d count=%d\n", st, count);
         return;
     }

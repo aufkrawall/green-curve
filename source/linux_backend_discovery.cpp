@@ -123,7 +123,10 @@ static bool linux_backend_bind_nvapi(LinuxGpuState* g, bool recovery,
     GPU_HANDLE handles[64] = {};
     int handleCount = 0;
     int enumStatus = enumGpus(handles, &handleCount);
-    if (!nvapi_ok(enumStatus) || handleCount <= 0 || handleCount > 64) {
+    // F-04-001: the same bound the probe path now asks for, stated once.
+    if (!nvapi_ok(enumStatus) ||
+        !linux_nvapi_enum_count_is_usable(
+            handleCount, (int)(sizeof(handles) / sizeof(handles[0])))) {
         gc_snprintf(err, errSize, "NvAPI enumerate status=%d (%s), count=%d",
             enumStatus, nvapi_status_name(enumStatus), handleCount);
         g->nvapiInitialized = false;

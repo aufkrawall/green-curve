@@ -698,6 +698,40 @@ static void gui_mutation_acknowledge_and_dispatch_next() {
     }
 }
 
+// Free completion blocks still sitting in the thread queue at shutdown
+// (F-06-002).
+//
+// The worker hands a heap block to the window thread via PostMessageW and the
+// handler owns it from there. A post that FAILS is already handled -- the call
+// site frees the block. The gap is a post that SUCCEEDS and is then never
+// dispatched because the message loop has already exited: those blocks are
+// still queued and nobody owns them any more.
+//
+// Scope, stated honestly: this catches completions queued while the loop was
+// winding down and the window was still alive. It cannot catch a completion
+// posted to a window that has since been destroyed, because Windows purges
+// those from the queue itself -- that one remains an at-exit leak the OS
+// reclaims. Neither is growth during a session; draining what is drainable
+// keeps the ownership rule ("whoever ends up holding the block frees it")
+// without a gap we could have closed.
+//
+// Runs AFTER the worker has been joined, so nothing can post while it drains.
+static void gui_mutation_drain_undelivered_completions() {
+    MSG message = {};
+    unsigned int drained = 0;
+    while (PeekMessageW(&message, nullptr, APP_WM_MUTATION_COMPLETE,
+                        APP_WM_SERVICE_IO_COMPLETE, PM_REMOVE)) {
+        if (message.lParam) {
+            HeapFree(GetProcessHeap(), 0, (LPVOID)message.lParam);
+            ++drained;
+        }
+    }
+    if (drained) {
+        debug_log("GUI service I/O: freed %u completion(s) that were posted but "
+                  "never dispatched before the window was destroyed\n", drained);
+    }
+}
+
 static bool gui_mutation_shutdown() {
     if (!g_guiMutationLockReady) return true;
     EnterCriticalSection(&g_guiMutationLock);
@@ -724,6 +758,7 @@ static bool gui_mutation_shutdown() {
         CloseHandle(g_guiMutationEvent);
         g_guiMutationEvent = nullptr;
     }
+    gui_mutation_drain_undelivered_completions();
     debug_log("GUI service I/O: coordinator stopped cleanly\n");
     return true;
 }

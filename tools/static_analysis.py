@@ -195,6 +195,16 @@ def _merge_baseline(baseline, current, script_dir):
     source file is gone, which is the one reason no host will ever report them
     again.  Anything else stays even when unreported, because "unreported here"
     is not "fixed": see the write path in run_clang_tidy().
+
+    F-07-001 note.  This is deliberate and stays -- a Windows host tidies 29
+    translation units and a Linux host tidies the Linux ones, so auto-pruning on
+    either would delete the other's live suppressions.  The cost is that the
+    suppression set only ever grows: at the 2026-09-15 audit, 36 of 38 entries
+    no longer reproduced, and each of those was a (file, check) pair whose gate
+    had silently gone quiet.  Retiring one is therefore a MANUAL act that
+    requires evidence the finding is gone on every host, not just unreported on
+    this one -- see the four string-to-number entries removed in that pass,
+    where a tree-wide grep proved no sscanf/atoi call remained anywhere.
     """
     gone = {
         entry for entry in baseline

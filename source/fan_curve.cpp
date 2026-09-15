@@ -49,7 +49,21 @@ int fan_curve_active_count(const FanCurveConfig* config) {
     return count;
 }
 
-void fan_curve_normalize(FanCurveConfig* config) {
+// Everything fan_curve_normalize() does EXCEPT replacing a curve that has
+// fewer than two enabled points with the built-in default.
+//
+// Split out for the IPC trust boundary (F-01-002).  The boundary needs the
+// semantic half of the rule -- the 250 ms poll grid, the 0..100 clamps, the
+// sorted enabled points -- because it had none of it and accepted curves the
+// GUI rejects.  It must NOT inherit the default substitution: that turns "this
+// client sent an unusable curve" into "apply a five-point curve the client
+// never asked for", which is a hardware decision, and the boundary's job is to
+// make a request coherent, not to invent one.  `false` for `substituteDefault`
+// leaves an under-populated curve under-populated; the fan runtime then treats
+// it as it always has (fan_curve_interpolate_percent returns 100 for a curve
+// with no enabled point, which is the safe direction).
+static void fan_curve_normalize_impl(FanCurveConfig* config,
+                                     bool substituteDefault) {
     if (!config) return;
 
     config->pollIntervalMs = clamp_int(config->pollIntervalMs, 250, 5000);
@@ -80,6 +94,7 @@ void fan_curve_normalize(FanCurveConfig* config) {
     }
 
     if (enabledCount < 2) {
+        if (!substituteDefault) return;
         fan_curve_set_default(config);
         config->pollIntervalMs = normalizedPollIntervalMs;
         config->hysteresisC = normalizedHysteresisC;
@@ -101,6 +116,16 @@ void fan_curve_normalize(FanCurveConfig* config) {
     for (int i = enabledCount + disabledCount; i < FAN_CURVE_MAX_POINTS; i++) {
         config->points[i] = { gc_bool8_from_bool(false), 100, 100 };
     }
+}
+
+void fan_curve_normalize(FanCurveConfig* config) {
+    fan_curve_normalize_impl(config, true);
+}
+
+// The IPC trust boundary's entry point (F-01-002).  Same rule, minus the
+// default substitution -- see fan_curve_normalize_impl().
+void fan_curve_normalize_for_ipc(FanCurveConfig* config) {
+    fan_curve_normalize_impl(config, false);
 }
 
 void fan_curve_clamp_percentages(FanCurveConfig* config, int minPct, int maxPct) {

@@ -191,6 +191,39 @@ enum GcArchiveStatus {
 // of the install directory is rejected here rather than being sanitized,
 // because there is no legitimate payload that needs it and a "cleaned" path is
 // a much harder thing to reason about than a refusal.
+// True when `name` does NOT resolve to a reserved DOS device (F-05-003).
+//
+// The stem is everything before the first '.', with trailing dots and spaces
+// stripped, because Win32 canonicalization removes those before resolving the
+// name.  Kept separate from gc_archive_name_is_safe() so the regression harness
+// can assert the device table on both hosts without a Win32 API.
+static inline bool gc_archive_name_device_free(const char* name, size_t length) {
+    static const char* const kDevices[] = {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    };
+    if (!name || length == 0) return true;
+    size_t stem = 0;
+    while (stem < length && name[stem] != '.') ++stem;
+    while (stem > 0 && (name[stem - 1] == ' ' || name[stem - 1] == '.')) --stem;
+    if (stem == 0 || stem > 4) return true;  // no device name is longer than 4
+    for (size_t i = 0; i < sizeof(kDevices) / sizeof(kDevices[0]); ++i) {
+        const char* device = kDevices[i];
+        size_t deviceLength = 0;
+        while (device[deviceLength]) ++deviceLength;
+        if (deviceLength != stem) continue;
+        bool same = true;
+        for (size_t c = 0; c < stem; ++c) {
+            char lhs = name[c];
+            if (lhs >= 'a' && lhs <= 'z') lhs = (char)(lhs - 'a' + 'A');
+            if (lhs != device[c]) { same = false; break; }
+        }
+        if (same) return false;
+    }
+    return true;
+}
+
 static inline bool gc_archive_name_is_safe(const char* name) {
     if (!name || !name[0]) return false;
     size_t length = 0;
@@ -208,6 +241,13 @@ static inline bool gc_archive_name_is_safe(const char* name) {
     // the extracted name differ from the verified one.
     if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0))) return false;
     if (name[length - 1] == '.' || name[length - 1] == ' ') return false;
+    // Reserved DOS device names (F-05-003).  CreateFile("CON") opens the
+    // console, not a file in the install directory, and "NUL" silently discards
+    // everything written to it -- so an entry named for a device would make
+    // extraction "succeed" while producing no payload file at all.  Matched
+    // ignoring case, any extension, and any trailing dots/spaces, because Win32
+    // resolves "con.txt", "CON " and "Con." to the same device.
+    if (!gc_archive_name_device_free(name, length)) return false;
     return true;
 }
 

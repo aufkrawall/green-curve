@@ -24,6 +24,8 @@
 
 #include "log_redaction_policy.h"
 #include "main_service_pipe_primitives.h"
+// F-03-002: the command -> authorization-tier table this file's gate consumes.
+#include "service_command_authority_policy.h"
 #include "service_ipc_throttle_policy.h"
 #include "service_pipe_prefix_read.h"
 // The three client-requested file writes, all of which run under the caller's
@@ -235,24 +237,28 @@ static void service_execute_checked_request(ServiceRequest* request,
                 (unsigned long)request->callerPid,
                 (unsigned long)caller->pid,
                 (unsigned int)request->command);
-        } else if ((request->command == SERVICE_CMD_APPLY ||
-                    request->command == SERVICE_CMD_RESET ||
-                    request->command == SERVICE_CMD_WRITE_LOG_SNAPSHOT ||
-                    request->command == SERVICE_CMD_WRITE_JSON_SNAPSHOT ||
-                    request->command == SERVICE_CMD_WRITE_PROBE_REPORT ||
-                    request->command == SERVICE_CMD_LOGON_HANDOFF ||
-                    request->command == SERVICE_CMD_CHECK_FOR_UPDATE ||
-                    request->command == SERVICE_CMD_INSTALL_UPDATE ||
-                    request->command == SERVICE_CMD_SET_UPDATE_POLICY) &&
-                   caller->integrityRid < SECURITY_MANDATORY_MEDIUM_RID) {
+        } else if (const char* authorityRejection =
+                       service_command_authority_reject_reason(
+                           request->command, caller->integrityRid,
+                           (unsigned int)SECURITY_MANDATORY_MEDIUM_RID,
+                           caller->isAdmin)) {
+            // F-03-002: the tier now comes from the pure table in
+            // service_command_authority_policy.h rather than an inline command
+            // list here.  The list had no place to record that
+            // SET_UPDATE_POLICY is MACHINE-scope while every one of its
+            // neighbours is SESSION-scope, which is how a standard console user
+            // came to be able to disable automatic updates for the whole box.
             response->status = SERVICE_STATUS_ERROR;
             StringCchCopyA(response->message, ARRAY_COUNT(response->message),
-                "Service control requires a medium-integrity client");
-            debug_log("service auth reject: low-integrity caller pid=%lu session=%lu command=%u integrityRid=%lu\n",
+                authorityRejection);
+            debug_log("service auth reject: command=%u tier=%d pid=%lu session=%lu integrityRid=%lu isAdmin=%d: %s\n",
+                (unsigned int)request->command,
+                (int)service_command_authority_tier(request->command),
                 (unsigned long)caller->pid,
                 (unsigned long)caller->sessionId,
-                (unsigned int)request->command,
-                (unsigned long)caller->integrityRid);
+                (unsigned long)caller->integrityRid,
+                caller->isAdmin ? 1 : 0,
+                authorityRejection);
         } else {
             stateEnvelopeAuthorized = true;
             // A logon handoff is settings-free and resolves an immutable

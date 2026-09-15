@@ -28,12 +28,23 @@
 enum {
     OC_HIGH_WARN_DEFAULT_GPU_OFFSET_MHZ = 200,
     OC_HIGH_WARN_DEFAULT_MEM_OFFSET_MHZ = 2000,
+    // F-05-001. The XBAR MSVDD rail offset is written through a private,
+    // undocumented NvAPI interface at a reverse-engineered field offset, and
+    // voltage is the one domain here that can damage silicon rather than merely
+    // destabilise it -- yet it was the only OC domain with no confirmation at
+    // all, while a +200 MHz core offset had one. 25 mV sits above the +10 mV the
+    // XBAR dialog's own hint recommends starting at and below a vendor-typical
+    // safe step, so a cautious first try stays silent and a large hand-typed
+    // jump does not.
+    OC_HIGH_WARN_DEFAULT_MSVDD_OFFSET_MV = 25,
 };
 
 // A threshold <= 0 disables warnings for that domain.
 struct OcHighWarnThresholds {
     int gpuOffsetMHz;
     int memOffsetMHz;
+    // Millivolts, matching the units the XBAR dialog edits in.
+    int msvddOffsetMv;
 };
 
 struct OcHighWarnInputs {
@@ -45,18 +56,24 @@ struct OcHighWarnInputs {
     bool memHandTyped;
     int memOffsetMHz;
     int currentMemOffsetMHz;
+    bool hasMsvddOffset;
+    bool msvddHandTyped;
+    int msvddOffsetMv;
+    int currentMsvddOffsetMv;
 };
 
 struct OcHighWarnDecision {
     bool warn;
     bool gpu;
     bool mem;
+    bool msvdd;
 };
 
 static inline OcHighWarnThresholds oc_high_warn_default_thresholds(void) {
     OcHighWarnThresholds thresholds = {};
     thresholds.gpuOffsetMHz = OC_HIGH_WARN_DEFAULT_GPU_OFFSET_MHZ;
     thresholds.memOffsetMHz = OC_HIGH_WARN_DEFAULT_MEM_OFFSET_MHZ;
+    thresholds.msvddOffsetMv = OC_HIGH_WARN_DEFAULT_MSVDD_OFFSET_MV;
     return thresholds;
 }
 
@@ -79,7 +96,10 @@ static inline OcHighWarnDecision oc_high_warn_decide(
     decision.mem = oc_high_warn_domain_triggers(
         in->hasMemOffset, in->memHandTyped, in->memOffsetMHz,
         in->currentMemOffsetMHz, thresholds->memOffsetMHz);
-    decision.warn = decision.gpu || decision.mem;
+    decision.msvdd = oc_high_warn_domain_triggers(
+        in->hasMsvddOffset, in->msvddHandTyped, in->msvddOffsetMv,
+        in->currentMsvddOffsetMv, thresholds->msvddOffsetMv);
+    decision.warn = decision.gpu || decision.mem || decision.msvdd;
     return decision;
 }
 
@@ -106,10 +126,25 @@ static inline void oc_high_warn_format_message(
                           in->memOffsetMHz, thresholds->memOffsetMHz,
                           in->currentMemOffsetMHz);
     }
-    gc_appendf(out, outSize, used,
+    if (decision->msvdd) {
+        used = gc_appendf(out, outSize, used,
+                          "XBAR voltage offset %+d mV is a high overvolt "
+                          "(warning threshold %d mV, currently applied %+d mV).\n",
+                          in->msvddOffsetMv, thresholds->msvddOffsetMv,
+                          in->currentMsvddOffsetMv);
+    }
+    used = gc_appendf(out, outSize, used,
                "\nUnstable clocks can hang or crash the GPU driver and the "
-               "system, and memory errors can corrupt data silently.\n\n"
-               "Apply anyway?");
+               "system, and memory errors can corrupt data silently.\n");
+    if (decision->msvdd) {
+        // Stated separately because it is a different KIND of risk: the other
+        // two domains threaten stability, this one threatens the hardware, and
+        // it is written through an interface the vendor does not document.
+        used = gc_appendf(out, outSize, used,
+               "Raising a rail voltage stresses the GPU beyond its validated "
+               "operating point and can damage it permanently.\n");
+    }
+    gc_appendf(out, outSize, used, "\nApply anyway?");
 }
 
 #endif // GREEN_CURVE_OC_HIGH_WARNING_POLICY_H

@@ -106,9 +106,10 @@ static bool nvapi_get_vf_info(LinuxGpuState* g) {
         return false;
     }
     unsigned int infoSize = b->infoBufferSize ? b->infoBufferSize : 0x4000;
-    if (infoSize > 0x4000 || b->infoBufferSize > infoSize ||
-        b->infoMaskOffset + sizeof(g->vfMask) > infoSize ||
-        b->infoNumClocksOffset + sizeof(g->vfNumClocks) > infoSize) {
+    // F-02-001: the shared layout rule, so the --probe path cannot bounds-check
+    // this differently than the control path does.
+    if (!linux_vf_info_layout_fits(b->infoBufferSize, b->infoMaskOffset,
+            b->infoNumClocksOffset, (unsigned int)sizeof(g->vfMask), infoSize)) {
         g->vfInfoStatus = LB_NVAPI_INVALID_DATA;
         return false;
     }
@@ -139,9 +140,16 @@ static bool nvapi_get_vf_info(LinuxGpuState* g) {
     memcpy(mask, ibuf + b->infoMaskOffset, sizeof(mask));
     memcpy(&numClocks, ibuf + b->infoNumClocksOffset, sizeof(numClocks));
     free(ibuf);
-    bool anyMask = false;
-    for (unsigned char value : mask) anyMask |= value != 0;
-    if (!anyMask || numClocks == 0 || numClocks > 64) {
+    // F-02-001: the shared data rule. The probe used to substitute an all-0xFF
+    // mask and defaultNumClocks here instead of refusing, which is how the two
+    // paths came to disagree about the same driver answer.
+    if (!linux_vf_info_data_usable(mask, (unsigned int)sizeof(mask), numClocks)) {
+        bool anyMaskBit = false;
+        for (unsigned char value : mask) anyMaskBit |= value != 0;
+        lb_log("nvapi_get_vf_info: driver returned an unusable VF info block "
+               "(numClocks=%u anyEditableBit=%d); --probe now refuses this "
+               "same answer instead of substituting defaults\n",
+               numClocks, anyMaskBit ? 1 : 0);
         g->vfInfoStatus = LB_NVAPI_INVALID_DATA;
         return false;
     }

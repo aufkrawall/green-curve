@@ -38,6 +38,10 @@ static unsigned char g_debugLogRing[gc_debug_log_queue::kRingBytes];
 static volatile LONG64 g_debugLogRingHead = 0;
 static volatile LONG64 g_debugLogRingTail = 0;
 static volatile LONG64 g_debugLogDroppedLines = 0;
+// F-04-002: lines whose route generation had already been recycled out of the
+// slot table by the time the writer drained them, and which were therefore
+// written to the current session's file rather than their own.
+static volatile LONG64 g_debugLogReroutedLines = 0;
 
 static HANDLE g_debugLogWriterThread = nullptr;
 static HANDLE g_debugLogWriterEvent = nullptr;
@@ -343,9 +347,21 @@ static bool debug_log_dequeue(char* out, size_t outSize, char* outPath, size_t o
                     g_debugLogRoutes[idx].generation == (unsigned short)routeGen) {
                     StringCchCopyA(outPath, outPathSize, g_debugLogRoutes[idx].path);
                 } else {
+                    // F-04-002: the line's own route generation is gone. There
+                    // are kMaxRouteSlots slots indexed by generation, so more
+                    // than that many route changes while this line sat queued
+                    // reused its slot. Falling back to the CURRENT route is the
+                    // right answer (the alternative is dropping the line), but
+                    // it silently writes a line into a different session's log,
+                    // so count it: a support log that quietly reroutes is worse
+                    // than one that says it did.
                     unsigned int curIdx = (unsigned int)(g_debugLogCurrentRouteGen % gc_debug_log_queue::kMaxRouteSlots);
                     if (g_debugLogRoutes[curIdx].valid) {
                         StringCchCopyA(outPath, outPathSize, g_debugLogRoutes[curIdx].path);
+                        if (routeGen != 0 &&
+                            routeGen != (unsigned int)g_debugLogCurrentRouteGen) {
+                            InterlockedIncrement64(&g_debugLogReroutedLines);
+                        }
                     }
                 }
             }
@@ -391,6 +407,25 @@ static void debug_log_writer_drain() {
         StringCchPrintfA(marker, ARRAY_COUNT(marker),
             gc_debug_log_queue::dropped_marker_format(),
             (unsigned long long)dropped);
+        int prefixLen = format_log_timestamp_prefix(stamped,
+            ARRAY_COUNT(stamped));
+        StringCchCatA(stamped + prefixLen, ARRAY_COUNT(stamped) - prefixLen,
+            marker);
+        OutputDebugStringA(stamped);
+        debug_log_write_line_locked(stamped);
+        wroteAny = true;
+    }
+    // F-04-002: same shape as the dropped-line marker, and for the same reason
+    // -- the log must be honest about its own gaps. A rerouted line is one that
+    // outlived its route slot and was written to the CURRENT session's file
+    // instead of the one it was produced for.
+    LONG64 rerouted = InterlockedExchange64(&g_debugLogReroutedLines, 0);
+    if (rerouted > 0) {
+        char marker[256] = {};
+        char stamped[gc_debug_log_queue::kMaxRecordBytes] = {};
+        StringCchPrintfA(marker, ARRAY_COUNT(marker),
+            gc_debug_log_queue::rerouted_marker_format(),
+            (unsigned long long)rerouted);
         int prefixLen = format_log_timestamp_prefix(stamped,
             ARRAY_COUNT(stamped));
         StringCchCatA(stamped + prefixLen, ARRAY_COUNT(stamped) - prefixLen,

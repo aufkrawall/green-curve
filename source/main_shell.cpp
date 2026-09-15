@@ -605,6 +605,9 @@ static bool capture_gui_desired_settings(DesiredSettings* desired, bool includeC
 #include "main_capability_warning.cpp"
 // Read-only --self-test report; also consumed by entry.cpp.
 #include "main_self_test.cpp"
+// The CLI's console sink (F-01-001); must precede both the help text and
+// entry.cpp, which are its only callers.
+#include "cli_console.cpp"
 // CLI usage text, split out of entry.cpp; must precede it.
 #include "main_cli_help.cpp"
 #include "main_runtime_gpu.cpp"

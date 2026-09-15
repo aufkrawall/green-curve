@@ -141,8 +141,15 @@ static void service_lifecycle_update_config_watch(const char* configPath,
             sizeof(directory))) {
         service_lifecycle_close_config_watch(handle, watchedDirectory,
             watchedPath, stamp);
+        // F-03-001: tokenized, not raw. This runs in the LocalSystem service and
+        // the path names ANOTHER account's profile directory; the raw spelling
+        // put "C:\Users\<account>\..." into the support log by default.
+        char configToken[32] = {};
         debug_log("lifecycle config readiness: cannot watch %s parent yet (%s)\n",
-            label, configPath && configPath[0] ? configPath : "<unset>");
+            label,
+            configPath && configPath[0]
+                ? gc_log_path_token(configPath, configToken, sizeof(configToken))
+                : "<unset>");
         return;
     }
     if (*handle != INVALID_HANDLE_VALUE &&
@@ -154,16 +161,20 @@ static void service_lifecycle_update_config_watch(const char* configPath,
         FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_SIZE |
         FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SECURITY);
     if (change == INVALID_HANDLE_VALUE) {
+        char directoryToken[32] = {};
         debug_log("lifecycle config readiness: FindFirstChangeNotification failed for %s directory %s (error=%lu)\n",
-            label, directory, GetLastError());
+            label,
+            gc_log_path_token(directory, directoryToken, sizeof(directoryToken)),
+            GetLastError());
         return;
     }
     *handle = change;
     StringCchCopyA(watchedDirectory, watchedDirectorySize, directory);
     StringCchCopyA(watchedPath, watchedPathSize, configPath);
     *stamp = service_lifecycle_config_file_stamp(configPath);
+    char watchedToken[32] = {};
     debug_log("lifecycle config readiness: watching %s directory %s\n",
-        label, directory);
+        label, gc_log_path_token(directory, watchedToken, sizeof(watchedToken)));
 }
 
 static void service_lifecycle_watch_config_context(

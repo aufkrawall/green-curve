@@ -288,6 +288,15 @@ bool parse_mouse_sequence(const std::string& sequence, TuiInputEvent* event) {
     long y = strtol(p, &end, 10);
     if (!end || (*end != 'M' && *end != 'm') || errno != 0) return false;
     if (end[1] != '\0') return false;
+    // F-04-003: errno catches only values outside long, so on a 64-bit host a
+    // terminal reporting a coordinate between INT_MAX and LONG_MAX would be
+    // silently truncated into a plausible-looking int. No real terminal does
+    // that, but this parses untrusted terminal input, and refusing an
+    // unrepresentable sequence is cheaper than reasoning about what the
+    // truncated value would hit.
+    if (button < 0 || button > 0xFFFF) return false;
+    if (x < 0 || x > 0xFFFF) return false;
+    if (y < 0 || y > 0xFFFF) return false;
     event->type = TUI_INPUT_MOUSE;
     event->mouseX = (int)x;
     event->mouseY = (int)y;

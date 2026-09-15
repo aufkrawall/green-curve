@@ -1788,6 +1788,9 @@ def run_regression_tests(extra_flags=None):
                     sys.exit(result.returncode)
         # Native named-pipe incident regression; details live in security_gates.
         security_gates.run_windows_pipe_fixture(_gate_ctx(), tmp, extra_flags)
+        # F-01-001: the built GUI-subsystem binary must reach its caller's
+        # stdout. Only the real artifact can answer that.
+        security_gates.run_cli_console_fixture(_gate_ctx())
         run_source_regression_checks()
         print("Regression tests passed")
     finally:
@@ -2025,6 +2028,8 @@ def run_source_regression_checks():
     security_gates.check_no_signing_key_material(
         _gate_ctx(), _tracked_repository_files())
     security_gates.check_diagnostic_probe_gates(_gate_ctx(), require_text, forbid_text)
+    # F-03-001: the enforcement source/log_redaction_policy.h never had.
+    security_gates.check_log_redaction(_gate_ctx())
     require_app_version_fallback_in_sync()
     main_cpp = os.path.join(SOURCE_DIR, "main.cpp")
     entry_cpp = os.path.join(SOURCE_DIR, "entry.cpp")
@@ -4047,8 +4052,10 @@ def run_source_regression_checks():
                  "pipe-client impersonation is reverted through RAII")
     require_text(service_server_cpp, "request->callerPid != caller->pid",
                  "payload caller PID must match the pipe-reported PID")
-    require_text(service_server_cpp, "caller->integrityRid < SECURITY_MANDATORY_MEDIUM_RID",
-                 "control and file-output requests reject low-integrity clients")
+    # F-03-002: the command -> authorization-tier gates live in security_gates
+    # so this file stays under its own ratchet.
+    security_gates.check_service_command_authority_gates(
+        _gate_ctx(), require_text, service_server_cpp)
     require_text(service_server_cpp, "ScopedServiceClientImpersonation impersonation(callerToken)",
                  "privileged file output is written under caller impersonation")
     require_order(service_server_cpp,

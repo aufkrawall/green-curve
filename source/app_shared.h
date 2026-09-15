@@ -337,6 +337,11 @@ struct GuiDraft {
 struct OcApplyBaseline {
     int currentGpuOffsetMHz;
     int currentMemOffsetMHz;
+    // F-05-001: microvolts, the wire/state unit. The confirmation converts to
+    // millivolts because that is what the XBAR dialog edits and what the user
+    // typed; carrying the state unit here keeps this struct a plain mirror of
+    // the change-detection baseline rather than a second representation.
+    int currentXbarMsvddOffsetUv;
 };
 
 struct AppData {

@@ -151,13 +151,22 @@ static void rotate_crash_breadcrumb_in_dir(const char* dir) {
 static void rotate_crash_artifacts_for_process() {
     char dir[MAX_PATH] = {};
     if (!crash_artifact_data_dir(dir, sizeof(dir))) {
+        // F-03-001: found by the redaction gate, not by reading -- this line
+        // only fires when the artifact directory cannot be resolved, so it
+        // never appeared in the sampled log that exposed the other sites.
+        char userDirToken[32] = {};
         debug_log("crash artifacts: no writable artifact directory resolved; "
             "dumps are disabled for this process (serviceProcess=%d userDataDir=%s)\n",
             g_app.isServiceProcess ? 1 : 0,
-            g_userDataDir[0] ? g_userDataDir : "<unset>");
+            g_userDataDir[0]
+                ? gc_log_path_token(g_userDataDir, userDirToken, sizeof(userDirToken))
+                : "<unset>");
         return;
     }
-    debug_log("crash artifacts: directory=%s keepPerKind=%d\n", dir, GC_CRASH_ARTIFACT_MAX_KEEP);
+    char dirToken[32] = {};
+    debug_log("crash artifacts: directory=%s keepPerKind=%d\n",
+        gc_log_path_token(dir, dirToken, sizeof(dirToken)),
+        GC_CRASH_ARTIFACT_MAX_KEEP);
     rotate_crash_dumps_in_dir(dir, GC_CRASH_DUMP_PREFIX, GC_CRASH_ARTIFACT_MAX_KEEP);
     rotate_crash_dumps_in_dir(dir, GC_VEH_DUMP_PREFIX, GC_CRASH_ARTIFACT_MAX_KEEP);
     rotate_crash_breadcrumb_in_dir(dir);

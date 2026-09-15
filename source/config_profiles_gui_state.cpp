@@ -250,10 +250,15 @@ static void ensure_profile_slot_cache() {
     g_app.appLaunchAssignmentPresentCache = appLaunchSlot > 0;
     g_app.startOnLogonPresentCache = is_start_on_logon_enabled(g_app.configPath);
     g_app.profileSlotCacheValid = true;
+    // F-03-001: tokenized. g_app.configPath is under the user profile, so the
+    // raw spelling published the account name on every cache refresh.
+    char configToken[32] = {};
     debug_log_on_change("profile slot cache: refreshed logon=%d shared=%d appLaunch=%d tray=%d from %s\n",
         logonSlot, logonSharedSlot, appLaunchSlot,
         g_app.startOnLogonPresentCache ? 1 : 0,
-        g_app.configPath[0] ? g_app.configPath : "(no config path)");
+        g_app.configPath[0]
+            ? gc_log_path_token(g_app.configPath, configToken, sizeof(configToken))
+            : "(no config path)");
 }
 
 static bool profile_slot_is_saved_cached(int slot) {

@@ -162,6 +162,16 @@ inline const char* dropped_marker_format() {
            "blocked\n";
 }
 
+// The route-slot counterpart of the drop marker.  There are only kMaxRouteSlots
+// generation slots, so a line queued across more than that many route changes
+// loses its own destination and is written here instead.  Bounded and rare, but
+// it means this file contains a line produced for a different session, and a
+// reader must be able to see that rather than infer it.
+inline const char* rerouted_marker_format() {
+    return "debug log: %llu line(s) were produced for an earlier log route that "
+           "had already been recycled, and were written here instead\n";
+}
+
 } // namespace gc_debug_log_queue
 
 #endif // GREEN_CURVE_DEBUG_LOG_QUEUE_POLICY_H

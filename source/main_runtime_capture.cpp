@@ -187,6 +187,7 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
     if (baselineOut) {
         baselineOut->currentGpuOffsetMHz = currentGpuOffsetMHz;
         baselineOut->currentMemOffsetMHz = currentMemOffsetMHz;
+        baselineOut->currentXbarMsvddOffsetUv = currentXbarMsvddUv;
     }
 
     bool gpuUnchanged = !full.hasGpuOffset || (full.gpuOffsetMHz == currentGpuOffsetMHz && full.gpuOffsetExcludeLowCount == currentGpuOffsetExcludeLowCount);

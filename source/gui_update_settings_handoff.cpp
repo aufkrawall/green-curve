@@ -170,18 +170,26 @@ void gui_update_replay_pending_restore() {
         // Silence here is what made the first failure undiagnosable: "no log
         // line" was indistinguishable from "never called".  Every exit from
         // this function now says something.
+        // F-03-001: tokenized; g_userDataDir is the account profile path.
+        char dirToken[32] = {};
         debug_log("update handoff: no restore attempted; user data dir is "
                   "unresolved (g_userDataDir=%s)\n",
-                  g_userDataDir[0] ? g_userDataDir : "<empty>");
+                  g_userDataDir[0]
+                      ? gc_log_path_token(g_userDataDir, dirToken, sizeof(dirToken))
+                      : "<empty>");
         return;
     }
     DWORD pendingAttrs = gc_GetFileAttributesUtf8(pending);
     if (pendingAttrs == INVALID_FILE_ATTRIBUTES) {
+        char pendingToken[32] = {};
         debug_log("update handoff: no pending restore at %s (error %lu)\n",
-                  pending, GetLastError());
+                  gc_log_path_token(pending, pendingToken, sizeof(pendingToken)),
+                  GetLastError());
         return;
     }
-    debug_log("update handoff: found a pending restore at %s\n", pending);
+    char foundToken[32] = {};
+    debug_log("update handoff: found a pending restore at %s\n",
+              gc_log_path_token(pending, foundToken, sizeof(foundToken)));
 
     char expectedVersion[GC_UPDATE_VERSION_MAX_CHARS] = {};
     // The return value is deliberately ignored: a MISSING key is the signature

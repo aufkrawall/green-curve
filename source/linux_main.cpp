@@ -10,6 +10,7 @@
 #include "linux_debug_log.h"
 #include "linux_terminal_launch.h"
 #include "linux_startup_sync.h"
+#include "linux_asset_escaping_policy.h"  // F-03-003
 
 #include <ctype.h>
 #include <errno.h>
@@ -314,16 +315,28 @@ bool write_linux_assets(const char* outputDir, const char* execPath, const char*
         set_message(err, errSize, "Missing asset generation paths");
         return false;
     }
-    if (!ensure_directory_recursive(outputDir, err, errSize)) return false;
-
+    // F-03-003: refuse-then-escape, before anything is written. Two layers, two
+    // grammars: the inner sh that .desktop Exec= and systemd ExecStart= both
+    // hand the command to, and the file format itself, which used to get no
+    // escaping at all. See linux_asset_escaping_policy.h.
     std::string execShell = shell_quote_single(execPath);
     std::string configShell = shell_quote_single(configPath);
+    LinuxAssetEscapedPaths escaped = {};
+    const char* pathReject = linux_asset_prepare_paths(
+        execPath, execShell.c_str(), configPath, configShell.c_str(), &escaped);
+    if (pathReject) {
+        set_message(err, errSize, "Cannot generate desktop assets: %s", pathReject);
+        return false;
+    }
+    if (!ensure_directory_recursive(outputDir, err, errSize)) return false;
+
     // --from-desktop keeps the window open long enough to read an error; on a
     // clean quit the terminal closes immediately, which is what a launcher
     // should do.
-    std::string desktopExec = "sh -lc \"exec " + execShell +
-        " --tui --from-desktop --config " + configShell + "\"";
-    std::string serviceExec = "/bin/sh -lc \"exec " + execShell + " --apply-config --config " + configShell + "\"";
+    std::string desktopExec = std::string("sh -lc \"exec ") + escaped.desktopExec +
+        " --tui --from-desktop --config " + escaped.desktopConfig + "\"";
+    std::string serviceExec = std::string("/bin/sh -lc \"exec ") + escaped.systemdExec +
+        " --apply-config --config " + escaped.systemdConfig + "\"";
 
     std::string desktop;
     appendf(&desktop,
@@ -356,7 +369,7 @@ bool write_linux_assets(const char* outputDir, const char* execPath, const char*
         "[Install]\n"
         "WantedBy=multi-user.target\n",
         APP_NAME,
-        configPath,
+        escaped.systemdConditionPath,  // F-03-003: was the RAW path
         serviceExec.c_str());
 
     std::string readme;

@@ -226,6 +226,48 @@ def run_windows_pipe_fixture(ctx, tmp_dir, extra_flags):
         sys.exit(result.returncode)
 
 
+def run_cli_console_fixture(ctx, built_exe=None):
+    """Prove the built GUI-subsystem binary actually writes to its caller (F-01-001).
+
+    This is the one check that could not be a source guard or a pure assertion:
+    the defect was that `greencurve.exe --help` produced ZERO bytes on stdout
+    and stderr and returned exit code 0, because a -subsystem:windows image has
+    no console and nothing ever attached one. Only running the real artifact
+    with a captured stdout answers it.
+
+    A captured pipe is also the exact path the fix's step 2 handles -- the child
+    sees a FILE_TYPE_PIPE standard handle -- so this covers redirection at the
+    same time. The interactive CONOUT$ path cannot be driven from a test and is
+    verified by hand; see llm-wiki/windows-architecture.md.
+
+    Skipped (not failed) when no built binary is present, because --test is
+    expected to run without a prior build.
+    """
+    if sys.platform != "win32":
+        return
+    if built_exe is None:
+        built_exe = os.path.join(ctx.SCRIPT_DIR, "dist", "windows-x64",
+                                 "greencurve", "greencurve.exe")
+    if not os.path.exists(built_exe):
+        print("Skipping CLI console fixture: no built greencurve.exe")
+        return
+    print("Running CLI console output fixture")
+    result = subprocess.run([built_exe, "--help"], cwd=ctx.SCRIPT_DIR,
+                            capture_output=True, text=True, timeout=60)
+    combined = (result.stdout or "") + (result.stderr or "")
+    if not combined.strip():
+        print("CLI console fixture FAILED: --help wrote nothing to the caller's "
+              "stdout/stderr (F-01-001 regression)")
+        sys.exit(1)
+    for needle in ("NVIDIA VF Curve Editor", "--service-install", "--help"):
+        if needle not in combined:
+            print(f"CLI console fixture FAILED: --help output is missing {needle!r}")
+            sys.exit(1)
+    if result.returncode != 0:
+        print(f"CLI console fixture FAILED: --help exited {result.returncode}")
+        sys.exit(1)
+
+
 def run_fuzz_targets(ctx, runs=None, target_filter=None):
     """Build and briefly exercise every libFuzzer target.
 
@@ -576,6 +618,116 @@ def check_diagnostic_probe_gates(ctx, require_text, forbid_text):
                  "the ClkDomains validity flags are sized by the domain loop bound")
     forbid_text(self_test, "measuredKhz[16]",
                 "the ClkDomains correlation overflow must never return")
+
+
+# Expressions that carry a Windows account name, a user-profile path, or a
+# machine name.  F-03-001: source/log_redaction_policy.h has existed since
+# 2026-08 to keep exactly these out of the default-on support log, and it was
+# applied in the identity code and nowhere else -- because nothing enforced it.
+# A 21 MB live log carried "C:\\Users\\<account>\\..." from four sites and the
+# Task Scheduler task name ("Green Curve Startup - <HOST>_<account>") from a
+# fifth.  This gate is the enforcement the policy never had.
+IDENTITY_BEARING_LOG_ARGUMENTS = (
+    "g_userDataDir",
+    "g_app.configPath",
+    "g_debugLogPath",
+    "g_forcedStartupUserSam",
+    "taskName",
+)
+
+# The tokenizers from log_redaction_policy.h.  A call that names one of the
+# expressions above is fine as long as it goes through one of these.
+LOG_REDACTION_TOKENIZERS = (
+    "gc_log_path_token(",
+    "gc_log_identifier_token(",
+    "gc_log_wide_identifier_token(",
+    "gc_log_u64_token(",
+)
+
+
+def _balanced_call_text(text, open_paren_index):
+    """The source text of one call, from '(' to its matching ')'.
+
+    Returns None for an unbalanced tail rather than guessing: a truncated span
+    would make the gate silently stop checking the rest of the call.
+    """
+    depth = 0
+    for index in range(open_paren_index, len(text)):
+        char = text[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return text[open_paren_index:index + 1]
+    return None
+
+
+def check_service_command_authority_gates(ctx, require_text, service_server_cpp):
+    """Pin the command -> authorization-tier contract (F-03-002).
+
+    This replaced an inline `caller->integrityRid < SECURITY_MANDATORY_MEDIUM_RID`
+    comparison over a hand-written command list in the pipe switch. The list had
+    nowhere to record that SERVICE_CMD_SET_UPDATE_POLICY mutates MACHINE-wide
+    persistent state while every one of its neighbours is per-session hardware
+    intent, which is how a standard console user came to be able to disable
+    automatic update checking for the whole machine.
+
+    The tier of every command is asserted exhaustively by the regression harness
+    (5259-5269); these gates pin the wiring the harness cannot see -- that the
+    pipe actually consults the table, with the right bound and the right caller
+    fact, and that the table still fails closed.
+    """
+    require_text(service_server_cpp, "service_command_authority_reject_reason(",
+                 "control and file-output requests reject low-integrity clients")
+    require_text(service_server_cpp, "(unsigned int)SECURITY_MANDATORY_MEDIUM_RID",
+                 "the integrity bound handed to the authority policy is the medium-integrity RID")
+    require_text(service_server_cpp, "caller->isAdmin",
+                 "machine-scope commands are gated on local-administrator membership")
+    policy = os.path.join(ctx.SOURCE_DIR, "service_command_authority_policy.h")
+    require_text(policy, "case SERVICE_CMD_SET_UPDATE_POLICY:",
+                 "the machine-wide update policy has an explicit authorization tier")
+    require_text(policy, "return SERVICE_COMMAND_TIER_MACHINE_ADMIN;",
+                 "a machine-admin tier exists and is reachable")
+    require_text(policy, "default:\n            return SERVICE_COMMAND_TIER_MACHINE_ADMIN;",
+                 "an unclassified command fails closed rather than into the weakest tier")
+
+
+def check_log_redaction(ctx):
+    """No debug_log call may name an identity-bearing value in the clear.
+
+    Deliberately a real scan rather than a list of forbidden literals: the
+    defect was four INDEPENDENT sites drifting from a policy, so the gate has
+    to cover sites nobody has written yet.
+    """
+    offenders = []
+    for name in sorted(os.listdir(ctx.SOURCE_DIR)):
+        if not name.endswith((".cpp", ".h")):
+            continue
+        path = os.path.join(ctx.SOURCE_DIR, name)
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+        for match in re.finditer(r"\bdebug_log(?:_on_change)?\s*\(", text):
+            call = _balanced_call_text(text, match.end() - 1)
+            if call is None:
+                offenders.append(f"{name}: unbalanced debug_log call near offset {match.start()}")
+                continue
+            if any(tokenizer in call for tokenizer in LOG_REDACTION_TOKENIZERS):
+                continue
+            for argument in IDENTITY_BEARING_LOG_ARGUMENTS:
+                # Whole-identifier match: `taskNameToken` is the FIX for
+                # `taskName`, so a substring test would flag every fixed site.
+                pattern = r"(?<![A-Za-z0-9_])" + re.escape(argument) + r"(?![A-Za-z0-9_])"
+                if re.search(pattern, call):
+                    line = text.count("\n", 0, match.start()) + 1
+                    offenders.append(f"{name}:{line}: logs {argument} without a redaction token")
+                    break
+    if offenders:
+        print("Regression source check FAILED: identity-bearing values reach the debug log")
+        for offender in offenders:
+            print(f"  {offender}")
+        print("  Route them through source/log_redaction_policy.h (F-03-001).")
+        sys.exit(1)
 
 
 def run_build_script_regression_tests(ctx):

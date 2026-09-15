@@ -5,6 +5,7 @@
 // Win32 GDI application
 
 #include "app_shared.h"
+#include "log_redaction_policy.h"  // F-03-001: tokenizers, visible to every shard
 #include "fan_curve.h"
 #include "lock_checkbox_policy.h"
 #include "win32_raii.h"
@@ -333,7 +334,7 @@ static bool service_reset_all(char* result, size_t resultSize,
     bool* hardwareWriteAttemptedOut = nullptr);
 static bool service_update_install_reserved();
 static void service_update_set_install_reserved(bool reserved);
-static bool service_update_install_blocks_locked();
+static bool service_update_install_release_and_block();
 static bool service_update_install_reject_mutation(
     ServiceResponse* response, const char* commandName);
 // GPU driver-recovery is handled by restarting the service process; record each
@@ -442,7 +443,7 @@ static void request_service_restart(const char* reason) {
     const LONG observedSupersessionEpoch =
         InterlockedExchangeAdd(&g_serviceExplicitSupersessionEpoch, 0);
     lock_service_runtime();
-    if (service_update_install_blocks_locked()) return;
+    if (service_update_install_release_and_block()) return;
     if (InterlockedExchangeAdd(&g_serviceExternalStopRequested, 0) != 0) {
         debug_log("request_service_restart: external SCM stop/shutdown is pending; controlled recovery skipped\n");
         unlock_service_runtime();

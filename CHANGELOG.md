@@ -1,5 +1,56 @@
 # Changelog
 
+## Unreleased
+
+A code-audit pass over the whole repository. No release-blocking defect was
+found; everything below is a fix for something the audit turned up.
+
+### Fixes
+
+- **Command-line output now actually appears in your terminal.** `greencurve.exe`
+  is a GUI-subsystem program, so Windows gives it no console — every CLI command
+  printed *nothing at all* and exited with success. `greencurve.exe --help`
+  produced zero output; `--service-install` gave no hint whether the service had
+  been installed or had failed. All CLI output now goes to your terminal **and**
+  to the log file, and the help text names the log path. Note that Windows does
+  not make a shell wait for a GUI program, so the output arrives just after your
+  prompt returns; `start /wait greencurve.exe --help` keeps it in order.
+- **The debug log no longer contains your Windows account name.** Five places
+  wrote your user-profile path (and the scheduled-task name, which embeds your
+  computer and account names) into `greencurve_debug.txt` — the file you attach
+  to a bug report. They are now written as stable anonymous tokens, which keeps
+  the log just as diagnosable without identifying you. A build check now enforces
+  this so it cannot come back.
+- **Changing the machine-wide update policy now requires an administrator.** A
+  standard user signed in at the console could permanently turn off automatic
+  update checking for everyone on the machine, with no elevation prompt.
+  Applying settings, resetting, and running a one-off update check or install are
+  unchanged — those stay available to any user at the console, as before.
+- **The "high overclock" confirmation now covers the XBAR voltage offset.** A
+  +200 MHz core clock asked for confirmation, but a +100 mV rail voltage — the
+  one setting here that can damage a card rather than just destabilise it — did
+  not. Hand-typed voltage offsets of +25 mV or more now prompt, with the same
+  never-nag rules as the clock domains (loading a saved profile, re-applying, or
+  lowering an existing offset all stay silent). Configurable via
+  `high_oc_warn_msvdd_offset_mv`; `0` disables it.
+- **Linux: generated desktop and systemd files handle unusual paths correctly.**
+  The `.desktop` launcher and the optional `greencurve-apply.service` unit are
+  now escaped according to each file format's own rules, and a path containing a
+  line break or control character is refused with a clear message instead of
+  producing a malformed file.
+- **Linux: `--probe` and the running daemon now agree.** They used two separate
+  copies of the GPU VF-table read that disagreed about what a valid driver
+  response is, so on some GPUs `--probe` could report a readable curve that the
+  terminal UI then refused to drive. Both now use the same rule.
+- **The fan curve is validated the same way everywhere.** Curves arriving from
+  something other than the graphical editor are now held to the same rules the
+  editor enforces (ordered points, the documented 0.25–5 s poll range).
+- Assorted smaller fixes: the CLI log is appended instead of being overwritten by
+  the next command, a mistyped command line now reports an error and a non-zero
+  exit code instead of failing silently, the debug log says so when a line was
+  written into a different session's file, and the log line during an unlocked
+  profile switch is no longer silent about why no clock clamp was armed.
+
 ## 0.25.2
 
 Green Curve 0.25.2 is a reliability and hardening release, featuring

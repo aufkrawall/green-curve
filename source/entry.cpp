@@ -27,6 +27,9 @@ static bool handle_cli(LPWSTR wCmdLine) {
         const char* text = opts.error[0] ? opts.error : "Failed to parse CLI";
         resolve_data_paths(err, sizeof(err));
         write_text_file_atomic(cli_log_path(), text, strlen(text), err, sizeof(err));
+        // F-01-001: a mistyped command line is where silence is worst.
+        gc_cli_console_writef("ERROR: %s\n", text);
+        g_cliExitCode = 1;
         return true;
     }
     if (opts.logonStart) {
@@ -90,15 +93,25 @@ static bool handle_cli(LPWSTR wCmdLine) {
     set_default_config_path();
     if (opts.hasConfigPath) StringCchCopyA(g_app.configPath, ARRAY_COUNT(g_app.configPath), opts.configPath);
 
-    // CLI always writes to file since we're a GUI subsystem app
+    // F-01-001: console sink first, so a caller is told even when the log file
+    // cannot be opened -- that case used to exit 0 in total silence.
+    gc_cli_console_ready();
+
     char pathErr[256] = {};
     resolve_data_paths(pathErr, sizeof(pathErr));
     const char* logPath = cli_log_path();
-    FILE* logf = gc_fopen_utf8(logPath, "w");
-    if (!logf) return true;
+    // F-01-003: append, not truncate -- "w" meant a later --help erased the
+    // --service-install record. Bounded by the trim.
+    gc_cli_log_trim_if_oversized(logPath);
+    FILE* logf = gc_fopen_utf8(logPath, "a");
+    if (!logf) {
+        gc_cli_console_write("ERROR: cannot open the Green Curve CLI log file.\n");
+        g_cliExitCode = 1;
+        return true;
+    }
 
     // flawfinder: ignore -- private macro; every invocation below has a literal format.
-    #define CLI_LOG(...) do { char _gc_ts[64] = {}; format_log_timestamp_prefix(_gc_ts, sizeof(_gc_ts)); fprintf(logf, "%s", _gc_ts); fprintf(logf, __VA_ARGS__); fflush(logf); } while(0)
+    #define CLI_LOG(...) gc_cli_logf(logf, __VA_ARGS__)
 
     CLI_LOG("Green Curve CLI mode started\n");
 
@@ -168,6 +181,13 @@ static bool handle_cli(LPWSTR wCmdLine) {
         if (self_test_cli_dispatch(opts, logf ? logf : stdout,
                                    &probeExitCode)) {
             g_cliExitCode = probeExitCode;
+            // These write a structured REPORT whose documented purpose is to
+            // produce a file to attach, so the console gets the POINTER to it.
+            CLI_LOG("%s report written to %s (exit code %d)\n",
+                opts.selfTest ? "Self-test"
+                    : (opts.clkDomainDump ? "ClkDomains dump"
+                                          : "ClkDomains probe"),
+                logPath, probeExitCode);
             if (logf) fclose(logf);
             return true;
         }

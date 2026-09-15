@@ -475,6 +475,12 @@ static bool set_startup_task_enabled_direct(bool enabled, bool* outNeedsElevatio
         set_message(err, errSize, "Failed to determine startup task name");
         return false;
     }
+    // F-03-001: the task name is STARTUP_TASK_PREFIX + "<DOMAIN>_<account>", so
+    // every log line below names the constant prefix plus this stable token.
+    // One token for the whole function so two lines about the same task are
+    // still obviously about the same task.
+    char taskNameToken[32] = {};
+    gc_log_wide_identifier_token(taskName, taskNameToken, sizeof(taskNameToken));
 
     DWORD exitCode = 0;
     if (!enabled) {
@@ -484,7 +490,8 @@ static bool set_startup_task_enabled_direct(bool enabled, bool* outNeedsElevatio
             set_message(err, errSize, "Scheduled task delete command too long");
             return false;
         }
-        debug_log("startup task: deleting \"%ls\" (direct, elevated=%d)\n", taskName, is_elevated() ? 1 : 0);
+        debug_log("startup task: deleting \"%s%s\" (direct, elevated=%d)\n",
+            STARTUP_TASK_PREFIX, taskNameToken, is_elevated() ? 1 : 0);
         if (!run_schtasks_command(deleteArgs, &exitCode, err, errSize)) {
             debug_log("startup task: schtasks /delete failed to launch: %s\n", err[0] ? err : "unknown");
             return false;
@@ -546,18 +553,20 @@ static bool set_startup_task_enabled_direct(bool enabled, bool* outNeedsElevatio
         StartupTaskDefinitionClass classification = startup_task_definition_classify_current(
             taskName, exePath, cfgPath, validation, sizeof(validation));
         if (classification == STARTUP_TASK_DEFINITION_CANONICAL) {
-            debug_log("startup task: definition verified for \"%ls\": %s\n",
-                taskName, validation[0] ? validation : "current");
+            debug_log("startup task: definition verified for \"%s%s\": %s\n",
+                STARTUP_TASK_PREFIX, taskNameToken,
+                validation[0] ? validation : "current");
             return true;
         }
         compatibleLegacyTask = classification == STARTUP_TASK_DEFINITION_COMPATIBLE_LEGACY;
-        debug_log("startup task: definition %s for \"%ls\": %s; canonical repair will be attempted%s\n",
+        debug_log("startup task: definition %s for \"%s%s\": %s; canonical repair will be attempted%s\n",
             compatibleLegacyTask ? "compatible legacy" : "broken or unreadable",
-            taskName,
+            STARTUP_TASK_PREFIX, taskNameToken,
             validation[0] ? validation : "XML validation failed",
             compatibleLegacyTask ? " best-effort" : "");
     } else {
-        debug_log("startup task: no existing task named \"%ls\"; creating expected definition\n", taskName);
+        debug_log("startup task: no existing task named \"%s%s\"; creating expected definition\n",
+            STARTUP_TASK_PREFIX, taskNameToken);
     }
 
     auto accept_still_functional_legacy_task = [&](const char* repairFailure) -> bool {
@@ -596,7 +605,8 @@ static bool set_startup_task_enabled_direct(bool enabled, bool* outNeedsElevatio
         return false;
     }
 
-    debug_log("startup task: creating \"%ls\" (direct, elevated=%d)\n", taskName, is_elevated() ? 1 : 0);
+    debug_log("startup task: creating \"%s%s\" (direct, elevated=%d)\n",
+        STARTUP_TASK_PREFIX, taskNameToken, is_elevated() ? 1 : 0);
     bool runOk = run_schtasks_command(createArgs, &exitCode, err, errSize);
     DeleteFileW(xmlPath);
     if (!runOk) {
@@ -630,19 +640,22 @@ static bool set_startup_task_enabled_direct(bool enabled, bool* outNeedsElevatio
     StartupTaskDefinitionClass createdClassification = startup_task_definition_classify_current(
         taskName, exePath, cfgPath, validation, sizeof(validation));
     if (createdClassification == STARTUP_TASK_DEFINITION_COMPATIBLE_LEGACY) {
-        debug_log("startup task: scheduler retained a functional compatible definition for \"%ls\": %s\n",
-            taskName, validation[0] ? validation : "compatible legacy task");
+        debug_log("startup task: scheduler retained a functional compatible definition for \"%s%s\": %s\n",
+            STARTUP_TASK_PREFIX, taskNameToken,
+            validation[0] ? validation : "compatible legacy task");
         return true;
     }
     if (createdClassification != STARTUP_TASK_DEFINITION_CANONICAL) {
-        debug_log("startup task: created task \"%ls\" failed XML verification: %s\n",
-            taskName, validation[0] ? validation : "unknown validation error");
+        debug_log("startup task: created task \"%s%s\" failed XML verification: %s\n",
+            STARTUP_TASK_PREFIX, taskNameToken,
+            validation[0] ? validation : "unknown validation error");
         set_message(err, errSize, "Startup task was created but its definition could not be verified: %s",
             validation[0] ? validation : "unknown validation error");
         return false;
     }
-    debug_log("startup task: created/repaired and verified \"%ls\": %s\n",
-        taskName, validation[0] ? validation : "current");
+    debug_log("startup task: created/repaired and verified \"%s%s\": %s\n",
+        STARTUP_TASK_PREFIX, taskNameToken,
+        validation[0] ? validation : "current");
     return true;
 }
 

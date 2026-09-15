@@ -578,6 +578,13 @@ static inline void validate_control_state_for_ipc(ControlState* c) {
     canonicalize_gc_bool8(&c->videoClkOffsetReadbackValid);
 }
 
+// Declared, not included: fan_curve.h includes app_shared.h which includes this
+// header, so taking the whole header would be circular.  fan_curve.cpp is linked
+// by every consumer of this boundary (both binaries, the regression harness and
+// both fuzz harnesses -- enforced by check_fuzz_harness_in_sync).  See
+// fan_curve.h for why the boundary uses the _for_ipc variant.
+void fan_curve_normalize_for_ipc(FanCurveConfig* config);
+
 // Sanitize a DesiredSettings struct received over IPC.  This is the single
 // trust boundary between an unprivileged caller and the privileged service:
 // every numeric field that can reach an array index, a hardware write, or a
@@ -662,7 +669,15 @@ static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
         if (d->fanCurve.hysteresisC > FAN_CURVE_MAX_HYSTERESIS_C) d->fanCurve.hysteresisC = FAN_CURVE_MAX_HYSTERESIS_C;
         if (d->fanCurve.zeroRpmHysteresisC < FAN_ZERO_RPM_MIN_HYSTERESIS_C) d->fanCurve.zeroRpmHysteresisC = FAN_ZERO_RPM_MIN_HYSTERESIS_C;
         if (d->fanCurve.zeroRpmHysteresisC > FAN_ZERO_RPM_MAX_HYSTERESIS_C) d->fanCurve.zeroRpmHysteresisC = FAN_ZERO_RPM_MAX_HYSTERESIS_C;
-        if (d->fanCurve.pollIntervalMs < 1) d->fanCurve.pollIntervalMs = 1;
+        // F-01-002: the clamps above bound every NUMBER, but the curve's own
+        // validity rule lived only in fan_curve_validate(), on the GUI side of
+        // this boundary -- so a non-GUI caller could install a curve the UI
+        // rejects. Normalizing here (rather than rejecting) matches every other
+        // rule in this function, and subsumes the 1 ms poll floor and the 150 C
+        // temperature cap this block used to apply by hand, neither of which
+        // any other rule in the product accepts. See fan_curve.h for why this
+        // is the _for_ipc variant.
+        fan_curve_normalize_for_ipc(&d->fanCurve);
     }
 }
 

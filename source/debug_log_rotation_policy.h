@@ -28,6 +28,12 @@ enum {
     // GUI-polling verbosity on disk while guaranteeing a hard bound for both
     // the user-side merged log and the SYSTEM-profile early log.
     kRotateBytes = 32 * 1024 * 1024,
+    // Cap for greencurve_cli_log.txt, which became an APPENDING log in
+    // F-01-003 (it used to be truncated on every invocation, which is why a
+    // --help run destroyed the preceding --service-install record). A CLI
+    // invocation writes tens of lines, not thousands, so 2 MiB holds a very
+    // long history of them and still bounds the file.
+    kCliRotateBytes = 2 * 1024 * 1024,
 };
 
 // True when the file has reached its cap and must be truncated before the
@@ -46,6 +52,10 @@ inline bool should_rotate(long long sizeBytes) {
 // First line written after a truncation so a rotated file explains itself.
 inline const char* marker_line() {
     return "debug log truncated here: size cap reached\n";
+}
+
+inline const char* cli_marker_line() {
+    return "CLI log truncated here: size cap reached\n";
 }
 
 } // namespace gc_debug_log_rotation

@@ -59,6 +59,42 @@ static inline const char* gc_log_identifier_token(
     return out;
 }
 
+// UTF-16 identifiers (the Windows Task Scheduler task name is
+// "Green Curve Startup - <DOMAIN_account>", which is identity-bearing).  Hashes
+// the code units directly rather than converting, so this stays pure and the
+// regression harness can pin it on a Linux host with no Win32 API.
+static inline unsigned long long gc_log_fingerprint_wide(const wchar_t* value) {
+    unsigned long long hash = 1469598103934665603ULL;
+    if (value) {
+        while (*value) {
+            unsigned long long unit = (unsigned long long)(unsigned int)*value++;
+            for (unsigned int shift = 0; shift < 32; shift += 8) {
+                hash ^= static_cast<unsigned char>((unit >> shift) & 0xffU);
+                hash *= 1099511628211ULL;
+            }
+        }
+    }
+    return hash;
+}
+
+static inline const char* gc_log_wide_identifier_token(
+    const wchar_t* value, char* out, size_t outSize) {
+    if (!out || outSize == 0) return "<log-error>";
+    if (!value || !value[0]) {
+        out[0] = '-';
+        out[1] = '\0';
+        return out;
+    }
+    if (outSize < 32) return "<log-error>";
+    unsigned long long hash = gc_log_fingerprint_wide(value);
+    out[0] = '['; out[1] = 'i'; out[2] = 'd'; out[3] = ' '; out[4] = '#';
+    for (int shift = 60, at = 5; shift >= 0; shift -= 4, ++at)
+        out[at] = "0123456789abcdef"[(hash >> shift) & 0xfU];
+    out[21] = ']';
+    out[22] = '\0';
+    return out;
+}
+
 static inline unsigned long long gc_log_fingerprint_u64(unsigned long long value) {
     unsigned long long hash = 1469598103934665603ULL;
     for (unsigned int shift = 0; shift < 64; shift += 8) {

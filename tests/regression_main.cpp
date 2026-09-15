@@ -150,6 +150,12 @@ void debug_log(const char*, ...) {}
 typedef int (*NvApiFunc)(void*, void*);
 #include "gpu_backend_xbar.h"
 #include "log_redaction_policy.h"
+// F-03-002: the command -> authorization-tier table. Asserted here because the
+// defect it fixes was a mapping error with no compile-time symptom -- a
+// machine-scope command sat in a session-scope list and nothing looked wrong.
+#include "service_command_authority_policy.h"
+// F-03-003: per-format escaping for the generated Linux .desktop / unit files.
+#include "linux_asset_escaping_policy.h"
 #include "update_worker_recovery_policy.h"
 
 #if defined(_WIN32)
@@ -4133,6 +4139,14 @@ static int run_all_tests(int argc, char** argv) {
         ds.fanMode = -7;
         validate_desired_settings_for_ipc(&ds);
         if (ds.fanMode != FAN_MODE_AUTO) return 60;
+        // F-01-002 updated these expectations. The boundary used to apply only
+        // per-field clamps, and two of them disagreed with every other rule in
+        // the product: it accepted a 150 C point (fan_curve_validate() and
+        // fan_curve_normalize() both cap at 100 C) and a 1 ms poll interval
+        // (both fan threads clamp to 250 ms, and the grid is 250 ms steps).
+        // It now runs fan_curve_normalize_for_ipc(), so the semantic rule --
+        // grid, clamps, ordering -- is enforced once for every caller instead
+        // of only in the GUI.
         ds.fanCurve.points[0].fanPercent = 250;
         ds.fanCurve.points[0].temperatureC = 9999;
         ds.fanCurve.points[1].fanPercent = -30;
@@ -4141,11 +4155,91 @@ static int run_all_tests(int argc, char** argv) {
         ds.fanCurve.pollIntervalMs = 0;
         validate_desired_settings_for_ipc(&ds);
         if (ds.fanCurve.points[0].fanPercent != 100) return 61;
-        if (ds.fanCurve.points[0].temperatureC != 150) return 62;
+        if (ds.fanCurve.points[0].temperatureC != 100) return 62;
         if (ds.fanCurve.points[1].fanPercent != 0) return 63;
         if (ds.fanCurve.points[1].temperatureC != 0) return 64;
         if (ds.fanCurve.hysteresisC != FAN_CURVE_MAX_HYSTERESIS_C) return 65;
-        if (ds.fanCurve.pollIntervalMs != 1) return 66;
+        if (ds.fanCurve.pollIntervalMs != 250) return 66;
+    }
+
+    // F-01-002: the IPC boundary and the GUI now share ONE definition of a
+    // valid fan curve. Before this, validate_desired_settings_for_ipc() bounded
+    // every NUMBER but knew nothing about the curve's own rules, so a non-GUI
+    // caller -- a script, the installer's settings restore, a profile written
+    // by an older build -- could install a curve fan_curve_validate() rejects.
+    {
+        // A non-monotonic curve is sorted into a usable one rather than being
+        // handed to the fan runtime out of order.
+        DesiredSettings ds = {};
+        ds.hasFan = true;
+        ds.fanMode = FAN_MODE_CURVE;
+        ds.fanCurve.pollIntervalMs = 1000;
+        ds.fanCurve.points[0] = { gc_bool8_from_bool(true), 80, 40 };
+        ds.fanCurve.points[1] = { gc_bool8_from_bool(true), 40, 90 };
+        validate_desired_settings_for_ipc(&ds);
+        if (!ds.fanCurve.points[0].enabled) return 5244;
+        if (!ds.fanCurve.points[1].enabled) return 5245;
+        if (ds.fanCurve.points[0].temperatureC != 40) return 5246;
+        if (ds.fanCurve.points[1].temperatureC != 80) return 5247;
+        // Sorting moves whole points, so each percentage follows its own
+        // temperature rather than being reassigned to a different one.
+        if (ds.fanCurve.points[0].fanPercent != 90) return 5248;
+        if (ds.fanCurve.points[1].fanPercent != 40) return 5249;
+    }
+    {
+        // The poll interval lands on the documented 250..5000 ms grid, the same
+        // rule fan_curve_validate() enforces, instead of the old 1 ms floor.
+        DesiredSettings ds = {};
+        ds.hasFan = true;
+        ds.fanCurve.points[0] = { gc_bool8_from_bool(true), 30, 20 };
+        ds.fanCurve.points[1] = { gc_bool8_from_bool(true), 70, 80 };
+        ds.fanCurve.pollIntervalMs = 1;
+        validate_desired_settings_for_ipc(&ds);
+        if (ds.fanCurve.pollIntervalMs != 250) return 5250;
+        ds.fanCurve.pollIntervalMs = 999999;
+        validate_desired_settings_for_ipc(&ds);
+        if (ds.fanCurve.pollIntervalMs != 5000) return 5251;
+        ds.fanCurve.pollIntervalMs = 800;
+        validate_desired_settings_for_ipc(&ds);
+        if ((ds.fanCurve.pollIntervalMs % 250) != 0) return 5252;
+    }
+    {
+        // The boundary must NOT invent a curve. fan_curve_normalize() replaces
+        // an under-populated curve with the built-in default; applying that at
+        // the IPC boundary would make the service drive a five-point fan curve
+        // the client never sent, so the boundary uses the _for_ipc variant and
+        // leaves it alone. This assertion is the negative control for that
+        // choice and fails against a boundary that calls the plain normalize.
+        DesiredSettings ds = {};
+        ds.hasFan = true;
+        ds.fanCurve.pollIntervalMs = 1000;
+        ds.fanCurve.points[0] = { gc_bool8_from_bool(true), 55, 45 };
+        validate_desired_settings_for_ipc(&ds);
+        if (!ds.fanCurve.points[0].enabled) return 5253;
+        if (ds.fanCurve.points[0].temperatureC != 55) return 5254;
+        if (ds.fanCurve.points[0].fanPercent != 45) return 5255;
+        if (ds.fanCurve.points[1].enabled) return 5256;
+    }
+    {
+        // Idempotent: normalizing an already-valid curve changes nothing, so a
+        // request that survives one boundary crossing survives every later one.
+        DesiredSettings ds = {};
+        ds.hasFan = true;
+        ds.fanMode = FAN_MODE_CURVE;
+        ds.fanCurve.pollIntervalMs = 1000;
+        ds.fanCurve.points[0] = { gc_bool8_from_bool(true), 30, 20 };
+        ds.fanCurve.points[1] = { gc_bool8_from_bool(true), 60, 55 };
+        ds.fanCurve.points[2] = { gc_bool8_from_bool(true), 84, 90 };
+        validate_desired_settings_for_ipc(&ds);
+        DesiredSettings once = ds;
+        validate_desired_settings_for_ipc(&ds);
+        for (int i = 0; i < FAN_CURVE_MAX_POINTS; ++i) {
+            if (ds.fanCurve.points[i].enabled != once.fanCurve.points[i].enabled ||
+                ds.fanCurve.points[i].temperatureC != once.fanCurve.points[i].temperatureC ||
+                ds.fanCurve.points[i].fanPercent != once.fanCurve.points[i].fanPercent)
+                return 5257;
+        }
+        if (ds.fanCurve.pollIntervalMs != once.fanCurve.pollIntervalMs) return 5258;
     }
 
 #if defined(_WIN32)
@@ -13888,6 +13982,412 @@ static int run_all_tests(int argc, char** argv) {
             int estMaxTextPx = (int)(measuredLen * 6.0 * scale / 100.0 + 0.5);
             if (availPx - estMaxTextPx < 70) return 4909;
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // F-03-002: the command -> authorization-tier table.
+    //
+    // The defect was a MAPPING error, not a logic error: SET_UPDATE_POLICY sat
+    // in an inline list of session-scope commands, so a standard user at the
+    // console could disable automatic update checking for the whole machine.
+    // Asserting the tier of every command is what stops a future command from
+    // quietly joining the weakest one.
+    // ---------------------------------------------------------------------
+    {
+        struct { unsigned int command; ServiceCommandAuthorityTier tier; } kExpected[] = {
+            { SERVICE_CMD_PING,                   SERVICE_COMMAND_TIER_READ },
+            { SERVICE_CMD_GET_SNAPSHOT,           SERVICE_COMMAND_TIER_READ },
+            { SERVICE_CMD_GET_TELEMETRY,          SERVICE_COMMAND_TIER_READ },
+            { SERVICE_CMD_GET_ACTIVE_DESIRED,     SERVICE_COMMAND_TIER_READ },
+            { SERVICE_CMD_GET_OPERATION_RESULT,   SERVICE_COMMAND_TIER_READ },
+            { SERVICE_CMD_GET_STARTUP_POLICY,     SERVICE_COMMAND_TIER_READ },
+            { SERVICE_CMD_GET_UPDATE_STATE,       SERVICE_COMMAND_TIER_READ },
+            { SERVICE_CMD_APPLY,                  SERVICE_COMMAND_TIER_CONTROL },
+            { SERVICE_CMD_RESET,                  SERVICE_COMMAND_TIER_CONTROL },
+            { SERVICE_CMD_WRITE_LOG_SNAPSHOT,     SERVICE_COMMAND_TIER_CONTROL },
+            { SERVICE_CMD_WRITE_JSON_SNAPSHOT,    SERVICE_COMMAND_TIER_CONTROL },
+            { SERVICE_CMD_WRITE_PROBE_REPORT,     SERVICE_COMMAND_TIER_CONTROL },
+            { SERVICE_CMD_LOGON_HANDOFF,          SERVICE_COMMAND_TIER_CONTROL },
+            { SERVICE_CMD_CHECK_FOR_UPDATE,       SERVICE_COMMAND_TIER_CONTROL },
+            { SERVICE_CMD_INSTALL_UPDATE,         SERVICE_COMMAND_TIER_CONTROL },
+            { SERVICE_CMD_RESUME_RESTORE,         SERVICE_COMMAND_TIER_CONTROL },
+            { SERVICE_CMD_REFRESH_STARTUP_PROFILE, SERVICE_COMMAND_TIER_CONTROL },
+            { SERVICE_CMD_SET_UPDATE_POLICY,      SERVICE_COMMAND_TIER_MACHINE_ADMIN },
+            { SERVICE_CMD_SET_STARTUP_POLICY,     SERVICE_COMMAND_TIER_MACHINE_ADMIN },
+        };
+        for (const auto& expected : kExpected) {
+            if (service_command_authority_tier(expected.command) != expected.tier)
+                return 5259;
+        }
+        // Every command in the protocol's range is classified. A new command
+        // that nobody adds to the table must not silently land in READ.
+        for (unsigned int command = SERVICE_CMD_PING;
+             command <= SERVICE_CMD_SET_UPDATE_POLICY; ++command) {
+            bool named = false;
+            for (const auto& expected : kExpected) {
+                if (expected.command == command) { named = true; break; }
+            }
+            if (!named) return 5260;
+        }
+        // An unknown command number fails CLOSED, not open.
+        if (service_command_authority_tier(9999u) !=
+            SERVICE_COMMAND_TIER_MACHINE_ADMIN) return 5261;
+
+        const unsigned int kMedium = 0x2000u;  // SECURITY_MANDATORY_MEDIUM_RID
+        const unsigned int kLow = 0x1000u;
+        // A read needs neither integrity nor admin.
+        if (service_command_authority_reject_reason(
+                SERVICE_CMD_GET_SNAPSHOT, kLow, kMedium, false) != nullptr)
+            return 5262;
+        // Control needs medium integrity and nothing more. The APPLY path must
+        // keep working for a standard user: it is that user's own hardware
+        // intent, and tightening it would break the product.
+        if (service_command_authority_reject_reason(
+                SERVICE_CMD_APPLY, kLow, kMedium, true) == nullptr) return 5263;
+        if (service_command_authority_reject_reason(
+                SERVICE_CMD_APPLY, kMedium, kMedium, false) != nullptr) return 5264;
+        // THE FINDING: a medium-integrity NON-admin is refused the machine-wide
+        // update policy, and an admin is not. This assertion fails against the
+        // pre-fix build.
+        if (service_command_authority_reject_reason(
+                SERVICE_CMD_SET_UPDATE_POLICY, kMedium, kMedium, false) == nullptr)
+            return 5265;
+        if (service_command_authority_reject_reason(
+                SERVICE_CMD_SET_UPDATE_POLICY, kMedium, kMedium, true) != nullptr)
+            return 5266;
+        // Integrity is checked before admin, so a low-integrity admin is told
+        // the accurate reason rather than the second one.
+        const char* lowAdmin = service_command_authority_reject_reason(
+            SERVICE_CMD_SET_UPDATE_POLICY, kLow, kMedium, true);
+        if (!lowAdmin || !strstr(lowAdmin, "medium-integrity")) return 5267;
+        // The one-shot update actions stay at CONTROL deliberately: neither
+        // persists a setting, and INSTALL_UPDATE ends in a signature-verified
+        // artifact.
+        if (service_command_authority_reject_reason(
+                SERVICE_CMD_INSTALL_UPDATE, kMedium, kMedium, false) != nullptr)
+            return 5268;
+        if (service_command_authority_reject_reason(
+                SERVICE_CMD_CHECK_FOR_UPDATE, kMedium, kMedium, false) != nullptr)
+            return 5269;
+    }
+
+    // ---------------------------------------------------------------------
+    // F-05-001: the XBAR MSVDD rail offset joins the high-OC confirmation.
+    //
+    // It was the only OC domain with no confirmation at all, while a +200 MHz
+    // core offset had one -- and it is the only domain that can damage the
+    // board rather than merely destabilise it.
+    // ---------------------------------------------------------------------
+    {
+        OcHighWarnThresholds thresholds = oc_high_warn_default_thresholds();
+        if (thresholds.msvddOffsetMv != OC_HIGH_WARN_DEFAULT_MSVDD_OFFSET_MV)
+            return 5270;
+
+        // Hand-typed, at/over threshold, raising beyond what is applied: warn.
+        OcHighWarnInputs in = {};
+        in.hasMsvddOffset = true;
+        in.msvddHandTyped = true;
+        in.msvddOffsetMv = 50;
+        in.currentMsvddOffsetMv = 0;
+        OcHighWarnDecision decision = oc_high_warn_decide(&in, &thresholds);
+        if (!decision.msvdd || !decision.warn) return 5271;
+
+        // Exactly at the threshold still warns (>=, matching the clock rule).
+        in.msvddOffsetMv = thresholds.msvddOffsetMv;
+        decision = oc_high_warn_decide(&in, &thresholds);
+        if (!decision.msvdd) return 5272;
+
+        // Below the threshold stays silent -- the +10 mV the dialog recommends
+        // starting at must not nag.
+        in.msvddOffsetMv = 10;
+        decision = oc_high_warn_decide(&in, &thresholds);
+        if (decision.msvdd || decision.warn) return 5273;
+
+        // Loaded from a profile: already reviewed when it was saved. Silent.
+        in.msvddOffsetMv = 80;
+        in.msvddHandTyped = false;
+        decision = oc_high_warn_decide(&in, &thresholds);
+        if (decision.msvdd) return 5274;
+
+        // Re-applying or LOWERING an already-applied high overvolt reduces
+        // risk and must stay silent.
+        in.msvddHandTyped = true;
+        in.currentMsvddOffsetMv = 80;
+        decision = oc_high_warn_decide(&in, &thresholds);
+        if (decision.msvdd) return 5275;
+        in.msvddOffsetMv = 60;
+        decision = oc_high_warn_decide(&in, &thresholds);
+        if (decision.msvdd) return 5276;
+
+        // A zero threshold disables the domain, like its siblings.
+        OcHighWarnThresholds off = thresholds;
+        off.msvddOffsetMv = 0;
+        in.msvddOffsetMv = 100;
+        in.currentMsvddOffsetMv = 0;
+        decision = oc_high_warn_decide(&in, &off);
+        if (decision.msvdd || decision.warn) return 5277;
+
+        // The message names the voltage domain AND states the damage risk,
+        // which is what distinguishes it from the two stability domains. It
+        // must also still end with the question.
+        decision = oc_high_warn_decide(&in, &thresholds);
+        char message[768] = {};
+        oc_high_warn_format_message(message, sizeof(message), &decision, &in,
+                                    &thresholds);
+        if (!strstr(message, "XBAR voltage offset")) return 5278;
+        if (!strstr(message, "damage it permanently")) return 5279;
+        if (!strstr(message, "Apply anyway?")) return 5280;
+
+        // All three domains at once still asks exactly once, and the message
+        // survives the larger buffer without losing its question.
+        in.hasGpuOffset = true;
+        in.gpuHandTyped = true;
+        in.gpuOffsetMHz = 400;
+        in.hasMemOffset = true;
+        in.memHandTyped = true;
+        in.memOffsetMHz = 2500;
+        decision = oc_high_warn_decide(&in, &thresholds);
+        if (!decision.gpu || !decision.mem || !decision.msvdd) return 5281;
+        message[0] = '\0';
+        oc_high_warn_format_message(message, sizeof(message), &decision, &in,
+                                    &thresholds);
+        if (!strstr(message, "GPU offset")) return 5282;
+        if (!strstr(message, "Memory offset")) return 5283;
+        if (!strstr(message, "XBAR voltage offset")) return 5284;
+        if (!strstr(message, "Apply anyway?")) return 5285;
+    }
+
+    // ---------------------------------------------------------------------
+    // F-03-003: per-format escaping for the generated Linux asset files.
+    // One shell quoter used to serve three grammars.
+    // ---------------------------------------------------------------------
+    {
+        // Ordinary paths are representable and pass through unchanged.
+        if (!linux_asset_path_is_representable("/usr/local/bin/greencurve"))
+            return 5286;
+        if (!linux_asset_path_is_representable("/home/u/.config/greencurve/config.ini"))
+            return 5287;
+        // A newline is the serious one: in a systemd unit it ends the directive,
+        // so everything after it becomes a directive of its own in a file the
+        // README tells the user to install as root.
+        if (linux_asset_path_is_representable("/tmp/x\nExecStartPre=/bin/sh -c id"))
+            return 5288;
+        const char* why = linux_asset_path_reject_reason("/tmp/x\nfoo");
+        if (!why || !strstr(why, "line break")) return 5289;
+        if (linux_asset_path_is_representable("/tmp/x\rfoo")) return 5290;
+        if (linux_asset_path_is_representable("/tmp/x\tfoo")) return 5291;
+        if (linux_asset_path_is_representable("")) return 5292;
+        if (linux_asset_path_is_representable(nullptr)) return 5293;
+
+        char out[256] = {};
+        // Desktop Entry: backslash-escape " ` $ and \, double a literal %.
+        if (!linux_desktop_exec_escape("/opt/a\"b", out, sizeof(out))) return 5294;
+        if (strcmp(out, "/opt/a\\\"b") != 0) return 5295;
+        if (!linux_desktop_exec_escape("/opt/a$b", out, sizeof(out))) return 5296;
+        if (strcmp(out, "/opt/a\\$b") != 0) return 5297;
+        if (!linux_desktop_exec_escape("/opt/a`b", out, sizeof(out))) return 5298;
+        if (strcmp(out, "/opt/a\\`b") != 0) return 5299;
+        if (!linux_desktop_exec_escape("/opt/a\\b", out, sizeof(out))) return 5300;
+        if (strcmp(out, "/opt/a\\\\b") != 0) return 5301;
+        // %f would otherwise be read as a field code and inject file arguments.
+        if (!linux_desktop_exec_escape("/opt/a%fb", out, sizeof(out))) return 5302;
+        if (strcmp(out, "/opt/a%%fb") != 0) return 5303;
+        // An ordinary path is untouched.
+        if (!linux_desktop_exec_escape("/opt/gc/greencurve", out, sizeof(out)))
+            return 5304;
+        if (strcmp(out, "/opt/gc/greencurve") != 0) return 5305;
+
+        // systemd: % -> %%, $ -> $$. Both are expansions, not quoting.
+        if (!linux_systemd_value_escape("/opt/a%hb", out, sizeof(out))) return 5306;
+        if (strcmp(out, "/opt/a%%hb") != 0) return 5307;
+        if (!linux_systemd_value_escape("/opt/a$HOME", out, sizeof(out))) return 5308;
+        if (strcmp(out, "/opt/a$$HOME") != 0) return 5309;
+        if (!linux_systemd_value_escape("/etc/greencurve/config.ini", out, sizeof(out)))
+            return 5310;
+        if (strcmp(out, "/etc/greencurve/config.ini") != 0) return 5311;
+
+        // Both escapers fail CLOSED on overflow rather than emitting a
+        // truncated value that would still parse as something.
+        char tiny[4] = {};
+        if (linux_desktop_exec_escape("/opt/aaaa", tiny, sizeof(tiny))) return 5312;
+        if (linux_systemd_value_escape("/opt/aaaa", tiny, sizeof(tiny))) return 5313;
+        if (linux_desktop_exec_escape("x", nullptr, 0)) return 5314;
+    }
+
+    // ---------------------------------------------------------------------
+    // F-02-001 / F-04-001: one VF-info rule and one enumeration bound, shared
+    // by the live Linux backend and the --probe diagnostic. They used to be
+    // two implementations that disagreed about the same driver answer.
+    // ---------------------------------------------------------------------
+    {
+        const unsigned int kMaskBytes = 32;
+        const unsigned int kInfoSize = 0x4000;
+        // A spec whose declared offsets fit its buffer is usable.
+        if (!linux_vf_info_layout_fits(kInfoSize, 0x100, 0x200, kMaskBytes, kInfoSize))
+            return 5315;
+        // A mask that runs off the end is not, and neither is a clock-count
+        // offset that does -- each was checked separately in one copy and
+        // together in the other.
+        if (linux_vf_info_layout_fits(kInfoSize, kInfoSize - 4, 0x200, kMaskBytes, kInfoSize))
+            return 5316;
+        if (linux_vf_info_layout_fits(kInfoSize, 0x100, kInfoSize - 2, kMaskBytes, kInfoSize))
+            return 5317;
+        // Exactly flush is fine; one past is not.
+        if (!linux_vf_info_layout_fits(kInfoSize, kInfoSize - kMaskBytes, 0x200,
+                                       kMaskBytes, kInfoSize)) return 5318;
+        if (linux_vf_info_layout_fits(kInfoSize, kInfoSize - kMaskBytes + 1, 0x200,
+                                      kMaskBytes, kInfoSize)) return 5319;
+        // An over-large or zero buffer is refused outright.
+        if (linux_vf_info_layout_fits(0x8000, 0x100, 0x200, kMaskBytes, 0x8000))
+            return 5320;
+        if (linux_vf_info_layout_fits(0, 0, 0, kMaskBytes, 0)) return 5321;
+        // A spec asking for more than the read buffer is refused.
+        if (linux_vf_info_layout_fits(kInfoSize + 1, 0x100, 0x200, kMaskBytes, kInfoSize))
+            return 5322;
+
+        // THE DIVERGENCE. An all-zero mask, or a zero/over-64 clock count, is
+        // unusable. The probe copy used to substitute an all-0xFF mask and
+        // defaultNumClocks here and report a readable 128-point curve, while
+        // the live backend refused the identical answer -- so `--probe` could
+        // green-light a GPU the TUI then refused to drive.
+        unsigned char zeroMask[32] = {};
+        unsigned char goodMask[32] = {};
+        goodMask[0] = 0x01;
+        if (linux_vf_info_data_usable(zeroMask, kMaskBytes, 32)) return 5323;
+        if (linux_vf_info_data_usable(goodMask, kMaskBytes, 0)) return 5324;
+        if (linux_vf_info_data_usable(goodMask, kMaskBytes, 65)) return 5325;
+        if (!linux_vf_info_data_usable(goodMask, kMaskBytes, 1)) return 5326;
+        if (!linux_vf_info_data_usable(goodMask, kMaskBytes, 64)) return 5327;
+        if (linux_vf_info_data_usable(nullptr, kMaskBytes, 32)) return 5328;
+        if (linux_vf_info_data_usable(goodMask, 0, 32)) return 5329;
+        // A bit anywhere in the mask counts, not just the first byte.
+        unsigned char lateMask[32] = {};
+        lateMask[31] = 0x80;
+        if (!linux_vf_info_data_usable(lateMask, kMaskBytes, 32)) return 5330;
+
+        // F-04-001: the driver-supplied handle count is a loop bound over a
+        // fixed 64-entry stack array. linux_backend_discovery.cpp clamped it;
+        // the --probe copy checked only `count < 1`.
+        if (!linux_nvapi_enum_count_is_usable(1, 64)) return 5331;
+        if (!linux_nvapi_enum_count_is_usable(64, 64)) return 5332;
+        if (linux_nvapi_enum_count_is_usable(65, 64)) return 5333;
+        if (linux_nvapi_enum_count_is_usable(0, 64)) return 5334;
+        if (linux_nvapi_enum_count_is_usable(-1, 64)) return 5335;
+        if (linux_nvapi_enum_count_is_usable(1, 0)) return 5336;
+    }
+
+    // ---------------------------------------------------------------------
+    // F-03-001: the log tokenizers are stable, distinguishing, and
+    // non-reversible. The policy existed; nothing enforced it, and four log
+    // sites drifted back to raw account paths.
+    // ---------------------------------------------------------------------
+    {
+        char a[32] = {};
+        char b[32] = {};
+        // Neutral root, not a literal C:\Users\... -- the sibling gate
+        // check_no_developer_profile_paths() rejects one of those in a tracked
+        // file, and the tokenizer is path-shape agnostic anyway.
+        const char* left = gc_log_path_token("%PROFILES%\\alice\\AppData\\Local\\Green Curve", a, sizeof(a));
+        const char* right = gc_log_path_token("%PROFILES%\\bob\\AppData\\Local\\Green Curve", b, sizeof(b));
+        // Distinguishing: two accounts must stay correlatable as different.
+        if (strcmp(left, right) == 0) return 5337;
+        // Non-reversible: the account name must not survive in the token.
+        if (strstr(left, "alice")) return 5338;
+        if (strstr(right, "bob")) return 5339;
+        // Stable: the same input always produces the same token, or
+        // correlating two events for one account stops working.
+        char again[32] = {};
+        if (strcmp(gc_log_path_token("%PROFILES%\\alice\\AppData\\Local\\Green Curve",
+                                     again, sizeof(again)), left) != 0) return 5340;
+        // Empty and null are reported as "-", not as a token of nothing.
+        char empty[32] = {};
+        if (strcmp(gc_log_path_token("", empty, sizeof(empty)), "-") != 0) return 5341;
+        if (strcmp(gc_log_path_token(nullptr, empty, sizeof(empty)), "-") != 0) return 5342;
+        // A buffer too small to hold a token is refused rather than truncated
+        // into something that looks like one.
+        char small[8] = {};
+        if (strcmp(gc_log_path_token("%PROFILES%\\alice", small, sizeof(small)),
+                   "<log-error>") != 0) return 5343;
+
+        // The wide variant, added for the Task Scheduler task name
+        // ("Green Curve Startup - <HOST>_<account>").
+        char wideA[32] = {};
+        char wideB[32] = {};
+        const char* wideLeft = gc_log_wide_identifier_token(L"HOST_alice", wideA, sizeof(wideA));
+        const char* wideRight = gc_log_wide_identifier_token(L"HOST_bob", wideB, sizeof(wideB));
+        if (strcmp(wideLeft, wideRight) == 0) return 5344;
+        if (strstr(wideLeft, "alice")) return 5345;
+        char wAgain[32] = {};
+        if (strcmp(gc_log_wide_identifier_token(L"HOST_alice", wAgain, sizeof(wAgain)),
+                   wideLeft) != 0) return 5346;
+        char wEmpty[32] = {};
+        if (strcmp(gc_log_wide_identifier_token(L"", wEmpty, sizeof(wEmpty)), "-") != 0)
+            return 5347;
+        if (strcmp(gc_log_wide_identifier_token(nullptr, wEmpty, sizeof(wEmpty)), "-") != 0)
+            return 5348;
+    }
+
+    // ---------------------------------------------------------------------
+    // F-05-003: reserved DOS device names in the installer payload directory.
+    // Defense in depth -- an attacker who controls the container controls the
+    // setup binary too -- but "CON" resolves to the console rather than a file,
+    // so extraction would "succeed" while producing no payload.
+    // ---------------------------------------------------------------------
+    {
+        if (!gc_archive_name_is_safe("greencurve.exe")) return 5349;
+        if (!gc_archive_name_is_safe("greencurve-service.exe")) return 5350;
+        if (gc_archive_name_is_safe("CON")) return 5351;
+        if (gc_archive_name_is_safe("con")) return 5352;
+        if (gc_archive_name_is_safe("NUL")) return 5353;
+        if (gc_archive_name_is_safe("AUX")) return 5354;
+        if (gc_archive_name_is_safe("PRN")) return 5355;
+        if (gc_archive_name_is_safe("COM1")) return 5356;
+        if (gc_archive_name_is_safe("LPT9")) return 5357;
+        // Win32 strips the extension and any trailing dots/spaces before
+        // resolving the device, so all of these are the console too.
+        if (gc_archive_name_is_safe("con.txt")) return 5358;
+        if (gc_archive_name_is_safe("CON.")) return 5359;
+        if (gc_archive_name_is_safe("Con.dll")) return 5360;
+        // Names that merely start with a device name are ordinary files.
+        if (!gc_archive_name_is_safe("console.dll")) return 5361;
+        if (!gc_archive_name_is_safe("COM10")) return 5362;
+        if (!gc_archive_name_is_safe("nullptr.txt")) return 5363;
+        // The pre-existing rules still hold.
+        if (gc_archive_name_is_safe("..")) return 5364;
+        if (gc_archive_name_is_safe("a/b")) return 5365;
+        if (gc_archive_name_is_safe("a\\b")) return 5366;
+    }
+
+    // ---------------------------------------------------------------------
+    // F-01-003: the CLI log became an APPENDING log, so it needs the bound the
+    // debug log already had.
+    // ---------------------------------------------------------------------
+    {
+        if (gc_debug_log_rotation::kCliRotateBytes <= 0) return 5367;
+        if (gc_debug_log_rotation::kCliRotateBytes >=
+            gc_debug_log_rotation::kRotateBytes) return 5368;
+        if (!gc_debug_log_rotation::should_rotate(
+                gc_debug_log_rotation::kCliRotateBytes,
+                gc_debug_log_rotation::kCliRotateBytes)) return 5369;
+        if (gc_debug_log_rotation::should_rotate(
+                gc_debug_log_rotation::kCliRotateBytes - 1,
+                gc_debug_log_rotation::kCliRotateBytes)) return 5370;
+        if (!gc_debug_log_rotation::cli_marker_line()) return 5371;
+        if (strcmp(gc_debug_log_rotation::cli_marker_line(),
+                   gc_debug_log_rotation::marker_line()) == 0) return 5372;
+    }
+
+    // ---------------------------------------------------------------------
+    // F-04-002: a log line that outlives its route slot is written to the
+    // current session's file and COUNTED, so the log admits the reroute
+    // instead of quietly mixing two sessions.
+    // ---------------------------------------------------------------------
+    {
+        const char* marker = gc_debug_log_queue::rerouted_marker_format();
+        if (!marker) return 5373;
+        if (!strstr(marker, "%llu")) return 5374;
+        if (strcmp(marker, gc_debug_log_queue::dropped_marker_format()) == 0)
+            return 5375;
     }
 
     return 0;

@@ -23,6 +23,11 @@ static OcHighWarnThresholds gui_high_oc_warn_thresholds() {
         "high_oc_warn_gpu_offset_mhz", thresholds.gpuOffsetMHz);
     thresholds.memOffsetMHz = get_config_int(g_app.configPath, "ui",
         "high_oc_warn_mem_offset_mhz", thresholds.memOffsetMHz);
+    // F-05-001. Configurable like its siblings, and 0 disables it like theirs --
+    // but it is the one domain that can damage the board, so the default is
+    // deliberately low rather than matched to the clock thresholds.
+    thresholds.msvddOffsetMv = get_config_int(g_app.configPath, "ui",
+        "high_oc_warn_msvdd_offset_mv", thresholds.msvddOffsetMv);
     return thresholds;
 }
 
@@ -40,34 +45,52 @@ static bool confirm_high_oc_apply(const DesiredSettings* desired,
     inputs.memHandTyped = !g_app.guiMemOffsetFromProfileLoad;
     inputs.memOffsetMHz = desired->memOffsetMHz;
     inputs.currentMemOffsetMHz = baseline->currentMemOffsetMHz;
+    // F-05-001: the XBAR MSVDD rail offset. Microvolts on the wire and in state,
+    // millivolts in the dialog the user typed into and in the message they read,
+    // so the conversion happens once, here, on the way into the pure policy.
+    inputs.hasMsvddOffset = desired->hasXbarMsvddOffsetUv != 0;
+    inputs.msvddHandTyped = !g_app.guiXbarMsvddOffsetFromProfileLoad;
+    inputs.msvddOffsetMv = desired->xbarMsvddOffsetUv / 1000;
+    inputs.currentMsvddOffsetMv = baseline->currentXbarMsvddOffsetUv / 1000;
 
     OcHighWarnThresholds thresholds = gui_high_oc_warn_thresholds();
     OcHighWarnDecision decision = oc_high_warn_decide(&inputs, &thresholds);
     debug_log("high-OC gate: gpu=(has=%d typed=%d value=%d current=%d threshold=%d trigger=%d) "
-              "mem=(has=%d typed=%d value=%d current=%d threshold=%d trigger=%d) warn=%d\n",
+              "mem=(has=%d typed=%d value=%d current=%d threshold=%d trigger=%d) "
+              "msvdd=(has=%d typed=%d valueMv=%d currentMv=%d thresholdMv=%d trigger=%d) warn=%d\n",
         inputs.hasGpuOffset ? 1 : 0, inputs.gpuHandTyped ? 1 : 0,
         inputs.gpuOffsetMHz, inputs.currentGpuOffsetMHz,
         thresholds.gpuOffsetMHz, decision.gpu ? 1 : 0,
         inputs.hasMemOffset ? 1 : 0, inputs.memHandTyped ? 1 : 0,
         inputs.memOffsetMHz, inputs.currentMemOffsetMHz,
         thresholds.memOffsetMHz, decision.mem ? 1 : 0,
+        inputs.hasMsvddOffset ? 1 : 0, inputs.msvddHandTyped ? 1 : 0,
+        inputs.msvddOffsetMv, inputs.currentMsvddOffsetMv,
+        thresholds.msvddOffsetMv, decision.msvdd ? 1 : 0,
         decision.warn ? 1 : 0);
     if (!decision.warn) return true;
 
-    char message[512] = {};
+    // Grown from 512: the voltage domain adds its own line plus the
+    // damage-risk sentence, and a run that trips all three domains must not
+    // have the "Apply anyway?" question truncated off the end of the message.
+    char message[768] = {};
     oc_high_warn_format_message(message, sizeof(message), &decision, &inputs,
                                 &thresholds);
-    int confirm = gc_message_box(g_app.hMainWnd, message, "Confirm High Overclock",
+    int confirm = gc_message_box(g_app.hMainWnd, message,
+                              decision.msvdd ? "Confirm High Overclock / Overvolt"
+                                             : "Confirm High Overclock",
                               MB_YESNO | MB_ICONWARNING);
     if (confirm == IDYES) {
-        record_ui_action("High-OC confirmation accepted (gpu=%d mem=%d)",
+        record_ui_action("High-OC confirmation accepted (gpu=%d mem=%d msvddMv=%d)",
             decision.gpu ? inputs.gpuOffsetMHz : 0,
-            decision.mem ? inputs.memOffsetMHz : 0);
+            decision.mem ? inputs.memOffsetMHz : 0,
+            decision.msvdd ? inputs.msvddOffsetMv : 0);
         return true;
     }
-    record_ui_action("High-OC confirmation declined (gpu=%d mem=%d)",
+    record_ui_action("High-OC confirmation declined (gpu=%d mem=%d msvddMv=%d)",
         decision.gpu ? inputs.gpuOffsetMHz : 0,
-        decision.mem ? inputs.memOffsetMHz : 0);
+        decision.mem ? inputs.memOffsetMHz : 0,
+        decision.msvdd ? inputs.msvddOffsetMv : 0);
     set_profile_status_text("Apply cancelled: high overclock not confirmed.");
     return false;
 }

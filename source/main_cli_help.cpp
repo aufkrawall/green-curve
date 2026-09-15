@@ -8,14 +8,14 @@
 // Included by main_shell.cpp ahead of entry.cpp.
 
 static void cli_print_help(FILE* out) {
-    if (!out) return;
-    // Same timestamped shape as entry.cpp's CLI_LOG, kept local so this shard
-    // does not depend on a macro defined around another file's log handle.
+    // `out` may now legitimately be null: the console sink stands on its own, so
+    // help still reaches a terminal when the log file could not be opened.
+    // Same two-sink shape as entry.cpp's CLI_LOG, kept local so this shard does
+    // not depend on a macro defined around another file's log handle.
     #define HELP_LOG(...) do { \
-        char _gc_ts[64] = {}; \
-        format_log_timestamp_prefix(_gc_ts, sizeof(_gc_ts)); \
-        fprintf(out, "%s", _gc_ts); \
-        fprintf(out, __VA_ARGS__); \
+        char _gc_line[512] = {}; \
+        StringCchPrintfA(_gc_line, ARRAY_COUNT(_gc_line), __VA_ARGS__); \
+        gc_cli_emit(out, _gc_line); \
     } while (0)
 
     HELP_LOG(APP_NAME " v" APP_VERSION " - NVIDIA VF Curve Editor\n");
@@ -44,7 +44,9 @@ static void cli_print_help(FILE* out) {
     HELP_LOG("  greencurve.exe --save-config [--config <path>]  Save to selected profile slot\n");
     HELP_LOG("  greencurve.exe --reset      Reset curve/global controls to defaults\n");
     HELP_LOG("  greencurve.exe --help       This help\n");
-    fflush(out);
+    // Where the same text is also kept, so the file sink is discoverable from
+    // the console one. gc_cli_emit() already flushed every line above.
+    HELP_LOG("A copy of this output is written to %s\n", cli_log_path());
 
     #undef HELP_LOG
 }

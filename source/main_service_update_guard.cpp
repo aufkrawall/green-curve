@@ -33,11 +33,19 @@ static bool service_update_install_reject_mutation(
 }
 
 // Variant for callers whose only legal response to an active reservation is
-// "return immediately".  They must already hold the runtime lock; this helper
-// releases it before reporting.
-static bool service_update_install_blocks_locked() {
+// "return immediately".  They must already hold the runtime lock.
+//
+// NAMED FOR ITS SIDE EFFECT (F-05-002).  This is not a predicate: when it
+// returns true it has ALREADY RELEASED the caller's runtime lock, and the
+// caller must return or `continue` without unlocking again.  It was previously
+// spelled service_update_install_blocks_locked(), which reads as a question and
+// hid that -- every one of the five call sites happened to be correct, but the
+// next caller to add cleanup after the check would have double-unlocked or
+// deadlocked, and nothing in the name would have warned them.
+static bool service_update_install_release_and_block() {
     if (!service_update_install_reserved()) return false;
     unlock_service_runtime();
-    debug_log("update install reservation suppressed a runtime write\n");
+    debug_log("update install reservation suppressed a runtime write "
+              "(runtime lock released by the reservation check)\n");
     return true;
 }
