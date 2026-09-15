@@ -59,7 +59,18 @@ FUZZ_LINUX_TARGETS = frozenset({"service_request", "vf_snapshot", "wire_prefix",
 # resolve entirely inside the harness and its headers; an empty/absent entry
 # means "link nothing extra", so a target that grows a dependency on a Win32
 # shard fails at link rather than being papered over.
+#
+# The Win32 side links one shared FUZZ_WIN32_SOURCES list, which is why a
+# Windows host never noticed that service_request needed fan_curve.cpp: the
+# harness #includes gpu_core.h unconditionally, and that header's static-inline
+# validate_service_request_for_ipc() calls the out-of-line
+# fan_curve_normalize_for_ipc() (which itself needs set_message() from
+# config_text_utils.cpp).  Keeping these lists per-target and minimal is
+# deliberate -- it is what makes an accidental Win32 dependency fail loudly --
+# so the answer is an accurate entry, plus check_fuzz_linux_link_lines() below
+# so every entry is proven on every host instead of only in Linux CI.
 FUZZ_LINUX_EXTRA_SOURCES = {
+    "service_request": ("fan_curve.cpp", "config_text_utils.cpp"),
     "config_strings": ("config_text_utils.cpp", "app_shared.cpp",
                        "fan_curve.cpp", "platform_posix.cpp"),
 }
@@ -284,6 +295,72 @@ def run_linux_fixtures(ctx, tmp_dir, extra_flags, test_env):
         if result.returncode != 0:
             print(f"Linux {label} regression FAILED ({result.returncode})")
             sys.exit(result.returncode)
+
+
+def check_fuzz_linux_link_lines(ctx, tmp_dir):
+    """Cross-link every Linux fuzz target on a non-Linux host (link check only).
+
+    `--fuzz` builds the Linux targets only on a Linux host, because libFuzzer
+    and the ASan runtime come from a host clang that the bundled Zig does not
+    ship.  That left FUZZ_LINUX_EXTRA_SOURCES -- a hand-maintained per-target
+    link line -- unproven anywhere but the Linux CI job, and on 2026-09-15 it
+    cost two consecutive red runs on `main`: `service_request` reaches
+    gpu_core.h's IPC validator, which grew a call to the out-of-line
+    fan_curve_normalize_for_ipc(), and nothing on the Windows host could see it.
+
+    This links each target for x86_64-linux-gnu with its DECLARED extra sources
+    plus tests/fuzz_link_check_main.cpp (libFuzzer's main() is absent without
+    -fsanitize=fuzzer).  It deliberately drops the sanitizer and coverage flags,
+    so it is a link-line check and NOT a substitute for `--fuzz`: it proves the
+    declared translation units resolve every symbol the target emits, nothing
+    more.  On a Linux host it is skipped, because the real `--fuzz` run already
+    links exactly these lines with the real instrumentation.
+    """
+    if sys.platform.startswith("linux"):
+        return
+    entry = os.path.join(ctx.SCRIPT_DIR, "tests", "fuzz_link_check_main.cpp")
+    harness = os.path.join(ctx.SCRIPT_DIR, "tests", "fuzz_main.cpp")
+    for path in (entry, harness):
+        if not os.path.exists(path):
+            print(f"Fuzz link check FAILED: missing {path}")
+            sys.exit(1)
+    for name in sorted(FUZZ_LINUX_TARGETS):
+        if name not in FUZZ_TARGETS:
+            print(f"Fuzz link check FAILED: {name} is in FUZZ_LINUX_TARGETS but "
+                  f"not in FUZZ_TARGETS")
+            sys.exit(1)
+        extra_sources = [os.path.join(ctx.SOURCE_DIR, source)
+                         for source in FUZZ_LINUX_EXTRA_SOURCES.get(name, ())]
+        for source in extra_sources:
+            if not os.path.exists(source):
+                print(f"Fuzz link check FAILED: {name} names a missing "
+                      f"translation unit: {source}")
+                sys.exit(1)
+        cmd = [
+            ctx.ZIG_EXE, "c++", "-std=c++17", "-DNDEBUG",
+            f'-DAPP_VERSION="{ctx.APP_VERSION}"',
+            f"-DAPP_BUILD_NUMBER={ctx.APP_BUILD_NUMBER}",
+            f"-DGC_FUZZ_TARGET={FUZZ_TARGETS[name]}",
+            "-fno-exceptions", "-fno-rtti", "-O1",
+            "-target", ctx.LINUX_TARGET,
+            f"-I{ctx.SOURCE_DIR}",
+            "-Wall", "-Wextra", "-Wshadow", "-Wno-unused-function",
+            "-Wno-unused-parameter", "-Werror",
+            # Same force-include the real Linux fuzz build uses: the harness
+            # names WCHAR and must stay unmodified for the Windows build.
+            "-include", os.path.join(ctx.SOURCE_DIR, "win32_compat.h"),
+            "-o", os.path.join(tmp_dir, f"fuzz_link_{name}"),
+            harness, entry, *extra_sources,
+        ]
+        linked = ", ".join(["fuzz_main.cpp"]
+                           + [os.path.basename(p) for p in extra_sources])
+        print(f"Cross-linking ({ctx.LINUX_TARGET}) fuzz target {name} "
+              f"[{linked}]")
+        if ctx._run_zig_link(cmd) != 0:
+            print(f"Fuzz target {name} cross-link FAILED (an undefined symbol "
+                  f"means a translation unit is missing from "
+                  f"FUZZ_LINUX_EXTRA_SOURCES['{name}'])")
+            sys.exit(1)
 
 
 def run_windows_pipe_fixture(ctx, tmp_dir, extra_flags):
@@ -1325,6 +1402,23 @@ def check_fuzz_harness_in_sync(ctx, require_text, forbid_text):
                  "aarch64 drops the x86-only CET flag; clang hard-errors on it")
     require_text(gates, "FUZZ_LINUX_TARGETS",
                  "the fuzz driver knows which targets a Linux host can build")
+    # Every Linux fuzz link line must be proven on every host.  --fuzz builds
+    # the Linux targets only ON Linux, so FUZZ_LINUX_EXTRA_SOURCES used to be
+    # verified nowhere but the Linux CI job; that is how service_request shipped
+    # without fan_curve.cpp and failed two consecutive runs on main.
+    require_text(gates, "def check_fuzz_linux_link_lines",
+                 "the Linux fuzz link lines are cross-linked on non-Linux hosts")
+    require_text(build_script, "security_gates.check_fuzz_linux_link_lines(",
+                 "--test runs the Linux fuzz link check")
+    require_text(gates,
+                 '"service_request": ("fan_curve.cpp", "config_text_utils.cpp")',
+                 "the service_request fuzz target links the IPC trust "
+                 "boundary's out-of-line fan-curve normalizer")
+    entry = os.path.join(ctx.SCRIPT_DIR, "tests", "fuzz_link_check_main.cpp")
+    require_text(entry, "return LLVMFuzzerTestOneInput(",
+                 "the link-check entry really calls the fuzz entry point; a "
+                 "mere declaration is collected away with the undefined "
+                 "references the check exists to find")
     require_text(gates, "def posix_test_compiler",
                  "sanitizer builds resolve a host clang; Zig ships no ASan runtime")
     require_text(gates,

@@ -1743,6 +1743,10 @@ def run_regression_tests(extra_flags=None):
         # extra translation units.
         security_gates.run_linux_fixtures(_gate_ctx(), tmp, extra_flags,
                                          test_env)
+        # Same reasoning one level up: the Linux fuzz targets' link lines are
+        # only built by --fuzz ON a Linux host, so a missing translation unit
+        # there was also invisible here.  Link-check them for the Linux target.
+        security_gates.check_fuzz_linux_link_lines(_gate_ctx(), tmp)
         # Native named-pipe incident regression; details live in security_gates.
         security_gates.run_windows_pipe_fixture(_gate_ctx(), tmp, extra_flags)
         # F-01-001: the built GUI-subsystem binary must reach its caller's
