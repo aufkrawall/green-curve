@@ -579,10 +579,10 @@ static inline void validate_control_state_for_ipc(ControlState* c) {
 }
 
 // Declared, not included: fan_curve.h includes app_shared.h which includes this
-// header, so taking the whole header would be circular.  fan_curve.cpp is linked
-// by every consumer of this boundary (both binaries, the regression harness and
-// both fuzz harnesses -- enforced by check_fuzz_harness_in_sync).  See
-// fan_curve.h for why the boundary uses the _for_ipc variant.
+// header, so taking the whole header would be circular.  fan_curve.cpp MUST be
+// linked by every consumer: both binaries, the regression harness, the fuzz
+// harnesses (FUZZ_LINUX_EXTRA_SOURCES) and the Linux fixtures
+// (LINUX_FIXTURE_EXTRA_SOURCES).  See fan_curve.h for the _for_ipc variant.
 void fan_curve_normalize_for_ipc(FanCurveConfig* config);
 
 // Sanitize a DesiredSettings struct received over IPC.  This is the single

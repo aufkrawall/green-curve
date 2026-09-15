@@ -64,6 +64,26 @@ FUZZ_LINUX_EXTRA_SOURCES = {
                        "fan_curve.cpp", "platform_posix.cpp"),
 }
 
+# Native-Linux regression fixtures under tests/ (stem -> human label), and the
+# extra translation units each one must LINK beyond its own .cpp.  The fixtures
+# #include real product shards (linux_daemon_transport.cpp,
+# linux_crash_report.cpp) and, through gpu_core.h, the IPC trust boundary --
+# whose static-inline validate_desired_settings_for_ipc() calls the OUT-OF-LINE
+# fan_curve_normalize_for_ipc() (source/fan_curve.cpp), which in turn calls
+# set_message() (source/config_text_utils.cpp).  gpu_core.h documents that every
+# consumer of that boundary links fan_curve.cpp; this table is how the fixtures
+# hold up their end.  An empty tuple means "link nothing extra", so a fixture
+# that grows a dependency on a Win32 shard fails at link rather than being
+# papered over -- the same contract as FUZZ_LINUX_EXTRA_SOURCES.
+LINUX_FIXTURES = (
+    ("linux_transport_regression", "socket transport"),
+    ("linux_crash_report_regression", "crash report"),
+)
+LINUX_FIXTURE_EXTRA_SOURCES = {
+    "linux_transport_regression": ("fan_curve.cpp", "config_text_utils.cpp"),
+    "linux_crash_report_regression": (),
+}
+
 # Translation units every Win32 fuzz target links.  Hoisted out of the command
 # builder so check_fuzz_target_wiring() can assert against it: when the shared
 # text helpers moved into config_text_utils.cpp, LINUX_SOURCE_FILES,
@@ -183,6 +203,87 @@ def posix_test_compiler(ctx, extra_flags):
         sys.exit(1)
     print(f"ASan build: using host {clang} (Zig ships no ASan runtime)")
     return [clang]
+
+
+def _linux_fixture_link_units(ctx, stem, label):
+    """Resolve one fixture's own .cpp plus its declared extra link units.
+
+    A fixture missing from LINUX_FIXTURE_EXTRA_SOURCES is a hard error rather
+    than an implicit empty list: the whole point of the table is that a
+    fixture's link line is declared, so a new one cannot silently inherit
+    "links nothing" and then fail only on the Linux CI host.
+    """
+    fixture_source = os.path.join(ctx.SCRIPT_DIR, "tests", f"{stem}.cpp")
+    if not os.path.exists(fixture_source):
+        print(f"Linux {label} fixture source is missing: {fixture_source}")
+        sys.exit(1)
+    if stem not in LINUX_FIXTURE_EXTRA_SOURCES:
+        print(f"Linux {label} fixture has no LINUX_FIXTURE_EXTRA_SOURCES entry; "
+              f"add one (an empty tuple means 'link nothing extra') so its link "
+              f"line stays declared, not implied")
+        sys.exit(1)
+    extra_sources = [os.path.join(ctx.SOURCE_DIR, name)
+                     for name in LINUX_FIXTURE_EXTRA_SOURCES[stem]]
+    for extra in extra_sources:
+        if not os.path.exists(extra):
+            print(f"Linux {label} fixture names a missing translation unit: "
+                  f"{extra}")
+            sys.exit(1)
+    return fixture_source, extra_sources
+
+
+def run_linux_fixtures(ctx, tmp_dir, extra_flags, test_env):
+    """Build every native-Linux fixture, and run them on a Linux host.
+
+    Non-Linux hosts CROSS-LINK the fixtures to a real x86_64-linux-gnu ELF that
+    is never executed here.  They used to only compile them to an object, and a
+    compile can never see an undefined symbol: that is exactly how the
+    2026-09 gpu_core.h change -- a static-inline IPC validator growing a call to
+    the out-of-line fan_curve_normalize_for_ipc() -- passed a Windows host and
+    broke the Linux CI job at `ld.lld: undefined symbol`.  Linking on every host
+    moves that failure back to the machine that introduced it.
+    """
+    for stem, label in LINUX_FIXTURES:
+        fixture_source, extra_sources = _linux_fixture_link_units(ctx, stem, label)
+        linked = ", ".join([os.path.basename(fixture_source)]
+                           + [os.path.basename(path) for path in extra_sources])
+        fixture_exe = os.path.join(tmp_dir, stem)
+        native = sys.platform.startswith("linux")
+        if native:
+            cmd = [*posix_test_compiler(ctx, extra_flags)]
+        else:
+            cmd = [ctx.ZIG_EXE, "c++", "-target", ctx.LINUX_TARGET,
+                   "-Wall", "-Wextra", "-Wno-unused-function",
+                   "-Wno-unused-parameter", "-Werror"]
+        cmd.extend([
+            "-std=c++17", "-DNDEBUG",
+            f'-DAPP_VERSION="{ctx.APP_VERSION}"',
+            f"-DAPP_BUILD_NUMBER={ctx.APP_BUILD_NUMBER}",
+            "-fno-exceptions", "-fno-rtti",
+            f"-I{ctx.SOURCE_DIR}",
+            "-o", fixture_exe,
+            fixture_source,
+            *extra_sources,
+        ])
+        if native and extra_flags:
+            cmd.extend(extra_flags)
+        verb = "Compiling" if native else f"Cross-linking ({ctx.LINUX_TARGET})"
+        print(f"{verb} Linux {label} regression tests [{linked}]")
+        # _run_zig_link serializes against the shared Zig cache, repairs a
+        # poisoned one, and audits the output for unexpected duplicate symbols.
+        returncode = ctx._run_zig_link(cmd)
+        if returncode != 0:
+            print(f"Linux {label} test link FAILED (see the diagnostic above; "
+                  f"an undefined symbol means a translation unit is missing "
+                  f"from LINUX_FIXTURE_EXTRA_SOURCES['{stem}'])")
+            sys.exit(returncode)
+        if not native:
+            continue
+        print(f"Running Linux {label} regression tests")
+        result = subprocess.run([fixture_exe], cwd=ctx.SCRIPT_DIR, env=test_env)
+        if result.returncode != 0:
+            print(f"Linux {label} regression FAILED ({result.returncode})")
+            sys.exit(result.returncode)
 
 
 def run_windows_pipe_fixture(ctx, tmp_dir, extra_flags):

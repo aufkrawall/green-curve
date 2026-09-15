@@ -460,8 +460,29 @@ def check_crash_report(ctx, require_text, forbid_text, require_order):
                  "the fixture asserts that a crash still produces its report")
     require_text(fixture_cpp, "an execve'd process leaves no report behind",
                  "the fixture covers the relaunch path that cleanup cannot reach")
-    require_text(build_script, '"linux_crash_report_regression"',
-                 "build.py compiles and runs the crash-report fixture")
+    gates = os.path.join(ctx.SCRIPT_DIR, "tools", "security_gates.py")
+    require_text(build_script, "security_gates.run_linux_fixtures(",
+                 "build.py builds and runs the native Linux fixtures")
+    require_text(gates, '"linux_crash_report_regression", "crash report"',
+                 "the crash-report fixture is in the Linux fixture table")
+    # Both Linux fixtures must LINK on every host, not merely compile.  A
+    # compile-only cross path cannot see an undefined symbol, so a header-inline
+    # call into an out-of-line product shard (gpu_core.h's
+    # validate_desired_settings_for_ipc -> fan_curve_normalize_for_ipc, 2026-09)
+    # stayed green on a Windows host and only broke the Linux CI job.  Pin the
+    # link line's shape and its declared extra translation units.
+    require_text(gates, "LINUX_FIXTURE_EXTRA_SOURCES = {",
+                 "the Linux fixtures declare their extra link units in one table")
+    require_text(gates,
+                 '"linux_transport_regression": ("fan_curve.cpp", '
+                 '"config_text_utils.cpp")',
+                 "the transport fixture links the IPC trust boundary's "
+                 "out-of-line fan-curve normalizer and its set_message()")
+    require_text(gates, 'f"Cross-linking ({ctx.LINUX_TARGET})"',
+                 "non-Linux hosts cross-link the fixtures to a real ELF")
+    forbid_text(gates, '"-c", fixture_source',
+                "a compile-only cross path hides undefined-symbol regressions "
+                "until Linux CI; the fixtures must be linked")
 
 
 def check_ini_limits(ctx):

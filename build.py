@@ -1736,56 +1736,13 @@ def run_regression_tests(extra_flags=None):
             sys.exit(result.returncode)
         # Fixtures that need real Linux kernel behaviour -- filesystem sockets
         # for the transport, fork/signal delivery and file creation for the
-        # crash report -- so they run natively on Linux and are cross-compiled
-        # everywhere else.  Compiling them on every host is the point: a break
+        # crash report -- so they run natively on Linux and are cross-LINKED
+        # everywhere else.  Building them on every host is the point: a break
         # in one would otherwise stay invisible until someone happened to test
-        # on Linux.
-        for stem, label in (("linux_transport_regression", "socket transport"),
-                            ("linux_crash_report_regression", "crash report")):
-            fixture_source = os.path.join(SCRIPT_DIR, "tests", f"{stem}.cpp")
-            if sys.platform.startswith("linux"):
-                fixture_exe = os.path.join(tmp, stem)
-                fixture_cmd = [
-                    *_posix_test_compiler(extra_flags), "-std=c++17", "-DNDEBUG",
-                    f'-DAPP_VERSION="{APP_VERSION}"',
-                    f"-DAPP_BUILD_NUMBER={APP_BUILD_NUMBER}",
-                    "-fno-exceptions", "-fno-rtti",
-                    f"-I{SOURCE_DIR}",
-                    "-o", fixture_exe,
-                    fixture_source,
-                ]
-                if extra_flags:
-                    fixture_cmd.extend(extra_flags)
-                print(f"Compiling Linux {label} regression tests")
-                returncode = zig_cache.run_zig_link(fixture_cmd, SCRIPT_DIR,
-                                                    ZIG_CACHE_ROOTS)
-                if returncode != 0:
-                    print(f"Linux {label} test compilation FAILED")
-                    sys.exit(returncode)
-                print(f"Running Linux {label} regression tests")
-                result = subprocess.run([fixture_exe], cwd=SCRIPT_DIR,
-                                        env=test_env)
-                if result.returncode != 0:
-                    print(f"Linux {label} regression FAILED ({result.returncode})")
-                    sys.exit(result.returncode)
-            else:
-                fixture_cmd = [
-                    ZIG_EXE, "c++", "-std=c++17", "-DNDEBUG",
-                    f'-DAPP_VERSION="{APP_VERSION}"',
-                    f"-DAPP_BUILD_NUMBER={APP_BUILD_NUMBER}",
-                    "-fno-exceptions", "-fno-rtti",
-                    "-target", "x86_64-linux-gnu",
-                    "-Wall", "-Wextra", "-Wno-unused-function",
-                    "-Wno-unused-parameter", "-Werror",
-                    f"-I{SOURCE_DIR}",
-                    "-c", fixture_source,
-                    "-o", os.path.join(tmp, f"{stem}.o"),
-                ]
-                print(f"Cross-compiling Linux {label} regression tests")
-                result = subprocess.run(fixture_cmd, cwd=SCRIPT_DIR)
-                if result.returncode != 0:
-                    print(f"Linux {label} test cross-compilation FAILED")
-                    sys.exit(result.returncode)
+        # on Linux.  security_gates owns the link lines and their declared
+        # extra translation units.
+        security_gates.run_linux_fixtures(_gate_ctx(), tmp, extra_flags,
+                                         test_env)
         # Native named-pipe incident regression; details live in security_gates.
         security_gates.run_windows_pipe_fixture(_gate_ctx(), tmp, extra_flags)
         # F-01-001: the built GUI-subsystem binary must reach its caller's
