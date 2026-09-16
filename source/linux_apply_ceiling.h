@@ -17,43 +17,168 @@
 // pinned one ran the newly raised curve with no clamp at all between the curve
 // phase and the lock phase.  Arming the requested target as a ceiling first
 // costs one NVML call and can never exceed what the request itself asks for.
+
+// The outgoing envelope, same rule as Windows: a pinned profile's entitlement
+// is its pin, not its deliberately raw VF tail -- reading the curve there
+// would return the raw tail and "cap" the transition at a value that caps
+// nothing.  Everything else is bounded by the curve it is running right now.
+//
+// `committed` is the intent this daemon last applied; it is the only record of
+// an outgoing pin, because NVML exposes no getter for the configured
+// locked-clock range.  A null one means "unknown", which falls back to the
+// live curve rather than inventing a pin.
+static unsigned int linux_outgoing_ceiling_mhz(const LinuxGpuState* g,
+                                               const DesiredSettings* committed) {
+    if (!g) return 0;
+    if (committed && committed->hasLock &&
+        committed->lockMode == LOCK_MODE_HARD && committed->lockMHz > 0)
+        return committed->lockMHz;
+    unsigned int peakMHz = 0;
+    for (int i = 0; i < VF_NUM_POINTS; i++) {
+        if (g->curve[i].freq_kHz == 0) continue;
+        unsigned int mhz = g->curve[i].freq_kHz / 1000;
+        if (mhz > peakMHz) peakMHz = mhz;
+    }
+    return peakMHz;
+}
+
+// Whether a reset-to-stock would RAISE this GPU on its way through: the
+// outgoing state is being held down by something the reset removes.
+static bool linux_outgoing_state_holds_clocks_down(const LinuxGpuState* g,
+                                                   const DesiredSettings* committed) {
+    if (!g) return false;
+    if (committed && committed->hasLock && committed->lockMode != LOCK_MODE_NONE)
+        return true;
+    if (committed && committed->hasGpuOffset && committed->gpuOffsetMHz < 0)
+        return true;
+    for (int i = 0; i < VF_NUM_POINTS; i++) {
+        if (g->curve[i].freq_kHz == 0) continue;
+        if (g->freqOffsets[i] < 0) return true;
+    }
+    return false;
+}
+
 static ApplyClockCeilingPlan linux_apply_clock_ceiling_plan(
-    LinuxGpuState* g, const DesiredSettings* d) {
+    LinuxGpuState* g, const DesiredSettings* d,
+    const DesiredSettings* committed = nullptr) {
     if (!g || !d) return ApplyClockCeilingPlan{};
     return apply_clock_ceiling_plan(
         service_request_replaces_lock_domain(d), d->hasLock != 0,
         (int)d->lockMode, d->lockMHz,
         g->nvml.setGpuLockedClocks != nullptr &&
-            g->nvml.resetGpuLockedClocks != nullptr);
+            g->nvml.resetGpuLockedClocks != nullptr,
+        d->resetOcBeforeApply != 0,
+        linux_outgoing_state_holds_clocks_down(g, committed),
+        linux_outgoing_ceiling_mhz(g, committed));
 }
 
-// The LINUX_MUTATION_LOCK_CEILING phase body.  Always reports success: this is
-// strictly an added safety net, and failing the whole apply because the net
-// could not be hung would be worse than the pre-guard behaviour it replaces.
-// The failure is logged at full volume instead, because it is the single most
-// useful line in the journal if the driver falls over during a profile switch.
+// What arming actually did, so the witness and the phase result can both stop
+// guessing.  `linux_apply_ceiling_armed` is written by the phase body and read
+// by the witness; the pre-fix witness used the PLAN's `arm` flag as evidence
+// of installation, so a refused clamp still produced a HELD verdict in the
+// journal (audit CT-07).
+static ApplyClockCeilingArmResult g_linuxCeilingArmResult =
+    APPLY_CEILING_ARM_NOT_NEEDED;
+static bool g_linuxCeilingArmed = false;
+static bool g_linuxCeilingWriteAttempted = false;
+// The plan AS ARMED, cached for the rest of the transaction.
+//
+// Every later consumer used to recompute it from `g` and `d`.  That is wrong
+// for two independent reasons now that the plan reads the outgoing state: the
+// reset and curve phases CHANGE that state, so a recomputed plan describes a
+// transition that is already half-done, and the witness would print a ceiling
+// value that never existed.  The clamp that is physically installed is a fact,
+// not something to re-derive.
+static ApplyClockCeilingPlan g_linuxCeilingPlan = {};
+// Whether the state this transaction is leaving was a HARD pin.
+//
+// CT-07.  Rollback needs this and cannot derive it: a HARD profile's VF tail
+// is deliberately left raw and high because the pin -- not the curve -- is
+// what makes it safe.  Restoring that curve and then releasing the lock is the
+// one rollback outcome that is worse than doing nothing.  It is a transaction
+// fact recorded at entry, not something the restore can infer from a snapshot
+// full of positive offsets, which an ordinary unpinned overclock also has.
+static bool g_linuxOutgoingHadHardPin = false;
+
+static void linux_apply_ceiling_reset_state() {
+    g_linuxCeilingArmResult = APPLY_CEILING_ARM_NOT_NEEDED;
+    g_linuxCeilingArmed = false;
+    g_linuxCeilingWriteAttempted = false;
+    g_linuxCeilingPlan = ApplyClockCeilingPlan{};
+    g_linuxOutgoingHadHardPin = false;
+}
+
+// Record what the transaction is leaving, before any phase runs.
+static void linux_apply_ceiling_note_outgoing(const DesiredSettings* committed) {
+    g_linuxOutgoingHadHardPin = committed && committed->hasLock &&
+        committed->lockMode == LOCK_MODE_HARD && committed->lockMHz > 0;
+}
+
+// Whether a curve this rollback is about to restore is one that needs a pin to
+// be safe.
+static bool linux_snapshot_curve_needs_a_pin(const LinuxHardwareSnapshot* s) {
+    if (!s || !s->curveValid) return false;
+    return g_linuxOutgoingHadHardPin;
+}
+
+// The LINUX_MUTATION_LOCK_CEILING phase body.
+//
+// CT-01.  This used to `return true` on every path, including the one where
+// both clamp forms were refused, with a comment arguing that failing the apply
+// because the safety net could not be hung would be worse than the pre-guard
+// behaviour.  That reasoning is wrong in the case that matters: the pre-guard
+// behaviour is precisely the uncapped transition that produced the 2026-09-13
+// TDR, so "no worse than before" means "still capable of crashing the driver".
+// A protection the plan marks REQUIRED and that could not be installed now
+// fails the phase, which the transaction turns into a refusal before the reset
+// and curve phases run.
 static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
-                                               const DesiredSettings* d) {
-    ApplyClockCeilingPlan plan = linux_apply_clock_ceiling_plan(g, d);
-    if (!plan.arm) return true;
+                                               const DesiredSettings* d,
+                                               const DesiredSettings* committed) {
+    linux_apply_ceiling_reset_state();
+    ApplyClockCeilingPlan plan = linux_apply_clock_ceiling_plan(g, d, committed);
+    g_linuxCeilingPlan = plan;
+    if (!plan.arm) {
+        if (!plan.required) return true;
+        g_linuxCeilingArmResult = APPLY_CEILING_ARM_UNAVAILABLE;
+        lb_log("apply: transition clock ceiling at %u MHz is REQUIRED (%s) but this"
+               " driver exposes no usable locked-clock control; refusing the"
+               " transition before any write\n",
+               plan.ceilingMHz, apply_clock_ceiling_reason_name(plan.reason));
+        return false;
+    }
+    g_linuxCeilingWriteAttempted = true;
     // Ceiling, not pin: a 0 minimum caps without forcing the clock up at idle
     // (what `nvidia-smi --lock-gpu-clocks=0,N` asks for).  A driver that refuses
-    // it still accepts the symmetric form, which caps correctly.
+    // it still accepts the symmetric form, which caps correctly -- but that
+    // form adds a FLOOR, so it is only used where the plan permits it.
     if (g->nvml.setGpuLockedClocks(g->nvmlDevice, 0, plan.ceilingMHz) ==
         NVML_SUCCESS) {
+        g_linuxCeilingArmed = true;
+        g_linuxCeilingArmResult = APPLY_CEILING_ARM_INSTALLED;
         lb_log("apply: transition clock ceiling armed 0..%u MHz before the"
                " reset/curve writes\n", plan.ceilingMHz);
         return true;
     }
-    if (g->nvml.setGpuLockedClocks(g->nvmlDevice, plan.ceilingMHz,
+    if (plan.symmetricFallbackAllowed &&
+        g->nvml.setGpuLockedClocks(g->nvmlDevice, plan.ceilingMHz,
                                    plan.ceilingMHz) == NVML_SUCCESS) {
+        g_linuxCeilingArmed = true;
+        g_linuxCeilingArmResult = APPLY_CEILING_ARM_INSTALLED;
         lb_log("apply: transition clock ceiling armed %u..%u MHz before the"
                " reset/curve writes\n", plan.ceilingMHz, plan.ceilingMHz);
         return true;
     }
-    lb_log("apply: COULD NOT ARM transition clock ceiling at %u MHz; the curve"
-           " write below runs uncapped until the lock phase\n", plan.ceilingMHz);
-    return true;
+    g_linuxCeilingArmResult = APPLY_CEILING_ARM_REFUSED;
+    lb_log("apply: COULD NOT ARM transition clock ceiling at %u MHz (symmetric"
+           " fallback %s); protection was %s\n",
+           plan.ceilingMHz,
+           plan.symmetricFallbackAllowed ? "also refused" : "not permitted here",
+           plan.required ? "REQUIRED -- refusing the transition before the reset"
+                           " and curve writes"
+                         : "optional -- continuing");
+    return !apply_clock_ceiling_transition_must_refuse(plan.required,
+                                                       g_linuxCeilingArmResult);
 }
 
 // The Linux counterpart of the Windows apply-clock witness: one line recording
@@ -66,7 +191,11 @@ static void linux_apply_log_clock_witness(LinuxGpuState* g,
                                           const DesiredSettings* d,
                                           const char* stage) {
     if (!g || !stage) return;
-    ApplyClockCeilingPlan ceiling = linux_apply_clock_ceiling_plan(g, d);
+    (void)d;
+    // The plan as it was ARMED, not a fresh one: the phases between arming and
+    // this sample have already changed the live state the plan is derived from,
+    // so recomputing would print a ceiling that never existed.
+    const ApplyClockCeilingPlan ceiling = g_linuxCeilingPlan;
     unsigned int gpc = 0, sm = 0, mem = 0, tempC = 0, powerMw = 0;
     bool clockOk = g->nvml.getClock &&
         g->nvml.getClock(g->nvmlDevice, NVML_CLOCK_GRAPHICS,
@@ -83,11 +212,18 @@ static void linux_apply_log_clock_witness(LinuxGpuState* g,
     bool powerOk = g->nvml.getPowerUsage &&
         g->nvml.getPowerUsage(g->nvmlDevice, &powerMw) == NVML_SUCCESS;
     // Same shared rule the Windows verdict uses, so the two platforms cannot
-    // disagree about what "the clamp held" means.  `arm` is both requested and
-    // (best-effort) armed here: the phase never fails, and a refusal is already
-    // logged loudly by linux_apply_arm_transition_ceiling().
+    // disagree about what "the clamp held" means.
+    //
+    // CT-07.  This used to pass the PLAN's `arm` flag as BOTH the requested
+    // and the armed argument, which made "we intended to arm" indistinguishable
+    // from "the clamp is installed".  A driver that refused the clamp therefore
+    // produced `HELD` in the journal whenever the GPU happened to be idle --
+    // the single diagnostic whose entire job is to catch an unprotected
+    // transition, reporting that the transition was protected.  The verdict now
+    // reads the flag the arming call actually set.
     const char* verdict = apply_clock_witness_verdict_name(
-        apply_clock_witness_verdict(ceiling.arm, ceiling.arm, ceiling.ceilingMHz,
+        apply_clock_witness_verdict(ceiling.required || ceiling.arm,
+                                    g_linuxCeilingArmed, ceiling.ceilingMHz,
                                     clockOk ? gpc : 0));
     lb_log("apply clock witness [%s]: gpc=%s%u MHz sm=%u mem=%u util=%s%u%%/%u%% "
            "power=%s%u.%01u W temp=%s%u C ceiling=%u MHz -> %s\n",
@@ -122,10 +258,14 @@ static bool linux_apply_write_final_lock(LinuxGpuState* g,
 // curve.  With no ceiling armed this still clears any stale pin, as before.
 static bool linux_apply_reset_baseline_locked_clocks(LinuxGpuState* g,
                                                      const DesiredSettings* d) {
-    ApplyClockCeilingPlan ceiling = linux_apply_clock_ceiling_plan(g, d);
-    if (ceiling.arm) {
+    (void)d;
+    // Keyed off the clamp that is ACTUALLY installed, not off a freshly
+    // recomputed plan.  Recomputing here would consult a live state the arming
+    // phase has already begun changing, and would keep the pin standing on the
+    // strength of an intention rather than a fact.
+    if (g_linuxCeilingArmed) {
         lb_log("apply: reset baseline keeps the %u MHz transition ceiling\n",
-               ceiling.ceilingMHz);
+               g_linuxCeilingPlan.ceilingMHz);
         return true;
     }
     return g->nvml.resetGpuLockedClocks &&

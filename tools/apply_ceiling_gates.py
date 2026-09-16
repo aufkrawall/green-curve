@@ -26,7 +26,7 @@ def _p(ctx, name):
     return os.path.join(ctx.SOURCE_DIR, name)
 
 
-def check_all(ctx, require_text, forbid_text):
+def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     policy_h = _p(ctx, "apply_clock_ceiling_policy.h")
     apply_cpp = _p(ctx, "gpu_backend_apply.cpp")
     guard_h = _p(ctx, "gpu_backend_apply_ceiling.h")
@@ -50,11 +50,59 @@ def check_all(ctx, require_text, forbid_text):
                  "the Windows apply owns a scope-bound transition clamp")
     require_text(apply_cpp, "ApplyClockCeilingGuard clockCeiling(desired);",
                  "the Windows apply declares the clamp before its first write")
-    require_text(apply_cpp, "clockCeiling.arm();\n        if (!reset_oc_before_gui_apply(",
-                 "the clamp is armed BEFORE reset-to-stock drops the old ceiling")
+    require_order_in_operation(
+        apply_cpp,
+        "static bool apply_desired_settings_service(const DesiredSettings* desired",
+        "clockCeiling.arm();",
+        "if (!reset_oc_before_gui_apply(",
+        "the clamp is armed BEFORE reset-to-stock drops the old ceiling")
+    # CT-01.  Arming used to return void, so a driver that refused the clamp let
+    # the apply walk straight into reset-to-stock and the curve batch with no
+    # protection -- the uncapped sequence this whole mechanism exists to
+    # prevent.  A REQUIRED protection that could not be installed is now a
+    # refusal before any mutation.
+    require_text(policy_h,
+                 "static inline bool apply_clock_ceiling_transition_must_refuse(",
+                 "whether an unprotectable transition must be refused is one "
+                 "named rule, not an open-coded log line")
+    require_text(guard_h, "ApplyClockCeilingArmResult arm() {",
+                 "arming reports what actually happened instead of returning void")
+    require_order_in_operation(
+        apply_cpp,
+        "static bool apply_desired_settings_service(const DesiredSettings* desired",
+        "if (clockCeiling.must_refuse_transition()) {",
+        "if (!reset_oc_before_gui_apply(",
+        "an unprotectable transition is refused BEFORE reset-to-stock runs")
     require_text(apply_cpp,
                  "clockCeiling.adopt(\"released with the locked-clock domain\");",
                  "a non-HARD apply hands the clamp to the locked-clock release")
+    # CT-02.  That release used to be unconditional on anything except the lock
+    # mode, so a FLATTEN whose tail failed verification uncapped a partially
+    # written curve -- the shape of the 2026-09-13 incident.  It is now gated on
+    # the curve having verified, and the failing branch retains the clamp.
+    require_text(apply_cpp,
+                 "const bool curveStateProvenSafe = curveRequestOk || !curveTouched;",
+                 "the locked-clock release is conditional on a verified curve")
+    require_order_in_operation(
+        apply_cpp,
+        "static bool apply_desired_settings_service(const DesiredSettings* desired",
+        "const bool curveStateProvenSafe = curveRequestOk || !curveTouched;",
+        "clockCeiling.adopt(\"released with the locked-clock domain\");",
+        "the verified-curve test precedes the release it guards")
+    # The curve verdict has to OUTLIVE the batch scope for that test to be
+    # possible at all; it used to be declared inside the curve-write block.
+    require_order_in_operation(
+        apply_cpp,
+        "static bool apply_desired_settings_service(const DesiredSettings* desired",
+        "bool curveRequestOk = true;",
+        "if (curveBatchNeeded && (curveRequest || memApplied)) {",
+        "the curve verdict is declared OUTSIDE the curve-write block, so the "
+        "locked-clock release at the end of the apply can still consult it")
+    # CT-02, the other half: an explicitly requested lock point this GPU cannot
+    # resolve is refused up front rather than silently applied unlocked.
+    require_text(apply_cpp,
+                 "is not available on this",
+                 "an unresolvable explicit lock anchor is refused before any write")
     require_text(apply_cpp,
                  "clockCeiling.adopt(\"re-asserted as the final hard pin\");",
                  "a HARD apply re-asserts the clamp as the authoritative pin")
@@ -119,12 +167,21 @@ def check_all(ctx, require_text, forbid_text):
                 "reset-before-apply never routes an owned power target through "
                 "the board default first")
 
-    # A rollback returns every other control to stock; a locked-clock clamp left
-    # standing behind that is an invisible cap.
-    forbid_text(front_cpp,
+    # A rollback returns every other control to stock, so a locked-clock clamp
+    # left standing behind that is an invisible cap -- WHEN the resets worked.
+    # CT-04: when they did not, releasing hands the user a raised curve with
+    # nothing holding it down, which is strictly worse.  The old LOCK_MODE_HARD
+    # gate stays forbidden (it missed the FLATTEN transition clamp entirely);
+    # what replaces it is a verified-recovery gate, not an unconditional release.
+    rollback_h = _p(ctx, "main_gpu_rollback.h")
+    forbid_text(rollback_h,
                 "if (g_nvml_api.resetGpuLockedClocks && g_app.lockMode == LOCK_MODE_HARD)",
-                "rollback releases locked clocks unconditionally, including a "
-                "transition clamp armed for a FLATTEN request")
+                "rollback must not gate the release on HARD mode, which misses "
+                "a transition clamp armed for a FLATTEN request")
+    require_text(policy_h, "static inline bool apply_recovery_permits_release(",
+                 "when a restriction may be lifted after recovery is one named rule")
+    require_text(rollback_h, "if (!apply_recovery_permits_release(recovery)) {",
+                 "rollback keeps the restriction when it cannot prove stock")
 
     # Linux: same contract, expressed in the pure phase order.
     require_text(transaction_h, "LINUX_MUTATION_LOCK_CEILING",
@@ -146,6 +203,34 @@ def check_all(ctx, require_text, forbid_text):
                  "if (!linux_apply_reset_baseline_locked_clocks(g, d)) return false;",
                  "the Linux reset baseline routes locked clocks through the "
                  "ceiling-aware rule")
+    # CT-01 on Linux: the phase body used to `return true` on every path,
+    # including the one where both clamp forms were refused.
+    require_text(linux_ceiling_h,
+                 "return !apply_clock_ceiling_transition_must_refuse(plan.required,",
+                 "a refused REQUIRED Linux clamp fails its phase")
+    # The phase must also be SCHEDULED when protection is required: gating the
+    # request on `.arm` alone meant a GPU with no locked-clock control simply
+    # omitted the phase, so the refusal inside it could never run.
     require_text(linux_mutation_cpp,
+                 "if (ceilingPlan.arm || ceilingPlan.required)",
+                 "the Linux ceiling phase is scheduled whenever protection is required")
+    # CT-07: the witness used to pass the PLAN's arm flag as evidence that the
+    # clamp was installed, so a refused clamp still printed HELD.
+    require_text(linux_ceiling_h, "g_linuxCeilingArmed",
+                 "the Linux witness reads the flag the arming call actually set")
+    forbid_text(linux_ceiling_h,
+                "apply_clock_witness_verdict(ceiling.arm, ceiling.arm,",
+                "a planned clamp is not evidence of an armed one")
+    linux_rollback_h = _p(ctx, "linux_backend_rollback.h")
+    require_text(linux_rollback_h,
                  "(phaseMask & LINUX_MUTATION_LOCK_CEILING)) {",
-                 "Linux rollback releases a transition clamp it armed")
+                 "Linux rollback accounts for a transition clamp it armed")
+    # CT-07.  It must not release that clamp over a curve it just restored and
+    # cannot vouch for -- in particular an outgoing HARD profile, whose raw VF
+    # tail is safe only because of its pin.
+    require_text(linux_rollback_h, "linux_snapshot_curve_needs_a_pin(snapshot)",
+                 "Linux rollback keeps the restriction when the restored curve "
+                 "needs a pin to be safe")
+    require_text(linux_ceiling_h, "static void linux_apply_ceiling_note_outgoing(",
+                 "what the Linux transaction is leaving is recorded at entry, "
+                 "not inferred from a snapshot full of positive offsets")

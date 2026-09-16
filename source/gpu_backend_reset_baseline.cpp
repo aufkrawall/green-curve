@@ -99,13 +99,49 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
     if (hadCurveOffsets && !apply_curve_offsets_verified(resetOffsets, resetMask, 2)) {
         append_failure("VF curve offsets did not reset");
     }
+    // CT-08.  The `if (failures[0]) return false` check used to live HERE,
+    // ahead of the three advanced-clock blocks below.  Every append_failure()
+    // in those blocks therefore wrote into a buffer nothing read again, and
+    // the function returned true -- a failed XBAR, SYS or VIDEO reset was
+    // reported to the caller as a successful baseline.  The check moved to the
+    // end of the function; this early exit only survives for the core domains,
+    // where stopping before the advanced writes is the point.
     if (failures[0]) {
         set_message(result, resultSize, "Reset before apply failed: %s", failures);
+        debug_log("reset-before-apply: core reset failed (%s); not attempting the"
+                  " advanced-clock resets\n", failures);
         return false;
     }
+    // CT-08.  Ownership, not "any nonzero value I can see".
+    //
+    // These three blocks used to zero every nonzero probed XBAR/MSVDD/SYS/VIDEO
+    // value regardless of whether the incoming request or a previous Green
+    // Curve intent owned that domain.  Apply then restored only the fields the
+    // request named, so a core-clock-only profile switch silently wiped an
+    // advanced offset set by another tool -- or by the user through a different
+    // path -- and never put it back.  A baseline reset cleans up what this
+    // application owns; it is not a licence to clear the whole GPU.
+    const bool requestOwnsXbar = desired &&
+        (desired->hasXbarOffsetKhz || desired->hasXbarMsvddOffsetUv);
+    const bool requestOwnsSysClk = desired && desired->hasSysClkOffsetKhz;
+    const bool requestOwnsVideoClk = desired && desired->hasVideoClkOffsetKhz;
+    // Previously-owned fields the replacement omits still need cleaning, which
+    // is what `previouslyOwned*` expresses: Green Curve put the value there, so
+    // Green Curve takes it away.  An externally owned value has neither flag
+    // and is preserved.
+    const bool previouslyOwnedXbar = g_app.appliedAdvancedOwnedXbar;
+    const bool previouslyOwnedSysClk = g_app.appliedAdvancedOwnedSysClk;
+    const bool previouslyOwnedVideoClk = g_app.appliedAdvancedOwnedVideoClk;
+    debug_log("reset-before-apply: advanced-clock ownership xbar=req%d/prev%d"
+              " sys=req%d/prev%d video=req%d/prev%d (probed xbar=%d/%d sys=%d video=%d)\n",
+        requestOwnsXbar ? 1 : 0, previouslyOwnedXbar ? 1 : 0,
+        requestOwnsSysClk ? 1 : 0, previouslyOwnedSysClk ? 1 : 0,
+        requestOwnsVideoClk ? 1 : 0, previouslyOwnedVideoClk ? 1 : 0,
+        g_app.xbarFreqOffsetKhz, g_app.xbarMsvddOffsetUv,
+        g_app.sysClkFreqOffsetKhz, g_app.videoClkFreqOffsetKhz);
     // Reset both owned XBAR fields through the same validated ClkDomains V2
     // transaction used by Apply.  A fresh GET preserves all unrelated fields.
-    if (g_app.xbarProbeValid &&
+    if ((requestOwnsXbar || previouslyOwnedXbar) && g_app.xbarProbeValid &&
         (g_app.xbarFreqOffsetKhz != 0 || g_app.xbarMsvddOffsetUv != 0)) {
         auto xbarGetFunc = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
         auto xbarSetFunc = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
@@ -119,6 +155,8 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
                 g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
                 g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
                 g_app.xbarMeasuredClockKhz = snap.measuredKhz;
+                // Back at stock: Green Curve no longer owns this domain.
+                g_app.appliedAdvancedOwnedXbar = false;
                 debug_log("reset-before-apply: XBAR reset to %d kHz, %d uV, measured %u kHz\n",
                           snap.freqOffsetKhz, snap.msvddOffsetUv, snap.measuredKhz);
             } else {
@@ -129,7 +167,8 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
         }
     }
     // SYS clock entry rides the same validated block.
-    if (g_app.sysClkProbeValid && g_app.sysClkFreqOffsetKhz != 0) {
+    if ((requestOwnsSysClk || previouslyOwnedSysClk) &&
+        g_app.sysClkProbeValid && g_app.sysClkFreqOffsetKhz != 0) {
         auto sysGetFunc = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
         auto sysSetFunc = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
         if (sysGetFunc && sysSetFunc) {
@@ -141,6 +180,7 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
                     g_xbarSchemas[0].freqOffsetField;
                 g_app.sysClkFreqReadbackValid = true;
                 g_app.sysClkFreqOffsetKhz = (int)xbar_get_u32(snap.buf, sysField);
+                g_app.appliedAdvancedOwnedSysClk = false;
                 debug_log("reset-before-apply: SYS clock reset to %d kHz\n",
                           g_app.sysClkFreqOffsetKhz);
             } else {
@@ -151,7 +191,8 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
         }
     }
     // VIDEO clock entry rides the same validated block.
-    if (g_app.videoClkProbeValid && g_app.videoClkFreqOffsetKhz != 0) {
+    if ((requestOwnsVideoClk || previouslyOwnedVideoClk) &&
+        g_app.videoClkProbeValid && g_app.videoClkFreqOffsetKhz != 0) {
         auto vidGetFunc = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
         auto vidSetFunc = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
         if (vidGetFunc && vidSetFunc) {
@@ -163,12 +204,26 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
                     g_xbarSchemas[0].freqOffsetField;
                 g_app.videoClkFreqReadbackValid = true;
                 g_app.videoClkFreqOffsetKhz = (int)xbar_get_u32(snap.buf, videoField);
+                g_app.appliedAdvancedOwnedVideoClk = false;
                 debug_log("reset-before-apply: VIDEO clock reset to %d kHz\n",
                           g_app.videoClkFreqOffsetKhz);
             } else {
                 append_failure("VIDEO clock offset did not reset");
             }
+        } else {
+            // CT-08.  VIDEO was the one domain whose missing-function path had
+            // no `else` at all: the reset was silently skipped and the caller
+            // was told the baseline was clean.  XBAR and SYS both recorded it.
+            append_failure("VIDEO clock reset functions unavailable");
         }
+    }
+    // CT-08.  THE check that the advanced-clock blocks above never had.  Every
+    // append_failure() they issue now actually decides the result; before this
+    // moved here, they wrote into a buffer whose only reader had already run.
+    if (failures[0]) {
+        set_message(result, resultSize, "Reset before apply failed: %s", failures);
+        debug_log("reset-before-apply: advanced-clock reset failed (%s)\n", failures);
+        return false;
     }
     g_app.lastApplyUsedGpuOffset = false;
     read_live_curve_snapshot_settled(4, 25, nullptr);

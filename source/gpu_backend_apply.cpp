@@ -4,6 +4,12 @@
 #include "gpu_backend_reset_baseline.cpp"
 
 #include "gpu_backend_apply_ceiling.h"
+// What the VF table actually looks like after the batch, for post-mortems.
+#include "gpu_backend_apply_diagnostics.h"
+// Intent plus a fresh live curve -> the per-point control offsets to write.
+#include "gpu_backend_apply_targets.h"
+// The XBAR/SYS/VIDEO half of an apply, after the core clock transaction.
+#include "gpu_backend_apply_advanced.h"
 
 static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool interactive, char* result, size_t resultSize,
@@ -21,6 +27,39 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     if (!validate_desired_fan_settings_for_apply(desired, result, resultSize)) {
         debug_log("apply_desired_settings: fan prevalidation failed: %s\n", result && result[0] ? result : "unknown");
         return false;
+    }
+    // CT-02, preflight half.  A request that EXPLICITLY names a lock point
+    // this GPU's visible map cannot resolve used to have `hasLock` quietly
+    // cleared halfway down this function -- after reset-to-stock had already
+    // run -- and the rest of the profile was then applied as an unlocked one.
+    // The user asked for a pinned or flattened profile and got an unpinned
+    // overclock, reported as success.  Resolving it here, before anything is
+    // written, turns that into an untouched refusal.
+    //
+    // Only an EXPLICIT request is validated: `hasLock` can also be inherited
+    // from the stored interactive lock further down, and dropping an inherited
+    // lock the current GPU cannot express is not a failure of this request.
+    // The visible map is topology, not live state, so it is as valid here as
+    // it is after the reset.
+    if (desired->hasLock && desired->lockCi >= 0 && desired->lockMHz > 0) {
+        bool lockPointVisible = false;
+        for (int vi = 0; vi < g_app.numVisible; vi++) {
+            if (g_app.visibleMap[vi] == desired->lockCi) { lockPointVisible = true; break; }
+        }
+        if (!lockPointVisible) {
+            set_message(result, resultSize,
+                "The requested %s lock point (curve index %d) is not available on this"
+                " GPU, so the profile cannot be applied as requested. Nothing was"
+                " changed. Re-pick the lock point on the curve.",
+                lock_mode_name(desired->lockMode), desired->lockCi);
+            debug_log("apply_desired_settings: REFUSED before any write -- requested"
+                      " lock ci=%d mode=%s lockMHz=%u is not in the visible map"
+                      " (numVisible=%d); refusing instead of silently applying an"
+                      " unlocked profile\n",
+                desired->lockCi, lock_mode_name(desired->lockMode),
+                desired->lockMHz, g_app.numVisible);
+            return false;
+        }
     }
 #ifdef GREEN_CURVE_SERVICE_BINARY
     bool proofInvalidatedForWrite = false;
@@ -50,6 +89,19 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         // BEFORE the reset drops whatever was capping the clocks (a flatten
         // tail floor, an old pin) and before the settle runs the stock curve.
         clockCeiling.arm();
+        // CT-01.  A required clamp that could not be installed stops the apply
+        // HERE, ahead of reset_oc_before_gui_apply() -- which is the write that
+        // removes the outgoing cap and hands the GPU a stock curve.  The
+        // pre-fix code logged the refusal and then ran that reset anyway.
+        if (clockCeiling.must_refuse_transition()) {
+            clockCeiling.refusal_message(result, resultSize);
+            debug_log("apply_desired_settings: REFUSED before reset-to-stock --"
+                      " required transition clamp at %u MHz not installed"
+                      " (armResult=%d)\n",
+                clockCeiling.plan.ceilingMHz, (int)clockCeiling.armResult);
+            set_last_apply_phase("apply: refused (transition clamp unavailable)");
+            return false;
+        }
         if (!reset_oc_before_gui_apply(desired, result, resultSize,
                                        &powerTargetWrittenByReset)) return false;
         // TDR settle after reset-to-stock: let VRM/memory controllers stabilize
@@ -182,7 +234,23 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             }
         }
         if (lockVi < 0) {
+            // CT-02.  Clearing `hasLock` alone left `lockMode` at FLATTEN or
+            // HARD, and the release branch near the end of this function keys
+            // off lockMode, not hasLock.  A FLATTEN whose anchor could not be
+            // resolved therefore took the "release the locked-clock domain"
+            // path and adopted the transition clamp as released -- over a
+            // curve the selective offset had already raised -- while the
+            // retain() fall-through that was supposed to catch exactly this
+            // case became unreachable, because adopt() had already run.
+            // The lock mode goes with the lock.
+            debug_log("apply: requested lock point ci=%d is not in this GPU's"
+                      " visible map; dropping the lock AND its mode (%s -> NONE)"
+                      " so the release branch cannot claim a domain this apply"
+                      " no longer owns\n",
+                lockCi, lock_mode_name(lockMode));
             hasLock = false;
+            lockMode = LOCK_MODE_NONE;
+            lockMhz = 0;
         } else {
             if (lockMhz == 0) {
                 lockMhz = desired->hasCurvePoint[lockCi] ? desired->curvePointMHz[lockCi] : displayed_curve_mhz(g_app.curve[lockCi].freq_kHz);
@@ -288,6 +356,17 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     // Second arm site: a request without reset-to-stock reaches its first
     // clock-affecting write here.  Idempotent when the reset path already armed.
     clockCeiling.arm();
+    // Same CT-01 refusal as the reset path, for the request shapes that reach
+    // their first clock write without a reset-to-stock.
+    if (clockCeiling.must_refuse_transition()) {
+        clockCeiling.refusal_message(result, resultSize);
+        debug_log("apply_desired_settings: REFUSED before the first clock write --"
+                  " required transition clamp at %u MHz not installed"
+                  " (armResult=%d)\n",
+            clockCeiling.plan.ceilingMHz, (int)clockCeiling.armResult);
+        set_last_apply_phase("apply: refused (transition clamp unavailable)");
+        return false;
+    }
     bool gpuApplied = false;
     // Apply GPU offset first via dedicated path (handles uniform offset reliably).
     // When combined with lock/curve edits, applying the GPU offset separately avoids
@@ -380,111 +459,12 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             explicitPoints,
             tailPoints);
     }
-    if (curveRequest || preserveCurveAcrossMem) {
-        for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-            if (!originalCurvePopulated[ci]) continue;
-            targetCurveOffsets[ci] = originalCurveOffsets[ci];
-            if (preserveCurveAcrossMem) targetCurveMask[ci] = true;
-        }
-        if (gpuPolicyViaCurveBatch) {
-            bool currentDetected = (currentAppliedGpuOffsetMHz != 0 || currentActiveGpuOffsetExcludeLowCount > 0);
-            for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-                if (!originalCurvePopulated[ci]) continue;
-                int desiredPointGpuOffsetkHz = gpu_offset_component_mhz_for_point(ci, desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount) * 1000;
-                int currentPointGpuOffsetkHz;
-                if (currentDetected) {
-                    currentPointGpuOffsetkHz = gpu_offset_component_mhz_for_point(ci, currentAppliedGpuOffsetMHz, currentActiveGpuOffsetExcludeLowCount) * 1000;
-                } else {
-                    currentPointGpuOffsetkHz = originalCurveOffsets[ci];
-                }
-                int targetOffset = clamp_freq_delta_khz(originalCurveOffsets[ci] - currentPointGpuOffsetkHz + desiredPointGpuOffsetkHz);
-                targetCurveOffsets[ci] = targetOffset;
-                targetCurveMask[ci] = true;
-            }
-            debug_log("selective offset: currentMHz=%d desiredMHz=%d currentExcl=%d desiredExcl=%d detected=%d hasLock=%d lockMHz=%d\n",
-                currentAppliedGpuOffsetMHz, desired->gpuOffsetMHz,
-                currentActiveGpuOffsetExcludeLowCount,
-                desiredActiveGpuOffsetExcludeLowCount,
-                currentDetected ? 1 : 0,
-                hasLock ? 1 : 0, lockMhz);
-        }
-        if (hasLock && lockMhz > 0) {
-            // When a selective offset is active, the selective path above already
-            // set correct per-point deltas (+offset for included points, 0 for
-            // excluded points). Using absolute profile targets for boost-region
-            // points would overwrite those deltas with temperature-dependent
-            // values that can blow out to 700+ MHz when the cold base curve is
-            // elevated. Only the tail-flatten loop is needed in this case.
-            if (!gpuPolicyViaCurveBatch) {
-                for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-                    if (!desired->hasCurvePoint[ci]) continue;
-                    if (lockedTailMask[ci]) continue;
-                    if (!originalCurvePopulated[ci]) continue;
-                    long long base = (long long)originalCurveFreqkHz[ci] - (long long)originalCurveOffsets[ci];
-                    if (base < 0) base = 0;
-                    long long target = (long long)desired->curvePointMHz[ci] * 1000LL;
-                    long long diff = target - base;
-                    if (diff > INT_MAX) diff = INT_MAX;
-                    if (diff < INT_MIN) diff = INT_MIN;
-                    targetCurveOffsets[ci] = clamp_freq_delta_khz((int)diff);
-                    targetCurveMask[ci] = true;
-                }
-            }
-            // Determine the uniform floor offset for tail points.
-            // Per-point tail offsets are ineffective on Blackwell: the
-            // driver ignores individual tail-point deltas and the correction
-            // loop cannot converge. The solution is to apply a single
-            // uniform negative offset to ALL tail points, which floors
-            // the tail and lets the lock point control the entire region.
-            // Use the minimum supported driver offset for this purpose.
-            int floorTailOffsetKHz = 0;
-            if (lockMode == LOCK_MODE_FLATTEN) {
-                int minkHz = 0, maxkHz = 0;
-                bool rangeOk = get_curve_offset_range_khz(&minkHz, &maxkHz);
-                if (rangeOk && minkHz < 0) {
-                    floorTailOffsetKHz = minkHz;
-                } else {
-                    floorTailOffsetKHz = -1000000;
-                }
-            }
-            for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-                if (!lockedTailMask[ci]) continue;
-                if (!originalCurvePopulated[ci]) continue;
-                if (ci == lockCi) {
-                    long long base = (long long)originalCurveFreqkHz[ci] - (long long)originalCurveOffsets[ci];
-                    if (base < 0) base = 0;
-                    long long target = (long long)lockMhz * 1000LL;
-                    long long diff = target - base;
-                    if (diff > INT_MAX) diff = INT_MAX;
-                    if (diff < INT_MIN) diff = INT_MIN;
-                    targetCurveOffsets[ci] = clamp_freq_delta_khz((int)diff);
-                    targetCurveMask[ci] = true;
-                } else if (lockMode == LOCK_MODE_FLATTEN) {
-                    targetCurveOffsets[ci] = floorTailOffsetKHz;
-                    targetCurveMask[ci] = true;
-                }
-            }
-        } else if (gpuPolicyViaCurveBatch && !hasLock) {
-            // When the selective GPU offset is active without a lock, the explicit
-            // curve point path is skipped because the selective offset already
-            // handles all populated points. The locked tail above also handles
-            // the case where both lock and selective offset are active.
-        } else {
-            // No lock, no selective offset — explicit curve points only.
-            for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-                if (!desired->hasCurvePoint[ci]) continue;
-                if (!originalCurvePopulated[ci]) continue;
-                long long base = (long long)originalCurveFreqkHz[ci] - (long long)originalCurveOffsets[ci];
-                if (base < 0) base = 0;
-                long long target = (long long)desired->curvePointMHz[ci] * 1000LL;
-                long long diff = target - base;
-                if (diff > INT_MAX) diff = INT_MAX;
-                if (diff < INT_MIN) diff = INT_MIN;
-                targetCurveOffsets[ci] = clamp_freq_delta_khz((int)diff);
-                targetCurveMask[ci] = true;
-            }
-        }
-    }
+    apply_build_curve_targets(desired, curveRequest, preserveCurveAcrossMem,
+        hasLock, lockMode, lockCi, lockMhz, gpuPolicyViaCurveBatch,
+        desiredActiveGpuOffsetExcludeLowCount, currentAppliedGpuOffsetMHz,
+        currentActiveGpuOffsetExcludeLowCount, originalCurvePopulated,
+        originalCurveOffsets, originalCurveFreqkHz, lockedTailMask,
+        targetCurveOffsets, targetCurveMask);
     if (desired->hasMemOffset) {
         if (shouldApplyMemOffset) {
             set_last_apply_phase("apply: memory offset write");
@@ -508,12 +488,29 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool curveBatchOk = true;
     bool curveBatchNeeded = false;
     bool curveTouched = gpuApplied;
+    // CT-02.  Transaction state, not batch-local state.  This used to be
+    // declared inside the curve-write block, so it had gone out of scope by
+    // the time the locked-clock release ran -- which is a large part of why
+    // that release could not consult it and instead keyed off the lock mode
+    // alone.  It starts true because a request that writes no curve has no
+    // unverified curve to worry about; `curveTouched` is what distinguishes
+    // the two cases at the release site.
+    bool curveRequestOk = true;
     int selectiveOffsetApplied = 0;
     int selectiveOffsetFailed = 0;
     int flattenApplied = 0;
     int flattenFailed = 0;
     int userBoostApplied = 0;
     int userBoostFailed = 0;
+    // CT-06.  Points the hardware put ABOVE what the request asked for.  They
+    // are counted separately from selectiveOffsetFailed because the shortcut
+    // in verify_curve_request() -- "most points matched, call it verified" --
+    // is a legitimate tolerance for points that came up SHORT and must never
+    // apply to points that came up OVER.
+    int selectiveOffsetOverTarget = 0;
+    int selectiveOffsetFirstOverTargetCi = -1;
+    unsigned int selectiveOffsetFirstOverTargetActualMHz = 0;
+    unsigned int selectiveOffsetFirstOverTargetRequestedMHz = 0;
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         if (targetCurveMask[ci]) {
             curveBatchNeeded = true;
@@ -559,19 +556,16 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         int maxAbsOffsetCi = -1;
         int firstHighOffsetCi = -1;
         int firstHighOffsetKHz = 0;
-        int rangeMinKHz = 0;
-        int rangeMaxKHz = 0;
-        bool rangeKnown = get_curve_offset_range_khz(&rangeMinKHz, &rangeMaxKHz);
-        // When the driver range is unknown, use a conservative fallback to
-        // prevent dangerously large offsets from corrupted/malicious profiles.
-        // Testing shows the driver accepts tail offsets beyond 300000 kHz;
-        // the GPU offset range (±1000 MHz = ±1000000 kHz) is the authoritative
-        // hardware capability.
-        const int FALLBACK_VF_OFFSET_LIMIT_KHZ = 500000; // 500 MHz (up from 300 MHz)
-        int hardLimitKHz = rangeKnown
-            ? nvmax(abs(rangeMinKHz), abs(rangeMaxKHz))
-            : FALLBACK_VF_OFFSET_LIMIT_KHZ;
-        if (hardLimitKHz <= 0) hardLimitKHz = FALLBACK_VF_OFFSET_LIMIT_KHZ;
+        // CT-03.  ONE range, from vf_offset_range_policy.h, shared with the
+        // FLATTEN tail floor above and the write clamp below.  This site used
+        // to carry its own 500,000 kHz fallback while the floor used
+        // -1,000,000 kHz, so on any board whose range could not be probed the
+        // planner generated a floor that this check then refused.
+        const VfOffsetRange offsetRange = vf_offset_range_current();
+        const int rangeMinKHz = offsetRange.minKHz;
+        const int rangeMaxKHz = offsetRange.maxKHz;
+        const bool rangeKnown = offsetRange.known;
+        const int hardLimitKHz = vf_offset_range_hard_limit_khz(offsetRange);
         for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
             if (!targetCurveMask[ci]) continue;
             int absOffsetKHz = abs(targetCurveOffsets[ci]);
@@ -595,16 +589,28 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             }
         }
         char curveVerifyDetail[256] = {};
-        bool curveRequestOk = true;
         if (hardLimitOffsets > 0) {
             set_last_apply_phase("apply: VF curve batch refused out-of-range offsets");
-            debug_log("apply curve batch: refused %d point(s) beyond hard range limit %d kHz\n",
-                hardLimitOffsets,
-                hardLimitKHz);
+            debug_log("apply curve batch: refused %d point(s) beyond hard range limit %d kHz"
+                      " (range %d..%d known=%d)\n",
+                hardLimitOffsets, hardLimitKHz, rangeMinKHz, rangeMaxKHz,
+                rangeKnown ? 1 : 0);
             curveBatchOk = false;
             curveRequestOk = false;
+            // CT-03.  This branch used to set the two flags and stop.  The
+            // curve domain's only failCount++ / append_failure() lives in the
+            // sibling branch below, so an apply that refused its ENTIRE VF
+            // batch returned failCount == 0 -- success -- released the
+            // transition clamp, and told the user a profile was applied that
+            // had never reached the GPU.  A refused batch is a failed required
+            // domain and is routed through exactly the same accounting as a
+            // driver rejection.
+            failCount++;
+            partialApplyRisk = true;
             set_message(curveVerifyDetail, sizeof(curveVerifyDetail),
-                "Refused VF curve batch because %d point(s) exceeded the driver VF offset range", hardLimitOffsets);
+                "Refused VF curve batch because %d point(s) exceeded the driver VF offset range (%d..%d kHz)",
+                hardLimitOffsets, rangeMinKHz, rangeMaxKHz);
+            append_failure("%s", curveVerifyDetail);
         } else {
             if (highOffsetWarnings > 0) {
                 debug_log("apply curve batch: high offset warning summary count=%d firstPoint=%d firstOffset=%d maxAbsPoint=%d maxAbs=%d driverRange=%d..%d known=%d\n",
@@ -678,6 +684,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 // overall operation isn't marked as failed for a single stubborn point.
                 selectiveOffsetApplied = 0;
                 selectiveOffsetFailed = 0;
+                selectiveOffsetOverTarget = 0;
+                selectiveOffsetFirstOverTargetCi = -1;
                 flattenApplied = 0;
                 flattenFailed = 0;
                 for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
@@ -705,16 +713,49 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                     } else {
                         selectiveOffsetFailed++;
                         if (userRelevantPoint) userBoostFailed++;
-                        verifyDesired.curvePointMHz[ci] = actualMHz;
-                        if (expectedOffsetkHz == 0 && actualOffsetkHz != 0) {
-                            debug_log("selective offset: point %d excluded from selective, hardware applied residual offset %d kHz, accepting actual %u MHz\n",
-                                ci, actualOffsetkHz, actualMHz);
-                        } else if (expectedOffsetkHz != 0 && abs(actualOffsetkHz) < abs(expectedOffsetkHz) / 2) {
-                            debug_log("selective offset: point %d hardware refused offset (expected %d kHz, got %d kHz), accepting actual %u MHz\n",
-                                ci, expectedOffsetkHz, actualOffsetkHz, actualMHz);
+                        // CT-06.  This used to overwrite the request with
+                        // whatever the hardware did, in EITHER direction, and
+                        // verification then compared the reading against
+                        // itself and passed.  A point running FASTER than the
+                        // user asked for is the direction that destabilises a
+                        // card, and it was being laundered into a success.
+                        //
+                        // Under-target is the benign case this exception was
+                        // written for -- a max-clock limit point, or a
+                        // hardware refusal to boost -- and stays accepted.
+                        // Over-target keeps the requested value, so
+                        // curve_targets_match_request() below fails and the
+                        // apply enters its normal failure/recovery path.
+                        const unsigned int requestedMHz = verifyDesired.curvePointMHz[ci];
+                        const unsigned int overshootToleranceMHz =
+                            curve_point_verify_tolerance_mhz(ci);
+                        const bool overTarget = requestedMHz > 0 &&
+                            actualMHz > requestedMHz + overshootToleranceMHz;
+                        if (overTarget) {
+                            selectiveOffsetOverTarget++;
+                            if (selectiveOffsetFirstOverTargetCi < 0) {
+                                selectiveOffsetFirstOverTargetCi = ci;
+                                selectiveOffsetFirstOverTargetActualMHz = actualMHz;
+                                selectiveOffsetFirstOverTargetRequestedMHz = requestedMHz;
+                            }
+                            debug_log("selective offset: point %d actual %u MHz is ABOVE the"
+                                      " requested %u MHz by more than %u MHz (offset %d kHz vs"
+                                      " expected %d kHz); NOT accepting it -- an over-target"
+                                      " point is a verification failure, not a stubborn point\n",
+                                ci, actualMHz, requestedMHz, overshootToleranceMHz,
+                                actualOffsetkHz, expectedOffsetkHz);
                         } else {
-                            debug_log("selective offset: point %d offset %d kHz != expected %d kHz, accepting actual %u MHz\n",
-                                ci, actualOffsetkHz, expectedOffsetkHz, actualMHz);
+                            verifyDesired.curvePointMHz[ci] = actualMHz;
+                            if (expectedOffsetkHz == 0 && actualOffsetkHz != 0) {
+                                debug_log("selective offset: point %d excluded from selective, hardware applied residual offset %d kHz, accepting actual %u MHz (at or below the requested %u MHz)\n",
+                                    ci, actualOffsetkHz, actualMHz, requestedMHz);
+                            } else if (expectedOffsetkHz != 0 && abs(actualOffsetkHz) < abs(expectedOffsetkHz) / 2) {
+                                debug_log("selective offset: point %d hardware refused offset (expected %d kHz, got %d kHz), accepting actual %u MHz (at or below the requested %u MHz)\n",
+                                    ci, expectedOffsetkHz, actualOffsetkHz, actualMHz, requestedMHz);
+                            } else {
+                                debug_log("selective offset: point %d offset %d kHz != expected %d kHz, accepting actual %u MHz (at or below the requested %u MHz)\n",
+                                    ci, actualOffsetkHz, expectedOffsetkHz, actualMHz, requestedMHz);
+                            }
                         }
                     }
                 }
@@ -725,8 +766,54 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             }
             auto verify_curve_request = [&](char* detailOut, size_t detailOutSize) -> bool {
                 if (!curveRequest) return true;
+                // CT-06, checked ahead of every mode-specific shortcut below.
+                // The counter only ever covers NON-tail points (tail points
+                // take the flatten branch and `continue`), so this is as valid
+                // under a HARD pin as it is without one: the pin governs the
+                // tail, never the boost region.
+                if (selectiveOffsetOverTarget > 0) {
+                    set_curve_target_mismatch_detail(selectiveOffsetFirstOverTargetCi,
+                        selectiveOffsetFirstOverTargetActualMHz,
+                        selectiveOffsetFirstOverTargetRequestedMHz, false,
+                        detailOut, detailOutSize);
+                    debug_log("verify: %d selective point(s) are above the requested"
+                              " target; first ci=%d actual=%u requested=%u\n",
+                        selectiveOffsetOverTarget, selectiveOffsetFirstOverTargetCi,
+                        selectiveOffsetFirstOverTargetActualMHz,
+                        selectiveOffsetFirstOverTargetRequestedMHz);
+                    return false;
+                }
                 if (hasLock && lockMode == LOCK_MODE_HARD && lockMhz > 0) {
-                    debug_log("verify: HARD lock mode — skipping tail verification (NVML pins at %u MHz)\n", lockMhz);
+                    // CT-06.  This used to `return true` outright, so a HARD
+                    // request verified NOTHING -- not the explicit pre-tail
+                    // points the user typed, not the anchor, nothing.  The pin
+                    // makes the TAIL diagnostic-only, because NVML holds the
+                    // clock there regardless of what the VF table says.  It
+                    // says nothing whatsoever about points BELOW the anchor,
+                    // which run at their own voltages and are exactly where a
+                    // bad undervolt destabilises a card.
+                    debug_log("verify: HARD lock mode — tail is diagnostic only"
+                              " (NVML pins at %u MHz); still verifying explicit"
+                              " pre-tail points\n", lockMhz);
+                    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+                        if (lockedTailMask[ci]) break;
+                        if (!explicitCurveMask[ci]) continue;
+                        if (g_app.curve[ci].freq_kHz == 0) continue;
+                        unsigned int actualMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
+                        unsigned int targetMHz = desired->curvePointMHz[ci];
+                        if (targetMHz == 0) continue;
+                        unsigned int toleranceMHz = curve_point_verify_tolerance_mhz(ci);
+                        unsigned int deltaMHz = actualMHz > targetMHz
+                            ? (actualMHz - targetMHz) : (targetMHz - actualMHz);
+                        if (deltaMHz > toleranceMHz) {
+                            set_curve_target_mismatch_detail(ci, actualMHz, targetMHz,
+                                false, detailOut, detailOutSize);
+                            debug_log("verify: HARD pre-tail mismatch ci=%d actual=%u"
+                                      " target=%u tol=%u; the pin does not cover this"
+                                      " point\n", ci, actualMHz, targetMHz, toleranceMHz);
+                            return false;
+                        }
+                    }
                     return true;
                 }
                 if (gpuPolicyViaCurveBatch && selectiveOffsetApplied > 0 && selectiveOffsetApplied >= selectiveOffsetFailed) {
@@ -770,16 +857,14 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                     // Uniform floor offset for tail points during correction.
                     // Per-point tail deltas are ineffective on Blackwell; the
                     // driver ignores them (see initial tail offset computation).
-                    int correctionFloorTailOffsetKHz = 0;
-                    {
-                        int minkHz = 0, maxkHz = 0;
-                        bool rangeOk = get_curve_offset_range_khz(&minkHz, &maxkHz);
-                        if (rangeOk && minkHz < 0) {
-                            correctionFloorTailOffsetKHz = minkHz;
-                        } else {
-                            correctionFloorTailOffsetKHz = -1000000;
-                        }
-                    }
+                    // CT-03.  The fourth copy of this decision, and it used the
+                    // same hardcoded -1,000,000 kHz `else` branch as the
+                    // planner -- against a batch pre-check that allowed only
+                    // 500,000 kHz on unprobeable hardware.  One policy now, so
+                    // the correction pass cannot generate a floor the refusal
+                    // check rejects.
+                    const int correctionFloorTailOffsetKHz =
+                        vf_offset_range_flatten_floor_khz(vf_offset_range_current());
                     for (int correctionPass = 0; correctionPass < 25; correctionPass++) {
                         int correctedCurveOffsets[VF_NUM_POINTS] = {};
                         bool correctedCurveMask[VF_NUM_POINTS] = {};
@@ -994,78 +1079,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                         lastTargetMHz = currentTarget;
                     }
                 }
-                // Log voltage consistency diagnostic: compare post-apply voltage
-                // against the pre-apply snapshot to detect unexpected voltage drift.
-                // Voltage is inherently immutable on NVIDIA VF tables, so any change
-                // indicates a driver state shift or NVAPI read instability.
-                {
-                    const unsigned int VOLTAGE_DRIFT_TOLERANCE_uV = 10000; // 10 mV
-                    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-                        if (!originalCurvePopulated[ci]) continue;
-                        unsigned int originalUv = originalCurveVoltUv[ci];
-                        unsigned int currentUv = g_app.curve[ci].volt_uV;
-                        if (originalUv == 0 || currentUv == 0) continue;
-                        unsigned int driftUv = (originalUv > currentUv)
-                            ? (originalUv - currentUv) : (currentUv - originalUv);
-                        if (driftUv > VOLTAGE_DRIFT_TOLERANCE_uV) {
-                            debug_log("voltage consistency: point %d drifted by %u uV (original=%u uV current=%u uV)\n",
-                                ci, driftUv, originalUv, currentUv);
-                        }
-                    }
-                }
-                // Post-apply curve state dump: log all points with target vs actual
-                // to detect weird shifts that differ from the intended VF curve shape.
-                // Also always log first/last tail point and any tail drift > 2 MHz.
-                {
-                    int tailOff = 0, tailOK = 0, nonTailOff = 0, nonTailOK = 0;
-                    int firstTail = -1, lastTail = -1;
-                    unsigned int firstTailActual = 0, firstTailTarget = 0;
-                    unsigned int lastTailActual = 0, lastTailTarget = 0;
-                    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-                        if (!verifyDesired.hasCurvePoint[ci]) continue;
-                        if (g_app.curve[ci].freq_kHz == 0) continue;
-                        unsigned int actualMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
-                        unsigned int targetMHz = (lockedTailMask[ci] && lockMhz > 0) ? lockMhz : verifyDesired.curvePointMHz[ci];
-                        unsigned int delta = actualMHz > targetMHz ? actualMHz - targetMHz : targetMHz - actualMHz;
-                        int tol = (int)curve_point_verify_tolerance_mhz(ci);
-                        bool isTail = (lockedTailMask[ci] && lockMhz > 0);
-                        if (delta > (unsigned int)tol) {
-                            debug_log("post-apply curve: ci=%d actual=%u target=%u delta=%u tol=%d freqOffs=%d %s\n",
-                                ci, actualMHz, targetMHz, delta, tol, g_app.freqOffsets[ci],
-                                isTail ? "TAIL" : "BOOST");
-                            if (isTail) tailOff++; else nonTailOff++;
-                        } else if (isTail && delta > 2) {
-                            tailOK++;
-                            debug_log("post-apply tail: ci=%d actual=%u target=%u delta=%u tol=%d freqOffs=%d\n",
-                                ci, actualMHz, targetMHz, delta, tol, g_app.freqOffsets[ci]);
-                        } else if (isTail) {
-                            tailOK++;
-                        } else {
-                            nonTailOK++;
-                        }
-                        if (isTail) {
-                            if (firstTail < 0) {
-                                firstTail = ci;
-                                firstTailActual = actualMHz;
-                                firstTailTarget = targetMHz;
-                            }
-                            lastTail = ci;
-                            lastTailActual = actualMHz;
-                            lastTailTarget = targetMHz;
-                        }
-                    }
-                    debug_log("post-apply tail bookends: first=ci%d actual=%u target=%u last=ci%d actual=%u target=%u\n",
-                        firstTail, firstTailActual, firstTailTarget,
-                        lastTail, lastTailActual, lastTailTarget);
-                    if (tailOff > 0 || nonTailOff > 0) {
-                        debug_log("post-apply curve summary: tail=%dOK+%dOFF boost=%dOK+%dOFF\n",
-                            tailOK, tailOff, nonTailOK, nonTailOff);
-                    }
-                    if (hasLock && lockMhz > 0) {
-                        flattenApplied = tailOK;
-                        flattenFailed = tailOff;
-                    }
-                }
+                apply_log_post_apply_curve_diagnostics(
+                    &verifyDesired, originalCurvePopulated, originalCurveVoltUv,
+                    lockedTailMask, hasLock, lockMhz, flattenApplied, flattenFailed);
                 // Success/failure counting and state persistence
                 if (curveRequestOk) {
                     successCount++;
@@ -1139,18 +1155,46 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         service_request_replaces_lock_domain(desired);
     if (lockMode != LOCK_MODE_HARD && replacesLockDomain &&
         g_nvml_api.resetGpuLockedClocks) {
-        char resetDetail[128] = {};
-        if (nvml_reset_gpu_locked_clocks(resetDetail, sizeof(resetDetail))) {
-            successCount++;
-            // This IS the release of any F-APPLY-CEILING transition clamp: by
-            // now the flatten tail (or the absence of a lock) is the ceiling.
-            clockCeiling.adopt("released with the locked-clock domain");
-            debug_log("apply: reset NVML locked clocks (not requesting HARD mode)\n");
+        // CT-02.  The release used to be unconditional on anything except the
+        // lock mode.  Its justifying comment -- "by now the flatten tail is the
+        // ceiling" -- is only true when the flatten tail was actually written
+        // AND verified.  When the curve failed, releasing handed the user the
+        // partially-written raised curve with nothing capping it, which is the
+        // precise shape of the 2026-09-13 incident.
+        //
+        // curveTouched is part of the test because a request that never wrote
+        // the curve at all has no raised state to protect: releasing a stale
+        // external pin there is correct and is long-standing behaviour.
+        const bool curveStateProvenSafe = curveRequestOk || !curveTouched;
+        if (!curveStateProvenSafe) {
+            clockCeiling.retain("the VF curve did not verify; releasing the clamp"
+                                " would uncap a partially written curve");
+            debug_log("apply: NOT releasing the locked-clock domain -- curve"
+                      " verification failed (curveRequestOk=%d curveTouched=%d);"
+                      " the transition clamp at %u MHz stays until recovery\n",
+                curveRequestOk ? 1 : 0, curveTouched ? 1 : 0,
+                clockCeiling.plan.ceilingMHz);
         } else {
-            failCount++;
-            partialApplyRisk = true;
-            append_failure("NVML locked clocks did not reset: %s",
-                resetDetail[0] ? resetDetail : "unknown error");
+            char resetDetail[128] = {};
+            if (nvml_reset_gpu_locked_clocks(resetDetail, sizeof(resetDetail))) {
+                successCount++;
+                // This IS the release of any F-APPLY-CEILING transition clamp:
+                // by now the flatten tail (or the absence of a lock) is the
+                // ceiling, and it has been verified.
+                clockCeiling.adopt("released with the locked-clock domain");
+                debug_log("apply: reset NVML locked clocks (not requesting HARD mode)\n");
+            } else {
+                failCount++;
+                partialApplyRisk = true;
+                // The requested end state is unpinned and the release failed,
+                // so a cap the user did not ask for is still in force.  Mark
+                // the guard adopted-as-retained so the destructor does not try
+                // the same failing release again and so recovery knows a
+                // restriction may still exist.
+                clockCeiling.retain("the locked-clock release was refused by NVML");
+                append_failure("NVML locked clocks did not reset: %s",
+                    resetDetail[0] ? resetDetail : "unknown error");
+            }
         }
     }
     if (hasLock) {
@@ -1165,30 +1209,58 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         g_app.guiLockTracksAnchor = desired->lockTracksAnchor;
 
         if (lockMode == LOCK_MODE_HARD) {
-            char lockedClockDetail[128] = {};
-            // With F-APPLY-CEILING armed this is a RE-assertion of the same
-            // ceiling in its final symmetric form, not the first time the clock
-            // is capped in this apply.  It stays unconditional: the guard is
-            // best-effort and the authoritative pin must not depend on it.
-            if (nvml_set_gpu_locked_clocks(lockMhz, lockMhz, lockedClockDetail, sizeof(lockedClockDetail))) {
-                successCount++;
-                clockCeiling.adopt("re-asserted as the final hard pin");
-                debug_log("apply: hard lock pinned at %u MHz via NVML\n", lockMhz);
-            } else {
+            // CT-02.  The final pin is the request's own ceiling, but the
+            // TRANSITION clamp may be lower than it -- when the outgoing
+            // profile had a lower pin, the plan deliberately bounds the whole
+            // transition at the lower of the two so the old pin keeps holding
+            // until the new curve exists.  Writing the higher requested pin
+            // over a curve that did NOT verify would relax that bound onto a
+            // partially written curve, which is the failure mode this whole
+            // guard exists to prevent.  A verified curve is the prerequisite
+            // for raising the ceiling to what was asked for.
+            const bool curveStateProvenSafeForPin = curveRequestOk || !curveTouched;
+            if (!curveStateProvenSafeForPin) {
                 failCount++;
                 partialApplyRisk = true;
-                clockCeiling.retain("final hard pin was refused by NVML");
-                append_failure("Hard lock at %u MHz failed: %s", lockMhz, lockedClockDetail);
+                clockCeiling.retain("the VF curve did not verify; the final hard pin"
+                                    " would relax the transition clamp over it");
+                append_failure("Hard lock at %u MHz was not applied because the VF curve"
+                               " did not verify; the transition clamp at %u MHz is still"
+                               " in force", lockMhz, clockCeiling.plan.ceilingMHz);
+                debug_log("apply: NOT asserting the final hard pin at %u MHz --"
+                          " curveRequestOk=%d curveTouched=%d; keeping the transition"
+                          " clamp at %u MHz\n",
+                    lockMhz, curveRequestOk ? 1 : 0, curveTouched ? 1 : 0,
+                    clockCeiling.plan.ceilingMHz);
+            } else {
+                char lockedClockDetail[128] = {};
+                // With F-APPLY-CEILING armed this is a RE-assertion of the same
+                // ceiling in its final symmetric form (or a raise from the
+                // lower transition bound to the requested pin), not the first
+                // time the clock is capped in this apply.
+                if (nvml_set_gpu_locked_clocks(lockMhz, lockMhz, lockedClockDetail, sizeof(lockedClockDetail))) {
+                    successCount++;
+                    clockCeiling.adopt("re-asserted as the final hard pin");
+                    debug_log("apply: hard lock pinned at %u MHz via NVML\n", lockMhz);
+                } else {
+                    failCount++;
+                    partialApplyRisk = true;
+                    clockCeiling.retain("final hard pin was refused by NVML");
+                    append_failure("Hard lock at %u MHz failed: %s", lockMhz, lockedClockDetail);
+                }
             }
         }
     }
-    // The one fall-through that reaches here with the clamp still armed: the
-    // request named a lock point this GPU's visible map could not resolve, so
-    // `hasLock` was cleared after the plan was made -- while the selective
-    // offset still went through the curve batch.  Dropping the clamp then would
-    // hand over exactly the raised, uncapped curve it was armed against, so it
-    // stays; every other unadopted exit is ahead of the first raising write and
-    // is released by the destructor.
+    // The catch-all for any path that reaches here with the clamp still armed
+    // after something was raised.  It is a net, not the primary mechanism: the
+    // release and pin branches above each make their own explicit
+    // retain()/adopt() decision based on whether the curve verified.
+    //
+    // This comment used to claim that every OTHER unadopted exit is ahead of
+    // the first raising write.  That was false, and the two counterexamples
+    // are now fixed at their sources: an unresolvable lock anchor is refused
+    // before any write, and the non-HARD release is conditional on a verified
+    // curve rather than on the lock mode alone.
     if (!clockCeiling.adopted && (curveTouched || gpuApplied))
         clockCeiling.retain("the apply raised the curve without establishing a final lock");
     if (curveTouched || gpuApplied || hasLock)
@@ -1253,146 +1325,59 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     // must never become inputs to this core rollback decision.
     const int coreSuccessCount = successCount;
     const int coreFailCount = failCount;
+    // CT-04.  Recovery now keys off whether a core domain was ATTEMPTED, not
+    // off a success count.  A counter only moves after a driver call returns,
+    // so the first core write of an apply -- a curve batch that partly applied
+    // before the driver rejected a later point, a baseline reset that got
+    // halfway, the transition clamp itself -- produced (success=0, fail=1),
+    // which the old mixed-result rule classified as "nothing to roll back"
+    // while the hardware sat in a partial state.
+    //
+    // `clockCeiling.writeAttempted` is in the disjunction for exactly that
+    // reason: arming is a hardware write the success counters never saw.
+    //
     // F-01-002 legacy source gate searches for "fan failure triggered rollback".
     // The executable guarantee is the typed core policy below: any fan or other
-    // core failure after an earlier successful core write enters rollback.
-    if (service_apply_core_requires_mixed_failure_rollback(
-            coreSuccessCount, coreFailCount)) {
+    // core failure after an earlier attempted core write enters rollback.
+    const bool anyCoreDomainAttempted =
+        coreSuccessCount > 0 || partialApplyRisk || curveTouched || gpuApplied ||
+        memApplied || powerChanged || clockCeiling.writeAttempted ||
+        desired->resetOcBeforeApply != 0;
+    bool coreRecoveryRan = false;
+    if (service_apply_core_requires_recovery(anyCoreDomainAttempted, coreFailCount)) {
         partialApplyRisk = true;
-        rollback_to_safe_defaults();
+        coreRecoveryRan = true;
+        ApplyRecoveryResult recovery = rollback_to_safe_defaults();
+        // CT-04.  The rollback used to release the locked-clock domain
+        // unconditionally, which silently undid the retain() decision the
+        // guard had already made a few lines above.  It now reports what it
+        // actually proved, and the guard is told so its destructor cannot
+        // release a clamp the rollback deliberately kept.
+        if (!recovery.restrictionReleased && clockCeiling.armed) {
+            clockCeiling.retain("recovery could not prove a safe state; the clamp"
+                                " stays until the user resets explicitly");
+        }
         g_app.gpuClockOffsetkHz = g_app.memClockOffsetkHz = g_app.powerLimitPct = 0;
         invalidate_scalar_readbacks(&g_app.readback);
         char rollbackDetail[128] = {};
         refresh_global_state(rollbackDetail, sizeof(rollbackDetail));
-        debug_log("apply: mixed core failure triggered rollback of %d successful core hardware writes after %d core failure(s)\n",
-            coreSuccessCount, coreFailCount);
+        debug_log("apply: core failure triggered rollback after %d core failure(s)"
+                  " (%d successful core writes, attempted=%d);"
+                  " curve attempted=%d verified=%d, gpuOffset attempted=%d verified=%d,"
+                  " restrictionReleased=%d\n",
+            coreFailCount, coreSuccessCount, anyCoreDomainAttempted ? 1 : 0,
+            recovery.curve.attempted ? 1 : 0, recovery.curve.verified ? 1 : 0,
+            recovery.gpuOffset.attempted ? 1 : 0, recovery.gpuOffset.verified ? 1 : 0,
+            recovery.restrictionReleased ? 1 : 0);
+        if (!apply_recovery_permits_release(recovery)) {
+            append_failure("Recovery to stock could not be verified; a reduced clock"
+                           " cap is still in force. Use Reset to clear it");
+        }
     }
 
-    // Advanced-clock transaction boundary.  XBAR/SYS/VIDEO are independently
-    // verified writes and intentionally live outside rollback_to_safe_defaults().
-    // They still contribute to the aggregate result reported to the caller, but
-    // neither their successes nor their failures trigger another core rollback.
-    if (desired && (desired->hasXbarOffsetKhz || desired->hasXbarMsvddOffsetUv)) {
-        auto xbarGetCtrl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
-        auto xbarSetCtrl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
-        auto xbarMeasure = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_MEASURE);
-        bool functionsAvailable = xbarGetCtrl && xbarSetCtrl && xbarMeasure;
-        if (g_app.xbarProbeValid && functionsAvailable) {
-            XbarControlSnapshot snap{};
-            int targetFreqKhz = desired->hasXbarOffsetKhz
-                ? desired->xbarOffsetKhz : g_app.xbarFreqOffsetKhz;
-            int targetMsvddUv = desired->hasXbarMsvddOffsetUv
-                ? desired->xbarMsvddOffsetUv : g_app.xbarMsvddOffsetUv;
-            if (xbar_write(xbarGetCtrl, xbarSetCtrl, xbarMeasure,
-                           g_app.gpuHandle, &snap, targetFreqKhz, targetMsvddUv,
-                           true, true)) {
-                g_app.xbarFreqReadbackValid = true;
-                g_app.xbarMsvddReadbackValid = true;
-                g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
-                g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
-                g_app.xbarMeasuredClockKhz = snap.measuredKhz;
-                successCount++;
-                debug_log("apply: XBAR offset %d kHz, MSVDD %d uV, measured %u kHz\n",
-                          snap.freqOffsetKhz, snap.msvddOffsetUv,
-                          snap.measuredKhz);
-            } else {
-                failCount++;
-                partialApplyRisk = true;
-                StringCchCatA(failureDetails, ARRAY_COUNT(failureDetails),
-                              failureDetails[0] ? "; XBAR offset" : "XBAR offset");
-                debug_log("apply: XBAR offset write FAILED requested=(%d kHz, %d uV)"
-                          " probeValid=%d\n", targetFreqKhz, targetMsvddUv,
-                          g_app.xbarProbeValid ? 1 : 0);
-            }
-        } else {
-            failCount++;
-            partialApplyRisk = true;
-            StringCchCatA(failureDetails, ARRAY_COUNT(failureDetails),
-                          failureDetails[0] ? "; XBAR unavailable" : "XBAR unavailable");
-            debug_log("apply: XBAR requested but unavailable probeValid=%d functions=%d\n",
-                      g_app.xbarProbeValid ? 1 : 0, functionsAvailable ? 1 : 0);
-        }
-    }
-    // SYS clock domain offset apply (second ClkDomains aux entry, identified
-    // empirically).  Same full-block transaction discipline as XBAR; a
-    // failure is reported rather than silently skipped.
-    if (desired && desired->hasSysClkOffsetKhz) {
-        auto sysGetCtrl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
-        auto sysSetCtrl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
-        if (g_app.sysClkProbeValid && sysGetCtrl && sysSetCtrl) {
-            XbarControlSnapshot snap{};
-            if (xbar_write_entry_freq(sysGetCtrl, sysSetCtrl, g_app.gpuHandle,
-                                      &snap, XBAR_PINNED_SYS_ENTRY_INDEX,
-                                      desired->sysClkOffsetKhz)) {
-                unsigned int sysField = snap.entryBase +
-                    XBAR_PINNED_SYS_ENTRY_INDEX * snap.entryStride +
-                    g_xbarSchemas[0].freqOffsetField;
-                g_app.sysClkFreqReadbackValid = true;
-                g_app.sysClkFreqOffsetKhz =
-                    (int)xbar_get_u32(snap.buf, sysField);
-                successCount++;
-                debug_log("apply: SYS clock offset %d kHz\n",
-                          g_app.sysClkFreqOffsetKhz);
-            } else {
-                failCount++;
-                partialApplyRisk = true;
-                StringCchCatA(failureDetails, ARRAY_COUNT(failureDetails),
-                              failureDetails[0] ? "; SYS clock offset"
-                                                : "SYS clock offset");
-                debug_log("apply: SYS clock offset write FAILED requested=%d kHz"
-                          " probeValid=%d\n", desired->sysClkOffsetKhz,
-                          g_app.sysClkProbeValid ? 1 : 0);
-            }
-        } else {
-            failCount++;
-            partialApplyRisk = true;
-            StringCchCatA(failureDetails, ARRAY_COUNT(failureDetails),
-                          failureDetails[0] ? "; SYS clock unavailable"
-                                            : "SYS clock unavailable");
-            debug_log("apply: SYS clock requested but unavailable probeValid=%d\n",
-                      g_app.sysClkProbeValid ? 1 : 0);
-        }
-    }
-    // VIDEO clock offset apply.  Entry 4 identified by differential dump;
-    // the engine's physical clock has no CLK_MEASURE id, so verification is
-    // the exact readback itself.
-    if (desired && desired->hasVideoClkOffsetKhz) {
-        auto vidGetCtrl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
-        auto vidSetCtrl = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
-        if (g_app.videoClkProbeValid && vidGetCtrl && vidSetCtrl) {
-            XbarControlSnapshot snap{};
-            if (xbar_write_entry_freq(vidGetCtrl, vidSetCtrl, g_app.gpuHandle,
-                                      &snap, (unsigned int)XBAR_PINNED_VIDEO_ENTRY_INDEX,
-                                      desired->videoClkOffsetKhz)) {
-                unsigned int videoField = snap.entryBase +
-                    XBAR_PINNED_VIDEO_ENTRY_INDEX * snap.entryStride +
-                    g_xbarSchemas[0].freqOffsetField;
-                g_app.videoClkFreqReadbackValid = true;
-                g_app.videoClkFreqOffsetKhz =
-                    (int)xbar_get_u32(snap.buf, videoField);
-                successCount++;
-                debug_log("apply: VIDEO clock offset %d kHz\n",
-                          g_app.videoClkFreqOffsetKhz);
-            } else {
-                failCount++;
-                partialApplyRisk = true;
-                StringCchCatA(failureDetails, ARRAY_COUNT(failureDetails),
-                              failureDetails[0] ? "; VIDEO clock offset"
-                                                : "VIDEO clock offset");
-                debug_log("apply: VIDEO clock offset write FAILED requested=%d kHz"
-                          " probeValid=%d\n", desired->videoClkOffsetKhz,
-                          g_app.videoClkProbeValid ? 1 : 0);
-            }
-        } else {
-            failCount++;
-            partialApplyRisk = true;
-            StringCchCatA(failureDetails, ARRAY_COUNT(failureDetails),
-                          failureDetails[0] ? "; VIDEO clock unavailable"
-                                            : "VIDEO clock unavailable");
-            debug_log("apply: VIDEO clock requested but unavailable probeValid=%d\n",
-                      g_app.videoClkProbeValid ? 1 : 0);
-        }
-    }
+    apply_advanced_clock_domains(desired, coreRecoveryRan, successCount,
+                                 failCount, partialApplyRisk, failureDetails,
+                                 ARRAY_COUNT(failureDetails));
     char detail[128] = {};
     if (memApplied || powerChanged || fanChanged) {
         refresh_global_state(detail, sizeof(detail));

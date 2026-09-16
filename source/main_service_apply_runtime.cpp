@@ -237,19 +237,36 @@ static bool service_reset_all(char* result, size_t resultSize,
             break;
         }
     }
-    if (hadCurveOffsets) {
-        if (apply_curve_offsets_verified(resetOffsets, resetMask, 2)) successCount++;
-        else {
-            failCount++;
-            append_failure("VF curve offsets did not reset cleanly");
-        }
-    }
+    // CT-04.  The separate GPU offset is zeroed BEFORE the VF tail floor is
+    // lifted, matching reset_oc_before_gui_apply() and the corrected rollback
+    // order.  Clearing the curve first while a previous profile's positive GPU
+    // offset is still live lets the tail snap to factory base frequencies with
+    // that offset still added on top -- the same additive transient the apply
+    // path reorders itself to avoid.  Explicit Reset had the old order.
+    ApplyRecoveryResult recovery = {};
     if (g_app.gpuClockOffsetkHz != 0) {
-        if (nvapi_set_gpu_offset(0)) successCount++;
-        else {
+        recovery.gpuOffset.attempted = true;
+        if (nvapi_set_gpu_offset(0)) {
+            successCount++;
+            recovery.gpuOffset.verified = true;
+        } else {
             failCount++;
             append_failure("GPU offset did not reset to default");
         }
+    } else {
+        recovery.gpuOffset.verified = true;
+    }
+    if (hadCurveOffsets) {
+        recovery.curve.attempted = true;
+        if (apply_curve_offsets_verified(resetOffsets, resetMask, 2)) {
+            successCount++;
+            recovery.curve.verified = true;
+        } else {
+            failCount++;
+            append_failure("VF curve offsets did not reset cleanly");
+        }
+    } else {
+        recovery.curve.verified = true;
     }
     if (g_app.memClockOffsetkHz != 0) {
         if (nvapi_set_mem_offset(0)) successCount++;
@@ -282,6 +299,9 @@ static bool service_reset_all(char* result, size_t resultSize,
                 g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
                 g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
                 g_app.xbarMeasuredClockKhz = snap.measuredKhz;
+                // Explicit Reset returns these domains to stock, so the
+                // ownership flags the baseline reset consults go with them.
+                g_app.appliedAdvancedOwnedXbar = false;
                 successCount++;
                 debug_log("service_reset_all: XBAR reset to %d kHz, %d uV,"
                           " measured %u kHz\n", snap.freqOffsetKhz,
@@ -308,6 +328,7 @@ static bool service_reset_all(char* result, size_t resultSize,
                     g_xbarSchemas[0].freqOffsetField;
                 g_app.sysClkFreqReadbackValid = true;
                 g_app.sysClkFreqOffsetKhz = (int)xbar_get_u32(snap.buf, sysField);
+                g_app.appliedAdvancedOwnedSysClk = false;
                 successCount++;
                 debug_log("service_reset_all: SYS clock reset to %d kHz\n",
                           g_app.sysClkFreqOffsetKhz);
@@ -333,6 +354,7 @@ static bool service_reset_all(char* result, size_t resultSize,
                     g_xbarSchemas[0].freqOffsetField;
                 g_app.videoClkFreqReadbackValid = true;
                 g_app.videoClkFreqOffsetKhz = (int)xbar_get_u32(snap.buf, videoField);
+                g_app.appliedAdvancedOwnedVideoClk = false;
                 successCount++;
                 debug_log("service_reset_all: VIDEO clock reset to %d kHz\n",
                           g_app.videoClkFreqOffsetKhz);
@@ -350,18 +372,52 @@ static bool service_reset_all(char* result, size_t resultSize,
         stop_service_fan_runtime_thread();
     }
 
-    // Reset NVML locked clocks (hard lock)
-    if (g_nvml_api.resetGpuLockedClocks) {
+    // Reset NVML locked clocks (hard lock, or a retained transition clamp).
+    //
+    // CT-04.  Two things were wrong here.  The release ran regardless of
+    // whether the curve and offset resets above had succeeded -- so an
+    // explicit Reset that failed to clear a raised curve still removed the cap
+    // holding it down.  And a failed release was written off as "may be
+    // benign", which is only true when no restriction was active; when one was,
+    // that log line was the sole record of a cap the user could not see and the
+    // UI went on to describe the GPU as stock.
+    if (!apply_recovery_permits_release(recovery)) {
+        append_failure("A reduced clock cap is still in force because the VF curve or"
+                       " GPU offset could not be returned to stock");
+        debug_log("service_reset_all: KEEPING the locked-clock restriction -- curve"
+                  " attempted=%d verified=%d, gpuOffset attempted=%d verified=%d;"
+                  " releasing it would uncap a curve that is still raised\n",
+            recovery.curve.attempted ? 1 : 0, recovery.curve.verified ? 1 : 0,
+            recovery.gpuOffset.attempted ? 1 : 0, recovery.gpuOffset.verified ? 1 : 0);
+    } else if (g_nvml_api.resetGpuLockedClocks) {
         if (nvml_ensure_ready()) {
+            const bool restrictionMayExist =
+                g_app.lockMode != LOCK_MODE_NONE || g_app.appliedLockFreq > 0;
             nvmlReturn_t r = g_nvml_api.resetGpuLockedClocks(g_app.nvmlDevice);
             if (r == NVML_SUCCESS) {
                 successCount++;
+                recovery.restrictionReleased = true;
                 debug_log("service_reset_all: resetGpuLockedClocks ok\n");
+            } else if (restrictionMayExist) {
+                // Green Curve believes a restriction was active, so a refused
+                // release is a real failure of this Reset, not a no-op on a
+                // GPU that never had one.
+                failCount++;
+                append_failure("The clock lock did not release: %s", nvml_err_name(r));
+                debug_log("service_reset_all: resetGpuLockedClocks → %s with lockMode=%s"
+                          " appliedLockFreq=%u; a restriction may still be active\n",
+                    nvml_err_name(r), lock_mode_name(g_app.lockMode),
+                    g_app.appliedLockFreq);
             } else {
-                // Not a failure if no lock was active
-                debug_log("service_reset_all: resetGpuLockedClocks → %s (may be benign)\n", nvml_err_name(r));
+                // No restriction was believed active and none of this session's
+                // writes installed one, so nothing owned this domain.
+                recovery.restrictionReleased = true;
+                debug_log("service_reset_all: resetGpuLockedClocks → %s (no lock was"
+                          " active and none was owned; benign)\n", nvml_err_name(r));
             }
         }
+    } else {
+        recovery.restrictionReleased = true;
     }
 
     if (!g_app.fanIsAuto || g_app.activeFanMode != FAN_MODE_AUTO) {

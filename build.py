@@ -2016,6 +2016,12 @@ def run_source_regression_checks():
     desired_settings_helpers_cpp = os.path.join(SOURCE_DIR, "desired_settings_helpers.cpp")
     config_profile_repair_cpp = os.path.join(SOURCE_DIR, "config_profile_repair.cpp")
     gpu_backend_apply_cpp = os.path.join(SOURCE_DIR, "gpu_backend_apply.cpp")
+    # Shards of the apply, split out under the source-size ratchet.  The gates
+    # follow the code: a guarantee does not stop being a guarantee because the
+    # lines moved into their own file.
+    gpu_backend_apply_diag_h = os.path.join(SOURCE_DIR, "gpu_backend_apply_diagnostics.h")
+    gpu_backend_apply_targets_h = os.path.join(SOURCE_DIR, "gpu_backend_apply_targets.h")
+    gpu_backend_apply_advanced_h = os.path.join(SOURCE_DIR, "gpu_backend_apply_advanced.h")
     main_gpu_state_cpp = os.path.join(SOURCE_DIR, "main_gpu_state.cpp")
     main_data_paths_cpp = os.path.join(SOURCE_DIR, "main_data_paths.cpp")
     main_state_sync_cpp = os.path.join(SOURCE_DIR, "main_state_sync.cpp")
@@ -2432,11 +2438,11 @@ def run_source_regression_checks():
     require_text(gpu_backend_apply_cpp, "non-tail %s point %d actual %u MHz != target", "non-tail readback artifacts are accepted only for verification")
     require_text(gpu_backend_apply_cpp, "keeping strict lock target", "lock tail readback mismatches do not mutate requested intent")
     require_text(gpu_backend_apply_cpp, "stockBase = (long long)originalCurveFreqkHz", "correction loop uses stock base for non-tail explicit points to avoid cumulative offset bug")
-    require_text(gpu_backend_apply_cpp, "post-apply curve: ci=%d actual=%u", "post-apply curve state dump detects weird shifts")
+    require_text(gpu_backend_apply_diag_h, "post-apply curve: ci=%d actual=%u", "post-apply curve state dump detects weird shifts")
     require_text(gpu_backend_apply_cpp, "not rewriting tail above lock", "monotonicity enforcement never raises the locked tail above the requested lock")
     require_text(os.path.join(SOURCE_DIR, "main_shell.cpp"), "skipping stale lock at ci=%d (lockedFreq=0", "stale lock skip only when lockedFreq=0, not when == liveMHz")
-    require_text(gpu_backend_apply_cpp, "post-apply tail bookends", "post-apply logs tail bookends even when within tolerance")
-    require_text(gpu_backend_apply_cpp, "post-apply tail: ci=%d actual=%u", "post-apply logs tail drifts > 2 MHz even when within tolerance")
+    require_text(gpu_backend_apply_diag_h, "post-apply tail bookends", "post-apply logs tail bookends even when within tolerance")
+    require_text(gpu_backend_apply_diag_h, "post-apply tail: ci=%d actual=%u", "post-apply logs tail drifts > 2 MHz even when within tolerance")
     require_text(gpu_backend_apply_cpp, "service_apply_outcome_severity_for_lock_mode(", "hard NVML pins do not surface VF tail readback as a warning")
     require_text(gpu_backend_apply_cpp, "high offset warning summary", "large VF offset diagnostics are aggregated")
     require_text(gpu_backend_cpp, "update_tray_icon", "VF/GPU offset applies update tray icon from GUI-side apply path")
@@ -3428,8 +3434,23 @@ def run_source_regression_checks():
     # F-11-001: Service event creation integrity check
     require_text(service_server_cpp, "g_serviceStopEvent) {", "service stop event creation check exists")
 
-    # F-05-001: Rollback retry support
-    require_text(os.path.join(SOURCE_DIR, "main_gpu_front.cpp"), "retry_op", "rollback uses retry_op helper")
+    # F-05-001: Rollback retry support.  rollback_to_safe_defaults() moved into
+    # its own shard under the source-size ratchet; the guarantee did not move.
+    main_gpu_rollback_h = os.path.join(SOURCE_DIR, "main_gpu_rollback.h")
+    require_text(main_gpu_rollback_h, "retry_op", "rollback uses retry_op helper")
+    # CT-04: the rollback must not release the clock restriction it is holding
+    # over a curve it could not prove is back at stock.  The unconditional
+    # unlock this replaces silently undid the transition guard's own retain()
+    # decision, because the rollback runs after it.
+    require_text(main_gpu_rollback_h, "apply_recovery_permits_release(recovery)",
+                 "rollback releases the clock restriction only once recovery verified stock")
+    require_order(main_gpu_rollback_h,
+        "recovery.gpuOffset.attempted = true;",
+        "recovery.curve.attempted = true;",
+        "rollback zeroes the separate GPU offset before lifting the VF tail floor")
+    forbid_text(main_gpu_rollback_h,
+        "debug_log(\"rollback: resetGpuLockedClocks (lockMode=%s)\n\"",
+        "the locked-clock release must stay inside the verified-recovery branch")
 
     # F-07-001: Config int truncation detection
     require_text(config_utils_cpp, "n >= sizeof(buf) - 1", "config int read detects truncation")
@@ -4210,7 +4231,8 @@ def run_source_regression_checks():
     # rewrites the VF curve, plus the sibling power-target ordering.  Every rule
     # there guards an ordering whose loss is invisible except as a driver crash
     # during a profile switch; see tools/apply_ceiling_gates.py.
-    apply_ceiling_gates.check_all(_gate_ctx(), require_text, forbid_text)
+    apply_ceiling_gates.check_all(_gate_ctx(), require_text, forbid_text,
+                                  require_order_in_operation)
     require_text(os.path.join(SOURCE_DIR, "intent_readback_status.h"),
                  "diverged = true;\n                    continue;",
                  "a fan policy takeover is disclosed even when the duty getter "
@@ -4273,17 +4295,41 @@ def run_source_regression_checks():
     forbid_text(main_service_runtime_cpp, "NVML stale, attempting recovery",
         "fan pulse no longer does ad-hoc NVML recovery")
 
-    # FP-01-005: Increased VF offset range limit for tail flatten
-    require_text(gpu_backend_apply_cpp, "FALLBACK_VF_OFFSET_LIMIT_KHZ = 500000", "VF offset fallback increased to 500 MHz for tail flatten")
+    # FP-01-005 / CT-03: THE VF offset range, in one place.
+    #
+    # These two gates used to pin the two CONTRADICTORY fallbacks that were the
+    # bug: the apply refused anything beyond 500,000 kHz while the range helper
+    # handed out +/-1,000,000 kHz, so on any board whose range could not be
+    # probed a FLATTEN generated a tail floor its own pre-check then refused --
+    # and the refusal skipped the branch owning the curve domain's only
+    # failCount++, so the apply reported SUCCESS for a curve it never wrote.
+    # A single struct now feeds the floor, the refusal limit and the write
+    # clamp, which makes that disagreement unrepresentable rather than merely
+    # fixed.
+    vf_range_policy_h = os.path.join(SOURCE_DIR, "vf_offset_range_policy.h")
+    vf_range_runtime_h = os.path.join(SOURCE_DIR, "vf_offset_range_runtime.h")
+    require_text(vf_range_policy_h, "VF_OFFSET_RANGE_FALLBACK_LIMIT_KHZ = 1000000",
+                 "the unprobeable-hardware fallback is named once")
+    require_text(vf_range_policy_h, "static inline int vf_offset_range_flatten_floor_khz(",
+                 "the FLATTEN tail floor is derived from the range, not hardcoded")
+    require_text(vf_range_policy_h, "static inline int vf_offset_range_hard_limit_khz(",
+                 "the out-of-range refusal limit is derived from the same range")
+    require_text(vf_range_runtime_h, "static VfOffsetRange vf_offset_range_current()",
+                 "one adapter turns live capability state into that range")
+    forbid_text(gpu_backend_apply_cpp, "FALLBACK_VF_OFFSET_LIMIT_KHZ",
+                "the apply must not carry its own offset-range fallback")
+    forbid_text(gpu_backend_apply_cpp, "= -1000000;",
+                "no hardcoded tail floor may bypass the range policy")
+    forbid_text(gpu_backend_apply_targets_h, "= -1000000;",
+                "no hardcoded tail floor may bypass the range policy")
     require_text(gpu_backend_apply_cpp, "tail point %d stuck at actual=%u target=%u", "tail point stuck diagnostic logging exists")
     require_text(gpu_backend_apply_cpp, "tail point %d out of range", "tail point out-of-range diagnostic logging exists")
-    require_text(os.path.join(SOURCE_DIR, "main_runtime_nvml.cpp"), "FALLBACK_VF_OFFSET_LIMIT_KHZ = 1000000", "VF offset range fallback uses GPU offset range (1000 MHz)")
 
     # FP-02-001: Uniform tail floor offset (Blackwell per-point delta fix)
-    require_text(gpu_backend_apply_cpp, "floorTailOffsetKHz", "uniform tail floor offset constant exists for initial tail loop")
+    require_text(gpu_backend_apply_targets_h, "floorTailOffsetKHz", "uniform tail floor offset constant exists for initial tail loop")
     require_text(gpu_backend_apply_cpp, "correctionFloorTailOffsetKHz", "uniform tail floor offset constant exists for correction passes")
     require_text(gpu_backend_apply_cpp, "tail uniform floor offset=%d", "correction pass logs uniform tail floor offset write")
-    require_text(gpu_backend_apply_cpp, "Determine the uniform floor offset for tail points.", "initial tail loop uses uniform floor for non-lock tail points")
+    require_text(gpu_backend_apply_targets_h, "Determine the uniform floor offset for tail points.", "initial tail loop uses uniform floor for non-lock tail points")
 
     # FP-02-002: Pre-tail point capture after restart (non-zero offset detection, guarded by profile load check)
     require_text(os.path.join(SOURCE_DIR, "main_runtime_control.cpp"), "preTailInferred", "pre-tail user-modified points inferred from non-zero live offset (guarded by hasPreTailExplicit)")

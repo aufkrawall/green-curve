@@ -23,6 +23,40 @@ static constexpr bool service_apply_core_requires_mixed_failure_rollback(
     return coreSuccessCount > 0 && coreFailCount > 0;
 }
 
+// The counter-based rule above has a hole this one closes.
+//
+// THE BUG (source-confirmed 2026-09-16, audit CT-04): a counter only moves
+// AFTER a driver call returns, so a write that mutated hardware and then
+// failed contributes to coreFailCount and to nothing else.  When it is the
+// FIRST core write of the apply -- a VF curve batch that partly applied before
+// the driver rejected a later point, a baseline reset that got halfway, a
+// transition clamp that was written and then refused -- the counters read
+// (success=0, fail=1), which the rule above classifies as "not a mixed apply"
+// and therefore as needing no recovery at all.  The hardware is in a partial
+// state and nothing runs to undo it.
+//
+// The fix is to record the ATTEMPT rather than infer it from the outcome: a
+// domain is marked attempted immediately before the driver call, so a failure
+// with zero successes is still a mutation that has to be recovered.
+//
+// `anyCoreDomainAttempted` must therefore include the transition clamp and the
+// baseline reset, which are hardware writes the old success counter never saw.
+static constexpr bool service_apply_core_requires_recovery(
+    bool anyCoreDomainAttempted, int coreFailCount) {
+    return anyCoreDomainAttempted && coreFailCount > 0;
+}
+
+static_assert(service_apply_core_requires_recovery(true, 1),
+    "a first core write that mutated and then failed must still recover");
+static_assert(!service_apply_core_requires_recovery(false, 1),
+    "a refusal that never reached the driver has nothing to recover");
+static_assert(!service_apply_core_requires_recovery(true, 0),
+    "an all-success core apply must not recover");
+static_assert(!service_apply_core_requires_recovery(false, 0),
+    "an untouched core apply must not recover");
+static_assert(service_apply_core_requires_recovery(true, 3),
+    "core recovery must not depend on exact failure counts");
+
 static_assert(!service_apply_core_requires_mixed_failure_rollback(0, 0),
     "an untouched core apply must not roll back");
 static_assert(!service_apply_core_requires_mixed_failure_rollback(1, 0),

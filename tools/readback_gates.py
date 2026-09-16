@@ -132,7 +132,10 @@ def check_all(ctx, require_text, forbid_text):
     require_text(linux_mutation_cpp,
                  "if (d->hasPowerLimit && !linux_power_request_is_inert(d, &snapshot, g))",
                  "an inert power request schedules no Linux power write")
-    require_text(linux_mutation_cpp,
+    # linux_backend_restore_snapshot() moved into its own shard under the
+    # source-size ratchet; the guarantee follows the code.
+    linux_rollback_h = _p(ctx, "linux_backend_rollback.h")
+    require_text(linux_rollback_h,
                  "powerOk = linux_read_power_limit_pair(g, &currentmW, &defaultmW) &&",
                  "Linux rollback is verified only while complete power readback remains")
     require_text(linux_mutation_cpp,

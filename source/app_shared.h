@@ -103,6 +103,10 @@
 // rewrites the VF curve, so a profile switch can never run the new (raised)
 // curve uncapped between the curve write and the lock write.
 #include "apply_clock_ceiling_policy.h"
+// THE VF offset range, in one place.  Consumed by the FLATTEN tail floor, the
+// apply's out-of-range refusal and the low-level write clamp, which used to
+// carry three different and mutually contradictory fallbacks.
+#include "vf_offset_range_policy.h"
 // OS-abstraction shim (dynamic loading, sleep, atomics, threads, bounded
 // strings, subprocess capture) used by the shared backend.
 #include "platform.h"
@@ -580,6 +584,20 @@ struct AppData {
     int appliedLockCi;
     unsigned int appliedLockFreq;
     LockMode appliedLockMode;
+    // Whether GREEN CURVE is the owner of each advanced-clock domain's current
+    // value, i.e. whether an apply of ours put it there.
+    //
+    // CT-08.  The baseline reset used to zero every nonzero probed
+    // XBAR/MSVDD/SYS/VIDEO value, and Apply then restored only the fields the
+    // incoming request named -- so a core-clock-only profile switch wiped an
+    // advanced offset that something else had set, and never put it back.
+    // These flags are what distinguishes "a previous profile of ours set this
+    // and the replacement drops it, so clean it up" from "this value is not
+    // ours, leave it alone".  Set on a verified advanced write, cleared when
+    // the domain is reset to stock.
+    bool appliedAdvancedOwnedXbar;
+    bool appliedAdvancedOwnedSysClk;
+    bool appliedAdvancedOwnedVideoClk;
     // Drift-free applied/owned VF curve intent, per point (0 = not owned; show live
     // readback instead). This is populated EXCLUSIVELY from intent (the applied or
     // service-active DesiredSettings), never from live g_app.curve readback. The

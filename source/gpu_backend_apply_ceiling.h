@@ -26,43 +26,136 @@
 // released (apply_clock_ceiling_release_on_abandon()).  The one path that
 // reaches the end of the apply with a raised curve and no resolved lock calls
 // retain() instead, which is what keeps that predicate honest.
+// The highest clock the OUTGOING state is entitled to run, which is what
+// bounds the transition together with the incoming request.
+//
+// For a pinned outgoing profile this is its pin, NOT its live VF curve peak:
+// a HARD profile's tail is deliberately left raw and high, and its safety
+// comes entirely from the pin.  Reading the curve there would produce the
+// 3637 MHz raw tail from the 2026-09-13 incident and "cap" the transition at a
+// value that caps nothing.  For everything else the live curve peak IS the
+// envelope -- the GPU is running it right now.
+static inline unsigned int apply_outgoing_ceiling_mhz() {
+    if (g_app.lockMode == LOCK_MODE_HARD && g_app.appliedLockFreq > 0)
+        return g_app.appliedLockFreq;
+    if (g_app.lockMode == LOCK_MODE_HARD && g_app.lockedFreq > 0)
+        return g_app.lockedFreq;
+    unsigned int peakMHz = 0;
+    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+        if (g_app.curve[ci].freq_kHz == 0) continue;
+        unsigned int mhz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
+        if (mhz > peakMHz) peakMHz = mhz;
+    }
+    return peakMHz;
+}
+
+// Whether the outgoing state is being held DOWN by something a reset-to-stock
+// removes.  When it is, the window between the reset and the new curve write
+// runs the GPU at stock, which is above BOTH profiles -- the transition state
+// neither the old nor the new profile ever validated.
+//
+// A purely positive outgoing offset fails this test on purpose: resetting it
+// only lowers the GPU, and the subsequent raise goes no higher than the
+// incoming profile's own intent.
+static inline bool apply_outgoing_state_holds_clocks_down() {
+    if (g_app.lockMode != LOCK_MODE_NONE) return true;
+    if (g_app.gpuClockOffsetkHz < 0) return true;
+    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+        if (g_app.curve[ci].freq_kHz == 0) continue;
+        if (g_app.freqOffsets[ci] < 0) return true;
+    }
+    return false;
+}
+
 struct ApplyClockCeilingGuard {
     ApplyClockCeilingPlan plan = {};
     bool armed = false;
     bool adopted = false;
+    // A clamp write was issued to the driver, whether or not it took.  The
+    // apply needs this even on the refusal path: a failed NVML write is still
+    // a hardware write attempt, so automatic restoration must latch off and
+    // the stability proof stays invalidated.
+    bool writeAttempted = false;
+    ApplyClockCeilingArmResult armResult = APPLY_CEILING_ARM_NOT_NEEDED;
 
     explicit ApplyClockCeilingGuard(const DesiredSettings* desired) {
         if (!desired) return;
+        // Resolve lazy NVML initialisation BEFORE reading the entry points.
+        // A null pointer that only means "NVML has not been loaded yet" used
+        // to select the no-protection path on the first apply of a process,
+        // which is exactly when a profile switch is most likely (logon
+        // restore, resume, tray pick right after start).
+        (void)nvml_ensure_ready();
+        const bool resetsToStock = desired->resetOcBeforeApply != 0;
+        const bool outgoingHoldsDown = apply_outgoing_state_holds_clocks_down();
+        const unsigned int outgoingCeiling = apply_outgoing_ceiling_mhz();
         plan = apply_clock_ceiling_plan(
             service_request_replaces_lock_domain(desired),
             desired->hasLock != 0, (int)desired->lockMode, desired->lockMHz,
             g_nvml_api.setGpuLockedClocks != nullptr &&
-                g_nvml_api.resetGpuLockedClocks != nullptr);
-        debug_log("apply ceiling: plan arm=%d ceiling=%u MHz finalPin=%d"
-                  " (hasLock=%d mode=%s lockMHz=%u nvmlSet=%d nvmlReset=%d)\n",
-            plan.arm ? 1 : 0, plan.ceilingMHz, plan.finalPinIsCeiling ? 1 : 0,
+                g_nvml_api.resetGpuLockedClocks != nullptr,
+            resetsToStock, outgoingHoldsDown, outgoingCeiling);
+        debug_log("apply ceiling: plan arm=%d required=%d reason=%s ceiling=%u MHz"
+                  " finalPin=%d symFallback=%d (hasLock=%d mode=%s lockMHz=%u"
+                  " resetToStock=%d outgoingHoldsDown=%d outgoingCeiling=%u"
+                  " outgoingMode=%s nvmlSet=%d nvmlReset=%d)\n",
+            plan.arm ? 1 : 0, plan.required ? 1 : 0,
+            apply_clock_ceiling_reason_name(plan.reason), plan.ceilingMHz,
+            plan.finalPinIsCeiling ? 1 : 0, plan.symmetricFallbackAllowed ? 1 : 0,
             desired->hasLock ? 1 : 0, lock_mode_name(desired->lockMode),
-            desired->lockMHz,
+            desired->lockMHz, resetsToStock ? 1 : 0, outgoingHoldsDown ? 1 : 0,
+            outgoingCeiling, lock_mode_name(g_app.lockMode),
             g_nvml_api.setGpuLockedClocks ? 1 : 0,
             g_nvml_api.resetGpuLockedClocks ? 1 : 0);
     }
 
     // Idempotent: the apply has two entry points into its first hardware write
     // (with and without reset-to-stock) and both must be covered.
-    void arm() {
-        if (!plan.arm || armed) return;
+    //
+    // Returns what actually happened, because the caller has to act on it.
+    // This used to return void and merely log a refusal, so a driver that
+    // rejected the clamp let the apply continue straight into reset-to-stock
+    // and the curve batch with no protection at all (audit CT-01) -- the
+    // uncapped sequence the whole mechanism exists to prevent.
+    ApplyClockCeilingArmResult arm() {
+        if (armed) return armResult;
+        if (!plan.arm) {
+            armResult = plan.required ? APPLY_CEILING_ARM_UNAVAILABLE
+                                      : APPLY_CEILING_ARM_NOT_NEEDED;
+            if (plan.required) {
+                debug_log("apply ceiling: protection REQUIRED (%s) but no clamp can be"
+                          " installed (ceiling=%u MHz nvmlSet=%d nvmlReset=%d);"
+                          " the transition will be refused before any write\n",
+                    apply_clock_ceiling_reason_name(plan.reason), plan.ceilingMHz,
+                    g_nvml_api.setGpuLockedClocks ? 1 : 0,
+                    g_nvml_api.resetGpuLockedClocks ? 1 : 0);
+            }
+            return armResult;
+        }
         set_last_apply_phase("apply: arm transition clock ceiling");
         char detail[128] = {};
+        writeAttempted = true;
         // Ceiling, not pin: a 0 minimum caps without also forcing the clock up
         // at idle.  A driver that refuses it still accepts the symmetric form,
-        // which caps correctly -- capping is the whole point.
+        // which caps correctly -- but that form adds a FLOOR, so it is only
+        // used where the plan says both endpoints permit it.
         if (nvml_set_gpu_locked_clocks(0, plan.ceilingMHz, detail, sizeof(detail))) {
             armed = true;
+            armResult = APPLY_CEILING_ARM_INSTALLED;
             apply_clock_witness_set_clamp(plan.ceilingMHz, true);
             debug_log("apply ceiling: armed 0..%u MHz before the first clock write\n",
                 plan.ceilingMHz);
             apply_clock_witness_record_at_arming("ceiling armed");
-            return;
+            return armResult;
+        }
+        if (!plan.symmetricFallbackAllowed) {
+            armResult = APPLY_CEILING_ARM_REFUSED;
+            debug_log("apply ceiling: open-ended clamp refused (%s) and the symmetric"
+                      " form is not permitted for a %s clamp -- it would add a clock"
+                      " FLOOR this request never asked for\n",
+                detail[0] ? detail : "unknown error",
+                apply_clock_ceiling_reason_name(plan.reason));
+            return armResult;
         }
         debug_log("apply ceiling: open-ended clamp refused (%s); retrying symmetric\n",
             detail[0] ? detail : "unknown error");
@@ -70,18 +163,46 @@ struct ApplyClockCeilingGuard {
         if (nvml_set_gpu_locked_clocks(plan.ceilingMHz, plan.ceilingMHz, detail,
                                        sizeof(detail))) {
             armed = true;
+            armResult = APPLY_CEILING_ARM_INSTALLED;
             apply_clock_witness_set_clamp(plan.ceilingMHz, true);
             debug_log("apply ceiling: armed %u..%u MHz before the first clock write\n",
                 plan.ceilingMHz, plan.ceilingMHz);
             apply_clock_witness_record_at_arming("ceiling armed");
-            return;
+            return armResult;
         }
-        // Not fatal: the apply is no worse off than it was before this guard
-        // existed.  It IS the single most useful line in the log if the driver
-        // falls over during a profile switch, so it is logged at full volume.
-        debug_log("apply ceiling: COULD NOT ARM clamp at %u MHz (%s); the VF curve"
-                  " write below runs uncapped until the lock step\n",
-            plan.ceilingMHz, detail[0] ? detail : "unknown error");
+        armResult = APPLY_CEILING_ARM_REFUSED;
+        // The single most useful line in the log if the driver falls over
+        // during a profile switch, so it is logged at full volume.  Unlike the
+        // pre-fix version it is no longer followed by the write it is warning
+        // about: the caller refuses the transition instead.
+        debug_log("apply ceiling: COULD NOT ARM clamp at %u MHz (%s); protection was"
+                  " %s\n",
+            plan.ceilingMHz, detail[0] ? detail : "unknown error",
+            plan.required ? "REQUIRED -- refusing the transition before any"
+                            " clock write"
+                          : "optional -- continuing");
+        return armResult;
+    }
+
+    // Whether this apply must stop before mutating anything.
+    bool must_refuse_transition() const {
+        return apply_clock_ceiling_transition_must_refuse(plan.required, armResult);
+    }
+
+    // What to tell the user.  Names the specific transition and the specific
+    // missing capability rather than reporting a generic failure, because the
+    // whole point of refusing here is that everything else about this GPU
+    // still works: fan, memory, power and any request that does not raise a
+    // clock past the outgoing envelope are unaffected.
+    void refusal_message(char* out, size_t outSize) const {
+        const char* why = (armResult == APPLY_CEILING_ARM_REFUSED)
+            ? "the driver refused it"
+            : "this driver exposes no usable locked-clock control";
+        set_message(out, outSize,
+            "This profile switch needs a temporary %u MHz clock cap while the VF"
+            " curve is rewritten (%s), but %s. No clock settings were changed."
+            " Fan, memory and power settings are unaffected.",
+            plan.ceilingMHz, apply_clock_ceiling_reason_name(plan.reason), why);
     }
 
     // The final lock step took ownership of the locked-clock domain, so the

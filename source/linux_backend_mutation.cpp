@@ -247,114 +247,9 @@ bool linux_backend_capture_snapshot(LinuxGpuState* g, LinuxHardwareSnapshot* sna
     return snapshot->valid;
 }
 
-bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapshot* snapshot,
-                                    unsigned int phaseMask, char* err, size_t errSize) {
-    if (err && errSize) err[0] = 0;
-    if (!g || !snapshot || !snapshot->valid) {
-        gc_strlcpy(err, errSize, "rollback snapshot is invalid");
-        return false;
-    }
-    bool ok = true;
-    bool baseline = (phaseMask & LINUX_MUTATION_RESET_BASELINE) != 0;
-    if ((baseline || (phaseMask & LINUX_MUTATION_GPU_OFFSET)) && snapshot->gpuOffsetValid)
-        ok &= nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, snapshot->gpuOffsetMHz);
-    if ((baseline || (phaseMask & LINUX_MUTATION_MEM_OFFSET)) && snapshot->memOffsetValid) {
-        // Snapshot is display MHz; the NVML wire unit is effective MHz.
-        int restoreEffectiveMHz =
-            nvml_mem_effective_mhz_from_display_mhz(snapshot->memOffsetMHz);
-        lb_log("offset: rollback domain=%u display=%d effective=%d\n",
-               (unsigned int)NVML_CLOCK_MEM, snapshot->memOffsetMHz,
-               restoreEffectiveMHz);
-        ok &= nvml_set_clock_offset(g, NVML_CLOCK_MEM, restoreEffectiveMHz);
-    }
-    if (((baseline && (snapshot->availableMutationDomains &
-                       SERVICE_MUTATION_DOMAIN_XBAR)) ||
-         (phaseMask & LINUX_MUTATION_XBAR)) &&
-        snapshot->xbarValid) {
-        ok &= linux_xbar_write_owned(g, snapshot->xbarOffsetKhz,
-                                     snapshot->xbarMsvddOffsetUv,
-                                     true, true);
-    }
-    if (((baseline && (snapshot->availableMutationDomains &
-                       SERVICE_MUTATION_DOMAIN_SYS_CLK)) ||
-         (phaseMask & LINUX_MUTATION_SYS_CLK)) &&
-        snapshot->sysClkValid) {
-        ok &= linux_xbar_write_entry(g, XBAR_PINNED_SYS_ENTRY_INDEX,
-                                     snapshot->sysClkOffsetKhz);
-    }
-    if (((baseline && (snapshot->availableMutationDomains &
-                       SERVICE_MUTATION_DOMAIN_VIDEO_CLK)) ||
-         (phaseMask & LINUX_MUTATION_VIDEO_CLK)) &&
-        snapshot->videoClkValid) {
-        ok &= linux_xbar_write_entry(g, XBAR_PINNED_VIDEO_ENTRY_INDEX,
-                                     snapshot->videoClkOffsetKhz);
-    }
-    if ((phaseMask & LINUX_MUTATION_POWER) && snapshot->powerValid && g->nvml.setPowerLimit) {
-        bool powerOk = g->nvml.setPowerLimit(g->nvmlDevice, snapshot->powerLimitmW) == NVML_SUCCESS;
-        if (powerOk) {
-            unsigned int currentmW = 0;
-            unsigned int defaultmW = 0;
-            powerOk = linux_read_power_limit_pair(g, &currentmW, &defaultmW) &&
-                      currentmW == snapshot->powerLimitmW;
-            g->powerLimitCurrentmW = currentmW > 0 ? (int)currentmW : 0;
-            g->powerLimitDefaultmW = defaultmW > 0 ? (int)defaultmW : 0;
-        }
-        ok &= powerOk;
-    }
-    if ((phaseMask & LINUX_MUTATION_CURVE) && snapshot->curveValid)
-        ok &= apply_curve_offsets_verified(g, snapshot->curveOffsets, snapshot->curveMask, 25);
-    if ((phaseMask & LINUX_MUTATION_FAN) && snapshot->fanValid) {
-        for (unsigned int i = 0; i < snapshot->fanCount; ++i) {
-            bool fanOk = false;
-            if (snapshot->fanPolicy[i] == NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW) {
-                if (g->nvml.setDefaultFanSpeed)
-                    fanOk = g->nvml.setDefaultFanSpeed(g->nvmlDevice, i) == NVML_SUCCESS;
-                else if (g->nvml.setFanControlPolicy)
-                    fanOk = g->nvml.setFanControlPolicy(g->nvmlDevice, i,
-                        NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW) == NVML_SUCCESS;
-            } else if (g->nvml.setFanSpeed) {
-                fanOk = g->nvml.setFanSpeed(g->nvmlDevice, i, snapshot->fanTargetPercent[i]) == NVML_SUCCESS;
-            }
-            if (fanOk && snapshot->fanPolicy[i] == NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW) {
-                unsigned int verifyPolicy = 0;
-                fanOk = g->nvml.getFanControlPolicy &&
-                        g->nvml.getFanControlPolicy(g->nvmlDevice, i, &verifyPolicy) == NVML_SUCCESS &&
-                        verifyPolicy == NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW;
-            } else if (fanOk) {
-                // Same trap as the forward write: the measured duty is not a
-                // readback.  Confirm the restored *intent* instead.
-                int intended = 0;
-                bool intendedKnown = nvml_read_fan_intent(g, i, &intended);
-                int measured = nvml_read_fan_measured(g, i);
-                fanOk = fan_manual_write_confirmed((int)snapshot->fanTargetPercent[i],
-                    measured < 0 ? 0 : measured, intended, intendedKnown);
-                if (!fanOk) {
-                    lb_log("fan: rollback readback mismatch for fan %u "
-                           "(want=%u intent=%s%d measured=%d)\n",
-                           i, snapshot->fanTargetPercent[i],
-                           intendedKnown ? "" : "unknown:", intended, measured);
-                }
-            }
-            if (!fanOk) lb_log("fan: rollback verification failed for fan %u\n", i);
-            ok &= fanOk;
-        }
-    }
-    if (baseline || (phaseMask & LINUX_MUTATION_LOCK) ||
-        (phaseMask & LINUX_MUTATION_LOCK_CEILING)) {
-        // NVML exposes no getter for the configured locked-clock range.  Release
-        // a lock written by this transaction, but never claim that the unknown
-        // pre-transaction lock policy was restored exactly.  The
-        // F-APPLY-CEILING transition clamp is written by this transaction too,
-        // and the rollback above has just put the curve and offsets back, so it
-        // must not be left standing as an invisible cap.
-        if (g->nvml.resetGpuLockedClocks)
-            g->nvml.resetGpuLockedClocks(g->nvmlDevice);
-        ok = false;
-    }
-    if (!ok) gc_strlcpy(err, errSize, "one or more GPU rollback phases failed");
-    linux_backend_refresh(g);
-    return ok;
-}
+// Rollback: putting the captured hardware snapshot back, and deciding whether
+// the clock restriction protecting it may be lifted.
+#include "linux_backend_rollback.h"
 
 // Whether an owned power request asks for nothing this board could do anyway.
 //
@@ -483,6 +378,11 @@ struct LinuxApplyTransactionContext {
     LinuxGpuState* gpu;
     const DesiredSettings* desired;
     const LinuxHardwareSnapshot* snapshot;
+    // The intent this daemon last committed.  NVML exposes no getter for a
+    // configured locked-clock range, so this is the only record of an OUTGOING
+    // pin -- and the transition ceiling is bounded by the lower of the
+    // outgoing and incoming entitlements, so it has to reach the arming phase.
+    const DesiredSettings* committedIntent;
     int curveTargets[VF_NUM_POINTS];
     bool curveMask[VF_NUM_POINTS];
     int fanTargetPercent;
@@ -495,7 +395,7 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
     const DesiredSettings* d = context->desired;
     switch (phase) {
         case LINUX_MUTATION_LOCK_CEILING:
-            return linux_apply_arm_transition_ceiling(g, d);
+            return linux_apply_arm_transition_ceiling(g, d, context->committedIntent);
         case LINUX_MUTATION_RESET_BASELINE: {
             if (!nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0) ||
                 !nvml_set_clock_offset(g, NVML_CLOCK_MEM, 0) ||
@@ -588,6 +488,11 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
                                         char* result, size_t resultSize) {
     LinuxHardwareSnapshot snapshot = {};
     char preflight[256] = {};
+    // Record what this transaction is LEAVING before any phase runs, so
+    // rollback can tell "restoring an ordinary overclock" from "restoring a
+    // curve whose safety came entirely from a pin" (CT-07).
+    linux_apply_ceiling_reset_state();
+    linux_apply_ceiling_note_outgoing(committedIntent);
     linux_backend_refresh(g);
     if (!linux_backend_capture_snapshot(g, &snapshot, preflight, sizeof(preflight)) ||
         !linux_backend_preflight(g, d, &snapshot, preflight, sizeof(preflight))) {
@@ -596,8 +501,8 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
         return mutation;
     }
     bool hardLock = d->hasLock && d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
-    LinuxApplyTransactionContext context = {g, d, &snapshot, {}, {},
-        d->fanPercent, false};
+    LinuxApplyTransactionContext context = {g, d, &snapshot, committedIntent,
+        {}, {}, d->fanPercent, false};
     gc_u32 requestedDomains = service_desired_mutation_domains(d);
     int cleanupPointCount = 0;
     LinuxCurveTargetBuildResult curveBuild = {};
@@ -649,8 +554,18 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     unsigned int requested = 0;
     // F-APPLY-CEILING first, so the clamp exists before the reset drops the old
     // ceiling and before the curve write installs the new (higher) one.
-    if (linux_apply_clock_ceiling_plan(g, d).arm)
-        requested |= LINUX_MUTATION_LOCK_CEILING;
+    //
+    // CT-01.  The phase is requested when protection is REQUIRED, not only when
+    // it can be armed.  Gating on `.arm` alone meant that a GPU with no usable
+    // locked-clock control simply omitted the phase and ran the unprotected
+    // transition -- the refusal inside the phase body could never execute
+    // because the phase was never scheduled.
+    {
+        ApplyClockCeilingPlan ceilingPlan =
+            linux_apply_clock_ceiling_plan(g, d, committedIntent);
+        if (ceilingPlan.arm || ceilingPlan.required)
+            requested |= LINUX_MUTATION_LOCK_CEILING;
+    }
     if (d->resetOcBeforeApply) requested |= LINUX_MUTATION_RESET_BASELINE;
     if (d->hasGpuOffset && !curveBuild.composedGpuOffset)
         requested |= LINUX_MUTATION_GPU_OFFSET;

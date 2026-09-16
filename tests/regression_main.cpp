@@ -53,6 +53,7 @@
 #include "linux_profile_mem_migration.h"
 #include "linux_transaction.h"
 #include "apply_clock_ceiling_policy.h"
+#include "vf_offset_range_policy.h"
 #include "linux_curve_targets.h"
 #include "fan_runtime_policy.h"
 #include "fan_zero_rpm_gui_policy.h"
@@ -6788,6 +6789,259 @@ static int run_all_tests(int argc, char** argv) {
         if (apply_clock_ceiling_release_on_abandon(true, true)) return 5213;
         if (apply_clock_ceiling_release_on_abandon(false, false)) return 5214;
         if (apply_clock_ceiling_release_on_abandon(false, true)) return 5215;
+    }
+
+    // =====================================================================
+    // The 2026-09-16 clock-transition audit, CT-01 .. CT-08.
+    //
+    // Every assertion in this block fails against the pre-fix code.  The
+    // findings were verified by reading the reachable control flow, not by
+    // reproducing a new crash, so each one names the exact path it closes.
+    // =====================================================================
+    {
+        // ---- CT-01/CT-05: WHEN is a transition clamp actually required? ----
+        //
+        // The old predicate was "the request names a lock".  That misses the
+        // whole class of transitions where the DANGER comes from what is being
+        // left rather than from what is being asked for: a reset-to-stock that
+        // removes a flatten floor, a negative offset or an old pin runs the GPU
+        // at stock -- above BOTH profiles -- for the window between the reset
+        // and the new curve write.
+        //
+        // An unpinned undervolt switching to another unpinned undervolt got no
+        // clamp at all under the old rule, because neither profile named a
+        // lock.  This is CT-05.
+        ApplyClockCeilingPlan uvToUv = apply_clock_ceiling_plan(
+            true, false, LOCK_MODE_NONE, 0, true,
+            /*resetsToStock=*/true, /*outgoingStateHoldsClocksDown=*/true,
+            /*outgoingCeilingMHz=*/2800);
+        if (!uvToUv.arm || !uvToUv.required) return 5400;
+        if (uvToUv.ceilingMHz != 2800) return 5401;
+        if (uvToUv.reason != APPLY_CEILING_REASON_RESET_DROPS_CAP) return 5402;
+        // Never the symmetric form for an unpinned profile: that adds a clock
+        // FLOOR, which would force this user's idle clock up to 2800 MHz on a
+        // profile whose entire point is running cooler.
+        if (uvToUv.symmetricFallbackAllowed) return 5403;
+        if (uvToUv.finalPinIsCeiling) return 5404;
+
+        // A purely POSITIVE outgoing offset is the case that needs nothing: the
+        // reset only lowers the GPU, and the raise that follows goes no higher
+        // than the incoming profile's own intent.  Arming here would be an
+        // invisible cap nobody asked for.
+        if (apply_clock_ceiling_plan(true, false, LOCK_MODE_NONE, 0, true,
+                                     true, false, 3100).arm) return 5405;
+        // No reset means no stock excursion to protect against either.
+        if (apply_clock_ceiling_plan(true, false, LOCK_MODE_NONE, 0, true,
+                                     false, true, 3100).arm) return 5406;
+
+        // ---- The bound is the LOWER of the two applicable ceilings ----
+        //
+        // A low pin -> high pin switch is the case this fixes.  Taking the
+        // INCOMING value alone relaxes the old 2700 MHz pin onto the old curve
+        // the instant the clamp is armed, before the new curve exists.  The old
+        // pin has to keep holding until the new curve is written and verified;
+        // only then does the final lock step raise the ceiling to 2957.
+        ApplyClockCeilingPlan lowToHigh = apply_clock_ceiling_plan(
+            true, true, LOCK_MODE_HARD, 2957, true, true, true, 2700);
+        if (!lowToHigh.arm || lowToHigh.ceilingMHz != 2700) return 5407;
+        // The transition bound is NOT the final pin here, so the guard must not
+        // believe the final lock step will re-assert its value for it.
+        if (lowToHigh.finalPinIsCeiling) return 5408;
+        // Symmetric IS allowed: a floor at min(old, new) is a value both
+        // endpoints already permit, so it cannot exceed either envelope.
+        if (!lowToHigh.symmetricFallbackAllowed) return 5409;
+
+        // High pin -> low pin: protection tightens to the incoming value before
+        // anything that depends on it is written.
+        ApplyClockCeilingPlan highToLow = apply_clock_ceiling_plan(
+            true, true, LOCK_MODE_HARD, 2700, true, true, true, 2957);
+        if (highToLow.ceilingMHz != 2700) return 5410;
+        // Equal pins: the transition bound IS the final pin, so the final lock
+        // step re-asserts the same number and no separate release is needed.
+        ApplyClockCeilingPlan sameToSame = apply_clock_ceiling_plan(
+            true, true, LOCK_MODE_HARD, 2957, true, true, true, 2957);
+        if (!sameToSame.finalPinIsCeiling) return 5411;
+
+        // ---- CT-01: required vs available are different questions ----
+        //
+        // A missing NVML entry point used to turn "protection required" into
+        // "no plan", and the apply ran the unprotected sequence.  It is now a
+        // plan that is required and cannot be armed, which the call site turns
+        // into a refusal BEFORE any mutation.
+        ApplyClockCeilingPlan noNvml = apply_clock_ceiling_plan(
+            true, true, LOCK_MODE_HARD, 2957, false, true, true, 2957);
+        if (noNvml.arm) return 5412;
+        if (!noNvml.required) return 5413;
+        if (!apply_clock_ceiling_transition_must_refuse(
+                noNvml.required, APPLY_CEILING_ARM_UNAVAILABLE)) return 5414;
+        // A driver that refused every permitted clamp form is the same verdict:
+        // a write was attempted, and no dependent write may follow.
+        if (!apply_clock_ceiling_transition_must_refuse(
+                true, APPLY_CEILING_ARM_REFUSED)) return 5415;
+        if (apply_clock_ceiling_transition_must_refuse(
+                true, APPLY_CEILING_ARM_INSTALLED)) return 5416;
+        // Protection that was never required does not refuse anything.  This is
+        // what keeps default read/write support for unprobeable and unsupported
+        // GPUs intact: only the specific transition that cannot be made safe
+        // fails, never the whole write surface.
+        if (apply_clock_ceiling_transition_must_refuse(
+                false, APPLY_CEILING_ARM_UNAVAILABLE)) return 5417;
+        if (apply_clock_ceiling_transition_must_refuse(
+                false, APPLY_CEILING_ARM_REFUSED)) return 5418;
+
+        // Required but with no defensible number: arming at a guess would
+        // either fail to cap or impose a limit nobody asked for, and the log
+        // would claim the transition was protected either way.
+        ApplyClockCeilingPlan noBound = apply_clock_ceiling_plan(
+            true, false, LOCK_MODE_NONE, 0, true, true, true, 0);
+        if (noBound.arm) return 5419;
+        if (!noBound.required) return 5420;
+
+        // A sparse fan/memory/power request still installs nothing: it does not
+        // own the clock domain, so it neither needs nor may clamp it.
+        if (apply_clock_ceiling_plan(false, false, LOCK_MODE_NONE, 0, true,
+                                     true, true, 2957).required) return 5421;
+    }
+
+    {
+        // ---- CT-04: releasing a restriction requires proof, not optimism ----
+        //
+        // rollback_to_safe_defaults() discarded every reset's return value and
+        // then unlocked unconditionally; service_reset_all() did the same and
+        // logged a failed unlock as "may be benign".  A failed curve reset
+        // means the GPU is NOT at stock, and lifting the cap there hands the
+        // user a raised curve with nothing holding it down.
+        ApplyRecoveryResult clean = {};
+        clean.curve.attempted = true;
+        clean.curve.verified = true;
+        clean.gpuOffset.verified = true;
+        if (!apply_recovery_permits_release(clean)) return 5430;
+
+        ApplyRecoveryResult curveFailed = {};
+        curveFailed.curve.attempted = true;   // written, not verified
+        curveFailed.gpuOffset.verified = true;
+        if (apply_recovery_permits_release(curveFailed)) return 5431;
+
+        ApplyRecoveryResult offsetFailed = {};
+        offsetFailed.curve.verified = true;
+        offsetFailed.gpuOffset.attempted = true;
+        if (apply_recovery_permits_release(offsetFailed)) return 5432;
+
+        // Un-attempted is safe, not uncertain: nothing was raised in that
+        // domain, so there is nothing to undo.  Conflating the two would strand
+        // a cap on every apply that only touched, say, memory.
+        ApplyRecoveryResult untouched = {};
+        untouched.curve.verified = true;
+        untouched.gpuOffset.verified = true;
+        if (!apply_recovery_permits_release(untouched)) return 5433;
+        if (apply_recovery_domain_is_uncertain(untouched.curve)) return 5434;
+        if (!apply_recovery_domain_is_uncertain(curveFailed.curve)) return 5435;
+
+        // A cap that survives recovery has to be VISIBLE.  A silent one is
+        // indistinguishable from a broken GPU, and the old code's only record
+        // of it was a debug line.
+        ApplyRecoveryResult retained = curveFailed;
+        if (!apply_recovery_must_report_retained_cap(retained, true)) return 5436;
+        ApplyRecoveryResult released = clean;
+        released.restrictionReleased = true;
+        if (apply_recovery_must_report_retained_cap(released, true)) return 5437;
+        // Nothing was restricting anything: no report.
+        if (apply_recovery_must_report_retained_cap(retained, false)) return 5438;
+    }
+
+    {
+        // ---- CT-04: recovery keys off the ATTEMPT, not the success count ----
+        //
+        // A counter only moves after a driver call RETURNS.  The first core
+        // write of an apply -- a curve batch that partly applied before the
+        // driver rejected a later point, a baseline reset that got halfway, the
+        // transition clamp itself -- therefore produced (success=0, fail=1),
+        // which the old mixed-result rule classified as "nothing to roll back"
+        // while the hardware sat in a partial state.
+        if (!service_apply_core_requires_recovery(true, 1)) return 5440;
+        // ... and the old rule is exactly what it must no longer agree with:
+        if (service_apply_core_requires_mixed_failure_rollback(0, 1)) return 5441;
+        // A refusal that never reached the driver has nothing to recover.
+        if (service_apply_core_requires_recovery(false, 1)) return 5442;
+        if (service_apply_core_requires_recovery(true, 0)) return 5443;
+        if (service_apply_core_requires_recovery(false, 0)) return 5444;
+        // The two rules still agree on the case the old one got right.
+        if (!service_apply_core_requires_recovery(true, 1) ||
+            !service_apply_core_requires_mixed_failure_rollback(1, 1)) return 5445;
+    }
+
+    {
+        // ---- CT-03: ONE VF offset range ----
+        //
+        // THE bug: three answers that disagreed.  get_curve_offset_range_khz()
+        // returned known=false while still handing out +/-1,000,000 kHz; the
+        // FLATTEN tail floor took a hardcoded -1,000,000 kHz; and the apply's
+        // own pre-write check refused anything beyond 500,000 kHz.  So on a
+        // board whose range could not be probed, a FLATTEN generated a floor
+        // that its own pre-check refused -- and that refusal skipped the branch
+        // owning the curve domain's only failCount++, so the apply returned
+        // failCount == 0.  SUCCESS, for a profile that never reached the GPU,
+        // with the transition clamp released on the way out.
+        //
+        // The invariant that makes this unrepresentable: a floor this policy
+        // produces is always one the same policy permits.
+        VfOffsetRange fallback = vf_offset_range_fallback();
+        if (fallback.known) return 5450;
+        if (!vf_offset_range_permits_khz(
+                fallback, vf_offset_range_flatten_floor_khz(fallback))) return 5451;
+
+        VfOffsetRange probed = vf_offset_range_from_probe(true, -1000000, 1000000);
+        if (!probed.known) return 5452;
+        if (!vf_offset_range_permits_khz(
+                probed, vf_offset_range_flatten_floor_khz(probed))) return 5453;
+
+        // The exact pre-fix reproduction: floor -1,000,000 kHz against a
+        // 500,000 kHz limit.  Both now come off the same struct, so the floor
+        // is inside the limit by construction.
+        if (vf_offset_range_flatten_floor_khz(fallback) != -1000000) return 5454;
+        if (vf_offset_range_hard_limit_khz(fallback) != 1000000) return 5455;
+
+        // An asymmetric driver range: the refusal limit is the larger
+        // magnitude, and the floor is still the range's own minimum.
+        VfOffsetRange asym = vf_offset_range_from_probe(true, -400000, 250000);
+        if (vf_offset_range_hard_limit_khz(asym) != 400000) return 5456;
+        if (vf_offset_range_flatten_floor_khz(asym) != -400000) return 5457;
+        if (!vf_offset_range_permits_khz(
+                asym, vf_offset_range_flatten_floor_khz(asym))) return 5458;
+        // Magnitude-based, matching the pre-write check it replaces.
+        if (!vf_offset_range_permits_khz(asym, 400000)) return 5459;
+        if (vf_offset_range_permits_khz(asym, 400001)) return 5460;
+
+        // An inverted or empty probe is not a range; it falls back rather than
+        // producing a window nothing can satisfy.
+        VfOffsetRange inverted = vf_offset_range_from_probe(true, 500, -500);
+        if (inverted.known) return 5461;
+        if (vf_offset_range_hard_limit_khz(inverted) != 1000000) return 5462;
+        VfOffsetRange unprobed = vf_offset_range_from_probe(false, -300000, 300000);
+        if (unprobed.known) return 5463;
+
+        // A positive-only range has no floor to give, so the flatten floor
+        // falls back rather than returning a positive "minimum" that would
+        // raise the tail it is supposed to push down.
+        VfOffsetRange positiveOnly = vf_offset_range_from_probe(true, 0, 300000);
+        if (vf_offset_range_flatten_floor_khz(positiveOnly) >= 0) return 5464;
+
+        // The clamp REPORTS that it altered a request.  The old one returned
+        // only the number, so a request the driver could not honour silently
+        // became a different request that verification then compared against
+        // the original target.
+        bool altered = true;
+        if (vf_offset_range_clamp_khz(asym, -100000, &altered) != -100000) return 5465;
+        if (altered) return 5466;
+        if (vf_offset_range_clamp_khz(asym, -900000, &altered) != -400000) return 5467;
+        if (!altered) return 5468;
+        if (vf_offset_range_clamp_khz(asym, 900000, &altered) != 250000) return 5469;
+        if (!altered) return 5470;
+        // Exact endpoints are not alterations.
+        if (vf_offset_range_clamp_khz(asym, -400000, &altered) != -400000 ||
+            altered) return 5471;
+        if (vf_offset_range_clamp_khz(asym, 250000, &altered) != 250000 ||
+            altered) return 5472;
     }
 
     // F-APPLY-CEILING ordering on Linux: the ceiling phase must execute before
