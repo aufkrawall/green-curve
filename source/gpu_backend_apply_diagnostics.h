@@ -54,6 +54,15 @@ static void apply_log_post_apply_curve_diagnostics(
                     int firstTail = -1, lastTail = -1;
                     unsigned int firstTailActual = 0, firstTailTarget = 0;
                     unsigned int lastTailActual = 0, lastTailTarget = 0;
+                    // A point that ends up FAR below what was asked for is the
+                    // shape of a silent wrong result: the apply can still report
+                    // success (the offset it wrote verified, or the shortfall was
+                    // accepted as driver-conservative) while the profile is not
+                    // doing what it says.  On 2026-09-17 slot 1 reported success
+                    // with points 74/75 sitting 465 and 360 MHz low.  Count and
+                    // name them so that never reads as a clean apply again.
+                    int farBelow = 0, farBelowCi = -1;
+                    unsigned int farBelowActual = 0, farBelowTarget = 0, farBelowWorst = 0;
                     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
                         if (!verifyDesired.hasCurvePoint[ci]) continue;
                         if (g_app.curve[ci].freq_kHz == 0) continue;
@@ -62,6 +71,15 @@ static void apply_log_post_apply_curve_diagnostics(
                         unsigned int delta = actualMHz > targetMHz ? actualMHz - targetMHz : targetMHz - actualMHz;
                         int tol = (int)curve_point_verify_tolerance_mhz(ci);
                         bool isTail = (lockedTailMask[ci] && lockMhz > 0);
+                        if (targetMHz > actualMHz && (targetMHz - actualMHz) >= 100) {
+                            farBelow++;
+                            if ((targetMHz - actualMHz) > farBelowWorst) {
+                                farBelowWorst = targetMHz - actualMHz;
+                                farBelowCi = ci;
+                                farBelowActual = actualMHz;
+                                farBelowTarget = targetMHz;
+                            }
+                        }
                         if (selective && !isTail && !explicitMask[ci]) {
                             const bool overOffset = (long long)g_app.freqOffsets[ci] >
                                 (long long)targetOffsets[ci] + 12000;
@@ -103,6 +121,10 @@ static void apply_log_post_apply_curve_diagnostics(
                     if (tailOff > 0 || nonTailOff > 0) {
                         debug_log("post-apply curve summary: tail=%dOK+%dOFF boost=%dOK+%dOFF\n",
                             tailOK, tailOff, nonTailOK, nonTailOff);
+                    }
+                    if (farBelow > 0) {
+                        debug_log("post-apply SHORTFALL: %d point(s) landed >=100 MHz below the requested curve; worst ci=%d actual=%u target=%u (short by %u MHz). The apply may still report success -- check whether this profile is being applied at all.\n",
+                            farBelow, farBelowCi, farBelowActual, farBelowTarget, farBelowWorst);
                     }
                     if (hasLock && lockMhz > 0) {
                         flattenApplied = tailOK;

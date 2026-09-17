@@ -370,46 +370,40 @@ static int run(){
        LOCK_MODE_NONE,mixedTail,0,mixedDetail,sizeof(mixedDetail)));
    }
  }
- // Profile 1's shape: no GPU offset at all, every point saved with
- // pointN_offset_khz=0 -- a recording of where stock sat, not a request. Under
- // load point 74 (saved 2902 MHz) read 2932, one VF bin up, and failed an apply
- // against a number the profile never asked anyone to hold.
+ // Profile 1's shape, and the rule that was briefly INVERTED here. Its curve
+ // section stores `point74_mhz=2902` with `point74_offset_khz=0` -- and stores
+ // offset 0 for the flatten tail too, which unambiguously needs a large
+ // NEGATIVE offset. So that field is hardware state at save time, not intent:
+ // the MHz is the intent. Treating a zero saved offset as "this point wants
+ // nothing" made slot 1 apply cleanly while leaving points 74/75 at stock,
+ // 465 and 360 MHz below the profile, and report success for it.
  {
    DesiredSettings stock{};
    stock.hasCurvePoint[74]=true;stock.curvePointMHz[74]=2902;
-   stock.curvePointFromGpuOffset[74]=true;
-   bool mask74[VF_NUM_POINTS]{},tail74[VF_NUM_POINTS]{};
+   // No provenance: nothing projected this, so it keeps absolute authority.
+   bool mask74[VF_NUM_POINTS]{};mask74[74]=true;
+   bool tail74[VF_NUM_POINTS]{};
    int target74[VF_NUM_POINTS]{};char detail74[128]{};
-   g_app.freqOffsets[74]=0;
-   // selective=0 here: this profile never routes an offset through the curve
-   // batch, which is exactly the case the first routing-gated fix missed.
-   for(unsigned int mhz:{2902u,2932u}){
-     g_app.curve[74].freq_kHz=mhz*1000;
-     CHECK(apply_verify_curve_targets(&stock,mask74,target74,true,false,false,
-       LOCK_MODE_NONE,tail74,0,detail74,sizeof(detail74)));
-   }
-   // A real offset appearing on a point asked to stay at stock still fails.
-   g_app.freqOffsets[74]=100000;
+   g_app.freqOffsets[74]=465000;
+   g_app.curve[74].freq_kHz=2902000;
+   CHECK(apply_verify_curve_targets(&stock,mask74,target74,true,false,false,
+     LOCK_MODE_NONE,tail74,0,detail74,sizeof(detail74)));
+   // Landing at stock instead of the asked-for frequency is a FAILURE, not a
+   // success with a quiet note. This is the assertion the inverted rule broke.
+   g_app.freqOffsets[74]=0;g_app.curve[74].freq_kHz=2437000;
    CHECK(!apply_verify_curve_targets(&stock,mask74,target74,true,false,false,
      LOCK_MODE_NONE,tail74,0,detail74,sizeof(detail74)));
-   // Negative control: without provenance the shifted stock base fails, which
-   // is the reported bug.
-   g_app.freqOffsets[74]=0;g_app.curve[74].freq_kHz=2932000;
-   DesiredSettings held=stock;held.curvePointFromGpuOffset[74]=false;
-   bool heldMask[VF_NUM_POINTS]{};heldMask[74]=true;
-   CHECK(!apply_verify_curve_targets(&held,heldMask,target74,true,false,false,
-     LOCK_MODE_NONE,tail74,0,detail74,sizeof(detail74)));
-   // The target stays offset 0 whatever base the driver reports, and without a
-   // GPU offset in the request at all.
+   // And the target really does chase the base for such a point, because here
+   // the caller is genuinely asking to land on a frequency.
    bool pop74[VF_NUM_POINTS]{},bmask[VF_NUM_POINTS]{};
    int off74[VF_NUM_POINTS]{},freq74[VF_NUM_POINTS]{};
    pop74[74]=true;
-   for(int baseMHz:{2902,2932}){
+   for(int baseMHz:{2437,2467}){
      freq74[74]=baseMHz*1000;off74[74]=0;
      int built74[VF_NUM_POINTS]{};
      CHECK(apply_build_curve_targets(&stock,true,false,false,LOCK_MODE_NONE,0,0,false,0,0,0,
        pop74,off74,freq74,tail74,built74,bmask));
-     CHECK(built74[74]==0);CHECK(bmask[74]);
+     CHECK(built74[74]==2902000-baseMHz*1000);CHECK(bmask[74]);
    }
  }
  // The shared offset policy. Four sites used to re-derive this independently;

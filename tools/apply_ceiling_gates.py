@@ -281,9 +281,6 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                 "projected points keep the requested offset, not absolute-minus-live-base")
     require_text(_p(ctx, "linux_curve_targets.h"), "desired->curvePointFromGpuOffset[i]",
                  "Linux target building honours the same provenance rule")
-    require_text(_p(ctx, "config_profile_repair.cpp"),
-                 "static void mark_zero_offset_points_as_stock_recordings(",
-                 "a profile point saved with offset 0 is a stock recording, not a target")
     forbid_text(targets_h, "desired->curvePointFromGpuOffset[ci] && gpuPolicyViaCurveBatch",
                 "offset ownership is routing-independent: a profile with no GPU offset never sets that flag")
 
@@ -302,6 +299,12 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                      f"the {what} asks the shared offset policy")
     forbid_text(apply_cpp, "long long targetKHz = (long long)raw_curve_khz_from_display_mhz(targetMHz);",
                 "the correction loop may not re-derive a point's offset from the live base itself")
+
+    # A point landing far below the requested curve is how a wrong result hides
+    # behind severity=success: slot 1 reported a clean apply with points 74/75
+    # sitting 465 and 360 MHz low. The count has to be in the log unconditionally.
+    require_text(_p(ctx, "gpu_backend_apply_diagnostics.h"), "post-apply SHORTFALL:",
+                 "an apply that lands far below the requested curve says so")
     # The GUI Apply path is the one the first fix missed: a profile load sets the
     # flag, but clicking Apply rebuilds the request from the editor, whose VF
     # fields show the same projection and carry the same stale absolutes.

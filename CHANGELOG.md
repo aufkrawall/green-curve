@@ -95,6 +95,11 @@ you; a half-updated pair refuses to talk rather than guessing, as before.
     by one bin because the stock frequency had moved. The apply then failed on a
     value that routine had invented. Every place that decides what to write to a
     curve point now asks the same single piece of code.
+  - **The log now says when an apply lands far below the curve you asked for.**
+    An apply could report success while a point sat hundreds of MHz below its
+    target, because the offset it wrote did verify — the profile simply was not
+    doing what it said. Any point ending 100 MHz or more below target is now
+    counted and named in the debug log.
   - The same routine could not tell that it had stopped making progress. Each pass rewrote identical values and read back
     identical frequencies, 25 times, about a second each. It now stops as soon
     as a pass improves nothing, and the apply fails immediately with the real

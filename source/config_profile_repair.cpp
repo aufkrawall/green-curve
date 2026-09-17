@@ -42,33 +42,6 @@ static bool curve_section_uses_base_plus_gpu_offset_semantics(const char* path, 
     bool offsetTailMatches = absoluteLockPointMHz == desired->lockMHz;
     return !directTailMatches && offsetTailMatches;
 }
-static int profile_point_saved_offset_khz(const char* path, const char* section, int pointIndex, bool* foundOut);
-
-// A saved point whose own `pointN_offset_khz` is zero is a RECORDING of where
-// stock sat when the profile was written, not a request for that frequency.
-// The profile stores both numbers; the offset is what was actually written to
-// the hardware, and zero means "this point was left alone".  Its `_mhz` is
-// therefore the stock base of that moment, and the driver reports a different
-// stock base under load -- profile 1's point 74 was saved at 2902 MHz idle and
-// read 2932 MHz at 100% util, one VF bin, which failed the apply against a
-// number the profile never asked anyone to hold.
-//
-// Flagging these cannot change what the GPU does: the requested offset is zero
-// either way, so the point sits at stock either way.  All it changes is that a
-// moved stock base stops being reported as a failed write.
-static void mark_zero_offset_points_as_stock_recordings(const char* path, const char* section,
-                                                        DesiredSettings* desired) {
-    if (!path || !section || !desired) return;
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (!desired->hasCurvePoint[i]) continue;
-        if (desired->curvePointFromGpuOffset[i]) continue;
-        bool haveOffset = false;
-        int savedOffset = profile_point_saved_offset_khz(path, section, i, &haveOffset);
-        if (!haveOffset || savedOffset != 0) continue;
-        desired->curvePointFromGpuOffset[i] = gc_bool8_from_bool(true);
-    }
-}
-
 static void restore_curve_points_from_base_plus_gpu_offset(DesiredSettings* desired) {
     if (!desired || !desired->hasGpuOffset || desired->gpuOffsetMHz == 0) return;
 

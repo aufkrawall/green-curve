@@ -283,7 +283,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
     if (curve_section_uses_base_plus_gpu_offset_semantics(path, curveSection, desired)) {
         restore_curve_points_from_base_plus_gpu_offset(desired);
     }
-    mark_zero_offset_points_as_stock_recordings(path, curveSection, desired);
+
     repair_profile_locked_curve_readback_artifacts(path, curveSection, slot, desired, mode);
 
     for (int i = 1; i < VF_NUM_POINTS; i++) {

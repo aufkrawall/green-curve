@@ -625,7 +625,6 @@ static void build_full_live_desired_settings(DesiredSettings* desired);
 static bool load_curve_points_explicit_from_section(const char* path, const char* section, DesiredSettings* desired, char* err, size_t errSize);
 static bool curve_section_uses_base_plus_gpu_offset_semantics(const char* path, const char* section, const DesiredSettings* desired);
 static void restore_curve_points_from_base_plus_gpu_offset(DesiredSettings* desired);
-static void mark_zero_offset_points_as_stock_recordings(const char* path, const char* section, DesiredSettings* desired);
 static void repair_profile_locked_curve_readback_artifacts(const char* path, const char* section, int slot, DesiredSettings* desired, ProfileReadMode mode = PROFILE_READ_FOR_EDITOR);
 static bool can_save_curve_as_base_plus_gpu_offset(const DesiredSettings* desired, int gpuOffsetMHz, int excludeLowCount);
 static int curve_base_khz_for_point(int pointIndex);
