@@ -2,10 +2,73 @@
 
 ## Unreleased
 
-A code-audit pass over the whole repository. No release-blocking defect was
-found; everything below is a fix for something the audit turned up.
+Two passes over the code: a targeted hardening of what happens to your clocks
+while a profile is being applied, and a code audit over the whole repository.
+The clock work is the substantial one — it closes several ways an Apply could
+briefly run the card above what either the old or the new profile allows, and
+several ways a failed Apply could report success or leave the card uncapped.
 
-### Fixes
+### Clock and profile-switching safety
+
+- **Switching profiles can no longer briefly run the card above both profiles.**
+  The transition clamp introduced in 0.25.2 armed only when the profile you were
+  switching *to* pinned a clock. But the risk comes from what you are leaving: an
+  Apply first resets to stock, and for the window between that reset and the new
+  curve being written, a card that was held down by a flatten floor, a negative
+  offset or an old pin runs at *stock* — above both profiles. Switching between
+  two unpinned undervolts got no protection at all. Protection is now armed
+  whenever an Apply could put the card above what it is already entitled to run,
+  and the ceiling is the lower of the outgoing and incoming limits, so a
+  low-pin → high-pin switch keeps the old pin holding until the new curve
+  verifies.
+- **If that protection cannot be installed, the Apply is refused before anything
+  is written**, naming the ceiling it wanted and the capability it is missing,
+  instead of walking on unprotected. Unsupported and unprobeable GPUs keep their
+  full read and write surface as before — only the one transition that cannot be
+  made safe is refused.
+- **A refused VF-curve write no longer reports success.** One refusal path set its
+  flags but skipped the branch that records the failure, so the Apply returned
+  “succeeded”, released the clamp, and left the card uncapped over a curve it had
+  never written. The refusal itself came from three parts of the code disagreeing
+  about the legal offset range; they now share one definition, so a limit the
+  program generates cannot be rejected by the program that generated it.
+- **A failed Apply now actually rolls back, and stays capped until it has.**
+  Recovery used to require at least one success *and* one failure, so a
+  first-and-only write that changed the hardware and then failed looked like
+  “nothing to undo” while the card sat half-written. Reset and rollback used to
+  discard each domain's result and lift the clock cap unconditionally — even
+  right after the guard had decided to keep it. The cap is now lifted only once
+  the card is verified back at stock, per domain.
+- **Verification no longer accepts a curve it did not check.** With a hard clock
+  lock, the check returned success outright — the individual points you typed
+  below the lock anchor were never verified, although they run at their own
+  voltages. And a point that came back far from its target had the target
+  overwritten with the reading, so the check was comparing the reading against
+  itself. Points reading *below* target are still accepted (the driver is allowed
+  to be conservative); points reading *above* target now fail. Points you did not
+  type an explicit frequency for are verified against the offset that was asked
+  for rather than against a preview computed before the write, which is what the
+  driver actually guarantees.
+- **Asking to lock at a point that is not on the card's curve is refused up front**
+  instead of being silently applied as an ordinary unlocked profile.
+- **Reset to stock no longer reports success over failures, or wipes settings it
+  does not own.** The baseline reset returned early on the core domain, so
+  failures in the XBAR, SYS and VIDEO domains were written into a buffer nobody
+  read and the reset still reported success; the VIDEO path had no failure branch
+  at all. It also zeroed every nonzero advanced offset it found while Apply
+  restored only the fields you had asked for — so a core-only profile switch
+  wiped an XBAR or MSVDD offset set elsewhere and never put it back. Those fields
+  are now preserved independently.
+- Diagnostics: the apply witness records the measured clock and live 3D load
+  across the transition and freezes its evidence at verified handoff, so a
+  legitimately higher final pin is no longer reported as having exceeded the
+  earlier transition cap, and an idle test run can be told apart from a loaded
+  one.
+
+### Audit fixes
+
+The repository-wide audit found no release-blocking defect; everything below is a
+fix for something it turned up.
 
 - **Command-line output now actually appears in your terminal.** `greencurve.exe`
   is a GUI-subsystem program, so Windows gives it no console — every CLI command
