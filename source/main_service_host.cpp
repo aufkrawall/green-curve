@@ -363,11 +363,27 @@ service_watchdog_loop:
             // wedged thread.  Do NOT TerminateThread / close NVML here — racy and
             // unnecessary right before the process exits.
             if (g_serviceFanPulseInFlight && g_serviceFanPulseHeartbeatMs != 0) {
-                ULONGLONG stuckMs = GetTickCount64() - g_serviceFanPulseHeartbeatMs;
-                if (stuckMs > SERVICE_FAN_PULSE_WEDGE_TIMEOUT_MS) {
-                    debug_log("service_main: fan pulse wedged for %llu ms — closing the hardware gate and using durable controlled recovery\n", stuckMs);
+                ULONGLONG nowTickMs = GetTickCount64();
+                ULONGLONG stuckMs = nowTickMs - g_serviceFanPulseHeartbeatMs;
+                // The pulse stamps its heartbeat BEFORE queuing on the runtime
+                // lock, so its age alone cannot tell a hang from a wait.  Require
+                // that the hardware gate itself has also stopped moving: a wedge
+                // inside nvml.dll stops every stamp, while an apply that is merely
+                // slow keeps advancing phases.  Without this second test a normal
+                // under-load profile switch was destroying a healthy driver
+                // session (2026-09-17).
+                ULONGLONG progressAgeMs = g_serviceHardwareProgressMs != 0
+                    ? nowTickMs - g_serviceHardwareProgressMs
+                    : stuckMs;
+                if (stuckMs > SERVICE_FAN_PULSE_WEDGE_TIMEOUT_MS &&
+                    progressAgeMs > SERVICE_FAN_PULSE_WEDGE_TIMEOUT_MS) {
+                    debug_log("service_main: fan pulse wedged for %llu ms and the hardware gate has not moved for %llu ms — closing the hardware gate and using durable controlled recovery\n",
+                        stuckMs, progressAgeMs);
                     service_emergency_restart_from_poisoned_runtime(
                         "fan pulse wedged inside nvml.dll", true);
+                } else if (stuckMs > SERVICE_FAN_PULSE_WEDGE_TIMEOUT_MS) {
+                    debug_log("service_main: fan pulse waiting %llu ms, but the hardware gate moved %llu ms ago — the gate holder is working, not wedged; not recovering\n",
+                        stuckMs, progressAgeMs);
                 }
             }
 

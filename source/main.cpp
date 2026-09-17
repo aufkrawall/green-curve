@@ -180,13 +180,7 @@ static ULONGLONG g_serviceTelemetryLastHardwarePollTickMs = 0;
 static char g_serviceTelemetryLastPollSource[64] = {};
 // (Removed in 0.18: g_serviceVfDrift* state for the continuous VF-drift monitor.)
 
-// Heartbeat written by the fan runtime thread at the START of every pulse
-// attempt (just before any NVML call) and again on completion.  The main-loop
-// watchdog uses it to detect a fan thread WEDGED inside nvml.dll on a dead
-// driver (a hang the VEH cannot catch) and request controlled process recovery.
-static volatile ULONGLONG g_serviceFanPulseHeartbeatMs = 0;
-static volatile LONG g_serviceFanPulseInFlight = 0;
-
+#include "service_gate_progress.h"
 // Set while the one lifecycle worker owns a validated controlled-recovery
 // continuation.  Cleared after its sole write succeeds/fails or the
 // continuation is cancelled.  No separate retry/reapply thread exists.

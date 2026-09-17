@@ -13,6 +13,15 @@ static bool apply_verify_curve_targets(const DesiredSettings* desired,
     LockMode mode, const bool* tailMask, unsigned int lockMHz,
     char* detail, size_t detailSize) {
     if (!curveRequest) return true;
+    // Points reconstructed from `curve_semantics=base_plus_gpu_offset` carry
+    // offset intent, not absolute intent, whatever routing this apply uses for
+    // the offset itself.  Their absolute MHz was built from the stock base the
+    // driver reported when the profile was SAVED; under load the driver reports
+    // a different base for the same point (one whole VF bin on Blackwell), so
+    // holding the readback to that number fails an apply that is doing exactly
+    // what was asked.
+    const bool reconstructedFromOffset = desired->curveIsBasePlusGpuOffset &&
+        desired->hasGpuOffset && desired->gpuOffsetMHz != 0;
     bool sawPoint = false;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
         bool tail = hasLock && tailMask[ci];
@@ -25,7 +34,7 @@ static bool apply_verify_curve_targets(const DesiredSettings* desired,
         // A HARD pin owns the tail frequency. The explicit pre-tail points still
         // own their own voltage/frequency targets and are checked below.
         if (tail && mode == LOCK_MODE_HARD) continue;
-        if (selective && !tail && !explicitMask[ci]) {
+        if (!tail && !explicitMask[ci] && (selective || reconstructedFromOffset)) {
             const int expected = targetOffsets[ci];
             const int actual = g_app.freqOffsets[ci];
             // Preserve delta intent, including excluded points and undervolts.
@@ -35,8 +44,9 @@ static bool apply_verify_curve_targets(const DesiredSettings* desired,
                 set_message(detail, detailSize,
                     "VF point %d offset verified at %d kHz above requested %d kHz",
                     ci, actual, expected);
-                debug_log("curve offset verification failed: ci=%d actual=%d target=%d kHz\n",
-                    ci, actual, expected);
+                debug_log("curve offset verification failed: ci=%d actual=%d target=%d kHz reconstructed=%d selective=%d\n",
+                    ci, actual, expected,
+                    reconstructedFromOffset ? 1 : 0, selective ? 1 : 0);
                 return false;
             }
             if ((long long)actual < (long long)expected - 12000)
@@ -50,8 +60,9 @@ static bool apply_verify_curve_targets(const DesiredSettings* desired,
         unsigned int delta = actual > target ? actual - target : target - actual;
         if (delta > tolerance) {
             set_curve_target_mismatch_detail(ci, actual, target, tail, detail, detailSize);
-            debug_log("curve verification failed: ci=%d actual=%u target=%u explicit=%d tail=%d\n",
-                ci, actual, target, explicitMask[ci], tail);
+            debug_log("curve verification failed: ci=%d actual=%u target=%u explicit=%d tail=%d reconstructed=%d selective=%d delta=%u tol=%u\n",
+                ci, actual, target, explicitMask[ci] ? 1 : 0, tail ? 1 : 0,
+                reconstructedFromOffset ? 1 : 0, selective ? 1 : 0, delta, tolerance);
             return false;
         }
     }

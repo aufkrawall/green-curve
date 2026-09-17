@@ -252,6 +252,52 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
 
     require_text(rollback_h, "reset_core_clock_controls(vf_curve_global_gpu_offset_supported(), true,",
                  "rollback uses backend-aware reset sequencing")
+
+    # The 2026-09-17 under-load profile switch (profile 3 -> 4 at 99% util).
+    # Nothing here is about the ceiling itself -- it armed correctly and held
+    # every sample -- but the apply that ran underneath it failed in a way that
+    # ended in a driver recovery, so the rules live beside the other ordering
+    # gates rather than in build.py.
+    #
+    # Profile 4 stores its curve as `base_plus_gpu_offset`: point 70 is the
+    # stock base (2322 MHz) plus the request's own +475 MHz component. Loading
+    # the profile reconstructs 2797 MHz from the base captured when the profile
+    # was SAVED. Under load the driver reports that point's stock base one whole
+    # VF bin higher, so the same correct +475000 kHz offset reads back as 2827
+    # MHz -- a 30 MHz "miss" against a number no user ever typed.
+    verify_h = _p(ctx, "gpu_backend_apply_verify.h")
+    targets_h = _p(ctx, "gpu_backend_apply_targets.h")
+    diagnostics_cpp = _p(ctx, "main_diagnostics.cpp")
+    service_host_cpp = _p(ctx, "main_service_host.cpp")
+
+    # Such a point carries OFFSET intent, in either offset routing.
+    require_text(verify_h, "reconstructedFromOffset",
+                 "verification separates reconstructed points from typed absolutes")
+    require_text(verify_h, "(selective || reconstructedFromOffset)",
+                 "reconstructed points take the offset branch whichever routing applies")
+    # ...and writing must not re-derive them from the live base, which is the
+    # very sample that moved.
+    require_text(targets_h, "offsetOwnsThisPoint",
+                 "reconstructed points keep the requested offset, not absolute-minus-live-base")
+
+    # The correction loop must terminate on its own evidence. Its per-point
+    # `stuck` bookkeeping is reachable only for locked tail points, so a non-tail
+    # point the driver would not move was reclassified every pass and never ended
+    # the loop: 25 passes at ~1 s each, all holding the hardware gate.
+    require_text(apply_cpp, "correctionReachedFixedPoint",
+                 "correction loop detects a pass in which no point improved")
+    require_text(apply_cpp, "if (correctionReachedFixedPoint) break;",
+                 "the fixed-point verdict actually leaves the correction loop")
+
+    # And the wedge watchdog must not read a queued fan pulse's age as a driver
+    # hang. The pulse stamps its heartbeat BEFORE queuing on the runtime lock, so
+    # waiting behind a slow apply looked identical to hanging inside nvml.dll;
+    # the service killed a working driver, broke the client's apply and locked
+    # out automatic restore. A wedge stops every stamp, so progress is the signal.
+    require_text(service_host_cpp, "progressAgeMs > SERVICE_FAN_PULSE_WEDGE_TIMEOUT_MS",
+                 "the wedge verdict also requires the hardware gate to have stopped moving")
+    require_text(diagnostics_cpp, "service_note_hardware_progress();",
+                 "an apply advancing a phase stamps gate progress, so slow is not read as wedged")
     require_order_in_operation(
         _p(ctx, "clock_reset_policy.h"),
         "static ApplyRecoveryResult reset_core_clock_controls(",

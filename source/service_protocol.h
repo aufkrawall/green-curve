@@ -77,7 +77,7 @@ enum {
     // fan-off hysteresis. Wire sizes remain unchanged, but mixed peers would
     // disagree about the byte's meaning and must reject each other.
     // v25 adds xbarMeasuredVoltageUv to ServiceSnapshot, changing wire size.
-    SERVICE_PROTOCOL_VERSION = 25,
+    SERVICE_PROTOCOL_VERSION = 26,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply. Bit 30 marks an
@@ -667,11 +667,11 @@ static_assert(offsetof(ServiceRequest, command) == 8, "ServiceRequest.command of
 
 static_assert(sizeof(ControlState) == 188,
               "ControlState changed without an IPC protocol-version bump");
-static_assert(sizeof(DesiredSettings) == 836,
+static_assert(sizeof(DesiredSettings) == 840,
               "DesiredSettings changed without an IPC protocol-version bump");
 static_assert(sizeof(ServiceSnapshot) == 4248,
               "ServiceSnapshot changed without an IPC protocol-version bump");
-static_assert(sizeof(ServiceRequest) == 1424,
+static_assert(sizeof(ServiceRequest) == 1432,
               "ServiceRequest changed without an IPC protocol-version bump");
 
 static inline bool service_wire_string_is_terminated(
@@ -780,7 +780,7 @@ struct ServiceResponse {
     ServiceUpdateState update;
     char message[512];
 };
-static_assert(sizeof(ServiceResponse) == 7112,
+static_assert(sizeof(ServiceResponse) == 7120,
               "ServiceResponse changed without an IPC protocol-version bump");
 
 static_assert(offsetof(ServiceResponse, magic) == 0, "ServiceResponse.magic must be at offset 0");

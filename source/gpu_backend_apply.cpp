@@ -198,6 +198,17 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool lockedTailMask[VF_NUM_POINTS] = {};
     bool explicitCurveMask[VF_NUM_POINTS] = {};
     bool haveNonZeroCurveOffsets = false;
+    // Mirrors the profile loader's own reconstruction condition
+    // (restore_curve_points_from_base_plus_gpu_offset).  True means every
+    // curvePointMHz in this request is a stored stock base plus this request's
+    // offset component, reconstructed against a base sampled when the profile
+    // was saved -- so the offset is the intent and the absolute MHz is only a
+    // preview of that sample.  Deliberately independent of how this particular
+    // apply routes the offset: a re-apply that requests no offset CHANGE has
+    // gpuPolicyViaCurveBatch == false, and the points are no less reconstructed
+    // for it.
+    const bool curveFromGpuOffset = desired->curveIsBasePlusGpuOffset &&
+        desired->hasGpuOffset && desired->gpuOffsetMHz != 0;
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         originalCurveOffsets[ci] = g_app.freqOffsets[ci];
         originalCurveFreqkHz[ci] = (int)g_app.curve[ci].freq_kHz;
@@ -206,7 +217,14 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         if (originalCurveOffsets[ci] != 0) haveNonZeroCurveOffsets = true;
         if (desired->hasCurvePoint[ci]) {
             hasCurveEdits = true;
-            explicitCurveMask[ci] = true;
+            // EXPLICIT means "the user typed this absolute MHz", which is what
+            // earns a point the right to fail an apply on its absolute readback.
+            // A point reconstructed from `curve_semantics=base_plus_gpu_offset`
+            // did not come from the user in absolute form: it is a stored stock
+            // base plus this request's own offset component, and the base it was
+            // stored against is not the base the driver reports now.  Those
+            // points keep offset authority and are verified as offsets.
+            explicitCurveMask[ci] = !curveFromGpuOffset;
         }
     }
     // After reset-before-apply, the live curve base frequencies may have shifted
@@ -474,7 +492,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         desiredActiveGpuOffsetExcludeLowCount, currentAppliedGpuOffsetMHz,
         currentActiveGpuOffsetExcludeLowCount, originalCurvePopulated,
         originalCurveOffsets, originalCurveFreqkHz, lockedTailMask,
-        targetCurveOffsets, targetCurveMask))
+        curveFromGpuOffset, targetCurveOffsets, targetCurveMask))
         return apply_recover_clock_failure(clockCeiling,
             "A requested curve target is missing or outside the driver range", result, resultSize);
     if (desired->hasMemOffset) {
@@ -763,6 +781,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                     // check rejects.
                     const int correctionFloorTailOffsetKHz =
                         vf_offset_range_flatten_floor_khz(vf_offset_range_current());
+                    bool correctionReachedFixedPoint = false;
                     for (int correctionPass = 0; correctionPass < 25; correctionPass++) {
                         int correctedCurveOffsets[VF_NUM_POINTS] = {};
                         bool correctedCurveMask[VF_NUM_POINTS] = {};
@@ -836,6 +855,19 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                             bool divRangeKnown = get_curve_offset_range_khz(&divMinKHz, &divMaxKHz);
                             int converging = 0, worsening = 0, stuck = 0, outOfRange = 0;
                             int acceptedNonTail = 0, strictDiverged = 0;
+                            // Fixed-point detection for the whole pass, not just
+                            // the tail.  The per-point `stuck` bookkeeping below
+                            // is reachable only for locked tail points; a NON-tail
+                            // point the driver will not move was reclassified every
+                            // pass and never ended the loop, so the apply ran all
+                            // 25 passes at ~1 s each while holding the hardware
+                            // gate (2026-09-17: ci=70 read 2827 against a 2797
+                            // target identically 12 times before an unrelated
+                            // watchdog tore the service down).  A pass whose inputs
+                            // are unchanged writes the same offsets and reads back
+                            // the same frequencies, so once no point improves, no
+                            // later pass can improve one either.
+                            int unconvergedPoints = 0, improvedPoints = 0;
                             for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
                                 if (!verifyDesired.hasCurvePoint[ci]) continue;
                                 if (g_app.curve[ci].freq_kHz == 0) continue;
@@ -843,10 +875,12 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                                 unsigned int targetMHz = (hasLock && lockedTailMask[ci] && lockMhz > 0)
                                     ? lockMhz : verifyDesired.curvePointMHz[ci];
                                 if (actualMHz == targetMHz) continue;
+                                unconvergedPoints++;
                                 int actualKHz = (int)g_app.curve[ci].freq_kHz;
                                 int targetKHz = (int)targetMHz * 1000;
                                 int errorKHz = actualKHz > targetKHz ? (actualKHz - targetKHz) : (targetKHz - actualKHz);
                                 int requiredDeltaKHz = curve_delta_khz_for_target_display_mhz_unclamped(ci, targetMHz);
+                                if (prevErrorKHz[ci] != INT_MAX && errorKHz < prevErrorKHz[ci]) improvedPoints++;
                                 bool diverged = (divRangeKnown && (requiredDeltaKHz < divMinKHz || requiredDeltaKHz > divMaxKHz));
                                 if (gpuPolicyViaCurveBatch && hasLock && lockedTailMask[ci] && lockMhz > 0) {
                                     if (!diverged && prevErrorKHz[ci] != INT_MAX && errorKHz < prevErrorKHz[ci]) {
@@ -906,9 +940,16 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                                     prevErrorKHz[ci] = errorKHz;
                                 }
                             }
-                            debug_log("correction pass %d convergence: converging=%d worsening=%d stuck=%d outOfRange=%d acceptedNonTail=%d strictDiverged=%d\n",
-                                correctionPass + 1, converging, worsening, stuck, outOfRange, acceptedNonTail, strictDiverged);
+                            debug_log("correction pass %d convergence: converging=%d worsening=%d stuck=%d outOfRange=%d acceptedNonTail=%d strictDiverged=%d unconverged=%d improved=%d\n",
+                                correctionPass + 1, converging, worsening, stuck, outOfRange, acceptedNonTail, strictDiverged,
+                                unconvergedPoints, improvedPoints);
+                            if (correctionPass > 0 && unconvergedPoints > 0 && improvedPoints == 0) {
+                                debug_log("correction pass %d: no point improved and %d remain unconverged; the correction has reached a fixed point, stopping instead of rewriting identical offsets\n",
+                                    correctionPass + 1, unconvergedPoints);
+                                correctionReachedFixedPoint = true;
+                            }
                         }
+                        if (correctionReachedFixedPoint) break;
                         if (verify_curve_request(curveVerifyDetail, sizeof(curveVerifyDetail))) {
                             curveRequestOk = true;
                             debug_log("curve correction pass %d converged to requested live MHz targets\n", correctionPass + 1);

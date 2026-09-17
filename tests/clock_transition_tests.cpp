@@ -24,6 +24,7 @@ struct DesiredSettings {
  LockMode lockMode{}; unsigned int lockMHz{}; int gpuOffsetMHz{};
  bool hasCurvePoint[VF_NUM_POINTS]{};
  unsigned int curvePointMHz[VF_NUM_POINTS]{};
+ bool curveIsBasePlusGpuOffset{};
 };
 static bool service_request_replaces_lock_domain(const DesiredSettings* d) {
  return d->hasLock||d->hasGpuOffset||d->resetOcBeforeApply;
@@ -250,7 +251,7 @@ static int run(){
    for(int i=0;i<4;++i){populated[i]=true;freq[i]=2400000;tail[i]=i>=2;}
    explicitMask[1]=true;
    CHECK(apply_build_curve_targets(&d,true,false,mode!=0,(LockMode)mode,2,2800,true,1,0,0,
-     populated,offsets,freq,tail,target,mask));
+     populated,offsets,freq,tail,false,target,mask));
    CHECK(target[1]==100000);CHECK(target[0]==0);
    for(int i=0;i<4;++i)g_app.curve[i].freq_kHz=i>=2?2800000:2500000;
    char detail[128]{};g_app.curve[1].freq_kHz=2700000;
@@ -262,7 +263,7 @@ static int run(){
    // Same delta intent remains stable when the sampled base changes.
    freq[1]+=30000;
    CHECK(apply_build_curve_targets(&d,true,false,mode!=0,(LockMode)mode,2,2800,true,1,0,0,
-     populated,offsets,freq,tail,target,mask));CHECK(target[1]==70000);
+     populated,offsets,freq,tail,false,target,mask));CHECK(target[1]==70000);
  }
  // User repro: excluded point 69 has offset zero, but its derived 2295 MHz
  // preview becomes 2407 MHz after the driver reshapes the curve. It is not an
@@ -288,6 +289,62 @@ static int run(){
    tail[69]=true;
    CHECK(!apply_verify_curve_targets(&d,explicitMask,target,true,true,true,LOCK_MODE_FLATTEN,tail,2295,detail,sizeof(detail)));
    CHECK(apply_verify_curve_targets(&d,explicitMask,target,true,true,true,LOCK_MODE_HARD,tail,2295,detail,sizeof(detail)));
+ }
+ // 2026-09-17 under-load repro. Profile 4 stores point 70 as base 2322 MHz
+ // with curve_semantics=base_plus_gpu_offset, so loading it reconstructs
+ // 2322+475 = 2797 MHz. Under 99% load the driver reports the stock base one
+ // whole VF bin higher (2352), so the same correct +475000 kHz offset reads
+ // back as 2827 MHz. Holding that point to the reconstructed absolute failed
+ // the apply, and the correction loop then rewrote identical offsets until an
+ // unrelated watchdog tore the service down.
+ {
+   DesiredSettings d{};
+   d.hasCurvePoint[70]=true;d.curvePointMHz[70]=2797;
+   d.hasGpuOffset=true;d.gpuOffsetMHz=475;d.curveIsBasePlusGpuOffset=true;
+   bool explicitMask[VF_NUM_POINTS]{},tail[VF_NUM_POINTS]{};
+   int target[VF_NUM_POINTS]{};char detail[128]{};
+   target[70]=475000;g_app.freqOffsets[70]=475000;
+   // The load-shifted readback is accepted in BOTH routings: the offset is the
+   // intent, and it verified exactly.
+   for(int selective=0;selective<2;++selective){
+     g_app.curve[70].freq_kHz=2827000;
+     CHECK(apply_verify_curve_targets(&d,explicitMask,target,true,selective!=0,false,
+       LOCK_MODE_NONE,tail,0,detail,sizeof(detail)));
+     g_app.curve[70].freq_kHz=2797000;
+     CHECK(apply_verify_curve_targets(&d,explicitMask,target,true,selective!=0,false,
+       LOCK_MODE_NONE,tail,0,detail,sizeof(detail)));
+   }
+   // Offset authority is not a licence: an offset the driver pushed ABOVE what
+   // was asked still fails, however plausible the MHz looks.
+   g_app.freqOffsets[70]=505000;g_app.curve[70].freq_kHz=2797000;
+   CHECK(!apply_verify_curve_targets(&d,explicitMask,target,true,true,false,
+     LOCK_MODE_NONE,tail,0,detail,sizeof(detail)));
+   // A genuinely user-typed absolute point keeps absolute authority: same
+   // readback, same 30 MHz miss, still a failure.
+   DesiredSettings typed{};
+   typed.hasCurvePoint[70]=true;typed.curvePointMHz[70]=2797;
+   bool typedMask[VF_NUM_POINTS]{};typedMask[70]=true;
+   g_app.freqOffsets[70]=475000;g_app.curve[70].freq_kHz=2827000;
+   CHECK(!apply_verify_curve_targets(&typed,typedMask,target,true,true,false,
+     LOCK_MODE_NONE,tail,0,detail,sizeof(detail)));
+   // Target building must not re-derive a reconstructed point from the live
+   // base. The requested offset survives a base that moved under load; the old
+   // absolute-minus-live-base rule produced 445000 for the shifted sample.
+   bool populated[VF_NUM_POINTS]{},mask[VF_NUM_POINTS]{};
+   int offsets[VF_NUM_POINTS]{},freq[VF_NUM_POINTS]{};
+   populated[70]=true;
+   for(int baseMHz:{2322,2352}){
+     freq[70]=baseMHz*1000;offsets[70]=0;
+     int built[VF_NUM_POINTS]{};
+     CHECK(apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,0,0,true,70,0,0,
+       populated,offsets,freq,tail,true,built,mask));
+     CHECK(built[70]==475000);CHECK(mask[70]);
+     // Negative control: the pre-fix rule tracked the shifted base instead.
+     int legacy[VF_NUM_POINTS]{};
+     CHECK(apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,0,0,true,70,0,0,
+       populated,offsets,freq,tail,false,legacy,mask));
+     CHECK(legacy[70]==2797000-baseMHz*1000);
+   }
  }
  // Real reset sequencing: VF-global must never invoke the scalar helper.
  for(int vfGlobal=0;vfGlobal<2;++vfGlobal)for(int scalarFails=0;scalarFails<2;++scalarFails)

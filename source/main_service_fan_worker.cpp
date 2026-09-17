@@ -278,11 +278,17 @@ static DWORD WINAPI service_fan_runtime_thread_proc(void*) {
             g_serviceFanPulseHeartbeatMs = GetTickCount64();
             InterlockedExchange(&g_serviceFanPulseInFlight, 1);
             lock_service_runtime();
+            // Queuing on the gate is not evidence of anything, so the wedge
+            // window starts HERE, once this thread owns the gate and is about
+            // to enter nvml.dll.  Before this line the pulse may simply have
+            // been waiting behind a long apply, which is healthy.
+            service_note_hardware_progress();
             if (service_update_install_release_and_block()) {
                 InterlockedExchange(&g_serviceFanPulseInFlight, 0);
                 continue;
             }
             service_runtime_pulse();
+            service_note_hardware_progress();
             unlock_service_runtime();
             InterlockedExchange(&g_serviceFanPulseInFlight, 0);
             g_serviceFanPulseHeartbeatMs = GetTickCount64();

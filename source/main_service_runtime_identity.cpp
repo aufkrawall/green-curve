@@ -368,6 +368,8 @@ static void unlock_service_runtime() {
     if (!ReleaseMutex(g_serviceRuntimeLock)) {
         service_runtime_lock_fail_closed("mutex release", GetLastError());
     }
+    // The gate moved: whatever held it finished without hanging.
+    service_note_hardware_progress();
 }
 
 static bool service_runtime_lock_held_by_current_thread() {

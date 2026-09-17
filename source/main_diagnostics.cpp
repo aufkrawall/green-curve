@@ -134,7 +134,19 @@ static void debug_log_session_marker(const char* phase, const char* kind, const 
     debug_log("========================\n");
 }
 
+// Stamped wherever the service's hardware gate demonstrably moves.  The wedge
+// watchdog reads it instead of the queued fan pulse's age, so a slow-but-live
+// apply is not mistaken for a driver hang.  Plain store of a volatile tick: one
+// writer at a time by construction (the gate is held), and a torn or slightly
+// stale read can only DELAY recovery by one watchdog interval, never suppress
+// it -- a genuine wedge stops stamping entirely.
+static void service_note_hardware_progress() {
+    g_serviceHardwareProgressMs = GetTickCount64();
+}
+
 static void set_last_apply_phase(const char* phase) {
+    // An apply advancing a phase is the clearest proof the gate holder is alive.
+    service_note_hardware_progress();
     // Per-phase apply timing (logging only, no behaviour change): log how long the
     // PREVIOUS phase took so profile-apply latency can be attributed precisely
     // (reset/settle vs each ~1s VF setControl vs correction vs fan) when measuring

@@ -2139,6 +2139,7 @@ def run_source_regression_checks():
         # service_protocol.h, split out only to stay inside the source-size
         # ratchet; the guards address the two as one logical surface.
         for _h in (os.path.join(SOURCE_DIR, "app_shared.h"), gpu_core_h,
+                   os.path.join(SOURCE_DIR, "desired_settings_ipc.h"),
                    service_protocol_h,
                    os.path.join(SOURCE_DIR, "service_protocol_validation.h")):
             with open(_h, "r", encoding="utf-8", errors="ignore") as _hf:
@@ -2153,7 +2154,7 @@ def run_source_regression_checks():
 
     require_text(shared_h, "APP_DEBUG_DEFAULT_ENABLED 1", "debug logging remains default-on")
     require_text(shared_h, "APP_TITLE           APP_NAME \" v\" APP_VERSION", "plain title macro exists")
-    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 25",
+    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 26",
                  "service protocol publishes outcome severity, update state and XBAR")
     require_text(shared_h, "typedef gc_u8 gc_bool8", "IPC bool fields use a fixed-width one-byte type")
     require_text(shared_h, "canonicalize_gc_bool8", "IPC bool fields are canonicalized at trust boundaries")

@@ -12,6 +12,7 @@ static bool apply_build_curve_targets(
     int currentAppliedGpuOffsetMHz, int currentActiveGpuOffsetExcludeLowCount,
     const bool* originalCurvePopulated, const int* originalCurveOffsets,
     const int* originalCurveFreqkHz, const bool* lockedTailMask,
+    bool curveFromGpuOffset,
     int* targetCurveOffsets, bool* targetCurveMask) {
     const VfOffsetRange range = vf_offset_range_current();
     if (hasLock && lockMode == LOCK_MODE_FLATTEN &&
@@ -36,10 +37,21 @@ static bool apply_build_curve_targets(
             write = true;
         }
         const bool tail = hasLock && lockMhz > 0 && lockedTailMask[ci];
-        if (desired->hasCurvePoint[ci] && !tail) {
+        // A reconstructed point must NOT be re-derived from the live base.  The
+        // block above already produced its offset from the request's own offset
+        // component, which is the whole intent; recomputing `absolute - live
+        // base` here reintroduces the stale-base error the reconstruction flag
+        // exists to avoid, because `absolute` was itself built from a DIFFERENT
+        // base sample.  Only the selective routing is skipped: with a global
+        // NVML offset the boost does not live in the per-point curve offsets,
+        // so those points still need absolute placement.
+        const bool offsetOwnsThisPoint = curveFromGpuOffset && gpuPolicyViaCurveBatch;
+        if (desired->hasCurvePoint[ci] && !tail && !offsetOwnsThisPoint) {
             long long base = (long long)originalCurveFreqkHz[ci] - originalCurveOffsets[ci];
             if (base < 0) base = 0;
             offset = (long long)desired->curvePointMHz[ci] * 1000 - base;
+            write = true;
+        } else if (desired->hasCurvePoint[ci] && !tail) {
             write = true;
         }
         if (tail && ci == lockCi) {
