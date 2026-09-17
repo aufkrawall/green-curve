@@ -82,9 +82,12 @@ you; a half-updated pair refuses to talk rather than guessing, as before.
     VF bin, 30 MHz, on this card — so a point carrying exactly the offset you
     asked for read back 30 MHz away from that rebuilt number and was rejected.
     Such points are now written and checked against the **offset**, which is what
-    you actually asked for. This is tracked per point, so hand-editing one field
-    of a loaded profile leaves that one point a real absolute target — it still
-    holds the driver to your number — while its neighbours keep offset intent.
+    you actually asked for. The same applies to a point a profile saved with a
+    zero offset: that is a record of where stock sat when you saved, not a
+    request to hold that frequency, and stock moves under load. This is tracked
+    per point, so hand-editing one field of a loaded profile leaves that one
+    point a real absolute target — it still holds the driver to your number —
+    while its neighbours keep offset intent.
   - The routine that nudges points onto target could not tell that it had
     stopped making progress. Each pass rewrote identical values and read back
     identical frequencies, 25 times, about a second each. It now stops as soon

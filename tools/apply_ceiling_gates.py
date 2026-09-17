@@ -281,6 +281,11 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "projected points keep the requested offset, not absolute-minus-live-base")
     require_text(_p(ctx, "linux_curve_targets.h"), "desired->curvePointFromGpuOffset[i]",
                  "Linux target building honours the same provenance rule")
+    require_text(_p(ctx, "config_profile_repair.cpp"),
+                 "static void mark_zero_offset_points_as_stock_recordings(",
+                 "a profile point saved with offset 0 is a stock recording, not a target")
+    forbid_text(targets_h, "desired->curvePointFromGpuOffset[ci] && gpuPolicyViaCurveBatch",
+                "offset ownership is routing-independent: a profile with no GPU offset never sets that flag")
     # The GUI Apply path is the one the first fix missed: a profile load sets the
     # flag, but clicking Apply rebuilds the request from the editor, whose VF
     # fields show the same projection and carry the same stale absolutes.

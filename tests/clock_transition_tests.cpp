@@ -370,6 +370,48 @@ static int run(){
        LOCK_MODE_NONE,mixedTail,0,mixedDetail,sizeof(mixedDetail)));
    }
  }
+ // Profile 1's shape: no GPU offset at all, every point saved with
+ // pointN_offset_khz=0 -- a recording of where stock sat, not a request. Under
+ // load point 74 (saved 2902 MHz) read 2932, one VF bin up, and failed an apply
+ // against a number the profile never asked anyone to hold.
+ {
+   DesiredSettings stock{};
+   stock.hasCurvePoint[74]=true;stock.curvePointMHz[74]=2902;
+   stock.curvePointFromGpuOffset[74]=true;
+   bool mask74[VF_NUM_POINTS]{},tail74[VF_NUM_POINTS]{};
+   int target74[VF_NUM_POINTS]{};char detail74[128]{};
+   g_app.freqOffsets[74]=0;
+   // selective=0 here: this profile never routes an offset through the curve
+   // batch, which is exactly the case the first routing-gated fix missed.
+   for(unsigned int mhz:{2902u,2932u}){
+     g_app.curve[74].freq_kHz=mhz*1000;
+     CHECK(apply_verify_curve_targets(&stock,mask74,target74,true,false,false,
+       LOCK_MODE_NONE,tail74,0,detail74,sizeof(detail74)));
+   }
+   // A real offset appearing on a point asked to stay at stock still fails.
+   g_app.freqOffsets[74]=100000;
+   CHECK(!apply_verify_curve_targets(&stock,mask74,target74,true,false,false,
+     LOCK_MODE_NONE,tail74,0,detail74,sizeof(detail74)));
+   // Negative control: without provenance the shifted stock base fails, which
+   // is the reported bug.
+   g_app.freqOffsets[74]=0;g_app.curve[74].freq_kHz=2932000;
+   DesiredSettings held=stock;held.curvePointFromGpuOffset[74]=false;
+   bool heldMask[VF_NUM_POINTS]{};heldMask[74]=true;
+   CHECK(!apply_verify_curve_targets(&held,heldMask,target74,true,false,false,
+     LOCK_MODE_NONE,tail74,0,detail74,sizeof(detail74)));
+   // The target stays offset 0 whatever base the driver reports, and without a
+   // GPU offset in the request at all.
+   bool pop74[VF_NUM_POINTS]{},bmask[VF_NUM_POINTS]{};
+   int off74[VF_NUM_POINTS]{},freq74[VF_NUM_POINTS]{};
+   pop74[74]=true;
+   for(int baseMHz:{2902,2932}){
+     freq74[74]=baseMHz*1000;off74[74]=0;
+     int built74[VF_NUM_POINTS]{};
+     CHECK(apply_build_curve_targets(&stock,true,false,false,LOCK_MODE_NONE,0,0,false,0,0,0,
+       pop74,off74,freq74,tail74,built74,bmask));
+     CHECK(built74[74]==0);CHECK(bmask[74]);
+   }
+ }
  // Real reset sequencing: VF-global must never invoke the scalar helper.
  for(int vfGlobal=0;vfGlobal<2;++vfGlobal)for(int scalarFails=0;scalarFails<2;++scalarFails)
  for(int curveFails=0;curveFails<2;++curveFails){

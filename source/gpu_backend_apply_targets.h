@@ -36,22 +36,26 @@ static bool apply_build_curve_targets(
             write = true;
         }
         const bool tail = hasLock && lockMhz > 0 && lockedTailMask[ci];
-        // A reconstructed point must NOT be re-derived from the live base.  The
-        // block above already produced its offset from the request's own offset
-        // component, which is the whole intent; recomputing `absolute - live
-        // base` here reintroduces the stale-base error the reconstruction flag
-        // exists to avoid, because `absolute` was itself built from a DIFFERENT
-        // base sample.  Only the selective routing is skipped: with a global
-        // NVML offset the boost does not live in the per-point curve offsets,
-        // so those points still need absolute placement.
-        const bool offsetOwnsThisPoint =
-            desired->curvePointFromGpuOffset[ci] && gpuPolicyViaCurveBatch;
+        // A projected point must NOT be re-derived from the live base.  Its
+        // absolute MHz was itself built over a DIFFERENT base sample, so
+        // `absolute - live base` turns the offset that was asked for into a
+        // different one the moment the driver re-reports the base -- which it
+        // does under load.  The offset the request asks for is the whole intent
+        // and needs no base at all: it is this request's own component for the
+        // point, which is zero for a profile that carries no GPU offset (a
+        // point saved with `pointN_offset_khz=0` means "leave this at stock").
+        // Routing-independent on purpose: a re-apply that requests no offset
+        // CHANGE has gpuPolicyViaCurveBatch == false, and a profile with no GPU
+        // offset never sets it at all, but neither point is less projected.
+        const bool offsetOwnsThisPoint = desired->curvePointFromGpuOffset[ci];
         if (desired->hasCurvePoint[ci] && !tail && !offsetOwnsThisPoint) {
             long long base = (long long)originalCurveFreqkHz[ci] - originalCurveOffsets[ci];
             if (base < 0) base = 0;
             offset = (long long)desired->curvePointMHz[ci] * 1000 - base;
             write = true;
         } else if (desired->hasCurvePoint[ci] && !tail) {
+            offset = (long long)gpu_offset_component_mhz_for_point(ci,
+                desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount) * 1000;
             write = true;
         }
         if (tail && ci == lockCi) {
