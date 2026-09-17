@@ -88,8 +88,14 @@ you; a half-updated pair refuses to talk rather than guessing, as before.
     per point, so hand-editing one field of a loaded profile leaves that one
     point a real absolute target — it still holds the driver to your number —
     while its neighbours keep offset intent.
-  - The routine that nudges points onto target could not tell that it had
-    stopped making progress. Each pass rewrote identical values and read back
+  - The routine that nudges points onto target was working from its own private
+    copy of the rule above, so it undid the fix. A profile whose points had just
+    been written correctly would have them overwritten the moment *any* other
+    point needed correcting — in the reported case the flat tail, which missed
+    by one bin because the stock frequency had moved. The apply then failed on a
+    value that routine had invented. Every place that decides what to write to a
+    curve point now asks the same single piece of code.
+  - The same routine could not tell that it had stopped making progress. Each pass rewrote identical values and read back
     identical frequencies, 25 times, about a second each. It now stops as soon
     as a pass improves nothing, and the apply fails immediately with the real
     reason instead of grinding.

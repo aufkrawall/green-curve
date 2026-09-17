@@ -4,6 +4,8 @@
 #ifndef GREEN_CURVE_LINUX_CURVE_TARGETS_H
 #define GREEN_CURVE_LINUX_CURVE_TARGETS_H
 
+#include "curve_point_offset_policy.h"
+
 #include <limits.h>
 
 struct LinuxCurveTargetBuildResult {
@@ -66,21 +68,20 @@ static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
             write = true;
         } else if (desired->hasCurvePoint[i] &&
                    desired->curvePointMHz[i] > 0) {
-            if (desired->curvePointFromGpuOffset[i]) {
-                // Offset intent, so do not go through an absolute at all: this
-                // point's MHz was projected over a stock base sampled earlier,
-                // and `baseKHz` below is that same base re-read -- under load
-                // the driver reports it a bin higher and the subtraction turns
-                // the requested offset into a different one.  Windows has the
-                // same rule in gpu_backend_apply_targets.h.
-                targetOffsets[i] = (ordinal >= exclude)
-                    ? desired->gpuOffsetMHz * 1000 : 0;
-                pointMask[i] = true;
-                result.pointCount++;
-                continue;
-            }
-            targetKHz = (long long)desired->curvePointMHz[i] * 1000LL;
-            write = true;
+            // Same shared answer Windows uses; see curve_point_offset_policy.h.
+            CurvePointOffsetRequest want = {};
+            want.fromGpuOffset = desired->curvePointFromGpuOffset[i];
+            want.gpuOffsetComponentKHz = (ordinal >= exclude)
+                ? desired->gpuOffsetMHz * 1000 : 0;
+            want.absoluteMHz = desired->curvePointMHz[i];
+            want.liveBaseKHz = baseKHz;
+            long long offsetKHz = curve_point_target_offset_khz(&want);
+            if (offsetKHz < INT_MIN) offsetKHz = INT_MIN;
+            if (offsetKHz > INT_MAX) offsetKHz = INT_MAX;
+            targetOffsets[i] = (int)offsetKHz;
+            pointMask[i] = true;
+            result.pointCount++;
+            continue;
         } else if (result.composedGpuOffset && ordinal >= exclude) {
             targetKHz = baseKHz +
                 (long long)desired->gpuOffsetMHz * 1000LL;

@@ -412,6 +412,50 @@ static int run(){
      CHECK(built74[74]==0);CHECK(bmask[74]);
    }
  }
+ // The shared offset policy. Four sites used to re-derive this independently;
+ // the correction loop's private copy is what overwrote an already-correct
+ // offset-0 point with +495000 kHz after an unrelated TAIL miss sent the apply
+ // into correction (2026-09-17, profile 1 under load).
+ {
+   // Offset intent ignores the base entirely -- that is the whole point, since
+   // the base is the thing that moves under load.
+   for(long long baseKHz:{2302000LL,2332000LL,2602000LL,0LL}){
+     CurvePointOffsetRequest want{};
+     want.fromGpuOffset=true;want.gpuOffsetComponentKHz=475000;
+     want.absoluteMHz=2797;want.liveBaseKHz=baseKHz;
+     CHECK(curve_point_target_offset_khz(&want)==475000);
+     // A profile with no GPU offset asks for exactly zero, at any base.
+     want.gpuOffsetComponentKHz=0;want.absoluteMHz=2902;
+     CHECK(curve_point_target_offset_khz(&want)==0);
+   }
+   // A genuine absolute still tracks the base, because there the caller really
+   // is asking to land on a frequency.
+   CurvePointOffsetRequest typed{};
+   typed.fromGpuOffset=false;typed.gpuOffsetComponentKHz=475000;
+   typed.absoluteMHz=2902;typed.liveBaseKHz=2902000;
+   CHECK(curve_point_target_offset_khz(&typed)==0);
+   typed.liveBaseKHz=2872000;
+   CHECK(curve_point_target_offset_khz(&typed)==30000);
+   // Negative bases cannot make the offset run away.
+   typed.liveBaseKHz=-5000;
+   CHECK(curve_point_target_offset_khz(&typed)==2902000);
+   CHECK(curve_point_stock_base_khz(2932000,495000)==2437000);
+   CHECK(curve_point_stock_base_khz(100,5000)==0);
+   // The target builder must agree with the policy for the same point, which
+   // is the property the correction loop broke by keeping its own copy.
+   DesiredSettings d{};
+   d.hasCurvePoint[74]=true;d.curvePointMHz[74]=2902;
+   d.curvePointFromGpuOffset[74]=true;
+   bool pop[VF_NUM_POINTS]{},msk[VF_NUM_POINTS]{},tl[VF_NUM_POINTS]{};
+   int offs[VF_NUM_POINTS]{},frq[VF_NUM_POINTS]{},built[VF_NUM_POINTS]{};
+   pop[74]=true;frq[74]=2437000;offs[74]=0;
+   CHECK(apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,0,0,false,0,0,0,
+     pop,offs,frq,tl,built,msk));
+   CurvePointOffsetRequest same{};
+   same.fromGpuOffset=true;same.gpuOffsetComponentKHz=0;
+   same.absoluteMHz=2902;same.liveBaseKHz=2437000;
+   CHECK(built[74]==(int)curve_point_target_offset_khz(&same));
+ }
  // Real reset sequencing: VF-global must never invoke the scalar helper.
  for(int vfGlobal=0;vfGlobal<2;++vfGlobal)for(int scalarFails=0;scalarFails<2;++scalarFails)
  for(int curveFails=0;curveFails<2;++curveFails){

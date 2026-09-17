@@ -792,13 +792,24 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                             } else {
                                 continue;
                             }
-                            if (gpuPolicyViaCurveBatch && !isTail && !explicitCurveMask[ci]) {
-                                correctedCurveOffsets[ci] = targetCurveOffsets[ci];
-                            } else if (!isTail && originalCurvePopulated[ci]) {
-                                long long stockBase = (long long)originalCurveFreqkHz[ci] - (long long)originalCurveOffsets[ci];
-                                if (stockBase < 0) stockBase = 0;
-                                long long targetKHz = (long long)raw_curve_khz_from_display_mhz(targetMHz);
-                                long long diff = targetKHz - stockBase;
+                            if (!isTail && originalCurvePopulated[ci]) {
+                                // ONE answer, shared with the initial target
+                                // build. This branch used to re-derive
+                                // `absolute - live base` on its own, so a
+                                // correction triggered by an unrelated point --
+                                // the TAIL missing by one VF bin -- overwrote
+                                // points that were already correct at offset 0
+                                // with +495000 kHz, then failed the apply on
+                                // the value it had just invented (2026-09-17,
+                                // profile 1 under load).
+                                CurvePointOffsetRequest want = {};
+                                want.fromGpuOffset = desired->curvePointFromGpuOffset[ci];
+                                want.gpuOffsetComponentKHz = gpu_offset_component_mhz_for_point(ci,
+                                    desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount) * 1000;
+                                want.absoluteMHz = targetMHz;
+                                want.liveBaseKHz = curve_point_stock_base_khz(
+                                    originalCurveFreqkHz[ci], originalCurveOffsets[ci]);
+                                long long diff = curve_point_target_offset_khz(&want);
                                 if (diff > INT_MAX) diff = INT_MAX;
                                 if (diff < INT_MIN) diff = INT_MIN;
                                 correctedCurveOffsets[ci] = clamp_freq_delta_khz((int)diff);

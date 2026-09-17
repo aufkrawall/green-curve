@@ -3,6 +3,8 @@
 #ifndef GREEN_CURVE_GPU_BACKEND_APPLY_TARGETS_H
 #define GREEN_CURVE_GPU_BACKEND_APPLY_TARGETS_H
 
+#include "curve_point_offset_policy.h"
+
 // Offset-derived points remain delta-based across temperature changes. Explicit
 // points own their absolute target and override the generic offset policy.
 static bool apply_build_curve_targets(
@@ -47,15 +49,15 @@ static bool apply_build_curve_targets(
         // Routing-independent on purpose: a re-apply that requests no offset
         // CHANGE has gpuPolicyViaCurveBatch == false, and a profile with no GPU
         // offset never sets it at all, but neither point is less projected.
-        const bool offsetOwnsThisPoint = desired->curvePointFromGpuOffset[ci];
-        if (desired->hasCurvePoint[ci] && !tail && !offsetOwnsThisPoint) {
-            long long base = (long long)originalCurveFreqkHz[ci] - originalCurveOffsets[ci];
-            if (base < 0) base = 0;
-            offset = (long long)desired->curvePointMHz[ci] * 1000 - base;
-            write = true;
-        } else if (desired->hasCurvePoint[ci] && !tail) {
-            offset = (long long)gpu_offset_component_mhz_for_point(ci,
+        if (desired->hasCurvePoint[ci] && !tail) {
+            CurvePointOffsetRequest want = {};
+            want.fromGpuOffset = desired->curvePointFromGpuOffset[ci];
+            want.gpuOffsetComponentKHz = gpu_offset_component_mhz_for_point(ci,
                 desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount) * 1000;
+            want.absoluteMHz = desired->curvePointMHz[ci];
+            want.liveBaseKHz = curve_point_stock_base_khz(
+                originalCurveFreqkHz[ci], originalCurveOffsets[ci]);
+            offset = curve_point_target_offset_khz(&want);
             write = true;
         }
         if (tail && ci == lockCi) {

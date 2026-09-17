@@ -277,8 +277,8 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "projected points take the offset branch whichever routing applies")
     # ...and writing must not re-derive them from the live base, which is the
     # very sample that moved.
-    require_text(targets_h, "offsetOwnsThisPoint",
-                 "projected points keep the requested offset, not absolute-minus-live-base")
+    forbid_text(targets_h, "offset = (long long)desired->curvePointMHz[ci] * 1000 - base;",
+                "projected points keep the requested offset, not absolute-minus-live-base")
     require_text(_p(ctx, "linux_curve_targets.h"), "desired->curvePointFromGpuOffset[i]",
                  "Linux target building honours the same provenance rule")
     require_text(_p(ctx, "config_profile_repair.cpp"),
@@ -286,6 +286,22 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "a profile point saved with offset 0 is a stock recording, not a target")
     forbid_text(targets_h, "desired->curvePointFromGpuOffset[ci] && gpuPolicyViaCurveBatch",
                 "offset ownership is routing-independent: a profile with no GPU offset never sets that flag")
+
+    # One answer to "what offset does this point want?", shared by the initial
+    # build, the correction loop and Linux.  Four private copies is what made
+    # each earlier fix cover only part of the system: the correction loop kept
+    # deriving `absolute - live base` after the build site stopped, so a tail
+    # miss under load sent it in to overwrite already-correct points.
+    policy_h = _p(ctx, "curve_point_offset_policy.h")
+    require_text(policy_h, "static inline long long curve_point_target_offset_khz(",
+                 "the shared curve-point offset policy exists")
+    for site, what in ((targets_h, "initial target build"),
+                       (apply_cpp, "correction loop"),
+                       (_p(ctx, "linux_curve_targets.h"), "Linux target build")):
+        require_text(site, "curve_point_target_offset_khz(&want)",
+                     f"the {what} asks the shared offset policy")
+    forbid_text(apply_cpp, "long long targetKHz = (long long)raw_curve_khz_from_display_mhz(targetMHz);",
+                "the correction loop may not re-derive a point's offset from the live base itself")
     # The GUI Apply path is the one the first fix missed: a profile load sets the
     # flag, but clicking Apply rebuilds the request from the editor, whose VF
     # fields show the same projection and carry the same stale absolutes.
