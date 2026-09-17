@@ -111,6 +111,9 @@ struct LinuxGpuState {
     int memOffsetMinMHz, memOffsetMaxMHz;
     int offsetReadPstate;
 
+    // Survives transaction cleanup after failed recovery; scoped to this GPU.
+    unsigned int retainedTransitionCeilingMHz;
+
     // Power
     int powerLimitMinmW, powerLimitMaxmW, powerLimitDefaultmW, powerLimitCurrentmW;
 

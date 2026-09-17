@@ -10,6 +10,10 @@
 static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
     char* result, size_t resultSize, bool* powerTargetAlreadyWrittenOut) {
     if (powerTargetAlreadyWrittenOut) *powerTargetAlreadyWrittenOut = false;
+    if (!nvapi_read_curve()) {
+        set_message(result, resultSize, "Cannot read the curve before baseline reset");
+        return false;
+    }
     int resetOffsets[VF_NUM_POINTS] = {};
     bool resetMask[VF_NUM_POINTS] = {};
     char failures[512] = {};
@@ -22,21 +26,15 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         if (g_app.curve[ci].freq_kHz != 0) resetMask[ci] = true;
     }
-    bool hadCurveOffsets = false;
-    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-        if (g_app.freqOffsets[ci] != 0) {
-            hadCurveOffsets = true;
-            break;
-        }
-    }
     set_last_apply_phase("apply: reset OC baseline");
     // Reset GPU offset first to avoid dangerous transient where VF curve tail
     // points snap to factory base frequencies (~3300+ MHz on modern GPUs) while
     // the GPU offset from the previous profile is still active — that spike
     // (e.g. 3300 base + 475 old offset = 3775 MHz effective) causes TDR/crashes.
-    if (desired && desired->hasGpuOffset &&
-        g_app.gpuClockOffsetkHz != 0 && !nvapi_set_gpu_offset(0)) {
-        append_failure("GPU offset did not reset");
+    if (desired && desired->hasGpuOffset && !vf_curve_global_gpu_offset_supported()
+        && !nvapi_set_gpu_offset(0, true)) {
+        set_message(result, resultSize, "GPU offset did not reset before curve reset");
+        return false;
     }
     // A reset-to-clean-VF-baseline is not ownership of unrelated controls.
     // Only write power when the incoming request itself owns power — and only
@@ -96,7 +94,7 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
     // to a milder profile — observed 2026-07-04, build 355 `skip_reset_curve_write`
     // experiment). It cannot be cheaply removed without reworking the boost to absolute
     // targets, which the delta design exists to avoid. So it always runs.
-    if (hadCurveOffsets && !apply_curve_offsets_verified(resetOffsets, resetMask, 2)) {
+    if (!apply_curve_offsets_verified(resetOffsets, resetMask, 2)) {
         append_failure("VF curve offsets did not reset");
     }
     // CT-08.  The `if (failures[0]) return false` check used to live HERE,
@@ -121,14 +119,14 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
     // advanced offset set by another tool -- or by the user through a different
     // path -- and never put it back.  A baseline reset cleans up what this
     // application owns; it is not a licence to clear the whole GPU.
-    const bool requestOwnsXbar = desired &&
-        (desired->hasXbarOffsetKhz || desired->hasXbarMsvddOffsetUv);
+    const bool requestOwnsXbar = desired && desired->hasXbarOffsetKhz;
+    const bool requestOwnsMsvdd = desired && desired->hasXbarMsvddOffsetUv;
+    const bool ownsXbar = requestOwnsXbar;
+    const bool ownsMsvdd = requestOwnsMsvdd;
     const bool requestOwnsSysClk = desired && desired->hasSysClkOffsetKhz;
     const bool requestOwnsVideoClk = desired && desired->hasVideoClkOffsetKhz;
-    // Previously-owned fields the replacement omits still need cleaning, which
-    // is what `previouslyOwned*` expresses: Green Curve put the value there, so
-    // Green Curve takes it away.  An externally owned value has neither flag
-    // and is preserved.
+    // Full profile replacement explicitly names dropped owned fields as zero
+    // in service_lifecycle_policy.h. A sparse request does not acquire them.
     const bool previouslyOwnedXbar = g_app.appliedAdvancedOwnedXbar;
     const bool previouslyOwnedSysClk = g_app.appliedAdvancedOwnedSysClk;
     const bool previouslyOwnedVideoClk = g_app.appliedAdvancedOwnedVideoClk;
@@ -141,22 +139,24 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
         g_app.sysClkFreqOffsetKhz, g_app.videoClkFreqOffsetKhz);
     // Reset both owned XBAR fields through the same validated ClkDomains V2
     // transaction used by Apply.  A fresh GET preserves all unrelated fields.
-    if ((requestOwnsXbar || previouslyOwnedXbar) && g_app.xbarProbeValid &&
-        (g_app.xbarFreqOffsetKhz != 0 || g_app.xbarMsvddOffsetUv != 0)) {
+    if ((ownsXbar || ownsMsvdd) && g_app.xbarProbeValid &&
+        ((ownsXbar && g_app.xbarFreqOffsetKhz != 0) ||
+         (ownsMsvdd && g_app.xbarMsvddOffsetUv != 0))) {
         auto xbarGetFunc = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
         auto xbarSetFunc = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
         auto xbarMeasure = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_MEASURE);
         if (xbarGetFunc && xbarSetFunc && xbarMeasure) {
             XbarControlSnapshot snap{};
-            if (xbar_reset_to_stock(xbarGetFunc, xbarSetFunc, xbarMeasure,
-                                    g_app.gpuHandle, &snap)) {
+            if (xbar_write(xbarGetFunc, xbarSetFunc, xbarMeasure,
+                          g_app.gpuHandle, &snap, 0, 0, ownsXbar, ownsMsvdd)) {
                 g_app.xbarFreqReadbackValid = true;
                 g_app.xbarMsvddReadbackValid = true;
                 g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
                 g_app.xbarMsvddOffsetUv = snap.msvddOffsetUv;
                 g_app.xbarMeasuredClockKhz = snap.measuredKhz;
                 // Back at stock: Green Curve no longer owns this domain.
-                g_app.appliedAdvancedOwnedXbar = false;
+                if (ownsXbar) g_app.appliedAdvancedOwnedXbar = false;
+                if (ownsMsvdd) g_app.appliedAdvancedOwnedMsvdd = false;
                 debug_log("reset-before-apply: XBAR reset to %d kHz, %d uV, measured %u kHz\n",
                           snap.freqOffsetKhz, snap.msvddOffsetUv, snap.measuredKhz);
             } else {
@@ -167,7 +167,7 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
         }
     }
     // SYS clock entry rides the same validated block.
-    if ((requestOwnsSysClk || previouslyOwnedSysClk) &&
+    if (requestOwnsSysClk &&
         g_app.sysClkProbeValid && g_app.sysClkFreqOffsetKhz != 0) {
         auto sysGetFunc = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
         auto sysSetFunc = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);
@@ -191,7 +191,7 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
         }
     }
     // VIDEO clock entry rides the same validated block.
-    if ((requestOwnsVideoClk || previouslyOwnedVideoClk) &&
+    if (requestOwnsVideoClk &&
         g_app.videoClkProbeValid && g_app.videoClkFreqOffsetKhz != 0) {
         auto vidGetFunc = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_GET_CONTROL);
         auto vidSetFunc = (NvApiFunc)nvapi_qi(XBAR_NVAPI_CLK_DOMAINS_SET_CONTROL);

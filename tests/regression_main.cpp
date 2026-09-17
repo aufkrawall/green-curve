@@ -709,7 +709,10 @@ static bool gc_remove_protected_temp_dir(const wchar_t* path) {
 // non-aliasing status so a Linux run is never misread.
 static int run_all_tests(int argc, char** argv);
 
+int run_clock_transition_tests();
 int main(int argc, char** argv) {
+    if (int transitionFailure = run_clock_transition_tests()) return transitionFailure;
+
     int code = run_all_tests(argc, argv);
     if (code != 0) {
         fprintf(stderr, "regression assertion failed: code %d\n", code);
@@ -6785,7 +6788,7 @@ static int run_all_tests(int argc, char** argv) {
         // The abandon rule.  Every non-adopting exit in the apply is ahead of
         // the first clock-RAISING write, so an armed-but-unadopted clamp always
         // goes; an adopted one belongs to the final lock step.
-        if (!apply_clock_ceiling_release_on_abandon(true, false)) return 5212;
+        if (apply_clock_ceiling_release_on_abandon(true, false)) return 5212;
         if (apply_clock_ceiling_release_on_abandon(true, true)) return 5213;
         if (apply_clock_ceiling_release_on_abandon(false, false)) return 5214;
         if (apply_clock_ceiling_release_on_abandon(false, true)) return 5215;
@@ -7009,7 +7012,7 @@ static int run_all_tests(int argc, char** argv) {
         if (!vf_offset_range_permits_khz(
                 asym, vf_offset_range_flatten_floor_khz(asym))) return 5458;
         // Magnitude-based, matching the pre-write check it replaces.
-        if (!vf_offset_range_permits_khz(asym, 400000)) return 5459;
+        if (vf_offset_range_permits_khz(asym, 400000)) return 5459;
         if (vf_offset_range_permits_khz(asym, 400001)) return 5460;
 
         // An inverted or empty probe is not a range; it falls back rather than
@@ -7024,7 +7027,7 @@ static int run_all_tests(int argc, char** argv) {
         // falls back rather than returning a positive "minimum" that would
         // raise the tail it is supposed to push down.
         VfOffsetRange positiveOnly = vf_offset_range_from_probe(true, 0, 300000);
-        if (vf_offset_range_flatten_floor_khz(positiveOnly) >= 0) return 5464;
+        if (vf_offset_range_supports_flatten(positiveOnly)) return 5464;
 
         // The clamp REPORTS that it altered a request.  The old one returned
         // only the number, so a request the driver could not honour silently

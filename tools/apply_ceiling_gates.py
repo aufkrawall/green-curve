@@ -81,12 +81,12 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # written curve -- the shape of the 2026-09-13 incident.  It is now gated on
     # the curve having verified, and the failing branch retains the clamp.
     require_text(apply_cpp,
-                 "const bool curveStateProvenSafe = curveRequestOk || !curveTouched;",
+                 "const bool curveStateProvenSafe = failCount == 0 && curveRequestOk;",
                  "the locked-clock release is conditional on a verified curve")
     require_order_in_operation(
         apply_cpp,
         "static bool apply_desired_settings_service(const DesiredSettings* desired",
-        "const bool curveStateProvenSafe = curveRequestOk || !curveTouched;",
+        "const bool curveStateProvenSafe = failCount == 0 && curveRequestOk;",
         "clockCeiling.adopt(\"released with the locked-clock domain\");",
         "the verified-curve test precedes the release it guards")
     # The curve verdict has to OUTLIVE the batch scope for that test to be
@@ -147,7 +147,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(apply_cpp, 'apply_clock_witness_record("post-curve-batch (pre-lock)");',
                  "the apply samples the live clock at the instant that used to be "
                  "uncapped -- the curve is raised and the lock has not run")
-    require_text(backend_cpp, 'apply_clock_witness_poll("curve settle");',
+    require_text(_p(ctx, "gpu_backend_snapshot.h"), 'apply_clock_witness_poll("curve settle");',
                  "the settle loop samples the middle of the post-curve window, not "
                  "only its two ends")
     # The witness must never grow a sampling thread: a concurrent NVML reader
@@ -223,7 +223,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                 "a planned clamp is not evidence of an armed one")
     linux_rollback_h = _p(ctx, "linux_backend_rollback.h")
     require_text(linux_rollback_h,
-                 "(phaseMask & LINUX_MUTATION_LOCK_CEILING)) {",
+                 "if (phaseMask & clockPhases) {",
                  "Linux rollback accounts for a transition clamp it armed")
     # CT-07.  It must not release that clamp over a curve it just restored and
     # cannot vouch for -- in particular an outgoing HARD profile, whose raw VF
@@ -234,3 +234,27 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(linux_ceiling_h, "static void linux_apply_ceiling_note_outgoing(",
                  "what the Linux transaction is leaving is recorded at entry, "
                  "not inferred from a snapshot full of positive offsets")
+
+    forbid_text(guard_h, "bool ok = nvml_reset_gpu_locked_clocks(detail, sizeof(detail));",
+                "scope destruction cannot release unverified protection")
+    require_text(apply_cpp, "return apply_recover_clock_failure(clockCeiling, result, result, resultSize);",
+                 "baseline failure reaches guarded recovery")
+    require_text(linux_mutation_cpp, "linux_apply_clock_ceiling_plan(g, d, previousIntent)",
+                 "Linux plans protection from the actual previous intent")
+    require_text(linux_mutation_cpp, "linux_apply_arm_transition_ceiling(g, d, context->previousIntent)",
+                 "Linux arming receives the previous intent too")
+    require_text(linux_mutation_cpp, "if (d->hasLock || (requested & LINUX_MUTATION_LOCK_CEILING))",
+                 "temporary protection always receives final disposition")
+    forbid_text(linux_rollback_h, "g->nvml.resetGpuLockedClocks(g->nvmlDevice);",
+                "uncertain Linux rollback cannot erase clock protection")
+    require_text(reset_cpp, "0, 0, ownsXbar, ownsMsvdd)",
+                 "baseline preserves independently unowned XBAR siblings")
+
+    require_text(rollback_h, "reset_core_clock_controls(vf_curve_global_gpu_offset_supported(), true,",
+                 "rollback uses backend-aware reset sequencing")
+    require_order_in_operation(
+        _p(ctx, "clock_reset_policy.h"),
+        "static ApplyRecoveryResult reset_core_clock_controls(",
+        "result.gpuOffset.verified = resetScalar();",
+        "result.curve.verified = resetCurve();",
+        "independent scalar reset verifies before the curve reset")

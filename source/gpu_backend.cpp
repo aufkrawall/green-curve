@@ -162,6 +162,8 @@ static void format_gpu_adapter_label(const GpuAdapterInfo* adapter, char* out, s
 #include "gpu_selection_config.cpp"
 
 static void reset_gpu_runtime_selection() {
+    g_app.transitionClockCapActive = false;
+    g_app.transitionClockCapMHz = 0;
     g_app.gpuHandle = nullptr;
     g_app.loaded = false;
     g_app.nvmlReady = false;
@@ -607,20 +609,22 @@ static bool nvapi_read_pstates() {
     else if (curveRangeAnyFound) set_curve_offset_range_khz(curveRangeAnyMinkHz, curveRangeAnyMaxkHz);
     return true;
 }
-static bool nvapi_set_gpu_offset(int offsetkHz) {
+static bool nvapi_set_gpu_offset(int offsetkHz, bool forceWrite) {
     if (!vf_curve_global_gpu_offset_supported()) {
-        if (g_app.gpuClockOffsetkHz == offsetkHz) return true;
+        if (!forceWrite && g_app.readback.gpuOffset && g_app.gpuClockOffsetkHz == offsetkHz) return true;
         bool exact = false;
         char detail[128] = {};
         set_last_apply_phase("GPU offset NVML write");
         bool ok = nvml_set_clock_offset_domain(NVML_CLOCK_GRAPHICS, offsetkHz / 1000, &exact, detail, sizeof(detail));
         if (!ok) return false;
         nvml_read_clock_offsets(detail, sizeof(detail));
+        const bool freshGpuMatch = g_app.readback.gpuOffset &&
+            g_app.gpuClockOffsetkHz == offsetkHz;
         nvapi_read_pstates();
         detect_clock_offsets();
         nvapi_read_offsets();
         if (nvapi_read_curve()) rebuild_visible_map();
-        return exact || g_app.gpuClockOffsetkHz == offsetkHz;
+        return exact || freshGpuMatch;
     }
     int currentGlobalkHz = uniform_curve_offset_khz();
     if (currentGlobalkHz == offsetkHz) return true;
@@ -820,71 +824,4 @@ static void detect_locked_tail_from_curve() {
     // No lock detected - appliedLock already synced at function entry.
 }
 
-static bool read_live_curve_snapshot_settled(int attempts, DWORD delayMs, bool* lastOffsetsOkOut) {
-    if (!g_app.isServiceProcess && g_app.usingBackgroundService) {
-        char err[256] = {};
-        ServiceResponse stateResponse = {};
-        if (!service_client_get_ready_state(&stateResponse, 2000,
-                "settled curve state", err, sizeof(err))) {
-            debug_log("service snapshot failed: %s\n", err);
-            if (lastOffsetsOkOut) *lastOffsetsOkOut = false;
-            return false;
-        }
-        apply_ready_service_envelope_to_app(&stateResponse);
-        if (lastOffsetsOkOut) *lastOffsetsOkOut = true;
-        return stateResponse.snapshot.loaded;
-    }
-    if (lastOffsetsOkOut) *lastOffsetsOkOut = false;
-    if (attempts < 1) attempts = 1;
-    bool anyCurveOk = false;
-    bool bestValid = false;
-    bool bestOffsetsOk = false;
-    int bestNumVisible = -1;
-    int bestNumPopulated = -1;
-    VFCurvePoint bestCurve[VF_NUM_POINTS] = {};
-    int bestFreqOffsets[VF_NUM_POINTS] = {};
-    for (int attempt = 0; attempt < attempts; attempt++) {
-        if (attempt > 0 && delayMs > 0) Sleep(delayMs);
-        // F-APPLY-CEILING witness. Inert unless an apply is in progress; it adds
-        // one NVML read to an iteration this loop was already making, and no
-        // sleep, attempt or branch that can change what the loop returns. This
-        // is the only place that samples the middle of the post-curve-write
-        // window rather than just its two ends.
-        apply_clock_witness_poll("curve settle");
-        bool curveOk = nvapi_read_curve();
-        bool offsetsOk = nvapi_read_offsets();
-        if (!curveOk) continue;
-        anyCurveOk = true;
-        rebuild_visible_map();
-        detect_locked_tail_from_curve();
-        bool betterSnapshot = !bestValid
-            || g_app.numVisible > bestNumVisible
-            || (g_app.numVisible == bestNumVisible && g_app.numPopulated > bestNumPopulated)
-            || (g_app.numVisible == bestNumVisible && g_app.numPopulated == bestNumPopulated && offsetsOk && !bestOffsetsOk);
-        if (betterSnapshot) {
-            memcpy(bestCurve, g_app.curve, sizeof(bestCurve));
-            memcpy(bestFreqOffsets, g_app.freqOffsets, sizeof(bestFreqOffsets));
-            bestNumVisible = g_app.numVisible;
-            bestNumPopulated = g_app.numPopulated;
-            bestOffsetsOk = offsetsOk;
-            bestValid = true;
-        }
-    }
-    if (!bestValid) {
-        if (lastOffsetsOkOut) *lastOffsetsOkOut = false;
-        return anyCurveOk;
-    }
-    memcpy(g_app.curve, bestCurve, sizeof(g_app.curve));
-    memcpy(g_app.freqOffsets, bestFreqOffsets, sizeof(g_app.freqOffsets));
-    g_app.numPopulated = bestNumPopulated;
-    g_app.loaded = true;
-    rebuild_visible_map();
-    detect_locked_tail_from_curve();
-    debug_log("read_live_curve_snapshot_settled: selected visible=%d populated=%d offsetsOk=%d attempts=%d\n",
-        bestNumVisible,
-        bestNumPopulated,
-        bestOffsetsOk ? 1 : 0,
-        attempts);
-    if (lastOffsetsOkOut) *lastOffsetsOkOut = bestOffsetsOk;
-    return true;
-}
+#include "gpu_backend_snapshot.h"

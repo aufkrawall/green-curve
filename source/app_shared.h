@@ -596,6 +596,9 @@ struct AppData {
     // ours, leave it alone".  Set on a verified advanced write, cleared when
     // the domain is reset to stock.
     bool appliedAdvancedOwnedXbar;
+    bool appliedAdvancedOwnedMsvdd;
+    bool transitionClockCapActive;
+    unsigned int transitionClockCapMHz;
     bool appliedAdvancedOwnedSysClk;
     bool appliedAdvancedOwnedVideoClk;
     // Drift-free applied/owned VF curve intent, per point (0 = not owned; show live

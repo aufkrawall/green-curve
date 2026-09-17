@@ -47,6 +47,7 @@ struct ApplyClockWitness {
     // reports the peak without claiming anything was supposed to hold it.
     unsigned int ceilingMHz;
     bool clampArmed;
+    bool transitionFinished;
     int samples;
     // Judged peak: samples taken while the clamp was actually armed. Only this
     // one reaches the verdict (apply_clock_witness_counts_toward_verdict()).
@@ -106,7 +107,7 @@ static ApplyClockSample apply_clock_sample_now() {
 static void apply_clock_witness_fold(const ApplyClockSample* s, const char* stage,
                                      bool sampledAtArmingInstant) {
     ApplyClockWitness* w = &g_applyClockWitness;
-    if (!w->active || !s) return;
+    if (!w->active || !s || w->transitionFinished) return;
     w->samples++;
     if (s->clockValid) {
         if (!apply_clock_witness_counts_toward_verdict(w->clampArmed,
@@ -160,6 +161,13 @@ static void apply_clock_witness_begin(unsigned int ceilingMHz, bool clampArmed) 
 static void apply_clock_witness_set_clamp(unsigned int ceilingMHz, bool clampArmed) {
     g_applyClockWitness.ceilingMHz = ceilingMHz;
     g_applyClockWitness.clampArmed = clampArmed;
+    g_applyClockWitness.transitionFinished = false;
+}
+
+// Freeze evidence at verified handoff. A higher final pin or an unlocked
+// stock curve must not be judged against the old, lower transition ceiling.
+static void apply_clock_witness_finish_transition() {
+    g_applyClockWitness.transitionFinished = true;
 }
 
 // Take one sample, fold it into the high-water marks, and log it.  Used at the
@@ -173,11 +181,12 @@ static void apply_clock_witness_record_ex(const char* stage,
     apply_clock_witness_fold(&s, stage, sampledAtArmingInstant);
     char detail[256] = {};
     apply_clock_witness_format(&s, detail, sizeof(detail));
-    debug_log("apply clock witness [%s]: %s (ceiling=%u MHz armed=%d judged=%d)\n",
+    debug_log("apply clock witness [%s]: %s (ceiling=%u MHz armed=%d judged=%d transitionFinished=%d)\n",
         stage ? stage : "?", detail, g_applyClockWitness.ceilingMHz,
         g_applyClockWitness.clampArmed ? 1 : 0,
         apply_clock_witness_counts_toward_verdict(g_applyClockWitness.clampArmed,
-                                                  sampledAtArmingInstant) ? 1 : 0);
+            sampledAtArmingInstant, g_applyClockWitness.transitionFinished) ? 1 : 0,
+        g_applyClockWitness.transitionFinished ? 1 : 0);
 }
 
 // A sample at a point where the clamp, if armed, has been in force for the

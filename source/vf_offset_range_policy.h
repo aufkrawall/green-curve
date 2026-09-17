@@ -39,6 +39,7 @@
 // can validate, so the floor stays a floor.
 #ifndef GREEN_CURVE_VF_OFFSET_RANGE_POLICY_H
 #define GREEN_CURVE_VF_OFFSET_RANGE_POLICY_H
+#include <limits.h>
 
 // What the driver accepts for a VF curve point offset, and whether that came
 // from the driver or from the fallback.
@@ -88,28 +89,33 @@ static inline VfOffsetRange vf_offset_range_from_probe(bool probed, int minKHz,
 // Derived from the same struct the floor comes from, which is the whole point:
 // the two can no longer disagree.
 static inline int vf_offset_range_hard_limit_khz(const VfOffsetRange& r) {
-    int lo = r.minKHz < 0 ? -r.minKHz : r.minKHz;
-    int hi = r.maxKHz < 0 ? -r.maxKHz : r.maxKHz;
-    int limit = lo > hi ? lo : hi;
+    long long lo = r.minKHz < 0 ? -(long long)r.minKHz : r.minKHz;
+    long long hi = r.maxKHz < 0 ? -(long long)r.maxKHz : r.maxKHz;
+    long long limit = lo > hi ? lo : hi;
     if (limit <= 0) limit = VF_OFFSET_RANGE_FALLBACK_LIMIT_KHZ;
-    return limit;
+    return limit > INT_MAX ? INT_MAX : (int)limit;
 }
 
 // The FLATTEN tail floor.  Always the range's own minimum, so
 // vf_offset_range_permits_khz(r, vf_offset_range_flatten_floor_khz(r)) is true
 // for every range this header can produce.
-static inline int vf_offset_range_flatten_floor_khz(const VfOffsetRange& r) {
-    if (r.minKHz < 0) return r.minKHz;
-    return -VF_OFFSET_RANGE_FALLBACK_LIMIT_KHZ;
+static inline bool vf_offset_range_supports_flatten(const VfOffsetRange& r) {
+    return r.minKHz < 0;
 }
 
-// Whether a requested offset may be written at all.  Magnitude-based to match
-// the pre-write check it replaces; an asymmetric driver range still clamps the
-// exact endpoint through vf_offset_range_clamp_khz() below.
+static inline int vf_offset_range_flatten_floor_khz(const VfOffsetRange& r) {
+    return r.minKHz;
+}
+
+// Whether the exact signed offset is inside the driver range.
 static inline bool vf_offset_range_permits_khz(const VfOffsetRange& r,
                                                int offsetKHz) {
-    int mag = offsetKHz < 0 ? -offsetKHz : offsetKHz;
-    return mag <= vf_offset_range_hard_limit_khz(r);
+    return offsetKHz >= r.minKHz && offsetKHz <= r.maxKHz;
+}
+
+static inline bool vf_offset_zero_readback_is_benign(int target, int actual,
+    unsigned int liveKHz, unsigned int operatingMinKHz) {
+    return target > 0 && actual == 0 && liveKHz > 0 && liveKHz < operatingMinKHz;
 }
 
 // Clamp to the exact endpoints, reporting whether the value was altered.

@@ -73,7 +73,7 @@ static void apply_advanced_clock_domains(const DesiredSettings* desired,
                 ? desired->xbarMsvddOffsetUv : g_app.xbarMsvddOffsetUv;
             if (xbar_write(xbarGetCtrl, xbarSetCtrl, xbarMeasure,
                            g_app.gpuHandle, &snap, targetFreqKhz, targetMsvddUv,
-                           true, true)) {
+                           desired->hasXbarOffsetKhz, desired->hasXbarMsvddOffsetUv)) {
                 g_app.xbarFreqReadbackValid = true;
                 g_app.xbarMsvddReadbackValid = true;
                 g_app.xbarFreqOffsetKhz = snap.freqOffsetKhz;
@@ -83,8 +83,10 @@ static void apply_advanced_clock_domains(const DesiredSettings* desired,
                 // later baseline reset can tell a value this application put
                 // there from one it must preserve.  Back at zero means the
                 // domain is at stock and nothing owns it.
-                g_app.appliedAdvancedOwnedXbar =
-                    (snap.freqOffsetKhz != 0 || snap.msvddOffsetUv != 0);
+                if (desired->hasXbarOffsetKhz)
+                    g_app.appliedAdvancedOwnedXbar = snap.freqOffsetKhz != 0;
+                if (desired->hasXbarMsvddOffsetUv)
+                    g_app.appliedAdvancedOwnedMsvdd = snap.msvddOffsetUv != 0;
                 successCount++;
                 debug_log("apply: XBAR offset %d kHz, MSVDD %d uV, measured %u kHz\n",
                           snap.freqOffsetKhz, snap.msvddOffsetUv,

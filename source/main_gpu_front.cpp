@@ -749,4 +749,5 @@ static bool should_show_limited_control_warning() {
     return true;
 }
 // Recovery to stock after a partial apply, with a per-domain result.
+#include "clock_reset_policy.h"
 #include "main_gpu_rollback.h"

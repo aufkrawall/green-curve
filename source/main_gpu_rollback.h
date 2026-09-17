@@ -33,42 +33,20 @@ static ApplyRecoveryResult rollback_to_safe_defaults() {
         debug_log("rollback: %s did not reset after %d attempts\n", label, maxRetries);
         return false;
     };
-    // Reset VF curve offsets to zero.
-    int resetOffsets[VF_NUM_POINTS] = {};
-    bool resetMask[VF_NUM_POINTS] = {};
-    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-        if (g_app.curve[ci].freq_kHz == 0) continue;
-        resetMask[ci] = true;
-    }
-    bool hadCurveOffsets = false;
-    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-        if (g_app.freqOffsets[ci] != 0) {
-            hadCurveOffsets = true;
-            break;
-        }
-    }
-    // CT-04.  Order matters and is the opposite of what a "reset everything"
-    // reading suggests: the separate GPU offset goes FIRST, before the VF
-    // tail floor is lifted, for the same reason reset_oc_before_gui_apply()
-    // does it first.  Zeroing the curve while a previous profile's positive
-    // GPU offset is still active lets the tail points snap to factory base
-    // frequencies WITH that offset still added on top -- the 3300 + 475 MHz
-    // transient that produces a TDR.  The pre-fix rollback did VF first.
-    if (g_app.gpuClockOffsetkHz != 0) {
-        recovery.gpuOffset.attempted = true;
-        recovery.gpuOffset.verified =
-            retry_op([&]() { return nvapi_set_gpu_offset(0); }, 3, "GPU offset");
-    } else {
-        recovery.gpuOffset.verified = true;
-    }
-    if (hadCurveOffsets) {
-        recovery.curve.attempted = true;
-        recovery.curve.verified = retry_op(
-            [&]() { return apply_curve_offsets_verified(resetOffsets, resetMask, 2); },
-            3, "VF curve offsets");
-    } else {
-        recovery.curve.verified = true;
-    }
+    recovery = reset_core_clock_controls(vf_curve_global_gpu_offset_supported(), true,
+        [&]() { return nvapi_set_gpu_offset(0, true); },
+        [&]() {
+            if (!nvapi_read_curve()) return false;
+            int zeros[VF_NUM_POINTS] = {};
+            bool mask[VF_NUM_POINTS] = {};
+            bool any = false;
+            for (int ci = 0; ci < VF_NUM_POINTS; ++ci)
+                any |= mask[ci] = g_app.curve[ci].freq_kHz != 0;
+            return any && apply_curve_offsets_verified(zeros, mask, 2);
+        });
+    debug_log("rollback core reset: vfGlobal=%d scalarOk=%d curveOk=%d\n",
+        vf_curve_global_gpu_offset_supported(), recovery.gpuOffset.verified,
+        recovery.curve.verified);
     // Reset memory offset.
     if (g_app.memClockOffsetkHz != 0) {
         retry_op([&]() { return nvapi_set_mem_offset(0); }, 3, "Memory offset");
@@ -127,6 +105,7 @@ static ApplyRecoveryResult rollback_to_safe_defaults() {
         if (nvml_ensure_ready()) {
             nvmlReturn_t r = g_nvml_api.resetGpuLockedClocks(g_app.nvmlDevice);
             recovery.restrictionReleased = (r == NVML_SUCCESS);
+            if (recovery.restrictionReleased) g_app.transitionClockCapActive = false;
             debug_log("rollback: resetGpuLockedClocks (lockMode=%s) → %s\n",
                 lock_mode_name(g_app.lockMode),
                 r == NVML_SUCCESS ? "ok" : nvml_err_name(r));

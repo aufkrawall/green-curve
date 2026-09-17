@@ -383,6 +383,7 @@ struct LinuxApplyTransactionContext {
     // pin -- and the transition ceiling is bounded by the lower of the
     // outgoing and incoming entitlements, so it has to reach the arming phase.
     const DesiredSettings* committedIntent;
+    const DesiredSettings* previousIntent;
     int curveTargets[VF_NUM_POINTS];
     bool curveMask[VF_NUM_POINTS];
     int fanTargetPercent;
@@ -395,22 +396,20 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
     const DesiredSettings* d = context->desired;
     switch (phase) {
         case LINUX_MUTATION_LOCK_CEILING:
-            return linux_apply_arm_transition_ceiling(g, d, context->committedIntent);
+            return linux_apply_arm_transition_ceiling(g, d, context->previousIntent);
         case LINUX_MUTATION_RESET_BASELINE: {
             if (!nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0) ||
                 !nvml_set_clock_offset(g, NVML_CLOCK_MEM, 0) ||
                 !g->nvml.resetGpuLockedClocks)
                 return false;
             if (!linux_apply_reset_baseline_locked_clocks(g, d)) return false;
-            if ((context->snapshot->availableMutationDomains &
-                 SERVICE_MUTATION_DOMAIN_XBAR) &&
-                !linux_xbar_write_owned(g, 0, 0, true, true)) return false;
-            if ((context->snapshot->availableMutationDomains &
-                 SERVICE_MUTATION_DOMAIN_SYS_CLK) &&
+            if ((d->hasXbarOffsetKhz || d->hasXbarMsvddOffsetUv) &&
+                !linux_xbar_write_owned(g, 0, 0, d->hasXbarOffsetKhz,
+                                       d->hasXbarMsvddOffsetUv)) return false;
+            if (d->hasSysClkOffsetKhz &&
                 !linux_xbar_write_entry(g, XBAR_PINNED_SYS_ENTRY_INDEX, 0))
                 return false;
-            if ((context->snapshot->availableMutationDomains &
-                 SERVICE_MUTATION_DOMAIN_VIDEO_CLK) &&
+            if (d->hasVideoClkOffsetKhz &&
                 !linux_xbar_write_entry(g, XBAR_PINNED_VIDEO_ENTRY_INDEX, 0))
                 return false;
             return true;
@@ -446,7 +445,7 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
             return curveOk;
         }
         case LINUX_MUTATION_LOCK:
-            return linux_apply_write_final_lock(g, d);
+            return linux_apply_write_final_lock(g, context->committedIntent ? context->committedIntent : d);
         case LINUX_MUTATION_FAN:
             if (d->fanMode == FAN_MODE_CURVE &&
                 context->fanUseDriverAuto) {
@@ -492,7 +491,7 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     // rollback can tell "restoring an ordinary overclock" from "restoring a
     // curve whose safety came entirely from a pin" (CT-07).
     linux_apply_ceiling_reset_state();
-    linux_apply_ceiling_note_outgoing(committedIntent);
+    linux_apply_ceiling_note_outgoing(previousIntent);
     linux_backend_refresh(g);
     if (!linux_backend_capture_snapshot(g, &snapshot, preflight, sizeof(preflight)) ||
         !linux_backend_preflight(g, d, &snapshot, preflight, sizeof(preflight))) {
@@ -501,8 +500,9 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
         return mutation;
     }
     bool hardLock = d->hasLock && d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
+    g_linuxOutgoingCeilingMHz = linux_outgoing_ceiling_mhz(g, previousIntent);
     LinuxApplyTransactionContext context = {g, d, &snapshot, committedIntent,
-        {}, {}, d->fanPercent, false};
+        previousIntent, {}, {}, d->fanPercent, false};
     gc_u32 requestedDomains = service_desired_mutation_domains(d);
     int cleanupPointCount = 0;
     LinuxCurveTargetBuildResult curveBuild = {};
@@ -562,7 +562,7 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     // because the phase was never scheduled.
     {
         ApplyClockCeilingPlan ceilingPlan =
-            linux_apply_clock_ceiling_plan(g, d, committedIntent);
+            linux_apply_clock_ceiling_plan(g, d, previousIntent);
         if (ceilingPlan.arm || ceilingPlan.required)
             requested |= LINUX_MUTATION_LOCK_CEILING;
     }
@@ -576,7 +576,8 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
         requested |= LINUX_MUTATION_POWER;
     if (curveBuild.pointCount > 0)
         requested |= LINUX_MUTATION_CURVE;
-    if (d->hasLock) requested |= LINUX_MUTATION_LOCK;
+    if (d->hasLock || (requested & LINUX_MUTATION_LOCK_CEILING))
+        requested |= LINUX_MUTATION_LOCK;
     if (d->hasFan) requested |= LINUX_MUTATION_FAN;
     if (d->hasXbarOffsetKhz || d->hasXbarMsvddOffsetUv)
         requested |= LINUX_MUTATION_XBAR;
@@ -606,8 +607,11 @@ static bool linux_reset_transaction_step(void* opaque, unsigned int phase) {
     LinuxResetTransactionContext* context = (LinuxResetTransactionContext*)opaque;
     LinuxGpuState* g = context->gpu;
     switch (phase) {
-        case LINUX_MUTATION_LOCK:
-            return g->nvml.resetGpuLockedClocks(g->nvmlDevice) == NVML_SUCCESS;
+        case LINUX_MUTATION_LOCK: {
+            bool ok = g->nvml.resetGpuLockedClocks(g->nvmlDevice) == NVML_SUCCESS;
+            if (ok) g->retainedTransitionCeilingMHz = 0;
+            return ok;
+        }
         case LINUX_MUTATION_GPU_OFFSET:
             return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0);
         case LINUX_MUTATION_MEM_OFFSET:
@@ -654,6 +658,7 @@ static bool linux_reset_transaction_rollback(void* opaque, unsigned int phases) 
 }
 
 LinuxMutationResult linux_backend_reset(LinuxGpuState* g, char* result, size_t resultSize) {
+    linux_apply_ceiling_reset_state();
     LinuxMutationResult mutation = {};
     LinuxHardwareSnapshot snapshot = {};
     char detail[256] = {};

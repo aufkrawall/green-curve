@@ -24,7 +24,8 @@
 static void apply_log_post_apply_curve_diagnostics(
     const DesiredSettings* verifyDesiredIn, const bool* originalCurvePopulated,
     const unsigned int* originalCurveVoltUv, const bool* lockedTailMask,
-    bool hasLock, unsigned int lockMhz, int& flattenApplied, int& flattenFailed) {
+    bool hasLock, unsigned int lockMhz, int& flattenApplied, int& flattenFailed,
+    bool selective, const bool* explicitMask, const int* targetOffsets) {
     const DesiredSettings& verifyDesired = *verifyDesiredIn;
                 // Log voltage consistency diagnostic: compare post-apply voltage
                 // against the pre-apply snapshot to detect unexpected voltage drift.
@@ -61,6 +62,16 @@ static void apply_log_post_apply_curve_diagnostics(
                         unsigned int delta = actualMHz > targetMHz ? actualMHz - targetMHz : targetMHz - actualMHz;
                         int tol = (int)curve_point_verify_tolerance_mhz(ci);
                         bool isTail = (lockedTailMask[ci] && lockMhz > 0);
+                        if (selective && !isTail && !explicitMask[ci]) {
+                            const bool overOffset = (long long)g_app.freqOffsets[ci] >
+                                (long long)targetOffsets[ci] + 12000;
+                            if (overOffset) nonTailOff++; else nonTailOK++;
+                            if (delta > (unsigned int)tol || overOffset)
+                                debug_log("post-apply derived point: ci=%d actual=%u MHz preview=%u MHz offset=%d kHz requestedOffset=%d kHz overOffset=%d\n",
+                                    ci, actualMHz, targetMHz, g_app.freqOffsets[ci],
+                                    targetOffsets[ci], overOffset);
+                            continue;
+                        }
                         if (delta > (unsigned int)tol) {
                             debug_log("post-apply curve: ci=%d actual=%u target=%u delta=%u tol=%d freqOffs=%d %s\n",
                                 ci, actualMHz, targetMHz, delta, tol, g_app.freqOffsets[ci],

@@ -397,7 +397,7 @@ static bool is_themed_checkbox_id(UINT id);
 static bool is_fan_dialog_checkbox_id(UINT id);
 static void draw_checkbox_tick_smooth(HDC hdc, const RECT* box, COLORREF color);
 static void write_error_report_log_for_user_failure(const char* summary, const char* details = nullptr);
-static bool nvapi_set_gpu_offset(int offsetkHz);
+static bool nvapi_set_gpu_offset(int offsetkHz, bool forceWrite = false);
 static bool nvapi_set_mem_offset(int offsetkHz);
 static bool nvapi_set_power_limit(int pct);
 static bool activate_existing_instance_window();

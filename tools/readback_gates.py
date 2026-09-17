@@ -91,7 +91,7 @@ def check_all(ctx, require_text, forbid_text):
                  "power_reset_before_apply_required(",
                  "reset-before-apply never writes power on a board with no power "
                  "control surface")
-    require_text(_p(ctx, "gpu_backend_apply.cpp"),
+    require_text(_p(ctx, "gpu_backend_apply_failure.h"),
                  "invalidate_scalar_readbacks(&g_app.readback);",
                  "a rollback drops readback validity with the scalars it zeroes")
     require_text(readback_policy_h, "all_fans_known",
@@ -144,5 +144,4 @@ def check_all(ctx, require_text, forbid_text):
     require_text(linux_mutation_cpp,
                  "bool pairValid = ok &&\n                linux_read_power_limit_pair(g, &currentmW, &defaultmW);",
                  "Linux reset-to-default requires complete post-write readback")
-
 

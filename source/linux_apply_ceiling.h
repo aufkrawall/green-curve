@@ -30,6 +30,8 @@
 static unsigned int linux_outgoing_ceiling_mhz(const LinuxGpuState* g,
                                                const DesiredSettings* committed) {
     if (!g) return 0;
+    if (g->retainedTransitionCeilingMHz > 0)
+        return g->retainedTransitionCeilingMHz;
     if (committed && committed->hasLock &&
         committed->lockMode == LOCK_MODE_HARD && committed->lockMHz > 0)
         return committed->lockMHz;
@@ -47,6 +49,7 @@ static unsigned int linux_outgoing_ceiling_mhz(const LinuxGpuState* g,
 static bool linux_outgoing_state_holds_clocks_down(const LinuxGpuState* g,
                                                    const DesiredSettings* committed) {
     if (!g) return false;
+    if (g->retainedTransitionCeilingMHz > 0) return true;
     if (committed && committed->hasLock && committed->lockMode != LOCK_MODE_NONE)
         return true;
     if (committed && committed->hasGpuOffset && committed->gpuOffsetMHz < 0)
@@ -99,6 +102,7 @@ static ApplyClockCeilingPlan g_linuxCeilingPlan = {};
 // fact recorded at entry, not something the restore can infer from a snapshot
 // full of positive offsets, which an ordinary unpinned overclock also has.
 static bool g_linuxOutgoingHadHardPin = false;
+static unsigned int g_linuxOutgoingCeilingMHz = 0;
 
 static void linux_apply_ceiling_reset_state() {
     g_linuxCeilingArmResult = APPLY_CEILING_ARM_NOT_NEEDED;
@@ -106,6 +110,7 @@ static void linux_apply_ceiling_reset_state() {
     g_linuxCeilingWriteAttempted = false;
     g_linuxCeilingPlan = ApplyClockCeilingPlan{};
     g_linuxOutgoingHadHardPin = false;
+    g_linuxOutgoingCeilingMHz = 0;
 }
 
 // Record what the transaction is leaving, before any phase runs.
@@ -135,7 +140,7 @@ static bool linux_snapshot_curve_needs_a_pin(const LinuxHardwareSnapshot* s) {
 static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
                                                const DesiredSettings* d,
                                                const DesiredSettings* committed) {
-    linux_apply_ceiling_reset_state();
+    // Transaction entry already initialized state and recorded outgoing ownership.
     ApplyClockCeilingPlan plan = linux_apply_clock_ceiling_plan(g, d, committed);
     g_linuxCeilingPlan = plan;
     if (!plan.arm) {
@@ -155,6 +160,7 @@ static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
     if (g->nvml.setGpuLockedClocks(g->nvmlDevice, 0, plan.ceilingMHz) ==
         NVML_SUCCESS) {
         g_linuxCeilingArmed = true;
+        g->retainedTransitionCeilingMHz = plan.ceilingMHz;
         g_linuxCeilingArmResult = APPLY_CEILING_ARM_INSTALLED;
         lb_log("apply: transition clock ceiling armed 0..%u MHz before the"
                " reset/curve writes\n", plan.ceilingMHz);
@@ -164,6 +170,7 @@ static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
         g->nvml.setGpuLockedClocks(g->nvmlDevice, plan.ceilingMHz,
                                    plan.ceilingMHz) == NVML_SUCCESS) {
         g_linuxCeilingArmed = true;
+        g->retainedTransitionCeilingMHz = plan.ceilingMHz;
         g_linuxCeilingArmResult = APPLY_CEILING_ARM_INSTALLED;
         lb_log("apply: transition clock ceiling armed %u..%u MHz before the"
                " reset/curve writes\n", plan.ceilingMHz, plan.ceilingMHz);
@@ -189,13 +196,18 @@ static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
 // would add a concurrent NVML reader alongside an in-flight VF write.
 static void linux_apply_log_clock_witness(LinuxGpuState* g,
                                           const DesiredSettings* d,
-                                          const char* stage) {
+                                          const char* stage, bool finalState = false) {
     if (!g || !stage) return;
-    (void)d;
     // The plan as it was ARMED, not a fresh one: the phases between arming and
     // this sample have already changed the live state the plan is derived from,
     // so recomputing would print a ceiling that never existed.
-    const ApplyClockCeilingPlan ceiling = g_linuxCeilingPlan;
+    ApplyClockCeilingPlan ceiling = g_linuxCeilingPlan;
+    bool armed = g_linuxCeilingArmed;
+    if (finalState && d) {
+        armed = d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
+        ceiling.required = ceiling.arm = armed;
+        ceiling.ceilingMHz = armed ? d->lockMHz : 0;
+    }
     unsigned int gpc = 0, sm = 0, mem = 0, tempC = 0, powerMw = 0;
     bool clockOk = g->nvml.getClock &&
         g->nvml.getClock(g->nvmlDevice, NVML_CLOCK_GRAPHICS,
@@ -223,7 +235,7 @@ static void linux_apply_log_clock_witness(LinuxGpuState* g,
     // reads the flag the arming call actually set.
     const char* verdict = apply_clock_witness_verdict_name(
         apply_clock_witness_verdict(ceiling.required || ceiling.arm,
-                                    g_linuxCeilingArmed, ceiling.ceilingMHz,
+                                    armed, ceiling.ceilingMHz,
                                     clockOk ? gpc : 0));
     lb_log("apply clock witness [%s]: gpc=%s%u MHz sm=%u mem=%u util=%s%u%%/%u%% "
            "power=%s%u.%01u W temp=%s%u C ceiling=%u MHz -> %s\n",
@@ -247,7 +259,13 @@ static bool linux_apply_write_final_lock(LinuxGpuState* g,
     else
         lockOk = g->nvml.resetGpuLockedClocks &&
                  g->nvml.resetGpuLockedClocks(g->nvmlDevice) == NVML_SUCCESS;
-    linux_apply_log_clock_witness(g, d, "post-lock");
+    if (lockOk) {
+        g->retainedTransitionCeilingMHz = 0;
+        // Post-handoff clocks obey the final state, not the old lower cap.
+        linux_apply_log_clock_witness(g, d, "post-lock final state", true);
+    } else {
+        linux_apply_log_clock_witness(g, d, "post-lock failure");
+    }
     return lockOk;
 }
 

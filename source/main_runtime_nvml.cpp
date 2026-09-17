@@ -248,6 +248,7 @@ static bool nvml_reset_gpu_locked_clocks(char* detail, size_t detailSize) {
         set_message(detail, detailSize, "nvmlDeviceResetGpuLockedClocks: %s", nvml_err_name(r));
         return false;
     }
+    g_app.transitionClockCapActive = false;
     debug_log("nvml_reset_gpu_locked_clocks: ok\n");
     return true;
 }

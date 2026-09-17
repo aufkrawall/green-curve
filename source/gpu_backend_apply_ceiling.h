@@ -20,12 +20,8 @@
 // the new (raised) VF curve and only THEN pin the clock, leaving the GPU
 // running a ~3637 MHz curve uncapped for 1.2 s under game load.
 //
-// Scope-bound rather than open-coded because the apply has validation paths
-// that return between arming and the final lock step; every one of those is
-// ahead of the first clock-RAISING write, so an abandoned clamp must be
-// released (apply_clock_ceiling_release_on_abandon()).  The one path that
-// reaches the end of the apply with a raised curve and no resolved lock calls
-// retain() instead, which is what keeps that predicate honest.
+// Scope exit retains protection. Only an explicit verified finalization or
+// recovery may release it; an early return can follow a partial driver write.
 // The highest clock the OUTGOING state is entitled to run, which is what
 // bounds the transition together with the incoming request.
 //
@@ -36,6 +32,8 @@
 // value that caps nothing.  For everything else the live curve peak IS the
 // envelope -- the GPU is running it right now.
 static inline unsigned int apply_outgoing_ceiling_mhz() {
+    if (g_app.transitionClockCapActive && g_app.transitionClockCapMHz > 0)
+        return g_app.transitionClockCapMHz;
     if (g_app.lockMode == LOCK_MODE_HARD && g_app.appliedLockFreq > 0)
         return g_app.appliedLockFreq;
     if (g_app.lockMode == LOCK_MODE_HARD && g_app.lockedFreq > 0)
@@ -58,6 +56,7 @@ static inline unsigned int apply_outgoing_ceiling_mhz() {
 // only lowers the GPU, and the subsequent raise goes no higher than the
 // incoming profile's own intent.
 static inline bool apply_outgoing_state_holds_clocks_down() {
+    if (g_app.transitionClockCapActive) return true;
     if (g_app.lockMode != LOCK_MODE_NONE) return true;
     if (g_app.gpuClockOffsetkHz < 0) return true;
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
@@ -119,6 +118,7 @@ struct ApplyClockCeilingGuard {
     // uncapped sequence the whole mechanism exists to prevent.
     ApplyClockCeilingArmResult arm() {
         if (armed) return armResult;
+        adopted = false;
         if (!plan.arm) {
             armResult = plan.required ? APPLY_CEILING_ARM_UNAVAILABLE
                                       : APPLY_CEILING_ARM_NOT_NEEDED;
@@ -141,6 +141,8 @@ struct ApplyClockCeilingGuard {
         // used where the plan says both endpoints permit it.
         if (nvml_set_gpu_locked_clocks(0, plan.ceilingMHz, detail, sizeof(detail))) {
             armed = true;
+            g_app.transitionClockCapActive = true;
+            g_app.transitionClockCapMHz = plan.ceilingMHz;
             armResult = APPLY_CEILING_ARM_INSTALLED;
             apply_clock_witness_set_clamp(plan.ceilingMHz, true);
             debug_log("apply ceiling: armed 0..%u MHz before the first clock write\n",
@@ -163,6 +165,8 @@ struct ApplyClockCeilingGuard {
         if (nvml_set_gpu_locked_clocks(plan.ceilingMHz, plan.ceilingMHz, detail,
                                        sizeof(detail))) {
             armed = true;
+            g_app.transitionClockCapActive = true;
+            g_app.transitionClockCapMHz = plan.ceilingMHz;
             armResult = APPLY_CEILING_ARM_INSTALLED;
             apply_clock_witness_set_clamp(plan.ceilingMHz, true);
             debug_log("apply ceiling: armed %u..%u MHz before the first clock write\n",
@@ -210,6 +214,9 @@ struct ApplyClockCeilingGuard {
     void adopt(const char* how) {
         if (!armed) return;
         adopted = true;
+        armed = false;
+        g_app.transitionClockCapActive = false;
+        apply_clock_witness_finish_transition();
         debug_log("apply ceiling: clamp adopted by the final lock step (%s)\n",
             how ? how : "");
     }
@@ -228,11 +235,8 @@ struct ApplyClockCeilingGuard {
     }
 
     ~ApplyClockCeilingGuard() {
-        if (!apply_clock_ceiling_release_on_abandon(armed, adopted)) return;
-        char detail[128] = {};
-        bool ok = nvml_reset_gpu_locked_clocks(detail, sizeof(detail));
-        debug_log("apply ceiling: released abandoned clamp at %u MHz ok=%d %s\n",
-            plan.ceilingMHz, ok ? 1 : 0, ok ? "" : (detail[0] ? detail : "unknown error"));
+        if (armed && !adopted)
+            retain("scope exit without a verified final state");
     }
 };
 

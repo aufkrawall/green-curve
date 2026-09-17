@@ -18,6 +18,31 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
         gc_strlcpy(err, errSize, "rollback snapshot is invalid");
         return false;
     }
+    const unsigned int clockPhases = LINUX_MUTATION_RESET_BASELINE |
+        LINUX_MUTATION_GPU_OFFSET | LINUX_MUTATION_CURVE |
+        LINUX_MUTATION_LOCK | LINUX_MUTATION_LOCK_CEILING;
+    if (phaseMask & clockPhases) {
+        unsigned int bound = g_linuxOutgoingCeilingMHz;
+        if (g_linuxCeilingPlan.ceilingMHz > 0 &&
+            (bound == 0 || g_linuxCeilingPlan.ceilingMHz < bound))
+            bound = g_linuxCeilingPlan.ceilingMHz;
+        // A rejected first arm must leave the old restriction alone. Failed
+        // writes may have side effects, so require protection before restoring.
+        bool protectedRestore = bound > 0 && g->nvml.setGpuLockedClocks &&
+            g->nvml.setGpuLockedClocks(g->nvmlDevice, 0, bound) == NVML_SUCCESS;
+        if (!protectedRestore && bound > 0 && g_linuxOutgoingHadHardPin &&
+            g->nvml.setGpuLockedClocks)
+            protectedRestore = g->nvml.setGpuLockedClocks(
+                g->nvmlDevice, bound, bound) == NVML_SUCCESS;
+        if (!protectedRestore) {
+            gc_strlcpy(err, errSize, "Rollback cannot establish clock protection; existing restriction preserved");
+            lb_log("rollback: refusing clock restore without protection at %u MHz\n", bound);
+            return false;
+        }
+        g_linuxCeilingArmed = true;
+        g->retainedTransitionCeilingMHz = bound;
+        lb_log("rollback: clock protection established at %u MHz before restore\n", bound);
+    }
     bool ok = true;
     bool baseline = (phaseMask & LINUX_MUTATION_RESET_BASELINE) != 0;
     if ((baseline || (phaseMask & LINUX_MUTATION_GPU_OFFSET)) && snapshot->gpuOffsetValid)
@@ -103,33 +128,12 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
             ok &= fanOk;
         }
     }
-    if (baseline || (phaseMask & LINUX_MUTATION_LOCK) ||
-        (phaseMask & LINUX_MUTATION_LOCK_CEILING)) {
-        // NVML exposes no getter for the configured locked-clock range, so the
-        // pre-transaction lock policy cannot be restored exactly and this
-        // rollback is always reported as uncertain (`ok = false`).
-        //
-        // CT-07.  What it must NOT do is release the restriction regardless.
-        // The pre-fix code called resetGpuLockedClocks() unconditionally on the
-        // argument that a clamp left standing over restored offsets is an
-        // invisible cap.  That argument holds only when the restore SUCCEEDED.
-        // When it did not -- or when the state being restored is an outgoing
-        // HARD profile whose raw VF tail is safe only because of its pin --
-        // releasing hands the GPU a raised curve with nothing holding it down.
-        // A cap the user can see and reset is strictly better than a TDR.
-        const bool curveRestoreUncertain =
-            (phaseMask & LINUX_MUTATION_CURVE) && snapshot->curveValid && !ok;
-        const bool restoringPinnedCurve =
-            snapshot->curveValid && (phaseMask & LINUX_MUTATION_CURVE) &&
-            linux_snapshot_curve_needs_a_pin(snapshot);
-        if (curveRestoreUncertain || restoringPinnedCurve) {
-            lb_log("rollback: KEEPING the locked-clock restriction -- restore"
-                   " uncertain=%d, restored curve needs a pin=%d. Releasing it"
-                   " would uncap the curve this rollback just wrote back\n",
-                   curveRestoreUncertain ? 1 : 0, restoringPinnedCurve ? 1 : 0);
-        } else if (g->nvml.resetGpuLockedClocks) {
-            g->nvml.resetGpuLockedClocks(g->nvmlDevice);
-        }
+    if (phaseMask & clockPhases) {
+        // A restored HARD curve needs its restriction even when failure happened
+        // before the CURVE phase. Keep protection on all uncertain rollbacks;
+        // the caller already reports rollback uncertainty to the user.
+        lb_log("rollback: retaining clock protection (outgoing hard=%d, restore ok=%d)\n",
+            linux_snapshot_curve_needs_a_pin(snapshot), ok);
         ok = false;
     }
     if (!ok) gc_strlcpy(err, errSize, "one or more GPU rollback phases failed");

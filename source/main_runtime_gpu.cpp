@@ -42,7 +42,7 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
         desiredOffsets[i] = clamp_freq_delta_khz(targetOffsets[i]);
         desiredCount++;
     }
-    if (desiredCount == 0) return true;
+    if (desiredCount == 0) return false;
 
     if (maxBatchPasses < 1) maxBatchPasses = 1;
 
@@ -120,6 +120,7 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
             break;
         }
 
+        if (!nvapi_read_curve()) { batchFailed = true; break; }
         bool anyPending = false;
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             if (!desiredMask[i]) continue;
@@ -133,7 +134,9 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
             // offset, the write returned success, but the readback is still exactly 0)
             // and accept it as non-offsettable instead of looping. Accepting it is a
             // hardware no-op — the driver was never going to move it.
-            if (!converged && desiredOffsets[i] != 0 && g_app.freqOffsets[i] == 0) {
+            if (!converged && vf_offset_zero_readback_is_benign(desiredOffsets[i],
+                g_app.freqOffsets[i], g_app.curve[i].freq_kHz,
+                MIN_VISIBLE_FREQ_MHz * 1000u)) {
                 if (!driverRefused[i]) {
                     driverRefused[i] = true;
                     debug_log("curve offset: driver refuses point %d (wrote %dkHz, readback pinned at 0, liveFreq=%ukHz); accepting as non-offsettable placeholder\n",
@@ -281,7 +284,10 @@ static bool curve_targets_match_request(const DesiredSettings* desired, const bo
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         if (!desired->hasCurvePoint[ci]) continue;
         if (lockedTailMask && lockedTailMask[ci]) continue;
-        if (g_app.curve[ci].freq_kHz == 0) continue;
+        if (g_app.curve[ci].freq_kHz == 0) {
+            set_message(detail, detailSize, "Requested VF point %d has no readback", ci);
+            return false;
+        }
 
         unsigned int actualMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
         unsigned int targetMHz = desired->curvePointMHz[ci];
@@ -295,7 +301,10 @@ static bool curve_targets_match_request(const DesiredSettings* desired, const bo
         bool sawTailPoint = false;
         for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
             if (!lockedTailMask[ci]) continue;
-            if (g_app.curve[ci].freq_kHz == 0) continue;
+            if (g_app.curve[ci].freq_kHz == 0) {
+            set_message(detail, detailSize, "Requested VF point %d has no readback", ci);
+            return false;
+        }
 
             sawTailPoint = true;
             unsigned int actualMHz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);

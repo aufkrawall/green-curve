@@ -251,8 +251,8 @@ enum { APPLY_CLOCK_WITNESS_LOAD_PCT = 20 };
 // be wrong anyway, because the honest statement is that the sample is
 // contemporaneous with the arming write, not that it is merely early.
 static inline bool apply_clock_witness_counts_toward_verdict(
-    bool clampArmed, bool sampledAtArmingInstant) {
-    return clampArmed && !sampledAtArmingInstant;
+    bool clampArmed, bool sampledAtArmingInstant, bool transitionFinished = false) {
+    return clampArmed && !sampledAtArmingInstant && !transitionFinished;
 }
 
 enum ApplyClockWitnessVerdict {
@@ -294,31 +294,12 @@ static inline bool apply_clock_witness_load_is_meaningful(bool utilKnown,
     return utilKnown && peakUtilPct >= (unsigned int)APPLY_CLOCK_WITNESS_LOAD_PCT;
 }
 
-// Whether a guard that was armed but never adopted by the final lock step must
-// be released before the apply returns.
-//
-// The rule is `armed && !adopted`, and the ONLY thing that makes it safe is
-// that the apply marks every exit which leaves a raised curve behind as
-// adopted, via retain().  This comment used to assert something stronger and
-// false -- that every abandoning exit in the Windows apply happens before the
-// first clock-RAISING write.  It did not:
-//
-//   * A FLATTEN request whose lock anchor the visible map could not resolve
-//     cleared `hasLock` but left `lockMode == LOCK_MODE_FLATTEN`, so the apply
-//     took the non-HARD release branch and called adopt() over a curve the
-//     selective offset had already raised.  The retain() fall-through that was
-//     supposed to catch it was unreachable, because adopt() had run first.
-//   * A FLATTEN whose tail failed verification released the clamp anyway: the
-//     release branch tested the lock mode and never looked at whether the
-//     curve had verified.
-//
-// Both are fixed at their call sites (the anchor failure now clears the lock
-// mode with the lock; the release is now conditional on a verified curve), and
-// the rule below is documented as what it is -- a predicate that depends on the
-// apply's adoption discipline, not a standalone proof.
-static inline bool apply_clock_ceiling_release_on_abandon(bool armed,
-                                                          bool adopted) {
-    return armed && !adopted;
+// An abandoned guard has no proof that release is safe. Finalization and
+// recovery explicitly release the restriction after verification instead.
+static inline bool apply_clock_ceiling_release_on_abandon(bool armed, bool adopted) {
+    (void)armed;
+    (void)adopted;
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -370,13 +351,10 @@ struct ApplyRecoveryResult {
 
 // Whether recovery reached a state in which the clock restriction may go.
 //
-// Un-attempted is safe: nothing was raised in that domain, so nothing needs
-// undoing.  Attempted-and-failed is not, whatever the other domains say.
+// Fresh verified state is required, including when a write was unnecessary.
 static inline bool apply_recovery_permits_release(
     const ApplyRecoveryResult& r) {
-    if (apply_recovery_domain_is_uncertain(r.curve)) return false;
-    if (apply_recovery_domain_is_uncertain(r.gpuOffset)) return false;
-    return true;
+    return r.curve.verified && r.gpuOffset.verified;
 }
 
 // Whether the user must be told that a restriction they did not ask for is

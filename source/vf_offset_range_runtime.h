@@ -29,7 +29,9 @@
 // narrower curve-specific range reported by NVML.
 static VfOffsetRange vf_offset_range_current() {
     if (g_app.gpuOffsetRangeKnown &&
-        g_app.gpuClockOffsetMinMHz <= g_app.gpuClockOffsetMaxMHz) {
+        g_app.gpuClockOffsetMinMHz <= g_app.gpuClockOffsetMaxMHz &&
+        g_app.gpuClockOffsetMinMHz >= INT_MIN / 1000 &&
+        g_app.gpuClockOffsetMaxMHz <= INT_MAX / 1000) {
         return vf_offset_range_from_probe(true, g_app.gpuClockOffsetMinMHz * 1000,
                                           g_app.gpuClockOffsetMaxMHz * 1000);
     }

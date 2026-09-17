@@ -211,6 +211,10 @@ static bool service_reset_all(char* result, size_t resultSize,
     }
     if (hardwareWriteAttemptedOut) *hardwareWriteAttemptedOut = true;
 
+    if (!nvapi_read_curve()) {
+        set_message(result, resultSize, "Cannot read the curve before Reset");
+        return false;
+    }
     int resetOffsets[VF_NUM_POINTS] = {};
     bool resetMask[VF_NUM_POINTS] = {};
     int successCount = 0;
@@ -230,43 +234,15 @@ static bool service_reset_all(char* result, size_t resultSize,
         if (g_app.curve[ci].freq_kHz == 0) continue;
         resetMask[ci] = true;
     }
-    bool hadCurveOffsets = false;
-    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-        if (g_app.freqOffsets[ci] != 0) {
-            hadCurveOffsets = true;
-            break;
-        }
-    }
-    // CT-04.  The separate GPU offset is zeroed BEFORE the VF tail floor is
-    // lifted, matching reset_oc_before_gui_apply() and the corrected rollback
-    // order.  Clearing the curve first while a previous profile's positive GPU
-    // offset is still live lets the tail snap to factory base frequencies with
-    // that offset still added on top -- the same additive transient the apply
-    // path reorders itself to avoid.  Explicit Reset had the old order.
-    ApplyRecoveryResult recovery = {};
-    if (g_app.gpuClockOffsetkHz != 0) {
-        recovery.gpuOffset.attempted = true;
-        if (nvapi_set_gpu_offset(0)) {
-            successCount++;
-            recovery.gpuOffset.verified = true;
-        } else {
-            failCount++;
-            append_failure("GPU offset did not reset to default");
-        }
+    ApplyRecoveryResult recovery = reset_core_clock_controls(
+        vf_curve_global_gpu_offset_supported(), true,
+        [&]() { return nvapi_set_gpu_offset(0, true); },
+        [&]() { return apply_curve_offsets_verified(resetOffsets, resetMask, 2); });
+    if (apply_recovery_permits_release(recovery)) {
+        successCount++;
     } else {
-        recovery.gpuOffset.verified = true;
-    }
-    if (hadCurveOffsets) {
-        recovery.curve.attempted = true;
-        if (apply_curve_offsets_verified(resetOffsets, resetMask, 2)) {
-            successCount++;
-            recovery.curve.verified = true;
-        } else {
-            failCount++;
-            append_failure("VF curve offsets did not reset cleanly");
-        }
-    } else {
-        recovery.curve.verified = true;
+        failCount++;
+        append_failure("Core clock reset did not verify; clock protection retained");
     }
     if (g_app.memClockOffsetkHz != 0) {
         if (nvapi_set_mem_offset(0)) successCount++;
@@ -302,6 +278,7 @@ static bool service_reset_all(char* result, size_t resultSize,
                 // Explicit Reset returns these domains to stock, so the
                 // ownership flags the baseline reset consults go with them.
                 g_app.appliedAdvancedOwnedXbar = false;
+                g_app.appliedAdvancedOwnedMsvdd = false;
                 successCount++;
                 debug_log("service_reset_all: XBAR reset to %d kHz, %d uV,"
                           " measured %u kHz\n", snap.freqOffsetKhz,
@@ -392,11 +369,13 @@ static bool service_reset_all(char* result, size_t resultSize,
     } else if (g_nvml_api.resetGpuLockedClocks) {
         if (nvml_ensure_ready()) {
             const bool restrictionMayExist =
-                g_app.lockMode != LOCK_MODE_NONE || g_app.appliedLockFreq > 0;
+                g_app.lockMode != LOCK_MODE_NONE || g_app.appliedLockFreq > 0 ||
+                g_app.transitionClockCapActive;
             nvmlReturn_t r = g_nvml_api.resetGpuLockedClocks(g_app.nvmlDevice);
             if (r == NVML_SUCCESS) {
                 successCount++;
                 recovery.restrictionReleased = true;
+                g_app.transitionClockCapActive = false;
                 debug_log("service_reset_all: resetGpuLockedClocks ok\n");
             } else if (restrictionMayExist) {
                 // Green Curve believes a restriction was active, so a refused

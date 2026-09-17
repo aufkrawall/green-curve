@@ -1694,6 +1694,7 @@ def run_regression_tests(extra_flags=None):
             "-o",
             test_exe,
             harness_path,
+            os.path.join(SCRIPT_DIR, "tests", "clock_transition_tests.cpp"),
             os.path.join(SOURCE_DIR, "fan_curve.cpp"),
             os.path.join(SOURCE_DIR, "config_text_utils.cpp"),
             os.path.join(SOURCE_DIR, "app_shared.cpp"),
@@ -3444,10 +3445,6 @@ def run_source_regression_checks():
     # decision, because the rollback runs after it.
     require_text(main_gpu_rollback_h, "apply_recovery_permits_release(recovery)",
                  "rollback releases the clock restriction only once recovery verified stock")
-    require_order(main_gpu_rollback_h,
-        "recovery.gpuOffset.attempted = true;",
-        "recovery.curve.attempted = true;",
-        "rollback zeroes the separate GPU offset before lifting the VF tail floor")
     forbid_text(main_gpu_rollback_h,
         "debug_log(\"rollback: resetGpuLockedClocks (lockMode=%s)\n\"",
         "the locked-clock release must stay inside the verified-recovery branch")
@@ -4326,10 +4323,10 @@ def run_source_regression_checks():
     require_text(gpu_backend_apply_cpp, "tail point %d out of range", "tail point out-of-range diagnostic logging exists")
 
     # FP-02-001: Uniform tail floor offset (Blackwell per-point delta fix)
-    require_text(gpu_backend_apply_targets_h, "floorTailOffsetKHz", "uniform tail floor offset constant exists for initial tail loop")
+    require_text(gpu_backend_apply_targets_h, "offset = vf_offset_range_flatten_floor_khz(range);", "uniform tail floor offset constant exists for initial tail loop")
     require_text(gpu_backend_apply_cpp, "correctionFloorTailOffsetKHz", "uniform tail floor offset constant exists for correction passes")
     require_text(gpu_backend_apply_cpp, "tail uniform floor offset=%d", "correction pass logs uniform tail floor offset write")
-    require_text(gpu_backend_apply_targets_h, "Determine the uniform floor offset for tail points.", "initial tail loop uses uniform floor for non-lock tail points")
+    require_text(gpu_backend_apply_targets_h, "tail && lockMode == LOCK_MODE_FLATTEN", "initial tail loop uses uniform floor for non-lock tail points")
 
     # FP-02-002: Pre-tail point capture after restart (non-zero offset detection, guarded by profile load check)
     require_text(os.path.join(SOURCE_DIR, "main_runtime_control.cpp"), "preTailInferred", "pre-tail user-modified points inferred from non-zero live offset (guarded by hasPreTailExplicit)")
@@ -4396,10 +4393,10 @@ def run_source_regression_checks():
     forbid_text(reset_baseline_cpp, "\"apply\", \"skip_reset_curve_write\"",
         "F-APPLY-SPEED: the VF-curve reset-to-zero must not be skippable (delta-boost baseline)")
     require_text(reset_baseline_cpp,
-        "if (hadCurveOffsets && !apply_curve_offsets_verified(resetOffsets, resetMask, 2))",
+        "if (!apply_curve_offsets_verified(resetOffsets, resetMask, 2))",
         "F-APPLY-SPEED: the VF-curve reset-to-zero always runs when the previous profile had curve offsets")
     require_text(reset_baseline_cpp,
-        "g_app.gpuClockOffsetkHz != 0 && !nvapi_set_gpu_offset(0)",
+        "desired->hasGpuOffset && !vf_curve_global_gpu_offset_supported()",
         "F-APPLY-SPEED: an owned GPU-offset transition resets that offset before the VF curve")
 
     # F-NO-INJECT: the auto-profile subsystem observes other processes/windows
@@ -4493,7 +4490,7 @@ def run_source_regression_checks():
         "bool driverRefused[VF_NUM_POINTS] = {};",
         "F-OFFSET-REFUSAL: driver-refused VF points are tracked so they are not retried")
     require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
-        "desiredOffsets[i] != 0 && g_app.freqOffsets[i] == 0",
+        "vf_offset_zero_readback_is_benign(desiredOffsets[i],",
         "F-OFFSET-REFUSAL: refusal detected when a non-zero offset write leaves readback pinned at 0")
     require_text(os.path.join(SOURCE_DIR, "main_runtime_gpu.cpp"),
         "accepting as non-offsettable placeholder",
