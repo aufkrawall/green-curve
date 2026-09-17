@@ -8,9 +8,18 @@ The clock work is the substantial one — it closes several ways an Apply could
 briefly run the card above what either the old or the new profile allows, and
 several ways a failed Apply could report success or leave the card uncapped.
 
+**Updating is recommended.** Most of what is below is hardening around the
+moment a profile is applied, which is where the failures people actually hit
+live: an Apply ending in an error, the background service restarting itself
+mid-write and switching automatic restore off, or a card left holding settings
+neither profile asked for. None of it is urgent if 0.25.2 has been behaving
+itself for you — it is simply a sturdier build to be on, and the fixes are hard
+to get any other way.
+
 The app and its background service now speak a newer internal protocol (v27),
-because curve points had to start carrying one more piece of information. They are installed and updated together, so this needs nothing from
-you; a half-updated pair refuses to talk rather than guessing, as before.
+because curve points had to start carrying one more piece of information. They
+are installed and updated together, so this needs nothing from you; a
+half-updated pair refuses to talk rather than guessing, as before.
 
 ### Clock and profile-switching safety
 

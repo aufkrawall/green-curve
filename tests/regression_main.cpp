@@ -1800,8 +1800,113 @@ static int run_all_tests(int argc, char** argv) {
             PROFILE_CURVE_DECODE_UNMARKED) return 5089;
         gc_DeleteFileUtf8(argv[1]);
     }
+
+    // F-UPDATE-HANDOFF: the settings file an OLD build writes across an in-app
+    // update, read by THIS build.
+    //
+    // The update handoff is the one place two different releases exchange a
+    // curve, and they do it in one direction only: 0.25.2's GUI writes the
+    // capture, then 0.26.0's `--apply-settings-file` reads it.  The writer is
+    // a binary that is already installed on the user's machine, so nothing
+    // here can be fixed later -- this reader is the only side that exists.
+    //
+    // 0.25.2 wrote a whole-section `curve_semantics=base_plus_gpu_offset` with
+    // BASE MHz whenever the capture carried a nonzero GPU offset.  0.26.0
+    // writes absolute MHz under `absolute_with_origin`.  Reading the old shape
+    // with the new rule would take 2322 MHz as an absolute the user asked for,
+    // apply a curve 475 MHz below the one that was running, and report success:
+    // the numbers are all valid, only their meaning is wrong.  Nothing about it
+    // would be visible except to the person whose overclock quietly vanished
+    // during an update.
+    //
+    // This asserts the exact two-step main_shell.cpp runs, in order.
+    {
+        gc_DeleteFileUtf8(argv[1]);
+        const char* curve = "curve";
+        // Byte-shape of a 0.25.2 export: the marker, the section's own offset
+        // metadata, and points stored as (absolute - offset).
+        if (!set_config_string(argv[1], curve, "format",
+                "explicit_vf_points_v1")) return 5200;
+        if (!set_config_string(argv[1], curve, "curve_semantics",
+                PROFILE_CURVE_SEMANTICS_BASE_PLUS_GPU_OFFSET)) return 5201;
+        if (!set_config_int(argv[1], curve, "gpu_offset_mhz", 475)) return 5202;
+        if (!set_config_int(argv[1], curve, "point70_mhz", 2322)) return 5203;
+        if (!set_config_int(argv[1], curve, "point71_mhz", 2352)) return 5204;
+
+        DesiredSettings carried = {};
+        carried.hasGpuOffset = 1; carried.gpuOffsetMHz = 475;
+        carried.hasCurvePoint[70] = 1; carried.curvePointMHz[70] = 2322;
+        carried.hasCurvePoint[71] = 1; carried.curvePointMHz[71] = 2352;
+
+        // The legacy marker is NOT the per-point format, so the first step must
+        // decline and hand over to the second.  If it ever claimed the section,
+        // the base MHz would be adopted verbatim as typed absolutes.
+        if (restore_curve_point_origins_from_section(argv[1], curve, &carried))
+            return 5205;
+        if (!curve_section_uses_base_plus_gpu_offset_semantics(argv[1], curve,
+                                                               &carried))
+            return 5206;
+        restore_curve_points_from_base_plus_gpu_offset(&carried);
+        if (carried.curvePointMHz[70] != 2797u) return 5207;
+        if (carried.curvePointMHz[71] != 2827u) return 5208;
+        // Reconstructed, therefore offset intent: the base in that file was
+        // sampled on the OLD install before the reboot-free service restart, so
+        // holding the rebuilt absolute is exactly the 2026-09-17 failure.
+        if (!carried.curvePointFromGpuOffset[70]) return 5209;
+        if (!carried.curvePointFromGpuOffset[71]) return 5210;
+
+        // A 0.25.2 capture with no GPU offset carried no marker at all, and the
+        // unmarked heuristic needs a lock it does not have -- so the stored MHz
+        // stay absolute and nothing is added back.  This is the common case for
+        // a plain undervolt, and adding 0 twice is not the same as adding it
+        // once: a regression here shows up only for users who HAVE an offset.
+        gc_DeleteFileUtf8(argv[1]);
+        if (!set_config_string(argv[1], curve, "format",
+                "explicit_vf_points_v1")) return 5211;
+        if (!set_config_int(argv[1], curve, "point70_mhz", 2797)) return 5212;
+        DesiredSettings plain = {};
+        plain.hasCurvePoint[70] = 1; plain.curvePointMHz[70] = 2797;
+        if (restore_curve_point_origins_from_section(argv[1], curve, &plain))
+            return 5213;
+        if (curve_section_uses_base_plus_gpu_offset_semantics(argv[1], curve,
+                                                              &plain))
+            return 5214;
+        if (plain.curvePointMHz[70] != 2797u) return 5215;
+        if (plain.curvePointFromGpuOffset[70]) return 5216;
+        gc_DeleteFileUtf8(argv[1]);
+    }
+
     gc_DeleteFileUtf8(argv[1]);
 #endif // _WIN32
+
+    // The other half of the same handoff: the capture a 0.25.2 GUI writes is
+    // bound to the version the service advertised out of the SIGNED manifest,
+    // and only a running build of that same version may replay it.  Get this
+    // wrong and the update installs perfectly and then silently drops every
+    // updating user's settings on the floor -- which is exactly what the
+    // 0.23 -> 0.23.1 hop did for a different reason.
+    //
+    // The comparison is numeric, not textual: an absent patch component is
+    // zero, so a manifest saying "0.26" and a build calling itself "0.26.0"
+    // still agree.  Asserted rather than assumed, because the spelling of
+    // VERSION was an open question right up to the release commit.
+    {
+        if (gc_update_restore_decide("0.26.0", "0.26.0", 30) !=
+            GC_UPDATE_RESTORE_APPLY) return 5217;
+        if (gc_update_restore_decide("0.26.0", "0.26", 30) !=
+            GC_UPDATE_RESTORE_APPLY) return 5218;
+        if (gc_update_restore_decide("0.26", "0.26.0", 30) !=
+            GC_UPDATE_RESTORE_APPLY) return 5219;
+        // A failed install leaves 0.25.2 running against a 0.26.0 capture, and
+        // replaying it would apply settings the user never asked this build for.
+        if (gc_update_restore_decide("0.26.0", "0.25.2", 30) !=
+            GC_UPDATE_RESTORE_DISCARD) return 5220;
+        // Freshness still gates the version-bound shape: a capture from a
+        // previous day is not this update's.
+        if (gc_update_restore_decide("0.26.0", "0.26.0",
+                                     GC_UPDATE_RESTORE_MAX_AGE_SECONDS + 1) !=
+            GC_UPDATE_RESTORE_DISCARD) return 5221;
+    }
 
     // F-08-001: IPC object size and field layout sanity
     {
@@ -12048,36 +12153,86 @@ static int run_all_tests(int argc, char** argv) {
         if (gc_update_meets_minimum_from(&base, &patch1)) return 4309;
         if (!gc_update_meets_minimum_from(&patch1, &patch1)) return 4310;
 
-        // Exact next stable release shape: the policies embedded in the
-        // public 0.24.0 tag must offer 0.25.0, preserve its three-component
-        // spelling in the setup filename, and support both shipped Windows
-        // architectures. The release manifest intentionally has no min_from
+        // Exact next stable release shape: the policies embedded in every
+        // public tag must offer 0.26.0, preserve its three-component spelling
+        // in the setup filename, and support both shipped Windows
+        // architectures.  The release manifest intentionally has no min_from
         // floor, so older updater-capable builds are not needlessly stranded.
-        static const char k025Manifest[] =
+        //
+        // The installed versions below are the whole public updater-bearing
+        // population: 0.23 is what the first updater shipped in, and 0.25.2 is
+        // what most machines run at the moment 0.26.0 goes out.  Every one of
+        // them must read AVAILABLE, 0.26.0 itself must read UP_TO_DATE, and
+        // anything above it must be REJECTED -- that last one is what keeps the
+        // local 0.26-0.29 test tags from ever being talked into a downgrade.
+        static const char k026Manifest[] =
             "format=1\n"
-            "version=0.25.0\n"
-            "x64_file=greencurve-0.25.0-windows-x64-setup.exe\n"
+            "version=0.26.0\n"
+            "x64_file=greencurve-0.26.0-windows-x64-setup.exe\n"
             "x64_size=200000\n"
             "x64_sha256=09931428a6e4293292cfc1be8e490d26a52fc9713b61cb84175c40802f2d7cfe\n"
-            "arm64_file=greencurve-0.25.0-windows-arm64-setup.exe\n"
+            "arm64_file=greencurve-0.26.0-windows-arm64-setup.exe\n"
             "arm64_size=300000\n"
             "arm64_sha256=94cf3d99cd91075f246efa1de0363323e5ebf06859c5eec940b6bacac4f8ec3a\n";
-        GcUpdateManifest release025;
-        gc_update_manifest_parse(k025Manifest, strlen(k025Manifest),
-                                 &release025);
-        GcUpdateVersion installed024;
-        gc_update_version_parse("0.24.0", &installed024);
-        if (!release025.valid || release025.hasMinimumFrom || !installed024.valid)
-            return 4311;
-        if (gc_update_decide(&release025, &installed024, GC_UPDATE_ARCH_X64) !=
-            GC_UPDATE_DECISION_AVAILABLE) return 4312;
-        if (gc_update_decide(&release025, &installed024, GC_UPDATE_ARCH_ARM64) !=
-            GC_UPDATE_DECISION_AVAILABLE) return 4313;
-        const GcUpdateAsset* release025X64 =
-            gc_update_select_asset(&release025, GC_UPDATE_ARCH_X64);
-        if (!release025X64 ||
-            strcmp(release025X64->file,
-                   "greencurve-0.25.0-windows-x64-setup.exe") != 0) return 4314;
+        GcUpdateManifest release026;
+        gc_update_manifest_parse(k026Manifest, strlen(k026Manifest),
+                                 &release026);
+        if (!release026.valid || release026.hasMinimumFrom) return 4311;
+        static const char* const kPublicInstalled[] = {
+            "0.23", "0.23.1", "0.24.0", "0.25.0", "0.25.1", "0.25.2"
+        };
+        for (size_t vi = 0;
+             vi < sizeof(kPublicInstalled) / sizeof(kPublicInstalled[0]); vi++) {
+            GcUpdateVersion installed;
+            gc_update_version_parse(kPublicInstalled[vi], &installed);
+            if (!installed.valid) return 4311;
+            if (gc_update_decide(&release026, &installed, GC_UPDATE_ARCH_X64) !=
+                GC_UPDATE_DECISION_AVAILABLE) return 4312;
+            if (gc_update_decide(&release026, &installed, GC_UPDATE_ARCH_ARM64) !=
+                GC_UPDATE_DECISION_AVAILABLE) return 4313;
+        }
+        GcUpdateVersion installed026;
+        gc_update_version_parse("0.26.0", &installed026);
+        if (gc_update_decide(&release026, &installed026, GC_UPDATE_ARCH_X64) !=
+            GC_UPDATE_DECISION_UP_TO_DATE) return 4315;
+        // An absent patch component parses as zero, so "0.26" and "0.26.0" are
+        // the SAME version to every ordering decision -- a machine running
+        // either one is up to date, and neither is offered a reinstall of the
+        // other.  Asserted because the release was nearly cut under the short
+        // spelling: the numbers would have been fine.  What is NOT
+        // interchangeable is the manifest's literal version text, which is what
+        // the asset filename is built from; that is pinned at 4319/4326 below.
+        GcUpdateVersion installed026NoPatch;
+        gc_update_version_parse("0.26", &installed026NoPatch);
+        if (gc_update_decide(&release026, &installed026NoPatch,
+                             GC_UPDATE_ARCH_X64) !=
+            GC_UPDATE_DECISION_UP_TO_DATE) return 4316;
+        GcUpdateVersion installed027;
+        gc_update_version_parse("0.27", &installed027);
+        if (gc_update_decide(&release026, &installed027, GC_UPDATE_ARCH_X64) !=
+            GC_UPDATE_DECISION_REJECTED) return 4317;
+        const GcUpdateAsset* release026X64 =
+            gc_update_select_asset(&release026, GC_UPDATE_ARCH_X64);
+        if (!release026X64 ||
+            strcmp(release026X64->file,
+                   "greencurve-0.26.0-windows-x64-setup.exe") != 0) return 4314;
+        const GcUpdateAsset* release026Arm64 =
+            gc_update_select_asset(&release026, GC_UPDATE_ARCH_ARM64);
+        if (!release026Arm64 ||
+            strcmp(release026Arm64->file,
+                   "greencurve-0.26.0-windows-arm64-setup.exe") != 0) return 4318;
+        // The names in a signed manifest have to be the names release.yml
+        // actually produces.  A mismatch verifies perfectly and then 404s, at
+        // the one moment the user has already consented to an install.
+        char expected026[GC_UPDATE_ASSET_NAME_MAX_CHARS] = {};
+        if (!gc_update_expected_asset_name(release026.version.text,
+                                           GC_UPDATE_ARCH_X64, expected026,
+                                           sizeof(expected026)) ||
+            strcmp(expected026, release026X64->file) != 0) return 4319;
+        if (!gc_update_expected_asset_name(release026.version.text,
+                                           GC_UPDATE_ARCH_ARM64, expected026,
+                                           sizeof(expected026)) ||
+            strcmp(expected026, release026Arm64->file) != 0) return 4326;
     }
 
     // --- Manifest parsing and binding (4120-4149) ---------------------
