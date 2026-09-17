@@ -384,7 +384,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     if (ci >= 0 && ci < VF_NUM_POINTS) {
                         bool lockTailPreviewPoint = (g_app.lockedVi >= 0 && vi > g_app.lockedVi);
                         if (!lockTailPreviewPoint) {
-                            g_app.guiCurvePointExplicit[ci] = true;
+                            // Typed by hand: an absolute target from here on,
+                            // whatever it was projected from before.
+                            gui_set_curve_point_origin(ci, true, false);
                             g_app.guiHasUserModifiedValues = true;
                             set_gui_state_dirty(true);
                         }

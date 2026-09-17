@@ -271,14 +271,25 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     service_host_cpp = _p(ctx, "main_service_host.cpp")
 
     # Such a point carries OFFSET intent, in either offset routing.
-    require_text(verify_h, "reconstructedFromOffset",
-                 "verification separates reconstructed points from typed absolutes")
-    require_text(verify_h, "(selective || reconstructedFromOffset)",
-                 "reconstructed points take the offset branch whichever routing applies")
+    require_text(verify_h, "desired->curvePointFromGpuOffset[ci]",
+                 "verification separates projected points from typed absolutes, PER POINT")
+    require_text(verify_h, "(selective || fromOffset)",
+                 "projected points take the offset branch whichever routing applies")
     # ...and writing must not re-derive them from the live base, which is the
     # very sample that moved.
     require_text(targets_h, "offsetOwnsThisPoint",
-                 "reconstructed points keep the requested offset, not absolute-minus-live-base")
+                 "projected points keep the requested offset, not absolute-minus-live-base")
+    require_text(_p(ctx, "linux_curve_targets.h"), "desired->curvePointFromGpuOffset[i]",
+                 "Linux target building honours the same provenance rule")
+    # The GUI Apply path is the one the first fix missed: a profile load sets the
+    # flag, but clicking Apply rebuilds the request from the editor, whose VF
+    # fields show the same projection and carry the same stale absolutes.
+    require_text(_p(ctx, "main_runtime_control.cpp"), "desired->curvePointFromGpuOffset[ci] = gc_bool8_from_bool(",
+                 "the GUI capture records curve-point provenance too")
+    require_text(_p(ctx, "app_shared.h"), "static inline void gui_set_curve_point_origin(",
+                 "editor ownership and provenance are recorded through one setter")
+    forbid_text(_p(ctx, "ui_main.cpp"), "g_app.guiCurvePointExplicit[ci] = true;",
+                "no site may claim editor ownership without stating provenance")
 
     # The correction loop must terminate on its own evidence. Its per-point
     # `stuck` bookkeeping is reachable only for locked tail points, so a non-tail

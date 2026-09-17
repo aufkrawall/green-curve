@@ -102,6 +102,17 @@
         if (lockTailPoint || explicitPoint || (captureAllCurvePoints && (unsigned int)effectiveMHz != currentMHz)) {
             desired->hasCurvePoint[ci] = true;
             desired->curvePointMHz[ci] = (unsigned int)effectiveMHz;
+            // The number above is only an absolute TARGET when it came from the
+            // user.  Two ways it did not: the editor is showing a value carried
+            // in from a base_plus_gpu_offset profile (or from an applied intent
+            // that was), and preTailInferred, which literally means "this point
+            // exists in the request because the GPU offset put it there".  Both
+            // are projections over a stock base the driver re-reports differently
+            // under load, so they are sent as offset intent.  A locked tail point
+            // is neither: the lock target is its own absolute.
+            desired->curvePointFromGpuOffset[ci] = gc_bool8_from_bool(
+                !lockTailPoint &&
+                (preTailInferred || g_app.guiCurvePointFromGpuOffset[ci]));
         }
     }
 

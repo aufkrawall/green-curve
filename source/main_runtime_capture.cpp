@@ -150,10 +150,11 @@ static void capture_applied_curve_baseline(const DesiredSettings* desired) {
     int owned = 0;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (desired->hasCurvePoint[i] && desired->curvePointMHz[i] > 0) {
-            g_app.appliedCurveMHz[i] = desired->curvePointMHz[i];
+            applied_set_curve_point_origin(i, desired->curvePointMHz[i],
+                desired->curvePointFromGpuOffset[i]);
             owned++;
         } else {
-            g_app.appliedCurveMHz[i] = 0;
+            applied_set_curve_point_origin(i, 0, false);
         }
     }
     debug_log("capture_applied_curve_baseline: owned=%d point74=%u point75=%u point76=%u lockCi=%d lockMHz=%u\n",

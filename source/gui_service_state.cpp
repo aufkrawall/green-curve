@@ -528,8 +528,7 @@ static void gui_apply_ready_envelope(const ServiceResponse* response,
     } else {
         memset(&g_app.serviceActiveDesired, 0,
             sizeof(g_app.serviceActiveDesired));
-        memset(g_app.appliedCurveMHz, 0,
-            sizeof(g_app.appliedCurveMHz));
+        applied_clear_curve_point_origins();
     }
     if ((response->state.validSections &
             SERVICE_STATE_SECTION_APPLIED_CONTROLS) != 0) {

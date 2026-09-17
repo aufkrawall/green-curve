@@ -558,6 +558,12 @@ struct AppData {
     bool gpuTemperatureValid;
 
     bool guiCurvePointExplicit[VF_NUM_POINTS];
+    // Provenance that travels with the ownership flag above.  See
+    // DesiredSettings::curvePointFromGpuOffset: a point the editor owns may be a
+    // typed absolute MHz or a projection of the GPU offset over a stock base,
+    // and only the first may hold the driver to its number.  The VF edit fields
+    // show the same digits either way, so this cannot be recovered later.
+    bool guiCurvePointFromGpuOffset[VF_NUM_POINTS];
     bool guiStateDirty;
     bool guiHasUserModifiedValues;
     // A manual Refresh is waiting for its full-sync completion.  The refresh no
@@ -609,6 +615,10 @@ struct AppData {
     // classification, or a saved profile. This baseline is the single source used to
     // display/compare owned points so expected drift produces no unexpected values.
     unsigned int appliedCurveMHz[VF_NUM_POINTS];
+    // Provenance of appliedCurveMHz, kept for the same reason: the editor
+    // repopulates owned points from this baseline, so without it a refresh
+    // after an apply would turn every projected point back into an absolute.
+    bool appliedCurveFromGpuOffset[VF_NUM_POINTS];
 
     int guiFanMode;
     int guiFanFixedPercent;
@@ -767,6 +777,33 @@ struct CliOptions {
 // Service protocol (magic/version/commands), ServiceSnapshot, and
 // ServiceRequest/Response live in service_protocol.h (included by gpu_core.h).
 extern AppData g_app;
+
+// Ownership and provenance move together.  Every site that records "the editor
+// owns this curve point" must also record whether its MHz is a typed absolute
+// or a projection of the GPU offset; recording only the first is what let a
+// GUI Apply carry stale absolutes under load (2026-09-17).  One setter, so a
+// new call site cannot record half of it.
+static inline void gui_set_curve_point_origin(int ci, bool ownedByEditor, bool fromGpuOffset) {
+    if (ci < 0 || ci >= VF_NUM_POINTS) return;
+    g_app.guiCurvePointExplicit[ci] = ownedByEditor;
+    g_app.guiCurvePointFromGpuOffset[ci] = ownedByEditor && fromGpuOffset;
+}
+
+static inline void gui_clear_curve_point_origins() {
+    memset(g_app.guiCurvePointExplicit, 0, sizeof(g_app.guiCurvePointExplicit));
+    memset(g_app.guiCurvePointFromGpuOffset, 0, sizeof(g_app.guiCurvePointFromGpuOffset));
+}
+
+static inline void applied_set_curve_point_origin(int ci, unsigned int mhz, bool fromGpuOffset) {
+    if (ci < 0 || ci >= VF_NUM_POINTS) return;
+    g_app.appliedCurveMHz[ci] = mhz;
+    g_app.appliedCurveFromGpuOffset[ci] = mhz != 0 && fromGpuOffset;
+}
+
+static inline void applied_clear_curve_point_origins() {
+    memset(g_app.appliedCurveMHz, 0, sizeof(g_app.appliedCurveMHz));
+    memset(g_app.appliedCurveFromGpuOffset, 0, sizeof(g_app.appliedCurveFromGpuOffset));
+}
 
 // Snapshot the live service/draft state the actionability policy decides from.
 // `static inline` matters: app_shared.h is included by translation units that

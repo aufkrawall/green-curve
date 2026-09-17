@@ -24,7 +24,7 @@ struct DesiredSettings {
  LockMode lockMode{}; unsigned int lockMHz{}; int gpuOffsetMHz{};
  bool hasCurvePoint[VF_NUM_POINTS]{};
  unsigned int curvePointMHz[VF_NUM_POINTS]{};
- bool curveIsBasePlusGpuOffset{};
+ bool curvePointFromGpuOffset[VF_NUM_POINTS]{};
 };
 static bool service_request_replaces_lock_domain(const DesiredSettings* d) {
  return d->hasLock||d->hasGpuOffset||d->resetOcBeforeApply;
@@ -251,7 +251,7 @@ static int run(){
    for(int i=0;i<4;++i){populated[i]=true;freq[i]=2400000;tail[i]=i>=2;}
    explicitMask[1]=true;
    CHECK(apply_build_curve_targets(&d,true,false,mode!=0,(LockMode)mode,2,2800,true,1,0,0,
-     populated,offsets,freq,tail,false,target,mask));
+     populated,offsets,freq,tail,target,mask));
    CHECK(target[1]==100000);CHECK(target[0]==0);
    for(int i=0;i<4;++i)g_app.curve[i].freq_kHz=i>=2?2800000:2500000;
    char detail[128]{};g_app.curve[1].freq_kHz=2700000;
@@ -263,7 +263,7 @@ static int run(){
    // Same delta intent remains stable when the sampled base changes.
    freq[1]+=30000;
    CHECK(apply_build_curve_targets(&d,true,false,mode!=0,(LockMode)mode,2,2800,true,1,0,0,
-     populated,offsets,freq,tail,false,target,mask));CHECK(target[1]==70000);
+     populated,offsets,freq,tail,target,mask));CHECK(target[1]==70000);
  }
  // User repro: excluded point 69 has offset zero, but its derived 2295 MHz
  // preview becomes 2407 MHz after the driver reshapes the curve. It is not an
@@ -300,7 +300,7 @@ static int run(){
  {
    DesiredSettings d{};
    d.hasCurvePoint[70]=true;d.curvePointMHz[70]=2797;
-   d.hasGpuOffset=true;d.gpuOffsetMHz=475;d.curveIsBasePlusGpuOffset=true;
+   d.hasGpuOffset=true;d.gpuOffsetMHz=475;d.curvePointFromGpuOffset[70]=true;
    bool explicitMask[VF_NUM_POINTS]{},tail[VF_NUM_POINTS]{};
    int target[VF_NUM_POINTS]{};char detail[128]{};
    target[70]=475000;g_app.freqOffsets[70]=475000;
@@ -337,13 +337,37 @@ static int run(){
      freq[70]=baseMHz*1000;offsets[70]=0;
      int built[VF_NUM_POINTS]{};
      CHECK(apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,0,0,true,70,0,0,
-       populated,offsets,freq,tail,true,built,mask));
+       populated,offsets,freq,tail,built,mask));
      CHECK(built[70]==475000);CHECK(mask[70]);
-     // Negative control: the pre-fix rule tracked the shifted base instead.
+     // Negative control: the SAME request without provenance is the pre-fix
+     // rule, and it tracks the shifted base instead of the asked-for offset.
+     DesiredSettings typedSame=d;typedSame.curvePointFromGpuOffset[70]=false;
      int legacy[VF_NUM_POINTS]{};
-     CHECK(apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,0,0,true,70,0,0,
-       populated,offsets,freq,tail,false,legacy,mask));
+     CHECK(apply_build_curve_targets(&typedSame,true,false,false,LOCK_MODE_NONE,0,0,true,70,0,0,
+       populated,offsets,freq,tail,legacy,mask));
      CHECK(legacy[70]==2797000-baseMHz*1000);
+   }
+   // Per-point, not per-request: hand-editing one field of a loaded profile
+   // leaves that point a real absolute target while its neighbours stay
+   // projections. A single request-wide flag would have mis-verified point 71.
+   {
+     DesiredSettings mixed{};
+     mixed.hasGpuOffset=true;mixed.gpuOffsetMHz=475;
+     mixed.hasCurvePoint[70]=true;mixed.curvePointMHz[70]=2797;
+     mixed.curvePointFromGpuOffset[70]=true;
+     mixed.hasCurvePoint[71]=true;mixed.curvePointMHz[71]=2900;
+     bool mixedMask[VF_NUM_POINTS]{};mixedMask[71]=true;
+     int mixedTarget[VF_NUM_POINTS]{};char mixedDetail[128]{};
+     bool mixedTail[VF_NUM_POINTS]{};
+     mixedTarget[70]=475000;mixedTarget[71]=475000;
+     g_app.freqOffsets[70]=475000;g_app.curve[70].freq_kHz=2827000;
+     g_app.freqOffsets[71]=475000;g_app.curve[71].freq_kHz=2900000;
+     CHECK(apply_verify_curve_targets(&mixed,mixedMask,mixedTarget,true,true,false,
+       LOCK_MODE_NONE,mixedTail,0,mixedDetail,sizeof(mixedDetail)));
+     // The typed neighbour still fails on its own absolute readback.
+     g_app.curve[71].freq_kHz=2930000;
+     CHECK(!apply_verify_curve_targets(&mixed,mixedMask,mixedTarget,true,true,false,
+       LOCK_MODE_NONE,mixedTail,0,mixedDetail,sizeof(mixedDetail)));
    }
  }
  // Real reset sequencing: VF-global must never invoke the scalar helper.

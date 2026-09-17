@@ -8,9 +8,8 @@ The clock work is the substantial one — it closes several ways an Apply could
 briefly run the card above what either the old or the new profile allows, and
 several ways a failed Apply could report success or leave the card uncapped.
 
-The app and its background service now speak a newer internal protocol (v26),
-because a profile's curve points had to start carrying one more piece of
-information. They are installed and updated together, so this needs nothing from
+The app and its background service now speak a newer internal protocol (v27),
+because curve points had to start carrying one more piece of information. They are installed and updated together, so this needs nothing from
 you; a half-updated pair refuses to talk rather than guessing, as before.
 
 ### Clock and profile-switching safety
@@ -74,15 +73,18 @@ you; a half-updated pair refuses to talk rather than guessing, as before.
   driver down with it.** Switching between two saved profiles while a game was
   running ended with an error, a restarted background service and automatic
   restore switched off. Three separate faults lined up:
-  - Profiles store each curve point as its *stock* frequency plus your GPU
-    offset, and rebuild the absolute MHz when the profile is loaded — using the
-    stock frequency as it was when you **saved** the profile. Under load the
-    driver reports a different stock frequency for the same point (a whole VF
-    bin, 30 MHz, on this card), so a point carrying exactly the offset you asked
-    for read back 30 MHz away from the rebuilt number and was rejected. Those
-    points are now written and checked against the **offset**, which is what you
-    actually asked for; points where you typed an absolute MHz are unchanged and
-    still hold the driver to that number.
+  - Curve points that come from a GPU offset rather than from a number you
+    typed were being held to a stale absolute frequency. A profile stores each
+    point as its *stock* frequency plus your offset and rebuilds the absolute MHz
+    on load, using the stock frequency as it was when you **saved**; the editor
+    shows the same projection for any point you did not type yourself. Under load
+    the driver reports a different stock frequency for the same point — a whole
+    VF bin, 30 MHz, on this card — so a point carrying exactly the offset you
+    asked for read back 30 MHz away from that rebuilt number and was rejected.
+    Such points are now written and checked against the **offset**, which is what
+    you actually asked for. This is tracked per point, so hand-editing one field
+    of a loaded profile leaves that one point a real absolute target — it still
+    holds the driver to your number — while its neighbours keep offset intent.
   - The routine that nudges points onto target could not tell that it had
     stopped making progress. Each pass rewrote identical values and read back
     identical frequencies, 25 times, about a second each. It now stops as soon

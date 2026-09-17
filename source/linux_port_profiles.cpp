@@ -420,10 +420,6 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
 
     bool basePlusGpuOffsetCurve = streqi_ascii(curveSemantics.c_str(), "base_plus_gpu_offset");
     if (basePlusGpuOffsetCurve && desired->hasGpuOffset && desired->gpuOffsetMHz != 0) {
-        // Same provenance rule as the Windows loader: the absolute MHz below is
-        // reconstructed from a base sampled at SAVE time, so the apply must hold
-        // the driver to the offset, not to that stale absolute value.
-        desired->curveIsBasePlusGpuOffset = gc_bool8_from_bool(true);
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             if (!desired->hasCurvePoint[i]) continue;
             int offsetCompMHz = gpu_offset_component_mhz_for_point_linux(i, desired->gpuOffsetMHz, desired->gpuOffsetExcludeLowCount);
@@ -434,6 +430,8 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
                 continue;
             }
             desired->curvePointMHz[i] = (unsigned int)absoluteMHz;
+            // Same provenance rule as the Windows loader.
+            desired->curvePointFromGpuOffset[i] = gc_bool8_from_bool(true);
         }
     } else if (legacyCurveSemantics && desired->hasGpuOffset && desired->gpuOffsetMHz != 0) {
         for (int i = 0; i < VF_NUM_POINTS; i++) {

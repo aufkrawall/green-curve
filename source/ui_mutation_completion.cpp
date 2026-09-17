@@ -113,8 +113,7 @@ static void handle_gui_mutation_completion(GuiMutationCompletion* completion) {
             g_app.lockedCi = -1;
             g_app.lockedFreq = 0;
             g_app.lockMode = LOCK_MODE_NONE;
-            memset(g_app.appliedCurveMHz, 0,
-                sizeof(g_app.appliedCurveMHz));
+            applied_clear_curve_point_origins();
         }
     }
 

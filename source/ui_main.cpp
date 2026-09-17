@@ -318,7 +318,7 @@ static void populate_edits() {
     bool serviceReady = gui_service_capability_enabled(
         &actionable, GUI_SERVICE_CAP_EDITOR);
     begin_programmatic_edit_update();
-    memset(g_app.guiCurvePointExplicit, 0, sizeof(g_app.guiCurvePointExplicit));
+    gui_clear_curve_point_origins();
     for (int vi = 0; vi < g_app.numVisible; vi++) {
         int ci = g_app.visibleMap[vi];
         // Owned points are shown from the drift-free applied-intent baseline, never
@@ -329,7 +329,7 @@ static void populate_edits() {
         // points still show live readback.
         unsigned int ownedMHz = (ci >= 0 && ci < VF_NUM_POINTS) ? g_app.appliedCurveMHz[ci] : 0;
         if (ownedMHz > 0) {
-            g_app.guiCurvePointExplicit[ci] = true;
+            gui_set_curve_point_origin(ci, true, g_app.appliedCurveFromGpuOffset[ci]);
             set_edit_value(g_app.hEditsMhz[vi], ownedMHz);
         } else {
             set_edit_value(g_app.hEditsMhz[vi], displayed_curve_mhz(g_app.curve[ci].freq_kHz));
@@ -443,7 +443,7 @@ static void unlock_all() {
     g_app.lockedFreq = 0;
     g_app.lockMode = LOCK_MODE_NONE;
     g_app.guiLockTracksAnchor = true;
-    memset(g_app.guiCurvePointExplicit, 0, sizeof(g_app.guiCurvePointExplicit));
+    gui_clear_curve_point_origins();
     set_gui_state_dirty(false);
 
     for (int vi = 0; vi < g_app.numVisible; vi++) {

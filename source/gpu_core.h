@@ -518,19 +518,17 @@ struct DesiredSettings {
     int sysClkOffsetKhz;
     gc_bool8 hasVideoClkOffsetKhz;
     int videoClkOffsetKhz;
-    // Provenance of curvePointMHz[], not a setting.  A profile saved with
-    // `curve_semantics=base_plus_gpu_offset` stores each point's STOCK base and
-    // reconstructs the absolute MHz at load time by adding the point's GPU
-    // offset component.  The reconstruction uses the base captured when the
-    // profile was SAVED, so the absolute value is only as current as that
-    // sample: the driver's stock base moves with load/temperature (observed
-    // 2026-09-17, point 70 at 2322 MHz saved idle vs 2352 MHz read at 99%
-    // util -- one whole VF bin).  Such a point's intent is the OFFSET, and it
-    // must be written and verified as an offset; treating the reconstructed
-    // MHz as a user-typed absolute target makes an apply fail under load that
-    // succeeds at idle.  The semantics tag is per curve SECTION, so one flag
-    // describes every point in the request.
-    gc_bool8 curveIsBasePlusGpuOffset;
+    // Provenance of curvePointMHz[], not a setting.  Per POINT, because one
+    // request mixes both kinds: load a profile saved as base + GPU offset and
+    // hand-edit one field, and that point is a real absolute target while its
+    // neighbours are projections.  A projected point's MHz is only as current as
+    // the stock base it was projected over, and that base moves with load (point
+    // 70: 2322 MHz saved idle, 2352 MHz at 99% util -- a whole VF bin), so it is
+    // written and verified against its OFFSET.  An unflagged point keeps
+    // absolute authority and still fails the apply on its own readback.  The GUI
+    // sets this too, and must: its VF fields show the same projection for any
+    // point it did not get from the user.
+    gc_bool8 curvePointFromGpuOffset[VF_NUM_POINTS];
 };
 
 static inline void validate_gpu_adapter_info_for_ipc(GpuAdapterInfo* g) {

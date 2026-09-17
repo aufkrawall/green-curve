@@ -40,7 +40,7 @@ static void populate_desired_into_gui(const DesiredSettings* desired) {
     // Curve points
     for (int vi = 0; vi < g_app.numVisible; vi++) {
         int ci = g_app.visibleMap[vi];
-        g_app.guiCurvePointExplicit[ci] = desired->hasCurvePoint[ci];
+        gui_set_curve_point_origin(ci, desired->hasCurvePoint[ci], desired->curvePointFromGpuOffset[ci]);
         if (g_app.hEditsMhz[vi]) {
             unsigned int mhz = displayed_curve_mhz(g_app.curve[ci].freq_kHz);
             if (desired->hasCurvePoint[ci]) mhz = desired->curvePointMHz[ci];

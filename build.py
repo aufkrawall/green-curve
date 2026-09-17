@@ -2154,7 +2154,7 @@ def run_source_regression_checks():
 
     require_text(shared_h, "APP_DEBUG_DEFAULT_ENABLED 1", "debug logging remains default-on")
     require_text(shared_h, "APP_TITLE           APP_NAME \" v\" APP_VERSION", "plain title macro exists")
-    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 26",
+    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 27",
                  "service protocol publishes outcome severity, update state and XBAR")
     require_text(shared_h, "typedef gc_u8 gc_bool8", "IPC bool fields use a fixed-width one-byte type")
     require_text(shared_h, "canonicalize_gc_bool8", "IPC bool fields are canonicalized at trust boundaries")
@@ -4349,7 +4349,7 @@ def run_source_regression_checks():
         "static void capture_applied_curve_baseline(const DesiredSettings* desired)",
         "F-DRIFT-1: baseline is captured from intent (DesiredSettings), not live readback")
     require_text(main_runtime_capture_cpp,
-        "g_app.appliedCurveMHz[i] = desired->curvePointMHz[i];",
+        "applied_set_curve_point_origin(i, desired->curvePointMHz[i],",
         "F-DRIFT-1: baseline values come from the applied desired curve, not g_app.curve")
     # Fan-only apply detection compares the editor against the drift-free baseline,
     # NOT live readback, so expected boost drift on a pre-tail point can no longer
@@ -4377,8 +4377,8 @@ def run_source_regression_checks():
         "F-DRIFT-1: populate_edits shows owned VF points from the drift-free baseline")
     # Reset-to-stock drops all owned intent so the editor shows live stock values.
     require_text(os.path.join(SOURCE_DIR, "ui_mutation_completion.cpp"),
-        "memset(g_app.appliedCurveMHz, 0,",
-        "F-DRIFT-1: reset clears the owned VF curve intent baseline")
+        "applied_clear_curve_point_origins();",
+        "F-DRIFT-1: reset clears the owned VF curve intent baseline (and its provenance)")
 
     # F-APPLY-SPEED: profile-switch speed levers must be gated with defaults that
     # preserve the exact current (TDR-safe) behaviour — the fast paths are opt-in and

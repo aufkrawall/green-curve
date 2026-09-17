@@ -198,17 +198,6 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool lockedTailMask[VF_NUM_POINTS] = {};
     bool explicitCurveMask[VF_NUM_POINTS] = {};
     bool haveNonZeroCurveOffsets = false;
-    // Mirrors the profile loader's own reconstruction condition
-    // (restore_curve_points_from_base_plus_gpu_offset).  True means every
-    // curvePointMHz in this request is a stored stock base plus this request's
-    // offset component, reconstructed against a base sampled when the profile
-    // was saved -- so the offset is the intent and the absolute MHz is only a
-    // preview of that sample.  Deliberately independent of how this particular
-    // apply routes the offset: a re-apply that requests no offset CHANGE has
-    // gpuPolicyViaCurveBatch == false, and the points are no less reconstructed
-    // for it.
-    const bool curveFromGpuOffset = desired->curveIsBasePlusGpuOffset &&
-        desired->hasGpuOffset && desired->gpuOffsetMHz != 0;
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         originalCurveOffsets[ci] = g_app.freqOffsets[ci];
         originalCurveFreqkHz[ci] = (int)g_app.curve[ci].freq_kHz;
@@ -219,12 +208,12 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             hasCurveEdits = true;
             // EXPLICIT means "the user typed this absolute MHz", which is what
             // earns a point the right to fail an apply on its absolute readback.
-            // A point reconstructed from `curve_semantics=base_plus_gpu_offset`
-            // did not come from the user in absolute form: it is a stored stock
-            // base plus this request's own offset component, and the base it was
-            // stored against is not the base the driver reports now.  Those
-            // points keep offset authority and are verified as offsets.
-            explicitCurveMask[ci] = !curveFromGpuOffset;
+            // A point the request marks as offset-derived did not come from the
+            // user in absolute form -- it is a stock base plus this request's own
+            // offset component, and the base it was projected from is not the
+            // base the driver reports now.  Those points keep offset authority
+            // and are verified as offsets.  Per point: one request mixes both.
+            explicitCurveMask[ci] = !desired->curvePointFromGpuOffset[ci];
         }
     }
     // After reset-before-apply, the live curve base frequencies may have shifted
@@ -492,7 +481,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         desiredActiveGpuOffsetExcludeLowCount, currentAppliedGpuOffsetMHz,
         currentActiveGpuOffsetExcludeLowCount, originalCurvePopulated,
         originalCurveOffsets, originalCurveFreqkHz, lockedTailMask,
-        curveFromGpuOffset, targetCurveOffsets, targetCurveMask))
+        targetCurveOffsets, targetCurveMask))
         return apply_recover_clock_failure(clockCeiling,
             "A requested curve target is missing or outside the driver range", result, resultSize);
     if (desired->hasMemOffset) {

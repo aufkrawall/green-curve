@@ -12,7 +12,6 @@ static bool apply_build_curve_targets(
     int currentAppliedGpuOffsetMHz, int currentActiveGpuOffsetExcludeLowCount,
     const bool* originalCurvePopulated, const int* originalCurveOffsets,
     const int* originalCurveFreqkHz, const bool* lockedTailMask,
-    bool curveFromGpuOffset,
     int* targetCurveOffsets, bool* targetCurveMask) {
     const VfOffsetRange range = vf_offset_range_current();
     if (hasLock && lockMode == LOCK_MODE_FLATTEN &&
@@ -45,7 +44,8 @@ static bool apply_build_curve_targets(
         // base sample.  Only the selective routing is skipped: with a global
         // NVML offset the boost does not live in the per-point curve offsets,
         // so those points still need absolute placement.
-        const bool offsetOwnsThisPoint = curveFromGpuOffset && gpuPolicyViaCurveBatch;
+        const bool offsetOwnsThisPoint =
+            desired->curvePointFromGpuOffset[ci] && gpuPolicyViaCurveBatch;
         if (desired->hasCurvePoint[ci] && !tail && !offsetOwnsThisPoint) {
             long long base = (long long)originalCurveFreqkHz[ci] - originalCurveOffsets[ci];
             if (base < 0) base = 0;

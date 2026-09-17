@@ -66,6 +66,19 @@ static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
             write = true;
         } else if (desired->hasCurvePoint[i] &&
                    desired->curvePointMHz[i] > 0) {
+            if (desired->curvePointFromGpuOffset[i]) {
+                // Offset intent, so do not go through an absolute at all: this
+                // point's MHz was projected over a stock base sampled earlier,
+                // and `baseKHz` below is that same base re-read -- under load
+                // the driver reports it a bin higher and the subtraction turns
+                // the requested offset into a different one.  Windows has the
+                // same rule in gpu_backend_apply_targets.h.
+                targetOffsets[i] = (ordinal >= exclude)
+                    ? desired->gpuOffsetMHz * 1000 : 0;
+                pointMask[i] = true;
+                result.pointCount++;
+                continue;
+            }
             targetKHz = (long long)desired->curvePointMHz[i] * 1000LL;
             write = true;
         } else if (result.composedGpuOffset && ordinal >= exclude) {

@@ -32,7 +32,9 @@ static inline void validate_desired_settings_for_ipc(DesiredSettings* d) {
     canonicalize_gc_bool8(&d->hasXbarMsvddOffsetUv);
     canonicalize_gc_bool8(&d->hasSysClkOffsetKhz);
     canonicalize_gc_bool8(&d->hasVideoClkOffsetKhz);
-    canonicalize_gc_bool8(&d->curveIsBasePlusGpuOffset);
+    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+        canonicalize_gc_bool8(&d->curvePointFromGpuOffset[ci]);
+    }
     if (d->hasXbarOffsetKhz && (d->xbarOffsetKhz < -1000000 || d->xbarOffsetKhz > 1000000)) {
         d->xbarOffsetKhz = d->xbarOffsetKhz < -1000000 ? -1000000 : 1000000;
     }

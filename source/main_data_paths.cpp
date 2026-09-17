@@ -474,7 +474,7 @@ static void clear_service_authoritative_state() {
     memset(&g_serviceControlState, 0, sizeof(g_serviceControlState));
     g_serviceTelemetryLastHardwarePollTickMs = 0;
     g_serviceTelemetryLastPollSource[0] = 0;
-    memset(g_app.appliedCurveMHz, 0, sizeof(g_app.appliedCurveMHz));
+    applied_clear_curve_point_origins();
 #ifndef GREEN_CURVE_SERVICE_BINARY
     sync_applied_profile_from_service_metadata();
 #endif

@@ -45,15 +45,6 @@ static bool curve_section_uses_base_plus_gpu_offset_semantics(const char* path, 
 static void restore_curve_points_from_base_plus_gpu_offset(DesiredSettings* desired) {
     if (!desired || !desired->hasGpuOffset || desired->gpuOffsetMHz == 0) return;
 
-    // Record that curvePointMHz[] below is RECONSTRUCTED, not typed.  The base
-    // it is reconstructed from was sampled when the profile was saved, and the
-    // driver's stock base moves with load, so the absolute MHz is a preview of
-    // that moment rather than a target the apply may hold the driver to.  The
-    // apply writes and verifies these points as offsets instead; without this
-    // flag a profile that applies cleanly at idle fails under load by a whole
-    // VF bin.
-    desired->curveIsBasePlusGpuOffset = gc_bool8_from_bool(true);
-
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (!desired->hasCurvePoint[i]) continue;
         int offsetCompMHz = gpu_offset_component_mhz_for_point(i, desired->gpuOffsetMHz, desired->gpuOffsetExcludeLowCount);
@@ -64,6 +55,10 @@ static void restore_curve_points_from_base_plus_gpu_offset(DesiredSettings* desi
             continue;
         }
         desired->curvePointMHz[i] = (unsigned int)absoluteMHz;
+        // RECONSTRUCTED, not typed: the base came from this file, sampled when
+        // the profile was saved, so the absolute above is a preview of that
+        // moment and the offset is the intent.
+        desired->curvePointFromGpuOffset[i] = gc_bool8_from_bool(true);
     }
 }
 

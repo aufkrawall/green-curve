@@ -617,11 +617,11 @@ static void apply_service_desired_to_gui(const DesiredSettings* desired) {
         }
     }
     if (!gui_state_dirty()) {
-        memset(g_app.guiCurvePointExplicit, 0, sizeof(g_app.guiCurvePointExplicit));
+        gui_clear_curve_point_origins();
         for (int vi = 0; vi < g_app.numVisible; vi++) {
             int ci = g_app.visibleMap[vi];
             if (ci < 0 || ci >= VF_NUM_POINTS) continue;
-            g_app.guiCurvePointExplicit[ci] = desired->hasCurvePoint[ci];
+            gui_set_curve_point_origin(ci, desired->hasCurvePoint[ci], desired->curvePointFromGpuOffset[ci]);
             if (desired->hasCurvePoint[ci] && g_app.hEditsMhz[vi]) {
                 set_edit_value(g_app.hEditsMhz[vi], desired->curvePointMHz[ci]);
             }
@@ -877,8 +877,7 @@ static void apply_ready_service_envelope_to_app(
     } else {
         memset(&g_app.serviceActiveDesired, 0,
             sizeof(g_app.serviceActiveDesired));
-        memset(g_app.appliedCurveMHz, 0,
-            sizeof(g_app.appliedCurveMHz));
+        applied_clear_curve_point_origins();
     }
     if ((response->state.validSections &
             SERVICE_STATE_SECTION_APPLIED_CONTROLS) != 0)
