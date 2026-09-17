@@ -141,9 +141,9 @@ struct ApplyClockCeilingGuard {
         set_last_apply_phase("apply: arm transition clock ceiling");
         char detail[128] = {};
         writeAttempted = true;
-        // Every permitted form has to answer NOT_SUPPORTED before the clamp
-        // counts as absent from this GPU: one form being unsupported while
-        // another is merely declined is still a clamp this hardware can hold.
+        // Every permitted form has to answer NOT_SUPPORTED before the attempt
+        // counts as unsupported: one form being unsupported while another is
+        // merely declined is still a clamp this request could have installed.
         bool openNotSupported = false, symmetricNotSupported = false;
         // Ceiling, not pin: a 0 minimum caps without also forcing the clock up
         // at idle.  A driver that refuses it still accepts the symmetric form,
@@ -194,8 +194,8 @@ struct ApplyClockCeilingGuard {
         // The single most useful line in the log if the driver falls over
         // during a profile switch, so it is logged at full volume.  Unlike the
         // pre-fix version it is no longer followed by the write it is warning
-        // about -- unless the clamp is one this GPU has never had, which the
-        // line now names explicitly.
+        // about -- unless no clamp form this request may use is supported at
+        // all, which the line now names explicitly.
         debug_log("apply ceiling: COULD NOT ARM clamp at %u MHz (%s); armResult=%s;"
                   " protection was %s\n",
             plan.ceilingMHz, detail[0] ? detail : "unknown error",
@@ -215,15 +215,26 @@ struct ApplyClockCeilingGuard {
         if (!apply_clock_ceiling_proceeds_unprotected(plan.required, armResult,
                                                       plan.reason))
             return;
+        // Says what was actually established, not more. The driver rejected
+        // every clamp form this request is PERMITTED to use as NOT_SUPPORTED --
+        // and for a lock-less request that is the open-ended form alone, since
+        // the symmetric one would add a clock floor nobody asked for. So this
+        // is not proof that the GPU has no locked-clock control; it is proof
+        // that nothing installable exists for this request, which is what the
+        // decision actually rests on.
         debug_log("apply ceiling: PROCEEDING UNPROTECTED -- a %u MHz transition"
-                  " clamp was required (%s) but this GPU has no locked-clock"
-                  " control (%s). The request names no lock of its own, so its"
-                  " end state is uncapped by the user's own choice and this is"
-                  " the behaviour this hardware has always had; a driver that"
-                  " CAN hold a clamp and merely declined it would have refused"
-                  " the transition instead\n",
+                  " clamp was required (%s) but the driver answered"
+                  " NOT_SUPPORTED for every clamp form this request may use"
+                  " (%s; symmetric fallback %s). The request names no lock of"
+                  " its own, so its end state is uncapped by the user's own"
+                  " choice and this is the behaviour this configuration has"
+                  " always had; a clamp that was installable and merely"
+                  " declined would have refused the transition instead\n",
             plan.ceilingMHz, apply_clock_ceiling_reason_name(plan.reason),
-            apply_clock_ceiling_arm_result_name(armResult));
+            apply_clock_ceiling_arm_result_name(armResult),
+            plan.symmetricFallbackAllowed
+                ? "permitted and also NOT_SUPPORTED"
+                : "not permitted here, so only the open-ended form was tried");
     }
 
     // Whether this apply must stop before mutating anything.
@@ -238,6 +249,11 @@ struct ApplyClockCeilingGuard {
     // still works: fan, memory, power and any request that does not raise a
     // clock past the outgoing envelope are unaffected.
     void refusal_message(char* out, size_t outSize) const {
+        // The strong wording IS earned on this path, unlike in the log line
+        // above: UNSUPPORTED only reaches a refusal when the request names its
+        // own lock, which is exactly when the symmetric form is permitted -- so
+        // both forms were tried and both answered NOT_SUPPORTED (or the entry
+        // points were missing outright).
         const char* why = (armResult == APPLY_CEILING_ARM_REFUSED)
             ? "the driver refused it"
             : (armResult == APPLY_CEILING_ARM_UNSUPPORTED)

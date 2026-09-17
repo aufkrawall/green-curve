@@ -42,6 +42,9 @@ you; a half-updated pair refuses to talk rather than guessing, as before.
   stated plainly in the debug log; a card that *does* have the control and
   merely declined it this time is still refused, as is any request that pins a
   clock itself, because that request would fail at its own final step anyway.
+  The debug log states what was actually established in that case — that the
+  driver reported every clamp form the request was allowed to use as
+  unsupported — rather than diagnosing the card, which is not the same claim.
 - **A refused VF-curve write no longer reports success.** One refusal path set its
   flags but skipped the branch that records the failure, so the Apply returned
   “succeeded”, released the clamp, and left the card uncapped over a curve it had

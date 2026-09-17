@@ -394,6 +394,19 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "the clamp it wanted")
     require_text(linux_ceiling_h, "PROCEEDING UNPROTECTED",
                  "the Linux arming phase says so out loud too")
+    # Both of those lines must diagnose the ATTEMPT, not the GPU. A lock-less
+    # request may only use the open-ended clamp form -- the symmetric one would
+    # add a clock floor nobody asked for -- so NOT_SUPPORTED there is also what
+    # a driver with working locked-clock control returns when it rejects a 0
+    # minimum. "This GPU has no locked-clock control" would be a wrong diagnosis
+    # in that case and would send the reader hunting the wrong fault. The
+    # stronger claim stays legal in refusal_message(), which is only reachable
+    # when the request names its own lock and BOTH forms were therefore tried.
+    for shard in (guard_h, linux_ceiling_h):
+        require_text(shard, "every clamp form this request may use",
+                     "an unprotected-transition log line states what was "
+                     "actually established -- no permitted form was supported "
+                     "-- rather than diagnosing the GPU")
     require_text(_p(ctx, "main_runtime_nvml.cpp"),
                  "*notSupportedOut = (r == NVML_ERROR_NOT_SUPPORTED);",
                  "the Windows clamp write reports NOT_SUPPORTED distinctly from "

@@ -115,11 +115,11 @@ struct ApplyClockCeilingPlan {
     // profile's idle clock up would be a new restriction the user never asked
     // for.
     bool symmetricFallbackAllowed;
-    // This driver/GPU exposes no locked-clock control at all, as opposed to a
-    // clamp that could be installed but was not.  The distinction decides
-    // whether a required-but-missing clamp is a reason to refuse the
-    // transition or a fact about the hardware: see
-    // `apply_clock_ceiling_transition_must_refuse()`.
+    // The locked-clock ENTRY POINTS are missing, so this driver exposes no
+    // locked-clock control at all and nothing was or could be written.  Narrow
+    // on purpose: a driver that has the entry points and rejects a particular
+    // clamp form is not this, and is decided at the arming site instead.  The
+    // distinction feeds `apply_clock_ceiling_transition_must_refuse()`.
     bool clampControlAbsent;
     ApplyClockCeilingReason reason;
 };
@@ -195,12 +195,28 @@ enum ApplyClockCeilingArmResult {
     // attempted, so the caller must still treat the operation as having
     // touched the hardware.
     APPLY_CEILING_ARM_REFUSED,
-    // The driver answered that this GPU has no locked-clock control at all --
-    // either the entry points are missing, or every permitted form came back
-    // NOT_SUPPORTED.  Distinct from REFUSED, which is a clamp this hardware
-    // CAN hold that was declined on this attempt (no permission, a conflicting
-    // reservation, a transient driver state).  A retry can change a REFUSED;
-    // nothing a retry can do changes an UNSUPPORTED.
+    // No clamp form THIS REQUEST IS PERMITTED TO USE is supported: either the
+    // entry points are missing, or every permitted form came back
+    // NOT_SUPPORTED.
+    //
+    // Read the qualifier literally; it is not the same claim as "this GPU has
+    // no locked-clock control".  A request with no lock of its own may only use
+    // the open-ended (0, ceiling) form -- the symmetric one would add a clock
+    // FLOOR nobody asked for -- so a driver that supports locked clocks but
+    // rejects a 0 minimum with NOT_SUPPORTED lands here too.  The decision is
+    // the same either way (nothing installable exists for this request), but a
+    // log line that diagnoses the GPU rather than the attempt would be wrong in
+    // that case, so none of them do.
+    //
+    // Distinct from REFUSED, which is a clamp that WAS installable and was
+    // declined on this attempt (no permission, a conflicting reservation, a
+    // transient driver state).  A retry can change a REFUSED; nothing a retry
+    // can do changes an UNSUPPORTED.
+    //
+    // On the REFUSAL path the stronger claim does hold, and the user-facing
+    // message may make it: UNSUPPORTED only refuses when the request names its
+    // own lock, which is exactly when the symmetric form is permitted, so both
+    // forms were tried and both answered NOT_SUPPORTED.
     APPLY_CEILING_ARM_UNSUPPORTED,
 };
 
@@ -272,7 +288,9 @@ static inline const char* apply_clock_ceiling_arm_result_name(
         case APPLY_CEILING_ARM_UNAVAILABLE: return "unavailable";
         case APPLY_CEILING_ARM_REFUSED: return "refused by driver";
         case APPLY_CEILING_ARM_UNSUPPORTED:
-            return "not supported on this GPU";
+            // Not "unsupported on this GPU": see the enum comment. What is
+            // known is that no form this request may use was accepted.
+            return "no permitted clamp form supported";
         default: return "not needed";
     }
 }

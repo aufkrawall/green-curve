@@ -153,20 +153,28 @@ static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
             : APPLY_CEILING_ARM_UNAVAILABLE;
         const bool refuse = apply_clock_ceiling_transition_must_refuse(
             plan.required, g_linuxCeilingArmResult, plan.reason);
-        lb_log("apply: transition clock ceiling at %u MHz is REQUIRED (%s) but this"
-               " driver exposes no usable locked-clock control (%s); %s\n",
+        // Two different facts reach this branch and they need different words:
+        // missing entry points really are "no control on this driver", while a
+        // plan with no defensible ceiling value has everything it needs except
+        // a number, and saying otherwise would send the next reader hunting for
+        // a driver problem that is not there.
+        lb_log("apply: transition clock ceiling at %u MHz is REQUIRED (%s) but"
+               " %s (%s); %s\n",
                plan.ceilingMHz, apply_clock_ceiling_reason_name(plan.reason),
+               plan.clampControlAbsent
+                   ? "this driver exposes no locked-clock entry points at all"
+                   : "no defensible ceiling value could be derived",
                apply_clock_ceiling_arm_result_name(g_linuxCeilingArmResult),
                refuse ? "refusing the transition before any write"
                       : "PROCEEDING UNPROTECTED -- the request names no lock of"
                         " its own, so its end state is uncapped by the user's own"
-                        " choice and no clamp exists on this GPU to hold");
+                        " choice and this driver has no clamp to install");
         return !refuse;
     }
     g_linuxCeilingWriteAttempted = true;
-    // Every permitted form has to answer NOT_SUPPORTED before the clamp counts
-    // as absent from this GPU: one form unsupported while another is merely
-    // declined is still a clamp this hardware can hold.
+    // Every permitted form has to answer NOT_SUPPORTED before the attempt
+    // counts as unsupported: one form unsupported while another is merely
+    // declined is still a clamp this request could have installed.
     bool openNotSupported = false, symmetricNotSupported = false;
     int armRc = NVML_SUCCESS;
     // Ceiling, not pin: a 0 minimum caps without forcing the clock up at idle
@@ -196,8 +204,13 @@ static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
         }
         symmetricNotSupported = (armRc == NVML_ERROR_NOT_SUPPORTED);
     }
-    // A clamp this GPU has never had is not the same as one it declined, and
-    // only the former may let a lock-less request through.  See
+    // A clamp form the driver does not support is not the same as one it
+    // declined, and only the former may let a lock-less request through.  Note
+    // what this does NOT establish: for a lock-less request only the open-ended
+    // form is permitted (the symmetric one would add a clock floor nobody asked
+    // for), so this can be true of a driver that does have locked-clock control
+    // and rejects a 0 minimum.  The decision is the same -- nothing installable
+    // exists for this request -- but the log below says only that.  See
     // apply_clock_ceiling_policy.h.
     const bool unsupported = openNotSupported &&
         (!plan.symmetricFallbackAllowed || symmetricNotSupported);
@@ -213,9 +226,11 @@ static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
            !plan.required ? "optional -- continuing"
                           : (refuse ? "REQUIRED -- refusing the transition before"
                                       " the reset and curve writes"
-                                    : "REQUIRED but absent on this GPU --"
-                                      " PROCEEDING UNPROTECTED, the request names"
-                                      " no lock of its own"));
+                                    : "REQUIRED, but the driver answered"
+                                      " NOT_SUPPORTED for"
+                                      " every clamp form this request may use"
+                                      " -- PROCEEDING UNPROTECTED, the request"
+                                      " names no lock of its own"));
     return !refuse;
 }
 
