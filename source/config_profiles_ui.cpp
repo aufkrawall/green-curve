@@ -375,6 +375,8 @@ static void migrate_legacy_config_if_needed(const char* path) {
             if (!desired.hasCurvePoint[i] && g_app.curve[i].freq_kHz > 0) {
                 desired.hasCurvePoint[i] = true;
                 desired.curvePointMHz[i] = displayed_curve_mhz(g_app.curve[i].freq_kHz);
+                // A live readback is an absolute sample, never an offset projection.
+                desired.curvePointFromGpuOffset[i] = 0;
             }
         }
         if (!desired.hasGpuOffset) { desired.hasGpuOffset = true; desired.gpuOffsetMHz = g_app.gpuClockOffsetkHz / 1000; }
@@ -469,6 +471,10 @@ static void merge_desired_settings(DesiredSettings* base, const DesiredSettings*
         if (override->hasCurvePoint[i]) {
             base->hasCurvePoint[i] = true;
             base->curvePointMHz[i] = override->curvePointMHz[i];
+            // Provenance is per point and describes THIS value: a merge that
+            // copies the MHz but not the flag turns a projection into an
+            // absolute (or the reverse) and hands the apply the wrong rule.
+            base->curvePointFromGpuOffset[i] = override->curvePointFromGpuOffset[i];
         }
     }
 }

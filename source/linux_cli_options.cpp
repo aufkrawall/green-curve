@@ -408,6 +408,8 @@ bool parse_linux_cli_options(int argc, char** argv, LinuxCliOptions* opts) {
             }
             opts->desired.hasCurvePoint[pointIndex] = true;
             opts->desired.curvePointMHz[pointIndex] = (unsigned int)value;
+            // --pointN takes an absolute MHz value.
+            opts->desired.curvePointFromGpuOffset[pointIndex] = 0;
         } else if (starts_with(arg, "--fan-curve-temp")) {
             opts->recognized = true;
             int pointIndex = 0;

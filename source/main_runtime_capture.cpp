@@ -318,6 +318,7 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             resetFull.hasCurvePoint[i] = false;
             resetFull.curvePointMHz[i] = 0;
+            resetFull.curvePointFromGpuOffset[i] = 0;
         }
     }
     if (!fanChanged) {

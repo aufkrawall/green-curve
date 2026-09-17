@@ -372,7 +372,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
             for (int i = 0; i < VF_NUM_POINTS; i++) {
                 if (g_app.curve[i].freq_kHz > 0) {
                     saveDesired.hasCurvePoint[i] = true;
-                    saveDesired.curvePointMHz[i] = displayed_curve_mhz(g_app.curve[i].freq_kHz);
+                    saveDesired.curvePointMHz[i] = displayed_curve_mhz(g_app.curve[i].freq_kHz); saveDesired.curvePointFromGpuOffset[i] = 0;
                 }
             }
         }

@@ -3080,6 +3080,7 @@ static int run_all_tests(int argc, char** argv) {
         projected.powerLimitPct = 85;
         projected.hasCurvePoint[12] = true;
         projected.curvePointMHz[12] = 1900;
+        projected.curvePointFromGpuOffset[12] = true;
         projected.hasLock = true;
         projected.lockMode = LOCK_MODE_FLATTEN;
         projected.lockCi = 12;
@@ -3100,7 +3101,8 @@ static int run_all_tests(int argc, char** argv) {
             SERVICE_MUTATION_DOMAIN_POWER);
         if (projected.resetOcBeforeApply || projected.hasGpuOffset ||
             !projected.hasMemOffset || !projected.hasPowerLimit ||
-            projected.hasCurvePoint[12] || projected.hasLock ||
+            projected.hasCurvePoint[12] ||
+            projected.curvePointFromGpuOffset[12] || projected.hasLock ||
             projected.hasFan || projected.hasXbarOffsetKhz ||
             projected.hasXbarMsvddOffsetUv ||
             projected.hasSysClkOffsetKhz ||
@@ -3112,6 +3114,7 @@ static int run_all_tests(int argc, char** argv) {
         DesiredSettings previous = {};
         previous.hasCurvePoint[20] = true;
         previous.curvePointMHz[20] = 2000;
+        previous.curvePointFromGpuOffset[20] = true;
         previous.hasFan = true;
         previous.fanMode = FAN_MODE_FIXED;
         previous.fanPercent = 50;
@@ -3130,6 +3133,7 @@ static int run_all_tests(int argc, char** argv) {
         DesiredSettings merged = service_merge_desired_after_mutation(
             &previous, &powerOnly);
         if (!merged.hasCurvePoint[20] || merged.curvePointMHz[20] != 2000 ||
+            !merged.curvePointFromGpuOffset[20] ||
             !merged.hasFan || merged.fanPercent != 50 ||
             !merged.hasXbarOffsetKhz || merged.xbarOffsetKhz != 120000 ||
             !merged.hasSysClkOffsetKhz || merged.sysClkOffsetKhz != 80000 ||
@@ -3141,12 +3145,15 @@ static int run_all_tests(int argc, char** argv) {
         DesiredSettings vfOnly = {};
         vfOnly.hasCurvePoint[7] = true;
         vfOnly.curvePointMHz[7] = 1700;
+        vfOnly.curvePointFromGpuOffset[7] = true;
         DesiredSettings vfMerged = service_merge_desired_after_mutation(
             &previous, &vfOnly);
         if (vfMerged.hasCurvePoint[20] ||
             vfMerged.curvePointMHz[20] != 0 ||
+            vfMerged.curvePointFromGpuOffset[20] ||
             !vfMerged.hasCurvePoint[7] ||
             vfMerged.curvePointMHz[7] != 1700 ||
+            !vfMerged.curvePointFromGpuOffset[7] ||
             !vfMerged.hasFan || vfMerged.fanPercent != 50) return 1260;
         DesiredSettings resetOnly = {};
         resetOnly.resetOcBeforeApply = true;
@@ -3154,6 +3161,7 @@ static int run_all_tests(int argc, char** argv) {
             &previous, &resetOnly);
         if (resetMerged.hasCurvePoint[20] ||
             resetMerged.curvePointMHz[20] != 0 ||
+            resetMerged.curvePointFromGpuOffset[20] ||
             !resetMerged.hasFan || resetMerged.fanPercent != 50 ||
             resetMerged.hasXbarOffsetKhz ||
             resetMerged.hasXbarMsvddOffsetUv ||
@@ -7640,6 +7648,35 @@ static int run_all_tests(int argc, char** argv) {
         if (!mask[3] || targets[3] != 0 ||
             !mask[5] || targets[5] != 110000)
             return 2052;
+
+        // Per-point provenance on Linux too: a projected point keeps the
+        // request's own offset even though absolute-minus-live-base would
+        // produce a different one from the stale stored absolute.
+        {
+            DesiredSettings projectedTarget = {};
+            projectedTarget.hasGpuOffset = true;
+            projectedTarget.gpuOffsetMHz = 300;
+            projectedTarget.gpuOffsetExcludeLowCount = 0;
+            projectedTarget.hasCurvePoint[3] = true;
+            projectedTarget.curvePointMHz[3] = 1500;
+            projectedTarget.curvePointFromGpuOffset[3] = true;
+            VFCurvePoint projectedCurve[VF_NUM_POINTS] = {};
+            int projectedCurrent[VF_NUM_POINTS] = {};
+            int projectedTargets[VF_NUM_POINTS] = {};
+            bool projectedMask[VF_NUM_POINTS] = {};
+            projectedCurve[3].freq_kHz = 1300000;
+            linux_build_curve_targets(projectedCurve, projectedCurrent,
+                &projectedTarget, -900000, projectedTargets, projectedMask);
+            if (!projectedMask[3] || projectedTargets[3] != 300000)
+                return 3010;
+            // Without provenance the same point is a typed absolute and the
+            // live base is the right reference (1300 + 200 = 1500).
+            projectedTarget.curvePointFromGpuOffset[3] = false;
+            linux_build_curve_targets(projectedCurve, projectedCurrent,
+                &projectedTarget, -900000, projectedTargets, projectedMask);
+            if (!projectedMask[3] || projectedTargets[3] != 200000)
+                return 3011;
+        }
 
         DesiredSettings previousComposed = desired;
         DesiredSettings committedComposed = desired;
@@ -13970,6 +14007,17 @@ static int run_all_tests(int argc, char** argv) {
         s1.hasVideoClkOffsetKhz = true; s1.videoClkOffsetKhz = 1500;
         s2 = s1; s2.videoClkOffsetKhz = 2500;
         if (desired_settings_equal(&s1, &s2)) return 4818;
+
+        // Per-point curve provenance changes what an apply does with the same
+        // numeric MHz, so it is state and not ignorable metadata.
+        DesiredSettings p1 = {};
+        p1.hasCurvePoint[3] = true;
+        p1.curvePointMHz[3] = 1500;
+        DesiredSettings p2 = p1;
+        p2.curvePointFromGpuOffset[3] = true;
+        if (desired_settings_equal(&p1, &p2)) return 4819;
+        p2.curvePointFromGpuOffset[3] = false;
+        if (!desired_settings_equal(&p1, &p2)) return 4828;
     }
 
     // ------------------------------------------------------------------

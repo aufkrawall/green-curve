@@ -76,7 +76,9 @@ static inline bool desired_settings_equal(const DesiredSettings* left,
     if (!left || !right) return left == right;
     for (int i = 0; i < VF_NUM_POINTS; ++i) {
         if (left->hasCurvePoint[i] != right->hasCurvePoint[i] ||
-            left->curvePointMHz[i] != right->curvePointMHz[i]) return false;
+            left->curvePointMHz[i] != right->curvePointMHz[i] ||
+            left->curvePointFromGpuOffset[i] !=
+                right->curvePointFromGpuOffset[i]) return false;
     }
     if (left->hasLock != right->hasLock ||
         left->lockCi != right->lockCi ||

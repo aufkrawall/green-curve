@@ -170,6 +170,10 @@ void set_field_value(TuiState* state, TuiField field, int index, int value) {
             } else {
                 desired.hasCurvePoint[index] = true;
                 desired.curvePointMHz[index] = (unsigned int)target;
+                // Typed by hand: an absolute target from here on, whatever the
+                // point may have been projected from before (Windows does the
+                // same in ui_main_window.cpp).
+                desired.curvePointFromGpuOffset[index] = 0;
             }
             state->selectedPoint = index;
             break;

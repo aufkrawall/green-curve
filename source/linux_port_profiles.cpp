@@ -59,6 +59,8 @@ void merge_desired_settings(DesiredSettings* base, const DesiredSettings* incomi
         if (incoming->hasCurvePoint[i]) {
             base->hasCurvePoint[i] = true;
             base->curvePointMHz[i] = incoming->curvePointMHz[i];
+            // Same rule as the Windows merge: the flag belongs to the value.
+            base->curvePointFromGpuOffset[i] = incoming->curvePointFromGpuOffset[i];
         }
     }
 }
@@ -416,6 +418,7 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
         }
         desired->hasCurvePoint[i] = true;
         desired->curvePointMHz[i] = (unsigned int)parsed;
+        desired->curvePointFromGpuOffset[i] = 0;
     }
 
     bool basePlusGpuOffsetCurve = streqi_ascii(curveSemantics.c_str(), "base_plus_gpu_offset");
@@ -427,6 +430,7 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
             if (absoluteMHz <= 0) {
                 desired->hasCurvePoint[i] = false;
                 desired->curvePointMHz[i] = 0;
+                desired->curvePointFromGpuOffset[i] = 0;
                 continue;
             }
             desired->curvePointMHz[i] = (unsigned int)absoluteMHz;
@@ -437,6 +441,7 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             desired->hasCurvePoint[i] = false;
             desired->curvePointMHz[i] = 0;
+            desired->curvePointFromGpuOffset[i] = 0;
         }
     }
 

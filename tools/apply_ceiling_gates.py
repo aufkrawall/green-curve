@@ -316,6 +316,32 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "editor ownership and provenance are recorded through one setter")
     forbid_text(_p(ctx, "ui_main.cpp"), "g_app.guiCurvePointExplicit[ci] = true;",
                 "no site may claim editor ownership without stating provenance")
+    # Provenance describes the VALUE it travels with, so every path that copies,
+    # merges, clears or synthesizes a curve point has to carry it too.  The
+    # active service intent and the profile/CLI merges are exactly the paths an
+    # under-load automatic replay uses; a dropped flag silently turns a
+    # projected point back into a typed absolute, which is the original defect.
+    require_text(_p(ctx, "config_profiles_ui.cpp"),
+                 "base->curvePointFromGpuOffset[i] = override->curvePointFromGpuOffset[i];",
+                 "the Windows settings merge carries per-point provenance")
+    require_text(_p(ctx, "linux_port_profiles.cpp"),
+                 "base->curvePointFromGpuOffset[i] = incoming->curvePointFromGpuOffset[i];",
+                 "the Linux settings merge carries per-point provenance")
+    require_text(_p(ctx, "service_desired_mutation_policy.h"),
+                 "merged.curvePointFromGpuOffset[i] = requested->curvePointFromGpuOffset[i];",
+                 "durable service intent keeps per-point provenance across sparse merges")
+    require_text(_p(ctx, "service_desired_mutation_policy.h"),
+                 "desired->curvePointFromGpuOffset[i] = 0;",
+                 "projecting a request to available domains clears dropped point provenance")
+    require_text(_p(ctx, "desired_settings_ui_policy.h"),
+                 "left->curvePointFromGpuOffset[i] !=",
+                 "struct equality treats provenance as state, not metadata")
+    require_text(_p(ctx, "linux_tui_actions.cpp"),
+                 "desired.curvePointFromGpuOffset[index] = 0;",
+                 "a Linux TUI hand edit makes that point an absolute target")
+    forbid_text(_p(ctx, "ui_main.cpp"),
+                "g_app.guiCurvePointExplicit[g_app.lockedCi] = true;",
+                "the lock anchor edit goes through the ownership+provenance setter")
 
     # The correction loop must terminate on its own evidence. Its per-point
     # `stuck` bookkeeping is reachable only for locked tail points, so a non-tail

@@ -776,7 +776,7 @@ static bool load_curve_points_explicit_from_section(const char* path, const char
         }
 
         desired->hasCurvePoint[i] = true;
-        desired->curvePointMHz[i] = (unsigned int)mhz;
+        desired->curvePointMHz[i] = (unsigned int)mhz; desired->curvePointFromGpuOffset[i] = 0;
         foundAny = true;
         lastCi = i;
         lastMHz = mhz;

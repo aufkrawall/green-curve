@@ -107,6 +107,7 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
             for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
                 mergedActiveDesired.hasCurvePoint[ci] = false;
                 mergedActiveDesired.curvePointMHz[ci] = 0;
+                mergedActiveDesired.curvePointFromGpuOffset[ci] = 0;
             }
             mergedActiveDesired.hasLock = false;
             mergedActiveDesired.lockCi = -1;

@@ -424,7 +424,9 @@ static void sync_locked_tail_preview_from_anchor() {
     int lockMhz = (int)g_app.guiDraft.curveMHz[ci];
 
     g_app.lockedFreq = (unsigned int)lockMhz;
-    if (g_app.lockedCi >= 0) g_app.guiCurvePointExplicit[g_app.lockedCi] = true;
+    // A lock anchor is an absolute target, never an offset projection.
+    if (g_app.lockedCi >= 0)
+        gui_set_curve_point_origin(g_app.lockedCi, true, false);
     g_app.guiLockTracksAnchor = false;
     set_gui_state_dirty(true);
     if (g_app.lockedCi >= 0) record_ui_action("lock anchor point %d edited to %u MHz (absolute)", g_app.lockedCi, g_app.lockedFreq);

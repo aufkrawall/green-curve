@@ -264,6 +264,8 @@ static bool parse_cli_options(LPWSTR cmdLine, CliOptions* opts) {
             }
             opts->desired.hasCurvePoint[idx] = true;
             opts->desired.curvePointMHz[idx] = (unsigned int)v;
+            // --pointN takes an absolute MHz value.
+            opts->desired.curvePointFromGpuOffset[idx] = 0;
         }
     }
 

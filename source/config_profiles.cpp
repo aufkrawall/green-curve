@@ -339,7 +339,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             if (desired->hasCurvePoint[i]) {
                 desired->hasCurvePoint[i] = false;
-                desired->curvePointMHz[i] = 0;
+                desired->curvePointMHz[i] = 0; desired->curvePointFromGpuOffset[i] = 0;
                 hadCurvePoints = true;
             }
         }
@@ -387,7 +387,7 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
             unsigned int volt_mv = g_app.curve[i].volt_uV / 1000;
             if (volt_mv < (unsigned)MIN_VISIBLE_VOLT_mV) {
                 desired->hasCurvePoint[i] = false;
-                desired->curvePointMHz[i] = 0;
+                desired->curvePointMHz[i] = 0; desired->curvePointFromGpuOffset[i] = 0;
             }
         }
     }

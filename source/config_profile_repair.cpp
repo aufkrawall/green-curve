@@ -52,6 +52,7 @@ static void restore_curve_points_from_base_plus_gpu_offset(DesiredSettings* desi
         if (absoluteMHz <= 0) {
             desired->hasCurvePoint[i] = false;
             desired->curvePointMHz[i] = 0;
+            desired->curvePointFromGpuOffset[i] = 0;
             continue;
         }
         desired->curvePointMHz[i] = (unsigned int)absoluteMHz;
@@ -107,6 +108,7 @@ static void clear_profile_curve_point(DesiredSettings* desired, int pointIndex) 
     if (!desired || pointIndex < 0 || pointIndex >= VF_NUM_POINTS) return;
     desired->hasCurvePoint[pointIndex] = false;
     desired->curvePointMHz[pointIndex] = 0;
+    desired->curvePointFromGpuOffset[pointIndex] = 0;
 }
 
 static bool profile_tail_points_flat_to_lock(const char* path, const char* section, const DesiredSettings* desired, int* visibleTailCountOut,

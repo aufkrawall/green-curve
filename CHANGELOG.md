@@ -87,7 +87,13 @@ you; a half-updated pair refuses to talk rather than guessing, as before.
     request to hold that frequency, and stock moves under load. This is tracked
     per point, so hand-editing one field of a loaded profile leaves that one
     point a real absolute target — it still holds the driver to your number —
-    while its neighbours keep offset intent.
+    while its neighbours keep offset intent. That provenance now survives every
+    path a request can take: the merge into the service's durable intent (so an
+    automatic restore or resume replays the same offset intent, not a stale
+    absolute), the Windows and Linux settings merges, and a Linux terminal-UI
+    edit, which makes the edited point a real absolute exactly like the
+    graphical editor already did. The same numbers with a different origin are
+    now also treated as a different request.
   - The routine that nudges points onto target was working from its own private
     copy of the rule above, so it undid the fix. A profile whose points had just
     been written correctly would have them overwritten the moment *any* other

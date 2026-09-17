@@ -672,6 +672,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 if (!desired->hasCurvePoint[ci]) {
                     verifyDesired.hasCurvePoint[ci] = false;
                     verifyDesired.curvePointMHz[ci] = 0;
+                    verifyDesired.curvePointFromGpuOffset[ci] = 0;
                 }
             }
             if (gpuPolicyViaCurveBatch) {
@@ -689,6 +690,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                         + (long long)gpu_offset_component_mhz_for_point(ci, desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount) * 1000LL;
                     if (targetFreqkHz < 0) targetFreqkHz = 0;
                     verifyDesired.hasCurvePoint[ci] = true;
+                    // Synthesized from the selective offset batch: an absolute
+                    // preview, not a projection flag inherited from `desired`.
+                    verifyDesired.curvePointFromGpuOffset[ci] = 0;
                     if (hasLock && lockedTailMask[ci]) {
                         verifyDesired.curvePointMHz[ci] = lockMhz;
                     } else {

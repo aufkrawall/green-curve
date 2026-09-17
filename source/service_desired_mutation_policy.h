@@ -43,6 +43,7 @@ static inline void service_project_desired_to_available_domains(
         for (int i = 0; i < VF_NUM_POINTS; ++i) {
             desired->hasCurvePoint[i] = false;
             desired->curvePointMHz[i] = 0;
+            desired->curvePointFromGpuOffset[i] = 0;
         }
         // Every current lock mode composes a VF anchor/tail write.
         desired->hasLock = false;
@@ -94,6 +95,7 @@ static inline DesiredSettings service_merge_desired_after_mutation(
         for (int i = 0; i < VF_NUM_POINTS; ++i) {
             merged.hasCurvePoint[i] = false;
             merged.curvePointMHz[i] = 0;
+            merged.curvePointFromGpuOffset[i] = 0;
         }
         merged.hasLock = false;
         merged.lockCi = -1;
@@ -127,6 +129,10 @@ static inline DesiredSettings service_merge_desired_after_mutation(
         for (int i = 0; i < VF_NUM_POINTS; ++i) {
             merged.hasCurvePoint[i] = requested->hasCurvePoint[i];
             merged.curvePointMHz[i] = requested->curvePointMHz[i];
+            // Durable intent must preserve how the point is to be applied;
+            // losing the flag here turns every projected profile point back
+            // into a typed absolute on the next replay.
+            merged.curvePointFromGpuOffset[i] = requested->curvePointFromGpuOffset[i];
         }
     }
     if (domains & SERVICE_MUTATION_DOMAIN_LOCK) {
