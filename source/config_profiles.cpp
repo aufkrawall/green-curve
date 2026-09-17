@@ -280,7 +280,13 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
     // defined results.  Legit saved values are always within these ranges.
     validate_desired_settings_for_ipc(desired);
 
-    if (curve_section_uses_base_plus_gpu_offset_semantics(path, curveSection, desired)) {
+    // Per-point provenance first: a section this build wrote carries it, and a
+    // point that was never flagged keeps the absolute authority the loader just
+    // gave it.  Only when the section is NOT in that format does the legacy
+    // whole-section reconstruction run -- which necessarily flattens every
+    // point to offset-derived, because a base+offset file cannot say otherwise.
+    if (!restore_curve_point_origins_from_section(path, curveSection, desired) &&
+        curve_section_uses_base_plus_gpu_offset_semantics(path, curveSection, desired)) {
         restore_curve_points_from_base_plus_gpu_offset(desired);
     }
 
@@ -397,34 +403,6 @@ static bool load_profile_from_config(const char* path, int slot, DesiredSettings
         desired->fanMode = FAN_MODE_AUTO;
     }
 
-    return true;
-}
-
-static unsigned int saved_curve_point_mhz(const DesiredSettings* desired, int pointIndex, int gpuOffsetMHz, int excludeLowCount) {
-    if (pointIndex < 0 || pointIndex >= VF_NUM_POINTS) return 0;
-
-    if (!desired || !desired->hasCurvePoint[pointIndex]) return 0;
-
-    unsigned int mhz = desired->curvePointMHz[pointIndex];
-    if (mhz == 0) return 0;
-    if (!is_curve_point_visible_in_gui(pointIndex)) return mhz;
-
-    int offsetCompMHz = gpu_offset_component_mhz_for_point(pointIndex, gpuOffsetMHz, excludeLowCount);
-    int baseMHz = (int)mhz - offsetCompMHz;
-    if (baseMHz <= 0) return mhz;
-    return (unsigned int)baseMHz;
-}
-
-static bool can_save_curve_as_base_plus_gpu_offset(const DesiredSettings* desired, int gpuOffsetMHz, int excludeLowCount) {
-    if (!desired || gpuOffsetMHz == 0) return false;
-    if (!g_app.loaded || g_app.numPopulated <= 0) return false;
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (!desired->hasCurvePoint[i]) continue;
-        if (!is_curve_point_visible_in_gui(i)) continue;
-        int offsetCompmhz = gpu_offset_component_mhz_for_point(i, gpuOffsetMHz, excludeLowCount);
-        int baseMhz = (int)desired->curvePointMHz[i] - offsetCompmhz;
-        if (baseMhz <= 0) return false;
-    }
     return true;
 }
 
@@ -570,7 +548,6 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         int profileGpuOffsetMHz = 0;
         int profileExcludeLowCount = 0;
         resolve_profile_gpu_offset_state_for_save(desired, &profileGpuOffsetMHz, &profileExcludeLowCount);
-        bool saveCurveAsBasePlusGpuOffset = can_save_curve_as_base_plus_gpu_offset(desired, profileGpuOffsetMHz, profileExcludeLowCount);
 
         appendf("[%s]\r\n", controlsSection);
         appendf("gpu_offset_mhz=%d\r\n", profileGpuOffsetMHz);
@@ -615,25 +592,25 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         appendf("format=explicit_vf_points_v1\r\n");
         appendf("gpu_offset_mhz=%d\r\n", profileGpuOffsetMHz);
         appendf("gpu_offset_exclude_low_count=%d\r\n", profileExcludeLowCount);
-        if (saveCurveAsBasePlusGpuOffset) {
-            appendf("curve_semantics=base_plus_gpu_offset\r\n");
-        }
+        appendf("curve_semantics=%s\r\n",
+            PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN);
+        int savedProjectedPoints = 0;
         for (int i = 0; i < VF_NUM_POINTS; i++) {
-            unsigned int mhz = saved_curve_point_mhz(desired, i,
-                saveCurveAsBasePlusGpuOffset ? profileGpuOffsetMHz : 0,
-                saveCurveAsBasePlusGpuOffset ? profileExcludeLowCount : 0);
-            if (mhz == 0) continue;
-            unsigned int voltMv = g_app.curve[i].volt_uV / 1000;
-            int offsetKHz = g_app.curve[i].freq_kHz > 0 ? g_app.freqOffsets[i] : 0;
-            appendf("point%d_mhz=%u\r\n", i, mhz);
-            appendf("point%d_mv=%u\r\n", i, voltMv);
-            appendf("point%d_offset_khz=%d\r\n", i, offsetKHz);
-            int pointVisible = is_curve_point_visible_in_gui(i) ? 1 : 0;
-            if (g_app.curve[i].volt_uV == 0) {
-                pointVisible = desired->hasCurvePoint[i] ? 1 : 0;
+            ProfileCurvePointRecord point = {};
+            if (!profile_curve_point_record_for_save(desired, i, false, &point)) continue;
+            appendf("point%d_mhz=%u\r\n", i, point.mhz);
+            appendf("point%d_mv=%u\r\n", i, point.voltMv);
+            appendf("point%d_offset_khz=%d\r\n", i, point.offsetKHz);
+            appendf("point%d_visible=%d\r\n", i, point.visible ? 1 : 0);
+            if (point.fromGpuOffset) {
+                appendf("point%d_%s=1\r\n", i, PROFILE_CURVE_POINT_ORIGIN_SUFFIX);
+                savedProjectedPoints++;
             }
-            appendf("point%d_visible=%d\r\n", i, pointVisible);
         }
+        debug_log("save_profile_to_config: [%s] written as %s "
+            "(gpuOffset=%d excludeLow=%d projectedPoints=%d)\n",
+            curveSection, PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN,
+            profileGpuOffsetMHz, profileExcludeLowCount, savedProjectedPoints);
         appendf("\r\n");
 
         const FanCurveConfig* curveToWrite = desired->hasFan ? &desired->fanCurve : &g_app.activeFanCurve;
@@ -682,7 +659,6 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         int profileGpuOffsetMHz = 0;
         int profileExcludeLowCount = 0;
         resolve_profile_gpu_offset_state_for_save(desired, &profileGpuOffsetMHz, &profileExcludeLowCount);
-        bool saveCurveAsBasePlusGpuOffset = can_save_curve_as_base_plus_gpu_offset(desired, profileGpuOffsetMHz, profileExcludeLowCount);
 
         appendf("[controls]\r\n");
         appendf("gpu_offset_mhz=%d\r\n", profileGpuOffsetMHz);
@@ -726,25 +702,25 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         appendf("format=explicit_vf_points_v1\r\n");
         appendf("gpu_offset_mhz=%d\r\n", profileGpuOffsetMHz);
         appendf("gpu_offset_exclude_low_count=%d\r\n", profileExcludeLowCount);
-        if (saveCurveAsBasePlusGpuOffset) {
-            appendf("curve_semantics=base_plus_gpu_offset\r\n");
-        }
+        appendf("curve_semantics=%s\r\n",
+            PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN);
+        int savedLegacyProjectedPoints = 0;
         for (int i = 0; i < VF_NUM_POINTS; i++) {
-            unsigned int mhz = saved_curve_point_mhz(desired, i,
-                saveCurveAsBasePlusGpuOffset ? profileGpuOffsetMHz : 0,
-                saveCurveAsBasePlusGpuOffset ? profileExcludeLowCount : 0);
-            if (mhz == 0) continue;
-            unsigned int voltMv = g_app.curve[i].volt_uV / 1000;
-            int offsetKHz = g_app.curve[i].freq_kHz > 0 ? g_app.freqOffsets[i] : 0;
-            appendf("point%d_mhz=%u\r\n", i, mhz);
-            appendf("point%d_mv=%u\r\n", i, voltMv);
-            appendf("point%d_offset_khz=%d\r\n", i, offsetKHz);
-            int pointVisible = is_curve_point_visible_in_gui(i) ? 1 : 0;
-            if (g_app.curve[i].volt_uV == 0) {
-                pointVisible = desired->hasCurvePoint[i] ? 1 : 0;
+            ProfileCurvePointRecord point = {};
+            if (!profile_curve_point_record_for_save(desired, i, false, &point)) continue;
+            appendf("point%d_mhz=%u\r\n", i, point.mhz);
+            appendf("point%d_mv=%u\r\n", i, point.voltMv);
+            appendf("point%d_offset_khz=%d\r\n", i, point.offsetKHz);
+            appendf("point%d_visible=%d\r\n", i, point.visible ? 1 : 0);
+            if (point.fromGpuOffset) {
+                appendf("point%d_%s=1\r\n", i, PROFILE_CURVE_POINT_ORIGIN_SUFFIX);
+                savedLegacyProjectedPoints++;
             }
-            appendf("point%d_visible=%d\r\n", i, pointVisible);
         }
+        debug_log("save_profile_to_config: [curve] written as %s "
+            "(gpuOffset=%d excludeLow=%d projectedPoints=%d)\n",
+            PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN, profileGpuOffsetMHz,
+            profileExcludeLowCount, savedLegacyProjectedPoints);
         appendf("\r\n");
 
         const FanCurveConfig* curveToWrite = desired->hasFan ? &desired->fanCurve : &g_app.activeFanCurve;

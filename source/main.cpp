@@ -626,7 +626,6 @@ static bool load_curve_points_explicit_from_section(const char* path, const char
 static bool curve_section_uses_base_plus_gpu_offset_semantics(const char* path, const char* section, const DesiredSettings* desired);
 static void restore_curve_points_from_base_plus_gpu_offset(DesiredSettings* desired);
 static void repair_profile_locked_curve_readback_artifacts(const char* path, const char* section, int slot, DesiredSettings* desired, ProfileReadMode mode = PROFILE_READ_FOR_EDITOR);
-static bool can_save_curve_as_base_plus_gpu_offset(const DesiredSettings* desired, int gpuOffsetMHz, int excludeLowCount);
 static int curve_base_khz_for_point(int pointIndex);
 static void persist_runtime_selective_gpu_offset_request(int gpuOffsetMHz, int excludeLowCount);
 static void clear_runtime_selective_gpu_offset_request();
@@ -729,6 +728,10 @@ static const UINT FAN_TELEMETRY_INTERVAL_MS = 1000;
 #include "main_fan_runtime.cpp"
 #include "gui_tray_menu.cpp"
 #include "config_profile_repair.cpp"
+// After the repair shard, whose read_profile_point_int() it reuses, and before
+// main_shell.cpp -- which both calls it for the global [curve] section and
+// pulls in config_profiles.cpp, the slot saver.
+#include "config_profile_curve_format.cpp"
 #include "main_shell.cpp"
     SelectObject(hdc, oldBrush);
     SelectObject(hdc, oldPen);

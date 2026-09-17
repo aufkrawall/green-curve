@@ -17,25 +17,20 @@ enum LinuxDaemonRecordState : gc_u32 {
 
 enum {
     LINUX_DAEMON_RECORD_MAGIC = 0x4752434Cu, // "LCRG"
-    // v3 reinterprets the embedded DesiredSettings.memOffsetMHz as display
-    // MHz (effective/display parity). The layout is byte-identical to v2, so
-    // a v2 record is recognized by its version field, its checksum validates
-    // over the stored bytes, and the loader halves the memory offset exactly
-    // once before the record is used for a restore-last replay. Replaying a
-    // pre-parity value unconverted would write the overclock twice as strong
-    // as the user chose.
-    LINUX_DAEMON_RECORD_VERSION = 3,
+    // v4 embeds the schema-2 DesiredSettings (per-point curve provenance,
+    // 0.26.0).  The layout GREW, which is why the version had to move: see
+    // desired_settings_schema.h for why size, not version, now selects the
+    // layout a loader decodes with.
+    LINUX_DAEMON_RECORD_VERSION = 4,
+    // Semantics markers WITHIN the frozen schema-1 layout.  v3 reinterprets
+    // the embedded memOffsetMHz as display MHz (effective/display parity);
+    // v1 and v2 stored effective MHz and must be halved exactly once before a
+    // restore-last replay, or the overclock is written twice as strong as the
+    // user chose.  v1 additionally predates the operation-id fields, so it is
+    // a narrower record -- a separate layout, not a separate meaning.
+    LINUX_DAEMON_RECORD_PRE_PROVENANCE_VERSION = 3,
     LINUX_DAEMON_RECORD_PRE_DISPLAY_MEM_UNITS_VERSION = 2,
-};
-
-struct LinuxDaemonStateRecordV1 {
-    gc_u32 magic;
-    gc_u32 version;
-    gc_u32 size;
-    gc_u32 state;
-    GpuAdapterInfo targetGpu;
-    DesiredSettings desired;
-    gc_u32 checksum;
+    LINUX_DAEMON_RECORD_PRE_OPERATION_ID_VERSION = 1,
 };
 
 struct LinuxDaemonStateRecord {
@@ -49,6 +44,56 @@ struct LinuxDaemonStateRecord {
     gc_u32 operationState;
     gc_u32 checksum;
 };
+
+// The live record's size is part of the upgrade contract, because the loader
+// admits a file by comparing st_size against it.  GpuAdapterInfo is embedded
+// here too, so this assert covers a change to either struct.
+static_assert(sizeof(LinuxDaemonStateRecord) == 1176,
+              "LinuxDaemonStateRecord changed size: freeze the outgoing layout "
+              "as LinuxDaemonStateRecordSchema<N>, teach the loader its size, "
+              "and bump LINUX_DAEMON_RECORD_VERSION "
+              "(see desired_settings_schema.h)");
+
+// FROZEN: what 0.25.2 and earlier wrote for record versions 2 and 3.  Same
+// fields as the live record, schema-1 DesiredSettings.  Never edit.
+struct LinuxDaemonStateRecordSchema1 {
+    gc_u32 magic;
+    gc_u32 version;
+    gc_u32 size;
+    gc_u32 state;
+    GpuAdapterInfo targetGpu;
+    DesiredSettingsSchema1 desired;
+    gc_u64 operationId;
+    gc_u32 operationState;
+    gc_u32 checksum;
+};
+static_assert(sizeof(LinuxDaemonStateRecordSchema1) == 1048,
+              "LinuxDaemonStateRecordSchema1 is a FROZEN on-disk layout");
+
+// FROZEN: record version 1, which predates operationId/operationState.  Only
+// the v1 files written between the video-clock field landing and the v2 bump
+// carry the schema-1 DesiredSettings and therefore this size; older v1 files
+// embed layouts the version number never distinguished, so they are not
+// identifiable and are discarded rather than guessed at.
+struct LinuxDaemonStateRecordSchema1V1 {
+    gc_u32 magic;
+    gc_u32 version;
+    gc_u32 size;
+    gc_u32 state;
+    GpuAdapterInfo targetGpu;
+    DesiredSettingsSchema1 desired;
+    gc_u32 checksum;
+};
+static_assert(sizeof(LinuxDaemonStateRecordSchema1V1) == 1036,
+              "LinuxDaemonStateRecordSchema1V1 is a FROZEN on-disk layout");
+
+// Distinct sizes are what makes size-based dispatch unambiguous.  If a future
+// layout ever collides with one of these, the loader must gain a different
+// discriminator before that layout ships.
+static_assert(sizeof(LinuxDaemonStateRecord) != sizeof(LinuxDaemonStateRecordSchema1) &&
+              sizeof(LinuxDaemonStateRecord) != sizeof(LinuxDaemonStateRecordSchema1V1) &&
+              sizeof(LinuxDaemonStateRecordSchema1) != sizeof(LinuxDaemonStateRecordSchema1V1),
+              "daemon state record layouts must be distinguishable by size");
 
 enum {
     LINUX_DAEMON_OPERATION_MAGIC = 0x504f4347u, // "GCOP"
@@ -70,6 +115,21 @@ struct LinuxDaemonOperationRecord {
     char message[512];
     gc_u32 checksum;
 };
+
+// FNV-1a over the leading `length` bytes of a record, i.e. everything up to
+// its own checksum member.  Shared by the live and the frozen layouts so a
+// migration validates a stored record with exactly the arithmetic that wrote
+// it, no transcription of the loop per generation.
+static inline gc_u32 linux_daemon_record_hash_bytes(const void* record, size_t length) {
+    if (!record) return 0;
+    const unsigned char* bytes = (const unsigned char*)record;
+    gc_u32 hash = 2166136261u;
+    for (size_t i = 0; i < length; ++i) {
+        hash ^= bytes[i];
+        hash *= 16777619u;
+    }
+    return hash;
+}
 
 static inline gc_u32 linux_daemon_record_checksum(const LinuxDaemonStateRecord* record) {
     if (!record) return 0;
@@ -134,21 +194,80 @@ static inline bool linux_daemon_migrate_desired_mem_units_to_display(
     return true;
 }
 
-// v2 (effective mem units) -> v3 (display mem units). Byte-identical layout;
-// the version bump plus re-hashed checksum is the whole on-disk difference.
-// Returns true when the record was migrated.
-static inline bool linux_daemon_state_record_migrate_pre_display_mem_units(
-    LinuxDaemonStateRecord* record, int* oldOut) {
-    if (!record) return false;
-    if (record->version != LINUX_DAEMON_RECORD_PRE_DISPLAY_MEM_UNITS_VERSION)
-        return false;
-    if (!linux_daemon_record_valid_except_version(record)) return false;
+// How a stored record was recognized, for the loader's log line.  A migration
+// that cannot say which generation it came from is a migration nobody can
+// debug from a support log.
+enum LinuxDaemonRecordGeneration : gc_u32 {
+    LINUX_DAEMON_RECORD_GENERATION_CURRENT = 0,
+    LINUX_DAEMON_RECORD_GENERATION_SCHEMA1 = 1,    // versions 2 and 3
+    LINUX_DAEMON_RECORD_GENERATION_SCHEMA1_V1 = 2, // version 1, no operation id
+};
+
+// Validate a stored schema-1 state record against its OWN checksum, over its
+// OWN bytes, with whatever version it carries.  Nothing may mutate before
+// this passes: the stored hash covers the stored version field.
+static inline bool linux_daemon_state_schema1_valid(
+    const LinuxDaemonStateRecordSchema1* record) {
+    return record && record->magic == LINUX_DAEMON_RECORD_MAGIC &&
+           record->size == sizeof(*record) &&
+           record->version >= LINUX_DAEMON_RECORD_PRE_DISPLAY_MEM_UNITS_VERSION &&
+           record->version <= LINUX_DAEMON_RECORD_PRE_PROVENANCE_VERSION &&
+           record->state >= LINUX_DAEMON_RECORD_PREPARED &&
+           record->state <= LINUX_DAEMON_RECORD_UNCERTAIN &&
+           record->operationState <= SERVICE_OPERATION_OUTCOME_UNKNOWN &&
+           record->checksum == linux_daemon_record_hash_bytes(
+               record, offsetof(LinuxDaemonStateRecordSchema1, checksum));
+}
+
+static inline bool linux_daemon_state_schema1_v1_valid(
+    const LinuxDaemonStateRecordSchema1V1* record) {
+    return record && record->magic == LINUX_DAEMON_RECORD_MAGIC &&
+           record->size == sizeof(*record) &&
+           record->version == LINUX_DAEMON_RECORD_PRE_OPERATION_ID_VERSION &&
+           record->state >= LINUX_DAEMON_RECORD_PREPARED &&
+           record->state <= LINUX_DAEMON_RECORD_UNCERTAIN &&
+           record->checksum == linux_daemon_record_hash_bytes(
+               record, offsetof(LinuxDaemonStateRecordSchema1V1, checksum));
+}
+
+// Widen a validated schema-1 state record into the current generation.  The
+// memory-offset unit conversion is applied here, once, for the versions that
+// stored effective MHz -- the value migration rides on the version, the layout
+// migration on the size, and neither is inferred from the other.
+static inline bool linux_daemon_state_record_widen_schema1(
+    LinuxDaemonStateRecord* out, const LinuxDaemonStateRecordSchema1* in,
+    int* oldMemOut, gc_u32* fromVersionOut) {
+    if (oldMemOut) *oldMemOut = 0;
+    if (fromVersionOut) *fromVersionOut = 0;
+    if (!out || !in || !linux_daemon_state_schema1_valid(in)) return false;
+    if (fromVersionOut) *fromVersionOut = in->version;
+    DesiredSettings widened = {};
+    desired_settings_widen_from_schema1(&widened, &in->desired);
+    if (in->version <= LINUX_DAEMON_RECORD_PRE_DISPLAY_MEM_UNITS_VERSION) {
+        int migratedOld = 0;
+        if (linux_daemon_migrate_desired_mem_units_to_display(&widened, &migratedOld) &&
+            oldMemOut) *oldMemOut = migratedOld;
+    }
+    linux_daemon_record_initialize(out, (LinuxDaemonRecordState)in->state,
+                                   &in->targetGpu, &widened, in->operationId,
+                                   in->operationState);
+    return true;
+}
+
+static inline bool linux_daemon_state_record_widen_schema1_v1(
+    LinuxDaemonStateRecord* out, const LinuxDaemonStateRecordSchema1V1* in,
+    int* oldMemOut) {
+    if (oldMemOut) *oldMemOut = 0;
+    if (!out || !in || !linux_daemon_state_schema1_v1_valid(in)) return false;
+    DesiredSettings widened = {};
+    desired_settings_widen_from_schema1(&widened, &in->desired);
     int migratedOld = 0;
-    bool changed = linux_daemon_migrate_desired_mem_units_to_display(
-        &record->desired, &migratedOld);
-    record->version = LINUX_DAEMON_RECORD_VERSION;
-    record->checksum = linux_daemon_record_checksum(record);
-    if (oldOut) *oldOut = changed ? migratedOld : 0;
+    if (linux_daemon_migrate_desired_mem_units_to_display(&widened, &migratedOld) &&
+        oldMemOut) *oldMemOut = migratedOld;
+    // v1 carried no operation identity; a widened record starts with none,
+    // which is the same "no operation in flight" state a fresh record has.
+    linux_daemon_record_initialize(out, (LinuxDaemonRecordState)in->state,
+                                   &in->targetGpu, &widened);
     return true;
 }
 
@@ -202,10 +321,14 @@ static inline bool linux_daemon_operation_valid(
 // forgeable by an unprivileged user or survive as a half-written record.
 enum {
     LINUX_DAEMON_STARTUP_MAGIC = 0x50555347u, // "GSUP"
-    // v2 reinterprets the embedded DesiredSettings.memOffsetMHz as display
-    // MHz (effective/display parity), exactly like the v2->v3 state record
-    // bump. Layout unchanged; the loader migrates a v1 record once on read.
-    LINUX_DAEMON_STARTUP_VERSION = 2,
+    // v3 embeds the schema-2 DesiredSettings (per-point curve provenance,
+    // 0.26.0) and is a LARGER record than v1/v2.  Within the frozen schema-1
+    // layout, v2 reinterprets the embedded memOffsetMHz as display MHz exactly
+    // like the state record's v2->v3 bump, so a v1 record is halved once on
+    // read.  Size selects the layout, version the meaning; see
+    // desired_settings_schema.h.
+    LINUX_DAEMON_STARTUP_VERSION = 3,
+    LINUX_DAEMON_STARTUP_PRE_PROVENANCE_VERSION = 2,
     LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION = 1,
     LINUX_DAEMON_STARTUP_NAME_MAX = 64,
 };
@@ -222,6 +345,31 @@ struct LinuxDaemonStartupRecord {
     DesiredSettings desired;
     gc_u32 checksum;
 };
+
+static_assert(sizeof(LinuxDaemonStartupRecord) == 1236,
+              "LinuxDaemonStartupRecord changed size: freeze the outgoing "
+              "layout as LinuxDaemonStartupRecordSchema<N>, teach the loader "
+              "its size, and bump LINUX_DAEMON_STARTUP_VERSION "
+              "(see desired_settings_schema.h)");
+
+// FROZEN: what 0.25.2 and earlier wrote for startup-policy versions 1 and 2.
+// Never edit.
+struct LinuxDaemonStartupRecordSchema1 {
+    gc_u32 magic;
+    gc_u32 version;
+    gc_u32 size;
+    gc_u32 mode;
+    gc_u32 profileSlot;
+    gc_u32 reserved;
+    char profileName[LINUX_DAEMON_STARTUP_NAME_MAX];
+    GpuAdapterInfo targetGpu;
+    DesiredSettingsSchema1 desired;
+    gc_u32 checksum;
+};
+static_assert(sizeof(LinuxDaemonStartupRecordSchema1) == 1108,
+              "LinuxDaemonStartupRecordSchema1 is a FROZEN on-disk layout");
+static_assert(sizeof(LinuxDaemonStartupRecord) != sizeof(LinuxDaemonStartupRecordSchema1),
+              "startup record layouts must be distinguishable by size");
 
 static inline gc_u32 linux_daemon_startup_checksum(
     const LinuxDaemonStartupRecord* record) {
@@ -290,39 +438,49 @@ static inline bool linux_daemon_startup_valid(
            record->version == LINUX_DAEMON_STARTUP_VERSION;
 }
 
-// v1 (effective mem units) -> v2 (display mem units). Returns true when the
-// record was migrated.
-static inline bool linux_daemon_startup_migrate_pre_display_mem_units(
-    LinuxDaemonStartupRecord* record, int* oldOut) {
-    if (!record) return false;
-    if (record->version != LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION)
+// Validate a stored schema-1 startup record against its own checksum, over
+// its own bytes, before anything mutates.
+static inline bool linux_daemon_startup_schema1_valid(
+    const LinuxDaemonStartupRecordSchema1* record) {
+    if (!record || record->magic != LINUX_DAEMON_STARTUP_MAGIC ||
+        record->size != sizeof(*record) ||
+        record->version < LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION ||
+        record->version > LINUX_DAEMON_STARTUP_PRE_PROVENANCE_VERSION ||
+        record->mode >= SERVICE_STARTUP_POLICY_MODE_COUNT ||
+        record->checksum != linux_daemon_record_hash_bytes(
+            record, offsetof(LinuxDaemonStartupRecordSchema1, checksum)))
         return false;
-    if (!linux_daemon_startup_valid_except_version(record)) return false;
-    int migratedOld = 0;
-    bool changed = linux_daemon_migrate_desired_mem_units_to_display(
-        &record->desired, &migratedOld);
-    record->version = LINUX_DAEMON_STARTUP_VERSION;
-    record->checksum = linux_daemon_startup_checksum(record);
-    if (oldOut) *oldOut = changed ? migratedOld : 0;
-    return true;
+    if (!service_wire_string_is_terminated(
+            record->profileName, (unsigned int)sizeof(record->profileName)))
+        return false;
+    if (record->mode == SERVICE_STARTUP_POLICY_PROFILE) {
+        return record->profileSlot >= 1 &&
+               record->profileSlot <= (gc_u32)CONFIG_NUM_SLOTS &&
+               record->targetGpu.valid && record->targetGpu.pciInfoValid;
+    }
+    return record->profileSlot == 0 && !record->targetGpu.valid;
 }
 
-// v1 state-record conversion used by the loader: build the current record and
-// halve the pre-parity memory offset in the same step, so a legacy record can
-// never be adopted with its stored effective units intact. Returns whether a
-// stored memory offset was present and converted (the record is v3 either
-// way, so a re-read cannot convert it twice).
-static inline bool linux_daemon_record_initialize_from_v1(
-    LinuxDaemonStateRecord* record, LinuxDaemonRecordState state,
-    const GpuAdapterInfo* target, const DesiredSettings* desired,
-    int* oldMemOut) {
-    linux_daemon_record_initialize(record, state, target, desired);
-    int migratedOld = 0;
-    bool converted = linux_daemon_migrate_desired_mem_units_to_display(
-        &record->desired, &migratedOld);
-    if (converted) record->checksum = linux_daemon_record_checksum(record);
-    if (oldMemOut) *oldMemOut = converted ? migratedOld : 0;
-    return converted;
+// Widen a validated schema-1 startup record into the current generation, with
+// the memory-offset unit conversion applied once for the version that stored
+// effective MHz.
+static inline bool linux_daemon_startup_widen_schema1(
+    LinuxDaemonStartupRecord* out, const LinuxDaemonStartupRecordSchema1* in,
+    int* oldMemOut, gc_u32* fromVersionOut) {
+    if (oldMemOut) *oldMemOut = 0;
+    if (fromVersionOut) *fromVersionOut = 0;
+    if (!out || !in || !linux_daemon_startup_schema1_valid(in)) return false;
+    if (fromVersionOut) *fromVersionOut = in->version;
+    DesiredSettings widened = {};
+    desired_settings_widen_from_schema1(&widened, &in->desired);
+    if (in->version <= LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION) {
+        int migratedOld = 0;
+        if (linux_daemon_migrate_desired_mem_units_to_display(&widened, &migratedOld) &&
+            oldMemOut) *oldMemOut = migratedOld;
+    }
+    linux_daemon_startup_initialize(out, in->mode, in->profileSlot,
+                                    in->profileName, &in->targetGpu, &widened);
+    return true;
 }
 
 // Automatic-restore guard.  Stored beside active.bin with the same root-owned
@@ -431,7 +589,7 @@ enum LinuxDaemonStateLoadResult {
 LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
                                                    LinuxDaemonStateRecord* out,
                                                    char* err, size_t errSize,
-                                                   bool* outMigratedMemUnits);
+                                                   bool* outMigratedFromLegacy);
 bool linux_daemon_state_store(const char* path, const LinuxDaemonStateRecord* record,
                               char* err, size_t errSize);
 bool linux_daemon_state_remove(const char* path, char* err, size_t errSize);
@@ -445,13 +603,15 @@ bool linux_daemon_operation_load(const char* path,
 // Startup policy.  A missing record is not an error: it means RESTORE_LAST,
 // the behaviour every build before protocol v13 had.  `outCorrupt` reports a
 // present-but-unusable record so the daemon can refuse to write at boot rather
-// than silently falling back to replaying old intent.  `outMigratedMemUnits`
-// reports that a pre-parity record was converted to display mem units; the
-// informational migration detail then rides in `err` even on success.
+// than silently falling back to replaying old intent.  `outMigratedFromLegacy`
+// reports that an OLDER on-disk generation was widened into the current record
+// -- a layout migration, a mem-unit reinterpretation, or both -- so the caller
+// can rewrite the file at the current generation; the detail rides in `err`
+// even on success.
 bool linux_daemon_startup_load(const char* path,
                                LinuxDaemonStartupRecord* record,
                                bool* outCorrupt, char* err, size_t errSize,
-                               bool* outMigratedMemUnits);
+                               bool* outMigratedFromLegacy);
 bool linux_daemon_startup_store(const char* path,
                                 const LinuxDaemonStartupRecord* record,
                                 char* err, size_t errSize);

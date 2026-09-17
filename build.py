@@ -105,6 +105,7 @@ import linux_gates  # noqa: E402  (same one-way dependency as security_gates)
 import readback_gates  # noqa: E402  (same one-way dependency as security_gates)
 import apply_ceiling_gates  # noqa: E402  (same one-way dependency as security_gates)
 import log_gates  # noqa: E402  (same one-way dependency as security_gates)
+import persistence_gates  # noqa: E402  (same one-way dependency as security_gates)
 import update_gates  # noqa: E402  (same one-way dependency as security_gates)
 import icon_render  # noqa: E402  (same one-way dependency as security_gates)
 import crash_artifacts  # noqa: E402  (same one-way dependency as security_gates)
@@ -3717,10 +3718,12 @@ def run_source_regression_checks():
     require_text(os.path.join(SOURCE_DIR, "main_service_operation_persist.cpp"),
                  "operation outcome became uncertain across service restart",
                  "Windows in-progress operations restore as outcome-unknown")
-    require_text(main_service_persist_cpp, "SERVICE_ACTIVE_DESIRED_VERSION 5u",
-                 "Windows protected active-state schema is version 5")
-    require_text(main_service_persist_cpp, "SERVICE_ACTIVE_DESIRED_LEGACY_VERSION 4u",
-                 "Windows active-state reader remains compatible with version 4")
+    # The on-disk DesiredSettings layouts (F-PERSIST-SCHEMA) and the saved-curve
+    # provenance format (F-CURVE-PROVENANCE). Both live in
+    # tools/persistence_gates.py.
+    persistence_gates.check_all(_gate_ctx(), require_text, forbid_text)
+    persistence_gates.check_profile_curve_format(
+        _gate_ctx(), require_text, forbid_text)
     require_text(os.path.join(SOURCE_DIR, "linux_operation_runtime.h"),
                  "persist_daemon_operation",
                  "Linux persists both in-progress and completed correlation")

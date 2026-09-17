@@ -525,7 +525,10 @@ static void unlock_all() {
         debug_log("load_desired_settings_from_ini: config has no explicit [curve] point*_mhz entries in %s\n", path);
     }
 
-    if (curve_section_uses_base_plus_gpu_offset_semantics(path, "curve", desired)) {
+    // Same order as the slot loader: per-point provenance when the section has
+    // it, the legacy whole-section reconstruction only when it does not.
+    if (!restore_curve_point_origins_from_section(path, "curve", desired) &&
+        curve_section_uses_base_plus_gpu_offset_semantics(path, "curve", desired)) {
         restore_curve_points_from_base_plus_gpu_offset(desired);
     }
 

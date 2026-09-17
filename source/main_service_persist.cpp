@@ -6,31 +6,18 @@
 // shards included immediately before this file.
 
 // ---- Driver-restart recovery persistence ----
-// Recovery after a GPU device reconnect, TDR, or driver upgrade is performed by
-// restarting the service PROCESS (see launch_recovery_thread / request_service_
-// restart).  Before exiting, the service snapshots the active desired OC/fan
-// profile to disk; the freshly relaunched process loads clean driver DLLs and
-// service_startup_coordinator_thread_proc() may re-apply the snapshot only when
-// the new process presents the nonce issued to the protected restart helper.
-// Ordinary service startup is always non-mutating.
+// The snapshot's on-disk layout, its frozen predecessor and the version
+// constants live in service_restart_snapshot_schema.h; reading and writing it
+// lives here.  Ordinary service startup is always non-mutating: only a process
+// presenting the protected restart helper's nonce may re-apply a snapshot.
+#include "service_restart_snapshot_schema.h"
 
-#define SERVICE_ACTIVE_DESIRED_MAGIC   0x47434144u /* 'GCAD' */
-#define SERVICE_ACTIVE_DESIRED_VERSION 5u
-#define SERVICE_ACTIVE_DESIRED_LEGACY_VERSION 4u
 #define SERVICE_CONTROLLED_RECOVERY_MAGIC   0x47434352u /* 'GCCR' */
 #define SERVICE_CONTROLLED_RECOVERY_VERSION 3u
 #define SERVICE_CONTROLLED_RECOVERY_MAX_AGE_MS 300000ULL
 #define SERVICE_CONTROLLED_RECOVERY_NONCE_BYTES 32u
 #define SERVICE_CONTROLLED_RECOVERY_NONCE_HEX_CHARS ((size_t)SERVICE_CONTROLLED_RECOVERY_NONCE_BYTES * 2ULL)
 #define SERVICE_CONTROLLED_RECOVERY_HELPER_VALIDATION_MAGIC 0x47434856u /* 'GCHV' */
-
-struct ServiceRestartReapplySnapshot {
-    DesiredSettings desired;
-    GpuAdapterInfo targetGpu;
-    DWORD activeProfileSource;
-    DWORD activeProfileSlot;
-    DWORD reserved[2];
-};
 
 struct ServiceControlledRecoveryAuthorization {
     DWORD magic;
@@ -835,23 +822,35 @@ static bool service_load_restart_reapply_snapshot(DesiredSettings* out, GpuAdapt
     bool ok = ReadFile(h, &magic, sizeof(magic), &read, nullptr) && read == sizeof(magic);
     ok = ok && ReadFile(h, &version, sizeof(version), &read, nullptr) && read == sizeof(version);
     ok = ok && ReadFile(h, &size, sizeof(size), &read, nullptr) && read == sizeof(size);
-    if (ok && (magic != SERVICE_ACTIVE_DESIRED_MAGIC ||
-               (version != SERVICE_ACTIVE_DESIRED_VERSION &&
-                version != SERVICE_ACTIVE_DESIRED_LEGACY_VERSION) ||
-               size != (DWORD)sizeof(ServiceRestartReapplySnapshot))) {
-        debug_log("restart reapply load: header mismatch magic=%08lX ver=%lu size=%lu (expected version=%u size=%lu); clearing old snapshot\n",
-            (unsigned long)magic,
-            (unsigned long)version,
-            (unsigned long)size,
+    // The header's `size` word is the layout discriminator; `version` then says
+    // what the fields mean within that layout.  A schema-1 payload is what a
+    // 0.25.2 service wrote, and widening it is what keeps a controlled restart
+    // across an upgrade from silently dropping the active overclock.
+    bool current = version == SERVICE_ACTIVE_DESIRED_VERSION &&
+        size == (DWORD)sizeof(ServiceRestartReapplySnapshot);
+    bool schema1 = version == SERVICE_ACTIVE_DESIRED_SCHEMA1_VERSION &&
+        size == (DWORD)sizeof(ServiceRestartReapplySnapshotSchema1);
+    if (ok && (magic != SERVICE_ACTIVE_DESIRED_MAGIC || !(current || schema1))) {
+        debug_log("restart reapply load: header mismatch magic=%08lX ver=%lu size=%lu (expected v%u/%lu or v%u/%lu); clearing old snapshot\n",
+            (unsigned long)magic, (unsigned long)version, (unsigned long)size,
             (unsigned)SERVICE_ACTIVE_DESIRED_VERSION,
-            (unsigned long)sizeof(ServiceRestartReapplySnapshot));
+            (unsigned long)sizeof(ServiceRestartReapplySnapshot),
+            (unsigned)SERVICE_ACTIVE_DESIRED_SCHEMA1_VERSION,
+            (unsigned long)sizeof(ServiceRestartReapplySnapshotSchema1));
         ok = false;
-    }
-    if (ok && version == SERVICE_ACTIVE_DESIRED_LEGACY_VERSION) {
-        debug_log("restart reapply load: accepted backward-compatible v4 snapshot\n");
+    } else if (ok && schema1) {
+        debug_log("restart reapply load: widening v%u schema-1 snapshot (%lu bytes) to v%u\n",
+            (unsigned)SERVICE_ACTIVE_DESIRED_SCHEMA1_VERSION,
+            (unsigned long)size, (unsigned)SERVICE_ACTIVE_DESIRED_VERSION);
     }
     ServiceRestartReapplySnapshot payload = {};
-    if (ok) ok = ReadFile(h, &payload, size, &read, nullptr) && read == size;
+    if (ok && schema1) {
+        ServiceRestartReapplySnapshotSchema1 legacy = {};
+        ok = ReadFile(h, &legacy, size, &read, nullptr) && read == size;
+        if (ok) service_restart_snapshot_widen_schema1(&payload, &legacy);
+    } else if (ok) {
+        ok = ReadFile(h, &payload, size, &read, nullptr) && read == size;
+    }
     BYTE trailing = 0;
     DWORD trailingRead = 0;
     if (ok) ok = ReadFile(h, &trailing, sizeof(trailing), &trailingRead, nullptr) && trailingRead == 0;

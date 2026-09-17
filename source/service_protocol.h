@@ -667,45 +667,23 @@ static_assert(offsetof(ServiceRequest, command) == 8, "ServiceRequest.command of
 
 static_assert(sizeof(ControlState) == 188,
               "ControlState changed without an IPC protocol-version bump");
+// DesiredSettings is not only a wire struct: three files embed it as raw
+// bytes (Linux daemon state, Linux startup policy, the Windows controlled-
+// restart snapshot), and their loaders dispatch on the record's byte size.  A
+// change here that bumps only the protocol version leaves those three records
+// unreadable on upgrade -- which is exactly what 0.26.0 shipped into review.
 static_assert(sizeof(DesiredSettings) == 964,
-              "DesiredSettings changed without an IPC protocol-version bump");
+              "DesiredSettings changed: bump SERVICE_PROTOCOL_VERSION *and* "
+              "freeze the outgoing on-disk layout as a new "
+              "DesiredSettingsSchema<N> with a widening migration, then bump "
+              "LINUX_DAEMON_RECORD_VERSION, LINUX_DAEMON_STARTUP_VERSION and "
+              "SERVICE_ACTIVE_DESIRED_VERSION (see desired_settings_schema.h)");
 static_assert(sizeof(ServiceSnapshot) == 4248,
               "ServiceSnapshot changed without an IPC protocol-version bump");
 static_assert(sizeof(ServiceRequest) == 1552,
               "ServiceRequest changed without an IPC protocol-version bump");
 
-static inline bool service_wire_string_is_terminated(
-    const char* value, unsigned int count) {
-    if (!value || count == 0) return false;
-    for (unsigned int i = 0; i < count; ++i)
-        if (value[i] == '\0') return true;
-    return false;
-}
-
-static inline bool service_desired_bool_fields_valid(
-    const DesiredSettings* desired) {
-    if (!desired) return false;
-    for (int i = 0; i < VF_NUM_POINTS; ++i)
-        if (desired->hasCurvePoint[i] > 1) return false;
-    const gc_bool8* flags[] = {
-        &desired->hasLock, &desired->lockTracksAnchor,
-        &desired->hasGpuOffset, &desired->hasMemOffset,
-        &desired->hasPowerLimit, &desired->hasFan, &desired->fanAuto,
-        &desired->resetOcBeforeApply,
-        &desired->hasXbarOffsetKhz, &desired->hasXbarMsvddOffsetUv,
-        &desired->hasSysClkOffsetKhz,
-        &desired->hasVideoClkOffsetKhz,
-    };
-    for (const gc_bool8* flag : flags)
-        if (*flag > 1) return false;
-    return fan_curve_wire_flags_valid(&desired->fanCurve);
-}
-
-static inline bool service_gpu_bool_fields_valid(const GpuAdapterInfo* gpu) {
-    return gpu && gpu->valid <= 1 && gpu->pciInfoValid <= 1 &&
-        gpu->vfReadSupported <= 1 && gpu->vfWriteSupported <= 1 &&
-        gpu->vfBestGuess <= 1;
-}
+#include "service_protocol_wire_validation.h"
 
 // Flags a client may put on a request. RESET carries none by contract:
 // validate_service_request_for_ipc() rejects any flag on RESET, and the

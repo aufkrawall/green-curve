@@ -597,6 +597,7 @@ static inline void validate_control_state_for_ipc(ControlState* c) {
 void fan_curve_normalize_for_ipc(FanCurveConfig* config);
 
 #include "desired_settings_ipc.h"
+#include "desired_settings_schema.h"
 
 // Decide whether the GUI may adopt the service snapshot's lock MODE for an
 // already-matching lock point.  Invariant: `lockMode != appliedLockMode`

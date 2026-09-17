@@ -551,18 +551,23 @@ int linux_daemon_run(const char* configPath) {
     // ACTIVE record for the exact physical GPU. Prepared/uncertain/legacy state
     // never causes an automatic hardware write.
     LinuxDaemonStateRecord saved = {};
-    bool stateMigratedMemUnits = false;
+    bool stateMigratedFromLegacy = false;
     LinuxDaemonStateLoadResult loadResult = linux_daemon_state_load(
-        GC_DAEMON_STATE_FILE, &saved, err, sizeof(err), &stateMigratedMemUnits);
+        GC_DAEMON_STATE_FILE, &saved, err, sizeof(err), &stateMigratedFromLegacy);
     if (loadResult == LINUX_DAEMON_STATE_LOADED && err[0]) {
-        // Informational migration note from the loader (v1/v2 adoption); the
-        // committed record itself is rewritten by the next state transition.
+        // Informational migration note from the loader (an older on-disk
+        // generation was widened into the current record); the committed record
+        // itself is rewritten by the next state transition.
         dlog("daemon: %s\n", err);
     }
     if (loadResult == LINUX_DAEMON_STATE_LEGACY_REMOVED ||
         loadResult == LINUX_DAEMON_STATE_INVALID_REMOVED) {
-        dlog("daemon: rejected and removed %s daemon state; explicit Apply/Reset required\n",
-             loadResult == LINUX_DAEMON_STATE_LEGACY_REMOVED ? "legacy" : "invalid");
+        // The loader's reason is the only thing that separates an upgrade that
+        // lost its layout from a torn or tampered file, and this failure is
+        // silent by nature -- the daemon simply applies nothing.  Never drop it.
+        dlog("daemon: rejected and removed %s daemon state (%s); explicit Apply/Reset required\n",
+             loadResult == LINUX_DAEMON_STATE_LEGACY_REMOVED ? "legacy" : "invalid",
+             err[0] ? err : "no detail");
     } else if (loadResult == LINUX_DAEMON_STATE_IO_ERROR) {
         g_stateUncertain = true;
         dlog("daemon: state load failed closed: %s\n", err);

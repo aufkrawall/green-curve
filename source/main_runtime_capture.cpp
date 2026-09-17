@@ -470,34 +470,31 @@ static bool save_desired_to_config_with_startup(const char* path, const DesiredS
     buildOk = buildOk && appendf("format=explicit_vf_points_v1\r\n");
     buildOk = buildOk && appendf("gpu_offset_mhz=%d\r\n", gpuOffset);
     buildOk = buildOk && appendf("gpu_offset_exclude_low_count=%d\r\n", gpuOffsetExcludeLowCount);
-    bool saveCurveAsBasePlusGpuOffset = gpuOffset != 0 && can_save_curve_as_base_plus_gpu_offset(desired, gpuOffset, gpuOffsetExcludeLowCount);
-    if (saveCurveAsBasePlusGpuOffset) {
-        buildOk = buildOk && appendf("curve_semantics=base_plus_gpu_offset\r\n");
-    }
+    // The transfer export is a profile like any other, and a receiving install
+    // decodes it with the same loader -- so it carries per-point provenance
+    // too.  Flattening it here was the same defect as flattening a saved slot,
+    // only harder to notice: the loss happened on a machine the user was in the
+    // middle of upgrading.
+    buildOk = buildOk && appendf("curve_semantics=%s\r\n",
+        PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN);
+    int exportedProjectedPoints = 0;
     for (int i = 0; i < VF_NUM_POINTS && buildOk; i++) {
-        bool have = desired && desired->hasCurvePoint[i];
-        unsigned int mhz = 0;
-        if (have) {
-            mhz = desired->curvePointMHz[i];
-            if (saveCurveAsBasePlusGpuOffset) {
-                int baseMHz = (int)mhz - gpu_offset_component_mhz_for_point(i, gpuOffset, gpuOffsetExcludeLowCount);
-                if (baseMHz <= 0) continue;
-                mhz = (unsigned int)baseMHz;
-            }
-        } else if (useCurrentForUnset && g_app.curve[i].freq_kHz > 0) {
-            mhz = displayed_curve_mhz(g_app.curve[i].freq_kHz);
-            if (saveCurveAsBasePlusGpuOffset) {
-                int baseMHz = (int)mhz - gpu_offset_component_mhz_for_point(i, gpuOffset, gpuOffsetExcludeLowCount);
-                if (baseMHz <= 0) continue;
-                mhz = (unsigned int)baseMHz;
-            }
+        ProfileCurvePointRecord point = {};
+        if (!profile_curve_point_record_for_save(desired, i, useCurrentForUnset, &point)) continue;
+        buildOk = buildOk && appendf("point%d_mhz=%u\r\n", i, point.mhz);
+        buildOk = buildOk && appendf("point%d_mv=%u\r\n", i, point.voltMv);
+        buildOk = buildOk && appendf("point%d_offset_khz=%d\r\n", i, point.offsetKHz);
+        buildOk = buildOk && appendf("point%d_visible=%s\r\n", i, point.visible ? "1" : "0");
+        if (point.fromGpuOffset) {
+            buildOk = buildOk && appendf("point%d_%s=1\r\n", i, PROFILE_CURVE_POINT_ORIGIN_SUFFIX);
+            exportedProjectedPoints++;
         }
-        if (mhz == 0) continue;
-        buildOk = buildOk && appendf("point%d_mhz=%u\r\n", i, mhz);
-        buildOk = buildOk && appendf("point%d_mv=%u\r\n", i, g_app.curve[i].volt_uV / 1000);
-        buildOk = buildOk && appendf("point%d_offset_khz=%d\r\n", i, g_app.curve[i].freq_kHz > 0 ? g_app.freqOffsets[i] : 0);
-        buildOk = buildOk && appendf("point%d_visible=%s\r\n", i, is_curve_point_visible_in_gui(i) ? "1" : "0");
     }
+    debug_log("settings transfer export: [curve] written as %s "
+        "(gpuOffset=%d excludeLow=%d projectedPoints=%d useCurrentForUnset=%d)\n",
+        PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN, gpuOffset,
+        gpuOffsetExcludeLowCount, exportedProjectedPoints,
+        useCurrentForUnset ? 1 : 0);
 
     buildOk = buildOk && appendf("[fan_curve]\r\n");
     buildOk = buildOk && appendf("poll_interval_ms=%d\r\n", fanCurve->pollIntervalMs);

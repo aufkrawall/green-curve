@@ -146,6 +146,16 @@ static bool get_current_user_sam_name(WCHAR*, DWORD) { return false; }
 
 bool is_curve_point_visible_in_gui(int) { return true; }
 void debug_log(const char*, ...) {}
+// F-CURVE-PROVENANCE: what a saved VF point's number IS.  The marker decision is
+// platform-neutral and compiled everywhere; the INI reader needs the Win32
+// profile-string API, so it joins the Windows-gated config suite.  Both are here
+// rather than only in the GUI amalgamation because the property they protect --
+// a hand-typed point keeping its authority across a save -- has no symptom until
+// the GPU is under load and the stock base has moved.
+#include "profile_curve_semantics.h"
+#if defined(_WIN32)
+#include "profile_curve_origin_io.h"
+#endif
 // The XBAR transaction/layout header is included after the harness's host-side
 // NvAPI seam declarations, so fake get/set/measure functions can pin readback.
 typedef int (*NvApiFunc)(void*, void*);
@@ -710,6 +720,245 @@ static bool gc_remove_protected_temp_dir(const wchar_t* path) {
 static int run_all_tests(int argc, char** argv);
 
 int run_clock_transition_tests();
+// F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
+// are over a kilobyte each and several are live at once; under ASan's
+// redzones that is enough to overflow main()'s frame, which already carries
+// every other suite in this file.
+static int run_persistence_schema_tests() {
+    // F-PERSIST-SCHEMA: the FROZEN 0.25.2 layouts are byte-exact fixtures,
+    // not the current structs wearing an old version number.
+    //
+    // The previous version of this suite did exactly that -- it built a
+    // LinuxDaemonStartupRecord, set version = 1, and migrated it -- so it
+    // passed while DesiredSettings grew 836 -> 964 bytes underneath every
+    // record on disk, and every 0.25.2 install lost its restore-last intent
+    // and its startup policy on upgrade.  These sizes ARE the regression:
+    // if a layout ever silently changes, this block stops compiling or
+    // stops accepting the fixture.
+    if (sizeof(DesiredSettingsSchema1) != 836) return 5018;
+    if (sizeof(DesiredSettingsSchema1) == sizeof(DesiredSettings)) return 5019;
+    if (sizeof(LinuxDaemonStartupRecordSchema1) != 1108) return 5020;
+    if (sizeof(LinuxDaemonStateRecordSchema1) != 1048) return 5021;
+    if (sizeof(LinuxDaemonStateRecordSchema1V1) != 1036) return 5022;
+
+    // Builds the schema-1 startup bytes a 0.25.2 daemon really wrote.
+    auto makeStartupSchema1 = [](gc_u32 version, gc_u32 mode,
+                                 const DesiredSettings* desired,
+                                 const GpuAdapterInfo* target,
+                                 LinuxDaemonStartupRecordSchema1* out) {
+        *out = {};
+        out->magic = LINUX_DAEMON_STARTUP_MAGIC;
+        out->version = version;
+        out->size = (gc_u32)sizeof(*out);
+        out->mode = mode;
+        if (mode == SERVICE_STARTUP_POLICY_PROFILE) {
+            out->profileSlot = 2;
+            gc_strlcpy(out->profileName, sizeof(out->profileName), "profile 2");
+            if (target) out->targetGpu = *target;
+            if (desired) desired_settings_narrow_to_schema1(&out->desired, desired);
+        }
+        out->checksum = linux_daemon_record_hash_bytes(
+            out, offsetof(LinuxDaemonStartupRecordSchema1, checksum));
+    };
+
+    GpuAdapterInfo startupTarget = {};
+    startupTarget.valid = true;
+    startupTarget.pciInfoValid = true;
+    startupTarget.pciBus = 7;
+
+    // A 0.25.2 startup policy with real curve intent.  Widening must keep
+    // every point, halve the v1 effective memory offset exactly once, and
+    // leave provenance zeroed -- 0.25.2 had none, and an unflagged point
+    // keeps the absolute authority that build gave it.
+    DesiredSettings startupIntent = {};
+    startupIntent.hasMemOffset = true;
+    startupIntent.memOffsetMHz = 2500;
+    startupIntent.hasGpuOffset = true;
+    startupIntent.gpuOffsetMHz = 300;
+    startupIntent.hasCurvePoint[70] = 1;
+    startupIntent.curvePointMHz[70] = 2822;
+    startupIntent.hasCurvePoint[71] = 1;
+    startupIntent.curvePointMHz[71] = 2850;
+
+    LinuxDaemonStartupRecordSchema1 startupV1 = {};
+    makeStartupSchema1(LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION,
+                       SERVICE_STARTUP_POLICY_PROFILE, &startupIntent,
+                       &startupTarget, &startupV1);
+    LinuxDaemonStartupRecord startupWide = {};
+    int startupOld = 0;
+    gc_u32 startupFromVersion = 0;
+    if (!linux_daemon_startup_widen_schema1(&startupWide, &startupV1,
+                                            &startupOld, &startupFromVersion))
+        return 5023;
+    if (startupFromVersion != LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION)
+        return 5024;
+    if (startupOld != 2500 || startupWide.desired.memOffsetMHz != 1250)
+        return 5025;
+    if (startupWide.version != LINUX_DAEMON_STARTUP_VERSION) return 5026;
+    if (!linux_daemon_startup_valid(&startupWide)) return 5027;
+    if (!startupWide.desired.hasCurvePoint[70] ||
+        startupWide.desired.curvePointMHz[70] != 2822) return 5028;
+    if (!startupWide.desired.hasCurvePoint[71] ||
+        startupWide.desired.curvePointMHz[71] != 2850) return 5029;
+    for (int ci = 0; ci < VF_NUM_POINTS; ci++)
+        if (startupWide.desired.curvePointFromGpuOffset[ci]) return 5030;
+    if (startupWide.profileSlot != 2 || startupWide.targetGpu.pciBus != 7)
+        return 5031;
+
+    // v2 stored display units already: widening must NOT halve again.
+    LinuxDaemonStartupRecordSchema1 startupV2 = {};
+    makeStartupSchema1(LINUX_DAEMON_STARTUP_PRE_PROVENANCE_VERSION,
+                       SERVICE_STARTUP_POLICY_PROFILE, &startupIntent,
+                       &startupTarget, &startupV2);
+    LinuxDaemonStartupRecord startupV2Wide = {};
+    startupOld = 0;
+    if (!linux_daemon_startup_widen_schema1(&startupV2Wide, &startupV2,
+                                            &startupOld, &startupFromVersion))
+        return 5032;
+    if (startupOld != 0 || startupV2Wide.desired.memOffsetMHz != 2500)
+        return 5033;
+    if (startupV2Wide.version != LINUX_DAEMON_STARTUP_VERSION) return 5034;
+
+    // A mode=NONE record still widens, and stays a "write nothing" record.
+    LinuxDaemonStartupRecordSchema1 startupNone = {};
+    makeStartupSchema1(LINUX_DAEMON_STARTUP_PRE_PROVENANCE_VERSION,
+                       SERVICE_STARTUP_POLICY_NONE, nullptr, nullptr,
+                       &startupNone);
+    LinuxDaemonStartupRecord startupNoneWide = {};
+    if (!linux_daemon_startup_widen_schema1(&startupNoneWide, &startupNone,
+                                            nullptr, nullptr)) return 5035;
+    if (startupNoneWide.mode != SERVICE_STARTUP_POLICY_NONE ||
+        startupNoneWide.desired.hasMemOffset) return 5036;
+
+    // Tampered bytes are refused, not widened: an unattended boot write
+    // must fail closed.
+    LinuxDaemonStartupRecordSchema1 startupTampered = startupV2;
+    startupTampered.desired.memOffsetMHz = 9999;  // checksum left stale
+    LinuxDaemonStartupRecord startupTamperedWide = {};
+    if (linux_daemon_startup_widen_schema1(&startupTamperedWide,
+                                           &startupTampered, nullptr, nullptr))
+        return 5037;
+    // So is a version this layout never carried (the provenance version is
+    // a LARGER record; seeing it at schema-1 size means forged bytes).
+    LinuxDaemonStartupRecordSchema1 startupWrongVersion = {};
+    makeStartupSchema1(LINUX_DAEMON_STARTUP_VERSION,
+                       SERVICE_STARTUP_POLICY_PROFILE, &startupIntent,
+                       &startupTarget, &startupWrongVersion);
+    if (linux_daemon_startup_widen_schema1(&startupTamperedWide,
+                                           &startupWrongVersion, nullptr,
+                                           nullptr)) return 5038;
+
+    // State record, schema-1 layout, versions 2 and 3.
+    auto makeStateSchema1 = [](gc_u32 version, const DesiredSettings* desired,
+                               LinuxDaemonStateRecordSchema1* out) {
+        *out = {};
+        out->magic = LINUX_DAEMON_RECORD_MAGIC;
+        out->version = version;
+        out->size = (gc_u32)sizeof(*out);
+        out->state = LINUX_DAEMON_RECORD_ACTIVE;
+        if (desired) desired_settings_narrow_to_schema1(&out->desired, desired);
+        out->operationId = 7;
+        out->operationState = SERVICE_OPERATION_SUCCEEDED;
+        out->checksum = linux_daemon_record_hash_bytes(
+            out, offsetof(LinuxDaemonStateRecordSchema1, checksum));
+    };
+
+    DesiredSettings stateIntent = {};
+    stateIntent.hasMemOffset = true;
+    stateIntent.memOffsetMHz = -2501;
+    stateIntent.hasCurvePoint[74] = 1;
+    stateIntent.curvePointMHz[74] = 2700;
+
+    LinuxDaemonStateRecordSchema1 stateV2 = {};
+    makeStateSchema1(LINUX_DAEMON_RECORD_PRE_DISPLAY_MEM_UNITS_VERSION,
+                     &stateIntent, &stateV2);
+    LinuxDaemonStateRecord stateWide = {};
+    int stateOld = 0;
+    gc_u32 stateFromVersion = 0;
+    if (!linux_daemon_state_record_widen_schema1(&stateWide, &stateV2,
+                                                 &stateOld, &stateFromVersion))
+        return 5039;
+    if (stateOld != -2501 || stateWide.desired.memOffsetMHz != -1250)
+        return 5040;
+    if (stateWide.version != LINUX_DAEMON_RECORD_VERSION) return 5041;
+    if (!linux_daemon_record_valid(&stateWide)) return 5042;
+    if (stateWide.state != LINUX_DAEMON_RECORD_ACTIVE ||
+        stateWide.operationId != 7 ||
+        stateWide.operationState != SERVICE_OPERATION_SUCCEEDED) return 5043;
+    if (!stateWide.desired.hasCurvePoint[74] ||
+        stateWide.desired.curvePointMHz[74] != 2700) return 5044;
+    if (stateWide.desired.curvePointFromGpuOffset[74]) return 5045;
+
+    LinuxDaemonStateRecordSchema1 stateV3 = {};
+    makeStateSchema1(LINUX_DAEMON_RECORD_PRE_PROVENANCE_VERSION,
+                     &stateIntent, &stateV3);
+    LinuxDaemonStateRecord stateV3Wide = {};
+    stateOld = 0;
+    if (!linux_daemon_state_record_widen_schema1(&stateV3Wide, &stateV3,
+                                                 &stateOld, &stateFromVersion))
+        return 5046;
+    if (stateOld != 0 || stateV3Wide.desired.memOffsetMHz != -2501)
+        return 5047;
+
+    LinuxDaemonStateRecordSchema1 stateTampered = stateV3;
+    stateTampered.desired.memOffsetMHz = 9999;  // checksum left stale
+    LinuxDaemonStateRecord stateTamperedWide = {};
+    if (linux_daemon_state_record_widen_schema1(&stateTamperedWide,
+                                                &stateTampered, nullptr,
+                                                nullptr)) return 5048;
+
+    // Version 1 is a NARROWER record (no operation identity), which is why
+    // it is its own frozen layout rather than another version of the one
+    // above.  It stored effective mem units, so it is halved once.
+    LinuxDaemonStateRecordSchema1V1 stateV1 = {};
+    stateV1.magic = LINUX_DAEMON_RECORD_MAGIC;
+    stateV1.version = LINUX_DAEMON_RECORD_PRE_OPERATION_ID_VERSION;
+    stateV1.size = (gc_u32)sizeof(stateV1);
+    stateV1.state = LINUX_DAEMON_RECORD_PREPARED;
+    {
+        DesiredSettings v1Intent = {};
+        v1Intent.hasMemOffset = true;
+        v1Intent.memOffsetMHz = 3000;
+        desired_settings_narrow_to_schema1(&stateV1.desired, &v1Intent);
+    }
+    stateV1.checksum = linux_daemon_record_hash_bytes(
+        &stateV1, offsetof(LinuxDaemonStateRecordSchema1V1, checksum));
+    LinuxDaemonStateRecord fromLegacy = {};
+    int legacyOld = 0;
+    if (!linux_daemon_state_record_widen_schema1_v1(&fromLegacy, &stateV1,
+                                                    &legacyOld)) return 5049;
+    if (legacyOld != 3000 || fromLegacy.desired.memOffsetMHz != 1500)
+        return 5050;
+    if (fromLegacy.version != LINUX_DAEMON_RECORD_VERSION) return 5051;
+    if (fromLegacy.operationId != 0 ||
+        fromLegacy.operationState != SERVICE_OPERATION_NONE) return 5052;
+    if (!linux_daemon_record_valid(&fromLegacy)) return 5053;
+
+    // The Windows controlled-restart snapshot shares the frozen payload.
+    if (sizeof(DesiredSettingsSchema1) + sizeof(GpuAdapterInfo) + 4 * sizeof(gc_u32) != 1032)
+        return 5054;
+    DesiredSettings widenedFromSchema1 = {};
+    DesiredSettingsSchema1 narrowed = {};
+    DesiredSettings mixedProvenance = {};
+    mixedProvenance.hasCurvePoint[70] = 1;
+    mixedProvenance.curvePointMHz[70] = 2822;
+    mixedProvenance.curvePointFromGpuOffset[70] = 1;
+    mixedProvenance.hasLock = true;
+    mixedProvenance.lockCi = 74;
+    mixedProvenance.lockMHz = 2900;
+    mixedProvenance.lockMode = LOCK_MODE_HARD;
+    desired_settings_narrow_to_schema1(&narrowed, &mixedProvenance);
+    desired_settings_widen_from_schema1(&widenedFromSchema1, &narrowed);
+    // The number survives the round trip; the provenance cannot, because
+    // schema 1 has nowhere to put it.  That is exactly why a schema-1
+    // record widens to "absolute", never to "projected".
+    if (widenedFromSchema1.curvePointMHz[70] != 2822) return 5055;
+    if (widenedFromSchema1.curvePointFromGpuOffset[70]) return 5056;
+    if (widenedFromSchema1.lockCi != 74 || widenedFromSchema1.lockMHz != 2900 ||
+        widenedFromSchema1.lockMode != LOCK_MODE_HARD) return 5057;
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (int transitionFailure = run_clock_transition_tests()) return transitionFailure;
 
@@ -1479,6 +1728,78 @@ static int run_all_tests(int argc, char** argv) {
             loaded.identity.pciBus != 9 || loaded.identity.pciDevice != 3 ||
             loaded.identity.pciFunction != 1) return 734;
     }
+
+    // F-CURVE-PROVENANCE, against a real INI file: a profile that MIXES one
+    // hand-typed absolute point with projected neighbours must come back the
+    // way it went in.
+    //
+    // This is the defect 0.26.0 shipped into review.  The old format stored one
+    // whole-section `curve_semantics=base_plus_gpu_offset`, so the mix could not
+    // be written down at all, and the loader then marked every restored point
+    // offset-derived -- handing a number the user typed back to a stock base
+    // that moves a whole VF bin under load.  Nothing about it was visible: the
+    // MHz round-tripped exactly, only the authority behind them did not.
+    {
+        gc_DeleteFileUtf8(argv[1]);
+        const char* section = "profile3_curve";
+        if (!set_config_string(argv[1], section, "curve_semantics",
+                PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN)) return 5070;
+        // 70 and 72 are projections of a +475 MHz GPU offset; 71 is the point
+        // the user typed into the editor after loading the profile.
+        if (!set_config_int(argv[1], section, "point70_mhz", 2797)) return 5071;
+        if (!set_config_int(argv[1], section, "point70_from_gpu_offset", 1)) return 5072;
+        if (!set_config_int(argv[1], section, "point71_mhz", 2850)) return 5073;
+        if (!set_config_int(argv[1], section, "point72_mhz", 2860)) return 5074;
+        if (!set_config_int(argv[1], section, "point72_from_gpu_offset", 1)) return 5075;
+
+        DesiredSettings restored = {};
+        restored.hasCurvePoint[70] = 1; restored.curvePointMHz[70] = 2797;
+        restored.hasCurvePoint[71] = 1; restored.curvePointMHz[71] = 2850;
+        restored.hasCurvePoint[72] = 1; restored.curvePointMHz[72] = 2860;
+        // Start every flag set, so a reader that simply never writes the array
+        // cannot pass by accident.
+        for (int ci = 0; ci < VF_NUM_POINTS; ci++)
+            restored.curvePointFromGpuOffset[ci] = 1;
+        if (!restore_curve_point_origins_from_section(argv[1], section, &restored))
+            return 5076;
+        if (!restored.curvePointFromGpuOffset[70]) return 5077;
+        if (restored.curvePointFromGpuOffset[71]) return 5078;  // the typed one
+        if (!restored.curvePointFromGpuOffset[72]) return 5079;
+        if (restored.curvePointMHz[70] != 2797 ||
+            restored.curvePointMHz[71] != 2850 ||
+            restored.curvePointMHz[72] != 2860) return 5080;
+        // A point this GPU has no row for must not pick up provenance from a
+        // stale key: the flag belongs to a value, and there is no value here.
+        if (restored.curvePointFromGpuOffset[0]) return 5081;
+
+        // The legacy whole-section marker is NOT the per-point format, so the
+        // caller falls through to the base+offset reconstruction instead.
+        if (!set_config_string(argv[1], section, "curve_semantics",
+                PROFILE_CURVE_SEMANTICS_BASE_PLUS_GPU_OFFSET)) return 5082;
+        DesiredSettings legacyRead = {};
+        legacyRead.hasCurvePoint[70] = 1; legacyRead.curvePointMHz[70] = 2322;
+        if (restore_curve_point_origins_from_section(argv[1], section, &legacyRead))
+            return 5083;
+        if (profile_curve_section_decode(argv[1], section) !=
+            PROFILE_CURVE_DECODE_BASE_PLUS_GPU_OFFSET) return 5084;
+
+        // An unrecognized marker (a profile from a NEWER build) reads as plain
+        // absolute: neither per-point provenance nor a base+offset add-back.
+        if (!set_config_string(argv[1], section, "curve_semantics",
+                "absolute_with_origin_v9")) return 5085;
+        if (restore_curve_point_origins_from_section(argv[1], section, &legacyRead))
+            return 5086;
+        if (profile_curve_section_decode(argv[1], section) !=
+            PROFILE_CURVE_DECODE_ABSOLUTE) return 5087;
+
+        // A section with no marker at all stays UNMARKED, so the Windows
+        // compatibility heuristic still gets its chance at a pre-marker file.
+        gc_DeleteFileUtf8(argv[1]);
+        if (!set_config_int(argv[1], section, "point70_mhz", 2322)) return 5088;
+        if (profile_curve_section_decode(argv[1], section) !=
+            PROFILE_CURVE_DECODE_UNMARKED) return 5089;
+        gc_DeleteFileUtf8(argv[1]);
+    }
     gc_DeleteFileUtf8(argv[1]);
 #endif // _WIN32
 
@@ -1851,105 +2172,39 @@ static int run_all_tests(int argc, char** argv) {
         validate_desired_settings_for_ipc(&order);
         if (order.memOffsetMHz != 2500) return 5017;
 
-        // Startup record v1 -> v2: same layout, effective mem units, one
-        // conversion on load, then structurally valid at the new version.
-        LinuxDaemonStartupRecord startupV1 = {};
-        startupV1.magic = LINUX_DAEMON_STARTUP_MAGIC;
-        startupV1.version = LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION;
-        startupV1.size = (gc_u32)sizeof(startupV1);
-        startupV1.mode = SERVICE_STARTUP_POLICY_PROFILE;
-        startupV1.profileSlot = 2;
-        gc_strlcpy(startupV1.profileName, sizeof(startupV1.profileName),
-                   "profile 2");
-        GpuAdapterInfo startupTarget = {};
-        startupTarget.valid = true;
-        startupTarget.pciInfoValid = true;
-        startupTarget.pciBus = 7;
-        startupV1.targetGpu = startupTarget;
-        startupV1.desired.hasMemOffset = 1;
-        startupV1.desired.memOffsetMHz = 2500;
-        startupV1.checksum = linux_daemon_startup_checksum(&startupV1);
-        int startupOld = 0;
-        if (!linux_daemon_startup_migrate_pre_display_mem_units(
-                &startupV1, &startupOld)) return 5018;
-        if (startupV1.version != LINUX_DAEMON_STARTUP_VERSION) return 5019;
-        if (startupOld != 2500 || startupV1.desired.memOffsetMHz != 1250)
-            return 5020;
-        if (!linux_daemon_startup_valid(&startupV1)) return 5021;
-        // Second migration attempt must refuse the current generation.
-        if (linux_daemon_startup_migrate_pre_display_mem_units(
-                &startupV1, &startupOld)) return 5022;
-        if (startupV1.desired.memOffsetMHz != 1250) return 5023;
+        int schemaResult = run_persistence_schema_tests();
+        if (schemaResult != 0) return schemaResult;
+    }
 
-        // A tampered v1 record must be refused, not migrated: the loader maps
-        // a refused migration onto the corrupt path (fail closed).
-        LinuxDaemonStartupRecord tamperedV1 = startupV1;
-        tamperedV1.version = LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION;
-        tamperedV1.desired.memOffsetMHz = 9999;  // checksum deliberately stale
-        if (linux_daemon_startup_migrate_pre_display_mem_units(
-                &tamperedV1, &startupOld)) return 5024;
-
-        // A v1 record without a memory offset still upgrades its version.
-        LinuxDaemonStartupRecord noMemV1 = {};
-        noMemV1.magic = LINUX_DAEMON_STARTUP_MAGIC;
-        noMemV1.version = LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION;
-        noMemV1.size = (gc_u32)sizeof(noMemV1);
-        noMemV1.mode = SERVICE_STARTUP_POLICY_NONE;
-        noMemV1.checksum = linux_daemon_startup_checksum(&noMemV1);
-        if (!linux_daemon_startup_migrate_pre_display_mem_units(
-                &noMemV1, &startupOld)) return 5025;
-        if (noMemV1.version != LINUX_DAEMON_STARTUP_VERSION ||
-            noMemV1.desired.hasMemOffset) return 5026;
-        if (!linux_daemon_startup_valid(&noMemV1)) return 5027;
-
-        // State record v2 -> v3: restore-last replay must not double the
-        // stored offset.
-        LinuxDaemonStateRecord stateV2 = {};
-        stateV2.magic = LINUX_DAEMON_RECORD_MAGIC;
-        stateV2.version = LINUX_DAEMON_RECORD_PRE_DISPLAY_MEM_UNITS_VERSION;
-        stateV2.size = (gc_u32)sizeof(stateV2);
-        stateV2.state = LINUX_DAEMON_RECORD_ACTIVE;
-        stateV2.desired.hasMemOffset = 1;
-        stateV2.desired.memOffsetMHz = -2501;
-        stateV2.operationId = 7;
-        stateV2.operationState = SERVICE_OPERATION_SUCCEEDED;
-        stateV2.checksum = linux_daemon_record_checksum(&stateV2);
-        int stateOld = 0;
-        if (!linux_daemon_state_record_migrate_pre_display_mem_units(
-                &stateV2, &stateOld)) return 5028;
-        if (stateV2.version != LINUX_DAEMON_RECORD_VERSION) return 5029;
-        if (stateOld != -2501 || stateV2.desired.memOffsetMHz != -1250)
-            return 5030;
-        if (!linux_daemon_record_valid(&stateV2)) return 5031;
-        if (linux_daemon_state_record_migrate_pre_display_mem_units(
-                &stateV2, &stateOld)) return 5032;
-
-        // A tampered v2 state record is refused the same way.
-        LinuxDaemonStateRecord tamperedState = stateV2;
-        tamperedState.version = LINUX_DAEMON_RECORD_PRE_DISPLAY_MEM_UNITS_VERSION;
-        tamperedState.desired.memOffsetMHz = 9999;  // checksum deliberately stale
-        if (linux_daemon_state_record_migrate_pre_display_mem_units(
-                &tamperedState, &stateOld)) return 5033;
-
-        // The v1 state-record path builds the current record with the halve
-        // applied before the checksum, so a legacy record is never adopted
-        // with effective units.
-        LinuxDaemonStateRecordV1 legacyState = {};
-        legacyState.magic = LINUX_DAEMON_RECORD_MAGIC;
-        legacyState.version = 1;
-        legacyState.size = (gc_u32)sizeof(legacyState);
-        legacyState.state = LINUX_DAEMON_RECORD_PREPARED;
-        legacyState.desired.hasMemOffset = 1;
-        legacyState.desired.memOffsetMHz = 3000;
-        LinuxDaemonStateRecord fromLegacy = {};
-        int legacyOld = 0;
-        if (!linux_daemon_record_initialize_from_v1(
-                &fromLegacy, LINUX_DAEMON_RECORD_PREPARED, nullptr,
-                &legacyState.desired, &legacyOld)) return 5034;
-        if (legacyOld != 3000 || fromLegacy.desired.memOffsetMHz != 1500)
-            return 5035;
-        if (fromLegacy.version != LINUX_DAEMON_RECORD_VERSION) return 5036;
-        if (!linux_daemon_record_valid(&fromLegacy)) return 5037;
+    // F-CURVE-PROVENANCE: one answer to "what are these stored MHz?", shared by
+    // both platforms, which previously spelled the same test twice.
+    {
+        if (profile_curve_decode_from_marker(nullptr) !=
+            PROFILE_CURVE_DECODE_UNMARKED) return 5060;
+        if (profile_curve_decode_from_marker("") !=
+            PROFILE_CURVE_DECODE_UNMARKED) return 5061;
+        if (profile_curve_decode_from_marker(
+                PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN) !=
+            PROFILE_CURVE_DECODE_ABSOLUTE_WITH_ORIGIN) return 5062;
+        if (profile_curve_decode_from_marker(
+                PROFILE_CURVE_SEMANTICS_BASE_PLUS_GPU_OFFSET) !=
+            PROFILE_CURVE_DECODE_BASE_PLUS_GPU_OFFSET) return 5063;
+        // Case-insensitive, like every other marker this product reads.
+        if (profile_curve_decode_from_marker("Absolute_With_Origin") !=
+            PROFILE_CURVE_DECODE_ABSOLUTE_WITH_ORIGIN) return 5064;
+        // THE downgrade-safety rule.  A marker from a newer build must read as
+        // absolute, never as base+offset: adding an offset component back to
+        // numbers that never had one subtracted writes the curve high by the
+        // whole GPU offset, on a machine whose user just rolled BACK.
+        if (profile_curve_decode_from_marker("absolute_with_origin_v9") !=
+            PROFILE_CURVE_DECODE_ABSOLUTE) return 5065;
+        if (profile_curve_decode_from_marker("some_future_format") !=
+            PROFILE_CURVE_DECODE_ABSOLUTE) return 5066;
+        // And the marker this build writes must never be mistaken for the
+        // legacy one, which is the same hazard in the other direction.
+        if (streqi_ascii(PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN,
+                         PROFILE_CURVE_SEMANTICS_BASE_PLUS_GPU_OFFSET))
+            return 5067;
     }
 
     // F-INTENT-READBACK: active desired settings are ownership/configuration
@@ -10238,6 +10493,34 @@ static int run_all_tests(int argc, char** argv) {
             return 2015;
         if (service_request_reject_reason(&apply) != nullptr) return 2014;
         if (!validate_service_request_for_ipc(&apply)) return 2014;
+
+        // The strict pass must reject a non-boolean curve-point PROVENANCE flag
+        // as firmly as it rejects a non-boolean ownership flag.  It did not:
+        // curvePointFromGpuOffset[] was added to the wire struct and to the
+        // canonicalizer but never to this list, so a request carrying 2 here
+        // passed validation and was silently folded to true downstream -- the
+        // one shape of trust-boundary omission that leaves no evidence.
+        {
+            ServiceRequest hostile = apply;
+            hostile.desired.hasCurvePoint[7] = 1;
+            hostile.desired.curvePointFromGpuOffset[7] = 2;
+            const char* provenanceReason = service_request_reject_reason(&hostile);
+            if (!provenanceReason ||
+                !strstr(provenanceReason, "non-boolean desired settings flags"))
+                return 2016;
+            if (validate_service_request_for_ipc(&hostile)) return 2016;
+            // Canonicalization still folds it, which is why this was invisible:
+            // the value is harmless, the missing refusal is the defect.
+            validate_desired_settings_for_ipc(&hostile.desired);
+            if (hostile.desired.curvePointFromGpuOffset[7] != 1) return 2017;
+            if (service_request_reject_reason(&hostile) != nullptr) return 2017;
+            // Both legal values stay legal.
+            for (gc_u8 legal = 0; legal <= 1; ++legal) {
+                ServiceRequest fine = apply;
+                fine.desired.curvePointFromGpuOffset[7] = legal;
+                if (service_request_reject_reason(&fine) != nullptr) return 2018;
+            }
+        }
 
         // The reset that --service-remove performs before deleting the service
         // travels the same path; it was refused for the same reason, leaving an

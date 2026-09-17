@@ -146,6 +146,43 @@ you; a half-updated pair refuses to talk rather than guessing, as before.
     service and killed the apply. It now asks whether the work itself has
     stopped moving, which a real hang does and a slow apply does not.
 
+### Upgrading, and what a saved profile remembers
+
+Adding that per-point information to curve points made each saved record 128
+bytes longer, and two things had been quietly relying on the old size.
+
+- **Upgrading on Linux no longer forgets what the daemon was doing.** The
+  background daemon keeps two files: the settings it last applied, so it can put
+  them back, and your start-up policy, so it knows what to apply at boot. Both
+  embed the record that just changed size, and both were accepted only at
+  *exactly* the size the running build expected — so upgrading from 0.25.2
+  deleted the first and treated the second as damaged, leaving the daemon
+  applying nothing until you set it up again. On Arch the package restarts a
+  running daemon as part of the upgrade, so it took effect immediately, and the
+  only trace was a line in the debug log. Both files are now recognised at their
+  older sizes and converted on read, keeping the settings and the policy, and
+  the daemon says in the log which generation it converted. A file it genuinely
+  cannot identify is still discarded, but it now says how big it was and what it
+  expected instead of just "invalid". The same applies to the short-lived file
+  the Windows service writes before restarting itself for driver recovery.
+- **Saving a profile no longer forgets which points you typed.** A profile
+  recorded "these points are stock plus your GPU offset" once for the whole
+  curve, which could not describe the case the work above exists for: load an
+  offset profile, hand-edit one point, and that point is a real target while its
+  neighbours are still projections. Saving flattened the difference, and loading
+  then marked *every* point as a projection — so one save-and-reload handed the
+  number you typed back to a stock frequency that moves under load. Profiles now
+  store the actual frequency of every point plus a per-point note of which ones
+  came from your offset, so a point you typed keeps holding the driver to your
+  number across any number of saves. Profiles written by earlier versions are
+  read exactly as before; a profile written now and opened by an older version
+  is read as plain frequencies, which is what that version would have done with
+  it anyway. This also covers the profile the installer carries across an
+  upgrade.
+- A request arriving at the background service with a malformed value in that
+  new per-point field is now rejected rather than corrected. Nothing could act
+  on it either way, but the check belonged with the others.
+
 ### Audit fixes
 
 The repository-wide audit found no release-blocking defect; everything below is a

@@ -13,16 +13,16 @@
 // visible to every caller.
 // ---------------------------------------------------------------------------
 
+#include "profile_curve_origin_io.h"
+
 static bool curve_section_uses_base_plus_gpu_offset_semantics(const char* path, const char* section, const DesiredSettings* desired) {
     if (!path || !section || !desired) return false;
 
-    char semanticsBuf[64] = {};
-    gc_GetPrivateProfileStringUtf8(section, "curve_semantics", "", semanticsBuf, sizeof(semanticsBuf), path);
-    trim_ascii(semanticsBuf);
-    if (_stricmp(semanticsBuf, "base_plus_gpu_offset") == 0) {
+    ProfileCurveDecode decode = profile_curve_section_decode(path, section);
+    if (decode == PROFILE_CURVE_DECODE_BASE_PLUS_GPU_OFFSET) {
         return desired->hasGpuOffset && desired->gpuOffsetMHz != 0;
     }
-    if (semanticsBuf[0]) {
+    if (decode != PROFILE_CURVE_DECODE_UNMARKED) {
         return false;
     }
 
@@ -63,22 +63,6 @@ static void restore_curve_points_from_base_plus_gpu_offset(DesiredSettings* desi
     }
 }
 
-static bool read_profile_point_int(const char* path, const char* section, int pointIndex, const char* suffix, int* valueOut) {
-    if (valueOut) *valueOut = 0;
-    if (!path || !section || !suffix || pointIndex < 0 || pointIndex >= VF_NUM_POINTS) return false;
-
-    char key[64] = {};
-    char buf[64] = {};
-    StringCchPrintfA(key, ARRAY_COUNT(key), "point%d_%s", pointIndex, suffix);
-    gc_GetPrivateProfileStringUtf8(section, key, "", buf, sizeof(buf), path);
-    trim_ascii(buf);
-    if (!buf[0]) return false;
-
-    int value = 0;
-    if (!parse_int_strict(buf, &value)) return false;
-    if (valueOut) *valueOut = value;
-    return true;
-}
 
 // save_profile_to_config() always emits `pointN_visible` next to
 // `pointN_offset_khz`, so the fallback below only fires for a profile written

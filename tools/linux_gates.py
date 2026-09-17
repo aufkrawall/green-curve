@@ -974,14 +974,24 @@ def check_mem_offset_migration(ctx, require_text, forbid_text, require_order):
                   "load_desired_settings_from_sections(&doc, controlsSection, "
                   "curveSection, fanCurveSection, desired, context, err, errSize)",
                   "the stored-unit conversion happens before any parse/clamp")
-    require_text(state_h, "linux_daemon_startup_migrate_pre_display_mem_units",
+    # The unit conversion now rides inside the schema widening (size selects the
+    # layout, version selects the semantics -- see tools/persistence_gates.py),
+    # so what has to survive is that BOTH records still halve a pre-parity
+    # offset exactly once on the way to the current generation.
+    require_text(state_h, "linux_daemon_startup_widen_schema1",
                  "the boot-apply startup record converts pre-parity mem units")
-    require_text(state_h, "linux_daemon_state_record_migrate_pre_display_mem_units",
+    require_text(state_h, "linux_daemon_state_record_widen_schema1",
                  "the committed restore-last record converts pre-parity mem units")
-    require_text(state_h, "LINUX_DAEMON_STARTUP_VERSION = 2",
-                 "the startup record generation moved with the unit change")
-    require_text(state_h, "LINUX_DAEMON_RECORD_VERSION = 3",
-                 "the committed record generation moved with the unit change")
+    require_text(state_h, "linux_daemon_migrate_desired_mem_units_to_display(&widened",
+                 "the widening path is where the halving happens, once")
+    require_text(state_h, "LINUX_DAEMON_STARTUP_VERSION = 3",
+                 "the startup record generation moved with the layout change")
+    require_text(state_h, "LINUX_DAEMON_RECORD_VERSION = 4",
+                 "the committed record generation moved with the layout change")
+    require_text(state_h, "LINUX_DAEMON_STARTUP_PRE_DISPLAY_MEM_UNITS_VERSION = 1",
+                 "the pre-parity startup generation is still recognized")
+    require_text(state_h, "LINUX_DAEMON_RECORD_PRE_DISPLAY_MEM_UNITS_VERSION = 2",
+                 "the pre-parity committed generation is still recognized")
     for windows_surface in ("config_profiles.cpp", "config_profiles_ui.cpp",
                             "main_shell.cpp"):
         forbid_text(_p(ctx, windows_surface), "linux_mem_migrated",

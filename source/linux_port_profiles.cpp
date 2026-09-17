@@ -5,6 +5,7 @@
 #include "linux_debug_log.h"
 #include "linux_profile_mem_migration.h"
 #include "profile_persistence_policy.h"
+#include "linux_profile_curve_codec.h"
 #include "gpu_selection_policy.h"
 
 #include <string>
@@ -404,7 +405,9 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
     if (!load_fan_curve_config_from_section(doc, fanCurveSection, &desired->fanCurve, err, errSize)) return false;
 
     std::string curveSemantics = get_section_value(doc, curveSection, "curve_semantics");
-    bool legacyCurveSemantics = curveSemantics.empty();
+    const ProfileCurveDecode curveDecode =
+        profile_curve_decode_from_marker(curveSemantics.c_str());
+    bool legacyCurveSemantics = curveDecode == PROFILE_CURVE_DECODE_UNMARKED;
 
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         char key[32] = {};
@@ -421,7 +424,13 @@ static bool load_desired_settings_from_sections(const IniDocument* doc,
         desired->curvePointFromGpuOffset[i] = 0;
     }
 
-    bool basePlusGpuOffsetCurve = streqi_ascii(curveSemantics.c_str(), "base_plus_gpu_offset");
+    // Per-point provenance when the section carries it; only a section written
+    // by an older build falls through to the whole-section reconstruction.
+    linux_profile_read_curve_point_origins(doc, curveSection, curveSemantics,
+                                           desired);
+
+    bool basePlusGpuOffsetCurve =
+        curveDecode == PROFILE_CURVE_DECODE_BASE_PLUS_GPU_OFFSET;
     if (basePlusGpuOffsetCurve && desired->hasGpuOffset && desired->gpuOffsetMHz != 0) {
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             if (!desired->hasCurvePoint[i]) continue;
@@ -637,23 +646,7 @@ static void write_profile_sections(IniDocument* doc, const char* controlsSection
     snprintf(value, sizeof(value), "%d", clamp_percent(desired->fanPercent));
     addControl("fan_fixed_pct", value);
 
-    IniEntry semanticsEntry;
-    semanticsEntry.key = "curve_semantics";
-    semanticsEntry.value = "base_plus_gpu_offset";
-    curveEntries.push_back(semanticsEntry);
-
-    for (int i = 0; i < VF_NUM_POINTS; i++) {
-        if (!desired->hasCurvePoint[i] || desired->curvePointMHz[i] == 0) continue;
-        IniEntry entry;
-        char key[32] = {};
-        snprintf(key, sizeof(key), "point%d", i);
-        entry.key = key;
-        int baseMHz = (int)desired->curvePointMHz[i] - gpu_offset_component_mhz_for_point_linux(i, desired->gpuOffsetMHz, desired->gpuOffsetExcludeLowCount);
-        if (baseMHz <= 0) continue;
-        snprintf(value, sizeof(value), "%d", baseMHz);
-        entry.value = value;
-        curveEntries.push_back(entry);
-    }
+    linux_profile_write_curve_points(curveSection, desired, &curveEntries);
 
     replace_section(doc, controlsSection, controlsEntries);
     replace_section(doc, curveSection, curveEntries);
