@@ -145,20 +145,36 @@ static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
     g_linuxCeilingPlan = plan;
     if (!plan.arm) {
         if (!plan.required) return true;
-        g_linuxCeilingArmResult = APPLY_CEILING_ARM_UNAVAILABLE;
+        // No entry points at all is a fact about the driver, not about this
+        // attempt.  A plan with no defensible ceiling value is neither, and
+        // stays UNAVAILABLE so it keeps refusing.
+        g_linuxCeilingArmResult = plan.clampControlAbsent
+            ? APPLY_CEILING_ARM_UNSUPPORTED
+            : APPLY_CEILING_ARM_UNAVAILABLE;
+        const bool refuse = apply_clock_ceiling_transition_must_refuse(
+            plan.required, g_linuxCeilingArmResult, plan.reason);
         lb_log("apply: transition clock ceiling at %u MHz is REQUIRED (%s) but this"
-               " driver exposes no usable locked-clock control; refusing the"
-               " transition before any write\n",
-               plan.ceilingMHz, apply_clock_ceiling_reason_name(plan.reason));
-        return false;
+               " driver exposes no usable locked-clock control (%s); %s\n",
+               plan.ceilingMHz, apply_clock_ceiling_reason_name(plan.reason),
+               apply_clock_ceiling_arm_result_name(g_linuxCeilingArmResult),
+               refuse ? "refusing the transition before any write"
+                      : "PROCEEDING UNPROTECTED -- the request names no lock of"
+                        " its own, so its end state is uncapped by the user's own"
+                        " choice and no clamp exists on this GPU to hold");
+        return !refuse;
     }
     g_linuxCeilingWriteAttempted = true;
+    // Every permitted form has to answer NOT_SUPPORTED before the clamp counts
+    // as absent from this GPU: one form unsupported while another is merely
+    // declined is still a clamp this hardware can hold.
+    bool openNotSupported = false, symmetricNotSupported = false;
+    int armRc = NVML_SUCCESS;
     // Ceiling, not pin: a 0 minimum caps without forcing the clock up at idle
     // (what `nvidia-smi --lock-gpu-clocks=0,N` asks for).  A driver that refuses
     // it still accepts the symmetric form, which caps correctly -- but that
     // form adds a FLOOR, so it is only used where the plan permits it.
-    if (g->nvml.setGpuLockedClocks(g->nvmlDevice, 0, plan.ceilingMHz) ==
-        NVML_SUCCESS) {
+    armRc = g->nvml.setGpuLockedClocks(g->nvmlDevice, 0, plan.ceilingMHz);
+    if (armRc == NVML_SUCCESS) {
         g_linuxCeilingArmed = true;
         g->retainedTransitionCeilingMHz = plan.ceilingMHz;
         g_linuxCeilingArmResult = APPLY_CEILING_ARM_INSTALLED;
@@ -166,26 +182,41 @@ static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
                " reset/curve writes\n", plan.ceilingMHz);
         return true;
     }
-    if (plan.symmetricFallbackAllowed &&
-        g->nvml.setGpuLockedClocks(g->nvmlDevice, plan.ceilingMHz,
-                                   plan.ceilingMHz) == NVML_SUCCESS) {
-        g_linuxCeilingArmed = true;
-        g->retainedTransitionCeilingMHz = plan.ceilingMHz;
-        g_linuxCeilingArmResult = APPLY_CEILING_ARM_INSTALLED;
-        lb_log("apply: transition clock ceiling armed %u..%u MHz before the"
-               " reset/curve writes\n", plan.ceilingMHz, plan.ceilingMHz);
-        return true;
+    openNotSupported = (armRc == NVML_ERROR_NOT_SUPPORTED);
+    if (plan.symmetricFallbackAllowed) {
+        armRc = g->nvml.setGpuLockedClocks(g->nvmlDevice, plan.ceilingMHz,
+                                           plan.ceilingMHz);
+        if (armRc == NVML_SUCCESS) {
+            g_linuxCeilingArmed = true;
+            g->retainedTransitionCeilingMHz = plan.ceilingMHz;
+            g_linuxCeilingArmResult = APPLY_CEILING_ARM_INSTALLED;
+            lb_log("apply: transition clock ceiling armed %u..%u MHz before the"
+                   " reset/curve writes\n", plan.ceilingMHz, plan.ceilingMHz);
+            return true;
+        }
+        symmetricNotSupported = (armRc == NVML_ERROR_NOT_SUPPORTED);
     }
-    g_linuxCeilingArmResult = APPLY_CEILING_ARM_REFUSED;
+    // A clamp this GPU has never had is not the same as one it declined, and
+    // only the former may let a lock-less request through.  See
+    // apply_clock_ceiling_policy.h.
+    const bool unsupported = openNotSupported &&
+        (!plan.symmetricFallbackAllowed || symmetricNotSupported);
+    g_linuxCeilingArmResult = unsupported ? APPLY_CEILING_ARM_UNSUPPORTED
+                                          : APPLY_CEILING_ARM_REFUSED;
+    const bool refuse = apply_clock_ceiling_transition_must_refuse(
+        plan.required, g_linuxCeilingArmResult, plan.reason);
     lb_log("apply: COULD NOT ARM transition clock ceiling at %u MHz (symmetric"
-           " fallback %s); protection was %s\n",
+           " fallback %s, armResult=%s); protection was %s\n",
            plan.ceilingMHz,
            plan.symmetricFallbackAllowed ? "also refused" : "not permitted here",
-           plan.required ? "REQUIRED -- refusing the transition before the reset"
-                           " and curve writes"
-                         : "optional -- continuing");
-    return !apply_clock_ceiling_transition_must_refuse(plan.required,
-                                                       g_linuxCeilingArmResult);
+           apply_clock_ceiling_arm_result_name(g_linuxCeilingArmResult),
+           !plan.required ? "optional -- continuing"
+                          : (refuse ? "REQUIRED -- refusing the transition before"
+                                      " the reset and curve writes"
+                                    : "REQUIRED but absent on this GPU --"
+                                      " PROCEEDING UNPROTECTED, the request names"
+                                      " no lock of its own"));
+    return !refuse;
 }
 
 // The Linux counterpart of the Windows apply-clock witness: one line recording

@@ -120,26 +120,37 @@ struct ApplyClockCeilingGuard {
         if (armed) return armResult;
         adopted = false;
         if (!plan.arm) {
-            armResult = plan.required ? APPLY_CEILING_ARM_UNAVAILABLE
-                                      : APPLY_CEILING_ARM_NOT_NEEDED;
-            if (plan.required) {
-                debug_log("apply ceiling: protection REQUIRED (%s) but no clamp can be"
-                          " installed (ceiling=%u MHz nvmlSet=%d nvmlReset=%d);"
-                          " the transition will be refused before any write\n",
-                    apply_clock_ceiling_reason_name(plan.reason), plan.ceilingMHz,
-                    g_nvml_api.setGpuLockedClocks ? 1 : 0,
-                    g_nvml_api.resetGpuLockedClocks ? 1 : 0);
+            if (!plan.required) {
+                armResult = APPLY_CEILING_ARM_NOT_NEEDED;
+                return armResult;
             }
+            // No entry points at all is a property of the driver, not of this
+            // attempt; a plan with no defensible ceiling value is neither.
+            armResult = plan.clampControlAbsent ? APPLY_CEILING_ARM_UNSUPPORTED
+                                                : APPLY_CEILING_ARM_UNAVAILABLE;
+            debug_log("apply ceiling: protection REQUIRED (%s) but no clamp can be"
+                      " installed (ceiling=%u MHz nvmlSet=%d nvmlReset=%d);"
+                      " armResult=%s\n",
+                apply_clock_ceiling_reason_name(plan.reason), plan.ceilingMHz,
+                g_nvml_api.setGpuLockedClocks ? 1 : 0,
+                g_nvml_api.resetGpuLockedClocks ? 1 : 0,
+                apply_clock_ceiling_arm_result_name(armResult));
+            log_unprotected_if_proceeding();
             return armResult;
         }
         set_last_apply_phase("apply: arm transition clock ceiling");
         char detail[128] = {};
         writeAttempted = true;
+        // Every permitted form has to answer NOT_SUPPORTED before the clamp
+        // counts as absent from this GPU: one form being unsupported while
+        // another is merely declined is still a clamp this hardware can hold.
+        bool openNotSupported = false, symmetricNotSupported = false;
         // Ceiling, not pin: a 0 minimum caps without also forcing the clock up
         // at idle.  A driver that refuses it still accepts the symmetric form,
         // which caps correctly -- but that form adds a FLOOR, so it is only
         // used where the plan says both endpoints permit it.
-        if (nvml_set_gpu_locked_clocks(0, plan.ceilingMHz, detail, sizeof(detail))) {
+        if (nvml_set_gpu_locked_clocks(0, plan.ceilingMHz, detail, sizeof(detail),
+                                       &openNotSupported)) {
             armed = true;
             g_app.transitionClockCapActive = true;
             g_app.transitionClockCapMHz = plan.ceilingMHz;
@@ -151,19 +162,22 @@ struct ApplyClockCeilingGuard {
             return armResult;
         }
         if (!plan.symmetricFallbackAllowed) {
-            armResult = APPLY_CEILING_ARM_REFUSED;
+            armResult = openNotSupported ? APPLY_CEILING_ARM_UNSUPPORTED
+                                         : APPLY_CEILING_ARM_REFUSED;
             debug_log("apply ceiling: open-ended clamp refused (%s) and the symmetric"
                       " form is not permitted for a %s clamp -- it would add a clock"
-                      " FLOOR this request never asked for\n",
+                      " FLOOR this request never asked for; armResult=%s\n",
                 detail[0] ? detail : "unknown error",
-                apply_clock_ceiling_reason_name(plan.reason));
+                apply_clock_ceiling_reason_name(plan.reason),
+                apply_clock_ceiling_arm_result_name(armResult));
+            log_unprotected_if_proceeding();
             return armResult;
         }
         debug_log("apply ceiling: open-ended clamp refused (%s); retrying symmetric\n",
             detail[0] ? detail : "unknown error");
         detail[0] = 0;
         if (nvml_set_gpu_locked_clocks(plan.ceilingMHz, plan.ceilingMHz, detail,
-                                       sizeof(detail))) {
+                                       sizeof(detail), &symmetricNotSupported)) {
             armed = true;
             g_app.transitionClockCapActive = true;
             g_app.transitionClockCapMHz = plan.ceilingMHz;
@@ -174,23 +188,48 @@ struct ApplyClockCeilingGuard {
             apply_clock_witness_record_at_arming("ceiling armed");
             return armResult;
         }
-        armResult = APPLY_CEILING_ARM_REFUSED;
+        armResult = (openNotSupported && symmetricNotSupported)
+            ? APPLY_CEILING_ARM_UNSUPPORTED
+            : APPLY_CEILING_ARM_REFUSED;
         // The single most useful line in the log if the driver falls over
         // during a profile switch, so it is logged at full volume.  Unlike the
         // pre-fix version it is no longer followed by the write it is warning
-        // about: the caller refuses the transition instead.
-        debug_log("apply ceiling: COULD NOT ARM clamp at %u MHz (%s); protection was"
-                  " %s\n",
+        // about -- unless the clamp is one this GPU has never had, which the
+        // line now names explicitly.
+        debug_log("apply ceiling: COULD NOT ARM clamp at %u MHz (%s); armResult=%s;"
+                  " protection was %s\n",
             plan.ceilingMHz, detail[0] ? detail : "unknown error",
-            plan.required ? "REQUIRED -- refusing the transition before any"
-                            " clock write"
-                          : "optional -- continuing");
+            apply_clock_ceiling_arm_result_name(armResult),
+            !plan.required ? "optional -- continuing"
+                           : (must_refuse_transition()
+                                  ? "REQUIRED -- refusing the transition before"
+                                    " any clock write"
+                                  : "REQUIRED but unavailable on this GPU"));
+        log_unprotected_if_proceeding();
         return armResult;
+    }
+
+    // One line, at the only two places it can be true, so an unprotected
+    // transition is never an absence in the log.
+    void log_unprotected_if_proceeding() const {
+        if (!apply_clock_ceiling_proceeds_unprotected(plan.required, armResult,
+                                                      plan.reason))
+            return;
+        debug_log("apply ceiling: PROCEEDING UNPROTECTED -- a %u MHz transition"
+                  " clamp was required (%s) but this GPU has no locked-clock"
+                  " control (%s). The request names no lock of its own, so its"
+                  " end state is uncapped by the user's own choice and this is"
+                  " the behaviour this hardware has always had; a driver that"
+                  " CAN hold a clamp and merely declined it would have refused"
+                  " the transition instead\n",
+            plan.ceilingMHz, apply_clock_ceiling_reason_name(plan.reason),
+            apply_clock_ceiling_arm_result_name(armResult));
     }
 
     // Whether this apply must stop before mutating anything.
     bool must_refuse_transition() const {
-        return apply_clock_ceiling_transition_must_refuse(plan.required, armResult);
+        return apply_clock_ceiling_transition_must_refuse(plan.required, armResult,
+                                                          plan.reason);
     }
 
     // What to tell the user.  Names the specific transition and the specific
@@ -201,7 +240,9 @@ struct ApplyClockCeilingGuard {
     void refusal_message(char* out, size_t outSize) const {
         const char* why = (armResult == APPLY_CEILING_ARM_REFUSED)
             ? "the driver refused it"
-            : "this driver exposes no usable locked-clock control";
+            : (armResult == APPLY_CEILING_ARM_UNSUPPORTED)
+                ? "this GPU has no locked-clock control"
+                : "this driver exposes no usable locked-clock control";
         set_message(out, outSize,
             "This profile switch needs a temporary %u MHz clock cap while the VF"
             " curve is rewritten (%s), but %s. No clock settings were changed."

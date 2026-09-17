@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.26.0
 
 Two passes over the code: a targeted hardening of what happens to your clocks
 while a profile is being applied, and a code audit over the whole repository.
@@ -30,6 +30,18 @@ you; a half-updated pair refuses to talk rather than guessing, as before.
   instead of walking on unprotected. Unsupported and unprobeable GPUs keep their
   full read and write surface as before — only the one transition that cannot be
   made safe is refused.
+- **With one exception, for cards that have never had the clock control this
+  uses.** The refusal above treated “the driver declined this clamp” and “this
+  card has no such clamp at all” as the same answer. The clamp is a GPU-locked-
+  clock control that exists on Turing and newer; on Pascal the driver answers
+  *not supported* to every form of it. Since the protection is wanted for any
+  Apply that resets to stock while your current settings hold the clocks down —
+  which is what an undervolt is — that turned every profile switch on a Pascal
+  card into a refusal, for a cap that card never had. A card that genuinely has
+  no such control now proceeds as it always did, with the unprotected transition
+  stated plainly in the debug log; a card that *does* have the control and
+  merely declined it this time is still refused, as is any request that pins a
+  clock itself, because that request would fail at its own final step anyway.
 - **A refused VF-curve write no longer reports success.** One refusal path set its
   flags but skipped the branch that records the failure, so the Apply returned
   “succeeded”, released the clamp, and left the card uncapped over a curve it had
@@ -116,6 +128,14 @@ you; a half-updated pair refuses to talk rather than guessing, as before.
     identical frequencies, 25 times, about a second each. It now stops as soon
     as a pass improves nothing, and the apply fails immediately with the real
     reason instead of grinding.
+  - That stop was then checked *before* the pass was checked against the curve
+    you asked for, and the two use different yardsticks: the progress check
+    wants an exact match, while the apply is verified against a small
+    per-point tolerance. A pass that put the whole curve inside tolerance
+    without hitting any point exactly could therefore stop and be reported as a
+    failure, rolling back a curve that had in fact landed. The pass is now
+    verified first, so a correct result is never thrown away for missing an
+    exact number.
   - While that ran, the service's own watchdog — which exists to catch the
     graphics driver hanging — measured how long a queued fan update had been
     waiting, not whether anything was actually stuck. A slow-but-healthy apply

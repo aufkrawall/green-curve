@@ -14,7 +14,8 @@ namespace clock_transition_fixture {
 constexpr int VF_NUM_POINTS=128, MAX_GPU_FANS=4;
 using gc_u32=unsigned int;
 enum LockMode:int {LOCK_MODE_NONE=0,LOCK_MODE_FLATTEN=1,LOCK_MODE_HARD=2};
-enum {NVML_SUCCESS=0,NVML_CLOCK_GRAPHICS=0,NVML_CLOCK_SM=1,NVML_CLOCK_MEM=2,
+enum {NVML_SUCCESS=0,NVML_ERROR_NOT_SUPPORTED=3,
+      NVML_CLOCK_GRAPHICS=0,NVML_CLOCK_SM=1,NVML_CLOCK_MEM=2,
       NVML_CLOCK_ID_CURRENT=0,NVML_TEMPERATURE_GPU=0,
       NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW=0,
       XBAR_PINNED_SYS_ENTRY_INDEX=1,XBAR_PINNED_VIDEO_ENTRY_INDEX=2};
@@ -54,7 +55,11 @@ struct LinuxGpuState {
 };
 static unsigned int cap=0, resets=0;
 static bool refuseArm=false;
-static int setCap(int,unsigned int,unsigned int hi){if(refuseArm)return 1;cap=hi;return 0;}
+// Which refusal the fake driver gives back. 1 is a generic error (a clamp this
+// GPU can hold, declined this time); NVML_ERROR_NOT_SUPPORTED is a GPU that has
+// no locked-clock control at all, which the two cases must not be confused.
+static int armRefusalCode=1;
+static int setCap(int,unsigned int,unsigned int hi){if(refuseArm)return armRefusalCode;cap=hi;return 0;}
 static int resetCap(int){cap=0;++resets;return 0;}
 enum ServiceMutationDomain : gc_u32 {
     SERVICE_MUTATION_DOMAIN_RESET_BASELINE = 1u << 0,
@@ -142,7 +147,11 @@ struct App {
 static App g_app;
 static Api g_nvml_api;
 static bool nvml_ensure_ready(){return true;}
-static bool nvml_set_gpu_locked_clocks(unsigned int lo,unsigned int hi,char*,size_t){return setCap(0,lo,hi)==0;}
+static bool nvml_set_gpu_locked_clocks(unsigned int lo,unsigned int hi,char*,size_t,
+                                       bool* notSupportedOut=nullptr){
+ int rc=setCap(0,lo,hi);
+ if(notSupportedOut)*notSupportedOut=(rc==NVML_ERROR_NOT_SUPPORTED);
+ return rc==0;}
 static bool nvml_reset_gpu_locked_clocks(char*,size_t){return resetCap(0)==0;}
 static const char* lock_mode_name(LockMode){return "fixture";}
 static unsigned int displayed_curve_mhz(unsigned int khz){return khz/1000;}
@@ -228,6 +237,79 @@ static int run(){
  auto failed=linux_execute_transaction(LINUX_MUTATION_LOCK_CEILING,probeStep,probeRollback,&context);
  CHECK(!failed.success&&failed.rollbackAttempted);CHECK(resets==0&&cap==2500);
  refuseArm=false;
+ // A clamp this GPU has never had is not a clamp it declined.
+ // nvmlDeviceSetGpuLockedClocks is Volta-and-newer; on Pascal -- a family this
+ // program fully supports -- every form answers NOT_SUPPORTED. Refusing on that
+ // meant refusing every profile switch away from an undervolt, because
+ // RESET_DROPS_CAP fires for exactly that shape. The rule now separates the two.
+ {
+   // Declined, on hardware that CAN hold a clamp: still refused, both reasons.
+   CHECK(apply_clock_ceiling_transition_must_refuse(true,APPLY_CEILING_ARM_REFUSED,
+     APPLY_CEILING_REASON_RESET_DROPS_CAP));
+   CHECK(apply_clock_ceiling_transition_must_refuse(true,APPLY_CEILING_ARM_REFUSED,
+     APPLY_CEILING_REASON_REQUESTED_LOCK));
+   // Absent from the GPU, and the request names a lock of its own: still
+   // refused, because the final lock step would fail on the same call anyway
+   // and refusing writes no hardware at all.
+   CHECK(apply_clock_ceiling_transition_must_refuse(true,APPLY_CEILING_ARM_UNSUPPORTED,
+     APPLY_CEILING_REASON_REQUESTED_LOCK));
+   // Absent from the GPU, request names no lock: proceeds, loudly.
+   CHECK(!apply_clock_ceiling_transition_must_refuse(true,APPLY_CEILING_ARM_UNSUPPORTED,
+     APPLY_CEILING_REASON_RESET_DROPS_CAP));
+   CHECK(apply_clock_ceiling_proceeds_unprotected(true,APPLY_CEILING_ARM_UNSUPPORTED,
+     APPLY_CEILING_REASON_RESET_DROPS_CAP));
+   CHECK(!apply_clock_ceiling_proceeds_unprotected(true,APPLY_CEILING_ARM_UNSUPPORTED,
+     APPLY_CEILING_REASON_REQUESTED_LOCK));
+   CHECK(!apply_clock_ceiling_proceeds_unprotected(true,APPLY_CEILING_ARM_REFUSED,
+     APPLY_CEILING_REASON_RESET_DROPS_CAP));
+   // An installed clamp never "proceeds unprotected", and a transition that
+   // needed no protection is not a refusal.
+   CHECK(!apply_clock_ceiling_proceeds_unprotected(true,APPLY_CEILING_ARM_INSTALLED,
+     APPLY_CEILING_REASON_RESET_DROPS_CAP));
+   CHECK(!apply_clock_ceiling_transition_must_refuse(false,APPLY_CEILING_ARM_REFUSED,
+     APPLY_CEILING_REASON_RESET_DROPS_CAP));
+   // A missing entry point is the same fact as NOT_SUPPORTED, and the plan
+   // carries it so the arming site does not have to infer it.
+   auto absent=apply_clock_ceiling_plan(true,false,LOCK_MODE_NONE,0,false,true,true,2500);
+   CHECK(absent.required&&!absent.arm&&absent.clampControlAbsent);
+   CHECK(absent.reason==APPLY_CEILING_REASON_RESET_DROPS_CAP);
+   auto present=apply_clock_ceiling_plan(true,false,LOCK_MODE_NONE,0,true,true,true,2500);
+   CHECK(present.required&&present.arm&&!present.clampControlAbsent);
+ }
+ // The same distinction through the real Linux arming phase.
+ {
+   DesiredSettings unlocked{};unlocked.resetOcBeforeApply=true;
+   unlocked.hasGpuOffset=true;unlocked.gpuOffsetMHz=-100;
+   DesiredSettings undervolt{};g.freqOffsets[0]=-200000;
+   // Pascal-shaped driver: every form NOT_SUPPORTED, request names no lock.
+   refuseArm=true;armRefusalCode=NVML_ERROR_NOT_SUPPORTED;
+   linux_apply_ceiling_reset_state();linux_apply_ceiling_note_outgoing(&undervolt);
+   CHECK(linux_apply_arm_transition_ceiling(&g,&unlocked,&undervolt));
+   CHECK(g_linuxCeilingArmResult==APPLY_CEILING_ARM_UNSUPPORTED);
+   CHECK(!g_linuxCeilingArmed&&g_linuxCeilingPlan.required);
+   // Same driver, but the request names a lock: refused before any write.
+   DesiredSettings pinned=unlocked;pinned.hasLock=true;
+   pinned.lockMode=LOCK_MODE_HARD;pinned.lockMHz=2400;
+   linux_apply_ceiling_reset_state();linux_apply_ceiling_note_outgoing(&undervolt);
+   CHECK(!linux_apply_arm_transition_ceiling(&g,&pinned,&undervolt));
+   CHECK(g_linuxCeilingArmResult==APPLY_CEILING_ARM_UNSUPPORTED);
+   // A generic refusal on capable hardware keeps refusing even without a lock.
+   armRefusalCode=1;
+   linux_apply_ceiling_reset_state();linux_apply_ceiling_note_outgoing(&undervolt);
+   CHECK(!linux_apply_arm_transition_ceiling(&g,&unlocked,&undervolt));
+   CHECK(g_linuxCeilingArmResult==APPLY_CEILING_ARM_REFUSED);
+   // No entry point at all is the absent case, not the declined one.
+   Api saved=g.nvml;g.nvml.setGpuLockedClocks=nullptr;
+   linux_apply_ceiling_reset_state();linux_apply_ceiling_note_outgoing(&undervolt);
+   CHECK(linux_apply_arm_transition_ceiling(&g,&unlocked,&undervolt));
+   CHECK(g_linuxCeilingArmResult==APPLY_CEILING_ARM_UNSUPPORTED);
+   CHECK(!linux_apply_arm_transition_ceiling(&g,&pinned,&undervolt));
+   g.nvml=saved;refuseArm=false;armRefusalCode=1;g.freqOffsets[0]=0;
+   // Hand the fixture back exactly the state the rollback cases below expect:
+   // an outgoing HARD pin on record, which is what decides whether a restored
+   // curve is one that needs a pin to be safe.
+   linux_apply_ceiling_reset_state();linux_apply_ceiling_note_outgoing(&old);
+ }
  // Re-establish low protection BEFORE restoring a previous HARD curve after a
  // higher final pin, release, or failed baseline. Never unlock on rollback.
  for(unsigned int mask:{(unsigned int)LINUX_MUTATION_LOCK_CEILING,

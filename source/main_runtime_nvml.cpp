@@ -224,14 +224,28 @@ static bool nvml_set_clock_offset_domain(unsigned int domain, int offsetMHz, boo
     return true;
 }
 
-static bool nvml_set_gpu_locked_clocks(unsigned int minMHz, unsigned int maxMHz, char* detail, size_t detailSize) {
+// `notSupportedOut`, when supplied, separates "this GPU has no locked-clock
+// control" from "the clamp was declined this time".  F-APPLY-CEILING needs the
+// distinction: a declined clamp on hardware that can hold one refuses the
+// transition, while hardware that has never had the control (the API is
+// Volta-and-newer; Pascal answers NOT_SUPPORTED to every form) must keep
+// working the way it always has.  See apply_clock_ceiling_policy.h.
+static bool nvml_set_gpu_locked_clocks(unsigned int minMHz, unsigned int maxMHz, char* detail, size_t detailSize,
+                                       bool* notSupportedOut = nullptr) {
+    if (notSupportedOut) *notSupportedOut = false;
     if (!nvml_ensure_ready() || !g_nvml_api.setGpuLockedClocks) {
         set_message(detail, detailSize, "NVML not ready or setGpuLockedClocks unavailable");
+        // A missing entry point is a fact about the driver; NVML merely not
+        // coming up is an environment failure that a later attempt can fix, so
+        // only the former may relax a required clamp.
+        if (notSupportedOut && !g_nvml_api.setGpuLockedClocks)
+            *notSupportedOut = true;
         return false;
     }
     nvmlReturn_t r = g_nvml_api.setGpuLockedClocks(g_app.nvmlDevice, minMHz, maxMHz);
     if (r != NVML_SUCCESS) {
         set_message(detail, detailSize, "nvmlDeviceSetGpuLockedClocks(%u, %u): %s", minMHz, maxMHz, nvml_err_name(r));
+        if (notSupportedOut) *notSupportedOut = (r == NVML_ERROR_NOT_SUPPORTED);
         return false;
     }
     debug_log("nvml_set_gpu_locked_clocks: min=%u max=%u ok\n", minMHz, maxMHz);

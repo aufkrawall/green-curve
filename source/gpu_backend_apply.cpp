@@ -973,12 +973,31 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                                 correctionReachedFixedPoint = true;
                             }
                         }
-                        if (correctionReachedFixedPoint) break;
+                        // Verification runs BEFORE the fixed-point exit, and the
+                        // order is the whole point.  The convergence bookkeeping
+                        // above counts a point as unconverged on exact equality
+                        // (`actualMHz == targetMHz`), while the apply is verified
+                        // against curve_point_verify_tolerance_mhz() -- so a pass
+                        // can land the whole curve inside tolerance, report
+                        // `unconverged>0 improved=0`, and reach a fixed point that
+                        // is in fact the requested result.  Breaking first left
+                        // curveRequestOk false, which fails the apply and rolls
+                        // back a curve that had verified.  The check is a pure
+                        // read of the latest readback (apply_verify_curve_targets
+                        // takes a const DesiredSettings and writes no hardware),
+                        // so running it first costs nothing and can only turn a
+                        // spurious failure into the success it already was.
                         if (verify_curve_request(curveVerifyDetail, sizeof(curveVerifyDetail))) {
                             curveRequestOk = true;
-                            debug_log("curve correction pass %d converged to requested live MHz targets\n", correctionPass + 1);
+                            debug_log("curve correction pass %d converged to requested live MHz targets%s\n",
+                                correctionPass + 1,
+                                correctionReachedFixedPoint
+                                    ? " (on the pass that reached a fixed point:"
+                                      " within tolerance, though not exact)"
+                                    : "");
                             break;
                         }
+                        if (correctionReachedFixedPoint) break;
                     }
                 }
                 // After the correction loop, apply post-correction handling.

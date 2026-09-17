@@ -28,6 +28,10 @@ def _p(ctx, name):
 
 def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     policy_h = _p(ctx, "apply_clock_ceiling_policy.h")
+    # Bound once under a name the later `policy_h` rebinding cannot shadow: the
+    # clock-ceiling rules are checked again after this function switches
+    # `policy_h` to curve_point_offset_policy.h.
+    ceiling_policy_h = policy_h
     apply_cpp = _p(ctx, "gpu_backend_apply.cpp")
     guard_h = _p(ctx, "gpu_backend_apply_ceiling.h")
     reset_cpp = _p(ctx, "gpu_backend_reset_baseline.cpp")
@@ -206,7 +210,10 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # CT-01 on Linux: the phase body used to `return true` on every path,
     # including the one where both clamp forms were refused.
     require_text(linux_ceiling_h,
-                 "return !apply_clock_ceiling_transition_must_refuse(plan.required,",
+                 "const bool refuse = apply_clock_ceiling_transition_must_refuse(",
+                 "the Linux phase asks the shared rule whether to refuse rather "
+                 "than deciding on its own")
+    require_text(linux_ceiling_h, "return !refuse;",
                  "a refused REQUIRED Linux clamp fails its phase")
     # The phase must also be SCHEDULED when protection is required: gating the
     # request on `.arm` alone meant a GPU with no locked-clock control simply
@@ -351,6 +358,46 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "correction loop detects a pass in which no point improved")
     require_text(apply_cpp, "if (correctionReachedFixedPoint) break;",
                  "the fixed-point verdict actually leaves the correction loop")
+    # ...but it must not leave before the pass has been VERIFIED. The
+    # convergence bookkeeping counts a point unconverged on exact equality,
+    # while the apply is verified against curve_point_verify_tolerance_mhz(), so
+    # a pass can land the whole curve inside tolerance, report
+    # `unconverged>0 improved=0`, and reach a fixed point that IS the requested
+    # result. Breaking first left curveRequestOk false and rolled back a curve
+    # that had verified.
+    require_order_in_operation(
+        apply_cpp,
+        "static bool apply_desired_settings_service(const DesiredSettings* desired",
+        "if (verify_curve_request(curveVerifyDetail, sizeof(curveVerifyDetail))) {",
+        "if (correctionReachedFixedPoint) break;",
+        "a correction pass is verified before the fixed-point exit, so a curve "
+        "within tolerance is not failed for missing exact equality")
+
+    # A clamp the GPU has never had is not a clamp that was declined. Refusing
+    # on both broke every profile switch away from an undervolt on families
+    # whose driver answers NOT_SUPPORTED to nvmlDeviceSetGpuLockedClocks (the
+    # API is Volta and newer; Pascal is a fully supported family here).
+    require_text(ceiling_policy_h, "APPLY_CEILING_ARM_UNSUPPORTED,",
+                 "an absent locked-clock control is a distinct arm result")
+    require_text(ceiling_policy_h, "if (result == APPLY_CEILING_ARM_UNSUPPORTED &&",
+                 "only an UNSUPPORTED clamp may let a transition through; a "
+                 "REFUSED one still refuses")
+    require_text(ceiling_policy_h, "reason == APPLY_CEILING_REASON_RESET_DROPS_CAP)",
+                 "and only for a request that names no lock of its own -- a "
+                 "lock request would fail at its own final lock step anyway")
+    require_text(ceiling_policy_h,
+                 "static inline bool apply_clock_ceiling_proceeds_unprotected(",
+                 "the log line for an unprotected transition shares the rule "
+                 "that permits it")
+    require_text(guard_h, "log_unprotected_if_proceeding();",
+                 "the Windows guard says so out loud when it proceeds without "
+                 "the clamp it wanted")
+    require_text(linux_ceiling_h, "PROCEEDING UNPROTECTED",
+                 "the Linux arming phase says so out loud too")
+    require_text(_p(ctx, "main_runtime_nvml.cpp"),
+                 "*notSupportedOut = (r == NVML_ERROR_NOT_SUPPORTED);",
+                 "the Windows clamp write reports NOT_SUPPORTED distinctly from "
+                 "any other refusal")
 
     # And the wedge watchdog must not read a queued fan pulse's age as a driver
     # hang. The pulse stamps its heartbeat BEFORE queuing on the runtime lock, so

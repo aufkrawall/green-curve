@@ -115,6 +115,12 @@ struct ApplyClockCeilingPlan {
     // profile's idle clock up would be a new restriction the user never asked
     // for.
     bool symmetricFallbackAllowed;
+    // This driver/GPU exposes no locked-clock control at all, as opposed to a
+    // clamp that could be installed but was not.  The distinction decides
+    // whether a required-but-missing clamp is a reason to refuse the
+    // transition or a fact about the hardware: see
+    // `apply_clock_ceiling_transition_must_refuse()`.
+    bool clampControlAbsent;
     ApplyClockCeilingReason reason;
 };
 
@@ -155,6 +161,7 @@ static inline ApplyClockCeilingPlan apply_clock_ceiling_plan(
     if (!incomingLock && !resetWillUncap) return plan;
 
     plan.required = true;
+    plan.clampControlAbsent = !nvmlLockedClocksAvailable;
     plan.reason = incomingLock ? APPLY_CEILING_REASON_REQUESTED_LOCK
                                : APPLY_CEILING_REASON_RESET_DROPS_CAP;
 
@@ -188,6 +195,13 @@ enum ApplyClockCeilingArmResult {
     // attempted, so the caller must still treat the operation as having
     // touched the hardware.
     APPLY_CEILING_ARM_REFUSED,
+    // The driver answered that this GPU has no locked-clock control at all --
+    // either the entry points are missing, or every permitted form came back
+    // NOT_SUPPORTED.  Distinct from REFUSED, which is a clamp this hardware
+    // CAN hold that was declined on this attempt (no permission, a conflicting
+    // reservation, a transient driver state).  A retry can change a REFUSED;
+    // nothing a retry can do changes an UNSUPPORTED.
+    APPLY_CEILING_ARM_UNSUPPORTED,
 };
 
 // Whether the transition must be refused before it mutates anything.
@@ -198,10 +212,69 @@ enum ApplyClockCeilingArmResult {
 // apply whose protection was never required proceeds exactly as before, which
 // is what keeps default read/write support for unprobeable and unsupported
 // GPUs intact.  Only the specific transition that cannot be made safe fails.
+//
+// THE EXCEPTION, AND WHY IT IS NOT A HOLE (2026-09-17 release review)
+// -------------------------------------------------------------------
+// The rule as first written refused on every non-INSTALLED result, which is
+// right for hardware that CAN hold a clamp and wrong for hardware that cannot
+// hold one at all.  `nvmlDeviceSetGpuLockedClocks` is a Volta-and-newer
+// control; on Pascal -- a family this program fully supports, and whose VF
+// curve it reads and writes through the same private NVAPI surface as every
+// other family -- the driver answers NOT_SUPPORTED to every form of it.
+//
+// `APPLY_CEILING_REASON_RESET_DROPS_CAP` fires for any apply that resets to
+// stock while the outgoing state holds the clocks down, which is what an
+// undervolt IS.  So on Pascal the first rule refused every profile switch away
+// from an undervolt -- the program's central operation -- with a message about
+// a clock cap the hardware has never had.  Nothing about that transition
+// changed in this release; only the veto did.
+//
+// The exception is therefore narrow in exactly two ways:
+//
+//  - It needs UNSUPPORTED, not REFUSED.  A clamp this GPU can hold that was
+//    declined once still refuses, so a Blackwell board whose clamp fails for a
+//    permission or reservation reason keeps the CT-01 protection in full.
+//  - It needs a request that names NO lock of its own.  When the request DOES
+//    name a lock, the apply would fail at its final lock step anyway -- the
+//    same call, the same NOT_SUPPORTED -- so refusing up front is strictly
+//    better: it reports the real reason and writes no hardware at all.
+//
+// What is left is an apply whose requested end state is uncapped by the user's
+// own choice, on a GPU with no clamp to arm, which is precisely the behaviour
+// this program had on that hardware before the mechanism existed.  The caller
+// logs the unprotected transition at full volume rather than silently.
 static inline bool apply_clock_ceiling_transition_must_refuse(
-    bool required, ApplyClockCeilingArmResult result) {
+    bool required, ApplyClockCeilingArmResult result,
+    ApplyClockCeilingReason reason = APPLY_CEILING_REASON_REQUESTED_LOCK) {
     if (!required) return false;
-    return result != APPLY_CEILING_ARM_INSTALLED;
+    if (result == APPLY_CEILING_ARM_INSTALLED) return false;
+    if (result == APPLY_CEILING_ARM_UNSUPPORTED &&
+        reason == APPLY_CEILING_REASON_RESET_DROPS_CAP)
+        return false;
+    return true;
+}
+
+// The transition is going ahead although the protection it wanted is not
+// installed.  Exists so the one log line that says so cannot drift apart from
+// the rule that allows it.
+static inline bool apply_clock_ceiling_proceeds_unprotected(
+    bool required, ApplyClockCeilingArmResult result,
+    ApplyClockCeilingReason reason) {
+    if (!required) return false;
+    if (result == APPLY_CEILING_ARM_INSTALLED) return false;
+    return !apply_clock_ceiling_transition_must_refuse(required, result, reason);
+}
+
+static inline const char* apply_clock_ceiling_arm_result_name(
+    ApplyClockCeilingArmResult r) {
+    switch (r) {
+        case APPLY_CEILING_ARM_INSTALLED: return "installed";
+        case APPLY_CEILING_ARM_UNAVAILABLE: return "unavailable";
+        case APPLY_CEILING_ARM_REFUSED: return "refused by driver";
+        case APPLY_CEILING_ARM_UNSUPPORTED:
+            return "not supported on this GPU";
+        default: return "not needed";
+    }
 }
 
 // ---------------------------------------------------------------------------
