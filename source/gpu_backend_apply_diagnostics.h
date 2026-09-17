@@ -71,7 +71,21 @@ static void apply_log_post_apply_curve_diagnostics(
                         unsigned int delta = actualMHz > targetMHz ? actualMHz - targetMHz : targetMHz - actualMHz;
                         int tol = (int)curve_point_verify_tolerance_mhz(ci);
                         bool isTail = (lockedTailMask[ci] && lockMhz > 0);
-                        if (targetMHz > actualMHz && (targetMHz - actualMHz) >= 100) {
+                        // Exclude the point the driver refuses to offset at
+                        // all -- it is pinned at zero below the operating
+                        // minimum and apply_curve_offsets_verified() already
+                        // accepted it as a non-offsettable placeholder, on the
+                        // same predicate.  It is short by the whole requested
+                        // offset on EVERY apply, so counting it here would put
+                        // a permanent warning in the log, and a warning that is
+                        // always there is a warning nobody reads -- which is
+                        // how the shortfall this line exists to catch survived
+                        // two builds in the first place.
+                        const bool refusedPlaceholder = vf_offset_zero_readback_is_benign(
+                            targetOffsets[ci], g_app.freqOffsets[ci],
+                            g_app.curve[ci].freq_kHz, MIN_VISIBLE_FREQ_MHz * 1000u);
+                        if (!refusedPlaceholder &&
+                            targetMHz > actualMHz && (targetMHz - actualMHz) >= 100) {
                             farBelow++;
                             if ((targetMHz - actualMHz) > farBelowWorst) {
                                 farBelowWorst = targetMHz - actualMHz;

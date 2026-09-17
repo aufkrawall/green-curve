@@ -305,6 +305,8 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # sitting 465 and 360 MHz low. The count has to be in the log unconditionally.
     require_text(_p(ctx, "gpu_backend_apply_diagnostics.h"), "post-apply SHORTFALL:",
                  "an apply that lands far below the requested curve says so")
+    require_text(_p(ctx, "gpu_backend_apply_diagnostics.h"), "refusedPlaceholder",
+                 "the shortfall line excludes the driver-refused placeholder, so it is not permanently on")
     # The GUI Apply path is the one the first fix missed: a profile load sets the
     # flag, but clicking Apply rebuilds the request from the editor, whose VF
     # fields show the same projection and carry the same stale absolutes.
