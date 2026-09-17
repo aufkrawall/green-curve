@@ -100,6 +100,12 @@ you; a half-updated pair refuses to talk rather than guessing, as before.
     target, because the offset it wrote did verify — the profile simply was not
     doing what it said. Any point ending 100 MHz or more below target is now
     counted and named in the debug log.
+  - The same routine was also measuring against the card's stock frequency as
+    it had been at the *start* of the apply, not as it was right then. Under
+    load the driver moves that figure, so the routine kept recomputing the same
+    value it had already written and the point never budged — the flat tail
+    converged on the first try every time because it alone was reading the
+    current figure.
   - The same routine could not tell that it had stopped making progress. Each pass rewrote identical values and read back
     identical frequencies, 25 times, about a second each. It now stops as soon
     as a pass improves nothing, and the apply fails immediately with the real

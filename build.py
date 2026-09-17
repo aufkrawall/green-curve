@@ -2439,7 +2439,7 @@ def run_source_regression_checks():
     require_text(gpu_backend_apply_cpp, "Restoring the existing VF curve after the memory offset did not verify", "VF preservation failures are reported")
     require_text(gpu_backend_apply_cpp, "non-tail %s point %d actual %u MHz != target", "non-tail readback artifacts are accepted only for verification")
     require_text(gpu_backend_apply_cpp, "keeping strict lock target", "lock tail readback mismatches do not mutate requested intent")
-    require_text(gpu_backend_apply_cpp, "want.liveBaseKHz = curve_point_stock_base_khz(", "correction loop uses stock base for non-tail explicit points to avoid cumulative offset bug")
+    require_text(gpu_backend_apply_cpp, "g_app.curve[ci].freq_kHz, g_app.freqOffsets[ci]);", "correction loop recovers the stock base from the FRESH readback: absolute (no cumulative offset bug) and current, so the point can actually move")
     require_text(gpu_backend_apply_diag_h, "post-apply curve: ci=%d actual=%u", "post-apply curve state dump detects weird shifts")
     require_text(gpu_backend_apply_cpp, "not rewriting tail above lock", "monotonicity enforcement never raises the locked tail above the requested lock")
     require_text(os.path.join(SOURCE_DIR, "main_shell.cpp"), "skipping stale lock at ci=%d (lockedFreq=0", "stale lock skip only when lockedFreq=0, not when == liveMHz")

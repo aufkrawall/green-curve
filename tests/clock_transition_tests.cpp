@@ -406,6 +406,30 @@ static int run(){
      CHECK(built74[74]==2902000-baseMHz*1000);CHECK(bmask[74]);
    }
  }
+ // The correction loop's base must be the CURRENT one. Profile 1 under load:
+ // the reset-time sample said base 2407, so every pass recomputed the same
+ // 495000 offset and the point stayed at 2932 against a 2902 target. Recovering
+ // the base from the fresh readback (2932 - 495000 = 2437) asks for 465000,
+ // which is the offset that actually lands the point. The locked tail already
+ // used the live base and converged in one pass every time, which is exactly
+ // the asymmetry the log showed.
+ {
+   CurvePointOffsetRequest stale{};
+   stale.fromGpuOffset=false;stale.absoluteMHz=2902;
+   stale.liveBaseKHz=2407000;
+   CHECK(curve_point_target_offset_khz(&stale)==495000);
+   CurvePointOffsetRequest fresh{};
+   fresh.fromGpuOffset=false;fresh.absoluteMHz=2902;
+   fresh.liveBaseKHz=curve_point_stock_base_khz(2932000,495000);
+   CHECK(fresh.liveBaseKHz==2437000);
+   CHECK(curve_point_target_offset_khz(&fresh)==465000);
+   // Absolute, not cumulative: feeding the result back in is a fixed point
+   // once the point lands, instead of compounding pass after pass.
+   CurvePointOffsetRequest landed{};
+   landed.fromGpuOffset=false;landed.absoluteMHz=2902;
+   landed.liveBaseKHz=curve_point_stock_base_khz(2902000,465000);
+   CHECK(curve_point_target_offset_khz(&landed)==465000);
+ }
  // The shared offset policy. Four sites used to re-derive this independently;
  // the correction loop's private copy is what overwrote an already-correct
  // offset-0 point with +495000 kHz after an unrelated TAIL miss sent the apply

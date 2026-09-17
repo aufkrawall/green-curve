@@ -807,8 +807,28 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                                 want.gpuOffsetComponentKHz = gpu_offset_component_mhz_for_point(ci,
                                     desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount) * 1000;
                                 want.absoluteMHz = targetMHz;
+                                // The base must be the one the driver is
+                                // reporting NOW, not the sample taken right
+                                // after the reset.  A correction pass runs
+                                // after a fresh settled readback precisely so
+                                // it can see where the point actually landed;
+                                // recomputing against the reset-time sample
+                                // reproduces the same offset every pass and the
+                                // point never moves.  That is why profile 1
+                                // sat at `ci=74 actual=2932 target=2902` with
+                                // `desiredOffset` equal to what was already
+                                // programmed, while the locked tail -- which
+                                // already used the live base via
+                                // curve_delta_khz_for_target_display_mhz() --
+                                // converged in one pass every time.
+                                //
+                                // Subtracting the CURRENTLY PROGRAMMED offset
+                                // from the CURRENT frequency is what keeps this
+                                // absolute rather than cumulative: it recovers
+                                // the stock base, so each pass recomputes the
+                                // whole offset instead of accumulating a delta.
                                 want.liveBaseKHz = curve_point_stock_base_khz(
-                                    originalCurveFreqkHz[ci], originalCurveOffsets[ci]);
+                                    g_app.curve[ci].freq_kHz, g_app.freqOffsets[ci]);
                                 long long diff = curve_point_target_offset_khz(&want);
                                 if (diff > INT_MAX) diff = INT_MAX;
                                 if (diff < INT_MIN) diff = INT_MIN;
