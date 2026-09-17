@@ -1,3 +1,27 @@
+<!--
+  HOW TO WRITE A SECTION HERE.  These notes become the GitHub release page
+  verbatim: release.yml extracts the "## <VERSION>" section with awk.
+
+  Write to be SCANNED.  Reading only the bold lead of each bullet must tell you
+  what changed.
+
+  - One bullet per user-visible change; one line where possible, never > two.
+  - The bold lead is a complete sentence and stands alone.
+  - Under ~400 words per release.  No nested bullets, no paragraphs of prose.
+  - Same four sections every time: intro, "### Highlights" OR
+    "### Fixes & Hardening", "### Compatibility notes",
+    "### Downloads and verification", then the "**Full changelog:**" compare
+    link.  Do not invent per-release subheads.
+  - Say what changed FOR THE USER, not how the code changed.  No internal
+    symbol/file names, no F-XXX codes, no story of how a bug was found -- that
+    belongs in the commit message.
+  - Copy the last release's "Compatibility notes" and "Downloads and
+    verification" and adjust; update both versions in the compare link.
+
+  0.24.0-0.25.2 are the reference shape.  0.26.0 was first written at 2824
+  words against a ~400 word budget, which is why this note exists.
+-->
+
 # Changelog
 
 ## 0.26.0
