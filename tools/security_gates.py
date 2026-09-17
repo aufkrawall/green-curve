@@ -11,6 +11,7 @@ prepare_work_subdir(name), cleanup_work_subdir(path).
 import bisect
 import glob
 import io
+import itertools
 import os
 import re
 import shutil
@@ -605,6 +606,17 @@ _ALLOWED_PROFILE_NAMES = frozenset({
 
 _PROFILE_PATH_RE = re.compile(r"[Cc]:[\\/]{1,2}Users[\\/]{1,2}([^\\/\s\"'`)<>]+|<[^>]+>)")
 
+# The POSIX and macOS spelling of the same thing.  The pattern above requires
+# a `C:` drive letter, so it only ever sees the Windows form -- but a home
+# directory names a person on every operating system, and a check that knows
+# one spelling is a check the next platform walks straight past.  Both share
+# the allowlist and placeholder handling below so the two cannot drift.
+#
+# A bare `/home` with no segment does not match, and the lookbehind keeps
+# this from firing on a path that is part of a URL.
+_POSIX_HOME_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_/])/(?:home|Users)/([^/\s\"'`)<>:]+|<[^>]+>)")
+
 # Update-signing private key material.  Names first, because a filename match
 # has no false positives and catches the file before its contents matter.
 _SIGNING_KEY_NAME_RE = re.compile(
@@ -670,13 +682,18 @@ def check_no_signing_key_material(ctx, tracked):
 
 
 def check_no_developer_profile_paths(ctx, tracked):
-    """Fail if a tracked text file hardcodes somebody's real Windows profile.
+    """Fail if a tracked text file hardcodes somebody's real home directory.
 
     A wiki entry once recorded a developer's real profile directory under the
     Windows Users folder, which is exactly the private-user-data leak the
     project rules forbid and is permanent once pushed.  Placeholders, single
     letter fixtures and synthetic test accounts are fine; anything else is
     assumed to be a real account name.
+
+    Covers the Windows, POSIX and macOS spellings together.  A gate that
+    knows only one of them is one that the same value walks past in another
+    platform's notation, so all three share this function's allowlist and
+    placeholder rules rather than being checked in separate places.
 
     `tracked` is build.py's tracked-file list, or None when git is unavailable
     (tarball/export build), in which case this cannot be assessed and must not
@@ -692,7 +709,9 @@ def check_no_developer_profile_paths(ctx, tracked):
         except (OSError, UnicodeDecodeError):
             continue  # binary fuzz corpora and unreadable files are not docs
         for line_no, line in enumerate(text.splitlines(), 1):
-            for match in _PROFILE_PATH_RE.finditer(line):
+            for match in itertools.chain(
+                    _PROFILE_PATH_RE.finditer(line),
+                    _POSIX_HOME_PATH_RE.finditer(line)):
                 name = match.group(1).strip().rstrip(".,;:").lower()
                 # Any angle-bracketed segment is a placeholder by construction:
                 # '<' and '>' are invalid in a Windows account name, so it can
@@ -709,7 +728,8 @@ def check_no_developer_profile_paths(ctx, tracked):
                     offenders.append(f"{rel}:{line_no}: {match.group(0)}")
     if offenders:
         print("Regression source check FAILED: tracked files hardcode a real "
-              "Windows user profile path (use %USERPROFILE% or a placeholder):")
+              "user home directory (use %USERPROFILE%, $HOME, or a "
+              "placeholder such as /home/testuser):")
         for offender in offenders[:20]:
             print(f"  {offender}")
         sys.exit(1)

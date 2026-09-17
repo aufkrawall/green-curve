@@ -14592,7 +14592,7 @@ static int run_all_tests(int argc, char** argv) {
         if (!linux_is_system_binary_dir("/bin")) return 4863;
         if (!linux_is_system_binary_dir("/sbin")) return 4864;
         if (!linux_is_system_binary_dir("/opt/greencurve")) return 4865;
-        if (linux_is_system_binary_dir("/home/julian/bin")) return 4866;
+        if (linux_is_system_binary_dir("/home/testuser/bin")) return 4866;
         if (linux_is_system_binary_dir("/tmp/greencurve")) return 4867;
         if (linux_is_system_binary_dir("")) return 4868;
         if (linux_is_system_binary_dir(nullptr)) return 4869;
@@ -14600,22 +14600,22 @@ static int run_all_tests(int argc, char** argv) {
         char path[512] = {};
 
         // Portable mode: non-system dir with existing local config.ini wins
-        if (!linux_resolve_default_config_path("/home/julian/greencurve", true,
-                                               "/custom/xdg", "/home/julian",
+        if (!linux_resolve_default_config_path("/home/testuser/greencurve", true,
+                                               "/custom/xdg", "/home/testuser",
                                                path, sizeof(path))) return 4870;
-        if (strcmp(path, "/home/julian/greencurve/config.ini") != 0) return 4871;
+        if (strcmp(path, "/home/testuser/greencurve/config.ini") != 0) return 4871;
 
         // System directory: ignores local config, prefers XDG_CONFIG_HOME
         if (!linux_resolve_default_config_path("/usr/bin", true,
-                                               "/custom/xdg", "/home/julian",
+                                               "/custom/xdg", "/home/testuser",
                                                path, sizeof(path))) return 4872;
         if (strcmp(path, "/custom/xdg/greencurve/config.ini") != 0) return 4873;
 
         // System directory: falls back to HOME/.config/greencurve/config.ini
         if (!linux_resolve_default_config_path("/usr/local/libexec/greencurve", false,
-                                               nullptr, "/home/julian",
+                                               nullptr, "/home/testuser",
                                                path, sizeof(path))) return 4874;
-        if (strcmp(path, "/home/julian/.config/greencurve/config.ini") != 0) return 4875;
+        if (strcmp(path, "/home/testuser/.config/greencurve/config.ini") != 0) return 4875;
 
         // Trailing slash normalization on XDG and HOME
         if (!linux_resolve_default_config_path("/usr/bin", false,
@@ -14624,9 +14624,9 @@ static int run_all_tests(int argc, char** argv) {
         if (strcmp(path, "/custom/xdg/greencurve/config.ini") != 0) return 4877;
 
         if (!linux_resolve_default_config_path("/usr/bin", false,
-                                               nullptr, "/home/julian/",
+                                               nullptr, "/home/testuser/",
                                                path, sizeof(path))) return 4878;
-        if (strcmp(path, "/home/julian/.config/greencurve/config.ini") != 0) return 4879;
+        if (strcmp(path, "/home/testuser/.config/greencurve/config.ini") != 0) return 4879;
 
         // Fallback when both XDG and HOME are unset
         if (!linux_resolve_default_config_path("/custom/app", false,
@@ -14637,7 +14637,7 @@ static int run_all_tests(int argc, char** argv) {
         // Bounded buffer check: buffer too small must fail safely
         char smallBuf[10] = {};
         if (linux_resolve_default_config_path("/usr/bin", false,
-                                              nullptr, "/home/julian",
+                                              nullptr, "/home/testuser",
                                               smallBuf, sizeof(smallBuf))) return 4882;
     }
 
