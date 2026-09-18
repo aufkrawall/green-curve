@@ -49,6 +49,7 @@ BUILD_NUMBER
 *.sha256
 myeasylog.log
 install-security-audit-tools.ps1
+tools/discover-debug-tools.ps1
 # Local tool paths and debug-tool discovery output
 tool-paths.env
 debug-tool-manifest.json
