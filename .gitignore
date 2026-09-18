@@ -49,6 +49,12 @@ BUILD_NUMBER
 *.sha256
 myeasylog.log
 install-security-audit-tools.ps1
+# Local tool paths and debug-tool discovery output
+tool-paths.env
+debug-tool-manifest.json
+debug-tool-warnings.txt
+debug-tool-availability.md
+security-audit-tool-manifest.json
 # .clangd is intentionally tracked: it is shared editor/clang-tidy config, and
 # `build.py --tidy` reuses its check list so CLI and editor agree.
 config.ini
