@@ -28,9 +28,9 @@
 
 A reliability release: hardening around Apply, plus fixes from a full code audit.
 
-**Updating is recommended.** These fixes cover the failures people actually hit —
-a failed Apply, the background service restarting mid-write, a card left on
-settings neither profile asked for. Not urgent if 0.25.2 has been fine for you.
+**Updating is recommended.** These changes proactively harden against edge cases
+identified during the audit — a failed Apply, the background service restarting
+mid-write, or a card left on settings neither profile asked for.
 
 ### Fixes & Hardening
 
