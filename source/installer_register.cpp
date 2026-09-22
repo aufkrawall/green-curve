@@ -16,6 +16,7 @@
 // which is frequently not the person who will use the program.
 
 #include "installer_common.h"
+#include "installer_move_cleanup.h"
 
 #define GC_SHORTCUT_FILE_NAME L"Green Curve.lnk"
 
@@ -229,13 +230,6 @@ bool gc_write_shortcuts_and_registration(GcInstallContext* context) {
 // Only files this installer places are removed.  Anything else the user put in
 // the folder stays, and the folder itself is removed only when it ends up
 // empty, so an uninstall can never take a directory of unrelated files with it.
-static const WCHAR* const GC_INSTALLED_FILE_NAMES[] = {
-    GC_SETUP_GUI_EXE_W,
-    GC_SETUP_SERVICE_EXE_W,
-    L"README.md",
-    L"LICENSE",
-};
-
 // The service reports STOPPED to the SCM from inside its own process, so its
 // binary stays locked for a short while afterwards.  `--service-remove` waits
 // for the status, not for the process, which is why the handle has to be taken
@@ -336,9 +330,9 @@ bool gc_uninstall_execute(const WCHAR* installDirectory, char* error, size_t err
     // It is the only case in which scheduling the *directory* for restart
     // removal makes sense: the folder will genuinely be empty by then.
     bool ownFilesLeftForRestart = false;
-    for (size_t i = 0; i < GC_ARRAY_COUNT(GC_INSTALLED_FILE_NAMES); i++) {
+    for (size_t i = 0; i < GC_ARRAY_COUNT(GC_SETUP_PAYLOAD_FILE_NAMES); i++) {
         WCHAR path[GC_INSTALLER_MAX_PATH_CHARS] = {};
-        if (!gc_join_path(installDirectory, GC_INSTALLED_FILE_NAMES[i], path, GC_ARRAY_COUNT(path))) continue;
+        if (!gc_join_path(installDirectory, GC_SETUP_PAYLOAD_FILE_NAMES[i], path, GC_ARRAY_COUNT(path))) continue;
         if (!gc_file_exists(path)) continue;
         if (DeleteFileW(path)) {
             gc_log_step("uninstall: deleted %ls", path);

@@ -274,6 +274,8 @@ struct GcInstallContext {
     // upgrade is exactly the kind of thing a user should be told about.
     bool settingsRestoreAttempted;
     bool settingsRestored;
+    // True only when a moved, setup-managed folder was actually removed.
+    bool previousDirectoryRemoved;
     // Filled with an actionable message when a step fails.
     char error[512];
 };
@@ -281,6 +283,7 @@ struct GcInstallContext {
 bool gc_read_prior_install(GcPriorInstall* prior);
 bool gc_default_install_directory(char* out, size_t outCount);
 bool gc_install_execute(GcInstallContext* context);
+void gc_retire_previous_directory(GcInstallContext* context);
 bool gc_uninstall_execute(const WCHAR* installDirectory, char* error, size_t errorSize);
 // Ask every running Green Curve GUI to close and wait for the processes to go
 // away.  `context` may be null (the uninstaller has no progress reporting).

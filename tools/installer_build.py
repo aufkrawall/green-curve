@@ -66,6 +66,7 @@ INSTALLER_SOURCE_NAMES = [
     "installer_ui_pages.cpp",
     "installer_theme.cpp",
     "installer_apply.cpp",
+    "installer_move_cleanup.cpp",
     "installer_register.cpp",
     "installer_autostart.cpp",
     "installer_payload.cpp",
@@ -601,14 +602,27 @@ def check_all(ctx, require_text, forbid_text):
                                    "gc_register_service(context)",
                                    "gc_reapply_captured_settings(context)",
                                    "settings are re-applied only after the new service is registered")
+    ctx.require_order_in_operation(apply_shard, install_anchor,
+                                   "gc_write_shortcuts_and_registration(context)",
+                                   "gc_retire_previous_directory(context)",
+                                   "the old directory is retired only after the new install is registered")
     require_text(apply_shard, "MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH",
                  "payload files are replaced atomically")
     require_text(apply_shard, "--service-install",
                  "the installed binary owns its own SCM registration")
     require_text(apply_shard, "gc_install_paths_equal(registeredUtf8, context->plan.targetDirectory)",
                  "the re-pointed service registration is verified against the new directory")
-    require_text(apply_shard, "UNPROTECTED_DACL_SECURITY_INFORMATION",
-                 "a moved-from directory is released so the user can delete it")
+    cleanup_shard = source("installer_move_cleanup.cpp")
+    require_text(cleanup_shard, "gc_install_input_paths_overlap_or_unresolved(previous, target)",
+                 "move cleanup preserves an old directory traversed through a mount point")
+    require_text(cleanup_shard, "gc_cleanup_directories_overlap(oldIdentity, newIdentity)",
+                 "move cleanup cannot alter an ancestor of the new service path")
+    require_text(cleanup_shard, "context->plan.cleanupPreviousDirectory && location == GC_SVC_LOCATION_OK",
+                 "only an ordinary setup-managed old folder may have owned files removed")
+    require_text(cleanup_shard, "UNPROTECTED_DACL_SECURITY_INFORMATION",
+                 "a retained moved-from directory is released so the user can delete it")
+    require_text(source("installer_move_cleanup.h"), "RemoveDirectoryW(directory)",
+                 "move cleanup removes the old directory only when empty")
     require_text(apply_shard, "CreateProcessWithTokenW",
                  "the installed GUI is started unelevated, not with setup's admin token")
     # The stop steps must fail closed when a process handle cannot be taken:

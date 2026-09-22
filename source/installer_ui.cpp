@@ -129,8 +129,10 @@ static DWORD WINAPI gc_worker_thread(LPVOID parameter) {
                      "Green Curve %s is installed in %s and the background service is running.%s%s",
                      APP_VERSION, wizard->install.plan.targetDirectory, restoreNote,
                      wizard->install.plan.directoryChanged
-                         ? "\n\nThe previous installation folder was left in place; you can delete it whenever "
-                           "you like."
+                         ? (wizard->install.previousDirectoryRemoved
+                             ? "\n\nThe previous installation folder was removed."
+                             : "\n\nThe previous installation folder was left in place. "
+                               "Check its contents before deleting it.")
                          : "");
         } else {
             snprintf(wizard->resultMessage, sizeof(wizard->resultMessage), "%s",

@@ -24,6 +24,9 @@
 // Where the previous install was found, and what it recorded about itself.
 struct GcPriorInstall {
     bool present;
+    // True only when InstallLocation came from our Add/Remove Programs entry.
+    // A service discovered through the SCM alone may be a user's portable copy.
+    bool installerRegistered;
     // Install directory recorded by a previous run of this installer.
     char directory[GC_INSTALLER_MAX_PATH_CHARS];
     char version[32];
@@ -46,10 +49,11 @@ struct GcPriorInstall {
 struct GcInstallPlan {
     char targetDirectory[GC_INSTALLER_MAX_PATH_CHARS];
     bool isUpgrade;
-    // The installation is moving: the old directory keeps its files (removing
-    // them is the user's call) but every machine-wide pointer must be re-aimed.
+    // The installation is moving; every machine-wide pointer must be re-aimed.
     bool directoryChanged;
     char previousDirectory[GC_INSTALLER_MAX_PATH_CHARS];
+    // Only a prior setup-managed directory is eligible for owned-file cleanup.
+    bool cleanupPreviousDirectory;
     // Re-point the SCM registration.  True whenever a service is registered and
     // its binary directory is not the new target.
     bool repointService;
@@ -319,6 +323,7 @@ static inline void gc_install_build_plan(const GcInstallerOptions* options,
         }
         plan->previousDirectory[p] = 0;
         plan->directoryChanged = !gc_install_paths_equal(plan->previousDirectory, plan->targetDirectory);
+        plan->cleanupPreviousDirectory = plan->directoryChanged && prior->installerRegistered;
     }
 
     // The SCM registration is re-pointed whenever a registered service is not

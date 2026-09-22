@@ -14,6 +14,7 @@
 #include <winioctl.h>
 #include <aclapi.h>
 #include <shlobj.h>
+#include "installer_move_cleanup.h"
 #endif
 #include "lock_checkbox_policy.h"
 #include "main_layout_policy.h"
@@ -724,6 +725,107 @@ static bool gc_remove_protected_temp_dir(const wchar_t* path) {
     char restoreErr[256] = {};
     restore_inherited_dacl(path, restoreErr, sizeof(restoreErr));
     return RemoveDirectoryW(path) != FALSE;
+}
+
+static int run_installer_move_cleanup_tests() {
+    if (!gc_install_path_is_parent_or_same(
+            L"\\\\?\\Volume{A}\\Old", L"\\\\?\\Volume{A}\\Old\\New")) return 5690;
+    if (!gc_install_path_is_parent_or_same(
+            L"\\\\?\\Volume{A}\\OLD", L"\\\\?\\Volume{A}\\old")) return 5691;
+    if (gc_install_path_is_parent_or_same(
+            L"\\\\?\\Volume{A}\\Old", L"\\\\?\\Volume{A}\\OldOther")) return 5692;
+    if (!gc_install_input_paths_overlap_or_unresolved(
+            L"C:\\Old", L"C:\\Old\\mount\\New")) return 5706;
+    if (gc_install_input_paths_overlap_or_unresolved(
+            L"C:\\Old", L"C:\\OldOther\\New")) return 5707;
+
+    wchar_t directory[MAX_PATH] = {};
+    if (!gc_make_unique_temp_dir(L"gc_move_cleanup", directory, MAX_PATH)) return 5693;
+    wchar_t installed[MAX_PATH] = {}, extra[MAX_PATH] = {};
+    if (FAILED(StringCchPrintfW(installed, MAX_PATH, L"%ls\\greencurve.exe", directory)) ||
+        FAILED(StringCchPrintfW(extra, MAX_PATH, L"%ls\\user-notes.txt", directory))) {
+        RemoveDirectoryW(directory);
+        return 5694;
+    }
+    auto createFile = [](const wchar_t* path) -> bool {
+        HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return false;
+        CloseHandle(file);
+        return true;
+    };
+    auto cleanup = [&]() {
+        DeleteFileW(installed);
+        RemoveDirectoryW(installed);
+        DeleteFileW(extra);
+        RemoveDirectoryW(directory);
+    };
+    wchar_t parent[MAX_PATH] = {};
+    const wchar_t* separator = wcsrchr(directory, L'\\');
+    if (!separator || (size_t)(separator - directory) >= MAX_PATH) {
+        cleanup();
+        return 5700;
+    }
+    memcpy(parent, directory, (size_t)(separator - directory) * sizeof(wchar_t));
+    GcCleanupDirectoryIdentity childIdentity = {}, parentIdentity = {};
+    if (!gc_read_cleanup_directory(directory, &childIdentity) ||
+        !gc_read_cleanup_directory(parent, &parentIdentity) ||
+        !gc_cleanup_directories_overlap(parentIdentity, childIdentity)) {
+        cleanup();
+        return 5701;
+    }
+    wchar_t sibling[MAX_PATH] = {};
+    if (!gc_make_unique_temp_dir(L"gc_move_sibling", sibling, MAX_PATH)) {
+        cleanup();
+        return 5702;
+    }
+    GcCleanupDirectoryIdentity siblingIdentity = {};
+    bool disjoint = gc_read_cleanup_directory(sibling, &siblingIdentity) &&
+        !gc_cleanup_directories_overlap(childIdentity, siblingIdentity);
+    RemoveDirectoryW(sibling);
+    if (!disjoint) {
+        cleanup();
+        return 5703;
+    }
+    if (!createFile(installed) || !createFile(extra)) {
+        cleanup();
+        return 5695;
+    }
+    GcPreviousFileCleanup retained = gc_remove_previous_setup_files(directory);
+    if (retained.removed || retained.deleted != 1 || retained.failed != 0 ||
+        retained.directoryError != ERROR_DIR_NOT_EMPTY ||
+        GetFileAttributesW(extra) == INVALID_FILE_ATTRIBUTES ||
+        GetFileAttributesW(installed) != INVALID_FILE_ATTRIBUTES) {
+        cleanup();
+        return 5696;
+    }
+    if (!DeleteFileW(extra)) {
+        cleanup();
+        return 5697;
+    }
+    if (!createFile(installed)) {
+        cleanup();
+        return 5698;
+    }
+    GcPreviousFileCleanup removed = gc_remove_previous_setup_files(directory);
+    if (!removed.removed || removed.deleted != 1 || removed.failed != 0 ||
+        GetFileAttributesW(directory) != INVALID_FILE_ATTRIBUTES) {
+        cleanup();
+        return 5699;
+    }
+    // An unexpected directory occupying one of our file names is not a file
+    // to unlink. The containing folder must remain too.
+    if (!CreateDirectoryW(directory, nullptr) || !CreateDirectoryW(installed, nullptr)) {
+        cleanup();
+        return 5704;
+    }
+    GcPreviousFileCleanup blocked = gc_remove_previous_setup_files(directory);
+    bool safe = !blocked.removed && blocked.failed == 1 &&
+        GetFileAttributesW(installed) != INVALID_FILE_ATTRIBUTES;
+    RemoveDirectoryW(installed);
+    RemoveDirectoryW(directory);
+    if (!safe) return 5705;
+    return 0;
 }
 #endif
 
@@ -11672,8 +11774,14 @@ static int run_all_tests_middle(char** argv) {
     }
 
     // ------------------------------------------------------------------
-    // Install plan (1785-1799)
+    // Install plan (1785-1799) and moved-folder cleanup (5690-5707)
     // ------------------------------------------------------------------
+#if defined(_WIN32)
+    {
+        int cleanupTest = run_installer_move_cleanup_tests();
+        if (cleanupTest) return cleanupTest;
+    }
+#endif
     {
         // Trailing separators and case must not make one install look like two.
         if (!gc_install_paths_equal("C:\\Program Files\\Green Curve",
@@ -11720,6 +11828,7 @@ static int run_all_tests_middle(char** argv) {
         // Upgrade in place: same folder, service already correct, nothing moves.
         gc_installer_options_defaults(&options);
         prior.present = true;
+        prior.installerRegistered = true;
         snprintf(prior.directory, sizeof(prior.directory), "%s", "C:\\Program Files\\Green Curve");
         snprintf(prior.version, sizeof(prior.version), "%s", "0.21");
         prior.serviceRegistered = true;
@@ -11728,7 +11837,8 @@ static int run_all_tests_middle(char** argv) {
         prior.startMenuShortcut = GC_TOGGLE_OFF;
         prior.desktopShortcut = GC_TOGGLE_ON;
         gc_install_build_plan(&options, &prior, defaultDirectory, &plan);
-        if (!plan.valid || !plan.isUpgrade || plan.directoryChanged) return 1793;
+        if (!plan.valid || !plan.isUpgrade || plan.directoryChanged ||
+            plan.cleanupPreviousDirectory) return 1793;
         if (plan.repointService) return 1794;
         if (!plan.captureActiveSettings) return 1795;
         // Shortcut choices the user already made are repeated, not reset.
@@ -11744,7 +11854,8 @@ static int run_all_tests_middle(char** argv) {
         options.hasDirectory = true;
         snprintf(options.directory, sizeof(options.directory), "%s", "D:\\Apps\\Green Curve");
         gc_install_build_plan(&options, &prior, defaultDirectory, &plan);
-        if (!plan.valid || !plan.isUpgrade || !plan.directoryChanged || !plan.repointService) return 1798;
+        if (!plan.valid || !plan.isUpgrade || !plan.directoryChanged ||
+            !plan.repointService || !plan.cleanupPreviousDirectory) return 1798;
         if (strcmp(plan.targetDirectory, "D:\\Apps\\Green Curve") != 0) return 1798;
         if (strcmp(plan.previousDirectory, "C:\\Program Files\\Green Curve") != 0) return 1798;
 
@@ -11760,7 +11871,8 @@ static int run_all_tests_middle(char** argv) {
         options.hasDirectory = true;
         snprintf(options.directory, sizeof(options.directory), "%s", defaultDirectory);
         gc_install_build_plan(&options, &portable, defaultDirectory, &plan);
-        if (!plan.repointService || !plan.directoryChanged) return 1799;
+        if (!plan.repointService || !plan.directoryChanged ||
+            plan.cleanupPreviousDirectory) return 1799;
 
         // A rejected directory must produce an invalid plan with a reason, not
         // a silent fallback to the default.

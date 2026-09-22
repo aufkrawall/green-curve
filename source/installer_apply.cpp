@@ -94,6 +94,7 @@ bool gc_read_prior_install(GcPriorInstall* prior) {
         if (gc_read_registry_string(key, L"InstallLocation", prior->directory, sizeof(prior->directory)) &&
             prior->directory[0]) {
             prior->present = true;
+            prior->installerRegistered = true;
         }
         gc_read_registry_string(key, L"DisplayVersion", prior->version, sizeof(prior->version));
         prior->startMenuShortcut = gc_read_registry_toggle(key, L"GreenCurveStartMenuShortcut");
@@ -427,33 +428,6 @@ static bool gc_register_service(GcInstallContext* context) {
     return true;
 }
 
-// After the installation moves, the old directory keeps the protected DACL the
-// previous service install applied to it.  Files there are deliberately left
-// alone — deleting a user's old copy is not setup's decision — but the ACL is
-// reverted to inherited so the user can actually delete them if they want to.
-static void gc_release_previous_directory(const GcInstallContext* context) {
-    if (!context->plan.directoryChanged || !context->plan.previousDirectory[0]) return;
-    WCHAR previous[GC_INSTALLER_MAX_PATH_CHARS] = {};
-    if (!gc_utf8_to_wide(context->plan.previousDirectory, previous, (int)GC_ARRAY_COUNT(previous))) return;
-    if (!gc_directory_exists(previous)) return;
-    DWORD result = SetNamedSecurityInfoW(previous, SE_FILE_OBJECT,
-                                         DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
-                                         nullptr, nullptr, nullptr, nullptr);
-    if (result == ERROR_SUCCESS) {
-        gc_log_step("previous directory: %ls reverted to inherited permissions; "
-                    "its files were left in place for you to remove", previous);
-    } else {
-        gc_log_step("previous directory: could not revert permissions on %ls (error %lu)", previous, result);
-    }
-    WCHAR previousService[GC_INSTALLER_MAX_PATH_CHARS] = {};
-    if (gc_join_path(previous, GC_SETUP_SERVICE_EXE_W, previousService,
-                     GC_ARRAY_COUNT(previousService)) && gc_file_exists(previousService)) {
-        SetNamedSecurityInfoW(previousService, SE_FILE_OBJECT,
-                              DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
-                              nullptr, nullptr, nullptr, nullptr);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Launching the installed program as the interactive user
 // ---------------------------------------------------------------------------
@@ -607,6 +581,7 @@ bool gc_launch_installed_gui(const WCHAR* installDirectory,
 bool gc_install_execute(GcInstallContext* context) {
     if (!context) return false;
     context->error[0] = 0;
+    context->previousDirectoryRemoved = false;
     if (!context->plan.valid) {
         gc_set_error(context, "%s", context->plan.error[0] ? context->plan.error : "The install plan is invalid.");
         return false;
@@ -742,7 +717,6 @@ bool gc_install_execute(GcInstallContext* context) {
 
     // 4. Service registration, which also re-hardens the new directory.
     if (!gc_register_service(context)) return false;
-    gc_release_previous_directory(context);
 
     // 5. Shortcuts and the Add/Remove Programs entry.
     gc_report(context, 80, "Creating shortcuts...");
@@ -750,6 +724,10 @@ bool gc_install_execute(GcInstallContext* context) {
 
     // 6. Put the user's settings back exactly as an explicit Apply would.
     gc_reapply_captured_settings(context);
+
+    // Only after the new registration, shortcuts, and ARP entry succeed is the
+    // previous setup-managed directory unused. Never remove a portable copy.
+    gc_retire_previous_directory(context);
 
     gc_report(context, 100, "Installation complete.");
     return true;

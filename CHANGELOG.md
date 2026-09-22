@@ -47,6 +47,7 @@ Program Files.
   about it.** It used to report only "exit code 1", with the real reason written
   to a log file you had no way to find.
 - **Green Curve now needs a folder of its own.** Downloads, the desktop and drive roots are refused even when reached through another path.
+- **Moving a setup installation now removes its old folder when empty.** Other files keep the folder in place.
 - **The service is no longer reported as failed when it is merely slow to
   start.** Antivirus scanning the new files on first run was enough to trigger
   that.
