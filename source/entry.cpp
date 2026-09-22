@@ -115,18 +115,16 @@ static bool handle_cli(LPWSTR wCmdLine) {
 
     CLI_LOG("Green Curve CLI mode started\n");
 
-    if (opts.serviceInstall || opts.serviceRemove) {
-        char err[256] = {};
-        bool ok = service_install_or_remove(opts.serviceInstall, err, sizeof(err));
-        if (ok) {
-            CLI_LOG("%s", opts.serviceInstall ? "Background service installed.\n" : "Background service removed.\n");
-            g_cliExitCode = 0;
-        } else {
-            CLI_LOG("ERROR: %s\n", err[0] ? err : "Background service update failed");
-            g_cliExitCode = 1;
+    {
+        char message[1024] = {};
+        const char* remedy = "";
+        if (cli_handle_service_admin_command(&opts, &g_cliExitCode, message,
+                                             sizeof(message), &remedy)) {
+            CLI_LOG("%s\n", message);
+            if (remedy[0]) CLI_LOG("%s\n", remedy);
+            fclose(logf);
+            return true;
         }
-        fclose(logf);
-        return true;
     }
 
     // Upgrade settings transfer; the body lives with the verbs it drives.

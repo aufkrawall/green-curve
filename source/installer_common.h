@@ -59,6 +59,11 @@
 #include "installer_plan_policy.h"
 #include "installer_uninstall_policy.h"
 #include "service_acl.h"
+// Why did installing/removing the background service fail?  Setup and the
+// uninstaller run the same --service-install/--service-remove helper work the
+// GUI drives, so they wait on the same derived budget and render the same
+// classified sentence (service_admin_reason_policy.h).
+#include "service_admin_reason_policy.h"
 
 #ifndef APP_VERSION
 // build.py injects the real version.  The neutral fallback matches the

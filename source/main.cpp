@@ -351,9 +351,10 @@ static bool service_client_apply_desired(const DesiredSettings* desired, const c
     int profileSlot, char* result, size_t resultSize, ServiceSnapshot* snapshotOut);
 static bool service_client_logon_handoff(char* result, size_t resultSize);
 static bool service_client_reset(char* result, size_t resultSize, ServiceSnapshot* snapshotOut);
-static bool service_install_or_remove(bool enable, char* err, size_t errSize);
-static bool launch_service_admin_helper(bool enable, const char* configPath,
-    char* err, size_t errSize);
+// reasonOut: GcServiceAdminReason (service_admin_reason_policy.h).
+static bool service_install_or_remove(bool enable, char* err, size_t errSize, int* reasonOut = nullptr);
+static void set_service_admin_reason_message(int reason, char* err, size_t errSize);
+static bool launch_service_admin_helper(bool enable, const char* cfg, char* err, size_t errSize, int* reasonOut = nullptr);
 static void begin_background_service_toggle(bool enable);
 static void end_background_service_toggle();
 static bool is_elevated();

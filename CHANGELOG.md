@@ -43,6 +43,18 @@ Program Files.
   when the folder it runs from is not protected, instead of installing quietly.
 - **Portable copies keep working from every folder.** They show the same clear
   protection warnings instead of silence.
+- **A failed service installation now tells you what went wrong and what to do
+  about it.** It used to report only "exit code 1", with the real reason written
+  to a log file you had no way to find.
+- **Green Curve now needs a folder of its own.** Installing it directly into
+  Downloads, the desktop or a drive root is refused, because securing the
+  background service would take your own write access to that folder away.
+- **The service is no longer reported as failed when it is merely slow to
+  start.** Antivirus scanning the new files on first run was enough to trigger
+  that.
+- **Declining the Windows elevation prompt is no longer reported as an error.**
+- **The service now reports its start-up progress to Windows**, so a slow start
+  is no longer indistinguishable from a hung one.
 
 ### Compatibility notes
 
@@ -50,6 +62,10 @@ Program Files.
 - Unattended updates never show prompts, wherever Green Curve is installed.
 - Drives without file permissions (FAT/exFAT) and network folders are usable
   with a clear warning that files there cannot be protected.
+- An existing installation in a folder Green Curve no longer accepts keeps
+  working; the restriction applies when you install or move it.
+- Installing from the archive requires an elevated PowerShell or Command
+  Prompt. This was always true and is now stated, and refused clearly.
 
 ## 0.26.0
 

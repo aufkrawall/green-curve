@@ -98,6 +98,13 @@
 #include "installer_plan_policy.h"
 #include "installer_uninstall_policy.h"
 #include "installer_ui_click_policy.h"
+// May a folder's permissions be rewritten to register a service out of it, and
+// why did installing the service fail? Both are pure and both guard a path the
+// harness is the only place that can exercise: the location gate stands in
+// front of a DACL rewrite, and the reason taxonomy is the only thing that
+// crosses the elevation boundary between the GUI and its elevated helper.
+#include "service_install_location_policy.h"
+#include "service_admin_reason_policy.h"
 // The in-app updater's pure policy: version ordering (which is what refuses a
 // downgrade), the signed manifest grammar and its cross-field bindings, the
 // URL/redirect allowlist, and the check/install schedule.  Every one of these
@@ -5293,6 +5300,200 @@ static int run_all_tests(int argc, char** argv) {
         gc_installer_parse_options(2, argv, &parsed);
         if (!parsed.valid || !parsed.hasDirectory) return 5622;
         if (strcmp(parsed.directory, "D:\\Apps\\Green Curve") != 0) return 5623;
+    }
+
+    // ---------------------------------------------------------------------
+    // May we rewrite this folder's permissions to register a service out of
+    // it?  (service_install_location_policy.h)
+    //
+    // The regression this pins: setup refused a drive root from the day it
+    // existed, and the PORTABLE path refused nothing -- so "extract the .7z
+    // anywhere" plus 7-Zip's Extract Here into Downloads, plus the GUI's
+    // service checkbox, rewrote the user's own Downloads folder to
+    // Users: Read & Execute.  On a drive root it was permanent, because the
+    // uninstall path deliberately skips reverting a root.
+    //
+    // Only the SHAPE half is host-neutral and therefore asserted here; the
+    // known-folder half needs SHGetKnownFolderPath and lives in
+    // service_path_chain.cpp.
+    {
+        // A folder of Green Curve's own, on any volume or share: accepted.
+        const wchar_t* acceptable[] = {
+            L"C:\\Program Files\\Green Curve",
+            L"D:\\Apps\\Green Curve",
+            L"C:\\Green Curve",
+            L"C:\\Users\\x\\Green Curve",
+            L"C:\\Green Curve\\",           // a trailing separator decides nothing
+            L"\\\\server\\share\\Green Curve",
+        };
+        for (const wchar_t* candidate : acceptable) {
+            if (gc_service_location_shape_verdict(candidate) != GC_SVC_LOCATION_OK) return 5624;
+            if (!gc_service_location_shape_is_acceptable(candidate)) return 5625;
+        }
+
+        // Roots, in every spelling that reaches this code. "D:" with no
+        // separator is the one that matters most: it is what a GetFullPathName
+        // of a bare drive letter can hand back, and reading it as "some folder
+        // on D:" is exactly the mistake that hardens a volume.
+        const wchar_t* driveRoots[] = {
+            L"D:\\", L"d:\\", L"D:", L"C:\\\\", L"C:/",
+        };
+        for (const wchar_t* candidate : driveRoots) {
+            if (gc_service_location_shape_verdict(candidate) != GC_SVC_LOCATION_DRIVE_ROOT) return 5626;
+            if (gc_service_location_shape_is_acceptable(candidate)) return 5627;
+        }
+
+        // A share root is a root too: \\server\share is somebody's whole share.
+        const wchar_t* shareRoots[] = {
+            L"\\\\server\\share", L"\\\\server\\share\\", L"\\\\server",
+        };
+        for (const wchar_t* candidate : shareRoots) {
+            if (gc_service_location_shape_verdict(candidate) != GC_SVC_LOCATION_SHARE_ROOT) return 5628;
+        }
+
+        // Nothing relative or device-shaped: those resolve against a base the
+        // caller did not name, and this gate stands in front of a DACL rewrite.
+        const wchar_t* notAbsolute[] = {
+            L"Green Curve", L".\\Green Curve", L"\\Green Curve", L"C|\\x",
+        };
+        for (const wchar_t* candidate : notAbsolute) {
+            if (gc_service_location_shape_verdict(candidate) != GC_SVC_LOCATION_NOT_ABSOLUTE) return 5629;
+        }
+
+        if (gc_service_location_shape_verdict(nullptr) != GC_SVC_LOCATION_EMPTY) return 5630;
+        if (gc_service_location_shape_verdict(L"") != GC_SVC_LOCATION_EMPTY) return 5631;
+        // A path that is nothing but separators trims away to nothing, so it
+        // reads EMPTY rather than NOT_ABSOLUTE. Both refuse; the distinction
+        // only ever reaches a log line.
+        if (gc_service_location_shape_verdict(L"\\") != GC_SVC_LOCATION_EMPTY) return 5632;
+        if (gc_service_location_shape_verdict(L"\\\\") != GC_SVC_LOCATION_EMPTY) return 5660;
+        // Every verdict must name itself; an unnamed one would log as a number.
+        for (int v = GC_SVC_LOCATION_OK; v <= GC_SVC_LOCATION_KNOWN_FOLDER; v++) {
+            const char* name = gc_service_location_verdict_name(v);
+            if (!name || !name[0] || strcmp(name, "unknown") == 0) return 5633;
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Why did the service install fail, and does that reason survive the
+    // elevation boundary?  (service_admin_reason_policy.h)
+    //
+    // The regression this pins: the GUI runs --service-install through
+    // ShellExecuteEx("runas") and can see NOTHING of it but the exit code.
+    // Every failure used to exit 1, so the user got "Elevated service helper
+    // failed (exit code 1)" and the real reason went to a log under the
+    // LocalAppData of whichever account approved the UAC prompt.  The round
+    // trip below is the whole mechanism; it cannot be tested from the GUI
+    // side, because by then the helper process is gone.
+    {
+        // Every reason survives reason -> exit code -> reason.
+        for (int reason = GC_SVC_ADMIN_OK; reason < GC_SVC_ADMIN_REASON_COUNT; reason++) {
+            int code = gc_service_admin_reason_exit_code(reason);
+            if (gc_service_admin_reason_from_exit_code((unsigned long)code) != reason) return 5634;
+        }
+        // Success is 0 and nothing else is.
+        if (gc_service_admin_reason_exit_code(GC_SVC_ADMIN_OK) != 0) return 5635;
+        for (int reason = GC_SVC_ADMIN_UNKNOWN; reason < GC_SVC_ADMIN_REASON_COUNT; reason++) {
+            if (gc_service_admin_reason_exit_code(reason) == 0) return 5636;
+        }
+        // UNKNOWN stays 1: that is what every build before this policy
+        // returned, so an old GUI driving a new helper still reads a failure.
+        if (gc_service_admin_reason_exit_code(GC_SVC_ADMIN_UNKNOWN) != 1) return 5637;
+        // A code from a future build must degrade to UNKNOWN, NEVER to OK --
+        // reading an unrecognized failure as success would report a service
+        // that was never installed as installed.
+        if (gc_service_admin_reason_from_exit_code(2) != GC_SVC_ADMIN_UNKNOWN) return 5638;
+        if (gc_service_admin_reason_from_exit_code(39) != GC_SVC_ADMIN_UNKNOWN) return 5639;
+        if (gc_service_admin_reason_from_exit_code(9999) != GC_SVC_ADMIN_UNKNOWN) return 5640;
+        if (gc_service_admin_reason_from_exit_code(0) != GC_SVC_ADMIN_OK) return 5641;
+        // No two reasons may share an exit code, or the mapping back is a coin
+        // toss and the user is told about the wrong failure.
+        for (int a = GC_SVC_ADMIN_OK; a < GC_SVC_ADMIN_REASON_COUNT; a++) {
+            for (int b = a + 1; b < GC_SVC_ADMIN_REASON_COUNT; b++) {
+                if (gc_service_admin_reason_exit_code(a) ==
+                    gc_service_admin_reason_exit_code(b)) return 5642;
+            }
+        }
+
+        // Every failure reason says something, and says it as a sentence the
+        // user can act on. An empty or duplicated text is a reason that was
+        // added to the enum and forgotten in the switch.
+        for (int reason = GC_SVC_ADMIN_UNKNOWN; reason < GC_SVC_ADMIN_REASON_COUNT; reason++) {
+            const char* text = gc_service_admin_reason_text(reason);
+            if (!text || strlen(text) < 20) return 5643;
+        }
+        if (gc_service_admin_reason_text(GC_SVC_ADMIN_OK)[0] != 0) return 5644;
+
+        // The classifier turns the Win32 codes that actually strand users into
+        // the reasons that tell them what to do.
+        if (gc_service_admin_classify_win32(GC_SVC_STAGE_OPEN_SCM, GC_SVC_ERR_ACCESS_DENIED) !=
+            GC_SVC_ADMIN_NOT_ELEVATED) return 5645;
+        // 1072 arrives on the RECONFIGURE, not on CreateService: OpenService
+        // still succeeds for a service that is only marked for deletion.
+        if (gc_service_admin_classify_win32(GC_SVC_STAGE_REGISTER,
+                GC_SVC_ERR_SERVICE_MARKED_FOR_DELETE) != GC_SVC_ADMIN_MARKED_FOR_DELETE) return 5646;
+        if (gc_service_admin_classify_win32(GC_SVC_STAGE_START,
+                GC_SVC_ERR_SERVICE_DISABLED) != GC_SVC_ADMIN_DISABLED_BY_POLICY) return 5647;
+        if (gc_service_admin_classify_win32(GC_SVC_STAGE_START,
+                GC_SVC_ERR_SERVICE_REQUEST_TIMEOUT) != GC_SVC_ADMIN_START_TIMED_OUT) return 5648;
+        if (gc_service_admin_classify_win32(GC_SVC_STAGE_STAGE_BINARY,
+                GC_SVC_ERR_SHARING_VIOLATION) != GC_SVC_ADMIN_BINARY_IN_USE) return 5649;
+        // An unrecognized code still lands on the STAGE's own reason, never on
+        // UNKNOWN: "the service could not be registered" beats "something
+        // failed", and the number is in the log beside it either way.
+        if (gc_service_admin_classify_win32(GC_SVC_STAGE_REGISTER, 12345) !=
+            GC_SVC_ADMIN_REGISTRATION_FAILED) return 5650;
+        if (gc_service_admin_classify_win32(GC_SVC_STAGE_REMOVE, 12345) !=
+            GC_SVC_ADMIN_REMOVE_FAILED) return 5651;
+        // ACCESS_DENIED means "not elevated" at the SCM and "in use" at the
+        // file: the same code, two different things to tell the user.
+        if (gc_service_admin_classify_win32(GC_SVC_STAGE_STAGE_BINARY, GC_SVC_ERR_ACCESS_DENIED) ==
+            GC_SVC_ADMIN_NOT_ELEVATED) return 5652;
+
+        // A declined UAC prompt is the user's own answer; presenting it as a
+        // fault (error icon, "failed", a log to go read) told people their PC
+        // was broken when they had clicked No.
+        if (!gc_service_admin_reason_is_user_cancel(GC_SVC_ADMIN_ELEVATION_DECLINED)) return 5653;
+        if (gc_service_admin_reason_is_user_cancel(GC_SVC_ADMIN_START_TIMED_OUT)) return 5654;
+        // Retrying cannot help these; it can help the rest.
+        if (!gc_service_admin_reason_needs_user_action(GC_SVC_ADMIN_MARKED_FOR_DELETE)) return 5655;
+        if (!gc_service_admin_reason_needs_user_action(GC_SVC_ADMIN_LOCATION_REFUSED)) return 5656;
+        if (gc_service_admin_reason_needs_user_action(GC_SVC_ADMIN_START_TIMED_OUT)) return 5657;
+        // The pointer to the log names WHOSE profile, which is the half a user
+        // on a machine where an admin approved the prompt cannot guess.
+        if (strstr(GC_SVC_ADMIN_LOG_POINTER, "greencurve_cli_log.txt") == nullptr) return 5658;
+        if (strstr(GC_SVC_ADMIN_LOG_POINTER, "approved the elevation prompt") == nullptr) return 5659;
+
+        // The admin-path waits must not contradict each other.  The parent's
+        // helper budget has to cover a stop wait PLUS a start wait PLUS the
+        // staging and DACL work between them, or the parent terminates a
+        // helper that was doing exactly what it was asked -- reporting failure
+        // for an install that then completes anyway.  Setup and the uninstaller
+        // wait on the same constant (installer_apply.cpp /
+        // installer_register.cpp), so this one relationship covers every
+        // parent of the helper (service_admin_reason_policy.h).
+        if (GC_SVC_SCM_STATE_WAIT_MS < 30000ul) return 5661;
+        if (GC_SVC_ADMIN_HELPER_TIMEOUT_MS <= 2 * GC_SVC_SCM_STATE_WAIT_MS) return 5662;
+        if (GC_SVC_ADMIN_HELPER_TIMEOUT_MS < 2 * GC_SVC_SCM_STATE_WAIT_MS + 30000ul) return 5663;
+
+        // (DWORD)-1 is what a helper that could not even be LAUNCHED reports
+        // back through GetExitCodeProcess.  Decoding it must land on UNKNOWN
+        // without an out-of-range narrowing cast on the way.
+        if (gc_service_admin_reason_from_exit_code(0xFFFFFFFFul) != GC_SVC_ADMIN_UNKNOWN) return 5664;
+        if (gc_service_admin_reason_from_exit_code((unsigned long)-1) != GC_SVC_ADMIN_UNKNOWN) return 5665;
+
+        // Abandoning the helper wait at GUI shutdown is nobody's fault and no
+        // click: it must read as informational, not as a failure or a cancel.
+        if (!gc_service_admin_reason_is_informational(GC_SVC_ADMIN_SHUTDOWN_ABANDONED)) return 5666;
+        if (gc_service_admin_reason_is_user_cancel(GC_SVC_ADMIN_SHUTDOWN_ABANDONED)) return 5667;
+        if (!gc_service_admin_reason_is_informational(GC_SVC_ADMIN_ELEVATION_DECLINED)) return 5668;
+        if (gc_service_admin_reason_is_informational(GC_SVC_ADMIN_START_FAILED)) return 5669;
+        // Every user-cancel is informational; that direction must never break
+        // or a declined prompt starts reading as a fault again.
+        for (int reason = GC_SVC_ADMIN_OK; reason < GC_SVC_ADMIN_REASON_COUNT; reason++) {
+            if (gc_service_admin_reason_is_user_cancel(reason) &&
+                !gc_service_admin_reason_is_informational(reason)) return 5670;
+        }
     }
 
     // Shared-only policy: the "apply shared slot N" request flag must encode the

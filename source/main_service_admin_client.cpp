@@ -75,27 +75,56 @@ static bool wait_for_helper_process_bounded(HANDLE process, const char* descript
     return true;
 }
 
+// Render a service-admin failure for the user: the classified sentence first
+// (it names the cause AND the next action), then where the technical detail
+// lives.  This runs ONCE per failure, at the GUI completion boundary --
+// lower layers only ever fill `err` with raw call-site detail, because the
+// elevated helper's own message went to ITS greencurve_cli_log.txt under the
+// LocalAppData of whichever account approved the UAC prompt (a standard user
+// cannot even open that profile), so the reason must survive the process
+// boundary on its own.  See service_admin_reason_policy.h.
+static void set_service_admin_reason_message(int reason, char* err, size_t errSize) {
+    const char* text = gc_service_admin_reason_text(reason);
+    if (gc_service_admin_reason_is_user_cancel(reason)) {
+        // A declined elevation prompt is the user's own answer, not a fault:
+        // no log pointer, nothing to investigate.
+        set_message(err, errSize, "%s", text);
+        return;
+    }
+    set_message(err, errSize, "%s\n\n%s", text, GC_SVC_ADMIN_LOG_POINTER);
+}
+
 static bool wait_for_service_admin_helper(HANDLE process, char* err,
-    size_t errSize) {
+    size_t errSize, int* reasonOut) {
     if (!process) return true;
     ULONGLONG started = GetTickCount64();
     for (;;) {
         if (InterlockedExchangeAdd(&g_serviceAdminWaitCancelled, 0) != 0) {
+            // Abandoning the wait at shutdown is nobody's fault and no click:
+            // the helper keeps running and finishes on its own.
+            if (reasonOut) *reasonOut = GC_SVC_ADMIN_SHUTDOWN_ABANDONED;
             set_message(err, errSize,
                 "Elevated service helper wait cancelled during GUI shutdown");
             return false;
         }
         ULONGLONG elapsed = GetTickCount64() - started;
-        if (elapsed >= ELEVATED_HELPER_TIMEOUT_MS) {
+        if (elapsed >= GC_SVC_ADMIN_HELPER_TIMEOUT_MS) {
             TerminateProcess(process, 1);
-            set_message(err, errSize, "Elevated service helper timed out");
+            if (reasonOut) *reasonOut = GC_SVC_ADMIN_HELPER_TIMED_OUT;
+            set_message(err, errSize,
+                "Elevated service helper was stopped after %lu ms without "
+                "reporting a result",
+                (unsigned long)GC_SVC_ADMIN_HELPER_TIMEOUT_MS);
+            debug_log("service admin helper: timed out after %lu ms and was terminated\n",
+                (unsigned long)GC_SVC_ADMIN_HELPER_TIMEOUT_MS);
             return false;
         }
-        DWORD remaining = (DWORD)(ELEVATED_HELPER_TIMEOUT_MS - elapsed);
+        DWORD remaining = (DWORD)(GC_SVC_ADMIN_HELPER_TIMEOUT_MS - elapsed);
         DWORD waitResult = WaitForSingleObject(process,
             (DWORD)nvmin((int)remaining, 250));
         if (waitResult == WAIT_OBJECT_0) break;
         if (waitResult == WAIT_FAILED) {
+            if (reasonOut) *reasonOut = GC_SVC_ADMIN_HELPER_LAUNCH_FAILED;
             set_message(err, errSize,
                 "Failed waiting for elevated service helper (error %lu)",
                 GetLastError());
@@ -103,16 +132,28 @@ static bool wait_for_service_admin_helper(HANDLE process, char* err,
         }
     }
     DWORD exitCode = 0;
-    if (!GetExitCodeProcess(process, &exitCode) || exitCode != 0) {
-        set_message(err, errSize, "Elevated service helper failed (exit code %lu)",
-            (unsigned long)exitCode);
+    if (!GetExitCodeProcess(process, &exitCode)) {
+        if (reasonOut) *reasonOut = GC_SVC_ADMIN_HELPER_LAUNCH_FAILED;
+        set_message(err, errSize,
+            "Failed reading the elevated service helper's result (error %lu)",
+            GetLastError());
         return false;
     }
-    return true;
+    int reason = gc_service_admin_reason_from_exit_code(exitCode);
+    debug_log("service admin helper: exited after %llu ms exitCode=%lu reason=%d\n",
+        (unsigned long long)(GetTickCount64() - started),
+        (unsigned long)exitCode, reason);
+    if (reasonOut) *reasonOut = reason;
+    // On failure `err` deliberately stays EMPTY: the helper's own message is in
+    // ITS log, and the GUI composes the sentence plus the pointer to that log
+    // (set_service_admin_reason_message).  Filling `err` here would either
+    // duplicate the sentence or hide the pointer behind a raw error number.
+    return reason == GC_SVC_ADMIN_OK;
 }
 
 static bool launch_service_admin_helper(bool enable, const char* configPath,
-    char* err, size_t errSize) {
+    char* err, size_t errSize, int* reasonOut) {
+    if (reasonOut) *reasonOut = GC_SVC_ADMIN_UNKNOWN;
     WCHAR exePath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exePath, ARRAY_COUNT(exePath));
 
@@ -123,6 +164,7 @@ static bool launch_service_admin_helper(bool enable, const char* configPath,
     // makes any helper logging reference the correct file.
     WCHAR cfgPath[MAX_PATH] = {};
     if (!utf8_to_wide(configPath, cfgPath, ARRAY_COUNT(cfgPath))) {
+        if (reasonOut) *reasonOut = GC_SVC_ADMIN_HELPER_LAUNCH_FAILED;
         set_message(err, errSize, "Failed converting config path for service helper");
         return false;
     }
@@ -133,6 +175,7 @@ static bool launch_service_admin_helper(bool enable, const char* configPath,
         pl_append_quoted_arg_w(helperArg, ARRAY_COUNT(helperArg), L"--config") &&
         pl_append_quoted_arg_w(helperArg, ARRAY_COUNT(helperArg), cfgPath);
     if (!buildArgs) {
+        if (reasonOut) *reasonOut = GC_SVC_ADMIN_HELPER_LAUNCH_FAILED;
         set_message(err, errSize, "Service helper command too long");
         return false;
     }
@@ -145,15 +188,29 @@ static bool launch_service_admin_helper(bool enable, const char* configPath,
     sei.nShow = SW_HIDE;
     sei.fMask = SEE_MASK_NOCLOSEPROCESS;
     if (!ShellExecuteExW(&sei)) {
-        set_message(err, errSize, "Failed starting elevated service helper (error %lu)", GetLastError());
+        // Declining the UAC prompt is by far the most common outcome here and
+        // it is not a fault: ERROR_CANCELLED got the same "(error 1223)"
+        // treatment as a real launch failure, which reads like a bug in the
+        // program rather than the answer the user just gave it.  `err` stays
+        // raw detail either way; the GUI composes the user message once.
+        DWORD launchErr = GetLastError();
+        int reason = launchErr == GC_SVC_ERR_CANCELLED
+            ? GC_SVC_ADMIN_ELEVATION_DECLINED
+            : GC_SVC_ADMIN_HELPER_LAUNCH_FAILED;
+        if (reasonOut) *reasonOut = reason;
+        debug_log("service admin helper: ShellExecuteEx(runas) failed error=%lu reason=%d\n",
+            (unsigned long)launchErr, reason);
+        set_message(err, errSize, "ShellExecuteEx(runas) failed (error %lu)",
+            (unsigned long)launchErr);
         return false;
     }
     if (sei.hProcess) {
         ScopedHandle helperProcess(sei.hProcess);
         bool ok = wait_for_service_admin_helper(
-            helperProcess.get(), err, errSize);
+            helperProcess.get(), err, errSize, reasonOut);
         if (!ok) return false;
     }
+    if (reasonOut) *reasonOut = GC_SVC_ADMIN_OK;
     return true;
 }
 
@@ -245,15 +302,48 @@ static bool get_secure_service_install_dir_w(WCHAR* out, size_t outCount, char* 
     return get_current_executable_directory_w(out, outCount, err, errSize);
 }
 
-static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char* err, size_t errSize) {
+static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char* err, size_t errSize,
+                                              int* reasonOut = nullptr) {
     if (!out || outCount == 0) return false;
     out[0] = 0;
 
     WCHAR sourcePath[MAX_PATH] = {};
-    if (!get_adjacent_service_binary_path(sourcePath, ARRAY_COUNT(sourcePath), err, errSize)) return false;
+    if (!get_adjacent_service_binary_path(sourcePath, ARRAY_COUNT(sourcePath), err, errSize)) {
+        // The only way this fails is "greencurve-service.exe is not beside
+        // greencurve.exe, or is not a plain file". A partially extracted
+        // archive and an antivirus quarantine both land here, and both are
+        // things the user can check in ten seconds once told.
+        if (reasonOut) *reasonOut = GC_SVC_ADMIN_BINARY_MISSING;
+        set_message(err, errSize, "%s", gc_service_admin_reason_text(GC_SVC_ADMIN_BINARY_MISSING));
+        return false;
+    }
 
     WCHAR installDir[MAX_PATH] = {};
-    if (!get_secure_service_install_dir_w(installDir, ARRAY_COUNT(installDir), err, errSize)) return false;
+    if (!get_secure_service_install_dir_w(installDir, ARRAY_COUNT(installDir), err, errSize)) {
+        if (reasonOut) *reasonOut = GC_SVC_ADMIN_LOCATION_REFUSED;
+        return false;
+    }
+
+    // MAY we harden this folder at all?  This is not the protection
+    // classification below -- it is the question that one never asked.
+    // Registering the service REPLACES this folder's DACL with an
+    // administrators-only-write one and propagates it to everything already
+    // inside, so a folder that is not plausibly Green Curve's own must be
+    // refused BEFORE the first DACL write, not warned about afterwards.
+    // README says "extract the .7z archive anywhere", and 7-Zip's Extract Here
+    // into Downloads is the obvious way to do that; setup has refused a bad
+    // destination since it existed, the portable path refused nothing.
+    int locationVerdict = gc_service_install_location_verdict(installDir);
+    if (locationVerdict != GC_SVC_LOCATION_OK) {
+        char dirToken[32] = {};
+        gc_log_wide_identifier_token(installDir, dirToken, sizeof(dirToken));
+        debug_log("service install: REFUSED location token %s verdict=%s; "
+                  "hardening it would take write access to a folder that is not ours\n",
+                  dirToken, gc_service_location_verdict_name(locationVerdict));
+        if (reasonOut) *reasonOut = GC_SVC_ADMIN_LOCATION_REFUSED;
+        set_message(err, errSize, "%s", gc_service_admin_reason_text(GC_SVC_ADMIN_LOCATION_REFUSED));
+        return false;
+    }
 
     // How well can this location be protected?  (See
     // service_path_chain_policy.h.)  F-SEC-1 in one line: a LocalSystem
@@ -281,6 +371,7 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
     if (!CreateDirectoryW(installDir, nullptr)) {
         DWORD createErr = GetLastError();
         if (createErr != ERROR_ALREADY_EXISTS) {
+            if (reasonOut) *reasonOut = GC_SVC_ADMIN_DIRECTORY_HARDENING_FAILED;
             set_message(err, errSize, "Failed creating secure service directory (error %lu)", createErr);
             return false;
         }
@@ -289,16 +380,19 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
     if (dirAttrs == INVALID_FILE_ATTRIBUTES ||
         (dirAttrs & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
         (dirAttrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        if (reasonOut) *reasonOut = GC_SVC_ADMIN_DIRECTORY_HARDENING_FAILED;
         set_message(err, errSize, "Secure service directory is unavailable or unsafe");
         return false;
     }
     char dirAclErr[256] = {};
     if (hardenFiles) {
         if (!apply_protected_service_dir_dacl(installDir, dirAclErr, sizeof(dirAclErr))) {
+            if (reasonOut) *reasonOut = GC_SVC_ADMIN_DIRECTORY_HARDENING_FAILED;
             set_message(err, errSize, "Failed securing service directory: %s", dirAclErr[0] ? dirAclErr : "unknown");
             return false;
         }
         if (!machine_config_dacl_is_hardened(installDir)) {
+            if (reasonOut) *reasonOut = GC_SVC_ADMIN_DIRECTORY_HARDENING_FAILED;
             set_message(err, errSize, "Service directory DACL did not remain hardened");
             return false;
         }
@@ -306,18 +400,21 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
 
     WCHAR targetPath[MAX_PATH] = {};
     if (FAILED(StringCchPrintfW(targetPath, ARRAY_COUNT(targetPath), L"%ls\\%ls", installDir, APP_SERVICE_EXE_NAME_W))) {
+        if (reasonOut) *reasonOut = GC_SVC_ADMIN_LOCATION_REFUSED;
         set_message(err, errSize, "Installed service binary path is too long");
         return false;
     }
 
     WCHAR canonicalPath[MAX_PATH] = {};
     if (GetFullPathNameW(targetPath, ARRAY_COUNT(canonicalPath), canonicalPath, nullptr) == 0) {
+        if (reasonOut) *reasonOut = GC_SVC_ADMIN_LOCATION_REFUSED;
         set_message(err, errSize, "Failed canonicalizing service binary path");
         return false;
     }
     size_t installDirLen = wcslen(installDir);
     if (_wcsnicmp(canonicalPath, installDir, installDirLen) != 0 ||
         (canonicalPath[installDirLen] != L'\\' && canonicalPath[installDirLen] != L'/' && canonicalPath[installDirLen] != 0)) {
+        if (reasonOut) *reasonOut = GC_SVC_ADMIN_LOCATION_REFUSED;
         set_message(err, errSize, "Service binary path escaped the expected installation directory");
         return false;
     }
@@ -325,23 +422,32 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
     if (_wcsicmp(sourcePath, targetPath) != 0) {
         WCHAR tempPath[MAX_PATH] = {};
         if (FAILED(StringCchPrintfW(tempPath, ARRAY_COUNT(tempPath), L"%ls.tmp", targetPath))) {
+            if (reasonOut) *reasonOut = GC_SVC_ADMIN_BINARY_STAGING_FAILED;
             set_message(err, errSize, "Temporary service binary path is too long");
             return false;
         }
         DeleteFileW(tempPath);
         if (!CopyFileW(sourcePath, tempPath, FALSE)) {
-            set_message(err, errSize, "Failed staging service binary in target directory (error %lu)", GetLastError());
+            DWORD copyErr = GetLastError();
+            if (reasonOut) {
+                *reasonOut = gc_service_admin_classify_win32(GC_SVC_STAGE_STAGE_BINARY, copyErr);
+            }
+            set_message(err, errSize, "Failed staging service binary in target directory (error %lu)", copyErr);
             return false;
         }
         if (!MoveFileExW(tempPath, targetPath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
             DWORD moveErr = GetLastError();
             DeleteFileW(tempPath);
+            if (reasonOut) {
+                *reasonOut = gc_service_admin_classify_win32(GC_SVC_STAGE_STAGE_BINARY, moveErr);
+            }
             set_message(err, errSize, "Failed installing service binary in target directory (error %lu)", moveErr);
             return false;
         }
     }
 
     if (!file_is_regular_no_reparse_w(targetPath)) {
+        if (reasonOut) *reasonOut = GC_SVC_ADMIN_BINARY_STAGING_FAILED;
         set_message(err, errSize, "Installed service binary is missing or unsafe");
         return false;
     }
@@ -356,10 +462,12 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
     char aclErr[160] = {};
     if (hardenFiles) {
         if (!apply_protected_service_binary_dacl(targetPath, aclErr, sizeof(aclErr))) {
+            if (reasonOut) *reasonOut = GC_SVC_ADMIN_DIRECTORY_HARDENING_FAILED;
             set_message(err, errSize, "Failed securing service binary: %s", aclErr[0] ? aclErr : "unknown");
             return false;
         }
         if (!service_binary_dacl_is_hardened(targetPath)) {
+            if (reasonOut) *reasonOut = GC_SVC_ADMIN_DIRECTORY_HARDENING_FAILED;
             set_message(err, errSize, "Service binary DACL did not remain hardened");
             return false;
         }
@@ -375,6 +483,7 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
             "The service directory lost its protection during staging (reason %d); "
             "refusing to register the service",
             (int)protectionAfter.verdict.reason);
+        if (reasonOut) *reasonOut = GC_SVC_ADMIN_DIRECTORY_HARDENING_FAILED;
         return false;
     }
     if (install_dir_is_under_user_profile_w(installDir)) {
@@ -430,6 +539,18 @@ bool running_exe_dir_protection(GcPathProtectionReport* out) {
     return true;
 }
 
+int running_exe_dir_install_location_verdict() {
+    WCHAR exeDir[MAX_PATH] = {};
+    char ignored[64] = {};
+    if (!get_current_executable_directory_w(exeDir, ARRAY_COUNT(exeDir),
+                                            ignored, sizeof(ignored))) {
+        // Unknown means unproven, and this gate stands in front of a DACL
+        // rewrite: refuse rather than proceed on a path we could not resolve.
+        return GC_SVC_LOCATION_NOT_ABSOLUTE;
+    }
+    return gc_service_install_location_verdict(exeDir);
+}
+
 // Service startup: record how well the service binary's own location is
 // protected (see service_path_chain_policy.h).  Purely diagnostic - a chain
 // someone loosened after the install never stops the service from working -
@@ -457,26 +578,18 @@ void service_log_path_protection_at_startup() {
     }
 }
 
+// Which directories uninstall must NOT revert to inherited permissions.
+//
+// This used to be a second, hand-written copy of the root/share-root shape
+// rule, and the two halves had drifted into an asymmetry that could not be
+// undone: install hardened a drive root happily, uninstall refused to revert
+// one, so registering the service from D:\ locked that volume down for good.
+// Install now refuses the same shapes this skips (the shared predicate below),
+// which makes the skip a consistency check rather than a trap: nothing we
+// hardened can land here, and anything that does was not hardened by us.
 static bool directory_path_is_root_or_share_root_w(const WCHAR* dir) {
     if (!dir || !dir[0]) return true;
-    size_t len = wcslen(dir);
-    if (len <= 3 && len >= 2 && dir[1] == L':') return true;
-    if ((dir[0] == L'\\' || dir[0] == L'/') && (dir[1] == L'\\' || dir[1] == L'/')) {
-        unsigned int components = 0;
-        bool inComponent = false;
-        for (const WCHAR* p = dir + 2; *p; ++p) {
-            bool slash = (*p == L'\\' || *p == L'/');
-            if (slash) {
-                if (inComponent) components++;
-                inComponent = false;
-            } else {
-                inComponent = true;
-            }
-        }
-        if (inComponent) components++;
-        return components <= 2;
-    }
-    return false;
+    return !gc_service_location_shape_is_acceptable(dir);
 }
 
 static void cleanup_secure_service_binary_after_remove(const WCHAR* installedServicePath = nullptr) {

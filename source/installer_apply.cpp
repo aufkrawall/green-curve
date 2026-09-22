@@ -17,7 +17,13 @@
 // kernel object (process exit) or on an external state machine (the SCM) that
 // has no other completion signal, and the bound exists only so a wedged
 // third-party state cannot hang an unattended silent update forever.
-#define GC_APP_CLI_TIMEOUT_MS 60000
+// The service-install child may legitimately spend a stop wait PLUS a start
+// wait plus its staging and DACL work inside the SCM, and
+// service_admin_reason_policy.h derives exactly that budget -- so this bound
+// IS the shared helper bound, not a second opinion.  A tighter one would
+// terminate a slow-but-healthy install and report failure for work that then
+// completes anyway.
+#define GC_APP_CLI_TIMEOUT_MS GC_SVC_ADMIN_HELPER_TIMEOUT_MS
 // The settings export is a read: it talks to a service that is already running
 // and writes one small file.  It gets a tighter bound than a general CLI call
 // because it is also the one place setup runs a binary whose vocabulary it had
@@ -393,10 +399,12 @@ static bool gc_register_service(GcInstallContext* context) {
                                : "Installing the background service...");
     DWORD exitCode = (DWORD)-1;
     if (!gc_run_and_wait(exePath, commandLine, GC_APP_CLI_TIMEOUT_MS, &exitCode) || exitCode != 0) {
-        gc_set_error(context,
-                     "The background service could not be installed (exit code %lu). "
-                     "See greencurve_cli_log.txt in %%LOCALAPPDATA%%\\Green Curve for the reason.",
-                     exitCode);
+        // The helper's exit code IS the classified reason (it is the only
+        // thing that crosses back), so setup renders the same sentence the
+        // GUI shows instead of a bare number the user cannot act on.
+        int reason = gc_service_admin_reason_from_exit_code(exitCode);
+        gc_set_error(context, "%s (exit code %lu)",
+                     gc_service_admin_reason_text(reason), exitCode);
         return false;
     }
     // Confirm the SCM now points at the new directory.  Without this an upgrade
@@ -623,6 +631,23 @@ bool gc_install_execute(GcInstallContext* context) {
     if (!gc_utf8_to_wide(context->plan.targetDirectory, targetDirectory,
                          (int)GC_ARRAY_COUNT(targetDirectory))) {
         gc_set_error(context, "The installation folder could not be decoded.");
+        return false;
+    }
+    // Before the protection classification, the question that precedes it: may
+    // this folder's permissions be rewritten at all?  Step 5 runs
+    // `greencurve.exe --service-install`, which hardens the install directory,
+    // so a folder that is not Green Curve's own must be refused here -- before
+    // the capture, the shutdown and the extraction -- and not by the register
+    // step after the old installation has already been replaced.  This is also
+    // the ONLY check on the silent path, where there is no folder page:
+    // `/S /D=%USERPROFILE%\Downloads` reaches exactly this line.
+    int locationVerdict = gc_service_install_location_verdict(targetDirectory);
+    if (locationVerdict != GC_SVC_LOCATION_OK) {
+        gc_log_step("path location: refused verdict=%s", gc_service_location_verdict_name(locationVerdict));
+        gc_set_error(context,
+                     "Green Curve needs a folder of its own. Installing into this folder would "
+                     "change its permissions so that only administrators could write to it. "
+                     "Choose a subfolder, for example C:\\Program Files\\Green Curve.");
         return false;
     }
     GcPathProtectionReport preProtection = {};

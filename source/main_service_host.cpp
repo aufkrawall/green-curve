@@ -3,6 +3,13 @@
 
 // SCM control handling, startup readiness, watchdog, and shutdown policy.
 
+// How long the SCM should expect each pre-RUNNING step to take.  Generous on
+// purpose: a wait hint is an upper bound the SCM measures progress against, not
+// a delay, and the steps behind it include DACL rewrites and a SAM round trip
+// on a domain-joined machine.
+static const DWORD SERVICE_START_WAIT_HINT_MS = 20000;
+static const DWORD SERVICE_STOP_WAIT_HINT_MS = 20000;
+
 static DWORD WINAPI service_control_handler_ex(DWORD dwControl, DWORD dwEventType, LPVOID, LPVOID lpEventData) {
     if (dwControl == SERVICE_CONTROL_POWEREVENT) {
         if (dwEventType == PBT_APMSUSPEND) {
@@ -74,9 +81,40 @@ static DWORD WINAPI service_control_handler_ex(DWORD dwControl, DWORD dwEventTyp
     // dedicated controlled-recovery exit code.
     InterlockedExchange(&g_serviceExternalStopRequested, 1);
     g_serviceStatus.dwCurrentState = SERVICE_STOP_PENDING;
+    // Same omission as the start path: without a hint the SCM has no stated
+    // budget for a shutdown that tears down NVML, the pipe pool and the fan
+    // runtime, and a caller cannot tell "stopping" from "stuck".
+    g_serviceStatus.dwCheckPoint++;
+    g_serviceStatus.dwWaitHint = SERVICE_STOP_WAIT_HINT_MS;
     SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
     if (g_serviceStopEvent) SetEvent(g_serviceStopEvent);
     return NO_ERROR;
+}
+
+// Publish "still starting, here is how far" to the SCM.
+//
+// THE DEFECT THIS EXISTS FOR (audit 2026-09-22): dwWaitHint and dwCheckPoint
+// were assigned NOWHERE in the tree.  g_serviceStatus is zero-initialized, so
+// START_PENDING went out once with waitHint 0 and checkpoint 0 and nothing
+// moved until RUNNING, ~200 lines and several filesystem/DACL/SAM operations
+// later.  A wait hint of 0 satisfies the SCM's hung-service heuristic
+// immediately, so NOTHING -- not the SCM, not `sc`, not Services.msc, not our
+// own installer's state wait -- could tell a service that was merely slow from
+// one that had hung.  "The service did not respond to the start or control
+// request in a timely fashion" is the single most recognizable Windows service
+// failure, and we were emitting the condition for it by omission.
+//
+// Each call bumps the checkpoint, which is the part that actually says
+// "progress happened"; the hint only says how long to allow before the next one.
+static void service_report_start_progress(const char* stage) {
+    if (!g_serviceStatusHandle) return;
+    g_serviceStatus.dwCurrentState = SERVICE_START_PENDING;
+    g_serviceStatus.dwControlsAccepted = 0;
+    g_serviceStatus.dwCheckPoint++;
+    g_serviceStatus.dwWaitHint = SERVICE_START_WAIT_HINT_MS;
+    SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
+    debug_log("service_main: start progress checkpoint=%lu stage=%s\n",
+        (unsigned long)g_serviceStatus.dwCheckPoint, stage ? stage : "(unnamed)");
 }
 
 static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
@@ -117,6 +155,8 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
     // only be dropped.  The complete mask is published atomically with RUNNING.
     g_serviceStatus.dwControlsAccepted = 0;
     g_serviceStatus.dwCurrentState = SERVICE_START_PENDING;
+    g_serviceStatus.dwCheckPoint = 1;
+    g_serviceStatus.dwWaitHint = SERVICE_START_WAIT_HINT_MS;
     SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
 
     service_resolve_active_user_paths_for_startup("service_main startup");
@@ -131,6 +171,10 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
     }
     if (!service_initialize_state_identity()) {
         debug_log("service_main: FATAL could not generate protocol-v12 service instance identity\n");
+        // Terminal state: drop any START_PENDING progress bookkeeping so a
+        // failed start is not advertised as still making progress.
+        g_serviceStatus.dwCheckPoint = 0;
+        g_serviceStatus.dwWaitHint = 0;
         g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
         g_serviceStatus.dwWin32ExitCode = ERROR_GEN_FAILURE;
         SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
@@ -144,6 +188,7 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
     // Clear any such legacy artifacts older builds left world-readable in
     // %ProgramData%\Green Curve (the deliberately-shared shared-profiles.ini is
     // preserved — see service_cleanup_legacy_programdata).
+    service_report_start_progress("legacy artifact cleanup");
     service_cleanup_legacy_programdata();
     service_cleanup_obsolete_recovery_artifacts();
     // This is the sole persisted-replay gate and runs synchronously while the
@@ -153,13 +198,17 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
     // One-time migration of the shared profile bank from the legacy
     // machine.ini-next-to-binary location to %ProgramData%\Green Curve.  Runs as
     // LocalSystem so it can write %ProgramData% and apply the protected DACL.
+    service_report_start_progress("machine config migration");
     migrate_legacy_machine_config();
     // Harden the %ProgramData% shared bank at boot (before any interactive login)
     // so a standard user cannot pre-create and squat the directory/file.
     secure_shared_bank_at_startup();
-    // Record how well the service binary's own directory is protected (never
-    // blocks): a chain loosened since the install must be visible in the log.
-    service_log_path_protection_at_startup();
+    // The service directory's protection verdict used to be gathered HERE, on
+    // the critical path to RUNNING, for a log line nothing reads synchronously.
+    // Its first call builds the admin trust set: a LoadLibrary plus a
+    // NetLocalGroupGetMembers round trip through SAM. Purely diagnostic work
+    // must not be able to delay -- or on a wedged SAM, prevent -- the service
+    // reaching RUNNING, so it now runs after RUNNING is published.
     // Read the update policy from that same protected machine-scope file.  It
     // is loaded AFTER the bank is hardened, so the value that decides whether
     // this service makes outbound requests is never read from a file a standard
@@ -177,6 +226,7 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
     // the terminal crash dumps and the append-only breadcrumb as well as the VEH
     // dumps, each against its own budget.
     rotate_crash_artifacts_for_process();
+    service_report_start_progress("crash artifact rotation");
 
     if (!ensure_service_runtime_lock()) {
         DWORD lockError = GetLastError();
@@ -185,6 +235,10 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
         g_serviceStatus.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
         g_serviceStatus.dwServiceSpecificExitCode =
             lockError ? lockError : ERROR_NOT_ENOUGH_MEMORY;
+        // Terminal state: drop any START_PENDING progress bookkeeping so a
+        // failed start is not advertised as still making progress.
+        g_serviceStatus.dwCheckPoint = 0;
+        g_serviceStatus.dwWaitHint = 0;
         g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
         SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
         return;
@@ -197,11 +251,16 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
     if (!g_serviceStopEvent || !g_servicePipeReadyEvent) {
         debug_log("service_main: FATAL failed to create required service events (error=%lu)\n",
             GetLastError());
+        // Terminal state: drop any START_PENDING progress bookkeeping so a
+        // failed start is not advertised as still making progress.
+        g_serviceStatus.dwCheckPoint = 0;
+        g_serviceStatus.dwWaitHint = 0;
         g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
         SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
         return;
     }
 
+    service_report_start_progress("lifecycle worker startup");
     char lifecycleErr[256] = {};
     if (!service_start_lifecycle_worker(lifecycleErr, sizeof(lifecycleErr))) {
         debug_log("service_main: FATAL lifecycle worker startup failed: %s\n",
@@ -210,6 +269,10 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
         service_shutdown_logon_apply_coordinator();
         g_serviceStatus.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
         g_serviceStatus.dwServiceSpecificExitCode = ERROR_NOT_ENOUGH_MEMORY;
+        // Terminal state: drop any START_PENDING progress bookkeeping so a
+        // failed start is not advertised as still making progress.
+        g_serviceStatus.dwCheckPoint = 0;
+        g_serviceStatus.dwWaitHint = 0;
         g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
         SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
         return;
@@ -218,6 +281,7 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
         ensure_service_fan_runtime_thread();
     }
 
+    service_report_start_progress("pipe listener startup");
     DWORD threadId = 0;
     (void)threadId;
     if (!service_pipe_listener_start()) {
@@ -241,6 +305,10 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
             CloseHandle(g_serviceRuntimeLock);
             g_serviceRuntimeLock = nullptr;
         }
+        // Terminal state: drop any START_PENDING progress bookkeeping so a
+        // failed start is not advertised as still making progress.
+        g_serviceStatus.dwCheckPoint = 0;
+        g_serviceStatus.dwWaitHint = 0;
         g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
         SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
         return;
@@ -259,6 +327,10 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
         g_serviceStatus.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
         g_serviceStatus.dwServiceSpecificExitCode =
             pipeStartupError == ERROR_SUCCESS ? ERROR_PIPE_NOT_CONNECTED : (DWORD)pipeStartupError;
+        // Terminal state: drop any START_PENDING progress bookkeeping so a
+        // failed start is not advertised as still making progress.
+        g_serviceStatus.dwCheckPoint = 0;
+        g_serviceStatus.dwWaitHint = 0;
         g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
         SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
         return;
@@ -295,6 +367,10 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
             service_pipe_listener_stop_and_join();
             g_serviceStatus.dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
             g_serviceStatus.dwServiceSpecificExitCode = notifyError;
+            // Terminal state: drop any START_PENDING progress bookkeeping so a
+            // failed start is not advertised as still making progress.
+            g_serviceStatus.dwCheckPoint = 0;
+            g_serviceStatus.dwWaitHint = 0;
             g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
             SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
             return;
@@ -315,7 +391,17 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
         SERVICE_ACCEPT_SHUTDOWN | SERVICE_ACCEPT_POWEREVENT |
         SERVICE_ACCEPT_DEVICE_EVENTS | SERVICE_ACCEPT_SESSIONCHANGE;
     g_serviceStatus.dwCurrentState = SERVICE_RUNNING;
+    // A running service reports no pending progress; leaving the last
+    // START_PENDING checkpoint/hint behind would misreport it as still moving.
+    g_serviceStatus.dwCheckPoint = 0;
+    g_serviceStatus.dwWaitHint = 0;
     SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
+
+    // Diagnostic only, and deliberately AFTER RUNNING (see the note at
+    // secure_shared_bank_at_startup above): a chain someone loosened since the
+    // install must be visible in the support log, but gathering that fact
+    // costs a SAM round trip and must never sit between the SCM and RUNNING.
+    service_log_path_protection_at_startup();
 
     debug_log("service_main: running; hardware writes only on explicit client request, authenticated/WTS logon, standby resume, or validated controlled recovery\n");
 
@@ -476,6 +562,10 @@ service_watchdog_loop:
             g_serviceStatus.dwControlsAccepted = 0;
             g_serviceStatus.dwWin32ExitCode = NO_ERROR;
             g_serviceStatus.dwServiceSpecificExitCode = 0;
+            // Terminal state: drop any START_PENDING progress bookkeeping so a
+            // finished stop is not advertised as still making progress.
+            g_serviceStatus.dwCheckPoint = 0;
+            g_serviceStatus.dwWaitHint = 0;
             g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
             SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
             ExitProcess(0); // fail closed; do not touch the transitional driver
@@ -568,6 +658,11 @@ service_watchdog_loop:
     g_serviceStatus.dwServiceSpecificExitCode = lifecycleWorkerFailed
         ? ERROR_PROCESS_ABORTED : 0;
     g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
+    // A terminal state carries no pending progress. Leaving the STOP_PENDING
+    // checkpoint and hint behind would advertise a stopped service as still
+    // working through a shutdown it already finished.
+    g_serviceStatus.dwCheckPoint = 0;
+    g_serviceStatus.dwWaitHint = 0;
     SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
     if (g_debug_logging) {
         ULONGLONG elapsedMs = g_debugSessionStartTickMs ? (GetTickCount64() - g_debugSessionStartTickMs) : 0;

@@ -57,12 +57,16 @@ struct GuiServiceIoCompletion {
     ULONGLONG durationMs;
     bool adminEnable;
     bool adminRepair;
+    // GcServiceAdminReason for an admin toggle: WHY it failed, classified
+    // across the elevation boundary by exit code so the GUI can say something
+    // other than "exit code 1" (service_admin_reason_policy.h).
+    int adminReason;
     // What the attempt proved about the service's EXISTENCE, as opposed to
     // whether this particular exchange worked. Only an unreachable pipe means
     // offline; see service_request_deadline_policy.h.
     ServiceClientSendOutcome sendOutcome;
     char reason[96];
-    char error[256];
+    char error[512];
 };
 
 static CRITICAL_SECTION g_guiMutationLock;
@@ -358,11 +362,31 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
         StringCchCopyA(completion->reason, ARRAY_COUNT(completion->reason), reason);
         ULONGLONG started = GetTickCount64();
         if (ioKind == GUI_SERVICE_IO_ADMIN_TOGGLE) {
+            completion->adminReason = GC_SVC_ADMIN_UNKNOWN;
+            // Already elevated: the reason comes back directly. Not elevated:
+            // it travels back from the helper process as its exit code.
             completion->transportSuccess = is_elevated()
                 ? service_install_or_remove(adminEnable, completion->error,
-                    sizeof(completion->error))
+                    sizeof(completion->error), &completion->adminReason)
                 : launch_service_admin_helper(adminEnable, adminConfigPath,
+                    completion->error, sizeof(completion->error),
+                    &completion->adminReason);
+            if (completion->transportSuccess) {
+                completion->adminReason = GC_SVC_ADMIN_OK;
+            } else {
+                // The raw call-site message is detail for the LOG; the dialog
+                // gets the classified sentence plus the pointer to that log
+                // (set_service_admin_reason_message). Composing for every
+                // failure is the point: the elevated in-process path used to
+                // show its raw Win32 message ("error 1072") with no remedy at
+                // all, while only empty-message failures got the sentence.
+                if (completion->error[0]) {
+                    debug_log("GUI service I/O: admin failure detail: %s\n",
+                        completion->error);
+                }
+                set_service_admin_reason_message(completion->adminReason,
                     completion->error, sizeof(completion->error));
+            }
             query_background_service_state(&completion->serviceInstalled,
                 &completion->serviceRunning);
             completion->connectionEpoch =

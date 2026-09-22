@@ -34,6 +34,13 @@
 // Host-neutral path-protection classification (the F-SEC-1 property and its
 // fail-safe rule); the Win32 gatherer lives in service_path_chain.cpp.
 #include "service_path_chain_policy.h"
+// May we rewrite a folder's permissions to register a service out of it? A
+// different question from how protected the folder already is, and the one the
+// portable path never asked.
+#include "service_install_location_policy.h"
+// Why did installing/removing the background service fail, and what does the
+// user do about it? Carried across the elevation boundary by exit code.
+#include "service_admin_reason_policy.h"
 #include <ctype.h>
 #include <errno.h>
 #include <math.h>
@@ -676,7 +683,11 @@ struct AppData {
     bool backgroundServiceRunning;
     bool backgroundServiceAvailable;
     bool backgroundServiceBroken;
-    char backgroundServiceError[256];
+    // 512, not 256: a service-install failure now carries a full remedy
+    // sentence plus the pointer to the log of the account that approved the
+    // elevation prompt (service_admin_reason_policy.h). At 256 the pointer --
+    // the half the user cannot guess -- was the part that got truncated away.
+    char backgroundServiceError[512];
     // A state read that missed its deadline against a service the transport
     // could still reach (F-READ-MISS).  Distinct from backgroundServiceBroken
     // on purpose: the live presentation stays up and keeps its last coherent
@@ -1020,6 +1031,11 @@ bool running_exe_dir_is_under_user_profile();
 // service_path_chain_policy.h).  Drives the GUI's install-folder warnings.
 bool running_exe_dir_protection(GcPathProtectionReport* out);
 void running_exe_dir_protection_invalidate();
+// GcServiceLocationVerdict for the RUNNING binary's own directory: may the
+// service be registered out of it at all, given that doing so rewrites the
+// folder's permissions? Returns GC_SVC_LOCATION_OK when it may. Kept beside
+// the protection query so the GUI never has to reach for Win32 path details.
+int running_exe_dir_install_location_verdict();
 
 // Service startup: log the service binary directory's protection verdict and
 // warn (without blocking) when it is less protected than Program Files.

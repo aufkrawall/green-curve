@@ -194,6 +194,24 @@ static bool gc_commit_folder_page(GcWizard* wizard) {
         SetFocus(wizard->pathEdit);
         return false;
     }
+    // The same folders --service-install refuses, refused HERE, on the page
+    // where the user typed them.  Setup's step 5 runs `greencurve.exe
+    // --service-install` in the target directory, so without this the answer
+    // still arrived -- just after the files had been extracted and as a
+    // late, generic registration failure.
+    int locationVerdict = gc_service_install_location_verdict(chosenWide);
+    if (locationVerdict != GC_SVC_LOCATION_OK) {
+        gc_log_step("folder page: rejected verdict=%s",
+                    gc_service_location_verdict_name(locationVerdict));
+        gc_show_message(wizard->hwnd,
+                        "Green Curve needs a folder of its own. Installing here would "
+                        "change this folder's permissions so that only administrators "
+                        "could write to it. Choose or create a subfolder, for example "
+                        "C:\\Program Files\\Green Curve.",
+                        "Green Curve Setup", true);
+        SetFocus(wizard->pathEdit);
+        return false;
+    }
     gc_refresh_folder_protection(wizard, chosenWide);
     gc_log_step("folder page: chosen=%ls protected=%d reason=%d acknowledged=%d",
                 chosenWide, wizard->folderProtection.verdict.chain_protected ? 1 : 0,

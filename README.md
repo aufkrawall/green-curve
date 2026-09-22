@@ -67,7 +67,10 @@ On either Windows or Linux, this builds the Windows and Linux x64/arm64 release 
 
 ## Installing on Windows
 
-Either extract the `.7z` archive anywhere and run `greencurve.exe --service-install` once, or run the setup executable, which does the same thing with a few conveniences:
+Either extract the `.7z` archive into a folder of its own and run `greencurve.exe --service-install` once **from an elevated PowerShell or Command Prompt**, or run the setup executable, which does the same thing with a few conveniences:
+
+Two things the archive route needs and setup handles for you: registering a service requires administrator rights, and the folder you extract into becomes the service's home — Green Curve locks it down to administrators so nothing unprivileged can replace the service binary. Give it its own folder (`C:\Program Files\Green Curve`, `D:\Apps\Green Curve`); extracting straight into Downloads or a drive root is refused, because securing that folder would take your own write access to it away.
+
 
 - Shows the MIT license and the version it is about to install.
 - Lets you choose where the `Green Curve` folder goes (default `%ProgramFiles%\Green Curve`).

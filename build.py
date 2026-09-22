@@ -2644,6 +2644,7 @@ def run_source_regression_checks():
     # can delete/replace the unregistered binary again.
     service_acl_cpp = os.path.join(SOURCE_DIR, "service_acl.cpp")
     security_gates.check_path_protection_gates(_gate_ctx(), require_text, service_ipc_cpp)
+    security_gates.check_service_admin_reason_gates(_gate_ctx(), require_text, service_ipc_cpp)
     # F-SEC-6: machine-wide default logon profile config is admin-writable and
     # user-readable, so non-admins can read the current default but cannot
     # tamper with it.

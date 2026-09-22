@@ -20,6 +20,7 @@
 #include <cstddef>
 
 #include "service_path_chain_policy.h"
+#include "service_install_location_policy.h"
 
 // Apply the protected service-binary DACL to `path`.  Returns false (with a
 // human-readable reason in err) on failure.
@@ -73,3 +74,16 @@ bool apply_protected_machine_config_dir_dacl(const wchar_t* path, char* err, siz
 // True if `path` carries the machine-config protected DACL: inheritance
 // disabled and no non-admin principal is granted write/delete/own access.
 bool machine_config_dacl_is_hardened(const wchar_t* path);
+
+// May Green Curve REWRITE this folder's permissions in order to register a
+// LocalSystem service out of it?  See service_install_location_policy.h: this
+// is not "how protected is it" but "is this folder plausibly Green Curve's
+// own", because registering the service REPLACES the folder's DACL with an
+// administrators-only-write one and propagates it to everything already inside.
+// Returns a GcServiceLocationVerdict; GC_SVC_LOCATION_OK means it may proceed.
+// Refuses a drive root, a UNC share root, and any well-known shell folder
+// (the user profile, Desktop, Downloads, Documents, AppData, ProgramData,
+// Program Files, the Windows directory, ...) by exact match - a SUBFOLDER of
+// any of those is fine, which is what keeps C:\Program Files\Green Curve and
+// a deliberate portable folder working.
+int gc_service_install_location_verdict(const wchar_t* directory);

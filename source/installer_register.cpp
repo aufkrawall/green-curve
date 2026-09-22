@@ -295,8 +295,16 @@ bool gc_uninstall_execute(const WCHAR* installDirectory, char* error, size_t err
         WCHAR commandLine[2048] = {};
         StringCchPrintfW(commandLine, GC_ARRAY_COUNT(commandLine), L"\"%ls\" --service-remove", guiPath);
         DWORD exitCode = (DWORD)-1;
-        if (!gc_run_and_wait(guiPath, commandLine, 60000, &exitCode) || exitCode != 0) {
-            gc_log_step("uninstall: --service-remove reported exit %lu; continuing with file removal", exitCode);
+        // The shared admin-helper budget, not a private one: --service-remove
+        // stops the service before deleting it and the stop wait alone may
+        // take GC_SVC_SCM_STATE_WAIT_MS (service_admin_reason_policy.h).
+        if (!gc_run_and_wait(guiPath, commandLine, GC_SVC_ADMIN_HELPER_TIMEOUT_MS,
+                             &exitCode) || exitCode != 0) {
+            gc_log_step("uninstall: --service-remove reported exit %lu (%s); "
+                        "continuing with file removal",
+                        exitCode,
+                        gc_service_admin_reason_text(
+                            gc_service_admin_reason_from_exit_code(exitCode)));
         } else {
             gc_log_step("uninstall: background service removed");
         }

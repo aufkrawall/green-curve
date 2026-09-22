@@ -588,7 +588,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
                 bool repair = g_app.backgroundServiceInstalled && g_app.backgroundServiceBroken;
                 bool enable = repair || !g_app.backgroundServiceInstalled;
-                char confirmText[1024] = {};
+                // 2048: the question now carries the permission-change
+                // sentence as well as the path-risk headline and its notes,
+                // and StringCchCat truncates silently -- at 1024 the last
+                // thing appended (the actual question) was what got cut.
+                char confirmText[2048] = {};
                 StringCchCopyA(confirmText, ARRAY_COUNT(confirmText), repair
                     ? "Repair and restart the background service using the current service binary?"
                     : enable
@@ -601,6 +605,31 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 // ticked acknowledgment on its folder page; here the same fact
                 // rides the confirmation the user already answers, so the
                 // portable path cannot register the service silently.
+                // Registering the service also REWRITES this folder's
+                // permissions to administrators-only-write. That is the right
+                // thing for a folder that holds nothing but Green Curve and
+                // destructive for one that holds anything else, so refuse the
+                // folders that are obviously not ours BEFORE asking anything -
+                // a consent dialog for an operation we are going to decline is
+                // just a slower way to say no.
+                if (enable) {
+                    int locationVerdict = running_exe_dir_install_location_verdict();
+                    if (locationVerdict != GC_SVC_LOCATION_OK) {
+                        debug_log("GUI service checkbox: refusing install from verdict=%s location\n",
+                            gc_service_location_verdict_name(locationVerdict));
+                        gc_message_box(g_app.hMainWnd,
+                            gc_service_admin_reason_text(GC_SVC_ADMIN_LOCATION_REFUSED),
+                            "Green Curve", MB_OK | MB_ICONWARNING);
+                        break;
+                    }
+                    // The permission change is a consequence the user lives
+                    // with afterwards, so it belongs in the question, not in a
+                    // log line they will never read.
+                    StringCchCatA(confirmText, ARRAY_COUNT(confirmText),
+                        "\n\nThis folder's permissions will be changed so that only "
+                        "administrators can write to it. That is what protects the "
+                        "background service from being replaced.");
+                }
                 GcPathProtectionReport servicePathProtection = {};
                 if (enable && running_exe_dir_protection(&servicePathProtection) &&
                     gc_path_protection_requires_acknowledgment(&servicePathProtection.verdict)) {

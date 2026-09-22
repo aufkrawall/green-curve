@@ -26,6 +26,7 @@
 #include <strsafe.h>
 
 #include "service_acl.h"
+#include "service_install_location_policy.h"
 
 // (local array-count helper; GC_ARRAY_COUNT lives in installer_common.h,
 // which this translation unit deliberately does not include)
@@ -328,6 +329,71 @@ void gather_component_facts(const WCHAR* full, size_t prefixEnd, bool isRoot,
 }
 
 }  // namespace
+
+int gc_service_install_location_verdict(const wchar_t* directory) {
+    if (!directory || !directory[0]) return GC_SVC_LOCATION_EMPTY;
+
+    // Canonicalize first: the shape rules and the known-folder comparison both
+    // read characters, and "%USERPROFILE%\Downloads\." must refuse for the
+    // same reason "%USERPROFILE%\Downloads" does.
+    WCHAR full[GC_PATH_CHAIN_MAX_PATH_CHARS] = {};
+    DWORD length = GetFullPathNameW(directory, GC_PATH_CHAIN_MAX_PATH_CHARS, full, nullptr);
+    if (length == 0 || length >= GC_PATH_CHAIN_MAX_PATH_CHARS) {
+        // An unresolvable path is refused, not waved through: this gate stands
+        // in front of a DACL rewrite, so unproven must mean no.
+        return GC_SVC_LOCATION_NOT_ABSOLUTE;
+    }
+
+    int shape = gc_service_location_shape_verdict(full);
+    if (shape != GC_SVC_LOCATION_OK) return shape;
+
+    // Every folder Windows itself owns a meaning for.  Matched EXACTLY - a
+    // subfolder of any of these is exactly what a correct install looks like
+    // (C:\Program Files\Green Curve), so only the folder itself is refused.
+    //
+    // FOLDERID_Downloads and the other per-user media folders are here for the
+    // same reason as Desktop: "extract the archive anywhere" plus 7-Zip's
+    // Extract Here lands greencurve.exe directly in one of them, and hardening
+    // it takes the user's own folder away from them.
+    static const KNOWNFOLDERID* const kRefusedFolders[] = {
+        &FOLDERID_Profile,         &FOLDERID_UserProfiles,
+        &FOLDERID_Desktop,         &FOLDERID_Downloads,
+        &FOLDERID_Documents,       &FOLDERID_Music,
+        &FOLDERID_Pictures,        &FOLDERID_Videos,
+        &FOLDERID_LocalAppData,    &FOLDERID_RoamingAppData,
+        &FOLDERID_LocalAppDataLow, &FOLDERID_ProgramData,
+        &FOLDERID_Windows,         &FOLDERID_System,
+        &FOLDERID_SystemX86,       &FOLDERID_ProgramFiles,
+        &FOLDERID_ProgramFilesX86, &FOLDERID_ProgramFilesCommon,
+        &FOLDERID_Public,          &FOLDERID_PublicDesktop,
+        &FOLDERID_PublicDocuments, &FOLDERID_PublicDownloads,
+    };
+    for (const KNOWNFOLDERID* folder : kRefusedFolders) {
+        PWSTR resolved = nullptr;
+        if (FAILED(SHGetKnownFolderPath(*folder, 0, nullptr, &resolved)) || !resolved) {
+            // A folder this Windows edition does not define cannot be the one
+            // we are standing in; skipping it is not a hole.
+            continue;
+        }
+        // Exact match only, so trailing separators must not decide it.
+        size_t resolvedLength = 0;
+        while (resolved[resolvedLength]) resolvedLength++;
+        while (resolvedLength > 0 &&
+               (resolved[resolvedLength - 1] == L'\\' || resolved[resolvedLength - 1] == L'/')) {
+            resolvedLength--;
+        }
+        size_t fullLength = length;
+        while (fullLength > 0 && (full[fullLength - 1] == L'\\' || full[fullLength - 1] == L'/')) {
+            fullLength--;
+        }
+        bool equal = resolvedLength > 0 && resolvedLength == fullLength &&
+            _wcsnicmp(full, resolved, resolvedLength) == 0;
+        CoTaskMemFree(resolved);
+        if (equal) return GC_SVC_LOCATION_KNOWN_FOLDER;
+    }
+
+    return GC_SVC_LOCATION_OK;
+}
 
 bool gc_path_is_under_user_profile(const wchar_t* path) {
     if (!path || !path[0]) return false;

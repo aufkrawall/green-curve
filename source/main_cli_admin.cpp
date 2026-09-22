@@ -14,6 +14,44 @@
 
 #ifndef GREEN_CURVE_SERVICE_BINARY
 
+// --service-install / --service-remove.  Here rather than inline in handle_cli
+// for the same reason as the six above -- it is a self-contained command that
+// reports one outcome -- and because its exit code is no longer a plain 0/1:
+// the code IS the classified failure reason, and it is the ONLY thing that
+// crosses back to the unelevated GUI that launched this process through
+// ShellExecuteEx("runas").  See service_admin_reason_policy.h.
+//
+// Returns true when `opts` names one of the two verbs.  `*exitCodeOut` is the
+// process exit code to use; `message` and `remedy` are the lines to print.
+static bool cli_handle_service_admin_command(const CliOptions* opts, int* exitCodeOut,
+                                             char* message, size_t messageSize,
+                                             const char** remedyOut) {
+    if (!opts || !exitCodeOut || !message || messageSize == 0 || !remedyOut) return false;
+    if (!opts->serviceInstall && !opts->serviceRemove) return false;
+    message[0] = 0;
+    *remedyOut = "";
+
+    // 512, not 256: the early-refusal paths write a full reason sentence
+    // (LOCATION_REFUSED is ~290 characters) into `err` verbatim, and a
+    // truncated sentence reads like a bug in the program.
+    char err[512] = {};
+    int reason = GC_SVC_ADMIN_UNKNOWN;
+    if (service_install_or_remove(opts->serviceInstall, err, sizeof(err), &reason)) {
+        set_message(message, messageSize, "%s", opts->serviceInstall
+            ? "Background service installed." : "Background service removed.");
+        *exitCodeOut = 0;
+        return true;
+    }
+    // `err` carries the Win32 detail for the log; the remedy is the sentence
+    // the person can act on, and is printed as well whenever it adds anything
+    // the first line did not already say.
+    const char* remedy = gc_service_admin_reason_text(reason);
+    set_message(message, messageSize, "ERROR: %s", err[0] ? err : remedy);
+    if (remedy[0] && err[0] && strcmp(remedy, err) != 0) *remedyOut = remedy;
+    *exitCodeOut = gc_service_admin_reason_exit_code(reason);
+    return true;
+}
+
 // Returns true when `opts` selects one of these commands.  `*okOut` then says
 // whether it succeeded and `message` carries the line to print.
 static bool cli_handle_machine_admin_command(const CliOptions* opts, bool* okOut,

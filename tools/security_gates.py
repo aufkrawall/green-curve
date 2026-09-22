@@ -957,6 +957,91 @@ def check_path_protection_gates(ctx, require_text, service_ipc_cpp):
         "the icacls remedy issues /setowner as its own command")
     require_text(path_chain_policy, "\\\" /setowner \\\"*S-1-5-32-544\\\"",
         "the remedy closes the path quote before /setowner and quotes the SID")
+    # Registering the service REWRITES the install directory's DACL. Which
+    # folders that may be done to is a gate, not a warning, and it has to stand
+    # in front of every path that reaches the hardening: the portable/GUI path
+    # (ensure_secure_service_binary_path), setup's folder page, and setup's own
+    # execute -- the last being the only check a silent `/S /D=<path>` run gets.
+    location_policy = os.path.join(ctx.SOURCE_DIR, "service_install_location_policy.h")
+    require_text(location_policy, "GC_SVC_LOCATION_DRIVE_ROOT",
+        "the install-location policy refuses a drive root")
+    require_text(location_policy, "GC_SVC_LOCATION_KNOWN_FOLDER",
+        "the install-location policy refuses a well-known shell folder")
+    require_text(path_chain_cpp, "gc_service_install_location_verdict",
+        "the Win32 half of the install-location gate exists")
+    require_text(path_chain_cpp, "FOLDERID_Downloads",
+        "the location gate refuses the Downloads folder by name")
+    require_text(service_ipc_cpp, "gc_service_install_location_verdict(installDir)",
+        "service install refuses to harden a folder that is not its own")
+    require_text(os.path.join(ctx.SOURCE_DIR, "installer_apply.cpp"),
+        "gc_service_install_location_verdict(targetDirectory)",
+        "setup refuses the same folders, including on the silent path")
+    require_text(os.path.join(ctx.SOURCE_DIR, "ui_main_window.cpp"),
+        "running_exe_dir_install_location_verdict",
+        "the GUI service checkbox refuses before it asks for consent")
+    # The install-location check and the uninstall DACL revert must share ONE
+    # predicate. They did not, and the asymmetry was unrecoverable: install
+    # hardened a drive root, uninstall refused to revert one.
+    require_text(service_ipc_cpp, "gc_service_location_shape_is_acceptable(dir)",
+        "uninstall's revert skip uses the same shape rule install enforces")
+
+
+def check_service_admin_reason_gates(ctx, require_text, service_ipc_cpp):
+    """Pin the reason taxonomy that crosses the elevation boundary.
+
+    The GUI drives `--service-install` through ShellExecuteEx("runas") and can
+    observe NOTHING of that process but its exit code. Every failure used to
+    exit 1, so the user saw "Elevated service helper failed (exit code 1)" and
+    the real reason sat in a log under the LocalAppData of whichever account
+    approved the UAC prompt -- unreachable on a standard-user machine. The exit
+    code IS the reason now, and these gates keep it that way.
+    """
+    policy = os.path.join(ctx.SOURCE_DIR, "service_admin_reason_policy.h")
+    require_text(policy, "gc_service_admin_reason_exit_code",
+        "a failure reason is encodable as an exit code")
+    require_text(policy, "gc_service_admin_reason_from_exit_code",
+        "an exit code decodes back to a failure reason")
+    require_text(policy, "GC_SVC_ADMIN_MARKED_FOR_DELETE",
+        "the 1072 dead end has its own reason and remedy")
+    require_text(policy, "approved the elevation prompt",
+        "the log pointer names whose profile the log is in")
+    cli_admin_cpp = os.path.join(ctx.SOURCE_DIR, "main_cli_admin.cpp")
+    require_text(cli_admin_cpp, "gc_service_admin_reason_exit_code(reason)",
+        "the CLI exits with the classified reason, not a bare 1")
+    require_text(service_ipc_cpp, "gc_service_admin_reason_from_exit_code(exitCode)",
+        "the GUI decodes the helper's exit code into a reason")
+    require_text(service_ipc_cpp, "GC_SVC_ADMIN_ELEVATION_DECLINED",
+        "a declined UAC prompt is told apart from a failure")
+    # Elevation is checked up front. "Failed opening service manager (error 5)"
+    # was the least self-explanatory way this failed and the easiest to fix.
+    require_text(os.path.join(ctx.SOURCE_DIR, "main_service_install.cpp"),
+        "GC_SVC_ADMIN_NOT_ELEVATED",
+        "service install refuses unelevated with a remedy, not an error number")
+    # A pending SCM state must carry progress, or nothing can tell a slow start
+    # from a hung one -- the condition behind "did not respond to the start or
+    # control request in a timely fashion".
+    host_cpp = os.path.join(ctx.SOURCE_DIR, "main_service_host.cpp")
+    require_text(host_cpp, "service_report_start_progress",
+        "the service publishes START_PENDING progress checkpoints")
+    require_text(host_cpp, "dwWaitHint = SERVICE_START_WAIT_HINT_MS",
+        "START_PENDING carries a wait hint")
+    require_text(host_cpp, "dwWaitHint = SERVICE_STOP_WAIT_HINT_MS",
+        "STOP_PENDING carries a wait hint")
+    # Every parent of the helper waits on the SAME derived budget.  A private
+    # timeout below stop+start+staging terminates a healthy slow install and
+    # reports failure for work that then completes anyway -- which is exactly
+    # the "merely slow to start" case this release stops reporting as failed.
+    require_text(os.path.join(ctx.SOURCE_DIR, "installer_apply.cpp"),
+        "GC_APP_CLI_TIMEOUT_MS GC_SVC_ADMIN_HELPER_TIMEOUT_MS",
+        "setup waits on the shared admin-helper budget")
+    require_text(os.path.join(ctx.SOURCE_DIR, "installer_register.cpp"),
+        "GC_SVC_ADMIN_HELPER_TIMEOUT_MS",
+        "the uninstaller waits on the shared admin-helper budget")
+    # Setup runs the same helper and must render the same classified sentence
+    # from its exit code, not a bare number.
+    require_text(os.path.join(ctx.SOURCE_DIR, "installer_apply.cpp"),
+        "gc_service_admin_reason_from_exit_code(exitCode)",
+        "setup decodes the helper exit code into the remedy sentence")
 
 
 def check_log_redaction(ctx):

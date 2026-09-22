@@ -736,10 +736,25 @@ static void gui_service_handle_admin_completion(
             ARRAY_COUNT(g_app.backgroundServiceError),
             completion->error[0] ? completion->error :
             "Failed updating the background service");
-        set_profile_status_text("Background service change failed: %s",
-            g_app.backgroundServiceError);
+        // The one-line status text must stay short, so it gets the reason
+        // WITHOUT the log pointer; the dialog carries the full message.  A
+        // declined elevation prompt (or an abandoned-at-shutdown wait) is not
+        // a fault: reporting those with "failed" framing and an error icon
+        // told people their PC was broken when they had simply clicked No.
+        bool informational =
+            gc_service_admin_reason_is_informational(completion->adminReason);
+        const char* statusReason =
+            gc_service_admin_reason_text(completion->adminReason);
+        if (informational) {
+            set_profile_status_text("Background service change not made: %s",
+                statusReason);
+        } else {
+            set_profile_status_text("Background service change failed: %s",
+                statusReason);
+        }
         gc_message_box(g_app.hMainWnd, g_app.backgroundServiceError,
-            "Green Curve", MB_OK | MB_ICONERROR);
+            "Green Curve",
+            MB_OK | (informational ? MB_ICONINFORMATION : MB_ICONERROR));
     } else if (completion->adminEnable) {
         g_app.backgroundServiceError[0] = '\0';
         set_profile_status_text(completion->adminRepair
@@ -754,10 +769,12 @@ static void gui_service_handle_admin_completion(
         gui_render_service_phase_only();
     }
     schedule_logon_combo_sync();
-    debug_log("GUI service I/O: admin completion enable=%d repair=%d success=%d installed=%d running=%d epoch=%llu error=%s\n",
+    debug_log("GUI service I/O: admin completion enable=%d repair=%d success=%d reason=%d needsUserAction=%d installed=%d running=%d epoch=%llu error=%s\n",
         completion->adminEnable ? 1 : 0,
         completion->adminRepair ? 1 : 0,
         completion->transportSuccess ? 1 : 0,
+        completion->adminReason,
+        gc_service_admin_reason_needs_user_action(completion->adminReason) ? 1 : 0,
         completion->serviceInstalled ? 1 : 0,
         completion->serviceRunning ? 1 : 0,
         (unsigned long long)completion->connectionEpoch,

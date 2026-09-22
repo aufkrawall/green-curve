@@ -30,8 +30,12 @@ static void cli_print_help(FILE* out) {
     HELP_LOG("  greencurve.exe --gpu-offset <mhz> --mem-offset <mhz> --power-limit <pct>\n");
     HELP_LOG("  greencurve.exe --fan <auto|0-100> --point49 <mhz> ... --point127 <mhz>\n");
     HELP_LOG("  greencurve.exe --apply-config [--config <path>]  Apply logon profile slot\n");
-    HELP_LOG("  greencurve.exe --service-install           Install and start background service\n");
-    HELP_LOG("  greencurve.exe --service-remove            Stop and remove background service\n");
+    // "run elevated" is stated here for the same reason it is stated on
+    // --self-test: without it the only feedback was "Failed opening service
+    // manager (error 5)", and README documented this verb as the archive
+    // install step without ever saying which kind of shell it needs.
+    HELP_LOG("  greencurve.exe --service-install           Install and start background service (run elevated)\n");
+    HELP_LOG("  greencurve.exe --service-remove            Stop and remove background service (run elevated)\n");
     HELP_LOG("  greencurve.exe --export-active-settings <path>  Write the currently applied settings to a file (used by setup)\n");
     HELP_LOG("  greencurve.exe --apply-settings-file <path>     Apply settings written by --export-active-settings\n");
     HELP_LOG("  greencurve.exe --set-machine-logon-slot <slot>  Set machine-wide default logon profile (admin only)\n");
