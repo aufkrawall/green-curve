@@ -130,9 +130,11 @@ static bool handle_cli(LPWSTR wCmdLine) {
     // Upgrade settings transfer; the body lives with the verbs it drives.
     if (opts.exportActiveSettings || opts.applySettingsFile) {
         char result[512] = {};
-        bool ok = cli_run_settings_transfer(&opts, result, sizeof(result));
-        CLI_LOG("%s%s\n", ok ? "" : "ERROR: ", result[0] ? result : "Settings transfer failed");
-        g_cliExitCode = ok ? 0 : 1;
+        bool noActive = false;
+        bool ok = cli_run_settings_transfer(&opts, result, sizeof(result), &noActive);
+        CLI_LOG("%s%s\n", (ok || noActive) ? "" : "ERROR: ",
+                result[0] ? result : "Settings transfer failed");
+        g_cliExitCode = ok ? 0 : (noActive ? GC_SETTINGS_TRANSFER_NO_ACTIVE_EXIT_CODE : 1);
         fclose(logf);
         return true;
     }

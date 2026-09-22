@@ -24,6 +24,8 @@
 
 #ifndef GREEN_CURVE_SERVICE_BINARY
 
+#include "settings_transfer_exit_policy.h"
+
 // The snapshot file holds one profile; slot 1 keeps it compatible with the
 // existing reader/writer without inventing a parallel section name.
 #define SETTINGS_TRANSFER_SLOT 1
@@ -38,7 +40,9 @@
 // Fails when nothing is applied.  That is a meaningful answer, not an error to
 // paper over: an upgrade with nothing active must not "restore" a synthesized
 // stock profile onto the GPU afterwards.
-static bool settings_transfer_export(const char* path, char* result, size_t resultSize) {
+static bool settings_transfer_export(const char* path, char* result, size_t resultSize,
+                                     bool* noActiveOut = nullptr) {
+    if (noActiveOut) *noActiveOut = false;
     if (!path || !path[0]) {
         set_message(result, resultSize, "No export path was given");
         return false;
@@ -56,6 +60,7 @@ static bool settings_transfer_export(const char* path, char* result, size_t resu
         return false;
     }
     if (!g_app.serviceActiveDesiredValid) {
+        if (noActiveOut) *noActiveOut = true;
         set_message(result, resultSize,
             "The background service is not holding any applied settings; nothing to export");
         debug_log("settings transfer: export skipped because the service reports no active intent\n");
@@ -266,18 +271,20 @@ static bool settings_transfer_apply(const char* path, char* result, size_t resul
 // it belongs here anyway, beside the functions it calls, for the same reason
 // cli_handle_machine_admin_command() lives with the admin verbs.
 //
-// Returns true when `opts` named one of the verbs (and `*okOut` says how it
-// went), false when this is not a settings-transfer invocation at all.
+// Returns whether the selected transfer completed. The optional output marks
+// the one non-error failure: the service confirmed there is no active intent.
 static bool cli_run_settings_transfer(const CliOptions* opts, char* result,
-                                      size_t resultSize) {
+                                      size_t resultSize, bool* noActiveOut = nullptr) {
     if (result && resultSize) result[0] = 0;
+    if (noActiveOut) *noActiveOut = false;
     if (!opts) return false;
     // Both halves need a live service, which is why the caller runs this after
     // the service-lifecycle commands and before anything that only touches
     // config on disk.
     refresh_background_service_state();
     bool ok = opts->exportActiveSettings
-        ? settings_transfer_export(opts->settingsFilePath, result, resultSize)
+        ? settings_transfer_export(opts->settingsFilePath, result, resultSize,
+                                   noActiveOut)
         : settings_transfer_apply(opts->settingsFilePath, result, resultSize);
     if (!opts->exportActiveSettings && opts->settingsFilePath[0]) {
         // The updater's relaunch helper consumes exactly one attempt.  Delete

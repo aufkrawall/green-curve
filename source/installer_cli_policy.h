@@ -22,6 +22,7 @@
 //                    --launch            start Green Curve afterwards
 //                    --launch-session id the authenticated session to relaunch
 //                                        into (used only by the updater)
+//   --settings-captured-by-gui          updater GUI handled the settings read
 //   /?  -h           --help              usage
 //
 // `/S` and `/D=` keep their NSIS spelling on purpose: the previous releases
@@ -62,6 +63,7 @@ struct GcInstallerOptions {
     GcInstallerToggle launchAfterInstall;
     bool hasLaunchSession;
     unsigned int launchSessionId;
+    bool settingsCaptureHandledByGui;
     bool valid;
     char error[192];
 };
@@ -221,6 +223,8 @@ static inline void gc_installer_parse_options(int argc, const char* const* argv,
             options->launchAfterInstall = GC_TOGGLE_OFF;
         } else if (gc_installer_arg_equals(arg, "--launch")) {
             options->launchAfterInstall = GC_TOGGLE_ON;
+        } else if (gc_installer_arg_equals(arg, "--settings-captured-by-gui")) {
+            options->settingsCaptureHandledByGui = true;
         } else if (gc_installer_arg_equals(arg, "--launch-session")) {
             if (i + 1 >= argc) {
                 gc_installer_reject(options, "Missing session id after ", "--launch-session");
@@ -258,6 +262,9 @@ static inline void gc_installer_parse_options(int argc, const char* const* argv,
     }
     if (options->hasLaunchSession && options->launchAfterInstall != GC_TOGGLE_ON) {
         gc_installer_reject(options, "--launch-session requires ", "--launch");
+    }
+    if (options->settingsCaptureHandledByGui && !options->silent) {
+        gc_installer_reject(options, "--settings-captured-by-gui requires ", "--silent");
     }
 }
 

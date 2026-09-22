@@ -65,6 +65,7 @@
 // classified sentence (service_admin_reason_policy.h).
 #include "service_admin_reason_policy.h"
 #include "log_redaction_policy.h"
+#include "settings_transfer_exit_policy.h"
 
 #ifndef APP_VERSION
 // build.py injects the real version.  The neutral fallback matches the
@@ -269,12 +270,17 @@ struct GcInstallContext {
     // otherwise re-prompt an unattended machine.
     bool requirePathRiskAcknowledgment;
     bool pathRiskAcknowledged;
+    // The in-app updater's GUI already captured (or explicitly declined to
+    // capture) the active intent in the authorized user session. Its SYSTEM
+    // setup child cannot query that session's service state again.
+    bool settingsCaptureHandledByGui;
     // Where the pre-upgrade settings snapshot was written, if one was taken.
     // Sized like every other installer path buffer: the snapshot path is built
     // in GC_INSTALLER_MAX_PATH_CHARS storage, and a narrower field here would
     // truncate it silently into a restore that cannot find its own file.
     WCHAR capturedSettingsPath[GC_INSTALLER_MAX_PATH_CHARS];
     bool haveCapturedSettings;
+    GcSettingsCaptureResult settingsCaptureResult;
     // Outcome of the restore, reported on the final page.  A failed restore does
     // not fail the installation, but silently leaving the GPU at stock after an
     // upgrade is exactly the kind of thing a user should be told about.

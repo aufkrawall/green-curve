@@ -93,8 +93,9 @@ static inline bool gc_update_command_append(char* out, size_t outSize, size_t* a
     return true;
 }
 
-// Build `"<setup>" /S --no-launch --dir "<installDir>"`, or the relaunch form
-// `"<setup>" /S --launch --launch-session <id> --dir "<installDir>"`.
+// Build `"<setup>" /S --no-launch --settings-captured-by-gui --dir
+// "<installDir>"`, or the corresponding relaunch form. The handoff marker is
+// present in both forms because either can be selected after the GUI exits.
 //
 //   /S            silent; the whole point of driving setup from a service.
 //   --dir         the CURRENT install directory. Passing it explicitly matters:
@@ -135,6 +136,10 @@ static inline bool gc_update_build_installer_command_line(const char* setupPath,
         if (!gc_update_command_append(out, outSize, &at, launchSessionId)) {
             out[0] = 0; return false;
         }
+    }
+    if (!gc_update_command_append(out, outSize, &at,
+                                  " --settings-captured-by-gui")) {
+        out[0] = 0; return false;
     }
     if (!gc_update_command_append(out, outSize, &at, " --dir \"")) { out[0] = 0; return false; }
     if (!gc_update_command_append(out, outSize, &at, installDir)) { out[0] = 0; return false; }

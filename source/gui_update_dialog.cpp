@@ -626,10 +626,20 @@ static LRESULT CALLBACK GuiUpdateDialogProc(HWND hwnd, UINT msg,
                 // requested.  Setup's own capture cannot work here: the
                 // updater launches it in session 0, where the service refuses
                 // its helpers.  This process is in the authorized session and
-                // already connected, so it does the job itself.  Failure is
-                // ordinary -- it means nothing is applied -- and never blocks
-                // the update.
-                bool captured = gui_update_capture_settings_for_restore();
+                // already connected, so it does the job itself. A failed read
+                // differs from a confirmed empty state: proceeding can lose
+                // the user's currently applied GPU settings.
+                GcSettingsCaptureResult capture =
+                    gui_update_capture_settings_for_restore();
+                if (capture == GC_SETTINGS_CAPTURE_FAILED &&
+                    gc_message_box(hwnd,
+                        "Green Curve could not save your currently applied settings "
+                        "for this update. The GPU will return to stock when the "
+                        "service stops. Install anyway?",
+                        "Green Curve", MB_YESNO | MB_ICONWARNING) != IDYES) {
+                    return 0;
+                }
+                bool captured = capture == GC_SETTINGS_CAPTURE_SAVED;
 
                 // The capture travels with the request: if the service
                 // refuses the install, the completion handler discards it

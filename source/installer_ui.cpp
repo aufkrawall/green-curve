@@ -124,6 +124,11 @@ static DWORD WINAPI gc_worker_thread(LPVOID parameter) {
                     ? "\n\nYour previous overclock, power, and fan settings were applied again."
                     : "\n\nYour previous settings could NOT be applied again - open Green Curve and "
                       "press Apply. greencurve_cli_log.txt in %LOCALAPPDATA%\\Green Curve says why.";
+            } else if (wizard->install.settingsCaptureResult ==
+                       GC_SETTINGS_CAPTURE_FAILED) {
+                restoreNote = "\n\nSetup could not confirm or save previously applied settings. "
+                              "If you had settings active, open Green Curve and press Apply. "
+                              "See the setup failure log for the capture result.";
             }
             snprintf(wizard->resultMessage, sizeof(wizard->resultMessage),
                      "Green Curve %s is installed in %s and the background service is running.%s%s",

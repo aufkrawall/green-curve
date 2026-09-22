@@ -48,6 +48,7 @@ Program Files.
 - **Moving a setup installation now removes its old folder when empty.** Other files keep the folder in place.
 - **A folder Green Curve no longer uses gets its normal permissions back.**
 - **A failed service install or repair no longer leaves the background service stopped.** The previous service is restored if the new one cannot start.
+- **Updates now warn when applied settings cannot be saved for restoration.** Setup also reports an uncertain settings capture instead of silently finishing at stock.
 - **A slow service start is no longer reported as a failure**, and a real
   failure is reported at once.
 - **Declining the Windows elevation prompt is no longer reported as an error.**

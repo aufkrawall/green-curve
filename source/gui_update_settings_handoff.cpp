@@ -45,9 +45,9 @@
 //
 // So: the GUI exports before it asks for the install, and the relaunched GUI
 // replays it through the ordinary `--apply-settings-file` CLI verb.  Setup's
-// own capture still runs and still fails in session 0, harmlessly -- it is
-// already written to tolerate that, and leaving it alone keeps the interactive
-// install path byte-for-byte unchanged.
+// own capture is skipped by an explicit updater handoff flag in both launch
+// modes; session 0 cannot make a trustworthy second read. Interactive setup
+// continues to capture the live settings itself.
 //
 // ## Degrading well
 //
@@ -73,27 +73,29 @@ static bool gui_update_pending_restore_path(const char* leaf, char* out, size_t 
 
 // Capture the applied settings just before asking the service to install.
 //
-// Returns false when there is nothing to carry, which is a perfectly ordinary
-// outcome: `settings_transfer_export()` deliberately fails when the service
-// holds no active intent, because an upgrade with nothing applied must not
-// "restore" a synthesized stock profile afterwards.
-static bool gui_update_capture_settings_for_restore() {
+// Returns a distinct no-intent result only after the service has been read
+// successfully. A transport or file failure needs a warning before the update
+// stops the service and returns the GPU to stock.
+static GcSettingsCaptureResult gui_update_capture_settings_for_restore() {
     char path[MAX_PATH] = {};
     if (!gui_update_pending_restore_path(GC_UPDATE_PENDING_RESTORE_NAME,
                                          path, sizeof(path))) {
         debug_log("update handoff: cannot resolve the pending-restore path\n");
-        return false;
+        return GC_SETTINGS_CAPTURE_FAILED;
     }
     // A leftover from an abandoned attempt must not be replayed later as if it
     // were this update's settings.
     gc_DeleteFileUtf8(path);
 
     char result[512] = {};
-    if (!settings_transfer_export(path, result, sizeof(result))) {
-        debug_log("update handoff: nothing to carry across the update: %s\n",
+    bool noActive = false;
+    if (!settings_transfer_export(path, result, sizeof(result), &noActive)) {
+        debug_log("update handoff: capture %s: %s\n",
+                  noActive ? "confirmed no active intent" : "failed",
                   result[0] ? result : "unknown");
         gc_DeleteFileUtf8(path);
-        return false;
+        return noActive ? GC_SETTINGS_CAPTURE_NONE_ACTIVE :
+                          GC_SETTINGS_CAPTURE_FAILED;
     }
     ServiceUpdateState updateValue = {};
     const ServiceUpdateState* update =
@@ -101,18 +103,18 @@ static bool gui_update_capture_settings_for_restore() {
     if (!update || !update->availableVersion[0]) {
         debug_log("update handoff: no authenticated available version; discarding capture\n");
         gc_DeleteFileUtf8(path);
-        return false;
+        return GC_SETTINGS_CAPTURE_FAILED;
     }
     if (!set_config_string(path, GC_UPDATE_RESTORE_SECTION,
                            GC_UPDATE_RESTORE_VERSION_KEY,
                            update->availableVersion)) {
         debug_log("update handoff: could not bind capture to the update version; discarding\n");
         gc_DeleteFileUtf8(path);
-        return false;
+        return GC_SETTINGS_CAPTURE_FAILED;
     }
     debug_log("update handoff: captured active settings for restore: %s\n",
               result[0] ? result : "ok");
-    return true;
+    return GC_SETTINGS_CAPTURE_SAVED;
 }
 
 static void gui_update_discard_pending_restore() {

@@ -582,6 +582,21 @@ def check_all(ctx, require_text, forbid_text):
                  "the extracted payload is checksummed before use")
 
     apply_shard = source("installer_apply.cpp")
+    require_text(apply_shard, "gc_settings_capture_attempt_result(",
+                 "setup distinguishes an empty active state from an export failure")
+    require_text(source("installer_ui.cpp"), "GC_SETTINGS_CAPTURE_FAILED",
+                 "the completion page reports an unconfirmed settings capture")
+    require_text(source("entry.cpp"), "GC_SETTINGS_TRANSFER_NO_ACTIVE_EXIT_CODE",
+                 "the CLI exposes the confirmed no-active result to setup")
+    require_text(source("gui_update_settings_handoff.cpp"),
+                 "return noActive ? GC_SETTINGS_CAPTURE_NONE_ACTIVE :",
+                 "the updater distinguishes an empty active state from capture failure")
+    require_text(source("gui_update_dialog.cpp"),
+                 "capture == GC_SETTINGS_CAPTURE_FAILED",
+                 "the updater warns before an update that cannot preserve settings")
+    require_text(source("installer_main.cpp"),
+                 "context.settingsCaptureHandledByGui = options->settingsCaptureHandledByGui",
+                 "the updater setup child does not retry an unauthorized session-0 capture")
     # Ordering is the correctness property of an upgrade: capture the live
     # settings while the old build is still running, then stop it, then replace
     # its files.  Anchored to gc_install_execute() so the checks read call order

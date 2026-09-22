@@ -97,6 +97,7 @@ static int gc_run_silent_install(const GcInstallerOptions* options, const GcPrio
                                  const char* defaultDirectory) {
     GcInstallContext context = {};
     gc_install_build_plan(options, prior, defaultDirectory, &context.plan);
+    context.settingsCaptureHandledByGui = options->settingsCaptureHandledByGui;
     if (!context.plan.valid) {
         gc_log_fail("silent: %s", context.plan.error);
         return GC_EXIT_BAD_ARGUMENTS;

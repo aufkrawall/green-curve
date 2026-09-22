@@ -161,26 +161,30 @@ bool gc_default_install_directory(char* out, size_t outCount) {
 // Settings capture and explicit re-apply
 // ---------------------------------------------------------------------------
 
-// Run one `--export-active-settings` attempt and report whether it produced a
-// snapshot.  The exit code alone is not the answer: only a readable file is.
-static bool gc_try_export_active_settings(const WCHAR* exePath, const WCHAR* snapshot,
-                                          const char* which) {
+// Run one `--export-active-settings` attempt. Only a successful exit with a
+// readable file counts as a capture; the distinct no-intent exit is trustworthy
+// only from a client that completed the service read.
+static GcSettingsCaptureResult gc_try_export_active_settings(
+    const WCHAR* exePath, const WCHAR* snapshot, const char* which) {
     if (!gc_file_exists(exePath)) {
         gc_log_step("capture: no %hs binary at the expected path", which);
-        return false;
+        return GC_SETTINGS_CAPTURE_FAILED;
     }
     WCHAR commandLine[2048] = {};
     if (FAILED(StringCchPrintfW(commandLine, GC_ARRAY_COUNT(commandLine),
                                 L"\"%ls\" --export-active-settings \"%ls\"", exePath, snapshot))) {
-        return false;
+        return GC_SETTINGS_CAPTURE_FAILED;
     }
     DWORD exitCode = (DWORD)-1;
     bool ran = gc_run_and_wait(exePath, commandLine, GC_APP_EXPORT_TIMEOUT_MS, &exitCode);
-    bool produced = ran && exitCode == 0 && gc_file_exists(snapshot);
-    gc_log_step("capture: %hs binary export ran=%d exit=%lu snapshot=%d",
-                which, ran ? 1 : 0, exitCode, produced ? 1 : 0);
-    if (!produced) DeleteFileW(snapshot);
-    return produced;
+    bool readable = gc_file_exists(snapshot);
+    GcSettingsCaptureResult outcome = gc_settings_capture_attempt_result(
+        ran, exitCode, readable);
+    gc_log_step("capture: %hs binary export ran=%d exit=%lu snapshot=%d result=%d",
+                 which, ran ? 1 : 0, exitCode, readable ? 1 : 0,
+                 (int)outcome);
+    if (outcome != GC_SETTINGS_CAPTURE_SAVED) DeleteFileW(snapshot);
+    return outcome;
 }
 
 // Ask the running service for its live settings before anything is stopped.
@@ -203,16 +207,19 @@ static bool gc_try_export_active_settings(const WCHAR* exePath, const WCHAR* sna
 // can leave a process behind holding the files about to be replaced.
 static void gc_capture_active_settings(GcInstallContext* context) {
     if (!context || !context->plan.captureActiveSettings) return;
+    context->settingsCaptureResult = GC_SETTINGS_CAPTURE_FAILED;
     const GcPayloadFile* gui = gc_payload_find(&context->payload, GC_SETUP_GUI_EXE);
     if (!gui) {
-        gc_log_step("capture: the payload carries no %s; skipping the settings snapshot", GC_SETUP_GUI_EXE);
+        gc_log_fail("capture: the payload carries no %s; cannot confirm active settings",
+                    GC_SETUP_GUI_EXE);
         return;
     }
 
     WCHAR scratch[GC_INSTALLER_MAX_PATH_CHARS] = {};
     if (!gc_create_private_temp_directory(
             scratch, GC_ARRAY_COUNT(scratch))) {
-        gc_log_step("capture: could not create an administrator-only scratch folder; skipping the settings snapshot");
+        gc_log_fail("capture: could not create an administrator-only scratch folder; "
+                    "cannot confirm active settings");
         return;
     }
     WCHAR snapshot[GC_INSTALLER_MAX_PATH_CHARS] = {};
@@ -225,7 +232,7 @@ static void gc_capture_active_settings(GcInstallContext* context) {
         // damaged download cannot be executed here either.
         ok = gc_write_payload_file(scratch, gui, nullptr);
     }
-    bool captured = false;
+    GcSettingsCaptureResult capture = GC_SETTINGS_CAPTURE_FAILED;
     if (ok && context->plan.captureFromInstalledBinary) {
         WCHAR installedDirectory[GC_INSTALLER_MAX_PATH_CHARS] = {};
         WCHAR installedExe[GC_INSTALLER_MAX_PATH_CHARS] = {};
@@ -233,11 +240,13 @@ static void gc_capture_active_settings(GcInstallContext* context) {
                             (int)GC_ARRAY_COUNT(installedDirectory)) &&
             gc_join_path(installedDirectory, GC_SETUP_GUI_EXE_W, installedExe,
                          GC_ARRAY_COUNT(installedExe))) {
-            captured = gc_try_export_active_settings(installedExe, snapshot, "installed");
+            capture = gc_try_export_active_settings(installedExe, snapshot, "installed");
         }
     }
-    if (ok && !captured) captured = gc_try_export_active_settings(exePath, snapshot, "payload");
-    if (captured) {
+    if (ok && capture == GC_SETTINGS_CAPTURE_FAILED)
+        capture = gc_try_export_active_settings(exePath, snapshot, "payload");
+    context->settingsCaptureResult = capture;
+    if (capture == GC_SETTINGS_CAPTURE_SAVED) {
         // Keep the settings in the same administrator-only directory until the
         // new build consumes them. Moving them back to the ordinary user TEMP
         // root would re-open a replacement window after the executable race was
@@ -246,12 +255,13 @@ static void gc_capture_active_settings(GcInstallContext* context) {
             GC_ARRAY_COUNT(context->capturedSettingsPath), snapshot);
         context->haveCapturedSettings = true;
         gc_log_step("capture: active settings snapshot written to protected path");
+    } else if (capture == GC_SETTINGS_CAPTURE_NONE_ACTIVE) {
+        gc_log_step("capture: service confirmed no active intent; no restore needed");
     } else {
-        // Not fatal: most often nothing is applied right now, which is a real
-        // answer rather than an error.  The upgrade proceeds and simply does not
-        // restore anything afterwards.
-        gc_log_step("capture: no settings snapshot from either binary. "
-                    "The upgrade will not re-apply settings.");
+        // An old helper cannot distinguish no intent from a failed service
+        // read. State the uncertainty instead of reporting a clean upgrade.
+        gc_log_fail("capture: could not confirm or save the previous active "
+                    "settings; the upgrade will not re-apply them");
     }
     DeleteFileW(exePath);
     if (!context->haveCapturedSettings) {
@@ -724,7 +734,11 @@ bool gc_install_execute(GcInstallContext* context) {
     GcCapturedSettingsGuard capturedSettingsGuard = {context};
 
     // 2. Capture: after the next step there is nothing left to ask.
-    gc_capture_active_settings(context);
+    if (!context->settingsCaptureHandledByGui) {
+        gc_capture_active_settings(context);
+    } else {
+        gc_log_step("capture: handled by the authorized update GUI before setup launched");
+    }
 
     // 3. Nothing may hold the files open once extraction starts.
     if (!gc_stop_gui_processes(context)) {

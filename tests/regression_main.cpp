@@ -98,6 +98,7 @@
 #include "installer_archive_policy.h"
 #include "installer_cli_policy.h"
 #include "installer_plan_policy.h"
+#include "settings_transfer_exit_policy.h"
 #include "installer_uninstall_policy.h"
 #include "installer_ui_click_policy.h"
 // May a folder's permissions be rewritten to register a service out of it, and
@@ -11815,6 +11816,25 @@ static int run_all_tests_middle(char** argv) {
         if (!gc_install_directory_is_acceptable("C:\\Apps\\.hidden\\Green Curve", &reason)) return 1788;
     }
     {
+        // A service-confirmed empty state must be distinct from a transport,
+        // process, or snapshot failure. Older helpers return 1 for both.
+        if (gc_settings_capture_attempt_result(true, 0, true) !=
+            GC_SETTINGS_CAPTURE_SAVED) return 5790;
+        if (gc_settings_capture_attempt_result(true,
+                GC_SETTINGS_TRANSFER_NO_ACTIVE_EXIT_CODE, false) !=
+            GC_SETTINGS_CAPTURE_NONE_ACTIVE) return 5791;
+        if (gc_settings_capture_attempt_result(true, 1, false) !=
+            GC_SETTINGS_CAPTURE_FAILED) return 5792;
+        if (gc_settings_capture_attempt_result(false,
+                GC_SETTINGS_TRANSFER_NO_ACTIVE_EXIT_CODE, false) !=
+            GC_SETTINGS_CAPTURE_FAILED) return 5793;
+        if (gc_settings_capture_attempt_result(true, 0, false) !=
+            GC_SETTINGS_CAPTURE_FAILED) return 5794;
+        if (gc_settings_capture_attempt_result(true,
+                GC_SETTINGS_TRANSFER_NO_ACTIVE_EXIT_CODE, true) !=
+            GC_SETTINGS_CAPTURE_FAILED) return 5795;
+    }
+    {
         const char* defaultDirectory = "C:\\Program Files\\Green Curve";
         GcInstallerOptions options = {};
         GcPriorInstall prior = {};
@@ -14080,6 +14100,7 @@ static int run_all_tests_final() {
         if (!strstr(cmd, "--dir \"C:\\Program Files\\Green Curve\"")) return 4262;
         if (!strstr(cmd, " /S ")) return 4263;
         if (!strstr(cmd, "--no-launch")) return 4264;
+        if (!strstr(cmd, " --settings-captured-by-gui ")) return 5796;
         // `/D=` must not reappear: it is the form that broke.
         if (strstr(cmd, "/D=")) return 4265;
 
@@ -14094,6 +14115,7 @@ static int run_all_tests_final() {
             return 4264;
         if (!strstr(relaunch, " --launch ")) return 4264;
         if (!strstr(relaunch, " --launch-session 7 ")) return 4264;
+        if (!strstr(relaunch, " --settings-captured-by-gui ")) return 5797;
         if (strstr(relaunch, "--no-launch")) return 4264;
 
         // Paths that cannot be expressed as one argv entry are refused rather
@@ -14160,6 +14182,7 @@ static int run_all_tests_final() {
                 return 4269;
             if (options.launchAfterInstall != GC_TOGGLE_OFF) return 4269;
             if (options.hasLaunchSession) return 4269;
+            if (!options.settingsCaptureHandledByGui) return 5798;
             if (options.mode != GC_INSTALLER_MODE_INSTALL) return 4269;
         }
 #endif
@@ -14222,6 +14245,8 @@ static int run_all_tests_final() {
         if (gc_update_session_id_is_quotable("7a")) return 4278;
 
         const char* valid[] = {"--launch", "--launch-session", "7"};
+        const char* handoff[] = {"--silent", "--no-launch", "--settings-captured-by-gui"};
+        const char* invalidHandoff[] = {"--settings-captured-by-gui"};
         const char* noLaunch[] = {"--launch-session", "7"};
         const char* badSession[] = {"--launch", "--launch-session", "7a"};
         const char* tooHigh[] = {"--launch", "--launch-session", "4294967296"};
@@ -14229,6 +14254,11 @@ static int run_all_tests_final() {
         gc_installer_parse_options(3, valid, &options);
         if (!options.valid || !options.hasLaunchSession ||
             options.launchSessionId != 7) return 4279;
+        if (options.settingsCaptureHandledByGui) return 5799;
+        gc_installer_parse_options(3, handoff, &options);
+        if (!options.valid || !options.settingsCaptureHandledByGui) return 5800;
+        gc_installer_parse_options(1, invalidHandoff, &options);
+        if (options.valid) return 5801;
         gc_installer_parse_options(2, noLaunch, &options);
         if (options.valid) return 4280;
         gc_installer_parse_options(3, badSession, &options);
