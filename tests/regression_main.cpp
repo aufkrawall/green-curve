@@ -838,6 +838,8 @@ static int run_all_tests_middle(char** argv);
 static int run_all_tests_final();
 
 int run_clock_transition_tests();
+// Service registration / install-location suite (tests/service_install_tests.cpp).
+int run_service_install_tests();
 // F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
 // are over a kilobyte each and several are live at once; under ASan's
 // redzones that is enough to overflow main()'s frame, which already carries
@@ -1079,6 +1081,13 @@ static int run_persistence_schema_tests() {
 
 int main(int argc, char** argv) {
     if (int transitionFailure = run_clock_transition_tests()) return transitionFailure;
+    if (int installFailure = run_service_install_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", installFailure);
+#if !defined(_WIN32)
+        return installFailure > 0 && installFailure < 126 ? installFailure : 1;
+#endif
+        return installFailure;
+    }
 
     int code = run_all_tests(argc, argv);
     if (code != 0) {
@@ -5528,7 +5537,7 @@ static int run_all_tests(int argc, char** argv) {
         if (gc_service_location_shape_verdict(L"\\") != GC_SVC_LOCATION_EMPTY) return 5632;
         if (gc_service_location_shape_verdict(L"\\\\") != GC_SVC_LOCATION_EMPTY) return 5660;
         // Every verdict must name itself; an unnamed one would log as a number.
-        for (int v = GC_SVC_LOCATION_OK; v <= GC_SVC_LOCATION_REPARSE; v++) {
+        for (int v = GC_SVC_LOCATION_OK; v < GC_SVC_LOCATION_VERDICT_COUNT; v++) {
             const char* name = gc_service_location_verdict_name(v);
             if (!name || !name[0] || strcmp(name, "unknown") == 0) return 5633;
         }
@@ -5660,8 +5669,10 @@ static int run_all_tests(int argc, char** argv) {
         // installer_register.cpp), so this one relationship covers every
         // parent of the helper (service_admin_reason_policy.h).
         if (GC_SVC_SCM_STATE_WAIT_MS < 30000ul) return 5661;
-        if (GC_SVC_ADMIN_HELPER_TIMEOUT_MS <= 2 * GC_SVC_SCM_STATE_WAIT_MS) return 5662;
-        if (GC_SVC_ADMIN_HELPER_TIMEOUT_MS < 2 * GC_SVC_SCM_STATE_WAIT_MS + 30000ul) return 5663;
+        // Each transition may now run to GC_SCM_WAIT_MAX_TOTAL_MS while the
+        // service keeps reporting progress (service_scm_wait_policy.h).
+        if (GC_SVC_ADMIN_HELPER_TIMEOUT_MS <= 2 * GC_SCM_WAIT_MAX_TOTAL_MS) return 5662;
+        if (GC_SVC_ADMIN_HELPER_TIMEOUT_MS < 2 * GC_SCM_WAIT_MAX_TOTAL_MS + 30000ull) return 5663;
 
         // (DWORD)-1 is what a helper that could not even be LAUNCHED reports
         // back through GetExitCodeProcess.  Decoding it must land on UNKNOWN

@@ -64,6 +64,7 @@
 // GUI drives, so they wait on the same derived budget and render the same
 // classified sentence (service_admin_reason_policy.h).
 #include "service_admin_reason_policy.h"
+#include "log_redaction_policy.h"
 
 #ifndef APP_VERSION
 // build.py injects the real version.  The neutral fallback matches the
@@ -127,6 +128,11 @@ void gc_log_init(const WCHAR* overridePath);
 [[gnu::format(printf, 1, 2)]] void gc_log_step(const char* fmt, ...);
 [[gnu::format(printf, 1, 2)]] void gc_log_fail(const char* fmt, ...);
 bool gc_log_had_failure();
+// The failure log's spelling of a folder: verbatim, except inside a user
+// profile, where the path carries an account name and is replaced by a stable
+// token (the same one the application's own logs use, log_redaction_policy.h).
+#define GC_INSTALLER_LOG_PATH_LABEL_CHARS 600
+void gc_log_path_label(const WCHAR* path, char* out, size_t outSize);
 // Flush the buffered transcript to disk if (and only if) a failure was
 // recorded.  Returns the path written, or nullptr when nothing was written.
 const WCHAR* gc_log_flush_on_failure();

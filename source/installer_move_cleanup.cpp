@@ -8,25 +8,26 @@
 
 namespace {
 
-void gc_release_previous_dacl(const WCHAR* previous) {
-    DWORD result = SetNamedSecurityInfoW((LPWSTR)previous, SE_FILE_OBJECT,
-        DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
-        nullptr, nullptr, nullptr, nullptr);
-    if (result == ERROR_SUCCESS)
-        gc_log_step("previous directory: %ls reverted to inherited permissions", previous);
-    else
-        gc_log_step("previous directory: could not revert permissions on %ls (error %lu)",
-                    previous, result);
+// Release the hardening the previous service install applied, so the user
+// can delete what is left.  release_service_hardening() only acts on a DACL
+// that is exactly the one Green Curve writes, and restores inheritance with an
+// EMPTY explicit ACL -- never a null one, which Windows stores as "no DACL",
+// i.e. Everyone: Full Control.
+void gc_release_previous_dacl(const WCHAR* previous, const char* label) {
+    char aclErr[160] = {};
     WCHAR previousService[GC_INSTALLER_MAX_PATH_CHARS] = {};
     if (gc_join_path(previous, GC_SETUP_SERVICE_EXE_W, previousService,
-                     GC_ARRAY_COUNT(previousService)) && gc_file_exists(previousService)) {
-        DWORD fileResult = SetNamedSecurityInfoW(previousService, SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
-            nullptr, nullptr, nullptr, nullptr);
-        if (fileResult != ERROR_SUCCESS)
-            gc_log_step("previous directory: could not revert service file permissions "
-                        "on %ls (error %lu)", previousService, fileResult);
+                     GC_ARRAY_COUNT(previousService))) {
+        int fileResult = release_service_hardening(previousService, GC_SERVICE_ACL_BINARY,
+                                                   aclErr, sizeof(aclErr));
+        gc_log_step("previous directory: service binary release in %s -> %s%s%s", label,
+                    service_release_result_name(fileResult), aclErr[0] ? ": " : "", aclErr);
     }
+    aclErr[0] = 0;
+    int result = release_service_hardening(previous, GC_SERVICE_ACL_DIRECTORY,
+                                           aclErr, sizeof(aclErr));
+    gc_log_step("previous directory: folder release %s -> %s%s%s", label,
+                service_release_result_name(result), aclErr[0] ? ": " : "", aclErr);
 }
 
 } // namespace
@@ -41,10 +42,12 @@ void gc_retire_previous_directory(GcInstallContext* context) {
         gc_log_step("previous directory: cleanup skipped because a path could not be decoded");
         return;
     }
+    char label[GC_INSTALLER_LOG_PATH_LABEL_CHARS] = {};
+    gc_log_path_label(previous, label, sizeof(label));
     GcCleanupDirectoryIdentity oldIdentity = {};
     GcCleanupDirectoryIdentity newIdentity = {};
     if (!gc_read_cleanup_directory(previous, &oldIdentity)) {
-        gc_log_step("previous directory: absent, unreadable, or a reparse point: %ls", previous);
+        gc_log_step("previous directory: absent, unreadable, or a reparse point: %s", label);
         return;
     }
     if (gc_install_input_paths_overlap_or_unresolved(previous, target) ||
@@ -53,7 +56,7 @@ void gc_retire_previous_directory(GcInstallContext* context) {
         // Releasing the old ACL when it is an ancestor of the new service
         // would make that service's binary path writable again.
         gc_log_step("previous directory: cleanup and ACL release skipped because "
-                    "the new directory could not be verified as disjoint: %ls", previous);
+                    "the new directory could not be verified as disjoint: %s", label);
         return;
     }
 
@@ -62,16 +65,16 @@ void gc_retire_previous_directory(GcInstallContext* context) {
         GcPreviousFileCleanup cleanup = gc_remove_previous_setup_files(previous);
         context->previousDirectoryRemoved = cleanup.removed;
         gc_log_step("previous directory: owned files deleted=%u failed=%u "
-                    "firstFailure=%ls firstError=%lu folderRemoved=%d folderError=%lu at %ls",
+                    "firstFailure=%ls firstError=%lu folderRemoved=%d folderError=%lu at %s",
                     cleanup.deleted, cleanup.failed,
                     cleanup.firstFailedName ? cleanup.firstFailedName : L"none",
                     cleanup.firstFileError, cleanup.removed ? 1 : 0,
-                    cleanup.directoryError, previous);
+                    cleanup.directoryError, label);
         if (cleanup.removed) return;
     } else {
-        gc_log_step("previous directory: retaining files (setupManaged=%d location=%s) at %ls",
+        gc_log_step("previous directory: retaining files (setupManaged=%d location=%s) at %s",
                     context->plan.cleanupPreviousDirectory ? 1 : 0,
-                    gc_service_location_verdict_name(location), previous);
+                    gc_service_location_verdict_name(location), label);
     }
-    gc_release_previous_dacl(previous);
+    gc_release_previous_dacl(previous, label);
 }

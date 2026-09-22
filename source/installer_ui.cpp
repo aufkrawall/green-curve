@@ -215,8 +215,10 @@ static bool gc_commit_folder_page(GcWizard* wizard) {
         return false;
     }
     gc_refresh_folder_protection(wizard, chosenWide);
-    gc_log_step("folder page: chosen=%ls protected=%d reason=%d acknowledged=%d",
-                chosenWide, wizard->folderProtection.verdict.chain_protected ? 1 : 0,
+    char chosenLabel[GC_INSTALLER_LOG_PATH_LABEL_CHARS] = {};
+    gc_log_path_label(chosenWide, chosenLabel, sizeof(chosenLabel));
+    gc_log_step("folder page: chosen=%s protected=%d reason=%d acknowledged=%d",
+                chosenLabel, wizard->folderProtection.verdict.chain_protected ? 1 : 0,
                 (int)wizard->folderProtection.verdict.reason,
                 wizard->riskAccepted ? 1 : 0);
     if (gc_path_protection_requires_acknowledgment(&wizard->folderProtection.verdict) &&

@@ -34,7 +34,68 @@ bool apply_protected_service_dir_dacl(const wchar_t* path, char* err, size_t err
 
 // Re-enable inheritance and drop the explicit protected DACL from `path`, so the
 // object inherits its parent directory's ACLs again (used on uninstall).
+// Unconditional: callers that release a folder they did not just create use
+// release_service_hardening() instead, which proves the DACL is ours first.
 bool restore_inherited_dacl(const wchar_t* path, char* err, size_t errSize);
+
+// ---------------------------------------------------------------------------
+// Handle-bound service hardening.
+//
+// Every check before a DACL write and the write itself must name the SAME
+// object.  SetNamedSecurityInfoW re-resolves the path and follows reparse
+// points, so a folder a standard account can rename could be swapped for a
+// junction between the elevated caller's checks and its write -- and the
+// elevated caller would then rewrite the DACL of whatever the junction names.
+// These functions take a handle the caller opened with
+// FILE_FLAG_OPEN_REPARSE_POINT (and, to pin the object while it works,
+// without FILE_SHARE_DELETE), and verify through that same handle.
+// ---------------------------------------------------------------------------
+
+enum GcServiceAclKind {
+    GC_SERVICE_ACL_DIRECTORY = 0,   // D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)
+    GC_SERVICE_ACL_BINARY = 1       // D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)
+};
+
+// True when `sd` carries EXACTLY the protected DACL Green Curve writes for
+// `kind`: inheritance disabled and precisely the three ACEs above, in any
+// order.  This is the proof of ownership a release needs -- Program Files,
+// System32 or a user's Downloads never carry exactly this DACL, so a folder
+// that does was hardened by Green Curve (any build: the SDDL never changed).
+// (`securityDescriptor` is a PSECURITY_DESCRIPTOR; void* keeps this header
+// includable by the host-neutral regression harness.)
+bool service_security_descriptor_is_ours(void* securityDescriptor, GcServiceAclKind kind);
+bool service_handle_dacl_is_ours(void* handle, GcServiceAclKind kind);
+// Owner is BUILTIN\Administrators.  A standard-user owner keeps implicit
+// WRITE_DAC and could re-grant itself write to a hardened folder.
+bool service_handle_owner_is_administrators(void* handle);
+
+// Opens `path` without following a leaf reparse point and answers
+// service_handle_dacl_is_ours.  False for anything it cannot open or read.
+bool service_path_dacl_is_ours(const wchar_t* path, GcServiceAclKind kind);
+
+// Apply the protected DACL through `handle` (opened with READ_CONTROL |
+// WRITE_DAC | WRITE_OWNER).  With `requireAdminOwner` the owner change is part
+// of the SAME call and its failure fails the hardening; without it (the
+// unelevated regression harness) the owner change is attempted separately and
+// may be refused.  Verified by reading the descriptor back from the handle.
+bool apply_protected_service_dacl_to_handle(void* handle, GcServiceAclKind kind,
+                                            bool requireAdminOwner,
+                                            char* err, size_t errSize);
+
+// Undo Green Curve's hardening of `path`, but only if the DACL there is
+// provably ours (service_security_descriptor_is_ours).  Anything else -- a
+// system folder, a folder someone re-ACLed since, a reparse point -- is left
+// exactly as it is.  The inherited DACL is restored with an EMPTY explicit
+// ACL, never a null one: a null DACL is "Everyone: Full Control".
+enum GcServiceReleaseResult {
+    GC_SERVICE_RELEASE_RELEASED = 0,
+    GC_SERVICE_RELEASE_NOT_OURS,
+    GC_SERVICE_RELEASE_ABSENT,
+    GC_SERVICE_RELEASE_FAILED
+};
+int release_service_hardening(const wchar_t* path, GcServiceAclKind kind,
+                              char* err, size_t errSize);
+const char* service_release_result_name(int result);
 
 // Gather Win32 facts about `path` and classify them into `out` (see
 // service_path_chain_policy.h for the property and the fail-safe rule).  Never
@@ -81,9 +142,22 @@ bool machine_config_dacl_is_hardened(const wchar_t* path);
 // own", because registering the service REPLACES the folder's DACL with an
 // administrators-only-write one and propagates it to everything already inside.
 // Returns a GcServiceLocationVerdict; GC_SVC_LOCATION_OK means it may proceed.
-// Refuses a drive root, a UNC share root, and any well-known shell folder
-// (the user profile, Desktop, Downloads, Documents, AppData, ProgramData,
-// Program Files, the Windows directory, ...) by exact match - a SUBFOLDER of
-// any of those is fine, which is what keeps C:\Program Files\Green Curve and
-// a deliberate portable folder working.
+// Refuses a drive root, a UNC share root, any well-known shell folder (the
+// user profile, Desktop, Downloads, Documents, AppData, ProgramData, Program
+// Files, ...) by directory identity, anything inside the Windows directory,
+// and an existing folder that holds files that are not Green Curve's -- unless
+// Green Curve already hardened it.  A dedicated subfolder is fine, which keeps
+// C:\Program Files\Green Curve and a deliberate portable folder working.
+// Implemented in service_install_location.cpp.
 int gc_service_install_location_verdict(const wchar_t* directory);
+// Same verdict, with the existing directory's identity, reparse state and
+// content read through `directoryHandle` -- the handle the caller is about to
+// harden through -- instead of a fresh open by name.  The handle needs
+// FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL and must have
+// been opened with FILE_FLAG_OPEN_REPARSE_POINT.
+int gc_service_install_location_verdict_for_handle(const wchar_t* directory,
+                                                   void* directoryHandle);
+// Both of the above, plus what was seen (for the log line; never names).
+// `directoryHandle` may be null; `detailOut` may be null.
+int gc_service_install_location_verdict_detailed(const wchar_t* directory, void* directoryHandle,
+                                                 GcServiceLocationDetail* detailOut);

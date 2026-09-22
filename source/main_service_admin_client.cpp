@@ -267,23 +267,6 @@ static bool launch_startup_task_admin_helper(bool enable, char* err, size_t errS
     return true;
 }
 
-static bool get_adjacent_service_binary_path(WCHAR* out, size_t outCount, char* err, size_t errSize) {
-    if (!out || outCount == 0) return false;
-    out[0] = 0;
-    WCHAR exeDir[MAX_PATH] = {};
-    if (!get_current_executable_directory_w(exeDir, ARRAY_COUNT(exeDir), err, errSize)) return false;
-    if (FAILED(StringCchPrintfW(out, outCount, L"%ls\\%ls", exeDir, APP_SERVICE_EXE_NAME_W))) {
-        set_message(err, errSize, "Service binary path is too long");
-        return false;
-    }
-    if (!file_is_regular_no_reparse_w(out)) {
-        set_message(err, errSize, "Service binary is missing or unsafe");
-        return false;
-    }
-    return true;
-}
-
-
 // True if `dir` is located under a Windows user profile directory (e.g.
 // C:\Users\<name>\...).  This catches the common portable-install mistake of
 // running greencurve.exe from inside an admin's profile, which makes the GUI
@@ -300,208 +283,6 @@ static bool get_secure_service_install_dir_w(WCHAR* out, size_t outCount, char* 
     if (!out || outCount == 0) return false;
     out[0] = 0;
     return get_current_executable_directory_w(out, outCount, err, errSize);
-}
-
-static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char* err, size_t errSize,
-                                              int* reasonOut = nullptr) {
-    if (!out || outCount == 0) return false;
-    out[0] = 0;
-
-    WCHAR sourcePath[MAX_PATH] = {};
-    if (!get_adjacent_service_binary_path(sourcePath, ARRAY_COUNT(sourcePath), err, errSize)) {
-        // The only way this fails is "greencurve-service.exe is not beside
-        // greencurve.exe, or is not a plain file". A partially extracted
-        // archive and an antivirus quarantine both land here, and both are
-        // things the user can check in ten seconds once told.
-        if (reasonOut) *reasonOut = GC_SVC_ADMIN_BINARY_MISSING;
-        set_message(err, errSize, "%s", gc_service_admin_reason_text(GC_SVC_ADMIN_BINARY_MISSING));
-        return false;
-    }
-
-    WCHAR installDir[MAX_PATH] = {};
-    if (!get_secure_service_install_dir_w(installDir, ARRAY_COUNT(installDir), err, errSize)) {
-        if (reasonOut) *reasonOut = GC_SVC_ADMIN_LOCATION_REFUSED;
-        return false;
-    }
-
-    // MAY we harden this folder at all?  This is not the protection
-    // classification below -- it is the question that one never asked.
-    // Registering the service REPLACES this folder's DACL with an
-    // administrators-only-write one and propagates it to everything already
-    // inside, so a folder that is not plausibly Green Curve's own must be
-    // refused BEFORE the first DACL write, not warned about afterwards.
-    // README says "extract the .7z archive anywhere", and 7-Zip's Extract Here
-    // into Downloads is the obvious way to do that; setup has refused a bad
-    // destination since it existed, the portable path refused nothing.
-    int locationVerdict = gc_service_install_location_verdict(installDir);
-    if (locationVerdict != GC_SVC_LOCATION_OK) {
-        char dirToken[32] = {};
-        gc_log_wide_identifier_token(installDir, dirToken, sizeof(dirToken));
-        debug_log("service install: REFUSED location token %s verdict=%s; "
-                  "hardening it would take write access to a folder that is not ours\n",
-                  dirToken, gc_service_location_verdict_name(locationVerdict));
-        if (reasonOut) *reasonOut = GC_SVC_ADMIN_LOCATION_REFUSED;
-        set_message(err, errSize, "%s", gc_service_admin_reason_text(GC_SVC_ADMIN_LOCATION_REFUSED));
-        return false;
-    }
-
-    // How well can this location be protected?  (See
-    // service_path_chain_policy.h.)  F-SEC-1 in one line: a LocalSystem
-    // service binary in a folder standard accounts can write is SYSTEM code
-    // execution waiting to happen.  The classification never blocks - the
-    // administrator picked this folder and portable use must work everywhere -
-    // but every verdict is logged and a filesystem that cannot express a DACL
-    // at all is handled as an explicit, loud capability gap.
-    GcPathProtectionReport protection = {};
-    classify_path_protection(installDir, &protection, true);
-    debug_log("service install: path protection protected=%d standardWritable=%d profile=%d "
-              "remote=%d noFilesystemPermissions=%d reason=%d\n",
-              protection.verdict.chain_protected ? 1 : 0,
-              protection.verdict.standard_writable ? 1 : 0,
-              protection.verdict.user_profile ? 1 : 0,
-              protection.verdict.remote ? 1 : 0,
-              protection.verdict.no_filesystem_permissions ? 1 : 0,
-              (int)protection.verdict.reason);
-    const bool hardenFiles = !protection.verdict.no_filesystem_permissions;
-    if (!hardenFiles) {
-        debug_log("service install WARNING: volume has no file permissions (for example "
-                  "FAT/exFAT); skipping DACL hardening - the LocalSystem service binary "
-                  "cannot be protected here\n");
-    }
-    if (!CreateDirectoryW(installDir, nullptr)) {
-        DWORD createErr = GetLastError();
-        if (createErr != ERROR_ALREADY_EXISTS) {
-            if (reasonOut) *reasonOut = GC_SVC_ADMIN_DIRECTORY_HARDENING_FAILED;
-            set_message(err, errSize, "Failed creating secure service directory (error %lu)", createErr);
-            return false;
-        }
-    }
-    DWORD dirAttrs = GetFileAttributesW(installDir);
-    if (dirAttrs == INVALID_FILE_ATTRIBUTES ||
-        (dirAttrs & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
-        (dirAttrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-        if (reasonOut) *reasonOut = GC_SVC_ADMIN_DIRECTORY_HARDENING_FAILED;
-        set_message(err, errSize, "Secure service directory is unavailable or unsafe");
-        return false;
-    }
-    char dirAclErr[256] = {};
-    if (hardenFiles) {
-        if (!apply_protected_service_dir_dacl(installDir, dirAclErr, sizeof(dirAclErr))) {
-            if (reasonOut) *reasonOut = GC_SVC_ADMIN_DIRECTORY_HARDENING_FAILED;
-            set_message(err, errSize, "Failed securing service directory: %s", dirAclErr[0] ? dirAclErr : "unknown");
-            return false;
-        }
-        if (!machine_config_dacl_is_hardened(installDir)) {
-            if (reasonOut) *reasonOut = GC_SVC_ADMIN_DIRECTORY_HARDENING_FAILED;
-            set_message(err, errSize, "Service directory DACL did not remain hardened");
-            return false;
-        }
-    }
-
-    WCHAR targetPath[MAX_PATH] = {};
-    if (FAILED(StringCchPrintfW(targetPath, ARRAY_COUNT(targetPath), L"%ls\\%ls", installDir, APP_SERVICE_EXE_NAME_W))) {
-        if (reasonOut) *reasonOut = GC_SVC_ADMIN_LOCATION_REFUSED;
-        set_message(err, errSize, "Installed service binary path is too long");
-        return false;
-    }
-
-    WCHAR canonicalPath[MAX_PATH] = {};
-    if (GetFullPathNameW(targetPath, ARRAY_COUNT(canonicalPath), canonicalPath, nullptr) == 0) {
-        if (reasonOut) *reasonOut = GC_SVC_ADMIN_LOCATION_REFUSED;
-        set_message(err, errSize, "Failed canonicalizing service binary path");
-        return false;
-    }
-    size_t installDirLen = wcslen(installDir);
-    if (_wcsnicmp(canonicalPath, installDir, installDirLen) != 0 ||
-        (canonicalPath[installDirLen] != L'\\' && canonicalPath[installDirLen] != L'/' && canonicalPath[installDirLen] != 0)) {
-        if (reasonOut) *reasonOut = GC_SVC_ADMIN_LOCATION_REFUSED;
-        set_message(err, errSize, "Service binary path escaped the expected installation directory");
-        return false;
-    }
-
-    if (_wcsicmp(sourcePath, targetPath) != 0) {
-        WCHAR tempPath[MAX_PATH] = {};
-        if (FAILED(StringCchPrintfW(tempPath, ARRAY_COUNT(tempPath), L"%ls.tmp", targetPath))) {
-            if (reasonOut) *reasonOut = GC_SVC_ADMIN_BINARY_STAGING_FAILED;
-            set_message(err, errSize, "Temporary service binary path is too long");
-            return false;
-        }
-        DeleteFileW(tempPath);
-        if (!CopyFileW(sourcePath, tempPath, FALSE)) {
-            DWORD copyErr = GetLastError();
-            if (reasonOut) {
-                *reasonOut = gc_service_admin_classify_win32(GC_SVC_STAGE_STAGE_BINARY, copyErr);
-            }
-            set_message(err, errSize, "Failed staging service binary in target directory (error %lu)", copyErr);
-            return false;
-        }
-        if (!MoveFileExW(tempPath, targetPath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-            DWORD moveErr = GetLastError();
-            DeleteFileW(tempPath);
-            if (reasonOut) {
-                *reasonOut = gc_service_admin_classify_win32(GC_SVC_STAGE_STAGE_BINARY, moveErr);
-            }
-            set_message(err, errSize, "Failed installing service binary in target directory (error %lu)", moveErr);
-            return false;
-        }
-    }
-
-    if (!file_is_regular_no_reparse_w(targetPath)) {
-        if (reasonOut) *reasonOut = GC_SVC_ADMIN_BINARY_STAGING_FAILED;
-        set_message(err, errSize, "Installed service binary is missing or unsafe");
-        return false;
-    }
-
-    // F-SEC-1: harden the installed binary's DACL so a standard user cannot
-    // overwrite it and gain SYSTEM code execution via the SCM/auto-restart path.
-    // Runs elevated (service install requires admin) and BEFORE the service is
-    // registered, so a failure to secure the binary fails the install closed.
-    // On a filesystem without persistent ACLs there is nothing to harden; that
-    // gap was already logged above and acknowledged wherever an interactive
-    // flow exists.
-    char aclErr[160] = {};
-    if (hardenFiles) {
-        if (!apply_protected_service_binary_dacl(targetPath, aclErr, sizeof(aclErr))) {
-            if (reasonOut) *reasonOut = GC_SVC_ADMIN_DIRECTORY_HARDENING_FAILED;
-            set_message(err, errSize, "Failed securing service binary: %s", aclErr[0] ? aclErr : "unknown");
-            return false;
-        }
-        if (!service_binary_dacl_is_hardened(targetPath)) {
-            if (reasonOut) *reasonOut = GC_SVC_ADMIN_DIRECTORY_HARDENING_FAILED;
-            set_message(err, errSize, "Service binary DACL did not remain hardened");
-            return false;
-        }
-    }
-    // Whatever the classification vouched for at the start must still hold now
-    // that the hardened binary is in place: a directory planted between the two
-    // checks fails the install closed rather than registering a LocalSystem
-    // service from a location less protected than reported.
-    GcPathProtectionReport protectionAfter = {};
-    classify_path_protection(installDir, &protectionAfter, false);
-    if (protection.verdict.chain_protected && !protectionAfter.verdict.chain_protected) {
-        set_message(err, errSize,
-            "The service directory lost its protection during staging (reason %d); "
-            "refusing to register the service",
-            (int)protectionAfter.verdict.reason);
-        if (reasonOut) *reasonOut = GC_SVC_ADMIN_DIRECTORY_HARDENING_FAILED;
-        return false;
-    }
-    if (install_dir_is_under_user_profile_w(installDir)) {
-        char targetToken[32] = {};
-        char dirToken[32] = {};
-        gc_log_wide_identifier_token(targetPath, targetToken, sizeof(targetToken));
-        gc_log_wide_identifier_token(installDir, dirToken, sizeof(dirToken));
-        debug_log("service install: staged and hardened LocalSystem binary at token %s (directory token %s)\n",
-                  targetToken, dirToken);
-        debug_log("service install WARNING: install dir %s is under a user profile. Other users, "
-            "including restricted/standard accounts, may be unable to read or execute the Green Curve "
-            "GUI binary. Install under %%ProgramFiles%% to make the application available to all users.\n",
-            dirToken);
-    } else {
-        debug_log("service install: staged and hardened LocalSystem binary at %ls (directory %ls)\n", targetPath, installDir);
-    }
-
-    return SUCCEEDED(StringCchCopyW(out, outCount, targetPath));
 }
 
 namespace {
@@ -551,6 +332,25 @@ int running_exe_dir_install_location_verdict() {
     return gc_service_install_location_verdict(exeDir);
 }
 
+bool running_exe_dir_differs_from_registered_service() {
+    WCHAR exeDir[MAX_PATH] = {};
+    WCHAR registeredDir[MAX_PATH] = {};
+    char ignored[64] = {};
+    if (!get_current_executable_directory_w(exeDir, ARRAY_COUNT(exeDir), ignored, sizeof(ignored)) ||
+        !get_service_binary_directory_from_scm(registeredDir, ARRAY_COUNT(registeredDir))) {
+        return false;
+    }
+    size_t exeLength = wcslen(exeDir);
+    size_t registeredLength = wcslen(registeredDir);
+    while (exeLength > 0 && (exeDir[exeLength - 1] == L'\\' || exeDir[exeLength - 1] == L'/')) exeLength--;
+    while (registeredLength > 0 && (registeredDir[registeredLength - 1] == L'\\' ||
+                                    registeredDir[registeredLength - 1] == L'/')) registeredLength--;
+    bool differs = exeLength != registeredLength ||
+        CompareStringOrdinal(exeDir, (int)exeLength, registeredDir, (int)registeredLength, TRUE) != CSTR_EQUAL;
+    if (differs) debug_log("GUI service checkbox: the registered service runs from a different folder\n");
+    return differs;
+}
+
 // Service startup: record how well the service binary's own location is
 // protected (see service_path_chain_policy.h).  Purely diagnostic - a chain
 // someone loosened after the install never stops the service from working -
@@ -575,64 +375,6 @@ void service_log_path_protection_at_startup() {
               (int)protection.verdict.reason);
     if (gc_path_protection_requires_acknowledgment(&protection.verdict)) {
         debug_log("path protection WARNING: %s\n", GC_PATH_PROTECTION_SUMMARY_UNPROTECTED);
-    }
-}
-
-// Which directories uninstall must NOT revert to inherited permissions.
-//
-// This used to be a second, hand-written copy of the root/share-root shape
-// rule, and the two halves had drifted into an asymmetry that could not be
-// undone: install hardened a drive root happily, uninstall refused to revert
-// one, so registering the service from D:\ locked that volume down for good.
-// Install now refuses the same shapes this skips (the shared predicate below),
-// which makes the skip a consistency check rather than a trap: nothing we
-// hardened can land here, and anything that does was not hardened by us.
-static bool directory_path_is_root_or_share_root_w(const WCHAR* dir) {
-    if (!dir || !dir[0]) return true;
-    return !gc_service_location_shape_is_acceptable(dir);
-}
-
-static void cleanup_secure_service_binary_after_remove(const WCHAR* installedServicePath = nullptr) {
-    // Service binary removal intentionally does NOT delete the file from disk.
-    // With the service installed adjacent to the GUI binary, the user manages
-    // the service binary manually. Deleting it on service uninstall would
-    // destroy the user's manually-placed binary.
-    //
-    // F-SEC-1: we DO revert the protected DACLs that install applied, so once
-    // the service is unregistered the user can freely delete or replace the
-    // adjacent payload again (the in-place hardening is only meaningful while it
-    // is a registered SYSTEM service).
-    WCHAR targetPath[MAX_PATH] = {};
-    if (installedServicePath && installedServicePath[0]) {
-        if (FAILED(StringCchCopyW(targetPath, ARRAY_COUNT(targetPath), installedServicePath))) return;
-    } else if (!get_service_binary_path_from_scm(targetPath, ARRAY_COUNT(targetPath))) {
-        WCHAR installDir[MAX_PATH] = {};
-        char ignored[64] = {};
-        if (!get_secure_service_install_dir_w(installDir, ARRAY_COUNT(installDir), ignored, sizeof(ignored))) return;
-        if (FAILED(StringCchPrintfW(targetPath, ARRAY_COUNT(targetPath), L"%ls\\%ls", installDir, APP_SERVICE_EXE_NAME_W))) return;
-    }
-    if (GetFileAttributesW(targetPath) == INVALID_FILE_ATTRIBUTES) return;
-    WCHAR installDir[MAX_PATH] = {};
-    if (SUCCEEDED(StringCchCopyW(installDir, ARRAY_COUNT(installDir), targetPath))) {
-        WCHAR* slash = wcsrchr(installDir, L'\\');
-        if (!slash) slash = wcsrchr(installDir, L'/');
-        if (slash) *slash = 0;
-    }
-    char aclErr[160] = {};
-    if (restore_inherited_dacl(targetPath, aclErr, sizeof(aclErr))) {
-        debug_log("service uninstall: reverted service binary DACL to inherited for %ls; user can delete/replace it\n", targetPath);
-    } else {
-        debug_log("service uninstall: could not revert service binary DACL: %s\n", aclErr[0] ? aclErr : "unknown");
-    }
-    if (installDir[0] && !directory_path_is_root_or_share_root_w(installDir)) {
-        char dirAclErr[160] = {};
-        if (restore_inherited_dacl(installDir, dirAclErr, sizeof(dirAclErr))) {
-            debug_log("service uninstall: reverted service directory DACL to inherited for %ls\n", installDir);
-        } else {
-            debug_log("service uninstall: could not revert service directory DACL: %s\n", dirAclErr[0] ? dirAclErr : "unknown");
-        }
-    } else if (installDir[0]) {
-        debug_log("service uninstall: skipped service directory DACL restore for root-like path %ls\n", installDir);
     }
 }
 

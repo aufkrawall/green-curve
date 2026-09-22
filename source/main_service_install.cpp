@@ -6,20 +6,58 @@
 // verification, and service_install_or_remove. Compiled as a shard included after
 // main_service_ipc.cpp and before main_service_server.cpp (no behavior change).
 
-static bool wait_for_service_state(SC_HANDLE svc, DWORD desiredState, DWORD timeoutMs) {
-    if (!svc) return false;
-    ULONGLONG startTick = GetTickCount64();
-    SERVICE_STATUS_PROCESS ssp = {};
-    DWORD needed = 0;
-    while ((GetTickCount64() - startTick) < timeoutMs) {
-        ZeroMemory(&ssp, sizeof(ssp));
-        if (!QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, (LPBYTE)&ssp, sizeof(ssp), &needed)) return false;
-        if (ssp.dwCurrentState == desiredState) return true;
-        Sleep(200);
+// The result of following one SCM state transition to its end.
+struct ServiceStateWait {
+    int verdict = GC_SCM_WAIT_STALLED;   // GcScmWaitVerdict
+    bool readable = false;               // the last sample could be read at all
+    SERVICE_STATUS_PROCESS last = {};
+    ULONGLONG elapsedMs = 0;
+};
+
+// Follow a pending transition the way the SCM protocol defines it
+// (service_scm_wait_policy.h): alive while the checkpoint advances within the
+// service's own wait hint, finished the moment the state settles -- including
+// settling somewhere ELSE, such as STOPPED while waiting for RUNNING, which
+// means the start failed and waiting longer cannot help.  A checkpoint change
+// raises no notification, so the status is sampled; the interval is derived
+// from the hint as the protocol prescribes.
+static ServiceStateWait wait_for_service_transition(SC_HANDLE svc, DWORD desiredState) {
+    ServiceStateWait result;
+    if (!svc) return result;
+    GcScmWaitTracker tracker = {};
+    ULONGLONG started = GetTickCount64();
+    gc_scm_wait_begin(&tracker, started);
+    for (;;) {
+        DWORD needed = 0;
+        ZeroMemory(&result.last, sizeof(result.last));
+        result.readable = QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO,
+            (LPBYTE)&result.last, sizeof(result.last), &needed) != FALSE;
+        ULONGLONG now = GetTickCount64();
+        result.elapsedMs = now - started;
+        if (!result.readable) {
+            result.verdict = GC_SCM_WAIT_STALLED;
+            break;
+        }
+        result.verdict = gc_scm_wait_step(&tracker, now, result.last.dwCurrentState,
+            result.last.dwCheckPoint, result.last.dwWaitHint, desiredState);
+        if (result.verdict != GC_SCM_WAIT_CONTINUE) break;
+        Sleep(gc_scm_wait_poll_interval_ms(result.last.dwWaitHint));
     }
-    ZeroMemory(&ssp, sizeof(ssp));
-    return QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, (LPBYTE)&ssp, sizeof(ssp), &needed) &&
-        ssp.dwCurrentState == desiredState;
+    debug_log("service state wait: desired=%lu verdict=%s after %llu ms state=%lu "
+              "checkPoint=%lu waitHint=%lu win32Exit=%lu specificExit=%lu pid=%lu readable=%d\n",
+              (unsigned long)desiredState, gc_scm_wait_verdict_name(result.verdict),
+              (unsigned long long)result.elapsedMs,
+              (unsigned long)result.last.dwCurrentState,
+              (unsigned long)result.last.dwCheckPoint,
+              (unsigned long)result.last.dwWaitHint,
+              (unsigned long)result.last.dwWin32ExitCode,
+              (unsigned long)result.last.dwServiceSpecificExitCode,
+              (unsigned long)result.last.dwProcessId, result.readable ? 1 : 0);
+    return result;
+}
+
+static bool wait_for_service_state(SC_HANDLE svc, DWORD desiredState) {
+    return wait_for_service_transition(svc, desiredState).verdict == GC_SCM_WAIT_REACHED;
 }
 
 // GUID for display adapter device interface (GUID_DEVINTERFACE_DISPLAY_ADAPTER)
@@ -74,7 +112,7 @@ static bool stop_service_for_binary_update(SC_HANDLE svc, char* err, size_t errS
         return false;
     }
     if (ssp.dwCurrentState == SERVICE_STOPPED) return true;
-    debug_log("service repair: stopping existing service before binary update (state=%lu pid=%lu)\n",
+    debug_log("service repair: stopping existing service before re-registration (state=%lu pid=%lu)\n",
         (unsigned long)ssp.dwCurrentState,
         (unsigned long)ssp.dwProcessId);
     if (ssp.dwCurrentState != SERVICE_STOP_PENDING) {
@@ -83,33 +121,26 @@ static bool stop_service_for_binary_update(SC_HANDLE svc, char* err, size_t errS
             DWORD stopErr = GetLastError();
             if (stopErr != ERROR_SERVICE_NOT_ACTIVE) {
                 if (reasonOut) *reasonOut = gc_service_admin_classify_win32(GC_SVC_STAGE_STOP, stopErr);
-                set_message(err, errSize, "Failed stopping service for binary update (error %lu)", stopErr);
+                set_message(err, errSize, "Failed stopping the service for re-registration (error %lu)", stopErr);
                 return false;
             }
             return true;
         }
     }
-    if (!wait_for_service_state(svc, SERVICE_STOPPED, GC_SVC_SCM_STATE_WAIT_MS)) {
-        // Name the state it actually reached. "Timed out stopping" alone could
-        // not tell a service wedged in STOP_PENDING apart from one whose status
-        // could no longer be read at all, and those want different answers.
-        SERVICE_STATUS_PROCESS last = {};
-        DWORD lastNeeded = 0;
-        bool readable = QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO,
-            (LPBYTE)&last, sizeof(last), &lastNeeded) != FALSE;
+    ServiceStateWait stopped = wait_for_service_transition(svc, SERVICE_STOPPED);
+    if (stopped.verdict != GC_SCM_WAIT_REACHED) {
+        // Name the state it actually reached and why the wait ended: a service
+        // wedged in STOP_PENDING, one that stopped reporting progress, and one
+        // whose status could no longer be read want different answers.
         if (reasonOut) *reasonOut = GC_SVC_ADMIN_STOP_TIMED_OUT;
         set_message(err, errSize,
-            "The service did not stop within %lu s (last state %lu%s)",
-            (unsigned long)(GC_SVC_SCM_STATE_WAIT_MS / 1000),
-            readable ? (unsigned long)last.dwCurrentState : 0ul,
-            readable ? "" : ", unreadable");
-        debug_log("service repair: stop wait expired after %lu ms readable=%d state=%lu pid=%lu\n",
-            (unsigned long)GC_SVC_SCM_STATE_WAIT_MS, readable ? 1 : 0,
-            readable ? (unsigned long)last.dwCurrentState : 0ul,
-            readable ? (unsigned long)last.dwProcessId : 0ul);
+            "The service did not stop after %llu ms (%s, last state %lu%s)",
+            (unsigned long long)stopped.elapsedMs, gc_scm_wait_verdict_name(stopped.verdict),
+            stopped.readable ? (unsigned long)stopped.last.dwCurrentState : 0ul,
+            stopped.readable ? "" : ", unreadable");
         return false;
     }
-    debug_log("service repair: existing service stopped for binary update\n");
+    debug_log("service repair: existing service stopped for re-registration\n");
     return true;
 }
 
@@ -232,6 +263,260 @@ static void service_verify_restart_safety_net() {
     }
 }
 
+
+// Shown in Services.msc and `sc qdescription`; a blank entry reads like
+// something nobody installed on purpose.
+#define GC_SERVICE_DESCRIPTION_W \
+    L"Applies the GPU clock, voltage-curve, power-limit and fan settings requested " \
+    L"by the Green Curve app. Removing it disables live GPU control in Green Curve."
+
+static void service_configure_description(SC_HANDLE svc) {
+    SERVICE_DESCRIPTIONW description = {};
+    description.lpDescription = (LPWSTR)GC_SERVICE_DESCRIPTION_W;
+    if (ChangeServiceConfig2W(svc, SERVICE_CONFIG_DESCRIPTION, &description)) {
+        debug_log("service install: service description set\n");
+    } else {
+        debug_log("service install: ChangeServiceConfig2(DESCRIPTION) failed (error %lu)\n",
+            (unsigned long)GetLastError());
+    }
+}
+
+// The registration that existed before this install, so a failure AFTER the
+// running service was stopped can put back what the user had.  Everything
+// that can refuse without side effects (location, permissions, the binary)
+// is checked before the stop; this covers what can only fail after it.
+struct PreviousServiceRegistration {
+    bool present = false;
+    bool wasRunning = false;
+    WCHAR commandLine[1024] = {};
+    WCHAR binaryPath[MAX_PATH] = {};
+};
+
+static void read_previous_service_registration(SC_HANDLE svc, PreviousServiceRegistration* out) {
+    if (!svc || !out) return;
+    out->present = true;
+    SERVICE_STATUS_PROCESS ssp = {};
+    DWORD needed = 0;
+    if (QueryServiceStatusEx(svc, SC_STATUS_PROCESS_INFO, (LPBYTE)&ssp, sizeof(ssp), &needed)) {
+        out->wasRunning = ssp.dwCurrentState != SERVICE_STOPPED;
+    }
+    needed = 0;
+    QueryServiceConfigW(svc, nullptr, 0, &needed);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || needed == 0) return;
+    HeapBuffer buf(needed);
+    if (!buf) return;
+    QUERY_SERVICE_CONFIGW* config = (QUERY_SERVICE_CONFIGW*)buf.ptr;
+    if (!QueryServiceConfigW(svc, config, needed, &needed) || !config->lpBinaryPathName) return;
+    if (FAILED(StringCchCopyW(out->commandLine, ARRAY_COUNT(out->commandLine),
+                              config->lpBinaryPathName))) {
+        out->commandLine[0] = 0;
+        return;
+    }
+    parse_service_binary_path_from_command_line(out->commandLine, out->binaryPath,
+                                                ARRAY_COUNT(out->binaryPath));
+}
+
+// Put the previous registration back after a failure that happened once the
+// running service had been stopped.  `restoreCommandLine` is set when the
+// registration had already been re-pointed at the new folder.
+static void restore_previous_service_after_failure(SC_HANDLE svc,
+                                                   const PreviousServiceRegistration* previous,
+                                                   bool restoreCommandLine, const char* why) {
+    if (!svc || !previous || !previous->present) return;
+    if (restoreCommandLine) {
+        if (!previous->commandLine[0] ||
+            !ChangeServiceConfigW(svc, SERVICE_NO_CHANGE, SERVICE_NO_CHANGE, SERVICE_NO_CHANGE,
+                                  previous->commandLine, nullptr, nullptr, nullptr, nullptr,
+                                  nullptr, nullptr)) {
+            debug_log("service install: could not restore the previous registration after %s "
+                      "(error %lu)\n", why, (unsigned long)GetLastError());
+            return;
+        }
+        debug_log("service install: previous registration restored after %s\n", why);
+    }
+    if (!previous->wasRunning) {
+        debug_log("service install: previous service was not running; leaving it stopped after %s\n",
+                  why);
+        return;
+    }
+    LPCWSTR startArgs[] = { L"--manual" };
+    if (StartServiceW(svc, 1, startArgs) || GetLastError() == ERROR_SERVICE_ALREADY_RUNNING) {
+        debug_log("service install: previous service restarted after %s\n", why);
+    } else {
+        debug_log("service install: previous service could not be restarted after %s (error %lu)\n",
+                  why, (unsigned long)GetLastError());
+    }
+}
+
+static bool service_install(SC_HANDLE scm, char* err, size_t errSize, int* reasonOut) {
+    // 1. Everything that can refuse without touching anything: whether this
+    //    folder may be hardened, how well it is protected, whether the binary
+    //    is a plain single-link file.  The folder and the binary stay pinned
+    //    (no FILE_SHARE_DELETE) until registration is over.
+    ServiceInstallTarget target;
+    if (!service_install_prepare_target(&target, err, errSize, reasonOut)) return false;
+    // 2. Harden through the pinned handles.  Changing a DACL does not need the
+    //    running service stopped, so a failure here still leaves it running.
+    if (!service_install_harden_target(&target, err, errSize, reasonOut)) return false;
+
+    WCHAR binPath[1024] = {};
+    if (FAILED(StringCchPrintfW(binPath, ARRAY_COUNT(binPath), L"\"%ls\" --service-run",
+                                target.binaryPath))) {
+        if (reasonOut) *reasonOut = GC_SVC_ADMIN_REGISTRATION_FAILED;
+        set_message(err, errSize, "Service command line is too long");
+        return false;
+    }
+
+    // 3. Only now is the running service disturbed.
+    ScopedServiceHandle svc(OpenServiceW(scm, L"GreenCurveService",
+        SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_STOP | SERVICE_QUERY_STATUS | SERVICE_QUERY_CONFIG));
+    PreviousServiceRegistration previous;
+    bool repointed = false;
+    if (svc.valid()) {
+        read_previous_service_registration(svc.get(), &previous);
+        repointed = !previous.commandLine[0] || _wcsicmp(previous.commandLine, binPath) != 0;
+        debug_log("service install: existing registration wasRunning=%d repoint=%d\n",
+                  previous.wasRunning ? 1 : 0, repointed ? 1 : 0);
+        int stopReason = GC_SVC_ADMIN_UNKNOWN;
+        if (!stop_service_for_binary_update(svc.get(), err, errSize, &stopReason)) {
+            if (reasonOut) *reasonOut = stopReason;
+            return false;
+        }
+        if (!ChangeServiceConfigW(svc.get(), SERVICE_NO_CHANGE, SERVICE_AUTO_START, SERVICE_NO_CHANGE,
+                                  binPath, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                  L"Green Curve Background Service")) {
+            // ERROR_SERVICE_MARKED_FOR_DELETE (1072) lands here, not on
+            // CreateService: OpenService still succeeds for a service that is
+            // only marked, so the reconfigure path is what refuses. It is also
+            // the one failure here a user cannot fix by retrying.
+            DWORD configErr = GetLastError();
+            int reason = gc_service_admin_classify_win32(GC_SVC_STAGE_REGISTER, configErr);
+            if (reasonOut) *reasonOut = reason;
+            set_message(err, errSize, "Failed updating service configuration (error %lu)", configErr);
+            restore_previous_service_after_failure(svc.get(), &previous, false,
+                                                   "a refused reconfiguration");
+            return false;
+        }
+    } else {
+        svc.reset(CreateServiceW(
+            scm,
+            L"GreenCurveService",
+            L"Green Curve Background Service",
+            SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_STOP | DELETE | SERVICE_QUERY_STATUS,
+            SERVICE_WIN32_OWN_PROCESS,
+            SERVICE_AUTO_START,
+            SERVICE_ERROR_NORMAL,
+            binPath,
+            nullptr,
+            nullptr,
+            nullptr,
+            L"LocalSystem",
+            nullptr));
+        if (!svc.valid()) {
+            DWORD createErr = GetLastError();
+            int reason = gc_service_admin_classify_win32(GC_SVC_STAGE_REGISTER, createErr);
+            if (reasonOut) *reasonOut = reason;
+            set_message(err, errSize, "Failed installing service (error %lu)", createErr);
+            return false;
+        }
+    }
+
+    // Configure SCM auto-restart failure actions so a non-zero exit (our
+    // driver-recovery restart) relaunches the service.  Also re-applied at
+    // every service start by service_ensure_failure_actions_configured().
+    if (service_configure_failure_actions(svc.get())) {
+        debug_log("service install: configured SCM auto-restart failure actions + non-crash-failure flag\n");
+    }
+    service_configure_description(svc.get());
+
+    // 4. Start it and follow the start the way the SCM protocol defines it.
+    //    The legacy --manual argument is kept for installed-version
+    //    compatibility; every ordinary start is non-mutating.
+    LPCWSTR startArgs[] = { L"--manual" };
+    if (!StartServiceW(svc.get(), 1, startArgs)) {
+        DWORD startErr = GetLastError();
+        if (startErr != ERROR_SERVICE_ALREADY_RUNNING) {
+            int reason = gc_service_admin_classify_win32(GC_SVC_STAGE_START, startErr);
+            if (reasonOut) *reasonOut = reason;
+            set_message(err, errSize, "Failed starting service (error %lu)", startErr);
+            debug_log("service install: StartService failed error=%lu reason=%d\n",
+                (unsigned long)startErr, reason);
+            restore_previous_service_after_failure(svc.get(), &previous, repointed,
+                                                   "a refused start");
+            return false;
+        }
+    }
+    ServiceStateWait started = wait_for_service_transition(svc.get(), SERVICE_RUNNING);
+    if (started.verdict != GC_SCM_WAIT_REACHED) {
+        // Settled elsewhere means the start FAILED (the service is back to
+        // STOPPED, usually within a second); the exit codes say why.  Stalled
+        // or out of time means it may still come up, so nothing is rolled back
+        // underneath it.
+        bool failed = started.verdict == GC_SCM_WAIT_SETTLED_ELSEWHERE;
+        int reason = failed ? GC_SVC_ADMIN_START_FAILED : GC_SVC_ADMIN_START_TIMED_OUT;
+        if (reasonOut) *reasonOut = reason;
+        set_message(err, errSize,
+            "The service was registered but did not reach RUNNING (%s after %llu ms, state %lu, "
+            "exit %lu/%lu)",
+            gc_scm_wait_verdict_name(started.verdict), (unsigned long long)started.elapsedMs,
+            (unsigned long)started.last.dwCurrentState,
+            (unsigned long)started.last.dwWin32ExitCode,
+            (unsigned long)started.last.dwServiceSpecificExitCode);
+        if (failed) {
+            restore_previous_service_after_failure(svc.get(), &previous, repointed,
+                                                   "a failed start");
+        }
+        return false;
+    }
+
+    // 5. The folder the service used to run from is not a service folder any
+    //    more.  Release its hardening -- only if provably ours, and never when
+    //    it is (or contains) the new one.
+    if (repointed && previous.binaryPath[0]) {
+        release_previous_service_location(previous.binaryPath, &target);
+    }
+    return true;
+}
+
+static bool service_remove(SC_HANDLE scm, char* err, size_t errSize, int* reasonOut) {
+    ScopedServiceHandle svc(OpenServiceW(scm, L"GreenCurveService", SERVICE_STOP | DELETE | SERVICE_QUERY_STATUS));
+    WCHAR installedServicePath[MAX_PATH] = {};
+    get_service_binary_path_from_scm(installedServicePath, ARRAY_COUNT(installedServicePath));
+    if (!svc.valid()) {
+        debug_log("service remove: no registration to remove (error %lu); releasing folder hardening only\n",
+                  (unsigned long)GetLastError());
+        cleanup_secure_service_binary_after_remove(installedServicePath[0] ? installedServicePath : nullptr);
+        return true;
+    }
+    char probeError[128] = {};
+    if (service_client_ping(probeError, sizeof(probeError))) {
+        char resetResult[256] = {};
+        service_client_reset(resetResult, sizeof(resetResult), nullptr);
+    }
+    SERVICE_STATUS status = {};
+    if (!ControlService(svc.get(), SERVICE_CONTROL_STOP, &status)) {
+        DWORD stopErr = GetLastError();
+        if (stopErr != ERROR_SERVICE_NOT_ACTIVE) {
+            debug_log("service remove: stop request refused (error %lu); deleting anyway, the "
+                      "registration stays marked for deletion until the process exits\n",
+                      (unsigned long)stopErr);
+        }
+    }
+    ServiceStateWait stopped = wait_for_service_transition(svc.get(), SERVICE_STOPPED);
+    if (stopped.verdict != GC_SCM_WAIT_REACHED) {
+        debug_log("service remove: service did not stop before deletion (%s); it is only marked "
+                  "for deletion until it exits\n", gc_scm_wait_verdict_name(stopped.verdict));
+    }
+    if (!DeleteService(svc.get())) {
+        DWORD deleteErr = GetLastError();
+        if (reasonOut) *reasonOut = gc_service_admin_classify_win32(GC_SVC_STAGE_REMOVE, deleteErr);
+        set_message(err, errSize, "Failed removing service (error %lu)", deleteErr);
+        return false;
+    }
+    cleanup_secure_service_binary_after_remove(installedServicePath[0] ? installedServicePath : nullptr);
+    return true;
+}
+
 static bool service_install_or_remove(bool enable, char* err, size_t errSize,
                                       int* reasonOut) {
     // Every exit from here carries a reason. UNKNOWN is the fail-safe default,
@@ -253,16 +538,6 @@ static bool service_install_or_remove(bool enable, char* err, size_t errSize,
         return false;
     }
 
-    WCHAR exePath[MAX_PATH] = {};
-    if (!enable && !get_adjacent_service_binary_path(exePath, ARRAY_COUNT(exePath), err, errSize)) {
-        // Removal does not need the adjacent binary to exist; keep going with the secure target path for cleanup.
-        err[0] = 0;
-        WCHAR installDir[MAX_PATH] = {};
-        char ignored[64] = {};
-        if (get_secure_service_install_dir_w(installDir, ARRAY_COUNT(installDir), ignored, sizeof(ignored))) {
-            StringCchPrintfW(exePath, ARRAY_COUNT(exePath), L"%ls\\%ls", installDir, APP_SERVICE_EXE_NAME_W);
-        }
-    }
     ScopedServiceHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CREATE_SERVICE | SC_MANAGER_CONNECT));
     if (!scm.valid()) {
         DWORD scmErr = GetLastError();
@@ -272,145 +547,8 @@ static bool service_install_or_remove(bool enable, char* err, size_t errSize,
         return false;
     }
 
-    bool ok = false;
-    if (enable) {
-        ScopedServiceHandle svc(OpenServiceW(scm.get(), L"GreenCurveService", SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_STOP | SERVICE_QUERY_STATUS));
-        if (svc.valid() && !stop_service_for_binary_update(svc.get(), err, errSize, &reason)) {
-            if (reasonOut) *reasonOut = reason;
-            return false;
-        }
-        if (!ensure_secure_service_binary_path(exePath, ARRAY_COUNT(exePath), err, errSize, &reason)) {
-            if (reasonOut) *reasonOut = reason;
-            return false;
-        }
-        WCHAR binPath[1024] = {};
-        if (FAILED(StringCchPrintfW(binPath, ARRAY_COUNT(binPath), L"\"%ls\" --service-run", exePath))) {
-            if (reasonOut) *reasonOut = GC_SVC_ADMIN_REGISTRATION_FAILED;
-            set_message(err, errSize, "Service command line is too long");
-            return false;
-        }
-        if (!svc.valid()) {
-            svc.reset(CreateServiceW(
-                scm.get(),
-                L"GreenCurveService",
-                L"Green Curve Background Service",
-                SERVICE_CHANGE_CONFIG | SERVICE_START | SERVICE_STOP | DELETE | SERVICE_QUERY_STATUS,
-                SERVICE_WIN32_OWN_PROCESS,
-                SERVICE_AUTO_START,
-                SERVICE_ERROR_NORMAL,
-                binPath,
-                nullptr,
-                nullptr,
-                nullptr,
-                L"LocalSystem",
-                nullptr));
-        } else {
-            if (!ChangeServiceConfigW(svc.get(), SERVICE_NO_CHANGE, SERVICE_AUTO_START, SERVICE_NO_CHANGE, binPath, nullptr, nullptr, nullptr, nullptr, nullptr, L"Green Curve Background Service")) {
-                // ERROR_SERVICE_MARKED_FOR_DELETE (1072) lands here, not on
-                // CreateService: OpenService still succeeds for a service that
-                // is only marked, so the reconfigure path is what refuses. It
-                // is also the one failure here a user cannot fix by retrying,
-                // which is why it gets its own reason rather than a number.
-                DWORD configErr = GetLastError();
-                reason = gc_service_admin_classify_win32(GC_SVC_STAGE_REGISTER, configErr);
-                if (reasonOut) *reasonOut = reason;
-                set_message(err, errSize, "Failed updating service configuration (error %lu)", configErr);
-                return false;
-            }
-        }
-        if (!svc.valid()) {
-            DWORD createErr = GetLastError();
-            reason = gc_service_admin_classify_win32(GC_SVC_STAGE_REGISTER, createErr);
-            if (reasonOut) *reasonOut = reason;
-            set_message(err, errSize, "Failed installing service (error %lu)", createErr);
-        } else {
-            // Configure SCM auto-restart failure actions so a non-zero exit
-            // (our driver-recovery restart) relaunches the service.  Also
-            // re-applied at every service start by service_ensure_failure_
-            // actions_configured().
-            if (service_configure_failure_actions(svc.get())) {
-                debug_log("service install: configured SCM auto-restart failure actions + non-crash-failure flag\n");
-            }
-            SERVICE_STATUS_PROCESS ssp = {};
-            DWORD needed = 0;
-            if (!QueryServiceStatusEx(svc.get(), SC_STATUS_PROCESS_INFO, (LPBYTE)&ssp, sizeof(ssp), &needed)) {
-                DWORD queryErr = GetLastError();
-                reason = gc_service_admin_classify_win32(GC_SVC_STAGE_START, queryErr);
-                if (reasonOut) *reasonOut = reason;
-                set_message(err, errSize, "Failed querying installed service state (error %lu)", queryErr);
-                return false;
-            }
-            if (ssp.dwCurrentState != SERVICE_RUNNING) {
-                // Keep the legacy --manual argument for installed-version
-                // compatibility. Every ordinary start reason is non-mutating;
-                // Fast Startup/autologon restoration comes only from the real
-                // authenticated scheduled-task handoff (coalesced with WTS).
-                LPCWSTR startArgs[] = { L"--manual" };
-                ULONGLONG startedAt = GetTickCount64();
-                if (!StartServiceW(svc.get(), 1, startArgs)) {
-                    DWORD startErr = GetLastError();
-                    if (startErr != ERROR_SERVICE_ALREADY_RUNNING) {
-                        reason = gc_service_admin_classify_win32(GC_SVC_STAGE_START, startErr);
-                        if (reasonOut) *reasonOut = reason;
-                        set_message(err, errSize, "Failed starting service (error %lu)", startErr);
-                        debug_log("service install: StartService failed error=%lu reason=%d\n",
-                            (unsigned long)startErr, reason);
-                        return false;
-                    }
-                }
-                wait_for_service_state(svc.get(), SERVICE_RUNNING, GC_SVC_SCM_STATE_WAIT_MS);
-                ZeroMemory(&ssp, sizeof(ssp));
-                QueryServiceStatusEx(svc.get(), SC_STATUS_PROCESS_INFO, (LPBYTE)&ssp, sizeof(ssp), &needed);
-                // How long the start actually took is the first thing a "did
-                // not reach RUNNING" report needs: it separates a service that
-                // is merely slow (antivirus on first run) from one that never
-                // moved off START_PENDING at all.
-                debug_log("service install: start wait finished after %llu ms state=%lu checkPoint=%lu waitHint=%lu pid=%lu\n",
-                    (unsigned long long)(GetTickCount64() - startedAt),
-                    (unsigned long)ssp.dwCurrentState,
-                    (unsigned long)ssp.dwCheckPoint,
-                    (unsigned long)ssp.dwWaitHint,
-                    (unsigned long)ssp.dwProcessId);
-            }
-            if (ssp.dwCurrentState != SERVICE_RUNNING) {
-                reason = GC_SVC_ADMIN_START_TIMED_OUT;
-                if (reasonOut) *reasonOut = reason;
-                set_message(err, errSize,
-                    "The service was registered but did not reach RUNNING within %lu s (last state %lu)",
-                    (unsigned long)(GC_SVC_SCM_STATE_WAIT_MS / 1000),
-                    (unsigned long)ssp.dwCurrentState);
-            } else {
-                ok = true;
-            }
-        }
-    } else {
-        ScopedServiceHandle svc(OpenServiceW(scm.get(), L"GreenCurveService", SERVICE_STOP | DELETE | SERVICE_QUERY_STATUS));
-        WCHAR installedServicePath[MAX_PATH] = {};
-        get_service_binary_path_from_scm(installedServicePath, ARRAY_COUNT(installedServicePath));
-        if (!svc.valid()) {
-            ok = true;
-            cleanup_secure_service_binary_after_remove(installedServicePath[0] ? installedServicePath : nullptr);
-        } else {
-            char probeError[128] = {};
-            if (service_client_ping(probeError, sizeof(probeError))) {
-                char resetResult[256] = {};
-                service_client_reset(resetResult, sizeof(resetResult), nullptr);
-            }
-            SERVICE_STATUS status = {};
-            ControlService(svc.get(), SERVICE_CONTROL_STOP, &status);
-            wait_for_service_state(svc.get(), SERVICE_STOPPED, GC_SVC_SCM_STATE_WAIT_MS);
-            if (!DeleteService(svc.get())) {
-                DWORD deleteErr = GetLastError();
-                reason = gc_service_admin_classify_win32(GC_SVC_STAGE_REMOVE, deleteErr);
-                if (reasonOut) *reasonOut = reason;
-                set_message(err, errSize, "Failed removing service (error %lu)", deleteErr);
-            } else {
-                ok = true;
-                cleanup_secure_service_binary_after_remove(installedServicePath[0] ? installedServicePath : nullptr);
-            }
-        }
-    }
-
+    bool ok = enable ? service_install(scm.get(), err, errSize, &reason)
+                     : service_remove(scm.get(), err, errSize, &reason);
     if (ok) reason = GC_SVC_ADMIN_OK;
     if (reasonOut) *reasonOut = reason;
     debug_log("service %s: finished ok=%d reason=%d exitCode=%d\n",
@@ -418,4 +556,3 @@ static bool service_install_or_remove(bool enable, char* err, size_t errSize,
         gc_service_admin_reason_exit_code(reason));
     return ok;
 }
-

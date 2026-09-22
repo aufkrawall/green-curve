@@ -629,6 +629,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         "\n\nThis folder's permissions will be changed so that only "
                         "administrators can write to it. That is what protects the "
                         "background service from being replaced.");
+                    // A registration pointing at ANOTHER copy is moved, not
+                    // duplicated -- say so, because the other copy stops
+                    // being the one Windows runs.
+                    if (g_app.backgroundServiceInstalled &&
+                        running_exe_dir_differs_from_registered_service()) {
+                        StringCchCatA(confirmText, ARRAY_COUNT(confirmText),
+                            "\n\nThe background service currently runs from a different "
+                            "Green Curve folder. It will be moved to this folder, and the "
+                            "other folder's permissions will be given back.");
+                    }
                 }
                 GcPathProtectionReport servicePathProtection = {};
                 if (enable && running_exe_dir_protection(&servicePathProtection) &&

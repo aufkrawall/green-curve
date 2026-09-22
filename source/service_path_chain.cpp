@@ -26,7 +26,6 @@
 #include <strsafe.h>
 
 #include "service_acl.h"
-#include "service_install_location_policy.h"
 
 // (local array-count helper; GC_ARRAY_COUNT lives in installer_common.h,
 // which this translation unit deliberately does not include)
@@ -328,143 +327,7 @@ void gather_component_facts(const WCHAR* full, size_t prefixEnd, bool isRoot,
     CloseHandle(handle);
 }
 
-struct GcDirectoryIdentity {
-    BY_HANDLE_FILE_INFORMATION file = {};
-    WCHAR finalPath[GC_PATH_CHAIN_MAX_PATH_CHARS] = {};
-};
-
-bool read_directory_identity(const WCHAR* path, GcDirectoryIdentity* out) {
-    if (!path || !out) return false;
-    *out = GcDirectoryIdentity{};
-    // Follow an ancestor junction or short name to the object that a later
-    // SetNamedSecurityInfoW call would actually change. The leaf reparse case
-    // is refused separately before this helper is called.
-    HANDLE handle = CreateFileW(path, FILE_READ_ATTRIBUTES,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
-    if (handle == INVALID_HANDLE_VALUE) return false;
-    bool ok = GetFileInformationByHandle(handle, &out->file) != FALSE;
-    DWORD length = GetFinalPathNameByHandleW(handle, out->finalPath,
-        GC_PATH_CHAIN_MAX_PATH_CHARS, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-    if (length == 0 || length >= GC_PATH_CHAIN_MAX_PATH_CHARS) out->finalPath[0] = 0;
-    CloseHandle(handle);
-    return ok;
-}
-
-bool same_directory_identity(const GcDirectoryIdentity& a, const GcDirectoryIdentity& b) {
-    return a.file.dwVolumeSerialNumber == b.file.dwVolumeSerialNumber &&
-           a.file.nFileIndexHigh == b.file.nFileIndexHigh &&
-           a.file.nFileIndexLow == b.file.nFileIndexLow;
-}
-
 }  // namespace
-
-int gc_service_install_location_verdict(const wchar_t* directory) {
-    if (!directory || !directory[0]) return GC_SVC_LOCATION_EMPTY;
-
-    // Canonicalize first: the shape rules and the known-folder comparison both
-    // read characters, and "%USERPROFILE%\Downloads\." must refuse for the
-    // same reason "%USERPROFILE%\Downloads" does.
-    WCHAR full[GC_PATH_CHAIN_MAX_PATH_CHARS] = {};
-    DWORD length = GetFullPathNameW(directory, GC_PATH_CHAIN_MAX_PATH_CHARS, full, nullptr);
-    if (length == 0 || length >= GC_PATH_CHAIN_MAX_PATH_CHARS) {
-        // An unresolvable path is refused, not waved through: this gate stands
-        // in front of a DACL rewrite, so unproven must mean no.
-        return GC_SVC_LOCATION_NOT_ABSOLUTE;
-    }
-
-    int shape = gc_service_location_shape_verdict(full);
-    if (shape != GC_SVC_LOCATION_OK) return shape;
-
-    GcDirectoryIdentity candidate = {};
-    bool candidateExists = false;
-    DWORD attributes = GetFileAttributesW(full);
-    if (attributes == INVALID_FILE_ATTRIBUTES) {
-        DWORD error = GetLastError();
-        if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
-            return GC_SVC_LOCATION_UNREADABLE;
-    } else {
-        if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) return GC_SVC_LOCATION_UNREADABLE;
-        if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) return GC_SVC_LOCATION_REPARSE;
-        if (!read_directory_identity(full, &candidate) || !candidate.finalPath[0])
-            return GC_SVC_LOCATION_UNREADABLE;
-        candidateExists = true;
-    }
-
-    // Every folder Windows itself owns a meaning for. Match the directory
-    // object, not just its spelling: a subfolder such as C:\Program Files\Green
-    // Curve is a correct install, while C:\PROGRA~1 is still Program Files.
-    //
-    // FOLDERID_Downloads and the other per-user media folders are here for the
-    // same reason as Desktop: "extract the archive anywhere" plus 7-Zip's
-    // Extract Here lands greencurve.exe directly in one of them, and hardening
-    // it takes the user's own folder away from them.
-    static const KNOWNFOLDERID* const kRefusedFolders[] = {
-        &FOLDERID_Profile,         &FOLDERID_UserProfiles,
-        &FOLDERID_Desktop,         &FOLDERID_Downloads,
-        &FOLDERID_Documents,       &FOLDERID_Music,
-        &FOLDERID_Pictures,        &FOLDERID_Videos,
-        &FOLDERID_LocalAppData,    &FOLDERID_RoamingAppData,
-        &FOLDERID_LocalAppDataLow, &FOLDERID_ProgramData,
-        &FOLDERID_Windows,         &FOLDERID_System,
-        &FOLDERID_SystemX86,       &FOLDERID_ProgramFiles,
-        &FOLDERID_ProgramFilesX86, &FOLDERID_ProgramFilesCommon,
-        &FOLDERID_Public,          &FOLDERID_PublicDesktop,
-        &FOLDERID_PublicDocuments, &FOLDERID_PublicDownloads,
-    };
-    for (const KNOWNFOLDERID* folder : kRefusedFolders) {
-        PWSTR resolved = nullptr;
-        if (FAILED(SHGetKnownFolderPath(*folder, 0, nullptr, &resolved)) || !resolved) {
-            // Shell32 can return an allocated pointer even on failure.
-            if (resolved) CoTaskMemFree(resolved);
-            continue;
-        }
-        // Exact match only, so trailing separators must not decide it.
-        size_t resolvedLength = 0;
-        while (resolved[resolvedLength]) resolvedLength++;
-        while (resolvedLength > 0 &&
-               (resolved[resolvedLength - 1] == L'\\' || resolved[resolvedLength - 1] == L'/')) {
-            resolvedLength--;
-        }
-        size_t fullLength = length;
-        while (fullLength > 0 && (full[fullLength - 1] == L'\\' || full[fullLength - 1] == L'/')) {
-            fullLength--;
-        }
-        bool equal = resolvedLength > 0 && resolvedLength == fullLength &&
-            _wcsnicmp(full, resolved, resolvedLength) == 0;
-        if (!equal && candidateExists) {
-            GcDirectoryIdentity known = {};
-            equal = read_directory_identity(resolved, &known) &&
-                same_directory_identity(candidate, known);
-        }
-        CoTaskMemFree(resolved);
-        if (equal) return GC_SVC_LOCATION_KNOWN_FOLDER;
-    }
-
-    // SHGetKnownFolderPath with a null token names the approving account's
-    // folders. Under UAC that may be a DIFFERENT user from the one whose
-    // directory is being installed into. The common per-profile shell folders
-    // therefore need a machine-wide check against FOLDERID_UserProfiles.
-    if (candidateExists) {
-        PWSTR profilesPath = nullptr;
-        HRESULT result = SHGetKnownFolderPath(FOLDERID_UserProfiles, 0, nullptr,
-                                               &profilesPath);
-        if (FAILED(result) || !profilesPath) {
-            if (profilesPath) CoTaskMemFree(profilesPath);
-            return GC_SVC_LOCATION_UNREADABLE;
-        }
-        GcDirectoryIdentity profiles = {};
-        bool readable = read_directory_identity(profilesPath, &profiles) &&
-            profiles.finalPath[0];
-        CoTaskMemFree(profilesPath);
-        if (!readable) return GC_SVC_LOCATION_UNREADABLE;
-        if (gc_service_location_is_profile_shell_folder(
-                candidate.finalPath, profiles.finalPath))
-            return GC_SVC_LOCATION_KNOWN_FOLDER;
-    }
-
-    return GC_SVC_LOCATION_OK;
-}
 
 bool gc_path_is_under_user_profile(const wchar_t* path) {
     if (!path || !path[0]) return false;
@@ -526,23 +389,27 @@ void classify_path_protection(const wchar_t* path, GcPathProtectionReport* out,
     UINT driveType = GetDriveTypeW(volume);
     out->facts.volume.is_remote = driveType == DRIVE_REMOTE;
 
+    // User-profile reachability is an extra warning, not part of the security
+    // proof; a failed lookup just omits it.  Pure path arithmetic against the
+    // shell's answers: no volume is touched.
+    out->facts.under_user_profile = gc_path_is_under_user_profile(full);
+
+    // A network-mapped drive is server-controlled exactly like a UNC path;
+    // same fixed verdict, same refusal to probe.  This return must come BEFORE
+    // GetVolumeInformationW: that call is a round trip to the redirector, and
+    // setup's folder page classifies on every keystroke, so a dead mapped
+    // drive would stall typing.  GetDriveTypeW above is the only question the
+    // redirector is asked.
+    if (out->facts.volume.is_remote) {
+        gc_path_protection_classify(&out->facts, &out->verdict);
+        return;
+    }
+
     DWORD fsFlags = 0;
     if (GetVolumeInformationW(volume, nullptr, 0, nullptr, nullptr, &fsFlags,
                               nullptr, 0)) {
         out->facts.volume.facts_complete = true;
         out->facts.volume.has_persistent_acls = (fsFlags & FILE_PERSISTENT_ACLS) != 0;
-    }
-
-    // User-profile reachability is an extra warning, not part of the security
-    // proof; a failed lookup just omits it.
-    out->facts.under_user_profile = gc_path_is_under_user_profile(full);
-
-    // A network-mapped drive is server-controlled exactly like a UNC path;
-    // same fixed verdict, same refusal to probe (GetDriveTypeW above is the
-    // only question asked of the redirector).
-    if (out->facts.volume.is_remote) {
-        gc_path_protection_classify(&out->facts, &out->verdict);
-        return;
     }
 
     const GcAdminTrustSet& trust = admin_trust_shared();

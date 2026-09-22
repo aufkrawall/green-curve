@@ -39,21 +39,21 @@ Program Files.
   a folder can be used to take over the background service; the warning says so
   and shows the admin command that fully protects the folder (it is never
   applied for you), ready to paste.
-- **Installing the background service from a portable copy now asks first**
-  when the folder it runs from is not protected, instead of installing quietly.
-- **Portable copies keep working from every folder.** They show the same clear
-  protection warnings instead of silence.
+- **Installing the service from an unprotected portable folder now asks first**
+  instead of installing quietly.
 - **A failed service installation now tells you what went wrong and what to do
   about it.** It used to report only "exit code 1", with the real reason written
   to a log file you had no way to find.
-- **Green Curve now needs a folder of its own.** Downloads, the desktop and drive roots are refused even when reached through another path.
+- **Green Curve now needs a folder of its own.** A folder holding other files, anything inside Windows, Downloads, the desktop and drive roots are refused, even when reached through another path.
 - **Moving a setup installation now removes its old folder when empty.** Other files keep the folder in place.
-- **The service is no longer reported as failed when it is merely slow to
-  start.** Antivirus scanning the new files on first run was enough to trigger
-  that.
+- **A folder Green Curve no longer uses gets its normal permissions back.**
+- **A failed service install or repair no longer leaves the background service stopped.** The previous service is restored if the new one cannot start.
+- **A slow service start is no longer reported as a failure**, and a real
+  failure is reported at once.
 - **Declining the Windows elevation prompt is no longer reported as an error.**
-- **The service now reports its start-up progress to Windows**, so a slow start
-  is no longer indistinguishable from a hung one.
+- **The service now reports start-up and shutdown progress to Windows**, so a
+  slow start or stop no longer looks hung.
+- **The background service now has a description in Windows Services.**
 
 ### Compatibility notes
 

@@ -902,10 +902,10 @@ def check_path_protection_gates(ctx, require_text, service_ipc_cpp):
     the location matters cannot silently vanish from setup's folder page and
     its acknowledgment.
     """
-    require_text(service_ipc_cpp, "apply_protected_service_binary_dacl(targetPath",
-                 "service install hardens the installed binary DACL")
-    require_text(service_ipc_cpp, "restore_inherited_dacl(targetPath",
-                 "service uninstall reverts the binary DACL to inherited")
+    require_text(service_ipc_cpp, "apply_protected_service_dacl_to_handle(target->binary",
+                 "service install hardens the installed binary DACL through its pinned handle")
+    require_text(service_ipc_cpp, "release_service_hardening(servicePath, GC_SERVICE_ACL_BINARY",
+                 "service uninstall releases the binary DACL only when it is provably ours")
     service_acl_cpp = os.path.join(ctx.SOURCE_DIR, "service_acl.cpp")
     require_text(service_acl_cpp, "PROTECTED_DACL_SECURITY_INFORMATION",
                  "binary DACL hardening disables inheritance")
@@ -967,16 +967,52 @@ def check_path_protection_gates(ctx, require_text, service_ipc_cpp):
         "the install-location policy refuses a drive root")
     require_text(location_policy, "GC_SVC_LOCATION_KNOWN_FOLDER",
         "the install-location policy refuses a well-known shell folder")
-    require_text(path_chain_cpp, "gc_service_install_location_verdict",
+    location_cpp = os.path.join(ctx.SOURCE_DIR, "service_install_location.cpp")
+    require_text(location_cpp, "gc_service_install_location_verdict",
         "the Win32 half of the install-location gate exists")
-    require_text(path_chain_cpp, "FOLDERID_Downloads",
+    require_text(location_cpp, "FOLDERID_Downloads",
         "the location gate refuses the Downloads folder by name")
-    require_text(path_chain_cpp, "same_directory_identity(candidate, known)",
+    require_text(location_cpp, "same_directory_identity(candidate, known)",
         "the location gate recognizes short names and ancestor aliases by directory identity")
-    require_text(path_chain_cpp, "gc_service_location_is_profile_shell_folder(",
+    require_text(location_cpp, "gc_service_location_is_profile_shell_folder(",
         "the location gate recognizes another UAC account's profile shell folders")
-    require_text(service_ipc_cpp, "gc_service_install_location_verdict(installDir)",
+    # A blocklist is never complete: an existing folder is ours only if it
+    # holds nothing but Green Curve's own files (or Green Curve hardened it),
+    # and nothing inside the Windows directory is ever ours.
+    require_text(location_cpp, "content_verdict(handle, detail)",
+        "the location gate refuses an existing folder holding files that are not ours")
+    require_text(location_cpp, "GC_SVC_LOCATION_SYSTEM_SUBTREE",
+        "the location gate refuses anything inside the Windows directory")
+    require_text(location_cpp, "FILE_FLAG_OPEN_REPARSE_POINT",
+        "the location gate inspects a leaf reparse point instead of following it")
+    require_text(service_ipc_cpp, "gc_service_install_location_verdict_detailed(",
         "service install refuses to harden a folder that is not its own")
+    # Check and write must name ONE object: the folder and binary are pinned
+    # (no FILE_SHARE_DELETE, reparse points not followed) and hardened through
+    # the same handles the checks used.
+    require_text(service_ipc_cpp, "target->directory = CreateFileW(",
+        "service install pins its directory before judging it")
+    require_text(service_ipc_cpp, "FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING",
+        "the pinned service directory cannot be renamed away while it is hardened")
+    install_cpp = os.path.join(ctx.SOURCE_DIR, "main_service_install.cpp")
+    with open(install_cpp, "r", encoding="utf-8", errors="replace") as handle:
+        install_text = handle.read()
+    harden_at = install_text.find(
+        "if (!service_install_harden_target(&target, err, errSize, reasonOut)) return false;")
+    stop_at = install_text.find(
+        "stop_service_for_binary_update(svc.get(), err, errSize, &stopReason)")
+    if harden_at < 0 or stop_at < 0 or harden_at > stop_at:
+        print("Regression source check FAILED: service install must finish every refusal "
+              "that needs nothing stopped (location, hardening) before it stops the "
+              "running service")
+        sys.exit(1)
+    require_text(install_cpp, "restore_previous_service_after_failure(",
+        "a failure after the stop puts the previous registration back")
+    require_text(install_cpp, "wait_for_service_transition(svc.get(), SERVICE_RUNNING)",
+        "service start follows the SCM checkpoint protocol instead of a fixed deadline")
+    require_text(install_cpp, "SERVICE_CONFIG_DESCRIPTION",
+        "the service registers a description")
+    check_no_null_dacl_writes(ctx)
     require_text(os.path.join(ctx.SOURCE_DIR, "installer_apply.cpp"),
         "gc_service_install_location_verdict(targetDirectory)",
         "setup refuses the same folders, including on the silent path")
@@ -988,6 +1024,52 @@ def check_path_protection_gates(ctx, require_text, service_ipc_cpp):
     # hardened a drive root, uninstall refused to revert one.
     require_text(service_ipc_cpp, "gc_service_location_shape_is_acceptable(dir)",
         "uninstall's revert skip uses the same shape rule install enforces")
+
+
+def check_no_null_dacl_writes(ctx):
+    """No security write may pass a NULL DACL with DACL_SECURITY_INFORMATION.
+
+    Windows stores that as "no DACL", i.e. Everyone: Full Control -- even with
+    UNPROTECTED_DACL_SECURITY_INFORMATION, which looks like "go back to
+    inherited" and is not.  An EMPTY ACL is the spelling that restores
+    inheritance.  A real scan, so a new call site
+    is covered too.
+    """
+    offenders = []
+    for name in sorted(os.listdir(ctx.SOURCE_DIR)):
+        if not name.endswith((".cpp", ".h")):
+            continue
+        path = os.path.join(ctx.SOURCE_DIR, name)
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+        for match in re.finditer(r"\b(SetNamedSecurityInfoW|SetSecurityInfo)\s*\(", text):
+            call = _balanced_call_text(text, match.end() - 1)
+            if call is None:
+                continue
+            inner = call[call.index("(") + 1:call.rindex(")")] if "(" in call else call
+            args, depth, current = [], 0, ""
+            for char in inner:
+                if char in "([{":
+                    depth += 1
+                elif char in ")]}":
+                    depth -= 1
+                if char == "," and depth == 0:
+                    args.append(current.strip())
+                    current = ""
+                else:
+                    current += char
+            args.append(current.strip())
+            if len(args) < 7 or "DACL_SECURITY_INFORMATION" not in args[2]:
+                continue
+            if args[5] in ("nullptr", "NULL", "0"):
+                line = text.count("\n", 0, match.start()) + 1
+                offenders.append(f"{name}:{line}")
+    if offenders:
+        print("Regression source check FAILED: a DACL write passes a NULL DACL "
+              "(stored as Everyone: Full Control)")
+        for offender in offenders:
+            print(f"  {offender}")
+        sys.exit(1)
 
 
 def check_service_admin_reason_gates(ctx, require_text, service_ipc_cpp):
@@ -1031,6 +1113,8 @@ def check_service_admin_reason_gates(ctx, require_text, service_ipc_cpp):
         "START_PENDING carries a wait hint")
     require_text(host_cpp, "dwWaitHint = SERVICE_STOP_WAIT_HINT_MS",
         "STOP_PENDING carries a wait hint")
+    require_text(host_cpp, "service_report_stop_progress(\"pipe listener shutdown\")",
+        "the service publishes STOP_PENDING progress through its teardown")
     # Every parent of the helper waits on the SAME derived budget.  A private
     # timeout below stop+start+staging terminates a healthy slow install and
     # reports failure for work that then completes anyway -- which is exactly

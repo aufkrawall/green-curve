@@ -73,6 +73,8 @@ INSTALLER_SOURCE_NAMES = [
     "installer_util.cpp",
     "service_acl.cpp",
     "service_path_chain.cpp",
+    "service_acl_handle.cpp",
+    "service_install_location.cpp",
     "ssp_glue.cpp",
     "cfg_glue.cpp",
     # Toolchain-neutral glue: defines gc_invoke_fatal_dump_hook, which
@@ -619,8 +621,9 @@ def check_all(ctx, require_text, forbid_text):
                  "move cleanup cannot alter an ancestor of the new service path")
     require_text(cleanup_shard, "context->plan.cleanupPreviousDirectory && location == GC_SVC_LOCATION_OK",
                  "only an ordinary setup-managed old folder may have owned files removed")
-    require_text(cleanup_shard, "UNPROTECTED_DACL_SECURITY_INFORMATION",
-                 "a retained moved-from directory is released so the user can delete it")
+    require_text(cleanup_shard, "release_service_hardening(previous, GC_SERVICE_ACL_DIRECTORY",
+                 "a retained moved-from directory is released (only if provably ours, "
+                 "never to a null DACL) so the user can delete it")
     require_text(source("installer_move_cleanup.h"), "RemoveDirectoryW(directory)",
                  "move cleanup removes the old directory only when empty")
     require_text(apply_shard, "CreateProcessWithTokenW",
@@ -752,8 +755,14 @@ def check_all(ctx, require_text, forbid_text):
                  "the installer-side acknowledgment check sees the real answer")
     forbid_text(installer_ui, "pathRiskAcknowledged = true",
                 "the folder page never fakes the path-risk acknowledgment")
-    require_text(apply_shard, "apply_protected_service_dir_dacl",
-                 "the install directory is hardened before privileged payload extraction")
+    require_text(apply_shard, "apply_protected_service_dacl_to_handle(targetHandle.get()",
+                 "the install directory is hardened through its pinned handle before extraction")
+    ctx.require_order_in_operation(apply_shard, install_anchor,
+                                   "apply_protected_service_dacl_to_handle(targetHandle.get()",
+                                   "gc_capture_active_settings(context);",
+                                   "the folder is judged and hardened before the live install is disturbed")
+    require_text(apply_shard, "gc_service_install_location_verdict_for_handle(targetDirectory",
+                 "setup re-judges the pinned folder, not a fresh lookup by name")
     installer_util = source("installer_util.cpp")
     require_text(installer_util, "FOLDERID_ProgramFiles",
                  "elevated capture helpers stage beneath an administrator-owned parent")

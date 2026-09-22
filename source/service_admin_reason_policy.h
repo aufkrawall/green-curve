@@ -35,6 +35,8 @@
 #ifndef GREEN_CURVE_SERVICE_ADMIN_REASON_POLICY_H
 #define GREEN_CURVE_SERVICE_ADMIN_REASON_POLICY_H
 
+#include "service_scm_wait_policy.h"
+
 // Win32 codes spelled locally so this header stays free of <windows.h> and can
 // be compiled by the cross-platform harness.  Prefixed rather than reusing the
 // SDK names, because the header IS included where <windows.h> already defined
@@ -259,9 +261,13 @@ static inline const char* gc_service_admin_reason_text(int reason) {
 // a service Windows itself was still willing to wait for -- antivirus scanning
 // a freshly written binary on its first run routinely costs more than that,
 // and the install then failed for something that succeeded moments later.
+// It is now the budget between two PROGRESS reports of a service that sends no
+// wait hint (service_scm_wait_policy.h); a service that keeps advancing its
+// checkpoint is waited on up to GC_SCM_WAIT_MAX_TOTAL_MS per transition.
 //
 // GC_SVC_ADMIN_HELPER_TIMEOUT_MS must exceed a stop wait PLUS a start wait
-// plus the staging and DACL work between them, or the unelevated parent can
+// (each up to GC_SCM_WAIT_MAX_TOTAL_MS) plus the DACL work between them, or
+// the unelevated parent can
 // terminate a helper that was doing exactly what it was asked -- reporting a
 // failure for an install that then completes anyway, which is the worst of
 // both answers. The harness asserts that relationship (regression_main.cpp,
@@ -270,6 +276,10 @@ static inline const char* gc_service_admin_reason_text(int reason) {
 // work and therefore wait on THIS constant, not on a private one.
 #define GC_SVC_SCM_STATE_WAIT_MS 30000ul
 #define GC_SVC_ADMIN_HELPER_TIMEOUT_MS 150000ul
+static_assert(GC_SVC_SCM_STATE_WAIT_MS == GC_SCM_WAIT_NO_HINT_STALL_MS,
+              "the no-hint stall budget IS the SCM default wait");
+static_assert(GC_SVC_ADMIN_HELPER_TIMEOUT_MS >= 2 * GC_SCM_WAIT_MAX_TOTAL_MS + 30000ull,
+              "the helper bound covers a full stop wait, a full start wait and the work between");
 
 // True when the reason is the user's own decision rather than a fault, so the
 // GUI can report it without an error icon or a "something went wrong" framing.

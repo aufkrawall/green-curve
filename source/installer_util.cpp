@@ -188,6 +188,22 @@ bool gc_utf8_to_wide(const char* utf8, WCHAR* out, int outCount) {
     return true;
 }
 
+void gc_log_path_label(const WCHAR* path, char* out, size_t outSize) {
+    if (!out || outSize == 0) return;
+    out[0] = 0;
+    if (!path || !path[0]) {
+        StringCchCopyA(out, outSize, "(none)");
+        return;
+    }
+    if (gc_path_is_under_user_profile(path)) {
+        char token[32] = {};
+        StringCchPrintfA(out, outSize, "user-profile folder %s",
+                         gc_log_wide_identifier_token(path, token, sizeof(token)));
+        return;
+    }
+    if (!gc_wide_to_utf8(path, out, (int)outSize)) StringCchCopyA(out, outSize, "(unprintable)");
+}
+
 bool gc_wide_to_utf8(const WCHAR* wide, char* out, int outCount) {
     if (!out || outCount <= 0) return false;
     out[0] = 0;

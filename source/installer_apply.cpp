@@ -645,48 +645,60 @@ bool gc_install_execute(GcInstallContext* context) {
         return false;
     }
 
-    GcCapturedSettingsGuard capturedSettingsGuard = {context};
-
-    // 1. Capture first: after the next step there is nothing left to ask.
-    gc_capture_active_settings(context);
-
-    // 2. Nothing may hold the files open once extraction starts.
-    if (!gc_stop_gui_processes(context)) {
-        gc_set_error(context, "A running Green Curve program could not be closed. Close it and run setup again.");
-        return false;
-    }
-    bool serviceWasRunning = false;
-    if (!gc_stop_service(context, &serviceWasRunning)) return false;
-
-    // 3. Files.
-    gc_report(context, 25, "Creating the installation folder...");
+    // 1. The folder itself: created, PINNED, judged again and hardened before
+    //    the running installation is disturbed at all.  Changing a folder's
+    //    DACL needs nothing stopped, so a refusal or a failure here still
+    //    leaves the old installation running with its settings intact.
+    //
+    //    The handle is opened without FILE_SHARE_DELETE and with
+    //    FILE_FLAG_OPEN_REPARSE_POINT and is held until setup returns: neither
+    //    the folder nor any ancestor can be renamed away underneath it, and
+    //    the location verdict, the DACL write and its read-back all name the
+    //    object that handle holds.  Hardening by NAME (SetNamedSecurityInfoW
+    //    follows junctions) let an account that can rename a parent swap the
+    //    folder for a junction between the check and the write, so the
+    //    elevated setup rewrote the DACL of whatever the junction named.
+    gc_report(context, 10, "Preparing the installation folder...");
     if (!gc_create_directory_tree(targetDirectory)) {
         gc_set_error(context, "Could not create %ls. Choose a different folder or run setup as an administrator.",
                      targetDirectory);
         return false;
     }
-    DWORD targetAttributes = GetFileAttributesW(targetDirectory);
-    if (targetAttributes == INVALID_FILE_ATTRIBUTES ||
-        (targetAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
-        (targetAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+    const bool hardenTarget = !preProtection.verdict.no_filesystem_permissions;
+    GcScopedHandle targetHandle(CreateFileW(targetDirectory,
+        FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL |
+            (hardenTarget ? (WRITE_DAC | WRITE_OWNER) : 0),
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!targetHandle.valid()) {
+        gc_set_error(context, "The installation folder could not be opened (error %lu).",
+                     GetLastError());
+        return false;
+    }
+    int pinnedVerdict = gc_service_install_location_verdict_for_handle(targetDirectory,
+                                                                       targetHandle.get());
+    if (pinnedVerdict != GC_SVC_LOCATION_OK) {
+        gc_log_step("path location: pinned folder refused verdict=%s",
+                    gc_service_location_verdict_name(pinnedVerdict));
         gc_set_error(context,
-            "The installation folder is unavailable or is a reparse point.");
+                     "Green Curve needs a folder of its own. Installing into this folder would "
+                     "change its permissions so that only administrators could write to it. "
+                     "Choose a subfolder, for example C:\\Program Files\\Green Curve.");
         return false;
     }
     char directoryAclError[256] = {};
-    if (preProtection.verdict.no_filesystem_permissions) {
+    if (!hardenTarget) {
         // A capability gap, not a failure: FAT/exFAT cannot express a DACL at
         // all.  The classification already forced the strongest acknowledgment
         // for exactly this case, so skip loudly instead of failing on a
-        // SetNamedSecurityInfo that can never succeed here.
+        // security write that can never succeed here.
         gc_log_step("install: volume has no file permissions; skipping directory DACL "
                     "hardening (nothing placed here can be protected)");
-    } else if (!apply_protected_service_dir_dacl(
-            targetDirectory, directoryAclError, sizeof(directoryAclError)) ||
-        !machine_config_dacl_is_hardened(targetDirectory)) {
+    } else if (!apply_protected_service_dacl_to_handle(targetHandle.get(), GC_SERVICE_ACL_DIRECTORY,
+                                                       true, directoryAclError,
+                                                       sizeof(directoryAclError))) {
         gc_set_error(context, "The installation folder could not be secured: %s",
-            directoryAclError[0] ? directoryAclError :
-            "DACL verification failed");
+            directoryAclError[0] ? directoryAclError : "DACL verification failed");
         return false;
     }
     // The folder now exists and carries its hardened DACL: what preflight
@@ -708,6 +720,21 @@ bool gc_install_execute(GcInstallContext* context) {
             (int)postProtection.verdict.reason);
         return false;
     }
+
+    GcCapturedSettingsGuard capturedSettingsGuard = {context};
+
+    // 2. Capture: after the next step there is nothing left to ask.
+    gc_capture_active_settings(context);
+
+    // 3. Nothing may hold the files open once extraction starts.
+    if (!gc_stop_gui_processes(context)) {
+        gc_set_error(context, "A running Green Curve program could not be closed. Close it and run setup again.");
+        return false;
+    }
+    bool serviceWasRunning = false;
+    if (!gc_stop_service(context, &serviceWasRunning)) return false;
+
+    // 4. Files.
     gc_report(context, 30, "Copying program files...");
     for (uint32_t i = 0; i < context->payload.fileCount; i++) {
         if (!gc_write_payload_file(targetDirectory, &context->payload.files[i], context)) return false;
@@ -715,14 +742,14 @@ bool gc_install_execute(GcInstallContext* context) {
         gc_report(context, percent, "Copying program files...");
     }
 
-    // 4. Service registration, which also re-hardens the new directory.
+    // 5. Service registration, which also re-hardens the new directory.
     if (!gc_register_service(context)) return false;
 
-    // 5. Shortcuts and the Add/Remove Programs entry.
+    // 6. Shortcuts and the Add/Remove Programs entry.
     gc_report(context, 80, "Creating shortcuts...");
     if (!gc_write_shortcuts_and_registration(context)) return false;
 
-    // 6. Put the user's settings back exactly as an explicit Apply would.
+    // 7. Put the user's settings back exactly as an explicit Apply would.
     gc_reapply_captured_settings(context);
 
     // Only after the new registration, shortcuts, and ARP entry succeed is the

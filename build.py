@@ -156,6 +156,7 @@ WINDOWS_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "process_hardening.cpp"),
     os.path.join(SOURCE_DIR, "service_acl.cpp"),
     os.path.join(SOURCE_DIR, "service_path_chain.cpp"),
+    os.path.join(SOURCE_DIR, "service_acl_handle.cpp"), os.path.join(SOURCE_DIR, "service_install_location.cpp"),
     os.path.join(SOURCE_DIR, "platform_win32.cpp"),
     os.path.join(SOURCE_DIR, "vf_backends.cpp"),
 ]
@@ -1619,7 +1620,7 @@ def generate_lsp_files():
             "arguments": ["clang++", *linux_flags, *zig_linux_analyzer_flags(),
                           "-fsyntax-only", source],
         })
-    for source in (os.path.join(SOURCE_DIR, "app_shared.cpp"), os.path.join(SOURCE_DIR, "config_utils.cpp"), os.path.join(SOURCE_DIR, "fan_curve.cpp"), os.path.join(SOURCE_DIR, "service_acl.cpp"), os.path.join(SOURCE_DIR, "service_path_chain.cpp")):
+    for source in (os.path.join(SOURCE_DIR, "app_shared.cpp"), os.path.join(SOURCE_DIR, "config_utils.cpp"), os.path.join(SOURCE_DIR, "fan_curve.cpp"), os.path.join(SOURCE_DIR, "service_acl.cpp"), os.path.join(SOURCE_DIR, "service_path_chain.cpp"), os.path.join(SOURCE_DIR, "service_acl_handle.cpp"), os.path.join(SOURCE_DIR, "service_install_location.cpp")):
         entries.append({
             "directory": SCRIPT_DIR,
             "file": source,
@@ -1697,6 +1698,7 @@ def run_regression_tests(extra_flags=None):
             test_exe,
             harness_path,
             os.path.join(SCRIPT_DIR, "tests", "clock_transition_tests.cpp"),
+            os.path.join(SCRIPT_DIR, "tests", "service_install_tests.cpp"),
             os.path.join(SOURCE_DIR, "fan_curve.cpp"),
             os.path.join(SOURCE_DIR, "config_text_utils.cpp"),
             os.path.join(SOURCE_DIR, "app_shared.cpp"),
@@ -1705,7 +1707,7 @@ def run_regression_tests(extra_flags=None):
         if sys.platform == "win32":
             # Win32-only implementations; the harness #ifdefs out the suites
             # that exercise them (config INI, DACLs, Task Scheduler XML).
-            for win_only in ("config_utils.cpp", "service_acl.cpp", "service_path_chain.cpp", "platform_win32.cpp"):
+            for win_only in ("config_utils.cpp", "service_acl.cpp", "service_path_chain.cpp", "service_acl_handle.cpp", "service_install_location.cpp", "platform_win32.cpp"):
                 cmd.append(os.path.join(SOURCE_DIR, win_only))
         else:
             # win32_compat.h is force-included, never #included by the harness.
@@ -2112,7 +2114,7 @@ def run_source_regression_checks():
     _service_ipc_surface = os.path.join(BUILD_WORK_DIR, "_service_ipc_surface.cpp")
     with open(_service_ipc_surface, "w", encoding="utf-8", errors="ignore") as _if:
         for _cpp in (service_connection_cpp, service_client_commands_cpp,
-                     service_admin_client_cpp, service_machine_config_cpp):
+                     service_admin_client_cpp, os.path.join(SOURCE_DIR, "main_service_install_target.cpp"), service_machine_config_cpp):
             with open(_cpp, "r", encoding="utf-8", errors="ignore") as _source:
                 _if.write(_source.read())
                 _if.write("\n")
@@ -2195,13 +2197,12 @@ def run_source_regression_checks():
     require_text(service_ipc_cpp, "SetNamedPipeHandleState", "service pipe message mode is checked")
     require_text(service_ipc_cpp, "Service response protocol mismatch", "service responses are validated before use")
     require_text(service_ipc_cpp, "WaitNamedPipeW(pipeName, waitSlice)", "service pipe connect retries on ERROR_PIPE_BUSY")
-    require_text(service_ipc_cpp, "ensure_secure_service_binary_path", "service install uses hardened adjacent service binary path")
-    require_text(service_ipc_cpp, "CopyFileW(sourcePath, tempPath", "service binary is staged before install")
+    require_text(service_ipc_cpp, "service_install_prepare_target", "service install judges and pins its folder before touching anything")
     require_text(service_ipc_cpp, "get_current_executable_directory_w", "service install resolves the current executable directory")
     require_text(service_ipc_cpp, "get_service_binary_path_from_scm(expectedPath", "service pipe identity compares against the SCM-registered service binary")
-    require_text(service_ipc_cpp, "apply_protected_service_dir_dacl", "service install hardens the staging directory DACL")
-    require_text(service_ipc_cpp, "service_binary_dacl_is_hardened(targetPath)", "service install verifies the staged binary DACL")
-    require_text(service_ipc_cpp, "restore_inherited_dacl(installDir", "service uninstall restores adjacent directory DACL")
+    require_text(service_ipc_cpp, "apply_protected_service_dacl_to_handle(target->directory", "service install hardens the pinned directory through its handle")
+    require_text(service_ipc_cpp, "apply_protected_service_dacl_to_handle(target->binary", "service install hardens the pinned binary through its handle")
+    require_text(service_ipc_cpp, "release_service_hardening(directory, GC_SERVICE_ACL_DIRECTORY", "service uninstall releases only a directory DACL that is provably ours")
     require_text(service_ipc_cpp, "directory_path_is_root_or_share_root_w", "service uninstall skips overly broad root/share-root DACL restore")
     require_text(service_server_cpp, "Requested GPU identity no longer matches", "service validates requested GPU PCI identity before mutation")
     require_order(service_server_cpp,

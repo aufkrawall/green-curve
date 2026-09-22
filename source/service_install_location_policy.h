@@ -27,14 +27,17 @@
 //   reverting a root, so uninstalling never gave the volume back.
 //
 // THE RULE: we only ever harden a folder that is plausibly Green Curve's OWN.
-// A drive root, a share root and any well-known shell folder are refused by
-// name, and the refusal names the fix.  Refusing is safe in both directions:
-// the service is not registered, so nothing is half-done, and no permissions
-// were touched before the check (it runs before the first DACL write).
+// A drive root, a share root, any well-known shell folder and anything inside
+// the Windows directory are refused, and so is an existing folder holding
+// files that are not Green Curve's (the content rule below) -- unless Green
+// Curve hardened it already.  The refusal names the fix.  Refusing is safe in
+// both directions: nothing is registered, no service is stopped, and no
+// permissions were touched before the check (it runs before the first DACL
+// write and before any running service is disturbed).
 //
-// The shape rules are host-neutral and pinned by the regression harness; the
-// known-folder comparison needs SHGetKnownFolderPath and lives in
-// service_path_chain.cpp beside the other Win32 gathering.
+// The shape and content rules are host-neutral and pinned by the regression
+// harness; the Win32 half (known folders by identity, the Windows subtree, the
+// directory enumeration) lives in service_install_location.cpp.
 
 #ifndef GREEN_CURVE_SERVICE_INSTALL_LOCATION_POLICY_H
 #define GREEN_CURVE_SERVICE_INSTALL_LOCATION_POLICY_H
@@ -50,7 +53,15 @@ enum GcServiceLocationVerdict {
     GC_SVC_LOCATION_SHARE_ROOT,
     GC_SVC_LOCATION_KNOWN_FOLDER,
     GC_SVC_LOCATION_UNREADABLE,
-    GC_SVC_LOCATION_REPARSE
+    GC_SVC_LOCATION_REPARSE,
+    // Anywhere inside the Windows directory: every folder there belongs to
+    // the OS or to software the OS installed, at any depth.
+    GC_SVC_LOCATION_SYSTEM_SUBTREE,
+    // An existing folder holding something that is not Green Curve's (see
+    // gc_service_location_entry_is_ours) that Green Curve has not already
+    // hardened.  Hardening it would take write access to those files away.
+    GC_SVC_LOCATION_FOREIGN_CONTENT,
+    GC_SVC_LOCATION_VERDICT_COUNT
 };
 
 static inline const char* gc_service_location_verdict_name(int verdict) {
@@ -63,6 +74,8 @@ static inline const char* gc_service_location_verdict_name(int verdict) {
         case GC_SVC_LOCATION_KNOWN_FOLDER: return "well-known-folder";
         case GC_SVC_LOCATION_UNREADABLE: return "unreadable";
         case GC_SVC_LOCATION_REPARSE: return "reparse";
+        case GC_SVC_LOCATION_SYSTEM_SUBTREE: return "windows-subtree";
+        case GC_SVC_LOCATION_FOREIGN_CONTENT: return "foreign-content";
         default: return "unknown";
     }
 }
@@ -119,6 +132,80 @@ static inline int gc_service_location_shape_verdict(const wchar_t* path) {
     }
 
     return GC_SVC_LOCATION_NOT_ABSOLUTE;
+}
+
+// THE CONTENT RULE ("is this folder plausibly ours?").  A blocklist of known
+// folders can never be complete: %LOCALAPPDATA%\Programs, C:\Program
+// Files\<another vendor>, or a D:\Tools shared with other programs are
+// nobody's known folder and every one of them is destroyed by an
+// administrators-only DACL.  So the Win32 half also enumerates an existing
+// folder and accepts it only if every entry is a file Green Curve itself
+// ships, leaves behind, or stages -- or if Green Curve already hardened it,
+// in which case re-hardening changes nothing.
+//
+// Case-insensitive, exact names; no subdirectories.  Transient names are the
+// ones setup (".gcnew") and older builds' staging (".tmp") write beside the
+// payload; the rest are payload, legacy side files, and shell metadata.
+static inline bool gc_service_location_entry_is_ours(const wchar_t* name, size_t length,
+                                                     bool isDirectory) {
+    if (!name || length == 0) return false;
+    if (isDirectory) return false;
+    static const wchar_t* const kOurs[] = {
+        L"greencurve.exe", L"greencurve-service.exe", L"README.md", L"LICENSE",
+        L"uninstall.exe",
+        L"greencurve.exe.gcnew", L"greencurve-service.exe.gcnew", L"README.md.gcnew",
+        L"LICENSE.gcnew", L"uninstall.exe.gcnew", L"greencurve-service.exe.tmp",
+        // Written beside the binary by older builds.
+        L"config.ini", L"machine.ini", L"greencurve_log.txt", L"greencurve_cli_log.txt",
+        L"greencurve_debug.txt", L"greencurve_curve.json",
+        // Explorer's own per-folder metadata.
+        L"desktop.ini", L"Thumbs.db",
+    };
+    for (const wchar_t* ours : kOurs) {
+        size_t i = 0;
+        for (; i < length && ours[i]; i++) {
+            wchar_t a = name[i];
+            wchar_t b = ours[i];
+            if (a >= L'A' && a <= L'Z') a += L'a' - L'A';
+            if (b >= L'A' && b <= L'Z') b += L'a' - L'A';
+            if (a != b) break;
+        }
+        if (i == length && ours[i] == 0) return true;
+    }
+    return false;
+}
+
+// What the Win32 half saw, for the log line that accompanies a verdict.
+// Deliberately no names: a foreign entry is the user's own file, and its name
+// is nobody's business in a support log.  Counts and kinds say enough.
+struct GcServiceLocationDetail {
+    bool exists;
+    bool alreadyHardened;       // carried exactly Green Curve's DACL already
+    unsigned int entriesScanned;
+    bool foreignIsDirectory;    // the first foreign entry was a folder
+    bool foreignIsReparse;      // ... or a reparse point
+};
+
+// `path` is `root` or lies below it (case-insensitive, separator-bounded).
+// Used for the Windows-directory subtree rule on already-canonical paths.
+static inline bool gc_service_location_is_within(const wchar_t* path, const wchar_t* root) {
+    if (!path || !root) return false;
+    size_t rootLength = 0;
+    while (root[rootLength]) rootLength++;
+    while (rootLength > 0 && (root[rootLength - 1] == L'\\' || root[rootLength - 1] == L'/'))
+        rootLength--;
+    if (rootLength == 0) return false;
+    for (size_t i = 0; i < rootLength; i++) {
+        wchar_t a = path[i];
+        wchar_t b = root[i];
+        if (!a) return false;
+        if (a >= L'A' && a <= L'Z') a += L'a' - L'A';
+        if (b >= L'A' && b <= L'Z') b += L'a' - L'A';
+        if (a == L'/') a = L'\\';
+        if (b == L'/') b = L'\\';
+        if (a != b) return false;
+    }
+    return path[rootLength] == 0 || path[rootLength] == L'\\' || path[rootLength] == L'/';
 }
 
 // True when the shape half already refuses.  The Win32 half calls this first

@@ -1036,6 +1036,11 @@ void running_exe_dir_protection_invalidate();
 // folder's permissions? Returns GC_SVC_LOCATION_OK when it may. Kept beside
 // the protection query so the GUI never has to reach for Win32 path details.
 int running_exe_dir_install_location_verdict();
+// True when a Green Curve service is registered and runs from a DIFFERENT
+// folder than this copy: installing from here moves the registration, and the
+// confirmation says so.  False when nothing is registered or on any lookup
+// failure (the message is informational; the helper re-derives everything).
+bool running_exe_dir_differs_from_registered_service();
 
 // Service startup: log the service binary directory's protection verdict and
 // warn (without blocking) when it is less protected than Program Files.

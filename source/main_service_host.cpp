@@ -117,6 +117,25 @@ static void service_report_start_progress(const char* stage) {
         (unsigned long)g_serviceStatus.dwCheckPoint, stage ? stage : "(unnamed)");
 }
 
+// The stop-side twin.  STOP_PENDING used to go out ONCE, from the control
+// handler, and nothing moved until STOPPED -- through pipe-pool join, fan
+// runtime shutdown, a possible GPU reset and NVML teardown.  A waiter that
+// follows the checkpoint protocol (service_scm_wait_policy.h: our own install
+// path now does) could not tell that apart from a hang.  Each teardown stage
+// bumps the checkpoint.  Controls are withdrawn: nothing may be accepted while
+// the process is going away, which also keeps the control handler from
+// writing g_serviceStatus concurrently with this thread.
+static void service_report_stop_progress(const char* stage) {
+    if (!g_serviceStatusHandle) return;
+    g_serviceStatus.dwCurrentState = SERVICE_STOP_PENDING;
+    g_serviceStatus.dwControlsAccepted = 0;
+    g_serviceStatus.dwCheckPoint++;
+    g_serviceStatus.dwWaitHint = SERVICE_STOP_WAIT_HINT_MS;
+    SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
+    debug_log("service_main: stop progress checkpoint=%lu stage=%s\n",
+        (unsigned long)g_serviceStatus.dwCheckPoint, stage ? stage : "(unnamed)");
+}
+
 static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
     g_app.isServiceProcess = true;
     g_serviceMainThreadId = GetCurrentThreadId();
@@ -594,13 +613,16 @@ service_watchdog_loop:
 
     // Ordinary or externally requested shutdown. The long-lived lifecycle
     // worker is the sole owner of pending automatic restoration work.
+    service_report_stop_progress("selected GPU notification and logon coordinator");
     service_stop_selected_gpu_notification_best_effort(
         "graceful service shutdown");
     service_shutdown_logon_apply_coordinator();
     lock_service_runtime();
     bool hadOwnedIntentForShutdown = g_serviceHasActiveDesired;
     unlock_service_runtime();
+    service_report_stop_progress("fan runtime shutdown");
     stop_service_fan_runtime_thread();
+    service_report_stop_progress("pipe listener shutdown");
     service_pipe_listener_stop_and_join();
     if (g_servicePipeReadyEvent) {
         CloseHandle(g_servicePipeReadyEvent);
@@ -628,6 +650,7 @@ service_watchdog_loop:
     // later stopped.  If this process successfully applied settings, retain
     // the established graceful-stop behavior of returning them to defaults.
     if (hadOwnedIntentForShutdown) {
+        service_report_stop_progress("GPU reset of owned intent");
         char resetDetail[256] = {};
         bool resetWriteAttempted = false;
         bool resetOk = service_reset_all(resetDetail, sizeof(resetDetail),
@@ -641,6 +664,7 @@ service_watchdog_loop:
         debug_log("service_main: graceful shutdown has no owned intent; skipping all GPU reset writes\n");
     }
     if (!lifecycleWorkerFailed) {
+        service_report_stop_progress("driver library teardown");
         close_nvml();
         if (g_app.hNvApi) {
             FreeLibrary(g_app.hNvApi);
