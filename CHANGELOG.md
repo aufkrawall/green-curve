@@ -37,7 +37,7 @@ Program Files.
   a folder can be used to take over the background service; the warning says so
   and shows the admin command that fully protects the folder (it is never
   applied for you).
-- **Portable copies keep working from every folder**, with the same clear
+- **Portable copies keep working from every folder.** They show the same clear
   protection warnings instead of silence.
 
 ### Compatibility notes

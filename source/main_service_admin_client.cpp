@@ -289,7 +289,7 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
     // but every verdict is logged and a filesystem that cannot express a DACL
     // at all is handled as an explicit, loud capability gap.
     GcPathProtectionReport protection = {};
-    classify_path_protection(installDir, &protection);
+    classify_path_protection(installDir, &protection, true);
     debug_log("service install: path protection protected=%d standardWritable=%d profile=%d "
               "remote=%d noFilesystemPermissions=%d reason=%d\n",
               protection.verdict.chain_protected ? 1 : 0,
@@ -395,7 +395,7 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
     // checks fails the install closed rather than registering a LocalSystem
     // service from a location less protected than reported.
     GcPathProtectionReport protectionAfter = {};
-    classify_path_protection(installDir, &protectionAfter);
+    classify_path_protection(installDir, &protectionAfter, false);
     if (protection.verdict.chain_protected && !protectionAfter.verdict.chain_protected) {
         set_message(err, errSize,
             "The service directory lost its protection during staging (reason %d); "
@@ -403,25 +403,44 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
             (int)protectionAfter.verdict.reason);
         return false;
     }
-    debug_log("service install: staged and hardened LocalSystem binary at %ls (directory %ls)\n", targetPath, installDir);
     if (install_dir_is_under_user_profile_w(installDir)) {
+        char targetToken[32] = {};
         char dirToken[32] = {};
+        gc_log_wide_identifier_token(targetPath, targetToken, sizeof(targetToken));
         gc_log_wide_identifier_token(installDir, dirToken, sizeof(dirToken));
+        debug_log("service install: staged and hardened LocalSystem binary at token %s (directory token %s)\n",
+                  targetToken, dirToken);
         debug_log("service install WARNING: install dir %s is under a user profile. Other users, "
             "including restricted/standard accounts, may be unable to read or execute the Green Curve "
             "GUI binary. Install under %%ProgramFiles%% to make the application available to all users.\n",
             dirToken);
+    } else {
+        debug_log("service install: staged and hardened LocalSystem binary at %ls (directory %ls)\n", targetPath, installDir);
     }
 
     return SUCCEEDED(StringCchCopyW(out, outCount, targetPath));
 }
 
+namespace {
+GcPathProtectionReport g_runningExeProtectionCache = {};
+bool g_runningExeProtectionCached = false;
+}
+
+void running_exe_dir_protection_invalidate() {
+    g_runningExeProtectionCached = false;
+}
+
 // Classify the RUNNING binary's own directory (the install root in every
 // supported layout: the service binary is staged adjacent to the GUI, and the
 // updater stages into %ProgramData%).  Used by the GUI's status warnings and
-// kept here so GUI shards stay away from the Win32 path details.
+// kept here so GUI shards stay away from the Win32 path details.  Cached after
+// first lookup to avoid repeated synchronous SAM/RPC and DACL queries on the UI thread.
 bool running_exe_dir_protection(GcPathProtectionReport* out) {
     if (!out) return false;
+    if (g_runningExeProtectionCached) {
+        *out = g_runningExeProtectionCache;
+        return true;
+    }
     GcPathProtectionReport blank = {};
     *out = blank;
     WCHAR exeDir[MAX_PATH] = {};
@@ -431,7 +450,9 @@ bool running_exe_dir_protection(GcPathProtectionReport* out) {
         gc_path_protection_classify(nullptr, &out->verdict);
         return false;
     }
-    classify_path_protection(exeDir, out);
+    classify_path_protection(exeDir, out, false);
+    g_runningExeProtectionCache = *out;
+    g_runningExeProtectionCached = true;
     return true;
 }
 
@@ -448,7 +469,7 @@ void service_log_path_protection_at_startup() {
         return;
     }
     GcPathProtectionReport protection = {};
-    classify_path_protection(installDir, &protection);
+    classify_path_protection(installDir, &protection, false);
     debug_log("path protection: service directory protected=%d standardWritable=%d profile=%d "
               "remote=%d noFilesystemPermissions=%d reason=%d\n",
               protection.verdict.chain_protected ? 1 : 0,

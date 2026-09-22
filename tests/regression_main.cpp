@@ -4956,11 +4956,20 @@ static int run_all_tests(int argc, char** argv) {
         if (!gc_path_protection_wants_remedy(&p)) return 5416;
 
         // The same grant on the LEAF is neutralized by the install's DACL
-        // replacement: still protected.
+        // replacement in preflight mode: still protected.
+        facts.preflight_mode = true;
         facts.components[1].non_admin_danger = false;
         facts.components[2].non_admin_danger = true;
         gc_path_protection_classify(&facts, &p);
         if (!p.chain_protected) return 5417;
+
+        // Outside preflight mode (post-hardening, runtime GUI, service startup),
+        // leaf non-admin danger is an active substitution risk: not protected.
+        facts.preflight_mode = false;
+        gc_path_protection_classify(&facts, &p);
+        if (p.chain_protected) return 5465;
+        if (p.reason != GC_PATH_RISK_COMPONENT_USER_WRITABLE) return 5466;
+        if (p.first_unsafe_component != 2) return 5467;
 
         // A reparse ancestor (junction substitution): not protected.
         facts.components[2].non_admin_danger = false;

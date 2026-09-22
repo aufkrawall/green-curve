@@ -290,10 +290,12 @@ void gather_component_facts(const WCHAR* full, size_t prefixEnd, bool isRoot,
 
 }  // namespace
 
-void classify_path_protection(const wchar_t* path, GcPathProtectionReport* out) {
+void classify_path_protection(const wchar_t* path, GcPathProtectionReport* out,
+                              bool preflightMode) {
     if (!out) return;
     GcPathProtectionReport blank = {};
     *out = blank;
+    out->facts.preflight_mode = preflightMode;
 
     if (!path || !path[0]) {
         gc_path_protection_classify(nullptr, &out->verdict);

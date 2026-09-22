@@ -227,7 +227,7 @@ void gc_paint(GcWizard* wizard, HDC dc, const RECT* client) {
             gc_draw_field_frame(dc, wizard->pathEdit);
             // Extra warnings and the (never applied) remediation line for the
             // exact folder at fault.
-            char notes[1024] = {};
+            char notes[2560] = {};
             for (int i = 0; ; i++) {
                 const char* note = gc_path_protection_extra_note(protection, i);
                 if (!note[0]) break;

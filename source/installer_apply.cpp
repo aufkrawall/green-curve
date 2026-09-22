@@ -626,7 +626,7 @@ bool gc_install_execute(GcInstallContext* context) {
         return false;
     }
     GcPathProtectionReport preProtection = {};
-    classify_path_protection(targetDirectory, &preProtection);
+    classify_path_protection(targetDirectory, &preProtection, true);
     gc_log_step("path protection: protected=%d standardWritable=%d profile=%d remote=%d "
                 "noFilesystemPermissions=%d reason=%d acknowledgmentRequired=%d acknowledged=%d",
                 preProtection.verdict.chain_protected ? 1 : 0,
@@ -696,7 +696,7 @@ bool gc_install_execute(GcInstallContext* context) {
     // LocalSystem service from a location less protected than the user was
     // told about.
     GcPathProtectionReport postProtection = {};
-    classify_path_protection(targetDirectory, &postProtection);
+    classify_path_protection(targetDirectory, &postProtection, false);
     if (!postProtection.verdict.chain_protected) {
         gc_log_step("path protection after hardening: protected=0 reason=%d",
                     (int)postProtection.verdict.reason);

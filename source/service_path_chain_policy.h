@@ -80,6 +80,7 @@ struct GcPathVolumeFacts {
 struct GcPathProtectionFacts {
     GcPathVolumeFacts volume;
     bool under_user_profile;
+    bool preflight_mode;   // true during installer preflight where the leaf DACL will be replaced
     GcPathComponentFacts components[GC_PATH_CHAIN_MAX_COMPONENTS];
     int component_count;   // components[0] is the volume root
     bool chain_complete;   // walked to the target without gaps or overflow
@@ -224,10 +225,12 @@ static inline void gc_path_protection_classify(const GcPathProtectionFacts* fact
             }
             // The install leaf's own DACL is replaced with the protected one
             // before anything is written into it, so a pre-existing non-admin
-            // grant on the LEAF is neutralized by construction.  On every
-            // ancestor it is not - that is the substitution path this whole
-            // policy exists to close.  The leaf is always the last component.
-            if (component->non_admin_danger && !isLeaf) {
+            // grant on the LEAF is neutralized by construction ONLY in preflight
+            // mode.  At runtime, service startup, and in post-hardening checks,
+            // non-admin substitution rights on the leaf directory itself are an
+            // active escalation risk.
+            bool exemptLeaf = isLeaf && facts->preflight_mode;
+            if (component->non_admin_danger && !exemptLeaf) {
                 chainProtected = false;
                 out->reason = GC_PATH_RISK_COMPONENT_USER_WRITABLE;
                 out->first_unsafe_component = i;

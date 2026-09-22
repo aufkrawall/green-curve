@@ -39,7 +39,10 @@ bool restore_inherited_dacl(const wchar_t* path, char* err, size_t errSize);
 // service_path_chain_policy.h for the property and the fail-safe rule).  Never
 // fails: an unprobeable path classifies as not protected.  Supersedes the old
 // "is it under Program Files" check, which was a proxy for this proof.
-void classify_path_protection(const wchar_t* path, GcPathProtectionReport* out);
+// `preflightMode` should be set true only during setup preflight where the leaf
+// directory DACL will be replaced before files are installed.
+void classify_path_protection(const wchar_t* path, GcPathProtectionReport* out,
+                              bool preflightMode = false);
 
 // True if `path` currently carries a hardened DACL: inheritance disabled
 // (SE_DACL_PROTECTED) AND no non-admin principal (Everyone / BUILTIN\Users /

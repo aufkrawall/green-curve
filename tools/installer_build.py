@@ -586,7 +586,7 @@ def check_all(ctx, require_text, forbid_text):
     # be defined in further up the file.
     install_anchor = "bool gc_install_execute(GcInstallContext* context)"
     ctx.require_order_in_operation(apply_shard, install_anchor,
-                                   "classify_path_protection(targetDirectory, &preProtection)",
+                                   "classify_path_protection(targetDirectory, &preProtection, true)",
                                    "gc_capture_active_settings(context);",
                                    "the path-protection preflight runs before setup disturbs the live installation")
     ctx.require_order_in_operation(apply_shard, install_anchor,

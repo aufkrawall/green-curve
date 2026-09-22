@@ -168,7 +168,7 @@ static void gc_start_work(GcWizard* wizard) {
 // the remote short-circuit in the gatherer keeps even a dead network path from
 // stalling typing with round trips.
 void gc_refresh_folder_protection(GcWizard* wizard, const WCHAR* pathWide) {
-    classify_path_protection(pathWide, &wizard->folderProtection);
+    classify_path_protection(pathWide, &wizard->folderProtection, true);
     gc_update_page_controls(wizard);
     InvalidateRect(wizard->hwnd, nullptr, TRUE);
 }
@@ -429,6 +429,8 @@ static LRESULT CALLBACK gc_wizard_proc(HWND hwnd, UINT message, WPARAM wParam, L
             if (controlId == GC_ID_PATH_EDIT && notification == EN_CHANGE) {
                 WCHAR wide[GC_INSTALLER_MAX_PATH_CHARS] = {};
                 GetWindowTextW(wizard->pathEdit, wide, (int)GC_ARRAY_COUNT(wide));
+                wizard->riskAccepted = false;
+                if (wizard->riskCheck) InvalidateRect(wizard->riskCheck, nullptr, TRUE);
                 gc_refresh_folder_protection(wizard, wide);
                 return 0;
             }

@@ -1019,6 +1019,7 @@ bool running_exe_dir_is_under_user_profile();
 // standard-account tampering with the LocalSystem service binary (see
 // service_path_chain_policy.h).  Drives the GUI's install-folder warnings.
 bool running_exe_dir_protection(GcPathProtectionReport* out);
+void running_exe_dir_protection_invalidate();
 
 // Service startup: log the service binary directory's protection verdict and
 // warn (without blocking) when it is less protected than Program Files.
