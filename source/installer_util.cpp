@@ -308,46 +308,6 @@ bool gc_create_private_temp_directory(WCHAR* out, size_t outCount) {
     return true;
 }
 
-static bool gc_path_is_direct_child_of_root(
-    const WCHAR* path, const WCHAR* root) {
-    if (!path || !path[0] || !root || !root[0]) return false;
-    WCHAR fullPath[GC_INSTALLER_MAX_PATH_CHARS] = {};
-    WCHAR fullRoot[GC_INSTALLER_MAX_PATH_CHARS] = {};
-    DWORD pathLength = GetFullPathNameW(path, GC_ARRAY_COUNT(fullPath),
-        fullPath, nullptr);
-    DWORD rootLength = GetFullPathNameW(root, GC_ARRAY_COUNT(fullRoot),
-        fullRoot, nullptr);
-    if (pathLength == 0 || pathLength >= GC_ARRAY_COUNT(fullPath) ||
-        rootLength == 0 || rootLength >= GC_ARRAY_COUNT(fullRoot))
-        return false;
-    while (rootLength > 0 &&
-        (fullRoot[rootLength - 1] == L'\\' ||
-         fullRoot[rootLength - 1] == L'/')) --rootLength;
-    if (pathLength <= rootLength ||
-        _wcsnicmp(fullPath, fullRoot, rootLength) != 0 ||
-        (fullPath[rootLength] != L'\\' && fullPath[rootLength] != L'/'))
-        return false;
-    const WCHAR* leaf = fullPath + rootLength + 1;
-    return leaf[0] && !wcschr(leaf, L'\\') && !wcschr(leaf, L'/');
-}
-
-bool gc_install_directory_is_secure_rooted(const WCHAR* path) {
-    if (!path || !path[0]) return false;
-    const KNOWNFOLDERID* roots[] = {
-        &FOLDERID_ProgramFiles,
-        &FOLDERID_ProgramFilesX86,
-    };
-    for (const KNOWNFOLDERID* rootId : roots) {
-        PWSTR root = nullptr;
-        HRESULT status = SHGetKnownFolderPath(*rootId, 0, nullptr, &root);
-        bool accepted = SUCCEEDED(status) && root &&
-            gc_path_is_direct_child_of_root(path, root);
-        if (root) CoTaskMemFree(root);
-        if (accepted) return true;
-    }
-    return false;
-}
-
 bool gc_create_directory_tree(const WCHAR* path) {
     if (!path || !path[0]) return false;
     if (gc_directory_exists(path)) return true;

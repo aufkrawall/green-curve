@@ -8,6 +8,12 @@
 // Exit code 0 = pass; any non-zero value identifies the exact assertion.
 #include "fan_curve.h"
 #include <string>
+#if defined(_WIN32)
+// FSCTL_SET_REPARSE_POINT for the junction fixture in the path-chain suite,
+// and SE_FILE_OBJECT/SetNamedSecurityInfoW for its synthesized DACLs.
+#include <winioctl.h>
+#include <aclapi.h>
+#endif
 #include "lock_checkbox_policy.h"
 #include "main_layout_policy.h"
 #include "ui_theme_metrics.h"
@@ -4692,7 +4698,368 @@ static int run_all_tests(int argc, char** argv) {
         if (!machine_config_dacl_is_hardened(mcDir)) { gc_remove_protected_temp_dir(mcDir); return 134; }
         if (!gc_remove_protected_temp_dir(mcDir)) return 139;
     }
+
+    // Path-protection walker (service_path_chain.cpp): the FACT extraction is
+    // asserted against real DACLs the test synthesizes, because the pure
+    // matrix below already pins how those facts map to verdicts.  Verdicts on
+    // temp trees are deliberately NOT asserted: the owning user's trust (an
+    // admin's profile chain is admin-owned) would make them depend on the
+    // elevation of whoever runs the test.  A genuinely admin-protected chain
+    // cannot be synthesized unelevated (setting an Administrators owner needs
+    // SeRestore), so the positive case probes %ProgramFiles% read-only further
+    // down instead.  The root-DELETE nuance in scan_dacl_for_danger is not
+    // covered here for the same reason: no test may rewrite a real volume
+    // root's DACL.
+    {
+        union AclStorage { DWORD align; BYTE bytes[1024]; };
+        auto applyTestDacl = [](const wchar_t* path, BYTE aceFlags, DWORD aceMask) -> bool {
+            BYTE admin[SECURITY_MAX_SID_SIZE] = {};
+            BYTE system[SECURITY_MAX_SID_SIZE] = {};
+            BYTE users[SECURITY_MAX_SID_SIZE] = {};
+            DWORD size = sizeof(admin);
+            if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr, admin, &size)) return false;
+            size = sizeof(system);
+            if (!CreateWellKnownSid(WinLocalSystemSid, nullptr, system, &size)) return false;
+            size = sizeof(users);
+            if (!CreateWellKnownSid(WinBuiltinUsersSid, nullptr, users, &size)) return false;
+            AclStorage storage = {};
+            ACL* acl = (ACL*)storage.bytes;
+            if (!InitializeAcl(acl, sizeof(storage.bytes), ACL_REVISION)) return false;
+            if (!AddAccessAllowedAceEx(acl, ACL_REVISION, 0, FILE_ALL_ACCESS, system)) return false;
+            if (!AddAccessAllowedAceEx(acl, ACL_REVISION, 0, FILE_ALL_ACCESS, admin)) return false;
+            if (!AddAccessAllowedAceEx(acl, ACL_REVISION, 0, FILE_GENERIC_READ, users)) return false;
+            if (aceMask != 0 &&
+                !AddAccessAllowedAceEx(acl, ACL_REVISION, aceFlags, aceMask, users)) return false;
+            return SetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
+                       DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                       nullptr, nullptr, acl, nullptr) == ERROR_SUCCESS;
+        };
+        // Junctions (mount points) need no privilege and are the reparse form a
+        // hostile parent substitution would actually use.
+        auto makeJunction = [](const wchar_t* junctionPath, const wchar_t* targetPath) -> bool {
+            struct MountPointReparse {
+                DWORD tag;
+                WORD dataLength;
+                WORD reserved;
+                WORD substituteOffset;
+                WORD substituteLength;
+                WORD printOffset;
+                WORD printLength;
+                wchar_t pathBuffer[600];
+            } reparse = {};
+            wchar_t substitute[600] = {};
+            if (FAILED(StringCchPrintfW(substitute, 600, L"\\??\\%ls", targetPath))) return false;
+            size_t substituteChars = wcslen(substitute);
+            size_t printChars = wcslen(targetPath);
+            if (substituteChars + printChars + 2 > 600) return false;
+            if (!CreateDirectoryW(junctionPath, nullptr)) return false;
+            HANDLE handle = CreateFileW(junctionPath, GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                                       FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+                                       nullptr);
+            if (handle == INVALID_HANDLE_VALUE) return false;
+            reparse.tag = IO_REPARSE_TAG_MOUNT_POINT;
+            reparse.substituteOffset = 0;
+            reparse.substituteLength = (WORD)(substituteChars * sizeof(wchar_t));
+            reparse.printOffset = (WORD)(reparse.substituteLength + sizeof(wchar_t));
+            reparse.printLength = (WORD)(printChars * sizeof(wchar_t));
+            memcpy(reparse.pathBuffer, substitute, reparse.substituteLength);
+            reparse.pathBuffer[substituteChars] = 0;
+            memcpy(reparse.pathBuffer + substituteChars + 1, targetPath, reparse.printLength);
+            reparse.pathBuffer[substituteChars + 1 + printChars] = 0;
+            reparse.dataLength = (WORD)(8 + reparse.substituteLength + 2 + reparse.printLength + 2);
+            DWORD returned = 0;
+            bool ok = DeviceIoControl(handle, FSCTL_SET_REPARSE_POINT, &reparse,
+                                      (DWORD)(8 + reparse.dataLength), nullptr, 0, &returned,
+                                      nullptr) != FALSE;
+            CloseHandle(handle);
+            return ok;
+        };
+
+        wchar_t base[MAX_PATH] = {};
+        if (!gc_make_unique_temp_dir(L"gc_path_chain", base, MAX_PATH)) return 5430;
+        wchar_t mid[MAX_PATH] = {}, leaf[MAX_PATH] = {}, junction[MAX_PATH] = {};
+        wchar_t missing[MAX_PATH] = {};
+        if (FAILED(StringCchPrintfW(mid, MAX_PATH, L"%ls\\mid", base)) ||
+            FAILED(StringCchPrintfW(leaf, MAX_PATH, L"%ls\\leaf", base)) ||
+            FAILED(StringCchPrintfW(junction, MAX_PATH, L"%ls\\junction", base)) ||
+            FAILED(StringCchPrintfW(missing, MAX_PATH, L"%ls\\mid\\missing", base)))
+            return 5431;
+        if (!CreateDirectoryW(mid, nullptr) || !CreateDirectoryW(leaf, nullptr)) return 5432;
+        if (!makeJunction(junction, leaf)) return 5433;
+
+        // A non-inheritable Users DELETE grant (the rename-away substitution
+        // right) must surface as danger on the component itself...
+        if (!applyTestDacl(mid, 0, DELETE)) return 5434;
+        GcPathProtectionReport report = {};
+        classify_path_protection(mid, &report);
+        int last = report.facts.component_count - 1;
+        if (last < 0 || !report.facts.components[last].exists) return 5435;
+        if (!report.facts.components[last].non_admin_danger) return 5436;
+
+        // ...while an INHERIT-ONLY grant is invisible on the component itself
+        // but must flag what children created beneath it would inherit (the
+        // real default shape of a data-drive root).
+        if (!applyTestDacl(mid, INHERIT_ONLY_ACE | OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE, DELETE))
+            return 5437;
+        classify_path_protection(mid, &report);
+        last = report.facts.component_count - 1;
+        if (report.facts.components[last].non_admin_danger) return 5438;
+        if (!report.facts.components[last].non_admin_inherit_danger) return 5439;
+
+        // A missing tail is recorded as such, with the inherit-danger of its
+        // future parent (the input the tail rule acts on).
+        classify_path_protection(missing, &report);
+        last = report.facts.component_count - 1;
+        if (last < 1) return 5440;
+        if (report.facts.components[last].exists) return 5441;
+        if (!report.facts.components[last - 1].non_admin_inherit_danger) return 5442;
+
+        // A junctioned component is reparse, including as an ancestor of a
+        // path that runs through it.
+        classify_path_protection(junction, &report);
+        last = report.facts.component_count - 1;
+        if (!report.facts.components[last].is_reparse) return 5443;
+        wchar_t underJunction[MAX_PATH] = {};
+        if (FAILED(StringCchPrintfW(underJunction, MAX_PATH, L"%ls\\junction\\missing", base)))
+            return 5464;
+        classify_path_protection(underJunction, &report);
+        bool sawReparse = false;
+        for (int i = 0; i < report.facts.component_count; i++) {
+            if (report.facts.components[i].is_reparse) sawReparse = true;
+        }
+        if (!sawReparse) return 5444;
+
+        // UNC short-circuit: classified remote without a single probe (a dead
+        // server must never stall the caller) and never offered a remediation.
+        classify_path_protection(L"\\\\gc-nonexistent-server\\share\\Green Curve", &report);
+        if (!report.verdict.remote) return 5445;
+        if (report.verdict.chain_protected) return 5446;
+        if (report.facts.component_count != 0) return 5447;
+        if (gc_path_protection_wants_remedy(&report.verdict)) return 5448;
+
+        // Cleanup must be asserted (see the DACL suite): a leaked junction is
+        // especially unpleasant because it keeps resolving to its target.
+        if (!RemoveDirectoryW(junction)) return 5449;
+        if (!RemoveDirectoryW(leaf)) return 5450;
+        char restoreErr[160] = {};
+        if (!restore_inherited_dacl(mid, restoreErr, sizeof(restoreErr))) return 5451;
+        if (!RemoveDirectoryW(mid)) return 5452;
+        if (!gc_remove_protected_temp_dir(base)) return 5453;
+    }
+
+    // Positive walker case, read-only: default Program Files ACLs must
+    // classify PROTECTED, or the whole scheme would warn on the default
+    // install path.  Probed rather than synthesized because a protected chain
+    // needs an Administrators owner that cannot be set unelevated.
+    {
+        wchar_t programFiles[MAX_PATH] = {};
+        if (GetEnvironmentVariableW(L"ProgramFiles", programFiles, MAX_PATH) == 0)
+            return 5454;
+        GcPathProtectionReport report = {};
+        classify_path_protection(programFiles, &report);
+        if (!report.verdict.chain_protected) return 5455;
+        if (gc_path_protection_requires_acknowledgment(&report.verdict)) return 5456;
+        if (strcmp(gc_path_protection_headline(&report.verdict),
+                   GC_PATH_PROTECTION_SUMMARY_GREEN) != 0) return 5457;
+    }
 #endif // _WIN32
+
+    // Path-protection classification (service_path_chain_policy.h): the F-SEC-1
+    // property as pure facts->verdict logic.  The fail-safe direction is
+    // asserted first because a false "protected" is the one verdict that lets
+    // someone install a LocalSystem service into a hijackable folder while
+    // believing they were told it was safe.  Host-neutral on purpose: the rule
+    // must hold identically wherever the harness compiles.
+    {
+        GcPathProtectionFacts facts = {};
+        GcPathProtection p = {};
+
+        // No facts at all: unproven is never protected.
+        gc_path_protection_classify(nullptr, &p);
+        if (p.chain_protected || !p.standard_writable) return 5400;
+        if (!gc_path_protection_requires_acknowledgment(&p)) return 5401;
+
+        // Zeroed facts are the safe-failing values: with the volume itself
+        // unproven the chain cannot be vouched for (primary reason: volume).
+        gc_path_protection_classify(&facts, &p);
+        if (p.chain_protected || !p.standard_writable) return 5402;
+        if (p.reason != GC_PATH_RISK_VOLUME_UNREADABLE) return 5403;
+
+        // A readable volume but an incomplete chain walk: unproven.
+        facts = GcPathProtectionFacts{};
+        facts.volume.facts_complete = true;
+        facts.volume.has_persistent_acls = true;
+        gc_path_protection_classify(&facts, &p);
+        if (p.chain_protected || p.reason != GC_PATH_RISK_CHAIN_INCOMPLETE) return 5404;
+
+        // The green shape: a complete chain of existing, admin-owned, plain
+        // directories with no non-admin substitution rights.
+        facts = GcPathProtectionFacts{};
+        facts.volume.facts_complete = true;
+        facts.volume.has_persistent_acls = true;
+        facts.chain_complete = true;
+        facts.component_count = 3;
+        for (int i = 0; i < 3; i++) {
+            facts.components[i].exists = true;
+            facts.components[i].owner_admin_trusted = true;
+            facts.components[i].facts_complete = true;
+        }
+        gc_path_protection_classify(&facts, &p);
+        if (!p.chain_protected || p.standard_writable) return 5405;
+        if (gc_path_protection_requires_acknowledgment(&p)) return 5406;
+        if (strcmp(gc_path_protection_headline(&p), GC_PATH_PROTECTION_SUMMARY_GREEN) != 0)
+            return 5407;
+
+        // The drive-root shape: create-only rights on the root and a missing
+        // tail under a parent that grants nothing inheritable - protected (the
+        // elevated setup creates the tail beneath the verified chain).
+        facts = GcPathProtectionFacts{};
+        facts.volume.facts_complete = true;
+        facts.volume.has_persistent_acls = true;
+        facts.chain_complete = true;
+        facts.component_count = 2;
+        facts.components[0].exists = true;
+        facts.components[0].owner_admin_trusted = true;
+        facts.components[0].facts_complete = true;
+        facts.components[1].exists = false;
+        gc_path_protection_classify(&facts, &p);
+        if (!p.chain_protected) return 5408;
+
+        // The same tail under INHERITABLE non-admin danger (a data-drive root
+        // handing Authenticated Users inheritable Modify): not protected, and
+        // the actionable component is the missing folder - created protected,
+        // it breaks the inheritance.
+        facts.components[0].non_admin_inherit_danger = true;
+        gc_path_protection_classify(&facts, &p);
+        if (p.chain_protected) return 5409;
+        if (p.reason != GC_PATH_RISK_COMPONENT_USER_WRITABLE) return 5410;
+        if (p.first_unsafe_component != 1) return 5411;
+        if (!gc_path_protection_remedy_needs_create(&facts, &p)) return 5412;
+
+        // Non-admin substitution rights on an ANCESTOR are the escalation path
+        // the leaf's protected DACL cannot close: not protected.
+        facts = GcPathProtectionFacts{};
+        facts.volume.facts_complete = true;
+        facts.volume.has_persistent_acls = true;
+        facts.chain_complete = true;
+        facts.component_count = 3;
+        for (int i = 0; i < 3; i++) {
+            facts.components[i].exists = true;
+            facts.components[i].owner_admin_trusted = true;
+            facts.components[i].facts_complete = true;
+        }
+        facts.components[1].non_admin_danger = true;
+        gc_path_protection_classify(&facts, &p);
+        if (p.chain_protected) return 5413;
+        if (p.reason != GC_PATH_RISK_COMPONENT_USER_WRITABLE) return 5414;
+        if (p.first_unsafe_component != 1) return 5415;
+        if (!gc_path_protection_wants_remedy(&p)) return 5416;
+
+        // The same grant on the LEAF is neutralized by the install's DACL
+        // replacement: still protected.
+        facts.components[1].non_admin_danger = false;
+        facts.components[2].non_admin_danger = true;
+        gc_path_protection_classify(&facts, &p);
+        if (!p.chain_protected) return 5417;
+
+        // A reparse ancestor (junction substitution): not protected.
+        facts.components[2].non_admin_danger = false;
+        facts.components[1].is_reparse = true;
+        gc_path_protection_classify(&facts, &p);
+        if (p.chain_protected || p.reason != GC_PATH_RISK_COMPONENT_REPARSE) return 5418;
+
+        // A non-admin-owned ancestor (implicit WRITE_DAC is the re-ACL path):
+        // not protected.
+        facts.components[1].is_reparse = false;
+        facts.components[1].owner_admin_trusted = false;
+        gc_path_protection_classify(&facts, &p);
+        if (p.chain_protected || p.reason != GC_PATH_RISK_COMPONENT_NOT_ADMIN_OWNED)
+            return 5419;
+
+        // An unreadable ancestor: unproven is dangerous.
+        facts.components[1].owner_admin_trusted = true;
+        facts.components[1].facts_complete = false;
+        gc_path_protection_classify(&facts, &p);
+        if (p.chain_protected || p.reason != GC_PATH_RISK_COMPONENT_MISSING_FACTS)
+            return 5420;
+
+        // Remote: the server-trust note leads, no remediation is offered.
+        facts = GcPathProtectionFacts{};
+        facts.volume.is_remote = true;
+        facts.component_count = 3;
+        for (int i = 0; i < 3; i++) {
+            facts.components[i].exists = true;
+            facts.components[i].owner_admin_trusted = true;
+            facts.components[i].facts_complete = true;
+        }
+        gc_path_protection_classify(&facts, &p);
+        if (p.chain_protected || !p.remote) return 5421;
+        if (strcmp(gc_path_protection_extra_note(&p, 0), GC_PATH_PROTECTION_NOTE_REMOTE) != 0)
+            return 5422;
+        if (gc_path_protection_wants_remedy(&p)) return 5463;
+
+        // No persistent ACLs (FAT/exFAT): nothing can be protected there even
+        // with a perfect chain.
+        facts = GcPathProtectionFacts{};
+        facts.volume.facts_complete = true;
+        facts.volume.has_persistent_acls = false;
+        facts.component_count = 3;
+        for (int i = 0; i < 3; i++) {
+            facts.components[i].exists = true;
+            facts.components[i].owner_admin_trusted = true;
+            facts.components[i].facts_complete = true;
+        }
+        gc_path_protection_classify(&facts, &p);
+        if (p.chain_protected || !p.no_filesystem_permissions) return 5423;
+        if (strcmp(gc_path_protection_extra_note(&p, 0), GC_PATH_PROTECTION_NOTE_NO_PERMISSIONS) != 0)
+            return 5424;
+        if (gc_path_protection_wants_remedy(&p)) return 5425;
+
+        // User profile: reaches the acknowledgment even with a protected chain
+        // (other accounts cannot run the copy), and never suggests an icacls
+        // recipe for a profile root.
+        facts = GcPathProtectionFacts{};
+        facts.volume.facts_complete = true;
+        facts.volume.has_persistent_acls = true;
+        facts.chain_complete = true;
+        facts.under_user_profile = true;
+        facts.component_count = 3;
+        for (int i = 0; i < 3; i++) {
+            facts.components[i].exists = true;
+            facts.components[i].owner_admin_trusted = true;
+            facts.components[i].facts_complete = true;
+        }
+        gc_path_protection_classify(&facts, &p);
+        if (!p.chain_protected || !p.user_profile) return 5426;
+        if (!gc_path_protection_requires_acknowledgment(&p)) return 5427;
+        if (gc_path_protection_wants_remedy(&p)) return 5428;
+
+        // The consent wording carries the escalation sentence verbatim (also
+        // pinned by the build gates), and extra notes terminate.
+        if (strstr(GC_PATH_PROTECTION_SUMMARY_UNPROTECTED,
+                   GC_PATH_RISK_ESCALATION_SENTENCE) == nullptr) return 5429;
+        if (gc_path_protection_extra_note(&p, 3)[0] != 0) return 5458;
+
+        // Damage rules vs. protection: the syntax gate still accepts every
+        // local/UNC shape this feature supports (drive roots, relative paths
+        // and friends stay refused by gc_install_directory_is_acceptable),
+        // and the updater's quoting rules accept them end to end.
+        const char* supportedPaths[] = {
+            "D:\\Apps\\Green Curve",
+            "C:\\Users\\x\\AppData\\Local\\Green Curve",
+            "\\\\server\\share\\Green Curve",
+        };
+        for (const char* candidate : supportedPaths) {
+            const char* reason = nullptr;
+            if (!gc_install_directory_is_acceptable(candidate, &reason)) return 5459;
+            if (!gc_update_path_is_quotable(candidate)) return 5460;
+        }
+        GcInstallerOptions parsed = {};
+        const char* argv[] = {"--dir", "D:\\Apps\\Green Curve"};
+        gc_installer_parse_options(2, argv, &parsed);
+        if (!parsed.valid || !parsed.hasDirectory) return 5461;
+        if (strcmp(parsed.directory, "D:\\Apps\\Green Curve") != 0) return 5462;
+    }
 
     // Shared-only policy: the "apply shared slot N" request flag must encode the
     // slot in bits 8..15 and the marker in bit 30, WITHOUT colliding with the

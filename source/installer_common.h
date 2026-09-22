@@ -177,10 +177,11 @@ bool gc_directory_exists(const WCHAR* path);
 // protected DACL prevents an unelevated process from replacing a staged
 // executable between extraction and CreateProcess.
 bool gc_create_private_temp_directory(WCHAR* out, size_t outCount);
-// Installer service binaries run as LocalSystem. Accept installation only
-// as a direct Program Files child, where an unprivileged intermediate parent
-// cannot substitute the protected directory after registration.
-bool gc_install_directory_is_secure_rooted(const WCHAR* path);
+// (Where an install may go is decided by classify_path_protection() in
+// service_acl.h: the administrator picks the folder, the classification says
+// how well it can be protected, and interactive runs acknowledge the
+// difference.  The old "direct child of Program Files" gate was a proxy for
+// that proof and is gone.)
 // Strip a quoted/unquoted argv[0] out of an SCM ImagePath and return its
 // directory, which is where a previously registered service lives.
 bool gc_service_image_directory(WCHAR* out, size_t outCount);
@@ -247,6 +248,14 @@ struct GcInstallContext {
     GcPayload payload;
     GcProgressFn progress;
     void* progressContext;
+    // Path-risk consent (see service_path_chain_policy.h).  Interactive runs
+    // set requirePathRiskAcknowledgment and only set pathRiskAcknowledged once
+    // the user has ticked the acknowledgment for a non-protected location.
+    // Silent runs (the updater's `setup /S`) leave both false and never block:
+    // whoever chose that path is the decision-maker, and every update would
+    // otherwise re-prompt an unattended machine.
+    bool requirePathRiskAcknowledgment;
+    bool pathRiskAcknowledged;
     // Where the pre-upgrade settings snapshot was written, if one was taken.
     // Sized like every other installer path buffer: the snapshot path is built
     // in GC_INSTALLER_MAX_PATH_CHARS storage, and a narrower field here would

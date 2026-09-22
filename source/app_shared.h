@@ -31,6 +31,9 @@
 // fields of AppData are unused here.
 #include "win32_compat.h"
 #endif
+// Host-neutral path-protection classification (the F-SEC-1 property and its
+// fail-safe rule); the Win32 gatherer lives in service_path_chain.cpp.
+#include "service_path_chain_policy.h"
 #include <ctype.h>
 #include <errno.h>
 #include <math.h>
@@ -1011,5 +1014,14 @@ bool service_install_dir_is_under_user_profile();
 // dir yet), covering the case where a restricted user cannot even execute the
 // GUI binary because it lives inside another user's profile.
 bool running_exe_dir_is_under_user_profile();
+
+// Classify how well the RUNNING binary's own directory is protected against
+// standard-account tampering with the LocalSystem service binary (see
+// service_path_chain_policy.h).  Drives the GUI's install-folder warnings.
+bool running_exe_dir_protection(GcPathProtectionReport* out);
+
+// Service startup: log the service binary directory's protection verdict and
+// warn (without blocking) when it is less protected than Program Files.
+void service_log_path_protection_at_startup();
 
 #endif

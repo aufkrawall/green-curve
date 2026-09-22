@@ -63,6 +63,12 @@ void gc_layout(GcWizard* wizard) {
         MoveWindow(wizard->acceptCheck, margin, contentBottom - rowHeight,
                    contentWidth, rowHeight, TRUE);
     }
+    // Same slot as the license acceptance: both live at the bottom of their
+    // page and are never visible at the same time.
+    if (wizard->riskCheck) {
+        MoveWindow(wizard->riskCheck, margin, contentBottom - rowHeight,
+                   contentWidth, rowHeight, TRUE);
+    }
     if (wizard->pathEdit) {
         int top = contentTop + gc_dp(58);
         int browseWidth = gc_dp(96);
@@ -95,6 +101,11 @@ void gc_update_page_controls(GcWizard* wizard) {
     gc_show_control(wizard->startMenuCheck, GC_ID_START_MENU, wizard->page);
     gc_show_control(wizard->desktopCheck, GC_ID_DESKTOP, wizard->page);
     gc_show_control(wizard->launchCheck, GC_ID_LAUNCH, wizard->page);
+    // The path-risk acknowledgment appears only when the current classification
+    // needs it (see service_path_chain_policy.h).
+    bool riskNeeded = wizard->page == GC_PAGE_FOLDER &&
+        gc_path_protection_requires_acknowledgment(&wizard->folderProtection.verdict);
+    ShowWindow(wizard->riskCheck, riskNeeded ? SW_SHOW : SW_HIDE);
 
     bool working = wizard->page == GC_PAGE_PROGRESS;
     bool done = wizard->page == GC_PAGE_DONE;
@@ -114,7 +125,11 @@ void gc_update_page_controls(GcWizard* wizard) {
     if (wizard->page == GC_PAGE_CONFIRM_REMOVE) nextLabel = L"Uninstall";
     if (done) nextLabel = L"Finish";
     SetWindowTextW(wizard->nextButton, nextLabel);
-    EnableWindow(wizard->nextButton, wizard->page != GC_PAGE_LICENSE || wizard->accepted);
+    bool folderReady = wizard->page != GC_PAGE_FOLDER ||
+        !gc_path_protection_requires_acknowledgment(&wizard->folderProtection.verdict) ||
+        wizard->riskAccepted;
+    EnableWindow(wizard->nextButton,
+                 (wizard->page != GC_PAGE_LICENSE || wizard->accepted) && folderReady);
 
     gc_layout(wizard);
     InvalidateRect(wizard->hwnd, nullptr, TRUE);
@@ -126,7 +141,7 @@ void gc_update_page_controls(GcWizard* wizard) {
 
 static void gc_draw_text(HDC dc, HFONT font, COLORREF colour, const char* text,
                          int left, int top, int width, int height, UINT format) {
-    WCHAR wide[1024] = {};
+    WCHAR wide[2048] = {};
     gc_utf8_to_wide(text ? text : "", wide, (int)GC_ARRAY_COUNT(wide));
     RECT rect = {left, top, left + width, top + height};
     HFONT oldFont = (HFONT)SelectObject(dc, font);
@@ -187,24 +202,63 @@ void gc_paint(GcWizard* wizard, HDC dc, const RECT* client) {
             gc_draw_field_frame(dc, wizard->licenseEdit);
             break;
         case GC_PAGE_FOLDER: {
-            gc_draw_text(dc, wizard->fonts.body, COL_LABEL,
-                         "Choose a folder directly under Program Files. This protects the "
-                         "LocalSystem background service from user-writable parent folders.",
-                         margin, contentTop, contentWidth, gc_dp(40),
+            // The classification of whatever is currently in the path box.
+            // Green reads as calm text; everything else leads with the exact
+            // risk the acknowledgment is about (service_path_chain_policy.h
+            // owns the wording).
+            const GcPathProtection* protection = &wizard->folderProtection.verdict;
+            gc_draw_text(dc, wizard->fonts.small_text,
+                         protection->chain_protected ? COL_CURVE : COL_POINT,
+                         gc_path_protection_headline(protection),
+                         margin, contentTop, contentWidth, gc_dp(52),
                          DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
             if (wizard->prior.present) {
                 char note[512] = {};
                 snprintf(note, sizeof(note),
-                         "Green Curve %s is already installed in %s. Setup can upgrade it in place only when "
-                         "that folder is directly under Program Files; otherwise choose a supported folder to "
-                         "move the installation and leave the old files for you to delete.",
+                         "Green Curve %s is already installed in %s. Keep that folder to upgrade it in "
+                         "place, or choose another to move the installation and leave the old files for "
+                         "you to delete.",
                          wizard->prior.version[0] ? wizard->prior.version : "(unknown version)",
                          wizard->prior.directory);
                 gc_draw_text(dc, wizard->fonts.small_text, COL_PENDING, note,
-                             margin, contentTop + gc_dp(100), contentWidth, gc_dp(72),
+                             margin, contentTop + gc_dp(102), contentWidth, gc_dp(52),
                              DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
             }
             gc_draw_field_frame(dc, wizard->pathEdit);
+            // Extra warnings and the (never applied) remediation line for the
+            // exact folder at fault.
+            char notes[1024] = {};
+            for (int i = 0; ; i++) {
+                const char* note = gc_path_protection_extra_note(protection, i);
+                if (!note[0]) break;
+                if (notes[0]) StringCchCatA(notes, GC_ARRAY_COUNT(notes), " ");
+                StringCchCatA(notes, GC_ARRAY_COUNT(notes), note);
+            }
+            if (gc_path_protection_wants_remedy(protection) &&
+                wizard->folderProtection.firstUnsafeComponent[0]) {
+                char component[GC_PATH_CHAIN_MAX_PATH_CHARS * 2] = {};
+                gc_wide_to_utf8(wizard->folderProtection.firstUnsafeComponent, component,
+                                (int)sizeof(component));
+                char remedy[sizeof(component) + 512] = {};
+                if (gc_path_protection_remedy_needs_create(&wizard->folderProtection.facts,
+                                                          protection)) {
+                    snprintf(remedy, sizeof(remedy), "%s%s%s%s%s",
+                             GC_PATH_PROTECTION_REMEDY_CREATE_BEFORE_PATH, component,
+                             GC_PATH_PROTECTION_REMEDY_CREATE_MID_PATH, component,
+                             GC_PATH_PROTECTION_REMEDY_AFTER_PATH);
+                } else {
+                    snprintf(remedy, sizeof(remedy), "%s%s%s",
+                             GC_PATH_PROTECTION_REMEDY_BEFORE_PATH, component,
+                             GC_PATH_PROTECTION_REMEDY_AFTER_PATH);
+                }
+                if (notes[0]) StringCchCatA(notes, GC_ARRAY_COUNT(notes), " ");
+                StringCchCatA(notes, GC_ARRAY_COUNT(notes), remedy);
+            }
+            if (notes[0]) {
+                gc_draw_text(dc, wizard->fonts.small_text, COL_PENDING, notes,
+                             margin, contentTop + gc_dp(160), contentWidth, gc_dp(116),
+                             DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
+            }
             break;
         }
         case GC_PAGE_OPTIONS:

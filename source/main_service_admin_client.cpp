@@ -3,6 +3,8 @@
 
 // Bounded UI waits, elevation helpers, and protected service-binary staging.
 
+#include "log_redaction_policy.h"
+
 static volatile LONG g_serviceAdminWaitCancelled = 0;
 
 static void service_admin_reset_wait_cancel() {
@@ -278,6 +280,30 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
 
     WCHAR installDir[MAX_PATH] = {};
     if (!get_secure_service_install_dir_w(installDir, ARRAY_COUNT(installDir), err, errSize)) return false;
+
+    // How well can this location be protected?  (See
+    // service_path_chain_policy.h.)  F-SEC-1 in one line: a LocalSystem
+    // service binary in a folder standard accounts can write is SYSTEM code
+    // execution waiting to happen.  The classification never blocks - the
+    // administrator picked this folder and portable use must work everywhere -
+    // but every verdict is logged and a filesystem that cannot express a DACL
+    // at all is handled as an explicit, loud capability gap.
+    GcPathProtectionReport protection = {};
+    classify_path_protection(installDir, &protection);
+    debug_log("service install: path protection protected=%d standardWritable=%d profile=%d "
+              "remote=%d noFilesystemPermissions=%d reason=%d\n",
+              protection.verdict.chain_protected ? 1 : 0,
+              protection.verdict.standard_writable ? 1 : 0,
+              protection.verdict.user_profile ? 1 : 0,
+              protection.verdict.remote ? 1 : 0,
+              protection.verdict.no_filesystem_permissions ? 1 : 0,
+              (int)protection.verdict.reason);
+    const bool hardenFiles = !protection.verdict.no_filesystem_permissions;
+    if (!hardenFiles) {
+        debug_log("service install WARNING: volume has no file permissions (for example "
+                  "FAT/exFAT); skipping DACL hardening - the LocalSystem service binary "
+                  "cannot be protected here\n");
+    }
     if (!CreateDirectoryW(installDir, nullptr)) {
         DWORD createErr = GetLastError();
         if (createErr != ERROR_ALREADY_EXISTS) {
@@ -293,13 +319,15 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
         return false;
     }
     char dirAclErr[256] = {};
-    if (!apply_protected_service_dir_dacl(installDir, dirAclErr, sizeof(dirAclErr))) {
-        set_message(err, errSize, "Failed securing service directory: %s", dirAclErr[0] ? dirAclErr : "unknown");
-        return false;
-    }
-    if (!machine_config_dacl_is_hardened(installDir)) {
-        set_message(err, errSize, "Service directory DACL did not remain hardened");
-        return false;
+    if (hardenFiles) {
+        if (!apply_protected_service_dir_dacl(installDir, dirAclErr, sizeof(dirAclErr))) {
+            set_message(err, errSize, "Failed securing service directory: %s", dirAclErr[0] ? dirAclErr : "unknown");
+            return false;
+        }
+        if (!machine_config_dacl_is_hardened(installDir)) {
+            set_message(err, errSize, "Service directory DACL did not remain hardened");
+            return false;
+        }
     }
 
     WCHAR targetPath[MAX_PATH] = {};
@@ -348,24 +376,90 @@ static bool ensure_secure_service_binary_path(WCHAR* out, size_t outCount, char*
     // overwrite it and gain SYSTEM code execution via the SCM/auto-restart path.
     // Runs elevated (service install requires admin) and BEFORE the service is
     // registered, so a failure to secure the binary fails the install closed.
+    // On a filesystem without persistent ACLs there is nothing to harden; that
+    // gap was already logged above and acknowledged wherever an interactive
+    // flow exists.
     char aclErr[160] = {};
-    if (!apply_protected_service_binary_dacl(targetPath, aclErr, sizeof(aclErr))) {
-        set_message(err, errSize, "Failed securing service binary: %s", aclErr[0] ? aclErr : "unknown");
-        return false;
+    if (hardenFiles) {
+        if (!apply_protected_service_binary_dacl(targetPath, aclErr, sizeof(aclErr))) {
+            set_message(err, errSize, "Failed securing service binary: %s", aclErr[0] ? aclErr : "unknown");
+            return false;
+        }
+        if (!service_binary_dacl_is_hardened(targetPath)) {
+            set_message(err, errSize, "Service binary DACL did not remain hardened");
+            return false;
+        }
     }
-    if (!service_binary_dacl_is_hardened(targetPath)) {
-        set_message(err, errSize, "Service binary DACL did not remain hardened");
+    // Whatever the classification vouched for at the start must still hold now
+    // that the hardened binary is in place: a directory planted between the two
+    // checks fails the install closed rather than registering a LocalSystem
+    // service from a location less protected than reported.
+    GcPathProtectionReport protectionAfter = {};
+    classify_path_protection(installDir, &protectionAfter);
+    if (protection.verdict.chain_protected && !protectionAfter.verdict.chain_protected) {
+        set_message(err, errSize,
+            "The service directory lost its protection during staging (reason %d); "
+            "refusing to register the service",
+            (int)protectionAfter.verdict.reason);
         return false;
     }
     debug_log("service install: staged and hardened LocalSystem binary at %ls (directory %ls)\n", targetPath, installDir);
     if (install_dir_is_under_user_profile_w(installDir)) {
-        debug_log("service install WARNING: install dir \"%ls\" is under a user profile. Other users, "
+        char dirToken[32] = {};
+        gc_log_wide_identifier_token(installDir, dirToken, sizeof(dirToken));
+        debug_log("service install WARNING: install dir %s is under a user profile. Other users, "
             "including restricted/standard accounts, may be unable to read or execute the Green Curve "
             "GUI binary. Install under %%ProgramFiles%% to make the application available to all users.\n",
-            installDir);
+            dirToken);
     }
 
     return SUCCEEDED(StringCchCopyW(out, outCount, targetPath));
+}
+
+// Classify the RUNNING binary's own directory (the install root in every
+// supported layout: the service binary is staged adjacent to the GUI, and the
+// updater stages into %ProgramData%).  Used by the GUI's status warnings and
+// kept here so GUI shards stay away from the Win32 path details.
+bool running_exe_dir_protection(GcPathProtectionReport* out) {
+    if (!out) return false;
+    GcPathProtectionReport blank = {};
+    *out = blank;
+    WCHAR exeDir[MAX_PATH] = {};
+    char ignored[64] = {};
+    if (!get_current_executable_directory_w(exeDir, ARRAY_COUNT(exeDir),
+                                            ignored, sizeof(ignored))) {
+        gc_path_protection_classify(nullptr, &out->verdict);
+        return false;
+    }
+    classify_path_protection(exeDir, out);
+    return true;
+}
+
+// Service startup: record how well the service binary's own location is
+// protected (see service_path_chain_policy.h).  Purely diagnostic - a chain
+// someone loosened after the install never stops the service from working -
+// but it must be visible in the support log and in the GUI warnings.
+void service_log_path_protection_at_startup() {
+    WCHAR installDir[MAX_PATH] = {};
+    char ignored[64] = {};
+    if (!get_secure_service_install_dir_w(installDir, ARRAY_COUNT(installDir),
+                                          ignored, sizeof(ignored))) {
+        debug_log("path protection: service directory could not be resolved\n");
+        return;
+    }
+    GcPathProtectionReport protection = {};
+    classify_path_protection(installDir, &protection);
+    debug_log("path protection: service directory protected=%d standardWritable=%d profile=%d "
+              "remote=%d noFilesystemPermissions=%d reason=%d\n",
+              protection.verdict.chain_protected ? 1 : 0,
+              protection.verdict.standard_writable ? 1 : 0,
+              protection.verdict.user_profile ? 1 : 0,
+              protection.verdict.remote ? 1 : 0,
+              protection.verdict.no_filesystem_permissions ? 1 : 0,
+              (int)protection.verdict.reason);
+    if (gc_path_protection_requires_acknowledgment(&protection.verdict)) {
+        debug_log("path protection WARNING: %s\n", GC_PATH_PROTECTION_SUMMARY_UNPROTECTED);
+    }
 }
 
 static bool directory_path_is_root_or_share_root_w(const WCHAR* dir) {

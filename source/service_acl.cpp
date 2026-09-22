@@ -158,33 +158,6 @@ bool restore_inherited_dacl(const wchar_t* path, char* err, size_t errSize) {
     return true;
 }
 
-bool service_path_is_under_secure_root(const wchar_t* path) {
-    if (!path || !path[0]) return false;
-    wchar_t full[MAX_PATH] = {};
-    if (GetFullPathNameW(path, MAX_PATH, full, nullptr) == 0) return false;
-    CharLowerW(full);
-
-    const char* vars[] = { "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "SystemRoot" };
-    for (const char* var : vars) {
-        wchar_t root[MAX_PATH] = {};
-        // GetEnvironmentVariableW needs a wide name.
-        wchar_t wvar[64] = {};
-        MultiByteToWideChar(CP_ACP, 0, var, -1, wvar, ARRAYSIZE(wvar));
-        DWORD n = GetEnvironmentVariableW(wvar, root, ARRAYSIZE(root));
-        if (n == 0 || n >= ARRAYSIZE(root)) continue;
-        CharLowerW(root);
-        size_t rootLen = wcslen(root);
-        if (rootLen == 0) continue;
-        if (wcsncmp(full, root, rootLen) == 0) {
-            // Require a path separator (or exact match) after the root so that
-            // e.g. "C:\Program Files Evil" does not match "C:\Program Files".
-            wchar_t next = full[rootLen];
-            if (next == 0 || next == L'\\' || next == L'/') return true;
-        }
-    }
-    return false;
-}
-
 bool machine_config_dacl_is_hardened(const wchar_t* path) {
     if (!path || !path[0]) return false;
     PSECURITY_DESCRIPTOR psd = nullptr;

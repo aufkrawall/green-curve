@@ -51,6 +51,7 @@ enum {
     GC_ID_NEXT,
     GC_ID_CANCEL,
     GC_ID_LICENSE_EDIT,
+    GC_ID_RISK_ACCEPT,
 };
 
 #define GC_WM_PROGRESS (WM_APP + 1)
@@ -76,6 +77,7 @@ struct GcWizard {
     HWND acceptCheck;
     HWND pathEdit;
     HWND browseButton;
+    HWND riskCheck;
     HWND startMenuCheck;
     HWND desktopCheck;
     HWND launchCheck;
@@ -87,6 +89,11 @@ struct GcWizard {
     bool startMenu;
     bool desktop;
     bool launch;
+    // Path-risk acknowledgment (see service_path_chain_policy.h).  The folder
+    // page reclassifies as the user types; the acknowledgment unlocks Next
+    // whenever the chosen location is not protected like Program Files.
+    bool riskAccepted;
+    GcPathProtectionReport folderProtection;
 
     GcInstallerOptions options;
     GcPriorInstall prior;
@@ -119,5 +126,8 @@ void gc_paint(GcWizard* wizard, HDC dc, const RECT* client);
 // installer_ui.cpp
 void gc_set_control_font(HWND control, HFONT font);
 void gc_set_text_utf8(HWND control, const char* text);
+// Reclassify the folder page's current path and refresh its protection
+// display, the acknowledgment checkbox, and the Next button state.
+void gc_refresh_folder_protection(GcWizard* wizard, const WCHAR* pathWide);
 
 #endif // GREEN_CURVE_INSTALLER_UI_INTERNAL_H

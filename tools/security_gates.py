@@ -891,6 +891,39 @@ def check_service_command_authority_gates(ctx, require_text, service_server_cpp)
                  "an unclassified command fails closed rather than into the weakest tier")
 
 
+def check_path_protection_gates(ctx, require_text, service_ipc_cpp):
+    """Pin the F-SEC-1 hardening and its location policy (chain proof + consent).
+
+    The old "direct child of Program Files" rule was a proxy for one property:
+    nothing unprivileged may substitute the LocalSystem service binary or any
+    directory above it.  service_path_chain_policy.h states that property
+    directly, and the administrator decides about everything else.  The
+    escalation sentence is pinned verbatim so the one statement that says WHY
+    the location matters cannot silently vanish from setup's folder page and
+    its acknowledgment.
+    """
+    require_text(service_ipc_cpp, "apply_protected_service_binary_dacl(targetPath",
+                 "service install hardens the installed binary DACL")
+    require_text(service_ipc_cpp, "restore_inherited_dacl(targetPath",
+                 "service uninstall reverts the binary DACL to inherited")
+    service_acl_cpp = os.path.join(ctx.SOURCE_DIR, "service_acl.cpp")
+    require_text(service_acl_cpp, "PROTECTED_DACL_SECURITY_INFORMATION",
+                 "binary DACL hardening disables inheritance")
+    require_text(service_acl_cpp, "(A;;0x1200a9;;;BU)",
+                 "binary DACL grants BUILTIN\\Users read+execute only")
+    path_chain_policy = os.path.join(ctx.SOURCE_DIR, "service_path_chain_policy.h")
+    require_text(path_chain_policy,
+        "anything that can write this folder - other accounts or software running as you - "
+        "can replace the LocalSystem background service and gain SYSTEM rights",
+        "the path-risk consent keeps the SYSTEM-escalation sentence")
+    require_text(path_chain_policy, "gc_path_protection_classify",
+        "the path-protection classifier exists and is pure")
+    require_text(os.path.join(ctx.SOURCE_DIR, "service_path_chain.cpp"),
+        "classify_path_protection", "the Win32 path-protection gatherer exists")
+    require_text(service_ipc_cpp, "service_log_path_protection_at_startup",
+        "service startup records the service directory's protection verdict")
+
+
 def check_log_redaction(ctx):
     """No debug_log call may name an identity-bearing value in the clear.
 

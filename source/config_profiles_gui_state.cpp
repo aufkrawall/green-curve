@@ -411,6 +411,35 @@ static void update_background_service_controls() {
                 StringCchCatA(text, ARRAY_COUNT(text), note);
             }
         }
+        // Path-protection warning (service_path_chain_policy.h): an install
+        // folder that standard accounts can write lets them replace the
+        // LocalSystem background service and gain SYSTEM rights (F-SEC-1).
+        // Short status-bar spellings here; the full wording with the exact
+        // risk lives in setup's folder page and its acknowledgment.
+        GcPathProtectionReport pathProtection = {};
+        if (running_exe_dir_protection(&pathProtection)) {
+            const char* protectionWarning = nullptr;
+            if (pathProtection.verdict.no_filesystem_permissions) {
+                protectionWarning =
+                    " Warning: this drive has no file permissions; the Green Curve files "
+                    "cannot be protected.";
+            } else if (pathProtection.verdict.remote) {
+                protectionWarning =
+                    " Warning: Green Curve runs from a network folder; the server controls "
+                    "its files and could replace the background service.";
+            } else if (pathProtection.verdict.standard_writable) {
+                protectionWarning =
+                    " Warning: this install folder can be changed by non-administrators, who "
+                    "could then replace the LocalSystem background service and gain SYSTEM rights.";
+            }
+            if (protectionWarning) {
+                size_t currentLen = strlen(text);
+                size_t warningLen = strlen(protectionWarning);
+                if (currentLen + warningLen < ARRAY_COUNT(text)) {
+                    StringCchCatA(text, ARRAY_COUNT(text), protectionWarning);
+                }
+            }
+        }
         // Surface a user-profile-install warning.  Two triggers cover the same
         // problem (a restricted/standard user cannot execute the GUI binary):
         //   1. service_install_dir_is_under_user_profile() — keys off the

@@ -71,6 +71,7 @@ INSTALLER_SOURCE_NAMES = [
     "installer_payload.cpp",
     "installer_util.cpp",
     "service_acl.cpp",
+    "service_path_chain.cpp",
     "ssp_glue.cpp",
     "cfg_glue.cpp",
     # Toolchain-neutral glue: defines gc_invoke_fatal_dump_hook, which
@@ -585,9 +586,9 @@ def check_all(ctx, require_text, forbid_text):
     # be defined in further up the file.
     install_anchor = "bool gc_install_execute(GcInstallContext* context)"
     ctx.require_order_in_operation(apply_shard, install_anchor,
-                                   "gc_install_directory_is_secure_rooted(targetDirectory)",
+                                   "classify_path_protection(targetDirectory, &preProtection)",
                                    "gc_capture_active_settings(context);",
-                                   "the service-root preflight runs before setup disturbs the live installation")
+                                   "the path-protection preflight runs before setup disturbs the live installation")
     ctx.require_order_in_operation(apply_shard, install_anchor,
                                    "gc_capture_active_settings(context);",
                                    "gc_stop_gui_processes(context)",
@@ -672,8 +673,19 @@ def check_all(ctx, require_text, forbid_text):
                  "a binary that turns out not to know the verb is terminated in seconds, not a minute")
     require_text(apply_shard, "gc_create_private_temp_directory",
                  "the elevated capture helper is staged in an unpredictable protected directory")
-    require_text(apply_shard, "gc_install_directory_is_secure_rooted",
-                 "LocalSystem service installs reject user-writable parent directories")
+    # The old "direct child of Program Files" gate is gone on purpose: the
+    # administrator picks the folder, the classification states how well it can
+    # be protected, and the acknowledgment is the consent.  What must NOT
+    # return is a silent install past a non-protected location, or a silent
+    # downgrade between the preflight verdict and the hardened directory.
+    require_text(apply_shard, "gc_path_protection_requires_acknowledgment",
+                 "an interactive install cannot proceed past a non-protected path without acknowledgment")
+    require_text(apply_shard, "GC_PATH_PROTECTION_ACKNOWLEDGMENT_LABEL",
+                 "the refusal names the acknowledgment the user must tick")
+    require_text(apply_shard, "no longer as protected as it was when setup",
+                 "a location that lost its protection between preflight and hardening fails closed")
+    require_text(apply_shard, "skipping directory DACL",
+                 "a filesystem without ACLs is an explicit logged capability gap, never a silent skip")
     installer_ui = source("installer_ui.cpp")
     # The setup window wears the Green Curve icon.  The .rc has always embedded
     # it (Explorer showed it on the file), but the window class asked for
@@ -713,16 +725,28 @@ def check_all(ctx, require_text, forbid_text):
                  "the window's icon id matches the one the resource script emits")
     ctx.require_order_in_operation(installer_ui,
                                    "static bool gc_commit_folder_page(GcWizard* wizard)",
-                                   "gc_install_directory_is_secure_rooted(chosenWide)",
+                                   "gc_refresh_folder_protection(wizard, chosenWide)",
                                    "StringCchCopyA(wizard->options.directory",
-                                   "the folder page rejects unsafe service roots before accepting the choice")
+                                   "the folder page classifies the service root before accepting the choice")
+    require_text(installer_ui, "GC_ID_RISK_ACCEPT",
+                 "the folder page offers the explicit path-risk acknowledgment")
     require_text(apply_shard, "apply_protected_service_dir_dacl",
                  "the install directory is hardened before privileged payload extraction")
     installer_util = source("installer_util.cpp")
-    require_text(installer_util, "gc_path_is_direct_child_of_root",
-                 "a weak intermediate Program Files directory cannot substitute the service root")
     require_text(installer_util, "FOLDERID_ProgramFiles",
                  "elevated capture helpers stage beneath an administrator-owned parent")
+    # The chain proof replaces the direct-child-of-Program-Files proxy; its
+    # fail-safe direction and its consent wording are the security contract.
+    path_chain_cpp = source("service_path_chain.cpp")
+    path_chain_policy = source("service_path_chain_policy.h")
+    require_text(path_chain_cpp, "scan_dacl_for_danger",
+                 "the path proof scans every component for substitution-capable rights")
+    require_text(path_chain_cpp, "INHERIT_ONLY",
+                 "the chain walk separates object rights from inherit-only ones")
+    require_text(path_chain_cpp, "FILE_FLAG_OPEN_REPARSE_POINT",
+                 "the chain walk never follows a reparse point while inspecting it")
+    require_text(path_chain_policy, "GC_PATH_RISK_ESCALATION_SENTENCE",
+                 "the consent wording carries the SYSTEM-escalation sentence")
     require_text(installer_util, "CREATE_NEW",
                  "failure logs never truncate or follow a pre-existing attacker-controlled file")
     require_text(installer_util, "FILE_FLAG_OPEN_REPARSE_POINT",

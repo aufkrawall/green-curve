@@ -157,6 +157,9 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
     // Harden the %ProgramData% shared bank at boot (before any interactive login)
     // so a standard user cannot pre-create and squat the directory/file.
     secure_shared_bank_at_startup();
+    // Record how well the service binary's own directory is protected (never
+    // blocks): a chain loosened since the install must be visible in the log.
+    service_log_path_protection_at_startup();
     // Read the update policy from that same protected machine-scope file.  It
     // is loaded AFTER the bank is hardened, so the value that decides whether
     // this service makes outbound requests is never read from a file a standard

@@ -19,6 +19,8 @@
 
 #include <cstddef>
 
+#include "service_path_chain_policy.h"
+
 // Apply the protected service-binary DACL to `path`.  Returns false (with a
 // human-readable reason in err) on failure.
 bool apply_protected_service_binary_dacl(const wchar_t* path, char* err, size_t errSize);
@@ -33,11 +35,11 @@ bool apply_protected_service_dir_dacl(const wchar_t* path, char* err, size_t err
 // object inherits its parent directory's ACLs again (used on uninstall).
 bool restore_inherited_dacl(const wchar_t* path, char* err, size_t errSize);
 
-// True if `path` resolves under an admin-only system root (%ProgramFiles%,
-// %ProgramFiles(x86)%, %ProgramW6432%, %SystemRoot%).  When false, the install
-// directory is assumed user-writable and the binary cannot be fully protected
-// in place (the parent can still grant delete/create), so the caller should warn.
-bool service_path_is_under_secure_root(const wchar_t* path);
+// Gather Win32 facts about `path` and classify them into `out` (see
+// service_path_chain_policy.h for the property and the fail-safe rule).  Never
+// fails: an unprobeable path classifies as not protected.  Supersedes the old
+// "is it under Program Files" check, which was a proxy for this proof.
+void classify_path_protection(const wchar_t* path, GcPathProtectionReport* out);
 
 // True if `path` currently carries a hardened DACL: inheritance disabled
 // (SE_DACL_PROTECTED) AND no non-admin principal (Everyone / BUILTIN\Users /

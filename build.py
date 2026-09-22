@@ -155,6 +155,7 @@ WINDOWS_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "cfg_glue.cpp"),
     os.path.join(SOURCE_DIR, "process_hardening.cpp"),
     os.path.join(SOURCE_DIR, "service_acl.cpp"),
+    os.path.join(SOURCE_DIR, "service_path_chain.cpp"),
     os.path.join(SOURCE_DIR, "platform_win32.cpp"),
     os.path.join(SOURCE_DIR, "vf_backends.cpp"),
 ]
@@ -1618,7 +1619,7 @@ def generate_lsp_files():
             "arguments": ["clang++", *linux_flags, *zig_linux_analyzer_flags(),
                           "-fsyntax-only", source],
         })
-    for source in (os.path.join(SOURCE_DIR, "app_shared.cpp"), os.path.join(SOURCE_DIR, "config_utils.cpp"), os.path.join(SOURCE_DIR, "fan_curve.cpp"), os.path.join(SOURCE_DIR, "service_acl.cpp")):
+    for source in (os.path.join(SOURCE_DIR, "app_shared.cpp"), os.path.join(SOURCE_DIR, "config_utils.cpp"), os.path.join(SOURCE_DIR, "fan_curve.cpp"), os.path.join(SOURCE_DIR, "service_acl.cpp"), os.path.join(SOURCE_DIR, "service_path_chain.cpp")):
         entries.append({
             "directory": SCRIPT_DIR,
             "file": source,
@@ -1704,7 +1705,7 @@ def run_regression_tests(extra_flags=None):
         if sys.platform == "win32":
             # Win32-only implementations; the harness #ifdefs out the suites
             # that exercise them (config INI, DACLs, Task Scheduler XML).
-            for win_only in ("config_utils.cpp", "service_acl.cpp", "platform_win32.cpp"):
+            for win_only in ("config_utils.cpp", "service_acl.cpp", "service_path_chain.cpp", "platform_win32.cpp"):
                 cmd.append(os.path.join(SOURCE_DIR, win_only))
         else:
             # win32_compat.h is force-included, never #included by the harness.
@@ -1714,9 +1715,9 @@ def run_regression_tests(extra_flags=None):
             cmd.extend(extra_flags)
         if sys.platform == "win32":
             cmd.extend(["-static", "-luser32", "-lgdi32", "-luuid", "-ladvapi32",
-                        # bcrypt: the harness compiles the real CNG update
-                        # verifier for the signer/verifier known-answer test.
-                        "-lshell32", "-lbcrypt"])
+                        # bcrypt: real CNG update-verifier test.  ole32: the
+                        # path-chain walker frees SHGetKnownFolderPath results.
+                        "-lshell32", "-lbcrypt", "-lole32"])
         else:
             cmd.extend(["-lpthread", "-ldl"])
         print("Compiling pure regression tests")
@@ -2642,10 +2643,7 @@ def run_source_regression_checks():
     # overwrite of a SYSTEM service binary) and uninstall reverts it so the user
     # can delete/replace the unregistered binary again.
     service_acl_cpp = os.path.join(SOURCE_DIR, "service_acl.cpp")
-    require_text(service_ipc_cpp, "apply_protected_service_binary_dacl(targetPath", "service install hardens the installed binary DACL")
-    require_text(service_ipc_cpp, "restore_inherited_dacl(targetPath", "service uninstall reverts the binary DACL to inherited")
-    require_text(service_acl_cpp, "PROTECTED_DACL_SECURITY_INFORMATION", "binary DACL hardening disables inheritance")
-    require_text(service_acl_cpp, "(A;;0x1200a9;;;BU)", "binary DACL grants BUILTIN\\Users read+execute only")
+    security_gates.check_path_protection_gates(_gate_ctx(), require_text, service_ipc_cpp)
     # F-SEC-6: machine-wide default logon profile config is admin-writable and
     # user-readable, so non-admins can read the current default but cannot
     # tamper with it.

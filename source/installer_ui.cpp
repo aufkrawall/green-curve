@@ -163,6 +163,16 @@ static void gc_start_work(GcWizard* wizard) {
 // Navigation
 // ---------------------------------------------------------------------------
 
+// Reclassify the folder page's path (see service_path_chain_policy.h).  Runs
+// on every edit: the classification is a handful of local security reads, and
+// the remote short-circuit in the gatherer keeps even a dead network path from
+// stalling typing with round trips.
+void gc_refresh_folder_protection(GcWizard* wizard, const WCHAR* pathWide) {
+    classify_path_protection(pathWide, &wizard->folderProtection);
+    gc_update_page_controls(wizard);
+    InvalidateRect(wizard->hwnd, nullptr, TRUE);
+}
+
 // Fold the folder page's answer back into the options, then re-derive the whole
 // plan.  Re-deriving (rather than patching the plan in place) keeps the pure
 // policy the single decision-maker even when the user steps backwards.
@@ -178,14 +188,29 @@ static bool gc_commit_folder_page(GcWizard* wizard) {
     }
     WCHAR chosenWide[GC_INSTALLER_MAX_PATH_CHARS] = {};
     if (!gc_utf8_to_wide(chosen, chosenWide,
-            (int)GC_ARRAY_COUNT(chosenWide)) ||
-        !gc_install_directory_is_secure_rooted(chosenWide)) {
-        gc_show_message(wizard->hwnd,
-            "Green Curve must be installed in a direct child folder of Program Files because its background service runs as LocalSystem.",
-            "Green Curve Setup", true);
+            (int)GC_ARRAY_COUNT(chosenWide))) {
+        gc_show_message(wizard->hwnd, "That installation folder cannot be read.",
+                        "Green Curve Setup", true);
         SetFocus(wizard->pathEdit);
         return false;
     }
+    gc_refresh_folder_protection(wizard, chosenWide);
+    gc_log_step("folder page: chosen=%ls protected=%d reason=%d acknowledged=%d",
+                chosenWide, wizard->folderProtection.verdict.chain_protected ? 1 : 0,
+                (int)wizard->folderProtection.verdict.reason,
+                wizard->riskAccepted ? 1 : 0);
+    if (gc_path_protection_requires_acknowledgment(&wizard->folderProtection.verdict) &&
+        !wizard->riskAccepted) {
+        char message[768] = {};
+        snprintf(message, sizeof(message), "%s\n\nTick \"%s\" to install there anyway.",
+                 gc_path_protection_headline(&wizard->folderProtection.verdict),
+                 GC_PATH_PROTECTION_ACKNOWLEDGMENT_LABEL);
+        gc_show_message(wizard->hwnd, message, "Green Curve Setup", true);
+        SetFocus(wizard->riskCheck);
+        return false;
+    }
+    wizard->install.requirePathRiskAcknowledgment = true;
+    wizard->install.pathRiskAcknowledged = true;
     StringCchCopyA(wizard->options.directory, GC_ARRAY_COUNT(wizard->options.directory), chosen);
     wizard->options.hasDirectory = true;
     return true;
@@ -292,10 +317,9 @@ static void gc_browse_for_folder(GcWizard* wizard) {
 static void gc_toggle_checkbox(GcWizard* wizard, HWND control, bool* value) {
     *value = !*value;
     InvalidateRect(control, nullptr, TRUE);
-    if (control == wizard->acceptCheck) {
-        EnableWindow(wizard->nextButton, wizard->accepted);
-        InvalidateRect(wizard->nextButton, nullptr, TRUE);
-    }
+    // Next is gated on the license acceptance and on the path-risk
+    // acknowledgment; a toggle of either re-derives its enabled state.
+    gc_update_page_controls(wizard);
 }
 
 // Title-bar / Alt-Tab / taskbar icon.
@@ -378,6 +402,9 @@ static LRESULT CALLBACK gc_wizard_proc(HWND hwnd, UINT message, WPARAM wParam, L
                 case GC_ID_ACCEPT:
                     gc_draw_themed_checkbox(item, wizard->fonts.body, wizard->dpi, wizard->accepted);
                     return TRUE;
+                case GC_ID_RISK_ACCEPT:
+                    gc_draw_themed_checkbox(item, wizard->fonts.body, wizard->dpi, wizard->riskAccepted);
+                    return TRUE;
                 case GC_ID_START_MENU:
                     gc_draw_themed_checkbox(item, wizard->fonts.body, wizard->dpi, wizard->startMenu);
                     return TRUE;
@@ -395,8 +422,19 @@ static LRESULT CALLBACK gc_wizard_proc(HWND hwnd, UINT message, WPARAM wParam, L
         case WM_COMMAND: {
             const int controlId = LOWORD(wParam);
             const unsigned int notification = HIWORD(wParam);
+            // Live path classification: every edit re-derives the protection
+            // display and the acknowledgment requirement, so the user sees the
+            // verdict of the path they are typing rather than one rejected
+            // after the fact.
+            if (controlId == GC_ID_PATH_EDIT && notification == EN_CHANGE) {
+                WCHAR wide[GC_INSTALLER_MAX_PATH_CHARS] = {};
+                GetWindowTextW(wizard->pathEdit, wide, (int)GC_ARRAY_COUNT(wide));
+                gc_refresh_folder_protection(wizard, wide);
+                return 0;
+            }
             const bool isCheckbox =
-                controlId == GC_ID_ACCEPT || controlId == GC_ID_START_MENU ||
+                controlId == GC_ID_ACCEPT || controlId == GC_ID_RISK_ACCEPT ||
+                controlId == GC_ID_START_MENU ||
                 controlId == GC_ID_DESKTOP || controlId == GC_ID_LAUNCH;
             if (!gc_wizard_notification_is_click(notification, isCheckbox)) {
                 // F-CLICK-FILTER: a fast double-click's second half arrives as
@@ -415,6 +453,7 @@ static LRESULT CALLBACK gc_wizard_proc(HWND hwnd, UINT message, WPARAM wParam, L
             }
             switch (controlId) {
                 case GC_ID_ACCEPT:      gc_toggle_checkbox(wizard, wizard->acceptCheck, &wizard->accepted); return 0;
+                case GC_ID_RISK_ACCEPT: gc_toggle_checkbox(wizard, wizard->riskCheck, &wizard->riskAccepted); return 0;
                 case GC_ID_START_MENU:  gc_toggle_checkbox(wizard, wizard->startMenuCheck, &wizard->startMenu); return 0;
                 case GC_ID_DESKTOP:     gc_toggle_checkbox(wizard, wizard->desktopCheck, &wizard->desktop); return 0;
                 case GC_ID_LAUNCH:      gc_toggle_checkbox(wizard, wizard->launchCheck, &wizard->launch); return 0;
@@ -648,6 +687,18 @@ int gc_run_setup_wizard(HINSTANCE instance, const GcInstallerOptions* options,
     gc_set_control_font(wizard->pathEdit, wizard->fonts.body);
     gc_set_text_utf8(wizard->pathEdit, wizard->install.plan.targetDirectory);
     wizard->browseButton = gc_create_button(wizard, L"Browse...", GC_ID_BROWSE);
+
+    // The acknowledgment for installing into a location that is not protected
+    // like Program Files.  Hidden on the folder page until the classification
+    // of the typed path actually needs it.
+    WCHAR riskLabel[160] = {};
+    gc_utf8_to_wide(GC_PATH_PROTECTION_ACKNOWLEDGMENT_LABEL, riskLabel,
+                    (int)GC_ARRAY_COUNT(riskLabel));
+    wizard->riskCheck = CreateWindowExW(0, L"BUTTON", riskLabel,
+                                        WS_CHILD | WS_TABSTOP | BS_OWNERDRAW,
+                                        0, 0, 10, 10, wizard->hwnd, (HMENU)(INT_PTR)GC_ID_RISK_ACCEPT,
+                                        instance, nullptr);
+    gc_set_control_font(wizard->riskCheck, wizard->fonts.body);
 
     wizard->startMenuCheck = CreateWindowExW(0, L"BUTTON", L"Create a Start menu shortcut",
                                              WS_CHILD | WS_TABSTOP | BS_OWNERDRAW,

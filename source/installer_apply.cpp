@@ -613,18 +613,35 @@ bool gc_install_execute(GcInstallContext* context) {
                 context->plan.createStartMenuShortcut ? 1 : 0, context->plan.createDesktopShortcut ? 1 : 0,
                 context->plan.launchAfterInstall ? 1 : 0);
 
-    // Reject an unsafe service location before capturing settings, closing the
+    // Classify the service location before capturing settings, closing the
     // GUI, or stopping the existing service.  A preflight failure must leave a
-    // working installation completely untouched.
+    // working installation completely untouched.  The classification never
+    // rejects a chosen folder - the administrator decides - but an interactive
+    // run must not proceed past a non-protected one without its explicit
+    // acknowledgment, and every run logs the verdict for the record.
     WCHAR targetDirectory[GC_INSTALLER_MAX_PATH_CHARS] = {};
     if (!gc_utf8_to_wide(context->plan.targetDirectory, targetDirectory,
                          (int)GC_ARRAY_COUNT(targetDirectory))) {
         gc_set_error(context, "The installation folder could not be decoded.");
         return false;
     }
-    if (!gc_install_directory_is_secure_rooted(targetDirectory)) {
-        gc_set_error(context,
-            "Green Curve must be installed in a direct child folder of Program Files because its background service runs as LocalSystem.");
+    GcPathProtectionReport preProtection = {};
+    classify_path_protection(targetDirectory, &preProtection);
+    gc_log_step("path protection: protected=%d standardWritable=%d profile=%d remote=%d "
+                "noFilesystemPermissions=%d reason=%d acknowledgmentRequired=%d acknowledged=%d",
+                preProtection.verdict.chain_protected ? 1 : 0,
+                preProtection.verdict.standard_writable ? 1 : 0,
+                preProtection.verdict.user_profile ? 1 : 0,
+                preProtection.verdict.remote ? 1 : 0,
+                preProtection.verdict.no_filesystem_permissions ? 1 : 0,
+                (int)preProtection.verdict.reason,
+                gc_path_protection_requires_acknowledgment(&preProtection.verdict) ? 1 : 0,
+                context->pathRiskAcknowledged ? 1 : 0);
+    if (gc_path_protection_requires_acknowledgment(&preProtection.verdict) &&
+        context->requirePathRiskAcknowledgment && !context->pathRiskAcknowledged) {
+        gc_set_error(context, "%s Tick \"%s\" to install there anyway.",
+                     GC_PATH_PROTECTION_SUMMARY_UNPROTECTED,
+                     GC_PATH_PROTECTION_ACKNOWLEDGMENT_LABEL);
         return false;
     }
 
@@ -657,12 +674,38 @@ bool gc_install_execute(GcInstallContext* context) {
         return false;
     }
     char directoryAclError[256] = {};
-    if (!apply_protected_service_dir_dacl(
+    if (preProtection.verdict.no_filesystem_permissions) {
+        // A capability gap, not a failure: FAT/exFAT cannot express a DACL at
+        // all.  The classification already forced the strongest acknowledgment
+        // for exactly this case, so skip loudly instead of failing on a
+        // SetNamedSecurityInfo that can never succeed here.
+        gc_log_step("install: volume has no file permissions; skipping directory DACL "
+                    "hardening (nothing placed here can be protected)");
+    } else if (!apply_protected_service_dir_dacl(
             targetDirectory, directoryAclError, sizeof(directoryAclError)) ||
         !machine_config_dacl_is_hardened(targetDirectory)) {
         gc_set_error(context, "The installation folder could not be secured: %s",
             directoryAclError[0] ? directoryAclError :
             "DACL verification failed");
+        return false;
+    }
+    // The folder now exists and carries its hardened DACL: what preflight
+    // vouched for must still hold.  A directory planted between the two
+    // checks, or a parent swapped out from under them, shows up here as a
+    // downgrade and fails the install closed instead of registering a
+    // LocalSystem service from a location less protected than the user was
+    // told about.
+    GcPathProtectionReport postProtection = {};
+    classify_path_protection(targetDirectory, &postProtection);
+    if (!postProtection.verdict.chain_protected) {
+        gc_log_step("path protection after hardening: protected=0 reason=%d",
+                    (int)postProtection.verdict.reason);
+    }
+    if (preProtection.verdict.chain_protected && !postProtection.verdict.chain_protected) {
+        gc_set_error(context,
+            "The installation folder is no longer as protected as it was when setup "
+            "started (reason %d). Nothing was registered; run setup again.",
+            (int)postProtection.verdict.reason);
         return false;
     }
     gc_report(context, 30, "Copying program files...");

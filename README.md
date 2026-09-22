@@ -388,6 +388,7 @@ Because the service installs next to the GUI binary, **where you place the two e
 ### Where to put the binaries
 
 - **Recommended: `%ProgramFiles%\Green Curve\`** (e.g. `C:\Program Files\Green Curve`). Put both `greencurve.exe` and `greencurve-service.exe` there, launch the GUI from there, then install the service. `%ProgramFiles%` is admin-only-writable but readable/executable by **every** account, so all users can launch the GUI while a standard user cannot tamper with the SYSTEM service binary. (The bundled installer already targets this location.)
+- **Any other local folder works too.** Setup and the portable service install accept any folder and show how well it is protected before anything is installed. A folder that standard accounts can change lets them replace the background service along with it — the warning says exactly that, names the folder at fault, and shows (never applies) the admin command that makes any folder as protected as `%ProgramFiles%`. A folder whose parent folders are all admin-protected (for example `D:\Apps\Green Curve`) needs no acknowledgment and is exactly as safe as `%ProgramFiles%`.
 - **Avoid running from inside a user profile** (e.g. `C:\Users\<name>\Downloads\...`). Other accounts — especially standard/restricted users — cannot read or execute a binary that lives in another user's profile, so they will not be able to start Green Curve. The GUI shows a warning in its status line when it detects it is running from a user-profile folder and recommends reinstalling under `%ProgramFiles%`.
 
 ### One-time admin setup

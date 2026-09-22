@@ -24,6 +24,29 @@
 
 # Changelog
 
+## Unreleased
+
+Setup now installs to any folder you choose instead of only one directly under
+Program Files.
+
+### Highlights
+
+- **Setup now accepts any install folder, on any drive.** It shows how well
+  that folder is protected before installing anything.
+- **Choosing a folder other accounts can change is an explicit decision.** Such
+  a folder can be used to take over the background service; the warning says so
+  and shows the admin command that fully protects the folder (it is never
+  applied for you).
+- **Portable copies keep working from every folder**, with the same clear
+  protection warnings instead of silence.
+
+### Compatibility notes
+
+- Existing installations keep updating in place; nothing moves.
+- Unattended updates never show prompts, wherever Green Curve is installed.
+- Drives without file permissions (FAT/exFAT) and network folders are usable
+  with a clear warning that files there cannot be protected.
+
 ## 0.26.0
 
 A reliability release: hardening around Apply, plus fixes from a full code audit.
