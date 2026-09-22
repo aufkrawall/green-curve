@@ -39,7 +39,7 @@ audit/
 *.bak
 
 # Generated Python bytecode.  A tracked build.cpython-*.pyc used to embed the
-# developer's absolute source path, which CLAUDE.md forbids committing.
+# developer's absolute source path, which AGENTS.md forbids committing.
 __pycache__/
 *.pyc
 *.pyo
