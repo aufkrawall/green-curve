@@ -11,13 +11,22 @@
 // from above.  "Direct child of Program Files" was the old proxy for the real
 // property; this header states the property itself:
 //
-//   chainProtected = every existing path component from the volume root down
-//   is a plain directory, admin/SYSTEM-owned, and grants no non-admin the
+//   chainProtected = every existing path component from the FILESYSTEM root
+//   down is a plain directory, admin/SYSTEM-owned, and grants no non-admin the
 //   rights that could substitute it (delete / delete-child / WRITE_DAC /
 //   WRITE_OWNER).  Create-only rights on ancestors are harmless: they cannot
-//   displace an existing protected child.  Components that do not exist yet are
-//   safe by construction - the elevated setup creates them beneath the
-//   verified chain and hardens the leaf before any payload lands in it.
+//   displace an existing protected child - but on the LEAF they are not, since
+//   a file dropped beside the service binary is a DLL-search-order hijack, so
+//   the leaf counts create rights too.  A component that does not exist yet is
+//   safe only when the elevated setup will both create AND harden it, which it
+//   does for the final component alone: an intermediate directory it creates
+//   keeps whatever it inherited from the last existing ancestor.
+//
+// "From the filesystem root" means the drive root (X:\), never the mount path
+// a volume happens to be reachable through.  A volume mounted into a directory
+// (C:\mnt\data) has ordinary, renameable directories above it, and they are
+// part of the proof; only a true drive root gets the "cannot be renamed or
+// deleted" DELETE relaxation.
 //
 // Everything else is INFORMATION, not a gate: the administrator decides.  The
 // classifier's one hard obligation is to err toward warning - unproven is never
@@ -43,27 +52,36 @@
 // are the DANGEROUS ones: a zeroed struct classifies as not protected.
 struct GcPathComponentFacts {
     // False for components that do not exist yet.  Only a contiguous TAIL may
-    // be missing; the policy treats that tail as safe by construction (the
-    // elevated setup creates it beneath the verified chain) when the last
-    // existing component grants nothing dangerous to non-admins.
+    // be missing, and only its FINAL component is safe by construction (the
+    // elevated setup creates it and immediately replaces its DACL); anything
+    // above it in that tail is created with inherited permissions.
     bool exists;
     bool is_reparse;
+    // A plain directory, not a file.  An existing non-directory component can
+    // never carry the install and is treated as unproven.
+    bool is_directory;
     // Owner is admin-equivalent (Administrators, SYSTEM, TrustedInstaller, or
     // an account that is a member of the local Administrators group).
     bool owner_admin_trusted;
     // Some non-admin principal holds substitution-capable rights against this
     // component: DELETE (rename it away and plant a replacement), delete-child
     // (remove it regardless of its own DACL), WRITE_DAC / WRITE_OWNER (re-ACL
-    // it to grant the above).  Create-only rights do NOT count: they cannot
-    // displace an existing protected child.  On the volume root (index 0) a
-    // bare DELETE grant is ignored - a volume root can be neither renamed nor
-    // deleted - but every other bit still counts.
+    // it to grant the above).  Create-only rights do NOT count here: they
+    // cannot displace an existing protected child.  On the filesystem root
+    // (index 0, always a drive root) a bare DELETE grant is ignored - a drive
+    // root can be neither renamed nor deleted - but every other bit counts.
     bool non_admin_danger;
+    // Some non-admin principal may CREATE inside this component (add-file /
+    // add-subdirectory / generic write).  Harmless on an ancestor, decisive on
+    // the leaf: the leaf is the directory the LocalSystem service binary loads
+    // its DLLs from, so a non-admin who can drop `version.dll` beside it gets
+    // SYSTEM without ever touching the protected binary.
+    bool non_admin_create_danger;
     // Some non-admin principal holds dangerous rights that INHERIT to children
     // created beneath this component.  An inherit-only ACE grants nothing on
     // the component itself but flows into whatever is created there, which is
-    // exactly what the constructed tail would pick up (real default ACLs do
-    // this: a data drive root hands Authenticated Users inheritable Modify).
+    // exactly what a constructed intermediate would pick up (real default ACLs
+    // do this: a drive root hands Authenticated Users inheritable Modify).
     bool non_admin_inherit_danger;
     // Owner and DACL could actually be read.  False => assume dangerous.
     bool facts_complete;
@@ -82,8 +100,8 @@ struct GcPathProtectionFacts {
     bool under_user_profile;
     bool preflight_mode;   // true during installer preflight where the leaf DACL will be replaced
     GcPathComponentFacts components[GC_PATH_CHAIN_MAX_COMPONENTS];
-    int component_count;   // components[0] is the volume root
-    bool chain_complete;   // walked to the target without gaps or overflow
+    int component_count;   // components[0] is the filesystem (drive) root
+    bool chain_complete;   // walked all the way to the target, no overflow
 };
 
 enum GcPathRiskReason {
@@ -139,15 +157,28 @@ struct GcPathProtectionReport {
 // spellings: one for an existing folder at the failing component, one for a
 // folder that setup would otherwise create with inherited (user-substitutable)
 // permissions - that one is created protected in the same breath.
+//
+// The exact spelling matters, because this is a line a user pastes:
+//   * every path is quote-CLOSED (BEFORE opens the quote, AFTER closes it);
+//   * `/setowner` is its OWN icacls invocation - icacls rejects it combined
+//     with /grant or /inheritance with "Invalid parameter" (error 87);
+//   * every SID:permission argument is quoted, because an unquoted `(OI)(CI)F`
+//     is a subexpression to PowerShell, the project's default shell;
+//   * `;` separates the invocations, which is what PowerShell wants.
+#define GC_PATH_PROTECTION_REMEDY_GRANTS \
+    "\" /inheritance:r /grant:r \"*S-1-5-32-544:(OI)(CI)F\" /grant:r \"*S-1-5-18:(OI)(CI)F\"" \
+    " /grant:r \"*S-1-5-32-545:(OI)(CI)RX\"; icacls \""
 #define GC_PATH_PROTECTION_REMEDY_BEFORE_PATH \
-    "To fully protect this location, run in an admin console: icacls \""
+    "To fully protect this location, run in an elevated PowerShell: icacls \""
 #define GC_PATH_PROTECTION_REMEDY_AFTER_PATH \
-    " /inheritance:r /grant:r *S-1-5-32-544:(OI)(CI)F /grant:r *S-1-5-18:(OI)(CI)F /grant:r *S-1-5-32-545:(OI)(CI)RX /setowner *S-1-5-32-544"
+    GC_PATH_PROTECTION_REMEDY_GRANTS
+#define GC_PATH_PROTECTION_REMEDY_TAIL_PATH \
+    "\" /setowner \"*S-1-5-32-544\""
 #define GC_PATH_PROTECTION_REMEDY_CREATE_BEFORE_PATH \
-    "To fully protect this location, run in an admin console: mkdir \""
+    "To fully protect this location, run in an elevated PowerShell: mkdir \""
 #define GC_PATH_PROTECTION_REMEDY_CREATE_MID_PATH \
-    "\" & icacls \""
-// (the same grant line as the existing-folder spelling follows)
+    "\"; icacls \""
+// Both spellings end with AFTER_PATH, the path again, then TAIL_PATH.
 #define GC_PATH_PROTECTION_ACKNOWLEDGMENT_LABEL \
     "I understand the risk and want to install here anyway"
 
@@ -217,6 +248,14 @@ static inline void gc_path_protection_classify(const GcPathProtectionFacts* fact
                 out->first_unsafe_component = i;
                 break;
             }
+            if (!component->is_directory) {
+                // An existing file where a directory must be: nothing about the
+                // install can be proven through it.
+                chainProtected = false;
+                out->reason = GC_PATH_RISK_COMPONENT_MISSING_FACTS;
+                out->first_unsafe_component = i;
+                break;
+            }
             if (!component->owner_admin_trusted) {
                 chainProtected = false;
                 out->reason = GC_PATH_RISK_COMPONENT_NOT_ADMIN_OWNED;
@@ -236,13 +275,29 @@ static inline void gc_path_protection_classify(const GcPathProtectionFacts* fact
                 out->first_unsafe_component = i;
                 break;
             }
+            // Create-only rights are harmless on an ancestor and decisive on
+            // the leaf: that is the directory the LocalSystem service binary
+            // resolves its DLL imports from, so a non-admin who can add a file
+            // there owns SYSTEM without touching the hardened binary.
+            if (isLeaf && component->non_admin_create_danger && !exemptLeaf) {
+                chainProtected = false;
+                out->reason = GC_PATH_RISK_COMPONENT_USER_WRITABLE;
+                out->first_unsafe_component = i;
+                break;
+            }
         }
-        // The missing tail is created beneath the last existing component; it
-        // inherits that component's inheritable ACLs.  A tail under
-        // inheritable non-admin danger would land still-substitutable (a
-        // created folder inheriting DELETE can be renamed away and replaced),
-        // so such a chain is not protected.  The actionable component is the
-        // first missing one: created protected, it breaks the inheritance.
+        // What setup will BUILD, versus what it will HARDEN.  It creates the
+        // whole missing tail but replaces the DACL of the final component
+        // only, so:
+        //   * a tail of exactly one is fully covered - the created leaf gets a
+        //     protected DACL that drops every inherited ACE, which is why the
+        //     common "C:\Green Curve under a stock drive root" case is green
+        //     rather than a warning the user learns to click through;
+        //   * a longer tail leaves intermediates carrying whatever the last
+        //     existing ancestor hands down, so inheritable non-admin danger
+        //     there lands a renameable parent above a hardened child.
+        // Outside preflight nothing is about to be created at all, so a
+        // missing component simply means the target is not there: unproven.
         if (chainProtected && facts->component_count > 0) {
             int lastExisting = -1;
             int firstMissing = -1;
@@ -253,13 +308,18 @@ static inline void gc_path_protection_classify(const GcPathProtectionFacts* fact
                     firstMissing = i;
                 }
             }
+            int tailLength = firstMissing >= 0 ? facts->component_count - firstMissing : 0;
             if (!seen_existing) {
                 // Nothing exists at all: there is no verified chain for the
                 // construction to rest on.
                 chainProtected = false;
                 out->reason = GC_PATH_RISK_CHAIN_INCOMPLETE;
                 out->first_unsafe_component = firstMissing >= 0 ? firstMissing : 0;
-            } else if (firstMissing >= 0 &&
+            } else if (firstMissing >= 0 && !facts->preflight_mode) {
+                chainProtected = false;
+                out->reason = GC_PATH_RISK_CHAIN_INCOMPLETE;
+                out->first_unsafe_component = firstMissing;
+            } else if (firstMissing >= 0 && tailLength > 1 &&
                        facts->components[lastExisting].non_admin_inherit_danger) {
                 chainProtected = false;
                 out->reason = GC_PATH_RISK_COMPONENT_USER_WRITABLE;

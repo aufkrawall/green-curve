@@ -141,7 +141,10 @@ void gc_update_page_controls(GcWizard* wizard) {
 
 static void gc_draw_text(HDC dc, HFONT font, COLORREF colour, const char* text,
                          int left, int top, int width, int height, UINT format) {
-    WCHAR wide[2048] = {};
+    // Matches the folder page's `notes` buffer: the path-protection remedy is
+    // the longest string any page draws, and a short buffer would cut a
+    // pasteable command in half.
+    WCHAR wide[4352] = {};
     gc_utf8_to_wide(text ? text : "", wide, (int)GC_ARRAY_COUNT(wide));
     RECT rect = {left, top, left + width, top + height};
     HFONT oldFont = (HFONT)SelectObject(dc, font);
@@ -227,7 +230,10 @@ void gc_paint(GcWizard* wizard, HDC dc, const RECT* client) {
             gc_draw_field_frame(dc, wizard->pathEdit);
             // Extra warnings and the (never applied) remediation line for the
             // exact folder at fault.
-            char notes[2560] = {};
+            // Sized for the longest thing that can land here: the create
+            // spelling of the remedy (three copies of the failing path) plus
+            // every extra note.  gc_draw_text's own buffer matches.
+            char notes[4352] = {};
             for (int i = 0; ; i++) {
                 const char* note = gc_path_protection_extra_note(protection, i);
                 if (!note[0]) break;
@@ -239,17 +245,23 @@ void gc_paint(GcWizard* wizard, HDC dc, const RECT* client) {
                 char component[GC_PATH_CHAIN_MAX_PATH_CHARS * 2] = {};
                 gc_wide_to_utf8(wizard->folderProtection.firstUnsafeComponent, component,
                                 (int)sizeof(component));
-                char remedy[sizeof(component) + 512] = {};
+                // Three copies of the path in the create spelling (mkdir,
+                // icacls grants, icacls /setowner), so the buffer holds three;
+                // a short buffer would truncate the command mid-path and hand
+                // the user something that silently targets the wrong folder.
+                char remedy[sizeof(component) * 3 + 512] = {};
                 if (gc_path_protection_remedy_needs_create(&wizard->folderProtection.facts,
                                                           protection)) {
-                    snprintf(remedy, sizeof(remedy), "%s%s%s%s%s",
+                    snprintf(remedy, sizeof(remedy), "%s%s%s%s%s%s%s",
                              GC_PATH_PROTECTION_REMEDY_CREATE_BEFORE_PATH, component,
                              GC_PATH_PROTECTION_REMEDY_CREATE_MID_PATH, component,
-                             GC_PATH_PROTECTION_REMEDY_AFTER_PATH);
+                             GC_PATH_PROTECTION_REMEDY_AFTER_PATH, component,
+                             GC_PATH_PROTECTION_REMEDY_TAIL_PATH);
                 } else {
-                    snprintf(remedy, sizeof(remedy), "%s%s%s",
+                    snprintf(remedy, sizeof(remedy), "%s%s%s%s%s",
                              GC_PATH_PROTECTION_REMEDY_BEFORE_PATH, component,
-                             GC_PATH_PROTECTION_REMEDY_AFTER_PATH);
+                             GC_PATH_PROTECTION_REMEDY_AFTER_PATH, component,
+                             GC_PATH_PROTECTION_REMEDY_TAIL_PATH);
                 }
                 if (notes[0]) StringCchCatA(notes, GC_ARRAY_COUNT(notes), " ");
                 StringCchCatA(notes, GC_ARRAY_COUNT(notes), remedy);

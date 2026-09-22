@@ -344,6 +344,11 @@ static void begin_background_service_toggle(bool enable) {
 
 static void end_background_service_toggle() {
     g_app.backgroundServiceToggleInFlight = false;
+    // Installing the service hardens the install directory's DACL and removing
+    // it restores inheritance, so the cached path-protection verdict the status
+    // line shows is exactly what just changed.  Drop it; the next status build
+    // reclassifies once.
+    running_exe_dir_protection_invalidate();
 }
 
 static DWORD service_remaining_timeout_ms(ULONGLONG startTickMs, DWORD timeoutMs) {

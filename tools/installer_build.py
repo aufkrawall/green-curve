@@ -730,6 +730,14 @@ def check_all(ctx, require_text, forbid_text):
                                    "the folder page classifies the service root before accepting the choice")
     require_text(installer_ui, "GC_ID_RISK_ACCEPT",
                  "the folder page offers the explicit path-risk acknowledgment")
+    # The wizard must hand gc_install_execute the user's ACTUAL answer.  An
+    # unconditional `pathRiskAcknowledged = true` made the apply-side check --
+    # the second line of defence pinned above -- inert on every GUI run while
+    # every gate still passed.
+    require_text(installer_ui, "pathRiskAcknowledged = wizard->riskAccepted",
+                 "the installer-side acknowledgment check sees the real answer")
+    forbid_text(installer_ui, "pathRiskAcknowledged = true",
+                "the folder page never fakes the path-risk acknowledgment")
     require_text(apply_shard, "apply_protected_service_dir_dacl",
                  "the install directory is hardened before privileged payload extraction")
     installer_util = source("installer_util.cpp")

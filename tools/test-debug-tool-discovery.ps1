@@ -15,6 +15,16 @@ function Assert-SequenceEqual {
   }
 }
 
+# tools/discover-debug-tools.ps1 is deliberately untracked (it records
+# machine-specific SDK/MSVC locations), so on a fresh clone there is nothing to
+# test.  Skip loudly instead of throwing: a test that cannot even find its
+# subject must not read as a build failure, and it must not read as a pass
+# either -- the caller prints this line.
+if (-not (Test-Path -LiteralPath $DiscoveryScriptPath)) {
+  Write-Host "SKIPPED: '$DiscoveryScriptPath' is not present (it is untracked by design)."
+  exit 0
+}
+
 $tokens = $null
 $parseErrors = $null
 $resolvedScriptPath = (Resolve-Path -LiteralPath $DiscoveryScriptPath).Path

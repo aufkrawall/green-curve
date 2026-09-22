@@ -231,38 +231,12 @@ static bool get_adjacent_service_binary_path(WCHAR* out, size_t outCount, char* 
 // C:\Users\<name>\...).  This catches the common portable-install mistake of
 // running greencurve.exe from inside an admin's profile, which makes the GUI
 // binary inaccessible to other restricted users on the same machine.
+//
+// One implementation, shared with the path classifier's `under_user_profile`
+// fact (service_acl.h): both warnings land in the same GUI status line, so
+// they must not be able to disagree about what counts as a user profile.
 static bool install_dir_is_under_user_profile_w(const WCHAR* dir) {
-    if (!dir || !dir[0]) return false;
-    WCHAR fullDir[MAX_PATH] = {};
-    if (GetFullPathNameW(dir, MAX_PATH, fullDir, nullptr) == 0) return false;
-    size_t fullDirLen = wcslen(fullDir);
-
-    // Check against the current user's profile path.
-    PWSTR profileDir = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &profileDir)) && profileDir) {
-        size_t profileLen = wcslen(profileDir);
-        if (fullDirLen >= profileLen &&
-            _wcsnicmp(fullDir, profileDir, profileLen) == 0 &&
-            (fullDirLen == profileLen || fullDir[profileLen] == L'\\' || fullDir[profileLen] == L'/')) {
-            CoTaskMemFree(profileDir);
-            return true;
-        }
-        CoTaskMemFree(profileDir);
-    }
-
-    // Also detect any path under C:\Users\ (or the localized equivalent).
-    PWSTR profilesDir = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_UserProfiles, 0, nullptr, &profilesDir)) && profilesDir) {
-        size_t profilesLen = wcslen(profilesDir);
-        if (fullDirLen >= profilesLen &&
-            _wcsnicmp(fullDir, profilesDir, profilesLen) == 0 &&
-            (fullDirLen == profilesLen || fullDir[profilesLen] == L'\\' || fullDir[profilesLen] == L'/')) {
-            CoTaskMemFree(profilesDir);
-            return true;
-        }
-        CoTaskMemFree(profilesDir);
-    }
-    return false;
+    return gc_path_is_under_user_profile(dir);
 }
 
 static bool get_secure_service_install_dir_w(WCHAR* out, size_t outCount, char* err, size_t errSize) {

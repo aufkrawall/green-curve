@@ -588,11 +588,35 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
                 bool repair = g_app.backgroundServiceInstalled && g_app.backgroundServiceBroken;
                 bool enable = repair || !g_app.backgroundServiceInstalled;
-                const char* confirmText = repair
+                char confirmText[1024] = {};
+                StringCchCopyA(confirmText, ARRAY_COUNT(confirmText), repair
                     ? "Repair and restart the background service using the current service binary?"
                     : enable
                     ? "Install the elevated background service to enable live GPU control?"
-                    : "Remove the background service? Live GPU control will be unavailable until it is installed again.";
+                    : "Remove the background service? Live GPU control will be unavailable until it is installed again.");
+                // Registering a LocalSystem service out of a folder that is not
+                // protected like Program Files is a decision, not a detail:
+                // whoever can write that folder inherits SYSTEM (F-SEC-1, see
+                // service_path_chain_policy.h).  Setup collects this as a
+                // ticked acknowledgment on its folder page; here the same fact
+                // rides the confirmation the user already answers, so the
+                // portable path cannot register the service silently.
+                GcPathProtectionReport servicePathProtection = {};
+                if (enable && running_exe_dir_protection(&servicePathProtection) &&
+                    gc_path_protection_requires_acknowledgment(&servicePathProtection.verdict)) {
+                    StringCchCatA(confirmText, ARRAY_COUNT(confirmText), "\n\n");
+                    StringCchCatA(confirmText, ARRAY_COUNT(confirmText),
+                                  gc_path_protection_headline(&servicePathProtection.verdict));
+                    for (int note = 0; ; note++) {
+                        const char* extra =
+                            gc_path_protection_extra_note(&servicePathProtection.verdict, note);
+                        if (!extra[0]) break;
+                        StringCchCatA(confirmText, ARRAY_COUNT(confirmText), " ");
+                        StringCchCatA(confirmText, ARRAY_COUNT(confirmText), extra);
+                    }
+                    StringCchCatA(confirmText, ARRAY_COUNT(confirmText),
+                        "\n\nInstall the background service from this folder anyway?");
+                }
                 int confirm = gc_message_box(g_app.hMainWnd, confirmText, "Confirm Service Change", MB_YESNO | MB_ICONQUESTION);
                 if (confirm != IDYES) {
                     break;

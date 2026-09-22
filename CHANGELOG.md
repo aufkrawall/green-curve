@@ -33,10 +33,14 @@ Program Files.
 
 - **Setup now accepts any install folder, on any drive.** It shows how well
   that folder is protected before installing anything.
+- **A new folder under a drive root no longer raises a false warning.** Setup
+  protects such a folder as it creates it, and now says so.
 - **Choosing a folder other accounts can change is an explicit decision.** Such
   a folder can be used to take over the background service; the warning says so
   and shows the admin command that fully protects the folder (it is never
-  applied for you).
+  applied for you), ready to paste.
+- **Installing the background service from a portable copy now asks first**
+  when the folder it runs from is not protected, instead of installing quietly.
 - **Portable copies keep working from every folder.** They show the same clear
   protection warnings instead of silence.
 

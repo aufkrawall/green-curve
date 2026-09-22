@@ -249,8 +249,10 @@ struct GcInstallContext {
     GcProgressFn progress;
     void* progressContext;
     // Path-risk consent (see service_path_chain_policy.h).  Interactive runs
-    // set requirePathRiskAcknowledgment and only set pathRiskAcknowledged once
-    // the user has ticked the acknowledgment for a non-protected location.
+    // set requirePathRiskAcknowledgment and set pathRiskAcknowledged to the
+    // user's ACTUAL answer - whether the acknowledgment box is ticked - never
+    // to a blanket true, or gc_install_execute's own re-check (the second line
+    // of defence, and the one the build gates pin) would be inert.
     // Silent runs (the updater's `setup /S`) leave both false and never block:
     // whoever chose that path is the decision-maker, and every update would
     // otherwise re-prompt an unattended machine.

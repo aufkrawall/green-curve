@@ -49,10 +49,19 @@ typedef NET_API_STATUS_LOCAL (WINAPI* NetApiBufferFreeFn)(LPVOID);
 // Substitution-capable rights; see GcPathComponentFacts.  DELETE renames the
 // component away and plants a replacement; FILE_DELETE_CHILD removes a child
 // regardless of the child's own DACL; WRITE_DAC/WRITE_OWNER re-ACL the
-// component to grant either.  Create-only bits are deliberately absent: they
-// cannot displace an existing protected child.
+// component to grant either.  Create-only bits are deliberately absent here:
+// they cannot displace an existing protected child.
 const DWORD kSubstituteMask =
     DELETE | FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL;
+
+// Rights that let a principal put a NEW file or directory inside a component.
+// Irrelevant on an ancestor, decisive on the leaf: the leaf is the directory
+// the LocalSystem service binary resolves its DLL imports from, so adding
+// `version.dll` beside it is SYSTEM code execution without ever touching the
+// hardened binary.  FILE_WRITE_EA / FILE_WRITE_ATTRIBUTES are NOT here - they
+// change metadata on existing entries and plant nothing.
+const DWORD kCreateMask =
+    FILE_WRITE_DATA | FILE_APPEND_DATA | GENERIC_WRITE | GENERIC_ALL;
 
 bool build_well_known_sid(WELL_KNOWN_SID_TYPE type, BYTE* buf, DWORD bufSize) {
     DWORD size = bufSize;
@@ -164,10 +173,32 @@ void admin_trust_build(GcAdminTrustSet* trust) {
     admin_trust_add_local_administrators(trust);
 }
 
-// Scan one component's DACL.  `isRoot` relaxes a bare DELETE grant (a volume
-// root can be neither renamed nor deleted) but nothing else.
+// The trust set costs a LoadLibrary plus a NetLocalGroupGetMembers round trip
+// (SAM, and a domain controller for domain members of the local group), which
+// is far too expensive to repeat: setup reclassifies on every keystroke in the
+// folder page.  Build it once per process.  Administrators-group membership
+// changing mid-process is not a case worth re-querying for - and a stale set
+// only ever mis-trusts an account that was an administrator moments ago.
+INIT_ONCE g_adminTrustOnce = INIT_ONCE_STATIC_INIT;
+GcAdminTrustSet g_adminTrust = {};
+
+BOOL CALLBACK admin_trust_init_once(PINIT_ONCE, PVOID, PVOID*) {
+    admin_trust_build(&g_adminTrust);
+    return TRUE;
+}
+
+const GcAdminTrustSet& admin_trust_shared() {
+    InitOnceExecuteOnce(&g_adminTrustOnce, admin_trust_init_once, nullptr, nullptr);
+    return g_adminTrust;
+}
+
+// Scan one component's DACL.  `isRoot` relaxes a bare DELETE grant and is only
+// ever true for a real drive root (X:\), which can be neither renamed nor
+// deleted; a directory a volume happens to be MOUNTED at is an ordinary
+// renameable directory and is walked as one.
 void scan_dacl_for_danger(PACL dacl, bool isRoot, const GcAdminTrustSet& trust,
-                          bool* nonAdminDanger, bool* nonAdminInheritDanger) {
+                          bool* nonAdminDanger, bool* nonAdminCreateDanger,
+                          bool* nonAdminInheritDanger) {
     // A null DACL grants everyone full control; the caller treats it as
     // dangerous before ever getting here.
     if (!dacl) return;
@@ -176,6 +207,7 @@ void scan_dacl_for_danger(PACL dacl, bool isRoot, const GcAdminTrustSet& trust,
         void* aceRaw = nullptr;
         if (!GetAce(dacl, i, &aceRaw) || !aceRaw) {
             *nonAdminDanger = true;
+            *nonAdminCreateDanger = true;
             *nonAdminInheritDanger = true;
             return;
         }
@@ -192,6 +224,7 @@ void scan_dacl_for_danger(PACL dacl, bool isRoot, const GcAdminTrustSet& trust,
             // guessing at layouts, treat them as dangerous unproven.  File
             // DACLs essentially never contain them.
             *nonAdminDanger = true;
+            *nonAdminCreateDanger = true;
             *nonAdminInheritDanger = true;
             return;
         }
@@ -203,6 +236,7 @@ void scan_dacl_for_danger(PACL dacl, bool isRoot, const GcAdminTrustSet& trust,
         bool inheritable =
             (header->AceFlags & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE)) != 0;
         if (!inheritOnly && (ace->Mask & selfMask)) *nonAdminDanger = true;
+        if (!inheritOnly && (ace->Mask & kCreateMask)) *nonAdminCreateDanger = true;
         if (inheritable && (ace->Mask & kSubstituteMask)) *nonAdminInheritDanger = true;
     }
 }
@@ -249,6 +283,7 @@ void gather_component_facts(const WCHAR* full, size_t prefixEnd, bool isRoot,
     }
     facts->exists = true;
     facts->is_reparse = (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+    facts->is_directory = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 
     HANDLE handle = CreateFileW(buffer, READ_CONTROL,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -272,16 +307,20 @@ void gather_component_facts(const WCHAR* full, size_t prefixEnd, bool isRoot,
     }
     facts->owner_admin_trusted = owner && IsValidSid(owner) && trust.contains(owner);
     bool nonAdminDanger = false;
+    bool nonAdminCreateDanger = false;
     bool nonAdminInheritDanger = false;
     if (dacl) {
-        scan_dacl_for_danger(dacl, isRoot, trust, &nonAdminDanger, &nonAdminInheritDanger);
+        scan_dacl_for_danger(dacl, isRoot, trust, &nonAdminDanger, &nonAdminCreateDanger,
+                             &nonAdminInheritDanger);
     } else {
         // A null DACL grants everyone full control: dangerous in the most
         // direct way possible.
         nonAdminDanger = true;
+        nonAdminCreateDanger = true;
         nonAdminInheritDanger = true;
     }
     facts->non_admin_danger = nonAdminDanger;
+    facts->non_admin_create_danger = nonAdminCreateDanger;
     facts->non_admin_inherit_danger = nonAdminInheritDanger;
     facts->facts_complete = true;
     LocalFree(sd);
@@ -289,6 +328,25 @@ void gather_component_facts(const WCHAR* full, size_t prefixEnd, bool isRoot,
 }
 
 }  // namespace
+
+bool gc_path_is_under_user_profile(const wchar_t* path) {
+    if (!path || !path[0]) return false;
+    WCHAR full[GC_PATH_CHAIN_MAX_PATH_CHARS] = {};
+    DWORD length = GetFullPathNameW(path, GC_PATH_CHAIN_MAX_PATH_CHARS, full, nullptr);
+    if (length == 0 || length >= GC_PATH_CHAIN_MAX_PATH_CHARS) return false;
+
+    bool under = false;
+    const KNOWNFOLDERID* roots[] = { &FOLDERID_Profile, &FOLDERID_UserProfiles };
+    for (const KNOWNFOLDERID* root : roots) {
+        PWSTR resolved = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(*root, 0, nullptr, &resolved)) && resolved) {
+            if (path_prefix_matches(full, resolved)) under = true;
+            CoTaskMemFree(resolved);
+        }
+        if (under) break;
+    }
+    return under;
+}
 
 void classify_path_protection(const wchar_t* path, GcPathProtectionReport* out,
                               bool preflightMode) {
@@ -340,18 +398,7 @@ void classify_path_protection(const wchar_t* path, GcPathProtectionReport* out,
 
     // User-profile reachability is an extra warning, not part of the security
     // proof; a failed lookup just omits it.
-    PWSTR profileDir = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &profileDir)) &&
-        profileDir) {
-        if (path_prefix_matches(full, profileDir)) out->facts.under_user_profile = true;
-        CoTaskMemFree(profileDir);
-    }
-    PWSTR profilesDir = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_UserProfiles, 0, nullptr, &profilesDir)) &&
-        profilesDir) {
-        if (path_prefix_matches(full, profilesDir)) out->facts.under_user_profile = true;
-        CoTaskMemFree(profilesDir);
-    }
+    out->facts.under_user_profile = gc_path_is_under_user_profile(full);
 
     // A network-mapped drive is server-controlled exactly like a UNC path;
     // same fixed verdict, same refusal to probe (GetDriveTypeW above is the
@@ -361,23 +408,29 @@ void classify_path_protection(const wchar_t* path, GcPathProtectionReport* out,
         return;
     }
 
-    GcAdminTrustSet trust = {};
-    admin_trust_build(&trust);
+    const GcAdminTrustSet& trust = admin_trust_shared();
 
-    // components[0] is the volume root; each deeper component extends the
-    // prefix of `full` to the next separator.  The walk stops at the first
-    // missing component (nothing deeper can exist), which is exactly the
-    // contiguous tail the policy describes.
-    size_t rootEnd = 0;
-    while (volume[rootEnd]) rootEnd++;
-    // Keep the trailing separator on a drive root ("D:\" - a bare "D:" names
-    // the current directory on that drive, not the root); trim it elsewhere.
-    while (rootEnd > 1 &&
-           (full[rootEnd - 1] == L'\\' || full[rootEnd - 1] == L'/') &&
-           !(rootEnd == 3 && full[1] == L':')) {
-        rootEnd--;
+    // components[0] is the FILESYSTEM root, which for a local path is always
+    // the drive root ("D:\").  Deliberately NOT GetVolumePathNameW's answer:
+    // that is the path a volume is REACHABLE through, and a volume mounted
+    // into a directory ("C:\mnt\data") hangs below ordinary directories that
+    // a non-admin with DELETE can rename away, taking the whole install with
+    // them.  Starting at the drive root walks those directories like any
+    // other, and confines the "cannot be renamed or deleted" DELETE
+    // relaxation to a root where it is actually true.
+    if (!(full[0] && full[1] == L':' && (full[2] == L'\\' || full[2] == L'/'))) {
+        // Not a drive-rooted local path (device namespace, a bare "X:" that
+        // GetFullPathNameW did not expand): unproven rather than guessed at.
+        out->facts.chain_complete = false;
+        gc_path_protection_classify(&out->facts, &out->verdict);
+        return;
     }
+    const size_t rootEnd = 3;  // keep the separator: "D:" names a directory, "D:\" the root
 
+    // Every component down to the target is probed, including ones that do not
+    // exist yet: the policy distinguishes a tail setup will create AND harden
+    // (the final component) from intermediates it would create with inherited
+    // permissions, and it can only do that if the whole tail is on the table.
     int componentCount = 0;
     size_t componentEnds[GC_PATH_CHAIN_MAX_COMPONENTS] = {};
     bool overflow = false;
@@ -397,7 +450,7 @@ void classify_path_protection(const wchar_t* path, GcPathProtectionReport* out,
         bool isRoot = componentCount == 0;
         gather_component_facts(full, end, isRoot, trust, facts);
         componentCount++;
-        if (!facts->exists || end >= fullLength) break;
+        if (end >= fullLength) break;
         cursor = end;
         while (full[cursor] == L'\\' || full[cursor] == L'/') cursor++;
         if (!full[cursor]) break;

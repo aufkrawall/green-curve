@@ -209,8 +209,12 @@ static bool gc_commit_folder_page(GcWizard* wizard) {
         SetFocus(wizard->riskCheck);
         return false;
     }
+    // Carry the user's ACTUAL answer, not the fact that the page let them
+    // past: `gc_install_execute` re-classifies and re-checks on its own, and
+    // it can only do that as a second line of defence if it is told whether a
+    // box was ticked rather than handed an unconditional yes.
     wizard->install.requirePathRiskAcknowledgment = true;
-    wizard->install.pathRiskAcknowledged = true;
+    wizard->install.pathRiskAcknowledged = wizard->riskAccepted;
     StringCchCopyA(wizard->options.directory, GC_ARRAY_COUNT(wizard->options.directory), chosen);
     wizard->options.hasDirectory = true;
     return true;

@@ -918,10 +918,45 @@ def check_path_protection_gates(ctx, require_text, service_ipc_cpp):
         "the path-risk consent keeps the SYSTEM-escalation sentence")
     require_text(path_chain_policy, "gc_path_protection_classify",
         "the path-protection classifier exists and is pure")
-    require_text(os.path.join(ctx.SOURCE_DIR, "service_path_chain.cpp"),
+    path_chain_cpp = os.path.join(ctx.SOURCE_DIR, "service_path_chain.cpp")
+    require_text(path_chain_cpp,
         "classify_path_protection", "the Win32 path-protection gatherer exists")
     require_text(service_ipc_cpp, "service_log_path_protection_at_startup",
         "service startup records the service directory's protection verdict")
+    # The walk must begin at the DRIVE root, never at GetVolumePathNameW's
+    # answer.  A volume mounted into a directory (C:\mnt\data) hangs below
+    # ordinary renameable directories; starting at the mount path skipped them
+    # entirely AND applied the "a root cannot be renamed" DELETE relaxation to
+    # a directory that can be, so a substitutable chain read as protected.
+    require_text(path_chain_cpp, "full[1] == L':'",
+        "the chain walk starts at the drive root, not at a volume mount path")
+    forbid_in_walk = "GetVolumePathNameW(full, volume"
+    with open(path_chain_cpp, "r", encoding="utf-8", errors="replace") as handle:
+        chain_text = handle.read()
+    if forbid_in_walk in chain_text and "const size_t rootEnd = 3;" not in chain_text:
+        print("Regression source check FAILED: the path-chain walk derives its "
+              "root from the volume mount path again (mount-point ancestors "
+              "would go unproven)")
+        sys.exit(1)
+    # Create-only rights are harmless on an ancestor and decisive on the leaf:
+    # the leaf is where the LocalSystem binary resolves DLL imports from.
+    require_text(path_chain_cpp, "kCreateMask",
+        "the walk records who may create files beside the service binary")
+    require_text(path_chain_policy, "non_admin_create_danger",
+        "leaf create rights are part of the protection verdict")
+    # Consent for a LocalSystem service registered out of an unprotected
+    # folder exists on BOTH interactive paths, setup and the GUI checkbox.
+    require_text(os.path.join(ctx.SOURCE_DIR, "ui_main_window.cpp"),
+        "gc_path_protection_requires_acknowledgment",
+        "the GUI service-install confirmation carries the path risk")
+    # A remedy line the user pastes: every path quote-closed, /setowner its own
+    # invocation (icacls rejects it combined with /grant with error 87), every
+    # SID:permission argument quoted so PowerShell does not read (OI)(CI) as a
+    # subexpression.
+    require_text(path_chain_policy, "GC_PATH_PROTECTION_REMEDY_TAIL_PATH",
+        "the icacls remedy issues /setowner as its own command")
+    require_text(path_chain_policy, "\\\" /setowner \\\"*S-1-5-32-544\\\"",
+        "the remedy closes the path quote before /setowner and quotes the SID")
 
 
 def check_log_redaction(ctx):
@@ -1115,10 +1150,43 @@ def run_build_script_regression_tests(ctx):
             print("Build-script regression FAILED: update signer self-tests")
             sys.exit(1)
         toolchain.run_self_tests()
+        run_debug_tool_discovery_tests(ctx)
     finally:
         ctx.cleanup_work_subdir(tmp)
     check_linux_release_packaging(ctx)
     check_arch_package_roundtrip(ctx)
+
+
+def run_debug_tool_discovery_tests(ctx):
+    """Run tools/test-debug-tool-discovery.ps1 when it can run at all.
+
+    The script it exercises, tools/discover-debug-tools.ps1, is untracked on
+    purpose (it records this machine's SDK/MSVC locations), so the test is
+    reachable only on a developer box that has one.  Without this call the
+    test was committed and then never invoked by anything, which is the same
+    as not having it.  A missing PowerShell 7 or a missing discovery script is
+    a loud SKIP; a real assertion failure is fatal like every other gate.
+    """
+    if sys.platform != "win32":
+        return
+    script = os.path.join(ctx.SCRIPT_DIR, "tools", "test-debug-tool-discovery.ps1")
+    if not os.path.exists(script):
+        print("Debug-tool discovery tests: SKIPPED (test script not present)")
+        return
+    pwsh = shutil.which("pwsh")
+    if not pwsh:
+        print("Debug-tool discovery tests: SKIPPED (pwsh not on PATH)")
+        return
+    result = subprocess.run(
+        [pwsh, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", script],
+        capture_output=True, text=True, errors="replace")
+    output = (result.stdout or "") + (result.stderr or "")
+    if result.returncode != 0:
+        print("Build-script regression FAILED: debug-tool discovery tests")
+        print(output.strip())
+        sys.exit(1)
+    print(output.strip() or "Debug-tool discovery tests passed.")
 
 
 def check_linux_release_packaging(ctx):

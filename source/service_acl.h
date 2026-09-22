@@ -44,6 +44,14 @@ bool restore_inherited_dacl(const wchar_t* path, char* err, size_t errSize);
 void classify_path_protection(const wchar_t* path, GcPathProtectionReport* out,
                               bool preflightMode = false);
 
+// True when `path` resolves under %USERPROFILE% or under the user-profiles
+// root (C:\Users and its localized/redirected spellings).  The single
+// implementation behind both the path classifier's `under_user_profile` fact
+// and the GUI's "other accounts cannot launch this copy" warning - they warn
+// about the same directory in the same status line, so they must not be able
+// to disagree about what a user profile is.
+bool gc_path_is_under_user_profile(const wchar_t* path);
+
 // True if `path` currently carries a hardened DACL: inheritance disabled
 // (SE_DACL_PROTECTED) AND no non-admin principal (Everyone / BUILTIN\Users /
 // Authenticated Users / INTERACTIVE) is granted any write/delete/own access.

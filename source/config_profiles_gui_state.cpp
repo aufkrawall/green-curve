@@ -353,7 +353,12 @@ static void update_background_service_controls() {
             InvalidateRect(g_app.hServiceEnableCheck, nullptr, FALSE);
     }
     if (g_app.hServiceStatusLabel) {
-        char text[512] = {};
+        // Four independent notices can stack here (base state, shared-profiles
+        // restriction, path protection, user-profile install) and each append
+        // is guarded by a length check that SILENTLY drops it.  At 512 the
+        // path-protection warning pushed the user-profile one off the end, so
+        // adding a warning removed one.  Sized for all four plus headroom.
+        char text[1024] = {};
         if (g_app.applyInFlight) {
             // Outranks every steady-state description below for the same reason
             // the tray icon greys out: none of them is true while the write is
