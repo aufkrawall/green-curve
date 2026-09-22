@@ -48,7 +48,9 @@ enum GcServiceLocationVerdict {
     GC_SVC_LOCATION_NOT_ABSOLUTE,
     GC_SVC_LOCATION_DRIVE_ROOT,
     GC_SVC_LOCATION_SHARE_ROOT,
-    GC_SVC_LOCATION_KNOWN_FOLDER
+    GC_SVC_LOCATION_KNOWN_FOLDER,
+    GC_SVC_LOCATION_UNREADABLE,
+    GC_SVC_LOCATION_REPARSE
 };
 
 static inline const char* gc_service_location_verdict_name(int verdict) {
@@ -59,6 +61,8 @@ static inline const char* gc_service_location_verdict_name(int verdict) {
         case GC_SVC_LOCATION_DRIVE_ROOT: return "drive-root";
         case GC_SVC_LOCATION_SHARE_ROOT: return "share-root";
         case GC_SVC_LOCATION_KNOWN_FOLDER: return "well-known-folder";
+        case GC_SVC_LOCATION_UNREADABLE: return "unreadable";
+        case GC_SVC_LOCATION_REPARSE: return "reparse";
         default: return "unknown";
     }
 }
@@ -121,6 +125,92 @@ static inline int gc_service_location_shape_verdict(const wchar_t* path) {
 // and only then pays for the known-folder lookups.
 static inline bool gc_service_location_shape_is_acceptable(const wchar_t* path) {
     return gc_service_location_shape_verdict(path) == GC_SVC_LOCATION_OK;
+}
+
+// A different administrator account approving UAC has different per-user
+// SHGetKnownFolderPath answers. Recognize the standard shell folders below
+// *any* profile in the machine's Profiles directory after the Win32 gatherer
+// has resolved the candidate's real path (including junctions and 8.3 names).
+// This is deliberately exact: a child such as Downloads\Green Curve is still
+// a dedicated installation directory.
+static inline bool gc_service_location_ascii_component_eq(const wchar_t* begin,
+                                                            size_t length,
+                                                            const wchar_t* word) {
+    size_t i = 0;
+    for (; i < length && word[i]; i++) {
+        wchar_t a = begin[i];
+        wchar_t b = word[i];
+        if (a >= L'A' && a <= L'Z') a += L'a' - L'A';
+        if (b >= L'A' && b <= L'Z') b += L'a' - L'A';
+        if (a != b) return false;
+    }
+    return i == length && word[i] == 0;
+}
+
+static inline bool gc_service_location_is_profile_shell_folder(
+    const wchar_t* candidate, const wchar_t* profilesRoot) {
+    if (!candidate || !profilesRoot) return false;
+    size_t rootLength = 0;
+    while (profilesRoot[rootLength]) rootLength++;
+    while (rootLength > 0 && (profilesRoot[rootLength - 1] == L'\\' ||
+                              profilesRoot[rootLength - 1] == L'/')) rootLength--;
+    if (rootLength == 0) return false;
+    for (size_t i = 0; i < rootLength; i++) {
+        wchar_t a = candidate[i];
+        wchar_t b = profilesRoot[i];
+        if (!a) return false;
+        if (a >= L'A' && a <= L'Z') a += L'a' - L'A';
+        if (b >= L'A' && b <= L'Z') b += L'a' - L'A';
+        if (a != b) return false;
+    }
+    if (candidate[rootLength] != L'\\' && candidate[rootLength] != L'/') return false;
+    const wchar_t* profile = candidate + rootLength + 1;
+    const wchar_t* end = profile;
+    while (*end && *end != L'\\' && *end != L'/') end++;
+    if (end == profile) return false;
+    if (!*end) return true;  // another account's profile root
+
+    const wchar_t* child = end + 1;
+    end = child;
+    while (*end && *end != L'\\' && *end != L'/') end++;
+    size_t childLength = (size_t)(end - child);
+    const wchar_t* const shells[] = {
+        L"Desktop", L"Downloads", L"Documents", L"Music", L"Pictures",
+        L"Videos", L"Favorites", L"Links", L"Searches", L"Contacts",
+        L"Saved Games", L"AppData",
+    };
+    bool oneDriveRoot = childLength >= 8 &&
+        gc_service_location_ascii_component_eq(child, 8, L"OneDrive") &&
+        (childLength == 8 ||
+         (childLength > 10 && child[8] == L' ' && child[9] == L'-' && child[10] == L' '));
+    if (!*end) {
+        if (oneDriveRoot) return true;
+        for (const wchar_t* shell : shells) {
+            if (gc_service_location_ascii_component_eq(child, childLength, shell)) return true;
+        }
+        return false;
+    }
+    if (oneDriveRoot) {
+        const wchar_t* syncedChild = end + 1;
+        end = syncedChild;
+        while (*end && *end != L'\\' && *end != L'/') end++;
+        if (*end) return false;
+        size_t syncedLength = (size_t)(end - syncedChild);
+        for (const wchar_t* shell : shells) {
+            if (gc_service_location_ascii_component_eq(syncedChild, syncedLength, shell))
+                return true;
+        }
+        return false;
+    }
+    if (!gc_service_location_ascii_component_eq(child, childLength, L"AppData")) return false;
+    const wchar_t* appDataChild = end + 1;
+    end = appDataChild;
+    while (*end && *end != L'\\' && *end != L'/') end++;
+    if (*end) return false;
+    size_t appDataLength = (size_t)(end - appDataChild);
+    return gc_service_location_ascii_component_eq(appDataChild, appDataLength, L"Local") ||
+           gc_service_location_ascii_component_eq(appDataChild, appDataLength, L"Roaming") ||
+           gc_service_location_ascii_component_eq(appDataChild, appDataLength, L"LocalLow");
 }
 
 #endif // GREEN_CURVE_SERVICE_INSTALL_LOCATION_POLICY_H

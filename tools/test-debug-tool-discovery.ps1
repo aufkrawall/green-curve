@@ -74,12 +74,17 @@ $vsRoot = $null
 $rootA = $null
 $rootB = $null
 $testLocalAppData = $null
+$ProjectRoot = $null
 
 try {
   $script:Warnings = [System.Collections.Generic.List[string]]::new()
   function Add-WarningMessage { param([string]$Message) $script:Warnings.Add($Message) | Out-Null }
 
-  $ProjectRoot = [IO.Path]::GetTempPath()
+  # Own one unpredictable directory for the entire run. Fixed names directly
+  # under the shared temp root can already belong to somebody else; the old
+  # finally block would recursively delete them after a successful test.
+  $candidate = Join-Path ([IO.Path]::GetTempPath()) ("gc-tool-discovery-" + [Guid]::NewGuid().ToString("N"))
+  $ProjectRoot = (New-Item -ItemType Directory -Path $candidate -ErrorAction Stop).FullName
   $rootA = Join-Path $ProjectRoot "llm-template-test-pf"
   $rootB = Join-Path $ProjectRoot "llm-template-test-pfx86"
   [Environment]::SetEnvironmentVariable("ProgramFiles", $rootA, "Process")
@@ -213,16 +218,16 @@ try {
   [Environment]::SetEnvironmentVariable("ProgramFiles(x86)", $originalProgramFilesX86, "Process")
   [Environment]::SetEnvironmentVariable("PROCESSOR_ARCHITECTURE", $originalProcessorArchitecture, "Process")
   [Environment]::SetEnvironmentVariable("LOCALAPPDATA", $originalLocalAppData, "Process")
-  if ($overrideFile -and (Test-Path -LiteralPath $overrideFile)) {
-    Remove-Item -LiteralPath $overrideFile -Force -ErrorAction SilentlyContinue
-  }
-  if ($vsRoot -and (Test-Path -LiteralPath $vsRoot)) {
-    Remove-Item -LiteralPath $vsRoot -Recurse -Force -ErrorAction SilentlyContinue
-  }
-  foreach ($testRoot in @($rootA, $rootB, $testLocalAppData)) {
-    if ($testRoot -and (Test-Path -LiteralPath $testRoot)) {
-      Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
+  if ($ProjectRoot -and (Test-Path -LiteralPath $ProjectRoot)) {
+    $resolvedRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
+    $resolvedTemp = (Resolve-Path -LiteralPath ([IO.Path]::GetTempPath())).Path
+    $rootItem = Get-Item -LiteralPath $resolvedRoot
+    if ([IO.Path]::GetDirectoryName($resolvedRoot) -ne $resolvedTemp.TrimEnd('\', '/') -or
+        $rootItem.Name -notlike 'gc-tool-discovery-*' -or
+        ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+      throw "Refusing to remove an unexpected test directory: $resolvedRoot"
     }
+    Remove-Item -LiteralPath $resolvedRoot -Recurse -Force
   }
 }
 

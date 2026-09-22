@@ -328,6 +328,35 @@ void gather_component_facts(const WCHAR* full, size_t prefixEnd, bool isRoot,
     CloseHandle(handle);
 }
 
+struct GcDirectoryIdentity {
+    BY_HANDLE_FILE_INFORMATION file = {};
+    WCHAR finalPath[GC_PATH_CHAIN_MAX_PATH_CHARS] = {};
+};
+
+bool read_directory_identity(const WCHAR* path, GcDirectoryIdentity* out) {
+    if (!path || !out) return false;
+    *out = GcDirectoryIdentity{};
+    // Follow an ancestor junction or short name to the object that a later
+    // SetNamedSecurityInfoW call would actually change. The leaf reparse case
+    // is refused separately before this helper is called.
+    HANDLE handle = CreateFileW(path, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return false;
+    bool ok = GetFileInformationByHandle(handle, &out->file) != FALSE;
+    DWORD length = GetFinalPathNameByHandleW(handle, out->finalPath,
+        GC_PATH_CHAIN_MAX_PATH_CHARS, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+    if (length == 0 || length >= GC_PATH_CHAIN_MAX_PATH_CHARS) out->finalPath[0] = 0;
+    CloseHandle(handle);
+    return ok;
+}
+
+bool same_directory_identity(const GcDirectoryIdentity& a, const GcDirectoryIdentity& b) {
+    return a.file.dwVolumeSerialNumber == b.file.dwVolumeSerialNumber &&
+           a.file.nFileIndexHigh == b.file.nFileIndexHigh &&
+           a.file.nFileIndexLow == b.file.nFileIndexLow;
+}
+
 }  // namespace
 
 int gc_service_install_location_verdict(const wchar_t* directory) {
@@ -347,9 +376,24 @@ int gc_service_install_location_verdict(const wchar_t* directory) {
     int shape = gc_service_location_shape_verdict(full);
     if (shape != GC_SVC_LOCATION_OK) return shape;
 
-    // Every folder Windows itself owns a meaning for.  Matched EXACTLY - a
-    // subfolder of any of these is exactly what a correct install looks like
-    // (C:\Program Files\Green Curve), so only the folder itself is refused.
+    GcDirectoryIdentity candidate = {};
+    bool candidateExists = false;
+    DWORD attributes = GetFileAttributesW(full);
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        DWORD error = GetLastError();
+        if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+            return GC_SVC_LOCATION_UNREADABLE;
+    } else {
+        if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) return GC_SVC_LOCATION_UNREADABLE;
+        if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) return GC_SVC_LOCATION_REPARSE;
+        if (!read_directory_identity(full, &candidate) || !candidate.finalPath[0])
+            return GC_SVC_LOCATION_UNREADABLE;
+        candidateExists = true;
+    }
+
+    // Every folder Windows itself owns a meaning for. Match the directory
+    // object, not just its spelling: a subfolder such as C:\Program Files\Green
+    // Curve is a correct install, while C:\PROGRA~1 is still Program Files.
     //
     // FOLDERID_Downloads and the other per-user media folders are here for the
     // same reason as Desktop: "extract the archive anywhere" plus 7-Zip's
@@ -371,8 +415,8 @@ int gc_service_install_location_verdict(const wchar_t* directory) {
     for (const KNOWNFOLDERID* folder : kRefusedFolders) {
         PWSTR resolved = nullptr;
         if (FAILED(SHGetKnownFolderPath(*folder, 0, nullptr, &resolved)) || !resolved) {
-            // A folder this Windows edition does not define cannot be the one
-            // we are standing in; skipping it is not a hole.
+            // Shell32 can return an allocated pointer even on failure.
+            if (resolved) CoTaskMemFree(resolved);
             continue;
         }
         // Exact match only, so trailing separators must not decide it.
@@ -388,8 +432,35 @@ int gc_service_install_location_verdict(const wchar_t* directory) {
         }
         bool equal = resolvedLength > 0 && resolvedLength == fullLength &&
             _wcsnicmp(full, resolved, resolvedLength) == 0;
+        if (!equal && candidateExists) {
+            GcDirectoryIdentity known = {};
+            equal = read_directory_identity(resolved, &known) &&
+                same_directory_identity(candidate, known);
+        }
         CoTaskMemFree(resolved);
         if (equal) return GC_SVC_LOCATION_KNOWN_FOLDER;
+    }
+
+    // SHGetKnownFolderPath with a null token names the approving account's
+    // folders. Under UAC that may be a DIFFERENT user from the one whose
+    // directory is being installed into. The common per-profile shell folders
+    // therefore need a machine-wide check against FOLDERID_UserProfiles.
+    if (candidateExists) {
+        PWSTR profilesPath = nullptr;
+        HRESULT result = SHGetKnownFolderPath(FOLDERID_UserProfiles, 0, nullptr,
+                                               &profilesPath);
+        if (FAILED(result) || !profilesPath) {
+            if (profilesPath) CoTaskMemFree(profilesPath);
+            return GC_SVC_LOCATION_UNREADABLE;
+        }
+        GcDirectoryIdentity profiles = {};
+        bool readable = read_directory_identity(profilesPath, &profiles) &&
+            profiles.finalPath[0];
+        CoTaskMemFree(profilesPath);
+        if (!readable) return GC_SVC_LOCATION_UNREADABLE;
+        if (gc_service_location_is_profile_shell_folder(
+                candidate.finalPath, profiles.finalPath))
+            return GC_SVC_LOCATION_KNOWN_FOLDER;
     }
 
     return GC_SVC_LOCATION_OK;

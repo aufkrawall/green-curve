@@ -13,6 +13,7 @@
 // and SE_FILE_OBJECT/SetNamedSecurityInfoW for its synthesized DACLs.
 #include <winioctl.h>
 #include <aclapi.h>
+#include <shlobj.h>
 #endif
 #include "lock_checkbox_policy.h"
 #include "main_layout_policy.h"
@@ -731,6 +732,8 @@ static bool gc_remove_protected_temp_dir(const wchar_t* path) {
 // number.  Report the true code on stderr and map any failure to a single
 // non-aliasing status so a Linux run is never misread.
 static int run_all_tests(int argc, char** argv);
+static int run_all_tests_middle(char** argv);
+static int run_all_tests_final();
 
 int run_clock_transition_tests();
 // F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
@@ -4785,6 +4788,7 @@ static int run_all_tests(int argc, char** argv) {
         wchar_t base[MAX_PATH] = {};
         if (!gc_make_unique_temp_dir(L"gc_path_chain", base, MAX_PATH)) return 5500;
         wchar_t mid[MAX_PATH] = {}, leaf[MAX_PATH] = {}, junction[MAX_PATH] = {};
+        wchar_t rootAlias[MAX_PATH] = {};
         wchar_t missing[MAX_PATH] = {}, deepMissing[MAX_PATH] = {}, plainFile[MAX_PATH] = {};
         wchar_t underFile[MAX_PATH] = {};
         // EVERY failure below has to undo the junction and the protected temp
@@ -4794,6 +4798,7 @@ static int run_all_tests(int argc, char** argv) {
         auto cleanupAnd = [&](int code) -> int {
             DeleteFileW(plainFile);
             RemoveDirectoryW(junction);
+            RemoveDirectoryW(rootAlias);
             RemoveDirectoryW(leaf);
             char ignoredErr[160] = {};
             restore_inherited_dacl(mid, ignoredErr, sizeof(ignoredErr));
@@ -4921,6 +4926,34 @@ static int run_all_tests(int argc, char** argv) {
         }
         if (!sawReparse) return cleanupAnd(5530);
 
+        // A junction in an ANCESTOR is different from a junction as the leaf:
+        // the final Program Files directory itself is ordinary, but the path
+        // spells it through our alias. The location gate must still refuse to
+        // rewrite its DACL.
+        PWSTR programFiles = nullptr;
+        if (FAILED(SHGetKnownFolderPath(FOLDERID_ProgramFiles, 0, nullptr,
+                                        &programFiles)) || !programFiles)
+            return cleanupAnd(5680);
+        const wchar_t* programFilesLeaf = wcsrchr(programFiles, L'\\');
+        wchar_t programFilesParent[MAX_PATH] = {};
+        if (!programFilesLeaf ||
+            (size_t)(programFilesLeaf - programFiles + 1) >= MAX_PATH) {
+            CoTaskMemFree(programFiles);
+            return cleanupAnd(5680);
+        }
+        memcpy(programFilesParent, programFiles,
+               (size_t)(programFilesLeaf - programFiles + 1) * sizeof(wchar_t));
+        wchar_t aliasProgramFiles[MAX_PATH] = {};
+        bool pathsOk = SUCCEEDED(StringCchPrintfW(rootAlias, MAX_PATH, L"%ls\\rootAlias", base)) &&
+            SUCCEEDED(StringCchPrintfW(aliasProgramFiles, MAX_PATH,
+                                       L"%ls\\%ls", rootAlias, programFilesLeaf + 1));
+        CoTaskMemFree(programFiles);
+        if (!pathsOk)
+            return cleanupAnd(5680);
+        if (!makeJunction(rootAlias, programFilesParent)) return cleanupAnd(5681);
+        if (gc_service_install_location_verdict(aliasProgramFiles) !=
+            GC_SVC_LOCATION_KNOWN_FOLDER) return cleanupAnd(5682);
+
         // UNC short-circuit: classified remote without a single probe (a dead
         // server must never stall the caller) and never offered a remediation.
         classify_path_protection(L"\\\\gc-nonexistent-server\\share\\Green Curve", &report);
@@ -4933,6 +4966,7 @@ static int run_all_tests(int argc, char** argv) {
         // especially unpleasant because it keeps resolving to its target.
         if (!DeleteFileW(plainFile)) return cleanupAnd(5535);
         if (!RemoveDirectoryW(junction)) return cleanupAnd(5536);
+        if (!RemoveDirectoryW(rootAlias)) return cleanupAnd(5683);
         if (!RemoveDirectoryW(leaf)) return cleanupAnd(5537);
         char restoreErr[160] = {};
         if (!restore_inherited_dacl(mid, restoreErr, sizeof(restoreErr))) return cleanupAnd(5538);
@@ -4999,6 +5033,30 @@ static int run_all_tests(int argc, char** argv) {
             if (report.verdict.first_unsafe_component != 1) return 5557;
             if (!gc_path_protection_remedy_needs_create(&report.facts, &report.verdict))
                 return 5558;
+        }
+    }
+
+    // The location gate must compare the directory Windows will actually
+    // modify, not just the spelling. On volumes with 8.3 names, GetFullPathName
+    // preserves PROGRA~1/DOWNLO~1 while the shell returns their long names.
+    {
+        const KNOWNFOLDERID* folders[] = {&FOLDERID_ProgramFiles, &FOLDERID_Downloads};
+        for (const KNOWNFOLDERID* folder : folders) {
+            PWSTR known = nullptr;
+            if (FAILED(SHGetKnownFolderPath(*folder, 0, nullptr, &known)) || !known) return 5671;
+            if (gc_service_install_location_verdict(known) != GC_SVC_LOCATION_KNOWN_FOLDER) {
+                CoTaskMemFree(known);
+                return 5672;
+            }
+            wchar_t shortPath[GC_PATH_CHAIN_MAX_PATH_CHARS] = {};
+            DWORD length = GetShortPathNameW(known, shortPath, GC_PATH_CHAIN_MAX_PATH_CHARS);
+            if (length > 0 && length < GC_PATH_CHAIN_MAX_PATH_CHARS &&
+                _wcsicmp(shortPath, known) != 0 &&
+                gc_service_install_location_verdict(shortPath) != GC_SVC_LOCATION_KNOWN_FOLDER) {
+                CoTaskMemFree(known);
+                return 5673;
+            }
+            CoTaskMemFree(known);
         }
     }
 #endif // _WIN32
@@ -5368,10 +5426,37 @@ static int run_all_tests(int argc, char** argv) {
         if (gc_service_location_shape_verdict(L"\\") != GC_SVC_LOCATION_EMPTY) return 5632;
         if (gc_service_location_shape_verdict(L"\\\\") != GC_SVC_LOCATION_EMPTY) return 5660;
         // Every verdict must name itself; an unnamed one would log as a number.
-        for (int v = GC_SVC_LOCATION_OK; v <= GC_SVC_LOCATION_KNOWN_FOLDER; v++) {
+        for (int v = GC_SVC_LOCATION_OK; v <= GC_SVC_LOCATION_REPARSE; v++) {
             const char* name = gc_service_location_verdict_name(v);
             if (!name || !name[0] || strcmp(name, "unknown") == 0) return 5633;
         }
+
+        // An installer elevated with a different account sees that account's
+        // Downloads from SHGetKnownFolderPath. The machine-wide profile-root
+        // check must still refuse the requesting user's shell folders.
+        const wchar_t* profiles = L"\\\\?\\C:\\Users";
+        if (!gc_service_location_is_profile_shell_folder(
+                L"\\\\?\\C:\\Users\\x", profiles)) return 5674;
+        if (!gc_service_location_is_profile_shell_folder(
+                L"\\\\?\\C:\\Users\\x\\Downloads", profiles)) return 5675;
+        if (!gc_service_location_is_profile_shell_folder(
+                L"\\\\?\\C:\\Users\\x\\AppData\\Local", profiles)) return 5676;
+        if (gc_service_location_is_profile_shell_folder(
+                L"\\\\?\\C:\\Users\\x\\Downloads\\Green Curve", profiles)) return 5677;
+        if (gc_service_location_is_profile_shell_folder(
+                L"\\\\?\\C:\\Users\\x\\Green Curve", profiles)) return 5678;
+        if (gc_service_location_is_profile_shell_folder(
+                L"\\\\?\\C:\\Users2\\x\\Downloads", profiles)) return 5679;
+        // OneDrive commonly redirects another account's Desktop/Documents
+        // into a profile-local sync tree, including an organization suffix.
+        if (!gc_service_location_is_profile_shell_folder(
+                L"\\\\?\\C:\\Users\\x\\OneDrive - Org", profiles)) return 5684;
+        if (!gc_service_location_is_profile_shell_folder(
+                L"\\\\?\\C:\\Users\\x\\OneDrive - Org\\Desktop", profiles)) return 5685;
+        if (gc_service_location_is_profile_shell_folder(
+                L"\\\\?\\C:\\Users\\x\\OneDrive - Org\\Desktop\\Green Curve", profiles)) return 5686;
+        if (gc_service_location_is_profile_shell_folder(
+                L"\\\\?\\C:\\Users\\x\\OneDrive Archive", profiles)) return 5687;
     }
 
     // ---------------------------------------------------------------------
@@ -7963,6 +8048,14 @@ static int run_all_tests(int argc, char** argv) {
         if (apply_clock_ceiling_release_on_abandon(false, false)) return 5214;
         if (apply_clock_ceiling_release_on_abandon(false, true)) return 5215;
     }
+
+    // Keep suites in separate stack frames. AddressSanitizer gives every local
+    // its own redzone at -O0, and one monolithic run_all_tests frame exceeded
+    // the Windows test executable's stack reserve before any assertion ran.
+    return run_all_tests_middle(argv);
+}
+
+static int run_all_tests_middle(char** argv) {
 
     // =====================================================================
     // The 2026-09-16 clock-transition audit, CT-01 .. CT-08.
@@ -12039,6 +12132,11 @@ static int run_all_tests(int argc, char** argv) {
         if (linux_terminal_should_relaunch(true, false, false, nullptr, ":0") == false)
             return 1822;
     }
+
+    return run_all_tests_final();
+}
+
+static int run_all_tests_final() {
 
     // F-LNX-DEBUGLOG: the log lands next to config.ini for clients, and in the
     // daemon's state directory because systemd mounts /usr read-only for the

@@ -971,6 +971,10 @@ def check_path_protection_gates(ctx, require_text, service_ipc_cpp):
         "the Win32 half of the install-location gate exists")
     require_text(path_chain_cpp, "FOLDERID_Downloads",
         "the location gate refuses the Downloads folder by name")
+    require_text(path_chain_cpp, "same_directory_identity(candidate, known)",
+        "the location gate recognizes short names and ancestor aliases by directory identity")
+    require_text(path_chain_cpp, "gc_service_location_is_profile_shell_folder(",
+        "the location gate recognizes another UAC account's profile shell folders")
     require_text(service_ipc_cpp, "gc_service_install_location_verdict(installDir)",
         "service install refuses to harden a folder that is not its own")
     require_text(os.path.join(ctx.SOURCE_DIR, "installer_apply.cpp"),

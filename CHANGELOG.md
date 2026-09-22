@@ -46,9 +46,7 @@ Program Files.
 - **A failed service installation now tells you what went wrong and what to do
   about it.** It used to report only "exit code 1", with the real reason written
   to a log file you had no way to find.
-- **Green Curve now needs a folder of its own.** Installing it directly into
-  Downloads, the desktop or a drive root is refused, because securing the
-  background service would take your own write access to that folder away.
+- **Green Curve now needs a folder of its own.** Downloads, the desktop and drive roots are refused even when reached through another path.
 - **The service is no longer reported as failed when it is merely slow to
   start.** Antivirus scanning the new files on first run was enough to trigger
   that.
