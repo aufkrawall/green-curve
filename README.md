@@ -104,6 +104,31 @@ python build.py --check-cet
 
 `--check-cet` verifies that the `-fcf-protection=full` hardening flag is actually effective, by confirming every address-taken function in a purpose-built unstripped probe begins with `endbr64`.
 
+## Antivirus false positives
+
+**Expect some antivirus products to flag Green Curve, and expect to add an exception for it.** The usual one is Microsoft Defender reporting `Trojan:Win32/Wacatac.B!ml`. It is a false positive.
+
+### Why it happens
+
+The `!ml` suffix means no virus signature matched and nothing malicious was seen running. A machine-learning model looked at the file's structure and guessed. `Wacatac` is Microsoft's catch-all name for those guesses. Typically one engine out of the roughly 70 on VirusTotal flags the file, and the rest report it clean.
+
+The model doesn't know what the program does. It scores surface traits, and a small open-source hardware tool has most of the traits it counts against a file:
+
+- **It is unsigned and always new.** Every release is a file the model has never seen, from a publisher with no reputation. Code-signing certificates cost money every year, and even a signed file starts with no reputation.
+- **It is a small native C++ program.** It is built with an open-source compiler, not Visual Studio, and it isn't a large installer or .NET app. Much malware looks the same way from the outside.
+- **It needs features that malware also uses.** It runs a background service as SYSTEM, loads the NVIDIA driver's libraries, writes hardware settings and starts the GUI in your session. It can also download its own updates, check which window is in front for auto profiles, and register global hotkeys.
+
+Every one of those is visible in the source code in this repository. Features and structure that weren't needed have been removed from the Windows files to reduce these guesses. The model still guesses, and every new release has new file hashes, so a detection can reappear after any update. A false-positive report to an antivirus vendor only clears that one exact file.
+
+### What to do
+
+1. **Check that your download is genuine.** Compare it with the matching `.sha256` file, or run `gh attestation verify <file> --repo aufkrawall/green-curve` (see [Updates](#how-a-downloaded-update-is-verified)).
+2. **Add an exclusion for the install folder**, by default `C:\Program Files\Green Curve`. In Windows Security, open *Virus & threat protection → Manage settings → Exclusions → Add or remove exclusions → Add an exclusion → Folder*. Other antivirus products have an equivalent setting. Green Curve limits write access to this folder to administrators, so excluding it doesn't let unprivileged programs place files there unscanned.
+3. **If a file was already quarantined**, restore it from *Protection history*, then run the setup again to repair the installation.
+4. **Optionally report the false positive to your antivirus vendor.** Microsoft accepts reports at [microsoft.com/wdsi/filesubmission](https://www.microsoft.com/en-us/wdsi/filesubmission). This helps other users of that exact release.
+
+If you don't trust a prebuilt binary, build it yourself with `python build.py` (see [Build](#build)).
+
 ## Updates
 
 Green Curve can check GitHub for a new release, download it, and install it for you. **It is off until you turn it on**, in *Updates* on the main window.
