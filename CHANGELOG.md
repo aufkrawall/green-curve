@@ -32,6 +32,7 @@ previous one. Crash recovery and Apply reliability also improve.
 ### Highlights
 
 - **Setup can now install to any folder of its own, on any drive.** It asks you to confirm when other accounts could change that folder.
+- **Native Windows builds now produce separate MSVC and release-toolchain artifacts.** They are kept in distinct folders so you can compare or package each compiler path independently.
 - **A failed install or upgrade now restores the previous installation.** Program files, the background service and the uninstall entry come back.
 - **Upgrading now also removes the previous version's leftover uninstaller file.**
 - **A failed service install, repair or removal now explains why.**

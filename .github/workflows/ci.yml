@@ -62,6 +62,27 @@ jobs:
         run: python build.py --fuzz --fuzz-runs 5000
       - name: Build verified Windows release packages
         run: python build.py --target windows
+      - name: Confirm both native Windows compiler variants
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw VERSION).Trim()
+          foreach ($arch in @("x64", "arm64")) {
+            foreach ($variant in @("msvc", "release")) {
+              $base = "dist/windows-$arch/$variant"
+              $names = @(
+                "greencurve-$version-windows-$arch.7z",
+                "greencurve-$version-windows-$arch.7z.sha256",
+                "greencurve-$version-windows-$arch-setup.exe",
+                "greencurve-$version-windows-$arch-setup.exe.sha256"
+              )
+              foreach ($name in $names) {
+                $path = Join-Path $base $name
+                if (-not (Test-Path -LiteralPath $path) -or (Get-Item -LiteralPath $path).Length -le 0) {
+                  throw "missing or empty Windows variant artifact: $path"
+                }
+              }
+            }
+          }
 
   linux:
     runs-on: ubuntu-latest

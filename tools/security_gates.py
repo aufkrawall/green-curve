@@ -144,7 +144,7 @@ def add_arguments(parser):
     parser.add_argument(
         "--check-cet", nargs="?", const="", default=None, metavar="EXE",
         help="Verify -fcf-protection=full is effective on our own code in a "
-             "built PE (default: dist/windows-x64/greencurve/greencurve.exe)")
+             "built PE, or compile a purpose-built probe when no PE is supplied")
 
 
 def fuzz_corpus_dir(ctx):
@@ -435,8 +435,12 @@ def run_cli_console_fixture(ctx, built_exe=None):
     if sys.platform != "win32":
         return
     if built_exe is None:
-        built_exe = os.path.join(ctx.SCRIPT_DIR, "dist", "windows-x64",
-                                 "greencurve", "greencurve.exe")
+        candidates = [
+            os.path.join(ctx.SCRIPT_DIR, "dist", "windows-x64", "msvc", "greencurve", "greencurve.exe"),
+            os.path.join(ctx.SCRIPT_DIR, "dist", "windows-x64", "release", "greencurve", "greencurve.exe"),
+            os.path.join(ctx.SCRIPT_DIR, "dist", "windows-x64", "greencurve", "greencurve.exe"),
+        ]
+        built_exe = next((path for path in candidates if os.path.exists(path)), candidates[0])
     if not os.path.exists(built_exe):
         print("Skipping CLI console fixture: no built greencurve.exe")
         return

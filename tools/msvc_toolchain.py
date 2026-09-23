@@ -21,8 +21,9 @@ llm-wiki/build.md "MSVC-ABI toolchain assessment"):
 The toolchain is a SYSTEM dependency: clang-cl/lld-link come from a standalone
 LLVM install or the VS-bundled Clang component, and the headers/libraries come
 from Visual Studio + the Windows SDK, none of which are redistributable.  That
-breaks the hermetic self-downloading model on purpose and by explicit decision:
-auto mode falls back LOUDLY to llvm-mingw when the MSVC-ABI stack is absent.
+breaks the hermetic self-downloading model on purpose and by explicit decision.
+The build entry point requests this toolchain for the native Windows MSVC
+variant; its direct auto mode still falls back loudly when the stack is absent.
 """
 
 import os
@@ -146,32 +147,35 @@ def _capture(cmd, cwd=None):
                           errors="replace", cwd=cwd)
 
 
-def _probe_toolchain(tools, work_dir):
+def _probe_toolchain(tools, work_dir, arch="all"):
     """Fail-closed verification: compile AND link a probe with the real flag
-    set for both architectures.  This proves MSVC header/library autodetection
-    works for both clang-cl and lld-link before a real build depends on it."""
+    set for each requested architecture."""
     problems = []
     os.makedirs(work_dir, exist_ok=True)
     source = os.path.join(work_dir, "msvc_probe.cpp")
     with open(source, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(_PROBE_SOURCE)
-    for arch, target_flags, extra_link in (
-            ("x64", [], ["-cetcompat"]),
-            ("arm64", ["--target=aarch64-pc-windows-msvc",
-                       "-mbranch-protection=standard"], [])):
-        obj = os.path.join(work_dir, f"msvc_probe_{arch}.obj")
-        exe = os.path.join(work_dir, f"msvc_probe_{arch}.exe")
+    probes = {
+        "x64": ([], ["-cetcompat"]),
+        "arm64": (["--target=aarch64-pc-windows-msvc",
+                   "-mbranch-protection=standard"], []),
+    }
+    arches = ("x64", "arm64") if arch == "all" else (arch,)
+    for probe_arch in arches:
+        target_flags, extra_link = probes[probe_arch]
+        obj = os.path.join(work_dir, f"msvc_probe_{probe_arch}.obj")
+        exe = os.path.join(work_dir, f"msvc_probe_{probe_arch}.exe")
         compiled = _capture([tools["clang_cl"], "-nologo", "-c", "-GS", "-guard:cf",
                              "-sdl", "-W4", "-WX", "-EHs-c-", "-GR-", "-Zi",
                              *target_flags, source, f"-Fo{obj}"])
         if compiled.returncode != 0 or not os.path.isfile(obj):
-            problems.append(f"{arch} probe compile failed:\n{compiled.stdout}{compiled.stderr}")
+            problems.append(f"{probe_arch} probe compile failed:\n{compiled.stdout}{compiled.stderr}")
             continue
         linked = _capture([tools["lld_link"], "-nologo", "-guard:cf",
                            "-opt:ref,icf", "-subsystem:console",
                            *extra_link, f"-out:{exe}", obj])
         if linked.returncode != 0 or not os.path.isfile(exe):
-            problems.append(f"{arch} probe link failed:\n{linked.stdout}{linked.stderr}")
+            problems.append(f"{probe_arch} probe link failed:\n{linked.stdout}{linked.stderr}")
     return problems
 
 
@@ -206,14 +210,16 @@ def _msvc_and_sdk_versions():
     return msvc_version, sdk_version
 
 
-def resolve_requested(mode, target, script_dir):
+def resolve_requested(mode, target, script_dir, arch="all"):
     """Return an MsvcToolchain, or None when the llvm-mingw path applies.
 
     mode: --toolchain choice (auto / clang-cl / llvm-mingw).
     target: resolved --target (windows / linux / all).
+    arch: requested Windows architecture (x64 / arm64 / all).
 
-    auto on a Windows host prefers clang-cl and falls back LOUDLY; forcing
-    clang-cl fails the build instead of silently degrading; Linux hosts and
+    auto on a Windows host prefers clang-cl and falls back LOUDLY for direct
+    callers; build.py resolves the native Windows MSVC variant explicitly;
+    forcing clang-cl fails the build instead of silently degrading; Linux hosts and
     Linux-only targets always return None (clang-cl cannot target Linux).
     """
     if mode == "llvm-mingw":
@@ -230,8 +236,8 @@ def resolve_requested(mode, target, script_dir):
         if not (tools["clang_cl"] and tools["lld_link"]):
             continue
         details = _discover_details({**tools, "label": label})
-        problems = _probe_toolchain(tools, os.path.join(script_dir,
-                                                        "build-tmp", "msvc-probe"))
+        problems = _probe_toolchain(
+            tools, os.path.join(script_dir, "build-tmp", "msvc-probe"), arch)
         if problems:
             print(f"MSVC-ABI candidate failed verification: {label}")
             for problem in problems:
@@ -239,8 +245,8 @@ def resolve_requested(mode, target, script_dir):
             continue
         return details
     if mode == "clang-cl":
-        print("ERROR: --toolchain clang-cl requested but no verified "
-              "clang-cl + lld-link installation was found.  Install standalone "
+        print("ERROR: a verified clang-cl + lld-link installation is required "
+              "for the native Windows MSVC variant. Install standalone "
               f"LLVM under {' or '.join(_LLVM_STANDALONE_DIRS)} (with lld-link), "
               "or Visual Studio with the C++ Clang component, or file the tools "
               "into PATH.")

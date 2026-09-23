@@ -27,9 +27,10 @@ same plain PE/text bytes the .7z ships, which every scanner can inspect.  The
 cost is roughly 0.9 MB of download.  It also makes Windows- and Linux-hosted
 setup files identical in layout (Linux could never compress).
 
-The installer still ACCEPTS the XPRESS_HUFF method (source/installer_payload.cpp,
-cabinet.dll's Compression API) so the file format is unchanged; the build just
-never produces it.  `_verify_setup_file` refuses anything but STORE.
+The setup stub accepts only STORE. The footer validator rejects old compressed
+methods before allocation; a setup file reads only its own appended payload,
+so previously published setup files retain their own older reader.
+`_verify_setup_file` also refuses anything but STORE.
 """
 
 import os
@@ -517,7 +518,7 @@ def _verify_setup_file(path, container):
         raise RuntimeError("setup file payload failed verification")
 
 
-def build_setup_executable(ctx, arch, payload_dir, expected_names):
+def build_setup_executable(ctx, arch, payload_dir, expected_names, output_dir=None):
     """Build greencurve-<version>-windows-<arch>-setup.exe.
 
     `payload_dir` is the staged release folder; `expected_names` is the exact
@@ -547,7 +548,9 @@ def build_setup_executable(ctx, arch, payload_dir, expected_names):
             entries.append(("greencurve-uninstall.exe", handle.read(), ARCHIVE_FLAG_UNINSTALLER))
 
         container = build_archive(entries)
-        output = os.path.join(ctx.SCRIPT_DIR,
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        output = os.path.join(output_dir or ctx.SCRIPT_DIR,
                               f"greencurve-{ctx.APP_VERSION}-windows-{arch}-setup.exe")
         if os.path.exists(output):
             os.remove(output)
@@ -562,7 +565,7 @@ def build_setup_executable(ctx, arch, payload_dir, expected_names):
         ctx.cleanup_work_subdir(work)
 
     size = os.path.getsize(output)
-    print(f"Built {os.path.basename(output)} ({size:,} bytes / {size / 1024:.1f} KB)")
+    print(f"Built {os.path.relpath(output, ctx.SCRIPT_DIR)} ({size:,} bytes / {size / 1024:.1f} KB)")
     with open(output + ".sha256", "w") as handle:
         handle.write(f"{ctx._sha256_file(output)}  {os.path.basename(output)}\n")
     return output
@@ -697,9 +700,12 @@ def check_all(ctx, require_text, forbid_text):
                  "the install-location allowlist knows the pre-rename uninstaller")
 
     payload = source("installer_payload.cpp")
-    # Decompression is an OS service, not a vendored library, and not a
-    # hand-written entropy decoder whose bugs would corrupt installed binaries.
-    require_text(payload, "cabinet.dll", "the installer decompresses with the Windows Compression API")
+    # Every emitted setup is stored; retaining a dormant decompressor makes
+    # the stub look like an unpacker even though it never exercises that path.
+    forbid_text(payload, "CreateDecompressor", "the setup stub has no unused decompressor")
+    require_text(source("installer_archive_policy.h"),
+                 "if (footer->method != GC_PAYLOAD_METHOD_STORE)",
+                 "the footer rejects unsupported payload methods before allocation")
     require_text(payload, "gc_archive_validate",
                  "the payload is fully validated before anything is extracted")
     require_text(payload, "archiveCrc32",

@@ -11992,10 +11992,10 @@ static int run_all_tests_middle([[maybe_unused]] char** argv) {
         const uint64_t fileSize = stubSize + blobSize + sizeof(GcPayloadFooter);
         GcPayloadFooter footer = {};
         memcpy(footer.magic, GC_PAYLOAD_FOOTER_MAGIC, GC_PAYLOAD_FOOTER_MAGIC_LEN);
-        footer.method = GC_PAYLOAD_METHOD_XPRESS_HUFF;
+        footer.method = GC_PAYLOAD_METHOD_STORE;
         footer.archiveOffset = stubSize;
         footer.compressedSize = blobSize;
-        footer.uncompressedSize = 4096;
+        footer.uncompressedSize = blobSize;
         footer.archiveCrc32 = 0x12345678u;
         footer.footerCrc32 = gc_payload_footer_expected_crc(&footer);
         if (gc_payload_validate_footer(&footer, fileSize, 1u << 20) != GC_PAYLOAD_OK) return 1768;
@@ -12010,21 +12010,25 @@ static int run_all_tests_middle([[maybe_unused]] char** argv) {
         damaged.method = 99;
         damaged.footerCrc32 = gc_payload_footer_expected_crc(&damaged);
         if (gc_payload_validate_footer(&damaged, fileSize, 1u << 20) != GC_PAYLOAD_ERR_METHOD) return 1771;
+        damaged.method = 1;  // old compressed mode is no longer emitted or read
+        damaged.footerCrc32 = gc_payload_footer_expected_crc(&damaged);
+        if (gc_payload_validate_footer(&damaged, fileSize, 1u << 20) != GC_PAYLOAD_ERR_METHOD) return 1776;
         damaged = footer;
-        damaged.compressedSize = blobSize - 1;  // leaves an unexplained gap
+        damaged.archiveOffset = stubSize + 1;  // leaves an unexplained gap
         damaged.footerCrc32 = gc_payload_footer_expected_crc(&damaged);
         if (gc_payload_validate_footer(&damaged, fileSize, 1u << 20) != GC_PAYLOAD_ERR_RANGE) return 1772;
         damaged = footer;
         damaged.archiveOffset = 0;  // no stub at all
         damaged.compressedSize = fileSize - sizeof(GcPayloadFooter);
+        damaged.uncompressedSize = damaged.compressedSize;
         damaged.footerCrc32 = gc_payload_footer_expected_crc(&damaged);
         if (gc_payload_validate_footer(&damaged, fileSize, 1u << 20) != GC_PAYLOAD_ERR_RANGE) return 1773;
         damaged = footer;
         damaged.footerCrc32 = gc_payload_footer_expected_crc(&damaged);
         // A corrupt size must be refused BEFORE it is used as an allocation.
-        if (gc_payload_validate_footer(&footer, fileSize, 1024) != GC_PAYLOAD_ERR_SIZE) return 1774;
+        if (gc_payload_validate_footer(&footer, fileSize, 1023) != GC_PAYLOAD_ERR_SIZE) return 1774;
         damaged = footer;
-        damaged.method = GC_PAYLOAD_METHOD_STORE;  // stored payloads cannot shrink
+        damaged.uncompressedSize = blobSize + 1;  // stored payloads cannot shrink
         damaged.footerCrc32 = gc_payload_footer_expected_crc(&damaged);
         if (gc_payload_validate_footer(&damaged, fileSize, 1u << 20) != GC_PAYLOAD_ERR_SIZE) return 1775;
     }

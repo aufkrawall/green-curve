@@ -159,6 +159,13 @@ def _contains_pe_text(data, value):
             value.encode("utf-16le") in data)
 
 
+def verify_setup_has_no_decompressor(data, label):
+    """The shipped setup stub reads only its stored, self-contained payload."""
+    for name in ("cabinet.dll", "CreateDecompressor", "CloseDecompressor"):
+        if _contains_pe_text(data, name):
+            raise RuntimeError(f"{label}: setup contains unused decompressor surface ({name})")
+
+
 def verify_windows_manifest_identity(data, label, original_filename):
     name = (original_filename or "").lower()
     if name == "greencurve.exe":
@@ -208,6 +215,7 @@ def verify_windows_binary_imports(data, label, original_filename,
             forbidden_functions=common_forbidden_functions,
             reject_exports=reject_exports)
     elif "setup" in name:
+        verify_setup_has_no_decompressor(data, label)
         verify_pe_import_surface(
             data, label,
             required_dlls={"user32.dll", "advapi32.dll", "shell32.dll", "wtsapi32.dll", "userenv.dll"},
@@ -536,6 +544,16 @@ def run_self_tests():
         failures.append("PE import surface accepted a forbidden function")
     except RuntimeError:
         pass
+    for needle in (b"cabinet.dll", "CreateDecompressor".encode("utf-16le")):
+        try:
+            verify_setup_has_no_decompressor(import_fixture + needle, "setup fixture")
+            failures.append("setup decompressor surface was accepted")
+        except RuntimeError:
+            pass
+    try:
+        verify_setup_has_no_decompressor(import_fixture, "setup fixture")
+    except RuntimeError as error:
+        failures.append(f"setup without decompressor was rejected: {error}")
 
     # Reference values cross-checked against pefile.generate_checksum() and
     # against lld-link /release output when the helper was written.  The odd

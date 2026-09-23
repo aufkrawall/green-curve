@@ -66,14 +66,15 @@ def release_archive_extension(os_name):
     raise ValueError(f"unsupported release OS: {os_name}")
 
 
-def release_archive_paths(script_dir, version, os_name, arch):
+def release_archive_paths(script_dir, version, os_name, arch, output_dir=None):
     """Every archive (and checksum) name this target could have produced.
 
     Includes formats this build no longer emits.  A stale, broken
     greencurve-<version>-linux-<arch>.7z left beside the new tarball from an
     earlier build is a distribution hazard, not merely clutter, so packaging
     deletes the whole set before writing the current one."""
-    return [os.path.join(script_dir, f"greencurve-{version}-{os_name}-{arch}{ext}{suffix}")
+    base = output_dir or script_dir
+    return [os.path.join(base, f"greencurve-{version}-{os_name}-{arch}{ext}{suffix}")
             for ext in (".7z", ".tar.xz") for suffix in ("", ".sha256")]
 
 
@@ -349,9 +350,10 @@ def check_all(ctx, require_text):
                  "the finished tarball is rejected if any shipped text carries CRLF")
     require_text(self_path, "def release_member_mode",
                  "every Linux release member has a declared Unix mode")
-    require_text(build_script, "release_archive_paths(SCRIPT_DIR, APP_VERSION, os_name, arch)",
-                 "a superseded archive from an earlier container format is deleted, not left to ship")
+    require_text(build_script, "release_archive_paths(\n            SCRIPT_DIR, APP_VERSION, os_name, arch, output_dir=package_dir)",
+                  "a superseded archive from an earlier container format is deleted, not left to ship")
     gitattributes = os.path.join(ctx.SCRIPT_DIR, ".gitattributes")
+
     require_text(gitattributes, "*.sh text eol=lf",
                  "shell scripts are pinned to LF regardless of host autocrlf")
     # This used to name build.py, where the only match was the guard's own
@@ -366,14 +368,18 @@ def check_all(ctx, require_text):
     # A missing archiver must not discard an otherwise complete, verified build.
     require_text(self_path, "def report_packaging_skipped",
                  "a missing 7-Zip is reported as a skip, not a build failure")
-    require_text(build_script, "                report_packaging_skipped(skipped)",
-                 "packaging degrades gracefully when find_seven_zip() returns None")
+    require_text(build_script, "                report_packaging_skipped([entry[:3] for entry in skipped])",
+                  "packaging degrades gracefully when find_seven_zip() returns None")
     require_text(build_script, "            seven = find_seven_zip()",
-                 "main() resolves the archiver before staging anything")
+                  "main() resolves the archiver before staging anything")
+
     require_text(build_script, 'if seven or entry[0] != "windows"',
                  "a missing 7-Zip withholds only the Windows archives, never the Linux tarball")
-    require_text(build_script, "package_release_archive(os_name, arch, binaries, seven=seven)",
-                 "the archiver is resolved once up front and passed in, not per-archive")
+    require_text(build_script, "package_release_archive(\n                    os_name, arch, binaries, seven=seven, variant=variant)",
+                  "the archiver is resolved once up front and passed in, not per-archive")
+
+
+
 
 
 def release_archive_root(os_name):

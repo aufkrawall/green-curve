@@ -3,29 +3,13 @@
 //
 // Reading the payload appended to the setup executable.
 //
-// Decompression uses the Windows Compression API in cabinet.dll
-// (CreateDecompressor / Decompress, XPRESS_HUFF).  That is an operating-system
-// service, not a third-party library, so the "no third-party code" rule holds
-// while the installer still avoids carrying a hand-written entropy decoder
-// whose bugs would surface as corrupted binaries on a user's machine.
-// build.py compresses through the same API and verifies the round trip before
-// a setup file is written.
+// Release setup files append the archive verbatim. The footer rejects other
+// methods before any allocation or file read.
 //
 // Everything about the container format, and every bounds check, lives in the
 // pure installer_archive_policy.h so it is exercised by `build.py --test`.
 
 #include "installer_common.h"
-
-// Compression API declarations.  llvm-mingw ships no compressapi.h, and the
-// import library for cabinet.dll is not guaranteed present, so the two entry
-// points are resolved dynamically.  Failure to resolve them is a clean,
-// explained error rather than a load-time crash.
-typedef PVOID GC_COMPRESSOR_HANDLE;
-typedef BOOL (WINAPI* GcCreateDecompressorFn)(DWORD, PVOID, GC_COMPRESSOR_HANDLE*);
-typedef BOOL (WINAPI* GcDecompressFn)(GC_COMPRESSOR_HANDLE, const void*, SIZE_T, PVOID, SIZE_T, SIZE_T*);
-typedef BOOL (WINAPI* GcCloseDecompressorFn)(GC_COMPRESSOR_HANDLE);
-
-#define GC_COMPRESS_ALGORITHM_XPRESS_HUFF 4
 
 // A payload larger than this is a corrupt footer, not a release: the whole
 // Windows manifest is a few megabytes.  The ceiling is checked before any
@@ -59,41 +43,6 @@ static bool gc_read_file_range(HANDLE file, uint64_t offset, void* buffer, uint6
         remaining -= read;
     }
     return true;
-}
-
-static bool gc_decompress_xpress_huff(const uint8_t* compressed, uint64_t compressedSize,
-                                      uint8_t* out, uint64_t outSize) {
-    HMODULE cabinet = LoadLibraryExW(L"cabinet.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-    if (!cabinet) {
-        gc_log_fail("payload: cabinet.dll could not be loaded (error %lu)", GetLastError());
-        return false;
-    }
-    auto createDecompressor = (GcCreateDecompressorFn)GetProcAddress(cabinet, "CreateDecompressor");
-    auto decompress = (GcDecompressFn)GetProcAddress(cabinet, "Decompress");
-    auto closeDecompressor = (GcCloseDecompressorFn)GetProcAddress(cabinet, "CloseDecompressor");
-    if (!createDecompressor || !decompress || !closeDecompressor) {
-        gc_log_fail("payload: cabinet.dll does not export the Compression API");
-        FreeLibrary(cabinet);
-        return false;
-    }
-    GC_COMPRESSOR_HANDLE handle = nullptr;
-    if (!createDecompressor(GC_COMPRESS_ALGORITHM_XPRESS_HUFF, nullptr, &handle)) {
-        gc_log_fail("payload: CreateDecompressor failed (error %lu)", GetLastError());
-        FreeLibrary(cabinet);
-        return false;
-    }
-    SIZE_T produced = 0;
-    bool ok = decompress(handle, compressed, (SIZE_T)compressedSize, out, (SIZE_T)outSize, &produced) != FALSE;
-    if (!ok) {
-        gc_log_fail("payload: Decompress failed (error %lu)", GetLastError());
-    } else if ((uint64_t)produced != outSize) {
-        gc_log_fail("payload: decompressed %llu byte(s), expected %llu",
-                    (unsigned long long)produced, (unsigned long long)outSize);
-        ok = false;
-    }
-    closeDecompressor(handle);
-    FreeLibrary(cabinet);
-    return ok;
 }
 
 bool gc_payload_load(const WCHAR* exePath, GcPayload* payload) {
@@ -142,21 +91,8 @@ bool gc_payload_load(const WCHAR* exePath, GcPayload* payload) {
         return false;
     }
 
-    bool ok = false;
-    if (footer.method == GC_PAYLOAD_METHOD_STORE) {
-        ok = gc_read_file_range(file.get(), footer.archiveOffset, container, footer.uncompressedSize);
-    } else {
-        uint8_t* compressed = (uint8_t*)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)footer.compressedSize);
-        if (!compressed) {
-            gc_log_fail("payload: could not reserve %llu byte(s) for the compressed payload",
-                        (unsigned long long)footer.compressedSize);
-        } else {
-            ok = gc_read_file_range(file.get(), footer.archiveOffset, compressed, footer.compressedSize) &&
-                 gc_decompress_xpress_huff(compressed, footer.compressedSize,
-                                           container, footer.uncompressedSize);
-            HeapFree(GetProcessHeap(), 0, compressed);
-        }
-    }
+    bool ok = gc_read_file_range(file.get(), footer.archiveOffset, container,
+                                 footer.uncompressedSize);
     if (ok && gc_crc32(container, (size_t)footer.uncompressedSize, 0) != footer.archiveCrc32) {
         gc_log_fail("payload: the extracted payload failed its checksum; this setup file is damaged");
         ok = false;

@@ -13,7 +13,7 @@
 // Layout of a setup executable, low address to high:
 //
 //   [ PE image .............................................. ]
-//   [ compressed archive blob ............................... ]
+//   [ stored archive blob ................................... ]
 //   [ GcPayloadFooter (fixed size, last bytes of the file) ... ]
 //
 // The footer is read from the end because the PE image size is not knowable
@@ -21,7 +21,7 @@
 // without disturbing the linker's own layout or the signature-free hardening
 // gates build.py runs on the stub.
 //
-// The decompressed archive is a "GCAR" container: a directory of fixed-size
+// The archive is a "GCAR" container: a directory of fixed-size
 // records followed by the file data.  Names are flat (no directories, no path
 // separators) because the payload is exactly the release manifest.
 
@@ -62,24 +62,18 @@ static inline uint32_t gc_crc32(const void* data, size_t size, uint32_t seed) {
 #define GC_PAYLOAD_FOOTER_MAGIC_LEN 8
 
 enum GcPayloadMethod {
-    // Stored verbatim.  Used when the build host cannot reach the Windows
-    // compression API, and for payloads compression makes larger.
+    // Stored verbatim by every release build.
     GC_PAYLOAD_METHOD_STORE = 0,
-    // Windows Compression API, COMPRESS_ALGORITHM_XPRESS_HUFF (cabinet.dll).
-    // Fast to decompress and shrinks the two binaries by roughly half, which is
-    // the "mild but fast" point on the curve; LZMS would win a few more percent
-    // for a multi-second decompress on the user's machine.
-    GC_PAYLOAD_METHOD_XPRESS_HUFF = 1,
 };
 
 #pragma pack(push, 1)
 struct GcPayloadFooter {
     char     magic[GC_PAYLOAD_FOOTER_MAGIC_LEN];
     uint32_t method;            // GcPayloadMethod
-    uint64_t archiveOffset;     // byte offset of the compressed blob in the file
-    uint64_t compressedSize;    // bytes of the compressed blob
-    uint64_t uncompressedSize;  // bytes of the decompressed GCAR container
-    uint32_t archiveCrc32;      // CRC-32 of the decompressed container
+    uint64_t archiveOffset;     // byte offset of the stored blob in the file
+    uint64_t compressedSize;    // stored blob size; equals uncompressedSize
+    uint64_t uncompressedSize;  // bytes of the GCAR container
+    uint32_t archiveCrc32;      // CRC-32 of the container
     uint32_t footerCrc32;       // CRC-32 of every field above
 };
 #pragma pack(pop)
@@ -119,8 +113,7 @@ static inline GcPayloadStatus gc_payload_validate_footer(const struct GcPayloadF
         if (footer->magic[i] != GC_PAYLOAD_FOOTER_MAGIC[i]) return GC_PAYLOAD_ERR_NO_FOOTER;
     }
     if (footer->footerCrc32 != gc_payload_footer_expected_crc(footer)) return GC_PAYLOAD_ERR_FOOTER_CRC;
-    if (footer->method != GC_PAYLOAD_METHOD_STORE &&
-        footer->method != GC_PAYLOAD_METHOD_XPRESS_HUFF) {
+    if (footer->method != GC_PAYLOAD_METHOD_STORE) {
         return GC_PAYLOAD_ERR_METHOD;
     }
     if (footer->compressedSize == 0 || footer->uncompressedSize == 0) return GC_PAYLOAD_ERR_SIZE;

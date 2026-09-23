@@ -4,7 +4,8 @@
 """Build script for Green Curve.
 
 Downloads Zig if needed, generates the app icon, compiles resources,
-then builds ``greencurve.exe``. Linux cross-builds use a separate source set.
+then builds the requested Windows/Linux targets. Native Windows runs emit
+separate MSVC-ABI and pinned-release Windows variants.
 """
 
 import argparse
@@ -112,6 +113,7 @@ import crash_artifacts  # noqa: E402  (same one-way dependency as security_gates
 import driver_inspect  # noqa: E402  (same one-way dependency as security_gates)
 import static_analysis  # noqa: E402  (same one-way dependency as security_gates)
 import build_scheduler  # noqa: E402  (same one-way dependency as security_gates)
+import build_variants
 import build_state  # noqa: E402  (same one-way dependency as security_gates)
 import toolchain  # noqa: E402  (same one-way dependency as security_gates)
 import zig_cache  # noqa: E402  (same one-way dependency as security_gates)
@@ -172,9 +174,9 @@ WINDOWS_MSVC_SOURCE_FILES = [
     if os.path.basename(path) not in _WINDOWS_MINGW_ONLY_GLUE
 ]
 
-# Windows toolchain selection (see tools/msvc_toolchain.py).  main() sets these
-# after argument parsing; every caller that bypasses main() (--test,
-# --check-cet, the tidy/LSP paths) keeps the llvm-mingw behavior.
+# Windows toolchain selection (see tools/msvc_toolchain.py). main() sets these
+# before each native-Windows variant batch; callers that bypass main()
+# (--test, --check-cet, the tidy/LSP paths) keep the llvm-mingw behavior.
 MSVC_TOOLCHAIN = None
 ACTIVE_WINDOWS_TOOLCHAIN = "llvm-mingw"
 
@@ -428,25 +430,18 @@ def linux_flags_for_arch(arch):
 
 # Every (os, arch) build lands in its OWN isolated folder under dist/, using the
 # canonical binary names (no -arch suffixes, no shared root or temp paths):
-#   dist/<os>-<arch>/greencurve/{greencurve.exe, greencurve-service.exe | greencurve}
+#   dist/<os>-<arch>[/<variant>]/greencurve/{greencurve.exe, greencurve-service.exe | greencurve}
 # That payload folder is also exactly what the 7z archives (a greencurve/ root).
 DIST_DIR = os.path.join(SCRIPT_DIR, "dist")
 
 
-def target_payload_dir(os_name, arch):
-    """The isolated `greencurve/` payload folder for one (os, arch) target."""
-    return os.path.join(DIST_DIR, f"{os_name}-{arch}", "greencurve")
+def target_payload_dir(os_name, arch, variant=None):
+    return build_variants.payload_dir(SCRIPT_DIR, os_name, arch, variant)
 
 
-def windows_symbol_output_path(output_path, arch):
-    """Keep private matching symbols outside release payloads/archives."""
-    name = os.path.basename(output_path)
-    if name.endswith(".new"):
-        name = name[:-4]
-    stem = os.path.splitext(name)[0]
-    # clang-cl emits PDBs for both arches; only the Zig arm64 path yields DWARF.
-    extension = ".debug" if (arch == "arm64" and ACTIVE_WINDOWS_TOOLCHAIN != "clang-cl") else ".pdb"
-    return os.path.join(DIST_DIR, "symbols", f"windows-{arch}", stem + extension)
+def windows_symbol_output_path(output_path, arch, variant=None):
+    return build_variants.symbol_path(
+        SCRIPT_DIR, output_path, arch, ACTIVE_WINDOWS_TOOLCHAIN, variant)
 
 
 def configure_build_number(bump_for_real_build):
@@ -853,9 +848,9 @@ def _compile_windows_x64_objects(object_dir, pdb_path, service=False, jobs=1, li
     return objects
 
 
-def _prepare_windows_symbol_paths(output_path, arch, link_pdb_name):
+def _prepare_windows_symbol_paths(output_path, arch, link_pdb_name, variant=None):
     """Fresh private-symbol destination plus the linker's scratch PDB path."""
-    pdb_path = windows_symbol_output_path(output_path, arch)
+    pdb_path = windows_symbol_output_path(output_path, arch, variant)
     stem, ext = os.path.splitext(link_pdb_name)
     scoped_link_pdb_name = f"{stem}-{arch}{ext}" if ACTIVE_WINDOWS_TOOLCHAIN == "clang-cl" else link_pdb_name
     link_pdb_path = os.path.join(SCRIPT_DIR, scoped_link_pdb_name)
@@ -1181,7 +1176,7 @@ def _verify_windows_artifact(temp_output, pdb_path, arch, service):
     verify_windows_private_symbols(pdb_path, arch)
 
 
-def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_TEMP_OUTPUT_EXE, backup_path=WINDOWS_BACKUP_EXE, finalize=True, arch="x64", jobs=1, limiter=None):
+def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_TEMP_OUTPUT_EXE, backup_path=WINDOWS_BACKUP_EXE, finalize=True, arch="x64", jobs=1, limiter=None, variant=None):
     """Compile the Windows GUI executable using Zig's bundled clang."""
     _require_windows_sources()
 
@@ -1189,7 +1184,7 @@ def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_T
         os.remove(temp_output)
 
     pdb_path, link_pdb_path = _prepare_windows_symbol_paths(
-        output_path, arch, "greencurve.pdb")
+        output_path, arch, "greencurve.pdb", variant)
     cmd = get_windows_gui_compile_command(temp_output, arch, pdb_path)
 
     _print_windows_build_header(output_path, arch, jobs, cmd)
@@ -1236,7 +1231,7 @@ def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_T
                              compile_started_at, finalize)
 
 
-def compile_windows_service_binary(output_path=WINDOWS_SERVICE_OUTPUT_EXE, temp_output=WINDOWS_SERVICE_TEMP_OUTPUT_EXE, backup_path=WINDOWS_SERVICE_BACKUP_EXE, finalize=True, arch="x64", jobs=1, limiter=None):
+def compile_windows_service_binary(output_path=WINDOWS_SERVICE_OUTPUT_EXE, temp_output=WINDOWS_SERVICE_TEMP_OUTPUT_EXE, backup_path=WINDOWS_SERVICE_BACKUP_EXE, finalize=True, arch="x64", jobs=1, limiter=None, variant=None):
     """Compile the dedicated Windows service executable."""
     _require_windows_sources()
 
@@ -1244,7 +1239,7 @@ def compile_windows_service_binary(output_path=WINDOWS_SERVICE_OUTPUT_EXE, temp_
         os.remove(temp_output)
 
     pdb_path, link_pdb_path = _prepare_windows_symbol_paths(
-        output_path, arch, "greencurve-service.pdb")
+        output_path, arch, "greencurve-service.pdb", variant)
     cmd = get_windows_service_compile_command(temp_output, arch, pdb_path)
 
     _print_windows_build_header(output_path, arch, jobs, cmd)
@@ -1376,7 +1371,7 @@ def detect_binary_arch(path):
     return None
 
 
-def package_release_archive(os_name, arch, binaries, seven=None):
+def package_release_archive(os_name, arch, binaries, seven=None, variant=None):
     """Stage and archive an exact per-platform allowlist, then read it back.
 
     main() resolves `seven` up front so a missing 7-Zip becomes one skip for the
@@ -1384,7 +1379,9 @@ def package_release_archive(os_name, arch, binaries, seven=None):
     the Windows container needs it -- the Linux tarball is written by the
     standard library, which is also the only way a Windows host can record the
     Unix modes the daemon and its setup script need."""
-    payload = target_payload_dir(os_name, arch)
+    payload = target_payload_dir(os_name, arch, variant)
+    package_dir = build_variants.package_dir(SCRIPT_DIR, os_name, arch, variant)
+    os.makedirs(package_dir, exist_ok=True)
     purge_runtime_artifacts(payload)
     binary_names = {os.path.basename(path) for path in binaries}
     expected_names = expected_release_names(os_name)
@@ -1412,10 +1409,11 @@ def package_release_archive(os_name, arch, binaries, seven=None):
         if not seven:
             raise RuntimeError("7-Zip is required to produce verified Windows release archives")
     archive = os.path.join(
-        SCRIPT_DIR, f"greencurve-{APP_VERSION}-{os_name}-{arch}{release_archive_extension(os_name)}")
+        package_dir, f"greencurve-{APP_VERSION}-{os_name}-{arch}{release_archive_extension(os_name)}")
     # Also clears a same-target archive left by an earlier container format, so
     # a stale and now-known-broken .7z cannot ship beside the current tarball.
-    for stale in release_archive_paths(SCRIPT_DIR, APP_VERSION, os_name, arch):
+    for stale in release_archive_paths(
+            SCRIPT_DIR, APP_VERSION, os_name, arch, output_dir=package_dir):
         if os.path.exists(stale):
             os.remove(stale)
     work = prepare_work_subdir(f"package-{os_name}-{arch}")
@@ -1448,11 +1446,12 @@ def package_release_archive(os_name, arch, binaries, seven=None):
             # uninstaller, so an archive and an installed copy are the same
             # bits.  Staged here rather than from dist/ because this folder has
             # already passed the allowlist and architecture checks above.
-            installer_build.build_setup_executable(_gate_ctx(), arch, staging, expected_names)
+            installer_build.build_setup_executable(
+                _gate_ctx(), arch, staging, expected_names, output_dir=package_dir)
     finally:
         cleanup_work_subdir(work)
     size = os.path.getsize(archive)
-    print(f"Archived {os.path.basename(archive)} ({size:,} bytes / {size / 1024:.1f} KB)")
+    print(f"Archived {os.path.relpath(archive, SCRIPT_DIR)} ({size:,} bytes / {size / 1024:.1f} KB)")
     with open(archive + ".sha256", "w") as f:
         f.write(f"{_sha256_file(archive)}  {os.path.basename(archive)}\n")
 
@@ -1474,7 +1473,8 @@ def resolve_targets(requested):
     return ["windows", "linux"] if requested == "all" else [requested]
 
 
-def run_check_builds(target, arch="all", generate_lsp=True, jobs=1, limiter=None):
+def run_check_builds(target, arch="all", generate_lsp=True, jobs=1, limiter=None,
+                     windows_variants=None, msvc_toolchain=None):
     """Build selected targets into a temporary directory without replacing release outputs."""
     if generate_lsp:
         generate_lsp_files()
@@ -1485,23 +1485,18 @@ def run_check_builds(target, arch="all", generate_lsp=True, jobs=1, limiter=None
     tmp = prepare_work_subdir("check")
     try:
         specs = []
+        if target in ("windows", "all"):
+            selected = windows_variants or (
+                (build_variants.MSVC_VARIANT,)
+                if ACTIVE_WINDOWS_TOOLCHAIN == "clang-cl"
+                else (build_variants.RELEASE_VARIANT,))
+            build_variants.run_windows_check_builds(
+                _gate_ctx(), selected, msvc_toolchain or MSVC_TOOLCHAIN,
+                requested_arches(arch), jobs, limiter, tmp)
         for selected_arch in requested_arches(arch):
-            arch_tmp = os.path.join(tmp, selected_arch)
-            os.makedirs(arch_tmp, exist_ok=True)
-            if target in ("windows", "all"):
-                gui = os.path.join(arch_tmp, "greencurve.exe")
-                svc = os.path.join(arch_tmp, "greencurve-service.exe")
-                specs.append(lambda gui=gui, selected_arch=selected_arch:
-                             compile_windows_binary(
-                                 output_path=gui, temp_output=gui + ".new",
-                                 backup_path="", arch=selected_arch, finalize=False,
-                                 jobs=jobs, limiter=limiter))
-                specs.append(lambda svc=svc, selected_arch=selected_arch:
-                             compile_windows_service_binary(
-                                 output_path=svc, temp_output=svc + ".new",
-                                 backup_path="", arch=selected_arch, finalize=False,
-                                 jobs=jobs, limiter=limiter))
             if target in ("linux", "all"):
+                arch_tmp = os.path.join(tmp, selected_arch)
+                os.makedirs(arch_tmp, exist_ok=True)
                 suffix = LINUX_ARM64_TRIPLE if selected_arch == "arm64" else LINUX_TARGET
                 out = os.path.join(arch_tmp, f"greencurve-{suffix}")
                 specs.append(lambda out=out, selected_arch=selected_arch:
@@ -1509,7 +1504,8 @@ def run_check_builds(target, arch="all", generate_lsp=True, jobs=1, limiter=None
                                  output_path=out, temp_output=out + ".new",
                                  backup_path="", arch=selected_arch, finalize=False,
                                  jobs=jobs, limiter=limiter))
-        build_scheduler.run_parallel(specs, jobs)
+        if specs:
+            build_scheduler.run_parallel(specs, jobs)
     finally:
         cleanup_work_subdir(tmp)
 
@@ -1634,6 +1630,7 @@ def generate_lsp_files():
 def run_build_script_regression_tests():
     """Delegate; security_gates owns the build-script self-tests and gates."""
     msvc_toolchain.run_self_tests()
+    build_variants.run_self_tests()
     return security_gates.run_build_script_regression_tests(_gate_ctx())
 
 
@@ -2594,8 +2591,12 @@ def run_source_regression_checks():
         "Windows x64 links emit matching private PDB symbols")
     require_text(build_script, '"--only-keep-debug"',
         "Windows ARM64 builds retain a matching private DWARF debug artifact")
-    require_text(build_script, 'DIST_DIR, "symbols"',
-        "private PDBs stay outside release payload directories")
+    require_text(build_script, "build_variants.symbol_path",
+                  "private PDBs stay outside release payload directories")
+    require_text(build_script, "build_variants.run_windows_builds",
+                  "Windows variants are built through the isolated variant runner")
+    require_text(build_script, "build_variants.windows_variants",
+                  "the native Windows default plans both compiler variants")
     require_text(build_script, "verify_windows_private_symbols",
         "Windows builds structurally verify every private symbol artifact")
     require_text(build_script, "-fPIE", "Linux PIE hardening retained")
@@ -4981,9 +4982,10 @@ def parse_args():
         "--toolchain",
         choices=("auto", "clang-cl", "llvm-mingw"),
         default="auto",
-        help="Windows toolchain: auto prefers the hardened MSVC-ABI clang-cl "
-             "build when a verified installation exists and falls back loudly "
-             "to llvm-mingw otherwise.  Linux targets always use Zig.",
+        help="Windows toolchain: on native Windows, auto builds both the MSVC-ABI "
+             "clang-cl artifacts and the pinned release-toolchain artifacts; "
+             "clang-cl and llvm-mingw force one variant.  Linux targets always "
+             "use Zig.",
     )
     parser.add_argument(
         "--check",
@@ -5061,9 +5063,8 @@ def run_clang_tidy(write_baseline=False):
         _gate_ctx(), write_baseline=write_baseline)
 
 
-def _needs_zig(target, arch):
-    """Zig builds every Linux target, and links Windows ARM64 — unless the
-    MSVC-ABI toolchain covers it.
+def _needs_zig(target, arch, include_windows_release=True):
+    """Zig builds every Linux target, and links the release Windows ARM64 path.
 
     The ARM64 half is easy to miss: a Windows-only build still shells out to
     Zig for aarch64 (llvm-mingw's aarch64 linker hits a misaligned ldr/str
@@ -5075,22 +5076,22 @@ def _needs_zig(target, arch):
     if target in ("linux", "all"):
         return True
     return (target == "windows" and "arm64" in requested_arches(arch)
-            and ACTIVE_WINDOWS_TOOLCHAIN != "clang-cl")
+            and include_windows_release)
 
 
-def _toolchain_components(target, arch="all"):
+def _toolchain_components(target, arch="all", include_windows_release=True):
     """The pinned components a given target needs, for verification/reporting."""
     components = []
     if target in ("windows", "all"):
         components.append(("llvm-mingw", LLVM_MINGW_VERSION, LLVM_MINGW_DIR))
         components.append(("7zip", toolchain.SEVEN_ZIP_VERSION,
                            toolchain.seven_zip_dir(SCRIPT_DIR)))
-    if _needs_zig(target, arch):
+    if _needs_zig(target, arch, include_windows_release):
         components.append(("zig", ZIG_VERSION, ZIG_DIR))
     return components
 
 
-def fetch_toolchain(target, arch="all"):
+def fetch_toolchain(target, arch="all", include_windows_release=True):
     """Vendor every pinned archive this host needs into compilers/.
 
     This is the deliberate "go and get the pinned bytes" step, so it is the one
@@ -5098,13 +5099,14 @@ def fetch_toolchain(target, arch="all"):
     local toolchains only.
     """
     print("=== Fetching pinned toolchain into compilers/ ===")
-    for tool, version, _root in _toolchain_components(target, arch):
+    for tool, version, _root in _toolchain_components(
+            target, arch, include_windows_release):
         print(f"{tool} {version}")
         toolchain.fetch_into_compilers(COMPILERS_DIR, tool, version)
     return 0
 
 
-def ensure_toolchain(target, arch="all"):
+def ensure_toolchain(target, arch="all", include_windows_release=True):
     """Download and verify the toolchain(s) needed for the given target."""
     if target in ("windows", "all"):
         download_llvm_mingw()
@@ -5113,7 +5115,7 @@ def ensure_toolchain(target, arch="all"):
         # with the compilers rather than installed from whatever version the
         # host distribution happens to ship that week.
         toolchain.ensure_seven_zip(SCRIPT_DIR, COMPILERS_DIR)
-    if _needs_zig(target, arch):
+    if _needs_zig(target, arch, include_windows_release):
         download_zig()
 
 
@@ -5178,32 +5180,34 @@ def main():
     _target_oses = resolve_targets(args.target or "all")
     args.target = "all" if len(_target_oses) > 1 else _target_oses[0]
     global MSVC_TOOLCHAIN, ACTIVE_WINDOWS_TOOLCHAIN
-    # Resolve BEFORE ensure_toolchain: with clang-cl covering both Windows
-    # architectures, a Windows-only run does not need Zig at all.  Modes that
-    # never build a Windows binary (--test/--fuzz/--tidy/--lsp only) keep the
-    # llvm-mingw analysis stack, so they skip discovery entirely by being
-    # resolved against a Linux-only target.
     builds_windows_binaries = not (args.lsp or args.test or args.fuzz
                                    or args.tidy or args.tidy_baseline)
     if args.sanitizer:
-        # The sanitizer stack is llvm-mingw-based (tools/security_gates.py);
-        # the MSVC-ABI flag set does not carry sanitizer instrumentation, so a
-        # sanitizer run must never silently drop it.
         print("Sanitizer build requested: using the llvm-mingw toolchain")
         builds_windows_binaries = False
-    MSVC_TOOLCHAIN = msvc_toolchain.resolve_requested(
-        args.toolchain,
-        args.target if builds_windows_binaries else "linux",
-        SCRIPT_DIR)
+    selection_toolchain = build_variants.selected_toolchain(args.toolchain, args.sanitizer)
+    resolve_windows = builds_windows_binaries and not args.fetch_toolchain
+    selected_windows_variants = build_variants.windows_variants(
+        selection_toolchain, args.target if builds_windows_binaries or args.sanitizer else "linux",
+        sys.platform, resolve_windows or args.sanitizer)
+    if build_variants.MSVC_VARIANT in selected_windows_variants:
+        MSVC_TOOLCHAIN = msvc_toolchain.resolve_requested(
+            "clang-cl", "windows", SCRIPT_DIR, args.arch)
+    else:
+        MSVC_TOOLCHAIN = msvc_toolchain.resolve_requested(
+            selection_toolchain, args.target if resolve_windows else "linux", SCRIPT_DIR, args.arch)
     ACTIVE_WINDOWS_TOOLCHAIN = "clang-cl" if MSVC_TOOLCHAIN else "llvm-mingw"
     if MSVC_TOOLCHAIN:
         MSVC_TOOLCHAIN.report()
+    msvc_variant_toolchain = MSVC_TOOLCHAIN
+    include_windows_release = not resolve_windows or build_variants.needs_release_windows_toolchain(
+        selection_toolchain, args.target, sys.platform)
     if args.fetch_toolchain:
-        sys.exit(fetch_toolchain(args.target, args.arch))
-    ensure_toolchain(args.target, args.arch)
+        sys.exit(fetch_toolchain(args.target, args.arch, include_windows_release))
+    ensure_toolchain(args.target, args.arch, include_windows_release)
     if args.verify_toolchain or args.toolchain_manifest:
         toolchain.report(COMPILERS_DIR,
-                         _toolchain_components(args.target, args.arch),
+                         _toolchain_components(args.target, args.arch, include_windows_release),
                          args.toolchain_manifest)
         if args.verify_toolchain:
             sys.exit(0)
@@ -5245,50 +5249,43 @@ def main():
                 print("=== Done ===")
                 return
         if args.check:
-            run_check_builds(args.target, args.arch, generate_lsp=not args.sanitizer,
-                             jobs=jobs, limiter=limiter)
+            run_check_builds(
+                args.target, args.arch, generate_lsp=not args.sanitizer,
+                jobs=jobs, limiter=limiter,
+                windows_variants=selected_windows_variants,
+                msvc_toolchain=msvc_variant_toolchain)
             print("=== Done ===")
             return
         generate_lsp_files()
         oses = _target_oses
         arches = ["x64", "arm64"] if args.arch == "all" else [args.arch]
-        built = []  # (os_name, arch, [binary_path, ...])
+        built = []
 
         def fresh_payload(os_name, arch):
-            # Wipe + recreate the target's isolated folder so each build is clean
-            # and no two targets ever share an output or temp path.
             payload = target_payload_dir(os_name, arch)
-            shutil.rmtree(os.path.dirname(payload), ignore_errors=True)
+            shutil.rmtree(payload, ignore_errors=True)
             os.makedirs(payload, exist_ok=True)
             return payload
 
         if "windows" in oses:
-            # Shared resources: generate once before any parallel worker touches them.
             generate_icon()
             compile_resources()
+            built.extend(build_variants.run_windows_builds(
+                _gate_ctx(), selected_windows_variants, msvc_variant_toolchain,
+                arches, jobs, limiter))
 
         specs = []
         for arch in arches:
-            if "windows" in oses:
-                payload = fresh_payload("windows", arch)
-                gui = os.path.join(payload, "greencurve.exe")
-                svc = os.path.join(payload, "greencurve-service.exe")
-                built.append(("windows", arch, [gui, svc]))
-                specs.append(lambda gui=gui, arch=arch: compile_windows_binary(
-                    output_path=gui, temp_output=gui + ".new", backup_path=gui + ".bak",
-                    arch=arch, jobs=jobs, limiter=limiter))
-                specs.append(lambda svc=svc, arch=arch: compile_windows_service_binary(
-                    output_path=svc, temp_output=svc + ".new", backup_path=svc + ".bak",
-                    arch=arch, jobs=jobs, limiter=limiter))
             if "linux" in oses:
                 payload = fresh_payload("linux", arch)
                 out = os.path.join(payload, "greencurve")
-                built.append(("linux", arch, [out]))
+                built.append(("linux", arch, [out], None))
                 specs.append(lambda out=out, arch=arch: compile_linux_binary(
                     output_path=out, temp_output=out + ".new", backup_path=out + ".bak",
                     arch=arch, jobs=jobs, limiter=limiter))
         if specs:
             build_scheduler.run_parallel(specs, jobs)
+
         if not args.no_package and built:
             # A missing 7-Zip is not a build failure: the binaries are already
             # built and verified, so packaging degrades to the --no-package end
@@ -5299,10 +5296,14 @@ def main():
             skipped = [entry for entry in built if entry not in packaged]
             if packaged:
                 print("--- Packaging release archives ---")
-            for os_name, arch, binaries in packaged:
-                package_release_archive(os_name, arch, binaries, seven=seven)
+            for os_name, arch, binaries, variant in packaged:
+                if build_variants.package_needs_variant(os_name, variant):
+                    build_variants.activate(
+                        _gate_ctx(), variant, msvc_variant_toolchain)
+                package_release_archive(
+                    os_name, arch, binaries, seven=seven, variant=variant)
             if skipped:
-                report_packaging_skipped(skipped)
+                report_packaging_skipped([entry[:3] for entry in skipped])
         print("=== Done ===")
     finally:
         COMMON_FLAGS[:] = _original_common_flags
