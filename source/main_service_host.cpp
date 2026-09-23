@@ -682,8 +682,22 @@ service_watchdog_loop:
     // must remain completely non-mutating even when that ordinary instance is
     // later stopped.  If this process successfully applied settings, retain
     // the established graceful-stop behavior of returning them to defaults.
-    if (hadOwnedIntentForShutdown) {
-        service_report_stop_progress("GPU reset of owned intent");
+    // A write this process made whose return was never proven (the marker is
+    // still committed although no intent is active) is returned too, so a
+    // clean stop never leaves the next start a crash handback to run
+    // (ownership_graceful_stop_reset in ownership_handback_policy.h).
+    const bool markerCommittedForShutdown =
+        InterlockedExchangeAdd(&g_serviceOwnershipMarkerCommitted, 0) != 0;
+    const OwnershipGracefulStopReset stopReset = ownership_graceful_stop_reset(
+        hadOwnedIntentForShutdown, markerCommittedForShutdown);
+    debug_log("service_main: graceful shutdown reset decision=%s ownedIntent=%d"
+              " markerCommitted=%d handbackPending=%ld\n",
+        ownership_graceful_stop_reset_name(stopReset),
+        hadOwnedIntentForShutdown ? 1 : 0, markerCommittedForShutdown ? 1 : 0,
+        (long)InterlockedExchangeAdd(&g_serviceHandbackPending, 0));
+    if (stopReset != OWNERSHIP_STOP_RESET_NONE) {
+        service_report_stop_progress(stopReset == OWNERSHIP_STOP_RESET_OWNED_INTENT
+            ? "GPU reset of owned intent" : "GPU reset of an unreturned write");
         char resetDetail[256] = {};
         bool resetWriteAttempted = false;
         bool resetOk = service_reset_all(resetDetail, sizeof(resetDetail),
@@ -694,7 +708,8 @@ service_watchdog_loop:
                 "graceful shutdown reset hardware write did not complete");
         }
     } else {
-        debug_log("service_main: graceful shutdown has no owned intent; skipping all GPU reset writes\n");
+        debug_log("service_main: graceful shutdown has no owned intent and no unreturned write;"
+                  " skipping all GPU reset writes\n");
     }
     if (!lifecycleWorkerFailed) {
         service_report_stop_progress("driver library teardown");

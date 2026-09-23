@@ -567,6 +567,18 @@ def check_all(ctx, require_text, forbid_text):
                                    "gc_update_shortcuts(context)",
                                    "gc_retire_previous_directory(context)",
                                    "the old directory is retired only after the new install is registered")
+    # The pinning handle holds the target without FILE_SHARE_DELETE, so the
+    # created-folder guard must be declared first (destroyed after it closes).
+    ctx.require_order_in_operation(apply_shard, install_anchor,
+                                   "} createdTarget = {targetDirectory,",
+                                   "GcScopedHandle targetHandle(",
+                                   "a failed fresh install removes the folders it created")
+    ctx.require_order_in_operation(apply_shard, install_anchor,
+                                   "transaction.cleanup();\n    createdTarget.armed = false;",
+                                   "gc_update_shortcuts(context)",
+                                   "a committed install keeps its folder")
+    forbid_text(source("installer_transaction_files.h"), "SHFileOperation",
+                "created-folder cleanup never deletes recursively")
     require_text(source("installer_transaction_files.h"), "MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH",
                  "payload files are replaced atomically")
     require_text(source("installer_transaction.cpp"), "restore_files()",

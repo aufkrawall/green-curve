@@ -532,6 +532,23 @@ bool gc_install_execute(GcInstallContext* context) {
     //    folder for a junction between the check and the write, so the
     //    elevated setup rewrote the DACL of whatever the junction named.
     gc_report(context, 10, "Preparing the installation folder...");
+    // Folders this run creates are removed again if the install then fails,
+    // so a refused or rolled-back fresh install leaves no empty,
+    // administrator-only folder behind.  Declared before targetHandle: the
+    // guard runs after the pinning handle (no FILE_SHARE_DELETE) is closed.
+    struct GcCreatedTargetGuard {
+        const WCHAR* path;
+        int created;
+        bool armed;
+        ~GcCreatedTargetGuard() {
+            if (!armed || created <= 0) return;
+            int removed = gc_remove_created_directory_chain(path, created);
+            gc_log_step("install failed: removed %d of %d folder(s) this run created at %ls",
+                        removed, created, path);
+        }
+    } createdTarget = {targetDirectory,
+                       gc_count_missing_directory_components(targetDirectory), true};
+    gc_log_step("install: target folder components to create=%d", createdTarget.created);
     if (!gc_create_directory_tree(targetDirectory)) {
         gc_set_error(context, "Could not create %ls. Choose a different folder or run setup as an administrator.",
                      targetDirectory);
@@ -642,7 +659,9 @@ bool gc_install_execute(GcInstallContext* context) {
             char original[sizeof(context->error)] = {};
             StringCchCopyA(original, GC_ARRAY_COUNT(original), context->error);
             bool restored = transaction.rollback(recordMayHaveChanged);
-            gc_set_error(context, "%s%s", original,
+            // Retained backups may still reference this folder's files.
+            if (!restored) createdTarget.armed = false;
+            gc_set_error(context, "%s%s%s", original, original[0] ? "" : "Setup failed.",
                 restored ? (transaction.serviceWasRunning
                     ? (context->settingsRestored
                         ? " Setup changes were rolled back and previous GPU settings reapplied."
@@ -651,6 +670,7 @@ bool gc_install_execute(GcInstallContext* context) {
                            " Recovery failed; keep the protected backup and see the failure log.");
         })) return false;
     transaction.cleanup();
+    createdTarget.armed = false;
 
     // 6. Shortcuts are best effort and cannot invalidate a running service.
     gc_report(context, 80, "Creating shortcuts...");

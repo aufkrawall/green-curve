@@ -1365,6 +1365,18 @@ static int run_ownership_handback_tests() {
     if (ownership_handback_retires_marker(OWNERSHIP_HANDBACK_SCOPE_FAN_ONLY, false)) return 5873;
     if (!ownership_handback_retires_marker(OWNERSHIP_HANDBACK_SCOPE_FAN_ONLY, true)) return 5874;
     if (ownership_handback_retires_marker(OWNERSHIP_HANDBACK_SCOPE_NONE, true)) return 5875;
+    // Graceful stop: an instance that never wrote stays non-mutating; owned
+    // intent is returned as before; and a write whose return was never proven
+    // (failed Apply disabled the intent, marker still committed) is returned
+    // now instead of turning the next start into a crash handback.
+    if (ownership_graceful_stop_reset(false, false) != OWNERSHIP_STOP_RESET_NONE) return 5887;
+    if (ownership_graceful_stop_reset(true, false) != OWNERSHIP_STOP_RESET_OWNED_INTENT ||
+        ownership_graceful_stop_reset(true, true) != OWNERSHIP_STOP_RESET_OWNED_INTENT)
+        return 5888;
+    if (ownership_graceful_stop_reset(false, true) != OWNERSHIP_STOP_RESET_UNRETURNED_WRITE)
+        return 5889;
+    if (strcmp(ownership_graceful_stop_reset_name(OWNERSHIP_STOP_RESET_UNRETURNED_WRITE),
+               "unreturned-write") != 0) return 5995;
     // The v28 lockout reason is inside the accepted range, and the range ends there.
     if (SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE != 4 ||
         SERVICE_AUTO_RESTORE_LOCKOUT_MAX != SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE)

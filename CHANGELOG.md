@@ -26,54 +26,52 @@
 
 ## Unreleased
 
-Setup now accepts install folders beyond Program Files.
+Setup can now install anywhere, and a failed install or upgrade restores the
+previous one. Crash recovery and Apply reliability also improve.
 
 ### Highlights
 
-- **Setup now accepts any install folder, on any drive.** It shows how well
-  that folder is protected before installing anything.
-- **A new folder under a drive root no longer raises a false warning.** Setup
-  protects such a folder as it creates it, and now says so.
-- **Choosing a folder other accounts can change requires acknowledgment.** Setup
-  explains the service takeover risk and shows a command to protect the folder.
-- **Installing the service from an unprotected portable folder now asks first**
-  instead of installing quietly.
-- **A failed service installation now gives a clear reason and remedy.**
-- **Green Curve now needs a folder of its own.** Folders with other files and restricted Windows locations are refused, including through alternate paths.
-- **Moving a setup installation now removes its old folder when empty.** Other files keep the folder in place.
-- **A folder Green Curve no longer uses gets its normal permissions back.**
-- **A failed service install or repair no longer leaves the background service stopped.** The previous service is restored if the new one cannot start.
-- **A failed setup upgrade now restores the previous installation.** Program files, service settings, and the uninstall entry are restored after a copy or registration failure.
-- **Updates now warn when applied settings cannot be saved for restoration.** Setup also reports an uncertain settings capture instead of silently finishing at stock.
-- **Pascal GPUs can apply curve-based clock limits without unsupported clock controls.** Apply, Reset, and recovery now handle that missing control consistently.
-- **A slow service start is no longer reported as a failure**, and a real
-  failure is reported at once.
-- **Declining the Windows elevation prompt is no longer reported as an error.**
-- **The service now reports start-up and shutdown progress to Windows**, so a
-  slow start or stop no longer looks hung.
-- **The background service now has a description in Windows Services.**
+- **Setup can now install to any folder of its own, on any drive.** It asks you to confirm when other accounts could change that folder.
+- **A failed install or upgrade now restores the previous installation.** Program files, the background service and the uninstall entry come back.
+- **A failed service install, repair or removal now explains why.**
+- **Moving an installation now removes its old folder when empty.**
+- **Updates now warn when your applied settings could not be saved for restoring.**
+- **A crashed or killed background service no longer leaves a custom fan curve frozen.** The fan returns to driver control, and on Windows the GPU returns to stock.
+- **A background service stuck inside the GPU driver now restarts itself.**
 - **Power-limit-only changes no longer reset the GPU to stock.**
-- **The tray keeps the applied profile's name** instead of "Manual settings".
 - **Slow applies under load no longer end as "outcome unknown".**
 - **Reset no longer claims success while a clock lock may remain.**
+- **Pascal GPUs can now apply curve-based clock limits.**
+- **The tray keeps the applied profile's name** instead of showing "Manual settings".
 - **More driver-update crashes are now recovered**, including on Windows on Arm.
-- **A crashed or killed background service no longer leaves a custom fan curve frozen.** The fan returns to driver control, and on Windows the GPU returns to stock.
-- **A background service stuck inside the GPU driver now restarts itself** instead of staying unresponsive, and says so if it cannot return the GPU to stock.
-- **Install-folder warnings no longer overflow the service status line.** The full text is in its tooltip.
-- **Antivirus programs should raise fewer false alarms about Green Curve.** Every program file now carries complete publisher details and a valid checksum.
+- **A slow service start or stop is no longer mistaken for a hang or a failure.**
+- **Antivirus programs should raise fewer false alarms about Green Curve.**
 
 ### Compatibility notes
 
-- Existing installations keep updating in place; nothing moves.
-- Unattended updates never show prompts, wherever Green Curve is installed.
-- Drives without file permissions (FAT/exFAT) and network folders are usable
-  with a clear warning that files there cannot be protected.
-- An existing installation in a folder Green Curve no longer accepts keeps
-  working; the restriction applies when you install or move it.
-- Installing from the archive requires an elevated PowerShell or Command
-  Prompt; setup now explains the requirement.
-- Uninstalling now removes the program folder at the next restart; the
-  finish page says so.
+- Existing installations keep updating in place; unattended updates never prompt.
+- Folders holding other files and protected Windows locations are refused.
+- FAT/exFAT drives and network folders work, with a warning.
+- An installation in a folder that is no longer accepted keeps working; the rule applies when you install or move it.
+- Installing from the archive requires an elevated PowerShell or Command Prompt.
+- Uninstalling removes the program folder at the next restart.
+- App and background service move to protocol v28. They update together, so this
+  needs nothing from you.
+
+### Downloads and verification
+
+- **Windows:** use the `setup.exe` for a normal install or upgrade; use the
+  `.7z` archive for a portable copy.
+- **Linux:** use the ready-to-install Arch Linux `.pkg.tar.zst` on pacman-based
+  systems, or extract the `.tar.xz` archive and run `greencurve-setup.sh`.
+- Every program package has a matching SHA-256 file and a GitHub
+  build-provenance attestation. Verify an artifact with:
+
+  ```bash
+  gh attestation verify <artifact> --repo aufkrawall/green-curve
+  ```
+
+**Full changelog:** [0.26.0...0.27.0](https://github.com/aufkrawall/green-curve/compare/0.26.0...0.27.0)
 
 ## 0.26.0
 

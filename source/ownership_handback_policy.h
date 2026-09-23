@@ -147,6 +147,43 @@ static inline bool ownership_handback_retires_marker(
         (scope == OWNERSHIP_HANDBACK_SCOPE_FAN_ONLY && markerCoversFanOnly);
 }
 
+// Why a graceful Windows stop returns the GPU to stock, if it does.
+enum OwnershipGracefulStopReset : gc_u32 {
+    // Nothing this process wrote is outstanding: stay non-mutating.
+    OWNERSHIP_STOP_RESET_NONE = 0,
+    // The established rule: settings this process applied are returned.
+    OWNERSHIP_STOP_RESET_OWNED_INTENT = 1,
+    // No intent is active any more (a failed Apply disabled it, or a Reset
+    // did not complete), but this process committed the ownership marker and
+    // nothing has proven the state returned.  Returning it now is what the
+    // marker vouches for; leaving it made the NEXT start in this boot run a
+    // crash handback for a stop that was not a crash -- and, if another tool
+    // had taken the GPU in between, overwrite that tool's settings.
+    OWNERSHIP_STOP_RESET_UNRETURNED_WRITE = 2,
+};
+
+// A merely started/installed/repaired service never commits the marker (it is
+// written only immediately before a hardware write), so this keeps that
+// instance non-mutating.  A marker inherited from a crashed predecessor whose
+// handback is still pending is NOT "committed by this process"; it stays on
+// disk for the next start, which is where that handback belongs.
+static inline OwnershipGracefulStopReset ownership_graceful_stop_reset(
+    bool ownsActiveIntent, bool markerCommittedByThisProcess) {
+    if (ownsActiveIntent) return OWNERSHIP_STOP_RESET_OWNED_INTENT;
+    if (markerCommittedByThisProcess) return OWNERSHIP_STOP_RESET_UNRETURNED_WRITE;
+    return OWNERSHIP_STOP_RESET_NONE;
+}
+
+static inline const char* ownership_graceful_stop_reset_name(
+    OwnershipGracefulStopReset reset) {
+    switch (reset) {
+        case OWNERSHIP_STOP_RESET_NONE: return "none";
+        case OWNERSHIP_STOP_RESET_OWNED_INTENT: return "owned-intent";
+        case OWNERSHIP_STOP_RESET_UNRETURNED_WRITE: return "unreturned-write";
+    }
+    return "unknown";
+}
+
 static inline const char* ownership_handback_verdict_name(
     OwnershipHandbackVerdict verdict) {
     switch (verdict) {

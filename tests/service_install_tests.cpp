@@ -351,6 +351,52 @@ int run_install_file_rollback_tests() {
     return finish(0);
 }
 
+// A failed fresh install removes exactly the folders it created, leaf first,
+// and never a folder that existed before or that holds anything.
+int run_install_created_folder_cleanup_tests() {
+    wchar_t root[MAX_PATH] = {};
+    if (!make_temp_dir(L"gc_install_created", root, MAX_PATH)) return 6130;
+    wchar_t outer[MAX_PATH] = {}, inner[MAX_PATH] = {}, file[MAX_PATH] = {};
+    StringCchPrintfW(outer, MAX_PATH, L"%ls\\Tools", root);
+    StringCchPrintfW(inner, MAX_PATH, L"%ls\\Tools\\Green Curve", root);
+    StringCchPrintfW(file, MAX_PATH, L"%ls\\keep.txt", outer);
+    auto finish = [&](int code) {
+        DeleteFileW(file);
+        RemoveDirectoryW(inner);
+        RemoveDirectoryW(outer);
+        RemoveDirectoryW(root);
+        return code;
+    };
+    if (gc_count_missing_directory_components(root) != 0) return finish(6131);
+    wchar_t trailing[MAX_PATH] = {};
+    StringCchPrintfW(trailing, MAX_PATH, L"%ls\\Tools\\Green Curve\\", root);
+    if (gc_count_missing_directory_components(inner) != 2 ||
+        gc_count_missing_directory_components(trailing) != 2) return finish(6132);
+    if (!CreateDirectoryW(outer, nullptr) || !CreateDirectoryW(inner, nullptr))
+        return finish(6133);
+    // Both created by "this run": both go, the pre-existing root stays.
+    if (gc_remove_created_directory_chain(inner, 2) != 2 ||
+        GetFileAttributesW(outer) != INVALID_FILE_ATTRIBUTES ||
+        GetFileAttributesW(root) == INVALID_FILE_ATTRIBUTES) return finish(6134);
+    // Something appeared in a created parent: only the empty leaf goes.
+    if (!CreateDirectoryW(outer, nullptr) || !CreateDirectoryW(inner, nullptr))
+        return finish(6135);
+    HANDLE keep = CreateFileW(file, GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (keep == INVALID_HANDLE_VALUE) return finish(6136);
+    CloseHandle(keep);
+    if (gc_remove_created_directory_chain(inner, 2) != 1 ||
+        GetFileAttributesW(inner) != INVALID_FILE_ATTRIBUTES ||
+        GetFileAttributesW(file) == INVALID_FILE_ATTRIBUTES) return finish(6137);
+    // Nothing created, or an existing file where a folder is expected.
+    if (gc_remove_created_directory_chain(outer, 0) != 0 ||
+        GetFileAttributesW(outer) == INVALID_FILE_ATTRIBUTES) return finish(6138);
+    wchar_t underFile[MAX_PATH] = {};
+    StringCchPrintfW(underFile, MAX_PATH, L"%ls\\child", file);
+    if (gc_count_missing_directory_components(underFile) != -1) return finish(6139);
+    return finish(0);
+}
+
 bool make_junction(const wchar_t* junctionPath, const wchar_t* targetPath) {
     struct MountPointReparse {
         DWORD tag;
@@ -484,6 +530,7 @@ int run_service_install_tests() {
     if (int failure = run_exact_dacl_tests()) return failure;
     if (int failure = run_handle_hardening_tests()) return failure;
     if (int failure = run_install_file_rollback_tests()) return failure;
+    if (int failure = run_install_created_folder_cleanup_tests()) return failure;
     if (int failure = run_location_verdict_tests()) return failure;
 #endif
     return 0;

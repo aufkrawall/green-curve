@@ -570,3 +570,11 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         "inFlight.handbackAttempts = marker.handbackAttempts + 1u;",
         "bool autoOk = linux_backend_set_fan_auto(&g_gpu);",
         "the Linux handback records itself in flight before writing (loop guard)")
+    # A clean Windows stop returns every write this process made whose return
+    # was never proven, so the next start never runs a crash handback for it.
+    require_order_in_operation(
+        service_host_cpp,
+        "static void WINAPI service_main(DWORD argc, LPWSTR* argv)",
+        "ownership_graceful_stop_reset(",
+        "bool resetOk = service_reset_all(",
+        "the graceful-stop reset covers unreturned writes, not only owned intent")
