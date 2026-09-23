@@ -106,11 +106,11 @@ python build.py --check-cet
 
 ## Antivirus false positives
 
-**Expect some antivirus products to flag Green Curve, and expect to add an exception for it.** Any of the Windows files can be hit: `greencurve.exe`, `greencurve-service.exe`, `greencurve-uninstall.exe`, the setup `.exe` and the `.7z` archive. Which file gets flagged changes from release to release. The usual detection is Microsoft Defender reporting `Trojan:Win32/Wacatac.B!ml`. It is a false positive.
+**Expect some antivirus products to flag Green Curve, and expect to add an exception for it.** Any of the Windows files can be hit: `greencurve.exe`, `greencurve-service.exe`, `greencurve-uninstall.exe`, the setup `.exe` and the `.7z` archive. Which file gets flagged, and by which product, changes from release to release. The most common report is Microsoft Defender's `Trojan:Win32/Wacatac.B!ml`, but other products use their own names for the same kind of guess. Typical ones contain `Generic`, `Gen`, `Heur`/`HEUR`, `ML`, `AI`, `Variant`, `Unsafe`, `Suspicious` or a confidence score, for example `Gen:Variant.…`, `HEUR:Trojan.Win32.Generic`, `Win64:Malware-gen`, `ML.Attribute.HighConfidence` or `Static AI - Suspicious PE`. A name like this on a Green Curve file is a false positive.
 
 ### Why it happens
 
-The `!ml` suffix means no virus signature matched and nothing malicious was seen running. A machine-learning model looked at the file's structure and guessed. `Wacatac` is Microsoft's catch-all name for those guesses. Typically one engine out of the roughly 70 on VirusTotal flags the file, and the rest report it clean.
+The `!ml` suffix means no virus signature matched and nothing malicious was seen running. A machine-learning model looked at the file's structure and guessed. `Wacatac` is Microsoft's catch-all name for those guesses; the generic, heuristic and ML names other products use mean the same thing. Typically one engine out of the roughly 70 on VirusTotal flags the file, and the rest report it clean.
 
 The model doesn't know what the program does. It scores surface traits, and a small open-source hardware tool has most of the traits it counts against a file:
 
