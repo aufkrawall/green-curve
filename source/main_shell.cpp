@@ -283,6 +283,9 @@ static void populate_edits() {
 static void refresh_oc_range_hints() {
 }
 
+static void service_status_tooltip_sync_rect() {
+}
+
 // The service owns no editor, so nothing is ever pending in it.
 static void gui_pending_changes_refresh() {
 }

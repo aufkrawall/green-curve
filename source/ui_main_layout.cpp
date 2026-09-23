@@ -310,6 +310,10 @@ static void main_layout_update_scroll_info(HWND hwnd, const MainLayoutPlan& plan
     ShowScrollBar(hwnd, SB_VERT, maxY > 0);
 }
 
+// Defined with the main-window tooltips (ui_oc_hints.cpp); a no-op in the
+// service binary (main_shell.cpp).
+static void service_status_tooltip_sync_rect();
+
 static void main_layout_place_controls(
     HWND parent, const MainLayoutPlan& plan, bool forceDirect = false) {
     MainLayoutMoveBatch batch = {
@@ -489,6 +493,7 @@ static void main_layout_place_controls(
         debug_log("main layout: DeferWindowPos batch failed; retrying complete placement directly\n");
         main_layout_place_controls(parent, plan, true);
     }
+    service_status_tooltip_sync_rect();
 }
 
 static void layout_main_window(HWND hwnd) {

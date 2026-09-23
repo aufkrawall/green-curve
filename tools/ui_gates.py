@@ -24,6 +24,23 @@ def _forbid_in_operation(ctx, path, anchor, needle, label):
     ctx.forbid_text_in_operation(path, anchor, needle, label)
 
 
+def check_service_status_notices(ctx, require_text, forbid_text):
+    """The service status label is one line: its notices are named briefly and
+    spelled out only in its tooltip (service_status_notice_policy.h). Appending
+    the full sentences made an unsafe install's status read as clipped junk."""
+    gui_state_cpp = _p(ctx, "config_profiles_gui_state.cpp")
+    require_text(gui_state_cpp, "service_status_compose(text, notices, label,",
+                 "the status label is composed by the notice policy")
+    require_text(gui_state_cpp, "service_status_tooltip_set(tooltip);",
+                 "the full notice text goes to the label's tooltip")
+    forbid_text(gui_state_cpp, "gain SYSTEM rights",
+                "no full-sentence warning is appended to the one-line label")
+    require_text(_p(ctx, "ui_main_layout.cpp"), "service_status_tooltip_sync_rect();",
+                 "the status tooltip's hover rectangle follows every layout pass")
+    require_text(_p(ctx, "ui_oc_hints.cpp"), "register_service_status_tooltip(tip, hParent);",
+                 "the status tooltip is re-registered with every tooltip rebuild")
+
+
 def check_overclock_range_hints(ctx, require_text, forbid_text):
     """F-OC-HINT: the supported ranges are advertised before the user types.
 
@@ -1439,3 +1456,4 @@ def check_all(ctx, require_text, forbid_text):
     check_manual_mutation_result_presentation(ctx, require_text, forbid_text)
     check_service_actionability(ctx, require_text, forbid_text)
     check_read_miss_is_not_a_disconnect(ctx, require_text, forbid_text)
+    check_service_status_notices(ctx, require_text, forbid_text)

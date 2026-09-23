@@ -58,6 +58,7 @@ Setup now accepts install folders beyond Program Files.
 - **More driver-update crashes are now recovered**, including on Windows on Arm.
 - **A crashed or killed background service no longer leaves a custom fan curve frozen.** The fan returns to driver control, and on Windows the GPU returns to stock.
 - **A background service stuck inside the GPU driver now restarts itself** instead of staying unresponsive, and says so if it cannot return the GPU to stock.
+- **Install-folder warnings no longer overflow the service status line.** The full text is in its tooltip.
 
 ### Compatibility notes
 

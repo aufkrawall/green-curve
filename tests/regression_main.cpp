@@ -79,6 +79,7 @@
 #include "desired_advanced_domains_policy.h"
 #include "ownership_handback_policy.h"
 #include "service_wedge_watchdog_policy.h"
+#include "service_status_notice_policy.h"
 #include "gui_tray_callback_policy.h"
 #include "applied_profile_indicator_policy.h"
 #include "service_profile_identity_policy.h"
@@ -1168,6 +1169,40 @@ static int run_audit_followup_tests() {
     if (profile_ownership_advanced_mismatch_allowed(true, false, true, -5000)) return 5848;
     if (profile_ownership_advanced_mismatch_allowed(true, true, false, 0)) return 5849;
     if (profile_ownership_advanced_mismatch_allowed(true, true, true, 0)) return 5850;
+
+    // Service status line (5900-5909): notices are named briefly on the one-line
+    // label and spelled out in full only in its tooltip.
+    {
+        char label[1024] = {};
+        char tip[1024] = {};
+        ServiceStatusNotices none = {};
+        service_status_compose("Background service installed.", none, label,
+            sizeof(label), tip, sizeof(tip));
+        if (strcmp(label, "Background service installed.") != 0 || tip[0]) return 5900;
+        ServiceStatusNotices unsafe = {};
+        unsafe.folderWritableByStandardUsers = true;
+        unsafe.underUserProfile = true;
+        service_status_compose("Background service installed.", unsafe, label,
+            sizeof(label), tip, sizeof(tip));
+        if (!strstr(label, " Warning: unprotected install folder, user-folder install"
+                           " (hover for details).")) return 5901;
+        // The label stays a line, not a paragraph: the long sentences are gone.
+        if (strlen(label) > 120 || strstr(label, "SYSTEM rights")) return 5902;
+        if (!strstr(tip, "SYSTEM rights") || !strstr(tip, "%ProgramFiles%") ||
+            !strstr(tip, "\r\n\r\n")) return 5903;
+        ServiceStatusNotices noteOnly = {};
+        noteOnly.sharedProfilesOnly = true;
+        service_status_compose("Ready.", noteOnly, label, sizeof(label), tip, sizeof(tip));
+        if (strcmp(label, "Ready. Note: shared profiles only (hover for details).") != 0)
+            return 5904;
+        // Truncation is bounded and terminated, never an overrun.
+        char tiny[16] = {};
+        char tinyTip[8] = {};
+        service_status_compose("Background service installed.", unsafe, tiny,
+            sizeof(tiny), tinyTip, sizeof(tinyTip));
+        if (strlen(tiny) != sizeof(tiny) - 1 || strlen(tinyTip) != sizeof(tinyTip) - 1)
+            return 5905;
+    }
 
     // Every advanced domain counts as a claim; the SYS and VIDEO clocks were
     // missing from two open-coded copies of this list.

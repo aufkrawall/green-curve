@@ -8,6 +8,11 @@
 // file-size guideline; that file keeps profile configuration and the logon /
 // sharing plumbing.
 
+#include "service_status_notice_policy.h"
+
+// Defined with the other main-window tooltips in ui_oc_hints.cpp.
+static void service_status_tooltip_set(const char* text);
+
 static void populate_desired_into_gui(const DesiredSettings* desired) {
     if (!desired) return;
     // Editor population re-runs live curve detection through populate_edits(),
@@ -408,67 +413,40 @@ static void update_background_service_controls() {
         } else {
             StringCchCopyA(text, ARRAY_COUNT(text), "Background service installed but stopped. Live controls are disabled.");
         }
-        // Shared-only policy notice for restricted (non-admin) users (ASCII only
-        // for the ANSI GUI path).
-        if (restricted_to_shared_profiles()) {
-            const char* note = " | Administrator restricts this PC to shared profiles; use 'Shared profiles...' to apply one.";
-            if (strlen(text) + strlen(note) < ARRAY_COUNT(text)) {
-                StringCchCatA(text, ARRAY_COUNT(text), note);
-            }
-        }
-        // Path-protection warning (service_path_chain_policy.h): an install
-        // folder that standard accounts can write lets them replace the
-        // LocalSystem background service and gain SYSTEM rights (F-SEC-1).
-        // Short status-bar spellings here; the full wording with the exact
-        // risk lives in setup's folder page and its acknowledgment.
+        // The notices ride on the one-line label as a few words each; their full
+        // sentences go to the label's hover tooltip (service_status_notice_policy.h).
+        ServiceStatusNotices notices = {};
+        notices.sharedProfilesOnly = restricted_to_shared_profiles();
+        // Path protection (service_path_chain_policy.h): an install folder that
+        // standard accounts can write lets them replace the LocalSystem
+        // background service (F-SEC-1).  The full
+        // wording with the exact risk also lives in setup's folder page.
         GcPathProtectionReport pathProtection = {};
         if (running_exe_dir_protection(&pathProtection)) {
-            const char* protectionWarning = nullptr;
-            if (pathProtection.verdict.no_filesystem_permissions) {
-                protectionWarning =
-                    " Warning: this drive has no file permissions; the Green Curve files "
-                    "cannot be protected.";
-            } else if (pathProtection.verdict.remote) {
-                protectionWarning =
-                    " Warning: Green Curve runs from a network folder; the server controls "
-                    "its files and could replace the background service.";
-            } else if (pathProtection.verdict.standard_writable) {
-                protectionWarning =
-                    " Warning: this install folder can be changed by non-administrators, who "
-                    "could then replace the LocalSystem background service and gain SYSTEM rights.";
-            }
-            if (protectionWarning) {
-                size_t currentLen = strlen(text);
-                size_t warningLen = strlen(protectionWarning);
-                if (currentLen + warningLen < ARRAY_COUNT(text)) {
-                    StringCchCatA(text, ARRAY_COUNT(text), protectionWarning);
-                }
-            }
+            notices.folderWithoutPermissions =
+                pathProtection.verdict.no_filesystem_permissions;
+            notices.networkFolder = !notices.folderWithoutPermissions &&
+                pathProtection.verdict.remote;
+            notices.folderWritableByStandardUsers =
+                !notices.folderWithoutPermissions && !notices.networkFolder &&
+                pathProtection.verdict.standard_writable;
         }
-        // Surface a user-profile-install warning.  Two triggers cover the same
-        // problem (a restricted/standard user cannot execute the GUI binary):
+        // User-profile install.  Two triggers cover the same problem (a
+        // restricted/standard user cannot execute the GUI binary):
         //   1. service_install_dir_is_under_user_profile() — keys off the
         //      SCM-registered service dir (requires the service installed).
         //   2. running_exe_dir_is_under_user_profile() — keys off the running
         //      GUI binary's own dir, so the warning also fires pre-install /
         //      in portable use, before there is any SCM service dir to check.
-        bool underUserProfile = !g_app.backgroundServiceToggleInFlight &&
+        notices.underUserProfile = !g_app.backgroundServiceToggleInFlight &&
             ((g_app.backgroundServiceInstalled && service_install_dir_is_under_user_profile()) ||
              running_exe_dir_is_under_user_profile());
-        if (underUserProfile) {
-            char warning[320] = {};
-            StringCchPrintfA(warning, ARRAY_COUNT(warning),
-                " Warning: Green Curve is running from a user account folder, so restricted/standard "
-                "users on this PC cannot launch it. Reinstall under an all-users folder such as %%ProgramFiles%%\\greencurve to "
-                "make it available to all users.");
-            // Append to the existing status text if there is room.
-            size_t currentLen = strlen(text);
-            size_t warningLen = strlen(warning);
-            if (currentLen + warningLen < ARRAY_COUNT(text)) {
-                StringCchCatA(text, ARRAY_COUNT(text), warning);
-            }
-        }
-        gui_set_window_text_if_changed(g_app.hServiceStatusLabel, text);
+        char label[1024] = {};
+        char tooltip[1024] = {};
+        service_status_compose(text, notices, label, ARRAY_COUNT(label),
+            tooltip, ARRAY_COUNT(tooltip));
+        gui_set_window_text_if_changed(g_app.hServiceStatusLabel, label);
+        service_status_tooltip_set(tooltip);
     }
 }
 

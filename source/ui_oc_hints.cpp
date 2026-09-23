@@ -24,6 +24,59 @@ struct OcRangeHintCache {
 
 static OcRangeHintCache s_ocRangeHintCache = {};
 static HWND s_ocRangeTooltip = nullptr;
+// The service status label's notices (service_status_notice_policy.h).  Kept
+// here because the label outlives the shared tooltip window, which is rebuilt
+// with the editor controls; the text is re-registered on every rebuild.
+//
+// The tool is the label's RECTANGLE on the main window, not the label itself:
+// a STATIC is transparent to the mouse unless it is made a notifying control,
+// and click-forwarding STATICs are deliberately banned in this window (see the
+// F-CHECKBOX-HIT gates).  The rectangle follows every layout pass.
+static char s_serviceStatusTooltipText[1024] = {};
+
+static bool service_status_tooltip_info(TOOLINFOA* ti) {
+    if (!g_app.hServiceStatusLabel || !g_app.hMainWnd) return false;
+    memset(ti, 0, sizeof(*ti));
+    ti->cbSize = sizeof(*ti);
+    ti->uFlags = TTF_SUBCLASS;
+    ti->hwnd = g_app.hMainWnd;
+    ti->uId = (UINT_PTR)SERVICE_STATUS_ID;
+    RECT rc = {};
+    if (!GetWindowRect(g_app.hServiceStatusLabel, &rc)) return false;
+    MapWindowPoints(nullptr, g_app.hMainWnd, (POINT*)&rc, 2);
+    ti->rect = rc;
+    ti->lpszText = s_serviceStatusTooltipText;
+    return true;
+}
+
+static void register_service_status_tooltip(HWND tip, HWND) {
+    TOOLINFOA ti = {};
+    if (!tip || !service_status_tooltip_info(&ti)) return;
+    if (!SendMessageA(tip, TTM_ADDTOOLA, 0, (LPARAM)&ti)) {
+        debug_log("service status tooltip registration FAILED: label=%p\n",
+                  (void*)g_app.hServiceStatusLabel);
+    }
+}
+
+// Called after every main-window layout pass: the label moves and resizes.
+static void service_status_tooltip_sync_rect() {
+    TOOLINFOA ti = {};
+    if (!s_ocRangeTooltip || !service_status_tooltip_info(&ti)) return;
+    SendMessageA(s_ocRangeTooltip, TTM_NEWTOOLRECTA, 0, (LPARAM)&ti);
+}
+
+// An empty text shows nothing on hover, which is the no-notice state.
+static void service_status_tooltip_set(const char* text) {
+    if (!text) text = "";
+    if (strcmp(text, s_serviceStatusTooltipText) == 0) return;
+    StringCchCopyA(s_serviceStatusTooltipText,
+        ARRAY_COUNT(s_serviceStatusTooltipText), text);
+    debug_log("service status tooltip: %s (%u chars)\n",
+        text[0] ? "notices present" : "cleared", (unsigned int)strlen(text));
+    TOOLINFOA ti = {};
+    if (!s_ocRangeTooltip || !service_status_tooltip_info(&ti)) return;
+    SendMessageA(s_ocRangeTooltip, TTM_UPDATETIPTEXTA, 0, (LPARAM)&ti);
+}
 
 // Drop every binding to controls that are about to be (or have just been)
 // recreated.  The tooltip window does not survive a control rebuild, so a
@@ -114,6 +167,7 @@ static void register_oc_range_tooltips(HWND tip, HWND hParent) {
                       i, (void*)edits[i]);
         }
     }
+    register_service_status_tooltip(tip, hParent);
     refresh_oc_range_hints();
 }
 
