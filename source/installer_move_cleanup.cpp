@@ -4,6 +4,7 @@
 // Retire a previous install only after the new one is fully registered.
 
 #include "installer_common.h"
+#include "service_acl.h"
 #include "installer_move_cleanup.h"
 
 // After a committed install, drop known setup-owned leaves this payload did

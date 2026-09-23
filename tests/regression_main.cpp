@@ -6252,6 +6252,13 @@ static int run_all_tests(int argc, char** argv) {
             if (gc_service_admin_reason_is_user_cancel(reason) &&
                 !gc_service_admin_reason_is_informational(reason)) return 5670;
         }
+        if (gc_service_admin_uninstall_reason_text(GC_SVC_ADMIN_OK)[0] != 0) return 6270;
+        for (int reason = GC_SVC_ADMIN_UNKNOWN; reason < GC_SVC_ADMIN_REASON_COUNT; reason++) {
+            const char* text = gc_service_admin_uninstall_reason_text(reason);
+            if (!text || strlen(text) < 20) return 6271;
+            if (strstr(text, "service-install") || strstr(text, "automatic service recovery") ||
+                strstr(text, "Extract the whole archive")) return 6272;
+        }
     }
 
     // Shared-only policy: the "apply shared slot N" request flag must encode the

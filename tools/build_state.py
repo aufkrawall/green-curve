@@ -81,6 +81,11 @@ def iter_build_fingerprint_inputs(script_dir, source_dir):
         for name in sorted(files):
             if name.endswith((".cpp", ".h")):
                 yield os.path.join(root, name)
+    tools_dir = os.path.join(script_dir, "tools")
+    for root, _dirs, files in os.walk(tools_dir):
+        for name in sorted(files):
+            if name.endswith(".py") or (name.endswith(".ps1") and not name.startswith("discover-")):
+                yield os.path.join(root, name)
 
 
 def compute_build_fingerprint(script_dir, source_dir):
@@ -171,17 +176,17 @@ BEGIN
     END
 END
 
-1 24 "greencurve.exe.manifest"
+1 24 "GC_MANIFEST_NAME"
 """
 
 APP_MANIFEST_CONTENT = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity
     type="win32"
-    name="GreenCurve"
-    version="VER_STR"
-    processorArchitecture="amd64"/>
-  <description>NVIDIA GPU VF Curve Editor</description>
+     name="ASSEMBLY_NAME"
+     version="VER_STR"
+     processorArchitecture="*"/>
+  <description>ASSEMBLY_DESCRIPTION</description>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>
       <requestedPrivileges>
@@ -211,14 +216,17 @@ APP_MANIFEST_CONTENT = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?
 """
 
 
-def build_rc_content(version, build_number, service=False):
+def build_rc_content(version, build_number, service=False, manifest_name=None):
     """Build RC content with version numbers and binary identity substituted."""
     major, minor, patch, build = parse_version_parts(version, build_number)
     ver_str = f"{major}.{minor}.{patch}.{build}"
     description, internal_name, original_name = WINDOWS_BINARY_IDENTITIES[bool(service)]
+    if manifest_name is None:
+        manifest_name = "greencurve-service.manifest" if service else "greencurve.exe.manifest"
     content = ICON_RC_CONTENT
     content = content.replace("GC_COMPANY_NAME", VERSION_COMPANY_NAME)
     content = content.replace("GC_FILE_DESCRIPTION", description)
+    content = content.replace("GC_MANIFEST_NAME", manifest_name)
     content = content.replace("GC_INTERNAL_NAME", internal_name)
     content = content.replace("GC_ORIGINAL_FILENAME", original_name)
     content = content.replace("VER_MAJOR", str(major))
@@ -241,14 +249,16 @@ def _write_if_changed(path, content):
 
 def compile_windows_resources(rc_tool, version, build_number, manifest_path,
                               icon_sources, variants, cwd):
-    """Generate the manifest and one .rc per binary, then compile stale ones.
-
-    `variants` is [(rc_path, res_path, service)].  Every script embeds the same
-    icons and manifest; only the VERSIONINFO identity differs."""
-    _write_if_changed(manifest_path, build_manifest_content(version, build_number))
+    """Generate the manifests and one .rc per binary, then compile stale ones."""
+    service_manifest_path = os.path.join(
+        os.path.dirname(manifest_path), "greencurve-service.manifest")
+    _write_if_changed(manifest_path, build_manifest_content(version, build_number, False))
+    _write_if_changed(service_manifest_path, build_manifest_content(version, build_number, True))
     for rc_path, res_path, service in variants:
-        _write_if_changed(rc_path, build_rc_content(version, build_number, service))
-        if not any_newer([rc_path, manifest_path, *icon_sources], res_path):
+        selected_manifest = service_manifest_path if service else manifest_path
+        _write_if_changed(rc_path, build_rc_content(
+            version, build_number, service, os.path.basename(selected_manifest)))
+        if not any_newer([rc_path, selected_manifest, *icon_sources], res_path):
             continue
         if os.path.exists(res_path):
             os.remove(res_path)
@@ -259,11 +269,15 @@ def compile_windows_resources(rc_tool, version, build_number, manifest_path,
             sys.exit(1)
 
 
-def build_manifest_content(version, build_number):
-    """Build manifest content with version substituted."""
+def build_manifest_content(version, build_number, service=False):
+    """Build manifest content with version and binary identity substituted."""
     major, minor, patch, build = parse_version_parts(version, build_number)
     ver_str = f"{major}.{minor}.{patch}.{build}"
-    return APP_MANIFEST_CONTENT.replace("VER_STR", ver_str)
+    assembly_name = "GreenCurveService" if service else "GreenCurve"
+    description = "Green Curve background service" if service else "Green Curve"
+    return (APP_MANIFEST_CONTENT.replace("VER_STR", ver_str)
+            .replace("ASSEMBLY_NAME", assembly_name)
+            .replace("ASSEMBLY_DESCRIPTION", description))
 
 
 def concatenated_gate_surface(work_dir, source_dir, out_name, source_names):
@@ -345,18 +359,35 @@ def enforce_source_size_ratchet(script_dir, source_dir, soft_limit=800):
 def run_resource_identity_self_tests():
     """Each Windows binary's resource script names that binary and its publisher."""
     failures = []
-    for service, expected in ((False, "greencurve.exe"), (True, "greencurve-service.exe")):
+    for service, expected, expected_manifest in (
+            (False, "greencurve.exe", "greencurve.exe.manifest"),
+            (True, "greencurve-service.exe", "greencurve-service.manifest")):
         rc = build_rc_content("1.2.3", 45, service)
         if f'VALUE "OriginalFilename", "{expected}"' not in rc:
             failures.append(f"service={service}: OriginalFilename is not {expected}")
         if f'VALUE "CompanyName", "{VERSION_COMPANY_NAME}"' not in rc:
             failures.append(f"service={service}: CompanyName is missing")
+        if f'1 24 "{expected_manifest}"' not in rc:
+            failures.append(f"service={service}: manifest resource is not {expected_manifest}")
         if "GC_" in rc or "VER_" in rc:
             failures.append(f"service={service}: an unsubstituted placeholder survived")
         if '"1.2.3.45"' not in rc:
             failures.append(f"service={service}: the version string was not substituted")
     if build_rc_content("1.2.3", 45, False) == build_rc_content("1.2.3", 45, True):
         failures.append("the GUI and the service share one VERSIONINFO")
+    gui_manifest = build_manifest_content("1.2.3", 45, False)
+    service_manifest = build_manifest_content("1.2.3", 45, True)
+    for manifest, assembly_name, description in (
+            (gui_manifest, "GreenCurve", "Green Curve"),
+            (service_manifest, "GreenCurveService", "Green Curve background service")):
+        if 'processorArchitecture="amd64"' in manifest or \
+                'processorArchitecture="*"' not in manifest:
+            failures.append(f"{assembly_name}: manifest is not architecture-neutral")
+        if f'name="{assembly_name}"' not in manifest or \
+                f"<description>{description}</description>" not in manifest:
+            failures.append(f"{assembly_name}: manifest identity is incomplete")
+    if gui_manifest == service_manifest:
+        failures.append("the GUI and service manifests share one identity")
     if failures:
         raise RuntimeError("resource identity self-tests failed:\n  " + "\n  ".join(failures))
     print("resource identity self-tests passed")

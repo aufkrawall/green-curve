@@ -43,6 +43,201 @@ def _rva_to_offset(sections, rva):
     return None
 
 
+def _pe_data_directory(data, index):
+    if len(data) < 0x40 or data[:2] != b"MZ":
+        raise RuntimeError("not a PE image")
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    optional = pe + 24
+    if pe + 24 + 112 + (index + 1) * 8 > len(data) or \
+            data[pe:pe + 4] != b"PE\x00\x00":
+        raise RuntimeError("invalid PE data directory")
+    return struct.unpack_from("<II", data, optional + 112 + index * 8)
+
+
+def _pe_ascii_string(data, offset):
+    if offset is None or offset < 0 or offset >= len(data):
+        raise RuntimeError("PE import string is out of bounds")
+    end = data.find(b"\0", offset, min(len(data), offset + 512))
+    if end < 0:
+        raise RuntimeError("unterminated PE import string")
+    return data[offset:end].decode("ascii", errors="replace")
+
+
+def pe_imports(data):
+    if len(data) < 0x40 or data[:2] != b"MZ":
+        raise RuntimeError("not a PE image")
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    optional = pe + 24
+    if pe + 24 + 112 + 16 * 8 > len(data) or data[pe:pe + 4] != b"PE\x00\x00":
+        raise RuntimeError("invalid PE optional header")
+    sections = _sections_of(data, pe, optional)
+    import_rva, import_size = _pe_data_directory(data, 1)
+    if not import_rva or not import_size:
+        return []
+    import_offset = _rva_to_offset(sections, import_rva)
+    if import_offset is None:
+        raise RuntimeError("PE import directory is not backed by file data")
+    imports = []
+    max_descriptors = max(1, (import_size + 19) // 20)
+    terminated = False
+    for index in range(max_descriptors):
+        descriptor = import_offset + index * 20
+        if descriptor + 20 > len(data):
+            raise RuntimeError("truncated PE import descriptor")
+        original_first, _, _, name_rva, first_thunk = struct.unpack_from(
+            "<IIIII", data, descriptor)
+        if not any((original_first, name_rva, first_thunk)):
+            terminated = True
+            break
+        name_offset = _rva_to_offset(sections, name_rva)
+        dll = _pe_ascii_string(data, name_offset).lower()
+        thunk_rva = original_first or first_thunk
+        thunk_offset = _rva_to_offset(sections, thunk_rva)
+        if thunk_offset is None:
+            raise RuntimeError("PE import thunk is not backed by file data")
+        functions = set()
+        for thunk_index in range(4096):
+            entry = thunk_offset + thunk_index * 8
+            if entry + 8 > len(data):
+                raise RuntimeError("truncated PE import thunk")
+            value = struct.unpack_from("<Q", data, entry)[0]
+            if not value:
+                break
+            if value & (1 << 63):
+                functions.add(f"ordinal:{value & 0xFFFF}")
+            else:
+                hint_name_offset = _rva_to_offset(
+                    sections, value & 0x7FFFFFFFFFFFFFFF)
+                if hint_name_offset is None or hint_name_offset + 2 > len(data):
+                    raise RuntimeError("PE import name is not backed by file data")
+                functions.add(_pe_ascii_string(data, hint_name_offset + 2))
+        else:
+            raise RuntimeError("PE import thunk table is too long")
+        imports.append((dll, functions))
+    if not terminated:
+        raise RuntimeError("PE import descriptor table is not terminated")
+    return imports
+
+
+def verify_pe_import_surface(data, label, required_dlls=(), forbidden_dlls=(),
+                             required_functions=(), forbidden_functions=(),
+                             reject_exports=False):
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    export_rva, export_size = _pe_data_directory(data, 0)
+    if reject_exports and (export_rva or export_size):
+        raise RuntimeError(f"{label}: PE exports are not allowed")
+    delay_rva, delay_size = _pe_data_directory(data, 13)
+    if delay_rva or delay_size:
+        raise RuntimeError(f"{label}: delay imports are not allowed")
+    imports = pe_imports(data)
+    libraries = {dll for dll, _ in imports}
+    functions = {function for _, names in imports for function in names}
+    required_libraries = {name.lower() for name in required_dlls}
+    forbidden_libraries = {name.lower() for name in forbidden_dlls}
+    required_names = {name.lower() for name in required_functions}
+    forbidden_names = {name.lower() for name in forbidden_functions}
+    missing_libraries = sorted(required_libraries - libraries)
+    present_forbidden = sorted(forbidden_libraries & libraries)
+    missing_functions = sorted(required_names - {name.lower() for name in functions})
+    present_forbidden_functions = sorted(
+        forbidden_names & {name.lower() for name in functions})
+    if missing_libraries or present_forbidden or missing_functions or present_forbidden_functions:
+        details = []
+        if missing_libraries:
+            details.append("missing DLLs " + ",".join(missing_libraries))
+        if present_forbidden:
+            details.append("forbidden DLLs " + ",".join(present_forbidden))
+        if missing_functions:
+            details.append("missing functions " + ",".join(missing_functions))
+        if present_forbidden_functions:
+            details.append("forbidden functions " + ",".join(present_forbidden_functions))
+        raise RuntimeError(f"{label}: PE import surface mismatch ({'; '.join(details)})")
+
+
+def _contains_pe_text(data, value):
+    return (value.encode("ascii") in data or
+            value.encode("utf-16le") in data)
+
+
+def verify_windows_manifest_identity(data, label, original_filename):
+    name = (original_filename or "").lower()
+    if name == "greencurve.exe":
+        assembly_name = "GreenCurve"
+        description = "Green Curve"
+    elif name == "greencurve-service.exe":
+        assembly_name = "GreenCurveService"
+        description = "Green Curve background service"
+    elif "uninstall" in name:
+        assembly_name = "GreenCurveUninstall"
+        description = "Green Curve uninstaller"
+    elif "setup" in name:
+        assembly_name = "GreenCurveSetup"
+        description = "Green Curve setup"
+    else:
+        raise RuntimeError(f"{label}: unknown Windows artifact identity {original_filename!r}")
+    for value, field in ((assembly_name, "assembly name"),
+                         (description, "description"),
+                         ('processorArchitecture="*"', "processor architecture")):
+        if not _contains_pe_text(data, value):
+            raise RuntimeError(f"{label}: manifest {field} is missing or wrong")
+    if _contains_pe_text(data, 'processorArchitecture="amd64"'):
+        raise RuntimeError(f"{label}: manifest claims amd64 for every architecture")
+
+
+def verify_windows_binary_imports(data, label, original_filename,
+                                  reject_exports=False):
+    name = (original_filename or "").lower()
+    common_forbidden_dlls = {"winhttp.dll", "cabinet.dll"}
+    common_forbidden_functions = {
+        "CreateRemoteThread", "WriteProcessMemory", "VirtualAllocEx",
+        "NtCreateThreadEx", "QueueUserAPC", "SetWindowsHookEx",
+    }
+    if name == "greencurve.exe":
+        verify_pe_import_surface(
+            data, label,
+            required_dlls={"user32.dll", "gdi32.dll", "advapi32.dll", "shell32.dll"},
+            forbidden_dlls=common_forbidden_dlls | {"wtsapi32.dll", "userenv.dll"},
+            forbidden_functions=common_forbidden_functions | {
+                "WTSQueryUserToken", "CreateProcessWithTokenW",
+            }, reject_exports=reject_exports)
+    elif name == "greencurve-service.exe":
+        verify_pe_import_surface(
+            data, label,
+            required_dlls={"advapi32.dll", "winhttp.dll", "wtsapi32.dll", "userenv.dll"},
+            forbidden_dlls={"cabinet.dll"},
+            forbidden_functions=common_forbidden_functions,
+            reject_exports=reject_exports)
+    elif "setup" in name:
+        verify_pe_import_surface(
+            data, label,
+            required_dlls={"user32.dll", "advapi32.dll", "shell32.dll", "wtsapi32.dll", "userenv.dll"},
+            forbidden_dlls={"winhttp.dll", "cabinet.dll"},
+            required_functions={"CreateProcessWithTokenW"},
+            forbidden_functions=common_forbidden_functions,
+            reject_exports=reject_exports)
+    elif "uninstall" in name:
+        verify_pe_import_surface(
+            data, label,
+            required_dlls={"user32.dll", "advapi32.dll", "shell32.dll"},
+            forbidden_dlls=common_forbidden_dlls | {"wtsapi32.dll", "userenv.dll"},
+            forbidden_functions=common_forbidden_functions | {
+                "WTSQueryUserToken", "CreateProcessWithTokenW",
+            }, reject_exports=reject_exports)
+    else:
+        raise RuntimeError(f"{label}: unknown Windows artifact identity {original_filename!r}")
+
+
+def verify_windows_binary_metadata(data, label, original_filename, arch,
+                                    windows_toolchain):
+    verify_pe_hardening(data, arch, windows_toolchain)
+    verify_pe_checksum(data, label)
+    verify_version_identity(data, original_filename, label)
+    verify_windows_manifest_identity(data, label, original_filename)
+    verify_windows_binary_imports(
+        data, label, original_filename,
+        reject_exports=(windows_toolchain == "clang-cl"))
+
+
 def verify_pe_hardening(data, arch, windows_toolchain="llvm-mingw"):
     if len(data) < 0x100 or data[:2] != b"MZ":
         raise RuntimeError("not a PE image")
@@ -294,6 +489,28 @@ def _version_string_entry(key, value):
     return struct.pack("<HHH", 6 + len(body), len(value) + 1, 1) + body
 
 
+def _synthetic_import_pe():
+    data = bytearray(0x400)
+    data[0:2] = b"MZ"
+    struct.pack_into("<I", data, 0x3C, 0x80)
+    data[0x80:0x84] = b"PE\0\0"
+    struct.pack_into("<H", data, 0x84, 0x8664)
+    struct.pack_into("<H", data, 0x86, 1)
+    struct.pack_into("<H", data, 0x94, 0xF0)
+    struct.pack_into("<H", data, 0x98, 0x20B)
+    section = 0x98 + 0xF0
+    data[section:section + 8] = b".text\0\0\0"
+    struct.pack_into("<IIII", data, section + 8, 0x200, 0x1000, 0x200, 0x200)
+    struct.pack_into("<I", data, section + 36, 0x60000020)
+    struct.pack_into("<II", data, 0x98 + 112 + 8, 0x1000, 40)
+    struct.pack_into("<IIIII", data, 0x200, 0x1050, 0, 0, 0x1030, 0x1050)
+    data[0x230:0x23D] = b"KERNEL32.dll\0"
+    struct.pack_into("<QQ", data, 0x250, 0x1070, 0)
+    struct.pack_into("<H", data, 0x270, 0)
+    data[0x272:0x27D] = b"CreateFileW\0"
+    return bytes(data)
+
+
 def run_self_tests():
     """Deterministic checks for the checksum and VERSIONINFO helpers."""
     failures = []
@@ -301,6 +518,24 @@ def run_self_tests():
     def expect(condition, label):
         if not condition:
             failures.append(label)
+
+    import_fixture = _synthetic_import_pe()
+    try:
+        imports = pe_imports(import_fixture)
+        if imports != [("kernel32.dll", {"CreateFileW"})]:
+            failures.append(f"PE import parser returned {imports!r}")
+        verify_pe_import_surface(
+            import_fixture, "import fixture",
+            required_dlls={"KERNEL32.dll"}, required_functions={"CreateFileW"})
+    except RuntimeError as error:
+        failures.append(f"PE import fixture was rejected: {error}")
+    try:
+        verify_pe_import_surface(
+            import_fixture, "import fixture",
+            forbidden_functions={"CreateFileW"})
+        failures.append("PE import surface accepted a forbidden function")
+    except RuntimeError:
+        pass
 
     # Reference values cross-checked against pefile.generate_checksum() and
     # against lld-link /release output when the helper was written.  The odd

@@ -10,6 +10,9 @@
 // the steps that succeeded, is kept until the outcome is known.
 
 #include "installer_common.h"
+#if !defined(GREEN_CURVE_UNINSTALLER)
+#include "service_acl.h"
+#endif
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -104,12 +107,16 @@ void gc_log_init(const WCHAR* overridePath) {
         // log" will actually look.
         WCHAR directory[MAX_PATH] = {};
         if (gc_module_directory(directory, GC_ARRAY_COUNT(directory)) &&
-            gc_join_path(directory, L"greencurve-setup-error.log",
+            gc_join_path(directory, GC_INSTALLER_LOG_BASENAME_W L".log",
                          s_logPath, GC_ARRAY_COUNT(s_logPath))) {
             s_logPathResolved = true;
         }
     }
+#if defined(GREEN_CURVE_UNINSTALLER)
+    gc_log_step("Green Curve uninstaller " APP_VERSION " starting");
+#else
     gc_log_step("Green Curve setup " APP_VERSION " starting");
+#endif
 }
 
 void gc_log_step(const char* fmt, ...) {
@@ -146,7 +153,7 @@ static HANDLE gc_create_new_log_file(WCHAR* path, size_t pathCount) {
         if (FAILED(CoCreateGuid(&id))) break;
         WCHAR leaf[96] = {};
         if (FAILED(StringCchPrintfW(leaf, GC_ARRAY_COUNT(leaf),
-                L"greencurve-setup-error-%08lx%04x%04x.log",
+                GC_INSTALLER_LOG_BASENAME_W L"-%08lx%04x%04x.log",
                 id.Data1, id.Data2, id.Data3)) ||
             !gc_join_path(directory, leaf, path, pathCount)) break;
         file = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
@@ -169,7 +176,7 @@ const WCHAR* gc_log_flush_on_failure() {
         WCHAR tempDir[MAX_PATH] = {};
         WCHAR fallback[MAX_PATH] = {};
         if (GetTempPathW(GC_ARRAY_COUNT(tempDir), tempDir) > 0 &&
-            gc_join_path(tempDir, L"greencurve-setup-error.log", fallback, GC_ARRAY_COUNT(fallback))) {
+            gc_join_path(tempDir, GC_INSTALLER_LOG_BASENAME_W L".log", fallback, GC_ARRAY_COUNT(fallback))) {
             file = gc_create_new_log_file(fallback, GC_ARRAY_COUNT(fallback));
             if (file != INVALID_HANDLE_VALUE) {
                 StringCchCopyW(s_logPath, GC_ARRAY_COUNT(s_logPath), fallback);
@@ -213,6 +220,7 @@ bool gc_utf8_to_wide(const char* utf8, WCHAR* out, int outCount) {
     return true;
 }
 
+#if !defined(GREEN_CURVE_UNINSTALLER)
 void gc_log_path_label(const WCHAR* path, char* out, size_t outSize) {
     if (!out || outSize == 0) return;
     out[0] = 0;
@@ -228,6 +236,7 @@ void gc_log_path_label(const WCHAR* path, char* out, size_t outSize) {
     }
     if (!gc_wide_to_utf8(path, out, (int)outSize)) StringCchCopyA(out, outSize, "(unprintable)");
 }
+#endif
 
 bool gc_wide_to_utf8(const WCHAR* wide, char* out, int outCount) {
     if (!out || outCount <= 0) return false;

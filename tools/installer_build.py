@@ -104,10 +104,6 @@ UNINSTALLER_SOURCE_NAMES = [
     "installer_autostart.cpp",
     "installer_util.cpp",
     "installer_stop.cpp",
-    "service_acl.cpp",
-    "service_path_chain.cpp",
-    "service_acl_handle.cpp",
-    "service_install_location.cpp",
     "ssp_glue.cpp",
     "cfg_glue.cpp",
     "process_hardening.cpp",
@@ -145,9 +141,9 @@ INSTALLER_LINK_LIBS = [
 # through an upgrade with the old version already stopped.
 INSTALLER_MANIFEST = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="GreenCurveSetup" version="VER_STR"
+  <assemblyIdentity type="win32" name="ASSEMBLY_NAME" version="VER_STR"
                     processorArchitecture="*"/>
-  <description>Green Curve setup</description>
+  <description>ASSEMBLY_DESCRIPTION</description>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>
       <requestedPrivileges>
@@ -180,6 +176,20 @@ INSTALLER_MANIFEST = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   </compatibility>
 </assembly>
 """
+
+INSTALLER_ASSEMBLY_NAME = "GreenCurveSetup"
+UNINSTALLER_ASSEMBLY_NAME = "GreenCurveUninstall"
+INSTALLER_ASSEMBLY_DESCRIPTION = "Green Curve setup"
+UNINSTALLER_ASSEMBLY_DESCRIPTION = "Green Curve uninstaller"
+
+
+def build_installer_manifest(uninstaller, version):
+    assembly_name = UNINSTALLER_ASSEMBLY_NAME if uninstaller else INSTALLER_ASSEMBLY_NAME
+    description = (UNINSTALLER_ASSEMBLY_DESCRIPTION if uninstaller
+                   else INSTALLER_ASSEMBLY_DESCRIPTION)
+    return (INSTALLER_MANIFEST.replace("VER_STR", version)
+            .replace("ASSEMBLY_NAME", assembly_name)
+            .replace("ASSEMBLY_DESCRIPTION", description))
 
 # Icon resource id embedded in both setup binaries.  GC_SETUP_ICON_ID in
 # source/installer_common.h must name the same number: the resource script
@@ -322,7 +332,7 @@ def _write_installer_resources(ctx, work, uninstaller, arch):
         ctx.APP_VERSION, ctx.APP_BUILD_NUMBER)
     version_string = f"{major}.{minor}.{patch}.{build}"
     manifest_name = "greencurve-uninstall.manifest" if uninstaller else "greencurve-setup.manifest"
-    manifest = INSTALLER_MANIFEST.replace("VER_STR", version_string)
+    manifest = build_installer_manifest(uninstaller, version_string)
     with open(os.path.join(work, manifest_name), "w", encoding="utf-8", newline="\n") as handle:
         handle.write(manifest)
 
@@ -432,23 +442,55 @@ def _verify_uninstaller_surface(path):
         data = handle.read()
     if not data.startswith(b"MZ"):
         raise RuntimeError("uninstaller is not a PE image")
+
+    def contains(value):
+        return (value.encode("ascii") in data or
+                value.encode("utf-16le") in data)
+
     forbidden = {
-        b"cabinet.dll": "the payload decompressor",
-        b"GCAR0001": "the payload archive parser",
-        b"GCPAY001": "the setup overlay footer parser",
-        b"Copying program files": "the install orchestrator progress text",
-        b"Updating the uninstall record": "the ARP registry writer",
-        b"this setup file carries no program files": "the silent-install payload load",
-        b"WTSQueryUserToken": "the unelevated GUI relaunch (session token theft shape)",
-        b"CreateProcessWithTokenW": "the unelevated GUI relaunch (token impersonation shape)",
+        "cabinet.dll": "the payload decompressor",
+        "GCAR0001": "the payload archive parser",
+        "GCPAY001": "the setup overlay footer parser",
+        "Copying program files": "the install orchestrator progress text",
+        "Updating the uninstall record": "the ARP registry writer",
+        "this setup file carries no program files": "the silent-install payload load",
+        "WTSQueryUserToken": "the unelevated GUI relaunch (session token theft shape)",
+        "CreateProcessWithTokenW": "the unelevated GUI relaunch (token impersonation shape)",
+        "WTSAPI32.dll": "the session-token relaunch import",
+        "USERENV.dll": "the session-token relaunch import",
+        "TASKSCHD.dll": "the scheduler import outside the COM path",
+        "regedit.exe": "the registry-editor heuristic",
+        "CreateRemoteThread": "the remote-thread injection import",
+        "WriteProcessMemory": "the process-memory injection import",
+        "GreenCurveSetup": "the setup manifest identity",
+        "Green Curve setup": "the setup manifest description",
+        "GreenCurveSetupClass": "the setup window class",
+        "greencurve-setup-error": "the setup failure-log identity",
+        "greencurve-service.exe is missing from the folder": "the install-only service reason text",
+        "The service binary could not be written into the program folder": "the install-only staging text",
+        "automatic service recovery": "the install-only recovery text",
+        "Running the install or repair again": "the install-only repair text",
+        "Extract the whole archive": "the install-only archive text",
     }
-    found = [label for needle, label in forbidden.items() if needle in data]
+    found = [label for needle, label in forbidden.items() if contains(needle)]
     if found:
         raise RuntimeError(
-            "greencurve-uninstall.exe still contains install/payload surface: "
+            "greencurve-uninstall.exe still contains setup/install surface: "
             + ", ".join(found))
+    required = {
+        "GreenCurveUninstall": "the uninstaller manifest identity",
+        "Green Curve uninstaller": "the uninstaller manifest description",
+        "GreenCurveUninstallClass": "the uninstaller window class",
+        "greencurve-uninstall-error": "the uninstaller failure-log identity",
+        "greencurve-uninstall.exe": "the uninstaller filename",
+    }
+    missing = [label for needle, label in required.items() if not contains(needle)]
+    if missing:
+        raise RuntimeError(
+            "greencurve-uninstall.exe is missing uninstaller identity: "
+            + ", ".join(missing))
     print(f"  installer: uninstaller {os.path.getsize(path):,} bytes, "
-          f"no payload/install surface ({len(forbidden)} markers)")
+          f"no setup/install surface ({len(forbidden)} markers)")
 
 
 def _verify_setup_file(path, container):
@@ -571,6 +613,35 @@ def check_all(ctx, require_text, forbid_text):
             raise RuntimeError(
                 f"{label} must link process_hardening.cpp "
                 "(toolchain-neutral fatal-dump hook referenced by the glue)")
+
+    expected_uninstaller_sources = {
+        "installer_main.cpp",
+        "installer_ui.cpp",
+        "installer_ui_pages.cpp",
+        "installer_theme.cpp",
+        "installer_register.cpp",
+        "installer_autostart.cpp",
+        "installer_util.cpp",
+        "installer_stop.cpp",
+        "ssp_glue.cpp",
+        "cfg_glue.cpp",
+        "process_hardening.cpp",
+    }
+    if set(UNINSTALLER_SOURCE_NAMES) != expected_uninstaller_sources:
+        raise RuntimeError(
+            "UNINSTALLER_SOURCE_NAMES changed; keep the removal-only allowlist explicit")
+
+    setup_manifest = build_installer_manifest(False, "0.0.0.0")
+    uninstaller_manifest = build_installer_manifest(True, "0.0.0.0")
+    if INSTALLER_ASSEMBLY_NAME not in setup_manifest or \
+            INSTALLER_ASSEMBLY_DESCRIPTION not in setup_manifest:
+        raise RuntimeError("the setup manifest lost its product identity")
+    if UNINSTALLER_ASSEMBLY_NAME not in uninstaller_manifest or \
+            UNINSTALLER_ASSEMBLY_DESCRIPTION not in uninstaller_manifest:
+        raise RuntimeError("the uninstaller manifest lost its product identity")
+    if INSTALLER_ASSEMBLY_NAME in uninstaller_manifest or \
+            UNINSTALLER_ASSEMBLY_NAME in setup_manifest:
+        raise RuntimeError("setup and uninstaller manifests must have distinct identities")
 
     # The uninstaller is a removal-only image.  These shards are install/
     # payload surface and must never return to UNINSTALLER_SOURCE_NAMES; the

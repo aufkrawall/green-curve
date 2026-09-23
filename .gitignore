@@ -82,6 +82,7 @@ greencurve-x86_64-linux-gnu
 greencurve-aarch64-linux-gnu
 
 greencurve.exe.manifest
+greencurve-service.manifest
 
 # Update-signing PRIVATE keys.  These normally live outside the repository
 # entirely (see llm-wiki/updates.md); these patterns exist so that a copy

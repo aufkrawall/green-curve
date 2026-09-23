@@ -9,6 +9,9 @@
 #define GREEN_CURVE_INSTALLER_UI_INTERNAL_H
 
 #include "installer_common.h"
+#if !defined(GREEN_CURVE_UNINSTALLER)
+#include "service_acl.h"
+#endif
 
 struct GcThemeFonts {
     HFONT body;
@@ -73,6 +76,7 @@ struct GcWizard {
     GcWizardPage page;
     bool uninstallMode;
 
+#if !defined(GREEN_CURVE_UNINSTALLER)
     HWND licenseEdit;
     HWND acceptCheck;
     HWND pathEdit;
@@ -81,10 +85,12 @@ struct GcWizard {
     HWND startMenuCheck;
     HWND desktopCheck;
     HWND launchCheck;
+#endif
     HWND backButton;
     HWND nextButton;
     HWND cancelButton;
 
+#if !defined(GREEN_CURVE_UNINSTALLER)
     bool accepted;
     bool startMenu;
     bool desktop;
@@ -98,8 +104,11 @@ struct GcWizard {
     GcInstallerOptions options;
     GcPriorInstall prior;
     char defaultDirectory[GC_INSTALLER_MAX_PATH_CHARS];
+#endif
     WCHAR uninstallDirectory[GC_INSTALLER_MAX_PATH_CHARS];
+#if !defined(GREEN_CURVE_UNINSTALLER)
     GcInstallContext install;
+#endif
 
     HANDLE worker;
     CRITICAL_SECTION progressLock;

@@ -71,7 +71,6 @@
 #include "installer_cli_policy.h"
 #include "installer_plan_policy.h"
 #include "installer_uninstall_policy.h"
-#include "service_acl.h"
 // Why did installing/removing the background service fail?  Setup and the
 // uninstaller run the same --service-install/--service-remove helper work the
 // GUI drives, so they wait on the same derived budget and render the same
@@ -106,7 +105,15 @@
 #define GC_SETUP_UNINSTALL_EXE_LEGACY "uninstall.exe"
 #define GC_SETUP_UNINSTALL_EXE_LEGACY_W L"uninstall.exe"
 #define GC_SETUP_SERVICE_NAME L"GreenCurveService"
+#if defined(GREEN_CURVE_UNINSTALLER)
+#define GC_SETUP_WINDOW_CLASS L"GreenCurveUninstallClass"
+#define GC_INSTALLER_CAPTION "Green Curve Uninstaller"
+#define GC_INSTALLER_LOG_BASENAME_W L"greencurve-uninstall-error"
+#else
 #define GC_SETUP_WINDOW_CLASS L"GreenCurveSetupClass"
+#define GC_INSTALLER_CAPTION "Green Curve Setup"
+#define GC_INSTALLER_LOG_BASENAME_W L"greencurve-setup-error"
+#endif
 // Resource id of the Green Curve icon embedded in both setup binaries.  It must
 // stay equal to the id emitted by INSTALLER_RC in tools/installer_build.py (and
 // to APP_ICON_ID, which the application's own icon.rc uses) -- the shell picks

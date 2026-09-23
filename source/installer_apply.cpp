@@ -12,6 +12,7 @@
 // which of those boundaries was crossed.
 
 #include "installer_common.h"
+#include "service_acl.h"
 #include "installer_transaction_policy.h"
 
 // Bounded waits.  These are not race workarounds: each one waits on a real

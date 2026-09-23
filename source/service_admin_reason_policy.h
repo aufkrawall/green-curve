@@ -261,6 +261,44 @@ static inline const char* gc_service_admin_reason_text(int reason) {
     }
 }
 
+static inline const char* gc_service_admin_uninstall_reason_text(int reason) {
+    switch (reason) {
+        case GC_SVC_ADMIN_OK:
+            return "";
+        case GC_SVC_ADMIN_NOT_ELEVATED:
+            return "This needs administrator rights. Approve the Windows "
+                   "elevation prompt to remove the background service.";
+        case GC_SVC_ADMIN_ELEVATION_DECLINED:
+            return "The Windows elevation prompt was declined. Removing the "
+                   "background service requires administrator rights.";
+        case GC_SVC_ADMIN_SCM_UNAVAILABLE:
+            return "The Windows Service Control Manager could not be opened. "
+                   "This is usually a security product or a group policy "
+                   "blocking service management on this PC.";
+        case GC_SVC_ADMIN_MARKED_FOR_DELETE:
+            return "Windows still has the previous Green Curve service marked "
+                   "for deletion and will not remove it until every handle to "
+                   "it is gone. Close the Services window and Task Manager's "
+                   "Services tab, then restart Windows and try again.";
+        case GC_SVC_ADMIN_REMOVE_FAILED:
+            return "The background service could not be removed. Check whether "
+                   "Services or a security product is blocking it, then try "
+                   "again after a restart.";
+        case GC_SVC_ADMIN_REMOVE_STOP_TIMED_OUT:
+            return "The running Green Curve service did not stop, so removal "
+                   "was cancelled. Stop it in Services or restart Windows and "
+                   "run uninstall again.";
+        case GC_SVC_ADMIN_HELPER_LAUNCH_FAILED:
+            return "The elevated removal helper could not be started.";
+        case GC_SVC_ADMIN_HELPER_TIMED_OUT:
+            return "The elevated removal helper did not finish in time and was "
+                   "stopped. Run uninstall again to finish removal.";
+        case GC_SVC_ADMIN_UNKNOWN:
+        default:
+            return "The background service could not be removed.";
+    }
+}
+
 // Where the full technical detail is.  Appended to every failure the GUI shows
 // that cannot carry the detail itself (the checkbox path runs the helper under
 // a possibly DIFFERENT account, and the user has no other way to learn that).

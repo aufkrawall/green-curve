@@ -21,6 +21,17 @@
 #define GC_EXIT_CANCELLED 2
 #define GC_EXIT_BAD_ARGUMENTS 3
 
+#if defined(GREEN_CURVE_UNINSTALLER)
+static const char* const GC_USAGE_TEXT =
+    "Green Curve " APP_VERSION " uninstaller\n"
+    "\n"
+    "  /S, --silent           Remove Green Curve without showing a window.\n"
+    "  /log=<name>            Write a new failure log named <name> next to this uninstaller.\n"
+    "  /?, --help             Show this text.\n"
+    "\n"
+    "Exit codes: 0 success, 1 failure, 2 cancelled, 3 bad arguments.\n"
+    "A log file is written next to the uninstaller only when something failed.";
+#else
 static const char* const GC_USAGE_TEXT =
     "Green Curve " APP_VERSION " setup\n"
     "\n"
@@ -38,6 +49,7 @@ static const char* const GC_USAGE_TEXT =
     "\n"
     "Exit codes: 0 success, 1 failure, 2 cancelled, 3 bad arguments.\n"
     "A log file is written next to setup only when something failed.";
+#endif
 
 static bool gc_process_is_elevated() {
     HANDLE token = nullptr;
@@ -209,7 +221,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 
     if (!argumentsOk) {
         gc_log_fail("arguments: %s", argumentError);
-        gc_show_message(nullptr, argumentError, "Green Curve Setup", true);
+        gc_show_message(nullptr, argumentError, GC_INSTALLER_CAPTION, true);
         gc_log_flush_on_failure();
         return GC_EXIT_BAD_ARGUMENTS;
     }
@@ -217,12 +229,12 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
         gc_log_fail("arguments: %s", options.error);
         char message[512] = {};
         snprintf(message, sizeof(message), "%s\n\n%s", options.error, GC_USAGE_TEXT);
-        gc_show_message(nullptr, message, "Green Curve Setup", true);
+        gc_show_message(nullptr, message, GC_INSTALLER_CAPTION, true);
         gc_log_flush_on_failure();
         return GC_EXIT_BAD_ARGUMENTS;
     }
     if (options.mode == GC_INSTALLER_MODE_HELP) {
-        gc_show_message(nullptr, GC_USAGE_TEXT, "Green Curve Setup", false);
+        gc_show_message(nullptr, GC_USAGE_TEXT, GC_INSTALLER_CAPTION, false);
         return GC_EXIT_OK;
     }
 
@@ -231,18 +243,32 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
     // unelevated means the manifest was stripped or bypassed; saying so beats
     // failing later with an opaque access-denied.
     if (!gc_process_is_elevated()) {
+#if defined(GREEN_CURVE_UNINSTALLER)
+        const char* message =
+            "The Green Curve uninstaller needs administrator rights to remove the background service. "
+            "Right-click the uninstaller and choose \"Run as administrator\".";
+        gc_log_fail("elevation: the uninstaller process is not elevated");
+#else
         const char* message =
             "Setup needs administrator rights to register the Green Curve background service. "
             "Right-click setup and choose \"Run as administrator\".";
         gc_log_fail("elevation: the setup process is not elevated");
-        if (!options.silent) gc_show_message(nullptr, message, "Green Curve Setup", true);
+#endif
+        if (!options.silent) gc_show_message(nullptr, message, GC_INSTALLER_CAPTION, true);
         gc_log_flush_on_failure();
         return GC_EXIT_FAILED;
     }
 
     HRESULT comStatus = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     bool comReady = SUCCEEDED(comStatus);
-    if (!comReady) gc_log_step("COM could not be initialized (hr 0x%08lx); shortcuts may be skipped", comStatus);
+    if (!comReady) {
+#if defined(GREEN_CURVE_UNINSTALLER)
+        gc_log_step("COM could not be initialized (hr 0x%08lx); scheduled-task cleanup may be incomplete",
+                    comStatus);
+#else
+        gc_log_step("COM could not be initialized (hr 0x%08lx); shortcuts may be skipped", comStatus);
+#endif
+    }
 
     int exitCode = GC_EXIT_FAILED;
     if (options.mode == GC_INSTALLER_MODE_UNINSTALL) {
@@ -290,9 +316,16 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
         char message[768] = {};
         char logPathUtf8[GC_INSTALLER_MAX_PATH_CHARS] = {};
         gc_wide_to_utf8(logPath, logPathUtf8, (int)sizeof(logPathUtf8));
+#if defined(GREEN_CURVE_UNINSTALLER)
         snprintf(message, sizeof(message),
-                 "Setup did not finish. A log describing what failed was written to:\n\n%s", logPathUtf8);
-        gc_show_message(nullptr, message, "Green Curve Setup", true);
+                 "Uninstall did not finish. A log describing what failed was written to:\n\n%s",
+                 logPathUtf8);
+#else
+        snprintf(message, sizeof(message),
+                 "Setup did not finish. A log describing what failed was written to:\n\n%s",
+                 logPathUtf8);
+#endif
+        gc_show_message(nullptr, message, GC_INSTALLER_CAPTION, true);
     }
     return exitCode;
 }

@@ -206,10 +206,12 @@ bool gc_uninstall_execute(const WCHAR* installDirectory, bool* folderLeftForRest
             gc_log_step("uninstall: --service-remove reported exit %lu (%s); "
                         "preserving program files",
                         exitCode,
-                        gc_service_admin_reason_text(
+                        gc_service_admin_uninstall_reason_text(
                             gc_service_admin_reason_from_exit_code(exitCode)));
+
             if (error && errorSize) StringCchCopyA(error, errorSize,
-                gc_service_admin_reason_text(gc_service_admin_reason_from_exit_code(exitCode)));
+                gc_service_admin_uninstall_reason_text(
+                    gc_service_admin_reason_from_exit_code(exitCode)));
             return false;
         }
         gc_log_step("uninstall: background service removed");
@@ -301,7 +303,7 @@ bool gc_uninstall_execute(const WCHAR* installDirectory, bool* folderLeftForRest
         } else if (removeError == ERROR_DIR_NOT_EMPTY) {
             // Files the user put there are the user's; taking the folder with
             // them at the next restart would delete those too.
-            gc_log_step("uninstall: %ls still holds files that were not installed by setup; leaving it in place",
+            gc_log_step("uninstall: %ls still holds files that were not part of this installation; leaving it in place",
                         installDirectory);
         } else {
             gc_log_step("uninstall: could not remove %ls (error %lu); scheduling it for the next restart",

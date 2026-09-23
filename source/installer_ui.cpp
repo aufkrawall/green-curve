@@ -96,8 +96,13 @@ static DWORD WINAPI gc_worker_thread(LPVOID parameter) {
     // marshal into it, which is a lot of machinery for three outgoing calls.
     HRESULT comStatus = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     if (FAILED(comStatus)) {
+#if defined(GREEN_CURVE_UNINSTALLER)
+        gc_log_step("worker: COM could not be initialized (hr 0x%08lx); scheduled-task cleanup may be incomplete",
+                    (unsigned long)comStatus);
+#else
         gc_log_step("worker: COM could not be initialized (hr 0x%08lx); shortcuts will be skipped",
                     (unsigned long)comStatus);
+#endif
     }
     bool ok = false;
     if (wizard->uninstallMode) {
@@ -110,8 +115,8 @@ static DWORD WINAPI gc_worker_thread(LPVOID parameter) {
                            folderLeftForRestart
                                ? "Green Curve has been removed. Its program folder, which still holds the "
                                  "running uninstaller, is deleted at the next restart. Files that were not "
-                                 "installed by setup were left in place, and your saved profiles are untouched."
-                               : "Green Curve has been removed. Files that were not installed by setup were left in "
+                                 "part of this installation were left in place, and your saved profiles are untouched."
+                               : "Green Curve has been removed. Files that were not part of this installation were left in "
                                  "place, and your saved profiles are untouched.");
         } else {
             StringCchCopyA(wizard->resultMessage, GC_ARRAY_COUNT(wizard->resultMessage),
@@ -171,8 +176,13 @@ static void gc_start_work(GcWizard* wizard) {
     if (!wizard->worker) {
         gc_log_fail("ui: could not start the worker thread (error %lu)", GetLastError());
         wizard->workSucceeded = false;
+#if defined(GREEN_CURVE_UNINSTALLER)
+        StringCchCopyA(wizard->resultMessage, GC_ARRAY_COUNT(wizard->resultMessage),
+                       "The uninstaller could not start its worker thread.");
+#else
         StringCchCopyA(wizard->resultMessage, GC_ARRAY_COUNT(wizard->resultMessage),
                        "Setup could not start its worker thread.");
+#endif
         wizard->page = GC_PAGE_DONE;
         gc_update_page_controls(wizard);
     }
@@ -315,6 +325,7 @@ static LRESULT CALLBACK gc_wizard_proc(HWND hwnd, UINT message, WPARAM wParam, L
             const auto* item = (const DRAWITEMSTRUCT*)lParam;
             if (!item || item->CtlType != ODT_BUTTON) break;
             switch (item->CtlID) {
+#if !defined(GREEN_CURVE_UNINSTALLER)
                 case GC_ID_ACCEPT:
                     gc_draw_themed_checkbox(item, wizard->fonts.body, wizard->dpi, wizard->accepted);
                     return TRUE;
@@ -330,6 +341,7 @@ static LRESULT CALLBACK gc_wizard_proc(HWND hwnd, UINT message, WPARAM wParam, L
                 case GC_ID_LAUNCH:
                     gc_draw_themed_checkbox(item, wizard->fonts.body, wizard->dpi, wizard->launch);
                     return TRUE;
+#endif
                 default:
                     gc_draw_themed_button(item, wizard->fonts.body);
                     return TRUE;
@@ -408,8 +420,10 @@ static LRESULT CALLBACK gc_wizard_proc(HWND hwnd, UINT message, WPARAM wParam, L
             wizard->dpi = HIWORD(wParam);
             gc_create_theme_fonts(&wizard->fonts, wizard->dpi);
             gc_apply_window_icons(wizard);
+#if !defined(GREEN_CURVE_UNINSTALLER)
             gc_set_control_font(wizard->licenseEdit, wizard->fonts.monospace);
             gc_set_control_font(wizard->pathEdit, wizard->fonts.body);
+#endif
             const RECT* suggested = (const RECT*)lParam;
             if (suggested) {
                 SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,

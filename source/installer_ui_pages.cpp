@@ -50,6 +50,7 @@ void gc_layout(GcWizard* wizard) {
     RECT client = {};
     GetClientRect(wizard->hwnd, &client);
     int margin = gc_dp(GC_MARGIN);
+#if !defined(GREEN_CURVE_UNINSTALLER)
     int contentTop = gc_dp(GC_HEADER_HEIGHT) + margin;
     int contentBottom = client.bottom - gc_dp(GC_FOOTER_HEIGHT);
     int contentWidth = client.right - 2 * margin;
@@ -61,7 +62,6 @@ void gc_layout(GcWizard* wizard) {
         MoveWindow(wizard->licenseEdit, margin + gc_dp(2), top + gc_dp(2),
                    contentWidth - gc_dp(4), bottom - top - gc_dp(4), TRUE);
     }
-#if !defined(GREEN_CURVE_UNINSTALLER)
     if (wizard->acceptCheck) {
         MoveWindow(wizard->acceptCheck, margin, contentBottom - rowHeight,
                    contentWidth, rowHeight, TRUE);
@@ -127,7 +127,9 @@ void gc_update_page_controls(GcWizard* wizard) {
     ShowWindow(wizard->nextButton, working ? SW_HIDE : SW_SHOW);
 
     const WCHAR* nextLabel = L"Next";
+#if !defined(GREEN_CURVE_UNINSTALLER)
     if (wizard->page == GC_PAGE_OPTIONS) nextLabel = L"Install";
+#endif
     if (wizard->page == GC_PAGE_CONFIRM_REMOVE) nextLabel = L"Uninstall";
     if (done) nextLabel = L"Finish";
     SetWindowTextW(wizard->nextButton, nextLabel);
@@ -201,8 +203,12 @@ void gc_paint(GcWizard* wizard, HDC dc, const RECT* client) {
     gc_draw_text(dc, wizard->fonts.heading, COL_TEXT, GC_SETUP_PRODUCT_NAME,
                  margin, gc_dp(14), contentWidth, gc_dp(28), DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
     char versionLine[128] = {};
+#if defined(GREEN_CURVE_UNINSTALLER)
+    snprintf(versionLine, sizeof(versionLine), "Uninstall version %s", APP_VERSION);
+#else
     snprintf(versionLine, sizeof(versionLine),
              wizard->uninstallMode ? "Uninstall version %s" : "Version %s", APP_VERSION);
+#endif
     gc_draw_text(dc, wizard->fonts.body, COL_CURVE, versionLine,
                  margin, gc_dp(44), contentWidth, gc_dp(20), DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
 
@@ -336,6 +342,15 @@ void gc_paint(GcWizard* wizard, HDC dc, const RECT* client) {
             break;
         }
         case GC_PAGE_DONE:
+#if defined(GREEN_CURVE_UNINSTALLER)
+            gc_draw_text(dc, wizard->fonts.heading,
+                         wizard->workSucceeded ? COL_CURVE : COL_POINT,
+                         wizard->workSucceeded
+                             ? "Green Curve was removed"
+                             : "Uninstall did not finish",
+                         margin, contentTop, contentWidth, gc_dp(30),
+                         DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+#else
             gc_draw_text(dc, wizard->fonts.heading,
                          wizard->workSucceeded ? COL_CURVE : COL_POINT,
                          wizard->workSucceeded
@@ -343,6 +358,7 @@ void gc_paint(GcWizard* wizard, HDC dc, const RECT* client) {
                              : (wizard->uninstallMode ? "Uninstall did not finish" : "Setup did not finish"),
                          margin, contentTop, contentWidth, gc_dp(30),
                          DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+#endif
             gc_draw_text(dc, wizard->fonts.body, COL_TEXT, wizard->resultMessage,
                          margin, contentTop + gc_dp(42), contentWidth, gc_dp(180),
                          DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);

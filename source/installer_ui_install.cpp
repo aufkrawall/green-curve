@@ -10,6 +10,7 @@
 // installer_ui_internal.h.
 
 #include "installer_common.h"
+#include "service_acl.h"
 #include "installer_ui_internal.h"
 
 // Reclassify the folder page's path (see service_path_chain_policy.h).  Runs
