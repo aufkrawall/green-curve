@@ -26,6 +26,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+// The shared rule for a VF entry the driver pins at zero offset.
+#include "vf_offset_range_policy.h"
 
 // ---------------------------------------------------------------------------
 // Logging — to stderr so systemd captures it in the journal.
@@ -452,6 +454,7 @@ static bool apply_curve_offsets_verified(LinuxGpuState* g, const int* targetOffs
     bool desiredMask[VF_NUM_POINTS] = {};
     int desiredOffsets[VF_NUM_POINTS] = {};
     bool pendingMask[VF_NUM_POINTS] = {};
+    bool driverRefused[VF_NUM_POINTS] = {};
     int desiredCount = 0;
     for (int i = 0; i < VF_NUM_POINTS; i++) {
         if (!pointMask[i] || g->curve[i].freq_kHz == 0) continue;
@@ -508,7 +511,27 @@ static bool apply_curve_offsets_verified(LinuxGpuState* g, const int* targetOffs
             for (int i = 0; i < VF_NUM_POINTS; i++) {
                 if (!desiredMask[i]) continue;
                 pendingMask[i] = (g->freqOffsets[i] != desiredOffsets[i]);
-                if (pendingMask[i]) anyPending = true;
+                // Same rule as the Windows writer (main_runtime_gpu.cpp): an
+                // idle placeholder entry below the operating range that the
+                // driver pins at offset 0 can never converge.  Without this the
+                // loop spent every remaining pass (~1 s each) rewriting it and
+                // then failed -- and rolled back -- a curve that had landed.
+                if (pendingMask[i] &&
+                    vf_offset_zero_readback_is_benign(desiredOffsets[i],
+                        g->freqOffsets[i], g->curve[i].freq_kHz,
+                        MIN_VISIBLE_FREQ_MHz * 1000u)) {
+                    if (!driverRefused[i]) {
+                        driverRefused[i] = true;
+                        lb_log("curve offset: driver refuses point %d (wrote %dkHz, readback pinned at 0, liveFreq=%ukHz); accepting as non-offsettable placeholder\n",
+                               i, desiredOffsets[i], g->curve[i].freq_kHz);
+                    }
+                    pendingMask[i] = false;
+                }
+                if (pendingMask[i]) {
+                    anyPending = true;
+                    lb_log("curve batch pass %d unconverged: ci=%d wroteOffset=%dkHz readbackOffset=%dkHz\n",
+                           pass + 1, i, desiredOffsets[i], g->freqOffsets[i]);
+                }
                 unsigned int off = b->controlEntryBaseOffset + (unsigned int)i * b->controlEntryStride + b->controlEntryDeltaOffset;
                 if (off + sizeof(g->freqOffsets[i]) <= b->controlBufferSize)
                     memcpy(baseControl + off, &g->freqOffsets[i], sizeof(g->freqOffsets[i]));

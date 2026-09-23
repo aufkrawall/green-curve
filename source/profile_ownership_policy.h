@@ -18,4 +18,25 @@ static inline bool profile_ownership_fan_mismatch_allowed(
     return allowUnclaimedFan && profileHasFan && !activeHasFan;
 }
 
+// The same ownership read, for the advanced ClkDomains fields (XBAR clock,
+// XBAR MSVDD, SYS clock, VIDEO clock), in the opposite direction.
+//
+// A GUI Apply that goes through reset-before-apply claims every advanced
+// domain the GPU exposes, at its current value -- stock (0) when the user
+// never touched it.  A profile saved before a domain existed, or while the
+// GUI had not yet learned the GPU exposes it, has no key for it and so claims
+// nothing.  Strict equality then recorded every such profile as ad-hoc after
+// a successful Apply ("xbar clock ownership differs profile=0 active=1"), and
+// the tray showed "Manual settings" instead of the profile the user picked.
+//
+// Leaving a domain at stock is exactly what a profile that does not mention
+// it asks for, so only that case matches: an active claim at a NON-zero
+// offset is a real difference and still breaks the match.
+static inline bool profile_ownership_advanced_mismatch_allowed(
+    bool relaxedOwnershipRead, bool profileClaims, bool activeClaims,
+    int activeValue) {
+    return relaxedOwnershipRead && !profileClaims && activeClaims &&
+        activeValue == 0;
+}
+
 #endif  // GREEN_CURVE_PROFILE_OWNERSHIP_POLICY_H

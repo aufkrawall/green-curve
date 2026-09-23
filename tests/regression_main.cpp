@@ -74,6 +74,9 @@
 #include "service_apply_severity_policy.h"
 #include "profile_save_policy.h"
 #include "profile_ownership_policy.h"
+#include "apply_correction_budget_policy.h"
+#include "gui_apply_shape_policy.h"
+#include "desired_advanced_domains_policy.h"
 #include "gui_tray_callback_policy.h"
 #include "applied_profile_indicator_policy.h"
 #include "service_profile_identity_policy.h"
@@ -1080,8 +1083,120 @@ static int run_persistence_schema_tests() {
     return 0;
 }
 
+// 2026-09-23 audit follow-up (5810-5859): the crash handler's driver-module
+// match, the apply correction budget, the GUI apply shape, the advanced-domain
+// ownership relaxation behind the "Manual settings" label, and the single
+// advanced-domain claim predicate.
+static int run_audit_followup_tests() {
+    // A fault inside any NVAPI/NVML image is the driver-restart signature the
+    // VEH recovers from; before, only the literal "nvapi64.dll"/"nvml.dll"
+    // matched, which missed the x64 _impl image and every ARM64 image.
+    if (!gc_crash_module_is_nvidia_control_library(
+            L"c:\\windows\\system32\\nvapi64.dll")) return 5810;
+    if (!gc_crash_module_is_nvidia_control_library(
+            L"C:\\Windows\\System32\\NVAPIA64.DLL")) return 5811;
+    if (!gc_crash_module_is_nvidia_control_library(
+            L"c:\\windows\\system32\\driverstore\\filerepository\\nv.inf_x\\nvapi64_impl.dll")) return 5812;
+    if (!gc_crash_module_is_nvidia_control_library(
+            L"c:\\windows\\system32\\nvml.dll")) return 5813;
+    if (!gc_crash_module_is_nvidia_control_library(
+            L"c:/drivers/nvml_arm64ec.dll")) return 5814;
+    if (gc_crash_module_is_nvidia_control_library(
+            L"c:\\program files\\green curve\\greencurve-service.exe")) return 5815;
+    if (gc_crash_module_is_nvidia_control_library(
+            L"c:\\windows\\system32\\nvcuda.dll")) return 5816;
+    // The directory name must not count, only the image's own base name.
+    if (gc_crash_module_is_nvidia_control_library(
+            L"c:\\nvapi\\helper.dll")) return 5817;
+    if (gc_crash_module_is_nvidia_control_library(
+            L"c:\\temp\\nvapi64.dll.bak")) return 5818;
+    if (gc_crash_module_is_nvidia_control_library(L"")) return 5819;
+    if (gc_crash_module_is_nvidia_control_library(nullptr)) return 5820;
+    if (gc_crash_module_is_nvidia_control_library(L".dll")) return 5821;
+
+    // Correction budget: derived from, and strictly inside, the handler budget
+    // the client deadlines are derived from.
+    if (apply_correction_budget_ms() + APPLY_POST_CORRECTION_RESERVE_MS !=
+        SERVICE_APPLY_HANDLER_BUDGET_MS) return 5825;
+    if (apply_correction_budget_ms() == 0) return 5826;
+    // The first pass is never refused, however slow the batch before it was.
+    if (!apply_correction_pass_may_start(0, 60000, 60000)) return 5827;
+    if (!apply_correction_pass_may_start(1, 5000, 3000)) return 5828;
+    const unsigned long long budget = apply_correction_budget_ms();
+    if (!apply_correction_pass_may_start(3, budget - 1000, 1000)) return 5829;
+    if (apply_correction_pass_may_start(3, budget - 1000, 1001)) return 5830;
+    if (apply_correction_pass_may_start(24, budget + 1, 0)) return 5831;
+    // Reset/rollback pass 0 = unbounded; an apply's deadline is exclusive.
+    if (!apply_fallback_write_may_start(~0ull, 0)) return 5832;
+    if (!apply_fallback_write_may_start(999, 1000)) return 5833;
+    if (apply_fallback_write_may_start(1000, 1000)) return 5834;
+
+    // GUI apply shape: only a change that moves no clock may skip
+    // reset-before-apply.
+    {
+        GuiApplyChangeSet none = {};
+        if (gui_apply_shape(none) != GUI_APPLY_SHAPE_NO_CHANGE) return 5836;
+        GuiApplyChangeSet fan = {}; fan.fan = true;
+        if (gui_apply_shape(fan) != GUI_APPLY_SHAPE_FAN_ONLY) return 5837;
+        GuiApplyChangeSet power = {}; power.powerLimit = true;
+        if (gui_apply_shape(power) != GUI_APPLY_SHAPE_POWER_SPARSE) return 5838;
+        GuiApplyChangeSet powerFan = power; powerFan.fan = true;
+        if (gui_apply_shape(powerFan) != GUI_APPLY_SHAPE_POWER_SPARSE) return 5839;
+        GuiApplyChangeSet clockDomains[6] = {};
+        clockDomains[0].gpuOffset = true;
+        clockDomains[1].memOffset = true;
+        clockDomains[2].advancedClocks = true;
+        clockDomains[3].curve = true;
+        clockDomains[4].lock = true;
+        clockDomains[5].memOffset = true;
+        clockDomains[5].powerLimit = true;
+        clockDomains[5].fan = true;
+        for (const GuiApplyChangeSet& change : clockDomains) {
+            if (gui_apply_shape(change) != GUI_APPLY_SHAPE_FULL) return 5840;
+        }
+        if (strcmp(gui_apply_shape_name(GUI_APPLY_SHAPE_POWER_SPARSE),
+                   "power-sparse") != 0) return 5841;
+    }
+
+    // Ownership read: a profile silent about an advanced domain matches an
+    // active claim of that domain at stock, and nothing else.
+    if (!profile_ownership_advanced_mismatch_allowed(true, false, true, 0)) return 5845;
+    if (profile_ownership_advanced_mismatch_allowed(false, false, true, 0)) return 5846;
+    if (profile_ownership_advanced_mismatch_allowed(true, false, true, 15000)) return 5847;
+    if (profile_ownership_advanced_mismatch_allowed(true, false, true, -5000)) return 5848;
+    if (profile_ownership_advanced_mismatch_allowed(true, true, false, 0)) return 5849;
+    if (profile_ownership_advanced_mismatch_allowed(true, true, true, 0)) return 5850;
+
+    // Every advanced domain counts as a claim; the SYS and VIDEO clocks were
+    // missing from two open-coded copies of this list.
+    {
+        DesiredSettings desired = {};
+        if (desired_claims_advanced_clock_domain(&desired)) return 5852;
+        if (desired_claims_advanced_clock_domain(nullptr)) return 5853;
+        desired.hasXbarOffsetKhz = true;
+        if (!desired_claims_advanced_clock_domain(&desired)) return 5854;
+        desired = DesiredSettings{};
+        desired.hasXbarMsvddOffsetUv = true;
+        if (!desired_claims_advanced_clock_domain(&desired)) return 5855;
+        desired = DesiredSettings{};
+        desired.hasSysClkOffsetKhz = true;
+        if (!desired_claims_advanced_clock_domain(&desired)) return 5856;
+        desired = DesiredSettings{};
+        desired.hasVideoClkOffsetKhz = true;
+        if (!desired_claims_advanced_clock_domain(&desired)) return 5857;
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (int transitionFailure = run_clock_transition_tests()) return transitionFailure;
+    if (int followupFailure = run_audit_followup_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", followupFailure);
+#if !defined(_WIN32)
+        return followupFailure > 0 && followupFailure < 126 ? followupFailure : 1;
+#endif
+        return followupFailure;
+    }
     if (int installFailure = run_service_install_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", installFailure);
 #if !defined(_WIN32)

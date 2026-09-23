@@ -444,3 +444,47 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         "result.gpuOffset.verified = resetScalar();",
         "result.curve.verified = resetCurve();",
         "independent scalar reset verifies before the curve reset")
+
+    # --- 2026-09-23 audit follow-up -------------------------------------------
+    # The apply's correction phase is bounded by the budget its client deadline
+    # is derived from. Losing either call leaves applies that silently outrun
+    # the client and report "outcome unknown" for a write that landed.
+    budget_h = _p(ctx, "apply_correction_budget_policy.h")
+    require_text(budget_h, "static inline bool apply_correction_pass_may_start(",
+                 "the correction-pass budget rule is one named policy")
+    require_text(budget_h, "SERVICE_APPLY_HANDLER_BUDGET_MS -",
+                 "the correction budget is derived from the handler budget")
+    require_text(apply_cpp, "if (!apply_correction_pass_may_start(correctionPass,",
+                 "every correction pass asks the budget before it writes")
+    for needle in ("hasLock ? 3 : 2,\n                correctionDeadlineTickMs);",
+                   "hasLock ? 3 : 2,\n                            correctionDeadlineTickMs);"):
+        require_text(apply_cpp, needle,
+                     "the apply's curve batch and correction passes carry the "
+                     "per-point fallback deadline")
+    require_text(_p(ctx, "main_runtime_gpu.cpp"),
+                 "if (!apply_fallback_write_may_start(GetTickCount64(), fallbackDeadlineTickMs)) {",
+                 "the ~1 s per-point fallback writes honour the apply deadline")
+
+    # Linux must accept the same driver-pinned placeholder VF entry as Windows,
+    # or a selective offset spends its whole pass budget and rolls back.
+    require_text(_p(ctx, "linux_backend.cpp"),
+                 "vf_offset_zero_readback_is_benign(desiredOffsets[i],",
+                 "the Linux VF writer shares the placeholder-refusal rule")
+
+    # A Reset that could not even attempt the locked-clock release must not
+    # report "Reset applied." while a pin or retained clamp may be active.
+    require_text(_p(ctx, "main_service_apply_runtime.cpp"),
+                 "The clock lock could not be released because NVML is not ready",
+                 "an unattempted lock release is a failed Reset when a lock may exist")
+
+    # The VEH recognises every NVAPI/NVML image, not one literal spelling.
+    crash_cpp = _p(ctx, "main_crash_artifacts.cpp")
+    require_text(crash_cpp, "if (!gc_crash_module_is_nvidia_control_library(modPath))",
+                 "the driver-crash VEH uses the shared module predicate")
+    forbid_text(crash_cpp, 'wcsstr(modPath, L"nvapi64.dll")',
+                "no literal nvapi64.dll match: it misses nvapi64_impl.dll and ARM64")
+
+    # A power-only GUI Apply is sparse; the shape is one tested decision.
+    require_text(_p(ctx, "main_runtime_capture.cpp"),
+                 "const GuiApplyShape shape = gui_apply_shape(changed);",
+                 "the GUI apply shape comes from gui_apply_shape_policy.h")

@@ -4363,11 +4363,11 @@ def run_source_regression_checks():
     require_text(main_runtime_capture_cpp,
         "baselineMHz == 0 || full.curvePointMHz[i] != baselineMHz",
         "F-DRIFT-1: a newly-owned point (no baseline) or an edited value still forces a full apply")
-    # A fan-only apply carries no curve intent, so it must NOT rewrite the baseline
-    # (which would drop the curve the service still holds).
+    # A sparse fan/power/memory apply carries no curve intent, so it must NOT
+    # rewrite the baseline (which would drop the curve the service still holds).
     require_text(os.path.join(SOURCE_DIR, "gpu_backend.cpp"),
-        "if (ok && !fanOnlyApply) capture_applied_curve_baseline(desired);",
-        "F-DRIFT-1: baseline is refreshed on a real curve apply, preserved on fan-only apply")
+        "if (ok && desired_updates_curve_or_gpu_offset_state(desired))",
+        "F-DRIFT-1: baseline is refreshed on a real curve apply, preserved on sparse applies")
     # Adopting the service's active desired keeps the baseline drift-free across
     # reconnects / telemetry refreshes.
     require_text(os.path.join(SOURCE_DIR, "main_state_sync.cpp"),

@@ -4,12 +4,13 @@
 // Service-owned settings apply/reset and authoritative in-memory intent.
 
 #include "gpu_backend_xbar.h"
+#include "desired_advanced_domains_policy.h"
 
 static bool service_desired_has_owned_intent(const DesiredSettings* desired) {
     if (!desired) return false;
     if (desired->hasLock || desired->hasGpuOffset || desired->hasMemOffset ||
         desired->hasPowerLimit || desired->hasFan ||
-        desired->hasXbarOffsetKhz || desired->hasXbarMsvddOffsetUv) return true;
+        desired_claims_advanced_clock_domain(desired)) return true;
     for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
         if (desired->hasCurvePoint[ci]) return true;
     }
@@ -340,6 +341,14 @@ static bool service_reset_all(char* result, size_t resultSize,
                 failCount++;
                 append_failure("VIDEO clock offset did not reset to stock");
             }
+        } else {
+            // Same rule as XBAR and SYS: a domain that is offset but cannot be
+            // reached is a failed Reset, not a silently skipped one.
+            failCount++;
+            append_failure("VIDEO clock reset interface unavailable");
+            debug_log("service_reset_all: VIDEO clock offset %d kHz left in place;"
+                      " ClkDomains get/set interface unavailable\n",
+                g_app.videoClkFreqOffsetKhz);
         }
     }
 
@@ -376,10 +385,26 @@ static bool service_reset_all(char* result, size_t resultSize,
         debug_log("service_reset_all: NVML locked-clock reset is inapplicable on Pascal;"
                   " no hard pin or retained cap exists\n");
     } else if (g_nvml_api.resetGpuLockedClocks) {
-        if (nvml_ensure_ready()) {
-            const bool restrictionMayExist =
-                g_app.lockMode != LOCK_MODE_NONE || g_app.appliedLockFreq > 0 ||
-                g_app.transitionClockCapActive;
+        const bool restrictionMayExist =
+            g_app.lockMode != LOCK_MODE_NONE || g_app.appliedLockFreq > 0 ||
+            g_app.transitionClockCapActive;
+        if (!nvml_ensure_ready()) {
+            // No release was attempted.  When Green Curve believes a pin or a
+            // retained clamp is active, reporting "Reset applied." here would
+            // describe a GPU as stock while its clocks are still held down.
+            if (restrictionMayExist) {
+                failCount++;
+                append_failure("The clock lock could not be released because NVML is not ready");
+                debug_log("service_reset_all: NVML not ready; locked-clock release NOT attempted"
+                          " with lockMode=%s appliedLockFreq=%u transitionCap=%d\n",
+                    lock_mode_name(g_app.lockMode), g_app.appliedLockFreq,
+                    g_app.transitionClockCapActive ? 1 : 0);
+            } else {
+                recovery.restrictionReleased = true;
+                debug_log("service_reset_all: NVML not ready; no lock was active or owned,"
+                          " so no locked-clock release was needed\n");
+            }
+        } else {
             nvmlReturn_t r = g_nvml_api.resetGpuLockedClocks(g_app.nvmlDevice);
             if (r == NVML_SUCCESS) {
                 successCount++;
@@ -474,12 +499,11 @@ static bool service_reset_all(char* result, size_t resultSize,
         set_message(result, resultSize, "Reset applied.");
         return true;
     }
-    // RC3 fix: on partial reset failure, keep the on-disk snapshot so the
-    // next recovery (or service restart) can restore the previous profile.
-    // The in-memory g_serviceActiveDesired was already cleared above — that
-    // is correct for reset, which is a "stop applying anything" operation;
-    // but the disk snapshot is the safety net for a service restart after a
-    // partial reset.
+    // The in-memory intent was already cleared above, because a Reset means
+    // "stop applying anything" even when one of its steps failed.  Writing the
+    // snapshot from that cleared intent therefore DELETES the on-disk restart
+    // snapshot, so no later restart can replay the profile the user just asked
+    // to reset away.
     service_write_restart_reapply_snapshot();
     populate_control_state(&g_serviceControlState);
     g_serviceControlStateValid = true;

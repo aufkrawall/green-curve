@@ -309,8 +309,7 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
             WCHAR modPath[MAX_PATH] = {};
             if (GetModuleFileNameW(hMod, modPath, ARRAY_COUNT(modPath))) {
                 CharLowerW(modPath);
-                isGpuDriverDll = wcsstr(modPath, L"nvml.dll") != nullptr
-                    || wcsstr(modPath, L"nvapi64.dll") != nullptr
+                isGpuDriverDll = gc_crash_module_is_nvidia_control_library(modPath)
                     || wcsstr(modPath, L"nvcuda.dll") != nullptr
                     || wcsstr(modPath, L"nvmessagebus") != nullptr
                     || wcsstr(modPath, L"nvwgf2umx") != nullptr;
@@ -501,8 +500,10 @@ static LONG CALLBACK green_curve_vectored_handler(EXCEPTION_POINTERS* info) {
     if (info->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
         return EXCEPTION_CONTINUE_SEARCH;
 
-    // Check if the crash is inside nvml.dll or nvapi64.dll (stale handle after
-    // driver restart / driver upgrade / device reconnect)
+    // Check if the crash is inside an NVML/NVAPI image (stale handle after
+    // driver restart / driver upgrade / device reconnect).  Every image the
+    // driver ships counts -- nvapi64_impl.dll where the x64 code runs and
+    // nvapia64.dll on ARM64 -- see gc_crash_module_is_nvidia_control_library().
     void* address = info->ExceptionRecord->ExceptionAddress;
     HMODULE hMod = nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -513,7 +514,7 @@ static LONG CALLBACK green_curve_vectored_handler(EXCEPTION_POINTERS* info) {
     if (!GetModuleFileNameW(hMod, modPath, MAX_PATH))
         return EXCEPTION_CONTINUE_SEARCH;
     CharLowerW(modPath);
-    if (!wcsstr(modPath, L"nvml.dll") && !wcsstr(modPath, L"nvapi64.dll"))
+    if (!gc_crash_module_is_nvidia_control_library(modPath))
         return EXCEPTION_CONTINUE_SEARCH;
 
     // Write a focused minidump BEFORE making any state changes — this captures

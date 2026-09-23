@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 #include "profile_ownership_policy.h"
+#include "desired_advanced_domains_policy.h"
 
 static int desired_curve_point_count(const DesiredSettings* desired) {
     if (!desired) return 0;
@@ -24,8 +25,7 @@ static bool desired_has_nonfan_apply_fields(const DesiredSettings* desired) {
     return desired_updates_curve_or_gpu_offset_state(desired)
         || desired->hasMemOffset
         || desired->hasPowerLimit
-        || desired->hasXbarOffsetKhz
-        || desired->hasXbarMsvddOffsetUv;
+        || desired_claims_advanced_clock_domain(desired);
 }
 
 static bool desired_is_fan_only_apply_request(const DesiredSettings* desired) {
@@ -45,7 +45,10 @@ static bool desired_bool_equal(gc_bool8 lhs, gc_bool8 rhs) {
     return (lhs != 0) == (rhs != 0);
 }
 
-static bool desired_settings_match_active_service_intent(const DesiredSettings* profile, const DesiredSettings* active, char* detail, size_t detailSize, bool allowUnclaimedFan) {
+// `relaxedOwnershipRead` is the post-write/indicator question "is this profile
+// what is now in force?"; see profile_ownership_policy.h for the two domain
+// relaxations it permits.  Pre-write profile claims pass false.
+static bool desired_settings_match_active_service_intent(const DesiredSettings* profile, const DesiredSettings* active, char* detail, size_t detailSize, bool relaxedOwnershipRead) {
     if (!profile || !active) {
         set_message(detail, detailSize, "missing desired settings");
         return false;
@@ -84,7 +87,10 @@ static bool desired_settings_match_active_service_intent(const DesiredSettings* 
     }
 
     if (!desired_bool_equal(profile->hasXbarOffsetKhz,
-                            active->hasXbarOffsetKhz)) {
+                            active->hasXbarOffsetKhz) &&
+        !profile_ownership_advanced_mismatch_allowed(relaxedOwnershipRead,
+            profile->hasXbarOffsetKhz, active->hasXbarOffsetKhz,
+            active->xbarOffsetKhz)) {
         set_message(detail, detailSize,
                     "xbar clock ownership differs profile=%d active=%d",
                     profile->hasXbarOffsetKhz ? 1 : 0,
@@ -99,7 +105,10 @@ static bool desired_settings_match_active_service_intent(const DesiredSettings* 
         return false;
     }
     if (!desired_bool_equal(profile->hasXbarMsvddOffsetUv,
-                            active->hasXbarMsvddOffsetUv)) {
+                            active->hasXbarMsvddOffsetUv) &&
+        !profile_ownership_advanced_mismatch_allowed(relaxedOwnershipRead,
+            profile->hasXbarMsvddOffsetUv, active->hasXbarMsvddOffsetUv,
+            active->xbarMsvddOffsetUv)) {
         set_message(detail, detailSize,
                     "xbar MSVDD ownership differs profile=%d active=%d",
                     profile->hasXbarMsvddOffsetUv ? 1 : 0,
@@ -114,7 +123,10 @@ static bool desired_settings_match_active_service_intent(const DesiredSettings* 
         return false;
     }
     if (!desired_bool_equal(profile->hasSysClkOffsetKhz,
-                            active->hasSysClkOffsetKhz)) {
+                            active->hasSysClkOffsetKhz) &&
+        !profile_ownership_advanced_mismatch_allowed(relaxedOwnershipRead,
+            profile->hasSysClkOffsetKhz, active->hasSysClkOffsetKhz,
+            active->sysClkOffsetKhz)) {
         set_message(detail, detailSize,
                     "sys clock ownership differs profile=%d active=%d",
                     profile->hasSysClkOffsetKhz ? 1 : 0,
@@ -129,7 +141,10 @@ static bool desired_settings_match_active_service_intent(const DesiredSettings* 
         return false;
     }
     if (!desired_bool_equal(profile->hasVideoClkOffsetKhz,
-                            active->hasVideoClkOffsetKhz)) {
+                            active->hasVideoClkOffsetKhz) &&
+        !profile_ownership_advanced_mismatch_allowed(relaxedOwnershipRead,
+            profile->hasVideoClkOffsetKhz, active->hasVideoClkOffsetKhz,
+            active->videoClkOffsetKhz)) {
         set_message(detail, detailSize,
                     "video clock ownership differs profile=%d active=%d",
                     profile->hasVideoClkOffsetKhz ? 1 : 0,
@@ -145,7 +160,7 @@ static bool desired_settings_match_active_service_intent(const DesiredSettings* 
     }
 
     if (!desired_bool_equal(profile->hasFan, active->hasFan) &&
-        !profile_ownership_fan_mismatch_allowed(allowUnclaimedFan,
+        !profile_ownership_fan_mismatch_allowed(relaxedOwnershipRead,
             profile->hasFan, active->hasFan)) {
         set_message(detail, detailSize, "fan ownership differs profile=%d active=%d", profile->hasFan ? 1 : 0, active->hasFan ? 1 : 0);
         return false;

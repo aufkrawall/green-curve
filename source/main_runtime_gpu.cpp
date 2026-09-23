@@ -1,3 +1,5 @@
+#include "apply_correction_budget_policy.h"
+
 static bool nvapi_read_control_table(unsigned char* buf, size_t bufSize) {
     const VfBackendSpec* backend = g_app.vfBackend;
     if (!backend) return false;
@@ -17,7 +19,10 @@ static bool nvapi_read_control_table(unsigned char* buf, size_t bufSize) {
     return getFunc(g_app.gpuHandle, buf) == 0;
 }
 
-static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* pointMask, int maxBatchPasses) {
+// `fallbackDeadlineTickMs` bounds the ~1 s per-point fallback writes for an
+// apply (apply_correction_budget_policy.h); 0 = unbounded, for Reset/rollback.
+static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* pointMask, int maxBatchPasses,
+    ULONGLONG fallbackDeadlineTickMs) {
     if (!targetOffsets || !pointMask) return false;
 
     const VfBackendSpec* backend = g_app.vfBackend;
@@ -177,8 +182,16 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
     }
 
     if (hasPending) {
+        int fallbackSkipped = 0;
         for (int i = 0; i < VF_NUM_POINTS; i++) {
             if (!pendingMask[i]) continue;
+            if (!apply_fallback_write_may_start(GetTickCount64(), fallbackDeadlineTickMs)) {
+                // Past the apply's correction budget: leave the point for
+                // verification to judge instead of spending another ~1 s write.
+                fallbackSkipped++;
+                allOk = false;
+                continue;
+            }
             // Points the batch could not converge fall back to per-point writes.
             // Log the pre-fallback gap so the batch-vs-fallback behaviour is visible.
             bool pointOk = nvapi_set_point(i, desiredOffsets[i]);
@@ -190,6 +203,12 @@ static bool apply_curve_offsets_verified(const int* targetOffsets, const bool* p
             } else {
                 anyWrite = true;
             }
+        }
+
+        if (fallbackSkipped > 0) {
+            debug_log("apply_curve_offsets_verified: skipped %d per-point fallback write(s);"
+                      " the apply correction budget (%lu ms after entry) is exhausted\n",
+                fallbackSkipped, apply_correction_budget_ms());
         }
 
         bool readOk = false;

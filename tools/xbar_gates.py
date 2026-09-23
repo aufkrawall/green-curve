@@ -141,9 +141,12 @@ def check_xbar_clk_domains(ctx, require_text, forbid_text):
     require_text(apply_capture_cpp,
                  "bool xbarUnchanged =",
                  "F-XBAR-V2: manual apply compares captured XBAR intent with hardware")
+    # The shortcuts are now one decision (gui_apply_shape_policy.h); the XBAR,
+    # SYS and VIDEO comparisons feed it as one clock-domain change, so a change
+    # to any of them can never take a sparse (no reset-before-apply) path.
     require_text(apply_capture_cpp,
-                 "powerUnchanged && xbarUnchanged &&",
-                 "F-XBAR-V2: no-change and fan-only shortcuts cannot omit XBAR")
+                 "changed.advancedClocks = !xbarUnchanged || !sysClkUnchanged || !videoClkUnchanged;",
+                 "F-XBAR-V2: no-change and sparse shortcuts cannot omit XBAR/SYS/VIDEO")
     require_text(apply_capture_cpp, "sysClkUnchanged",
                  "F-XBAR-SYS: the no-change/fan-only shortcuts must include SYS")
 

@@ -12,6 +12,8 @@
 #include "gpu_backend_apply_verify.h"
 // The XBAR/SYS/VIDEO half of an apply, after the core clock transaction.
 #include "gpu_backend_apply_advanced.h"
+// How long VF correction may run inside the apply's own time budget.
+#include "apply_correction_budget_policy.h"
 
 static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool interactive, char* result, size_t resultSize,
@@ -26,6 +28,11 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         set_message(result, resultSize, "No desired settings");
         return false;
     }
+    // Every VF write below measures itself against this, so the apply cannot
+    // outrun the budget its client deadline is derived from.
+    const ULONGLONG applyStartTickMs = GetTickCount64();
+    const ULONGLONG correctionDeadlineTickMs =
+        applyStartTickMs + apply_correction_budget_ms();
     if (!validate_desired_fan_settings_for_apply(desired, result, resultSize)) {
         debug_log("apply_desired_settings: fan prevalidation failed: %s\n", result && result[0] ? result : "unknown");
         return false;
@@ -654,7 +661,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 highOffsetWarnings,
                 maxAbsOffsetCi,
                 maxAbsOffsetKHz);
-            curveBatchOk = apply_curve_offsets_verified(targetCurveOffsets, targetCurveMask, hasLock ? 3 : 2);
+            curveBatchOk = apply_curve_offsets_verified(targetCurveOffsets, targetCurveMask, hasLock ? 3 : 2,
+                correctionDeadlineTickMs);
             // THE critical sample. The curve is now at its new (raised) shape and
             // the final lock step has not run; this is the exact instant that was
             // uncapped before F-APPLY-CEILING, and the 2026-09-13 TDR landed
@@ -775,7 +783,24 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                     const int correctionFloorTailOffsetKHz =
                         vf_offset_range_flatten_floor_khz(vf_offset_range_current());
                     bool correctionReachedFixedPoint = false;
+                    bool correctionBudgetExhausted = false;
+                    int correctionPassesRun = 0;
+                    ULONGLONG previousPassMs = 0;
                     for (int correctionPass = 0; correctionPass < 25; correctionPass++) {
+                        const ULONGLONG passStartTickMs = GetTickCount64();
+                        if (!apply_correction_pass_may_start(correctionPass,
+                                passStartTickMs - applyStartTickMs, previousPassMs)) {
+                            correctionBudgetExhausted = true;
+                            debug_log("curve correction: NOT starting pass %d -- %llu ms since"
+                                      " apply entry plus the previous pass's %llu ms would pass"
+                                      " the %lu ms correction budget; verifying what landed\n",
+                                correctionPass + 1,
+                                (unsigned long long)(passStartTickMs - applyStartTickMs),
+                                (unsigned long long)previousPassMs,
+                                apply_correction_budget_ms());
+                            break;
+                        }
+                        correctionPassesRun = correctionPass + 1;
                         int correctedCurveOffsets[VF_NUM_POINTS] = {};
                         bool correctedCurveMask[VF_NUM_POINTS] = {};
                         bool haveCorrections = false;
@@ -863,10 +888,15 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                             g_app.freqOffsets[75],
                             correctedCurveOffsets[75]);
                         set_last_apply_phase("apply: VF curve correction write");
-                        bool correctionOk = apply_curve_offsets_verified(correctedCurveOffsets, correctedCurveMask, hasLock ? 3 : 2);
+                        bool correctionOk = apply_curve_offsets_verified(correctedCurveOffsets, correctedCurveMask, hasLock ? 3 : 2,
+                            correctionDeadlineTickMs);
+                        previousPassMs = GetTickCount64() - passStartTickMs;
                         if (!correctionOk) {
                             debug_log("curve correction pass %d had an offset verification mismatch\n", correctionPass + 1);
                         }
+                        debug_log("curve correction pass %d wrote in %llu ms (%llu ms since apply entry)\n",
+                            correctionPass + 1, (unsigned long long)previousPassMs,
+                            (unsigned long long)(GetTickCount64() - applyStartTickMs));
                         // After writing correction offsets, check for non-tail points whose
                         // required correction delta exceeds the hardware range. This happens
                         // when tail offset writes shift adjacent point bases (observed on
@@ -998,6 +1028,16 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                             break;
                         }
                         if (correctionReachedFixedPoint) break;
+                    }
+                    if (correctionBudgetExhausted && !curveRequestOk) {
+                        // The last verification detail says which point missed;
+                        // say also why no further pass was tried.
+                        char budgetDetail[256] = {};
+                        set_message(budgetDetail, sizeof(budgetDetail),
+                            "%s (correction stopped after %d pass(es) to stay within the apply time budget)",
+                            curveVerifyDetail[0] ? curveVerifyDetail : "VF curve did not verify",
+                            correctionPassesRun);
+                        StringCchCopyA(curveVerifyDetail, ARRAY_COUNT(curveVerifyDetail), budgetDetail);
                     }
                 }
                 // After the correction loop, apply post-correction handling.
@@ -1367,9 +1407,13 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     gc_u32 outcomeSeverity = service_apply_outcome_severity_for_lock_mode(
         lockMode == LOCK_MODE_HARD, failCount, userBoostFailed, flattenFailed);
     if (outcomeSeverityOut) *outcomeSeverityOut = outcomeSeverity;
-    debug_log("apply outcome: severity=%s failCount=%d successCount=%d boostUnmatched=%d flattenUnmatched=%d\n",
+    const ULONGLONG applyElapsedMs = GetTickCount64() - applyStartTickMs;
+    debug_log("apply outcome: severity=%s failCount=%d successCount=%d boostUnmatched=%d flattenUnmatched=%d elapsedMs=%llu budgetMs=%lu%s\n",
         service_outcome_severity_name(outcomeSeverity), failCount, successCount,
-        userBoostFailed, flattenFailed);
+        userBoostFailed, flattenFailed, (unsigned long long)applyElapsedMs,
+        (unsigned long)SERVICE_APPLY_HANDLER_BUDGET_MS,
+        applyElapsedMs > SERVICE_APPLY_HANDLER_BUDGET_MS
+            ? " OVER-BUDGET (the client has already timed out)" : "");
     if (successCount == 0 && failCount == 0) {
         set_message(result, resultSize, "No setting changes needed.");
     } else if (failCount == 0) {

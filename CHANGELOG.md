@@ -51,6 +51,11 @@ Setup now accepts install folders beyond Program Files.
 - **The service now reports start-up and shutdown progress to Windows**, so a
   slow start or stop no longer looks hung.
 - **The background service now has a description in Windows Services.**
+- **Power-limit-only changes no longer reset the GPU to stock.**
+- **The tray keeps the applied profile's name** instead of "Manual settings".
+- **Slow applies under load no longer end as "outcome unknown".**
+- **Reset no longer claims success while a clock lock may remain.**
+- **More driver-update crashes are now recovered**, including on Windows on Arm.
 
 ### Compatibility notes
 

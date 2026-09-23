@@ -1,3 +1,5 @@
+#include "gui_apply_shape_policy.h"
+
 static void close_startup_sync_thread_handle() {
     if (g_app.hStartupSyncThread) {
         CloseHandle(g_app.hStartupSyncThread);
@@ -276,24 +278,46 @@ static bool capture_gui_apply_settings(DesiredSettings* desired, OcApplyBaseline
         lock_mode_name(full.lockMode),
         lockChanged ? 1 : 0);
 
-    if (gpuUnchanged && memUnchanged && powerUnchanged && xbarUnchanged &&
-        sysClkUnchanged && videoClkUnchanged && curveUnchanged &&
-        !lockChanged && fanChanged) {
-        debug_log("capture_gui_apply_settings: fan-only apply shortcut taken\n");
-        *desired = fanOnly;
-        desired->hasFan = true;
-        desired->fanMode = full.fanMode;
-        desired->fanAuto = full.fanAuto;
-        desired->fanPercent = full.fanPercent;
-        copy_fan_curve(&desired->fanCurve, &full.fanCurve);
-        return true;
-    }
+    GuiApplyChangeSet changed = {};
+    changed.gpuOffset = !gpuUnchanged;
+    changed.memOffset = !memUnchanged;
+    changed.powerLimit = !powerUnchanged;
+    changed.advancedClocks = !xbarUnchanged || !sysClkUnchanged || !videoClkUnchanged;
+    changed.curve = !curveUnchanged;
+    changed.lock = lockChanged;
+    changed.fan = fanChanged;
+    const GuiApplyShape shape = gui_apply_shape(changed);
+    debug_log("capture_gui_apply_settings: shape=%s changed gpu=%d mem=%d power=%d advanced=%d curve=%d lock=%d fan=%d\n",
+        gui_apply_shape_name(shape), changed.gpuOffset ? 1 : 0,
+        changed.memOffset ? 1 : 0, changed.powerLimit ? 1 : 0,
+        changed.advancedClocks ? 1 : 0, changed.curve ? 1 : 0,
+        changed.lock ? 1 : 0, changed.fan ? 1 : 0);
 
-    if (gpuUnchanged && memUnchanged && powerUnchanged && xbarUnchanged &&
-        sysClkUnchanged && videoClkUnchanged && curveUnchanged &&
-        !lockChanged && !fanChanged) {
+    if (shape == GUI_APPLY_SHAPE_NO_CHANGE) {
         set_message(err, errSize, "No changes to apply");
         return false;
+    }
+    if (shape == GUI_APPLY_SHAPE_FAN_ONLY || shape == GUI_APPLY_SHAPE_POWER_SPARSE) {
+        // Sparse: no reset-before-apply, no curve, no lock.  The service merges
+        // it into the intent it already owns (gui_apply_shape_policy.h).
+        *desired = fanOnly;
+        if (fanChanged) {
+            desired->hasFan = true;
+            desired->fanMode = full.fanMode;
+            desired->fanAuto = full.fanAuto;
+            desired->fanPercent = full.fanPercent;
+            copy_fan_curve(&desired->fanCurve, &full.fanCurve);
+        }
+        if (shape == GUI_APPLY_SHAPE_POWER_SPARSE) {
+            desired->hasPowerLimit = true;
+            desired->powerLimitPct = full.powerLimitPct;
+            debug_log("capture_gui_apply_settings: power-sparse apply shortcut taken"
+                      " (power %d%% -> %d%%, fanChanged=%d); no reset-before-apply\n",
+                currentPowerLimitPct, full.powerLimitPct, fanChanged ? 1 : 0);
+        } else {
+            debug_log("capture_gui_apply_settings: fan-only apply shortcut taken\n");
+        }
+        return true;
     }
 
     if (full.hasGpuOffset && full.gpuOffsetExcludeLowCount

@@ -249,4 +249,45 @@ static inline bool gc_crash_breadcrumb_needs_reset(unsigned long long bytes) {
     return bytes >= (unsigned long long)GC_CRASH_BREADCRUMB_MAX_BYTES;
 }
 
+// ---------------------------------------------------------------------------
+// Which faulting module is an NVIDIA control library
+// ---------------------------------------------------------------------------
+
+static inline wchar_t gc_crash_ascii_lower_w(wchar_t c) {
+    return (c >= L'A' && c <= L'Z') ? (wchar_t)(c - L'A' + L'a') : c;
+}
+
+static inline bool gc_crash_name_has_prefix_w(const wchar_t* name,
+                                              const wchar_t* prefix) {
+    for (; *prefix; ++name, ++prefix) {
+        if (gc_crash_ascii_lower_w(*name) != *prefix) return false;
+    }
+    return true;
+}
+
+// Whether the image at `modulePath` (any case, either separator) is part of
+// the NVAPI or NVML user-mode driver.  The Windows VEH treats an access
+// violation there as the stale-handle signature of a driver restart and
+// recovers instead of letting the process die, so a spelling it does not know
+// turns a recoverable driver update into a service crash.  Matched by base
+// name prefix, not by one literal, because the driver ships several images:
+//   nvapi64.dll       x64 shim           nvapi64_impl.dll  where the code runs
+//   nvapia64.dll      native ARM64       nvml.dll / nvml_*.dll
+// The shim/_impl split alone meant a fault in the image that does the work was
+// never recognised, and ARM64 never loads nvapi64.dll at all.
+static inline bool gc_crash_module_is_nvidia_control_library(
+    const wchar_t* modulePath) {
+    if (!modulePath || !modulePath[0]) return false;
+    const wchar_t* base = modulePath;
+    for (const wchar_t* p = modulePath; *p; ++p) {
+        if (*p == L'\\' || *p == L'/') base = p + 1;
+    }
+    size_t length = 0;
+    while (base[length]) ++length;
+    if (length < 5 || !gc_crash_name_has_prefix_w(base + length - 4, L".dll"))
+        return false;
+    return gc_crash_name_has_prefix_w(base, L"nvapi") ||
+           gc_crash_name_has_prefix_w(base, L"nvml");
+}
+
 #endif // GREEN_CURVE_CRASH_ARTIFACT_POLICY_H
