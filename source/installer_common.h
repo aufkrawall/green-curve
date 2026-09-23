@@ -34,6 +34,15 @@
 #define WINVER 0x0A00
 #endif
 
+// C++ standard headers MUST precede <strsafe.h>: it #defines strcpy, sprintf,
+// wcscpy, ... to poison names, and libc++'s <cstring>/<cwchar> then fail on
+// `using ::strcpy`.  Shards included later in a TU (installer_transaction.cpp)
+// cannot include them themselves, so every standard header the installer
+// uses is pulled in here.  MSVC's STL tolerates the order; llvm-mingw (the
+// release toolchain) does not.
+#include <string>
+#include <vector>
+
 #include <windows.h>
 // WTSQueryUserToken / WTSGetActiveConsoleSessionId, used to reach the
 // interactive session when setup runs in session 0 (the in-app updater

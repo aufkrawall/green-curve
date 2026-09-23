@@ -5,8 +5,8 @@
 // the old service is stopped. A failed rollback retains its protected copies
 // and reports their location rather than discarding the only working binaries.
 
-#include <string>
-#include <vector>
+// <string>/<vector> come from installer_common.h: this shard is included after
+// <strsafe.h>, whose deprecation macros break libc++ headers included here.
 #include "installer_transaction_files.h"
 
 static const WCHAR* const gc_registration_values[] = {

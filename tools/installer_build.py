@@ -33,9 +33,11 @@ never produces it.  `_verify_setup_file` refuses anything but STORE.
 """
 
 import os
+import re
 import shutil
 import struct
 import subprocess
+import sys
 
 import build_state  # same one-way dependency: it never imports build.py
 import msvc_toolchain  # same one-way dependency
@@ -567,6 +569,25 @@ def check_all(ctx, require_text, forbid_text):
                                    "gc_update_shortcuts(context)",
                                    "gc_retire_previous_directory(context)",
                                    "the old directory is retired only after the new install is registered")
+    # <strsafe.h> poisons strcpy/sprintf/wcscpy..., which breaks libc++'s
+    # <cstring>/<cwchar> on the llvm-mingw release toolchain (MSVC's STL does
+    # not care, so only release packaging failed).  Standard C++ headers are
+    # therefore included once, in installer_common.h, ahead of <strsafe.h>.
+    common_text = open(installer_common, encoding="utf-8").read()
+    for header in ("#include <string>", "#include <vector>"):
+        if header not in common_text or \
+                common_text.index(header) > common_text.index("#include <strsafe.h>"):
+            print(f"Regression source check FAILED: installer_common.h must {header} "
+                  "before <strsafe.h>")
+            sys.exit(1)
+    for name in sorted(os.listdir(ctx.SOURCE_DIR)):
+        if not name.startswith("installer_") or name == "installer_common.h":
+            continue
+        text = open(source(name), encoding="utf-8").read()
+        if re.search(r"^\s*#\s*include\s*<[A-Za-z_]+>", text, re.MULTILINE):
+            print(f"Regression source check FAILED: {name} includes a C++ standard "
+                  "header; include it from installer_common.h before <strsafe.h>")
+            sys.exit(1)
     # The pinning handle holds the target without FILE_SHARE_DELETE, so the
     # created-folder guard must be declared first (destroyed after it closes).
     ctx.require_order_in_operation(apply_shard, install_anchor,
