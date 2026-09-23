@@ -68,6 +68,9 @@ jobs:
         with:
           python-version: '3.12.10'
 
+      - name: Check release notes for this version
+        run: python tools/release_prep.py
+
       # No toolchain cache on the release path.  A restored cache is writable by
       # other workflow runs in a way a pinned archive is not, so the release
       # always unpacks the compilers from the archive whose SHA-256 this repo

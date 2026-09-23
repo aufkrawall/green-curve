@@ -74,7 +74,7 @@ Two things the archive route needs and setup handles for you: registering a serv
 
 - Shows the MIT license and the version it is about to install.
 - Lets you choose where the `Green Curve` folder goes (default `%ProgramFiles%\Green Curve`).
-- Detects an existing installation and upgrades it: it reads your currently applied settings, closes the GUI, stops the background service, replaces the files, re-registers the service, and applies those settings again. Choosing a different folder moves the installation and re-points the service registration; the old folder's files are left for you to delete.
+- Detects an existing installation and upgrades it: it reads your currently applied settings, closes the GUI, stops the background service, replaces the files, re-registers the service, and applies those settings again. Choosing a different folder moves the installation and re-points the service registration. Setup removes its own files from the old folder when safe; other files are left for you.
 - Optional Start menu and desktop shortcuts, and an option to start the program when setup finishes.
 - Registers an Add/Remove Programs entry with a `greencurve-uninstall.exe` next to the program.
 
@@ -83,7 +83,7 @@ Setup writes a log file next to itself **only if something fails**; a successful
 For unattended installs and updates:
 
 ```powershell
-greencurve-0.26.0-windows-x64-setup.exe /S
+greencurve-0.27.0-windows-x64-setup.exe /S
 ```
 
 `/S` installs or upgrades with no window (it still needs administrator rights, because it registers a service). `/D=<path>` selects the folder, `--no-start-menu` / `--desktop` / `--launch` override the shortcut and post-install behaviour, and `--uninstall` removes an installation. Exit codes are `0` success, `1` failure, `2` cancelled, `3` bad arguments. Run it with `/?` for the full list.
@@ -187,7 +187,7 @@ Running `python build.py` by default produces ready-to-install Arch Linux packag
 Install the package directly with `pacman`:
 
 ```bash
-sudo pacman -U greencurve-0.26.0-1-x86_64.pkg.tar.zst
+sudo pacman -U greencurve-0.27.0-1-x86_64.pkg.tar.zst
 ```
 
 The package installs `/usr/bin/greencurve`, provisions the `greencurve` group automatically via `systemd-sysusers`, configures the systemd service units (`greencurve.service` and `greencurve-resume.service`), and provides desktop integration.

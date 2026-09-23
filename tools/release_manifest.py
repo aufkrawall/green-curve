@@ -25,9 +25,9 @@ import subprocess
 import sys
 import tarfile
 
+import release_prep
 import toolchain
-from arch_package import build_arch_package
-
+from arch_package import build_arch_package  # noqa: F401 (re-exported for build.py)
 
 # Files the binary legitimately writes beside itself at run time.  A developer
 # who runs the freshly built binary out of dist/ must not have that turn into a
@@ -187,7 +187,8 @@ def verify_seven_zip_manifest(seven, archive, expected_names, root):
     Moved out of build.py to sit beside the tarball's equivalent check; 7-Zip
     records no Unix mode, which is precisely why only Windows ships this
     format."""
-    result = subprocess.run([seven, "l", "-slt", archive], text=True, capture_output=True)
+    result = subprocess.run([seven, "l", "-slt", archive], text=True,
+                            capture_output=True, check=False)
     if result.returncode != 0:
         raise RuntimeError("7-Zip could not inspect the completed archive")
     in_entries = False
@@ -261,7 +262,7 @@ def report_packaging_skipped(skipped):
         if os_name != "windows":
             raise ValueError(f"only Windows packaging needs an external archiver, got {os_name!r}")
     install_hint = "python build.py --fetch-toolchain"
-    print("")
+    print()
     print("!!! WARNING: 7-Zip not found -- Windows release archives were NOT built !!!")
     print("    The binaries below are complete and passed every build-time check;")
     print("    only the .7z archives, .sha256 files and the Windows setup .exe were")
@@ -273,7 +274,7 @@ def report_packaging_skipped(skipped):
     for os_name, arch, binaries in skipped:
         for binary in binaries:
             print(f"      [{os_name}-{arch}] {binary}")
-    print("")
+    print()
 
 
 def check_packaging_skip_warning():
@@ -321,6 +322,7 @@ def check_all(ctx, require_text):
 
     These describe build.py's packaging path but live beside the manifest they
     protect, which also keeps the build script under its size ratchet."""
+    release_prep.check_repo(ctx.SCRIPT_DIR)
     build_script = os.path.join(ctx.SCRIPT_DIR, "build.py")
     self_path = os.path.join(ctx.SCRIPT_DIR, "tools", "release_manifest.py")
     require_text(build_script, "def package_release_archive",

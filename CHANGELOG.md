@@ -24,52 +24,48 @@
 
 # Changelog
 
-## Unreleased
+## 0.27.0
 
-Setup can now install anywhere, and a failed install or upgrade restores the
-previous one. Crash recovery and Apply reliability also improve.
+Setup, crash recovery, and Apply reliability improve in this release.
 
 ### Highlights
 
-- **Setup can now install to any folder of its own, on any drive.** It asks you to confirm when other accounts could change that folder.
-- **Native Windows builds now produce separate MSVC and release-toolchain artifacts.** They are kept in distinct folders so you can compare or package each compiler path independently.
-- **A failed install or upgrade now restores the previous installation.** Program files, the background service and the uninstall entry come back.
-- **Upgrading now also removes the previous version's leftover uninstaller file.**
-- **A failed service install, repair or removal now explains why.**
+- **Setup accepts dedicated folders on any drive.** It asks for consent when other accounts could change one.
+- **Windows source builds now include both compiler variants.** Their artifacts stay in separate folders.
+- **A failed upgrade now restores the previous installation.**
+- **A failed fresh install now removes the folder it created.**
 - **Moving an installation now removes its old folder when empty.**
-- **Updates now warn when your applied settings could not be saved for restoring.**
-- **A crashed or killed background service no longer leaves a custom fan curve frozen.** The fan returns to driver control, and on Windows the GPU returns to stock.
-- **A background service stuck inside the GPU driver now restarts itself.**
-- **Power-limit-only changes no longer reset the GPU to stock.**
-- **Slow applies under load no longer end as "outcome unknown".**
-- **Reset no longer claims success while a clock lock may remain.**
+- **Upgrading now removes the old `uninstall.exe` when it is left behind.**
+- **Service install and removal failures now explain why they failed.**
+- **Updates now warn if applied settings could not be saved for restoration.**
+- **A crashed service now returns custom fans to driver control.** On Windows, it also returns the GPU to stock.
+- **A service stuck in the GPU driver now restarts itself.**
+- **Changing only the power limit no longer resets other GPU settings.**
+- **Slow applies under load no longer end with an unknown outcome.**
+- **Reset no longer reports success while a clock lock may remain.**
 - **Pascal GPUs can now apply curve-based clock limits.**
-- **The tray keeps the applied profile's name** instead of showing "Manual settings".
-- **More driver-update crashes are now recovered**, including on Windows on Arm.
-- **A slow service start or stop is no longer mistaken for a hang or a failure.**
-- **With several NVIDIA GPUs, the memory offset is now read from the selected GPU.**
-- **Antivirus programs should raise fewer false alarms about Green Curve.**
-- **The uninstaller is now `greencurve-uninstall.exe` and is much smaller.** Setup still removes the old `uninstall.exe` on upgrade.
+- **The tray now keeps the applied profile's name.**
+- **More driver-update crashes are now recovered, including on Windows on Arm.**
+- **Slow service starts and stops are no longer mistaken for failures.**
+- **The selected GPU now supplies its own memory offset reading.**
+- **Windows binaries should trigger fewer antivirus false alarms.**
+- **The uninstaller is now smaller and named `greencurve-uninstall.exe`.**
 
 ### Compatibility notes
 
-- Existing installations keep updating in place; unattended updates never prompt.
-- Folders holding other files and protected Windows locations are refused.
-- FAT/exFAT drives and network folders work, with a warning.
-- An installation in a folder that is no longer accepted keeps working; the rule applies when you install or move it.
-- Installing from the archive requires an elevated PowerShell or Command Prompt.
+- Existing installations update in place; unattended updates never prompt.
+- Protected Windows locations and folders holding other files are refused.
+- Existing installs in a now-refused folder keep working until moved or reinstalled.
+- FAT/exFAT and network folders work with a warning.
+- Installing from an archive requires an elevated terminal.
 - Uninstalling removes the program folder at the next restart.
-- App and background service move to protocol v28. They update together, so this
-  needs nothing from you.
+- App and service update together to protocol v28; no action is needed.
 
 ### Downloads and verification
 
-- **Windows:** use the `setup.exe` for a normal install or upgrade; use the
-  `.7z` archive for a portable copy.
-- **Linux:** use the ready-to-install Arch Linux `.pkg.tar.zst` on pacman-based
-  systems, or extract the `.tar.xz` archive and run `greencurve-setup.sh`.
-- Every program package has a matching SHA-256 file and a GitHub
-  build-provenance attestation. Verify an artifact with:
+- **Windows:** use `setup.exe` to install or upgrade, or `.7z` for a portable copy.
+- **Linux:** install the Arch `.pkg.tar.zst`, or extract `.tar.xz` and run `greencurve-setup.sh`.
+- Packages include SHA-256 files and GitHub build attestations. Verify with:
 
   ```bash
   gh attestation verify <artifact> --repo aufkrawall/green-curve
