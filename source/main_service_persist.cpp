@@ -745,7 +745,7 @@ static bool service_auto_restore_allowed_after_standby_resume(DWORD* lockoutReas
 // there is no active desired — a restart with nothing applied should not
 // auto-apply on the next boot.
 static void service_write_restart_reapply_snapshot() {
-    if (!g_app.isServiceProcess) return;
+    if (!app_is_service_process()) return;
     char path[MAX_PATH] = {};
     if (!service_active_desired_persist_path(path, sizeof(path))) return;
     if (!g_serviceHasActiveDesired) {

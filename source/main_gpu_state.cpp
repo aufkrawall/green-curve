@@ -443,7 +443,7 @@ static bool control_state_has_any_meaningful_value(const ControlState* state) {
 }
 
 static int current_green_curve_fan_intent_mode() {
-    if (g_app.isServiceProcess && g_serviceHasActiveDesired && g_serviceActiveDesired.hasFan) {
+    if (app_is_service_process() && g_serviceHasActiveDesired && g_serviceActiveDesired.hasFan) {
         return g_serviceActiveDesired.fanMode;
     }
     if (g_app.fanCurveRuntimeActive) return FAN_MODE_CURVE;
@@ -454,7 +454,7 @@ static int current_green_curve_fan_intent_mode() {
 }
 
 static int current_green_curve_fan_intent_fixed_percent() {
-    if (g_app.isServiceProcess && g_serviceHasActiveDesired && g_serviceActiveDesired.hasFan) {
+    if (app_is_service_process() && g_serviceHasActiveDesired && g_serviceActiveDesired.hasFan) {
         return g_serviceActiveDesired.fanMode == FAN_MODE_FIXED
             ? clamp_percent(g_serviceActiveDesired.fanPercent)
             : 0;
@@ -466,7 +466,7 @@ static int current_green_curve_fan_intent_fixed_percent() {
 }
 
 static const FanCurveConfig* current_green_curve_fan_intent_curve() {
-    if (g_app.isServiceProcess && g_serviceHasActiveDesired && g_serviceActiveDesired.hasFan
+    if (app_is_service_process() && g_serviceHasActiveDesired && g_serviceActiveDesired.hasFan
         && g_serviceActiveDesired.fanMode == FAN_MODE_CURVE) {
         return &g_serviceActiveDesired.fanCurve;
     }
@@ -496,7 +496,7 @@ static bool should_accept_service_curve_lock_detection() {
     return true;
 }
 static bool should_auto_detect_locked_tail_from_live_curve() {
-    if (g_app.isServiceProcess
+    if (app_is_service_process()
         && g_serviceHasActiveDesired
         && g_serviceActiveDesired.hasLock
         && g_serviceActiveDesired.lockCi >= 0
@@ -585,7 +585,7 @@ static bool live_curve_has_any_nonzero_offsets() {
 static bool service_active_desired_gpu_offset_fallback(int* gpuOffsetMHzOut, int* excludeLowCountOut) {
     if (gpuOffsetMHzOut) *gpuOffsetMHzOut = 0;
     if (excludeLowCountOut) *excludeLowCountOut = 0;
-    if (!g_app.isServiceProcess || !g_serviceHasActiveDesired || !g_serviceActiveDesired.hasGpuOffset) return false;
+    if (!app_is_service_process() || !g_serviceHasActiveDesired || !g_serviceActiveDesired.hasGpuOffset) return false;
 
     int gpuOffsetMHz = g_serviceActiveDesired.gpuOffsetMHz;
     int excludeLowCount = (g_serviceActiveDesired.gpuOffsetExcludeLowCount > 0 && gpuOffsetMHz != 0) ? g_serviceActiveDesired.gpuOffsetExcludeLowCount : 0;
@@ -599,7 +599,7 @@ static bool service_active_desired_gpu_offset_fallback(int* gpuOffsetMHzOut, int
 
 static bool refresh_service_snapshot_and_active_desired(char* err, size_t errSize, DesiredSettings* activeDesiredOut) {
     if (activeDesiredOut) initialize_desired_settings_defaults(activeDesiredOut);
-    if (g_app.isServiceProcess) return true;
+    if (app_is_service_process()) return true;
     if (!g_app.usingBackgroundService) {
         if (err && errSize > 0) err[0] = 0;
         return true;

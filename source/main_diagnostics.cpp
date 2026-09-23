@@ -15,7 +15,7 @@ static void debug_log_enqueue(const char* line);
 // See debug_log_queue_policy.h for why that separation exists.
 
 static DWORD debug_log_file_attributes() {
-    return FILE_ATTRIBUTE_NORMAL | (g_app.isServiceProcess ? FILE_FLAG_WRITE_THROUGH : 0);
+    return FILE_ATTRIBUTE_NORMAL | (app_is_service_process() ? FILE_FLAG_WRITE_THROUGH : 0);
 }
 
 static HANDLE open_debug_log_file_locked(const char* debugPath) {
@@ -65,7 +65,7 @@ static const char* service_early_error_log_path() {
 }
 
 static const char* effective_error_log_path() {
-    if (g_app.isServiceProcess && !g_serviceUserPathsResolved) {
+    if (app_is_service_process() && !g_serviceUserPathsResolved) {
         return service_early_error_log_path();
     }
     return g_errorLogPath[0] ? g_errorLogPath : APP_LOG_FILE;
@@ -76,7 +76,7 @@ static const char* error_log_path() {
 }
 
 static const char* effective_debug_log_path() {
-    if (g_app.isServiceProcess && !g_serviceUserPathsResolved) {
+    if (app_is_service_process() && !g_serviceUserPathsResolved) {
         return service_early_debug_log_path();
     }
     return debug_log_path();
@@ -121,7 +121,7 @@ static void debug_log_session_marker(const char* phase, const char* kind, const 
         (unsigned long)APP_BUILD_NUMBER,
         (unsigned long)SERVICE_PROTOCOL_VERSION,
         is_elevated() ? 1 : 0,
-        g_app.isServiceProcess ? 1 : 0,
+        app_is_service_process() ? 1 : 0,
         g_app.backgroundServiceInstalled ? 1 : 0,
         g_app.backgroundServiceRunning ? 1 : 0,
         g_app.backgroundServiceAvailable ? 1 : 0,

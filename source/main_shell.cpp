@@ -26,7 +26,7 @@ static void start_fan_curve_runtime() {
             stop_fan_curve_runtime();
             return;
         }
-    } else if (g_app.isServiceProcess) {
+    } else if (app_is_service_process()) {
         if (!ensure_service_fan_runtime_thread()) {
             stop_fan_curve_runtime();
             return;
@@ -39,7 +39,7 @@ static void start_fan_curve_runtime() {
     if (g_app.fanCurveRuntimeActive) {
         apply_fan_curve_tick();
     }
-    if (g_app.isServiceProcess) {
+    if (app_is_service_process()) {
         populate_control_state(&g_serviceControlState);
         g_serviceControlStateValid = true;
         mark_service_telemetry_cache_updated("fan curve start");
@@ -68,7 +68,7 @@ static void start_fixed_fan_runtime() {
             stop_fan_curve_runtime();
             return;
         }
-    } else if (g_app.isServiceProcess) {
+    } else if (app_is_service_process()) {
         if (!ensure_service_fan_runtime_thread()) {
             stop_fan_curve_runtime();
             return;
@@ -79,7 +79,7 @@ static void start_fixed_fan_runtime() {
     update_fan_telemetry_timer();
 
     apply_fan_curve_tick();
-    if (g_app.isServiceProcess) {
+    if (app_is_service_process()) {
         populate_control_state(&g_serviceControlState);
         g_serviceControlStateValid = true;
         mark_service_telemetry_cache_updated("fixed fan start");

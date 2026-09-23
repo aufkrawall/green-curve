@@ -384,7 +384,7 @@ static bool service_reset_all(char* result, size_t resultSize,
     // Stop the service-owned fan maintenance first so it cannot immediately
     // reassert a manual target after we restore driver auto.
     stop_fan_curve_runtime();
-    if (g_app.isServiceProcess && g_serviceFanThread) {
+    if (app_is_service_process() && g_serviceFanThread) {
         stop_service_fan_runtime_thread();
     }
 

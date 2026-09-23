@@ -88,7 +88,7 @@ static void populate_global_controls() {
         apply_control_state_to_gui(&control);
     }
 
-    bool serviceReady = g_app.isServiceProcess
+    bool serviceReady = app_is_service_process()
         ? g_app.loaded : gui_service_model_ready(&g_app.guiServiceModel);
 #ifndef GREEN_CURVE_SERVICE_BINARY
     populate_gpu_selector();

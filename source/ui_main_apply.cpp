@@ -198,7 +198,7 @@ static void apply_changes() {
 // answers into the normal completion paths, which transition truthfully if the
 // service really has become unreachable or non-READY.
 static void refresh_curve() {
-    if (!g_app.usingBackgroundService || g_app.isServiceProcess) return;
+    if (!g_app.usingBackgroundService || app_is_service_process()) return;
     if (g_app.guiDraft.detached && gui_state_dirty()) {
         int discard = gc_message_box(g_app.hMainWnd,
             "The preserved draft belongs to a different GPU or VF topology.\n\nDiscard that draft and refresh this GPU?",
@@ -231,7 +231,7 @@ static void reset_curve() {
         MB_YESNO | MB_ICONWARNING);
     if (confirm != IDYES) return;
 
-    if (g_app.usingBackgroundService && !g_app.isServiceProcess) {
+    if (g_app.usingBackgroundService && !app_is_service_process()) {
         char queueStatus[512] = {};
         if (!gui_mutation_queue_reset(queueStatus, sizeof(queueStatus))) {
             gc_message_box(g_app.hMainWnd, queueStatus, "Green Curve",

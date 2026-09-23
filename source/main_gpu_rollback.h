@@ -57,7 +57,7 @@ static ApplyRecoveryResult rollback_to_safe_defaults() {
     }
     // Stop fan runtime and return to driver auto.
     stop_fan_curve_runtime();
-    if (g_app.isServiceProcess && g_serviceFanThread) {
+    if (app_is_service_process() && g_serviceFanThread) {
         stop_service_fan_runtime_thread();
     }
     if (!g_app.fanIsAuto || g_app.activeFanMode != FAN_MODE_AUTO) {

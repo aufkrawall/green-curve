@@ -18,7 +18,7 @@ static DWORD service_active_fan_runtime_interval_ms() {
     return 0;
 }
 static void mark_service_telemetry_cache_updated(const char* source) {
-    if (!g_app.isServiceProcess) return;
+    if (!app_is_service_process()) return;
     g_serviceTelemetryLastHardwarePollTickMs = GetTickCount64();
     if (source && source[0]) {
         StringCchCopyA(g_serviceTelemetryLastPollSource, ARRAY_COUNT(g_serviceTelemetryLastPollSource), source);

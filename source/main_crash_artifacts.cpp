@@ -46,7 +46,7 @@ static bool crash_artifact_data_dir(char* out, size_t outSize) {
     bool machineResolvable = resolve_service_machine_data_dir(machineDir, sizeof(machineDir)) &&
         gc_crash_dir_is_acceptable(machineDir);
 
-    switch (gc_crash_dir_source(g_app.isServiceProcess, g_userDataDir, machineResolvable)) {
+    switch (gc_crash_dir_source(app_is_service_process(), g_userDataDir, machineResolvable)) {
     case GC_CRASH_DIR_MACHINE:
         return SUCCEEDED(StringCchCopyA(out, outSize, machineDir));
     case GC_CRASH_DIR_USER_CONFIG:
@@ -157,7 +157,7 @@ static void rotate_crash_artifacts_for_process() {
         char userDirToken[32] = {};
         debug_log("crash artifacts: no writable artifact directory resolved; "
             "dumps are disabled for this process (serviceProcess=%d userDataDir=%s)\n",
-            g_app.isServiceProcess ? 1 : 0,
+            app_is_service_process() ? 1 : 0,
             g_userDataDir[0]
                 ? gc_log_path_token(g_userDataDir, userDirToken, sizeof(userDirToken))
                 : "<unset>");
@@ -343,7 +343,7 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
         " source=%s phase=%s serviceProcess=%d deviceRemoved=%d gpuDriverDll=%d config=%s",
         g_pendingOperationSource[0] ? g_pendingOperationSource : "<none>",
         g_lastApplyPhase[0] ? g_lastApplyPhase : "<none>",
-        g_app.isServiceProcess ? 1 : 0,
+        app_is_service_process() ? 1 : 0,
         g_app.deviceRemoved ? 1 : 0,
         isGpuDriverDll ? 1 : 0,
         crashConfigToken);
@@ -420,7 +420,7 @@ static void green_curve_report_fatal_dump(unsigned long reason, const char* labe
         label ? label : "<none>",
         g_pendingOperationSource[0] ? g_pendingOperationSource : "<none>",
         g_lastApplyPhase[0] ? g_lastApplyPhase : "<none>",
-        g_app.isServiceProcess ? 1 : 0,
+        app_is_service_process() ? 1 : 0,
         APP_VERSION,
         (unsigned long)APP_BUILD_NUMBER,
         dumped ? dumpPath : "<none>");
@@ -519,14 +519,14 @@ static LONG CALLBACK green_curve_vectored_handler(EXCEPTION_POINTERS* info) {
 
     // Write a focused minidump BEFORE making any state changes — this captures
     // the exact crash context.  Must NOT hold any locks.
-    if (g_app.isServiceProcess) {
+    if (app_is_service_process()) {
         write_veh_minidump(info, modPath);
     }
 
     // Mark NVML as invalid.  Do not call nvmlShutdown() from this crash path:
     // after a driver restart it can hang inside the dead driver instance while
     // the service is trying to recover.
-    if (g_app.isServiceProcess) {
+    if (app_is_service_process()) {
         service_close_nvml_without_shutdown();
     } else {
         g_app.nvmlReady = false;

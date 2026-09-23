@@ -60,7 +60,7 @@ static bool apply_fan_curve_zero_rpm_tick(const FanCurveConfig* curve,
             currentTempC, fan_curve_zero_rpm_hysteresis(curve),
             startC, stopC);
     }
-    if (g_app.isServiceProcess) {
+    if (app_is_service_process()) {
         populate_control_state(&g_serviceControlState);
         g_serviceControlStateValid = true;
     }

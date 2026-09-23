@@ -63,7 +63,7 @@ static bool secure_random_temp_suffix(gc_u64* suffixOut, char* err,
 }
 
 static bool write_text_file_atomic(const char* path, const char* data, size_t dataSize, char* err, size_t errSize) {
-    if (g_app.isServiceProcess) {
+    if (app_is_service_process()) {
         if (g_serviceUserPathsResolved) {
             return write_text_file_atomic_service(path, data, dataSize, err, errSize);
         }

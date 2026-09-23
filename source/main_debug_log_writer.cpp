@@ -163,7 +163,7 @@ static HANDLE debug_log_acquire_handle_locked() {
     // Late path resolution for the GUI, preserved from the synchronous writer:
     // lines produced before WinMain resolves the data paths would otherwise
     // land in the relative fallback file forever.
-    if (!g_app.isServiceProcess && !g_debugLogPath[0]) {
+    if (!app_is_service_process() && !g_debugLogPath[0]) {
         char pathErr[256] = {};
         resolve_data_paths(pathErr, sizeof(pathErr));
         debugPath = effective_debug_log_path();
@@ -277,7 +277,7 @@ static void debug_log_enqueue(const char* line) {
         EnterCriticalSection(&g_debugLogFileLock);
         OutputDebugStringA(line);
         debug_log_write_line_locked(line);
-        if (g_app.isServiceProcess && g_debugLogFile != INVALID_HANDLE_VALUE)
+        if (app_is_service_process() && g_debugLogFile != INVALID_HANDLE_VALUE)
             FlushFileBuffers(g_debugLogFile);
         LeaveCriticalSection(&g_debugLogFileLock);
         return;
@@ -444,7 +444,7 @@ static void debug_log_writer_drain() {
             wroteAny = true;
         }
     }
-    if (wroteAny && g_app.isServiceProcess &&
+    if (wroteAny && app_is_service_process() &&
         g_debugLogFile != INVALID_HANDLE_VALUE) {
         FlushFileBuffers(g_debugLogFile);
     }

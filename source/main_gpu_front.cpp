@@ -611,7 +611,7 @@ static void update_fan_telemetry_timer() {
 // logon tray launch is waiting to display that snapshot.  The task never owns a
 // hardware retry; automatic logon applies belong exclusively to the service.
 static void start_service_reconnect_timer_if_needed() {
-    if (g_app.isServiceProcess) return;
+    if (app_is_service_process()) return;
     if (gui_service_model_ready(&g_app.guiServiceModel) && !g_app.logonServiceReadinessPending) return;
     HWND hWnd = g_app.hMainWnd;
     if (!hWnd) return;

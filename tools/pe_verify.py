@@ -267,6 +267,24 @@ SERVICE_FORBIDDEN_UI_FUNCTIONS = {
     "CreatePipe", "VirtualAlloc",
 }
 
+# The mirror image: the GUI never becomes the service.  g_app.isServiceProcess
+# is set only by service_main and the controlled-restart helper, both reached
+# solely from the service binary's WinMain, so the service runtime was dead
+# code in the GUI image (app_is_service_process() in source/app_shared.h now
+# compiles it out).  An unprivileged desktop program that carries SCM entry
+# points, client impersonation, and a pipe server it can never run reads as a
+# backdoor to an ML classifier.
+#
+# CreateNamedPipeW is deliberately NOT here: the Zig ARM64 link runs without
+# LTO (to preserve BTI/PAC through code generation) and does not drop it, while
+# the other three builds do.  Creating a pipe is also far weaker evidence than
+# accepting a client on one and impersonating it, which this set does cover.
+GUI_FORBIDDEN_SERVICE_FUNCTIONS = {
+    "SetServiceStatus", "StartServiceCtrlDispatcherW", "StartServiceCtrlDispatcherA",
+    "RegisterServiceCtrlHandlerExW", "RegisterServiceCtrlHandlerW",
+    "ImpersonateNamedPipeClient", "ImpersonateLoggedOnUser", "ConnectNamedPipe",
+}
+
 
 def verify_windows_binary_imports(data, label, original_filename,
                                   reject_exports=False):
@@ -283,7 +301,7 @@ def verify_windows_binary_imports(data, label, original_filename,
             forbidden_dlls=common_forbidden_dlls | {"wtsapi32.dll", "userenv.dll"},
             forbidden_functions=common_forbidden_functions | {
                 "WTSQueryUserToken", "CreateProcessWithTokenW",
-            }, reject_exports=reject_exports)
+            } | GUI_FORBIDDEN_SERVICE_FUNCTIONS, reject_exports=reject_exports)
     elif name == "greencurve-service.exe":
         verify_service_resources(data, label)
         verify_pe_import_surface(
@@ -679,13 +697,23 @@ def run_self_tests():
             expect(accepted, f"service icon groups {groups!r} were accepted")
         except RuntimeError:
             expect(not accepted, f"service icon groups {groups!r} were rejected")
-    try:
-        verify_pe_import_surface(
-            import_fixture, "import fixture",
-            forbidden_functions=SERVICE_FORBIDDEN_UI_FUNCTIONS | {"CreateFileW"})
-        failures.append("the service UI-import ban did not apply")
-    except RuntimeError:
-        pass
+    for banned, what in ((SERVICE_FORBIDDEN_UI_FUNCTIONS, "service UI-import"),
+                         (GUI_FORBIDDEN_SERVICE_FUNCTIONS, "GUI service-import")):
+        try:
+            verify_pe_import_surface(
+                import_fixture, "import fixture",
+                forbidden_functions=banned | {"CreateFileW"})
+            failures.append(f"the {what} ban did not apply")
+        except RuntimeError:
+            pass
+        # ...and does not reject an image that imports none of them.
+        try:
+            verify_pe_import_surface(
+                import_fixture, "import fixture", forbidden_functions=banned)
+        except RuntimeError as error:
+            failures.append(f"the {what} ban rejected a clean image: {error}")
+    expect(not (SERVICE_FORBIDDEN_UI_FUNCTIONS & GUI_FORBIDDEN_SERVICE_FUNCTIONS),
+           "the two per-binary bans name disjoint APIs")
 
     # Reference values cross-checked against pefile.generate_checksum() and
     # against lld-link /release output when the helper was written.  The odd

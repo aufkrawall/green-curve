@@ -810,6 +810,21 @@ static inline HWND app_main_window() {
 #endif
 }
 
+// The mirror image: the GUI binary never becomes the service.
+// g_app.isServiceProcess is set only by service_main and the controlled-restart
+// helper, both reached solely from the service binary's WinMain.  Reading it
+// through this accessor lets the GUI image drop the service runtime (SCM
+// status reporting, emergency restarts, hardware writes) instead of carrying
+// code it can never run.  gpu_backend_snapshot.h, which the clock-transition
+// harness compiles against a stand-in g_app, keeps reading the field.
+static inline bool app_is_service_process() {
+#if defined(_WIN32) && !defined(GREEN_CURVE_SERVICE_BINARY)
+    return false;
+#else
+    return g_app.isServiceProcess;
+#endif
+}
+
 // Ownership and provenance move together.  Every site that records "the editor
 // owns this curve point" must also record whether its MHz is a typed absolute
 // or a projection of the GPU offset; recording only the first is what let a

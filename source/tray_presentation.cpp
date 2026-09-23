@@ -84,7 +84,7 @@ static bool tray_apply_in_flight() {
 // the driver is disabled/removed or the service is down.  Shared by the tray icon
 // theme and the tray tooltip so both stay consistent.
 static bool tray_hardware_live() {
-    if (g_app.usingBackgroundService && !g_app.isServiceProcess)
+    if (g_app.usingBackgroundService && !app_is_service_process())
         return gui_service_model_ready(&g_app.guiServiceModel) && g_app.loaded;
     return g_app.loaded;
 }

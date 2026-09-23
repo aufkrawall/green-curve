@@ -813,6 +813,31 @@ def check_workflow_structure(ctx):
         sys.exit(1)
 
 
+def check_binary_role_gates(app_shared_h, require_order_after):
+    """Each Windows binary must be able to compile the other's runtime out.
+
+    The GUI and the service are built from one source tree, so every shared
+    shard used to link both roles: the service carried the window/tray/timer
+    code it can never reach (g_app.hMainWnd is assigned only by the GUI-only
+    entry.cpp), and the GUI carried the service runtime (g_app.isServiceProcess
+    is set only by service_main and the controlled-restart helper).  Reading
+    each through an accessor that folds to a constant in the other build is
+    what lets the compiler drop those branches.
+
+    Gut either body and the dead code links again, which the per-artifact PE
+    import bans in tools/pe_verify.py then reject.  These gates fail earlier,
+    at the source, and name the reason.  require_order_after() already fails
+    when its anchor is missing, so it also pins each accessor's existence.
+    """
+    require_order_after(app_shared_h, "static inline HWND app_main_window()",
+                        "#ifdef GREEN_CURVE_SERVICE_BINARY", "return nullptr;",
+                        "the service build sees a constant-null main window")
+    require_order_after(app_shared_h, "static inline bool app_is_service_process()",
+                        "#if defined(_WIN32) && !defined(GREEN_CURVE_SERVICE_BINARY)",
+                        "return false;",
+                        "the Windows GUI build sees a constant-false process role")
+
+
 def check_diagnostic_probe_gates(ctx, require_text, forbid_text):
     """Pin fail-closed parsing for the write-capable clock-domain probe."""
     self_test = os.path.join(ctx.SOURCE_DIR, "main_self_test.cpp")

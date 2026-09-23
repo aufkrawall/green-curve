@@ -308,7 +308,7 @@ static void clear_service_user_data_path_cache() {
     g_serviceUserPathsResolved = false;
     g_serviceUserPathsSessionId = (DWORD)-1;
     g_serviceUserPathsSid[0] = 0;
-    if (g_app.isServiceProcess) {
+    if (app_is_service_process()) {
         debug_log_set_route_path(service_early_debug_log_path());
     }
 }
@@ -543,7 +543,7 @@ static void set_default_config_path() {
 }
 
 static void refresh_service_debug_logging_from_config() {
-    if (!g_app.isServiceProcess) return;
+    if (!app_is_service_process()) return;
     bool newDebugLogging = service_config_debug_logging_enabled(nullptr, nullptr);
     g_debug_logging = newDebugLogging;
     if (!g_debug_logging) {

@@ -5,7 +5,7 @@
 static bool apply_desired_settings(const DesiredSettings* desired, bool interactive,
     ServiceApplyOrigin origin, ServiceProfileSource profileSource, int profileSlot,
     char* result, size_t resultSize) {
-    if (!g_app.isServiceProcess) {
+    if (!app_is_service_process()) {
         refresh_background_service_state();
         if (!g_app.backgroundServiceAvailable) {
             set_message(result, resultSize,

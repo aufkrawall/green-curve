@@ -302,7 +302,7 @@ static bool refresh_background_service_state() {
     bool installed = false;
     bool running = false;
     query_background_service_state(&installed, &running);
-    if (service_health_probe_should_defer(g_app.isServiceProcess,
+    if (service_health_probe_should_defer(app_is_service_process(),
             g_app.applyInFlight, installed, running)) {
         g_app.backgroundServiceInstalled = true;
         g_app.backgroundServiceRunning = true;
@@ -330,7 +330,7 @@ static bool refresh_background_service_state() {
         g_app.backgroundServiceBroken = true;
         StringCchCopyA(g_app.backgroundServiceError, ARRAY_COUNT(g_app.backgroundServiceError), "Background service is installed but not running");
     }
-    g_app.usingBackgroundService = !g_app.isServiceProcess;
+    g_app.usingBackgroundService = !app_is_service_process();
     if (!g_app.backgroundServiceAvailable) {
         clear_service_authoritative_state();
     }

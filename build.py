@@ -2028,7 +2028,6 @@ def run_source_regression_checks():
     main_service_recovery_ledger_cpp = os.path.join(SOURCE_DIR, "main_service_recovery_ledger.cpp")
     main_service_controlled_restart_cpp = os.path.join(SOURCE_DIR, "main_service_controlled_restart.cpp")
     platform_h = os.path.join(SOURCE_DIR, "platform.h")
-    platform_win32_cpp = os.path.join(SOURCE_DIR, "platform_win32.cpp")
     platform_posix_cpp = os.path.join(SOURCE_DIR, "platform_posix.cpp")
     main_service_selected_gpu_pnp_cpp = os.path.join(SOURCE_DIR, "main_service_selected_gpu_pnp.cpp")
     selected_gpu_pnp_policy_h = os.path.join(SOURCE_DIR, "selected_gpu_pnp_policy.h")
@@ -2404,7 +2403,7 @@ def run_source_regression_checks():
     require_text(main_gpu_state_cpp, 'debug_log_on_change("current_applied_gpu_offset_mhz: not Blackwell', "stable non-Blackwell GPU offset diagnostic is change-gated")
     forbid_text(main_gpu_state_cpp, 'debug_log("current_applied_gpu_offset_mhz: not Blackwell', "stable non-Blackwell GPU offset diagnostic must not spam every poll")
     require_text(main_runtime_capture_cpp, 'debug_log_on_change("populate_global_controls: dirty=', "global control refresh diagnostics are change-gated")
-    require_text(gpu_backend_apply_cpp, "interactive && !g_app.isServiceProcess", "service apply does not inherit stale GUI lock state")
+    require_text(gpu_backend_apply_cpp, "interactive && !app_is_service_process()", "service apply does not inherit stale GUI lock state")
     require_text(gpu_backend_apply_cpp, "post-apply lock clear: no lock requested", "service no-lock applies clear stale lock markers")
     require_text(gpu_backend_apply_cpp, "reset_oc_before_gui_apply", "GUI OC applies reset stale OC baseline before applying")
     require_text(gpu_backend_apply_cpp, "Restoring the existing VF curve after the memory offset did not verify", "VF preservation failures are reported")
@@ -3933,6 +3932,7 @@ def run_source_regression_checks():
                    "tray reopen preserves a coherent cached first frame while refreshing asynchronously")
     require_text(app_shared_h, "bool trayWindowHiddenIntent;",
                  "tray-hidden state survives display-driver window reconstruction")
+    security_gates.check_binary_role_gates(app_shared_h, require_order_after)
     require_text(ui_main_window_cpp, "case WM_WINDOWPOSCHANGING:",
                  "top-level visibility requests are policy-gated before display")
     require_text(ui_main_window_cpp, "position->flags &= ~SWP_SHOWWINDOW;",
@@ -4741,7 +4741,7 @@ def run_source_regression_checks():
         "crash breadcrumb assembly does not treat HRESULT as a character count")
     forbid_text(gpu_backend_apply_cpp, "+= StringCchPrintf",
         "apply summaries do not treat HRESULT as a character count")
-    forbid_text(platform_win32_cpp, "CreatePipe",
+    forbid_text(os.path.join(SOURCE_DIR, "platform_win32.cpp"), "CreatePipe",
         "Windows has no hidden-child output capture (NVML replaces nvidia-smi)")
     require_text(platform_posix_cpp, "WIFEXITED(status)",
         "POSIX subprocess capture requires a normal child exit")

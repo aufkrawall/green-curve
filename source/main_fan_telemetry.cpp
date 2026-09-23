@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 static void refresh_live_fan_telemetry(bool redrawControls) {
-    if (!g_app.isServiceProcess) {
+    if (!app_is_service_process()) {
 #ifndef GREEN_CURVE_SERVICE_BINARY
         if (g_app.applyInFlight) {
             debug_log_on_change("fan telemetry: deferred while the GUI owns an active GPU mutation\n");

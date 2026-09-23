@@ -126,7 +126,7 @@ static bool service_ownership_current_target(GpuAdapterInfo* out) {
 // The pre-write boundary.  Fail closed like the proof invalidation beside it:
 // a write whose ownership cannot be recorded is a write a crash could strand.
 static bool service_ownership_marker_ensure_before_write() {
-    if (!g_app.isServiceProcess || g_serviceHandbackRunning) return true;
+    if (!app_is_service_process() || g_serviceHandbackRunning) return true;
     if (InterlockedExchangeAdd(&g_serviceHandbackPending, 0) != 0) {
         // Reached only when the pre-write hook found the GPU not ready for the
         // handback but this write is going ahead anyway: from here on the new

@@ -529,7 +529,7 @@ static void stop_fan_curve_runtime(bool restoreFanAutoOnExit) {
         g_app.activeFanMode = FAN_MODE_AUTO;
         g_app.activeFanFixedPercent = 0;
     }
-    if (g_app.isServiceProcess && hadRuntime) {
+    if (app_is_service_process() && hadRuntime) {
         stop_service_fan_runtime_thread();
     }
     if (g_app.hMainWnd) {
@@ -623,7 +623,7 @@ static void apply_fan_curve_tick() {
         g_app.activeFanMode = FAN_MODE_FIXED;
         g_app.activeFanFixedPercent = fixedTargetPercent;
         mark_fan_runtime_success(now);
-        if (g_app.isServiceProcess) {
+        if (app_is_service_process()) {
             populate_control_state(&g_serviceControlState);
             g_serviceControlStateValid = true;
         }
@@ -745,7 +745,7 @@ static void apply_fan_curve_tick() {
             currentTempC, targetPercent,
             fan_curve_first_enabled_temperature(&activeCurve));
     }
-    if (g_app.isServiceProcess) {
+    if (app_is_service_process()) {
         populate_control_state(&g_serviceControlState);
         g_serviceControlStateValid = true;
     }
@@ -837,7 +837,7 @@ static void apply_fan_settings(const DesiredSettings* desired, char* failureDeta
         } else if (desiredFanMode == FAN_MODE_FIXED) {
             if (validate_manual_fan_percent_for_runtime(desired->fanPercent, detail, sizeof(detail))) {
                 stop_fan_curve_runtime();
-                if (g_app.hMainWnd || g_app.isServiceProcess) {
+                if (g_app.hMainWnd || app_is_service_process()) {
                     set_last_apply_phase("apply: fixed fan runtime start");
                     g_app.activeFanFixedPercent = clamp_percent(desired->fanPercent);
                     start_fixed_fan_runtime();
@@ -860,7 +860,7 @@ static void apply_fan_settings(const DesiredSettings* desired, char* failureDeta
         } else {
             if (!validate_fan_curve_for_runtime(&desiredCurve, detail, sizeof(detail))) {
                 ok = false;
-            } else if (g_app.hMainWnd || g_app.isServiceProcess) {
+            } else if (g_app.hMainWnd || app_is_service_process()) {
                 stop_fan_curve_runtime();
                 copy_fan_curve(&g_app.activeFanCurve, &desiredCurve);
                 debug_log("apply fan curve: pollMs=%d curveDownshift=%dC "
@@ -872,7 +872,7 @@ static void apply_fan_settings(const DesiredSettings* desired, char* failureDeta
                     fan_curve_zero_rpm_hysteresis(&g_app.activeFanCurve),
                     fan_curve_first_enabled_temperature(&g_app.activeFanCurve),
                     g_app.activeFanCurve.points[0].enabled ? g_app.activeFanCurve.points[0].fanPercent : 0,
-                    g_app.isServiceProcess ? 1 : 0);
+                    app_is_service_process() ? 1 : 0);
                 set_last_apply_phase("apply: fan curve runtime start");
                 start_fan_curve_runtime();
                 ok = g_app.fanCurveRuntimeActive && g_app.fanRuntimeLastApplyTickMs != 0;

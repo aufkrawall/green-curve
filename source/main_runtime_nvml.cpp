@@ -802,7 +802,7 @@ static bool nvml_ensure_ready() {
 }
 
 static bool refresh_global_state(char* detail, size_t detailSize) {
-    if (!g_app.isServiceProcess) {
+    if (!app_is_service_process()) {
         if (!g_app.backgroundServiceAvailable) {
             set_message(detail, detailSize,
                 g_app.backgroundServiceInstalled

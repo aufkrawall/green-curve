@@ -172,7 +172,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         debug_log("apply failure: %s\n", part);
     };
     bool requestHasLock = desired->hasLock && desired->lockCi >= 0 && desired->lockMHz > 0;
-    bool allowInteractiveStoredLock = interactive && !g_app.isServiceProcess;
+    bool allowInteractiveStoredLock = interactive && !app_is_service_process();
     bool hasLock = requestHasLock
         || (allowInteractiveStoredLock && g_app.lockedVi >= 0 && g_app.lockedVi < g_app.numVisible);
     LockMode lockMode = LOCK_MODE_NONE;
@@ -1391,7 +1391,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             displayedLockMHz,
             lock_mode_name(lockMode),
             desired->lockTracksAnchor ? 1 : 0);
-    } else if (g_app.isServiceProcess && coreFailCount == 0 && (curveTouched || desired->hasGpuOffset || hasCurveEdits)) {
+    } else if (app_is_service_process() && coreFailCount == 0 && (curveTouched || desired->hasGpuOffset || hasCurveEdits)) {
         g_app.lockedVi = -1;
         g_app.lockedCi = -1;
         g_app.lockedFreq = 0;
@@ -1404,7 +1404,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         debug_log("post-apply lock clear: no lock requested; cleared stale service lock markers\n");
     }
     capture_last_operation_snapshot(g_lastOperationAfterSnapshot, sizeof(g_lastOperationAfterSnapshot));
-    if (!g_app.isServiceProcess) {
+    if (!app_is_service_process()) {
         populate_global_controls();
         if (interactive) {
             populate_edits();

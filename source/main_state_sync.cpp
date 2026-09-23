@@ -147,7 +147,7 @@ static void populate_service_snapshot_locked(ServiceSnapshot* snapshot,
     // and the desired lock has NOT been reapplied — fall through to live
     // curve detection so the GUI does not falsely display a locked tail.
     bool reapplyPending = InterlockedExchangeAdd(&g_serviceReapplyInProgress, 0) != 0;
-    bool snapshotLockFromActiveDesired = g_app.isServiceProcess
+    bool snapshotLockFromActiveDesired = app_is_service_process()
         && g_app.loaded
         && g_app.gpuHandle
         && g_serviceHasActiveDesired
@@ -896,7 +896,7 @@ static bool get_effective_control_state(ControlState* stateOut) {
             stateOut->fanMode);
         return stateOut->valid;
     }
-    if (g_app.isServiceProcess && g_serviceControlStateValid &&
+    if (app_is_service_process() && g_serviceControlStateValid &&
         g_serviceControlState.valid) {
         *stateOut = g_serviceControlState;
         debug_log("get_effective_control_state: using service-local state gpu=%d exclude=%d fanMode=%d\n",

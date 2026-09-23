@@ -1029,7 +1029,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             persist_main_window_placement(hwnd);
             KillTimer(hwnd, FAN_TELEMETRY_TIMER_ID);
             auto_profile_shutdown(hwnd);
-            if (!g_app.usingBackgroundService || g_app.isServiceProcess) {
+            if (!g_app.usingBackgroundService || app_is_service_process()) {
                 stop_fan_curve_runtime(true);
             }
             if (g_debug_logging) {
