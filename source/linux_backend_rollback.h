@@ -21,27 +21,36 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
     const unsigned int clockPhases = LINUX_MUTATION_RESET_BASELINE |
         LINUX_MUTATION_GPU_OFFSET | LINUX_MUTATION_CURVE |
         LINUX_MUTATION_LOCK | LINUX_MUTATION_LOCK_CEILING;
+    const bool noClockControl = linux_clock_control_proven_absent(g);
     if (phaseMask & clockPhases) {
         unsigned int bound = g_linuxOutgoingCeilingMHz;
         if (g_linuxCeilingPlan.ceilingMHz > 0 &&
             (bound == 0 || g_linuxCeilingPlan.ceilingMHz < bound))
             bound = g_linuxCeilingPlan.ceilingMHz;
         // A rejected first arm must leave the old restriction alone. Failed
-        // writes may have side effects, so require protection before restoring.
-        bool protectedRestore = bound > 0 && g->nvml.setGpuLockedClocks &&
+        // writes may have side effects, so require protection before restoring
+        // whenever this GPU has a locked-clock control. Pascal cannot install
+        // one; restore and verify its prior snapshot without inventing a pin.
+        bool protectedRestore = !noClockControl && bound > 0 &&
+            g->nvml.setGpuLockedClocks &&
             g->nvml.setGpuLockedClocks(g->nvmlDevice, 0, bound) == NVML_SUCCESS;
         if (!protectedRestore && bound > 0 && g_linuxOutgoingHadHardPin &&
             g->nvml.setGpuLockedClocks)
             protectedRestore = g->nvml.setGpuLockedClocks(
                 g->nvmlDevice, bound, bound) == NVML_SUCCESS;
-        if (!protectedRestore) {
+        if (!protectedRestore && !noClockControl) {
             gc_strlcpy(err, errSize, "Rollback cannot establish clock protection; existing restriction preserved");
             lb_log("rollback: refusing clock restore without protection at %u MHz\n", bound);
             return false;
         }
-        g_linuxCeilingArmed = true;
-        g->retainedTransitionCeilingMHz = bound;
-        lb_log("rollback: clock protection established at %u MHz before restore\n", bound);
+        if (protectedRestore) {
+            g_linuxCeilingArmed = true;
+            g->retainedTransitionCeilingMHz = bound;
+            lb_log("rollback: clock protection established at %u MHz before restore\n", bound);
+        } else {
+            lb_log("rollback: Pascal exposes no NVML clock clamp; restoring"
+                   " the previous snapshot without a transition pin\n");
+        }
     }
     bool ok = true;
     bool baseline = (phaseMask & LINUX_MUTATION_RESET_BASELINE) != 0;
@@ -128,7 +137,7 @@ bool linux_backend_restore_snapshot(LinuxGpuState* g, const LinuxHardwareSnapsho
             ok &= fanOk;
         }
     }
-    if (phaseMask & clockPhases) {
+    if ((phaseMask & clockPhases) && !noClockControl) {
         // A restored HARD curve needs its restriction even when failure happened
         // before the CURVE phase. Keep protection on all uncertain rollbacks;
         // the caller already reports rollback uncertainty to the user.

@@ -101,7 +101,15 @@ static ApplyRecoveryResult rollback_to_safe_defaults() {
             lock_mode_name(g_app.lockMode));
         return recovery;
     }
-    if (g_nvml_api.resetGpuLockedClocks) {
+    if (apply_clock_control_proven_absent(
+            g_app.gpuFamily == GPU_FAMILY_PASCAL,
+            g_app.transitionClockCapActive,
+            g_app.lockMode == LOCK_MODE_HARD ||
+                g_app.appliedLockMode == LOCK_MODE_HARD)) {
+        recovery.restrictionReleased = true;
+        debug_log("rollback: NVML locked-clock release inapplicable on Pascal;"
+                  " stock controls verified and no cap was installed\n");
+    } else if (g_nvml_api.resetGpuLockedClocks) {
         if (nvml_ensure_ready()) {
             nvmlReturn_t r = g_nvml_api.resetGpuLockedClocks(g_app.nvmlDevice);
             recovery.restrictionReleased = (r == NVML_SUCCESS);

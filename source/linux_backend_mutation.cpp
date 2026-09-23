@@ -302,7 +302,8 @@ static bool linux_backend_preflight(LinuxGpuState* g, const DesiredSettings* d,
         return false;
     }
     bool hardLock = d->hasLock && d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
-    if (d->resetOcBeforeApply && !g->nvml.resetGpuLockedClocks) {
+    if (d->resetOcBeforeApply && !g->nvml.resetGpuLockedClocks &&
+        !linux_clock_control_proven_absent(g)) {
         gc_strlcpy(err, errSize, "OC baseline reset cannot release locked clocks safely"); return false;
     }
     if (((d->hasGpuOffset && !desired_gpu_offset_uses_curve(d)) ||
@@ -400,7 +401,8 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
         case LINUX_MUTATION_RESET_BASELINE: {
             if (!nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, 0) ||
                 !nvml_set_clock_offset(g, NVML_CLOCK_MEM, 0) ||
-                !g->nvml.resetGpuLockedClocks)
+                (!g->nvml.resetGpuLockedClocks &&
+                 !linux_clock_control_proven_absent(g)))
                 return false;
             if (!linux_apply_reset_baseline_locked_clocks(g, d)) return false;
             if ((d->hasXbarOffsetKhz || d->hasXbarMsvddOffsetUv) &&
@@ -608,7 +610,12 @@ static bool linux_reset_transaction_step(void* opaque, unsigned int phase) {
     LinuxGpuState* g = context->gpu;
     switch (phase) {
         case LINUX_MUTATION_LOCK: {
-            bool ok = g->nvml.resetGpuLockedClocks(g->nvmlDevice) == NVML_SUCCESS;
+            bool noControl = linux_clock_control_proven_absent(g);
+            bool ok = noControl || (g->nvml.resetGpuLockedClocks &&
+                g->nvml.resetGpuLockedClocks(g->nvmlDevice) == NVML_SUCCESS);
+            if (noControl)
+                lb_log("reset: NVML locked-clock domain absent on Pascal;"
+                       " continuing with mutable domains\n");
             if (ok) g->retainedTransitionCeilingMHz = 0;
             return ok;
         }

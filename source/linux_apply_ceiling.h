@@ -166,9 +166,8 @@ static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
                    : "no defensible ceiling value could be derived",
                apply_clock_ceiling_arm_result_name(g_linuxCeilingArmResult),
                refuse ? "refusing the transition before any write"
-                      : "PROCEEDING UNPROTECTED -- the request names no lock of"
-                        " its own, so its end state is uncapped by the user's own"
-                        " choice and this driver has no clamp to install");
+                      : "PROCEEDING UNPROTECTED -- the final state needs no"
+                        " NVML hard pin and this driver has no clamp to install");
         return !refuse;
     }
     g_linuxCeilingWriteAttempted = true;
@@ -229,8 +228,8 @@ static bool linux_apply_arm_transition_ceiling(LinuxGpuState* g,
                                     : "REQUIRED, but the driver answered"
                                       " NOT_SUPPORTED for"
                                       " every clamp form this request may use"
-                                      " -- PROCEEDING UNPROTECTED, the request"
-                                      " names no lock of its own"));
+                                      " -- PROCEEDING UNPROTECTED, the final"
+                                      " state needs no NVML hard pin"));
     return !refuse;
 }
 
@@ -295,6 +294,13 @@ static void linux_apply_log_clock_witness(LinuxGpuState* g,
 // state (a hard pin, or the release that also hands over any F-APPLY-CEILING
 // transition clamp), then witness the result.  The witness runs either way --
 // a failed lock write is exactly when knowing the live clock matters most.
+static bool linux_clock_control_proven_absent(const LinuxGpuState* g) {
+    return g && apply_clock_control_proven_absent(
+        g->family == GPU_FAMILY_PASCAL,
+        g_linuxCeilingArmed || g->retainedTransitionCeilingMHz != 0,
+        g_linuxOutgoingHadHardPin);
+}
+
 static bool linux_apply_write_final_lock(LinuxGpuState* g,
                                          const DesiredSettings* d) {
     bool lockOk;
@@ -302,7 +308,11 @@ static bool linux_apply_write_final_lock(LinuxGpuState* g,
         lockOk = g->nvml.setGpuLockedClocks &&
                  g->nvml.setGpuLockedClocks(g->nvmlDevice, d->lockMHz,
                                             d->lockMHz) == NVML_SUCCESS;
-    else
+    else if (linux_clock_control_proven_absent(g)) {
+        lb_log("apply: final NVML locked-clock reset is inapplicable on Pascal;"
+               " no hard pin or retained cap exists\n");
+        lockOk = true;
+    } else
         lockOk = g->nvml.resetGpuLockedClocks &&
                  g->nvml.resetGpuLockedClocks(g->nvmlDevice) == NVML_SUCCESS;
     if (lockOk) {
@@ -330,6 +340,10 @@ static bool linux_apply_reset_baseline_locked_clocks(LinuxGpuState* g,
     if (g_linuxCeilingArmed) {
         lb_log("apply: reset baseline keeps the %u MHz transition ceiling\n",
                g_linuxCeilingPlan.ceilingMHz);
+        return true;
+    }
+    if (linux_clock_control_proven_absent(g)) {
+        lb_log("apply: baseline NVML locked-clock reset is inapplicable on Pascal\n");
         return true;
     }
     return g->nvml.resetGpuLockedClocks &&

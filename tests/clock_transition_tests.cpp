@@ -14,6 +14,7 @@ namespace clock_transition_fixture {
 constexpr int VF_NUM_POINTS=128, MAX_GPU_FANS=4;
 using gc_u32=unsigned int;
 enum LockMode:int {LOCK_MODE_NONE=0,LOCK_MODE_FLATTEN=1,LOCK_MODE_HARD=2};
+enum GpuFamily:int {GPU_FAMILY_UNKNOWN=0,GPU_FAMILY_PASCAL=1,GPU_FAMILY_TURING=2};
 enum {NVML_SUCCESS=0,NVML_ERROR_NOT_SUPPORTED=3,
       NVML_CLOCK_GRAPHICS=0,NVML_CLOCK_SM=1,NVML_CLOCK_MEM=2,
       NVML_CLOCK_ID_CURRENT=0,NVML_TEMPERATURE_GPU=0,
@@ -49,18 +50,20 @@ struct Api {
 };
 struct LinuxGpuState {
  unsigned int retainedTransitionCeilingMHz{};
+ GpuFamily family{};
  Api nvml{}; int nvmlDevice{}; Point curve[VF_NUM_POINTS]{};
  int freqOffsets[VF_NUM_POINTS]{};
  int powerLimitCurrentmW{},powerLimitDefaultmW{};
 };
 static unsigned int cap=0, resets=0;
+static bool refuseReset=false;
 static bool refuseArm=false;
 // Which refusal the fake driver gives back. 1 is a generic error (a clamp this
 // GPU can hold, declined this time); NVML_ERROR_NOT_SUPPORTED is a GPU that has
 // no locked-clock control at all, which the two cases must not be confused.
 static int armRefusalCode=1;
 static int setCap(int,unsigned int,unsigned int hi){if(refuseArm)return armRefusalCode;cap=hi;return 0;}
-static int resetCap(int){cap=0;++resets;return 0;}
+static int resetCap(int){++resets;if(refuseReset)return NVML_ERROR_NOT_SUPPORTED;cap=0;return 0;}
 enum ServiceMutationDomain : gc_u32 {
     SERVICE_MUTATION_DOMAIN_RESET_BASELINE = 1u << 0,
     SERVICE_MUTATION_DOMAIN_GPU_OFFSET = 1u << 1,
@@ -106,7 +109,8 @@ struct LinuxHardwareSnapshot {
 #include "apply_clock_ceiling_policy.h"
 #include "linux_transaction.h"
 #include "linux_apply_ceiling.h"
-template<class... A> static bool nvml_set_clock_offset(A...){return true;}
+static int clockOffsetWrites=0, curveOffsetWrites=0;
+static bool nvml_set_clock_offset(LinuxGpuState*,unsigned int,int){++clockOffsetWrites;return true;}
 static int nvml_mem_effective_mhz_from_display_mhz(int x){return x*2;}
 template<class... A> static bool linux_xbar_write_owned(A...){return true;}
 template<class... A> static bool linux_xbar_write_entry(A...){return true;}
@@ -116,7 +120,7 @@ template<class... A> static int nvml_read_fan_measured(A...){return 0;}
 template<class... A> static bool fan_manual_write_confirmed(A...){return true;}
 static void gc_strlcpy(char* dst,size_t n,const char* s){if(dst&&n)std::snprintf(dst,n,"%s",s);}
 static void linux_backend_refresh(LinuxGpuState*){}
-static bool apply_curve_offsets_verified(LinuxGpuState*,const int*,const bool*,int){return true;}
+static bool apply_curve_offsets_verified(LinuxGpuState*,const int*,const bool*,int){++curveOffsetWrites;return true;}
 #include "linux_backend_rollback.h"
 struct ProbeContext {LinuxGpuState* gpu; DesiredSettings* d; LinuxHardwareSnapshot* s;};
 static bool probeStep(void* raw,unsigned int phase){
@@ -141,6 +145,7 @@ struct App {
  int numVisible=0,numPopulated=0;
  Point curve[VF_NUM_POINTS]{}; int freqOffsets[VF_NUM_POINTS]{};
  int gpuClockOffsetkHz{}; LockMode lockMode{};
+ GpuFamily gpuFamily{};
  unsigned int appliedLockFreq{},lockedFreq{},transitionClockCapMHz{}; bool transitionClockCapActive{};
  int readback{};
 };
@@ -253,6 +258,19 @@ static int run(){
    // and refusing writes no hardware at all.
    CHECK(apply_clock_ceiling_transition_must_refuse(true,APPLY_CEILING_ARM_UNSUPPORTED,
      APPLY_CEILING_REASON_REQUESTED_LOCK));
+   // FLATTEN is a VF-curve end state, so an absent NVML hard pin cannot veto it.
+   auto flatten=apply_clock_ceiling_plan(true,true,LOCK_MODE_FLATTEN,2400,true,true,true,2500);
+   CHECK(flatten.reason==APPLY_CEILING_REASON_REQUESTED_FLATTEN);
+   CHECK(!apply_clock_ceiling_transition_must_refuse(true,APPLY_CEILING_ARM_UNSUPPORTED,
+     flatten.reason));
+   CHECK(apply_clock_ceiling_proceeds_unprotected(true,APPLY_CEILING_ARM_UNSUPPORTED,
+     flatten.reason));
+   CHECK(apply_clock_ceiling_transition_must_refuse(true,APPLY_CEILING_ARM_REFUSED,
+     flatten.reason));
+   CHECK(apply_clock_control_proven_absent(true,false,false));
+   CHECK(!apply_clock_control_proven_absent(true,true,false));
+   CHECK(!apply_clock_control_proven_absent(true,false,true));
+   CHECK(!apply_clock_control_proven_absent(false,false,false));
    // Absent from the GPU, request names no lock: proceeds, loudly.
    CHECK(!apply_clock_ceiling_transition_must_refuse(true,APPLY_CEILING_ARM_UNSUPPORTED,
      APPLY_CEILING_REASON_RESET_DROPS_CAP));
@@ -287,12 +305,44 @@ static int run(){
    CHECK(linux_apply_arm_transition_ceiling(&g,&unlocked,&undervolt));
    CHECK(g_linuxCeilingArmResult==APPLY_CEILING_ARM_UNSUPPORTED);
    CHECK(!g_linuxCeilingArmed&&g_linuxCeilingPlan.required);
-   // Same driver, but the request names a lock: refused before any write.
+   // Same driver, but the request needs an NVML HARD pin: refuse before writes.
    DesiredSettings pinned=unlocked;pinned.hasLock=true;
    pinned.lockMode=LOCK_MODE_HARD;pinned.lockMHz=2400;
    linux_apply_ceiling_reset_state();linux_apply_ceiling_note_outgoing(&undervolt);
    CHECK(!linux_apply_arm_transition_ceiling(&g,&pinned,&undervolt));
    CHECK(g_linuxCeilingArmResult==APPLY_CEILING_ARM_UNSUPPORTED);
+   // Both NVML commands are unsupported on Pascal. Curve FLATTEN and a
+   // lock-free transition still complete without issuing a reset, while a
+   // retained cap or capable family continues to treat reset refusal as real.
+   DesiredSettings flat=unlocked;flat.hasLock=true;
+   flat.lockMode=LOCK_MODE_FLATTEN;flat.lockMHz=2400;
+   g.family=GPU_FAMILY_PASCAL;refuseReset=true;resets=0;
+   linux_apply_ceiling_reset_state();linux_apply_ceiling_note_outgoing(&undervolt);
+   CHECK(linux_apply_arm_transition_ceiling(&g,&unlocked,&undervolt));
+   CHECK(linux_apply_reset_baseline_locked_clocks(&g,&unlocked));
+   CHECK(linux_apply_write_final_lock(&g,&unlocked));
+   CHECK(resets==0);
+   linux_apply_ceiling_reset_state();linux_apply_ceiling_note_outgoing(&undervolt);
+   CHECK(linux_apply_arm_transition_ceiling(&g,&flat,&undervolt));
+   CHECK(linux_apply_reset_baseline_locked_clocks(&g,&flat));
+   CHECK(linux_apply_write_final_lock(&g,&flat));
+   CHECK(resets==0);
+   LinuxHardwareSnapshot pascalSnapshot{};pascalSnapshot.valid=true;
+   pascalSnapshot.gpuOffsetValid=true;pascalSnapshot.memOffsetValid=true;
+   pascalSnapshot.curveValid=true;
+   int oldOffsetWrites=clockOffsetWrites,oldCurveWrites=curveOffsetWrites;
+   char pascalErr[128]{};
+   CHECK(linux_backend_restore_snapshot(&g,&pascalSnapshot,
+     LINUX_MUTATION_RESET_BASELINE|LINUX_MUTATION_CURVE,pascalErr,sizeof(pascalErr)));
+   CHECK(clockOffsetWrites==oldOffsetWrites+2&&curveOffsetWrites==oldCurveWrites+1);
+   CHECK(resets==0);
+   g.retainedTransitionCeilingMHz=2300;
+   CHECK(!linux_apply_reset_baseline_locked_clocks(&g,&flat));
+   CHECK(resets==1);
+   g.retainedTransitionCeilingMHz=0;g.family=GPU_FAMILY_TURING;
+   CHECK(!linux_apply_reset_baseline_locked_clocks(&g,&flat));
+   CHECK(resets==2);
+   g.family=GPU_FAMILY_UNKNOWN;refuseReset=false;
    // A generic refusal on capable hardware keeps refusing even without a lock.
    armRefusalCode=1;
    linux_apply_ceiling_reset_state();linux_apply_ceiling_note_outgoing(&undervolt);

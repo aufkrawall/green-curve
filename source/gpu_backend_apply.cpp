@@ -1107,7 +1107,15 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool replacesLockDomain =
         service_request_replaces_lock_domain(desired);
     if (lockMode != LOCK_MODE_HARD && replacesLockDomain &&
-        g_nvml_api.resetGpuLockedClocks) {
+        apply_clock_control_proven_absent(
+            g_app.gpuFamily == GPU_FAMILY_PASCAL,
+            clockCeiling.armed || g_app.transitionClockCapActive,
+            g_app.lockMode == LOCK_MODE_HARD ||
+                g_app.appliedLockMode == LOCK_MODE_HARD)) {
+        debug_log("apply: no NVML locked-clock reset on Pascal; no hard pin or"
+                  " retained transition cap exists\n");
+    } else if (lockMode != LOCK_MODE_HARD && replacesLockDomain &&
+               g_nvml_api.resetGpuLockedClocks) {
         // CT-02.  The release used to be unconditional on anything except the
         // lock mode.  Its justifying comment -- "by now the flatten tail is the
         // ceiling" -- is only true when the flatten tail was actually written

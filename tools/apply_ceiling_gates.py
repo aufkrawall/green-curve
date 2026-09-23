@@ -382,9 +382,26 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(ceiling_policy_h, "if (result == APPLY_CEILING_ARM_UNSUPPORTED &&",
                  "only an UNSUPPORTED clamp may let a transition through; a "
                  "REFUSED one still refuses")
-    require_text(ceiling_policy_h, "reason == APPLY_CEILING_REASON_RESET_DROPS_CAP)",
-                 "and only for a request that names no lock of its own -- a "
-                 "lock request would fail at its own final lock step anyway")
+    require_text(ceiling_policy_h, "reason == APPLY_CEILING_REASON_RESET_DROPS_CAP ||",
+                 "an absent clamp may permit a lock-free transition")
+    require_text(ceiling_policy_h, "reason == APPLY_CEILING_REASON_REQUESTED_FLATTEN))",
+                 "a VF flatten remains usable without NVML hard-lock support")
+    require_text(ceiling_policy_h, "static inline bool apply_clock_control_proven_absent(",
+                 "reset and rollback use one conservative absent-control rule")
+    require_text(_p(ctx, "gpu_backend_apply.cpp"),
+                 "apply_clock_control_proven_absent(",
+                 "Windows skips an inapplicable Pascal reset only without a retained pin")
+    require_text(rollback_h, "apply_clock_control_proven_absent(",
+                 "Windows recovery recognizes an absent Pascal lock domain after stock verifies")
+    require_text(_p(ctx, "main_service_apply_runtime.cpp"),
+                 "apply_clock_control_proven_absent(",
+                 "explicit Windows Reset recognizes an absent Pascal lock domain")
+    require_text(linux_ceiling_h, "linux_clock_control_proven_absent(g)",
+                 "Linux baseline and final lock use the absent-control rule")
+    require_text(linux_rollback_h, "const bool noClockControl = linux_clock_control_proven_absent(g);",
+                 "Pascal rollback restores prior settings when no cap can exist")
+    require_text(linux_mutation_cpp, "bool noControl = linux_clock_control_proven_absent(g);",
+                 "explicit Linux Reset skips an absent locked-clock domain")
     require_text(ceiling_policy_h,
                  "static inline bool apply_clock_ceiling_proceeds_unprotected(",
                  "the log line for an unprotected transition shares the rule "

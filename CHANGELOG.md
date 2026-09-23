@@ -26,8 +26,7 @@
 
 ## Unreleased
 
-Setup now installs to any folder you choose instead of only one directly under
-Program Files.
+Setup now accepts install folders beyond Program Files.
 
 ### Highlights
 
@@ -35,20 +34,17 @@ Program Files.
   that folder is protected before installing anything.
 - **A new folder under a drive root no longer raises a false warning.** Setup
   protects such a folder as it creates it, and now says so.
-- **Choosing a folder other accounts can change is an explicit decision.** Such
-  a folder can be used to take over the background service; the warning says so
-  and shows the admin command that fully protects the folder (it is never
-  applied for you), ready to paste.
+- **Choosing a folder other accounts can change requires acknowledgment.** Setup
+  explains the service takeover risk and shows a command to protect the folder.
 - **Installing the service from an unprotected portable folder now asks first**
   instead of installing quietly.
-- **A failed service installation now tells you what went wrong and what to do
-  about it.** It used to report only "exit code 1", with the real reason written
-  to a log file you had no way to find.
-- **Green Curve now needs a folder of its own.** A folder holding other files, anything inside Windows, Downloads, the desktop and drive roots are refused, even when reached through another path.
+- **A failed service installation now gives a clear reason and remedy.**
+- **Green Curve now needs a folder of its own.** Folders with other files and restricted Windows locations are refused, including through alternate paths.
 - **Moving a setup installation now removes its old folder when empty.** Other files keep the folder in place.
 - **A folder Green Curve no longer uses gets its normal permissions back.**
 - **A failed service install or repair no longer leaves the background service stopped.** The previous service is restored if the new one cannot start.
 - **Updates now warn when applied settings cannot be saved for restoration.** Setup also reports an uncertain settings capture instead of silently finishing at stock.
+- **Pascal GPUs can apply curve-based clock limits without unsupported clock controls.** Apply, Reset, and recovery now handle that missing control consistently.
 - **A slow service start is no longer reported as a failure**, and a real
   failure is reported at once.
 - **Declining the Windows elevation prompt is no longer reported as an error.**
@@ -65,7 +61,7 @@ Program Files.
 - An existing installation in a folder Green Curve no longer accepts keeps
   working; the restriction applies when you install or move it.
 - Installing from the archive requires an elevated PowerShell or Command
-  Prompt. This was always true and is now stated, and refused clearly.
+  Prompt; setup now explains the requirement.
 
 ## 0.26.0
 

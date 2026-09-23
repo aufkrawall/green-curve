@@ -367,6 +367,14 @@ static bool service_reset_all(char* result, size_t resultSize,
                   " releasing it would uncap a curve that is still raised\n",
             recovery.curve.attempted ? 1 : 0, recovery.curve.verified ? 1 : 0,
             recovery.gpuOffset.attempted ? 1 : 0, recovery.gpuOffset.verified ? 1 : 0);
+    } else if (apply_clock_control_proven_absent(
+            g_app.gpuFamily == GPU_FAMILY_PASCAL,
+            g_app.transitionClockCapActive,
+            g_app.lockMode == LOCK_MODE_HARD ||
+                g_app.appliedLockMode == LOCK_MODE_HARD)) {
+        recovery.restrictionReleased = true;
+        debug_log("service_reset_all: NVML locked-clock reset is inapplicable on Pascal;"
+                  " no hard pin or retained cap exists\n");
     } else if (g_nvml_api.resetGpuLockedClocks) {
         if (nvml_ensure_ready()) {
             const bool restrictionMayExist =

@@ -225,9 +225,8 @@ struct ApplyClockCeilingGuard {
         debug_log("apply ceiling: PROCEEDING UNPROTECTED -- a %u MHz transition"
                   " clamp was required (%s) but the driver answered"
                   " NOT_SUPPORTED for every clamp form this request may use"
-                  " (%s; symmetric fallback %s). The request names no lock of"
-                  " its own, so its end state is uncapped by the user's own"
-                  " choice and this is the behaviour this configuration has"
+                  " (%s; symmetric fallback %s). The final state needs no"
+                  " NVML hard pin, so this is the behaviour this GPU has"
                   " always had; a clamp that was installable and merely"
                   " declined would have refused the transition instead\n",
             plan.ceilingMHz, apply_clock_ceiling_reason_name(plan.reason),
@@ -250,8 +249,8 @@ struct ApplyClockCeilingGuard {
     // clock past the outgoing envelope are unaffected.
     void refusal_message(char* out, size_t outSize) const {
         // The strong wording IS earned on this path, unlike in the log line
-        // above: UNSUPPORTED only reaches a refusal when the request names its
-        // own lock, which is exactly when the symmetric form is permitted -- so
+        // above: UNSUPPORTED only reaches a refusal for a HARD pin, where the
+        // symmetric form is permitted -- so
         // both forms were tried and both answered NOT_SUPPORTED (or the entry
         // points were missing outright).
         const char* why = (armResult == APPLY_CEILING_ARM_REFUSED)

@@ -62,6 +62,9 @@ enum ApplyClockCeilingReason {
     // The request names a lock target.  That target is a ceiling the user has
     // already validated, so it bounds the transition too.
     APPLY_CEILING_REASON_REQUESTED_LOCK,
+    // The requested limit is a VF-curve FLATTEN, not an NVML hard pin. A
+    // device without locked-clock control can still establish this end state.
+    APPLY_CEILING_REASON_REQUESTED_FLATTEN,
     // The apply resets to stock first, and the outgoing state was being held
     // DOWN by something the reset removes -- a FLATTEN tail floor, a negative
     // offset, an old pin.  Stock is above both endpoints for the whole window
@@ -76,6 +79,7 @@ static inline const char* apply_clock_ceiling_reason_name(
     ApplyClockCeilingReason r) {
     switch (r) {
         case APPLY_CEILING_REASON_REQUESTED_LOCK: return "requested lock target";
+        case APPLY_CEILING_REASON_REQUESTED_FLATTEN: return "requested VF flatten target";
         case APPLY_CEILING_REASON_RESET_DROPS_CAP:
             return "reset-to-stock removes the outgoing cap";
         default: return "none";
@@ -162,8 +166,10 @@ static inline ApplyClockCeilingPlan apply_clock_ceiling_plan(
 
     plan.required = true;
     plan.clampControlAbsent = !nvmlLockedClocksAvailable;
-    plan.reason = incomingLock ? APPLY_CEILING_REASON_REQUESTED_LOCK
-                               : APPLY_CEILING_REASON_RESET_DROPS_CAP;
+    plan.reason = incomingLock
+        ? (lockMode == LOCK_MODE_HARD ? APPLY_CEILING_REASON_REQUESTED_LOCK
+                                     : APPLY_CEILING_REASON_REQUESTED_FLATTEN)
+        : APPLY_CEILING_REASON_RESET_DROPS_CAP;
 
     unsigned int bound = incomingLock ? lockMHz : 0;
     if (outgoingCeilingMHz > 0 && (bound == 0 || outgoingCeilingMHz < bound))
@@ -250,24 +256,32 @@ enum ApplyClockCeilingArmResult {
 //  - It needs UNSUPPORTED, not REFUSED.  A clamp this GPU can hold that was
 //    declined once still refuses, so a Blackwell board whose clamp fails for a
 //    permission or reservation reason keeps the CT-01 protection in full.
-//  - It needs a request that names NO lock of its own.  When the request DOES
-//    name a lock, the apply would fail at its final lock step anyway -- the
-//    same call, the same NOT_SUPPORTED -- so refusing up front is strictly
-//    better: it reports the real reason and writes no hardware at all.
+//  - It needs a final state that does not require an NVML HARD pin. A VF
+//    FLATTEN is written into the curve and can finish without locked-clock
+//    control; a HARD request would fail at its final NVML call, so it is
+//    refused before any write.
 //
-// What is left is an apply whose requested end state is uncapped by the user's
-// own choice, on a GPU with no clamp to arm, which is precisely the behaviour
-// this program had on that hardware before the mechanism existed.  The caller
-// logs the unprotected transition at full volume rather than silently.
+// What is left is an apply whose final state uses either no lock or a VF-curve
+// FLATTEN, on a GPU with no clamp to arm. This is the pre-guard behaviour on
+// that hardware. The caller logs the unprotected transition at full volume.
 static inline bool apply_clock_ceiling_transition_must_refuse(
     bool required, ApplyClockCeilingArmResult result,
     ApplyClockCeilingReason reason = APPLY_CEILING_REASON_REQUESTED_LOCK) {
     if (!required) return false;
     if (result == APPLY_CEILING_ARM_INSTALLED) return false;
     if (result == APPLY_CEILING_ARM_UNSUPPORTED &&
-        reason == APPLY_CEILING_REASON_RESET_DROPS_CAP)
+        (reason == APPLY_CEILING_REASON_RESET_DROPS_CAP ||
+         reason == APPLY_CEILING_REASON_REQUESTED_FLATTEN))
         return false;
     return true;
+}
+
+// Pascal predates NVML's locked-clock control. A reset of that absent domain
+// is a no-op only if this process has neither installed nor inherited a pin.
+// Keep every actual or uncertain restriction on the normal reset/recovery path.
+static inline bool apply_clock_control_proven_absent(
+    bool knownPascal, bool installedOrRetainedCap, bool outgoingHardPin) {
+    return knownPascal && !installedOrRetainedCap && !outgoingHardPin;
 }
 
 // The transition is going ahead although the protection it wanted is not
