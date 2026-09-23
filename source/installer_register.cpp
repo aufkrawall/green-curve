@@ -6,9 +6,9 @@
 // The registry record is the installer's memory: it is what makes the next run
 // an upgrade instead of a second parallel installation, and what makes it
 // possible to move an installation without stranding the previous one.  It is
-// therefore written last, after the files and the service registration have
-// already succeeded, so a half-finished install never advertises itself as
-// complete.
+// therefore saved by the install transaction and written just before service
+// registration. A failed helper restores the previous record; shortcuts are
+// updated only after the service has been confirmed running.
 //
 // Shortcuts go to the all-users locations because the payload lands in a
 // machine-wide directory under an elevated setup: writing to the invoking
@@ -136,7 +136,7 @@ static DWORD gc_estimated_size_kb(const GcPayload* payload) {
     return (DWORD)(kb > 0xFFFFFFFFull ? 0xFFFFFFFFull : kb);
 }
 
-bool gc_write_shortcuts_and_registration(GcInstallContext* context) {
+bool gc_write_uninstall_registration(GcInstallContext* context) {
     WCHAR installDirectory[GC_INSTALLER_MAX_PATH_CHARS] = {};
     if (!gc_utf8_to_wide(context->plan.targetDirectory, installDirectory,
                          (int)GC_ARRAY_COUNT(installDirectory))) {
@@ -151,28 +151,6 @@ bool gc_write_shortcuts_and_registration(GcInstallContext* context) {
                        "The installation path is too long for the program files.");
         gc_log_fail("%s", context->error);
         return false;
-    }
-
-    // An upgrade that moved must not leave the old install's icons behind
-    // pointing at a directory that is no longer maintained.
-    if (context->plan.directoryChanged || !context->plan.createStartMenuShortcut) {
-        gc_remove_shortcut(FOLDERID_CommonPrograms, GC_SETUP_PRODUCT_NAME_W);
-    }
-    if (context->plan.directoryChanged || !context->plan.createDesktopShortcut) {
-        gc_remove_shortcut(FOLDERID_PublicDesktop, nullptr);
-    }
-    // Shortcut failures are recorded but never fail the installation: the
-    // program is installed and working at this point, and refusing to finish
-    // over a missing icon would be worse than the missing icon.
-    if (context->plan.createStartMenuShortcut) {
-        if (!gc_write_start_menu_shortcut(guiPath, installDirectory)) {
-            gc_log_step("shortcut: the Start menu entry could not be created; continuing");
-        }
-    }
-    if (context->plan.createDesktopShortcut) {
-        if (!gc_write_desktop_shortcut(guiPath, installDirectory)) {
-            gc_log_step("shortcut: the desktop icon could not be created; continuing");
-        }
     }
 
     HKEY key = nullptr;
@@ -221,6 +199,27 @@ bool gc_write_shortcuts_and_registration(GcInstallContext* context) {
     }
     gc_log_step("registry: Add/Remove Programs entry written for %ls", installDirectory);
     return true;
+}
+
+void gc_update_shortcuts(GcInstallContext* context) {
+    WCHAR installDirectory[GC_INSTALLER_MAX_PATH_CHARS] = {};
+    WCHAR guiPath[GC_INSTALLER_MAX_PATH_CHARS] = {};
+    if (!gc_utf8_to_wide(context->plan.targetDirectory, installDirectory,
+                         (int)GC_ARRAY_COUNT(installDirectory)) ||
+        !gc_join_path(installDirectory, GC_SETUP_GUI_EXE_W, guiPath, GC_ARRAY_COUNT(guiPath))) {
+        gc_log_fail("shortcut: the installation path could not be formed");
+        return;
+    }
+    if (context->plan.directoryChanged || !context->plan.createStartMenuShortcut)
+        gc_remove_shortcut(FOLDERID_CommonPrograms, GC_SETUP_PRODUCT_NAME_W);
+    if (context->plan.directoryChanged || !context->plan.createDesktopShortcut)
+        gc_remove_shortcut(FOLDERID_PublicDesktop, nullptr);
+    if (context->plan.createStartMenuShortcut &&
+        !gc_write_start_menu_shortcut(guiPath, installDirectory))
+        gc_log_step("shortcut: the Start menu entry could not be created; continuing");
+    if (context->plan.createDesktopShortcut &&
+        !gc_write_desktop_shortcut(guiPath, installDirectory))
+        gc_log_step("shortcut: the desktop icon could not be created; continuing");
 }
 
 // ---------------------------------------------------------------------------

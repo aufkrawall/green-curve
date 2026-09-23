@@ -544,19 +544,41 @@ def check_all(ctx, require_text, forbid_text):
                                    "gc_stop_gui_processes(context)",
                                    "settings are captured before anything is stopped")
     ctx.require_order_in_operation(apply_shard, install_anchor,
+                                   "transaction.prepare(targetDirectory)",
                                    "gc_stop_service(context, &serviceWasRunning)",
-                                   "gc_write_payload_file",
+                                   "the previous files and registration are saved before shutdown")
+    ctx.require_order_in_operation(apply_shard, install_anchor,
+                                   "gc_stop_service(context, &serviceWasRunning)",
+                                   "transaction.replace(i)",
                                    "the service is stopped before its binary is replaced")
     ctx.require_order_in_operation(apply_shard, install_anchor,
                                    "gc_register_service(context)",
                                    "gc_reapply_captured_settings(context)",
                                    "settings are re-applied only after the new service is registered")
     ctx.require_order_in_operation(apply_shard, install_anchor,
-                                   "gc_write_shortcuts_and_registration(context)",
+                                   "gc_write_uninstall_registration(context)",
+                                   "gc_register_service(context)",
+                                   "the uninstall record is recoverable before the service helper commits")
+    ctx.require_order_in_operation(apply_shard, install_anchor,
+                                   "transaction.cleanup();",
+                                   "gc_update_shortcuts(context)",
+                                   "shortcuts are changed only after service registration commits")
+    ctx.require_order_in_operation(apply_shard, install_anchor,
+                                   "gc_update_shortcuts(context)",
                                    "gc_retire_previous_directory(context)",
                                    "the old directory is retired only after the new install is registered")
-    require_text(apply_shard, "MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH",
+    require_text(source("installer_transaction_files.h"), "MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH",
                  "payload files are replaced atomically")
+    require_text(source("installer_transaction.cpp"), "restore_files()",
+                 "every failed replacement can restore the previous payload")
+    require_text(source("installer_transaction.cpp"), "restore_service()",
+                 "a failed registration restores the previous SCM configuration")
+    require_text(source("installer_transaction.cpp"), "restore_registry()",
+                 "a failed registration restores the uninstall record")
+    require_text(source("installer_transaction_files.h"), "CopyFile2(staged, temporary, nullptr)",
+                 "staged payload copies inherit target permissions instead of the protected scratch ACL")
+    forbid_text(source("installer_transaction_files.h"), "CopyFileW(staged, temporary",
+                "CopyFileW would copy the scratch ACL and block standard users from the installed GUI")
     require_text(apply_shard, "--service-install",
                  "the installed binary owns its own SCM registration")
     require_text(apply_shard, "gc_install_paths_equal(registeredUtf8, context->plan.targetDirectory)",
@@ -573,7 +595,7 @@ def check_all(ctx, require_text, forbid_text):
                  "never to a null DACL) so the user can delete it")
     require_text(source("installer_move_cleanup.h"), "RemoveDirectoryW(directory)",
                  "move cleanup removes the old directory only when empty")
-    require_text(apply_shard, "CreateProcessWithTokenW",
+    require_text(source("installer_launch.cpp"), "CreateProcessWithTokenW",
                  "the installed GUI is started unelevated, not with setup's admin token")
     # The stop steps must fail closed when a process handle cannot be taken:
     # "all exited" would otherwise be an assumption while the process still

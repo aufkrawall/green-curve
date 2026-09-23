@@ -12,6 +12,7 @@
 // which of those boundaries was crossed.
 
 #include "installer_common.h"
+#include "installer_transaction_policy.h"
 
 // Bounded waits.  These are not race workarounds: each one waits on a real
 // kernel object (process exit) or on an external state machine (the SCM) that
@@ -290,12 +291,16 @@ struct GcCapturedSettingsGuard {
 // path.  This is a normal, user-typed-equivalent Apply — not a silent replay of
 // a persisted snapshot — which is why it is allowed to write to the GPU at all
 // under the service's event-only restore policy.
-static void gc_reapply_captured_settings(GcInstallContext* context) {
+static void gc_reapply_captured_settings(GcInstallContext* context,
+                                         const WCHAR* directoryOverride = nullptr) {
     if (!context || !context->haveCapturedSettings) return;
     WCHAR targetDirectory[GC_INSTALLER_MAX_PATH_CHARS] = {};
     WCHAR exePath[GC_INSTALLER_MAX_PATH_CHARS] = {};
-    if (!gc_utf8_to_wide(context->plan.targetDirectory, targetDirectory,
-                         (int)GC_ARRAY_COUNT(targetDirectory)) ||
+    if ((directoryOverride
+            ? FAILED(StringCchCopyW(targetDirectory, GC_ARRAY_COUNT(targetDirectory),
+                                     directoryOverride))
+            : !gc_utf8_to_wide(context->plan.targetDirectory, targetDirectory,
+                               (int)GC_ARRAY_COUNT(targetDirectory))) ||
         !gc_join_path(targetDirectory, GC_SETUP_GUI_EXE_W, exePath, GC_ARRAY_COUNT(exePath))) {
         return;
     }
@@ -382,6 +387,8 @@ static bool gc_write_payload_file(const WCHAR* directory, const GcPayloadFile* f
     return true;
 }
 
+#include "installer_transaction.cpp"
+
 // ---------------------------------------------------------------------------
 // Service registration
 // ---------------------------------------------------------------------------
@@ -438,151 +445,7 @@ static bool gc_register_service(GcInstallContext* context) {
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Launching the installed program as the interactive user
-// ---------------------------------------------------------------------------
-
-// The active interactive user's primary token, obtained WITHOUT a window.
-//
-// `GetShellWindow()` is session-scoped: it returns the shell of the caller's own
-// session, which is null when setup was launched by the LocalSystem service and
-// is therefore running in session 0.  That is not a corner case -- it is every
-// in-app update, because the updater deliberately drives setup from the service
-// so the install needs no UAC prompt.
-//
-// WTSQueryUserToken answers the same question by session id instead of by
-// window, and works precisely because setup is running as SYSTEM.  Returns null
-// when there is no interactive session (a genuinely headless update), which is
-// a legitimate answer and not an error.
-static HANDLE gc_active_user_primary_token(DWORD preferredSessionId) {
-    DWORD sessionId = preferredSessionId;
-    if (sessionId == (DWORD)-1) sessionId = WTSGetActiveConsoleSessionId();
-    if (sessionId == 0xFFFFFFFFu) return nullptr;
-
-    HANDLE userToken = nullptr;
-    if (!WTSQueryUserToken(sessionId, &userToken)) {
-        gc_log_step("launch: WTSQueryUserToken(session %lu) failed (error %lu)",
-                    sessionId, GetLastError());
-        return nullptr;
-    }
-    GcScopedHandle scopedUser(userToken);
-    HANDLE primaryToken = nullptr;
-    if (!DuplicateTokenEx(userToken,
-                          TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY |
-                              TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID,
-                          nullptr, SecurityImpersonation, TokenPrimary,
-                          &primaryToken)) {
-        gc_log_step("launch: DuplicateTokenEx for session %lu failed (error %lu)",
-                    sessionId, GetLastError());
-        return nullptr;
-    }
-    gc_log_step("launch: obtained the interactive token for session %lu", sessionId);
-    return primaryToken;
-}
-
-bool gc_launch_installed_gui(const WCHAR* installDirectory,
-                             DWORD preferredSessionId) {
-    WCHAR exePath[GC_INSTALLER_MAX_PATH_CHARS] = {};
-    if (!gc_join_path(installDirectory, GC_SETUP_GUI_EXE_W, exePath, GC_ARRAY_COUNT(exePath))) return false;
-    if (!gc_file_exists(exePath)) return false;
-
-    // Setup runs elevated; starting the GUI directly from here would hand it an
-    // administrator token it is not designed to hold (its manifest asks for
-    // asInvoker).  Borrowing the desktop shell's token starts it at the
-    // interactive user's normal integrity level instead.
-    HWND shell = preferredSessionId == (DWORD)-1 ? GetShellWindow() : nullptr;
-    if (shell) {
-        DWORD shellProcessId = 0;
-        GetWindowThreadProcessId(shell, &shellProcessId);
-        if (shellProcessId != 0) {
-            GcScopedHandle shellProcess(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, shellProcessId));
-            if (shellProcess.valid()) {
-                HANDLE shellToken = nullptr;
-                if (OpenProcessToken(shellProcess.get(), TOKEN_DUPLICATE, &shellToken)) {
-                    GcScopedHandle scopedShellToken(shellToken);
-                    HANDLE primaryToken = nullptr;
-                    if (DuplicateTokenEx(shellToken,
-                                         TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY |
-                                             TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID,
-                                         nullptr, SecurityImpersonation, TokenPrimary, &primaryToken)) {
-                        GcScopedHandle scopedPrimary(primaryToken);
-                        WCHAR commandLine[GC_INSTALLER_MAX_PATH_CHARS + 8] = {};
-                        StringCchPrintfW(commandLine, GC_ARRAY_COUNT(commandLine), L"\"%ls\"", exePath);
-                        STARTUPINFOW startup = {};
-                        startup.cb = sizeof(startup);
-                        PROCESS_INFORMATION process = {};
-                        if (CreateProcessWithTokenW(primaryToken, 0, exePath, commandLine, 0, nullptr,
-                                                    installDirectory, &startup, &process)) {
-                            CloseHandle(process.hProcess);
-                            CloseHandle(process.hThread);
-                            gc_log_step("launch: started %ls as the interactive user", exePath);
-                            return true;
-                        }
-                        gc_log_step("launch: CreateProcessWithTokenW failed (error %lu)", GetLastError());
-                    }
-                }
-            }
-        }
-    }
-
-    // No shell window in this session.  That is the normal state when the
-    // updater's service launched setup (session 0), so ask WTS for the
-    // interactive user's token by session id instead of by window.
-    //
-    // CreateProcessAsUser rather than CreateProcessWithTokenW: the latter needs
-    // SE_IMPERSONATE_NAME and starts the process in the CALLER's session, which
-    // from session 0 would produce a GUI nobody can see.  CreateProcessAsUser
-    // honours the token's own session, and SYSTEM holds the privileges it wants.
-    {
-        HANDLE primaryToken = gc_active_user_primary_token(preferredSessionId);
-        if (primaryToken) {
-            GcScopedHandle scopedPrimary(primaryToken);
-            WCHAR commandLine[GC_INSTALLER_MAX_PATH_CHARS + 8] = {};
-            StringCchPrintfW(commandLine, GC_ARRAY_COUNT(commandLine), L"\"%ls\"", exePath);
-            STARTUPINFOW startup = {};
-            startup.cb = sizeof(startup);
-            // The interactive desktop, or the process starts with no station to
-            // draw on and dies immediately.
-            WCHAR desktop[] = L"winsta0\\default";
-            startup.lpDesktop = desktop;
-            // The user's OWN environment block, not this process's.
-            //
-            // CreateProcessAsUser with lpEnvironment=nullptr hands the child the
-            // CALLER's environment -- and the caller here is a SYSTEM service in
-            // session 0.  The child would then see SYSTEM's %USERPROFILE% and
-            // %LOCALAPPDATA%, so anything that resolves a per-user path can land
-            // in C:\Windows\System32\config\systemprofile instead of the real
-            // user's profile.  CreateEnvironmentBlock builds the correct one from
-            // the token.
-            LPVOID environment = nullptr;
-            BOOL haveEnvironment = CreateEnvironmentBlock(&environment, primaryToken, FALSE);
-            if (!haveEnvironment) {
-                gc_log_step("launch: CreateEnvironmentBlock failed (error %lu); "
-                            "refusing to start it with SYSTEM's environment",
-                            GetLastError());
-                return false;
-            }
-            PROCESS_INFORMATION process = {};
-            BOOL started = CreateProcessAsUserW(
-                primaryToken, exePath, commandLine, nullptr, nullptr, FALSE,
-                CREATE_UNICODE_ENVIRONMENT, haveEnvironment ? environment : nullptr,
-                installDirectory, &startup, &process);
-            DWORD startError = started ? 0 : GetLastError();
-            if (haveEnvironment) DestroyEnvironmentBlock(environment);
-            if (started) {
-                CloseHandle(process.hProcess);
-                CloseHandle(process.hThread);
-                gc_log_step("launch: started %ls in the interactive session", exePath);
-                return true;
-            }
-            gc_log_step("launch: CreateProcessAsUser failed (error %lu)", startError);
-        }
-    }
-
-    gc_log_step("launch: could not start %ls as an interactive user "
-                "(last error %lu)", exePath, GetLastError());
-    return false;
-}
+#include "installer_launch.cpp"
 
 // ---------------------------------------------------------------------------
 // The install itself
@@ -740,28 +603,58 @@ bool gc_install_execute(GcInstallContext* context) {
         gc_log_step("capture: handled by the authorized update GUI before setup launched");
     }
 
+    // Preserve a complete, runnable old image and the machine-wide pointers
+    // before the first process is stopped. Staging also exposes disk and path
+    // failures while the previous installation is still available.
+    GcInstallTransaction transaction(context);
+    if (!transaction.prepare(targetDirectory)) return false;
+
     // 3. Nothing may hold the files open once extraction starts.
     if (!gc_stop_gui_processes(context)) {
         gc_set_error(context, "A running Green Curve program could not be closed. Close it and run setup again.");
+        transaction.cleanup();
         return false;
     }
+    // 4-5. Every failure edge after shutdown reaches the same recovery path.
+    // The uninstall record is saved and written before the service helper:
+    // there is no fallible setup work after that helper commits and releases
+    // the previous location's hardening.
     bool serviceWasRunning = false;
-    if (!gc_stop_service(context, &serviceWasRunning)) return false;
+    if (!gc_run_install_transaction(context->payload.fileCount,
+        [&]() {
+            bool stopped = gc_stop_service(context, &serviceWasRunning);
+            transaction.serviceWasRunning |= serviceWasRunning;
+            return stopped;
+        },
+        [&](uint32_t i) {
+            if (i == 0) gc_report(context, 30, "Copying program files...");
+            if (!transaction.replace(i)) return false;
+            int percent = 30 + (int)((40 * (uint64_t)(i + 1)) / context->payload.fileCount);
+            gc_report(context, percent, "Copying program files...");
+            return true;
+        },
+        [&]() {
+            gc_report(context, 75, "Updating the uninstall record...");
+            return gc_write_uninstall_registration(context);
+        },
+        [&]() { return gc_register_service(context); },
+        [&](bool recordMayHaveChanged) {
+            char original[sizeof(context->error)] = {};
+            StringCchCopyA(original, GC_ARRAY_COUNT(original), context->error);
+            bool restored = transaction.rollback(recordMayHaveChanged);
+            gc_set_error(context, "%s%s", original,
+                restored ? (transaction.serviceWasRunning
+                    ? (context->settingsRestored
+                        ? " Setup changes were rolled back and previous GPU settings reapplied."
+                        : " Setup changes were rolled back; reapply GPU settings if needed.")
+                    : " Setup changes were rolled back.") :
+                           " Recovery failed; keep the protected backup and see the failure log.");
+        })) return false;
+    transaction.cleanup();
 
-    // 4. Files.
-    gc_report(context, 30, "Copying program files...");
-    for (uint32_t i = 0; i < context->payload.fileCount; i++) {
-        if (!gc_write_payload_file(targetDirectory, &context->payload.files[i], context)) return false;
-        int percent = 30 + (int)((40 * (uint64_t)(i + 1)) / context->payload.fileCount);
-        gc_report(context, percent, "Copying program files...");
-    }
-
-    // 5. Service registration, which also re-hardens the new directory.
-    if (!gc_register_service(context)) return false;
-
-    // 6. Shortcuts and the Add/Remove Programs entry.
+    // 6. Shortcuts are best effort and cannot invalidate a running service.
     gc_report(context, 80, "Creating shortcuts...");
-    if (!gc_write_shortcuts_and_registration(context)) return false;
+    gc_update_shortcuts(context);
 
     // 7. Put the user's settings back exactly as an explicit Apply would.
     gc_reapply_captured_settings(context);

@@ -104,6 +104,7 @@
 #include "installer_archive_policy.h"
 #include "installer_cli_policy.h"
 #include "installer_plan_policy.h"
+#include "installer_transaction_policy.h"
 #include "settings_transfer_exit_policy.h"
 #include "installer_uninstall_policy.h"
 #include "installer_ui_click_policy.h"
@@ -1453,6 +1454,58 @@ static int run_ownership_handback_tests() {
 }
 
 int main(int argc, char** argv) {
+    // Inject a refusal at every post-shutdown boundary. This is the same
+    // orchestrator setup uses, with fake side effects and an observed rollback.
+    for (int failure = 0; failure < 6; ++failure) {
+        int step = 0;
+        int rollbacks = 0;
+        int restoredRecord = -1;
+        int replaced = 0;
+        bool result = gc_run_install_transaction(3,
+            [&]() { return step++ != failure; },
+            [&](uint32_t index) {
+                if (index != (uint32_t)replaced) return false;
+                if (step++ == failure) return false;
+                ++replaced;
+                return true;
+            },
+            [&]() { return step++ != failure; },
+            [&]() { return step++ != failure; },
+            [&](bool record) { ++rollbacks; restoredRecord = record ? 1 : 0; });
+        if (result || rollbacks != 1 || restoredRecord != (failure >= 4 ? 1 : 0))
+            return 6100 + failure;
+    }
+    {
+        int replaced = 0;
+        int rollbacks = 0;
+        bool result = gc_run_install_transaction(3,
+            []() { return true; },
+            [&](uint32_t index) { return index == (uint32_t)replaced++; },
+            [&]() { return replaced == 3; },
+            []() { return true; },
+            [&](bool) { ++rollbacks; });
+        if (!result || replaced != 3 || rollbacks != 0) return 6106;
+    }
+    {
+        const bool changed[] = {true, true, false, true};
+        const bool existed[] = {true, false, true, true};
+        int restored = 0;
+        int removed = 0;
+        bool complete = gc_restore_install_files(4,
+            [&](uint32_t i) { return changed[i]; },
+            [&](uint32_t i) { return existed[i]; },
+            [&](uint32_t i) { restored |= 1 << i; return i != 0; },
+            [&](uint32_t i) { removed |= 1 << i; return true; });
+        // The first restore fails, but the other changed files are still
+        // visited. An untouched file is never removed or overwritten.
+        if (complete || restored != ((1 << 0) | (1 << 3)) || removed != (1 << 1))
+            return 6107;
+    }
+    if (!gc_rollback_can_reapply_settings(true, true, true, true) ||
+        gc_rollback_can_reapply_settings(false, true, true, true) ||
+        gc_rollback_can_reapply_settings(true, false, true, true) ||
+        gc_rollback_can_reapply_settings(true, true, false, true) ||
+        gc_rollback_can_reapply_settings(true, true, true, false)) return 6108;
     if (int transitionFailure = run_clock_transition_tests()) return transitionFailure;
     if (int handbackFailure = run_ownership_handback_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", handbackFailure);

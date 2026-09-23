@@ -296,8 +296,10 @@ bool gc_uninstall_execute(const WCHAR* installDirectory, bool* folderLeftForRest
 // Ask every running Green Curve GUI to close and wait for the processes to go
 // away.  `context` may be null (the uninstaller has no progress reporting).
 bool gc_stop_gui_processes(GcInstallContext* context);
-// Shortcuts plus the Add/Remove Programs record (source/installer_register.cpp).
-bool gc_write_shortcuts_and_registration(GcInstallContext* context);
+// The uninstall record is a fallible transaction step; shortcuts are updated
+// only after commit and remain best effort (source/installer_register.cpp).
+bool gc_write_uninstall_registration(GcInstallContext* context);
+void gc_update_shortcuts(GcInstallContext* context);
 // Launch the installed GUI as the interactive (unelevated) user.
 bool gc_launch_installed_gui(const WCHAR* installDirectory,
                              DWORD preferredSessionId);

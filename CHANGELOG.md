@@ -43,6 +43,7 @@ Setup now accepts install folders beyond Program Files.
 - **Moving a setup installation now removes its old folder when empty.** Other files keep the folder in place.
 - **A folder Green Curve no longer uses gets its normal permissions back.**
 - **A failed service install or repair no longer leaves the background service stopped.** The previous service is restored if the new one cannot start.
+- **A failed setup upgrade now restores the previous installation.** Program files, service settings, and the uninstall entry are restored after a copy or registration failure.
 - **Updates now warn when applied settings cannot be saved for restoration.** Setup also reports an uncertain settings capture instead of silently finishing at stock.
 - **Pascal GPUs can apply curve-based clock limits without unsupported clock controls.** Apply, Reset, and recovery now handle that missing control consistently.
 - **A slow service start is no longer reported as a failure**, and a real

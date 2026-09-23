@@ -27,6 +27,7 @@
 #include "service_admin_reason_policy.h"
 #include "service_install_location_policy.h"
 #include "service_scm_wait_policy.h"
+#include "installer_transaction_files.h"
 
 namespace {
 
@@ -282,6 +283,74 @@ int run_handle_hardening_tests() {
     return cleanupAnd(0);
 }
 
+int run_install_file_rollback_tests() {
+    wchar_t directory[MAX_PATH] = {};
+    if (!make_temp_dir(L"gc_install_rollback", directory, MAX_PATH)) return 6120;
+    wchar_t destination[MAX_PATH] = {}, staged[MAX_PATH] = {}, backup[MAX_PATH] = {};
+    StringCchPrintfW(destination, MAX_PATH, L"%ls\\greencurve.exe", directory);
+    StringCchPrintfW(staged, MAX_PATH, L"%ls\\staged.exe", directory);
+    StringCchPrintfW(backup, MAX_PATH, L"%ls\\old.exe", directory);
+    auto finish = [&](int code) {
+        char ignored[160] = {};
+        release_service_hardening(staged, GC_SERVICE_ACL_BINARY, ignored, sizeof(ignored));
+        DeleteFileW(destination);
+        DeleteFileW(staged);
+        DeleteFileW(backup);
+        RemoveDirectoryW(directory);
+        return code;
+    };
+    auto writeOne = [](const wchar_t* path, char value) {
+        HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return false;
+        DWORD written = 0;
+        bool ok = WriteFile(file, &value, 1, &written, nullptr) && written == 1;
+        CloseHandle(file);
+        return ok;
+    };
+    auto readOne = [](const wchar_t* path, char expected) {
+        HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return false;
+        char value = 0;
+        DWORD read = 0;
+        bool ok = ReadFile(file, &value, 1, &read, nullptr) && read == 1 &&
+                  value == expected;
+        CloseHandle(file);
+        return ok;
+    };
+    if (!writeOne(destination, 'O') || !writeOne(staged, 'N') ||
+        !CopyFileW(destination, backup, TRUE)) return finish(6121);
+    HANDLE stagedHandle = open_for_hardening(staged, false);
+    if (stagedHandle == INVALID_HANDLE_VALUE) return finish(6127);
+    char aclError[160] = {};
+    bool hardened = apply_protected_service_dacl_to_handle(stagedHandle,
+        GC_SERVICE_ACL_BINARY, false, aclError, sizeof(aclError));
+    CloseHandle(stagedHandle);
+    if (!hardened || !service_path_dacl_is_ours(staged, GC_SERVICE_ACL_BINARY))
+        return finish(6128);
+    if (FAILED(gc_replace_staged_install_file(staged, destination)) ||
+        !readOne(destination, 'N') || !released_dacl_is_inherited(destination))
+        return finish(6122);
+    if (FAILED(gc_restore_previous_install_file(backup, destination)) ||
+        !readOne(destination, 'O')) return finish(6123);
+    // An extraction failure must leave the last complete file untouched.
+    char ignored[160] = {};
+    if (release_service_hardening(staged, GC_SERVICE_ACL_BINARY, ignored,
+                                  sizeof(ignored)) != GC_SERVICE_RELEASE_RELEASED ||
+        !DeleteFileW(staged)) return finish(6129);
+    if (SUCCEEDED(gc_replace_staged_install_file(staged, destination)) ||
+        !readOne(destination, 'O')) return finish(6124);
+    if (!writeOne(staged, 'N') ||
+        FAILED(gc_replace_staged_install_file(staged, destination))) return finish(6125);
+    // If the backup is lost, restoration must fail without truncating the
+    // complete new file; the enclosing transaction reports recovery failure.
+    DeleteFileW(backup);
+    if (SUCCEEDED(gc_restore_previous_install_file(backup, destination)) ||
+        !readOne(destination, 'N')) return finish(6126);
+    return finish(0);
+}
+
 bool make_junction(const wchar_t* junctionPath, const wchar_t* targetPath) {
     struct MountPointReparse {
         DWORD tag;
@@ -414,6 +483,7 @@ int run_service_install_tests() {
 #if defined(_WIN32)
     if (int failure = run_exact_dacl_tests()) return failure;
     if (int failure = run_handle_hardening_tests()) return failure;
+    if (int failure = run_install_file_rollback_tests()) return failure;
     if (int failure = run_location_verdict_tests()) return failure;
 #endif
     return 0;
