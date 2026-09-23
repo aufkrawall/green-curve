@@ -6,6 +6,32 @@
 #include "installer_common.h"
 #include "installer_move_cleanup.h"
 
+// After a committed install, drop known setup-owned leaves this payload did
+// not write.  The in-place upgrade path replaces every file the payload
+// contains and leaves every file it does not; the pre-rename uninstaller is
+// exactly such a leave.  Best effort and never fatal: the new install is
+// already registered, and a locked leave is litter, not a broken install.
+void gc_remove_stale_payload_leaves(const WCHAR* directory, const GcPayload* payload) {
+    if (!directory || !directory[0] || !payload || payload->fileCount == 0) return;
+    char label[GC_INSTALLER_LOG_PATH_LABEL_CHARS] = {};
+    gc_log_path_label(directory, label, sizeof(label));
+    const char* shipped[GC_ARCHIVE_MAX_FILES] = {};
+    size_t shippedCount = payload->fileCount;
+    if (shippedCount > GC_ARRAY_COUNT(shipped)) shippedCount = GC_ARRAY_COUNT(shipped);
+    for (size_t i = 0; i < shippedCount; i++) shipped[i] = payload->files[i].name;
+    GcPreviousFileCleanup cleanup =
+        gc_remove_stale_setup_files(directory, shipped, shippedCount);
+    if (cleanup.deleted == 0 && cleanup.failed == 0) {
+        gc_log_step("upgrade reconcile: no stale owned leaves at %s", label);
+        return;
+    }
+    gc_log_step("upgrade reconcile: stale owned leaves deleted=%u failed=%u "
+                "firstFailure=%ls firstError=%lu at %s",
+                cleanup.deleted, cleanup.failed,
+                cleanup.firstFailedName ? cleanup.firstFailedName : L"none",
+                cleanup.firstFileError, label);
+}
+
 namespace {
 
 // Release the hardening the previous service install applied, so the user

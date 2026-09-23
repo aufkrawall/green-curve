@@ -559,6 +559,14 @@ bool gc_install_execute(GcInstallContext* context) {
     transaction.cleanup();
     createdTarget.armed = false;
 
+    // 6a. Reconcile the directory to THIS payload.  An in-place upgrade
+    // replaces every file the payload contains and leaves every file it does
+    // not; the pre-rename uninstaller is exactly such a leave, and a stale
+    // generic `uninstall.exe` is what antivirus engines keep flagging.  Only
+    // after commit: a failed install must leave the previous uninstaller
+    // working.
+    gc_remove_stale_payload_leaves(targetDirectory, &context->payload);
+
     // 6. Shortcuts are best effort and cannot invalidate a running service.
     gc_report(context, 80, "Creating shortcuts...");
     gc_update_shortcuts(context);

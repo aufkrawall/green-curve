@@ -317,6 +317,10 @@ bool gc_read_prior_install(GcPriorInstall* prior);
 bool gc_default_install_directory(char* out, size_t outCount);
 bool gc_install_execute(GcInstallContext* context);
 void gc_retire_previous_directory(GcInstallContext* context);
+// After a committed install, delete known setup-owned leaves the current
+// payload did not write (a renamed uninstaller, a retired file).  Best
+// effort; never removes the directory (source/installer_move_cleanup.cpp).
+void gc_remove_stale_payload_leaves(const WCHAR* directory, const GcPayload* payload);
 // `folderLeftForRestart` (optional) is set when the install folder could not be
 // removed now and was handed to the session manager for the next restart --
 // always the case when the installed uninstaller itself is running.

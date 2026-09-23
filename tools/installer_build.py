@@ -715,6 +715,18 @@ def check_all(ctx, require_text, forbid_text):
                                    "a failed fresh install removes the folders it created")
     ctx.require_order_in_operation(apply_shard, install_anchor,
                                    "transaction.cleanup();\n    createdTarget.armed = false;",
+                                   "gc_remove_stale_payload_leaves(targetDirectory",
+                                   "a committed install reconciles the folder to the current payload")
+    require_text(source("installer_move_cleanup.cpp"), "gc_remove_stale_setup_files(",
+                 "upgrade reconcile deletes only known leaves the payload did not write")
+    require_text(source("installer_move_cleanup.h"), "gc_stale_name_is_shipped",
+                 "a leaf the payload just wrote is never deleted")
+    ctx.require_order_in_operation(apply_shard, install_anchor,
+                                   "gc_remove_stale_payload_leaves(targetDirectory",
+                                   "gc_update_shortcuts(context)",
+                                   "stale leaves go only after the install is committed")
+    ctx.require_order_in_operation(apply_shard, install_anchor,
+                                   "transaction.cleanup();\n    createdTarget.armed = false;",
                                    "gc_update_shortcuts(context)",
                                    "a committed install keeps its folder")
     forbid_text(source("installer_transaction_files.h"), "SHFileOperation",

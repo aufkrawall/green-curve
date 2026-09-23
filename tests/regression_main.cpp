@@ -864,6 +864,72 @@ static int run_installer_move_cleanup_tests() {
     DeleteFileW(userFile);
     RemoveDirectoryW(directory);
     if (!dualOk) return 5713;
+
+    // In-place upgrade reconcile: a known setup-owned leaf the CURRENT payload
+    // did not write is deleted (the pre-rename uninstaller), a leaf it did
+    // write is kept, and a user file is never touched.  This is the path an
+    // upgrade over a 0.26.0-era install takes; without it the stale
+    // uninstall.exe sat in the folder forever.
+    if (!CreateDirectoryW(directory, nullptr)) return 5714;
+    wchar_t shippedUninstaller[MAX_PATH] = {}, staleUninstaller[MAX_PATH] = {},
+           shippedGui[MAX_PATH] = {}, userNote[MAX_PATH] = {};
+    if (FAILED(StringCchPrintfW(shippedUninstaller, MAX_PATH,
+                                L"%ls\\greencurve-uninstall.exe", directory)) ||
+        FAILED(StringCchPrintfW(staleUninstaller, MAX_PATH,
+                                L"%ls\\uninstall.exe", directory)) ||
+        FAILED(StringCchPrintfW(shippedGui, MAX_PATH, L"%ls\\greencurve.exe", directory)) ||
+        FAILED(StringCchPrintfW(userNote, MAX_PATH, L"%ls\\notes.txt", directory))) {
+        RemoveDirectoryW(directory);
+        return 5715;
+    }
+    if (!createFile(shippedUninstaller) || !createFile(staleUninstaller) ||
+        !createFile(shippedGui) || !createFile(userNote)) {
+        DeleteFileW(shippedUninstaller);
+        DeleteFileW(staleUninstaller);
+        DeleteFileW(shippedGui);
+        DeleteFileW(userNote);
+        RemoveDirectoryW(directory);
+        return 5716;
+    }
+    const char* shipped[] = {
+        "greencurve.exe", "greencurve-service.exe", "README.md", "LICENSE",
+        "greencurve-uninstall.exe",
+    };
+    GcPreviousFileCleanup stale =
+        gc_remove_stale_setup_files(directory, shipped, sizeof(shipped) / sizeof(shipped[0]));
+    bool staleOk = !stale.removed && stale.deleted == 1 && stale.failed == 0 &&
+        GetFileAttributesW(staleUninstaller) == INVALID_FILE_ATTRIBUTES &&
+        GetFileAttributesW(shippedUninstaller) != INVALID_FILE_ATTRIBUTES &&
+        GetFileAttributesW(shippedGui) != INVALID_FILE_ATTRIBUTES &&
+        GetFileAttributesW(userNote) != INVALID_FILE_ATTRIBUTES;
+    DeleteFileW(shippedUninstaller);
+    DeleteFileW(shippedGui);
+    DeleteFileW(userNote);
+    RemoveDirectoryW(directory);
+    if (!staleOk) return 5717;
+
+    // Fail-safe: a leaf the payload wrote is kept, a retired one is not
+    // "shipped", and an empty shipped list is "unknown" -- the caller refuses
+    // to act on unknown and deletes nothing.
+    if (!gc_stale_name_is_shipped(L"greencurve-uninstall.exe", shipped, 5)) return 5718;
+    if (gc_stale_name_is_shipped(L"uninstall.exe", shipped, 5)) return 5719;
+    if (!CreateDirectoryW(directory, nullptr)) return 5720;
+    wchar_t unknownLeave[MAX_PATH] = {};
+    if (FAILED(StringCchPrintfW(unknownLeave, MAX_PATH, L"%ls\\uninstall.exe", directory))) {
+        RemoveDirectoryW(directory);
+        return 5721;
+    }
+    if (!createFile(unknownLeave)) {
+        RemoveDirectoryW(directory);
+        return 5722;
+    }
+    GcPreviousFileCleanup unknown =
+        gc_remove_stale_setup_files(directory, shipped, 0);
+    bool unknownOk = unknown.deleted == 0 && unknown.failed == 0 &&
+        GetFileAttributesW(unknownLeave) != INVALID_FILE_ATTRIBUTES;
+    DeleteFileW(unknownLeave);
+    RemoveDirectoryW(directory);
+    if (!unknownOk) return 5723;
     return 0;
 }
 #endif

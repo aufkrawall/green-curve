@@ -20,6 +20,22 @@ static const wchar_t* const GC_SETUP_PAYLOAD_FILE_NAMES[] = {
     L"greencurve.exe", L"greencurve-service.exe", L"README.md", L"LICENSE",
 };
 
+// Every leaf this installer has ever shipped under those names plus the
+// uninstaller spellings.  Used both to clear a retired directory and to
+// reconcile a just-upgraded one to the current payload.
+static inline void gc_setup_owned_leaf_names(const wchar_t* const** namesOut,
+                                             size_t* countOut) {
+    static const wchar_t* const kOwned[] = {
+        L"greencurve.exe", L"greencurve-service.exe", L"README.md", L"LICENSE",
+        L"greencurve-uninstall.exe",
+        // Pre-rename uninstaller: still removed so an upgrade from a
+        // 0.26.0-era install does not strand it.
+        L"uninstall.exe",
+    };
+    if (namesOut) *namesOut = kOwned;
+    if (countOut) *countOut = sizeof(kOwned) / sizeof(kOwned[0]);
+}
+
 static inline bool gc_install_path_is_parent_or_same(const wchar_t* parent,
                                                      const wchar_t* child) {
     if (!parent || !child) return false;
@@ -92,15 +108,11 @@ struct GcPreviousFileCleanup {
 static inline GcPreviousFileCleanup gc_remove_previous_setup_files(const wchar_t* directory) {
     GcPreviousFileCleanup result = {};
     if (!directory || !directory[0]) return result;
-    const wchar_t* const names[] = {
-        GC_SETUP_PAYLOAD_FILE_NAMES[0], GC_SETUP_PAYLOAD_FILE_NAMES[1],
-        GC_SETUP_PAYLOAD_FILE_NAMES[2], GC_SETUP_PAYLOAD_FILE_NAMES[3],
-        L"greencurve-uninstall.exe",
-        // Pre-rename uninstaller: still removed so an upgrade from a
-        // 0.26.0-era install does not strand it.
-        L"uninstall.exe",
-    };
-    for (const wchar_t* name : names) {
+    const wchar_t* const* names = nullptr;
+    size_t nameCount = 0;
+    gc_setup_owned_leaf_names(&names, &nameCount);
+    for (size_t n = 0; n < nameCount; n++) {
+        const wchar_t* name = names[n];
         wchar_t path[GC_INSTALLER_MAX_PATH_CHARS] = {};
         if (FAILED(StringCchPrintfW(path, GC_INSTALLER_MAX_PATH_CHARS,
                                     L"%ls\\%ls", directory, name))) {
@@ -144,6 +156,100 @@ static inline GcPreviousFileCleanup gc_remove_previous_setup_files(const wchar_t
     // directory is truly empty. No reboot-time directory deletion is scheduled.
     result.removed = RemoveDirectoryW(directory) != FALSE;
     if (!result.removed) result.directoryError = GetLastError();
+    return result;
+}
+
+// Is `knownName` (a leaf this installer has shipped) on the list of leaves the
+// CURRENT payload writes?  ASCII case-insensitive; all owned leaves are ASCII.
+// Fail-safe: an unconvertible name counts as shipped, so it is never deleted.
+static inline bool gc_stale_name_is_shipped(const wchar_t* knownName,
+                                            const char* const* shippedUtf8,
+                                            size_t shippedCount) {
+    if (!knownName || !knownName[0]) return true;
+    // Owned leaves are short ASCII names (the longest is
+    // "greencurve-service.exe"); 64 matches GC_ARCHIVE_MAX_NAME + 1 without
+    // pulling the archive header into every consumer of this one.
+    char knownUtf8[64] = {};
+    if (!gc_wide_to_utf8(knownName, knownUtf8, (int)sizeof(knownUtf8))) return true;
+    for (size_t i = 0; i < shippedCount; i++) {
+        const char* shipped = shippedUtf8[i];
+        if (!shipped) continue;
+        size_t k = 0;
+        for (; knownUtf8[k] && shipped[k]; k++) {
+            char a = knownUtf8[k];
+            char b = shipped[k];
+            if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+            if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+            if (a != b) break;
+        }
+        if (knownUtf8[k] == 0 && shipped[k] == 0) return true;
+    }
+    return false;
+}
+
+// Reconcile a just-upgraded directory to the payload THIS setup shipped.
+//
+// An in-place upgrade replaces every file the payload contains and leaves
+// every file it does not: the pre-rename uninstaller is exactly such a leave,
+// and a stale `uninstall.exe` in the install folder is what antivirus engines
+// keep flagging long after the product was renamed.  Only known setup-owned
+// leaves are considered -- a user file is never on the list -- and a leaf the
+// payload just wrote is skipped.  Best effort: a locked leave is counted, not
+// fatal, because the new install is already committed and registered.
+//
+// Unlike gc_remove_previous_setup_files this NEVER removes the directory: the
+// install just put files in it.
+static inline GcPreviousFileCleanup gc_remove_stale_setup_files(
+    const wchar_t* directory, const char* const* shippedUtf8, size_t shippedCount) {
+    GcPreviousFileCleanup result = {};
+    if (!directory || !directory[0] || !shippedUtf8 || shippedCount == 0) return result;
+    const wchar_t* const* names = nullptr;
+    size_t nameCount = 0;
+    gc_setup_owned_leaf_names(&names, &nameCount);
+    for (size_t n = 0; n < nameCount; n++) {
+        const wchar_t* name = names[n];
+        if (gc_stale_name_is_shipped(name, shippedUtf8, shippedCount)) continue;
+        wchar_t path[GC_INSTALLER_MAX_PATH_CHARS] = {};
+        if (FAILED(StringCchPrintfW(path, GC_INSTALLER_MAX_PATH_CHARS,
+                                    L"%ls\\%ls", directory, name))) {
+            if (!result.failed) {
+                result.firstFailedName = name;
+                result.firstFileError = ERROR_INSUFFICIENT_BUFFER;
+            }
+            result.failed++;
+            continue;
+        }
+        DWORD attributes = GetFileAttributesW(path);
+        if (attributes == INVALID_FILE_ATTRIBUTES) {
+            DWORD error = GetLastError();
+            if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
+                if (!result.failed) {
+                    result.firstFailedName = name;
+                    result.firstFileError = error;
+                }
+                result.failed++;
+            }
+            continue;
+        }
+        // A directory or reparse point squatting on our name is NOT ours to
+        // unlink; the same rule as gc_remove_previous_setup_files.
+        if (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) {
+            if (!result.failed) {
+                result.firstFailedName = name;
+                result.firstFileError = ERROR_INVALID_DATA;
+            }
+            result.failed++;
+            continue;
+        }
+        if (DeleteFileW(path)) result.deleted++;
+        else {
+            if (!result.failed) {
+                result.firstFailedName = name;
+                result.firstFileError = GetLastError();
+            }
+            result.failed++;
+        }
+    }
     return result;
 }
 #endif // _WIN32
