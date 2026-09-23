@@ -168,8 +168,14 @@ int dp(int px);
 // ui_message_box.cpp; the service binary gets a no-UI stub in main_shell.cpp.
 int gc_message_box(HWND owner, const char* text, const char* caption,
                    unsigned int type);
+// Both processes need the shared config/app locks (init_dpi() takes them for
+// the GUI); only the GUI has a display to scale for, so the service links no
+// DPI code and calls init_app_locks() alone.
+void init_app_locks();
+#ifndef GREEN_CURVE_SERVICE_BINARY
 void enable_best_process_dpi_awareness();
 void init_dpi();
+#endif
 
 // VF_NUM_POINTS + NVAPI entry-point IDs moved to gpu_core.h
 
@@ -544,8 +550,8 @@ struct AppData {
     int powerLimitMinmW;
     int powerLimitMaxmW;
 
-    bool smiClocksRead;
-    unsigned int smiMemMaxMHz;
+    // Board maximum memory clock without the user offset (NVML "Max Clocks").
+    unsigned int nvmlMemMaxMHz;
 
     bool vfInfoCached;
     unsigned int vfNumClocks;
@@ -791,6 +797,18 @@ struct CliOptions {
 // Service protocol (magic/version/commands), ServiceSnapshot, and
 // ServiceRequest/Response live in service_protocol.h (included by gpu_core.h).
 extern AppData g_app;
+
+// The service never creates a window: g_app.hMainWnd is assigned only by the
+// GUI-only entry.cpp.  Shared shards test the handle through this accessor so
+// the compiler can drop every window, tray, and timer branch from the service
+// image instead of linking user32 UI calls a SYSTEM process can never make.
+static inline HWND app_main_window() {
+#ifdef GREEN_CURVE_SERVICE_BINARY
+    return nullptr;
+#else
+    return g_app.hMainWnd;
+#endif
+}
 
 // Ownership and provenance move together.  Every site that records "the editor
 // owns this curve point" must also record whether its MHz is a typed absolute

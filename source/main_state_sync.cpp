@@ -66,11 +66,11 @@ static bool hardware_initialize(char* detail, size_t detailSize) {
     // "corrected" with a hardware write.  Only APPLY/RESET or an authorized
     // lifecycle restoration may mutate GPU state.
     if (!g_serviceHasActiveDesired && g_app.memClockOffsetkHz != 0
-        && (g_app.smiMemMaxMHz == 0 || g_app.pstateMemMaxMHz == 0))
+        && (g_app.nvmlMemMaxMHz == 0 || g_app.pstateMemMaxMHz == 0))
     {
         debug_log("hardware_initialize: stale mem VF offset %d kHz detected"
-            " (smi=%u pstate=%u); diagnostic only, no write\n",
-            g_app.memClockOffsetkHz, g_app.smiMemMaxMHz, g_app.pstateMemMaxMHz);
+            " (nvmlMax=%u pstate=%u); diagnostic only, no write\n",
+            g_app.memClockOffsetkHz, g_app.nvmlMemMaxMHz, g_app.pstateMemMaxMHz);
     }
     // Read-only per-domain control-surface probe.  Runs last so the VF mask is
     // already populated; it never writes GPU state and, on hardware where every

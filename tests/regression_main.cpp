@@ -1682,6 +1682,8 @@ static int run_all_tests(int argc, char** argv) {
 
     // Subprocess capture succeeds only for exit code zero and must continue
     // draining output after the caller's bounded capture buffer fills.
+    // POSIX only: Windows deliberately has no subprocess capture.
+#if !defined(_WIN32)
     {
         const char* successArgs[] = { argv[0], "--capture-success", nullptr };
         char captured[16] = {};
@@ -1691,6 +1693,7 @@ static int run_all_tests(int argc, char** argv) {
         if (pl_run_capture(failureArgs, captured, sizeof(captured), 5000) ||
             strncmp(captured, "expected child", 14) != 0) return 1144;
     }
+#endif
 
     // Merely selecting a saved slot must not make saved OC intent look live on
     // the next GUI launch. Only explicit app-launch automation may source the

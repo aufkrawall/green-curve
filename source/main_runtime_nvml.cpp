@@ -729,7 +729,7 @@ static bool nvml_ensure_ready() {
         nvml_resolve((void**)&g_nvml_api.getCoolerInfo, "nvmlDeviceGetCoolerInfo");
         nvml_resolve((void**)&g_nvml_api.getTemperature, "nvmlDeviceGetTemperature");
         nvml_resolve((void**)&g_nvml_api.getClock, "nvmlDeviceGetClock");
-        nvml_resolve((void**)&g_nvml_api.getMaxClock, "nvmlDeviceGetMaxClock");
+        nvml_resolve((void**)&g_nvml_api.getMaxClock, "nvmlDeviceGetMaxClockInfo");
         // Read-only load witnesses for the apply-transition trace; both are
         // optional and a board without them simply logs the load as unknown.
         nvml_resolve((void**)&g_nvml_api.getUtilization, "nvmlDeviceGetUtilizationRates");

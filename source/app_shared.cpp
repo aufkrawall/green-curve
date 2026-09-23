@@ -19,7 +19,7 @@ bool g_guiForceFullRefresh = false;
 // System-library loading and DPI awareness are Win32 process setup. The rest
 // of this file (scale math and the pure logon/auto-restore decisions) is
 // platform-neutral and is compiled into the Linux regression harness.
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(GREEN_CURVE_SERVICE_BINARY)
 static HMODULE load_system_library_local_a(const char* name) {
     if (!name || !name[0] || strchr(name, '\\') || strchr(name, '/')) return nullptr;
     char systemDir[MAX_PATH] = {};
@@ -29,7 +29,7 @@ static HMODULE load_system_library_local_a(const char* name) {
     if (FAILED(StringCchPrintfA(path, ARRAY_COUNT(path), "%s\\%s", systemDir, name))) return nullptr;
     return LoadLibraryA(path);
 }
-#endif // _WIN32
+#endif // _WIN32 && !GREEN_CURVE_SERVICE_BINARY
 
 int nvmin(int a, int b) {
     return a < b ? a : b;
@@ -44,6 +44,12 @@ int dp(int px) {
 }
 
 #if defined(_WIN32)
+void init_app_locks() {
+    InitializeCriticalSection(&g_configLock);
+    InitializeCriticalSection(&g_appLock);
+}
+
+#ifndef GREEN_CURVE_SERVICE_BINARY
 void enable_best_process_dpi_awareness() {
     HMODULE user32 = GetModuleHandleA("user32.dll");
     if (user32) {
@@ -60,9 +66,7 @@ void enable_best_process_dpi_awareness() {
 }
 
 void init_dpi() {
-    InitializeCriticalSection(&g_configLock);
-    InitializeCriticalSection(&g_appLock);
-
+    init_app_locks();
     HMODULE user32 = GetModuleHandleA("user32.dll");
     if (user32) {
         typedef UINT (WINAPI *GetDpiForSystem_t)();
@@ -103,6 +107,7 @@ void init_dpi() {
     if (g_dpi <= 0) g_dpi = 96;
     g_scale = (float)g_dpi / 96.0f;
 }
+#endif // !GREEN_CURVE_SERVICE_BINARY
 #endif // _WIN32
 
 // Pure policy decision shared by every logon auto-apply path (client + service).

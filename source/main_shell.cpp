@@ -20,9 +20,9 @@ static void start_fan_curve_runtime() {
     g_app.fanRuntimeConsecutiveFailures = 0;
     g_app.fanRuntimeLastApplyTickMs = 0;
 
-    if (g_app.hMainWnd) {
-        KillTimer(g_app.hMainWnd, FAN_CURVE_TIMER_ID);
-        if (!SetTimer(g_app.hMainWnd, FAN_CURVE_TIMER_ID, (UINT)g_app.activeFanCurve.pollIntervalMs, nullptr)) {
+    if (HWND mainWnd = app_main_window()) {
+        KillTimer(mainWnd, FAN_CURVE_TIMER_ID);
+        if (!SetTimer(mainWnd, FAN_CURVE_TIMER_ID, (UINT)g_app.activeFanCurve.pollIntervalMs, nullptr)) {
             stop_fan_curve_runtime();
             return;
         }
@@ -62,9 +62,9 @@ static void start_fixed_fan_runtime() {
     g_app.fanRuntimeConsecutiveFailures = 0;
     g_app.fanRuntimeLastApplyTickMs = 0;
 
-    if (g_app.hMainWnd) {
-        KillTimer(g_app.hMainWnd, FAN_CURVE_TIMER_ID);
-        if (!SetTimer(g_app.hMainWnd, FAN_CURVE_TIMER_ID, FAN_FIXED_RUNTIME_INTERVAL_MS, nullptr)) {
+    if (HWND mainWnd = app_main_window()) {
+        KillTimer(mainWnd, FAN_CURVE_TIMER_ID);
+        if (!SetTimer(mainWnd, FAN_CURVE_TIMER_ID, FAN_FIXED_RUNTIME_INTERVAL_MS, nullptr)) {
             stop_fan_curve_runtime();
             return;
         }

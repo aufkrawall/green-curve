@@ -183,6 +183,8 @@ static void refresh_fan_curve_button_text() {
     }
 }
 static void update_fan_controls_enabled_state() {
+    // Every control below is a child of the main window.
+    if (!app_main_window()) return;
     bool serviceReady = gui_service_model_ready(&g_app.guiServiceModel) &&
         g_app.guiDraft.attached && !g_app.guiDraft.detached;
     if (g_app.hFanModeCombo) {
@@ -213,7 +215,7 @@ static void update_fan_controls_enabled_state() {
     }
 }
 static void update_tray_icon() {
-    if (!g_app.hMainWnd) return;
+    if (!app_main_window()) return;
 #ifndef GREEN_CURVE_SERVICE_BINARY
     // The tray refresh is the one thing that already runs on every poll tick in
     // both window states, so it is where the main window's Updates button
@@ -510,8 +512,8 @@ static void stop_fan_curve_runtime(bool restoreFanAutoOnExit) {
             g_app.fanIsAuto = true;
         }
     }
-    if (g_app.hMainWnd) {
-        KillTimer(g_app.hMainWnd, FAN_CURVE_TIMER_ID);
+    if (HWND mainWnd = app_main_window()) {
+        KillTimer(mainWnd, FAN_CURVE_TIMER_ID);
     }
     bool hadRuntime = g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive;
     g_app.fanCurveRuntimeActive = false;

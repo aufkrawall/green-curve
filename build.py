@@ -293,18 +293,17 @@ SANITIZER_FLAGS = [
 ]
 
 WINDOWS_FLAGS = [
-    # --allow-multiple-definition is REQUIRED because the MinGW CRT
-    # unconditionally provides __guard_check_icall_fptr as a data pointer
-    # in .00cfg (mingw_cfguard_support.o, pulled in by loadcfg.o's PE
-    # load config references).  Our cfg_glue.cpp overrides it with a
-    # proper function.  The duplicate is harmless — LLD uses our
-    # definition (first on command line).  This is a known limitation
-    # of MinGW's CFG implementation.
+    # --allow-multiple-definition is REQUIRED: the MinGW CRT always defines
+    # __guard_check_icall_fptr as data in .00cfg (mingw_cfguard_support.o via
+    # loadcfg.o); cfg_glue.cpp overrides it with a real function and LLD keeps
+    # ours (first on the command line).  A known MinGW CFG limitation.
     "-Wl,--subsystem,windows,--dynamicbase,--nxcompat,--high-entropy-va,--allow-multiple-definition",
     "-mguard=cf",
     "-fcf-protection=full",
     "-flto",
-    "-Wl,--icf=safe",
+    # LLD-MinGW's own ".buildid" section holds the RSDS/PDB debug directory;
+    # merge it into .rdata as MSVC links do (PDB linkage unchanged, gated).
+    "-Wl,--icf=safe,-Xlink=-merge:.buildid=.rdata",
     "-ftrivial-auto-var-init=pattern",
     "-fno-delete-null-pointer-checks",
     "-static",
@@ -3293,8 +3292,8 @@ def run_source_regression_checks():
     require_text(os.path.join(SOURCE_DIR, "win32_raii.h"), "void terminate(DWORD exitCode", "ScopedProcess.terminate exists")
 
     # F-06-001: nvidia-smi callers use ScopedProcess
-    require_text(gpu_backend_cpp, "ScopedProcess proc", "nvidia-smi clock read uses ScopedProcess")
-    require_text(gpu_backend_cpp, "ScopedProcess proc", "nvidia-smi power limit uses ScopedProcess")
+    require_text(gpu_backend_cpp, "getMaxClock(g_app.nvmlDevice, NVML_CLOCK_MEM", "max memory clock comes from NVML, not an nvidia-smi child")
+    require_text(os.path.join(SOURCE_DIR, "gpu_backend_power.cpp"), "ScopedProcess proc", "nvidia-smi power limit uses ScopedProcess")
 
     # F-15-001: Lock state propagated through ServiceSnapshot
     require_text(shared_h, "gc_bool8 hasLock", "ServiceSnapshot carries lock state as a fixed-width wire flag")
@@ -4742,8 +4741,8 @@ def run_source_regression_checks():
         "crash breadcrumb assembly does not treat HRESULT as a character count")
     forbid_text(gpu_backend_apply_cpp, "+= StringCchPrintf",
         "apply summaries do not treat HRESULT as a character count")
-    require_text(platform_win32_cpp, "GetExitCodeProcess",
-        "Windows subprocess capture requires a zero child exit status")
+    forbid_text(platform_win32_cpp, "CreatePipe",
+        "Windows has no hidden-child output capture (NVML replaces nvidia-smi)")
     require_text(platform_posix_cpp, "WIFEXITED(status)",
         "POSIX subprocess capture requires a normal child exit")
     require_text(platform_posix_cpp, "WEXITSTATUS(status) == 0",

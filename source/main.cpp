@@ -788,8 +788,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         DeleteCriticalSection(&g_debugLogLock);
         return helperExitCode;
     }
-    enable_best_process_dpi_awareness();
-    init_dpi();
+    // No DPI setup: the service never creates a window.
+    init_app_locks();
     SERVICE_TABLE_ENTRYW table[] = {
         { (LPWSTR)L"GreenCurveService", service_main },
         { nullptr, nullptr },

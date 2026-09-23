@@ -47,6 +47,7 @@ previous one. Crash recovery and Apply reliability also improve.
 - **The tray keeps the applied profile's name** instead of showing "Manual settings".
 - **More driver-update crashes are now recovered**, including on Windows on Arm.
 - **A slow service start or stop is no longer mistaken for a hang or a failure.**
+- **With several NVIDIA GPUs, the memory offset is now read from the selected GPU.**
 - **Antivirus programs should raise fewer false alarms about Green Curve.**
 - **The uninstaller is now `greencurve-uninstall.exe` and is much smaller.** Setup still removes the old `uninstall.exe` on upgrade.
 

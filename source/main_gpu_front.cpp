@@ -548,7 +548,7 @@ static int current_manual_fan_target_percent() {
     return current_displayed_fan_percent();
 }
 static bool window_should_redraw_fan_controls() {
-    if (!g_app.hMainWnd || !IsWindowVisible(g_app.hMainWnd)) return false;
+    if (!app_main_window() || !IsWindowVisible(g_app.hMainWnd)) return false;
     return g_app.guiFanMode != FAN_MODE_FIXED || GetFocus() != g_app.hFanEdit;
 }
 static void boost_fan_telemetry_for_ms(DWORD durationMs) {
@@ -584,7 +584,7 @@ static void update_all_gui_for_service_state() {
     invalidate_main_window();
 }
 static void update_fan_telemetry_timer() {
-    if (!g_app.hMainWnd) return;
+    if (!app_main_window()) return;
     KillTimer(g_app.hMainWnd, FAN_TELEMETRY_TIMER_ID);
     bool visible = IsWindowVisible(g_app.hMainWnd) != FALSE;
     // When the window is hidden, keep a SLOW poll only while we are sitting in the

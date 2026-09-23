@@ -119,6 +119,68 @@ def pe_imports(data):
     return imports
 
 
+def pe_section_names(data):
+    if len(data) < 0x40 or data[:2] != b"MZ":
+        raise RuntimeError("not a PE image")
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    if pe + 24 > len(data) or data[pe:pe + 4] != b"PE\x00\x00":
+        raise RuntimeError("invalid PE signature")
+    count = struct.unpack_from("<H", data, pe + 6)[0]
+    table = pe + 24 + struct.unpack_from("<H", data, pe + 20)[0]
+    if table + count * 40 > len(data):
+        raise RuntimeError("truncated PE section table")
+    return [data[table + i * 40:table + i * 40 + 8].rstrip(b"\0").decode("ascii", "replace")
+            for i in range(count)]
+
+
+def verify_no_buildid_section(data, label):
+    """LLD-MinGW puts the RSDS debug directory in a ".buildid" section unless
+    the link merges it into .rdata (WINDOWS_FLAGS).  Only MinGW-style
+    toolchains emit that name; MSVC-style images never carry it."""
+    if ".buildid" in pe_section_names(data):
+        raise RuntimeError(f"{label}: .buildid section was not merged into .rdata")
+
+
+_RT_GROUP_ICON = 14
+
+
+def pe_resource_ids(data, type_id):
+    """Integer IDs of the resources of one type (names are reported as None)."""
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    sections = _sections_of(data, pe, pe + 24)
+    rsrc_rva, rsrc_size = _pe_data_directory(data, 2)
+    if not rsrc_rva or not rsrc_size:
+        return []
+    root = _rva_to_offset(sections, rsrc_rva)
+    if root is None:
+        raise RuntimeError("PE resource directory is not backed by file data")
+
+    def entries(offset):
+        if offset + 16 > len(data):
+            raise RuntimeError("truncated PE resource directory")
+        named, numbered = struct.unpack_from("<HH", data, offset + 12)
+        if offset + 16 + (named + numbered) * 8 > len(data):
+            raise RuntimeError("truncated PE resource directory entries")
+        return [struct.unpack_from("<II", data, offset + 16 + i * 8)
+                for i in range(named + numbered)]
+
+    for name, target in entries(root):
+        if name & 0x80000000 or name != type_id:
+            continue
+        if not target & 0x80000000:
+            raise RuntimeError("PE resource type entry is not a directory")
+        return [None if child & 0x80000000 else child
+                for child, _ in entries(root + (target & 0x7FFFFFFF))]
+    return []
+
+
+def verify_service_resources(data, label):
+    """The service has no window; only the GUI loads the tray icons 111-115."""
+    groups = pe_resource_ids(data, _RT_GROUP_ICON)
+    if groups != [101]:
+        raise RuntimeError(f"{label}: service icon groups are {groups!r}, expected only [101]")
+
+
 def verify_pe_import_surface(data, label, required_dlls=(), forbidden_dlls=(),
                              required_functions=(), forbidden_functions=(),
                              reject_exports=False):
@@ -191,6 +253,21 @@ def verify_windows_manifest_identity(data, label, original_filename):
         raise RuntimeError(f"{label}: manifest claims amd64 for every architecture")
 
 
+# The service never creates a window (g_app.hMainWnd is GUI-only), so window,
+# tray, timer, and DPI imports in it are unreachable GUI code.  In a SYSTEM
+# process they read as a spy/keylogger surface, and a child process with
+# redirected output (CreatePipe) reads as a remote shell; the one former user,
+# the nvidia-smi max-clock read, is an NVML query now.
+SERVICE_FORBIDDEN_UI_FUNCTIONS = {
+    "GetWindowTextA", "GetWindowTextW", "GetWindowTextLengthA", "SetWindowTextA",
+    "SetWindowTextW", "GetFocus", "SendMessageA", "SendMessageW", "EnableWindow",
+    "IsWindowEnabled", "IsWindowVisible", "RedrawWindow", "SetTimer", "KillTimer",
+    "Shell_NotifyIconA", "Shell_NotifyIconW", "LoadIconA", "LoadIconW", "GetDC",
+    "ReleaseDC", "SetProcessDPIAware", "CreateWindowExA", "CreateWindowExW",
+    "CreatePipe", "VirtualAlloc",
+}
+
+
 def verify_windows_binary_imports(data, label, original_filename,
                                   reject_exports=False):
     name = (original_filename or "").lower()
@@ -208,11 +285,12 @@ def verify_windows_binary_imports(data, label, original_filename,
                 "WTSQueryUserToken", "CreateProcessWithTokenW",
             }, reject_exports=reject_exports)
     elif name == "greencurve-service.exe":
+        verify_service_resources(data, label)
         verify_pe_import_surface(
             data, label,
             required_dlls={"advapi32.dll", "winhttp.dll", "wtsapi32.dll", "userenv.dll"},
-            forbidden_dlls={"cabinet.dll"},
-            forbidden_functions=common_forbidden_functions,
+            forbidden_dlls={"cabinet.dll", "gdi32.dll", "comctl32.dll"},
+            forbidden_functions=common_forbidden_functions | SERVICE_FORBIDDEN_UI_FUNCTIONS,
             reject_exports=reject_exports)
     elif "setup" in name:
         verify_setup_has_no_decompressor(data, label)
@@ -244,6 +322,8 @@ def verify_windows_binary_metadata(data, label, original_filename, arch,
     verify_windows_binary_imports(
         data, label, original_filename,
         reject_exports=(windows_toolchain == "clang-cl"))
+    if arch == "x64":
+        verify_no_buildid_section(data, label)
 
 
 def verify_pe_hardening(data, arch, windows_toolchain="llvm-mingw"):
@@ -519,6 +599,29 @@ def _synthetic_import_pe():
     return bytes(data)
 
 
+def _synthetic_resource_pe(group_ids):
+    """One .rsrc section whose RT_GROUP_ICON directory lists group_ids."""
+    data = bytearray(0x400)
+    data[0:2] = b"MZ"
+    struct.pack_into("<I", data, 0x3C, 0x80)
+    data[0x80:0x84] = b"PE\0\0"
+    struct.pack_into("<H", data, 0x84, 0x8664)
+    struct.pack_into("<H", data, 0x86, 1)
+    struct.pack_into("<H", data, 0x94, 0xF0)
+    struct.pack_into("<H", data, 0x98, 0x20B)
+    section = 0x98 + 0xF0
+    data[section:section + 8] = b".rsrc\0\0\0"
+    struct.pack_into("<IIII", data, section + 8, 0x200, 0x1000, 0x200, 0x200)
+    struct.pack_into("<II", data, 0x98 + 112 + 2 * 8, 0x1000, 0x200)
+    struct.pack_into("<HH", data, 0x200 + 12, 0, 2)             # root: two types
+    struct.pack_into("<II", data, 0x210, 3, 0x80000100)        # RT_ICON (ignored)
+    struct.pack_into("<II", data, 0x218, _RT_GROUP_ICON, 0x80000020)
+    struct.pack_into("<HH", data, 0x220 + 12, 0, len(group_ids))
+    for index, group in enumerate(group_ids):
+        struct.pack_into("<II", data, 0x230 + index * 8, group, 0x80000100)
+    return bytes(data)
+
+
 def run_self_tests():
     """Deterministic checks for the checksum and VERSIONINFO helpers."""
     failures = []
@@ -554,6 +657,35 @@ def run_self_tests():
         verify_setup_has_no_decompressor(import_fixture, "setup fixture")
     except RuntimeError as error:
         failures.append(f"setup without decompressor was rejected: {error}")
+
+    expect(pe_section_names(import_fixture) == [".text"], "section names are read back")
+    buildid_fixture = bytearray(import_fixture)
+    buildid_fixture[0x188:0x190] = b".buildid"
+    try:
+        verify_no_buildid_section(bytes(buildid_fixture), "buildid fixture")
+        failures.append("a .buildid section passed verify_no_buildid_section")
+    except RuntimeError:
+        pass
+    try:
+        verify_no_buildid_section(import_fixture, "import fixture")
+    except RuntimeError as error:
+        failures.append(f"an image without .buildid was rejected: {error}")
+    for groups, accepted in (([101], True), ([101, 111, 115], False), ([], False)):
+        fixture = _synthetic_resource_pe(groups)
+        expect(pe_resource_ids(fixture, _RT_GROUP_ICON) == groups,
+               f"resource IDs {groups!r} are read back")
+        try:
+            verify_service_resources(fixture, "resource fixture")
+            expect(accepted, f"service icon groups {groups!r} were accepted")
+        except RuntimeError:
+            expect(not accepted, f"service icon groups {groups!r} were rejected")
+    try:
+        verify_pe_import_surface(
+            import_fixture, "import fixture",
+            forbidden_functions=SERVICE_FORBIDDEN_UI_FUNCTIONS | {"CreateFileW"})
+        failures.append("the service UI-import ban did not apply")
+    except RuntimeError:
+        pass
 
     # Reference values cross-checked against pefile.generate_checksum() and
     # against lld-link /release output when the helper was written.  The odd

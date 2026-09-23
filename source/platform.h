@@ -304,16 +304,20 @@ static inline void gc_strlcat(char* dst, size_t dstSize, const char* src) {
 }
 
 // ---------------------------------------------------------------------------
-// Subprocess capture (for nvidia-smi queries)
+// Subprocess capture (POSIX only)
 //
 // Runs an executable with argv (argv[0] is the program; the array is
 // NULL-terminated) and captures up to outSize-1 bytes of stdout into `out`
 // (always NUL-terminated).  Returns true on a clean exit within timeoutMs.
-// Implemented per-OS in platform_win32.cpp / platform_posix.cpp.
+// Implemented in platform_posix.cpp.  Windows has no caller: the service reads
+// the NVML values nvidia-smi would print directly (tools/pe_verify.py bans
+// CreatePipe from the service image).
 // ---------------------------------------------------------------------------
 
+#if !defined(_WIN32)
 bool pl_run_capture(const char* const* argv, char* out, size_t outSize,
                     unsigned int timeoutMs);
+#endif
 
 #if defined(_WIN32)
 // Append one argument using CommandLineToArgvW-compatible quoting.  The helper

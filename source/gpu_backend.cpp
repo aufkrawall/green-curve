@@ -336,91 +336,27 @@ static bool parse_mhz_value_prefix(const char* text, unsigned int* valueOut) {
     return true;
 }
 
-static void read_nvidia_smi_max_clocks() {
-    if (g_app.smiClocksRead) return;
-    g_app.smiClocksRead = true;
-    SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
-    ScopedProcess proc;
-    HANDLE hRead = nullptr, hWrite = nullptr;
-    if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return;
-    proc.assign_pipes(hRead, hWrite);
-    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
-    STARTUPINFOW si = {};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    si.hStdOutput = hWrite;
-    si.hStdError = hWrite;
-    WCHAR exePath[MAX_PATH] = {};
-    if (!find_trusted_nvidia_smi_path_w(exePath, ARRAY_COUNT(exePath))) {
-        debug_log("nvidia-smi clock read skipped: trusted executable not found\n");
-        return;
+// The memory offset is derived as the Pstates20 maximum (offset included)
+// minus the board's maximum memory clock (offset excluded).  That maximum is
+// nvmlDeviceGetMaxClockInfo(NVML_CLOCK_MEM) -- the same value `nvidia-smi -q
+// -d CLOCK` prints under "Max Clocks", because nvidia-smi is an NVML client.
+// Reading it directly, for the selected device, replaces spawning a hidden
+// nvidia-smi with redirected output from the SYSTEM service, which also took
+// the LAST GPU's value on a multi-GPU system.  Re-read on every detection so a
+// GPU switch or driver reload never leaves a stale baseline; 0 means unknown
+// and skips the derivation exactly like a failed nvidia-smi read did.
+static void read_nvml_max_mem_clock() {
+    unsigned int maxMHz = 0;
+    nvmlReturn_t r = NVML_ERROR_NOT_SUPPORTED;
+    if (nvml_ensure_ready() && g_nvml_api.getMaxClock) {
+        r = g_nvml_api.getMaxClock(g_app.nvmlDevice, NVML_CLOCK_MEM, &maxMHz);
+        if (r != NVML_SUCCESS) maxMHz = 0;
     }
-    WCHAR cmd[MAX_PATH + 64] = {};
-    StringCchPrintfW(cmd, ARRAY_COUNT(cmd), L"\"%ls\" -q -d CLOCK", exePath);
-    PROCESS_INFORMATION pi = {};
-    if (CreateProcessW(exePath, cmd, nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        // Detach pipe handles before assign() so its cleanup() doesn't close
-        // them.  The read pipe remains open for the read loop below; the
-        // write pipe is owned by the child process and closed manually.
-        proc.pipeRead = nullptr;
-        proc.pipeWrite = nullptr;
-        proc.assign(pi.hProcess, pi.hThread);
-        proc.pipeRead = hRead;   // restore so ScopedProcess destructor closes it
-        CloseHandle(hWrite);     // child owns hWrite now, close our copy
-        char* smiBuf = (char*)malloc(4096);
-        if (!smiBuf) return;
-        memset(smiBuf, 0, 4096);
-        DWORD totalRead = 0;
-        bool timedOut = false;
-        ULONGLONG startTickMs = GetTickCount64();
-        while (totalRead < 4096 - 1) {
-            DWORD available = 0;
-            if (PeekNamedPipe(hRead, nullptr, 0, nullptr, &available, nullptr) && available > 0) {
-                DWORD toRead = (DWORD)nvmin((int)available, (int)(4096 - 1 - totalRead));
-                DWORD n = 0;
-                if (!ReadFile(hRead, smiBuf + totalRead, toRead, &n, nullptr) || n == 0) break;
-                totalRead += n;
-                continue;
-            }
-            DWORD waitResult = proc.wait(25);
-            if (waitResult == WAIT_OBJECT_0) break;
-            if (GetTickCount64() - startTickMs >= 5000) {
-                timedOut = true;
-                proc.terminate(1);
-                break;
-            }
-        }
-        if (timedOut) {
-            debug_log("nvidia-smi clock read timed out and was terminated\n");
-        }
-        proc.wait(1000);
-        bool inMaxSection = false;
-        char* line = smiBuf;
-        while (line && *line) {
-            char* nextLine = strchr(line, '\n');
-            if (nextLine) { *nextLine = 0; nextLine++; }
-            char* cr = strchr(line, '\r');
-            if (cr) *cr = 0;
-            while (*line == ' ' || *line == '\t') line++;
-            if (strstr(line, "Max Clocks")) { inMaxSection = true; line = nextLine; continue; }
-            if (inMaxSection && line[0] == '[') inMaxSection = false;
-            if (inMaxSection) {
-                char* mem = strstr(line, "Memory");
-                char* vp = mem ? strchr(mem, ':') : nullptr;
-                if (vp) {
-                    unsigned int parsedMHz = 0;
-                    if (parse_mhz_value_prefix(vp + 1, &parsedMHz)) {
-                        g_app.smiMemMaxMHz = parsedMHz;
-                    } else {
-                        debug_log("nvidia-smi clock read: could not parse memory max clock from \"%s\"\n", line);
-                    }
-                }
-            }
-            line = nextLine;
-        }
-        free(smiBuf);
-    }
+    g_app.nvmlMemMaxMHz = maxMHz;
+    debug_log_on_change("nvml max memory clock: %u MHz (%s)\n", maxMHz,
+        !g_app.nvmlReady ? "NVML not ready"
+            : !g_nvml_api.getMaxClock ? "nvmlDeviceGetMaxClockInfo unavailable"
+            : nvml_err_name(r));
 }
 static int uniform_curve_offset_khz() {
     if (!vf_curve_global_gpu_offset_supported()) return 0;
@@ -466,7 +402,7 @@ static void detect_clock_offsets() {
     // Memory: prefer public Pstates20 memory clocks vs VBIOS max clocks.
     // This reflects the currently active offset and avoids stale NVML/Pstates delta fields
     // surviving after another tool resets memory to default.
-    read_nvidia_smi_max_clocks();
+    read_nvml_max_mem_clock();
     int gpuOffsetkHz = uniform_curve_offset_khz();
     if (gpuOffsetkHz != 0 || g_app.pstateGpuOffsetkHz != 0) {
         if (gpuOffsetkHz == 0) gpuOffsetkHz = g_app.pstateGpuOffsetkHz;
@@ -481,8 +417,8 @@ static void detect_clock_offsets() {
     // scalar's protocol-v14 provenance; see control_readback_policy.h.
     g_app.readback.gpuOffset = gpu_offset_readback_after_detection(
         vf_curve_global_gpu_offset_supported(), g_app.numPopulated, g_app.readback.pstate);
-    if (g_app.pstateMemMaxMHz > 0 && g_app.smiMemMaxMHz > 0) {
-        int memOffsetkHz = ((int)g_app.pstateMemMaxMHz - (int)g_app.smiMemMaxMHz) * 1000;
+    if (g_app.pstateMemMaxMHz > 0 && g_app.nvmlMemMaxMHz > 0) {
+        int memOffsetkHz = ((int)g_app.pstateMemMaxMHz - (int)g_app.nvmlMemMaxMHz) * 1000;
         g_app.memClockOffsetkHz = memOffsetkHz;
         g_app.readback.memOffset = true;  // upgrade only; NVML's read survives
         if (!g_app.memOffsetRangeKnown && memOffsetkHz != 0) {

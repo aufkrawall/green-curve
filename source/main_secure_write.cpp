@@ -565,7 +565,9 @@ static bool write_log_snapshot(const char* path, char* err, size_t errSize) {
 // diagnose apply failures but includes GPU identifiers and runtime configuration.
 // The log is written to the user's configured error log path.
 static bool write_error_report_log(const char* summary, const char* details, char* err, size_t errSize) {
-    char* text = (char*)VirtualAlloc(nullptr, 73728, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    // Zeroed heap memory, released on every return path.
+    HeapBuffer textBuffer(73728);
+    char* text = (char*)textBuffer.ptr;
     if (!text) {
         set_message(err, errSize, "Out of memory generating error log");
         return false;
@@ -656,12 +658,13 @@ static bool write_error_report_log(const char* summary, const char* details, cha
     }
 
     bool ok = write_text_file_atomic(error_log_path(), text, used, err, errSize);
-    VirtualFree(text, 0, MEM_RELEASE);
     return ok;
 }
 
 static bool write_json_snapshot(const char* path, char* err, size_t errSize) {
-    char* json = (char*)VirtualAlloc(nullptr, 131072, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    // Zeroed heap memory, released on every return path.
+    HeapBuffer jsonBuffer(131072);
+    char* json = (char*)jsonBuffer.ptr;
     if (!json) {
         set_message(err, errSize, "Out of memory generating JSON");
         return false;
@@ -729,6 +732,5 @@ static bool write_json_snapshot(const char* path, char* err, size_t errSize) {
     append("\n  ]\n}\n");
 
     bool ok = write_text_file_atomic(path, json, used, err, errSize);
-    VirtualFree(json, 0, MEM_RELEASE);
     return ok;
 }

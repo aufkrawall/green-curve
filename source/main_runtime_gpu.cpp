@@ -442,7 +442,7 @@ static bool gui_top_level_paint_suppressed() {
 }
 
 static void invalidate_main_window() {
-    if (!g_app.hMainWnd) return;
+    if (!app_main_window()) return;
     if (gui_window_invalidation_must_defer(gui_top_level_paint_suppressed(),
             g_app.trayWindowHiddenIntent,
             IsWindowVisible(g_app.hMainWnd) != FALSE)) {

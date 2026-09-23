@@ -16,46 +16,10 @@ static void refresh_oc_range_hints();
 // as on target, and the lock diff below has to agree.
 static unsigned int curve_point_verify_tolerance_mhz(int pointIndex);
 
-static void populate_global_controls() {
-    ControlState control = {};
-    bool haveControlState = get_effective_control_state(&control);
-    if (haveControlState && !gui_state_dirty()) {
-        apply_control_state_to_gui(&control);
-    }
-
-    bool serviceReady = g_app.isServiceProcess
-        ? g_app.loaded : gui_service_model_ready(&g_app.guiServiceModel);
-#ifndef GREEN_CURVE_SERVICE_BINARY
-    populate_gpu_selector();
-#endif
-
-    int liveGpuOffsetExcludeLowCount = haveControlState && control.hasGpuOffset
-        ? control.gpuOffsetExcludeLowCount
-        : g_app.appliedGpuOffsetExcludeLowCount;
-    int liveGpuOffsetMHz = haveControlState && control.hasGpuOffset
-        ? control.gpuOffsetMHz
-        : g_app.appliedGpuOffsetMHz;
-    g_app.appliedGpuOffsetExcludeLowCount = liveGpuOffsetExcludeLowCount;
-    g_app.appliedGpuOffsetMHz = liveGpuOffsetMHz;
-    bool preservePendingCurveEdits = gui_has_pending_curve_or_lock_edits();
-    if (!gui_state_dirty()) {
-        g_app.guiGpuOffsetExcludeLowCount = liveGpuOffsetExcludeLowCount;
-        g_app.guiGpuOffsetMHz = liveGpuOffsetMHz;
-        g_app.guiMemOffsetMHz = haveControlState && control.hasMemOffset
-            ? control.memOffsetMHz
-            : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
-        g_app.guiPowerLimitPct = haveControlState && control.hasPowerLimit
-            ? control.powerLimitPct : g_app.powerLimitPct;
-    }
-    debug_log_on_change("populate_global_controls: dirty=%d haveControl=%d liveGpu=%d liveExclude=%d guiGpu=%d guiExclude=%d appliedGpu=%d appliedExclude=%d\n",
-        gui_state_dirty() ? 1 : 0,
-        haveControlState ? 1 : 0,
-        liveGpuOffsetMHz,
-        liveGpuOffsetExcludeLowCount,
-        g_app.guiGpuOffsetMHz,
-        g_app.guiGpuOffsetExcludeLowCount,
-        g_app.appliedGpuOffsetMHz,
-        g_app.appliedGpuOffsetExcludeLowCount);
+// The window half of populate_global_controls(): push the adopted values into
+// the edit boxes and derive their enable gates.  Never reached by the service.
+static void write_global_control_windows(const ControlState& control,
+                                         bool haveControlState, bool serviceReady) {
     begin_programmatic_edit_update();
     if (g_app.hGpuOffsetEdit) {
         char buf[32];
@@ -115,6 +79,52 @@ static void populate_global_controls() {
     if (g_app.hRefreshBtn) EnableWindow(g_app.hRefreshBtn, TRUE);
     if (g_app.hResetBtn) EnableWindow(g_app.hResetBtn, mutationReady ? TRUE : FALSE);
     end_programmatic_edit_update();
+}
+
+static void populate_global_controls() {
+    ControlState control = {};
+    bool haveControlState = get_effective_control_state(&control);
+    if (haveControlState && !gui_state_dirty()) {
+        apply_control_state_to_gui(&control);
+    }
+
+    bool serviceReady = g_app.isServiceProcess
+        ? g_app.loaded : gui_service_model_ready(&g_app.guiServiceModel);
+#ifndef GREEN_CURVE_SERVICE_BINARY
+    populate_gpu_selector();
+#endif
+
+    int liveGpuOffsetExcludeLowCount = haveControlState && control.hasGpuOffset
+        ? control.gpuOffsetExcludeLowCount
+        : g_app.appliedGpuOffsetExcludeLowCount;
+    int liveGpuOffsetMHz = haveControlState && control.hasGpuOffset
+        ? control.gpuOffsetMHz
+        : g_app.appliedGpuOffsetMHz;
+    g_app.appliedGpuOffsetExcludeLowCount = liveGpuOffsetExcludeLowCount;
+    g_app.appliedGpuOffsetMHz = liveGpuOffsetMHz;
+    bool preservePendingCurveEdits = gui_has_pending_curve_or_lock_edits();
+    if (!gui_state_dirty()) {
+        g_app.guiGpuOffsetExcludeLowCount = liveGpuOffsetExcludeLowCount;
+        g_app.guiGpuOffsetMHz = liveGpuOffsetMHz;
+        g_app.guiMemOffsetMHz = haveControlState && control.hasMemOffset
+            ? control.memOffsetMHz
+            : mem_display_mhz_from_driver_khz(g_app.memClockOffsetkHz);
+        g_app.guiPowerLimitPct = haveControlState && control.hasPowerLimit
+            ? control.powerLimitPct : g_app.powerLimitPct;
+    }
+    debug_log_on_change("populate_global_controls: dirty=%d haveControl=%d liveGpu=%d liveExclude=%d guiGpu=%d guiExclude=%d appliedGpu=%d appliedExclude=%d\n",
+        gui_state_dirty() ? 1 : 0,
+        haveControlState ? 1 : 0,
+        liveGpuOffsetMHz,
+        liveGpuOffsetExcludeLowCount,
+        g_app.guiGpuOffsetMHz,
+        g_app.guiGpuOffsetExcludeLowCount,
+        g_app.appliedGpuOffsetMHz,
+        g_app.appliedGpuOffsetExcludeLowCount);
+    // Every control written here is a child of the main window.
+    if (app_main_window()) {
+        write_global_control_windows(control, haveControlState, serviceReady);
+    }
     // The advertised ranges live in the same snapshot that just drove the
     // enable gates above, so refresh them from the same place.  The call is
     // change-gated inside and is a no-op in the service binary.

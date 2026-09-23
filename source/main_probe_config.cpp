@@ -1,5 +1,7 @@
 static bool write_probe_report(const char* path, char* err, size_t errSize) {
-    char* json = (char*)VirtualAlloc(nullptr, 524288, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    // Zeroed heap memory, released on every return path.
+    HeapBuffer jsonBuffer(524288);
+    char* json = (char*)jsonBuffer.ptr;
     if (!json) {
         set_message(err, errSize, "Out of memory generating probe report");
         return false;
@@ -622,7 +624,6 @@ static bool write_probe_report(const char* path, char* err, size_t errSize) {
     append("}\n");
 
     bool ok = write_text_file_atomic(path, json, used, err, errSize);
-    VirtualFree(json, 0, MEM_RELEASE);
     return ok;
 }
 
