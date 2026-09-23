@@ -103,11 +103,16 @@ static DWORD WINAPI gc_worker_thread(LPVOID parameter) {
     if (wizard->uninstallMode) {
         char error[512] = {};
         gc_progress_callback(wizard, 20, "Removing Green Curve...");
-        ok = gc_uninstall_execute(wizard->uninstallDirectory, error, sizeof(error));
+        bool folderLeftForRestart = false;
+        ok = gc_uninstall_execute(wizard->uninstallDirectory, &folderLeftForRestart, error, sizeof(error));
         if (ok) {
             StringCchCopyA(wizard->resultMessage, GC_ARRAY_COUNT(wizard->resultMessage),
-                           "Green Curve has been removed. Files that were not installed by setup were left in "
-                           "place, and your saved profiles are untouched.");
+                           folderLeftForRestart
+                               ? "Green Curve has been removed. Its program folder, which still holds the "
+                                 "running uninstaller, is deleted at the next restart. Files that were not "
+                                 "installed by setup were left in place, and your saved profiles are untouched."
+                               : "Green Curve has been removed. Files that were not installed by setup were left in "
+                                 "place, and your saved profiles are untouched.");
         } else {
             StringCchCopyA(wizard->resultMessage, GC_ARRAY_COUNT(wizard->resultMessage),
                            error[0] ? error : "The installation could not be removed.");

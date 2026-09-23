@@ -252,6 +252,18 @@ static HANDLE gc_open_running_service_process() {
 // Nothing may be holding the install directory open when it is removed, and a
 // process's own working directory holds it as surely as an open file does.  An
 // uninstaller started by double-clicking it in Explorer inherits exactly that.
+// Hand the (by then empty) install folder to the session manager.  Reported
+// back so the finish page can say the folder goes away at the next restart
+// instead of claiming it is already gone.
+static void gc_schedule_directory_for_restart(const WCHAR* installDirectory, bool* folderLeftForRestart) {
+    if (MoveFileExW(installDirectory, nullptr, MOVEFILE_DELAY_UNTIL_REBOOT)) {
+        if (folderLeftForRestart) *folderLeftForRestart = true;
+        return;
+    }
+    gc_log_step("uninstall: %ls could not be scheduled for removal at the next restart (error %lu)",
+                installDirectory, GetLastError());
+}
+
 static void gc_leave_install_directory() {
     WCHAR system[MAX_PATH] = {};
     UINT length = GetSystemDirectoryW(system, GC_ARRAY_COUNT(system));
@@ -262,8 +274,10 @@ static void gc_leave_install_directory() {
     }
 }
 
-bool gc_uninstall_execute(const WCHAR* installDirectory, char* error, size_t errorSize) {
+bool gc_uninstall_execute(const WCHAR* installDirectory, bool* folderLeftForRestart,
+                          char* error, size_t errorSize) {
     if (error && errorSize) error[0] = 0;
+    if (folderLeftForRestart) *folderLeftForRestart = false;
     if (!installDirectory || !installDirectory[0]) {
         if (error && errorSize) StringCchCopyA(error, errorSize, "No installation folder was given.");
         return false;
@@ -349,8 +363,18 @@ bool gc_uninstall_execute(const WCHAR* installDirectory, char* error, size_t err
         gc_log_step("uninstall: could not delete the Add/Remove Programs entry (error %ld)", status);
     }
 
-    // The uninstaller is normally running from the directory it is deleting, so
-    // it has to remove its own running image before the folder can go.
+    // The uninstaller is normally running from the directory it is deleting.
+    // Windows refuses to delete a mapped image, so its own file -- and with it
+    // the now otherwise empty folder -- is handed to the session manager for
+    // the next restart, the conventional installer behavior.
+    //
+    // Deliberately NOT unlinked in place.  The only way to delete a running
+    // image immediately (rename its default data stream into an alternate
+    // stream, then a POSIX-semantics delete) is a published malware
+    // self-deletion technique that antivirus behavior monitors flag; a false
+    // detection in the middle of an uninstall costs the user far more than a
+    // folder that lingers until the next restart.  tools/installer_build.py
+    // forbids the pattern from returning.
     //
     // Only when it IS the installed copy: the same code path also runs inside
     // the setup stub launched with --uninstall, and that binary is sitting in
@@ -363,16 +387,12 @@ bool gc_uninstall_execute(const WCHAR* installDirectory, char* error, size_t err
         gc_wide_to_utf8(selfPath, selfPathUtf8, (int)sizeof(selfPathUtf8)) &&
         gc_wide_to_utf8(installDirectory, installDirectoryUtf8, (int)sizeof(installDirectoryUtf8)) &&
         gc_uninstall_self_is_installed_copy(selfPathUtf8, installDirectoryUtf8)) {
-        // Immediately, so "uninstalled" and "the folder is gone" are the same
-        // moment.  The reboot path stays as the fallback for a volume that
-        // cannot do it (the rename needs alternate data streams).
-        if (!gc_delete_running_module(selfPath)) {
-            if (MoveFileExW(selfPath, nullptr, MOVEFILE_DELAY_UNTIL_REBOOT)) {
-                ownFilesLeftForRestart = true;
-            } else {
-                gc_log_fail("uninstall: %ls could not be removed or scheduled for removal (error %lu)",
-                            selfPath, GetLastError());
-            }
+        if (MoveFileExW(selfPath, nullptr, MOVEFILE_DELAY_UNTIL_REBOOT)) {
+            gc_log_step("uninstall: %ls is running; scheduled for removal at the next restart", selfPath);
+            ownFilesLeftForRestart = true;
+        } else {
+            gc_log_fail("uninstall: %ls could not be scheduled for removal (error %lu)",
+                        selfPath, GetLastError());
         }
     } else if (selfPath[0]) {
         gc_log_step("uninstall: %ls is not the installed copy; leaving it in place", selfPath);
@@ -383,7 +403,7 @@ bool gc_uninstall_execute(const WCHAR* installDirectory, char* error, size_t err
         if (removeError == ERROR_DIR_NOT_EMPTY && ownFilesLeftForRestart) {
             gc_log_step("uninstall: %ls still holds Green Curve files that are locked; "
                         "scheduling the folder for the next restart", installDirectory);
-            MoveFileExW(installDirectory, nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+            gc_schedule_directory_for_restart(installDirectory, folderLeftForRestart);
         } else if (removeError == ERROR_DIR_NOT_EMPTY) {
             // Files the user put there are the user's; taking the folder with
             // them at the next restart would delete those too.
@@ -392,7 +412,7 @@ bool gc_uninstall_execute(const WCHAR* installDirectory, char* error, size_t err
         } else {
             gc_log_step("uninstall: could not remove %ls (error %lu); scheduling it for the next restart",
                         installDirectory, removeError);
-            MoveFileExW(installDirectory, nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
+            gc_schedule_directory_for_restart(installDirectory, folderLeftForRestart);
         }
     } else {
         gc_log_step("uninstall: removed %ls", installDirectory);

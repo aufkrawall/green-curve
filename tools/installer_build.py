@@ -9,7 +9,7 @@ one place.
 What a setup file is
 --------------------
 
-    [ installer stub PE ][ compressed GCAR container ][ 44-byte footer ]
+    [ installer stub PE ][ stored GCAR container ][ 44-byte footer ]
 
 The stub is an ordinary hardened Windows executable built from source/installer_*.
 The container holds the exact release manifest plus uninstall.exe.  The footer
@@ -17,25 +17,25 @@ is read from the end of the file at runtime; the format, and every bounds check
 the installer performs on it, live in source/installer_archive_policy.h so
 `build.py --test` covers them.
 
-Compression
------------
+Compression (deliberately none)
+-------------------------------
 
-XPRESS_HUFF through the Windows Compression API (cabinet.dll).  That is an OS
-service rather than a third-party library, so the installer decompresses with
-the same API that produced the bytes, and no hand-written entropy decoder ships
-to users.  Every payload is decompressed again here and compared before the
-setup file is written, so a round-trip failure is a build error, not a support
-ticket.  A host without the API (or a payload compression would enlarge) falls
-back to storing the container verbatim, which the installer also accepts.
+The container is STORED.  An unsigned executable whose tail is ~1.2 MB of
+entropy-8.0 data in an unknown format is the textbook shape of a packed
+dropper, and antivirus heuristics score it that way; stored, the overlay is the
+same plain PE/text bytes the .7z ships, which every scanner can inspect.  The
+cost is roughly 0.9 MB of download.  It also makes Windows- and Linux-hosted
+setup files identical in layout (Linux could never compress).
+
+The installer still ACCEPTS the XPRESS_HUFF method (source/installer_payload.cpp,
+cabinet.dll's Compression API) so the file format is unchanged; the build just
+never produces it.  `_verify_setup_file` refuses anything but STORE.
 """
 
-import ctypes
-import ctypes.wintypes
 import os
 import shutil
 import struct
 import subprocess
-import sys
 
 import build_state  # same one-way dependency: it never imports build.py
 import msvc_toolchain  # same one-way dependency
@@ -54,8 +54,6 @@ ARCHIVE_ENTRY_SIZE = struct.calcsize(ARCHIVE_ENTRY_FORMAT)
 ARCHIVE_MAX_NAME = 63
 
 METHOD_STORE = 0
-METHOD_XPRESS_HUFF = 1
-COMPRESS_ALGORITHM_XPRESS_HUFF = 4
 
 ARCHIVE_FLAG_NONE = 0
 ARCHIVE_FLAG_UNINSTALLER = 1
@@ -175,9 +173,10 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
+            VALUE "CompanyName", "COMPANY_NAME"
             VALUE "FileDescription", "DESCRIPTION"
             VALUE "FileVersion", "VER_STR"
-            VALUE "InternalName", "GreenCurveSetup"
+            VALUE "InternalName", "INTERNAL_NAME"
             VALUE "LegalCopyright", "Copyright (c) 2026 aufkrawall. MIT License."
             VALUE "OriginalFilename", "ORIGINAL_NAME"
             VALUE "ProductName", "Green Curve"
@@ -239,87 +238,6 @@ def build_archive(entries):
 
 
 # ---------------------------------------------------------------------------
-# Compression
-# ---------------------------------------------------------------------------
-
-def _compression_api():
-    """Resolve cabinet.dll's Compression API, or None when unavailable."""
-    if sys.platform != "win32":
-        return None
-    try:
-        cabinet = ctypes.WinDLL("cabinet.dll")
-        cabinet.CreateCompressor.argtypes = [ctypes.wintypes.DWORD, ctypes.c_void_p,
-                                             ctypes.POINTER(ctypes.c_void_p)]
-        cabinet.CreateCompressor.restype = ctypes.wintypes.BOOL
-        cabinet.Compress.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t,
-                                     ctypes.c_void_p, ctypes.c_size_t,
-                                     ctypes.POINTER(ctypes.c_size_t)]
-        cabinet.Compress.restype = ctypes.wintypes.BOOL
-        cabinet.CloseCompressor.argtypes = [ctypes.c_void_p]
-        cabinet.CloseCompressor.restype = ctypes.wintypes.BOOL
-        cabinet.CreateDecompressor.argtypes = [ctypes.wintypes.DWORD, ctypes.c_void_p,
-                                               ctypes.POINTER(ctypes.c_void_p)]
-        cabinet.CreateDecompressor.restype = ctypes.wintypes.BOOL
-        cabinet.Decompress.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t,
-                                       ctypes.c_void_p, ctypes.c_size_t,
-                                       ctypes.POINTER(ctypes.c_size_t)]
-        cabinet.Decompress.restype = ctypes.wintypes.BOOL
-        cabinet.CloseDecompressor.argtypes = [ctypes.c_void_p]
-        cabinet.CloseDecompressor.restype = ctypes.wintypes.BOOL
-        return cabinet
-    except (OSError, AttributeError):
-        return None
-
-
-def _xpress_huff_compress(cabinet, data):
-    handle = ctypes.c_void_p()
-    if not cabinet.CreateCompressor(COMPRESS_ALGORITHM_XPRESS_HUFF, None, ctypes.byref(handle)):
-        raise RuntimeError(f"CreateCompressor failed (error {ctypes.get_last_error()})")
-    try:
-        needed = ctypes.c_size_t(0)
-        cabinet.Compress(handle, data, len(data), None, 0, ctypes.byref(needed))
-        buffer = ctypes.create_string_buffer(max(needed.value, 1))
-        produced = ctypes.c_size_t(0)
-        if not cabinet.Compress(handle, data, len(data), buffer, len(buffer), ctypes.byref(produced)):
-            raise RuntimeError(f"Compress failed (error {ctypes.get_last_error()})")
-        return buffer.raw[:produced.value]
-    finally:
-        cabinet.CloseCompressor(handle)
-
-
-def _xpress_huff_decompress(cabinet, data, expected_size):
-    handle = ctypes.c_void_p()
-    if not cabinet.CreateDecompressor(COMPRESS_ALGORITHM_XPRESS_HUFF, None, ctypes.byref(handle)):
-        raise RuntimeError(f"CreateDecompressor failed (error {ctypes.get_last_error()})")
-    try:
-        buffer = ctypes.create_string_buffer(max(expected_size, 1))
-        produced = ctypes.c_size_t(0)
-        if not cabinet.Decompress(handle, data, len(data), buffer, len(buffer), ctypes.byref(produced)):
-            raise RuntimeError(f"Decompress failed (error {ctypes.get_last_error()})")
-        return buffer.raw[:produced.value]
-    finally:
-        cabinet.CloseDecompressor(handle)
-
-
-def compress_payload(container):
-    """Return (method, blob).  Always verified by decompressing the result."""
-    cabinet = _compression_api()
-    if cabinet is None:
-        print("  installer: Windows Compression API unavailable; storing the payload uncompressed")
-        return METHOD_STORE, container
-    compressed = _xpress_huff_compress(cabinet, container)
-    if len(compressed) >= len(container):
-        # Compression made it bigger (tiny or already-compressed payload).
-        return METHOD_STORE, container
-    round_trip = _xpress_huff_decompress(cabinet, compressed, len(container))
-    if round_trip != container:
-        raise RuntimeError("payload compression did not round-trip; refusing to write a setup file")
-    ratio = 100.0 * len(compressed) / len(container)
-    print(f"  installer: payload {len(container):,} -> {len(compressed):,} bytes ({ratio:.1f}%)")
-    return METHOD_XPRESS_HUFF, compressed
-
-
-# ---------------------------------------------------------------------------
 # Compiling the stub and the uninstaller
 # ---------------------------------------------------------------------------
 
@@ -358,7 +276,15 @@ def _installer_sources(ctx):
     return [os.path.join(ctx.SOURCE_DIR, name) for name in INSTALLER_SOURCE_NAMES]
 
 
-def _write_installer_resources(ctx, work, uninstaller):
+def installer_original_filename(ctx, arch, uninstaller):
+    """The name each installer-family PE ships under, which its VERSIONINFO
+    must repeat exactly (a mismatch reads as a renamed binary to heuristics)."""
+    if uninstaller:
+        return "uninstall.exe"
+    return f"greencurve-{ctx.APP_VERSION}-windows-{arch}-setup.exe"
+
+
+def _write_installer_resources(ctx, work, uninstaller, arch):
     """Emit the .rc/.manifest pair and compile them with llvm-rc."""
     major, minor, patch, build = build_state.parse_version_parts(
         ctx.APP_VERSION, ctx.APP_BUILD_NUMBER)
@@ -375,8 +301,10 @@ def _write_installer_resources(ctx, work, uninstaller):
           .replace("VER_BUILD", str(build))
           .replace("VER_STR", version_string)
           .replace("MANIFEST_NAME", manifest_name)
+          .replace("COMPANY_NAME", build_state.VERSION_COMPANY_NAME)
+          .replace("INTERNAL_NAME", "GreenCurveUninstall" if uninstaller else "GreenCurveSetup")
           .replace("DESCRIPTION", "Green Curve uninstaller" if uninstaller else "Green Curve setup")
-          .replace("ORIGINAL_NAME", "uninstall.exe" if uninstaller else "greencurve-setup.exe"))
+          .replace("ORIGINAL_NAME", installer_original_filename(ctx, arch, uninstaller)))
     rc_name = "greencurve-uninstall.rc" if uninstaller else "greencurve-setup.rc"
     rc_path = os.path.join(work, rc_name)
     with open(rc_path, "w", encoding="utf-8", newline="\n") as handle:
@@ -397,7 +325,7 @@ def compile_installer_binary(ctx, output_path, arch, uninstaller, work):
     definitions = [f"-DAPP_BUILD_NUMBER={ctx.APP_BUILD_NUMBER}"]
     if uninstaller:
         definitions.append("-DGREEN_CURVE_UNINSTALLER=1")
-    res_path = _write_installer_resources(ctx, work, uninstaller)
+    res_path = _write_installer_resources(ctx, work, uninstaller, arch)
 
     if ctx.MSVC_TOOLCHAIN is not None:
         _compile_installer_binary_msvc(ctx, output_path, arch, uninstaller,
@@ -441,7 +369,9 @@ def compile_installer_binary(ctx, output_path, arch, uninstaller, work):
 # ---------------------------------------------------------------------------
 
 def _append_payload(stub_path, output_path, container):
-    method, blob = compress_payload(container)
+    # Stored, never compressed: see "Compression (deliberately none)" above.
+    method, blob = METHOD_STORE, container
+    print(f"  installer: payload {len(container):,} bytes (stored)")
     with open(stub_path, "rb") as handle:
         stub = handle.read()
     if not stub.startswith(b"MZ"):
@@ -474,14 +404,9 @@ def _verify_setup_file(path, container):
             raise RuntimeError("setup file payload does not match the staged container")
         handle.seek(offset)
         blob = handle.read(compressed_size)
-    if method == METHOD_STORE:
-        extracted = blob
-    else:
-        cabinet = _compression_api()
-        if cabinet is None:
-            raise RuntimeError("a compressed setup file was produced on a host that cannot verify it")
-        extracted = _xpress_huff_decompress(cabinet, blob, uncompressed_size)
-    if extracted != container:
+    if method != METHOD_STORE:
+        raise RuntimeError(f"setup file payload method is {method}; release setup files are stored")
+    if blob != container:
         raise RuntimeError("setup file payload failed verification")
 
 
@@ -498,8 +423,10 @@ def build_setup_executable(ctx, arch, payload_dir, expected_names):
         compile_installer_binary(ctx, uninstaller_path, arch, True, work)
         stub_path = os.path.join(work, "setup-stub.exe")
         compile_installer_binary(ctx, stub_path, arch, False, work)
-        for binary in (uninstaller_path, stub_path):
-            ctx.verify_release_binary(binary, "windows", arch)
+        for binary, is_uninstaller in ((uninstaller_path, True), (stub_path, False)):
+            ctx.pe_verify.stamp_pe_checksum(binary)
+            ctx.verify_release_binary(binary, "windows", arch, original_filename=
+                                      installer_original_filename(ctx, arch, is_uninstaller))
 
         entries = []
         for name in sorted(expected_names):
@@ -517,6 +444,11 @@ def build_setup_executable(ctx, arch, payload_dir, expected_names):
         if os.path.exists(output):
             os.remove(output)
         _append_payload(stub_path, output, container)
+        # The image checksum covers the overlay, so the stub's own stamp is
+        # stale once the payload is appended; restamp the finished file.
+        ctx.pe_verify.stamp_pe_checksum(output)
+        with open(output, "rb") as handle:
+            ctx.pe_verify.verify_pe_checksum(handle.read(), os.path.basename(output))
         _verify_setup_file(output, container)
     finally:
         ctx.cleanup_work_subdir(work)
@@ -843,7 +775,7 @@ def check_all(ctx, require_text, forbid_text):
         if lib == "-ltaskschd":
             raise SystemExit("installer gate: -ltaskschd does not resolve under Zig's arm64 link step")
     register_shard = source("installer_register.cpp")
-    uninstall_anchor = "bool gc_uninstall_execute(const WCHAR* installDirectory, char* error, size_t errorSize)"
+    uninstall_anchor = "bool gc_uninstall_execute(const WCHAR* installDirectory, bool* folderLeftForRestart,"
     ctx.require_order_in_operation(register_shard, uninstall_anchor,
                                    "gc_remove_startup_tasks()",
                                    "RemoveDirectoryW(installDirectory)",
@@ -858,34 +790,32 @@ def check_all(ctx, require_text, forbid_text):
                                    "WaitForSingleObject(serviceProcess.get()",
                                    "DeleteFileW(path)",
                                    "the service process has exited before its binary is deleted")
-    # The uninstaller removes its own running image so the folder can go now
-    # rather than at the next restart -- but only when it IS the installed copy.
-    # The same function runs inside the setup stub launched with --uninstall,
-    # which normally sits in a downloads folder.
+    # The uninstaller schedules its own running image (and so the folder) for
+    # the next restart -- but only when it IS the installed copy.  The same
+    # function runs inside the setup stub launched with --uninstall, which
+    # normally sits in a downloads folder.
     require_text(register_shard, "gc_uninstall_self_is_installed_copy(selfPathUtf8, installDirectoryUtf8)",
                  "the setup stub never schedules itself for deletion")
     ctx.require_order_in_operation(register_shard, uninstall_anchor,
-                                   "gc_delete_running_module(selfPath)",
+                                   "MoveFileExW(selfPath, nullptr, MOVEFILE_DELAY_UNTIL_REBOOT)",
                                    "RemoveDirectoryW(installDirectory)",
-                                   "the uninstaller deletes itself before removing the folder")
+                                   "the uninstaller hands itself to the session manager before removing the folder")
     require_text(register_shard, "SetCurrentDirectoryW(system)",
                  "the working directory is moved out of the folder being removed")
-    require_text(installer_util, "FileRenameInfo",
-                 "the running image is unlinked by renaming its data stream")
-    # Measured, not assumed: after the rename, the classic FileDispositionInfo
-    # is still refused with ERROR_ACCESS_DENIED on Windows 11 26200.  Only the
-    # POSIX-semantics delete unlinks the name of a mapped image.  Dropping back
-    # to the classic spelling would silently restore the reboot-only behavior.
-    require_text(installer_util, "FILE_DISPOSITION_FLAG_POSIX_SEMANTICS",
-                 "the unlinked image is deleted with POSIX semantics, the only form that works")
-    ctx.require_order_in_operation(installer_util, "bool gc_delete_running_module(const WCHAR* path)",
-                                   "GC_FILE_DISPOSITION_INFO_EX_CLASS",
-                                   "FileDispositionInfo,",
-                                   "the classic disposition is only the fallback, never the first attempt")
-    # Zig's mingw headers hide the FileDispositionInfoEx enumerator at this
-    # project's _WIN32_WINNT, so the arm64 build needs the ABI value spelled out.
-    require_text(installer_util, "(FILE_INFO_BY_HANDLE_CLASS)21",
-                 "the POSIX disposition class survives a toolchain that hides the enumerator")
+    # Antivirus hygiene: deleting a RUNNING image in place (rename its data
+    # stream into an alternate stream, then a POSIX-semantics delete) is a
+    # published malware self-deletion technique that behavior monitors flag.
+    # It must not appear in any binary we ship.
+    for name in sorted(os.listdir(ctx.SOURCE_DIR)):
+        if not name.endswith((".cpp", ".h")):
+            continue
+        for needle in ("FileRenameInfo", "FILE_DISPOSITION_FLAG_POSIX_SEMANTICS",
+                       "FileDispositionInfoEx", "(FILE_INFO_BY_HANDLE_CLASS)21"):
+            forbid_text(source(name), needle,
+                        f"source/{name} must not rename/unlink a running image ({needle})")
+    # The finish page must not claim the folder is gone when it is pending.
+    require_text(source("installer_ui.cpp"), "is deleted at the next restart",
+                 "the uninstall finish page reports a restart-pending folder")
 
     # Anchored on the CLI parser, not the usage text: the parser is what makes
     # the verb real, and the usage text moved to main_cli_help.cpp when entry.cpp

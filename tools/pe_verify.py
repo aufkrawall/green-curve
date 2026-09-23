@@ -173,3 +173,192 @@ def sanitize_pe_codeview_path(binary_path, pdb_basename):
         handle.seek(0)
         handle.write(data)
         handle.truncate()
+
+
+# ---------------------------------------------------------------------------
+# Image checksum and version identity
+#
+# Neither affects how Windows runs a user-mode image; both are metadata that
+# antivirus heuristics and PE-feature classifiers score.  An image whose
+# CheckSum is 0 (what LLD writes without /release) or whose VERSIONINFO names a
+# different file than it ships as looks, respectively, "hand-patched" and
+# "renamed" to those models.  Unsigned small projects have no reputation to
+# outweigh such signals, so every shipped PE gets a correct checksum and its
+# own identity, and the build gates both.
+# ---------------------------------------------------------------------------
+
+# Offset of OptionalHeader.CheckSum from the start of the optional header; the
+# same for PE32 and PE32+.
+_CHECKSUM_OPTIONAL_OFFSET = 64
+
+
+def _checksum_field_offset(data):
+    if len(data) < 0x40 or data[:2] != b"MZ":
+        raise RuntimeError("cannot checksum a non-PE artifact")
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    if pe + 24 + _CHECKSUM_OPTIONAL_OFFSET + 4 > len(data) or data[pe:pe + 4] != b"PE\x00\x00":
+        raise RuntimeError("cannot checksum an image without a PE header")
+    return pe + 24 + _CHECKSUM_OPTIONAL_OFFSET
+
+
+def pe_image_checksum(data):
+    """The CheckSumMappedFile / link.exe /RELEASE algorithm over the WHOLE file.
+
+    16-bit one's-complement-style folding sum of every word except the
+    CheckSum field itself, plus the file length.  The overlay is included, so a
+    setup file must be stamped after its payload is appended."""
+    field = _checksum_field_offset(data)
+    padded = bytes(data) + (b"\0" if len(data) % 2 else b"")
+    words = struct.unpack(f"<{len(padded) // 2}H", padded)
+    total = sum(words) - words[field // 2] - words[field // 2 + 1]
+    while total >> 16:
+        total = (total & 0xFFFF) + (total >> 16)
+    return (total + len(data)) & 0xFFFFFFFF
+
+
+def stamp_pe_checksum(binary_path):
+    """Write the correct image checksum into `binary_path`; returns it.
+
+    Must be the LAST byte-level edit to the file: CodeView sanitization and the
+    setup payload append both change the sum."""
+    with open(binary_path, "r+b") as handle:
+        data = bytearray(handle.read())
+        checksum = pe_image_checksum(data)
+        struct.pack_into("<I", data, _checksum_field_offset(data), checksum)
+        handle.seek(0)
+        handle.write(data)
+    return checksum
+
+
+def verify_pe_checksum(data, label):
+    field = _checksum_field_offset(data)
+    stored = struct.unpack_from("<I", data, field)[0]
+    expected = pe_image_checksum(data)
+    if stored != expected:
+        raise RuntimeError(f"{label}: PE CheckSum is 0x{stored:08x}, expected 0x{expected:08x} "
+                           "(stamp_pe_checksum must run after the last edit to the file)")
+
+
+def version_string_value(data, key):
+    """Return a StringFileInfo value (e.g. "OriginalFilename"), or None.
+
+    Located by its UTF-16LE key rather than by walking the resource tree: a
+    String entry is key, NUL, zero padding to a DWORD boundary, then the
+    NUL-terminated value, and no value this project emits is empty."""
+    needle = key.encode("utf-16le") + b"\0\0"
+    at = data.find(needle)
+    if at < 0:
+        return None
+    cursor = at + len(needle)
+    while cursor + 1 < len(data) and data[cursor:cursor + 2] == b"\0\0":
+        cursor += 2
+    end = cursor
+    while end + 1 < len(data) and data[end:end + 2] != b"\0\0":
+        end += 2
+    try:
+        return bytes(data[cursor:end]).decode("utf-16le")
+    except UnicodeDecodeError:
+        return None
+
+
+def verify_version_identity(data, expected_original_filename, label):
+    """Every shipped PE names itself and its publisher."""
+    original = version_string_value(data, "OriginalFilename")
+    if original is None or original.lower() != expected_original_filename.lower():
+        raise RuntimeError(f"{label}: VERSIONINFO OriginalFilename is {original!r}, "
+                           f"expected {expected_original_filename!r}")
+    for key in ("CompanyName", "FileDescription", "ProductName", "InternalName"):
+        if not version_string_value(data, key):
+            raise RuntimeError(f"{label}: VERSIONINFO {key} is missing or empty")
+
+
+def _synthetic_pe(length):
+    """A deterministic byte pattern with just enough PE header to checksum."""
+    data = bytearray((index * 37 + 11) & 0xFF for index in range(length))
+    data[0:2] = b"MZ"
+    struct.pack_into("<I", data, 0x3C, 0x80)
+    data[0x80:0x84] = b"PE\x00\x00"
+    struct.pack_into("<H", data, 0x80 + 4, 0x8664)   # Machine: AMD64
+    struct.pack_into("<H", data, 0x80 + 20, 0xF0)    # SizeOfOptionalHeader
+    struct.pack_into("<H", data, 0x80 + 24, 0x20B)   # PE32+ magic
+    struct.pack_into("<I", data, 0x80 + 24 + _CHECKSUM_OPTIONAL_OFFSET, 0xDEADBEEF)
+    return data
+
+
+def _version_string_entry(key, value):
+    """One StringFileInfo String: header, key, NUL, DWORD padding, value, NUL."""
+    body = key.encode("utf-16le") + b"\0\0"
+    header_and_key = 6 + len(body)
+    body += b"\0" * ((4 - header_and_key % 4) % 4)
+    body += value.encode("utf-16le") + b"\0\0"
+    return struct.pack("<HHH", 6 + len(body), len(value) + 1, 1) + body
+
+
+def run_self_tests():
+    """Deterministic checks for the checksum and VERSIONINFO helpers."""
+    failures = []
+
+    def expect(condition, label):
+        if not condition:
+            failures.append(label)
+
+    # Reference values cross-checked against pefile.generate_checksum() and
+    # against lld-link /release output when the helper was written.  The odd
+    # length covers the zero-pad of the trailing byte.
+    for length, reference in ((0x400, 0x34F3), (0x401, 0x34FF)):
+        data = _synthetic_pe(length)
+        expect(pe_image_checksum(data) == reference,
+               f"checksum of the {length}-byte vector is 0x{pe_image_checksum(data):x}, "
+               f"expected 0x{reference:x}")
+        # The stored field must not feed into its own value.
+        field = _checksum_field_offset(data)
+        altered = bytearray(data)
+        struct.pack_into("<I", altered, field, 0)
+        expect(pe_image_checksum(altered) == reference, "the CheckSum field is excluded from the sum")
+        # Zero (LLD's default) is what the gate exists to reject.
+        try:
+            verify_pe_checksum(altered, "vector")
+            failures.append("verify_pe_checksum accepted CheckSum 0")
+        except RuntimeError:
+            pass
+        struct.pack_into("<I", altered, field, reference)
+        try:
+            verify_pe_checksum(altered, "vector")
+        except RuntimeError as error:
+            failures.append(f"verify_pe_checksum rejected a correct checksum: {error}")
+        # An appended overlay (the setup payload) changes the sum.
+        expect(pe_image_checksum(bytes(altered) + b"payload") != reference,
+               "the overlay is part of the checksum")
+
+    identity = b"".join([
+        b"\x00" * 7,  # misalignment the parser must not depend on
+        _version_string_entry("CompanyName", "aufkrawall"),
+        _version_string_entry("FileDescription", "Green Curve background service"),
+        _version_string_entry("InternalName", "GreenCurveService"),
+        _version_string_entry("OriginalFilename", "greencurve-service.exe"),
+        _version_string_entry("ProductName", "Green Curve"),
+    ])
+    expect(version_string_value(identity, "OriginalFilename") == "greencurve-service.exe",
+           "OriginalFilename is read back")
+    expect(version_string_value(identity, "CompanyName") == "aufkrawall", "CompanyName is read back")
+    expect(version_string_value(identity, "LegalTrademarks") is None, "an absent key reads as None")
+    try:
+        verify_version_identity(identity, "GREENCURVE-SERVICE.EXE", "service")
+    except RuntimeError as error:
+        failures.append(f"a matching identity was rejected: {error}")
+    # The shape every service binary had before the split: it claimed to be the GUI.
+    try:
+        verify_version_identity(identity, "greencurve.exe", "gui")
+        failures.append("a binary naming another file passed verify_version_identity")
+    except RuntimeError:
+        pass
+    anonymous = identity.replace("CompanyName".encode("utf-16le"), "CompanyNamX".encode("utf-16le"))
+    try:
+        verify_version_identity(anonymous, "greencurve-service.exe", "service")
+        failures.append("a binary without CompanyName passed verify_version_identity")
+    except RuntimeError:
+        pass
+
+    if failures:
+        raise RuntimeError("pe_verify self-tests failed:\n  " + "\n  ".join(failures))
+    print("pe_verify self-tests passed")

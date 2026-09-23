@@ -232,6 +232,8 @@ TRAY_ICON_OC_FAN_ICO = os.path.join(SCRIPT_DIR, "greencurve_tray_oc_fan.ico")
 TRAY_ICON_PENDING_ICO = os.path.join(SCRIPT_DIR, "greencurve_tray_pending.ico")
 ICON_RC = os.path.join(SCRIPT_DIR, "icon.rc")
 ICON_RES = os.path.join(SCRIPT_DIR, "icon.res")
+SERVICE_ICON_RC = os.path.join(SCRIPT_DIR, "icon-service.rc")
+SERVICE_ICON_RES = os.path.join(SCRIPT_DIR, "icon-service.res")
 
 os.makedirs(ZIG_GLOBAL_CACHE_DIR, exist_ok=True)
 os.makedirs(ZIG_LOCAL_CACHE_DIR, exist_ok=True)
@@ -483,47 +485,12 @@ def generate_icon():
 MANIFEST_PATH = os.path.join(SCRIPT_DIR, "greencurve.exe.manifest")
 
 
-def generate_resource_script():
-    """Generate the deterministic Windows resource script and manifest if missing or stale."""
-    rc_content = build_state.build_rc_content(APP_VERSION, APP_BUILD_NUMBER)
-    manifest_content = build_state.build_manifest_content(APP_VERSION, APP_BUILD_NUMBER)
-    current_rc = None
-    if os.path.exists(ICON_RC):
-        with open(ICON_RC, "r", encoding="utf-8", errors="replace") as handle:
-            current_rc = handle.read()
-    if current_rc != rc_content:
-        with open(ICON_RC, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(rc_content)
-    current_manifest = None
-    if os.path.exists(MANIFEST_PATH):
-        with open(MANIFEST_PATH, "r", encoding="utf-8", errors="replace") as handle:
-            current_manifest = handle.read()
-    if current_manifest != manifest_content:
-        with open(MANIFEST_PATH, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(manifest_content)
-
-
 def compile_resources():
-    """Compile the Windows resource file if stale using llvm-rc."""
-    generate_resource_script()
-    sources = [ICON_RC, MANIFEST_PATH] + [path for _, path, _ in ICON_OUTPUTS]
-    if not build_state.any_newer(sources, ICON_RES):
-        return
-
-    if os.path.exists(ICON_RES):
-        os.remove(ICON_RES)
-
-    cmd = [
-        LLVM_MINGW_RC,
-        "/x",
-        f"/fo{ICON_RES}",
-        ICON_RC,
-    ]
-    print(f"Compiling resources: {os.path.basename(ICON_RC)}")
-    result = subprocess.run(cmd, cwd=SCRIPT_DIR)
-    if result.returncode != 0 or not os.path.exists(ICON_RES):
-        print("Resource compilation FAILED")
-        sys.exit(1)
+    """Generate and (when stale) compile the GUI and service resource files."""
+    build_state.compile_windows_resources(
+        LLVM_MINGW_RC, APP_VERSION, APP_BUILD_NUMBER, MANIFEST_PATH,
+        [path for _, path, _ in ICON_OUTPUTS],
+        [(ICON_RC, ICON_RES, False), (SERVICE_ICON_RC, SERVICE_ICON_RES, True)], SCRIPT_DIR)
 
 
 def prepare_work_subdir(name):
@@ -748,7 +715,7 @@ def _zig_arm64_windows_command(temp_output, libs, service=False):
         "-o",
         temp_output,
         *WINDOWS_SOURCE_FILES,
-        ICON_RES,
+        (SERVICE_ICON_RES if service else ICON_RES),
         *libs,
     ]
 
@@ -767,7 +734,7 @@ def _mingw_x64_windows_command(temp_output, libs, service=False, pdb_path=None):
         "-o",
         temp_output,
         *WINDOWS_SOURCE_FILES,
-        ICON_RES,
+        (SERVICE_ICON_RES if service else ICON_RES),
         *libs,
     ]
 
@@ -932,7 +899,7 @@ def _compile_and_link_windows_msvc(temp_output, service, arch, jobs, limiter, li
             WINDOWS_SERVICE_LINK_LIBS if service else WINDOWS_LINK_LIBS)
         with (limiter.slot() if limiter is not None else nullcontext()):
             returncode = msvc_toolchain.link_windows(
-                toolchain.lld_link, link_flags, objects, ICON_RES, libs,
+                toolchain.lld_link, link_flags, objects, (SERVICE_ICON_RES if service else ICON_RES), libs,
                 temp_output, _run_compiler)
     finally:
         cleanup_work_subdir(work)
@@ -944,7 +911,7 @@ def _link_windows_x64(temp_output, objects, pdb_path, service=False):
     cmd = [LLVM_MINGW_CLANG, *COMMON_FLAGS, *WINDOWS_FLAGS,
            *_windows_link_debug_flags(
                pdb_path, "greencurve-service.pdb" if service else "greencurve.pdb"),
-           "-o", temp_output, *objects, ICON_RES,
+           "-o", temp_output, *objects, (SERVICE_ICON_RES if service else ICON_RES),
            *(WINDOWS_SERVICE_LINK_LIBS if service else WINDOWS_LINK_LIBS)]
     return _run_compiler(cmd, allow_cfg_collision=True)
 
@@ -1014,7 +981,7 @@ def _link_arm64_windows(temp_output, sources, link_libs, symbol_path, service=Fa
         cmd = [ZIG_EXE, "c++", "-target", "aarch64-windows-gnu",
                "-mbranch-protection=standard", "-fno-lto", "-static",
                "-Wl,--subsystem,windows,--dynamicbase,--nxcompat,--high-entropy-va",
-               "-o", scratch_output, *objects, ICON_RES, *link_libs]
+               "-o", scratch_output, *objects, (SERVICE_ICON_RES if service else ICON_RES), *link_libs]
         with (limiter.slot() if limiter is not None else nullcontext()):
             if _run_zig_link(cmd, cwd=work) != 0:
                 raise RuntimeError("ARM64 Windows link failed")
@@ -1104,7 +1071,7 @@ def _verify_elf_hardening(data):
         raise RuntimeError("ELF dynamic dependency table is missing")
 
 
-def verify_release_binary(path, os_name, arch, allow_debug_paths=False):
+def verify_release_binary(path, os_name, arch, allow_debug_paths=False, original_filename=None):
     """Mandatory post-link artifact verification, independent of command flags."""
     with open(path, "rb") as handle:
         data = handle.read()
@@ -1121,6 +1088,9 @@ def verify_release_binary(path, os_name, arch, allow_debug_paths=False):
         raise RuntimeError("binary embeds the private build workspace path")
     if os_name == "windows":
         pe_verify.verify_pe_hardening(data, arch, ACTIVE_WINDOWS_TOOLCHAIN)
+        # Antivirus-heuristic hygiene; both are stamped/generated by the build.
+        pe_verify.verify_pe_checksum(data, os.path.basename(path))
+        pe_verify.verify_version_identity(data, original_filename or "", os.path.basename(path))
         major, minor, patch, build = build_state.parse_version_parts(
             APP_VERSION, APP_BUILD_NUMBER)
         resource_version = f"{major}.{minor}.{patch}.{build}".encode("utf-16le")
@@ -1201,11 +1171,14 @@ def _finalize_windows_output(temp_output, output_path, backup_path,
         print(f"Check build successful: {temp_output} ({size:,} bytes / {size / 1024:.1f} KB)")
 
 
-def _verify_windows_artifact(temp_output, pdb_path, arch):
-    """Shared artifact tail: sanitize the RSDS record, then run every gate."""
+def _verify_windows_artifact(temp_output, pdb_path, arch, service):
+    """Shared artifact tail: sanitize the RSDS record, stamp the checksum LAST,
+    then run every gate."""
     if arch == "x64" or ACTIVE_WINDOWS_TOOLCHAIN == "clang-cl":
         pe_verify.sanitize_pe_codeview_path(temp_output, os.path.basename(pdb_path))
-    verify_release_binary(temp_output, "windows", arch, "-g" in COMMON_FLAGS)
+    print(f"  PE CheckSum: 0x{pe_verify.stamp_pe_checksum(temp_output):08x}")
+    verify_release_binary(temp_output, "windows", arch, "-g" in COMMON_FLAGS,
+                          build_state.WINDOWS_BINARY_IDENTITIES[service][2])
     verify_windows_private_symbols(pdb_path, arch)
 
 
@@ -1250,7 +1223,7 @@ def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_T
             if returncode == 0:
                 os.replace(link_pdb_path, pdb_path)
         if returncode == 0:
-            _verify_windows_artifact(temp_output, pdb_path, arch)
+            _verify_windows_artifact(temp_output, pdb_path, arch, service=False)
     except (OSError, RuntimeError) as exc:
         print(f"ERROR: {exc}")
         returncode = 1
@@ -1307,7 +1280,7 @@ def compile_windows_service_binary(output_path=WINDOWS_SERVICE_OUTPUT_EXE, temp_
             if returncode == 0:
                 os.replace(link_pdb_path, pdb_path)
         if returncode == 0:
-            _verify_windows_artifact(temp_output, pdb_path, arch)
+            _verify_windows_artifact(temp_output, pdb_path, arch, service=True)
     except (OSError, RuntimeError) as exc:
         print(f"ERROR: {exc}")
         returncode = 1

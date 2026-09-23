@@ -59,6 +59,7 @@ Setup now accepts install folders beyond Program Files.
 - **A crashed or killed background service no longer leaves a custom fan curve frozen.** The fan returns to driver control, and on Windows the GPU returns to stock.
 - **A background service stuck inside the GPU driver now restarts itself** instead of staying unresponsive, and says so if it cannot return the GPU to stock.
 - **Install-folder warnings no longer overflow the service status line.** The full text is in its tooltip.
+- **Antivirus programs should raise fewer false alarms about Green Curve.** Every program file now carries complete publisher details and a valid checksum.
 
 ### Compatibility notes
 
@@ -70,6 +71,8 @@ Setup now accepts install folders beyond Program Files.
   working; the restriction applies when you install or move it.
 - Installing from the archive requires an elevated PowerShell or Command
   Prompt; setup now explains the requirement.
+- Uninstalling now removes the program folder at the next restart; the
+  finish page says so.
 
 ## 0.26.0
 

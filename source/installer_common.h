@@ -201,14 +201,6 @@ bool gc_service_image_directory(WCHAR* out, size_t outCount);
 // code.  Used for the application's own --service-install and settings CLI.
 bool gc_run_and_wait(const WCHAR* exePath, const WCHAR* commandLine, DWORD timeoutMs,
                      DWORD* exitCodeOut);
-// Delete a file that is the image of the running process, immediately.
-//
-// Windows refuses an ordinary delete on a mapped image, which is why the
-// uninstaller used to hand itself to the session manager and leave
-// uninstall.exe — and therefore the whole install folder — sitting there until
-// the next restart.  Returns false when the file is still present afterwards,
-// so the caller can fall back to MOVEFILE_DELAY_UNTIL_REBOOT.
-bool gc_delete_running_module(const WCHAR* path);
 
 // ---------------------------------------------------------------------------
 // Autostart removal (source/installer_autostart.cpp)
@@ -296,7 +288,11 @@ bool gc_read_prior_install(GcPriorInstall* prior);
 bool gc_default_install_directory(char* out, size_t outCount);
 bool gc_install_execute(GcInstallContext* context);
 void gc_retire_previous_directory(GcInstallContext* context);
-bool gc_uninstall_execute(const WCHAR* installDirectory, char* error, size_t errorSize);
+// `folderLeftForRestart` (optional) is set when the install folder could not be
+// removed now and was handed to the session manager for the next restart --
+// always the case when the installed uninstall.exe itself is running.
+bool gc_uninstall_execute(const WCHAR* installDirectory, bool* folderLeftForRestart,
+                          char* error, size_t errorSize);
 // Ask every running Green Curve GUI to close and wait for the processes to go
 // away.  `context` may be null (the uninstaller has no progress reporting).
 bool gc_stop_gui_processes(GcInstallContext* context);

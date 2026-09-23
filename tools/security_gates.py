@@ -27,6 +27,8 @@ import update_signing  # ditto; owns the update signer's RFC 6979 vectors
 import toolchain  # ditto; owns pinned-toolchain verification
 import zig_cache  # ditto; owns the cross-process Zig link lock + cache repair
 import arch_package  # ditto; builds pacman-installable Arch Linux packages
+import build_state  # ditto; owns the Windows resource scripts
+import pe_verify  # ditto; owns the PE checksum / VERSIONINFO identity helpers
 
 # Fuzz targets built from tests/fuzz_main.cpp.  The key is the GC_FUZZ_TARGET
 # macro suffix and the corpus directory name; the value is the macro's numeric
@@ -1182,6 +1184,8 @@ def run_build_script_regression_tests(ctx):
         build_scheduler.run_self_tests()
         zig_cache.run_self_tests()
         arch_package.run_self_tests()
+        pe_verify.run_self_tests()
+        build_state.run_resource_identity_self_tests()
         build_script = os.path.join(ctx.SCRIPT_DIR, "build.py")
         with open(build_script, "r", encoding="utf-8", errors="replace") as handle:
             build_script_text = handle.read()

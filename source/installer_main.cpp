@@ -137,8 +137,12 @@ static int gc_run_silent_install(const GcInstallerOptions* options, const GcPrio
 
 static int gc_run_silent_uninstall(const WCHAR* installDirectory) {
     char error[512] = {};
-    bool ok = gc_uninstall_execute(installDirectory, error, sizeof(error));
+    bool folderLeftForRestart = false;
+    bool ok = gc_uninstall_execute(installDirectory, &folderLeftForRestart, error, sizeof(error));
     if (!ok) gc_log_fail("silent uninstall: %s", error[0] ? error : "unknown failure");
+    if (ok && folderLeftForRestart) {
+        gc_log_step("silent uninstall: %ls is removed at the next restart", installDirectory);
+    }
     return ok ? GC_EXIT_OK : GC_EXIT_FAILED;
 }
 
