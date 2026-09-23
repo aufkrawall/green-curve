@@ -106,27 +106,25 @@ python build.py --check-cet
 
 ## Antivirus false positives
 
-**Expect some antivirus products to flag Green Curve, and expect to add an exception for it.** Any of the Windows files can be hit: `greencurve.exe`, `greencurve-service.exe`, `greencurve-uninstall.exe`, the setup `.exe` and the `.7z` archive. Which file gets flagged, and by which product, changes from release to release. The most common report is Microsoft Defender's `Trojan:Win32/Wacatac.B!ml`, but other products use their own names for the same kind of guess. Typical ones contain `Generic`, `Gen`, `Heur`/`HEUR`, `ML`, `AI`, `Variant`, `Unsafe`, `Suspicious` or a confidence score, for example `Gen:Variant.…`, `HEUR:Trojan.Win32.Generic`, `Win64:Malware-gen`, `ML.Attribute.HighConfidence` or `Static AI - Suspicious PE`. A name like this on a Green Curve file is a false positive.
+Antivirus products may flag a Green Curve Windows file, including the GUI, service, uninstaller, setup executable or archive. Generic names such as `Trojan:Win32/Wacatac.B!ml`, `Gen:Variant.…`, `HEUR:Trojan.Win32.Generic` and `Static AI - Suspicious PE` describe a detection method, not a confirmed diagnosis. Check the exact file and report before deciding whether it is a false positive. Our goal is for you to use Green Curve without disabling antivirus protection or excluding the install folder.
 
 ### Why it happens
 
-The `!ml` suffix means no virus signature matched and nothing malicious was seen running. A machine-learning model looked at the file's structure and guessed. `Wacatac` is Microsoft's catch-all name for those guesses; the generic, heuristic and ML names other products use mean the same thing. Typically one engine out of the roughly 70 on VirusTotal flags the file, and the rest report it clean.
+The `!ml` suffix indicates a machine-learning classification. It does not prove that the file is malicious or benign. A result where one VirusTotal engine flags a file and the others do not is useful context, but it is not proof by itself.
 
-The model doesn't know what the program does. It scores surface traits, and a small open-source hardware tool has most of the traits it counts against a file:
+Heuristic scanners can score traits in a file without knowing how the program is used. A small open-source hardware tool has several traits they may count against it:
 
-- **It is unsigned and always new.** Every release is a file the model has never seen, from a publisher with no reputation. Code-signing certificates cost money every year, and even a signed file starts with no reputation.
+- **It is unsigned and always new.** Every release has a new file hash, and the binaries do not carry a trusted publisher signature. Consistent code signing can build publisher reputation across releases, although it does not guarantee an immediate clean verdict.
 - **It is a small native C++ program.** It is built with an open-source compiler, not Visual Studio, and it isn't a large installer or .NET app. Much malware looks the same way from the outside.
 - **It needs features that malware also uses.** It runs a background service as SYSTEM, loads the NVIDIA driver's libraries, writes hardware settings and starts the GUI in your session. It can also download its own updates, check which window is in front for auto profiles, and register global hotkeys.
 
-Every one of those is visible in the source code in this repository. Features and structure that weren't needed have been removed from the Windows files to reduce these guesses. The model still guesses, and every new release has new file hashes, so a detection can reappear after any update. A false-positive report to an antivirus vendor only clears that one exact file.
+Every one of those is visible in the source code in this repository. Features and structure that weren't needed have been removed from the Windows files to reduce these guesses. Every new release has new file hashes, so a detection can reappear after any update and may need a new vendor review.
 
 ### What to do
 
-1. **Check that your download is genuine.** Compare it with the matching `.sha256` file, or run `gh attestation verify <file> --repo aufkrawall/green-curve` (see [Updates](#how-a-downloaded-update-is-verified)).
-2. **If the setup file or archive itself is blocked**, restore it from *Protection history* (Windows Security → *Virus & threat protection*) and choose *Allow on device*, then run it.
-3. **Add an exclusion for the install folder**, by default `C:\Program Files\Green Curve`. In Windows Security, open *Virus & threat protection → Manage settings → Exclusions → Add or remove exclusions → Add an exclusion → Folder*. Other antivirus products have an equivalent setting. Green Curve limits write access to this folder to administrators, so excluding it doesn't let unprivileged programs place files there unscanned.
-4. **If an installed file was already quarantined**, restore it from *Protection history*, then run the setup again to repair the installation.
-5. **Optionally report the false positive to your antivirus vendor.** Microsoft accepts reports at [microsoft.com/wdsi/filesubmission](https://www.microsoft.com/en-us/wdsi/filesubmission). This helps other users of that exact release.
+1. **Check the exact download.** Compare it with the matching `.sha256` file and verify its GitHub build provenance with `gh attestation verify <file> --repo aufkrawall/green-curve` (see [Updates](#how-a-downloaded-update-is-verified)). Provenance shows where a file came from; it does not replace an antivirus verdict.
+2. **Report the detected file to your antivirus vendor for review.** Include the exact file hash and detection name. For Microsoft Defender, use the [software developer file-submission portal](https://www.microsoft.com/en-us/wdsi/filesubmission). A determination for one release does not automatically apply to a rebuilt file.
+3. **Keep protection enabled while the vendor reviews it.** If a file was quarantined, wait for the detection to be corrected before restoring it and repairing the installation.
 
 If you don't trust a prebuilt binary, build it yourself with `python build.py` (see [Build](#build)).
 
