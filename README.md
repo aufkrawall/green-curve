@@ -63,14 +63,41 @@ It reports which NVAPI image loaded, whether the VF curve and control structs re
 python build.py
 ```
 
-On either Windows or Linux, this builds the Windows and Linux x64/arm64 release matrix under `dist/` and packages verified archives per OS/architecture — a `.7z` for Windows and a `.tar.xz` for Linux — plus a `greencurve-<version>-windows-<arch>-setup.exe` installer for each Windows architecture and Windows variant and ready-to-install Arch Linux packages (`greencurve-<version>-1-<arch>.pkg.tar.zst`) for Linux architectures. On native Windows, the default builds two isolated Windows variants: `dist/windows-<arch>/msvc/` uses the hardened MSVC-ABI `clang-cl` toolchain, while `dist/windows-<arch>/release/` uses the pinned llvm-mingw/Zig toolchain and flags used by the Linux-hosted GitHub release job. `--toolchain clang-cl` and `--toolchain llvm-mingw` select one variant explicitly. Linux-hosted release builds keep the existing root-level package names and layout. The native Windows `release` variant is toolchain/flag-equivalent, but the two host platforms use different executable bundles; byte-for-byte identity with the Linux release still requires running that release build on Linux. Linux hosts cross-build the Windows targets with a pinned native llvm-mingw host bundle and the Linux targets with pinned Zig. Every archive is read back against an exact manifest and rejects unexpected payload files. Windows packaging requires 7-Zip; the Linux tarball is written by the Python standard library, so that it records the Unix file modes the daemon and its setup script need no matter which host built it. Windows archives extract to a `Green Curve` folder (matching what the installer creates); Linux archives keep the lowercase `greencurve` folder.
+Compiling yourself is straightforward and essentially requires only Python (Python 3.10+): `python build.py` automatically downloads, verifies, and manages its pinned toolchains (Zig, llvm-mingw, and 7-Zip archiver) under `compilers/`.
+
+On either Windows or Linux, running `python build.py` by default builds the release matrix under `dist/` and packages verified archives per OS/architecture — a `.7z` for Windows and a `.tar.xz` for Linux — plus a `greencurve-<version>-windows-<arch>-setup.exe` installer for each Windows architecture and Windows variant and ready-to-install Arch Linux packages (`greencurve-<version>-1-<arch>.pkg.tar.zst`) for Linux architectures.
+
+Target options:
+```bash
+python build.py --target windows         # build Windows targets only
+python build.py --target linux           # build Linux targets only
+```
+
+On native Windows, the default builds two isolated Windows variants: `dist/windows-<arch>/msvc/` uses the hardened MSVC-ABI `clang-cl` toolchain (requiring an installed Visual Studio / Windows SDK), while `dist/windows-<arch>/release/` uses the pinned llvm-mingw/Zig release toolchain. Passing `--toolchain llvm-mingw` allows building on Windows without Visual Studio installed.
+
+Linux hosts cross-build the Windows targets with a pinned native llvm-mingw host bundle and the Linux targets with pinned Zig. Every archive is read back against an exact manifest and rejects unexpected payload files. Windows archives extract to a `Green Curve` folder (matching what the installer creates); Linux archives keep the lowercase `greencurve` folder.
+
+Additional developer and verification checks:
+
+```bash
+python build.py --check
+python build.py --test
+python build.py --lsp
+python build.py --fuzz
+python build.py --check-cet
+```
+
+- `--check` builds the selected target(s) into a temporary workspace without replacing release outputs.
+- `--test` runs pure regression tests that do not touch GPU hardware.
+- `--lsp` regenerates `compile_commands.json` for clangd.
+- `--fuzz` builds and briefly runs coverage-guided libFuzzer harnesses (ASan + UBSan) over the untrusted-input boundaries — the IPC request validator, the VF snapshot validator, the startup-task XML classifier, the config/INI parsers, and the daemon transport classifiers. The default is a bounded 20000 runs per target; pass `--fuzz-runs` for a longer session and `--fuzz-target` to select one.
+- `--check-cet` verifies that the `-fcf-protection=full` hardening flag is actually effective, by confirming every address-taken function in a purpose-built unstripped probe begins with `endbr64`.
 
 ## Installing on Windows
 
 Either extract the `.7z` archive into a folder of its own and run `greencurve.exe --service-install` once **from an elevated PowerShell or Command Prompt**, or run the setup executable, which does the same thing with a few conveniences:
 
 Two things the archive route needs and setup handles for you: registering a service requires administrator rights, and the folder you extract into becomes the service's home — Green Curve locks it down to administrators so nothing unprivileged can replace the service binary. Give it its own folder (`C:\Program Files\Green Curve`, `D:\Apps\Green Curve`); extracting straight into Downloads or a drive root is refused, because securing that folder would take your own write access to it away.
-
 
 - Shows the MIT license and the version it is about to install.
 - Lets you choose where the `Green Curve` folder goes (default `%ProgramFiles%\Green Curve`).
@@ -88,55 +115,47 @@ greencurve-0.27.0-windows-x64-setup.exe /S
 
 `/S` installs or upgrades with no window (it still needs administrator rights, because it registers a service). `/D=<path>` selects the folder, `--no-start-menu` / `--desktop` / `--launch` override the shortcut and post-install behaviour, and `--uninstall` removes an installation. Exit codes are `0` success, `1` failure, `2` cancelled, `3` bad arguments. Run it with `/?` for the full list.
 
-Additional non-shipping checks:
-
-```bash
-python build.py --check
-python build.py --test
-python build.py --lsp
-python build.py --fuzz
-python build.py --check-cet
-```
-
-`--check` builds the selected target(s) into a temporary workspace without replacing release outputs. `--test` runs pure regression tests that do not touch GPU hardware. `--lsp` regenerates `compile_commands.json` for clangd.
-
-`--fuzz` builds and briefly runs coverage-guided libFuzzer harnesses (ASan + UBSan) over the untrusted-input boundaries — the IPC request validator, the VF snapshot validator, the startup-task XML classifier, the config/INI parsers, and the daemon transport classifiers. The default is a bounded 20000 runs per target; pass `--fuzz-runs` for a longer session and `--fuzz-target` to select one.
-
-`--check-cet` verifies that the `-fcf-protection=full` hardening flag is actually effective, by confirming every address-taken function in a purpose-built unstripped probe begins with `endbr64`.
-
 ## Antivirus false positives
 
-Antivirus products may flag a Green Curve Windows file, including the GUI, service, uninstaller, setup executable or archive. Generic names such as `Trojan:Win32/Wacatac.B!ml`, `Gen:Variant.…`, `HEUR:Trojan.Win32.Generic` and `Static AI - Suspicious PE` describe a detection method, not a confirmed diagnosis. Check the exact file and report before deciding whether it is a false positive. Our goal is for you to use Green Curve without disabling antivirus protection or excluding the install folder.
+Antivirus products may flag Green Curve Windows files, including the GUI, background service, uninstaller, setup executable, or release archives. Generic names such as `Trojan:Win32/Wacatac.B!ml`, `Gen:Variant.…`, `HEUR:Trojan.Win32.Generic`, and `Static AI - Suspicious PE` describe automated heuristic or machine-learning detection methods, not confirmed diagnoses.
+
+We have made extensive efforts at the binary and code level to minimize suspicious traits (stripping unneeded APIs, isolating the background service from GUI code, slimming the uninstaller, and formatting standard PE structures), but we cannot prevent false positives. As an open-source, unsigned hardware control utility, Green Curve will inevitably trigger heuristic and ML alarms across various antivirus vendors and shifting definitions.
+
+**Because we cannot prevent these false positives, you will need to define an exception/exclusion in your antivirus for Green Curve (e.g. for the installation directory or binaries) in case of a false positive.**
+
+- **The project source code is 100% open and available** in this repository. You can inspect every line of code, build script, and security check for yourself.
+- **Compiling yourself is easy:** If you prefer not to use prebuilt binaries, you can easily build Green Curve from source. It basically requires only Python installed — `python build.py` handles the rest automatically (see [Build](#build)).
 
 ### Why it happens
 
-The `!ml` suffix indicates a machine-learning classification. It does not prove that the file is malicious or benign. A result where one VirusTotal engine flags a file and the others do not is useful context, but it is not proof by itself.
+The `!ml` suffix indicates a machine-learning classification rather than a signature. Heuristic and AI scanners score traits in a binary without understanding what the program actually does:
 
-Heuristic scanners can score traits in a file without knowing how the program is used. A small open-source hardware tool has several traits they may count against it:
+- **It is unsigned and always new.** Every release produces new file hashes, and the binaries do not carry an expensive commercial Authenticode certificate. Without publisher reputation, scanners treat new binaries with suspicion.
+- **It is a small native C++ program.** It is compiled with modern open-source toolchains, without large frameworks or runtime overhead. Malware binaries often look structurally similar from the outside.
+- **It requires capabilities that hardware tools and malware both use.** Green Curve runs a background service as `LocalSystem`, talks directly to the NVIDIA driver libraries, writes GPU clocks/voltages, checks foreground windows for auto-profile switching, and registers global hotkeys.
 
-- **It is unsigned and always new.** Every release has a new file hash, and the binaries do not carry a trusted publisher signature. Consistent code signing can build publisher reputation across releases, although it does not guarantee an immediate clean verdict.
-- **It is a small native C++ program.** It is built with an open-source compiler, not Visual Studio, and it isn't a large installer or .NET app. Much malware looks the same way from the outside.
-- **It needs features that malware also uses.** It runs a background service as SYSTEM, loads the NVIDIA driver's libraries, writes hardware settings and starts the GUI in your session. It can also download its own updates, check which window is in front for auto profiles, and register global hotkeys.
-
-Every one of those is visible in the source code in this repository. Features and structure that weren't needed have been removed from the Windows files to reduce these guesses. Every new release has new file hashes, so a detection can reappear after any update and may need a new vendor review.
+All of these actions are essential for GPU tuning and are fully visible in the repository source code.
 
 ### What to do
 
-1. **Check the exact download.** Compare it with the matching `.sha256` file and verify its GitHub build provenance with `gh attestation verify <file> --repo aufkrawall/green-curve` (see [Updates](#how-a-downloaded-update-is-verified)). Provenance shows where a file came from; it does not replace an antivirus verdict.
-2. **Report the detected file to your antivirus vendor for review.** Include the exact file hash and detection name. For Microsoft Defender, use the [software developer file-submission portal](https://www.microsoft.com/en-us/wdsi/filesubmission). A determination for one release does not automatically apply to a rebuilt file.
-3. **Keep protection enabled while the vendor reviews it.** If a file was quarantined, wait for the detection to be corrected before restoring it and repairing the installation.
-
-If you don't trust a prebuilt binary, build it yourself with `python build.py` (see [Build](#build)).
+1. **Verify the download.** Compare the downloaded file against the published `.sha256` checksum, and verify its GitHub build provenance with `gh attestation verify <file> --repo aufkrawall/green-curve` (see [Updates](#how-a-downloaded-update-is-verified)).
+2. **Define an exclusion in your antivirus.** Add the Green Curve installation folder (e.g. `C:\Program Files\Green Curve`) or executables to your antivirus exclusion list to prevent scans from quarantining or blocking the background service or GUI.
+3. **Optional: Report the false positive to your vendor.** You can submit flagged files to your antivirus vendor for analysis (e.g., via the [Microsoft Defender file submission portal](https://www.microsoft.com/en-us/wdsi/filesubmission)). Note that vendor clearance for one release does not prevent a newer release with different hashes from being flagged again.
+4. **Build from source if desired.** If you prefer not to run prebuilt binaries, build them locally with `python build.py` (see [Build](#build)).
 
 ## Updates
 
-Green Curve can check GitHub for a new release, download it, and install it for you. **It is off until you turn it on**, in *Updates* on the main window.
+Green Curve can check GitHub for new releases, download verified installers, and install them for you.
 
-- **Checking** is the only part that can be automatic, and only after you enable it. It is a daily request to `github.com` for two small files.
-- **Downloading** happens automatically once a new version is found, into a folder only administrators can write. Nothing about your system changes.
-- **Installing never happens on its own.** It always takes a click, and it is refused while a settings change is being applied or while a fullscreen application is running — the update briefly stops the background service, which returns your GPU to stock settings for a few seconds before your settings are restored.
+- **First-run prompt:** On the first interactive launch, Green Curve asks whether you want it to check for updates automatically. The choice is yours:
+  - If enabled, Green Curve checks `github.com` about once a day for two small files, disclosing only your IP address, installed version, and CPU architecture.
+  - If declined, automatic background checking remains off.
+  - You can change this preference at any time in the **Updates** dialog on the main window, or click **Check now** for an immediate check.
+- **Downloading** happens in the background once a verified newer version is found. It downloads into a protected directory (`%ProgramData%\Green Curve\updates`) that only administrators can write to. Nothing about your active system changes.
+- **Installing never happens on its own.** It always requires an explicit click on **Install** in the Updates dialog. The update process captures your active GPU settings, closes the GUI, stops the service, updates the binaries, re-registers the service, re-applies your settings, and relaunches the GUI. Installation is refused while a hardware apply is running or while a fullscreen application is active.
+- **Passive alert signals:** When an update is ready to install, the **Updates** button on the main window is highlighted in orange (`COL_PENDING`), and notifications appear in the tray icon's tooltip and context menu.
 
-There is no UAC prompt: the background service already runs with the rights it needs.
+There is no UAC prompt during installation because the background service already runs as `LocalSystem`.
 
 ### How a downloaded update is verified
 
@@ -205,9 +224,43 @@ Alternatively, packaging templates are provided under [`packaging/arch/`](packag
   makepkg -si -p PKGBUILD.bin
   ```
 
-### Launching
+### Launching and TUI navigation
 
-`greencurve` with no arguments opens the terminal UI. Launching the binary from a graphical file manager works too: with no controlling terminal but a live display server, it re-execs itself inside the session's terminal emulator (Konsole on KDE, GNOME Console/Terminal on GNOME, and so on down a fallback list). The window closes when you quit with `q`, and stays open if there is an error to read.
+`greencurve` (or `greencurve --tui`) opens the terminal UI. Launching the binary from a graphical file manager works too: with no controlling terminal but a live display server, it re-execs itself inside the session's terminal emulator (Konsole on KDE, GNOME Console/Terminal on GNOME, and so on down a fallback list). The window closes when you quit with `q`, and stays open if there is an error to read.
+
+The TUI header, tabs, status/footer, graphs, tables, and controls reflow at compact, medium, and wide terminal breakpoints (minimum interactive size: 72x24 cells). Buttons, checkboxes, table fields, and graphs are mouse-clickable. The mouse wheel scrolls the active table. Complete keyboard navigation is available: `Tab`/`Shift+Tab` and arrow keys move focus, `Enter` edits or activates, `Page Up`/`Page Down` scroll by a page, `Ctrl+Page Up`/`Ctrl+Page Down` changes tabs, and `Home`/`End` jumps through the VF curve.
+
+### Upgrading on Linux
+
+For an upgrade, run `sudo ./greencurve-setup.sh install` (or `sudo ./greencurve --service-install`) from the newly unpacked build. Do **not** uninstall the old service first: the installer safely replaces the staged daemon, reloads systemd, unconditionally restarts an already running service, verifies the real filesystem socket pathname as `root:greencurve 0660`, and verifies the active daemon's version, build, and IPC protocol before reporting success. Incorrect socket ownership/mode is an install failure; a GPU/VF capability problem is reported as a degradation warning. No uninstall is needed for an upgrade. Use `--service-remove` only when you intend to remove Green Curve entirely.
+
+### Permissions and user group
+
+The daemon socket is restricted to `root` and the `greencurve` group (`0660 root:greencurve`). To use the TUI or CLI without `sudo`, add your account after installation, then start a new group session:
+
+```bash
+sudo usermod -aG greencurve "$USER"
+# sign out and back in, or run: newgrp greencurve
+```
+
+Existing group membership normally survives an upgrade. Verify it in the same session that launches Green Curve with `id -nG | tr ' ' '\n' | grep -x greencurve`. Run the TUI/CLI as your normal account, not with `sudo`; if the new membership is not visible, sign out and back in (preferred) or enter a `newgrp greencurve` shell first.
+
+### CLI commands
+
+```bash
+greencurve --probe                  # verify NvAPI + NVML, GPU, family, OC range
+greencurve --self-test              # read-only validation of the apply path
+greencurve --gpu 0000:01:00.0 --tui # select a stable PCI target on multi-GPU systems
+sudo ./greencurve --service-install # install/upgrade, restart, and verify daemon
+greencurve --tui                    # edit and apply the VF curve / fan / power
+greencurve --dump-live              # dump all 128 live/base/target VF values
+greencurve --json-live              # same live state as machine-readable JSON
+greencurve --apply-config           # apply the selected profile
+greencurve --reset --apply-config   # reset OC/UV to driver defaults
+sudo greencurve --service-remove
+```
+
+`--dump` and `--json` describe the selected saved profile. Use `--dump-live` or `--json-live` when diagnosing or calculating from the daemon's current absolute VF state: every populated point includes its index, voltage, base MHz, live MHz, offset, staged target MHz, and the rule producing that target.
 
 ### What is applied at daemon start
 
@@ -224,15 +277,28 @@ The same control is on the TUI's **Profiles & Tools** tab. Because the daemon ru
 
 That snapshot is kept in step with the profile: saving the slot — in the TUI or with `--save-config` — pushes the new values to the daemon, and clearing the slot switches startup apply off rather than leaving a deleted profile applying at every boot. Editing `config.ini` by hand does not, so the snapshot is also checked against the file: `--show-startup` reports any difference field by field, and the TUI's control reads `PROFILE N STALE`. Save that slot again to bring the two back together.
 
-## Windows Probe Report
+### Hardware write safety and transactional updates
 
-If a future GPU family is unrecognized and uses the fallback backend, collect a Windows probe report with:
+The Linux VF write path is validated on real NVIDIA hardware; the apply pipeline verifies each write by reading the curve back. Run `--probe` first to confirm the driver libraries and the GPU family are detected.
 
-```powershell
-greencurve.exe --probe --probe-output unrecognized_gpu_probe.json
-```
+Linux hardware writes are transactional. The daemon journals a checksummed, versioned record before mutation, publishes it as active only after verified success, and attempts rollback on any phase or persistence failure. Corrupt, legacy, prepared, uncertain, or mismatched-GPU state is never replayed at startup. On a multi-GPU system an exact PCI BDF selection is mandatory; stale, missing, duplicate, or cross-API-mismatched identities allow telemetry but block writes until the user selects a GPU explicitly.
 
-Run it while the Windows background service is installed and healthy. The CLI entry point stays `greencurve.exe`, but hardware-backed probe generation is executed by `greencurve-service.exe` through the local service IPC path.
+The TUI distinguishes an offline daemon from an online but GPU-degraded daemon. If VF data is degraded, it shows the typed driver/binding/read failure instead of waiting indefinitely. Fresh independent NVML controls may remain available, but VF or mixed requests and full Reset stay blocked until the complete VF snapshot recovers. For a report, include `greencurve --probe`, `greencurve --json-live`, `systemctl status greencurve.service`, `journalctl -u greencurve.service -b`, and `stat /run/greencurve/greencurve.sock` output.
+
+## GPU Probe Report
+
+If a future GPU family is unrecognized and uses the fallback backend, or if you need to inspect driver and VF capabilities for diagnostic purposes, collect a probe report:
+
+- **Windows:**
+  ```powershell
+  greencurve.exe --probe --probe-output unrecognized_gpu_probe.json
+  ```
+  Run it while the Windows background service is installed and healthy. The CLI entry point is `greencurve.exe`, but hardware-backed probe generation is executed by `greencurve-service.exe` through the local service IPC path.
+
+- **Linux:**
+  ```bash
+  greencurve --probe --probe-output unrecognized_gpu_probe.json
+  ```
 
 The generated JSON report includes:
 
@@ -240,102 +306,9 @@ The generated JSON report includes:
 - selected GPU family and VF backend
 - NVML and public clock/power/fan state
 - raw results from the current private VF probe calls
+- system diagnostic data and daemon binding health
 
-That JSON file is the artifact to use when validating or correcting fallback support for a new NVIDIA GPU family.
-
-Linux cross-build:
-
-```bash
-python build.py --target linux
-```
-
-This produces the selected Linux payload under `dist/linux-<arch>/greencurve/`,
-a dynamically linked glibc binary (it must `dlopen` the proprietary NVIDIA driver
-libraries, which a static musl binary cannot do).
-
-The Linux binary is a native NVIDIA control port. It drives the GPU through the
-same private NvAPI `nvapi_QueryInterface` path the Windows build uses — on Linux
-via `libnvidia-api.so.1` (proprietary driver >= 555) — plus NVML
-(`libnvidia-ml.so.1`), and supports VF-curve read/write, GPU/memory clock
-offsets, power limit, hard clock locks, and fan control. A root daemon owns the
-GPU and the unprivileged TUI/CLI talk to it over a Unix socket, mirroring the
-Windows elevated-service / GUI split.
-
-```bash
-greencurve --probe                  # verify NvAPI + NVML, GPU, family, OC range
-greencurve --self-test              # read-only validation of the apply path
-greencurve --gpu 0000:01:00.0 --tui # select a stable PCI target on multi-GPU systems
-sudo ./greencurve --service-install # install/upgrade, restart, and verify daemon
-greencurve --tui                    # edit and apply the VF curve / fan / power
-greencurve --dump-live              # dump all 128 live/base/target VF values
-greencurve --json-live              # same live state as machine-readable JSON
-greencurve --apply-config           # apply the selected profile
-greencurve --reset --apply-config   # reset OC/UV to driver defaults
-sudo greencurve --service-remove
-```
-
-For an upgrade, run `sudo ./greencurve --service-install` from the newly
-unpacked build. Do **not** uninstall the old service first: the installer safely
-replaces the staged daemon, reloads systemd, unconditionally restarts an already
-running service, verifies the real filesystem socket pathname as
-`root:greencurve 0660`, and verifies the active daemon's version, build, and IPC
-protocol before reporting success. Incorrect socket ownership/mode is an install
-failure; a GPU/VF capability problem is instead reported as a degradation
-warning. No uninstall is needed for an upgrade.
-Use `--service-remove` only when you intend to remove Green Curve entirely.
-
-Running `greencurve` without arguments also opens the TUI. Its fixed header,
-tabs, status/footer, graphs, tables, and controls reflow at compact, medium, and
-wide terminal breakpoints; the minimum interactive size is 72x24 cells. Click
-buttons, checkboxes, table fields, and either graph with the mouse. The wheel
-scrolls the active table. `Tab`/`Shift+Tab` and the arrow keys move focus,
-`Enter` edits or activates, `Page Up`/`Page Down` scroll by a page,
-`Ctrl+Page Up`/`Ctrl+Page Down` changes tabs, and `Home`/`End` jumps through the
-VF curve. Every mouse operation has a keyboard path.
-
-`--dump` and `--json` describe the selected saved profile. Use `--dump-live` or
-`--json-live` when diagnosing or calculating from the daemon's current absolute
-VF state: every populated point includes its index, voltage, base MHz, live MHz,
-offset, staged target MHz, and the rule producing that target.
-
-The daemon socket is restricted to `root` and the `greencurve` group
-(`0660 root:greencurve`). To use the TUI or CLI without `sudo`, add your account
-after installation, then start a new group session:
-
-```bash
-sudo usermod -aG greencurve "$USER"
-# sign out and back in, or run: newgrp greencurve
-```
-
-Existing group membership normally survives an upgrade. Verify it in the same
-session that launches Green Curve with `id -nG | tr ' ' '\n' | grep -x
-greencurve`. Run the TUI/CLI as your normal account, not with `sudo`; if the
-new membership is not visible, sign out and back in (preferred) or enter a
-`newgrp greencurve` shell first. Connection errors now include the socket's
-actual owner/mode and whether the current process has the supplementary group.
-
-The TUI distinguishes an offline daemon from an online but GPU-degraded daemon.
-If VF data is degraded, it shows the typed driver/binding/read failure instead
-of waiting indefinitely. Fresh independent NVML controls may remain available,
-but VF or mixed requests and full Reset stay blocked until the complete VF
-snapshot recovers. For a report, include `greencurve --probe`,
-`greencurve --json-live`, `systemctl status greencurve.service`,
-`journalctl -u greencurve.service -b`, and
-`stat /run/greencurve/greencurve.sock` output. The probe report records the socket
-pathname's numeric owner/group/mode and both the in-process and daemon-published
-binding health.
-
-The Linux VF write path is validated on real NVIDIA hardware; the apply pipeline
-verifies each write by reading the curve back. Run `--probe` first to confirm
-the driver libraries and the GPU family are detected.
-
-Linux hardware writes are transactional. The daemon journals a checksummed,
-versioned record before mutation, publishes it as active only after verified
-success, and attempts rollback on any phase or persistence failure. Corrupt,
-legacy, prepared, uncertain, or mismatched-GPU state is never replayed at
-startup. On a multi-GPU system an exact PCI BDF selection is mandatory; stale,
-missing, duplicate, or cross-API-mismatched identities allow telemetry but block
-writes until the user selects a GPU explicitly.
+That JSON file is the artifact to use when validating or adding fallback support for a new NVIDIA GPU family.
 
 ## Safety warning
 
@@ -448,7 +421,7 @@ For managed/multi-user PCs, an admin can require that **standard (non-admin) use
 
 ## Privacy & Data Handling
 
-- Green Curve has **no telemetry, analytics, cloud sync, or remote logging**. The only network feature is the optional update check described under [Updates](#updates), and it is off until you turn it on. When it is on, Green Curve requests two small files from `github.com` on a schedule (daily by default); GitHub sees your IP address, and the request reveals the version and CPU architecture you run. Nothing about your GPU, your settings or your profiles is sent, and there is no account, identifier or cookie involved.
+- Green Curve has **no telemetry, analytics, cloud sync, or remote logging**. The only network feature is the optional update check described under [Updates](#updates). On first interactive launch, Green Curve asks whether you want automatic checking enabled; you can also toggle it at any time under *Updates*. When enabled, Green Curve requests two small files from `github.com` on a schedule (daily by default); GitHub sees your IP address, and the request reveals the version and CPU architecture you run. Nothing about your GPU, your settings or your profiles is sent, and there is no account, identifier or cookie involved.
 - Debug logs are written locally to `%LOCALAPPDATA%\Green Curve\greencurve_debug.txt` on Windows. On Linux the client and TUI write owner-only `greencurve_debug.txt` next to `config.ini` (the binary's own folder by default), and the root daemon writes it into `/var/lib/greencurve/` because systemd mounts `/usr` read-only for the unit. Log files are size-capped and rotated automatically (one previous generation is kept as `.1`). Logging is on by default and is turned off with `[debug] enabled=0` in `config.ini` or `GREEN_CURVE_DEBUG=0`; the log records GPU identifiers, config path fingerprints and applied settings, so review it before sharing.
 - Green Curve writes a crash *breadcrumb* (role, signal, phase, version) to the debug log and to stderr; it does not write its own dump. On Linux the actual core dump is left to the kernel's `core_pattern`, which on most distributions means `systemd-coredump` (`coredumpctl list greencurve`). Windows additionally writes `greencurve_crash_*.dmp` minidumps next to the binary.
 - Probe reports (`--probe --probe-output`) are written only to a local file you specify. They contain GPU identifiers, driver capabilities, VF-curve samples, and diagnostic host/session data such as `uname` and `id`; review and redact usernames, hostnames, or unique hardware identifiers before sharing publicly.
@@ -461,7 +434,7 @@ For managed/multi-user PCs, an admin can require that **standard (non-admin) use
 
 ## Release readiness notes
 
-- Built for local Windows use on systems with an installed NVIDIA driver
+- Built for local Windows and Linux systems with an installed NVIDIA driver
 - A dedicated Windows background service binary is now shipped; no network-facing service or kernel component is shipped
 - Hardware behavior can still vary by board vendor, VBIOS, cooling design, and driver version
 - Long-running custom fan control now reasserts manual fan settings periodically and falls back to driver auto fan after repeated NVML failures
