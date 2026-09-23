@@ -403,31 +403,217 @@ static inline bool validate_service_state_envelope_for_ipc(
     return true;
 }
 
-// True when a response carries no state payload whatsoever.
-//
-// A refusal issued before the caller cleared the session/PID/integrity gates
-// deliberately publishes nothing: the pipe ACL admits every local user, and
-// only an authorized caller receives authoritative state.  That is a complete,
-// well-formed answer, so it is checked as "all four payload members are still
-// zero" -- byte-exact, so a half-populated envelope can never slip through as
-// "absent".
-static inline bool service_wire_block_is_zero(const void* block, size_t size) {
-    const unsigned char* bytes = (const unsigned char*)block;
-    for (size_t i = 0; i < size; ++i)
-        if (bytes[i] != 0) return false;
+// Check arrays of scalar wire fields without inspecting the padding between
+// fields in their enclosing structures. Padding is not part of the payload's
+// meaning and may be indeterminate after ordinary C++ member initialization.
+template <typename T, size_t N>
+static inline bool service_scalar_array_is_zero(const T (&values)[N]) {
+    for (size_t i = 0; i < N; ++i)
+        if (values[i] != 0) return false;
     return true;
 }
 
+#define GC_SERVICE_PROTOCOL_REQUIRE_ZERO(value) \
+    do { if ((value) != 0) return false; } while (0)
+
+static inline bool service_fan_curve_config_is_zero(
+    const FanCurveConfig& curve) {
+    for (size_t i = 0; i < FAN_CURVE_MAX_POINTS; ++i) {
+        if (curve.points[i].enabled != 0 ||
+            curve.points[i].temperatureC != 0 ||
+            curve.points[i].fanPercent != 0) return false;
+    }
+    return curve.pollIntervalMs == 0 && curve.hysteresisC == 0 &&
+        curve.zeroRpmEnabled == 0 && curve.zeroRpmHysteresisC == 0 &&
+        service_scalar_array_is_zero(curve.zeroRpmReserved);
+}
+
+static inline bool service_gpu_adapter_info_is_zero(
+    const GpuAdapterInfo& adapter) {
+    return adapter.valid == 0 && adapter.pciInfoValid == 0 &&
+        adapter.vfReadSupported == 0 && adapter.vfWriteSupported == 0 &&
+        adapter.vfBestGuess == 0 && adapter.nvapiIndex == 0 &&
+        adapter.nvmlIndex == 0 && adapter.deviceId == 0 &&
+        adapter.subSystemId == 0 && adapter.pciRevisionId == 0 &&
+        adapter.extDeviceId == 0 && adapter.pciDomain == 0 &&
+        adapter.pciBus == 0 && adapter.pciDevice == 0 &&
+        adapter.pciFunction == 0 && adapter.family == 0 &&
+        service_scalar_array_is_zero(adapter.name);
+}
+
+static inline bool service_desired_settings_is_zero(
+    const DesiredSettings& desired) {
+    if (!service_scalar_array_is_zero(desired.hasCurvePoint) ||
+        !service_scalar_array_is_zero(desired.curvePointMHz) ||
+        !service_scalar_array_is_zero(desired.curvePointFromGpuOffset))
+        return false;
+    return desired.hasLock == 0 && desired.lockCi == 0 &&
+        desired.lockMHz == 0 && desired.lockMode == 0 &&
+        desired.lockTracksAnchor == 0 && desired.hasGpuOffset == 0 &&
+        desired.gpuOffsetMHz == 0 && desired.gpuOffsetExcludeLowCount == 0 &&
+        desired.hasMemOffset == 0 && desired.memOffsetMHz == 0 &&
+        desired.hasPowerLimit == 0 && desired.powerLimitPct == 0 &&
+        desired.hasFan == 0 && desired.fanAuto == 0 && desired.fanMode == 0 &&
+        desired.fanPercent == 0 &&
+        service_fan_curve_config_is_zero(desired.fanCurve) &&
+        desired.resetOcBeforeApply == 0 &&
+        desired.hasXbarOffsetKhz == 0 && desired.xbarOffsetKhz == 0 &&
+        desired.hasXbarMsvddOffsetUv == 0 &&
+        desired.xbarMsvddOffsetUv == 0 &&
+        desired.hasSysClkOffsetKhz == 0 && desired.sysClkOffsetKhz == 0 &&
+        desired.hasVideoClkOffsetKhz == 0 &&
+        desired.videoClkOffsetKhz == 0;
+}
+
+static inline bool service_control_state_is_zero(const ControlState& controls) {
+    return controls.valid == 0 && controls.hasGpuOffset == 0 &&
+        controls.gpuOffsetReadbackValid == 0 && controls.gpuOffsetMHz == 0 &&
+        controls.gpuOffsetExcludeLowCount == 0 &&
+        controls.hasMemOffset == 0 && controls.memOffsetReadbackValid == 0 &&
+        controls.memOffsetMHz == 0 && controls.hasPowerLimit == 0 &&
+        controls.powerLimitReadbackValid == 0 && controls.powerLimitPct == 0 &&
+        controls.hasFan == 0 && controls.fanPolicyReadbackValid == 0 &&
+        controls.fanTargetReadbackValid == 0 && controls.fanMode == 0 &&
+        controls.fanFixedPercent == 0 && controls.fanCurrentPercent == 0 &&
+        controls.fanCurrentTemperatureC == 0 &&
+        service_fan_curve_config_is_zero(controls.fanCurve) &&
+        controls.hasXbarOffset == 0 && controls.xbarOffsetReadbackValid == 0 &&
+        controls.xbarOffsetKhz == 0 && controls.hasXbarMsvddOffset == 0 &&
+        controls.xbarMsvddOffsetReadbackValid == 0 &&
+        controls.xbarMsvddOffsetUv == 0 && controls.hasSysClkOffset == 0 &&
+        controls.sysClkOffsetReadbackValid == 0 && controls.sysClkOffsetKhz == 0 &&
+        controls.hasVideoClkOffset == 0 &&
+        controls.videoClkOffsetReadbackValid == 0 &&
+        controls.videoClkOffsetKhz == 0;
+}
+
+static inline bool service_gpu_health_is_zero(const ServiceGpuHealth& health) {
+    return health.reason == 0 && health.driverStatus == 0 &&
+        health.architectureSource == 0 &&
+        health.availableMutationDomains == 0 &&
+        health.vfSnapshotFresh == 0 && health.recoveryAttempted == 0 &&
+        health.recoverySucceeded == 0 && health.capabilityMemoryTopology == 0 &&
+        health.capabilityDomainsPacked == 0 &&
+        service_scalar_array_is_zero(health.detail);
+}
+
+static inline bool service_snapshot_is_zero(const ServiceSnapshot& snapshot) {
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.initialized);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.loaded);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.fanSupported);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.fanRangeKnown);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.fanIsAuto);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.fanCurveRuntimeActive);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.fanFixedRuntimeActive);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.gpuOffsetRangeKnown);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.memOffsetRangeKnown);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.curveOffsetRangeKnown);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.gpuTemperatureValid);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.vfReadSupported);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.vfWriteSupported);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.vfBestGuess);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.hasLock);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.lockCi);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.lockMHz);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.lockMode);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.lockTracksAnchor);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.adapterCount);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.selectedAdapterIndex);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.selectedAdapterOrdinalFallback);
+    for (size_t i = 0; i < MAX_GPU_ADAPTERS; ++i)
+        if (!service_gpu_adapter_info_is_zero(snapshot.adapters[i])) return false;
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.gpuFamily);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.numPopulated);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.gpuClockOffsetkHz);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.memClockOffsetkHz);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.gpuClockOffsetMinMHz);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.gpuClockOffsetMaxMHz);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.memOffsetMinMHz);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.memOffsetMaxMHz);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.curveOffsetMinkHz);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.curveOffsetMaxkHz);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.powerLimitPct);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.powerLimitDefaultmW);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.powerLimitCurrentmW);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.powerLimitMinmW);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.powerLimitMaxmW);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.appliedGpuOffsetMHz);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.appliedGpuOffsetExcludeLowCount);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.lastApplyUsedGpuOffset);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.activeFanMode);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.activeFanFixedPercent);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.gpuTemperatureC);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.fanCount);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.fanMinPct);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.fanMaxPct);
+    if (!service_scalar_array_is_zero(snapshot.fanPercent) ||
+        !service_scalar_array_is_zero(snapshot.fanTargetPercent) ||
+        !service_scalar_array_is_zero(snapshot.fanRpm) ||
+        !service_scalar_array_is_zero(snapshot.fanPolicy) ||
+        !service_scalar_array_is_zero(snapshot.fanControlSignal) ||
+        !service_scalar_array_is_zero(snapshot.fanTargetMask)) return false;
+    for (size_t i = 0; i < VF_NUM_POINTS; ++i) {
+        if (snapshot.curve[i].freq_kHz != 0 ||
+            snapshot.curve[i].volt_uV != 0 || snapshot.freqOffsets[i] != 0)
+            return false;
+    }
+    if (!service_fan_curve_config_is_zero(snapshot.activeFanCurve) ||
+        !service_scalar_array_is_zero(snapshot.gpuName) ||
+        !service_scalar_array_is_zero(snapshot.ownerUser)) return false;
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.ownerSessionId);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.ownerUtcMs);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.serviceInRecovery);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.lastRecoveryTickMs);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.serviceReapplyInProgress);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.activeProfileSource);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.activeProfileSlot);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.lastLifecycleTrigger);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.lastLifecycleResult);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.autoRestoreLockoutReason);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.xbarSupported);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.xbarOffsetReadbackValid);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.xbarOffsetKhz);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.xbarMsvddOffsetReadbackValid);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.xbarMsvddOffsetUv);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.xbarMeasuredClockKhz);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.xbarMeasuredVoltageUv);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.sysClkSupported);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.sysClkOffsetReadbackValid);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.sysClkOffsetKhz);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.sysClkMeasuredClockKhz);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.videoClkSupported);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.videoClkOffsetReadbackValid);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.videoClkOffsetKhz);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.videoClkMeasuredClockKhz);
+    return service_gpu_health_is_zero(snapshot.health);
+}
+
+static inline bool service_state_envelope_is_zero(
+    const ServiceStateEnvelope& state) {
+    return state.serviceInstanceId == 0 && state.stateRevision == 0 &&
+        state.gpuGeneration == 0 && state.topologySignature == 0 &&
+        state.gpuPhase == 0 && state.validSections == 0 &&
+        state.startupPolicyMode == 0 && state.startupPolicySlot == 0 &&
+        state.activeDesiredValid == 0 &&
+        service_scalar_array_is_zero(state.reservedBool);
+}
+
+#undef GC_SERVICE_PROTOCOL_REQUIRE_ZERO
+
+// A refusal issued before the caller cleared the session/PID/integrity gates
+// deliberately publishes no state: the pipe ACL admits every local user, and
+// only an authorized caller receives authoritative state. Check every declared
+// state field and reserved byte; compiler padding carries no payload meaning.
 static inline bool service_response_payload_is_absent(
     const ServiceResponse* r) {
     return r &&
-        service_wire_block_is_zero(&r->state, sizeof(r->state)) &&
-        service_wire_block_is_zero(&r->snapshot, sizeof(r->snapshot)) &&
-        service_wire_block_is_zero(&r->desired, sizeof(r->desired)) &&
-        service_wire_block_is_zero(&r->controlState, sizeof(r->controlState)) &&
-        service_wire_block_is_zero(&r->startupProfile,
-            sizeof(r->startupProfile)) &&
-        r->startupProfileValid == 0;
+        service_state_envelope_is_zero(r->state) &&
+        service_snapshot_is_zero(r->snapshot) &&
+        service_desired_settings_is_zero(r->desired) &&
+        service_control_state_is_zero(r->controlState) &&
+        service_desired_settings_is_zero(r->startupProfile) &&
+        r->startupProfileValid == 0 &&
+        service_scalar_array_is_zero(r->startupProfileReserved);
 }
 
 static inline bool validate_service_update_state_for_ipc(ServiceUpdateState* update) {
@@ -469,8 +655,7 @@ static inline bool service_response_startup_profile_is_coherent(
     for (unsigned int i = 0; i < sizeof(r->startupProfileReserved); ++i)
         if (r->startupProfileReserved[i] != 0) return false;
     if (!r->startupProfileValid)
-        return service_wire_block_is_zero(&r->startupProfile,
-            sizeof(r->startupProfile));
+        return service_desired_settings_is_zero(r->startupProfile);
     return r->state.startupPolicyMode == SERVICE_STARTUP_POLICY_PROFILE &&
         r->state.startupPolicySlot != 0 &&
         service_desired_bool_fields_valid(&r->startupProfile);

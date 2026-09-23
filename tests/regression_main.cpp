@@ -841,7 +841,7 @@ static int run_installer_move_cleanup_tests() {
 // number.  Report the true code on stderr and map any failure to a single
 // non-aliasing status so a Linux run is never misread.
 static int run_all_tests(int argc, char** argv);
-static int run_all_tests_middle(char** argv);
+static int run_all_tests_middle([[maybe_unused]] char** argv);
 static int run_all_tests_final();
 
 int run_clock_transition_tests();
@@ -1083,6 +1083,83 @@ static int run_persistence_schema_tests() {
     if (widenedFromSchema1.curvePointFromGpuOffset[70]) return 5056;
     if (widenedFromSchema1.lockCi != 74 || widenedFromSchema1.lockMHz != 2900 ||
         widenedFromSchema1.lockMode != LOCK_MODE_HARD) return 5057;
+    return 0;
+}
+
+// Keep the larger wire-response fixtures out of run_all_tests_middle's frame;
+// ASan redzones compound that already-large suite with its delegated frames.
+static int run_service_stateless_refusal_tests() {
+    ServiceResponse refusal = {};
+    refusal.magic = SERVICE_PROTOCOL_MAGIC;
+    refusal.version = SERVICE_PROTOCOL_VERSION;
+    refusal.status = SERVICE_STATUS_ERROR;
+    // Stamped exactly as the producers stamp it: a payload-free refusal is
+    // still a response, so the severity rule covers it too.
+    refusal.outcomeSeverity = SERVICE_OUTCOME_SEVERITY_ERROR;
+    refusal.serviceBuildNumber = 470;
+    gc_strlcpy(refusal.serviceVersion, sizeof(refusal.serviceVersion), "0.21");
+    gc_strlcpy(refusal.message, sizeof(refusal.message),
+        "Service request contains invalid protocol fields");
+    if (!service_response_payload_is_absent(&refusal)) return 2017;
+    if (!validate_service_response_for_ipc(&refusal)) return 2017;
+    // The shortcut that lets a stateless refusal through does not skip the
+    // severity rule: a refusal claiming a clean outcome is damaged.
+    ServiceResponse cleanRefusal = refusal;
+    cleanRefusal.outcomeSeverity = SERVICE_OUTCOME_SEVERITY_SUCCESS;
+    if (validate_service_response_for_ipc(&cleanRefusal)) return 2017;
+
+    // Success may never be stateless: an OK answer that publishes nothing
+    // would let a client read stock values as the service's own state.
+    ServiceResponse statelessOk = refusal;
+    statelessOk.status = SERVICE_STATUS_OK;
+    statelessOk.outcomeSeverity = SERVICE_OUTCOME_SEVERITY_SUCCESS;
+    if (validate_service_response_for_ipc(&statelessOk)) return 2018;
+
+    // A half-populated envelope is a damaged refusal.
+    ServiceResponse halfEnvelope = refusal;
+    halfEnvelope.state.serviceInstanceId = 99;
+    if (service_response_payload_is_absent(&halfEnvelope)) return 2019;
+    if (validate_service_response_for_ipc(&halfEnvelope)) return 2019;
+    ServiceResponse straySnapshot = refusal;
+    straySnapshot.snapshot.adapterCount = 1;
+    if (service_response_payload_is_absent(&straySnapshot)) return 2019;
+    if (validate_service_response_for_ipc(&straySnapshot)) return 2019;
+    ServiceResponse strayControls = refusal;
+    strayControls.controlState.valid = 1;
+    if (service_response_payload_is_absent(&strayControls)) return 2019;
+    ServiceResponse strayDesired = refusal;
+    strayDesired.desired.hasPowerLimit = 1;
+    if (service_response_payload_is_absent(&strayDesired)) return 2019;
+    ServiceResponse strayStartupProfile = refusal;
+    strayStartupProfile.startupProfile.hasPowerLimit = 1;
+    if (service_response_payload_is_absent(&strayStartupProfile)) return 2019;
+    ServiceResponse strayStartupReserved = refusal;
+    strayStartupReserved.startupProfileReserved[0] = 1;
+    if (service_response_payload_is_absent(&strayStartupReserved)) return 2019;
+
+    // The wire contract is about fields, not ABI padding. Poison the alignment
+    // gap before lockCi while keeping every snapshot field zero.
+    ServiceResponse paddingOnlyRefusal = refusal;
+    const size_t paddingBegin = offsetof(ServiceSnapshot, hasLock) +
+        sizeof(paddingOnlyRefusal.snapshot.hasLock);
+    const size_t paddingEnd = offsetof(ServiceSnapshot, lockCi);
+    if (paddingBegin >= paddingEnd) return 2021;
+    memset(reinterpret_cast<unsigned char*>(&paddingOnlyRefusal.snapshot) +
+               paddingBegin, 0xA5, paddingEnd - paddingBegin);
+    if (!service_response_payload_is_absent(&paddingOnlyRefusal) ||
+        !validate_service_response_for_ipc(&paddingOnlyRefusal)) return 2021;
+
+    // A well-formed answer that carries state is unaffected, and the header
+    // rules still apply to a stateless refusal.
+    ServiceResponse ok = fake_ready_service_response(12, 3, 1);
+    if (service_response_payload_is_absent(&ok)) return 2020;
+    if (!validate_service_response_for_ipc(&ok)) return 2020;
+    ServiceResponse wrongVersion = refusal;
+    wrongVersion.version = SERVICE_PROTOCOL_VERSION + 1;
+    if (validate_service_response_for_ipc(&wrongVersion)) return 2020;
+    ServiceResponse unterminated = refusal;
+    memset(unterminated.message, 'x', sizeof(unterminated.message));
+    if (validate_service_response_for_ipc(&unterminated)) return 2020;
     return 0;
 }
 
@@ -1420,6 +1497,9 @@ static int run_all_tests(int argc, char** argv) {
     }
 
     InitializeCriticalSection(&g_configLock);
+
+    if (int responseFailure = run_service_stateless_refusal_tests())
+        return responseFailure;
 
     if (APP_DEBUG_DEFAULT_ENABLED != 1) return 20;
 
@@ -8478,7 +8558,7 @@ static int run_all_tests(int argc, char** argv) {
     return run_all_tests_middle(argv);
 }
 
-static int run_all_tests_middle(char** argv) {
+static int run_all_tests_middle([[maybe_unused]] char** argv) {
 
     // =====================================================================
     // The 2026-09-16 clock-transition audit, CT-01 .. CT-08.
@@ -11959,74 +12039,6 @@ static int run_all_tests_middle(char** argv) {
         if (!service_client_stamp_mutation_preconditions(&reset, &identity))
             return 2016;
         if (!validate_service_request_for_ipc(&reset)) return 2016;
-    }
-
-    // ------------------------------------------------------------------
-    // A refusal reaches the client that caused it (2017-2020)
-    //
-    // The service answers a request it rejects before authorization with a
-    // message and no state at all — the pipe ACL admits every local user, so
-    // only an authorized caller receives authoritative state. The client
-    // validator treated that missing envelope as a damaged response, discarded
-    // the message, and reported a transport failure instead; the mutation path
-    // then queried the operation and announced "still pending or unknown".
-    // Every protocol and authorization refusal was undiagnosable because of it.
-    // ------------------------------------------------------------------
-    {
-        ServiceResponse refusal = {};
-        refusal.magic = SERVICE_PROTOCOL_MAGIC;
-        refusal.version = SERVICE_PROTOCOL_VERSION;
-        refusal.status = SERVICE_STATUS_ERROR;
-        // Stamped exactly as the producers stamp it: a payload-free refusal is
-        // still a response, so the severity rule covers it too.
-        refusal.outcomeSeverity = SERVICE_OUTCOME_SEVERITY_ERROR;
-        refusal.serviceBuildNumber = 470;
-        gc_strlcpy(refusal.serviceVersion, sizeof(refusal.serviceVersion), "0.21");
-        gc_strlcpy(refusal.message, sizeof(refusal.message),
-            "Service request contains invalid protocol fields");
-        if (!service_response_payload_is_absent(&refusal)) return 2017;
-        if (!validate_service_response_for_ipc(&refusal)) return 2017;
-        // The shortcut that lets a stateless refusal through does not skip the
-        // severity rule: a refusal claiming a clean outcome is damaged.
-        ServiceResponse cleanRefusal = refusal;
-        cleanRefusal.outcomeSeverity = SERVICE_OUTCOME_SEVERITY_SUCCESS;
-        if (validate_service_response_for_ipc(&cleanRefusal)) return 2017;
-
-        // Success may never be stateless: an OK answer that publishes nothing
-        // would let a client read stock values as the service's own state.
-        ServiceResponse statelessOk = refusal;
-        statelessOk.status = SERVICE_STATUS_OK;
-        statelessOk.outcomeSeverity = SERVICE_OUTCOME_SEVERITY_SUCCESS;
-        if (validate_service_response_for_ipc(&statelessOk)) return 2018;
-
-        // "Absent" means the whole payload, not merely a plausible-looking
-        // header: a half-populated envelope is still a damaged response.
-        ServiceResponse halfEnvelope = refusal;
-        halfEnvelope.state.serviceInstanceId = 99;
-        if (service_response_payload_is_absent(&halfEnvelope)) return 2019;
-        if (validate_service_response_for_ipc(&halfEnvelope)) return 2019;
-        ServiceResponse straySnapshot = refusal;
-        straySnapshot.snapshot.adapterCount = 1;
-        if (service_response_payload_is_absent(&straySnapshot)) return 2019;
-        if (validate_service_response_for_ipc(&straySnapshot)) return 2019;
-        ServiceResponse strayControls = refusal;
-        strayControls.controlState.valid = 1;
-        if (service_response_payload_is_absent(&strayControls)) return 2019;
-        ServiceResponse strayDesired = refusal;
-        strayDesired.desired.hasPowerLimit = 1;
-        if (service_response_payload_is_absent(&strayDesired)) return 2019;
-
-        // A well-formed answer that does carry state is unaffected, and the
-        // header rules still apply to a stateless refusal.
-        ServiceResponse ok = fake_ready_service_response(12, 3, 1);
-        if (service_response_payload_is_absent(&ok)) return 2020;
-        if (!validate_service_response_for_ipc(&ok)) return 2020;
-        ServiceResponse wrongVersion = refusal;
-        wrongVersion.version = SERVICE_PROTOCOL_VERSION + 1;
-        if (validate_service_response_for_ipc(&wrongVersion)) return 2020;
-        ServiceResponse unterminated = refusal;
-        memset(unterminated.message, 'x', sizeof(unterminated.message));
-        if (validate_service_response_for_ipc(&unterminated)) return 2020;
     }
 
     // ------------------------------------------------------------------
