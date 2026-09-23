@@ -138,6 +138,9 @@ static bool restore_committed_record(bool hadPrevious, const GpuAdapterInfo* pre
                                previousDesired, err, sizeof(err));
 }
 
+// The fan ownership marker and once-per-crash startup handback.  Before the
+// unattended-write path below, which records ownership through it.
+#include "linux_fan_ownership.h"
 #include "linux_daemon_snapshot_runtime.cpp"
 // The single unattended-write path, shared by both boot-apply modes and the
 // standby-resume restore.  Needs store_daemon_record(), populate_snapshot(),
@@ -304,6 +307,8 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
             LinuxHardwareSnapshot before = {};
             char stateErr[256] = {};
             if (!linux_backend_capture_snapshot(&g_gpu, &before, stateErr, sizeof(stateErr)) ||
+                !daemon_fan_ownership_ensure_before_write(&committedDesired,
+                                                          stateErr, sizeof(stateErr)) ||
                 !store_daemon_record(LINUX_DAEMON_RECORD_PREPARED, &g_gpu.selectedGpu,
                                      &committedDesired, stateErr, sizeof(stateErr),
                                      req->operationId, SERVICE_OPERATION_IN_PROGRESS)) {
@@ -353,6 +358,9 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 g_hasActiveDesired = true;
                 g_stateUncertain = false;
                 g_fanFailureCount = 0;
+                if (g_fanOwnershipMarkerCommitted &&
+                    !daemon_desired_takes_manual_fan(&committedDesired))
+                    daemon_fan_ownership_retire("committed intent leaves the fan to the driver");
                 char guardErr[256] = {};
                 if (!auto_restore_note_explicit_success("apply", guardErr,
                                                         sizeof(guardErr))) {
@@ -433,6 +441,8 @@ static void handle_request(const ServiceRequest* wireReq, ServiceResponse* resp)
                 memset(&g_activeTarget, 0, sizeof(g_activeTarget));
                 g_stateUncertain = false;
                 g_fanFailureCount = 0;
+                // Reset returned the fan to the driver: nothing to hand back.
+                daemon_fan_ownership_retire("reset committed");
                 char guardErr[256] = {};
                 if (!auto_restore_note_explicit_success("reset", guardErr,
                                                         sizeof(guardErr))) {
@@ -539,6 +549,11 @@ int linux_daemon_run(const char* configPath) {
                 ? "operation outcome became uncertain across daemon restart"
                 : operation.message);
     }
+
+    // Before any startup write and before the fan worker exists: a previous
+    // daemon in this boot that died with the fan under manual control gets it
+    // handed back to the driver, once (linux_fan_ownership.h).
+    daemon_fan_ownership_handback_at_start();
 
     load_auto_restore_guard_at_boot();
     load_startup_policy_at_boot();

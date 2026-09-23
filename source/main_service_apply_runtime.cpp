@@ -6,6 +6,14 @@
 #include "gpu_backend_xbar.h"
 #include "desired_advanced_domains_policy.h"
 
+// Ownership marker + once-per-crash handback, defined later in
+// main_service_ownership_handback.cpp (ownership_handback_policy.h).
+static bool service_ownership_marker_ensure_before_write();
+static bool service_ownership_marker_clear(const char* reason);
+static bool service_ownership_handback_before_write_locked(const char* origin,
+    char* result, size_t resultSize);
+static void service_ownership_handback_superseded_by_reset_locked();
+
 static bool service_desired_has_owned_intent(const DesiredSettings* desired) {
     if (!desired) return false;
     if (desired->hasLock || desired->hasGpuOffset || desired->hasMemOffset ||
@@ -54,6 +62,15 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
     if (!hardware_initialize(detail, sizeof(detail))) {
         set_message(result, resultSize, "%s", detail[0] ? detail : "Hardware initialization failed");
         set_last_apply_phase("service apply: hardware initialize failed");
+        return false;
+    }
+    // A previous instance that died owning GPU state gets it handed back
+    // before anything is layered over it (ownership_handback_policy.h).
+    set_last_apply_phase("service apply: ownership handback");
+    if (!service_ownership_handback_before_write_locked("before apply",
+            result, resultSize)) {
+        if (writeAttemptedOut) *writeAttemptedOut = true;
+        set_last_apply_phase("service apply: ownership handback failed");
         return false;
     }
     int requestedCurvePoints = 0;
@@ -206,9 +223,16 @@ static bool service_reset_all(char* result, size_t resultSize,
         set_message(result, resultSize, "%s", detail[0] ? detail : "Hardware initialization failed");
         return false;
     }
+    // A Reset returns everything a pending ownership handback would.
+    service_ownership_handback_superseded_by_reset_locked();
     if (!service_invalidate_oc_apply_proof_before_write()) {
         set_message(result, resultSize,
             "Could not invalidate the previous stability proof; no reset write was attempted");
+        return false;
+    }
+    if (!service_ownership_marker_ensure_before_write()) {
+        set_message(result, resultSize,
+            "Could not record GPU ownership before the write; no reset write was attempted");
         return false;
     }
     if (hardwareWriteAttemptedOut) *hardwareWriteAttemptedOut = true;
@@ -493,6 +517,9 @@ static bool service_reset_all(char* result, size_t resultSize,
         g_app.appliedGpuOffsetExcludeLowCount = 0;
         InterlockedExchange(&g_serviceReapplyInProgress, 0);
         service_clear_restart_reapply_snapshot();
+        // The GPU is at stock and the fan is the driver's: nothing Green Curve
+        // owns remains for a later start to hand back.
+        service_ownership_marker_clear("reset to stock succeeded");
         clear_service_authoritative_state();
         populate_control_state(&g_serviceControlState);
         g_serviceControlStateValid = true;

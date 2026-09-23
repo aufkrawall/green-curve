@@ -192,11 +192,19 @@ static int daemon_serve_until_stopped(int srv) {
 // Call only after the fan worker is joined, so the two cannot race.
 static void daemon_release_fan_to_driver() {
     if (!(g_gpuReady && g_hasActiveDesired && g_activeDesired.hasFan &&
-          g_activeDesired.fanMode != FAN_MODE_AUTO))
+          g_activeDesired.fanMode != FAN_MODE_AUTO)) {
+        // Nothing manual is held.  A marker left from a handback that could
+        // not run yet (GPU not ready) is kept for the next start in this boot.
+        if (g_fanOwnershipMarkerCommitted)
+            daemon_fan_ownership_retire("clean stop with no manual fan held");
         return;
+    }
     bool autoOk = linux_backend_set_fan_auto(&g_gpu);
     dlog("daemon: shutdown fan handback: driver auto restore ok=%d\n",
          autoOk ? 1 : 0);
+    // Only a confirmed handback retires the marker; a forced emergency duty is
+    // still a manual fan the next start should return.
+    if (autoOk) daemon_fan_ownership_retire("shutdown fan handback");
     if (fan_runtime_escalation_after_auto_restore(autoOk) ==
             FAN_RUNTIME_ESCALATION_EMERGENCY_MAX) {
         bool emergencyOk = linux_backend_set_curve_fan_percent(

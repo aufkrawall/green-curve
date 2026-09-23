@@ -33,6 +33,11 @@
 // thing standing between a setting that hangs the driver and an endless
 // crash / systemd-restart / replay loop.
 #define GC_DAEMON_GUARD_FILE "/var/lib/greencurve/restore-guard.bin"
+// Present while this daemon may have left the fan under manual control that
+// only its own runtime maintains.  Found at start in the same boot, it means
+// the previous daemon died without handing the fan back
+// (ownership_handback_policy.h).
+#define GC_DAEMON_FAN_MARKER_FILE "/var/lib/greencurve/fan-owned.bin"
 
 // Pending-connection backlog.  Requests are serviced one at a time under the
 // runtime lock, so this only has to absorb bursts while one request is in

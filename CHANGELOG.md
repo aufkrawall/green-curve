@@ -56,6 +56,7 @@ Setup now accepts install folders beyond Program Files.
 - **Slow applies under load no longer end as "outcome unknown".**
 - **Reset no longer claims success while a clock lock may remain.**
 - **More driver-update crashes are now recovered**, including on Windows on Arm.
+- **A crashed or killed background service no longer leaves a custom fan curve frozen.** The fan returns to driver control, and on Windows the GPU returns to stock.
 
 ### Compatibility notes
 

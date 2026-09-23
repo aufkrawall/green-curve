@@ -520,3 +520,50 @@ bool linux_daemon_operation_load(const char* path,
     if (record) *record = loaded;
     return true;
 }
+
+bool linux_fan_ownership_marker_store(const char* path,
+                                      const LinuxFanOwnershipMarker* marker,
+                                      char* err, size_t errSize) {
+    if (err && errSize) err[0] = 0;
+    if (!linux_fan_ownership_marker_valid(marker)) {
+        gc_strlcpy(err, errSize, "refusing invalid fan ownership marker");
+        return false;
+    }
+    return store_record_atomic(path, marker, sizeof(*marker),
+                               "fan ownership marker", err, errSize);
+}
+
+int linux_fan_ownership_marker_load(const char* path,
+                                    LinuxFanOwnershipMarker* marker,
+                                    char* err, size_t errSize) {
+    if (err && errSize) err[0] = 0;
+    if (marker) memset(marker, 0, sizeof(*marker));
+    char name[256] = {};
+    int dirfd = open_state_directory(path, name, sizeof(name), err, errSize);
+    if (dirfd < 0) return -1;
+    int fd = openat(dirfd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) {
+        int saved = errno;
+        close(dirfd);
+        if (saved == ENOENT) return 0;
+        gc_snprintf(err, errSize, "cannot open fan ownership marker: %s",
+                    strerror(saved));
+        return -1;
+    }
+    LinuxFanOwnershipMarker loaded = {};
+    struct stat status = {};
+    bool ok = fstat(fd, &status) == 0 && S_ISREG(status.st_mode) &&
+        status.st_uid == 0 && status.st_nlink == 1 &&
+        (status.st_mode & 0077) == 0 &&
+        status.st_size == (off_t)sizeof(loaded) &&
+        read(fd, &loaded, sizeof(loaded)) == (ssize_t)sizeof(loaded) &&
+        linux_fan_ownership_marker_valid(&loaded);
+    close(fd);
+    close(dirfd);
+    if (!ok) {
+        gc_strlcpy(err, errSize, "fan ownership marker is invalid");
+        return -1;
+    }
+    if (marker) *marker = loaded;
+    return 1;
+}

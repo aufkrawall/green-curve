@@ -8,6 +8,7 @@
 #include <string.h>
 #include "gpu_core.h"
 #include "linux_auto_restore_policy.h"
+#include "ownership_handback_policy.h"
 
 enum LinuxDaemonRecordState : gc_u32 {
     LINUX_DAEMON_RECORD_PREPARED = 1,
@@ -630,5 +631,15 @@ bool linux_daemon_guard_store(const char* path,
 // 128-bit BootIdentifier: stable for one real boot, and unaffected by a
 // wall-clock correction.
 bool linux_read_boot_id(char* out, size_t outSize);
+
+// Fan ownership marker (ownership_handback_policy.h).  Same root-owned,
+// private, atomic store as the records above.  Load returns 0 when absent,
+// 1 for a valid marker, -1 for one that is present but unusable.
+bool linux_fan_ownership_marker_store(const char* path,
+                                      const LinuxFanOwnershipMarker* marker,
+                                      char* err, size_t errSize);
+int linux_fan_ownership_marker_load(const char* path,
+                                    LinuxFanOwnershipMarker* marker,
+                                    char* err, size_t errSize);
 
 #endif

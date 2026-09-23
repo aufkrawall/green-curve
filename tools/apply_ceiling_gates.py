@@ -488,3 +488,68 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(_p(ctx, "main_runtime_capture.cpp"),
                  "const GuiApplyShape shape = gui_apply_shape(changed);",
                  "the GUI apply shape comes from gui_apply_shape_policy.h")
+
+    # --- Once-per-crash ownership handback (ownership_handback_policy.h) -----
+    # Every rule here guards an ordering or a boundary whose loss is silent:
+    # the service still starts, and only a crash in the right window shows it.
+    handback_cpp = _p(ctx, "main_service_ownership_handback.cpp")
+    apply_runtime_cpp = _p(ctx, "main_service_apply_runtime.cpp")
+    require_text(apply_cpp, "!service_ownership_marker_ensure_before_write()) {",
+                 "the apply records GPU ownership at its pre-write boundary")
+    require_text(apply_runtime_cpp, "!service_ownership_marker_ensure_before_write()) {",
+                 "Reset records GPU ownership at its pre-write boundary")
+    require_text(apply_runtime_cpp,
+                 'service_ownership_marker_clear("reset to stock succeeded");',
+                 "only a successful reset to stock retires the ownership marker")
+    require_order_in_operation(
+        apply_runtime_cpp,
+        "static bool service_apply_desired_settings(const DesiredSettings* desired",
+        "service_ownership_handback_before_write_locked(",
+        "apply_desired_settings_service(desired, interactive,",
+        "a pending handback runs before any apply is layered over it")
+    require_order_in_operation(
+        handback_cpp,
+        "static bool service_ownership_handback_run_locked(",
+        "inFlight.handbackInFlight = 1u;",
+        "fanOk = nvml_set_fan_auto(",
+        "the handback records itself in flight before its first write (loop guard)")
+    require_order_in_operation(
+        handback_cpp,
+        "static bool service_ownership_handback_run_locked(",
+        "fanOk = nvml_set_fan_auto(",
+        "resetOk = service_reset_all(",
+        "the fan, the only state unsafe without a controller, is returned first")
+    require_text(service_host_cpp, "service_ownership_handback_prepare_at_startup(",
+                 "service startup decides the ownership handback before RUNNING")
+    require_order_in_operation(
+        _p(ctx, "main_service_logon_coordinator.cpp"),
+        "static DWORD WINAPI service_lifecycle_thread_proc(void*)",
+        "service_lifecycle_attempt_ownership_handback();",
+        "service_lifecycle_attempt_logon();",
+        "no automatic write is layered over a crashed instance's owned state")
+    linux_daemon_cpp = _p(ctx, "linux_daemon.cpp")
+    require_order_in_operation(
+        linux_daemon_cpp, "int linux_daemon_run(const char* configPath)",
+        "daemon_fan_ownership_handback_at_start();",
+        "load_startup_policy_at_boot();",
+        "the Linux fan handback runs before any startup write")
+    require_order_in_operation(
+        linux_daemon_cpp, "int linux_daemon_run(const char* configPath)",
+        "daemon_fan_ownership_handback_at_start();",
+        "pl_thread_start(&fanThread, fan_reassert_thread",
+        "the Linux fan handback runs before the fan worker exists")
+    require_text(linux_daemon_cpp,
+                 "!daemon_fan_ownership_ensure_before_write(&committedDesired,",
+                 "an explicit Linux apply records fan ownership before writing")
+    require_order_in_operation(
+        _p(ctx, "linux_auto_restore_runtime.h"),
+        "static LinuxAutoRestoreOutcome daemon_automatic_restore_write(",
+        "daemon_fan_ownership_ensure_before_write(&committed,",
+        "LinuxMutationResult mutation = linux_backend_apply(",
+        "an unattended Linux write records fan ownership before writing")
+    require_order_in_operation(
+        _p(ctx, "linux_fan_ownership.h"),
+        "static void daemon_fan_ownership_handback_at_start()",
+        "inFlight.handbackInFlight = 1u;",
+        "bool autoOk = linux_backend_set_fan_auto(&g_gpu);",
+        "the Linux handback records itself in flight before writing (loop guard)")

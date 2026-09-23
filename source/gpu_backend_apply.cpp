@@ -97,6 +97,12 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 "Could not invalidate the previous stability proof; no hardware write was attempted");
             return false;
         }
+        // Same boundary: a crash after this write must be handed back.
+        if (!service_ownership_marker_ensure_before_write()) {
+            set_message(result, resultSize,
+                "Could not record GPU ownership before the write; no hardware write was attempted");
+            return false;
+        }
         proofInvalidatedForWrite = true;
 #endif
         if (hardwareWriteAttemptedOut) *hardwareWriteAttemptedOut = true;
@@ -371,6 +377,12 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         !service_invalidate_oc_apply_proof_before_write()) {
         set_message(result, resultSize,
             "Could not invalidate the previous stability proof; no hardware write was attempted");
+        return false;
+    }
+    if (!proofInvalidatedForWrite &&
+        !service_ownership_marker_ensure_before_write()) {
+        set_message(result, resultSize,
+            "Could not record GPU ownership before the write; no hardware write was attempted");
         return false;
     }
 #endif

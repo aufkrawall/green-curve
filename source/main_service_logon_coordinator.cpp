@@ -240,6 +240,9 @@ static DWORD WINAPI service_lifecycle_thread_proc(void*) {
             InterlockedExchangeAdd(&g_serviceRestartRequested, 0) == 0 &&
             InterlockedExchangeAdd(&g_serviceRestartPreparing, 0) == 0 &&
             InterlockedExchangeAdd(&g_serviceExternalStopRequested, 0) == 0) {
+            // First: nothing automatic may be layered over state a crashed
+            // previous instance still owns.
+            service_lifecycle_attempt_ownership_handback();
             service_lifecycle_attempt_logon();
             service_lifecycle_attempt_standby_restore();
             service_lifecycle_attempt_driver_restore();

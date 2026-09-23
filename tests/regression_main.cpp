@@ -77,6 +77,7 @@
 #include "apply_correction_budget_policy.h"
 #include "gui_apply_shape_policy.h"
 #include "desired_advanced_domains_policy.h"
+#include "ownership_handback_policy.h"
 #include "gui_tray_callback_policy.h"
 #include "applied_profile_indicator_policy.h"
 #include "service_profile_identity_policy.h"
@@ -1188,8 +1189,136 @@ static int run_audit_followup_tests() {
     return 0;
 }
 
+// Once-per-crash ownership handback (5860-5899): the startup decision, the
+// per-platform scope, when a completed handback retires the marker, and both
+// on-disk marker records.
+static int run_ownership_handback_tests() {
+    const OwnershipHandbackScope full = OWNERSHIP_HANDBACK_SCOPE_FULL;
+    OwnershipHandbackInputs in = {};
+    OwnershipHandbackPlan plan = ownership_handback_plan(in, full);
+    // A clean previous stop leaves no marker: nothing to do, nothing to delete.
+    if (plan.verdict != OWNERSHIP_HANDBACK_NO_MARKER || plan.deleteMarker) return 5860;
+
+    in.markerPresent = true;
+    plan = ownership_handback_plan(in, full);
+    // Corrupt marker: unproven is never authorization to write.
+    if (plan.verdict != OWNERSHIP_HANDBACK_DISCARD_UNPROVEN || !plan.deleteMarker ||
+        plan.scope != OWNERSHIP_HANDBACK_SCOPE_NONE) return 5861;
+
+    in.markerValid = true;
+    plan = ownership_handback_plan(in, full);
+    if (plan.verdict != OWNERSHIP_HANDBACK_DISCARD_UNPROVEN) return 5862;
+
+    in.currentBootKnown = true;
+    plan = ownership_handback_plan(in, full);
+    // Another boot: the driver re-initialized, and another tool may own it now.
+    if (plan.verdict != OWNERSHIP_HANDBACK_DISCARD_OTHER_BOOT || !plan.deleteMarker) return 5863;
+
+    in.sameBoot = true;
+    plan = ownership_handback_plan(in, full);
+    if (plan.verdict != OWNERSHIP_HANDBACK_RUN || plan.deleteMarker ||
+        plan.scope != OWNERSHIP_HANDBACK_SCOPE_FULL) return 5864;
+    plan = ownership_handback_plan(in, OWNERSHIP_HANDBACK_SCOPE_FAN_ONLY);
+    if (plan.verdict != OWNERSHIP_HANDBACK_RUN ||
+        plan.scope != OWNERSHIP_HANDBACK_SCOPE_FAN_ONLY) return 5865;
+    plan = ownership_handback_plan(in, OWNERSHIP_HANDBACK_SCOPE_NONE);
+    if (plan.verdict == OWNERSHIP_HANDBACK_RUN || !plan.deleteMarker) return 5866;
+
+    // The previous instance died inside its own handback: stop, do not loop.
+    in.previousHandbackInFlight = true;
+    plan = ownership_handback_plan(in, full);
+    if (plan.verdict != OWNERSHIP_HANDBACK_GIVE_UP_PREVIOUS_ATTEMPT_DIED ||
+        !plan.deleteMarker || plan.scope != OWNERSHIP_HANDBACK_SCOPE_NONE) return 5867;
+    // ...even when the boot also changed, the boot rule wins (no write either way).
+    in.sameBoot = false;
+    if (ownership_handback_plan(in, full).verdict !=
+        OWNERSHIP_HANDBACK_DISCARD_OTHER_BOOT) return 5868;
+
+    // Windows scope: a validated controlled recovery replays the full intent
+    // later, so only the fan is returned now.
+    if (ownership_handback_windows_start_scope(false) != OWNERSHIP_HANDBACK_SCOPE_FULL) return 5870;
+    if (ownership_handback_windows_start_scope(true) != OWNERSHIP_HANDBACK_SCOPE_FAN_ONLY) return 5871;
+
+    if (!ownership_handback_retires_marker(OWNERSHIP_HANDBACK_SCOPE_FULL, false)) return 5872;
+    if (ownership_handback_retires_marker(OWNERSHIP_HANDBACK_SCOPE_FAN_ONLY, false)) return 5873;
+    if (!ownership_handback_retires_marker(OWNERSHIP_HANDBACK_SCOPE_FAN_ONLY, true)) return 5874;
+    if (ownership_handback_retires_marker(OWNERSHIP_HANDBACK_SCOPE_NONE, true)) return 5875;
+    if (strcmp(ownership_handback_verdict_name(OWNERSHIP_HANDBACK_RUN), "run") != 0 ||
+        strcmp(ownership_handback_scope_name(OWNERSHIP_HANDBACK_SCOPE_FAN_ONLY),
+               "fan-only") != 0) return 5876;
+
+    // Windows marker record.
+    {
+        ServiceBootIdentity boot = {};
+        boot.high = 0x1122334455667788ull;
+        boot.low = 0x99aabbccddeeff00ull;
+        GpuAdapterInfo target = {};
+        target.valid = 1;
+        target.pciInfoValid = 1;
+        target.pciBus = 1;
+        ServiceOwnershipMarker marker = {};
+        service_ownership_marker_initialize(&marker, boot, &target);
+        if (!service_ownership_marker_valid(&marker)) return 5880;
+        if (!marker.targetGpu.valid || marker.targetGpu.pciBus != 1 ||
+            marker.handbackInFlight != 0) return 5881;
+        ServiceOwnershipMarker bad = marker;
+        bad.magic ^= 1u;
+        if (service_ownership_marker_valid(&bad)) return 5882;
+        bad = marker;
+        bad.handbackInFlight = 2u;
+        if (service_ownership_marker_valid(&bad)) return 5883;
+        bad = marker;
+        bad.bootIdentity = ServiceBootIdentity{};
+        if (service_ownership_marker_valid(&bad)) return 5884;
+        bad = marker;
+        bad.size = 0;
+        if (service_ownership_marker_valid(&bad)) return 5885;
+        service_ownership_marker_initialize(&marker, boot, nullptr);
+        if (!service_ownership_marker_valid(&marker) || marker.targetGpu.valid) return 5886;
+    }
+
+    // Linux marker record: the boot id is the kernel's UUID, and a record whose
+    // text field could not round-trip through strcmp is refused.
+    {
+        const char* boot = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+        LinuxFanOwnershipMarker marker = {};
+        linux_fan_ownership_marker_initialize(&marker, boot);
+        if (!linux_fan_ownership_marker_valid(&marker) ||
+            strcmp(marker.bootId, boot) != 0) return 5890;
+        LinuxFanOwnershipMarker bad = marker;
+        bad.bootId[0] = 0;
+        if (linux_fan_ownership_marker_valid(&bad)) return 5891;
+        bad = marker;
+        bad.bootId[3] = ' ';
+        if (linux_fan_ownership_marker_valid(&bad)) return 5892;
+        bad = marker;
+        bad.bootId[sizeof(bad.bootId) - 1] = 'x';  // stray byte after terminator
+        if (linux_fan_ownership_marker_valid(&bad)) return 5893;
+        bad = marker;
+        memset(bad.bootId, 'a', sizeof(bad.bootId));  // unterminated
+        if (linux_fan_ownership_marker_valid(&bad)) return 5894;
+        char tooLong[64] = {};
+        memset(tooLong, 'b', sizeof(tooLong) - 1);
+        linux_fan_ownership_marker_initialize(&bad, tooLong);
+        if (linux_fan_ownership_marker_valid(&bad)) return 5895;
+        bad = marker;
+        bad.handbackInFlight = 7u;
+        if (linux_fan_ownership_marker_valid(&bad)) return 5896;
+        if (sizeof(LinuxFanOwnershipMarker) != 16u + LINUX_FAN_OWNERSHIP_BOOT_ID_MAX)
+            return 5897;
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (int transitionFailure = run_clock_transition_tests()) return transitionFailure;
+    if (int handbackFailure = run_ownership_handback_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", handbackFailure);
+#if !defined(_WIN32)
+        return handbackFailure > 0 && handbackFailure < 126 ? handbackFailure : 1;
+#endif
+        return handbackFailure;
+    }
     if (int followupFailure = run_audit_followup_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", followupFailure);
 #if !defined(_WIN32)

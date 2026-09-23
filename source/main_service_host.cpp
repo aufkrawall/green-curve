@@ -214,6 +214,12 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
     // service is START_PENDING. Ordinary/failure-action/Task-Manager restarts
     // clear stale state and remain non-mutating.
     service_prepare_controlled_recovery_startup(argc, argv);
+    // Startup never replays; it only decides here (file I/O, no hardware)
+    // whether a previous instance died owning GPU state that must be handed
+    // back once.  The lifecycle worker performs it after RUNNING.
+    service_report_start_progress("ownership handback decision");
+    service_ownership_handback_prepare_at_startup(
+        g_serviceControlledRecoveryValidated);
     // One-time migration of the shared profile bank from the legacy
     // machine.ini-next-to-binary location to %ProgramData%\Green Curve.  Runs as
     // LocalSystem so it can write %ProgramData% and apply the protected DACL.
@@ -422,7 +428,13 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
     // costs a SAM round trip and must never sit between the SCM and RUNNING.
     service_log_path_protection_at_startup();
 
-    debug_log("service_main: running; hardware writes only on explicit client request, authenticated/WTS logon, standby resume, or validated controlled recovery\n");
+    // The one startup write: returning what a crashed previous instance still
+    // owned.  The worker runs it as soon as the GPU is ready.
+    if (InterlockedExchangeAdd(&g_serviceHandbackPending, 0) != 0) {
+        service_lifecycle_signal();
+    }
+
+    debug_log("service_main: running; hardware writes only on explicit client request, authenticated/WTS logon, standby resume, validated controlled recovery, or the once-per-crash ownership handback\n");
 
     // No startup inference or persisted replay occurs here. Fast Startup and
     // autologon are authorized only by a real authenticated scheduled-task

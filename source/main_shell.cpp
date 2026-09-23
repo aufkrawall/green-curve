@@ -343,6 +343,9 @@ static void unlock_all() {
 #include "main_service_lifecycle_events.cpp"
 #include "main_service_dxgi_readiness.cpp"
 #include "main_service_lifecycle_apply.cpp"
+// After the selected-GPU epoch and lifecycle shards it uses, before the
+// lifecycle worker that runs it.
+#include "main_service_ownership_handback.cpp"
 #include "main_service_logon_coordinator.cpp"
 #include "main_service_controlled_restart.cpp"
 

@@ -324,6 +324,17 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
              captureErr[0] ? captureErr : "unknown error");
         return outcome;
     }
+    char ownershipErr[256] = {};
+    if (!daemon_fan_ownership_ensure_before_write(&committed, ownershipErr,
+                                                  sizeof(ownershipErr))) {
+        gc_snprintf(outcome.message, sizeof(outcome.message),
+                    "fan ownership could not be recorded before automatic "
+                    "restore: %s",
+                    ownershipErr[0] ? ownershipErr : "unknown error");
+        dlog("daemon auto-restore: %s aborted before any write: %s\n",
+             linux_auto_restore_trigger_name(trigger), outcome.message);
+        return outcome;
+    }
     dlog("daemon auto-restore: %s writing intent [resetBaseline=%d curvePoints=%d "
          "gpuOffset=%d memOffset=%d powerPct=%d lock=%d lockMode=%d fanMode=%d fanPct=%d]\n",
          linux_auto_restore_trigger_name(trigger),
