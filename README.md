@@ -106,7 +106,7 @@ python build.py --check-cet
 
 ## Antivirus false positives
 
-**Expect some antivirus products to flag Green Curve, and expect to add an exception for it.** The usual one is Microsoft Defender reporting `Trojan:Win32/Wacatac.B!ml`. It is a false positive.
+**Expect some antivirus products to flag Green Curve, and expect to add an exception for it.** Any of the Windows files can be hit: `greencurve.exe`, `greencurve-service.exe`, `greencurve-uninstall.exe`, the setup `.exe` and the `.7z` archive. Which file gets flagged changes from release to release. The usual detection is Microsoft Defender reporting `Trojan:Win32/Wacatac.B!ml`. It is a false positive.
 
 ### Why it happens
 
@@ -123,9 +123,10 @@ Every one of those is visible in the source code in this repository. Features an
 ### What to do
 
 1. **Check that your download is genuine.** Compare it with the matching `.sha256` file, or run `gh attestation verify <file> --repo aufkrawall/green-curve` (see [Updates](#how-a-downloaded-update-is-verified)).
-2. **Add an exclusion for the install folder**, by default `C:\Program Files\Green Curve`. In Windows Security, open *Virus & threat protection → Manage settings → Exclusions → Add or remove exclusions → Add an exclusion → Folder*. Other antivirus products have an equivalent setting. Green Curve limits write access to this folder to administrators, so excluding it doesn't let unprivileged programs place files there unscanned.
-3. **If a file was already quarantined**, restore it from *Protection history*, then run the setup again to repair the installation.
-4. **Optionally report the false positive to your antivirus vendor.** Microsoft accepts reports at [microsoft.com/wdsi/filesubmission](https://www.microsoft.com/en-us/wdsi/filesubmission). This helps other users of that exact release.
+2. **If the setup file or archive itself is blocked**, restore it from *Protection history* (Windows Security → *Virus & threat protection*) and choose *Allow on device*, then run it.
+3. **Add an exclusion for the install folder**, by default `C:\Program Files\Green Curve`. In Windows Security, open *Virus & threat protection → Manage settings → Exclusions → Add or remove exclusions → Add an exclusion → Folder*. Other antivirus products have an equivalent setting. Green Curve limits write access to this folder to administrators, so excluding it doesn't let unprivileged programs place files there unscanned.
+4. **If an installed file was already quarantined**, restore it from *Protection history*, then run the setup again to repair the installation.
+5. **Optionally report the false positive to your antivirus vendor.** Microsoft accepts reports at [microsoft.com/wdsi/filesubmission](https://www.microsoft.com/en-us/wdsi/filesubmission). This helps other users of that exact release.
 
 If you don't trust a prebuilt binary, build it yourself with `python build.py` (see [Build](#build)).
 
