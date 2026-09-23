@@ -424,6 +424,14 @@ def run_cli_console_fixture(ctx, built_exe=None):
     Skipped (not failed) when no built binary is present, because --test is
     expected to run without a prior build.
     """
+    with open(os.path.join(ctx.SOURCE_DIR, "entry.cpp"), "r", encoding="utf-8") as handle:
+        cli_entry = handle.read()
+    no_log = cli_entry.split('FILE* logf = gc_fopen_utf8(logPath, "a");', 1)[1].split(
+        "#define CLI_LOG", 1)[0]
+    if "return true;" in no_log or "g_cliExitCode = 1;" in no_log:
+        raise RuntimeError("CLI commands must continue when the optional log cannot open")
+    if re.search(r"(?<!if \(logf\) )fclose\(logf\);", cli_entry):
+        raise RuntimeError("CLI commands must close the optional log only when it exists")
     if sys.platform != "win32":
         return
     if built_exe is None:
@@ -908,6 +916,15 @@ def check_path_protection_gates(ctx, require_text, service_ipc_cpp):
                  "service install hardens the installed binary DACL through its pinned handle")
     require_text(service_ipc_cpp, "release_service_hardening(servicePath, GC_SERVICE_ACL_BINARY",
                  "service uninstall releases the binary DACL only when it is provably ours")
+    acl_handle_cpp = os.path.join(ctx.SOURCE_DIR, "service_acl_handle.cpp")
+    with open(acl_handle_cpp, "r", encoding="utf-8", errors="replace") as handle:
+        release_text = handle.read().split("int release_service_hardening(", 1)[1].split(
+            "const char* service_release_result_name(", 1)[0]
+    read_at = release_text.find("HANDLE inspected = CreateFileW(path, READ_CONTROL | FILE_READ_ATTRIBUTES")
+    verify_at = release_text.find("service_handle_dacl_is_ours(inspected, kind)")
+    write_at = release_text.find("HANDLE handle = CreateFileW(path, READ_CONTROL | WRITE_DAC")
+    if min(read_at, verify_at, write_at) < 0 or not read_at < verify_at < write_at:
+        raise RuntimeError("DACL release must inspect without write rights before opening for change")
     service_acl_cpp = os.path.join(ctx.SOURCE_DIR, "service_acl.cpp")
     require_text(service_acl_cpp, "PROTECTED_DACL_SECURITY_INFORMATION",
                  "binary DACL hardening disables inheritance")
@@ -1008,12 +1025,28 @@ def check_path_protection_gates(ctx, require_text, service_ipc_cpp):
               "that needs nothing stopped (location, hardening) before it stops the "
               "running service")
         sys.exit(1)
+    recovery_gate = "if (!service_configure_failure_actions(svc.get()))"
+    if install_text.count(recovery_gate) != 2 or install_text.find(recovery_gate) > stop_at:
+        raise RuntimeError("both new and existing service installs must require crash recovery; "
+                           "existing service must remain running on refusal")
     require_text(install_cpp, "restore_previous_service_after_failure(",
         "a failure after the stop puts the previous registration back")
     require_text(install_cpp, "wait_for_service_transition(svc.get(), SERVICE_RUNNING)",
         "service start follows the SCM checkpoint protocol instead of a fixed deadline")
     require_text(install_cpp, "SERVICE_CONFIG_DESCRIPTION",
         "the service registers a description")
+    # A failed OpenService must not be interpreted as an absent registration,
+    # and a failed stop must not turn DeleteService into a pending removal while
+    # the service is still running.
+    remove_text = install_text.split("static bool service_remove(", 1)[1].split(
+        "static bool service_install_or_remove(", 1)[0]
+    if "if (!gc_service_admin_open_proves_absence(openErr))" not in remove_text or \
+            "preserving permissions\\n" not in remove_text:
+        raise RuntimeError("service removal must preserve permissions when OpenService fails ambiguously")
+    stop_refusal = remove_text.split("if (stopped.verdict != GC_SCM_WAIT_REACHED)", 1)[1].split(
+        "if (!DeleteService", 1)[0]
+    if "return false;" not in stop_refusal:
+        raise RuntimeError("service removal must stop before deleting its registration")
     check_no_null_dacl_writes(ctx)
     require_text(os.path.join(ctx.SOURCE_DIR, "installer_apply.cpp"),
         "gc_service_install_location_verdict(targetDirectory)",

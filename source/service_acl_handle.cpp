@@ -234,16 +234,34 @@ int release_service_hardening(const wchar_t* path, GcServiceAclKind kind,
     if (!path || !path[0]) return GC_SERVICE_RELEASE_ABSENT;
     // No FILE_SHARE_DELETE: nobody may rename this object away while it is
     // being inspected and released.
+    HANDLE inspected = CreateFileW(path, READ_CONTROL | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (inspected == INVALID_HANDLE_VALUE) {
+        DWORD openErr = GetLastError();
+        if (openErr == ERROR_FILE_NOT_FOUND || openErr == ERROR_PATH_NOT_FOUND)
+            return GC_SERVICE_RELEASE_ABSENT;
+        set_handle_acl_err(err, errSize, "Failed inspecting the object to release", openErr);
+        return GC_SERVICE_RELEASE_FAILED;
+    }
+    // Most candidate paths are not ours. Read them without requesting write
+    // access, which a protected unrelated directory need not grant us.
+    if (!handle_matches_kind(inspected, kind) || !service_handle_dacl_is_ours(inspected, kind)) {
+        CloseHandle(inspected);
+        return GC_SERVICE_RELEASE_NOT_OURS;
+    }
+    // Keep the inspection handle open without FILE_SHARE_DELETE while opening
+    // the write handle; then recheck the DACL on that handle before changing it.
     HANDLE handle = CreateFileW(path, READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         DWORD openErr = GetLastError();
-        if (openErr == ERROR_FILE_NOT_FOUND || openErr == ERROR_PATH_NOT_FOUND)
-            return GC_SERVICE_RELEASE_ABSENT;
-        set_handle_acl_err(err, errSize, "Failed opening the object to release", openErr);
+        CloseHandle(inspected);
+        set_handle_acl_err(err, errSize, "Failed opening our object to release", openErr);
         return GC_SERVICE_RELEASE_FAILED;
     }
+    CloseHandle(inspected);
     int result = GC_SERVICE_RELEASE_NOT_OURS;
     if (handle_matches_kind(handle, kind) && service_handle_dacl_is_ours(handle, kind)) {
         // An EMPTY explicit ACL plus UNPROTECTED: the object keeps nothing of

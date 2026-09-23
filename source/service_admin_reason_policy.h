@@ -54,6 +54,13 @@
 #define GC_SVC_ERR_SHARING_VIOLATION        32ul
 #define GC_SVC_ERR_WRITE_PROTECT            19ul
 
+// An unsuccessful OpenService call proves absence only for this one error.
+// Access denial, a damaged SCM database, and a pending deletion all leave the
+// registration's state unknown. Uninstall must preserve its files and DACL.
+static inline bool gc_service_admin_open_proves_absence(unsigned long openError) {
+    return openError == GC_SVC_ERR_SERVICE_DOES_NOT_EXIST;
+}
+
 // One reason per thing a user can actually do something about.  Ordering is
 // part of the wire format (see gc_service_admin_reason_exit_code): append only.
 enum GcServiceAdminReason {
@@ -80,6 +87,8 @@ enum GcServiceAdminReason {
     GC_SVC_ADMIN_HELPER_LAUNCH_FAILED,
     GC_SVC_ADMIN_HELPER_TIMED_OUT,
     GC_SVC_ADMIN_SHUTDOWN_ABANDONED,
+    GC_SVC_ADMIN_REMOVE_STOP_TIMED_OUT,
+    GC_SVC_ADMIN_RECOVERY_CONFIG_FAILED,
     GC_SVC_ADMIN_REASON_COUNT
 };
 
@@ -225,7 +234,17 @@ static inline const char* gc_service_admin_reason_text(int reason) {
                    "its binary could not be replaced. Restart Windows and try "
                    "again.";
         case GC_SVC_ADMIN_REMOVE_FAILED:
-            return "The service could not be removed.";
+            return "The background service could not be removed. Check whether "
+                   "Services or a security product is blocking it, then try "
+                   "again after a restart.";
+        case GC_SVC_ADMIN_REMOVE_STOP_TIMED_OUT:
+            return "The running Green Curve service did not stop, so removal "
+                   "was cancelled. Stop it in Services or restart Windows and "
+                   "run uninstall again.";
+        case GC_SVC_ADMIN_RECOVERY_CONFIG_FAILED:
+            return "Windows refused to configure automatic service recovery. "
+                   "Check whether a security product or service policy is "
+                   "blocking the change, then install or repair the service.";
         case GC_SVC_ADMIN_HELPER_LAUNCH_FAILED:
             return "The elevated helper could not be started.";
         case GC_SVC_ADMIN_HELPER_TIMED_OUT:
@@ -306,6 +325,7 @@ static inline bool gc_service_admin_reason_needs_user_action(int reason) {
         case GC_SVC_ADMIN_LOCATION_REFUSED:
         case GC_SVC_ADMIN_MARKED_FOR_DELETE:
         case GC_SVC_ADMIN_DISABLED_BY_POLICY:
+        case GC_SVC_ADMIN_RECOVERY_CONFIG_FAILED:
             return true;
         default:
             return false;

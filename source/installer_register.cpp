@@ -236,17 +236,54 @@ bool gc_write_shortcuts_and_registration(GcInstallContext* context) {
 // before the registration disappears and waited on after.
 #define GC_UNINSTALL_SERVICE_EXIT_TIMEOUT_MS 20000
 
-static HANDLE gc_open_running_service_process() {
+static bool gc_inspect_service_before_uninstall(HANDLE* processOut, bool* registeredOut,
+                                                 char* error, size_t errorSize) {
+    if (processOut) *processOut = nullptr;
+    if (registeredOut) *registeredOut = false;
     GcScopedServiceHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
-    if (!scm.valid()) return nullptr;
+    if (!scm.valid()) {
+        if (error && errorSize) StringCchCopyA(error, errorSize,
+            "Could not open the service manager before uninstall.");
+        gc_log_step("uninstall: OpenSCManager failed (error %lu)", GetLastError());
+        return false;
+    }
     GcScopedServiceHandle service(OpenServiceW(scm.get(), GC_SETUP_SERVICE_NAME, SERVICE_QUERY_STATUS));
-    if (!service.valid()) return nullptr;
+    if (!service.valid()) {
+        DWORD openErr = GetLastError();
+        if (gc_service_admin_open_proves_absence(openErr)) return true;
+        if (error && errorSize) StringCchCopyA(error, errorSize,
+            "Could not check the background service before uninstall.");
+        gc_log_step("uninstall: OpenService failed (error %lu)", (unsigned long)openErr);
+        return false;
+    }
+    if (registeredOut) *registeredOut = true;
     SERVICE_STATUS_PROCESS status = {};
     DWORD needed = 0;
     if (!QueryServiceStatusEx(service.get(), SC_STATUS_PROCESS_INFO, (LPBYTE)&status,
-                              sizeof(status), &needed)) return nullptr;
-    if (status.dwProcessId == 0) return nullptr;
-    return OpenProcess(SYNCHRONIZE, FALSE, status.dwProcessId);
+                              sizeof(status), &needed)) {
+        if (error && errorSize) StringCchCopyA(error, errorSize,
+            "Could not read the background service state before uninstall.");
+        gc_log_step("uninstall: QueryServiceStatusEx failed (error %lu)", GetLastError());
+        return false;
+    }
+    if (status.dwProcessId == 0) return true;
+    HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, status.dwProcessId);
+    if (!process) {
+        DWORD openErr = GetLastError();
+        if (openErr == ERROR_INVALID_PARAMETER) {
+            gc_log_step("uninstall: service process %lu exited before its handle was taken",
+                        (unsigned long)status.dwProcessId);
+            return true;
+        }
+        if (error && errorSize) StringCchCopyA(error, errorSize,
+            "Could not track the background service process before uninstall.");
+        gc_log_step("uninstall: OpenProcess(%lu) failed (error %lu)",
+                    (unsigned long)status.dwProcessId, (unsigned long)openErr);
+        return false;
+    }
+    if (processOut) *processOut = process;
+    else CloseHandle(process);
+    return true;
 }
 
 // Nothing may be holding the install directory open when it is removed, and a
@@ -296,10 +333,15 @@ bool gc_uninstall_execute(const WCHAR* installDirectory, bool* folderLeftForRest
     // Let the installed binary unregister its own service: it also resets the
     // GPU and reverts the hardened permissions it applied, neither of which the
     // uninstaller should reimplement.
+    GcScopedHandle serviceProcess;
+    bool serviceRegistered = false;
+    HANDLE runningProcess = nullptr;
+    if (!gc_inspect_service_before_uninstall(&runningProcess, &serviceRegistered,
+                                             error, errorSize)) return false;
+    serviceProcess.reset(runningProcess);
     WCHAR guiPath[GC_INSTALLER_MAX_PATH_CHARS] = {};
     if (gc_join_path(installDirectory, GC_SETUP_GUI_EXE_W, guiPath, GC_ARRAY_COUNT(guiPath)) &&
         gc_file_exists(guiPath)) {
-        GcScopedHandle serviceProcess(gc_open_running_service_process());
         WCHAR commandLine[2048] = {};
         StringCchPrintfW(commandLine, GC_ARRAY_COUNT(commandLine), L"\"%ls\" --service-remove", guiPath);
         DWORD exitCode = (DWORD)-1;
@@ -309,13 +351,15 @@ bool gc_uninstall_execute(const WCHAR* installDirectory, bool* folderLeftForRest
         if (!gc_run_and_wait(guiPath, commandLine, GC_SVC_ADMIN_HELPER_TIMEOUT_MS,
                              &exitCode) || exitCode != 0) {
             gc_log_step("uninstall: --service-remove reported exit %lu (%s); "
-                        "continuing with file removal",
+                        "preserving program files",
                         exitCode,
                         gc_service_admin_reason_text(
                             gc_service_admin_reason_from_exit_code(exitCode)));
-        } else {
-            gc_log_step("uninstall: background service removed");
+            if (error && errorSize) StringCchCopyA(error, errorSize,
+                gc_service_admin_reason_text(gc_service_admin_reason_from_exit_code(exitCode)));
+            return false;
         }
+        gc_log_step("uninstall: background service removed");
         // Wait on the real event.  Deleting the service binary while its
         // process is still exiting is what turns a clean uninstall into a
         // folder that survives until the next restart.
@@ -324,10 +368,19 @@ bool gc_uninstall_execute(const WCHAR* installDirectory, bool* folderLeftForRest
             if (wait != WAIT_OBJECT_0) {
                 gc_log_step("uninstall: the service process was still running %d ms after removal (wait %lu)",
                             GC_UNINSTALL_SERVICE_EXIT_TIMEOUT_MS, wait);
+                if (error && errorSize) StringCchCopyA(error, errorSize,
+                    "The background service has not exited. Restart Windows and run uninstall again.");
+                return false;
             } else {
                 gc_log_step("uninstall: the service process has exited");
             }
         }
+    } else if (serviceRegistered) {
+        gc_log_step("uninstall: program missing while background service is still registered; preserving files");
+        if (error && errorSize) StringCchCopyA(error, errorSize,
+            "greencurve.exe is missing while the background service is registered. "
+            "Restore the program files and run uninstall again.");
+        return false;
     }
 
     gc_remove_shortcut(FOLDERID_CommonPrograms, GC_SETUP_PRODUCT_NAME_W);

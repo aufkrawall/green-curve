@@ -776,6 +776,18 @@ def check_all(ctx, require_text, forbid_text):
             raise SystemExit("installer gate: -ltaskschd does not resolve under Zig's arm64 link step")
     register_shard = source("installer_register.cpp")
     uninstall_anchor = "bool gc_uninstall_execute(const WCHAR* installDirectory, bool* folderLeftForRestart,"
+    with open(register_shard, "r", encoding="utf-8", errors="replace") as handle:
+        uninstall_text = handle.read().split(uninstall_anchor, 1)[1]
+    if "gc_inspect_service_before_uninstall(&runningProcess, &serviceRegistered," not in uninstall_text:
+        raise RuntimeError("uninstall must establish service state before deleting files")
+    helper_failure = uninstall_text.split("if (!gc_run_and_wait(guiPath, commandLine", 1)[1].split(
+        'gc_log_step("uninstall: background service removed")', 1)[0]
+    if "return false;" not in helper_failure:
+        raise RuntimeError("uninstall must preserve files when service removal fails")
+    missing_gui = uninstall_text.split("} else if (serviceRegistered) {", 1)[1].split(
+        "gc_remove_shortcut(", 1)[0]
+    if "return false;" not in missing_gui:
+        raise RuntimeError("uninstall must preserve files if its helper is missing and service exists")
     ctx.require_order_in_operation(register_shard, uninstall_anchor,
                                    "gc_remove_startup_tasks()",
                                    "RemoveDirectoryW(installDirectory)",

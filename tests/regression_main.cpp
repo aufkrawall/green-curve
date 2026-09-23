@@ -6036,6 +6036,14 @@ static int run_all_tests(int argc, char** argv) {
         if (gc_service_admin_classify_win32(GC_SVC_STAGE_STAGE_BINARY, GC_SVC_ERR_ACCESS_DENIED) ==
             GC_SVC_ADMIN_NOT_ELEVATED) return 5652;
 
+        // A failed OpenService is not proof that uninstall may remove files
+        // or release the registered service binary's permissions.
+        if (!gc_service_admin_open_proves_absence(GC_SVC_ERR_SERVICE_DOES_NOT_EXIST)) return 6200;
+        if (gc_service_admin_open_proves_absence(GC_SVC_ERR_ACCESS_DENIED)) return 6201;
+        if (gc_service_admin_open_proves_absence(GC_SVC_ERR_SERVICE_MARKED_FOR_DELETE)) return 6202;
+        if (gc_service_admin_open_proves_absence(12345)) return 6203;
+        if (!gc_service_admin_reason_needs_user_action(GC_SVC_ADMIN_RECOVERY_CONFIG_FAILED)) return 6204;
+
         // A declined UAC prompt is the user's own answer; presenting it as a
         // fault (error icon, "failed", a log to go read) told people their PC
         // was broken when they had clicked No.

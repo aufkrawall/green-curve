@@ -159,8 +159,10 @@ bool touch(const wchar_t* path) {
 }
 
 HANDLE open_for_hardening(const wchar_t* path, bool directory) {
+    // These fixtures pass changeOwner=false. Requiring WRITE_OWNER here tests
+    // the temp directory's inherited ACL instead of handle-bound DACL writes.
     return CreateFileW(path,
-        READ_CONTROL | WRITE_DAC | WRITE_OWNER | FILE_READ_ATTRIBUTES |
+        READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES |
             (directory ? FILE_LIST_DIRECTORY : 0),
         FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
         (directory ? FILE_FLAG_BACKUP_SEMANTICS : 0) | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
@@ -225,9 +227,7 @@ int run_handle_hardening_tests() {
     if (!touch(child) || !touch(binary)) return cleanupAnd(5752);
 
     char err[160] = {};
-    // Both handles first, exactly like service_install_prepare_target: once
-    // the folder is hardened the (unelevated) test user may no longer open the
-    // binary for WRITE_OWNER.
+    // Pin both handles before changing the folder ACL, as the installer does.
     HANDLE binaryHandle = open_for_hardening(binary, false);
     if (binaryHandle == INVALID_HANDLE_VALUE) return cleanupAnd(5758);
     HANDLE dirHandle = open_for_hardening(dir, true);
@@ -352,7 +352,7 @@ int run_location_verdict_tests() {
     RemoveDirectoryW(sub);
     // The handle-bound verdict judges the pinned object identically.
     HANDLE handle = CreateFileW(dir, FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL |
-                                WRITE_DAC | WRITE_OWNER, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                WRITE_DAC, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                                 OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
                                 nullptr);
     if (handle == INVALID_HANDLE_VALUE) return cleanupAnd(5774);
@@ -369,7 +369,7 @@ int run_location_verdict_tests() {
     release_service_hardening(dir, GC_SERVICE_ACL_DIRECTORY, ignored, sizeof(ignored));
     if (!touch(foreign)) return cleanupAnd(5777);
     handle = CreateFileW(dir, FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL |
-                         WRITE_DAC | WRITE_OWNER, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                         WRITE_DAC, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                          OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (handle == INVALID_HANDLE_VALUE) return cleanupAnd(5778);
     hardened = apply_protected_service_dacl_to_handle(handle, GC_SERVICE_ACL_DIRECTORY,

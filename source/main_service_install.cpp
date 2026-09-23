@@ -377,6 +377,14 @@ static bool service_install(SC_HANDLE scm, char* err, size_t errSize, int* reaso
         repointed = !previous.commandLine[0] || _wcsicmp(previous.commandLine, binPath) != 0;
         debug_log("service install: existing registration wasRunning=%d repoint=%d\n",
                   previous.wasRunning ? 1 : 0, repointed ? 1 : 0);
+        // Recovery configuration does not require a stop. If policy blocks it,
+        // keep the working service running instead of reporting a fragile
+        // registration as successfully repaired.
+        if (!service_configure_failure_actions(svc.get())) {
+            if (reasonOut) *reasonOut = GC_SVC_ADMIN_RECOVERY_CONFIG_FAILED;
+            set_message(err, errSize, "Failed configuring automatic service recovery");
+            return false;
+        }
         int stopReason = GC_SVC_ADMIN_UNKNOWN;
         if (!stop_service_for_binary_update(svc.get(), err, errSize, &stopReason)) {
             if (reasonOut) *reasonOut = stopReason;
@@ -419,14 +427,20 @@ static bool service_install(SC_HANDLE scm, char* err, size_t errSize, int* reaso
             set_message(err, errSize, "Failed installing service (error %lu)", createErr);
             return false;
         }
+        if (!service_configure_failure_actions(svc.get())) {
+            if (reasonOut) *reasonOut = GC_SVC_ADMIN_RECOVERY_CONFIG_FAILED;
+            set_message(err, errSize, "Failed configuring automatic service recovery");
+            if (!DeleteService(svc.get())) {
+                debug_log("service install: failed removing unstarted registration after recovery configuration failure (error %lu)\n",
+                          (unsigned long)GetLastError());
+            }
+            return false;
+        }
     }
 
-    // Configure SCM auto-restart failure actions so a non-zero exit (our
-    // driver-recovery restart) relaunches the service.  Also re-applied at
-    // every service start by service_ensure_failure_actions_configured().
-    if (service_configure_failure_actions(svc.get())) {
-        debug_log("service install: configured SCM auto-restart failure actions + non-crash-failure flag\n");
-    }
+    // An unavailable unexpected-crash recovery net fails registration instead
+    // of silently leaving a service that will not restart after a crash.
+    debug_log("service install: configured SCM auto-restart failure actions + non-crash-failure flag\n");
     service_configure_description(svc.get());
 
     // 4. Start it and follow the start the way the SCM protocol defines it.
@@ -480,11 +494,18 @@ static bool service_install(SC_HANDLE scm, char* err, size_t errSize, int* reaso
 
 static bool service_remove(SC_HANDLE scm, char* err, size_t errSize, int* reasonOut) {
     ScopedServiceHandle svc(OpenServiceW(scm, L"GreenCurveService", SERVICE_STOP | DELETE | SERVICE_QUERY_STATUS));
+    DWORD openErr = svc.valid() ? ERROR_SUCCESS : GetLastError();
     WCHAR installedServicePath[MAX_PATH] = {};
     get_service_binary_path_from_scm(installedServicePath, ARRAY_COUNT(installedServicePath));
     if (!svc.valid()) {
-        debug_log("service remove: no registration to remove (error %lu); releasing folder hardening only\n",
-                  (unsigned long)GetLastError());
+        if (!gc_service_admin_open_proves_absence(openErr)) {
+            if (reasonOut) *reasonOut = gc_service_admin_classify_win32(GC_SVC_STAGE_REMOVE, openErr);
+            set_message(err, errSize, "Failed opening service for removal (error %lu)", openErr);
+            debug_log("service remove: OpenService failed error=%lu; registration state unknown, preserving permissions\n",
+                      (unsigned long)openErr);
+            return false;
+        }
+        debug_log("service remove: no registration to remove; releasing folder hardening only\n");
         cleanup_secure_service_binary_after_remove(installedServicePath[0] ? installedServicePath : nullptr);
         return true;
     }
@@ -497,15 +518,21 @@ static bool service_remove(SC_HANDLE scm, char* err, size_t errSize, int* reason
     if (!ControlService(svc.get(), SERVICE_CONTROL_STOP, &status)) {
         DWORD stopErr = GetLastError();
         if (stopErr != ERROR_SERVICE_NOT_ACTIVE) {
-            debug_log("service remove: stop request refused (error %lu); deleting anyway, the "
-                      "registration stays marked for deletion until the process exits\n",
+            debug_log("service remove: stop request refused (error %lu); checking the settled state before deletion\n",
                       (unsigned long)stopErr);
         }
     }
     ServiceStateWait stopped = wait_for_service_transition(svc.get(), SERVICE_STOPPED);
     if (stopped.verdict != GC_SCM_WAIT_REACHED) {
-        debug_log("service remove: service did not stop before deletion (%s); it is only marked "
-                  "for deletion until it exits\n", gc_scm_wait_verdict_name(stopped.verdict));
+        if (reasonOut) *reasonOut = GC_SVC_ADMIN_REMOVE_STOP_TIMED_OUT;
+        set_message(err, errSize, "Service removal stopped before deletion: stop did not complete "
+                    "(%s after %llu ms, state %lu)",
+                    gc_scm_wait_verdict_name(stopped.verdict),
+                    (unsigned long long)stopped.elapsedMs,
+                    (unsigned long)stopped.last.dwCurrentState);
+        debug_log("service remove: stop did not complete (%s); preserving registration and permissions\n",
+                  gc_scm_wait_verdict_name(stopped.verdict));
+        return false;
     }
     if (!DeleteService(svc.get())) {
         DWORD deleteErr = GetLastError();

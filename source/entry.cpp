@@ -105,9 +105,9 @@ static bool handle_cli(LPWSTR wCmdLine) {
     gc_cli_log_trim_if_oversized(logPath);
     FILE* logf = gc_fopen_utf8(logPath, "a");
     if (!logf) {
-        gc_cli_console_write("ERROR: cannot open the Green Curve CLI log file.\n");
-        g_cliExitCode = 1;
-        return true;
+        // The console sink keeps service commands usable without a file log.
+        gc_cli_console_write("WARNING: cannot open the Green Curve CLI log file; "
+                             "continuing without a file log.\n");
     }
 
     // flawfinder: ignore -- private macro; every invocation below has a literal format.
@@ -122,7 +122,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
                                              sizeof(message), &remedy)) {
             CLI_LOG("%s\n", message);
             if (remedy[0]) CLI_LOG("%s\n", remedy);
-            fclose(logf);
+            if (logf) fclose(logf);
             return true;
         }
     }
@@ -135,7 +135,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
         CLI_LOG("%s%s\n", (ok || noActive) ? "" : "ERROR: ",
                 result[0] ? result : "Settings transfer failed");
         g_cliExitCode = ok ? 0 : (noActive ? GC_SETTINGS_TRANSFER_NO_ACTIVE_EXIT_CODE : 1);
-        fclose(logf);
+        if (logf) fclose(logf);
         return true;
     }
 
@@ -149,7 +149,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
             CLI_LOG("ERROR: %s\n", err[0] ? err : "Startup task update failed");
             g_cliExitCode = 1;
         }
-        fclose(logf);
+        if (logf) fclose(logf);
         return true;
     }
 
@@ -161,14 +161,14 @@ static bool handle_cli(LPWSTR wCmdLine) {
         if (cli_handle_machine_admin_command(&opts, &adminOk, adminMessage, sizeof(adminMessage))) {
             CLI_LOG("%s%s\n", adminOk ? "" : "ERROR: ", adminMessage);
             g_cliExitCode = adminOk ? 0 : 1;
-            fclose(logf);
+            if (logf) fclose(logf);
             return true;
         }
     }
 
     if (opts.showHelp) {
         cli_print_help(logf);
-        fclose(logf);
+        if (logf) fclose(logf);
         return true;
     }
 
@@ -204,7 +204,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
         } else {
             CLI_LOG("The service is installed but not responding. Restart or reinstall it.\n");
         }
-        fclose(logf);
+        if (logf) fclose(logf);
         g_cliExitCode = 1;
         return true;
     }
@@ -217,7 +217,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
             CLI_LOG("Green Curve: Background service available. Using service-backed hardware control path.\n");
         } else {
             CLI_LOG("ERROR: %s\n", err[0] ? err : "Failed reading background service snapshot");
-            fclose(logf);
+            if (logf) fclose(logf);
             g_cliExitCode = 1;
             return true;
         }
@@ -231,7 +231,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
                 gpuSelectionErr, sizeof(gpuSelectionErr))) {
             CLI_LOG("ERROR: %s\n", gpuSelectionErr[0] ? gpuSelectionErr :
                 "Configured GPU identity is unavailable");
-            fclose(logf);
+            if (logf) fclose(logf);
             g_cliExitCode = 1;
             return true;
         }
@@ -245,27 +245,27 @@ static bool handle_cli(LPWSTR wCmdLine) {
         if (logonSlot < 0 || logonSlot > CONFIG_NUM_SLOTS) logonSlot = 0;
         if (logonSlot < 1 || logonSlot > CONFIG_NUM_SLOTS) {
             CLI_LOG("ERROR: No valid logon profile slot is configured. Silent logon apply was skipped.\n");
-            fclose(logf);
+            if (logf) fclose(logf);
             g_cliExitCode = 1;
             return true;
         }
         if (!is_profile_slot_saved(g_app.configPath, logonSlot)) {
             CLI_LOG("ERROR: Logon profile slot %d is empty. Silent logon apply was skipped.\n", logonSlot);
-            fclose(logf);
+            if (logf) fclose(logf);
             g_cliExitCode = 1;
             return true;
         }
         if (!load_profile_from_config(g_app.configPath, logonSlot, &cfg, err, sizeof(err))) {
             write_error_report_log_for_user_failure("CLI profile load failed", err);
             CLI_LOG("ERROR: %s\n", err);
-            fclose(logf);
+            if (logf) fclose(logf);
             g_cliExitCode = 1;
             return true;
         }
         if (!desired_settings_have_explicit_state(&cfg, true, err, sizeof(err))) {
             write_error_report_log_for_user_failure("CLI logon profile rejected", err);
             CLI_LOG("ERROR: %s\n", err);
-            fclose(logf);
+            if (logf) fclose(logf);
             g_cliExitCode = 1;
             return true;
         }
@@ -293,7 +293,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
             result, sizeof(result));
         CLI_LOG("%s\n", result);
         if (!ok) {
-            fclose(logf);
+            if (logf) fclose(logf);
             g_cliExitCode = 1;
             return true;
         }
@@ -306,7 +306,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
             result, sizeof(result));
         CLI_LOG("%s\n", result);
         if (!ok) {
-            fclose(logf);
+            if (logf) fclose(logf);
             g_cliExitCode = 1;
             return true;
         }
@@ -318,7 +318,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
         bool ok = service_client_reset(result, sizeof(result), nullptr);
         CLI_LOG("%s\n", result);
         if (!ok) {
-            fclose(logf);
+            if (logf) fclose(logf);
             g_cliExitCode = 1;
             return true;
         }
@@ -333,14 +333,14 @@ static bool handle_cli(LPWSTR wCmdLine) {
         if (!refresh_service_snapshot_and_active_desired(err, sizeof(err))) {
             CLI_LOG("ERROR: %s\n", err[0] ? err : "Failed to refresh background service state before save");
             g_cliExitCode = 1;
-            fclose(logf);
+            if (logf) fclose(logf);
             return true;
         }
         if (opts.applyConfig) {
             if (!load_desired_settings_from_ini(g_app.configPath, &saveDesired, opts.error, sizeof(opts.error))) {
                 CLI_LOG("ERROR: %s\n", opts.error);
                 g_cliExitCode = 1;
-                fclose(logf);
+                if (logf) fclose(logf);
                 return true;
             }
             merge_desired_settings(&saveDesired, &opts.desired);
@@ -379,7 +379,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
         if (!save_profile_to_config(g_app.configPath, targetSlot, &saveDesired, err, sizeof(err))) {
             CLI_LOG("ERROR: %s\n", err);
             g_cliExitCode = 1;
-            fclose(logf);
+            if (logf) fclose(logf);
             return true;
         }
         CLI_LOG("Profile %d written to %s\n", targetSlot, g_app.configPath);
@@ -392,7 +392,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
             CLI_LOG("%s\n", result);
         } else {
             CLI_LOG("ERROR: %s\n", result);
-            fclose(logf);
+            if (logf) fclose(logf);
             g_cliExitCode = 1;
             return true;
         }
@@ -415,7 +415,7 @@ static bool handle_cli(LPWSTR wCmdLine) {
             CLI_LOG("%s\n", result);
         } else {
             CLI_LOG("ERROR: %s\n", result);
-            fclose(logf);
+            if (logf) fclose(logf);
             g_cliExitCode = 1;
             return true;
         }
@@ -429,14 +429,14 @@ static bool handle_cli(LPWSTR wCmdLine) {
             CLI_LOG("%s\n", result);
         } else {
             CLI_LOG("ERROR: %s\n", result);
-            fclose(logf);
+            if (logf) fclose(logf);
             g_cliExitCode = 1;
             return true;
         }
     }
 
     CLI_LOG("\nGreen Curve CLI done.\n");
-    fclose(logf);
+    if (logf) fclose(logf);
     #undef CLI_LOG
     return true;
 }
