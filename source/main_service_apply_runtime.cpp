@@ -58,6 +58,8 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         return false;
     }
     char detail[256] = {};
+    // Watched by the service wedge watchdog (service_wedge_watchdog_policy.h).
+    ServiceHardwareWorkScope hardwareWork("apply");
     set_last_apply_phase("service apply: hardware initialize");
     if (!hardware_initialize(detail, sizeof(detail))) {
         set_message(result, resultSize, "%s", detail[0] ? detail : "Hardware initialization failed");
@@ -219,6 +221,9 @@ static bool service_reset_all(char* result, size_t resultSize,
     bool* hardwareWriteAttemptedOut) {
     if (hardwareWriteAttemptedOut) *hardwareWriteAttemptedOut = false;
     char detail[256] = {};
+    // Watched by the service wedge watchdog (service_wedge_watchdog_policy.h).
+    ServiceHardwareWorkScope hardwareWork("reset");
+    set_last_apply_phase("service reset: hardware initialize");
     if (!hardware_initialize(detail, sizeof(detail))) {
         set_message(result, resultSize, "%s", detail[0] ? detail : "Hardware initialization failed");
         return false;
@@ -520,6 +525,16 @@ static bool service_reset_all(char* result, size_t resultSize,
         // The GPU is at stock and the fan is the driver's: nothing Green Curve
         // owns remains for a later start to hand back.
         service_ownership_marker_clear("reset to stock succeeded");
+        // "Press Reset" has been answered.  Automatic restoration stays off
+        // (only an explicit Apply re-arms it), but the GPU is no longer in an
+        // unknown state, so the lockout stops saying that it is.
+        DWORD lockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
+        if (service_auto_restore_is_locked_out(&lockoutReason) &&
+            lockoutReason == SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE) {
+            service_latch_auto_restore_lockout(
+                SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED,
+                "a successful Reset returned the GPU after an incomplete handback");
+        }
         clear_service_authoritative_state();
         populate_control_state(&g_serviceControlState);
         g_serviceControlStateValid = true;

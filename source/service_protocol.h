@@ -77,7 +77,10 @@ enum {
     // fan-off hysteresis. Wire sizes remain unchanged, but mixed peers would
     // disagree about the byte's meaning and must reject each other.
     // v25 adds xbarMeasuredVoltageUv to ServiceSnapshot, changing wire size.
-    SERVICE_PROTOCOL_VERSION = 27,
+    // v28 adds SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE.  Sizes are
+    // unchanged, but an older peer would fold the new value into "automatic
+    // apply failed" and hide that the GPU was left in an unknown state.
+    SERVICE_PROTOCOL_VERSION = 28,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply. Bit 30 marks an
@@ -242,6 +245,13 @@ enum ServiceAutoRestoreLockoutReason {
     SERVICE_AUTO_RESTORE_LOCKOUT_UNSTABLE_APPLY = 1,
     SERVICE_AUTO_RESTORE_LOCKOUT_TDR_SPAM = 2,
     SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED = 3,
+    // v28: the service/daemon stopped unexpectedly while owning GPU state and
+    // could not return it (ownership_handback_policy.h).  Unlike the others
+    // this names hardware left in an unknown state, not only a disabled
+    // automation, so the GUI tells the user to Reset.
+    SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE = 4,
+    // Highest value any receiver accepts; everything above fails closed.
+    SERVICE_AUTO_RESTORE_LOCKOUT_MAX = SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE,
 };
 
 enum ServiceResponseStatus {

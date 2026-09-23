@@ -550,12 +550,12 @@ int linux_daemon_run(const char* configPath) {
                 : operation.message);
     }
 
-    // Before any startup write and before the fan worker exists: a previous
-    // daemon in this boot that died with the fan under manual control gets it
-    // handed back to the driver, once (linux_fan_ownership.h).
-    daemon_fan_ownership_handback_at_start();
-
     load_auto_restore_guard_at_boot();
+    // After the guard load (a give-up latches it), before any startup write
+    // and before the fan worker exists: a previous daemon in this boot that
+    // died with the fan under manual control gets it handed back to the
+    // driver, at most twice (linux_fan_ownership.h).
+    daemon_fan_ownership_handback_at_start();
     load_startup_policy_at_boot();
 
     if (g_startupPolicy.mode == SERVICE_STARTUP_POLICY_PROFILE) {

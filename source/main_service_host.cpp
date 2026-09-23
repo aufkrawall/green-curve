@@ -3,6 +3,8 @@
 
 // SCM control handling, startup readiness, watchdog, and shutdown policy.
 
+#include "service_wedge_watchdog_policy.h"
+
 // How long the SCM should expect each pre-RUNNING step to take.  Generous on
 // purpose: a wait hint is an upper bound the SCM measures progress against, not
 // a delay, and the steps behind it include DACL rewrites and a SAM round trip
@@ -482,6 +484,25 @@ service_watchdog_loop:
             // process maps clean driver DLLs, and ExitProcess tears down the
             // wedged thread.  Do NOT TerminateThread / close NVML here — racy and
             // unnecessary right before the process exits.
+            // Any other hardware work -- an Apply, a Reset, the crash handback --
+            // that stops making progress is the same wedge, fan curve or not.
+            // Windows cannot see it (a hung thread in a running service is
+            // healthy to the SCM), so a fresh process with fresh driver DLLs is
+            // requested exactly as for a wedged fan pulse.
+            if (InterlockedExchangeAdd(&g_serviceHardwareWorkDepth, 0) > 0) {
+                ULONGLONG workProgressAgeMs = service_progress_age_ms(
+                    GetTickCount64(), g_serviceHardwareProgressMs);
+                if (service_hardware_work_is_wedged(true, workProgressAgeMs)) {
+                    const char* label = g_serviceHardwareWorkLabel;
+                    debug_log("service_main: hardware work '%s' made no progress for %llu ms"
+                              " (limit %llu ms, phase=%s) -- treating it as wedged inside the"
+                              " driver and restarting into a fresh process\n",
+                        label ? label : "unknown", workProgressAgeMs,
+                        SERVICE_HARDWARE_WORK_WEDGE_TIMEOUT_MS, g_lastApplyPhase);
+                    service_emergency_restart_from_poisoned_runtime(
+                        "hardware work wedged inside the driver", true);
+                }
+            }
             if (g_serviceFanPulseInFlight && g_serviceFanPulseHeartbeatMs != 0) {
                 ULONGLONG nowTickMs = GetTickCount64();
                 ULONGLONG stuckMs = nowTickMs - g_serviceFanPulseHeartbeatMs;

@@ -555,7 +555,7 @@ static inline bool linux_daemon_guard_valid(
            record->size == sizeof(*record) &&
            record->lockedOut <= 1u &&
            record->lockoutReason <=
-               (gc_u32)SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED &&
+               (gc_u32)SERVICE_AUTO_RESTORE_LOCKOUT_MAX &&
            // Coherent or rejected, the same rule the wire envelope follows: a
            // latched lockout always names a reason, and a clear guard never
            // carries one.  Either half alone would be published as a fact.

@@ -78,6 +78,7 @@
 #include "gui_apply_shape_policy.h"
 #include "desired_advanced_domains_policy.h"
 #include "ownership_handback_policy.h"
+#include "service_wedge_watchdog_policy.h"
 #include "gui_tray_callback_policy.h"
 #include "applied_profile_indicator_policy.h"
 #include "service_profile_identity_policy.h"
@@ -1224,11 +1225,19 @@ static int run_ownership_handback_tests() {
     plan = ownership_handback_plan(in, OWNERSHIP_HANDBACK_SCOPE_NONE);
     if (plan.verdict == OWNERSHIP_HANDBACK_RUN || !plan.deleteMarker) return 5866;
 
-    // The previous instance died inside its own handback: stop, do not loop.
-    in.previousHandbackInFlight = true;
+    // A first attempt that died (crash, or a hang the watchdog restarted) is
+    // retried once in the fresh process...
+    if (plan.retry) return 5869;
+    in.previousAttempts = 1u;
+    plan = ownership_handback_plan(in, full);
+    if (plan.verdict != OWNERSHIP_HANDBACK_RUN || !plan.retry ||
+        plan.deleteMarker) return 5877;
+    // ...but when every allowed attempt died, stop: do not loop.
+    in.previousAttempts = OWNERSHIP_HANDBACK_MAX_ATTEMPTS;
     plan = ownership_handback_plan(in, full);
     if (plan.verdict != OWNERSHIP_HANDBACK_GIVE_UP_PREVIOUS_ATTEMPT_DIED ||
         !plan.deleteMarker || plan.scope != OWNERSHIP_HANDBACK_SCOPE_NONE) return 5867;
+    if (OWNERSHIP_HANDBACK_MAX_ATTEMPTS != 2u) return 5878;
     // ...even when the boot also changed, the boot rule wins (no write either way).
     in.sameBoot = false;
     if (ownership_handback_plan(in, full).verdict !=
@@ -1243,6 +1252,25 @@ static int run_ownership_handback_tests() {
     if (ownership_handback_retires_marker(OWNERSHIP_HANDBACK_SCOPE_FAN_ONLY, false)) return 5873;
     if (!ownership_handback_retires_marker(OWNERSHIP_HANDBACK_SCOPE_FAN_ONLY, true)) return 5874;
     if (ownership_handback_retires_marker(OWNERSHIP_HANDBACK_SCOPE_NONE, true)) return 5875;
+    // The v28 lockout reason is inside the accepted range, and the range ends there.
+    if (SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE != 4 ||
+        SERVICE_AUTO_RESTORE_LOCKOUT_MAX != SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE)
+        return 5898;
+    {
+        ServiceSnapshot snapshot = {};
+        snapshot.autoRestoreLockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE;
+        validate_service_snapshot_for_ipc(&snapshot);
+        if (snapshot.autoRestoreLockoutReason !=
+            SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE) return 5899;
+    }
+    // The wedge watchdog's decision.
+    if (service_hardware_work_is_wedged(false, 999999ull)) return 5990;
+    if (service_hardware_work_is_wedged(true, SERVICE_HARDWARE_WORK_WEDGE_TIMEOUT_MS)) return 5991;
+    if (!service_hardware_work_is_wedged(true, SERVICE_HARDWARE_WORK_WEDGE_TIMEOUT_MS + 1ull)) return 5994;
+    if (SERVICE_HARDWARE_WORK_WEDGE_TIMEOUT_MS <= SERVICE_APPLY_HANDLER_BUDGET_MS / 2) return 5992;
+    if (service_progress_age_ms(1000ull, 2000ull) != 0ull ||
+        service_progress_age_ms(5000ull, 2000ull) != 3000ull ||
+        service_progress_age_ms(5000ull, 0ull) != 0ull) return 5993;
     if (strcmp(ownership_handback_verdict_name(OWNERSHIP_HANDBACK_RUN), "run") != 0 ||
         strcmp(ownership_handback_scope_name(OWNERSHIP_HANDBACK_SCOPE_FAN_ONLY),
                "fan-only") != 0) return 5876;
@@ -1260,12 +1288,14 @@ static int run_ownership_handback_tests() {
         service_ownership_marker_initialize(&marker, boot, &target);
         if (!service_ownership_marker_valid(&marker)) return 5880;
         if (!marker.targetGpu.valid || marker.targetGpu.pciBus != 1 ||
-            marker.handbackInFlight != 0) return 5881;
+            marker.handbackAttempts != 0) return 5881;
         ServiceOwnershipMarker bad = marker;
         bad.magic ^= 1u;
         if (service_ownership_marker_valid(&bad)) return 5882;
         bad = marker;
-        bad.handbackInFlight = 2u;
+        bad.handbackAttempts = OWNERSHIP_HANDBACK_MAX_ATTEMPTS;
+        if (!service_ownership_marker_valid(&bad)) return 5879;
+        bad.handbackAttempts = OWNERSHIP_HANDBACK_MAX_ATTEMPTS + 1u;
         if (service_ownership_marker_valid(&bad)) return 5883;
         bad = marker;
         bad.bootIdentity = ServiceBootIdentity{};
@@ -1302,7 +1332,7 @@ static int run_ownership_handback_tests() {
         linux_fan_ownership_marker_initialize(&bad, tooLong);
         if (linux_fan_ownership_marker_valid(&bad)) return 5895;
         bad = marker;
-        bad.handbackInFlight = 7u;
+        bad.handbackAttempts = OWNERSHIP_HANDBACK_MAX_ATTEMPTS + 1u;
         if (linux_fan_ownership_marker_valid(&bad)) return 5896;
         if (sizeof(LinuxFanOwnershipMarker) != 16u + LINUX_FAN_OWNERSHIP_BOOT_ID_MAX)
             return 5897;
@@ -3698,7 +3728,7 @@ static int run_all_tests(int argc, char** argv) {
     // Protocol-v13 request validation, mutation preconditions, and field layout.
     {
         if (SERVICE_PROTOCOL_MAGIC != 0x47535643u) return 80;
-        if (SERVICE_PROTOCOL_VERSION != 27) return 81;
+        if (SERVICE_PROTOCOL_VERSION != 28) return 81;
         // These are release gates, not incidental layout observations. A field
         // addition that changes a fixed-size IPC structure must bump the wire
         // version; otherwise mixed old/new peers pass the header handshake and
@@ -8223,7 +8253,7 @@ static int run_all_tests(int argc, char** argv) {
         if (linux_daemon_guard_valid(&corrupt)) return 3179;
         corrupt = record;
         corrupt.lockoutReason =
-            (gc_u32)SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED + 1u;
+            (gc_u32)SERVICE_AUTO_RESTORE_LOCKOUT_MAX + 1u;
         corrupt.checksum = linux_daemon_guard_checksum(&corrupt);
         if (linux_daemon_guard_valid(&corrupt)) return 3190;
         // A clean guard round-trips with no reason attached.

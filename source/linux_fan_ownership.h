@@ -61,6 +61,19 @@ static void daemon_fan_ownership_retire(const char* reason) {
          err[0] ? ": " : "", err);
 }
 
+// Latch the automatic-restore guard with the reason clients show as "run
+// Reset".  The guard is loaded before this runs (linux_daemon_run order).
+static void daemon_fan_ownership_latch_incomplete(const char* context) {
+    linux_auto_restore_note_lockout(&g_autoRestoreGuard,
+        SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE);
+    char guardErr[256] = {};
+    bool stored = linux_daemon_guard_store(GC_DAEMON_GUARD_FILE,
+        &g_autoRestoreGuard, guardErr, sizeof(guardErr));
+    dlog("daemon fan ownership: latched handback-incomplete lockout (%s) "
+         "persisted=%d%s%s\n", context ? context : "", stored ? 1 : 0,
+         guardErr[0] ? " detail=" : "", guardErr);
+}
+
 // Once per start, before the startup policy runs and before the fan worker
 // exists, so nothing races it.
 static void daemon_fan_ownership_handback_at_start() {
@@ -75,20 +88,26 @@ static void daemon_fan_ownership_handback_at_start() {
     in.markerValid = loaded == 1;
     in.currentBootKnown = bootKnown;
     in.sameBoot = loaded == 1 && bootKnown && strcmp(marker.bootId, bootId) == 0;
-    in.previousHandbackInFlight = loaded == 1 && marker.handbackInFlight != 0;
+    in.previousAttempts = loaded == 1 ? (unsigned int)marker.handbackAttempts : 0u;
     OwnershipHandbackPlan plan = ownership_handback_plan(
         in, OWNERSHIP_HANDBACK_SCOPE_FAN_ONLY);
     if (plan.verdict == OWNERSHIP_HANDBACK_NO_MARKER) return;
     dlog("daemon fan ownership: previous daemon left the fan under manual control; "
          "verdict=%s markerValid=%d bootKnown=%d sameBoot=%d "
-         "previousHandbackInFlight=%d%s%s\n",
+         "previousAttempts=%u/%u retry=%d%s%s\n",
          ownership_handback_verdict_name(plan.verdict), in.markerValid ? 1 : 0,
          in.currentBootKnown ? 1 : 0, in.sameBoot ? 1 : 0,
-         in.previousHandbackInFlight ? 1 : 0, err[0] ? " detail=" : "", err);
+         in.previousAttempts, (unsigned int)OWNERSHIP_HANDBACK_MAX_ATTEMPTS,
+         plan.retry ? 1 : 0, err[0] ? " detail=" : "", err);
     if (plan.deleteMarker) {
-        if (plan.verdict == OWNERSHIP_HANDBACK_GIVE_UP_PREVIOUS_ATTEMPT_DIED)
-            dlog("daemon fan ownership: the previous daemon died while handing the "
-                 "fan back; NOT retrying (restart-loop guard). Reset returns it.\n");
+        if (plan.verdict == OWNERSHIP_HANDBACK_GIVE_UP_PREVIOUS_ATTEMPT_DIED) {
+            dlog("daemon fan ownership: every allowed handback attempt died or "
+                 "hung (systemd start timeout); NOT retrying (restart-loop guard). "
+                 "Reset returns the fan.\n");
+            // Published to clients (protocol v28) so the TUI/CLI say what to do.
+            daemon_fan_ownership_latch_incomplete(
+                "every allowed fan handback attempt died");
+        }
         daemon_fan_ownership_retire(ownership_handback_verdict_name(plan.verdict));
         return;
     }
@@ -97,8 +116,10 @@ static void daemon_fan_ownership_handback_at_start() {
         dlog("daemon fan ownership: GPU backend not ready; handback deferred\n");
         return;
     }
+    // Counted before writing: a hang here is killed by systemd's start timeout
+    // (this runs before READY=1), and the next start retries at most once.
     LinuxFanOwnershipMarker inFlight = marker;
-    inFlight.handbackInFlight = 1u;
+    inFlight.handbackAttempts = marker.handbackAttempts + 1u;
     if (!linux_fan_ownership_marker_store(GC_DAEMON_FAN_MARKER_FILE, &inFlight,
                                           err, sizeof(err))) {
         dlog("daemon fan ownership: in-flight record failed (%s); not writing "
@@ -119,10 +140,13 @@ static void daemon_fan_ownership_handback_at_start() {
     if (autoOk) {
         daemon_fan_ownership_retire("startup handback returned the fan");
     } else {
-        // Survived: clear the in-flight flag so the next start may try again.
-        inFlight.handbackInFlight = 0u;
+        // Survived but refused: this attempt returned, so it does not count as
+        // one that died; the next start may try again.  Tell clients now.
+        inFlight.handbackAttempts = 0u;
         linux_fan_ownership_marker_store(GC_DAEMON_FAN_MARKER_FILE, &inFlight,
                                          err, sizeof(err));
+        daemon_fan_ownership_latch_incomplete(
+            "the driver refused to take the fan back after an unexpected stop");
     }
 }
 

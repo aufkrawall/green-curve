@@ -174,7 +174,7 @@ static void service_ownership_handback_prepare_at_startup(bool controlledRecover
     in.currentBootKnown = bootKnown;
     in.sameBoot = loaded == 1 && bootKnown &&
         service_boot_identity_equal(marker.bootIdentity, currentBoot);
-    in.previousHandbackInFlight = loaded == 1 && marker.handbackInFlight != 0;
+    in.previousAttempts = loaded == 1 ? (unsigned int)marker.handbackAttempts : 0u;
     OwnershipHandbackPlan plan = ownership_handback_plan(in,
         ownership_handback_windows_start_scope(controlledRecoveryValidated));
     if (plan.verdict == OWNERSHIP_HANDBACK_NO_MARKER) {
@@ -183,21 +183,23 @@ static void service_ownership_handback_prepare_at_startup(bool controlledRecover
     }
     debug_log("ownership handback: previous instance left GPU state it owned;"
               " verdict=%s scope=%s markerValid=%d bootKnown=%d sameBoot=%d"
-              " previousHandbackInFlight=%d controlledRecovery=%d\n",
+              " previousAttempts=%u/%u retry=%d controlledRecovery=%d\n",
         ownership_handback_verdict_name(plan.verdict),
         ownership_handback_scope_name(plan.scope), in.markerValid ? 1 : 0,
         in.currentBootKnown ? 1 : 0, in.sameBoot ? 1 : 0,
-        in.previousHandbackInFlight ? 1 : 0, controlledRecoveryValidated ? 1 : 0);
+        in.previousAttempts, (unsigned int)OWNERSHIP_HANDBACK_MAX_ATTEMPTS,
+        plan.retry ? 1 : 0, controlledRecoveryValidated ? 1 : 0);
     if (plan.verdict == OWNERSHIP_HANDBACK_GIVE_UP_PREVIOUS_ATTEMPT_DIED) {
+        // Tells the GUI to ask the user for a Reset (protocol v28).
         service_latch_auto_restore_lockout(
-            SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED,
-            "the previous instance died while handing its GPU state back");
+            SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE,
+            "every allowed handback attempt died before returning the GPU state");
         char logErr[256] = {};
         write_error_report_log("Returning GPU settings to stock was abandoned",
-            "The background service stopped unexpectedly while returning GPU"
-            " settings to stock after an earlier unexpected stop. It did not try"
-            " again, to avoid a restart loop. Use Reset in Green Curve to return"
-            " the GPU to stock.", logErr, sizeof(logErr));
+            "The background service stopped unexpectedly, and each attempt to"
+            " return the GPU to stock afterwards stopped or hung as well. It did"
+            " not try again, to avoid a restart loop. Use Reset in Green Curve to"
+            " return the GPU to stock.", logErr, sizeof(logErr));
     }
     if (plan.deleteMarker) {
         service_ownership_marker_clear(ownership_handback_verdict_name(plan.verdict));
@@ -233,7 +235,11 @@ static bool service_ownership_handback_run_locked(const char* origin,
     if (detail && detailSize) detail[0] = 0;
     if (InterlockedExchangeAdd(&g_serviceHandbackPending, 0) == 0) return true;
     const OwnershipHandbackScope scope = g_serviceHandbackPendingScope;
+    // Watched by the service wedge watchdog: a handback stuck inside a dead
+    // driver is restarted into a fresh process instead of hanging forever.
+    ServiceHardwareWorkScope hardwareWork("ownership handback");
 
+    set_last_apply_phase("ownership handback: hardware initialize");
     if (!hardware_initialize(detail, detailSize) || g_app.deviceRemoved) {
         debug_log("ownership handback (%s): GPU not ready; stays pending: %s\n",
             origin, detail && detail[0] ? detail : "device removed");
@@ -254,23 +260,25 @@ static bool service_ownership_handback_run_locked(const char* origin,
     }
     ServiceSelectedGpuWriteEpoch gpuEpoch = service_selected_gpu_capture_write_epoch();
 
-    // Write-before-act: if this handback kills the process, the next start
-    // must see that and stop, not repeat it forever.
+    // Write-before-act: if this attempt dies (crash, or a hang the watchdog
+    // restarts), the next start sees the count and retries at most up to
+    // OWNERSHIP_HANDBACK_MAX_ATTEMPTS instead of looping forever.
     ServiceOwnershipMarker inFlight = g_serviceHandbackMarker;
-    inFlight.handbackInFlight = 1u;
+    inFlight.handbackAttempts = g_serviceHandbackMarker.handbackAttempts + 1u;
     if (!service_ownership_marker_store(&inFlight)) {
         set_message(detail, detailSize,
             "The handback could not record itself durably, so it was not attempted");
         debug_log("ownership handback (%s): in-flight record failed; not writing"
                   " (an unguarded handback could crash-loop)\n", origin);
         service_latch_auto_restore_lockout(
-            SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED,
+            SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE,
             "ownership handback could not be recorded before writing");
         service_ownership_handback_finish_locked();
         return false;
     }
     if (!service_selected_gpu_write_epoch_is_current(gpuEpoch)) {
-        inFlight.handbackInFlight = 0u;
+        // Nothing was written: this attempt does not count.
+        inFlight.handbackAttempts = g_serviceHandbackMarker.handbackAttempts;
         service_ownership_marker_store(&inFlight);
         debug_log("ownership handback (%s): selected GPU changed before the write; stays pending\n",
             origin);
@@ -278,14 +286,17 @@ static bool service_ownership_handback_run_locked(const char* origin,
     }
     if (writeAttemptedOut) *writeAttemptedOut = true;
     g_serviceHandbackRunning = true;
-    debug_log("ownership handback (%s): returning %s GPU state to the driver\n",
-        origin, ownership_handback_scope_name(scope));
+    debug_log("ownership handback (%s): returning %s GPU state to the driver"
+              " (attempt %u of %u)\n", origin, ownership_handback_scope_name(scope),
+        (unsigned int)inFlight.handbackAttempts,
+        (unsigned int)OWNERSHIP_HANDBACK_MAX_ATTEMPTS);
 
     // Fan first: it is the only owned state that is unsafe without a
     // controller.  Idempotent when the driver already owns the fan.
     bool fanOk = true;
     char fanDetail[128] = {};
     if (g_app.fanSupported) {
+        set_last_apply_phase("ownership handback: fan to driver auto");
         fanOk = nvml_set_fan_auto(fanDetail, sizeof(fanDetail));
         if (fanOk) {
             g_app.fanIsAuto = true;
@@ -308,6 +319,7 @@ static bool service_ownership_handback_run_locked(const char* origin,
     bool resetOk = true;
     char resetDetail[512] = {};
     if (scope == OWNERSHIP_HANDBACK_SCOPE_FULL) {
+        set_last_apply_phase("ownership handback: reset to stock");
         bool resetAttempted = false;
         resetOk = service_reset_all(resetDetail, sizeof(resetDetail), &resetAttempted);
         debug_log("ownership handback (%s): reset to stock ok=%d attempted=%d detail=%s\n",
@@ -321,9 +333,9 @@ static bool service_ownership_handback_run_locked(const char* origin,
         // service_reset_all() already retired it; make that unconditional.
         service_ownership_marker_clear("handback returned the owned state");
     } else {
-        // Survived: the in-flight flag must not read as a crash next time.  A
-        // FAN_ONLY handback leaves a controlled recovery that still owns intent.
-        inFlight.handbackInFlight = 0u;
+        // Survived: this attempt returned, so it must not count as one that
+        // died.  A FAN_ONLY handback leaves a controlled recovery owning intent.
+        inFlight.handbackAttempts = 0u;
         if (service_ownership_marker_store(&inFlight)) {
             g_serviceOwnershipMarkerTarget = inFlight.targetGpu;
             InterlockedExchange(&g_serviceOwnershipMarkerCommitted, 1);
@@ -335,7 +347,7 @@ static bool service_ownership_handback_run_locked(const char* origin,
             !resetOk ? "The GPU could not be fully returned to stock: " : "",
             !resetOk ? resetDetail : "");
         service_latch_auto_restore_lockout(
-            SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED,
+            SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE,
             "ownership handback after an unexpected stop did not complete");
         char logErr[256] = {};
         write_error_report_log(

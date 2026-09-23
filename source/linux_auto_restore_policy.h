@@ -92,6 +92,9 @@ static inline const char* linux_auto_restore_lockout_reason_name(
         case SERVICE_AUTO_RESTORE_LOCKOUT_TDR_SPAM: return "driver restart spam";
         case SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED:
             return "an automatic write failed at the hardware";
+        case SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE:
+            return "the fan could not be returned to the driver after an "
+                   "unexpected daemon stop; run Reset";
         default: return "unknown safety reason";
     }
 }
@@ -195,12 +198,15 @@ static inline void linux_auto_restore_note_lockout(
     if (!guard) return;
     guard->lockedOut = 1;
     if (reason == SERVICE_AUTO_RESTORE_LOCKOUT_NONE ||
-        reason > SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED)
+        reason > SERVICE_AUTO_RESTORE_LOCKOUT_MAX)
         reason = SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED;
     // First cause wins.  A lockout is cleared only by an explicit Apply/Reset,
     // so a later automatic refusal is a consequence of the original latch and
-    // must not overwrite the reason that actually explains it.
-    if (guard->lockoutReason == SERVICE_AUTO_RESTORE_LOCKOUT_NONE)
+    // must not overwrite the reason that actually explains it.  The one
+    // exception is HANDBACK_INCOMPLETE: it names hardware left in an unknown
+    // state that the user must act on, which outranks why automation stopped.
+    if (guard->lockoutReason == SERVICE_AUTO_RESTORE_LOCKOUT_NONE ||
+        reason == SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE)
         guard->lockoutReason = reason;
 }
 
@@ -224,8 +230,7 @@ static inline gc_u32 linux_auto_restore_published_lockout_reason(
         // A locked-out guard must never publish NONE; a record that says
         // otherwise is incoherent and is reported as the generic reason.
         if (guard->lockoutReason == SERVICE_AUTO_RESTORE_LOCKOUT_NONE ||
-            guard->lockoutReason >
-                SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED)
+            guard->lockoutReason > SERVICE_AUTO_RESTORE_LOCKOUT_MAX)
             return SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED;
         return guard->lockoutReason;
     }

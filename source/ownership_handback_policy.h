@@ -25,9 +25,14 @@
 // already at stock and another tool may have taken the fan since.  A marker
 // from another boot is discarded without a write.
 //
-// "Once": the marker records a handback in flight BEFORE the handback writes.
-// If that write itself kills the process, the next start sees the flag and
-// gives up instead of looping (SCM and systemd both restart us indefinitely).
+// "Bounded": the marker counts handback attempts, and the count is stored
+// BEFORE each attempt writes and reset once an attempt returns.  A nonzero
+// count at start therefore means an attempt died -- crashed, or hung and was
+// killed by the Windows wedge watchdog or systemd's start timeout.  One more
+// attempt runs in the fresh process (fresh driver DLLs are the documented way
+// out of a wedged nvml.dll); after OWNERSHIP_HANDBACK_MAX_ATTEMPTS the start
+// gives up and says so instead of looping (SCM and systemd both restart us
+// indefinitely).
 //
 // Scope is platform policy, chosen to match what that platform's graceful stop
 // already does:
@@ -48,6 +53,10 @@
 #include "gpu_core.h"
 #include "service_recovery_policy.h"
 
+// Attempts per boot, counting the one that died.  Two: a wedge caused by a
+// stale driver image is cured by the restart, and a second death is not.
+#define OWNERSHIP_HANDBACK_MAX_ATTEMPTS 2u
+
 enum OwnershipHandbackScope : gc_u32 {
     OWNERSHIP_HANDBACK_SCOPE_NONE = 0,
     OWNERSHIP_HANDBACK_SCOPE_FAN_ONLY = 1,
@@ -64,7 +73,7 @@ enum OwnershipHandbackVerdict : gc_u32 {
     // Unreadable/corrupt marker, or the current boot cannot be identified.
     // Unproven is never authorization to write.
     OWNERSHIP_HANDBACK_DISCARD_UNPROVEN = 3,
-    // The previous instance died INSIDE its own handback: do not loop.
+    // Every allowed attempt died inside the handback: do not loop.
     OWNERSHIP_HANDBACK_GIVE_UP_PREVIOUS_ATTEMPT_DIED = 4,
 };
 
@@ -73,7 +82,8 @@ struct OwnershipHandbackInputs {
     bool markerValid;
     bool currentBootKnown;
     bool sameBoot;
-    bool previousHandbackInFlight;
+    // Attempts that started and never returned (the marker's count).
+    unsigned int previousAttempts;
 };
 
 struct OwnershipHandbackPlan {
@@ -82,6 +92,8 @@ struct OwnershipHandbackPlan {
     // Whether the marker file must be deleted now (every non-RUN verdict that
     // found one).  A RUN keeps it until the handback has returned the state.
     bool deleteMarker;
+    // RUN after an attempt that died: the retry in a fresh process.
+    bool retry;
 };
 
 static inline OwnershipHandbackPlan ownership_handback_plan(
@@ -99,7 +111,7 @@ static inline OwnershipHandbackPlan ownership_handback_plan(
         plan.verdict = OWNERSHIP_HANDBACK_DISCARD_OTHER_BOOT;
         return plan;
     }
-    if (in.previousHandbackInFlight) {
+    if (in.previousAttempts >= OWNERSHIP_HANDBACK_MAX_ATTEMPTS) {
         plan.verdict = OWNERSHIP_HANDBACK_GIVE_UP_PREVIOUS_ATTEMPT_DIED;
         return plan;
     }
@@ -112,6 +124,7 @@ static inline OwnershipHandbackPlan ownership_handback_plan(
     plan.verdict = OWNERSHIP_HANDBACK_RUN;
     plan.scope = startScope;
     plan.deleteMarker = false;
+    plan.retry = in.previousAttempts > 0;
     return plan;
 }
 
@@ -166,8 +179,8 @@ struct ServiceOwnershipMarker {
     gc_u32 magic;
     gc_u32 version;
     gc_u32 size;
-    // Nonzero while a handback is writing; see the header comment.
-    gc_u32 handbackInFlight;
+    // Handback attempts that started and have not returned; see the header.
+    gc_u32 handbackAttempts;
     ServiceBootIdentity bootIdentity;
     // The adapter the owning instance wrote, so a multi-GPU handback targets it.
     GpuAdapterInfo targetGpu;
@@ -189,7 +202,7 @@ static inline bool service_ownership_marker_valid(
     return marker && marker->magic == SERVICE_OWNERSHIP_MARKER_MAGIC &&
         marker->version == SERVICE_OWNERSHIP_MARKER_VERSION &&
         marker->size == (gc_u32)sizeof(*marker) &&
-        marker->handbackInFlight <= 1u &&
+        marker->handbackAttempts <= OWNERSHIP_HANDBACK_MAX_ATTEMPTS &&
         service_boot_identity_valid(marker->bootIdentity);
 }
 
@@ -203,7 +216,7 @@ struct LinuxFanOwnershipMarker {
     gc_u32 magic;
     gc_u32 version;
     gc_u32 size;
-    gc_u32 handbackInFlight;
+    gc_u32 handbackAttempts;
     char bootId[LINUX_FAN_OWNERSHIP_BOOT_ID_MAX];
 };
 
@@ -225,7 +238,8 @@ static inline bool linux_fan_ownership_marker_valid(
     if (!marker || marker->magic != LINUX_FAN_OWNERSHIP_MARKER_MAGIC ||
         marker->version != LINUX_FAN_OWNERSHIP_MARKER_VERSION ||
         marker->size != (gc_u32)sizeof(*marker) ||
-        marker->handbackInFlight > 1u || !marker->bootId[0])
+        marker->handbackAttempts > OWNERSHIP_HANDBACK_MAX_ATTEMPTS ||
+        !marker->bootId[0])
         return false;
     // Terminated inside the field, printable, no stray bytes after it.
     bool terminated = false;

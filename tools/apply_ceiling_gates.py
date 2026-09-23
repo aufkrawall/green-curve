@@ -510,9 +510,21 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_order_in_operation(
         handback_cpp,
         "static bool service_ownership_handback_run_locked(",
-        "inFlight.handbackInFlight = 1u;",
+        "inFlight.handbackAttempts = g_serviceHandbackMarker.handbackAttempts + 1u;",
         "fanOk = nvml_set_fan_auto(",
-        "the handback records itself in flight before its first write (loop guard)")
+        "the handback counts its attempt before its first write (loop guard)")
+    require_order_in_operation(
+        handback_cpp,
+        "static bool service_ownership_handback_run_locked(",
+        'ServiceHardwareWorkScope hardwareWork("ownership handback");',
+        "fanOk = nvml_set_fan_auto(",
+        "the handback runs inside a watched hardware-work scope")
+    for shard in ("main_service_apply_runtime.cpp",):
+        require_text(_p(ctx, shard), "ServiceHardwareWorkScope hardwareWork(",
+                     "apply and Reset run inside watched hardware-work scopes")
+    require_text(service_host_cpp, "service_hardware_work_is_wedged(",
+                 "the wedge watchdog watches every hardware-work scope, not only "
+                 "a queued fan pulse")
     require_order_in_operation(
         handback_cpp,
         "static bool service_ownership_handback_run_locked(",
@@ -535,6 +547,11 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         "the Linux fan handback runs before any startup write")
     require_order_in_operation(
         linux_daemon_cpp, "int linux_daemon_run(const char* configPath)",
+        "load_auto_restore_guard_at_boot();",
+        "daemon_fan_ownership_handback_at_start();",
+        "the guard is loaded before a handback give-up latches it")
+    require_order_in_operation(
+        linux_daemon_cpp, "int linux_daemon_run(const char* configPath)",
         "daemon_fan_ownership_handback_at_start();",
         "pl_thread_start(&fanThread, fan_reassert_thread",
         "the Linux fan handback runs before the fan worker exists")
@@ -550,6 +567,6 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_order_in_operation(
         _p(ctx, "linux_fan_ownership.h"),
         "static void daemon_fan_ownership_handback_at_start()",
-        "inFlight.handbackInFlight = 1u;",
+        "inFlight.handbackAttempts = marker.handbackAttempts + 1u;",
         "bool autoOk = linux_backend_set_fan_auto(&g_gpu);",
         "the Linux handback records itself in flight before writing (loop guard)")

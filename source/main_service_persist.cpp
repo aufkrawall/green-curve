@@ -467,6 +467,7 @@ static const char* service_auto_restore_lockout_reason_name(DWORD reason) {
         case SERVICE_AUTO_RESTORE_LOCKOUT_UNSTABLE_APPLY: return "apply did not survive the 10-minute proving period";
         case SERVICE_AUTO_RESTORE_LOCKOUT_TDR_SPAM: return "TDR/restart spam detected";
         case SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED: return "automatic recovery apply failed";
+        case SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE: return "GPU state could not be returned to stock after an unexpected stop";
         default: return "unknown safety reason";
     }
 }
@@ -504,7 +505,7 @@ static bool service_read_auto_restore_registry_lockout(
     if (status == ERROR_FILE_NOT_FOUND) return true;
     if (status != ERROR_SUCCESS || type != REG_DWORD || size != sizeof(reason) ||
         reason == SERVICE_AUTO_RESTORE_LOCKOUT_NONE ||
-        reason > SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED) {
+        reason > SERVICE_AUTO_RESTORE_LOCKOUT_MAX) {
         return false;
     }
     if (reasonOut) *reasonOut = reason;
@@ -623,7 +624,7 @@ static bool service_auto_restore_is_locked_out(DWORD* reasonOut = nullptr) {
     if (!ok || magic != SERVICE_AUTO_RESTORE_LOCKOUT_MAGIC ||
         version != SERVICE_AUTO_RESTORE_LOCKOUT_VERSION ||
         reason == SERVICE_AUTO_RESTORE_LOCKOUT_NONE ||
-        reason > SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED) {
+        reason > SERVICE_AUTO_RESTORE_LOCKOUT_MAX) {
         InterlockedExchange(&g_serviceAutoRestoreCachedLockoutReason,
             SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED);
         if (reasonOut) *reasonOut = SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED;

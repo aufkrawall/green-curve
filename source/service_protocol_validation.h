@@ -292,7 +292,7 @@ static inline void validate_service_snapshot_for_ipc(ServiceSnapshot* s) {
     if (s->lastLifecycleResult > SERVICE_LIFECYCLE_RESULT_FAILED) {
         s->lastLifecycleResult = SERVICE_LIFECYCLE_RESULT_NONE;
     }
-    if (s->autoRestoreLockoutReason > SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED) {
+    if (s->autoRestoreLockoutReason > SERVICE_AUTO_RESTORE_LOCKOUT_MAX) {
         s->autoRestoreLockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED;
     }
     if (s->adapterCount > MAX_GPU_ADAPTERS) s->adapterCount = MAX_GPU_ADAPTERS;
@@ -336,7 +336,7 @@ static inline bool validate_service_state_envelope_for_ipc(
             SERVICE_LIFECYCLE_TRIGGER_DRIVER_RECOVERY ||
         snapshot->lastLifecycleResult > SERVICE_LIFECYCLE_RESULT_FAILED ||
         snapshot->autoRestoreLockoutReason >
-            SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED ||
+            SERVICE_AUTO_RESTORE_LOCKOUT_MAX ||
         snapshot->health.reason > SERVICE_GPU_HEALTH_STATE_UNCERTAIN ||
         snapshot->health.architectureSource >
             SERVICE_GPU_ARCH_SOURCE_FUTURE_GUESS ||

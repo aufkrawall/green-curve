@@ -30,4 +30,25 @@ static volatile ULONGLONG g_serviceHardwareProgressMs = 0;
 
 static void service_note_hardware_progress();
 
+// Hardware work the watchdog must be able to see hang even when no fan pulse
+// is queued behind it (service_wedge_watchdog_policy.h).  Nested scopes share
+// one depth; the label names the outermost one for the watchdog's log line.
+static volatile LONG g_serviceHardwareWorkDepth = 0;
+static const char* volatile g_serviceHardwareWorkLabel = nullptr;
+
+struct ServiceHardwareWorkScope {
+    explicit ServiceHardwareWorkScope(const char* label) {
+        service_note_hardware_progress();
+        if (InterlockedIncrement(&g_serviceHardwareWorkDepth) == 1)
+            g_serviceHardwareWorkLabel = label;
+    }
+    ~ServiceHardwareWorkScope() {
+        service_note_hardware_progress();
+        if (InterlockedDecrement(&g_serviceHardwareWorkDepth) == 0)
+            g_serviceHardwareWorkLabel = nullptr;
+    }
+    ServiceHardwareWorkScope(const ServiceHardwareWorkScope&) = delete;
+    ServiceHardwareWorkScope& operator=(const ServiceHardwareWorkScope&) = delete;
+};
+
 #endif
