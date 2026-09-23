@@ -126,8 +126,16 @@ void gc_paint(GcWizard* wizard, HDC dc, const RECT* client);
 // installer_ui.cpp
 void gc_set_control_font(HWND control, HFONT font);
 void gc_set_text_utf8(HWND control, const char* text);
-// Reclassify the folder page's current path and refresh its protection
-// display, the acknowledgment checkbox, and the Next button state.
+void gc_get_text_utf8(HWND control, char* out, size_t outCount);
+#if !defined(GREEN_CURVE_UNINSTALLER)
+// installer_ui_install.cpp (setup-only install wizard)
 void gc_refresh_folder_protection(GcWizard* wizard, const WCHAR* pathWide);
+bool gc_commit_folder_page(GcWizard* wizard);
+void gc_commit_options_page(GcWizard* wizard);
+void gc_go_back(GcWizard* wizard);
+void gc_browse_for_folder(GcWizard* wizard);
+void gc_toggle_checkbox(GcWizard* wizard, HWND control, bool* value);
+void gc_fill_license_text(GcWizard* wizard);
+#endif
 
 #endif // GREEN_CURVE_INSTALLER_UI_INTERNAL_H

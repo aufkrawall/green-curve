@@ -93,6 +93,7 @@ static bool gc_build_argument_vector(GcArgumentVector* vector, char* error, size
 // Silent execution
 // ---------------------------------------------------------------------------
 
+#if !defined(GREEN_CURVE_UNINSTALLER)
 static int gc_run_silent_install(const GcInstallerOptions* options, const GcPriorInstall* prior,
                                  const char* defaultDirectory) {
     GcInstallContext context = {};
@@ -134,6 +135,7 @@ static int gc_run_silent_install(const GcInstallerOptions* options, const GcPrio
     gc_payload_release(&context.payload);
     return ok ? GC_EXIT_OK : GC_EXIT_FAILED;
 }
+#endif  // !GREEN_CURVE_UNINSTALLER
 
 static int gc_run_silent_uninstall(const WCHAR* installDirectory) {
     char error[512] = {};
@@ -155,16 +157,13 @@ static int gc_run_silent_uninstall(const WCHAR* installDirectory) {
 // instead, because it may be sitting in a downloads folder.
 static bool gc_resolve_uninstall_directory(WCHAR* out, size_t outCount) {
 #if defined(GREEN_CURVE_UNINSTALLER)
-    if (gc_module_directory(out, outCount)) return true;
-#endif
+    return gc_module_directory(out, outCount);
+#else
     GcPriorInstall prior = {};
     if (gc_read_prior_install(&prior) && prior.directory[0]) {
         return gc_utf8_to_wide(prior.directory, out, (int)outCount);
     }
-#if !defined(GREEN_CURVE_UNINSTALLER)
     return false;
-#else
-    return gc_module_directory(out, outCount);
 #endif
 }
 
@@ -259,6 +258,13 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
             exitCode = gc_run_uninstall_window(instance, installDirectory);
         }
     } else {
+#if defined(GREEN_CURVE_UNINSTALLER)
+        // Unreachable in practice (the mode is forced to UNINSTALL above); the
+        // branch exists so a future mistake cannot silently link the install
+        // orchestrator back into the uninstaller.
+        gc_log_fail("uninstall: install mode is not available in this binary");
+        exitCode = GC_EXIT_FAILED;
+#else
         GcPriorInstall prior = {};
         gc_read_prior_install(&prior);
         char defaultDirectory[GC_INSTALLER_MAX_PATH_CHARS] = {};
@@ -274,6 +280,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
         } else {
             exitCode = gc_run_setup_wizard(instance, &options, &prior, defaultDirectory);
         }
+#endif
     }
 
     if (comReady) CoUninitialize();

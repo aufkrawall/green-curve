@@ -833,6 +833,37 @@ static int run_installer_move_cleanup_tests() {
     RemoveDirectoryW(installed);
     RemoveDirectoryW(directory);
     if (!safe) return 5705;
+
+    // Both uninstaller leaves are cleaned up on upgrade: the current
+    // product-specific name and the pre-rename generic one.  A stale
+    // uninstall.exe left behind by a 0.26.0-era install is exactly the file a
+    // later antivirus scan still flags.
+    if (!CreateDirectoryW(directory, nullptr)) return 5710;
+    wchar_t currentUninstaller[MAX_PATH] = {}, legacyUninstaller[MAX_PATH] = {},
+           userFile[MAX_PATH] = {};
+    if (FAILED(StringCchPrintfW(currentUninstaller, MAX_PATH,
+                                L"%ls\\greencurve-uninstall.exe", directory)) ||
+        FAILED(StringCchPrintfW(legacyUninstaller, MAX_PATH,
+                                L"%ls\\uninstall.exe", directory)) ||
+        FAILED(StringCchPrintfW(userFile, MAX_PATH, L"%ls\\notes.txt", directory))) {
+        RemoveDirectoryW(directory);
+        return 5711;
+    }
+    if (!createFile(currentUninstaller) || !createFile(legacyUninstaller) || !createFile(userFile)) {
+        DeleteFileW(currentUninstaller);
+        DeleteFileW(legacyUninstaller);
+        DeleteFileW(userFile);
+        RemoveDirectoryW(directory);
+        return 5712;
+    }
+    GcPreviousFileCleanup dual = gc_remove_previous_setup_files(directory);
+    bool dualOk = !dual.removed && dual.deleted == 2 && dual.failed == 0 &&
+        GetFileAttributesW(currentUninstaller) == INVALID_FILE_ATTRIBUTES &&
+        GetFileAttributesW(legacyUninstaller) == INVALID_FILE_ATTRIBUTES &&
+        GetFileAttributesW(userFile) != INVALID_FILE_ATTRIBUTES;
+    DeleteFileW(userFile);
+    RemoveDirectoryW(directory);
+    if (!dualOk) return 5713;
     return 0;
 }
 #endif
@@ -11819,7 +11850,7 @@ static int run_all_tests_middle([[maybe_unused]] char** argv) {
         entries[0].dataOffset = dataStart;
         entries[0].dataSize = sizeA;
         entries[0].dataCrc32 = gc_crc32(payloadA, sizeA, 0);
-        snprintf(entries[1].name, sizeof(entries[1].name), "%s", "uninstall.exe");
+        snprintf(entries[1].name, sizeof(entries[1].name), "%s", "greencurve-uninstall.exe");
         entries[1].dataOffset = dataStart + sizeA;
         entries[1].dataSize = sizeB;
         entries[1].dataCrc32 = gc_crc32(payloadB, sizeB, 0);
@@ -12485,17 +12516,20 @@ static int run_all_tests_middle([[maybe_unused]] char** argv) {
         // downloads folder -- it used to be scheduled for deletion regardless,
         // which quietly took the user's setup file with it.
         if (!gc_uninstall_self_is_installed_copy(
+                "C:\\Program Files\\Green Curve\\greencurve-uninstall.exe",
+                "C:\\Program Files\\Green Curve")) return 2047;
+        if (!gc_uninstall_self_is_installed_copy(
                 "C:\\Program Files\\Green Curve\\uninstall.exe",
                 "C:\\Program Files\\Green Curve")) return 2047;
         // One trailing separator and forward slashes are the same install.
         if (!gc_uninstall_self_is_installed_copy(
-                "C:\\Program Files\\Green Curve\\uninstall.exe",
+                "C:\\Program Files\\Green Curve\\greencurve-uninstall.exe",
                 "C:\\Program Files\\Green Curve\\")) return 2047;
         if (!gc_uninstall_self_is_installed_copy(
-                "C:/Program Files/Green Curve/uninstall.exe",
+                "C:/Program Files/Green Curve/greencurve-uninstall.exe",
                 "C:\\Program Files\\Green Curve")) return 2047;
         if (!gc_uninstall_self_is_installed_copy(
-                "c:\\program files\\GREEN CURVE\\uninstall.exe",
+                "c:\\program files\\GREEN CURVE\\greencurve-uninstall.exe",
                 "C:\\Program Files\\Green Curve")) return 2047;
         // The setup stub in a downloads folder is not the installed copy.
         if (gc_uninstall_self_is_installed_copy(
@@ -12504,35 +12538,35 @@ static int run_all_tests_middle([[maybe_unused]] char** argv) {
         // Neither is a copy in a subdirectory of the installation: removing the
         // folder would not have removed it anyway.
         if (gc_uninstall_self_is_installed_copy(
-                "C:\\Program Files\\Green Curve\\backup\\uninstall.exe",
+                "C:\\Program Files\\Green Curve\\backup\\greencurve-uninstall.exe",
                 "C:\\Program Files\\Green Curve")) return 2048;
         // ...nor a sibling directory whose name merely starts the same way.
         if (gc_uninstall_self_is_installed_copy(
-                "C:\\Program Files\\Green Curve 2\\uninstall.exe",
+                "C:\\Program Files\\Green Curve 2\\greencurve-uninstall.exe",
                 "C:\\Program Files\\Green Curve")) return 2048;
         if (gc_uninstall_self_is_installed_copy(nullptr, "C:\\Program Files\\Green Curve"))
             return 2049;
         if (gc_uninstall_self_is_installed_copy(
-                "C:\\Program Files\\Green Curve\\uninstall.exe", nullptr)) return 2049;
-        if (gc_uninstall_self_is_installed_copy("uninstall.exe",
+                "C:\\Program Files\\Green Curve\\greencurve-uninstall.exe", nullptr)) return 2049;
+        if (gc_uninstall_self_is_installed_copy("greencurve-uninstall.exe",
                 "C:\\Program Files\\Green Curve")) return 2049;
         if (gc_uninstall_self_is_installed_copy("", "")) return 2049;
 
         char directory[GC_INSTALLER_MAX_PATH_CHARS] = {};
-        if (!gc_uninstall_directory_of("C:\\Program Files\\Green Curve\\uninstall.exe",
+        if (!gc_uninstall_directory_of("C:\\Program Files\\Green Curve\\greencurve-uninstall.exe",
                                        directory, sizeof(directory)) ||
             strcmp(directory, "C:\\Program Files\\Green Curve") != 0) return 2050;
         // A file at a drive root yields the bare drive, never a stray empty
         // string that would compare equal to something.
-        if (!gc_uninstall_directory_of("C:\\uninstall.exe", directory, sizeof(directory)) ||
+        if (!gc_uninstall_directory_of("C:\\greencurve-uninstall.exe", directory, sizeof(directory)) ||
             strcmp(directory, "C:") != 0) return 2050;
         // Nothing to split: a relative path has no directory to compare.
-        if (gc_uninstall_directory_of("uninstall.exe", directory, sizeof(directory)))
+        if (gc_uninstall_directory_of("greencurve-uninstall.exe", directory, sizeof(directory)))
             return 2050;
-        if (gc_uninstall_directory_of("\\uninstall.exe", directory, sizeof(directory)))
+        if (gc_uninstall_directory_of("\\greencurve-uninstall.exe", directory, sizeof(directory)))
             return 2050;
         char tiny[4] = {};
-        if (gc_uninstall_directory_of("C:\\Program Files\\uninstall.exe", tiny, sizeof(tiny)))
+        if (gc_uninstall_directory_of("C:\\Program Files\\greencurve-uninstall.exe", tiny, sizeof(tiny)))
             return 2050;
     }
 

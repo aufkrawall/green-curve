@@ -15,6 +15,31 @@
 #include <stdio.h>
 #include <string.h>
 
+// ---------------------------------------------------------------------------
+// GcInstallContext progress and failure reporting
+//
+// Shared by installer_apply.cpp, installer_stop.cpp, and the transaction shard
+// (included by apply).  They used to be static in installer_apply.cpp; making
+// installer_stop.cpp a real translation unit in both binaries is what lets the
+// uninstaller drop the install orchestrator entirely.
+// ---------------------------------------------------------------------------
+
+void gc_report(GcInstallContext* context, int percent, const char* status) {
+    gc_log_step("[%3d%%] %s", percent, status ? status : "");
+    if (context && context->progress) context->progress(context->progressContext, percent, status);
+}
+
+void gc_set_error(GcInstallContext* context, const char* fmt, ...) {
+    if (!context) return;
+    va_list args;
+    va_start(args, fmt);
+    int written = vsnprintf(context->error, sizeof(context->error), fmt, args);
+    va_end(args);
+    if (written < 0) context->error[0] = 0;
+    context->error[sizeof(context->error) - 1] = 0;
+    gc_log_fail("%s", context->error);
+}
+
 // Enough for the whole transcript of an install; older lines are dropped rather
 // than growing without bound, and the drop is recorded so a truncated log never
 // looks complete.

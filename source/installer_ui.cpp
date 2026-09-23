@@ -61,7 +61,7 @@ void gc_set_text_utf8(HWND control, const char* text) {
     SetWindowTextW(control, wide);
 }
 
-static void gc_get_text_utf8(HWND control, char* out, size_t outCount) {
+void gc_get_text_utf8(HWND control, char* out, size_t outCount) {
     if (!out || outCount == 0) return;
     out[0] = 0;
     WCHAR wide[GC_INSTALLER_MAX_PATH_CHARS] = {};
@@ -119,6 +119,12 @@ static DWORD WINAPI gc_worker_thread(LPVOID parameter) {
         }
         gc_progress_callback(wizard, 100, ok ? "Removed." : "Failed.");
     } else {
+#if defined(GREEN_CURVE_UNINSTALLER)
+        gc_log_fail("worker: install mode is not available in this binary");
+        StringCchCopyA(wizard->resultMessage, GC_ARRAY_COUNT(wizard->resultMessage),
+                       "This binary can only remove Green Curve.");
+        gc_progress_callback(wizard, 100, "Failed.");
+#else
         ok = gc_install_execute(&wizard->install);
         if (ok) {
             // A restore that did not happen is worth saying out loud: the user
@@ -148,6 +154,7 @@ static DWORD WINAPI gc_worker_thread(LPVOID parameter) {
             snprintf(wizard->resultMessage, sizeof(wizard->resultMessage), "%s",
                      wizard->install.error[0] ? wizard->install.error : "Setup could not complete.");
         }
+#endif
     }
     wizard->workSucceeded = ok;
     if (SUCCEEDED(comStatus)) CoUninitialize();
@@ -173,95 +180,15 @@ static void gc_start_work(GcWizard* wizard) {
 
 // ---------------------------------------------------------------------------
 // Navigation
+//
+// Install-only navigation (folder commit, options commit, back, folder browse)
+// lives in installer_ui_install.cpp.  gc_advance stays here because it is the
+// shared page machine.
 // ---------------------------------------------------------------------------
-
-// Reclassify the folder page's path (see service_path_chain_policy.h).  Runs
-// on every edit: the classification is a handful of local security reads, and
-// the remote short-circuit in the gatherer keeps even a dead network path from
-// stalling typing with round trips.
-void gc_refresh_folder_protection(GcWizard* wizard, const WCHAR* pathWide) {
-    classify_path_protection(pathWide, &wizard->folderProtection, true);
-    gc_update_page_controls(wizard);
-    InvalidateRect(wizard->hwnd, nullptr, TRUE);
-}
-
-// Fold the folder page's answer back into the options, then re-derive the whole
-// plan.  Re-deriving (rather than patching the plan in place) keeps the pure
-// policy the single decision-maker even when the user steps backwards.
-static bool gc_commit_folder_page(GcWizard* wizard) {
-    char chosen[GC_INSTALLER_MAX_PATH_CHARS] = {};
-    gc_get_text_utf8(wizard->pathEdit, chosen, sizeof(chosen));
-    const char* reason = nullptr;
-    if (!gc_install_directory_is_acceptable(chosen, &reason)) {
-        gc_show_message(wizard->hwnd, reason ? reason : "That installation folder cannot be used.",
-                        "Green Curve Setup", true);
-        SetFocus(wizard->pathEdit);
-        return false;
-    }
-    WCHAR chosenWide[GC_INSTALLER_MAX_PATH_CHARS] = {};
-    if (!gc_utf8_to_wide(chosen, chosenWide,
-            (int)GC_ARRAY_COUNT(chosenWide))) {
-        gc_show_message(wizard->hwnd, "That installation folder cannot be read.",
-                        "Green Curve Setup", true);
-        SetFocus(wizard->pathEdit);
-        return false;
-    }
-    // The same folders --service-install refuses, refused HERE, on the page
-    // where the user typed them.  Setup's step 5 runs `greencurve.exe
-    // --service-install` in the target directory, so without this the answer
-    // still arrived -- just after the files had been extracted and as a
-    // late, generic registration failure.
-    int locationVerdict = gc_service_install_location_verdict(chosenWide);
-    if (locationVerdict != GC_SVC_LOCATION_OK) {
-        gc_log_step("folder page: rejected verdict=%s",
-                    gc_service_location_verdict_name(locationVerdict));
-        gc_show_message(wizard->hwnd,
-                        "Green Curve needs a folder of its own. Installing here would "
-                        "change this folder's permissions so that only administrators "
-                        "could write to it. Choose or create a subfolder, for example "
-                        "C:\\Program Files\\Green Curve.",
-                        "Green Curve Setup", true);
-        SetFocus(wizard->pathEdit);
-        return false;
-    }
-    gc_refresh_folder_protection(wizard, chosenWide);
-    char chosenLabel[GC_INSTALLER_LOG_PATH_LABEL_CHARS] = {};
-    gc_log_path_label(chosenWide, chosenLabel, sizeof(chosenLabel));
-    gc_log_step("folder page: chosen=%s protected=%d reason=%d acknowledged=%d",
-                chosenLabel, wizard->folderProtection.verdict.chain_protected ? 1 : 0,
-                (int)wizard->folderProtection.verdict.reason,
-                wizard->riskAccepted ? 1 : 0);
-    if (gc_path_protection_requires_acknowledgment(&wizard->folderProtection.verdict) &&
-        !wizard->riskAccepted) {
-        char message[768] = {};
-        snprintf(message, sizeof(message), "%s\n\nTick \"%s\" to install there anyway.",
-                 gc_path_protection_headline(&wizard->folderProtection.verdict),
-                 GC_PATH_PROTECTION_ACKNOWLEDGMENT_LABEL);
-        gc_show_message(wizard->hwnd, message, "Green Curve Setup", true);
-        SetFocus(wizard->riskCheck);
-        return false;
-    }
-    // Carry the user's ACTUAL answer, not the fact that the page let them
-    // past: `gc_install_execute` re-classifies and re-checks on its own, and
-    // it can only do that as a second line of defence if it is told whether a
-    // box was ticked rather than handed an unconditional yes.
-    wizard->install.requirePathRiskAcknowledgment = true;
-    wizard->install.pathRiskAcknowledged = wizard->riskAccepted;
-    StringCchCopyA(wizard->options.directory, GC_ARRAY_COUNT(wizard->options.directory), chosen);
-    wizard->options.hasDirectory = true;
-    return true;
-}
-
-static void gc_commit_options_page(GcWizard* wizard) {
-    wizard->options.startMenuShortcut = wizard->startMenu ? GC_TOGGLE_ON : GC_TOGGLE_OFF;
-    wizard->options.desktopShortcut = wizard->desktop ? GC_TOGGLE_ON : GC_TOGGLE_OFF;
-    wizard->options.launchAfterInstall = wizard->launch ? GC_TOGGLE_ON : GC_TOGGLE_OFF;
-    gc_install_build_plan(&wizard->options, &wizard->prior, wizard->defaultDirectory,
-                          &wizard->install.plan);
-}
 
 static void gc_advance(GcWizard* wizard) {
     switch (wizard->page) {
+#if !defined(GREEN_CURVE_UNINSTALLER)
         case GC_PAGE_LICENSE:
             if (!wizard->accepted) return;
             wizard->page = GC_PAGE_FOLDER;
@@ -279,12 +206,19 @@ static void gc_advance(GcWizard* wizard) {
             }
             gc_start_work(wizard);
             return;
+#else
+        case GC_PAGE_LICENSE:
+        case GC_PAGE_FOLDER:
+        case GC_PAGE_OPTIONS:
+            break;
+#endif
         case GC_PAGE_CONFIRM_REMOVE:
             gc_start_work(wizard);
             return;
         case GC_PAGE_PROGRESS:
             return;
         case GC_PAGE_DONE:
+#if !defined(GREEN_CURVE_UNINSTALLER)
             if (!wizard->uninstallMode && wizard->workSucceeded && wizard->install.plan.launchAfterInstall) {
                 WCHAR directory[GC_INSTALLER_MAX_PATH_CHARS] = {};
                 if (gc_utf8_to_wide(wizard->install.plan.targetDirectory, directory,
@@ -292,6 +226,7 @@ static void gc_advance(GcWizard* wizard) {
                     gc_launch_installed_gui(directory, (DWORD)-1);
                 }
             }
+#endif
             wizard->exitCode = wizard->workSucceeded ? 0 : 1;
             DestroyWindow(wizard->hwnd);
             return;
@@ -299,64 +234,9 @@ static void gc_advance(GcWizard* wizard) {
     gc_update_page_controls(wizard);
 }
 
-static void gc_go_back(GcWizard* wizard) {
-    if (wizard->page == GC_PAGE_FOLDER) wizard->page = GC_PAGE_LICENSE;
-    else if (wizard->page == GC_PAGE_OPTIONS) wizard->page = GC_PAGE_FOLDER;
-    else return;
-    gc_update_page_controls(wizard);
-}
-
-// Modern folder picker.  The user selects the PARENT folder; setup appends the
-// fixed "Green Curve" name, unless the folder they picked already is one, which
-// avoids the "Green Curve\Green Curve" people otherwise create by browsing to
-// their existing installation.
-static void gc_browse_for_folder(GcWizard* wizard) {
-    IFileDialog* dialog = nullptr;
-    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                IID_IFileDialog, (void**)&dialog)) || !dialog) {
-        return;
-    }
-    DWORD options = 0;
-    if (SUCCEEDED(dialog->GetOptions(&options))) {
-        dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM);
-    }
-    dialog->SetTitle(L"Select the folder that should contain \"Green Curve\"");
-    if (SUCCEEDED(dialog->Show(wizard->hwnd))) {
-        IShellItem* item = nullptr;
-        if (SUCCEEDED(dialog->GetResult(&item)) && item) {
-            PWSTR selected = nullptr;
-            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &selected)) && selected) {
-                char parent[GC_INSTALLER_MAX_PATH_CHARS] = {};
-                if (gc_wide_to_utf8(selected, parent, (int)sizeof(parent))) {
-                    char resolved[GC_INSTALLER_MAX_PATH_CHARS] = {};
-                    const WCHAR* leaf = wcsrchr(selected, L'\\');
-                    bool alreadyNamed = leaf && lstrcmpiW(leaf + 1, GC_SETUP_PRODUCT_NAME_W) == 0;
-                    if (alreadyNamed) {
-                        StringCchCopyA(resolved, GC_ARRAY_COUNT(resolved), parent);
-                    } else if (!gc_install_default_directory(parent, resolved, sizeof(resolved))) {
-                        StringCchCopyA(resolved, GC_ARRAY_COUNT(resolved), parent);
-                    }
-                    gc_set_text_utf8(wizard->pathEdit, resolved);
-                }
-                CoTaskMemFree(selected);
-            }
-            item->Release();
-        }
-    }
-    dialog->Release();
-}
-
 // ---------------------------------------------------------------------------
 // Window procedure
 // ---------------------------------------------------------------------------
-
-static void gc_toggle_checkbox(GcWizard* wizard, HWND control, bool* value) {
-    *value = !*value;
-    InvalidateRect(control, nullptr, TRUE);
-    // Next is gated on the license acceptance and on the path-risk
-    // acknowledgment; a toggle of either re-derives its enabled state.
-    gc_update_page_controls(wizard);
-}
 
 // Title-bar / Alt-Tab / taskbar icon.
 //
@@ -458,6 +338,7 @@ static LRESULT CALLBACK gc_wizard_proc(HWND hwnd, UINT message, WPARAM wParam, L
         case WM_COMMAND: {
             const int controlId = LOWORD(wParam);
             const unsigned int notification = HIWORD(wParam);
+#if !defined(GREEN_CURVE_UNINSTALLER)
             // Live path classification: every edit re-derives the protection
             // display and the acknowledgment requirement, so the user sees the
             // verdict of the path they are typing rather than one rejected
@@ -474,6 +355,9 @@ static LRESULT CALLBACK gc_wizard_proc(HWND hwnd, UINT message, WPARAM wParam, L
                 controlId == GC_ID_ACCEPT || controlId == GC_ID_RISK_ACCEPT ||
                 controlId == GC_ID_START_MENU ||
                 controlId == GC_ID_DESKTOP || controlId == GC_ID_LAUNCH;
+#else
+            const bool isCheckbox = false;
+#endif
             if (!gc_wizard_notification_is_click(notification, isCheckbox)) {
                 // F-CLICK-FILTER: a fast double-click's second half arrives as
                 // BN_DBLCLK; dropping it made rapid page navigation ignore
@@ -490,6 +374,7 @@ static LRESULT CALLBACK gc_wizard_proc(HWND hwnd, UINT message, WPARAM wParam, L
                             "(fast double-click advances once more)", controlId);
             }
             switch (controlId) {
+#if !defined(GREEN_CURVE_UNINSTALLER)
                 case GC_ID_ACCEPT:      gc_toggle_checkbox(wizard, wizard->acceptCheck, &wizard->accepted); return 0;
                 case GC_ID_RISK_ACCEPT: gc_toggle_checkbox(wizard, wizard->riskCheck, &wizard->riskAccepted); return 0;
                 case GC_ID_START_MENU:  gc_toggle_checkbox(wizard, wizard->startMenuCheck, &wizard->startMenu); return 0;
@@ -497,6 +382,7 @@ static LRESULT CALLBACK gc_wizard_proc(HWND hwnd, UINT message, WPARAM wParam, L
                 case GC_ID_LAUNCH:      gc_toggle_checkbox(wizard, wizard->launchCheck, &wizard->launch); return 0;
                 case GC_ID_BROWSE:      gc_browse_for_folder(wizard); return 0;
                 case GC_ID_BACK:        gc_go_back(wizard); return 0;
+#endif
                 case GC_ID_NEXT:        gc_advance(wizard); return 0;
                 case GC_ID_CANCEL:      SendMessageW(hwnd, WM_CLOSE, 0, 0); return 0;
                 default: break;
@@ -566,36 +452,6 @@ static HWND gc_create_button(GcWizard* wizard, const WCHAR* text, int id) {
                                   wizard->instance, nullptr);
     gc_set_control_font(button, wizard->fonts.body);
     return button;
-}
-
-static void gc_fill_license_text(GcWizard* wizard) {
-    const GcPayloadFile* license = gc_payload_find(&wizard->install.payload, "LICENSE");
-    if (!license || license->size == 0 || license->size > 512 * 1024) {
-        gc_set_text_utf8(wizard->licenseEdit,
-                         "MIT License\r\n\r\nThe LICENSE file could not be read from this setup file.");
-        return;
-    }
-    // The edit control needs CRLF; the shipped file uses LF.
-    size_t capacity = (size_t)license->size * 2 + 2;
-    char* text = (char*)HeapAlloc(GetProcessHeap(), 0, capacity);
-    if (!text) return;
-    size_t out = 0;
-    for (uint64_t i = 0; i < license->size; i++) {
-        char c = (char)license->data[i];
-        if (c == '\n' && (i == 0 || license->data[i - 1] != '\r')) text[out++] = '\r';
-        text[out++] = c;
-    }
-    text[out] = 0;
-    WCHAR* wide = (WCHAR*)HeapAlloc(GetProcessHeap(), 0, (out + 1) * sizeof(WCHAR));
-    if (wide) {
-        int written = MultiByteToWideChar(CP_UTF8, 0, text, (int)out, wide, (int)out);
-        if (written > 0) {
-            wide[written] = 0;
-            SetWindowTextW(wizard->licenseEdit, wide);
-        }
-        HeapFree(GetProcessHeap(), 0, wide);
-    }
-    HeapFree(GetProcessHeap(), 0, text);
 }
 
 static bool gc_create_wizard_window(GcWizard* wizard, HINSTANCE instance, const WCHAR* title) {
@@ -676,6 +532,7 @@ static int gc_message_loop(GcWizard* wizard) {
     return wizard->exitCode;
 }
 
+#if !defined(GREEN_CURVE_UNINSTALLER)
 int gc_run_setup_wizard(HINSTANCE instance, const GcInstallerOptions* options,
                         const GcPriorInstall* prior, const char* defaultDirectory) {
     GcWizard* wizard = &g_wizard;
@@ -764,6 +621,7 @@ int gc_run_setup_wizard(HINSTANCE instance, const GcInstallerOptions* options,
     gc_destroy_wizard(wizard);
     return exitCode;
 }
+#endif  // !GREEN_CURVE_UNINSTALLER
 
 int gc_run_uninstall_window(HINSTANCE instance, const WCHAR* installDirectory) {
     GcWizard* wizard = &g_wizard;

@@ -23,6 +23,7 @@ static int gc_dp(int logicalPixels) { return gc_scaled(g_wizard.dpi, logicalPixe
 
 static bool gc_page_is_visible(GcWizardPage page, int controlId) {
     switch (controlId) {
+#if !defined(GREEN_CURVE_UNINSTALLER)
         case GC_ID_LICENSE_EDIT:
         case GC_ID_ACCEPT:
             return page == GC_PAGE_LICENSE;
@@ -33,6 +34,7 @@ static bool gc_page_is_visible(GcWizardPage page, int controlId) {
         case GC_ID_DESKTOP:
         case GC_ID_LAUNCH:
             return page == GC_PAGE_OPTIONS;
+#endif
         default:
             return true;
     }
@@ -59,6 +61,7 @@ void gc_layout(GcWizard* wizard) {
         MoveWindow(wizard->licenseEdit, margin + gc_dp(2), top + gc_dp(2),
                    contentWidth - gc_dp(4), bottom - top - gc_dp(4), TRUE);
     }
+#if !defined(GREEN_CURVE_UNINSTALLER)
     if (wizard->acceptCheck) {
         MoveWindow(wizard->acceptCheck, margin, contentBottom - rowHeight,
                    contentWidth, rowHeight, TRUE);
@@ -83,6 +86,7 @@ void gc_layout(GcWizard* wizard) {
         MoveWindow(wizard->desktopCheck, margin, top + rowHeight + gc_dp(8), contentWidth, rowHeight, TRUE);
         MoveWindow(wizard->launchCheck, margin, top + 2 * (rowHeight + gc_dp(8)), contentWidth, rowHeight, TRUE);
     }
+#endif
 
     int buttonWidth = gc_dp(104);
     int buttonHeight = gc_dp(32);
@@ -94,6 +98,7 @@ void gc_layout(GcWizard* wizard) {
 }
 
 void gc_update_page_controls(GcWizard* wizard) {
+#if !defined(GREEN_CURVE_UNINSTALLER)
     gc_show_control(wizard->licenseEdit, GC_ID_LICENSE_EDIT, wizard->page);
     gc_show_control(wizard->acceptCheck, GC_ID_ACCEPT, wizard->page);
     gc_show_control(wizard->pathEdit, GC_ID_PATH_EDIT, wizard->page);
@@ -106,6 +111,7 @@ void gc_update_page_controls(GcWizard* wizard) {
     bool riskNeeded = wizard->page == GC_PAGE_FOLDER &&
         gc_path_protection_requires_acknowledgment(&wizard->folderProtection.verdict);
     ShowWindow(wizard->riskCheck, riskNeeded ? SW_SHOW : SW_HIDE);
+#endif
 
     bool working = wizard->page == GC_PAGE_PROGRESS;
     bool done = wizard->page == GC_PAGE_DONE;
@@ -125,11 +131,15 @@ void gc_update_page_controls(GcWizard* wizard) {
     if (wizard->page == GC_PAGE_CONFIRM_REMOVE) nextLabel = L"Uninstall";
     if (done) nextLabel = L"Finish";
     SetWindowTextW(wizard->nextButton, nextLabel);
+#if !defined(GREEN_CURVE_UNINSTALLER)
     bool folderReady = wizard->page != GC_PAGE_FOLDER ||
         !gc_path_protection_requires_acknowledgment(&wizard->folderProtection.verdict) ||
         wizard->riskAccepted;
     EnableWindow(wizard->nextButton,
                  (wizard->page != GC_PAGE_LICENSE || wizard->accepted) && folderReady);
+#else
+    EnableWindow(wizard->nextButton, true);
+#endif
 
     gc_layout(wizard);
     InvalidateRect(wizard->hwnd, nullptr, TRUE);
@@ -197,6 +207,7 @@ void gc_paint(GcWizard* wizard, HDC dc, const RECT* client) {
                  margin, gc_dp(44), contentWidth, gc_dp(20), DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
 
     switch (wizard->page) {
+#if !defined(GREEN_CURVE_UNINSTALLER)
         case GC_PAGE_LICENSE:
             gc_draw_text(dc, wizard->fonts.body, COL_LABEL,
                          "This program is released under the MIT license. Read it, then continue.",
@@ -285,6 +296,12 @@ void gc_paint(GcWizard* wizard, HDC dc, const RECT* client) {
                              DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
             }
             break;
+#else
+        case GC_PAGE_LICENSE:
+        case GC_PAGE_FOLDER:
+        case GC_PAGE_OPTIONS:
+            break;
+#endif
         case GC_PAGE_CONFIRM_REMOVE: {
             char note[600] = {};
             char directory[GC_INSTALLER_MAX_PATH_CHARS] = {};

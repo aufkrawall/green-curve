@@ -11,9 +11,13 @@
 //
 // Two binaries are built from these sources:
 //   * the setup stub, which carries the payload (GREEN_CURVE_UNINSTALLER unset)
-//   * uninstall.exe, which ships inside that payload (GREEN_CURVE_UNINSTALLER=1)
-// Both share the window, the theme, and the service/shortcut handling; only the
-// work they perform differs.
+//   * greencurve-uninstall.exe, which ships inside that payload
+//     (GREEN_CURVE_UNINSTALLER=1)
+// Both share the window, the theme, and the service/shortcut handling.  The
+// uninstaller is compiled WITHOUT the install/payload translation units (see
+// UNINSTALLER_SOURCE_NAMES in tools/installer_build.py): an uninstaller image
+// that statically contains a payload extractor and the install orchestrator
+// scores as a dropper on antivirus ML models even though none of it runs.
 
 #ifndef GREEN_CURVE_INSTALLER_COMMON_H
 #define GREEN_CURVE_INSTALLER_COMMON_H
@@ -91,8 +95,16 @@
 #define GC_SETUP_GUI_EXE_W L"greencurve.exe"
 #define GC_SETUP_SERVICE_EXE "greencurve-service.exe"
 #define GC_SETUP_SERVICE_EXE_W L"greencurve-service.exe"
-#define GC_SETUP_UNINSTALL_EXE "uninstall.exe"
-#define GC_SETUP_UNINSTALL_EXE_W L"uninstall.exe"
+// Product-specific leaf name.  The generic "uninstall.exe" is heavily
+// over-represented in malware corpora and is itself an ML feature; the ARP
+// UninstallString, the VERSIONINFO OriginalFilename, and the on-disk name all
+// repeat this one spelling.
+#define GC_SETUP_UNINSTALL_EXE "greencurve-uninstall.exe"
+#define GC_SETUP_UNINSTALL_EXE_W L"greencurve-uninstall.exe"
+// Pre-rename leaf.  Still deleted on upgrade and uninstall so an existing
+// 0.26.0-era install does not leave a stale uninstaller behind; never shipped.
+#define GC_SETUP_UNINSTALL_EXE_LEGACY "uninstall.exe"
+#define GC_SETUP_UNINSTALL_EXE_LEGACY_W L"uninstall.exe"
 #define GC_SETUP_SERVICE_NAME L"GreenCurveService"
 #define GC_SETUP_WINDOW_CLASS L"GreenCurveSetupClass"
 // Resource id of the Green Curve icon embedded in both setup binaries.  It must
@@ -293,18 +305,30 @@ struct GcInstallContext {
     char error[512];
 };
 
+// Progress and failure reporting shared by every shard that drives
+// GcInstallContext (source/installer_util.cpp).  Both used to be static in
+// installer_apply.cpp; installer_stop.cpp is a real translation unit in both
+// binaries and needs them too.
+void gc_report(GcInstallContext* context, int percent, const char* status);
+[[gnu::format(printf, 2, 3)]] void gc_set_error(GcInstallContext* context,
+                                                const char* fmt, ...);
+
 bool gc_read_prior_install(GcPriorInstall* prior);
 bool gc_default_install_directory(char* out, size_t outCount);
 bool gc_install_execute(GcInstallContext* context);
 void gc_retire_previous_directory(GcInstallContext* context);
 // `folderLeftForRestart` (optional) is set when the install folder could not be
 // removed now and was handed to the session manager for the next restart --
-// always the case when the installed uninstall.exe itself is running.
+// always the case when the installed uninstaller itself is running.
 bool gc_uninstall_execute(const WCHAR* installDirectory, bool* folderLeftForRestart,
                           char* error, size_t errorSize);
 // Ask every running Green Curve GUI to close and wait for the processes to go
 // away.  `context` may be null (the uninstaller has no progress reporting).
 bool gc_stop_gui_processes(GcInstallContext* context);
+// Stop the background service and wait for its process to exit.  Setup-only:
+// the uninstaller delegates to `greencurve.exe --service-remove`, which also
+// resets the GPU and reverts the hardened DACLs (source/installer_stop.cpp).
+bool gc_stop_background_service(GcInstallContext* context, bool* wasRunningOut);
 // The uninstall record is a fallible transaction step; shortcuts are updated
 // only after commit and remain best effort (source/installer_register.cpp).
 bool gc_write_uninstall_registration(GcInstallContext* context);

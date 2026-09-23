@@ -152,9 +152,10 @@ static inline bool gc_service_location_entry_is_ours(const wchar_t* name, size_t
     if (isDirectory) return false;
     static const wchar_t* const kOurs[] = {
         L"greencurve.exe", L"greencurve-service.exe", L"README.md", L"LICENSE",
-        L"uninstall.exe",
+        L"greencurve-uninstall.exe", L"uninstall.exe",
         L"greencurve.exe.gcnew", L"greencurve-service.exe.gcnew", L"README.md.gcnew",
-        L"LICENSE.gcnew", L"uninstall.exe.gcnew", L"greencurve-service.exe.tmp",
+        L"LICENSE.gcnew", L"greencurve-uninstall.exe.gcnew", L"uninstall.exe.gcnew",
+        L"greencurve-service.exe.tmp",
         // Written beside the binary by older builds.
         L"config.ini", L"machine.ini", L"greencurve_log.txt", L"greencurve_cli_log.txt",
         L"greencurve_debug.txt", L"greencurve_curve.json",

@@ -84,7 +84,8 @@ int run_location_content_policy_tests() {
         return gc_service_location_entry_is_ours(name, wcslen(name), isDirectory);
     };
     if (!ours(L"greencurve.exe", false) || !ours(L"GREENCURVE-SERVICE.EXE", false) ||
-        !ours(L"README.md", false) || !ours(L"LICENSE", false) || !ours(L"uninstall.exe", false))
+        !ours(L"README.md", false) || !ours(L"LICENSE", false) ||
+        !ours(L"greencurve-uninstall.exe", false) || !ours(L"uninstall.exe", false))
         return 5735;
     if (!ours(L"greencurve-service.exe.gcnew", false) || !ours(L"desktop.ini", false) ||
         !ours(L"machine.ini", false)) return 5736;

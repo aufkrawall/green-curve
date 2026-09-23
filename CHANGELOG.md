@@ -46,6 +46,7 @@ previous one. Crash recovery and Apply reliability also improve.
 - **More driver-update crashes are now recovered**, including on Windows on Arm.
 - **A slow service start or stop is no longer mistaken for a hang or a failure.**
 - **Antivirus programs should raise fewer false alarms about Green Curve.**
+- **The uninstaller is now `greencurve-uninstall.exe` and is much smaller.** Setup still removes the old `uninstall.exe` on upgrade.
 
 ### Compatibility notes
 

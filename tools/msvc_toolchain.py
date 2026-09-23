@@ -275,6 +275,9 @@ def windows_compile_flags(service, arch, app_version, build_number, source_dir,
         # Hardening flags clang-cl accepts cleanly (verified under -WX).
         "-ftrivial-auto-var-init=pattern",
         "-fno-delete-null-pointer-checks",
+        # Function-level COMDATs so the link's /OPT:ref,icf can drop unreferenced
+        # functions (and whole install-only shards in the uninstaller build).
+        "-Gy",
     ]
     if debug:
         flags.append("-Zi")

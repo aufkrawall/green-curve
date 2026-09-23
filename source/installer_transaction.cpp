@@ -395,7 +395,7 @@ struct GcInstallTransaction {
         // A failed service helper may have restarted the previous registration
         // against the complete new payload. Stop it before touching any image.
         bool ignored = false;
-        if (!gc_stop_service(context, &ignored)) {
+        if (!gc_stop_background_service(context, &ignored)) {
             gc_log_fail("rollback: cannot prove the service process exited; preserving backups");
             return false;
         }

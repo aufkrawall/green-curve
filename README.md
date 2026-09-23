@@ -76,7 +76,7 @@ Two things the archive route needs and setup handles for you: registering a serv
 - Lets you choose where the `Green Curve` folder goes (default `%ProgramFiles%\Green Curve`).
 - Detects an existing installation and upgrades it: it reads your currently applied settings, closes the GUI, stops the background service, replaces the files, re-registers the service, and applies those settings again. Choosing a different folder moves the installation and re-points the service registration; the old folder's files are left for you to delete.
 - Optional Start menu and desktop shortcuts, and an option to start the program when setup finishes.
-- Registers an Add/Remove Programs entry with an `uninstall.exe` next to the program.
+- Registers an Add/Remove Programs entry with a `greencurve-uninstall.exe` next to the program.
 
 Setup writes a log file next to itself **only if something fails**; a successful run leaves nothing behind.
 

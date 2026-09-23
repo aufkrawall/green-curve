@@ -3,13 +3,16 @@
 //
 // Stopping the running Green Curve GUI and background service.
 //
-// Included by installer_apply.cpp where the stop step used to sit, so the
-// amalgamated ordering is unchanged: the static helpers it relies on
-// (gc_set_error, gc_report, gc_log_step) are defined above the include, and
-// gc_stop_gui_processes() stays a normal function visible to the uninstall
-// shard through installer_common.h.  Split out because the stop step grew
-// fail-closed handle accounting and installer_apply.cpp reached the ~800-line
-// guideline; the source-size ratchet forbids raising the ceiling instead.
+// A real translation unit in BOTH binaries: the uninstaller needs
+// gc_stop_gui_processes() and must not carry the install orchestrator, so this
+// can no longer be #included by installer_apply.cpp.  The progress/error
+// helpers it uses live in installer_util.cpp.
+//
+// gc_stop_background_service() is setup-only: the uninstaller delegates service
+// removal to `greencurve.exe --service-remove`, which also resets the GPU and
+// reverts the hardened DACLs.
+
+#include "installer_common.h"
 
 // Bounded waits.  These are not race workarounds: each one waits on a real
 // kernel object (process exit) or on an external state machine (the SCM) that
@@ -168,7 +171,12 @@ bool gc_stop_gui_processes(GcInstallContext* context) {
 // queries: process exit is a real, signalable event, and it is also the
 // condition that matters here, because a still-running process keeps a lock on
 // the binary that is about to be overwritten.
-static bool gc_stop_service(GcInstallContext* context, bool* wasRunningOut) {
+//
+// Setup-only (GREEN_CURVE_UNINSTALLER unset).  The uninstaller must not carry
+// the SCM stop path: it runs --service-remove so the GPU reset and DACL revert
+// happen in one place.
+#if !defined(GREEN_CURVE_UNINSTALLER)
+bool gc_stop_background_service(GcInstallContext* context, bool* wasRunningOut) {
     if (wasRunningOut) *wasRunningOut = false;
     GcScopedServiceHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
     if (!scm.valid()) {
@@ -269,3 +277,4 @@ static bool gc_stop_service(GcInstallContext* context, bool* wasRunningOut) {
     gc_log_step("stop: background service stopped");
     return true;
 }
+#endif  // !GREEN_CURVE_UNINSTALLER

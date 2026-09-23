@@ -12,10 +12,10 @@ What a setup file is
     [ installer stub PE ][ stored GCAR container ][ 44-byte footer ]
 
 The stub is an ordinary hardened Windows executable built from source/installer_*.
-The container holds the exact release manifest plus uninstall.exe.  The footer
-is read from the end of the file at runtime; the format, and every bounds check
-the installer performs on it, live in source/installer_archive_policy.h so
-`build.py --test` covers them.
+The container holds the exact release manifest plus greencurve-uninstall.exe.
+The footer is read from the end of the file at runtime; the format, and every
+bounds check the installer performs on it, live in
+source/installer_archive_policy.h so `build.py --test` covers them.
 
 Compression (deliberately none)
 -------------------------------
@@ -68,9 +68,13 @@ INSTALLER_SOURCE_NAMES = [
     "installer_apply.cpp",
     "installer_move_cleanup.cpp",
     "installer_register.cpp",
+    "installer_register_install.cpp",
     "installer_autostart.cpp",
     "installer_payload.cpp",
+    "installer_prior.cpp",
+    "installer_ui_install.cpp",
     "installer_util.cpp",
+    "installer_stop.cpp",
     "service_acl.cpp",
     "service_path_chain.cpp",
     "service_acl_handle.cpp",
@@ -81,6 +85,31 @@ INSTALLER_SOURCE_NAMES = [
     # ssp_glue.cpp/cfg_glue.cpp reference. Without it the MinGW link of the
     # setup/uninstaller stubs fails with an undefined symbol (the function
     # used to live in cfg_glue.cpp before the MSVC-ABI split).
+    "process_hardening.cpp",
+]
+
+# The uninstaller is a REMOVAL-only image.  It deliberately omits the install
+# orchestrator, the payload/archive extractor, and the ARP/shortcut writer:
+# antivirus ML models score "archive extractor + file writer + registry writer +
+# self-delete" in one unsigned generic-named binary as a dropper even when none
+# of it is reachable at runtime.  GREEN_CURVE_UNINSTALLER also compile-times
+# those paths out of the shared shards; dropping the translation units is what
+# keeps them out of the image.
+UNINSTALLER_SOURCE_NAMES = [
+    "installer_main.cpp",
+    "installer_ui.cpp",
+    "installer_ui_pages.cpp",
+    "installer_theme.cpp",
+    "installer_register.cpp",
+    "installer_autostart.cpp",
+    "installer_util.cpp",
+    "installer_stop.cpp",
+    "service_acl.cpp",
+    "service_path_chain.cpp",
+    "service_acl_handle.cpp",
+    "service_install_location.cpp",
+    "ssp_glue.cpp",
+    "cfg_glue.cpp",
     "process_hardening.cpp",
 ]
 
@@ -274,15 +303,16 @@ def _compile_installer_binary_msvc(ctx, output_path, arch, uninstaller, work,
         raise RuntimeError(f"installer compilation failed ({arch}, uninstaller={uninstaller})")
 
 
-def _installer_sources(ctx):
-    return [os.path.join(ctx.SOURCE_DIR, name) for name in INSTALLER_SOURCE_NAMES]
+def _installer_sources(ctx, uninstaller=False):
+    names = UNINSTALLER_SOURCE_NAMES if uninstaller else INSTALLER_SOURCE_NAMES
+    return [os.path.join(ctx.SOURCE_DIR, name) for name in names]
 
 
 def installer_original_filename(ctx, arch, uninstaller):
     """The name each installer-family PE ships under, which its VERSIONINFO
     must repeat exactly (a mismatch reads as a renamed binary to heuristics)."""
     if uninstaller:
-        return "uninstall.exe"
+        return "greencurve-uninstall.exe"
     return f"greencurve-{ctx.APP_VERSION}-windows-{arch}-setup.exe"
 
 
@@ -323,7 +353,7 @@ def _write_installer_resources(ctx, work, uninstaller, arch):
 
 def compile_installer_binary(ctx, output_path, arch, uninstaller, work):
     """Compile one installer-family binary with the project's hardening flags."""
-    sources = _installer_sources(ctx)
+    sources = _installer_sources(ctx, uninstaller=uninstaller)
     definitions = [f"-DAPP_BUILD_NUMBER={ctx.APP_BUILD_NUMBER}"]
     if uninstaller:
         definitions.append("-DGREEN_CURVE_UNINSTALLER=1")
@@ -342,10 +372,11 @@ def compile_installer_binary(ctx, output_path, arch, uninstaller, work):
         objects = ctx._compile_arm64_objects(sources, object_dir, "aarch64-windows-gnu", definitions)
         cmd = [ctx.ZIG_EXE, "c++", "-target", "aarch64-windows-gnu",
                "-mbranch-protection=standard", "-fno-lto", "-static",
-               "-Wl,--subsystem,windows,--dynamicbase,--nxcompat,--high-entropy-va",
+               "-Wl,--subsystem,windows,--dynamicbase,--nxcompat,--high-entropy-va,--gc-sections",
                "-o", output_path, *objects, res_path, *INSTALLER_LINK_LIBS]
     else:
         cmd = [ctx.LLVM_MINGW_CLANG, *ctx.COMMON_FLAGS, *ctx.WINDOWS_FLAGS, *definitions,
+               "-Wl,--gc-sections",
                "-o", output_path, *sources, res_path, *INSTALLER_LINK_LIBS]
     if arch == "arm64":
         # Hold the cross-process zig-cache lock: the arm64 installer links via
@@ -388,6 +419,38 @@ def _append_payload(stub_path, output_path, container):
     return method
 
 
+def _verify_uninstaller_surface(path):
+    """The uninstaller image must not carry install/payload surface.
+
+    Antivirus ML models score "archive extractor + file writer + registry
+    writer + self-delete" in one unsigned binary as a dropper even when none of
+    it is reachable.  The source split keeps those translation units out; this
+    gate is the artifact-level proof, and it is what fails if a future edit
+    pulls a shared shard back into the uninstaller link.
+    """
+    with open(path, "rb") as handle:
+        data = handle.read()
+    if not data.startswith(b"MZ"):
+        raise RuntimeError("uninstaller is not a PE image")
+    forbidden = {
+        b"cabinet.dll": "the payload decompressor",
+        b"GCAR0001": "the payload archive parser",
+        b"GCPAY001": "the setup overlay footer parser",
+        b"Copying program files": "the install orchestrator progress text",
+        b"Updating the uninstall record": "the ARP registry writer",
+        b"this setup file carries no program files": "the silent-install payload load",
+        b"WTSQueryUserToken": "the unelevated GUI relaunch (session token theft shape)",
+        b"CreateProcessWithTokenW": "the unelevated GUI relaunch (token impersonation shape)",
+    }
+    found = [label for needle, label in forbidden.items() if needle in data]
+    if found:
+        raise RuntimeError(
+            "greencurve-uninstall.exe still contains install/payload surface: "
+            + ", ".join(found))
+    print(f"  installer: uninstaller {os.path.getsize(path):,} bytes, "
+          f"no payload/install surface ({len(forbidden)} markers)")
+
+
 def _verify_setup_file(path, container):
     """Re-read the finished file exactly the way the installer will."""
     size = os.path.getsize(path)
@@ -421,8 +484,9 @@ def build_setup_executable(ctx, arch, payload_dir, expected_names):
     """
     work = ctx.prepare_work_subdir(f"installer-{arch}")
     try:
-        uninstaller_path = os.path.join(work, "uninstall.exe")
+        uninstaller_path = os.path.join(work, "greencurve-uninstall.exe")
         compile_installer_binary(ctx, uninstaller_path, arch, True, work)
+        _verify_uninstaller_surface(uninstaller_path)
         stub_path = os.path.join(work, "setup-stub.exe")
         compile_installer_binary(ctx, stub_path, arch, False, work)
         for binary, is_uninstaller in ((uninstaller_path, True), (stub_path, False)):
@@ -438,7 +502,7 @@ def build_setup_executable(ctx, arch, payload_dir, expected_names):
             with open(source, "rb") as handle:
                 entries.append((name, handle.read(), ARCHIVE_FLAG_NONE))
         with open(uninstaller_path, "rb") as handle:
-            entries.append(("uninstall.exe", handle.read(), ARCHIVE_FLAG_UNINSTALLER))
+            entries.append(("greencurve-uninstall.exe", handle.read(), ARCHIVE_FLAG_UNINSTALLER))
 
         container = build_archive(entries)
         output = os.path.join(ctx.SCRIPT_DIR,
@@ -490,7 +554,7 @@ def check_all(ctx, require_text, forbid_text):
 
     # The setup program must not grow a dependency on the application model:
     # app_shared.h drags in the GPU state machine and the service protocol.
-    for name in INSTALLER_SOURCE_NAMES:
+    for name in set(INSTALLER_SOURCE_NAMES) | set(UNINSTALLER_SOURCE_NAMES):
         if not name.startswith("installer_"):
             continue
         forbid_text(source(name), '#include "app_shared.h"',
@@ -501,10 +565,65 @@ def check_all(ctx, require_text, forbid_text):
     # cfg_glue.cpp reference gc_invoke_fatal_dump_hook. Dropping it from this
     # list turns every MinGW stub link into an undefined-symbol failure
     # (2026-08-29 release-packaging CI).
-    if "process_hardening.cpp" not in INSTALLER_SOURCE_NAMES:
-        raise RuntimeError(
-            "INSTALLER_SOURCE_NAMES must link process_hardening.cpp "
-            "(toolchain-neutral fatal-dump hook referenced by the glue)")
+    for label, names in (("INSTALLER_SOURCE_NAMES", INSTALLER_SOURCE_NAMES),
+                         ("UNINSTALLER_SOURCE_NAMES", UNINSTALLER_SOURCE_NAMES)):
+        if "process_hardening.cpp" not in names:
+            raise RuntimeError(
+                f"{label} must link process_hardening.cpp "
+                "(toolchain-neutral fatal-dump hook referenced by the glue)")
+
+    # The uninstaller is a removal-only image.  These shards are install/
+    # payload surface and must never return to UNINSTALLER_SOURCE_NAMES; the
+    # artifact-level proof is _verify_uninstaller_surface().
+    for banned in ("installer_apply.cpp", "installer_payload.cpp",
+                   "installer_prior.cpp", "installer_register_install.cpp",
+                   "installer_move_cleanup.cpp", "installer_ui_install.cpp"):
+        if banned in UNINSTALLER_SOURCE_NAMES:
+            raise RuntimeError(
+                f"UNINSTALLER_SOURCE_NAMES must not link {banned} "
+                "(install/payload surface in a removal-only image)")
+
+    # GREEN_CURVE_UNINSTALLER must compile the install path out of the shared
+    # shards, not merely skip it at runtime: a runtime mode flip leaves the
+    # whole install orchestrator reachable and therefore linked.
+    require_text(source("installer_main.cpp"),
+                 "#if defined(GREEN_CURVE_UNINSTALLER)",
+                 "the uninstaller compile-times the install entry points out")
+    require_text(source("installer_main.cpp"),
+                 "gc_run_silent_install",
+                 "the setup stub still has its silent-install entry point")
+    require_text(source("installer_main.cpp"),
+                 "#if !defined(GREEN_CURVE_UNINSTALLER)\nstatic int gc_run_silent_install",
+                 "silent install is compile-time gated away from the uninstaller")
+    require_text(source("installer_ui.cpp"),
+                 "#if defined(GREEN_CURVE_UNINSTALLER)",
+                 "the uninstaller UI compile-times the install wizard out")
+    require_text(source("installer_stop.cpp"),
+                 "bool gc_stop_gui_processes",
+                 "both binaries stop the GUI before replacing/removing files")
+    require_text(source("installer_stop.cpp"),
+                 "#if !defined(GREEN_CURVE_UNINSTALLER)",
+                 "the SCM service stop is setup-only")
+
+    # Product-specific uninstaller leaf.  The generic "uninstall.exe" is an ML
+    # feature of its own; the legacy spelling is kept only so upgrades delete
+    # it.
+    require_text(installer_common,
+                 '#define GC_SETUP_UNINSTALL_EXE "greencurve-uninstall.exe"',
+                 "the uninstaller ships under a product-specific name")
+    require_text(installer_common,
+                 '#define GC_SETUP_UNINSTALL_EXE_LEGACY "uninstall.exe"',
+                 "the pre-rename uninstaller name is still known for cleanup")
+    require_text(source("installer_move_cleanup.h"), 'L"uninstall.exe"',
+                 "upgrade cleanup still deletes the pre-rename uninstaller")
+    require_text(source("installer_move_cleanup.h"), 'L"greencurve-uninstall.exe"',
+                 "upgrade cleanup deletes the current uninstaller")
+    require_text(source("service_install_location_policy.h"),
+                 'L"greencurve-uninstall.exe"',
+                 "the install-location allowlist knows the current uninstaller")
+    require_text(source("service_install_location_policy.h"),
+                 'L"uninstall.exe"',
+                 "the install-location allowlist knows the pre-rename uninstaller")
 
     payload = source("installer_payload.cpp")
     # Decompression is an OS service, not a vendored library, and not a
@@ -547,10 +666,10 @@ def check_all(ctx, require_text, forbid_text):
                                    "settings are captured before anything is stopped")
     ctx.require_order_in_operation(apply_shard, install_anchor,
                                    "transaction.prepare(targetDirectory)",
-                                   "gc_stop_service(context, &serviceWasRunning)",
+                                   "gc_stop_background_service(context, &serviceWasRunning)",
                                    "the previous files and registration are saved before shutdown")
     ctx.require_order_in_operation(apply_shard, install_anchor,
-                                   "gc_stop_service(context, &serviceWasRunning)",
+                                   "gc_stop_background_service(context, &serviceWasRunning)",
                                    "transaction.replace(i)",
                                    "the service is stopped before its binary is replaced")
     ctx.require_order_in_operation(apply_shard, install_anchor,
@@ -680,10 +799,10 @@ def check_all(ctx, require_text, forbid_text):
     # The version is a fallback for installs predating the marker; the marker
     # is the authority, because a release number answers a capability question
     # only at release granularity and was already wrong once inside 0.21.
-    require_text(source("installer_register.cpp"),
+    require_text(source("installer_register_install.cpp"),
                  "GC_SETUP_SETTINGS_EXPORT_VALUE",
                  "every install records whether its binary knows the settings export verb")
-    require_text(apply_shard, "GC_SETUP_SETTINGS_EXPORT_VALUE",
+    require_text(source("installer_prior.cpp"), "GC_SETUP_SETTINGS_EXPORT_VALUE",
                  "the capture reads the recorded capability back")
     require_text(source("installer_plan_policy.h"),
                  "prior->settingsExport == GC_TOGGLE_ON",
@@ -742,8 +861,9 @@ def check_all(ctx, require_text, forbid_text):
     require_text(installer_common,
                  f"#define GC_SETUP_ICON_ID {GC_SETUP_ICON_RESOURCE_ID}",
                  "the window's icon id matches the one the resource script emits")
-    ctx.require_order_in_operation(installer_ui,
-                                   "static bool gc_commit_folder_page(GcWizard* wizard)",
+    installer_ui_install = source("installer_ui_install.cpp")
+    ctx.require_order_in_operation(installer_ui_install,
+                                   "bool gc_commit_folder_page(GcWizard* wizard)",
                                    "gc_refresh_folder_protection(wizard, chosenWide)",
                                    "StringCchCopyA(wizard->options.directory",
                                    "the folder page classifies the service root before accepting the choice")
@@ -753,9 +873,9 @@ def check_all(ctx, require_text, forbid_text):
     # unconditional `pathRiskAcknowledged = true` made the apply-side check --
     # the second line of defence pinned above -- inert on every GUI run while
     # every gate still passed.
-    require_text(installer_ui, "pathRiskAcknowledged = wizard->riskAccepted",
+    require_text(installer_ui_install, "pathRiskAcknowledged = wizard->riskAccepted",
                  "the installer-side acknowledgment check sees the real answer")
-    forbid_text(installer_ui, "pathRiskAcknowledged = true",
+    forbid_text(installer_ui_install, "pathRiskAcknowledged = true",
                 "the folder page never fakes the path-risk acknowledgment")
     require_text(apply_shard, "apply_protected_service_dacl_to_handle(targetHandle.get()",
                  "the install directory is hardened through its pinned handle before extraction")
@@ -766,7 +886,7 @@ def check_all(ctx, require_text, forbid_text):
     require_text(apply_shard, "gc_service_install_location_verdict_for_handle(targetDirectory",
                  "setup re-judges the pinned folder, not a fresh lookup by name")
     installer_util = source("installer_util.cpp")
-    require_text(installer_util, "FOLDERID_ProgramFiles",
+    require_text(source("installer_prior.cpp"), "FOLDERID_ProgramFiles",
                  "elevated capture helpers stage beneath an administrator-owned parent")
     # The chain proof replaces the direct-child-of-Program-Files proxy; its
     # fail-safe direction and its consent wording are the security contract.
@@ -852,11 +972,15 @@ def check_all(ctx, require_text, forbid_text):
                                    "RemoveDirectoryW(installDirectory)",
                                    "the tray Run values are removed as part of the uninstall")
     # The service reports STOPPED from inside its own process; deleting its
-    # binary before that process exits is what leaves the folder behind.
+    # binary before that process exits is what leaves the folder behind.  The
+    # deletion loop lives in gc_delete_installed_files(); the order gate is on
+    # its call site so a future re-inline cannot silently invert it.
     ctx.require_order_in_operation(register_shard, uninstall_anchor,
                                    "WaitForSingleObject(serviceProcess.get()",
-                                   "DeleteFileW(path)",
+                                   "gc_delete_installed_files(installDirectory",
                                    "the service process has exited before its binary is deleted")
+    require_text(register_shard, "DeleteFileW(path)",
+                 "installed payload leaves are deleted by name, never recursively")
     # The uninstaller schedules its own running image (and so the folder) for
     # the next restart -- but only when it IS the installed copy.  The same
     # function runs inside the setup stub launched with --uninstall, which

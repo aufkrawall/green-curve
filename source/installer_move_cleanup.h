@@ -14,7 +14,8 @@
 #include "installer_plan_policy.h"
 
 // Keep this list identical to the release payload manifest. The uninstaller
-// uses it too; uninstall.exe is separate because it may be the running image.
+// uses it too; the uninstaller binaries are separate because they may be the
+// running image (and the legacy name is still cleaned up on upgrade).
 static const wchar_t* const GC_SETUP_PAYLOAD_FILE_NAMES[] = {
     L"greencurve.exe", L"greencurve-service.exe", L"README.md", L"LICENSE",
 };
@@ -94,6 +95,9 @@ static inline GcPreviousFileCleanup gc_remove_previous_setup_files(const wchar_t
     const wchar_t* const names[] = {
         GC_SETUP_PAYLOAD_FILE_NAMES[0], GC_SETUP_PAYLOAD_FILE_NAMES[1],
         GC_SETUP_PAYLOAD_FILE_NAMES[2], GC_SETUP_PAYLOAD_FILE_NAMES[3],
+        L"greencurve-uninstall.exe",
+        // Pre-rename uninstaller: still removed so an upgrade from a
+        // 0.26.0-era install does not strand it.
         L"uninstall.exe",
     };
     for (const wchar_t* name : names) {
