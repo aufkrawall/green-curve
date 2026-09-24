@@ -816,6 +816,15 @@ def check_all(ctx, require_text, forbid_text):
                  "a failed registration restores the previous SCM configuration")
     require_text(source("installer_transaction.cpp"), "restore_registry()",
                  "a failed registration restores the uninstall record")
+    require_text(apply_shard, "transaction.recover_after_stop_failure(&restarted)",
+                 "a failed service stop uses its own recovery, not the file rollback")
+    transaction_text = open(source("installer_transaction.cpp"), encoding="utf-8").read()
+    stop_recovery = transaction_text.split("GcStopFailureRecovery recover_after_stop_failure(", 1)
+    stop_recovery_body = stop_recovery[-1].split("\n    }\n", 1)[0]
+    if len(stop_recovery) != 2 or "gc_stop_background_service" in stop_recovery_body:
+        print("Regression source check FAILED: the stop-failure recovery must exist "
+              "and must never retry the service stop that just failed")
+        sys.exit(1)
     require_text(source("installer_transaction_files.h"), "CopyFile2(staged, temporary, nullptr)",
                  "staged payload copies inherit target permissions instead of the protected scratch ACL")
     forbid_text(source("installer_transaction_files.h"), "CopyFileW(staged, temporary",

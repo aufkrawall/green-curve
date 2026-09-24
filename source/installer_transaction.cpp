@@ -349,45 +349,96 @@ struct GcInstallTransaction {
                 ok = false;
             }
         }
-        if (ok && serviceWasRunning) {
-            LPCWSTR arguments[] = {L"--manual"};
-            if (!StartServiceW(service.get(), 1, arguments) &&
-                GetLastError() != ERROR_SERVICE_ALREADY_RUNNING) {
-                gc_log_fail("rollback: restart previous service error %lu", GetLastError());
-                ok = false;
-            } else {
-                // StartService only acknowledges the request. Confirm the
-                // service actually reaches RUNNING before reporting recovery.
-                const ULONGLONG started = GetTickCount64();
-                GcScmWaitTracker tracker = {};
-                gc_scm_wait_begin(&tracker, started);
-                for (;;) {
-                    SERVICE_STATUS_PROCESS state = {};
-                    DWORD needed = 0;
-                    if (!QueryServiceStatusEx(service.get(), SC_STATUS_PROCESS_INFO,
-                        (LPBYTE)&state, sizeof(state), &needed)) {
-                        gc_log_fail("rollback: query restarted service error %lu", GetLastError());
-                        ok = false;
-                        break;
-                    }
-                    int verdict = gc_scm_wait_step(&tracker, GetTickCount64(),
-                        state.dwCurrentState, state.dwCheckPoint, state.dwWaitHint,
-                        SERVICE_RUNNING);
-                    if (verdict == GC_SCM_WAIT_REACHED) break;
-                    if (verdict != GC_SCM_WAIT_CONTINUE) {
-                        gc_log_fail("rollback: previous service did not resume (%s, state %lu, error %lu/%lu)",
-                            gc_scm_wait_verdict_name(verdict),
-                            (unsigned long)state.dwCurrentState,
-                            (unsigned long)state.dwWin32ExitCode,
-                            (unsigned long)state.dwServiceSpecificExitCode);
-                        ok = false;
-                        break;
-                    }
-                    Sleep(gc_scm_wait_poll_interval_ms(state.dwWaitHint));
-                }
-            }
-        }
+        if (ok && serviceWasRunning && !restart_previous_service(service.get())) ok = false;
         return ok;
+    }
+
+    // Starts the previous registration again and confirms it reaches RUNNING.
+    bool restart_previous_service(SC_HANDLE service) {
+        LPCWSTR arguments[] = {L"--manual"};
+        if (!StartServiceW(service, 1, arguments) &&
+            GetLastError() != ERROR_SERVICE_ALREADY_RUNNING) {
+            gc_log_fail("rollback: restart previous service error %lu", GetLastError());
+            return false;
+        }
+        // StartService only acknowledges the request. Confirm the service
+        // actually reaches RUNNING before reporting recovery.
+        const ULONGLONG started = GetTickCount64();
+        GcScmWaitTracker tracker = {};
+        gc_scm_wait_begin(&tracker, started);
+        for (;;) {
+            SERVICE_STATUS_PROCESS state = {};
+            DWORD needed = 0;
+            if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO,
+                (LPBYTE)&state, sizeof(state), &needed)) {
+                gc_log_fail("rollback: query restarted service error %lu", GetLastError());
+                return false;
+            }
+            int verdict = gc_scm_wait_step(&tracker, GetTickCount64(),
+                state.dwCurrentState, state.dwCheckPoint, state.dwWaitHint,
+                SERVICE_RUNNING);
+            if (verdict == GC_SCM_WAIT_REACHED) return true;
+            if (verdict != GC_SCM_WAIT_CONTINUE) {
+                gc_log_fail("rollback: previous service did not resume (%s, state %lu, error %lu/%lu)",
+                    gc_scm_wait_verdict_name(verdict),
+                    (unsigned long)state.dwCurrentState,
+                    (unsigned long)state.dwWin32ExitCode,
+                    (unsigned long)state.dwServiceSpecificExitCode);
+                return false;
+            }
+            Sleep(gc_scm_wait_poll_interval_ms(state.dwWaitHint));
+        }
+    }
+
+    GcStopFailureServiceState query_service_after_stop_failure(SC_HANDLE scm,
+                                                              GcScopedServiceHandle* out) {
+        out->reset(OpenServiceW(scm, GC_SETUP_SERVICE_NAME,
+                                SERVICE_START | SERVICE_QUERY_STATUS));
+        if (!out->valid()) {
+            DWORD error = GetLastError();
+            if (error == ERROR_SERVICE_DOES_NOT_EXIST) return GC_STOP_FAILURE_SERVICE_ABSENT;
+            gc_log_fail("stop-failure recovery: open service error %lu", error);
+            return GC_STOP_FAILURE_SERVICE_UNKNOWN;
+        }
+        SERVICE_STATUS_PROCESS state = {};
+        DWORD needed = 0;
+        if (!QueryServiceStatusEx(out->get(), SC_STATUS_PROCESS_INFO, (LPBYTE)&state,
+                                  sizeof(state), &needed)) {
+            gc_log_fail("stop-failure recovery: query service error %lu", GetLastError());
+            return GC_STOP_FAILURE_SERVICE_UNKNOWN;
+        }
+        gc_log_step("stop-failure recovery: service state %lu, pid %lu",
+                    (unsigned long)state.dwCurrentState, (unsigned long)state.dwProcessId);
+        return state.dwCurrentState == SERVICE_STOPPED ? GC_STOP_FAILURE_SERVICE_STOPPED
+                                                       : GC_STOP_FAILURE_SERVICE_ACTIVE;
+    }
+
+    // The stop failed before any file, record or registration was written:
+    // the previous installation is intact, so this never retries the stop and
+    // never reports a failed recovery for it. It only returns a previous
+    // service that did go down to RUNNING and discards the staged copies.
+    GcStopFailureRecovery recover_after_stop_failure(bool* restartedOut) {
+        *restartedOut = false;
+        GcStopFailureServiceState now = GC_STOP_FAILURE_SERVICE_UNKNOWN;
+        GcScopedServiceHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
+        GcScopedServiceHandle service;
+        if (scm.valid()) now = query_service_after_stop_failure(scm.get(), &service);
+        else gc_log_fail("stop-failure recovery: open service manager error %lu", GetLastError());
+        GcStopFailureRecovery action = gc_stop_failure_recovery(serviceWasRunning, now);
+        gc_log_step("stop-failure recovery: previously running=%d action=%s",
+                    serviceWasRunning ? 1 : 0, gc_stop_failure_recovery_name(action));
+        if (action == GC_STOP_FAILURE_RESTART_PREVIOUS) {
+            *restartedOut = restart_previous_service(service.get());
+            // Its graceful stop reset owned GPU state; hand the captured intent
+            // back the same way a rollback does.
+            if (*restartedOut &&
+                gc_rollback_can_reapply_settings(serviceWasRunning,
+                    context->plan.captureFromInstalledBinary,
+                    context->haveCapturedSettings, previousServiceDirectory[0] != 0))
+                gc_reapply_captured_settings(context, previousServiceDirectory);
+        }
+        cleanup();
+        return action;
     }
 
     bool rollback(bool recordMayHaveChanged) {

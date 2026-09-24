@@ -1661,13 +1661,17 @@ static int run_ownership_handback_tests() {
 int main(int argc, char** argv) {
     // Inject a refusal at every post-shutdown boundary. This is the same
     // orchestrator setup uses, with fake side effects and an observed rollback.
+    // A failed stop (failure 0) is not a rollback: nothing was written yet,
+    // so only the stop-failure recovery runs, and exactly once.
     for (int failure = 0; failure < 6; ++failure) {
         int step = 0;
         int rollbacks = 0;
+        int stopFailures = 0;
         int restoredRecord = -1;
         int replaced = 0;
         bool result = gc_run_install_transaction(3,
             [&]() { return step++ != failure; },
+            [&]() { ++stopFailures; },
             [&](uint32_t index) {
                 if (index != (uint32_t)replaced) return false;
                 if (step++ == failure) return false;
@@ -1677,14 +1681,40 @@ int main(int argc, char** argv) {
             [&]() { return step++ != failure; },
             [&]() { return step++ != failure; },
             [&](bool record) { ++rollbacks; restoredRecord = record ? 1 : 0; });
-        if (result || rollbacks != 1 || restoredRecord != (failure >= 4 ? 1 : 0))
+        if (failure == 0) {
+            if (result || stopFailures != 1 || rollbacks != 0 || replaced != 0 || step != 1)
+                return 6109;
+            continue;
+        }
+        if (result || stopFailures != 0 || rollbacks != 1 ||
+            restoredRecord != (failure >= 4 ? 1 : 0))
             return 6100 + failure;
     }
+    // Stop-failure recovery: the previous installation is intact, so the only
+    // action ever taken is restarting a previous service that did go down.
+    if (gc_stop_failure_recovery(true, GC_STOP_FAILURE_SERVICE_STOPPED) !=
+            GC_STOP_FAILURE_RESTART_PREVIOUS ||
+        gc_stop_failure_recovery(false, GC_STOP_FAILURE_SERVICE_STOPPED) !=
+            GC_STOP_FAILURE_NOTHING_TO_DO ||
+        gc_stop_failure_recovery(true, GC_STOP_FAILURE_SERVICE_ACTIVE) !=
+            GC_STOP_FAILURE_LEAVE_ACTIVE ||
+        gc_stop_failure_recovery(false, GC_STOP_FAILURE_SERVICE_ACTIVE) !=
+            GC_STOP_FAILURE_LEAVE_ACTIVE ||
+        gc_stop_failure_recovery(true, GC_STOP_FAILURE_SERVICE_ABSENT) !=
+            GC_STOP_FAILURE_NOTHING_TO_DO ||
+        gc_stop_failure_recovery(true, GC_STOP_FAILURE_SERVICE_UNKNOWN) !=
+            GC_STOP_FAILURE_STATE_UNKNOWN ||
+        gc_stop_failure_recovery(false, GC_STOP_FAILURE_SERVICE_UNKNOWN) !=
+            GC_STOP_FAILURE_STATE_UNKNOWN) return 6110;
+    for (int action = 0; action <= GC_STOP_FAILURE_STATE_UNKNOWN; ++action)
+        if (strcmp(gc_stop_failure_recovery_name((GcStopFailureRecovery)action), "invalid") == 0)
+            return 6111;
     {
         int replaced = 0;
         int rollbacks = 0;
         bool result = gc_run_install_transaction(3,
             []() { return true; },
+            [&]() { ++rollbacks; },
             [&](uint32_t index) { return index == (uint32_t)replaced++; },
             [&]() { return replaced == 3; },
             []() { return true; },

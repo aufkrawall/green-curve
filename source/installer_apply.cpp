@@ -531,6 +531,26 @@ bool gc_install_execute(GcInstallContext* context) {
             transaction.serviceWasRunning |= serviceWasRunning;
             return stopped;
         },
+        [&]() {
+            // Nothing was replaced or registered yet: the previous installation
+            // is intact, so this is a refused upgrade, never a failed recovery.
+            char original[sizeof(context->error)] = {};
+            StringCchCopyA(original, GC_ARRAY_COUNT(original), context->error);
+            bool restarted = false;
+            GcStopFailureRecovery action = transaction.recover_after_stop_failure(&restarted);
+            const char* serviceNote = "";
+            if (action == GC_STOP_FAILURE_RESTART_PREVIOUS)
+                serviceNote = !restarted
+                    ? " The previous background service stopped and could not be restarted; start Green Curve to restart it."
+                    : (context->settingsRestored
+                        ? " The previous background service was restarted and its GPU settings reapplied."
+                        : " The previous background service was restarted; reapply GPU settings if needed.");
+            else if (action == GC_STOP_FAILURE_STATE_UNKNOWN)
+                serviceNote = " The background service state could not be read.";
+            gc_set_error(context, "%s%s Nothing was changed.%s", original,
+                         original[0] ? "" : "Setup could not stop the background service.",
+                         serviceNote);
+        },
         [&](uint32_t i) {
             if (i == 0) gc_report(context, 30, "Copying program files...");
             if (!transaction.replace(i)) return false;
