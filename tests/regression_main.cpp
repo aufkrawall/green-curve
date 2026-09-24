@@ -64,6 +64,8 @@
 #include "vf_offset_range_policy.h"
 #include "linux_curve_targets.h"
 #include "fan_runtime_policy.h"
+#include "fan_worker_lifecycle_policy.h"
+#include "update_install_fan_policy.h"
 #include "fan_zero_rpm_gui_policy.h"
 #include "linux_cli_fan_override_policy.h"
 #include "desired_settings_ui_policy.h"
@@ -1400,6 +1402,85 @@ static int run_audit_followup_tests() {
     return 0;
 }
 
+// Service fan worker lifecycle and the fan during an update install
+// (6300-6339).  fan_worker_lifecycle_policy.h and update_install_fan_policy.h.
+static int run_fan_worker_lifecycle_tests() {
+    // A stop requested by the worker itself must never be a join: joining
+    // yourself only times out, and that timeout is what held g_appLock while
+    // the runtime mutex was released -- the ABBA deadlock with telemetry.
+    if (fan_worker_stop_plan(true, true) != FAN_WORKER_STOP_SIGNAL_ONLY) return 6300;
+    if (fan_worker_stop_plan(true, false) != FAN_WORKER_STOP_SIGNAL_AND_JOIN) return 6301;
+    if (fan_worker_stop_plan(false, false) != FAN_WORKER_STOP_NOTHING) return 6302;
+    if (fan_worker_stop_plan(false, true) != FAN_WORKER_STOP_NOTHING) return 6303;
+
+    // ensure: no handle -> create; exited -> reap; live and not stopping ->
+    // keep; live but told to stop -> join it first (it is leaving, and calling
+    // it "already running" left the runtime undriven until the next watchdog
+    // tick); the worker cannot replace itself.
+    if (fan_worker_ensure_plan(false, false, false, false) != FAN_WORKER_ENSURE_CREATE) return 6304;
+    if (fan_worker_ensure_plan(true, false, false, false) != FAN_WORKER_ENSURE_REAP_THEN_CREATE) return 6305;
+    if (fan_worker_ensure_plan(true, false, true, false) != FAN_WORKER_ENSURE_REAP_THEN_CREATE) return 6306;
+    if (fan_worker_ensure_plan(true, true, false, false) != FAN_WORKER_ENSURE_ALREADY_RUNNING) return 6307;
+    if (fan_worker_ensure_plan(true, true, true, false) !=
+        FAN_WORKER_ENSURE_JOIN_RETIRING_THEN_CREATE) return 6308;
+    if (fan_worker_ensure_plan(true, true, true, true) != FAN_WORKER_ENSURE_REFUSE_SELF) return 6309;
+    if (fan_worker_ensure_plan(true, true, false, true) != FAN_WORKER_ENSURE_ALREADY_RUNNING) return 6310;
+
+    // The worker's lock wait is {stop event, runtime mutex}: the stop wins,
+    // an abandoned mutex is surfaced (never treated as acquired), and anything
+    // else -- an "abandoned" event, a timeout, WAIT_FAILED -- is a failure.
+    if (fan_worker_lock_wait_outcome(FAN_WORKER_WAIT_OBJECT_0) !=
+        FAN_WORKER_LOCK_STOP_REQUESTED) return 6311;
+    if (fan_worker_lock_wait_outcome(FAN_WORKER_WAIT_OBJECT_0 + 1) !=
+        FAN_WORKER_LOCK_ACQUIRED) return 6312;
+    if (fan_worker_lock_wait_outcome(FAN_WORKER_WAIT_ABANDONED_0 + 1) !=
+        FAN_WORKER_LOCK_ABANDONED) return 6313;
+    if (fan_worker_lock_wait_outcome(FAN_WORKER_WAIT_ABANDONED_0) !=
+        FAN_WORKER_LOCK_FAILED) return 6314;
+    if (fan_worker_lock_wait_outcome(0x102ul /* WAIT_TIMEOUT */) !=
+        FAN_WORKER_LOCK_FAILED) return 6315;
+    if (fan_worker_lock_wait_outcome(0xFFFFFFFFul /* WAIT_FAILED */) !=
+        FAN_WORKER_LOCK_FAILED) return 6316;
+    if (strcmp(fan_worker_stop_plan_name(FAN_WORKER_STOP_SIGNAL_ONLY), "signal-only (self)") != 0 ||
+        strcmp(fan_worker_ensure_plan_name(FAN_WORKER_ENSURE_JOIN_RETIRING_THEN_CREATE),
+               "join-retiring-then-create") != 0) return 6317;
+
+    // Install handback: only a manual runtime is handed to the driver.
+    UpdateInstallFanHandback none = update_install_fan_handback_capture(false, false, 40);
+    if (update_install_fan_handback_needed(&none) ||
+        none.runtime != UPDATE_INSTALL_FAN_RUNTIME_NONE) return 6320;
+    UpdateInstallFanHandback curve = update_install_fan_handback_capture(true, false, 0);
+    if (!update_install_fan_handback_needed(&curve) ||
+        curve.runtime != UPDATE_INSTALL_FAN_RUNTIME_CURVE) return 6321;
+    UpdateInstallFanHandback fixed = update_install_fan_handback_capture(false, true, 35);
+    if (fixed.runtime != UPDATE_INSTALL_FAN_RUNTIME_FIXED || fixed.fixedPercent != 35) return 6322;
+    // Exclusive in practice; if both flags were set the temperature-tracking
+    // curve is the one to bring back.
+    if (update_install_fan_handback_capture(true, true, 50).runtime !=
+        UPDATE_INSTALL_FAN_RUNTIME_CURVE) return 6323;
+    if (update_install_fan_handback_capture(false, true, 140).fixedPercent != 100 ||
+        update_install_fan_handback_capture(false, true, -5).fixedPercent != 0) return 6324;
+    if (update_install_fan_handback_needed(nullptr)) return 6325;
+
+    // Restore: only once the reservation is released, never twice, never
+    // something that was not handed back.
+    if (update_install_fan_restore_plan(&curve, true, false) !=
+        UPDATE_INSTALL_FAN_RUNTIME_CURVE) return 6326;
+    if (update_install_fan_restore_plan(&fixed, true, false) !=
+        UPDATE_INSTALL_FAN_RUNTIME_FIXED) return 6327;
+    if (update_install_fan_restore_plan(&curve, false, false) !=
+        UPDATE_INSTALL_FAN_RUNTIME_NONE) return 6328;
+    if (update_install_fan_restore_plan(&curve, true, true) !=
+        UPDATE_INSTALL_FAN_RUNTIME_NONE) return 6329;
+    if (update_install_fan_restore_plan(&none, true, false) !=
+        UPDATE_INSTALL_FAN_RUNTIME_NONE) return 6330;
+    if (update_install_fan_restore_plan(nullptr, true, false) !=
+        UPDATE_INSTALL_FAN_RUNTIME_NONE) return 6331;
+    if (strcmp(update_install_fan_runtime_name(UPDATE_INSTALL_FAN_RUNTIME_FIXED), "fixed") != 0)
+        return 6332;
+    return 0;
+}
+
 // Once-per-crash ownership handback (5860-5899): the startup decision, the
 // per-platform scope, when a completed handback retires the marker, and both
 // on-disk marker records.
@@ -1622,6 +1703,13 @@ int main(int argc, char** argv) {
         return handbackFailure > 0 && handbackFailure < 126 ? handbackFailure : 1;
 #endif
         return handbackFailure;
+    }
+    if (int fanWorkerFailure = run_fan_worker_lifecycle_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", fanWorkerFailure);
+#if !defined(_WIN32)
+        return fanWorkerFailure > 0 && fanWorkerFailure < 126 ? fanWorkerFailure : 1;
+#endif
+        return fanWorkerFailure;
     }
     if (int followupFailure = run_audit_followup_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", followupFailure);

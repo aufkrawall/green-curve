@@ -40,6 +40,8 @@ Setup, crash recovery, and Apply reliability improve in this release.
 - **Updates now warn if applied settings could not be saved for restoration.**
 - **A crashed service now returns custom fans to driver control.** On Windows, it also returns the GPU to stock.
 - **A service stuck in the GPU driver now restarts itself.**
+- **Repeated fan-control errors no longer hang the service.**
+- **Custom fans return to driver control during updates.**
 - **Changing only the power limit no longer resets other GPU settings.**
 - **Slow applies under load no longer end with an unknown outcome.**
 - **Reset no longer reports success while a clock lock may remain.**

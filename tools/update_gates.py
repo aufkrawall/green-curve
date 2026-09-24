@@ -226,8 +226,8 @@ def check_policy_stays_unit_tested(ctx, require_text, harness_source_path):
     for header in ("update_version_policy.h", "update_manifest_policy.h",
                    "update_url_policy.h", "update_schedule_policy.h",
                    "update_presentation_policy.h", "update_transport_policy.h"):
-        require_text(harness_source_path, '#include "%s"' % header,
-                     "the regression harness asserts %s" % header)
+        require_text(harness_source_path, f'#include "{header}"',
+                     f"the regression harness asserts {header}")
     require_text(harness_source_path, "gc_update_is_newer",
                  "the downgrade gate is unit-tested (no other control catches "
                  "a replayed older release)")
@@ -320,6 +320,17 @@ def check_install_reservation_and_restore_gate(ctx, require_text, require_order)
         worker, "service_update_run_install",
         "service_update_set_install_reserved(true)", "CreateProcessW",
         "the reservation survives until setup is launched")
+    # The reservation blocks the fan pulse, so a manual fan duty would freeze
+    # behind it for as long as setup takes -- up to the installer timeout.
+    require_order(
+        worker, "service_update_run_install",
+        "service_update_set_install_reserved(true)",
+        "service_update_hand_fans_to_driver_for_install()",
+        "a manual fan runtime is handed to driver auto when the install reserves")
+    require_order(
+        worker, "service_update_run_install",
+        "service_update_hand_fans_to_driver_for_install()", "unlock_service_runtime()",
+        "the fan handback happens under the same runtime lock as the reservation")
     pipe_switch = _p(ctx, "main_service_pipe_switch.cpp")
     require_text(pipe_switch, "service_update_install_reject_mutation",
                  "APPLY/RESET refuse GPU writes while an install is reserved")
@@ -359,6 +370,16 @@ def check_install_failure_recovery(ctx, require_text, forbid_text):
     require_text(worker, "TerminateProcess(pi.hProcess,",
                  "an overrunning setup is ended rather than waited out, so the "
                  "reservation's precondition is made false instead of assumed")
+    # Every non-success release goes through the helper that also restores
+    # the fan runtime the reservation handed to the driver.
+    forbid_text(worker, "service_update_set_install_reserved(false)",
+                "the install worker releases the reservation only through "
+                "service_update_release_install_reservation()")
+    guard = _p(ctx, "main_service_update_guard.cpp")
+    require_text(guard, "service_update_restore_fans_after_install(why);",
+                 "releasing the reservation restores the handed-back fan runtime")
+    require_text(guard, "update_install_fan_restore_plan(&handback,",
+                 "the fan restore decision is the unit-tested pure plan")
     require_text(worker, "if (!ok && !reservationHeld)",
                  "the reservation is held past this function only when the "
                  "setup process could not be proven dead")

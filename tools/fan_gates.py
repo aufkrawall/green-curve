@@ -251,8 +251,65 @@ def check_native_zero_rpm(ctx, require_text, forbid_text):
                  "Linux validates partial fan overrides without replacing a saved curve")
 
 
+def check_service_fan_worker_serialization(ctx, require_text, forbid_text):
+    """The Windows service fan worker can neither deadlock the service nor
+    open a hole in runtime serialization.
+
+    * The worker used to escalate its own repeated failures while holding
+      g_appLock, and the escalation stopped the worker from inside the worker:
+      a self-join that released the runtime mutex for its five-second timeout
+      and then re-took it -- still holding g_appLock.  Any telemetry request
+      that took the mutex in that window and then g_appLock deadlocked the
+      service until the wedge watchdog forced an emergency restart.
+    * Every other stop released the runtime mutex while joining, which let a
+      logon/resume restore or the updater run a whole hardware transaction in
+      the middle of the caller's Apply or Reset.
+
+    Both are properties no happy-path run shows; they are pinned here and by
+    the pure policy tests (6300-6317).
+    """
+    worker_cpp = _p(ctx, "main_service_fan_worker.cpp")
+    failure_cpp = _p(ctx, "main_fan_runtime_failure.cpp")
+    fan_runtime_cpp = _p(ctx, "main_fan_runtime.cpp")
+    zero_rpm_cpp = _p(ctx, "main_fan_zero_rpm.cpp")
+    host_cpp = _p(ctx, "main_service_host.cpp")
+
+    require_text(worker_cpp, "lock_service_runtime_unless_signaled(g_serviceFanStopEvent)",
+                 "the fan worker's runtime-lock wait also ends on its stop event")
+    require_text(worker_cpp, "HANDLE handles[2] = { cancelEvent, g_serviceRuntimeLock };",
+                 "the stop event is waited on first, so it wins over the mutex")
+    require_text(worker_cpp, "fan_worker_stop_plan(g_serviceFanThread != nullptr,",
+                 "stopping the fan worker goes through the pure stop plan")
+    require_text(worker_cpp, "if (plan == FAN_WORKER_STOP_SIGNAL_ONLY) {",
+                 "a stop requested by the fan worker itself only signals")
+    require_text(worker_cpp, "fan_worker_ensure_plan(present, alive,",
+                 "starting the fan worker goes through the pure ensure plan")
+    forbid_text(worker_cpp, "bool lockHeld = service_runtime_lock_held_by_current_thread();",
+                "stopping the fan worker must not release the caller's runtime lock")
+    require_text(worker_cpp, "service_fan_worker_note_unserialized(",
+                 "touching the fan worker handle without the runtime lock is logged")
+
+    # Escalation writes NVML and stops the runtime: never under g_appLock.
+    require_text(failure_cpp,
+                 "    bool escalate = note_fan_runtime_failure_locked(action, detail);\n"
+                 "    LeaveCriticalSection(&g_appLock);\n"
+                 "    if (escalate) escalate_fan_runtime_failure(action, detail);",
+                 "fan failure escalation runs only after g_appLock is released")
+    for surface in (fan_runtime_cpp, zero_rpm_cpp, failure_cpp):
+        forbid_text(surface, "handle_fan_runtime_failure(",
+                    "the old escalate-under-g_appLock entry point stays gone")
+    require_text(fan_runtime_cpp, '#include "main_fan_runtime_failure.cpp"',
+                 "the fan runtime uses the split failure reducer")
+
+    # The service main thread owns the worker handle only under the runtime
+    # lock, and never blocks its watchdog loop on it.
+    require_text(host_cpp, "if (try_lock_service_runtime(0)) {",
+                 "the watchdog checks fan worker health under a non-blocking runtime lock")
+
+
 def check_all(ctx, require_text, forbid_text, require_order, backend_surface):
     check_manual_write_verification(ctx, require_text, forbid_text, backend_surface)
+    check_service_fan_worker_serialization(ctx, require_text, forbid_text)
     check_runtime_failsafe(ctx, require_text, forbid_text, require_order)
     check_power_limit_range(ctx, require_text, forbid_text)
     check_native_zero_rpm(ctx, require_text, forbid_text)

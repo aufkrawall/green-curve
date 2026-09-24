@@ -504,6 +504,9 @@ static bool service_update_run_install(char* err, size_t errSize) {
         return false;
     }
     service_update_set_install_reserved(true);
+    // The reservation blocks the fan pulse too; never leave a manual duty
+    // frozen behind it (update_install_fan_policy.h).
+    service_update_hand_fans_to_driver_for_install();
     unlock_service_runtime();
     debug_log("update install: reserved GPU writes for setup launch\n");
 
@@ -539,7 +542,7 @@ static bool service_update_run_install(char* err, size_t errSize) {
                                                 nullptr, noLaunchCommand,
                                                 sizeof(noLaunchCommand))) {
         CloseHandle(pinned);
-        service_update_set_install_reserved(false);
+        service_update_release_install_reservation("installer command line could not be built");
         set_message(err, errSize,
                     "Cannot build a usable installer command line for %s",
                     installDir);
@@ -552,7 +555,7 @@ static bool service_update_run_install(char* err, size_t errSize) {
     if (!wideRelaunch.valid_for(relaunchCommand) ||
         !wideNoLaunch.valid_for(noLaunchCommand)) {
         CloseHandle(pinned);
-        service_update_set_install_reserved(false);
+        service_update_release_install_reservation("installer command line could not be encoded");
         GcUpdateStateLock guard;
         g_updateState.installRunning = false;
         set_message(err, errSize, "Cannot encode the installer command line");
@@ -567,7 +570,7 @@ static bool service_update_run_install(char* err, size_t errSize) {
     if (!service_update_stop_gui_processes(installDir, &closedGuiCount,
                                            err, errSize)) {
         CloseHandle(pinned);
-        service_update_set_install_reserved(false);
+        service_update_release_install_reservation("Green Curve windows could not be closed");
         GcUpdateStateLock guard;
         g_updateState.installRunning = false;
         return false;
@@ -591,7 +594,7 @@ static bool service_update_run_install(char* err, size_t errSize) {
     CloseHandle(pinned);
 
     if (!created) {
-        service_update_set_install_reserved(false);
+        service_update_release_install_reservation("the installer could not be started");
         GcUpdateStateLock guard;
         g_updateState.installRunning = false;
         set_message(err, errSize, "Cannot start the installer (error %lu)", createError);
@@ -680,7 +683,8 @@ static bool service_update_run_install(char* err, size_t errSize) {
     // replacement genuinely cannot be ruled out.  This used to additionally
     // require having SEEN the process exit, which is how the timeout path
     // leaked the reservation for the life of the service.
-    if (!ok && !reservationHeld) service_update_set_install_reserved(false);
+    if (!ok && !reservationHeld)
+        service_update_release_install_reservation("the installer did not succeed");
 
     {
         GcUpdateStateLock guard;

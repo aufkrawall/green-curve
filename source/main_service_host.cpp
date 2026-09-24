@@ -304,9 +304,13 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
         SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
         return;
     }
+    // The lifecycle worker is already running and may own the fan worker
+    // handle under the runtime lock; take the same lock here.
+    lock_service_runtime();
     if (g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive) {
         ensure_service_fan_runtime_thread();
     }
+    unlock_service_runtime();
 
     service_report_start_progress("pipe listener startup");
     DWORD threadId = 0;
@@ -315,7 +319,9 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
         debug_log("service_main: FATAL failed to create pipe listener pool\n");
         if (g_serviceStopEvent) SetEvent(g_serviceStopEvent);
         service_shutdown_logon_apply_coordinator();
+        lock_service_runtime();
         stop_service_fan_runtime_thread();
+        unlock_service_runtime();
         if (g_servicePipeReadyEvent) {
             CloseHandle(g_servicePipeReadyEvent);
             g_servicePipeReadyEvent = nullptr;
@@ -545,9 +551,18 @@ service_watchdog_loop:
             // actually wipe the OC: resume-from-standby, driver/TDR recovery restart,
             // and session logon (the event-driven reapply worker below/elsewhere).
 
-            // Check fan runtime thread health
-            if (g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive) {
-                ensure_service_fan_runtime_thread();
+            // Check fan runtime thread health.  The worker handle is owned under
+            // the runtime lock; this thread used to touch it without, racing an
+            // Apply/Reset that closes or replaces it.  Never block here -- the
+            // wedge checks above must keep running behind a long Apply -- so a
+            // busy lock simply defers the check to the next tick.
+            if (try_lock_service_runtime(0)) {
+                EnterCriticalSection(&g_appLock);
+                bool fanRuntimeWanted =
+                    g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive;
+                LeaveCriticalSection(&g_appLock);
+                if (fanRuntimeWanted) ensure_service_fan_runtime_thread();
+                unlock_service_runtime();
             }
 
             // Check pipe worker health. A VEH-killed worker (stuck in NVML on
@@ -654,7 +669,9 @@ service_watchdog_loop:
     bool hadOwnedIntentForShutdown = g_serviceHasActiveDesired;
     unlock_service_runtime();
     service_report_stop_progress("fan runtime shutdown");
+    lock_service_runtime();
     stop_service_fan_runtime_thread();
+    unlock_service_runtime();
     service_report_stop_progress("pipe listener shutdown");
     service_pipe_listener_stop_and_join();
     if (g_servicePipeReadyEvent) {

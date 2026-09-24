@@ -206,8 +206,12 @@ void gui_update_replay_pending_restore() {
     long long ageSeconds = -1;
     bool haveAge = gui_update_pending_restore_age_seconds(pending, &ageSeconds);
     if (!haveAge) {
+        // Tokenized like every other path in this file (F-03-001): the
+        // pending-restore path sits under the account's profile directory.
+        DWORD ageError = GetLastError();
+        char ageToken[32] = {};
         debug_log("update handoff: cannot measure the capture's age at %s (error %lu)\n",
-                  pending, GetLastError());
+                  gc_log_path_token(pending, ageToken, sizeof(ageToken)), ageError);
     }
     if (!haveAge || gc_update_restore_decide(expectedVersion, APP_VERSION,
                                              ageSeconds) != GC_UPDATE_RESTORE_APPLY) {

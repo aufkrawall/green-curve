@@ -24,10 +24,10 @@ static void service_disable_automatic_restore(DWORD lockoutReason,
     g_app.fanCurveRuntimeActive = false;
     g_app.fanFixedRuntimeActive = false;
     // When the caller already owns the runtime lock, the fan worker is either
-    // outside a pulse or blocked on that same lock. Signal it and let it exit
-    // after the atomic state transition is published; synchronously joining it
-    // would temporarily drop the lock and let an explicit Apply interleave
-    // halfway through this fail-closed transition.
+    // outside a pulse or waiting for that same lock, and that wait also ends on
+    // the stop event.  Signalling is therefore enough: the worker exits after
+    // the atomic state transition is published, and this fail-closed path does
+    // not block on it.  The worker handle is reaped by the next ensure/stop.
     if (service_runtime_lock_held_by_current_thread()) {
         if (g_serviceFanStopEvent) SetEvent(g_serviceFanStopEvent);
     } else {

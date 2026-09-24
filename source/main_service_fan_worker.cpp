@@ -8,6 +8,8 @@ static bool xbar_refresh_live_state();
 
 // Read-only telemetry cache and the serialized service fan runtime worker.
 
+#include "fan_worker_lifecycle_policy.h"
+
 
 static DWORD service_active_fan_runtime_interval_ms() {
     if (g_app.fanFixedRuntimeActive) return FAN_FIXED_RUNTIME_INTERVAL_MS;
@@ -237,6 +239,55 @@ static void service_runtime_pulse() {
     }
 }
 
+static_assert(FAN_WORKER_WAIT_OBJECT_0 == WAIT_OBJECT_0,
+    "fan_worker_lifecycle_policy.h mirrors WAIT_OBJECT_0");
+static_assert(FAN_WORKER_WAIT_ABANDONED_0 == WAIT_ABANDONED_0,
+    "fan_worker_lifecycle_policy.h mirrors WAIT_ABANDONED_0");
+
+// Blocking acquisition that a stop request can cancel.  Returns false, with the
+// lock NOT held, when `cancelEvent` is signaled first.  Only the fan worker uses
+// it: because its wait now ends on the stop event too, whoever stops it can keep
+// the runtime mutex for the whole join instead of releasing it mid-transaction
+// (fan_worker_lifecycle_policy.h).  Poison and abandonment are handled exactly
+// as lock_service_runtime() handles them.
+static bool lock_service_runtime_unless_signaled(HANDLE cancelEvent) {
+    if (!cancelEvent) {
+        lock_service_runtime();
+        return true;
+    }
+    if (InterlockedExchangeAdd(&g_serviceRuntimeLockPoisoned, 0) != 0) {
+        service_runtime_reject_poisoned_acquisition("cancellable acquisition", false);
+    }
+    if (!ensure_service_runtime_lock()) {
+        service_runtime_lock_fail_closed("mutex creation", GetLastError());
+    }
+    HANDLE handles[2] = { cancelEvent, g_serviceRuntimeLock };
+    DWORD waitResult = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+    switch (fan_worker_lock_wait_outcome(waitResult)) {
+        case FAN_WORKER_LOCK_STOP_REQUESTED:
+            return false;
+        case FAN_WORKER_LOCK_ABANDONED:
+            service_runtime_mutex_abandoned("cancellable wait");
+        case FAN_WORKER_LOCK_FAILED:
+            service_runtime_lock_fail_closed("cancellable mutex wait",
+                waitResult == WAIT_FAILED ? GetLastError() : waitResult);
+        case FAN_WORKER_LOCK_ACQUIRED:
+            break;
+    }
+    if (InterlockedExchangeAdd(&g_serviceRuntimeLockPoisoned, 0) != 0) {
+        service_runtime_reject_poisoned_acquisition(
+            "cancellable acquisition", true);
+    }
+    DWORD currentThreadId = GetCurrentThreadId();
+    if (g_serviceRuntimeLockOwnerThreadId == currentThreadId) {
+        g_serviceRuntimeLockDepth++;
+    } else {
+        g_serviceRuntimeLockOwnerThreadId = currentThreadId;
+        g_serviceRuntimeLockDepth = 1;
+    }
+    return true;
+}
+
 static DWORD WINAPI service_fan_runtime_thread_proc(void*) {
     HANDLE waitHandles[1] = { g_serviceFanStopEvent };
     debug_log("service_fan_runtime_thread: started\n");
@@ -277,7 +328,14 @@ static DWORD WINAPI service_fan_runtime_thread_proc(void*) {
             // VEH cannot catch) and request a controlled process restart.
             g_serviceFanPulseHeartbeatMs = GetTickCount64();
             InterlockedExchange(&g_serviceFanPulseInFlight, 1);
-            lock_service_runtime();
+            // Cancellable: a stop requested while this pulse queues behind an
+            // Apply/Reset reaches it here, so the stopper never has to release
+            // the runtime mutex to be able to join this thread.
+            if (!lock_service_runtime_unless_signaled(g_serviceFanStopEvent)) {
+                InterlockedExchange(&g_serviceFanPulseInFlight, 0);
+                debug_log("service_fan_runtime_thread: stop requested while waiting for the runtime lock\n");
+                break;
+            }
             // Queuing on the gate is not evidence of anything, so the wedge
             // window starts HERE, once this thread owns the gate and is about
             // to enter nvml.dll.  Before this line the pulse may simply have
@@ -301,17 +359,67 @@ static DWORD WINAPI service_fan_runtime_thread_proc(void*) {
     return 0;
 }
 
+// Whether the calling thread is the fan worker.  The id is only trusted while
+// the worker's handle is open: an open handle keeps the thread object alive, so
+// its id cannot have been reused by another thread.
+static bool service_fan_worker_is_current_thread() {
+    return g_serviceFanThread && g_fanRuntimeThreadId != 0 &&
+        g_fanRuntimeThreadId == GetCurrentThreadId();
+}
+
+static void service_fan_worker_release_handle() {
+    CloseHandle(g_serviceFanThread);
+    g_serviceFanThread = nullptr;
+    g_fanRuntimeThreadId = 0;
+}
+
+// The worker handle is shared by the pipe workers, the lifecycle worker, the
+// updater and the service main thread.  The runtime mutex is what serializes
+// them; a caller without it is a handle-ownership race (double CloseHandle, or
+// two workers), so it is logged rather than silently tolerated.
+static void service_fan_worker_note_unserialized(const char* operation) {
+    if (service_runtime_lock_held_by_current_thread()) return;
+    debug_log("%s: called WITHOUT the runtime lock; fan worker handle ownership"
+              " is unserialized here\n", operation);
+}
+
 static bool ensure_service_fan_runtime_thread() {
-    if (g_serviceFanThread) {
-        DWORD waitResult = WaitForSingleObject(g_serviceFanThread, 0);
-        if (waitResult == WAIT_TIMEOUT) {
+    service_fan_worker_note_unserialized("ensure_service_fan_runtime_thread");
+    bool present = g_serviceFanThread != nullptr;
+    bool alive = present && WaitForSingleObject(g_serviceFanThread, 0) == WAIT_TIMEOUT;
+    bool stopSignaled = g_serviceFanStopEvent &&
+        WaitForSingleObject(g_serviceFanStopEvent, 0) == WAIT_OBJECT_0;
+    FanWorkerEnsurePlan plan = fan_worker_ensure_plan(present, alive,
+        stopSignaled, service_fan_worker_is_current_thread());
+    switch (plan) {
+        case FAN_WORKER_ENSURE_ALREADY_RUNNING:
             debug_log("ensure_service_fan_runtime_thread: already running\n");
             return true;
+        case FAN_WORKER_ENSURE_REFUSE_SELF:
+            debug_log("ensure_service_fan_runtime_thread: refused -- the retiring fan"
+                      " worker cannot replace itself\n");
+            return false;
+        case FAN_WORKER_ENSURE_JOIN_RETIRING_THEN_CREATE: {
+            // It was told to stop and is leaving; its lock wait is cancellable,
+            // so this join cannot depend on the runtime mutex we may hold.
+            DWORD joined = WaitForSingleObject(g_serviceFanThread,
+                SERVICE_FAN_THREAD_STOP_TIMEOUT_MS);
+            if (joined != WAIT_OBJECT_0) {
+                debug_log("ensure_service_fan_runtime_thread: retiring fan worker did not"
+                          " exit (result=%lu); thread handle preserved, not replaced\n",
+                    joined);
+                return false;
+            }
+            service_fan_worker_release_handle();
+            debug_log("ensure_service_fan_runtime_thread: joined a retiring worker, recreating\n");
+            break;
         }
-        // Thread has exited; close stale handle and recreate.
-        CloseHandle(g_serviceFanThread);
-        g_serviceFanThread = nullptr;
-        debug_log("ensure_service_fan_runtime_thread: stale handle detected, recreating\n");
+        case FAN_WORKER_ENSURE_REAP_THEN_CREATE:
+            service_fan_worker_release_handle();
+            debug_log("ensure_service_fan_runtime_thread: stale handle detected, recreating\n");
+            break;
+        case FAN_WORKER_ENSURE_CREATE:
+            break;
     }
     if (!g_serviceFanStopEvent) {
         g_serviceFanStopEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
@@ -320,31 +428,39 @@ static bool ensure_service_fan_runtime_thread() {
     ResetEvent(g_serviceFanStopEvent);
     DWORD threadId = 0;
     g_serviceFanThread = CreateThread(nullptr, (SIZE_T)64 * 1024, service_fan_runtime_thread_proc, nullptr, STACK_SIZE_PARAM_IS_A_RESERVATION, &threadId);
-    g_fanRuntimeThreadId = threadId;
-    debug_log("ensure_service_fan_runtime_thread: created=%d threadId=%lu\n", g_serviceFanThread ? 1 : 0, threadId);
+    g_fanRuntimeThreadId = g_serviceFanThread ? threadId : 0;
+    debug_log("ensure_service_fan_runtime_thread: created=%d threadId=%lu plan=%s\n",
+        g_serviceFanThread ? 1 : 0, threadId, fan_worker_ensure_plan_name(plan));
     return g_serviceFanThread != nullptr;
 }
 
 static void stop_service_fan_runtime_thread() {
-    if (!g_serviceFanThread) return;
+    FanWorkerStopPlan plan = fan_worker_stop_plan(g_serviceFanThread != nullptr,
+        service_fan_worker_is_current_thread());
+    if (plan == FAN_WORKER_STOP_NOTHING) return;
     if (g_serviceFanStopEvent) SetEvent(g_serviceFanStopEvent);
-    bool lockHeld = service_runtime_lock_held_by_current_thread();
-    if (lockHeld) {
-        unlock_service_runtime();
+    if (plan == FAN_WORKER_STOP_SIGNAL_ONLY) {
+        // Joining yourself can only time out, and it used to do so with the
+        // runtime mutex released and g_appLock still held by the failure
+        // escalation that got us here -- an ABBA deadlock with any telemetry
+        // request.  The loop sees the event and exits after this pulse.
+        debug_log("stop_service_fan_runtime_thread: requested by the fan worker itself;"
+                  " signalled, it exits after the current pulse\n");
+        return;
     }
+    service_fan_worker_note_unserialized("stop_service_fan_runtime_thread");
+    // The runtime mutex is deliberately NOT released here.  The worker's lock
+    // wait also ends on the stop event, so it can leave without it, and keeping
+    // it closes the window in which a lifecycle restore or the updater could
+    // run a hardware transaction in the middle of the caller's Apply/Reset.
     DWORD waitResult = WaitForSingleObject(g_serviceFanThread, SERVICE_FAN_THREAD_STOP_TIMEOUT_MS);
     if (waitResult != WAIT_OBJECT_0) {
         debug_log("stop_service_fan_runtime_thread: timed out waiting for fan thread (result=%lu); thread handle preserved to prevent replacement\n", waitResult);
-        if (lockHeld) {
-            lock_service_runtime();
-        }
         // Keep g_serviceFanThread handle alive to prevent a new thread from starting
         // while the original may still reference shared events or runtime state.
         return;
     }
-    if (lockHeld) {
-        lock_service_runtime();
-    }
-    CloseHandle(g_serviceFanThread);
-    g_serviceFanThread = nullptr;
+    service_fan_worker_release_handle();
+    debug_log("stop_service_fan_runtime_thread: fan worker joined (plan=%s)\n",
+        fan_worker_stop_plan_name(plan));
 }

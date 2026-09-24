@@ -1115,7 +1115,11 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 }
             }
         }
-        if (memApplied && preserveCurveAcrossMem && !curveRequest && !curveBatchOk) {
+        // curveRequestOk is still true only when no branch above has already
+        // counted this batch as failed; the out-of-range refusal both clears it
+        // and counts, so without it that one refusal was reported twice.
+        if (memApplied && preserveCurveAcrossMem && !curveRequest && !curveBatchOk &&
+            curveRequestOk) {
             curveRequestOk = false;
             failCount++;
             partialApplyRisk = true;

@@ -403,108 +403,7 @@ static void release_single_instance_mutex() {
     CloseHandle(g_singleInstanceMutex);
     g_singleInstanceMutex = nullptr;
 }
-static unsigned int fan_runtime_failure_limit() {
-    UINT intervalMs = g_app.fanFixedRuntimeActive
-        ? FAN_FIXED_RUNTIME_INTERVAL_MS
-        : (UINT)g_app.activeFanCurve.pollIntervalMs;
-    if (intervalMs < 250) intervalMs = 250;
-    unsigned int limit = (unsigned int)((FAN_RUNTIME_FAILURE_WINDOW_MS + intervalMs - 1) / intervalMs);
-    if (limit < 3) limit = 3;
-    if (limit > 10) limit = 10;
-    return limit;
-}
-static void mark_fan_runtime_success(ULONGLONG now) {
-    g_app.fanRuntimeConsecutiveFailures = 0;
-    g_app.fanRuntimeLastApplyTickMs = now;
-}
-static void handle_fan_runtime_failure(const char* action, const char* detail) {
-    if (!g_app.fanCurveRuntimeActive && !g_app.fanFixedRuntimeActive) return;
-    g_app.fanRuntimeLastApplyTickMs = 0;
-    g_app.fanRuntimeConsecutiveFailures++;
-    unsigned int limit = fan_runtime_failure_limit();
-    // Suppress repetitive identical failure logs within a 30-second window.
-    // Requires g_appLock (caller must hold it).
-    static ULONGLONG s_lastFailureLogTickMs = 0;
-    static char s_lastFailureAction[128] = {};
-    static char s_lastFailureDetail[128] = {};
-    ULONGLONG now = GetTickCount64();
-    bool sameAction = (action && action[0]) ? strcmp(action, s_lastFailureAction) == 0 : s_lastFailureAction[0] == 0;
-    bool sameDetail = (detail && detail[0]) ? strcmp(detail, s_lastFailureDetail) == 0 : s_lastFailureDetail[0] == 0;
-    bool suppress = sameAction && sameDetail && (now - s_lastFailureLogTickMs < 30000);
-    if (!suppress) {
-        s_lastFailureLogTickMs = now;
-        StringCchCopyA(s_lastFailureAction, ARRAY_COUNT(s_lastFailureAction), action ? action : "");
-        StringCchCopyA(s_lastFailureDetail, ARRAY_COUNT(s_lastFailureDetail), detail ? detail : "");
-        debug_log("fan runtime failure %u/%u: %s%s%s\n",
-            g_app.fanRuntimeConsecutiveFailures,
-            limit,
-            action ? action : "fan runtime failure",
-            (detail && detail[0]) ? " - " : "",
-            (detail && detail[0]) ? detail : "");
-    }
-    if (g_app.fanRuntimeConsecutiveFailures < limit) return;
-    char summary[512] = {};
-    if (action && action[0] && detail && detail[0]) {
-        set_message(summary, sizeof(summary), "%s: %s", action, detail);
-    } else if (action && action[0]) {
-        set_message(summary, sizeof(summary), "%s", action);
-    } else if (detail && detail[0]) {
-        set_message(summary, sizeof(summary), "%s", detail);
-    } else {
-        set_message(summary, sizeof(summary), "Custom fan runtime failed repeatedly");
-    }
-    char autoDetail[128] = {};
-    bool autoRestored = nvml_set_fan_auto(autoDetail, sizeof(autoDetail));
-    if (!autoRestored) {
-        char emergencyDetail[128] = {};
-        if (nvml_set_fan_manual(100, nullptr, emergencyDetail, sizeof(emergencyDetail))) {
-            debug_log("fan runtime failure emergency: set fan to 100%% after auto-restore failed\n");
-        } else {
-            debug_log("fan runtime failure emergency: could not set fan to 100%% after auto-restore failed: %s\n", emergencyDetail);
-        }
-    }
-    stop_fan_curve_runtime();
-    if (autoRestored) {
-        g_app.activeFanMode = FAN_MODE_AUTO;
-        sync_fan_ui_from_cached_state(window_should_redraw_fan_controls());
-    } else if (g_app.hMainWnd) {
-        refresh_live_fan_telemetry(window_should_redraw_fan_controls());
-    }
-    char reportDetails[768] = {};
-    if (autoRestored) {
-        if (autoDetail[0]) {
-            set_message(reportDetails, sizeof(reportDetails),
-                "%s. Driver auto fan restored (%s).", summary, autoDetail);
-        } else {
-            set_message(reportDetails, sizeof(reportDetails),
-                "%s. Driver auto fan restored.", summary);
-        }
-    } else {
-        if (autoDetail[0]) {
-            set_message(reportDetails, sizeof(reportDetails),
-                "%s. Attempt to restore driver auto fan failed: %s", summary, autoDetail);
-        } else {
-            set_message(reportDetails, sizeof(reportDetails),
-                "%s. Attempt to restore driver auto fan failed.", summary);
-        }
-    }
-    char logErr[256] = {};
-    if (!write_error_report_log(
-            "Fan control runtime disabled after repeated failures",
-            reportDetails,
-            logErr,
-            sizeof(logErr)) &&
-        logErr[0]) {
-        debug_log("fan runtime error log failed: %s\n", logErr);
-    }
-    if (g_app.hProfileStatusLabel) {
-        set_profile_status_text(
-            autoRestored
-                ? "Custom fan runtime disabled after repeated failures. Driver auto fan restored. See the Green Curve error log."
-                : "Custom fan runtime disabled after repeated failures. Could not confirm driver auto fan restore. See the Green Curve error log.");
-    }
-    update_tray_icon();
-}
+#include "main_fan_runtime_failure.cpp"
 static void stop_fan_curve_runtime(bool restoreFanAutoOnExit) {
     if (restoreFanAutoOnExit && (g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive)) {
         char detail[128] = {};
@@ -603,9 +502,7 @@ static void apply_fan_curve_tick() {
                 return;
             }
         } else if (!needsReapply) {
-            EnterCriticalSection(&g_appLock);
-            handle_fan_runtime_failure("Fixed fan runtime verify failed", detail);
-            LeaveCriticalSection(&g_appLock);
+            report_fan_runtime_failure("Fixed fan runtime verify failed", detail);
             return;
         }
         bool exact = false;
@@ -614,9 +511,7 @@ static void apply_fan_curve_tick() {
             if (!detail[0] && !exact) {
                 set_message(detail, sizeof(detail), "Fan readback did not confirm %d%%", fixedTargetPercent);
             }
-            EnterCriticalSection(&g_appLock);
-            handle_fan_runtime_failure("Fixed fan runtime apply failed", detail);
-            LeaveCriticalSection(&g_appLock);
+            report_fan_runtime_failure("Fixed fan runtime apply failed", detail);
             return;
         }
         EnterCriticalSection(&g_appLock);
@@ -637,9 +532,7 @@ static void apply_fan_curve_tick() {
     char detail[128] = {};
     // nvml_read_temperature can crash in nvml.dll — NO CS held.
     if (!nvml_read_temperature(&currentTempC, detail, sizeof(detail))) {
-        EnterCriticalSection(&g_appLock);
-        handle_fan_runtime_failure("Fan curve temperature poll failed", detail);
-        LeaveCriticalSection(&g_appLock);
+        report_fan_runtime_failure("Fan curve temperature poll failed", detail);
         return;
     }
 
@@ -724,9 +617,7 @@ static void apply_fan_curve_tick() {
         if (!detail[0] && !exact) {
             set_message(detail, sizeof(detail), "Fan readback did not confirm %d%%", targetPercent);
         }
-        EnterCriticalSection(&g_appLock);
-        handle_fan_runtime_failure("Fan curve runtime apply failed", detail);
-        LeaveCriticalSection(&g_appLock);
+        report_fan_runtime_failure("Fan curve runtime apply failed", detail);
         return;
     }
 

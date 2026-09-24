@@ -33,10 +33,8 @@ static bool apply_fan_curve_zero_rpm_tick(const FanCurveConfig* curve,
 
     bool alreadyAuto = nvml_read_fans(detail, detailSize) && g_app.fanIsAuto;
     if (!alreadyAuto && !nvml_set_fan_auto(detail, detailSize)) {
-        EnterCriticalSection(&g_appLock);
-        handle_fan_runtime_failure(
+        report_fan_runtime_failure(
             "Fan curve native zero-RPM handback failed", detail);
-        LeaveCriticalSection(&g_appLock);
         return true;
     }
 

@@ -39,8 +39,6 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     linux_mutation_cpp = _p(ctx, "linux_backend_mutation.cpp")
     linux_ceiling_h = _p(ctx, "linux_apply_ceiling.h")
 
-    front_cpp = _p(ctx, "main_gpu_front.cpp")
-
     # One decision, shared. Two independent copies would drift, and the drift
     # would be invisible until a platform-specific TDR report.
     require_text(policy_h, "static inline ApplyClockCeilingPlan apply_clock_ceiling_plan(",
@@ -124,7 +122,6 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # 2026-09-13 post-fix run turned out to have been idle, which was only
     # discoverable afterwards by inferring load from fan telemetry.
     witness_h = _p(ctx, "apply_clock_witness.h")
-    backend_cpp = _p(ctx, "gpu_backend.cpp")
     require_text(policy_h, "static inline ApplyClockWitnessVerdict apply_clock_witness_verdict(",
                  "the held/exceeded verdict is one shared pure rule")
     require_text(policy_h, "static inline bool apply_clock_witness_load_is_meaningful(",
@@ -578,3 +575,8 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
         "ownership_graceful_stop_reset(",
         "bool resetOk = service_reset_all(",
         "the graceful-stop reset covers unreturned writes, not only owned intent")
+    # A VF batch refused for out-of-range offsets is counted once.  The
+    # preserve-across-memory branch used to count the same refusal again.
+    require_text(apply_cpp,
+                 "!curveRequest && !curveBatchOk &&\n            curveRequestOk)",
+                 "the curve-preserve failure is not counted twice after a refused batch")
