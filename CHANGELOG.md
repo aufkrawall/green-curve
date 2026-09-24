@@ -32,20 +32,20 @@ Setup, crash recovery, and Apply reliability improve in this release.
 
 ### New
 
-- **Pascal GPUs can now apply curve-based clock limits.**
 - **Setup accepts dedicated folders on any drive.** It asks for consent when other accounts could change one.
-- **Windows source builds now include both compiler variants.** Their artifacts stay in separate folders.
+- **Windows local source builds now build both compiler variants.** Running `build.py` locally on Windows builds both MSVC-ABI and release toolchain artifacts in separate folders (does not affect release packages).
 
 ### Improved
 
+- **Windows binaries trigger fewer antivirus false alarms, though heuristic detections still regularly occur.** Open-source, unsigned hardware utilities inevitably trip heuristic scanners, so exclusions remain recommended.
 - **Service install and removal failures now explain why they failed.**
 - **Updates now warn if applied settings could not be saved for restoration.**
 - **The selected GPU now supplies its own memory offset reading.**
-- **Windows binaries should trigger fewer antivirus false alarms.**
 - **The uninstaller is now smaller and named `greencurve-uninstall.exe`.**
 
 ### Fixed
 
+- **Pascal GPUs no longer fail profile switching or curve limits due to unsupported hardware clock locks.**
 - **Changing only the power limit no longer resets other GPU settings.**
 - **Slow applies under load no longer end with an unknown outcome.**
 - **Reset no longer reports success while a clock lock may remain.**
@@ -63,13 +63,12 @@ Setup, crash recovery, and Apply reliability improve in this release.
 
 ### Compatibility notes
 
-- Existing installations update in place; unattended updates never prompt.
+- Existing installations update in place without prompting, even when in a custom folder.
 - Protected Windows locations and folders holding other files are refused.
 - Existing installs in a now-refused folder keep working until moved or reinstalled.
 - FAT/exFAT and network folders work with a warning.
-- Installing from an archive requires an elevated terminal.
+- Registering the background service from a portable archive (.7z / .tar.xz) requires an elevated terminal; setup.exe prompts for elevation automatically.
 - Uninstalling removes the program folder at the next restart.
-- App and service update together to protocol v28; no action is needed.
 
 ### Downloads and verification
 
