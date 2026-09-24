@@ -276,7 +276,11 @@ def check_service_fan_worker_serialization(ctx, require_text, forbid_text):
 
     require_text(worker_cpp, "lock_service_runtime_unless_signaled(g_serviceFanStopEvent)",
                  "the fan worker's runtime-lock wait also ends on its stop event")
-    require_text(worker_cpp, "HANDLE handles[2] = { cancelEvent, g_serviceRuntimeLock };",
+    require_text(worker_cpp,
+                 "fan_worker_wait_for_runtime_lock(cancelEvent, g_serviceRuntimeLock, &waitResult)",
+                 "the fan worker uses the natively tested cancellable wait")
+    require_text(_p(ctx, "fan_worker_lock_wait_win32.h"),
+                 "HANDLE handles[2] = { stopEvent, runtimeMutex };",
                  "the stop event is waited on first, so it wins over the mutex")
     require_text(worker_cpp, "fan_worker_stop_plan(g_serviceFanThread != nullptr,",
                  "stopping the fan worker goes through the pure stop plan")

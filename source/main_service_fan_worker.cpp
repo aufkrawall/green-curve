@@ -9,6 +9,8 @@ static bool xbar_refresh_live_state();
 // Read-only telemetry cache and the serialized service fan runtime worker.
 
 #include "fan_worker_lifecycle_policy.h"
+// The cancellable wait itself, shared with the native regression fixture.
+#include "fan_worker_lock_wait_win32.h"
 
 
 static DWORD service_active_fan_runtime_interval_ms() {
@@ -239,11 +241,6 @@ static void service_runtime_pulse() {
     }
 }
 
-static_assert(FAN_WORKER_WAIT_OBJECT_0 == WAIT_OBJECT_0,
-    "fan_worker_lifecycle_policy.h mirrors WAIT_OBJECT_0");
-static_assert(FAN_WORKER_WAIT_ABANDONED_0 == WAIT_ABANDONED_0,
-    "fan_worker_lifecycle_policy.h mirrors WAIT_ABANDONED_0");
-
 // Blocking acquisition that a stop request can cancel.  Returns false, with the
 // lock NOT held, when `cancelEvent` is signaled first.  Only the fan worker uses
 // it: because its wait now ends on the stop event too, whoever stops it can keep
@@ -261,9 +258,8 @@ static bool lock_service_runtime_unless_signaled(HANDLE cancelEvent) {
     if (!ensure_service_runtime_lock()) {
         service_runtime_lock_fail_closed("mutex creation", GetLastError());
     }
-    HANDLE handles[2] = { cancelEvent, g_serviceRuntimeLock };
-    DWORD waitResult = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
-    switch (fan_worker_lock_wait_outcome(waitResult)) {
+    DWORD waitResult = 0;
+    switch (fan_worker_wait_for_runtime_lock(cancelEvent, g_serviceRuntimeLock, &waitResult)) {
         case FAN_WORKER_LOCK_STOP_REQUESTED:
             return false;
         case FAN_WORKER_LOCK_ABANDONED:

@@ -962,6 +962,12 @@ int run_service_install_tests();
 // 2026-09-24 audit follow-ups: lock/pre-tail refusal before reset, Linux fixed
 // fan maintenance (tests/apply_profile_followup_tests.cpp, 6430-6499).
 int run_apply_profile_followup_tests();
+// The apply's VF correction loop against a simulated driver
+// (tests/apply_correction_tests.cpp, 6500-6549).
+int run_apply_correction_tests();
+// Native fan worker cancellable-lock fixture (tests/fan_worker_lock_tests.cpp,
+// 6550-6569; Windows only).
+int run_fan_worker_lock_tests();
 // F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
 // are over a kilobyte each and several are live at once; under ASan's
 // redzones that is enough to overflow main()'s frame, which already carries
@@ -1762,6 +1768,17 @@ int main(int argc, char** argv) {
         return followupFailure > 0 && followupFailure < 126 ? followupFailure : 1;
 #endif
         return followupFailure;
+    }
+    if (int fanLockFailure = run_fan_worker_lock_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", fanLockFailure);
+        return fanLockFailure;
+    }
+    if (int correctionFailure = run_apply_correction_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", correctionFailure);
+#if !defined(_WIN32)
+        return correctionFailure > 0 && correctionFailure < 126 ? correctionFailure : 1;
+#endif
+        return correctionFailure;
     }
     if (int followup2Failure = run_apply_profile_followup_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", followup2Failure);

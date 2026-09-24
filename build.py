@@ -1666,7 +1666,8 @@ def run_regression_tests(extra_flags=None):
             test_exe,
             harness_path,
             *[os.path.join(SCRIPT_DIR, "tests", name) for name in ("clock_transition_tests.cpp",
-              "service_install_tests.cpp", "apply_profile_followup_tests.cpp")],
+              "service_install_tests.cpp", "apply_profile_followup_tests.cpp",
+              "apply_correction_tests.cpp", "fan_worker_lock_tests.cpp")],
             os.path.join(SOURCE_DIR, "fan_curve.cpp"),
             os.path.join(SOURCE_DIR, "config_text_utils.cpp"),
             os.path.join(SOURCE_DIR, "app_shared.cpp"),
@@ -2409,7 +2410,7 @@ def run_source_regression_checks():
     require_text(gpu_backend_apply_cpp, "Restoring the existing VF curve after the memory offset did not verify", "VF preservation failures are reported")
     require_text(gpu_backend_apply_cpp, "non-tail %s point %d actual %u MHz != target", "non-tail readback artifacts are accepted only for verification")
     require_text(gpu_backend_apply_cpp, "keeping strict lock target", "lock tail readback mismatches do not mutate requested intent")
-    require_text(gpu_backend_apply_cpp, "g_app.curve[ci].freq_kHz, g_app.freqOffsets[ci]);", "correction loop recovers the stock base from the FRESH readback: absolute (no cumulative offset bug) and current, so the point can actually move")
+    require_text(gpu_backend_apply_cpp, "rbOffsetKHz[ci] = g_app.freqOffsets[ci];", "correction loop recovers the stock base from the FRESH readback: absolute (no cumulative offset bug) and current, so the point can actually move")
     require_text(gpu_backend_apply_diag_h, "post-apply curve: ci=%d actual=%u", "post-apply curve state dump detects weird shifts")
     require_text(gpu_backend_apply_cpp, "not rewriting tail above lock", "monotonicity enforcement never raises the locked tail above the requested lock")
     require_text(os.path.join(SOURCE_DIR, "main_shell.cpp"), "skipping stale lock at ci=%d (lockedFreq=0", "stale lock skip only when lockedFreq=0, not when == liveMHz")
@@ -4300,7 +4301,6 @@ def run_source_regression_checks():
 
     # FP-02-001: Uniform tail floor offset (Blackwell per-point delta fix)
     require_text(gpu_backend_apply_targets_h, "offset = vf_offset_range_flatten_floor_khz(range);", "uniform tail floor offset constant exists for initial tail loop")
-    require_text(gpu_backend_apply_cpp, "correctionFloorTailOffsetKHz", "uniform tail floor offset constant exists for correction passes")
     require_text(gpu_backend_apply_cpp, "tail uniform floor offset=%d", "correction pass logs uniform tail floor offset write")
     require_text(gpu_backend_apply_targets_h, "tail && lockMode == LOCK_MODE_FLATTEN", "initial tail loop uses uniform floor for non-lock tail points")
 

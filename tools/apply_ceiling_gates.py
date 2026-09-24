@@ -297,7 +297,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(policy_h, "static inline long long curve_point_target_offset_khz(",
                  "the shared curve-point offset policy exists")
     for site, what in ((targets_h, "initial target build"),
-                       (apply_cpp, "correction loop"),
+                       (_p(ctx, "apply_correction_policy.h"), "correction loop"),
                        (_p(ctx, "linux_curve_targets.h"), "Linux target build")):
         require_text(site, "curve_point_target_offset_khz(&want)",
                      f"the {what} asks the shared offset policy")
@@ -351,10 +351,24 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # `stuck` bookkeeping is reachable only for locked tail points, so a non-tail
     # point the driver would not move was reclassified every pass and never ended
     # the loop: 25 passes at ~1 s each, all holding the hardware gate.
-    require_text(apply_cpp, "correctionReachedFixedPoint",
+    # Since 2026-09-24 those decisions are pure (apply_correction_policy.h) and
+    # executed by tests/apply_correction_tests.cpp; these gates pin the wiring.
+    correction_h = _p(ctx, "apply_correction_policy.h")
+    require_text(correction_h,
+                 "s.fixedPoint = correctionPass > 0 && s.unconverged > 0 && s.improved == 0;",
                  "correction loop detects a pass in which no point improved")
-    require_text(apply_cpp, "if (correctionReachedFixedPoint) break;",
-                 "the fixed-point verdict actually leaves the correction loop")
+    require_text(apply_cpp, "ApplyCorrectionLoopOutcome loop = apply_run_correction_loop(",
+                 "the apply runs the tested correction loop, not an inline copy")
+    require_text(correction_h, "offsetsOut[ci] = floorKHz;",
+                 "uniform tail floor offset exists for correction passes")
+    require_text(correction_h, "const int floorKHz = vf_offset_range_flatten_floor_khz(range);",
+                 "the correction tail floor comes from the shared range policy")
+    require_text(correction_h, "want.liveBaseKHz = apply_correction_live_base_khz(rb, ci);",
+                 "a correction offset is absolute over the live base, never cumulative")
+    require_text(apply_cpp, "return st.fixedPoint;",
+                 "the fixed-point verdict actually reaches the loop driver")
+    require_text(apply_cpp, "curveRequestOk = loop.verified;",
+                 "only a verified correction pass makes the curve request succeed")
     # ...but it must not leave before the pass has been VERIFIED. The
     # convergence bookkeeping counts a point unconverged on exact equality,
     # while the apply is verified against curve_point_verify_tolerance_mhz(), so
@@ -363,10 +377,10 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # result. Breaking first left curveRequestOk false and rolled back a curve
     # that had verified.
     require_order_in_operation(
-        apply_cpp,
-        "static bool apply_desired_settings_service(const DesiredSettings* desired",
-        "if (verify_curve_request(curveVerifyDetail, sizeof(curveVerifyDetail))) {",
-        "if (correctionReachedFixedPoint) break;",
+        correction_h,
+        "static ApplyCorrectionLoopOutcome apply_run_correction_loop(int maxPasses,",
+        "if (verify(pass)) {",
+        "if (fixedPoint) {",
         "a correction pass is verified before the fixed-point exit, so a curve "
         "within tolerance is not failed for missing exact equality")
 
@@ -451,10 +465,10 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "the correction-pass budget rule is one named policy")
     require_text(budget_h, "SERVICE_APPLY_HANDLER_BUDGET_MS -",
                  "the correction budget is derived from the handler budget")
-    require_text(apply_cpp, "if (!apply_correction_pass_may_start(correctionPass,",
+    require_text(apply_cpp, "if (apply_correction_pass_may_start(correctionPass,",
                  "every correction pass asks the budget before it writes")
     for needle in ("hasLock ? 3 : 2,\n                correctionDeadlineTickMs);",
-                   "hasLock ? 3 : 2,\n                            correctionDeadlineTickMs);"):
+                   "correctedCurveMask, hasLock ? 3 : 2, correctionDeadlineTickMs);"):
         require_text(apply_cpp, needle,
                      "the apply's curve batch and correction passes carry the "
                      "per-point fallback deadline")
