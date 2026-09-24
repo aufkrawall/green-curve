@@ -32,7 +32,7 @@ Setup, crash recovery, and Apply reliability improve in this release.
 
 ### New
 
-- **Setup accepts dedicated folders on any drive.** It asks for consent when other accounts could change one.
+- **Setup now supports more installation paths across any drive.** Installations are no longer restricted to Program Files; custom locations are allowed with fewer restrictions, prompting for security acknowledgment if a chosen path has weak permissions.
 - **Windows local source builds now build both compiler variants.** Running `build.py` locally on Windows builds both MSVC-ABI and release toolchain artifacts in separate folders (does not affect release packages).
 
 ### Improved
