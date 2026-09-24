@@ -1027,11 +1027,11 @@ def check_manual_mutation_result_presentation(ctx, require_text, forbid_text):
         "set_mutation_result_status_line(work, completion, successForUi);",
         "and it reports it through the same formatter the Apply button uses")
     ctx.require_text_in_operation(
-        auto_cpp, "static bool ap_do_apply_slot(",
+        auto_cpp, "static ApApplyStart ap_do_apply_slot(",
         "if (service_apply_origin_is_explicit(origin) && queueStatus[0])",
         "an explicit pick shows the queued line, an automatic switch does not")
     ctx.require_text_in_operation(
-        auto_cpp, "static bool ap_do_apply_slot(",
+        auto_cpp, "static ApApplyStart ap_do_apply_slot(",
         "set_profile_status_text(\"Profile %d is already applied.\", slot)",
         "an explicit pick that is already applied says so instead of looking "
         "like nothing happened")

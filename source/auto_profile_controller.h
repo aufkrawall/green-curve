@@ -39,6 +39,15 @@ struct AutoProfileController {
     int appliedSlot;       // slot we believe is currently applied (0 = unknown)
     int pendingTarget;     // debounce-pending target slot (0 = none)
     long long lastApplyMs; // tick of the last apply we drove
+    // Failure backoff.  A switch that failed is not retried until
+    // retryNotBeforeMs; each consecutive failure of the same slot doubles the
+    // wait (minIntervalMs, 2x, 4x ... capped at AUTO_PROFILE_FAILURE_BACKOFF_MAX_MS).
+    // Without it a deterministic failure -- an empty slot, a profile that does
+    // not load, a refused apply -- was re-armed at the debounce interval
+    // forever while the matching app kept focus.
+    int failedSlot;           // 0 = no failure pending
+    int consecutiveFailures;
+    long long retryNotBeforeMs;
     // Synced from config:
     int debounceMs;
     int minIntervalMs;
@@ -65,8 +74,19 @@ AutoProfileAction ap_on_target_resolved(AutoProfileController* c, int targetSlot
 AutoProfileAction ap_on_debounce_fire(AutoProfileController* c, int currentTarget,
                                       long long nowMs, bool suppressed);
 
-// The driver finished applying `slot` (auto or manual).  Records applied state.
+// The driver finished applying `slot` (auto or manual).  Records applied state
+// and clears any failure backoff.
 void ap_on_applied(AutoProfileController* c, int slot, long long nowMs);
+
+// Applying `slot` failed (refused before the queue, or completed with an
+// error).  Charges the cooldown and arms the per-slot failure backoff, so the
+// resolver keeps its target but does not retry until the backoff elapses.
+// Explicit picks (ap_on_hotkey), enable transitions and config changes clear it.
+void ap_on_apply_failed(AutoProfileController* c, int slot, long long nowMs);
+
+// Remaining failure backoff for `slot` at `nowMs`, 0 when it may be tried now.
+long long ap_failure_backoff_remaining_ms(const AutoProfileController* c,
+                                          int slot, long long nowMs);
 
 // A per-slot hotkey / tray profile pick fired.  Same slot while already pinned
 // to it → resume AUTO; otherwise pin the slot and apply it immediately.

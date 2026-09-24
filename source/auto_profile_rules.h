@@ -29,6 +29,8 @@
 #define AUTO_PROFILE_MAX_DEBOUNCE_MS          10000
 #define AUTO_PROFILE_MIN_INTERVAL_FLOOR_MS    1000
 #define AUTO_PROFILE_MAX_INTERVAL_MS          60000
+// Upper bound of the backoff after repeated failed switches to the same slot.
+#define AUTO_PROFILE_FAILURE_BACKOFF_MAX_MS   300000
 
 enum AutoProfileMatchType {
     AUTO_MATCH_NONE = 0,

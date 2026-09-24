@@ -226,8 +226,27 @@ static bool reset_oc_before_gui_apply(const DesiredSettings* desired,
         return false;
     }
     g_app.lastApplyUsedGpuOffset = false;
-    read_live_curve_snapshot_settled(4, 25, nullptr);
-    refresh_global_state(result, resultSize);
+    // Every target the apply computes next is measured from THIS readback (the
+    // "refresh originals after reset-before-apply" step).  Both results used to
+    // be discarded, so a failed read let the apply build its offsets on a curve
+    // sampled before the reset.  Same criterion as the apply's own reads.
+    bool settledOffsetsOk = false;
+    if (!read_live_curve_snapshot_settled(4, 25, &settledOffsetsOk) || !settledOffsetsOk) {
+        set_message(result, resultSize,
+            "Reset before apply failed: the VF curve could not be read back after the reset");
+        debug_log("reset-before-apply: post-reset curve readback failed (offsetsOk=%d);"
+                  " not computing targets from a pre-reset sample\n",
+            settledOffsetsOk ? 1 : 0);
+        return false;
+    }
+    // Scalar refresh (power, memory, fan) is informative here; its detail used
+    // to be written into the caller's result buffer, which the apply then
+    // reported as if it were the outcome.
+    char refreshDetail[128] = {};
+    if (!refresh_global_state(refreshDetail, sizeof(refreshDetail))) {
+        debug_log("reset-before-apply: post-reset state refresh reported: %s\n",
+            refreshDetail[0] ? refreshDetail : "failure without detail");
+    }
     debug_log("reset-before-apply: OC baseline reset succeeded\n");
     return true;
 }

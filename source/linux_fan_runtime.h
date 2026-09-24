@@ -1,6 +1,26 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
+// Fixed duty is re-checked on the same cadence Windows re-asserts it.
+static const unsigned int LINUX_FAN_FIXED_MAINTENANCE_INTERVAL_MS = 5000u;
+
+// A committed fixed duty the driver no longer holds is written again; a read
+// that cannot tell counts toward the same escalation as a curve failure.
+// Caller holds g_lock.
+static FanRuntimeOutcome daemon_fixed_fan_maintain(const char** reasonOut) {
+    int target = g_activeDesired.fanPercent;
+    if (target < 0) target = 0;
+    if (target > 100) target = 100;
+    FanFixedMaintenanceDecision d = linux_backend_fixed_fan_check(&g_gpu, target);
+    if (reasonOut) *reasonOut = d.reason;
+    if (d.failure) return FAN_RUNTIME_OUTCOME_TELEMETRY_FAILED;
+    if (!d.write) return FAN_RUNTIME_OUTCOME_SUCCESS;
+    bool ok = linux_backend_set_curve_fan_percent(&g_gpu, (unsigned int)target);
+    dlog("daemon: fixed fan re-asserted at %d%% (%s) ok=%d\n", target, d.reason,
+         ok ? 1 : 0);
+    return ok ? FAN_RUNTIME_OUTCOME_SUCCESS : FAN_RUNTIME_OUTCOME_WRITE_FAILED;
+}
+
 static pl_thread_ret fan_reassert_thread(void*) {
     FanRuntimeState runtime = {};
     unsigned long long observedGeneration = 0;
@@ -12,8 +32,11 @@ static pl_thread_ret fan_reassert_thread(void*) {
                       linux_gpu_identity_matches(
                           &g_activeTarget, &g_gpu.selectedGpu) &&
                       g_activeDesired.hasFan &&
-                      g_activeDesired.fanMode == FAN_MODE_CURVE;
-        if (active) {
+                      (g_activeDesired.fanMode == FAN_MODE_CURVE ||
+                       g_activeDesired.fanMode == FAN_MODE_FIXED);
+        if (active && g_activeDesired.fanMode == FAN_MODE_FIXED) {
+            pollMs = LINUX_FAN_FIXED_MAINTENANCE_INTERVAL_MS;
+        } else if (active) {
             pollMs = (unsigned int)g_activeDesired.fanCurve.pollIntervalMs;
             if (pollMs < 250) pollMs = 250;
         } else {
@@ -70,8 +93,38 @@ static pl_thread_ret fan_reassert_thread(void*) {
                  linux_gpu_identity_matches(
                      &g_activeTarget, &g_gpu.selectedGpu) &&
                  g_activeDesired.hasFan &&
-                 g_activeDesired.fanMode == FAN_MODE_CURVE;
-        if (active) {
+                 (g_activeDesired.fanMode == FAN_MODE_CURVE ||
+                  g_activeDesired.fanMode == FAN_MODE_FIXED);
+        if (active && g_activeDesired.fanMode == FAN_MODE_FIXED) {
+            const char* reason = "";
+            FanRuntimeOutcome outcome = daemon_fixed_fan_maintain(&reason);
+            FanRuntimeFailureDecision failure = fan_runtime_observe_result(
+                g_fanFailureCount, outcome, FAN_RUNTIME_DEFAULT_FAILURE_LIMIT);
+            g_fanFailureCount = failure.failureCount;
+            if (failure.shouldLogFailure) {
+                dlog("daemon: fixed fan maintenance failed (%u/%u) target=%d%%: %s\n",
+                     failure.failureCount, FAN_RUNTIME_DEFAULT_FAILURE_LIMIT,
+                     g_activeDesired.fanPercent, reason ? reason : "unknown");
+            }
+            if (failure.escalation == FAN_RUNTIME_ESCALATION_RESTORE_AUTO) {
+                bool autoOk = linux_backend_set_fan_auto(&g_gpu);
+                char stateErr[256] = {};
+                g_stateUncertain = true;
+                store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, &g_activeTarget,
+                                    &g_activeDesired, stateErr, sizeof(stateErr));
+                dlog("daemon: fixed fan maintenance locked out after repeated failures;"
+                     " auto=%d state=%s\n", autoOk ? 1 : 0,
+                     stateErr[0] ? stateErr : "persisted");
+                if (fan_runtime_escalation_after_auto_restore(autoOk) ==
+                        FAN_RUNTIME_ESCALATION_EMERGENCY_MAX) {
+                    bool emergencyOk = linux_backend_set_curve_fan_percent(
+                        &g_gpu, (unsigned int)FAN_RUNTIME_EMERGENCY_PERCENT);
+                    dlog("daemon: fan runtime emergency: driver auto restore failed,"
+                         " forced %d%% ok=%d\n", FAN_RUNTIME_EMERGENCY_PERCENT,
+                         emergencyOk ? 1 : 0);
+                }
+            }
+        } else if (active) {
             // Telemetry loss is escalated exactly like a refused write: either
             // way the curve stops tracking temperature while a manual duty
             // stays pinned.  Silently skipping the read left the fan stuck

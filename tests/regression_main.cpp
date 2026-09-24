@@ -221,21 +221,33 @@ void invalidate_tray_profile_cache() {}
 #if defined(_WIN32)
 // Production auto-profile persistence uses the amalgamated atomic whole-file
 // section writer.  The pure fixture starts with an empty temporary INI, so this
-// deterministic stand-in only needs to commit the supplied complete sections.
+// deterministic stand-in only needs to commit the supplied complete sections --
+// through the SAME on-disk encoding step production uses
+// (gc_utf8_to_ini_file_bytes), so the round trip below is a real test of what
+// the profile API reads back.
 static bool write_config_sections_atomic(const char* path,
     const char* newSectionsData, const char* const*, int,
     char* err, size_t errSize) {
+    char* encoded = nullptr;
+    size_t encodedSize = 0;
+    if (gc_utf8_to_ini_file_bytes(newSectionsData, &encoded, &encodedSize) !=
+            GC_INI_ENCODE_OK) {
+        set_message(err, errSize, "fixture encode refused");
+        return false;
+    }
     HANDLE file = gc_CreateFileUtf8(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
         FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) {
+        HeapFree(GetProcessHeap(), 0, encoded);
         set_message(err, errSize, "fixture CreateFile failed");
         return false;
     }
-    DWORD size = (DWORD)strlen(newSectionsData);
+    DWORD size = (DWORD)encodedSize;
     DWORD written = 0;
-    bool ok = WriteFile(file, newSectionsData, size, &written, nullptr) &&
+    bool ok = WriteFile(file, encoded, size, &written, nullptr) &&
         written == size && FlushFileBuffers(file) != FALSE;
     CloseHandle(file);
+    HeapFree(GetProcessHeap(), 0, encoded);
     return ok;
 }
 #endif // _WIN32
@@ -947,6 +959,9 @@ static int run_all_tests_final();
 int run_clock_transition_tests();
 // Service registration / install-location suite (tests/service_install_tests.cpp).
 int run_service_install_tests();
+// 2026-09-24 audit follow-ups: lock/pre-tail refusal before reset, Linux fixed
+// fan maintenance (tests/apply_profile_followup_tests.cpp, 6430-6499).
+int run_apply_profile_followup_tests();
 // F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
 // are over a kilobyte each and several are live at once; under ASan's
 // redzones that is enough to overflow main()'s frame, which already carries
@@ -1717,6 +1732,13 @@ int main(int argc, char** argv) {
         return followupFailure > 0 && followupFailure < 126 ? followupFailure : 1;
 #endif
         return followupFailure;
+    }
+    if (int followup2Failure = run_apply_profile_followup_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", followup2Failure);
+#if !defined(_WIN32)
+        return followup2Failure > 0 && followup2Failure < 126 ? followup2Failure : 1;
+#endif
+        return followup2Failure;
     }
     if (int installFailure = run_service_install_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", installFailure);
@@ -7579,6 +7601,52 @@ static int run_all_tests(int argc, char** argv) {
         if (!repair.hasCurvePoint[7]) return 2244;
         DeleteFileA(argv[1]);
     }
+
+    // The legacy readback-artifact repair (6470-6473) still cleans a profile
+    // an old build wrote, but no longer deletes points from a section in the
+    // per-point provenance format, whose every point is explicit intent.
+    {
+        auto build = [](DesiredSettings* d) {
+            *d = DesiredSettings{};
+            d->hasLock = true;
+            d->lockCi = 10;
+            d->lockMHz = 2000;
+            d->hasCurvePoint[5] = true;  d->curvePointMHz[5] = 1500;  // offset 0
+            d->hasCurvePoint[7] = true;  d->curvePointMHz[7] = 1700;  // artifact shape
+            d->hasCurvePoint[8] = true;  d->curvePointMHz[8] = 1950;
+            d->hasCurvePoint[9] = true;  d->curvePointMHz[9] = 1990;
+            for (int ci = 10; ci < 14; ci++) {
+                d->hasCurvePoint[ci] = true;
+                d->curvePointMHz[ci] = 2000;
+            }
+        };
+        DeleteFileA(argv[1]);
+        if (!set_config_int(argv[1], "curve", "point5_offset_khz", 0) ||
+            !set_config_int(argv[1], "curve", "point5_visible", 1) ||
+            !set_config_int(argv[1], "curve", "point7_offset_khz", 100000) ||
+            !set_config_int(argv[1], "curve", "point7_visible", 1)) return 6470;
+        for (int ci = 10; ci < 14; ci++) {
+            char key[32] = {};
+            StringCchPrintfA(key, ARRAY_COUNT(key), "point%d_visible", ci);
+            if (!set_config_int(argv[1], "curve", key, 1)) return 6470;
+        }
+        DesiredSettings legacy = {};
+        build(&legacy);
+        repair_profile_locked_curve_readback_artifacts(argv[1], "curve", 1,
+            &legacy, PROFILE_READ_FOR_EDITOR);
+        // Unmarked (old) file: scaffold and artifact are removed as before.
+        if (legacy.hasCurvePoint[5] || legacy.hasCurvePoint[7] ||
+            !legacy.hasCurvePoint[8] || !legacy.hasCurvePoint[10]) return 6471;
+        if (!set_config_string(argv[1], "curve", "curve_semantics",
+                PROFILE_CURVE_SEMANTICS_ABSOLUTE_WITH_ORIGIN)) return 6472;
+        DesiredSettings current = {};
+        build(&current);
+        repair_profile_locked_curve_readback_artifacts(argv[1], "curve", 1,
+            &current, PROFILE_READ_FOR_EDITOR);
+        if (!current.hasCurvePoint[5] || current.curvePointMHz[5] != 1500 ||
+            !current.hasCurvePoint[7] || current.curvePointMHz[7] != 1700) return 6473;
+        DeleteFileA(argv[1]);
+    }
 #endif // _WIN32
 
     // CommandLineToArgvW-compatible quoting for elevated helper argv.
@@ -8299,6 +8367,65 @@ static int run_all_tests(int argc, char** argv) {
         if (ap_controller_is_driving(&k, false)) return 272;
     }
 
+    // Failure backoff (6410-6424).  A switch that fails used to leave
+    // appliedSlot and lastApplyMs untouched, so the completion's re-resolve
+    // armed the debounce again and the same failing apply ran every ~0.8 s for
+    // as long as the matching app kept focus.
+    {
+        AutoProfileConfig cfg = {};
+        auto_profile_config_set_defaults(&cfg);
+        cfg.enabled = true;
+        cfg.switchDebounceMs = 800;
+        cfg.minSwitchIntervalMs = 4000;
+        AutoProfileController c = {};
+        ap_controller_init(&c, &cfg);
+        ap_on_applied(&c, 1, 0);
+        // Target 3 resolves, debounce fires after the cooldown, apply issued.
+        AutoProfileAction a = ap_on_target_resolved(&c, 3, 10000, false);
+        if (a.kind != AP_ACTION_ARM_DEBOUNCE || a.delayMs != 800) return 6410;
+        a = ap_on_debounce_fire(&c, 3, 10800, false);
+        if (a.kind != AP_ACTION_APPLY_SLOT || a.slot != 3) return 6411;
+        // It fails.  The immediate re-resolve must NOT come back at debounce
+        // pace, and the debounce fire must not apply before the backoff ends.
+        ap_on_apply_failed(&c, 3, 11000);
+        if (c.appliedSlot != 1 || c.failedSlot != 3 || c.consecutiveFailures != 1) return 6412;
+        if (ap_failure_backoff_remaining_ms(&c, 3, 11000) != 4000) return 6413;
+        a = ap_on_target_resolved(&c, 3, 11000, false);
+        if (a.kind != AP_ACTION_ARM_DEBOUNCE || a.delayMs != 4000) return 6414;
+        a = ap_on_debounce_fire(&c, 3, 11800, false);
+        if (a.kind != AP_ACTION_ARM_DEBOUNCE || a.delayMs < 3000) return 6415;
+        a = ap_on_debounce_fire(&c, 3, 15000, false);
+        if (a.kind != AP_ACTION_APPLY_SLOT || a.slot != 3) return 6416;
+        // Consecutive failures double the wait and are capped.
+        ap_on_apply_failed(&c, 3, 15000);
+        if (ap_failure_backoff_remaining_ms(&c, 3, 15000) != 8000) return 6417;
+        for (int i = 0; i < 40; ++i) ap_on_apply_failed(&c, 3, 20000);
+        if (ap_failure_backoff_remaining_ms(&c, 3, 20000) !=
+            AUTO_PROFILE_FAILURE_BACKOFF_MAX_MS) return 6418;
+        // A different target is not held back by slot 3's failure (only by the
+        // cooldown the failed attempt spent).
+        if (ap_failure_backoff_remaining_ms(&c, 2, 20000) != 0) return 6419;
+        a = ap_on_debounce_fire(&c, 2, 24000, false);
+        if (a.kind != AP_ACTION_APPLY_SLOT || a.slot != 2) return 6420;
+        // Success clears the backoff.
+        ap_on_applied(&c, 2, 24100);
+        if (c.failedSlot != 0 || ap_failure_backoff_remaining_ms(&c, 3, 24100) != 0) return 6421;
+        // An explicit pick is never held back, and clears the backoff.
+        ap_on_apply_failed(&c, 3, 30000);
+        a = ap_on_hotkey(&c, 3);
+        if (a.kind != AP_ACTION_APPLY_SLOT || a.slot != 3 || c.failedSlot != 0) return 6422;
+        // Editing the configuration grants a fresh attempt.
+        AutoProfileController e = {};
+        ap_controller_init(&e, &cfg);
+        ap_on_apply_failed(&e, 4, 1000);
+        ap_apply_config_change(&e, &cfg);
+        if (e.failedSlot != 0) return 6423;
+        // Out-of-range slots are ignored rather than recorded.
+        ap_on_apply_failed(&e, 0, 1000);
+        ap_on_apply_failed(&e, CONFIG_NUM_SLOTS + 1, 1000);
+        if (e.failedSlot != 0) return 6424;
+    }
+
 #if defined(_WIN32)
     // Win32 config-INI storage again (auto_profile_config_save/load live in the
     // Windows auto-profile shard); the pure resolver above runs on both hosts.
@@ -8335,6 +8462,74 @@ static int run_all_tests(int argc, char** argv) {
             strcmp(hotkeyReadback, "ctrl+alt+f3") != 0) return 607;
         if (config_section_has_keys(argv[1], "auto_rule3")) return 608;
         DeleteFileA(argv[1]);
+    }
+    // A non-ASCII pattern survives save -> load -> save -> load byte-exact
+    // (6400-6409).  It used to be written as raw UTF-8 and read back through
+    // the ANSI code page, so it came back as a different string and every
+    // later save encoded it again.  "Spiel<a-umlaut>.exe" / "Caf<e-acute>":
+    // present in every Latin ANSI code page and in UTF-8 as the system code
+    // page; skipped only where the ANSI code page cannot hold them, which the
+    // encoder then refuses (6405).
+    {
+        static const char kExe[] = "Spiel\xC3\xA4.exe";
+        static const char kTitle[] = "Caf\xC3\xA9 \xC2\xAE";
+        WCHAR probe[] = { 0x00E4, 0x00E9, 0x00AE, 0 };
+        BOOL lossy = FALSE;
+        char probeOut[16] = {};
+        bool representable = GetACP() == CP_UTF8 ||
+            (WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, probe, -1,
+                 probeOut, (int)sizeof(probeOut), nullptr, &lossy) > 0 && !lossy);
+        if (representable) {
+            DeleteFileA(argv[1]);
+            AutoProfileConfig w = {};
+            auto_profile_config_set_defaults(&w);
+            w.ruleCount = 2;
+            w.rules[0] = { AUTO_MATCH_EXE, "", true, 3 };
+            w.rules[1] = { AUTO_MATCH_TITLE, "", true, 4 };
+            gc_strlcpy(w.rules[0].pattern, sizeof(w.rules[0].pattern), kExe);
+            gc_strlcpy(w.rules[1].pattern, sizeof(w.rules[1].pattern), kTitle);
+            if (!auto_profile_config_save(argv[1], &w, nullptr)) return 6400;
+            AutoProfileConfig r = {};
+            auto_profile_config_load(argv[1], &r);
+            if (r.ruleCount != 2 || strcmp(r.rules[0].pattern, kExe) != 0) return 6401;
+            if (strcmp(r.rules[1].pattern, kTitle) != 0) return 6402;
+            // Second generation: what was read back must save as itself.
+            if (!auto_profile_config_save(argv[1], &r, nullptr)) return 6403;
+            AutoProfileConfig r2 = {};
+            auto_profile_config_load(argv[1], &r2);
+            if (strcmp(r2.rules[0].pattern, kExe) != 0 ||
+                strcmp(r2.rules[1].pattern, kTitle) != 0) return 6404;
+            // And it matches what detection now reports (UTF-8 from UTF-16).
+            ForegroundInfo fg = {};
+            fg.valid = true;
+            WCHAR exeW[] = { L'S', L'p', L'i', L'e', L'l', 0x00E4, L'.', L'e', L'x', L'e', 0 };
+            gc_wide_to_utf8_truncating(exeW, fg.exeName, sizeof(fg.exeName));
+            ProcessPresence pres = {};
+            if (resolve_auto_profile_slot(&r2, &fg, &pres) != 3) return 6406;
+            DeleteFileA(argv[1]);
+        }
+        // The encoder itself: ASCII is identity, malformed UTF-8 is refused,
+        // and a character the ANSI code page cannot hold is refused rather
+        // than replaced (U+4E2D is outside every single-byte code page).
+        char* bytes = nullptr;
+        size_t byteCount = 0;
+        if (gc_utf8_to_ini_file_bytes("[a]\r\nk=v\r\n", &bytes, &byteCount) != GC_INI_ENCODE_OK ||
+            byteCount != 10 || memcmp(bytes, "[a]\r\nk=v\r\n", 10) != 0) return 6407;
+        HeapFree(GetProcessHeap(), 0, bytes);
+        if (gc_utf8_to_ini_file_bytes("k=\xC3", &bytes, &byteCount) != GC_INI_ENCODE_INVALID_UTF8 ||
+            bytes != nullptr) return 6408;
+        UINT acp = GetACP();
+        bool singleByteAcp = acp != CP_UTF8 && acp != 932 && acp != 936 &&
+            acp != 949 && acp != 950;
+        if (singleByteAcp &&
+            gc_utf8_to_ini_file_bytes("k=\xE4\xB8\xAD", &bytes, &byteCount) !=
+                GC_INI_ENCODE_UNREPRESENTABLE) return 6405;
+        // Truncation stops at a whole code point: 3 bytes of room hold "S"
+        // and "p" but not half of the two-byte a-umlaut.
+        char small[4] = {};
+        WCHAR truncW[] = { L'S', L'p', 0x00E4, 0 };
+        gc_wide_to_utf8_truncating(truncW, small, sizeof(small));
+        if (strcmp(small, "Sp") != 0) return 6409;
     }
 #endif // _WIN32
 

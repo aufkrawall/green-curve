@@ -734,7 +734,7 @@ static bool save_profile_to_config(const char* path, int slot, const DesiredSett
         set_message(err, errSize, "Config buffer truncated during save");
     }
     if (ok) {
-        ok = write_text_file_atomic(path, cfg, used, err, errSize);
+        ok = write_config_text_atomic(path, cfg, err, errSize);
     }
     if (ok) {
         // The documented cache-flush form returns zero on a successful flush;
@@ -866,7 +866,7 @@ static bool clear_profile_from_config(const char* path, int slot, char* err, siz
     if (truncated) {
         set_message(err, errSize, "Config buffer truncated during clear");
     }
-    if (ok2) ok2 = write_text_file_atomic(path, cfg, used, err, errSize);
+    if (ok2) ok2 = write_config_text_atomic(path, cfg, err, errSize);
     if (ok2) {
         // See save_profile_to_config: zero is the successful flush sentinel.
         (void)gc_WritePrivateProfileStringUtf8(nullptr, nullptr, nullptr, path);

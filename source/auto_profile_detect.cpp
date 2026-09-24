@@ -16,20 +16,22 @@
 #include "auto_profile.h"
 #include <tlhelp32.h>
 
-static void ap_wide_to_acp(const WCHAR* w, char* out, size_t outSize) {
-    if (!out || outSize == 0) return;
-    out[0] = 0;
-    if (!w) return;
-    WideCharToMultiByte(CP_ACP, 0, w, -1, out, (int)outSize, nullptr, nullptr);
-    out[outSize - 1] = 0;
+// Everything detection hands to the rule matcher is UTF-8, the same encoding
+// the rule patterns have once they are loaded from the INI (config strings come
+// back through the UTF-8 profile wrappers).  This used to be the ANSI code
+// page, so a pattern with a non-ASCII character matched until the first
+// restart and never again after it.  Long titles are cut at a code point, never
+// emptied.
+static void ap_wide_to_utf8(const WCHAR* w, char* out, size_t outSize) {
+    gc_wide_to_utf8_truncating(w, out, outSize);
 }
 
-static void ap_base_name_acp(const WCHAR* fullPath, char* out, size_t outSize) {
+static void ap_base_name_utf8(const WCHAR* fullPath, char* out, size_t outSize) {
     const WCHAR* base = fullPath;
     for (const WCHAR* p = fullPath; *p; ++p) {
         if (*p == L'\\' || *p == L'/') base = p + 1;
     }
-    ap_wide_to_acp(base, out, outSize);
+    ap_wide_to_utf8(base, out, outSize);
 }
 
 // Resolve a PID's exe base name from the global process-list snapshot.  This
@@ -46,7 +48,7 @@ static void ap_exe_name_for_pid(DWORD pid, char* out, size_t outSize) {
     if (Process32FirstW(snap, &pe)) {
         do {
             if (pe.th32ProcessID == pid) {
-                ap_base_name_acp(pe.szExeFile, out, outSize);   // szExeFile is already a base name
+                ap_base_name_utf8(pe.szExeFile, out, outSize);   // szExeFile is already a base name
                 break;
             }
         } while (Process32NextW(snap, &pe));
@@ -76,7 +78,7 @@ bool auto_profile_get_foreground_info(HWND selfWnd, ForegroundInfo* out) {
     WCHAR clsW[128] = {};
     GetClassNameW(fg, clsW, (int)ARRAY_COUNT(clsW) - 1);
     char cls[AUTO_PROFILE_CLASS_MAX] = {};
-    ap_wide_to_acp(clsW, cls, sizeof(cls));
+    ap_wide_to_utf8(clsW, cls, sizeof(cls));
     // The desktop/shell counts as "no app foreground" — never a match target.
     if (streqi_ascii(cls, "Progman") || streqi_ascii(cls, "WorkerW") ||
         streqi_ascii(cls, "Shell_TrayWnd")) {
@@ -88,7 +90,7 @@ bool auto_profile_get_foreground_info(HWND selfWnd, ForegroundInfo* out) {
 
     WCHAR titleW[256] = {};
     GetWindowTextW(fg, titleW, (int)ARRAY_COUNT(titleW) - 1);
-    ap_wide_to_acp(titleW, out->title, sizeof(out->title));
+    ap_wide_to_utf8(titleW, out->title, sizeof(out->title));
 
     // Resolve the exe base name from the process-list snapshot — never by opening
     // a handle to the game process.  exeName may stay empty if the process
@@ -125,7 +127,7 @@ void auto_profile_compute_presence(const AutoProfileConfig* cfg, ProcessPresence
     if (Process32FirstW(snap, &pe)) {
         do {
             char exe[AUTO_PROFILE_PATTERN_MAX] = {};
-            ap_base_name_acp(pe.szExeFile, exe, sizeof(exe));
+            ap_base_name_utf8(pe.szExeFile, exe, sizeof(exe));
             for (int i = 0; i < n; i++) {
                 const AutoProfileRule* r = &cfg->rules[i];
                 if (r->matchType == AUTO_MATCH_EXE && !r->requireFocus && r->pattern[0] &&

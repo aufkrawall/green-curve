@@ -22,6 +22,7 @@
 #include "linux_architecture_policy.h"
 #include "linux_gpu_binding_policy.h"
 #include "linux_transaction.h"
+#include "fan_fixed_maintenance_policy.h"
 #include "platform.h"
 
 struct LinuxGpuState {
@@ -214,5 +215,9 @@ LinuxMutationResult linux_backend_reset(LinuxGpuState* g, char* result, size_t r
 bool linux_backend_set_curve_fan_percent(LinuxGpuState* g, unsigned int percent);
 bool linux_backend_set_fan_auto(LinuxGpuState* g);
 bool linux_backend_fans_are_auto(LinuxGpuState* g);
+// Whether a committed FIXED duty is still what every fan holds
+// (fan_fixed_maintenance_policy.h).  Read-only.
+FanFixedMaintenanceDecision linux_backend_fixed_fan_check(LinuxGpuState* g,
+                                                          int requestedPercent);
 
 #endif // GREEN_CURVE_LINUX_BACKEND_H

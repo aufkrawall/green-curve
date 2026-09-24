@@ -157,6 +157,123 @@ static inline DWORD gc_wide_multisz_to_utf8(const WCHAR* input, char* output,
     return used;
 }
 
+// The on-disk form of an INI file this program writes byte-for-byte.
+//
+// The profile API (GetPrivateProfileStringW) decodes a file without a UTF-16
+// BOM in the system ANSI code page, and WritePrivateProfileStringW encodes into
+// it.  A writer that emits Green Curve's in-memory UTF-8 text verbatim
+// therefore stores bytes the reader later decodes as a DIFFERENT string: an
+// "ä" written as C3 A4 comes back as "Ã¤", and every later save encodes that
+// again.  This is the one conversion that keeps a whole-file INI writer in the
+// encoding the reader uses.
+//
+// Strict both ways: malformed UTF-8, or a character the ANSI code page cannot
+// hold, fails instead of being replaced with '?' -- a lossy save would turn a
+// rule's pattern into one that silently never matches.  ASCII text (every
+// numeric and key field) is copied unchanged.  Returns a HeapAlloc'd,
+// NUL-terminated buffer the caller frees with HeapFree.
+enum GcIniEncodeResult {
+    GC_INI_ENCODE_OK = 0,
+    GC_INI_ENCODE_INVALID_UTF8 = 1,
+    GC_INI_ENCODE_UNREPRESENTABLE = 2,
+    GC_INI_ENCODE_NO_MEMORY = 3,
+};
+
+static inline const char* gc_ini_encode_result_name(GcIniEncodeResult result) {
+    switch (result) {
+        case GC_INI_ENCODE_OK: return "ok";
+        case GC_INI_ENCODE_INVALID_UTF8: return "invalid-utf8";
+        case GC_INI_ENCODE_UNREPRESENTABLE: return "unrepresentable-in-ansi-code-page";
+        case GC_INI_ENCODE_NO_MEMORY: return "no-memory";
+    }
+    return "unknown";
+}
+
+static inline GcIniEncodeResult gc_utf8_to_ini_file_bytes(const char* utf8,
+    char** out, size_t* outLen) {
+    if (out) *out = nullptr;
+    if (outLen) *outLen = 0;
+    if (!utf8 || !out || !outLen) return GC_INI_ENCODE_INVALID_UTF8;
+    size_t len = strlen(utf8);
+    bool ascii = true;
+    for (size_t i = 0; i < len; ++i) {
+        if ((unsigned char)utf8[i] >= 0x80) { ascii = false; break; }
+    }
+    // CP_UTF8 as the system code page (the "Beta: use UTF-8" option) makes the
+    // reader decode UTF-8, so the text is already in the reader's encoding.
+    if (ascii || GetACP() == CP_UTF8) {
+        if (!ascii && MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                utf8, (int)len, nullptr, 0) <= 0)
+            return GC_INI_ENCODE_INVALID_UTF8;
+        char* copy = (char*)HeapAlloc(GetProcessHeap(), 0, len + 1);
+        if (!copy) return GC_INI_ENCODE_NO_MEMORY;
+        memcpy(copy, utf8, len + 1);
+        *out = copy;
+        *outLen = len;
+        return GC_INI_ENCODE_OK;
+    }
+    int wideCount = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+        utf8, (int)len, nullptr, 0);
+    if (wideCount <= 0) return GC_INI_ENCODE_INVALID_UTF8;
+    WCHAR* wide = (WCHAR*)HeapAlloc(GetProcessHeap(), 0,
+        (SIZE_T)wideCount * sizeof(WCHAR));
+    if (!wide) return GC_INI_ENCODE_NO_MEMORY;
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, (int)len,
+            wide, wideCount) != wideCount) {
+        HeapFree(GetProcessHeap(), 0, wide);
+        return GC_INI_ENCODE_INVALID_UTF8;
+    }
+    BOOL usedDefault = FALSE;
+    int bytes = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, wide,
+        wideCount, nullptr, 0, nullptr, &usedDefault);
+    if (bytes <= 0 || usedDefault) {
+        HeapFree(GetProcessHeap(), 0, wide);
+        return GC_INI_ENCODE_UNREPRESENTABLE;
+    }
+    char* encoded = (char*)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)bytes + 1);
+    if (!encoded) {
+        HeapFree(GetProcessHeap(), 0, wide);
+        return GC_INI_ENCODE_NO_MEMORY;
+    }
+    usedDefault = FALSE;
+    int written = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, wide,
+        wideCount, encoded, bytes, nullptr, &usedDefault);
+    HeapFree(GetProcessHeap(), 0, wide);
+    if (written != bytes || usedDefault) {
+        HeapFree(GetProcessHeap(), 0, encoded);
+        return GC_INI_ENCODE_UNREPRESENTABLE;
+    }
+    encoded[bytes] = 0;
+    *out = encoded;
+    *outLen = (size_t)bytes;
+    return GC_INI_ENCODE_OK;
+}
+
+// UTF-8 from a UTF-16 string that may not fit: truncated at a whole code point
+// instead of failing outright (gc_wide_to_utf8 returns nothing when the buffer
+// is short, which turned a long window title into an empty one).
+static inline void gc_wide_to_utf8_truncating(const WCHAR* wide, char* out,
+    size_t outSize) {
+    if (!out || outSize == 0) return;
+    out[0] = 0;
+    if (!wide) return;
+    size_t used = 0;
+    for (const WCHAR* p = wide; *p; ) {
+        int units = 1;
+        if (*p >= 0xD800 && *p <= 0xDBFF && p[1] >= 0xDC00 && p[1] <= 0xDFFF)
+            units = 2;
+        char encoded[8] = {};
+        int bytes = WideCharToMultiByte(CP_UTF8, 0, p, units, encoded,
+            (int)sizeof(encoded), nullptr, nullptr);
+        if (bytes <= 0) break;
+        if (used + (size_t)bytes + 1 > outSize) break;
+        memcpy(out + used, encoded, (size_t)bytes);
+        used += (size_t)bytes;
+        p += units;
+    }
+    out[used] = 0;
+}
+
 static inline HANDLE gc_CreateFileUtf8(const char* path, DWORD access,
     DWORD share, LPSECURITY_ATTRIBUTES security, DWORD creation,
     DWORD attributes, HANDLE templateFile) {

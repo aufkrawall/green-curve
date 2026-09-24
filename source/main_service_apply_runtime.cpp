@@ -200,14 +200,17 @@ static bool service_apply_desired_settings(const DesiredSettings* desired, bool 
         populate_control_state(&g_serviceControlState);
         g_serviceControlStateValid = true;
         mark_service_telemetry_cache_updated("service apply partial");
-        // RC3 fix: do NOT clear g_serviceHasActiveDesired / g_serviceActiveDesired
-        // on transient apply failure.  Previously, a single failed apply (e.g.
-        // mid-recovery) wiped the active desired, so the next recovery had
-        // nothing to reapply and the service was stuck in "crash recovery
-        // active, skipping hardware_initialize" forever.  Preserving the
-        // active desired lets the next recovery reapply the same settings.
-        // The disk snapshot is also kept up to date so a service restart
-        // mid-recovery can still restore the previous profile.
+        // The previous intent is NOT cleared here, because this function cannot
+        // tell a refusal that wrote nothing (the previous profile is still in
+        // force) from a failed write.  Its callers can: every one of them
+        // (pipe APPLY, lifecycle logon/standby/driver restore) calls
+        // service_disable_automatic_restore() when `hardwareWriteAttempted`
+        // is set, which retires this intent, its profile identity and the
+        // restart snapshot written below -- the rollback has returned the GPU
+        // to safe defaults, so the previous profile is no longer what runs.
+        // (The earlier "RC3" rationale here, keeping the intent so a later
+        // recovery could replay it, no longer holds: a failed write latches
+        // the automatic-restore lockout, and nothing replays past it.)
         debug_log("service apply: apply FAILED, preserving active desired (hasLock=%d lockCi=%d)\n",
             g_serviceActiveDesired.hasLock ? 1 : 0,
             g_serviceActiveDesired.hasLock ? g_serviceActiveDesired.lockCi : -1);

@@ -30,6 +30,42 @@ static AutoProfileAction ap_action_apply(int slot) {
     return a;
 }
 
+static void ap_clear_failure(AutoProfileController* c) {
+    c->failedSlot = 0;
+    c->consecutiveFailures = 0;
+    c->retryNotBeforeMs = 0;
+}
+
+long long ap_failure_backoff_remaining_ms(const AutoProfileController* c,
+                                          int slot, long long nowMs) {
+    if (!c || c->failedSlot == 0 || slot != c->failedSlot) return 0;
+    long long remaining = c->retryNotBeforeMs - nowMs;
+    return remaining > 0 ? remaining : 0;
+}
+
+void ap_on_apply_failed(AutoProfileController* c, int slot, long long nowMs) {
+    if (!c || !ap_slot_valid(slot)) return;
+    if (c->failedSlot == slot) {
+        if (c->consecutiveFailures < 30) c->consecutiveFailures++;
+    } else {
+        c->failedSlot = slot;
+        c->consecutiveFailures = 1;
+    }
+    long long delay = c->minIntervalMs > 0 ? c->minIntervalMs
+                                           : AUTO_PROFILE_DEFAULT_MIN_INTERVAL_MS;
+    for (int i = 1; i < c->consecutiveFailures &&
+                    delay < AUTO_PROFILE_FAILURE_BACKOFF_MAX_MS; i++) {
+        delay *= 2;
+    }
+    if (delay > AUTO_PROFILE_FAILURE_BACKOFF_MAX_MS)
+        delay = AUTO_PROFILE_FAILURE_BACKOFF_MAX_MS;
+    c->retryNotBeforeMs = nowMs + delay;
+    // A failed switch may still have run a hardware transaction; it spends the
+    // cooldown like a successful one.
+    c->lastApplyMs = nowMs;
+    c->pendingTarget = 0;
+}
+
 void ap_controller_sync_config(AutoProfileController* c, const AutoProfileConfig* cfg) {
     if (!c || !cfg) return;
     c->autoEnabled = cfg->enabled;
@@ -47,6 +83,7 @@ void ap_controller_init(AutoProfileController* c, const AutoProfileConfig* cfg) 
     // Far-past so the first switch is not gated by the cooldown.
     c->lastApplyMs = -1000000;
     c->autoEnabled = false;
+    ap_clear_failure(c);
     c->debounceMs = AUTO_PROFILE_DEFAULT_DEBOUNCE_MS;
     c->minIntervalMs = AUTO_PROFILE_DEFAULT_MIN_INTERVAL_MS;
     c->defaultSlot = CONFIG_DEFAULT_SLOT;
@@ -59,7 +96,6 @@ bool ap_controller_is_driving(const AutoProfileController* c, bool suppressed) {
 
 AutoProfileAction ap_on_target_resolved(AutoProfileController* c, int targetSlot,
                                         long long nowMs, bool suppressed) {
-    (void)nowMs;
     if (!ap_controller_is_driving(c, suppressed)) return ap_action_none();
     if (!ap_slot_valid(targetSlot)) return ap_action_none();
     if (targetSlot == c->appliedSlot) {
@@ -68,6 +104,10 @@ AutoProfileAction ap_on_target_resolved(AutoProfileController* c, int targetSlot
         return ap_action_none();
     }
     c->pendingTarget = targetSlot;
+    // A target that just failed waits out its backoff instead of the debounce.
+    long long backoff = ap_failure_backoff_remaining_ms(c, targetSlot, nowMs);
+    if (backoff > c->debounceMs)
+        return ap_action_arm(backoff > 0x7fffffffLL ? 0x7fffffff : (int)backoff);
     return ap_action_arm(c->debounceMs);
 }
 
@@ -92,6 +132,11 @@ AutoProfileAction ap_on_debounce_fire(AutoProfileController* c, int currentTarge
         int remaining = (int)(c->minIntervalMs - sinceApply);
         return ap_action_arm(remaining);
     }
+    long long backoff = ap_failure_backoff_remaining_ms(c, currentTarget, nowMs);
+    if (backoff > 0) {
+        c->pendingTarget = currentTarget;
+        return ap_action_arm(backoff > 0x7fffffffLL ? 0x7fffffff : (int)backoff);
+    }
     c->pendingTarget = 0;
     return ap_action_apply(currentTarget);
 }
@@ -101,10 +146,14 @@ void ap_on_applied(AutoProfileController* c, int slot, long long nowMs) {
     c->appliedSlot = slot;
     c->lastApplyMs = nowMs;
     c->pendingTarget = 0;
+    ap_clear_failure(c);
 }
 
 AutoProfileAction ap_on_hotkey(AutoProfileController* c, int slot) {
     if (!c || !ap_slot_valid(slot)) return ap_action_none();
+    // An explicit pick is the user retrying: no backoff applies to it, and a
+    // later automatic switch starts clean.
+    ap_clear_failure(c);
     if (!c->autoEnabled) {
         // Auto is off: a pick is simply "apply this profile now".  Pinning here
         // would be meaningless (nothing is switching to override) and actively
@@ -143,6 +192,7 @@ void ap_enter_manual_custom(AutoProfileController* c) {
 AutoProfileAction ap_set_enabled(AutoProfileController* c, bool enabled) {
     if (!c) return ap_action_none();
     c->autoEnabled = enabled;
+    ap_clear_failure(c);
     if (enabled) {
         c->mode = AP_MODE_AUTO;
         c->pinnedSlot = 0;
@@ -169,6 +219,8 @@ AutoProfileAction ap_apply_config_change(AutoProfileController* c, const AutoPro
     // same edit that flips the enable may also have changed them, and
     // ap_set_enabled's revert-to-default must use the NEW default slot.
     ap_controller_sync_config(c, cfg);
+    // Edited rules or intervals deserve a fresh attempt.
+    ap_clear_failure(c);
     if (cfg->enabled == wasEnabled) return ap_action_none();
     return ap_set_enabled(c, cfg->enabled);
 }

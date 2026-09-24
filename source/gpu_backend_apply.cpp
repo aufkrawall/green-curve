@@ -14,6 +14,8 @@
 #include "gpu_backend_apply_advanced.h"
 // How long VF correction may run inside the apply's own time budget.
 #include "apply_correction_budget_policy.h"
+// Lock below a pre-tail point: refused before the reset, not after it.
+#include "gpu_backend_apply_lock_pretail.h"
 
 static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool interactive, char* result, size_t resultSize,
@@ -69,6 +71,12 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 desired->lockMHz, g_app.numVisible);
             return false;
         }
+    }
+    // A lock below a pre-tail point is refused HERE, before the clamp or the
+    // reset-to-stock below write anything (apply_lock_pretail_policy.h).
+    if (!apply_lock_pretail_precheck_before_reset(desired, result, resultSize)) {
+        set_last_apply_phase("apply: refused (lock below a pre-tail point)");
+        return false;
     }
 #ifdef GREEN_CURVE_SERVICE_BINARY
     bool proofInvalidatedForWrite = false;
@@ -333,40 +341,45 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             desired->gpuOffsetMHz, g_app.gpuClockOffsetMinMHz, g_app.gpuClockOffsetMaxMHz);
     }
     if (gpuOffsetValid && hasLock && lockMhz > 0 && (hasCurveEdits || hasLock || gpuPolicyViaCurveBatch)) {
+        // Backstop for apply_lock_pretail_precheck_before_reset(): a stock base
+        // that moved a bin between that read and the post-reset one.  Without a
+        // reset it is still ahead of the first write; after one it is not, and
+        // the refusal must take the recovery path instead of leaving the GPU on
+        // the stock curve under the transition clamp.
+        ApplyLockPretailArrays pretail = {};
         for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-            if (!originalCurvePopulated[ci]) continue;
-            if (lockedTailMask[ci]) break;
-
-            unsigned int preTailTargetMHz = 0;
-            if (desired->hasCurvePoint[ci] && !lockedTailMask[ci]) {
-                preTailTargetMHz = desired->curvePointMHz[ci];
-            } else if (desired->hasGpuOffset) {
-                long long base = (long long)originalCurveFreqkHz[ci] - (long long)originalCurveOffsets[ci];
-                if (base < 0) base = 0;
-                long long targetKHz = base + (long long)gpu_offset_component_mhz_for_point(ci, desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount) * 1000LL;
-                if (targetKHz < 0) targetKHz = 0;
-                if (targetKHz > UINT_MAX) targetKHz = UINT_MAX;
-                preTailTargetMHz = displayed_curve_mhz((unsigned int)targetKHz);
-            } else {
-                preTailTargetMHz = displayed_curve_mhz((unsigned int)originalCurveFreqkHz[ci]);
-            }
-
-            if (preTailTargetMHz > lockMhz) {
-                char excludeHint[128] = {};
-                if (desired->hasGpuOffset && desired->gpuOffsetMHz != 0 && gpuPolicyViaCurveBatch) {
-                    StringCchPrintfA(excludeHint, ARRAY_COUNT(excludeHint),
-                        " Enable 'exclude low VF points' to exclude pre-tail points from the GPU offset.");
-                }
-                set_message(result, resultSize,
-                    "Curve lock %u MHz at point %d is below pre-tail point %d (%u MHz).%s Lower the preceding point or raise the lock target.",
-                    lockMhz, lockCi, ci, preTailTargetMHz, excludeHint);
-                debug_log("lock monotonicity validation failed before writes: lockCi=%d lockMHz=%u preTailCi=%d target=%u desiredGpu=%d exclude=%d explicit=%d\n",
-                    lockCi, lockMhz, ci, preTailTargetMHz,
-                    desired->hasGpuOffset ? desired->gpuOffsetMHz : currentAppliedGpuOffsetMHz,
-                    desired->hasGpuOffset ? desiredActiveGpuOffsetExcludeLowCount : currentActiveGpuOffsetExcludeLowCount,
-                    desired->hasCurvePoint[ci] ? 1 : 0);
-                return false;
-            }
+            pretail.populated[ci] = originalCurvePopulated[ci];
+            pretail.tail[ci] = lockedTailMask[ci];
+            pretail.base[ci] = apply_lock_pretail_stock_base_khz(
+                (unsigned int)originalCurveFreqkHz[ci], originalCurveOffsets[ci]);
+            pretail.unowned[ci] = originalCurveFreqkHz[ci];
+            pretail.gpuComponentMHz[ci] = desired->hasGpuOffset
+                ? gpu_offset_component_mhz_for_point(ci, desired->gpuOffsetMHz,
+                      desiredActiveGpuOffsetExcludeLowCount)
+                : 0;
+        }
+        unsigned int preTailTargetMHz = 0;
+        int ci = apply_lock_pretail_first_violation(VF_NUM_POINTS, lockMhz,
+            pretail.populated, pretail.tail, desired->hasCurvePoint,
+            desired->curvePointMHz, desired->hasGpuOffset != 0, pretail.base,
+            pretail.gpuComponentMHz, pretail.unowned, &preTailTargetMHz);
+        if (ci >= 0) {
+            char refusal[256] = {};
+            apply_lock_pretail_format_refusal(refusal, sizeof(refusal), lockMhz,
+                lockCi, ci, preTailTargetMHz,
+                desired->hasGpuOffset && desired->gpuOffsetMHz != 0 &&
+                    !desired->hasCurvePoint[ci]);
+            debug_log("lock monotonicity validation failed %s: lockCi=%d lockMHz=%u preTailCi=%d target=%u desiredGpu=%d exclude=%d explicit=%d\n",
+                desired->resetOcBeforeApply ? "AFTER the reset-to-stock (recovering)"
+                                            : "before writes",
+                lockCi, lockMhz, ci, preTailTargetMHz,
+                desired->hasGpuOffset ? desired->gpuOffsetMHz : currentAppliedGpuOffsetMHz,
+                desired->hasGpuOffset ? desiredActiveGpuOffsetExcludeLowCount : currentActiveGpuOffsetExcludeLowCount,
+                desired->hasCurvePoint[ci] ? 1 : 0);
+            if (desired->resetOcBeforeApply)
+                return apply_recover_clock_failure(clockCeiling, refusal, result, resultSize);
+            set_message(result, resultSize, "%s", refusal);
+            return false;
         }
     }
     // All validation that can reject the request without touching hardware is

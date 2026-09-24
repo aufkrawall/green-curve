@@ -91,28 +91,38 @@ static int ap_resolve_current_target() {
 
 // The actual apply: reuse the same TDR-safe path + idempotency skip the app-start
 // auto-load uses (maybe_load_app_launch_profile_to_gui).
-static bool ap_do_apply_slot(int slot, ServiceApplyOrigin origin) {
-    if (slot < 1 || slot > CONFIG_NUM_SLOTS) return false;
+// What starting an apply achieved.  FAILED is the only outcome that arms the
+// controller's failure backoff: a skip (another write in flight) and a no-op
+// (the service already owns this slot's intent) are not failures.
+enum ApApplyStart {
+    AP_APPLY_QUEUED = 0,
+    AP_APPLY_SKIPPED = 1,
+    AP_APPLY_ALREADY_APPLIED = 2,
+    AP_APPLY_FAILED = 3,
+};
+
+static ApApplyStart ap_do_apply_slot(int slot, ServiceApplyOrigin origin) {
+    if (slot < 1 || slot > CONFIG_NUM_SLOTS) return AP_APPLY_FAILED;
     if (g_apApplyInFlight) {
         debug_log("auto-profile: apply slot %d SKIPPED (apply in flight)\n", slot);
-        return false;
+        return AP_APPLY_SKIPPED;
     }
     char gpuSelectionErr[256] = {};
     if (!validate_configured_gpu_selection_for_client(
             gpuSelectionErr, sizeof(gpuSelectionErr))) {
         debug_log("auto-profile: blocked slot %d because durable GPU identity is unresolved: %s\n",
             slot, gpuSelectionErr[0] ? gpuSelectionErr : "unknown error");
-        return false;
+        return AP_APPLY_FAILED;
     }
     if (!is_profile_slot_saved(g_app.configPath, slot)) {
         debug_log("auto-profile: target slot %d is empty; skipping apply\n", slot);
-        return false;
+        return AP_APPLY_FAILED;
     }
     DesiredSettings desired = {};
     char err[256] = {};
     if (!load_profile_from_config(g_app.configPath, slot, &desired, err, sizeof(err))) {
         debug_log("auto-profile: load slot %d failed: %s\n", slot, err);
-        return false;
+        return AP_APPLY_FAILED;
     }
 
     // "Don't needlessly re-apply": if the service already owns this exact intent,
@@ -140,7 +150,7 @@ static bool ap_do_apply_slot(int slot, ServiceApplyOrigin origin) {
             ap_on_applied(&g_apCtrl, slot, ap_now_ms());
             update_tray_icon();
             invalidate_main_window();
-            return false;
+            return AP_APPLY_ALREADY_APPLIED;
         }
     }
 
@@ -160,7 +170,7 @@ static bool ap_do_apply_slot(int slot, ServiceApplyOrigin origin) {
         // only in the log.  Still no dialog: this path stays surface-free.
         if (service_apply_origin_is_explicit(origin) && queueStatus[0])
             set_profile_status_text("%s", queueStatus);
-        return false;
+        return AP_APPLY_FAILED;
     }
     // The same "Applying Profile N to the GPU..." line the Apply button shows;
     // the completion replaces it with the outcome.  Only for an explicit pick,
@@ -170,7 +180,19 @@ static bool ap_do_apply_slot(int slot, ServiceApplyOrigin origin) {
         set_profile_status_text("%s", queueStatus);
     debug_log("auto-profile: queued slot %d operation (%s)\n", slot,
         queueStatus[0] ? queueStatus : "started");
-    return true;
+    return AP_APPLY_QUEUED;
+}
+
+// Arms the controller's backoff for a switch that did not happen, and says in
+// the log when the next automatic attempt may run (the retry used to be
+// silent and immediate).
+static void ap_note_apply_failed(int slot, const char* why) {
+    long long now = ap_now_ms();
+    ap_on_apply_failed(&g_apCtrl, slot, now);
+    debug_log("auto-profile: slot %d switch failed (%s); consecutive=%d, next automatic"
+              " attempt in %lld ms\n", slot, why && why[0] ? why : "unknown",
+        g_apCtrl.consecutiveFailures,
+        ap_failure_backoff_remaining_ms(&g_apCtrl, slot, now));
 }
 
 static void ap_arm_debounce(HWND hwnd, int delayMs) {
@@ -189,7 +211,9 @@ static void ap_execute(HWND hwnd, AutoProfileAction a,
             break;
         case AP_ACTION_APPLY_SLOT: {
             KillTimer(hwnd, AUTO_PROFILE_DEBOUNCE_TIMER_ID);
-            if (ap_do_apply_slot(a.slot, origin)) break;
+            ApApplyStart started = ap_do_apply_slot(a.slot, origin);
+            if (started == AP_APPLY_QUEUED) break;
+            if (started == AP_APPLY_FAILED) ap_note_apply_failed(a.slot, "not started");
             // Drain a hotkey/tray pick that arrived while the blocking apply
             // was running (see auto_profile_pick_slot / auto_profile_on_hotkey).
             // The full retry re-enters ap_execute with its explicit origin and
@@ -245,6 +269,7 @@ static void auto_profile_on_mutation_completed(int slot,
     } else {
         debug_log("auto-profile: apply slot %d FAILED: %s\n", slot,
             result && result[0] ? result : "unknown");
+        ap_note_apply_failed(slot, "service reported failure");
     }
 
     int pending = g_apPendingPickSlot;

@@ -49,6 +49,10 @@ Setup, crash recovery, and Apply reliability improve in this release.
 - **Changing only the power limit no longer resets other GPU settings.**
 - **Slow applies under load no longer end with an unknown outcome.**
 - **Reset no longer reports success while a clock lock may remain.**
+- **Profiles with a lock below an earlier curve point are refused before anything changes.**
+- **Auto-profile rules with non-English characters keep matching after a restart.**
+- **A failing automatic profile switch now backs off instead of retrying every second.**
+- **Linux now holds a fixed fan speed when the driver takes the fan back.**
 - **A crashed service now returns custom fans to driver control.** On Windows, it also returns the GPU to stock.
 - **A service stuck in the GPU driver now restarts itself.**
 - **Repeated fan-control errors no longer hang the service.**

@@ -1665,8 +1665,8 @@ def run_regression_tests(extra_flags=None):
             "-o",
             test_exe,
             harness_path,
-            os.path.join(SCRIPT_DIR, "tests", "clock_transition_tests.cpp"),
-            os.path.join(SCRIPT_DIR, "tests", "service_install_tests.cpp"),
+            *[os.path.join(SCRIPT_DIR, "tests", name) for name in ("clock_transition_tests.cpp",
+              "service_install_tests.cpp", "apply_profile_followup_tests.cpp")],
             os.path.join(SOURCE_DIR, "fan_curve.cpp"),
             os.path.join(SOURCE_DIR, "config_text_utils.cpp"),
             os.path.join(SOURCE_DIR, "app_shared.cpp"),
@@ -4408,7 +4408,7 @@ def run_source_regression_checks():
         "APP_WM_ACTIVATE_EXISTING_INSTANCE", "ShellExecute", "CreateProcess",
         "WinExec", "AllocConsole")
     presentation_silent_operations = (
-        (auto_win32_cpp, "static bool ap_do_apply_slot("),
+        (auto_win32_cpp, "static ApApplyStart ap_do_apply_slot("),
         (auto_win32_cpp, "static void auto_profile_on_mutation_completed("),
         (ui_mutation_completion_cpp,
          "static void handle_auto_profile_mutation_completion_presentation_silent("))

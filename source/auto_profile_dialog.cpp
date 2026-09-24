@@ -130,6 +130,39 @@ static int apd_get_edit_int(HWND edit, int fallback) {
     return fallback;
 }
 
+// Pattern text crosses the dialog in UTF-8, the encoding rule patterns have in
+// memory and after an INI load.  The ANSI *A calls used here before handed the
+// edit control a UTF-8 string as if it were ANSI, so a pattern loaded back from
+// the INI showed as mojibake and a re-save stored the mojibake.
+static void apd_set_pattern_text(HWND edit, const char* utf8) {
+    if (!edit) return;
+    WCHAR wide[AUTO_PROFILE_PATTERN_MAX] = {};
+    if (utf8 && utf8[0] &&
+        MultiByteToWideChar(CP_UTF8, 0, utf8, -1, wide, (int)ARRAY_COUNT(wide)) <= 0) {
+        debug_log("auto-profile dialog: pattern is not displayable UTF-8; showing it empty\n");
+        wide[0] = 0;
+    }
+    SetWindowTextW(edit, wide);
+}
+
+// False when the typed pattern does not fit the rule's UTF-8 buffer, so it is
+// refused rather than silently cut into one that never matches.
+static bool apd_get_pattern_text(HWND edit, char* out, size_t outSize) {
+    if (!out || outSize == 0) return false;
+    out[0] = 0;
+    if (!edit) return true;
+    WCHAR wide[AUTO_PROFILE_PATTERN_MAX] = {};
+    GetWindowTextW(edit, wide, (int)ARRAY_COUNT(wide));
+    wide[ARRAY_COUNT(wide) - 1] = 0;
+    if (!wide[0]) return true;
+    DWORD written = 0;
+    if (!gc_wide_to_utf8(wide, out, (DWORD)outSize, &written)) {
+        out[0] = 0;
+        return false;
+    }
+    return true;
+}
+
 // Populate all controls from the current in-memory config + [hotkeys] section.
 static void apd_populate() {
     const AutoProfileConfig* cfg = auto_profile_config();
@@ -151,7 +184,7 @@ static void apd_populate() {
             StringCchCopyA(pattern, sizeof(pattern), cfg->rules[i].pattern);
         }
         apd_combo_select(g_apDialog.typeCombo[i], type);
-        SetWindowTextA(g_apDialog.patternEdit[i], pattern);
+        apd_set_pattern_text(g_apDialog.patternEdit[i], pattern);
         apd_check_set(g_apDialog.focusCheck[i], focus);
         apd_combo_select(g_apDialog.slotCombo[i], slot);
     }
@@ -181,7 +214,11 @@ static bool apd_capture(AutoProfileConfig* out, char hotkeysOut[CONFIG_NUM_SLOTS
         AutoProfileMatchType type = (AutoProfileMatchType)apd_combo_data(g_apDialog.typeCombo[i], AUTO_MATCH_NONE);
         if (type == AUTO_MATCH_NONE) continue;   // skip empty rows (keeps order of the rest)
         char pattern[AUTO_PROFILE_PATTERN_MAX] = {};
-        get_window_text_safe(g_apDialog.patternEdit[i], pattern, sizeof(pattern));
+        if (!apd_get_pattern_text(g_apDialog.patternEdit[i], pattern, sizeof(pattern))) {
+            set_message(err, errSize,
+                "Rule %d's pattern is too long once stored as text; shorten it.", i + 1);
+            return false;
+        }
         trim_ascii(pattern);
         if ((type == AUTO_MATCH_EXE || type == AUTO_MATCH_TITLE || type == AUTO_MATCH_CLASS) && pattern[0] == 0) {
             set_message(err, errSize, "Rule %d needs a pattern for its match type.", i + 1);
@@ -345,7 +382,9 @@ static void apd_create_controls(HWND hwnd) {
         apd_combo_add(g_apDialog.typeCombo[i], "Window class", AUTO_MATCH_CLASS);
         apd_combo_add(g_apDialog.typeCombo[i], "Fullscreen app", AUTO_MATCH_FULLSCREEN);
 
-        g_apDialog.patternEdit[i] = CreateWindowExA(0, "EDIT", "",
+        // A Unicode edit control: an ANSI one would narrow a pattern to the
+        // ANSI code page on every SetWindowTextW/GetWindowTextW round trip.
+        g_apDialog.patternEdit[i] = CreateWindowExW(0, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
             dp(156), dp(y), dp(392), dp(22), hwnd, (HMENU)(INT_PTR)(APD_RULE_PATTERN_BASE + i), g_app.hInst, nullptr);
         style_input_control(g_apDialog.patternEdit[i]);

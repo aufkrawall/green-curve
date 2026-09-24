@@ -114,6 +114,14 @@ static bool profile_tail_points_flat_to_lock(const char* path, const char* secti
 static void repair_profile_locked_curve_readback_artifacts(const char* path, const char* section, int slot, DesiredSettings* desired,
                                                            ProfileReadMode mode) {
     if (!path || !section || !desired) return;
+    // The artifacts this removes were written by builds that saved live VF
+    // readback (before the 2026-05-17 intent/readback split).  A section in the
+    // per-point provenance format was written by a build that only ever saves
+    // explicit intent, so every point in it is something the user asked for;
+    // the magic-number heuristic below must not delete one of them on load.
+    ProfileCurveDecode decode = profile_curve_section_decode(path, section);
+    // Silent: profile reads run on every tray refresh, and a skip changes nothing.
+    if (decode == PROFILE_CURVE_DECODE_ABSOLUTE_WITH_ORIGIN) return;
     if (!desired->hasLock || desired->lockCi < 3 || desired->lockCi >= VF_NUM_POINTS || desired->lockMHz == 0) return;
     if (desired->hasGpuOffset && desired->gpuOffsetMHz != 0) return;
     if (desired->gpuOffsetExcludeLowCount > 0) return;

@@ -580,3 +580,27 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(apply_cpp,
                  "!curveRequest && !curveBatchOk &&\n            curveRequestOk)",
                  "the curve-preserve failure is not counted twice after a refused batch")
+    # A lock below a pre-tail point is refused before the clamp is armed or the
+    # reset-to-stock runs.  It used to be refused only after both, with a bare
+    # `return false` that left the GPU on the stock curve under the clamp.
+    require_order_in_operation(
+        apply_cpp,
+        "static bool apply_desired_settings_service(const DesiredSettings* desired,",
+        "if (!apply_lock_pretail_precheck_before_reset(desired, result, resultSize)) {",
+        "ApplyClockCeilingGuard clockCeiling(desired);",
+        "the lock pre-tail refusal runs before the first clock write")
+    require_order_in_operation(
+        apply_cpp,
+        "static bool apply_desired_settings_service(const DesiredSettings* desired,",
+        "if (!apply_lock_pretail_precheck_before_reset(desired, result, resultSize)) {",
+        "if (!reset_oc_before_gui_apply(desired, result, resultSize,",
+        "the lock pre-tail refusal runs before reset-to-stock")
+    require_text(apply_cpp,
+                 "return apply_recover_clock_failure(clockCeiling, refusal, result, resultSize);",
+                 "a post-reset pre-tail refusal recovers instead of returning bare")
+    # The apply measures every target from the post-reset readback; the reset
+    # must fail rather than let it build on a pre-reset sample.
+    forbid_text(reset_cpp, "read_live_curve_snapshot_settled(4, 25, nullptr);",
+                "the post-reset curve readback result is not discarded")
+    forbid_text(reset_cpp, "refresh_global_state(result, resultSize);",
+                "the post-reset refresh does not write into the caller's result")

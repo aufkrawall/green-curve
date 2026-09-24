@@ -313,7 +313,8 @@ static bool section_should_be_preserved(const char* line, const char* const* rep
     return true;
 }
 
-static bool write_config_sections_atomic(const char* path, const char* newSectionsData, const char* const* replaceSections, int replaceCount, char* err, size_t errSize) {
+// `newSectionsData` is already on-disk encoded (write_config_sections_atomic).
+static bool write_config_sections_atomic_encoded(const char* path, const char* newSectionsData, const char* const* replaceSections, int replaceCount, char* err, size_t errSize) {
     if (!path || !newSectionsData) {
         set_message(err, errSize, "Invalid config write arguments");
         return false;
@@ -471,6 +472,67 @@ static bool write_config_sections_atomic(const char* path, const char* newSectio
 
     bool ok = write_text_file_atomic(path, out, outUsed, err, errSize);
     free(out);
+    return ok;
+}
+
+// The new sections arrive as UTF-8, and the file is read back through the
+// profile API in the ANSI code page (gc_utf8_to_ini_file_bytes).  Encoding
+// first means a value that cannot be stored refuses the whole write before the
+// existing file is touched, instead of committing text that reads back as a
+// different string.
+static bool encode_config_text_for_file(const char* utf8Text, const char* what,
+    char** encodedOut, size_t* encodedSizeOut, char* err, size_t errSize) {
+    GcIniEncodeResult encodeResult = gc_utf8_to_ini_file_bytes(
+        utf8Text, encodedOut, encodedSizeOut);
+    if (encodeResult == GC_INI_ENCODE_OK) return true;
+    debug_log("config write: refused %s: %s (acp=%u)\n",
+        what ? what : "update", gc_ini_encode_result_name(encodeResult),
+        (unsigned)GetACP());
+    set_message(err, errSize, encodeResult == GC_INI_ENCODE_UNREPRESENTABLE
+        ? "A setting contains characters that the Windows language-for-non-Unicode-"
+          "programs setting cannot store in the configuration file"
+        : encodeResult == GC_INI_ENCODE_NO_MEMORY
+            ? "Out of memory encoding config"
+            : "A setting is not valid UTF-8 text");
+    return false;
+}
+
+static bool write_config_sections_atomic(const char* path, const char* newSectionsData, const char* const* replaceSections, int replaceCount, char* err, size_t errSize) {
+    if (!path || !newSectionsData) {
+        set_message(err, errSize, "Invalid config write arguments");
+        return false;
+    }
+    char* encodedSections = nullptr;
+    size_t encodedSectionsSize = 0;
+    char what[96] = {};
+    StringCchPrintfA(what, ARRAY_COUNT(what), "section update (first section %s)",
+        replaceCount > 0 && replaceSections && replaceSections[0]
+            ? replaceSections[0] : "<none>");
+    if (!encode_config_text_for_file(newSectionsData, what, &encodedSections,
+            &encodedSectionsSize, err, errSize))
+        return false;
+    bool ok = write_config_sections_atomic_encoded(path, encodedSections,
+        replaceSections, replaceCount, err, errSize);
+    HeapFree(GetProcessHeap(), 0, encodedSections);
+    return ok;
+}
+
+// A whole INI file built as UTF-8 text (every section read back through the
+// UTF-8 wrappers), committed in the on-disk encoding.  Written raw, one profile
+// save re-encoded every non-ASCII value in every section it never touched.
+static bool write_config_text_atomic(const char* path, const char* utf8Text,
+    char* err, size_t errSize) {
+    if (!path || !utf8Text) {
+        set_message(err, errSize, "Invalid config write arguments");
+        return false;
+    }
+    char* encoded = nullptr;
+    size_t encodedSize = 0;
+    if (!encode_config_text_for_file(utf8Text, "whole-file config rewrite",
+            &encoded, &encodedSize, err, errSize))
+        return false;
+    bool ok = write_text_file_atomic(path, encoded, encodedSize, err, errSize);
+    HeapFree(GetProcessHeap(), 0, encoded);
     return ok;
 }
 
