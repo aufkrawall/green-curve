@@ -60,13 +60,16 @@ static void service_release_recovery_ledger_mutex(HANDLE mutex) {
 
 static bool service_generate_random_bytes(void* buffer, ULONG size) {
     if (!buffer || size == 0) return false;
-    HMODULE advapi = GetModuleHandleW(L"advapi32.dll");
-    if (!advapi) advapi = LoadLibraryW(L"advapi32.dll");
-    if (!advapi) return false;
-    typedef BOOLEAN (WINAPI *RtlGenRandomFn)(PVOID, ULONG);
-    RtlGenRandomFn random = reinterpret_cast<RtlGenRandomFn>(
-        GetProcAddress(advapi, "SystemFunction036"));
-    return random && random(buffer, size) != FALSE;
+    // Direct import like every other RNG site here: resolving the RNG through
+    // GetProcAddress hides a dependency we have no reason to hide.
+    NTSTATUS status = BCryptGenRandom(nullptr, (PUCHAR)buffer, size,
+        BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    if (status < 0) {
+        debug_log("recovery ledger: secure evidence-key RNG failed (status 0x%08lx)\n",
+            (unsigned long)status);
+        return false;
+    }
+    return true;
 }
 
 static bool service_new_recovery_evidence_key(ServiceRecoveryEvidenceKey* out) {
