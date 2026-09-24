@@ -8,10 +8,12 @@
   - One bullet per user-visible change; one line where possible, never > two.
   - The bold lead is a complete sentence and stands alone.
   - Under ~400 words per release.  No nested bullets, no paragraphs of prose.
-  - Same four sections every time: intro, "### Highlights" OR
-    "### Fixes & Hardening", "### Compatibility notes",
+  - Group user-visible changes under category subheadings: "### New",
+    "### Improved", "### Fixed", "### Removed" (and "### Changed" / "### Security"
+    when needed).
+  - Every release ends with: "### Compatibility notes",
     "### Downloads and verification", then the "**Full changelog:**" compare
-    link.  Do not invent per-release subheads.
+    link.  Do not invent arbitrary subheads.
   - Say what changed FOR THE USER, not how the code changed.  No internal
     symbol/file names, no F-XXX codes, no story of how a bug was found -- that
     belongs in the commit message.
@@ -28,30 +30,36 @@
 
 Setup, crash recovery, and Apply reliability improve in this release.
 
-### Highlights
+### New
 
+- **Pascal GPUs can now apply curve-based clock limits.**
 - **Setup accepts dedicated folders on any drive.** It asks for consent when other accounts could change one.
 - **Windows source builds now include both compiler variants.** Their artifacts stay in separate folders.
-- **A failed upgrade now restores the previous installation.**
-- **A failed fresh install now removes the folder it created.**
-- **Moving an installation now removes its old folder when empty.**
-- **Upgrading now removes the old `uninstall.exe` when it is left behind.**
+
+### Improved
+
 - **Service install and removal failures now explain why they failed.**
 - **Updates now warn if applied settings could not be saved for restoration.**
+- **The selected GPU now supplies its own memory offset reading.**
+- **Windows binaries should trigger fewer antivirus false alarms.**
+- **The uninstaller is now smaller and named `greencurve-uninstall.exe`.**
+
+### Fixed
+
+- **Changing only the power limit no longer resets other GPU settings.**
+- **Slow applies under load no longer end with an unknown outcome.**
+- **Reset no longer reports success while a clock lock may remain.**
 - **A crashed service now returns custom fans to driver control.** On Windows, it also returns the GPU to stock.
 - **A service stuck in the GPU driver now restarts itself.**
 - **Repeated fan-control errors no longer hang the service.**
 - **Custom fans return to driver control during updates.**
-- **Changing only the power limit no longer resets other GPU settings.**
-- **Slow applies under load no longer end with an unknown outcome.**
-- **Reset no longer reports success while a clock lock may remain.**
-- **Pascal GPUs can now apply curve-based clock limits.**
-- **The tray now keeps the applied profile's name.**
-- **More driver-update crashes are now recovered, including on Windows on Arm.**
 - **Slow service starts and stops are no longer mistaken for failures.**
-- **The selected GPU now supplies its own memory offset reading.**
-- **Windows binaries should trigger fewer antivirus false alarms.**
-- **The uninstaller is now smaller and named `greencurve-uninstall.exe`.**
+- **More driver-update crashes are now recovered, including on Windows on Arm.**
+- **The tray now keeps the applied profile's name.**
+- **A failed upgrade now restores the previous installation.**
+- **A failed fresh install now removes the folder it created.**
+- **Moving an installation now removes its old folder when empty.**
+- **Upgrading now removes the old `uninstall.exe` when it is left behind.**
 
 ### Compatibility notes
 

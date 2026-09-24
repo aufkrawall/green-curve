@@ -4,6 +4,9 @@ import re
 from pathlib import Path
 
 _RELEASE_HEADING = re.compile(r"^## (\d+\.\d+(?:\.\d+)?)$", re.MULTILINE)
+ALLOWED_CATEGORIES = frozenset(
+    {"New", "Improved", "Fixed", "Changed", "Deprecated", "Removed", "Security"}
+)
 
 
 def validate_release_notes(version, changelog):
@@ -13,9 +16,15 @@ def validate_release_notes(version, changelog):
     current = changelog[sections[0].end():sections[1].start()]
     previous = sections[1].group(1)
     subheads = re.findall(r"^### (.+)$", current, re.MULTILINE)
-    if (len(subheads) != 3 or subheads[0] not in ("Highlights", "Fixes & Hardening")
-            or subheads[1:] != ["Compatibility notes", "Downloads and verification"]):
-        raise ValueError("current release notes need the standard three sections in order")
+    if len(subheads) < 3:
+        raise ValueError("current release notes need at least one category subheading plus Compatibility notes and Downloads and verification")
+    categories = subheads[:-2]
+    tail = subheads[-2:]
+    if tail != ["Compatibility notes", "Downloads and verification"]:
+        raise ValueError("current release notes must end with Compatibility notes and Downloads and verification")
+    for cat in categories:
+        if cat not in ALLOWED_CATEGORIES and cat not in ("Highlights", "Fixes & Hardening"):
+            raise ValueError(f"invalid category subheading: '{cat}'. Allowed: {', '.join(sorted(ALLOWED_CATEGORIES))}")
     compare = (f"**Full changelog:** [{previous}...{version}]"
                f"(https://github.com/aufkrawall/green-curve/compare/{previous}...{version})")
     if compare not in current:
@@ -32,13 +41,15 @@ def check_repo(root):
 
 
 def self_test():
-    good = ("## 0.27.0\n### Highlights\n### Compatibility notes\n"
+    good = ("## 0.27.0\n### New\n- **Feature.** Detail.\n### Improved\n- **Improvement.** Detail.\n"
+            "### Fixed\n- **Bugfix.** Detail.\n### Compatibility notes\n"
             "### Downloads and verification\n"
             "**Full changelog:** [0.26.0...0.27.0]"
             "(https://github.com/aufkrawall/green-curve/compare/0.26.0...0.27.0)\n"
             "## 0.26.0\nEarlier release\n")
     validate_release_notes("0.27.0", good)
-    validate_release_notes("0.27.0", good.replace("### Highlights", "### Fixes & Hardening"))
+    validate_release_notes("0.27.0", good.replace("### New\n- **Feature.** Detail.\n", ""))
+    validate_release_notes("0.27.0", good.replace("### New", "### Highlights"))
     for version, notes in (("0.28.0", good),
                            ("0.27.0", good.replace("### Compatibility notes", "")),
                            ("0.27.0", good.replace("### Compatibility notes",
