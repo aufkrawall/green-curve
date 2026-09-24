@@ -53,8 +53,8 @@ def payload_dir(script_dir, os_name, arch, variant=None):
 def package_dir(script_dir, os_name, arch, variant=None):
     if os_name == "windows" and variant is not None:
         _validate_variant(variant)
-        return os.path.dirname(payload_dir(script_dir, os_name, arch, variant))
-    return script_dir
+    return os.path.dirname(payload_dir(script_dir, os_name, arch, variant))
+
 
 
 def symbol_dir(script_dir, arch, variant=None):
@@ -171,6 +171,12 @@ def run_self_tests():
         raise AssertionError("Windows variants share a payload directory")
     if package_dir("repo", "windows", "x64", MSVC_VARIANT) != os.path.dirname(msvc_payload):
         raise AssertionError("variant package directory is not scoped")
+    if package_dir("repo", "windows", "x64") != os.path.join(root, "windows-x64"):
+        raise AssertionError("unscoped Windows package directory changed")
+    if package_dir("repo", "linux", "x64") != os.path.join(root, "linux-x64"):
+        raise AssertionError("Linux package directory changed")
+    if package_dir("repo", "linux", "arm64") != os.path.join(root, "linux-arm64"):
+        raise AssertionError("Linux ARM64 package directory changed")
     if payload_dir("repo", "windows", "x64") != os.path.join(root, "windows-x64", "greencurve"):
         raise AssertionError("host-independent Windows payload path changed")
     if symbol_path("repo", "greencurve.exe", "x64", "clang-cl", MSVC_VARIANT) == \

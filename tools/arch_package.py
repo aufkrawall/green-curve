@@ -289,6 +289,7 @@ def build_arch_package(script_dir, app_version, arch, binary_path, pkgrel=1, out
         print("  Notice: zstandard not found; packaging Arch package as .pkg.tar.xz")
 
     target_dir = output_dir if output_dir else script_dir
+    os.makedirs(target_dir, exist_ok=True)
     pkg_name = arch_package_filename(app_version, arch, pkgrel=pkgrel, ext=pkg_ext)
     archive_path = os.path.join(target_dir, pkg_name)
 
@@ -296,6 +297,10 @@ def build_arch_package(script_dir, app_version, arch, binary_path, pkgrel=1, out
     for stale in arch_package_stale_paths(target_dir, app_version, arch, pkgrel=pkgrel):
         if os.path.exists(stale):
             os.remove(stale)
+    if target_dir != script_dir:
+        for stale in arch_package_stale_paths(script_dir, app_version, arch, pkgrel=pkgrel):
+            if os.path.exists(stale):
+                os.remove(stale)
 
     # Assemble tar archive into buffer or file
     tar_buf = io.BytesIO()

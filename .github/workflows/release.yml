@@ -102,22 +102,22 @@ jobs:
             exit 1
           fi
           for f in \
-            greencurve-${{ steps.version.outputs.version }}-windows-x64.7z \
-            greencurve-${{ steps.version.outputs.version }}-windows-arm64.7z \
-            greencurve-${{ steps.version.outputs.version }}-windows-x64-setup.exe \
-            greencurve-${{ steps.version.outputs.version }}-windows-arm64-setup.exe \
-            greencurve-${{ steps.version.outputs.version }}-linux-x64.tar.xz \
-            greencurve-${{ steps.version.outputs.version }}-linux-arm64.tar.xz \
-            greencurve-${{ steps.version.outputs.version }}-1-x86_64.pkg.tar.zst \
-            greencurve-${{ steps.version.outputs.version }}-1-aarch64.pkg.tar.zst \
-            greencurve-${{ steps.version.outputs.version }}-windows-x64.7z.sha256 \
-            greencurve-${{ steps.version.outputs.version }}-windows-arm64.7z.sha256 \
-            greencurve-${{ steps.version.outputs.version }}-windows-x64-setup.exe.sha256 \
-            greencurve-${{ steps.version.outputs.version }}-windows-arm64-setup.exe.sha256 \
-            greencurve-${{ steps.version.outputs.version }}-linux-x64.tar.xz.sha256 \
-            greencurve-${{ steps.version.outputs.version }}-linux-arm64.tar.xz.sha256 \
-            greencurve-${{ steps.version.outputs.version }}-1-x86_64.pkg.tar.zst.sha256 \
-            greencurve-${{ steps.version.outputs.version }}-1-aarch64.pkg.tar.zst.sha256; do
+            dist/windows-x64/greencurve-${{ steps.version.outputs.version }}-windows-x64.7z \
+            dist/windows-arm64/greencurve-${{ steps.version.outputs.version }}-windows-arm64.7z \
+            dist/windows-x64/greencurve-${{ steps.version.outputs.version }}-windows-x64-setup.exe \
+            dist/windows-arm64/greencurve-${{ steps.version.outputs.version }}-windows-arm64-setup.exe \
+            dist/linux-x64/greencurve-${{ steps.version.outputs.version }}-linux-x64.tar.xz \
+            dist/linux-arm64/greencurve-${{ steps.version.outputs.version }}-linux-arm64.tar.xz \
+            dist/linux-x64/greencurve-${{ steps.version.outputs.version }}-1-x86_64.pkg.tar.zst \
+            dist/linux-arm64/greencurve-${{ steps.version.outputs.version }}-1-aarch64.pkg.tar.zst \
+            dist/windows-x64/greencurve-${{ steps.version.outputs.version }}-windows-x64.7z.sha256 \
+            dist/windows-arm64/greencurve-${{ steps.version.outputs.version }}-windows-arm64.7z.sha256 \
+            dist/windows-x64/greencurve-${{ steps.version.outputs.version }}-windows-x64-setup.exe.sha256 \
+            dist/windows-arm64/greencurve-${{ steps.version.outputs.version }}-windows-arm64-setup.exe.sha256 \
+            dist/linux-x64/greencurve-${{ steps.version.outputs.version }}-linux-x64.tar.xz.sha256 \
+            dist/linux-arm64/greencurve-${{ steps.version.outputs.version }}-linux-arm64.tar.xz.sha256 \
+            dist/linux-x64/greencurve-${{ steps.version.outputs.version }}-1-x86_64.pkg.tar.zst.sha256 \
+            dist/linux-arm64/greencurve-${{ steps.version.outputs.version }}-1-aarch64.pkg.tar.zst.sha256; do
             test -s "$f" || { echo "::error::missing or empty release artifact: $f"; exit 1; }
           done
           test -s "greencurve-${{ steps.version.outputs.version }}-toolchain.json" \
@@ -129,10 +129,10 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
           subject-path: |
-            greencurve-${{ steps.version.outputs.version }}-windows-*.7z
-            greencurve-${{ steps.version.outputs.version }}-windows-*-setup.exe
-            greencurve-${{ steps.version.outputs.version }}-linux-*.tar.xz
-            greencurve-${{ steps.version.outputs.version }}-1-*.pkg.tar.zst
+            dist/**/greencurve-${{ steps.version.outputs.version }}-windows-*.7z
+            dist/**/greencurve-${{ steps.version.outputs.version }}-windows-*-setup.exe
+            dist/**/greencurve-${{ steps.version.outputs.version }}-linux-*.tar.xz
+            dist/**/greencurve-${{ steps.version.outputs.version }}-1-*.pkg.tar.zst
             greencurve-${{ steps.version.outputs.version }}-toolchain.json
 
       - name: Write release notes
@@ -171,7 +171,11 @@ jobs:
             --title "Green Curve ${VERSION}" \
             --notes-file "${RUNNER_TEMP}/release-notes.md" \
             --target "${GITHUB_SHA}" \
-            greencurve-${VERSION}-*
+            dist/windows-x64/greencurve-${VERSION}-* \
+            dist/windows-arm64/greencurve-${VERSION}-* \
+            dist/linux-x64/greencurve-${VERSION}-* \
+            dist/linux-arm64/greencurve-${VERSION}-* \
+            greencurve-${VERSION}-toolchain.json
 
       - name: Verify attestations on released artifacts
         env:
@@ -180,14 +184,14 @@ jobs:
         run: |
           set -eu
           for f in \
-            greencurve-${VERSION}-windows-x64.7z \
-            greencurve-${VERSION}-windows-arm64.7z \
-            greencurve-${VERSION}-windows-x64-setup.exe \
-            greencurve-${VERSION}-windows-arm64-setup.exe \
-            greencurve-${VERSION}-linux-x64.tar.xz \
-            greencurve-${VERSION}-linux-arm64.tar.xz \
-            greencurve-${VERSION}-1-x86_64.pkg.tar.zst \
-            greencurve-${VERSION}-1-aarch64.pkg.tar.zst \
+            dist/windows-x64/greencurve-${VERSION}-windows-x64.7z \
+            dist/windows-arm64/greencurve-${VERSION}-windows-arm64.7z \
+            dist/windows-x64/greencurve-${VERSION}-windows-x64-setup.exe \
+            dist/windows-arm64/greencurve-${VERSION}-windows-arm64-setup.exe \
+            dist/linux-x64/greencurve-${VERSION}-linux-x64.tar.xz \
+            dist/linux-arm64/greencurve-${VERSION}-linux-arm64.tar.xz \
+            dist/linux-x64/greencurve-${VERSION}-1-x86_64.pkg.tar.zst \
+            dist/linux-arm64/greencurve-${VERSION}-1-aarch64.pkg.tar.zst \
             greencurve-${VERSION}-toolchain.json; do
             gh attestation verify "$f" --repo "$GITHUB_REPOSITORY"
           done

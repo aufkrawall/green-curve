@@ -137,6 +137,23 @@ jobs:
         run: python build.py --fuzz --fuzz-runs 5000
       - name: Build verified Linux release packages
         run: python build.py --target linux
+      - name: Confirm the Linux archives were produced and the tree is clean
+        run: |
+          set -eu
+          version="$(tr -d '\r\n' < VERSION)"
+          for f in \
+            "dist/linux-x64/greencurve-${version}-linux-x64.tar.xz" \
+            "dist/linux-x64/greencurve-${version}-linux-x64.tar.xz.sha256" \
+            "dist/linux-x64/greencurve-${version}-1-x86_64.pkg.tar.zst" \
+            "dist/linux-x64/greencurve-${version}-1-x86_64.pkg.tar.zst.sha256"; do
+            test -s "$f" || { echo "::error::missing Linux release artifact: $f"; exit 1; }
+          done
+          dirty="$(git status --porcelain --untracked-files=all)"
+          if [ -n "$dirty" ]; then
+            echo "::error::packaging modified the tracked checkout"
+            printf '%s\n' "$dirty"
+            exit 1
+          fi
 
   # The release workflow builds the Windows artifacts on a Linux runner, and
   # that combination -- cross-compiled PEs packaged by the pinned Linux 7-Zip --
@@ -168,10 +185,10 @@ jobs:
           set -eu
           version="$(tr -d '\r\n' < VERSION)"
           for f in \
-            "greencurve-${version}-windows-x64.7z" \
-            "greencurve-${version}-windows-arm64.7z" \
-            "greencurve-${version}-windows-x64-setup.exe" \
-            "greencurve-${version}-windows-arm64-setup.exe"; do
+            "dist/windows-x64/greencurve-${version}-windows-x64.7z" \
+            "dist/windows-arm64/greencurve-${version}-windows-arm64.7z" \
+            "dist/windows-x64/greencurve-${version}-windows-x64-setup.exe" \
+            "dist/windows-arm64/greencurve-${version}-windows-arm64-setup.exe"; do
             test -s "$f" || { echo "::error::missing release artifact: $f"; exit 1; }
           done
           dirty="$(git status --porcelain --untracked-files=all)"

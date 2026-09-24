@@ -74,8 +74,12 @@ def release_archive_paths(script_dir, version, os_name, arch, output_dir=None):
     earlier build is a distribution hazard, not merely clutter, so packaging
     deletes the whole set before writing the current one."""
     base = output_dir or script_dir
-    return [os.path.join(base, f"greencurve-{version}-{os_name}-{arch}{ext}{suffix}")
+    paths = [os.path.join(base, f"greencurve-{version}-{os_name}-{arch}{ext}{suffix}")
             for ext in (".7z", ".tar.xz") for suffix in ("", ".sha256")]
+    if output_dir and os.path.abspath(output_dir) != os.path.abspath(script_dir):
+        paths.extend(os.path.join(script_dir, f"greencurve-{version}-{os_name}-{arch}{ext}{suffix}")
+                     for ext in (".7z", ".tar.xz") for suffix in ("", ".sha256"))
+    return paths
 
 
 def release_member_mode(name):

@@ -698,7 +698,7 @@ def check_release_packaging(ctx, require_text, forbid_text):
                  "Arch install scriptlet mentions resume service")
     require_text(manifest, "from arch_package import build_arch_package",
                  "release manifest connects arch package builder")
-    require_text(build_script, "build_arch_package(SCRIPT_DIR, APP_VERSION, arch, binaries[0])",
+    require_text(build_script, "build_arch_package(SCRIPT_DIR, APP_VERSION, arch, binaries[0], output_dir=package_dir)",
                  "Linux packaging step builds Arch Linux package")
     check_packaging_line_endings(arch_dir)
 

@@ -1432,7 +1432,7 @@ def package_release_archive(os_name, arch, binaries, seven=None, variant=None):
         if os_name == "linux":
             write_linux_tarball(archive, staging, root, expected_names)
             verify_linux_tarball(archive, expected_names, root)
-            build_arch_package(SCRIPT_DIR, APP_VERSION, arch, binaries[0])
+            build_arch_package(SCRIPT_DIR, APP_VERSION, arch, binaries[0], output_dir=package_dir)
         else:
             result = subprocess.run(
                 [seven, "a", "-t7z", "-mx=9", "-bso0", "-bsp0", archive, root],
