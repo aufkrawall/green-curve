@@ -37,8 +37,8 @@ Setup, crash recovery, and Apply reliability improve in this release.
 
 ### Improved
 
-- **Windows binaries trigger fewer antivirus false alarms, though heuristic detections still regularly occur.** Open-source, unsigned hardware utilities inevitably trip heuristic scanners, so exclusions remain recommended.
-- **Windows binaries built with the Visual Studio toolchain now use the same link-time optimization as release builds and no longer carry an unused debugger-detection import.** Local and CI builds only; release packages are unaffected.
+- **Windows binaries now omit several patterns that can contribute to antivirus false alarms.** Heuristic detections remain possible, and exclusions may still be needed.
+- **Windows binaries built with the Visual Studio toolchain now use link-time optimization and omit a debugger-detection import.** Local and CI builds only; release packages are unaffected.
 - **Service install and removal failures now explain why they failed.**
 - **Updates now warn if applied settings could not be saved for restoration.**
 - **The selected GPU now supplies its own memory offset reading.**
@@ -78,7 +78,7 @@ Setup, crash recovery, and Apply reliability improve in this release.
 ### Downloads and verification
 
 - **Windows:** use `setup.exe` to install or upgrade, or `.7z` for a portable copy.
-- **Linux:** install the Arch `.pkg.tar.zst`, or extract `.tar.xz` and run `greencurve-setup.sh`.
+- **Linux:** install the Arch package, or extract `.tar.xz` and run `greencurve-setup.sh`.
 - Packages include SHA-256 files and GitHub build attestations. Verify with:
 
   ```bash
