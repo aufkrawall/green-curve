@@ -17,41 +17,17 @@ either pipeline.
 
 import struct
 
+import pe_resources  # one-way tools/ dependency: it never imports build.py
+import pe_strings  # ditto; owns the banned-string scan over raw image bytes
+
+# PE layout primitives are shared with pe_resources' resource/CodeView
+# parsing; re-exported here so the call sites below stay unchanged.
+from pe_resources import _pe_data_directory, _rva_to_offset, _sections_of
+
 
 # IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT (debug directory, type 20).
 _CET_COMPAT_BIT = 0x0001
 _EX_DLLCHARACTERISTICS_TYPE = 20
-
-
-def _sections_of(data, pe, optional):
-    number_of_sections = struct.unpack_from("<H", data, pe + 6)[0]
-    optional_size = struct.unpack_from("<H", data, pe + 20)[0]
-    section_table = optional + optional_size
-    sections = []
-    for index in range(number_of_sections):
-        section = section_table + index * 40
-        virtual_size, virtual_address, raw_size, raw_pointer = struct.unpack_from(
-            "<IIII", data, section + 8)
-        sections.append((virtual_address, max(virtual_size, raw_size), raw_pointer))
-    return sections
-
-
-def _rva_to_offset(sections, rva):
-    for virtual_address, span, raw_pointer in sections:
-        if virtual_address <= rva < virtual_address + span:
-            return raw_pointer + (rva - virtual_address)
-    return None
-
-
-def _pe_data_directory(data, index):
-    if len(data) < 0x40 or data[:2] != b"MZ":
-        raise RuntimeError("not a PE image")
-    pe = struct.unpack_from("<I", data, 0x3C)[0]
-    optional = pe + 24
-    if pe + 24 + 112 + (index + 1) * 8 > len(data) or \
-            data[pe:pe + 4] != b"PE\x00\x00":
-        raise RuntimeError("invalid PE data directory")
-    return struct.unpack_from("<II", data, optional + 112 + index * 8)
 
 
 def _pe_ascii_string(data, offset):
@@ -135,8 +111,10 @@ def pe_section_names(data):
 
 def verify_no_buildid_section(data, label):
     """LLD-MinGW puts the RSDS debug directory in a ".buildid" section unless
-    the link merges it into .rdata (WINDOWS_FLAGS).  Only MinGW-style
-    toolchains emit that name; MSVC-style images never carry it."""
+    the link merges it into .rdata (WINDOWS_FLAGS).  Gated for every Windows
+    PE whatever the architecture: only MinGW-style toolchains emit that name
+    (MSVC-style images never carry it), and the "obfuscation" tags that fire
+    on it do not single out x64."""
     if ".buildid" in pe_section_names(data):
         raise RuntimeError(f"{label}: .buildid section was not merged into .rdata")
 
@@ -181,6 +159,20 @@ def verify_service_resources(data, label):
         raise RuntimeError(f"{label}: service icon groups are {groups!r}, expected only [101]")
 
 
+# Windows exports A/W/Ex/ExW spellings of one API (SetWindowsHookExW,
+# CreateRemoteThreadEx), while the ban lists name the stem.  A ban therefore
+# matches its exact name or one of those suffixed spellings -- deliberately NOT
+# a raw prefix match: a ban on CreateProcessW must not catch the legitimate
+# CreateProcessAsUserW / CreateProcessWithTokenW.
+_IMPORT_NAME_SUFFIXES = ("", "a", "w", "ex", "exw")
+
+
+def _import_name_matches(name, banned):
+    lowered = name.lower()
+    stem = banned.lower()
+    return any(lowered == stem + suffix for suffix in _IMPORT_NAME_SUFFIXES)
+
+
 def verify_pe_import_surface(data, label, required_dlls=(), forbidden_dlls=(),
                              required_functions=(), forbidden_functions=(),
                              reject_exports=False):
@@ -202,7 +194,8 @@ def verify_pe_import_surface(data, label, required_dlls=(), forbidden_dlls=(),
     present_forbidden = sorted(forbidden_libraries & libraries)
     missing_functions = sorted(required_names - {name.lower() for name in functions})
     present_forbidden_functions = sorted(
-        forbidden_names & {name.lower() for name in functions})
+        name for name in functions
+        if any(_import_name_matches(name, banned) for banned in forbidden_names))
     if missing_libraries or present_forbidden or missing_functions or present_forbidden_functions:
         details = []
         if missing_libraries:
@@ -228,22 +221,36 @@ def verify_setup_has_no_decompressor(data, label):
             raise RuntimeError(f"{label}: setup contains unused decompressor surface ({name})")
 
 
+_RT_MANIFEST = 24
+
+
 def verify_windows_manifest_identity(data, label, original_filename):
     name = (original_filename or "").lower()
+    # comctl32_v6: True = the manifest must carry the v6 common-controls SxS
+    # dependency, False = it must not, None = not gated (the GUI template may
+    # legitimately adopt it later).
     if name == "greencurve.exe":
         assembly_name = "GreenCurve"
         description = "Green Curve"
+        elevation, comctl32_v6 = "asInvoker", None
     elif name == "greencurve-service.exe":
         assembly_name = "GreenCurveService"
         description = "Green Curve background service"
+        elevation, comctl32_v6 = "asInvoker", False
     elif "uninstall" in name:
         assembly_name = "GreenCurveUninstall"
         description = "Green Curve uninstaller"
+        elevation, comctl32_v6 = "requireAdministrator", True
     elif "setup" in name:
         assembly_name = "GreenCurveSetup"
         description = "Green Curve setup"
+        elevation, comctl32_v6 = "requireAdministrator", True
     else:
         raise RuntimeError(f"{label}: unknown Windows artifact identity {original_filename!r}")
+    # These whole-file claims remain as additional assertions; elevation and
+    # the comctl32 v6 SxS token below come from the parsed RT_MANIFEST
+    # resource, never from raw substrings (a setup file's payload would
+    # satisfy those).
     for value, field in ((assembly_name, "assembly name"),
                          (description, "description"),
                          ('processorArchitecture="*"', "processor architecture")):
@@ -251,6 +258,20 @@ def verify_windows_manifest_identity(data, label, original_filename):
             raise RuntimeError(f"{label}: manifest {field} is missing or wrong")
     if _contains_pe_text(data, 'processorArchitecture="amd64"'):
         raise RuntimeError(f"{label}: manifest claims amd64 for every architecture")
+    manifests = pe_resources.pe_resource_data(data, _RT_MANIFEST)
+    if len(manifests) != 1:
+        raise RuntimeError(f"{label}: expected one embedded manifest, found {len(manifests)}")
+    manifest = manifests[0][1]
+    level = pe_resources.manifest_execution_level(manifest)
+    if level != elevation:
+        raise RuntimeError(f"{label}: manifest requestedExecutionLevel is {level!r}, "
+                           f"expected {elevation!r}")
+    has_comctl32_v6 = pe_resources.manifest_has_comctl32_v6(manifest)
+    if comctl32_v6 is True and not has_comctl32_v6:
+        raise RuntimeError(f"{label}: manifest lacks the comctl32 v6 SxS dependency")
+    if comctl32_v6 is False and has_comctl32_v6:
+        raise RuntimeError(f"{label}: manifest unexpectedly carries the "
+                           "comctl32 v6 SxS dependency")
 
 
 # The service never creates a window (g_app.hMainWnd is GUI-only), so window,
@@ -287,13 +308,22 @@ GUI_FORBIDDEN_SERVICE_FUNCTIONS = {
 
 
 def verify_windows_binary_imports(data, label, original_filename,
-                                  reject_exports=False):
+                                  reject_exports=False, windows_toolchain="llvm-mingw"):
     name = (original_filename or "").lower()
     common_forbidden_dlls = {"winhttp.dll", "cabinet.dll"}
     common_forbidden_functions = {
         "CreateRemoteThread", "WriteProcessMemory", "VirtualAllocEx",
         "NtCreateThreadEx", "QueueUserAPC", "SetWindowsHookEx",
+        "CheckRemoteDebuggerPresent", "NtQueryInformationProcess",
     }
+    if windows_toolchain != "clang-cl":
+        # IsDebuggerPresent is a hard ban for the llvm-mingw/Zig release
+        # toolchain.  The MSVC-ABI (clang-cl) variant links it from kernel32
+        # as a toolchain-inherent CRT startup import (alphabetically adjacent
+        # to InitializeSListHead/IsProcessorFeaturePresent, zero references in
+        # this project's sources), so that one name is exempt there only.
+        # See tools/pe_strings.py for the matching string-scan scope.
+        common_forbidden_functions.add("IsDebuggerPresent")
     if name == "greencurve.exe":
         verify_pe_import_surface(
             data, label,
@@ -339,9 +369,16 @@ def verify_windows_binary_metadata(data, label, original_filename, arch,
     verify_windows_manifest_identity(data, label, original_filename)
     verify_windows_binary_imports(
         data, label, original_filename,
-        reject_exports=(windows_toolchain == "clang-cl"))
-    if arch == "x64":
-        verify_no_buildid_section(data, label)
+        reject_exports=(windows_toolchain == "clang-cl"),
+        windows_toolchain=windows_toolchain)
+    # The import bans above cover the import table; the raw-byte scan also
+    # catches the same family names as embedded text in any shipped image.
+    pe_strings.verify_no_forbidden_strings(data, label, original_filename,
+                                           windows_toolchain)
+    # The RSDS record must name its PDB by bare basename: an absolute path
+    # leaks the build workspace and means CodeView sanitization did not run.
+    pe_resources.verify_codeview_pdb_basename(data, label)
+    verify_no_buildid_section(data, label)
 
 
 def verify_pe_hardening(data, arch, windows_toolchain="llvm-mingw"):
@@ -562,216 +599,45 @@ def version_string_value(data, key):
         return None
 
 
+def _version_translation(data):
+    """The VarFileInfo Translation (language, charset) pair, or None.
+
+    Located by its UTF-16LE key like the string values: a Var entry is key,
+    NUL, DWORD padding, then the binary value (two little-endian WORDs)."""
+    needle = "Translation".encode("utf-16le") + b"\0\0"
+    at = data.find(needle)
+    if at < 0:
+        return None
+    cursor = at + len(needle)
+    while cursor + 1 < len(data) and data[cursor:cursor + 2] == b"\0\0":
+        cursor += 2
+    if cursor + 4 > len(data):
+        return None
+    return struct.unpack_from("<HH", data, cursor)
+
+
 def verify_version_identity(data, expected_original_filename, label):
     """Every shipped PE names itself and its publisher."""
     original = version_string_value(data, "OriginalFilename")
     if original is None or original.lower() != expected_original_filename.lower():
         raise RuntimeError(f"{label}: VERSIONINFO OriginalFilename is {original!r}, "
                            f"expected {expected_original_filename!r}")
-    for key in ("CompanyName", "FileDescription", "ProductName", "InternalName"):
+    for key in ("CompanyName", "Comments", "FileDescription", "FileVersion",
+                "LegalCopyright", "ProductName", "ProductVersion", "InternalName"):
         if not version_string_value(data, key):
             raise RuntimeError(f"{label}: VERSIONINFO {key} is missing or empty")
-
-
-def _synthetic_pe(length):
-    """A deterministic byte pattern with just enough PE header to checksum."""
-    data = bytearray((index * 37 + 11) & 0xFF for index in range(length))
-    data[0:2] = b"MZ"
-    struct.pack_into("<I", data, 0x3C, 0x80)
-    data[0x80:0x84] = b"PE\x00\x00"
-    struct.pack_into("<H", data, 0x80 + 4, 0x8664)   # Machine: AMD64
-    struct.pack_into("<H", data, 0x80 + 20, 0xF0)    # SizeOfOptionalHeader
-    struct.pack_into("<H", data, 0x80 + 24, 0x20B)   # PE32+ magic
-    struct.pack_into("<I", data, 0x80 + 24 + _CHECKSUM_OPTIONAL_OFFSET, 0xDEADBEEF)
-    return data
-
-
-def _version_string_entry(key, value):
-    """One StringFileInfo String: header, key, NUL, DWORD padding, value, NUL."""
-    body = key.encode("utf-16le") + b"\0\0"
-    header_and_key = 6 + len(body)
-    body += b"\0" * ((4 - header_and_key % 4) % 4)
-    body += value.encode("utf-16le") + b"\0\0"
-    return struct.pack("<HHH", 6 + len(body), len(value) + 1, 1) + body
-
-
-def _synthetic_import_pe():
-    data = bytearray(0x400)
-    data[0:2] = b"MZ"
-    struct.pack_into("<I", data, 0x3C, 0x80)
-    data[0x80:0x84] = b"PE\0\0"
-    struct.pack_into("<H", data, 0x84, 0x8664)
-    struct.pack_into("<H", data, 0x86, 1)
-    struct.pack_into("<H", data, 0x94, 0xF0)
-    struct.pack_into("<H", data, 0x98, 0x20B)
-    section = 0x98 + 0xF0
-    data[section:section + 8] = b".text\0\0\0"
-    struct.pack_into("<IIII", data, section + 8, 0x200, 0x1000, 0x200, 0x200)
-    struct.pack_into("<I", data, section + 36, 0x60000020)
-    struct.pack_into("<II", data, 0x98 + 112 + 8, 0x1000, 40)
-    struct.pack_into("<IIIII", data, 0x200, 0x1050, 0, 0, 0x1030, 0x1050)
-    data[0x230:0x23D] = b"KERNEL32.dll\0"
-    struct.pack_into("<QQ", data, 0x250, 0x1070, 0)
-    struct.pack_into("<H", data, 0x270, 0)
-    data[0x272:0x27D] = b"CreateFileW\0"
-    return bytes(data)
-
-
-def _synthetic_resource_pe(group_ids):
-    """One .rsrc section whose RT_GROUP_ICON directory lists group_ids."""
-    data = bytearray(0x400)
-    data[0:2] = b"MZ"
-    struct.pack_into("<I", data, 0x3C, 0x80)
-    data[0x80:0x84] = b"PE\0\0"
-    struct.pack_into("<H", data, 0x84, 0x8664)
-    struct.pack_into("<H", data, 0x86, 1)
-    struct.pack_into("<H", data, 0x94, 0xF0)
-    struct.pack_into("<H", data, 0x98, 0x20B)
-    section = 0x98 + 0xF0
-    data[section:section + 8] = b".rsrc\0\0\0"
-    struct.pack_into("<IIII", data, section + 8, 0x200, 0x1000, 0x200, 0x200)
-    struct.pack_into("<II", data, 0x98 + 112 + 2 * 8, 0x1000, 0x200)
-    struct.pack_into("<HH", data, 0x200 + 12, 0, 2)             # root: two types
-    struct.pack_into("<II", data, 0x210, 3, 0x80000100)        # RT_ICON (ignored)
-    struct.pack_into("<II", data, 0x218, _RT_GROUP_ICON, 0x80000020)
-    struct.pack_into("<HH", data, 0x220 + 12, 0, len(group_ids))
-    for index, group in enumerate(group_ids):
-        struct.pack_into("<II", data, 0x230 + index * 8, group, 0x80000100)
-    return bytes(data)
+    translation = _version_translation(data)
+    if translation != (0x0409, 1200):
+        raise RuntimeError(f"{label}: VERSIONINFO Translation is {translation!r}, "
+                           "expected (0x0409, 1200)")
+    block = f"{translation[0]:04X}{translation[1]:04X}"
+    if block.encode("utf-16le") not in bytes(data):
+        raise RuntimeError(f"{label}: VERSIONINFO StringFileInfo block {block} is missing "
+                           "(inconsistent with the VarFileInfo Translation)")
 
 
 def run_self_tests():
-    """Deterministic checks for the checksum and VERSIONINFO helpers."""
-    failures = []
-
-    def expect(condition, label):
-        if not condition:
-            failures.append(label)
-
-    import_fixture = _synthetic_import_pe()
-    try:
-        imports = pe_imports(import_fixture)
-        if imports != [("kernel32.dll", {"CreateFileW"})]:
-            failures.append(f"PE import parser returned {imports!r}")
-        verify_pe_import_surface(
-            import_fixture, "import fixture",
-            required_dlls={"KERNEL32.dll"}, required_functions={"CreateFileW"})
-    except RuntimeError as error:
-        failures.append(f"PE import fixture was rejected: {error}")
-    try:
-        verify_pe_import_surface(
-            import_fixture, "import fixture",
-            forbidden_functions={"CreateFileW"})
-        failures.append("PE import surface accepted a forbidden function")
-    except RuntimeError:
-        pass
-    for needle in (b"cabinet.dll", "CreateDecompressor".encode("utf-16le")):
-        try:
-            verify_setup_has_no_decompressor(import_fixture + needle, "setup fixture")
-            failures.append("setup decompressor surface was accepted")
-        except RuntimeError:
-            pass
-    try:
-        verify_setup_has_no_decompressor(import_fixture, "setup fixture")
-    except RuntimeError as error:
-        failures.append(f"setup without decompressor was rejected: {error}")
-
-    expect(pe_section_names(import_fixture) == [".text"], "section names are read back")
-    buildid_fixture = bytearray(import_fixture)
-    buildid_fixture[0x188:0x190] = b".buildid"
-    try:
-        verify_no_buildid_section(bytes(buildid_fixture), "buildid fixture")
-        failures.append("a .buildid section passed verify_no_buildid_section")
-    except RuntimeError:
-        pass
-    try:
-        verify_no_buildid_section(import_fixture, "import fixture")
-    except RuntimeError as error:
-        failures.append(f"an image without .buildid was rejected: {error}")
-    for groups, accepted in (([101], True), ([101, 111, 115], False), ([], False)):
-        fixture = _synthetic_resource_pe(groups)
-        expect(pe_resource_ids(fixture, _RT_GROUP_ICON) == groups,
-               f"resource IDs {groups!r} are read back")
-        try:
-            verify_service_resources(fixture, "resource fixture")
-            expect(accepted, f"service icon groups {groups!r} were accepted")
-        except RuntimeError:
-            expect(not accepted, f"service icon groups {groups!r} were rejected")
-    for banned, what in ((SERVICE_FORBIDDEN_UI_FUNCTIONS, "service UI-import"),
-                         (GUI_FORBIDDEN_SERVICE_FUNCTIONS, "GUI service-import")):
-        try:
-            verify_pe_import_surface(
-                import_fixture, "import fixture",
-                forbidden_functions=banned | {"CreateFileW"})
-            failures.append(f"the {what} ban did not apply")
-        except RuntimeError:
-            pass
-        # ...and does not reject an image that imports none of them.
-        try:
-            verify_pe_import_surface(
-                import_fixture, "import fixture", forbidden_functions=banned)
-        except RuntimeError as error:
-            failures.append(f"the {what} ban rejected a clean image: {error}")
-    expect(not (SERVICE_FORBIDDEN_UI_FUNCTIONS & GUI_FORBIDDEN_SERVICE_FUNCTIONS),
-           "the two per-binary bans name disjoint APIs")
-
-    # Reference values cross-checked against pefile.generate_checksum() and
-    # against lld-link /release output when the helper was written.  The odd
-    # length covers the zero-pad of the trailing byte.
-    for length, reference in ((0x400, 0x34F3), (0x401, 0x34FF)):
-        data = _synthetic_pe(length)
-        expect(pe_image_checksum(data) == reference,
-               f"checksum of the {length}-byte vector is 0x{pe_image_checksum(data):x}, "
-               f"expected 0x{reference:x}")
-        # The stored field must not feed into its own value.
-        field = _checksum_field_offset(data)
-        altered = bytearray(data)
-        struct.pack_into("<I", altered, field, 0)
-        expect(pe_image_checksum(altered) == reference, "the CheckSum field is excluded from the sum")
-        # Zero (LLD's default) is what the gate exists to reject.
-        try:
-            verify_pe_checksum(altered, "vector")
-            failures.append("verify_pe_checksum accepted CheckSum 0")
-        except RuntimeError:
-            pass
-        struct.pack_into("<I", altered, field, reference)
-        try:
-            verify_pe_checksum(altered, "vector")
-        except RuntimeError as error:
-            failures.append(f"verify_pe_checksum rejected a correct checksum: {error}")
-        # An appended overlay (the setup payload) changes the sum.
-        expect(pe_image_checksum(bytes(altered) + b"payload") != reference,
-               "the overlay is part of the checksum")
-
-    identity = b"".join([
-        b"\x00" * 7,  # misalignment the parser must not depend on
-        _version_string_entry("CompanyName", "aufkrawall"),
-        _version_string_entry("FileDescription", "Green Curve background service"),
-        _version_string_entry("InternalName", "GreenCurveService"),
-        _version_string_entry("OriginalFilename", "greencurve-service.exe"),
-        _version_string_entry("ProductName", "Green Curve"),
-    ])
-    expect(version_string_value(identity, "OriginalFilename") == "greencurve-service.exe",
-           "OriginalFilename is read back")
-    expect(version_string_value(identity, "CompanyName") == "aufkrawall", "CompanyName is read back")
-    expect(version_string_value(identity, "LegalTrademarks") is None, "an absent key reads as None")
-    try:
-        verify_version_identity(identity, "GREENCURVE-SERVICE.EXE", "service")
-    except RuntimeError as error:
-        failures.append(f"a matching identity was rejected: {error}")
-    # The shape every service binary had before the split: it claimed to be the GUI.
-    try:
-        verify_version_identity(identity, "greencurve.exe", "gui")
-        failures.append("a binary naming another file passed verify_version_identity")
-    except RuntimeError:
-        pass
-    anonymous = identity.replace("CompanyName".encode("utf-16le"), "CompanyNamX".encode("utf-16le"))
-    try:
-        verify_version_identity(anonymous, "greencurve-service.exe", "service")
-        failures.append("a binary without CompanyName passed verify_version_identity")
-    except RuntimeError:
-        pass
-
-    if failures:
-        raise RuntimeError("pe_verify self-tests failed:\n  " + "\n  ".join(failures))
-    print("pe_verify self-tests passed")
+    """Delegate; tools/pe_verify_tests.py owns the fixtures and checks so this
+    module stays focused on the gates (source size discipline)."""
+    import pe_verify_tests  # function-level: that module imports this one
+    pe_verify_tests.run_self_tests()
