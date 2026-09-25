@@ -17,6 +17,8 @@ either pipeline.
 
 import struct
 
+import pe_strings  # one-way tools/ dependency: it never imports build.py
+
 
 # IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT (debug directory, type 20).
 _CET_COMPAT_BIT = 0x0001
@@ -357,6 +359,9 @@ def verify_windows_binary_metadata(data, label, original_filename, arch,
     verify_windows_binary_imports(
         data, label, original_filename,
         reject_exports=(windows_toolchain == "clang-cl"))
+    # The import bans above cover the import table; the raw-byte scan also
+    # catches the same family names as embedded text in any shipped image.
+    pe_strings.verify_no_forbidden_strings(data, label, original_filename)
     verify_no_buildid_section(data, label)
 
 
@@ -715,6 +720,7 @@ def _synthetic_resource_pe(group_ids):
 
 def run_self_tests():
     """Deterministic checks for the checksum and VERSIONINFO helpers."""
+    pe_strings.run_self_tests()
     failures = []
 
     def expect(condition, label):
@@ -798,6 +804,18 @@ def run_self_tests():
         except RuntimeError as error:
             expect(with_buildid and ".buildid" in str(error),
                    f"the metadata fixture was rejected for the wrong reason: {error}")
+    # The banned-string scan is wired into the metadata gates: an otherwise
+    # complete image carrying an injection-family name as text must fail on it.
+    dirty = bytearray(_synthetic_metadata_pe("greencurve.exe"))
+    dirty += b"\x00VirtualAllocEx\0"
+    struct.pack_into("<I", dirty, _checksum_field_offset(dirty), pe_image_checksum(dirty))
+    try:
+        verify_windows_binary_metadata(
+            bytes(dirty), "metadata fixture", "greencurve.exe", "arm64", "llvm-mingw")
+        failures.append("a banned string passed verify_windows_binary_metadata")
+    except RuntimeError as error:
+        expect("VirtualAllocEx" in str(error),
+               f"the banned-string rejection did not name the hit: {error}")
     for groups, accepted in (([101], True), ([101, 111, 115], False), ([], False)):
         fixture = _synthetic_resource_pe(groups)
         expect(pe_resource_ids(fixture, _RT_GROUP_ICON) == groups,
