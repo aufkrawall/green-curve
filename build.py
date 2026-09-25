@@ -101,6 +101,7 @@ import ui_gates  # noqa: E402  (same one-way dependency as security_gates)
 import fan_gates  # noqa: E402  (same one-way dependency as security_gates)
 import msvc_toolchain  # noqa: E402  (same one-way dependency as security_gates)
 import pe_verify  # noqa: E402  (same one-way dependency as security_gates)
+import pe_layout  # noqa: E402  (same one-way dependency; post-link debug layout)
 import xbar_gates  # noqa: E402  (same one-way dependency as security_gates)
 import linux_gates  # noqa: E402  (same one-way dependency as security_gates)
 import readback_gates  # noqa: E402  (same one-way dependency as security_gates)
@@ -1165,10 +1166,9 @@ def _finalize_windows_output(temp_output, output_path, backup_path,
 
 
 def _verify_windows_artifact(temp_output, pdb_path, arch, service):
-    """Shared artifact tail: sanitize the RSDS record, stamp the checksum LAST,
-    then run every gate."""
-    if arch == "x64" or ACTIVE_WINDOWS_TOOLCHAIN == "clang-cl":
-        pe_verify.sanitize_pe_codeview_path(temp_output, os.path.basename(pdb_path))
+    """Shared artifact tail: normalize the debug layout (RSDS name + .buildid),
+    stamp the checksum LAST, then run every gate."""
+    pe_layout.normalize_pe_debug_layout(temp_output, pdb_path)
     print(f"  PE CheckSum: 0x{pe_verify.stamp_pe_checksum(temp_output):08x}")
     verify_release_binary(temp_output, "windows", arch, "-g" in COMMON_FLAGS,
                           build_state.WINDOWS_BINARY_IDENTITIES[service][2])

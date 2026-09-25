@@ -41,6 +41,7 @@ import subprocess
 import sys
 
 import build_state  # same one-way dependency: it never imports build.py
+import pe_layout  # ditto; normalizes the .buildid debug layout post-link
 import msvc_toolchain  # same one-way dependency
 import zig_cache  # ditto; owns the cross-process Zig link lock + cache repair
 
@@ -533,6 +534,9 @@ def build_setup_executable(ctx, arch, payload_dir, expected_names, output_dir=No
         stub_path = os.path.join(work, "setup-stub.exe")
         compile_installer_binary(ctx, stub_path, arch, False, work)
         for binary, is_uninstaller in ((uninstaller_path, True), (stub_path, False)):
+            # Before the payload is appended: the stub carries no overlay yet,
+            # so the debug layout can still be normalized in place.
+            pe_layout.normalize_pe_debug_layout(binary, require_rsds=False)
             ctx.pe_verify.stamp_pe_checksum(binary)
             ctx.verify_release_binary(binary, "windows", arch, original_filename=
                                       installer_original_filename(ctx, arch, is_uninstaller))
