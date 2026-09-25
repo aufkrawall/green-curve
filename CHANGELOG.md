@@ -38,6 +38,7 @@ Setup, crash recovery, and Apply reliability improve in this release.
 ### Improved
 
 - **Windows binaries trigger fewer antivirus false alarms, though heuristic detections still regularly occur.** Open-source, unsigned hardware utilities inevitably trip heuristic scanners, so exclusions remain recommended.
+- **Windows binaries built with the Visual Studio toolchain now use the same link-time optimization as release builds and no longer carry an unused debugger-detection import.** Local and CI builds only; release packages are unaffected.
 - **Service install and removal failures now explain why they failed.**
 - **Updates now warn if applied settings could not be saved for restoration.**
 - **The selected GPU now supplies its own memory offset reading.**

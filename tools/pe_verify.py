@@ -308,22 +308,20 @@ GUI_FORBIDDEN_SERVICE_FUNCTIONS = {
 
 
 def verify_windows_binary_imports(data, label, original_filename,
-                                  reject_exports=False, windows_toolchain="llvm-mingw"):
+                                  reject_exports=False):
     name = (original_filename or "").lower()
     common_forbidden_dlls = {"winhttp.dll", "cabinet.dll"}
     common_forbidden_functions = {
         "CreateRemoteThread", "WriteProcessMemory", "VirtualAllocEx",
         "NtCreateThreadEx", "QueueUserAPC", "SetWindowsHookEx",
         "CheckRemoteDebuggerPresent", "NtQueryInformationProcess",
+        # Anti-debug family, banned in EVERY variant since 2026-09-25: the
+        # MSVC-ABI link satisfies the static UCRT's fault-path reference
+        # (__acrt_call_reportfault) locally through source/crt_debugger_shim.cpp
+        # instead of importing the API, and the llvm-mingw CRT never imported
+        # it.  See tools/pe_strings.py for the matching string-scan scope.
+        "IsDebuggerPresent",
     }
-    if windows_toolchain != "clang-cl":
-        # IsDebuggerPresent is a hard ban for the llvm-mingw/Zig release
-        # toolchain.  The MSVC-ABI (clang-cl) variant links it from kernel32
-        # as a toolchain-inherent CRT startup import (alphabetically adjacent
-        # to InitializeSListHead/IsProcessorFeaturePresent, zero references in
-        # this project's sources), so that one name is exempt there only.
-        # See tools/pe_strings.py for the matching string-scan scope.
-        common_forbidden_functions.add("IsDebuggerPresent")
     if name == "greencurve.exe":
         verify_pe_import_surface(
             data, label,
@@ -369,12 +367,10 @@ def verify_windows_binary_metadata(data, label, original_filename, arch,
     verify_windows_manifest_identity(data, label, original_filename)
     verify_windows_binary_imports(
         data, label, original_filename,
-        reject_exports=(windows_toolchain == "clang-cl"),
-        windows_toolchain=windows_toolchain)
+        reject_exports=(windows_toolchain == "clang-cl"))
     # The import bans above cover the import table; the raw-byte scan also
     # catches the same family names as embedded text in any shipped image.
-    pe_strings.verify_no_forbidden_strings(data, label, original_filename,
-                                           windows_toolchain)
+    pe_strings.verify_no_forbidden_strings(data, label, original_filename)
     # The RSDS record must name its PDB by bare basename: an absolute path
     # leaks the build workspace and means CodeView sanitization did not run.
     pe_resources.verify_codeview_pdb_basename(data, label)

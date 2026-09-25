@@ -292,6 +292,12 @@ def windows_compile_flags(service, arch, app_version, build_number, source_dir,
     if arch == "arm64":
         flags += ["--target=aarch64-pc-windows-msvc",
                   "-mbranch-protection=standard"]
+    else:
+        # ThinLTO parity with the llvm-mingw x64 release link: cross-module
+        # inlining and dead-CRT elimination (the one change ever measured to
+        # move a real antivirus verdict).  arm64 stays no-LTO exactly like the
+        # Zig arm64 link, preserving the branch-protection codegen invariant.
+        flags.append("-flto=thin")
     return flags
 
 
@@ -302,6 +308,9 @@ def windows_link_flags(pdb_name, arch, debug=True):
         # Shadow-stack (CET backward edge) opt-in.  x64-only: there is no
         # CETCOMPAT for ARM64; arm64 gets CFG metadata + PAC/BTI instead.
         flags.append("-cetcompat")
+        # Explicit ThinLTO optimization level (matches the GNU-mode default so
+        # both x64 toolchains optimize their bitcode identically).
+        flags.append("-opt:lldlto=2")
     if debug:
         flags += ["-debug:full", f"-pdb:{pdb_name}"]
     return flags
@@ -369,14 +378,24 @@ def run_self_tests():
                                       source_dir="source", debug=False)
     if "-Zi" in x64_flags or "-DGREEN_CURVE_SERVICE_BINARY=1" in x64_flags:
         raise AssertionError("debug/service flags leaked into plain x64 flags")
+    # ThinLTO is the x64 optimization-parity invariant; arm64 must stay no-LTO
+    # exactly like the Zig arm64 link (branch-protection codegen invariant).
+    if "-flto=thin" not in x64_flags:
+        raise AssertionError("x64 compile flags must opt into ThinLTO")
+    if any(flag.startswith("-flto") for flag in compile_flags):
+        raise AssertionError("arm64 compile flags must stay no-LTO")
     x64_link = windows_link_flags("greencurve.pdb", "x64", debug=False)
     if "-cetcompat" not in x64_link:
         raise AssertionError("x64 link must opt into CET shadow stacks")
+    if "-opt:lldlto=2" not in x64_link:
+        raise AssertionError("x64 link must set the explicit ThinLTO level")
     if "-debug:full" in x64_link:
         raise AssertionError("debug=False must omit PDB emission")
     a64_link = windows_link_flags("greencurve.pdb", "arm64")
     if "-cetcompat" in a64_link:
         raise AssertionError("cetcompat is x64-only and must not reach arm64 links")
+    if "-opt:lldlto=2" in a64_link:
+        raise AssertionError("the ThinLTO level is x64-only and must not reach arm64 links")
     if msvc_link_libs(["-luser32", "-lbcrypt"]) != ["user32.lib", "bcrypt.lib"]:
         raise AssertionError("-l library mapping produced the wrong .lib names")
     for bad in ("-static", "-l", "foo.lib"):

@@ -325,6 +325,11 @@ def _compile_installer_binary_msvc(ctx, output_path, arch, uninstaller, work,
     glue = {"ssp_glue.cpp", "cfg_glue.cpp"}
     msvc_sources = [path for path in sources
                     if os.path.basename(path) not in glue]
+    # MSVC-ABI-only IsDebuggerPresent import shim (source/crt_debugger_shim.cpp):
+    # the statically linked UCRT fault path imports the anti-debug API in every
+    # clang-cl image, and the setup stub and uninstaller are no exception.  The
+    # MinGW stub builds must not link it.
+    msvc_sources.append(os.path.join(ctx.SOURCE_DIR, "crt_debugger_shim.cpp"))
     compile_flags = msvc_toolchain.windows_compile_flags(
         service=False, arch=arch, app_version=ctx.APP_VERSION,
         build_number=ctx.APP_BUILD_NUMBER, source_dir=ctx.SOURCE_DIR,

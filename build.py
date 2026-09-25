@@ -169,10 +169,16 @@ WINDOWS_SOURCE_FILES = [
 # and the OS's GFIDS validator replaces cfg_glue.cpp's module-range shim.
 # process_hardening.cpp is their toolchain-neutral half (fatal-dump hook +
 # process mitigation policies) and is linked by BOTH toolchains.
+# crt_debugger_shim.cpp is the inverse: an MSVC-ABI-only shard that satisfies
+# the static UCRT's kernel32!IsDebuggerPresent fault-path reference locally so
+# the anti-debug import never reaches any clang-cl image (the MinGW CRT has no
+# such import and must not link the shim).
 _WINDOWS_MINGW_ONLY_GLUE = {"ssp_glue.cpp", "cfg_glue.cpp"}
+_WINDOWS_MSVC_ONLY_SHIM = "crt_debugger_shim.cpp"
 WINDOWS_MSVC_SOURCE_FILES = [
-    path for path in WINDOWS_SOURCE_FILES
-    if os.path.basename(path) not in _WINDOWS_MINGW_ONLY_GLUE
+    *[path for path in WINDOWS_SOURCE_FILES
+      if os.path.basename(path) not in _WINDOWS_MINGW_ONLY_GLUE],
+    os.path.join(SOURCE_DIR, _WINDOWS_MSVC_ONLY_SHIM),
 ]
 
 # Windows toolchain selection (see tools/msvc_toolchain.py). main() sets these
@@ -1587,7 +1593,7 @@ def generate_lsp_files():
             "arguments": ["clang++", *linux_flags, *zig_linux_analyzer_flags(),
                           "-fsyntax-only", source],
         })
-    for source in (os.path.join(SOURCE_DIR, "app_shared.cpp"), os.path.join(SOURCE_DIR, "config_utils.cpp"), os.path.join(SOURCE_DIR, "fan_curve.cpp"), os.path.join(SOURCE_DIR, "service_acl.cpp"), os.path.join(SOURCE_DIR, "service_path_chain.cpp"), os.path.join(SOURCE_DIR, "service_acl_handle.cpp"), os.path.join(SOURCE_DIR, "service_install_location.cpp")):
+    for source in (os.path.join(SOURCE_DIR, "app_shared.cpp"), os.path.join(SOURCE_DIR, "config_utils.cpp"), os.path.join(SOURCE_DIR, "fan_curve.cpp"), os.path.join(SOURCE_DIR, "service_acl.cpp"), os.path.join(SOURCE_DIR, "service_path_chain.cpp"), os.path.join(SOURCE_DIR, "service_acl_handle.cpp"), os.path.join(SOURCE_DIR, "service_install_location.cpp"), os.path.join(SOURCE_DIR, "crt_debugger_shim.cpp")):
         entries.append({
             "directory": SCRIPT_DIR,
             "file": source,
@@ -2584,6 +2590,18 @@ def run_source_regression_checks():
                  "clang-cl links go through the hardened flag builder, not ad-hoc command lines")
     require_text(build_script, '"-cetcompat"',
                  "the MSVC-ABI x64 link opts into CET shadow stacks")
+    require_text(build_script, "_WINDOWS_MSVC_ONLY_SHIM",
+                 "the MSVC-ABI-only IsDebuggerPresent import shim stays wired into the clang-cl source list")
+    require_text(os.path.join(SOURCE_DIR, _WINDOWS_MSVC_ONLY_SHIM), "__imp_IsDebuggerPresent",
+                 "the shim defines the exact IAT slot the static UCRT fault path calls through")
+    installer_build_py = os.path.join(SCRIPT_DIR, "tools", "installer_build.py")
+    require_text(installer_build_py, "crt_debugger_shim.cpp",
+                 "the MSVC-ABI setup stub and uninstaller link the IsDebuggerPresent import shim")
+    msvc_toolchain_py = os.path.join(SCRIPT_DIR, "tools", "msvc_toolchain.py")
+    require_text(msvc_toolchain_py, '"-flto=thin"',
+                 "MSVC-ABI x64 compiles opt into ThinLTO for optimization parity with the release toolchain")
+    require_text(msvc_toolchain_py, '"-opt:lldlto=2"',
+                 "the MSVC-ABI x64 link sets an explicit ThinLTO optimization level")
     require_text(build_script, '"-gcodeview"',
         "Windows builds retain CodeView records for actionable crash dumps")
     require_text(build_script, '"-Wl,--pdb=',
