@@ -1233,6 +1233,96 @@ def check_log_redaction(ctx):
         sys.exit(1)
 
 
+# The undocumented SystemFunction0NN aliases (RtlGenRandom and siblings) are a
+# classic malware-corpus feature: the alias string in the PE is itself a
+# classifier signal, and reaching one through GetProcAddress hides an import
+# for no legitimate reason. The documented generator, BCryptGenRandom, is
+# imported directly at every RNG site.
+SYSTEM_FUNCTION_ALIAS_RE = re.compile(r"SystemFunction0\d*", re.IGNORECASE)
+
+
+def system_function_alias_hits(files):
+    """Return `name:line: text` labels for alias-family mentions.
+
+    `files` is an iterable of (name, text) pairs; pure so the self-test can
+    prove the gate fires on synthetic violations without touching the tree.
+    """
+    hits = []
+    for name, text in files:
+        for match in SYSTEM_FUNCTION_ALIAS_RE.finditer(text):
+            line = text.count("\n", 0, match.start()) + 1
+            hits.append(f"{name}:{line}: {match.group(0)}")
+    return hits
+
+
+def check_no_system_function_aliases(ctx):
+    """No source file may reference the undocumented SystemFunction0NN aliases.
+
+    Deliberately a whole-source scan like check_log_redaction: the defect was
+    one call site resolving an undocumented alias through LoadLibraryW and
+    GetProcAddress, and any future mention -- call site or comment -- risks
+    shipping the corpus string in a PE again. Generate randomness with
+    BCryptGenRandom (BCRYPT_USE_SYSTEM_PREFERRED_RNG), the direct import used
+    at every other RNG site.
+    """
+    files = []
+    for name in sorted(os.listdir(ctx.SOURCE_DIR)):
+        if not name.endswith((".cpp", ".h")):
+            continue
+        with open(os.path.join(ctx.SOURCE_DIR, name), "r",
+                  encoding="utf-8", errors="replace") as handle:
+            files.append((name, handle.read()))
+    hits = system_function_alias_hits(files)
+    if hits:
+        print("Regression source check FAILED: undocumented alias family "
+              "in the source tree")
+        for hit in hits:
+            print(f"  {hit}")
+        print("  Generate randomness with BCryptGenRandom "
+              "(BCRYPT_USE_SYSTEM_PREFERRED_RNG), imported directly.")
+        sys.exit(1)
+
+
+def run_self_tests():
+    """Deterministic self-tests run by ``python build.py --test``.
+
+    Proves the alias-family gate fires on a synthetic violation, stays quiet
+    on the legitimate direct RNG import, and does not false-positive on
+    ordinary identifiers.
+    """
+    failures = []
+
+    clean = [("ok.cpp",
+              "NTSTATUS status = BCryptGenRandom(nullptr, (PUCHAR)buffer, size,\n"
+              "    BCRYPT_USE_SYSTEM_PREFERRED_RNG);\n")]
+    if system_function_alias_hits(clean):
+        failures.append("a direct BCryptGenRandom call site must not trip the gate")
+
+    violating = [("bad.cpp",
+                  '    random = GetProcAddress(advapi, "SystemFunction036");\n')]
+    hits = system_function_alias_hits(violating)
+    if len(hits) != 1:
+        failures.append(f"a synthetic violation must report exactly one hit: {hits}")
+    elif not hits[0].startswith("bad.cpp:1:") or "SystemFunction036" not in hits[0]:
+        failures.append(f"a violation hit must carry file:line and the alias: {hits[0]}")
+
+    if not system_function_alias_hits([("c.cpp", "uses systemfunction036 here\n")]):
+        failures.append("case-variant alias spellings must be caught")
+    if not system_function_alias_hits([("d.cpp", 'load("SystemFunction032")\n')]):
+        failures.append("every member of the alias family must be caught")
+
+    quiet = [("e.cpp",
+              "service_generate_random_bytes SystemFunctionName random_bytes_requested\n")]
+    if system_function_alias_hits(quiet):
+        failures.append("ordinary identifiers must not trip the alias gate")
+
+    if failures:
+        for failure in failures:
+            print(f"security_gates self-test FAILED: {failure}")
+        sys.exit(1)
+    print("security_gates self-tests passed")
+
+
 def run_build_script_regression_tests(ctx):
     """Self-tests for build.py's own invariants.
 
@@ -1248,6 +1338,11 @@ def run_build_script_regression_tests(ctx):
         arch_package.run_self_tests()
         pe_verify.run_self_tests()
         build_state.run_resource_identity_self_tests()
+        run_self_tests()
+        # Real-tree alias-family gate, wired here because build.py sits at
+        # exactly BUILD_SCRIPT_SIZE_RATCHET lines and a call site there would
+        # breach it ("move source guards out rather than raising it").
+        check_no_system_function_aliases(ctx)
         build_script = os.path.join(ctx.SCRIPT_DIR, "build.py")
         with open(build_script, "r", encoding="utf-8", errors="replace") as handle:
             build_script_text = handle.read()
@@ -2221,3 +2316,7 @@ def _analyze_cet(ctx, binary_path):
         return 1
     print("  OK: every address-taken function from our source carries endbr64")
     return 0
+
+
+if __name__ == "__main__":
+    run_self_tests()
