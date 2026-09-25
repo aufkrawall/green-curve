@@ -27,8 +27,8 @@ _COMMON_FORBIDDEN_STRINGS = {
     # process injection family
     "VirtualAllocEx", "WriteProcessMemory", "CreateRemoteThread",
     "NtCreateThreadEx", "NtUnmapViewOfSection", "QueueUserAPC",
-    # anti-debug
-    "IsDebuggerPresent", "CheckRemoteDebuggerPresent", "NtQueryInformationProcess",
+    # anti-debug (IsDebuggerPresent is added per toolchain, see below)
+    "CheckRemoteDebuggerPresent", "NtQueryInformationProcess",
     # download/exec
     "URLDownloadToFile", "WinExec", "urlmon.dll",
     # keyboard-hook family
@@ -37,6 +37,21 @@ _COMMON_FORBIDDEN_STRINGS = {
     # RtlGenRandom spelling); banned as a prefix
     "SystemFunction0",
 }
+
+# IsDebuggerPresent is banned in the llvm-mingw/Zig release toolchain (import
+# table AND raw strings), which builds all four shipped binaries clean.  The
+# MSVC-ABI (clang-cl) variant carries it as a toolchain-inherent CRT startup
+# import from kernel32 -- alphabetically adjacent to InitializeSListHead and
+# IsProcessorFeaturePresent in the import hint/name table, imported by the CRT
+# startup, with zero references in this project's sources.  That one name is
+# exempt for MSVC-ABI images only, justified by that import alone (the import
+# spelling is raw image text, and a setup embeds the same-variant binaries, so
+# the exemption cannot be limited to the outer import table).  The toolchain
+# gates the same exemption on the import surface (tools/pe_verify.py).
+# CheckRemoteDebuggerPresent and NtQueryInformationProcess are never
+# CRT-inherent and stay hard-banned in every variant on both surfaces; no
+# source may use any of these APIs.
+_MSVC_ABI_EXEMPT_STRINGS = {"IsDebuggerPresent"}
 
 # Token-relay names: the setup needs them to relaunch the GUI unelevated and
 # the service keeps its signed-updater surface, but neither the GUI nor the
@@ -67,25 +82,29 @@ def artifact_kind(original_filename):
     raise RuntimeError(f"unknown Windows artifact identity {original_filename!r}")
 
 
-def forbidden_strings(original_filename):
-    """The full ban set for one shipped artifact."""
-    return _COMMON_FORBIDDEN_STRINGS | set(
+def forbidden_strings(original_filename, windows_toolchain="llvm-mingw"):
+    """The full ban set for one shipped artifact and toolchain variant."""
+    banned = _COMMON_FORBIDDEN_STRINGS | set(
         _FORBIDDEN_BY_ARTIFACT[artifact_kind(original_filename)])
+    if windows_toolchain != "clang-cl":
+        banned |= _MSVC_ABI_EXEMPT_STRINGS
+    return banned
 
 
-def find_forbidden_strings(data, original_filename):
+def find_forbidden_strings(data, original_filename, windows_toolchain="llvm-mingw"):
     """Names of banned strings present in `data`, ASCII or UTF-16LE."""
     lowered = bytes(data).lower()
     hits = []
-    for name in sorted(forbidden_strings(original_filename)):
+    for name in sorted(forbidden_strings(original_filename, windows_toolchain)):
         needle = name.lower()
         if needle.encode("ascii") in lowered or needle.encode("utf-16le") in lowered:
             hits.append(name)
     return hits
 
 
-def verify_no_forbidden_strings(data, label, original_filename):
-    hits = find_forbidden_strings(data, original_filename)
+def verify_no_forbidden_strings(data, label, original_filename,
+                                windows_toolchain="llvm-mingw"):
+    hits = find_forbidden_strings(data, original_filename, windows_toolchain)
     if hits:
         raise RuntimeError(f"{label}: image contains banned strings "
                            f"({', '.join(hits)})")
@@ -121,6 +140,19 @@ def run_self_tests():
                f"{spelling} was not flagged")
     expect(find_forbidden_strings(b"winexec", "greencurve.exe") == ["WinExec"],
            "the scan is case-insensitive")
+    # IsDebuggerPresent: hard ban in the release toolchain, CRT-inherent
+    # import exemption in the MSVC-ABI variant; the other anti-debug names
+    # stay hard in every variant.
+    expect(find_forbidden_strings(b"IsDebuggerPresent", "greencurve.exe")
+           == ["IsDebuggerPresent"],
+           "IsDebuggerPresent is not banned in a release image")
+    expect(find_forbidden_strings(b"IsDebuggerPresent", "greencurve.exe", "clang-cl") == [],
+           "the MSVC-ABI CRT exemption for IsDebuggerPresent is not applied")
+    for name in ("CheckRemoteDebuggerPresent", "NtQueryInformationProcess"):
+        for toolchain in ("llvm-mingw", "clang-cl"):
+            expect(find_forbidden_strings(name.encode("ascii"), "greencurve.exe",
+                                          toolchain) == [name],
+                   f"{name} was not flagged for {toolchain}")
     # Token-relay names are banned only where the feature cannot exist.
     for kind_name in ("greencurve.exe", "greencurve-uninstall.exe"):
         expect(find_forbidden_strings(b"WTSQueryUserToken", kind_name)
