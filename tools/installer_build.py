@@ -215,6 +215,7 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
+            VALUE "Comments", "COMMENTS"
             VALUE "CompanyName", "COMPANY_NAME"
             VALUE "FileDescription", "DESCRIPTION"
             VALUE "FileVersion", "VER_STR"
@@ -233,6 +234,36 @@ END
 
 1 24 "MANIFEST_NAME"
 """
+
+
+def build_installer_rc(version, build_number, original_name, uninstaller=False,
+                       manifest_name=None):
+    """Build the setup/uninstaller .rc text with identity substituted (pure).
+
+    Mirrors build_state.build_rc_content for the installer family so a self-test
+    can assert the generated VERSIONINFO without a toolchain.  `original_name`
+    is the exact shipped filename (installer_original_filename) because that is
+    what the VERSIONINFO must repeat.
+    """
+    major, minor, patch, build = build_state.parse_version_parts(version, build_number)
+    version_string = f"{major}.{minor}.{patch}.{build}"
+    if manifest_name is None:
+        manifest_name = ("greencurve-uninstall.manifest" if uninstaller
+                         else "greencurve-setup.manifest")
+    return (INSTALLER_RC
+            .replace("VER_MAJOR", str(major))
+            .replace("VER_MINOR", str(minor))
+            .replace("VER_PATCH", str(patch))
+            .replace("VER_BUILD", str(build))
+            .replace("VER_STR", version_string)
+            .replace("MANIFEST_NAME", manifest_name)
+            .replace("COMPANY_NAME", build_state.VERSION_COMPANY_NAME)
+            .replace("COMMENTS", build_state.VERSION_COMMENTS)
+            .replace("INTERNAL_NAME",
+                     "GreenCurveUninstall" if uninstaller else "GreenCurveSetup")
+            .replace("DESCRIPTION",
+                     "Green Curve uninstaller" if uninstaller else "Green Curve setup")
+            .replace("ORIGINAL_NAME", original_name))
 
 
 # ---------------------------------------------------------------------------
@@ -337,17 +368,10 @@ def _write_installer_resources(ctx, work, uninstaller, arch):
     with open(os.path.join(work, manifest_name), "w", encoding="utf-8", newline="\n") as handle:
         handle.write(manifest)
 
-    rc = (INSTALLER_RC
-          .replace("VER_MAJOR", str(major))
-          .replace("VER_MINOR", str(minor))
-          .replace("VER_PATCH", str(patch))
-          .replace("VER_BUILD", str(build))
-          .replace("VER_STR", version_string)
-          .replace("MANIFEST_NAME", manifest_name)
-          .replace("COMPANY_NAME", build_state.VERSION_COMPANY_NAME)
-          .replace("INTERNAL_NAME", "GreenCurveUninstall" if uninstaller else "GreenCurveSetup")
-          .replace("DESCRIPTION", "Green Curve uninstaller" if uninstaller else "Green Curve setup")
-          .replace("ORIGINAL_NAME", installer_original_filename(ctx, arch, uninstaller)))
+    rc = build_installer_rc(
+        ctx.APP_VERSION, ctx.APP_BUILD_NUMBER,
+        installer_original_filename(ctx, arch, uninstaller),
+        uninstaller=uninstaller, manifest_name=manifest_name)
     rc_name = "greencurve-uninstall.rc" if uninstaller else "greencurve-setup.rc"
     rc_path = os.path.join(work, rc_name)
     with open(rc_path, "w", encoding="utf-8", newline="\n") as handle:
@@ -579,7 +603,38 @@ def build_setup_executable(ctx, arch, payload_dir, expected_names, output_dir=No
 # no unit test because they are about *where* code lives or which API it uses.
 # ---------------------------------------------------------------------------
 
+def run_rc_identity_self_tests():
+    """Every shipped Windows PE's VERSIONINFO carries a non-empty Comments string.
+
+    Antivirus/reputation tooling scores an incomplete version resource as mildly
+    suspicious, and Comments was the one standard field the generators left
+    empty.  The GUI and service come from build_state.build_rc_content; the setup
+    stub and uninstaller from build_installer_rc.  All four must emit the same
+    neutral sentence (build_state.VERSION_COMMENTS) and never a blank one.
+    """
+    comment = build_state.VERSION_COMMENTS
+    failures = []
+    if not comment.strip():
+        failures.append("the shared Comments sentence is empty")
+    cases = (
+        ("GUI", build_state.build_rc_content("1.2.3", 45, False)),
+        ("service", build_state.build_rc_content("1.2.3", 45, True)),
+        ("setup", build_installer_rc("1.2.3", 45, "greencurve-1.2.3-windows-x64-setup.exe")),
+        ("uninstaller", build_installer_rc("1.2.3", 45, "greencurve-uninstall.exe",
+                                           uninstaller=True)),
+    )
+    for label, rc in cases:
+        if f'VALUE "Comments", "{comment}"' not in rc:
+            failures.append(f"{label}: Comments is missing or not the shared sentence")
+    if failures:
+        raise RuntimeError("VERSIONINFO Comments self-tests failed:\n  " + "\n  ".join(failures))
+    print("VERSIONINFO Comments self-tests passed")
+
+
 def check_all(ctx, require_text, forbid_text):
+    # The generated VERSIONINFO must carry a non-empty Comments for all four
+    # setup-family/GUI binaries; see run_rc_identity_self_tests for the why.
+    run_rc_identity_self_tests()
     def source(name):
         return os.path.join(ctx.SOURCE_DIR, name)
 

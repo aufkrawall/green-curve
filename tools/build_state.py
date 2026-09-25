@@ -131,6 +131,12 @@ def parse_version_parts(version, build_number):
 # "renamed executable" signal antivirus heuristics look for.
 # tools/pe_verify.verify_version_identity() gates it on every build.
 VERSION_COMPANY_NAME = "aufkrawall"
+# One neutral sentence shared by every shipped PE's VERSIONINFO Comments field.
+# Antivirus/reputation tooling scores an incomplete version resource as mildly
+# suspicious, so all four binaries (GUI, service, setup stub, uninstaller) carry
+# the same value.  installer_build.py reuses this constant so the two generators
+# can never drift apart.
+VERSION_COMMENTS = "Open-source GPU fan and overclock control"
 WINDOWS_BINARY_IDENTITIES = {
     # service flag -> (FileDescription, InternalName, OriginalFilename)
     False: ("NVIDIA GPU VF Curve Editor", "GreenCurve", "greencurve.exe"),
@@ -167,6 +173,7 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
+            VALUE "Comments", "GC_COMMENTS"
             VALUE "CompanyName", "GC_COMPANY_NAME"
             VALUE "FileDescription", "GC_FILE_DESCRIPTION"
             VALUE "FileVersion", "VER_STR"
@@ -232,6 +239,7 @@ def build_rc_content(version, build_number, service=False, manifest_name=None):
         manifest_name = "greencurve-service.manifest" if service else "greencurve.exe.manifest"
     content = ICON_RC_CONTENT
     content = content.replace("GC_TRAY_ICONS\n", "" if service else TRAY_ICON_RC_LINES)
+    content = content.replace("GC_COMMENTS", VERSION_COMMENTS)
     content = content.replace("GC_COMPANY_NAME", VERSION_COMPANY_NAME)
     content = content.replace("GC_FILE_DESCRIPTION", description)
     content = content.replace("GC_MANIFEST_NAME", manifest_name)
@@ -375,6 +383,8 @@ def run_resource_identity_self_tests():
             failures.append(f"service={service}: OriginalFilename is not {expected}")
         if f'VALUE "CompanyName", "{VERSION_COMPANY_NAME}"' not in rc:
             failures.append(f"service={service}: CompanyName is missing")
+        if f'VALUE "Comments", "{VERSION_COMMENTS}"' not in rc:
+            failures.append(f"service={service}: Comments is missing or not the shared sentence")
         if f'1 24 "{expected_manifest}"' not in rc:
             failures.append(f"service={service}: manifest resource is not {expected_manifest}")
         if "GC_" in rc or "VER_" in rc:
