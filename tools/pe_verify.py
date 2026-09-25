@@ -135,8 +135,10 @@ def pe_section_names(data):
 
 def verify_no_buildid_section(data, label):
     """LLD-MinGW puts the RSDS debug directory in a ".buildid" section unless
-    the link merges it into .rdata (WINDOWS_FLAGS).  Only MinGW-style
-    toolchains emit that name; MSVC-style images never carry it."""
+    the link merges it into .rdata (WINDOWS_FLAGS).  Gated for every Windows
+    PE whatever the architecture: only MinGW-style toolchains emit that name
+    (MSVC-style images never carry it), and the "obfuscation" tags that fire
+    on it do not single out x64."""
     if ".buildid" in pe_section_names(data):
         raise RuntimeError(f"{label}: .buildid section was not merged into .rdata")
 
@@ -355,8 +357,7 @@ def verify_windows_binary_metadata(data, label, original_filename, arch,
     verify_windows_binary_imports(
         data, label, original_filename,
         reject_exports=(windows_toolchain == "clang-cl"))
-    if arch == "x64":
-        verify_no_buildid_section(data, label)
+    verify_no_buildid_section(data, label)
 
 
 def verify_pe_hardening(data, arch, windows_toolchain="llvm-mingw"):
@@ -610,7 +611,8 @@ def _version_string_entry(key, value):
     return struct.pack("<HHH", 6 + len(body), len(value) + 1, 1) + body
 
 
-def _synthetic_import_pe(function_name="CreateFileW"):
+def _synthetic_imports_pe(dll_functions):
+    """One .text section and a real import table for [(dll, [function, ...])]."""
     data = bytearray(0x400)
     data[0:2] = b"MZ"
     struct.pack_into("<I", data, 0x3C, 0x80)
@@ -623,15 +625,68 @@ def _synthetic_import_pe(function_name="CreateFileW"):
     data[section:section + 8] = b".text\0\0\0"
     struct.pack_into("<IIII", data, section + 8, 0x200, 0x1000, 0x200, 0x200)
     struct.pack_into("<I", data, section + 36, 0x60000020)
-    struct.pack_into("<II", data, 0x98 + 112 + 8, 0x1000, 40)
-    struct.pack_into("<IIIII", data, 0x200, 0x1050, 0, 0, 0x1030, 0x1050)
-    data[0x230:0x23D] = b"KERNEL32.dll\0"
-    struct.pack_into("<QQ", data, 0x250, 0x1070, 0)
-    struct.pack_into("<H", data, 0x270, 0)
-    encoded = function_name.encode("ascii") + b"\0"
-    if len(encoded) > 0x80:
-        raise RuntimeError("synthetic import name is too long for the fixture")
-    data[0x272:0x272 + len(encoded)] = encoded
+    struct.pack_into("<II", data, 0x98 + 112 + 8, 0x1000, 20 * (len(dll_functions) + 1))
+    cursor = 0x200 + 20 * (len(dll_functions) + 1)
+
+    def rva(offset):
+        return 0x1000 + (offset - 0x200)
+
+    layout = []
+    for dll, functions in dll_functions:
+        dll_offset = cursor
+        cursor += len(dll) + 1
+        cursor += -cursor % 8
+        thunk_offset = cursor
+        cursor += 8 * (len(functions) + 1)
+        hints = []
+        for function in functions:
+            cursor += -cursor % 2
+            hints.append((cursor, function))
+            cursor += 2 + len(function) + 1
+        layout.append((dll, dll_offset, thunk_offset, hints))
+    if cursor > 0x400:
+        raise RuntimeError("synthetic import table exceeds the fixture buffer")
+    for index, (dll, dll_offset, thunk_offset, hints) in enumerate(layout):
+        descriptor = 0x200 + index * 20
+        struct.pack_into("<IIIII", data, descriptor,
+                         rva(thunk_offset), 0, 0, rva(dll_offset), rva(thunk_offset))
+        data[dll_offset:dll_offset + len(dll) + 1] = dll.encode("ascii") + b"\0"
+        for thunk_index, (hint_offset, function) in enumerate(hints):
+            struct.pack_into("<Q", data, thunk_offset + thunk_index * 8, rva(hint_offset))
+            struct.pack_into("<H", data, hint_offset, 0)
+            data[hint_offset + 2:hint_offset + 3 + len(function)] = \
+                function.encode("ascii") + b"\0"
+    return bytes(data)
+
+
+def _synthetic_import_pe(function_name="CreateFileW"):
+    return _synthetic_imports_pe([("KERNEL32.dll", [function_name])])
+
+
+def _synthetic_metadata_pe(original_filename, with_buildid=False):
+    """A synthetic PE that passes every verify_windows_binary_metadata gate
+    except, optionally, the .buildid gate: full VERSIONINFO identity, the
+    whole-file manifest claims, a GUI-shaped import table, and a correct
+    checksum stamped after the appended identity."""
+    data = bytearray(_synthetic_imports_pe([
+        ("user32.dll", ["GetDesktopWindow"]),
+        ("gdi32.dll", ["CreateSolidBrush"]),
+        ("advapi32.dll", ["RegOpenKeyExW"]),
+        ("shell32.dll", ["ShellExecuteW"]),
+    ]))
+    struct.pack_into("<H", data, 0x80 + 24 + 70, 0x20 | 0x40 | 0x100)
+    if with_buildid:
+        data[0x188:0x190] = b".buildid"
+    data += b"".join([
+        _version_string_entry("CompanyName", "aufkrawall"),
+        _version_string_entry("FileDescription", "Green Curve"),
+        _version_string_entry("InternalName", "GreenCurve"),
+        _version_string_entry("OriginalFilename", original_filename),
+        _version_string_entry("ProductName", "Green Curve"),
+    ])
+    data += (b"\x00GreenCurve\0Green Curve\0"
+             b'processorArchitecture="*"\0')
+    struct.pack_into("<I", data, _checksum_field_offset(data), pe_image_checksum(data))
     return bytes(data)
 
 
@@ -731,6 +786,18 @@ def run_self_tests():
         verify_no_buildid_section(import_fixture, "import fixture")
     except RuntimeError as error:
         failures.append(f"an image without .buildid was rejected: {error}")
+    # The gate covers every Windows PE, not only x64: before the scope fix an
+    # arm64 image carrying .buildid slipped through verify_windows_binary_metadata.
+    for with_buildid in (False, True):
+        fixture = _synthetic_metadata_pe("greencurve.exe", with_buildid=with_buildid)
+        try:
+            verify_windows_binary_metadata(
+                fixture, "metadata fixture", "greencurve.exe", "arm64", "llvm-mingw")
+            expect(not with_buildid,
+                   "an arm64 .buildid section passed verify_windows_binary_metadata")
+        except RuntimeError as error:
+            expect(with_buildid and ".buildid" in str(error),
+                   f"the metadata fixture was rejected for the wrong reason: {error}")
     for groups, accepted in (([101], True), ([101, 111, 115], False), ([], False)):
         fixture = _synthetic_resource_pe(groups)
         expect(pe_resource_ids(fixture, _RT_GROUP_ICON) == groups,
