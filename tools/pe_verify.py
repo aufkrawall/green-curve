@@ -181,6 +181,20 @@ def verify_service_resources(data, label):
         raise RuntimeError(f"{label}: service icon groups are {groups!r}, expected only [101]")
 
 
+# Windows exports A/W/Ex/ExW spellings of one API (SetWindowsHookExW,
+# CreateRemoteThreadEx), while the ban lists name the stem.  A ban therefore
+# matches its exact name or one of those suffixed spellings -- deliberately NOT
+# a raw prefix match: a ban on CreateProcessW must not catch the legitimate
+# CreateProcessAsUserW / CreateProcessWithTokenW.
+_IMPORT_NAME_SUFFIXES = ("", "a", "w", "ex", "exw")
+
+
+def _import_name_matches(name, banned):
+    lowered = name.lower()
+    stem = banned.lower()
+    return any(lowered == stem + suffix for suffix in _IMPORT_NAME_SUFFIXES)
+
+
 def verify_pe_import_surface(data, label, required_dlls=(), forbidden_dlls=(),
                              required_functions=(), forbidden_functions=(),
                              reject_exports=False):
@@ -202,7 +216,8 @@ def verify_pe_import_surface(data, label, required_dlls=(), forbidden_dlls=(),
     present_forbidden = sorted(forbidden_libraries & libraries)
     missing_functions = sorted(required_names - {name.lower() for name in functions})
     present_forbidden_functions = sorted(
-        forbidden_names & {name.lower() for name in functions})
+        name for name in functions
+        if any(_import_name_matches(name, banned) for banned in forbidden_names))
     if missing_libraries or present_forbidden or missing_functions or present_forbidden_functions:
         details = []
         if missing_libraries:
@@ -595,7 +610,7 @@ def _version_string_entry(key, value):
     return struct.pack("<HHH", 6 + len(body), len(value) + 1, 1) + body
 
 
-def _synthetic_import_pe():
+def _synthetic_import_pe(function_name="CreateFileW"):
     data = bytearray(0x400)
     data[0:2] = b"MZ"
     struct.pack_into("<I", data, 0x3C, 0x80)
@@ -613,7 +628,10 @@ def _synthetic_import_pe():
     data[0x230:0x23D] = b"KERNEL32.dll\0"
     struct.pack_into("<QQ", data, 0x250, 0x1070, 0)
     struct.pack_into("<H", data, 0x270, 0)
-    data[0x272:0x27D] = b"CreateFileW\0"
+    encoded = function_name.encode("ascii") + b"\0"
+    if len(encoded) > 0x80:
+        raise RuntimeError("synthetic import name is too long for the fixture")
+    data[0x272:0x272 + len(encoded)] = encoded
     return bytes(data)
 
 
@@ -665,6 +683,31 @@ def run_self_tests():
         failures.append("PE import surface accepted a forbidden function")
     except RuntimeError:
         pass
+    # A ban matches its exact name or the A/W/Ex/ExW spelling Windows exports
+    # (SetWindowsHookExW, CreateRemoteThreadEx), never a raw prefix: a ban on
+    # CreateProcessW must not catch CreateProcessAsUserW or
+    # CreateProcessWithTokenW, the setup's legitimate token relaunch.
+    for function, banned, should_match in (
+            ("CreateProcessW", "CreateProcessW", True),
+            ("CreateProcessW", "CreateProcess", True),
+            ("CreateProcessAsUserW", "CreateProcessW", False),
+            ("CreateProcessWithTokenW", "CreateProcessW", False),
+            ("CreateRemoteThreadEx", "CreateRemoteThread", True),
+            ("CreateRemoteThreadEx", "CreateRemoteThreadEx", True),
+            ("SetWindowsHookExA", "SetWindowsHookEx", True),
+            ("SetWindowsHookExW", "SetWindowsHookEx", True),
+            ("SetWindowsHookExW", "setwindowshookex", True),
+            ("CreateFileW", "SetWindowsHookEx", False),
+            ("CreateFileW", "CreateFile", True)):
+        fixture = _synthetic_import_pe(function)
+        try:
+            verify_pe_import_surface(
+                fixture, "import fixture", forbidden_functions={banned})
+            expect(not should_match,
+                   f"a ban on {banned!r} missed the import {function!r}")
+        except RuntimeError:
+            expect(should_match,
+                   f"a ban on {banned!r} caught the import {function!r}")
     for needle in (b"cabinet.dll", "CreateDecompressor".encode("utf-16le")):
         try:
             verify_setup_has_no_decompressor(import_fixture + needle, "setup fixture")
