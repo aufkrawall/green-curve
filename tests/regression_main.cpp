@@ -1388,6 +1388,8 @@ static int run_audit_followup_tests() {
         if (strlen(label) > 120 || strstr(label, "SYSTEM rights")) return 5902;
         if (!strstr(tip, "SYSTEM rights") || !strstr(tip, "%ProgramFiles%") ||
             !strstr(tip, "\r\n\r\n")) return 5903;
+        if (!strstr(tip, "%ProgramFiles%\\Green Curve") ||
+            strstr(tip, "%ProgramFiles%\\greencurve")) return 5906;
         ServiceStatusNotices noteOnly = {};
         noteOnly.sharedProfilesOnly = true;
         service_status_compose("Ready.", noteOnly, label, sizeof(label), tip, sizeof(tip));

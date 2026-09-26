@@ -216,7 +216,7 @@ void gc_paint(GcWizard* wizard, HDC dc, const RECT* client) {
 #if !defined(GREEN_CURVE_UNINSTALLER)
         case GC_PAGE_LICENSE:
             gc_draw_text(dc, wizard->fonts.body, COL_LABEL,
-                         "This program is released under the MIT license. Read it, then continue.",
+                         "This program is released under the MIT license. Please review the terms before continuing.",
                          margin, contentTop, contentWidth, gc_dp(22),
                          DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
             gc_draw_field_frame(dc, wizard->licenseEdit);
@@ -235,9 +235,9 @@ void gc_paint(GcWizard* wizard, HDC dc, const RECT* client) {
             if (wizard->prior.present) {
                 char note[512] = {};
                 snprintf(note, sizeof(note),
-                         "Green Curve %s is already installed in %s. Keep that folder to upgrade it in "
-                         "place, or choose another to move the installation and leave the old files for "
-                         "you to delete.",
+                         "Green Curve %s is already installed in %s. Keep that folder to upgrade in "
+                         "place, or choose a different folder to move the installation (existing files will "
+                         "not be deleted).",
                          wizard->prior.version[0] ? wizard->prior.version : "(unknown version)",
                          wizard->prior.directory);
                 gc_draw_text(dc, wizard->fonts.small_text, COL_PENDING, note,
@@ -315,7 +315,7 @@ void gc_paint(GcWizard* wizard, HDC dc, const RECT* client) {
             snprintf(note, sizeof(note),
                      "Green Curve will be removed from %s.\n\n"
                      "The background service is stopped and unregistered, and your GPU returns to its "
-                     "default settings. Your saved profiles in %%LOCALAPPDATA%%\\Green Curve are left alone.",
+                     "default settings. Your saved profiles in %%LOCALAPPDATA%%\\Green Curve are preserved.",
                      directory);
             gc_draw_text(dc, wizard->fonts.body, COL_TEXT, note,
                          margin, contentTop, contentWidth, gc_dp(160),

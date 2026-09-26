@@ -43,11 +43,11 @@ static void cli_print_help(FILE* out) {
     HELP_LOG("  greencurve.exe --share-slot <slot>              Share slot with all users: publish data + set as all-users default (admin only)\n");
     HELP_LOG("  greencurve.exe --unshare-slot <slot>            Stop sharing slot with all users (admin only)\n");
     HELP_LOG("  greencurve.exe --set-restrict-shared <0|1>      Restrict standard users to shared profiles only (admin only)\n");
-    HELP_LOG("  greencurve.exe --publish-slot-to-machine <slot> [advanced] Copy profile slot to shared bank without changing the default (admin only)\n");
-    HELP_LOG("  greencurve.exe --clear-machine-slot <slot>      [advanced] Clear a slot from the shared bank (admin only)\n");
+    HELP_LOG("  greencurve.exe --publish-slot-to-machine <slot> [advanced] Copy profile slot for all users without changing the default (admin only)\n");
+    HELP_LOG("  greencurve.exe --clear-machine-slot <slot>      [advanced] Clear a shared profile slot (admin only)\n");
     HELP_LOG("  greencurve.exe --save-config [--config <path>]  Save to selected profile slot\n");
     HELP_LOG("  greencurve.exe --reset      Reset curve/global controls to defaults\n");
-    HELP_LOG("  greencurve.exe --help       This help\n");
+    HELP_LOG("  greencurve.exe --help       Show this help text\n");
     // Where the same text is also kept, so the file sink is discoverable from
     // the console one. gc_cli_emit() already flushed every line above.
     HELP_LOG("A copy of this output is written to %s\n", cli_log_path());

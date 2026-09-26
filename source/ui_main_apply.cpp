@@ -201,7 +201,7 @@ static void refresh_curve() {
     if (!g_app.usingBackgroundService || app_is_service_process()) return;
     if (g_app.guiDraft.detached && gui_state_dirty()) {
         int discard = gc_message_box(g_app.hMainWnd,
-            "The preserved draft belongs to a different GPU or VF topology.\n\nDiscard that draft and refresh this GPU?",
+            "The preserved draft belongs to a different GPU or configuration.\n\nDiscard that draft and refresh this GPU?",
             "Discard Detached Draft", MB_YESNO | MB_ICONWARNING);
         if (discard != IDYES) return;
         gui_draft_discard();

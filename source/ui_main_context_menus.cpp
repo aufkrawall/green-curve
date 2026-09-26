@@ -182,17 +182,17 @@ static void show_machine_logon_context_menu(HWND hwnd, POINT screenPt) {
             const char* argv[] = { "--publish-slot-to-machine", slotArg, "--config", g_app.configPath, nullptr };
             ok = run_elevated_command(argv,
                 "Administrator consent was cancelled; profile was not published.",
-                "Publish profile to machine-wide bank");
+                "Publish profile for all users");
         } else {
             char err[256] = {};
             ok = copy_profile_slot_to_machine_config(g_app.configPath, selectedSlot, err, sizeof(err));
             if (!ok) {
-                write_error_report_log_for_user_failure("Publish to machine profile bank failed", err[0] ? err : "Unknown error");
-                gc_message_box(g_app.hMainWnd, err[0] ? err : "Failed to publish profile to machine-wide bank.",
+                write_error_report_log_for_user_failure("Publish profile for all users failed", err[0] ? err : "Unknown error");
+                gc_message_box(g_app.hMainWnd, err[0] ? err : "Failed to publish profile for all users.",
                     "Green Curve", MB_OK | MB_ICONERROR);
             }
         }
-        if (ok) set_profile_status_text("Slot %d published to the shared bank (default unchanged).", selectedSlot);
+        if (ok) set_profile_status_text("Slot %d published for all users (default unchanged).", selectedSlot);
         refresh_profile_controls_from_config();
     } else if (cmd == MACHINE_LOGON_MENU_CLEAR_MACHINE_SLOT_ID) {
         bool ok = false;
@@ -201,18 +201,18 @@ static void show_machine_logon_context_menu(HWND hwnd, POINT screenPt) {
             StringCchPrintfA(slotArg, ARRAY_COUNT(slotArg), "%d", selectedSlot);
             const char* argv[] = { "--clear-machine-slot", slotArg, "--config", g_app.configPath, nullptr };
             ok = run_elevated_command(argv,
-                "Administrator consent was cancelled; machine-wide profile slot was not cleared.",
-                "Clear machine-wide profile slot");
+                "Administrator consent was cancelled; profile was not cleared.",
+                "Clear shared profile slot");
         } else {
             char err[256] = {};
             ok = clear_machine_profile_slot(selectedSlot, err, sizeof(err));
             if (!ok) {
-                write_error_report_log_for_user_failure("Clear machine profile slot failed", err[0] ? err : "Unknown error");
-                gc_message_box(g_app.hMainWnd, err[0] ? err : "Failed to clear machine-wide profile slot.",
+                write_error_report_log_for_user_failure("Clear shared profile slot failed", err[0] ? err : "Unknown error");
+                gc_message_box(g_app.hMainWnd, err[0] ? err : "Failed to clear shared profile slot.",
                     "Green Curve", MB_OK | MB_ICONERROR);
             }
         }
-        if (ok) set_profile_status_text("Cleared machine-wide profile slot %d.", selectedSlot);
+        if (ok) set_profile_status_text("Cleared shared profile slot %d.", selectedSlot);
         refresh_profile_controls_from_config();
     } else if (cmd == MACHINE_LOGON_MENU_RESTRICT_ID) {
         bool enable = !restrictOn;
@@ -286,7 +286,7 @@ static void show_shared_profiles_menu(HWND hwnd, POINT screenPt) {
         // for the per-account logon choice).  Point them there from here.
         AppendMenuA(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuA(menu, MF_STRING | MF_GRAYED, 0,
-            "To apply one at logon, use the \"Apply profile after user log in\" list");
+            "To apply one at logon, use the \"Apply profile at Windows logon\" list");
     }
 
     SetForegroundWindow(hwnd);

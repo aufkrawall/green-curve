@@ -747,7 +747,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     SendMessageA(g_app.hLogonCombo, CB_SETCURSEL, 0, 0);
 
     g_app.hLogonLabel = CreateWindowExA(
-        0, "STATIC", "Apply profile after user log in:",
+        0, "STATIC", "Apply profile at Windows logon:",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
         0, 0, dp(208), dp(18),
         g_app.hMainWnd, (HMENU)(INT_PTR)LOGON_LABEL_ID, hInstance, nullptr
@@ -767,7 +767,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     // not match any other label in the dark window.  layout_main_window() then
     // fits the control to its own text so nothing past the caption is clickable.
     g_app.hStartOnLogonCheck = CreateWindowExA(
-        0, "BUTTON", "Start program to tray on log in",
+        0, "BUTTON", "Start minimized to tray at logon",
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
         0, 0, dp(220), dp(20),
         g_app.hMainWnd, (HMENU)(INT_PTR)START_ON_LOGON_CHECK_ID, hInstance, nullptr

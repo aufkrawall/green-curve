@@ -579,11 +579,11 @@ static void open_xbar_dialog() {
 
     int y4 = y3b + dp(24);
     const char* hintLines[] = {
-        "Requires driver support (validated schema). Service required.",
+        "Requires driver support. Background service required.",
         "Clock offset moves the XBAR domain; voltage offset",
         "adjusts its MSVDD rail. Start with small values",
         "(e.g. +50 MHz / +10 mV) and test stability.",
-        "Changes apply with the main Apply button.",
+        "Click Apply Changes in the main window to apply.",
     };
     for (int i = 0; i < 5; i++) {
         CreateWindowExA(0, "STATIC", hintLines[i],

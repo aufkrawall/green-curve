@@ -46,9 +46,8 @@ void gui_update_maybe_prompt_first_run(HWND parent) {
 
     int answer = gc_message_box(owner,
         "Should Green Curve check for updates automatically?\n\n"
-        "It contacts GitHub about once a day and reveals your IP address, "
-        "the installed version and your architecture. Nothing is ever "
-        "installed without you clicking Install.\n\n"
+        "It checks GitHub once a day using your current version and architecture. "
+        "Nothing is downloaded or installed without your confirmation.\n\n"
         "You can change this later under Updates.",
         "Green Curve", MB_YESNO | MB_ICONQUESTION);
     // A dismissed dialog (0) is not a "no": it is no answer, and recording one

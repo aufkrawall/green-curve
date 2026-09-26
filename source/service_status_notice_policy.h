@@ -55,7 +55,7 @@ static inline size_t service_status_notice_list(const ServiceStatusNotices& n,
     add(n.underUserProfile, "user-folder install",
         "Green Curve is running from a user account folder, so restricted or "
         "standard users on this PC cannot launch it. Reinstall under an "
-        "all-users folder such as %ProgramFiles%\\greencurve to make it "
+        "all-users folder such as %ProgramFiles%\\Green Curve to make it "
         "available to all users.", true);
     return count;
 }

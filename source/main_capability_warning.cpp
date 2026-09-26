@@ -53,7 +53,8 @@ static void show_limited_control_surface_warning(HWND parent) {
             "memory clock change here targets system RAM rather than a separate "
             "VRAM pool.\n\n"
             "Check applied clocks and offsets carefully after changes.\n\n"
-            "No disables this warning.",
+            "Show this warning again on next launch?\n"
+            "(Select No to disable this warning)",
             g_app.gpuName[0] ? g_app.gpuName : "NVIDIA GPU");
     } else {
         StringCchPrintfA(message, ARRAY_COUNT(message),
@@ -66,7 +67,8 @@ static void show_limited_control_surface_warning(HWND parent) {
             "target (TGP) and often the fan under its own firmware.\n\n"
             "Everything else still works, and Green Curve will attempt the domains that "
             "did answer.\n\n"
-            "No disables this warning.",
+            "Show this warning again on next launch?\n"
+            "(Select No to disable this warning)",
             g_app.gpuName[0] ? g_app.gpuName : "NVIDIA GPU", surfaceName, missingList);
     }
 

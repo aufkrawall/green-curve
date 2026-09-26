@@ -4,9 +4,9 @@ static bool show_best_guess_support_warning(HWND parent) {
     char message[768] = {};
     StringCchPrintfA(message, ARRAY_COUNT(message),
         "Detected an unrecognized NVIDIA GPU family (%s, %s).\n\n"
-        "Green Curve will allow best-effort support for a new NVIDIA GPU family using the fallback VF backend layout. Writes stay enabled, but this exact architecture has not been tested yet.\n\n"
+        "Green Curve will allow best-effort support for a new NVIDIA GPU family using fallback clock and voltage controls. Writes stay enabled, but this exact architecture has not been tested yet.\n\n"
         "Check applied clocks and offsets carefully after changes.\n\n"
-        "Yes continues this time. No continues and disables this warning. Cancel exits.",
+        "Continue with this GPU?\n- Yes: Continue this time\n- No: Continue and do not show this warning again\n- Cancel: Exit",
         gpu_family_name(g_app.gpuFamily),
         g_app.gpuName[0] ? g_app.gpuName : "NVIDIA GPU");
 
@@ -33,7 +33,7 @@ static bool show_best_guess_support_warning(HWND parent) {
             WCHAR content[2048] = {};
             StringCchPrintfW(content, ARRAY_COUNT(content),
                 L"Detected an unrecognized NVIDIA GPU family (%hs, %hs).\n\n"
-                L"Green Curve will allow best-effort support for a new NVIDIA GPU family using the fallback VF backend layout. Writes stay enabled, but this exact architecture has not been tested yet.\n\n"
+                L"Green Curve will allow best-effort support for a new NVIDIA GPU family using fallback clock and voltage controls. Writes stay enabled, but this exact architecture has not been tested yet.\n\n"
                 L"Check applied clocks and offsets carefully after changes.",
                 gpu_family_name(g_app.gpuFamily),
                 g_app.gpuName[0] ? g_app.gpuName : "NVIDIA GPU");

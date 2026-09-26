@@ -113,9 +113,9 @@ static DWORD WINAPI gc_worker_thread(LPVOID parameter) {
         if (ok) {
             StringCchCopyA(wizard->resultMessage, GC_ARRAY_COUNT(wizard->resultMessage),
                            folderLeftForRestart
-                               ? "Green Curve has been removed. Its program folder, which still holds the "
-                                 "running uninstaller, is deleted at the next restart. Files that were not "
-                                 "part of this installation were left in place, and your saved profiles are untouched."
+                               ? "Green Curve has been removed. Its program folder is deleted at the next restart. "
+                                 "Files that were not part of this installation were left in place, and your "
+                                 "saved profiles are untouched."
                                : "Green Curve has been removed. Files that were not part of this installation were left in "
                                  "place, and your saved profiles are untouched.");
         } else {
@@ -138,12 +138,12 @@ static DWORD WINAPI gc_worker_thread(LPVOID parameter) {
             if (wizard->install.settingsRestoreAttempted) {
                 restoreNote = wizard->install.settingsRestored
                     ? "\n\nYour previous overclock, power, and fan settings were applied again."
-                    : "\n\nYour previous settings could NOT be applied again - open Green Curve and "
-                      "press Apply. greencurve_cli_log.txt in %LOCALAPPDATA%\\Green Curve says why.";
+                    : "\n\nYour previous settings could not be reapplied. Open Green Curve and "
+                      "click Apply Changes. For details, see greencurve_cli_log.txt in %LOCALAPPDATA%\\Green Curve.";
             } else if (wizard->install.settingsCaptureResult ==
                        GC_SETTINGS_CAPTURE_FAILED) {
                 restoreNote = "\n\nSetup could not confirm or save previously applied settings. "
-                              "If you had settings active, open Green Curve and press Apply. "
+                              "If you had settings active, open Green Curve and click Apply Changes. "
                               "See the setup failure log for the capture result.";
             }
             snprintf(wizard->resultMessage, sizeof(wizard->resultMessage),
