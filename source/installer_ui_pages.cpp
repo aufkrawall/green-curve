@@ -236,8 +236,7 @@ void gc_paint(GcWizard* wizard, HDC dc, const RECT* client) {
                 char note[512] = {};
                 snprintf(note, sizeof(note),
                          "Green Curve %s is already installed in %s. Keep that folder to upgrade in "
-                         "place, or choose a different folder to move the installation (existing files will "
-                         "not be deleted).",
+                         "place, or choose a different folder to move the installation.",
                          wizard->prior.version[0] ? wizard->prior.version : "(unknown version)",
                          wizard->prior.directory);
                 gc_draw_text(dc, wizard->fonts.small_text, COL_PENDING, note,
