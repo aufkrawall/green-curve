@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tarfile
 
+import release_post
 import release_prep
 import toolchain
 from arch_package import build_arch_package  # noqa: F401 (re-exported for build.py)
@@ -327,6 +328,7 @@ def check_all(ctx, require_text):
     These describe build.py's packaging path but live beside the manifest they
     protect, which also keeps the build script under its size ratchet."""
     release_prep.check_repo(ctx.SCRIPT_DIR)
+    release_post.run_self_tests()
     build_script = os.path.join(ctx.SCRIPT_DIR, "build.py")
     self_path = os.path.join(ctx.SCRIPT_DIR, "tools", "release_manifest.py")
     require_text(build_script, "def package_release_archive",
