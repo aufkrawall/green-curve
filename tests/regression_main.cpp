@@ -2747,6 +2747,19 @@ static int run_all_tests(int argc, char** argv) {
         if (gc_update_restore_decide("0.26.0", "0.26.0",
                                      GC_UPDATE_RESTORE_MAX_AGE_SECONDS + 1) !=
             GC_UPDATE_RESTORE_DISCARD) return 5221;
+
+        // 0.27.0 release verification: exact, no-patch, failed-install, and freshness handoffs.
+        if (gc_update_restore_decide("0.27.0", "0.27.0", 30) !=
+            GC_UPDATE_RESTORE_APPLY) return 5907;
+        if (gc_update_restore_decide("0.27.0", "0.27", 30) !=
+            GC_UPDATE_RESTORE_APPLY) return 5908;
+        if (gc_update_restore_decide("0.27", "0.27.0", 30) !=
+            GC_UPDATE_RESTORE_APPLY) return 5909;
+        if (gc_update_restore_decide("0.27.0", "0.26.0", 30) !=
+            GC_UPDATE_RESTORE_DISCARD) return 5910;
+        if (gc_update_restore_decide("0.27.0", "0.27.0",
+                                     GC_UPDATE_RESTORE_MAX_AGE_SECONDS + 1) !=
+            GC_UPDATE_RESTORE_DISCARD) return 5922;
     }
 
     // F-08-001: IPC object size and field layout sanity
@@ -14116,6 +14129,70 @@ static int run_all_tests_final() {
                                            GC_UPDATE_ARCH_ARM64, expected026,
                                            sizeof(expected026)) ||
             strcmp(expected026, release026Arm64->file) != 0) return 4326;
+    }
+
+    {
+        // 0.27.0 release candidate manifest verification: must offer 0.27.0 to all
+        // public installed versions including 0.26.0, preserve literal version in
+        // setup filenames, and reject higher versions.
+        static const char k027Manifest[] =
+            "format=1\n"
+            "version=0.27.0\n"
+            "x64_file=greencurve-0.27.0-windows-x64-setup.exe\n"
+            "x64_size=200000\n"
+            "x64_sha256=09931428a6e4293292cfc1be8e490d26a52fc9713b61cb84175c40802f2d7cfe\n"
+            "arm64_file=greencurve-0.27.0-windows-arm64-setup.exe\n"
+            "arm64_size=300000\n"
+            "arm64_sha256=94cf3d99cd91075f246efa1de0363323e5ebf06859c5eec940b6bacac4f8ec3a\n";
+        GcUpdateManifest release027;
+        gc_update_manifest_parse(k027Manifest, strlen(k027Manifest),
+                                 &release027);
+        if (!release027.valid || release027.hasMinimumFrom) return 5911;
+        static const char* const kPublicInstalled027[] = {
+            "0.23", "0.23.1", "0.24.0", "0.25.0", "0.25.1", "0.25.2", "0.26.0"
+        };
+        for (size_t vi = 0;
+             vi < sizeof(kPublicInstalled027) / sizeof(kPublicInstalled027[0]); vi++) {
+            GcUpdateVersion installed;
+            gc_update_version_parse(kPublicInstalled027[vi], &installed);
+            if (!installed.valid) return 5912;
+            if (gc_update_decide(&release027, &installed, GC_UPDATE_ARCH_X64) !=
+                GC_UPDATE_DECISION_AVAILABLE) return 5913;
+            if (gc_update_decide(&release027, &installed, GC_UPDATE_ARCH_ARM64) !=
+                GC_UPDATE_DECISION_AVAILABLE) return 5914;
+        }
+        GcUpdateVersion installed027Exact;
+        gc_update_version_parse("0.27.0", &installed027Exact);
+        if (gc_update_decide(&release027, &installed027Exact, GC_UPDATE_ARCH_X64) !=
+            GC_UPDATE_DECISION_UP_TO_DATE) return 5915;
+        GcUpdateVersion installed027NoPatch;
+        gc_update_version_parse("0.27", &installed027NoPatch);
+        if (gc_update_decide(&release027, &installed027NoPatch,
+                             GC_UPDATE_ARCH_X64) !=
+            GC_UPDATE_DECISION_UP_TO_DATE) return 5916;
+        GcUpdateVersion installed028;
+        gc_update_version_parse("0.28", &installed028);
+        if (gc_update_decide(&release027, &installed028, GC_UPDATE_ARCH_X64) !=
+            GC_UPDATE_DECISION_REJECTED) return 5917;
+        const GcUpdateAsset* release027X64 =
+            gc_update_select_asset(&release027, GC_UPDATE_ARCH_X64);
+        if (!release027X64 ||
+            strcmp(release027X64->file,
+                   "greencurve-0.27.0-windows-x64-setup.exe") != 0) return 5918;
+        const GcUpdateAsset* release027Arm64 =
+            gc_update_select_asset(&release027, GC_UPDATE_ARCH_ARM64);
+        if (!release027Arm64 ||
+            strcmp(release027Arm64->file,
+                   "greencurve-0.27.0-windows-arm64-setup.exe") != 0) return 5919;
+        char expected027[GC_UPDATE_ASSET_NAME_MAX_CHARS] = {};
+        if (!gc_update_expected_asset_name(release027.version.text,
+                                           GC_UPDATE_ARCH_X64, expected027,
+                                           sizeof(expected027)) ||
+            strcmp(expected027, release027X64->file) != 0) return 5920;
+        if (!gc_update_expected_asset_name(release027.version.text,
+                                           GC_UPDATE_ARCH_ARM64, expected027,
+                                           sizeof(expected027)) ||
+            strcmp(expected027, release027Arm64->file) != 0) return 5921;
     }
 
     // --- Manifest parsing and binding (4120-4149) ---------------------
