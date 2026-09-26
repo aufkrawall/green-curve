@@ -3,10 +3,11 @@
   verbatim: release.yml extracts the "## <VERSION>" section with awk.
 
   Write to be SCANNED.  Reading only the bold lead of each bullet must tell you
-  what changed.
+  what area changed, with the description in regular font.
 
   - One bullet per user-visible change; one line where possible, never > two.
-  - The bold lead is a complete sentence and stands alone.
+  - Use topic-lead bolding: "- **Topic:** description.", or a bold sentence
+    followed by regular-font detail. Avoid all-bold bullets where nothing stands out.
   - Under ~400 words per release.  No nested bullets, no paragraphs of prose.
   - Group user-visible changes under category subheadings: "### New",
     "### Improved", "### Fixed", "### Removed" (and "### Changed" / "### Security"
@@ -32,39 +33,39 @@ Setup, crash recovery, and Apply reliability improve in this release.
 
 ### New
 
-- **Setup now supports more installation paths across any drive.** Installations are no longer restricted to Program Files; custom locations are allowed with fewer restrictions, prompting for security acknowledgment if a chosen path has weak permissions.
-- **Windows local source builds now build both compiler variants.** Running `build.py` locally on Windows builds both MSVC-ABI and release toolchain artifacts in separate folders (does not affect release packages).
+- **Custom install paths:** setup now supports installation paths across any drive. Custom locations are allowed with fewer restrictions, prompting for security acknowledgment if a chosen path has weak permissions.
+- **Dual compiler builds:** running `build.py` locally on Windows now builds both MSVC-ABI and release toolchain artifacts in separate folders (does not affect release packages).
 
 ### Improved
 
-- **Windows binaries now omit several patterns that can contribute to antivirus false alarms.** Heuristic detections remain possible, and exclusions may still be needed.
-- **Windows binaries built with the Visual Studio toolchain now use link-time optimization and omit a debugger-detection import.** Local and CI builds only; release packages are unaffected.
-- **Service install and removal failures now explain why they failed.**
-- **Updates now warn if applied settings could not be saved for restoration.**
-- **The selected GPU now supplies its own memory offset reading.**
-- **The uninstaller is now smaller and named `greencurve-uninstall.exe`.**
+- **Antivirus heuristics:** Windows binaries now omit several patterns that contribute to false alarms. Heuristic detections remain possible, and exclusions may still be needed.
+- **MSVC optimization:** binaries built with the Visual Studio toolchain now use link-time optimization and omit a debugger-detection import (local and CI builds only).
+- **Service management:** service install and removal failures now explain why they failed.
+- **Update warnings:** updates now warn if applied settings could not be saved for restoration.
+- **GPU telemetry:** the selected GPU now supplies its own memory offset reading.
+- **Uninstaller footprint:** uninstaller is now smaller and named `greencurve-uninstall.exe`.
 
 ### Fixed
 
-- **Pascal GPUs no longer fail profile switching or curve limits due to unsupported hardware clock locks.**
-- **Changing only the power limit no longer resets other GPU settings.**
-- **Slow applies under load no longer end with an unknown outcome.**
-- **Reset no longer reports success while a clock lock may remain.**
-- **Profiles with a lock below an earlier curve point are refused before anything changes.**
-- **Auto-profile rules with non-English characters keep matching after a restart.**
-- **A failing automatic profile switch now backs off instead of retrying every second.**
-- **Linux now holds a fixed fan speed when the driver takes the fan back.**
-- **A crashed service now returns custom fans to driver control.** On Windows, it also returns the GPU to stock.
-- **A service stuck in the GPU driver now restarts itself.**
-- **Repeated fan-control errors no longer hang the service.**
-- **Custom fans return to driver control during updates.**
-- **Slow service starts and stops are no longer mistaken for failures.**
-- **More driver-update crashes are now recovered, including on Windows on Arm.**
-- **The tray now keeps the applied profile's name.**
-- **A failed upgrade now restores the previous installation.**
-- **A failed fresh install now removes the folder it created.**
-- **Moving an installation now removes its old folder when empty.**
-- **Upgrading now removes the old `uninstall.exe` when it is left behind.**
+- **Pascal GPUs:** profile switching and curve limits no longer fail due to unsupported hardware clock locks.
+- **Power limit:** changing only the power limit no longer resets other GPU settings.
+- **Apply reliability:** slow applies under load no longer end with an unknown outcome.
+- **Stock reset:** reset no longer reports success while a clock lock may remain.
+- **Curve validation:** profiles with a lock below an earlier curve point are refused before anything changes.
+- **Auto-profile matching:** rules with non-English characters keep matching after a restart.
+- **Auto-profile retry:** a failing automatic profile switch now backs off instead of retrying every second.
+- **Linux fans:** daemon now holds a fixed fan speed when the driver takes the fan back.
+- **Crash recovery:** a crashed service now returns custom fans to driver control (and returns the GPU to stock on Windows).
+- **Service watchdog:** a service stuck in the GPU driver now restarts itself.
+- **Fan control:** repeated hardware errors no longer hang the service.
+- **Update safety:** custom fans return to driver control during updates.
+- **Service lifecycle:** slow service starts and stops are no longer mistaken for failures.
+- **Driver recovery:** more driver-update crashes are now recovered, including on Windows on Arm.
+- **System tray:** icon and tooltip now keep the applied profile's name.
+- **Upgrade rollback:** a failed upgrade now restores the previous installation.
+- **Install rollback:** a failed fresh install now removes the folder it created.
+- **Move cleanup:** moving an installation now removes its old folder when empty.
+- **In-place upgrades:** now remove the legacy `uninstall.exe` left behind by older versions.
 
 ### Compatibility notes
 
