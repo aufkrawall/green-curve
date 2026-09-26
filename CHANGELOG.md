@@ -80,7 +80,10 @@ Setup, crash recovery, and Apply reliability improve in this release.
 
 - **Windows:** use `setup.exe` to install or upgrade, or `.7z` for a portable copy.
 - **Linux:** install the Arch package, or extract `.tar.xz` and run `greencurve-setup.sh`.
-- Packages include SHA-256 files and GitHub build attestations. Verify with:
+- Packages include SHA-256 files and GitHub build attestations:
+  [![Attestation](https://img.shields.io/badge/GitHub-Attestation_Verified-brightgreen?logo=github)](https://github.com/aufkrawall/green-curve/actions/attestations)
+
+  Verify with:
 
   ```bash
   gh attestation verify <artifact> --repo aufkrawall/green-curve
