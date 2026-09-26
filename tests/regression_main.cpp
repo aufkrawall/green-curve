@@ -15174,6 +15174,19 @@ static int run_all_tests_final() {
         if (options.settingsCaptureHandledByGui) return 5799;
         gc_installer_parse_options(3, handoff, &options);
         if (!options.valid || !options.settingsCaptureHandledByGui) return 5800;
+        if (!gc_installer_settings_capture_handled_by_gui(&options)) return 6474;
+        if (gc_installer_settings_capture_handled_by_gui(nullptr)) return 6475;
+        GcInstallerOptions defaultOpts = {};
+        if (gc_installer_settings_capture_handled_by_gui(&defaultOpts)) return 6476;
+
+        // Legacy 0.26.0 in-app updater command line: /S --launch --launch-session <id>
+        // (passed --launch-session without the newer --settings-captured-by-gui flag).
+        const char* legacyUpdater[] = {"--silent", "--launch", "--launch-session", "1"};
+        GcInstallerOptions legacyOpts = {};
+        gc_installer_parse_options(4, legacyUpdater, &legacyOpts);
+        if (!legacyOpts.valid || !legacyOpts.hasLaunchSession) return 6477;
+        if (legacyOpts.settingsCaptureHandledByGui) return 6478;
+        if (!gc_installer_settings_capture_handled_by_gui(&legacyOpts)) return 6479;
         gc_installer_parse_options(1, invalidHandoff, &options);
         if (options.valid) return 5801;
         gc_installer_parse_options(2, noLaunch, &options);

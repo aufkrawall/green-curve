@@ -110,7 +110,14 @@ static int gc_run_silent_install(const GcInstallerOptions* options, const GcPrio
                                  const char* defaultDirectory) {
     GcInstallContext context = {};
     gc_install_build_plan(options, prior, defaultDirectory, &context.plan);
-    context.settingsCaptureHandledByGui = options->settingsCaptureHandledByGui;
+    // An update launched with --launch-session is always driven by the updater
+    // service on behalf of an interactive user session where the GUI captures
+    // the active settings before setup runs and restores them upon relaunch.
+    // Older services (e.g. 0.26.0) did not pass --settings-captured-by-gui
+    // explicitly; gc_installer_settings_capture_handled_by_gui preserves seamless
+    // backward compatibility across version boundaries.
+    context.settingsCaptureHandledByGui = options->settingsCaptureHandledByGui ||
+                                          gc_installer_settings_capture_handled_by_gui(options);
     if (!context.plan.valid) {
         gc_log_fail("silent: %s", context.plan.error);
         return GC_EXIT_BAD_ARGUMENTS;

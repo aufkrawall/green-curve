@@ -272,6 +272,16 @@ static inline bool gc_install_toggle_value(GcInstallerToggle requested,
     return freshDefault;
 }
 
+// Whether settings capture is handled by the update GUI rather than setup.
+// True if the explicit --settings-captured-by-gui flag was passed, or if
+// --launch-session was passed (which older updater services, e.g. 0.26.0,
+// passed on GUI-driven updates before the explicit flag existed).
+static inline bool gc_installer_settings_capture_handled_by_gui(
+    const GcInstallerOptions* options) {
+    if (!options) return false;
+    return options->settingsCaptureHandledByGui || options->hasLaunchSession;
+}
+
 // Resolve the complete plan.  `defaultDirectory` is the fresh-install fallback
 // (normally %ProgramFiles%\Green Curve).
 static inline void gc_install_build_plan(const GcInstallerOptions* options,
