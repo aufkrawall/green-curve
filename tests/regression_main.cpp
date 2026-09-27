@@ -15186,7 +15186,21 @@ static int run_all_tests_final() {
         gc_installer_parse_options(4, legacyUpdater, &legacyOpts);
         if (!legacyOpts.valid || !legacyOpts.hasLaunchSession) return 6477;
         if (legacyOpts.settingsCaptureHandledByGui) return 6478;
-        if (!gc_installer_settings_capture_handled_by_gui(&legacyOpts)) return 6479;
+        if (!gc_installer_settings_capture_handled_by_gui(&legacyOpts, true)) return 6479;
+        // A manual silent setup can use exactly the same relaunch arguments;
+        // they must not suppress capture without a verified service parent.
+        if (gc_installer_settings_capture_handled_by_gui(&legacyOpts)) return 6680;
+        if (gc_installer_settings_capture_handled_by_gui(&legacyOpts, false)) return 6681;
+        // The old updater also selected --no-launch when no GUI was closed.
+        const char* legacyNoLaunch[] = {"--silent", "--no-launch"};
+        gc_installer_parse_options(2, legacyNoLaunch, &legacyOpts);
+        if (!legacyOpts.valid || legacyOpts.hasLaunchSession ||
+            !gc_installer_settings_capture_handled_by_gui(&legacyOpts, true)) return 6682;
+        if (gc_installer_settings_capture_handled_by_gui(&legacyOpts, false)) return 6683;
+        gc_installer_parse_options(3, valid, &legacyOpts);
+        if (gc_installer_settings_capture_handled_by_gui(&legacyOpts, true)) return 6684;
+        if (gc_installer_settings_capture_handled_by_gui(nullptr, true)) return 6685;
+        if (!gc_installer_settings_capture_handled_by_gui(&options, false)) return 6686;
         gc_installer_parse_options(1, invalidHandoff, &options);
         if (options.valid) return 5801;
         gc_installer_parse_options(2, noLaunch, &options);

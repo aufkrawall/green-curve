@@ -789,8 +789,22 @@ def check_all(ctx, require_text, forbid_text):
                  "capture == GC_SETTINGS_CAPTURE_FAILED",
                  "the updater warns before an update that cannot preserve settings")
     require_text(source("installer_main.cpp"),
-                 "context.settingsCaptureHandledByGui = options->settingsCaptureHandledByGui",
+                 "gc_installer_settings_capture_handled_by_gui(options, legacyServiceHandoff)",
                  "the updater setup child does not retry an unauthorized session-0 capture")
+    main = source("installer_main.cpp")
+    for proof in ("gc_setup_launched_by_service()", "if (sessionId != 0) return false;",
+                  "entry.th32ParentProcessID", "CompareFileTime(&parentCreated, &setupCreated) >= 0",
+                  "WaitForSingleObject(parent.get(), 0) != WAIT_TIMEOUT",
+                  "status.dwCurrentState == SERVICE_RUNNING && status.dwProcessId == parentId"):
+        require_text(main, proof, "legacy handoff requires the live service launch origin")
+    capture_anchor = "static void gc_capture_active_settings("
+    ctx.require_text_in_operation(apply_shard, capture_anchor,
+                                  "context->settingsCaptureResult = GC_SETTINGS_CAPTURE_FAILED;",
+                                  "unhandled capture starts with an uncertain result")
+    ctx.require_text_in_operation(apply_shard, capture_anchor, 'gc_log_fail("capture: session 0',
+                                  "unhandled session-0 capture retains a failure diagnostic")
+    ctx.forbid_text_in_operation(apply_shard, capture_anchor, "GC_SETTINGS_CAPTURE_NOT_REQUESTED",
+                                 "session isolation does not prove that capture was unnecessary")
     # Ordering is the correctness property of an upgrade: capture the live
     # settings while the old build is still running, then stop it, then replace
     # its files.  Anchored to gc_install_execute() so the checks read call order

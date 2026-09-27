@@ -14,6 +14,9 @@
 // reached through the same plan and the same executor, so the two cannot drift.
 
 #include "installer_common.h"
+#if !defined(GREEN_CURVE_UNINSTALLER)
+#include <tlhelp32.h>
+#endif
 
 // Exit codes.  Documented because an updater will branch on them.
 #define GC_EXIT_OK 0
@@ -106,18 +109,80 @@ static bool gc_build_argument_vector(GcArgumentVector* vector, char* error, size
 // ---------------------------------------------------------------------------
 
 #if !defined(GREEN_CURVE_UNINSTALLER)
+// Legacy services did not pass the capture handoff flag. Verify the launch
+// origin while that service is still running, before setup stops anything.
+static bool gc_setup_launched_by_service() {
+    DWORD sessionId = 0;
+    if (!ProcessIdToSessionId(GetCurrentProcessId(), &sessionId)) {
+        gc_log_step("capture handoff: session query failed (error %lu)", GetLastError());
+        return false;
+    }
+    if (sessionId != 0) return false;
+
+    GcScopedHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    PROCESSENTRY32W entry = {};
+    entry.dwSize = sizeof(entry);
+    if (!snapshot.valid() || !Process32FirstW(snapshot.get(), &entry)) {
+        gc_log_step("capture handoff: process snapshot failed (error %lu)", GetLastError());
+        return false;
+    }
+    DWORD parentId = 0;
+    do {
+        if (entry.th32ProcessID == GetCurrentProcessId()) {
+            parentId = entry.th32ParentProcessID;
+            break;
+        }
+    } while (Process32NextW(snapshot.get(), &entry));
+    if (!parentId) {
+        gc_log_step("capture handoff: setup parent could not be identified");
+        return false;
+    }
+
+    GcScopedHandle parent(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+                                      FALSE, parentId));
+    FILETIME parentCreated = {}, setupCreated = {}, exited = {}, kernel = {}, user = {};
+    if (!parent.valid() ||
+        !GetProcessTimes(parent.get(), &parentCreated, &exited, &kernel, &user) ||
+        !GetProcessTimes(GetCurrentProcess(), &setupCreated, &exited, &kernel, &user)) {
+        gc_log_step("capture handoff: parent lifetime query failed (error %lu)", GetLastError());
+        return false;
+    }
+    // A recycled parent PID must not identify a service that started later.
+    if (CompareFileTime(&parentCreated, &setupCreated) >= 0 ||
+        WaitForSingleObject(parent.get(), 0) != WAIT_TIMEOUT) {
+        gc_log_step("capture handoff: parent is no longer the live launching process");
+        return false;
+    }
+
+    GcScopedServiceHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT));
+    GcScopedServiceHandle service(scm.valid()
+        ? OpenServiceW(scm.get(), GC_SETUP_SERVICE_NAME, SERVICE_QUERY_STATUS) : nullptr);
+    SERVICE_STATUS_PROCESS status = {};
+    DWORD needed = 0;
+    if (!service.valid() ||
+        !QueryServiceStatusEx(service.get(), SC_STATUS_PROCESS_INFO,
+                              (LPBYTE)&status, sizeof(status), &needed)) {
+        gc_log_step("capture handoff: service status query failed (error %lu)", GetLastError());
+        return false;
+    }
+    bool matched = status.dwCurrentState == SERVICE_RUNNING && status.dwProcessId == parentId;
+    gc_log_step("capture handoff: running service is setup parent=%d", matched ? 1 : 0);
+    return matched;
+}
+#endif
+
+#if !defined(GREEN_CURVE_UNINSTALLER)
 static int gc_run_silent_install(const GcInstallerOptions* options, const GcPriorInstall* prior,
                                  const char* defaultDirectory) {
     GcInstallContext context = {};
     gc_install_build_plan(options, prior, defaultDirectory, &context.plan);
-    // An update launched with --launch-session is always driven by the updater
-    // service on behalf of an interactive user session where the GUI captures
-    // the active settings before setup runs and restores them upon relaunch.
-    // Older services (e.g. 0.26.0) did not pass --settings-captured-by-gui
-    // explicitly; gc_installer_settings_capture_handled_by_gui preserves seamless
-    // backward compatibility across version boundaries.
-    context.settingsCaptureHandledByGui = options->settingsCaptureHandledByGui ||
-                                          gc_installer_settings_capture_handled_by_gui(options);
+    bool legacyServiceHandoff = !options->settingsCaptureHandledByGui &&
+                               gc_setup_launched_by_service();
+    context.settingsCaptureHandledByGui =
+        gc_installer_settings_capture_handled_by_gui(options, legacyServiceHandoff);
+    gc_log_step("capture handoff: explicit=%d legacy-service=%d handled=%d",
+                options->settingsCaptureHandledByGui ? 1 : 0,
+                legacyServiceHandoff ? 1 : 0, context.settingsCaptureHandledByGui ? 1 : 0);
     if (!context.plan.valid) {
         gc_log_fail("silent: %s", context.plan.error);
         return GC_EXIT_BAD_ARGUMENTS;

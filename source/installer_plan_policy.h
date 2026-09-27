@@ -273,13 +273,14 @@ static inline bool gc_install_toggle_value(GcInstallerToggle requested,
 }
 
 // Whether settings capture is handled by the update GUI rather than setup.
-// True if the explicit --settings-captured-by-gui flag was passed, or if
-// --launch-session was passed (which older updater services, e.g. 0.26.0,
-// passed on GUI-driven updates before the explicit flag existed).
+// Older updater services omitted the explicit flag in both launch modes.
+// The caller must establish that the running service launched setup before
+// inferring its GUI handoff. --launch-session alone only requests a relaunch.
 static inline bool gc_installer_settings_capture_handled_by_gui(
-    const GcInstallerOptions* options) {
+    const GcInstallerOptions* options, bool launchedByService = false) {
     if (!options) return false;
-    return options->settingsCaptureHandledByGui || options->hasLaunchSession;
+    return options->settingsCaptureHandledByGui ||
+           (options->silent && launchedByService);
 }
 
 // Resolve the complete plan.  `defaultDirectory` is the fresh-install fallback

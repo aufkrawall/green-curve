@@ -100,14 +100,12 @@ static void gc_capture_active_settings(GcInstallContext* context) {
 
     DWORD currentSessionId = 0;
     if (ProcessIdToSessionId(GetCurrentProcessId(), &currentSessionId) && currentSessionId == 0) {
-        // Setup running as LocalSystem in Session 0 cannot query the service
-        // for live user settings (service control is strictly restricted to
-        // the active interactive session). For updater-driven installs, the GUI
-        // in the user session owns capture and restore; for headless/unattended
-        // service runs, there is no interactive session to query.
-        gc_log_step("capture: running in non-interactive session 0; service settings "
-                    "export requires an active user session (skipped)");
-        context->settingsCaptureResult = GC_SETTINGS_CAPTURE_NOT_REQUESTED;
+        // A confirmed updater handoff bypasses this function. Other Session 0
+        // launches cannot export settings, but may still interrupt active user
+        // intent. Preserve the failed result and its retained diagnostic.
+        gc_log_fail("capture: session 0 cannot export active user settings and no "
+                    "GUI handoff was confirmed; previous settings will not be "
+                    "re-applied. Open Green Curve and click Apply Changes if needed.");
         return;
     }
 
