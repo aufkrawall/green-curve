@@ -5,17 +5,20 @@
 
 Implements sections 5.4, 5.5, and 5.6 of update-procedure.md:
 1. Downloads published Windows setup executables and sha256 checksums from GitHub.
-2. Cross-checks SHA-256 digests against release .sha256 assets and GitHub asset metadata.
-3. Generates the floorless manifest and ECDSA signature via tools/update_signing.py prepare.
-4. Verifies the signature against GC_UPDATE_PUBLIC_KEY_ACTIVE in source/update_verify_keys.h.
-5. Uploads greencurve-update-manifest.txt and greencurve-update-manifest.sig.
-6. Performs anonymous post-publication checks:
+2. Requires both installers and checks their SHA-256 digests against release .sha256 assets.
+3. Verifies both installers' provenance against the reviewed release commit and workflow.
+4. Generates the floorless manifest and ECDSA signature via tools/update_signing.py prepare.
+5. Verifies the signature against GC_UPDATE_PUBLIC_KEY_ACTIVE in source/update_verify_keys.h.
+6. Uploads greencurve-update-manifest.txt and greencurve-update-manifest.sig.
+7. Performs anonymous post-publication checks:
    - Fetches manifest and signature from anonymous releases/latest/download URLs.
    - Verifies signature over network bytes against GC_UPDATE_PUBLIC_KEY_ACTIVE.
    - Verifies byte equality between local and fetched manifest/sig.
    - Downloads setup executables from signed manifest URLs; verifies sizes, hashes, and allowlisted hosts.
-   - Verifies build provenance attestation via gh attestation verify.
-   - Confirms release page body equals the CHANGELOG.md extraction.
+   - Reports whether the release page body equals the CHANGELOG.md extraction.
+
+The expected commit comes from the local release tag, or --source-commit with
+the full reviewed SHA. GitHub's release tag must resolve to that same commit.
 """
 
 import argparse
@@ -37,6 +40,8 @@ ALLOWLISTED_REDIRECT_HOSTS = frozenset({
     "objects.githubusercontent.com",
     "github.com",
 })
+INSTALLER_ARCHES = ("x64", "arm64")
+RELEASE_WORKFLOW = ".github/workflows/release.yml"
 
 
 def get_default_key_path():
@@ -86,9 +91,63 @@ def run_command(cmd, cwd=None):
     return res.stdout.strip()
 
 
-def run_post_release(repo, version, key_path, root_dir, dry_run=False):
+def validate_commit_sha(commit):
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", commit):
+        raise ValueError("release source commit must be a full 40-character SHA")
+    return commit.lower()
+
+
+def reviewed_release_commit(root, version, source_commit=None):
+    if source_commit is not None:
+        return validate_commit_sha(source_commit)
+    try:
+        commit = run_command(["git", "rev-parse", "--verify",
+                              f"refs/tags/{version}^{{commit}}"], cwd=root)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"reviewed local release tag {version} is unavailable; "
+                         "provide --source-commit with the full reviewed SHA") from exc
+    return validate_commit_sha(commit)
+
+
+def remote_release_commit(repo, version):
+    document = json.loads(run_command(["gh", "api", f"repos/{repo}/git/ref/tags/{version}"]))
+    seen = set()
+    # Annotated tags can target other tags. Bound traversal and reject cycles;
+    # release.targetCommitish can be a moving branch, so it is not used here.
+    for _ in range(16):
+        obj = document.get("object", {})
+        sha = validate_commit_sha(obj.get("sha"))
+        if obj.get("type") == "commit":
+            return sha
+        if obj.get("type") != "tag" or sha in seen:
+            raise ValueError("release tag does not resolve to a unique commit")
+        seen.add(sha)
+        document = json.loads(run_command(["gh", "api", f"repos/{repo}/git/tags/{sha}"]))
+    raise ValueError("release tag chain exceeds the supported depth")
+
+
+def verify_installer_provenance(path, repo, commit):
+    print(f"  {path.name}: verifying {RELEASE_WORKFLOW} provenance at {commit}")
+    run_command(["gh", "attestation", "verify", str(path), "--repo", repo,
+                 "--source-digest", commit,
+                 "--signer-workflow", f"{repo}/{RELEASE_WORKFLOW}"])
+    print(f"  {path.name}: release provenance verified")
+
+
+def run_post_release(repo, version, key_path, root_dir, dry_run=False, source_commit=None):
     root = Path(root_dir)
+    if not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", version):
+        raise ValueError("release version must be numeric MAJOR.MINOR[.PATCH]")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", repo):
+        raise ValueError("release repository must have owner/repo form")
     print(f"=== Post-release publication automation for {version} on {repo} ===")
+
+    expected_commit = reviewed_release_commit(root, version, source_commit)
+    published_commit = remote_release_commit(repo, version)
+    if published_commit != expected_commit:
+        raise ValueError(f"release source commit mismatch: reviewed {expected_commit}, "
+                         f"GitHub tag {published_commit}")
+    print(f"Release tag matches reviewed source commit: {expected_commit}")
 
     # 1. Verify release exists on origin
     print("Checking GitHub release status...")
@@ -98,6 +157,15 @@ def run_post_release(repo, version, key_path, root_dir, dry_run=False):
         raise ValueError(f"release {version} is a draft; cannot issue updater manifest for draft release")
     if rel_info.get("isPrerelease"):
         raise ValueError(f"release {version} is marked pre-release; cannot issue updater manifest for pre-release")
+
+    installer_names = {arch: f"greencurve-{version}-windows-{arch}-setup.exe"
+                       for arch in INSTALLER_ARCHES}
+    asset_names = {asset["name"] for asset in rel_info.get("assets", [])}
+    required_names = {name + suffix for name in installer_names.values()
+                      for suffix in ("", ".sha256")}
+    missing = required_names - asset_names
+    if missing:
+        raise ValueError("release is missing required installer assets: " + ", ".join(sorted(missing)))
 
     active_pubkey_hex = extract_active_public_key_hex(root)
     print(f"Active public key: {active_pubkey_hex[:16]}...{active_pubkey_hex[-16:]}")
@@ -113,24 +181,33 @@ def run_post_release(repo, version, key_path, root_dir, dry_run=False):
 
         # 2. Download setup executables and checksums
         print("Downloading setup executables and .sha256 files...")
-        run_command([
-            "gh", "release", "download", version,
-            "--repo", repo,
-            "--pattern", "greencurve-*-windows-*-setup.exe",
-            "--pattern", "greencurve-*-windows-*-setup.exe.sha256",
-            "--dir", str(relbits)
-        ])
+        download = ["gh", "release", "download", version, "--repo", repo]
+        for name in installer_names.values():
+            download.extend(["--pattern", name, "--pattern", name + ".sha256"])
+        run_command(download + ["--dir", str(relbits)])
 
         # 3. Check hashes against release .sha256 assets
-        for exe_path in relbits.glob("*-setup.exe"):
+        installers = [relbits / name for name in installer_names.values()]
+        for exe_path in installers:
+            if not exe_path.is_file():
+                raise FileNotFoundError(f"missing required installer: {exe_path.name}")
             sha_file = Path(str(exe_path) + ".sha256")
             if not sha_file.exists():
                 raise FileNotFoundError(f"missing checksum file for {exe_path.name}")
-            expected_hash = sha_file.read_text(encoding="utf-8").split()[0].lower()
+            checksum_fields = sha_file.read_text(encoding="utf-8").split()
+            if not checksum_fields or not re.fullmatch(r"[0-9a-fA-F]{64}", checksum_fields[0]):
+                raise ValueError(f"invalid checksum file for {exe_path.name}")
+            expected_hash = checksum_fields[0].lower()
             actual_hash = sha256_file(exe_path)
             if actual_hash != expected_hash:
                 raise ValueError(f"hash mismatch on {exe_path.name}: expected {expected_hash}, got {actual_hash}")
             print(f"  {exe_path.name}: checksum verified ({actual_hash[:16]}...)")
+
+        # Provenance is a prerequisite to using the offline key, in dry runs
+        # too. Verify every installer that the manifest will authorize.
+        print("Verifying both installers before signing or publication...")
+        for exe_path in installers:
+            verify_installer_provenance(exe_path, repo, expected_commit)
 
         # 4. Generate manifest and signature
         print("Generating and signing update manifest...")
@@ -162,7 +239,8 @@ def run_post_release(repo, version, key_path, root_dir, dry_run=False):
             raise ValueError(f"malformed manifest text:\n{manifest_text}")
 
         if dry_run:
-            print("\n[DRY-RUN] Manifest generated and verified successfully. Skipping upload and remote verification.")
+            print("\n[DRY-RUN] Both installers' provenance and the local signature verified. "
+                  "Skipping upload and anonymous delivery verification.")
             return True
 
         # 6. Upload updater assets
@@ -174,7 +252,7 @@ def run_post_release(repo, version, key_path, root_dir, dry_run=False):
             str(sig_file)
         ])
 
-        # Confirm 19 assets
+        # Confirm updater assets
         view_assets = json.loads(run_command(["gh", "release", "view", version, "--repo", repo, "--json", "assets"]))
         asset_names = [a["name"] for a in view_assets.get("assets", [])]
         if "greencurve-update-manifest.txt" not in asset_names or "greencurve-update-manifest.sig" not in asset_names:
@@ -213,7 +291,7 @@ def run_post_release(repo, version, key_path, root_dir, dry_run=False):
                 entries[k.strip()] = v.strip()
 
         # Fetch and verify each setup installer from manifest URLs
-        for arch in ("x64", "arm64"):
+        for arch in INSTALLER_ARCHES:
             fname = entries[f"{arch}_file"]
             fsize = int(entries[f"{arch}_size"])
             fsha = entries[f"{arch}_sha256"].lower()
@@ -232,12 +310,6 @@ def run_post_release(repo, version, key_path, root_dir, dry_run=False):
             if actual_sha != fsha:
                 raise ValueError(f"{fname} SHA-256 mismatch: expected {fsha}, got {actual_sha}")
             print(f"  {arch} installer OK: size={actual_size}, host={redirect_host}")
-
-        # 8. Verify attestation
-        print("Verifying build provenance attestation...")
-        x64_exe = verify_dir / entries["x64_file"]
-        run_command(["gh", "attestation", "verify", str(x64_exe), "--repo", repo])
-        print("  gh attestation verify passed.")
 
         # 9. Verify release page body matches CHANGELOG.md extraction
         print("Verifying release notes body...")
@@ -261,6 +333,8 @@ def run_post_release(repo, version, key_path, root_dir, dry_run=False):
 
 
 def run_self_tests():
+    import release_post_tests
+
     # Test SHA-256 calculation
     with tempfile.NamedTemporaryFile(delete=False) as tf:
         tf.write(b"GreenCurveTest123")
@@ -276,6 +350,8 @@ def run_self_tests():
         assert host in ALLOWLISTED_REDIRECT_HOSTS, f"missing allowlisted host {host}"
     assert "malicious.example.com" not in ALLOWLISTED_REDIRECT_HOSTS
 
+    release_post_tests.run_tests()
+
     print("release_post self-tests passed")
     return True
 
@@ -285,7 +361,8 @@ def main():
     parser.add_argument("--version", help="Release version (defaults to VERSION file)")
     parser.add_argument("--repo", default=DEFAULT_REPO, help=f"GitHub repository (default: {DEFAULT_REPO})")
     parser.add_argument("--key", help="Path to offline update signing private key")
-    parser.add_argument("--dry-run", action="store_true", help="Download and test manifest signing locally without uploading")
+    parser.add_argument("--source-commit", help="Full reviewed release commit SHA (defaults to the local release tag)")
+    parser.add_argument("--dry-run", action="store_true", help="Verify both installers' provenance and sign locally without uploading")
     parser.add_argument("--self-test", action="store_true", help="Run internal self-tests")
     args = parser.parse_args()
 
@@ -303,7 +380,8 @@ def main():
             sys.exit("error: VERSION file not found and --version not specified")
 
     try:
-        run_post_release(args.repo, version, args.key, root_dir, dry_run=args.dry_run)
+        run_post_release(args.repo, version, args.key, root_dir,
+                         dry_run=args.dry_run, source_commit=args.source_commit)
     except Exception as e:
         sys.exit(f"error: {e}")
 

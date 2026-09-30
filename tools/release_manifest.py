@@ -329,6 +329,11 @@ def check_all(ctx, require_text):
     protect, which also keeps the build script under its size ratchet."""
     release_prep.check_repo(ctx.SCRIPT_DIR)
     release_post.run_self_tests()
+    release_workflow = os.path.join(ctx.SCRIPT_DIR, ".github", "workflows", "release.yml")
+    require_text(release_workflow, '--source-digest "$GITHUB_SHA"',
+                 "release attestations must match the exact dispatch commit")
+    require_text(release_workflow, '--signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml"',
+                 "release attestations must come from the release workflow")
     build_script = os.path.join(ctx.SCRIPT_DIR, "build.py")
     self_path = os.path.join(ctx.SCRIPT_DIR, "tools", "release_manifest.py")
     require_text(build_script, "def package_release_archive",

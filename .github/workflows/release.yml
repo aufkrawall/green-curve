@@ -212,7 +212,9 @@ jobs:
             dist/linux-x64/greencurve-${VERSION}-1-x86_64.pkg.tar.zst \
             dist/linux-arm64/greencurve-${VERSION}-1-aarch64.pkg.tar.zst \
             greencurve-${VERSION}-toolchain.json; do
-            gh attestation verify "$f" --repo "$GITHUB_REPOSITORY"
+            gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" \
+              --source-digest "$GITHUB_SHA" \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml"
           done
 
       - name: Post commit status for attestation
