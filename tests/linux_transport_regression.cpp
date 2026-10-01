@@ -144,6 +144,62 @@ int main() {
     if (!answered || busyBytes != (ssize_t)sizeof(busy) ||
         busy.status != SERVICE_STATUS_ERROR || strncmp(busy.message, "busy:", 5)) return 66;
 
+    // The client must see that refusal in BOTH orders of "daemon closes" and
+    // "client writes".  Each order is constructed explicitly; nothing here
+    // depends on scheduling.
+    {
+        ServiceRequest request = {};
+        request.magic = SERVICE_PROTOCOL_MAGIC;
+        request.version = SERVICE_PROTOCOL_VERSION;
+        request.command = SERVICE_CMD_PING;
+
+        // Close first: the request write fails with EPIPE, but the refusal is
+        // already queued and must be read rather than reported as a fault.
+        int closedFirst[2];
+        if (!pair(closedFirst)) return 67;
+        if (!daemon_answer_busy(closedFirst[0])) return 68;
+        close(closedFirst[0]);
+        DaemonIoResult sent = daemon_write_exact_with_timeout(
+            closedFirst[1], &request, sizeof(request), 1000);
+        ServiceResponse refusal = {};
+        bool recovered = sent.failure != DAEMON_IO_NONE &&
+            daemon_read_refusal_after_failed_write(closedFirst[1], &sent,
+                                                   monotonic_ms() + 1000, &refusal);
+        close(closedFirst[1]);
+        if (!recovered || refusal.status != SERVICE_STATUS_ERROR ||
+            strncmp(refusal.message, "busy:", 5)) return 69;
+
+        // Write first: the daemon closes with the request unread, which resets
+        // the connection -- the queued refusal is still delivered before it.
+        int writtenFirst[2];
+        if (!pair(writtenFirst)) return 70;
+        sent = daemon_write_exact_with_timeout(writtenFirst[1], &request,
+                                                sizeof(request), 1000);
+        if (sent.failure != DAEMON_IO_NONE) return 71;
+        if (!daemon_answer_busy(writtenFirst[0])) return 72;
+        close(writtenFirst[0]);
+        ServiceResponse queued = {};
+        DaemonIoResult received = daemon_read_exact_with_timeout(
+            writtenFirst[1], &queued, sizeof(queued), 1000);
+        close(writtenFirst[1]);
+        if (received.failure != DAEMON_IO_NONE || queued.status != SERVICE_STATUS_ERROR ||
+            strncmp(queued.message, "busy:", 5)) return 73;
+
+        // A peer that vanished WITHOUT answering is still a transport fault,
+        // and the refusal read ends at EOF instead of waiting for a deadline.
+        int silent[2];
+        if (!pair(silent)) return 74;
+        close(silent[0]);
+        sent = daemon_write_exact_with_timeout(silent[1], &request, sizeof(request), 1000);
+        ServiceResponse none = {};
+        const unsigned long long before = monotonic_ms();
+        bool invented = daemon_read_refusal_after_failed_write(
+            silent[1], &sent, before + 60000, &none);
+        const unsigned long long elapsed = monotonic_ms() - before;
+        close(silent[1]);
+        if (sent.failure == DAEMON_IO_NONE || invented || elapsed >= 60000) return 75;
+    }
+
     // An old, shorter response is decided from the complete eight-byte prefix;
     // no current-version body read is attempted.
     {

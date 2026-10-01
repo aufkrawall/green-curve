@@ -961,6 +961,8 @@ int run_clock_transition_tests();
 int run_service_install_tests();
 int run_security_audit_tests();
 int run_installer_fuzz_harness_tests();
+// Post-0.27.0 review follow-ups (tests/review_followup_tests.cpp, 6250-6269).
+int run_review_followup_tests();
 // 2026-09-24 audit follow-ups: lock/pre-tail refusal before reset, Linux fixed
 // fan maintenance (tests/apply_profile_followup_tests.cpp, 6430-6499).
 int run_apply_profile_followup_tests();
@@ -1671,6 +1673,7 @@ static int run_ownership_handback_tests() {
 int main(int argc, char** argv) {
     if (int failure = run_security_audit_tests()) return failure;
     if (int failure = run_installer_fuzz_harness_tests()) return failure;
+    if (int failure = run_review_followup_tests()) return failure;
     // Inject a refusal at every post-shutdown boundary. This is the same
     // orchestrator setup uses, with fake side effects and an observed rollback.
     // A failed stop (failure 0) is not a rollback: nothing was written yet,
@@ -14851,7 +14854,8 @@ static int run_all_tests_final() {
             variant.updateIntervalSeconds = 0;
             if (validate_service_request_for_ipc(&variant)) return 4219;
             variant = policy; variant.updateAutoCheck = GC_UPDATE_AUTO_CHECK_ON + 1;
-            if (validate_service_request_for_ipc(&variant)) return 4220;            // The boundaries themselves are accepted.
+            if (validate_service_request_for_ipc(&variant)) return 4220;
+            // The boundaries themselves are accepted.
             variant = policy;
             variant.updateIntervalSeconds = GC_UPDATE_INTERVAL_MIN_SECONDS;
             if (!validate_service_request_for_ipc(&variant)) return 4221;

@@ -443,10 +443,14 @@ static_assert(GC_WIN_ERROR_FILE_NOT_FOUND == ERROR_FILE_NOT_FOUND &&
 static void describe_service_connect_error(DWORD err, char* out, size_t outSize) {
     if (!out || outSize == 0) return;
     if (err == ERROR_ACCESS_DENIED) {
+        // The pipe ACL admits every authenticated local account, so a denial
+        // here is not "another user is active" (that is refused later, at
+        // dispatch, with its own message); it is a sandboxed, restricted or
+        // non-local caller.
         StringCchCopyA(out, outSize,
-            "Another user is currently the active GPU controller, so this "
-            "session has read-only access. Controls are disabled until you "
-            "become the active session (switch to / unlock this user).");
+            "Windows denied this program access to the Green Curve service. "
+            "Only programs running normally under a signed-in local account "
+            "can connect; sandboxed or restricted processes cannot.");
         return;
     }
     set_message(out, outSize, "Failed connecting to service pipe (error %lu)", err);

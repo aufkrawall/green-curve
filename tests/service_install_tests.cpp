@@ -333,23 +333,52 @@ int run_install_file_rollback_tests() {
     if (FAILED(gc_replace_staged_install_file(staged, destination)) ||
         !readOne(destination, 'N') || !released_dacl_is_inherited(destination))
         return finish(6122);
-    // Pre-existing temporaries must survive untouched and must never be
-    // followed, including when an unelevated developer-mode symlink is allowed.
+    // A leftover temporary from an interrupted run (power loss between create
+    // and rename) must not wedge every later upgrade: it is discarded once and
+    // the exclusive create retried.  It is never written through.
     wchar_t temporary[MAX_PATH] = {};
     StringCchPrintfW(temporary, MAX_PATH, L"%ls.gcnew", destination);
     if (!writeOne(temporary, 'P')) return finish(6222);
-    bool collisionRefused = FAILED(gc_replace_staged_install_file(staged, destination)) &&
-        readOne(temporary, 'P') && readOne(destination, 'N');
+    bool discarded = false;
+    bool staleRecovered = SUCCEEDED(gc_replace_staged_install_file(staged, destination,
+        &discarded)) && discarded && readOne(destination, 'N') &&
+        GetFileAttributesW(temporary) == INVALID_FILE_ATTRIBUTES;
     DeleteFileW(temporary);
-    if (!collisionRefused) return finish(6223);
+    if (!staleRecovered) return finish(6223);
+    // A planted symlink is removed itself; its target is never opened.  This
+    // runs where unelevated developer-mode symlinks are allowed.
     if (CreateSymbolicLinkW(temporary, backup, SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE)) {
-        bool linkRefused = FAILED(gc_replace_staged_install_file(staged, destination)) &&
-            readOne(backup, 'O') && readOne(destination, 'N');
+        bool linkNotFollowed = SUCCEEDED(gc_replace_staged_install_file(staged, destination)) &&
+            readOne(backup, 'O') && readOne(destination, 'N') &&
+            GetFileAttributesW(temporary) == INVALID_FILE_ATTRIBUTES;
         DeleteFileW(temporary);
-        if (!linkRefused) return finish(6224);
+        if (!linkNotFollowed) return finish(6224);
     } else if (GetLastError() != ERROR_PRIVILEGE_NOT_HELD && GetLastError() != ERROR_INVALID_PARAMETER) {
         return finish(6225);
     }
+    // An obstruction that cannot be discarded (a non-empty directory) is still
+    // refused, and what it holds is left alone.
+    wchar_t obstructionChild[MAX_PATH] = {};
+    StringCchPrintfW(obstructionChild, MAX_PATH, L"%ls\\keep", temporary);
+    if (!CreateDirectoryW(temporary, nullptr) || !writeOne(obstructionChild, 'K'))
+        return finish(6237);
+    bool obstructionRefused = FAILED(gc_replace_staged_install_file(staged, destination)) &&
+        readOne(obstructionChild, 'K') && readOne(destination, 'N');
+    DeleteFileW(obstructionChild);
+    RemoveDirectoryW(temporary);
+    if (!obstructionRefused) return finish(6238);
+    // The rollback temporary has the same interrupted-run shape.
+    wchar_t restoreTemporary[MAX_PATH] = {};
+    StringCchPrintfW(restoreTemporary, MAX_PATH, L"%ls.gcrestore", destination);
+    if (!writeOne(restoreTemporary, 'R')) return finish(6239);
+    discarded = false;
+    bool restoreRecovered = SUCCEEDED(gc_restore_previous_install_file(backup, destination,
+        &discarded)) && discarded && readOne(destination, 'O') &&
+        GetFileAttributesW(restoreTemporary) == INVALID_FILE_ATTRIBUTES;
+    DeleteFileW(restoreTemporary);
+    if (!restoreRecovered) return finish(6240);
+    if (FAILED(gc_replace_staged_install_file(staged, destination)) ||
+        !readOne(destination, 'N')) return finish(6241);
     if (FAILED(gc_restore_previous_install_file(backup, destination)) ||
         !readOne(destination, 'O')) return finish(6123);
     // An extraction failure must leave the last complete file untouched.

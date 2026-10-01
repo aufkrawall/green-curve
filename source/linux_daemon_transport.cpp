@@ -411,6 +411,43 @@ static void format_response_timeout(char* error, size_t errorSize,
 // transfer.  `outcome` reports what a failure proves about the daemon's
 // existence, whether the complete request was submitted, and whether the
 // response deadline expired; see linux_daemon_deadline_policy.h.
+// The daemon answers an over-budget peer BEFORE reading anything and closes at
+// once (daemon_answer_busy).  Whether this client's request write then succeeds
+// or fails with EPIPE/ECONNRESET depends only on whether that close happened
+// before the write -- but in both orders the refusal is already queued in this
+// socket's receive buffer, and Linux delivers queued AF_UNIX data before the
+// reset.  Read it, so a refused request is reported as the daemon's own "busy"
+// answer in both orders instead of as a transport fault in one of them.
+//
+// Only a complete, valid, NON-OK response counts: the request never reached
+// the daemon, so nothing but a refusal can be a truthful answer to it.
+static bool daemon_read_refusal_after_failed_write(int fd,
+                                                   const DaemonIoResult* writeResult,
+                                                   unsigned long long deadline,
+                                                   ServiceResponse* response) {
+    if (!writeResult || !response) return false;
+    // EIO is wait_fd_ready()'s spelling of "poll reported only error bits",
+    // which is how a reset peer can surface before send() is even attempted.
+    // Each of these means the peer is gone, so the read below cannot stall.
+    const bool peerClosed = writeResult->failure == DAEMON_IO_EOF ||
+        (writeResult->failure == DAEMON_IO_ERROR &&
+         (writeResult->errorNumber == EPIPE || writeResult->errorNumber == ECONNRESET ||
+          writeResult->errorNumber == EIO));
+    if (!peerClosed) return false;
+    ServiceResponse refusal;
+    memset(&refusal, 0, sizeof(refusal));
+    DaemonIoResult read = daemon_read_exact_until(fd, &refusal, sizeof(refusal), deadline);
+    if (read.failure != DAEMON_IO_NONE ||
+        refusal.magic != SERVICE_PROTOCOL_MAGIC ||
+        refusal.version != SERVICE_PROTOCOL_VERSION ||
+        !validate_service_response_for_ipc(&refusal) ||
+        refusal.status == SERVICE_STATUS_OK) {
+        return false;
+    }
+    *response = refusal;
+    return true;
+}
+
 static bool linux_daemon_send_deadline(const ServiceRequest* request,
                                        ServiceResponse* response,
                                        unsigned long totalTimeoutMs,
@@ -477,6 +514,16 @@ static bool linux_daemon_send_deadline(const ServiceRequest* request,
     DaemonIoResult writeResult = daemon_write_exact_until(
         fd, request, sizeof(*request), exchangeDeadline);
     if (writeResult.failure != DAEMON_IO_NONE) {
+        // requestSubmitted stays false on both arms: the daemon refused before
+        // reading, so no idempotency key can refer to an executed request.
+        if (daemon_read_refusal_after_failed_write(fd, &writeResult,
+                                                   exchangeDeadline, response)) {
+            close(fd);
+            if (error) gc_strlcpy(error, errorSize,
+                response->message[0] ? response->message : "daemon refused the request");
+            log_client_failure("daemon refused the request before reading it", error);
+            return false;
+        }
         format_io_failure(error, errorSize, "request write", writeResult,
                           0, sizeof(*request));
         log_client_failure("request write", error);

@@ -81,12 +81,11 @@
 static bool service_update_cache_path(const char* leafName, char* out, size_t outSize) {
     if (out && outSize) out[0] = 0;
     if (!leafName || !leafName[0]) return false;
-    char machinePath[MAX_PATH] = {};
-    if (!resolve_machine_config_path(machinePath, sizeof(machinePath))) return false;
-    char* slash = strrchr(machinePath, '\\');
-    if (!slash) return false;
-    *slash = 0;
-    return SUCCEEDED(StringCchPrintfA(out, outSize, "%s\\%s", machinePath, leafName));
+    // Beside the bank, so the directory -- never gated on the bank's content
+    // proof.  The cache is signature-verified on every restore regardless.
+    char machineDir[MAX_PATH] = {};
+    if (!resolve_machine_config_dir(machineDir, sizeof(machineDir))) return false;
+    return SUCCEEDED(StringCchPrintfA(out, outSize, "%s\\%s", machineDir, leafName));
 }
 
 static void service_update_cache_clear() {
@@ -304,8 +303,13 @@ static void service_update_restore_from_cache() {
     }
 
     GcUpdateFreshness freshness = {};
-    if (!gc_update_fresh_parse(manifestText, manifestLength, service_update_now_unix(), &freshness)) {
-        debug_log("update cache: signed freshness refused; discarding cached metadata\n");
+    const long long nowUnix = service_update_now_unix();
+    const GcUpdateFreshStatus freshStatus =
+        gc_update_fresh_parse_status(manifestText, manifestLength, nowUnix, &freshness);
+    if (freshStatus != GC_UPDATE_FRESH_OK) {
+        debug_log("update cache: signed freshness refused status=%d issued=%lld expires=%lld "
+                  "now=%lld; discarding cached metadata\n",
+                  (int)freshStatus, freshness.issued, freshness.expires, nowUnix);
         service_update_cache_clear();
         return;
     }

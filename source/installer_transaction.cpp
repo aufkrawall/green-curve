@@ -217,7 +217,13 @@ struct GcInstallTransaction {
         WCHAR stagedPath[GC_INSTALLER_MAX_PATH_CHARS] = {};
         WCHAR backupPath[GC_INSTALLER_MAX_PATH_CHARS] = {};
         if (!paths(index, finalPath, stagedPath, backupPath)) return false;
-        HRESULT result = gc_replace_staged_install_file(stagedPath, finalPath);
+        bool discardedStale = false;
+        HRESULT result = gc_replace_staged_install_file(stagedPath, finalPath,
+                                                        &discardedStale);
+        if (discardedStale) {
+            gc_log_step("transaction: discarded a leftover %ls.gcnew from an "
+                        "interrupted earlier run", finalPath);
+        }
         if (FAILED(result)) {
             gc_set_error(context, "Could not replace %ls (HRESULT 0x%08lx).",
                          finalPath, (unsigned long)result);
@@ -266,7 +272,13 @@ struct GcInstallTransaction {
                 WCHAR stagedPath[GC_INSTALLER_MAX_PATH_CHARS] = {};
                 WCHAR backupPath[GC_INSTALLER_MAX_PATH_CHARS] = {};
                 if (!paths(i, finalPath, stagedPath, backupPath)) return false;
-                HRESULT result = gc_restore_previous_install_file(backupPath, finalPath);
+                bool discardedStale = false;
+                HRESULT result = gc_restore_previous_install_file(backupPath, finalPath,
+                                                                  &discardedStale);
+                if (discardedStale) {
+                    gc_log_step("rollback: discarded a leftover %ls.gcrestore from an "
+                                "interrupted earlier run", finalPath);
+                }
                 if (FAILED(result)) {
                     gc_log_fail("rollback: restore %ls HRESULT 0x%08lx",
                                 finalPath, (unsigned long)result);

@@ -81,7 +81,10 @@ enum LinuxAutoRestoreVerdict : gc_u32 {
     LINUX_AUTO_RESTORE_DENY_RESUME_RATE_LIMITED = 5,
 };
 
-// Persisted verbatim (see LinuxDaemonRestoreGuardRecord).  Keep POD.
+// Persisted field by field (see LinuxDaemonRestoreGuardRecord and
+// linux_daemon_guard_initialize), never by memcpy of this struct, so member
+// order here is free; the resume-window counters are deliberately in-memory
+// only.  Keep POD.
 //
 // `lockoutReason` is a ServiceAutoRestoreLockoutReason and is part of the
 // latched state, not a log detail: it is what populate_snapshot() publishes, so

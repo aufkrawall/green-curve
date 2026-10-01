@@ -1665,7 +1665,7 @@ def run_regression_tests(extra_flags=None):
             harness_path,
             *[os.path.join(SCRIPT_DIR, "tests", name) for name in ("clock_transition_tests.cpp",
               "service_install_tests.cpp", "apply_profile_followup_tests.cpp",
-              "apply_correction_tests.cpp", "fan_worker_lock_tests.cpp", "security_audit_tests.cpp", "installer_fuzz_harness_tests.cpp")],
+              "apply_correction_tests.cpp", "fan_worker_lock_tests.cpp", "security_audit_tests.cpp", "installer_fuzz_harness_tests.cpp", "review_followup_tests.cpp")],
             os.path.join(SOURCE_DIR, "fan_curve.cpp"),
             os.path.join(SOURCE_DIR, "config_text_utils.cpp"),
             os.path.join(SOURCE_DIR, "app_shared.cpp"),

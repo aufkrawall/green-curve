@@ -3,6 +3,7 @@
 
 #include "linux_port_internal.h"
 #include "linux_config_path_policy.h"
+#include "linux_atomic_write_policy.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -213,38 +214,43 @@ bool write_text_file_atomic(const char* path, const std::string& data, char* err
         return false;
     }
 
-    std::string parent = path_dirname(path);
-    if (!ensure_directory_recursive(parent.c_str(), err, errSize)) return false;
-
-    std::string leaf(path);
-    size_t slash = leaf.find_last_of('/');
-    if (slash == std::string::npos) {
-        set_message(err, errSize, "Output path has no directory: %s", path);
-        return false;
-    }
-    std::string name = leaf.substr(slash + 1);
-    if (name.empty() || name == "." || name == "..") {
+    std::string dir, name;
+    if (!linux_atomic_write_split(path, &dir, &name)) {
         set_message(err, errSize, "Output path has no file name: %s", path);
         return false;
     }
-    std::string dir = leaf.substr(0, slash);
+    if (!ensure_directory_recursive(dir.c_str(), err, errSize)) return false;
 
-    int dirfd = open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    // O_NOFOLLOW on the directory only guards its LAST component -- every
+    // ancestor is still followed -- so it is not what makes this safe; the
+    // exclusive no-follow temp and renameat() are.  It is kept for root, where
+    // the caller may name a directory another account controls, and dropped
+    // otherwise: a user's ~/.config/greencurve is routinely a symlink into a
+    // dotfiles checkout, and refusing it broke --save-config for that user.
+    const int dirFlags = O_RDONLY | O_DIRECTORY | O_CLOEXEC |
+                         (geteuid() == 0 ? O_NOFOLLOW : 0);
+    int dirfd = open(dir.c_str(), dirFlags);
     if (dirfd < 0) {
         set_message(err, errSize, "Cannot open %s (%s)", dir.c_str(), strerror(errno));
         return false;
     }
 
     bool written = false;
-    for (unsigned int attempt = 0; attempt < 16 && !written; ++attempt) {
+    bool failed = false;
+    // Retries cover a temp-name COLLISION only.  A write, sync or rename
+    // failure is a real I/O error that a new name will not cure.
+    for (unsigned int attempt = 0; attempt < 16 && !written && !failed; ++attempt) {
         gc_u64 suffix = 0;
         if (getrandom(&suffix, sizeof(suffix), 0) != (ssize_t)sizeof(suffix)) {
             set_message(err, errSize, "Cannot generate a temp name (%s)", strerror(errno));
             break;
         }
-        char temporary[320] = {};
-        gc_snprintf(temporary, sizeof(temporary), ".%s.tmp.%016llx",
-                    name.c_str(), (unsigned long long)suffix);
+        char temporary[LINUX_ATOMIC_WRITE_TEMP_PREFIX_MAX + 32] = {};
+        if (!linux_atomic_write_temp_name(name, (unsigned long long)suffix,
+                                          temporary, sizeof(temporary))) {
+            set_message(err, errSize, "Cannot form a temp name for %s", path);
+            break;
+        }
         int fd = openat(dirfd, temporary,
                         O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
         if (fd < 0) {
@@ -252,13 +258,27 @@ bool write_text_file_atomic(const char* path, const std::string& data, char* err
             set_message(err, errSize, "Cannot create %s (%s)", temporary, strerror(errno));
             break;
         }
-        bool ok = write_all_fd(fd, data.data(), data.size()) && fsync(fd) == 0;
-        if (close(fd) != 0) ok = false;
-        if (ok && renameat(dirfd, temporary, dirfd, name.c_str()) == 0) {
+        const char* step = "write";
+        bool ok = write_all_fd(fd, data.data(), data.size());
+        if (ok) { step = "sync"; ok = fsync(fd) == 0; }
+        int ioError = ok ? 0 : errno;
+        if (close(fd) != 0 && ok) { step = "close"; ok = false; ioError = errno; }
+        if (ok) {
+            step = "rename";
+            ok = renameat(dirfd, temporary, dirfd, name.c_str()) == 0;
+            if (!ok) ioError = errno;
+        }
+        if (ok) {
             written = true;
+            // Durability of the rename itself, as the daemon's record writer
+            // does.  Best effort: the replacement is already complete and
+            // visible, and this TU has no logger that would not draw over the
+            // TUI, so a failure here is not reported as a failed save.
+            (void)fsync(dirfd);
         } else {
-            if (err && errSize && !err[0])
-                set_message(err, errSize, "Failed to finalize %s (%s)", path, strerror(errno));
+            failed = true;
+            set_message(err, errSize, "Failed to %s %s (%s)", step, path,
+                        strerror(ioError));
             unlinkat(dirfd, temporary, 0);
         }
     }

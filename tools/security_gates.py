@@ -1343,6 +1343,31 @@ def check_audit_finding_gates(ctx, require_text):
                  "FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT",
                  "the updater pins the staging directory across process creation")
 
+    # The shared bank's CONTENT proof gates content readers only.  It used to
+    # gate path resolution itself and was latched for the service lifetime, so
+    # one failed proof also disabled the updater's cache and staging directory
+    # (which only live beside the bank) until a restart.
+    machine_config = path("main_service_machine_config.cpp")
+    require_text(machine_config, '!service_prove_shared_bank("content read")',
+                 "an unproven shared bank is re-proven by the next content read")
+    ctx.require_text_in_operation(machine_config, "static bool service_prove_shared_bank(const char* origin) {",
+                                  "enter_config_storage_lock(&configMutex)",
+                                  "the bank proof cannot interleave with an admin write+harden")
+    ctx.require_text_in_operation(machine_config, "static bool write_machine_config_int_hardened(",
+                                  "harden_machine_config_file_required(pathW, path, err, errSize);\n"
+                                  "    leave_config_storage_lock(configMutex);",
+                                  "admin bank writes are hardened before the config lock is released")
+    for name, anchor in (("main_service_update_state.cpp", "static bool service_update_staging_dir("),
+                         ("main_service_update_cache.cpp", "static bool service_update_cache_path(")):
+        ctx.require_text_in_operation(path(name), anchor, "resolve_machine_config_dir(",
+                                      f"{name}: files beside the bank resolve the directory")
+        ctx.forbid_text_in_operation(path(name), anchor, "resolve_machine_config_path(",
+                                     f"{name}: the bank's content proof never gates the updater's own files")
+    ctx.require_text_in_operation(path("main_service_update_state.cpp"),
+                                  "static bool service_update_staging_dir(",
+                                  "service_handle_owner_is_administrators(stagingHandle)",
+                                  "the staging directory's Administrators owner is proven, not assumed")
+
     # Every command, READ included, needs medium integrity: the pipe ACL admits
     # every authenticated user, which is a strictly wider set.
     authority = read("service_command_authority_policy.h")

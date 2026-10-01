@@ -220,6 +220,14 @@ static void service_update_save_settings() {
         failures = g_updateState.consecutiveFailures;
         lastCheck = g_updateState.lastCheckUnix;
     }
+    // Held across the writes AND the re-hardening: the bank's content proof
+    // runs under this lock, and a first write creates the file with the
+    // directory's inherited ACL, which the proof would discard as unproven.
+    HANDLE configMutex = nullptr;
+    if (!enter_config_storage_lock(&configMutex)) {
+        debug_log("update settings: the config lock is unavailable; settings not saved\n");
+        return;
+    }
     set_config_int(path, GC_UPDATE_CONFIG_SECTION, "auto_check", mode);
     set_config_int(path, GC_UPDATE_CONFIG_SECTION, "interval_seconds", interval);
     set_config_int(path, GC_UPDATE_CONFIG_SECTION, "consecutive_failures", failures);
@@ -243,6 +251,7 @@ static void service_update_save_settings() {
                       aclErr[0] ? aclErr : "unknown");
         }
     }
+    leave_config_storage_lock(configMutex);
 }
 
 // ---------------------------------------------------------------------------
@@ -268,18 +277,14 @@ static bool service_update_staging_dir(char* out, size_t outSize, char* err, siz
     if (out && outSize) out[0] = 0;
     if (!ensure_machine_config_directory(err, errSize)) return false;
 
-    char machinePath[MAX_PATH] = {};
-    if (!resolve_machine_config_path(machinePath, sizeof(machinePath))) {
-        set_message(err, errSize, "Cannot resolve the machine config path");
+    // The DIRECTORY, not the bank file: whether shared-profiles.ini's bytes are
+    // proven says nothing about a folder this function hardens and verifies.
+    char machineDir[MAX_PATH] = {};
+    if (!resolve_machine_config_dir(machineDir, sizeof(machineDir))) {
+        set_message(err, errSize, "Cannot resolve the machine config directory");
         return false;
     }
-    char* slash = strrchr(machinePath, '\\');
-    if (!slash) {
-        set_message(err, errSize, "Machine config path has no directory");
-        return false;
-    }
-    *slash = 0;
-    if (FAILED(StringCchPrintfA(out, outSize, "%s\\%s", machinePath,
+    if (FAILED(StringCchPrintfA(out, outSize, "%s\\%s", machineDir,
                                 GC_UPDATE_STAGING_DIR_NAME))) {
         set_message(err, errSize, "Update staging path is too long");
         return false;
@@ -320,6 +325,21 @@ static bool service_update_staging_dir(char* out, size_t outSize, char* err, siz
     }
     if (!machine_config_dacl_is_hardened(stagingPath.value)) {
         set_message(err, errSize, "Update staging DACL verification failed");
+        out[0] = 0;
+        return false;
+    }
+    // The DACL alone is not ownership: a pre-created folder's standard-user
+    // owner keeps implicit WRITE_DAC and could re-grant itself delete-child
+    // after this check.  The hardening above assigns Administrators; prove it
+    // took, through a handle that does not follow a reparse point.
+    HANDLE stagingHandle = CreateFileW(stagingPath.value, READ_CONTROL | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    const bool ownerProven = stagingHandle != INVALID_HANDLE_VALUE &&
+        service_handle_owner_is_administrators(stagingHandle);
+    if (stagingHandle != INVALID_HANDLE_VALUE) CloseHandle(stagingHandle);
+    if (!ownerProven) {
+        set_message(err, errSize, "Update staging directory owner is not Administrators");
         out[0] = 0;
         return false;
     }
@@ -450,12 +470,14 @@ static void service_update_populate_response(ServiceUpdateState* out) {
         out->availableBytes = asset ? (gc_u64)asset->size : 0;
     }
     StringCchCopyA(out->detail, sizeof(out->detail), g_updateState.detail);
-    if (g_updateState.manifestValid &&
-        !gc_update_fresh_time_valid(&g_updateState.freshness, service_update_now_unix())) {
+    const GcUpdateFreshStatus freshStatus = g_updateState.manifestValid
+        ? gc_update_fresh_time_status(&g_updateState.freshness, service_update_now_unix())
+        : GC_UPDATE_FRESH_OK;
+    if (freshStatus != GC_UPDATE_FRESH_OK) {
         out->decision = GC_UPDATE_DECISION_REJECTED;
         out->packageVerified = 0;
         StringCchCopyA(out->detail, sizeof(out->detail),
-            "Signed update metadata expired; check for updates again and verify the system clock.");
+                       gc_update_fresh_status_text(freshStatus));
     }
 
     // Computed here rather than in the GUI because the high-water mark is

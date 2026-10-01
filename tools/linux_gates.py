@@ -954,6 +954,18 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
     # otherwise get a fresh, unmetered bucket every request.
     require_text(serve_h, "SO_PEERCRED",
                  "the admission identity is the peer credential, not a bare pid")
+    # A refusal is sent before the daemon reads anything, so the client's
+    # request write races the daemon's close.  The client must read the queued
+    # refusal after EPIPE instead of reporting a transport fault (fixture 67-75).
+    require_text(_p(ctx, "linux_daemon_transport.cpp"),
+                 "daemon_read_refusal_after_failed_write(fd, &writeResult,",
+                 "a refused client reads the daemon's queued busy answer after EPIPE")
+    # The CLI/TUI atomic writer accepts bare file names and symlinked config
+    # directories for ordinary users; the rules are pure and harness-tested.
+    require_text(_p(ctx, "linux_port.cpp"), "linux_atomic_write_split(path, &dir, &name)",
+                 "the atomic text writer uses the tested path split")
+    require_text(_p(ctx, "linux_port.cpp"), "(geteuid() == 0 ? O_NOFOLLOW : 0)",
+                 "only root refuses a symlinked output directory")
     require_text(runtime_h, "F-PREP-NO-UNCERTAIN",
                  "a pre-write GPU-not-available failure does not poison the daemon state")
 

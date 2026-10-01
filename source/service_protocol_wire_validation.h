@@ -44,7 +44,7 @@ static inline bool service_wire_string_is_log_safe(
         // An empty string is safe: it is terminated, and it carries nothing.
         // The dispatch site already handles it explicitly
         // (`request->source[0] ? request->source : "service request"`).
-        if (c == '\0') return 1;
+        if (c == '\0') return true;
         if (c < 0x20 && c != '\t') return false;
         if (c == 0x7F) return false;
     }

@@ -366,6 +366,8 @@ def run_self_tests():
     assert "malicious.example.com" not in ALLOWLISTED_REDIRECT_HOSTS
 
     release_post_tests.run_tests()
+    import release_renew_tests
+    release_renew_tests.run_tests()
 
     print("release_post self-tests passed")
     return True
@@ -378,6 +380,9 @@ def main():
     parser.add_argument("--key", help="Path to offline update signing private key")
     parser.add_argument("--source-commit", help="Full reviewed release commit SHA (defaults to the local release tag)")
     parser.add_argument("--dry-run", action="store_true", help="Verify both installers' provenance and sign locally without uploading")
+    parser.add_argument("--renew-freshness", action="store_true",
+                        help="Re-sign ONLY the 30-day v2 freshness pair of the latest release "
+                             "(see tools/release_renew.py); never touches v1 or installers")
     parser.add_argument("--self-test", action="store_true", help="Run internal self-tests")
     args = parser.parse_args()
 
@@ -395,8 +400,14 @@ def main():
             sys.exit("error: VERSION file not found and --version not specified")
 
     try:
-        run_post_release(args.repo, version, args.key, root_dir,
-                         dry_run=args.dry_run, source_commit=args.source_commit)
+        if args.renew_freshness:
+            import release_renew
+            release_renew.run_renew_freshness(args.repo, version, args.key, root_dir,
+                                              dry_run=args.dry_run,
+                                              source_commit=args.source_commit)
+        else:
+            run_post_release(args.repo, version, args.key, root_dir,
+                             dry_run=args.dry_run, source_commit=args.source_commit)
     except Exception as e:
         sys.exit(f"error: {e}")
 

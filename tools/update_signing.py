@@ -596,6 +596,14 @@ def main(argv=None):
     prepare.add_argument("--key", required=True)
     prepare.add_argument("--min-from", default=None)
 
+    renew = subparsers.add_parser(
+        "renew-freshness",
+        help="sign a NEW v2 freshness envelope over an existing, already "
+             "published v1 manifest (the v1 bytes are never rewritten)")
+    renew.add_argument("manifest", help="the exact published v1 manifest")
+    renew.add_argument("--key", required=True)
+    renew.add_argument("--dir", default=".")
+
     subparsers.add_parser("self-test", help="run the built-in vectors")
 
     args = parser.parse_args(argv)
@@ -686,6 +694,29 @@ def main(argv=None):
         print(f"  gh release upload {args.version} \\\n"
               f"      {MANIFEST_ASSET} {SIGNATURE_ASSET} "
               f"{update_freshness.MANIFEST_ASSET} {update_freshness.SIGNATURE_ASSET} --repo <owner>/<repo>")
+        return 0
+
+    if args.command == "renew-freshness":
+        # Only the envelope is new.  Regenerating the v1 manifest here would
+        # re-derive it from whatever installers happen to be in --dir, which is
+        # exactly what a renewal must not be able to change.
+        with open(args.manifest, "rb") as handle:
+            payload = handle.read()
+        if not payload.startswith(b"#") or b"\nformat=1\n" not in payload:
+            raise SystemExit("not a v1 update manifest: " + args.manifest)
+        key = read_private_key(args.key)
+        public_point = public_key_from_private(key)
+        fresh_payload = update_freshness.build_envelope(payload)
+        fresh_signature = sign(key, fresh_payload)
+        if not verify(public_point, fresh_payload, fresh_signature):
+            raise SystemExit("internal error: freshness signature failed verification")
+        for name, content in ((update_freshness.MANIFEST_ASSET, fresh_payload),
+                              (update_freshness.SIGNATURE_ASSET,
+                               base64.b64encode(fresh_signature) + b"\n")):
+            with open(os.path.join(args.dir, name), "wb") as handle:
+                handle.write(content)
+        print(f"Renewed {update_freshness.MANIFEST_ASSET}; it expires after 30 days.")
+        print(f"Signed with public key:\n  {public_key_bytes(public_point).hex()}")
         return 0
 
     if args.command == "verify":

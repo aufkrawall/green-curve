@@ -907,6 +907,12 @@ def check_all(ctx, require_text, forbid_text):
                  "staged payload copies inherit target permissions instead of the protected scratch ACL")
     forbid_text(source("installer_transaction_files.h"), "CopyFileW(staged, temporary",
                 "CopyFileW would copy the scratch ACL and block standard users from the installed GUI")
+    # A leftover .gcnew/.gcrestore from an interrupted run is removed through a
+    # no-follow handle (never by name, never written through), then the
+    # exclusive create is retried once; refusing it forever wedged upgrades.
+    require_text(source("installer_transaction_files.h"),
+                 "FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);",
+                 "stale install temporaries are discarded without following a reparse point")
     require_text(apply_shard, "--service-install",
                  "the installed binary owns its own SCM registration")
     require_text(apply_shard, "gc_install_paths_equal(registeredUtf8, context->plan.targetDirectory)",

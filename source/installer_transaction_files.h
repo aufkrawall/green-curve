@@ -9,8 +9,35 @@
 #include <strsafe.h>
 #include "installer_cli_policy.h"
 
+// Remove a leftover fixed-name temporary (".gcnew"/".gcrestore") so setup can
+// create it exclusively again.  A run interrupted between creating one and
+// renaming it over its target (power loss, a killed setup) leaves it behind;
+// refusing every later run on that name would wedge upgrade AND rollback until
+// someone deleted it by hand.
+//
+// The name is removed through a handle opened with FILE_FLAG_OPEN_REPARSE_POINT,
+// so a planted symlink or junction is deleted itself and its target is never
+// opened, and a planted hard link loses only this directory entry.  A non-empty
+// directory cannot be deleted and the caller's exclusive create then still
+// refuses.  Callers retry their CREATE_NEW exactly once afterwards: a name that
+// reappears in between is refused, not raced in a loop.
+static inline bool gc_discard_stale_install_temporary(const WCHAR* path) {
+    HANDLE stale = CreateFileW(path, DELETE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (stale == INVALID_HANDLE_VALUE) return false;
+    FILE_DISPOSITION_INFO disposition = {};
+    disposition.DeleteFile = TRUE;
+    bool deleted = SetFileInformationByHandle(stale, FileDispositionInfo,
+                                              &disposition, sizeof(disposition)) != FALSE;
+    CloseHandle(stale);
+    return deleted;
+}
+
 static inline HRESULT gc_replace_staged_install_file(const WCHAR* staged,
-                                                       const WCHAR* destination) {
+                                                       const WCHAR* destination,
+                                                       bool* discardedStale = nullptr) {
+    if (discardedStale) *discardedStale = false;
     WCHAR temporary[GC_INSTALLER_MAX_PATH_CHARS] = {};
     if (FAILED(StringCchPrintfW(temporary, GC_INSTALLER_MAX_PATH_CHARS,
                                 L"%ls.gcnew", destination)))
@@ -24,10 +51,17 @@ static inline HRESULT gc_replace_staged_install_file(const WCHAR* staged,
         CloseHandle(source);
         return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
     }
-    // Exclusive creation never deletes or follows a pre-existing object. The
-    // new file inherits the target directory's ACL, not scratch's admin ACL.
+    // Exclusive creation never follows a pre-existing object. The new file
+    // inherits the target directory's ACL, not scratch's admin ACL.
     HANDLE output = CreateFileW(temporary, GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (output == INVALID_HANDLE_VALUE &&
+        (GetLastError() == ERROR_FILE_EXISTS || GetLastError() == ERROR_ALREADY_EXISTS) &&
+        gc_discard_stale_install_temporary(temporary)) {
+        if (discardedStale) *discardedStale = true;
+        output = CreateFileW(temporary, GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    }
     if (output == INVALID_HANDLE_VALUE) {
         DWORD error = GetLastError();
         CloseHandle(source);
@@ -67,14 +101,24 @@ static inline HRESULT gc_replace_staged_install_file(const WCHAR* staged,
 }
 
 static inline HRESULT gc_restore_previous_install_file(const WCHAR* backup,
-                                                         const WCHAR* destination) {
+                                                         const WCHAR* destination,
+                                                         bool* discardedStale = nullptr) {
+    if (discardedStale) *discardedStale = false;
     WCHAR temporary[GC_INSTALLER_MAX_PATH_CHARS] = {};
     if (FAILED(StringCchPrintfW(temporary, GC_INSTALLER_MAX_PATH_CHARS,
                                 L"%ls.gcrestore", destination)))
         return HRESULT_FROM_WIN32(ERROR_FILENAME_EXCED_RANGE);
     // Backup CopyFileW preserved the original security descriptor; copy it
-    // back before the atomic replacement.
-    if (!CopyFileW(backup, temporary, TRUE)) {
+    // back before the atomic replacement.  bFailIfExists never follows or
+    // overwrites a pre-existing name; a leftover one is discarded once.
+    BOOL copied = CopyFileW(backup, temporary, TRUE);
+    if (!copied &&
+        (GetLastError() == ERROR_FILE_EXISTS || GetLastError() == ERROR_ALREADY_EXISTS) &&
+        gc_discard_stale_install_temporary(temporary)) {
+        if (discardedStale) *discardedStale = true;
+        copied = CopyFileW(backup, temporary, TRUE);
+    }
+    if (!copied) {
         DWORD error = GetLastError();
         return HRESULT_FROM_WIN32(error);
     }

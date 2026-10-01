@@ -144,9 +144,15 @@ static bool service_update_run_check(char* err, size_t errSize) {
     }
 
     GcUpdateFreshness freshness = {};
-    if (!gc_update_fresh_parse(manifestText, manifestLength, service_update_now_unix(), &freshness)) {
-        set_message(err, errSize, "Signed update metadata is expired, future-dated, or missing freshness; check the system clock");
-        debug_log("update check: signed freshness refused\n");
+    const long long nowUnix = service_update_now_unix();
+    const GcUpdateFreshStatus freshStatus =
+        gc_update_fresh_parse_status(manifestText, manifestLength, nowUnix, &freshness);
+    if (freshStatus != GC_UPDATE_FRESH_OK) {
+        // Telling "the publisher has not renewed it" apart from "this clock is
+        // wrong" is the whole point: they need opposite remedies.
+        set_message(err, errSize, "%s", gc_update_fresh_status_text(freshStatus));
+        debug_log("update check: signed freshness refused status=%d issued=%lld expires=%lld now=%lld\n",
+                  (int)freshStatus, freshness.issued, freshness.expires, nowUnix);
         return false;
     }
     GcUpdateManifest manifest;
