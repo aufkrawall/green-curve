@@ -426,9 +426,9 @@ static bool service_pipe_read_exact(HANDLE pipe, void* data, DWORD dataSize, DWO
 
 // Map a service-pipe connect error code to a human-readable reason.  Pure
 // helper (no globals) so it can be unit-tested.  The ACCESS_DENIED case is the
-// important multi-user signal: only the active console/RDP user is granted
-// pipe write access (F-SEC-3), so a different logged-in user's GUI gets denied
-// and should see WHY rather than a generic "service not responding".
+// important transport signal: the ACL admits authenticated local users;
+// active-session authorization happens after token capture at dispatch.
+// An ACL/OS denial should still explain WHY instead of "service not responding".
 // The reachability contract in service_request_deadline_policy.h spells these
 // out as numbers so it stays unit-testable on the Linux host. This is the one
 // place both spellings are visible, so it is where they are pinned together.

@@ -9,5 +9,4 @@ regexes = [
 ]
 paths = [
     '''source/update_verify_keys\.h''',
-    '''tests/fuzz-corpus/''',
 ]

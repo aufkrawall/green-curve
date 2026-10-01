@@ -41,6 +41,8 @@ const GcExpectedServiceAce kExpectedServiceAces[3] = {
 };
 
 const wchar_t* service_acl_sddl(GcServiceAclKind kind) {
+    if (kind == GC_SERVICE_ACL_CONFIG)
+        return L"D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x120089;;;BU)";
     return kind == GC_SERVICE_ACL_DIRECTORY
         ? L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)"
         : L"D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)";
@@ -104,7 +106,9 @@ bool service_security_descriptor_is_ours(void* securityDescriptor, GcServiceAclK
         bool matched = false;
         for (int e = 0; e < 3; e++) {
             if (seen[e] || !EqualSid(sid, (PSID)expectedSids[e])) continue;
-            if (ace->Mask != kExpectedServiceAces[e].mask) return false;
+            DWORD expectedMask = kind == GC_SERVICE_ACL_CONFIG && e == 2
+                ? 0x120089 : kExpectedServiceAces[e].mask;
+            if (ace->Mask != expectedMask) return false;
             seen[e] = true;
             matched = true;
             break;
@@ -312,4 +316,32 @@ const char* service_release_result_name(int result) {
         case GC_SERVICE_RELEASE_FAILED: return "failed";
         default: return "unknown";
     }
+}
+
+bool service_prepare_shared_bank_handle(void* handleRaw, bool requireAdminOwner,
+    bool* discarded, char* err, size_t errSize) {
+    if (discarded) *discarded = false;
+    HANDLE handle = (HANDLE)handleRaw;
+    if (!handle_matches_kind(handle, GC_SERVICE_ACL_CONFIG)) {
+        set_handle_acl_err(err, errSize, "Shared bank is not a regular non-reparse file", ERROR_INVALID_DATA);
+        return false;
+    }
+    BY_HANDLE_FILE_INFORMATION info = {};
+    if (!GetFileInformationByHandle(handle, &info) || info.nNumberOfLinks != 1) {
+        set_handle_acl_err(err, errSize, "Shared bank link identity is unsafe", ERROR_INVALID_DATA);
+        return false;
+    }
+    const bool trusted = service_handle_dacl_is_ours(handle, GC_SERVICE_ACL_CONFIG) &&
+        service_handle_owner_is_administrators(handle);
+    if (!trusted) {
+        LARGE_INTEGER zero = {};
+        if (!SetFilePointerEx(handle, zero, nullptr, FILE_BEGIN) ||
+            !SetEndOfFile(handle) || !FlushFileBuffers(handle)) {
+            set_handle_acl_err(err, errSize, "Cannot discard unproven shared bank content", GetLastError());
+            return false;
+        }
+        if (discarded) *discarded = true;
+    }
+    return apply_protected_service_dacl_to_handle(handle, GC_SERVICE_ACL_CONFIG,
+        requireAdminOwner, err, errSize);
 }

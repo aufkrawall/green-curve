@@ -6,7 +6,7 @@ Moved out of build.py (one-way dependency, same pattern as the other tools/
 modules) and extended for the two Windows toolchains:
 
 - llvm-mingw: OS CFG is emulated by the cfg_glue.cpp shim; the load config
-  carries a Guard CF function table but no CET_COMPAT opt-in and no /GS cookie.
+  carries a Guard CF function table and CET_COMPAT opt-in but no /GS cookie.
 - clang-cl (MSVC ABI): real kernel-enforced CFG, a /GS security cookie, and —
   on x64 — the /cetcompat shadow-stack opt-in bit in the debug directory.
   ARM64 additionally gains CFG metadata (GFIDS) the Zig build never had.
@@ -420,7 +420,7 @@ def verify_pe_hardening(data, arch, windows_toolchain="llvm-mingw"):
         guard_count = struct.unpack_from("<Q", data, load_off + 136)[0]
         if not guard_table or not guard_count:
             raise RuntimeError("Windows arm64 CFG function table is empty")
-    if arch == "x64" and windows_toolchain == "clang-cl":
+    if arch == "x64":
         # The /cetcompat shadow-stack opt-in lives in the debug directory, not
         # the load config.  Require it so the flag can never silently stop
         # reaching the binary.

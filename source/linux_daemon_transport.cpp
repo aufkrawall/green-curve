@@ -710,3 +710,16 @@ static bool daemon_write_response(int fd, const ServiceResponse* response) {
     dlog("daemon: %s\n", detail);
     return false;
 }
+// Refusal must not occupy the serialized accept loop waiting for a frame or
+// a reader. A fresh socket normally fits this one response in its send buffer.
+static bool daemon_answer_busy(int conn) {
+    ServiceResponse busy = {};
+    busy.magic = SERVICE_PROTOCOL_MAGIC;
+    busy.version = SERVICE_PROTOCOL_VERSION;
+    busy.status = SERVICE_STATUS_ERROR;
+    busy.outcomeSeverity = SERVICE_OUTCOME_SEVERITY_ERROR;
+    gc_strlcpy(busy.message, sizeof(busy.message),
+               "busy: this client is over its per-peer request budget");
+    return send(conn, &busy, sizeof(busy), MSG_DONTWAIT | MSG_NOSIGNAL) ==
+        (ssize_t)sizeof(busy);
+}

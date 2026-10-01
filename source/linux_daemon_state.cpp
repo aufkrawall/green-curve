@@ -3,6 +3,7 @@
 
 #include "linux_daemon_state.h"
 #include "platform.h"
+#include "record_read.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -144,12 +145,12 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
     bool migratedFromLegacy = false;
     if (protectedRegular &&
         st.st_size == (off_t)sizeof(LinuxDaemonStateRecord)) {
-        count = read(fd, &record, sizeof(record));
+        count = gc_read_record(::read, fd, &record, sizeof(record));
         storedVersion = record.version;
     } else if (protectedRegular &&
                st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema1)) {
         LinuxDaemonStateRecordSchema1 legacy = {};
-        if (read(fd, &legacy, sizeof(legacy)) == (ssize_t)sizeof(legacy) &&
+        if ((count = gc_read_record(::read, fd, &legacy, sizeof(legacy))) == (ssize_t)sizeof(legacy) &&
             linux_daemon_state_record_widen_schema1(&record, &legacy,
                                                     &migratedOldMemMHz,
                                                     &storedVersion)) {
@@ -161,7 +162,7 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
     } else if (protectedRegular &&
                st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema1V1)) {
         LinuxDaemonStateRecordSchema1V1 legacy = {};
-        if (read(fd, &legacy, sizeof(legacy)) == (ssize_t)sizeof(legacy) &&
+        if ((count = gc_read_record(::read, fd, &legacy, sizeof(legacy))) == (ssize_t)sizeof(legacy) &&
             linux_daemon_state_record_widen_schema1_v1(&record, &legacy,
                                                        &migratedOldMemMHz)) {
             count = (ssize_t)sizeof(record);
@@ -171,7 +172,16 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
             migratedMemConverted = migratedOldMemMHz != 0;
         }
     }
+    int readError = errno;
     close(fd);
+    if (protectedRegular && count < 0 &&
+        (st.st_size == (off_t)sizeof(LinuxDaemonStateRecord) ||
+         st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema1) ||
+         st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema1V1))) {
+        gc_snprintf(err, errSize, "cannot read daemon state: %s", strerror(readError));
+        close(dirfd);
+        return LINUX_DAEMON_STATE_IO_ERROR;
+    }
     LinuxDaemonStateLoadResult result = LINUX_DAEMON_STATE_LOADED;
     if (!protectedRegular || count != (ssize_t)sizeof(record) ||
         !linux_daemon_record_valid(&record)) {
@@ -348,12 +358,12 @@ bool linux_daemon_startup_load(const char* path,
     int migratedOldMemMHz = 0;
     gc_u32 storedVersion = 0;
     if (protectedRegular && status.st_size == (off_t)sizeof(loaded)) {
-        parsed = read(fd, &loaded, sizeof(loaded)) == (ssize_t)sizeof(loaded);
+        parsed = gc_read_record(::read, fd, &loaded, sizeof(loaded)) == (ssize_t)sizeof(loaded);
         if (parsed) storedVersion = loaded.version;
     } else if (protectedRegular &&
                status.st_size == (off_t)sizeof(LinuxDaemonStartupRecordSchema1)) {
         LinuxDaemonStartupRecordSchema1 legacy = {};
-        if (read(fd, &legacy, sizeof(legacy)) == (ssize_t)sizeof(legacy) &&
+        if (gc_read_record(::read, fd, &legacy, sizeof(legacy)) == (ssize_t)sizeof(legacy) &&
             linux_daemon_startup_widen_schema1(&loaded, &legacy,
                                                &migratedOldMemMHz,
                                                &storedVersion)) {
@@ -413,7 +423,7 @@ bool linux_read_boot_id(char* out, size_t outSize) {
     char raw[64] = {};
     ssize_t count = -1;
     do {
-        count = read(fd, raw, sizeof(raw) - 1);
+        count = gc_read_record(::read, fd, raw, sizeof(raw) - 1);
     } while (count < 0 && errno == EINTR);
     close(fd);
     if (count <= 0) return false;
@@ -474,7 +484,7 @@ bool linux_daemon_guard_load(const char* path, LinuxAutoRestoreGuard* guard,
         status.st_uid == 0 && status.st_nlink == 1 &&
         (status.st_mode & 0077) == 0 &&
         status.st_size == (off_t)sizeof(loaded) &&
-        read(fd, &loaded, sizeof(loaded)) == (ssize_t)sizeof(loaded) &&
+        gc_read_record(::read, fd, &loaded, sizeof(loaded)) == (ssize_t)sizeof(loaded) &&
         linux_daemon_guard_valid(&loaded);
     close(fd);
     close(dirfd);
@@ -509,7 +519,7 @@ bool linux_daemon_operation_load(const char* path,
     bool ok = fstat(fd, &status) == 0 && S_ISREG(status.st_mode) &&
         status.st_uid == 0 && status.st_nlink == 1 &&
         (status.st_mode & 0077) == 0 &&
-        read(fd, &loaded, sizeof(loaded)) == (ssize_t)sizeof(loaded) &&
+        gc_read_record(::read, fd, &loaded, sizeof(loaded)) == (ssize_t)sizeof(loaded) &&
         linux_daemon_operation_valid(&loaded);
     close(fd);
     close(dirfd);
@@ -556,7 +566,7 @@ int linux_fan_ownership_marker_load(const char* path,
         status.st_uid == 0 && status.st_nlink == 1 &&
         (status.st_mode & 0077) == 0 &&
         status.st_size == (off_t)sizeof(loaded) &&
-        read(fd, &loaded, sizeof(loaded)) == (ssize_t)sizeof(loaded) &&
+        gc_read_record(::read, fd, &loaded, sizeof(loaded)) == (ssize_t)sizeof(loaded) &&
         linux_fan_ownership_marker_valid(&loaded);
     close(fd);
     close(dirfd);

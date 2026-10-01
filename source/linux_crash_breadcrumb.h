@@ -168,7 +168,7 @@ static inline int gc_crash_report_open_on_demand() {
         close((int)reserve);
         reserve = -1;
     }
-    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0600);
     slot = (sig_atomic_t)(fd >= 0 ? fd : GC_CRASH_REPORT_FD_FAILED);
     return fd;
 }

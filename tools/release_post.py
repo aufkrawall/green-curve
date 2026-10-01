@@ -22,6 +22,7 @@ the full reviewed SHA. GitHub's release tag must resolve to that same commit.
 """
 
 import argparse
+import update_freshness
 import hashlib
 import json
 import os
@@ -238,6 +239,13 @@ def run_post_release(repo, version, key_path, root_dir, dry_run=False, source_co
         if f"version={version}" not in manifest_text or "format=1" not in manifest_text:
             raise ValueError(f"malformed manifest text:\n{manifest_text}")
 
+        fresh_manifest = relbits / update_freshness.MANIFEST_ASSET
+        fresh_sig = relbits / update_freshness.SIGNATURE_ASSET
+        if update_freshness.unwrap(fresh_manifest.read_bytes()) != manifest_file.read_bytes():
+            raise ValueError("freshness metadata is not bound to the prepared manifest")
+        run_command([sys.executable, str(root / "tools" / "update_signing.py"),
+                     "verify", str(fresh_manifest), "--sig", str(fresh_sig),
+                     "--pubkey", active_pubkey_hex])
         if dry_run:
             print("\n[DRY-RUN] Both installers' provenance and the local signature verified. "
                   "Skipping upload and anonymous delivery verification.")
@@ -249,13 +257,14 @@ def run_post_release(repo, version, key_path, root_dir, dry_run=False, source_co
             "gh", "release", "upload", version,
             "--repo", repo,
             str(manifest_file),
-            str(sig_file)
+            str(sig_file), str(fresh_manifest), str(fresh_sig)
         ])
 
         # Confirm updater assets
         view_assets = json.loads(run_command(["gh", "release", "view", version, "--repo", repo, "--json", "assets"]))
         asset_names = [a["name"] for a in view_assets.get("assets", [])]
-        if "greencurve-update-manifest.txt" not in asset_names or "greencurve-update-manifest.sig" not in asset_names:
+        if any(name not in asset_names for name in ("greencurve-update-manifest.txt",
+            "greencurve-update-manifest.sig", update_freshness.MANIFEST_ASSET, update_freshness.SIGNATURE_ASSET)):
             raise RuntimeError("uploaded updater assets not visible in release asset list")
         print(f"  Release now has {len(asset_names)} assets (updater assets present).")
 
@@ -283,6 +292,10 @@ def run_post_release(repo, version, key_path, root_dir, dry_run=False, source_co
         ])
         print("  Anonymous manifest signature verified over network bytes.")
 
+        for local in (fresh_manifest, fresh_sig):
+            network, _ = fetch_url(f"{fixed_base}/{local.name}", verify_dir / local.name)
+            if network != local.read_bytes():
+                raise ValueError("published freshness bytes differ from local signed metadata")
         # Parse manifest for asset URLs
         entries = {}
         for line in net_manifest.decode("utf-8").splitlines():
@@ -293,6 +306,8 @@ def run_post_release(repo, version, key_path, root_dir, dry_run=False, source_co
         # Fetch and verify each setup installer from manifest URLs
         for arch in INSTALLER_ARCHES:
             fname = entries[f"{arch}_file"]
+            if fname != f"greencurve-{version}-windows-{arch}-setup.exe":
+                raise ValueError("signed installer filename is not the expected basename")
             fsize = int(entries[f"{arch}_size"])
             fsha = entries[f"{arch}_sha256"].lower()
             asset_url = f"https://github.com/{repo}/releases/download/{version}/{fname}"

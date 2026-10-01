@@ -31,6 +31,8 @@ enum {
     // six threads x ~8.4 KB request/response wire structs.
     SERVICE_PIPE_WORKER_COUNT = 6,
 };
+static_assert(SERVICE_PIPE_WORKER_COUNT == ServicePipeTransportLeases::kSlots,
+    "transport lease capacity must match listener workers");
 
 // Worker stack reservation, in bytes (matches the historical pipe thread).
 static const SIZE_T kWorkerStackBytes = 1024ULL * 1024ULL;

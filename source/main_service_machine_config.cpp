@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Protected shared-profile bank paths, migration, and policy accessors.
+static bool g_sharedBankStartupTrusted = true;
 
 static bool resolve_machine_config_dir_w(WCHAR* outW, size_t outCount, char* err, size_t errSize) {
     if (outW && outCount > 0) outW[0] = 0;
@@ -51,7 +52,7 @@ static bool resolve_machine_config_path_internal(WCHAR* outW, size_t outCount, c
 
 bool resolve_machine_config_path(char* out, size_t outSize) {
     if (out && outSize > 0) out[0] = 0;
-    if (!out || outSize == 0) return false;
+    if (!out || outSize == 0 || !g_sharedBankStartupTrusted) return false;
     WCHAR pathW[MAX_PATH] = {};
     if (!resolve_machine_config_path_internal(pathW, ARRAY_COUNT(pathW), out, outSize)) return false;
     return copy_wide_to_utf8(pathW, out, (int)outSize);
@@ -170,38 +171,58 @@ static void migrate_legacy_machine_config() {
     }
 }
 
-// Harden the %ProgramData% shared bank at service start (SYSTEM, before any
-// interactive login).  The default %ProgramData% ACL lets standard users create
-// subfolders, so without this a user could pre-create %ProgramData%\Green Curve
-// (owning it with full control) and plant a malicious shared-profiles.ini before
-// any admin initializes it — which the service would then trust (e.g. apply a
-// hostile "shared default" to other users on logon).  Creating + hardening the
-// directory at boot wins the race; if a squatted directory/file already exists,
-// SYSTEM reclaims the protected DACL (and the file's owner) so the bank is
-// admin-controlled from then on.
+// Startup trust is distinct from repairing permissions. A repaired ACL cannot
+// authenticate bytes planted before installation. Any failed proof disables
+// the automatic machine default for this service lifetime.
 static void secure_shared_bank_at_startup() {
+    g_sharedBankStartupTrusted = false;
     char err[256] = {};
     if (!ensure_machine_config_directory(err, sizeof(err))) {
-        debug_log("shared bank: startup hardening could not ensure directory: %s\n", err[0] ? err : "unknown");
+        debug_log("shared bank: startup directory refused: %s\n", err);
         return;
     }
-    WCHAR fileW[MAX_PATH] = {};
-    char perr[256] = {};
-    if (resolve_machine_config_path_internal(fileW, ARRAY_COUNT(fileW), perr, sizeof(perr)) &&
-        GetFileAttributesW(fileW) != INVALID_FILE_ATTRIBUTES) {
-        char aclErr[256] = {};
-        if (!apply_protected_machine_config_dacl(fileW, aclErr, sizeof(aclErr))) {
-            debug_log("shared bank: startup file DACL reclaim failed: %s\n", aclErr[0] ? aclErr : "unknown");
-        } else if (!machine_config_dacl_is_hardened(fileW)) {
-            debug_log("shared bank: startup file DACL verification failed after reclaim\n");
-        } else {
-            debug_log("shared bank: startup hardening verified/reclaimed %ls\n", fileW);
-        }
+    WCHAR dirW[MAX_PATH] = {}, fileW[MAX_PATH] = {};
+    if (!resolve_machine_config_dir_w(dirW, ARRAY_COUNT(dirW), err, sizeof(err)) ||
+        !resolve_machine_config_path_internal(fileW, ARRAY_COUNT(fileW), err, sizeof(err))) return;
+    HANDLE directory = CreateFileW(dirW, READ_CONTROL | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (directory == INVALID_HANDLE_VALUE) {
+        debug_log("shared bank: cannot pin startup directory (error %lu)\n", GetLastError());
+        return;
     }
+    FILE_ATTRIBUTE_TAG_INFO directoryTag = {};
+    const bool directoryTrusted = GetFileInformationByHandleEx(directory, FileAttributeTagInfo,
+        &directoryTag, sizeof(directoryTag)) &&
+        (directoryTag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+        !(directoryTag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && service_handle_dacl_is_ours(directory, GC_SERVICE_ACL_DIRECTORY) &&
+        service_handle_owner_is_administrators(directory);
+    if (!directoryTrusted) {
+        CloseHandle(directory);
+        debug_log("shared bank: startup directory protection is unproven\n");
+        return;
+    }
+    HANDLE file = CreateFileW(fileW, GENERIC_READ | GENERIC_WRITE | READ_CONTROL | WRITE_DAC | WRITE_OWNER,
+        FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        g_sharedBankStartupTrusted = GetLastError() == ERROR_FILE_NOT_FOUND;
+        if (!g_sharedBankStartupTrusted)
+            debug_log("shared bank: cannot pin startup file; machine default disabled (error %lu)\n", GetLastError());
+    } else {
+        bool discarded = false;
+        g_sharedBankStartupTrusted = service_prepare_shared_bank_handle(file, true,
+            &discarded, err, sizeof(err));
+        debug_log("shared bank: startup trusted=%d discardedUnprovenContent=%d reason=%s\n",
+            g_sharedBankStartupTrusted ? 1 : 0, discarded ? 1 : 0,
+            err[0] ? err : "verified");
+        CloseHandle(file);
+    }
+    CloseHandle(directory);
 }
 
 bool get_machine_logon_slot(int* slotOut) {
     if (slotOut) *slotOut = 0;
+    if (!g_sharedBankStartupTrusted) return false;
     char path[MAX_PATH] = {};
     if (!resolve_machine_config_path(path, sizeof(path))) return false;
     int slot = get_config_int(path, "profiles", "logon_slot", 0);

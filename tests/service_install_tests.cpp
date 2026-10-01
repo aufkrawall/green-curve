@@ -333,6 +333,23 @@ int run_install_file_rollback_tests() {
     if (FAILED(gc_replace_staged_install_file(staged, destination)) ||
         !readOne(destination, 'N') || !released_dacl_is_inherited(destination))
         return finish(6122);
+    // Pre-existing temporaries must survive untouched and must never be
+    // followed, including when an unelevated developer-mode symlink is allowed.
+    wchar_t temporary[MAX_PATH] = {};
+    StringCchPrintfW(temporary, MAX_PATH, L"%ls.gcnew", destination);
+    if (!writeOne(temporary, 'P')) return finish(6222);
+    bool collisionRefused = FAILED(gc_replace_staged_install_file(staged, destination)) &&
+        readOne(temporary, 'P') && readOne(destination, 'N');
+    DeleteFileW(temporary);
+    if (!collisionRefused) return finish(6223);
+    if (CreateSymbolicLinkW(temporary, backup, SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE)) {
+        bool linkRefused = FAILED(gc_replace_staged_install_file(staged, destination)) &&
+            readOne(backup, 'O') && readOne(destination, 'N');
+        DeleteFileW(temporary);
+        if (!linkRefused) return finish(6224);
+    } else if (GetLastError() != ERROR_PRIVILEGE_NOT_HELD && GetLastError() != ERROR_INVALID_PARAMETER) {
+        return finish(6225);
+    }
     if (FAILED(gc_restore_previous_install_file(backup, destination)) ||
         !readOne(destination, 'O')) return finish(6123);
     // An extraction failure must leave the last complete file untouched.

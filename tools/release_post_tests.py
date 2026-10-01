@@ -102,6 +102,9 @@ class ReleasePublicationTests(unittest.TestCase):
             (directory / "greencurve-update-manifest.txt").write_text(
                 update_signing.build_manifest(_VERSION, directory), encoding="utf-8", newline="\n")
             (directory / "greencurve-update-manifest.sig").write_bytes(b"mock signature\n")
+            (directory / "greencurve-update-v2.txt").write_bytes(
+                release_post.update_freshness.build_envelope((directory / "greencurve-update-manifest.txt").read_bytes()))
+            (directory / "greencurve-update-v2.sig").write_bytes(b"mock signature\n")
             return ""
         if cmd[0] != "gh" and cmd[2] == "verify":
             if self.signature_failure:
@@ -109,7 +112,7 @@ class ReleasePublicationTests(unittest.TestCase):
             return ""
         if cmd[:3] == ["gh", "release", "upload"]:
             self.events.append("publish")
-            for name in cmd[-2:]:
+            for name in cmd[6:]:
                 path = Path(name)
                 self.remote[path.name] = path.read_bytes()
                 self.assets.append(path.name)
@@ -268,6 +271,12 @@ class ReleasePublicationTests(unittest.TestCase):
     def test_anonymous_manifest_corruption_is_rejected(self):
         self.network_corrupt = "greencurve-update-manifest.txt"
         with self.assertRaisesRegex(ValueError, "network manifest"):
+            self.run_release()
+        self.assertNotIn("SUCCESS:", self.output.getvalue())
+
+    def test_anonymous_freshness_corruption_is_rejected(self):
+        self.network_corrupt = "greencurve-update-v2.txt"
+        with self.assertRaisesRegex(ValueError, "published freshness"):
             self.run_release()
         self.assertNotIn("SUCCESS:", self.output.getvalue())
 

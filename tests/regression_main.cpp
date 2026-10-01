@@ -959,6 +959,8 @@ static int run_all_tests_final();
 int run_clock_transition_tests();
 // Service registration / install-location suite (tests/service_install_tests.cpp).
 int run_service_install_tests();
+int run_security_audit_tests();
+int run_installer_fuzz_harness_tests();
 // 2026-09-24 audit follow-ups: lock/pre-tail refusal before reset, Linux fixed
 // fan maintenance (tests/apply_profile_followup_tests.cpp, 6430-6499).
 int run_apply_profile_followup_tests();
@@ -1667,6 +1669,8 @@ static int run_ownership_handback_tests() {
 }
 
 int main(int argc, char** argv) {
+    if (int failure = run_security_audit_tests()) return failure;
+    if (int failure = run_installer_fuzz_harness_tests()) return failure;
     // Inject a refusal at every post-shutdown boundary. This is the same
     // orchestrator setup uses, with fake side effects and an observed rollback.
     // A failed stop (failure 0) is not a rollback: nothing was written yet,
@@ -14693,8 +14697,12 @@ static int run_all_tests_final() {
         gate.userConsented = true;
         gate.packageStaged = true;
         gate.packageVerified = true;
+        gate.updateAvailable = true;
         gate.isInstalledCopy = true;
         if (gc_update_install_decision(&gate) != GC_UPDATE_INSTALL_ALLOWED) return 4190;
+        gate.updateAvailable = false;
+        if (gc_update_install_decision(&gate) != GC_UPDATE_INSTALL_NOT_VERIFIED) return 6200;
+        gate.updateAvailable = true;
 
         // Each refusal arm in turn.  Consent is checked first so the log's
         // first line is never a technical detail when the real answer is that
@@ -16364,7 +16372,7 @@ static int run_all_tests_final() {
                 SERVICE_IPC_COST_SUCCESS, 700000);
         }
         if (service_ipc_decide_admission(&table, key,
-                SERVICE_IPC_CLASS_NORMAL, 700100) !=
+                SERVICE_IPC_CLASS_NORMAL, 700010) !=
             SERVICE_IPC_REJECTED_RATE) return 4627;
         if (service_ipc_decide_admission(&table, key,
                 SERVICE_IPC_CLASS_HANDOFF, 700100) !=
@@ -16570,18 +16578,9 @@ static int run_all_tests_final() {
         // The refusal is temporary, not a ban.  This is what makes the control
         // safe to ship without asking whether a real user did something wrong.
         //
-        // The subtlety: the refill is materialised by service_ipc_charge(), NOT
-        // by decide_admission() -- a zero-cost refusal charge returns early and
-        // decide reads tokensMilli without refilling.  So what actually lets a
-        // drained peer climb back in production is the serve loop's own
-        // "refused, then charge BAD_COMMAND" step.  This drives that exact
-        // sequence rather than asserting a mechanism the code does not have.
-        //
-        // 1000 ms buys a full second of refill: refill() adds
-        // elapsedMs * perSecondMilli / 1000, and perSecondMilli is 20 * 1000.
+        // Admission itself refills, so quiet clients recover without a
+        // refusal charge or any background polling.
         const unsigned long long afterRefill = 2000000 + 1000ULL;
-        service_ipc_charge(&peers, flooder, SERVICE_IPC_CLASS_NORMAL,
-            SERVICE_IPC_COST_BAD_COMMAND, afterRefill);
         if (service_ipc_decide_admission(&peers, flooder,
                 SERVICE_IPC_CLASS_NORMAL, afterRefill) !=
             SERVICE_IPC_ADMITTED) return 5987;
@@ -17193,13 +17192,13 @@ static int run_all_tests_final() {
         char out[256] = {};
         // Desktop Entry: backslash-escape " ` $ and \, double a literal %.
         if (!linux_desktop_exec_escape("/opt/a\"b", out, sizeof(out))) return 5294;
-        if (strcmp(out, "/opt/a\\\"b") != 0) return 5295;
+        if (strcmp(out, "/opt/a\\\\\"b") != 0) return 5295;
         if (!linux_desktop_exec_escape("/opt/a$b", out, sizeof(out))) return 5296;
-        if (strcmp(out, "/opt/a\\$b") != 0) return 5297;
+        if (strcmp(out, "/opt/a\\\\$b") != 0) return 5297;
         if (!linux_desktop_exec_escape("/opt/a`b", out, sizeof(out))) return 5298;
-        if (strcmp(out, "/opt/a\\`b") != 0) return 5299;
+        if (strcmp(out, "/opt/a\\\\`b") != 0) return 5299;
         if (!linux_desktop_exec_escape("/opt/a\\b", out, sizeof(out))) return 5300;
-        if (strcmp(out, "/opt/a\\\\b") != 0) return 5301;
+        if (strcmp(out, "/opt/a\\\\\\\\b") != 0) return 5301;
         // %f would otherwise be read as a field code and inject file arguments.
         if (!linux_desktop_exec_escape("/opt/a%fb", out, sizeof(out))) return 5302;
         if (strcmp(out, "/opt/a%%fb") != 0) return 5303;

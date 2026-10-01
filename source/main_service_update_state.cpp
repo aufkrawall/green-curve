@@ -33,6 +33,7 @@ static_assert(sizeof(((ServiceUpdateState*)nullptr)->detail) >= 128,
 // The staging directory is hardened and VERIFIED with the same helpers the
 // shared profile bank uses.  Do not rely on include order to provide them.
 #include "service_acl.h"
+#include "update_freshness_policy.h"
 
 #define GC_UPDATE_CONFIG_SECTION "updates"
 #define GC_UPDATE_STAGING_DIR_NAME "updates"
@@ -55,6 +56,7 @@ struct GcUpdateRuntimeState {
     // already-staged update disappear from the GUI.
     GcUpdateManifest manifest;
     bool manifestValid;
+    GcUpdateFreshness freshness;
     // Highest version ever advertised by a signature-verified manifest.
     // Persisted, because the whole point is to notice a channel that goes
     // backwards across restarts. See update_channel_policy.h.
@@ -448,6 +450,13 @@ static void service_update_populate_response(ServiceUpdateState* out) {
         out->availableBytes = asset ? (gc_u64)asset->size : 0;
     }
     StringCchCopyA(out->detail, sizeof(out->detail), g_updateState.detail);
+    if (g_updateState.manifestValid &&
+        !gc_update_fresh_time_valid(&g_updateState.freshness, service_update_now_unix())) {
+        out->decision = GC_UPDATE_DECISION_REJECTED;
+        out->packageVerified = 0;
+        StringCchCopyA(out->detail, sizeof(out->detail),
+            "Signed update metadata expired; check for updates again and verify the system clock.");
+    }
 
     // Computed here rather than in the GUI because the high-water mark is
     // machine scope and the GUI is per-user: two accounts must not disagree

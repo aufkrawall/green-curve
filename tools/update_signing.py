@@ -42,8 +42,10 @@ the most security-sensitive path of the application.
 import argparse
 import base64
 import binascii
+import update_freshness
 import hashlib
 import os
+import re
 import hmac
 import secrets
 import stat
@@ -147,7 +149,7 @@ def _bits_to_octets(data):
 
 
 def _rfc6979_k(private_key, digest):
-    """Deterministic nonce (RFC 6979 section 3.2), HMAC-SHA256."""
+    """Yield deterministic candidates, including the RFC 6979 retry transition."""
     hlen = hashlib.sha256().digest_size
     key_octets = _int_to_octets(private_key)
     digest_octets = _bits_to_octets(digest)
@@ -161,7 +163,7 @@ def _rfc6979_k(private_key, digest):
         v = hmac.new(k, v, hashlib.sha256).digest()
         candidate = _bits_to_int(v)
         if 1 <= candidate < N:
-            return candidate
+            yield candidate
         k = hmac.new(k, v + b"\x00", hashlib.sha256).digest()
         v = hmac.new(k, v, hashlib.sha256).digest()
 
@@ -179,8 +181,7 @@ def sign(private_key, message):
         raise ValueError("private key out of range")
     digest = hashlib.sha256(message).digest()
     e = _bits_to_int(digest)
-    while True:
-        k = _rfc6979_k(private_key, digest)
+    for k in _rfc6979_k(private_key, digest):
         point = _scalar_mult(k, (GX, GY))
         if point is None:
             continue
@@ -339,6 +340,10 @@ def build_manifest(version, directory, minimum_from=None):
     covers these exact bytes, so a CRLF checkout on one machine and LF on
     another must not produce two different documents for one release.
     """
+    if not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", version):
+        raise ValueError("version must be numeric MAJOR.MINOR[.PATCH]")
+    if minimum_from and not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", minimum_from):
+        raise ValueError("minimum version must be numeric MAJOR.MINOR[.PATCH]")
     lines = [
         "# Green Curve update manifest.  Signed with the release key; see",
         "# tools/update_signing.py.  Do not edit by hand -- the signature is",
@@ -399,6 +404,26 @@ def _normalize_low_s(s):
 
 def run_self_tests():
     failures = []
+    update_freshness.run_self_tests()
+
+    # Force the normally astronomically unlikely r=0 retry. The second nonce
+    # must differ and the resulting signature must still verify.
+    global _scalar_mult
+    original_mult = _scalar_mult
+    attempted = []
+    def forced_retry(scalar, point):
+        attempted.append(scalar)
+        if len(attempted) == 1:
+            return (0, GY)
+        return original_mult(scalar, point)
+    try:
+        _scalar_mult = forced_retry
+        retried = sign(_VECTOR_KEY, b"retry-regression")
+    finally:
+        _scalar_mult = original_mult
+    if len(attempted) != 2 or attempted[0] == attempted[1] or not verify(
+            (_VECTOR_UX, _VECTOR_UY), b"retry-regression", retried):
+        failures.append("RFC 6979 rejected-candidate retry failed")
 
     # 1. The public key derived from the vector private key must be the
     #    published one -- this checks the curve arithmetic independently of
@@ -638,6 +663,16 @@ def main(argv=None):
         with open(signature_path, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(base64.b64encode(signature).decode("ascii") + "\n")
 
+        fresh_payload = update_freshness.build_envelope(payload)
+        fresh_signature = sign(key, fresh_payload)
+        if not verify(public_point, fresh_payload, fresh_signature):
+            raise SystemExit("internal error: freshness signature failed verification")
+        for name, content in ((update_freshness.MANIFEST_ASSET, fresh_payload),
+                              (update_freshness.SIGNATURE_ASSET,
+                               base64.b64encode(fresh_signature) + b"\n")):
+            with open(os.path.join(args.dir, name), "wb") as handle:
+                handle.write(content)
+        print("Freshness metadata expires after 30 days; re-sign it before expiry.")
         print(f"\nWrote {manifest_path}")
         print(f"Wrote {signature_path}")
         print(f"\nSigned with public key:\n  {public_key_bytes(public_point).hex()}")
@@ -649,7 +684,8 @@ def main(argv=None):
         # should not be one command.
         print("\nThen publish both files to the release:\n")
         print(f"  gh release upload {args.version} \\\n"
-              f"      {MANIFEST_ASSET} {SIGNATURE_ASSET} --repo <owner>/<repo>")
+              f"      {MANIFEST_ASSET} {SIGNATURE_ASSET} "
+              f"{update_freshness.MANIFEST_ASSET} {update_freshness.SIGNATURE_ASSET} --repo <owner>/<repo>")
         return 0
 
     if args.command == "verify":

@@ -181,6 +181,7 @@ struct GcUpdateInstallGate {
     // the install directory from; those users get pointed at the release page.
     bool isInstalledCopy;
     bool installAlreadyRunning;
+    bool updateAvailable;
 };
 
 static inline GcUpdateInstallRefusal gc_update_install_decision(
@@ -193,6 +194,7 @@ static inline GcUpdateInstallRefusal gc_update_install_decision(
     if (gate->installAlreadyRunning) return GC_UPDATE_INSTALL_ALREADY_RUNNING;
     if (!gate->packageStaged) return GC_UPDATE_INSTALL_NO_PACKAGE;
     if (!gate->packageVerified) return GC_UPDATE_INSTALL_NOT_VERIFIED;
+    if (!gate->updateAvailable) return GC_UPDATE_INSTALL_NOT_VERIFIED;
     if (!gate->isInstalledCopy) return GC_UPDATE_INSTALL_NOT_INSTALLED_COPY;
     if (gate->applyInFlight) return GC_UPDATE_INSTALL_BUSY_APPLYING;
     if (gate->foregroundAppActive) return GC_UPDATE_INSTALL_BUSY_FOREGROUND;

@@ -15,15 +15,48 @@ static inline HRESULT gc_replace_staged_install_file(const WCHAR* staged,
     if (FAILED(StringCchPrintfW(temporary, GC_INSTALLER_MAX_PATH_CHARS,
                                 L"%ls.gcnew", destination)))
         return HRESULT_FROM_WIN32(ERROR_FILENAME_EXCED_RANGE);
-    if (!DeleteFileW(temporary) && GetLastError() != ERROR_FILE_NOT_FOUND)
-        return HRESULT_FROM_WIN32(GetLastError());
-    // CopyFileW copies scratch's admin-only DACL on Windows 8+. CopyFile2
-    // preserves the destination directory's inherited security instead.
-    HRESULT copied = CopyFile2(staged, temporary, nullptr);
-    if (FAILED(copied)) {
-        DeleteFileW(temporary);
-        return copied;
+    HANDLE source = CreateFileW(staged, GENERIC_READ, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (source == INVALID_HANDLE_VALUE) return HRESULT_FROM_WIN32(GetLastError());
+    BY_HANDLE_FILE_INFORMATION info = {};
+    if (!GetFileInformationByHandle(source, &info) ||
+        (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) {
+        CloseHandle(source);
+        return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
     }
+    // Exclusive creation never deletes or follows a pre-existing object. The
+    // new file inherits the target directory's ACL, not scratch's admin ACL.
+    HANDLE output = CreateFileW(temporary, GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (output == INVALID_HANDLE_VALUE) {
+        DWORD error = GetLastError();
+        CloseHandle(source);
+        return HRESULT_FROM_WIN32(error);
+    }
+    DWORD copyError = ERROR_SUCCESS;
+    BYTE buffer[65536];
+    for (;;) {
+        DWORD count = 0;
+        if (!ReadFile(source, buffer, sizeof(buffer), &count, nullptr)) {
+            copyError = GetLastError(); break;
+        }
+        if (!count) break;
+        DWORD offset = 0;
+        while (offset < count) {
+            DWORD written = 0;
+            if (!WriteFile(output, buffer + offset, count - offset, &written, nullptr) || !written) {
+                copyError = GetLastError();
+                if (!copyError) copyError = ERROR_WRITE_FAULT;
+                break;
+            }
+            offset += written;
+        }
+        if (copyError) break;
+    }
+    if (!copyError && !FlushFileBuffers(output)) copyError = GetLastError();
+    CloseHandle(output);
+    CloseHandle(source);
+    if (copyError) { DeleteFileW(temporary); return HRESULT_FROM_WIN32(copyError); }
     if (!MoveFileExW(temporary, destination,
                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         DWORD error = GetLastError();
@@ -39,13 +72,10 @@ static inline HRESULT gc_restore_previous_install_file(const WCHAR* backup,
     if (FAILED(StringCchPrintfW(temporary, GC_INSTALLER_MAX_PATH_CHARS,
                                 L"%ls.gcrestore", destination)))
         return HRESULT_FROM_WIN32(ERROR_FILENAME_EXCED_RANGE);
-    if (!DeleteFileW(temporary) && GetLastError() != ERROR_FILE_NOT_FOUND)
-        return HRESULT_FROM_WIN32(GetLastError());
     // Backup CopyFileW preserved the original security descriptor; copy it
     // back before the atomic replacement.
     if (!CopyFileW(backup, temporary, TRUE)) {
         DWORD error = GetLastError();
-        DeleteFileW(temporary);
         return HRESULT_FROM_WIN32(error);
     }
     if (!MoveFileExW(temporary, destination,

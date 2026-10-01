@@ -50,6 +50,7 @@ static DWORD WINAPI service_update_worker_thread(LPVOID param) {
             bool stagedStillVerified = false;
             GcUpdateManifest currentManifest;
             bool currentManifestValid;
+            bool updateAvailable;
             {
                 GcUpdateStateLock guard;
                 stagedStillVerified = g_updateState.packageStaged &&
@@ -57,6 +58,7 @@ static DWORD WINAPI service_update_worker_thread(LPVOID param) {
                                           GC_UPDATE_DECISION_AVAILABLE;
                 currentManifest = g_updateState.manifest;
                 currentManifestValid = g_updateState.manifestValid;
+                updateAvailable = g_updateState.decision == GC_UPDATE_DECISION_AVAILABLE;
             }
             bool stagedPackageMatches = stagedStillVerified &&
                 currentManifestValid &&
@@ -64,7 +66,7 @@ static DWORD WINAPI service_update_worker_thread(LPVOID param) {
                     &currentManifest, err, sizeof(err));
             if (gc_update_failed_check_recovery(
                     stagedStillVerified,
-                    g_updateState.decision == GC_UPDATE_DECISION_AVAILABLE,
+                    updateAvailable,
                     currentManifestValid,
                     stagedPackageMatches) ==
                 GC_UPDATE_FAILED_CHECK_KEEP_READY) {

@@ -24,7 +24,7 @@ void set_acl_err(char* err, size_t errSize, const char* msg, DWORD code) {
 // Bits that let a principal replace or tamper with the binary.
 const DWORD kDangerousWriteMask =
     FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES |
-    DELETE | WRITE_DAC | WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL;
+    DELETE | FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL;
 
 bool build_well_known_sid(WELL_KNOWN_SID_TYPE type, BYTE* buf, DWORD bufSize) {
     DWORD sz = bufSize;
@@ -32,20 +32,14 @@ bool build_well_known_sid(WELL_KNOWN_SID_TYPE type, BYTE* buf, DWORD bufSize) {
 }
 
 bool sid_is_non_admin_principal(PSID sid) {
-    if (!sid || !IsValidSid(sid)) return false;
-    BYTE everyone[SECURITY_MAX_SID_SIZE] = {};
-    BYTE users[SECURITY_MAX_SID_SIZE] = {};
-    BYTE authUsers[SECURITY_MAX_SID_SIZE] = {};
-    BYTE interactive[SECURITY_MAX_SID_SIZE] = {};
-    if (build_well_known_sid(WinWorldSid, everyone, sizeof(everyone)) &&
-        EqualSid(sid, everyone)) return true;
-    if (build_well_known_sid(WinBuiltinUsersSid, users, sizeof(users)) &&
-        EqualSid(sid, users)) return true;
-    if (build_well_known_sid(WinAuthenticatedUserSid, authUsers, sizeof(authUsers)) &&
-        EqualSid(sid, authUsers)) return true;
-    if (build_well_known_sid(WinInteractiveSid, interactive, sizeof(interactive)) &&
-        EqualSid(sid, interactive)) return true;
-    return false;
+    if (!sid || !IsValidSid(sid)) return true;
+    BYTE system[SECURITY_MAX_SID_SIZE] = {};
+    BYTE admins[SECURITY_MAX_SID_SIZE] = {};
+    if (build_well_known_sid(WinLocalSystemSid, system, sizeof(system)) &&
+        EqualSid(sid, system)) return false;
+    if (build_well_known_sid(WinBuiltinAdministratorsSid, admins, sizeof(admins)) &&
+        EqualSid(sid, admins)) return false;
+    return true;
 }
 
 } // namespace
@@ -171,13 +165,14 @@ bool machine_config_dacl_is_hardened(const wchar_t* path) {
     DWORD revision = 0;
     if (GetSecurityDescriptorControl(psd, &control, &revision) &&
         (control & SE_DACL_PROTECTED)) {
-        bool nonAdminWrite = false;
+        bool nonAdminWrite = pDacl == nullptr;
         if (pDacl) {
             for (DWORD i = 0; i < pDacl->AceCount; i++) {
                 void* aceRaw = nullptr;
-                if (!GetAce(pDacl, i, &aceRaw) || !aceRaw) continue;
+                if (!GetAce(pDacl, i, &aceRaw) || !aceRaw) { nonAdminWrite = true; break; }
                 ACE_HEADER* hdr = (ACE_HEADER*)aceRaw;
-                if (hdr->AceType != ACCESS_ALLOWED_ACE_TYPE) continue;
+                if (hdr->AceType == ACCESS_DENIED_ACE_TYPE) continue;
+                if (hdr->AceType != ACCESS_ALLOWED_ACE_TYPE) { nonAdminWrite = true; break; }
                 ACCESS_ALLOWED_ACE* ace = (ACCESS_ALLOWED_ACE*)aceRaw;
                 PSID sid = (PSID)&ace->SidStart;
                 if (sid_is_non_admin_principal(sid) && (ace->Mask & kDangerousWriteMask)) {
@@ -287,13 +282,14 @@ bool service_binary_dacl_is_hardened(const wchar_t* path) {
     DWORD revision = 0;
     if (GetSecurityDescriptorControl(psd, &control, &revision) &&
         (control & SE_DACL_PROTECTED)) {
-        bool nonAdminWrite = false;
+        bool nonAdminWrite = pDacl == nullptr;
         if (pDacl) {
             for (DWORD i = 0; i < pDacl->AceCount; i++) {
                 void* aceRaw = nullptr;
-                if (!GetAce(pDacl, i, &aceRaw) || !aceRaw) continue;
+                if (!GetAce(pDacl, i, &aceRaw) || !aceRaw) { nonAdminWrite = true; break; }
                 ACE_HEADER* hdr = (ACE_HEADER*)aceRaw;
-                if (hdr->AceType != ACCESS_ALLOWED_ACE_TYPE) continue;
+                if (hdr->AceType == ACCESS_DENIED_ACE_TYPE) continue;
+                if (hdr->AceType != ACCESS_ALLOWED_ACE_TYPE) { nonAdminWrite = true; break; }
                 ACCESS_ALLOWED_ACE* ace = (ACCESS_ALLOWED_ACE*)aceRaw;
                 PSID sid = (PSID)&ace->SidStart;
                 if (sid_is_non_admin_principal(sid) && (ace->Mask & kDangerousWriteMask)) {

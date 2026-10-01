@@ -135,6 +135,8 @@ sudo ./greencurve-setup.sh install
 
 The script installs and starts the root systemd daemon (`greencurve.service`), creates the `greencurve` group, adds your user to it, creates a desktop launcher, and symlinks the binary to `/usr/local/bin/greencurve`.
 
+Membership in `greencurve` grants trusted GPU administration, including persistent boot settings. Removing an account from the group does not clear its saved boot policy; clear that policy separately before revoking access.
+
 After installation, reload your group membership (log out and back in, or run `newgrp greencurve` in your current shell).
 
 Useful setup commands:

@@ -280,7 +280,7 @@ static void service_update_restore_from_cache() {
         return;
     }
 
-    char manifestText[GC_UPDATE_MANIFEST_MAX_BYTES + 1] = {};
+    char manifestText[GC_UPDATE_FRESH_MAX_BYTES + 1] = {};
     size_t manifestLength = 0;
     char signatureText[GC_UPDATE_SIGNATURE_MAX_BYTES + 1] = {};
     size_t signatureLength = 0;
@@ -303,8 +303,15 @@ static void service_update_restore_from_cache() {
         return;
     }
 
+    GcUpdateFreshness freshness = {};
+    if (!gc_update_fresh_parse(manifestText, manifestLength, service_update_now_unix(), &freshness)) {
+        debug_log("update cache: signed freshness refused; discarding cached metadata\n");
+        service_update_cache_clear();
+        return;
+    }
     GcUpdateManifest manifest;
-    gc_update_manifest_parse(manifestText, manifestLength, &manifest);
+    gc_update_manifest_parse(manifestText + freshness.manifestOffset,
+        manifestLength - freshness.manifestOffset, &manifest);
     if (!manifest.valid) {
         debug_log("update cache: cached manifest does not parse (%s); discarding it\n",
                   manifest.error[0] ? manifest.error : "unknown");
@@ -329,6 +336,7 @@ static void service_update_restore_from_cache() {
         GcUpdateStateLock guard;
         g_updateState.manifest = manifest;
         g_updateState.manifestValid = true;
+        g_updateState.freshness = freshness;
         g_updateState.decision = decision;
     }
     debug_log("update cache: restored decision=%d published=%s installed=%s arch=%s\n",

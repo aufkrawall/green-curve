@@ -41,7 +41,11 @@ jobs:
           # Python run in between; with credentials persisted, anything that
           # executes in those steps inherits a repository-write credential.
           # The two steps that actually publish authenticate explicitly below.
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Scan the complete history for secrets
+        run: python3 tools/secret_scan.py
 
       - name: Verify clean checkout
         run: |
@@ -103,6 +107,12 @@ jobs:
       # and no link, so the release job pays about a second for it.
       - name: Run the source and security regression gates
         run: python build.py --gates
+
+      - name: Test the exact release commit
+        run: python build.py --test
+
+      - name: Fuzz release input boundaries
+        run: python build.py --fuzz --fuzz-runs 5000
 
       # 7-Zip is no longer installed from apt: it writes the Windows .7z
       # archives, so it is pinned and vendored with the compilers instead of
@@ -188,6 +198,12 @@ jobs:
           # Authenticate for the push here, and only here.  The checkout ran
           # with persist-credentials:false, so nothing else in this job has a
           # write credential.
+          key_file=""
+          cleanup_publish_credentials() {
+            git config --local --unset-all http.https://github.com/.extraheader || true
+            if [ -n "$key_file" ]; then rm -f "$key_file"; fi
+          }
+          trap cleanup_publish_credentials EXIT
           git config --local http.https://github.com/.extraheader \
             "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           if [ -n "${TAG_SIGNING_KEY:-}" ]; then

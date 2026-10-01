@@ -97,6 +97,7 @@ static bool service_load_operation_record(ServiceOperationTracker* tracker) {
         record.size == sizeof(record) && record.operationId != 0 &&
         record.state >= SERVICE_OPERATION_IN_PROGRESS &&
         record.state <= SERVICE_OPERATION_OUTCOME_UNKNOWN &&
+        memchr(record.message, 0, sizeof(record.message)) != nullptr &&
         record.checksum == service_operation_record_checksum(&record);
     if (!ok) return false;
     DWORD restoredState = record.state == SERVICE_OPERATION_IN_PROGRESS

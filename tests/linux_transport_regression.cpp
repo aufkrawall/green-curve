@@ -133,6 +133,17 @@ static int socket_path_permission_regression() {
 }
 
 int main() {
+    // A refused peer sends nothing. The production refusal path must still
+    // answer immediately; no request read or timeout is needed to make progress.
+    int refusedPair[2];
+    if (!pair(refusedPair)) return 65;
+    bool answered = daemon_answer_busy(refusedPair[0]);
+    ServiceResponse busy = {};
+    ssize_t busyBytes = recv(refusedPair[1], &busy, sizeof(busy), MSG_DONTWAIT);
+    close(refusedPair[0]); close(refusedPair[1]);
+    if (!answered || busyBytes != (ssize_t)sizeof(busy) ||
+        busy.status != SERVICE_STATUS_ERROR || strncmp(busy.message, "busy:", 5)) return 66;
+
     // An old, shorter response is decided from the complete eight-byte prefix;
     // no current-version body read is attempted.
     {

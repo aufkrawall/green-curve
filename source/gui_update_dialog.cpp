@@ -307,13 +307,14 @@ static void gud_refresh_controls() {
         StringCchPrintfA(detail, sizeof(detail),
             "The last %u check(s) failed; Green Curve will retry less often "
             "until one succeeds.", (unsigned)state->consecutiveFailures);
-    } else if (state && state->phase == SERVICE_UPDATE_PHASE_READY) {
+    } else if (state && state->phase == SERVICE_UPDATE_PHASE_READY &&
+               state->decision == GC_UPDATE_DECISION_AVAILABLE) {
         StringCchCopyA(detail, sizeof(detail),
             "Installing stops Green Curve briefly and restores your settings "
             "afterwards. Do not install while gaming.");
     } else if (state && state->phase == SERVICE_UPDATE_PHASE_FAILED &&
                state->packageStaged && state->packageVerified &&
-               state->isInstalledCopy) {
+               state->isInstalledCopy && state->decision == GC_UPDATE_DECISION_AVAILABLE) {
         // A failed INSTALL does not invalidate the downloaded package, and the
         // button below is enabled again for it.  Saying so matters: the status
         // line above reports the failure, and without this the user has no way
@@ -353,7 +354,7 @@ static void gud_refresh_controls() {
     // package is still being produced (DOWNLOADING, VERIFYING) also reports
     // `busy`, so dropping the phase test cannot enable the button mid-download.
     bool ready = state && state->packageStaged && state->packageVerified &&
-                 state->isInstalledCopy;
+                 state->isInstalledCopy && state->decision == GC_UPDATE_DECISION_AVAILABLE;
     EnableWindow(g_updateDialog.checkButton, !busy);
     EnableWindow(g_updateDialog.installButton, ready && !busy);
 

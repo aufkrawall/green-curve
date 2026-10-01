@@ -86,7 +86,8 @@ static inline bool gc_asset_put(char* out, size_t outSize, size_t* at, char c) {
 //
 // Per the Desktop Entry Specification: backslash-escape " ` $ and \, and double
 // a literal % so it is not read as a field code.  The caller supplies the
-// surrounding quotes.
+// surrounding quotes. The desktop file string layer decodes first, so every
+// Exec backslash is doubled again (four for a literal backslash).
 static inline bool linux_desktop_exec_escape(const char* value, char* out,
                                              size_t outSize) {
     if (!out || outSize == 0) return false;
@@ -96,7 +97,9 @@ static inline bool linux_desktop_exec_escape(const char* value, char* out,
     for (const char* p = value; *p; ++p) {
         char c = *p;
         if (c == '"' || c == '`' || c == '$' || c == '\\') {
-            if (!gc_asset_put(out, outSize, &at, '\\')) return false;
+            if (!gc_asset_put(out, outSize, &at, '\\') ||
+                !gc_asset_put(out, outSize, &at, '\\')) return false;
+            if (c == '\\' && !gc_asset_put(out, outSize, &at, '\\')) return false;
         } else if (c == '%') {
             // Doubling, not backslash-escaping: % is a field code, not a
             // quoting metacharacter, and the spec spells its literal as %%.

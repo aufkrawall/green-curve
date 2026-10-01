@@ -210,7 +210,7 @@ struct ServiceIpcBucket {
     }
 
     bool spend(unsigned long long costMilli) {
-        if (tokensMilli < costMilli) return false;
+        if (tokensMilli < costMilli) { tokensMilli = 0; return false; }
         tokensMilli -= costMilli;
         return true;
     }
@@ -267,16 +267,19 @@ struct ServiceIpcAdmissionTable {
         unsigned int mask = SERVICE_IPC_TABLE_SLOTS - 1;
         unsigned int index = keyHash & mask;
         ServiceIpcIdentitySlot* evictCandidate = nullptr;
+        ServiceIpcIdentitySlot* expiredCandidate = nullptr;
         for (unsigned int probe = 0; probe < SERVICE_IPC_TABLE_SLOTS; ++probe) {
             ServiceIpcIdentitySlot* slot = &slots[index];
-            if (!slot->used) return install(slot, key, keyHash, nowMs);
+            if (!slot->used) return install(expiredCandidate ? expiredCandidate : slot, key, keyHash, nowMs);
             if (slot->hash == keyHash && slot->key.equals(key)) {
                 slot->lastSeenMs = nowMs;
                 return slot;
             }
             if (service_ipc_time_at_or_after(nowMs,
                     slot->lastSeenMs + SERVICE_IPC_IDLE_EXPIRY_MS)) {
-                return install(slot, key, keyHash, nowMs);
+                // Search the remaining collision chain before reusing this
+                // slot: a live resident later in the chain keeps its budget.
+                if (!expiredCandidate) expiredCandidate = slot;
             }
             if (!evictCandidate ||
                 service_ipc_time_at_or_after(evictCandidate->lastSeenMs,
@@ -285,7 +288,7 @@ struct ServiceIpcAdmissionTable {
             }
             index = (index + 1) & mask;
         }
-        return install(evictCandidate, key, keyHash, nowMs);
+        return install(expiredCandidate ? expiredCandidate : evictCandidate, key, keyHash, nowMs);
     }
 
 private:
@@ -328,9 +331,11 @@ inline ServiceIpcAdmissionDecision service_ipc_decide_admission(
     }
     unsigned long long needed = (unsigned long long)SERVICE_IPC_COST_SUCCESS *
                                 1000ULL;
-    const ServiceIpcBucket& bucket = cls == SERVICE_IPC_CLASS_HANDOFF
+    ServiceIpcBucket& bucket = cls == SERVICE_IPC_CLASS_HANDOFF
                                          ? slot->handoffBucket
                                          : slot->normalBucket;
+    bucket.refill(nowMs, cls == SERVICE_IPC_CLASS_HANDOFF ? SERVICE_IPC_HANDOFF_RESERVE_MILLI : SERVICE_IPC_BUCKET_BURST_MILLI,
+        cls == SERVICE_IPC_CLASS_HANDOFF ? SERVICE_IPC_HANDOFF_REFILL_PER_SECOND_MILLI : SERVICE_IPC_REFILL_PER_SECOND_MILLI);
     return bucket.tokensMilli >= needed ? SERVICE_IPC_ADMITTED
                                         : SERVICE_IPC_REJECTED_RATE;
 }

@@ -192,7 +192,9 @@ enum GcArchiveStatus {
 // can assert the device table on both hosts without a Win32 API.
 static inline bool gc_archive_name_device_free(const char* name, size_t length) {
     static const char* const kDevices[] = {
-        "CON", "PRN", "AUX", "NUL",
+        "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$",
+        "COM\xC2\xB9", "COM\xC2\xB2", "COM\xC2\xB3",
+        "LPT\xC2\xB9", "LPT\xC2\xB2", "LPT\xC2\xB3",
         "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     };
@@ -200,7 +202,7 @@ static inline bool gc_archive_name_device_free(const char* name, size_t length) 
     size_t stem = 0;
     while (stem < length && name[stem] != '.') ++stem;
     while (stem > 0 && (name[stem - 1] == ' ' || name[stem - 1] == '.')) --stem;
-    if (stem == 0 || stem > 4) return true;  // no device name is longer than 4
+    if (stem == 0 || stem > 7) return true;  // no device name is longer than 7
     for (size_t i = 0; i < sizeof(kDevices) / sizeof(kDevices[0]); ++i) {
         const char* device = kDevices[i];
         size_t deviceLength = 0;

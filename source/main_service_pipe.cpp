@@ -6,7 +6,7 @@
 // Transport concurrency lives in main_service_pipe_listener.cpp (a bounded,
 // fixed-size worker pool). This shard serves ONE connection end to end:
 //
-//   12-byte header probe -> brief impersonation -> stable logon identity ->
+//   account transport lease -> 12-byte header -> connection impersonation ->
 //   classification + admission -> body read -> SERIALIZED dispatch ->
 //   response snapshot -> out-of-lock response write.
 //
@@ -28,6 +28,7 @@
 #include "service_command_authority_policy.h"
 #include "service_ipc_throttle_policy.h"
 #include "service_pipe_prefix_read.h"
+#include "service_pipe_transport_lease.h"
 // The three client-requested file writes, all of which run under the caller's
 // own token.  Included here so its position in the amalgamation is exactly
 // where the case body it replaced used to sit.
@@ -108,6 +109,28 @@ inline ServiceIpcAdmissionTable& service_admission_table() {
 }
 
 } // namespace gc_pipe_dispatch
+
+// The lease covers header/body stalls and slow response readers, and is
+// released on every exit. It cannot authorize any command or state envelope.
+static ServicePipeTransportLeases g_pipeTransportLeases = {};
+class ScopedPipeTransportLease {
+public:
+    explicit ScopedPipeTransportLease(HANDLE pipe) {
+        ServiceIpcThrottleKey account;
+        if (!service_pipe_transport_account(pipe, &account)) return;
+        gc_pipe_dispatch::ScopedAdmissionLock guard;
+        slot = g_pipeTransportLeases.acquire(account);
+    }
+    ~ScopedPipeTransportLease() {
+        gc_pipe_dispatch::ScopedAdmissionLock guard;
+        g_pipeTransportLeases.release(slot);
+    }
+    bool valid() const { return slot >= 0; }
+private:
+    int slot = -1;
+    ScopedPipeTransportLease(const ScopedPipeTransportLease&) = delete;
+    ScopedPipeTransportLease& operator=(const ScopedPipeTransportLease&) = delete;
+};
 
 // Per-connection client context. Captured ONCE, immediately after the header
 // probe's mandatory first read, by briefly impersonating the verified client.
@@ -377,6 +400,12 @@ static bool service_finish_admitted_connection(HANDLE pipe,
 // diagnostics only).
 // ---------------------------------------------------------------------------
 static bool service_serve_pipe_connection(HANDLE pipe) {
+    ScopedPipeTransportLease lease(pipe);
+    if (!lease.valid()) {
+        debug_log("service_pipe_server: refused pre-header transport occupancy or unavailable account proof\n");
+        DisconnectNamedPipe(pipe);
+        return false;
+    }
     ServiceResponse response = {};
     response.magic = SERVICE_PROTOCOL_MAGIC;
     response.version = SERVICE_PROTOCOL_VERSION;
@@ -396,6 +425,8 @@ static bool service_serve_pipe_connection(HANDLE pipe) {
             sizeof(pipeErr))) {
         debug_log("service_pipe_server: dropping stalled client before header: %s\n",
             pipeErr[0] ? pipeErr : "unknown");
+        service_admission_charge(caller.throttleKey, SERVICE_IPC_CLASS_NORMAL,
+            SERVICE_IPC_COST_TRANSPORT_FAULT);
         DisconnectNamedPipe(pipe);
         return false;
     }
@@ -477,12 +508,8 @@ static bool service_serve_pipe_connection(HANDLE pipe) {
         ServiceIpcAdmissionDecision decision =
             service_admission_decide(caller.throttleKey, requestClass);
         if (decision != SERVICE_IPC_ADMITTED) {
-            // Refuse with the generic payload-free error form. No charge:
-            // the bucket state that produced the refusal is the punishment.
-            if (!prefix.messageComplete) {
-                service_pipe_drain_inbound_message(pipe,
-                    SERVICE_PIPE_SERVER_DRAIN_TIMEOUT_MS, nullptr, 0);
-            }
+            // Reply without consuming an untrusted body: refusal must not buy
+            // another body-read deadline for a peer already over budget.
             response.status = SERVICE_STATUS_ERROR;
             StringCchCopyA(response.message, ARRAY_COUNT(response.message),
                 "Service is busy handling other requests; retry shortly");
@@ -517,4 +544,3 @@ static bool service_serve_pipe_connection(HANDLE pipe) {
     DisconnectNamedPipe(pipe);
     return true;
 }
-

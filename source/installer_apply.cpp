@@ -247,9 +247,8 @@ static bool gc_write_payload_file(const WCHAR* directory, const GcPayloadFile* f
         return false;
     }
 
-    DeleteFileW(tempPath);
-    GcScopedHandle handle(CreateFileW(tempPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                                      FILE_ATTRIBUTE_NORMAL, nullptr));
+    GcScopedHandle handle(CreateFileW(tempPath, GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                                      FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (!handle.valid()) {
         gc_set_error(context, "Could not create %ls (error %lu).", tempPath, GetLastError());
         return false;

@@ -662,6 +662,15 @@ def check_all(ctx, require_text, forbid_text, require_order, harness_source_path
     check_uninstall_key_agrees_with_setup(ctx, require_text)
     check_install_reservation_and_restore_gate(ctx, require_text, require_order)
     check_install_failure_recovery(ctx, require_text, forbid_text)
+    for name in ("main_service_update_worker.cpp", "main_service_update_cache.cpp"):
+        require_order(_p(ctx, name), "service_update_run_check" if "worker" in name else "service_update_restore_from_cache",
+                      "gc_update_verify_manifest_signature", "gc_update_fresh_parse",
+                      "signed freshness is checked after signature verification")
+        require_text(_p(ctx, name), "gc_update_fresh_parse", "metadata freshness is mandatory")
+    require_text(_p(ctx, "main_service_update_worker.cpp"), "gate.updateAvailable",
+                 "install enforces the latest update decision")
+    require_text(_p(ctx, "main_service_update_worker.cpp"), "gc_update_fresh_time_valid",
+                 "staged packages do not outlive signed freshness")
     check_cache_is_reverified_not_trusted(ctx, require_text, forbid_text,
                                           require_order)
     check_update_is_actually_surfaced(ctx, require_text, require_order)

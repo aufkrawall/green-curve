@@ -3,6 +3,7 @@
 // Included by linux_daemon.cpp; do not compile separately.
 
 #include "linux_service_install_policy.h"
+#include "linux_service_sandbox.h"
 #include "linux_socket_path_permissions.h"
 
 // ===========================================================================
@@ -350,7 +351,9 @@ static bool write_resume_unit(char* err, size_t errSize) {
         "Type=oneshot\n"
         "ExecStart=%s --resume-restore\n"
         "StandardOutput=journal\n"
-        "StandardError=journal\n\n"
+        "StandardError=journal\n"
+        GC_LINUX_SERVICE_SANDBOX
+        "\n"
         "[Install]\n"
         "WantedBy=suspend.target hibernate.target hybrid-sleep.target"
         " suspend-then-hibernate.target\n",
@@ -380,6 +383,7 @@ int linux_service_install(char* err, size_t errSize,
     exe[n] = 0;
     if (!stage_service_binary(exe, err, errSize)) return 1;
 
+    fprintf(stderr, "The greencurve group grants trusted GPU administration, including persistent boot settings. Removing membership does not clear saved boot settings; clear those separately.\n");
     // Admin group creation and verification are part of the authorization
     // boundary. Installation must not claim success without them.
     char* groupArgs[] = {(char*)"groupadd", (char*)"-f", (char*)"greencurve", nullptr};
@@ -447,32 +451,11 @@ int linux_service_install(char* err, size_t errSize,
         // with per-point readback verification is the longest thing that runs
         // between two pings.
         "WatchdogSec=120\n"
-        "UMask=0077\n"
-        "NoNewPrivileges=true\n"
         "StateDirectory=greencurve\n"
         "RuntimeDirectory=greencurve\n"
         "RuntimeDirectoryMode=0755\n"
-        // Sandboxing.  The daemon needs root, the NVIDIA character devices, and
-        // its own state/runtime directories -- nothing else.  ProtectSystem is
-        // deliberately "full" rather than "strict": the NVIDIA user-mode stack
-        // resolves libraries and driver state under /usr and /sys at runtime,
-        // and StateDirectory/RuntimeDirectory already remain writable.
-        "ProtectSystem=full\n"
-        "ProtectHome=yes\n"
-        "PrivateTmp=yes\n"
-        "ProtectControlGroups=yes\n"
-        "ProtectKernelLogs=yes\n"
-        "RestrictSUIDSGID=yes\n"
-        "RestrictNamespaces=yes\n"
-        "RestrictRealtime=yes\n"
-        // The control socket is AF_UNIX only; the daemon has no network path.
-        "RestrictAddressFamilies=AF_UNIX\n"
-        "SystemCallArchitectures=native\n"
-        // Deliberately not set: MemoryDenyWriteExecute (the NVIDIA user-mode
-        // stack maps writable-executable pages), ProtectKernelTunables and
-        // ProtectKernelModules (driver state lives under /proc/driver/nvidia),
-        // and PrivateDevices (the daemon needs /dev/nvidia*).
-        "LockPersonality=yes\n\n"
+        GC_LINUX_SERVICE_SANDBOX
+        "\n"
         "[Install]\n"
         "WantedBy=multi-user.target\n",
         GC_INSTALL_BIN);

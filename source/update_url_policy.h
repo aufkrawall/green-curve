@@ -110,8 +110,8 @@ static inline bool gc_update_host_is_allowed(const char* host) {
 // Rejecting `user@host` matters more than it looks: a URL like
 // `https://github.com@evil.example/...` has authority `evil.example`, and a
 // naive "does it start with https://github.com" check accepts it.  The host is
-// taken as the bytes after the last `@` in the authority precisely so that
-// this parser cannot disagree with the HTTP stack about who is being called.
+// parsed only after rejecting ANY `@` in the authority, so this parser
+// cannot disagree with the HTTP stack about who is being called.
 static inline void gc_update_url_parse(const char* url, GcUpdateUrl* out) {
     if (!out) return;
     GcUpdateUrl blank = {};

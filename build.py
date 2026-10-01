@@ -278,7 +278,7 @@ COMMON_FLAGS = [
     "-Wno-unused-function",
     "-Wno-unused-parameter",
     "-Werror",
-    "-D_FORTIFY_SOURCE=2",
+    "-D_FORTIFY_SOURCE=3",
 ]
 
 # C-002: read VERSION and inject it into all compile commands
@@ -310,7 +310,7 @@ WINDOWS_FLAGS = [
     "-flto",
     # LLD-MinGW's own ".buildid" section holds the RSDS/PDB debug directory;
     # merge it into .rdata as MSVC links do (PDB linkage unchanged, gated).
-    "-Wl,--icf=safe,-Xlink=-merge:.buildid=.rdata",
+    "-Wl,--icf=safe,-Xlink=-merge:.buildid=.rdata,-Xlink=-cetcompat",
     "-ftrivial-auto-var-init=pattern",
     "-fno-delete-null-pointer-checks",
     "-static",
@@ -324,6 +324,7 @@ LINUX_FLAGS = [
     # Dynamically linked against glibc so the backend can dlopen the NVIDIA
     # driver libraries at runtime (see LINUX_TARGET note).  Hardening kept.
     "-fPIE",
+    "-fstack-clash-protection",
     "-pie",
     "-Wl,-z,relro,-z,now",
     "-Wl,-z,noexecstack",
@@ -1664,7 +1665,7 @@ def run_regression_tests(extra_flags=None):
             harness_path,
             *[os.path.join(SCRIPT_DIR, "tests", name) for name in ("clock_transition_tests.cpp",
               "service_install_tests.cpp", "apply_profile_followup_tests.cpp",
-              "apply_correction_tests.cpp", "fan_worker_lock_tests.cpp")],
+              "apply_correction_tests.cpp", "fan_worker_lock_tests.cpp", "security_audit_tests.cpp", "installer_fuzz_harness_tests.cpp")],
             os.path.join(SOURCE_DIR, "fan_curve.cpp"),
             os.path.join(SOURCE_DIR, "config_text_utils.cpp"),
             os.path.join(SOURCE_DIR, "app_shared.cpp"),
@@ -3604,7 +3605,7 @@ def run_source_regression_checks():
                       "RestrictAddressFamilies=AF_UNIX", "RestrictNamespaces=yes",
                       "RestrictSUIDSGID=yes", "SystemCallArchitectures=native",
                       "LockPersonality=yes"):
-        require_text(linux_service_install_cpp, directive,
+        require_text(os.path.join(SOURCE_DIR, "linux_service_sandbox.h"), directive,
                      f"systemd unit applies {directive}")
     # These would break the NVIDIA user-mode stack; keep them out deliberately.
     forbid_text(linux_service_install_cpp, "PrivateDevices=yes",
@@ -4087,7 +4088,7 @@ def run_source_regression_checks():
     require_text(linux_service_install_cpp,
                  "LINUX_SERVICE_STEP_VERIFY_SOCKET",
                  "service installation verifies pathname authorization before protocol ping")
-    require_text(linux_service_install_cpp, "UMask=0077",
+    require_text(os.path.join(SOURCE_DIR, "linux_service_sandbox.h"), "UMask=0077",
                  "systemd service repeats restrictive umask hardening")
     require_text(linux_service_install_cpp, "RuntimeDirectoryMode=0755",
                  "systemd creates the protected socket directory deterministically")

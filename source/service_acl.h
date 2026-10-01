@@ -53,7 +53,8 @@ bool restore_inherited_dacl(const wchar_t* path, char* err, size_t errSize);
 
 enum GcServiceAclKind {
     GC_SERVICE_ACL_DIRECTORY = 0,   // D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)
-    GC_SERVICE_ACL_BINARY = 1       // D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)
+    GC_SERVICE_ACL_BINARY = 1,      // D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)
+    GC_SERVICE_ACL_CONFIG = 2      // same file ACL, Users read-only (0x120089)
 };
 
 // True when `sd` carries EXACTLY the protected DACL Green Curve writes for
@@ -68,6 +69,10 @@ bool service_handle_dacl_is_ours(void* handle, GcServiceAclKind kind);
 // Owner is BUILTIN\Administrators.  A standard-user owner keeps implicit
 // WRITE_DAC and could re-grant itself write to a hardened folder.
 bool service_handle_owner_is_administrators(void* handle);
+// A startup bank may retain bytes only when its PREVIOUS ACL and owner prove
+// admin control. Truncate unproven content through the pinned handle first.
+bool service_prepare_shared_bank_handle(void* handle, bool requireAdminOwner,
+    bool* discarded, char* err, size_t errSize);
 
 // Opens `path` without following a leaf reparse point and answers
 // service_handle_dacl_is_ours.  False for anything it cannot open or read.

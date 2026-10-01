@@ -36,30 +36,20 @@ static void daemon_admission_key(int connFd, ServiceIpcThrottleKey* key) {
     key->clear();
     struct ucred cred;
     socklen_t len = sizeof(cred);
-    if (getsockopt(connFd, SOL_SOCKET, SO_PEERCRED, &cred, &len) != 0) return;
+    if (getsockopt(connFd, SOL_SOCKET, SO_PEERCRED, &cred, &len) != 0 || len != sizeof(cred)) return;
     char uid[32] = {};
     int written = snprintf(uid, sizeof(uid), "uid:%lu", (unsigned long)cred.uid);
     if (written <= 0) return;
-    // The primary group rides along so two accounts sharing a uid under
-    // different groups do not share a bucket.
-    snprintf(key->sid, sizeof(key->sid), "g:%lu", (unsigned long)cred.gid);
+    // UID alone bounds the account: changing a primary group cannot buy a
+    // fresh quota. SO_PEERCRED supplies the kernel-authenticated identity.
     key->fill(0, 0, uid);
-    if (key->valid) {
-        // Keep the group in the identity too: the socket's own boundary is
-        // uid:greencurve-group, so the group is part of who this peer is.
-        size_t used = strlen(key->sid);
-        snprintf(key->sid + used, sizeof(key->sid) - used, "/%s", uid);
-    }
 }
 
 static bool daemon_admission_admit(int connFd, ServiceIpcThrottleKey* key) {
     daemon_admission_key(connFd, key);
     if (!key->valid) {
-        // No peer identity means no bucket to charge; the request is still
-        // clamped and still runs single-threaded, so this cannot become an
-        // unbounded path -- it only means an unidentifiable peer is not
-        // metered, which is the same trade the Windows transport makes.
-        return true;
+        dlog("daemon: refusing a peer with unavailable kernel identity\n");
+        return false;
     }
     const ServiceIpcAdmissionDecision decision = service_ipc_decide_admission(
         &g_daemonAdmissionTable, *key, SERVICE_IPC_CLASS_NORMAL,
@@ -247,31 +237,17 @@ static int daemon_serve_until_stopped(int srv) {
         // request -- the same weighting the Windows transport uses.
         ServiceIpcThrottleKey throttleKey;
         const bool admitted = daemon_admission_admit(conn, &throttleKey);
-        if (daemon_read_request(conn, &req)) {
-            if (!admitted) {
-                // Answer rather than drop: a client that is told "busy" can back
-                // off, while a dropped connection looks like a transport fault
-                // and is retried immediately, which is the behaviour being
-                // bounded here.
-                ServiceResponse busy = {};
-                busy.magic = SERVICE_PROTOCOL_MAGIC;
-                busy.version = SERVICE_PROTOCOL_VERSION;
-                busy.status = SERVICE_STATUS_ERROR;
-                busy.outcomeSeverity = SERVICE_OUTCOME_SEVERITY_ERROR;
-                snprintf(busy.message, sizeof(busy.message),
-                         "busy: this client is over its per-peer request budget");
-                daemon_write_response(conn, &busy);
-                daemon_admission_charge(&throttleKey, SERVICE_IPC_COST_BAD_COMMAND);
-            } else {
-                ServiceResponse resp;
-                handle_request(&req, &resp);
-                daemon_write_response(conn, &resp);
-                daemon_admission_charge(&throttleKey, SERVICE_IPC_COST_SUCCESS);
-            }
+        if (!admitted) {
+            // Refused peers never get a read or write deadline in the accept
+            // loop. Best-effort nonblocking output tells healthy clients busy.
+            daemon_answer_busy(conn);
+            daemon_admission_charge(&throttleKey, 0);
+        } else if (daemon_read_request(conn, &req)) {
+            ServiceResponse resp;
+            handle_request(&req, &resp);
+            daemon_write_response(conn, &resp);
+            daemon_admission_charge(&throttleKey, SERVICE_IPC_COST_SUCCESS);
         } else {
-            // A peer that connected and did not deliver a complete frame has
-            // spent the shared dispatch time and gets charged for it, so a
-            // stall-and-abandon flood is more expensive than real work.
             daemon_admission_charge(&throttleKey, SERVICE_IPC_COST_TRANSPORT_FAULT);
         }
         close(conn);

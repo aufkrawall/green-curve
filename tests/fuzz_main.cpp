@@ -371,7 +371,26 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     // half the target was unreachable.  A smaller container is a perfectly good
     // input to the validator -- it will simply report a range error, which is
     // the behaviour worth covering too.
-    const size_t capacity = size;
+    // Reserve five independent steering bytes and a footer/size tail. Never
+    // consume the footer as archive bytes, even for short inputs.
+    const size_t tailBytes = 5 + sizeof(GcPayloadFooter) + 1;
+    const size_t capacity = size > tailBytes ? size - tailBytes : size / 2;
+    FuzzInput tail(data + capacity, size - capacity);
+    const unsigned char magicSteer = tail.byte();
+    const unsigned char countSteer = tail.byte();
+    const unsigned char countValue = tail.byte();
+    const unsigned char rangeSteer = tail.byte();
+    const unsigned char footerSteer = tail.byte();
+    GcPayloadFooter footer = {};
+    tail.bytes((uint8_t*)&footer, sizeof(footer));
+    const uint64_t total = (uint64_t)tail.byte() * 64u;
+    if (footerSteer & 1) {
+        memcpy(footer.magic, GC_PAYLOAD_FOOTER_MAGIC, GC_PAYLOAD_FOOTER_MAGIC_LEN);
+    }
+    const GcPayloadStatus footerStatus =
+        gc_payload_validate_footer(&footer, total, 1u << 20);
+    GC_FUZZ_CHECK(gc_payload_status_text(footerStatus) != NULL,
+                  "a footer status has no text");
     if (capacity < sizeof(struct GcArchiveHeader)) return 0;
 
     uint8_t* container = (uint8_t*)malloc(capacity);
@@ -388,9 +407,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
     // Steer toward the ACCEPTED shape, so the fuzzer reaches the offset and
     // CRC arithmetic instead of failing the magic word on every input.
-    if (in.byte() & 0x01) memcpy(header->magic, GC_ARCHIVE_MAGIC, GC_ARCHIVE_MAGIC_LEN);
-    if (in.byte() & 0x02) header->fileCount = 1 + (in.byte() % GC_ARCHIVE_MAX_FILES);
-    if (in.byte() & 0x04) {
+    if (magicSteer & 0x01) memcpy(header->magic, GC_ARCHIVE_MAGIC, GC_ARCHIVE_MAGIC_LEN);
+    if (countSteer & 0x02) header->fileCount = 1 + (countValue % GC_ARCHIVE_MAX_FILES);
+    if (rangeSteer & 0x04) {
         // Point the single entry at real, in-range bytes and stamp the CRC
         // that range actually has, so validation can succeed.
         //
@@ -401,7 +420,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         // a wild pointer.  That is not a defect in gc_archive_validate() -- it
         // never sees these values -- but it is exactly the shape a fuzzer is
         // for, and an unguarded subtraction in a harness is a harness bug.
-        if (header->fileCount > GC_ARCHIVE_MAX_FILES) { free(container); return 0; }
+        if (header->fileCount < 1 || header->fileCount > GC_ARCHIVE_MAX_FILES) { free(container); return 0; }
         const uint64_t directory = (uint64_t)header->fileCount *
             sizeof(struct GcArchiveEntry);
         if (directory >= (uint64_t)capacity -
@@ -456,27 +475,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
             volatile unsigned int sink = gc_crc32(
                 container + entry->dataOffset, (size_t)entry->dataSize, 0);
             (void)sink;
-        }
-    }
-
-    // The footer is the OTHER untrusted boundary in the same file: it decides
-    // where the archive starts and how big it is, and it is read from the end of
-    // an executable a user downloaded.
-    if (in.remaining() >= sizeof(GcPayloadFooter)) {
-        GcPayloadFooter footer;
-        memset(&footer, 0, sizeof(footer));
-        in.bytes((uint8_t*)&footer, sizeof(footer));
-        // Total size is chosen so some fraction of the layouts are in-range and
-        // some are not; the function must refuse the rest without reading past
-        // what it was given.
-        const uint64_t total = (uint64_t)in.byte() * 64u;
-        const GcPayloadStatus footerStatus =
-            gc_payload_validate_footer(&footer, total, 1u << 20);
-        if (footerStatus != GC_PAYLOAD_OK) {
-            // Every refusal must be labelable: a status with no text would
-            // reach the user as an empty failure line.
-            GC_FUZZ_CHECK(gc_payload_status_text(footerStatus) != NULL,
-                          "a footer refusal has no status text");
         }
     }
 
@@ -830,9 +828,20 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 #include "update_manifest_policy.h"
 #include "update_url_policy.h"
 #include "update_schedule_policy.h"
+#include "update_freshness_policy.h"
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     FuzzInput in(data, size);
+    GcUpdateFreshness fresh = {};
+    if (gc_update_fresh_parse((const char*)data, size, 2000000000LL, &fresh)) {
+        GC_FUZZ_CHECK(fresh.manifestOffset < size, "freshness accepted an empty manifest");
+        GC_FUZZ_CHECK(gc_update_fresh_time_valid(&fresh, 2000000000LL), "freshness escaped its time gate");
+        GC_FUZZ_CHECK(!gc_update_fresh_time_valid(&fresh, fresh.expires), "expiry boundary was accepted");
+        GcUpdateManifest enclosed;
+        gc_update_manifest_parse((const char*)data + fresh.manifestOffset,
+            size - fresh.manifestOffset, &enclosed);
+    }
+
 
     // --- The manifest parser, over the raw input ------------------------
     GcUpdateManifest manifest;

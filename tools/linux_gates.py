@@ -7,6 +7,10 @@ here imports build.py, so the dependency runs one way only.
 `ctx` is any object exposing SOURCE_DIR and SCRIPT_DIR.
 """
 import os
+import re
+import shutil
+import shlex
+import subprocess
 import sys
 
 
@@ -637,6 +641,7 @@ def check_release_packaging(ctx, require_text, forbid_text):
     require_text(setup_script, "pass --purge to remove it",
                  "uninstall keeps persisted settings unless --purge is given")
     check_setup_script_line_endings(setup_script)
+    check_setup_exec_escaping(setup_script)
     # F-LNX-EOL / F-LNX-MODE: the archive must be identical off any build host.
     gates = os.path.join(ctx.SCRIPT_DIR, "tools", "security_gates.py")
     require_text(gates, "def check_linux_release_packaging",
@@ -680,6 +685,15 @@ def check_release_packaging(ctx, require_text, forbid_text):
                  "README silent install example matches APP_VERSION")
     require_text(os.path.join(arch_dir, "greencurve.service"), "ExecStart=/usr/bin/greencurve --daemon",
                  "Arch systemd unit runs daemon")
+    sandbox = _p(ctx, "linux_service_sandbox.h")
+    with open(sandbox, encoding="utf-8") as handle:
+        directives = re.findall(r'"([A-Za-z][^"\\]+)\\n"', handle.read())
+    for unit in ("greencurve.service", "greencurve-resume.service"):
+        for directive in directives:
+            require_text(os.path.join(arch_dir, unit), directive,
+                         f"{unit} matches the shared runtime sandbox: {directive}")
+    require_text(_p(ctx, "linux_service_install.cpp"), "GC_LINUX_SERVICE_SANDBOX",
+                 "generated units use the shared sandbox")
     require_text(os.path.join(arch_dir, "greencurve-resume.service"), "ExecStart=/usr/bin/greencurve --resume-restore",
                  "Arch resume unit runs binary resume-restore")
     require_text(os.path.join(arch_dir, "greencurve.sysusers"), "g greencurve -",
@@ -701,6 +715,36 @@ def check_release_packaging(ctx, require_text, forbid_text):
     require_text(build_script, "build_arch_package(SCRIPT_DIR, APP_VERSION, arch, binaries[0], output_dir=package_dir)",
                  "Linux packaging step builds Arch Linux package")
     check_packaging_line_endings(arch_dir)
+
+
+def check_setup_exec_escaping(setup_script):
+    # Execute only the real escaping assignments, without running installation.
+    bash = shutil.which("bash")
+    git_bash = os.path.join(os.environ.get("ProgramFiles", ""), "Git", "usr", "bin", "bash.exe")
+    if os.name == "nt" and os.path.isfile(git_bash):
+        bash = git_bash
+    if not bash:
+        if os.name != "nt":
+            raise RuntimeError("Bash is required to verify setup Exec escaping")
+        return  # Native Linux CI executes this fixture; no Windows Bash required.
+    with open(setup_script, encoding="utf-8") as handle:
+        text = handle.read()
+    start = text.index('    local exec_binary=')
+    finish = text.index('    command -v runuser', start)
+    script = ('fixture() {\n    local target_bin=$1\n' + text[start:finish] +
+              '    printf "%s" "$exec_binary"\n}\n')
+    slash = chr(92)
+    cases = [("/opt/normal path", "/opt/normal path"),
+             ("/opt/a" + slash + "b", "/opt/a" + slash * 4 + "b"),
+             ("/opt/a$b", "/opt/a" + slash * 2 + "$b"),
+             ('/opt/a"b', '/opt/a' + slash * 2 + '"b'),
+             ("/opt/a`b", "/opt/a" + slash * 2 + "`b"),
+             ("/opt/a%fb", "/opt/a%%fb")]
+    for value, expected in cases:
+        result = subprocess.run([bash, "-s"], input=script + "fixture " + shlex.quote(value) + "\n",
+                                check=True, capture_output=True, text=True)
+        if result.stdout != expected:
+            raise RuntimeError("setup Exec escaping violates desktop string/argument rules")
 
 
 def check_setup_script_line_endings(setup_script):

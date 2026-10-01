@@ -176,8 +176,14 @@ install_desktop_entries() {
     elif [ -x "$BINARY" ]; then
         target_bin="$BINARY"
     fi
+    info "The greencurve group grants trusted GPU administration, including persistent boot settings. Revoking membership does not clear saved boot settings."
     local exec_binary="${target_bin//\\/\\\\}"
     exec_binary="${exec_binary//\"/\\\"}"
+    exec_binary="${exec_binary//\$/\\\$}"
+    exec_binary="${exec_binary//\`/\\\`}"
+    exec_binary="${exec_binary//%/%%}"
+    # Desktop string decoding happens before Exec argument decoding.
+    exec_binary="${exec_binary//\\/\\\\}"
     command -v runuser >/dev/null 2>&1 ||
         { warn "runuser is unavailable; skipping desktop entry"; return 0; }
     # Everything below runs with the target account's privileges. The desktop

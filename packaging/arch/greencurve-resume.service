@@ -11,6 +11,19 @@ Type=oneshot
 ExecStart=/usr/bin/greencurve --resume-restore
 StandardOutput=journal
 StandardError=journal
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+LockPersonality=yes
 
 [Install]
 WantedBy=suspend.target hibernate.target hybrid-sleep.target suspend-then-hibernate.target

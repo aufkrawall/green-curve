@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
+#include "update_freshness_policy.h"
 //
 // The updater's cryptographic gate: does this manifest carry a signature from a
 // key we compiled in, and are these bytes on disk the ones it names?
@@ -315,7 +316,7 @@ static bool gc_update_verify_manifest_signature(const void* manifestBytes,
         StringCchCopyA(err, errSize, "no manifest bytes to verify");
         return false;
     }
-    if (manifestLength > GC_UPDATE_MANIFEST_MAX_BYTES) {
+    if (manifestLength > GC_UPDATE_FRESH_MAX_BYTES) {
         StringCchCopyA(err, errSize, "manifest is larger than the format allows");
         return false;
     }

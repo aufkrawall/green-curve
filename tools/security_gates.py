@@ -658,7 +658,7 @@ _ALLOWED_PROFILE_NAMES = frozenset({
     "<username>", "<admin>", "<youruser>",
 })
 
-_PROFILE_PATH_RE = re.compile(r"[Cc]:[\\/]{1,2}Users[\\/]{1,2}([^\\/\s\"'`)<>]+|<[^>]+>)")
+_PROFILE_PATH_RE = re.compile(r"(?:[a-z]:[\\/]{1,2}|[\\]{2}[^\\/\s]+[\\/]c\$[\\/])Users[\\/]{1,2}([^\\/\s\"'`)<>]+|<[^>]+>)", re.IGNORECASE)
 
 # The POSIX and macOS spelling of the same thing.  The pattern above requires
 # a `C:` drive letter, so it only ever sees the Windows form -- but a home
@@ -836,6 +836,18 @@ def check_workflow_structure(ctx):
     if masked_sequence in ci_text:
         all_errors.append(
             f"{ci_path}: test and check must be separate fail-fast steps")
+
+    release_path = os.path.join(ctx.SCRIPT_DIR, ".github", "workflows", "release.yml")
+    with open(release_path, encoding="utf-8") as handle:
+        release_text = handle.read()
+    for path, workflow in ((ci_path, ci_text), (release_path, release_text)):
+        if "fetch-depth: 0" not in workflow or "python3 tools/secret_scan.py" not in workflow:
+            all_errors.append(f"{path}: full-history secret scanning is mandatory")
+    for command in ("python build.py --test", "python build.py --fuzz --fuzz-runs 5000"):
+        if "run: " + command + "\n" not in release_text:
+            all_errors.append(f"{release_path}: release must run {command}")
+    if "trap cleanup_publish_credentials EXIT" not in release_text:
+        all_errors.append(f"{release_path}: publication credentials need exit cleanup")
 
     # Exercise the checker itself with the exact malformed indentation that
     # previously made the whole CI workflow unparsable.
@@ -1439,6 +1451,10 @@ def run_self_tests():
     ordinary identifiers.
     """
     failures = []
+    for spelling in (r"c:\users\a\source.cpp", r"\\host\c$\USERS\a\source.cpp"):
+        match = _PROFILE_PATH_RE.search(spelling)
+        if not match or match.group(1) != "a":
+            failures.append("profile path gate misses lowercase or UNC administrative paths")
 
     clean = [("ok.cpp",
               "NTSTATUS status = BCryptGenRandom(nullptr, (PUCHAR)buffer, size,\n"

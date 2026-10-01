@@ -114,16 +114,16 @@ static bool service_update_run_check(char* err, size_t errSize) {
 
     char manifestUrl[GC_UPDATE_URL_MAX_CHARS] = {};
     char signatureUrl[GC_UPDATE_URL_MAX_CHARS] = {};
-    if (!gc_update_build_latest_url(GC_UPDATE_MANIFEST_ASSET, manifestUrl,
+    if (!gc_update_build_latest_url(GC_UPDATE_FRESH_MANIFEST_ASSET, manifestUrl,
                                     sizeof(manifestUrl)) ||
-        !gc_update_build_latest_url(GC_UPDATE_SIGNATURE_ASSET, signatureUrl,
+        !gc_update_build_latest_url(GC_UPDATE_FRESH_SIGNATURE_ASSET, signatureUrl,
                                     sizeof(signatureUrl))) {
         set_message(err, errSize, "Could not build the update URLs");
         return false;
     }
 
     // Both documents are tiny and both are fetched before anything is trusted.
-    char manifestText[GC_UPDATE_MANIFEST_MAX_BYTES + 1] = {};
+    char manifestText[GC_UPDATE_FRESH_MAX_BYTES + 1] = {};
     size_t manifestLength = 0;
     if (!gc_update_http_get_small(manifestUrl, manifestText, sizeof(manifestText),
                                   &manifestLength, err, errSize)) {
@@ -143,8 +143,15 @@ static bool service_update_run_check(char* err, size_t errSize) {
         return false;
     }
 
+    GcUpdateFreshness freshness = {};
+    if (!gc_update_fresh_parse(manifestText, manifestLength, service_update_now_unix(), &freshness)) {
+        set_message(err, errSize, "Signed update metadata is expired, future-dated, or missing freshness; check the system clock");
+        debug_log("update check: signed freshness refused\n");
+        return false;
+    }
     GcUpdateManifest manifest;
-    gc_update_manifest_parse(manifestText, manifestLength, &manifest);
+    gc_update_manifest_parse(manifestText + freshness.manifestOffset,
+        manifestLength - freshness.manifestOffset, &manifest);
     if (!manifest.valid) {
         // A correctly signed manifest that does not parse means the release
         // tooling produced something this build cannot read.  That is not a
@@ -175,6 +182,7 @@ static bool service_update_run_check(char* err, size_t errSize) {
         GcUpdateStateLock guard;
         g_updateState.manifest = manifest;
         g_updateState.manifestValid = true;
+        g_updateState.freshness = freshness;
         g_updateState.decision = decision;
         // Folded in AFTER the signature verified and the manifest parsed, so
         // the mark can only ever be moved by the maintainer.  An attacker who
@@ -256,7 +264,8 @@ static bool service_update_run_download(char* err, size_t errSize) {
     {
         GcUpdateStateLock guard;
         if (!g_updateState.manifestValid ||
-            g_updateState.decision != GC_UPDATE_DECISION_AVAILABLE) {
+            g_updateState.decision != GC_UPDATE_DECISION_AVAILABLE ||
+            !gc_update_fresh_time_valid(&g_updateState.freshness, service_update_now_unix())) {
             set_message(err, errSize, "No update is available to download");
             return false;
         }
@@ -358,6 +367,13 @@ static bool service_update_staged_package_matches_manifest(
     const GcUpdateManifest* manifest, char* err, size_t errSize) {
     if (err && errSize) err[0] = 0;
     if (!manifest || !manifest->valid) return false;
+    {
+        GcUpdateStateLock guard;
+        if (!gc_update_fresh_time_valid(&g_updateState.freshness, service_update_now_unix())) {
+            set_message(err, errSize, "Signed update metadata has expired; check for updates again");
+            return false;
+        }
+    }
     const GcUpdateAsset* asset =
         gc_update_select_asset(manifest, service_update_host_arch());
     if (!asset) return false;
@@ -435,6 +451,8 @@ static bool service_update_run_install(char* err, size_t errSize) {
         gate.packageStaged = g_updateState.packageStaged;
         gate.packageVerified = g_updateState.packageVerified;
         gate.installAlreadyRunning = g_updateState.installRunning;
+        gate.updateAvailable = g_updateState.decision == GC_UPDATE_DECISION_AVAILABLE &&
+            gc_update_fresh_time_valid(&g_updateState.freshness, service_update_now_unix());
         requestingSessionId = g_updateState.requestingSessionId;
         StringCchCopyA(stagedPath, sizeof(stagedPath), g_updateState.stagedPath);
     }
@@ -447,6 +465,9 @@ static bool service_update_run_install(char* err, size_t errSize) {
     gate.applyInFlight = false;
 
     GcUpdateInstallRefusal refusal = gc_update_install_decision(&gate);
+    if (!gate.updateAvailable) {
+        debug_log("update install: current metadata/decision does not permit in-app installation\n");
+    }
     {
         GcUpdateStateLock guard;
         g_updateState.lastRefusal = refusal;
@@ -617,6 +638,19 @@ static bool service_update_run_install(char* err, size_t errSize) {
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi = {};
+    bool freshAtLaunch = false;
+    {
+        GcUpdateStateLock guard;
+        freshAtLaunch = gc_update_fresh_time_valid(&g_updateState.freshness, service_update_now_unix());
+    }
+    if (!freshAtLaunch) {
+        CloseHandle(pinned);
+        service_update_release_install_reservation("signed metadata expired before launch");
+        GcUpdateStateLock guard;
+        g_updateState.installRunning = false;
+        set_message(err, errSize, "Signed update metadata expired before launch; check for updates again");
+        return false;
+    }
     BOOL created = CreateProcessW(nullptr, wideCommand, nullptr, nullptr,
                                   FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
     DWORD createError = created ? 0 : GetLastError();

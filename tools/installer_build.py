@@ -903,7 +903,7 @@ def check_all(ctx, require_text, forbid_text):
         print("Regression source check FAILED: the stop-failure recovery must exist "
               "and must never retry the service stop that just failed")
         sys.exit(1)
-    require_text(source("installer_transaction_files.h"), "CopyFile2(staged, temporary, nullptr)",
+    require_text(source("installer_transaction_files.h"), "HANDLE output = CreateFileW(temporary, GENERIC_WRITE, 0, nullptr, CREATE_NEW,",
                  "staged payload copies inherit target permissions instead of the protected scratch ACL")
     forbid_text(source("installer_transaction_files.h"), "CopyFileW(staged, temporary",
                 "CopyFileW would copy the scratch ACL and block standard users from the installed GUI")

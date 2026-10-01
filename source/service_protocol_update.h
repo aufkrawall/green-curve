@@ -31,10 +31,8 @@
 // update exists through the polling they already do, with no extra round trip
 // and no second code path that a new command branch could forget to feed.
 //
-// It is deliberately NOT gated on the caller passing the state-envelope
-// authorization checks: it carries no hardware state, no session state and no
-// settings -- only "a newer public release exists", which is a fact anyone can
-// read off the releases page.
+// It is delivered only after the caller passes the same state-envelope
+// authorization checks as the hardware snapshot.
 
 #ifndef GREEN_CURVE_SERVICE_PROTOCOL_UPDATE_H
 #define GREEN_CURVE_SERVICE_PROTOCOL_UPDATE_H

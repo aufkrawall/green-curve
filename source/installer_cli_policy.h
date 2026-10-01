@@ -33,6 +33,8 @@
 #define GREEN_CURVE_INSTALLER_CLI_POLICY_H
 
 #include <stddef.h>
+#include <string.h>
+#include "installer_archive_policy.h"
 
 #define GC_INSTALLER_MAX_PATH_CHARS 520
 
@@ -130,7 +132,7 @@ static inline bool gc_installer_log_name_is_acceptable(const char* name) {
             c == '*' || c == '?' || c == '"' || c == '<' ||
             c == '>' || c == '|') return false;
     }
-    return true;
+    return gc_archive_name_device_free(name, strlen(name));
 }
 
 static inline void gc_installer_reject(GcInstallerOptions* options, const char* message, const char* detail) {
