@@ -16504,6 +16504,90 @@ static int run_all_tests_final() {
     }
 
     // ------------------------------------------------------------------
+    // F-LNX-ADMISSION: the Linux serve loop now meters its peers with the SAME
+    // policy the Windows pipe transport runs.
+    //
+    // What this proves is the property the port exists for, end to end over the
+    // shared table: a single peer that keeps issuing requests is eventually
+    // refused, and a DIFFERENT peer on the same daemon is unaffected while that
+    // happens.  Without the second half it would be a global rate limit, i.e. a
+    // self-inflicted denial of service for every other user on the machine.
+    // ------------------------------------------------------------------
+    {
+        ServiceIpcAdmissionTable peers;
+        peers.reset(2000000);
+
+        // Two distinct peer identities, the shape the serve loop builds from
+        // SO_PEERCRED: a uid and its primary group.
+        ServiceIpcThrottleKey flooder;
+        flooder.fill(0, 0, "uid:1000/g:1000");
+        ServiceIpcThrottleKey bystander;
+        bystander.fill(0, 0, "uid:1001/g:1000");
+        if (!flooder.valid || !bystander.valid) return 5980;
+        if (flooder.equals(bystander)) return 5981;
+
+        const unsigned long long burst =
+            SERVICE_IPC_BUCKET_BURST_MILLI / 1000u / SERVICE_IPC_COST_SUCCESS;
+        unsigned int served = 0;
+        bool refusedFlooder = false;
+        for (unsigned int i = 0; i < burst * 2u; ++i) {
+            if (service_ipc_decide_admission(&peers, flooder,
+                    SERVICE_IPC_CLASS_NORMAL, 2000000) == SERVICE_IPC_ADMITTED) {
+                service_ipc_charge(&peers, flooder, SERVICE_IPC_CLASS_NORMAL,
+                    SERVICE_IPC_COST_SUCCESS, 2000000);
+                served++;
+            } else {
+                refusedFlooder = true;
+                break;
+            }
+        }
+        // A flood is bounded, and it is bounded at roughly the documented
+        // burst rather than after an unbounded number of requests.
+        if (!refusedFlooder) return 5982;
+        if (served == 0 || served > burst) return 5983;
+
+        // The OTHER peer is still served while the flooder is being refused.
+        if (service_ipc_decide_admission(&peers, bystander,
+                SERVICE_IPC_CLASS_NORMAL, 2000000) !=
+            SERVICE_IPC_ADMITTED) return 5984;
+
+        // And a refused peer is not charged for the refusal, so it cannot dig
+        // its own hole deeper by retrying -- it simply keeps being refused until
+        // the bucket refills.
+        ServiceIpcIdentitySlot* flooderSlot = peers.find(
+            flooder, service_ipc_key_hash(flooder));
+        if (!flooderSlot) return 5985;
+        const unsigned long long balanceBefore =
+            flooderSlot->normalBucket.tokensMilli;
+        service_ipc_charge(&peers, flooder, SERVICE_IPC_CLASS_NORMAL,
+            service_ipc_connection_cost_tokens(
+                SERVICE_IPC_CONNECTION_ADMISSION_REFUSED), 2000000);
+        flooderSlot = peers.find(flooder, service_ipc_key_hash(flooder));
+        if (!flooderSlot ||
+            flooderSlot->normalBucket.tokensMilli != balanceBefore)
+            return 5986;
+
+        // The refusal is temporary, not a ban.  This is what makes the control
+        // safe to ship without asking whether a real user did something wrong.
+        //
+        // The subtlety: the refill is materialised by service_ipc_charge(), NOT
+        // by decide_admission() -- a zero-cost refusal charge returns early and
+        // decide reads tokensMilli without refilling.  So what actually lets a
+        // drained peer climb back in production is the serve loop's own
+        // "refused, then charge BAD_COMMAND" step.  This drives that exact
+        // sequence rather than asserting a mechanism the code does not have.
+        //
+        // 1000 ms buys a full second of refill: refill() adds
+        // elapsedMs * perSecondMilli / 1000, and perSecondMilli is 20 * 1000.
+        const unsigned long long afterRefill = 2000000 + 1000ULL;
+        service_ipc_charge(&peers, flooder, SERVICE_IPC_CLASS_NORMAL,
+            SERVICE_IPC_COST_BAD_COMMAND, afterRefill);
+        if (service_ipc_decide_admission(&peers, flooder,
+                SERVICE_IPC_CLASS_NORMAL, afterRefill) !=
+            SERVICE_IPC_ADMITTED) return 5987;
+    }
+
+    // ------------------------------------------------------------------
     // Debug log size-cap rotation (debug_log_rotation_policy.h). Pure
     // boundaries for the unbounded-log fix: rotate at/after the cap only,
     // never below it, and never on a misconfigured non-positive cap.

@@ -15,6 +15,10 @@
 #include "linux_daemon_state.h"
 #include "linux_debug_log.h"
 #include "linux_gpu_selection.h"
+// The SAME per-identity admission policy the Windows pipe transport runs.  It is
+// host-neutral pure logic (a monotonic clock in, a decision out), so reusing it
+// here is a port of an existing, tested control rather than a second design.
+#include "service_ipc_throttle_policy.h"
 #include "linux_mutation_authority.h"
 #include "profile_persistence_policy.h"
 // The platform-neutral "replay the complete active intent" request builder the

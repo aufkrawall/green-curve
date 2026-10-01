@@ -893,6 +893,23 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
                  "the resume rate limit has its own refusal verdict")
     require_text(runtime_h, "linux_auto_restore_note_resume_attempt(&g_autoRestoreGuard, nowMs)",
                  "the resume attempt is counted before the decision, not after")
+
+    # F-LNX-ADMISSION: the serve loop meters its peers with the SAME pure policy
+    # the Windows pipe transport runs, rather than having no rate limit at all.
+    serve_h = _p(ctx, "linux_daemon_serve.h")
+    daemon_cpp = _p(ctx, "linux_daemon.cpp")
+    require_text(daemon_cpp, '#include "service_ipc_throttle_policy.h"',
+                 "the Linux daemon reuses the shared per-identity admission policy")
+    require_text(serve_h, "g_daemonAdmissionTable",
+                 "the Linux serve loop owns an admission table")
+    require_text(serve_h, "service_ipc_decide_admission(",
+                 "the Linux serve loop asks the admission policy before handling")
+    require_text(serve_h, "SERVICE_IPC_COST_TRANSPORT_FAULT",
+                 "a peer that connects without delivering a frame is charged for it")
+    # The identity is the peer uid, not the pid: a client that forks would
+    # otherwise get a fresh, unmetered bucket every request.
+    require_text(serve_h, "SO_PEERCRED",
+                 "the admission identity is the peer credential, not a bare pid")
     require_text(runtime_h, "F-PREP-NO-UNCERTAIN",
                  "a pre-write GPU-not-available failure does not poison the daemon state")
 
