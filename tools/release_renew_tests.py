@@ -151,6 +151,26 @@ class FreshnessRenewalTests(unittest.TestCase):
             self.renew()
         self.assert_nothing_signed_or_uploaded()
 
+    def test_latest_is_rechecked_before_upload(self):
+        original = self.command
+        def publish_race(cmd, cwd=None):
+            result = original(cmd, cwd)
+            if cmd[0] != "gh" and cmd[2] == "renew-freshness":
+                self.latest = "9.9.9"
+            return result
+        with patch.object(release_post, "run_command", publish_race):
+            with self.assertRaisesRegex(ValueError, "releases/latest"):
+                self.renew()
+        self.assertIn("sign", self.events)
+        self.assertNotIn("upload", self.events)
+
+    def test_duplicate_manifest_key_is_refused_before_renewal(self):
+        self.remote[release_renew.V1_MANIFEST] += b"min_from=1.0\nmin_from=1.1\n"
+        with self.assertRaisesRegex(ValueError, "duplicate manifest field"):
+            self.renew()
+        self.assertNotIn("sign", self.events)
+        self.assertNotIn("upload", self.events)
+
     def test_unverified_published_manifest_is_refused(self):
         self.bad_signature = release_renew.V1_MANIFEST
         with self.assertRaisesRegex(RuntimeError, "signature rejected"):

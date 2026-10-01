@@ -20,21 +20,16 @@ source=(
     "greencurve.png"
 )
 sha256sums=(
-    'SKIP'
+    'b508dfc57397f1494086c958cc1c93bf4e054c72b825cfd276979555d7c3b99a'
     'ab54902d53821b375a471990d515eb38a006971cc2b66352dba9a2d69793726e'
-    'b5a58d0cdf6fd713765b69f470f670c4d8e3283e6862a5a37b92209ce2c3104c'
+    '2aa2e91a0ae63c2dac16689ed8b824a2f774fb550cb5d56d3385516fd6e71528'
     'ea609d86699918483679359aff45bcd5d1344a76fee3b4dac6cf6805b6b272c7'
     '70df9616dbba8cd76600dca962432813f2a4562175a8f322cc0c103a760b82e0'
     'b834cc7fc3a5614a65b55f2d1c49c73927bf7d512b7ebb4fb9a02c1408ef19d1'
 )
 
-# The source tarball is GitHub's generated archive for a MUTABLE tag, so its
-# bytes are not content-addressed and the digest cannot be derived offline --
-# it has to be taken from a trusted fetch.  A 'SKIP' here used to mean the
-# daemon was built and installed as root from a tree nobody had checked, so the
-# placeholder is now fatal: fill the digest in from a fetch you trust, or this
-# PKGBUILD refuses rather than building something unverified.  See PKGBUILD.bin
-# for the prebuilt-package variant, which pins its payload outright.
+# The source archive is pinned to the reviewed release tree. Update its digest
+# with pkgver; a placeholder must never silently disable verification.
 _gc_placeholder=0
 for _gc_sum in "${sha256sums[@]}"; do
     [ "$_gc_sum" = "SKIP" ] && _gc_placeholder=1

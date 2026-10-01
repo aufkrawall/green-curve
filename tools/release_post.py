@@ -23,6 +23,7 @@ the full reviewed SHA. GitHub's release tag must resolve to that same commit.
 
 import argparse
 import update_freshness
+import update_manifest_tools
 import hashlib
 import json
 import os
@@ -135,10 +136,17 @@ def verify_installer_provenance(path, repo, commit):
     print(f"  {path.name}: release provenance verified")
 
 
+def require_latest_release(repo, version):
+    latest = json.loads(run_command(["gh", "api", f"repos/{repo}/releases/latest"])).get("tag_name")
+    if latest != version:
+        raise ValueError(f"{version} is not releases/latest ({latest}); "
+                         "refusing to sign or publish updater metadata for another release")
+    print(f"Updater channel still targets release {version}")
+
+
 def run_post_release(repo, version, key_path, root_dir, dry_run=False, source_commit=None):
     root = Path(root_dir)
-    if not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", version):
-        raise ValueError("release version must be numeric MAJOR.MINOR[.PATCH]")
+    update_manifest_tools.validate_version(version)
     if not re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("release repository must have owner/repo form")
     print(f"=== Post-release publication automation for {version} on {repo} ===")
@@ -158,6 +166,7 @@ def run_post_release(repo, version, key_path, root_dir, dry_run=False, source_co
         raise ValueError(f"release {version} is a draft; cannot issue updater manifest for draft release")
     if rel_info.get("isPrerelease"):
         raise ValueError(f"release {version} is marked pre-release; cannot issue updater manifest for pre-release")
+    require_latest_release(repo, version)
 
     installer_names = {arch: f"greencurve-{version}-windows-{arch}-setup.exe"
                        for arch in INSTALLER_ARCHES}
@@ -211,6 +220,7 @@ def run_post_release(repo, version, key_path, root_dir, dry_run=False, source_co
             verify_installer_provenance(exe_path, repo, expected_commit)
 
         # 4. Generate manifest and signature
+        require_latest_release(repo, version)
         print("Generating and signing update manifest...")
         run_command([
             sys.executable, str(root / "tools" / "update_signing.py"),
@@ -235,9 +245,9 @@ def run_post_release(repo, version, key_path, root_dir, dry_run=False, source_co
         ])
         print("  Local signature verification passed.")
 
-        manifest_text = manifest_file.read_text(encoding="utf-8")
-        if f"version={version}" not in manifest_text or "format=1" not in manifest_text:
-            raise ValueError(f"malformed manifest text:\n{manifest_text}")
+        entries = update_manifest_tools.parse_manifest(manifest_file.read_bytes())
+        if entries["version"] != version:
+            raise ValueError("prepared manifest does not describe the requested release")
 
         fresh_manifest = relbits / update_freshness.MANIFEST_ASSET
         fresh_sig = relbits / update_freshness.SIGNATURE_ASSET
@@ -252,6 +262,7 @@ def run_post_release(repo, version, key_path, root_dir, dry_run=False, source_co
             return True
 
         # 6. Upload updater assets
+        require_latest_release(repo, version)
         print("Uploading updater assets to GitHub Release...")
         run_command([
             "gh", "release", "upload", version,
@@ -296,12 +307,7 @@ def run_post_release(repo, version, key_path, root_dir, dry_run=False, source_co
             network, _ = fetch_url(f"{fixed_base}/{local.name}", verify_dir / local.name)
             if network != local.read_bytes():
                 raise ValueError("published freshness bytes differ from local signed metadata")
-        # Parse manifest for asset URLs
-        entries = {}
-        for line in net_manifest.decode("utf-8").splitlines():
-            if "=" in line and not line.startswith("#"):
-                k, v = line.split("=", 1)
-                entries[k.strip()] = v.strip()
+        entries = update_manifest_tools.parse_manifest(net_manifest)
 
         # Fetch and verify each setup installer from manifest URLs
         for arch in INSTALLER_ARCHES:

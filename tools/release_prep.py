@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+import update_manifest_tools
 
 _RELEASE_HEADING = re.compile(r"^## (\d+\.\d+(?:\.\d+)?)$", re.MULTILINE)
 ALLOWED_CATEGORIES = frozenset(
@@ -14,6 +15,7 @@ ALLOWED_CATEGORIES = frozenset(
 
 
 def validate_release_notes(version, changelog):
+    update_manifest_tools.validate_version(version)
     sections = list(_RELEASE_HEADING.finditer(changelog))
     if len(sections) < 2 or sections[0].group(1) != version:
         raise ValueError(f"latest versioned changelog section must be ## {version}")

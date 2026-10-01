@@ -12,6 +12,7 @@ import shutil
 import shlex
 import subprocess
 import sys
+import arch_recipe_checks
 
 
 def _p(ctx, name):
@@ -715,6 +716,7 @@ def check_release_packaging(ctx, require_text, forbid_text):
     require_text(build_script, "build_arch_package(SCRIPT_DIR, APP_VERSION, arch, binaries[0], output_dir=package_dir)",
                  "Linux packaging step builds Arch Linux package")
     check_packaging_line_endings(arch_dir)
+    arch_recipe_checks.check_all(arch_dir)
 
 
 def check_setup_exec_escaping(setup_script):

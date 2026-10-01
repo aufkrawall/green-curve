@@ -50,6 +50,7 @@ class ReleasePublicationTests(unittest.TestCase):
         self.remote_object = {"type": "commit", "sha": _COMMIT}
         self.tag_objects = {}
         self.local_commit = _COMMIT
+        self.latest = _VERSION
         self.bad_provenance = None
         self.source_commit = _COMMIT
         self.signer_workflow = f"{_REPO}/.github/workflows/release.yml"
@@ -68,6 +69,9 @@ class ReleasePublicationTests(unittest.TestCase):
             return self.local_commit
         if cmd[:2] == ["gh", "api"]:
             endpoint = cmd[2]
+            if endpoint.endswith("/releases/latest"):
+                self.events.append("latest-check")
+                return json.dumps({"tag_name": self.latest})
             if "/git/ref/tags/" in endpoint:
                 return json.dumps({"object": self.remote_object})
             if "/git/tags/" in endpoint:
@@ -149,6 +153,28 @@ class ReleasePublicationTests(unittest.TestCase):
         for cmd in commands:
             self.assertEqual(cmd[cmd.index("--source-digest") + 1], _COMMIT)
             self.assertEqual(cmd[cmd.index("--signer-workflow") + 1], self.signer_workflow)
+
+    def test_non_latest_release_is_refused_before_signing_or_upload(self):
+        for dry_run in (False, True):
+            with self.subTest(dry_run=dry_run):
+                self.latest = "9.9.9"
+                with self.assertRaisesRegex(ValueError, "releases/latest"):
+                    self.run_release(dry_run=dry_run)
+                self.assertNotIn("download", self.events)
+                self.assert_not_signed_or_published()
+
+    def test_latest_is_rechecked_before_upload(self):
+        original = self.command
+        def publish_race(cmd, cwd=None):
+            result = original(cmd, cwd)
+            if cmd[0] != "gh" and cmd[2] == "prepare":
+                self.latest = "9.9.9"
+            return result
+        with patch.object(release_post, "run_command", publish_race):
+            with self.assertRaisesRegex(ValueError, "releases/latest"):
+                self.run_release()
+        self.assertIn("sign", self.events)
+        self.assertNotIn("publish", self.events)
 
     def test_invalid_provenance_never_signs_or_publishes(self):
         for arch in ("x64", "arm64"):

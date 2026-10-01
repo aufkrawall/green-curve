@@ -30,18 +30,14 @@ from pathlib import Path
 
 import release_post
 import update_freshness
+import update_manifest_tools
 
 V1_MANIFEST = "greencurve-update-manifest.txt"
 V1_SIGNATURE = "greencurve-update-manifest.sig"
 
 
 def _manifest_entries(payload):
-    entries = {}
-    for line in payload.decode("utf-8").splitlines():
-        if "=" in line and not line.startswith("#"):
-            key, value = line.split("=", 1)
-            entries[key.strip()] = value.strip()
-    return entries
+    return update_manifest_tools.parse_manifest(payload)
 
 
 def _verify_signature(root, manifest, signature, pubkey_hex):
@@ -75,8 +71,7 @@ def _check_published_installers(entries, version, directory):
 def run_renew_freshness(repo, version, key_path, root_dir, dry_run=False,
                         source_commit=None, now=None):
     root = Path(root_dir)
-    if not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", version):
-        raise ValueError("release version must be numeric MAJOR.MINOR[.PATCH]")
+    update_manifest_tools.validate_version(version)
     if not re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("release repository must have owner/repo form")
     print(f"=== Freshness renewal for {version} on {repo} ===")
@@ -87,11 +82,7 @@ def run_renew_freshness(repo, version, key_path, root_dir, dry_run=False,
         raise ValueError(f"release source commit mismatch: reviewed {expected_commit}, "
                          f"GitHub tag {published_commit}")
 
-    latest = json.loads(release_post.run_command(
-        ["gh", "api", f"repos/{repo}/releases/latest"])).get("tag_name")
-    if latest != version:
-        raise ValueError(f"{version} is not releases/latest ({latest}); clients never fetch "
-                         "its metadata, so renewing it would change nothing")
+    release_post.require_latest_release(repo, version)
 
     info = json.loads(release_post.run_command(
         ["gh", "release", "view", version, "--repo", repo, "--json", "isDraft,isPrerelease,assets"]))
@@ -129,6 +120,7 @@ def run_renew_freshness(repo, version, key_path, root_dir, dry_run=False,
         for installer in installers:
             release_post.verify_installer_provenance(installer, repo, expected_commit)
 
+        release_post.require_latest_release(repo, version)
         print("Signing a new freshness envelope over the unchanged v1 bytes...")
         release_post.run_command([sys.executable, str(root / "tools" / "update_signing.py"),
                                   "renew-freshness", str(v1_manifest),
@@ -147,6 +139,7 @@ def run_renew_freshness(repo, version, key_path, root_dir, dry_run=False,
                   "Nothing was uploaded.")
             return True
 
+        release_post.require_latest_release(repo, version)
         print("Replacing ONLY the v2 freshness pair on the release...")
         release_post.run_command(["gh", "release", "upload", version, "--repo", repo,
                                   str(fresh_manifest), str(fresh_signature), "--clobber"])

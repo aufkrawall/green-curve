@@ -45,7 +45,7 @@ import binascii
 import update_freshness
 import hashlib
 import os
-import re
+import update_manifest_tools
 import hmac
 import secrets
 import stat
@@ -340,10 +340,9 @@ def build_manifest(version, directory, minimum_from=None):
     covers these exact bytes, so a CRLF checkout on one machine and LF on
     another must not produce two different documents for one release.
     """
-    if not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", version):
-        raise ValueError("version must be numeric MAJOR.MINOR[.PATCH]")
-    if minimum_from and not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", minimum_from):
-        raise ValueError("minimum version must be numeric MAJOR.MINOR[.PATCH]")
+    update_manifest_tools.validate_version(version)
+    if minimum_from is not None:
+        update_manifest_tools.validate_version(minimum_from)
     lines = [
         "# Green Curve update manifest.  Signed with the release key; see",
         "# tools/update_signing.py.  Do not edit by hand -- the signature is",
@@ -373,7 +372,9 @@ def build_manifest(version, directory, minimum_from=None):
         raise SystemExit(
             f"no setup executables found in {directory} for version {version}"
         )
-    return "\n".join(lines) + "\n"
+    rendered = "\n".join(lines) + "\n"
+    update_manifest_tools.parse_manifest(rendered.encode("utf-8"))
+    return rendered
 
 
 # --------------------------------------------------------------------------
@@ -405,6 +406,8 @@ def _normalize_low_s(s):
 def run_self_tests():
     failures = []
     update_freshness.run_self_tests()
+    import update_manifest_tools_tests
+    update_manifest_tools_tests.run_tests()
 
     # Force the normally astronomically unlikely r=0 retry. The second nonce
     # must differ and the resulting signature must still verify.
@@ -702,8 +705,7 @@ def main(argv=None):
         # exactly what a renewal must not be able to change.
         with open(args.manifest, "rb") as handle:
             payload = handle.read()
-        if not payload.startswith(b"#") or b"\nformat=1\n" not in payload:
-            raise SystemExit("not a v1 update manifest: " + args.manifest)
+        update_manifest_tools.parse_manifest(payload)
         key = read_private_key(args.key)
         public_point = public_key_from_private(key)
         fresh_payload = update_freshness.build_envelope(payload)

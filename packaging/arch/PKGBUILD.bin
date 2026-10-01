@@ -29,13 +29,13 @@ source_aarch64=("$url/releases/download/$pkgver/greencurve-$pkgver-linux-arm64.t
 # emits as the .sha256 sidecar beside each archive -- bump them with the version.
 sha256sums=(
     'ab54902d53821b375a471990d515eb38a006971cc2b66352dba9a2d69793726e'
-    'b5a58d0cdf6fd713765b69f470f670c4d8e3283e6862a5a37b92209ce2c3104c'
+    '2aa2e91a0ae63c2dac16689ed8b824a2f774fb550cb5d56d3385516fd6e71528'
     'ea609d86699918483679359aff45bcd5d1344a76fee3b4dac6cf6805b6b272c7'
     '70df9616dbba8cd76600dca962432813f2a4562175a8f322cc0c103a760b82e0'
     'b834cc7fc3a5614a65b55f2d1c49c73927bf7d512b7ebb4fb9a02c1408ef19d1'
 )
-sha256sums_x86_64=('2ea567c4d63b098adefa0fb04123ec90545331984b391a4cfbb30a2f3e7b3054')
-sha256sums_aarch64=('a904c168a68d963326cdfe8b6345ff1e098ed624cdc128bb2eebe5e7ab9e6318')
+sha256sums_x86_64=('86aae0f4617b8836f98982e49fadde5d87a9f83e2f91abda082ac7452a01e34d')
+sha256sums_aarch64=('afc7eab5889b4c3a8f8abc64a85a8159fa2bbc6f532cb1ad6e63caeb4b03a969')
 
 package() {
     local _gc_arch
