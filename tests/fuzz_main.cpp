@@ -23,6 +23,7 @@
 #include "service_protocol.h"
 #include "linux_vf_validation.h"
 #include "linux_daemon_transport_policy.h"
+#include "installer_archive_policy.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,6 +37,8 @@
 #define GC_FUZZ_CONFIG_STRINGS  4
 #define GC_FUZZ_WIRE_PREFIX     5
 #define GC_FUZZ_UPDATE_MANIFEST 6
+#define GC_FUZZ_SERVICE_RESPONSE 7
+#define GC_FUZZ_INSTALLER_ARCHIVE 8
 
 #ifndef GC_FUZZ_TARGET
 #error "GC_FUZZ_TARGET must be defined (see FUZZ_TARGETS in build.py)"
@@ -247,6 +250,241 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 }
 
 #endif  // GC_FUZZ_SERVICE_REQUEST
+
+// ---------------------------------------------------------------------------
+// Target 7: the RESPONSE validator -- the other side of the same boundary.
+//
+// The request target above is the one that was already covered.  This is the
+// mirror image and it was the largest gap in the suite: the client treats a
+// ServiceResponse as authoritative -- it is what the GUI projects, and what
+// decides whether a mutation is reported as applied -- yet
+// validate_service_response_for_ipc() is the BIGGEST function in the protocol
+// validator, carries the most cross-field coherence rules (status/severity
+// agreement, envelope/section/phase coherence, topology-signature
+// recomputation, startup-profile coherence, the payload-free-refusal shortcut),
+// and had 36 deterministic assertions but no fuzz target at all.
+//
+// The steer bits matter as much here: a random 7368-byte image almost never
+// satisfies the magic/version pair, so without them the fuzzer would spend its
+// budget failing the first two comparisons.
+// ---------------------------------------------------------------------------
+#if GC_FUZZ_TARGET == GC_FUZZ_SERVICE_RESPONSE
+
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+    ServiceResponse response;
+    memset(&response, 0, sizeof(response));
+
+    FuzzInput in(data, size);
+    const uint8_t mode = in.byte();
+
+    uint8_t* raw = (uint8_t*)&response;
+    size_t copy = in.remaining();
+    if (copy > sizeof(response)) copy = sizeof(response);
+    in.bytes(raw, copy);
+
+    if (mode & 0x01) response.magic = SERVICE_PROTOCOL_MAGIC;
+    if (mode & 0x02) response.version = SERVICE_PROTOCOL_VERSION;
+    if (mode & 0x04) {
+        // Terminate the two strings the validator scans before it does anything
+        // else, so a fuzzed image is judged on the RULES rather than on whether
+        // the tail happened to be zero.
+        response.serviceVersion[sizeof(response.serviceVersion) - 1] = '\0';
+        response.message[sizeof(response.message) - 1] = '\0';
+    }
+    if (mode & 0x08) {
+        // A payload-free refusal is a legitimate answer, and it is the shape a
+        // refused request produces.  Drive that arm directly so the shortcut is
+        // covered rather than only reachable by luck.
+        response.status = SERVICE_STATUS_ERROR;
+        response.outcomeSeverity = SERVICE_OUTCOME_SEVERITY_ERROR;
+        memset(&response.state, 0, sizeof(response.state));
+        memset(&response.snapshot, 0, sizeof(response.snapshot));
+    }
+
+    const bool accepted = validate_service_response_for_ipc(&response);
+    if (!accepted) return 0;
+
+    // Accepted responses are what the GUI renders and what decides a mutation
+    // was applied, so the guarantees the validator advertises must hold.
+    GC_FUZZ_CHECK(response.magic == SERVICE_PROTOCOL_MAGIC,
+                  "accepted a response with the wrong protocol magic");
+    GC_FUZZ_CHECK(response.version == SERVICE_PROTOCOL_VERSION,
+                  "accepted a response with the wrong protocol version");
+    GC_FUZZ_CHECK(response.status <= SERVICE_STATUS_STALE_STATE,
+                  "accepted an out-of-range status");
+    GC_FUZZ_CHECK(response.operationState <= SERVICE_OPERATION_OUTCOME_UNKNOWN,
+                  "accepted an out-of-range operation state");
+    GC_FUZZ_CHECK(response.outcomeSeverityReserved == 0,
+                  "accepted a response with a non-zero reserved severity field");
+    GC_FUZZ_CHECK(service_outcome_severity_matches_status(
+                      response.status, response.outcomeSeverity),
+                  "accepted a status/severity pair that disagree");
+    GC_FUZZ_CHECK(service_wire_string_is_terminated(
+                      response.serviceVersion,
+                      (unsigned int)sizeof(response.serviceVersion)),
+                  "accepted an unterminated serviceVersion string");
+    GC_FUZZ_CHECK(service_wire_string_is_terminated(
+                      response.message, (unsigned int)sizeof(response.message)),
+                  "accepted an unterminated message string");
+
+    // Reading the strings is what a real consumer does; ASan catches any
+    // overrun the termination checks failed to prevent.
+    volatile size_t sink = strlen(response.serviceVersion) +
+                           strlen(response.message);
+    (void)sink;
+
+    // A second pass must be a no-op, or a re-queued response could change
+    // meaning between the client reading it twice.
+    ServiceResponse again = response;
+    GC_FUZZ_CHECK(validate_service_response_for_ipc(&again),
+                  "response validation is not idempotent (second pass rejected)");
+    GC_FUZZ_CHECK(memcmp(&again, &response, sizeof(response)) == 0,
+                  "response validation is not idempotent (second pass mutated it)");
+    return 0;
+}
+
+#endif  // GC_FUZZ_SERVICE_RESPONSE
+
+// ---------------------------------------------------------------------------
+// Target 8: the installer's GCAR container.
+//
+// gc_archive_validate() and gc_payload_validate_footer() are the parser for the
+// payload the elevated setup program unpacks out of its OWN verified bytes.  It
+// has deterministic unit tests for every status code, but nothing explores the
+// COMBINATORIAL space of fileCount x dataOffset x dataSize -- overlap, aliasing,
+// offsets that straddle the directory, sizes that exactly consume the container.
+// This parser runs as administrator, and the field it consumes most
+// (a caller-derived dataOffset) is exactly the one worth exploring.
+//
+// The container is store-only (never compressed), so there is no decompression
+// bomb to fuzz; the interesting surface is purely the offset arithmetic.
+// ---------------------------------------------------------------------------
+#if GC_FUZZ_TARGET == GC_FUZZ_INSTALLER_ARCHIVE
+
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+    FuzzInput in(data, size);
+
+    // Size the container FROM THE INPUT rather than demanding a fixed maximum.
+    // An earlier revision required the full header + 16-entry directory + 256
+    // data bytes before doing anything, which meant a short input returned at
+    // once: the measured max input length never even reached the footer, so
+    // half the target was unreachable.  A smaller container is a perfectly good
+    // input to the validator -- it will simply report a range error, which is
+    // the behaviour worth covering too.
+    const size_t capacity = size;
+    if (capacity < sizeof(struct GcArchiveHeader)) return 0;
+
+    uint8_t* container = (uint8_t*)malloc(capacity);
+    if (!container) return 0;
+    memset(container, 0, capacity);
+    in.bytes(container, capacity);
+
+    // Non-const on purpose: the steer bits below write THROUGH these to shape
+    // the container toward the accepted path.  gc_archive_validate() re-reads
+    // them as const, which is the only place const matters.
+    struct GcArchiveHeader* header = (struct GcArchiveHeader*)container;
+    struct GcArchiveEntry* entries =
+        (struct GcArchiveEntry*)(container + sizeof(struct GcArchiveHeader));
+
+    // Steer toward the ACCEPTED shape, so the fuzzer reaches the offset and
+    // CRC arithmetic instead of failing the magic word on every input.
+    if (in.byte() & 0x01) memcpy(header->magic, GC_ARCHIVE_MAGIC, GC_ARCHIVE_MAGIC_LEN);
+    if (in.byte() & 0x02) header->fileCount = 1 + (in.byte() % GC_ARCHIVE_MAX_FILES);
+    if (in.byte() & 0x04) {
+        // Point the single entry at real, in-range bytes and stamp the CRC
+        // that range actually has, so validation can succeed.
+        //
+        // The two guards are the harness's OWN arithmetic, and they are here
+        // because the fuzzer found the omission: a fuzzed fileCount can put
+        // dataStart past the end of the buffer, `capacity - dataStart` then
+        // UNDERFLOWS in gc_u64, and gc_crc32 is handed an enormous length over
+        // a wild pointer.  That is not a defect in gc_archive_validate() -- it
+        // never sees these values -- but it is exactly the shape a fuzzer is
+        // for, and an unguarded subtraction in a harness is a harness bug.
+        if (header->fileCount > GC_ARCHIVE_MAX_FILES) { free(container); return 0; }
+        const uint64_t directory = (uint64_t)header->fileCount *
+            sizeof(struct GcArchiveEntry);
+        if (directory >= (uint64_t)capacity -
+                (uint64_t)sizeof(struct GcArchiveHeader)) {
+            free(container);
+            return 0;
+        }
+        const uint64_t dataStart = sizeof(struct GcArchiveHeader) + directory;
+        const uint64_t available = (uint64_t)capacity - dataStart;
+        entries[0].name[0] = 'p';
+        entries[0].name[1] = '\0';
+        entries[0].dataOffset = dataStart;
+        entries[0].dataSize = available;
+        entries[0].dataCrc32 = gc_crc32(container + dataStart, (size_t)available, 0);
+    }
+
+    const struct GcArchiveEntry* outEntries = NULL;
+    uint32_t outCount = 0;
+    const GcArchiveStatus status =
+        gc_archive_validate(container, capacity, &outEntries, &outCount);
+
+    if (status == GC_ARCHIVE_OK) {
+        // An accepted container is about to be extracted by an ADMINISTRATOR
+        // process, so every postcondition the format promises must hold.
+        GC_FUZZ_CHECK(outEntries != NULL,
+                      "an accepted container returned no directory");
+        GC_FUZZ_CHECK(outCount == header->fileCount,
+                      "an accepted container reported a different file count");
+        GC_FUZZ_CHECK(outCount > 0 && outCount <= GC_ARCHIVE_MAX_FILES,
+                      "an accepted container reported an impossible file count");
+        const uint64_t dataStart = sizeof(struct GcArchiveHeader) +
+            (uint64_t)header->fileCount * sizeof(struct GcArchiveEntry);
+        for (uint32_t i = 0; i < outCount; ++i) {
+            const struct GcArchiveEntry* entry = &outEntries[i];
+            // Every name is NUL-terminated inside its own field and safe: this
+            // is what stops "..", a separator, a drive letter, an ADS colon, a
+            // wildcard, or a reserved DOS device from being written to disk
+            // under Program Files.
+            GC_FUZZ_CHECK(strnlen(entry->name, GC_ARCHIVE_MAX_NAME + 1) <= GC_ARCHIVE_MAX_NAME,
+                          "an accepted entry's name is not NUL-terminated in its field");
+            GC_FUZZ_CHECK(gc_archive_name_is_safe(entry->name),
+                          "an accepted entry carries an unsafe file name");
+            // And the range is inside the container, in the overflow-safe form.
+            GC_FUZZ_CHECK(entry->dataOffset >= dataStart,
+                          "an accepted entry points into the directory");
+            GC_FUZZ_CHECK(entry->dataSize <= (uint64_t)capacity,
+                          "an accepted entry claims more bytes than the container holds");
+            GC_FUZZ_CHECK(entry->dataOffset <= (uint64_t)capacity - entry->dataSize,
+                          "an accepted entry's range runs past the container");
+            // Reading the range is what extraction does; ASan catches an overrun
+            // the arithmetic failed to prevent.
+            volatile unsigned int sink = gc_crc32(
+                container + entry->dataOffset, (size_t)entry->dataSize, 0);
+            (void)sink;
+        }
+    }
+
+    // The footer is the OTHER untrusted boundary in the same file: it decides
+    // where the archive starts and how big it is, and it is read from the end of
+    // an executable a user downloaded.
+    if (in.remaining() >= sizeof(GcPayloadFooter)) {
+        GcPayloadFooter footer;
+        memset(&footer, 0, sizeof(footer));
+        in.bytes((uint8_t*)&footer, sizeof(footer));
+        // Total size is chosen so some fraction of the layouts are in-range and
+        // some are not; the function must refuse the rest without reading past
+        // what it was given.
+        const uint64_t total = (uint64_t)in.byte() * 64u;
+        const GcPayloadStatus footerStatus =
+            gc_payload_validate_footer(&footer, total, 1u << 20);
+        if (footerStatus != GC_PAYLOAD_OK) {
+            // Every refusal must be labelable: a status with no text would
+            // reach the user as an empty failure line.
+            GC_FUZZ_CHECK(gc_payload_status_text(footerStatus) != NULL,
+                          "a footer refusal has no status text");
+        }
+    }
+
+    free(container);
+    return 0;
+}
+
+#endif  // GC_FUZZ_INSTALLER_ARCHIVE
 
 // ---------------------------------------------------------------------------
 // Target 2: Linux VF snapshot structural validation.

@@ -42,6 +42,8 @@ FUZZ_TARGETS = {
     "config_strings": 4,
     "wire_prefix": 5,
     "update_manifest": 6,
+    "service_response": 7,
+    "installer_archive": 8,
 }
 
 # Targets that build on a native Linux host.  The one omission is not an
@@ -56,8 +58,15 @@ FUZZ_TARGETS = {
 #
 # update_manifest is header-only pure policy with no Win32 dependency at all,
 # so it builds and runs on both hosts.
+#
+# service_response and installer_archive (2026-10-01) are the two gaps the
+# security audit found in the suite: the response-side trust boundary, and the
+# container the ELEVATED setup program unpacks.  Both are header-only pure
+# policy over a fixed-size struct, so they build on both hosts for the same
+# reason update_manifest does.
 FUZZ_LINUX_TARGETS = frozenset({"service_request", "vf_snapshot", "wire_prefix",
-                                "config_strings", "update_manifest"})
+                                "config_strings", "update_manifest",
+                                "service_response", "installer_archive"})
 
 # Extra translation units a Linux fuzz target needs, keyed by target name.  Most
 # resolve entirely inside the harness and its headers; an empty/absent entry
@@ -75,6 +84,12 @@ FUZZ_LINUX_TARGETS = frozenset({"service_request", "vf_snapshot", "wire_prefix",
 # so every entry is proven on every host instead of only in Linux CI.
 FUZZ_LINUX_EXTRA_SOURCES = {
     "service_request": ("fan_curve.cpp", "config_text_utils.cpp"),
+    # Same dependency as service_request, and for the same reason: the response
+    # validator reaches validate_desired_settings_for_ipc(), which calls the
+    # out-of-line fan_curve_normalize_for_ipc() and, through set_message(),
+    # needs config_text_utils.cpp.  Discovered by check_fuzz_linux_link_lines()
+    # on its first run -- which is the gate doing its job, not a nuisance.
+    "service_response": ("fan_curve.cpp", "config_text_utils.cpp"),
     "config_strings": ("config_text_utils.cpp", "app_shared.cpp",
                        "fan_curve.cpp", "platform_posix.cpp"),
 }
