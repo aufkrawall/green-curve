@@ -507,7 +507,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     // CLI mode - handle --dump, --json, --help
     if (handle_cli(wCmdLine)) {
         debug_log_writer_stop();
-        DeleteCriticalSection(&g_debugLogLock);
+        // g_debugLogLock is process-lifetime; see cleanup_gui_process_runtime().
         return g_cliExitCode;
     }
 
@@ -538,7 +538,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
         } else {
             clear_service_authoritative_state();
             debug_log("startup service state is coherent but not READY: phase=%u generation=%llu revision=%llu\n",
-                stateResponse.state.gpuPhase,
+                (unsigned int)stateResponse.state.gpuPhase,
                 (unsigned long long)stateResponse.state.gpuGeneration,
                 (unsigned long long)stateResponse.state.stateRevision);
         }

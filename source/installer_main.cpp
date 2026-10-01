@@ -258,7 +258,28 @@ static bool gc_resolve_uninstall_directory(WCHAR* out, size_t outCount) {
 // WinMain rather than wWinMain: the MinGW CRT looks for the narrow entry point
 // unless the link adds -municode, and the narrow parameters are unused anyway —
 // the real command line is read wide via GetCommandLineW().
+// Defined in process_hardening.cpp, which is linked into every binary this
+// project produces -- including this one.  Until 2026-10 the setup program and
+// the uninstaller were the only two that never CALLED it.
+extern "C" void initialize_process_mitigations();
+
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
+    // FIRST, before any LoadLibrary and before any window exists.  This is the
+    // most privileged binary the project ships: both stubs carry
+    // requireAdministrator, and setup rewrites a directory DACL, registers a
+    // LocalSystem service, and writes under Program Files.
+    //
+    // SetDefaultDllDirectories matters most here.  The loader binds our
+    // STATIC imports -- including UxTheme.dll, which is not a KnownDLL -- before
+    // this call runs, so it cannot protect those; it protects every LoadLibrary
+    // the installer performs afterwards and it drops the current directory from
+    // the search order.  The remaining half of that exposure is why the install
+    // is expected to run from a hardened folder: a UxTheme.dll planted beside
+    // setup.exe in a user-writable directory is still loaded ahead of us, and
+    // the mitigations below deliberately TOLERATE refusal (log and continue)
+    // rather than abort an install the user already approved.
+    initialize_process_mitigations();
+
     // Per-monitor-v2 is requested by the manifest; this call also covers
     // launchers that strip or override manifest awareness, which is exactly the
     // case an in-app updater creates when it spawns setup from its own process.

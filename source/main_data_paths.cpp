@@ -304,7 +304,13 @@ static void clear_service_user_data_path_cache() {
     g_jsonPath[0] = 0;
     g_errorLogPath[0] = 0;
     g_serviceUserProfileDir[0] = 0;
+    // configPath is shared with pipe workers, the lifecycle worker and the
+    // redaction sites, so it is cleared under the same lock set_default_config_
+    // path() publishes it under.  Truncation is the whole point here, so this
+    // is a single write of the first byte.
+    EnterCriticalSection(&g_appLock);
     g_app.configPath[0] = 0;
+    LeaveCriticalSection(&g_appLock);
     g_serviceUserPathsResolved = false;
     g_serviceUserPathsSessionId = (DWORD)-1;
     g_serviceUserPathsSid[0] = 0;
@@ -502,7 +508,17 @@ static int format_log_timestamp_prefix(char* out, size_t outSize) {
 
 
 static void set_default_config_path() {
-    if (g_app.configPath[0]) return;
+    // g_app.configPath is read by pipe workers (refresh_service_debug_logging_
+    // from_config), by the lifecycle worker, and by the redaction sites, while
+    // it is written here.  Resolution does file I/O and a legacy copy, so the
+    // lock is NOT held across any of it: resolve into a local, then publish the
+    // finished string under the lock in one copy.  A half-written path would
+    // otherwise reach gc_log_path_token() and produce a fingerprint of a
+    // truncated path.
+    EnterCriticalSection(&g_appLock);
+    bool alreadyResolved = g_app.configPath[0] != 0;
+    LeaveCriticalSection(&g_appLock);
+    if (alreadyResolved) return;
 
     char err[256] = {};
     if (!resolve_data_paths(err, sizeof(err))) {
@@ -520,7 +536,8 @@ static void set_default_config_path() {
         return;
     }
 
-    StringCchPrintfA(g_app.configPath, ARRAY_COUNT(g_app.configPath), "%s\\%s", g_userDataDir, CONFIG_FILE_NAME);
+    char resolved[MAX_PATH] = {};
+    StringCchPrintfA(resolved, ARRAY_COUNT(resolved), "%s\\%s", g_userDataDir, CONFIG_FILE_NAME);
 
     // Legacy one-time import (READ ONLY): if a config.ini exists beside the
     // executable from a very old portable install AND the user has no config yet,
@@ -534,11 +551,20 @@ static void set_default_config_path() {
         slash[1] = 0;
         StringCchCatA(exeConfigPath, ARRAY_COUNT(exeConfigPath), CONFIG_FILE_NAME);
         DWORD legacyAttrs = gc_GetFileAttributesUtf8(exeConfigPath);
-        DWORD currentAttrs = gc_GetFileAttributesUtf8(g_app.configPath);
+        DWORD currentAttrs = gc_GetFileAttributesUtf8(resolved);
         if (legacyAttrs != INVALID_FILE_ATTRIBUTES && currentAttrs == INVALID_FILE_ATTRIBUTES) {
-            gc_CopyFileUtf8(exeConfigPath, g_app.configPath, TRUE);
+            gc_CopyFileUtf8(exeConfigPath, resolved, TRUE);
         }
     }
+
+    // Publish last, under the lock, and only if nothing beat us to it.  The
+    // legacy copy above used the local so this assignment is a single copy.
+    EnterCriticalSection(&g_appLock);
+    if (!g_app.configPath[0]) {
+        StringCchCopyA(g_app.configPath, ARRAY_COUNT(g_app.configPath), resolved);
+    }
+    LeaveCriticalSection(&g_appLock);
+
     invalidate_tray_profile_cache();
 }
 

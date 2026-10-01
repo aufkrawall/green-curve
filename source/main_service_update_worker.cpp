@@ -478,6 +478,37 @@ static bool service_update_run_install(char* err, size_t errSize) {
         return false;
     }
 
+    // Pin the staging DIRECTORY as well, for the same reason the secure writer
+    // pins its parent (main_secure_write.cpp): the handle above proves the
+    // BYTES cannot change, but CreateProcessW is called with a path, so the
+    // NAME is resolved again at exec time.  Without a delete-deny handle on the
+    // containing directory, "the file that was verified" and "the file that
+    // ran" are only the same object because every component of the path happens
+    // to be un-renameable.  That is true -- the directory is hardened and
+    // verified by service_update_staging_dir() -- so this is the assertion that
+    // keeps it true rather than a new boundary.
+    //
+    // The window this closes is real: between here and CreateProcessW the
+    // worker stops the user's GUI processes, which is allowed to block.
+    char stagingDir[MAX_PATH] = {};
+    StringCchCopyA(stagingDir, ARRAY_COUNT(stagingDir), stagedPath);
+    char* stagedSlash = strrchr(stagingDir, '\\');
+    if (!stagedSlash) stagedSlash = strrchr(stagingDir, '/');
+    if (stagedSlash) *stagedSlash = 0;
+    ScopedHandle stagingDirHandle(stagedSlash
+        ? gc_CreateFileUtf8(stagingDir, GENERIC_READ,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                            nullptr)
+        : INVALID_HANDLE_VALUE);
+    if (!stagingDirHandle.valid()) {
+        CloseHandle(pinned);
+        set_message(err, errSize,
+                    "Cannot pin the update staging directory (error %lu)",
+                    GetLastError());
+        return false;
+    }
+
     GcUpdateManifest manifest;
     {
         GcUpdateStateLock guard;

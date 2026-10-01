@@ -21,9 +21,14 @@
 // THE RULE: a command's authorization tier follows the SCOPE of what it
 // mutates, not how dangerous it looks.
 //
-//   READ          - answers from published state; the pipe ACL is the gate.
+//   READ          - answers from published state; no mutation, so no session
+//                   and no admin.  Still medium integrity: the pipe ACL admits
+//                   every AUTHENTICATED user, which is a wider set than medium
+//                   integrity, and READ is exactly the command that delivers
+//                   the state envelope.  See service_command_requires_medium_
+//                   integrity() below.
 //   CONTROL       - per-session hardware/diagnostic intent: medium integrity
-//                   and the active interactive session.
+//                   AND the active interactive session.
 //   MACHINE_ADMIN - persistent machine-wide configuration: CONTROL plus
 //                   membership of the local Administrators group.
 //
@@ -116,10 +121,26 @@ static inline ServiceCommandAuthorityTier service_command_authority_tier(
     }
 }
 
+// EVERY tier needs at least medium integrity, READ included.
+//
+// The READ tier is the one the pipe ACL alone was supposed to carry, and the
+// pipe ACL is `GRGW` for Authenticated Users -- which is broader than medium
+// integrity.  A low-integrity process (a sandboxed app, a low-MIL renderer) in
+// the active session therefore passed the session and PID gates and was handed
+// the authoritative envelope: GPU model names, PCI IDs, fan RPM, the applied
+// OC/UV/power state, and the machine's update posture.  That is exactly what
+// the dispatch site's own comment claimed would not happen ("only refused or
+// low-integrity callers lose it") -- the comment described the intent and the
+// tier table did not implement it.
+//
+// READ still needs nothing beyond this: it mutates nothing, so it does not
+// require the active session or Administrators membership.  It is the state
+// ENVELOPE that crosses the integrity boundary, and that is why the gate is
+// here rather than on the tier.
 static inline bool service_command_requires_medium_integrity(
     unsigned int command) {
-    return service_command_authority_tier(command) !=
-        SERVICE_COMMAND_TIER_READ;
+    (void)command;
+    return true;
 }
 
 static inline bool service_command_requires_local_admin(unsigned int command) {
@@ -135,7 +156,7 @@ static inline const char* service_command_authority_reject_reason(
     unsigned int mediumIntegrityRid, bool callerIsLocalAdmin) {
     if (service_command_requires_medium_integrity(command) &&
         callerIntegrityRid < mediumIntegrityRid) {
-        return "Service control requires a medium-integrity client";
+        return "Service access requires a medium-integrity client";
     }
     if (service_command_requires_local_admin(command) && !callerIsLocalAdmin) {
         return "Changing machine-wide Green Curve policy requires an administrator";

@@ -199,6 +199,16 @@ static void service_maybe_launch_recovery_from_main_loop(const char* source) {
 }
 
 static void service_capture_owner_identity(const char* user, DWORD sessionId) {
+    // This runs on the LIFECYCLE worker, not under the pipe dispatch lock, while
+    // populate_service_snapshot() reads these fields from any of the six pipe
+    // workers under g_appLock.  The two are genuinely concurrent -- a logon
+    // handoff with the GUI polling is enough -- so the write belongs under the
+    // same lock the reader uses.  Without it a 256-byte non-atomic char array is
+    // read while it is being rewritten: torn text, a username paired with
+    // another session's id, and formally undefined behaviour.  Nothing here
+    // decides authorization; it is the "service is owned by ..." display text
+    // and its persisted copy.
+    EnterCriticalSection(&g_appLock);
     g_app.backgroundServiceOwnerUser[0] = 0;
     if (user && user[0]) {
         StringCchCopyA(g_app.backgroundServiceOwnerUser, ARRAY_COUNT(g_app.backgroundServiceOwnerUser), user);
@@ -210,6 +220,7 @@ static void service_capture_owner_identity(const char* user, DWORD sessionId) {
     uli.LowPart = ft.dwLowDateTime;
     uli.HighPart = ft.dwHighDateTime;
     g_app.backgroundServiceOwnerUtcMs = uli.QuadPart / 10000ULL;
+    LeaveCriticalSection(&g_appLock);
 }
 
 static bool ensure_service_runtime_lock() {

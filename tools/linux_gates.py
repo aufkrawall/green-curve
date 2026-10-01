@@ -881,8 +881,18 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
                  "an uncertain daemon has its own refusal verdict")
     require_text(runtime_h,
                  "linux_auto_restore_decide(&g_autoRestoreGuard, trigger,\n"
-                 "                                  g_stateUncertain);",
+                 "                                  g_stateUncertain, nowMs);",
                  "the unattended-write gate consults the uncertain flag, not only the guard")
+    # F-LNX-RESUME-BUDGET: the resume trigger is exempt from the per-boot
+    # counter but spends a short-window budget, so the socket command cannot be
+    # replayed without bound.  Asserted on behaviour in the regression harness
+    # (codes 5950-5957); these three keep the wiring in place.
+    require_text(policy_h, "LINUX_AUTO_RESTORE_MAX_RESUME_PER_WINDOW",
+                 "resume restores are bounded inside a short window")
+    require_text(policy_h, "LINUX_AUTO_RESTORE_DENY_RESUME_RATE_LIMITED",
+                 "the resume rate limit has its own refusal verdict")
+    require_text(runtime_h, "linux_auto_restore_note_resume_attempt(&g_autoRestoreGuard, nowMs)",
+                 "the resume attempt is counted before the decision, not after")
     require_text(runtime_h, "F-PREP-NO-UNCERTAIN",
                  "a pre-write GPU-not-available failure does not poison the daemon state")
 

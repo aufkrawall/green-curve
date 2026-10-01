@@ -14,6 +14,31 @@ def selected_toolchain(toolchain, sanitizer):
     return "llvm-mingw" if sanitizer else toolchain
 
 
+def linux_flags_for_arch(arch, base_flags, arm64_triple):
+    """base_flags with the cross-compilation triple swapped for the arch.
+
+    Pure: it copies the caller's list and never mutates it.  Lives here rather
+    than in build.py because per-arch flag selection is the same kind of
+    decision this module already owns, and because build.py's size ratchet is
+    shrink-only.
+    """
+    flags = list(base_flags)
+    if arch == "arm64":
+        flags[flags.index("-target") + 1] = arm64_triple
+        # -fcf-protection is x86-only; clang hard-errors with "option
+        # 'cf-protection=return' cannot be specified on this target" on
+        # aarch64, so it is removed rather than merely unused.
+        flags.remove("-fcf-protection=full")
+        flags.remove("-flto")
+        flags.append("-fno-lto")
+        # Match the Windows arm64 build: -O2 over the common -Oz (avoids the
+        # same arm64 size-opt codegen issue and keeps the two arches uniform),
+        # plus BTI/PAC branch protection (the arm64 analogue of x86 CET).
+        flags.append("-mbranch-protection=standard")
+        flags.append("-O2")
+    return flags
+
+
 def package_needs_variant(os_name, variant):
     return os_name == "windows" and variant is not None
 

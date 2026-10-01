@@ -416,7 +416,12 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
                     ioKind == GUI_SERVICE_IO_FULL_SYNC),
             completion->transportSuccess ? 1 : 0,
             (unsigned long long)completion->connectionEpoch,
-            completion->response.state.gpuPhase,
+            // gc_u32 is `unsigned long`, which is 64-bit under the MinGW/LP64
+            // release toolchain and 32-bit under clang-cl/LLP64.  The value is a
+            // small enum, so pin the width explicitly rather than letting %u
+            // read a 64-bit argument on one toolchain and a 32-bit one on the
+            // other.  (Found by the printf attribute added to debug_log.)
+            (unsigned int)completion->response.state.gpuPhase,
             (unsigned long long)completion->response.state.stateRevision,
             (int)completion->sendOutcome.reachability,
             completion->sendOutcome.deadlineExpired ? 1 : 0,

@@ -673,7 +673,8 @@ static bool gui_service_accept_response_on_main_thread(
             (unsigned long long)response->state.serviceInstanceId,
             (unsigned long long)response->state.stateRevision,
             (unsigned long long)response->state.gpuGeneration,
-            response->state.gpuPhase, response->state.validSections,
+            (unsigned int)response->state.gpuPhase,
+            (unsigned int)response->state.validSections,
             reason && reason[0] ? reason : "completion");
         return false;
     }

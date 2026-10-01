@@ -34,6 +34,14 @@ jobs:
       # attestation is only worth what the workflow that produced it was.
       - name: Checkout the exact dispatch commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Do not leave a write-scoped GITHUB_TOKEN materialised in
+          # .git/config for the whole job.  This workflow holds contents:write
+          # (it creates the tag and the release) and ~5300 lines of repository
+          # Python run in between; with credentials persisted, anything that
+          # executes in those steps inherits a repository-write credential.
+          # The two steps that actually publish authenticate explicitly below.
+          persist-credentials: false
 
       - name: Verify clean checkout
         run: |
@@ -86,6 +94,15 @@ jobs:
         run: |
           python build.py --verify-toolchain \
             --toolchain-manifest "greencurve-${{ steps.version.outputs.version }}-toolchain.json"
+
+      # The source-gate suite used to run only under `build.py --test`, which
+      # this workflow never invoked, so a regression in the "every GitHub Action
+      # is pinned to a commit SHA" gate, the developer-path gate, the key-
+      # material gate, or any of the per-subsystem check_all() guards could
+      # reach a published release.  `--gates` runs the same body with no compile
+      # and no link, so the release job pays about a second for it.
+      - name: Run the source and security regression gates
+        run: python build.py --gates
 
       # 7-Zip is no longer installed from apt: it writes the Windows .7z
       # archives, so it is pinned and vendored with the compilers instead of
@@ -168,6 +185,11 @@ jobs:
           TAG_SIGNING_KEY: ${{ secrets.TAG_SIGNING_KEY }}
         run: |
           set -eu
+          # Authenticate for the push here, and only here.  The checkout ran
+          # with persist-credentials:false, so nothing else in this job has a
+          # write credential.
+          git config --local http.https://github.com/.extraheader \
+            "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           if [ -n "${TAG_SIGNING_KEY:-}" ]; then
             echo "Signing tag ${TAG} with configured maintainer key"
             key_file="$RUNNER_TEMP/tag_signing_key"
@@ -185,6 +207,8 @@ jobs:
             git push origin "refs/tags/${TAG}"
             rm -f "$key_file"
           fi
+          # Drop the write credential again before the remaining steps run.
+          git config --local --unset-all http.https://github.com/.extraheader || true
           gh release create "${TAG}" \
             --repo "${GITHUB_REPOSITORY}" \
             --title "Green Curve ${VERSION}" \

@@ -88,25 +88,71 @@ def archive_record(manifest, host=None):
     host = host or host_key()
     for entry in manifest.get("archives", []):
         if entry.get("host_platform") == host:
+            # Presence is not enough: an entry without a digest is the silent
+            # fail-open that lets an unpinned archive be downloaded and used.
+            # Refuse here, where the caller is about to fetch it, rather than
+            # deep inside resolve_archive() where the message is less specific.
+            if not entry.get("sha256"):
+                print(f"ERROR: {manifest.get('tool')} {manifest.get('version')} "
+                      f"records no sha256 for host '{host}'")
+                sys.exit(1)
             return entry
     print(f"ERROR: {manifest.get('tool')} {manifest.get('version')} has no "
           f"pinned archive for host '{host}'")
     sys.exit(1)
 
 
+def verify_pinned_executable(label, path, expected_sha256):
+    """Verify an explicitly-overridden tool against its pinned digest, or exit.
+
+    The override path exists so a developer can point the build at a toolchain
+    they already have.  That is legitimate; using it to smuggle in a DIFFERENT
+    binary is not.  We cannot "refresh" a path someone else owns, so a mismatch
+    is a hard refusal rather than a silent re-extract into a directory the
+    override is not pointing at.
+
+    Lives here rather than in build.py so every digest decision for a shipped
+    compiler sits in one file, and so build.py stays inside its size ratchet.
+    """
+    if not expected_sha256:
+        print(f"ERROR: {label} has no pinned executable digest for this host; "
+              f"refusing to use the override")
+        sys.exit(1)
+    try:
+        actual = sha256_file(path)
+    except OSError as exc:
+        print(f"ERROR: {label} cannot be read for integrity verification: {exc}")
+        sys.exit(1)
+    if actual != expected_sha256.lower():
+        print(f"ERROR: the {label} override is not the pinned compiler")
+        print(f"  override:          {path}")
+        print(f"  expected (pinned): {expected_sha256.lower()}")
+        print(f"  actual:            {actual}")
+        sys.exit(1)
+    print(f"{label} override accepted (pinned digest matched): {path}")
+    return True
+
+
 def resolve_archive(label, archive_name, local_dir, url, sha256, dest_path):
     """Copy *archive_name* out of *local_dir*, or download it, into *dest_path*.
 
     The vendored copy always wins, so a machine that has run
-    ``fetch-toolchain`` never touches the network again.  Either way the result
-    is verified against *sha256* before the caller extracts it.
+    ``fetch-toolchain`` never touches the network again.  Either way the
+    result is verified against *sha256* before the caller extracts it.
+
+    A missing *sha256* is a refusal, not a skip.  The guard used to read
+    ``if sha256 and not _verify(...)``, so an empty pin silently meant "do not
+    check" in the one function whose entire job is checking.
     """
+    if not sha256:
+        print(f"ERROR: {label} has no pinned sha256; refusing to use it")
+        sys.exit(1)
     local_path = os.path.join(local_dir, archive_name)
 
     if os.path.exists(local_path):
         print(f"Using local {label} archive: {local_path}")
         shutil.copy2(local_path, dest_path)
-        if sha256 and not _verify(dest_path, sha256):
+        if not _verify(dest_path, sha256):
             os.remove(dest_path)
             print(f"ERROR: local {label} archive failed SHA-256 verification")
             sys.exit(1)
@@ -127,7 +173,7 @@ def resolve_archive(label, archive_name, local_dir, url, sha256, dest_path):
         print(f"Please obtain from: {url}")
         sys.exit(1)
 
-    if sha256 and not _verify(dest_path, sha256):
+    if not _verify(dest_path, sha256):
         os.remove(dest_path)
         print(f"ERROR: {label} archive SHA-256 verification failed")
         sys.exit(1)
@@ -192,6 +238,21 @@ def verify_tree(label, root, manifest, host=None):
         return False
     by_path = {entry["path"].replace("/", os.sep): entry for entry in entries}
     checked = 0
+    # A manifest entry with no digest is an entry this build cannot account
+    # for.  Skipping it used to look conservative and was the opposite: a
+    # silently-unverified compiler in the tree is exactly what this function
+    # exists to prevent, and "no digest" is indistinguishable from "the digest
+    # was dropped".  Refuse the tree instead.
+    unpinned = [entry["path"] for entry in entries
+                if not entry.get("symlink") and not entry.get("sha256")]
+    if unpinned:
+        print(f"ERROR: {label} manifest has {len(unpinned)} entr(y/ies) with no "
+              f"pinned sha256; refusing to verify the tree")
+        for path in unpinned[:5]:
+            print(f"  unpinned: {path}")
+        if len(unpinned) > 5:
+            print(f"  ... and {len(unpinned) - 5} more")
+        return False
     root_abs = os.path.abspath(root)
     for entry in entries:
         relative = entry["path"].replace("/", os.sep)

@@ -213,7 +213,9 @@ static void populate_service_state_response(ServiceResponse* response) {
         (unsigned long long)response->state.serviceInstanceId,
         (unsigned long long)response->state.stateRevision,
         (unsigned long long)response->state.gpuGeneration,
-        response->state.gpuPhase, response->state.validSections,
+        // Explicit width: gc_u32 is `unsigned long`, 64-bit on MinGW/LP64 and
+        // 32-bit on clang-cl/LLP64, and the value is a small enum.
+        (unsigned int)response->state.gpuPhase, response->state.validSections,
         (unsigned long long)response->state.topologySignature,
         response->state.activeDesiredValid ? 1 : 0);
 }

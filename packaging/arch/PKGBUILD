@@ -28,6 +28,25 @@ sha256sums=(
     'b834cc7fc3a5614a65b55f2d1c49c73927bf7d512b7ebb4fb9a02c1408ef19d1'
 )
 
+# The source tarball is GitHub's generated archive for a MUTABLE tag, so its
+# bytes are not content-addressed and the digest cannot be derived offline --
+# it has to be taken from a trusted fetch.  A 'SKIP' here used to mean the
+# daemon was built and installed as root from a tree nobody had checked, so the
+# placeholder is now fatal: fill the digest in from a fetch you trust, or this
+# PKGBUILD refuses rather than building something unverified.  See PKGBUILD.bin
+# for the prebuilt-package variant, which pins its payload outright.
+_gc_placeholder=0
+for _gc_sum in "${sha256sums[@]}"; do
+    [ "$_gc_sum" = "SKIP" ] && _gc_placeholder=1
+done
+if [ "$_gc_placeholder" = "1" ]; then
+    echo "error: the source tarball digest is not pinned." >&2
+    echo "  Fetch $url/archive/refs/tags/$pkgver.tar.gz over a channel you trust," >&2
+    echo "  run: sha256sum greencurve-$pkgver.tar.gz" >&2
+    echo "  and replace the SKIP above with that digest." >&2
+    return 1 2>/dev/null || exit 1
+fi
+
 build() {
     cd "$pkgname-$pkgver"
 

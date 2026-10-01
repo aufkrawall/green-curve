@@ -148,6 +148,30 @@ def add_arguments(parser):
              "built PE, or compile a purpose-built probe when no PE is supplied")
 
 
+def add_gates_argument(parser):
+    """`build.py --gates`: the source gate suite with no compile and no link.
+
+    The suite is ~3000 lines of require_text/forbid_text over the tree -- the
+    "every GitHub Action is pinned to a commit SHA" gate, the developer-path
+    gate, the key-material gate, and every `*_gates.check_all()`.  It used to run
+    only under `--test`, which the release workflow never invokes, so a
+    regression in any of them could reach a published release.  This gives a
+    release job the same body for about a second of work.
+
+    Lives here rather than in build.py so that adding the flag does not grow a
+    file whose size ratchet is deliberately shrink-only.
+    """
+    parser.add_argument(
+        "--gates", action="store_true",
+        help="Run the source/security regression gates and exit")
+
+
+def run_source_gates(ctx):
+    """Run build.py's source regression gates through the live module."""
+    ctx.run_source_regression_checks()
+    print("Source regression gates passed")
+
+
 def fuzz_corpus_dir(ctx):
     return os.path.join(ctx.SCRIPT_DIR, "tests", "fuzz-corpus")
 
@@ -1197,6 +1221,114 @@ def check_service_admin_reason_gates(ctx, require_text, service_ipc_cpp):
         "setup decodes the helper exit code into the remedy sentence")
 
 
+def check_audit_finding_gates(ctx, require_text):
+    """Keep the security-audit remediations in place.
+
+    Each of these is a property that, once lost, is invisible on the happy path
+    -- which is exactly why each one earned a gate rather than only a comment.
+    The behavioural half lives in tests/regression_main.cpp; these are the wiring
+    assertions, so a refactor that moves the code has to move the gate with it.
+    """
+    source = ctx.SOURCE_DIR
+
+    def path(name):
+        return os.path.join(source, name)
+
+    def read(name):
+        with open(path(name), encoding="utf-8") as handle:
+            return handle.read()
+
+    # The elevated setup/uninstaller is the most privileged binary the project
+    # ships and was the only one that never called this.  It statically imports
+    # UxTheme.dll, which is NOT a KnownDLL, so the loader binds it before any
+    # code of ours runs; SetDefaultDllDirectories cannot stop that, but it does
+    # stop every LoadLibrary after it and drops the CWD from the search order.
+    require_text(path("installer_main.cpp"), "initialize_process_mitigations();",
+                 "the elevated installer applies the process mitigations too")
+    installer_main = read("installer_main.cpp")
+    win_main = installer_main.find("int WINAPI WinMain(")
+    if win_main < 0:
+        print("Regression source check FAILED: installer_main.cpp has no WinMain")
+        sys.exit(1)
+    # Structural, not a substring window: walk WinMain's body and require the
+    # FIRST statement in it to be the mitigations call.  A comment may be
+    # however long it likes; a LoadLibrary, a window, or a DACL write before
+    # this call is what the gate is actually about.
+    body = installer_main[win_main:].split("{", 1)[1]
+    first_statement = None
+    for line in body.split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//") or stripped.startswith("/*"):
+            continue
+        first_statement = stripped
+        break
+    if first_statement != "initialize_process_mitigations();":
+        print("Regression source check FAILED: the installer's first statement in "
+              f"WinMain must be initialize_process_mitigations(); found "
+              f"{first_statement!r}")
+        sys.exit(1)
+
+    # The process-lifetime critical sections must never be deleted.  A detached
+    # GUI/service worker can still call debug_log() and enter a deleted
+    # CRITICAL_SECTION, which is a heap use-after-free in the exiting process.
+    for name in ("gui_process_cleanup.cpp", "main_service_host.cpp",
+                 "entry.cpp", "main.cpp"):
+        text = read(name)
+        for target in ("g_debugLogLock", "g_appLock", "g_configLock"):
+            if "DeleteCriticalSection(&" + target + ")" in text:
+                print(f"Regression source check FAILED: {name} still deletes the "
+                      f"process-lifetime {target}; a detached worker may still use it")
+                sys.exit(1)
+
+    # A client-chosen string must not be able to carry structure into the SYSTEM
+    # service log or the crash breadcrumb.
+    wire_validation = read("service_protocol_validation.h")
+    require_text(path("service_protocol_validation.h"),
+                 "service_wire_string_is_log_safe(",
+                 "client strings are refused when they carry control characters")
+    # Proximity rather than exact layout: each client string has to appear as an
+    # argument to the predicate, whichever way the call is wrapped.
+    for field in ("r->source", "r->path", "r->targetGpu.name"):
+        checked = False
+        at = wire_validation.find("service_wire_string_is_log_safe(")
+        while at >= 0:
+            if field in wire_validation[at:at + 200]:
+                checked = True
+                break
+            at = wire_validation.find("service_wire_string_is_log_safe(", at + 1)
+        if not checked:
+            print("Regression source check FAILED: the client string " + field +
+                  " is not log-safe checked on the wire")
+            sys.exit(1)
+
+    # The update staging directory is hardened and VERIFIED, not merely created:
+    # the parent's DACL only reaches a child the service itself creates.
+    require_text(path("main_service_update_state.cpp"),
+                 "apply_protected_machine_config_dir_dacl(",
+                 "the update staging directory DACL is hardened, not assumed inherited")
+    require_text(path("main_service_update_state.cpp"),
+                 "machine_config_dacl_is_hardened(",
+                 "the update staging directory's hardened DACL is verified before use")
+
+    # The updater pins the staging DIRECTORY across CreateProcessW, so the name
+    # it executes cannot be swapped for the bytes it verified.
+    require_text(path("main_service_update_worker.cpp"),
+                 "FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT",
+                 "the updater pins the staging directory across process creation")
+
+    # Every command, READ included, needs medium integrity: the pipe ACL admits
+    # every authenticated user, which is a strictly wider set.
+    authority = read("service_command_authority_policy.h")
+    decide = authority.find("service_command_requires_medium_integrity")
+    if decide < 0:
+        print("Regression source check FAILED: the medium-integrity predicate is gone")
+        sys.exit(1)
+    if "return true;" not in authority[decide:decide + 400]:
+        print("Regression source check FAILED: READ commands must require medium "
+              "integrity too; a low-integrity peer gets the state envelope otherwise")
+        sys.exit(1)
+
+
 def check_log_redaction(ctx):
     """No debug_log call may name an identity-bearing value in the clear.
 
@@ -1393,10 +1525,10 @@ def run_build_script_regression_tests(ctx):
         # break the legacy jobs==1 llvm-mingw x64 service build
         # (2026-08-29 toolchain commit).
         for arch in ("x64", "arm64"):
-            gui_cmd = ctx.get_windows_gui_compile_command(
-                os.path.join(tmp, "lsp-gui.out"), arch)
-            service_cmd = ctx.get_windows_service_compile_command(
-                os.path.join(tmp, "lsp-service.out"), arch)
+            gui_cmd = ctx.get_windows_compile_command(
+                os.path.join(tmp, "lsp-gui.out"), arch=arch)
+            service_cmd = ctx.get_windows_compile_command(
+                os.path.join(tmp, "lsp-service.out"), service=True, arch=arch)
             for label, cmd in (("GUI", gui_cmd), ("service", service_cmd)):
                 exploded = [arg for arg in cmd if len(arg) == 1]
                 if exploded:
@@ -1855,7 +1987,14 @@ def check_fuzz_harness_in_sync(ctx, require_text, forbid_text):
     require_text(build_script, "x86 CET instrumentation missing",
                  "Linux x64 release artifacts are gated on endbr64 presence, the "
                  "analogue of the ARM64 BTI/PAC artifact gate")
-    require_text(build_script, 'flags.remove("-fcf-protection=full")',
+    # The aarch64 CET-flag removal moved out of build.py into
+    # tools/build_variants.py (per-arch flag selection lives with the rest of
+    # the per-arch decisions, and build.py's size ratchet is shrink-only).  The
+    # behaviour is asserted above, against the returned flag list, which is
+    # what actually matters; this text gate now names the file that holds it
+    # rather than asserting a literal that any move would break.
+    require_text(os.path.join(ctx.SCRIPT_DIR, "tools", "build_variants.py"),
+                 'flags.remove("-fcf-protection=full")',
                  "aarch64 drops the x86-only CET flag; clang hard-errors on it")
     require_text(gates, "FUZZ_LINUX_TARGETS",
                  "the fuzz driver knows which targets a Linux host can build")
@@ -1981,7 +2120,7 @@ def _build_unstripped_probe(ctx):
     ctx.configure_build_number(False)  # defines APP_BUILD_NUMBER, no bump
     tmp = ctx.prepare_work_subdir("cet")
     out = os.path.join(tmp, "greencurve-cet-probe.exe")
-    cmd = [arg for arg in ctx.get_windows_gui_compile_command(out, "x64")
+    cmd = [arg for arg in ctx.get_windows_compile_command(out, arch="x64")
            if arg != "-s"]
     print("CET check: compiling an unstripped probe with the shipped flags")
     result = subprocess.run(cmd, cwd=ctx.SCRIPT_DIR, capture_output=True, text=True)

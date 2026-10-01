@@ -21,6 +21,36 @@ static inline bool service_wire_string_is_terminated(
     return false;
 }
 
+// A client-supplied string that we echo into a log line, a crash breadcrumb, or
+// a diagnostic must not be able to CARRY structure.  CR and LF would let any
+// authenticated local user -- the pipe ACL admits all of them -- forge whole
+// lines in the SYSTEM service's debug log and, worse, in the crash breadcrumb
+// that is the primary artifact for telling "the driver died under us" apart
+// from "we handed the driver an invalidated handle".  ESC would let a caller
+// drive the reader's terminal.  TAB is allowed: it is whitespace, not framing.
+//
+// Bytes >= 0x80 stay allowed so a legitimate non-ASCII profile path is not
+// refused; this is a framing check, not an encoding check, and the paths that
+// are actually used for file I/O get their own much stricter validation in
+// service_validate_file_write_path().
+//
+// The length bound is the same NUL-terminated scan as above, so a caller cannot
+// hide a control byte past the terminator.
+static inline bool service_wire_string_is_log_safe(
+    const char* value, unsigned int count) {
+    if (!value || count == 0) return false;
+    for (unsigned int i = 0; i < count; ++i) {
+        unsigned char c = (unsigned char)value[i];
+        // An empty string is safe: it is terminated, and it carries nothing.
+        // The dispatch site already handles it explicitly
+        // (`request->source[0] ? request->source : "service request"`).
+        if (c == '\0') return 1;
+        if (c < 0x20 && c != '\t') return false;
+        if (c == 0x7F) return false;
+    }
+    return false;  // ran off the end without a terminator
+}
+
 static inline bool service_desired_bool_fields_valid(
     const DesiredSettings* desired) {
     if (!desired) return false;

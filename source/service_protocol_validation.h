@@ -44,12 +44,24 @@ static inline const char* service_request_reject_reason(
     if (!service_wire_string_is_terminated(
             r->source, (unsigned int)sizeof(r->source)))
         return "unterminated source string";
+    // Termination is not enough: `source` is client-chosen and reaches the
+    // service log AND the crash breadcrumb, so a CR/LF in it would forge lines
+    // in artifacts a standard user can write and the maintainer later trusts.
+    if (!service_wire_string_is_log_safe(
+            r->source, (unsigned int)sizeof(r->source)))
+        return "control character in source string";
     if (!service_wire_string_is_terminated(
             r->path, (unsigned int)sizeof(r->path)))
         return "unterminated path string";
+    if (!service_wire_string_is_log_safe(
+            r->path, (unsigned int)sizeof(r->path)))
+        return "control character in path string";
     if (!service_wire_string_is_terminated(r->targetGpu.name,
             (unsigned int)sizeof(r->targetGpu.name)))
         return "unterminated target GPU name";
+    if (!service_wire_string_is_log_safe(r->targetGpu.name,
+            (unsigned int)sizeof(r->targetGpu.name)))
+        return "control character in target GPU name";
     if (!service_gpu_bool_fields_valid(&r->targetGpu))
         return "non-boolean target GPU flags";
     if (!service_desired_bool_fields_valid(&r->desired))

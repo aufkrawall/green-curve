@@ -6,6 +6,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <glob.h>
 #include <pwd.h>
 #include <stdarg.h>
@@ -13,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <string>
+#include <sys/random.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
@@ -182,6 +184,29 @@ static bool read_text_file(const char* path, std::string* text, char* err, size_
     return true;
 }
 
+// Same discipline the daemon's own record writer uses (linux_daemon_state.cpp
+// store_record_atomic): a CSPRNG temp name created with O_CREAT|O_EXCL so a
+// planted file can never be opened, O_NOFOLLOW so a planted symlink is not
+// followed, and a renameat() against a dirfd rather than a rename() by name.
+//
+// The version this replaced used a fixed "<path>.tmp" name and fopen("wb"),
+// which FOLLOWS a symlink and truncates whatever it points at.  Reachable as
+// root: `sudo greencurve --config <attacker-dir>/x.ini --save-config` (or any
+// command carrying --gpu, which re-saves the GPU selection) writes through
+// that helper as root.  The directory is the caller's choice, so a symlink
+// planted there first would have redirected a root write.
+static bool write_all_fd(int fd, const void* data, size_t size) {
+    const unsigned char* bytes = (const unsigned char*)data;
+    size_t written = 0;
+    while (written < size) {
+        ssize_t count = write(fd, bytes + written, size - written);
+        if (count > 0) { written += (size_t)count; continue; }
+        if (count < 0 && errno == EINTR) continue;
+        return false;
+    }
+    return true;
+}
+
 bool write_text_file_atomic(const char* path, const std::string& data, char* err, size_t errSize) {
     if (!path || !*path) {
         set_message(err, errSize, "Invalid output path");
@@ -191,42 +216,57 @@ bool write_text_file_atomic(const char* path, const std::string& data, char* err
     std::string parent = path_dirname(path);
     if (!ensure_directory_recursive(parent.c_str(), err, errSize)) return false;
 
-    std::string tempPath(path);
-    tempPath += ".tmp";
-    FILE* file = fopen(tempPath.c_str(), "wb");
-    if (!file) {
-        set_message(err, errSize, "Failed to create %s (%s)", tempPath.c_str(), strerror(errno));
+    std::string leaf(path);
+    size_t slash = leaf.find_last_of('/');
+    if (slash == std::string::npos) {
+        set_message(err, errSize, "Output path has no directory: %s", path);
+        return false;
+    }
+    std::string name = leaf.substr(slash + 1);
+    if (name.empty() || name == "." || name == "..") {
+        set_message(err, errSize, "Output path has no file name: %s", path);
+        return false;
+    }
+    std::string dir = leaf.substr(0, slash);
+
+    int dirfd = open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (dirfd < 0) {
+        set_message(err, errSize, "Cannot open %s (%s)", dir.c_str(), strerror(errno));
         return false;
     }
 
-    size_t totalWritten = fwrite(data.data(), 1, data.size(), file);
-    if (totalWritten != data.size()) {
-        set_message(err, errSize, "Failed to write %s (%s)", tempPath.c_str(), strerror(errno));
-        fclose(file);
-        unlink(tempPath.c_str());
-        return false;
+    bool written = false;
+    for (unsigned int attempt = 0; attempt < 16 && !written; ++attempt) {
+        gc_u64 suffix = 0;
+        if (getrandom(&suffix, sizeof(suffix), 0) != (ssize_t)sizeof(suffix)) {
+            set_message(err, errSize, "Cannot generate a temp name (%s)", strerror(errno));
+            break;
+        }
+        char temporary[320] = {};
+        gc_snprintf(temporary, sizeof(temporary), ".%s.tmp.%016llx",
+                    name.c_str(), (unsigned long long)suffix);
+        int fd = openat(dirfd, temporary,
+                        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (fd < 0) {
+            if (errno == EEXIST) continue;
+            set_message(err, errSize, "Cannot create %s (%s)", temporary, strerror(errno));
+            break;
+        }
+        bool ok = write_all_fd(fd, data.data(), data.size()) && fsync(fd) == 0;
+        if (close(fd) != 0) ok = false;
+        if (ok && renameat(dirfd, temporary, dirfd, name.c_str()) == 0) {
+            written = true;
+        } else {
+            if (err && errSize && !err[0])
+                set_message(err, errSize, "Failed to finalize %s (%s)", path, strerror(errno));
+            unlinkat(dirfd, temporary, 0);
+        }
     }
-    if (fflush(file) != 0) {
-        set_message(err, errSize, "Failed to flush %s (%s)", tempPath.c_str(), strerror(errno));
-        fclose(file);
-        unlink(tempPath.c_str());
-        return false;
+    close(dirfd);
+    if (!written && err && errSize && !err[0]) {
+        set_message(err, errSize, "Failed to write %s", path);
     }
-    int fd = fileno(file);
-    if (fd >= 0 && fsync(fd) != 0) {
-        set_message(err, errSize, "Failed to sync %s (%s)", tempPath.c_str(), strerror(errno));
-        fclose(file);
-        unlink(tempPath.c_str());
-        return false;
-    }
-    fclose(file);
-
-    if (rename(tempPath.c_str(), path) != 0) {
-        set_message(err, errSize, "Failed to finalize %s (%s)", path, strerror(errno));
-        unlink(tempPath.c_str());
-        return false;
-    }
-    return true;
+    return written;
 }
 
 static IniSection* find_section(IniDocument* doc, const char* name) {

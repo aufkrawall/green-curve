@@ -8670,10 +8670,10 @@ static int run_all_tests(int argc, char** argv) {
 
         // Lockout dominates every trigger, including resume.
         if (linux_auto_restore_decide(&guard,
-                LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST, false) !=
+                LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST, false, 0) !=
             LINUX_AUTO_RESTORE_DENY_LOCKED_OUT) return 3147;
         if (linux_auto_restore_decide(&guard,
-                LINUX_AUTO_RESTORE_TRIGGER_RESUME, false) !=
+                LINUX_AUTO_RESTORE_TRIGGER_RESUME, false, 0) !=
             LINUX_AUTO_RESTORE_DENY_LOCKED_OUT) return 3148;
         // Automatic success never re-arms; only an explicit Apply/Reset does.
         if (!linux_auto_restore_note_explicit_success(&guard)) return 3149;
@@ -8691,25 +8691,25 @@ static int run_all_tests(int argc, char** argv) {
         for (int attempt = 0; attempt < LINUX_AUTO_RESTORE_MAX_START_ATTEMPTS;
              ++attempt) {
             if (linux_auto_restore_decide(&guard,
-                    LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE, false) !=
+                    LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE, false, 0) !=
                 LINUX_AUTO_RESTORE_ALLOW) return 3152;
             linux_auto_restore_note_start_attempt(&guard);
         }
         if (linux_auto_restore_decide(&guard,
-                LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST, false) !=
+                LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST, false, 0) !=
             LINUX_AUTO_RESTORE_DENY_ATTEMPTS_EXHAUSTED) return 3153;
         // A resume is a machine event that cannot repeat by itself, so it is
         // not rationed: a laptop must not stop restoring its curve on the
         // fourth lid open.
         if (linux_auto_restore_decide(&guard,
-                LINUX_AUTO_RESTORE_TRIGGER_RESUME, false) !=
+                LINUX_AUTO_RESTORE_TRIGGER_RESUME, false, 0) !=
             LINUX_AUTO_RESTORE_ALLOW) return 3154;
         // A clean stop is evidence the starts were not a loop.
         if (!linux_auto_restore_note_clean_stop(&guard)) return 3155;
         if (guard.startAttempts != 0) return 3156;
         if (linux_auto_restore_note_clean_stop(&guard)) return 3157;
         if (linux_auto_restore_decide(&guard,
-                LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST, false) !=
+                LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST, false, 0) !=
             LINUX_AUTO_RESTORE_ALLOW) return 3158;
         // ... but it does NOT clear a lockout: that still needs a user.
         linux_auto_restore_note_lockout(&guard,
@@ -8717,10 +8717,10 @@ static int run_all_tests(int argc, char** argv) {
         linux_auto_restore_note_clean_stop(&guard);
         if (!guard.lockedOut) return 3159;
         if (linux_auto_restore_decide(&guard,
-                LINUX_AUTO_RESTORE_TRIGGER_NONE, false) !=
+                LINUX_AUTO_RESTORE_TRIGGER_NONE, false, 0) !=
             LINUX_AUTO_RESTORE_DENY_NO_TRIGGER) return 3160;
         if (linux_auto_restore_decide(nullptr,
-                LINUX_AUTO_RESTORE_TRIGGER_RESUME, false) !=
+                LINUX_AUTO_RESTORE_TRIGGER_RESUME, false, 0) !=
             LINUX_AUTO_RESTORE_DENY_NO_TRIGGER) return 3161;
         // The first cause wins.  A later automatic refusal is a consequence of
         // the original latch, so it must not overwrite the reason that explains
@@ -8755,7 +8755,7 @@ static int run_all_tests(int argc, char** argv) {
              ++attempt)
             linux_auto_restore_note_start_attempt(&guard);
         if (linux_auto_restore_decide(&guard,
-                LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST, false) !=
+                LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST, false, 0) !=
             LINUX_AUTO_RESTORE_DENY_ATTEMPTS_EXHAUSTED) return 3182;
         linux_auto_restore_note_lockout(&guard,
             SERVICE_AUTO_RESTORE_LOCKOUT_UNSTABLE_APPLY);
@@ -8804,26 +8804,26 @@ static int run_all_tests(int argc, char** argv) {
         // A clean guard with unsettled daemon state denies every automatic
         // trigger, including the otherwise unrationed resume.
         if (linux_auto_restore_decide(&guard,
-                LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST, true) !=
+                LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST, true, 0) !=
             LINUX_AUTO_RESTORE_DENY_STATE_UNCERTAIN) return 3228;
         if (linux_auto_restore_decide(&guard,
-                LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE, true) !=
+                LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE, true, 0) !=
             LINUX_AUTO_RESTORE_DENY_STATE_UNCERTAIN) return 3229;
         if (linux_auto_restore_decide(&guard,
-                LINUX_AUTO_RESTORE_TRIGGER_RESUME, true) !=
+                LINUX_AUTO_RESTORE_TRIGGER_RESUME, true, 0) !=
             LINUX_AUTO_RESTORE_DENY_STATE_UNCERTAIN) return 3230;
         // Settled state falls back to the ordinary rules.
         if (linux_auto_restore_decide(&guard,
-                LINUX_AUTO_RESTORE_TRIGGER_RESUME, false) !=
+                LINUX_AUTO_RESTORE_TRIGGER_RESUME, false, 0) !=
             LINUX_AUTO_RESTORE_ALLOW) return 3231;
         // A latch outranks the uncertain flag, matching the published reason.
         linux_auto_restore_note_lockout(&guard,
             SERVICE_AUTO_RESTORE_LOCKOUT_UNSTABLE_APPLY);
         if (linux_auto_restore_decide(&guard,
-                LINUX_AUTO_RESTORE_TRIGGER_RESUME, true) !=
+                LINUX_AUTO_RESTORE_TRIGGER_RESUME, true, 0) !=
             LINUX_AUTO_RESTORE_DENY_LOCKED_OUT) return 3232;
         if (linux_auto_restore_decide(&guard,
-                LINUX_AUTO_RESTORE_TRIGGER_NONE, true) !=
+                LINUX_AUTO_RESTORE_TRIGGER_NONE, true, 0) !=
             LINUX_AUTO_RESTORE_DENY_NO_TRIGGER) return 3233;
         // An exhausted boot and an uncertain daemon: the unsettled state is
         // the earlier, more specific explanation.
@@ -8831,11 +8831,89 @@ static int run_all_tests(int argc, char** argv) {
         linux_auto_restore_guard_adopt_boot(&exhausted, "boot-uncertain-2");
         exhausted.startAttempts = LINUX_AUTO_RESTORE_MAX_START_ATTEMPTS;
         if (linux_auto_restore_decide(&exhausted,
-                LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE, true) !=
+                LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE, true, 0) !=
             LINUX_AUTO_RESTORE_DENY_STATE_UNCERTAIN) return 3234;
         if (linux_auto_restore_decide(&exhausted,
-                LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE, false) !=
+                LINUX_AUTO_RESTORE_TRIGGER_BOOT_PROFILE, false, 0) !=
             LINUX_AUTO_RESTORE_DENY_ATTEMPTS_EXHAUSTED) return 3235;
+    }
+
+    // F-LNX-RESUME-BUDGET: the resume trigger is exempt from the per-BOOT
+    // counter, but not from every bound.
+    //
+    // The exemption is right for the suspend EVENT -- a laptop must not stop
+    // restoring its curve after the third lid open -- and it was wrong for the
+    // SOCKET COMMAND that event becomes.  RESUME_RESTORE is an unauthenticated,
+    // uncounted, repeatable request on a root daemon, and each call runs a full
+    // reset-to-baseline plus rewrite.  Seven or eight back to back cross the
+    // systemd watchdog (the serve loop only pings around poll(), never inside a
+    // handler) and get the root GPU daemon killed and restarted.
+    {
+        LinuxAutoRestoreGuard guard = {};
+        linux_auto_restore_guard_adopt_boot(&guard, "boot-resume-budget");
+        const gc_u32 t0 = 1000000u;
+
+        // Ordinary lid-open behaviour is untouched: the first several resumes
+        // inside a window are allowed, and the per-boot counter never moves.
+        for (unsigned int i = 0; i < LINUX_AUTO_RESTORE_MAX_RESUME_PER_WINDOW; ++i) {
+            linux_auto_restore_note_resume_attempt(&guard, t0);
+            if (linux_auto_restore_decide(&guard,
+                    LINUX_AUTO_RESTORE_TRIGGER_RESUME, false, t0) !=
+                LINUX_AUTO_RESTORE_ALLOW) return 5950;
+        }
+        if (guard.startAttempts != 0) return 5951;  // still exempt from per-boot
+
+        // One more inside the same window is refused, and refused with its OWN
+        // verdict: printing ATTEMPTS_EXHAUSTED here would claim a crash-loop
+        // that did not happen.
+        linux_auto_restore_note_resume_attempt(&guard, t0);
+        if (linux_auto_restore_decide(&guard,
+                LINUX_AUTO_RESTORE_TRIGGER_RESUME, false, t0) !=
+            LINUX_AUTO_RESTORE_DENY_RESUME_RATE_LIMITED) return 5952;
+
+        // Still refused just before the window closes.
+        const gc_u32 nearEnd = t0 + LINUX_AUTO_RESTORE_RESUME_WINDOW_MS - 1u;
+        if (linux_auto_restore_decide(&guard,
+                LINUX_AUTO_RESTORE_TRIGGER_RESUME, false, nearEnd) !=
+            LINUX_AUTO_RESTORE_DENY_RESUME_RATE_LIMITED) return 5953;
+
+        // The window rolls: a real lid open a minute later works again.  This
+        // is the property that keeps ordinary suspend/resume unaffected.
+        const gc_u32 afterWindow = t0 + LINUX_AUTO_RESTORE_RESUME_WINDOW_MS;
+        linux_auto_restore_note_resume_attempt(&guard, afterWindow);
+        if (linux_auto_restore_decide(&guard,
+                LINUX_AUTO_RESTORE_TRIGGER_RESUME, false, afterWindow) !=
+            LINUX_AUTO_RESTORE_ALLOW) return 5954;
+
+        // The budget is resume-only.  A boot trigger is still governed by the
+        // per-boot counter and is not consumed by resume traffic.
+        LinuxAutoRestoreGuard mixed = {};
+        linux_auto_restore_guard_adopt_boot(&mixed, "boot-resume-mixed");
+        for (unsigned int i = 0; i < LINUX_AUTO_RESTORE_MAX_RESUME_PER_WINDOW + 4u; ++i) {
+            linux_auto_restore_note_resume_attempt(&mixed, t0);
+        }
+        if (linux_auto_restore_decide(&mixed,
+                LINUX_AUTO_RESTORE_TRIGGER_RESUME, false, t0) !=
+            LINUX_AUTO_RESTORE_DENY_RESUME_RATE_LIMITED) return 5955;
+        if (linux_auto_restore_decide(&mixed,
+                LINUX_AUTO_RESTORE_TRIGGER_BOOT_RESTORE_LAST, false, t0) !=
+            LINUX_AUTO_RESTORE_ALLOW) return 5956;
+
+        // The tick-count wrap must not be mistaken for "the window closed".
+        // A gc_u32 tick counter wraps every 49.7 days; a one-minute window has
+        // to survive the boundary, so a window whose start is just below the
+        // wrap must still be inside the window at a just-above tick.
+        LinuxAutoRestoreGuard wrapped = {};
+        linux_auto_restore_guard_adopt_boot(&wrapped, "boot-resume-wrap");
+        const gc_u32 nearWrap = 0xFFFFF000u;
+        for (unsigned int i = 0; i < LINUX_AUTO_RESTORE_MAX_RESUME_PER_WINDOW; ++i) {
+            linux_auto_restore_note_resume_attempt(&wrapped, nearWrap);
+        }
+        linux_auto_restore_note_resume_attempt(&wrapped, nearWrap);
+        // nearWrap + 1000 has wrapped to a small value.
+        if (linux_auto_restore_decide(&wrapped,
+                LINUX_AUTO_RESTORE_TRIGGER_RESUME, false, nearWrap + 1000u) !=
+            LINUX_AUTO_RESTORE_DENY_RESUME_RATE_LIMITED) return 5957;
     }
 
     // The persisted guard round-trips and rejects tampering.  It authorizes an
@@ -14765,8 +14843,7 @@ static int run_all_tests_final() {
             variant.updateIntervalSeconds = 0;
             if (validate_service_request_for_ipc(&variant)) return 4219;
             variant = policy; variant.updateAutoCheck = GC_UPDATE_AUTO_CHECK_ON + 1;
-            if (validate_service_request_for_ipc(&variant)) return 4220;
-            // The boundaries themselves are accepted.
+            if (validate_service_request_for_ipc(&variant)) return 4220;            // The boundaries themselves are accepted.
             variant = policy;
             variant.updateIntervalSeconds = GC_UPDATE_INTERVAL_MIN_SECONDS;
             if (!validate_service_request_for_ipc(&variant)) return 4221;
@@ -14796,6 +14873,86 @@ static int run_all_tests_final() {
             if (!longest.valid) return 4226;
             if (strlen(longest.text) + 1 > SERVICE_UPDATE_VERSION_CHARS) return 4227;
         }
+
+        // --- Client strings may not CARRY structure into a log (5958-5969) --
+        //
+        // The pipe ACL admits every authenticated local user, and `source`,
+        // `path` and the target GPU name are client-chosen.  They reach the
+        // service debug log AND, via set_pending_operation_source(), the crash
+        // breadcrumb -- the primary artifact for telling "the driver died under
+        // us" apart from "we handed the driver an invalidated handle".  A CR/LF
+        // in one of them forges whole lines in exactly the file a maintainer
+        // reads after a crash.  Termination alone never closed that.
+        {
+            ServiceRequest logSafe = base;
+            logSafe.command = SERVICE_CMD_PING;
+            StringCchCopyA(logSafe.source, ARRAY_COUNT(logSafe.source), "GUI apply");
+            if (!validate_service_request_for_ipc(&logSafe)) return 5958;
+            // Non-ASCII must survive: a legitimate non-ASCII profile path is
+            // not a reason to refuse the request.
+            StringCchCopyA(logSafe.source, ARRAY_COUNT(logSafe.source), "caf\xC3\xA9 apply");
+            if (!validate_service_request_for_ipc(&logSafe)) return 5959;
+            // TAB is whitespace, not framing.
+            StringCchCopyA(logSafe.source, ARRAY_COUNT(logSafe.source), "a\tb");
+            if (!validate_service_request_for_ipc(&logSafe)) return 5960;
+
+            // NOTE: each control character is written as its own literal and
+            // then concatenated.  "\x0bb" is ONE character -- 0xBB, because `b`
+            // is a hex digit and C hex escapes are greedy -- which would have
+            // made these assertions pass for the wrong reason.
+            const char* framing[] = {
+                "a\r\nb",            // forged log line
+                "a\nb",
+                "a\rb",
+                "a\x1b" "[31mred",  // drive the reader's terminal
+                "a\x07" "b",         // BEL
+                "a\x08" "b",         // backspace
+                "a\x0b" "b",         // vertical tab
+                "a\x0c" "b",         // form feed
+            };
+            for (size_t i = 0; i < sizeof(framing) / sizeof(framing[0]); ++i) {
+                ServiceRequest forged = logSafe;
+                StringCchCopyA(forged.source, ARRAY_COUNT(forged.source), framing[i]);
+                if (validate_service_request_for_ipc(&forged)) return 5961;
+                // The same rule on the other two client strings.
+                forged = logSafe;
+                StringCchCopyA(forged.path, ARRAY_COUNT(forged.path), framing[i]);
+                if (validate_service_request_for_ipc(&forged)) return 5962;
+                forged = logSafe;
+                StringCchCopyA(forged.targetGpu.name, ARRAY_COUNT(forged.targetGpu.name),
+                               framing[i]);
+                if (validate_service_request_for_ipc(&forged)) return 5963;
+            }
+            // DEL is refused even though it is printable-adjacent.
+            ServiceRequest del = logSafe;
+            StringCchCopyA(del.source, ARRAY_COUNT(del.source), "a\x7f" "b");
+            if (validate_service_request_for_ipc(&del)) return 5964;
+
+            // The refusal names the field, like every other rule here.
+            ServiceRequest named = logSafe;
+            StringCchCopyA(named.source, ARRAY_COUNT(named.source), "a\r\nb");
+            const char* why = service_request_reject_reason(&named);
+            if (!why || !strstr(why, "source")) return 5965;
+
+            // An empty string is still terminated and still safe.  It has to be:
+            // a zero-initialised request carries empty client strings, and the
+            // dispatch site already reads them as `x[0] ? x : "<default>"`.
+            ServiceRequest empty = logSafe;
+            empty.source[0] = '\0';
+            if (!validate_service_request_for_ipc(&empty)) return 5966;
+            if (!service_wire_string_is_log_safe("", 1)) return 5976;
+
+            // The predicate itself: an unterminated buffer is not log-safe even
+            // when every byte it holds is printable, because the caller's
+            // length bound is what makes the scan meaningful.
+            char unterminated[8];
+            memset(unterminated, 'a', sizeof(unterminated));
+            if (service_wire_string_is_log_safe(unterminated,
+                    (unsigned int)sizeof(unterminated))) return 5967;
+            if (service_wire_string_is_log_safe(nullptr, 8)) return 5968;
+            if (service_wire_string_is_log_safe("abc", 0)) return 5969;
+        }
+
         // A command past the end of the v19 set is still unknown.
         {
             ServiceRequest tampered = base;
@@ -16775,10 +16932,40 @@ static int run_all_tests_final() {
 
         const unsigned int kMedium = 0x2000u;  // SECURITY_MANDATORY_MEDIUM_RID
         const unsigned int kLow = 0x1000u;
-        // A read needs neither integrity nor admin.
+        const unsigned int kHigh = 0x3000u;
+
+        // A READ now needs MEDIUM INTEGRITY.  It used to need nothing, on the
+        // reasoning that "the pipe ACL is the gate" -- but the pipe ACL is
+        // GRGW for Authenticated Users, which is a strictly wider set than
+        // medium integrity, and READ is the command that delivers the
+        // authoritative state envelope (GPU model, PCI IDs, fan RPM, the
+        // applied OC/UV/power state, the update posture).  A low-integrity
+        // process in the active session therefore used to be handed all of it,
+        // while the dispatch site's own comment claimed low-integrity callers
+        // lose the envelope.  This assertion fails against the pre-fix build.
         if (service_command_authority_reject_reason(
-                SERVICE_CMD_GET_SNAPSHOT, kLow, kMedium, false) != nullptr)
+                SERVICE_CMD_GET_SNAPSHOT, kLow, kMedium, false) == nullptr)
             return 5262;
+        // Medium integrity is enough for a read -- it still needs no admin, and
+        // still needs no active session, so an ordinary medium-integrity client
+        // of the active session is unaffected.
+        if (service_command_authority_reject_reason(
+                SERVICE_CMD_GET_SNAPSHOT, kMedium, kMedium, false) != nullptr)
+            return 5970;
+        if (service_command_authority_reject_reason(
+                SERVICE_CMD_GET_SNAPSHOT, kHigh, kMedium, false) != nullptr)
+            return 5971;
+        if (service_command_authority_reject_reason(
+                SERVICE_CMD_GET_SNAPSHOT, kMedium, kMedium, true) != nullptr)
+            return 5972;
+        // EVERY command carries the integrity requirement, including the
+        // unknown-command fail-closed arm.
+        if (!service_command_requires_medium_integrity(SERVICE_CMD_PING))
+            return 5973;
+        if (!service_command_requires_medium_integrity(9999u)) return 5974;
+        // And a read still never requires admin: this is not a privilege change.
+        if (service_command_requires_local_admin(SERVICE_CMD_GET_SNAPSHOT))
+            return 5975;
         // Control needs medium integrity and nothing more. The APPLY path must
         // keep working for a standard user: it is that user's own hardware
         // intent, and tightening it would break the product.

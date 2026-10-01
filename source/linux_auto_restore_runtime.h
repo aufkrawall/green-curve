@@ -25,6 +25,16 @@
 #ifndef GREEN_CURVE_LINUX_AUTO_RESTORE_RUNTIME_H
 #define GREEN_CURVE_LINUX_AUTO_RESTORE_RUNTIME_H
 
+// Monotonic milliseconds, truncated to gc_u32 so the resume window's arithmetic
+// is a plain wrapsafe subtraction.  linux_daemon_transport.cpp keeps its own
+// static copy for the transport deadlines; this one is scoped to the guard.
+static inline gc_u32 gc_auto_restore_now_ms(void) {
+    struct timespec ts = {};
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (gc_u32)((unsigned long long)ts.tv_sec * 1000ULL +
+                    (unsigned long long)(ts.tv_nsec / 1000000ULL));
+}
+
 struct LinuxAutoRestoreOutcome {
     bool authorized;  // the guard allowed it
     bool attempted;   // a hardware write was actually issued
@@ -61,9 +71,17 @@ static bool persist_auto_restore_guard(const char* why,
 // uncommittable proof invalidation aborts before touching the GPU.
 static bool auto_restore_authorize(LinuxAutoRestoreTrigger trigger,
                                    LinuxAutoRestoreVerdict* verdictOut) {
+    gc_u32 nowMs = gc_auto_restore_now_ms();
+    // Count the resume BEFORE deciding, so the very first request in a window
+    // already consumes one and the budget cannot be skipped by asking.  In
+    // memory only: unlike the per-boot counter this is not persisted, because a
+    // one-minute window has no meaning across a daemon restart.
+    if (!linux_auto_restore_trigger_is_start(trigger)) {
+        linux_auto_restore_note_resume_attempt(&g_autoRestoreGuard, nowMs);
+    }
     LinuxAutoRestoreVerdict verdict =
         linux_auto_restore_decide(&g_autoRestoreGuard, trigger,
-                                  g_stateUncertain);
+                                  g_stateUncertain, nowMs);
     // Reported to the caller rather than recomputed by it: latching the lockout
     // below changes what a second call would answer, so "attempts exhausted"
     // would come back as the less specific "locked out".

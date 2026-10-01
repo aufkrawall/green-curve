@@ -38,6 +38,18 @@ enum {
     // fourth consecutive start in one boot is the point at which both platforms
     // stop trying by themselves.
     LINUX_AUTO_RESTORE_MAX_START_ATTEMPTS = 3,
+    // Resume is a per-boot-exempt trigger, so it needs its OWN budget: a real
+    // suspend/resume happens a few times a day, and the exemption exists so a
+    // laptop does not stop restoring its curve after the third lid open.  That
+    // reasoning assumes the trigger is a real machine event -- but RESUME is
+    // also a socket command any peer can send, at any rate, forever.  Without a
+    // separate bound, one peer could loop full reset+rewrite transactions: a
+    // driver-reset/rewrite hazard on a deliberately tuned card, and enough
+    // cumulative handler time to cross the systemd watchdog and restart the
+    // root daemon.  This is a short WINDOW budget, not a per-boot count, so it
+    // cannot make ordinary lid-open behaviour stop working.
+    LINUX_AUTO_RESTORE_MAX_RESUME_PER_WINDOW = 8,
+    LINUX_AUTO_RESTORE_RESUME_WINDOW_MS = 60000,
 };
 
 enum LinuxAutoRestoreTrigger : gc_u32 {
@@ -62,6 +74,11 @@ enum LinuxAutoRestoreVerdict : gc_u32 {
     // The daemon state or a rollback did not settle, so no unattended write
     // may run until an explicit Apply or Reset resolves it.
     LINUX_AUTO_RESTORE_DENY_STATE_UNCERTAIN = 4,
+    // Too many resume restores inside one short window.  A separate refusal
+    // from ATTEMPTS_EXHAUSTED on purpose: the per-boot budget is a stability
+    // proof and this is an abuse bound, and a snapshot that printed the same
+    // label for both would be claiming a crash-loop that did not happen.
+    LINUX_AUTO_RESTORE_DENY_RESUME_RATE_LIMITED = 5,
 };
 
 // Persisted verbatim (see LinuxDaemonRestoreGuardRecord).  Keep POD.
@@ -74,11 +91,46 @@ enum LinuxAutoRestoreVerdict : gc_u32 {
 // `lockedOut` by construction: locked out implies a non-NONE reason, and clear
 // implies NONE.
 struct LinuxAutoRestoreGuard {
-    gc_bool8 lockedOut;
-    gc_u32 startAttempts;
     gc_u32 lockoutReason;
     char bootId[LINUX_BOOT_ID_MAX];
+    gc_bool8 lockedOut;
+    gc_u32 startAttempts;
+    // In-memory only, deliberately NOT part of the persisted record: a
+    // short-window rate limit is meaningless across a restart, and persisting
+    // it would change the record layout for no behavioural gain.
+    gc_u32 resumeAttempts;
+    gc_u32 resumeWindowStartMs;
 };
+
+// Roll the resume window if `nowMs` has left it, then count this attempt.
+// Wrapsafe: the comparison is a subtraction in gc_u32, which is correct across
+// the 49.7-day tick-count wrap for any window smaller than that.
+static inline void linux_auto_restore_note_resume_attempt(
+    LinuxAutoRestoreGuard* guard, gc_u32 nowMs) {
+    if (!guard) return;
+    if (guard->resumeAttempts == 0 ||
+        (gc_u32)(nowMs - guard->resumeWindowStartMs) >=
+            (gc_u32)LINUX_AUTO_RESTORE_RESUME_WINDOW_MS) {
+        guard->resumeAttempts = 0;
+        guard->resumeWindowStartMs = nowMs;
+    }
+    if (guard->resumeAttempts < 0xFFFFFFFFu) guard->resumeAttempts++;
+}
+
+static inline gc_bool8 linux_auto_restore_resume_budget_spent(
+    const LinuxAutoRestoreGuard* guard, gc_u32 nowMs) {
+    if (!guard || guard->resumeAttempts == 0) return 0;
+    if ((gc_u32)(nowMs - guard->resumeWindowStartMs) >=
+        (gc_u32)LINUX_AUTO_RESTORE_RESUME_WINDOW_MS) {
+        return 0;  // the window has aged out
+    }
+    // Strictly greater, not >=: the caller counts the attempt BEFORE asking, so
+    // `>=` would make the budget mean "seven are allowed" -- the eighth note
+    // would already trip it.  This way exactly MAX_RESUME_PER_WINDOW resumes
+    // succeed inside a window and the next one is refused.
+    return guard->resumeAttempts >
+        (gc_u32)LINUX_AUTO_RESTORE_MAX_RESUME_PER_WINDOW ? 1 : 0;
+}
 
 // Wire reasons, spelled for a Linux log line.  The Windows service has its own
 // copy of these strings (service_auto_restore_lockout_reason_name) phrased for
@@ -125,6 +177,8 @@ static inline const char* linux_auto_restore_verdict_name(
             return "refused: this boot already spent its automatic start-time writes";
         case LINUX_AUTO_RESTORE_DENY_STATE_UNCERTAIN:
             return "refused: the daemon state is uncertain until an explicit Apply or Reset succeeds";
+        case LINUX_AUTO_RESTORE_DENY_RESUME_RATE_LIMITED:
+            return "refused: too many standby restores in a short window";
         default:
             return "refused: no automatic trigger";
     }
@@ -153,7 +207,7 @@ static inline bool linux_auto_restore_guard_adopt_boot(
 
 static inline LinuxAutoRestoreVerdict linux_auto_restore_decide(
     const LinuxAutoRestoreGuard* guard, LinuxAutoRestoreTrigger trigger,
-    bool stateUncertain) {
+    bool stateUncertain, gc_u32 nowMs) {
     if (!guard || trigger == LINUX_AUTO_RESTORE_TRIGGER_NONE)
         return LINUX_AUTO_RESTORE_DENY_NO_TRIGGER;
     if (guard->lockedOut) return LINUX_AUTO_RESTORE_DENY_LOCKED_OUT;
@@ -164,11 +218,20 @@ static inline LinuxAutoRestoreVerdict linux_auto_restore_decide(
     // lockout reason, so this gate is what makes that label true.
     if (stateUncertain) return LINUX_AUTO_RESTORE_DENY_STATE_UNCERTAIN;
     // A resume is a user-visible machine event, not a restart: it cannot repeat
-    // by itself, so counting it would only make a laptop stop restoring its
-    // curve after the third lid open.  Windows treats standby the same way --
-    // it is the one restore that bypasses the stability proof entirely.
-    if (!linux_auto_restore_trigger_is_start(trigger))
+    // by itself, so the per-BOOT counter would only make a laptop stop restoring
+    // its curve after the third lid open.  Windows treats standby the same way.
+    //
+    // What changed is the assumption behind that exemption.  "It cannot repeat
+    // by itself" was true of the suspend event, not of the SOCKET COMMAND the
+    // resume unit turns into: any peer can send that as often as it likes.  So
+    // resume is still exempt from the per-boot budget but now spends a separate
+    // short-window one.  The caller passes nowMs and has already called
+    // linux_auto_restore_note_resume_attempt().
+    if (!linux_auto_restore_trigger_is_start(trigger)) {
+        if (linux_auto_restore_resume_budget_spent(guard, nowMs))
+            return LINUX_AUTO_RESTORE_DENY_RESUME_RATE_LIMITED;
         return LINUX_AUTO_RESTORE_ALLOW;
+    }
     if (guard->startAttempts >= (gc_u32)LINUX_AUTO_RESTORE_MAX_START_ATTEMPTS)
         return LINUX_AUTO_RESTORE_DENY_ATTEMPTS_EXHAUSTED;
     return LINUX_AUTO_RESTORE_ALLOW;

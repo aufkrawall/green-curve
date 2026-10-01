@@ -417,21 +417,7 @@ LINUX_ARM64_TRIPLE = "aarch64-linux-gnu"
 
 def linux_flags_for_arch(arch):
     """LINUX_FLAGS with the cross-compilation triple swapped for the arch."""
-    flags = list(LINUX_FLAGS)
-    if arch == "arm64":
-        flags[flags.index("-target") + 1] = LINUX_ARM64_TRIPLE
-        # -fcf-protection is x86-only; clang hard-errors with "option
-        # 'cf-protection=return' cannot be specified on this target" on
-        # aarch64, so it is removed rather than merely unused.
-        flags.remove("-fcf-protection=full")
-        flags.remove("-flto")
-        flags.append("-fno-lto")
-        # Match the Windows arm64 build: -O2 over the common -Oz (avoids the
-        # same arm64 size-opt codegen issue and keeps the two arches uniform),
-        # plus BTI/PAC branch protection (the arm64 analogue of x86 CET).
-        flags.append("-mbranch-protection=standard")
-        flags.append("-O2")
-    return flags
+    return build_variants.linux_flags_for_arch(arch, LINUX_FLAGS, LINUX_ARM64_TRIPLE)
 
 
 # Every (os, arch) build lands in its OWN isolated folder under dist/, using the
@@ -494,12 +480,18 @@ def compile_resources():
         [(ICON_RC, ICON_RES, False), (SERVICE_ICON_RC, SERVICE_ICON_RES, True)], SCRIPT_DIR)
 
 
+def _work_subdir_abs(path):
+    """Absolute path of a scratch dir, or None if it escapes BUILD_WORK_DIR."""
+    base_abs = os.path.abspath(BUILD_WORK_DIR)
+    target = os.path.abspath(path)
+    return target if os.path.commonpath([base_abs, target]) == base_abs else None
+
+
 def prepare_work_subdir(name):
     """Create a clean build scratch subdirectory inside the repository."""
-    base_abs = os.path.abspath(BUILD_WORK_DIR)
-    target = os.path.abspath(os.path.join(base_abs, name))
-    if os.path.commonpath([base_abs, target]) != base_abs:
-        raise RuntimeError(f"Unsafe build scratch path: {target}")
+    target = _work_subdir_abs(os.path.join(BUILD_WORK_DIR, name))
+    if target is None:
+        raise RuntimeError(f"Unsafe build scratch path: {name}")
     if os.path.exists(target):
         shutil.rmtree(target)
     os.makedirs(target, exist_ok=True)
@@ -507,11 +499,8 @@ def prepare_work_subdir(name):
 
 
 def cleanup_work_subdir(path):
-    if not path:
-        return
-    base_abs = os.path.abspath(BUILD_WORK_DIR)
-    target = os.path.abspath(path)
-    if os.path.commonpath([base_abs, target]) == base_abs and os.path.exists(target):
+    target = _work_subdir_abs(path) if path else None
+    if target is not None and os.path.exists(target):
         shutil.rmtree(target, ignore_errors=True)
 
 
@@ -590,6 +579,11 @@ def _verify_cached_tool_binary(binary_path, label, trusted_sha256,
 
 def download_zig():
     if "ZIG_EXE" in os.environ and os.path.exists(ZIG_EXE):
+        # An override must still BE the pinned compiler.  This used to return
+        # unconditionally, so any existing file became the compiler for every
+        # Linux build and the Windows ARM64 link, while --verify-toolchain still
+        # reported zig/zig.exe healthy (it reads ZIG_DIR, not ZIG_EXE).
+        toolchain.verify_pinned_executable("zig", ZIG_EXE, ZIG_EXE_SHA256)
         return
     if os.path.exists(ZIG_EXE) and _verify_cached_tool_binary(ZIG_EXE, "zig", ZIG_EXE_SHA256):
         print(f"Zig already present at {ZIG_EXE}")
@@ -740,21 +734,18 @@ def _mingw_x64_windows_command(temp_output, libs, service=False, pdb_path=None):
     ]
 
 
-def get_windows_gui_compile_command(temp_output, arch="x64", pdb_path=None):
-    """Command array for the Windows GUI executable (llvm-mingw x64, Zig arm64)."""
-    if arch == "arm64":
-        return _zig_arm64_windows_command(temp_output, WINDOWS_LINK_LIBS)
-    return _mingw_x64_windows_command(temp_output, WINDOWS_LINK_LIBS,
-                                      pdb_path=pdb_path)
+def get_windows_compile_command(temp_output, service=False, arch="x64", pdb_path=None):
+    """Command array for a Windows executable (llvm-mingw x64, Zig arm64).
 
-
-def get_windows_service_compile_command(temp_output, arch="x64", pdb_path=None):
-    """Command array for the Windows service executable (llvm-mingw x64, Zig arm64)."""
+    GUI and service differed only in which link libs they named and in the
+    service flag, so they are one function with a flag rather than two that can
+    drift apart.
+    """
+    libs = WINDOWS_SERVICE_LINK_LIBS if service else WINDOWS_LINK_LIBS
     if arch == "arm64":
-        return _zig_arm64_windows_command(temp_output, WINDOWS_SERVICE_LINK_LIBS,
-                                          service=True)
-    return _mingw_x64_windows_command(temp_output, WINDOWS_SERVICE_LINK_LIBS,
-                                      service=True, pdb_path=pdb_path)
+        return _zig_arm64_windows_command(temp_output, libs, service=service)
+    return _mingw_x64_windows_command(temp_output, libs,
+                                      service=service, pdb_path=pdb_path)
 
 
 def get_linux_compile_command(temp_output, arch="x64"):
@@ -1190,7 +1181,7 @@ def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_T
 
     pdb_path, link_pdb_path = _prepare_windows_symbol_paths(
         output_path, arch, "greencurve.pdb", variant)
-    cmd = get_windows_gui_compile_command(temp_output, arch, pdb_path)
+    cmd = get_windows_compile_command(temp_output, service=False, arch=arch, pdb_path=pdb_path)
 
     _print_windows_build_header(output_path, arch, jobs, cmd)
 
@@ -1245,7 +1236,7 @@ def compile_windows_service_binary(output_path=WINDOWS_SERVICE_OUTPUT_EXE, temp_
 
     pdb_path, link_pdb_path = _prepare_windows_symbol_paths(
         output_path, arch, "greencurve-service.pdb", variant)
-    cmd = get_windows_service_compile_command(temp_output, arch, pdb_path)
+    cmd = get_windows_compile_command(temp_output, service=True, arch=arch, pdb_path=pdb_path)
 
     _print_windows_build_header(output_path, arch, jobs, cmd)
 
@@ -1468,9 +1459,9 @@ def package_release_archive(os_name, arch, binaries, seven=None, variant=None):
 def requested_arches(arch):
     if arch == "all":
         return ["x64", "arm64"]
-    if arch in ("x64", "arm64"):
-        return [arch]
-    raise ValueError(f"unsupported architecture: {arch}")
+    if arch not in ("x64", "arm64"):
+        raise ValueError(f"unsupported architecture: {arch}")
+    return [arch]
 
 
 def resolve_targets(requested):
@@ -1567,8 +1558,8 @@ def generate_lsp_files():
     """Generate compile_commands.json for clangd from real build flags."""
     entries = []
     dummy_temp = os.path.join(SCRIPT_DIR, "dummy.out")
-    gui_cmd = get_windows_gui_compile_command(dummy_temp)
-    service_cmd = get_windows_service_compile_command(dummy_temp)
+    gui_cmd = get_windows_compile_command(dummy_temp)
+    service_cmd = get_windows_compile_command(dummy_temp, service=True)
     linux_cmd = get_linux_compile_command(dummy_temp)
     # gui_cmd[0] = clang++; service_cmd[0] = clang++; linux_cmd[0] = zig
     # Skip the compiler executable (index 0), then strip trailing link args
@@ -1971,6 +1962,9 @@ def run_source_regression_checks():
     security_gates.check_diagnostic_probe_gates(_gate_ctx(), require_text, forbid_text)
     # F-03-001: the enforcement source/log_redaction_policy.h never had.
     security_gates.check_log_redaction(_gate_ctx())
+    # Security-audit remediations: wiring assertions for the properties whose
+    # loss is invisible on the happy path.
+    security_gates.check_audit_finding_gates(_gate_ctx(), require_text)
     require_app_version_fallback_in_sync()
     main_cpp = os.path.join(SOURCE_DIR, "main.cpp")
     entry_cpp = os.path.join(SOURCE_DIR, "entry.cpp")
@@ -5029,6 +5023,7 @@ def parse_args():
         action="store_true",
         help="Verify the installed toolchain against compilers/*/manifest.json and exit",
     )
+    security_gates.add_gates_argument(parser)
     parser.add_argument(
         "--toolchain-manifest",
         metavar="PATH",
@@ -5228,6 +5223,9 @@ def main():
                          args.toolchain_manifest)
         if args.verify_toolchain:
             sys.exit(0)
+    if args.gates:
+        security_gates.run_source_gates(_gate_ctx())
+        sys.exit(0)
     jobs = build_scheduler.resolve_jobs(args.jobs)
     limiter = build_scheduler.JobLimiter(jobs)
     print(f"Using {jobs} parallel build job(s)")

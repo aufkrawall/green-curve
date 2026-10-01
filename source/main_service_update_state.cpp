@@ -30,6 +30,10 @@ static_assert(SERVICE_UPDATE_VERSION_CHARS == GC_UPDATE_VERSION_MAX_CHARS,
 static_assert(sizeof(((ServiceUpdateState*)nullptr)->detail) >= 128,
               "update detail buffer is too small to carry a useful reason");
 
+// The staging directory is hardened and VERIFIED with the same helpers the
+// shared profile bank uses.  Do not rely on include order to provide them.
+#include "service_acl.h"
+
 #define GC_UPDATE_CONFIG_SECTION "updates"
 #define GC_UPDATE_STAGING_DIR_NAME "updates"
 
@@ -247,6 +251,17 @@ static void service_update_save_settings() {
 // config directory, so it inherits SYSTEM+Administrators full / Users
 // read-and-execute.  A standard user can see the staged installer and cannot
 // replace it, which is the property the whole design turns on.
+//
+// Inheritance is only true when WE create the child.  The default
+// %ProgramData% ACL lets a standard user create subdirectories, so one can
+// pre-create ...\Green Curve\updates -- owning it, with a DACL of its choosing
+// -- before the service's first start.  Hardening the parent afterwards does
+// NOT rewrite an existing child's inherited ACEs, and CreateDirectory's
+// ERROR_ALREADY_EXISTS path would have accepted it forever.  That is the same
+// squatting threat secure_shared_bank_at_startup() exists to defeat, one level
+// down, so the child gets the same treat: harden it, then VERIFY it, and fail
+// closed if either step says no.  A directory we cannot prove we own must not
+// become the place a SYSTEM process downloads a file it will later launch.
 static bool service_update_staging_dir(char* out, size_t outSize, char* err, size_t errSize) {
     if (out && outSize) out[0] = 0;
     if (!ensure_machine_config_directory(err, errSize)) return false;
@@ -285,6 +300,27 @@ static bool service_update_staging_dir(char* out, size_t outSize, char* err, siz
         out[0] = 0;
         return false;
     }
+
+    // Hard-then-verify, and a reparse point is refused on the way in, so this
+    // is operating on the real directory.
+    Win32Utf8Path stagingPath(out);
+    if (!stagingPath.valid_for(out)) {
+        set_message(err, errSize, "Update staging path could not be encoded");
+        out[0] = 0;
+        return false;
+    }
+    char aclErr[256] = {};
+    if (!apply_protected_machine_config_dir_dacl(stagingPath.value, aclErr, sizeof(aclErr))) {
+        set_message(err, errSize, "Update staging DACL hardening failed: %s",
+                    aclErr[0] ? aclErr : "unknown");
+        out[0] = 0;
+        return false;
+    }
+    if (!machine_config_dacl_is_hardened(stagingPath.value)) {
+        set_message(err, errSize, "Update staging DACL verification failed");
+        out[0] = 0;
+        return false;
+    }
     return true;
 }
 
@@ -302,13 +338,44 @@ static void service_update_clear_staging() {
     HANDLE find = gc_FindFirstFileUtf8(pattern, &fd);
     if (find == INVALID_HANDLE_VALUE) return;
     int removed = 0;
+    int removedDirs = 0;
     do {
-        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) continue;
         char filePath[MAX_PATH] = {};
-        if (SUCCEEDED(StringCchPrintfA(filePath, sizeof(filePath), "%s\\%s", dir,
-                                       fd.cFileName))) {
-            if (gc_DeleteFileUtf8(filePath)) removed++;
+        if (FAILED(StringCchPrintfA(filePath, sizeof(filePath), "%s\\%s", dir,
+                                   fd.cFileName))) {
+            continue;
         }
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            // A directory here is never ours: the sweeper's own names are all
+            // flat files.  Skipping them used to be "be conservative", but it
+            // is exactly the shape an attacker plants -- a DIRECTORY named
+            // greencurve-<version>-windows-x64-setup.exe, which the download's
+            // CREATE_NEW then fails on forever, surviving every sweep.  The
+            // directory is now proven SYSTEM/Administrators-only by
+            // service_update_staging_dir() before we get here, so removing an
+            // entry inside it is a write into a place we own.  Skip "." and
+            // ".." defensively even though a FindFirst pattern never returns
+            // them.
+            if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) {
+                continue;
+            }
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+                // Never recurse or follow one; a link named like a task is
+                // still not ours, and RemoveDirectory removes the link itself.
+                removedDirs += gc_RemoveDirectoryUtf8(filePath) ? 1 : 0;
+            } else if (gc_RemoveDirectoryUtf8(filePath)) {
+                // Only succeeds when empty, which is the normal case for a
+                // planted obstruction.
+                removedDirs++;
+            } else {
+                // Non-empty: log it rather than recursing. A recursive delete
+                // in a SYSTEM process is exactly the operation that must never
+                // walk a tree it did not create.
+                debug_log("update staging: left a non-empty foreign directory in place\n");
+            }
+            continue;
+        }
+        if (gc_DeleteFileUtf8(filePath)) removed++;
     } while (gc_FindNextFileUtf8(find, &fd));
     FindClose(find);
 
@@ -317,6 +384,7 @@ static void service_update_clear_staging() {
     g_updateState.packageStaged = false;
     g_updateState.packageVerified = false;
     if (removed) debug_log("update staging: cleared %d stale file(s)\n", removed);
+    if (removedDirs) debug_log("update staging: removed %d planted/foreign directory entry(ies)\n", removedDirs);
 }
 
 // ---------------------------------------------------------------------------

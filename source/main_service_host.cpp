@@ -760,7 +760,16 @@ service_watchdog_loop:
         debug_log_session_marker("END", "service", extra);
     }
     debug_log_writer_stop();
-    DeleteCriticalSection(&g_debugLogLock);
+    // g_debugLogLock is NOT deleted, and the update worker is not joined here.
+    // service_update_worker_thread.cpp starts it detached and only records
+    // g_updateState.workerRunning, so it can still be inside the WinHTTP
+    // download (four bounded 30 s timeouts) -- or just returning from it --
+    // when a service stop or a driver-recovery restart reaches this line.  Its
+    // next debug_log() would then enter a deleted CRITICAL_SECTION, which is a
+    // heap use-after-free inside the exiting LocalSystem process.  The GUI
+    // cleanup path reached the same conclusion for the same reason; the
+    // process-lifetime rule is that these locks live for the whole process and
+    // Windows reclaims them on exit.
 }
 
 static bool should_suppress_startup_ui() {

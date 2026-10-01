@@ -21,6 +21,12 @@ source=(
 )
 source_x86_64=("$url/releases/download/$pkgver/greencurve-$pkgver-linux-x64.tar.xz")
 source_aarch64=("$url/releases/download/$pkgver/greencurve-$pkgver-linux-arm64.tar.xz")
+# The payload is the binary that becomes /usr/bin/greencurve and that
+# greencurve.service executes AS ROOT, so it carries a real digest like every
+# other file in this PKGBUILD.  It used to be SKIP: a compromised release asset,
+# tag or account then produced a package that installed silently as root with
+# nothing local to notice.  These are the digests the release pipeline already
+# emits as the .sha256 sidecar beside each archive -- bump them with the version.
 sha256sums=(
     'ab54902d53821b375a471990d515eb38a006971cc2b66352dba9a2d69793726e'
     'b5a58d0cdf6fd713765b69f470f670c4d8e3283e6862a5a37b92209ce2c3104c'
@@ -28,8 +34,8 @@ sha256sums=(
     '70df9616dbba8cd76600dca962432813f2a4562175a8f322cc0c103a760b82e0'
     'b834cc7fc3a5614a65b55f2d1c49c73927bf7d512b7ebb4fb9a02c1408ef19d1'
 )
-sha256sums_x86_64=('SKIP')
-sha256sums_aarch64=('SKIP')
+sha256sums_x86_64=('2ea567c4d63b098adefa0fb04123ec90545331984b391a4cfbb30a2f3e7b3054')
+sha256sums_aarch64=('a904c168a68d963326cdfe8b6345ff1e098ed624cdc128bb2eebe5e7ab9e6318')
 
 package() {
     local _gc_arch

@@ -28,15 +28,23 @@ static void cleanup_gui_process_runtime(bool coordinatorStarted) {
         s_hUiFont = nullptr;
     }
     if (coordinatorStopped) {
-        // Drains and joins the log writer before the ring lock goes away,
-        // so the last lines of the session reach disk.
+        // Drains and joins the log writer so the last lines of the session reach
+        // disk.  That is the last thing worth WAITING for at exit.
         debug_log_writer_stop();
-        DeleteCriticalSection(&g_configLock);
-        DeleteCriticalSection(&g_appLock);
-        DeleteCriticalSection(&g_debugLogLock);
     } else {
-        // Windows reclaims these process-lifetime resources on exit. Keep them
-        // valid for a bounded pipe operation that did not observe cancellation.
-        debug_log("GUI shutdown: retaining process-lifetime synchronization for the exiting service I/O coordinator\n");
+        debug_log("GUI shutdown: the I/O coordinator did not stop in time; "
+                  "the session's final log lines may be lost\n");
     }
+    // The process-lifetime critical sections are deliberately NOT deleted.
+    //
+    // gui_mutation_shutdown() gates exactly one worker: the mutation
+    // coordinator.  Two others are detached and never joined -- the Updates
+    // dialog's command worker and the logon/tray startup-sync thread -- and
+    // both call debug_log() and enter_config_storage_lock() after their work
+    // completes.  Deleting a CRITICAL_SECTION while a thread can still call
+    // EnterCriticalSection on it is a heap use-after-free in the exiting
+    // process, and a straggler is exactly what the `else` branch above exists to
+    // tolerate.  Windows reclaims all of it at exit, and the debug-log writer's
+    // own event is already treated this way (main_debug_log_writer.cpp), so this
+    // makes the three locks consistent with the object they were meant to be.
 }

@@ -82,6 +82,17 @@ static const char* effective_debug_log_path() {
     return debug_log_path();
 }
 
+// The printf attribute is what makes -Wformat=2 / -Wformat-security /
+// -Wformat-nonliteral mean anything at this call site.  debug_log is the
+// most-called logger in the product and it is routinely handed
+// ServiceRequest/ServiceResponse-derived strings, so without the annotation
+// every one of those hundreds of call sites is silently unchecked -- a
+// future debug_log(userString) would be a format-string bug in a LocalSystem
+// process that the compiler would never see.  The other loggers in the tree
+// (set_message, gc_snprintf, gc_log_step, dlog) already carry theirs.
+static void debug_log(const char* fmt, ...)
+    __attribute__((format(printf, 1, 2)));
+
 static void debug_log(const char* fmt, ...) {
     if (!g_debug_logging || !fmt) return;
     char message[1024] = {};

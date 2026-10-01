@@ -785,7 +785,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     int helperExitCode = 0;
     if (service_try_dispatch_controlled_restart_helper(&helperExitCode)) {
         debug_log_writer_stop();
-        DeleteCriticalSection(&g_debugLogLock);
+        // g_debugLogLock is process-lifetime; see cleanup_gui_process_runtime().
         return helperExitCode;
     }
     // No DPI setup: the service never creates a window.
