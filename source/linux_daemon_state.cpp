@@ -150,7 +150,8 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
     } else if (protectedRegular &&
                st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema1)) {
         LinuxDaemonStateRecordSchema1 legacy = {};
-        if ((count = gc_read_record(::read, fd, &legacy, sizeof(legacy))) == (ssize_t)sizeof(legacy) &&
+        count = gc_read_record(::read, fd, &legacy, sizeof(legacy));
+        if (count == (ssize_t)sizeof(legacy) &&
             linux_daemon_state_record_widen_schema1(&record, &legacy,
                                                     &migratedOldMemMHz,
                                                     &storedVersion)) {
@@ -162,7 +163,8 @@ LinuxDaemonStateLoadResult linux_daemon_state_load(const char* path,
     } else if (protectedRegular &&
                st.st_size == (off_t)sizeof(LinuxDaemonStateRecordSchema1V1)) {
         LinuxDaemonStateRecordSchema1V1 legacy = {};
-        if ((count = gc_read_record(::read, fd, &legacy, sizeof(legacy))) == (ssize_t)sizeof(legacy) &&
+        count = gc_read_record(::read, fd, &legacy, sizeof(legacy));
+        if (count == (ssize_t)sizeof(legacy) &&
             linux_daemon_state_record_widen_schema1_v1(&record, &legacy,
                                                        &migratedOldMemMHz)) {
             count = (ssize_t)sizeof(record);

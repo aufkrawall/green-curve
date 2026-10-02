@@ -338,6 +338,35 @@ def run_linux_fixtures(ctx, tmp_dir, extra_flags, test_env):
         if result.returncode != 0:
             print(f"Linux {label} regression FAILED ({result.returncode})")
             sys.exit(result.returncode)
+    if not native:
+        harness_path = os.path.join(ctx.SCRIPT_DIR, "tests", "regression_main.cpp")
+        harness_exe = os.path.join(tmp_dir, "fan_curve_regression_linux_check")
+        harness_cmd = [
+            ctx.ZIG_EXE, "c++", "-target", ctx.LINUX_TARGET,
+            "-std=c++17", "-DNDEBUG",
+            f'-DAPP_VERSION="{ctx.APP_VERSION}"',
+            "-fno-exceptions", "-fno-rtti",
+            f"-I{ctx.SOURCE_DIR}",
+            "-o", harness_exe,
+            harness_path,
+            *[os.path.join(ctx.SCRIPT_DIR, "tests", name) for name in (
+                "clock_transition_tests.cpp", "service_install_tests.cpp",
+                "apply_profile_followup_tests.cpp", "apply_correction_tests.cpp",
+                "fan_worker_lock_tests.cpp", "security_audit_tests.cpp",
+                "installer_fuzz_harness_tests.cpp", "review_followup_tests.cpp")],
+            os.path.join(ctx.SOURCE_DIR, "fan_curve.cpp"),
+            os.path.join(ctx.SOURCE_DIR, "config_text_utils.cpp"),
+            os.path.join(ctx.SOURCE_DIR, "app_shared.cpp"),
+            os.path.join(ctx.SOURCE_DIR, "vf_backends.cpp"),
+            os.path.join(ctx.SOURCE_DIR, "platform_posix.cpp"),
+            "-include", os.path.join(ctx.SOURCE_DIR, "win32_compat.h"),
+            "-lpthread", "-ldl"
+        ]
+        print(f"Cross-linking ({ctx.LINUX_TARGET}) regression test harness")
+        returncode = ctx._run_zig_link(harness_cmd)
+        if returncode != 0:
+            print("Linux regression harness cross-link FAILED")
+            sys.exit(returncode)
 
 
 def check_fuzz_linux_link_lines(ctx, tmp_dir):

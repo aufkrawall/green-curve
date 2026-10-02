@@ -53,6 +53,41 @@ typedef uint8_t  BYTE;
 typedef unsigned int UINT;
 typedef int      BOOL;
 typedef wchar_t  WCHAR;   // never dereferenced on Linux; matches L"" literals
+typedef int32_t  HRESULT;
+
+#ifndef S_OK
+#define S_OK ((HRESULT)0L)
+#endif
+#ifndef S_FALSE
+#define S_FALSE ((HRESULT)1L)
+#endif
+#ifndef SUCCEEDED
+#define SUCCEEDED(hr) (((HRESULT)(hr)) >= 0)
+#endif
+#ifndef FAILED
+#define FAILED(hr) (((HRESULT)(hr)) < 0)
+#endif
+#ifndef STRSAFE_E_INSUFFICIENT_BUFFER
+#define STRSAFE_E_INSUFFICIENT_BUFFER ((HRESULT)0x8007007AL)
+#endif
+#ifndef STRSAFE_E_INVALID_PARAMETER
+#define STRSAFE_E_INVALID_PARAMETER   ((HRESULT)0x80070057L)
+#endif
+
+#include <stdio.h>
+
+static inline HRESULT StringCchCopyA(char* dst, size_t dstSize, const char* src) {
+    if (!dst || dstSize == 0 || !src) {
+        if (dst && dstSize > 0) dst[0] = '\0';
+        return STRSAFE_E_INVALID_PARAMETER;
+    }
+    int written = snprintf(dst, dstSize, "%s", src);
+    if (written < 0 || (size_t)written >= dstSize) {
+        dst[dstSize - 1] = '\0';
+        return STRSAFE_E_INSUFFICIENT_BUFFER;
+    }
+    return S_OK;
+}
 
 #ifndef TRUE
 #define TRUE 1

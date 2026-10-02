@@ -6,6 +6,7 @@
 // Linux atomic writer's path rules.  Both are pure, so they run on every host.
 #include "update_freshness_policy.h"
 #include "linux_atomic_write_policy.h"
+#include "app_shared.h"
 #include <string.h>
 #include <string>
 
@@ -77,8 +78,34 @@ static int atomic_write_path_tests() {
     return 0;
 }
 
+static int string_copy_shim_tests() {
+    char buf[16] = {};
+    HRESULT hr = StringCchCopyA(buf, sizeof(buf), "hello");
+    if (!SUCCEEDED(hr) || hr != S_OK || strcmp(buf, "hello") != 0) return 6270;
+
+    hr = StringCchCopyA(buf, sizeof(buf), "");
+    if (!SUCCEEDED(hr) || hr != S_OK || buf[0] != '\0') return 6271;
+
+    const char exact15[] = "123456789012345";
+    hr = StringCchCopyA(buf, sizeof(buf), exact15);
+    if (!SUCCEEDED(hr) || hr != S_OK || strcmp(buf, exact15) != 0) return 6272;
+
+    const char overlong[] = "12345678901234567890";
+    hr = StringCchCopyA(buf, sizeof(buf), overlong);
+    if (SUCCEEDED(hr) || !FAILED(hr) || hr != STRSAFE_E_INSUFFICIENT_BUFFER) return 6273;
+    if (buf[sizeof(buf) - 1] != '\0' || strncmp(buf, overlong, sizeof(buf) - 1) != 0) return 6274;
+
+    if (!FAILED(StringCchCopyA(buf, 0, "test"))) return 6275;
+
+    if (!SUCCEEDED(S_OK) || FAILED(S_OK)) return 6276;
+    if (!SUCCEEDED(S_FALSE) || FAILED(S_FALSE)) return 6277;
+
+    return 0;
+}
+
 int run_review_followup_tests() {
     if (int failure = freshness_status_tests()) return failure;
     if (int failure = atomic_write_path_tests()) return failure;
+    if (int failure = string_copy_shim_tests()) return failure;
     return 0;
 }
