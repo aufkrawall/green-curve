@@ -374,6 +374,8 @@ def run_self_tests():
     release_post_tests.run_tests()
     import release_renew_tests
     release_renew_tests.run_tests()
+    import simulate_release_tests
+    simulate_release_tests.run_tests()
 
     print("release_post self-tests passed")
     return True
