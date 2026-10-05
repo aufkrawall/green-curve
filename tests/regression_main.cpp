@@ -2767,6 +2767,25 @@ static int run_all_tests(int argc, char** argv) {
         if (gc_update_restore_decide("0.27.0", "0.27.0",
                                      GC_UPDATE_RESTORE_MAX_AGE_SECONDS + 1) !=
             GC_UPDATE_RESTORE_DISCARD) return 5922;
+
+        // 0.28 release verification: exact, cross-spelling, failed-install, and
+        // freshness handoffs.  0.28 ships under the SHORT spelling, so the
+        // cross-spelling pairs are the cases that prove a capture bound to
+        // "0.28" and a build calling itself "0.28.0" still hand settings over
+        // instead of silently dropping them on the floor.
+        if (gc_update_restore_decide("0.28", "0.28", 30) !=
+            GC_UPDATE_RESTORE_APPLY) return 5923;
+        if (gc_update_restore_decide("0.28", "0.28.0", 30) !=
+            GC_UPDATE_RESTORE_APPLY) return 5924;
+        if (gc_update_restore_decide("0.28.0", "0.28", 30) !=
+            GC_UPDATE_RESTORE_APPLY) return 5925;
+        // A failed install leaves 0.27.0 running against a 0.28 capture; the
+        // capture must not be replayed into the build the user never got.
+        if (gc_update_restore_decide("0.28", "0.27.0", 30) !=
+            GC_UPDATE_RESTORE_DISCARD) return 5926;
+        if (gc_update_restore_decide("0.28", "0.28",
+                                     GC_UPDATE_RESTORE_MAX_AGE_SECONDS + 1) !=
+            GC_UPDATE_RESTORE_DISCARD) return 5927;
     }
 
     // F-08-001: IPC object size and field layout sanity
@@ -14278,6 +14297,82 @@ static int run_all_tests_final() {
                                            GC_UPDATE_ARCH_ARM64, expected027,
                                            sizeof(expected027)) ||
             strcmp(expected027, release027Arm64->file) != 0) return 5921;
+    }
+
+    {
+        // 0.28 release candidate manifest verification: must offer 0.28 to the
+        // ENTIRE public updater-bearing population -- every version from the
+        // first updater in 0.23 through the outgoing 0.27.0 -- on both
+        // architectures, with no upgrade floor.  The "0.27" short spelling is
+        // in the list because it orders equal to 0.27.0 and names the same
+        // machines.  Anything above 0.28 must read REJECTED, which is what
+        // keeps the stale local 0.29 test tag from ever being offered a
+        // downgrade.  The manifest's literal version text is pinned too: it
+        // builds the setup filenames, and a spelling mismatch verifies
+        // perfectly and then 404s after the user consented to the install.
+        static const char k028Manifest[] =
+            "format=1\n"
+            "version=0.28\n"
+            "x64_file=greencurve-0.28-windows-x64-setup.exe\n"
+            "x64_size=200000\n"
+            "x64_sha256=09931428a6e4293292cfc1be8e490d26a52fc9713b61cb84175c40802f2d7cfe\n"
+            "arm64_file=greencurve-0.28-windows-arm64-setup.exe\n"
+            "arm64_size=300000\n"
+            "arm64_sha256=94cf3d99cd91075f246efa1de0363323e5ebf06859c5eec940b6bacac4f8ec3a\n";
+        GcUpdateManifest release028;
+        gc_update_manifest_parse(k028Manifest, strlen(k028Manifest),
+                                 &release028);
+        if (!release028.valid || release028.hasMinimumFrom) return 5928;
+        static const char* const kPublicInstalled028[] = {
+            "0.23", "0.23.1", "0.24.0", "0.25.0", "0.25.1", "0.25.2",
+            "0.26.0", "0.27.0", "0.27"
+        };
+        for (size_t vi = 0;
+             vi < sizeof(kPublicInstalled028) / sizeof(kPublicInstalled028[0]);
+             vi++) {
+            GcUpdateVersion installed;
+            gc_update_version_parse(kPublicInstalled028[vi], &installed);
+            if (!installed.valid) return 5929;
+            if (gc_update_decide(&release028, &installed, GC_UPDATE_ARCH_X64) !=
+                GC_UPDATE_DECISION_AVAILABLE) return 5930;
+            if (gc_update_decide(&release028, &installed, GC_UPDATE_ARCH_ARM64) !=
+                GC_UPDATE_DECISION_AVAILABLE) return 5931;
+        }
+        GcUpdateVersion installed028Exact;
+        gc_update_version_parse("0.28", &installed028Exact);
+        if (gc_update_decide(&release028, &installed028Exact, GC_UPDATE_ARCH_X64) !=
+            GC_UPDATE_DECISION_UP_TO_DATE) return 5932;
+        // An absent patch component parses as zero, so the release spelled
+        // "0.28" and a test build calling itself "0.28.0" are the same
+        // version: neither may be offered a reinstall of the other.
+        GcUpdateVersion installed028Full;
+        gc_update_version_parse("0.28.0", &installed028Full);
+        if (gc_update_decide(&release028, &installed028Full,
+                             GC_UPDATE_ARCH_X64) !=
+            GC_UPDATE_DECISION_UP_TO_DATE) return 5933;
+        GcUpdateVersion installed029;
+        gc_update_version_parse("0.29", &installed029);
+        if (gc_update_decide(&release028, &installed029, GC_UPDATE_ARCH_X64) !=
+            GC_UPDATE_DECISION_REJECTED) return 5934;
+        const GcUpdateAsset* release028X64 =
+            gc_update_select_asset(&release028, GC_UPDATE_ARCH_X64);
+        if (!release028X64 ||
+            strcmp(release028X64->file,
+                   "greencurve-0.28-windows-x64-setup.exe") != 0) return 5935;
+        const GcUpdateAsset* release028Arm64 =
+            gc_update_select_asset(&release028, GC_UPDATE_ARCH_ARM64);
+        if (!release028Arm64 ||
+            strcmp(release028Arm64->file,
+                   "greencurve-0.28-windows-arm64-setup.exe") != 0) return 5936;
+        char expected028[GC_UPDATE_ASSET_NAME_MAX_CHARS] = {};
+        if (!gc_update_expected_asset_name(release028.version.text,
+                                           GC_UPDATE_ARCH_X64, expected028,
+                                           sizeof(expected028)) ||
+            strcmp(expected028, release028X64->file) != 0) return 5937;
+        if (!gc_update_expected_asset_name(release028.version.text,
+                                           GC_UPDATE_ARCH_ARM64, expected028,
+                                           sizeof(expected028)) ||
+            strcmp(expected028, release028Arm64->file) != 0) return 5938;
     }
 
     // --- Manifest parsing and binding (4120-4149) ---------------------
