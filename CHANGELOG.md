@@ -27,6 +27,50 @@
 
 # Changelog
 
+## Unreleased
+
+Security, updater resilience, and background service hardening improve in this release.
+
+### New
+
+- **Release simulation:** developers can now simulate multi-hop in-app updater runs on a test repository before public release.
+
+### Improved
+
+- **Settings restoration:** updates installed through background services now delegate settings transfer to the active desktop session, preventing lost profiles or unapplied clocks after an upgrade.
+- **Upgrade recovery:** interrupted or cancelled installations now clean up stale temporary files automatically, avoiding wedged future upgrades or rollbacks.
+- **Service admission:** the background service and Linux daemon now meter client connections per account, preventing resource starvation and lock contention.
+- **Clock diagnostics:** update check failures now clearly distinguish expired update manifests from local system clock desynchronization.
+- **Profile reload:** background configuration proof checks no longer latch transient read errors permanently, allowing dynamic recovery without a service restart.
+
+### Security
+
+- **Update freshness checks:** update checks now verify cryptographic freshness envelopes to protect clients against replay or freeze attacks.
+- **Update origin validation:** the installer requires verified updater origin parameters before skipping redundant settings capture.
+- **Staging folder ownership:** update cache and staging directories enforce administrative ownership checks before running downloaded installers.
+- **Release provenance:** update manifest signing requires verified build workflow provenance before manifests can be published.
+
+### Compatibility notes
+
+- Existing installations update in place without prompting, and saved profiles load without changes.
+- In-app updates require systems to have reasonably accurate system time (within 30 days) to pass cryptographic freshness validation.
+- Registering the background service from a portable archive (.7z / .tar.xz) requires an elevated terminal; setup.exe prompts for elevation automatically.
+
+### Downloads and verification
+
+- **Windows:** use `setup.exe` to install or upgrade, or `.7z` for a portable copy.
+- **Linux:** install the Arch package, or extract `.tar.xz` and run `greencurve-setup.sh`.
+- Packages include SHA-256 files and GitHub build attestations:
+  [![Attestation](https://img.shields.io/badge/GitHub-Attestation_Verified-brightgreen?logo=github)](https://github.com/aufkrawall/green-curve/attestations)
+
+  Verify with:
+
+  ```bash
+  gh attestation verify <artifact> --repo aufkrawall/green-curve
+  ```
+
+**Full changelog:** [0.27.0...HEAD](https://github.com/aufkrawall/green-curve/compare/0.27.0...HEAD)
+
 ## 0.27.0
 
 Setup, crash recovery, and Apply reliability improve in this release.
