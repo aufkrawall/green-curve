@@ -83,7 +83,7 @@ Run `greencurve-<version>-windows-<arch>-setup.exe`. The installer:
 For unattended or scripted deployments:
 
 ```powershell
-greencurve-0.27.0-windows-x64-setup.exe /S
+greencurve-0.28-windows-x64-setup.exe /S
 ```
 
 Flags include `/D=<path>` to choose the installation folder, `--no-start-menu`, `--desktop`, `--launch`, and `--uninstall`.
@@ -151,7 +151,7 @@ sudo ./greencurve-setup.sh uninstall --purge   # complete removal including /var
 Arch Linux packages are built automatically under `dist/` by `python build.py`. Install directly using `pacman`:
 
 ```bash
-sudo pacman -U dist/linux-x64/greencurve-0.27.0-1-x86_64.pkg.tar.zst
+sudo pacman -U dist/linux-x64/greencurve-0.28-1-x86_64.pkg.tar.zst
 ```
 
 Alternatively, PKGBUILD templates are available under [`packaging/arch/`](packaging/arch/) to build from source (`makepkg -si`) or install from prebuilt binaries (`makepkg -si -p PKGBUILD.bin`).
