@@ -87,6 +87,16 @@ def parse_repo(repo_str):
     return m.group(1), m.group(2)
 
 
+def release_exists(repo, version):
+    """Check whether a GitHub release exists."""
+    res = subprocess.run(
+        ["gh", "release", "view", version, "--repo", repo],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return res.returncode == 0
+
+
 def get_default_key_path():
     """Locate offline update signing key."""
     userprofile = os.environ.get("USERPROFILE") or os.environ.get("HOME")
@@ -176,14 +186,13 @@ def setup_toolchain_junctions(root, worktree_dir):
             # Use cmd mklink /J on Windows for non-elevated directory junctions
             res = subprocess.run(
                 ["cmd.exe", "/c", "mklink", "/J", str(dst), str(src)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
             if res.returncode == 0:
                 junctions.append(dst)
             else:
-                log(f"warning: failed to create junction for {d}: {res.stderr.strip()}")
+                log(f"warning: failed to create junction for {d} (exit {res.returncode})")
     return junctions
 
 
@@ -258,7 +267,7 @@ def cmd_init(args):
             log("[DRY-RUN] skipping setting repo visibility to public")
         else:
             log("setting test repository visibility to 'public' for anonymous WinHTTP fetches...")
-            run_command(["gh", "repo", "edit", args.repo, "--visibility", "public"])
+            run_command(["gh", "repo", "edit", args.repo, "--visibility", "public", "--accept-visibility-change-consequences"])
             log("test repository is now public")
 
     releases = json.loads(run_command(["gh", "release", "list", "--repo", args.repo, "--json", "tagName,isLatest,createdAt"]))
@@ -385,8 +394,7 @@ def _sign_and_publish_hop(version, repo, bits_dir, key_path, hop_label, dry_run=
         return
 
     # Check if release tag already exists and clobber/delete if needed
-    existing = run_command(["gh", "release", "view", version, "--repo", repo], check=False)
-    if "release not found" not in existing.lower() and "404" not in existing:
+    if release_exists(repo, version):
         log(f"release {version} already exists on {repo}; deleting stale release...")
         run_command(["gh", "release", "delete", version, "--repo", repo, "--cleanup-tag", "--yes"])
 
@@ -511,7 +519,7 @@ def cmd_teardown(args):
 
     if args.private:
         log(f"reverting repository visibility to 'private' for {args.repo}...")
-        run_command(["gh", "repo", "edit", args.repo, "--visibility", "private"], check=False)
+        run_command(["gh", "repo", "edit", args.repo, "--visibility", "private", "--accept-visibility-change-consequences"], check=False)
         log("test repository visibility reverted to private")
 
     log("teardown complete.")
