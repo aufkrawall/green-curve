@@ -52,9 +52,7 @@ Security, updater resilience, and background service hardening improve in this r
 
 ### Compatibility notes
 
-- Existing installations update in place without prompting, and saved profiles load without changes.
-- In-app updates require systems to have reasonably accurate system time (within 30 days) to pass cryptographic freshness validation.
-- Registering the background service from a portable archive (.7z / .tar.xz) requires an elevated terminal; setup.exe prompts for elevation automatically.
+- Existing configuration and profiles remain fully compatible.
 
 ### Downloads and verification
 
