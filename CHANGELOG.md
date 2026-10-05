@@ -27,7 +27,7 @@
 
 # Changelog
 
-## Unreleased
+## 0.28
 
 Security, updater resilience, and background service hardening improve in this release.
 
@@ -67,7 +67,7 @@ Security, updater resilience, and background service hardening improve in this r
   gh attestation verify <artifact> --repo aufkrawall/green-curve
   ```
 
-**Full changelog:** [0.27.0...HEAD](https://github.com/aufkrawall/green-curve/compare/0.27.0...HEAD)
+**Full changelog:** [0.27.0...0.28](https://github.com/aufkrawall/green-curve/compare/0.27.0...0.28)
 
 ## 0.27.0
 
