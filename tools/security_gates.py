@@ -30,6 +30,7 @@ import arch_package  # ditto; builds pacman-installable Arch Linux packages
 import build_state  # ditto; owns the Windows resource scripts
 import pe_verify  # ditto; owns the PE checksum / VERSIONINFO identity helpers
 import pe_layout  # ditto; owns the post-link .buildid debug-layout normalization
+import wiki_public_gates  # ditto; owns the public-wiki / agent-instruction tracking rules
 
 # Fuzz targets built from tests/fuzz_main.cpp.  The key is the GC_FUZZ_TARGET
 # macro suffix and the corpus directory name; the value is the macro's numeric
@@ -764,14 +765,25 @@ def check_no_signing_key_material(ctx, tracked):
         sys.exit(1)
 
 
+def check_public_wiki(ctx, tracked):
+    """AGENTS.md, CLAUDE.md and llm-wiki/*.md are public; log/ and private/ are not.
+
+    Delegates to wiki_public_gates (kept out of this already oversized module);
+    wired from build.py's source gates next to the profile-path and key-material
+    gates, all three fed from one tracked-file listing.
+    """
+    wiki_public_gates.check_all(ctx, tracked)
+
+
 def check_no_developer_profile_paths(ctx, tracked):
     """Fail if a tracked text file hardcodes somebody's real home directory.
 
-    A wiki entry once recorded a developer's real profile directory under the
-    Windows Users folder, which is exactly the private-user-data leak the
-    project rules forbid and is permanent once pushed.  Placeholders, single
-    letter fixtures and synthetic test accounts are fine; anything else is
-    assumed to be a real account name.
+    A real developer profile directory under the Windows Users folder (or a
+    POSIX home) in a tracked file is exactly the private-user-data leak the
+    project rules forbid, and it is permanent once pushed.  This covers the
+    tracked agent-instruction and wiki pages as well as source.  Placeholders,
+    single letter fixtures and synthetic test accounts are fine; anything else
+    is assumed to be a real account name.
 
     Covers the Windows, POSIX and macOS spellings together.  A gate that
     knows only one of them is one that the same value walks past in another
@@ -1558,6 +1570,7 @@ def run_build_script_regression_tests(ctx):
         pe_layout.run_self_tests()
         build_state.run_resource_identity_self_tests()
         run_self_tests()
+        wiki_public_gates.run_self_tests()
         # Real-tree alias-family gate, wired here because build.py sits at
         # exactly BUILD_SCRIPT_SIZE_RATCHET lines and a call site there would
         # breach it ("move source guards out rather than raising it").

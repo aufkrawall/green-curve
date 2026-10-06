@@ -7,10 +7,10 @@
 // every decision; this file only reports what the filesystem says.  Two rules
 // govern the gathering:
 //
-//   1. Nothing here trusts a name.  Every principal is a SID (the German
-//      Windows this project is developed on calls the groups
-//      "VORDEFINIERT\Administratoren" and "NT-AUTORITÄT\Authentifizierte
-//      Benutzer"), except for one lookup that resolves the LOCALIZED name of
+//   1. Nothing here trusts a name.  Every principal is a SID (group names are
+//      localized: a German Windows calls them "VORDEFINIERT\Administratoren"
+//      and "NT-AUTORITÄT\Authentifizierte Benutzer"), except for one lookup
+//      that resolves the LOCALIZED name of
 //      the Administrators group from its SID to enumerate its members.
 //   2. An unreadable fact is a DANGEROUS fact.  A failure to open a component
 //      or read its owner/DACL marks it unproven and the policy then warns.

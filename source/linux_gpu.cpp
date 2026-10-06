@@ -3,7 +3,7 @@
 //
 // linux_gpu.cpp — native Linux GPU driver probe.
 //
-// Loads the NVIDIA driver libraries the same way LACT/NVCurve do — NvAPI via
+// Loads the NVIDIA driver libraries at run time — NvAPI via
 // libnvidia-api.so.1 and NVML via libnvidia-ml.so.1 — using the platform shim,
 // and exercises the read-only control surfaces:
 //   * NvAPI: QueryInterface -> init -> enumerate GPUs -> name + architecture

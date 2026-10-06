@@ -28,9 +28,8 @@ import sys
 # 5313 after the Windows resource generation moved into
 # build_state.compile_windows_resources() (GUI + service identities).
 # 5312 after the MinGW link merged .buildid into .rdata (comment tightened).
-# 5330 after the MSVC-ABI-only IsDebuggerPresent import shim joined the clang-cl
-# source list and its artifact/ThinLTO text gates (antivirus sixth pass).
-BUILD_SCRIPT_SIZE_RATCHET = 5330
+# 5316 after the MSVC-ABI-only CRT import shim and its text gates were removed.
+BUILD_SCRIPT_SIZE_RATCHET = 5316
 
 SOURCE_SIZE_RATCHET = {
     "config_profiles.cpp": 903,  # 889 before the VIDEO profile save key  # 883 before the SYS profile save key

@@ -8,7 +8,7 @@
 // before (or while) sending their request. The transport now probes the fixed
 // 12-byte request header first, impersonates the verified client only after
 // that mandatory first read (pre-read impersonation fails with
-// ERROR_CANNOT_IMPERSONATE -- see llm-wiki/log/recent.md), derives a stable
+// ERROR_CANNOT_IMPERSONATE -- see llm-wiki/windows-architecture.md), derives a stable
 // logon identity, and asks THIS module whether to continue.
 //
 // Everything here is pure and host-portable: callers inject a monotonic

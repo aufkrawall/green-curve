@@ -8,9 +8,9 @@ flag accepted by zig c++ 0.13.0 can suppress it, so the release pipeline
 normalizes every shipped PE after linking and before stamp_pe_checksum
 (which must stay the LAST byte edit).
 
-Two rungs, chosen per input by normalize_pe_debug_layout():
+normalize_pe_debug_layout() merges the section into .rdata, or fails the build:
 
-- Rung 1 (preferred): merge_buildid_into_rdata() absorbs the .buildid raw
+- merge_buildid_into_rdata() absorbs the .buildid raw
   bytes into .rdata verbatim, removes the section header (count -1) and
   repacks raw offsets on FileAlignment boundaries.  Every section RVA and
   SizeOfImage stay exactly as the linker wrote them (so .pdata, .reloc and
@@ -21,12 +21,10 @@ Two rungs, chosen per input by normalize_pe_debug_layout():
   discarded or overwritten (the .buildid tail lands after .rdata's raw end,
   which also promotes .rdata's alignment slack into its virtual size).
 
-- Rung 2 (fallback): rewrite the 8-byte section-header NAME field from
-  ".buildid" to ".rdata" in place.  The name is a duplicate of the .rdata
-  name, which the loader tolerates; every offset, RVA and byte stays exactly
-  where the linker put it, so there is zero relocation risk.  This is also
-  byte-count neutral, which matters for images that carry a self-referential
-  overlay (the setup payload footer records the stub length).
+  When the merge cannot be proven safe (overlay, .pdata/.reloc references,
+  virtual-size tails, excessive growth) the build fails rather than falling
+  back to renaming the section: a duplicate section name would only disguise
+  the section, not remove it.  Normalize before any overlay is appended.
 
 A file without ".buildid" is left untouched apart from the RSDS name
 sanitization every call performs.
@@ -39,9 +37,6 @@ from pe_verify import sanitize_pe_codeview_path
 
 
 _BUILDID_NAME = b".buildid"
-# Exactly 8 bytes (NUL-padded): replacing an 8-byte field with fewer bytes
-# would shift the bytearray instead of rewriting the field.
-_RDATA_NAME = b".rdata\0\0"
 _SECTION_HEADER_SIZE = 40
 _DEBUG_DIRECTORY_INDEX = 6
 _EXCEPTION_DIRECTORY_INDEX = 3
@@ -52,7 +47,7 @@ _MAX_MERGE_GROWTH = 4096
 
 
 class UnsafeMergeError(Exception):
-    """Rung 1 cannot be proven safe for this image; fall back to rung 2."""
+    """The .buildid merge cannot be proven safe for this image."""
 
 
 def _align_up(value, alignment):
@@ -169,10 +164,10 @@ def _debug_entries(data, layout):
 
 
 def merge_buildid_into_rdata(data):
-    """Rung 1: absorb the .buildid section into .rdata; return (image, report).
+    """Absorb the .buildid section into .rdata; return (image, report).
 
     Raises UnsafeMergeError when any invariant cannot be proven for this
-    image, in which case the caller falls back to the name rewrite.  Raises
+    image, in which case the caller fails the build.  Raises
     RuntimeError on structurally broken input.
     """
     layout = _parse_pe(data)
@@ -200,7 +195,7 @@ def merge_buildid_into_rdata(data):
     overlay = len(data) - max(s["rawptr"] + s["rawsize"] for s in sections)
     if overlay:
         # Repacking would shift overlay bytes that may reference absolute file
-        # offsets (the setup payload footer does).  Rung 2 stays byte-neutral.
+        # offsets (the setup payload footer does), so normalize before appending.
         raise UnsafeMergeError(f"image carries a {overlay}-byte overlay")
     if buildid["vsize"] > buildid["rawsize"]:
         raise UnsafeMergeError(".buildid virtual size exceeds its raw size")
@@ -368,24 +363,13 @@ def _rva_to_raw(layout, rva):
     return None
 
 
-def _rename_buildid(data, layout):
-    """Rung 2: the 8-byte section-name rewrite; returns the rename count."""
-    renamed = 0
-    for section in layout["sections"]:
-        if section["name"] == _BUILDID_NAME:
-            header = section["header"]
-            data[header:header + 8] = _RDATA_NAME
-            renamed += 1
-    return renamed
-
-
 def normalize_pe_debug_layout(pe_path, pdb_path=None, require_rsds=True):
     """Sanitize the RSDS name, then normalize the .buildid layout in-place.
 
     `pdb_path` names the symbol file whose basename (with a .pdb extension)
     replaces the CodeView path; it defaults to `pe_path`, which is the right
     answer when the PE was linked under the symbol file's own stem.  Returns
-    {"rung", "renamed", "growth"} and fails loudly on anything that is not a
+    {"rung", "growth"} and fails loudly on anything that is not a
     structurally readable PE.  `require_rsds` demands a CodeView record (the
     GUI/service contract); installer stubs linked without /debug have none.
     """
@@ -407,17 +391,13 @@ def normalize_pe_debug_layout(pe_path, pdb_path=None, require_rsds=True):
     layout = _parse_pe(data)
     if not any(s["name"] == _BUILDID_NAME for s in layout["sections"]):
         print("  PE debug layout: clean (no .buildid section)")
-        return {"rung": 0, "renamed": 0, "growth": 0}
+        return {"rung": 0, "growth": 0}
 
     try:
         result, report = merge_buildid_into_rdata(data)
     except UnsafeMergeError as reason:
-        print(f"  PE debug layout: rung 2 name rewrite (.buildid -> .rdata: {reason})")
-        result = bytearray(data)
-        renamed = _rename_buildid(result, layout)
-        if renamed > 1:
-            raise RuntimeError(f"{pe_path}: PE carries {renamed} .buildid sections, expected at most 1")
-        report = {"rung": 2, "renamed": renamed, "growth": 0}
+        raise RuntimeError(f"{pe_path}: .buildid cannot be merged into .rdata safely ({reason}); "
+                           "normalize the image before any overlay is appended") from reason
     else:
         print(f"  PE debug layout: .buildid merged into .rdata (file growth {report['growth']} bytes)")
     result = bytes(result)
@@ -480,7 +460,7 @@ def _buildid_content(record_rva, record_ptr, path=b"fix.pdb\0", extra_entry=Fals
 
 
 def run_self_tests():
-    """Deterministic checks for both rungs and their loud failure modes."""
+    """Deterministic checks for the merge and its loud failure modes."""
     failures = []
 
     def expect(condition, label):
@@ -688,19 +668,11 @@ def run_self_tests():
         record_off = _rva_to_raw(layout, report.get("record_rva_new", 0))
         expect(record_off is not None and bytes(result[record_off:record_off + len(sanitized)]) == sanitized,
                "normalize sanitizes the RSDS name to the .pdb convention")
-        report, result = normalize_fixture(overlay)
-        expect(report["rung"] == 2 and len(result) == len(overlay),
-               "an overlaid image falls back to the byte-neutral rung 2")
-        expect(pe_verify.pe_section_names(result) == [".text", ".rdata", ".rdata",
-                                                      ".data", ".pdata", ".reloc"],
-               "rung 2 removes the .buildid name (duplicate .rdata name is the documented tradeoff)")
-        name_at = before["table"] + 2 * _SECTION_HEADER_SIZE
-        record_off = before["sections"][2]["rawptr"] + (0x301C - before["sections"][2]["vaddr"])
-        allowed = set(range(name_at, name_at + 8))
-        allowed |= set(range(record_off + 24, record_off + len(record)))
-        diffs = {i for i in range(len(overlay)) if overlay[i] != result[i]}
-        expect(result[name_at:name_at + 8] == _RDATA_NAME and diffs <= allowed,
-               "rung 2 changes only the name field and the RSDS path field")
+        expect_raises(lambda: normalize_fixture(overlay),
+                      "an overlaid image fails instead of renaming .buildid")
+        with open(os.path.join(work, "fixture.exe"), "rb") as handle:
+            expect(".buildid" in pe_verify.pe_section_names(handle.read()),
+                   "a refused image keeps its section table untouched, never renamed in place")
         clean_content, _ = _buildid_content(0x201C, 0x61C, path=b"placeholder.pdb\0")
         clean_fixture = _build_pe([
             (b".text\0\0\0", 0x1000, 0x190, 0x200, text),

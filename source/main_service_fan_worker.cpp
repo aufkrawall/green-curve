@@ -182,7 +182,7 @@ static void service_runtime_pulse() {
             g_app.activeFanFixedPercent);
         LeaveCriticalSection(&g_appLock);
     }
-    // GPU driver restart recovery (restart64.exe / TDR / driver upgrade).
+    // GPU driver restart recovery (driver restart / TDR / driver upgrade).
     // A stale NVIDIA user-mode DLL is never reloaded in this process. Any
     // corroborated VEH/device cue requests the nonce-bound clean process
     // restart; the old process performs no recovery write.

@@ -42,7 +42,7 @@ static volatile ULONGLONG g_nvmlCrashTickMs = 0;
 static volatile LONG g_nvmlCrashCount = 0;
 
 // Upper bound of the NVML crash recovery window.  After a GPU device reconnect
-// / driver restart (e.g. restart64.exe), NVML reads access-violate for a few
+// / driver restart, NVML reads access-violate for a few
 // seconds while the GPU kernel driver settles.  During this window, pipe-server
 // snapshots, telemetry, and hardware_initialize() avoid issuing NVML reads and
 // serve cached data while the recovery thread reloads the driver libraries.

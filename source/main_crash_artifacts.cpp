@@ -481,7 +481,7 @@ static void write_veh_minidump(EXCEPTION_POINTERS* info, const WCHAR* modPath) {
 // device removal notification).
 //
 // When nvmlDeviceGetTemperature reads from invalid memory inside nvml.dll (after
-// a WDDM driver restart, e.g. via restart64.exe), this handler writes a minidump,
+// a WDDM driver restart), this handler writes a minidump,
 // invalidates NVML state, and cleanly terminates the crashing thread via
 // ExitThread(0).  It records the crash; the main service loop observes
 // crashCount>0 and requests a controlled service-process restart for clean

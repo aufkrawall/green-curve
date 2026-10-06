@@ -25,7 +25,7 @@ static bool hardware_initialize(char* detail, size_t detailSize) {
     }
     (void)offsetsOk;
     // Skip refresh_global_state() while recovering from a recent NVML crash
-    // (GPU device reconnect / driver restart via restart64.exe).
+    // (GPU device reconnect / driver restart).
     // refresh_global_state() issues NVML reads (power limit, clock offsets,
     // fans) that can access-violate while the GPU kernel driver is still in a
     // transitional state after the reconnect — even though NVAPI (used for the
@@ -815,7 +815,7 @@ static void apply_control_state_to_gui(const ControlState* state) {
             ensure_valid_fan_curve_config(&g_app.guiFanCurve);
         }
         // state->fanMode is Green Curve intent, not necessarily the live driver
-        // fan policy.  FanControl or another external controller may make NVML
+        // fan policy.  An external fan controller may make NVML
         // report manual while Green Curve intent remains Auto; keep fanIsAuto
         // sourced from live snapshots/telemetry.
         g_app.fanCurveRuntimeActive = state->fanMode == FAN_MODE_CURVE;

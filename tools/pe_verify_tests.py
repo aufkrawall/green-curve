@@ -334,22 +334,27 @@ def run_self_tests():
     except RuntimeError as error:
         expect("VirtualAllocEx" in str(error),
                f"the banned-string rejection did not name the hit: {error}")
-    # The anti-debug family is a hard import ban for EVERY variant since the
-    # MSVC-ABI shim removed the last CRT-inherent import (2026-09-25); before
-    # that, IsDebuggerPresent was exempt for clang-cl images, which is exactly
-    # what this gate must never accept again.
-    for function in ("IsDebuggerPresent", "CheckRemoteDebuggerPresent",
-                     "NtQueryInformationProcess"):
+    # IsDebuggerPresent is a hard import ban for the release toolchain and a
+    # runtime-import exemption for MSVC-ABI images only (static UCRT fault
+    # handler); the other anti-debug names stay banned in every variant.
+    for function, toolchain, banned in (
+            ("IsDebuggerPresent", "llvm-mingw", True),
+            ("IsDebuggerPresent", "clang-cl", False),
+            ("CheckRemoteDebuggerPresent", "llvm-mingw", True),
+            ("CheckRemoteDebuggerPresent", "clang-cl", True),
+            ("NtQueryInformationProcess", "llvm-mingw", True),
+            ("NtQueryInformationProcess", "clang-cl", True)):
         fixture = _synthetic_imports_pe([
             ("user32.dll", ["GetDesktopWindow"]), ("gdi32.dll", ["CreateSolidBrush"]),
             ("advapi32.dll", ["RegOpenKeyExW"]), ("shell32.dll", ["ShellExecuteW"]),
             ("kernel32.dll", [function]),
         ])
         try:
-            verify_windows_binary_imports(fixture, "import fixture", "greencurve.exe")
-            failures.append(f"{function} passed the universal import bans")
-        except RuntimeError:
-            pass
+            verify_windows_binary_imports(
+                fixture, "import fixture", "greencurve.exe", windows_toolchain=toolchain)
+            expect(not banned, f"{function} passed the {toolchain} import bans")
+        except RuntimeError as error:
+            expect(banned, f"{function} was rejected by the {toolchain} import bans: {error}")
     # Positive control: the same fixture shape with a benign kernel32 import
     # passes, so the rejections above came from the ban list.
     try:

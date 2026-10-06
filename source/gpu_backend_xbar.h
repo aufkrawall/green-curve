@@ -75,8 +75,8 @@ static const unsigned int XBAR_PINNED_ENTRY_STRIDE = 0x304;
 static const unsigned int XBAR_PINNED_DOMAIN_COUNT = 8;
 static const unsigned int XBAR_PINNED_XBAR_ENTRY_INDEX = 1;
 // MSVDD voltage lives in domain-entry 0, NOT in the XBAR-frequency entry 1.
-// Confirmed by mVolt.exe validation rules at 0x1400ff4e0: the driver validates
-// the voltage field at buffer offset 0x23c = entry 0 (0x124) + 0x118.  Writing
+// Observed driver behaviour: the driver validates the voltage field at buffer
+// offset 0x23c = entry 0 (0x124) + 0x118.  Writing
 // to entry 1 + 0x11c (0x544) was rejected by the RM driver with status
 // 0xFFFFFFFF because that offset belongs to the SYS domain's second voltage
 // rail, which Blackwell does not support.
@@ -93,7 +93,7 @@ static const unsigned int XBAR_PINNED_SYS_ENTRY_INDEX = 3;
 static const unsigned int XBAR_PINNED_VIDEO_ENTRY_INDEX = 4;
 static const unsigned int XBAR_FREQ_OFFSET_FIELD = 0x114;
 // MSVDD voltage field offset within its entry.  This is +0x118, NOT +0x11c.
-// mVolt.exe validates buf[0x23c] = entry 0 + 0x118 in [-500000, 500000] uV.
+// The driver accepts buf[0x23c] = entry 0 + 0x118 within [-500000, 500000] uV.
 static const unsigned int XBAR_MSVDD_OFFSET_FIELD = 0x118;
 // Physical-clock ids for verification/display, identified empirically
 // (differential writes): entry 1 drives CLK_MEASURE domain 1, entry 3

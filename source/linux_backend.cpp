@@ -444,8 +444,8 @@ static int clamp_freq_delta_khz(LinuxGpuState* g, int freqDelta_kHz) {
 
 // ports apply_curve_offsets_verified(): batch per-point writes with readback
 // verification.  The set-control mask carries multiple bits per pass on Windows;
-// per the LACT/NVCurve finding, on a driver that rejects multi-bit masks the
-// verify loop converges via repeated single-changed-point passes.
+// on a driver that rejects multi-bit masks the verify loop converges via
+// repeated single-changed-point passes.
 static bool apply_curve_offsets_verified(LinuxGpuState* g, const int* targetOffsets,
                                          const bool* pointMask, int maxBatchPasses) {
     const VfBackendSpec* b = g->backend;

@@ -18,7 +18,7 @@
 // LocalSystem service and lives in session 0, so both helpers are refused:
 //
 //     service auth reject: source=client ping pid=1280 session=0 activeSession=1
-//                          user=NT-AUTORITAET\SYSTEM
+//                          user=NT AUTHORITY\SYSTEM
 //     capture: no settings snapshot from either binary.
 //              The upgrade will not re-apply settings.
 //

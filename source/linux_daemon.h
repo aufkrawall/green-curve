@@ -3,7 +3,7 @@
 //
 // linux_daemon.h — root GPU-control daemon + thin-client transport.
 //
-// Mirrors the Windows elevated-service / named-pipe split (LACT's lactd model):
+// Mirrors the Windows elevated-service / named-pipe split:
 // a root daemon owns the GPU (NvAPI/NVML via linux_backend) and serves the
 // binary ServiceRequest/ServiceResponse protocol (gpu_core.h) over a Unix
 // domain socket; unprivileged TUI/CLI clients connect and send requests.

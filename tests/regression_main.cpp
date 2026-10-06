@@ -3243,7 +3243,7 @@ static int run_all_tests(int argc, char** argv) {
             status.unavailableDomains != 0 ||
             !intent_readback_matches(&status)) return 1711;
 
-        // LACT-like replacement of only the memory offset is disclosed as a
+        // An external tool replacing only the memory offset is disclosed as a
         // memory override; configured intent itself remains unchanged.
         live.controlState.memOffsetMHz = 0;
         live.snapshot.memClockOffsetkHz = 0;
