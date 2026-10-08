@@ -3,7 +3,7 @@
 Routing table for durable project knowledge.
 
 > **Every page in this directory is PUBLIC** (tracked in git and published on
-> GitHub together with `AGENTS.md` / `CLAUDE.md`). `llm-wiki/log/` and
+> GitHub together with `AGENTS.md`). `llm-wiki/log/` and
 > `llm-wiki/private/` are gitignored and local-only: they hold chronology,
 > incident and remediation records, open security findings and machine-specific
 > notes, and they do not exist in a fresh clone. Topic pages must stay
@@ -44,11 +44,11 @@ Local-only (not in the repository, not linked as pages): `log/recent.md`
 
 | File | Role |
 |------|------|
-| `AGENTS.md` / `CLAUDE.md` | Agent instructions, scope, conventions (public; `CLAUDE.md` is a link to / identical copy of `AGENTS.md`, enforced by the gates) |
+| `AGENTS.md` | Agent instructions, scope, conventions (public) |
 | `VERSION` | Mandatory single source of the current release version (`0.28`); injected into every compile/test/LSP command. `README.md`'s silent-install example and the matching `CHANGELOG.md` section carry the same number |
 | `build.py` | Only build tool; on native Windows selects both MSVC-ABI and pinned release Windows variants, downloads llvm-mingw + Zig, and compiles all targets |
 | `tools/build_variants.py` | Windows variant selection, compiler activation, isolated payload/symbol paths, sequential native-Windows variant orchestration, and pure path/plan self-tests |
-| `tools/security_gates.py` | `--fuzz` libFuzzer driver (both hosts), `--check-cet` PE+ELF instrumentation gate, host sanitizer-toolchain resolution, the build-script self-tests, `check_no_developer_profile_paths()` (no real user profile path in a tracked file), the tracked-wiki gates (`tools/wiki_public_gates.py`: no tracked `llm-wiki/log/` or `llm-wiki/private/` file, both ignored by `.gitignore`, `CLAUDE.md` identical to `AGENTS.md`, no email/host/IP/secret-shaped text in public pages, and no third-party GPU-tool names in any tracked file), and every fixture runner: `run_windows_pipe_fixture()`, `run_cli_console_fixture()`, `run_linux_fixtures()` with its `LINUX_FIXTURES` / `LINUX_FIXTURE_EXTRA_SOURCES` declared link lines, and `check_fuzz_linux_link_lines()` for `FUZZ_LINUX_EXTRA_SOURCES` — non-Linux hosts cross-LINK both sets for `x86_64-linux-gnu` rather than merely compiling (or, for the fuzz targets, not building them at all); imported by `build.py` |
+| `tools/security_gates.py` | `--fuzz` libFuzzer driver (both hosts), `--check-cet` PE+ELF instrumentation gate, host sanitizer-toolchain resolution, the build-script self-tests, `check_no_developer_profile_paths()` (no real user profile path in a tracked file), the tracked-wiki gates (`tools/wiki_public_gates.py`: no tracked `llm-wiki/log/` or `llm-wiki/private/` file, both ignored by `.gitignore`, `AGENTS.md` tracked as a regular file, no email/host/IP/secret-shaped text in public pages, and no third-party GPU-tool names in any tracked file), and every fixture runner: `run_windows_pipe_fixture()`, `run_cli_console_fixture()`, `run_linux_fixtures()` with its `LINUX_FIXTURES` / `LINUX_FIXTURE_EXTRA_SOURCES` declared link lines, and `check_fuzz_linux_link_lines()` for `FUZZ_LINUX_EXTRA_SOURCES` — non-Linux hosts cross-LINK both sets for `x86_64-linux-gnu` rather than merely compiling (or, for the fuzz targets, not building them at all); imported by `build.py` |
 | `tools/static_analysis.py` | Host-correct clang-tidy runner and baseline ratchet; new findings, compiler diagnostics, and tool failures are hard errors. Owns the cross-clang-tidy-version rules — alias-set matching, the pinned `SHARD_HEADER_FILTER`, the add-only `_merge_baseline()` — plus `run_self_tests()` and `check_ratchet_wiring()` |
 | `tools/build_scheduler.py` | `--jobs` scheduler: RAM/CPU-aware `auto_job_count()`, per-binary `run_parallel()` pool, nested-pool `compile_objects()` with a global `JobLimiter`, linker-only flag filtering, atomic output during parallel runs, and its own deterministic self-tests; imported by `build.py` and `security_gates.py` |
 | `tools/build_state.py` | Moved build-state helpers: size ratchets (`BUILD_SCRIPT_SIZE_RATCHET`, `SOURCE_SIZE_RATCHET`), fingerprint/version/resource-script builders, and `any_newer()`; imported by `build.py` and `installer_build.py` |

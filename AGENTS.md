@@ -5,14 +5,19 @@ Copyright (c) 2026 aufkrawall
 
 # Agent Instructions
 
+Keep always-on rules here (commit gates, tool and platform precedence, stop conditions) and keep full procedures, style guides, and worked examples in `llm-wiki/`, referenced by path. Do not maintain the same rule in both places; the exception is a highest-stakes commit gate, which may stay here as a compressed checklist so it holds even when no wiki page is loaded.
+
 ## Critical workflow
 
 - Windows-first project: prefer PowerShell 7.6, Windows-native paths, and installed project tools unless we are on Linux!
+- Use the repository's declared platform priority, build system, package manager, toolchain, and pinned/project-local tools; never silently substitute another ecosystem, tool version, or globally installed tool. If declarations conflict or a required tool is unavailable, stop and report instead of working around it!
 - Rebuild with `python build.py` after implementing changes!
 - Always git commit after code changes!
 - Before committing, run relevant tests/unit tests and ensure build/test results succeed.
-- Confirm the changed behavior or artifact when practical; do not infer success from exit status alone.
+- Verify the change itself, not just command exit status: prefer a check that would fail without the change; otherwise inspect the artifact directly (it exists and its content, format, or size changed as expected); otherwise read the actual output to confirm the relevant tests or build ran. If none is practical, state what was and was not verified!
 - Keep large logs, generated output, traces, dumps, and minified files out of working context unless needed; inspect targeted ranges or summaries and retain full output only as evidence.
+- When committing, use a concise title plus a short bullet-point body for non-trivial changes stating what changed and why!
+- Split up non-trivial tasks into a series of small, self-contained commits (but don't compile every small commit!), not one large commit, so later review stays easy; each commit must independently hold together and pass verification and secret-leak checks!
 - Commit completed code changes with plain git commands only: `git status`, `git add -A`, `git commit -m "<message>"`!
 - Do not push to remote, generally just commit locally!
 - Always consult `llm-wiki/` for code, bug, build, test, config, debugging, or behavior work!
@@ -38,7 +43,7 @@ Copyright (c) 2026 aufkrawall
   range, no "this was exposed since X"! Describe the rule the change enforces.
   The incident record belongs in the gitignored, local-only `llm-wiki/log/` or
   `llm-wiki/private/` -- never in a tracked file, and never in a topic page!
-- `AGENTS.md`, `CLAUDE.md` and the `llm-wiki/*.md` topic pages are PUBLIC (tracked
+- `AGENTS.md` and the `llm-wiki/*.md` topic pages are PUBLIC (tracked
   and published on GitHub). They obey the same masking rule as public commits;
   see "`llm-wiki/` workflow" and `llm-wiki/secret-leak-prevention.md`
   ("Public wiki safety")!
@@ -102,7 +107,15 @@ Copyright (c) 2026 aufkrawall
 
 - We are paranoid about having sufficient debug logging!
 - Add additional debug logging when it helps diagnose issue root causes, state transitions, failure modes, unexpected runtime conditions, or future regressions!
+- Keep diagnostics non-secret, low-overhead, and economical to consume (human- and token-efficient): single-line entries with stable prefixes; log each distinct event once; rate-limit repeats with counters and summaries; cap collections and truncate long values (first few items plus totals, sizes/hashes instead of full bodies); keep verbose detail behind an explicit flag!
 - Ensure builds preserve useful debug symbols etc. so crash dumps contain actionable information!
+
+## Test apps and computer use
+
+- Prefer scripted, API-, CLI-, or harness-driven verification, including scripted input and screenshots, over interactive computer use; computer use remains allowed when GUI interaction itself is what must be verified.
+- Keep runs short and bounded: start with a brief duration, extend only when evidence requires it, give every started process an explicit stop condition, and never leave test apps running longer than needed.
+- Own the full lifecycle: shut down everything started, including child processes, when done or on failure, then confirm nothing lingers in the background.
+- Start interdependent apps in dependency order and let each signal readiness (open port, created file, health check, visible process state) before starting the next; use only a brief stagger when no such signal exists.
 
 ## Debugging and binary analysis
 
@@ -122,7 +135,7 @@ Copyright (c) 2026 aufkrawall
 ## `llm-wiki/` workflow
 
 - `llm-wiki/` is canonical LLM-maintained derived memory, not the sole source of truth.
-- PUBLIC vs LOCAL: `llm-wiki/*.md` topic pages (and this file) are tracked in git and public. `llm-wiki/log/` (rolling log, archives) and `llm-wiki/private/` (incident/remediation records, open security findings, machine-specific notes) are gitignored and local-only; they are absent from a fresh clone, so never make a topic page depend on them. `tools/wiki_public_gates.py` (run by `python build.py --test` and `--gates`) fails if either is tracked or no longer ignored, if `CLAUDE.md` diverges from this file, or if a public page contains an email, host name, IP address or secret-shaped token.
+- PUBLIC vs LOCAL: `llm-wiki/*.md` topic pages (and this file) are tracked in git and public. `llm-wiki/log/` (rolling log, archives) and `llm-wiki/private/` (incident/remediation records, open security findings, machine-specific notes) are gitignored and local-only; they are absent from a fresh clone, so never make a topic page depend on them. `tools/wiki_public_gates.py` (run by `python build.py --test` and `--gates`) fails if either is tracked or no longer ignored, or if a public page contains an email, host name, IP address or secret-shaped token.
 - Vendor neutrality, for EVERY tracked file (docs, comments, tests, strings, workflows): never name third-party GPU tuning, overclocking, monitoring or fan-control applications, their binaries or their authors. Write "an external tool" / "another fan controller" and state the behaviour as our own observation or as driver behaviour, never as analysis of another product. NVIDIA driver, NVML and NvAPI names (including NVML fan-control policy entry points), OS components and dev/build tooling are fine. `tools/wiki_public_gates.py` enforces a denylist over every tracked path and text file (`python build.py --test` / `--gates`); if a hit sits in a user-visible string, functional code, a test name or a detection list, do not change behaviour: report it to the maintainer.
 - Public-wiki safety, for EVERY edit to a topic page: no real names (the public handle `aufkrawall` is fine), emails, host/machine names, IPs, user-profile or home paths, dev-machine tool locations, key/signing-key locations or ACL details, tokens or key material, leaked values, affected version ranges or "exposed since X" narration, release-operator runbook steps, exploit steps for anything unfixed, open/deferred security findings, profanity, or disparaging remarks about people/vendors/tools. Describe the rule or invariant instead; put the story in `llm-wiki/log/` or `llm-wiki/private/`!
 - For substantial work, start with `llm-wiki/index.md`, read only relevant topic pages, then read `llm-wiki/log/recent.md` for active/stale-risk areas.

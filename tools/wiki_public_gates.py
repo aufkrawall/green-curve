@@ -1,6 +1,6 @@
 """Public-wiki gates for Green Curve.
 
-`AGENTS.md`, `CLAUDE.md` and the `llm-wiki/*.md` topic pages are tracked in Git
+`AGENTS.md` and the `llm-wiki/*.md` topic pages are tracked in Git
 and published on GitHub.  `llm-wiki/log/` (chronology) and `llm-wiki/private/`
 (incident records, open security findings, machine-specific notes) stay
 local-only.  Nothing about that split is visible to a compiler, and a slip is
@@ -9,7 +9,7 @@ permanent once pushed, so it is enforced here instead of being left to memory:
 * nothing under the two private directories may be tracked;
 * `.gitignore` must keep ignoring them, and must not start ignoring the public
   pages again (a re-ignored page silently drops out of `git add -A`);
-* `CLAUDE.md` must stay a link to, or an identical copy of, `AGENTS.md`;
+* `AGENTS.md` must stay tracked as a regular file;
 * the public pages must not contain email addresses, Windows auto-generated
   host names, non-documentation IPv4 addresses, secret-shaped tokens, or the
   current developer's OS account name;
@@ -46,7 +46,7 @@ IGNORE_RULES_REQUIRED = ("/llm-wiki/log/", "/llm-wiki/private/")
 # Patterns that would (re-)ignore a public page.  Compared as whole lines, so an
 # unrelated rule such as `/llm-wiki/log/` never matches.
 IGNORE_RULES_FORBIDDEN = frozenset({
-    "AGENTS.md", "/AGENTS.md", "CLAUDE.md", "/CLAUDE.md",
+    "AGENTS.md", "/AGENTS.md",
     "llm-wiki", "/llm-wiki", "llm-wiki/", "/llm-wiki/",
     "llm-wiki/*", "/llm-wiki/*", "llm-wiki/*.md", "/llm-wiki/*.md",
     "*.md", "/*.md",
@@ -54,7 +54,7 @@ IGNORE_RULES_FORBIDDEN = frozenset({
 
 # Tracked files that must exist for the policy to mean anything.
 REQUIRED_TRACKED = (
-    "AGENTS.md", "CLAUDE.md",
+    "AGENTS.md",
     "llm-wiki/index.md", "llm-wiki/secret-leak-prevention.md",
 )
 
@@ -211,31 +211,15 @@ def gitignore_errors(text):
     return errors
 
 
-def agent_file_identity_errors(agents_mode, agents_data, claude_mode, claude_data):
-    """`CLAUDE.md` must be a link to, or an identical copy of, `AGENTS.md` (pure).
+def agent_file_identity_errors(agents_mode, agents_data):
+    """`AGENTS.md` must be tracked and be a regular file (pure).
 
-    Modes are git index modes as strings ("100644", "120000").  A symlink's blob
-    is the link target text; a checkout without symlink support turns it into a
-    plain file containing that text, which git still records as mode 120000.
+    Modes are git index modes as strings ("100644", "120000").
     """
-    if agents_mode is None or claude_mode is None:
-        return ["AGENTS.md and CLAUDE.md must both be tracked"]
+    if agents_mode is None:
+        return ["AGENTS.md must be tracked"]
     if agents_mode == "120000":
-        return ["AGENTS.md must be a regular file (CLAUDE.md may link to it)"]
-    if claude_mode == "120000":
-        target = claude_data.decode("utf-8", "replace").strip().replace("\\", "/")
-        if target.startswith("./"):
-            target = target[2:]
-        if target != "AGENTS.md":
-            return [f"CLAUDE.md links to `{target}`, expected AGENTS.md"]
-        return []
-
-    def canonical(data):
-        return data.replace(b"\r\n", b"\n")
-
-    if canonical(agents_data) != canonical(claude_data):
-        return ["CLAUDE.md differs from AGENTS.md; keep them identical "
-                "(preferably CLAUDE.md as a link to AGENTS.md)"]
+        return ["AGENTS.md must be a regular file (not a symlink)"]
     return []
 
 
@@ -340,7 +324,7 @@ def third_party_tool_errors(rel, text, singles=None, multis=None):
 
 def is_public_text_path(path):
     rel = normalize_rel(path)
-    return rel in ("agents.md", "claude.md") or (
+    return rel == "agents.md" or (
         rel.startswith("llm-wiki/") and rel.endswith(".md"))
 
 
@@ -409,10 +393,8 @@ def check_all(ctx, tracked):
         if _ignored_by_git(root, probe) is True:
             errors.append(f"{probe}: git ignores this public page")
     agents_mode, agents_data = _index_entry(root, "AGENTS.md")
-    claude_mode, claude_data = _index_entry(root, "CLAUDE.md")
-    if agents_mode is not None or claude_mode is not None:
-        errors += agent_file_identity_errors(
-            agents_mode, agents_data, claude_mode, claude_data)
+    if agents_mode is not None:
+        errors += agent_file_identity_errors(agents_mode, agents_data)
     account = current_account_name()
     for path in tracked:
         try:
@@ -461,11 +443,11 @@ def run_self_tests():
            "public pages and look-alike names must pass")
 
     # --- required tracked files ------------------------------------------------
-    full = ["AGENTS.md", "CLAUDE.md", "llm-wiki/index.md",
+    full = ["AGENTS.md", "llm-wiki/index.md",
             "llm-wiki/secret-leak-prevention.md"]
     expect(not required_tracked_errors(full), "all required files present must pass")
-    expect(required_tracked_errors([p for p in full if p != "CLAUDE.md"]),
-           "a missing CLAUDE.md must fail")
+    expect(required_tracked_errors([p for p in full if p != "AGENTS.md"]),
+           "a missing AGENTS.md must fail")
     expect(required_tracked_errors([p for p in full if p != "llm-wiki/index.md"]),
            "a missing wiki index must fail")
 
@@ -480,8 +462,6 @@ def run_self_tests():
            "re-ignoring the whole wiki must fail")
     expect(gitignore_errors(good_ignore + "AGENTS.md\n"),
            "re-ignoring AGENTS.md must fail")
-    expect(gitignore_errors(good_ignore + "CLAUDE.md\n"),
-           "re-ignoring CLAUDE.md must fail")
     expect(gitignore_errors(good_ignore + "*.md\n"),
            "ignoring every markdown file must fail")
     expect(gitignore_errors(good_ignore + "!llm-wiki/log/keep.md\n"),
@@ -489,27 +469,14 @@ def run_self_tests():
     expect(not gitignore_errors(good_ignore + "# AGENTS.md\n  \n"),
            "a comment mentioning a forbidden rule must not fail")
 
-    # --- CLAUDE.md identity ----------------------------------------------------
+    # --- AGENTS.md identity ----------------------------------------------------
     agents = b"# Agent Instructions\nline\n"
-    expect(not agent_file_identity_errors("100644", agents, "120000", b"AGENTS.md"),
-           "a symlink to AGENTS.md must pass")
-    expect(not agent_file_identity_errors("100644", agents, "120000", b"./AGENTS.md\n"),
-           "a symlink target spelled ./AGENTS.md must pass")
-    expect(agent_file_identity_errors("100644", agents, "120000", b"OTHER.md"),
-           "a symlink to another file must fail")
-    expect(not agent_file_identity_errors("100644", agents, "100644", agents),
-           "an identical copy must pass")
-    expect(not agent_file_identity_errors(
-        "100644", agents, "100644", agents.replace(b"\n", b"\r\n")),
-           "an identical copy with CRLF line endings must pass")
-    expect(agent_file_identity_errors("100644", agents, "100644", agents + b"x\n"),
-           "a diverged copy must fail")
-    expect(agent_file_identity_errors("100644", agents, None, None),
-           "an untracked CLAUDE.md must fail")
-    expect(agent_file_identity_errors(None, None, "120000", b"AGENTS.md"),
-           "an untracked AGENTS.md must fail")
-    expect(agent_file_identity_errors("120000", b"CLAUDE.md", "100644", agents),
+    expect(not agent_file_identity_errors("100644", agents),
+           "a regular AGENTS.md must pass")
+    expect(agent_file_identity_errors("120000", b"other.md"),
            "a symlinked AGENTS.md must fail")
+    expect(agent_file_identity_errors(None, None),
+           "an untracked AGENTS.md must fail")
 
     # --- public page content ---------------------------------------------------
     def hits(text, account=None):
@@ -551,8 +518,8 @@ def run_self_tests():
     expect(not hits("anything at all", account=None), "no account name means no check")
 
     expect(is_public_text_path("llm-wiki/updates.md"), "wiki pages are public text")
-    expect(is_public_text_path("AGENTS.md") and is_public_text_path("CLAUDE.md"),
-           "agent files are public text")
+    expect(is_public_text_path("AGENTS.md"),
+           "AGENTS.md is public text")
     expect(not is_public_text_path("README.md"), "README is not in this gate's scope")
     expect(not is_public_text_path("llm-wiki/data.json"), "only markdown is scanned")
 

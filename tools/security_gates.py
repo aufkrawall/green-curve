@@ -766,7 +766,7 @@ def check_no_signing_key_material(ctx, tracked):
 
 
 def check_public_wiki(ctx, tracked):
-    """AGENTS.md, CLAUDE.md and llm-wiki/*.md are public; log/ and private/ are not.
+    """AGENTS.md and llm-wiki/*.md are public; log/ and private/ are not.
 
     Delegates to wiki_public_gates (kept out of this already oversized module);
     wired from build.py's source gates next to the profile-path and key-material

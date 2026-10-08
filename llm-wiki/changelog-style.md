@@ -18,7 +18,7 @@ placements, deliberately redundant because they fail in different ways:
 
 | Where | Found when | Survives a fresh clone |
 |---|---|---|
-| `AGENTS.md` / `CLAUDE.md` | loaded into every agent session | yes |
+| `AGENTS.md` | loaded into every agent session | yes |
 | `update-procedure.md` §5.2 + §8 checklist | the runbook is open during a release | no (local-only, gitignored) |
 | this page (routed from `index.md`) | the wiki is consulted | yes |
 | the HTML comment atop `CHANGELOG.md` | **the file being edited is opened** | yes |

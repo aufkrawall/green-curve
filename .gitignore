@@ -1,4 +1,4 @@
-# AGENTS.md, CLAUDE.md and the llm-wiki/*.md topic pages are tracked and PUBLIC.
+# AGENTS.md and the llm-wiki/*.md topic pages are tracked and PUBLIC.
 # Only the wiki's chronology and private notes stay local; tools/wiki_public_gates.py
 # fails the build if these two rules disappear or either area becomes tracked.
 /llm-wiki/log/

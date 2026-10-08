@@ -40,7 +40,7 @@ Before every agent-created commit:
    ```
    Record in the agent context that automated scanning was unavailable and manual review was performed.
 7. Review the planned commit message/body/trailers before committing. Do not paste raw secrets, sensitive log excerpts, private URLs containing credentials, tokens, or personal data into commit metadata.
-8. If the staged change touches `AGENTS.md`, `CLAUDE.md` or any `llm-wiki/*.md` page, also apply "Public wiki safety" below to the staged patch.
+8. If the staged change touches `AGENTS.md` or any `llm-wiki/*.md` page, also apply "Public wiki safety" below to the staged patch.
 9. If any suspected secret or sensitive artifact is found, stop the commit until it is removed, redacted, replaced with a safe fixture/placeholder, or explicitly established as safe to commit.
 
 A clean scanner result does not replace staged-diff review. Secret scanners can miss custom formats, encoded values, private data, or sensitive artifacts that are not recognizable as credentials.
@@ -65,7 +65,7 @@ For a multi-commit outgoing branch, run an additional secrets review over the co
 
 ## Public wiki safety
 
-`AGENTS.md`, `CLAUDE.md` and the `llm-wiki/*.md` topic pages are tracked in Git and published on GitHub. They obey the same masking rule as public commits and code comments. `llm-wiki/log/` and `llm-wiki/private/` are gitignored and local-only; they do not exist in a fresh clone, so a topic page must never depend on them.
+`AGENTS.md` and the `llm-wiki/*.md` topic pages are tracked in Git and published on GitHub. They obey the same masking rule as public commits and code comments. `llm-wiki/log/` and `llm-wiki/private/` are gitignored and local-only; they do not exist in a fresh clone, so a topic page must never depend on them.
 
 Never write any of the following into a tracked page:
 
@@ -89,7 +89,7 @@ Where the content goes instead:
 Enforcement is layered, and none of it replaces reviewing the staged patch:
 
 - `.gitignore` ignores `llm-wiki/log/` and `llm-wiki/private/`.
-- `tools/wiki_public_gates.py` (run by `python build.py --test` and `--gates`) fails if any file under those two directories is tracked, if either is no longer ignored, if `CLAUDE.md` differs from `AGENTS.md`, if a tracked agent-instruction or wiki page contains an email address, a Windows host-name pattern, an IPv4 address outside documentation ranges, or a secret-shaped token, or if ANY tracked path or text file names a third-party tool (case-insensitive, word-bounded denylist, built from fragments so the file does not contain the names; NVML identifiers and the phrase "fan control" never match). It self-tests each rule with bad inputs.
+- `tools/wiki_public_gates.py` (run by `python build.py --test` and `--gates`) fails if any file under those two directories is tracked, if either is no longer ignored, if a tracked agent-instruction or wiki page contains an email address, a Windows host-name pattern, an IPv4 address outside documentation ranges, or a secret-shaped token, or if ANY tracked path or text file names a third-party tool (case-insensitive, word-bounded denylist, built from fragments so the file does not contain the names; NVML identifiers and the phrase "fan control" never match). It self-tests each rule with bad inputs.
 - `check_no_developer_profile_paths()` and `check_no_signing_key_material()` already scan every tracked text file, so they cover the wiki too.
 - CI scans full history with `gitleaks` (`tools/secret_scan.py`, `.gitleaks.toml`).
 
