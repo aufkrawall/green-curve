@@ -26,6 +26,15 @@ greencurve --self-test
 
 It reports the loaded NVAPI image, whether the VF curve and control structs read back, the memory topology, and control domain availability.
 
+## Support
+
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor%20on%20GitHub-%23EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/aufkrawall)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-%23FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/aufkrawall)
+
+Support through GitHub Sponsors or Buy Me a Coffee helps with development time, hardware, and tooling. My other
+open-source projects would also profit from donations; they are listed in [Other projects](#other-projects) at the
+bottom of this page.
+
 ## Features
 
 - **Live VF-curve editing:** Inspect and modify visible curve points in a native Win32 GUI or raw-terminal Linux TUI.
@@ -248,6 +257,17 @@ Administrators can prevent standard accounts from applying arbitrary custom over
 - **Network access:** The only network feature is the optional GitHub release check, which runs only if enabled. It queries GitHub for version manifests; no hardware information, profiles, or settings are ever transmitted.
 - **Local logs:** Debug logs are stored locally (`%LOCALAPPDATA%\Green Curve\greencurve_debug.txt` on Windows, or `/var/lib/greencurve/` / user config directory on Linux). Logs are size-capped, rotated, and redact sensitive account names and filesystem paths. Logging can be disabled by setting `[debug] enabled=0` in `config.ini` or environment variable `GREEN_CURVE_DEBUG=0`.
 - **Crash dumps:** Windows writes local minidumps (`greencurve_crash_*.dmp`) next to the binary. On Linux, crash breadcrumbs are written to the debug log and stderr; core dumps are managed by the system's `core_pattern`.
+
+## Other projects
+
+- [capture-engine](https://github.com/aufkrawall/capture-engine) — game capture, recording, overlays, graphics overrides, and frame pacing for Windows
+- [testsmem4u](https://github.com/aufkrawall/testsmem4u) — cross-platform RAM testing tool using proven patterns
+- [Shader-Stress](https://github.com/aufkrawall/Shader-Stress) — CPU stress test with shader-compilation-like
+  workloads
+- [obs-indicator](https://github.com/aufkrawall/obs-indicator) — a low-overhead OBS recording-status indicator
+
+More projects are available on [my GitHub profile](https://github.com/aufkrawall?tab=repositories). All of these
+projects would also profit from donations — see [Support](#support) at the top of this page.
 
 ## Safety warning
 
