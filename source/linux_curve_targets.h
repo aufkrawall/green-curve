@@ -99,6 +99,27 @@ static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
     return result;
 }
 
+// A composed GPU offset lives entirely in the VF deltas, so the NVML graphics
+// offset must be zero while it is in effect: one left by an earlier
+// uniform-only apply adds to every point on top of the composed delta (stock
+// + twice the offset when the two match).  The reset phase already zeroes it;
+// without a reset the transaction has to.  `scalarKnown` is false when NVML
+// cannot report it (no offset API: nothing this program could have set).
+static inline bool linux_composed_offset_must_clear_scalar(
+    bool composedGpuOffset, bool scalarKnown, int scalarMHz, bool resetBaseline) {
+    return composedGpuOffset && scalarKnown && scalarMHz != 0 && !resetBaseline;
+}
+
+// Curve targets are built from the pre-transaction readback.  When the
+// transaction zeroes a non-zero NVML graphics offset before the curve write
+// (reset, or the clear above), rebuild them from a fresh readback, so no
+// typed point or lock anchor depends on whether the driver's VF readback
+// included that offset.
+static inline bool linux_curve_targets_rebuild_after_scalar(
+    bool scalarKnown, int scalarMHz, bool resetBaseline, bool clearsScalar) {
+    return scalarKnown && scalarMHz != 0 && (resetBaseline || clearsScalar);
+}
+
 // A successful VF-domain Apply replaces that domain's durable intent.  Build
 // the complete committed target, then explicitly release points that the
 // previous curve intent owned but the replacement no longer owns.  Without

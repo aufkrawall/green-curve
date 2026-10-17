@@ -343,6 +343,15 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "the boost tally runs after correction through the tested policy")
     forbid_text(apply_cpp, "bool userRelevantPoint = (expectedOffsetkHz != 0) && (actualMHz >= 500);",
                 "no first-batch boost tally judging typed points by offset")
+    # Linux: a composed offset lives in the VF deltas, so a stale NVML
+    # graphics offset from an earlier uniform-only apply is cleared in the
+    # same transaction, and targets are rebuilt after any such clear.
+    require_text(linux_mutation_cpp, "|| clearStaleGpuOffset)",
+                 "a no-reset composed Linux apply schedules the stale NVML offset clear")
+    require_text(linux_mutation_cpp, "context->composedGpuOffset ? 0 : d->gpuOffsetMHz);",
+                 "the Linux GPU_OFFSET phase writes 0 for a composed offset")
+    require_text(linux_mutation_cpp, "if (!linux_apply_rebuild_curve_targets(context)) return false;",
+                 "the Linux curve phase rebuilds targets after an NVML offset clear")
     require_text(apply_cpp, "long long anchorKHz = curve_point_stored_lock_anchor_khz(",
                  "an interactive stored-lock anchor uses the provenance-aware anchor rule")
     # ...and writing must not re-derive them from the live base, which is the

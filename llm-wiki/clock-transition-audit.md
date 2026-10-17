@@ -624,11 +624,24 @@ scalar, typed points and the lock anchor would land a scalar too high
 `curve targets: scalarGpuOffset=` and a per-point readback after a
 `base_plus_gpu_offset` profile apply would settle it.
 
-Linux (not changed): `linux_build_curve_targets()` composes the whole offset
-into the curve whenever any curve point exists and then skips the NVML write,
-so the reset path is safe. A no-reset partial apply that composes while the
-NVML graphics offset still holds a previous uniform value would stack the
-two; open question, not reproduced and not fixed here.
+Linux (fixed the same day): `linux_build_curve_targets()` composes the whole
+offset into the curve whenever any curve point, lock or exclusion exists and
+then skips the NVML write. The reset phase zeroes the NVML graphics offset, but
+a no-reset partial apply that composed while NVML still held an earlier
+uniform-only offset stacked the two. Now
+`linux_composed_offset_must_clear_scalar()` schedules the GPU_OFFSET phase to
+write 0 in that case (the apply refuses when the offset is set but no NVML
+setter exists), and whenever a transaction zeroes a non-zero NVML offset
+before the curve write (reset or that clear),
+`linux_curve_targets_rebuild_after_scalar()` makes the CURVE phase re-read the
+VF table and rebuild the targets, so typed points and the lock anchor no longer
+depend on whether the readback included the old offset. Rollback is unchanged
+(the snapshot restores the NVML offset and the full curve). Log:
+`apply: gpu offset routing composed= nvmlOffset= ... clearStale= rebuildCurve=`
+and `apply: curve targets rebuilt after NVML offset clear`. Source:
+`linux_backend_apply_context.h` (split from `linux_backend_mutation.cpp`).
+Tests 6600-6604 (`tests/regression_main.cpp`, mutation-checked); gates in
+`tools/apply_ceiling_gates.py`. No Linux hardware run.
 
 ## Open questions / release acceptance
 

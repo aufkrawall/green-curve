@@ -10046,6 +10046,27 @@ static int run_all_tests_middle([[maybe_unused]] char** argv) {
             !mask[5] || targets[5] != 110000)
             return 2052;
 
+        // A composed offset lives in the VF deltas; an NVML graphics offset
+        // left by an earlier uniform-only apply would add on top of it.  A
+        // no-reset composed apply must clear it itself, and every transaction
+        // that zeroes a non-zero NVML offset before the curve write rebuilds
+        // the targets from a fresh readback (6600-6604).
+        if (!linux_composed_offset_must_clear_scalar(true, true, 475, false))
+            return 6600;
+        if (linux_composed_offset_must_clear_scalar(true, true, 475, true) ||
+            linux_composed_offset_must_clear_scalar(false, true, 475, false))
+            return 6601;
+        if (linux_composed_offset_must_clear_scalar(true, false, 475, false) ||
+            linux_composed_offset_must_clear_scalar(true, true, 0, false))
+            return 6602;
+        if (!linux_curve_targets_rebuild_after_scalar(true, 475, false, true) ||
+            !linux_curve_targets_rebuild_after_scalar(true, -100, true, false))
+            return 6603;
+        if (linux_curve_targets_rebuild_after_scalar(true, 0, true, true) ||
+            linux_curve_targets_rebuild_after_scalar(false, 475, true, true) ||
+            linux_curve_targets_rebuild_after_scalar(true, 475, false, false))
+            return 6604;
+
         // Per-point provenance on Linux too: a projected point keeps the
         // request's own offset even though absolute-minus-live-base would
         // produce a different one from the stale stored absolute.

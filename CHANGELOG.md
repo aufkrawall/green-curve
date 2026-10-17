@@ -38,6 +38,7 @@ Apply reliability improves in this release.
 - **Lock validation:** a lock is no longer wrongly refused, or wrongly accepted, because a saved curve point's base moved since the profile was saved.
 - **Apply summary:** the "N of M boost points matched" note and the warning level now reflect the final curve after correction.
 - **Stored lock:** applying from the editor with an inherited lock now places the lock where the saved point really runs today.
+- **Linux:** applying a curve or lock without a reset no longer stacks a GPU offset left over from an earlier offset-only apply.
 
 ### Compatibility notes
 
