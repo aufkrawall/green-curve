@@ -336,6 +336,13 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "the flat-tail check judges offset-intent points by offset over the live base")
     require_text(apply_cpp, "int violationCi = apply_correction_tail_monotonic_violation(correction,",
                  "the apply's flat-tail check reads the same request as the correction loop")
+    # The boost tally feeding the outcome severity is taken on the final
+    # readback with verification's quantity per point, not after the first
+    # batch with offsets for everything.
+    require_text(apply_cpp, "const ApplyBoostTally boost = apply_correction_boost_tally(correction,",
+                 "the boost tally runs after correction through the tested policy")
+    forbid_text(apply_cpp, "bool userRelevantPoint = (expectedOffsetkHz != 0) && (actualMHz >= 500);",
+                "no first-batch boost tally judging typed points by offset")
     # ...and writing must not re-derive them from the live base, which is the
     # very sample that moved.
     forbid_text(targets_h, "offset = (long long)desired->curvePointMHz[ci] * 1000 - base;",

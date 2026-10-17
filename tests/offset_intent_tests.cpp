@@ -282,10 +282,79 @@ int run_pretail_offset_intent_tests() {
     return 0;
 }
 
+// The boost tally (apply_correction_boost_tally) behind the outcome severity
+// and the "N of M boost points matched" summary.
+int run_boost_tally_tests() {
+    auto tol8 = [](int) { return 8u; };
+    Request r;
+    request_init(&r);
+    r.q.gpuPolicyViaCurveBatch = true;
+    unsigned int freq[N] = {};
+    int programmed[N] = {};
+    for (int i = 0; i < N; i++) freq[i] = 2000000u + 50000u * (unsigned int)i;
+    // Points 1..4 synthesized by the selective batch (+200 MHz target), point 6
+    // typed at 2310 MHz, point 0 excluded (target 0).
+    for (int i = 0; i <= 4; i++) {
+        r.hasPoint[i] = 1;
+        r.targetOffsetKHz[i] = i == 0 ? 0 : 200000;
+        r.pointMHz[i] = 2000 + 50 * i + (i == 0 ? 0 : 200);
+    }
+    r.hasPoint[6] = 1;
+    r.explicitMask[6] = true;
+    r.pointMHz[6] = 2310;
+    r.targetOffsetKHz[6] = 10000;                  // what the first batch wrote
+    const ApplyCorrectionReadback rb = {freq, programmed};
+
+    // 6594: the first batch: points 1..4 still at 0, the typed point short.
+    ApplyBoostTally t = apply_correction_boost_tally(r.q, rb, tol8);
+    if (t.applied != 1 || t.failed != 5 || t.userFailed != 5 || t.userApplied != 0 ||
+        t.firstFailedCi != 1 || !t.firstFailedOffsetIntent) return 6594;
+    // 6595: after correction everything holds: the offsets landed and the
+    // typed point sits at its MHz with a DIFFERENT offset than the first batch
+    // chose (its base moved a bin).  The old offset-only count called it failed.
+    for (int i = 1; i <= 4; i++) {
+        programmed[i] = 200000;
+        freq[i] += 200000;
+    }
+    programmed[6] = -40000;
+    freq[6] = 2310000;
+    t = apply_correction_boost_tally(r.q, rb, tol8);
+    if (t.failed != 0 || t.userFailed != 0 || t.applied != 6 || t.userApplied != 5 ||
+        t.firstFailedCi != -1) return 6595;
+    // 6596: the cold-boot shape -- a whole VF bin of base movement on an
+    // offset-intent point that holds its offset is still matched; its preview
+    // MHz is irrelevant.
+    freq[2] += 30000;
+    t = apply_correction_boost_tally(r.q, rb, tol8);
+    if (t.failed != 0) return 6596;
+    // 6597: a driver-limited offset is unmatched (verification accepts it as
+    // safe; the tally reports it as partial), and so is a typed point off its
+    // MHz by more than the tolerance.
+    programmed[3] = 150000;
+    t = apply_correction_boost_tally(r.q, rb, tol8);
+    if (t.failed != 1 || t.userFailed != 1 || t.firstFailedCi != 3 ||
+        t.firstFailedProgrammedKHz != 150000 || t.firstFailedTargetOffsetKHz != 200000)
+        return 6597;
+    programmed[3] = 200000;
+    freq[6] = 2330000;
+    t = apply_correction_boost_tally(r.q, rb, tol8);
+    if (t.failed != 1 || t.firstFailedCi != 6 || t.firstFailedOffsetIntent ||
+        t.firstFailedTargetMHz != 2310) return 6598;
+    // 6599: locked-tail points belong to the flatten tally, not this one.
+    r.q.hasLock = true;
+    r.q.lockMHz = 2300;
+    r.q.lockCi = 6;
+    for (int i = 6; i < N; i++) r.tail[i] = true;
+    t = apply_correction_boost_tally(r.q, rb, tol8);
+    if (t.failed != 0 || t.applied != 5) return 6599;
+    return 0;
+}
+
 }  // namespace
 
 int run_offset_intent_tests() {
     if (int r = run_scalar_offset_tests()) return r;
     if (int r = run_pretail_offset_intent_tests()) return r;
+    if (int r = run_boost_tally_tests()) return r;
     return 0;
 }

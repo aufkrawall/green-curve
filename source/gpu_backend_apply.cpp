@@ -753,17 +753,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                         verifyDesired.curvePointMHz[ci] = displayed_curve_mhz((unsigned int)targetFreqkHz);
                     }
                 }
-                // Verify selective offset in the boost region (below the lock point).
-                // Tail points are verified separately against the flatten target.
-                // Some VF points may have hardware limits that prevent the selective
-                // offset from taking effect (e.g. special max-clock limit points on
-                // Blackwell, or rounding edge cases). Accept the actual live frequency
-                // for points where the hardware didn't apply the expected offset, so the
-                // overall operation isn't marked as failed for a single stubborn point.
-                selectiveOffsetApplied = 0;
-                selectiveOffsetFailed = 0;
-
-
+                // First-batch flatten tally, for the log only: the post-apply
+                // diagnostics recount the tail after correction, and the boost
+                // tally is taken there too (apply_correction_boost_tally()).
                 flattenApplied = 0;
                 flattenFailed = 0;
                 for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
@@ -781,23 +773,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                         }
                         continue;
                     }
-                    int actualOffsetkHz = g_app.freqOffsets[ci];
-                    int expectedOffsetkHz = targetCurveOffsets[ci];
-                    bool userRelevantPoint = (expectedOffsetkHz != 0) && (actualMHz >= 500);
-                    if (abs(actualOffsetkHz - expectedOffsetkHz) <= 12000) {
-                        selectiveOffsetApplied++;
-                        if (userRelevantPoint) userBoostApplied++;
-                    } else {
-                        selectiveOffsetFailed++;
-                        if (userRelevantPoint) userBoostFailed++;
-                        // Derived MHz is a preview. Verify the immutable control
-                        // target; absolute point/tail authority is checked below.
-                        debug_log("selective offset: point %d actual=%u MHz offset=%d kHz expected=%d kHz explicit=%d; retaining requested intent for verification\n",
-                            ci, actualMHz, actualOffsetkHz, expectedOffsetkHz,
-                            explicitCurveMask[ci]);
-                    }
                 }
-                debug_log("selective offset: boost applied=%d failed=%d\n", selectiveOffsetApplied, selectiveOffsetFailed);
                 if (hasLock) {
                     debug_log("flatten undervolt: target=%u MHz applied=%d failed=%d\n", lockMhz, flattenApplied, flattenFailed);
                 }
@@ -1028,6 +1004,27 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                                 apply_correction_point_offset_is_intent(correction, pi) ? 1 : 0);
                             break;
                         }
+                    }
+                }
+                // The boost tally the summary and the outcome severity report,
+                // on the final readback: after correction, not the first batch.
+                if (gpuPolicyViaCurveBatch) {
+                    snapshot_readback();
+                    const ApplyBoostTally boost = apply_correction_boost_tally(correction,
+                        readback, [](int ci) { return curve_point_verify_tolerance_mhz(ci); });
+                    selectiveOffsetApplied = boost.applied;
+                    selectiveOffsetFailed = boost.failed;
+                    userBoostApplied = boost.userApplied;
+                    userBoostFailed = boost.userFailed;
+                    debug_log("selective offset: final boost applied=%d failed=%d user=%d/%d\n",
+                        selectiveOffsetApplied, selectiveOffsetFailed, userBoostApplied,
+                        userBoostApplied + userBoostFailed);
+                    if (boost.firstFailedCi >= 0) {
+                        debug_log("selective offset: first unmatched point %d actual=%u MHz"
+                                  " offset=%d kHz targetOffset=%d kHz targetMHz=%u offsetIntent=%d\n",
+                            boost.firstFailedCi, boost.firstFailedActualMHz,
+                            boost.firstFailedProgrammedKHz, boost.firstFailedTargetOffsetKHz,
+                            boost.firstFailedTargetMHz, boost.firstFailedOffsetIntent ? 1 : 0);
                     }
                 }
                 apply_log_post_apply_curve_diagnostics(
