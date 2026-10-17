@@ -6,6 +6,9 @@
 #include "linux_debug_log.h"
 #include "linux_gpu_selection.h"
 #include "linux_transaction.h"
+// The lockout notice tui_refresh_service() puts on the status line.
+#include "linux_auto_restore_policy.h"
+#include "auto_apply_failure_notice_policy.h"
 
 #include <stdio.h>
 #include <string.h>

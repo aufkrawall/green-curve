@@ -57,6 +57,7 @@ static inline const char* gc_auto_apply_trigger_phrase(gc_u32 trigger) {
         case SERVICE_LIFECYCLE_TRIGGER_TASK_HANDOFF: return "at logon";
         case SERVICE_LIFECYCLE_TRIGGER_STANDBY_RESUME: return "after standby";
         case SERVICE_LIFECYCLE_TRIGGER_DRIVER_RECOVERY: return "after a driver restart";
+        case SERVICE_LIFECYCLE_TRIGGER_DAEMON_START: return "at daemon start";
         default: return nullptr;
     }
 }

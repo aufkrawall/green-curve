@@ -311,7 +311,7 @@ static inline void validate_service_snapshot_for_ipc(ServiceSnapshot* s) {
     // v29 failure record: an out-of-range trigger voids the whole record (its
     // text would be attributed to nothing), and the detail is always a string.
     canonicalize_gc_bool8(&s->autoApplyFailure.coreRecovered);
-    if (s->autoApplyFailure.trigger > SERVICE_LIFECYCLE_TRIGGER_DRIVER_RECOVERY) {
+    if (s->autoApplyFailure.trigger > SERVICE_LIFECYCLE_TRIGGER_DAEMON_START) {
         s->autoApplyFailure = ServiceAutoApplyFailure{};
     }
     for (gc_u8& reservedByte : s->autoApplyFailure.reserved) reservedByte = 0;
@@ -374,7 +374,7 @@ static inline bool validate_service_state_envelope_for_ipc(
         !service_wire_string_is_terminated(snapshot->ownerUser,
             (unsigned int)sizeof(snapshot->ownerUser)) ||
         snapshot->autoApplyFailure.trigger >
-            SERVICE_LIFECYCLE_TRIGGER_DRIVER_RECOVERY ||
+            SERVICE_LIFECYCLE_TRIGGER_DAEMON_START ||
         snapshot->autoApplyFailure.reserved[0] != 0 ||
         snapshot->autoApplyFailure.reserved[1] != 0 ||
         snapshot->autoApplyFailure.reserved[2] != 0 ||

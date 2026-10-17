@@ -7,6 +7,7 @@
 // lockout is the one daemon state that makes settings silently stop applying at
 // boot, so it belongs in the status a bug report is built from.
 #include "linux_auto_restore_policy.h"
+#include "auto_apply_failure_notice_policy.h"
 
 #include <stdio.h>
 
@@ -127,12 +128,23 @@ void print_linux_live_state_text(FILE* out, const ServiceResponse* response) {
             snapshot.health.availableMutationDomains);
     fprintf(out, "Health detail: %s\n",
             snapshot.health.detail[0] ? snapshot.health.detail : "none");
-    fprintf(out, "Automatic restore: %s\n\n",
+    fprintf(out, "Automatic restore: %s\n",
             snapshot.autoRestoreLockoutReason ==
                 SERVICE_AUTO_RESTORE_LOCKOUT_NONE
                 ? "armed"
                 : linux_auto_restore_lockout_reason_name(
                       snapshot.autoRestoreLockoutReason));
+    // Protocol v29: what failed and what to do, not only that it did.
+    if (snapshot.autoRestoreLockoutReason ==
+            SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED) {
+        char notice[256] = {}, title[64] = {}, body[256] = {};
+        gc_auto_apply_failure_compose(&snapshot.autoApplyFailure, notice,
+            sizeof(notice), title, sizeof(title), body, sizeof(body));
+        fprintf(out, "Automatic restore notice: %s\n"
+                     "  (Apply: greencurve --apply-config, or the TUI; "
+                     "Reset: greencurve --reset --apply-config)\n", notice);
+    }
+    fputc('\n', out);
     IntentReadbackStatus readback = compare_intent_to_readback(response);
     fprintf(out,
             "Intent/readback: %s | requested=0x%02x | checked=0x%02x | "
@@ -241,6 +253,16 @@ void print_linux_live_state_json(FILE* out, const ServiceResponse* response) {
             snapshot.autoRestoreLockoutReason);
     json_string(out, linux_auto_restore_lockout_reason_name(
                          snapshot.autoRestoreLockoutReason));
+    // Protocol v29 cause record; trigger 0 / empty detail when there is none.
+    const char* failureWhen =
+        gc_auto_apply_trigger_phrase(snapshot.autoApplyFailure.trigger);
+    fprintf(out, ",\n    \"failure_trigger_code\": %u,\n    \"failure_trigger\": ",
+            (unsigned int)snapshot.autoApplyFailure.trigger);
+    json_string(out, failureWhen ? failureWhen : "");
+    fputs(",\n    \"failure_detail\": ", out);
+    json_string(out, snapshot.autoApplyFailure.detail);
+    fprintf(out, ",\n    \"clocks_returned_to_stock\": %s",
+            snapshot.autoApplyFailure.coreRecovered ? "true" : "false");
     fprintf(out,
             "\n  },\n  \"active_intent\": %s,\n"
             "  \"intent_readback\": {\n    \"state\": ",

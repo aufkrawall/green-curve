@@ -246,6 +246,11 @@ int run_auto_apply_notice_tests() {
     gc_auto_apply_failure_compose(&f, status, sizeof(status), title, sizeof(title),
                                   body, sizeof(body));
     if (strstr(status, "after a driver restart failed") == nullptr) return 6758;
+    f = failure_record(SERVICE_LIFECYCLE_TRIGGER_DAEMON_START, false, "rollback ok");
+    gc_auto_apply_failure_compose(&f, status, sizeof(status), title, sizeof(title),
+                                  body, sizeof(body));
+    if (strstr(status, "at daemon start failed. Press Apply to retry, or Reset") == nullptr)
+        return 6765;
     // No record (lockout from an earlier service instance): no invented cause.
     ServiceAutoApplyFailure none = {};
     snprintf(none.detail, sizeof(none.detail), "stale text must not show");
@@ -295,8 +300,16 @@ int run_auto_apply_wire_tests() {
                                                true, "cause");
     if (!validate_service_state_envelope_for_ipc(&envelope, &snapshot, &desired,
                                                  &controls)) return 6773;
+    // The Linux start-time trigger is valid in the record, and only there.
+    ServiceSnapshot linuxStart = snapshot;
+    linuxStart.autoApplyFailure.trigger = SERVICE_LIFECYCLE_TRIGGER_DAEMON_START;
+    if (!validate_service_state_envelope_for_ipc(&envelope, &linuxStart, &desired,
+                                                 &controls)) return 6782;
+    linuxStart.lastLifecycleTrigger = SERVICE_LIFECYCLE_TRIGGER_DAEMON_START;
+    if (validate_service_state_envelope_for_ipc(&envelope, &linuxStart, &desired,
+                                                &controls)) return 6783;
     ServiceSnapshot bad = snapshot;
-    bad.autoApplyFailure.trigger = SERVICE_LIFECYCLE_TRIGGER_DRIVER_RECOVERY + 1;
+    bad.autoApplyFailure.trigger = SERVICE_LIFECYCLE_TRIGGER_DAEMON_START + 1;
     if (validate_service_state_envelope_for_ipc(&envelope, &bad, &desired, &controls))
         return 6774;
     bad = snapshot;

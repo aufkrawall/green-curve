@@ -10,7 +10,8 @@
 // failure latched SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED in this
 // service instance.  All zero when there is none: no lockout, another cause, or
 // a lockout persisted by an earlier instance.  `coreRecovered` is set only when
-// the apply's own core recovery verified stock clocks.
+// the apply's own core recovery verified stock clocks (never on Linux, whose
+// rollback restores the pre-write state; its detail says how that went).
 enum { SERVICE_AUTO_APPLY_FAILURE_DETAIL_CHARS = 184 };
 struct ServiceAutoApplyFailure {
     gc_u32 trigger;              // ServiceLifecycleTrigger

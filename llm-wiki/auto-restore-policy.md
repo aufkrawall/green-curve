@@ -177,8 +177,22 @@ and the user saw nothing: the GPU just ran at stock with automation off.
   (service), `GUI: automatic apply failure notice (trigger=... tray=...)` and
   `GUI: automatic apply failure tray notice shown` (GUI).
 - Open: not exercised live; the logon failure that motivated it was reproduced
-  only from the field log. The Linux daemon publishes an all-zero record;
-  whether its TUI/CLI surface an automatic-apply lockout was not reviewed here.
+  only from the field log.
+- **Linux (same record, 2026-10-17):** before this the TUI showed no lockout at
+  all and `status` printed only the reason name. Now
+  `auto_restore_note_automatic_failure(trigger, detail, rollbackOk)`
+  (`linux_auto_restore_runtime.h`) records the cause before latching, with
+  trigger `DAEMON_START` (v29, valid only in this record; `lastLifecycleTrigger`
+  still ends at `DRIVER_RECOVERY`) for the boot replays and `STANDBY_RESUME` for
+  resume. `coreRecovered` is never set on Linux: its rollback restores the
+  pre-write state, not defaults, so the detail carries "rollback to the
+  previous state verified / is uncertain" instead and the text asks for Reset
+  as well. An explicit Apply/Reset that re-arms the guard clears it.
+  `status` prints `Automatic restore notice:` plus the CLI verbs, JSON adds
+  `failure_trigger(_code)`, `failure_detail`, `clocks_returned_to_stock`, and
+  the TUI puts the notice on its status line on the lockout edge
+  (`linux_tui_refresh.cpp`, same transition rule as the GUI). Not run on a
+  Linux machine; covered by the shared policy tests and `tools/log_gates.py`.
 
 ## Reset-to-stock is part of a restore
 

@@ -229,6 +229,9 @@ enum ServiceLifecycleTrigger {
     SERVICE_LIFECYCLE_TRIGGER_TASK_HANDOFF = 2,
     SERVICE_LIFECYCLE_TRIGGER_STANDBY_RESUME = 3,
     SERVICE_LIFECYCLE_TRIGGER_DRIVER_RECOVERY = 4,
+    // v29, ServiceAutoApplyFailure.trigger only: the Linux daemon's start-time
+    // replay.  lastLifecycleTrigger still ends at DRIVER_RECOVERY.
+    SERVICE_LIFECYCLE_TRIGGER_DAEMON_START = 5,
 };
 
 enum ServiceLifecycleResult {
