@@ -17,10 +17,16 @@ Supported subcommands:
   teardown        Delete test releases and tags from test repo; restore private visibility.
 
 Invariants enforced:
-- Repointed repository constants are modified ONLY inside isolated temporary git worktrees.
+- Repointed repository constants AND the trusted update keys are modified ONLY
+  inside isolated temporary git worktrees.
+- Simulated builds trust only a separate simulation signing key, and manifests
+  are signed with it; the release key (or any key a release build trusts) is
+  refused, so nothing a simulation publishes verifies on a real installation.
+- No step runs against the production repository.
 - The baseline client is built from the released stable tag, not from HEAD.
-- Manifests (v1 + v2 freshness envelope) are signed with the maintainer's offline key.
 - Test repository must be public for anonymous WinHTTP fetches; reverted to private on teardown.
+- init records the installed client's [updates] highest_seen_version and teardown
+  restores it (or prints the exact elevated command).
 """
 
 import argparse
@@ -42,10 +48,18 @@ ROOT_DIR = SCRIPT_DIR.parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-import release_prep
 import update_freshness
 import update_manifest_tools
-import update_signing
+from simulate_release_guards import (  # noqa: E402  (after the sys.path insert)
+    default_state_path,
+    ensure_simulation_key,
+    get_default_key_path,
+    patch_update_keys,
+    record_pre_simulation_state,
+    require_simulation_repo,
+    restore_highest_seen,
+    simulation_pubkey_hex,
+)
 
 DEFAULT_TEST_REPO = "aufkrawall/green-curve-update-test"
 DEFAULT_ARCH = "x64"
@@ -95,14 +109,6 @@ def release_exists(repo, version):
         stderr=subprocess.DEVNULL,
     )
     return res.returncode == 0
-
-
-def get_default_key_path():
-    """Locate offline update signing key."""
-    userprofile = os.environ.get("USERPROFILE") or os.environ.get("HOME")
-    if not userprofile:
-        return None
-    return Path(userprofile) / ".greencurve-keys" / "update-signing-key.txt"
 
 
 def get_active_pubkey_hex(root=ROOT_DIR):
@@ -237,25 +243,30 @@ def find_built_setup_exe(worktree_dir, version, arch="x64"):
     return candidates[0]
 
 
-def check_environment(root, key_path=None):
-    """Verify prerequisites: git, gh authentication, and offline signing key."""
+def check_environment(root, key_path=None, dry_run=False):
+    """Verify prerequisites: gh authentication and the simulation signing key."""
     log("checking environment preconditions...")
     gh_status = run_command(["gh", "auth", "status"], cwd=root, check=False)
     if "Logged in to" not in gh_status and "account" not in gh_status:
         raise RuntimeError(f"gh CLI is not authenticated; run 'gh auth login'.\nOutput:\n{gh_status}")
     log("gh CLI authentication confirmed")
 
-    valid_key, key_info = release_prep.check_update_signing_key(root, key_path)
-    if not valid_key:
-        raise RuntimeError(f"signing key validation failed: {key_info}")
-    log(f"update signing key confirmed (public key: {key_info[:16]}...{key_info[-16:]})")
+    pubkey = ensure_simulation_key(key_path or get_default_key_path(), root, dry_run=dry_run)
+    if pubkey:
+        log(f"simulation signing key confirmed (public key: {pubkey[:16]}...{pubkey[-16:]}); "
+            "release builds do not trust it")
     return True
 
 
 def cmd_init(args):
     """Initialize simulation environment: verify keys and set test repo to public."""
+    require_simulation_repo(args.repo)
     owner, repo = parse_repo(args.repo)
-    check_environment(ROOT_DIR, args.key)
+    check_environment(ROOT_DIR, args.key, dry_run=args.dry_run)
+    if args.dry_run:
+        log("[DRY-RUN] skipping the pre-simulation highest_seen_version record")
+    else:
+        record_pre_simulation_state(args.state)
 
     log(f"checking target repository: {args.repo}")
     repo_json = json.loads(run_command(["gh", "api", f"repos/{args.repo}"]))
@@ -289,7 +300,9 @@ def cmd_init(args):
 
 def cmd_build_baseline(args):
     """Build baseline installer from released stable tag repointed to test repo."""
+    require_simulation_repo(args.repo)
     owner, repo = parse_repo(args.repo)
+    sim_pubkey = simulation_pubkey_hex(Path(args.key) if args.key else get_default_key_path())
     tag = args.stable_tag or get_latest_stable_tag(ROOT_DIR)
     update_manifest_tools.validate_version(tag)
     log(f"=== Building Baseline Client ({tag}) for {args.repo} ===")
@@ -303,6 +316,7 @@ def cmd_build_baseline(args):
         create_worktree(ROOT_DIR, f"refs/tags/{tag}", temp_dir)
         junctions = setup_toolchain_junctions(ROOT_DIR, temp_dir)
         patch_update_repo(temp_dir, owner, repo)
+        patch_update_keys(temp_dir, sim_pubkey)
 
         log(f"building Windows {args.arch} setup in worktree...")
         run_command([sys.executable, "build.py", "--target", "windows", "--arch", args.arch], cwd=temp_dir)
@@ -331,8 +345,9 @@ def cmd_build_baseline(args):
     return 0
 
 
-def _build_and_stage_hop(version, ref, arch, repo, out_dir):
+def _build_and_stage_hop(version, ref, arch, repo, out_dir, sim_pubkey):
     """Helper: build setup in worktree and stage artifacts."""
+    require_simulation_repo(repo)
     owner, repo_name = parse_repo(repo)
     update_manifest_tools.validate_version(version)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -343,6 +358,7 @@ def _build_and_stage_hop(version, ref, arch, repo, out_dir):
         create_worktree(ROOT_DIR, ref, temp_dir)
         junctions = setup_toolchain_junctions(ROOT_DIR, temp_dir)
         patch_update_repo(temp_dir, owner, repo_name)
+        patch_update_keys(temp_dir, sim_pubkey)
 
         version_file = temp_dir / "VERSION"
         version_file.write_text(version, encoding="utf-8")
@@ -367,9 +383,11 @@ def _build_and_stage_hop(version, ref, arch, repo, out_dir):
 
 def _sign_and_publish_hop(version, repo, bits_dir, key_path, hop_label, dry_run=False):
     """Helper: generate signed manifests and upload release to test repo."""
+    require_simulation_repo(repo)
     key_file = Path(key_path) if key_path else get_default_key_path()
     if not key_file or not key_file.exists():
-        raise FileNotFoundError(f"update signing key not found: {key_file}")
+        raise FileNotFoundError(f"simulation signing key not found: {key_file} (run init)")
+    sim_pubkey = simulation_pubkey_hex(key_file)
 
     log("generating and signing update manifests (v1 + v2 freshness envelope)...")
     run_command([
@@ -422,7 +440,6 @@ def _sign_and_publish_hop(version, repo, bits_dir, key_path, hop_label, dry_run=
     with urllib.request.urlopen(req_sig, timeout=20) as resp:
         net_sig = resp.read()
 
-    active_pubkey_hex = get_active_pubkey_hex(ROOT_DIR)
     temp_v = tempfile.mkdtemp(prefix="gc-sim-verify-")
     try:
         t_v2 = Path(temp_v) / "v2.txt"
@@ -431,9 +448,9 @@ def _sign_and_publish_hop(version, repo, bits_dir, key_path, hop_label, dry_run=
         t_sig.write_bytes(net_sig)
         run_command([
             sys.executable, str(ROOT_DIR / "tools" / "update_signing.py"),
-            "verify", str(t_v2), "--sig", str(t_sig), "--pubkey", active_pubkey_hex
+            "verify", str(t_v2), "--sig", str(t_sig), "--pubkey", sim_pubkey
         ])
-        log("anonymous v2 freshness signature verified against GC_UPDATE_PUBLIC_KEY_ACTIVE")
+        log("anonymous v2 freshness signature verified against the simulation key")
     finally:
         shutil.rmtree(temp_v, ignore_errors=True)
 
@@ -450,7 +467,8 @@ def cmd_publish_hop1(args):
 
     log(f"=== Publishing Hop 1 Candidate ({version}) on {args.repo} ===")
     out_dir = Path(args.output_dir).resolve()
-    _build_and_stage_hop(version, args.source_ref, args.arch, args.repo, out_dir)
+    sim_pubkey = simulation_pubkey_hex(Path(args.key) if args.key else get_default_key_path())
+    _build_and_stage_hop(version, args.source_ref, args.arch, args.repo, out_dir, sim_pubkey)
     _sign_and_publish_hop(version, args.repo, out_dir, args.key, "Hop 1 Candidate", dry_run=args.dry_run)
 
     print("\n" + "=" * 70)
@@ -483,7 +501,8 @@ def cmd_publish_hop2(args):
 
     log(f"=== Publishing Hop 2 Follow-Up ({version}) on {args.repo} ===")
     out_dir = Path(args.output_dir).resolve()
-    _build_and_stage_hop(version, args.source_ref, args.arch, args.repo, out_dir)
+    sim_pubkey = simulation_pubkey_hex(Path(args.key) if args.key else get_default_key_path())
+    _build_and_stage_hop(version, args.source_ref, args.arch, args.repo, out_dir, sim_pubkey)
     _sign_and_publish_hop(version, args.repo, out_dir, args.key, "Hop 2 Regression Test", dry_run=args.dry_run)
 
     print("\n" + "=" * 70)
@@ -499,31 +518,39 @@ def cmd_publish_hop2(args):
 
 
 def cmd_teardown(args):
-    """Clean up test releases and restore test repo visibility to private."""
-    owner, repo = parse_repo(args.repo)
-    log(f"=== Tearing Down Test Releases on {args.repo} ===")
+    """Clean up test releases, restore test repo visibility and the client's seen version."""
+    if not args.restore_seen_only:
+        require_simulation_repo(args.repo)
+        log(f"=== Tearing Down Test Releases on {args.repo} ===")
 
-    releases = json.loads(run_command(["gh", "release", "list", "--repo", args.repo, "--json", "tagName"]))
-    tags_to_delete = []
-    if args.versions:
-        tags_to_delete = [v.strip() for v in args.versions.split(",") if v.strip()]
-    elif args.all_sim:
-        tags_to_delete = [r["tagName"] for r in releases]
+        releases = json.loads(run_command(["gh", "release", "list", "--repo", args.repo, "--json", "tagName"]))
+        tags_to_delete = []
+        if args.versions:
+            tags_to_delete = [v.strip() for v in args.versions.split(",") if v.strip()]
+        elif args.all_sim:
+            tags_to_delete = [r["tagName"] for r in releases]
 
-    if not tags_to_delete:
-        log("no specific release tags provided for deletion (pass --versions <v1,v2> or --all-sim)")
-    else:
-        for tag in tags_to_delete:
-            log(f"deleting release and tag '{tag}' from {args.repo}...")
-            run_command(["gh", "release", "delete", tag, "--repo", args.repo, "--cleanup-tag", "--yes"], check=False)
+        if not tags_to_delete:
+            log("no specific release tags provided for deletion (pass --versions <v1,v2> or --all-sim)")
+        else:
+            for tag in tags_to_delete:
+                log(f"deleting release and tag '{tag}' from {args.repo}...")
+                run_command(["gh", "release", "delete", tag, "--repo", args.repo, "--cleanup-tag", "--yes"], check=False)
 
-    if args.private:
-        log(f"reverting repository visibility to 'private' for {args.repo}...")
-        run_command(["gh", "repo", "edit", args.repo, "--visibility", "private", "--accept-visibility-change-consequences"], check=False)
-        log("test repository visibility reverted to private")
+        if args.private:
+            log(f"reverting repository visibility to 'private' for {args.repo}...")
+            run_command(["gh", "repo", "edit", args.repo, "--visibility", "private", "--accept-visibility-change-consequences"], check=False)
+            log("test repository visibility reverted to private")
 
-    log("teardown complete.")
-    return 0
+    state_path = Path(args.state) if args.state else default_state_path()
+    restored, message = restore_highest_seen(state_path, override=args.seen_version)
+    log(message)
+    if restored and args.seen_version is None and state_path.exists():
+        state_path.unlink()
+        log(f"removed the pre-simulation record {state_path}")
+
+    log("teardown complete." if restored else "teardown complete except the seen-version restore.")
+    return 0 if restored else 2
 
 
 def run_self_tests():
@@ -540,15 +567,17 @@ def main():
     # init
     p_init = subparsers.add_parser("init", help="Verify keys and set test repo visibility to public")
     p_init.add_argument("--repo", default=DEFAULT_TEST_REPO, help=f"Test repository (default: {DEFAULT_TEST_REPO})")
-    p_init.add_argument("--key", help="Offline update signing key path")
+    p_init.add_argument("--key", help="Simulation signing key path (created if missing; never the release key)")
     p_init.add_argument("--clear", action="store_true", help="Delete existing releases on test repo")
     p_init.add_argument("--dry-run", action="store_true", help="Skip remote mutations")
+    p_init.add_argument("--state", help="Pre-simulation record path (default: dist/test-simulation/)")
 
     # build-baseline
     p_base = subparsers.add_parser("build-baseline", help="Build baseline setup from released stable tag")
     p_base.add_argument("--repo", default=DEFAULT_TEST_REPO, help=f"Test repository (default: {DEFAULT_TEST_REPO})")
     p_base.add_argument("--stable-tag", help="Stable release tag (default: latest stable tag)")
     p_base.add_argument("--arch", default=DEFAULT_ARCH, help=f"Target architecture (default: {DEFAULT_ARCH})")
+    p_base.add_argument("--key", help="Simulation signing key path (its public key is built in)")
     p_base.add_argument("--output-dir", default=str(ROOT_DIR / "dist" / "test-simulation" / "baseline"))
 
     # publish-hop1
@@ -557,7 +586,7 @@ def main():
     p_hop1.add_argument("--version", help="Candidate version (default: from VERSION file)")
     p_hop1.add_argument("--source-ref", default="HEAD", help="Git reference for candidate code (default: HEAD)")
     p_hop1.add_argument("--arch", default=DEFAULT_ARCH, help=f"Target architecture (default: {DEFAULT_ARCH})")
-    p_hop1.add_argument("--key", help="Offline update signing key path")
+    p_hop1.add_argument("--key", help="Simulation signing key path (never the release key)")
     p_hop1.add_argument("--output-dir", default=str(ROOT_DIR / "dist" / "test-simulation" / "hop1"))
     p_hop1.add_argument("--dry-run", action="store_true", help="Build and sign locally without uploading")
 
@@ -567,7 +596,7 @@ def main():
     p_hop2.add_argument("--version", help="Follow-up version (default: bumped patch version)")
     p_hop2.add_argument("--source-ref", default="HEAD", help="Git reference for code (default: HEAD)")
     p_hop2.add_argument("--arch", default=DEFAULT_ARCH, help=f"Target architecture (default: {DEFAULT_ARCH})")
-    p_hop2.add_argument("--key", help="Offline update signing key path")
+    p_hop2.add_argument("--key", help="Simulation signing key path (never the release key)")
     p_hop2.add_argument("--output-dir", default=str(ROOT_DIR / "dist" / "test-simulation" / "hop2"))
     p_hop2.add_argument("--dry-run", action="store_true", help="Build and sign locally without uploading")
 
@@ -577,6 +606,11 @@ def main():
     p_tear.add_argument("--versions", help="Comma-separated release tags to delete")
     p_tear.add_argument("--all-sim", action="store_true", help="Delete all releases found on test repo")
     p_tear.add_argument("--no-private", dest="private", action="store_false", help="Do not revert repo to private")
+    p_tear.add_argument("--state", help="Pre-simulation record path (default: dist/test-simulation/)")
+    p_tear.add_argument("--seen-version", default=None,
+                        help="Restore highest_seen_version to this value instead of the record ('' removes it)")
+    p_tear.add_argument("--restore-seen-only", action="store_true",
+                        help="Only restore highest_seen_version (run elevated); no GitHub calls")
     p_tear.set_defaults(private=True)
 
     args = parser.parse_args()

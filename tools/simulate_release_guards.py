@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
+# SPDX-License-Identifier: MIT
+"""Guards for tools/simulate_release.py.
+
+A release simulation builds and publishes installers that look exactly like
+real releases.  These helpers keep that from ever reaching a real installation
+or the real channel:
+
+- simulated builds trust ONLY a separate simulation key (patched into the
+  isolated worktree like the repository constants), and signing refuses any
+  key a release build trusts or the release key's own path;
+- no step may target the production repository;
+- the installed client's [updates] highest_seen_version is recorded before a
+  simulation and restored afterwards.
+"""
+
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+ROOT_DIR = SCRIPT_DIR.parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import update_signing  # noqa: E402
+
+SIMULATION_KEY_NAME = "simulation-update-signing-key.txt"
+RELEASE_KEY_ARRAYS = ("GC_UPDATE_PUBLIC_KEY_ACTIVE", "GC_UPDATE_PUBLIC_KEY_NEXT")
+SEEN_SECTION = "updates"
+SEEN_KEY = "highest_seen_version"
+SIMULATE_SCRIPT = SCRIPT_DIR / "simulate_release.py"
+_REPO_RE = re.compile(r"([A-Za-z0-9_-]+)/([A-Za-z0-9_.-]+)")
+
+
+def log(msg, prefix="[simulate-release]"):
+    print(f"{prefix} {msg}", flush=True)
+
+
+def get_default_key_path():
+    """Locate the SIMULATION update signing key.
+
+    Deliberately a different file from the release key: a simulated build is
+    signed with a key no shipped build trusts, so nothing published by a
+    simulation can ever verify on a real installation.
+    """
+    userprofile = os.environ.get("USERPROFILE") or os.environ.get("HOME")
+    if not userprofile:
+        return None
+    return Path(userprofile) / ".greencurve-keys" / SIMULATION_KEY_NAME
+
+
+def get_release_key_path():
+    """The release key's conventional location, which a simulation refuses."""
+    userprofile = os.environ.get("USERPROFILE") or os.environ.get("HOME")
+    if not userprofile:
+        return None
+    return Path(userprofile) / ".greencurve-keys" / "update-signing-key.txt"
+
+
+def _key_array_hex(text, name):
+    m = re.search(name + r"\[[^\]]+\]\s*=\s*\{(.*?)\};", text, re.DOTALL)
+    if not m:
+        return None
+    return bytes(int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(1))).hex().lower()
+
+
+def get_release_pubkeys(root=ROOT_DIR):
+    """Every public key the repository's own builds trust (ACTIVE and NEXT)."""
+    header = Path(root) / "source" / "update_verify_keys.h"
+    text = header.read_text(encoding="utf-8")
+    keys = {_key_array_hex(text, name) for name in RELEASE_KEY_ARRAYS}
+    keys.discard(None)
+    if not keys:
+        raise ValueError(f"no update public keys found in {header}")
+    return keys
+
+
+def get_production_repo(root=ROOT_DIR):
+    """owner/repo the repository's own builds fetch updates from."""
+    policy = Path(root) / "source" / "update_url_policy.h"
+    text = policy.read_text(encoding="utf-8")
+    owner = re.search(r'#define GC_UPDATE_REPO_OWNER "([^"]+)"', text)
+    name = re.search(r'#define GC_UPDATE_REPO_NAME\s+"([^"]+)"', text)
+    if not owner or not name:
+        raise ValueError(f"could not read the update repository from {policy}")
+    return f"{owner.group(1)}/{name.group(1)}"
+
+
+def require_simulation_repo(repo, root=ROOT_DIR):
+    """Refuse to point any simulation step at the production repository."""
+    if not _REPO_RE.fullmatch((repo or "").strip()):
+        raise ValueError(f"invalid repository format '{repo}'; expected owner/repo")
+    production = get_production_repo(root)
+    if repo.strip().lower() == production.lower():
+        raise RuntimeError(
+            f"refusing to run a simulation against the production repository {production}; "
+            "pass a dedicated test repository with --repo")
+    return repo.strip()
+
+
+def simulation_pubkey_hex(key_path, root=ROOT_DIR):
+    """Public key of the simulation key; refuses any key a release build trusts."""
+    key_path = Path(key_path)
+    release_path = get_release_key_path()
+    if release_path is not None:
+        try:
+            if key_path.resolve() == release_path.resolve():
+                raise RuntimeError(
+                    f"refusing the release signing key path {key_path}; simulations sign with "
+                    f"their own key (default: {get_default_key_path()})")
+        except OSError:
+            pass
+    private_key = update_signing.read_private_key(str(key_path))
+    point = update_signing.public_key_from_private(private_key)
+    pubkey_hex = update_signing.public_key_bytes(point).hex().lower()
+    if pubkey_hex in get_release_pubkeys(root):
+        raise RuntimeError(
+            "refusing to sign a simulation with a key that release builds trust; "
+            "generate a separate simulation key (init creates one)")
+    return pubkey_hex
+
+
+def ensure_simulation_key(key_path, root=ROOT_DIR, dry_run=False):
+    """Create the simulation key (owner-only) if it is missing; return its public key."""
+    key_path = Path(key_path)
+    if not key_path.exists():
+        if dry_run:
+            log(f"[DRY-RUN] would create a simulation signing key at {key_path}")
+            return None
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        update_signing.write_private_key(str(key_path), update_signing.generate_private_key())
+        log(f"created a simulation signing key at {key_path}")
+    return simulation_pubkey_hex(key_path, root)
+
+
+def patch_update_keys(source_dir, pubkey_hex):
+    """Make a worktree's build trust ONLY the simulation key (ACTIVE and NEXT).
+
+    Like patch_update_repo, this edits an isolated worktree and is never
+    committed.  Both slots are replaced so a simulated client cannot accept a
+    manifest signed with a release key either.
+    """
+    raw = bytes.fromhex(pubkey_hex)
+    if len(raw) != 64:
+        raise ValueError("simulation public key must be 64 bytes")
+    header = Path(source_dir) / "source" / "update_verify_keys.h"
+    if not header.exists():
+        raise FileNotFoundError(f"missing update_verify_keys.h at {header}")
+    text = header.read_text(encoding="utf-8")
+    body = "\n" + "\n".join(
+        "    " + ", ".join(f"0x{b:02X}" for b in raw[i:i + 8]) + ","
+        for i in range(0, 64, 8)) + "\n"
+    for name in RELEASE_KEY_ARRAYS:
+        text, count = re.subn("(" + name + r"\[[^\]]+\]\s*=\s*\{)(.*?)(\};)",
+                              lambda m: m.group(1) + body + m.group(3), text,
+                              count=1, flags=re.DOTALL)
+        if count != 1:
+            raise RuntimeError(f"failed to patch {name} in {header}")
+    for name in RELEASE_KEY_ARRAYS:
+        if _key_array_hex(text, name) != pubkey_hex:
+            raise RuntimeError(f"{name} did not read back as the simulation key")
+    header.write_text(text, encoding="utf-8")
+    log(f"patched {header.name} -> simulation key {pubkey_hex[:16]}...")
+
+
+# ---------------------------------------------------------------------------
+# The installed client's [updates] highest_seen_version
+# ---------------------------------------------------------------------------
+#
+# Every check the simulated client makes raises the machine-wide high-water
+# mark to the simulated version.  Left there, the next real release (numbered
+# below the simulated one) would be reported as the channel going backwards.
+# init records the value before anything is published and teardown restores it.
+
+def machine_config_path():
+    program_data = os.environ.get("ProgramData") or r"C:\ProgramData"
+    return Path(program_data) / "Green Curve" / "shared-profiles.ini"
+
+
+def default_state_path():
+    return ROOT_DIR / "dist" / "test-simulation" / "pre-simulation-state.json"
+
+
+def _updates_section_span(lines):
+    """(start, end) line indices of the [updates] body, or None."""
+    start = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if start is not None:
+                return start, index
+            if stripped[1:-1].strip().lower() == SEEN_SECTION:
+                start = index + 1
+    return (start, len(lines)) if start is not None else None
+
+
+def read_highest_seen(ini_path):
+    """The recorded value, or None when the file or key is absent."""
+    ini_path = Path(ini_path)
+    if not ini_path.exists():
+        return None
+    lines = ini_path.read_bytes().decode("latin-1").splitlines()
+    span = _updates_section_span(lines)
+    if span is None:
+        return None
+    for line in lines[span[0]:span[1]]:
+        key, sep, value = line.partition("=")
+        if sep and key.strip().lower() == SEEN_KEY:
+            return value.strip()
+    return None
+
+
+def set_highest_seen(ini_path, value):
+    """Rewrite one key IN PLACE (same file object, so its protected DACL and
+    owner are kept); value None removes the key.  Returns True when changed."""
+    ini_path = Path(ini_path)
+    data = ini_path.read_bytes().decode("latin-1")
+    newline = "\r\n" if "\r\n" in data else "\n"
+    lines = data.splitlines()
+    span = _updates_section_span(lines)
+    replacement = None if value is None else f"{SEEN_KEY}={value}"
+    changed = False
+    if span is not None:
+        for index in range(span[0], span[1]):
+            key, sep, _ = lines[index].partition("=")
+            if sep and key.strip().lower() == SEEN_KEY:
+                if replacement is None:
+                    del lines[index]
+                elif lines[index] != replacement:
+                    lines[index] = replacement
+                else:
+                    return False
+                changed = True
+                break
+        if not changed and replacement is not None:
+            insert_at = span[1]
+            while insert_at > span[0] and not lines[insert_at - 1].strip():
+                insert_at -= 1
+            lines.insert(insert_at, replacement)
+            changed = True
+    elif replacement is not None:
+        lines += ["", "[updates]", replacement]
+        changed = True
+    if not changed:
+        return False
+    out = (newline.join(lines) + newline).encode("latin-1")
+    with open(ini_path, "r+b") as handle:
+        handle.seek(0)
+        handle.write(out)
+        handle.truncate()
+    return True
+
+
+def record_pre_simulation_state(state_path=None, ini_path=None):
+    """Remember highest_seen_version before the first simulated publish.
+
+    Never overwrites an existing record: a second init during the same
+    simulation would otherwise record the already-raised value.
+    """
+    state_path = Path(state_path or default_state_path())
+    ini_path = Path(ini_path or machine_config_path())
+    if state_path.exists():
+        log(f"pre-simulation state already recorded in {state_path}; keeping it")
+        return json.loads(state_path.read_text(encoding="utf-8"))
+    state = {"highest_seen_version": read_highest_seen(ini_path),
+             "machine_config": str(ini_path)}
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    log(f"recorded pre-simulation highest_seen_version="
+        f"{state['highest_seen_version'] or '<absent>'} in {state_path}")
+    return state
+
+
+def is_elevated():
+    if os.name != "nt":
+        return hasattr(os, "geteuid") and os.geteuid() == 0
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return False
+
+
+def restore_command(state_path):
+    """The exact command an elevated prompt must run to finish the restore."""
+    return (f'"{sys.executable}" "{SIMULATE_SCRIPT}" teardown '
+            f'--restore-seen-only --state "{Path(state_path).resolve()}"')
+
+
+def restore_highest_seen(state_path=None, ini_path=None, override=None, elevated=None):
+    """Put highest_seen_version back; returns (restored, message)."""
+    state_path = Path(state_path or default_state_path())
+    if override is not None:
+        target = override or None
+    elif state_path.exists():
+        target = json.loads(state_path.read_text(encoding="utf-8")).get("highest_seen_version")
+    else:
+        return False, (f"no pre-simulation record at {state_path}; pass --seen-version <v> "
+                       "(empty string removes the key) to restore by hand")
+    ini_path = Path(ini_path or machine_config_path())
+    current = read_highest_seen(ini_path)
+    if current == target:
+        return True, f"highest_seen_version already {target or '<absent>'}; nothing to restore"
+    if elevated is None:
+        elevated = is_elevated()
+    if not elevated:
+        command = restore_command(state_path)
+        if override is not None:
+            command += f' --seen-version "{override}"'
+        return False, ("restoring highest_seen_version "
+                       f"({current or '<absent>'} -> {target or '<absent>'}) needs an elevated "
+                       f"prompt. Run:\n  {command}")
+    if not ini_path.exists():
+        return False, f"{ini_path} does not exist; nothing to restore"
+    set_highest_seen(ini_path, target)
+    return True, (f"restored highest_seen_version {current or '<absent>'} -> "
+                  f"{target or '<absent>'}. Restart the Green Curve service (or reboot) "
+                  "before its next update check, or it writes its in-memory value back.")
