@@ -94,6 +94,7 @@ def check_all(ctx, require_text, require_text_in_operation,
                  "the crash paths drain what the log writer has not written yet")
 
     check_steady_state_lines(ctx, require_text)
+    check_cli_log_appends(ctx, require_text)
 
 
 # The per-tick lines measured at ~97% of the 0.28 field log.  Each must route
@@ -148,3 +149,21 @@ def check_steady_state_lines(ctx, require_text):
     require_text(_p(ctx, "main_service_host.cpp"), "refresh_debug_log_verbose();",
                  "the service decides verbose per-tick logging at startup")
 
+
+def check_cli_log_appends(ctx, require_text):
+    # greencurve_cli_log.txt is an appending, capped log (F-01-003).  Replacing
+    # it erased the earlier records at every logon, including the FAILED one.
+    import re
+    pattern = re.compile(r"write_text_file_atomic\(\s*cli_log_path\(\)")
+    for name in sorted(os.listdir(ctx.SOURCE_DIR)):
+        if not name.endswith((".cpp", ".h")):
+            continue
+        if pattern.search(_read(_p(ctx, name))):
+            _fail(f"source/{name}: the CLI log must be appended, never replaced")
+    require_text(_p(ctx, "logon_handoff_status.h"), "gc_cli_log_append_linef(",
+                 "the logon handoff success record appends to the CLI log")
+    require_text(_p(ctx, "entry.cpp"),
+                 'gc_cli_log_append_linef("Green Curve logon handoff FAILED',
+                 "the logon handoff FAILED record appends to the CLI log")
+    require_text(_p(ctx, "cli_console.cpp"), "gc_cli_log_append_record(cli_log_path(),",
+                 "the CLI append goes through the capped append policy")

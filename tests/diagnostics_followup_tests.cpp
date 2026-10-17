@@ -3,12 +3,21 @@
 //
 // 0.28 field-log diagnostics follow-ups (assertion codes 6700-6799): the
 // steady-state summarizer behind the per-tick log lines
-// (debug_log_steady_state_policy.h).  Pure header; no GPU, no service.
+// (debug_log_steady_state_policy.h) and the bounded CLI-log append the silent
+// logon paths now use (cli_log_append_policy.h).  Pure headers plus one temp
+// file; no GPU, no service.
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
+#include "cli_log_append_policy.h"
 #include "debug_log_steady_state_policy.h"
 
 namespace {
@@ -108,9 +117,76 @@ int run_steady_state_tests() {
     return 0;
 }
 
+bool temp_log_path(char* out, size_t outSize, const char* tag) {
+#if defined(_WIN32)
+    char dir[MAX_PATH] = {};
+    if (GetTempPathA(MAX_PATH, dir) == 0) return false;
+    int n = snprintf(out, outSize, "%sgc_cli_log_%s_%lu.txt", dir, tag,
+                     (unsigned long)GetCurrentProcessId());
+#else
+    int n = snprintf(out, outSize, "/tmp/gc_cli_log_%s_%ld.txt", tag, (long)getpid());
+#endif
+    return n > 0 && (size_t)n < outSize;
+}
+
+bool read_all(const char* path, char* out, size_t outSize) {
+    FILE* f = fopen(path, "r");
+    if (!f) return false;
+    size_t n = fread(out, 1, outSize - 1, f);
+    out[n] = '\0';
+    fclose(f);
+    return true;
+}
+
+FILE* refuse_open(const char*, const char*) { return nullptr; }
+
+int run_cli_log_append_tests() {
+    char path[512] = {};
+    if (!temp_log_path(path, sizeof(path), "append")) return 6730;
+    remove(path);
+    // THE BUG: a logon record replaced the file.  Two appends keep both.
+    if (gc_cli_log_append_record(path, "first FAILED\n", 1 << 20, "ts ", fopen) !=
+        GC_CLI_LOG_APPENDED) return 6731;
+    if (gc_cli_log_append_record(path, "second accepted\n", 1 << 20, "ts ", fopen) !=
+        GC_CLI_LOG_APPENDED) return 6732;
+    char content[512] = {};
+    if (!read_all(path, content, sizeof(content))) return 6733;
+    if (strcmp(content, "first FAILED\nsecond accepted\n") != 0) return 6734;
+    // At the cap the file is truncated in place, marker first, then the record.
+    if (gc_cli_log_append_record(path, "third\n", 4, "ts ", fopen) !=
+        GC_CLI_LOG_APPENDED_AFTER_ROTATION) return 6735;
+    if (!read_all(path, content, sizeof(content))) return 6736;
+    char expected[256] = {};
+    snprintf(expected, sizeof(expected), "ts %sthird\n",
+             gc_debug_log_rotation::cli_marker_line());
+    if (strcmp(content, expected) != 0) return 6737;
+    // Under the cap, an existing file is appended to, never rotated.
+    if (gc_cli_log_append_record(path, "fourth\n", 1 << 20, nullptr, fopen) !=
+        GC_CLI_LOG_APPENDED) return 6738;
+    if (!read_all(path, content, sizeof(content))) return 6739;
+    if (strstr(content, "third\nfourth\n") == nullptr) return 6740;
+    // A non-positive cap never rotates (rotation policy contract).
+    if (gc_cli_log_append_record(path, "fifth\n", 0, nullptr, fopen) !=
+        GC_CLI_LOG_APPENDED) return 6741;
+    remove(path);
+    // Refusals.
+    if (gc_cli_log_append_record(nullptr, "x\n", 10, nullptr, fopen) !=
+        GC_CLI_LOG_APPEND_FAILED) return 6742;
+    if (gc_cli_log_append_record("", "x\n", 10, nullptr, fopen) !=
+        GC_CLI_LOG_APPEND_FAILED) return 6743;
+    if (gc_cli_log_append_record(path, nullptr, 10, nullptr, fopen) !=
+        GC_CLI_LOG_APPEND_FAILED) return 6744;
+    if (gc_cli_log_append_record(path, "x\n", 10, nullptr, nullptr) !=
+        GC_CLI_LOG_APPEND_FAILED) return 6745;
+    if (gc_cli_log_append_record(path, "x\n", 10, nullptr, refuse_open) !=
+        GC_CLI_LOG_APPEND_FAILED) return 6746;
+    return 0;
+}
+
 }  // namespace
 
 int run_diagnostics_followup_tests() {
     if (int r = run_steady_state_tests()) return r;
+    if (int r = run_cli_log_append_tests()) return r;
     return 0;
 }

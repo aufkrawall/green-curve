@@ -358,3 +358,12 @@ When grepping an old (<= 0.28) log, the per-tick lines are still there; a newer
 log shows `steady` summaries instead, so search the summary prefix too, e.g.
 `'GUI service I/O: read (kind|steady)'`.
 
+## CLI log (`greencurve_cli_log.txt`, updated 2026-10-17)
+
+Every writer appends, capped at 2 MiB with an in-place truncation marker
+(`cli_log_append_policy.h`, `gc_cli_log_append_linef` in `cli_console.cpp`).
+The silent scheduled-task paths (logon handoff accepted, logon handoff FAILED,
+an unparseable command line) used to replace the whole file, so each logon
+erased the previous logon's record. `tools/log_gates.py` forbids any
+`write_text_file_atomic(cli_log_path()` again; tests 6730-6746 cover append,
+rotation and refusals.

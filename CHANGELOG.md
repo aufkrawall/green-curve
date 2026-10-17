@@ -38,6 +38,7 @@ Apply reliability and diagnostics improve in this release.
 ### Fixed
 
 - **Logon profile:** a profile with a selective GPU offset and an undervolt lock no longer fails to apply at logon on a cold GPU, which previously left the GPU at stock and paused automatic restore.
+- **CLI log:** signing in no longer erases the earlier entries of `greencurve_cli_log.txt`, including the record of a failed logon handoff.
 
 ### Compatibility notes
 

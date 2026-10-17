@@ -42,6 +42,8 @@
 #ifndef GREEN_CURVE_CLI_CONSOLE_SINK
 #define GREEN_CURVE_CLI_CONSOLE_SINK
 
+#include "cli_log_append_policy.h"
+
 // The console we write to, or INVALID_HANDLE_VALUE when the caller has none.
 static HANDLE g_cliConsoleHandle = INVALID_HANDLE_VALUE;
 // Attach is attempted exactly once per process: AttachConsole() against a
@@ -186,6 +188,49 @@ static void gc_cli_logf(FILE* logf, const char* fmt, ...) {
     StringCchVPrintfA(line, ARRAY_COUNT(line), fmt, ap);
     va_end(ap);
     gc_cli_emit(logf, line);
+}
+
+// One timestamped record appended to the CLI log by a path that has no CLI_LOG
+// handle: the silent scheduled-task handoff (success and FAILED) and a command
+// line that did not parse.  These used to REPLACE the file, so every logon
+// erased the history the cap is there to keep (cli_log_append_policy.h).
+// Never fails the caller; a lost record is reported to the debug log.
+static bool gc_cli_log_append_linef(const char* fmt, ...)
+    __attribute__((format(printf, 1, 2)));
+static bool gc_cli_log_append_linef(const char* fmt, ...) {
+    if (!fmt) return false;
+    char timestamp[64] = {};
+    format_log_timestamp_prefix(timestamp, sizeof(timestamp));
+    char record[1024] = {};
+    StringCchCopyA(record, ARRAY_COUNT(record), timestamp);
+    size_t prefixLen = strlen(record);
+    va_list ap;
+    va_start(ap, fmt);
+    StringCchVPrintfA(record + prefixLen, ARRAY_COUNT(record) - prefixLen, fmt, ap);
+    va_end(ap);
+    size_t len = strlen(record);
+    if (len > 0 && record[len - 1] != '\n') {
+        StringCchCatA(record, ARRAY_COUNT(record), "\n");
+    }
+    char pathErr[256] = {};
+    if (!resolve_data_paths(pathErr, sizeof(pathErr))) {
+        debug_log("cli log: record not written, data path unresolved: %s\n",
+                  pathErr[0] ? pathErr : "unknown error");
+        return false;
+    }
+    GcCliLogAppendResult appended = gc_cli_log_append_record(cli_log_path(),
+        record, (long long)gc_debug_log_rotation::kCliRotateBytes, timestamp,
+        gc_fopen_utf8);
+    if (appended == GC_CLI_LOG_APPEND_FAILED) {
+        debug_log("cli log: could not append a record (errno=%d bytes=%u)\n",
+                  errno, (unsigned int)strlen(record));
+        return false;
+    }
+    if (appended == GC_CLI_LOG_APPENDED_AFTER_ROTATION) {
+        debug_log("cli log: truncated at the %d byte cap before appending a record\n",
+                  (int)gc_debug_log_rotation::kCliRotateBytes);
+    }
+    return true;
 }
 
 #endif // GREEN_CURVE_CLI_CONSOLE_SINK
