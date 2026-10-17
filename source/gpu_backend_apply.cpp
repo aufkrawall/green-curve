@@ -291,7 +291,28 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             lockMhz = 0;
         } else {
             if (lockMhz == 0) {
-                lockMhz = desired->hasCurvePoint[lockCi] ? desired->curvePointMHz[lockCi] : displayed_curve_mhz(g_app.curve[lockCi].freq_kHz);
+                // Interactive stored lock.  A provenance anchor's stored MHz is
+                // a projection; use its offset over today's base instead.
+                const int anchorExclude = (desired->hasGpuOffset &&
+                    desired->gpuOffsetExcludeLowCount > 0 && desired->gpuOffsetMHz != 0)
+                    ? desired->gpuOffsetExcludeLowCount : 0;
+                const int anchorScalarKHz = curve_point_scalar_gpu_offset_khz(
+                    vf_curve_global_gpu_offset_supported(), currentAppliedGpuOffsetMHz * 1000);
+                const long long anchorComponentKHz = (long long)gpu_offset_component_mhz_for_point(
+                    lockCi, desired->gpuOffsetMHz, anchorExclude) * 1000;
+                long long anchorKHz = curve_point_stored_lock_anchor_khz(
+                    desired->hasCurvePoint[lockCi] != 0,
+                    desired->curvePointFromGpuOffset[lockCi] != 0,
+                    desired->curvePointMHz[lockCi], g_app.curve[lockCi].freq_kHz,
+                    g_app.freqOffsets[lockCi], anchorScalarKHz, anchorComponentKHz);
+                if (anchorKHz > UINT_MAX) anchorKHz = UINT_MAX;
+                lockMhz = displayed_curve_mhz((unsigned int)anchorKHz);
+                debug_log("apply: stored lock anchor ci=%d -> %u MHz (requested=%d fromOffset=%d"
+                          " storedMHz=%u live=%u kHz offset=%d kHz scalar=%d kHz component=%lld kHz)\n",
+                    lockCi, lockMhz, desired->hasCurvePoint[lockCi] ? 1 : 0,
+                    desired->curvePointFromGpuOffset[lockCi] ? 1 : 0,
+                    desired->curvePointMHz[lockCi], g_app.curve[lockCi].freq_kHz,
+                    g_app.freqOffsets[lockCi], anchorScalarKHz, anchorComponentKHz);
             }
             for (int vi = lockVi; vi < g_app.numVisible; vi++) {
                 int ci = g_app.visibleMap[vi];

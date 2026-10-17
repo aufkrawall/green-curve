@@ -118,4 +118,21 @@ static inline long long curve_point_offset_intent_live_khz(long long liveFreqKHz
         gpuOffsetComponentKHz;
 }
 
+// The anchor of an interactive stored lock when the request names no lock MHz.
+// A typed anchor point: its MHz.  An anchor point with offset provenance: where
+// its offset puts it over today's base (its stored MHz is a projection over an
+// earlier one).  No request point: the live MHz, as before.
+static inline long long curve_point_stored_lock_anchor_khz(bool requested, bool fromGpuOffset,
+                                                           unsigned int requestedMHz,
+                                                           long long liveFreqKHz,
+                                                           long long programmedOffsetKHz,
+                                                           long long scalarGpuOffsetKHz,
+                                                           long long gpuOffsetComponentKHz) {
+    if (requested && !fromGpuOffset) return (long long)requestedMHz * 1000;
+    if (requested)
+        return curve_point_offset_intent_live_khz(liveFreqKHz, programmedOffsetKHz,
+                                                  scalarGpuOffsetKHz, gpuOffsetComponentKHz);
+    return liveFreqKHz < 0 ? 0 : liveFreqKHz;
+}
+
 #endif

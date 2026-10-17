@@ -624,6 +624,16 @@ static int run(){
    CHECK(apply_build_curve_targets(&pre,true,false,true,LOCK_MODE_FLATTEN,72,2950,false,0,475,0,0,
      pop,offs,frq,preTail,preBuilt,msk));
    CHECK(preBuilt[70]==475000);
+   // Interactive stored-lock anchor with no lock MHz in the request: a typed
+   // anchor keeps its MHz; a provenance anchor follows its offset over today's
+   // base (stored 2797 was projected over a base one bin lower than now).
+   CHECK(curve_point_stored_lock_anchor_khz(true,false,2797,2827000,475000,0,475000)==2797000);
+   CHECK(curve_point_stored_lock_anchor_khz(true,true,2797,2827000,475000,0,475000)==2827000);
+   // Pre-Blackwell: same point, offset carried by the NVML scalar.
+   CHECK(curve_point_stored_lock_anchor_khz(true,true,2797,2827000,0,475000,475000)==2827000);
+   // No request point: the live value, as before.
+   CHECK(curve_point_stored_lock_anchor_khz(false,false,0,2827000,475000,0,0)==2827000);
+   CHECK(curve_point_stored_lock_anchor_khz(false,true,0,-5,0,0,0)==0);
  }
  // Real reset sequencing: VF-global must never invoke the scalar helper.
  for(int vfGlobal=0;vfGlobal<2;++vfGlobal)for(int scalarFails=0;scalarFails<2;++scalarFails)

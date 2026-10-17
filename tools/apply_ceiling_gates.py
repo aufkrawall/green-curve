@@ -343,6 +343,8 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "the boost tally runs after correction through the tested policy")
     forbid_text(apply_cpp, "bool userRelevantPoint = (expectedOffsetkHz != 0) && (actualMHz >= 500);",
                 "no first-batch boost tally judging typed points by offset")
+    require_text(apply_cpp, "long long anchorKHz = curve_point_stored_lock_anchor_khz(",
+                 "an interactive stored-lock anchor uses the provenance-aware anchor rule")
     # ...and writing must not re-derive them from the live base, which is the
     # very sample that moved.
     forbid_text(targets_h, "offset = (long long)desired->curvePointMHz[ci] * 1000 - base;",
