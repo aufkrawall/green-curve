@@ -368,20 +368,37 @@ static ApplyCorrectionLoopOutcome apply_run_correction_loop(int maxPasses,
     return out;
 }
 
+// Where a point is meant to sit for the flat-tail check.  A tail point: the
+// lock.  A typed point: its MHz.  An offset-intent point: its requested offset
+// over the stock base the driver reports NOW (live minus programmed) -- its
+// stored MHz is a projection over an earlier base, and on a cold board that
+// base sits a VF bin or more away, which would fail (or pass) the check on a
+// number the apply never asked the driver for.
+static inline unsigned int apply_correction_monotonic_target_mhz(
+        const ApplyCorrectionRequest& q, const ApplyCorrectionReadback& rb, int ci) {
+    if (q.lockedTailMask[ci]) return q.lockMHz;
+    if (apply_correction_point_offset_is_intent(q, ci)) {
+        long long kHz = apply_correction_live_base_khz(rb, ci) + (long long)q.targetOffsetKHz[ci];
+        if (kHz < 0) kHz = 0;
+        if (kHz > UINT_MAX) kHz = UINT_MAX;
+        return apply_correction_display_mhz((unsigned int)kHz);
+    }
+    return q.curvePointMHz[ci];
+}
+
 // A FLATTEN/NONE lock must keep a flat tail: a tail point whose predecessor's
 // target is above the lock would force the driver to raise the plateau.
 // Returns the first violating point index, or -1; `previousTargetOut` gets the
 // predecessor target that caused it.
-static inline int apply_correction_tail_monotonic_violation(int pointCount,
-        const unsigned int* freqKHz, const unsigned char* hasCurvePoint,
-        const unsigned int* curvePointMHz, const bool* lockedTailMask,
-        unsigned int lockMHz, unsigned int* previousTargetOut) {
+static inline int apply_correction_tail_monotonic_violation(
+        const ApplyCorrectionRequest& q, const ApplyCorrectionReadback& rb,
+        unsigned int* previousTargetOut) {
     unsigned int lastTargetMHz = 0;
     if (previousTargetOut) *previousTargetOut = 0;
-    for (int ci = 0; ci < pointCount; ci++) {
-        if (!freqKHz[ci] || !hasCurvePoint[ci]) continue;
-        const unsigned int currentTarget = lockedTailMask[ci] ? lockMHz : curvePointMHz[ci];
-        if (lockedTailMask[ci] && ci > 0 && lastTargetMHz > currentTarget) {
+    for (int ci = 0; ci < q.pointCount; ci++) {
+        if (!rb.freqKHz[ci] || !q.hasCurvePoint[ci]) continue;
+        const unsigned int currentTarget = apply_correction_monotonic_target_mhz(q, rb, ci);
+        if (q.lockedTailMask[ci] && ci > 0 && lastTargetMHz > currentTarget) {
             if (previousTargetOut) *previousTargetOut = lastTargetMHz;
             return ci;
         }

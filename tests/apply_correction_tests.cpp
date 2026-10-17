@@ -408,19 +408,23 @@ int run_lock_tests() {
     // 6521: the flat-tail monotonic check names the first tail point that sits
     // below its predecessor's target, and passes a flat tail.
     {
-        unsigned int freq[N]; unsigned char has[N]; unsigned int mhz[N]; bool tail[N];
+        unsigned int freq[N]; int prog[N] = {};
+        Request r; request_init(&r);
+        r.q.hasLock = true; r.q.lockMHz = 2000; r.q.lockCi = 10;
         for (int i = 0; i < N; i++) {
-            freq[i] = 1500000u + 50000u * i; has[i] = 1; mhz[i] = 1500 + 50 * i;
-            tail[i] = i >= 10;
+            freq[i] = 1500000u + 50000u * i; r.hasPoint[i] = 1; r.pointMHz[i] = 1500 + 50 * i;
+            r.explicitMask[i] = true;
+            r.tail[i] = i >= 10;
         }
+        const ApplyCorrectionReadback rb = {freq, prog};
         unsigned int prev = 0;
-        if (apply_correction_tail_monotonic_violation(N, freq, has, mhz, tail, 2000, &prev) != -1)
+        if (apply_correction_tail_monotonic_violation(r.q, rb, &prev) != -1)
             return 6521;
-        mhz[9] = 2020;
-        if (apply_correction_tail_monotonic_violation(N, freq, has, mhz, tail, 2000, &prev) != 10 ||
+        r.pointMHz[9] = 2020;
+        if (apply_correction_tail_monotonic_violation(r.q, rb, &prev) != 10 ||
             prev != 2020) return 6522;
-        has[9] = 0;                                  // an unrequested point is not a target
-        if (apply_correction_tail_monotonic_violation(N, freq, has, mhz, tail, 2000, &prev) != -1)
+        r.hasPoint[9] = 0;                           // an unrequested point is not a target
+        if (apply_correction_tail_monotonic_violation(r.q, rb, &prev) != -1)
             return 6523;
     }
     return 0;

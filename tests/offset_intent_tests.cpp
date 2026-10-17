@@ -15,6 +15,7 @@
 #include <cstring>
 
 #include "apply_correction_policy.h"
+#include "apply_lock_pretail_policy.h"
 
 namespace {
 
@@ -190,9 +191,101 @@ int run_scalar_offset_tests() {
     return 0;
 }
 
+// Pre-tail judging (apply_lock_pretail_policy.h) and the post-correction
+// flat-tail check (apply_correction_tail_monotonic_violation): a requested
+// point with offset provenance is judged where its offset puts it over the
+// base the driver reports now, never by its stored projection.
+int run_pretail_offset_intent_tests() {
+    constexpr int P = 8;
+    bool populated[P], tail[P], hasPoint[P] = {}, fromOffset[P] = {};
+    unsigned int pointMHz[P] = {};
+    long long base[P], unowned[P];
+    int component[P];
+    for (int i = 0; i < P; i++) {
+        populated[i] = true;
+        tail[i] = i >= 5;
+        base[i] = 2000000LL + 100000LL * i;   // stock 2000..2700 MHz
+        unowned[i] = base[i];
+        component[i] = 0;
+    }
+    unsigned int target = 0;
+    // 6586: a cold-boot projection.  Point 4 was saved as base 2350 + 0 and is
+    // stored at 2350 MHz; the driver now reports its base at 2400, so with no
+    // GPU offset the point runs at 2400 -- above a 2380 lock.  Judging the
+    // stored 2350 let the lock through and the tail could not stay flat.
+    hasPoint[4] = true;
+    fromOffset[4] = true;
+    pointMHz[4] = 2350;
+    if (apply_lock_pretail_first_violation(P, 2380u, populated, tail, hasPoint, fromOffset,
+            pointMHz, false, base, component, unowned, &target) != 4 || target != 2400)
+        return 6586;
+    // 6587: the reverse -- a warm-saved projection (2450) above the lock while
+    // the live base + component (2400 + 0) is below it: no false refusal.
+    pointMHz[4] = 2450;
+    if (apply_lock_pretail_first_violation(P, 2420u, populated, tail, hasPoint, fromOffset,
+            pointMHz, false, base, component, unowned, &target) != -1)
+        return 6587;
+    // 6588: under a GPU offset the provenance point takes its component, like
+    // an unrequested neighbour (2400 + 100 > 2450).
+    for (int i = 0; i < P; i++) component[i] = 100;
+    if (apply_lock_pretail_first_violation(P, 2450u, populated, tail, hasPoint, fromOffset,
+            pointMHz, true, base, component, unowned, &target) != 4 || target != 2500)
+        return 6588;
+    // 6589: a TYPED point keeps its absolute, whatever the base says.
+    fromOffset[4] = false;
+    pointMHz[4] = 2440;
+    if (apply_lock_pretail_first_violation(P, 2450u, populated, tail, hasPoint, fromOffset,
+            pointMHz, true, base, component, unowned, &target) != -1)
+        return 6589;
+
+    // 6590: the flat-tail check after correction.  Point 4 is offset intent
+    // (provenance) holding +0; its stored projection 2350 is a whole bin below
+    // where it really runs (live 2400), above the 2380 lock.
+    {
+        Request r;
+        request_init(&r);
+        unsigned int freq[N] = {};
+        int programmed[N] = {};
+        r.q.hasLock = true;
+        r.q.lockMHz = 2380;
+        r.q.lockCi = 5;
+        for (int i = 0; i < N; i++) freq[i] = 2000000u + 100000u * (unsigned int)i;
+        for (int i = 5; i < N; i++) {
+            r.tail[i] = true;
+            r.hasPoint[i] = 1;
+            r.pointMHz[i] = 2380;
+            freq[i] = 2400000;                // the driver's running maximum
+        }
+        r.hasPoint[4] = 1;
+        r.fromGpuOffset[4] = 1;
+        r.pointMHz[4] = 2350;
+        r.targetOffsetKHz[4] = 0;
+        const ApplyCorrectionReadback rb = {freq, programmed};
+        unsigned int prev = 0;
+        if (apply_correction_tail_monotonic_violation(r.q, rb, &prev) != 5 || prev != 2400)
+            return 6590;
+        // 6591: the reverse: projection 2450, live 2300 + 0 under a 2380 lock.
+        freq[4] = 2300000;
+        r.pointMHz[4] = 2450;
+        if (apply_correction_tail_monotonic_violation(r.q, rb, &prev) != -1) return 6591;
+        // 6592: a driver-limited offset is judged by its TARGET offset over the
+        // live base: programmed +0 of a +100 MHz target on base 2300 = 2400.
+        r.targetOffsetKHz[4] = 100000;
+        if (apply_correction_tail_monotonic_violation(r.q, rb, &prev) != 5 || prev != 2400)
+            return 6592;
+        // 6593: a typed predecessor is still judged by its MHz.
+        r.fromGpuOffset[4] = 0;
+        r.explicitMask[4] = true;
+        r.pointMHz[4] = 2370;
+        if (apply_correction_tail_monotonic_violation(r.q, rb, &prev) != -1) return 6593;
+    }
+    return 0;
+}
+
 }  // namespace
 
 int run_offset_intent_tests() {
     if (int r = run_scalar_offset_tests()) return r;
+    if (int r = run_pretail_offset_intent_tests()) return r;
     return 0;
 }

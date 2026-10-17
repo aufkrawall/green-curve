@@ -314,6 +314,28 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "the Windows target build passes the scalar to the shared policy")
     require_text(apply_cpp, "const int scalarGpuOffsetKHz = curve_point_scalar_gpu_offset_khz(",
                  "the apply derives the scalar from the VF-table capability, not a guess")
+    # The pre-tail refusal and the post-correction flat-tail check judge a
+    # provenance point where its offset puts it over today's base, like an
+    # unrequested neighbour -- not by its stored projection.
+    pretail_policy_h = _p(ctx, "apply_lock_pretail_policy.h")
+    require_text(pretail_policy_h,
+                 "curve_point_offset_is_intent(!fromOffset, fromOffset, false);",
+                 "the pre-tail check uses the shared offset-intent predicate")
+    require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
+                 "desired->curvePointFromGpuOffset, desired->curvePointMHz,",
+                 "the pre-reset pre-tail check passes per-point provenance")
+    require_text(apply_cpp, "desired->curvePointFromGpuOffset, desired->curvePointMHz,",
+                 "the post-reset pre-tail check passes per-point provenance")
+    require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
+                 "g_app.freqOffsets[ci] + scalarKHz);",
+                 "the pre-reset pre-tail base strips a pre-Blackwell NVML scalar")
+    require_text(apply_cpp, "originalCurveOffsets[ci] + pretailScalarKHz);",
+                 "the post-reset pre-tail base strips a pre-Blackwell NVML scalar")
+    require_text(correction_policy_h,
+                 "const unsigned int currentTarget = apply_correction_monotonic_target_mhz(q, rb, ci);",
+                 "the flat-tail check judges offset-intent points by offset over the live base")
+    require_text(apply_cpp, "int violationCi = apply_correction_tail_monotonic_violation(correction,",
+                 "the apply's flat-tail check reads the same request as the correction loop")
     # ...and writing must not re-derive them from the live base, which is the
     # very sample that moved.
     forbid_text(targets_h, "offset = (long long)desired->curvePointMHz[ci] * 1000 - base;",
