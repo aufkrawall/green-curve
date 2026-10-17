@@ -34,6 +34,10 @@ Apply reliability improves in this release.
 ### Fixed
 
 - **Logon profile:** a profile with a selective GPU offset and an undervolt lock no longer fails to apply at logon on a cold GPU, which previously left the GPU at stock and paused automatic restore.
+- **GTX 10 to RTX 40 series:** profiles carrying a GPU offset no longer apply that offset twice to their saved curve points.
+- **Lock validation:** a lock is no longer wrongly refused, or wrongly accepted, because a saved curve point's base moved since the profile was saved.
+- **Apply summary:** the "N of M boost points matched" note and the warning level now reflect the final curve after correction.
+- **Stored lock:** applying from the editor with an inherited lock now places the lock where the saved point really runs today.
 
 ### Compatibility notes
 
