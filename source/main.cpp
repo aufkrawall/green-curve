@@ -292,7 +292,7 @@ static bool try_lock_service_runtime(DWORD timeoutMs);
 static void unlock_service_runtime();
 static bool service_runtime_lock_held_by_current_thread();
 static void service_set_pending_operation_source(const char* source);
-static void set_last_apply_phase(const char* phase);
+static void set_last_apply_phase(const char* phase, bool logPhase = true);
 #include "crash_artifacts_forward.h"
 static bool service_resolve_active_user_paths_for_startup(const char* context);
 static DWORD WINAPI service_fan_runtime_thread_proc(void*);
@@ -562,7 +562,7 @@ static bool nvml_ensure_ready();
 // process restart and is defined in main_service_runtime_identity.cpp.
 static void launch_recovery_thread();
 static bool nvml_set_fan_auto(char* detail, size_t detailSize);
-static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_t detailSize);
+static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_t detailSize, bool runtimeTick = false);
 static void initialize_gui_fan_settings_from_live_state(bool syncGuiCurve = true);
 static int get_effective_live_fan_mode();
 static bool fan_setting_matches_current(int wantMode, int wantPct, const FanCurveConfig* wantCurve);

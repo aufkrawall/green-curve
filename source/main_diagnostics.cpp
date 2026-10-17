@@ -155,7 +155,7 @@ static void service_note_hardware_progress() {
     g_serviceHardwareProgressMs = GetTickCount64();
 }
 
-static void set_last_apply_phase(const char* phase) {
+static void set_last_apply_phase(const char* phase, bool logPhase) {
     // An apply advancing a phase is the clearest proof the gate holder is alive.
     service_note_hardware_progress();
     // Per-phase apply timing (logging only, no behaviour change): log how long the
@@ -173,6 +173,9 @@ static void set_last_apply_phase(const char* phase) {
     unsigned long long prevPhaseMs = (s_lastPhaseTickMs != 0 && nowMs >= s_lastPhaseTickMs)
         ? (unsigned long long)(nowMs - s_lastPhaseTickMs) : 0ull;
     StringCchCopyA(g_lastApplyPhase, ARRAY_COUNT(g_lastApplyPhase), phase);
+    // A fan runtime tick is not an apply: it keeps the crash/wedge breadcrumb
+    // current but neither logs nor disturbs the apply's phase timing.
+    if (!logPhase) return;
     debug_log("apply phase: %s (previous phase took +%llums)\n", g_lastApplyPhase, prevPhaseMs);
     s_lastPhaseTickMs = nowMs;
 }

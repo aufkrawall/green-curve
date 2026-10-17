@@ -340,19 +340,25 @@ the recovery is logged as a change too.
 | `service_runtime_pulse_done:` | fan mode, duty, curve/fixed, failing | temperature | first failing tick, recovery |
 | `service_fan_runtime_thread: waiting` | interval, curve/fixed | waitMs | interval/mode change |
 | `ensure_service_fan_runtime_thread: already running` | constant | - | every other plan |
+| `fan runtime write:` (curve/fixed duty writes) | mode, fan count | duty % | mode/fan-count change; failures log from the runtime failure path |
 
 `service_runtime_pulse:` (pre-tick inputs) and
-`nvml_set_fan_manual: ... already manual` are verbose-only; the speed write's
-`apply phase:` line still records every fan write.
+`nvml_set_fan_manual: ... already manual` are verbose-only. A runtime duty
+write no longer logs `apply phase: Fan manual speed write` per fan
+(`nvml_set_fan_manual(..., runtimeTick=true)` ->
+`set_last_apply_phase(phase, false)`), but still updates the phase marker
+that crash reports and the wedge watchdog print. Explicit applies keep their
+`apply phase:` lines and timings. Measured in the 0.28 log: the busiest
+fan-curve hour carried 148 KB of these lines (13% of that hour); a sustained
+2 s poll on two fans would be ~700 KB/h, now ~1 KB/h of summaries.
 
 Verbose mode restores the old per-tick detail: `GREEN_CURVE_DEBUG=verbose` (or
 `2`), or `[debug] verbose=1` in the config. Both processes log
 `debug log: per-tick verbose detail ON|OFF` once when the mode is decided.
 Replaying the 0.28 field log (44 h) through the new rules gives about 19 KB/h
 instead of 549 KB/h (29x), so the cap holds about ten weeks of steady state.
-Stale-risk: a sustained fan-curve load still writes one `apply phase: Fan
-manual speed write` per fan per changed duty step; not measured on a gaming
-session.
+Stale-risk: the fan-write numbers are a replay of the field log, not a
+measured gaming session.
 
 When grepping an old (<= 0.28) log, the per-tick lines are still there; a newer
 log shows `steady` summaries instead, so search the summary prefix too, e.g.

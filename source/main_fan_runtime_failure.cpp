@@ -146,6 +146,7 @@ static void escalate_fan_runtime_failure(const char* action, const char* detail)
 
 // The one entry point for a failed tick.  Must be called WITHOUT g_appLock.
 static void report_fan_runtime_failure(const char* action, const char* detail) {
+    gc_log_steady::invalidate(&g_fanRuntimeWriteLog);
     EnterCriticalSection(&g_appLock);
     bool escalate = note_fan_runtime_failure_locked(action, detail);
     LeaveCriticalSection(&g_appLock);

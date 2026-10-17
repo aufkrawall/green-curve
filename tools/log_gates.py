@@ -110,6 +110,8 @@ _STEADY_STATE_SITES = (
     ("main_service_fan_worker.cpp", "observe(&s_pulseLog"),
     ("main_service_fan_worker.cpp", "observe(&s_waitLog"),
     ("main_service_fan_worker.cpp", "observe(&s_ensureLog"),
+    # Fan-curve duty steps under load: one write per fan per poll.
+    ("main_fan_runtime.cpp", "observe(&g_fanRuntimeWriteLog"),
 )
 
 # Text that, if it reappears, is the old unconditional per-tick form.
@@ -142,6 +144,13 @@ def check_steady_state_lines(ctx, require_text):
     for name, needle in _STEADY_STATE_FORBIDDEN:
         if needle in _read(_p(ctx, name)):
             _fail(f"{name}: unsummarized per-tick log line is back ({needle!r})")
+    # The runtime's duty writes keep the crash/wedge phase marker but do not log
+    # an "apply phase:" line each; both runtime callers say they are runtime.
+    require_text(_p(ctx, "main_runtime_nvml.cpp"), "set_last_apply_phase(phase, !runtimeTick);",
+                 "a runtime fan duty write updates the phase marker without logging it")
+    fan_runtime = _read(_p(ctx, "main_fan_runtime.cpp"))
+    if fan_runtime.count("sizeof(detail), true) || !exact)") != 2:
+        _fail("main_fan_runtime.cpp: both fan runtime ticks must mark their duty writes as runtime")
     # Verbose must be wired in both processes or the per-tick detail is gone.
     require_text(_p(ctx, "entry.cpp"), "refresh_debug_log_verbose();",
                  "the GUI decides verbose per-tick logging after enabling the log")
