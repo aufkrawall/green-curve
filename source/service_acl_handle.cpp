@@ -33,24 +33,74 @@ struct GcExpectedServiceAce {
     DWORD mask;
 };
 
-// FILE_ALL_ACCESS is what SDDL "FA" maps to; 0x1200a9 is read & execute.
+// FILE_ALL_ACCESS is what SDDL "FA" maps to; 0x1200a9 is read & execute and
+// 0x120089 is read.  The private kinds are the first two rows alone.
 const GcExpectedServiceAce kExpectedServiceAces[3] = {
     {WinLocalSystemSid, FILE_ALL_ACCESS},
     {WinBuiltinAdministratorsSid, FILE_ALL_ACCESS},
     {WinBuiltinUsersSid, 0x1200a9},
 };
 
+int service_acl_expected_ace_count(GcServiceAclKind kind) {
+    return kind == GC_SERVICE_ACL_PRIVATE_DIRECTORY || kind == GC_SERVICE_ACL_PRIVATE_FILE
+        ? 2 : 3;
+}
+
+DWORD service_acl_expected_mask(GcServiceAclKind kind, int row) {
+    if (kind == GC_SERVICE_ACL_CONFIG && row == 2) return 0x120089;
+    return kExpectedServiceAces[row].mask;
+}
+
 const wchar_t* service_acl_sddl(GcServiceAclKind kind) {
-    if (kind == GC_SERVICE_ACL_CONFIG)
-        return L"D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x120089;;;BU)";
-    return kind == GC_SERVICE_ACL_DIRECTORY
-        ? L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)"
-        : L"D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)";
+    switch (kind) {
+        case GC_SERVICE_ACL_CONFIG:
+            return L"D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x120089;;;BU)";
+        case GC_SERVICE_ACL_DIRECTORY:
+            return L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)";
+        case GC_SERVICE_ACL_PRIVATE_DIRECTORY:
+            return L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+        case GC_SERVICE_ACL_PRIVATE_FILE:
+            return L"D:P(A;;FA;;;SY)(A;;FA;;;BA)";
+        case GC_SERVICE_ACL_BINARY:
+        default:
+            return L"D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)";
+    }
 }
 
 BYTE service_acl_ace_flags(GcServiceAclKind kind) {
-    return kind == GC_SERVICE_ACL_DIRECTORY
+    return service_acl_kind_is_directory(kind)
         ? (BYTE)(OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) : (BYTE)0;
+}
+
+bool handle_owner_is_one_of(HANDLE handle, const WELL_KNOWN_SID_TYPE* types, int count) {
+    if (!handle || handle == INVALID_HANDLE_VALUE) return false;
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    PSID owner = nullptr;
+    DWORD rc = GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
+                               &owner, nullptr, nullptr, nullptr, &sd);
+    if (rc != ERROR_SUCCESS || !sd) return false;
+    bool match = false;
+    if (owner && IsValidSid(owner)) {
+        for (int i = 0; i < count && !match; i++) {
+            BYTE sid[SECURITY_MAX_SID_SIZE] = {};
+            match = build_sid(types[i], sid, sizeof(sid)) && EqualSid(owner, (PSID)sid);
+        }
+    }
+    LocalFree(sd);
+    return match;
+}
+
+// A suffix that only has to be unlikely to collide (a collision fails the
+// rename, which the caller retries or fails closed on), so no CSPRNG dependency
+// is pulled into every binary that links this shard.
+unsigned long long set_aside_suffix(unsigned attempt) {
+    LARGE_INTEGER counter = {};
+    QueryPerformanceCounter(&counter);
+    unsigned long long value = (unsigned long long)counter.QuadPart;
+    value ^= (unsigned long long)GetCurrentProcessId() << 32;
+    value ^= GetTickCount64() * 0x9E3779B97F4A7C15ull;
+    value ^= (unsigned long long)(attempt + 1) * 0xC2B2AE3D27D4EB4Full;
+    return value;
 }
 
 // The reparse/directory facts of the object the handle names -- never of
@@ -69,10 +119,18 @@ bool handle_matches_kind(HANDLE handle, GcServiceAclKind kind) {
     bool isReparse = false;
     if (!handle_attribute_facts(handle, &isDirectory, &isReparse)) return false;
     if (isReparse) return false;
-    return isDirectory == (kind == GC_SERVICE_ACL_DIRECTORY);
+    return isDirectory == service_acl_kind_is_directory(kind);
 }
 
 }  // namespace
+
+const wchar_t* service_acl_kind_sddl(GcServiceAclKind kind) {
+    return service_acl_sddl(kind);
+}
+
+bool service_acl_kind_is_directory(GcServiceAclKind kind) {
+    return kind == GC_SERVICE_ACL_DIRECTORY || kind == GC_SERVICE_ACL_PRIVATE_DIRECTORY;
+}
 
 bool service_security_descriptor_is_ours(void* securityDescriptor, GcServiceAclKind kind) {
     PSECURITY_DESCRIPTOR sd = (PSECURITY_DESCRIPTOR)securityDescriptor;
@@ -87,9 +145,10 @@ bool service_security_descriptor_is_ours(void* securityDescriptor, GcServiceAclK
     // A null DACL is "Everyone: Full Control" -- the opposite of ours.
     if (!GetSecurityDescriptorDacl(sd, &present, &dacl, &defaulted) || !present || !dacl)
         return false;
-    if (dacl->AceCount != 3) return false;
+    const int expectedCount = service_acl_expected_ace_count(kind);
+    if (dacl->AceCount != (DWORD)expectedCount) return false;
     BYTE expectedSids[3][SECURITY_MAX_SID_SIZE] = {};
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < expectedCount; i++) {
         if (!build_sid(kExpectedServiceAces[i].sid, expectedSids[i], sizeof(expectedSids[i])))
             return false;
     }
@@ -104,18 +163,19 @@ bool service_security_descriptor_is_ours(void* securityDescriptor, GcServiceAclK
         ACCESS_ALLOWED_ACE* ace = (ACCESS_ALLOWED_ACE*)aceRaw;
         PSID sid = (PSID)&ace->SidStart;
         bool matched = false;
-        for (int e = 0; e < 3; e++) {
+        for (int e = 0; e < expectedCount; e++) {
             if (seen[e] || !EqualSid(sid, (PSID)expectedSids[e])) continue;
-            DWORD expectedMask = kind == GC_SERVICE_ACL_CONFIG && e == 2
-                ? 0x120089 : kExpectedServiceAces[e].mask;
-            if (ace->Mask != expectedMask) return false;
+            if (ace->Mask != service_acl_expected_mask(kind, e)) return false;
             seen[e] = true;
             matched = true;
             break;
         }
         if (!matched) return false;
     }
-    return seen[0] && seen[1] && seen[2];
+    for (int e = 0; e < expectedCount; e++) {
+        if (!seen[e]) return false;
+    }
+    return true;
 }
 
 bool service_handle_dacl_is_ours(void* handle, GcServiceAclKind kind) {
@@ -131,18 +191,71 @@ bool service_handle_dacl_is_ours(void* handle, GcServiceAclKind kind) {
 }
 
 bool service_handle_owner_is_administrators(void* handle) {
-    if (!handle || handle == INVALID_HANDLE_VALUE) return false;
-    PSECURITY_DESCRIPTOR sd = nullptr;
-    PSID owner = nullptr;
-    DWORD rc = GetSecurityInfo((HANDLE)handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
-                               &owner, nullptr, nullptr, nullptr, &sd);
-    if (rc != ERROR_SUCCESS || !sd) return false;
-    BYTE admins[SECURITY_MAX_SID_SIZE] = {};
-    bool isAdmins = owner && IsValidSid(owner) &&
-        build_sid(WinBuiltinAdministratorsSid, admins, sizeof(admins)) &&
-        EqualSid(owner, (PSID)admins);
-    LocalFree(sd);
-    return isAdmins;
+    const WELL_KNOWN_SID_TYPE admins[] = {WinBuiltinAdministratorsSid};
+    return handle_owner_is_one_of((HANDLE)handle, admins, 1);
+}
+
+bool service_handle_owner_is_privileged(void* handle) {
+    const WELL_KNOWN_SID_TYPE privileged[] = {WinBuiltinAdministratorsSid, WinLocalSystemSid};
+    return handle_owner_is_one_of((HANDLE)handle, privileged, 2);
+}
+
+bool service_set_aside_by_name(const wchar_t* path, const void* expectedIdentityRaw,
+                               char* err, size_t errSize) {
+    if (err && errSize) err[0] = 0;
+    const BY_HANDLE_FILE_INFORMATION* expected =
+        (const BY_HANDLE_FILE_INFORMATION*)expectedIdentityRaw;
+    const size_t pathChars = path ? wcslen(path) : 0;
+    if (pathChars == 0 || pathChars > MAX_PATH - 32 || path[pathChars - 1] == L'\\') {
+        set_handle_acl_err(err, errSize, "The object to set aside has an unusable name",
+                           ERROR_INVALID_NAME);
+        return false;
+    }
+    DWORD lastError = ERROR_ALREADY_EXISTS;
+    for (unsigned attempt = 0; attempt < 4; attempt++) {
+        // "<path>.unproven-<suffix>": the same directory by construction, so
+        // the move is a rename (no copy fallback) that never leaves it.
+        WCHAR aside[MAX_PATH] = {};
+        if (FAILED(StringCchPrintfW(aside, ARRAYSIZE(aside), L"%ls.unproven-%016llx", path,
+                                    set_aside_suffix(attempt)))) {
+            set_handle_acl_err(err, errSize, "The set-aside name is too long", ERROR_INVALID_NAME);
+            return false;
+        }
+        // A rename moves a link itself, never its target, and never replaces
+        // whatever might already hold the new name.
+        if (!MoveFileExW(path, aside, 0)) {
+            lastError = GetLastError();
+            if (lastError == ERROR_ALREADY_EXISTS || lastError == ERROR_FILE_EXISTS) continue;
+            break;
+        }
+        HANDLE moved = CreateFileW(aside, FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        BY_HANDLE_FILE_INFORMATION now = {};
+        bool identityOk = moved != INVALID_HANDLE_VALUE && GetFileInformationByHandle(moved, &now);
+        const bool isDirectory = identityOk && (now.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+        if (moved != INVALID_HANDLE_VALUE) CloseHandle(moved);
+        if (expected) {
+            identityOk = identityOk &&
+                now.dwVolumeSerialNumber == expected->dwVolumeSerialNumber &&
+                now.nFileIndexHigh == expected->nFileIndexHigh &&
+                now.nFileIndexLow == expected->nFileIndexLow;
+        }
+        if (!identityOk) {
+            // Something else took the name between the inspection and the
+            // move.  It stays aside untouched; the caller looks again.
+            set_handle_acl_err(err, errSize, "A different object was set aside than inspected",
+                               ERROR_INVALID_DATA);
+            return false;
+        }
+        // Best effort: a non-empty directory simply stays renamed aside.  The
+        // original name is free either way, which is what the caller needs.
+        if (isDirectory) RemoveDirectoryW(aside);
+        else DeleteFileW(aside);
+        return true;
+    }
+    set_handle_acl_err(err, errSize, "Cannot rename the unproven object aside", lastError);
+    return false;
 }
 
 bool service_path_dacl_is_ours(const wchar_t* path, GcServiceAclKind kind) {
@@ -173,7 +286,7 @@ bool apply_protected_service_dacl_to_handle(void* handleRaw, GcServiceAclKind ki
         set_handle_acl_err(err, errSize, "Failed reading the object's attributes", GetLastError());
         return false;
     }
-    if (isReparse || isDirectory != (kind == GC_SERVICE_ACL_DIRECTORY)) {
+    if (isReparse || isDirectory != service_acl_kind_is_directory(kind)) {
         set_handle_acl_err(err, errSize,
                            "Refusing to harden a reparse point or the wrong object type",
                            ERROR_INVALID_PARAMETER);
@@ -318,29 +431,34 @@ const char* service_release_result_name(int result) {
     }
 }
 
-bool service_prepare_shared_bank_handle(void* handleRaw, bool requireAdminOwner,
-    bool* discarded, char* err, size_t errSize) {
+bool service_prepare_shared_bank_handle(void** handleInOut, const wchar_t* path,
+    bool requireAdminOwner, bool* discarded, char* err, size_t errSize) {
     if (discarded) *discarded = false;
-    HANDLE handle = (HANDLE)handleRaw;
+    HANDLE handle = handleInOut ? (HANDLE)*handleInOut : INVALID_HANDLE_VALUE;
     if (!handle_matches_kind(handle, GC_SERVICE_ACL_CONFIG)) {
         set_handle_acl_err(err, errSize, "Shared bank is not a regular non-reparse file", ERROR_INVALID_DATA);
         return false;
     }
     BY_HANDLE_FILE_INFORMATION info = {};
-    if (!GetFileInformationByHandle(handle, &info) || info.nNumberOfLinks != 1) {
-        set_handle_acl_err(err, errSize, "Shared bank link identity is unsafe", ERROR_INVALID_DATA);
+    if (!GetFileInformationByHandle(handle, &info)) {
+        set_handle_acl_err(err, errSize, "Cannot read the shared bank's link identity", GetLastError());
         return false;
     }
-    const bool trusted = service_handle_dacl_is_ours(handle, GC_SERVICE_ACL_CONFIG) &&
+    const bool trusted = info.nNumberOfLinks == 1 &&
+        service_handle_dacl_is_ours(handle, GC_SERVICE_ACL_CONFIG) &&
         service_handle_owner_is_administrators(handle);
     if (!trusted) {
-        LARGE_INTEGER zero = {};
-        if (!SetFilePointerEx(handle, zero, nullptr, FILE_BEGIN) ||
-            !SetEndOfFile(handle) || !FlushFileBuffers(handle)) {
-            set_handle_acl_err(err, errSize, "Cannot discard unproven shared bank content", GetLastError());
-            return false;
-        }
+        // Never adopted, never truncated in place: whoever created it may still
+        // hold a WRITE_DAC handle that a re-ACL would not revoke, and a second
+        // hard link would make a write through this name a write elsewhere.
+        // Only this NAME is removed; the object's bytes are never touched.
+        // The caller's handle denies FILE_SHARE_DELETE, so it is closed for
+        // the move and the moved object is matched to its file id instead.
+        CloseHandle(handle);
+        *handleInOut = INVALID_HANDLE_VALUE;
+        if (!service_set_aside_by_name(path, &info, err, errSize)) return false;
         if (discarded) *discarded = true;
+        return true;
     }
     return apply_protected_service_dacl_to_handle(handle, GC_SERVICE_ACL_CONFIG,
         requireAdminOwner, err, errSize);

@@ -212,8 +212,10 @@ static void migrate_legacy_machine_config() {
 
 // Content trust is distinct from repairing permissions. A repaired ACL cannot
 // authenticate bytes planted before installation, so the proof either finds
-// the previous exact ACL and Administrators owner, or discards the content
-// through the pinned handle before re-hardening it.  Runs under the
+// the previous exact ACL and Administrators owner, or sets the unproven file's
+// name aside (matched to the pinned handle's file id) -- never truncating or
+// re-ACLing it in place -- and the bank is simply absent until an
+// administrator writes it again.  Runs under the
 // cross-process config lock: an elevated GUI publishes by writing the bank and
 // THEN hardening it, and a proof landing between the two would discard a
 // legitimate administrator's write as unproven.
@@ -249,8 +251,9 @@ static bool service_prove_shared_bank_locked(char* err, size_t errSize, bool* di
         trusted = openError == ERROR_FILE_NOT_FOUND;
         if (!trusted) set_message(err, errSize, "cannot pin the bank file (error %lu)", openError);
     } else {
-        trusted = service_prepare_shared_bank_handle(file, true, discarded, err, errSize);
-        CloseHandle(file);
+        void* bank = file;
+        trusted = service_prepare_shared_bank_handle(&bank, fileW, true, discarded, err, errSize);
+        if (bank != INVALID_HANDLE_VALUE) CloseHandle((HANDLE)bank);
     }
     CloseHandle(directory);
     return trusted;

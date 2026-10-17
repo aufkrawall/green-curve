@@ -160,7 +160,7 @@ WINDOWS_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "service_acl.cpp"),
     os.path.join(SOURCE_DIR, "service_path_chain.cpp"),
     os.path.join(SOURCE_DIR, "service_acl_handle.cpp"), os.path.join(SOURCE_DIR, "service_install_location.cpp"),
-    os.path.join(SOURCE_DIR, "platform_win32.cpp"),
+    os.path.join(SOURCE_DIR, "service_acl_claim.cpp"), os.path.join(SOURCE_DIR, "platform_win32.cpp"),
     os.path.join(SOURCE_DIR, "vf_backends.cpp"),
 ]
 
@@ -1579,7 +1579,7 @@ def generate_lsp_files():
             "arguments": ["clang++", *linux_flags, *zig_linux_analyzer_flags(),
                           "-fsyntax-only", source],
         })
-    for source in (os.path.join(SOURCE_DIR, "app_shared.cpp"), os.path.join(SOURCE_DIR, "config_utils.cpp"), os.path.join(SOURCE_DIR, "fan_curve.cpp"), os.path.join(SOURCE_DIR, "service_acl.cpp"), os.path.join(SOURCE_DIR, "service_path_chain.cpp"), os.path.join(SOURCE_DIR, "service_acl_handle.cpp"), os.path.join(SOURCE_DIR, "service_install_location.cpp")):
+    for source in (os.path.join(SOURCE_DIR, "app_shared.cpp"), os.path.join(SOURCE_DIR, "config_utils.cpp"), os.path.join(SOURCE_DIR, "fan_curve.cpp"), os.path.join(SOURCE_DIR, "service_acl.cpp"), os.path.join(SOURCE_DIR, "service_path_chain.cpp"), os.path.join(SOURCE_DIR, "service_acl_handle.cpp"), os.path.join(SOURCE_DIR, "service_install_location.cpp"), os.path.join(SOURCE_DIR, "service_acl_claim.cpp")):
         entries.append({
             "directory": SCRIPT_DIR,
             "file": source,
@@ -1668,7 +1668,7 @@ def run_regression_tests(extra_flags=None):
         if sys.platform == "win32":
             # Win32-only implementations; the harness #ifdefs out the suites
             # that exercise them (config INI, DACLs, Task Scheduler XML).
-            for win_only in ("config_utils.cpp", "service_acl.cpp", "service_path_chain.cpp", "service_acl_handle.cpp", "service_install_location.cpp", "platform_win32.cpp"):
+            for win_only in ("config_utils.cpp", "service_acl.cpp", "service_path_chain.cpp", "service_acl_handle.cpp", "service_install_location.cpp", "service_acl_claim.cpp", "platform_win32.cpp"):
                 cmd.append(os.path.join(SOURCE_DIR, win_only))
         else:
             # win32_compat.h is force-included, never #included by the harness.

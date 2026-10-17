@@ -444,7 +444,10 @@ int run_install_created_folder_cleanup_tests() {
     return finish(0);
 }
 
-bool make_junction(const wchar_t* junctionPath, const wchar_t* targetPath) {
+}  // namespace
+
+// Shared with the claim suite in security_audit_tests.cpp.
+bool gc_test_make_junction(const wchar_t* junctionPath, const wchar_t* targetPath) {
     struct MountPointReparse {
         DWORD tag;
         WORD dataLength;
@@ -477,6 +480,8 @@ bool make_junction(const wchar_t* junctionPath, const wchar_t* targetPath) {
     CloseHandle(handle);
     return ok;
 }
+
+namespace {
 
 int run_location_verdict_tests() {
     wchar_t dir[MAX_PATH] = {}, file[MAX_PATH] = {}, foreign[MAX_PATH] = {}, sub[MAX_PATH] = {};
@@ -542,7 +547,7 @@ int run_location_verdict_tests() {
         !detail.alreadyHardened) return cleanupAnd(5780);
     release_service_hardening(dir, GC_SERVICE_ACL_DIRECTORY, ignored, sizeof(ignored));
     // A leaf junction is seen, never followed.
-    if (!make_junction(junction, dir)) return cleanupAnd(5781);
+    if (!gc_test_make_junction(junction, dir)) return cleanupAnd(5781);
     if (gc_service_install_location_verdict(junction) != GC_SVC_LOCATION_REPARSE)
         return cleanupAnd(5782);
     // Anything inside the Windows directory, at any depth.
