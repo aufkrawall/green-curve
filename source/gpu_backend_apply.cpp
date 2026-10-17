@@ -210,7 +210,6 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     bool shouldApplyGpuOffset = false;
     int desiredActiveGpuOffsetExcludeLowCount = 0;
     bool gpuPolicyViaCurveBatch = false;
-    bool gpuPolicyChangeRequested = false;
     bool partialApplyRisk = false;
     int originalCurveOffsets[VF_NUM_POINTS] = {};
     int originalCurveFreqkHz[VF_NUM_POINTS] = {};
@@ -296,6 +295,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 const int anchorExclude = (desired->hasGpuOffset &&
                     desired->gpuOffsetExcludeLowCount > 0 && desired->gpuOffsetMHz != 0)
                     ? desired->gpuOffsetExcludeLowCount : 0;
+                const bool anchorOffsetInVfTable = curve_point_request_uses_vf_table_offset(
+                    vf_curve_global_gpu_offset_supported(), desired->hasGpuOffset != 0,
+                    desired->gpuOffsetMHz, anchorExclude);
                 const long long anchorComponentKHz = (long long)gpu_offset_component_mhz_for_point(
                     lockCi, desired->gpuOffsetMHz, anchorExclude) * 1000;
                 long long anchorKHz = curve_point_stored_lock_anchor_khz(
@@ -303,7 +305,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                     desired->curvePointFromGpuOffset[lockCi] != 0,
                     desired->curvePointMHz[lockCi], g_app.curve[lockCi].freq_kHz,
                     g_app.freqOffsets[lockCi], anchorComponentKHz,
-                    vf_curve_global_gpu_offset_supported());
+                    anchorOffsetInVfTable);
                 if (anchorKHz > UINT_MAX) anchorKHz = UINT_MAX;
                 lockMhz = displayed_curve_mhz((unsigned int)anchorKHz);
                 debug_log("apply: stored lock anchor ci=%d -> %u MHz (requested=%d fromOffset=%d"
@@ -312,7 +314,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                     desired->curvePointFromGpuOffset[lockCi] ? 1 : 0,
                     desired->curvePointMHz[lockCi], g_app.curve[lockCi].freq_kHz,
                     g_app.freqOffsets[lockCi], anchorComponentKHz,
-                    vf_curve_global_gpu_offset_supported() ? 1 : 0);
+                    anchorOffsetInVfTable ? 1 : 0);
             }
             for (int vi = lockVi; vi < g_app.numVisible; vi++) {
                 int ci = g_app.visibleMap[vi];
@@ -334,16 +336,17 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 desired->memOffsetMHz, g_app.memClockOffsetMinMHz, g_app.memClockOffsetMaxMHz);
         }
     }
+    CurveOffsetRoutingPlan offsetRouting = curve_point_plan_gpu_offset_routing(
+        vf_curve_global_gpu_offset_supported(), desired->hasGpuOffset != 0,
+        desired->gpuOffsetMHz, desired->gpuOffsetExcludeLowCount,
+        currentAppliedGpuOffsetMHz, currentActiveGpuOffsetExcludeLowCount);
     if (desired->hasGpuOffset) {
         if (!g_app.gpuOffsetRangeKnown ||
             (desired->gpuOffsetMHz >= g_app.gpuClockOffsetMinMHz && desired->gpuOffsetMHz <= g_app.gpuClockOffsetMaxMHz)) {
-            desiredActiveGpuOffsetExcludeLowCount = (desired->gpuOffsetExcludeLowCount > 0 && desired->gpuOffsetMHz != 0) ? desired->gpuOffsetExcludeLowCount : 0;
+            desiredActiveGpuOffsetExcludeLowCount = offsetRouting.activeDesiredExcludeLowCount;
             targetGpuOffsetkHz = desired->gpuOffsetMHz * 1000;
-            gpuPolicyChangeRequested =
-                (targetGpuOffsetkHz != currentAppliedGpuOffsetMHz * 1000) ||
-                (desiredActiveGpuOffsetExcludeLowCount != currentActiveGpuOffsetExcludeLowCount);
-            shouldApplyGpuOffset = gpuPolicyChangeRequested && currentActiveGpuOffsetExcludeLowCount <= 0 && desiredActiveGpuOffsetExcludeLowCount <= 0;
-            gpuPolicyViaCurveBatch = gpuPolicyChangeRequested && (currentActiveGpuOffsetExcludeLowCount > 0 || desiredActiveGpuOffsetExcludeLowCount > 0);
+            shouldApplyGpuOffset = offsetRouting.shouldApplyGpuOffset;
+            gpuPolicyViaCurveBatch = offsetRouting.gpuPolicyViaCurveBatch;
             debug_log("desired gpu offset mhz=%d current=%d shouldApply=%d viaCurve=%d desiredSelective=%d currentSelective=%d\n",
                 desired->gpuOffsetMHz,
                 currentAppliedGpuOffsetMHz,
@@ -357,6 +360,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 desired->gpuOffsetMHz, g_app.gpuClockOffsetMinMHz, g_app.gpuClockOffsetMaxMHz);
         }
     }
+    const bool offsetInVfTable = curve_point_request_uses_vf_table_offset(
+        vf_curve_global_gpu_offset_supported(), desired->hasGpuOffset != 0,
+        desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount);
     if (!gpuOffsetValid) {
         failCount++;
         partialApplyRisk = true;
@@ -384,7 +390,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         }
         unsigned int preTailTargetMHz = 0;
         int ci = apply_lock_pretail_first_violation(VF_NUM_POINTS,
-            vf_curve_global_gpu_offset_supported(), lockMhz,
+            offsetInVfTable, lockMhz,
             pretail.populated, pretail.tail, desired->hasCurvePoint,
             desired->curvePointFromGpuOffset, desired->curvePointMHz,
             desired->hasGpuOffset != 0, pretail.base,
@@ -475,14 +481,11 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             originalCurvePopulated[ci] = g_app.curve[ci].freq_kHz > 0;
         }
     }
-    // When transitioning between uniform and selective (exclude-low) offsets
-    // on Blackwell, zero the existing per-curve-point offsets first.
-    // This establishes a clean baseline (all offsets = 0) so that the new
-    // per-point deltas are applied from a known state, rather than depending on
-    // correct detection of the previous offset magnitude in the delta formula.
-    if (gpuPolicyViaCurveBatch
-        && currentAppliedGpuOffsetMHz != 0
-        && vf_curve_global_gpu_offset_supported()) {
+    // When transitioning from a uniform offset into a curve-batch offset
+    // (Blackwell uniform<->selective, or pre-Blackwell uniform->selective),
+    // zero the prior uniform offset first so the VF batch writes from a clean
+    // baseline without compounding a live scalar offset.
+    if (offsetRouting.zeroPriorScalarBeforeCurveBatch) {
         set_last_apply_phase("apply: zero prior GPU offset");
         debug_log("selective offset: zeroing prior offset %d MHz before transition\n", currentAppliedGpuOffsetMHz);
         if (nvapi_set_gpu_offset(0)) {
@@ -539,7 +542,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     // additive. That composition needs hardware evidence before compensation.
     debug_log("curve targets: offsetContract=full-component vfTableOffset=%d gpuApplied=%d"
               " current=%d MHz requested=%d MHz exclude=%d viaCurve=%d\n",
-        vf_curve_global_gpu_offset_supported() ? 1 : 0,
+        offsetInVfTable ? 1 : 0,
         gpuApplied ? 1 : 0, currentAppliedGpuOffsetMHz,
         desired->hasGpuOffset ? desired->gpuOffsetMHz : 0,
         desiredActiveGpuOffsetExcludeLowCount, gpuPolicyViaCurveBatch ? 1 : 0);
@@ -548,7 +551,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         desiredActiveGpuOffsetExcludeLowCount, currentAppliedGpuOffsetMHz,
         currentActiveGpuOffsetExcludeLowCount, originalCurvePopulated,
         originalCurveOffsets, originalCurveFreqkHz, lockedTailMask,
-        targetCurveOffsets, targetCurveMask))
+        targetCurveOffsets, targetCurveMask, offsetRouting.curveBatchGpuOffsetMHz))
         return apply_recover_clock_failure(clockCeiling,
             "A requested curve target is missing or outside the driver range", result, resultSize);
     if (desired->hasMemOffset) {
@@ -755,7 +758,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                     }
                     long long targetFreqkHz = (long long)originalCurveFreqkHz[ci]
                         - currentPointGpuOffsetkHz
-                        + (long long)gpu_offset_component_mhz_for_point(ci, desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount) * 1000LL;
+                        + (long long)gpu_offset_component_mhz_for_point(ci, offsetRouting.curveBatchGpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount) * 1000LL;
                     if (targetFreqkHz < 0) targetFreqkHz = 0;
                     verifyDesired.hasCurvePoint[ci] = true;
                     // Synthesized from the selective offset batch: an absolute
@@ -814,7 +817,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             correction.lockMHz = lockMhz;
             correction.lockCi = lockCi;
             correction.gpuPolicyViaCurveBatch = gpuPolicyViaCurveBatch;
-            correction.offsetInVfTable = vf_curve_global_gpu_offset_supported();
+            correction.offsetInVfTable = offsetInVfTable;
             correction.lockedTailMask = lockedTailMask;
             correction.explicitCurveMask = explicitCurveMask;
             correction.originalCurvePopulated = originalCurvePopulated;
@@ -1049,7 +1052,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 // Success/failure counting and state persistence
                 if (curveRequestOk) {
                     successCount++;
-                    g_app.lastApplyUsedGpuOffset = gpuPolicyViaCurveBatch;
+                    g_app.lastApplyUsedGpuOffset = offsetRouting.lastApplyUsedGpuOffset;
                     if (gpuPolicyViaCurveBatch) {
                         g_app.appliedGpuOffsetMHz = desired->gpuOffsetMHz;
                         g_app.appliedGpuOffsetExcludeLowCount = desiredActiveGpuOffsetExcludeLowCount;

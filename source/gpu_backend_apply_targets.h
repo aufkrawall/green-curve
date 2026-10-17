@@ -14,7 +14,11 @@ static bool apply_build_curve_targets(
     int currentAppliedGpuOffsetMHz, int currentActiveGpuOffsetExcludeLowCount,
     const bool* originalCurvePopulated, const int* originalCurveOffsets,
     const int* originalCurveFreqkHz, const bool* lockedTailMask,
-    int* targetCurveOffsets, bool* targetCurveMask) {
+    int* targetCurveOffsets, bool* targetCurveMask,
+    int curveBatchGpuOffsetMHz = INT_MIN) {
+    const int batchOffsetMHz = (curveBatchGpuOffsetMHz == INT_MIN)
+        ? desired->gpuOffsetMHz
+        : curveBatchGpuOffsetMHz;
     const VfOffsetRange range = vf_offset_range_current();
     if (hasLock && lockMode == LOCK_MODE_FLATTEN &&
         !vf_offset_range_supports_flatten(range)) return false;
@@ -34,7 +38,7 @@ static bool apply_build_curve_targets(
                 : originalCurveOffsets[ci];
             offset = (long long)originalCurveOffsets[ci] - oldComponent +
                 (long long)gpu_offset_component_mhz_for_point(ci,
-                    desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount) * 1000;
+                    batchOffsetMHz, desiredActiveGpuOffsetExcludeLowCount) * 1000;
             write = true;
         }
         const bool tail = hasLock && lockMhz > 0 && lockedTailMask[ci];

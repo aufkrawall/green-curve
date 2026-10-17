@@ -278,11 +278,78 @@ int run_boost_tally_tests() {
     return 0;
 }
 
+int run_pre_blackwell_offset_routing_tests() {
+    // 6852: VF-table offset routing predicate across Blackwell and pre-Blackwell.
+    if (!curve_point_request_uses_vf_table_offset(true, true, 150, 0)) return 6852;
+    if (!curve_point_request_uses_vf_table_offset(true, true, 150, 5)) return 6852;
+    if (!curve_point_request_uses_vf_table_offset(false, false, 0, 0)) return 6852;
+    if (!curve_point_request_uses_vf_table_offset(false, true, 0, 0)) return 6852;
+    if (!curve_point_request_uses_vf_table_offset(false, true, 150, 5)) return 6852;
+    if (curve_point_request_uses_vf_table_offset(false, true, 150, 0)) return 6852;
+
+    // 6853: Pre-Blackwell uniform (+150, excl=0) -> selective (+150, excl=5)
+    // clears the prior scalar NVML offset before writing the VF curve batch.
+    CurveOffsetRoutingPlan p = curve_point_plan_gpu_offset_routing(
+        false, true, 150, 5, 150, 0);
+    if (p.activeDesiredExcludeLowCount != 5 || !p.policyChangeRequested ||
+        p.shouldApplyGpuOffset || !p.gpuPolicyViaCurveBatch ||
+        !p.zeroPriorScalarBeforeCurveBatch || p.curveBatchGpuOffsetMHz != 150 ||
+        !p.lastApplyUsedGpuOffset) {
+        return 6853;
+    }
+
+    // 6854: Pre-Blackwell selective (+150, excl=5) -> uniform (+150, excl=0)
+    // writes the uniform NVML offset and strips the selective VF batch to 0.
+    p = curve_point_plan_gpu_offset_routing(false, true, 150, 0, 150, 5);
+    if (p.activeDesiredExcludeLowCount != 0 || !p.policyChangeRequested ||
+        !p.shouldApplyGpuOffset || !p.gpuPolicyViaCurveBatch ||
+        p.zeroPriorScalarBeforeCurveBatch || p.curveBatchGpuOffsetMHz != 0 ||
+        !p.lastApplyUsedGpuOffset) {
+        return 6854;
+    }
+
+    // 6855: Pre-Blackwell selective (+150, excl=5) -> zero (0, excl=0)
+    // strips the selective VF batch without a redundant NVML write.
+    p = curve_point_plan_gpu_offset_routing(false, true, 0, 0, 150, 5);
+    if (p.activeDesiredExcludeLowCount != 0 || !p.policyChangeRequested ||
+        p.shouldApplyGpuOffset || !p.gpuPolicyViaCurveBatch ||
+        p.zeroPriorScalarBeforeCurveBatch || p.curveBatchGpuOffsetMHz != 0 ||
+        p.lastApplyUsedGpuOffset) {
+        return 6855;
+    }
+
+    // 6856: Blackwell selective (+150, excl=5) -> uniform (+150, excl=0)
+    // stays entirely on the VF curve batch and zeros prior VF offsets first.
+    p = curve_point_plan_gpu_offset_routing(true, true, 150, 0, 150, 5);
+    if (p.activeDesiredExcludeLowCount != 0 || !p.policyChangeRequested ||
+        p.shouldApplyGpuOffset || !p.gpuPolicyViaCurveBatch ||
+        !p.zeroPriorScalarBeforeCurveBatch || p.curveBatchGpuOffsetMHz != 150 ||
+        !p.lastApplyUsedGpuOffset) {
+        return 6856;
+    }
+
+    // 6857: Unchanged non-zero uniform or selective offset with a curve/lock
+    // edit preserves lastApplyUsedGpuOffset = true even when gpuPolicyViaCurveBatch is false.
+    p = curve_point_plan_gpu_offset_routing(false, true, 150, 0, 150, 0);
+    if (p.policyChangeRequested || p.gpuPolicyViaCurveBatch || !p.lastApplyUsedGpuOffset)
+        return 6857;
+    p = curve_point_plan_gpu_offset_routing(false, true, 150, 5, 150, 5);
+    if (p.policyChangeRequested || p.gpuPolicyViaCurveBatch || !p.lastApplyUsedGpuOffset)
+        return 6857;
+    p = curve_point_plan_gpu_offset_routing(false, false, 0, 0, 150, 5);
+    if (p.policyChangeRequested || !p.lastApplyUsedGpuOffset)
+        return 6857;
+
+    return 0;
+}
+
 }  // namespace
 
 int run_offset_intent_tests() {
     if (int r = run_offset_contract_tests()) return r;
     if (int r = run_pretail_offset_intent_tests()) return r;
     if (int r = run_boost_tally_tests()) return r;
+    if (int r = run_pre_blackwell_offset_routing_tests()) return r;
     return 0;
 }
+

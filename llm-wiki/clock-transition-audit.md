@@ -593,29 +593,47 @@ transition clamps and failure recovery are unchanged by the deferral below.
    demonstrated only its own assumption; it is not evidence of driver behavior.
    Log: `curve targets: offsetContract=full-component`, with VF-table capability,
    requested/current offset, exclusion count and routing.
-2. **Pre-tail and flat-tail checks.** On the VF-table route (Blackwell and the
-   existing best-guess backend), a requested provenance point is judged at live
+2. **Pre-tail and flat-tail checks.** `curve_point_request_uses_vf_table_offset()`
+   (`source/curve_point_offset_policy.h`) is true on Blackwell (and the existing
+   best-guess backend) and also on Pascal..Ada whenever a request carries no GPU
+   offset (`0 MHz`) or uses a selective (`excludeLowCount > 0`) VF-batch offset.
+   On those VF-table routes, a requested provenance point is judged at live
    frequency minus programmed VF offset plus its requested component, using
    `apply_lock_pretail_first_violation()` before writes and
-   `apply_correction_monotonic_target_mhz()` after correction. On the separate
-   NVML route, both checks retain the previous stored-MHz behavior for requested
-   points. This avoids inferring a new base from an unmeasured composition.
-   `ApplyCorrectionRequest::offsetInVfTable` controls only flat-tail projection;
-   offset verification and correction remain routing-independent.
+   `apply_correction_monotonic_target_mhz()` after correction. Only on the
+   separate non-Blackwell uniform NVML route (`!globalVfOffsetSupported &&
+   hasGpuOffset && gpuOffsetMHz != 0 && excludeLowCount <= 0`) do both checks
+   retain the stored-MHz behavior for requested points, avoiding an unmeasured
+   NVML/VF base derivation. `ApplyCorrectionRequest::offsetInVfTable` controls
+   only flat-tail projection; offset verification and correction remain
+   routing-independent.
 3. **Boost tallies.** `apply_correction_boost_tally()` runs on the final
    readback: offset-intent points by programmed offset (within 12 MHz), typed
    points by MHz within the verify tolerance. A driver-limited offset can verify
    safely while counting unmatched: the tally reports closeness to the request.
    Logs: `selective offset: final boost` / `first unmatched`.
 4. **Interactive stored-lock anchor.** With no lock MHz in the request, the
-   VF-table route resolves a provenance anchor from its offset over the current
-   base (`curve_point_stored_lock_anchor_khz()`). The separate NVML route keeps
-   the requested point's stored MHz. A typed anchor keeps its stored MHz on both
-   routes; an absent requested point keeps the live value. The anchor diagnostic
-   logs both provenance and VF-table capability.
+   VF-table route (`curve_point_request_uses_vf_table_offset()`) resolves a
+   provenance anchor from its offset over the current base
+   (`curve_point_stored_lock_anchor_khz()`). The separate uniform NVML route
+   keeps the requested point's stored MHz. A typed anchor keeps its stored MHz
+   on both routes; an absent requested point keeps the live value. The anchor
+   diagnostic logs both provenance and VF-table routing.
+5. **Pre-Blackwell uniform/selective transitions (`curve_point_plan_gpu_offset_routing()`).**
+   Transitioning from a uniform NVML offset (`exclude == 0`) to a selective VF
+   offset (`exclude > 0`) without `resetOcBeforeApply` sets
+   `zeroPriorScalarBeforeCurveBatch = true` so `nvapi_set_gpu_offset(0)` clears
+   the live NVML scalar offset before the VF curve batch runs. Transitioning from
+   a selective VF offset back to a uniform NVML offset sets both
+   `shouldApplyGpuOffset = true` (writes the NVML scalar offset) and
+   `gpuPolicyViaCurveBatch = true` with `curveBatchGpuOffsetMHz = 0` (strips the
+   prior selective VF offsets back to `0` instead of re-writing the offset into
+   the VF table). `lastApplyUsedGpuOffset` stays `true` whenever the request owns
+   or preserves a non-zero uniform or selective GPU offset.
 
-Tests 6800-6829 (`tests/offset_intent_tests.cpp`) exercise the component contract,
-route-specific lock projection, pre-tail/flat-tail checks and final boost tally.
+Tests 6800-6829 and 6852-6857 (`tests/offset_intent_tests.cpp`) exercise the
+component contract, route-specific lock projection, pre-tail/flat-tail checks,
+final boost tally, and pre-Blackwell uniform/selective offset routing.
 They do not simulate NVML/VF composition. Target-build and stored-anchor cases
 also execute production headers in `tests/clock_transition_tests.cpp`. The
 full-component assertion was observed failing before compensation was removed;

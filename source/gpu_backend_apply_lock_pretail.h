@@ -74,9 +74,12 @@ static bool apply_lock_pretail_precheck_before_reset(const DesiredSettings* desi
             ? gpu_offset_component_mhz_for_point(ci, desired->gpuOffsetMHz, excludeLow)
             : 0;
     }
+    const bool offsetInVfTable = curve_point_request_uses_vf_table_offset(
+        vf_curve_global_gpu_offset_supported(), desired->hasGpuOffset != 0,
+        desired->gpuOffsetMHz, excludeLow);
     unsigned int offendingMHz = 0;
     int offendingCi = apply_lock_pretail_first_violation(VF_NUM_POINTS,
-        vf_curve_global_gpu_offset_supported(), desired->lockMHz,
+        offsetInVfTable, desired->lockMHz,
         a.populated, a.tail, desired->hasCurvePoint,
         desired->curvePointFromGpuOffset, desired->curvePointMHz,
         desired->hasGpuOffset, a.base,

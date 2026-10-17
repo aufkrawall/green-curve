@@ -105,6 +105,64 @@ static inline long long curve_point_offset_intent_live_khz(long long liveFreqKHz
         gpuOffsetComponentKHz;
 }
 
+// Whether a request's GPU offset is expressed through the VF control table
+// rather than a separate NVML graphics-clock offset.  Global-VF backends
+// (Blackwell) always use the VF table; older families use the VF table when
+// no uniform NVML offset is active (either no GPU offset, or a selective
+// exclude-low offset written through the curve batch).
+static inline bool curve_point_request_uses_vf_table_offset(
+    bool globalVfOffsetSupported, bool hasGpuOffset, int gpuOffsetMHz,
+    int excludeLowCount) {
+    if (globalVfOffsetSupported) return true;
+    if (!hasGpuOffset || gpuOffsetMHz == 0) return true;
+    return excludeLowCount > 0;
+}
+
+struct CurveOffsetRoutingPlan {
+    int activeDesiredExcludeLowCount;
+    bool policyChangeRequested;
+    bool shouldApplyGpuOffset;
+    bool gpuPolicyViaCurveBatch;
+    bool zeroPriorScalarBeforeCurveBatch;
+    int curveBatchGpuOffsetMHz;
+    bool lastApplyUsedGpuOffset;
+};
+
+static inline CurveOffsetRoutingPlan curve_point_plan_gpu_offset_routing(
+    bool globalVfOffsetSupported, bool requestHasGpuOffset,
+    int desiredGpuOffsetMHz, int desiredExcludeLowCount,
+    int currentAppliedGpuOffsetMHz, int currentActiveExcludeLowCount) {
+    CurveOffsetRoutingPlan p = {};
+    p.lastApplyUsedGpuOffset = requestHasGpuOffset
+        ? (desiredGpuOffsetMHz != 0)
+        : (currentAppliedGpuOffsetMHz != 0);
+    if (!requestHasGpuOffset) return p;
+    p.activeDesiredExcludeLowCount =
+        (desiredExcludeLowCount > 0 && desiredGpuOffsetMHz != 0)
+            ? desiredExcludeLowCount
+            : 0;
+    p.policyChangeRequested =
+        (desiredGpuOffsetMHz * 1000 != currentAppliedGpuOffsetMHz * 1000) ||
+        (p.activeDesiredExcludeLowCount != currentActiveExcludeLowCount);
+    const bool leavingSelectiveOnSplitBackend =
+        !globalVfOffsetSupported && currentActiveExcludeLowCount > 0 &&
+        p.activeDesiredExcludeLowCount <= 0;
+    p.shouldApplyGpuOffset = p.policyChangeRequested &&
+        p.activeDesiredExcludeLowCount <= 0 &&
+        (currentActiveExcludeLowCount <= 0 ||
+         (leavingSelectiveOnSplitBackend && desiredGpuOffsetMHz != 0));
+    p.gpuPolicyViaCurveBatch = p.policyChangeRequested &&
+        (currentActiveExcludeLowCount > 0 || p.activeDesiredExcludeLowCount > 0);
+    p.zeroPriorScalarBeforeCurveBatch = p.gpuPolicyViaCurveBatch &&
+        currentAppliedGpuOffsetMHz != 0 &&
+        (globalVfOffsetSupported || currentActiveExcludeLowCount <= 0);
+    p.curveBatchGpuOffsetMHz =
+        (!globalVfOffsetSupported && p.activeDesiredExcludeLowCount <= 0)
+            ? 0
+            : desiredGpuOffsetMHz;
+    return p;
+}
+
 // The anchor of an interactive stored lock when the request names no lock MHz.
 // A typed anchor point: its MHz. On the VF-table route an anchor with offset
 // provenance follows today's base. Keep the stored MHz on the separate NVML

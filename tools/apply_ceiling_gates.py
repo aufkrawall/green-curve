@@ -337,25 +337,41 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(pretail_policy_h,
                  "const bool offsetIntent = offsetInVfTable && requestHasPoint[ci] &&",
                  "live-base provenance projection is confined to the VF-table route")
+    require_text(_p(ctx, "curve_point_offset_policy.h"),
+                 "static inline bool curve_point_request_uses_vf_table_offset(",
+                 "shared helper decides when a request expresses its GPU offset in the VF table")
+    require_text(_p(ctx, "curve_point_offset_policy.h"),
+                 "static inline CurveOffsetRoutingPlan curve_point_plan_gpu_offset_routing(",
+                 "shared helper plans uniform and selective GPU offset routing across families")
     require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
-                 "vf_curve_global_gpu_offset_supported(), desired->lockMHz,",
-                 "the pre-reset pre-tail check supplies the VF-table capability")
-    require_text(apply_cpp, "vf_curve_global_gpu_offset_supported(), lockMhz,",
-                 "the post-reset pre-tail check supplies the VF-table capability")
+                 "const bool offsetInVfTable = curve_point_request_uses_vf_table_offset(",
+                 "the pre-reset pre-tail check computes VF-table offset routing")
+    require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
+                 "offsetInVfTable, desired->lockMHz,",
+                 "the pre-reset pre-tail check supplies the VF-table routing")
+    require_text(apply_cpp,
+                 "const bool offsetInVfTable = curve_point_request_uses_vf_table_offset(",
+                 "the apply computes VF-table offset routing for pre-tail and flat-tail checks")
+    require_text(apply_cpp, "offsetInVfTable, lockMhz,",
+                 "the post-reset pre-tail check supplies the VF-table routing")
     require_text(_p(ctx, "curve_point_offset_policy.h"),
                  "if (requested && (!fromGpuOffset || !offsetInVfTable))",
                  "a separate-NVML-route stored lock retains its saved MHz")
     require_text(apply_cpp, "g_app.freqOffsets[lockCi], anchorComponentKHz,\n"
-                 "                    vf_curve_global_gpu_offset_supported());",
-                 "stored-lock projection uses the actual VF-table capability")
+                 "                    anchorOffsetInVfTable);",
+                 "stored-lock projection uses the request's VF-table routing")
     require_text(correction_policy_h,
                  "const unsigned int currentTarget = apply_correction_monotonic_target_mhz(q, rb, ci);",
                  "the flat-tail check judges offset-intent points by offset over the live base")
     require_text(correction_policy_h,
                  "if (q.offsetInVfTable && apply_correction_point_offset_is_intent(q, ci)) {",
                  "flat-tail live-base projection is confined to the VF-table route")
-    require_text(apply_cpp, "correction.offsetInVfTable = vf_curve_global_gpu_offset_supported();",
-                 "the flat-tail check receives the actual VF-table capability")
+    require_text(apply_cpp, "correction.offsetInVfTable = offsetInVfTable;",
+                 "the flat-tail check receives the request's VF-table routing")
+    require_text(apply_cpp, "if (offsetRouting.zeroPriorScalarBeforeCurveBatch) {",
+                 "uniform-to-selective transitions clear a prior scalar GPU offset before the VF batch")
+    require_text(apply_cpp, "g_app.lastApplyUsedGpuOffset = offsetRouting.lastApplyUsedGpuOffset;",
+                 "curve-batch completion preserves lastApplyUsedGpuOffset across uniform and selective routes")
     require_text(apply_cpp, "int violationCi = apply_correction_tail_monotonic_violation(correction,",
                  "the apply's flat-tail check reads the same request as the correction loop")
     # The boost tally feeding the outcome severity is taken on the final
