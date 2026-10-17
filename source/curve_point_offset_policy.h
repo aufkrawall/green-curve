@@ -200,7 +200,9 @@ static inline CurveOffsetRoutingPlan curve_point_plan_gpu_offset_routing(
 //
 // Only measurable when the NVML offset was known to be zero before the write
 // (so the first sample is NVML-free) and this apply wrote it on the separate
-// route.  Anything else keeps the full component.
+// route. Without a fresh pair, the apply must use proven same-session
+// evidence for the same scalar, or refuse before writing provenance targets
+// over a live scalar (gpu_backend_apply_scalar_shift.h).
 static inline bool curve_point_scalar_shift_measurable(bool offsetInVfTable,
                                                        bool scalarWritten,
                                                        bool scalarBeforeKnownZero) {

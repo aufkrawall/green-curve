@@ -329,10 +329,33 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "only provenance points are compensated by the measured shift")
     require_text(targets_h, "const long long bounded = curve_point_bounded_scalar_shift_khz(",
                  "the measured shift is bounded by the written NVML offset")
+    shift_h = _p(ctx, "gpu_backend_apply_scalar_shift.h")
+    require_text(apply_cpp, "if (!apply_resolve_provenance_scalar_shift(desired,",
+                 "a live scalar requires fresh or retained shift evidence before target building")
+    require_text(shift_h, "g_applyScalarShiftEvidence.copy(scalarKHz, curve, required, shiftOut, &first)",
+                 "same-scalar measurement reuse proves the voltage topology and requested point coverage")
+    require_order_in_operation(
+        apply_cpp, "static bool apply_desired_settings_service(const DesiredSettings* desired",
+        "apply_scalar_shift_precheck_before_writes(desired,", "if (desired->resetOcBeforeApply) {",
+        "missing retained measurement is refused before any baseline reset or clock write")
+    require_order_in_operation(
+        _p(ctx, "gpu_backend_apply_scalar_shift_runtime.h"),
+        "static bool apply_scalar_shift_precheck_before_writes(",
+        "read_live_curve_snapshot_settled(1, 0, &offsetsOk)",
+        "apply_provenance_scalar_shift_precheck(desired,",
+        "retained evidence is checked against a fresh VF snapshot")
+    for function in ("static void close_nvapi() {", "static void reset_gpu_runtime_selection() {",
+                     "static bool nvapi_enum_gpu() {"):
+        require_text(_p(ctx, "gpu_backend.cpp"), function + "\n    g_applyScalarShiftEvidence.clear();",
+                     "GPU session changes invalidate retained NVML composition evidence")
+    require_order_in_operation(
+        _p(ctx, "gpu_backend.cpp"), "static bool nvapi_set_gpu_offset(int offsetkHz, bool forceWrite)",
+        "g_applyScalarShiftEvidence.clear();", "bool ok = nvml_set_clock_offset_domain(",
+        "a scalar write invalidates old measurement evidence before reaching the driver")
     require_order_in_operation(
         apply_cpp,
         "static bool apply_desired_settings_service(const DesiredSettings* desired",
-        "memcpy(preScalarCurveFreqkHz, originalCurveFreqkHz",
+        "const ApplyScalarShiftSnapshot preScalar(originalCurveFreqkHz,",
         "if (nvapi_set_gpu_offset(targetGpuOffsetkHz)) {",
         "the NVML-free sample is taken before the NVML write")
     # The deferral is only temporary if field logs can answer it: the apply

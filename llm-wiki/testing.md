@@ -1,5 +1,22 @@
 # Testing
 
+## Scalar measurement retention and curve rebuild identity (2026-10-17)
+
+Source anchors: `tests/scalar_shift_retention_tests.cpp`,
+`source/gpu_backend_apply_scalar_shift.h`, `tests/regression_main.cpp`
+(6890-6894), `source/linux_curve_targets.h`, `tools/apply_ceiling_gates.py`.
+The scalar fixture executes production measurement, retained-evidence
+preflight/resolution and target building across successive applies. It covers
+full, partial, zero and negative shifts; typed neighbours; absent or stale
+evidence; changed scalar values and voltage topology; newly populated points;
+and sparse requests retaining the uniform scalar. Both native and cross-linked
+regression harnesses include it. Source gates bind preflight to the pre-write
+boundary and require invalidation at GPU-session and scalar-write boundaries.
+Linux rebuild tests reject equal-count point replacements and changed cleanup
+masks or voltage topology while allowing temperature-dependent frequencies.
+The equal-count assertion failed before the implementation fix. These are
+hardware-free software-contract tests, not GPU stability acceptance.
+
 ## Release and packaging input review (2026-10-01)
 
 Source anchors: `tools/update_manifest_tools_tests.py`,

@@ -607,15 +607,34 @@ transition clamps and failure recovery are unchanged by the deferral below.
    leaves today's full component. The shift is bounded to
    `[min(0, written), max(0, written)]`, so a positive offset can never be
    raised by the compensation and drift/clamps stay within one written offset.
-   Not measurable (no reset owning the domain, no NVML write, VF-table route):
-   the full component, logged as `nvml shift: not measurable`. Logs:
+   Without a fresh pair, a nonzero separate scalar requires retained evidence
+   for the same GPU session, exact scalar value and complete populated voltage
+   topology (`gpu_backend_apply_scalar_shift.h`). Every requested non-tail
+   provenance point must have participated in the measurement; a newly
+   populated point is not assigned an implicit zero shift. GPU enumeration,
+   selection teardown and real scalar writes clear the in-memory evidence.
+   A no-reset request first reads the scalar and a fresh VF snapshot, then
+   either proves retained evidence or refuses before hardware writes with a
+   normal-Apply instruction. A different scalar is never inferred by scaling
+   an earlier measurement. The target build rechecks evidence after writes;
+   a changed topology then takes the existing recovery path. VF-table routes,
+   absent scalars, typed points and lock tails need no retained compensation.
+   Logs:
    `nvml shift: written= points= full= none= partial= raw=..` (the per-apply
    field answer to the composition question) and
-   `curve targets: offsetContract=component-minus-measured-nvml-shift|full-component`.
+   `curve targets: offsetContract=component-minus-measured-nvml-shift|full-component`,
+   `nvml shift: retained same-session measurement`, and a bounded refusal with
+   scalar/readback/evidence state and the first unproven curve index.
    Residual assumption, shared with typed points and locks: the VF readback
    reflects effective clocks. Residual error: thermal drift between the two
    samples, at most about one VF bin. Tests in `tests/clock_transition_tests.cpp`
    (production header; mutation-checked: removing the subtraction fails).
+   Tests 6900-6923 (`tests/scalar_shift_retention_tests.cpp`) execute production
+   measurement, preflight, evidence resolution and target building: repeats
+   preserve zero/full/partial/negative-shift targets, typed neighbours remain
+   absolute, unknown or changed scalars and topology are refused, and sparse
+   requests can retain the scalar while cancelling its contribution at a
+   requested stock point. Both harness build paths include this test unit.
    Log (deferral era): `curve targets: offsetContract=full-component`, with VF-table capability,
    requested/current offset, exclusion count and routing. To let a field log
    answer the open question, an apply on the separate NVML route with a live

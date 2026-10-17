@@ -42,14 +42,14 @@ Apply reliability, diagnostics and the in-app updater's local protections improv
 - **Logon profile:** a profile with a selective GPU offset and an undervolt lock no longer fails to apply at logon on a cold GPU, which previously left the GPU at stock and paused automatic restore.
 - **In-app update:** an update refused because its signed metadata expired no longer closes your Green Curve window first.
 - **CLI log:** signing in no longer erases the earlier entries of `greencurve_cli_log.txt`, including the record of a failed logon handoff.
-- **GTX 10 to RTX 40 series profiles:** curve points saved from a uniform GPU offset are now set by measuring how far the offset already moved each point, so the offset is never counted twice.
+- **GTX 10 to RTX 40 series profiles:** curve points saved from a uniform GPU offset are now set by measuring how far the offset already moved each point, and repeated curve applies retain that measurement so the offset is never counted twice.
 - **CLI dump:** `--dump` no longer fails with "error 5"; it now writes the VF curve to `greencurve_vf_dump.txt` beside the CLI log.
 - **RTX 50 series lock validation:** a lock is no longer wrongly refused, or wrongly accepted, because a saved curve point's base moved since the profile was saved.
 - **Apply summary:** the "N of M boost points matched" note and the warning level now reflect the final curve after correction.
 - **Apply validation:** an out-of-range GPU offset is refused before any reset or offset write, and sparse curve applies that keep an existing offset now follow its real NVML or VF route.
 - **Restore notices:** when a safety pause has no recorded automatic-apply cause, Green Curve now says automation is paused rather than falsely claiming an automatic apply failed.
 - **RTX 50 series stored lock:** applying from the editor with an inherited lock now places the lock where the saved point really runs today.
-- **Linux:** applying a curve or lock without a reset no longer stacks a GPU offset left over from an earlier offset-only apply.
+- **Linux:** curve and lock applies clear a GPU offset left by an earlier offset-only apply and refuse unexpected changes to the curve's points.
 
 ### Security
 

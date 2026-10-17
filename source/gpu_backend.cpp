@@ -72,6 +72,7 @@ static bool nvapi_init() {
 }
 
 static void close_nvapi() {
+    g_applyScalarShiftEvidence.clear();
     if (g_app.hNvApi) {
         FreeLibrary(g_app.hNvApi);
         g_app.hNvApi = nullptr;
@@ -165,6 +166,7 @@ static void format_gpu_adapter_label(const GpuAdapterInfo* adapter, char* out, s
 #include "gpu_selection_config.cpp"
 
 static void reset_gpu_runtime_selection() {
+    g_applyScalarShiftEvidence.clear();
     g_app.transitionClockCapActive = false;
     g_app.transitionClockCapMHz = 0;
     g_app.gpuHandle = nullptr;
@@ -179,6 +181,7 @@ static void reset_gpu_runtime_selection() {
 }
 
 static bool nvapi_enum_gpu() {
+    g_applyScalarShiftEvidence.clear();
     typedef int (*enum_t)(GPU_HANDLE*, int*);
     typedef int (*bus_id_t)(GPU_HANDLE, unsigned int*);
     auto enumGpu = (enum_t)nvapi_qi(NVAPI_ENUM_GPU_ID);
@@ -553,6 +556,7 @@ static bool nvapi_read_pstates() {
 static bool nvapi_set_gpu_offset(int offsetkHz, bool forceWrite) {
     if (!vf_curve_global_gpu_offset_supported()) {
         if (!forceWrite && g_app.readback.gpuOffset && g_app.gpuClockOffsetkHz == offsetkHz) return true;
+        g_applyScalarShiftEvidence.clear();
         bool exact = false;
         char detail[128] = {};
         set_last_apply_phase("GPU offset NVML write");

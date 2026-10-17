@@ -7,8 +7,9 @@
 
 // Fill `shiftOut` with each point's bounded base shift across this apply's
 // NVML write (curve_point_bounded_scalar_shift_khz()) and return true, or
-// return false when it is not measurable (the target build then keeps the
-// full component).  Logs one summary line either way when it matters: a
+// return false when it is not measurable (the caller must resolve retained
+// evidence for a live scalar before building targets). Logs one summary line
+// either way when it matters: a
 // measured shift is also the field answer to the NVML/VF composition question.
 static bool apply_measure_provenance_scalar_shift(const DesiredSettings* desired,
     bool offsetInVfTable, bool scalarWritten, bool scalarBeforeKnownZero,
@@ -21,8 +22,8 @@ static bool apply_measure_provenance_scalar_shift(const DesiredSettings* desired
     }
     if (offsetInVfTable || provenancePoints == 0) return false;
     if (!curve_point_scalar_shift_measurable(offsetInVfTable, scalarWritten, scalarBeforeKnownZero)) {
-        debug_log("nvml shift: not measurable (written=%d beforeZero=%d); %d provenance point(s)"
-                  " keep their full component\n", scalarWritten ? 1 : 0,
+        debug_log("nvml shift: no fresh measurement (written=%d beforeZero=%d); %d provenance point(s)"
+                  " require retained evidence for a live scalar\n", scalarWritten ? 1 : 0,
                   scalarBeforeKnownZero ? 1 : 0, provenancePoints);
         return false;
     }
@@ -64,8 +65,9 @@ static bool apply_build_curve_targets(
     // no caller can fall back to writing the offset into both places.
     int batchOffsetMHz,
     // Per point, the measured base shift of this apply's NVML write
-    // (curve_point_bounded_scalar_shift_khz()), or null when it was not
-    // measurable.  Subtracted from a provenance point's component only.
+    // (curve_point_bounded_scalar_shift_khz()), freshly measured or retained
+    // for the same GPU session/scalar/topology, or null when no separate
+    // scalar needs compensation. Subtracted from provenance points only.
     const int* provenanceScalarShiftKHz) {
     const VfOffsetRange range = vf_offset_range_current();
     if (hasLock && lockMode == LOCK_MODE_FLATTEN &&

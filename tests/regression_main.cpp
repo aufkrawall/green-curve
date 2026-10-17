@@ -977,6 +977,7 @@ int run_wer_local_dumps_tests();
 // Offset intent vs absolute MHz on pre-Blackwell scalar offsets, pre-tail and
 // verify-count yardsticks (tests/offset_intent_tests.cpp, 6800-6829).
 int run_offset_intent_tests();
+int run_scalar_shift_retention_tests();
 // Native fan worker cancellable-lock fixture (tests/fan_worker_lock_tests.cpp,
 // 6550-6569; Windows only).
 int run_fan_worker_lock_tests();
@@ -1804,6 +1805,13 @@ int main(int argc, char** argv) {
         return diagnosticsFailure > 0 && diagnosticsFailure < 126 ? diagnosticsFailure : 1;
 #endif
         return diagnosticsFailure;
+    }
+    if (int scalarShiftFailure = run_scalar_shift_retention_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", scalarShiftFailure);
+#if !defined(_WIN32)
+        return scalarShiftFailure > 0 && scalarShiftFailure < 126 ? scalarShiftFailure : 1;
+#endif
+        return scalarShiftFailure;
     }
     if (int offsetIntentFailure = run_offset_intent_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", offsetIntentFailure);

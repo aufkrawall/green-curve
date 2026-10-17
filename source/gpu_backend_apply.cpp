@@ -9,6 +9,8 @@
 #include "gpu_backend_apply_diagnostics.h"
 // Intent plus a fresh live curve -> the per-point control offsets to write.
 #include "gpu_backend_apply_targets.h"
+#include "gpu_backend_apply_scalar_shift.h"
+#include "gpu_backend_apply_scalar_shift_runtime.h"
 #include "gpu_backend_apply_verify.h"
 // The XBAR/SYS/VIDEO half of an apply, after the core clock transaction.
 #include "gpu_backend_apply_advanced.h"
@@ -58,6 +60,10 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             desired->gpuOffsetMHz, g_app.gpuClockOffsetMinMHz,
             g_app.gpuClockOffsetMaxMHz);
         set_last_apply_phase("apply: refused (GPU offset outside range)");
+        return false;
+    }
+    if (!apply_scalar_shift_precheck_before_writes(desired, result, resultSize)) {
+        set_last_apply_phase("apply: refused (NVML shift evidence unavailable)");
         return false;
     }
     // CT-02, preflight half.  A request that EXPLICITLY names a lock point
@@ -486,10 +492,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     // point (curve_point_scalar_shift_measurable()).  Trusted only right after
     // a reset that owned the GPU-offset domain: that reset forced the NVML
     // offset to 0 and re-read the curve settled, so these originals are stock.
-    int preScalarCurveFreqkHz[VF_NUM_POINTS] = {};
-    int preScalarCurveOffsets[VF_NUM_POINTS] = {};
-    memcpy(preScalarCurveFreqkHz, originalCurveFreqkHz, sizeof(preScalarCurveFreqkHz));
-    memcpy(preScalarCurveOffsets, originalCurveOffsets, sizeof(preScalarCurveOffsets));
+    const ApplyScalarShiftSnapshot preScalar(originalCurveFreqkHz, originalCurveOffsets, originalCurveVoltUv);
     const bool scalarBeforeKnownZero = desired->resetOcBeforeApply && desired->hasGpuOffset &&
         g_app.readback.gpuOffset && g_app.gpuClockOffsetkHz == 0;
     // Apply GPU offset first via dedicated path (handles uniform offset reliably).
@@ -586,10 +589,14 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
     // provenance point's component is reduced by what this apply's NVML write
     // measurably did to that point (curve_point_offset_policy.h).
     int provenanceScalarShiftKHz[VF_NUM_POINTS] = {};
-    const bool provenanceShiftMeasured = apply_measure_provenance_scalar_shift(desired,
+    bool provenanceShiftMeasured = false;
+    if (!apply_resolve_provenance_scalar_shift(desired,
         offsetInVfTable, gpuApplied, scalarBeforeKnownZero, targetGpuOffsetkHz,
-        preScalarCurveFreqkHz, preScalarCurveOffsets, originalCurveFreqkHz,
-        originalCurveOffsets, provenanceScalarShiftKHz);
+        preScalar.freqKHz, preScalar.offsetsKHz, preScalar.voltageUv,
+        originalCurveFreqkHz, originalCurveOffsets, originalCurveVoltUv,
+        lockedTailMask, provenanceScalarShiftKHz, &provenanceShiftMeasured))
+        return apply_recover_clock_failure(clockCeiling,
+            "The GPU-offset measurement no longer matches the curve", result, resultSize);
     debug_log("curve targets: offsetContract=%s vfTableOffset=%d gpuApplied=%d"
               " current=%d MHz requested=%d MHz exclude=%d viaCurve=%d\n",
         provenanceShiftMeasured ? "component-minus-measured-nvml-shift" : "full-component",
