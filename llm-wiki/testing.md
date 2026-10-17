@@ -14,14 +14,18 @@ are covered. Malformed renewal rejects before reading a private key. All keys,
 network calls and release publication in orchestration fixtures are mocked.
 
 The simulation seen-version editor has byte-exact fixtures for ANSI/UTF-8
-text, CRLF/LF/CR and mixed line endings, and an unterminated final line. A
-deterministic lock fixture completes another edit before acquisition and
-asserts that the subsequent read/write stays inside the shared mutex. Native
-Windows tests prove exclusion and release (including exception unwinding) on
-a scratch mutex; a contract check ties its name and descriptor to
-`source/config_utils.cpp`. Source: `tools/simulate_release_tests.py`,
-`tools/windows_config_lock.py`; verified 2026-10-17. Linux CI injects a lock
-only for the byte-editor fixtures; the native fixture is Windows-only.
+text, CRLF/LF/CR and mixed line endings, and an unterminated final line. It
+also records the pre-simulation file/section layout and proves that restoring
+an absent key removes only scaffolding the editor created, including a
+simulation-created file, while an unrelated `[updates]` setting added during
+the simulation survives. A deterministic lock
+fixture completes another edit before acquisition and asserts that the
+subsequent read/write stays inside the shared mutex. Native Windows tests prove
+exclusion and release (including exception unwinding) on a scratch mutex; a
+contract check ties its name and descriptor to `source/config_utils.cpp`.
+Source: `tools/simulate_release_tests.py`, `tools/windows_config_lock.py`;
+verified 2026-10-17. Linux CI injects a lock only for the byte-editor fixtures;
+the native fixture is Windows-only.
 
 Arch recipe checks run through Linux packaging source gates on every host.
 They verify actual local source bytes and real remote checksum pins, with

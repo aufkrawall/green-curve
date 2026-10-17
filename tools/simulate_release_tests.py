@@ -183,10 +183,10 @@ class SimulationGuardTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 guards.simulation_pubkey_hex(key, root)
         # The release key's own path is refused before it is even read.
-        with patch.object(guards, "get_release_key_path", return_value=key):
-            with self.assertRaises(RuntimeError):
-                guards.simulation_pubkey_hex(key, _fake_root(self.tmp / "o2", b"\x01" * 64,
-                                                             b"\x02" * 64))
+        with patch.object(guards, "get_release_key_path", return_value=key), \
+             self.assertRaises(RuntimeError):
+            guards.simulation_pubkey_hex(key, _fake_root(self.tmp / "o2", b"\x01" * 64,
+                                                         b"\x02" * 64))
         # The repository's real keys are never the default simulation key.
         self.assertNotIn(pub, guards.get_release_pubkeys(ROOT_DIR))
         self.assertNotEqual(guards.get_default_key_path().name, "update-signing-key.txt")
@@ -335,6 +335,70 @@ class HighestSeenRestoreTests(unittest.TestCase):
             self.assertTrue(guards.set_highest_seen(self.ini, "0.28"))
             self.assertEqual(self.ini.read_bytes(), original.replace(b"9.9", b"0.28"))
 
+    def test_restore_absent_key_removes_simulation_scaffolding_exactly(self):
+        originals = (
+            b"",
+            b"[updates]",
+            b"[meta]\r\n[updates]",
+            b"[profiles]\nselected_slot=1",
+            b"[profiles]\r\nselected_slot=1\r\n",
+        )
+        for original in originals:
+            with self.subTest(original=original):
+                self.ini.write_bytes(original)
+                self.state.unlink(missing_ok=True)
+                recorded = guards.record_pre_simulation_state(self.state, self.ini)
+                layout = recorded["highest_seen_layout"]
+                self.assertFalse(layout["highest_seen_present"])
+                self.assertTrue(guards.set_highest_seen(self.ini, "9.9.9"))
+                restored, _ = guards.restore_highest_seen(
+                    self.state, self.ini, elevated=True)
+                self.assertTrue(restored)
+                self.assertIsNone(guards.read_highest_seen(self.ini))
+                self.assertEqual(self.ini.read_bytes(), original)
+
+    def test_cleanup_after_key_already_absent_requires_elevation_only_when_needed(self):
+        original = b"[profiles]\nselected_slot=1"
+        self.ini.write_bytes(original)
+        guards.record_pre_simulation_state(self.state, self.ini)
+        self.assertTrue(guards.set_highest_seen(self.ini, "9.9.9"))
+        # Simulate an interrupted earlier restore that removed the key but left
+        # the empty section and repair newline behind.
+        self.ini.write_bytes(self.ini.read_bytes().replace(
+            b"highest_seen_version=9.9.9\n", b""))
+        restored, message = guards.restore_highest_seen(
+            self.state, self.ini, elevated=False)
+        self.assertFalse(restored)
+        self.assertIn("--restore-seen-only", message)
+        restored, _ = guards.restore_highest_seen(self.state, self.ini, elevated=True)
+        self.assertTrue(restored)
+        self.assertEqual(self.ini.read_bytes(), original)
+
+    def test_restore_absent_file_removes_simulation_only_config(self):
+        self.ini.unlink(missing_ok=True)
+        recorded = guards.record_pre_simulation_state(self.state, self.ini)
+        self.assertFalse(recorded["highest_seen_layout"]["file_present"])
+        # The installed client creates the file just to persist the seen mark.
+        self.ini.write_bytes(b"[updates]\nhighest_seen_version=9.9.9\n")
+        restored, _ = guards.restore_highest_seen(self.state, self.ini, elevated=True)
+        self.assertTrue(restored)
+        self.assertFalse(self.ini.exists())
+
+    def test_restore_absent_key_keeps_unrelated_update_settings(self):
+        original = b"[profiles]\nselected_slot=1"
+        self.ini.write_bytes(original)
+        guards.record_pre_simulation_state(self.state, self.ini)
+        self.assertTrue(guards.set_highest_seen(self.ini, "9.9.9"))
+        self.ini.write_bytes(self.ini.read_bytes().replace(
+            b"highest_seen_version=9.9.9\n",
+            b"highest_seen_version=9.9.9\nauto_check=2\n"))
+        restored, _ = guards.restore_highest_seen(self.state, self.ini, elevated=True)
+        self.assertTrue(restored)
+        data = self.ini.read_bytes()
+        self.assertNotIn(b"highest_seen_version", data)
+        self.assertIn(b"auto_check=2", data)
+        self.assertIn(b"[updates]", data)
+
     def test_mutex_failure_prevents_read_and_write(self):
         with patch.object(guards, "config_storage_lock", side_effect=TimeoutError("busy")), \
              patch.object(Path, "read_bytes", side_effect=AssertionError("read without lock")):
@@ -419,9 +483,9 @@ class WindowsConfigLockTests(unittest.TestCase):
             with windows_config_lock.config_storage_lock(name):
                 self.assertEqual(worker.submit(acquire).result(timeout=10), "busy")
             self.assertEqual(worker.submit(acquire).result(timeout=10), "acquired")
-            with self.assertRaisesRegex(ValueError, "fixture"):
-                with windows_config_lock.config_storage_lock(name):
-                    raise ValueError("fixture")
+            with self.assertRaisesRegex(ValueError, "fixture"), \
+                 windows_config_lock.config_storage_lock(name):
+                raise ValueError("fixture")
             self.assertEqual(worker.submit(acquire).result(timeout=10), "acquired")
 
 

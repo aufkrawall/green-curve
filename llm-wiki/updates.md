@@ -1228,13 +1228,20 @@ Two things this must get right or it proves nothing:
   simulated version number for a real release.
 
   The seen-version editor preserves unrelated bytes, original CR/LF endings
-  and an unterminated final line. It splits only CR/LF bytes, so ANSI and UTF-8
-  profile text is not interpreted as extra lines. Reads and the complete
-  read/modify/write use the same cross-session storage mutex as
+  and an unterminated final line. `init` records the original `[updates]` layout
+  (file/section/key presence, nonblank body count and final-line termination),
+  so a teardown that restores an absent key also removes an empty section,
+  repair newline, or simulation-created file when only the temporary key
+  existed. If the simulation added another real `[updates]` setting, that
+  setting and its section survive; only `highest_seen_version` is removed. The
+  editor splits only CR/LF bytes, so
+  ANSI and UTF-8 profile text is not interpreted as extra lines. Reads and the
+  complete read/modify/write use the same cross-session storage mutex as
   `source/config_utils.cpp`, through `tools/windows_config_lock.py`; a mutex
   creation or wait failure prevents configuration I/O. The descriptor and
   access contract match the application even when tooling creates the mutex
-  first. `tools/simulate_release_tests.py` covers byte preservation, an edit
+  first. `tools/simulate_release_tests.py` covers byte preservation, absent
+  section/key restoration, unrelated update-setting retention, an edit
   completed before lock acquisition, refusal before I/O, and native Windows
   mutual exclusion/release on a scratch mutex. Last verified: 2026-10-17.
 

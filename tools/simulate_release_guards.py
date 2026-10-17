@@ -26,8 +26,8 @@ ROOT_DIR = SCRIPT_DIR.parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-import update_signing  # noqa: E402
-from windows_config_lock import config_storage_lock  # noqa: E402
+import update_signing
+from windows_config_lock import config_storage_lock
 
 SIMULATION_KEY_NAME = "simulation-update-signing-key.txt"
 RELEASE_KEY_ARRAYS = ("GC_UPDATE_PUBLIC_KEY_ACTIVE", "GC_UPDATE_PUBLIC_KEY_NEXT")
@@ -186,17 +186,23 @@ def default_state_path():
     return ROOT_DIR / "dist" / "test-simulation" / "pre-simulation-state.json"
 
 
-def _updates_section_span(lines):
-    """(start, end) line indices of the [updates] body, or None."""
-    start = None
+def _updates_section_bounds(lines):
+    """(header index, body start, body end) for [updates], or None."""
+    header = None
     for index, line in enumerate(lines):
         stripped = line.strip(b" \t\r\n")
         if stripped.startswith(b"[") and stripped.endswith(b"]"):
-            if start is not None:
-                return start, index
+            if header is not None:
+                return header, header + 1, index
             if stripped[1:-1].strip().lower() == SEEN_SECTION.encode("ascii"):
-                start = index + 1
-    return (start, len(lines)) if start is not None else None
+                header = index
+    return (header, header + 1, len(lines)) if header is not None else None
+
+
+def _updates_section_span(lines):
+    """(start, end) line indices of the [updates] body, or None."""
+    bounds = _updates_section_bounds(lines)
+    return (bounds[1], bounds[2]) if bounds is not None else None
 
 
 def _ini_lines(data):
@@ -205,75 +211,166 @@ def _ini_lines(data):
     return [line for line in re.findall(rb"[^\r\n]*(?:\r\n|\r|\n|$)", data) if line]
 
 
+def _empty_highest_seen_layout(file_present=False):
+    return {
+        "file_present": file_present,
+        "file_ended_with_newline": False,
+        "updates_present": False,
+        "highest_seen_present": False,
+        "updates_nonblank_lines": 0,
+    }
+
+
+def _highest_seen_state_from_bytes(data):
+    """Value plus the minimal layout facts needed to reverse an absent-key edit."""
+    layout = _empty_highest_seen_layout(file_present=True)
+    layout["file_ended_with_newline"] = bool(re.search(rb"(?:\r\n|\r|\n)$", data))
+    lines = _ini_lines(data)
+    bounds = _updates_section_bounds(lines)
+    if bounds is None:
+        return None, layout
+    _, body_start, body_end = bounds
+    layout["updates_present"] = True
+    layout["updates_nonblank_lines"] = sum(
+        1 for line in lines[body_start:body_end] if line.strip())
+    for line in lines[body_start:body_end]:
+        key, sep, value = line.partition(b"=")
+        if sep and key.strip().lower() == SEEN_KEY.encode("ascii"):
+            layout["highest_seen_present"] = True
+            return value.strip().decode("ascii"), layout
+    return None, layout
+
+
+def _read_highest_seen_locked(ini_path):
+    if not ini_path.exists():
+        return None, _empty_highest_seen_layout()
+    return _highest_seen_state_from_bytes(ini_path.read_bytes())
+
+
 def read_highest_seen(ini_path):
     """The recorded value, or None when the file or key is absent."""
     ini_path = Path(ini_path)
     with config_storage_lock():
-        if not ini_path.exists():
-            return None
-        lines = _ini_lines(ini_path.read_bytes())
-    span = _updates_section_span(lines)
-    if span is None:
-        return None
-    for line in lines[span[0]:span[1]]:
-        key, sep, value = line.partition(b"=")
-        if sep and key.strip().lower() == SEEN_KEY.encode("ascii"):
-            return value.strip().decode("ascii")
-    return None
+        value, _layout = _read_highest_seen_locked(ini_path)
+    return value
 
 
-def set_highest_seen(ini_path, value):
+def _strip_one_final_line_ending(lines):
+    if lines and lines[-1].endswith((b"\r", b"\n")):
+        lines[-1] = re.sub(rb"(?:\r\n|\r|\n)$", b"", lines[-1], count=1)
+
+
+def _cleanup_absent_key_artifacts(lines, layout):
+    """Remove only structure this editor knows it added while the key was absent.
+
+    Existing [updates] entries written by the simulation are retained.  If an
+    absent section became non-empty for any other reason, only the seen-version
+    key is removed elsewhere; this cleanup becomes a no-op.
+    """
+    if not layout or layout.get("highest_seen_present", True):
+        return
+    bounds = _updates_section_bounds(lines)
+    if bounds is None:
+        return
+    header, body_start, body_end = bounds
+    updates_at_eof = body_end == len(lines)
+    nonblank = sum(1 for line in lines[body_start:body_end] if line.strip())
+    originally_present = bool(layout.get("updates_present"))
+    can_restore_final_termination = False
+    if not originally_present:
+        if nonblank:
+            return
+        # The writer appends a missing section at EOF.  Remove the header, its
+        # body and the separator blank line it introduced; retain anything the
+        # simulation appended after it.
+        del lines[header:body_end]
+        if header > 0 and not lines[header - 1].strip():
+            del lines[header - 1]
+        can_restore_final_termination = updates_at_eof
+    else:
+        original_nonblank = int(layout.get("updates_nonblank_lines", 0))
+        if nonblank != original_nonblank:
+            return
+        can_restore_final_termination = updates_at_eof
+    if can_restore_final_termination and not layout.get("file_ended_with_newline", True):
+        # Inserting a line after an unterminated final line had to add an EOL.
+        _strip_one_final_line_ending(lines)
+
+
+def _absent_key_cleanup_needed_locked(ini_path, layout):
+    if not ini_path.exists():
+        return False
+    data = ini_path.read_bytes()
+    lines = _ini_lines(data)
+    _cleanup_absent_key_artifacts(lines, layout)
+    out = b"".join(lines)
+    if not out and not layout.get("file_present", True):
+        return True
+    return out != data
+
+
+def set_highest_seen(ini_path, value, restore_layout=None):
     """Rewrite one key IN PLACE (same file object, so its protected DACL and
-    owner are kept); value None removes the key.  Returns True when changed."""
+    owner are kept); value None removes the key.  Returns True when changed.
+
+    `restore_layout` is the layout recorded before a simulation.  It is used
+    only when removing a key that was absent then, so empty section scaffolding
+    and an artificially added final newline can be removed again.
+    """
     # Read only after the shared mutex is held: another writer may finish
     # while this caller waits, and its unrelated edits must survive the restore.
     with config_storage_lock():
-        return _set_highest_seen_locked(Path(ini_path), value)
+        return _set_highest_seen_locked(Path(ini_path), value, restore_layout)
 
 
-def _set_highest_seen_locked(ini_path, value):
+def _set_highest_seen_locked(ini_path, value, restore_layout=None):
     data = ini_path.read_bytes()
     match = re.search(rb"\r\n|\r|\n", data)
     newline = match.group() if match else b"\n"
     lines = _ini_lines(data)
     span = _updates_section_span(lines)
     replacement = None if value is None else f"{SEEN_KEY}={value}".encode("ascii")
-    changed = False
+    found = False
     if span is not None:
         for index in range(span[0], span[1]):
             key, sep, _ = lines[index].partition(b"=")
             if sep and key.strip().lower() == SEEN_KEY.encode("ascii"):
                 ending = re.search(rb"(?:\r\n|\r|\n)$", lines[index])
-                new_line = replacement + (ending.group() if ending else b"") \
-                    if replacement is not None else None
                 if replacement is None:
                     del lines[index]
-                elif lines[index] != new_line:
-                    lines[index] = new_line
                 else:
-                    return False
-                changed = True
+                    new_line = replacement + (ending.group() if ending else b"")
+                    if lines[index] == new_line:
+                        return False
+                    lines[index] = new_line
+                found = True
                 break
-        if not changed and replacement is not None:
+        if not found and replacement is not None:
             insert_at = span[1]
             while insert_at > span[0] and not lines[insert_at - 1].strip():
                 insert_at -= 1
             if insert_at and not lines[insert_at - 1].endswith((b"\r", b"\n")):
                 lines[insert_at - 1] += newline
             lines.insert(insert_at, replacement + newline)
-            changed = True
     elif replacement is not None:
         if lines and not lines[-1].endswith((b"\r", b"\n")):
             lines[-1] += newline
         lines += [newline, b"[updates]" + newline, replacement + newline]
-        changed = True
-    if not changed:
-        return False
+    if replacement is None:
+        _cleanup_absent_key_artifacts(lines, restore_layout)
     out = b"".join(lines)
-    with open(ini_path, "r+b") as handle:
-        handle.seek(0)
-        handle.write(out)
-        handle.truncate()
+    remove_file = (replacement is None and restore_layout is not None and
+                   not restore_layout.get("file_present", True) and
+                   not out and ini_path.exists())
+    if out == data and not remove_file:
+        return False
+    if out != data:
+        with open(ini_path, "r+b") as handle:
+            handle.seek(0)
+            handle.write(out)
+            handle.truncate()
+    if remove_file:
+        ini_path.unlink()
     return True
 
 
@@ -288,8 +385,13 @@ def record_pre_simulation_state(state_path=None, ini_path=None):
     if state_path.exists():
         log(f"pre-simulation state already recorded in {state_path}; keeping it")
         return json.loads(state_path.read_text(encoding="utf-8"))
-    state = {"highest_seen_version": read_highest_seen(ini_path),
-             "machine_config": str(ini_path)}
+    with config_storage_lock():
+        value, layout = _read_highest_seen_locked(ini_path)
+    state = {
+        "highest_seen_version": value,
+        "machine_config": str(ini_path),
+        "highest_seen_layout": layout,
+    }
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
     log(f"recorded pre-simulation highest_seen_version="
@@ -316,17 +418,36 @@ def restore_command(state_path):
 def restore_highest_seen(state_path=None, ini_path=None, override=None, elevated=None):
     """Put highest_seen_version back; returns (restored, message)."""
     state_path = Path(state_path or default_state_path())
+    layout = None
     if override is not None:
         target = override or None
     elif state_path.exists():
-        target = json.loads(state_path.read_text(encoding="utf-8")).get("highest_seen_version")
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        target = state.get("highest_seen_version")
+        layout = state.get("highest_seen_layout")
     else:
         return False, (f"no pre-simulation record at {state_path}; pass --seen-version <v> "
                        "(empty string removes the key) to restore by hand")
     ini_path = Path(ini_path or machine_config_path())
     current = read_highest_seen(ini_path)
+    cleanup_possible = target is None and layout is not None and ini_path.exists()
+    cleanup_needed = False
+    if cleanup_possible:
+        with config_storage_lock():
+            cleanup_needed = _absent_key_cleanup_needed_locked(ini_path, layout)
     if current == target:
-        return True, f"highest_seen_version already {target or '<absent>'}; nothing to restore"
+        if not cleanup_needed:
+            return True, f"highest_seen_version already {target or '<absent>'}; nothing to restore"
+        if elevated is None:
+            elevated = is_elevated()
+        if not elevated:
+            command = restore_command(state_path)
+            return False, ("highest_seen_version is already "
+                           f"{target or '<absent>'}, but removing simulation-only "
+                           f"configuration scaffolding needs an elevated prompt. Run:\n  {command}")
+        set_highest_seen(ini_path, None, layout)
+        return True, ("highest_seen_version was already absent; removed "
+                      "simulation-only configuration scaffolding")
     if elevated is None:
         elevated = is_elevated()
     if not elevated:
@@ -338,7 +459,7 @@ def restore_highest_seen(state_path=None, ini_path=None, override=None, elevated
                        f"prompt. Run:\n  {command}")
     if not ini_path.exists():
         return False, f"{ini_path} does not exist; nothing to restore"
-    set_highest_seen(ini_path, target)
+    set_highest_seen(ini_path, target, layout if target is None else None)
     return True, (f"restored highest_seen_version {current or '<absent>'} -> "
                   f"{target or '<absent>'}. Restart the Green Curve service (or reboot) "
                   "before its next update check, or it writes its in-memory value back.")
