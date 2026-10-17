@@ -277,8 +277,23 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # Such a point carries OFFSET intent, in either offset routing.
     require_text(verify_h, "desired->curvePointFromGpuOffset[ci]",
                  "verification separates projected points from typed absolutes, PER POINT")
-    require_text(verify_h, "(selective || fromOffset)",
+    require_text(verify_h, "curve_point_offset_is_intent(explicitMask[ci], fromOffset, selective)",
                  "projected points take the offset branch whichever routing applies")
+    require_text(_p(ctx, "curve_point_offset_policy.h"),
+                 "return !explicitPoint && (selectiveBatch || fromGpuOffset);",
+                 "offset authority: every non-typed point under the selective batch or "
+                 "with offset provenance holds its offset")
+    # The correction loop asks the SAME question as verification.  When it did
+    # not, a selective-batch point the request never contained was chased to its
+    # projected MHz after a cold-boot base shift and then failed verification
+    # for holding the very offset the correction had just written.
+    correction_policy_h = _p(ctx, "apply_correction_policy.h")
+    require_text(correction_policy_h, "apply_correction_point_offset_is_intent(q, ci)",
+                 "the correction plan and classification use the verification predicate")
+    require_text(correction_policy_h, "want.gpuOffsetComponentKHz = q.targetOffsetKHz[ci];",
+                 "an offset-intent correction writes the build's own target offset")
+    require_text(apply_cpp, "correction.targetOffsetKHz = targetCurveOffsets;",
+                 "the correction is steered by the offsets verification compares against")
     # ...and writing must not re-derive them from the live base, which is the
     # very sample that moved.
     forbid_text(targets_h, "offset = (long long)desired->curvePointMHz[ci] * 1000 - base;",

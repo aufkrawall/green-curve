@@ -74,7 +74,7 @@ struct Request {
     unsigned char hasPoint[N];
     unsigned int pointMHz[N];
     unsigned char fromGpuOffset[N];
-    int gpuComponentKHz[N];
+    int targetOffsetKHz[N];
     ApplyCorrectionRequest q;
 };
 
@@ -89,7 +89,7 @@ void request_init(Request* r) {
     r->q.hasCurvePoint = r->hasPoint;
     r->q.curvePointMHz = r->pointMHz;
     r->q.fromGpuOffset = r->fromGpuOffset;
-    r->q.gpuOffsetComponentKHz = r->gpuComponentKHz;
+    r->q.targetOffsetKHz = r->targetOffsetKHz;
 }
 
 void request_point(Request* r, int ci, unsigned int mhz) {
@@ -113,11 +113,17 @@ void request_lock(Request* r, int anchor, unsigned int lockMHz, bool viaCurveBat
 
 const VfOffsetRange kRange = {-1000000, 1000000, true};
 
-// Tolerance verification, the shape of curve_targets_match_request().
+// Tolerance verification, the shape of apply_verify_curve_targets(): an
+// offset-intent point is judged by its programmed offset (a lower, driver-
+// limited one is fine; a higher one fails), every other point by its MHz.
 bool sim_verify(const Request& r, const SimDriver& d, unsigned int tolMHz) {
     for (int i = 0; i < N; i++) {
         if (!r.hasPoint[i]) continue;
         if (d.liveKHz[i] == 0) return false;
+        if (apply_correction_point_offset_is_intent(r.q, i)) {
+            if ((long long)d.programmedKHz[i] > (long long)r.targetOffsetKHz[i] + 12000) return false;
+            continue;
+        }
         unsigned int actual = apply_correction_display_mhz(d.liveKHz[i]);
         unsigned int target = (r.q.hasLock && r.tail[i] && r.q.lockMHz) ? r.q.lockMHz : r.pointMHz[i];
         int diff = (int)actual - (int)target;
@@ -254,7 +260,7 @@ int run_plan_tests() {
         request_point(&r, 3, 2150);              // stale projection
         r.explicitMask[3] = false;
         r.fromGpuOffset[3] = 1;
-        r.gpuComponentKHz[3] = 0;
+        r.targetOffsetKHz[3] = 0;
         request_point(&r, 5, 1800);              // unrelated point that misses
         unsigned int freq[N]; int prog[N];
         for (int i = 0; i < N; i++) { freq[i] = d.liveKHz[i]; prog[i] = d.programmedKHz[i]; }
@@ -262,7 +268,7 @@ int run_plan_tests() {
         int offsets[N]; bool mask[N];
         apply_correction_plan_pass(r.q, rb, kRange, offsets, mask);
         if (!mask[3] || offsets[3] != 0 || offsets[5] != 50000) return 6506;
-        r.gpuComponentKHz[3] = 45000;
+        r.targetOffsetKHz[3] = 45000;
         apply_correction_plan_pass(r.q, rb, kRange, offsets, mask);
         if (offsets[3] != 45000) return 6507;
     }
@@ -538,11 +544,127 @@ int run_loop_control_tests() {
     return 0;
 }
 
+// Selective-batch points the request never contained: the apply synthesizes
+// them with offset intent (0 on excluded points) and an MHz preview over the
+// base sampled after reset.
+void request_synthesized(Request* r, int ci, const SimDriver& d, int targetOffsetKHz) {
+    r->hasPoint[ci] = 1;
+    r->explicitMask[ci] = false;
+    r->fromGpuOffset[ci] = 0;
+    r->targetOffsetKHz[ci] = targetOffsetKHz;
+    r->pointMHz[ci] = apply_correction_display_mhz(
+        (unsigned int)(d.baseKHz[ci] + targetOffsetKHz));
+}
+
+int run_offset_intent_tests() {
+    // 6532: the 2026-10-17 cold-boot logon failure.  FLATTEN through the curve
+    // batch, excluded low points synthesized at offset 0, and the whole base
+    // drops one VF bin after the first correction write.  The anchor is
+    // re-derived and verifies on pass 2; the excluded points keep offset 0.
+    // Before the fix pass 2 wrote +30000 kHz onto every excluded point to chase
+    // its stale preview, and verification refused exactly that offset.
+    {
+        SimDriver d; sim_init(&d);
+        d.monotonic = true;
+        sim_refresh(&d);
+        Request r; request_init(&r);
+        request_lock(&r, 10, 1980, true);
+        for (int i = 2; i < 10; i++) request_synthesized(&r, i, d, 0);
+        LoopRun run = run_loop(&r, &d, 8, 0, -30000);
+        if (!run.outcome.verified || run.outcome.passesRun != 2) return 6532;
+        for (int i = 2; i < 10; i++)
+            if (d.programmedKHz[i] != 0 || !run.firstPassMask[i] || run.firstPassOffsets[i] != 0)
+                return 6533;
+        if (run.lastPlan.offsetIntentCount != 8 || run.lastPlan.absoluteCount != 0) return 6534;
+        if (apply_correction_display_mhz(d.liveKHz[10]) != 1980) return 6535;
+    }
+    // 6536: a boost-region synthesized point holds its +offset too, whatever
+    // the base does; the plan never re-derives it from the live base.
+    {
+        SimDriver d; sim_init(&d);
+        d.programmedKHz[4] = 45000;
+        d.baseKHz[4] -= 15000;                       // base moved after the preview
+        sim_refresh(&d);
+        Request r; request_init(&r);
+        r.q.gpuPolicyViaCurveBatch = true;
+        request_synthesized(&r, 4, d, 45000);
+        r.pointMHz[4] += 15;                         // preview over the old base
+        unsigned int freq[N]; int prog[N];
+        for (int i = 0; i < N; i++) { freq[i] = d.liveKHz[i]; prog[i] = d.programmedKHz[i]; }
+        const ApplyCorrectionReadback rb = {freq, prog};
+        int offsets[N]; bool mask[N];
+        ApplyCorrectionPlan plan = apply_correction_plan_pass(r.q, rb, kRange, offsets, mask);
+        if (!mask[4] || offsets[4] != 45000 || plan.offsetIntentCount != 1) return 6536;
+        // Classification: holding the offset is converged even though the live
+        // MHz is 15 below the preview.
+        int prevError[N];
+        apply_correction_reset_history(N, prevError);
+        ApplyCorrectionPointReport rep[N];
+        ApplyCorrectionPassStats s = apply_correction_classify_pass(r.q, rb, kRange, 0, prevError, rep);
+        if (s.unconverged != 0 || s.offsetIntentOff != 0 || s.firstOffsetIntentOffCi != -1) return 6537;
+    }
+    // 6538: a driver-limited (lower) offset on an offset-intent point is
+    // reported, counts as unconverged, is never "accepted" by lowering its
+    // preview, and verifies (lower is safe).  Without the curve-batch policy a
+    // fromGpuOffset point is offset intent as well.
+    {
+        SimDriver d; sim_init(&d);
+        d.programmedKHz[6] = -112000;
+        sim_refresh(&d);
+        Request r; request_init(&r);
+        request_lock(&r, 12, 2100, false);
+        request_synthesized(&r, 6, d, 0);
+        r.pointMHz[6] = 1800;                        // stock-base preview
+        r.fromGpuOffset[6] = 1;
+        unsigned int freq[N]; int prog[N];
+        for (int i = 0; i < N; i++) { freq[i] = d.liveKHz[i]; prog[i] = d.programmedKHz[i]; }
+        for (int i = 12; i < N; i++) freq[i] = 2100000;
+        const ApplyCorrectionReadback rb = {freq, prog};
+        int prevError[N];
+        apply_correction_reset_history(N, prevError);
+        ApplyCorrectionPointReport rep[N];
+        ApplyCorrectionPassStats s = apply_correction_classify_pass(r.q, rb, kRange, 0, prevError, rep);
+        if (s.offsetIntentOff != 1 || s.firstOffsetIntentOffCi != 6 ||
+            s.firstOffsetIntentProgrammedKHz != -112000 || s.firstOffsetIntentTargetKHz != 0 ||
+            s.acceptedNonTail != 0 || (rep[6].events & APPLY_CORRECTION_EVENT_ACCEPTED_READBACK) ||
+            r.pointMHz[6] != 1800 || prevError[6] != 112000) return 6538;
+        // Verification of that point alone (no lock): lower passes, higher fails.
+        Request v; request_init(&v);
+        request_synthesized(&v, 6, d, 0);
+        v.fromGpuOffset[6] = 1;
+        if (!sim_verify(v, d, 8)) return 6539;
+        d.programmedKHz[6] = 13000;                  // above requested + 12 MHz
+        sim_refresh(&d);
+        if (sim_verify(v, d, 8)) return 6540;
+    }
+    // 6541: a typed point under the curve batch still steers to its MHz after
+    // the base moves (only typed points are absolute).
+    {
+        SimDriver d; sim_init(&d); sim_refresh(&d);
+        Request r; request_init(&r);
+        r.q.gpuPolicyViaCurveBatch = true;
+        request_point(&r, 3, 1700);
+        LoopRun run = run_loop(&r, &d, 8, 0, 30000);
+        if (!run.outcome.verified || run.outcome.passesRun != 2 ||
+            d.programmedKHz[3] != 20000 || run.lastPlan.absoluteCount != 1 ||
+            run.lastPlan.offsetIntentCount != 0) return 6541;
+    }
+    // 6542: the shared predicate, which verification uses as well.
+    if (!curve_point_offset_is_intent(false, false, true) ||
+        !curve_point_offset_is_intent(false, true, false) ||
+        !curve_point_offset_is_intent(false, true, true) ||
+        curve_point_offset_is_intent(false, false, false) ||
+        curve_point_offset_is_intent(true, false, true) ||
+        curve_point_offset_is_intent(true, true, true)) return 6542;
+    return 0;
+}
+
 }  // namespace
 
 int run_apply_correction_tests() {
     if (int r = run_plan_tests()) return r;
     if (int r = run_lock_tests()) return r;
     if (int r = run_loop_control_tests()) return r;
+    if (int r = run_offset_intent_tests()) return r;
     return 0;
 }

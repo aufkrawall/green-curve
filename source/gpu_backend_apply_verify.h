@@ -3,6 +3,8 @@
 #ifndef GREEN_CURVE_GPU_BACKEND_APPLY_VERIFY_H
 #define GREEN_CURVE_GPU_BACKEND_APPLY_VERIFY_H
 
+#include "curve_point_offset_policy.h"
+
 // Re-evaluate the latest readback on every call, including correction passes.
 // Matching a generic selective offset never excuses violating an explicit point.
 // Derived MHz values are only a preview: the driver can change the base curve
@@ -33,7 +35,8 @@ static bool apply_verify_curve_targets(const DesiredSettings* desired,
         // own their own voltage/frequency targets and are checked below.
         if (tail && mode == LOCK_MODE_HARD) continue;
         const bool fromOffset = desired->curvePointFromGpuOffset[ci];
-        if (!tail && !explicitMask[ci] && (selective || fromOffset)) {
+        // Same predicate as the correction loop's plan (apply_correction_policy.h).
+        if (!tail && curve_point_offset_is_intent(explicitMask[ci], fromOffset, selective)) {
             const int expected = targetOffsets[ci];
             const int actual = g_app.freqOffsets[ci];
             // Preserve delta intent, including excluded points and undervolts.

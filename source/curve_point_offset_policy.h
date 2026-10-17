@@ -41,6 +41,20 @@ struct CurvePointOffsetRequest {
     long long liveBaseKHz;
 };
 
+// Which question a NON-tail point answers: "hold this offset" or "hit this
+// absolute MHz". Only a point the user typed asks the second one. A point the
+// selective GPU-offset batch synthesized (it is not in the request at all, the
+// apply projects its MHz over the base sampled after reset) or a point the
+// request marks offset-derived asks the first. Verification and the correction
+// loop must ask this identically: when they did not, a cold-boot base that
+// moved by one VF bin sent the correction chasing the projected MHz with
+// positive offsets on excluded points, which verification then refused as
+// "above requested" (2026-10-17 logon apply).
+static inline bool curve_point_offset_is_intent(bool explicitPoint, bool fromGpuOffset,
+                                                bool selectiveBatch) {
+    return !explicitPoint && (selectiveBatch || fromGpuOffset);
+}
+
 static inline long long curve_point_target_offset_khz(const CurvePointOffsetRequest* r) {
     if (!r) return 0;
     if (r->fromGpuOffset) return (long long)r->gpuOffsetComponentKHz;

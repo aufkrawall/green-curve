@@ -18,7 +18,11 @@
 //   - a NON-tail point the driver would not move never ended the loop, so it
 //     ran all 25 passes holding the hardware gate;
 //   - the fixed-point exit ran before verification and rolled back a curve
-//     that was within tolerance.
+//     that was within tolerance;
+//   - points the selective GPU-offset batch synthesized were still chased to
+//     their projected MHz after a cold-boot base shift, so the loop wrote
+//     positive offsets onto excluded points and verification -- which judges
+//     those points by offset -- failed a logon apply on them (2026-10-17).
 //
 // All of them used to live inline in gpu_backend_apply.cpp, reading g_app,
 // where no test could reach them.  They live here now; the apply supplies the
@@ -57,7 +61,9 @@ struct ApplyCorrectionRequest {
     const unsigned char* hasCurvePoint;  // the verify request's points (gc_bool8)
     unsigned int* curvePointMHz;       // verify targets; lowered on acceptance
     const unsigned char* fromGpuOffset;  // per-point provenance (gc_bool8)
-    const int* gpuOffsetComponentKHz;  // this request's per-point GPU offset
+    // The offset the initial build chose for each point -- the same array
+    // verification compares an offset-intent point against.
+    const int* targetOffsetKHz;
 };
 
 static inline unsigned int apply_correction_display_mhz(unsigned int freqKHz) {
@@ -68,6 +74,17 @@ static inline unsigned int apply_correction_display_mhz(unsigned int freqKHz) {
 
 static inline bool apply_correction_point_is_tail(const ApplyCorrectionRequest& q, int ci) {
     return q.hasLock && q.lockedTailMask[ci] && q.lockMHz > 0;
+}
+
+// A non-tail point whose intent is its OFFSET, asked exactly the way
+// apply_verify_curve_targets() asks it.  Its MHz in `curvePointMHz` is only a
+// projection over the base sampled after reset; when the driver re-reports that
+// base (a cold GPU's curve moves by a whole VF bin between passes), chasing the
+// projection writes an offset verification must then refuse.
+static inline bool apply_correction_point_offset_is_intent(const ApplyCorrectionRequest& q, int ci) {
+    return !apply_correction_point_is_tail(q, ci) && q.originalCurvePopulated[ci] &&
+        curve_point_offset_is_intent(q.explicitCurveMask[ci], q.fromGpuOffset[ci] != 0,
+                                     q.gpuPolicyViaCurveBatch);
 }
 
 // The stock base the driver implies for a point: live minus programmed.
@@ -92,6 +109,8 @@ struct ApplyCorrectionPlan {
     int firstClampedCi;        // -1 when none
     int firstClampedRequestKHz;
     int firstClampedResultKHz;
+    int offsetIntentCount;     // non-tail points held at their requested offset
+    int absoluteCount;         // non-tail points steered to a typed MHz
 };
 
 // Offsets for one correction pass.  Every offset is recomputed ABSOLUTELY from
@@ -131,8 +150,10 @@ static inline ApplyCorrectionPlan apply_correction_plan_pass(
         else continue;
         if (!isTail && q.originalCurvePopulated[ci]) {
             CurvePointOffsetRequest want = {};
-            want.fromGpuOffset = q.fromGpuOffset[ci] != 0;
-            want.gpuOffsetComponentKHz = q.gpuOffsetComponentKHz[ci];
+            want.fromGpuOffset = apply_correction_point_offset_is_intent(q, ci);
+            want.gpuOffsetComponentKHz = q.targetOffsetKHz[ci];
+            if (want.fromGpuOffset) plan.offsetIntentCount++;
+            else plan.absoluteCount++;
             want.absoluteMHz = targetMHz;
             want.liveBaseKHz = apply_correction_live_base_khz(rb, ci);
             long long diff = curve_point_target_offset_khz(&want);
@@ -174,6 +195,12 @@ struct ApplyCorrectionPassStats {
     int converging, worsening, stuck, outOfRange;
     int acceptedNonTail, strictDiverged;
     int unconverged, improved;
+    // Offset-intent points whose programmed offset is not the requested one
+    // (typically a driver limit); the first is kept for the log line.
+    int offsetIntentOff;
+    int firstOffsetIntentOffCi;   // -1 when none
+    int firstOffsetIntentProgrammedKHz;
+    int firstOffsetIntentTargetKHz;
     bool fixedPoint;
 };
 
@@ -192,11 +219,39 @@ static inline ApplyCorrectionPassStats apply_correction_classify_pass(
         const VfOffsetRange& range, int correctionPass, int* prevErrorKHz,
         ApplyCorrectionPointReport* reports) {
     ApplyCorrectionPassStats s = {};
+    s.firstOffsetIntentOffCi = -1;
     for (int ci = 0; ci < q.pointCount; ci++) {
         ApplyCorrectionPointReport* r = reports ? &reports[ci] : nullptr;
         if (r) *r = ApplyCorrectionPointReport{};
         if (!q.hasCurvePoint[ci]) continue;
         if (rb.freqKHz[ci] == 0) continue;
+        if (apply_correction_point_offset_is_intent(q, ci)) {
+            // Converged means "holds the requested offset"; its live MHz is
+            // whatever the driver's base makes of that, and is never chased
+            // nor accepted as a lowered target.
+            const int programmed = rb.programmedOffsetKHz[ci];
+            const int wanted = q.targetOffsetKHz[ci];
+            if (programmed == wanted) continue;
+            s.unconverged++;
+            long long diff = (long long)programmed - (long long)wanted;
+            if (diff < 0) diff = -diff;
+            const int errorKHz = diff > INT_MAX ? INT_MAX : (int)diff;
+            const int prev = prevErrorKHz[ci];
+            if (prev != INT_MAX && errorKHz < prev) s.improved++;
+            prevErrorKHz[ci] = errorKHz;
+            if (s.offsetIntentOff++ == 0) {
+                s.firstOffsetIntentOffCi = ci;
+                s.firstOffsetIntentProgrammedKHz = programmed;
+                s.firstOffsetIntentTargetKHz = wanted;
+            }
+            if (r) {
+                r->actualMHz = apply_correction_display_mhz(rb.freqKHz[ci]);
+                r->targetMHz = q.curvePointMHz[ci];
+                r->errorKHz = errorKHz;
+                r->prevErrorKHz = prev;
+            }
+            continue;
+        }
         const bool tail = q.lockedTailMask[ci];
         const unsigned int actualMHz = apply_correction_display_mhz(rb.freqKHz[ci]);
         const unsigned int targetMHz = apply_correction_point_is_tail(q, ci)

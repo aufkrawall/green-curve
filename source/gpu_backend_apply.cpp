@@ -806,11 +806,6 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                             rbOffsetKHz[ci] = g_app.freqOffsets[ci];
                         }
                     };
-                    int gpuOffsetComponentKHz[VF_NUM_POINTS] = {};
-                    for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-                        gpuOffsetComponentKHz[ci] = gpu_offset_component_mhz_for_point(ci,
-                            desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount) * 1000;
-                    }
                     ApplyCorrectionRequest correction = {};
                     correction.pointCount = VF_NUM_POINTS;
                     correction.hasLock = hasLock;
@@ -823,7 +818,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                     correction.hasCurvePoint = verifyDesired.hasCurvePoint;
                     correction.curvePointMHz = verifyDesired.curvePointMHz;
                     correction.fromGpuOffset = desired->curvePointFromGpuOffset;
-                    correction.gpuOffsetComponentKHz = gpuOffsetComponentKHz;
+                    correction.targetOffsetKHz = targetCurveOffsets;
                     int prevErrorKHz[VF_NUM_POINTS] = {};
                     apply_correction_reset_history(VF_NUM_POINTS, prevErrorKHz);
                     ApplyCorrectionPointReport pointReports[VF_NUM_POINTS] = {};
@@ -872,6 +867,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                                     correctionPass + 1, plan.tailFloorCount,
                                     vf_offset_range_flatten_floor_khz(range));
                             }
+                            debug_log("correction pass %d plan: offsetIntent=%d absolute=%d tailFloor=%d clamped=%d\n",
+                                correctionPass + 1, plan.offsetIntentCount, plan.absoluteCount,
+                                plan.tailFloorCount, plan.clampedCount);
                             debug_log("curve correction pass %d: target point 75 live=%u MHz offset=%d desiredOffset=%d\n",
                                 correctionPass + 1,
                                 displayed_curve_mhz(g_app.curve[75].freq_kHz),
@@ -935,6 +933,12 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                             debug_log("correction pass %d convergence: converging=%d worsening=%d stuck=%d outOfRange=%d acceptedNonTail=%d strictDiverged=%d unconverged=%d improved=%d\n",
                                 correctionPass + 1, st.converging, st.worsening, st.stuck, st.outOfRange,
                                 st.acceptedNonTail, st.strictDiverged, st.unconverged, st.improved);
+                            if (st.offsetIntentOff > 0) {
+                                debug_log("correction pass %d: %d offset-intent point(s) off their requested offset"
+                                          " (first ci=%d programmed=%d target=%d kHz); holding the offset, not the projected MHz\n",
+                                    correctionPass + 1, st.offsetIntentOff, st.firstOffsetIntentOffCi,
+                                    st.firstOffsetIntentProgrammedKHz, st.firstOffsetIntentTargetKHz);
+                            }
                             if (st.fixedPoint) {
                                 debug_log("correction pass %d: no point improved and %d remain unconverged; the correction has reached a fixed point, stopping instead of rewriting identical offsets\n",
                                     correctionPass + 1, st.unconverged);
