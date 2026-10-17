@@ -969,6 +969,9 @@ int run_apply_profile_followup_tests();
 // The apply's VF correction loop against a simulated driver
 // (tests/apply_correction_tests.cpp, 6500-6549).
 int run_apply_correction_tests();
+// Offset intent vs absolute MHz on pre-Blackwell scalar offsets, pre-tail and
+// verify-count yardsticks (tests/offset_intent_tests.cpp, 6570-6599).
+int run_offset_intent_tests();
 // Native fan worker cancellable-lock fixture (tests/fan_worker_lock_tests.cpp,
 // 6550-6569; Windows only).
 int run_fan_worker_lock_tests();
@@ -1788,6 +1791,13 @@ int main(int argc, char** argv) {
         return correctionFailure > 0 && correctionFailure < 126 ? correctionFailure : 1;
 #endif
         return correctionFailure;
+    }
+    if (int offsetIntentFailure = run_offset_intent_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", offsetIntentFailure);
+#if !defined(_WIN32)
+        return offsetIntentFailure > 0 && offsetIntentFailure < 126 ? offsetIntentFailure : 1;
+#endif
+        return offsetIntentFailure;
     }
     if (int followup2Failure = run_apply_profile_followup_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", followup2Failure);

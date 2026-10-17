@@ -62,7 +62,8 @@ struct ApplyCorrectionRequest {
     unsigned int* curvePointMHz;       // verify targets; lowered on acceptance
     const unsigned char* fromGpuOffset;  // per-point provenance (gc_bool8)
     // The offset the initial build chose for each point -- the same array
-    // verification compares an offset-intent point against.
+    // verification compares an offset-intent point against.  Already the
+    // per-point delta, net of any separate GPU-offset scalar (pre-Blackwell).
     const int* targetOffsetKHz;
 };
 

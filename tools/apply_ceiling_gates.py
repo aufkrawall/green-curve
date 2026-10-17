@@ -303,6 +303,17 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "SHORTFALL judges an offset-intent point by its missing offset, not a stale preview")
     forbid_text(diagnostics_h, "if (selective && !isTail && !explicitMask[ci]) {",
                 "no private copy of the offset-intent predicate in the diagnostics")
+    # Pre-Blackwell a uniform GPU offset is a separate driver scalar (NVML)
+    # that already lifts every point; an offset-intent point's VF delta must
+    # carry only the rest, or it runs at stock + twice the offset while the
+    # offset verifier, comparing against that same delta, reports success.
+    require_text(_p(ctx, "curve_point_offset_policy.h"),
+                 "return (long long)r->gpuOffsetComponentKHz - (long long)r->scalarGpuOffsetKHz;",
+                 "an offset-intent delta is net of the separate GPU-offset scalar")
+    require_text(targets_h, "want.scalarGpuOffsetKHz = scalarGpuOffsetKHz;",
+                 "the Windows target build passes the scalar to the shared policy")
+    require_text(apply_cpp, "const int scalarGpuOffsetKHz = curve_point_scalar_gpu_offset_khz(",
+                 "the apply derives the scalar from the VF-table capability, not a guess")
     # ...and writing must not re-derive them from the live base, which is the
     # very sample that moved.
     forbid_text(targets_h, "offset = (long long)desired->curvePointMHz[ci] * 1000 - base;",

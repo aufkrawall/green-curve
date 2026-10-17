@@ -34,6 +34,14 @@ struct CurvePointOffsetRequest {
     // against the exclude-low count. Zero for a profile carrying no GPU offset,
     // which is exactly what a point saved with `pointN_offset_khz=0` asks for.
     int gpuOffsetComponentKHz;
+    // The part of that offset a separate driver scalar already carries for
+    // every point while this point is written.  Pre-Blackwell boards (Pascal ..
+    // Ada) write a uniform GPU offset as the NVML graphics offset, which the
+    // driver adds on top of each point's VF delta; writing the full component
+    // into the delta as well ran such a point at stock + 2x the offset.  Zero
+    // where the GPU offset lives in the VF table itself (Blackwell) and where
+    // a build composes the whole offset into the curve (Linux).
+    int scalarGpuOffsetKHz;
     // The absolute target, honoured only for a point the user really typed.
     unsigned int absoluteMHz;
     // The stock base as read right now. Consulted ONLY for a genuine absolute,
@@ -73,9 +81,19 @@ static inline unsigned int curve_point_shortfall_mhz(bool offsetIntent, int targ
 
 static inline long long curve_point_target_offset_khz(const CurvePointOffsetRequest* r) {
     if (!r) return 0;
-    if (r->fromGpuOffset) return (long long)r->gpuOffsetComponentKHz;
+    // Effective offset over stock = scalar + delta = this request's component.
+    if (r->fromGpuOffset)
+        return (long long)r->gpuOffsetComponentKHz - (long long)r->scalarGpuOffsetKHz;
     long long base = r->liveBaseKHz < 0 ? 0 : r->liveBaseKHz;
     return (long long)r->absoluteMHz * 1000 - base;
+}
+
+// What a separate GPU-offset scalar holds while the curve batch is written:
+// nothing when the offset lives in the VF table (`offsetInVfTable`, Blackwell),
+// otherwise the scalar value in effect at that moment.
+static inline int curve_point_scalar_gpu_offset_khz(bool offsetInVfTable,
+                                                    int scalarInEffectKHz) {
+    return offsetInVfTable ? 0 : scalarInEffectKHz;
 }
 
 // Convenience for the common shape: caller has the live frequency and the
@@ -85,6 +103,19 @@ static inline long long curve_point_stock_base_khz(long long liveFreqKHz,
                                                    long long programmedOffsetKHz) {
     long long base = liveFreqKHz - programmedOffsetKHz;
     return base < 0 ? 0 : base;
+}
+
+// The MHz an offset-intent point lands at over the base the driver reports
+// NOW: stock base (live minus everything programmed, the scalar included) plus
+// the request's component.  Used where an absolute is needed for such a point
+// (a lock anchor, a pre-tail neighbour) instead of its stored MHz, which is a
+// projection over a base sampled earlier.
+static inline long long curve_point_offset_intent_live_khz(long long liveFreqKHz,
+                                                           long long programmedOffsetKHz,
+                                                           long long scalarGpuOffsetKHz,
+                                                           long long gpuOffsetComponentKHz) {
+    return curve_point_stock_base_khz(liveFreqKHz, programmedOffsetKHz + scalarGpuOffsetKHz) +
+        gpuOffsetComponentKHz;
 }
 
 #endif

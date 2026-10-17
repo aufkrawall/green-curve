@@ -12,7 +12,7 @@ static bool apply_build_curve_targets(
     bool hasLock, LockMode lockMode, int lockCi, unsigned int lockMhz,
     bool gpuPolicyViaCurveBatch, int desiredActiveGpuOffsetExcludeLowCount,
     int currentAppliedGpuOffsetMHz, int currentActiveGpuOffsetExcludeLowCount,
-    const bool* originalCurvePopulated, const int* originalCurveOffsets,
+    int scalarGpuOffsetKHz, const bool* originalCurvePopulated, const int* originalCurveOffsets,
     const int* originalCurveFreqkHz, const bool* lockedTailMask,
     int* targetCurveOffsets, bool* targetCurveMask) {
     const VfOffsetRange range = vf_offset_range_current();
@@ -54,6 +54,8 @@ static bool apply_build_curve_targets(
             want.fromGpuOffset = desired->curvePointFromGpuOffset[ci];
             want.gpuOffsetComponentKHz = gpu_offset_component_mhz_for_point(ci,
                 desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount) * 1000;
+            // Pre-Blackwell: the NVML scalar already adds the uniform part.
+            want.scalarGpuOffsetKHz = scalarGpuOffsetKHz;
             want.absoluteMHz = desired->curvePointMHz[ci];
             want.liveBaseKHz = curve_point_stock_base_khz(
                 originalCurveFreqkHz[ci], originalCurveOffsets[ci]);

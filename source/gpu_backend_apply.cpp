@@ -510,10 +510,22 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             explicitPoints,
             tailPoints);
     }
+    // Pre-Blackwell the uniform GPU offset is the NVML graphics scalar, which
+    // the driver adds on top of every VF delta: an offset-intent point's delta
+    // carries only what the scalar does not (see curve_point_offset_policy.h).
+    const int scalarGpuOffsetKHz = curve_point_scalar_gpu_offset_khz(
+        vf_curve_global_gpu_offset_supported(),
+        gpuApplied ? targetGpuOffsetkHz : currentAppliedGpuOffsetMHz * 1000);
+    debug_log("curve targets: scalarGpuOffset=%d kHz (vfTableOffset=%d gpuApplied=%d"
+              " current=%d MHz requested=%d MHz exclude=%d)\n",
+        scalarGpuOffsetKHz, vf_curve_global_gpu_offset_supported() ? 1 : 0,
+        gpuApplied ? 1 : 0, currentAppliedGpuOffsetMHz,
+        desired->hasGpuOffset ? desired->gpuOffsetMHz : 0,
+        desiredActiveGpuOffsetExcludeLowCount);
     if (!apply_build_curve_targets(desired, curveRequest, preserveCurveAcrossMem,
         hasLock, lockMode, lockCi, lockMhz, gpuPolicyViaCurveBatch,
         desiredActiveGpuOffsetExcludeLowCount, currentAppliedGpuOffsetMHz,
-        currentActiveGpuOffsetExcludeLowCount, originalCurvePopulated,
+        currentActiveGpuOffsetExcludeLowCount, scalarGpuOffsetKHz, originalCurvePopulated,
         originalCurveOffsets, originalCurveFreqkHz, lockedTailMask,
         targetCurveOffsets, targetCurveMask))
         return apply_recover_clock_failure(clockCeiling,
