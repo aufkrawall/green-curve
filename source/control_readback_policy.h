@@ -49,14 +49,39 @@ static inline void invalidate_scalar_readbacks(HardwareReadbackValidity* v) {
     v->pstate = false;
 }
 
+// Whether a VF backend can express and read back a selective (exclude-low)
+// GPU offset.  Unlike global/uniform GPU offsets -- which only Blackwell
+// routes through the VF table -- selective offsets are written as per-point VF
+// curve deltas on every readable and writable VF backend (Pascal through
+// Blackwell).
+static inline bool vf_backend_supports_selective_gpu_offset(
+    bool hasBackend, bool readSupported, bool writeSupported) {
+    return hasBackend && readSupported && writeSupported;
+}
+
 // Final provenance of the GPU offset scalar after clock-offset detection.
 // Detection unconditionally replaces that scalar -- including with the 0 that
 // both "no offset applied" and "nothing could be read" produce -- so it, not
-// the earlier NVML read, owns the answer.  Its two real sources are a populated
-// VF control table and the Pstates20 read.
+// the earlier NVML read, owns the answer.  On global-VF backends its sources
+// are a populated VF control table and Pstates20; on non-Blackwell backends
+// that write global offsets via NVML, a fresh NVML graphics-offset reading is
+// also authoritative when Pstates20 did not supply a non-zero delta.
 static inline bool gpu_offset_readback_after_detection(
-    bool globalOffsetBackend, int numPopulated, bool pstateRead) {
-    return (globalOffsetBackend && numPopulated > 0) || pstateRead;
+    bool globalOffsetBackend, int numPopulated, bool pstateRead,
+    bool nvmlRead = false) {
+    return (globalOffsetBackend && numPopulated > 0) || pstateRead ||
+        (!globalOffsetBackend && nvmlRead);
+}
+
+static inline int resolve_detected_scalar_gpu_offset_khz(
+    bool globalOffsetBackend, int uniformCurveOffsetKHz,
+    int pstateGpuOffsetKHz, bool nvmlRead, int nvmlGpuOffsetKHz) {
+    int gpuOffsetKHz = globalOffsetBackend ? uniformCurveOffsetKHz : 0;
+    if (gpuOffsetKHz == 0 && pstateGpuOffsetKHz != 0)
+        gpuOffsetKHz = pstateGpuOffsetKHz;
+    if (gpuOffsetKHz == 0 && !globalOffsetBackend && nvmlRead)
+        gpuOffsetKHz = nvmlGpuOffsetKHz;
+    return gpuOffsetKHz;
 }
 
 // True once every fan present has answered the given getter.  A partial answer

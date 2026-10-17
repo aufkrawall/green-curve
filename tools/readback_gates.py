@@ -40,10 +40,16 @@ def check_all(ctx, require_text, forbid_text):
     require_text(gpu_state_cpp,
                  "static int current_applied_gpu_offset_mhz(bool* fromHardware)",
                  "the Windows applied GPU offset reports whether it is a reading")
+    require_text(gpu_state_cpp,
+                 "static bool vf_curve_selective_gpu_offset_supported()",
+                 "selective GPU offset state uses VF read/write capability, not the Blackwell global-offset gate")
     require_text(gpu_state_cpp, "*fromHardware = false;  // remembered request",
                  "the persisted selective request is never reported as readback")
     require_text(gpu_state_cpp, "*fromHardware = false;  // active desired intent",
                  "the active-desired fallback is never reported as readback")
+    require_text(gpu_backend_cpp_path,
+                 "int gpuOffsetkHz = resolve_detected_scalar_gpu_offset_khz(",
+                 "clock-offset detection preserves fresh non-Blackwell NVML readings when Pstates20 reports 0")
     require_text(gpu_backend_cpp_path,
                  "g_app.readback.gpuOffset = gpu_offset_readback_after_detection(",
                  "clock-offset detection owns the GPU scalar it overwrites")

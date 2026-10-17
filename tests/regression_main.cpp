@@ -3567,12 +3567,21 @@ static int run_all_tests(int argc, char** argv) {
         if (!validity.fan.policy[0]) return 1747;
 
         // Clock-offset detection replaces the GPU scalar unconditionally, so it
-        // owns the answer: no populated curve and no Pstates20 read means the
-        // published 0 is not a reading.
+        // owns the answer: no populated curve and no Pstates20/NVML read means
+        // the published 0 is not a reading.
         if (gpu_offset_readback_after_detection(true, 0, false)) return 1748;
         if (!gpu_offset_readback_after_detection(true, 12, false)) return 1749;
         if (!gpu_offset_readback_after_detection(false, 0, true)) return 1750;
         if (gpu_offset_readback_after_detection(false, 12, false)) return 1751;
+        if (!gpu_offset_readback_after_detection(false, 0, false, true)) return 1752;
+        if (gpu_offset_readback_after_detection(true, 0, false, true)) return 1753;
+        if (resolve_detected_scalar_gpu_offset_khz(false, 0, 0, true, 150000) != 150000) return 1754;
+        if (resolve_detected_scalar_gpu_offset_khz(false, 0, 120000, true, 150000) != 120000) return 1755;
+        if (resolve_detected_scalar_gpu_offset_khz(true, 180000, 0, true, 150000) != 180000) return 1756;
+        if (resolve_detected_scalar_gpu_offset_khz(true, 0, 0, true, 150000) != 0) return 1757;
+        if (!vf_backend_supports_selective_gpu_offset(true, true, true)) return 1758;
+        if (vf_backend_supports_selective_gpu_offset(true, true, false)) return 1759;
+        if (vf_backend_supports_selective_gpu_offset(false, true, true)) return 1760;
     }
 
     // F-POWER-SURFACE: a board whose driver refuses the power target has no

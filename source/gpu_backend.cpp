@@ -403,20 +403,22 @@ static void detect_clock_offsets() {
     // This reflects the currently active offset and avoids stale NVML/Pstates delta fields
     // surviving after another tool resets memory to default.
     read_nvml_max_mem_clock();
-    int gpuOffsetkHz = uniform_curve_offset_khz();
-    if (gpuOffsetkHz != 0 || g_app.pstateGpuOffsetkHz != 0) {
-        if (gpuOffsetkHz == 0) gpuOffsetkHz = g_app.pstateGpuOffsetkHz;
-        if (!g_app.gpuOffsetRangeKnown) {
-            int gpuOffsetMHz = gpuOffsetkHz / 1000;
-            g_app.gpuClockOffsetMinMHz = gpuOffsetMHz;
-            g_app.gpuClockOffsetMaxMHz = gpuOffsetMHz;
-        }
+    const bool globalOffsetBackend = vf_curve_global_gpu_offset_supported();
+    const bool nvmlGpuRead = !globalOffsetBackend && g_app.readback.gpuOffset;
+    const int nvmlGpuOffsetkHz = nvmlGpuRead ? g_app.gpuClockOffsetkHz : 0;
+    int gpuOffsetkHz = resolve_detected_scalar_gpu_offset_khz(
+        globalOffsetBackend, uniform_curve_offset_khz(),
+        g_app.pstateGpuOffsetkHz, nvmlGpuRead, nvmlGpuOffsetkHz);
+    if (gpuOffsetkHz != 0 && !g_app.gpuOffsetRangeKnown) {
+        int gpuOffsetMHz = gpuOffsetkHz / 1000;
+        g_app.gpuClockOffsetMinMHz = gpuOffsetMHz;
+        g_app.gpuClockOffsetMaxMHz = gpuOffsetMHz;
     }
     g_app.gpuClockOffsetkHz = gpuOffsetkHz;
     // Detection replaces the GPU scalar unconditionally, so it owns that
     // scalar's protocol-v14 provenance; see control_readback_policy.h.
     g_app.readback.gpuOffset = gpu_offset_readback_after_detection(
-        vf_curve_global_gpu_offset_supported(), g_app.numPopulated, g_app.readback.pstate);
+        globalOffsetBackend, g_app.numPopulated, g_app.readback.pstate, nvmlGpuRead);
     if (g_app.pstateMemMaxMHz > 0 && g_app.nvmlMemMaxMHz > 0) {
         int memOffsetkHz = ((int)g_app.pstateMemMaxMHz - (int)g_app.nvmlMemMaxMHz) * 1000;
         g_app.memClockOffsetkHz = memOffsetkHz;
