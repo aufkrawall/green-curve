@@ -271,6 +271,16 @@ class HighestSeenRestoreTests(unittest.TestCase):
         self.assertEqual(guards.read_highest_seen(bare), "0.27.0")
         self.assertIsNone(guards.read_highest_seen(self.tmp / "missing.ini"))
 
+    def test_undecodable_value_round_trips(self):
+        # A damaged or hand-edited value used to raise UnicodeDecodeError and
+        # abort init/teardown before anything was recorded or restored.
+        self.ini.write_bytes(INI.replace("0.28.1", "0.28.\xe91").encode("latin-1"))
+        guards.record_pre_simulation_state(self.state, self.ini)
+        recorded = json.loads(self.state.read_text(encoding="utf-8"))
+        guards.set_highest_seen(self.ini, "9.9.9")
+        self.assertTrue(guards.set_highest_seen(self.ini, recorded["highest_seen_version"]))
+        self.assertIn(b"highest_seen_version=0.28.\xe91\r\n", self.ini.read_bytes())
+
     def test_record_is_never_overwritten(self):
         guards.record_pre_simulation_state(self.state, self.ini)
         guards.set_highest_seen(self.ini, "9.9.9")

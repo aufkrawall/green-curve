@@ -35,6 +35,10 @@ SEEN_SECTION = "updates"
 SEEN_KEY = "highest_seen_version"
 SIMULATE_SCRIPT = SCRIPT_DIR / "simulate_release.py"
 _REPO_RE = re.compile(r"([A-Za-z0-9_-]+)/([A-Za-z0-9_.-]+)")
+# The value is whatever bytes the file holds.  A hand-edited or damaged value
+# must round-trip through the JSON record and back without aborting init or
+# teardown, so undecodable bytes are carried as surrogate escapes.
+_VALUE_CODEC = ("utf-8", "surrogateescape")
 
 
 def log(msg, prefix="[simulate-release]"):
@@ -237,7 +241,7 @@ def _highest_seen_state_from_bytes(data):
         key, sep, value = line.partition(b"=")
         if sep and key.strip().lower() == SEEN_KEY.encode("ascii"):
             layout["highest_seen_present"] = True
-            return value.strip().decode("ascii"), layout
+            return value.strip().decode(*_VALUE_CODEC), layout
     return None, layout
 
 
@@ -329,7 +333,7 @@ def _set_highest_seen_locked(ini_path, value, restore_layout=None):
     newline = match.group() if match else b"\n"
     lines = _ini_lines(data)
     span = _updates_section_span(lines)
-    replacement = None if value is None else f"{SEEN_KEY}={value}".encode("ascii")
+    replacement = None if value is None else f"{SEEN_KEY}={value}".encode(*_VALUE_CODEC)
     found = False
     if span is not None:
         for index in range(span[0], span[1]):

@@ -164,7 +164,7 @@ static inline CurveOffsetRoutingPlan curve_point_plan_gpu_offset_routing(
             ? desiredExcludeLowCount
             : 0;
     p.policyChangeRequested =
-        (desiredGpuOffsetMHz * 1000 != currentAppliedGpuOffsetMHz * 1000) ||
+        (desiredGpuOffsetMHz != currentAppliedGpuOffsetMHz) ||
         (p.activeDesiredExcludeLowCount != currentActiveExcludeLowCount);
     const bool leavingSelectiveOnSplitBackend =
         !globalVfOffsetSupported && currentActiveExcludeLowCount > 0 &&

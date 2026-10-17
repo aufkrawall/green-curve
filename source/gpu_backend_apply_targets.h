@@ -15,10 +15,10 @@ static bool apply_build_curve_targets(
     const bool* originalCurvePopulated, const int* originalCurveOffsets,
     const int* originalCurveFreqkHz, const bool* lockedTailMask,
     int* targetCurveOffsets, bool* targetCurveMask,
-    int curveBatchGpuOffsetMHz = INT_MIN) {
-    const int batchOffsetMHz = (curveBatchGpuOffsetMHz == INT_MIN)
-        ? desired->gpuOffsetMHz
-        : curveBatchGpuOffsetMHz;
+    // The GPU offset the curve batch carries (CurveOffsetRoutingPlan): the
+    // request's own, or 0 where a separate NVML scalar owns it.  Required, so
+    // no caller can fall back to writing the offset into both places.
+    int batchOffsetMHz) {
     const VfOffsetRange range = vf_offset_range_current();
     if (hasLock && lockMode == LOCK_MODE_FLATTEN &&
         !vf_offset_range_supports_flatten(range)) return false;

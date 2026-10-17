@@ -383,7 +383,7 @@ static int run(){
    for(int i=0;i<4;++i){populated[i]=true;freq[i]=2400000;tail[i]=i>=2;}
    explicitMask[1]=true;
    CHECK(apply_build_curve_targets(&d,true,false,mode!=0,(LockMode)mode,2,2800,true,1,0,0,
-     populated,offsets,freq,tail,target,mask));
+     populated,offsets,freq,tail,target,mask,d.gpuOffsetMHz));
    CHECK(target[1]==100000);CHECK(target[0]==0);
    for(int i=0;i<4;++i)g_app.curve[i].freq_kHz=i>=2?2800000:2500000;
    char detail[128]{};g_app.curve[1].freq_kHz=2700000;
@@ -395,7 +395,7 @@ static int run(){
    // Same delta intent remains stable when the sampled base changes.
    freq[1]+=30000;
    CHECK(apply_build_curve_targets(&d,true,false,mode!=0,(LockMode)mode,2,2800,true,1,0,0,
-     populated,offsets,freq,tail,target,mask));CHECK(target[1]==70000);
+     populated,offsets,freq,tail,target,mask,d.gpuOffsetMHz));CHECK(target[1]==70000);
  }
  // User repro: excluded point 69 has offset zero, but its derived 2295 MHz
  // preview becomes 2407 MHz after the driver reshapes the curve. It is not an
@@ -469,14 +469,14 @@ static int run(){
      freq[70]=baseMHz*1000;offsets[70]=0;
      int built[VF_NUM_POINTS]{};
      CHECK(apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,0,0,true,70,0,0,
-       populated,offsets,freq,tail,built,mask));
+       populated,offsets,freq,tail,built,mask,d.gpuOffsetMHz));
      CHECK(built[70]==475000);CHECK(mask[70]);
      // Negative control: the SAME request without provenance is the pre-fix
      // rule, and it tracks the shifted base instead of the asked-for offset.
      DesiredSettings typedSame=d;typedSame.curvePointFromGpuOffset[70]=false;
      int legacy[VF_NUM_POINTS]{};
      CHECK(apply_build_curve_targets(&typedSame,true,false,false,LOCK_MODE_NONE,0,0,true,70,0,0,
-       populated,offsets,freq,tail,legacy,mask));
+       populated,offsets,freq,tail,legacy,mask,typedSame.gpuOffsetMHz));
      CHECK(legacy[70]==2797000-baseMHz*1000);
    }
    // Per-point, not per-request: hand-editing one field of a loaded profile
@@ -534,7 +534,7 @@ static int run(){
      freq74[74]=baseMHz*1000;off74[74]=0;
      int built74[VF_NUM_POINTS]{};
      CHECK(apply_build_curve_targets(&stock,true,false,false,LOCK_MODE_NONE,0,0,false,0,0,0,
-       pop74,off74,freq74,tail74,built74,bmask));
+       pop74,off74,freq74,tail74,built74,bmask,stock.gpuOffsetMHz));
      CHECK(built74[74]==2902000-baseMHz*1000);CHECK(bmask[74]);
    }
  }
@@ -600,7 +600,7 @@ static int run(){
    int offs[VF_NUM_POINTS]{},frq[VF_NUM_POINTS]{},built[VF_NUM_POINTS]{};
    pop[74]=true;frq[74]=2437000;offs[74]=0;
    CHECK(apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,0,0,false,0,0,0,
-     pop,offs,frq,tl,built,msk));
+     pop,offs,frq,tl,built,msk,d.gpuOffsetMHz));
    CurvePointOffsetRequest same{};
    same.fromGpuOffset=true;same.gpuOffsetComponentKHz=0;
    same.absoluteMHz=2902;same.liveBaseKHz=2437000;
@@ -617,7 +617,7 @@ static int run(){
    frq[70]=2797000;frq[71]=2850000;frq[72]=2900000;frq[73]=2950000;
    int preBuilt[VF_NUM_POINTS]{};
    CHECK(apply_build_curve_targets(&pre,true,false,true,LOCK_MODE_FLATTEN,72,2950,false,0,475,0,
-     pop,offs,frq,preTail,preBuilt,msk));
+     pop,offs,frq,preTail,preBuilt,msk,pre.gpuOffsetMHz));
    CHECK(preBuilt[70]==475000);CHECK(msk[70]);
    CHECK(preBuilt[71]==50000);CHECK(preBuilt[72]==50000);
    // Interactive stored-lock anchor with no lock MHz in the request: a typed
