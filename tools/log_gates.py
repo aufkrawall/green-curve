@@ -148,6 +148,17 @@ def check_steady_state_lines(ctx, require_text):
                  "verbose per-tick logging has one decision point")
     require_text(_p(ctx, "main_service_host.cpp"), "refresh_debug_log_verbose();",
                  "the service decides verbose per-tick logging at startup")
+    # Fan intent lines name Green Curve's own state accurately: a manual policy
+    # seen before any readback (boot) or left by our own runtime (shutdown) is
+    # not another controller's.
+    require_text(_p(ctx, "main_state_sync.cpp"),
+                 "!g_app.fanIsAuto && live_fan_policy_readback_complete()",
+                 "the snapshot's external-fan-policy line waits for a fan policy readback")
+    require_text(_p(ctx, "main_fan_runtime.cpp"),
+                 "with the driver fan still manual from Green Curve's own runtime",
+                 "a stopped runtime attributes the manual fan to itself")
+    if "treating it as external policy" in _read(_p(ctx, "main_fan_runtime.cpp")):
+        _fail("main_fan_runtime.cpp: runtime stop misattributes its own manual fan")
 
 
 def check_cli_log_appends(ctx, require_text):

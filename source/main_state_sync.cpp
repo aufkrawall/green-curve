@@ -180,8 +180,8 @@ static void populate_service_snapshot_locked(ServiceSnapshot* snapshot,
     int snapshotFanMode = current_green_curve_fan_intent_mode();
     int snapshotFanFixedPercent = current_green_curve_fan_intent_fixed_percent();
     const FanCurveConfig* snapshotFanCurve = current_green_curve_fan_intent_curve();
-    if (snapshotFanMode == FAN_MODE_AUTO && !g_app.fanIsAuto) {
-        debug_log_on_change("fan intent: external live fan policy observed fanIsAuto=0 gcIntent=Auto; preserving Auto in service snapshot\n");
+    if (snapshotFanMode == FAN_MODE_AUTO && !g_app.fanIsAuto && live_fan_policy_readback_complete()) {
+        debug_log_on_change("fan intent: live fan policy reads manual while Green Curve intent is Auto (no fan runtime of ours); preserving Auto in service snapshot\n");
     }
     snapshot->activeFanMode = snapshotFanMode;
     snapshot->activeFanFixedPercent = snapshotFanFixedPercent;

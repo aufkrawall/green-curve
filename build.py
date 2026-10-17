@@ -2466,10 +2466,10 @@ def run_source_regression_checks():
     require_text(vf_backends_cpp, "case NV_GPU_ARCHITECTURE_GB200: fam = GPU_FAMILY_BLACKWELL", "Blackwell maps to a known non-best-effort backend")
     require_text(main_shell_cpp, "preserving requested value", "config memory offsets are not clamped to reported range")
     require_text(main_gpu_state_cpp, "current_green_curve_fan_intent_mode", "fan state has a Green Curve-owned intent helper")
-    require_text(main_state_sync_cpp, "external live fan policy observed fanIsAuto=0 gcIntent=Auto", "service snapshots preserve Auto intent when external fan control is manual")
+    require_text(main_state_sync_cpp, "live fan policy reads manual while Green Curve intent is Auto", "service snapshots preserve Auto intent when external fan control is manual")
     require_text(main_state_sync_cpp, "state->fanMode is Green Curve intent", "control-state fan mode is not treated as live driver fan policy")
     require_text(ui_main_window_cpp, "preserved visible GUI fan intent", "profile Save preserves the visible fan mode over live external policy")
-    require_text(main_fan_runtime_cpp, "external live fan policy is %s while Green Curve intent is Auto", "fan initialization logs external manual policy without adopting it")
+    require_text(main_fan_runtime_cpp, "live fan policy reads %s while Green Curve intent is Auto", "fan initialization logs external manual policy without adopting it")
     # GUI lock-checkbox rendering moved to tools/ui_gates.py
     # (check_lock_checkbox_render).  The remaining rules here cover the tri-state
     # gesture: only BN_CLICKED may advance it -- BS_OWNERDRAW emits BN_DBLCLK

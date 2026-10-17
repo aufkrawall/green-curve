@@ -31,14 +31,23 @@ static int get_effective_live_fan_mode() {
     if (g_app.fanCurveRuntimeActive) return FAN_MODE_CURVE;
     return g_app.fanIsAuto ? FAN_MODE_AUTO : FAN_MODE_FIXED;
 }
+// fanIsAuto starts false and says nothing until a policy readback has answered
+// for every fan, so a "manual" seen before that (at boot, before the first
+// telemetry pass) is not an observation of anyone's fan policy.
+static bool live_fan_policy_readback_complete() {
+    return g_app.fanSupported && g_app.fanCount > 0 &&
+        all_fans_known(g_app.readback.fan.policy, g_app.fanCount);
+}
 static void initialize_gui_fan_settings_from_live_state(bool syncGuiCurve) {
     ensure_valid_fan_curve_config(&g_app.guiFanCurve);
     ensure_valid_fan_curve_config(&g_app.activeFanCurve);
     if (!g_app.serviceSnapshotAuthoritative) {
         int liveMode = get_effective_live_fan_mode();
         int intentMode = current_green_curve_fan_intent_mode();
-        if (intentMode == FAN_MODE_AUTO && liveMode != FAN_MODE_AUTO) {
-            debug_log("fan intent: external live fan policy is %s while Green Curve intent is Auto; preserving Auto\n",
+        if (intentMode == FAN_MODE_AUTO && liveMode != FAN_MODE_AUTO &&
+            !g_app.fanCurveRuntimeActive && !g_app.fanFixedRuntimeActive &&
+            live_fan_policy_readback_complete()) {
+            debug_log("fan intent: live fan policy reads %s while Green Curve intent is Auto (not this process's fan runtime); preserving Auto\n",
                 fan_mode_label(liveMode));
         }
         g_app.activeFanMode = intentMode;
@@ -423,7 +432,11 @@ static void stop_fan_curve_runtime(bool restoreFanAutoOnExit) {
     g_app.fanRuntimeLastApplyTickMs = 0;
     if (hadRuntime && (g_app.activeFanMode == FAN_MODE_CURVE || g_app.activeFanMode == FAN_MODE_FIXED)) {
         if (!restoreFanAutoOnExit && !g_app.fanIsAuto) {
-            debug_log("fan intent: runtime stopped while live driver fan is manual; treating it as external policy and returning Green Curve intent to Auto\n");
+            // The manual policy is this runtime's own write, not another
+            // controller's: every caller follows with its own fan write (driver
+            // auto in Reset/rollback/handback, a new runtime, or the failure path).
+            debug_log("fan intent: runtime stopped (previous mode=%s) with the driver fan still manual from Green Curve's own runtime; intent returns to Auto until the caller's next fan write\n",
+                fan_mode_label(g_app.activeFanMode));
         }
         g_app.activeFanMode = FAN_MODE_AUTO;
         g_app.activeFanFixedPercent = 0;
