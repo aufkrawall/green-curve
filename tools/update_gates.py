@@ -102,6 +102,30 @@ def check_verification_precedes_launch(ctx, require_order, require_text):
         worker, "service_update_run_install",
         "service_update_stop_gui_processes", "CreateProcessW",
         "the GUI is stopped before setup is launched")
+    # Every refusal that does not need the windows gone happens before they
+    # are closed: the private launch folder is prepared, and the signed
+    # metadata's freshness is checked, ahead of the stop.  A refusal after it
+    # would leave the user with no GUI.
+    require_order(
+        worker, "service_update_run_install",
+        "service_update_prepare_launch_dir(", "service_update_stop_gui_processes(",
+        "the launch folder is prepared before any GUI is closed")
+    require_order(
+        worker, "service_update_run_install",
+        "freshAtLaunch = gc_update_fresh_time_valid", "service_update_stop_gui_processes(",
+        "the freshness refusal comes before any GUI is closed")
+    # What runs is the verified private copy, re-proven after the stop.
+    require_text(
+        worker, "gc_update_build_installer_command_line(launch.fileUtf8",
+        "setup is launched from its private launch folder, not the staging directory")
+    require_order(
+        worker, "service_update_run_install",
+        "service_update_reverify_launch_dir(", "CreateProcessW",
+        "the launch folder is re-proven immediately before setup is launched")
+    require_order(
+        worker, "service_update_run_install",
+        "service_update_stop_gui_processes(", "service_update_reverify_launch_dir(",
+        "the final launch-folder proof follows the (blocking) GUI stop")
     require_text(
         worker, "FILE_SHARE_READ",
         "the staged installer is opened with writes and deletes denied")

@@ -1404,11 +1404,19 @@ def check_audit_finding_gates(ctx, require_text):
                                   "(tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0",
                                   "the legacy ProgramData sweep refuses a reparse point")
 
-    # The updater pins the staging DIRECTORY across CreateProcessW, so the name
-    # it executes cannot be swapped for the bytes it verified.
-    require_text(path("main_service_update_worker.cpp"),
-                 "FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT",
-                 "the updater pins the staging directory across process creation")
+    # Setup runs from a fresh, randomly named SYSTEM/Administrators-only folder
+    # holding only the verified copy, created fresh-only (an existing name is
+    # never used) and re-proven through its pinned handle right before launch.
+    launch = path("main_service_update_launch.cpp")
+    require_text(launch, "BCryptGenRandom(",
+                 "the launch folder name is random")
+    require_text(launch, "GC_SERVICE_ACL_PRIVATE_DIRECTORY, true, false, &pinned",
+                 "the launch folder is created fresh-only, Administrators-owned and pinned")
+    require_text(launch, "service_create_protected_file(launch->fileW, GC_SERVICE_ACL_PRIVATE_FILE",
+                 "the launch copy is created with its descriptor in the call")
+    ctx.require_text_in_operation(launch, "static bool service_update_reverify_launch_dir(",
+                                  "service_directory_holds_only(launch->dir",
+                                  "the launch folder's DACL, owner and content are re-proven via its pin")
 
     # The shared bank's CONTENT proof gates content readers only.  It used to
     # gate path resolution itself and was latched for the service lifetime, so

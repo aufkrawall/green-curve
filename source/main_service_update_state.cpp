@@ -307,6 +307,11 @@ static bool service_update_staging_dir(char* out, size_t outSize, char* err, siz
     return true;
 }
 
+// Defined with the launch code (main_service_update_launch.cpp), which the
+// amalgamation includes after this shard.
+static bool service_update_launch_name_is_ours(const char* name);
+static bool service_update_remove_stale_launch_dir(const char* dirUtf8);
+
 // Remove any previously staged packages.  Called before staging a new one and
 // after a successful install, so a verified-but-superseded installer is never
 // left lying around for a later run to pick up by name.
@@ -322,6 +327,7 @@ static void service_update_clear_staging() {
     if (find == INVALID_HANDLE_VALUE) return;
     int removed = 0;
     int removedDirs = 0;
+    int removedLaunchDirs = 0;
     do {
         char filePath[MAX_PATH] = {};
         if (FAILED(StringCchPrintfA(filePath, sizeof(filePath), "%s\\%s", dir,
@@ -329,8 +335,9 @@ static void service_update_clear_staging() {
             continue;
         }
         if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-            // A directory here is never ours: the sweeper's own names are all
-            // flat files.  Skipping them used to be "be conservative", but it
+            // Apart from a launch folder whose handle proves it ours, a
+            // directory here is never ours: the staged names are all flat
+            // files.  Skipping them used to be "be conservative", but it
             // is exactly the shape an attacker plants -- a DIRECTORY named
             // greencurve-<version>-windows-x64-setup.exe, which the download's
             // CREATE_NEW then fails on forever, surviving every sweep.  The
@@ -342,7 +349,13 @@ static void service_update_clear_staging() {
             if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) {
                 continue;
             }
-            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0 &&
+                service_update_launch_name_is_ours(fd.cFileName) &&
+                service_update_remove_stale_launch_dir(filePath)) {
+                // A previous launch's private folder, proven ours by its
+                // handle before anything in it is touched.
+                removedLaunchDirs++;
+            } else if ((fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
                 // Never recurse or follow one; a link named like a task is
                 // still not ours, and RemoveDirectory removes the link itself.
                 removedDirs += gc_RemoveDirectoryUtf8(filePath) ? 1 : 0;
@@ -368,6 +381,7 @@ static void service_update_clear_staging() {
     g_updateState.packageVerified = false;
     if (removed) debug_log("update staging: cleared %d stale file(s)\n", removed);
     if (removedDirs) debug_log("update staging: removed %d planted/foreign directory entry(ies)\n", removedDirs);
+    if (removedLaunchDirs) debug_log("update staging: removed %d stale launch directory(ies)\n", removedLaunchDirs);
 }
 
 // ---------------------------------------------------------------------------
