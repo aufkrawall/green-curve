@@ -51,6 +51,19 @@ static inline GcAutoRestoreNotice gc_auto_restore_notice_for_transition(
     return GC_AUTO_RESTORE_NOTICE_NONE;
 }
 
+// The notice decision for one adopted snapshot, against the reason THIS client
+// last observed (stored in `*observed`, updated here).  Only answered
+// snapshots are observed: a disconnect is not a transition to "not locked
+// out", so reconnecting to a daemon/service still under the same lockout
+// announces nothing new.  GUI and TUI share this rule.
+static inline GcAutoRestoreNotice gc_auto_restore_notice_observe(gc_u32* observed,
+                                                                 gc_u32 current) {
+    if (!observed) return GC_AUTO_RESTORE_NOTICE_NONE;
+    const gc_u32 previous = *observed;
+    *observed = current;
+    return gc_auto_restore_notice_for_transition(previous, current);
+}
+
 static inline const char* gc_auto_apply_trigger_phrase(gc_u32 trigger) {
     switch (trigger) {
         case SERVICE_LIFECYCLE_TRIGGER_WTS_LOGON:

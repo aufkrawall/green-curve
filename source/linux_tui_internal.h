@@ -59,6 +59,9 @@ struct TuiState {
     bool startupSnapshotKnown;
     StartupSnapshotState startupSnapshotState;
     char status[512];
+    // The automatic-restore lockout this TUI last saw in an answered snapshot
+    // (gc_auto_restore_notice_observe); a disconnect does not reset it.
+    gc_u32 noticeObservedLockout;
     ProbeSummary probe;
     GpuAdapterInfo targetGpu;
     TuiEditState edit;

@@ -122,11 +122,13 @@ bool tui_refresh_service(TuiState* state, bool userRequested,
     }
     // A new automatic-restore lockout wins the status line once, with its
     // cause (protocol v29) and the action; until 2026-10 the TUI never said
-    // that automatic restore had stopped.  Same edge rule as the Windows GUI.
-    GcAutoRestoreNotice lockoutNotice = gc_auto_restore_notice_for_transition(
-        wasOnline ? previous.snapshot.autoRestoreLockoutReason
-                  : (gc_u32)SERVICE_AUTO_RESTORE_LOCKOUT_NONE,
-        next.snapshot.autoRestoreLockoutReason);
+    // that automatic restore had stopped.  Same edge rule as the Windows GUI,
+    // against what this TUI last observed: an offline refresh in between is
+    // not a transition, so a daemon restart or socket hiccup under the same
+    // lockout does not re-announce it.
+    const gc_u32 observedBefore = state->noticeObservedLockout;
+    GcAutoRestoreNotice lockoutNotice = gc_auto_restore_notice_observe(
+        &state->noticeObservedLockout, next.snapshot.autoRestoreLockoutReason);
     if (lockoutNotice == GC_AUTO_RESTORE_NOTICE_HANDBACK_INCOMPLETE) {
         snprintf(state->status, sizeof(state->status),
             "Automatic restore is off: %s",
@@ -139,7 +141,8 @@ bool tui_refresh_service(TuiState* state, bool userRequested,
             body, sizeof(body));
     }
     if (lockoutNotice != GC_AUTO_RESTORE_NOTICE_NONE) {
-        linux_debug_logf("tui: automatic restore lockout notice (reason=%u trigger=%u): %s\n",
+        linux_debug_logf("tui: automatic restore lockout notice (previous=%u reason=%u trigger=%u): %s\n",
+            (unsigned int)observedBefore,
             (unsigned int)next.snapshot.autoRestoreLockoutReason,
             (unsigned int)next.snapshot.autoApplyFailure.trigger, state->status);
     }

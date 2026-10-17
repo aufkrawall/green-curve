@@ -217,6 +217,23 @@ int run_auto_apply_notice_tests() {
         gc_auto_restore_notice_for_transition(FAILED, NONE) != GC_AUTO_RESTORE_NOTICE_NONE ||
         gc_auto_restore_notice_for_transition(NONE, SERVICE_AUTO_RESTORE_LOCKOUT_TDR_SPAM) !=
             GC_AUTO_RESTORE_NOTICE_NONE) return 6752;
+    // The observer (GUI and TUI): only answered snapshots move it, so going
+    // offline and reconnecting under the same lockout is not news.  The TUI
+    // used to treat every reconnect as a transition from NONE (6877-6878).
+    {
+        gc_u32 observed = NONE;
+        if (gc_auto_restore_notice_observe(&observed, FAILED) !=
+                GC_AUTO_RESTORE_NOTICE_AUTO_APPLY_FAILED || observed != FAILED) return 6877;
+        // ...offline refreshes observe nothing; the daemon answers again:
+        if (gc_auto_restore_notice_observe(&observed, FAILED) != GC_AUTO_RESTORE_NOTICE_NONE)
+            return 6877;
+        // An explicit Apply clears it; a later failure is announced again.
+        if (gc_auto_restore_notice_observe(&observed, NONE) != GC_AUTO_RESTORE_NOTICE_NONE ||
+            gc_auto_restore_notice_observe(&observed, FAILED) !=
+                GC_AUTO_RESTORE_NOTICE_AUTO_APPLY_FAILED) return 6878;
+        if (gc_auto_restore_notice_observe(nullptr, FAILED) != GC_AUTO_RESTORE_NOTICE_NONE)
+            return 6878;
+    }
 
     // The verified-recovery sentence is what licenses "returned to stock".
     if (!gc_apply_result_reports_core_recovery(

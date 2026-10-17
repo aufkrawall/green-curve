@@ -16,8 +16,7 @@
 static bool g_guiAutoApplyBalloonPending = false;
 static char g_guiAutoApplyBalloonTitle[64] = {};
 static char g_guiAutoApplyBalloonBody[256] = {};
-static ServiceAutoRestoreLockoutReason g_guiNoticeObservedLockout =
-    SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
+static gc_u32 g_guiNoticeObservedLockout = SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
 
 static void gui_auto_restore_notice_flush_balloon() {
     if (!g_guiAutoApplyBalloonPending || !g_app.trayIconAdded) return;
@@ -45,10 +44,9 @@ static void gui_auto_restore_notice_flush_balloon() {
 static void gui_announce_auto_restore_lockout() {
     // Startup can already have adopted a failed-apply snapshot before there
     // is a window. Snapshot state is not evidence that its notice was shown.
-    const ServiceAutoRestoreLockoutReason previous = g_guiNoticeObservedLockout;
-    g_guiNoticeObservedLockout = g_app.serviceAutoRestoreLockoutReason;
-    GcAutoRestoreNotice notice = gc_auto_restore_notice_for_transition(
-        (gc_u32)previous, (gc_u32)g_app.serviceAutoRestoreLockoutReason);
+    const gc_u32 previous = g_guiNoticeObservedLockout;
+    GcAutoRestoreNotice notice = gc_auto_restore_notice_observe(
+        &g_guiNoticeObservedLockout, (gc_u32)g_app.serviceAutoRestoreLockoutReason);
     if (notice == GC_AUTO_RESTORE_NOTICE_HANDBACK_INCOMPLETE) {
         // The one lockout reason that names hardware left in an unknown state:
         // the service stopped unexpectedly and could not return the GPU to

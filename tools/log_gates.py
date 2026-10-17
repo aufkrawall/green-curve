@@ -241,5 +241,14 @@ def check_auto_apply_failure_notice(ctx, require_text):
         _fail("linux_auto_restore_runtime.h: each failed unattended write records its cause")
     require_text(_p(ctx, "linux_live_output.cpp"), "Automatic restore notice: %s",
                  "the Linux CLI status shows the automatic-apply failure notice")
-    require_text(_p(ctx, "linux_tui_refresh.cpp"), "gc_auto_restore_notice_for_transition(",
-                 "the Linux TUI announces a new automatic-restore lockout")
+    # Both clients judge the edge against what THEY last observed in an answered
+    # snapshot; an offline refresh is not a transition from "not locked out".
+    require_text(_p(ctx, "linux_tui_refresh.cpp"),
+                 "gc_auto_restore_notice_observe(\n        &state->noticeObservedLockout,",
+                 "the Linux TUI announces a new automatic-restore lockout once per observation")
+    require_text(_p(ctx, "gui_auto_restore_notice.h"),
+                 "gc_auto_restore_notice_observe(\n        &g_guiNoticeObservedLockout,",
+                 "the GUI uses the shared lockout observer")
+    ctx.forbid_text(_p(ctx, "linux_tui_refresh.cpp"),
+                    "wasOnline ? previous.snapshot.autoRestoreLockoutReason",
+                    "a TUI reconnect is not treated as a transition from no lockout")
