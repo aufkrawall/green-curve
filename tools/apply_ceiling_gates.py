@@ -317,6 +317,10 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                     "no assumed scalar subtraction from live VF readbacks")
     require_text(apply_cpp, "curve targets: offsetContract=full-component",
                  "the apply logs its offset contract and routing")
+    # The deferral is only temporary if field logs can answer it: the apply
+    # logs NVML/VF composition evidence on the separate NVML route.
+    require_text(apply_cpp, "apply_log_nvml_composition_evidence(desired, offsetInVfTable,",
+                 "the apply logs NVML/VF composition evidence after the final readback")
     # The pre-tail refusal and the post-correction flat-tail check judge a
     # provenance point where its offset puts it over today's base, like an
     # unrequested neighbour -- not by its stored projection.

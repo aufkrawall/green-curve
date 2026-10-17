@@ -155,4 +155,27 @@ static void apply_log_post_apply_curve_diagnostics(
                 }
 }
 
+// One line of composition evidence per apply on the separate NVML route
+// (curve_point_nvml_composition_probe()).  Reads the final readback; never
+// changes a decision.  A typical answer: if reference.live - stock base and
+// provenance.live - (stock base + VF delta) both equal the NVML scalar, the
+// two controls add.
+static void apply_log_nvml_composition_evidence(const DesiredSettings* desired,
+    bool offsetInVfTable, const bool* originalCurvePopulated,
+    const bool* lockedTailMask, const int* targetOffsets) {
+    int provenanceCi = -1, referenceCi = -1;
+    if (!desired || !curve_point_nvml_composition_probe(VF_NUM_POINTS, offsetInVfTable,
+            g_app.gpuClockOffsetkHz, originalCurvePopulated, lockedTailMask,
+            desired->hasCurvePoint, desired->curvePointFromGpuOffset,
+            &provenanceCi, &referenceCi)) return;
+    const int p = provenanceCi;
+    debug_log("nvml composition evidence: nvmlScalar=%d kHz provenance ci=%d live=%u kHz"
+              " vfOffset=%d kHz targetVf=%d kHz storedMHz=%u reference ci=%d live=%u kHz"
+              " vfOffset=%d kHz\n",
+        g_app.gpuClockOffsetkHz, p, g_app.curve[p].freq_kHz, g_app.freqOffsets[p],
+        targetOffsets ? targetOffsets[p] : 0, desired->curvePointMHz[p], referenceCi,
+        referenceCi >= 0 ? g_app.curve[referenceCi].freq_kHz : 0u,
+        referenceCi >= 0 ? g_app.freqOffsets[referenceCi] : 0);
+}
+
 #endif  // GREEN_CURVE_GPU_BACKEND_APPLY_DIAGNOSTICS_H

@@ -1083,6 +1083,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                     &verifyDesired, originalCurvePopulated, originalCurveVoltUv,
                     lockedTailMask, hasLock, lockMhz, flattenApplied, flattenFailed,
                     gpuPolicyViaCurveBatch, explicitCurveMask, targetCurveOffsets);
+                apply_log_nvml_composition_evidence(desired, offsetInVfTable,
+                    originalCurvePopulated, lockedTailMask, targetCurveOffsets);
                 // Success/failure counting and state persistence
                 if (curveRequestOk) {
                     successCount++;

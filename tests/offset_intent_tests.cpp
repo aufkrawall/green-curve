@@ -210,6 +210,39 @@ int run_pretail_offset_intent_tests() {
                "agreement") != 0)
         return 6876;
 
+    // 6880-6883: which points the NVML/VF composition evidence line reports.
+    {
+        constexpr int R = 6;
+        bool rPopulated[R] = {true, true, true, true, true, true};
+        bool rTail[R] = {false, false, false, false, true, true};
+        bool rHas[R] = {false, false, true, true, true, true};
+        bool rFrom[R] = {false, false, false, true, false, false};
+        int prov = 9, ref = 9;
+        // Separate NVML route, live scalar, a provenance point at 3 (2 is typed):
+        // the reference is the nearest unrequested point below it.
+        if (!curve_point_nvml_composition_probe(R, false, 100000, rPopulated, rTail, rHas,
+                rFrom, &prov, &ref) || prov != 3 || ref != 1)
+            return 6880;
+        // The question does not arise on the VF-table route or without a scalar.
+        if (curve_point_nvml_composition_probe(R, true, 100000, rPopulated, rTail, rHas,
+                rFrom, &prov, &ref) || prov != -1 || ref != -1 ||
+            curve_point_nvml_composition_probe(R, false, 0, rPopulated, rTail, rHas,
+                rFrom, &prov, &ref))
+            return 6881;
+        // No provenance point below the tail: nothing to report.
+        rFrom[3] = false;
+        rFrom[4] = true;   // a tail point never counts
+        if (curve_point_nvml_composition_probe(R, false, 100000, rPopulated, rTail, rHas,
+                rFrom, &prov, &ref))
+            return 6882;
+        // A provenance point with no unrequested point below still reports.
+        rFrom[0] = true;
+        rHas[0] = true;
+        if (!curve_point_nvml_composition_probe(R, false, 100000, rPopulated, rTail, rHas,
+                rFrom, &prov, &ref) || prov != 0 || ref != -1)
+            return 6883;
+    }
+
     // 6820: the flat-tail check after correction.  Point 4 is offset intent
     // (provenance) holding +0; its stored projection 2350 is a whole bin below
     // where it really runs (live 2400), above the 2380 lock.

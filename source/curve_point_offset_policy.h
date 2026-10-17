@@ -185,6 +185,38 @@ static inline CurveOffsetRoutingPlan curve_point_plan_gpu_offset_routing(
     return p;
 }
 
+// Field evidence for the deferred NVML/VF composition question (Pascal..Ada).
+// On the separate NVML route a provenance point keeps its full requested
+// component in the VF delta while a uniform NVML scalar is also live; whether
+// the driver adds the two is unmeasured.  The apply logs one point of each
+// kind after the final readback so a field log answers it: the first
+// requested provenance point (VF delta + scalar) and the nearest populated
+// point below it that the request leaves alone (scalar only).  Returns false
+// when the question does not arise.  Arrays have `numPoints` entries.
+template <typename Flag, typename FromFlag>
+static inline bool curve_point_nvml_composition_probe(int numPoints, bool offsetInVfTable,
+        int nvmlScalarKHz, const bool* populated, const bool* tailMask,
+        const Flag* requestHasPoint, const FromFlag* requestPointFromOffset,
+        int* provenanceCiOut, int* referenceCiOut) {
+    if (provenanceCiOut) *provenanceCiOut = -1;
+    if (referenceCiOut) *referenceCiOut = -1;
+    if (offsetInVfTable || nvmlScalarKHz == 0 || numPoints <= 0 || !populated ||
+        !tailMask || !requestHasPoint || !requestPointFromOffset) return false;
+    int provenance = -1;
+    for (int ci = 0; ci < numPoints && provenance < 0; ci++) {
+        if (populated[ci] && !tailMask[ci] && requestHasPoint[ci] &&
+            requestPointFromOffset[ci] != 0) provenance = ci;
+    }
+    if (provenance < 0) return false;
+    int reference = -1;
+    for (int ci = provenance - 1; ci >= 0 && reference < 0; ci--) {
+        if (populated[ci] && !tailMask[ci] && !requestHasPoint[ci]) reference = ci;
+    }
+    if (provenanceCiOut) *provenanceCiOut = provenance;
+    if (referenceCiOut) *referenceCiOut = reference;
+    return true;
+}
+
 // The anchor of an interactive stored lock when the request names no lock MHz.
 // A typed anchor point: its MHz. On the VF-table route an anchor with offset
 // provenance follows today's base. Keep the stored MHz on the separate NVML
