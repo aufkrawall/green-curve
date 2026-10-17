@@ -65,12 +65,17 @@ static bool apply_lock_pretail_precheck_before_reset(const DesiredSettings* desi
     const int excludeLow = (desired->hasGpuOffset &&
         desired->gpuOffsetExcludeLowCount > 0 && desired->gpuOffsetMHz != 0)
         ? desired->gpuOffsetExcludeLowCount : 0;
+    // Pre-Blackwell the live curve also carries the NVML scalar, which the
+    // reset clears only for a request that owns the GPU offset.
+    const int scalarKHz = curve_point_scalar_gpu_offset_khz(
+        vf_curve_global_gpu_offset_supported(), g_app.gpuClockOffsetkHz);
     for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
         a.populated[ci] = g_app.curve[ci].freq_kHz > 0;
         a.base[ci] = apply_lock_pretail_stock_base_khz(g_app.curve[ci].freq_kHz,
-                                                       g_app.freqOffsets[ci]);
-        // After the reset every point the request does not name sits at stock.
-        a.unowned[ci] = a.base[ci];
+                                                       g_app.freqOffsets[ci] + scalarKHz);
+        // After the reset every point the request does not name sits at stock
+        // (plus a scalar the request does not own).
+        a.unowned[ci] = a.base[ci] + (desired->hasGpuOffset ? 0 : scalarKHz);
         a.gpuComponentMHz[ci] = desired->hasGpuOffset
             ? gpu_offset_component_mhz_for_point(ci, desired->gpuOffsetMHz, excludeLow)
             : 0;
@@ -78,7 +83,8 @@ static bool apply_lock_pretail_precheck_before_reset(const DesiredSettings* desi
     unsigned int offendingMHz = 0;
     int offendingCi = apply_lock_pretail_first_violation(VF_NUM_POINTS,
         desired->lockMHz, a.populated, a.tail, desired->hasCurvePoint,
-        desired->curvePointMHz, desired->hasGpuOffset, a.base,
+        desired->curvePointFromGpuOffset, desired->curvePointMHz,
+        desired->hasGpuOffset, a.base,
         a.gpuComponentMHz, a.unowned, &offendingMHz);
     if (offendingCi < 0) return true;
     apply_lock_pretail_format_refusal(result, resultSize, desired->lockMHz,
@@ -87,11 +93,12 @@ static bool apply_lock_pretail_precheck_before_reset(const DesiredSettings* desi
             !desired->hasCurvePoint[offendingCi]);
     debug_log("apply lock precheck: REFUSED before any write -- lockCi=%d lockMHz=%u"
               " mode=%s preTailCi=%d target=%u stockBase=%lld kHz gpuOffset=%d"
-              " exclude=%d explicit=%d\n",
+              " exclude=%d requested=%d fromOffset=%d scalar=%d kHz\n",
         desired->lockCi, desired->lockMHz, lock_mode_name(desired->lockMode),
         offendingCi, offendingMHz, a.base[offendingCi],
         desired->hasGpuOffset ? desired->gpuOffsetMHz : 0, excludeLow,
-        desired->hasCurvePoint[offendingCi] ? 1 : 0);
+        desired->hasCurvePoint[offendingCi] ? 1 : 0,
+        desired->curvePointFromGpuOffset[offendingCi] ? 1 : 0, scalarKHz);
     return false;
 }
 

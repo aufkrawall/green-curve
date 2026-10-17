@@ -207,7 +207,10 @@ That is 11 of ~340 files in `source/` (plus the extra test translation units
 `tests/clock_transition_tests.cpp`, `tests/service_install_tests.cpp`,
 `tests/apply_profile_followup_tests.cpp`, `tests/apply_correction_tests.cpp`
 (6500-6531: the apply's VF correction loop against a simulated driver, see
-[clock-transition-audit](clock-transition-audit.md)) and
+[clock-transition-audit](clock-transition-audit.md)),
+`tests/offset_intent_tests.cpp` (6800-6829: offset intent vs absolute MHz --
+a pre-Blackwell scalar-offset simulated driver, pre-tail and flat-tail
+judging, the post-correction boost tally) and
 `tests/fan_worker_lock_tests.cpp` (6550-6569: native Windows threads/events/
 mutex fixture for the fan worker's cancellable lock wait, see
 [fan-control](fan-control.md)); `service_install_tests.cpp` owns

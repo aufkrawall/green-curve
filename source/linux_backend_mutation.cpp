@@ -375,21 +375,7 @@ static LinuxCurveTargetBuildResult build_curve_transition_targets(
         targetOffsets, pointMask, cleanupPointCountOut);
 }
 
-struct LinuxApplyTransactionContext {
-    LinuxGpuState* gpu;
-    const DesiredSettings* desired;
-    const LinuxHardwareSnapshot* snapshot;
-    // The intent this daemon last committed.  NVML exposes no getter for a
-    // configured locked-clock range, so this is the only record of an OUTGOING
-    // pin -- and the transition ceiling is bounded by the lower of the
-    // outgoing and incoming entitlements, so it has to reach the arming phase.
-    const DesiredSettings* committedIntent;
-    const DesiredSettings* previousIntent;
-    int curveTargets[VF_NUM_POINTS];
-    bool curveMask[VF_NUM_POINTS];
-    int fanTargetPercent;
-    bool fanUseDriverAuto;
-};
+#include "linux_backend_apply_context.h"
 
 static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
     LinuxApplyTransactionContext* context = (LinuxApplyTransactionContext*)opaque;
@@ -417,7 +403,8 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
             return true;
         }
         case LINUX_MUTATION_GPU_OFFSET:
-            return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS, d->gpuOffsetMHz);
+            return nvml_set_clock_offset(g, NVML_CLOCK_GRAPHICS,
+                context->composedGpuOffset ? 0 : d->gpuOffsetMHz);
         case LINUX_MUTATION_MEM_OFFSET: {
             // DesiredSettings is display MHz; the NVML wire unit is effective
             // MHz (matches Windows, which writes (offsetkHz/1000)*2).
@@ -438,6 +425,7 @@ static bool linux_apply_transaction_step(void* opaque, unsigned int phase) {
             return pairValid;
         }
         case LINUX_MUTATION_CURVE: {
+            if (!linux_apply_rebuild_curve_targets(context)) return false;
             bool curveOk = apply_curve_offsets_verified(g, context->curveTargets,
                                                         context->curveMask, 25);
             // The curve is now at its new (raised) shape and LINUX_MUTATION_LOCK
@@ -504,18 +492,31 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     bool hardLock = d->hasLock && d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
     g_linuxOutgoingCeilingMHz = linux_outgoing_ceiling_mhz(g, previousIntent);
     LinuxApplyTransactionContext context = {g, d, &snapshot, committedIntent,
-        previousIntent, {}, {}, d->fanPercent, false};
+        previousIntent, {}, {}, d->fanPercent, false, false, false, false};
     gc_u32 requestedDomains = service_desired_mutation_domains(d);
     int cleanupPointCount = 0;
-    LinuxCurveTargetBuildResult curveBuild = {};
-    if ((requestedDomains & SERVICE_MUTATION_DOMAIN_VF_CURVE) != 0 &&
-        committedIntent) {
-        curveBuild = build_curve_transition_targets(g, previousIntent,
-            committedIntent, context.curveTargets, context.curveMask,
-            &cleanupPointCount);
-    } else {
-        curveBuild = build_curve_targets(g, d, context.curveTargets,
-            context.curveMask);
+    context.transitionBuild =
+        (requestedDomains & SERVICE_MUTATION_DOMAIN_VF_CURVE) != 0 && committedIntent;
+    LinuxCurveTargetBuildResult curveBuild =
+        linux_apply_build_curve(&context, &cleanupPointCount);
+    context.composedGpuOffset = curveBuild.composedGpuOffset;
+    const bool clearStaleGpuOffset = linux_composed_offset_must_clear_scalar(
+        curveBuild.composedGpuOffset, snapshot.gpuOffsetValid,
+        snapshot.gpuOffsetMHz, d->resetOcBeforeApply);
+    context.rebuildCurveTargets = curveBuild.pointCount > 0 &&
+        linux_curve_targets_rebuild_after_scalar(snapshot.gpuOffsetValid,
+            snapshot.gpuOffsetMHz, d->resetOcBeforeApply, clearStaleGpuOffset);
+    lb_log("apply: gpu offset routing composed=%d nvmlOffset=%d MHz (known=%d)"
+           " reset=%d clearStale=%d rebuildCurve=%d\n",
+           curveBuild.composedGpuOffset ? 1 : 0, snapshot.gpuOffsetMHz,
+           snapshot.gpuOffsetValid ? 1 : 0, d->resetOcBeforeApply ? 1 : 0,
+           clearStaleGpuOffset ? 1 : 0, context.rebuildCurveTargets ? 1 : 0);
+    if (clearStaleGpuOffset && !g->nvml.setGpcClkVfOffset && !g->nvml.setClockOffsets) {
+        LinuxMutationResult mutation = {};
+        if (result) gc_snprintf(result, resultSize,
+            "A GPU offset of %d MHz is still set and cannot be cleared; it would"
+            " add to the curve's own offset", snapshot.gpuOffsetMHz);
+        return mutation;
     }
     if (cleanupPointCount > 0) {
         lb_log("apply: added %d zero-offset cleanup point(s) for replaced "
@@ -569,7 +570,7 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
             requested |= LINUX_MUTATION_LOCK_CEILING;
     }
     if (d->resetOcBeforeApply) requested |= LINUX_MUTATION_RESET_BASELINE;
-    if (d->hasGpuOffset && !curveBuild.composedGpuOffset)
+    if ((d->hasGpuOffset && !curveBuild.composedGpuOffset) || clearStaleGpuOffset)
         requested |= LINUX_MUTATION_GPU_OFFSET;
     if (d->hasMemOffset) requested |= LINUX_MUTATION_MEM_OFFSET;
     // An inert power request owns the domain but writes nothing; see

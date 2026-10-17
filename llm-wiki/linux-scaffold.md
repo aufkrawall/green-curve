@@ -373,7 +373,10 @@ once, stamped by `[meta] linux_mem_migrated`:
   pre-transaction curve snapshot if any phase fails.
   NVML pinning happens only after the curve commit. A global NVML offset is used
   only when the requested result is truly global; selective/explicit/lock
-  compositions use the curve path and region-aware readback verification.
+  compositions use the curve path and region-aware readback verification, and
+  zero an NVML offset left by an earlier global apply in the same transaction
+  (then rebuild the curve targets from a fresh readback); see
+  clock-transition-audit.md.
 - Unrecognized GPU families keep the best-effort VF backend and write support by
   default. A failed transaction rolls back instead of globally disabling this
   fallback.

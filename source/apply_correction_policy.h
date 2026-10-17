@@ -62,7 +62,8 @@ struct ApplyCorrectionRequest {
     unsigned int* curvePointMHz;       // verify targets; lowered on acceptance
     const unsigned char* fromGpuOffset;  // per-point provenance (gc_bool8)
     // The offset the initial build chose for each point -- the same array
-    // verification compares an offset-intent point against.
+    // verification compares an offset-intent point against.  Already the
+    // per-point delta, net of any separate GPU-offset scalar (pre-Blackwell).
     const int* targetOffsetKHz;
 };
 
@@ -367,20 +368,102 @@ static ApplyCorrectionLoopOutcome apply_run_correction_loop(int maxPasses,
     return out;
 }
 
+// The boost tally behind the outcome severity and the "N of M boost points
+// matched" summary, measured on the FINAL readback (after any correction) with
+// verification's choice of quantity: an offset-intent point by its programmed
+// offset, a typed point by its MHz.  It used to be taken right after the first
+// batch, before correction, and judged typed points by an offset computed over
+// the reset-time base -- so a correction that fixed a point still reported it
+// unmatched, and a typed point that verified by MHz could count as failed.
+// A point counts matched only when it holds its target (offset within 12 MHz,
+// or MHz within `toleranceMHz(ci)`); a driver-limited offset that verification
+// accepts as safe still counts unmatched here, because "committed something
+// close to the request" is exactly what this tally reports.  Locked-tail points
+// are the flatten tally's business and are skipped.  "User" counts exclude
+// points that are not boosted (offset-intent target 0) or sit below 500 MHz.
+struct ApplyBoostTally {
+    int applied, failed;
+    int userApplied, userFailed;
+    int firstFailedCi;                 // -1 when none
+    unsigned int firstFailedActualMHz;
+    int firstFailedProgrammedKHz;
+    int firstFailedTargetOffsetKHz;
+    unsigned int firstFailedTargetMHz;
+    bool firstFailedOffsetIntent;
+};
+
+template <typename ToleranceMHz>
+static inline ApplyBoostTally apply_correction_boost_tally(const ApplyCorrectionRequest& q,
+        const ApplyCorrectionReadback& rb, ToleranceMHz toleranceMHz) {
+    ApplyBoostTally t = {};
+    t.firstFailedCi = -1;
+    for (int ci = 0; ci < q.pointCount; ci++) {
+        if (!q.hasCurvePoint[ci] || rb.freqKHz[ci] == 0) continue;
+        if (q.hasLock && q.lockedTailMask[ci]) continue;
+        const unsigned int actualMHz = apply_correction_display_mhz(rb.freqKHz[ci]);
+        const bool offsetIntent = apply_correction_point_offset_is_intent(q, ci);
+        bool matched = false;
+        bool userRelevant = actualMHz >= 500;
+        if (offsetIntent) {
+            long long diff = (long long)rb.programmedOffsetKHz[ci] - (long long)q.targetOffsetKHz[ci];
+            if (diff < 0) diff = -diff;
+            matched = diff <= 12000;
+            userRelevant = userRelevant && q.targetOffsetKHz[ci] != 0;
+        } else {
+            const unsigned int target = q.curvePointMHz[ci];
+            const unsigned int delta = actualMHz > target ? actualMHz - target : target - actualMHz;
+            matched = delta <= (unsigned int)toleranceMHz(ci);
+        }
+        if (matched) {
+            t.applied++;
+            if (userRelevant) t.userApplied++;
+            continue;
+        }
+        t.failed++;
+        if (userRelevant) t.userFailed++;
+        if (t.firstFailedCi < 0) {
+            t.firstFailedCi = ci;
+            t.firstFailedActualMHz = actualMHz;
+            t.firstFailedProgrammedKHz = rb.programmedOffsetKHz[ci];
+            t.firstFailedTargetOffsetKHz = q.targetOffsetKHz[ci];
+            t.firstFailedTargetMHz = q.curvePointMHz[ci];
+            t.firstFailedOffsetIntent = offsetIntent;
+        }
+    }
+    return t;
+}
+
+// Where a point is meant to sit for the flat-tail check.  A tail point: the
+// lock.  A typed point: its MHz.  An offset-intent point: its requested offset
+// over the stock base the driver reports NOW (live minus programmed) -- its
+// stored MHz is a projection over an earlier base, and on a cold board that
+// base sits a VF bin or more away, which would fail (or pass) the check on a
+// number the apply never asked the driver for.
+static inline unsigned int apply_correction_monotonic_target_mhz(
+        const ApplyCorrectionRequest& q, const ApplyCorrectionReadback& rb, int ci) {
+    if (q.lockedTailMask[ci]) return q.lockMHz;
+    if (apply_correction_point_offset_is_intent(q, ci)) {
+        long long kHz = apply_correction_live_base_khz(rb, ci) + (long long)q.targetOffsetKHz[ci];
+        if (kHz < 0) kHz = 0;
+        if (kHz > UINT_MAX) kHz = UINT_MAX;
+        return apply_correction_display_mhz((unsigned int)kHz);
+    }
+    return q.curvePointMHz[ci];
+}
+
 // A FLATTEN/NONE lock must keep a flat tail: a tail point whose predecessor's
 // target is above the lock would force the driver to raise the plateau.
 // Returns the first violating point index, or -1; `previousTargetOut` gets the
 // predecessor target that caused it.
-static inline int apply_correction_tail_monotonic_violation(int pointCount,
-        const unsigned int* freqKHz, const unsigned char* hasCurvePoint,
-        const unsigned int* curvePointMHz, const bool* lockedTailMask,
-        unsigned int lockMHz, unsigned int* previousTargetOut) {
+static inline int apply_correction_tail_monotonic_violation(
+        const ApplyCorrectionRequest& q, const ApplyCorrectionReadback& rb,
+        unsigned int* previousTargetOut) {
     unsigned int lastTargetMHz = 0;
     if (previousTargetOut) *previousTargetOut = 0;
-    for (int ci = 0; ci < pointCount; ci++) {
-        if (!freqKHz[ci] || !hasCurvePoint[ci]) continue;
-        const unsigned int currentTarget = lockedTailMask[ci] ? lockMHz : curvePointMHz[ci];
-        if (lockedTailMask[ci] && ci > 0 && lastTargetMHz > currentTarget) {
+    for (int ci = 0; ci < q.pointCount; ci++) {
+        if (!rb.freqKHz[ci] || !q.hasCurvePoint[ci]) continue;
+        const unsigned int currentTarget = apply_correction_monotonic_target_mhz(q, rb, ci);
+        if (q.lockedTailMask[ci] && ci > 0 && lastTargetMHz > currentTarget) {
             if (previousTargetOut) *previousTargetOut = lastTargetMHz;
             return ci;
         }

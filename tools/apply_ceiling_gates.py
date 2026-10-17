@@ -303,6 +303,57 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "SHORTFALL judges an offset-intent point by its missing offset, not a stale preview")
     forbid_text(diagnostics_h, "if (selective && !isTail && !explicitMask[ci]) {",
                 "no private copy of the offset-intent predicate in the diagnostics")
+    # Pre-Blackwell a uniform GPU offset is a separate driver scalar (NVML)
+    # that already lifts every point; an offset-intent point's VF delta must
+    # carry only the rest, or it runs at stock + twice the offset while the
+    # offset verifier, comparing against that same delta, reports success.
+    require_text(_p(ctx, "curve_point_offset_policy.h"),
+                 "return (long long)r->gpuOffsetComponentKHz - (long long)r->scalarGpuOffsetKHz;",
+                 "an offset-intent delta is net of the separate GPU-offset scalar")
+    require_text(targets_h, "want.scalarGpuOffsetKHz = scalarGpuOffsetKHz;",
+                 "the Windows target build passes the scalar to the shared policy")
+    require_text(apply_cpp, "const int scalarGpuOffsetKHz = curve_point_scalar_gpu_offset_khz(",
+                 "the apply derives the scalar from the VF-table capability, not a guess")
+    # The pre-tail refusal and the post-correction flat-tail check judge a
+    # provenance point where its offset puts it over today's base, like an
+    # unrequested neighbour -- not by its stored projection.
+    pretail_policy_h = _p(ctx, "apply_lock_pretail_policy.h")
+    require_text(pretail_policy_h,
+                 "curve_point_offset_is_intent(!fromOffset, fromOffset, false);",
+                 "the pre-tail check uses the shared offset-intent predicate")
+    require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
+                 "desired->curvePointFromGpuOffset, desired->curvePointMHz,",
+                 "the pre-reset pre-tail check passes per-point provenance")
+    require_text(apply_cpp, "desired->curvePointFromGpuOffset, desired->curvePointMHz,",
+                 "the post-reset pre-tail check passes per-point provenance")
+    require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
+                 "g_app.freqOffsets[ci] + scalarKHz);",
+                 "the pre-reset pre-tail base strips a pre-Blackwell NVML scalar")
+    require_text(apply_cpp, "originalCurveOffsets[ci] + pretailScalarKHz);",
+                 "the post-reset pre-tail base strips a pre-Blackwell NVML scalar")
+    require_text(correction_policy_h,
+                 "const unsigned int currentTarget = apply_correction_monotonic_target_mhz(q, rb, ci);",
+                 "the flat-tail check judges offset-intent points by offset over the live base")
+    require_text(apply_cpp, "int violationCi = apply_correction_tail_monotonic_violation(correction,",
+                 "the apply's flat-tail check reads the same request as the correction loop")
+    # The boost tally feeding the outcome severity is taken on the final
+    # readback with verification's quantity per point, not after the first
+    # batch with offsets for everything.
+    require_text(apply_cpp, "const ApplyBoostTally boost = apply_correction_boost_tally(correction,",
+                 "the boost tally runs after correction through the tested policy")
+    forbid_text(apply_cpp, "bool userRelevantPoint = (expectedOffsetkHz != 0) && (actualMHz >= 500);",
+                "no first-batch boost tally judging typed points by offset")
+    # Linux: a composed offset lives in the VF deltas, so a stale NVML
+    # graphics offset from an earlier uniform-only apply is cleared in the
+    # same transaction, and targets are rebuilt after any such clear.
+    require_text(linux_mutation_cpp, "|| clearStaleGpuOffset)",
+                 "a no-reset composed Linux apply schedules the stale NVML offset clear")
+    require_text(linux_mutation_cpp, "context->composedGpuOffset ? 0 : d->gpuOffsetMHz);",
+                 "the Linux GPU_OFFSET phase writes 0 for a composed offset")
+    require_text(linux_mutation_cpp, "if (!linux_apply_rebuild_curve_targets(context)) return false;",
+                 "the Linux curve phase rebuilds targets after an NVML offset clear")
+    require_text(apply_cpp, "long long anchorKHz = curve_point_stored_lock_anchor_khz(",
+                 "an interactive stored-lock anchor uses the provenance-aware anchor rule")
     # ...and writing must not re-derive them from the live base, which is the
     # very sample that moved.
     forbid_text(targets_h, "offset = (long long)desired->curvePointMHz[ci] * 1000 - base;",

@@ -291,7 +291,28 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             lockMhz = 0;
         } else {
             if (lockMhz == 0) {
-                lockMhz = desired->hasCurvePoint[lockCi] ? desired->curvePointMHz[lockCi] : displayed_curve_mhz(g_app.curve[lockCi].freq_kHz);
+                // Interactive stored lock.  A provenance anchor's stored MHz is
+                // a projection; use its offset over today's base instead.
+                const int anchorExclude = (desired->hasGpuOffset &&
+                    desired->gpuOffsetExcludeLowCount > 0 && desired->gpuOffsetMHz != 0)
+                    ? desired->gpuOffsetExcludeLowCount : 0;
+                const int anchorScalarKHz = curve_point_scalar_gpu_offset_khz(
+                    vf_curve_global_gpu_offset_supported(), currentAppliedGpuOffsetMHz * 1000);
+                const long long anchorComponentKHz = (long long)gpu_offset_component_mhz_for_point(
+                    lockCi, desired->gpuOffsetMHz, anchorExclude) * 1000;
+                long long anchorKHz = curve_point_stored_lock_anchor_khz(
+                    desired->hasCurvePoint[lockCi] != 0,
+                    desired->curvePointFromGpuOffset[lockCi] != 0,
+                    desired->curvePointMHz[lockCi], g_app.curve[lockCi].freq_kHz,
+                    g_app.freqOffsets[lockCi], anchorScalarKHz, anchorComponentKHz);
+                if (anchorKHz > UINT_MAX) anchorKHz = UINT_MAX;
+                lockMhz = displayed_curve_mhz((unsigned int)anchorKHz);
+                debug_log("apply: stored lock anchor ci=%d -> %u MHz (requested=%d fromOffset=%d"
+                          " storedMHz=%u live=%u kHz offset=%d kHz scalar=%d kHz component=%lld kHz)\n",
+                    lockCi, lockMhz, desired->hasCurvePoint[lockCi] ? 1 : 0,
+                    desired->curvePointFromGpuOffset[lockCi] ? 1 : 0,
+                    desired->curvePointMHz[lockCi], g_app.curve[lockCi].freq_kHz,
+                    g_app.freqOffsets[lockCi], anchorScalarKHz, anchorComponentKHz);
             }
             for (int vi = lockVi; vi < g_app.numVisible; vi++) {
                 int ci = g_app.visibleMap[vi];
@@ -349,11 +370,16 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         // the refusal must take the recovery path instead of leaving the GPU on
         // the stock curve under the transition clamp.
         ApplyLockPretailArrays pretail = {};
+        // Pre-Blackwell the NVML scalar is in the live curve too; strip it so
+        // `base` is stock, as the target build's offset-intent deltas assume.
+        const int pretailScalarKHz = curve_point_scalar_gpu_offset_khz(
+            vf_curve_global_gpu_offset_supported(), currentAppliedGpuOffsetMHz * 1000);
         for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
             pretail.populated[ci] = originalCurvePopulated[ci];
             pretail.tail[ci] = lockedTailMask[ci];
             pretail.base[ci] = apply_lock_pretail_stock_base_khz(
-                (unsigned int)originalCurveFreqkHz[ci], originalCurveOffsets[ci]);
+                (unsigned int)originalCurveFreqkHz[ci],
+                originalCurveOffsets[ci] + pretailScalarKHz);
             pretail.unowned[ci] = originalCurveFreqkHz[ci];
             pretail.gpuComponentMHz[ci] = desired->hasGpuOffset
                 ? gpu_offset_component_mhz_for_point(ci, desired->gpuOffsetMHz,
@@ -363,7 +389,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         unsigned int preTailTargetMHz = 0;
         int ci = apply_lock_pretail_first_violation(VF_NUM_POINTS, lockMhz,
             pretail.populated, pretail.tail, desired->hasCurvePoint,
-            desired->curvePointMHz, desired->hasGpuOffset != 0, pretail.base,
+            desired->curvePointFromGpuOffset, desired->curvePointMHz,
+            desired->hasGpuOffset != 0, pretail.base,
             pretail.gpuComponentMHz, pretail.unowned, &preTailTargetMHz);
         if (ci >= 0) {
             char refusal[256] = {};
@@ -371,13 +398,14 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 lockCi, ci, preTailTargetMHz,
                 desired->hasGpuOffset && desired->gpuOffsetMHz != 0 &&
                     !desired->hasCurvePoint[ci]);
-            debug_log("lock monotonicity validation failed %s: lockCi=%d lockMHz=%u preTailCi=%d target=%u desiredGpu=%d exclude=%d explicit=%d\n",
+            debug_log("lock monotonicity validation failed %s: lockCi=%d lockMHz=%u preTailCi=%d target=%u desiredGpu=%d exclude=%d requested=%d fromOffset=%d scalar=%d kHz\n",
                 desired->resetOcBeforeApply ? "AFTER the reset-to-stock (recovering)"
                                             : "before writes",
                 lockCi, lockMhz, ci, preTailTargetMHz,
                 desired->hasGpuOffset ? desired->gpuOffsetMHz : currentAppliedGpuOffsetMHz,
                 desired->hasGpuOffset ? desiredActiveGpuOffsetExcludeLowCount : currentActiveGpuOffsetExcludeLowCount,
-                desired->hasCurvePoint[ci] ? 1 : 0);
+                desired->hasCurvePoint[ci] ? 1 : 0,
+                desired->curvePointFromGpuOffset[ci] ? 1 : 0, pretailScalarKHz);
             if (desired->resetOcBeforeApply)
                 return apply_recover_clock_failure(clockCeiling, refusal, result, resultSize);
             set_message(result, resultSize, "%s", refusal);
@@ -510,10 +538,22 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             explicitPoints,
             tailPoints);
     }
+    // Pre-Blackwell the uniform GPU offset is the NVML graphics scalar, which
+    // the driver adds on top of every VF delta: an offset-intent point's delta
+    // carries only what the scalar does not (see curve_point_offset_policy.h).
+    const int scalarGpuOffsetKHz = curve_point_scalar_gpu_offset_khz(
+        vf_curve_global_gpu_offset_supported(),
+        gpuApplied ? targetGpuOffsetkHz : currentAppliedGpuOffsetMHz * 1000);
+    debug_log("curve targets: scalarGpuOffset=%d kHz (vfTableOffset=%d gpuApplied=%d"
+              " current=%d MHz requested=%d MHz exclude=%d)\n",
+        scalarGpuOffsetKHz, vf_curve_global_gpu_offset_supported() ? 1 : 0,
+        gpuApplied ? 1 : 0, currentAppliedGpuOffsetMHz,
+        desired->hasGpuOffset ? desired->gpuOffsetMHz : 0,
+        desiredActiveGpuOffsetExcludeLowCount);
     if (!apply_build_curve_targets(desired, curveRequest, preserveCurveAcrossMem,
         hasLock, lockMode, lockCi, lockMhz, gpuPolicyViaCurveBatch,
         desiredActiveGpuOffsetExcludeLowCount, currentAppliedGpuOffsetMHz,
-        currentActiveGpuOffsetExcludeLowCount, originalCurvePopulated,
+        currentActiveGpuOffsetExcludeLowCount, scalarGpuOffsetKHz, originalCurvePopulated,
         originalCurveOffsets, originalCurveFreqkHz, lockedTailMask,
         targetCurveOffsets, targetCurveMask))
         return apply_recover_clock_failure(clockCeiling,
@@ -734,17 +774,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                         verifyDesired.curvePointMHz[ci] = displayed_curve_mhz((unsigned int)targetFreqkHz);
                     }
                 }
-                // Verify selective offset in the boost region (below the lock point).
-                // Tail points are verified separately against the flatten target.
-                // Some VF points may have hardware limits that prevent the selective
-                // offset from taking effect (e.g. special max-clock limit points on
-                // Blackwell, or rounding edge cases). Accept the actual live frequency
-                // for points where the hardware didn't apply the expected offset, so the
-                // overall operation isn't marked as failed for a single stubborn point.
-                selectiveOffsetApplied = 0;
-                selectiveOffsetFailed = 0;
-
-
+                // First-batch flatten tally, for the log only: the post-apply
+                // diagnostics recount the tail after correction, and the boost
+                // tally is taken there too (apply_correction_boost_tally()).
                 flattenApplied = 0;
                 flattenFailed = 0;
                 for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
@@ -762,23 +794,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                         }
                         continue;
                     }
-                    int actualOffsetkHz = g_app.freqOffsets[ci];
-                    int expectedOffsetkHz = targetCurveOffsets[ci];
-                    bool userRelevantPoint = (expectedOffsetkHz != 0) && (actualMHz >= 500);
-                    if (abs(actualOffsetkHz - expectedOffsetkHz) <= 12000) {
-                        selectiveOffsetApplied++;
-                        if (userRelevantPoint) userBoostApplied++;
-                    } else {
-                        selectiveOffsetFailed++;
-                        if (userRelevantPoint) userBoostFailed++;
-                        // Derived MHz is a preview. Verify the immutable control
-                        // target; absolute point/tail authority is checked below.
-                        debug_log("selective offset: point %d actual=%u MHz offset=%d kHz expected=%d kHz explicit=%d; retaining requested intent for verification\n",
-                            ci, actualMHz, actualOffsetkHz, expectedOffsetkHz,
-                            explicitCurveMask[ci]);
-                    }
                 }
-                debug_log("selective offset: boost applied=%d failed=%d\n", selectiveOffsetApplied, selectiveOffsetFailed);
                 if (hasLock) {
                     debug_log("flatten undervolt: target=%u MHz applied=%d failed=%d\n", lockMhz, flattenApplied, flattenFailed);
                 }
@@ -788,6 +804,31 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                     curveRequest, gpuPolicyViaCurveBatch, hasLock, lockMode,
                     lockedTailMask, lockMhz, detailOut, detailOutSize);
             };
+            // The correction loop, the post-correction monotonic check and the
+            // boost tallies all read the request through this one struct.
+            unsigned int rbFreqKHz[VF_NUM_POINTS] = {};
+            int rbOffsetKHz[VF_NUM_POINTS] = {};
+            const ApplyCorrectionReadback readback = {rbFreqKHz, rbOffsetKHz};
+            auto snapshot_readback = [&]() {
+                for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
+                    rbFreqKHz[ci] = g_app.curve[ci].freq_kHz;
+                    rbOffsetKHz[ci] = g_app.freqOffsets[ci];
+                }
+            };
+            ApplyCorrectionRequest correction = {};
+            correction.pointCount = VF_NUM_POINTS;
+            correction.hasLock = hasLock;
+            correction.lockMHz = lockMhz;
+            correction.lockCi = lockCi;
+            correction.gpuPolicyViaCurveBatch = gpuPolicyViaCurveBatch;
+            correction.lockedTailMask = lockedTailMask;
+            correction.explicitCurveMask = explicitCurveMask;
+            correction.originalCurvePopulated = originalCurvePopulated;
+            correction.hasCurvePoint = verifyDesired.hasCurvePoint;
+            correction.curvePointMHz = verifyDesired.curvePointMHz;
+            // The verify request's provenance, exactly what verification reads.
+            correction.fromGpuOffset = verifyDesired.curvePointFromGpuOffset;
+            correction.targetOffsetKHz = targetCurveOffsets;
             if (curveRequest) {
                 curveRequestOk = verify_curve_request(curveVerifyDetail, sizeof(curveVerifyDetail));
                 if (!curveRequestOk) {
@@ -797,29 +838,6 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                     // The decisions live in apply_correction_policy.h, where the
                     // regression harness drives them with simulated readbacks; this
                     // block supplies the readback, the write and the log lines.
-                    unsigned int rbFreqKHz[VF_NUM_POINTS] = {};
-                    int rbOffsetKHz[VF_NUM_POINTS] = {};
-                    const ApplyCorrectionReadback readback = {rbFreqKHz, rbOffsetKHz};
-                    auto snapshot_readback = [&]() {
-                        for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
-                            rbFreqKHz[ci] = g_app.curve[ci].freq_kHz;
-                            rbOffsetKHz[ci] = g_app.freqOffsets[ci];
-                        }
-                    };
-                    ApplyCorrectionRequest correction = {};
-                    correction.pointCount = VF_NUM_POINTS;
-                    correction.hasLock = hasLock;
-                    correction.lockMHz = lockMhz;
-                    correction.lockCi = lockCi;
-                    correction.gpuPolicyViaCurveBatch = gpuPolicyViaCurveBatch;
-                    correction.lockedTailMask = lockedTailMask;
-                    correction.explicitCurveMask = explicitCurveMask;
-                    correction.originalCurvePopulated = originalCurvePopulated;
-                    correction.hasCurvePoint = verifyDesired.hasCurvePoint;
-                    correction.curvePointMHz = verifyDesired.curvePointMHz;
-                    // The verify request's provenance, exactly what verification reads.
-                    correction.fromGpuOffset = verifyDesired.curvePointFromGpuOffset;
-                    correction.targetOffsetKHz = targetCurveOffsets;
                     int prevErrorKHz[VF_NUM_POINTS] = {};
                     apply_correction_reset_history(VF_NUM_POINTS, prevErrorKHz);
                     ApplyCorrectionPointReport pointReports[VF_NUM_POINTS] = {};
@@ -986,12 +1004,10 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 // apply must fail rather than silently converting the lock into a
                 // higher plateau.
                 if (curveRequestOk && hasLock && lockMhz > 0 && lockMode != LOCK_MODE_HARD) {
-                    unsigned int monoFreqKHz[VF_NUM_POINTS] = {};
-                    for (int ci = 0; ci < VF_NUM_POINTS; ci++) monoFreqKHz[ci] = g_app.curve[ci].freq_kHz;
+                    snapshot_readback();
                     unsigned int lastTargetMHz = 0;
-                    int violationCi = apply_correction_tail_monotonic_violation(VF_NUM_POINTS,
-                        monoFreqKHz, verifyDesired.hasCurvePoint, verifyDesired.curvePointMHz,
-                        lockedTailMask, lockMhz, &lastTargetMHz);
+                    int violationCi = apply_correction_tail_monotonic_violation(correction,
+                        readback, &lastTargetMHz);
                     if (violationCi >= 0) {
                         curveRequestOk = false;
                         set_message(curveVerifyDetail, sizeof(curveVerifyDetail),
@@ -999,6 +1015,37 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                             lockMhz, violationCi, lastTargetMHz);
                         debug_log("monotonicity enforcement: strict tail violation ci=%d lockMhz=%u previousTarget=%u; not rewriting tail above lock\n",
                             violationCi, lockMhz, lastTargetMHz);
+                        // Name the predecessor and how its target was judged.
+                        for (int pi = violationCi - 1; pi >= 0; pi--) {
+                            if (!rbFreqKHz[pi] || !verifyDesired.hasCurvePoint[pi]) continue;
+                            debug_log("monotonicity enforcement: predecessor ci=%d live=%u MHz"
+                                      " offset=%d kHz targetOffset=%d kHz storedMHz=%u offsetIntent=%d\n",
+                                pi, apply_correction_display_mhz(rbFreqKHz[pi]), rbOffsetKHz[pi],
+                                targetCurveOffsets[pi], verifyDesired.curvePointMHz[pi],
+                                apply_correction_point_offset_is_intent(correction, pi) ? 1 : 0);
+                            break;
+                        }
+                    }
+                }
+                // The boost tally the summary and the outcome severity report,
+                // on the final readback: after correction, not the first batch.
+                if (gpuPolicyViaCurveBatch) {
+                    snapshot_readback();
+                    const ApplyBoostTally boost = apply_correction_boost_tally(correction,
+                        readback, [](int ci) { return curve_point_verify_tolerance_mhz(ci); });
+                    selectiveOffsetApplied = boost.applied;
+                    selectiveOffsetFailed = boost.failed;
+                    userBoostApplied = boost.userApplied;
+                    userBoostFailed = boost.userFailed;
+                    debug_log("selective offset: final boost applied=%d failed=%d user=%d/%d\n",
+                        selectiveOffsetApplied, selectiveOffsetFailed, userBoostApplied,
+                        userBoostApplied + userBoostFailed);
+                    if (boost.firstFailedCi >= 0) {
+                        debug_log("selective offset: first unmatched point %d actual=%u MHz"
+                                  " offset=%d kHz targetOffset=%d kHz targetMHz=%u offsetIntent=%d\n",
+                            boost.firstFailedCi, boost.firstFailedActualMHz,
+                            boost.firstFailedProgrammedKHz, boost.firstFailedTargetOffsetKHz,
+                            boost.firstFailedTargetMHz, boost.firstFailedOffsetIntent ? 1 : 0);
                     }
                 }
                 apply_log_post_apply_curve_diagnostics(

@@ -5,6 +5,8 @@
 
 #include <climits>
 
+#include "curve_point_offset_policy.h"
+
 // Would a locked request put some point BELOW the lock point above the lock
 // target?  The driver cannot keep a flat tail under a higher pre-tail point, so
 // such a request is refused -- and the question is when.
@@ -21,9 +23,15 @@
 //
 // Per point below the tail, in curve-index order, stopping at the first tail
 // point (mirrors the apply's own target build):
-//   - a point the request names:        its requested MHz
-//   - otherwise, with a GPU offset:     stock base + this request's per-point
-//                                       offset component
+//   - a point the user typed:           its requested MHz
+//   - a requested point with offset
+//     provenance, or an unrequested
+//     point under a GPU offset:         stock base + this request's per-point
+//                                       offset component (a provenance point's
+//                                       stored MHz is a projection over a base
+//                                       sampled when the profile was saved; on a
+//                                       cold board it sat a VF bin or more away
+//                                       from the base the driver reports now)
 //   - otherwise:                        `unownedKHz` (the value the point is
 //                                       left at -- stock after a reset, the
 //                                       current live value without one)
@@ -43,26 +51,32 @@ static inline long long apply_lock_pretail_stock_base_khz(unsigned int liveKHz,
 }
 
 // `Flag` is bool or the wire's gc_bool8.
-template <typename Flag>
+template <typename Flag, typename FromFlag>
 static inline int apply_lock_pretail_first_violation(
     int numPoints, unsigned int lockMHz,
     const bool* populated, const bool* tailMask,
-    const Flag* requestHasPoint, const unsigned int* requestPointMHz,
+    const Flag* requestHasPoint, const FromFlag* requestPointFromOffset,
+    const unsigned int* requestPointMHz,
     bool requestHasGpuOffset, const long long* stockBaseKHz,
     const int* gpuComponentMHz, const long long* unownedKHz,
     unsigned int* offendingTargetMHzOut) {
     if (offendingTargetMHzOut) *offendingTargetMHzOut = 0;
     if (lockMHz == 0 || numPoints <= 0 || !populated || !tailMask ||
-        !requestHasPoint || !requestPointMHz || !stockBaseKHz ||
+        !requestHasPoint || !requestPointFromOffset || !requestPointMHz || !stockBaseKHz ||
         !gpuComponentMHz || !unownedKHz)
         return -1;
     for (int ci = 0; ci < numPoints; ci++) {
         if (!populated[ci]) continue;
         if (tailMask[ci]) break;
         unsigned int targetMHz = 0;
-        if (requestHasPoint[ci]) {
+        const bool fromOffset = requestPointFromOffset[ci] != 0;
+        // The verification predicate, with no selective batch in play: a
+        // requested point is offset intent exactly when it has provenance.
+        const bool offsetIntent = requestHasPoint[ci] &&
+            curve_point_offset_is_intent(!fromOffset, fromOffset, false);
+        if (requestHasPoint[ci] && !offsetIntent) {
             targetMHz = requestPointMHz[ci];
-        } else if (requestHasGpuOffset) {
+        } else if (offsetIntent || requestHasGpuOffset) {
             long long targetKHz = stockBaseKHz[ci] +
                 (long long)gpuComponentMHz[ci] * 1000LL;
             targetMHz = apply_lock_pretail_display_mhz(targetKHz);

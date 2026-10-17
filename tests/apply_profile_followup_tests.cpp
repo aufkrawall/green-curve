@@ -19,6 +19,7 @@ struct PretailFixture {
     bool populated[N];
     bool tail[N];
     bool hasPoint[N];
+    bool fromOffset[N];
     unsigned int pointMHz[N];
     long long base[N];
     long long unowned[N];
@@ -40,7 +41,7 @@ void pretail_fixture(PretailFixture* f) {
 int first_violation(const PretailFixture& f, unsigned int lockMHz, bool gpuOffset,
                     unsigned int* target) {
     return apply_lock_pretail_first_violation(N, lockMHz, f.populated, f.tail,
-        f.hasPoint, f.pointMHz, gpuOffset, f.base, f.component, f.unowned, target);
+        f.hasPoint, f.fromOffset, f.pointMHz, gpuOffset, f.base, f.component, f.unowned, target);
 }
 
 int run_lock_pretail_tests() {
@@ -128,7 +129,7 @@ int run_lock_pretail_tests() {
         mask[2] = 1;
         g.pointMHz[2] = 2800;
         if (apply_lock_pretail_first_violation(N, 2500u, g.populated, g.tail, mask,
-                g.pointMHz, false, g.base, g.component, g.unowned, &target) != 2 ||
+                g.fromOffset, g.pointMHz, false, g.base, g.component, g.unowned, &target) != 2 ||
             target != 2800) return 6443;
     }
     return 0;

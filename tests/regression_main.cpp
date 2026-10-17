@@ -974,6 +974,9 @@ int run_diagnostics_followup_tests();
 int run_apply_correction_tests();
 // WER LocalDumps backstop registration (tests/wer_local_dumps_tests.cpp, 6570-6589).
 int run_wer_local_dumps_tests();
+// Offset intent vs absolute MHz on pre-Blackwell scalar offsets, pre-tail and
+// verify-count yardsticks (tests/offset_intent_tests.cpp, 6800-6829).
+int run_offset_intent_tests();
 // Native fan worker cancellable-lock fixture (tests/fan_worker_lock_tests.cpp,
 // 6550-6569; Windows only).
 int run_fan_worker_lock_tests();
@@ -1801,6 +1804,13 @@ int main(int argc, char** argv) {
         return diagnosticsFailure > 0 && diagnosticsFailure < 126 ? diagnosticsFailure : 1;
 #endif
         return diagnosticsFailure;
+    }
+    if (int offsetIntentFailure = run_offset_intent_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", offsetIntentFailure);
+#if !defined(_WIN32)
+        return offsetIntentFailure > 0 && offsetIntentFailure < 126 ? offsetIntentFailure : 1;
+#endif
+        return offsetIntentFailure;
     }
     if (int followup2Failure = run_apply_profile_followup_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", followup2Failure);
@@ -10048,6 +10058,27 @@ static int run_all_tests_middle([[maybe_unused]] char** argv) {
         if (!mask[3] || targets[3] != 0 ||
             !mask[5] || targets[5] != 110000)
             return 2052;
+
+        // A composed offset lives in the VF deltas; an NVML graphics offset
+        // left by an earlier uniform-only apply would add on top of it.  A
+        // no-reset composed apply must clear it itself, and every transaction
+        // that zeroes a non-zero NVML offset before the curve write rebuilds
+        // the targets from a fresh readback (6830-6834).
+        if (!linux_composed_offset_must_clear_scalar(true, true, 475, false))
+            return 6830;
+        if (linux_composed_offset_must_clear_scalar(true, true, 475, true) ||
+            linux_composed_offset_must_clear_scalar(false, true, 475, false))
+            return 6831;
+        if (linux_composed_offset_must_clear_scalar(true, false, 475, false) ||
+            linux_composed_offset_must_clear_scalar(true, true, 0, false))
+            return 6832;
+        if (!linux_curve_targets_rebuild_after_scalar(true, 475, false, true) ||
+            !linux_curve_targets_rebuild_after_scalar(true, -100, true, false))
+            return 6833;
+        if (linux_curve_targets_rebuild_after_scalar(true, 0, true, true) ||
+            linux_curve_targets_rebuild_after_scalar(false, 475, true, true) ||
+            linux_curve_targets_rebuild_after_scalar(true, 475, false, false))
+            return 6834;
 
         // Per-point provenance on Linux too: a projected point keeps the
         // request's own offset even though absolute-minus-live-base would
