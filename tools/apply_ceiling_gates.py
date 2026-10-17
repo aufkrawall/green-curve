@@ -315,8 +315,26 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                     "no unmeasured NVML scalar compensation in curve targets")
         forbid_text(path, "curve_point_scalar_gpu_offset_khz",
                     "no assumed scalar subtraction from live VF readbacks")
-    require_text(apply_cpp, "curve targets: offsetContract=full-component",
+    require_text(apply_cpp, "curve targets: offsetContract=%s",
                  "the apply logs its offset contract and routing")
+    # NVML/VF composition is measured, never assumed: a provenance point on the
+    # separate NVML route loses only the per-point shift the apply's own NVML
+    # write produced between an NVML-free sample and the post-write sample,
+    # bounded so a positive offset can never be raised.
+    require_text(apply_cpp, "const bool scalarBeforeKnownZero = desired->resetOcBeforeApply && desired->hasGpuOffset &&",
+                 "the NVML-free sample is trusted only after a reset that owned the GPU-offset domain")
+    require_text(apply_cpp, "provenanceShiftMeasured ? provenanceScalarShiftKHz : nullptr))",
+                 "the target build receives the measured shift only when it was measurable")
+    require_text(targets_h, "if (want.fromGpuOffset && provenanceScalarShiftKHz)",
+                 "only provenance points are compensated by the measured shift")
+    require_text(targets_h, "const long long bounded = curve_point_bounded_scalar_shift_khz(",
+                 "the measured shift is bounded by the written NVML offset")
+    require_order_in_operation(
+        apply_cpp,
+        "static bool apply_desired_settings_service(const DesiredSettings* desired",
+        "memcpy(preScalarCurveFreqkHz, originalCurveFreqkHz",
+        "if (nvapi_set_gpu_offset(targetGpuOffsetkHz)) {",
+        "the NVML-free sample is taken before the NVML write")
     # The deferral is only temporary if field logs can answer it: the apply
     # logs NVML/VF composition evidence on the separate NVML route.
     require_text(apply_cpp, "apply_log_nvml_composition_evidence(desired, offsetInVfTable,",

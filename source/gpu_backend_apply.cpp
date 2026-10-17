@@ -482,6 +482,16 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         return false;
     }
     bool gpuApplied = false;
+    // The NVML-free sample for measuring what the NVML write below does to each
+    // point (curve_point_scalar_shift_measurable()).  Trusted only right after
+    // a reset that owned the GPU-offset domain: that reset forced the NVML
+    // offset to 0 and re-read the curve settled, so these originals are stock.
+    int preScalarCurveFreqkHz[VF_NUM_POINTS] = {};
+    int preScalarCurveOffsets[VF_NUM_POINTS] = {};
+    memcpy(preScalarCurveFreqkHz, originalCurveFreqkHz, sizeof(preScalarCurveFreqkHz));
+    memcpy(preScalarCurveOffsets, originalCurveOffsets, sizeof(preScalarCurveOffsets));
+    const bool scalarBeforeKnownZero = desired->resetOcBeforeApply && desired->hasGpuOffset &&
+        g_app.readback.gpuOffset && g_app.gpuClockOffsetkHz == 0;
     // Apply GPU offset first via dedicated path (handles uniform offset reliably).
     // When combined with lock/curve edits, applying the GPU offset separately avoids
     // sending highly non-uniform offsets for all curve points in a single batch,
@@ -572,10 +582,17 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             explicitPoints,
             tailPoints);
     }
-    // Record routing without treating NVML and VF offsets as independently
-    // additive. That composition needs hardware evidence before compensation.
-    debug_log("curve targets: offsetContract=full-component vfTableOffset=%d gpuApplied=%d"
+    // NVML/VF composition is not assumed: on the separate NVML route a
+    // provenance point's component is reduced by what this apply's NVML write
+    // measurably did to that point (curve_point_offset_policy.h).
+    int provenanceScalarShiftKHz[VF_NUM_POINTS] = {};
+    const bool provenanceShiftMeasured = apply_measure_provenance_scalar_shift(desired,
+        offsetInVfTable, gpuApplied, scalarBeforeKnownZero, targetGpuOffsetkHz,
+        preScalarCurveFreqkHz, preScalarCurveOffsets, originalCurveFreqkHz,
+        originalCurveOffsets, provenanceScalarShiftKHz);
+    debug_log("curve targets: offsetContract=%s vfTableOffset=%d gpuApplied=%d"
               " current=%d MHz requested=%d MHz exclude=%d viaCurve=%d\n",
+        provenanceShiftMeasured ? "component-minus-measured-nvml-shift" : "full-component",
         offsetInVfTable ? 1 : 0,
         gpuApplied ? 1 : 0, currentAppliedGpuOffsetMHz,
         desired->hasGpuOffset ? desired->gpuOffsetMHz : 0,
@@ -585,7 +602,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         desiredActiveGpuOffsetExcludeLowCount, currentAppliedGpuOffsetMHz,
         currentActiveGpuOffsetExcludeLowCount, originalCurvePopulated,
         originalCurveOffsets, originalCurveFreqkHz, lockedTailMask,
-        targetCurveOffsets, targetCurveMask, offsetRouting.curveBatchGpuOffsetMHz))
+        targetCurveOffsets, targetCurveMask, offsetRouting.curveBatchGpuOffsetMHz,
+        provenanceShiftMeasured ? provenanceScalarShiftKHz : nullptr))
         return apply_recover_clock_failure(clockCeiling,
             "A requested curve target is missing or outside the driver range", result, resultSize);
     if (desired->hasMemOffset) {

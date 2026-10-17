@@ -5,6 +5,50 @@
 
 #include "curve_point_offset_policy.h"
 
+// Fill `shiftOut` with each point's bounded base shift across this apply's
+// NVML write (curve_point_bounded_scalar_shift_khz()) and return true, or
+// return false when it is not measurable (the target build then keeps the
+// full component).  Logs one summary line either way when it matters: a
+// measured shift is also the field answer to the NVML/VF composition question.
+static bool apply_measure_provenance_scalar_shift(const DesiredSettings* desired,
+    bool offsetInVfTable, bool scalarWritten, bool scalarBeforeKnownZero,
+    int writtenScalarKHz, const int* preFreqKHz, const int* preOffsetsKHz,
+    const int* postFreqKHz, const int* postOffsetsKHz, int* shiftOut) {
+    int provenancePoints = 0;
+    for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
+        shiftOut[ci] = 0;
+        if (desired->hasCurvePoint[ci] && desired->curvePointFromGpuOffset[ci]) provenancePoints++;
+    }
+    if (offsetInVfTable || provenancePoints == 0) return false;
+    if (!curve_point_scalar_shift_measurable(offsetInVfTable, scalarWritten, scalarBeforeKnownZero)) {
+        debug_log("nvml shift: not measurable (written=%d beforeZero=%d); %d provenance point(s)"
+                  " keep their full component\n", scalarWritten ? 1 : 0,
+                  scalarBeforeKnownZero ? 1 : 0, provenancePoints);
+        return false;
+    }
+    int measured = 0, full = 0, none = 0, partial = 0;
+    long long rawMin = LLONG_MAX, rawMax = LLONG_MIN;
+    for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
+        if (preFreqKHz[ci] <= 0 || postFreqKHz[ci] <= 0) continue;
+        const long long raw = ((long long)postFreqKHz[ci] - postOffsetsKHz[ci]) -
+            ((long long)preFreqKHz[ci] - preOffsetsKHz[ci]);
+        if (raw < rawMin) rawMin = raw;
+        if (raw > rawMax) rawMax = raw;
+        const long long bounded = curve_point_bounded_scalar_shift_khz(preFreqKHz[ci],
+            preOffsetsKHz[ci], postFreqKHz[ci], postOffsetsKHz[ci], writtenScalarKHz);
+        shiftOut[ci] = (int)bounded;
+        measured++;
+        if (bounded == writtenScalarKHz) full++;
+        else if (bounded == 0) none++;
+        else partial++;
+    }
+    debug_log("nvml shift: written=%d kHz points=%d full=%d none=%d partial=%d raw=%lld..%lld kHz;"
+              " %d provenance point(s) get component minus measured shift\n",
+        writtenScalarKHz, measured, full, none, partial,
+        measured ? rawMin : 0, measured ? rawMax : 0, provenancePoints);
+    return true;
+}
+
 // Offset-derived points remain delta-based across temperature changes. Explicit
 // points own their absolute target and override the generic offset policy.
 static bool apply_build_curve_targets(
@@ -18,7 +62,11 @@ static bool apply_build_curve_targets(
     // The GPU offset the curve batch carries (CurveOffsetRoutingPlan): the
     // request's own, or 0 where a separate NVML scalar owns it.  Required, so
     // no caller can fall back to writing the offset into both places.
-    int batchOffsetMHz) {
+    int batchOffsetMHz,
+    // Per point, the measured base shift of this apply's NVML write
+    // (curve_point_bounded_scalar_shift_khz()), or null when it was not
+    // measurable.  Subtracted from a provenance point's component only.
+    const int* provenanceScalarShiftKHz) {
     const VfOffsetRange range = vf_offset_range_current();
     if (hasLock && lockMode == LOCK_MODE_FLATTEN &&
         !vf_offset_range_supports_flatten(range)) return false;
@@ -62,6 +110,10 @@ static bool apply_build_curve_targets(
             want.liveBaseKHz = curve_point_stock_base_khz(
                 originalCurveFreqkHz[ci], originalCurveOffsets[ci]);
             offset = curve_point_target_offset_khz(&want);
+            // Measured, not assumed: the part of the component this apply's
+            // NVML write already moved the point by (zero when it did not).
+            if (want.fromGpuOffset && provenanceScalarShiftKHz)
+                offset -= provenanceScalarShiftKHz[ci];
             write = true;
         }
         if (tail && ci == lockCi) {

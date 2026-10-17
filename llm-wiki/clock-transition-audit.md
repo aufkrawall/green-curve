@@ -593,7 +593,30 @@ transition clamps and failure recovery are unchanged by the deferral below.
    No hardware reproduction establishes that saved points received a doubled
    offset, so the release notes make no such claim. An additive fake driver
    demonstrated only its own assumption; it is not evidence of driver behavior.
-   Log: `curve targets: offsetContract=full-component`, with VF-table capability,
+   **Superseded the same day by a measured compensation** (no assumed driver
+   model): on the separate NVML route, right after a reset that owned the
+   GPU-offset domain (NVML forced to 0, curve re-read settled), the apply keeps
+   that NVML-free sample, writes the NVML offset, re-reads, and takes each
+   point's base shift (post minus pre, live minus programmed VF delta) as what
+   the NVML write did to it. A provenance point then gets `component - shift`
+   (`apply_measure_provenance_scalar_shift()` in
+   `gpu_backend_apply_targets.h`, `curve_point_bounded_scalar_shift_khz()` /
+   `curve_point_scalar_shift_measurable()` in `curve_point_offset_policy.h`).
+   It lands at stock + component in the same readback domain typed points, the
+   lock anchor and verification already use; a readback that does not move
+   leaves today's full component. The shift is bounded to
+   `[min(0, written), max(0, written)]`, so a positive offset can never be
+   raised by the compensation and drift/clamps stay within one written offset.
+   Not measurable (no reset owning the domain, no NVML write, VF-table route):
+   the full component, logged as `nvml shift: not measurable`. Logs:
+   `nvml shift: written= points= full= none= partial= raw=..` (the per-apply
+   field answer to the composition question) and
+   `curve targets: offsetContract=component-minus-measured-nvml-shift|full-component`.
+   Residual assumption, shared with typed points and locks: the VF readback
+   reflects effective clocks. Residual error: thermal drift between the two
+   samples, at most about one VF bin. Tests in `tests/clock_transition_tests.cpp`
+   (production header; mutation-checked: removing the subtraction fails).
+   Log (deferral era): `curve targets: offsetContract=full-component`, with VF-table capability,
    requested/current offset, exclusion count and routing. To let a field log
    answer the open question, an apply on the separate NVML route with a live
    NVML scalar also logs `nvml composition evidence:` after the final readback:
@@ -682,10 +705,11 @@ three lock projection sites, and require the range refusal to precede reset.
 Removing each route guard in an isolated header copy was rejected at 6808
 (anchor), 6810 (pre-tail), and 6812 (flat-tail).
 
-**Open hardware question.** Any future compensation needs controlled stock,
-NVML-only, VF-only and combined measurements, including write order and both
-frequency/offset readbacks. Without that evidence, retain the established route
-and component contract. Passing these tests proves software decisions, not the
+**Open hardware question.** The measured compensation above removes the need
+to know the composition for provenance points, but it is not hardware-verified:
+a Pascal..Ada log with `nvml shift:` and `nvml composition evidence:` lines
+confirms whether the readback moves by the written offset (expected) and that
+the compensated points then sit at stock + component. Passing these tests proves software decisions, not the
 stability of a particular OC or undocumented driver composition.
 
 Linux (fixed the same day): `linux_build_curve_targets()` composes the whole

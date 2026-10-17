@@ -383,7 +383,7 @@ static int run(){
    for(int i=0;i<4;++i){populated[i]=true;freq[i]=2400000;tail[i]=i>=2;}
    explicitMask[1]=true;
    CHECK(apply_build_curve_targets(&d,true,false,mode!=0,(LockMode)mode,2,2800,true,1,0,0,
-     populated,offsets,freq,tail,target,mask,d.gpuOffsetMHz));
+     populated,offsets,freq,tail,target,mask,d.gpuOffsetMHz,nullptr));
    CHECK(target[1]==100000);CHECK(target[0]==0);
    for(int i=0;i<4;++i)g_app.curve[i].freq_kHz=i>=2?2800000:2500000;
    char detail[128]{};g_app.curve[1].freq_kHz=2700000;
@@ -395,7 +395,7 @@ static int run(){
    // Same delta intent remains stable when the sampled base changes.
    freq[1]+=30000;
    CHECK(apply_build_curve_targets(&d,true,false,mode!=0,(LockMode)mode,2,2800,true,1,0,0,
-     populated,offsets,freq,tail,target,mask,d.gpuOffsetMHz));CHECK(target[1]==70000);
+     populated,offsets,freq,tail,target,mask,d.gpuOffsetMHz,nullptr));CHECK(target[1]==70000);
  }
  // User repro: excluded point 69 has offset zero, but its derived 2295 MHz
  // preview becomes 2407 MHz after the driver reshapes the curve. It is not an
@@ -469,14 +469,14 @@ static int run(){
      freq[70]=baseMHz*1000;offsets[70]=0;
      int built[VF_NUM_POINTS]{};
      CHECK(apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,0,0,true,70,0,0,
-       populated,offsets,freq,tail,built,mask,d.gpuOffsetMHz));
+       populated,offsets,freq,tail,built,mask,d.gpuOffsetMHz,nullptr));
      CHECK(built[70]==475000);CHECK(mask[70]);
      // Negative control: the SAME request without provenance is the pre-fix
      // rule, and it tracks the shifted base instead of the asked-for offset.
      DesiredSettings typedSame=d;typedSame.curvePointFromGpuOffset[70]=false;
      int legacy[VF_NUM_POINTS]{};
      CHECK(apply_build_curve_targets(&typedSame,true,false,false,LOCK_MODE_NONE,0,0,true,70,0,0,
-       populated,offsets,freq,tail,legacy,mask,typedSame.gpuOffsetMHz));
+       populated,offsets,freq,tail,legacy,mask,typedSame.gpuOffsetMHz,nullptr));
      CHECK(legacy[70]==2797000-baseMHz*1000);
    }
    // Per-point, not per-request: hand-editing one field of a loaded profile
@@ -534,7 +534,7 @@ static int run(){
      freq74[74]=baseMHz*1000;off74[74]=0;
      int built74[VF_NUM_POINTS]{};
      CHECK(apply_build_curve_targets(&stock,true,false,false,LOCK_MODE_NONE,0,0,false,0,0,0,
-       pop74,off74,freq74,tail74,built74,bmask,stock.gpuOffsetMHz));
+       pop74,off74,freq74,tail74,built74,bmask,stock.gpuOffsetMHz,nullptr));
      CHECK(built74[74]==2902000-baseMHz*1000);CHECK(bmask[74]);
    }
  }
@@ -600,7 +600,7 @@ static int run(){
    int offs[VF_NUM_POINTS]{},frq[VF_NUM_POINTS]{},built[VF_NUM_POINTS]{};
    pop[74]=true;frq[74]=2437000;offs[74]=0;
    CHECK(apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,0,0,false,0,0,0,
-     pop,offs,frq,tl,built,msk,d.gpuOffsetMHz));
+     pop,offs,frq,tl,built,msk,d.gpuOffsetMHz,nullptr));
    CurvePointOffsetRequest same{};
    same.fromGpuOffset=true;same.gpuOffsetComponentKHz=0;
    same.absoluteMHz=2902;same.liveBaseKHz=2437000;
@@ -617,9 +617,59 @@ static int run(){
    frq[70]=2797000;frq[71]=2850000;frq[72]=2900000;frq[73]=2950000;
    int preBuilt[VF_NUM_POINTS]{};
    CHECK(apply_build_curve_targets(&pre,true,false,true,LOCK_MODE_FLATTEN,72,2950,false,0,475,0,
-     pop,offs,frq,preTail,preBuilt,msk,pre.gpuOffsetMHz));
+     pop,offs,frq,preTail,preBuilt,msk,pre.gpuOffsetMHz,nullptr));
    CHECK(preBuilt[70]==475000);CHECK(msk[70]);
    CHECK(preBuilt[71]==50000);CHECK(preBuilt[72]==50000);
+   // Measured NVML shift (Pascal..Ada separate route): the provenance point
+   // gets only the part of its component the NVML write did not already move
+   // it by.  Typed and tail points are unaffected (their bases already carry
+   // the shift).  Full shift -> 0; no shift -> the full component as before.
+   {
+     int shift[VF_NUM_POINTS]{};shift[70]=475000;shift[71]=475000;shift[72]=475000;
+     int measured[VF_NUM_POINTS]{};
+     CHECK(apply_build_curve_targets(&pre,true,false,true,LOCK_MODE_FLATTEN,72,2950,false,0,475,0,
+       pop,offs,frq,preTail,measured,msk,pre.gpuOffsetMHz,shift));
+     CHECK(measured[70]==0);CHECK(measured[71]==50000);CHECK(measured[72]==50000);
+     shift[70]=0;
+     CHECK(apply_build_curve_targets(&pre,true,false,true,LOCK_MODE_FLATTEN,72,2950,false,0,475,0,
+       pop,offs,frq,preTail,measured,msk,pre.gpuOffsetMHz,shift));
+     CHECK(measured[70]==475000);
+     shift[70]=460000;  // a driver clamp near the top: only the remainder
+     CHECK(apply_build_curve_targets(&pre,true,false,true,LOCK_MODE_FLATTEN,72,2950,false,0,475,0,
+       pop,offs,frq,preTail,measured,msk,pre.gpuOffsetMHz,shift));
+     CHECK(measured[70]==15000);
+   }
+   // The bounded shift (curve_point_bounded_scalar_shift_khz): post minus pre
+   // base, kept between 0 and the written offset so a positive offset can
+   // never be raised by the compensation.
+   CHECK(curve_point_bounded_scalar_shift_khz(2400000,0,2875000,0,475000)==475000);
+   CHECK(curve_point_bounded_scalar_shift_khz(2400000,0,2400000,0,475000)==0);
+   CHECK(curve_point_bounded_scalar_shift_khz(2400000,0,2385000,0,475000)==0);       // drift down
+   CHECK(curve_point_bounded_scalar_shift_khz(2400000,0,2900000,0,475000)==475000);  // drift up
+   CHECK(curve_point_bounded_scalar_shift_khz(2400000,100000,2975000,100000,475000)==475000);
+   CHECK(curve_point_bounded_scalar_shift_khz(2400000,0,2300000,0,-100000)==-100000);
+   CHECK(curve_point_bounded_scalar_shift_khz(2400000,0,2450000,0,-100000)==0);
+   CHECK(curve_point_scalar_shift_measurable(false,true,true));
+   CHECK(!curve_point_scalar_shift_measurable(true,true,true));   // VF-table route
+   CHECK(!curve_point_scalar_shift_measurable(false,false,true)); // nothing written
+   CHECK(!curve_point_scalar_shift_measurable(false,true,false)); // first sample not NVML-free
+   // The apply's measurement step over whole curves.
+   {
+     int preF[VF_NUM_POINTS]{},preO[VF_NUM_POINTS]{},postF[VF_NUM_POINTS]{},postO[VF_NUM_POINTS]{};
+     int s[VF_NUM_POINTS]{};
+     preF[70]=2400000;postF[70]=2875000;           // readback moved by the full offset
+     preF[71]=2450000;postF[71]=2450000;           // readback did not move
+     preF[72]=2500000;postF[72]=2900000;postO[72]=0; // clamped: moved 400 of 475
+     CHECK(apply_measure_provenance_scalar_shift(&pre,false,true,true,475000,preF,preO,postF,postO,s));
+     CHECK(s[70]==475000);CHECK(s[71]==0);CHECK(s[72]==400000);CHECK(s[0]==0);
+     // Not measurable, VF-table route, or no provenance point: no shift at all.
+     s[70]=1;
+     CHECK(!apply_measure_provenance_scalar_shift(&pre,false,true,false,475000,preF,preO,postF,postO,s));
+     CHECK(s[70]==0);
+     CHECK(!apply_measure_provenance_scalar_shift(&pre,true,true,true,475000,preF,preO,postF,postO,s));
+     DesiredSettings typedOnly=pre;typedOnly.curvePointFromGpuOffset[70]=false;
+     CHECK(!apply_measure_provenance_scalar_shift(&typedOnly,false,true,true,475000,preF,preO,postF,postO,s));
+   }
    // Interactive stored-lock anchor with no lock MHz in the request: a typed
    // anchor keeps its MHz; a provenance anchor follows its offset over today's
    // base (stored 2797 was projected over a base one bin lower than now).

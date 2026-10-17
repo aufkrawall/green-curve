@@ -185,6 +185,45 @@ static inline CurveOffsetRoutingPlan curve_point_plan_gpu_offset_routing(
     return p;
 }
 
+// Measured NVML-shift compensation for provenance points (Pascal..Ada).
+//
+// On the separate NVML route a uniform GPU offset is the NVML graphics
+// offset, and a provenance point used to receive its full component as a VF
+// delta on top.  If the driver adds the two (unmeasured), such a point ran at
+// stock + 2x the offset.  Instead of assuming either answer, the apply measures
+// it: it samples the curve with the NVML offset at zero, writes the offset,
+// samples again, and takes each point's base shift (post minus pre, live minus
+// programmed VF delta) as what the NVML write did to that point.  A provenance
+// point then gets `component - shift`, so it lands at stock + component in the
+// same readback domain typed points, the lock anchor and verification use.
+// No shift (the readback ignores NVML) leaves today's full component.
+//
+// Only measurable when the NVML offset was known to be zero before the write
+// (so the first sample is NVML-free) and this apply wrote it on the separate
+// route.  Anything else keeps the full component.
+static inline bool curve_point_scalar_shift_measurable(bool offsetInVfTable,
+                                                       bool scalarWritten,
+                                                       bool scalarBeforeKnownZero) {
+    return !offsetInVfTable && scalarWritten && scalarBeforeKnownZero;
+}
+
+// One point's measured shift, bounded to [min(0, written), max(0, written)].
+// The bound keeps a provenance point within one written offset of its old
+// full-component target, on the side the NVML offset already covers: for a
+// positive (overclocking) offset it never ends above the old target, so this
+// can never add an overclock.  Thermal drift between the two samples or a
+// driver clamp near the top of the curve stays inside that envelope.
+static inline long long curve_point_bounded_scalar_shift_khz(long long preLiveKHz,
+                                                             long long preProgrammedKHz,
+                                                             long long postLiveKHz,
+                                                             long long postProgrammedKHz,
+                                                             long long writtenScalarKHz) {
+    const long long shift = (postLiveKHz - postProgrammedKHz) - (preLiveKHz - preProgrammedKHz);
+    const long long lo = writtenScalarKHz < 0 ? writtenScalarKHz : 0;
+    const long long hi = writtenScalarKHz > 0 ? writtenScalarKHz : 0;
+    return shift < lo ? lo : (shift > hi ? hi : shift);
+}
+
 // Field evidence for the deferred NVML/VF composition question (Pascal..Ada).
 // On the separate NVML route a provenance point keeps its full requested
 // component in the VF delta while a uniform NVML scalar is also live; whether
