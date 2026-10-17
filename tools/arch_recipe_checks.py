@@ -33,6 +33,27 @@ def check_recipe(path):
             actual = hashlib.sha256((path.parent / source).read_bytes()).hexdigest()
             if actual != expected:
                 raise ValueError(f"{path.name}: {source} checksum differs from its current bytes")
+    check_source_dir(path, text)
+
+
+def check_source_dir(path, text):
+    """A GitHub tag archive unpacks to `<repository>-<tag>/`; build() and
+    package() must enter exactly that directory or makepkg fails."""
+    if "/archive/refs/tags/$pkgver.tar.gz" not in text:
+        return
+    url = re.search(r'(?m)^url="([^"]+)"', text)
+    if not url:
+        raise ValueError(f"{path.name}: tag archive source without a url=")
+    expected = url.group(1).rstrip("/").rsplit("/", 1)[1] + "-$pkgver"
+    srcname = re.search(r'(?m)^_srcname="([^"]+)"', text)
+    dirs = re.findall(r'(?m)^\s*cd "([^"]+)"', text)
+    if not dirs:
+        raise ValueError(f"{path.name}: tag archive source but no cd into it")
+    for d in dirs:
+        if d == "$_srcname" and srcname:
+            d = srcname.group(1)
+        if d != expected:
+            raise ValueError(f"{path.name}: cd \"{d}\" but the tag archive unpacks to {expected}")
 
 
 def check_all(directory):

@@ -11,6 +11,8 @@ depends=('glibc')
 optdepends=('nvidia-utils: proprietary NVIDIA driver libraries (libnvidia-api.so.1, libnvidia-ml.so.1)')
 makedepends=('python' 'zig')
 install=greencurve.install
+# GitHub tag archives unpack to <repository>-<tag>, not <pkgname>-<pkgver>.
+_srcname="green-curve-$pkgver"
 source=(
     "$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/$pkgver.tar.gz"
     "greencurve.service"
@@ -43,7 +45,7 @@ if [ "$_gc_placeholder" = "1" ]; then
 fi
 
 build() {
-    cd "$pkgname-$pkgver"
+    cd "$_srcname"
 
     local _gc_arch
     case "$CARCH" in
@@ -61,7 +63,7 @@ build() {
 }
 
 package() {
-    cd "$pkgname-$pkgver"
+    cd "$_srcname"
 
     local _gc_arch
     case "$CARCH" in

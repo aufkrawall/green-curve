@@ -47,6 +47,30 @@ class ArchRecipeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "counts differ"):
             arch_recipe_checks.check_recipe(self.recipe)
 
+    def _tag_archive_recipe(self, body):
+        recipe = self.root / "PKGBUILD.tag"
+        header = ('url="https://github.com/o/green-curve"\n'
+                  'source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/$pkgver.tar.gz")\n'
+                  f"sha256sums=('{'c' * 64}')\n")
+        recipe.write_text(header + body, encoding="utf-8")
+        return recipe
+
+    def test_tag_archive_dir_must_match_repository_name(self):
+        recipe = self._tag_archive_recipe('build() {\n    cd "$pkgname-$pkgver"\n}\n')
+        with self.assertRaisesRegex(ValueError, r"unpacks to green-curve-\$pkgver"):
+            arch_recipe_checks.check_recipe(recipe)
+
+    def test_tag_archive_dir_via_srcname_passes(self):
+        recipe = self._tag_archive_recipe('_srcname="green-curve-$pkgver"\n'
+                                          'build() {\n    cd "$_srcname"\n}\n'
+                                          'package() {\n    cd "$_srcname"\n}\n')
+        arch_recipe_checks.check_recipe(recipe)
+
+    def test_tag_archive_without_cd_is_rejected(self):
+        recipe = self._tag_archive_recipe('build() {\n    true\n}\n')
+        with self.assertRaisesRegex(ValueError, "no cd"):
+            arch_recipe_checks.check_recipe(recipe)
+
 
 def run_tests():
     result = unittest.TextTestRunner().run(
