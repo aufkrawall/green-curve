@@ -18,8 +18,10 @@
 //
 // Both are the highest-signal crashes the program can have — a smashed stack or
 // a corrupted call target — and both used to leave nothing behind but a Windows
-// Error Reporting event this project does not collect.  So they now report
-// BEFORE they die, through this hook.
+// Error Reporting event.  So they now report BEFORE they die, through this
+// hook.  Fast-fails raised outside our code (ntdll, a driver DLL) cannot reach
+// it; for those the service install registers a WER LocalDumps backstop
+// (wer_local_dumps_policy.h).
 //
 // It is a function POINTER, defaulting to null, and not a direct call, because
 // ssp_glue.cpp and cfg_glue.cpp are also linked into the setup program, which

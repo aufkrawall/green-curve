@@ -622,8 +622,8 @@ the regression harness asserts on either host.
   directory rule; a source gate pins the `MiniDumpWriteDump(` count at 1.
 - **Fast-fail and stack-smash crashes now produce dumps.** `__fastfail` (the CFG
   violation in `cfg_glue.cpp`) bypasses the vectored handler *and*
-  `SetUnhandledExceptionFilter` by design, and nothing here registers a WER
-  LocalDumps entry — so those crashes used to leave nothing on disk at all.
+  `SetUnhandledExceptionFilter` by design, so those crashes used to leave
+  nothing on disk at all.
   `source/fatal_dump_hook.h` is the seam: a null-by-default function pointer
   owned by `cfg_glue.cpp` (which is also linked into the setup program, where a
   null hook keeps the old behaviour), invoked *before* the uncatchable
@@ -648,6 +648,28 @@ the regression harness asserts on either host.
   structurally, and the suppressed dump was exactly the evidence needed to tell
   "the driver died under us" from "we passed the driver a handle we had already
   invalidated". The breadcrumb still records `gpuDriverDll=1`.
+- **WER LocalDumps backstop (2026-10-17).** The hook above only covers fast-fails
+  raised by OUR code. A `0xC0000409` raised elsewhere (ntdll's CFG dispatch, a
+  CET shadow-stack mismatch, heap-corruption detection, `/GS` inside a GPU
+  driver DLL) reaches no in-process handler; only WER sees it, and WER keeps
+  nothing unless a `...\Windows Error Reporting\LocalDumps\<image>` key exists
+  under HKLM. Observed once on 0.28: the service died with `0xC0000409` in
+  ntdll during an NVIDIA driver reinstall and left no dump.
+  `service_install()` now registers keys for `greencurve-service.exe`
+  (DumpFolder `...\systemprofile\AppData\Local\Green Curve\WerDumps`, inside
+  the service's admin-only profile directory, created at install) and
+  `greencurve.exe` (WER's per-user default folder): DumpCount 5, custom type
+  with the same `CustomDumpFlags` as our own writer (a `static_assert` in
+  `wer_local_dumps_win.h` pins that). Each key we write carries a
+  `GreenCurveManaged` marker; an administrator's own key is never overwritten
+  or deleted. Both `service_remove()` exits and setup's rollback of a first
+  install remove ours. Ordinary crashes are not dumped twice: our filter
+  returns `EXCEPTION_EXECUTE_HANDLER`, so WER is not engaged for them. Log
+  lines: `service install|remove: WER LocalDumps <image> key=<state> action=
+  status=`. Tests 6570-6582 (`tests/wer_local_dumps_tests.cpp`; registry half
+  against scratch HKCU); gates in `tools/crash_artifacts.py`. Open: not yet
+  observed catching a real fast-fail; WER's own folder and expansion behaviour
+  is unverified here beyond the install log line.
 - `install_crash_handlers(bool installVectoredNvmlRecovery)` is the single entry
   point used by all three process modes (GUI, service, restart helper) — they had
   drifted on which handlers they installed.

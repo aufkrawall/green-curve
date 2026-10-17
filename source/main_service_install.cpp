@@ -6,6 +6,57 @@
 // verification, and service_install_or_remove. Compiled as a shard included after
 // main_service_ipc.cpp and before main_service_server.cpp (no behavior change).
 
+#include "wer_local_dumps_win.h"
+
+// One line per image: which key state we found and what we did about it.
+static void service_log_wer_results(const char* phase, const GcWerResult* results) {
+    for (size_t i = 0; i < GC_WER_IMAGE_COUNT; ++i) {
+        const GcWerResult& r = results[i];
+        debug_log("service %s: WER LocalDumps %ls key=%s action=%s status=%ld\n", phase,
+            r.imageName, gc_wer_key_state_name(r.before),
+            r.action == GC_WER_ACTION_WRITE ? "write"
+                : r.action == GC_WER_ACTION_DELETE ? "delete" : "leave",
+            (long)r.status);
+    }
+}
+
+// The fast-fail backstop (wer_local_dumps_policy.h).  Best effort by design: a
+// missing backstop costs crash evidence, never the service.
+static void service_register_wer_local_dumps() {
+    GcWerResult results[GC_WER_IMAGE_COUNT] = {};
+    gc_wer_register_all(results);
+    service_log_wer_results("install", results);
+    // Make sure the service's dump folder exists instead of relying on WER to
+    // create it.  It sits inside the SYSTEM profile, so it inherits that
+    // profile's SYSTEM/Administrators-only protection.
+    for (size_t i = 0; i < GC_WER_IMAGE_COUNT; ++i) {
+        if (results[i].action != GC_WER_ACTION_WRITE || results[i].status != ERROR_SUCCESS ||
+            !kGcWerImages[i].dumpFolder) continue;
+        WCHAR folder[MAX_PATH] = {};
+        DWORD n = ExpandEnvironmentStringsW(kGcWerImages[i].dumpFolder, folder, ARRAY_COUNT(folder));
+        if (n == 0 || n > ARRAY_COUNT(folder)) {
+            debug_log("service install: WER dump folder for %ls did not expand (error %lu)\n",
+                kGcWerImages[i].imageName, (unsigned long)GetLastError());
+            continue;
+        }
+        WCHAR parent[MAX_PATH] = {};
+        StringCchCopyW(parent, ARRAY_COUNT(parent), folder);
+        WCHAR* slash = wcsrchr(parent, L'\\');
+        if (slash) *slash = 0;
+        bool parentOk = CreateDirectoryW(parent, nullptr) || GetLastError() == ERROR_ALREADY_EXISTS;
+        bool folderOk = parentOk &&
+            (CreateDirectoryW(folder, nullptr) || GetLastError() == ERROR_ALREADY_EXISTS);
+        debug_log("service install: WER dump folder for %ls ready=%d (error %lu)\n",
+            kGcWerImages[i].imageName, folderOk ? 1 : 0, folderOk ? 0ul : (unsigned long)GetLastError());
+    }
+}
+
+static void service_unregister_wer_local_dumps() {
+    GcWerResult results[GC_WER_IMAGE_COUNT] = {};
+    gc_wer_unregister_all(results);
+    service_log_wer_results("remove", results);
+}
+
 // The result of following one SCM state transition to its end.
 struct ServiceStateWait {
     int verdict = GC_SCM_WAIT_STALLED;   // GcScmWaitVerdict
@@ -442,6 +493,8 @@ static bool service_install(SC_HANDLE scm, char* err, size_t errSize, int* reaso
     // of silently leaving a service that will not restart after a crash.
     debug_log("service install: configured SCM auto-restart failure actions + non-crash-failure flag\n");
     service_configure_description(svc.get());
+    // Before the start, so a crash during the very first start is caught too.
+    service_register_wer_local_dumps();
 
     // 4. Start it and follow the start the way the SCM protocol defines it.
     //    The legacy --manual argument is kept for installed-version
@@ -507,6 +560,7 @@ static bool service_remove(SC_HANDLE scm, char* err, size_t errSize, int* reason
         }
         debug_log("service remove: no registration to remove; releasing folder hardening only\n");
         cleanup_secure_service_binary_after_remove(installedServicePath[0] ? installedServicePath : nullptr);
+        service_unregister_wer_local_dumps();
         return true;
     }
     char probeError[128] = {};
@@ -541,6 +595,7 @@ static bool service_remove(SC_HANDLE scm, char* err, size_t errSize, int* reason
         return false;
     }
     cleanup_secure_service_binary_after_remove(installedServicePath[0] ? installedServicePath : nullptr);
+    service_unregister_wer_local_dumps();
     return true;
 }
 

@@ -110,6 +110,28 @@ def check_windows_crash_artifacts(ctx, require_text, forbid_text, require_order,
     require_text(entry_cpp, "rotate_crash_artifacts_for_process();",
                  "GUI startup rotates its own crash artifacts")
 
+    # A fast-fail raised OUTSIDE our code (ntdll CFG dispatch, a CET
+    # shadow-stack mismatch, heap-corruption detection, /GS in a driver DLL)
+    # reaches none of the paths above; only a WER LocalDumps key keeps a dump.
+    # Registered by every service install door, removed by removal and by a
+    # rolled-back first install, and never touching an administrator's own key.
+    install_cpp = _p(ctx, "main_service_install.cpp")
+    wer_policy_h = _p(ctx, "wer_local_dumps_policy.h")
+    require_order(install_cpp, "service_configure_description(svc.get());",
+                  "service_register_wer_local_dumps();",
+                  "the WER backstop is registered before the first service start")
+    require_order(install_cpp, "service_register_wer_local_dumps();",
+                  "if (!StartServiceW(svc.get(), 1, startArgs)) {",
+                  "the WER backstop is registered before the first service start")
+    require_text_count(install_cpp, "service_unregister_wer_local_dumps();", 2,
+                       "both service-removal exits remove the WER backstop")
+    require_text(_p(ctx, "installer_transaction.cpp"), "gc_wer_unregister_all(wer);",
+                 "a rolled-back first install removes the WER backstop")
+    require_text(wer_policy_h, "return state == GC_WER_KEY_OURS ? GC_WER_ACTION_DELETE : GC_WER_ACTION_LEAVE;",
+                 "only a key carrying our marker is ever deleted")
+    forbid_text(wer_policy_h, "ProgramData",
+                "SYSTEM dumps never go to a world-readable folder")
+
 
 # ---------------------------------------------------------------------------
 # Linux debug symbols

@@ -65,11 +65,12 @@ __attribute__((used)) void __cdecl __guard_check_icall_fptr(uintptr_t Target) {
     //
     // Report BEFORE the fast-fail.  __fastfail is uncatchable by design: it
     // never reaches the vectored handler or SetUnhandledExceptionFilter, so
-    // this call is the only chance to leave a dump behind.  Relying on Windows
-    // Error Reporting instead does not work here — nothing in this project
-    // registers a WER LocalDumps entry, and the unhandled-exception filter
-    // returns EXCEPTION_EXECUTE_HANDLER elsewhere, so the process has already
-    // opted out of WER's own collection.
+    // this call is the only chance to leave a dump with our own context and
+    // name behind.  The service install's WER LocalDumps key
+    // (wer_local_dumps_policy.h) is only the backstop for fast-fails raised
+    // OUTSIDE this code; the unhandled-exception filter returns
+    // EXCEPTION_EXECUTE_HANDLER elsewhere, so ordinary crashes are not dumped
+    // twice.
     gc_invoke_fatal_dump_hook(GC_FATAL_CFG_VIOLATION,
         "control flow guard: indirect call target belongs to no loaded module");
 

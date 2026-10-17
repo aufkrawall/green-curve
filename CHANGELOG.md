@@ -31,6 +31,10 @@
 
 Apply reliability improves in this release.
 
+### Improved
+
+- **Crash diagnostics:** installing the background service now also enables Windows crash dumps for Green Curve, so crashes that bypass its own crash handler still leave a dump for diagnosis.
+
 ### Fixed
 
 - **Logon profile:** a profile with a selective GPU offset and an undervolt lock no longer fails to apply at logon on a cold GPU, which previously left the GPU at stock and paused automatic restore.

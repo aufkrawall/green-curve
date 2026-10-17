@@ -969,6 +969,8 @@ int run_apply_profile_followup_tests();
 // The apply's VF correction loop against a simulated driver
 // (tests/apply_correction_tests.cpp, 6500-6549).
 int run_apply_correction_tests();
+// WER LocalDumps backstop registration (tests/wer_local_dumps_tests.cpp, 6570-6589).
+int run_wer_local_dumps_tests();
 // Native fan worker cancellable-lock fixture (tests/fan_worker_lock_tests.cpp,
 // 6550-6569; Windows only).
 int run_fan_worker_lock_tests();
@@ -1674,6 +1676,7 @@ int main(int argc, char** argv) {
     if (int failure = run_security_audit_tests()) return failure;
     if (int failure = run_installer_fuzz_harness_tests()) return failure;
     if (int failure = run_review_followup_tests()) return failure;
+    if (int failure = run_wer_local_dumps_tests()) return failure;
     // Inject a refusal at every post-shutdown boundary. This is the same
     // orchestrator setup uses, with fake side effects and an observed rollback.
     // A failed stop (failure 0) is not a rollback: nothing was written yet,

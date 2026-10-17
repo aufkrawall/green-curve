@@ -8,6 +8,7 @@
 // <string>/<vector> come from installer_common.h: this shard is included after
 // <strsafe.h>, whose deprecation macros break libc++ headers included here.
 #include "installer_transaction_files.h"
+#include "wer_local_dumps_win.h"
 
 static const WCHAR* const gc_registration_values[] = {
     L"DisplayName", L"DisplayVersion", L"Publisher", L"InstallLocation",
@@ -311,6 +312,14 @@ struct GcInstallTransaction {
             if (!DeleteService(service.get())) {
                 gc_log_fail("rollback: remove new service error %lu", GetLastError());
                 return false;
+            }
+            // The new service's --service-install registered the crash-dump
+            // backstop; a rolled-back first install takes it away again.
+            GcWerResult wer[GC_WER_IMAGE_COUNT] = {};
+            gc_wer_unregister_all(wer);
+            for (size_t i = 0; i < GC_WER_IMAGE_COUNT; ++i) {
+                gc_log_step("rollback: WER LocalDumps %ls key=%s status=%ld", wer[i].imageName,
+                            gc_wer_key_state_name(wer[i].before), (long)wer[i].status);
             }
             return true;
         }
