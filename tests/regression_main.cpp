@@ -10110,6 +10110,64 @@ static int run_all_tests_middle([[maybe_unused]] char** argv) {
             rebuilt.lockTail = false;
             if (linux_curve_rebuild_keeps_shape(planned, rebuilt)) return 6837;
         }
+        // Equal counts must not hide a replaced requested point, a shifted
+        // voltage topology, or a different set of cleanup writes.
+        {
+            VFCurvePoint before[VF_NUM_POINTS] = {};
+            VFCurvePoint after[VF_NUM_POINTS] = {};
+            int zeroOffsets[VF_NUM_POINTS] = {};
+            int rebuiltTargets[VF_NUM_POINTS] = {};
+            bool rebuiltMask[VF_NUM_POINTS] = {};
+            for (int ci = 0; ci < 10; ++ci) {
+                before[ci].freq_kHz = 2000000u + 50000u * (unsigned)ci;
+                before[ci].volt_uV = 700000u + 10000u * (unsigned)ci;
+                after[ci] = before[ci];
+            }
+            DesiredSettings request = {};
+            request.hasGpuOffset = true;
+            request.gpuOffsetMHz = 150;
+            request.gpuOffsetExcludeLowCount = 1;
+            request.hasCurvePoint[1] = true;
+            request.curvePointMHz[1] = 2200;
+            const auto planned = linux_build_curve_targets(before, zeroOffsets,
+                &request, -900000, targets, mask);
+            // A base-frequency change is the reason for rebuilding and is
+            // allowed when point identity and the write set remain stable.
+            after[2].freq_kHz += 15000;
+            auto rebuilt = linux_build_curve_targets(after, zeroOffsets,
+                &request, -900000, rebuiltTargets, rebuiltMask);
+            if (!linux_curve_rebuild_keeps_shape(planned, rebuilt)) return 6890;
+            after[1] = {};
+            after[10].freq_kHz = 2500000;
+            after[10].volt_uV = 800000;
+            rebuilt = linux_build_curve_targets(after, zeroOffsets,
+                &request, -900000, rebuiltTargets, rebuiltMask);
+            if (planned.pointCount != rebuilt.pointCount || !mask[1] ||
+                rebuiltMask[1] || !rebuiltMask[10]) return 6891;
+            if (linux_curve_rebuild_keeps_shape(planned, rebuilt)) return 6892;
+            after[1] = before[1];
+            after[10] = {};
+            after[2].volt_uV += 1000;
+            rebuilt = linux_build_curve_targets(after, zeroOffsets,
+                &request, -900000, rebuiltTargets, rebuiltMask);
+            if (linux_curve_rebuild_keeps_shape(planned, rebuilt)) return 6893;
+            DesiredSettings oldIntent = {};
+            oldIntent.hasCurvePoint[3] = true;
+            oldIntent.curvePointMHz[3] = 2200;
+            DesiredSettings newIntent = {};
+            newIntent.hasCurvePoint[5] = true;
+            newIntent.curvePointMHz[5] = 2300;
+            const auto cleanupPlan = linux_build_curve_transition_targets(before,
+                zeroOffsets, &oldIntent, &newIntent, -900000, targets, mask, nullptr);
+            oldIntent.hasCurvePoint[3] = false;
+            oldIntent.hasCurvePoint[4] = true;
+            oldIntent.curvePointMHz[4] = 2200;
+            const auto changedCleanup = linux_build_curve_transition_targets(before,
+                zeroOffsets, &oldIntent, &newIntent, -900000,
+                rebuiltTargets, rebuiltMask, nullptr);
+            if (cleanupPlan.pointCount != changedCleanup.pointCount ||
+                linux_curve_rebuild_keeps_shape(cleanupPlan, changedCleanup)) return 6894;
+        }
 
         // Per-point provenance on Linux too: a projected point keeps the
         // request's own offset even though absolute-minus-live-base would

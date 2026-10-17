@@ -61,11 +61,17 @@ static bool linux_apply_rebuild_curve_targets(LinuxApplyTransactionContext* cont
         linux_apply_build_curve(context, &cleanup);
     const LinuxCurveTargetBuildResult& planned = context->plannedBuild;
     if (!linux_curve_rebuild_keeps_shape(planned, rebuilt)) {
+        const int ci = linux_curve_rebuild_first_changed_point(planned, rebuilt);
         lb_log("apply: curve rebuild after NVML offset clear changed shape"
-               " (points %d->%d composed %d->%d lockTail %d->%d); refusing to write it\n",
+               " (points %d->%d composed %d->%d lockTail %d->%d"
+               " firstCi=%d write=%d->%d voltageUv=%u->%u); refusing to write it\n",
                planned.pointCount, rebuilt.pointCount,
                planned.composedGpuOffset ? 1 : 0, rebuilt.composedGpuOffset ? 1 : 0,
-               planned.lockTail ? 1 : 0, rebuilt.lockTail ? 1 : 0);
+               planned.lockTail ? 1 : 0, rebuilt.lockTail ? 1 : 0, ci,
+               ci >= 0 && planned.pointMask[ci] ? 1 : 0,
+               ci >= 0 && rebuilt.pointMask[ci] ? 1 : 0,
+               ci >= 0 ? planned.pointVoltageUv[ci] : 0u,
+               ci >= 0 ? rebuilt.pointVoltageUv[ci] : 0u);
         return false;
     }
     lb_log("apply: curve targets rebuilt after NVML offset clear"

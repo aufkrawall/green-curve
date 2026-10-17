@@ -12,6 +12,11 @@ struct LinuxCurveTargetBuildResult {
     int pointCount;
     bool composedGpuOffset;
     bool lockTail;
+    // Identity of the complete readback and write set, including cleanup
+    // points. Frequencies may move while the scalar is cleared; voltages and
+    // membership must not silently describe different VF points.
+    bool pointMask[VF_NUM_POINTS];
+    unsigned int pointVoltageUv[VF_NUM_POINTS];
 };
 
 // Compose the complete Linux VF target in one pass.  Absolute explicit points
@@ -50,6 +55,7 @@ static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
         targetOffsets[i] = 0;
         pointMask[i] = false;
         if (curve[i].freq_kHz == 0) continue;
+        result.pointVoltageUv[i] = curve[i].volt_uV;
         int ordinal = populatedOrdinal++;
         long long baseKHz = (long long)curve[i].freq_kHz -
             (long long)currentOffsets[i];
@@ -62,6 +68,7 @@ static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
             } else {
                 targetOffsets[i] = minimumOffsetKHz;
                 pointMask[i] = true;
+                result.pointMask[i] = true;
                 result.pointCount++;
                 continue;
             }
@@ -80,6 +87,7 @@ static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
             if (offsetKHz > INT_MAX) offsetKHz = INT_MAX;
             targetOffsets[i] = (int)offsetKHz;
             pointMask[i] = true;
+            result.pointMask[i] = true;
             result.pointCount++;
             continue;
         } else if (result.composedGpuOffset && ordinal >= exclude) {
@@ -94,6 +102,7 @@ static inline LinuxCurveTargetBuildResult linux_build_curve_targets(
         if (offset > INT_MAX) offset = INT_MAX;
         targetOffsets[i] = (int)offset;
         pointMask[i] = true;
+        result.pointMask[i] = true;
         result.pointCount++;
     }
     return result;
@@ -126,11 +135,21 @@ static inline bool linux_curve_targets_rebuild_after_scalar(
 // already acted on.  A different shape means the fresh readback is not the
 // curve the plan was made for (points that vanished or appeared), and writing
 // it would commit a target nothing validated.
+static inline int linux_curve_rebuild_first_changed_point(
+    const LinuxCurveTargetBuildResult& planned, const LinuxCurveTargetBuildResult& rebuilt) {
+    for (int ci = 0; ci < VF_NUM_POINTS; ++ci) {
+        if (planned.pointMask[ci] != rebuilt.pointMask[ci] ||
+            planned.pointVoltageUv[ci] != rebuilt.pointVoltageUv[ci]) return ci;
+    }
+    return -1;
+}
+
 static inline bool linux_curve_rebuild_keeps_shape(const LinuxCurveTargetBuildResult& planned,
                                                    const LinuxCurveTargetBuildResult& rebuilt) {
     return rebuilt.pointCount > 0 && rebuilt.pointCount == planned.pointCount &&
         rebuilt.composedGpuOffset == planned.composedGpuOffset &&
-        rebuilt.lockTail == planned.lockTail;
+        rebuilt.lockTail == planned.lockTail &&
+        linux_curve_rebuild_first_changed_point(planned, rebuilt) < 0;
 }
 
 // A successful VF-domain Apply replaces that domain's durable intent.  Build
@@ -161,6 +180,7 @@ linux_build_curve_transition_targets(
         if (!previousMask[i] || pointMask[i]) continue;
         targetOffsets[i] = 0;
         pointMask[i] = true;
+        result.pointMask[i] = true;
         ++result.pointCount;
         if (cleanupPointCountOut) ++*cleanupPointCountOut;
     }

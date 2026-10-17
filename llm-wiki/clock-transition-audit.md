@@ -731,10 +731,16 @@ and `apply: curve targets rebuilt after NVML offset clear`. Source:
 Tests 6830-6834 (`tests/regression_main.cpp`, mutation-checked); gates in
 `tools/apply_ceiling_gates.py`. No Linux hardware run. The rebuild keeps the
 transaction's shape (`linux_curve_rebuild_keeps_shape()`): the same point
-count, composition decision and lock tail as the build the phase plan came
+count, exact write mask (including replacement cleanup), populated-point voltage
+topology, composition decision and lock tail as the build the phase plan came
 from (`LinuxApplyTransactionContext::plannedBuild`); a different shape is
 refused and logged (`curve rebuild after NVML offset clear changed shape`)
-instead of being written. Tests 6835-6837.
+instead of being written. The refusal names the first changed curve index and
+its old/new write membership and voltage; frequency changes remain allowed.
+Tests 6835-6837 and 6890-6894: equal-count point replacement, a missing requested
+point, voltage changes, and changed cleanup membership are refused. The
+equal-count regression failed at 6892 before the mask/topology check was added.
+Last verified: 2026-10-17, hardware-free regression harness; no Linux GPU run.
 
 ## Open questions / release acceptance
 

@@ -461,6 +461,9 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "a Linux curve rebuild that changed the plan's shape is refused, not written")
     require_text(linux_mutation_cpp, "context.plannedBuild = curveBuild;",
                  "the Linux rebuild is compared with the build the phase plan used")
+    require_text(_p(ctx, "linux_curve_targets.h"),
+                 "linux_curve_rebuild_first_changed_point(planned, rebuilt) < 0;",
+                 "equal Linux target counts cannot hide a changed point mask or voltage topology")
     require_text(apply_cpp, "long long anchorKHz = curve_point_stored_lock_anchor_khz(",
                  "an interactive stored-lock anchor uses the provenance-aware anchor rule")
     # ...and writing must not re-derive them from the live base, which is the
