@@ -548,7 +548,21 @@ Tests 6532-6542 in `tests/apply_correction_tests.cpp` (the harness's
 `sim_verify` now mirrors the real verifier's offset branch). Mutation-checked:
 reverting the plan to the old provenance fails 6532. Gates in
 `tools/apply_ceiling_gates.py` pin the shared predicate at both sites and the
-`targetOffsetKHz` wiring. Not reproduced on hardware: needs a cold boot whose
+`targetOffsetKHz` wiring.
+
+Review follow-up (same day): the correction request now reads
+`verifyDesired.curvePointFromGpuOffset` (the array verification reads) rather
+than `desired`'s, and the post-apply diagnostics use the same predicate. Their
+`post-apply SHORTFALL` check judged offset-intent points by MHz against the
+stale preview and fired on successful cold-boot applies (point 70 holding
++475000 kHz exactly, 225 MHz below a warmer-base preview);
+`curve_point_shortfall_mhz()` now measures such a point by its missing offset
+only (tests 6543-6546, mutation-checked). 6520 was made meaningful again: under
+the batch a non-typed point must take the offset branch (mutation of the
+classify branch fails 6520). The readback-acceptance branch in classification
+is now unreachable for any request shape the apply builds (every non-typed
+point is offset intent); it is kept as the conservative answer and covered by
+6516-6519 only. Not reproduced on hardware: needs a cold boot whose
 low base shifts during correction; the anchor/tail convergence after the fix is
 inferred from the 2026-10-15/16 traces of the same profile.
 

@@ -817,7 +817,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                     correction.originalCurvePopulated = originalCurvePopulated;
                     correction.hasCurvePoint = verifyDesired.hasCurvePoint;
                     correction.curvePointMHz = verifyDesired.curvePointMHz;
-                    correction.fromGpuOffset = desired->curvePointFromGpuOffset;
+                    // The verify request's provenance, exactly what verification reads.
+                    correction.fromGpuOffset = verifyDesired.curvePointFromGpuOffset;
                     correction.targetOffsetKHz = targetCurveOffsets;
                     int prevErrorKHz[VF_NUM_POINTS] = {};
                     apply_correction_reset_history(VF_NUM_POINTS, prevErrorKHz);

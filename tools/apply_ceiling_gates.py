@@ -294,6 +294,15 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "an offset-intent correction writes the build's own target offset")
     require_text(apply_cpp, "correction.targetOffsetKHz = targetCurveOffsets;",
                  "the correction is steered by the offsets verification compares against")
+    require_text(apply_cpp, "correction.fromGpuOffset = verifyDesired.curvePointFromGpuOffset;",
+                 "the correction reads the same provenance array as verification")
+    diagnostics_h = _p(ctx, "gpu_backend_apply_diagnostics.h")
+    require_text(diagnostics_h, "const bool offsetIntent = !isTail && curve_point_offset_is_intent(",
+                 "post-apply diagnostics judge points with the verification predicate")
+    require_text(diagnostics_h, "curve_point_shortfall_mhz(offsetIntent,",
+                 "SHORTFALL judges an offset-intent point by its missing offset, not a stale preview")
+    forbid_text(diagnostics_h, "if (selective && !isTail && !explicitMask[ci]) {",
+                "no private copy of the offset-intent predicate in the diagnostics")
     # ...and writing must not re-derive them from the live base, which is the
     # very sample that moved.
     forbid_text(targets_h, "offset = (long long)desired->curvePointMHz[ci] * 1000 - base;",

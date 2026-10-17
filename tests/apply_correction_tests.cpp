@@ -393,13 +393,17 @@ int run_lock_tests() {
         if ((rep[7].events & APPLY_CORRECTION_EVENT_ACCEPTED_READBACK) || r.pointMHz[7] != 1830)
             return 6518;
         if (s.acceptedNonTail != 1 || s.unconverged != 3) return 6519;
-        // With the curve-batch GPU policy nothing is ever accepted.
+        // With the curve-batch GPU policy a non-typed point is offset intent:
+        // judged by its programmed offset, never accepted, preview untouched.
         request_point(&r, 5, 1780);
         r.explicitMask[5] = false;
+        r.targetOffsetKHz[5] = -10000;               // programmed 0 is off by 10 MHz
         r.q.gpuPolicyViaCurveBatch = true;
         apply_correction_reset_history(N, prevError);
         s = apply_correction_classify_pass(r.q, rb, kRange, 0, prevError, rep);
-        if (s.acceptedNonTail != 0 || r.pointMHz[5] != 1780) return 6520;
+        if (s.acceptedNonTail != 0 || r.pointMHz[5] != 1780 || rep[5].events != 0 ||
+            s.offsetIntentOff != 1 || s.firstOffsetIntentOffCi != 5 || prevError[5] != 10000)
+            return 6520;
     }
     // 6521: the flat-tail monotonic check names the first tail point that sits
     // below its predecessor's target, and passes a flat tail.
@@ -656,6 +660,17 @@ int run_offset_intent_tests() {
         curve_point_offset_is_intent(false, false, false) ||
         curve_point_offset_is_intent(true, false, true) ||
         curve_point_offset_is_intent(true, true, true)) return 6542;
+    // 6543: SHORTFALL judges an offset-intent point by its missing offset.
+    // The 2026-10-16 false alarm: point 70 held +475000 kHz exactly but sat
+    // 225 MHz below a preview projected over a warmer base.
+    if (curve_point_shortfall_mhz(true, 475000, 475000, 2797, 2572) != 0) return 6543;
+    // A driver-limited offset (-112000 kHz against 0) IS short, by the offset.
+    if (curve_point_shortfall_mhz(true, 0, -112000, 2295, 2183) != 112) return 6544;
+    // A higher-than-requested offset is never a shortfall.
+    if (curve_point_shortfall_mhz(true, 0, 279000, 2295, 2287) != 0) return 6545;
+    // A typed point keeps the MHz yardstick (the 2026-09-17 465 MHz case).
+    if (curve_point_shortfall_mhz(false, 0, 0, 2932, 2467) != 465 ||
+        curve_point_shortfall_mhz(false, 0, 0, 2932, 2950) != 0) return 6546;
     return 0;
 }
 

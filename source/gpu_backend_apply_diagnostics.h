@@ -21,6 +21,8 @@
 #ifndef GREEN_CURVE_GPU_BACKEND_APPLY_DIAGNOSTICS_H
 #define GREEN_CURVE_GPU_BACKEND_APPLY_DIAGNOSTICS_H
 
+#include "curve_point_offset_policy.h"
+
 static void apply_log_post_apply_curve_diagnostics(
     const DesiredSettings* verifyDesiredIn, const bool* originalCurvePopulated,
     const unsigned int* originalCurveVoltUv, const bool* lockedTailMask,
@@ -84,17 +86,23 @@ static void apply_log_post_apply_curve_diagnostics(
                         const bool refusedPlaceholder = vf_offset_zero_readback_is_benign(
                             targetOffsets[ci], g_app.freqOffsets[ci],
                             g_app.curve[ci].freq_kHz, MIN_VISIBLE_FREQ_MHz * 1000u);
-                        if (!refusedPlaceholder &&
-                            targetMHz > actualMHz && (targetMHz - actualMHz) >= 100) {
+                        // The verification predicate: an offset-intent point is
+                        // short when its OFFSET is, never because a cold or
+                        // loaded base moved its MHz off the projected preview.
+                        const bool offsetIntent = !isTail && curve_point_offset_is_intent(
+                            explicitMask[ci], verifyDesired.curvePointFromGpuOffset[ci] != 0, selective);
+                        const unsigned int shortMHz = curve_point_shortfall_mhz(offsetIntent,
+                            targetOffsets[ci], g_app.freqOffsets[ci], targetMHz, actualMHz);
+                        if (!refusedPlaceholder && shortMHz >= 100) {
                             farBelow++;
-                            if ((targetMHz - actualMHz) > farBelowWorst) {
-                                farBelowWorst = targetMHz - actualMHz;
+                            if (shortMHz > farBelowWorst) {
+                                farBelowWorst = shortMHz;
                                 farBelowCi = ci;
                                 farBelowActual = actualMHz;
-                                farBelowTarget = targetMHz;
+                                farBelowTarget = offsetIntent ? actualMHz + shortMHz : targetMHz;
                             }
                         }
-                        if (selective && !isTail && !explicitMask[ci]) {
+                        if (offsetIntent) {
                             const bool overOffset = (long long)g_app.freqOffsets[ci] >
                                 (long long)targetOffsets[ci] + 12000;
                             if (overOffset) nonTailOff++; else nonTailOK++;

@@ -289,7 +289,10 @@ static inline ApplyCorrectionPassStats apply_correction_classify_pass(
             s.outOfRange++;
         }
         const bool userExplicitPoint = q.explicitCurveMask[ci] && !tail;
-        // Only derived, lower readbacks may be accepted.
+        // Only derived, lower readbacks may be accepted.  Since offset-intent
+        // points are classified above, the apply produces no request shape that
+        // reaches this (a non-typed point is always offset intent); it stays as
+        // the conservative answer for a derived absolute, tested by 6516.
         const bool acceptNonTailReadback = !q.gpuPolicyViaCurveBatch
             && q.hasLock
             && !tail

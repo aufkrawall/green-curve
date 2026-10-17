@@ -55,6 +55,22 @@ static inline bool curve_point_offset_is_intent(bool explicitPoint, bool fromGpu
     return !explicitPoint && (selectiveBatch || fromGpuOffset);
 }
 
+// How far (MHz) a landed point falls short of its request, for the post-apply
+// SHORTFALL diagnostic. An offset-intent point is short only by the offset it
+// is missing; its MHz preview was projected over a base the driver has since
+// re-reported (on a cold boot by a whole VF bin or more), so judging it by MHz
+// raised a false alarm on points that held their offset exactly.
+static inline unsigned int curve_point_shortfall_mhz(bool offsetIntent, int targetOffsetKHz,
+                                                     int programmedOffsetKHz,
+                                                     unsigned int targetMHz,
+                                                     unsigned int actualMHz) {
+    if (offsetIntent) {
+        long long shortKHz = (long long)targetOffsetKHz - (long long)programmedOffsetKHz;
+        return shortKHz > 0 ? (unsigned int)(shortKHz / 1000) : 0u;
+    }
+    return targetMHz > actualMHz ? targetMHz - actualMHz : 0u;
+}
+
 static inline long long curve_point_target_offset_khz(const CurvePointOffsetRequest* r) {
     if (!r) return 0;
     if (r->fromGpuOffset) return (long long)r->gpuOffsetComponentKHz;
