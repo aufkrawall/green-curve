@@ -202,6 +202,14 @@ hop, and a cycle.
 
 ## Targets
 
+**Verification runs are not deliverable builds.** A change is complete only
+after plain `python build.py` has refreshed the expected `dist/...` payload,
+release archive, and Windows setup executable. `--test`, `--gates`, and
+`--check` are validation modes; they can compile into scratch locations but do
+not satisfy this package build. Check the artifact timestamps/content, not just
+exit status: `dist/` is gitignored, so a clean `git status` proves nothing
+about it.
+
 **`python build.py` (no args) builds the full matrix: Windows + Linux, each for
 x64 and arm64, and packages each into a release archive — a `.7z` for Windows, a
 `.tar.xz` for Linux (see [the container table](#release-packaging) below for why

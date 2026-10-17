@@ -11,7 +11,8 @@ Keep always-on rules here (commit gates, tool and platform precedence, stop cond
 
 - Windows-first project: prefer PowerShell 7.6, Windows-native paths, and installed project tools unless we are on Linux!
 - Use the repository's declared platform priority, build system, package manager, toolchain, and pinned/project-local tools; never silently substitute another ecosystem, tool version, or globally installed tool. If declarations conflict or a required tool is unavailable, stop and report instead of working around it!
-- Rebuild with `python build.py` after implementing changes!
+- After implementing changes and before reporting done, rebuild with plain `python build.py`. Verification-only runs (`--test`, `--gates`, `--check`) never substitute for this deliverable build!
+- Confirm the expected `dist/...` installer/archive was freshly produced (timestamp and content). A clean `git status` does not prove `dist/` was refreshed!
 - Always git commit after code changes!
 - Before committing, run relevant tests/unit tests and ensure build/test results succeed.
 - Verify the change itself, not just command exit status: prefer a check that would fail without the change; otherwise inspect the artifact directly (it exists and its content, format, or size changed as expected); otherwise read the actual output to confirm the relevant tests or build ran. If none is practical, state what was and was not verified!
