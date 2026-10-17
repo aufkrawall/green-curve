@@ -507,13 +507,8 @@ static void gui_apply_ready_envelope(const ServiceResponse* response,
         gui_top_level_redraw_begin(&redrawTransaction, g_app.hMainWnd,
             reason);
     }
-    const ServiceAutoRestoreLockoutReason previousLockout =
-        g_app.serviceAutoRestoreLockoutReason;
     apply_service_snapshot_to_app(&response->snapshot);
     g_app.serviceSnapshotAuthoritative = true;
-    // A new lockout is announced once, with its cause and the user's action
-    // (gui_auto_restore_notice.h); a waiting tray balloon is retried here.
-    gui_announce_auto_restore_lockout(previousLockout);
     if (!suppressRedraw && g_guiForceFullRefresh) {
         // Snapshot adoption can discover an out-of-band Reset that requires a
         // full editor/lock rebase. Start suppression before any HWND projection
@@ -715,6 +710,9 @@ static bool gui_service_accept_response_on_main_thread(
     }
     if (!g_app.logonServiceReadinessPending)
         KillTimer(g_app.hMainWnd, SERVICE_RECONNECT_TIMER_ID);
+    // Last: generic refresh/adoption and startup handlers can set the status
+    // line too. A newly observed lockout must keep its cause and action.
+    gui_announce_auto_restore_lockout();
     return true;
 }
 

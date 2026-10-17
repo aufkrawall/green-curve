@@ -205,8 +205,18 @@ def check_auto_apply_failure_notice(ctx, require_text):
     require_text(_p(ctx, "main_state_sync.cpp"),
                  "service_auto_apply_failure_for_snapshot_locked(snapshotLockoutReason)",
                  "the snapshot publishes the failure record only with its lockout")
-    require_text(_p(ctx, "gui_service_state.cpp"), "gui_announce_auto_restore_lockout(previousLockout);",
-                 "the GUI announces a new automatic-restore lockout")
+    state = _p(ctx, "gui_service_state.cpp")
+    adoption = "static bool gui_service_accept_response_on_main_thread("
+    for earlier in ("gui_apply_ready_envelope(", "apply_logon_startup_behavior();",
+                    "maybe_load_app_launch_profile_to_gui();"):
+        ctx.require_order_in_operation(state, adoption, earlier,
+            "gui_announce_auto_restore_lockout();",
+            "the lockout notice follows generic READY adoption and startup status writes")
+    ctx.forbid_text_in_operation(state, "static void gui_apply_ready_envelope(",
+        "gui_announce_auto_restore_lockout(",
+        "generic refresh/adoption cannot consume the notice before final status projection")
+    require_text(_p(ctx, "gui_auto_restore_notice.h"), "g_guiNoticeObservedLockout",
+                 "notice observation is independent of pre-window snapshot adoption")
     # The Linux daemon publishes the same record and both Linux clients show it.
     require_text(_p(ctx, "linux_daemon_snapshot_runtime.cpp"),
                  "s->autoApplyFailure = g_autoApplyFailure;",

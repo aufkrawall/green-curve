@@ -3,8 +3,8 @@
 //
 // The window thread's announcement of a new automatic-restore lockout
 // (auto_apply_failure_notice_policy.h), split out of gui_service_state.cpp.
-// Called on every snapshot adoption with the reason the previous one carried;
-// it acts only on the edge, so a lockout is announced once per appearance.
+// Called after each READY adoption and its startup/status projection. Its own
+// observed reason is independent of snapshots adopted before window creation.
 #ifndef GREEN_CURVE_GUI_AUTO_RESTORE_NOTICE_H
 #define GREEN_CURVE_GUI_AUTO_RESTORE_NOTICE_H
 
@@ -16,6 +16,8 @@
 static bool g_guiAutoApplyBalloonPending = false;
 static char g_guiAutoApplyBalloonTitle[64] = {};
 static char g_guiAutoApplyBalloonBody[256] = {};
+static ServiceAutoRestoreLockoutReason g_guiNoticeObservedLockout =
+    SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
 
 static void gui_auto_restore_notice_flush_balloon() {
     if (!g_guiAutoApplyBalloonPending || !g_app.trayIconAdded) return;
@@ -40,8 +42,11 @@ static void gui_auto_restore_notice_flush_balloon() {
     }
 }
 
-static void gui_announce_auto_restore_lockout(
-    ServiceAutoRestoreLockoutReason previous) {
+static void gui_announce_auto_restore_lockout() {
+    // Startup can already have adopted a failed-apply snapshot before there
+    // is a window. Snapshot state is not evidence that its notice was shown.
+    const ServiceAutoRestoreLockoutReason previous = g_guiNoticeObservedLockout;
+    g_guiNoticeObservedLockout = g_app.serviceAutoRestoreLockoutReason;
     GcAutoRestoreNotice notice = gc_auto_restore_notice_for_transition(
         (gc_u32)previous, (gc_u32)g_app.serviceAutoRestoreLockoutReason);
     if (notice == GC_AUTO_RESTORE_NOTICE_HANDBACK_INCOMPLETE) {
@@ -56,14 +61,14 @@ static void gui_announce_auto_restore_lockout(
         if (gc_auto_apply_failure_compose(failure, status, sizeof(status),
                 g_guiAutoApplyBalloonTitle, sizeof(g_guiAutoApplyBalloonTitle),
                 g_guiAutoApplyBalloonBody, sizeof(g_guiAutoApplyBalloonBody))) {
-            debug_log("GUI: automatic apply failure notice (trigger=%u coreRecovered=%d tray=%d): %s\n",
-                (unsigned int)failure->trigger, failure->coreRecovered ? 1 : 0,
+            debug_log("GUI: automatic apply failure notice (previous=%u trigger=%u coreRecovered=%d tray=%d): %s\n",
+                (unsigned int)previous, (unsigned int)failure->trigger, failure->coreRecovered ? 1 : 0,
                 g_app.trayIconAdded ? 1 : 0, status);
             set_profile_status_text("%s", status);
             // A failure this service instance saw is news every time.  The
-            // causeless "still paused" form reappears on every reconnect (a
-            // restarted service forgets the cause), so it gets one balloon
-            // per GUI process; the status line always says it.
+            // causeless "still paused" form gets at most one balloon per GUI
+            // process, even if automation is cleared and later paused again;
+            // each new appearance still gets its status line.
             static bool s_pausedBalloonShown = false;
             bool fresh = failure->trigger != SERVICE_LIFECYCLE_TRIGGER_NONE;
             if (fresh || !s_pausedBalloonShown) {

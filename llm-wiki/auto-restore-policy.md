@@ -164,20 +164,30 @@ and the user saw nothing: the GPU just ran at stock with automation off.
 - **Lifetime:** in memory only. An explicit successful Apply clears it with the
   lockout. After a service restart the persisted lockout has no record, and the
   GUI says only that automation is paused until Apply; it never invents a cause.
-- **GUI:** on the edge NONE -> `AUTOMATIC_APPLY_FAILED` the status line and a
+- **GUI:** on the notice-observed edge NONE -> `AUTOMATIC_APPLY_FAILED` the status line and a
   silent warning balloon say what failed and when ("at logon", "after
   standby", "after a driver restart"), whether the clocks were returned to
   stock, the action (Apply to retry; Reset as well when recovery did not
   verify), and the recorded cause, cut with "..." when it does not fit. A
   balloon composed before the tray icon exists waits for it. The causeless
-  "paused" form gets one balloon per GUI process, because every reconnect to a
-  restarted service shows it again. `HANDBACK_INCOMPLETE` -> `AUTOMATIC_APPLY_FAILED`
+  "paused" form gets at most one balloon per GUI process. Notice observation
+  has its own reason history in `gui_auto_restore_notice.h`: a synchronous
+  snapshot adopted before window creation does not consume the first notice,
+  and repeated READY snapshots do not repeat it. The call is the final step
+  of `gui_service_accept_response_on_main_thread`, after generic refresh/state
+  messages and both logon/app-start handlers, so those cannot replace a newly
+  announced failure. `HANDBACK_INCOMPLETE` -> `AUTOMATIC_APPLY_FAILED`
   is the user's own Reset answering the handback notice and stays silent.
 - Diagnostics: `automatic apply failure: recorded for the GUI trigger=...`
-  (service), `GUI: automatic apply failure notice (trigger=... tray=...)` and
+  (service), `GUI: automatic apply failure notice (previous=... trigger=... tray=...)` and
   `GUI: automatic apply failure tray notice shown` (GUI).
-- Open: not exercised live; the logon failure that motivated it was reproduced
-  only from the field log.
+- Tests 6840-6851 in `tests/gui_auto_restore_notice_tests.cpp` execute the actual
+  notice header with status/tray sinks: failure adopted before a window,
+  repeated snapshots, delayed/refused balloon delivery, clearing a queued
+  balloon, and Reset/causeless notice rules. Source gates pin the final call
+  after generic adoption and both startup handlers. Last verified: 2026-10-17.
+- Open: the full window/adoption and live logon failure have not been replayed;
+  the original failure was reproduced only from the field log.
 - **Linux (same record, 2026-10-17):** before this the TUI showed no lockout at
   all and `status` printed only the reason name. Now
   `auto_restore_note_automatic_failure(trigger, detail, rollbackOk)`
