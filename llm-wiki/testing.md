@@ -13,6 +13,16 @@ Canonical native version rules and manifest duplicate/unknown-key/asset bounds
 are covered. Malformed renewal rejects before reading a private key. All keys,
 network calls and release publication in orchestration fixtures are mocked.
 
+The simulation seen-version editor has byte-exact fixtures for ANSI/UTF-8
+text, CRLF/LF/CR and mixed line endings, and an unterminated final line. A
+deterministic lock fixture completes another edit before acquisition and
+asserts that the subsequent read/write stays inside the shared mutex. Native
+Windows tests prove exclusion and release (including exception unwinding) on
+a scratch mutex; a contract check ties its name and descriptor to
+`source/config_utils.cpp`. Source: `tools/simulate_release_tests.py`,
+`tools/windows_config_lock.py`; verified 2026-10-17. Linux CI injects a lock
+only for the byte-editor fixtures; the native fixture is Windows-only.
+
 Arch recipe checks run through Linux packaging source gates on every host.
 They verify actual local source bytes and real remote checksum pins, with
 fixtures for changed resume-service bytes and missing/unpinned source digests.

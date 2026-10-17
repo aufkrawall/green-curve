@@ -1227,6 +1227,17 @@ Two things this must get right or it proves nothing:
   its in-memory value, so restart it before its next check. Do not reuse a
   simulated version number for a real release.
 
+  The seen-version editor preserves unrelated bytes, original CR/LF endings
+  and an unterminated final line. It splits only CR/LF bytes, so ANSI and UTF-8
+  profile text is not interpreted as extra lines. Reads and the complete
+  read/modify/write use the same cross-session storage mutex as
+  `source/config_utils.cpp`, through `tools/windows_config_lock.py`; a mutex
+  creation or wait failure prevents configuration I/O. The descriptor and
+  access contract match the application even when tooling creates the mutex
+  first. `tools/simulate_release_tests.py` covers byte preservation, an edit
+  completed before lock acquisition, refusal before I/O, and native Windows
+  mutual exclusion/release on a scratch mutex. Last verified: 2026-10-17.
+
 Everything else is repo-independent and therefore faithful: asset names carry
 the version and arch but not the repo, and the host allowlist is unchanged
 because a fork's assets are served from the same three hosts.

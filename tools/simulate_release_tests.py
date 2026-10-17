@@ -7,10 +7,13 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,6 +25,7 @@ if str(SCRIPT_DIR) not in sys.path:
 import simulate_release
 import simulate_release_guards as guards
 import update_signing
+import windows_config_lock
 
 
 class SimulateReleaseTests(unittest.TestCase):
@@ -231,6 +235,14 @@ INI = ("[meta]\r\nformat_version=2\r\n\r\n[updates]\r\nauto_check=2\r\n"
 class HighestSeenRestoreTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="gc-sim-seen-"))
+        # Real Windows synchronization on a scratch name; Linux CI exercises
+        # the byte editor without claiming to hold a Windows machine mutex.
+        name = "Local\\GreenCurveConfigFixture-" + self.tmp.name
+        lock = (lambda: windows_config_lock.config_storage_lock(name)) \
+            if os.name == "nt" else nullcontext
+        self.lock_patch = patch.object(guards, "config_storage_lock", lock)
+        self.lock_patch.start()
+        self.addCleanup(self.lock_patch.stop)
         self.ini = self.tmp / "shared-profiles.ini"
         self.ini.write_bytes(INI.encode("latin-1"))
         self.state = self.tmp / "state.json"
@@ -265,6 +277,72 @@ class HighestSeenRestoreTests(unittest.TestCase):
         guards.record_pre_simulation_state(self.state, self.ini)
         recorded = json.loads(self.state.read_text(encoding="utf-8"))
         self.assertEqual(recorded["highest_seen_version"], "0.28.1")
+
+    def test_restore_preserves_unrelated_bytes_and_line_endings(self):
+        for ending in (b"\r\n", b"\n", b"\r"):
+            for suffix in (b"", ending):
+                original = ending.join((
+                    b"[updates]", b"highest_seen_version=9.9", b"",
+                    b"[profile1]", b"name=Quiet\x85", b"pattern=\xc3\x85 game")) + suffix
+                with self.subTest(ending=ending, suffix=suffix):
+                    self.ini.write_bytes(original)
+                    self.assertTrue(guards.set_highest_seen(self.ini, "0.28"))
+                    self.assertEqual(self.ini.read_bytes(),
+                                     original.replace(b"9.9", b"0.28"))
+                    self.assertTrue(guards.set_highest_seen(self.ini, None))
+                    self.assertEqual(self.ini.read_bytes(), original.replace(
+                        b"highest_seen_version=9.9" + ending, b""))
+
+    def test_restore_reads_and_writes_inside_the_shared_lock(self):
+        held = False
+        entered = False
+        read_bytes = Path.read_bytes
+        original_open = open
+
+        @contextmanager
+        def config_lock():
+            nonlocal held, entered
+            # A writer finished while this caller was waiting for the lock.
+            self.ini.write_bytes(INI.replace("selected_slot=2", "selected_slot=3")
+                                 .encode("latin-1"))
+            held = entered = True
+            try:
+                yield
+            finally:
+                held = False
+
+        def read_locked(path):
+            self.assertTrue(held, "configuration read preceded mutex acquisition")
+            return read_bytes(path)
+
+        def open_locked(*args, **kwargs):
+            self.assertTrue(held, "configuration write outlived the mutex")
+            return original_open(*args, **kwargs)
+
+        with patch.object(guards, "config_storage_lock", config_lock, create=True), \
+             patch.object(Path, "read_bytes", read_locked), \
+             patch("builtins.open", side_effect=open_locked):
+            self.assertTrue(guards.set_highest_seen(self.ini, "0.28"))
+        self.assertTrue(entered)
+        self.assertFalse(held)
+        self.assertIn(b"selected_slot=3", self.ini.read_bytes())
+
+    def test_restore_preserves_mixed_endings_and_unterminated_key(self):
+        for original in (b"[profile1]\r\nname=Quiet\x85\n[updates]\rhighest_seen_version=9.9",
+                         b"[updates]\nhighest_seen_version=9.9\r\n[profile1]\rname=Quiet\x85"):
+            self.ini.write_bytes(original)
+            self.assertEqual(guards.read_highest_seen(self.ini), "9.9")
+            self.assertTrue(guards.set_highest_seen(self.ini, "0.28"))
+            self.assertEqual(self.ini.read_bytes(), original.replace(b"9.9", b"0.28"))
+
+    def test_mutex_failure_prevents_read_and_write(self):
+        with patch.object(guards, "config_storage_lock", side_effect=TimeoutError("busy")), \
+             patch.object(Path, "read_bytes", side_effect=AssertionError("read without lock")):
+            with self.assertRaises(TimeoutError):
+                guards.read_highest_seen(self.ini)
+            with self.assertRaises(TimeoutError):
+                guards.set_highest_seen(self.ini, "0.28")
+        self.assertEqual(self.ini.read_bytes(), INI.encode("latin-1"))
 
     def test_restore_needs_elevation_and_prints_the_command(self):
         self.state.write_text(json.dumps({"highest_seen_version": "0.28"}), encoding="utf-8")
@@ -316,10 +394,42 @@ class HighestSeenRestoreTests(unittest.TestCase):
         self.assertTrue(self.state.exists())
 
 
+class WindowsConfigLockTests(unittest.TestCase):
+    def test_lock_contract_matches_the_application(self):
+        source = (ROOT_DIR / "source" / "config_utils.cpp").read_text(encoding="utf-8")
+        self.assertIn('"' + windows_config_lock.CONFIG_MUTEX_NAME.replace("\\", "\\\\") + '"',
+                      source)
+        # The C++ descriptor is a sequence of adjacent string literals.
+        # SDDL itself contains semicolons: bound by its closing declaration.
+        descriptor = source.split("CONFIG_INTERPROCESS_MUTEX_SDDL =", 1)[1].split('";', 1)[0]
+        self.assertEqual("".join(re.findall(r'"([^\"]*)"', descriptor + '"')),
+                         windows_config_lock.CONFIG_MUTEX_SDDL)
+        self.assertEqual(windows_config_lock.CONFIG_MUTEX_ACCESS, 0x00100001)
+
+    @unittest.skipUnless(os.name == "nt", "Windows named mutex fixture")
+    def test_native_mutex_excludes_other_threads_and_releases(self):
+        name = f"Local\\GreenCurveConfigLockFixture-{os.getpid()}"
+        def acquire():
+            try:
+                with windows_config_lock.config_storage_lock(name, timeout_ms=0):
+                    return "acquired"
+            except TimeoutError:
+                return "busy"
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            with windows_config_lock.config_storage_lock(name):
+                self.assertEqual(worker.submit(acquire).result(timeout=10), "busy")
+            self.assertEqual(worker.submit(acquire).result(timeout=10), "acquired")
+            with self.assertRaisesRegex(ValueError, "fixture"):
+                with windows_config_lock.config_storage_lock(name):
+                    raise ValueError("fixture")
+            self.assertEqual(worker.submit(acquire).result(timeout=10), "acquired")
+
+
 def run_tests():
     loader = unittest.defaultTestLoader
     suite = unittest.TestSuite()
-    for case in (SimulateReleaseTests, SimulationGuardTests, HighestSeenRestoreTests):
+    for case in (SimulateReleaseTests, SimulationGuardTests, HighestSeenRestoreTests,
+                 WindowsConfigLockTests):
         suite.addTests(loader.loadTestsFromTestCase(case))
     result = unittest.TextTestRunner(stream=sys.stderr).run(suite)
     # Raised, like the sibling release suites: the release self-test chain

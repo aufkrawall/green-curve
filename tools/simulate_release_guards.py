@@ -27,6 +27,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import update_signing  # noqa: E402
+from windows_config_lock import config_storage_lock  # noqa: E402
 
 SIMULATION_KEY_NAME = "simulation-update-signing-key.txt"
 RELEASE_KEY_ARRAYS = ("GC_UPDATE_PUBLIC_KEY_ACTIVE", "GC_UPDATE_PUBLIC_KEY_NEXT")
@@ -189,49 +190,66 @@ def _updates_section_span(lines):
     """(start, end) line indices of the [updates] body, or None."""
     start = None
     for index, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
+        stripped = line.strip(b" \t\r\n")
+        if stripped.startswith(b"[") and stripped.endswith(b"]"):
             if start is not None:
                 return start, index
-            if stripped[1:-1].strip().lower() == SEEN_SECTION:
+            if stripped[1:-1].strip().lower() == SEEN_SECTION.encode("ascii"):
                 start = index + 1
     return (start, len(lines)) if start is not None else None
+
+
+def _ini_lines(data):
+    # str.splitlines() also splits ANSI/UTF-8 bytes such as 0x85. Retain the
+    # actual CR/LF endings, including mixed endings and an unterminated EOF.
+    return [line for line in re.findall(rb"[^\r\n]*(?:\r\n|\r|\n|$)", data) if line]
 
 
 def read_highest_seen(ini_path):
     """The recorded value, or None when the file or key is absent."""
     ini_path = Path(ini_path)
-    if not ini_path.exists():
-        return None
-    lines = ini_path.read_bytes().decode("latin-1").splitlines()
+    with config_storage_lock():
+        if not ini_path.exists():
+            return None
+        lines = _ini_lines(ini_path.read_bytes())
     span = _updates_section_span(lines)
     if span is None:
         return None
     for line in lines[span[0]:span[1]]:
-        key, sep, value = line.partition("=")
-        if sep and key.strip().lower() == SEEN_KEY:
-            return value.strip()
+        key, sep, value = line.partition(b"=")
+        if sep and key.strip().lower() == SEEN_KEY.encode("ascii"):
+            return value.strip().decode("ascii")
     return None
 
 
 def set_highest_seen(ini_path, value):
     """Rewrite one key IN PLACE (same file object, so its protected DACL and
     owner are kept); value None removes the key.  Returns True when changed."""
-    ini_path = Path(ini_path)
-    data = ini_path.read_bytes().decode("latin-1")
-    newline = "\r\n" if "\r\n" in data else "\n"
-    lines = data.splitlines()
+    # Read only after the shared mutex is held: another writer may finish
+    # while this caller waits, and its unrelated edits must survive the restore.
+    with config_storage_lock():
+        return _set_highest_seen_locked(Path(ini_path), value)
+
+
+def _set_highest_seen_locked(ini_path, value):
+    data = ini_path.read_bytes()
+    match = re.search(rb"\r\n|\r|\n", data)
+    newline = match.group() if match else b"\n"
+    lines = _ini_lines(data)
     span = _updates_section_span(lines)
-    replacement = None if value is None else f"{SEEN_KEY}={value}"
+    replacement = None if value is None else f"{SEEN_KEY}={value}".encode("ascii")
     changed = False
     if span is not None:
         for index in range(span[0], span[1]):
-            key, sep, _ = lines[index].partition("=")
-            if sep and key.strip().lower() == SEEN_KEY:
+            key, sep, _ = lines[index].partition(b"=")
+            if sep and key.strip().lower() == SEEN_KEY.encode("ascii"):
+                ending = re.search(rb"(?:\r\n|\r|\n)$", lines[index])
+                new_line = replacement + (ending.group() if ending else b"") \
+                    if replacement is not None else None
                 if replacement is None:
                     del lines[index]
-                elif lines[index] != replacement:
-                    lines[index] = replacement
+                elif lines[index] != new_line:
+                    lines[index] = new_line
                 else:
                     return False
                 changed = True
@@ -240,14 +258,18 @@ def set_highest_seen(ini_path, value):
             insert_at = span[1]
             while insert_at > span[0] and not lines[insert_at - 1].strip():
                 insert_at -= 1
-            lines.insert(insert_at, replacement)
+            if insert_at and not lines[insert_at - 1].endswith((b"\r", b"\n")):
+                lines[insert_at - 1] += newline
+            lines.insert(insert_at, replacement + newline)
             changed = True
     elif replacement is not None:
-        lines += ["", "[updates]", replacement]
+        if lines and not lines[-1].endswith((b"\r", b"\n")):
+            lines[-1] += newline
+        lines += [newline, b"[updates]" + newline, replacement + newline]
         changed = True
     if not changed:
         return False
-    out = (newline.join(lines) + newline).encode("latin-1")
+    out = b"".join(lines)
     with open(ini_path, "r+b") as handle:
         handle.seek(0)
         handle.write(out)
