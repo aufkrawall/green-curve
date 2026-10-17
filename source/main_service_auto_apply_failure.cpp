@@ -31,13 +31,17 @@ static void service_auto_apply_failure_record(ServiceLifecycleTrigger trigger,
         detail && strlen(detail) >= ARRAY_COUNT(record.detail) ? 1 : 0);
 }
 
-// An explicit successful Apply re-armed automation: the cause is history.
+// An explicit successful Apply is about to re-arm automation: the cause is
+// history.  Called BEFORE the lockout is cleared, so the record can never
+// outlive its lockout into one latched for another reason.
 static void service_auto_apply_failure_clear() {
     EnterCriticalSection(&g_appLock);
-    bool had = g_serviceAutoApplyFailure.trigger != SERVICE_LIFECYCLE_TRIGGER_NONE;
+    const gc_u32 hadTrigger = g_serviceAutoApplyFailure.trigger;
     g_serviceAutoApplyFailure = ServiceAutoApplyFailure{};
     LeaveCriticalSection(&g_appLock);
-    if (had) debug_log("automatic apply failure: record cleared by explicit successful apply\n");
+    if (hadTrigger != SERVICE_LIFECYCLE_TRIGGER_NONE)
+        debug_log("automatic apply failure: record (trigger=%u) cleared by explicit successful apply\n",
+                  (unsigned int)hadTrigger);
 }
 
 // Caller holds g_appLock.  Published only while the lockout it explains is the

@@ -316,6 +316,13 @@ switch (request->command) {
                 // Only a deliberate successful user write with a
                 // durably published fresh proof acknowledges
                 // instability/TDR history.
+                //
+                // The recorded cause goes FIRST, before the lockout can
+                // read NONE: if re-arming then fails and re-latches
+                // below, that lockout is this Apply's, and a snapshot
+                // taken in between must not re-announce the old
+                // automatic failure as if it had just happened.
+                service_auto_apply_failure_clear();
                 bool lockoutCleared =
                     service_clear_auto_restore_lockout();
                 bool historyCleared =
@@ -324,7 +331,6 @@ switch (request->command) {
                     EnterCriticalSection(&g_appLock);
                     g_serviceLifecycleState.lockedOut = false;
                     LeaveCriticalSection(&g_appLock);
-                    service_auto_apply_failure_clear();
                 } else {
                     service_latch_auto_restore_lockout(
                         SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED,

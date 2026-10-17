@@ -201,6 +201,15 @@ def check_auto_apply_failure_notice(ctx, require_text):
                  "the apply's recovery sentence is the shared constant the service matches")
     require_text(_p(ctx, "main_service_pipe_switch.cpp"), "service_auto_apply_failure_clear();",
                  "an explicit successful Apply clears the recorded failure cause")
+    # Before the lockout can read NONE: a re-latch after a failed re-arm is the
+    # Apply's own lockout and must not republish (and re-announce) the old cause.
+    ctx.require_order(_p(ctx, "main_service_pipe_switch.cpp"),
+                      "service_auto_apply_failure_clear();",
+                      "service_clear_auto_restore_lockout();",
+                      "the failure record is cleared before the lockout it explains")
+    pipe_switch = _read(_p(ctx, "main_service_pipe_switch.cpp"))
+    if pipe_switch.count("service_auto_apply_failure_clear();") != 1:
+        _fail("main_service_pipe_switch.cpp: the failure record is cleared at exactly one place")
     notice = _read(_p(ctx, "auto_apply_failure_notice_policy.h"))
     require_text(_p(ctx, "auto_apply_failure_notice_policy.h"),
                  '"Automatic profile restore is paused for safety. "',
