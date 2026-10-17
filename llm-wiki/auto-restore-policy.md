@@ -169,8 +169,11 @@ and the user saw nothing: the GPU just ran at stock with automation off.
   standby", "after a driver restart"), whether the clocks were returned to
   stock, the action (Apply to retry; Reset as well when recovery did not
   verify), and the recorded cause, cut with "..." when it does not fit. A
-  balloon composed before the tray icon exists waits for it. The causeless
-  "paused" form gets at most one balloon per GUI process. Notice observation
+  balloon composed before the tray icon exists waits for it. When no cause was
+  recorded, the text says only that automatic restore is paused for safety; the
+  same lockout reason is also used by explicit-write and non-apply safety
+  failures, so the fallback never claims an automatic profile apply failed. The
+  causeless form gets at most one balloon per GUI process. Notice observation
   has its own reason history in `gui_auto_restore_notice.h`: a synchronous
   snapshot adopted before window creation does not consume the first notice,
   and repeated READY snapshots do not repeat it. The call is the final step

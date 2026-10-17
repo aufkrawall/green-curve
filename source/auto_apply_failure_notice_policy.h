@@ -82,9 +82,11 @@ static inline bool gc_notice_append(char* out, size_t outSize, const char* text)
 
 // status: the main window's one-line profile status (<= 256).
 // title/body: the tray balloon (szInfoTitle 64 / szInfo 256).
-// `failure` may be all-zero (the lockout predates this service instance or has
-// another cause): the text then says only what still holds -- automation is
-// paused until Apply.
+// `failure` may be all-zero: that means no cause was recorded.  It can be a
+// lockout persisted by an earlier service instance, an explicit Apply failure,
+// or one of the service's other safety lockouts.  In that case the text says
+// only what is true for all of them -- automation is paused until Apply -- and
+// never attributes the lockout to an automatic profile apply.
 static inline bool gc_auto_apply_failure_compose(
     const ServiceAutoApplyFailure* failure,
     char* status, size_t statusSize,
@@ -100,16 +102,17 @@ static inline bool gc_auto_apply_failure_compose(
         memcpy(detail, failure->detail, sizeof(failure->detail));
         detail[sizeof(failure->detail)] = '\0';
     }
-    gc_notice_append(title, titleSize, "Green Curve: automatic apply failed");
     if (!when) {
+        gc_notice_append(title, titleSize, "Green Curve: automatic restore disabled");
         gc_notice_append(status, statusSize,
-            "Automatic profile restore is paused after a failed automatic apply. "
+            "Automatic profile restore is paused for safety. "
             "Press Apply to re-enable it.");
         gc_notice_append(body, bodySize,
-            "Automatic profile restore is paused after a failed automatic apply. "
+            "Automatic profile restore is paused for safety. "
             "Open Green Curve and press Apply to re-enable it.");
         return true;
     }
+    gc_notice_append(title, titleSize, "Green Curve: automatic apply failed");
     const bool recovered = failure->coreRecovered != 0;
     char lead[128] = {};
     gc_notice_append(lead, sizeof(lead), "Automatic profile apply ");

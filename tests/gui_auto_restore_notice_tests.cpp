@@ -109,7 +109,10 @@ static int run() {
     g_app.serviceAutoRestoreLockoutReason = FAILED;
     g_app.serviceAutoApplyFailure = ServiceAutoApplyFailure{};
     announce();
-    if (!strstr(status, "paused") || balloonsShown != 3) return 6848;
+    if (!strstr(status, "paused for safety") || balloonsShown != 3 ||
+        strstr(g_guiAutoApplyBalloonTitle, "automatic apply failed") != nullptr ||
+        strstr(g_guiAutoApplyBalloonBody, "automatic apply failed") != nullptr)
+        return 6848;
     g_app.serviceAutoRestoreLockoutReason = NONE;
     announce();
     g_app.serviceAutoRestoreLockoutReason = FAILED;

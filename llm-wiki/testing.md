@@ -40,7 +40,8 @@ inspected for the exact resume-unit bytes and mode 0644.
 `source/gui_auto_restore_notice.h` with status/tray sinks. It covers a failure
 already adopted before window creation, repeated snapshots, delayed and
 refused shell delivery, cancellation after Apply, Reset's silent downgrade,
-and the once-per-process causeless balloon. It runs in the regular regression
+the neutral no-record text used for explicit and non-apply safety lockouts, and
+the once-per-process causeless balloon. It runs in the regular regression
 harness through `tests/diagnostics_followup_tests.cpp`, is cross-linked on
 Windows for Linux, and can run alone with `GC_GUI_NOTICE_FIXTURE_MAIN`.
 The first startup-failure assertion failed against the original header.

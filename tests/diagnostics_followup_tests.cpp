@@ -251,16 +251,24 @@ int run_auto_apply_notice_tests() {
                                   body, sizeof(body));
     if (strstr(status, "at daemon start failed. Press Apply to retry, or Reset") == nullptr)
         return 6765;
-    // No record (lockout from an earlier service instance): no invented cause.
+    // No record means no known cause.  This is also the shape published by an
+    // explicit Apply write failure and by non-apply safety lockouts, all of
+    // which share AUTOMATIC_APPLY_FAILED as their reason.  Never invent an
+    // automatic-apply cause; state only that automation is paused for safety.
     ServiceAutoApplyFailure none = {};
     snprintf(none.detail, sizeof(none.detail), "stale text must not show");
     gc_auto_apply_failure_compose(&none, status, sizeof(status), title, sizeof(title),
                                   body, sizeof(body));
-    if (strstr(status, "paused") == nullptr || strstr(status, "Press Apply") == nullptr ||
+    if (strstr(status, "paused for safety") == nullptr ||
+        strstr(status, "Press Apply") == nullptr ||
+        strstr(status, "automatic apply failed") != nullptr ||
+        strcmp(title, "Green Curve: automatic restore disabled") != 0 ||
         strstr(status, "stale") != nullptr || strstr(body, "Cause") != nullptr) return 6759;
     if (!gc_auto_apply_failure_compose(nullptr, status, sizeof(status), title,
                                        sizeof(title), body, sizeof(body)) ||
-        strstr(status, "paused") == nullptr) return 6760;
+        strstr(status, "paused for safety") == nullptr ||
+        strstr(status, "automatic apply failed") != nullptr ||
+        strcmp(title, "Green Curve: automatic restore disabled") != 0) return 6760;
     // A full-length cause is cut with "..." in the 256-char balloon, never overflowed.
     char longDetail[SERVICE_AUTO_APPLY_FAILURE_DETAIL_CHARS];
     memset(longDetail, 'd', sizeof(longDetail) - 1);

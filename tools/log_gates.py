@@ -76,8 +76,7 @@ def check_all(ctx, require_text, require_text_in_operation,
     for call in _BLOCKING_CALLS:
         forbid_text_in_operation(
             diagnostics_cpp, _DEBUG_LOG_ANCHOR, call,
-            "debug_log() must not call %s on the producer thread"
-            % call.rstrip("("))
+            f"debug_log() must not call {call.rstrip('(')} on the producer thread")
     # The file lock is the one that is held across I/O. A producer that takes it
     # has undone the split even if it performs no I/O of its own.
     forbid_text_in_operation(
@@ -202,6 +201,13 @@ def check_auto_apply_failure_notice(ctx, require_text):
                  "the apply's recovery sentence is the shared constant the service matches")
     require_text(_p(ctx, "main_service_pipe_switch.cpp"), "service_auto_apply_failure_clear();",
                  "an explicit successful Apply clears the recorded failure cause")
+    notice = _read(_p(ctx, "auto_apply_failure_notice_policy.h"))
+    require_text(_p(ctx, "auto_apply_failure_notice_policy.h"),
+                 '"Automatic profile restore is paused for safety. "',
+                 "a lockout with no recorded cause uses neutral, non-attributing text")
+    if "automatic apply failed" in notice.split("if (!when) {", 1)[-1].split("return true;", 1)[0]:
+        _fail("auto_apply_failure_notice_policy.h: a causeless lockout must not "
+              "claim an automatic apply failed")
     require_text(_p(ctx, "main_state_sync.cpp"),
                  "service_auto_apply_failure_for_snapshot_locked(snapshotLockoutReason)",
                  "the snapshot publishes the failure record only with its lockout")
