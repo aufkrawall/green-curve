@@ -398,6 +398,13 @@ int run_security_audit_tests() {
 
 #if defined(_WIN32)
     if (int failure = native_preheader_lease_test()) return failure;
+    bool invalidDiscarded = true;
+    char invalidBankError[128] = {};
+    if (service_prepare_shared_bank_handle(nullptr, nullptr, false,
+            &invalidDiscarded, invalidBankError, sizeof(invalidBankError)) ||
+        invalidDiscarded || !invalidBankError[0]) return 6925;
+    if (service_prepare_shared_bank_handle(nullptr, nullptr, false,
+            nullptr, nullptr, 0)) return 6926;
     WCHAR directory[MAX_PATH] = {}, path[MAX_PATH] = {};
     if (!GetTempPathW(MAX_PATH, directory) ||
         !GetTempFileNameW(directory, L"gca", 0, path)) return 6219;

@@ -225,6 +225,11 @@ updates.md, "Claimed machine-scope folders"):
   `READ_CONTROL | FILE_READ_ATTRIBUTES` takes no part in sharing checks.
 
 Regression anchors: `tests/security_audit_tests.cpp` 6221, 6600-6632.
+The shared-bank handle API explicitly rejects a missing in/out handle pointer
+before inspecting or changing an object; tests 6925-6926 cover rejection with
+and without optional output buffers. The private launch-name loop uses
+pointer-sized indexing for its fixed random-byte buffer. Verified 2026-10-17
+with the native regression harness and clang-tidy.
 
 ### Releases are proven, not assumed
 

@@ -434,7 +434,11 @@ const char* service_release_result_name(int result) {
 bool service_prepare_shared_bank_handle(void** handleInOut, const wchar_t* path,
     bool requireAdminOwner, bool* discarded, char* err, size_t errSize) {
     if (discarded) *discarded = false;
-    HANDLE handle = handleInOut ? (HANDLE)*handleInOut : INVALID_HANDLE_VALUE;
+    if (!handleInOut) {
+        set_handle_acl_err(err, errSize, "Shared bank handle argument is missing", ERROR_INVALID_PARAMETER);
+        return false;
+    }
+    HANDLE handle = (HANDLE)*handleInOut;
     if (!handle_matches_kind(handle, GC_SERVICE_ACL_CONFIG)) {
         set_handle_acl_err(err, errSize, "Shared bank is not a regular non-reparse file", ERROR_INVALID_DATA);
         return false;

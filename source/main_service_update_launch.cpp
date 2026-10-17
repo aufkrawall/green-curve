@@ -182,7 +182,7 @@ static bool service_update_prepare_launch_dir(HANDLE verifiedStaged, const GcUpd
         return false;
     }
     WCHAR suffix[33] = {};
-    for (int i = 0; i < 16; i++)
+    for (size_t i = 0; i < sizeof(random); i++)
         StringCchPrintfW(suffix + i * 2, 3, L"%02x", (unsigned)random[i]);
     if (FAILED(StringCchPrintfW(launch->dirW, ARRAY_COUNT(launch->dirW), L"%ls\\%hs%ls",
                                 stagingW.value, GC_UPDATE_LAUNCH_DIR_PREFIX, suffix)) ||
