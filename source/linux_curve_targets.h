@@ -120,6 +120,19 @@ static inline bool linux_curve_targets_rebuild_after_scalar(
     return scalarKnown && scalarMHz != 0 && (resetBaseline || clearsScalar);
 }
 
+// The rebuild after the NVML offset is zeroed may change each point's offset
+// (that is its purpose), but not the transaction's shape: the same points,
+// the same lock tail, and the same composition decision the GPU_OFFSET phase
+// already acted on.  A different shape means the fresh readback is not the
+// curve the plan was made for (points that vanished or appeared), and writing
+// it would commit a target nothing validated.
+static inline bool linux_curve_rebuild_keeps_shape(const LinuxCurveTargetBuildResult& planned,
+                                                   const LinuxCurveTargetBuildResult& rebuilt) {
+    return rebuilt.pointCount > 0 && rebuilt.pointCount == planned.pointCount &&
+        rebuilt.composedGpuOffset == planned.composedGpuOffset &&
+        rebuilt.lockTail == planned.lockTail;
+}
+
 // A successful VF-domain Apply replaces that domain's durable intent.  Build
 // the complete committed target, then explicitly release points that the
 // previous curve intent owned but the replacement no longer owns.  Without

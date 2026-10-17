@@ -492,13 +492,14 @@ LinuxMutationResult linux_backend_apply(LinuxGpuState* g, const DesiredSettings*
     bool hardLock = d->hasLock && d->lockMode == LOCK_MODE_HARD && d->lockMHz > 0;
     g_linuxOutgoingCeilingMHz = linux_outgoing_ceiling_mhz(g, previousIntent);
     LinuxApplyTransactionContext context = {g, d, &snapshot, committedIntent,
-        previousIntent, {}, {}, d->fanPercent, false, false, false, false};
+        previousIntent, {}, {}, d->fanPercent, false, false, false, false, {}};
     gc_u32 requestedDomains = service_desired_mutation_domains(d);
     int cleanupPointCount = 0;
     context.transitionBuild =
         (requestedDomains & SERVICE_MUTATION_DOMAIN_VF_CURVE) != 0 && committedIntent;
     LinuxCurveTargetBuildResult curveBuild =
         linux_apply_build_curve(&context, &cleanupPointCount);
+    context.plannedBuild = curveBuild;
     context.composedGpuOffset = curveBuild.composedGpuOffset;
     const bool clearStaleGpuOffset = linux_composed_offset_must_clear_scalar(
         curveBuild.composedGpuOffset, snapshot.gpuOffsetValid,

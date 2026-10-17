@@ -28,6 +28,8 @@ struct LinuxApplyTransactionContext {
     // curve targets from a fresh readback in the CURVE phase.
     bool rebuildCurveTargets;
     bool transitionBuild;
+    // The build the phase plan was made from; a rebuild must keep its shape.
+    LinuxCurveTargetBuildResult plannedBuild;
 };
 
 // The curve targets for this transaction: the replacement-aware build when
@@ -57,6 +59,15 @@ static bool linux_apply_rebuild_curve_targets(LinuxApplyTransactionContext* cont
     int cleanup = 0;
     LinuxCurveTargetBuildResult rebuilt =
         linux_apply_build_curve(context, &cleanup);
+    const LinuxCurveTargetBuildResult& planned = context->plannedBuild;
+    if (!linux_curve_rebuild_keeps_shape(planned, rebuilt)) {
+        lb_log("apply: curve rebuild after NVML offset clear changed shape"
+               " (points %d->%d composed %d->%d lockTail %d->%d); refusing to write it\n",
+               planned.pointCount, rebuilt.pointCount,
+               planned.composedGpuOffset ? 1 : 0, rebuilt.composedGpuOffset ? 1 : 0,
+               planned.lockTail ? 1 : 0, rebuilt.lockTail ? 1 : 0);
+        return false;
+    }
     lb_log("apply: curve targets rebuilt after NVML offset clear"
            " (points=%d cleanup=%d composed=%d)\n",
            rebuilt.pointCount, cleanup, rebuilt.composedGpuOffset ? 1 : 0);

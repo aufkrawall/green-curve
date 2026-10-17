@@ -10088,6 +10088,28 @@ static int run_all_tests_middle([[maybe_unused]] char** argv) {
             linux_curve_targets_rebuild_after_scalar(false, 475, true, true) ||
             linux_curve_targets_rebuild_after_scalar(true, 475, false, false))
             return 6834;
+        // The rebuild may move offsets, never the plan's shape: the result used
+        // to be logged and discarded, so a re-read that lost points (or a
+        // different composition decision than the GPU_OFFSET phase acted on)
+        // was written as if validated (6835-6837).
+        {
+            LinuxCurveTargetBuildResult planned = {};
+            planned.pointCount = 57;
+            planned.composedGpuOffset = true;
+            planned.lockTail = true;
+            LinuxCurveTargetBuildResult rebuilt = planned;
+            if (!linux_curve_rebuild_keeps_shape(planned, rebuilt)) return 6835;
+            rebuilt.pointCount = 0;
+            if (linux_curve_rebuild_keeps_shape(planned, rebuilt)) return 6836;
+            rebuilt.pointCount = 56;
+            if (linux_curve_rebuild_keeps_shape(planned, rebuilt)) return 6836;
+            rebuilt = planned;
+            rebuilt.composedGpuOffset = false;
+            if (linux_curve_rebuild_keeps_shape(planned, rebuilt)) return 6837;
+            rebuilt = planned;
+            rebuilt.lockTail = false;
+            if (linux_curve_rebuild_keeps_shape(planned, rebuilt)) return 6837;
+        }
 
         // Per-point provenance on Linux too: a projected point keeps the
         // request's own offset even though absolute-minus-live-base would

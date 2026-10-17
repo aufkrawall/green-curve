@@ -434,6 +434,11 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "the Linux GPU_OFFSET phase writes 0 for a composed offset")
     require_text(linux_mutation_cpp, "if (!linux_apply_rebuild_curve_targets(context)) return false;",
                  "the Linux curve phase rebuilds targets after an NVML offset clear")
+    require_text(_p(ctx, "linux_backend_apply_context.h"),
+                 "if (!linux_curve_rebuild_keeps_shape(planned, rebuilt)) {",
+                 "a Linux curve rebuild that changed the plan's shape is refused, not written")
+    require_text(linux_mutation_cpp, "context.plannedBuild = curveBuild;",
+                 "the Linux rebuild is compared with the build the phase plan used")
     require_text(apply_cpp, "long long anchorKHz = curve_point_stored_lock_anchor_khz(",
                  "an interactive stored-lock anchor uses the provenance-aware anchor rule")
     # ...and writing must not re-derive them from the live base, which is the
