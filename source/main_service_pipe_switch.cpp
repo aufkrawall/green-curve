@@ -324,6 +324,7 @@ switch (request->command) {
                     EnterCriticalSection(&g_appLock);
                     g_serviceLifecycleState.lockedOut = false;
                     LeaveCriticalSection(&g_appLock);
+                    service_auto_apply_failure_clear();
                 } else {
                     service_latch_auto_restore_lockout(
                         SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED,

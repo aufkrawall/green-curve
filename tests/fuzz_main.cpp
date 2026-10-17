@@ -264,7 +264,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 // recomputation, startup-profile coherence, the payload-free-refusal shortcut),
 // and had 36 deterministic assertions but no fuzz target at all.
 //
-// The steer bits matter as much here: a random 7368-byte image almost never
+// The steer bits matter as much here: a random 7560-byte image almost never
 // satisfies the magic/version pair, so without them the fuzzer would spend its
 // budget failing the first two comparisons.
 // ---------------------------------------------------------------------------

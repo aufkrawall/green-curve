@@ -8,6 +8,7 @@
 #include "gui_draft_policy.h"
 #include "gui_service_io_queue_policy.h"
 #include "gui_service_resync_policy.h"
+#include "gui_auto_restore_notice.h"
 
 static bool g_guiRenderTransactionActive = false;
 static bool g_guiRebuildPreserveDraft = false;
@@ -510,15 +511,9 @@ static void gui_apply_ready_envelope(const ServiceResponse* response,
         g_app.serviceAutoRestoreLockoutReason;
     apply_service_snapshot_to_app(&response->snapshot);
     g_app.serviceSnapshotAuthoritative = true;
-    // The one lockout reason that names hardware left in an unknown state:
-    // the service stopped unexpectedly and could not return the GPU to stock.
-    // Say it once, when it appears; the user's Reset clears it.
-    if (g_app.serviceAutoRestoreLockoutReason ==
-            SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE &&
-        previousLockout != SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE) {
-        debug_log("GUI: service reports an incomplete handback after an unexpected stop\n");
-        set_profile_status_text("Service stopped unexpectedly; GPU may not be at stock. Press Reset.");
-    }
+    // A new lockout is announced once, with its cause and the user's action
+    // (gui_auto_restore_notice.h); a waiting tray balloon is retried here.
+    gui_announce_auto_restore_lockout(previousLockout);
     if (!suppressRedraw && g_guiForceFullRefresh) {
         // Snapshot adoption can discover an out-of-band Reset that requires a
         // full editor/lock rebase. Start suppression before any HWND projection
@@ -694,13 +689,8 @@ static bool gui_service_accept_response_on_main_thread(
     g_app.backgroundServiceRunning = true;
     g_app.backgroundServiceBroken = false;
     g_app.backgroundServiceError[0] = '\0';
-    debug_log_on_change("GUI service state: phase=%s epoch=%llu instance=%llu revision=%llu gpuGeneration=%llu valid=0x%02X\n",
-        gui_service_phase_name(g_app.guiServiceModel.phase),
-        (unsigned long long)connectionEpoch,
-        (unsigned long long)response->state.serviceInstanceId,
-        (unsigned long long)response->state.stateRevision,
-        (unsigned long long)response->state.gpuGeneration,
-        response->state.validSections);
+    gui_log_service_state_adoption(gui_service_phase_name(
+        g_app.guiServiceModel.phase), connectionEpoch, response);
 
     if (!gui_service_model_ready(&g_app.guiServiceModel)) {
         // The refresh got a real answer: it is not READY.  The phase

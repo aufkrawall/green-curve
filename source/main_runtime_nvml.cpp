@@ -453,7 +453,7 @@ static bool desired_settings_have_explicit_state(const DesiredSettings* desired,
     return true;
 }
 
-static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_t detailSize) {
+static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_t detailSize, bool runtimeTick) {
     if (exactApplied) *exactApplied = false;
     if (!nvml_ensure_ready() || !g_app.fanSupported || !g_nvml_api.setFanSpeed) {
         set_message(detail, detailSize, "Fan manual unsupported");
@@ -505,12 +505,14 @@ static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_
             } else {
                 debug_log("nvml_set_fan_manual: setFanControlPolicy fan=%u failed: %s\n", fan, nvml_err_name(pr));
             }
-        } else if (alreadyManual) {
+        } else if (alreadyManual && g_debug_log_verbose) {
+            // A no-op confirmation on every curve step; the speed write below logs.
             debug_log("nvml_set_fan_manual: fan=%u already manual, skipping policy write\n", fan);
         }
         char phase[128] = {};
         StringCchPrintfA(phase, ARRAY_COUNT(phase), "Fan manual speed write: fan=%u pct=%d", fan, pct);
-        set_last_apply_phase(phase);
+        // Runtime duty steps are summarized by log_fan_runtime_write().
+        set_last_apply_phase(phase, !runtimeTick);
         nvmlReturn_t r = g_nvml_api.setFanSpeed(g_app.nvmlDevice, fan, (unsigned int)pct);
         if (r != NVML_SUCCESS) {
             set_message(detail, detailSize, "fan %u: %s", fan, nvml_err_name(r));

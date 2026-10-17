@@ -3,6 +3,8 @@
 #ifndef GREEN_CURVE_GPU_BACKEND_APPLY_FAILURE_H
 #define GREEN_CURVE_GPU_BACKEND_APPLY_FAILURE_H
 
+#include "apply_recovery_text.h"
+
 // All prerequisite failures leave normal finalization immediately. Recovery
 // owns the only permitted release; scope destruction cannot release again.
 static bool apply_recover_clock_failure(ApplyClockCeilingGuard& ceiling,
@@ -25,9 +27,12 @@ static bool apply_recover_clock_failure(ApplyClockCeilingGuard& ceiling,
     invalidate_scalar_readbacks(&g_app.readback);
     char refreshDetail[128] = {};
     refresh_global_state(refreshDetail, sizeof(refreshDetail));
-    set_message(result, resultSize, "%s. Recovery %s", failure,
+    // GC_APPLY_RECOVERY_VERIFIED_TEXT is matched by the service to tell the
+    // user the clocks are back at stock (auto_apply_failure_notice_policy.h).
+    set_message(result, resultSize, "%s. %s", failure,
         apply_recovery_permits_release(recovery) && recovery.restrictionReleased
-            ? "verified core defaults" : "could not verify core defaults; clock protection retained");
+            ? GC_APPLY_RECOVERY_VERIFIED_TEXT
+            : "Recovery could not verify core defaults; clock protection retained");
     debug_log("apply prerequisite failed: %s; recovery scalar=%d curve=%d released=%d\n",
         failure, recovery.gpuOffset.verified, recovery.curve.verified,
         recovery.restrictionReleased);

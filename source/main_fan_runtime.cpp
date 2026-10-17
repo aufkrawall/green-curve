@@ -31,14 +31,23 @@ static int get_effective_live_fan_mode() {
     if (g_app.fanCurveRuntimeActive) return FAN_MODE_CURVE;
     return g_app.fanIsAuto ? FAN_MODE_AUTO : FAN_MODE_FIXED;
 }
+// fanIsAuto starts false and says nothing until a policy readback has answered
+// for every fan, so a "manual" seen before that (at boot, before the first
+// telemetry pass) is not an observation of anyone's fan policy.
+static bool live_fan_policy_readback_complete() {
+    return g_app.fanSupported && g_app.fanCount > 0 &&
+        all_fans_known(g_app.readback.fan.policy, g_app.fanCount);
+}
 static void initialize_gui_fan_settings_from_live_state(bool syncGuiCurve) {
     ensure_valid_fan_curve_config(&g_app.guiFanCurve);
     ensure_valid_fan_curve_config(&g_app.activeFanCurve);
     if (!g_app.serviceSnapshotAuthoritative) {
         int liveMode = get_effective_live_fan_mode();
         int intentMode = current_green_curve_fan_intent_mode();
-        if (intentMode == FAN_MODE_AUTO && liveMode != FAN_MODE_AUTO) {
-            debug_log("fan intent: external live fan policy is %s while Green Curve intent is Auto; preserving Auto\n",
+        if (intentMode == FAN_MODE_AUTO && liveMode != FAN_MODE_AUTO &&
+            !g_app.fanCurveRuntimeActive && !g_app.fanFixedRuntimeActive &&
+            live_fan_policy_readback_complete()) {
+            debug_log("fan intent: live fan policy reads %s while Green Curve intent is Auto (not this process's fan runtime); preserving Auto\n",
                 fan_mode_label(liveMode));
         }
         g_app.activeFanMode = intentMode;
@@ -403,6 +412,31 @@ static void release_single_instance_mutex() {
     CloseHandle(g_singleInstanceMutex);
     g_singleInstanceMutex = nullptr;
 }
+// The runtime's own duty writes.  Under load a curve steps every poll, one
+// write per fan, and logging each was the largest remaining steady-state line
+// (up to ~340 KB/h at a 2 s poll on two fans).  The mode/fan count is the key
+// and logs at once; the duty is the summarized value.  A failed tick logs from
+// report_fan_runtime_failure() and invalidates this, so recovery is a change.
+// Fan worker (service) or fan timer (GUI) thread only.
+static gc_log_steady::Tracker g_fanRuntimeWriteLog = {};
+static void log_fan_runtime_write(const char* mode, int pct, int tempC) {
+    char key[64] = {};
+    StringCchPrintfA(key, ARRAY_COUNT(key), "mode=%s fans=%u", mode,
+        (unsigned int)g_app.fanCount);
+    gc_log_steady::Decision d = gc_log_steady::observe(&g_fanRuntimeWriteLog,
+        key, GetTickCount64(), (unsigned long long)(pct > 0 ? pct : 0),
+        g_debug_log_verbose);
+    if (gc_log_steady::wants_summary(d)) {
+        char window[128] = {};
+        gc_log_steady::format_window(window, sizeof(window), d.pending, "pct");
+        debug_log("fan runtime writes: steady %s %s lastTempC=%d\n",
+            d.action == gc_log_steady::LOG_CHANGE ? "(previous mode)" : key,
+            window, tempC);
+    }
+    if (gc_log_steady::wants_full_line(d)) {
+        debug_log("fan runtime write: %s pct=%d tempC=%d\n", key, pct, tempC);
+    }
+}
 #include "main_fan_runtime_failure.cpp"
 static void stop_fan_curve_runtime(bool restoreFanAutoOnExit) {
     if (restoreFanAutoOnExit && (g_app.fanCurveRuntimeActive || g_app.fanFixedRuntimeActive)) {
@@ -423,7 +457,11 @@ static void stop_fan_curve_runtime(bool restoreFanAutoOnExit) {
     g_app.fanRuntimeLastApplyTickMs = 0;
     if (hadRuntime && (g_app.activeFanMode == FAN_MODE_CURVE || g_app.activeFanMode == FAN_MODE_FIXED)) {
         if (!restoreFanAutoOnExit && !g_app.fanIsAuto) {
-            debug_log("fan intent: runtime stopped while live driver fan is manual; treating it as external policy and returning Green Curve intent to Auto\n");
+            // The manual policy is this runtime's own write, not another
+            // controller's: every caller follows with its own fan write (driver
+            // auto in Reset/rollback/handback, a new runtime, or the failure path).
+            debug_log("fan intent: runtime stopped (previous mode=%s) with the driver fan still manual from Green Curve's own runtime; intent returns to Auto until the caller's next fan write\n",
+                fan_mode_label(g_app.activeFanMode));
         }
         g_app.activeFanMode = FAN_MODE_AUTO;
         g_app.activeFanFixedPercent = 0;
@@ -507,7 +545,7 @@ static void apply_fan_curve_tick() {
         }
         bool exact = false;
         // nvml_set_fan_manual can crash in nvml.dll — NO CS held.
-        if (!nvml_set_fan_manual(fixedTargetPercent, &exact, detail, sizeof(detail)) || !exact) {
+        if (!nvml_set_fan_manual(fixedTargetPercent, &exact, detail, sizeof(detail), true) || !exact) {
             if (!detail[0] && !exact) {
                 set_message(detail, sizeof(detail), "Fan readback did not confirm %d%%", fixedTargetPercent);
             }
@@ -524,6 +562,8 @@ static void apply_fan_curve_tick() {
         }
         sync_fan_ui_from_cached_state(window_should_redraw_fan_controls());
         LeaveCriticalSection(&g_appLock);
+        log_fan_runtime_write("fixed", fixedTargetPercent,
+            g_app.gpuTemperatureValid ? g_app.gpuTemperatureC : 0);
         return;
     }
 
@@ -613,7 +653,7 @@ static void apply_fan_curve_tick() {
 
     // Phase 4: apply fan speed — nvml_set_fan_manual can crash, NO CS held.
     bool exact = false;
-    if (!nvml_set_fan_manual(targetPercent, &exact, detail, sizeof(detail)) || !exact) {
+    if (!nvml_set_fan_manual(targetPercent, &exact, detail, sizeof(detail), true) || !exact) {
         if (!detail[0] && !exact) {
             set_message(detail, sizeof(detail), "Fan readback did not confirm %d%%", targetPercent);
         }
@@ -642,6 +682,7 @@ static void apply_fan_curve_tick() {
     }
     sync_fan_ui_from_cached_state(window_should_redraw_fan_controls());
     LeaveCriticalSection(&g_appLock);
+    log_fan_runtime_write("curve", targetPercent, currentTempC);
 }
 static bool validate_desired_fan_settings_for_apply(const DesiredSettings* desired, char* result, size_t resultSize) {
     if (!desired->hasFan) return true;

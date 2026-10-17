@@ -776,7 +776,7 @@ once, with no proof gate.
   `DENY_STATE_UNCERTAIN` verdict until an explicit Apply/Reset resolves the
   state — the flag is a gate, not just a published label (2026-08-01).
 
-## Startup-apply policy (introduced in protocol v13; current protocol v28)
+## Startup-apply policy (introduced in protocol v13; current protocol v29)
 
 What the daemon writes to the GPU when it starts is administrator-configurable,
 not hard-coded. `RESTORE_LAST` is **zero**, so an absent or zero-filled record

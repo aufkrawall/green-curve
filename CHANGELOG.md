@@ -29,16 +29,19 @@
 
 ## Unreleased
 
-Apply reliability and the in-app updater's local protections improve in this release.
+Apply reliability, diagnostics and the in-app updater's local protections improve in this release.
 
 ### Improved
 
+- **Automatic apply failures:** when a profile fails to apply automatically at logon, after standby or after a driver restart, Green Curve now says so in the window and the tray (on Linux in the TUI and `status`), with the cause and a prompt to press Apply.
 - **Crash diagnostics:** installing the background service now also enables Windows crash dumps for Green Curve, so crashes that bypass its own crash handler still leave a dump for diagnosis.
+- **Debug log:** routine background activity, including fan-curve speed steps under load, is now summarized every 10 minutes, so the log keeps weeks of history instead of about two days; set `GREEN_CURVE_DEBUG=verbose` for full per-tick detail.
 
 ### Fixed
 
 - **Logon profile:** a profile with a selective GPU offset and an undervolt lock no longer fails to apply at logon on a cold GPU, which previously left the GPU at stock and paused automatic restore.
 - **In-app update:** an update refused because its signed metadata expired no longer closes your Green Curve window first.
+- **CLI log:** signing in no longer erases the earlier entries of `greencurve_cli_log.txt`, including the record of a failed logon handoff.
 
 ### Security
 
@@ -48,6 +51,7 @@ Apply reliability and the in-app updater's local protections improve in this rel
 ### Compatibility notes
 
 - Existing configuration and profiles remain fully compatible.
+- App and background service move to protocol v29. They update together, so this needs nothing from you.
 
 ## 0.28
 

@@ -92,3 +92,129 @@ def check_all(ctx, require_text, require_text_in_operation,
                  "queued debug lines can be flushed to the crash breadcrumb")
     require_text(crash_cpp, "debug_log_drain_pending_for_crash()",
                  "the crash paths drain what the log writer has not written yet")
+
+    check_steady_state_lines(ctx, require_text)
+    check_cli_log_appends(ctx, require_text)
+    check_auto_apply_failure_notice(ctx, require_text)
+
+
+# The per-tick lines measured at ~97% of the 0.28 field log.  Each must route
+# through the steady-state tracker (debug_log_steady_state_policy.h): a plain
+# debug_log or a debug_log_on_change whose key carries a per-read counter
+# brings back a log that holds two days.  (file, anchor that must be present)
+_STEADY_STATE_SITES = (
+    ("gui_service_io_log.h", "observe(&s_telemetry"),
+    ("gui_service_io_log.h", "observe(&s_adoption"),
+    ("main_service_state_envelope.cpp", "observe(\n        &s_envelopeLog"),
+    ("xbar_telemetry.h", "observe(&s_xbarLog"),
+    ("main_service_fan_worker.cpp", "observe(&s_pulseLog"),
+    ("main_service_fan_worker.cpp", "observe(&s_waitLog"),
+    ("main_service_fan_worker.cpp", "observe(&s_ensureLog"),
+    # Fan-curve duty steps under load: one write per fan per poll.
+    ("main_fan_runtime.cpp", "observe(&g_fanRuntimeWriteLog"),
+)
+
+# Text that, if it reappears, is the old unconditional per-tick form.
+_STEADY_STATE_FORBIDDEN = (
+    ("gui_service_state.cpp", '"GUI service state: phase=%s epoch=%llu instance=%llu revision='),
+    ("main_service_state_envelope.cpp", '"service envelope: instance=%llu revision='),
+    ("gui_mutation_worker.cpp", '"GUI service I/O: read kind='),
+)
+
+
+def _read(path):
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        return handle.read()
+
+
+def _fail(label):
+    import sys
+    print(f"Regression source check FAILED: {label}")
+    sys.exit(1)
+
+
+def check_steady_state_lines(ctx, require_text):
+    require_text(_p(ctx, "app_shared.h"), '#include "debug_log_steady_state_policy.h"',
+                 "every shard sees the steady-state log policy")
+    require_text(_p(ctx, "gui_mutation_worker.cpp"), '#include "gui_service_io_log.h"',
+                 "the GUI worker's read line goes through the summarizing helper")
+    for name, anchor in _STEADY_STATE_SITES:
+        if anchor not in _read(_p(ctx, name)):
+            _fail(f"{name}: per-tick line must use the steady-state tracker ({anchor!r})")
+    for name, needle in _STEADY_STATE_FORBIDDEN:
+        if needle in _read(_p(ctx, name)):
+            _fail(f"{name}: unsummarized per-tick log line is back ({needle!r})")
+    # The runtime's duty writes keep the crash/wedge phase marker but do not log
+    # an "apply phase:" line each; both runtime callers say they are runtime.
+    require_text(_p(ctx, "main_runtime_nvml.cpp"), "set_last_apply_phase(phase, !runtimeTick);",
+                 "a runtime fan duty write updates the phase marker without logging it")
+    fan_runtime = _read(_p(ctx, "main_fan_runtime.cpp"))
+    if fan_runtime.count("sizeof(detail), true) || !exact)") != 2:
+        _fail("main_fan_runtime.cpp: both fan runtime ticks must mark their duty writes as runtime")
+    # Verbose must be wired in both processes or the per-tick detail is gone.
+    require_text(_p(ctx, "entry.cpp"), "refresh_debug_log_verbose();",
+                 "the GUI decides verbose per-tick logging after enabling the log")
+    require_text(_p(ctx, "main_data_paths.cpp"), "static void refresh_debug_log_verbose()",
+                 "verbose per-tick logging has one decision point")
+    require_text(_p(ctx, "main_service_host.cpp"), "refresh_debug_log_verbose();",
+                 "the service decides verbose per-tick logging at startup")
+    # Fan intent lines name Green Curve's own state accurately: a manual policy
+    # seen before any readback (boot) or left by our own runtime (shutdown) is
+    # not another controller's.
+    require_text(_p(ctx, "main_state_sync.cpp"),
+                 "!g_app.fanIsAuto && live_fan_policy_readback_complete()",
+                 "the snapshot's external-fan-policy line waits for a fan policy readback")
+    require_text(_p(ctx, "main_fan_runtime.cpp"),
+                 "with the driver fan still manual from Green Curve's own runtime",
+                 "a stopped runtime attributes the manual fan to itself")
+    if "treating it as external policy" in _read(_p(ctx, "main_fan_runtime.cpp")):
+        _fail("main_fan_runtime.cpp: runtime stop misattributes its own manual fan")
+
+
+def check_cli_log_appends(ctx, require_text):
+    # greencurve_cli_log.txt is an appending, capped log (F-01-003).  Replacing
+    # it erased the earlier records at every logon, including the FAILED one.
+    import re
+    pattern = re.compile(r"write_text_file_atomic\(\s*cli_log_path\(\)")
+    for name in sorted(os.listdir(ctx.SOURCE_DIR)):
+        if not name.endswith((".cpp", ".h")):
+            continue
+        if pattern.search(_read(_p(ctx, name))):
+            _fail(f"source/{name}: the CLI log must be appended, never replaced")
+    require_text(_p(ctx, "logon_handoff_status.h"), "gc_cli_log_append_linef(",
+                 "the logon handoff success record appends to the CLI log")
+    require_text(_p(ctx, "entry.cpp"),
+                 'gc_cli_log_append_linef("Green Curve logon handoff FAILED',
+                 "the logon handoff FAILED record appends to the CLI log")
+    require_text(_p(ctx, "cli_console.cpp"), "gc_cli_log_append_record(cli_log_path(),",
+                 "the CLI append goes through the capped append policy")
+
+
+def check_auto_apply_failure_notice(ctx, require_text):
+    # A failed automatic logon/standby/driver-recovery write latched the
+    # AUTOMATIC_APPLY_FAILED lockout silently.  Every such site records its
+    # cause for the GUI (protocol v29), and the GUI announces the new lockout.
+    lifecycle = _read(_p(ctx, "main_service_lifecycle_apply.cpp"))
+    if lifecycle.count("service_lifecycle_latch_write_failure(") != 4:
+        _fail("main_service_lifecycle_apply.cpp: each failed automatic write "
+              "(logon, standby, driver recovery) must record its cause")
+    require_text(_p(ctx, "gpu_backend_apply_failure.h"), "GC_APPLY_RECOVERY_VERIFIED_TEXT",
+                 "the apply's recovery sentence is the shared constant the service matches")
+    require_text(_p(ctx, "main_service_pipe_switch.cpp"), "service_auto_apply_failure_clear();",
+                 "an explicit successful Apply clears the recorded failure cause")
+    require_text(_p(ctx, "main_state_sync.cpp"),
+                 "service_auto_apply_failure_for_snapshot_locked(snapshotLockoutReason)",
+                 "the snapshot publishes the failure record only with its lockout")
+    require_text(_p(ctx, "gui_service_state.cpp"), "gui_announce_auto_restore_lockout(previousLockout);",
+                 "the GUI announces a new automatic-restore lockout")
+    # The Linux daemon publishes the same record and both Linux clients show it.
+    require_text(_p(ctx, "linux_daemon_snapshot_runtime.cpp"),
+                 "s->autoApplyFailure = g_autoApplyFailure;",
+                 "the Linux snapshot publishes the failure record with its lockout")
+    runtime = _read(_p(ctx, "linux_auto_restore_runtime.h"))
+    if runtime.count("auto_restore_note_automatic_failure(trigger, outcome.message") != 2:
+        _fail("linux_auto_restore_runtime.h: each failed unattended write records its cause")
+    require_text(_p(ctx, "linux_live_output.cpp"), "Automatic restore notice: %s",
+                 "the Linux CLI status shows the automatic-apply failure notice")
+    require_text(_p(ctx, "linux_tui_refresh.cpp"), "gc_auto_restore_notice_for_transition(",
+                 "the Linux TUI announces a new automatic-restore lockout")

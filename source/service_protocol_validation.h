@@ -237,6 +237,7 @@ static inline bool service_snapshot_bool_fields_valid(
         &snapshot->health.vfSnapshotFresh,
         &snapshot->health.recoveryAttempted,
         &snapshot->health.recoverySucceeded,
+        &snapshot->autoApplyFailure.coreRecovered,
     };
     for (const gc_bool8* flag : flags)
         if (*flag > 1) return false;
@@ -307,6 +308,14 @@ static inline void validate_service_snapshot_for_ipc(ServiceSnapshot* s) {
     if (s->autoRestoreLockoutReason > SERVICE_AUTO_RESTORE_LOCKOUT_MAX) {
         s->autoRestoreLockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED;
     }
+    // v29 failure record: an out-of-range trigger voids the whole record (its
+    // text would be attributed to nothing), and the detail is always a string.
+    canonicalize_gc_bool8(&s->autoApplyFailure.coreRecovered);
+    if (s->autoApplyFailure.trigger > SERVICE_LIFECYCLE_TRIGGER_DAEMON_START) {
+        s->autoApplyFailure = ServiceAutoApplyFailure{};
+    }
+    for (gc_u8& reservedByte : s->autoApplyFailure.reserved) reservedByte = 0;
+    s->autoApplyFailure.detail[sizeof(s->autoApplyFailure.detail) - 1] = '\0';
     if (s->adapterCount > MAX_GPU_ADAPTERS) s->adapterCount = MAX_GPU_ADAPTERS;
     if (s->selectedAdapterIndex >= MAX_GPU_ADAPTERS) s->selectedAdapterIndex = 0;
     for (unsigned int i = 0; i < s->adapterCount && i < MAX_GPU_ADAPTERS; i++) {
@@ -363,7 +372,14 @@ static inline bool validate_service_state_envelope_for_ipc(
         !service_wire_string_is_terminated(snapshot->gpuName,
             (unsigned int)sizeof(snapshot->gpuName)) ||
         !service_wire_string_is_terminated(snapshot->ownerUser,
-            (unsigned int)sizeof(snapshot->ownerUser))) return false;
+            (unsigned int)sizeof(snapshot->ownerUser)) ||
+        snapshot->autoApplyFailure.trigger >
+            SERVICE_LIFECYCLE_TRIGGER_DAEMON_START ||
+        snapshot->autoApplyFailure.reserved[0] != 0 ||
+        snapshot->autoApplyFailure.reserved[1] != 0 ||
+        snapshot->autoApplyFailure.reserved[2] != 0 ||
+        !service_wire_string_is_terminated(snapshot->autoApplyFailure.detail,
+            (unsigned int)sizeof(snapshot->autoApplyFailure.detail))) return false;
     for (unsigned int i = 0; i < snapshot->adapterCount; ++i) {
         if (!service_wire_string_is_terminated(snapshot->adapters[i].name,
                 (unsigned int)sizeof(snapshot->adapters[i].name)) ||
@@ -597,6 +613,10 @@ static inline bool service_snapshot_is_zero(const ServiceSnapshot& snapshot) {
     GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.videoClkOffsetReadbackValid);
     GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.videoClkOffsetKhz);
     GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.videoClkMeasuredClockKhz);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.autoApplyFailure.trigger);
+    GC_SERVICE_PROTOCOL_REQUIRE_ZERO(snapshot.autoApplyFailure.coreRecovered);
+    if (!service_scalar_array_is_zero(snapshot.autoApplyFailure.reserved) ||
+        !service_scalar_array_is_zero(snapshot.autoApplyFailure.detail)) return false;
     return service_gpu_health_is_zero(snapshot.health);
 }
 

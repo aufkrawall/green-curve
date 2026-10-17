@@ -23,10 +23,8 @@ static void set_main_window_title(HWND hwnd) {
 static bool handle_cli(LPWSTR wCmdLine) {
     CliOptions opts = {};
     if (!parse_cli_options(wCmdLine, &opts)) {
-        char err[256] = {};
         const char* text = opts.error[0] ? opts.error : "Failed to parse CLI";
-        resolve_data_paths(err, sizeof(err));
-        write_text_file_atomic(cli_log_path(), text, strlen(text), err, sizeof(err));
+        gc_cli_log_append_linef("ERROR: %s\n", text);
         // F-01-001: a mistyped command line is where silence is worst.
         gc_cli_console_writef("ERROR: %s\n", text);
         g_cliExitCode = 1;
@@ -46,19 +44,8 @@ static bool handle_cli(LPWSTR wCmdLine) {
         char handoffResult[512] = {};
         if (!service_client_logon_handoff(handoffResult,
                 sizeof(handoffResult))) {
-            char taskLog[768] = {};
-            char timestamp[64] = {};
-            format_log_timestamp_prefix(timestamp, sizeof(timestamp));
-            StringCchPrintfA(taskLog, ARRAY_COUNT(taskLog),
-                "%sGreen Curve logon handoff FAILED: %s\n",
-                timestamp,
+            gc_cli_log_append_linef("Green Curve logon handoff FAILED: %s\n",
                 handoffResult[0] ? handoffResult : "unknown service error");
-            char pathErr[256] = {};
-            char writeErr[256] = {};
-            if (resolve_data_paths(pathErr, sizeof(pathErr))) {
-                write_text_file_atomic(cli_log_path(), taskLog,
-                    strlen(taskLog), writeErr, sizeof(writeErr));
-            }
             debug_log("logon startup: authenticated handoff failed: %s\n",
                 handoffResult[0] ? handoffResult : "unknown");
             g_cliExitCode = 1;
@@ -477,6 +464,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     } else {
         g_debug_logging = debugEnvEnabled || (configDebugEnabled != 0);
     }
+    refresh_debug_log_verbose();
     if (g_debug_logging) {
         g_debugSessionStartTickMs = GetTickCount64();
         char configToken[32] = {};

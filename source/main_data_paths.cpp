@@ -491,6 +491,7 @@ static void clear_service_authoritative_state() {
     g_app.serviceLastLifecycleTrigger = SERVICE_LIFECYCLE_TRIGGER_NONE;
     g_app.serviceLastLifecycleResult = SERVICE_LIFECYCLE_RESULT_NONE;
     g_app.serviceAutoRestoreLockoutReason = SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
+    memset(&g_app.serviceAutoApplyFailure, 0, sizeof(g_app.serviceAutoApplyFailure));
     g_app.serviceActiveDesiredValid = false;
     memset(&g_app.serviceActiveDesired, 0, sizeof(g_app.serviceActiveDesired));
     g_app.serviceControlStateValid = false;
@@ -587,6 +588,25 @@ static void set_default_config_path() {
     invalidate_tray_profile_cache();
 }
 
+// Per-tick steady-state detail (debug_log_steady_state_policy.h).  Both
+// processes call this after deciding g_debug_logging; verbose never outlives
+// logging itself.  The transition is logged once, so a log says which mode it
+// was written in.
+static void refresh_debug_log_verbose() {
+    char value[32] = {};
+    DWORD n = GetEnvironmentVariableA(APP_DEBUG_ENV, value, ARRAY_COUNT(value));
+    bool envVerbose = n > 0 && n < ARRAY_COUNT(value) &&
+        gc_log_steady::env_value_requests_verbose(value);
+    bool configVerbose = g_app.configPath[0] &&
+        get_config_int(g_app.configPath, "debug", "verbose", 0) != 0;
+    bool verbose = g_debug_logging && (envVerbose || configVerbose);
+    if (verbose == g_debug_log_verbose) return;
+    g_debug_log_verbose = verbose;
+    debug_log("debug log: per-tick verbose detail %s (env=%d config=%d); steady-state lines otherwise summarize every %llu s\n",
+        verbose ? "ON" : "OFF", envVerbose ? 1 : 0, configVerbose ? 1 : 0,
+        (unsigned long long)(gc_log_steady::kSummaryIntervalMs / 1000ull));
+}
+
 static void refresh_service_debug_logging_from_config() {
     if (!app_is_service_process()) return;
     bool newDebugLogging = service_config_debug_logging_enabled(nullptr, nullptr);
@@ -594,4 +614,5 @@ static void refresh_service_debug_logging_from_config() {
     if (!g_debug_logging) {
         close_debug_log_file();
     }
+    refresh_debug_log_verbose();
 }

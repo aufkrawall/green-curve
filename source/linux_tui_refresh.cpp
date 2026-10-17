@@ -120,6 +120,29 @@ bool tui_refresh_service(TuiState* state, bool userRequested,
         snprintf(state->status, sizeof(state->status),
             "Hardware readback now matches configured intent");
     }
+    // A new automatic-restore lockout wins the status line once, with its
+    // cause (protocol v29) and the action; until 2026-10 the TUI never said
+    // that automatic restore had stopped.  Same edge rule as the Windows GUI.
+    GcAutoRestoreNotice lockoutNotice = gc_auto_restore_notice_for_transition(
+        wasOnline ? previous.snapshot.autoRestoreLockoutReason
+                  : (gc_u32)SERVICE_AUTO_RESTORE_LOCKOUT_NONE,
+        next.snapshot.autoRestoreLockoutReason);
+    if (lockoutNotice == GC_AUTO_RESTORE_NOTICE_HANDBACK_INCOMPLETE) {
+        snprintf(state->status, sizeof(state->status),
+            "Automatic restore is off: %s",
+            linux_auto_restore_lockout_reason_name(
+                next.snapshot.autoRestoreLockoutReason));
+    } else if (lockoutNotice == GC_AUTO_RESTORE_NOTICE_AUTO_APPLY_FAILED) {
+        char title[64] = {}, body[256] = {};
+        gc_auto_apply_failure_compose(&next.snapshot.autoApplyFailure,
+            state->status, sizeof(state->status), title, sizeof(title),
+            body, sizeof(body));
+    }
+    if (lockoutNotice != GC_AUTO_RESTORE_NOTICE_NONE) {
+        linux_debug_logf("tui: automatic restore lockout notice (reason=%u trigger=%u): %s\n",
+            (unsigned int)next.snapshot.autoRestoreLockoutReason,
+            (unsigned int)next.snapshot.autoApplyFailure.trigger, state->status);
+    }
     state->nextTelemetryMs = tui_monotonic_ms() + 1000;
     return true;
 }

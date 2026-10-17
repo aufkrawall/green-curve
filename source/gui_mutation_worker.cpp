@@ -68,6 +68,7 @@ struct GuiServiceIoCompletion {
     char reason[96];
     char error[512];
 };
+#include "gui_service_io_log.h"
 
 static CRITICAL_SECTION g_guiMutationLock;
 static bool g_guiMutationLockReady = false;
@@ -402,30 +403,7 @@ static DWORD WINAPI gui_mutation_worker_proc(void*) {
                 completion->transportSuccess ? &completion->response : nullptr);
         }
         completion->durationMs = GetTickCount64() - started;
-        // deadlineMs makes a timeout self-describing: without it a failed read
-        // could not be told apart from a read that was merely slower than a
-        // deadline nobody recorded.  reachability/deadlineExpired finish the
-        // job: without them a missed answer from a BUSY service and a genuinely
-        // absent one are the same log line, which is the conflation that made a
-        // 19 s volume stall present as a lost connection (2026-09-12).
-        debug_log("GUI service I/O: read kind=%d reason=%s durationMs=%llu deadlineMs=%lu success=%d epoch=%llu phase=%u revision=%llu reachability=%d deadlineExpired=%d error=%s\n",
-            (int)ioKind, completion->reason,
-            (unsigned long long)completion->durationMs,
-            ioKind == GUI_SERVICE_IO_ADMIN_TOGGLE ? 0ul
-                : service_state_read_response_timeout_ms(
-                    ioKind == GUI_SERVICE_IO_FULL_SYNC),
-            completion->transportSuccess ? 1 : 0,
-            (unsigned long long)completion->connectionEpoch,
-            // gc_u32 is `unsigned long`, which is 64-bit under the MinGW/LP64
-            // release toolchain and 32-bit under clang-cl/LLP64.  The value is a
-            // small enum, so pin the width explicitly rather than letting %u
-            // read a 64-bit argument on one toolchain and a 32-bit one on the
-            // other.  (Found by the printf attribute added to debug_log.)
-            (unsigned int)completion->response.state.gpuPhase,
-            (unsigned long long)completion->response.state.stateRevision,
-            (int)completion->sendOutcome.reachability,
-            completion->sendOutcome.deadlineExpired ? 1 : 0,
-            completion->error[0] ? completion->error : "none");
+        gui_worker_log_read_completion(ioKind, completion);
 
         HWND notifyWindow = g_guiServiceNotifyWindow;
         // The notify handle is captured on the main thread during coordinator

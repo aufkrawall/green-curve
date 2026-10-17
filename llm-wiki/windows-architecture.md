@@ -154,9 +154,10 @@ comparison.
   `ServiceStateEnvelope`, nonzero service instance/revision/GPU-generation
   identity, phase/topology/active-intent validity, mutation preconditions,
   operation deduplication/result query, and fixed-width `gc_bool8` validation
-  all remain. Current exact sizes (protocol 28; unchanged since 27) are `ServiceRequest=1552`,
-  `ControlState=188`, `DesiredSettings=964`, `ServiceSnapshot=4248`, and
-  `ServiceResponse=7368`; v26/v27 added `DesiredSettings.curvePointFromGpuOffset`,
+  all remain. Current exact sizes (protocol 29) are `ServiceRequest=1552`,
+  `ControlState=188`, `DesiredSettings=964`, `ServiceSnapshot=4440`, and
+  `ServiceResponse=7560`; v29 appended the 192-byte `ServiceAutoApplyFailure`
+  record to the snapshot (see auto-restore-policy.md); v26/v27 added `DesiredSettings.curvePointFromGpuOffset`,
   the PER-POINT provenance the apply needs to tell a typed absolute MHz from one
   projected over a stock base (see clock-transition-audit.md).
   v15-v17 are Linux-side additions; see

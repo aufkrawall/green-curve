@@ -307,3 +307,69 @@ service share the user-side file through append-only handles -- FILE_APPEND_DATA
 writes always land at EOF, so a cooperative truncate moves EOF for every
 writer. Legacy oversized files self-heal on the first post-update write.
 Pure boundaries covered by regression tests 4700+.
+
+## Steady-state summaries and verbose mode (added 2026-10-17)
+
+Source anchors: `source/debug_log_steady_state_policy.h`,
+`source/gui_service_io_log.h`, `source/main_service_state_envelope.cpp`,
+`source/xbar_telemetry.h`, `source/main_service_fan_worker.cpp`,
+`source/main_data_paths.cpp` (`refresh_debug_log_verbose`),
+`tools/log_gates.py` (`check_steady_state_lines`), tests 6700-6719 in
+`tests/diagnostics_followup_tests.cpp`.
+
+The 0.28 field log measured eight per-tick lines (every 2-6 s) at about 97% of
+the file: about 550 KB/h, so the 32 MiB cap held about 2.5 days and older
+evidence was gone before anyone looked. Two of them already used
+`debug_log_on_change`, but their key contained the state revision, which
+increments on every read, so they never suppressed anything.
+
+Rule for a per-tick line: split it into a STATE KEY (what a reader acts on)
+and one tracked VALUE (a counter or measurement). A key change logs at once and
+in full; repeats are counted and one summary per 10 minutes reports
+`n=<count> windowS=<s> <value>=<min>..<max> last=<last>`. When a key changes
+after repeats, a `steady (previous state)` summary precedes the change line.
+Anomalies never go through a tracker: they log at once and invalidate it, so
+the recovery is logged as a change too.
+
+| Line | Key | Tracked value | Logged at once |
+|------|-----|---------------|----------------|
+| `GUI service I/O: read` (telemetry) | kind, reason, epoch, phase, reachability | durationMs | failure, deadline expiry, error, >= 250 ms, every non-telemetry read |
+| `service envelope:` | instance, generation, phase, sections, topology, desired | revision | any key change |
+| `GUI service state:` (adoption) | phase, epoch, instance, generation, sections | revision | any key change |
+| `xbar refresh:` | XBAR/MSVDD/SYS/VIDEO offsets | measured XBAR kHz | offset change |
+| `service_runtime_pulse_done:` | fan mode, duty, curve/fixed, failing | temperature | first failing tick, recovery |
+| `service_fan_runtime_thread: waiting` | interval, curve/fixed | waitMs | interval/mode change |
+| `ensure_service_fan_runtime_thread: already running` | constant | - | every other plan |
+| `fan runtime write:` (curve/fixed duty writes) | mode, fan count | duty % | mode/fan-count change; failures log from the runtime failure path |
+
+`service_runtime_pulse:` (pre-tick inputs) and
+`nvml_set_fan_manual: ... already manual` are verbose-only. A runtime duty
+write no longer logs `apply phase: Fan manual speed write` per fan
+(`nvml_set_fan_manual(..., runtimeTick=true)` ->
+`set_last_apply_phase(phase, false)`), but still updates the phase marker
+that crash reports and the wedge watchdog print. Explicit applies keep their
+`apply phase:` lines and timings. Measured in the 0.28 log: the busiest
+fan-curve hour carried 148 KB of these lines (13% of that hour); a sustained
+2 s poll on two fans would be ~700 KB/h, now ~1 KB/h of summaries.
+
+Verbose mode restores the old per-tick detail: `GREEN_CURVE_DEBUG=verbose` (or
+`2`), or `[debug] verbose=1` in the config. Both processes log
+`debug log: per-tick verbose detail ON|OFF` once when the mode is decided.
+Replaying the 0.28 field log (44 h) through the new rules gives about 19 KB/h
+instead of 549 KB/h (29x), so the cap holds about ten weeks of steady state.
+Stale-risk: the fan-write numbers are a replay of the field log, not a
+measured gaming session.
+
+When grepping an old (<= 0.28) log, the per-tick lines are still there; a newer
+log shows `steady` summaries instead, so search the summary prefix too, e.g.
+`'GUI service I/O: read (kind|steady)'`.
+
+## CLI log (`greencurve_cli_log.txt`, updated 2026-10-17)
+
+Every writer appends, capped at 2 MiB with an in-place truncation marker
+(`cli_log_append_policy.h`, `gc_cli_log_append_linef` in `cli_console.cpp`).
+The silent scheduled-task paths (logon handoff accepted, logon handoff FAILED,
+an unparseable command line) used to replace the whole file, so each logon
+erased the previous logon's record. `tools/log_gates.py` forbids any
+`write_text_file_atomic(cli_log_path()` again; tests 6730-6746 cover append,
+rotation and refusals.

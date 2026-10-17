@@ -148,6 +148,7 @@ static bool auto_restore_note_explicit_success(const char* origin,
              errorOut && errorOut[0] ? errorOut : "unknown error");
         return false;
     }
+    g_autoApplyFailure = ServiceAutoApplyFailure{};
     dlog("daemon auto-restore: explicit %s succeeded; automatic restoration "
          "re-armed durably\n",
          origin ? origin : "operation");
@@ -222,8 +223,27 @@ static void clear_auto_restore_attempts_on_clean_stop() {
 // restoration off, whatever its origin -- the Windows rule, verbatim.  The
 // difference between "we could not start" and "we wrote and it went wrong" is
 // exactly the difference between retrying being safe and being reckless.
-static void auto_restore_note_automatic_failure(LinuxAutoRestoreTrigger trigger) {
+//
+// `detail` is the write's own failure text and `rollbackOk` whether returning
+// to the pre-write state verified; both become the v29 cause record.  The
+// record never claims stock clocks (coreRecovered stays 0): Linux rolls back to
+// whatever was on the hardware before the write, not to defaults.
+static void auto_restore_note_automatic_failure(LinuxAutoRestoreTrigger trigger,
+                                                const char* detail,
+                                                bool rollbackOk) {
     if (g_autoRestoreGuard.lockedOut) return;
+    ServiceAutoApplyFailure record = {};
+    record.trigger = linux_auto_restore_trigger_is_start(trigger)
+        ? SERVICE_LIFECYCLE_TRIGGER_DAEMON_START
+        : SERVICE_LIFECYCLE_TRIGGER_STANDBY_RESUME;
+    gc_snprintf(record.detail, sizeof(record.detail), "%s; rollback to the "
+                "previous state %s", detail && detail[0] ? detail : "write failed",
+                rollbackOk ? "verified" : "is uncertain");
+    // Before the lockout, so no snapshot shows the lockout without its cause.
+    g_autoApplyFailure = record;
+    dlog("daemon auto-restore: failure recorded for clients trigger=%u "
+         "rollbackOk=%d detailChars=%u\n", (unsigned int)record.trigger,
+         rollbackOk ? 1 : 0, (unsigned int)strlen(record.detail));
     linux_auto_restore_note_lockout(&g_autoRestoreGuard,
         SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED);
     dlog("daemon auto-restore: %s failed after reaching hardware or its durable "
@@ -374,7 +394,8 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
         char stateErr[256] = {};
         store_daemon_record(LINUX_DAEMON_RECORD_UNCERTAIN, target, &committed,
                             stateErr, sizeof(stateErr));
-        auto_restore_note_automatic_failure(trigger);
+        auto_restore_note_automatic_failure(trigger, outcome.message,
+                                            mutation.rollbackSucceeded);
         dlog("daemon auto-restore: %s failed -> %s (rollback=%d anyWrite=%d)\n",
              linux_auto_restore_trigger_name(trigger), outcome.message,
              mutation.rollbackSucceeded ? 1 : 0, mutation.anyWrite ? 1 : 0);
@@ -400,11 +421,11 @@ static LinuxAutoRestoreOutcome daemon_automatic_restore_write(
         bool uncertaintyRecorded = store_daemon_record(
             LINUX_DAEMON_RECORD_UNCERTAIN, &committedTarget, &committed,
             uncertainErr, sizeof(uncertainErr));
-        auto_restore_note_automatic_failure(trigger);
         gc_snprintf(outcome.message, sizeof(outcome.message),
                     "automatic restore persistence failed after hardware "
                     "write; hardware rollback %s: %s",
                     rollbackOk ? "succeeded" : "is uncertain", commitErr);
+        auto_restore_note_automatic_failure(trigger, outcome.message, rollbackOk);
         dlog("daemon auto-restore: %s applied but ACTIVE commit failed: %s; "
              "hardware rollback=%d%s%s; uncertain record persisted=%d%s%s\n",
              linux_auto_restore_trigger_name(trigger),

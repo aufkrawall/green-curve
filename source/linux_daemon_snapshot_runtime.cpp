@@ -22,6 +22,10 @@ static void populate_snapshot(ServiceSnapshot* s, ControlState* control) {
     // from its real lockout state (service_auto_restore_is_locked_out).
     s->autoRestoreLockoutReason = linux_auto_restore_published_lockout_reason(
         &g_autoRestoreGuard, g_stateUncertain);
+    // Published only with the lockout it explains (protocol v29).
+    if (s->autoRestoreLockoutReason ==
+            SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED)
+        s->autoApplyFailure = g_autoApplyFailure;
     s->health = g_gpu.health;
     if (g_stateUncertain) {
         s->health.reason = SERVICE_GPU_HEALTH_STATE_UNCERTAIN;

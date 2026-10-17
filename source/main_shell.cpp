@@ -330,6 +330,7 @@ static void unlock_all() {
 #endif
 
 #include "main_data_paths.cpp"
+#include "main_service_auto_apply_failure.cpp"
 #include "main_state_sync.cpp"
 #include "main_service_recovery_clock.cpp"
 #include "main_service_recovery_ledger.cpp"

@@ -105,6 +105,10 @@ static LinuxDaemonStartupRecord g_startupPolicy = {};
 // Whether an unattended write is still allowed.  See
 // linux_auto_restore_policy.h; the persisted copy lives in GC_DAEMON_GUARD_FILE.
 static LinuxAutoRestoreGuard g_autoRestoreGuard = {};
+// The protocol-v29 cause of an AUTOMATIC_APPLY_FAILED latched by THIS daemon
+// process (linux_auto_restore_runtime.h).  In memory only, like Windows: after
+// a restart the persisted lockout is published without a cause.
+static ServiceAutoApplyFailure g_autoApplyFailure = {};
 
 static bool persist_daemon_operation(gc_u64 operationId, gc_u32 state,
     gc_u32 responseStatus, gc_u32 outcomeSeverity, const char* message) {

@@ -93,9 +93,33 @@ static bool xbar_refresh_live_state() {
     changed = changed ||
         g_app.videoClkMeasuredClockKhz != videoMeasuredKhz;
     g_app.videoClkMeasuredClockKhz = videoMeasuredKhz;
+    // The offsets are state and log at once when they move; the measured clocks
+    // and voltage move on nearly every refresh, so they are the summarized
+    // value (debug_log_steady_state_policy.h).  This refresh runs under the
+    // caller's hardware serialization, which also serializes the tracker.
     if (changed) {
-        debug_log("xbar refresh: offset=%d kHz msvdd=%d uV measured=%u kHz volt=%u uV\n",
-                  snap.freqOffsetKhz, snap.msvddOffsetUv, snap.measuredKhz, measuredVoltUv);
+        static gc_log_steady::Tracker s_xbarLog = {};
+        char key[128] = {};
+        StringCchPrintfA(key, ARRAY_COUNT(key),
+            "offset=%d kHz msvdd=%d uV sysOffset=%d kHz videoOffset=%d kHz",
+            snap.freqOffsetKhz, snap.msvddOffsetUv, g_app.sysClkFreqOffsetKhz,
+            g_app.videoClkFreqOffsetKhz);
+        gc_log_steady::Decision d = gc_log_steady::observe(&s_xbarLog, key,
+            GetTickCount64(), snap.measuredKhz, g_debug_log_verbose);
+        if (gc_log_steady::wants_summary(d)) {
+            char window[128] = {};
+            gc_log_steady::format_window(window, sizeof(window), d.pending,
+                "measuredKhz");
+            debug_log("xbar refresh: steady %s %s volt=%u uV\n",
+                d.action == gc_log_steady::LOG_CHANGE ? "(previous offsets)" : key,
+                window, measuredVoltUv);
+        }
+        if (gc_log_steady::wants_full_line(d)) {
+            debug_log("xbar refresh: offset=%d kHz msvdd=%d uV measured=%u kHz volt=%u uV sysOffset=%d kHz videoOffset=%d kHz\n",
+                      snap.freqOffsetKhz, snap.msvddOffsetUv, snap.measuredKhz,
+                      measuredVoltUv, g_app.sysClkFreqOffsetKhz,
+                      g_app.videoClkFreqOffsetKhz);
+        }
     }
     return true;
 }
