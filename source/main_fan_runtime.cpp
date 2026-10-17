@@ -417,12 +417,13 @@ static void release_single_instance_mutex() {
 // (up to ~340 KB/h at a 2 s poll on two fans).  The mode/fan count is the key
 // and logs at once; the duty is the summarized value.  A failed tick logs from
 // report_fan_runtime_failure() and invalidates this, so recovery is a change.
-// Fan worker (service) or fan timer (GUI) thread only.
+// Fan worker (service) or fan timer (GUI) thread only.  Called after g_appLock
+// is released (debug_log can block), so the caller passes the g_app values it
+// read while holding it.
 static gc_log_steady::Tracker g_fanRuntimeWriteLog = {};
-static void log_fan_runtime_write(const char* mode, int pct, int tempC) {
+static void log_fan_runtime_write(const char* mode, unsigned int fanCount, int pct, int tempC) {
     char key[64] = {};
-    StringCchPrintfA(key, ARRAY_COUNT(key), "mode=%s fans=%u", mode,
-        (unsigned int)g_app.fanCount);
+    StringCchPrintfA(key, ARRAY_COUNT(key), "mode=%s fans=%u", mode, fanCount);
     gc_log_steady::Decision d = gc_log_steady::observe(&g_fanRuntimeWriteLog,
         key, GetTickCount64(), (unsigned long long)(pct > 0 ? pct : 0),
         g_debug_log_verbose);
@@ -561,9 +562,10 @@ static void apply_fan_curve_tick() {
             g_serviceControlStateValid = true;
         }
         sync_fan_ui_from_cached_state(window_should_redraw_fan_controls());
+        const unsigned int logFanCount = (unsigned int)g_app.fanCount;
+        const int logTempC = g_app.gpuTemperatureValid ? g_app.gpuTemperatureC : 0;
         LeaveCriticalSection(&g_appLock);
-        log_fan_runtime_write("fixed", fixedTargetPercent,
-            g_app.gpuTemperatureValid ? g_app.gpuTemperatureC : 0);
+        log_fan_runtime_write("fixed", logFanCount, fixedTargetPercent, logTempC);
         return;
     }
 
@@ -681,8 +683,9 @@ static void apply_fan_curve_tick() {
         g_serviceControlStateValid = true;
     }
     sync_fan_ui_from_cached_state(window_should_redraw_fan_controls());
+    const unsigned int logFanCount = (unsigned int)g_app.fanCount;
     LeaveCriticalSection(&g_appLock);
-    log_fan_runtime_write("curve", targetPercent, currentTempC);
+    log_fan_runtime_write("curve", logFanCount, targetPercent, currentTempC);
 }
 static bool validate_desired_fan_settings_for_apply(const DesiredSettings* desired, char* result, size_t resultSize) {
     if (!desired->hasFan) return true;
