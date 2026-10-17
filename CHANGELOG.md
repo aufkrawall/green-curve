@@ -29,7 +29,11 @@
 
 ## Unreleased
 
-Apply reliability improves in this release.
+Apply reliability and diagnostics improve in this release.
+
+### Improved
+
+- **Debug log:** routine background activity is now summarized every 10 minutes, so the log keeps weeks of history instead of about two days; set `GREEN_CURVE_DEBUG=verbose` for full per-tick detail.
 
 ### Fixed
 

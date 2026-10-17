@@ -966,6 +966,9 @@ int run_review_followup_tests();
 // 2026-09-24 audit follow-ups: lock/pre-tail refusal before reset, Linux fixed
 // fan maintenance (tests/apply_profile_followup_tests.cpp, 6430-6499).
 int run_apply_profile_followup_tests();
+// 0.28 field-log diagnostics: steady-state log summarizer and the bounded CLI
+// log append (tests/diagnostics_followup_tests.cpp, 6700-6799).
+int run_diagnostics_followup_tests();
 // The apply's VF correction loop against a simulated driver
 // (tests/apply_correction_tests.cpp, 6500-6549).
 int run_apply_correction_tests();
@@ -1788,6 +1791,13 @@ int main(int argc, char** argv) {
         return correctionFailure > 0 && correctionFailure < 126 ? correctionFailure : 1;
 #endif
         return correctionFailure;
+    }
+    if (int diagnosticsFailure = run_diagnostics_followup_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", diagnosticsFailure);
+#if !defined(_WIN32)
+        return diagnosticsFailure > 0 && diagnosticsFailure < 126 ? diagnosticsFailure : 1;
+#endif
+        return diagnosticsFailure;
     }
     if (int followup2Failure = run_apply_profile_followup_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", followup2Failure);

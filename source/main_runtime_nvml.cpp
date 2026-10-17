@@ -505,7 +505,8 @@ static bool nvml_set_fan_manual(int pct, bool* exactApplied, char* detail, size_
             } else {
                 debug_log("nvml_set_fan_manual: setFanControlPolicy fan=%u failed: %s\n", fan, nvml_err_name(pr));
             }
-        } else if (alreadyManual) {
+        } else if (alreadyManual && g_debug_log_verbose) {
+            // A no-op confirmation on every curve step; the speed write below logs.
             debug_log("nvml_set_fan_manual: fan=%u already manual, skipping policy write\n", fan);
         }
         char phase[128] = {};

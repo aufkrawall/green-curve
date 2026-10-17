@@ -477,6 +477,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrev*/, LPSTR /*lpCmdLine*/
     } else {
         g_debug_logging = debugEnvEnabled || (configDebugEnabled != 0);
     }
+    refresh_debug_log_verbose();
     if (g_debug_logging) {
         g_debugSessionStartTickMs = GetTickCount64();
         char configToken[32] = {};

@@ -694,13 +694,8 @@ static bool gui_service_accept_response_on_main_thread(
     g_app.backgroundServiceRunning = true;
     g_app.backgroundServiceBroken = false;
     g_app.backgroundServiceError[0] = '\0';
-    debug_log_on_change("GUI service state: phase=%s epoch=%llu instance=%llu revision=%llu gpuGeneration=%llu valid=0x%02X\n",
-        gui_service_phase_name(g_app.guiServiceModel.phase),
-        (unsigned long long)connectionEpoch,
-        (unsigned long long)response->state.serviceInstanceId,
-        (unsigned long long)response->state.stateRevision,
-        (unsigned long long)response->state.gpuGeneration,
-        response->state.validSections);
+    gui_log_service_state_adoption(gui_service_phase_name(
+        g_app.guiServiceModel.phase), connectionEpoch, response);
 
     if (!gui_service_model_ready(&g_app.guiServiceModel)) {
         // The refresh got a real answer: it is not READY.  The phase

@@ -183,6 +183,8 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
     service_resolve_active_user_paths_for_startup("service_main startup");
     if (!envExplicitlyEnabled) {
         refresh_service_debug_logging_from_config();
+    } else {
+        refresh_debug_log_verbose();
     }
 
     if (g_debug_logging) {

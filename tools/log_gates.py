@@ -92,3 +92,59 @@ def check_all(ctx, require_text, require_text_in_operation,
                  "queued debug lines can be flushed to the crash breadcrumb")
     require_text(crash_cpp, "debug_log_drain_pending_for_crash()",
                  "the crash paths drain what the log writer has not written yet")
+
+    check_steady_state_lines(ctx, require_text)
+
+
+# The per-tick lines measured at ~97% of the 0.28 field log.  Each must route
+# through the steady-state tracker (debug_log_steady_state_policy.h): a plain
+# debug_log or a debug_log_on_change whose key carries a per-read counter
+# brings back a log that holds two days.  (file, anchor that must be present)
+_STEADY_STATE_SITES = (
+    ("gui_service_io_log.h", "observe(&s_telemetry"),
+    ("gui_service_io_log.h", "observe(&s_adoption"),
+    ("main_service_state_envelope.cpp", "observe(\n        &s_envelopeLog"),
+    ("xbar_telemetry.h", "observe(&s_xbarLog"),
+    ("main_service_fan_worker.cpp", "observe(&s_pulseLog"),
+    ("main_service_fan_worker.cpp", "observe(&s_waitLog"),
+    ("main_service_fan_worker.cpp", "observe(&s_ensureLog"),
+)
+
+# Text that, if it reappears, is the old unconditional per-tick form.
+_STEADY_STATE_FORBIDDEN = (
+    ("gui_service_state.cpp", '"GUI service state: phase=%s epoch=%llu instance=%llu revision='),
+    ("main_service_state_envelope.cpp", '"service envelope: instance=%llu revision='),
+    ("gui_mutation_worker.cpp", '"GUI service I/O: read kind='),
+)
+
+
+def _read(path):
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        return handle.read()
+
+
+def _fail(label):
+    import sys
+    print(f"Regression source check FAILED: {label}")
+    sys.exit(1)
+
+
+def check_steady_state_lines(ctx, require_text):
+    require_text(_p(ctx, "app_shared.h"), '#include "debug_log_steady_state_policy.h"',
+                 "every shard sees the steady-state log policy")
+    require_text(_p(ctx, "gui_mutation_worker.cpp"), '#include "gui_service_io_log.h"',
+                 "the GUI worker's read line goes through the summarizing helper")
+    for name, anchor in _STEADY_STATE_SITES:
+        if anchor not in _read(_p(ctx, name)):
+            _fail(f"{name}: per-tick line must use the steady-state tracker ({anchor!r})")
+    for name, needle in _STEADY_STATE_FORBIDDEN:
+        if needle in _read(_p(ctx, name)):
+            _fail(f"{name}: unsummarized per-tick log line is back ({needle!r})")
+    # Verbose must be wired in both processes or the per-tick detail is gone.
+    require_text(_p(ctx, "entry.cpp"), "refresh_debug_log_verbose();",
+                 "the GUI decides verbose per-tick logging after enabling the log")
+    require_text(_p(ctx, "main_data_paths.cpp"), "static void refresh_debug_log_verbose()",
+                 "verbose per-tick logging has one decision point")
+    require_text(_p(ctx, "main_service_host.cpp"), "refresh_debug_log_verbose();",
+                 "the service decides verbose per-tick logging at startup")
+

@@ -12,6 +12,7 @@ AppData g_app = {};
 NvmlApi g_nvml_api = {};
 HMODULE g_nvml = nullptr;
 bool g_debug_logging = false;
+bool g_debug_log_verbose = false;
 bool g_bestGuessWarningShownThisSession = false;
 bool g_limitedControlWarningShownThisSession = false;
 bool g_guiForceFullRefresh = false;

@@ -172,10 +172,6 @@ static DWORD g_serviceUserPathsSessionId = (DWORD)-1;
 static char g_serviceUserPathsSid[184] = {};
 static char g_serviceUserProfileDir[MAX_PATH] = {};
 static ULONGLONG g_serviceRuntimeLastPulseLogTickMs = 0;
-static ULONGLONG g_serviceFanThreadLastWaitLogTickMs = 0;
-static DWORD g_serviceFanThreadLastWaitMs = 0;
-static bool g_serviceFanThreadLastWaitCurve = false;
-static bool g_serviceFanThreadLastWaitFixed = false;
 static ULONGLONG g_serviceTelemetryLastHardwarePollTickMs = 0;
 static char g_serviceTelemetryLastPollSource[64] = {};
 // (Removed in 0.18: g_serviceVfDrift* state for the continuous VF-drift monitor.)

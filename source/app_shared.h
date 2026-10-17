@@ -121,6 +121,9 @@
 // strings, subprocess capture) used by the shared backend.
 #include "platform.h"
 #include "service_operation_tracker.h"
+// Per-tick log lines: log state changes at once, steady repeats as a periodic
+// summary, full per-tick detail only with g_debug_log_verbose.
+#include "debug_log_steady_state_policy.h"
 
 // Emit a debug line only when its formatted text changes from the previous call
 // AT THIS CALL SITE.  Cuts repetition of high-frequency idempotent state lines
@@ -875,6 +878,10 @@ static inline GuiServiceActionability gui_service_actionability_from_app() {
 extern NvmlApi g_nvml_api;
 extern HMODULE g_nvml;
 extern bool g_debug_logging;
+// Per-tick detail for the summarized steady-state lines.  Off by default; set
+// by GREEN_CURVE_DEBUG=verbose (or 2) or [debug] verbose=1, and only ever true
+// while g_debug_logging is.
+extern bool g_debug_log_verbose;
 // F-DOM-1: the unrecognized-GPU best-effort VF warning re-shows once per GUI
 // session unless the user disables it persistently; set once the warning has
 // been acknowledged in this process.

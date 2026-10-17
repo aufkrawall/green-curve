@@ -171,8 +171,12 @@ static void service_runtime_pulse() {
     ULONGLONG now = GetTickCount64();
     bool logPulse = g_serviceRuntimeLastPulseLogTickMs == 0 ||
         now - g_serviceRuntimeLastPulseLogTickMs >= SERVICE_RUNTIME_NOISY_LOG_INTERVAL_MS;
-    if (logPulse) {
-        g_serviceRuntimeLastPulseLogTickMs = now;
+    // Fan worker thread only: the tracker for the healthy pulse below.  The
+    // anomaly branches keep their 5 s rate limit (logPulse) and invalidate it,
+    // so the first healthy pulse after one is logged as a change.
+    static gc_log_steady::Tracker s_pulseLog = {};
+    if (logPulse) g_serviceRuntimeLastPulseLogTickMs = now;
+    if (g_debug_log_verbose) {
         EnterCriticalSection(&g_appLock);
         debug_log("service_runtime_pulse: curve=%d fixed=%d lastApplyMs=%llu mode=%d fixedPct=%d\n",
             g_app.fanCurveRuntimeActive ? 1 : 0,
@@ -197,6 +201,7 @@ static void service_runtime_pulse() {
     if (deviceWasRemoved) {
         // Device physically gone — NVML is unsafe; wait for arrival.  Skip the
         // fan tick entirely (it would only read stale/zero data).
+        gc_log_steady::invalidate(&s_pulseLog);
         if (logPulse) {
             debug_log("service_runtime_pulse: device removed, awaiting arrival (NVML idle)\n");
         }
@@ -204,6 +209,7 @@ static void service_runtime_pulse() {
     }
 
     if (crashCount > 0 || pendingRecovery) {
+        gc_log_steady::invalidate(&s_pulseLog);
         if (logPulse || crashCount > 0) {
             debug_log("service_runtime_pulse: driver recovery cue detected; requesting controlled process restart (crashCount=%ld pending=%d)\n",
                 (long)crashCount, pendingRecovery ? 1 : 0);
@@ -216,6 +222,7 @@ static void service_runtime_pulse() {
     // the fan tick so it cannot touch a transitional driver before the sole
     // authorized restore finishes.
     if (InterlockedExchangeAdd(&g_serviceReapplyInProgress, 0) != 0) {
+        gc_log_steady::invalidate(&s_pulseLog);
         if (logPulse) {
             debug_log("service_runtime_pulse: reapply active, skipping fan tick\n");
         }
@@ -229,15 +236,34 @@ static void service_runtime_pulse() {
     apply_fan_curve_tick();
 
     mark_service_telemetry_cache_updated("fan runtime");
-    if (logPulse) {
-        EnterCriticalSection(&g_appLock);
-        debug_log("service_runtime_pulse_done: fanMode=%d currentPct=%d temp=%d runtimeLastApply=%llu failures=%u\n",
-            g_app.activeFanMode,
-            g_app.activeFanFixedPercent,
-            g_app.gpuTemperatureValid ? g_app.gpuTemperatureC : 0,
-            g_app.fanRuntimeLastApplyTickMs,
-            g_app.fanRuntimeConsecutiveFailures);
-        LeaveCriticalSection(&g_appLock);
+    // The mode, duty and whether ticks are failing are the state; temperature
+    // moves every tick and is the summarized value.  The first failing tick is
+    // a key change and is logged at once; a run of them is summarized with its
+    // latest consecutive count, as is the recovery.
+    EnterCriticalSection(&g_appLock);
+    unsigned int pulseFailures = g_app.fanRuntimeConsecutiveFailures;
+    char pulseKey[128] = {};
+    StringCchPrintfA(pulseKey, ARRAY_COUNT(pulseKey),
+        "fanMode=%d currentPct=%d curve=%d fixed=%d failing=%d",
+        g_app.activeFanMode, g_app.activeFanFixedPercent,
+        g_app.fanCurveRuntimeActive ? 1 : 0, g_app.fanFixedRuntimeActive ? 1 : 0,
+        pulseFailures != 0 ? 1 : 0);
+    int pulseTemp = g_app.gpuTemperatureValid ? g_app.gpuTemperatureC : 0;
+    unsigned long long pulseLastApply = g_app.fanRuntimeLastApplyTickMs;
+    LeaveCriticalSection(&g_appLock);
+    gc_log_steady::Decision d = gc_log_steady::observe(&s_pulseLog, pulseKey,
+        now, (unsigned long long)(pulseTemp > 0 ? pulseTemp : 0),
+        g_debug_log_verbose);
+    if (gc_log_steady::wants_summary(d)) {
+        char window[128] = {};
+        gc_log_steady::format_window(window, sizeof(window), d.pending, "tempC");
+        debug_log("service_runtime_pulse: steady %s %s runtimeLastApply=%llu failures=%u\n",
+            d.action == gc_log_steady::LOG_CHANGE ? "(previous state)" : pulseKey,
+            window, pulseLastApply, pulseFailures);
+    }
+    if (gc_log_steady::wants_full_line(d)) {
+        debug_log("service_runtime_pulse_done: %s temp=%d runtimeLastApply=%llu failures=%u\n",
+            pulseKey, pulseTemp, pulseLastApply, pulseFailures);
     }
 }
 
@@ -299,22 +325,24 @@ static DWORD WINAPI service_fan_runtime_thread_proc(void*) {
             waitMs = pollIntervalMs;
             if (waitMs < 250) waitMs = 250;
         }
-        bool curveActive = fanCurveRuntimeActive;
-        bool fixedActive = fanFixedRuntimeActive;
-        ULONGLONG now = GetTickCount64();
-        if (g_serviceFanThreadLastWaitLogTickMs == 0 ||
-            now - g_serviceFanThreadLastWaitLogTickMs >= SERVICE_RUNTIME_NOISY_LOG_INTERVAL_MS ||
-            waitMs != g_serviceFanThreadLastWaitMs ||
-            curveActive != g_serviceFanThreadLastWaitCurve ||
-            fixedActive != g_serviceFanThreadLastWaitFixed) {
-            g_serviceFanThreadLastWaitLogTickMs = now;
-            g_serviceFanThreadLastWaitMs = waitMs;
-            g_serviceFanThreadLastWaitCurve = curveActive;
-            g_serviceFanThreadLastWaitFixed = fixedActive;
-            debug_log("service_fan_runtime_thread: waiting %lu ms curve=%d fixed=%d\n",
-                waitMs,
-                curveActive ? 1 : 0,
-                fixedActive ? 1 : 0);
+        // A new interval or mode logs at once; the identical wait before every
+        // tick is counted into one summary per window.  This thread only.
+        static gc_log_steady::Tracker s_waitLog = {};
+        char waitKey[64] = {};
+        StringCchPrintfA(waitKey, ARRAY_COUNT(waitKey), "%lu ms curve=%d fixed=%d",
+            waitMs, fanCurveRuntimeActive ? 1 : 0, fanFixedRuntimeActive ? 1 : 0);
+        gc_log_steady::Decision waitLog = gc_log_steady::observe(&s_waitLog,
+            waitKey, GetTickCount64(), waitMs, g_debug_log_verbose);
+        if (gc_log_steady::wants_summary(waitLog)) {
+            char window[128] = {};
+            gc_log_steady::format_window(window, sizeof(window),
+                waitLog.pending, "waitMs");
+            debug_log("service_fan_runtime_thread: steady waits %s %s\n",
+                waitLog.action == gc_log_steady::LOG_CHANGE
+                    ? "(previous interval)" : waitKey, window);
+        }
+        if (gc_log_steady::wants_full_line(waitLog)) {
+            debug_log("service_fan_runtime_thread: waiting %s\n", waitKey);
         }
         DWORD waitResult = WaitForMultipleObjects(1, waitHandles, FALSE, waitMs);
         if (waitResult == WAIT_OBJECT_0) break;
@@ -387,10 +415,26 @@ static bool ensure_service_fan_runtime_thread() {
         WaitForSingleObject(g_serviceFanStopEvent, 0) == WAIT_OBJECT_0;
     FanWorkerEnsurePlan plan = fan_worker_ensure_plan(present, alive,
         stopSignaled, service_fan_worker_is_current_thread());
+    // The watchdog asks every few seconds and the answer is nearly always
+    // "already running": that answer is counted and summarized, every other
+    // plan is logged at once (and resets the count).  Callers hold the runtime
+    // lock, which serializes the tracker.
+    static gc_log_steady::Tracker s_ensureLog = {};
+    if (plan != FAN_WORKER_ENSURE_ALREADY_RUNNING) {
+        gc_log_steady::invalidate(&s_ensureLog);
+    }
     switch (plan) {
-        case FAN_WORKER_ENSURE_ALREADY_RUNNING:
-            debug_log("ensure_service_fan_runtime_thread: already running\n");
+        case FAN_WORKER_ENSURE_ALREADY_RUNNING: {
+            gc_log_steady::Decision d = gc_log_steady::observe(&s_ensureLog,
+                "already running", GetTickCount64(), 0, g_debug_log_verbose);
+            if (gc_log_steady::wants_summary(d)) {
+                debug_log("ensure_service_fan_runtime_thread: already running (steady n=%llu windowS=%llu)\n",
+                    d.pending.count, d.pending.elapsedMs / 1000ull);
+            } else if (gc_log_steady::wants_full_line(d)) {
+                debug_log("ensure_service_fan_runtime_thread: already running\n");
+            }
             return true;
+        }
         case FAN_WORKER_ENSURE_REFUSE_SELF:
             debug_log("ensure_service_fan_runtime_thread: refused -- the retiring fan"
                       " worker cannot replace itself\n");

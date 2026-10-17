@@ -205,19 +205,40 @@ static void populate_service_state_response(ServiceResponse* response) {
     response->snapshot = g_servicePublishedState.snapshot;
     response->desired = g_servicePublishedState.desired;
     response->controlState = g_servicePublishedState.controlState;
-    ReleaseSRWLockExclusive(&g_servicePublishedStateLock);
-    LeaveCriticalSection(&g_appLock);
-
-    debug_log_on_change(
-        "service envelope: instance=%llu revision=%llu gpuGeneration=%llu phase=%u valid=0x%02X topology=%llu desired=%d\n",
+    // Every read builds an envelope and every build bumps the revision, so the
+    // revision is the tracked value, not part of the key: the key is what a
+    // reader acts on (debug_log_steady_state_policy.h).  Decided under the
+    // publication lock, which serializes the static tracker; logged after.
+    static gc_log_steady::Tracker s_envelopeLog = {};
+    char key[160] = {};
+    StringCchPrintfA(key, ARRAY_COUNT(key),
+        "instance=%llu gpuGeneration=%llu phase=%u valid=0x%02X topology=%llu desired=%d",
         (unsigned long long)response->state.serviceInstanceId,
-        (unsigned long long)response->state.stateRevision,
         (unsigned long long)response->state.gpuGeneration,
         // Explicit width: gc_u32 is `unsigned long`, 64-bit on MinGW/LP64 and
         // 32-bit on clang-cl/LLP64, and the value is a small enum.
-        (unsigned int)response->state.gpuPhase, response->state.validSections,
+        (unsigned int)response->state.gpuPhase,
+        (unsigned int)response->state.validSections,
         (unsigned long long)response->state.topologySignature,
         response->state.activeDesiredValid ? 1 : 0);
+    gc_log_steady::Decision logDecision = gc_log_steady::observe(
+        &s_envelopeLog, key, GetTickCount64(),
+        (unsigned long long)response->state.stateRevision, g_debug_log_verbose);
+    ReleaseSRWLockExclusive(&g_servicePublishedStateLock);
+    LeaveCriticalSection(&g_appLock);
+
+    if (gc_log_steady::wants_summary(logDecision)) {
+        char window[128] = {};
+        gc_log_steady::format_window(window, sizeof(window),
+            logDecision.pending, "revision");
+        debug_log("service envelope: steady %s %s\n",
+            logDecision.action == gc_log_steady::LOG_CHANGE
+                ? "(previous state)" : key, window);
+    }
+    if (gc_log_steady::wants_full_line(logDecision)) {
+        debug_log("service envelope: %s revision=%llu\n", key,
+            (unsigned long long)response->state.stateRevision);
+    }
 }
 
 static bool service_mutation_preconditions_match(const ServiceRequest* request,
