@@ -1369,14 +1369,40 @@ def check_audit_finding_gates(ctx, require_text):
                   " is not log-safe checked on the wire")
             sys.exit(1)
 
-    # The update staging directory is hardened and VERIFIED, not merely created:
-    # the parent's DACL only reaches a child the service itself creates.
-    require_text(path("main_service_update_state.cpp"),
-                 "apply_protected_machine_config_dir_dacl(",
-                 "the update staging directory DACL is hardened, not assumed inherited")
-    require_text(path("main_service_update_state.cpp"),
-                 "machine_config_dacl_is_hardened(",
-                 "the update staging directory's hardened DACL is verified before use")
+    # The machine-scope folders are claimed, never adopted on faith: an
+    # existing object is used only when its handle proves our exact DACL and a
+    # privileged owner, otherwise it is set aside and created fresh with the
+    # descriptor in the create call.  No shard re-ACLs an existing object by
+    # path any more (a path re-resolves and follows reparse points, and a
+    # re-ACL does not revoke handles opened before it).
+    for name, anchor in (("main_service_machine_config.cpp",
+                          "static bool ensure_machine_config_directory("),
+                         ("main_service_update_state.cpp",
+                          "static bool service_update_staging_dir(")):
+        ctx.require_text_in_operation(path(name), anchor,
+                                      "service_claim_protected_directory(",
+                                      f"{name}: the folder is claimed through a handle")
+    for name in ("main_service_machine_config.cpp", "main_service_update_state.cpp",
+                 "main_service_update_cache.cpp"):
+        for path_api in ("apply_protected_machine_config_dir_dacl(",
+                         "apply_protected_machine_config_dacl(",
+                         "machine_config_dacl_is_hardened("):
+            ctx.forbid_text(path(name), path_api,
+                        f"{name}: machine-scope objects are hardened through a handle, never by path")
+    ctx.require_text_in_operation(path("main_service_machine_config.cpp"),
+                                  "static bool harden_machine_config_file_required(",
+                                  "apply_protected_service_dacl_to_handle(file, GC_SERVICE_ACL_CONFIG",
+                                  "bank files are re-hardened through a reparse-safe handle")
+    # The legacy sweep deletes by name inside %ProgramData%\Green Curve, so it
+    # first pins the folder and refuses a reparse point.
+    ctx.require_text_in_operation(path("main_data_paths.cpp"),
+                                  "static void service_cleanup_legacy_programdata(",
+                                  "FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT",
+                                  "the legacy ProgramData sweep pins its folder without following a link")
+    ctx.require_text_in_operation(path("main_data_paths.cpp"),
+                                  "static void service_cleanup_legacy_programdata(",
+                                  "(tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0",
+                                  "the legacy ProgramData sweep refuses a reparse point")
 
     # The updater pins the staging DIRECTORY across CreateProcessW, so the name
     # it executes cannot be swapped for the bytes it verified.
@@ -1404,10 +1430,6 @@ def check_audit_finding_gates(ctx, require_text):
                                       f"{name}: files beside the bank resolve the directory")
         ctx.forbid_text_in_operation(path(name), anchor, "resolve_machine_config_path(",
                                      f"{name}: the bank's content proof never gates the updater's own files")
-    ctx.require_text_in_operation(path("main_service_update_state.cpp"),
-                                  "static bool service_update_staging_dir(",
-                                  "service_handle_owner_is_administrators(stagingHandle)",
-                                  "the staging directory's Administrators owner is proven, not assumed")
 
     # Every command, READ included, needs medium integrity: the pipe ACL admits
     # every authenticated user, which is a strictly wider set.

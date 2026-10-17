@@ -131,8 +131,24 @@ static void service_cleanup_legacy_programdata() {
     }
     char legacyDir[MAX_PATH] = {};
     if (FAILED(StringCchPrintfA(legacyDir, ARRAY_COUNT(legacyDir), "%s\\Green Curve", programData))) return;
-    DWORD attrs = gc_GetFileAttributesUtf8(legacyDir);
-    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) return;
+    // The sweep deletes by name, so the folder it walks is pinned first: opened
+    // without following a reparse point and without FILE_SHARE_DELETE, and
+    // refused unless the handle names a real directory.  A junction here
+    // would otherwise turn "delete our own leftovers" into deletions in
+    // whatever folder it names.  The folder itself may still be unproven (the
+    // claim that follows sets it aside); only its entries are swept here, and
+    // never recursively.
+    ScopedHandle pinned(gc_CreateFileUtf8(legacyDir, FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!pinned.valid()) return;
+    FILE_ATTRIBUTE_TAG_INFO tag = {};
+    if (!GetFileInformationByHandleEx(pinned.get(), FileAttributeTagInfo, &tag, sizeof(tag)) ||
+        (tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+        (tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        debug_log("service: legacy ProgramData sweep skipped; the folder is not a plain directory\n");
+        return;
+    }
 
     char pattern[MAX_PATH] = {};
     if (FAILED(StringCchPrintfA(pattern, ARRAY_COUNT(pattern), "%s\\*", legacyDir))) return;
@@ -141,6 +157,7 @@ static void service_cleanup_legacy_programdata() {
     if (h != INVALID_HANDLE_VALUE) {
         do {
             if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) continue; // skip ., .., subdirs
+            // DeleteFile removes a link itself, never its target.
             // Preserve everything that CURRENTLY belongs here; only sweep
             // sensitive legacy artifacts (dumps/logs/restart state).
             //
@@ -160,7 +177,9 @@ static void service_cleanup_legacy_programdata() {
         FindClose(h);
     }
     // RemoveDirectory fails harmlessly if the shared bank file remains; only log
-    // when the directory was actually empty and got removed.
+    // when the directory was actually empty and got removed.  The pin is
+    // released first: it denies the delete sharing RemoveDirectory needs.
+    pinned.reset();
     if (gc_RemoveDirectoryUtf8(legacyDir)) {
         debug_log("service: removed legacy ProgramData\\Green Curve directory (no shared bank present)\n");
     }

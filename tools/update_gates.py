@@ -188,8 +188,9 @@ def check_staging_is_protected(ctx, require_text, forbid_text):
     state = _p(ctx, "main_service_update_state.cpp")
     require_text(state, "ensure_machine_config_directory",
                  "update staging inherits the hardened machine-config DACL")
-    require_text(state, "FILE_ATTRIBUTE_REPARSE_POINT",
-                 "the staging directory is refused when it is a reparse point")
+    require_text(state, "service_claim_protected_directory(",
+                 "the staging directory is claimed through a handle that never "
+                 "follows a reparse point, and never adopted unproven")
     # API names and the environment lookup, not the bare word "%TEMP%": both
     # files explain in prose why a temp folder is the wrong place, and a gate
     # that flags its own rationale is one that gets deleted rather than fixed.
