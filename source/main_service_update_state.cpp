@@ -246,7 +246,7 @@ static void service_update_save_settings() {
     Win32Utf8Path widePath(path);
     if (widePath.valid_for(path)) {
         char aclErr[256] = {};
-        if (!apply_protected_machine_config_dacl(widePath.value, aclErr, sizeof(aclErr))) {
+        if (!harden_machine_config_file_required(widePath.value, path, aclErr, sizeof(aclErr))) {
             debug_log("update settings: DACL hardening failed: %s\n",
                       aclErr[0] ? aclErr : "unknown");
         }
@@ -258,27 +258,25 @@ static void service_update_save_settings() {
 // Staging directory
 // ---------------------------------------------------------------------------
 
-// %ProgramData%\Green Curve\updates -- inside the already-hardened machine
-// config directory, so it inherits SYSTEM+Administrators full / Users
-// read-and-execute.  A standard user can see the staged installer and cannot
-// replace it, which is the property the whole design turns on.
+// %ProgramData%\Green Curve\updates -- inside the proven machine config
+// directory, with the same SYSTEM+Administrators full / Users read-and-execute
+// DACL.  A standard user can see the staged installer and cannot replace it,
+// which is the property the whole design turns on.
 //
-// Inheritance is only true when WE create the child.  The default
-// %ProgramData% ACL lets a standard user create subdirectories, so one can
-// pre-create ...\Green Curve\updates -- owning it, with a DACL of its choosing
-// -- before the service's first start.  Hardening the parent afterwards does
-// NOT rewrite an existing child's inherited ACEs, and CreateDirectory's
-// ERROR_ALREADY_EXISTS path would have accepted it forever.  That is the same
-// squatting threat secure_shared_bank_at_startup() exists to defeat, one level
-// down, so the child gets the same treat: harden it, then VERIFY it, and fail
-// closed if either step says no.  A directory we cannot prove we own must not
-// become the place a SYSTEM process downloads a file it will later launch.
+// A subfolder only carries that DACL when WE create it, so an existing one is
+// never adopted on faith: it is used only when its handle proves our exact
+// DACL and a privileged owner, and anything else -- a folder pre-created
+// before the parent was ours, a junction, a file -- is set aside and replaced
+// by a folder created with the descriptor in the call.  Nothing here rewrites
+// the ACL of an existing object, and a reparse point is never followed.  A
+// directory we cannot prove we own must not become the place a SYSTEM process
+// downloads a file it will later launch.
 static bool service_update_staging_dir(char* out, size_t outSize, char* err, size_t errSize) {
     if (out && outSize) out[0] = 0;
     if (!ensure_machine_config_directory(err, errSize)) return false;
 
     // The DIRECTORY, not the bank file: whether shared-profiles.ini's bytes are
-    // proven says nothing about a folder this function hardens and verifies.
+    // proven says nothing about a folder this function claims and verifies.
     char machineDir[MAX_PATH] = {};
     if (!resolve_machine_config_dir(machineDir, sizeof(machineDir))) {
         set_message(err, errSize, "Cannot resolve the machine config directory");
@@ -289,62 +287,30 @@ static bool service_update_staging_dir(char* out, size_t outSize, char* err, siz
         set_message(err, errSize, "Update staging path is too long");
         return false;
     }
-    if (!gc_CreateDirectoryUtf8(out, nullptr)) {
-        DWORD createErr = GetLastError();
-        if (createErr != ERROR_ALREADY_EXISTS) {
-            set_message(err, errSize, "Cannot create the update staging directory (error %lu)",
-                        createErr);
-            out[0] = 0;
-            return false;
-        }
-    }
-    DWORD attrs = gc_GetFileAttributesUtf8(out);
-    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
-        (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-        // A reparse point here would redirect an elevated write somewhere the
-        // user chose.  Refuse rather than follow it.
-        set_message(err, errSize, "Update staging directory is unavailable or unsafe");
-        out[0] = 0;
-        return false;
-    }
-
-    // Hard-then-verify, and a reparse point is refused on the way in, so this
-    // is operating on the real directory.
     Win32Utf8Path stagingPath(out);
     if (!stagingPath.valid_for(out)) {
         set_message(err, errSize, "Update staging path could not be encoded");
         out[0] = 0;
         return false;
     }
-    char aclErr[256] = {};
-    if (!apply_protected_machine_config_dir_dacl(stagingPath.value, aclErr, sizeof(aclErr))) {
-        set_message(err, errSize, "Update staging DACL hardening failed: %s",
-                    aclErr[0] ? aclErr : "unknown");
-        out[0] = 0;
-        return false;
-    }
-    if (!machine_config_dacl_is_hardened(stagingPath.value)) {
-        set_message(err, errSize, "Update staging DACL verification failed");
-        out[0] = 0;
-        return false;
-    }
-    // The DACL alone is not ownership: a pre-created folder's standard-user
-    // owner keeps implicit WRITE_DAC and could re-grant itself delete-child
-    // after this check.  The hardening above assigns Administrators; prove it
-    // took, through a handle that does not follow a reparse point.
-    HANDLE stagingHandle = CreateFileW(stagingPath.value, READ_CONTROL | FILE_READ_ATTRIBUTES,
-        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
-    const bool ownerProven = stagingHandle != INVALID_HANDLE_VALUE &&
-        service_handle_owner_is_administrators(stagingHandle);
-    if (stagingHandle != INVALID_HANDLE_VALUE) CloseHandle(stagingHandle);
-    if (!ownerProven) {
-        set_message(err, errSize, "Update staging directory owner is not Administrators");
+    static volatile LONG s_stagingClaimFailures = 0;
+    char claimErr[256] = {};
+    const int claim = service_claim_protected_directory(stagingPath.value,
+        GC_SERVICE_ACL_DIRECTORY, true, true, nullptr, claimErr, sizeof(claimErr));
+    log_machine_dir_claim("update staging", claim, claimErr, &s_stagingClaimFailures);
+    if (claim == GC_SERVICE_CLAIM_FAILED) {
+        set_message(err, errSize, "Update staging directory is not provably protected: %s",
+                    claimErr[0] ? claimErr : "unknown");
         out[0] = 0;
         return false;
     }
     return true;
 }
+
+// Defined with the launch code (main_service_update_launch.cpp), which the
+// amalgamation includes after this shard.
+static bool service_update_launch_name_is_ours(const char* name);
+static bool service_update_remove_stale_launch_dir(const char* dirUtf8);
 
 // Remove any previously staged packages.  Called before staging a new one and
 // after a successful install, so a verified-but-superseded installer is never
@@ -361,6 +327,7 @@ static void service_update_clear_staging() {
     if (find == INVALID_HANDLE_VALUE) return;
     int removed = 0;
     int removedDirs = 0;
+    int removedLaunchDirs = 0;
     do {
         char filePath[MAX_PATH] = {};
         if (FAILED(StringCchPrintfA(filePath, sizeof(filePath), "%s\\%s", dir,
@@ -368,8 +335,9 @@ static void service_update_clear_staging() {
             continue;
         }
         if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-            // A directory here is never ours: the sweeper's own names are all
-            // flat files.  Skipping them used to be "be conservative", but it
+            // Apart from a launch folder whose handle proves it ours, a
+            // directory here is never ours: the staged names are all flat
+            // files.  Skipping them used to be "be conservative", but it
             // is exactly the shape an attacker plants -- a DIRECTORY named
             // greencurve-<version>-windows-x64-setup.exe, which the download's
             // CREATE_NEW then fails on forever, surviving every sweep.  The
@@ -381,7 +349,13 @@ static void service_update_clear_staging() {
             if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) {
                 continue;
             }
-            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0 &&
+                service_update_launch_name_is_ours(fd.cFileName) &&
+                service_update_remove_stale_launch_dir(filePath)) {
+                // A previous launch's private folder, proven ours by its
+                // handle before anything in it is touched.
+                removedLaunchDirs++;
+            } else if ((fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
                 // Never recurse or follow one; a link named like a task is
                 // still not ours, and RemoveDirectory removes the link itself.
                 removedDirs += gc_RemoveDirectoryUtf8(filePath) ? 1 : 0;
@@ -407,6 +381,7 @@ static void service_update_clear_staging() {
     g_updateState.packageVerified = false;
     if (removed) debug_log("update staging: cleared %d stale file(s)\n", removed);
     if (removedDirs) debug_log("update staging: removed %d planted/foreign directory entry(ies)\n", removedDirs);
+    if (removedLaunchDirs) debug_log("update staging: removed %d stale launch directory(ies)\n", removedLaunchDirs);
 }
 
 // ---------------------------------------------------------------------------

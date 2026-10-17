@@ -54,8 +54,15 @@ bool restore_inherited_dacl(const wchar_t* path, char* err, size_t errSize);
 enum GcServiceAclKind {
     GC_SERVICE_ACL_DIRECTORY = 0,   // D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)
     GC_SERVICE_ACL_BINARY = 1,      // D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)
-    GC_SERVICE_ACL_CONFIG = 2      // same file ACL, Users read-only (0x120089)
+    GC_SERVICE_ACL_CONFIG = 2,      // same file ACL, Users read-only (0x120089)
+    // SYSTEM + Administrators only, nothing for Users: the directory a SYSTEM
+    // process launches an executable from, and the executable inside it.
+    GC_SERVICE_ACL_PRIVATE_DIRECTORY = 3,  // D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)
+    GC_SERVICE_ACL_PRIVATE_FILE = 4        // D:P(A;;FA;;;SY)(A;;FA;;;BA)
 };
+bool service_acl_kind_is_directory(GcServiceAclKind kind);
+// The protected DACL Green Curve writes for `kind`, as SDDL (no owner part).
+const wchar_t* service_acl_kind_sddl(GcServiceAclKind kind);
 
 // True when `sd` carries EXACTLY the protected DACL Green Curve writes for
 // `kind`: inheritance disabled and precisely the three ACEs above, in any
@@ -69,10 +76,70 @@ bool service_handle_dacl_is_ours(void* handle, GcServiceAclKind kind);
 // Owner is BUILTIN\Administrators.  A standard-user owner keeps implicit
 // WRITE_DAC and could re-grant itself write to a hardened folder.
 bool service_handle_owner_is_administrators(void* handle);
+// Owner is BUILTIN\Administrators or LocalSystem: an owner a standard account
+// cannot assign, so the object was created or claimed by a privileged caller.
+bool service_handle_owner_is_privileged(void* handle);
 // A startup bank may retain bytes only when its PREVIOUS ACL and owner prove
-// admin control. Truncate unproven content through the pinned handle first.
-bool service_prepare_shared_bank_handle(void* handle, bool requireAdminOwner,
-    bool* discarded, char* err, size_t errSize);
+// admin control.  An unproven bank is never adopted: no byte of it is read,
+// kept or written through.  Its NAME is set aside (service_set_aside_by_name)
+// and the bank is absent afterwards (`*discarded` = true).  On that path the
+// function closes `*handle` and sets it to INVALID_HANDLE_VALUE, because the
+// move needs the name unpinned; `path` is the name the handle was opened by.
+// A proven bank is re-hardened in place through the handle, left open.
+bool service_prepare_shared_bank_handle(void** handle, const wchar_t* path,
+    bool requireAdminOwner, bool* discarded, char* err, size_t errSize);
+
+// Move whatever holds `path` out of the way without writing through it: a
+// same-directory rename to "<path>.unproven-<suffix>" (a link is moved, never
+// its target), then a best-effort delete (a non-empty directory stays renamed
+// aside).  `expectedIdentity` (a BY_HANDLE_FILE_INFORMATION*, may be null) is
+// the file id the caller inspected; a moved object with a different id fails
+// the call and is left aside untouched.
+bool service_set_aside_by_name(const wchar_t* path, const void* expectedIdentity,
+                               char* err, size_t errSize);
+
+// ---------------------------------------------------------------------------
+// Never adopt what we did not create (service_acl_claim.cpp).
+//
+// A pre-existing object under a world-creatable parent (%ProgramData%) may
+// have been created by a standard account that still holds a handle with
+// WRITE_DAC or DELETE.  Re-ACLing such an object in place does not revoke
+// those handles, so the service never converts an unproven object into a
+// trusted one.  It either proves the object is already ours -- exact
+// protected DACL and a privileged owner, read through a handle that does not
+// follow reparse points -- or sets it aside and creates a fresh one whose
+// security descriptor is part of the CreateDirectoryW / CreateFileW call.
+// ---------------------------------------------------------------------------
+enum GcServiceClaimResult {
+    GC_SERVICE_CLAIM_FAILED = 0,
+    GC_SERVICE_CLAIM_CREATED,    // nothing was there; created with our descriptor
+    GC_SERVICE_CLAIM_ADOPTED,    // already provably ours; nothing rewritten
+    GC_SERVICE_CLAIM_REPLACED    // something unproven was set aside, then created
+};
+// `kind` is GC_SERVICE_ACL_DIRECTORY or GC_SERVICE_ACL_PRIVATE_DIRECTORY.
+// `requireAdminOwner` puts O:BA into the creation descriptor and requires a
+// privileged owner to adopt (false only for the unelevated regression harness).
+// `allowAdopt` false means fresh-only: any existing name fails the claim.
+// `pinnedOut` (optional) receives a handle opened with
+// FILE_FLAG_OPEN_REPARSE_POINT and without FILE_SHARE_DELETE, carrying
+// READ_CONTROL | FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES.
+int service_claim_protected_directory(const wchar_t* path, GcServiceAclKind kind,
+                                      bool requireAdminOwner, bool allowAdopt,
+                                      void** pinnedOut, char* err, size_t errSize);
+const char* service_claim_result_name(int result);
+// CREATE_NEW a file with the protected descriptor for `kind` in the call
+// itself (GC_SERVICE_ACL_CONFIG / BINARY / PRIVATE_FILE).  Opened with
+// FILE_FLAG_OPEN_REPARSE_POINT; `access` and `shareMode` are the caller's.
+// Returns INVALID_HANDLE_VALUE (as void*) on failure.
+void* service_create_protected_file(const wchar_t* path, GcServiceAclKind kind,
+                                    bool requireAdminOwner, unsigned long access,
+                                    unsigned long shareMode, char* err, size_t errSize);
+// Re-prove a pinned directory immediately before its content is used: the
+// exact DACL for `kind`, a privileged owner (when required), and that it holds
+// exactly one entry, `expectedLeaf`, which is a regular non-reparse file.
+bool service_directory_holds_only(void* directoryHandle, GcServiceAclKind kind,
+                                  bool requireAdminOwner, const wchar_t* expectedLeaf,
+                                  char* err, size_t errSize);
 
 // Opens `path` without following a leaf reparse point and answers
 // service_handle_dacl_is_ours.  False for anything it cannot open or read.

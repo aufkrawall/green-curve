@@ -490,48 +490,19 @@ static bool service_update_run_install(char* err, size_t errSize) {
         return false;
     }
 
-    // Open the verified file with writes and deletes denied, re-verify through
-    // that handle, and HOLD IT until the process exists.  Re-verifying is not
-    // paranoia theatre: the download-time check ran against a handle that has
-    // since been closed, so without this the window between staging and
-    // installing would be unguarded.
+    // Open the verified file with writes and deletes denied and re-verify
+    // through that handle.  Re-verifying is not paranoia theatre: the
+    // download-time check ran against a handle that has since been closed, so
+    // without this the window between staging and installing would be
+    // unguarded.  The bytes that pass are then copied into this launch's own
+    // private directory (main_service_update_launch.cpp), and it is THAT copy,
+    // verified again and held open, that CreateProcessW runs.
     HANDLE pinned = gc_CreateFileUtf8(stagedPath, GENERIC_READ, FILE_SHARE_READ,
                                       nullptr, OPEN_EXISTING,
                                       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
                                       nullptr);
     if (pinned == INVALID_HANDLE_VALUE) {
         set_message(err, errSize, "Cannot open the staged installer (error %lu)",
-                    GetLastError());
-        return false;
-    }
-
-    // Pin the staging DIRECTORY as well, for the same reason the secure writer
-    // pins its parent (main_secure_write.cpp): the handle above proves the
-    // BYTES cannot change, but CreateProcessW is called with a path, so the
-    // NAME is resolved again at exec time.  Without a delete-deny handle on the
-    // containing directory, "the file that was verified" and "the file that
-    // ran" are only the same object because every component of the path happens
-    // to be un-renameable.  That is true -- the directory is hardened and
-    // verified by service_update_staging_dir() -- so this is the assertion that
-    // keeps it true rather than a new boundary.
-    //
-    // The window this closes is real: between here and CreateProcessW the
-    // worker stops the user's GUI processes, which is allowed to block.
-    char stagingDir[MAX_PATH] = {};
-    StringCchCopyA(stagingDir, ARRAY_COUNT(stagingDir), stagedPath);
-    char* stagedSlash = strrchr(stagingDir, '\\');
-    if (!stagedSlash) stagedSlash = strrchr(stagingDir, '/');
-    if (stagedSlash) *stagedSlash = 0;
-    ScopedHandle stagingDirHandle(stagedSlash
-        ? gc_CreateFileUtf8(stagingDir, GENERIC_READ,
-                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-                            nullptr)
-        : INVALID_HANDLE_VALUE);
-    if (!stagingDirHandle.valid()) {
-        CloseHandle(pinned);
-        set_message(err, errSize,
-                    "Cannot pin the update staging directory (error %lu)",
                     GetLastError());
         return false;
     }
@@ -554,10 +525,23 @@ static bool service_update_run_install(char* err, size_t errSize) {
         return false;
     }
 
+    // Fallible, so before anything is reserved or closed.
+    GcUpdateLaunchDir launch;
+    const bool launchReady = service_update_prepare_launch_dir(pinned, asset, &launch,
+                                                               err, errSize);
+    // The staged file has served its purpose: from here the launch copy is
+    // what gets verified and executed.
+    CloseHandle(pinned);
+    if (!launchReady) {
+        debug_log("update install: REFUSED; no private launch directory (%s)\n",
+                  err && err[0] ? err : "no detail");
+        return false;
+    }
+
     lock_service_runtime();
     if (service_update_install_reserved()) {
         unlock_service_runtime();
-        CloseHandle(pinned);
+        service_update_launch_dir_discard(&launch, "an install is already reserved");
         set_message(err, errSize, "Update not installed: an install is already reserved");
         return false;
     }
@@ -593,13 +577,13 @@ static bool service_update_run_install(char* err, size_t errSize) {
                      (unsigned long)requestingSessionId);
     char relaunchCommand[GC_UPDATE_COMMAND_LINE_MAX_CHARS] = {};
     char noLaunchCommand[GC_UPDATE_COMMAND_LINE_MAX_CHARS] = {};
-    if (!gc_update_build_installer_command_line(stagedPath, installDir, true,
+    if (!gc_update_build_installer_command_line(launch.fileUtf8, installDir, true,
                                                 launchSessionId, relaunchCommand,
                                                 sizeof(relaunchCommand)) ||
-        !gc_update_build_installer_command_line(stagedPath, installDir, false,
+        !gc_update_build_installer_command_line(launch.fileUtf8, installDir, false,
                                                 nullptr, noLaunchCommand,
                                                 sizeof(noLaunchCommand))) {
-        CloseHandle(pinned);
+        service_update_launch_dir_discard(&launch, "installer command line could not be built");
         service_update_release_install_reservation("installer command line could not be built");
         set_message(err, errSize,
                     "Cannot build a usable installer command line for %s",
@@ -612,11 +596,31 @@ static bool service_update_run_install(char* err, size_t errSize) {
     Win32Utf8Path wideNoLaunch(noLaunchCommand);
     if (!wideRelaunch.valid_for(relaunchCommand) ||
         !wideNoLaunch.valid_for(noLaunchCommand)) {
-        CloseHandle(pinned);
+        service_update_launch_dir_discard(&launch, "installer command line could not be encoded");
         service_update_release_install_reservation("installer command line could not be encoded");
         GcUpdateStateLock guard;
         g_updateState.installRunning = false;
         set_message(err, errSize, "Cannot encode the installer command line");
+        return false;
+    }
+
+    // The signed metadata must still be fresh -- checked here, the last step
+    // before the windows close, because a refusal after them would leave the
+    // user with no GUI.  Closing them takes seconds against a lifetime of
+    // days, so this is still the launch-time check in every sense that
+    // matters.
+    bool freshAtLaunch = false;
+    {
+        GcUpdateStateLock guard;
+        freshAtLaunch = gc_update_fresh_time_valid(&g_updateState.freshness, service_update_now_unix());
+    }
+    if (!freshAtLaunch) {
+        service_update_launch_dir_discard(&launch, "signed metadata expired before launch");
+        service_update_release_install_reservation("signed metadata expired before launch");
+        GcUpdateStateLock guard;
+        g_updateState.installRunning = false;
+        set_message(err, errSize, "Signed update metadata expired before launch; check for updates again");
+        debug_log("update install: REFUSED before closing any window; signed metadata expired\n");
         return false;
     }
 
@@ -627,7 +631,7 @@ static bool service_update_run_install(char* err, size_t errSize) {
     int closedGuiCount = 0;
     if (!service_update_stop_gui_processes(installDir, &closedGuiCount,
                                            err, errSize)) {
-        CloseHandle(pinned);
+        service_update_launch_dir_discard(&launch, "Green Curve windows could not be closed");
         service_update_release_install_reservation("Green Curve windows could not be closed");
         GcUpdateStateLock guard;
         g_updateState.installRunning = false;
@@ -641,30 +645,30 @@ static bool service_update_run_install(char* err, size_t errSize) {
     debug_log("update install: command line is %s\n",
               closedGuiCount > 0 ? relaunchCommand : noLaunchCommand);
 
+    // The one check that must follow the stop, because closing the windows can
+    // take seconds: the launch folder still holds exactly the verified copy,
+    // with our DACL and owner, read through the pinned handles.  It cannot
+    // fail short of a privileged process tampering with a SYSTEM-only folder.
+    if (!service_update_reverify_launch_dir(&launch, err, errSize)) {
+        service_update_launch_dir_discard(&launch, "launch directory failed its final proof");
+        service_update_release_install_reservation("launch directory failed its final proof");
+        GcUpdateStateLock guard;
+        g_updateState.installRunning = false;
+        return false;
+    }
+
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi = {};
-    bool freshAtLaunch = false;
-    {
-        GcUpdateStateLock guard;
-        freshAtLaunch = gc_update_fresh_time_valid(&g_updateState.freshness, service_update_now_unix());
-    }
-    if (!freshAtLaunch) {
-        CloseHandle(pinned);
-        service_update_release_install_reservation("signed metadata expired before launch");
-        GcUpdateStateLock guard;
-        g_updateState.installRunning = false;
-        set_message(err, errSize, "Signed update metadata expired before launch; check for updates again");
-        return false;
-    }
     BOOL created = CreateProcessW(nullptr, wideCommand, nullptr, nullptr,
                                   FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
     DWORD createError = created ? 0 : GetLastError();
-    // The pin has done its job the moment the image is mapped: from here the
-    // running installer is what matters, not the file it came from.
-    CloseHandle(pinned);
+    // The pins have done their job the moment the image is mapped: from here
+    // the running installer is what matters, not the file it came from.
+    service_update_launch_dir_close(&launch);
 
     if (!created) {
+        service_update_launch_dir_discard(&launch, "the installer could not be started");
         service_update_release_install_reservation("the installer could not be started");
         GcUpdateStateLock guard;
         g_updateState.installRunning = false;
@@ -672,8 +676,8 @@ static bool service_update_run_install(char* err, size_t errSize) {
         return false;
     }
 
-    debug_log("update install: launched %s (pid=%lu)\n", stagedPath,
-              (unsigned long)pi.dwProcessId);
+    debug_log("update install: launched the private launch copy of %s (pid=%lu)\n",
+              stagedPath, (unsigned long)pi.dwProcessId);
     CloseHandle(pi.hThread);
 
     // The installer stops this very service as part of its work, so this wait
@@ -747,6 +751,10 @@ static bool service_update_run_install(char* err, size_t errSize) {
         }
     }
     CloseHandle(pi.hProcess);
+    // Setup is gone (or was killed) unless the reservation is still held; its
+    // folder goes with it.  A launch folder left behind by a setup that
+    // outlived this service is removed by the next staging sweep.
+    if (!reservationHeld) service_update_launch_dir_discard(&launch, "setup has exited");
 
     // Released on every path except (a) a SUCCESSFUL install, where setup has
     // stopped this service and this process must not touch the GPU on its way

@@ -97,54 +97,69 @@ static bool resolve_machine_config_dir(char* out, size_t outSize) {
     return copy_wide_to_utf8(dirW, out, (int)outSize);
 }
 
+// One line per claim that changed something or failed.  An adopted directory
+// is the steady state and is not logged; a failure that keeps recurring is
+// logged on its 1st, 2nd, 4th, 8th... occurrence with the running count.
+static void log_machine_dir_claim(const char* what, int claim, const char* claimErr,
+                                  volatile LONG* failureCount) {
+    if (claim == GC_SERVICE_CLAIM_ADOPTED) return;
+    if (claim != GC_SERVICE_CLAIM_FAILED) {
+        debug_log("%s: directory claim=%s\n", what, service_claim_result_name(claim));
+        return;
+    }
+    const LONG count = InterlockedIncrement(failureCount);
+    if ((count & (count - 1)) == 0) {
+        debug_log("%s: directory claim=failed count=%ld (%s)\n", what, (long)count,
+                  claimErr && claimErr[0] ? claimErr : "unknown");
+    }
+}
+
+// %ProgramData%\Green Curve is never adopted on faith.  The default
+// %ProgramData% ACL lets any account create a subfolder there, so the folder
+// is used only when its handle proves our exact protected DACL and a
+// privileged owner; anything else is set aside and replaced by a folder whose
+// descriptor is part of its creation.  Nothing here rewrites the ACL of an
+// existing object.  A required postcondition for all machine-bank writers.
 static bool ensure_machine_config_directory(char* err, size_t errSize) {
-    WCHAR pathW[MAX_PATH] = {};
-    if (!resolve_machine_config_path_internal(pathW, ARRAY_COUNT(pathW), err, errSize)) return false;
     WCHAR dirW[MAX_PATH] = {};
-    StringCchCopyW(dirW, ARRAY_COUNT(dirW), pathW);
-    WCHAR* slash = wcsrchr(dirW, L'\\');
-    if (!slash) slash = wcsrchr(dirW, L'/');
-    if (!slash) {
-        set_message(err, errSize, "Machine config path has no directory");
-        return false;
-    }
-    *slash = 0;
-    if (!CreateDirectoryW(dirW, nullptr)) {
-        DWORD createErr = GetLastError();
-        if (createErr != ERROR_ALREADY_EXISTS) {
-            set_message(err, errSize, "Failed creating machine config directory (error %lu)", createErr);
-            return false;
-        }
-    }
-    DWORD attrs = GetFileAttributesW(dirW);
-    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
-        (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-        set_message(err, errSize, "Machine config directory is unavailable or unsafe");
-        return false;
-    }
-    // Harden the directory so a standard user cannot plant or delete files in
-    // the shared bank (the default %ProgramData% ACL grants users create-file
-    // rights).  This is a required postcondition for all machine-bank writers.
-    char aclErr[256] = {};
-    if (!apply_protected_machine_config_dir_dacl(dirW, aclErr, sizeof(aclErr))) {
-        set_message(err, errSize, "Machine config directory DACL hardening failed: %s", aclErr[0] ? aclErr : "unknown");
-        return false;
-    }
-    if (!machine_config_dacl_is_hardened(dirW)) {
-        set_message(err, errSize, "Machine config directory DACL verification failed");
+    if (!resolve_machine_config_dir_w(dirW, ARRAY_COUNT(dirW), err, errSize)) return false;
+    static volatile LONG s_claimFailures = 0;
+    char claimErr[256] = {};
+    const int claim = service_claim_protected_directory(dirW, GC_SERVICE_ACL_DIRECTORY,
+        true, true, nullptr, claimErr, sizeof(claimErr));
+    log_machine_dir_claim("machine config", claim, claimErr, &s_claimFailures);
+    if (claim == GC_SERVICE_CLAIM_FAILED) {
+        set_message(err, errSize, "Machine config directory is not provably protected: %s",
+                    claimErr[0] ? claimErr : "unknown");
         return false;
     }
     return true;
 }
 
+// Re-harden one file in the proven bank directory through a handle that does
+// not follow a reparse point, refusing a second hard link: a write that lands
+// in this directory must not be a write somewhere else.
 static bool harden_machine_config_file_required(const WCHAR* pathW, const char* pathForLog, char* err, size_t errSize) {
-    char aclErr[256] = {};
-    if (!apply_protected_machine_config_dacl(pathW, aclErr, sizeof(aclErr))) {
-        set_message(err, errSize, "Machine config file DACL hardening failed: %s", aclErr[0] ? aclErr : "unknown");
+    HANDLE file = CreateFileW(pathW, READ_CONTROL | WRITE_DAC | WRITE_OWNER | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        set_message(err, errSize, "Machine config file cannot be opened for hardening (error %lu)",
+                    GetLastError());
         return false;
     }
-    if (!machine_config_dacl_is_hardened(pathW)) {
-        set_message(err, errSize, "Machine config file DACL verification failed");
+    BY_HANDLE_FILE_INFORMATION info = {};
+    if (!GetFileInformationByHandle(file, &info) || info.nNumberOfLinks != 1) {
+        CloseHandle(file);
+        set_message(err, errSize, "Machine config file link identity is unsafe");
+        return false;
+    }
+    char aclErr[256] = {};
+    const bool hardened = apply_protected_service_dacl_to_handle(file, GC_SERVICE_ACL_CONFIG,
+        true, aclErr, sizeof(aclErr));
+    CloseHandle(file);
+    if (!hardened) {
+        set_message(err, errSize, "Machine config file DACL hardening failed: %s", aclErr[0] ? aclErr : "unknown");
         return false;
     }
     debug_log("machine config: verified protected DACL on %s\n", pathForLog ? pathForLog : "<wide path>");
@@ -192,13 +207,8 @@ static void migrate_legacy_machine_config() {
         return;
     }
     char aclErr[256] = {};
-    if (!apply_protected_machine_config_dacl(newW, aclErr, sizeof(aclErr))) {
-        debug_log("machine config migration: DACL hardening failed: %s\n", aclErr[0] ? aclErr : "unknown");
-        DeleteFileW(newW);
-        return;
-    }
-    if (!machine_config_dacl_is_hardened(newW)) {
-        debug_log("machine config migration: DACL verification failed after copy\n");
+    if (!harden_machine_config_file_required(newW, newPath, aclErr, sizeof(aclErr))) {
+        debug_log("machine config migration: %s\n", aclErr[0] ? aclErr : "DACL hardening failed");
         DeleteFileW(newW);
         return;
     }
@@ -212,8 +222,10 @@ static void migrate_legacy_machine_config() {
 
 // Content trust is distinct from repairing permissions. A repaired ACL cannot
 // authenticate bytes planted before installation, so the proof either finds
-// the previous exact ACL and Administrators owner, or discards the content
-// through the pinned handle before re-hardening it.  Runs under the
+// the previous exact ACL and Administrators owner, or sets the unproven file's
+// name aside (matched to the pinned handle's file id) -- never truncating or
+// re-ACLing it in place -- and the bank is simply absent until an
+// administrator writes it again.  Runs under the
 // cross-process config lock: an elevated GUI publishes by writing the bank and
 // THEN hardening it, and a proof landing between the two would discard a
 // legitimate administrator's write as unproven.
@@ -235,7 +247,7 @@ static bool service_prove_shared_bank_locked(char* err, size_t errSize, bool* di
         (directoryTag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
         !(directoryTag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
         service_handle_dacl_is_ours(directory, GC_SERVICE_ACL_DIRECTORY) &&
-        service_handle_owner_is_administrators(directory);
+        service_handle_owner_is_privileged(directory);
     if (!directoryTrusted) {
         CloseHandle(directory);
         set_message(err, errSize, "bank directory protection is unproven");
@@ -249,8 +261,9 @@ static bool service_prove_shared_bank_locked(char* err, size_t errSize, bool* di
         trusted = openError == ERROR_FILE_NOT_FOUND;
         if (!trusted) set_message(err, errSize, "cannot pin the bank file (error %lu)", openError);
     } else {
-        trusted = service_prepare_shared_bank_handle(file, true, discarded, err, errSize);
-        CloseHandle(file);
+        void* bank = file;
+        trusted = service_prepare_shared_bank_handle(&bank, fileW, true, discarded, err, errSize);
+        if (bank != INVALID_HANDLE_VALUE) CloseHandle((HANDLE)bank);
     }
     CloseHandle(directory);
     return trusted;

@@ -29,7 +29,7 @@
 
 ## Unreleased
 
-Apply reliability improves in this release.
+Apply reliability and the in-app updater's local protections improve in this release.
 
 ### Improved
 
@@ -38,6 +38,12 @@ Apply reliability improves in this release.
 ### Fixed
 
 - **Logon profile:** a profile with a selective GPU offset and an undervolt lock no longer fails to apply at logon on a cold GPU, which previously left the GPU at stock and paused automatic restore.
+- **In-app update:** an update refused because its signed metadata expired no longer closes your Green Curve window first.
+
+### Security
+
+- **Machine-wide folders:** the service now uses its folders under ProgramData only when it can prove it created them, and otherwise moves them aside and creates fresh ones.
+- **Update install:** the installer now runs from a fresh, administrators-only folder holding only the verified copy, checked again right before launch.
 
 ### Compatibility notes
 

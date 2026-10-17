@@ -102,6 +102,30 @@ def check_verification_precedes_launch(ctx, require_order, require_text):
         worker, "service_update_run_install",
         "service_update_stop_gui_processes", "CreateProcessW",
         "the GUI is stopped before setup is launched")
+    # Every refusal that does not need the windows gone happens before they
+    # are closed: the private launch folder is prepared, and the signed
+    # metadata's freshness is checked, ahead of the stop.  A refusal after it
+    # would leave the user with no GUI.
+    require_order(
+        worker, "service_update_run_install",
+        "service_update_prepare_launch_dir(", "service_update_stop_gui_processes(",
+        "the launch folder is prepared before any GUI is closed")
+    require_order(
+        worker, "service_update_run_install",
+        "freshAtLaunch = gc_update_fresh_time_valid", "service_update_stop_gui_processes(",
+        "the freshness refusal comes before any GUI is closed")
+    # What runs is the verified private copy, re-proven after the stop.
+    require_text(
+        worker, "gc_update_build_installer_command_line(launch.fileUtf8",
+        "setup is launched from its private launch folder, not the staging directory")
+    require_order(
+        worker, "service_update_run_install",
+        "service_update_reverify_launch_dir(", "CreateProcessW",
+        "the launch folder is re-proven immediately before setup is launched")
+    require_order(
+        worker, "service_update_run_install",
+        "service_update_stop_gui_processes(", "service_update_reverify_launch_dir(",
+        "the final launch-folder proof follows the (blocking) GUI stop")
     require_text(
         worker, "FILE_SHARE_READ",
         "the staged installer is opened with writes and deletes denied")
@@ -188,8 +212,9 @@ def check_staging_is_protected(ctx, require_text, forbid_text):
     state = _p(ctx, "main_service_update_state.cpp")
     require_text(state, "ensure_machine_config_directory",
                  "update staging inherits the hardened machine-config DACL")
-    require_text(state, "FILE_ATTRIBUTE_REPARSE_POINT",
-                 "the staging directory is refused when it is a reparse point")
+    require_text(state, "service_claim_protected_directory(",
+                 "the staging directory is claimed through a handle that never "
+                 "follows a reparse point, and never adopted unproven")
     # API names and the environment lookup, not the bare word "%TEMP%": both
     # files explain in prose why a temp folder is the wrong place, and a gate
     # that flags its own rationale is one that gets deleted rather than fixed.

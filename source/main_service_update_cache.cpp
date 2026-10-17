@@ -163,7 +163,7 @@ static bool service_update_cache_write_one(const char* path, const char* data,
     Win32Utf8Path widePath(path);
     if (widePath.valid_for(path)) {
         char aclErr[256] = {};
-        if (!apply_protected_machine_config_dacl(widePath.value, aclErr, sizeof(aclErr))) {
+        if (!harden_machine_config_file_required(widePath.value, path, aclErr, sizeof(aclErr))) {
             debug_log("update cache: DACL hardening failed for %s: %s\n", path,
                       aclErr[0] ? aclErr : "unknown");
         }
