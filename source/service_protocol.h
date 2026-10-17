@@ -80,7 +80,10 @@ enum {
     // v28 adds SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE.  Sizes are
     // unchanged, but an older peer would fold the new value into "automatic
     // apply failed" and hide that the GPU was left in an unknown state.
-    SERVICE_PROTOCOL_VERSION = 28,
+    // v29 appends ServiceAutoApplyFailure to ServiceSnapshot (192 bytes): the
+    // cause of the automatic write that latched AUTOMATIC_APPLY_FAILED, so the
+    // GUI can tell the user instead of leaving a silent lockout.
+    SERVICE_PROTOCOL_VERSION = 29,
 };
 
 // ServiceRequest.flags bits. Bit 0 = interactive apply. Bit 30 marks an
@@ -538,6 +541,8 @@ static inline const char* service_gpu_health_reason_name(gc_u32 reason) {
     }
 }
 
+#include "service_auto_apply_failure.h"  // v29 snapshot record
+
 struct ServiceSnapshot {
     gc_bool8 initialized;
     gc_bool8 loaded;
@@ -632,6 +637,7 @@ struct ServiceSnapshot {
     int videoClkOffsetKhz;
     unsigned int videoClkMeasuredClockKhz;
     ServiceGpuHealth health;
+    ServiceAutoApplyFailure autoApplyFailure;  // v29
 };
 
 struct ServiceRequest {
@@ -688,7 +694,7 @@ static_assert(sizeof(DesiredSettings) == 964,
               "DesiredSettingsSchema<N> with a widening migration, then bump "
               "LINUX_DAEMON_RECORD_VERSION, LINUX_DAEMON_STARTUP_VERSION and "
               "SERVICE_ACTIVE_DESIRED_VERSION (see desired_settings_schema.h)");
-static_assert(sizeof(ServiceSnapshot) == 4248,
+static_assert(sizeof(ServiceSnapshot) == 4440,
               "ServiceSnapshot changed without an IPC protocol-version bump");
 static_assert(sizeof(ServiceRequest) == 1552,
               "ServiceRequest changed without an IPC protocol-version bump");
@@ -768,7 +774,7 @@ struct ServiceResponse {
     ServiceUpdateState update;
     char message[512];
 };
-static_assert(sizeof(ServiceResponse) == 7368,
+static_assert(sizeof(ServiceResponse) == 7560,
               "ServiceResponse changed without an IPC protocol-version bump");
 
 static_assert(offsetof(ServiceResponse, magic) == 0, "ServiceResponse.magic must be at offset 0");

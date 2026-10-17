@@ -641,7 +641,9 @@ static int run(){
  for(int scalarFails=0;scalarFails<2;++scalarFails)for(int curveFails=0;curveFails<2;++curveFails){
    failScalar=scalarFails;failCurve=curveFails;scalarWrites=curveWrites=0;resets=0;
    {ApplyClockCeilingGuard guard(&next);CHECK(guard.arm()==APPLY_CEILING_ARM_INSTALLED);
-    char result[256]{};CHECK(!apply_recover_clock_failure(guard,"injected partial write",result,sizeof(result)));}
+    char result[256]{};CHECK(!apply_recover_clock_failure(guard,"injected partial write",result,sizeof(result)));
+    // The service claims "returned to stock" only from this exact sentence.
+    CHECK((std::strstr(result,GC_APPLY_RECOVERY_VERIFIED_TEXT)!=nullptr)==(!scalarFails&&!curveFails));}
    CHECK(scalarWrites==1);CHECK(curveWrites==(scalarFails?0:1));
    CHECK(resets==(!scalarFails&&!curveFails?1:0));
  }

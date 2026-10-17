@@ -124,6 +124,9 @@
 // Per-tick log lines: log state changes at once, steady repeats as a periodic
 // summary, full per-tick detail only with g_debug_log_verbose.
 #include "debug_log_steady_state_policy.h"
+// What the GUI says about a new automatic-restore lockout, and the apply's
+// recovery sentence the service matches to fill the v29 failure record.
+#include "auto_apply_failure_notice_policy.h"
 
 // Emit a debug line only when its formatted text changes from the previous call
 // AT THIS CALL SITE.  Cuts repetition of high-frequency idempotent state lines
@@ -711,6 +714,9 @@ struct AppData {
     ServiceLifecycleTrigger serviceLastLifecycleTrigger;
     ServiceLifecycleResult serviceLastLifecycleResult;
     ServiceAutoRestoreLockoutReason serviceAutoRestoreLockoutReason;
+    // GUI copy of the v29 snapshot record behind an AUTOMATIC_APPLY_FAILED
+    // lockout (what failed, and whether the clocks were recovered to stock).
+    ServiceAutoApplyFailure serviceAutoApplyFailure;
     bool serviceActiveDesiredValid;
     DesiredSettings serviceActiveDesired;
     bool serviceControlStateValid;

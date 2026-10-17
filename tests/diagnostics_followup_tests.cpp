@@ -4,8 +4,10 @@
 // 0.28 field-log diagnostics follow-ups (assertion codes 6700-6799): the
 // steady-state summarizer behind the per-tick log lines
 // (debug_log_steady_state_policy.h) and the bounded CLI-log append the silent
-// logon paths now use (cli_log_append_policy.h).  Pure headers plus one temp
-// file; no GPU, no service.
+// logon paths now use (cli_log_append_policy.h), and the GUI notice for a
+// failed automatic apply plus its protocol-v29 wire record
+// (auto_apply_failure_notice_policy.h).  Pure headers plus one temp file; no
+// GPU, no service.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +19,11 @@
 #include <unistd.h>
 #endif
 
+#include <stddef.h>
+
+#include "gpu_core.h"
+#include "service_protocol.h"
+#include "auto_apply_failure_notice_policy.h"
 #include "cli_log_append_policy.h"
 #include "debug_log_steady_state_policy.h"
 
@@ -183,10 +190,149 @@ int run_cli_log_append_tests() {
     return 0;
 }
 
+ServiceAutoApplyFailure failure_record(gc_u32 trigger, bool recovered, const char* detail) {
+    ServiceAutoApplyFailure f = {};
+    f.trigger = trigger;
+    f.coreRecovered = recovered ? 1 : 0;
+    snprintf(f.detail, sizeof(f.detail), "%s", detail);
+    return f;
+}
+
+int run_auto_apply_notice_tests() {
+    // Which lockout transitions are announced.
+    const gc_u32 NONE = SERVICE_AUTO_RESTORE_LOCKOUT_NONE;
+    const gc_u32 FAILED = SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED;
+    const gc_u32 HANDBACK = SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE;
+    // THE 0.28 GAP: a failed automatic apply latched FAILED and nothing was said.
+    if (gc_auto_restore_notice_for_transition(NONE, FAILED) !=
+        GC_AUTO_RESTORE_NOTICE_AUTO_APPLY_FAILED) return 6750;
+    if (gc_auto_restore_notice_for_transition(NONE, HANDBACK) !=
+        GC_AUTO_RESTORE_NOTICE_HANDBACK_INCOMPLETE ||
+        gc_auto_restore_notice_for_transition(FAILED, HANDBACK) !=
+        GC_AUTO_RESTORE_NOTICE_HANDBACK_INCOMPLETE) return 6751;
+    // The user's Reset downgrading HANDBACK to FAILED is not news; nor is a
+    // lockout that stays, clears, or has a reason without a notice.
+    if (gc_auto_restore_notice_for_transition(HANDBACK, FAILED) != GC_AUTO_RESTORE_NOTICE_NONE ||
+        gc_auto_restore_notice_for_transition(FAILED, FAILED) != GC_AUTO_RESTORE_NOTICE_NONE ||
+        gc_auto_restore_notice_for_transition(FAILED, NONE) != GC_AUTO_RESTORE_NOTICE_NONE ||
+        gc_auto_restore_notice_for_transition(NONE, SERVICE_AUTO_RESTORE_LOCKOUT_TDR_SPAM) !=
+            GC_AUTO_RESTORE_NOTICE_NONE) return 6752;
+
+    // The verified-recovery sentence is what licenses "returned to stock".
+    if (!gc_apply_result_reports_core_recovery(
+            "VF point 45 offset verified at 22000 kHz above requested 0 kHz. "
+            GC_APPLY_RECOVERY_VERIFIED_TEXT) ||
+        gc_apply_result_reports_core_recovery(
+            "x. Recovery could not verify core defaults; clock protection retained") ||
+        gc_apply_result_reports_core_recovery(nullptr)) return 6753;
+
+    char status[256], title[64], body[256];
+    ServiceAutoApplyFailure f = failure_record(SERVICE_LIFECYCLE_TRIGGER_TASK_HANDOFF,
+                                               true, "VF point 45 offset mismatch");
+    if (!gc_auto_apply_failure_compose(&f, status, sizeof(status), title, sizeof(title),
+                                       body, sizeof(body))) return 6754;
+    if (strcmp(status, "Automatic profile apply at logon failed; GPU clocks were "
+                       "returned to stock. Press Apply to retry. Cause: VF point 45 "
+                       "offset mismatch") != 0) return 6755;
+    if (strcmp(title, "Green Curve: automatic apply failed") != 0 ||
+        strcmp(body, status) != 0) return 6756;
+    // Unverified recovery never claims stock and offers Reset.
+    f = failure_record(SERVICE_LIFECYCLE_TRIGGER_STANDBY_RESUME, false, "fan write failed");
+    gc_auto_apply_failure_compose(&f, status, sizeof(status), title, sizeof(title),
+                                  body, sizeof(body));
+    if (strstr(status, "after standby failed. Press Apply to retry, or Reset") != status + 24 ||
+        strstr(status, "returned to stock") != nullptr) return 6757;
+    f = failure_record(SERVICE_LIFECYCLE_TRIGGER_DRIVER_RECOVERY, true, "x");
+    gc_auto_apply_failure_compose(&f, status, sizeof(status), title, sizeof(title),
+                                  body, sizeof(body));
+    if (strstr(status, "after a driver restart failed") == nullptr) return 6758;
+    // No record (lockout from an earlier service instance): no invented cause.
+    ServiceAutoApplyFailure none = {};
+    snprintf(none.detail, sizeof(none.detail), "stale text must not show");
+    gc_auto_apply_failure_compose(&none, status, sizeof(status), title, sizeof(title),
+                                  body, sizeof(body));
+    if (strstr(status, "paused") == nullptr || strstr(status, "Press Apply") == nullptr ||
+        strstr(status, "stale") != nullptr || strstr(body, "Cause") != nullptr) return 6759;
+    if (!gc_auto_apply_failure_compose(nullptr, status, sizeof(status), title,
+                                       sizeof(title), body, sizeof(body)) ||
+        strstr(status, "paused") == nullptr) return 6760;
+    // A full-length cause is cut with "..." in the 256-char balloon, never overflowed.
+    char longDetail[SERVICE_AUTO_APPLY_FAILURE_DETAIL_CHARS];
+    memset(longDetail, 'd', sizeof(longDetail) - 1);
+    longDetail[sizeof(longDetail) - 1] = '\0';
+    f = failure_record(SERVICE_LIFECYCLE_TRIGGER_WTS_LOGON, false, longDetail);
+    gc_auto_apply_failure_compose(&f, status, sizeof(status), title, sizeof(title),
+                                  body, sizeof(body));
+    size_t bodyLen = strlen(body);
+    if (bodyLen != sizeof(body) - 1 || strcmp(body + bodyLen - 3, "...") != 0) return 6761;
+    if (strlen(status) != sizeof(status) - 1) return 6762;
+    // An unterminated wire detail is never read past its field.
+    memset(f.detail, 'z', sizeof(f.detail));
+    gc_auto_apply_failure_compose(&f, status, sizeof(status), title, sizeof(title),
+                                  body, sizeof(body));
+    if (strlen(status) >= sizeof(status)) return 6763;
+    if (gc_auto_apply_failure_compose(&f, nullptr, 1, title, sizeof(title), body,
+                                      sizeof(body))) return 6764;
+    return 0;
+}
+
+int run_auto_apply_wire_tests() {
+    // v29 carries the record; every fixed-size peer must refuse a v28 header.
+    if (SERVICE_PROTOCOL_VERSION != 29) return 6770;
+    if (sizeof(ServiceAutoApplyFailure) != 192 ||
+        offsetof(ServiceSnapshot, autoApplyFailure) + sizeof(ServiceAutoApplyFailure) >
+            sizeof(ServiceSnapshot)) return 6771;
+    ServiceStateEnvelope envelope = {};
+    ServiceSnapshot snapshot = {};
+    DesiredSettings desired = {};
+    ControlState controls = {};
+    envelope.serviceInstanceId = 11;
+    envelope.stateRevision = 4;
+    envelope.gpuGeneration = 1;
+    if (!validate_service_state_envelope_for_ipc(&envelope, &snapshot, &desired,
+                                                 &controls)) return 6772;
+    snapshot.autoApplyFailure = failure_record(SERVICE_LIFECYCLE_TRIGGER_WTS_LOGON,
+                                               true, "cause");
+    if (!validate_service_state_envelope_for_ipc(&envelope, &snapshot, &desired,
+                                                 &controls)) return 6773;
+    ServiceSnapshot bad = snapshot;
+    bad.autoApplyFailure.trigger = SERVICE_LIFECYCLE_TRIGGER_DRIVER_RECOVERY + 1;
+    if (validate_service_state_envelope_for_ipc(&envelope, &bad, &desired, &controls))
+        return 6774;
+    bad = snapshot;
+    bad.autoApplyFailure.coreRecovered = 2;
+    if (validate_service_state_envelope_for_ipc(&envelope, &bad, &desired, &controls))
+        return 6775;
+    bad = snapshot;
+    bad.autoApplyFailure.reserved[1] = 1;
+    if (validate_service_state_envelope_for_ipc(&envelope, &bad, &desired, &controls))
+        return 6776;
+    bad = snapshot;
+    memset(bad.autoApplyFailure.detail, 'x', sizeof(bad.autoApplyFailure.detail));
+    if (validate_service_state_envelope_for_ipc(&envelope, &bad, &desired, &controls))
+        return 6777;
+    // The canonicalizer makes the same record safe rather than trusting it.
+    validate_service_snapshot_for_ipc(&bad);
+    if (bad.autoApplyFailure.detail[sizeof(bad.autoApplyFailure.detail) - 1] != '\0')
+        return 6778;
+    bad.autoApplyFailure.trigger = 99;
+    validate_service_snapshot_for_ipc(&bad);
+    if (bad.autoApplyFailure.trigger != 0 || bad.autoApplyFailure.detail[0] != '\0')
+        return 6779;
+    // A snapshot that must be empty may not smuggle a cause.
+    ServiceSnapshot empty = {};
+    if (!service_snapshot_is_zero(empty)) return 6780;
+    empty.autoApplyFailure.detail[0] = 'x';
+    if (service_snapshot_is_zero(empty)) return 6781;
+    return 0;
+}
+
 }  // namespace
 
 int run_diagnostics_followup_tests() {
     if (int r = run_steady_state_tests()) return r;
     if (int r = run_cli_log_append_tests()) return r;
+    if (int r = run_auto_apply_notice_tests()) return r;
+    if (int r = run_auto_apply_wire_tests()) return r;
     return 0;
 }

@@ -5,6 +5,21 @@
 // Lifecycle apply authorization and terminal-write handling
 // ============================================================================
 
+// A failed automatic hardware write: the reducer locks out, the cause is
+// recorded for the GUI (protocol v29), and automation is disabled.  Called
+// with the runtime lock held, like the disable it wraps.
+static void service_lifecycle_latch_write_failure(ServiceLifecycleTrigger trigger,
+    const char* detail, const char* context) {
+    EnterCriticalSection(&g_appLock);
+    ServiceLifecycleEvent lockout = {};
+    lockout.type = SERVICE_LIFECYCLE_EVENT_LOCKOUT;
+    service_lifecycle_reduce_locked(&lockout);
+    LeaveCriticalSection(&g_appLock);
+    service_auto_apply_failure_record(trigger, detail);
+    service_disable_automatic_restore(
+        SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED, context);
+}
+
 static bool service_lifecycle_pending_logon_snapshot(
     ServiceLifecycleIdentity* identityOut,
     gc_u64* generationOut,
@@ -473,13 +488,7 @@ static void service_lifecycle_attempt_logon() {
             service_write_restart_reapply_snapshot();
             service_record_oc_apply_stamp();
         } else if (writeAttempted) {
-            EnterCriticalSection(&g_appLock);
-            ServiceLifecycleEvent lockout = {};
-            lockout.type = SERVICE_LIFECYCLE_EVENT_LOCKOUT;
-            service_lifecycle_reduce_locked(&lockout);
-            LeaveCriticalSection(&g_appLock);
-            service_disable_automatic_restore(
-                SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED,
+            service_lifecycle_latch_write_failure(trigger, detail,
                 "configured logon profile write failed");
         }
     } while (false);
@@ -603,13 +612,8 @@ static void service_lifecycle_attempt_standby_restore() {
             }
             service_write_restart_reapply_snapshot();
         } else if (writeAttempted) {
-            EnterCriticalSection(&g_appLock);
-            ServiceLifecycleEvent lockout = {};
-            lockout.type = SERVICE_LIFECYCLE_EVENT_LOCKOUT;
-            service_lifecycle_reduce_locked(&lockout);
-            LeaveCriticalSection(&g_appLock);
-            service_disable_automatic_restore(
-                SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED,
+            service_lifecycle_latch_write_failure(
+                SERVICE_LIFECYCLE_TRIGGER_STANDBY_RESUME, detail,
                 "standby resume restore write failed");
         }
     }
@@ -765,13 +769,8 @@ static void service_lifecycle_attempt_driver_restore() {
     } else if (writeAttempted) {
         // Serialize the terminal failure with explicit Apply: this runtime lock
         // is still held, so a later explicit success wins chronologically.
-        EnterCriticalSection(&g_appLock);
-        ServiceLifecycleEvent lockout = {};
-        lockout.type = SERVICE_LIFECYCLE_EVENT_LOCKOUT;
-        service_lifecycle_reduce_locked(&lockout);
-        LeaveCriticalSection(&g_appLock);
-        service_disable_automatic_restore(
-            SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED,
+        service_lifecycle_latch_write_failure(
+            SERVICE_LIFECYCLE_TRIGGER_DRIVER_RECOVERY, detail,
             "controlled driver-recovery hardware write failed");
     }
     unlock_service_runtime();

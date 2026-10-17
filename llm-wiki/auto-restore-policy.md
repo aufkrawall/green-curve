@@ -7,7 +7,8 @@
 > a persisted per-boot crash-loop guard. The reset-to-stock rule below is
 > genuinely shared code.
 
-Last verified: 2026-09-23 (once-per-crash ownership handback, software only);
+Last verified: 2026-10-17 (failed automatic apply announced, protocol v29,
+software only); 2026-09-23 (once-per-crash ownership handback, software only);
 2026-07-31 (the shared restore-request builder; the rest 2026-07-12). Source anchors: `source/service_protocol.h`,
 `source/service_lifecycle_policy.h`, `source/main_service_sessions.cpp`,
 `source/main_service_lifecycle_events.cpp`,
@@ -100,8 +101,9 @@ instance in the same boot provably owned.** Pure decision in
   `service_emergency_restart_from_poisoned_runtime()` path. A wedged Apply
   therefore now ends, after the restart, in the crash handback to stock.
 - **User-visible:** `SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE` (protocol
-  v28) is the one lockout reason the Windows GUI announces ("Service stopped
-  unexpectedly; GPU may not be at stock. Press Reset."). A successful Reset
+  v28) is announced by the Windows GUI ("Service stopped unexpectedly; GPU
+  may not be at stock. Press Reset."); since v29 a failed automatic apply is
+  announced too (section below). A successful Reset
   downgrades it to `AUTOMATIC_APPLY_FAILED` (automation still needs an explicit
   Apply, but the hardware is no longer unknown). Linux publishes it through the
   guard; its explicit Reset clears the guard as before.
@@ -129,6 +131,54 @@ instance in the same boot provably owned.** Pure decision in
   hung one; the same attempt budget applies.
 - Open: never observed on hardware. A thread stuck in an uninterruptible kernel
   wait can delay process exit even after the watchdog's `ExitProcess`.
+
+## A failed automatic apply is announced (protocol v29, 2026-10-17)
+
+Source anchors: `source/service_auto_apply_failure.h`,
+`source/main_service_auto_apply_failure.cpp`,
+`source/main_service_lifecycle_apply.cpp`
+(`service_lifecycle_latch_write_failure`),
+`source/auto_apply_failure_notice_policy.h`, `source/apply_recovery_text.h`,
+`source/gui_auto_restore_notice.h`, `tools/log_gates.py`
+(`check_auto_apply_failure_notice`), tests 6750-6781.
+
+Before this, `HANDBACK_INCOMPLETE` was the only lockout reason the GUI
+announced. A logon, standby or driver-recovery write that failed latched
+`AUTOMATIC_APPLY_FAILED`, the apply's recovery returned the clocks to stock,
+and the user saw nothing: the GPU just ran at stock with automation off.
+
+- **Service:** the three failed-write sites go through
+  `service_lifecycle_latch_write_failure(trigger, detail, context)`: reducer
+  lockout, then the cause record, then the existing disable. The record is
+  written BEFORE the lockout latches, so no snapshot shows the lockout without
+  its cause. `coreRecovered` is decided on the full apply result (before the
+  184-char wire truncation) by matching `GC_APPLY_RECOVERY_VERIFIED_TEXT`, the
+  one sentence the apply's recovery emits when the core reset verified.
+- **Wire:** `ServiceSnapshot.autoApplyFailure` (192 bytes, appended last;
+  snapshot 4248 -> 4440, response 7368 -> 7560). Published only while the
+  lockout reason is `AUTOMATIC_APPLY_FAILED`, so a later lockout with another
+  cause never inherits it. Validation rejects an out-of-range trigger, a
+  non-canonical bool, nonzero reserved bytes or an unterminated detail; the
+  canonicalizer voids a record with a bad trigger. Mixed v28/v29 peers refuse
+  each other at the header, as for every size change.
+- **Lifetime:** in memory only. An explicit successful Apply clears it with the
+  lockout. After a service restart the persisted lockout has no record, and the
+  GUI says only that automation is paused until Apply; it never invents a cause.
+- **GUI:** on the edge NONE -> `AUTOMATIC_APPLY_FAILED` the status line and a
+  silent warning balloon say what failed and when ("at logon", "after
+  standby", "after a driver restart"), whether the clocks were returned to
+  stock, the action (Apply to retry; Reset as well when recovery did not
+  verify), and the recorded cause, cut with "..." when it does not fit. A
+  balloon composed before the tray icon exists waits for it. The causeless
+  "paused" form gets one balloon per GUI process, because every reconnect to a
+  restarted service shows it again. `HANDBACK_INCOMPLETE` -> `AUTOMATIC_APPLY_FAILED`
+  is the user's own Reset answering the handback notice and stays silent.
+- Diagnostics: `automatic apply failure: recorded for the GUI trigger=...`
+  (service), `GUI: automatic apply failure notice (trigger=... tray=...)` and
+  `GUI: automatic apply failure tray notice shown` (GUI).
+- Open: not exercised live; the logon failure that motivated it was reproduced
+  only from the field log. The Linux daemon publishes an all-zero record;
+  whether its TUI/CLI surface an automatic-apply lockout was not reviewed here.
 
 ## Reset-to-stock is part of a restore
 

@@ -218,6 +218,7 @@ static void populate_service_snapshot_locked(ServiceSnapshot* snapshot,
     snapshot->lastLifecycleTrigger = (gc_u32)g_serviceLastLifecycleTrigger;
     snapshot->lastLifecycleResult = (gc_u32)g_serviceLastLifecycleResult;
     snapshot->autoRestoreLockoutReason = snapshotLockoutReason;
+    snapshot->autoApplyFailure = service_auto_apply_failure_for_snapshot_locked(snapshotLockoutReason);
     snapshot->health.availableMutationDomains = gpu_capability_available_domains(&g_app.gpuCapability);
     snapshot->health.capabilityMemoryTopology = (gc_u8)g_app.gpuCapability.memoryTopology;
     snapshot->health.capabilityDomainsPacked = gpu_capability_pack_domains(&g_app.gpuCapability);
@@ -321,8 +322,8 @@ static void apply_service_snapshot_to_app(const ServiceSnapshot* snapshot) {
     g_app.serviceActiveProfileSlot = snapshot->activeProfileSlot;
     g_app.serviceLastLifecycleTrigger = (ServiceLifecycleTrigger)snapshot->lastLifecycleTrigger;
     g_app.serviceLastLifecycleResult = (ServiceLifecycleResult)snapshot->lastLifecycleResult;
-    g_app.serviceAutoRestoreLockoutReason =
-        (ServiceAutoRestoreLockoutReason)snapshot->autoRestoreLockoutReason;
+    g_app.serviceAutoRestoreLockoutReason = (ServiceAutoRestoreLockoutReason)snapshot->autoRestoreLockoutReason;
+    g_app.serviceAutoApplyFailure = snapshot->autoApplyFailure;
     gc_u32 previousCapabilityPacked =
         gpu_capability_pack_domains(&g_app.gpuCapability);
     gc_u32 previousMemoryTopology = g_app.gpuCapability.memoryTopology;

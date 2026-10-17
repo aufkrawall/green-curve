@@ -95,6 +95,7 @@ def check_all(ctx, require_text, require_text_in_operation,
 
     check_steady_state_lines(ctx, require_text)
     check_cli_log_appends(ctx, require_text)
+    check_auto_apply_failure_notice(ctx, require_text)
 
 
 # The per-tick lines measured at ~97% of the 0.28 field log.  Each must route
@@ -178,3 +179,22 @@ def check_cli_log_appends(ctx, require_text):
                  "the logon handoff FAILED record appends to the CLI log")
     require_text(_p(ctx, "cli_console.cpp"), "gc_cli_log_append_record(cli_log_path(),",
                  "the CLI append goes through the capped append policy")
+
+
+def check_auto_apply_failure_notice(ctx, require_text):
+    # A failed automatic logon/standby/driver-recovery write latched the
+    # AUTOMATIC_APPLY_FAILED lockout silently.  Every such site records its
+    # cause for the GUI (protocol v29), and the GUI announces the new lockout.
+    lifecycle = _read(_p(ctx, "main_service_lifecycle_apply.cpp"))
+    if lifecycle.count("service_lifecycle_latch_write_failure(") != 4:
+        _fail("main_service_lifecycle_apply.cpp: each failed automatic write "
+              "(logon, standby, driver recovery) must record its cause")
+    require_text(_p(ctx, "gpu_backend_apply_failure.h"), "GC_APPLY_RECOVERY_VERIFIED_TEXT",
+                 "the apply's recovery sentence is the shared constant the service matches")
+    require_text(_p(ctx, "main_service_pipe_switch.cpp"), "service_auto_apply_failure_clear();",
+                 "an explicit successful Apply clears the recorded failure cause")
+    require_text(_p(ctx, "main_state_sync.cpp"),
+                 "service_auto_apply_failure_for_snapshot_locked(snapshotLockoutReason)",
+                 "the snapshot publishes the failure record only with its lockout")
+    require_text(_p(ctx, "gui_service_state.cpp"), "gui_announce_auto_restore_lockout(previousLockout);",
+                 "the GUI announces a new automatic-restore lockout")

@@ -33,6 +33,7 @@ Apply reliability and diagnostics improve in this release.
 
 ### Improved
 
+- **Automatic apply failures:** when a profile fails to apply automatically at logon, after standby or after a driver restart, Green Curve now says so in the window and the tray, with the cause and a prompt to press Apply.
 - **Debug log:** routine background activity is now summarized every 10 minutes, so the log keeps weeks of history instead of about two days; set `GREEN_CURVE_DEBUG=verbose` for full per-tick detail.
 
 ### Fixed
@@ -43,6 +44,7 @@ Apply reliability and diagnostics improve in this release.
 ### Compatibility notes
 
 - Existing configuration and profiles remain fully compatible.
+- App and background service move to protocol v29. They update together, so this needs nothing from you.
 
 ## 0.28
 

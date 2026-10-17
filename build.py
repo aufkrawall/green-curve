@@ -2121,8 +2121,8 @@ def run_source_regression_checks():
 
     require_text(shared_h, "APP_DEBUG_DEFAULT_ENABLED 1", "debug logging remains default-on")
     require_text(shared_h, "APP_TITLE           APP_NAME \" v\" APP_VERSION", "plain title macro exists")
-    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 28",
-                 "service protocol publishes outcome severity, update state, XBAR and the handback lockout")
+    require_text(shared_h, "SERVICE_PROTOCOL_VERSION = 29",
+                 "service protocol publishes outcome severity, update state, XBAR, the handback lockout and the auto-apply failure")
     require_text(shared_h, "typedef gc_u8 gc_bool8", "IPC bool fields use a fixed-width one-byte type")
     require_text(shared_h, "canonicalize_gc_bool8", "IPC bool fields are canonicalized at trust boundaries")
     require_text(shared_h, "validate_service_response_for_ipc", "service responses are canonicalized before GUI use")
