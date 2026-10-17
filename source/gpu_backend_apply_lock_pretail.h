@@ -74,9 +74,20 @@ static bool apply_lock_pretail_precheck_before_reset(const DesiredSettings* desi
             ? gpu_offset_component_mhz_for_point(ci, desired->gpuOffsetMHz, excludeLow)
             : 0;
     }
-    const bool offsetInVfTable = curve_point_request_uses_vf_table_offset(
+    // A reset-before-apply clears VF curve offsets, but it only clears the
+    // separate NVML graphics scalar when the request itself owns the GPU-offset
+    // domain.  A sparse lock/curve request therefore retains a uniform scalar,
+    // and the lock projection must keep using the separate-NVML route.
+    int currentAppliedMHz = 0;
+    int currentActiveExclude = 0;
+    if (!desired->hasGpuOffset) {
+        currentAppliedMHz = current_applied_gpu_offset_mhz();
+        currentActiveExclude = current_applied_gpu_offset_excludes_low_points()
+            ? g_app.appliedGpuOffsetExcludeLowCount : 0;
+    }
+    const bool offsetInVfTable = curve_point_apply_uses_vf_table_offset(
         vf_curve_global_gpu_offset_supported(), desired->hasGpuOffset != 0,
-        desired->gpuOffsetMHz, excludeLow);
+        desired->gpuOffsetMHz, excludeLow, currentAppliedMHz, currentActiveExclude);
     unsigned int offendingMHz = 0;
     int offendingCi = apply_lock_pretail_first_violation(VF_NUM_POINTS,
         offsetInVfTable, desired->lockMHz,

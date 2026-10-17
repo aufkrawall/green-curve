@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 //
 // "Offset intent vs absolute MHz" follow-ups to the 2026-10-17 correction-loop
-// fix (assertion codes 6800-6829).  Pure headers only; no GPU, no OS state.
+// fix (assertion codes 6800-6829, 6852-6861).  Pure headers only; no GPU, no OS state.
 //
 // These tests exercise requested offsets and supplied readbacks. They do not
 // model composition between NVML graphics offsets and VF deltas, which needs
@@ -280,12 +280,26 @@ int run_boost_tally_tests() {
 
 int run_pre_blackwell_offset_routing_tests() {
     // 6852: VF-table offset routing predicate across Blackwell and pre-Blackwell.
-    if (!curve_point_request_uses_vf_table_offset(true, true, 150, 0)) return 6852;
-    if (!curve_point_request_uses_vf_table_offset(true, true, 150, 5)) return 6852;
-    if (!curve_point_request_uses_vf_table_offset(false, false, 0, 0)) return 6852;
-    if (!curve_point_request_uses_vf_table_offset(false, true, 0, 0)) return 6852;
-    if (!curve_point_request_uses_vf_table_offset(false, true, 150, 5)) return 6852;
-    if (curve_point_request_uses_vf_table_offset(false, true, 150, 0)) return 6852;
+    if (!curve_point_apply_uses_vf_table_offset(true, true, 150, 0, 0, 0)) return 6852;
+    if (!curve_point_apply_uses_vf_table_offset(true, true, 150, 5, 0, 0)) return 6852;
+    if (!curve_point_apply_uses_vf_table_offset(false, false, 0, 0, 0, 0)) return 6852;
+    if (!curve_point_apply_uses_vf_table_offset(false, true, 0, 0, 0, 0)) return 6852;
+    if (!curve_point_apply_uses_vf_table_offset(false, true, 150, 5, 0, 0)) return 6852;
+    if (curve_point_apply_uses_vf_table_offset(false, true, 150, 0, 0, 0)) return 6852;
+
+    // 6858: a sparse curve/lock request that does not own the GPU-offset domain
+    // must follow the offset route it retains.  A live uniform scalar stays on
+    // the separate NVML route; a live selective offset stays on the VF route;
+    // no live offset leaves the request on the VF-table route.  An explicit
+    // request for zero owns the scalar clear, so the eventual route is VF.
+    if (curve_point_apply_uses_vf_table_offset(false, false, 0, 0, 150, 0))
+        return 6858;
+    if (!curve_point_apply_uses_vf_table_offset(false, false, 0, 0, 150, 5))
+        return 6858;
+    if (!curve_point_apply_uses_vf_table_offset(false, false, 0, 0, 0, 0))
+        return 6858;
+    if (!curve_point_apply_uses_vf_table_offset(false, true, 0, 0, 150, 0))
+        return 6858;
 
     // 6853: Pre-Blackwell uniform (+150, excl=0) -> selective (+150, excl=5)
     // clears the prior scalar NVML offset before writing the VF curve batch.
@@ -343,6 +357,26 @@ int run_pre_blackwell_offset_routing_tests() {
     return 0;
 }
 
+int run_gpu_offset_range_preflight_tests() {
+    // 6860: unknown ranges are permissive, because they carry no evidence that
+    // the request is invalid.  Known ranges are inclusive at both endpoints.
+    if (!curve_point_gpu_offset_request_in_range(false, 999, true, -100, 100))
+        return 6860;
+    if (!curve_point_gpu_offset_request_in_range(true, 999, false, -100, 100))
+        return 6860;
+    if (!curve_point_gpu_offset_request_in_range(true, -100, true, -100, 100) ||
+        !curve_point_gpu_offset_request_in_range(true, 100, true, -100, 100))
+        return 6860;
+
+    // 6861: an out-of-range owned offset must be detectable before the reset
+    // path runs, in either direction, including zero outside a positive range.
+    if (curve_point_gpu_offset_request_in_range(true, -101, true, -100, 100) ||
+        curve_point_gpu_offset_request_in_range(true, 101, true, -100, 100) ||
+        curve_point_gpu_offset_request_in_range(true, 0, true, 10, 20))
+        return 6861;
+    return 0;
+}
+
 }  // namespace
 
 int run_offset_intent_tests() {
@@ -350,6 +384,7 @@ int run_offset_intent_tests() {
     if (int r = run_pretail_offset_intent_tests()) return r;
     if (int r = run_boost_tally_tests()) return r;
     if (int r = run_pre_blackwell_offset_routing_tests()) return r;
+    if (int r = run_gpu_offset_range_preflight_tests()) return r;
     return 0;
 }
 

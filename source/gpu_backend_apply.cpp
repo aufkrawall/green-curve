@@ -41,6 +41,25 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         debug_log("apply_desired_settings: fan prevalidation failed: %s\n", result && result[0] ? result : "unknown");
         return false;
     }
+    // A GPU offset outside the driver-reported range must be refused before the
+    // reset-before-apply path can run.  The later routing branch is far below
+    // the reset, and a plan computed from invalid input could otherwise clear a
+    // still-active uniform offset before the apply ultimately failed.
+    if (!curve_point_gpu_offset_request_in_range(
+            desired->hasGpuOffset != 0, desired->gpuOffsetMHz,
+            g_app.gpuOffsetRangeKnown, g_app.gpuClockOffsetMinMHz,
+            g_app.gpuClockOffsetMaxMHz)) {
+        set_message(result, resultSize,
+            "GPU offset %d MHz is outside the supported range %d..%d MHz. Nothing was changed.",
+            desired->gpuOffsetMHz, g_app.gpuClockOffsetMinMHz,
+            g_app.gpuClockOffsetMaxMHz);
+        debug_log("apply_desired_settings: REFUSED before any write -- GPU offset"
+                  " %d MHz is outside the reported range %d..%d MHz\n",
+            desired->gpuOffsetMHz, g_app.gpuClockOffsetMinMHz,
+            g_app.gpuClockOffsetMaxMHz);
+        set_last_apply_phase("apply: refused (GPU offset outside range)");
+        return false;
+    }
     // CT-02, preflight half.  A request that EXPLICITLY names a lock point
     // this GPU's visible map cannot resolve used to have `hasLock` quietly
     // cleared halfway down this function -- after reset-to-stock had already
@@ -295,9 +314,10 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 const int anchorExclude = (desired->hasGpuOffset &&
                     desired->gpuOffsetExcludeLowCount > 0 && desired->gpuOffsetMHz != 0)
                     ? desired->gpuOffsetExcludeLowCount : 0;
-                const bool anchorOffsetInVfTable = curve_point_request_uses_vf_table_offset(
+                const bool anchorOffsetInVfTable = curve_point_apply_uses_vf_table_offset(
                     vf_curve_global_gpu_offset_supported(), desired->hasGpuOffset != 0,
-                    desired->gpuOffsetMHz, anchorExclude);
+                    desired->gpuOffsetMHz, anchorExclude, currentAppliedGpuOffsetMHz,
+                    currentActiveGpuOffsetExcludeLowCount);
                 const long long anchorComponentKHz = (long long)gpu_offset_component_mhz_for_point(
                     lockCi, desired->gpuOffsetMHz, anchorExclude) * 1000;
                 long long anchorKHz = curve_point_stored_lock_anchor_khz(
@@ -341,8 +361,9 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         desired->gpuOffsetMHz, desired->gpuOffsetExcludeLowCount,
         currentAppliedGpuOffsetMHz, currentActiveGpuOffsetExcludeLowCount);
     if (desired->hasGpuOffset) {
-        if (!g_app.gpuOffsetRangeKnown ||
-            (desired->gpuOffsetMHz >= g_app.gpuClockOffsetMinMHz && desired->gpuOffsetMHz <= g_app.gpuClockOffsetMaxMHz)) {
+        if (curve_point_gpu_offset_request_in_range(
+                true, desired->gpuOffsetMHz, g_app.gpuOffsetRangeKnown,
+                g_app.gpuClockOffsetMinMHz, g_app.gpuClockOffsetMaxMHz)) {
             desiredActiveGpuOffsetExcludeLowCount = offsetRouting.activeDesiredExcludeLowCount;
             targetGpuOffsetkHz = desired->gpuOffsetMHz * 1000;
             shouldApplyGpuOffset = offsetRouting.shouldApplyGpuOffset;
@@ -355,14 +376,19 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 desiredActiveGpuOffsetExcludeLowCount,
                 currentActiveGpuOffsetExcludeLowCount);
         } else {
+            // The preflight at the top of the apply normally makes this
+            // unreachable.  Keep the defense and, crucially, make the routing
+            // plan a no-op if live range state changed while the apply ran.
             gpuOffsetValid = false;
-            debug_log("desired gpu offset mhz=%d rejected by range %d..%d\n",
+            offsetRouting = CurveOffsetRoutingPlan{};
+            debug_log("desired gpu offset mhz=%d rejected by range %d..%d after preflight\n",
                 desired->gpuOffsetMHz, g_app.gpuClockOffsetMinMHz, g_app.gpuClockOffsetMaxMHz);
         }
     }
-    const bool offsetInVfTable = curve_point_request_uses_vf_table_offset(
+    const bool offsetInVfTable = curve_point_apply_uses_vf_table_offset(
         vf_curve_global_gpu_offset_supported(), desired->hasGpuOffset != 0,
-        desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount);
+        desired->gpuOffsetMHz, desiredActiveGpuOffsetExcludeLowCount,
+        currentAppliedGpuOffsetMHz, currentActiveGpuOffsetExcludeLowCount);
     if (!gpuOffsetValid) {
         failCount++;
         partialApplyRisk = true;

@@ -593,33 +593,43 @@ transition clamps and failure recovery are unchanged by the deferral below.
    demonstrated only its own assumption; it is not evidence of driver behavior.
    Log: `curve targets: offsetContract=full-component`, with VF-table capability,
    requested/current offset, exclusion count and routing.
-2. **Pre-tail and flat-tail checks.** `curve_point_request_uses_vf_table_offset()`
+2. **Pre-tail and flat-tail checks.** `curve_point_apply_uses_vf_table_offset()`
    (`source/curve_point_offset_policy.h`) is true on Blackwell (and the existing
-   best-guess backend) and also on Pascal..Ada whenever a request carries no GPU
-   offset (`0 MHz`) or uses a selective (`excludeLowCount > 0`) VF-batch offset.
-   On those VF-table routes, a requested provenance point is judged at live
-   frequency minus programmed VF offset plus its requested component, using
-   `apply_lock_pretail_first_violation()` before writes and
-   `apply_correction_monotonic_target_mhz()` after correction. Only on the
-   separate non-Blackwell uniform NVML route (`!globalVfOffsetSupported &&
-   hasGpuOffset && gpuOffsetMHz != 0 && excludeLowCount <= 0`) do both checks
-   retain the stored-MHz behavior for requested points, avoiding an unmeasured
-   NVML/VF base derivation. `ApplyCorrectionRequest::offsetInVfTable` controls
-   only flat-tail projection; offset verification and correction remain
-   routing-independent.
+   best-guess backend). On Pascal..Ada it is false for a uniform NVML scalar,
+   including one retained by a sparse curve/lock request that does not own the
+   GPU-offset domain, and true for a selective (`excludeLowCount > 0`) or absent
+   VF-table offset. A reset-before-apply does not clear the uniform NVML scalar
+   unless the request itself owns that domain, so the route decision carries the
+   current offset and exclusion state rather than treating an omitted request
+   field as proof that no scalar exists. On those VF-table routes, a requested
+   provenance point is judged at live frequency minus programmed VF offset plus
+   its requested component, using `apply_lock_pretail_first_violation()` before
+   writes and `apply_correction_monotonic_target_mhz()` after correction. Only
+   on the separate non-Blackwell uniform NVML route do both checks retain the
+   stored-MHz behavior for requested points, avoiding an unmeasured NVML/VF base
+   derivation. `ApplyCorrectionRequest::offsetInVfTable` controls only flat-tail
+   projection; offset verification and correction remain routing-independent.
 3. **Boost tallies.** `apply_correction_boost_tally()` runs on the final
    readback: offset-intent points by programmed offset (within 12 MHz), typed
    points by MHz within the verify tolerance. A driver-limited offset can verify
    safely while counting unmatched: the tally reports closeness to the request.
    Logs: `selective offset: final boost` / `first unmatched`.
 4. **Interactive stored-lock anchor.** With no lock MHz in the request, the
-   VF-table route (`curve_point_request_uses_vf_table_offset()`) resolves a
+   effective VF-table route (`curve_point_apply_uses_vf_table_offset()`) resolves a
    provenance anchor from its offset over the current base
    (`curve_point_stored_lock_anchor_khz()`). The separate uniform NVML route
    keeps the requested point's stored MHz. A typed anchor keeps its stored MHz
    on both routes; an absent requested point keeps the live value. The anchor
    diagnostic logs both provenance and VF-table routing.
-5. **Pre-Blackwell uniform/selective transitions (`curve_point_plan_gpu_offset_routing()`).**
+5. **GPU-offset range preflight.** `curve_point_gpu_offset_request_in_range()`
+   is evaluated before reset-before-apply or any other hardware write. A known
+   range is inclusive; an unknown range is permissive because it carries no
+   evidence that the request is invalid. An out-of-range request is refused with
+   no mutation, so an invalid selective request can no longer clear a live
+   uniform scalar while failing later. The post-reset routing branch keeps the
+   same check as defense and makes its `CurveOffsetRoutingPlan` a no-op if live
+   range state changed after preflight.
+6. **Pre-Blackwell uniform/selective transitions (`curve_point_plan_gpu_offset_routing()`).**
    Transitioning from a uniform NVML offset (`exclude == 0`) to a selective VF
    offset (`exclude > 0`) without `resetOcBeforeApply` sets
    `zeroPriorScalarBeforeCurveBatch = true` so `nvapi_set_gpu_offset(0)` clears
@@ -631,14 +641,16 @@ transition clamps and failure recovery are unchanged by the deferral below.
    the VF table). `lastApplyUsedGpuOffset` stays `true` whenever the request owns
    or preserves a non-zero uniform or selective GPU offset.
 
-Tests 6800-6829 and 6852-6857 (`tests/offset_intent_tests.cpp`) exercise the
+Tests 6800-6829 and 6852-6861 (`tests/offset_intent_tests.cpp`) exercise the
 component contract, route-specific lock projection, pre-tail/flat-tail checks,
-final boost tally, and pre-Blackwell uniform/selective offset routing.
-They do not simulate NVML/VF composition. Target-build and stored-anchor cases
-also execute production headers in `tests/clock_transition_tests.cpp`. The
-full-component assertion was observed failing before compensation was removed;
-source gates require the contract, prohibit the removed scalar helper/field and
-require capability wiring for all three lock projection sites.
+final boost tally, pre-Blackwell uniform/selective offset routing, retained
+scalar routing for sparse requests, and the hardware-free GPU-offset range
+preflight. They do not simulate NVML/VF composition. Target-build and
+stored-anchor cases also execute production headers in
+`tests/clock_transition_tests.cpp`. The full-component assertion was observed
+failing before compensation was removed; source gates require the contract,
+prohibit the removed scalar helper/field, require capability wiring for all
+three lock projection sites, and require the range refusal to precede reset.
 Removing each route guard in an isolated header copy was rejected at 6808
 (anchor), 6810 (pre-tail), and 6812 (flat-tail).
 

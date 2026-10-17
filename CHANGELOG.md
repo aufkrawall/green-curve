@@ -44,6 +44,7 @@ Apply reliability, diagnostics and the in-app updater's local protections improv
 - **CLI log:** signing in no longer erases the earlier entries of `greencurve_cli_log.txt`, including the record of a failed logon handoff.
 - **RTX 50 series lock validation:** a lock is no longer wrongly refused, or wrongly accepted, because a saved curve point's base moved since the profile was saved.
 - **Apply summary:** the "N of M boost points matched" note and the warning level now reflect the final curve after correction.
+- **Apply validation:** an out-of-range GPU offset is refused before any reset or offset write, and sparse curve applies that keep an existing offset now follow its real NVML or VF route.
 - **RTX 50 series stored lock:** applying from the editor with an inherited lock now places the lock where the saved point really runs today.
 - **Linux:** applying a curve or lock without a reset no longer stacks a GPU offset left over from an earlier offset-only apply.
 

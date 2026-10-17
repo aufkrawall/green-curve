@@ -232,11 +232,11 @@ That is 11 of ~340 files in `source/` (plus the extra test translation units
 `tests/apply_profile_followup_tests.cpp`, `tests/apply_correction_tests.cpp`
 (6500-6531: the apply's VF correction loop against a simulated driver, see
 [clock-transition-audit](clock-transition-audit.md)),
-`tests/offset_intent_tests.cpp` (6800-6829, 6852-6857: offset intent vs absolute MHz --
+`tests/offset_intent_tests.cpp` (6800-6829, 6852-6861: offset intent vs absolute MHz --
 the full-component contract without an assumed NVML/VF driver model,
 route-specific pre-tail/flat-tail and stored-anchor projection, the
-post-correction boost tally, and pre-Blackwell uniform/selective GPU offset
-routing) and
+post-correction boost tally, pre-Blackwell uniform/selective GPU offset
+routing, retained scalar routing for sparse requests, and the range preflight) and
 `tests/fan_worker_lock_tests.cpp` (6550-6569: native Windows threads/events/
 mutex fixture for the fan worker's cancellable lock wait, see
 [fan-control](fan-control.md)); `service_install_tests.cpp` owns

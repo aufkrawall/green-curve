@@ -338,22 +338,47 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "const bool offsetIntent = offsetInVfTable && requestHasPoint[ci] &&",
                  "live-base provenance projection is confined to the VF-table route")
     require_text(_p(ctx, "curve_point_offset_policy.h"),
-                 "static inline bool curve_point_request_uses_vf_table_offset(",
-                 "shared helper decides when a request expresses its GPU offset in the VF table")
+                 "static inline bool curve_point_gpu_offset_request_in_range(",
+                 "one helper compares a requested GPU offset with its reported range")
+    require_text(_p(ctx, "curve_point_offset_policy.h"),
+                 "static inline bool curve_point_apply_uses_vf_table_offset(",
+                 "shared helper decides the effective GPU-offset route, including a retained scalar")
     require_text(_p(ctx, "curve_point_offset_policy.h"),
                  "static inline CurveOffsetRoutingPlan curve_point_plan_gpu_offset_routing(",
                  "shared helper plans uniform and selective GPU offset routing across families")
+    require_text(_p(ctx, "curve_point_offset_policy.h"),
+                 "if (currentAppliedGpuOffsetMHz != 0 &&\n"
+                 "        currentActiveExcludeLowCount <= 0) return false;",
+                 "a sparse request keeps a retained uniform NVML offset on its separate route")
+    # Out-of-range GPU offsets are refusals, not a failed write followed by a
+    # recovery.  The check has to precede reset-before-apply, which can write.
+    require_order_in_operation(
+        apply_cpp,
+        "static bool apply_desired_settings_service(const DesiredSettings* desired",
+        "curve_point_gpu_offset_request_in_range(",
+        "if (!reset_oc_before_gui_apply(",
+        "the GPU-offset range refusal precedes reset-before-apply")
+    require_text(apply_cpp, "REFUSED before any write -- GPU offset",
+                 "the out-of-range GPU-offset refusal is explicit in the log")
     require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
-                 "const bool offsetInVfTable = curve_point_request_uses_vf_table_offset(",
-                 "the pre-reset pre-tail check computes VF-table offset routing")
+                 "const bool offsetInVfTable = curve_point_apply_uses_vf_table_offset(",
+                 "the pre-reset pre-tail check computes the effective offset route")
+    require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
+                 "currentAppliedMHz, currentActiveExclude);",
+                 "the pre-reset pre-tail check supplies the retained offset route")
     require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
                  "offsetInVfTable, desired->lockMHz,",
                  "the pre-reset pre-tail check supplies the VF-table routing")
     require_text(apply_cpp,
-                 "const bool offsetInVfTable = curve_point_request_uses_vf_table_offset(",
-                 "the apply computes VF-table offset routing for pre-tail and flat-tail checks")
+                 "const bool offsetInVfTable = curve_point_apply_uses_vf_table_offset(",
+                 "the apply computes its effective VF-table offset route")
+    require_text(apply_cpp,
+                 "currentAppliedGpuOffsetMHz, currentActiveGpuOffsetExcludeLowCount);",
+                 "the apply supplies the retained offset state to the route decision")
     require_text(apply_cpp, "offsetInVfTable, lockMhz,",
                  "the post-reset pre-tail check supplies the VF-table routing")
+    require_text(apply_cpp, "offsetRouting = CurveOffsetRoutingPlan{};",
+                 "a post-preflight range change cannot leave a live routing plan")
     require_text(_p(ctx, "curve_point_offset_policy.h"),
                  "if (requested && (!fromGpuOffset || !offsetInVfTable))",
                  "a separate-NVML-route stored lock retains its saved MHz")

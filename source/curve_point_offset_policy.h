@@ -105,17 +105,39 @@ static inline long long curve_point_offset_intent_live_khz(long long liveFreqKHz
         gpuOffsetComponentKHz;
 }
 
-// Whether a request's GPU offset is expressed through the VF control table
-// rather than a separate NVML graphics-clock offset.  Global-VF backends
-// (Blackwell) always use the VF table; older families use the VF table when
-// no uniform NVML offset is active (either no GPU offset, or a selective
-// exclude-low offset written through the curve batch).
-static inline bool curve_point_request_uses_vf_table_offset(
-    bool globalVfOffsetSupported, bool hasGpuOffset, int gpuOffsetMHz,
-    int excludeLowCount) {
+// The GPU-offset range check used before an apply may touch hardware.  An
+// unknown range is permissive because it carries no evidence of an invalid
+// request; a known range is inclusive at both endpoints, matching the write
+// validation below.
+static inline bool curve_point_gpu_offset_request_in_range(
+    bool hasGpuOffset, int gpuOffsetMHz, bool rangeKnown,
+    int rangeMinMHz, int rangeMaxMHz) {
+    if (!hasGpuOffset || !rangeKnown) return true;
+    return gpuOffsetMHz >= rangeMinMHz && gpuOffsetMHz <= rangeMaxMHz;
+}
+
+// Which route will OWN the GPU offset once this apply reaches its curve
+// writes.  Global-VF backends (Blackwell) always use the VF table.  On older
+// families a uniform offset is a separate NVML scalar; a selective offset is
+// expressed through the VF table.  A sparse request that does not name the GPU
+// offset preserves whichever route is already active.
+//
+// `currentAppliedGpuOffsetMHz` and `currentActiveExcludeLowCount` are the
+// retained live state.  They matter only when `requestHasGpuOffset` is false:
+// a reset-before-apply does not clear a uniform NVML scalar unless the request
+// itself owns the GPU-offset domain.
+static inline bool curve_point_apply_uses_vf_table_offset(
+    bool globalVfOffsetSupported, bool requestHasGpuOffset,
+    int desiredGpuOffsetMHz, int desiredExcludeLowCount,
+    int currentAppliedGpuOffsetMHz, int currentActiveExcludeLowCount) {
     if (globalVfOffsetSupported) return true;
-    if (!hasGpuOffset || gpuOffsetMHz == 0) return true;
-    return excludeLowCount > 0;
+    if (requestHasGpuOffset) {
+        if (desiredGpuOffsetMHz == 0) return true;
+        return desiredExcludeLowCount > 0;
+    }
+    if (currentAppliedGpuOffsetMHz != 0 &&
+        currentActiveExcludeLowCount <= 0) return false;
+    return true;
 }
 
 struct CurveOffsetRoutingPlan {
