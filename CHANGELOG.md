@@ -27,6 +27,18 @@
 
 # Changelog
 
+## Unreleased
+
+Apply reliability improves in this release.
+
+### Fixed
+
+- **Logon profile:** a profile with a selective GPU offset and an undervolt lock no longer fails to apply at logon on a cold GPU, which previously left the GPU at stock and paused automatic restore.
+
+### Compatibility notes
+
+- Existing configuration and profiles remain fully compatible.
+
 ## 0.28
 
 Security, updater resilience, and background service hardening improve in this release.

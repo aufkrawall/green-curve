@@ -508,6 +508,50 @@ readback is 0 never counts as unconverged, so it cannot trigger the fixed-point
 exit; the loop then rewrites unchanged offsets until the time budget. Only
 reachable for a requested but unpopulated VF point.
 
+## 2026-10-17 correction loop chased synthesized selective points
+
+A cold-boot (25 C) logon apply of a FLATTEN profile with `+475 MHz,
+exclude_low=70` failed with `VF point 45 offset verified at 22000 kHz above
+requested 0 kHz`, rolled back and latched the automatic-restore lockout. The
+same profile had applied cleanly on the two previous boots.
+
+Points the request does not contain (here 0..69; the profile stores 70..126)
+are synthesized by the selective GPU-offset batch: target OFFSET from the build
+(`targetCurveOffsets`, 0 on excluded points), MHz only a preview over the base
+sampled after reset. Verification already judged them by offset
+(`!explicit && (selective || fromOffset)`), but the correction loop took
+provenance from `desired->curvePointFromGpuOffset`, which is 0 for points the
+request never had, so it chased the preview with `absolute - live base`. After
+the first correction write the driver re-reported the low base one VF bin
+lower (the derived bases of points 46..49 equalled the post-reset frequencies
+of 45..48), the loop wrote +22..+279 MHz onto excluded points, and
+verification refused exactly what it had written. Same class as 1d/2026-09-17:
+two sites answering "offset or absolute?" differently.
+
+Fix: one predicate, `curve_point_offset_is_intent(explicit, fromGpuOffset,
+selectiveBatch)` in [curve_point_offset_policy.h](../source/curve_point_offset_policy.h),
+used by `apply_verify_curve_targets()` and (via
+`apply_correction_point_offset_is_intent()`) by the correction plan and
+classification. The correction request now carries the build's own
+`targetOffsetKHz` instead of a recomputed GPU component, so an offset-intent
+point is rewritten to the offset verification compares against. Classification
+counts such a point converged when its programmed offset equals the target
+(never against the MHz preview, never "accepted" by lowering the preview).
+Only typed points and the lock anchor remain absolute.
+
+Diagnostics: per pass `correction pass N plan: offsetIntent= absolute=
+tailFloor= clamped=` and, when a driver limit holds an offset-intent point off
+its target, one summary line `N offset-intent point(s) off their requested
+offset (first ci= programmed= target= kHz)`.
+
+Tests 6532-6542 in `tests/apply_correction_tests.cpp` (the harness's
+`sim_verify` now mirrors the real verifier's offset branch). Mutation-checked:
+reverting the plan to the old provenance fails 6532. Gates in
+`tools/apply_ceiling_gates.py` pin the shared predicate at both sites and the
+`targetOffsetKHz` wiring. Not reproduced on hardware: needs a cold boot whose
+low base shifts during correction; the anchor/tail convergence after the fix is
+inferred from the 2026-10-15/16 traces of the same profile.
+
 ## Open questions / release acceptance
 
 - 0.26.0 release review (2026-09-17): build 202 ran clean on hardware -- 11
