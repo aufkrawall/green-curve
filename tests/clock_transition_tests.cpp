@@ -382,7 +382,7 @@ static int run(){
    int offsets[VF_NUM_POINTS]{},freq[VF_NUM_POINTS]{},target[VF_NUM_POINTS]{};
    for(int i=0;i<4;++i){populated[i]=true;freq[i]=2400000;tail[i]=i>=2;}
    explicitMask[1]=true;
-   CHECK(apply_build_curve_targets(&d,true,false,mode!=0,(LockMode)mode,2,2800,true,1,0,0,0,
+   CHECK(apply_build_curve_targets(&d,true,false,mode!=0,(LockMode)mode,2,2800,true,1,0,0,
      populated,offsets,freq,tail,target,mask));
    CHECK(target[1]==100000);CHECK(target[0]==0);
    for(int i=0;i<4;++i)g_app.curve[i].freq_kHz=i>=2?2800000:2500000;
@@ -394,7 +394,7 @@ static int run(){
    CHECK(!apply_verify_curve_targets(&d,explicitMask,target,true,true,mode!=0,(LockMode)mode,tail,2800,detail,sizeof(detail)));
    // Same delta intent remains stable when the sampled base changes.
    freq[1]+=30000;
-   CHECK(apply_build_curve_targets(&d,true,false,mode!=0,(LockMode)mode,2,2800,true,1,0,0,0,
+   CHECK(apply_build_curve_targets(&d,true,false,mode!=0,(LockMode)mode,2,2800,true,1,0,0,
      populated,offsets,freq,tail,target,mask));CHECK(target[1]==70000);
  }
  // User repro: excluded point 69 has offset zero, but its derived 2295 MHz
@@ -468,14 +468,14 @@ static int run(){
    for(int baseMHz:{2322,2352}){
      freq[70]=baseMHz*1000;offsets[70]=0;
      int built[VF_NUM_POINTS]{};
-     CHECK(apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,0,0,true,70,0,0,0,
+     CHECK(apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,0,0,true,70,0,0,
        populated,offsets,freq,tail,built,mask));
      CHECK(built[70]==475000);CHECK(mask[70]);
      // Negative control: the SAME request without provenance is the pre-fix
      // rule, and it tracks the shifted base instead of the asked-for offset.
      DesiredSettings typedSame=d;typedSame.curvePointFromGpuOffset[70]=false;
      int legacy[VF_NUM_POINTS]{};
-     CHECK(apply_build_curve_targets(&typedSame,true,false,false,LOCK_MODE_NONE,0,0,true,70,0,0,0,
+     CHECK(apply_build_curve_targets(&typedSame,true,false,false,LOCK_MODE_NONE,0,0,true,70,0,0,
        populated,offsets,freq,tail,legacy,mask));
      CHECK(legacy[70]==2797000-baseMHz*1000);
    }
@@ -533,7 +533,7 @@ static int run(){
    for(int baseMHz:{2437,2467}){
      freq74[74]=baseMHz*1000;off74[74]=0;
      int built74[VF_NUM_POINTS]{};
-     CHECK(apply_build_curve_targets(&stock,true,false,false,LOCK_MODE_NONE,0,0,false,0,0,0,0,
+     CHECK(apply_build_curve_targets(&stock,true,false,false,LOCK_MODE_NONE,0,0,false,0,0,0,
        pop74,off74,freq74,tail74,built74,bmask));
      CHECK(built74[74]==2902000-baseMHz*1000);CHECK(bmask[74]);
    }
@@ -599,15 +599,15 @@ static int run(){
    bool pop[VF_NUM_POINTS]{},msk[VF_NUM_POINTS]{},tl[VF_NUM_POINTS]{};
    int offs[VF_NUM_POINTS]{},frq[VF_NUM_POINTS]{},built[VF_NUM_POINTS]{};
    pop[74]=true;frq[74]=2437000;offs[74]=0;
-   CHECK(apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,0,0,false,0,0,0,0,
+   CHECK(apply_build_curve_targets(&d,true,false,false,LOCK_MODE_NONE,0,0,false,0,0,0,
      pop,offs,frq,tl,built,msk));
    CurvePointOffsetRequest same{};
    same.fromGpuOffset=true;same.gpuOffsetComponentKHz=0;
    same.absoluteMHz=2902;same.liveBaseKHz=2437000;
    CHECK(built[74]==(int)curve_point_target_offset_khz(&same));
-   // Pre-Blackwell: the uniform +475 is the NVML scalar, already on every
-   // point, so the reconstructed point's VF delta is 0 (it was +475, which ran
-   // the point at stock + 950). Typed and lock-anchor points are untouched.
+   // Preserve the existing full-component target when the uniform GPU offset
+   // uses a separate API. This fixture checks emitted VF targets, without
+   // assuming how a physical driver composes the two controls.
    DesiredSettings pre{};
    pre.hasGpuOffset=true;pre.gpuOffsetMHz=475;
    pre.hasCurvePoint[70]=true;pre.curvePointMHz[70]=2797;pre.curvePointFromGpuOffset[70]=true;
@@ -616,24 +616,22 @@ static int run(){
    pop[70]=pop[71]=pop[72]=pop[73]=true;
    frq[70]=2797000;frq[71]=2850000;frq[72]=2900000;frq[73]=2950000;
    int preBuilt[VF_NUM_POINTS]{};
-   CHECK(apply_build_curve_targets(&pre,true,false,true,LOCK_MODE_FLATTEN,72,2950,false,0,475,0,475000,
+   CHECK(apply_build_curve_targets(&pre,true,false,true,LOCK_MODE_FLATTEN,72,2950,false,0,475,0,
      pop,offs,frq,preTail,preBuilt,msk));
-   CHECK(preBuilt[70]==0);CHECK(msk[70]);
+   CHECK(preBuilt[70]==475000);CHECK(msk[70]);
    CHECK(preBuilt[71]==50000);CHECK(preBuilt[72]==50000);
-   // Same request on a VF-table board (no scalar): the delta carries it.
-   CHECK(apply_build_curve_targets(&pre,true,false,true,LOCK_MODE_FLATTEN,72,2950,false,0,475,0,0,
-     pop,offs,frq,preTail,preBuilt,msk));
-   CHECK(preBuilt[70]==475000);
    // Interactive stored-lock anchor with no lock MHz in the request: a typed
    // anchor keeps its MHz; a provenance anchor follows its offset over today's
    // base (stored 2797 was projected over a base one bin lower than now).
-   CHECK(curve_point_stored_lock_anchor_khz(true,false,2797,2827000,475000,0,475000)==2797000);
-   CHECK(curve_point_stored_lock_anchor_khz(true,true,2797,2827000,475000,0,475000)==2827000);
-   // Pre-Blackwell: same point, offset carried by the NVML scalar.
-   CHECK(curve_point_stored_lock_anchor_khz(true,true,2797,2827000,0,475000,475000)==2827000);
+   CHECK(curve_point_stored_lock_anchor_khz(true,false,2797,2827000,475000,475000,true)==2797000);
+   CHECK(curve_point_stored_lock_anchor_khz(true,true,2797,2827000,475000,475000,true)==2827000);
+   // Separate NVML route: retain the stored anchor, whatever the VF readback.
+   CHECK(curve_point_stored_lock_anchor_khz(true,true,2797,2827000,0,475000,false)==2797000);
+   CHECK(curve_point_stored_lock_anchor_khz(true,true,2797,2827000,475000,475000,false)==2797000);
    // No request point: the live value, as before.
-   CHECK(curve_point_stored_lock_anchor_khz(false,false,0,2827000,475000,0,0)==2827000);
-   CHECK(curve_point_stored_lock_anchor_khz(false,true,0,-5,0,0,0)==0);
+   CHECK(curve_point_stored_lock_anchor_khz(false,false,0,2827000,475000,0,true)==2827000);
+   CHECK(curve_point_stored_lock_anchor_khz(false,false,0,2827000,0,475000,false)==2827000);
+   CHECK(curve_point_stored_lock_anchor_khz(false,true,0,-5,0,0,false)==0);
  }
  // Real reset sequencing: VF-global must never invoke the scalar helper.
  for(int vfGlobal=0;vfGlobal<2;++vfGlobal)for(int scalarFails=0;scalarFails<2;++scalarFails)

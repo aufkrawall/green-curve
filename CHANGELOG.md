@@ -42,10 +42,9 @@ Apply reliability, diagnostics and the in-app updater's local protections improv
 - **Logon profile:** a profile with a selective GPU offset and an undervolt lock no longer fails to apply at logon on a cold GPU, which previously left the GPU at stock and paused automatic restore.
 - **In-app update:** an update refused because its signed metadata expired no longer closes your Green Curve window first.
 - **CLI log:** signing in no longer erases the earlier entries of `greencurve_cli_log.txt`, including the record of a failed logon handoff.
-- **GTX 10 to RTX 40 series:** profiles carrying a GPU offset no longer apply that offset twice to their saved curve points.
-- **Lock validation:** a lock is no longer wrongly refused, or wrongly accepted, because a saved curve point's base moved since the profile was saved.
+- **RTX 50 series lock validation:** a lock is no longer wrongly refused, or wrongly accepted, because a saved curve point's base moved since the profile was saved.
 - **Apply summary:** the "N of M boost points matched" note and the warning level now reflect the final curve after correction.
-- **Stored lock:** applying from the editor with an inherited lock now places the lock where the saved point really runs today.
+- **RTX 50 series stored lock:** applying from the editor with an inherited lock now places the lock where the saved point really runs today.
 - **Linux:** applying a curve or lock without a reset no longer stacks a GPU offset left over from an earlier offset-only apply.
 
 ### Security

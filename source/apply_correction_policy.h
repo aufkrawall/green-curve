@@ -55,6 +55,9 @@ struct ApplyCorrectionRequest {
     unsigned int lockMHz;
     int lockCi;                        // the anchor point of a locked tail
     bool gpuPolicyViaCurveBatch;       // GPU offset expressed through the batch
+    // Only controls live-base projection for the flat-tail check. Offset
+    // verification and correction remain routing-independent.
+    bool offsetInVfTable;
     const bool* lockedTailMask;
     const bool* explicitCurveMask;     // points the user typed
     const bool* originalCurvePopulated;
@@ -62,8 +65,7 @@ struct ApplyCorrectionRequest {
     unsigned int* curvePointMHz;       // verify targets; lowered on acceptance
     const unsigned char* fromGpuOffset;  // per-point provenance (gc_bool8)
     // The offset the initial build chose for each point -- the same array
-    // verification compares an offset-intent point against.  Already the
-    // per-point delta, net of any separate GPU-offset scalar (pre-Blackwell).
+    // verification compares an offset-intent point against.
     const int* targetOffsetKHz;
 };
 
@@ -442,7 +444,7 @@ static inline ApplyBoostTally apply_correction_boost_tally(const ApplyCorrection
 static inline unsigned int apply_correction_monotonic_target_mhz(
         const ApplyCorrectionRequest& q, const ApplyCorrectionReadback& rb, int ci) {
     if (q.lockedTailMask[ci]) return q.lockMHz;
-    if (apply_correction_point_offset_is_intent(q, ci)) {
+    if (q.offsetInVfTable && apply_correction_point_offset_is_intent(q, ci)) {
         long long kHz = apply_correction_live_base_khz(rb, ci) + (long long)q.targetOffsetKHz[ci];
         if (kHz < 0) kHz = 0;
         if (kHz > UINT_MAX) kHz = UINT_MAX;

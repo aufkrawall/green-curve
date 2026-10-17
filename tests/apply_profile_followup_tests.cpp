@@ -40,7 +40,7 @@ void pretail_fixture(PretailFixture* f) {
 
 int first_violation(const PretailFixture& f, unsigned int lockMHz, bool gpuOffset,
                     unsigned int* target) {
-    return apply_lock_pretail_first_violation(N, lockMHz, f.populated, f.tail,
+    return apply_lock_pretail_first_violation(N, true, lockMHz, f.populated, f.tail,
         f.hasPoint, f.fromOffset, f.pointMHz, gpuOffset, f.base, f.component, f.unowned, target);
 }
 
@@ -128,7 +128,7 @@ int run_lock_pretail_tests() {
         unsigned char mask[N] = {};
         mask[2] = 1;
         g.pointMHz[2] = 2800;
-        if (apply_lock_pretail_first_violation(N, 2500u, g.populated, g.tail, mask,
+        if (apply_lock_pretail_first_violation(N, true, 2500u, g.populated, g.tail, mask,
                 g.fromOffset, g.pointMHz, false, g.base, g.component, g.unowned, &target) != 2 ||
             target != 2800) return 6443;
     }

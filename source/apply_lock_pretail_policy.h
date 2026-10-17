@@ -37,7 +37,9 @@
 //                                       current live value without one)
 //
 // Returns the first offending curve index, or -1.  All arrays have
-// `numPoints` entries.
+// `numPoints` entries. `offsetInVfTable` permits resolving a requested
+// provenance point over the live base. On the separate NVML route, retain the
+// stored MHz until composition with VF offsets has been measured on hardware.
 static inline unsigned int apply_lock_pretail_display_mhz(long long kHz) {
     if (kHz < 0) kHz = 0;
     if (kHz > INT_MAX) kHz = INT_MAX;
@@ -53,7 +55,7 @@ static inline long long apply_lock_pretail_stock_base_khz(unsigned int liveKHz,
 // `Flag` is bool or the wire's gc_bool8.
 template <typename Flag, typename FromFlag>
 static inline int apply_lock_pretail_first_violation(
-    int numPoints, unsigned int lockMHz,
+    int numPoints, bool offsetInVfTable, unsigned int lockMHz,
     const bool* populated, const bool* tailMask,
     const Flag* requestHasPoint, const FromFlag* requestPointFromOffset,
     const unsigned int* requestPointMHz,
@@ -72,7 +74,7 @@ static inline int apply_lock_pretail_first_violation(
         const bool fromOffset = requestPointFromOffset[ci] != 0;
         // The verification predicate, with no selective batch in play: a
         // requested point is offset intent exactly when it has provenance.
-        const bool offsetIntent = requestHasPoint[ci] &&
+        const bool offsetIntent = offsetInVfTable && requestHasPoint[ci] &&
             curve_point_offset_is_intent(!fromOffset, fromOffset, false);
         if (requestHasPoint[ci] && !offsetIntent) {
             targetMHz = requestPointMHz[ci];

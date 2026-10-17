@@ -566,69 +566,75 @@ point is offset intent); it is kept as the conservative answer and covered by
 low base shifts during correction; the anchor/tail convergence after the fix is
 inferred from the 2026-10-15/16 traces of the same profile.
 
-## 2026-10-17 offset-intent follow-ups (scalar GPU offset, pre-tail, tallies)
+## 2026-10-17 offset-intent follow-ups and hardware evidence boundary
 
-Audit of the remaining sites that answered "offset or absolute?" on their own
-after the correction-loop fix above. Governing rule: Green Curve writes
-offsets; the driver owns and moves the stock base; only typed points and the
-lock anchor/tail have absolute authority.
+Source anchors: `source/curve_point_offset_policy.h`,
+`source/gpu_backend_apply_targets.h`, `source/gpu_backend_apply_lock_pretail.h`,
+`source/apply_lock_pretail_policy.h`, `source/apply_correction_policy.h`,
+`source/gpu_backend_apply.cpp`, `tests/offset_intent_tests.cpp`,
+`tests/clock_transition_tests.cpp`, `tools/apply_ceiling_gates.py`.
+Last verified: 2026-10-17, software policy tests and production-header fixtures;
+no Pascal..Ada hardware replay of the proposed scalar composition model.
 
-1. **Pre-Blackwell double GPU offset (high).** On Pascal..Ada
-   (`vf_curve_global_gpu_offset_supported()` false) a uniform GPU offset is
-   the NVML graphics offset, a scalar the driver adds to every VF point on top
-   of its per-point delta (the apply already relies on this: the
-   uniform-to-selective formula subtracts the scalar per point, and the lock
-   anchor is derived from a readback taken after the scalar write). The target
-   build nevertheless wrote the full offset component into the delta of every
-   provenance point (`curvePointFromGpuOffset`: `base_plus_gpu_offset` and
-   `absolute_with_origin` profiles, GUI-inferred pre-tail points), so they ran
-   at stock + 2x the offset. Verification and correction compare against the
-   same delta and reported success. Fix: `CurvePointOffsetRequest` carries
-   `scalarGpuOffsetKHz` and the offset-intent delta is `component - scalar`
-   (`curve_point_scalar_gpu_offset_khz()`: 0 when the offset lives in the VF
-   table). Verification/correction read the build's target array, so all
-   three agree. Log: `curve targets: scalarGpuOffset=`.
-2. **Pre-tail and flat-tail checks (medium).** `apply_lock_pretail_first_violation()`
-   judged a requested point by its stored MHz whatever its provenance; a
-   provenance point is now judged as stock base + this request's component
-   (shared predicate). Both callers strip the pre-Blackwell scalar from the
-   base. `apply_correction_tail_monotonic_violation()` now takes the correction
-   request + readback and judges an offset-intent predecessor at live base +
-   target offset (`apply_correction_monotonic_target_mhz()`).
-3. **Boost tallies (low).** `userBoostApplied/Failed` (outcome severity and the
-   "N of M boost points" summary) were taken after the first batch, before
-   correction, and judged typed points by offset. `apply_correction_boost_tally()`
-   now runs on the final readback: offset-intent points by programmed offset
-   (within 12 MHz), typed points by MHz within the verify tolerance. A
-   driver-limited offset (which verification accepts as safe) still counts
-   unmatched on purpose: the tally exists to report "committed something close
-   to the request". Logs: `selective offset: final boost` / `first unmatched`.
-4. **Interactive stored-lock anchor (low).** With no lock MHz in the request,
-   a provenance anchor took its stored projection; it now uses its offset over
-   today's base (`curve_point_stored_lock_anchor_khz()`).
+The cold-boot correction fix above keeps its shared offset-intent predicate:
+non-tail projected/selective points keep their requested offsets; typed points
+and the lock anchor/tail keep their absolute authority. Verification limits,
+transition clamps and failure recovery are unchanged by the deferral below.
 
-Tests 6800-6829 (`tests/offset_intent_tests.cpp`, a pre-Blackwell simulated
-driver with live = stock + scalar + delta), plus target-build and anchor cases
-in `tests/clock_transition_tests.cpp`; mutation-checked (scalar wiring removed
--> clock_transition `preBuilt[70]==0`; pre-tail provenance ignored -> 6816;
-monotonic offset branch removed -> 6820; tally typed-by-offset -> 6824). Gates
-in `tools/apply_ceiling_gates.py`.
+1. **Separate NVML-offset compensation is deferred.** On the Windows
+   Pascal..Ada route, uniform GPU offsets use NVML rather than the VF table.
+   That routing does not prove that the two controls add independently or
+   whether VF frequency/offset readbacks include the NVML offset. The proposed
+   `component - scalar` compensation and the related scalar subtraction from
+   live-base calculations have been removed. A non-tail provenance point keeps
+   the established full requested component, including zero/negative values.
+   No hardware reproduction establishes that saved points received a doubled
+   offset, so the release notes make no such claim. An additive fake driver
+   demonstrated only its own assumption; it is not evidence of driver behavior.
+   Log: `curve targets: offsetContract=full-component`, with VF-table capability,
+   requested/current offset, exclusion count and routing.
+2. **Pre-tail and flat-tail checks.** On the VF-table route (Blackwell and the
+   existing best-guess backend), a requested provenance point is judged at live
+   frequency minus programmed VF offset plus its requested component, using
+   `apply_lock_pretail_first_violation()` before writes and
+   `apply_correction_monotonic_target_mhz()` after correction. On the separate
+   NVML route, both checks retain the previous stored-MHz behavior for requested
+   points. This avoids inferring a new base from an unmeasured composition.
+   `ApplyCorrectionRequest::offsetInVfTable` controls only flat-tail projection;
+   offset verification and correction remain routing-independent.
+3. **Boost tallies.** `apply_correction_boost_tally()` runs on the final
+   readback: offset-intent points by programmed offset (within 12 MHz), typed
+   points by MHz within the verify tolerance. A driver-limited offset can verify
+   safely while counting unmatched: the tally reports closeness to the request.
+   Logs: `selective offset: final boost` / `first unmatched`.
+4. **Interactive stored-lock anchor.** With no lock MHz in the request, the
+   VF-table route resolves a provenance anchor from its offset over the current
+   base (`curve_point_stored_lock_anchor_khz()`). The separate NVML route keeps
+   the requested point's stored MHz. A typed anchor keeps its stored MHz on both
+   routes; an absent requested point keeps the live value. The anchor diagnostic
+   logs both provenance and VF-table capability.
 
-**Hardware-unverified.** No Pascal..Ada board has run any of this. The
-model "NvAPI curve readback includes the NVML scalar, and scalar + delta are
-additive" is inferred from the code's own existing assumptions (anchor math,
-selective-transition formula, detection using the P-state offset rather than
-VF deltas on those families), not measured. If the readback EXCLUDES the
-scalar, typed points and the lock anchor would land a scalar too high
-(pre-existing, unchanged by this fix). A Pascal..Ada log with
-`curve targets: scalarGpuOffset=` and a per-point readback after a
-`base_plus_gpu_offset` profile apply would settle it.
+Tests 6800-6829 (`tests/offset_intent_tests.cpp`) exercise the component contract,
+route-specific lock projection, pre-tail/flat-tail checks and final boost tally.
+They do not simulate NVML/VF composition. Target-build and stored-anchor cases
+also execute production headers in `tests/clock_transition_tests.cpp`. The
+full-component assertion was observed failing before compensation was removed;
+source gates require the contract, prohibit the removed scalar helper/field and
+require capability wiring for all three lock projection sites.
+Removing each route guard in an isolated header copy was rejected at 6808
+(anchor), 6810 (pre-tail), and 6812 (flat-tail).
+
+**Open hardware question.** Any future compensation needs controlled stock,
+NVML-only, VF-only and combined measurements, including write order and both
+frequency/offset readbacks. Without that evidence, retain the established route
+and component contract. Passing these tests proves software decisions, not the
+stability of a particular OC or undocumented driver composition.
 
 Linux (fixed the same day): `linux_build_curve_targets()` composes the whole
 offset into the curve whenever any curve point, lock or exclusion exists and
 then skips the NVML write. The reset phase zeroes the NVML graphics offset, but
-a no-reset partial apply that composed while NVML still held an earlier
-uniform-only offset stacked the two. Now
+a no-reset partial apply could retain an earlier uniform-only offset alongside
+the composed curve. To keep one offset authority,
 `linux_composed_offset_must_clear_scalar()` schedules the GPU_OFFSET phase to
 write 0 in that case (the apply refuses when the offset is set but no NVML
 setter exists), and whenever a transaction zeroes a non-zero NVML offset

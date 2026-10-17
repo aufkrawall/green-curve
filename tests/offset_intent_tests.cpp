@@ -4,15 +4,13 @@
 // "Offset intent vs absolute MHz" follow-ups to the 2026-10-17 correction-loop
 // fix (assertion codes 6800-6829).  Pure headers only; no GPU, no OS state.
 //
-// The simulated driver here models a PRE-Blackwell board: a uniform GPU offset
-// is a separate scalar (the NVML graphics offset) that the driver adds to
-// every VF point on top of the per-point delta, and the live readback includes
-// it.  No Pascal..Ada hardware has run these shapes; the readback-includes-
-// the-scalar assumption is the same one the apply's lock-anchor math already
-// relies on (see llm-wiki/clock-transition-audit.md).
+// These tests exercise requested offsets and supplied readbacks. They do not
+// model composition between NVML graphics offsets and VF deltas, which needs
+// measured hardware evidence before changing the established contract.
 
 #include <climits>
 #include <cstring>
+#include <initializer_list>
 
 #include "apply_correction_policy.h"
 #include "apply_lock_pretail_policy.h"
@@ -20,32 +18,6 @@
 namespace {
 
 constexpr int N = 12;
-
-struct ScalarSim {
-    long long stockKHz[N];
-    int deltaKHz[N];      // per-point VF delta (what the curve batch writes)
-    int scalarKHz;        // NVML graphics offset, added to every point
-    unsigned int liveKHz[N];
-};
-
-void scalar_sim_init(ScalarSim* d, int scalarKHz) {
-    memset(d, 0, sizeof(*d));
-    d->scalarKHz = scalarKHz;
-    for (int i = 0; i < N; i++) d->stockKHz[i] = 1500000LL + 50000LL * i;
-}
-
-void scalar_sim_refresh(ScalarSim* d) {
-    for (int i = 0; i < N; i++) {
-        long long v = d->stockKHz[i] + d->scalarKHz + d->deltaKHz[i];
-        d->liveKHz[i] = v < 0 ? 0u : (unsigned int)v;
-    }
-}
-
-void scalar_sim_write(ScalarSim* d, const int* offsets, const bool* mask) {
-    for (int i = 0; i < N; i++)
-        if (mask[i]) d->deltaKHz[i] = offsets[i];
-    scalar_sim_refresh(d);
-}
 
 struct Request {
     bool tail[N];
@@ -62,6 +34,7 @@ void request_init(Request* r) {
     memset(r, 0, sizeof(*r));
     for (int i = 0; i < N; i++) r->origPopulated[i] = true;
     r->q.pointCount = N;
+    r->q.offsetInVfTable = true;
     r->q.lockCi = -1;
     r->q.lockedTailMask = r->tail;
     r->q.explicitCurveMask = r->explicitMask;
@@ -74,120 +47,53 @@ void request_init(Request* r) {
 
 const VfOffsetRange kRange = {-1000000, 1000000, true};
 
-// The verifier's offset branch: an offset-intent point fails only when its
-// programmed delta is above the target.
-bool verify_offsets(const Request& r, const ScalarSim& d) {
-    for (int i = 0; i < N; i++) {
-        if (!r.hasPoint[i]) continue;
-        if (!apply_correction_point_offset_is_intent(r.q, i)) continue;
-        if ((long long)d.deltaKHz[i] > (long long)r.targetOffsetKHz[i] + 12000) return false;
-    }
-    return true;
-}
-
-// A `base_plus_gpu_offset` profile on a pre-Blackwell board: +475 MHz uniform
-// GPU offset (written as the NVML scalar), points 2..5 reconstructed as offset
-// intent.  Builds each point's delta through the shared policy exactly the way
-// apply_build_curve_targets() does, with `scalarKHz` as the scalar argument.
-void build_reconstructed(Request* r, const ScalarSim& d, int componentKHz, int scalarKHz) {
-    request_init(r);
-    for (int i = 2; i <= 5; i++) {
-        r->hasPoint[i] = 1;
-        r->fromGpuOffset[i] = 1;
-        r->pointMHz[i] = (unsigned int)((d.stockKHz[i] + componentKHz) / 1000);
-        CurvePointOffsetRequest want = {};
-        want.fromGpuOffset = true;
-        want.gpuOffsetComponentKHz = componentKHz;
-        want.scalarGpuOffsetKHz = scalarKHz;
-        want.absoluteMHz = r->pointMHz[i];
-        want.liveBaseKHz = curve_point_stock_base_khz(d.liveKHz[i], d.deltaKHz[i]);
-        r->targetOffsetKHz[i] = (int)curve_point_target_offset_khz(&want);
-    }
-}
-
-int run_scalar_offset_tests() {
-    // 6800: the policy nets the scalar out of an offset-intent point's delta.
-    {
-        CurvePointOffsetRequest want = {};
-        want.fromGpuOffset = true;
-        want.gpuOffsetComponentKHz = 475000;
-        want.scalarGpuOffsetKHz = 475000;
-        want.absoluteMHz = 2797;
-        want.liveBaseKHz = 2322000;
-        if (curve_point_target_offset_khz(&want) != 0) return 6800;
-        // Blackwell / VF-table offset: no scalar, the delta carries it all.
-        want.scalarGpuOffsetKHz = 0;
-        if (curve_point_target_offset_khz(&want) != 475000) return 6801;
-        // An excluded point under a scalar still left from a uniform offset
-        // must cancel it, exactly like the selective batch's own formula.
-        want.gpuOffsetComponentKHz = 0;
-        want.scalarGpuOffsetKHz = 475000;
-        if (curve_point_target_offset_khz(&want) != -475000) return 6802;
-        // A typed absolute ignores the scalar: its live base already holds it.
-        want.fromGpuOffset = false;
-        want.absoluteMHz = 2900;
-        want.liveBaseKHz = 2797000;
-        if (curve_point_target_offset_khz(&want) != 103000) return 6803;
-        // The scalar exists only where the offset is not in the VF table.
-        if (curve_point_scalar_gpu_offset_khz(true, 475000) != 0 ||
-            curve_point_scalar_gpu_offset_khz(false, 475000) != 475000 ||
-            curve_point_scalar_gpu_offset_khz(false, 0) != 0) return 6804;
-    }
-    // 6805: THE regression.  The NVML scalar is already +475 MHz when the
-    // batch is built; every reconstructed point must land at stock + 475, not
-    // stock + 950, and the offset verifier must agree with what was written.
-    {
-        ScalarSim d;
-        scalar_sim_init(&d, 475000);
-        scalar_sim_refresh(&d);
-        Request r;
-        build_reconstructed(&r, d, 475000, d.scalarKHz);
-        bool mask[N] = {};
-        for (int i = 2; i <= 5; i++) mask[i] = true;
-        scalar_sim_write(&d, r.targetOffsetKHz, mask);
-        for (int i = 2; i <= 5; i++) {
-            if (d.liveKHz[i] != (unsigned int)(d.stockKHz[i] + 475000)) return 6805;
-            if (d.deltaKHz[i] != 0) return 6806;
+// Keep the full requested component, including zero and negative offsets,
+// regardless of the saved MHz projection or the currently reported base.
+int run_offset_contract_tests() {
+    for (int component : {-150000, 0, 475000}) {
+        for (long long base : {0LL, 2322000LL, 2797000LL}) {
+            CurvePointOffsetRequest want = {};
+            want.fromGpuOffset = true;
+            want.gpuOffsetComponentKHz = component;
+            want.absoluteMHz = 2797;
+            want.liveBaseKHz = base;
+            if (curve_point_target_offset_khz(&want) != component) return 6800;
         }
-        if (!verify_offsets(r, d)) return 6807;
-        // A correction pass (the tail missed, say) holds the same delta.
-        unsigned int freq[N];
-        int programmed[N];
-        for (int i = 0; i < N; i++) { freq[i] = d.liveKHz[i]; programmed[i] = d.deltaKHz[i]; }
-        const ApplyCorrectionReadback rb = {freq, programmed};
-        int offsets[N];
-        bool cmask[N];
-        ApplyCorrectionPlan plan = apply_correction_plan_pass(r.q, rb, kRange, offsets, cmask);
-        if (plan.offsetIntentCount != 4 || offsets[3] != 0 || !cmask[3]) return 6808;
     }
-    // 6809: negative control -- the pre-fix build (no scalar netted out) on the
-    // same board doubles the offset, and the offset verifier cannot see it:
-    // that blindness is why the target build itself has to be right.
-    {
-        ScalarSim d;
-        scalar_sim_init(&d, 475000);
-        scalar_sim_refresh(&d);
-        Request r;
-        build_reconstructed(&r, d, 475000, 0);
-        bool mask[N] = {};
-        for (int i = 2; i <= 5; i++) mask[i] = true;
-        scalar_sim_write(&d, r.targetOffsetKHz, mask);
-        if (d.liveKHz[3] != (unsigned int)(d.stockKHz[3] + 950000)) return 6809;
-        if (!verify_offsets(r, d)) return 6810;
+    CurvePointOffsetRequest typed = {};
+    typed.gpuOffsetComponentKHz = 475000;
+    typed.absoluteMHz = 2900;
+    typed.liveBaseKHz = 2797000;
+    if (curve_point_target_offset_khz(&typed) != 103000) return 6801;
+    if (curve_point_stock_base_khz(1000, 475000) != 0) return 6802;
+    // Live-derived anchors use the same live-minus-VF-offset base as typed
+    // points and the lock tail. No additional graphics-offset subtraction.
+    if (curve_point_offset_intent_live_khz(2797000, 0, 475000) != 3272000) return 6803;
+    if (curve_point_offset_intent_live_khz(2797000, 475000, 475000) != 2797000) return 6804;
+    if (curve_point_offset_intent_live_khz(2827000, 475000, 475000) != 2827000) return 6805;
+    if (curve_point_offset_intent_live_khz(2797000, 475000, 0) != 2322000) return 6806;
+    // A separate-NVML-route anchor retains its stored value for either sign
+    // of the requested component; VF-table provenance still follows the base.
+    for (int component : {-150000, 0, 475000}) {
+        if (curve_point_stored_lock_anchor_khz(true, true, 2797, 2827000, 0,
+                component, false) != 2797000) return 6808;
+        if (curve_point_stored_lock_anchor_khz(true, false, 2797, 2827000, 0,
+                component, true) != 2797000) return 6809;
     }
-    // 6811: an absolute derived from the live readback (lock anchor, pre-tail
-    // neighbour) strips the scalar too: stock + component, on either family.
-    {
-        // Pre-Blackwell: live 2797 = stock 2322 + scalar 475 + delta 0.
-        if (curve_point_offset_intent_live_khz(2797000, 0, 475000, 475000) != 2797000) return 6811;
-        // Blackwell: live 2797 = stock 2322 + delta 475, no scalar.
-        if (curve_point_offset_intent_live_khz(2797000, 475000, 0, 475000) != 2797000) return 6812;
-        // The base moved a bin since the profile was saved: follow it.
-        if (curve_point_offset_intent_live_khz(2827000, 475000, 0, 475000) != 2827000) return 6813;
-        // A request carrying no GPU offset: just the stock base.
-        if (curve_point_offset_intent_live_khz(2797000, 475000, 0, 0) != 2322000) return 6814;
-        if (curve_point_offset_intent_live_khz(1000, 475000, 0, 0) != 0) return 6815;
-    }
+    // Correction consumes the same target, even if a readback's base moves.
+    Request r;
+    request_init(&r);
+    r.hasPoint[3] = r.fromGpuOffset[3] = 1;
+    r.pointMHz[3] = 2797;
+    r.targetOffsetKHz[3] = 475000;
+    unsigned int live[N] = {};
+    int programmed[N] = {}, offsets[N] = {};
+    bool mask[N] = {};
+    live[3] = 2827000;
+    programmed[3] = 475000;
+    const ApplyCorrectionReadback rb = {live, programmed};
+    ApplyCorrectionPlan plan = apply_correction_plan_pass(r.q, rb, kRange, offsets, mask);
+    if (plan.offsetIntentCount != 1 || offsets[3] != 475000 || !mask[3]) return 6807;
     return 0;
 }
 
@@ -216,25 +122,34 @@ int run_pretail_offset_intent_tests() {
     hasPoint[4] = true;
     fromOffset[4] = true;
     pointMHz[4] = 2350;
-    if (apply_lock_pretail_first_violation(P, 2380u, populated, tail, hasPoint, fromOffset,
+    if (apply_lock_pretail_first_violation(P, true, 2380u, populated, tail, hasPoint, fromOffset,
             pointMHz, false, base, component, unowned, &target) != 4 || target != 2400)
         return 6816;
     // 6817: the reverse -- a warm-saved projection (2450) above the lock while
     // the live base + component (2400 + 0) is below it: no false refusal.
     pointMHz[4] = 2450;
-    if (apply_lock_pretail_first_violation(P, 2420u, populated, tail, hasPoint, fromOffset,
+    if (apply_lock_pretail_first_violation(P, true, 2420u, populated, tail, hasPoint, fromOffset,
             pointMHz, false, base, component, unowned, &target) != -1)
         return 6817;
     // 6818: under a GPU offset the provenance point takes its component, like
     // an unrequested neighbour (2400 + 100 > 2450).
     for (int i = 0; i < P; i++) component[i] = 100;
-    if (apply_lock_pretail_first_violation(P, 2450u, populated, tail, hasPoint, fromOffset,
+    if (apply_lock_pretail_first_violation(P, true, 2450u, populated, tail, hasPoint, fromOffset,
             pointMHz, true, base, component, unowned, &target) != 4 || target != 2500)
         return 6818;
+    // Separate NVML route: a requested provenance point keeps its stored MHz,
+    // just as before the unmeasured scalar compensation was introduced.
+    pointMHz[4] = 2440;
+    if (apply_lock_pretail_first_violation(P, false, 2450u, populated, tail, hasPoint, fromOffset,
+            pointMHz, true, base, component, unowned, &target) != -1) return 6810;
+    pointMHz[4] = 2460;
+    if (apply_lock_pretail_first_violation(P, false, 2450u, populated, tail, hasPoint, fromOffset,
+            pointMHz, true, base, component, unowned, &target) != 4 || target != 2460)
+        return 6811;
     // 6819: a TYPED point keeps its absolute, whatever the base says.
     fromOffset[4] = false;
     pointMHz[4] = 2440;
-    if (apply_lock_pretail_first_violation(P, 2450u, populated, tail, hasPoint, fromOffset,
+    if (apply_lock_pretail_first_violation(P, true, 2450u, populated, tail, hasPoint, fromOffset,
             pointMHz, true, base, component, unowned, &target) != -1)
         return 6819;
 
@@ -273,6 +188,19 @@ int run_pretail_offset_intent_tests() {
         r.targetOffsetKHz[4] = 100000;
         if (apply_correction_tail_monotonic_violation(r.q, rb, &prev) != 5 || prev != 2400)
             return 6822;
+        // The separate NVML route retains the stored-frequency check; this
+        // flag must not change the offset target correction itself writes.
+        r.q.offsetInVfTable = false;
+        r.pointMHz[4] = 2370;
+        if (apply_correction_tail_monotonic_violation(r.q, rb, &prev) != -1) return 6812;
+        r.pointMHz[4] = 2390;
+        if (apply_correction_tail_monotonic_violation(r.q, rb, &prev) != 5 || prev != 2390)
+            return 6813;
+        int offsets[N] = {};
+        bool mask[N] = {};
+        apply_correction_plan_pass(r.q, rb, kRange, offsets, mask);
+        if (!mask[4] || offsets[4] != 100000) return 6814;
+        r.q.offsetInVfTable = true;
         // 6823: a typed predecessor is still judged by its MHz.
         r.fromGpuOffset[4] = 0;
         r.explicitMask[4] = true;
@@ -353,7 +281,7 @@ int run_boost_tally_tests() {
 }  // namespace
 
 int run_offset_intent_tests() {
-    if (int r = run_scalar_offset_tests()) return r;
+    if (int r = run_offset_contract_tests()) return r;
     if (int r = run_pretail_offset_intent_tests()) return r;
     if (int r = run_boost_tally_tests()) return r;
     return 0;

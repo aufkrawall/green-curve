@@ -291,28 +291,28 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             lockMhz = 0;
         } else {
             if (lockMhz == 0) {
-                // Interactive stored lock.  A provenance anchor's stored MHz is
-                // a projection; use its offset over today's base instead.
+                // Interactive stored lock: resolve a provenance anchor over
+                // today's base only on the VF-table GPU-offset route.
                 const int anchorExclude = (desired->hasGpuOffset &&
                     desired->gpuOffsetExcludeLowCount > 0 && desired->gpuOffsetMHz != 0)
                     ? desired->gpuOffsetExcludeLowCount : 0;
-                const int anchorScalarKHz = curve_point_scalar_gpu_offset_khz(
-                    vf_curve_global_gpu_offset_supported(), currentAppliedGpuOffsetMHz * 1000);
                 const long long anchorComponentKHz = (long long)gpu_offset_component_mhz_for_point(
                     lockCi, desired->gpuOffsetMHz, anchorExclude) * 1000;
                 long long anchorKHz = curve_point_stored_lock_anchor_khz(
                     desired->hasCurvePoint[lockCi] != 0,
                     desired->curvePointFromGpuOffset[lockCi] != 0,
                     desired->curvePointMHz[lockCi], g_app.curve[lockCi].freq_kHz,
-                    g_app.freqOffsets[lockCi], anchorScalarKHz, anchorComponentKHz);
+                    g_app.freqOffsets[lockCi], anchorComponentKHz,
+                    vf_curve_global_gpu_offset_supported());
                 if (anchorKHz > UINT_MAX) anchorKHz = UINT_MAX;
                 lockMhz = displayed_curve_mhz((unsigned int)anchorKHz);
                 debug_log("apply: stored lock anchor ci=%d -> %u MHz (requested=%d fromOffset=%d"
-                          " storedMHz=%u live=%u kHz offset=%d kHz scalar=%d kHz component=%lld kHz)\n",
+                          " storedMHz=%u live=%u kHz offset=%d kHz component=%lld kHz vfTableOffset=%d)\n",
                     lockCi, lockMhz, desired->hasCurvePoint[lockCi] ? 1 : 0,
                     desired->curvePointFromGpuOffset[lockCi] ? 1 : 0,
                     desired->curvePointMHz[lockCi], g_app.curve[lockCi].freq_kHz,
-                    g_app.freqOffsets[lockCi], anchorScalarKHz, anchorComponentKHz);
+                    g_app.freqOffsets[lockCi], anchorComponentKHz,
+                    vf_curve_global_gpu_offset_supported() ? 1 : 0);
             }
             for (int vi = lockVi; vi < g_app.numVisible; vi++) {
                 int ci = g_app.visibleMap[vi];
@@ -370,16 +370,12 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
         // the refusal must take the recovery path instead of leaving the GPU on
         // the stock curve under the transition clamp.
         ApplyLockPretailArrays pretail = {};
-        // Pre-Blackwell the NVML scalar is in the live curve too; strip it so
-        // `base` is stock, as the target build's offset-intent deltas assume.
-        const int pretailScalarKHz = curve_point_scalar_gpu_offset_khz(
-            vf_curve_global_gpu_offset_supported(), currentAppliedGpuOffsetMHz * 1000);
         for (int ci = 0; ci < VF_NUM_POINTS; ci++) {
             pretail.populated[ci] = originalCurvePopulated[ci];
             pretail.tail[ci] = lockedTailMask[ci];
             pretail.base[ci] = apply_lock_pretail_stock_base_khz(
                 (unsigned int)originalCurveFreqkHz[ci],
-                originalCurveOffsets[ci] + pretailScalarKHz);
+                originalCurveOffsets[ci]);
             pretail.unowned[ci] = originalCurveFreqkHz[ci];
             pretail.gpuComponentMHz[ci] = desired->hasGpuOffset
                 ? gpu_offset_component_mhz_for_point(ci, desired->gpuOffsetMHz,
@@ -387,7 +383,8 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 : 0;
         }
         unsigned int preTailTargetMHz = 0;
-        int ci = apply_lock_pretail_first_violation(VF_NUM_POINTS, lockMhz,
+        int ci = apply_lock_pretail_first_violation(VF_NUM_POINTS,
+            vf_curve_global_gpu_offset_supported(), lockMhz,
             pretail.populated, pretail.tail, desired->hasCurvePoint,
             desired->curvePointFromGpuOffset, desired->curvePointMHz,
             desired->hasGpuOffset != 0, pretail.base,
@@ -398,14 +395,14 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 lockCi, ci, preTailTargetMHz,
                 desired->hasGpuOffset && desired->gpuOffsetMHz != 0 &&
                     !desired->hasCurvePoint[ci]);
-            debug_log("lock monotonicity validation failed %s: lockCi=%d lockMHz=%u preTailCi=%d target=%u desiredGpu=%d exclude=%d requested=%d fromOffset=%d scalar=%d kHz\n",
+            debug_log("lock monotonicity validation failed %s: lockCi=%d lockMHz=%u preTailCi=%d target=%u desiredGpu=%d exclude=%d requested=%d fromOffset=%d\n",
                 desired->resetOcBeforeApply ? "AFTER the reset-to-stock (recovering)"
                                             : "before writes",
                 lockCi, lockMhz, ci, preTailTargetMHz,
                 desired->hasGpuOffset ? desired->gpuOffsetMHz : currentAppliedGpuOffsetMHz,
                 desired->hasGpuOffset ? desiredActiveGpuOffsetExcludeLowCount : currentActiveGpuOffsetExcludeLowCount,
                 desired->hasCurvePoint[ci] ? 1 : 0,
-                desired->curvePointFromGpuOffset[ci] ? 1 : 0, pretailScalarKHz);
+                desired->curvePointFromGpuOffset[ci] ? 1 : 0);
             if (desired->resetOcBeforeApply)
                 return apply_recover_clock_failure(clockCeiling, refusal, result, resultSize);
             set_message(result, resultSize, "%s", refusal);
@@ -538,22 +535,18 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             explicitPoints,
             tailPoints);
     }
-    // Pre-Blackwell the uniform GPU offset is the NVML graphics scalar, which
-    // the driver adds on top of every VF delta: an offset-intent point's delta
-    // carries only what the scalar does not (see curve_point_offset_policy.h).
-    const int scalarGpuOffsetKHz = curve_point_scalar_gpu_offset_khz(
-        vf_curve_global_gpu_offset_supported(),
-        gpuApplied ? targetGpuOffsetkHz : currentAppliedGpuOffsetMHz * 1000);
-    debug_log("curve targets: scalarGpuOffset=%d kHz (vfTableOffset=%d gpuApplied=%d"
-              " current=%d MHz requested=%d MHz exclude=%d)\n",
-        scalarGpuOffsetKHz, vf_curve_global_gpu_offset_supported() ? 1 : 0,
+    // Record routing without treating NVML and VF offsets as independently
+    // additive. That composition needs hardware evidence before compensation.
+    debug_log("curve targets: offsetContract=full-component vfTableOffset=%d gpuApplied=%d"
+              " current=%d MHz requested=%d MHz exclude=%d viaCurve=%d\n",
+        vf_curve_global_gpu_offset_supported() ? 1 : 0,
         gpuApplied ? 1 : 0, currentAppliedGpuOffsetMHz,
         desired->hasGpuOffset ? desired->gpuOffsetMHz : 0,
-        desiredActiveGpuOffsetExcludeLowCount);
+        desiredActiveGpuOffsetExcludeLowCount, gpuPolicyViaCurveBatch ? 1 : 0);
     if (!apply_build_curve_targets(desired, curveRequest, preserveCurveAcrossMem,
         hasLock, lockMode, lockCi, lockMhz, gpuPolicyViaCurveBatch,
         desiredActiveGpuOffsetExcludeLowCount, currentAppliedGpuOffsetMHz,
-        currentActiveGpuOffsetExcludeLowCount, scalarGpuOffsetKHz, originalCurvePopulated,
+        currentActiveGpuOffsetExcludeLowCount, originalCurvePopulated,
         originalCurveOffsets, originalCurveFreqkHz, lockedTailMask,
         targetCurveOffsets, targetCurveMask))
         return apply_recover_clock_failure(clockCeiling,
@@ -821,6 +814,7 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
             correction.lockMHz = lockMhz;
             correction.lockCi = lockCi;
             correction.gpuPolicyViaCurveBatch = gpuPolicyViaCurveBatch;
+            correction.offsetInVfTable = vf_curve_global_gpu_offset_supported();
             correction.lockedTailMask = lockedTailMask;
             correction.explicitCurveMask = explicitCurveMask;
             correction.originalCurvePopulated = originalCurvePopulated;
