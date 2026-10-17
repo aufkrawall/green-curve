@@ -122,36 +122,93 @@ int run_pretail_offset_intent_tests() {
     hasPoint[4] = true;
     fromOffset[4] = true;
     pointMHz[4] = 2350;
-    if (apply_lock_pretail_first_violation(P, true, 2380u, populated, tail, hasPoint, fromOffset,
+    if (apply_lock_pretail_first_violation(P, APPLY_LOCK_PRETAIL_PROVENANCE_LIVE_BASE, 2380u, populated, tail, hasPoint, fromOffset,
             pointMHz, false, base, component, unowned, &target) != 4 || target != 2400)
         return 6816;
     // 6817: the reverse -- a warm-saved projection (2450) above the lock while
     // the live base + component (2400 + 0) is below it: no false refusal.
     pointMHz[4] = 2450;
-    if (apply_lock_pretail_first_violation(P, true, 2420u, populated, tail, hasPoint, fromOffset,
+    if (apply_lock_pretail_first_violation(P, APPLY_LOCK_PRETAIL_PROVENANCE_LIVE_BASE, 2420u, populated, tail, hasPoint, fromOffset,
             pointMHz, false, base, component, unowned, &target) != -1)
         return 6817;
     // 6818: under a GPU offset the provenance point takes its component, like
     // an unrequested neighbour (2400 + 100 > 2450).
     for (int i = 0; i < P; i++) component[i] = 100;
-    if (apply_lock_pretail_first_violation(P, true, 2450u, populated, tail, hasPoint, fromOffset,
+    if (apply_lock_pretail_first_violation(P, APPLY_LOCK_PRETAIL_PROVENANCE_LIVE_BASE, 2450u, populated, tail, hasPoint, fromOffset,
             pointMHz, true, base, component, unowned, &target) != 4 || target != 2500)
         return 6818;
     // Separate NVML route: a requested provenance point keeps its stored MHz,
     // just as before the unmeasured scalar compensation was introduced.
     pointMHz[4] = 2440;
-    if (apply_lock_pretail_first_violation(P, false, 2450u, populated, tail, hasPoint, fromOffset,
+    if (apply_lock_pretail_first_violation(P, APPLY_LOCK_PRETAIL_PROVENANCE_STORED, 2450u, populated, tail, hasPoint, fromOffset,
             pointMHz, true, base, component, unowned, &target) != -1) return 6810;
     pointMHz[4] = 2460;
-    if (apply_lock_pretail_first_violation(P, false, 2450u, populated, tail, hasPoint, fromOffset,
+    if (apply_lock_pretail_first_violation(P, APPLY_LOCK_PRETAIL_PROVENANCE_STORED, 2450u, populated, tail, hasPoint, fromOffset,
             pointMHz, true, base, component, unowned, &target) != 4 || target != 2460)
         return 6811;
     // 6819: a TYPED point keeps its absolute, whatever the base says.
     fromOffset[4] = false;
     pointMHz[4] = 2440;
-    if (apply_lock_pretail_first_violation(P, true, 2450u, populated, tail, hasPoint, fromOffset,
+    if (apply_lock_pretail_first_violation(P, APPLY_LOCK_PRETAIL_PROVENANCE_LIVE_BASE, 2450u, populated, tail, hasPoint, fromOffset,
             pointMHz, true, base, component, unowned, &target) != -1)
         return 6819;
+
+    // 6870-6876: the PRE-RESET base (live minus programmed while another
+    // profile is still applied) is only an estimate.  Field case, Blackwell:
+    // switching from a profile with typed points at 74/75 and a flatten lock
+    // to one with +475 MHz on points 70+ and a 2957 MHz lock.  The untouched
+    // point 73 read 2512 MHz with offset 0 (stock ~2397, as saved), so
+    // base + 475 = 2987 refused every switch, although the stored projection
+    // 2872 and the post-reset stock base both satisfy the lock.
+    {
+        constexpr int Q = 4;
+        bool qPopulated[Q] = {true, true, true, true};
+        bool qTail[Q] = {false, false, false, true};
+        bool qHas[Q] = {false, false, true, true};
+        bool qFrom[Q] = {false, false, true, false};
+        unsigned int qMHz[Q] = {0, 0, 2872, 2957};
+        long long qBase[Q] = {2300000, 2350000, 2512000, 2442000};
+        long long qUnowned[Q] = {2300000, 2350000, 2512000, 2442000};
+        int qComponent[Q] = {0, 0, 475, 475};
+        if (apply_lock_pretail_first_violation(Q, APPLY_LOCK_PRETAIL_PROVENANCE_AGREEMENT,
+                2957u, qPopulated, qTail, qHas, qFrom, qMHz, true, qBase, qComponent,
+                qUnowned, &target) != -1)
+            return 6870;
+        // The same inputs judged as a post-reset readback do refuse: that mode
+        // is only correct for a base read with every offset cleared.
+        if (apply_lock_pretail_first_violation(Q, APPLY_LOCK_PRETAIL_PROVENANCE_LIVE_BASE,
+                2957u, qPopulated, qTail, qHas, qFrom, qMHz, true, qBase, qComponent,
+                qUnowned, &target) != 2 || target != 2987)
+            return 6871;
+        // After the reset the real stock base (2397) passes in LIVE_BASE too.
+        qBase[2] = 2397000;
+        if (apply_lock_pretail_first_violation(Q, APPLY_LOCK_PRETAIL_PROVENANCE_LIVE_BASE,
+                2957u, qPopulated, qTail, qHas, qFrom, qMHz, true, qBase, qComponent,
+                qUnowned, &target) != -1)
+            return 6872;
+        // When both estimates are above the lock the pre-check still refuses,
+        // naming the lower (more conservative) of the two.
+        qBase[2] = 2512000;
+        qMHz[2] = 3000;
+        if (apply_lock_pretail_first_violation(Q, APPLY_LOCK_PRETAIL_PROVENANCE_AGREEMENT,
+                2957u, qPopulated, qTail, qHas, qFrom, qMHz, true, qBase, qComponent,
+                qUnowned, &target) != 2 || target != 2987)
+            return 6873;
+        // Typed points and unrequested points are unaffected by the mode.
+        qFrom[2] = false;
+        if (apply_lock_pretail_first_violation(Q, APPLY_LOCK_PRETAIL_PROVENANCE_AGREEMENT,
+                2957u, qPopulated, qTail, qHas, qFrom, qMHz, true, qBase, qComponent,
+                qUnowned, &target) != 2 || target != 3000)
+            return 6874;
+    }
+    if (apply_lock_pretail_provenance_mode(false, false) != APPLY_LOCK_PRETAIL_PROVENANCE_STORED ||
+        apply_lock_pretail_provenance_mode(false, true) != APPLY_LOCK_PRETAIL_PROVENANCE_STORED ||
+        apply_lock_pretail_provenance_mode(true, true) != APPLY_LOCK_PRETAIL_PROVENANCE_LIVE_BASE ||
+        apply_lock_pretail_provenance_mode(true, false) != APPLY_LOCK_PRETAIL_PROVENANCE_AGREEMENT)
+        return 6875;
+    if (strcmp(apply_lock_pretail_provenance_name(APPLY_LOCK_PRETAIL_PROVENANCE_AGREEMENT),
+               "agreement") != 0)
+        return 6876;
 
     // 6820: the flat-tail check after correction.  Point 4 is offset intent
     // (provenance) holding +0; its stored projection 2350 is a whole bin below

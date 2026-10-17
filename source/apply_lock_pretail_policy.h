@@ -31,15 +31,55 @@
 //                                       stored MHz is a projection over a base
 //                                       sampled when the profile was saved; on a
 //                                       cold board it sat a VF bin or more away
-//                                       from the base the driver reports now)
-//   - otherwise:                        `unownedKHz` (the value the point is
+//                                       from the base the driver reports now;
+//                                       see ApplyLockPretailProvenance)
+//   - otherwise:                       `unownedKHz` (the value the point is
 //                                       left at -- stock after a reset, the
 //                                       current live value without one)
 //
 // Returns the first offending curve index, or -1.  All arrays have
-// `numPoints` entries. `offsetInVfTable` permits resolving a requested
-// provenance point over the live base. On the separate NVML route, retain the
-// stored MHz until composition with VF offsets has been measured on hardware.
+// `numPoints` entries.
+//
+// How a requested provenance point is judged depends on how trustworthy the
+// supplied base is (`ApplyLockPretailProvenance`):
+//   - STORED: its stored MHz.  The separate NVML route, until composition with
+//     VF offsets has been measured on hardware.
+//   - LIVE_BASE: base + component.  The base is a post-reset readback (every
+//     programmed offset zero), which IS the stock curve.
+//   - AGREEMENT: refused only when BOTH the stored MHz and base + component
+//     are above the lock.  For a base derived from a curve still carrying
+//     another profile's offsets.  "Live minus programmed" is not the stock
+//     base there: the driver reports a point next to a large offset step above
+//     its own base + offset (observed on Blackwell: an untouched point read
+//     ~115 MHz above stock under a profile whose next point carried +475 MHz),
+//     so judging by it alone refused profile switches that the post-reset
+//     check accepts.  The post-reset backstop (LIVE_BASE) still catches a real
+//     violation, through the recovery path.
+enum ApplyLockPretailProvenance {
+    APPLY_LOCK_PRETAIL_PROVENANCE_STORED = 0,
+    APPLY_LOCK_PRETAIL_PROVENANCE_LIVE_BASE = 1,
+    APPLY_LOCK_PRETAIL_PROVENANCE_AGREEMENT = 2,
+};
+
+// The mode for one check: `offsetInVfTable` is the route
+// (curve_point_apply_uses_vf_table_offset()), `baseIsPostReset` whether the
+// base was read after reset-to-stock cleared every programmed offset.
+static inline ApplyLockPretailProvenance apply_lock_pretail_provenance_mode(
+    bool offsetInVfTable, bool baseIsPostReset) {
+    if (!offsetInVfTable) return APPLY_LOCK_PRETAIL_PROVENANCE_STORED;
+    return baseIsPostReset ? APPLY_LOCK_PRETAIL_PROVENANCE_LIVE_BASE
+                           : APPLY_LOCK_PRETAIL_PROVENANCE_AGREEMENT;
+}
+
+static inline const char* apply_lock_pretail_provenance_name(ApplyLockPretailProvenance mode) {
+    switch (mode) {
+        case APPLY_LOCK_PRETAIL_PROVENANCE_STORED: return "stored";
+        case APPLY_LOCK_PRETAIL_PROVENANCE_LIVE_BASE: return "live-base";
+        case APPLY_LOCK_PRETAIL_PROVENANCE_AGREEMENT: return "agreement";
+        default: return "unknown";
+    }
+}
+
 static inline unsigned int apply_lock_pretail_display_mhz(long long kHz) {
     if (kHz < 0) kHz = 0;
     if (kHz > INT_MAX) kHz = INT_MAX;
@@ -55,7 +95,7 @@ static inline long long apply_lock_pretail_stock_base_khz(unsigned int liveKHz,
 // `Flag` is bool or the wire's gc_bool8.
 template <typename Flag, typename FromFlag>
 static inline int apply_lock_pretail_first_violation(
-    int numPoints, bool offsetInVfTable, unsigned int lockMHz,
+    int numPoints, ApplyLockPretailProvenance provenanceMode, unsigned int lockMHz,
     const bool* populated, const bool* tailMask,
     const Flag* requestHasPoint, const FromFlag* requestPointFromOffset,
     const unsigned int* requestPointMHz,
@@ -71,17 +111,18 @@ static inline int apply_lock_pretail_first_violation(
         if (!populated[ci]) continue;
         if (tailMask[ci]) break;
         unsigned int targetMHz = 0;
-        const bool fromOffset = requestPointFromOffset[ci] != 0;
-        // The verification predicate, with no selective batch in play: a
-        // requested point is offset intent exactly when it has provenance.
-        const bool offsetIntent = offsetInVfTable && requestHasPoint[ci] &&
-            curve_point_offset_is_intent(!fromOffset, fromOffset, false);
+        // With no selective batch in play, a requested point is offset intent
+        // exactly when it carries provenance (curve_point_offset_is_intent()).
+        const bool offsetIntent = provenanceMode != APPLY_LOCK_PRETAIL_PROVENANCE_STORED &&
+            requestHasPoint[ci] && requestPointFromOffset[ci] != 0;
+        const unsigned int baseTargetMHz = apply_lock_pretail_display_mhz(
+            stockBaseKHz[ci] + (long long)gpuComponentMHz[ci] * 1000LL);
         if (requestHasPoint[ci] && !offsetIntent) {
             targetMHz = requestPointMHz[ci];
+        } else if (offsetIntent && provenanceMode == APPLY_LOCK_PRETAIL_PROVENANCE_AGREEMENT) {
+            targetMHz = requestPointMHz[ci] < baseTargetMHz ? requestPointMHz[ci] : baseTargetMHz;
         } else if (offsetIntent || requestHasGpuOffset) {
-            long long targetKHz = stockBaseKHz[ci] +
-                (long long)gpuComponentMHz[ci] * 1000LL;
-            targetMHz = apply_lock_pretail_display_mhz(targetKHz);
+            targetMHz = baseTargetMHz;
         } else {
             targetMHz = apply_lock_pretail_display_mhz(unownedKHz[ci]);
         }

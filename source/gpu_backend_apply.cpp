@@ -415,8 +415,13 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 : 0;
         }
         unsigned int preTailTargetMHz = 0;
+        // After a reset the originals are the stock curve; without one they
+        // still carry the live profile's shape (see the precheck).
+        const ApplyLockPretailProvenance pretailProvenance =
+            apply_lock_pretail_provenance_mode(offsetInVfTable,
+                                               desired->resetOcBeforeApply != 0);
         int ci = apply_lock_pretail_first_violation(VF_NUM_POINTS,
-            offsetInVfTable, lockMhz,
+            pretailProvenance, lockMhz,
             pretail.populated, pretail.tail, desired->hasCurvePoint,
             desired->curvePointFromGpuOffset, desired->curvePointMHz,
             desired->hasGpuOffset != 0, pretail.base,
@@ -427,14 +432,17 @@ static bool apply_desired_settings_service(const DesiredSettings* desired,
                 lockCi, ci, preTailTargetMHz,
                 desired->hasGpuOffset && desired->gpuOffsetMHz != 0 &&
                     !desired->hasCurvePoint[ci]);
-            debug_log("lock monotonicity validation failed %s: lockCi=%d lockMHz=%u preTailCi=%d target=%u desiredGpu=%d exclude=%d requested=%d fromOffset=%d\n",
+            debug_log("lock monotonicity validation failed %s: lockCi=%d lockMHz=%u preTailCi=%d target=%u desiredGpu=%d exclude=%d requested=%d fromOffset=%d stockBase=%lld kHz storedMHz=%u provenance=%s\n",
                 desired->resetOcBeforeApply ? "AFTER the reset-to-stock (recovering)"
                                             : "before writes",
                 lockCi, lockMhz, ci, preTailTargetMHz,
                 desired->hasGpuOffset ? desired->gpuOffsetMHz : currentAppliedGpuOffsetMHz,
                 desired->hasGpuOffset ? desiredActiveGpuOffsetExcludeLowCount : currentActiveGpuOffsetExcludeLowCount,
                 desired->hasCurvePoint[ci] ? 1 : 0,
-                desired->curvePointFromGpuOffset[ci] ? 1 : 0);
+                desired->curvePointFromGpuOffset[ci] ? 1 : 0,
+                pretail.base[ci],
+                desired->hasCurvePoint[ci] ? desired->curvePointMHz[ci] : 0u,
+                apply_lock_pretail_provenance_name(pretailProvenance));
             if (desired->resetOcBeforeApply)
                 return apply_recover_clock_failure(clockCeiling, refusal, result, resultSize);
             set_message(result, resultSize, "%s", refusal);

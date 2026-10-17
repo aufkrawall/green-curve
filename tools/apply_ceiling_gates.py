@@ -322,8 +322,24 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     # unrequested neighbour -- not by its stored projection.
     pretail_policy_h = _p(ctx, "apply_lock_pretail_policy.h")
     require_text(pretail_policy_h,
-                 "curve_point_offset_is_intent(!fromOffset, fromOffset, false);",
-                 "the pre-tail check uses the shared offset-intent predicate")
+                 "requestHasPoint[ci] && requestPointFromOffset[ci] != 0;",
+                 "the pre-tail check treats exactly the provenance points as offset intent")
+    # A base derived from a curve still carrying the outgoing profile's offsets
+    # is an estimate: the pre-reset check refuses a provenance point only when
+    # its stored MHz agrees (field: every profile switch refused on Blackwell).
+    require_text(pretail_policy_h,
+                 "offsetIntent && provenanceMode == APPLY_LOCK_PRETAIL_PROVENANCE_AGREEMENT",
+                 "the pre-reset pre-tail check needs both estimates to refuse a provenance point")
+    require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
+                 "apply_lock_pretail_provenance_mode(offsetInVfTable, false);",
+                 "the pre-reset pre-tail check uses the agreement rule on the VF-table route")
+    require_text(apply_cpp,
+                 "apply_lock_pretail_provenance_mode(offsetInVfTable,\n"
+                 "                                               desired->resetOcBeforeApply != 0);",
+                 "the backstop uses the live base only after a reset cleared every offset")
+    require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
+                 "if (!nvapi_read_curve() || !nvapi_read_offsets()) {",
+                 "the pre-reset base reads frequencies and offsets from the same moment")
     require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
                  "desired->curvePointFromGpuOffset, desired->curvePointMHz,",
                  "the pre-reset pre-tail check passes per-point provenance")
@@ -335,8 +351,11 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(apply_cpp, "originalCurveOffsets[ci]);",
                  "the post-reset pre-tail base uses the existing VF-offset derivation")
     require_text(pretail_policy_h,
-                 "const bool offsetIntent = offsetInVfTable && requestHasPoint[ci] &&",
+                 "const bool offsetIntent = provenanceMode != APPLY_LOCK_PRETAIL_PROVENANCE_STORED &&",
                  "live-base provenance projection is confined to the VF-table route")
+    require_text(pretail_policy_h,
+                 "if (!offsetInVfTable) return APPLY_LOCK_PRETAIL_PROVENANCE_STORED;",
+                 "the separate NVML route keeps the stored MHz")
     require_text(_p(ctx, "curve_point_offset_policy.h"),
                  "static inline bool curve_point_gpu_offset_request_in_range(",
                  "one helper compares a requested GPU offset with its reported range")
@@ -367,7 +386,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
                  "currentAppliedMHz, currentActiveExclude);",
                  "the pre-reset pre-tail check supplies the retained offset route")
     require_text(_p(ctx, "gpu_backend_apply_lock_pretail.h"),
-                 "offsetInVfTable, desired->lockMHz,",
+                 "provenance, desired->lockMHz,",
                  "the pre-reset pre-tail check supplies the VF-table routing")
     require_text(apply_cpp,
                  "const bool offsetInVfTable = curve_point_apply_uses_vf_table_offset(",
@@ -375,7 +394,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
     require_text(apply_cpp,
                  "currentAppliedGpuOffsetMHz, currentActiveGpuOffsetExcludeLowCount);",
                  "the apply supplies the retained offset state to the route decision")
-    require_text(apply_cpp, "offsetInVfTable, lockMhz,",
+    require_text(apply_cpp, "pretailProvenance, lockMhz,",
                  "the post-reset pre-tail check supplies the VF-table routing")
     require_text(apply_cpp, "offsetRouting = CurveOffsetRoutingPlan{};",
                  "a post-preflight range change cannot leave a live routing plan")

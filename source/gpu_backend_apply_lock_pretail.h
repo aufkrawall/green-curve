@@ -52,8 +52,11 @@ static bool apply_lock_pretail_precheck_before_reset(const DesiredSettings* desi
         if (g_app.visibleMap[vi] == desired->lockCi) { lockVi = vi; break; }
     }
     if (lockVi < 0) return true;  // refused earlier by the visibility check
-    if (!nvapi_read_curve()) {
-        debug_log("apply lock precheck: curve read failed; deferring the pre-tail"
+    // Frequencies and programmed offsets from the same moment: a base built
+    // from a fresh frequency read and a cached offset table is neither stock
+    // nor live.
+    if (!nvapi_read_curve() || !nvapi_read_offsets()) {
+        debug_log("apply lock precheck: curve or offset read failed; deferring the pre-tail"
                   " check to the post-reset backstop\n");
         return true;
     }
@@ -88,9 +91,13 @@ static bool apply_lock_pretail_precheck_before_reset(const DesiredSettings* desi
     const bool offsetInVfTable = curve_point_apply_uses_vf_table_offset(
         vf_curve_global_gpu_offset_supported(), desired->hasGpuOffset != 0,
         desired->gpuOffsetMHz, excludeLow, currentAppliedMHz, currentActiveExclude);
+    // The base above still carries the outgoing profile's shape, so a
+    // provenance point is refused here only when its stored MHz agrees.
+    const ApplyLockPretailProvenance provenance =
+        apply_lock_pretail_provenance_mode(offsetInVfTable, false);
     unsigned int offendingMHz = 0;
     int offendingCi = apply_lock_pretail_first_violation(VF_NUM_POINTS,
-        offsetInVfTable, desired->lockMHz,
+        provenance, desired->lockMHz,
         a.populated, a.tail, desired->hasCurvePoint,
         desired->curvePointFromGpuOffset, desired->curvePointMHz,
         desired->hasGpuOffset, a.base,
@@ -101,13 +108,17 @@ static bool apply_lock_pretail_precheck_before_reset(const DesiredSettings* desi
         desired->hasGpuOffset && desired->gpuOffsetMHz != 0 &&
             !desired->hasCurvePoint[offendingCi]);
     debug_log("apply lock precheck: REFUSED before any write -- lockCi=%d lockMHz=%u"
-              " mode=%s preTailCi=%d target=%u stockBase=%lld kHz gpuOffset=%d"
-              " exclude=%d requested=%d fromOffset=%d\n",
+              " mode=%s preTailCi=%d target=%u stockBase=%lld kHz live=%u kHz"
+              " programmed=%d kHz storedMHz=%u gpuOffset=%d exclude=%d requested=%d"
+              " fromOffset=%d provenance=%s\n",
         desired->lockCi, desired->lockMHz, lock_mode_name(desired->lockMode),
         offendingCi, offendingMHz, a.base[offendingCi],
+        g_app.curve[offendingCi].freq_kHz, g_app.freqOffsets[offendingCi],
+        desired->hasCurvePoint[offendingCi] ? desired->curvePointMHz[offendingCi] : 0u,
         desired->hasGpuOffset ? desired->gpuOffsetMHz : 0, excludeLow,
         desired->hasCurvePoint[offendingCi] ? 1 : 0,
-        desired->curvePointFromGpuOffset[offendingCi] ? 1 : 0);
+        desired->curvePointFromGpuOffset[offendingCi] ? 1 : 0,
+        apply_lock_pretail_provenance_name(provenance));
     return false;
 }
 
