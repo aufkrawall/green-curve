@@ -193,10 +193,17 @@ exactly these production translation units:
 
 - `fan_curve.cpp`, `config_text_utils.cpp`, `app_shared.cpp`, `vf_backends.cpp`
 - Windows host only: `config_utils.cpp`, `service_acl.cpp`, `service_path_chain.cpp`,
-  `service_acl_handle.cpp`, `service_install_location.cpp`, `platform_win32.cpp`
+  `service_acl_handle.cpp`, `service_install_location.cpp`, `service_acl_claim.cpp`,
+  `platform_win32.cpp`
 - POSIX host only: `platform_posix.cpp`
 
-That is 10 of ~340 files in `source/` (plus the extra test translation units
+(`tests/security_audit_tests.cpp` owns 6600-6632 for `service_acl_claim.cpp`:
+claim/adopt/fresh-only, squatted folder, junction and file squatters, the
+user-owned exact-DACL folder, the private ACL kinds and the pinned-folder
+content proof; the private-folder claim asserts fail-closed when the harness
+is unelevated and created/replaced when it is elevated.)
+
+That is 11 of ~340 files in `source/` (plus the extra test translation units
 `tests/clock_transition_tests.cpp`, `tests/service_install_tests.cpp`,
 `tests/apply_profile_followup_tests.cpp`, `tests/apply_correction_tests.cpp`
 (6500-6531: the apply's VF correction loop against a simulated driver, see

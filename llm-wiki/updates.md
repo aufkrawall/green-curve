@@ -23,6 +23,80 @@ signature alone does not imply that the native parser accepts the document.
 No normalization of signed bytes occurs. Raw `sign`/`verify` remain generic
 cryptographic helpers. No real key or publication is used in regression tests.
 
+## Claimed machine-scope folders and the private launch folder (verified 2026-10-17)
+
+Source anchors: `source/service_acl_claim.cpp`, `source/service_acl_handle.cpp`
+(`service_set_aside_by_name`, `service_prepare_shared_bank_handle`),
+`source/main_service_machine_config.cpp` (`ensure_machine_config_directory`,
+`harden_machine_config_file_required`), `source/main_service_update_state.cpp`
+(`service_update_staging_dir`), `source/main_service_update_launch.cpp`,
+`source/main_service_update_worker.cpp` (`service_update_run_install`),
+`source/main_data_paths.cpp` (`service_cleanup_legacy_programdata`).
+
+Rules:
+
+- **Never adopt an object the service did not create and prove.** The machine
+  config folder and the staging folder are claimed with
+  `service_claim_protected_directory()`: `CreateDirectoryW` with the protected
+  descriptor (owner Administrators) in the call; on `ERROR_ALREADY_EXISTS` the
+  existing object is used only when a no-follow handle proves the exact DACL
+  and a SYSTEM or Administrators owner. Anything else (a folder created by
+  another account, a junction, a file) is renamed aside within its own folder
+  (`<name>.unproven-<suffix>`, matched to the inspected file id before and
+  after the move), deleted when empty, and replaced. A re-ACL in place is never
+  used to turn an unproven object into a trusted one, because it does not
+  revoke handles opened before it.
+- **Harden through the handle, never by path.** Bank, settings, cache and
+  migration files are re-hardened with `apply_protected_service_dacl_to_handle()`
+  on a no-follow handle that also refuses a second hard link. The gates forbid
+  the path-based helpers in these shards.
+- **An unproven bank is set aside, not truncated.** The bank proof no longer
+  rewrites unproven bytes in place; the name is moved aside and the bank is
+  absent until an administrator writes it.
+- **The legacy ProgramData sweep pins its folder** (no-follow, no delete
+  sharing) and refuses a reparse point before deleting anything inside it.
+- **Setup runs from a private launch folder.** At install time the verified
+  staged file is copied into `updates\launch-<32 random hex>`, created
+  fresh-only with a SYSTEM + Administrators-only descriptor; the copy is
+  `CREATE_NEW` with the same kind of descriptor and is hashed again through the
+  handle held across `CreateProcessW`. Immediately before `CreateProcessW`
+  the pinned folder handle re-proves its DACL, owner and that it holds exactly
+  that one file, and the copy's handle re-proves its DACL, owner and link count.
+  The folder is removed after setup exits; a leftover one is removed by the
+  staging sweep only after its handle proves it ours.
+- **Refuse before closing windows.** Preparing the launch folder and the
+  signed-metadata freshness refusal both happen before
+  `service_update_stop_gui_processes()`; only the final launch-folder proof
+  follows the stop (it cannot fail short of a privileged process tampering
+  with a SYSTEM-only folder).
+
+Implementation notes: renames go through `MoveFileExW` within the same folder;
+the project forbids handle-based rename/disposition (antivirus-heuristics.md),
+and the kernel32 handle rename resolves a bare leaf name against the process
+current directory, which the regression suite caught. `CreateFileW` always
+requests `SYNCHRONIZE`, so an unelevated owner cannot open a SYSTEM/Admins-only
+folder at all; the harness therefore asserts the private-folder claim as
+fail-closed when unelevated and as created/replaced when elevated, and covers
+the content proof on a Users-listable folder.
+
+Diagnostics: `machine config: directory claim=...` / `update staging: directory
+claim=...` (created/replaced once; failures rate-limited on powers of two),
+`update launch: prepared ...`, `update launch: REFUSED at launch; ...`,
+`update launch: discarded launch directory (...)`, `update install: REFUSED
+before closing any window; signed metadata expired`, `update staging: removed
+N stale launch directory(ies)`.
+
+Regression anchors: `tests/security_audit_tests.cpp` 6221 (unproven bank set
+aside, other hard link keeps its bytes, a delete-sharing-denying opener makes
+it fail closed) and 6600-6632 (claim/adopt/fresh-only, squatted folder,
+junction, file squatter, user-owned exact-DACL folder, private kinds, content
+proof, set-aside stays in the original folder); `tools/update_gates.py` and
+`tools/security_gates.py` order/text gates.
+
+Open questions / stale-risk: an elevated end-to-end install through the new
+launch folder has not been live-run yet; the private-folder claim under a real
+SYSTEM token is covered only by the elevated branch of the harness.
+
 ## Signed freshness envelope (verified 2026-10-01)
 
 Source anchors: `source/update_freshness_policy.h`,
@@ -82,9 +156,9 @@ The update cache and staging directory resolve `%ProgramData%\Green Curve`
 through `resolve_machine_config_dir()`, NOT the bank-content-gated
 `resolve_machine_config_path()` (see windows-architecture.md, shared bank
 content proof); only the update SETTINGS live inside the bank file and fall
-back to defaults while it is unproven. The staging directory additionally
-proves an Administrators owner through a no-follow handle. Live SYSTEM install/GUI close/relaunch was not
-performed. Treat the historical v1 discussion below as legacy behavior.
+back to defaults while it is unproven. Both folders are claimed, never
+adopted unproven (see "Claimed machine-scope folders" above). Live SYSTEM
+install/GUI close/relaunch was not performed. Treat the historical v1 discussion below as legacy behavior.
 
 Source anchors: `source/update_version_policy.h`, `source/update_manifest_policy.h`,
 `source/update_url_policy.h`, `source/update_schedule_policy.h`,
@@ -180,8 +254,10 @@ SYSTEM, so a consented update is genuinely seamless.
    declared, aborting **mid-transfer** the moment it is exceeded.
 5. Re-open with `FILE_SHARE_READ` (writes and deletes denied) and verify byte
    length then SHA-256 through that handle.
-6. `service_update_run_install()` re-verifies through a freshly pinned handle
-   and holds it across `CreateProcessW`.
+6. `service_update_run_install()` re-verifies through a freshly pinned handle,
+   copies those bytes into a fresh private launch folder, verifies the copy
+   through the handle it holds across `CreateProcessW`, and re-proves the
+   folder and the copy through their pinned handles just before launching.
 
 Step 6 closes the time-of-check/time-of-use window: verifying by path and
 launching by path would leave a moment where the bytes measured and the bytes
@@ -1138,6 +1214,18 @@ Two things this must get right or it proves nothing:
   4. `publish-hop2`: Builds and publishes follow-up patch to test repo. The newly upgraded client detects and applies the update, verifying that the new updater code has not regressed.
   5. `teardown`: Deletes simulation releases/tags and reverts test repo visibility to private.
   Runbook anchored in `update-procedure.md` Section 10; unit tests in `tools/simulate_release_tests.py`.
+  Guards (`tools/simulate_release_guards.py`, verified 2026-10-17): simulated
+  builds trust ONLY a separate simulation key, patched into both key slots of
+  the worktree's `update_verify_keys.h`, and manifests are signed with it;
+  signing refuses the release key's path and any key a release build trusts, so
+  nothing a simulation publishes verifies on a real installation. Every
+  subcommand refuses the production repository (read from `update_url_policy.h`)
+  before any remote call. `init` records the installed client's
+  `[updates] highest_seen_version`; `teardown` restores it in place (same file,
+  so its protected ACL stays) when elevated, otherwise prints the exact
+  elevated `teardown --restore-seen-only` command; the running service keeps
+  its in-memory value, so restart it before its next check. Do not reuse a
+  simulated version number for a real release.
 
 Everything else is repo-independent and therefore faithful: asset names carry
 the version and arch but not the repo, and the host allowlist is unchanged
@@ -1191,9 +1279,10 @@ opinion, not a dependency.
    the one the release workflow produces for that version and architecture.
 4. Every request and every redirect hop is HTTPS, default-port, allowlisted, and
    free of embedded credentials.
-5. The staged file is written into a directory a standard user cannot write, and
-   is re-verified through a write/delete-denying handle held across process
-   creation.
+5. The staged file is written into a directory a standard user cannot write;
+   setup runs from a fresh SYSTEM/Administrators-only folder holding only a
+   verified copy, re-verified through write/delete-denying handles held across
+   process creation.
 6. No update command carries a path, a version, a digest, settings, a GPU or a
    profile identity.
 7. An install happens only after an explicit client request; no timer reaches it.
@@ -1204,6 +1293,7 @@ opinion, not a dependency.
 10. Nothing that can fail happens after the user's windows have been closed: the
     installer command line is built and UTF-16-encoded **before** the GUI stop,
     and the measured count only selects between two already-valid strings.
+    The launch folder and the freshness refusal also precede the stop.
 11. Pre-install process enumeration distinguishes "already gone" from "refused
     us a handle". A PID that died mid-enumeration is not a failure; anything
     else, including a live process we cannot name, fails closed.
@@ -1214,6 +1304,11 @@ opinion, not a dependency.
     require a click to find. Gated by
     `update_gates.check_update_is_actually_surfaced()`, because silence is the
     one failure mode with no crash, no log line and no failing test.
+14. An existing machine-scope folder or bank file is used only when a no-follow
+    handle proves it ours; otherwise it is set aside and created fresh with its
+    descriptor in the create call. No object's ACL is rewritten by path.
+15. A release simulation never signs with, or builds clients that trust, a key
+    a release build trusts, and never targets the production repository.
 
 ### The reservation's precondition is made false, not waited out
 

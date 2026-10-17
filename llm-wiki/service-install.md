@@ -4,7 +4,10 @@ Source anchors: `source/service_admin_reason_policy.h`,
 `source/service_scm_wait_policy.h`, `source/service_install_location_policy.h`,
 `source/service_install_location.cpp` (`gc_service_install_location_verdict*`),
 `source/service_acl_handle.cpp` (`apply_protected_service_dacl_to_handle`,
-`release_service_hardening`), `source/main_service_install.cpp`
+`release_service_hardening`, `service_set_aside_by_name`),
+`source/service_acl_claim.cpp` (`service_claim_protected_directory`,
+`service_create_protected_file`, `service_directory_holds_only`),
+`source/main_service_install.cpp`
 (`service_install`, `service_remove`, `wait_for_service_transition`),
 `source/main_service_install_target.cpp` (`service_install_prepare_target`,
 `service_install_harden_target`, release helpers),
@@ -197,6 +200,32 @@ Spelling checks run before any open, so a folder a standard user cannot open
 implicit WRITE_DAC. The handle path sets owner + DACL in ONE `SetSecurityInfo`
 when elevated and reads both back exactly.
 
+### Machine-scope objects are claimed, not adopted (2026-10-17)
+
+The same "judge and write the same object" rule, applied to what the RUNNING
+service creates under `%ProgramData%\Green Curve` (machine config folder,
+shared bank, update staging, the per-launch setup folder; details in
+updates.md, "Claimed machine-scope folders"):
+
+- An existing object is used only when a no-follow handle proves the exact
+  protected DACL for its kind and a SYSTEM or Administrators owner. A re-ACL in
+  place is never how an unproven object becomes trusted: it does not revoke
+  handles opened before it.
+- Anything else is renamed aside within its own folder (matched to the
+  inspected file id before and after the move), deleted when empty, and
+  replaced by an object whose security descriptor is part of its
+  `CreateDirectoryW` / `CREATE_NEW` call. If it cannot be moved (another
+  opener denies delete sharing), the caller fails closed and retries later.
+- Two ACL kinds exist for launching: `GC_SERVICE_ACL_PRIVATE_DIRECTORY` /
+  `_PRIVATE_FILE` (SYSTEM + Administrators only, no Users ACE).
+- `service_directory_holds_only()` re-proves a pinned folder's DACL, owner and
+  exact content (one named regular file) right before it is used.
+- Pins that are meant to block a rename carry a data right
+  (`FILE_LIST_DIRECTORY` / `GENERIC_READ`): a handle with only
+  `READ_CONTROL | FILE_READ_ATTRIBUTES` takes no part in sharing checks.
+
+Regression anchors: `tests/security_audit_tests.cpp` 6221, 6600-6632.
+
 ### Releases are proven, not assumed
 
 Uninstall, re-point, and setup's move cleanup all go through
@@ -308,6 +337,9 @@ copy. That asymmetry is what made hardening a drive root unrecoverable.
    exactly ours, and never writes a null DACL (source gate).
 9. A waiter follows the checkpoint protocol; a start that settles in STOPPED
    is reported at once with its exit codes.
+10. The service never adopts an existing machine-scope object it cannot prove
+    through a no-follow handle; it sets it aside and creates a fresh one with
+    the descriptor in the create call, and never rewrites an ACL by path.
 
 ## Diagnostics / failure modes
 
@@ -330,6 +362,11 @@ copy. That asymmetry is what made hardening a drive root unrecoverable.
 - `service_main: stop progress checkpoint=%lu stage=%s` — where a slow stop is.
 - `service_main: start progress checkpoint=%lu stage=%s` — where a slow start
   actually is.
+- `machine config: directory claim=created|replaced|failed count=%ld (...)`,
+  `update staging: directory claim=...` — a machine-scope folder that was not
+  already provably ours (adoption is silent; failures rate-limited).
+- `service: legacy ProgramData sweep skipped; the folder is not a plain
+  directory` — the startup sweep refused a reparse point.
 
 ## Open questions / stale-risk
 
