@@ -592,13 +592,43 @@ static void set_default_config_path() {
 // processes call this after deciding g_debug_logging; verbose never outlives
 // logging itself.  The transition is logged once, so a log says which mode it
 // was written in.
+//
+// The service calls this on every authorized pipe request (the GUI's ~2 s
+// telemetry cadence), and a config read takes the cross-session config mutex.
+// [debug] verbose is re-read only when the config file's path, size or write
+// time changed since the last read; pipe threads share the cache under a lock.
+static bool debug_log_verbose_config_value(const char* path) {
+    static SRWLOCK s_lock = SRWLOCK_INIT;
+    static bool s_valid = false;
+    static char s_path[MAX_PATH] = {};
+    static WIN32_FILE_ATTRIBUTE_DATA s_stamp = {};
+    static bool s_value = false;
+    if (!path || !path[0]) return false;
+    WIN32_FILE_ATTRIBUTE_DATA stamp = {};
+    if (!gc_GetFileAttributesExUtf8(path, GetFileExInfoStandard, &stamp)) return false;
+    AcquireSRWLockExclusive(&s_lock);
+    const bool unchanged = s_valid && _stricmp(s_path, path) == 0 &&
+        s_stamp.nFileSizeHigh == stamp.nFileSizeHigh &&
+        s_stamp.nFileSizeLow == stamp.nFileSizeLow &&
+        CompareFileTime(&s_stamp.ftLastWriteTime, &stamp.ftLastWriteTime) == 0;
+    if (!unchanged) {
+        s_value = get_config_int(path, "debug", "verbose", 0) != 0;
+        StringCchCopyA(s_path, ARRAY_COUNT(s_path), path);
+        s_stamp = stamp;
+        s_valid = true;
+    }
+    const bool value = s_value;
+    ReleaseSRWLockExclusive(&s_lock);
+    return value;
+}
+
 static void refresh_debug_log_verbose() {
     char value[32] = {};
     DWORD n = GetEnvironmentVariableA(APP_DEBUG_ENV, value, ARRAY_COUNT(value));
     bool envVerbose = n > 0 && n < ARRAY_COUNT(value) &&
         gc_log_steady::env_value_requests_verbose(value);
-    bool configVerbose = g_app.configPath[0] &&
-        get_config_int(g_app.configPath, "debug", "verbose", 0) != 0;
+    bool configVerbose = g_debug_logging &&
+        debug_log_verbose_config_value(g_app.configPath);
     bool verbose = g_debug_logging && (envVerbose || configVerbose);
     if (verbose == g_debug_log_verbose) return;
     g_debug_log_verbose = verbose;
