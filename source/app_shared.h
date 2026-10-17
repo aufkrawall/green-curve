@@ -213,6 +213,7 @@ void init_dpi();
 #define APP_CLI_LOG_FILE    "greencurve_cli_log.txt"
 #define APP_DEBUG_LOG_FILE  "greencurve_debug.txt"
 #define APP_JSON_FILE       "greencurve_curve.json"
+#define APP_VF_DUMP_FILE    "greencurve_vf_dump.txt"
 #define APP_DEBUG_ENV       "GREEN_CURVE_DEBUG"
 #define APP_DEBUG_DEFAULT_ENABLED 1
 #define APP_WM_SYNC_STARTUP (WM_APP + 1)

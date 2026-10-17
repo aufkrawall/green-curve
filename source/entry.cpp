@@ -373,9 +373,15 @@ static bool handle_cli(LPWSTR wCmdLine) {
     }
 
     if (opts.dump) {
+        // Its own file, beside the CLI log: that log is open in this process,
+        // so the service's atomic replace of it failed (access denied), and
+        // replacing it would erase the history the append-only log keeps.
+        char dumpPath[MAX_PATH] = {};
+        StringCchPrintfA(dumpPath, ARRAY_COUNT(dumpPath), "%s%s%s", g_userDataDir,
+                         g_userDataDir[0] ? "\\" : "", APP_VF_DUMP_FILE);
         char result[512] = {};
-        if (service_client_write_file_command(SERVICE_CMD_WRITE_LOG_SNAPSHOT, logPath, "client dump", result, sizeof(result))) {
-            CLI_LOG("VF curve dump written to %s\n", logPath);
+        if (service_client_write_file_command(SERVICE_CMD_WRITE_LOG_SNAPSHOT, dumpPath, "client dump", result, sizeof(result))) {
+            CLI_LOG("VF curve dump written to %s\n", dumpPath);
             CLI_LOG("%s\n", result);
         } else {
             CLI_LOG("ERROR: %s\n", result);

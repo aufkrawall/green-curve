@@ -187,6 +187,12 @@ def check_cli_log_appends(ctx, require_text):
                  "the logon handoff FAILED record appends to the CLI log")
     require_text(_p(ctx, "cli_console.cpp"), "gc_cli_log_append_record(cli_log_path(),",
                  "the CLI append goes through the capped append policy")
+    # The service writes --dump by atomic replace, so the target is never the
+    # CLI log the CLI holds open (that replace failed and would erase history).
+    ctx.forbid_text(_p(ctx, "entry.cpp"), "SERVICE_CMD_WRITE_LOG_SNAPSHOT, logPath",
+                    "--dump never targets the open, append-only CLI log")
+    require_text(_p(ctx, "entry.cpp"), "APP_VF_DUMP_FILE);",
+                 "--dump writes its own file beside the CLI log")
 
 
 def check_auto_apply_failure_notice(ctx, require_text):

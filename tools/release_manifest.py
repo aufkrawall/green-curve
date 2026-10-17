@@ -42,6 +42,7 @@ RUNTIME_ARTIFACT_NAMES = (
     "greencurve-live.txt",
     "greencurve-live.json",
     "greencurve_cli_log.txt",
+    "greencurve_vf_dump.txt",
     "greencurve_log.txt",
 )
 
