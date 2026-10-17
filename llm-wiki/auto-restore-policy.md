@@ -161,8 +161,12 @@ and the user saw nothing: the GPU just ran at stock with automation off.
   non-canonical bool, nonzero reserved bytes or an unterminated detail; the
   canonicalizer voids a record with a bad trigger. Mixed v28/v29 peers refuse
   each other at the header, as for every size change.
-- **Lifetime:** in memory only. An explicit successful Apply clears it with the
-  lockout. After a service restart the persisted lockout has no record, and the
+- **Lifetime:** in memory only. An explicit successful Apply clears it BEFORE
+  clearing the lockout (`main_service_pipe_switch.cpp`, gate in
+  `tools/log_gates.py`): if re-arming then fails and re-latches
+  `AUTOMATIC_APPLY_FAILED`, that lockout is the Apply's own and carries no
+  automatic cause, and no snapshot taken while the lockout briefly read NONE
+  can re-announce the old failure. After a service restart the persisted lockout has no record, and the
   GUI says only that automation is paused until Apply; it never invents a cause.
 - **GUI:** on the notice-observed edge NONE -> `AUTOMATIC_APPLY_FAILED` the status line and a
   silent warning balloon say what failed and when ("at logon", "after
@@ -176,7 +180,11 @@ and the user saw nothing: the GPU just ran at stock with automation off.
   causeless form gets at most one balloon per GUI process. Notice observation
   has its own reason history in `gui_auto_restore_notice.h`: a synchronous
   snapshot adopted before window creation does not consume the first notice,
-  and repeated READY snapshots do not repeat it. The call is the final step
+  and repeated READY snapshots do not repeat it. The edge rule itself is
+  `gc_auto_restore_notice_observe()` (`auto_apply_failure_notice_policy.h`),
+  shared with the Linux TUI: only answered snapshots move the observed reason,
+  so a disconnect/reconnect under the same lockout is not news (the TUI used to
+  treat every reconnect as a transition from NONE; tests 6877-6878). The call is the final step
   of `gui_service_accept_response_on_main_thread`, after generic refresh/state
   messages and both logon/app-start handlers, so those cannot replace a newly
   announced failure. `HANDBACK_INCOMPLETE` -> `AUTOMATIC_APPLY_FAILED`

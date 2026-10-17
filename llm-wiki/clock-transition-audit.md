@@ -79,7 +79,9 @@ live Pascal apply/Reset/recovery sequence remain unverified.
   is the one rule; [gpu_backend_apply_lock_pretail.h](../source/gpu_backend_apply_lock_pretail.h)
   runs it before the clamp is armed, on a fresh curve read, using each point's
   stock base (live minus programmed offset), which is what the post-reset
-  readback reports. The post-reset copy stays as a backstop for a base that
+  readback reports. (Superseded for provenance points on 2026-10-17: that
+  equality does not hold next to a large offset step, so the pre-reset check
+  uses the AGREEMENT rule -- see "offset-intent follow-ups" below.) The post-reset copy stays as a backstop for a base that
   moved between the two reads and now returns through
   `apply_recover_clock_failure()` when a reset ran. A failed pre-check read
   defers to that backstop.
@@ -592,7 +594,14 @@ transition clamps and failure recovery are unchanged by the deferral below.
    offset, so the release notes make no such claim. An additive fake driver
    demonstrated only its own assumption; it is not evidence of driver behavior.
    Log: `curve targets: offsetContract=full-component`, with VF-table capability,
-   requested/current offset, exclusion count and routing.
+   requested/current offset, exclusion count and routing. To let a field log
+   answer the open question, an apply on the separate NVML route with a live
+   NVML scalar also logs `nvml composition evidence:` after the final readback:
+   the first requested provenance point (VF delta + scalar) and the nearest
+   untouched point below it (scalar only), each with live frequency and
+   programmed VF offset (`curve_point_nvml_composition_probe()`,
+   `apply_log_nvml_composition_evidence()`; tests 6880-6883). It changes no
+   decision.
 2. **Pre-tail and flat-tail checks.** `curve_point_apply_uses_vf_table_offset()`
    (`source/curve_point_offset_policy.h`) is true on Blackwell (and the existing
    best-guess backend). On Pascal..Ada it is false for a uniform NVML scalar,
@@ -607,7 +616,26 @@ transition clamps and failure recovery are unchanged by the deferral below.
    writes and `apply_correction_monotonic_target_mhz()` after correction. Only
    on the separate non-Blackwell uniform NVML route do both checks retain the
    stored-MHz behavior for requested points, avoiding an unmeasured NVML/VF base
-   derivation. `ApplyCorrectionRequest::offsetInVfTable` controls only flat-tail
+   derivation.
+   **Pre-reset estimate (same day, follow-up).** The pre-tail check takes an
+   `ApplyLockPretailProvenance` mode (`apply_lock_pretail_provenance_mode()`):
+   STORED on the NVML route, LIVE_BASE for a base read after reset-to-stock,
+   and AGREEMENT for a base derived from a curve that still carries another
+   profile's offsets (the pre-reset precheck, and the backstop when no reset
+   ran). AGREEMENT refuses a provenance point only when both its stored MHz
+   and base + component exceed the lock, and reports the lower. Field case
+   (Blackwell): switching from a profile with typed points 74/75 (+~475 MHz
+   over stock) and a flatten lock to one with +475 MHz on points 70+ and a
+   2957 MHz lock was refused every time, `preTailCi=73 target=2987
+   stockBase=2512000`, while point 73 was saved over a 2397 MHz base and the
+   reset two minutes earlier read stock point 75 at 2460 MHz -- so 2512 was not
+   a stock base. Inferred, unverified mechanism: the driver reports an
+   untouched point next to a large offset step above its own base + offset.
+   "Live minus programmed" is therefore a stock base only after a reset. The
+   precheck now also reads frequencies and offsets from the same moment
+   (`nvapi_read_curve()` + `nvapi_read_offsets()`; it used to pair a fresh
+   frequency read with the cached offset table) and logs live, programmed,
+   stored and the mode on a refusal. Tests 6870-6876. `ApplyCorrectionRequest::offsetInVfTable` controls only flat-tail
    projection; offset verification and correction remain routing-independent.
 3. **Boost tallies.** `apply_correction_boost_tally()` runs on the final
    readback: offset-intent points by programmed offset (within 12 MHz), typed
@@ -677,7 +705,12 @@ depend on whether the readback included the old offset. Rollback is unchanged
 and `apply: curve targets rebuilt after NVML offset clear`. Source:
 `linux_backend_apply_context.h` (split from `linux_backend_mutation.cpp`).
 Tests 6830-6834 (`tests/regression_main.cpp`, mutation-checked); gates in
-`tools/apply_ceiling_gates.py`. No Linux hardware run.
+`tools/apply_ceiling_gates.py`. No Linux hardware run. The rebuild keeps the
+transaction's shape (`linux_curve_rebuild_keeps_shape()`): the same point
+count, composition decision and lock tail as the build the phase plan came
+from (`LinuxApplyTransactionContext::plannedBuild`); a different shape is
+refused and logged (`curve rebuild after NVML offset clear changed shape`)
+instead of being written. Tests 6835-6837.
 
 ## Open questions / release acceptance
 

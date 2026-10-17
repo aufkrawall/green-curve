@@ -355,6 +355,11 @@ fan-curve hour carried 148 KB of these lines (13% of that hour); a sustained
 Verbose mode restores the old per-tick detail: `GREEN_CURVE_DEBUG=verbose` (or
 `2`), or `[debug] verbose=1` in the config. Both processes log
 `debug log: per-tick verbose detail ON|OFF` once when the mode is decided.
+The service re-evaluates the mode on every authorized pipe request; the
+`[debug] verbose` value is re-read only when the config file's path, size or
+write time changed, and not at all while debug logging is off
+(`debug_log_verbose_config_value()`), so the telemetry cadence does not add a
+config read under the cross-session config mutex.
 Replaying the 0.28 field log (44 h) through the new rules gives about 19 KB/h
 instead of 549 KB/h (29x), so the cap holds about ten weeks of steady state.
 Stale-risk: the fan-write numbers are a replay of the field log, not a

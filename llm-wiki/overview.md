@@ -104,7 +104,7 @@ a warning or an error.
 | `source/win32_utf8_paths.h` | Strict UTF-8-to-UTF-16 path/profile wrappers used at Win32 filesystem and INI boundaries |
 | `source/main_runtime_ui.cpp` | Dark-mode, font, GDI+ curve rendering, themed combo, and other Win32 UI helper code split out of `main.cpp` |
 | `source/ui_theme_button.cpp`, `source/ui_theme_checkbox.cpp`, `source/ui_checkbox_state.h` | Owner-drawn button/checkbox rendering, the themed-control id tables, and the derived-tick/last-painted repaint gate (F-CHECKBOX-PAINT) |
-| `source/entry.cpp` | `WinMain` plus the CLI dispatcher (`--dump`, `--json`, `--probe`, `--service-install`, ...) |
+| `source/entry.cpp` | `WinMain` plus the CLI dispatcher (`--dump`, `--json`, `--probe`, `--service-install`, ...); `--dump` writes `greencurve_vf_dump.txt` beside the CLI log, never the open, append-only CLI log itself |
 | `source/main_cli_options.cpp` | `parse_cli_options()`, split out of `main_runtime_nvml.cpp` |
 | `source/main_cli_admin.cpp` | The machine-wide administrator CLI commands behind one dispatcher |
 | `source/main_settings_transfer.cpp` | `--export-active-settings` / `--apply-settings-file`: carrying live settings across an upgrade as an explicit CLI Apply. See [installer.md](installer.md) |
