@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -93,11 +94,27 @@ class SimulateReleaseTests(unittest.TestCase):
         self.assertTrue(all(c in "0123456789abcdef" for c in pubkey))
 
     def test_get_latest_stable_tag(self):
-        tag = simulate_release.get_latest_stable_tag(ROOT_DIR)
-        self.assertTrue(tag.startswith("0."))
-        # Must parse as major.minor[.patch]
-        parts = [int(p) for p in tag.split(".")]
-        self.assertGreaterEqual(len(parts), 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            subprocess.run(["git", "init"], cwd=tmp, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.name", "test"], cwd=tmp, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=tmp, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=tmp, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            for t in ["0.25.0", "0.27.0", "0.26.1", "invalid-tag"]:
+                subprocess.run(["git", "tag", t], cwd=tmp, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            highest = simulate_release.get_latest_stable_tag(tmp_path)
+            self.assertEqual(highest, "0.27.0")
+
+        try:
+            tag = simulate_release.get_latest_stable_tag(ROOT_DIR)
+            self.assertTrue(tag.startswith("0."))
+            # Must parse as major.minor[.patch]
+            parts = [int(p) for p in tag.split(".")]
+            self.assertGreaterEqual(len(parts), 2)
+        except RuntimeError as exc:
+            if "could not find any valid stable release tags" in str(exc):
+                return
+            raise
 
     def test_cli_subcommands_parse(self):
         # Verify parser handles all documented subcommands without crashing

@@ -83,6 +83,21 @@ static bool claim_test_is_elevated() {
     return elevated;
 }
 
+static bool claim_test_set_user_owner(const WCHAR* path) {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+    BYTE buf[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE] = {};
+    DWORD size = 0;
+    bool ok = false;
+    if (GetTokenInformation(token, TokenUser, buf, sizeof(buf), &size)) {
+        TOKEN_USER* tu = (TOKEN_USER*)buf;
+        ok = SetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
+                                   tu->User.Sid, nullptr, nullptr, nullptr) == ERROR_SUCCESS;
+    }
+    CloseHandle(token);
+    return ok;
+}
+
 // Every "<path>.unproven-*" sibling: counted, then removed.
 static int claim_test_sweep_aside(const WCHAR* path, bool remove) {
     WCHAR pattern[MAX_PATH] = {};
@@ -235,6 +250,8 @@ static int claim_protected_directory_tests() {
     // keeps implicit WRITE_DAC, so with the owner required it is never adopted.
     if (service_claim_protected_directory(dir, GC_SERVICE_ACL_DIRECTORY, false, true,
                                           nullptr, err, sizeof(err)) != GC_SERVICE_CLAIM_CREATED)
+        return cleanupAnd(6616);
+    if (elevated && !claim_test_set_user_owner(dir))
         return cleanupAnd(6616);
     BY_HANDLE_FILE_INFORMATION before = {}, after = {};
     HANDLE probe = CreateFileW(dir, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE |
