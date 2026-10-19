@@ -1631,6 +1631,26 @@ be started, the closed GUIs are not relaunched.
 
 ## Last verified
 
+- 2026-10-19 (**0.29.0 released**): published stable from commit `0ac74a70293d36f44bf46dc154bf2fb4c3167437`,
+  tag `0.29.0`, with a floorless signed manifest so all public clients (0.23+)
+  are eligible. CI run `39247438156` and release run `39249109401` were green.
+  All FOUR version-independent updater assets were published (`greencurve-update-manifest.txt`,
+  `greencurve-update-manifest.sig`, `greencurve-update-v2.txt`, and `greencurve-update-v2.sig`; 21
+  release assets total). The published x64/ARM64 setup executables were downloaded back from GitHub,
+  cross-checked against the release's `.sha256` sidecars, provenance-verified against
+  `release.yml` at `0ac74a70293d36f44bf46dc154bf2fb4c3167437`, then signed with the active key by
+  `tools/release_post.py`.
+  Published x64 setup: size `2001269`, SHA-256
+  `c02c9505697659416d22cb32f680a501f007a8ba7ddf253da2e177e1e03fb92e`.
+  Published ARM64 setup: size `2998645`, SHA-256
+  `3fcf170eaee6377291e014bb5d4d4e84764267c64301e496905254f94e292331`.
+  Post-publication checks through the client's fixed `releases/latest/download` URLs: v1 and v2
+  signatures verified over network bytes against `GC_UPDATE_PUBLIC_KEY_ACTIVE`, fetched bytes
+  identical to the locally prepared set, v2 wraps the exact v1 bytes, both installers matched
+  signed size/SHA-256 through the manifest URLs with redirects ending on
+  `release-assets.githubusercontent.com`, and the release body matches the `CHANGELOG.md` extraction.
+  Attestation verified for the published setup executables, commit status `Provenance & Attestation`
+  posted `success`, and tag `0.29.0` is verified.
 - 2026-10-05 (**0.28 released**): published stable from commit `358793a`,
   tag `0.28`, with a floorless signed manifest so all public clients (0.23+)
   are eligible. CI run `37356433779` and release run `37358341063` were green.
