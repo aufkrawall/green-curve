@@ -2817,6 +2817,14 @@ static int run_all_tests(int argc, char** argv) {
         if (gc_update_restore_decide("0.28", "0.28",
                                      GC_UPDATE_RESTORE_MAX_AGE_SECONDS + 1) !=
             GC_UPDATE_RESTORE_DISCARD) return 5927;
+
+        // 0.29.0 release verification: exact apply, and mismatched version discard.
+        if (gc_update_restore_decide("0.29.0", "0.29.0", 30) !=
+            GC_UPDATE_RESTORE_APPLY) return 5941;
+        if (gc_update_restore_decide("0.29.0", "0.28", 30) !=
+            GC_UPDATE_RESTORE_DISCARD) return 5942;
+        if (gc_update_restore_decide("0.28", "0.29.0", 30) !=
+            GC_UPDATE_RESTORE_DISCARD) return 5943;
     }
 
     // F-08-001: IPC object size and field layout sanity

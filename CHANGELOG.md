@@ -27,7 +27,7 @@
 
 # Changelog
 
-## Unreleased
+## 0.29.0
 
 Apply reliability, diagnostics and the in-app updater's local protections improve in this release.
 
@@ -60,6 +60,21 @@ Apply reliability, diagnostics and the in-app updater's local protections improv
 
 - Existing configuration and profiles remain fully compatible.
 - App and background service move to protocol v29. They update together, so this needs nothing from you.
+
+### Downloads and verification
+
+- **Windows:** use `setup.exe` to install or upgrade, or `.7z` for a portable copy.
+- **Linux:** install the Arch package, or extract `.tar.xz` and run `greencurve-setup.sh`.
+- Packages include SHA-256 files and GitHub build attestations:
+  [![Attestation](https://img.shields.io/badge/GitHub-Attestation_Verified-brightgreen?logo=github)](https://github.com/aufkrawall/green-curve/attestations)
+
+  Verify with:
+
+  ```bash
+  gh attestation verify <artifact> --repo aufkrawall/green-curve
+  ```
+
+**Full changelog:** [0.28...0.29.0](https://github.com/aufkrawall/green-curve/compare/0.28...0.29.0)
 
 ## 0.28
 
