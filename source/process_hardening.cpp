@@ -22,8 +22,24 @@
 #undef _WIN32_WINNT
 #define _WIN32_WINNT 0x0A00
 #include <windows.h>
+#include <stddef.h>
 
 #include "fatal_dump_hook.h"
+
+#if defined(__aarch64__) && !defined(_MSC_VER)
+// The pinned GNU ARM64 linker has no dependent-load-flag option. Its CRT does
+// not supply a load configuration, so publish the documented PE field here.
+// The pinned headers retain the older name Reserved1 at byte offset 78.
+static_assert(offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, Reserved1) == 78,
+    "DependentLoadFlags must occupy its PE32+ ABI offset");
+constexpr IMAGE_LOAD_CONFIG_DIRECTORY64 gc_system_import_config() {
+    IMAGE_LOAD_CONFIG_DIRECTORY64 config = {};
+    config.Size = sizeof(config);
+    config.Reserved1 = LOAD_LIBRARY_SEARCH_SYSTEM32;
+    return config;
+}
+extern "C" const IMAGE_LOAD_CONFIG_DIRECTORY64 _load_config_used = gc_system_import_config();
+#endif
 
 extern "C" {
 

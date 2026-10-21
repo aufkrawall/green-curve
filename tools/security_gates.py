@@ -476,6 +476,8 @@ def run_windows_pipe_fixture(ctx, tmp_dir, extra_flags):
     if result.returncode != 0:
         print(f"Windows named-pipe regression FAILED ({result.returncode})")
         sys.exit(result.returncode)
+    import windows_loader_tests
+    windows_loader_tests.run(ctx, tmp_dir)
 
 
 def run_cli_console_fixture(ctx, built_exe=None):

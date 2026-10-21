@@ -381,6 +381,21 @@ def verify_windows_binary_metadata(data, label, original_filename, arch,
     verify_no_buildid_section(data, label)
 
 
+def verify_pe_dependent_load_flags(data):
+    """Static imports use the system search path before application entry."""
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    sections = _sections_of(data, pe, pe + 24)
+    load_rva, load_size = _pe_data_directory(data, 10)
+    offset = _rva_to_offset(sections, load_rva) if load_rva else None
+    if offset is None or load_size < 80 or offset + load_size > len(data):
+        raise RuntimeError("PE dependent-load configuration is missing or truncated")
+    declared_size = struct.unpack_from("<I", data, offset)[0]
+    if declared_size < 80 or declared_size > load_size:
+        raise RuntimeError("PE dependent-load configuration size is inconsistent")
+    if struct.unpack_from("<H", data, offset + 78)[0] != 0x800:
+        raise RuntimeError("PE static imports are not restricted to System32")
+
+
 def verify_pe_hardening(data, arch, windows_toolchain="llvm-mingw"):
     if len(data) < 0x100 or data[:2] != b"MZ":
         raise RuntimeError("not a PE image")
@@ -406,6 +421,7 @@ def verify_pe_hardening(data, arch, windows_toolchain="llvm-mingw"):
     import_rva, import_size = struct.unpack_from("<II", data, optional + 112 + 8)
     if not import_rva or not import_size:
         raise RuntimeError("PE import dependency table is missing")
+    verify_pe_dependent_load_flags(data)
     load_rva, load_size = struct.unpack_from("<II", data, optional + 112 + 10 * 8)
     load_off = _rva_to_offset(sections, load_rva) if load_rva else None
     if arch == "x64":

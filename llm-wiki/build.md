@@ -29,6 +29,19 @@ artifacts; current x64 builds now carry the opt-in.
 
 ## Build tool
 
+Static Windows imports are restricted to System32 by PE DependentLoadFlags
+(`0x800`), before entry-point initialization. MSVC and x64 GNU links set it
+with their linker option. The pinned ARM64 GNU headers call the same field
+`Reserved1`; `source/process_hardening.cpp` publishes the load configuration
+with an asserted ABI offset. This adds no ARM64 CFG claim. Every Windows
+artifact must pass `tools/pe_verify.py`'s dependent-load gate, including setup
+and uninstaller stubs. Synthetic PE mutations cover missing, widened and
+truncated settings. The native `tests/windows_loader_fixture.cpp` acceptance
+loads a harmless sibling DLL in its baseline and excludes it with the restricted
+search. The OS applies this field on Windows 10 RS1 and later; earlier systems
+ignore it. Installation paths and runtime system-library resolution are unchanged.
+Verified 2026-10-21.
+
 `python build.py` is the only build tool. No CMake, no package manager, no test runner.
 Parallel scheduling and build-state helpers live in `tools/build_scheduler.py`
 and `tools/build_state.py` (one-way dependencies, same pattern as the other

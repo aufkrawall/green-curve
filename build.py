@@ -298,7 +298,7 @@ WINDOWS_FLAGS = [
     # __guard_check_icall_fptr as data in .00cfg (mingw_cfguard_support.o via
     # loadcfg.o); cfg_glue.cpp overrides it with a real function and LLD keeps
     # ours (first on the command line).  A known MinGW CFG limitation.
-    "-Wl,--subsystem,windows,--dynamicbase,--nxcompat,--high-entropy-va,--allow-multiple-definition",
+    "-Wl,--subsystem,windows,--dynamicbase,--nxcompat,--high-entropy-va,--allow-multiple-definition,--dependent-load-flag=0x800",
     "-mguard=cf",
     "-fcf-protection=full",
     "-flto",

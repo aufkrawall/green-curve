@@ -303,7 +303,7 @@ def windows_compile_flags(service, arch, app_version, build_number, source_dir,
 
 def windows_link_flags(pdb_name, arch, debug=True):
     """Link flags for one Windows binary (lld-link, MSVC ABI)."""
-    flags = ["-nologo", "-guard:cf", "-opt:ref,icf", "-subsystem:windows"]
+    flags = ["-nologo", "-guard:cf", "-opt:ref,icf", "-subsystem:windows", "-dependentloadflag:0x800"]
     if arch == "x64":
         # Shadow-stack (CET backward edge) opt-in.  x64-only: there is no
         # CETCOMPAT for ARM64; arm64 gets CFG metadata + PAC/BTI instead.
@@ -385,6 +385,9 @@ def run_self_tests():
     if any(flag.startswith("-flto") for flag in compile_flags):
         raise AssertionError("arm64 compile flags must stay no-LTO")
     x64_link = windows_link_flags("greencurve.pdb", "x64", debug=False)
+    for arch in ("x64", "arm64"):
+        if "-dependentloadflag:0x800" not in windows_link_flags("green.pdb", arch):
+            raise AssertionError("Windows static imports must resolve from System32")
     if "-cetcompat" not in x64_link:
         raise AssertionError("x64 link must opt into CET shadow stacks")
     if "-opt:lldlto=2" not in x64_link:

@@ -20,6 +20,7 @@ from pe_verify import (
     pe_imports, pe_resource_ids, pe_section_names, version_string_value,
     verify_no_buildid_section, verify_pe_checksum, verify_pe_import_surface,
     verify_service_resources, verify_setup_has_no_decompressor,
+    verify_pe_dependent_load_flags,
     verify_version_identity, verify_windows_binary_imports,
     verify_windows_binary_metadata, verify_windows_manifest_identity,
 )
@@ -195,6 +196,15 @@ def _synthetic_metadata_pe(original_filename, with_buildid=False,
     struct.pack_into("<II", data, 0x700 + 20, 0x2320, 0x720)           # addr, raw ptr
     data[0x720:0x724] = b"RSDS"
     data[0x738:0x738 + len(codeview_path) + 1] = codeview_path.encode("utf-8") + b"\0"
+    data.extend(b"\x00" * (0xA00 - len(data)))
+    load_section = 0x98 + 0xF0 + 80
+    data[load_section:load_section + 8] = b".loadcfg"
+    struct.pack_into("<IIII", data, load_section + 8, 0x200, 0x3000, 0x200, 0x800)
+    struct.pack_into("<I", data, load_section + 36, 0x40000040)
+    struct.pack_into("<H", data, 0x86, 3)
+    struct.pack_into("<II", data, 0x98 + 112 + 10 * 8, 0x3000, 112)
+    struct.pack_into("<I", data, 0x800, 112)
+    struct.pack_into("<H", data, 0x800 + 78, 0x800)
     data += b"".join([
         _version_string_entry("CompanyName", "aufkrawall"),
         _version_string_entry("Comments", "Green Curve release build"),
@@ -244,6 +254,23 @@ def run_self_tests():
     def expect(condition, label):
         if not condition:
             failures.append(label)
+
+    dependent = _synthetic_metadata_pe("greencurve.exe")
+    verify_pe_dependent_load_flags(dependent)
+    for offset, fmt, value in (
+            (0x800 + 78, "<H", 0),
+            (0x800 + 78, "<H", 0x1800),
+            (0x800, "<I", 79),
+            (0x800, "<I", 113),
+            (0x98 + 112 + 10 * 8, "<I", 0),
+            (0x98 + 112 + 10 * 8 + 4, "<I", 79)):
+        bad = bytearray(dependent)
+        struct.pack_into(fmt, bad, offset, value)
+        try:
+            verify_pe_dependent_load_flags(bad)
+            failures.append(f"dependent-load gate accepted mutation {offset}/{value}")
+        except RuntimeError:
+            pass
 
     import_fixture = _synthetic_import_pe()
     try:
