@@ -121,6 +121,17 @@ Prefer `readelf -d`, `objdump -p`, or equivalent static inspection for untrusted
 
 ## Identity in the log is tokenized (F-03-001)
 
+Verified 2026-10-21: `source/log_path_redaction.h` also applies at the formatted
+message boundary in Windows debug, installer and CLI files, Linux debug output
+and backend journal output. Quoted absolute paths retain surrounding diagnostic
+fields; unquoted path spans are conservatively tokenized to the line end or a
+standard error suffix. Direct path arguments use individual tokens when several
+paths share a record. Installer task identifiers are tokenized too. Console
+responses remain readable with their actual paths; explicit exports keep their
+existing format. Regression anchors: `tests/diagnostics_followup_tests.cpp`
+and `tools/log_gates.py`. These are correlation fingerprints, not cryptographic
+anonymization of predictable input.
+
 `source/log_redaction_policy.h` turns account names, SIDs, authentication LUIDs
 and user-profile paths into stable non-reversible tokens — `[path #<16 hex>]`
 and `[id #<16 hex>]` — so two events for one account stay correlatable without

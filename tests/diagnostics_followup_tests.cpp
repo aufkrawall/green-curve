@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <initializer_list>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -26,8 +27,52 @@
 #include "auto_apply_failure_notice_policy.h"
 #include "cli_log_append_policy.h"
 #include "debug_log_steady_state_policy.h"
+#include "log_path_redaction.h"
+#include "log_redaction_policy.h"
 
 namespace {
+
+int run_log_path_redaction_tests() {
+    const char* inputs[] = {
+        "open X:\\Profiles\\sample account\\App Data\\settings.ini (error 5)\n",
+        "open \"X:\\Profiles\\sample account\\App Data\\settings.ini\" (error 5)\n",
+        "open \\\\fixture\\share\\sample account\\settings.ini (error 5)\n",
+        "open /tmp/sample account/settings.ini (error 5)\n",
+        "open './sample account/settings.ini' (error 5)\n",
+        "open .\\sample account\\settings.ini (error 5)\n",
+    };
+    for (const char* input : inputs) {
+        char output[512] = {};
+        gc_log_redact_paths(input, output, sizeof(output));
+        if (strstr(output, "sample") || strstr(output, "settings.ini") ||
+            !strstr(output, "[path #") || !strstr(output, "(error 5)") ||
+            output[strlen(output) - 1] != '\n') return 7040;
+        char again[512] = {};
+        gc_log_redact_paths(output, again, sizeof(again));
+        if (strcmp(output, again)) return 7041;
+    }
+    for (const char* unchanged : {"https://example.invalid/a/b", "clock=1/2 memory=100/200 MHz",
+                                  "[path #123456789abcdef0]", "setup /S /D=target"}) {
+        char output[256] = {};
+        gc_log_redact_paths(unchanged, output, sizeof(output));
+        if (strcmp(output, unchanged)) return 7042;
+    }
+    char output[256] = {};
+    gc_log_redact_paths("from \"X:\\first\" to '/tmp/second'; error=5", output, sizeof(output));
+    const char* first = strstr(output, "[path #");
+    if (!first || !strstr(first + 1, "[path #") || !strstr(output, "error=5")) return 7043;
+    char tiny[3] = {'x', 'x', 'z'};
+    gc_log_redact_paths("X:\\sample", tiny, 2);
+    if (tiny[1] != 0 || tiny[2] != 'z') return 7044;
+    if (gc_log_redact_paths(nullptr, output, sizeof(output)) || output[0] ||
+        gc_log_redact_paths("x", nullptr, 0)) return 7045;
+    const char* a = gc_log_path("X:\\first");
+    const char* b = gc_log_path(L"X:\\second");
+    const char* id = gc_log_identifier(L"sample account");
+    if (a == b || b == id || !strstr(a, "[path #") || !strstr(b, "[path #") ||
+        !strstr(id, "[id #") || !strcmp(a, b)) return 7046;
+    return 0;
+}
 
 using namespace gc_log_steady;
 
@@ -175,6 +220,10 @@ int run_cli_log_append_tests() {
     // A non-positive cap never rotates (rotation policy contract).
     if (gc_cli_log_append_record(path, "fifth\n", 0, nullptr, fopen) !=
         GC_CLI_LOG_APPENDED) return 6741;
+    if (gc_cli_log_append_record(path, "open X:\\Profiles\\sample account\\settings.ini (error 5)\n",
+            0, nullptr, fopen) != GC_CLI_LOG_APPENDED ||
+        !read_all(path, content, sizeof(content)) || strstr(content, "sample account") ||
+        !strstr(content, "[path #") || !strstr(content, "(error 5)")) return 7047;
     remove(path);
     // Refusals.
     if (gc_cli_log_append_record(nullptr, "x\n", 10, nullptr, fopen) !=
@@ -370,6 +419,7 @@ int run_auto_apply_wire_tests() {
 int run_gui_auto_restore_notice_tests();
 
 int run_diagnostics_followup_tests() {
+    if (int r = run_log_path_redaction_tests()) return r;
     if (int r = run_steady_state_tests()) return r;
     if (int r = run_cli_log_append_tests()) return r;
     if (int r = run_auto_apply_notice_tests()) return r;

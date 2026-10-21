@@ -158,7 +158,9 @@ static void gc_cli_emit(FILE* logf, const char* text) {
     if (logf) {
         char timestamp[64] = {};
         format_log_timestamp_prefix(timestamp, sizeof(timestamp));
-        fprintf(logf, "%s%s", timestamp, text);
+        char redacted[4096] = {};
+        gc_log_redact_paths(text, redacted, sizeof(redacted));
+        fprintf(logf, "%s%s", timestamp, redacted);
         fflush(logf);
     }
     gc_cli_console_write(text);

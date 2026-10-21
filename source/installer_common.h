@@ -21,6 +21,7 @@
 
 #ifndef GREEN_CURVE_INSTALLER_COMMON_H
 #define GREEN_CURVE_INSTALLER_COMMON_H
+#include "log_redaction_policy.h"
 
 // The setup program is wide-character throughout; defining UNICODE makes the
 // resource pseudo-macros (IDC_ARROW, IDI_APPLICATION) expand to their wide form

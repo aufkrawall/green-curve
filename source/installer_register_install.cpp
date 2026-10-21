@@ -50,12 +50,12 @@ static bool gc_write_shortcut(const WCHAR* linkPath, const WCHAR* targetExe,
         if (SUCCEEDED(link->QueryInterface(IID_IPersistFile, (void**)&persist)) && persist) {
             hr = persist->Save(linkPath, TRUE);
             ok = SUCCEEDED(hr);
-            if (!ok) gc_log_fail("shortcut: saving %ls failed (hr 0x%08lx)", linkPath, (unsigned long)hr);
+            if (!ok) gc_log_fail("shortcut: saving %s failed (hr 0x%08lx)", gc_log_path(linkPath), (unsigned long)hr);
             persist->Release();
         }
     }
     link->Release();
-    if (ok) gc_log_step("shortcut: wrote %ls", linkPath);
+    if (ok) gc_log_step("shortcut: wrote %s", gc_log_path(linkPath));
     return ok;
 }
 
@@ -70,14 +70,14 @@ static void gc_remove_shortcut(REFKNOWNFOLDERID folder, const WCHAR* subFolder) 
         WCHAR nested[GC_INSTALLER_MAX_PATH_CHARS] = {};
         if (!gc_join_path(directory, subFolder, nested, GC_ARRAY_COUNT(nested))) return;
         if (!gc_join_path(nested, GC_SHORTCUT_FILE_NAME, linkPath, GC_ARRAY_COUNT(linkPath))) return;
-        if (DeleteFileW(linkPath)) gc_log_step("shortcut: removed %ls", linkPath);
+        if (DeleteFileW(linkPath)) gc_log_step("shortcut: removed %s", gc_log_path(linkPath));
         // The program folder is ours, so removing it when empty is safe;
         // RemoveDirectory refuses a non-empty one on its own.
         RemoveDirectoryW(nested);
         return;
     }
     if (!gc_join_path(directory, GC_SHORTCUT_FILE_NAME, linkPath, GC_ARRAY_COUNT(linkPath))) return;
-    if (DeleteFileW(linkPath)) gc_log_step("shortcut: removed %ls", linkPath);
+    if (DeleteFileW(linkPath)) gc_log_step("shortcut: removed %s", gc_log_path(linkPath));
 }
 
 static bool gc_write_start_menu_shortcut(const WCHAR* targetExe, const WCHAR* installDirectory) {
@@ -196,7 +196,7 @@ bool gc_write_uninstall_registration(GcInstallContext* context) {
                        "The Add/Remove Programs entry could not be completed.");
         return false;
     }
-    gc_log_step("registry: Add/Remove Programs entry written for %ls", installDirectory);
+    gc_log_step("registry: Add/Remove Programs entry written for %s", gc_log_path(installDirectory));
     return true;
 }
 

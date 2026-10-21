@@ -185,7 +185,7 @@ static bool gc_delete_startup_task_via_schtasks(const WCHAR* name) {
     if (!gc_run_and_wait(schtasks, commandLine, GC_SCHTASKS_TIMEOUT_MS, &exitCode)) return false;
     // schtasks reports a non-zero code for "already gone" as well as for
     // "refused", so its exit code is not the answer; the caller re-enumerates.
-    gc_log_step("autostart: schtasks /delete \"%ls\" exited %lu", name, exitCode);
+    gc_log_step("autostart: schtasks /delete \"%s\" exited %lu", gc_log_identifier(name), exitCode);
     return exitCode == 0;
 }
 
@@ -197,15 +197,15 @@ static void gc_delete_startup_task(ITaskFolder* root, const WCHAR* name) {
             HRESULT hr = root->DeleteTask(taskName, 0);
             SysFreeString(taskName);
             if (SUCCEEDED(hr)) {
-                gc_log_step("autostart: removed the logon task \"%ls\"", name);
+                gc_log_step("autostart: removed the logon task \"%s\"", gc_log_identifier(name));
                 return;
             }
-            gc_log_step("autostart: the scheduler refused to delete \"%ls\" (hr 0x%08lx); trying schtasks",
-                        name, (unsigned long)hr);
+            gc_log_step("autostart: the scheduler refused to delete \"%s\" (hr 0x%08lx); trying schtasks",
+                        gc_log_identifier(name), (unsigned long)hr);
         }
     }
     if (gc_delete_startup_task_via_schtasks(name)) {
-        gc_log_step("autostart: removed the logon task \"%ls\" via schtasks", name);
+        gc_log_step("autostart: removed the logon task \"%s\" via schtasks", gc_log_identifier(name));
     }
 }
 

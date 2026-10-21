@@ -21,6 +21,7 @@
 #include <stdio.h>
 
 #include "debug_log_rotation_policy.h"
+#include "log_path_redaction.h"
 
 typedef FILE* (*GcCliLogOpenFn)(const char* path, const char* mode);
 
@@ -30,7 +31,7 @@ enum GcCliLogAppendResult {
     GC_CLI_LOG_APPENDED_AFTER_ROTATION = 2,
 };
 
-// `record` is written verbatim (the caller owns its timestamp and newline);
+// The caller owns the timestamp and newline; the file copy redacts path spans.
 // `rotationPrefix` (normally a timestamp) precedes the rotation marker.
 static inline GcCliLogAppendResult gc_cli_log_append_record(
     const char* path, const char* record, long long capBytes,
@@ -49,7 +50,9 @@ static inline GcCliLogAppendResult gc_cli_log_append_record(
         fputs(gc_debug_log_rotation::cli_marker_line(), f);
         rotated = true;
     }
-    bool ok = fputs(record, f) >= 0;
+    char redacted[4096] = {};
+    gc_log_redact_paths(record, redacted, sizeof(redacted));
+    bool ok = fputs(redacted, f) >= 0;
     ok = fflush(f) == 0 && ok;
     ok = fclose(f) == 0 && ok;
     if (!ok) return GC_CLI_LOG_APPEND_FAILED;

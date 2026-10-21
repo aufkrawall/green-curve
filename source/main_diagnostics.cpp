@@ -4,6 +4,7 @@
 #include "debug_log_rotation_policy.h"
 #include "debug_log_queue_policy.h"
 #include "log_redaction_policy.h"
+#include "log_path_redaction.h"
 
 // The hand-off into the writer thread (main_debug_log_writer.cpp), which is
 // included after this file because it needs the path helpers below.
@@ -112,7 +113,9 @@ static void debug_log(const char* fmt, ...) {
     // is called from inside the service's serialized dispatch lock, where a
     // stall stops the service answering anything at all.  That is precisely
     // what happened on 2026-09-12; see debug_log_queue_policy.h.
-    debug_log_enqueue(buf);
+    char redacted[sizeof(buf)] = {};
+    gc_log_redact_paths(buf, redacted, sizeof(redacted));
+    debug_log_enqueue(redacted);
 }
 
 static void debug_log_session_marker(const char* phase, const char* kind, const char* extra) {

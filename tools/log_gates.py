@@ -82,8 +82,12 @@ def check_all(ctx, require_text, require_text_in_operation,
     require_text(diagnostics_cpp, '#include "debug_log_queue_policy.h"',
                  "debug log hand-off policy is compiled into the diagnostics shard")
     require_text_in_operation(
-        diagnostics_cpp, _DEBUG_LOG_ANCHOR, "debug_log_enqueue(buf)",
+        diagnostics_cpp, _DEBUG_LOG_ANCHOR, "debug_log_enqueue(redacted)",
         "debug_log() hands the formatted line to the writer thread")
+    for name in ("main_diagnostics.cpp", "installer_util.cpp", "linux_debug_log.cpp", "linux_backend.cpp",
+                 "cli_log_append_policy.h", "cli_console.cpp"):
+        require_text(_p(ctx, name), "gc_log_redact_paths(",
+                     "persisted diagnostics pass the path redaction boundary")
     for call in _BLOCKING_CALLS:
         forbid_text_in_operation(
             diagnostics_cpp, _DEBUG_LOG_ANCHOR, call,

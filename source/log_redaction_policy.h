@@ -117,4 +117,32 @@ static inline const char* gc_log_u64_token(
     return out;
 }
 
+// Short-lived printf arguments. Each call gets its own buffer so multiple
+// paths in one record remain distinct regardless of argument evaluation order.
+static inline char* gc_log_argument_buffer() {
+    static thread_local char buffers[16][32] = {};
+    static thread_local unsigned int next = 0;
+    return buffers[next++ % 16];
+}
+
+static inline const char* gc_log_path(const char* path) {
+    return gc_log_path_token(path, gc_log_argument_buffer(), 32);
+}
+
+static inline const char* gc_log_path(const wchar_t* path) {
+    char* out = gc_log_argument_buffer();
+    if (!path || !path[0]) { out[0] = '-'; out[1] = 0; return out; }
+    const unsigned long long hash = gc_log_fingerprint_wide(path);
+    const char prefix[] = "[path #";
+    for (size_t i = 0; i < sizeof(prefix) - 1; ++i) out[i] = prefix[i];
+    for (int shift = 60, at = 7; shift >= 0; shift -= 4, ++at)
+        out[at] = "0123456789abcdef"[(hash >> shift) & 15U];
+    out[23] = ']'; out[24] = 0;
+    return out;
+}
+
+static inline const char* gc_log_identifier(const wchar_t* name) {
+    return gc_log_wide_identifier_token(name, gc_log_argument_buffer(), 32);
+}
+
 #endif

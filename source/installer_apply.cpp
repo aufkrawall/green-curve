@@ -268,7 +268,7 @@ static bool gc_write_payload_file(const WCHAR* directory, const GcPayloadFile* f
         remaining -= written;
     }
     if (!FlushFileBuffers(handle.get())) {
-        gc_log_step("extract: FlushFileBuffers failed for %ls (error %lu)", tempPath, GetLastError());
+        gc_log_step("extract: FlushFileBuffers failed for %s (error %lu)", gc_log_path(tempPath), GetLastError());
     }
     handle.reset();
 
@@ -282,7 +282,7 @@ static bool gc_write_payload_file(const WCHAR* directory, const GcPayloadFile* f
                      finalPath, error);
         return false;
     }
-    gc_log_step("extract: wrote %ls (%llu bytes)", finalPath, (unsigned long long)file->size);
+    gc_log_step("extract: wrote %s (%llu bytes)", gc_log_path(finalPath), (unsigned long long)file->size);
     return true;
 }
 
@@ -336,7 +336,7 @@ static bool gc_register_service(GcInstallContext* context) {
                          registered, context->plan.targetDirectory);
             return false;
         }
-        gc_log_step("service: registration verified at %ls", registered);
+        gc_log_step("service: registration verified at %s", gc_log_path(registered));
     } else {
         gc_set_error(context, "The background service registration could not be read back.");
         return false;
@@ -363,7 +363,7 @@ bool gc_install_execute(GcInstallContext* context) {
         return false;
     }
     gc_log_step("install: target=%s upgrade=%d moved=%d repointService=%d startMenu=%d desktop=%d launch=%d",
-                context->plan.targetDirectory, context->plan.isUpgrade ? 1 : 0,
+                gc_log_path(context->plan.targetDirectory), context->plan.isUpgrade ? 1 : 0,
                 context->plan.directoryChanged ? 1 : 0, context->plan.repointService ? 1 : 0,
                 context->plan.createStartMenuShortcut ? 1 : 0, context->plan.createDesktopShortcut ? 1 : 0,
                 context->plan.launchAfterInstall ? 1 : 0);

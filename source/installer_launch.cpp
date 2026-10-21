@@ -79,7 +79,7 @@ bool gc_launch_installed_gui(const WCHAR* installDirectory,
                                                     installDirectory, &startup, &process)) {
                             CloseHandle(process.hProcess);
                             CloseHandle(process.hThread);
-                            gc_log_step("launch: started %ls as the interactive user", exePath);
+                            gc_log_step("launch: started %s as the interactive user", gc_log_path(exePath));
                             return true;
                         }
                         gc_log_step("launch: CreateProcessWithTokenW failed (error %lu)", GetLastError());
@@ -136,14 +136,14 @@ bool gc_launch_installed_gui(const WCHAR* installDirectory,
             if (started) {
                 CloseHandle(process.hProcess);
                 CloseHandle(process.hThread);
-                gc_log_step("launch: started %ls in the interactive session", exePath);
+                gc_log_step("launch: started %s in the interactive session", gc_log_path(exePath));
                 return true;
             }
             gc_log_step("launch: CreateProcessAsUser failed (error %lu)", startError);
         }
     }
 
-    gc_log_step("launch: could not start %ls as an interactive user "
-                "(last error %lu)", exePath, GetLastError());
+    gc_log_step("launch: could not start %s as an interactive user "
+                "(last error %lu)", gc_log_path(exePath), GetLastError());
     return false;
 }

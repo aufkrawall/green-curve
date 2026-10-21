@@ -6,9 +6,11 @@
 // caller-supplied paths. Compiled as a shard included immediately after
 // main_diagnostics.cpp (no behavior change; pure move).
 
+#include "log_redaction_policy.h"
 // Verify that the parent directory of the given path does not contain reparse points
 // (symlinks, junctions, mount points) that could redirect the write to an unexpected
 // location. Scans each path component from the root downward.
+
 static bool verify_parent_no_reparse_point(const char* path, char* err, size_t errSize) {
     if (!path || !path[0]) {
         set_message(err, errSize, "Empty path");
@@ -223,7 +225,7 @@ static bool write_text_file_atomic_service_scoped(const char* path, const char* 
     const char* scopeTag = scope == GC_SERVICE_WRITE_MACHINE_CONFIG ? "machine-scoped" :
                            scope == GC_SERVICE_WRITE_MACHINE_DATA ? "machine-data-scoped" : "caller-scoped";
     debug_log("write_text_file_atomic_service: %s parent directory verified (%s)\n",
-              scopeTag, parentFinalPath);
+              scopeTag, gc_log_path(parentFinalPath));
 
     if (!ensure_parent_directory_for_file(path, err, errSize)) return false;
 

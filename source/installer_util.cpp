@@ -10,6 +10,7 @@
 // the steps that succeeded, is kept until the outcome is known.
 
 #include "installer_common.h"
+#include "log_path_redaction.h"
 #if !defined(GREEN_CURVE_UNINSTALLER)
 #include "service_acl.h"
 #endif
@@ -75,18 +76,20 @@ static void gc_log_append(const char* prefix, const char* fmt, va_list args) {
     if (length + 2 >= sizeof(line)) length = sizeof(line) - 2;
     line[length++] = '\n';
     line[length] = 0;
+    char redacted[sizeof(line)] = {};
+    length = gc_log_redact_paths(line, redacted, sizeof(redacted));
 
     if (s_logLockReady) EnterCriticalSection(&s_logLock);
     if (s_logUsed + length + 1 >= sizeof(s_logBuffer)) {
         s_logTruncated = true;
     } else {
-        memcpy(s_logBuffer + s_logUsed, line, length);
+        memcpy(s_logBuffer + s_logUsed, redacted, length);
         s_logUsed += length;
         s_logBuffer[s_logUsed] = 0;
     }
     if (s_logLockReady) LeaveCriticalSection(&s_logLock);
 
-    OutputDebugStringA(line);
+    OutputDebugStringA(redacted);
 }
 
 void gc_log_init(const WCHAR* overridePath) {

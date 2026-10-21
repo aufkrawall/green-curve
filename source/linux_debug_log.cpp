@@ -7,6 +7,7 @@
 
 #include "linux_daemon.h"
 #include "log_redaction_policy.h"
+#include "log_path_redaction.h"
 #include "platform.h"
 
 #include <errno.h>
@@ -163,6 +164,10 @@ void linux_debug_logf(const char* fmt, ...) {
     gc_vsnprintf(line + prefix, sizeof(line) - (size_t)prefix, fmt, ap);
     va_end(ap);
 
+    char redacted[sizeof(line)] = {};
+    gc_log_redact_paths(line, redacted, sizeof(redacted));
+    memcpy(line, redacted, strlen(redacted) + 1);
+
     size_t length = strlen(line);
     if (length == 0) return;
     if (line[length - 1] != '\n' && length + 1 < sizeof(line)) {
@@ -172,8 +177,8 @@ void linux_debug_logf(const char* fmt, ...) {
     }
 
     if (g_stderrMirror) {
-        // The journal/terminal copy keeps the message verbatim: systemd already
-        // stamps its own timestamp and PID.
+        // The journal/terminal copy uses the same redacted message; systemd
+        // already stamps its own timestamp and PID.
         (void)write_all(STDERR_FILENO, line + prefix, length - (size_t)prefix);
     }
 

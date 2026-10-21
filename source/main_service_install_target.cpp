@@ -207,8 +207,8 @@ static bool service_install_harden_target(ServiceInstallTarget* target, char* er
             "GUI binary. Install under %%ProgramFiles%% to make the application available to all users.\n",
             dirToken);
     } else {
-        debug_log("service install: prepared LocalSystem binary at %ls (directory %ls)\n",
-                  target->binaryPath, target->installDir);
+        debug_log("service install: prepared LocalSystem binary at %s (directory %s)\n",
+                  gc_log_path(target->binaryPath), gc_log_path(target->installDir));
     }
     return true;
 }

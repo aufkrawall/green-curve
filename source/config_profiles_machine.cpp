@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 aufkrawall
 // SPDX-License-Identifier: MIT
 
+#include "log_redaction_policy.h"
+
 // Machine-wide profile bank. A published slot contains both its settings and
 // the stable GPU identity selected by the administrator at publication time.
 
@@ -287,7 +289,7 @@ bool copy_profile_slot_to_machine_config(const char* srcPath, int slot,
         slot, configuredGpu.legacyIndex,
         configuredGpu.stableIdentityPresent ? 1 : 0,
         configured_gpu_identity_has_bdf(&configuredGpu.identity) ? 1 : 0,
-        srcPath, machinePath);
+        gc_log_path(srcPath), gc_log_path(machinePath));
     return true;
 }
 
@@ -321,7 +323,7 @@ bool clear_machine_profile_slot(int slot, char* err, size_t errSize) {
             err, errSize)) return false;
     invalidate_tray_profile_cache();
     debug_log("machine profile bank: atomically cleared slot %d settings and GPU binding from %s\n",
-        slot, machinePath);
+        slot, gc_log_path(machinePath));
     return true;
 }
 

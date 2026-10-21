@@ -971,6 +971,8 @@ IDENTITY_BEARING_LOG_ARGUMENTS = (
 # The tokenizers from log_redaction_policy.h.  A call that names one of the
 # expressions above is fine as long as it goes through one of these.
 LOG_REDACTION_TOKENIZERS = (
+    "gc_log_path(",
+    "gc_log_identifier(",
     "gc_log_path_token(",
     "gc_log_identifier_token(",
     "gc_log_wide_identifier_token(",

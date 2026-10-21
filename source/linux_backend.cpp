@@ -20,6 +20,7 @@
 // linux_platform_is_integrated_soc(), used by the capability-probe derivation
 // in linux_backend_mutation.cpp so the Tegra/SoC detection exists exactly once.
 #include "linux_gpu.h"
+#include "log_path_redaction.h"
 
 #include <stdarg.h>
 #include <limits.h>
@@ -42,9 +43,12 @@ static void lb_log(const char* fmt, ...) {
     if (!g_lbDebug) return;
     va_list ap;
     va_start(ap, fmt);
-    // flawfinder: ignore -- private logger; every call site supplies a constant format.
-    vfprintf(stderr, fmt, ap);
+    char message[2048] = {};
+    char redacted[sizeof(message)] = {};
+    vsnprintf(message, sizeof(message), fmt, ap);
     va_end(ap);
+    gc_log_redact_paths(message, redacted, sizeof(redacted));
+    fputs(redacted, stderr);
 }
 
 // NvAPI status is 0 == OK on every OS; Linux error codes are NEGATIVE (-1
