@@ -21,6 +21,15 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
 // the faulting thread, after dumping it.  See main_crash_artifacts.cpp.
 static LONG CALLBACK green_curve_vectored_handler(EXCEPTION_POINTERS* info);
 
+// The first fault that handler claimed, for the one log line a healthy thread
+// writes later (the handler itself may not log).  The record is published
+// (state 2) before g_nvmlCrashCount moves, so whoever reacts to the count can
+// already read it.
+#include "veh_driver_fault_win32.h"
+static GcVehDriverFaultRecord g_nvmlVehFaultRecord = {};
+static volatile LONG g_nvmlVehFaultRecordState = 0;  // 0 none, 1 writing, 2 published
+static volatile LONG g_nvmlVehFaultLogged = 0;
+
 // Installs the unhandled-exception filter and the fast-fail reporter, plus the
 // vectored handler when asked.  One entry point so the GUI, the service and the
 // restart helper cannot drift apart on which handlers they have.

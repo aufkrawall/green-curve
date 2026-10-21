@@ -179,7 +179,18 @@ static void launch_recovery_thread() {
     request_service_restart("GPU driver recovery (device reconnect / driver upgrade / TDR)");
 }
 
+// The VEH may not log; report its first claimed driver fault once, from here.
+static void service_log_vectored_driver_fault_once() {
+    if (InterlockedCompareExchange(&g_nvmlVehFaultRecordState, 2, 2) != 2) return;
+    if (InterlockedExchange(&g_nvmlVehFaultLogged, 1) != 0) return;
+    char line[224] = {};
+    gc_veh_driver_fault_format(&g_nvmlVehFaultRecord,
+        (long)InterlockedExchangeAdd(&g_nvmlCrashCount, 0), line, sizeof(line));
+    debug_log("%s\n", line);
+}
+
 static void service_maybe_launch_recovery_from_main_loop(const char* source) {
+    service_log_vectored_driver_fault_once();
     bool deviceWasRemoved = false;
     bool pendingRecovery = false;
     EnterCriticalSection(&g_appLock);
@@ -259,6 +270,7 @@ static bool ensure_service_runtime_lock() {
     InterlockedExchange(&g_serviceRuntimeLockPoisoned, 1);
     if (corroborated) {
         InterlockedExchange(&g_serviceRuntimePoisonCorroborated, 1);
+        service_log_vectored_driver_fault_once();
     }
     InterlockedExchange(&g_serviceClientRequestsReady, 0);
     ReleaseMutex(g_serviceRuntimeLock);

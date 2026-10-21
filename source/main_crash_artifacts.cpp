@@ -476,51 +476,51 @@ static void write_veh_minidump(EXCEPTION_POINTERS* info, const WCHAR* modPath) {
     debug_log_drain_pending_for_crash();
 }
 
-// Vectored exception handler — catches nvml.dll access violations at first chance
-// so the fan runtime thread survives stale-handle crashes (driver restart without
-// device removal notification).
+// The driver-fault flow itself is veh_driver_fault_win32.h, shared with the
+// native fixture that proves it under enforced shadow stacks.  This file only
+// supplies the service's two decisions: which images count as the driver, and
+// what to record before the faulting thread ends.
 //
 // When nvmlDeviceGetTemperature reads from invalid memory inside nvml.dll (after
-// a WDDM driver restart), this handler writes a minidump,
-// invalidates NVML state, and cleanly terminates the crashing thread via
-// ExitThread(0).  It records the crash; the main service loop observes
+// a WDDM driver restart or a driver update), the flow calls the recorder below,
+// which writes a minidump, invalidates NVML state and counts the crash, and then
+// ends ONLY the faulting thread with ExitThread.  The main service loop observes
 // crashCount>0 and requests a controlled service-process restart for clean
-// driver re-init (see request_service_restart / launch_recovery_thread).
+// driver re-init, which re-applies the active profile (see
+// request_service_restart / launch_recovery_thread).
 //
-// This approach replaces the earlier stack-scanning recovery attempt which was
-// unreliable (false positives from data values on the stack that happened to
-// look like code addresses).
+// The thread is ended by a direct ExitThread call, never by rewriting the
+// context's instruction pointer: under the /cetcompat shadow stacks that
+// rewrite is refused and fast-fails the whole service (details in the header).
+//
+// For the fan runtime thread: the main-loop watchdog recreates it after the
+// recovery thread completes.  For the pipe server thread: the pipe watchdog
+// recreates it.  The g_nvmlVhCrashed flag causes the NEW pipe server thread to
+// skip NVML calls in the snapshot handler, so it won't crash a second time.
 //
 // NOTE: llvm-mingw does not support __try/__except SEH blocks, so a VEH is the
 // standard Windows API for exception catching.
-static LONG CALLBACK green_curve_vectored_handler(EXCEPTION_POINTERS* info) {
-    // Only intercept access violations
-    if (!info || !info->ExceptionRecord || !info->ContextRecord)
-        return EXCEPTION_CONTINUE_SEARCH;
-    if (info->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
-        return EXCEPTION_CONTINUE_SEARCH;
+static bool green_curve_veh_owns_module(const WCHAR* modulePath) {
+    // Every image the driver ships counts -- nvapi64_impl.dll where the x64
+    // code runs and nvapia64.dll on ARM64.
+    return gc_crash_module_is_nvidia_control_library(modulePath);
+}
 
-    // Check if the crash is inside an NVML/NVAPI image (stale handle after
-    // driver restart / driver upgrade / device reconnect).  Every image the
-    // driver ships counts -- nvapi64_impl.dll where the x64 code runs and
-    // nvapia64.dll on ARM64 -- see gc_crash_module_is_nvidia_control_library().
-    void* address = info->ExceptionRecord->ExceptionAddress;
-    HMODULE hMod = nullptr;
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            (LPCWSTR)address, &hMod) || !hMod)
-        return EXCEPTION_CONTINUE_SEARCH;
-
-    WCHAR modPath[MAX_PATH] = {};
-    if (!GetModuleFileNameW(hMod, modPath, MAX_PATH))
-        return EXCEPTION_CONTINUE_SEARCH;
-    CharLowerW(modPath);
-    if (!gc_crash_module_is_nvidia_control_library(modPath))
-        return EXCEPTION_CONTINUE_SEARCH;
-
+// Runs on the faulting thread, which may hold g_appLock or g_debugLogLock:
+// no lock, no debug_log(), no heap.
+static void green_curve_veh_record_driver_fault(EXCEPTION_POINTERS* info,
+    const WCHAR* modPath, const GcVehDriverFaultRecord* fault, void*) {
     // Write a focused minidump BEFORE making any state changes — this captures
-    // the exact crash context.  Must NOT hold any locks.
+    // the exact crash context.
     if (app_is_service_process()) {
         write_veh_minidump(info, modPath);
+    }
+
+    // Publish the first claimed fault for the main loop's log line before the
+    // crash count moves (see crash_artifacts_forward.h).
+    if (fault && InterlockedCompareExchange(&g_nvmlVehFaultRecordState, 1, 0) == 0) {
+        g_nvmlVehFaultRecord = *fault;
+        InterlockedExchange(&g_nvmlVehFaultRecordState, 2);
     }
 
     // Mark NVML as invalid.  Do not call nvmlShutdown() from this crash path:
@@ -558,43 +558,16 @@ static LONG CALLBACK green_curve_vectored_handler(EXCEPTION_POINTERS* info) {
     {
         char vehMsg[180] = {};
         StringCchPrintfA(vehMsg, sizeof(vehMsg),
-            "VEH: nvml/nvapi access violation at %p handled (crashCount=%ld) — minidump captured; main loop will request service restart\n",
-            address, (long)crashCountNow);
+            "VEH: nvml/nvapi access violation at %p handled (crashCount=%ld) — minidump captured; ending the faulting thread\n",
+            info && info->ExceptionRecord ? info->ExceptionRecord->ExceptionAddress : nullptr,
+            (long)crashCountNow);
         debug_log_veh(vehMsg);
     }
+}
 
-    // The VEH only marks the crash and kills the faulting thread. The main
-    // service loop observes crashCount>0 and prepares the nonce-bound process
-    // restart. There is no per-event reapply thread to clean up or retry.
+static const GcVehDriverFaultHandler kGreenCurveVehDriverFault = {
+    green_curve_veh_owns_module, green_curve_veh_record_driver_fault, nullptr };
 
-    // Terminate the crashing thread via ExitThread(0).  Rsp is adjusted to
-    // simulate the return address a CALL would have pushed, maintaining
-    // 16-byte alignment through ExitThread's prologue.
-    //
-    // For the fan runtime thread: the main-loop watchdog recreates it after
-    // the recovery thread completes.
-    //
-    // For the pipe server thread: the pipe watchdog recreates it.  The
-    // g_nvmlVhCrashed flag causes the NEW pipe server thread to skip NVML
-    // calls in the snapshot handler, so it won't crash a second time.
-    HMODULE hK32 = GetModuleHandleA("kernel32");
-    if (hK32) {
-        FARPROC exitThread = GetProcAddress(hK32, "ExitThread");
-        if (exitThread) {
-#if defined(__aarch64__) || defined(_M_ARM64)
-            // ARM64: PC = target, first arg in X0, SP stays 16-byte aligned
-            // (the link register holds the "return" address but ExitThread
-            // never returns).
-            info->ContextRecord->Pc = (ULONG_PTR)exitThread;
-            info->ContextRecord->X[0] = 0; // exit code
-            info->ContextRecord->Sp = info->ContextRecord->Sp & ~(ULONG_PTR)15;
-#else
-            info->ContextRecord->Rip = (ULONG_PTR)exitThread;
-            info->ContextRecord->Rcx = 0; // exit code
-            info->ContextRecord->Rsp = (info->ContextRecord->Rsp & ~(ULONG_PTR)15) - 8;
-#endif
-            return EXCEPTION_CONTINUE_EXECUTION;
-        }
-    }
-    return EXCEPTION_CONTINUE_EXECUTION;
+static LONG CALLBACK green_curve_vectored_handler(EXCEPTION_POINTERS* info) {
+    return gc_veh_handle_driver_fault(info, &kGreenCurveVehDriverFault);
 }

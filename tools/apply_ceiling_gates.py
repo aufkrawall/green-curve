@@ -700,7 +700,7 @@ def check_all(ctx, require_text, forbid_text, require_order_in_operation):
 
     # The VEH recognises every NVAPI/NVML image, not one literal spelling.
     crash_cpp = _p(ctx, "main_crash_artifacts.cpp")
-    require_text(crash_cpp, "if (!gc_crash_module_is_nvidia_control_library(modPath))",
+    require_text(crash_cpp, "return gc_crash_module_is_nvidia_control_library(modulePath);",
                  "the driver-crash VEH uses the shared module predicate")
     forbid_text(crash_cpp, 'wcsstr(modPath, L"nvapi64.dll")',
                 "no literal nvapi64.dll match: it misses nvapi64_impl.dll and ARM64")

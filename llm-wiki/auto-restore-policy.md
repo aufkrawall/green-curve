@@ -7,8 +7,9 @@
 > a persisted per-boot crash-loop guard. The reset-to-stock rule below is
 > genuinely shared code.
 
-Last verified: 2026-10-17 (failed automatic apply announced, protocol v29,
-software only); 2026-09-23 (once-per-crash ownership handback, software only);
+Last verified: 2026-10-21 (invariant 9: a driver fault must not kill the
+service; field crash root-caused, fix software-verified only); 2026-10-17
+(failed automatic apply announced, protocol v29, software only); 2026-09-23 (once-per-crash ownership handback, software only);
 2026-07-31 (the shared restore-request builder; the rest 2026-07-12). Source anchors: `source/service_protocol.h`,
 `source/service_lifecycle_policy.h`, `source/main_service_sessions.cpp`,
 `source/main_service_lifecycle_events.cpp`,
@@ -450,6 +451,11 @@ that logon-event redundancy is degraded.
 8. Reset may supersede pending lifecycle work, but it does not acknowledge or
    clear sticky recovery history; only a successful explicit Apply can re-arm
    automatic restoration.
+9. A stale-driver fault during a driver update/restart must end only the
+   faulting thread, never the process: a process death is a crash restart,
+   which hands back to stock and cannot replay. The VEH therefore ends the
+   thread without rewriting its context, which CET refuses (2026-10-21, see
+   "VEH thread exit under CET" in [gpu-backend](gpu-backend.md)).
 
 ## Diagnostics and state
 

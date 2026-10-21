@@ -982,6 +982,11 @@ int run_scalar_shift_retention_tests();
 // Native fan worker cancellable-lock fixture (tests/fan_worker_lock_tests.cpp,
 // 6550-6569; Windows only).
 int run_fan_worker_lock_tests();
+// Native vectored driver-fault fixture (tests/veh_driver_fault_tests.cpp,
+// 7100-7129; Windows only).  The child entry re-runs this executable under
+// enforced shadow stacks.
+int run_veh_driver_fault_tests();
+int run_veh_driver_fault_child(int argc, char** argv, bool* isChild);
 // F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
 // are over a kilobyte each and several are live at once; under ASan's
 // redzones that is enough to overflow main()'s frame, which already carries
@@ -1681,6 +1686,9 @@ static int run_ownership_handback_tests() {
 }
 
 int main(int argc, char** argv) {
+    bool vehFaultChild = false;
+    int vehFaultChildExit = run_veh_driver_fault_child(argc, argv, &vehFaultChild);
+    if (vehFaultChild) return vehFaultChildExit;
     if (int failure = run_security_audit_tests()) return failure;
     if (int failure = run_installer_fuzz_harness_tests()) return failure;
     if (int failure = run_review_followup_tests()) return failure;
@@ -1792,6 +1800,10 @@ int main(int argc, char** argv) {
     if (int fanLockFailure = run_fan_worker_lock_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", fanLockFailure);
         return fanLockFailure;
+    }
+    if (int vehFaultFailure = run_veh_driver_fault_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", vehFaultFailure);
+        return vehFaultFailure;
     }
     if (int correctionFailure = run_apply_correction_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", correctionFailure);

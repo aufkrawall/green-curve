@@ -55,8 +55,21 @@ def check_windows_crash_artifacts(ctx, require_text, forbid_text, require_order,
                  "crash dumps retain actionable thread records")
     require_text(crash_cpp, "MiniDumpWithUnloadedModules",
                  "crash dumps retain unloaded-module history")
-    require_text(crash_cpp, "ContextRecord->Pc",
-                 "VEH thread-exit redirect supports arm64 (Pc/X0/Sp)")
+    # F-VEH-CET: the driver-fault VEH ends the faulting thread with a direct
+    # ExitThread call.  Rewriting the context's instruction pointer and
+    # continuing is refused under the /cetcompat shadow stacks and fast-fails
+    # the whole service (0xC0000409), which turned every driver update into a
+    # non-replaying crash restart.  tests/veh_driver_fault_tests.cpp proves the
+    # flow in a child with shadow stacks forced on.
+    veh_h = _p(ctx, "veh_driver_fault_win32.h")
+    require_text(veh_h, "ExitThread(GC_VEH_DRIVER_FAULT_THREAD_EXIT_CODE);",
+                 "the driver-fault flow ends the faulting thread directly")
+    require_text(crash_cpp, "return gc_veh_handle_driver_fault(info, &kGreenCurveVehDriverFault);",
+                 "the service VEH runs the shared, fixture-tested driver-fault flow")
+    for path in (crash_cpp, veh_h):
+        for needle in ("ContextRecord->Rip", "ContextRecord->Pc", "EXCEPTION_CONTINUE_EXECUTION"):
+            forbid_text(path, needle,
+                        "no VEH continues at a rewritten instruction pointer (CET refuses it)")
     require_order(main_cpp,
                   "install_crash_handlers(false);",
                   "service_try_dispatch_controlled_restart_helper(&helperExitCode)",

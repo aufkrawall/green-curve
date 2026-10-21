@@ -655,7 +655,10 @@ the regression harness asserts on either host.
   driver DLL) reaches no in-process handler; only WER sees it, and WER keeps
   nothing unless a `...\Windows Error Reporting\LocalDumps\<image>` key exists
   under HKLM. Observed once on 0.28: the service died with `0xC0000409` in
-  ntdll during an NVIDIA driver reinstall and left no dump.
+  ntdll during an NVIDIA driver reinstall and left no dump. Root cause found
+  2026-10-21: the driver-fault VEH's instruction-pointer rewrite, refused under
+  CET (`FAST_FAIL_SET_CONTEXT_DENIED`); see "VEH thread exit under CET" in
+  [gpu-backend](gpu-backend.md).
   `service_install()` now registers keys for `greencurve-service.exe`
   (DumpFolder `...\systemprofile\AppData\Local\Green Curve\WerDumps`, inside
   the service's admin-only profile directory, created at install) and

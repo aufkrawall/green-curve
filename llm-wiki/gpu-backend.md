@@ -1072,9 +1072,61 @@ invalidated immediately before the first real hardware write; failure to commit
 that invalidation aborts before mutation. See
 [automatic restore policy](auto-restore-policy.md) for the complete contract.
 
+### VEH thread exit under CET (2026-10-21)
+
+The VEH used to end the faulting thread by rewriting the context's instruction
+pointer to `kernel32!ExitThread` and continuing. The x64 images are linked
+`/cetcompat`, and with user shadow stacks enforced the continuation's
+`NtContinue` (reached through `KiUserExceptionDispatcher` ->
+`RtlGuardRestoreContext` -> `RtlRestoreContext`) refuses a target that is
+neither on the shadow stack nor a registered EH-continuation target:
+`STATUS_SET_CONTEXT_DENIED` (0xC000060A), after which ntdll executes `int 29h`
+with code 0x30 (`FAST_FAIL_SET_CONTEXT_DENIED`) and the process dies with
+0xC0000409 in ntdll. So the recovery never ran: every stale-handle fault ended
+the whole service, the SCM restart was an ordinary crash restart, the
+once-per-crash handback reset the GPU to stock, and nothing was re-applied.
+Observed on hardware (RTX 5070) during a driver update with a mature proof: the
+fault offset resolved to `RtlRestoreContext`'s `int 29h` right after
+`NtContinue`, and another process's monitoring code access-violated inside
+`nvml.dll` in the same second.
+
+Fix: `source/veh_driver_fault_win32.h` owns the flow (claim decision, log
+record, thread end) and ends the thread with a direct
+`ExitThread(GC_VEH_DRIVER_FAULT_THREAD_EXIT_CODE)` (0xC0000005) from inside the
+handler. Sound because ntdll calls vectored handlers with its handler-list lock
+released (the entry is reference counted; verified by disassembling
+`RtlpCallVectoredHandlers` on build 26100); what the faulting thread itself
+held is abandoned exactly as before, which is why recovery is a process
+restart. The VEH entry keeps one leaked reference, irrelevant because the
+service never removes it. `main_crash_artifacts.cpp` supplies only the module
+predicate and the recorder.
+
+- Diagnostics: the VEH cannot log, so it publishes its first claimed fault
+  (`g_nvmlVehFaultRecord`, `crash_artifacts_forward.h`) before the crash count
+  moves; the main loop, or a VEH-corroborated mutex abandonment, logs it once:
+  `VEH driver fault: ended thread tid=<n> at nvml.dll+0x<off> (read of 0x<addr>); crashCount=<n>`.
+- Tests 7100-7129 (`tests/veh_driver_fault_tests.cpp`): claim decision and log
+  record on synthesised records; real access violations on real threads in
+  process; and on x64 a child re-launched with
+  `PROCESS_CREATION_MITIGATION_POLICY2_CET_USER_SHADOW_STACKS_STRICT_MODE` plus
+  context-IP validation, where the production flow must survive (7120) and the
+  pre-fix rewrite must die with 0xC0000409 (7121, negative control).
+  Mutation-verified: restoring the rewrite fails 7120 with child exit
+  0xC0000409. Hosts without CET print a skip line for the child half; ASan
+  builds skip the real-fault half. Gates in `tools/crash_artifacts.py`
+  (F-VEH-CET) forbid `ContextRecord->Rip`/`->Pc` and continue-execution in the
+  VEH sources.
+- Invariant: no exception handler in a `/cetcompat` image may continue at a
+  rewritten instruction pointer.
+- Open: the fixed path (thread end -> controlled restart -> replay after a
+  driver update) is software-verified only; it needs a live driver update with
+  a mature proof. Which thread faulted in the field is unknown (the WER dump
+  sits in the admin-only service directory and was not read).
+
 Current source anchors:
 
 - `source/main_crash_artifacts.cpp`: VEH driver-crash detection;
+- `source/veh_driver_fault_win32.h`: the shared CET-safe driver-fault flow;
 - `source/main_service_selected_gpu_pnp.cpp` and
   `source/selected_gpu_pnp_policy.h`: exact selected-adapter evidence;
 - `source/main_service_controlled_restart.cpp`: nonce/helper/startup protocol;
@@ -1119,7 +1171,7 @@ When a GPU device is physically disconnected (e.g., eGPU unplugged, device remov
 - `nvml.dll` is loaded once with `LoadLibrary` at service startup.
 - After a driver reset, stale NVML/NvAPI handles can access-violate. `nvmlShutdown()` on the dead driver instance is unsafe (earlier builds observed hangs at 100% CPU).
 - **Recovery is by process restart**, not in-process reload — in-process reload is fundamentally unreliable: the NVIDIA user-mode DLLs stay mapped (driver-pinned), so `FreeLibrary` does not unmap them and the new on-disk DLL is never loaded; `nvmlInit` then returns `ALREADY_INITIALIZED` on a handle bound to the dead driver instance, and NvAPI's process-global UMD cannot be reloaded and must version-match the kernel driver. A fresh process is the only state that reliably re-binds a version-matched UMD to the new driver.
-- The **VEH** (`green_curve_vectored_handler`) stays as the crash **detector**: on a stale-handle AV it invalidates NVML via `service_close_nvml_without_shutdown()` (no `nvmlShutdown`), increments `g_nvmlCrashCount`, and `ExitThread`s the faulting thread so the process survives. The main service loop observes `crashCount>0` and calls `launch_recovery_thread()`, which now just `request_service_restart()`s.
+- The **VEH** (`green_curve_vectored_handler`) stays as the crash **detector**: on a stale-handle AV it invalidates NVML via `service_close_nvml_without_shutdown()` (no `nvmlShutdown`), increments `g_nvmlCrashCount`, and ends the faulting thread with a direct `ExitThread` call so the process survives (never an instruction-pointer rewrite; see "VEH thread exit under CET" below). The main service loop observes `crashCount>0` and calls `launch_recovery_thread()`, which now just `request_service_restart()`s.
 - `nvml_ensure_ready()` still returns not-ready while `g_nvmlVhCrashed` / `nvml_crash_recovery_active()` is set (a brief pre-restart guard so other threads serve cached data). `g_serviceInitInProgress` remains a narrow bypass used by the post-restart **reapply thread** (not by any in-process reload, which is gone).
 - **Invariant:** never call `nvmlShutdown()` from a stale-driver crash path or VEH handler. Use `service_close_nvml_without_shutdown()` and let a fresh process perform `nvmlInit_v2()`.
 

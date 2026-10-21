@@ -35,6 +35,10 @@ Local protection and diagnostic privacy improve while existing installation loca
 
 - **Support logs:** Personal paths are redacted consistently, with separate references when a message names multiple locations.
 
+### Fixed
+
+- **Driver updates:** the background service no longer crashes while the graphics driver is updated or restarted, so your active profile is restored afterwards instead of the GPU being left at stock.
+
 ### Security
 
 - **Windows setup:** Improved protection when running setup or portable helpers from Downloads and shared folders.
