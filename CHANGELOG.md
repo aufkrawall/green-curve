@@ -27,6 +27,29 @@
 
 # Changelog
 
+## Unreleased
+
+Local protection and diagnostic privacy improve while existing installation locations remain supported.
+
+### Improved
+
+- **Support logs:** Personal paths are redacted consistently, with separate references when a message names multiple locations.
+
+### Security
+
+- **Windows setup:** Improved protection when running setup or portable helpers from Downloads and shared folders.
+- **Desktop shortcuts:** Safer shortcut creation and removal preserve support for redirected desktop folders.
+
+### Compatibility notes
+
+Existing installation paths, service-location choices, GPU support and update settings are retained.
+
+### Downloads and verification
+
+These changes are in development; no new public release has been published. Current downloads and verification information remain in the latest release section below.
+
+**Full changelog:** [0.29.0...HEAD](https://github.com/aufkrawall/green-curve/compare/0.29.0...HEAD)
+
 ## 0.29.0
 
 Apply reliability, diagnostics and the in-app updater's local protections improve in this release.

@@ -28,6 +28,7 @@
 #include "service_install_location_policy.h"
 #include "service_scm_wait_policy.h"
 #include "installer_transaction_files.h"
+#include "shortcut_file_writer.h"
 
 namespace {
 
@@ -571,6 +572,107 @@ int run_location_verdict_tests() {
     return cleanupAnd(0);
 }
 
+int run_shortcut_stream_tests() {
+    wchar_t directory[MAX_PATH] = {};
+    if (!make_temp_dir(L"gc_shortcut", directory, MAX_PATH)) return 7080;
+    wchar_t destination[MAX_PATH] = {}, victim[MAX_PATH] = {}, alias[MAX_PATH] = {};
+    wchar_t redirect[MAX_PATH] = {}, nested[MAX_PATH] = {};
+    StringCchPrintfW(destination, MAX_PATH, L"%ls\\Green Curve.lnk", directory);
+    StringCchPrintfW(victim, MAX_PATH, L"%ls\\kept.txt", directory);
+    StringCchPrintfW(alias, MAX_PATH, L"%ls\\alias.lnk", directory);
+    StringCchPrintfW(redirect, MAX_PATH, L"%ls\\redirect", directory);
+    StringCchPrintfW(nested, MAX_PATH, L"%ls\\nested.lnk", directory);
+    auto finish = [&](int code) {
+        DeleteFileW(destination); DeleteFileW(victim); DeleteFileW(alias);
+        DeleteFileW(nested); RemoveDirectoryW(redirect); RemoveDirectoryW(directory);
+        return code;
+    };
+    auto save = [](const WCHAR* path, const char* text) {
+        IStream* stream = nullptr;
+        if (FAILED(CreateStreamOnHGlobal(nullptr, TRUE, &stream))) return false;
+        ULONG written = 0;
+        bool ok = SUCCEEDED(stream->Write(text, (ULONG)strlen(text), &written)) &&
+                  gc_shortcut_write_stream(path, stream);
+        stream->Release();
+        return ok;
+    };
+    auto equals = [](const WCHAR* path, const char* text) {
+        HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return false;
+        char buffer[64] = {};
+        DWORD bytes = 0;
+        bool ok = ReadFile(file, buffer, sizeof(buffer), &bytes, nullptr) &&
+                  bytes == strlen(text) && !memcmp(buffer, text, bytes);
+        CloseHandle(file);
+        return ok;
+    };
+    if (!save(destination, "long initial shortcut") || !save(destination, "new") ||
+        !equals(destination, "new") || !save(victim, "kept")) return finish(7081);
+    if (save(destination, "") || !equals(destination, "new")) return finish(7082);
+    if (!CreateHardLinkW(alias, victim, nullptr)) return finish(7083);
+    if (save(alias, "forbidden") || !equals(victim, "kept")) return finish(7084);
+    DeleteFileW(alias);
+    if (CreateSymbolicLinkW(alias, victim, 2)) {
+        if (save(alias, "forbidden") || !equals(victim, "kept")) return finish(7085);
+        DeleteFileW(alias);
+    } else {
+        printf("shortcut fixture: file symlink unavailable (%lu)\n", GetLastError());
+    }
+    if (CreateSymbolicLinkW(redirect, directory, 3)) {
+        wchar_t redirected[MAX_PATH] = {};
+        StringCchPrintfW(redirected, MAX_PATH, L"%ls\\nested.lnk", redirect);
+        if (!save(redirected, "redirected") || !equals(nested, "redirected")) return finish(7086);
+        // Remove the alias after opening its directory, without timing or
+        // another thread. A relative leaf open stays with the pinned object.
+        HANDLE parent = CreateFileW(redirect, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (parent == INVALID_HANDLE_VALUE) return finish(7088);
+        bool removed = RemoveDirectoryW(redirect) != FALSE;
+        IStream* bound = nullptr;
+        ULONG written = 0;
+        bool boundOk = removed && SUCCEEDED(CreateStreamOnHGlobal(nullptr, TRUE, &bound)) &&
+            SUCCEEDED(bound->Write("bound", 5, &written)) &&
+            gc_shortcut_write_to_directory(parent, L"nested.lnk", bound) && equals(nested, "bound");
+        HANDLE invalid = gc_open_relative_output(parent, L"..\\kept.txt");
+        if (invalid != INVALID_HANDLE_VALUE) CloseHandle(invalid);
+        if (bound) bound->Release();
+        CloseHandle(parent);
+        if (!boundOk || invalid != INVALID_HANDLE_VALUE || !equals(victim, "kept")) return finish(7089);
+    } else {
+        printf("shortcut fixture: directory symlink unavailable (%lu)\n", GetLastError());
+    }
+
+    // Serialize the actual shell object, then load the written .lnk through
+    // the Windows shell API to verify the target survives the stream path.
+    HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    IShellLinkW *link = nullptr, *loaded = nullptr;
+    IPersistStream* persist = nullptr;
+    IPersistFile* reader = nullptr;
+    IStream* stream = nullptr;
+    wchar_t actual[MAX_PATH] = {};
+    bool ok = (SUCCEEDED(initialized) || initialized == RPC_E_CHANGED_MODE) &&
+        SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                                    IID_IShellLinkW, (void**)&link)) &&
+        SUCCEEDED(link->SetPath(victim)) && SUCCEEDED(link->SetWorkingDirectory(directory)) &&
+        SUCCEEDED(link->QueryInterface(IID_IPersistStream, (void**)&persist)) &&
+        SUCCEEDED(CreateStreamOnHGlobal(nullptr, TRUE, &stream)) &&
+        SUCCEEDED(persist->Save(stream, TRUE)) && gc_shortcut_write_stream(destination, stream) &&
+        SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
+                                    IID_IShellLinkW, (void**)&loaded)) &&
+        SUCCEEDED(loaded->QueryInterface(IID_IPersistFile, (void**)&reader)) &&
+        SUCCEEDED(reader->Load(destination, STGM_READ)) &&
+        SUCCEEDED(loaded->GetPath(actual, MAX_PATH, nullptr, SLGP_RAWPATH)) &&
+        !_wcsicmp(actual, victim);
+    if (reader) reader->Release();
+    if (loaded) loaded->Release();
+    if (stream) stream->Release();
+    if (persist) persist->Release();
+    if (link) link->Release();
+    if (SUCCEEDED(initialized)) CoUninitialize();
+    return finish(ok ? 0 : 7087);
+}
+
 #endif  // _WIN32
 
 }  // namespace
@@ -584,6 +686,7 @@ int run_service_install_tests() {
     if (int failure = run_install_file_rollback_tests()) return failure;
     if (int failure = run_install_created_folder_cleanup_tests()) return failure;
     if (int failure = run_location_verdict_tests()) return failure;
+    if (int failure = run_shortcut_stream_tests()) return failure;
 #endif
     return 0;
 }

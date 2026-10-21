@@ -1,5 +1,21 @@
 # Windows installer
 
+## Shortcut persistence (verified 2026-10-21)
+
+Source anchors: `source/installer_register_install.cpp`,
+`source/shortcut_file_writer.h`, `source/file_relative_open.h`, `tests/service_install_tests.cpp`.
+Setup serializes the shell link through IPersistStream before opening its
+destination. It pins the known folder's resolved directory and opens the leaf
+relative to that handle without following reparse points or truncating.
+It requires a regular single-link disk file before writing. Existing ordinary shortcuts are
+updated and truncated through that same handle. Known-folder redirects and
+custom installation targets remain supported; shortcut failure retains the
+existing non-fatal installer behavior. Native tests execute create/replace,
+hard-link and symbolic-link refusal, redirected parents, alias removal after
+directory capture, and shell-API reload of the serialized shortcut's target.
+This does not change installation-folder
+ownership or the consent policy.
+
 ## Exclusive temporary-file creation (verified 2026-10-01)
 
 Source anchors: `source/installer_transaction_files.h`,

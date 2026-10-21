@@ -221,6 +221,17 @@ EOF
     info "desktop entry written to $entry"
 }
 
+remove_user_desktop_entry() {
+    local user="$1" home="$2"
+    command -v runuser >/dev/null 2>&1 ||
+        { warn "runuser is unavailable; skipping desktop entry cleanup"; return 0; }
+    if runuser -u "$user" -- rm -f -- "$home/.local/share/applications/greencurve.desktop"; then
+        info "removed desktop entry for '$user'"
+    else
+        warn "could not remove the desktop entry as '$user'; leaving it for that account"
+    fi
+}
+
 cmd_uninstall() {
     require_root uninstall
     require_binary
@@ -246,9 +257,8 @@ cmd_uninstall() {
     if [ -n "$user" ]; then
         local home
         home="$(getent passwd "$user" 2>/dev/null | cut -d: -f6)"
-        if [ -n "$home" ] && [ -f "$home/.local/share/applications/greencurve.desktop" ]; then
-            rm -f "$home/.local/share/applications/greencurve.desktop"
-            info "removed desktop entry for '$user'"
+        if [ -n "$home" ]; then
+            remove_user_desktop_entry "$user" "$home"
         fi
     fi
 

@@ -16,6 +16,7 @@
 
 #include "installer_common.h"
 #include "installer_move_cleanup.h"
+#include "shortcut_file_writer.h"
 
 #define GC_SHORTCUT_FILE_NAME L"Green Curve.lnk"
 
@@ -46,11 +47,20 @@ static bool gc_write_shortcut(const WCHAR* linkPath, const WCHAR* targetExe,
         SUCCEEDED(link->SetWorkingDirectory(workingDirectory)) &&
         SUCCEEDED(link->SetDescription(descriptionW)) &&
         SUCCEEDED(link->SetIconLocation(targetExe, 0))) {
-        IPersistFile* persist = nullptr;
-        if (SUCCEEDED(link->QueryInterface(IID_IPersistFile, (void**)&persist)) && persist) {
-            hr = persist->Save(linkPath, TRUE);
-            ok = SUCCEEDED(hr);
-            if (!ok) gc_log_fail("shortcut: saving %s failed (hr 0x%08lx)", gc_log_path(linkPath), (unsigned long)hr);
+        IPersistStream* persist = nullptr;
+        if (SUCCEEDED(link->QueryInterface(IID_IPersistStream, (void**)&persist)) && persist) {
+            IStream* stream = nullptr;
+            hr = CreateStreamOnHGlobal(nullptr, TRUE, &stream);
+            if (SUCCEEDED(hr)) {
+                hr = persist->Save(stream, TRUE);
+                if (SUCCEEDED(hr)) ok = gc_shortcut_write_stream(linkPath, stream);
+                if (!ok) gc_log_fail("shortcut: saving %s failed (hr 0x%08lx, error %lu)",
+                    gc_log_path(linkPath), (unsigned long)hr, GetLastError());
+                stream->Release();
+            } else {
+                gc_log_fail("shortcut: serialization stream could not be created (hr 0x%08lx)",
+                    (unsigned long)hr);
+            }
             persist->Release();
         }
     }

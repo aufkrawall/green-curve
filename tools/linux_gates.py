@@ -623,6 +623,12 @@ def check_release_packaging(ctx, require_text, forbid_text):
                  "desktop files in a user-controlled tree are never written with root privileges")
     forbid_text(setup_script, 'cat > "$entry"',
                 "root setup must not follow a planted desktop-entry symlink")
+    require_text(setup_script, 'runuser -u "$user" -- rm -f --',
+                 "desktop entry cleanup uses the account's own filesystem privileges")
+    forbid_text(setup_script, 'rm -f "$home/.local/share/applications/greencurve.desktop"',
+                "desktop entry cleanup has no root pathname-deletion fallback")
+    import linux_setup_tests
+    linux_setup_tests.run_self_tests(ctx.SCRIPT_DIR)
     # F-LNX-GROUPADVICE.  The install summary used to prescribe usermod to
     # everyone, including users who already had the group and users the wrapper
     # was about to enroll on the very next line.

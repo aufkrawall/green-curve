@@ -1,5 +1,13 @@
 # Linux Backend
 
+Desktop-entry removal in `tools/greencurve-setup.sh` uses the target account's
+`runuser` context, matching desktop-entry installation. A missing or failed
+user switch reports a warning and has no root deletion fallback. Machine
+service cleanup, retained settings and explicit purge behavior are unchanged.
+`tools/linux_setup_tests.py` verifies helper wiring on both hosts and executes
+success/failure/unavailable shell fixtures on native Linux, including a home
+directory containing spaces. Verified 2026-10-21.
+
 ## Arch recipe source verification (verified 2026-10-01)
 
 Source anchors: `packaging/arch/PKGBUILD`, `packaging/arch/PKGBUILD.bin`,
