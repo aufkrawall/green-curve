@@ -95,3 +95,20 @@ static ServicePoisonedRuntimeExit service_poisoned_runtime_plan_or_exit(
     }
     return plan;
 }
+
+// A validated controlled recovery that will not run must not leave its
+// provisional intent behind: g_serviceReapplyInProgress keeps the published GPU
+// phase at REAPPLYING ("GPU reconnecting") until something clears it, and
+// without a write nothing would.  The lockout itself is left as it is.
+static void service_drop_provisional_recovery_intent(const char* reason) {
+    lock_service_runtime();
+    const bool wasReapplying = InterlockedExchange(&g_serviceReapplyInProgress, 0) != 0;
+    g_serviceHasActiveDesired = false;
+    memset(&g_serviceActiveDesired, 0, sizeof(g_serviceActiveDesired));
+    memset(&g_serviceActiveDesiredGpu, 0, sizeof(g_serviceActiveDesiredGpu));
+    g_serviceActiveProfileSource = SERVICE_PROFILE_SOURCE_NONE;
+    g_serviceActiveProfileSlot = 0;
+    unlock_service_runtime();
+    debug_log("controlled recovery: provisional intent dropped (%s; wasReapplying=%d)\n",
+        reason && reason[0] ? reason : "recovery will not run", wasReapplying ? 1 : 0);
+}

@@ -143,6 +143,14 @@ void print_linux_live_state_text(FILE* out, const ServiceResponse* response) {
         fprintf(out, "Automatic restore notice: %s\n"
                      "  (Apply: greencurve --apply-config, or the TUI; "
                      "Reset: greencurve --reset --apply-config)\n", notice);
+    } else {
+        char notice[256] = {}, title[64] = {}, body[256] = {};
+        if (gc_auto_restore_lockout_compose(gc_auto_restore_notice_for_transition(
+                    SERVICE_AUTO_RESTORE_LOCKOUT_NONE, snapshot.autoRestoreLockoutReason),
+                notice, sizeof(notice), title, sizeof(title), body, sizeof(body))) {
+            fprintf(out, "Automatic restore notice: %s\n"
+                         "  (Apply: greencurve --apply-config, or the TUI)\n", notice);
+        }
     }
     fputc('\n', out);
     IntentReadbackStatus readback = compare_intent_to_readback(response);

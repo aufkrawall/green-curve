@@ -785,6 +785,8 @@ static void service_arm_validated_controlled_recovery() {
             service_disable_automatic_restore(
                 SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED,
                 "validated controlled recovery could not be queued");
+        } else {  // locked out already: the intent must not keep publishing REAPPLYING
+            service_drop_provisional_recovery_intent("recovery refused under an existing lockout");
         }
         g_serviceControlledRecoveryValidated = false;
         memset(&g_serviceControlledRecoveryDesired, 0,

@@ -74,6 +74,19 @@ static void gui_announce_auto_restore_lockout() {
                 g_guiAutoApplyBalloonPending = true;
             }
         }
+    } else if (notice == GC_AUTO_RESTORE_NOTICE_UNSTABLE_APPLY ||
+               notice == GC_AUTO_RESTORE_NOTICE_RECOVERY_SPAM) {
+        // A driver restart the profile was deliberately not restored after.
+        char status[256] = {};
+        if (gc_auto_restore_lockout_compose(notice, status, sizeof(status),
+                g_guiAutoApplyBalloonTitle, sizeof(g_guiAutoApplyBalloonTitle),
+                g_guiAutoApplyBalloonBody, sizeof(g_guiAutoApplyBalloonBody))) {
+            debug_log("GUI: automatic restore lockout notice (previous=%u reason=%u tray=%d): %s\n",
+                (unsigned int)previous, (unsigned int)g_app.serviceAutoRestoreLockoutReason,
+                g_app.trayIconAdded ? 1 : 0, status);
+            set_profile_status_text("%s", status);
+            g_guiAutoApplyBalloonPending = true;
+        }
     } else if (g_app.serviceAutoRestoreLockoutReason ==
                SERVICE_AUTO_RESTORE_LOCKOUT_NONE) {
         // Cleared (an explicit Apply succeeded): a balloon still waiting for

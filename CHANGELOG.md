@@ -38,10 +38,12 @@ Local protection and diagnostic privacy improve while existing installation loca
 ### Improved
 
 - **Support logs:** Personal paths are redacted consistently, with separate references when a message names multiple locations.
+- **Automatic restore notices:** Green Curve now also says when a profile was not restored because the graphics driver restarted soon after it was applied, or restarted repeatedly.
 
 ### Fixed
 
 - **Driver updates:** the background service no longer crashes while the graphics driver is updated or restarted, so your active profile is restored afterwards instead of the GPU being left at stock.
+- **GPU reconnecting:** the status no longer stays on "GPU reconnecting" after a driver recovery that was not allowed to restore the profile.
 
 ### Security
 

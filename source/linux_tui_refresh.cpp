@@ -139,6 +139,10 @@ bool tui_refresh_service(TuiState* state, bool userRequested,
         gc_auto_apply_failure_compose(&next.snapshot.autoApplyFailure,
             state->status, sizeof(state->status), title, sizeof(title),
             body, sizeof(body));
+    } else if (lockoutNotice != GC_AUTO_RESTORE_NOTICE_NONE) {
+        char title[64] = {}, body[256] = {};
+        gc_auto_restore_lockout_compose(lockoutNotice, state->status,
+            sizeof(state->status), title, sizeof(title), body, sizeof(body));
     }
     if (lockoutNotice != GC_AUTO_RESTORE_NOTICE_NONE) {
         linux_debug_logf("tui: automatic restore lockout notice (previous=%u reason=%u trigger=%u): %s\n",

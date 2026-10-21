@@ -32,6 +32,11 @@ enum GcAutoRestoreNotice {
     GC_AUTO_RESTORE_NOTICE_NONE = 0,
     GC_AUTO_RESTORE_NOTICE_HANDBACK_INCOMPLETE = 1,
     GC_AUTO_RESTORE_NOTICE_AUTO_APPLY_FAILED = 2,
+    // A driver restart inside the stability window, or too many of them: the
+    // profile was deliberately not restored.  Silent until 2026-10-21, so a
+    // GPU could run stock with automation off and nothing on screen said so.
+    GC_AUTO_RESTORE_NOTICE_UNSTABLE_APPLY = 3,
+    GC_AUTO_RESTORE_NOTICE_RECOVERY_SPAM = 4,
 };
 
 static inline bool gc_apply_result_reports_core_recovery(const char* result) {
@@ -43,6 +48,10 @@ static inline GcAutoRestoreNotice gc_auto_restore_notice_for_transition(
     if (current == previous) return GC_AUTO_RESTORE_NOTICE_NONE;
     if (current == SERVICE_AUTO_RESTORE_LOCKOUT_HANDBACK_INCOMPLETE)
         return GC_AUTO_RESTORE_NOTICE_HANDBACK_INCOMPLETE;
+    if (current == SERVICE_AUTO_RESTORE_LOCKOUT_UNSTABLE_APPLY)
+        return GC_AUTO_RESTORE_NOTICE_UNSTABLE_APPLY;
+    if (current == SERVICE_AUTO_RESTORE_LOCKOUT_TDR_SPAM)
+        return GC_AUTO_RESTORE_NOTICE_RECOVERY_SPAM;
     // Only from "not locked out": HANDBACK_INCOMPLETE -> AUTOMATIC_APPLY_FAILED
     // is the user's own successful Reset answering the previous notice.
     if (current == SERVICE_AUTO_RESTORE_LOCKOUT_AUTOMATIC_APPLY_FAILED &&
@@ -141,6 +150,35 @@ static inline bool gc_auto_apply_failure_compose(
         gc_notice_append(body, bodySize, " Cause: ");
         gc_notice_append(body, bodySize, detail);
     }
+    return true;
+}
+
+// The two driver-restart lockouts carry no recorded cause: the reason itself
+// is the whole story.  Same sinks and limits as gc_auto_apply_failure_compose.
+// Returns false for any other notice.
+static inline bool gc_auto_restore_lockout_compose(
+    GcAutoRestoreNotice notice,
+    char* status, size_t statusSize,
+    char* title, size_t titleSize,
+    char* body, size_t bodySize) {
+    if (!status || statusSize == 0 || !title || titleSize == 0 ||
+        !body || bodySize == 0) return false;
+    status[0] = title[0] = body[0] = '\0';
+    const char* text = nullptr;
+    if (notice == GC_AUTO_RESTORE_NOTICE_UNSTABLE_APPLY) {
+        gc_notice_append(title, titleSize, "Green Curve: profile not restored");
+        text = "The graphics driver restarted within 10 minutes of applying your "
+               "profile, so it was not restored automatically. Press Apply to "
+               "re-apply it.";
+    } else if (notice == GC_AUTO_RESTORE_NOTICE_RECOVERY_SPAM) {
+        gc_notice_append(title, titleSize, "Green Curve: automatic restore paused");
+        text = "The graphics driver restarted repeatedly, so automatic profile "
+               "restore is paused for safety. Press Apply to re-enable it.";
+    } else {
+        return false;
+    }
+    gc_notice_append(status, statusSize, text);
+    gc_notice_append(body, bodySize, text);
     return true;
 }
 

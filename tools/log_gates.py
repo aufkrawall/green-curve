@@ -273,3 +273,13 @@ def check_auto_apply_failure_notice(ctx, require_text):
     ctx.forbid_text(_p(ctx, "linux_tui_refresh.cpp"),
                     "wasOnline ? previous.snapshot.autoRestoreLockoutReason",
                     "a TUI reconnect is not treated as a transition from no lockout")
+    # The driver-restart lockouts (UNSTABLE_APPLY, TDR_SPAM) are announced by
+    # every client, not only the failed-apply and handback ones.
+    for name in ("gui_auto_restore_notice.h", "linux_tui_refresh.cpp", "linux_live_output.cpp"):
+        require_text(_p(ctx, name), "gc_auto_restore_lockout_compose(",
+                     f"{name} announces the driver-restart lockouts")
+    # A validated recovery that will not run drops its provisional intent, so
+    # the published phase cannot stay at REAPPLYING ("GPU reconnecting").
+    require_text(_p(ctx, "main_service_controlled_restart.cpp"),
+                 "service_drop_provisional_recovery_intent(",
+                 "a refused controlled recovery leaves no REAPPLYING state behind")

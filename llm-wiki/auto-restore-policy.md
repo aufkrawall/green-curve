@@ -190,6 +190,23 @@ and the user saw nothing: the GPU just ran at stock with automation off.
   messages and both logon/app-start handlers, so those cannot replace a newly
   announced failure. `HANDBACK_INCOMPLETE` -> `AUTOMATIC_APPLY_FAILED`
   is the user's own Reset answering the handback notice and stays silent.
+- **Driver-restart lockouts are announced too (2026-10-21).** Any edge into
+  `UNSTABLE_APPLY` (a driver restart inside the 10-minute proof window) or
+  `TDR_SPAM` (the recovery ledger threshold) now yields
+  `GC_AUTO_RESTORE_NOTICE_UNSTABLE_APPLY` / `_RECOVERY_SPAM`, composed by
+  `gc_auto_restore_lockout_compose()`: status line and balloon in the GUI, the
+  status line in the TUI, and an `Automatic restore notice:` line in the Linux
+  CLI status. Before, both were silent: the GPU ran stock with automation off
+  and nothing said why. Tests 7160-7162 (`tests/diagnostics_followup_tests.cpp`;
+  the old 6752 leg asserting NONE -> TDR_SPAM is silent was the gap and is
+  gone). Log line: `GUI: automatic restore lockout notice (previous= reason= tray=)`.
+- **A refused controlled recovery drops its provisional intent (2026-10-21).**
+  `service_arm_validated_controlled_recovery()` sets REAPPLYING before queuing;
+  when queuing failed under an EXISTING lockout it skipped the disable (which
+  is what clears that state), so the GUI could show "GPU reconnecting" until an
+  explicit Apply. `service_drop_provisional_recovery_intent()` now clears it
+  without touching the lockout. Gate in `tools/log_gates.py`; no runtime test
+  (the branch needs a live controlled restart).
 - Diagnostics: `automatic apply failure: recorded for the GUI trigger=...`
   (service), `GUI: automatic apply failure notice (previous=... trigger=... tray=...)` and
   `GUI: automatic apply failure tray notice shown` (GUI).

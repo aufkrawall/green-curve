@@ -263,9 +263,40 @@ int run_auto_apply_notice_tests() {
     // lockout that stays, clears, or has a reason without a notice.
     if (gc_auto_restore_notice_for_transition(HANDBACK, FAILED) != GC_AUTO_RESTORE_NOTICE_NONE ||
         gc_auto_restore_notice_for_transition(FAILED, FAILED) != GC_AUTO_RESTORE_NOTICE_NONE ||
-        gc_auto_restore_notice_for_transition(FAILED, NONE) != GC_AUTO_RESTORE_NOTICE_NONE ||
-        gc_auto_restore_notice_for_transition(NONE, SERVICE_AUTO_RESTORE_LOCKOUT_TDR_SPAM) !=
-            GC_AUTO_RESTORE_NOTICE_NONE) return 6752;
+        gc_auto_restore_notice_for_transition(FAILED, NONE) != GC_AUTO_RESTORE_NOTICE_NONE) return 6752;
+    // 7160: the driver-restart lockouts are announced too (they used to be
+    // silent: a GPU at stock with automation off and nothing on screen).
+    {
+        const gc_u32 UNSTABLE = SERVICE_AUTO_RESTORE_LOCKOUT_UNSTABLE_APPLY;
+        const gc_u32 SPAM = SERVICE_AUTO_RESTORE_LOCKOUT_TDR_SPAM;
+        if (gc_auto_restore_notice_for_transition(NONE, UNSTABLE) !=
+                GC_AUTO_RESTORE_NOTICE_UNSTABLE_APPLY ||
+            gc_auto_restore_notice_for_transition(NONE, SPAM) !=
+                GC_AUTO_RESTORE_NOTICE_RECOVERY_SPAM ||
+            gc_auto_restore_notice_for_transition(FAILED, SPAM) !=
+                GC_AUTO_RESTORE_NOTICE_RECOVERY_SPAM ||
+            gc_auto_restore_notice_for_transition(UNSTABLE, UNSTABLE) !=
+                GC_AUTO_RESTORE_NOTICE_NONE ||
+            gc_auto_restore_notice_for_transition(SPAM, NONE) !=
+                GC_AUTO_RESTORE_NOTICE_NONE) return 7160;
+        // 7161: each says what happened and the action, within the sinks.
+        char status[256] = {}, title[64] = {}, body[256] = {};
+        if (!gc_auto_restore_lockout_compose(GC_AUTO_RESTORE_NOTICE_UNSTABLE_APPLY,
+                status, sizeof(status), title, sizeof(title), body, sizeof(body)) ||
+            !strstr(status, "within 10 minutes") || !strstr(status, "Press Apply") ||
+            strcmp(status, body) != 0 || strcmp(title, "Green Curve: profile not restored") != 0)
+            return 7161;
+        if (!gc_auto_restore_lockout_compose(GC_AUTO_RESTORE_NOTICE_RECOVERY_SPAM,
+                status, sizeof(status), title, sizeof(title), body, sizeof(body)) ||
+            !strstr(status, "restarted repeatedly") || !strstr(status, "Press Apply") ||
+            strlen(title) >= sizeof(title))
+            return 7161;
+        // 7162: other notices are not composed here; bad sinks are refused.
+        if (gc_auto_restore_lockout_compose(GC_AUTO_RESTORE_NOTICE_AUTO_APPLY_FAILED,
+                status, sizeof(status), title, sizeof(title), body, sizeof(body)) ||
+            gc_auto_restore_lockout_compose(GC_AUTO_RESTORE_NOTICE_UNSTABLE_APPLY,
+                nullptr, 0, title, sizeof(title), body, sizeof(body))) return 7162;
+    }
     // The observer (GUI and TUI): only answered snapshots move it, so going
     // offline and reconnecting under the same lockout is not news.  The TUI
     // used to treat every reconnect as a transition from NONE (6877-6878).
