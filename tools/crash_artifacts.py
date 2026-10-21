@@ -90,6 +90,14 @@ def check_windows_crash_artifacts(ctx, require_text, forbid_text, require_order,
     require_text(recovery_cpp, "service_exit_poisoned_runtime_for_ordinary_restart(reason);",
                  "a poisoned runtime without intent exits for an ordinary restart")
 
+    # A driver update stops/starts the selected GPU without removing it; the
+    # exact-device arrival decides through the shared, tested policy.
+    coordinator_cpp = _p(ctx, "main_service_logon_coordinator.cpp")
+    require_text(coordinator_cpp, "service_selected_gpu_arrival_action(wasRemoved, hasIntent, recoveryPending);",
+                 "the selected-GPU arrival follows the shared arrival policy")
+    forbid_text(coordinator_cpp, "selected-GPU arrival without a corroborated removal; diagnostic/readiness only",
+                "a started-only driver restart with applied intent is not ignored")
+
     # The user-facing crash-dump notice: scanned with the service's rights,
     # written under the user's token, and the dumps themselves never leave the
     # admin-only directory (a SYSTEM dump can hold other accounts' data).

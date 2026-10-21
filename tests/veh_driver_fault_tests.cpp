@@ -54,6 +54,23 @@ static int veh_exit_plan_tests() {
     // 7134: live intent without a snapshot cannot be restored: stay fail-closed.
     if (service_poisoned_runtime_exit_plan(true, SERVICE_RESTART_SNAPSHOT_ABSENT, true) !=
             SERVICE_POISONED_EXIT_LATCH_AND_STOP) return 7134;
+
+    // The other way a driver restart reaches recovery: the selected GPU's
+    // exact-device STARTED notification.
+    // 7135: a driver update stops and starts the device without removing it;
+    // with applied intent that alone is recovery (it used to be ignored).
+    if (service_selected_gpu_arrival_action(false, true, false) != SERVICE_GPU_ARRIVAL_RECOVER)
+        return 7135;
+    // 7136: not while this fresh process's own recovery write is pending (the
+    // arrival is its readiness cue), and not without intent.
+    if (service_selected_gpu_arrival_action(false, true, true) != SERVICE_GPU_ARRIVAL_NONE ||
+        service_selected_gpu_arrival_action(false, false, false) != SERVICE_GPU_ARRIVAL_NONE)
+        return 7136;
+    // 7137: a removal cycle keeps its rule.
+    if (service_selected_gpu_arrival_action(true, true, false) != SERVICE_GPU_ARRIVAL_RECOVER ||
+        service_selected_gpu_arrival_action(true, true, true) != SERVICE_GPU_ARRIVAL_RECOVER ||
+        service_selected_gpu_arrival_action(true, false, false) !=
+            SERVICE_GPU_ARRIVAL_ABANDON_EVIDENCE) return 7137;
     return 0;
 }
 

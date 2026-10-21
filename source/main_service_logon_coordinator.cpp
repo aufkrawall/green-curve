@@ -196,30 +196,32 @@ static DWORD WINAPI service_lifecycle_thread_proc(void*) {
             unlock_service_runtime();
         }
         if (inbox.selectedGpuArrivalPending) {
-            bool wasRemoved = false;
-            bool hasIntent = false;
             lock_service_runtime();
             EnterCriticalSection(&g_appLock);
-            wasRemoved = g_app.deviceRemoved;
+            const bool wasRemoved = g_app.deviceRemoved;
             g_app.deviceRemoved = false;
-            hasIntent = g_serviceHasActiveDesired;
-            g_app.pendingDeviceRecovery = wasRemoved && hasIntent;
+            const bool hasIntent = g_serviceHasActiveDesired;
+            const bool recoveryPending =
+                InterlockedExchangeAdd(&g_serviceReapplyInProgress, 0) != 0;
+            const ServiceSelectedGpuArrivalAction action =
+                service_selected_gpu_arrival_action(wasRemoved, hasIntent, recoveryPending);
+            g_app.pendingDeviceRecovery = action == SERVICE_GPU_ARRIVAL_RECOVER;
             LeaveCriticalSection(&g_appLock);
-            if (wasRemoved) {
-                service_check_disk_version_on_device_arrival();
-                debug_log("lifecycle PnP: selected GPU re-arrived (activeIntent=%d); confirmed recovery dominates standby\n",
-                    hasIntent ? 1 : 0);
-                if (hasIntent) {
-                    launch_recovery_thread();
-                } else {
-                    // The exact removal remains counted in the persisted
-                    // ledger, but a later, distinct cycle must receive a new
-                    // evidence key even though this cycle had nothing to
-                    // restore and therefore needed no process restart.
-                    service_abandon_current_recovery_evidence();
-                }
-            } else {
-                debug_log("lifecycle PnP: selected-GPU arrival without a corroborated removal; diagnostic/readiness only\n");
+            const bool driverChanged = service_check_disk_version_on_device_arrival();
+            debug_log("lifecycle PnP: selected GPU %s (activeIntent=%d recoveryPending=%d driverChanged=%d) -> %s\n",
+                wasRemoved ? "re-arrived after a removal" : "restarted without a removal",
+                hasIntent ? 1 : 0, recoveryPending ? 1 : 0, driverChanged ? 1 : 0,
+                action == SERVICE_GPU_ARRIVAL_RECOVER ? "driver recovery (dominates standby)"
+                    : action == SERVICE_GPU_ARRIVAL_ABANDON_EVIDENCE ? "nothing to restore"
+                    : "readiness only");
+            if (action == SERVICE_GPU_ARRIVAL_RECOVER) {
+                launch_recovery_thread();
+            } else if (action == SERVICE_GPU_ARRIVAL_ABANDON_EVIDENCE) {
+                // The exact removal remains counted in the persisted ledger,
+                // but a later, distinct cycle must receive a new evidence key
+                // even though this cycle had nothing to restore and therefore
+                // needed no process restart.
+                service_abandon_current_recovery_evidence();
             }
             unlock_service_runtime();
         }

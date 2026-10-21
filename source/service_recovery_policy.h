@@ -149,6 +149,31 @@ static inline ServicePoisonedRuntimeExit service_poisoned_runtime_exit_plan(
                           : SERVICE_POISONED_EXIT_ORDINARY_RESTART;
 }
 
+// What an exact-device arrival (CM STARTED) of the selected GPU means.
+enum ServiceSelectedGpuArrivalAction {
+    SERVICE_GPU_ARRIVAL_RECOVER = 0,        // controlled restart, then replay
+    SERVICE_GPU_ARRIVAL_ABANDON_EVIDENCE,   // removal cycle with nothing to restore
+    SERVICE_GPU_ARRIVAL_NONE,               // diagnostic / readiness only
+};
+
+// The selected GPU was already running when its notification was registered,
+// so a STARTED without a preceding REMOVED means its driver was stopped and
+// started again.  A driver update does exactly that (observed 2026-10-21: one
+// STARTED, no REMOVED), and the stop discards every setting -- so with intent
+// applied by this process it is recovery evidence on its own.  It used to be
+// "diagnostic only", which left the OC wiped until the next logon whenever no
+// NVML call happened to fault (no fan curve running, GUI closed).
+// Not while a validated recovery write is still pending: in that fresh process
+// the arrival is the readiness cue the write is waiting for, and the write
+// re-checks the device generation itself.  A removal cycle keeps its rule.
+static inline ServiceSelectedGpuArrivalAction service_selected_gpu_arrival_action(
+    bool wasRemoved, bool hasIntent, bool recoveryWritePending) {
+    if (wasRemoved)
+        return hasIntent ? SERVICE_GPU_ARRIVAL_RECOVER : SERVICE_GPU_ARRIVAL_ABANDON_EVIDENCE;
+    return (hasIntent && !recoveryWritePending) ? SERVICE_GPU_ARRIVAL_RECOVER
+                                                : SERVICE_GPU_ARRIVAL_NONE;
+}
+
 static inline bool service_controlled_recovery_start_is_authorized(
     const ServiceControlledRecoveryStartGate& gate) {
     return gate.argumentsValid && gate.explicitlyRequested &&

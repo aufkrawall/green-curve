@@ -44,6 +44,7 @@ Local protection and diagnostic privacy improve while existing installation loca
 
 - **Driver updates:** the background service no longer crashes while the graphics driver is updated or restarted, so your active profile is restored afterwards instead of the GPU being left at stock.
 - **GPU reconnecting:** the status no longer stays on "GPU reconnecting" after a driver recovery that was not allowed to restore the profile.
+- **Driver updates without a fan curve:** your profile is now restored after a driver update even when no fan curve is running and the Green Curve window is closed.
 
 ### Security
 

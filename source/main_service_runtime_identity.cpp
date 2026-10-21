@@ -138,12 +138,12 @@ static bool service_nvapi_disk_version_changed() {
     return true;
 }
 
-// Public entry point: log a single line per DLL when the on-disk version
-// differs from the in-process module.  Called from the DBT_DEVICEARRIVAL
-// handler (main_service_server.cpp) to correlate the device-reconnect
-// event with a possible driver upgrade.  The actual reload happens in the
-// recovery thread (Phase B/C) where the runtime lock is held.
-void service_check_disk_version_on_device_arrival() {
+// Log a single line per DLL when the on-disk version differs from the
+// in-process module, on a selected-GPU arrival (lifecycle worker), to
+// correlate the device restart with a driver upgrade.  Diagnostic only: the
+// recovery decision does not depend on it, and a fresh process picks up the
+// new files either way.  Returns whether an upgrade was seen.
+static bool service_check_disk_version_on_device_arrival() {
     bool nvmlChanged = service_nvml_disk_version_changed();
     bool nvapiChanged = service_nvapi_disk_version_changed();
     if (nvmlChanged || nvapiChanged) {
@@ -153,6 +153,7 @@ void service_check_disk_version_on_device_arrival() {
     } else {
         debug_log("service_check_disk_version_on_device_arrival: on-disk driver matches in-process\n");
     }
+    return nvmlChanged || nvapiChanged;
 }
 
 // ---- GPU driver-recovery: recover by restarting the service process ----
@@ -167,9 +168,10 @@ void service_check_disk_version_on_device_arrival() {
 // state that reliably re-binds a version-matched UMD to the new kernel driver is
 // a FRESH PROCESS.
 //
-// So every recovery trigger (DBT_DEVICEARRIVAL after a removal, a VEH-caught
-// stale-handle access violation, a fan-pulse wedge, or an on-disk driver-version
-// change) requests a controlled service restart.  request_service_restart()
+// So every recovery trigger (an exact selected-GPU arrival, with or without a
+// removal -- service_selected_gpu_arrival_action() -- a VEH-caught stale-handle
+// access violation, or a fan-pulse wedge) requests a controlled service
+// restart.  request_service_restart()
 // snapshots the active OC/fan profile, records the restart for loop protection,
 // launches a nonce-bound helper and commits the dedicated clean exit. Only
 // that helper may demand-start a fresh process with the validated continuation.

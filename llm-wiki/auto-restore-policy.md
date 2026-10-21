@@ -369,8 +369,19 @@ acknowledgement.
 `DBT_DEVNODES_CHANGED` commonly arrives with null event data. It is only a
 read-only re-enumeration cue and never authorizes a write by itself. A driver
 recovery needs independently corroborated evidence for the selected GPU, such
-as disappearance/rearrival, a validated device-generation change, or the VEH
-driver-crash path. A coincident confirmed driver recovery dominates standby.
+as disappearance/rearrival, a validated device-generation change, the VEH
+driver-crash path, or (2026-10-21) the exact selected device's CM STARTED
+notification without a removal while this process holds applied intent. A
+driver update stops and starts the device without removing it (one STARTED,
+no REMOVED, observed on hardware); that arrival used to be "diagnostic only",
+so with no fan curve running and the GUI closed nothing touched NVML, nothing
+faulted, and the wiped OC stayed wiped until the next logon. The rule is
+`service_selected_gpu_arrival_action()` (`service_recovery_policy.h`, tests
+7135-7137): not while a validated recovery write is still pending in a fresh
+process (the arrival is its readiness cue; the write re-checks the device
+generation). Log line: `lifecycle PnP: selected GPU restarted without a removal
+(activeIntent= recoveryPending= driverChanged=) -> ...`. A coincident confirmed
+driver recovery dominates standby.
 
 Recovery evidence is deduplicated in one protected persisted ledger. Automatic
 success does not erase its history. Only a successful explicit Apply clears the
