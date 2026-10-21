@@ -222,10 +222,9 @@ update itself out of the problem.
 Refreshing the standby slot while retaining ACTIVE preserves verification of
 ACTIVE-signed metadata on both existing and updated clients. Keep publication
 on a mutually trusted key until the new trust set has been distributed.
-`tools/update_signing.py` self-tests copy and restore a disposable key, reapply
-local ownership, then sign and verify with the restored value. Directory
-owner grants inherit to new children; individual signing files still require
-their own protected owner descriptor. Verified 2026-10-21.
+`tools/update_signing.py` self-tests copy and restore a disposable key, then
+sign and verify with the restored value. Creation and restoration checks are
+independent of the original file's security descriptor. Verified 2026-10-21.
 
 The private keys live outside the repository. `.gitignore` covers the obvious
 names and `security_gates.check_no_signing_key_material()` hard-fails if key
