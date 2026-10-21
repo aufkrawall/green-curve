@@ -228,7 +228,7 @@ The background service (`greencurve-service.exe`) manages GPU access, allowing t
 Green Curve applies settings only during specific lifecycle events:
 - **User logon:** Applies the account's configured logon profile.
 - **Standby resume:** Restores the active curve, offsets, power, and fan settings once after waking.
-- **Driver recovery:** Restores active settings once after a confirmed driver recovery event, provided the system has been stable for at least 10 minutes. Repeated crashes or TDR events lock out automatic restoration until manually re-applied by the user.
+- **Driver recovery:** Restores active settings once after a confirmed driver recovery event (including a driver update), provided the system has been stable for at least 10 minutes since they were applied; a driver update restores them even sooner. Repeated crashes or TDR events lock out automatic restoration until manually re-applied by the user, and Green Curve says so.
 - **Service starts/restarts:** Manual or unexpected service restarts do not automatically replay settings (preventing restart loops after emergency stops).
 - Normal boost clock and temperature drift are never artificially overwritten.
 

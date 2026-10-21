@@ -66,6 +66,38 @@ static int veh_exit_plan_tests() {
     if (service_selected_gpu_arrival_action(false, true, true) != SERVICE_GPU_ARRIVAL_NONE ||
         service_selected_gpu_arrival_action(false, false, false) != SERVICE_GPU_ARRIVAL_NONE)
         return 7136;
+    // 7138: a driver update since the apply waives the awake-time window; a
+    // TDR (same driver) or an unknown version on either side does not.
+    const uint64_t window = 600000ULL;
+    if (!service_driver_version_changed(0x00200000u, 0x000F1FC1u, 0x00200000u, 0x000F1FDDu) ||
+        service_driver_version_changed(0x00200000u, 0x000F1FDDu, 0x00200000u, 0x000F1FDDu) ||
+        service_driver_version_changed(0, 0, 0x00200000u, 0x000F1FDDu) ||
+        service_driver_version_changed(0x00200000u, 0x000F1FDDu, 0, 0) ||
+        !service_driver_version_changed(0x001F0000u, 0x000F1FDDu, 0x00200000u, 0x000F1FDDu))
+        return 7138;
+    // 7139: the window alone, or a verified update, accepts; nothing else.
+    if (!service_driver_recovery_proof_accepts(window, window, false) ||
+        service_driver_recovery_proof_accepts(window - 1, window, false) ||
+        !service_driver_recovery_proof_accepts(60000ULL, window, true) ||
+        !service_driver_recovery_proof_accepts(0, window, true)) return 7139;
+    {
+        // The stamp grew; the age computation still validates it exactly.
+        ServiceOcApplyProofStamp stamp = {};
+        stamp.magic = SERVICE_OC_APPLY_STAMP_MAGIC;
+        stamp.version = SERVICE_OC_APPLY_STAMP_VERSION;
+        stamp.size = sizeof(stamp);
+        stamp.bootIdentity = ServiceBootIdentity{ 1, 2 };
+        stamp.awakeTime100ns = 10;
+        stamp.driverVersionMs = 0x00200000u;
+        stamp.driverVersionLs = 0x000F1FDDu;
+        uint64_t ageMs = 0;
+        if (SERVICE_OC_APPLY_STAMP_VERSION != 4u || sizeof(stamp) != 48 ||
+            !service_compute_proof_age_ms(&stamp, ServiceBootIdentity{ 1, 2 }, 10 + 10000ULL, &ageMs) ||
+            ageMs != 1) return 7139;
+        stamp.version = 3u;  // a pre-v4 stamp fails closed
+        if (service_compute_proof_age_ms(&stamp, ServiceBootIdentity{ 1, 2 }, 10 + 10000ULL, &ageMs))
+            return 7139;
+    }
     // 7137: a removal cycle keeps its rule.
     if (service_selected_gpu_arrival_action(true, true, false) != SERVICE_GPU_ARRIVAL_RECOVER ||
         service_selected_gpu_arrival_action(true, true, true) != SERVICE_GPU_ARRIVAL_RECOVER ||

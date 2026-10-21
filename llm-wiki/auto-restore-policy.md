@@ -45,7 +45,7 @@ an immutable profile context itself.
 | Explicit GUI/CLI/hotkey/tray Apply | Apply. On success, clear sticky automatic-restore lockout and recovery history, record the active profile source/slot when known, and start a new 10-minute proof period. |
 | WTS logon or authenticated scheduled-task handoff | Apply the configured account/shared profile once unless locked out. WTS and task events for the same Windows login are coalesced. |
 | Standby resume | Reapply the complete current in-memory intent once without the proof-period gate. A successful restore preserves an already mature same-boot proof; an immature or unavailable proof starts fresh. |
-| Confirmed selected-GPU driver recovery | Reapply once only after 10 minutes of awake stability, in the same boot, and below the recovery-spam threshold. |
+| Confirmed selected-GPU driver recovery | Reapply once only after 10 minutes of awake stability, in the same boot, and below the recovery-spam threshold. A verified driver update since the apply (stamped NvAPI image version differs from the one on disk) waives the 10 minutes; the spam threshold still applies (2026-10-21). |
 | Service install/start/repair or ordinary SCM restart | Never apply or reset merely because the process started, **except** the once-per-crash ownership handback below. |
 | Task Manager kill, crash, or failure-action restart | Never replay persisted settings. Hand back, once, what the dead instance still owned in this boot: fan to driver auto first, then the whole GPU to stock (the graceful-stop reset). |
 | Expected VF/temperature/boost drift | Log diagnostically only. Never apply, clear ownership, or invalidate the applied-profile indicator. |
@@ -471,8 +471,13 @@ that logon-event redundancy is degraded.
    ordinary process restart cannot turn a standby snapshot into authorization.
    A successful standby write preserves prior proof age only when that proof was
    already mature and valid in the current boot; otherwise it starts fresh.
-5. Driver recovery needs 10 minutes of awake stability and valid current-boot
-   proof.
+5. Driver recovery needs valid current-boot proof and 10 minutes of awake
+   stability, unless the driver was verifiably updated since the apply: the
+   proof stamp (v4) records the NvAPI image version the apply ran under, and a
+   different version on disk at recovery waives the window
+   (`service_driver_recovery_proof_accepts()`, tests 7138-7139, log line
+   `oc stabilization: proof age ... driver at apply ..., on disk ... -> ...`).
+   A pre-v4 stamp fails closed; the next successful apply writes v4.
 6. Prerequisite waiting may repeat; a real hardware write may not.
 7. Expected live VF drift never triggers correction or changes profile
    ownership.

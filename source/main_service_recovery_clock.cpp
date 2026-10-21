@@ -10,6 +10,10 @@
 
 static bool service_auto_restore_is_locked_out(DWORD* reasonOut);
 static void service_latch_auto_restore_lockout(DWORD reason, const char* context);
+// Driver image versions (main_service_runtime_identity.cpp).
+static bool service_get_file_version(const WCHAR* path, DWORD* outMs, DWORD* outLs);
+static bool service_get_module_version(HMODULE mod, DWORD* outMs, DWORD* outLs);
+static bool service_get_nvapi_disk_path(WCHAR* out, size_t outCount);
 static volatile LONG g_serviceOcProofInvalidated = 0;
 
 // SystemBootEnvironmentInformation is not declared by every user-mode SDK.
@@ -182,6 +186,13 @@ static bool service_record_oc_apply_stamp() {
     stamp.magic = SERVICE_OC_APPLY_STAMP_MAGIC;
     stamp.version = SERVICE_OC_APPLY_STAMP_VERSION;
     stamp.size = sizeof(stamp);
+    // The driver the settings were applied under; unknown stays 0/0, which only
+    // forgoes the driver-update exemption.
+    DWORD driverMs = 0, driverLs = 0;
+    if (service_get_module_version(g_app.hNvApi, &driverMs, &driverLs)) {
+        stamp.driverVersionMs = driverMs;
+        stamp.driverVersionLs = driverLs;
+    }
     if (!service_query_boot_identity(&stamp.bootIdentity) ||
         !service_query_unbiased_time_100ns(&stamp.awakeTime100ns)) {
         debug_log("oc stabilization: proof clock unavailable; deleting prior proof (fail closed)\n");
@@ -300,5 +311,21 @@ static bool service_auto_restore_allowed_after_driver_event(DWORD* lockoutReason
         return false;
     }
     if (successfulApplyAgeMsOut) *successfulApplyAgeMsOut = ageMs;
-    return should_auto_restore_after_driver_event(true, ageMs, false);
+    if (should_auto_restore_after_driver_event(true, ageMs, false)) return true;
+    // Immature proof: allowed only when the driver was verifiably updated since
+    // the apply (stamped image version vs the image now on disk).
+    WCHAR nvapiPath[MAX_PATH] = {};
+    DWORD diskMs = 0, diskLs = 0;
+    const bool diskKnown = service_get_nvapi_disk_path(nvapiPath, ARRAY_COUNT(nvapiPath)) &&
+        service_get_file_version(nvapiPath, &diskMs, &diskLs);
+    const bool updated = diskKnown && service_driver_version_changed(
+        stamp.driverVersionMs, stamp.driverVersionLs, diskMs, diskLs);
+    debug_log("oc stabilization: proof age %llu ms is below the %llu ms window; driver at apply %u.%u.%u.%u, on disk %u.%u.%u.%u -> %s\n",
+        (unsigned long long)ageMs, (unsigned long long)SERVICE_OC_STABILIZATION_WINDOW_MS,
+        (unsigned)(stamp.driverVersionMs >> 16), (unsigned)(stamp.driverVersionMs & 0xFFFFu),
+        (unsigned)(stamp.driverVersionLs >> 16), (unsigned)(stamp.driverVersionLs & 0xFFFFu),
+        (unsigned)(diskMs >> 16), (unsigned)(diskMs & 0xFFFFu),
+        (unsigned)(diskLs >> 16), (unsigned)(diskLs & 0xFFFFu),
+        updated ? "driver updated, accepted (not stability evidence)" : "refused");
+    return service_driver_recovery_proof_accepts(ageMs, SERVICE_OC_STABILIZATION_WINDOW_MS, updated);
 }

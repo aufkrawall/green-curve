@@ -6,7 +6,10 @@
 #include <stdint.h>
 
 #define SERVICE_OC_APPLY_STAMP_MAGIC   0x47434153u /* 'GCAS' */
-#define SERVICE_OC_APPLY_STAMP_VERSION 3u
+// v4 (2026-10-21) appends the driver version the settings were applied under.
+// A v3 stamp fails closed like any other legacy format: the next successful
+// apply writes v4.
+#define SERVICE_OC_APPLY_STAMP_VERSION 4u
 
 // SystemBootEnvironmentInformation supplies a fresh 128-bit BootIdentifier
 // for each Windows boot. Keep both halves: unlike the wall-clock-derived
@@ -33,7 +36,34 @@ struct ServiceOcApplyProofStamp {
     uint32_t reserved;
     ServiceBootIdentity bootIdentity;
     uint64_t awakeTime100ns;
+    // File version (MS, LS) of the NvAPI image the apply ran under; 0/0 when
+    // unknown.  Compared at driver recovery: a different version on disk means
+    // the driver was updated since the settings were proven applied.
+    uint32_t driverVersionMs;
+    uint32_t driverVersionLs;
 };
+
+// Both versions known and different.  Unknown on either side is "not proven".
+static inline bool service_driver_version_changed(uint32_t previousMs, uint32_t previousLs,
+                                                  uint32_t currentMs, uint32_t currentLs) {
+    const bool previousKnown = previousMs != 0 || previousLs != 0;
+    const bool currentKnown = currentMs != 0 || currentLs != 0;
+    return previousKnown && currentKnown &&
+        (previousMs != currentMs || previousLs != currentLs);
+}
+
+// The awake-time proof exists to catch settings that make the driver fail
+// soon after they are applied.  A verified driver update is not that
+// evidence -- its device restart says nothing about the settings -- so an
+// immature proof does not block the replay then.  The proof itself must still
+// be valid (same boot, a successful apply), and the recovery ledger's spam
+// threshold still applies.  Before, a driver update inside the window latched
+// the sticky UNSTABLE_APPLY lockout and the profile was silently not restored.
+static inline bool service_driver_recovery_proof_accepts(uint64_t proofAgeMs,
+                                                         uint64_t windowMs,
+                                                         bool verifiedDriverUpdate) {
+    return proofAgeMs >= windowMs || verifiedDriverUpdate;
+}
 
 // Pure boundary calculation. Querying the real clocks and reading the protected
 // stamp are deliberately outside this helper so tests need no sleeps or Windows.

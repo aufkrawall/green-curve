@@ -98,6 +98,14 @@ def check_windows_crash_artifacts(ctx, require_text, forbid_text, require_order,
     forbid_text(coordinator_cpp, "selected-GPU arrival without a corroborated removal; diagnostic/readiness only",
                 "a started-only driver restart with applied intent is not ignored")
 
+    # A verified driver update waives the awake-time window (it is not
+    # stability evidence); the stamp records the driver the apply ran under.
+    clock_cpp = _p(ctx, "main_service_recovery_clock.cpp")
+    require_text(clock_cpp, "service_get_module_version(g_app.hNvApi, &driverMs, &driverLs)",
+                 "the proof stamp records the driver the settings were applied under")
+    require_text(clock_cpp, "return service_driver_recovery_proof_accepts(ageMs, SERVICE_OC_STABILIZATION_WINDOW_MS, updated);",
+                 "the driver-recovery proof gate uses the shared waiver policy")
+
     # The user-facing crash-dump notice: scanned with the service's rights,
     # written under the user's token, and the dumps themselves never leave the
     # admin-only directory (a SYSTEM dump can hold other accounts' data).
