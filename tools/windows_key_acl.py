@@ -159,14 +159,14 @@ def _owned_sid_pointer(sid):
 
 
 def harden_owner_only(path):
-    """Replace the file DACL with one protected full-control owner ACE."""
+    """Set a protected owner grant; directories pass it to new children."""
     advapi32, kernel32 = _libraries()
     sid = current_user_sid()
     sid_buffer, sid_pointer = _owned_sid_pointer(sid)
     access = ExplicitAccessW()
     access.grfAccessPermissions = FILE_ALL_ACCESS
     access.grfAccessMode = 1  # GRANT_ACCESS
-    access.grfInheritance = 0
+    access.grfInheritance = 3 if os.path.isdir(path) else 0  # OBJECT/CONTAINER_INHERIT
     access.Trustee.TrusteeForm = 0  # TRUSTEE_IS_SID
     access.Trustee.TrusteeType = 1  # TRUSTEE_IS_USER
     access.Trustee.ptstrName = sid_pointer

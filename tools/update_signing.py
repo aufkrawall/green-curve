@@ -48,6 +48,7 @@ import os
 import update_manifest_tools
 import hmac
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
@@ -501,7 +502,26 @@ def run_self_tests():
             write_private_key(key_path, _VECTOR_KEY)
             if read_private_key(key_path) != _VECTOR_KEY:
                 failures.append("secure key write/read round trip failed")
+            # A backup preserves key bytes independently of the original file's
+            # security descriptor. Restoring reapplies local owner permissions
+            # before the key is used, including on a new Windows installation.
+            backup_path = os.path.join(temp, "backup-key")
+            restored_path = os.path.join(temp, "restored-key")
+            shutil.copyfile(key_path, backup_path)
+            _harden_private_key_file(backup_path)
+            shutil.copyfile(backup_path, restored_path)
+            _harden_private_key_file(restored_path)
+            restored = read_private_key(restored_path)
+            if restored != _VECTOR_KEY or not verify(
+                    public_key_from_private(_VECTOR_KEY), message,
+                    sign(restored, message)):
+                failures.append("key backup/restore signing round trip failed")
             if os.name == "nt":
+                windows_key_acl.harden_owner_only(temp)
+                child = os.path.join(temp, "inherited-key")
+                write_private_key(child, _VECTOR_KEY)
+                if read_private_key(child) != _VECTOR_KEY:
+                    failures.append("owner-directory key round trip failed")
                 # Reproduce the Actions runner's important distinction:
                 # /grant:r for the owner does not remove another principal's
                 # already-explicit ACE. The hardener must replace the complete
