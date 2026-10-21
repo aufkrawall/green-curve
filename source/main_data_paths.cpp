@@ -1,4 +1,5 @@
 #include "log_redaction_policy.h"
+#include "debug_log_identity.h"
 
 static bool ensure_directory_recursive_windows(const char* path, char* err, size_t errSize) {
     if (!path || !*path) return true;
@@ -361,9 +362,9 @@ static bool resolve_service_user_data_paths(DWORD sessionId, char* err, size_t e
         set_message(err, errSize, "WTSQueryUserToken failed (error %lu)", GetLastError());
         return false;
     }
+    ScopedHandle sessionToken(hToken);
     char userSid[184] = {};
     if (!service_sid_string_from_token(hToken, userSid, sizeof(userSid), err, errSize)) {
-        CloseHandle(hToken);
         return false;
     }
     if (g_serviceUserPathsResolved) {
@@ -371,7 +372,6 @@ static bool resolve_service_user_data_paths(DWORD sessionId, char* err, size_t e
             g_serviceUserPathsSid[0] &&
             strcmp(g_serviceUserPathsSid, userSid) == 0;
         if (sameIdentity) {
-            CloseHandle(hToken);
             return true;
         }
         char oldSidToken[32] = {};
@@ -389,13 +389,11 @@ static bool resolve_service_user_data_paths(DWORD sessionId, char* err, size_t e
     DWORD profileSize = ARRAY_COUNT(profileDirW);
     if (!GetUserProfileDirectoryW(hToken, profileDirW, &profileSize)) {
         set_message(err, errSize, "GetUserProfileDirectoryW failed");
-        CloseHandle(hToken);
         return false;
     }
     char profileDir[MAX_PATH] = {};
     if (!copy_wide_to_utf8(profileDirW, profileDir, ARRAY_COUNT(profileDir))) {
         set_message(err, errSize, "Profile path conversion failed");
-        CloseHandle(hToken);
         return false;
     }
     StringCchCopyA(g_serviceUserProfileDir, ARRAY_COUNT(g_serviceUserProfileDir), profileDir);
@@ -413,7 +411,6 @@ static bool resolve_service_user_data_paths(DWORD sessionId, char* err, size_t e
         CoTaskMemFree(localAppDataW);
         localAppDataW = nullptr;
     }
-    CloseHandle(hToken);
     if (!localAppData[0]) {
         if (FAILED(StringCchPrintfA(localAppData, ARRAY_COUNT(localAppData), "%s\\AppData\\Local", profileDir))) {
             set_message(err, errSize, "Profile path too long");
@@ -428,13 +425,16 @@ static bool resolve_service_user_data_paths(DWORD sessionId, char* err, size_t e
         set_message(err, errSize, "Resolved storage paths are too long");
         return false;
     }
-    if (!ensure_directory_recursive_windows(g_userDataDir, err, errSize)) {
+    ScopedHandle logToken(gc_debug_log_user_token(hToken));
+    GcDebugLogIdentity userIdentity(logToken.valid() ? logToken.get() : nullptr, true);
+    if (!userIdentity.valid() || !gc_debug_log_user_directory(g_userDataDir)) {
+        set_message(err, errSize, "Cannot prepare the user data directory with its user's permissions");
         return false;
     }
     g_serviceUserPathsResolved = true;
     g_serviceUserPathsSessionId = sessionId;
     StringCchCopyA(g_serviceUserPathsSid, ARRAY_COUNT(g_serviceUserPathsSid), userSid);
-    debug_log_set_route_path(g_debugLogPath);
+    debug_log_set_route_path(g_debugLogPath, hToken);
     return true;
 }
 

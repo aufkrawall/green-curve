@@ -60,12 +60,23 @@ def check_all(ctx, require_text, require_text_in_operation,
                  "debug log size-cap policy is compiled into the diagnostics shard")
     require_order_in_operation(
         writer_cpp,
-        "static HANDLE debug_log_acquire_handle_locked()",
+        "static HANDLE debug_log_acquire_handle_for_path_locked(",
         "gc_debug_log_rotation::should_rotate(",
         "return g_debugLogFile;",
         "debug log lines append only after the size-cap rotation check")
     require_text(writer_cpp, "gc_debug_log_rotation::marker_line",
                  "a truncated debug log opens with an explanatory marker")
+    require_text_in_operation(
+        writer_cpp, "static void debug_log_write_line_to_path_locked(",
+        "GcDebugLogIdentity identity(route.userToken, route.userDestination)",
+        "destination identity covers append, reopen and rotation")
+    require_text_in_operation(
+        writer_cpp, "static bool debug_log_capture_route_locked(",
+        "DUPLICATE_SAME_ACCESS", "queued routes retain independent token handles")
+    require_text_in_operation(
+        writer_cpp, "static void debug_log_flush_file_locked()",
+        "GcDebugLogIdentity identity(g_debugLogFileUserToken, g_debugLogFileUserDestination)",
+        "batched flush retains the opened file's destination identity")
 
     # The producer half: format, hand off, return.
     require_text(diagnostics_cpp, '#include "debug_log_queue_policy.h"',

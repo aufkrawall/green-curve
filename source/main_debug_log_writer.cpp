@@ -29,6 +29,8 @@
 
 static CRITICAL_SECTION g_debugLogFileLock = {};
 static bool g_debugLogLocksReady = false;
+static HANDLE g_debugLogFileUserToken = nullptr;
+static bool g_debugLogFileUserDestination = false;
 
 static unsigned char g_debugLogRing[gc_debug_log_queue::kRingBytes];
 // Monotonic byte counters, not wrapped indices (debug_log_queue_policy.h).
@@ -60,12 +62,22 @@ static void debug_log_initialize_locks() {
 // to, which is exactly why no producer thread is allowed to reach it.
 // ---------------------------------------------------------------------------
 
+static void debug_log_flush_file_locked() {
+    GcDebugLogIdentity identity(g_debugLogFileUserToken, g_debugLogFileUserDestination);
+    if (identity.valid() && g_debugLogFile != INVALID_HANDLE_VALUE)
+        FlushFileBuffers(g_debugLogFile);
+}
+
 static void debug_log_close_file_locked() {
     if (g_debugLogFile != INVALID_HANDLE_VALUE) {
-        FlushFileBuffers(g_debugLogFile);
+        GcDebugLogIdentity identity(g_debugLogFileUserToken, g_debugLogFileUserDestination);
+        if (identity.valid()) FlushFileBuffers(g_debugLogFile);
         CloseHandle(g_debugLogFile);
         g_debugLogFile = INVALID_HANDLE_VALUE;
     }
+    if (g_debugLogFileUserToken) CloseHandle(g_debugLogFileUserToken);
+    g_debugLogFileUserToken = nullptr;
+    g_debugLogFileUserDestination = false;
     g_debugLogOpenPath[0] = 0;
 }
 
@@ -83,6 +95,8 @@ struct DebugLogRouteSlot {
     unsigned short generation;
     bool valid;
     char path[MAX_PATH];
+    HANDLE userToken;
+    bool userDestination;
 };
 
 static unsigned short g_debugLogCurrentRouteGen = 0;
@@ -90,14 +104,16 @@ static DebugLogRouteSlot g_debugLogRoutes[gc_debug_log_queue::kMaxRouteSlots] = 
 
 // Update the current log destination path and advance the route generation.
 // Callable from any thread (takes g_debugLogLock, never touches disk I/O).
-static void debug_log_set_route_path(const char* path) {
+static void debug_log_set_route_path(const char* path, HANDLE userToken) {
     if (!path || !path[0]) return;
+    HANDLE tokenCopy = gc_debug_log_user_token(userToken);
     debug_log_initialize_locks();
     EnterCriticalSection(&g_debugLogLock);
     unsigned int curSlotIdx = (unsigned int)(g_debugLogCurrentRouteGen % gc_debug_log_queue::kMaxRouteSlots);
     if (g_debugLogCurrentRouteGen != 0 &&
         g_debugLogRoutes[curSlotIdx].valid &&
         g_debugLogRoutes[curSlotIdx].generation == g_debugLogCurrentRouteGen &&
+        !userToken && !g_debugLogRoutes[curSlotIdx].userDestination &&
         _stricmp(g_debugLogRoutes[curSlotIdx].path, path) == 0) {
         LeaveCriticalSection(&g_debugLogLock);
         return;
@@ -105,6 +121,9 @@ static void debug_log_set_route_path(const char* path) {
     g_debugLogCurrentRouteGen++;
     if (g_debugLogCurrentRouteGen == 0) g_debugLogCurrentRouteGen = 1;
     unsigned int newIdx = (unsigned int)(g_debugLogCurrentRouteGen % gc_debug_log_queue::kMaxRouteSlots);
+    if (g_debugLogRoutes[newIdx].userToken) CloseHandle(g_debugLogRoutes[newIdx].userToken);
+    g_debugLogRoutes[newIdx].userToken = tokenCopy;
+    g_debugLogRoutes[newIdx].userDestination = userToken != nullptr;
     g_debugLogRoutes[newIdx].generation = g_debugLogCurrentRouteGen;
     g_debugLogRoutes[newIdx].valid = true;
     StringCchCopyA(g_debugLogRoutes[newIdx].path, ARRAY_COUNT(g_debugLogRoutes[newIdx].path), path);
@@ -112,23 +131,96 @@ static void debug_log_set_route_path(const char* path) {
     if (g_debugLogWriterEvent) SetEvent(g_debugLogWriterEvent);
 }
 
-static HANDLE debug_log_acquire_handle_for_path_locked(const char* targetPath) {
+static void debug_log_initialize_route_locked() {
+    if (g_debugLogCurrentRouteGen == 0) {
+        const char* initPath = app_is_service_process() ? service_early_debug_log_path() : effective_debug_log_path();
+        if (initPath && initPath[0]) {
+            g_debugLogCurrentRouteGen = 1;
+            unsigned int idx = (unsigned int)(1 % gc_debug_log_queue::kMaxRouteSlots);
+            g_debugLogRoutes[idx].generation = 1;
+            g_debugLogRoutes[idx].valid = true;
+            StringCchCopyA(g_debugLogRoutes[idx].path, ARRAY_COUNT(g_debugLogRoutes[idx].path), initPath);
+        }
+    }
+}
+
+// Caller holds the ring lock while copying both destination and identity.
+static bool debug_log_capture_route_locked(unsigned short generation, GcDebugLogRoute* out) {
+    out->reset();
+    unsigned int index = generation % gc_debug_log_queue::kMaxRouteSlots;
+    if (!generation || !g_debugLogRoutes[index].valid ||
+        g_debugLogRoutes[index].generation != generation) {
+        index = g_debugLogCurrentRouteGen % gc_debug_log_queue::kMaxRouteSlots;
+        if (generation && generation != g_debugLogCurrentRouteGen)
+            InterlockedIncrement64(&g_debugLogReroutedLines);
+    }
+    const DebugLogRouteSlot& slot = g_debugLogRoutes[index];
+    if (!slot.valid) return false;
+    out->userDestination = slot.userDestination;
+    out->generation = slot.generation;
+    if (slot.userDestination && (!slot.userToken || !DuplicateHandle(
+            GetCurrentProcess(), slot.userToken, GetCurrentProcess(), &out->userToken,
+            0, FALSE, DUPLICATE_SAME_ACCESS))) {
+        InterlockedIncrement64(&g_debugLogDroppedLines);
+        return false;
+    }
+    if (slot.userDestination) {
+        TOKEN_STATISTICS statistics = {{}, {}, {}, TokenImpersonation,
+            SecurityImpersonation, 0, 0, 0, 0, {}};
+        DWORD bytes = 0;
+        if (!GetTokenInformation(out->userToken, TokenStatistics, &statistics,
+                                  sizeof(statistics), &bytes)) {
+            InterlockedIncrement64(&g_debugLogDroppedLines);
+            return false;
+        }
+        out->tokenId = statistics.TokenId;
+    }
+    StringCchCopyA(out->path, ARRAY_COUNT(out->path), slot.path);
+    return true;
+}
+
+static unsigned short g_debugLogOpenRouteGen = 0;
+static LUID g_debugLogOpenTokenId = {};
+
+static HANDLE debug_log_open_route_file_locked(const GcDebugLogRoute& route) {
+    HANDLE token = nullptr;
+    if (route.userDestination && !DuplicateHandle(GetCurrentProcess(), route.userToken,
+            GetCurrentProcess(), &token, 0, FALSE, DUPLICATE_SAME_ACCESS))
+        return INVALID_HANDLE_VALUE;
+    HANDLE file = open_debug_log_file_locked(route.path, route.userDestination);
+    if (file == INVALID_HANDLE_VALUE) {
+        if (token) CloseHandle(token);
+        return INVALID_HANDLE_VALUE;
+    }
+    g_debugLogFileUserToken = token;
+    g_debugLogFileUserDestination = route.userDestination;
+    g_debugLogOpenTokenId = route.tokenId;
+    return file;
+}
+
+static HANDLE debug_log_acquire_handle_for_path_locked(const GcDebugLogRoute& route) {
+    const char* targetPath = route.path;
     if (!targetPath || !targetPath[0]) return INVALID_HANDLE_VALUE;
     if (InterlockedExchange(&g_debugLogCloseRequested, 0) != 0)
         debug_log_close_file_locked();
 
     if (g_debugLogFile != INVALID_HANDLE_VALUE &&
-        _stricmp(g_debugLogOpenPath, targetPath) != 0) {
+        (_stricmp(g_debugLogOpenPath, targetPath) != 0 ||
+         g_debugLogOpenRouteGen != route.generation ||
+         g_debugLogFileUserDestination != route.userDestination ||
+         g_debugLogOpenTokenId.LowPart != route.tokenId.LowPart ||
+         g_debugLogOpenTokenId.HighPart != route.tokenId.HighPart)) {
         debug_log_close_file_locked();
     }
     if (g_debugLogFile == INVALID_HANDLE_VALUE) {
-        g_debugLogFile = open_debug_log_file_locked(targetPath);
+        g_debugLogFile = debug_log_open_route_file_locked(route);
         if (g_debugLogFile != INVALID_HANDLE_VALUE) {
             StringCchCopyA(g_debugLogOpenPath, ARRAY_COUNT(g_debugLogOpenPath), targetPath);
         }
     }
     if (g_debugLogFile == INVALID_HANDLE_VALUE) return INVALID_HANDLE_VALUE;
 
+    g_debugLogOpenRouteGen = route.generation;
     LARGE_INTEGER logSize = {};
     if (GetFileSizeEx(g_debugLogFile, &logSize) &&
         gc_debug_log_rotation::should_rotate(logSize.QuadPart)) {
@@ -143,7 +235,7 @@ static HANDLE debug_log_acquire_handle_for_path_locked(const char* targetPath) {
                       nullptr);
             CloseHandle(fresh);
         }
-        g_debugLogFile = open_debug_log_file_locked(targetPath);
+        g_debugLogFile = debug_log_open_route_file_locked(route);
         if (g_debugLogFile != INVALID_HANDLE_VALUE) {
             StringCchCopyA(g_debugLogOpenPath, ARRAY_COUNT(g_debugLogOpenPath), targetPath);
         }
@@ -152,81 +244,35 @@ static HANDLE debug_log_acquire_handle_for_path_locked(const char* targetPath) {
     return g_debugLogFile;
 }
 
-// Open (or re-open) the handle for the path that is currently in effect, and
-// honour a pending close request. Returns the handle to write through, or
-// INVALID_HANDLE_VALUE when the log cannot be opened at all.
-static HANDLE debug_log_acquire_handle_locked() {
-    if (InterlockedExchange(&g_debugLogCloseRequested, 0) != 0)
-        debug_log_close_file_locked();
-
-    const char* debugPath = effective_debug_log_path();
-    // Late path resolution for the GUI, preserved from the synchronous writer:
-    // lines produced before WinMain resolves the data paths would otherwise
-    // land in the relative fallback file forever.
-    if (!app_is_service_process() && !g_debugLogPath[0]) {
-        char pathErr[256] = {};
-        resolve_data_paths(pathErr, sizeof(pathErr));
-        debugPath = effective_debug_log_path();
+static void debug_log_write_line_to_path_locked(const char* text, const GcDebugLogRoute& route) {
+    if (!text || !text[0] || !route.path[0]) return;
+    GcDebugLogIdentity identity(route.userToken, route.userDestination);
+    if (!identity.valid()) {
+        InterlockedIncrement64(&g_debugLogDroppedLines);
+        return;
     }
-    if (g_debugLogFile != INVALID_HANDLE_VALUE &&
-        _stricmp(g_debugLogOpenPath, debugPath) != 0) {
-        debug_log_close_file_locked();
+    HANDLE file = debug_log_acquire_handle_for_path_locked(route);
+    if (file == INVALID_HANDLE_VALUE) {
+        InterlockedIncrement64(&g_debugLogDroppedLines);
+        return;
     }
-    if (g_debugLogFile == INVALID_HANDLE_VALUE)
-        g_debugLogFile = open_debug_log_file_locked(debugPath);
-    if (g_debugLogFile == INVALID_HANDLE_VALUE) return INVALID_HANDLE_VALUE;
-
-    // Size-cap rotation. The GUI and service can share one user-side log via
-    // append-only handles, so truncation (not rename) is what keeps every
-    // writer valid: FILE_APPEND_DATA writes always land at EOF, and a
-    // cooperative truncate simply moves that EOF for everyone.
-    LARGE_INTEGER logSize = {};
-    if (GetFileSizeEx(g_debugLogFile, &logSize) &&
-        gc_debug_log_rotation::should_rotate(logSize.QuadPart)) {
-        debug_log_close_file_locked();
-        HANDLE fresh = gc_CreateFileUtf8(debugPath, GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS,
-            debug_log_file_attributes(), nullptr);
-        if (fresh != INVALID_HANDLE_VALUE) {
-            const char* marker = gc_debug_log_rotation::marker_line();
-            DWORD markerWritten = 0;
-            WriteFile(fresh, marker, (DWORD)strlen(marker), &markerWritten,
-                      nullptr);
-            CloseHandle(fresh);
-        }
-        g_debugLogFile = open_debug_log_file_locked(debugPath);
-        if (g_debugLogFile == INVALID_HANDLE_VALUE) return INVALID_HANDLE_VALUE;
-    }
-    return g_debugLogFile;
-}
-
-static void debug_log_write_line_to_path_locked(const char* text, const char* targetPath) {
-    if (!text || !text[0] || !targetPath || !targetPath[0]) return;
-    HANDLE file = debug_log_acquire_handle_for_path_locked(targetPath);
-    if (file == INVALID_HANDLE_VALUE) return;
     DWORD written = 0;
     if (!WriteFile(file, text, (DWORD)strlen(text), &written, nullptr)) {
         debug_log_close_file_locked();
-        file = debug_log_acquire_handle_for_path_locked(targetPath);
+        file = debug_log_acquire_handle_for_path_locked(route);
         if (file != INVALID_HANDLE_VALUE)
             WriteFile(file, text, (DWORD)strlen(text), &written, nullptr);
     }
 }
 
-// Append one already-formatted line. Caller holds g_debugLogFileLock.
+// Append to the current route using the same identity rules as queued records.
 static void debug_log_write_line_locked(const char* text) {
-    if (!text || !text[0]) return;
-    HANDLE file = debug_log_acquire_handle_locked();
-    if (file == INVALID_HANDLE_VALUE) return;
-    DWORD written = 0;
-    if (!WriteFile(file, text, (DWORD)strlen(text), &written, nullptr)) {
-        // One re-open retry: a handle invalidated by a path/session change
-        // under us is recoverable, and losing the line to it is not.
-        debug_log_close_file_locked();
-        file = debug_log_acquire_handle_locked();
-        if (file != INVALID_HANDLE_VALUE)
-            WriteFile(file, text, (DWORD)strlen(text), &written, nullptr);
-    }
+    GcDebugLogRoute route;
+    EnterCriticalSection(&g_debugLogLock);
+    debug_log_initialize_route_locked();
+    debug_log_capture_route_locked(g_debugLogCurrentRouteGen, &route);
+    LeaveCriticalSection(&g_debugLogLock);
+    debug_log_write_line_to_path_locked(text, route);
 }
 
 // ---------------------------------------------------------------------------
@@ -278,23 +324,14 @@ static void debug_log_enqueue(const char* line) {
         OutputDebugStringA(line);
         debug_log_write_line_locked(line);
         if (app_is_service_process() && g_debugLogFile != INVALID_HANDLE_VALUE)
-            FlushFileBuffers(g_debugLogFile);
+            debug_log_flush_file_locked();
         LeaveCriticalSection(&g_debugLogFileLock);
         return;
     }
 
     bool committed = false;
     EnterCriticalSection(&g_debugLogLock);
-    if (g_debugLogCurrentRouteGen == 0) {
-        const char* initPath = effective_debug_log_path();
-        if (initPath && initPath[0]) {
-            g_debugLogCurrentRouteGen = 1;
-            unsigned int idx = (unsigned int)(1 % gc_debug_log_queue::kMaxRouteSlots);
-            g_debugLogRoutes[idx].generation = 1;
-            g_debugLogRoutes[idx].valid = true;
-            StringCchCopyA(g_debugLogRoutes[idx].path, ARRAY_COUNT(g_debugLogRoutes[idx].path), initPath);
-        }
-    }
+    debug_log_initialize_route_locked();
     unsigned short routeGen = g_debugLogCurrentRouteGen;
     unsigned long long head = (unsigned long long)g_debugLogRingHead;
     unsigned long long tail = (unsigned long long)g_debugLogRingTail;
@@ -320,10 +357,10 @@ static void debug_log_enqueue(const char* line) {
 }
 
 // Move one record out of the ring. Returns false when the ring is empty.
-static bool debug_log_dequeue(char* out, size_t outSize, char* outPath, size_t outPathSize) {
+static bool debug_log_dequeue(char* out, size_t outSize, GcDebugLogRoute* route) {
     if (!out || outSize == 0) return false;
     bool dequeued = false;
-    if (outPath && outPathSize > 0) outPath[0] = 0;
+    route->reset();
     EnterCriticalSection(&g_debugLogLock);
     unsigned long long head = (unsigned long long)g_debugLogRingHead;
     unsigned long long tail = (unsigned long long)g_debugLogRingTail;
@@ -341,30 +378,7 @@ static bool debug_log_dequeue(char* out, size_t outSize, char* outPath, size_t o
             debug_log_ring_copy_out(
                 tail + gc_debug_log_queue::kHeaderBytes, out, copyBytes);
             out[copyBytes] = 0;
-            if (outPath && outPathSize > 0) {
-                unsigned int idx = (unsigned int)(routeGen % gc_debug_log_queue::kMaxRouteSlots);
-                if (routeGen != 0 && g_debugLogRoutes[idx].valid &&
-                    g_debugLogRoutes[idx].generation == (unsigned short)routeGen) {
-                    StringCchCopyA(outPath, outPathSize, g_debugLogRoutes[idx].path);
-                } else {
-                    // F-04-002: the line's own route generation is gone. There
-                    // are kMaxRouteSlots slots indexed by generation, so more
-                    // than that many route changes while this line sat queued
-                    // reused its slot. Falling back to the CURRENT route is the
-                    // right answer (the alternative is dropping the line), but
-                    // it silently writes a line into a different session's log,
-                    // so count it: a support log that quietly reroutes is worse
-                    // than one that says it did.
-                    unsigned int curIdx = (unsigned int)(g_debugLogCurrentRouteGen % gc_debug_log_queue::kMaxRouteSlots);
-                    if (g_debugLogRoutes[curIdx].valid) {
-                        StringCchCopyA(outPath, outPathSize, g_debugLogRoutes[curIdx].path);
-                        if (routeGen != 0 &&
-                            routeGen != (unsigned int)g_debugLogCurrentRouteGen) {
-                            InterlockedIncrement64(&g_debugLogReroutedLines);
-                        }
-                    }
-                }
-            }
+            debug_log_capture_route_locked((unsigned short)routeGen, route);
             InterlockedExchange64(&g_debugLogRingTail,
                 (LONG64)(tail +
                     gc_debug_log_queue::record_bytes(payloadBytes)));
@@ -381,11 +395,6 @@ static bool debug_log_dequeue(char* out, size_t outSize, char* outPath, size_t o
     return dequeued;
 }
 
-static bool debug_log_dequeue(char* out, size_t outSize) {
-    char targetPath[MAX_PATH] = {};
-    return debug_log_dequeue(out, outSize, targetPath, sizeof(targetPath));
-}
-
 // ---------------------------------------------------------------------------
 // The writer thread.
 // ---------------------------------------------------------------------------
@@ -396,7 +405,7 @@ static bool debug_log_dequeue(char* out, size_t outSize) {
 // crash drain below and by debug_log_writer_stop().
 static void debug_log_writer_drain() {
     char line[gc_debug_log_queue::kMaxRecordBytes + 1] = {};
-    char targetPath[MAX_PATH] = {};
+    GcDebugLogRoute route;
     bool wroteAny = false;
     if (!g_debugLogLocksReady) return;
     EnterCriticalSection(&g_debugLogFileLock);
@@ -434,19 +443,19 @@ static void debug_log_writer_drain() {
         debug_log_write_line_locked(stamped);
         wroteAny = true;
     }
-    while (debug_log_dequeue(line, sizeof(line), targetPath, sizeof(targetPath))) {
+    while (debug_log_dequeue(line, sizeof(line), &route)) {
         // OutputDebugStringA serializes on a system-wide mutex whenever a
         // debugger or DebugView is listening, so it belongs on this thread for
         // the same reason the file write does.
         OutputDebugStringA(line);
-        if (targetPath[0]) {
-            debug_log_write_line_to_path_locked(line, targetPath);
+        if (route.path[0]) {
+            debug_log_write_line_to_path_locked(line, route);
             wroteAny = true;
         }
     }
     if (wroteAny && app_is_service_process() &&
         g_debugLogFile != INVALID_HANDLE_VALUE) {
-        FlushFileBuffers(g_debugLogFile);
+        debug_log_flush_file_locked();
     }
     LeaveCriticalSection(&g_debugLogFileLock);
 }
@@ -488,10 +497,9 @@ static void debug_log_writer_ensure_started() {
 // synchronous fallback.
 static void debug_log_writer_start() {
     debug_log_initialize_locks();
-    const char* initPath = effective_debug_log_path();
-    if (initPath && initPath[0]) {
-        debug_log_set_route_path(initPath);
-    }
+    EnterCriticalSection(&g_debugLogLock);
+    debug_log_initialize_route_locked();
+    LeaveCriticalSection(&g_debugLogLock);
     debug_log_writer_ensure_started();
 }
 

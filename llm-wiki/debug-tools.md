@@ -166,6 +166,17 @@ WHICH file changes at runtime (`effective_debug_log_path()` in
    THE ACTIVE USER's `%LOCALAPPDATA%\Green Curve\greencurve_debug.txt`, the
    same file the GUI appends to. Fast user switching closes/reopens onto the
    new user's file via generation-stamped log routing (`debug_log_set_route_path()`).
+
+Verified 2026-10-21: each service user route owns a limited-user impersonation
+token (`source/debug_log_identity.h`). Dequeue copies both path and token;
+append, reopen, rotation, batched flush and close retain that destination's
+identity. Cached handles are invalidated by route generation and token ID,
+including when two routes have the same pathname. A missing identity drops
+the record and increments the existing dropped-line counter. The machine
+early route remains separate. User directory creation runs with user rights,
+so known-folder redirects remain usable. Native coverage in
+`tests/debug_log_identity_tests.cpp` executes the production writer against
+restricted-token files, slot reuse, redirects, rotation and identity restoration.
    Queued asynchronous log records retain their route generation (`kMaxRouteSlots = 8`),
    so records queued before the session change are drained to the prior profile
    rather than leaking across sessions. So the active-era user-side log is MERGED GUI+service.

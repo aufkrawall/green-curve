@@ -18,10 +18,12 @@ static DWORD debug_log_file_attributes() {
     return FILE_ATTRIBUTE_NORMAL | (app_is_service_process() ? FILE_FLAG_WRITE_THROUGH : 0);
 }
 
-static HANDLE open_debug_log_file_locked(const char* debugPath) {
+static HANDLE open_debug_log_file_locked(const char* debugPath, bool userDestination) {
     if (!debugPath || !debugPath[0]) return INVALID_HANDLE_VALUE;
     char pathErr[256] = {};
-    ensure_parent_directory_for_file(debugPath, pathErr, sizeof(pathErr));
+    if (userDestination ? !gc_debug_log_user_parent(debugPath) :
+        !ensure_parent_directory_for_file(debugPath, pathErr, sizeof(pathErr)))
+        return INVALID_HANDLE_VALUE;
     HANDLE h = gc_CreateFileUtf8(debugPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
         OPEN_ALWAYS, debug_log_file_attributes(), nullptr);
     if (h != INVALID_HANDLE_VALUE) {
