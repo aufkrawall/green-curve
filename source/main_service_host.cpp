@@ -216,7 +216,9 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
     service_cleanup_obsolete_recovery_artifacts();
     // This is the sole persisted-replay gate and runs synchronously while the
     // service is START_PENDING. Ordinary/failure-action/Task-Manager restarts
-    // clear stale state and remain non-mutating.
+    // clear stale state and remain non-mutating -- except that a failure-action
+    // start racing a live recovery helper first steps aside (never returns).
+    service_yield_to_controlled_recovery_helper_if_pending(argc, argv);
     service_prepare_controlled_recovery_startup(argc, argv);
     // Startup never replays; it only decides here (file I/O, no hardware)
     // whether a previous instance died owning GPU state that must be handed

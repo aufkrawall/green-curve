@@ -46,6 +46,7 @@ Local protection and diagnostic privacy improve while existing installation loca
 - **GPU reconnecting:** the status no longer stays on "GPU reconnecting" after a driver recovery that was not allowed to restore the profile.
 - **Driver updates without a fan curve:** your profile is now restored after a driver update even when no fan curve is running and the Green Curve window is closed.
 - **Driver updates soon after applying:** a profile applied less than 10 minutes before a driver update is now restored too; a driver crash in that window still pauses automatic restore.
+- **Driver recovery restart:** a rare timing race no longer leaves the GPU at stock instead of restoring your profile after a driver recovery.
 
 ### Security
 

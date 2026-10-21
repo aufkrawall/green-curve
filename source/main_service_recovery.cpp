@@ -112,3 +112,87 @@ static void service_drop_provisional_recovery_intent(const char* reason) {
     debug_log("controlled recovery: provisional intent dropped (%s; wasReapplying=%d)\n",
         reason && reason[0] ? reason : "recovery will not run", wasReapplying ? 1 : 0);
 }
+
+// ---- An SCM failure-action start yields to a pending controlled recovery ----
+//
+// The controlled exit leaves the service in STOP_PENDING, which the SCM counts
+// as a failure: 2 s later its failure action starts an ordinary instance.  The
+// nonce-bound helper normally starts the recovery instance long before that,
+// but when it is late the ordinary instance used to win, delete the
+// authorization, hand the GPU back to stock and leave the profile unrestored.
+// Now that instance steps aside (service_ordinary_start_yields_to_recovery_helper)
+// and the helper waits through it (service_classify_controlled_recovery_scm_stop_state).
+
+#ifndef SERVICE_START_REASON_RESTART_ON_FAILURE
+#define SERVICE_START_REASON_RESTART_ON_FAILURE 0x00000008
+#endif
+
+static bool service_query_scm_start_reason(DWORD* reasonOut);
+
+// Whether the process (pid, creation time) is still running.
+static bool service_process_identity_alive(DWORD pid, ULONGLONG creationTime100ns) {
+    if (pid == 0 || creationTime100ns == 0) return false;
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
+    if (!process) return false;
+    ULONGLONG created = 0;
+    const bool alive = service_query_process_creation_time_100ns(process, &created) &&
+        created == creationTime100ns && WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
+    CloseHandle(process);
+    return alive;
+}
+
+// A helper-validated, fresh, same-boot authorization, read without its nonce
+// and without consuming it.
+static bool service_peek_pending_controlled_recovery(
+    ServiceControlledRecoveryAuthorization* out) {
+    char path[MAX_PATH] = {};
+    if (!out || !service_controlled_recovery_authorization_path(path, sizeof(path))) return false;
+    HANDLE file = gc_CreateFileUtf8(path, GENERIC_READ, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    DWORD read = 0, trailingRead = 0;
+    BYTE trailing = 0;
+    bool ok = ReadFile(file, out, sizeof(*out), &read, nullptr) && read == sizeof(*out) &&
+        ReadFile(file, &trailing, sizeof(trailing), &trailingRead, nullptr) && trailingRead == 0;
+    CloseHandle(file);
+    ServiceBootIdentity boot = {};
+    const ULONGLONG now = GetTickCount64();
+    return ok && out->magic == SERVICE_CONTROLLED_RECOVERY_MAGIC &&
+        out->version == SERVICE_CONTROLLED_RECOVERY_VERSION && out->size == sizeof(*out) &&
+        out->helperValidationMagic == SERVICE_CONTROLLED_RECOVERY_HELPER_VALIDATION_MAGIC &&
+        service_query_boot_identity(&boot) && service_boot_identity_equal(out->bootIdentity, boot) &&
+        out->createdUptimeMs != 0 && out->createdUptimeMs <= now &&
+        now - out->createdUptimeMs < SERVICE_CONTROLLED_RECOVERY_MAX_AGE_MS;
+}
+
+// Called before the startup gate clears recovery state.  Returns for every
+// start except a failure-action start racing a live helper, which it ends.
+static void service_yield_to_controlled_recovery_helper_if_pending(DWORD argc, LPWSTR* argv) {
+    for (DWORD i = 1; argv && i < argc; ++i) {
+        if (argv[i] && _wcsicmp(argv[i], L"--controlled-recovery") == 0) return;
+    }
+    DWORD startReason = 0;
+    const bool restartOnFailure = service_query_scm_start_reason(&startReason) &&
+        (startReason & SERVICE_START_REASON_RESTART_ON_FAILURE) != 0;
+    if (!restartOnFailure) return;
+    ServiceControlledRecoveryAuthorization pending = {};
+    const bool authorizationPending = service_peek_pending_controlled_recovery(&pending);
+    const bool previousGone = authorizationPending && !service_process_identity_alive(
+        pending.previousProcessId, pending.previousProcessCreationTime100ns);
+    const bool helperAlive = authorizationPending && service_process_identity_alive(
+        pending.helperProcessId, pending.helperProcessCreationTime100ns);
+    SecureZeroMemory(&pending, sizeof(pending));
+    const bool yield = service_ordinary_start_yields_to_recovery_helper(
+        restartOnFailure, authorizationPending, previousGone, helperAlive);
+    debug_log("controlled recovery: failure-action start (reason=0x%08lX) pending=%d previousGone=%d helperAlive=%d -> %s\n",
+        (unsigned long)startReason, authorizationPending ? 1 : 0, previousGone ? 1 : 0,
+        helperAlive ? 1 : 0, yield ? "yielding to the recovery helper" : "ordinary start");
+    if (!yield) return;
+    debug_log_drain_pending_for_crash();
+    g_serviceStatus.dwControlsAccepted = 0;
+    g_serviceStatus.dwWin32ExitCode = ERROR_RETRY;
+    g_serviceStatus.dwServiceSpecificExitCode = 0;
+    g_serviceStatus.dwCurrentState = SERVICE_STOPPED;
+    SetServiceStatus(g_serviceStatusHandle, &g_serviceStatus);
+    ExitProcess(ERROR_RETRY);
+}

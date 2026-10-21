@@ -234,10 +234,12 @@ static bool service_configure_failure_actions(SC_HANDLE svc) {
         }
         return false;
     }
-    // Unexpected-crash availability net only. Controlled driver recovery reports
-    // a clean stop and is restarted exclusively by the nonce-bound helper; it
-    // never relies on SCM failure actions. Any failure-action restart has no
-    // nonce and is therefore strictly non-restoring.
+    // Unexpected-crash availability net only. Controlled driver recovery is
+    // restarted by the nonce-bound helper; its exit leaves STOP_PENDING, which
+    // the SCM also answers with a failure action, and that start yields to a
+    // live helper (service_yield_to_controlled_recovery_helper_if_pending). Any
+    // failure-action restart has no nonce and is therefore strictly
+    // non-restoring.
     SERVICE_FAILURE_ACTIONS_FLAG faf = {};
     faf.fFailureActionsOnNonCrashFailures = TRUE;
     if (!ChangeServiceConfig2W(svc, SERVICE_CONFIG_FAILURE_ACTIONS_FLAG, &faf)) {

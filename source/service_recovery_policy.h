@@ -123,9 +123,20 @@ enum ServiceControlledRecoveryScmStopDisposition {
 
 // QueryServiceStatusEx explicitly does not guarantee a valid process ID while
 // a service is STOP_PENDING. The helper has already verified the old process's
-// dedicated exit through a pinned process handle, so STOP_PENDING remains the
-// one legitimate transitional state even when SCM reports pid=0 or a stale
-// value. Other non-stopped states must still identify the exact old generation.
+// dedicated exit through a pinned process handle, so STOP_PENDING remains a
+// legitimate transitional state even when SCM reports pid=0 or a stale value.
+//
+// A DIFFERENT generation is waited through as well (2026-10-21).  The old
+// process exits in STOP_PENDING, which the SCM counts as a failure, so its
+// failure action starts an ordinary instance 2 s later; if that won the race
+// against the helper's StartServiceW, the helper used to reject here and the
+// recovery was lost (the ordinary start then handed the GPU back to stock).
+// That instance now yields (service_ordinary_start_yields_to_recovery_helper)
+// and stops again.  Waiting through any other generation is harmless: every
+// ordinary start that does not yield deletes the authorization while it
+// starts, and the helper re-reads it right before its single start attempt.
+// A starting/running state always belongs to a process, so one reported with
+// pid 0 is not attributable to any generation and is still rejected.
 static inline ServiceControlledRecoveryScmStopDisposition
 service_classify_controlled_recovery_scm_stop_state(
     bool stopped, bool stopPending, uint32_t reportedProcessId,
@@ -137,9 +148,23 @@ service_classify_controlled_recovery_scm_stop_state(
     if (stopPending) {
         return SERVICE_CONTROLLED_RECOVERY_SCM_WAIT_FOR_STOPPED;
     }
-    return reportedProcessId == expectedPreviousProcessId
+    return reportedProcessId != 0
         ? SERVICE_CONTROLLED_RECOVERY_SCM_WAIT_FOR_STOPPED
         : SERVICE_CONTROLLED_RECOVERY_SCM_REJECT;
+}
+
+// Whether an ordinary service start must step aside for a pending controlled
+// recovery: only the SCM's own failure-action start (the one that races the
+// helper), only while a helper-validated, fresh authorization exists, the old
+// process is gone and the helper that will start the recovery is alive.  The
+// yielding instance touches no hardware and leaves the authorization alone;
+// it stops with an error so the SCM's next failure action remains the fallback
+// if the helper dies after all.
+static inline bool service_ordinary_start_yields_to_recovery_helper(
+    bool restartOnFailureStart, bool helperValidatedAuthorizationPending,
+    bool previousProcessGone, bool helperAlive) {
+    return restartOnFailureStart && helperValidatedAuthorizationPending &&
+        previousProcessGone && helperAlive;
 }
 
 // What the service does once its runtime mutex is poisoned (a thread died

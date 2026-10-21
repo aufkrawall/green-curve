@@ -3,7 +3,8 @@
 //
 // Native fixture for the service's vectored driver-fault flow
 // (veh_driver_fault_win32.h) and what follows a claimed fault
-// (service_poisoned_runtime_exit_plan), assertion codes 7100-7139.
+// (service_poisoned_runtime_exit_plan), assertion codes 7100-7139 and
+// 7170-7179 (the failure-action yield to the recovery helper).
 //
 // The claim decision and the log record run against synthesised exception
 // records.  The flow itself runs against REAL access violations on real
@@ -98,6 +99,22 @@ static int veh_exit_plan_tests() {
         if (service_compute_proof_age_ms(&stamp, ServiceBootIdentity{ 1, 2 }, 10 + 10000ULL, &ageMs))
             return 7139;
     }
+    // 7170: only the SCM failure-action start yields, and only to a pending,
+    // helper-validated recovery whose old process is gone and whose helper is
+    // alive; every other start proceeds (and clears the authorization).
+    if (!service_ordinary_start_yields_to_recovery_helper(true, true, true, true) ||
+        service_ordinary_start_yields_to_recovery_helper(false, true, true, true) ||
+        service_ordinary_start_yields_to_recovery_helper(true, false, true, true) ||
+        service_ordinary_start_yields_to_recovery_helper(true, true, false, true) ||
+        service_ordinary_start_yields_to_recovery_helper(true, true, true, false)) return 7170;
+    // 7171: the helper waits through an intermediate generation instead of
+    // abandoning the recovery; with no expected old process it still rejects.
+    if (service_classify_controlled_recovery_scm_stop_state(false, false, 4242, 1111) !=
+            SERVICE_CONTROLLED_RECOVERY_SCM_WAIT_FOR_STOPPED ||
+        service_classify_controlled_recovery_scm_stop_state(true, false, 4242, 1111) !=
+            SERVICE_CONTROLLED_RECOVERY_SCM_STOPPED ||
+        service_classify_controlled_recovery_scm_stop_state(false, false, 4242, 0) !=
+            SERVICE_CONTROLLED_RECOVERY_SCM_REJECT) return 7171;
     // 7137: a removal cycle keeps its rule.
     if (service_selected_gpu_arrival_action(true, true, false) != SERVICE_GPU_ARRIVAL_RECOVER ||
         service_selected_gpu_arrival_action(true, true, true) != SERVICE_GPU_ARRIVAL_RECOVER ||

@@ -406,12 +406,26 @@ This uses a nonce-bound controlled-restart protocol, not a reusable marker:
    polling or timing sleep. Because `QueryServiceStatusEx` does not guarantee a
    valid process ID in `SERVICE_STOP_PENDING`, that one transitional state is
    waitable after the pinned parent's dedicated exit even with a zero/stale
-   reported PID. Every other non-stopped state must still belong to the exact
-   old PID. The helper then revalidates the protected authorization and makes
-   exactly one `StartServiceW` call with `--controlled-recovery <nonce>`.
-   Notification failure, deletion, timeout, or a different SCM process
-   generation clears the recovery files and performs no start or hardware
-   write.
+   reported PID. Since 2026-10-21 an intervening generation with a real PID
+   is waited through as well (a running state with pid 0 is still rejected):
+   the STOP_PENDING exit counts as a failure for the SCM, whose failure action
+   starts an ordinary instance 2 s later, and when that won the race the
+   helper used to give up, so the ordinary start handed the GPU back to stock
+   and the profile was lost. That failure-action instance now yields before
+   the startup gate (`service_yield_to_controlled_recovery_helper_if_pending`,
+   policy `service_ordinary_start_yields_to_recovery_helper`, tests 7170-7171,
+   654/763 updated): only for start reason RESTART_ON_FAILURE, a fresh
+   same-boot helper-validated authorization, the old process gone and the
+   helper alive; it touches no hardware, leaves the authorization alone and
+   stops with ERROR_RETRY so the next failure action stays the fallback if the
+   helper dies. Waiting through any other generation is harmless: an ordinary
+   start that does not yield deletes the authorization while starting. Log
+   line: `controlled recovery: failure-action start (reason=) pending=
+   previousGone= helperAlive= -> ...`. The helper then revalidates the
+   protected authorization and makes exactly one `StartServiceW` call with
+   `--controlled-recovery <nonce>`. Notification failure, deletion, timeout, or
+   an authorization that no longer validates clears the recovery files and
+   performs no start or hardware write. Not exercised live.
 4. Before reporting `RUNNING`, the new service synchronously validates the
    nonce, snapshot, previous process identity, freshness, and SCM start reason.
 

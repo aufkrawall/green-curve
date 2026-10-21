@@ -6995,9 +6995,12 @@ static int run_all_tests(int argc, char** argv) {
         if (service_classify_controlled_recovery_scm_stop_state(
                 false, false, 20184, 20184) !=
                 SERVICE_CONTROLLED_RECOVERY_SCM_WAIT_FOR_STOPPED) return 653;
+        // A different generation is waited through (2026-10-21): the SCM's
+        // failure-action instance yields to the helper, and any instance that
+        // does not yield deletes the authorization the helper re-reads.
         if (service_classify_controlled_recovery_scm_stop_state(
                 false, false, 9999, 20184) !=
-                SERVICE_CONTROLLED_RECOVERY_SCM_REJECT) return 654;
+                SERVICE_CONTROLLED_RECOVERY_SCM_WAIT_FOR_STOPPED) return 654;
         if (service_classify_controlled_recovery_scm_stop_state(
                 false, true, 0, 0) !=
                 SERVICE_CONTROLLED_RECOVERY_SCM_REJECT) return 655;
@@ -9792,7 +9795,7 @@ static int run_all_tests_middle([[maybe_unused]] char** argv) {
         if (service_classify_controlled_recovery_scm_stop_state(
             false, false, 12345, 12345) != SERVICE_CONTROLLED_RECOVERY_SCM_WAIT_FOR_STOPPED) return 762;
         if (service_classify_controlled_recovery_scm_stop_state(
-            false, false, 99999, 12345) != SERVICE_CONTROLLED_RECOVERY_SCM_REJECT) return 763;
+            false, false, 99999, 12345) != SERVICE_CONTROLLED_RECOVERY_SCM_WAIT_FOR_STOPPED) return 763;
         if (service_classify_controlled_recovery_scm_stop_state(
             false, true, 0, 0) != SERVICE_CONTROLLED_RECOVERY_SCM_REJECT) return 764;
         if (service_classify_controlled_recovery_scm_stop_state(

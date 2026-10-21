@@ -78,8 +78,8 @@ static bool service_wait_for_scm_stopped_notification(
     // QueryServiceStatusEx documents dwProcessId as potentially invalid while
     // STOP_PENDING. The helper has already observed the pinned old process's
     // dedicated exit, so that state is safe to wait through without trusting
-    // its PID. Every other state still has to name the exact old generation;
-    // an intervening service generation is rejected before notification setup.
+    // its PID. An intervening generation (the SCM failure action) is waited
+    // through: it yields, and any other start deletes what we re-read below.
     if (disposition == SERVICE_CONTROLLED_RECOVERY_SCM_REJECT) {
         debug_log("controlled recovery helper: SCM state is not tied to the expected old generation (state=%lu pid=%lu expectedPid=%lu)\n",
             (unsigned long)status.dwCurrentState,

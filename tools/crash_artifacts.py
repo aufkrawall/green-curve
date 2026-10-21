@@ -106,6 +106,16 @@ def check_windows_crash_artifacts(ctx, require_text, forbid_text, require_order,
     require_text(clock_cpp, "return service_driver_recovery_proof_accepts(ageMs, SERVICE_OC_STABILIZATION_WINDOW_MS, updated);",
                  "the driver-recovery proof gate uses the shared waiver policy")
 
+    # The SCM failure-action start (2 s after the controlled exit) yields to a
+    # live recovery helper before the startup gate can clear its authorization.
+    host_cpp = _p(ctx, "main_service_host.cpp")
+    require_order(host_cpp, "service_yield_to_controlled_recovery_helper_if_pending(argc, argv);",
+                  "service_prepare_controlled_recovery_startup(argc, argv);",
+                  "the failure-action yield runs before the startup gate clears recovery state")
+    require_text(_p(ctx, "main_service_recovery.cpp"),
+                 "service_ordinary_start_yields_to_recovery_helper(",
+                 "the yield follows the shared, tested policy")
+
     # The user-facing crash-dump notice: scanned with the service's rights,
     # written under the user's token, and the dumps themselves never leave the
     # admin-only directory (a SYSTEM dump can hold other accounts' data).
