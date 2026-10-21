@@ -261,10 +261,11 @@ post-correction boost tally, pre-Blackwell uniform/selective GPU offset
 routing, retained scalar routing for sparse requests, and the range preflight) and
 `tests/fan_worker_lock_tests.cpp` (6550-6569: native Windows threads/events/
 mutex fixture for the fan worker's cancellable lock wait, see
-[fan-control](fan-control.md)), `tests/veh_driver_fault_tests.cpp` (7100-7129:
+[fan-control](fan-control.md)), `tests/veh_driver_fault_tests.cpp` (7100-7139:
 the service VEH's driver-fault flow against real access violations, on x64 also
 in a child the harness re-launches with CET shadow stacks forced on, via the
-`--veh-driver-fault-child` argument `main()` dispatches first; see
+`--veh-driver-fault-child` argument `main()` dispatches first, plus the
+declined-thread child and the portable poisoned-runtime exit plan; see
 [gpu-backend](gpu-backend.md)); `service_install_tests.cpp` owns
 assertions 5720-5786: SCM checkpoint-wait policy, the location content rule,
 the exact-DACL predicate, handle-bound hardening with propagation to existing

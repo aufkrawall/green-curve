@@ -70,6 +70,25 @@ def check_windows_crash_artifacts(ctx, require_text, forbid_text, require_order,
         for needle in ("ContextRecord->Rip", "ContextRecord->Pc", "EXCEPTION_CONTINUE_EXECUTION"):
             forbid_text(path, needle,
                         "no VEH continues at a rewritten instruction pointer (CET refuses it)")
+    # Ending the service main thread (the watchdog) or the SCM dispatcher
+    # would leave a hung, never-restarted service; their faults crash instead.
+    require_text(veh_h, "if (handler->mayEndCurrentThread && !handler->mayEndCurrentThread(handler->context))",
+                 "the driver-fault flow asks before ending the faulting thread")
+    require_text(crash_cpp, "return threadId != g_serviceMainThreadId && threadId != g_serviceDispatcherThreadId;",
+                 "the service VEH never ends its main or dispatcher thread")
+    require_order(main_cpp, "g_serviceDispatcherThreadId = GetCurrentThreadId();",
+                  "StartServiceCtrlDispatcherW(table);",
+                  "the dispatcher thread is recorded before it can dispatch")
+    # A poisoned runtime with nothing to restore restarts plainly; latching the
+    # lockout there blocked the next logon's profile.
+    restart_cpp = _p(ctx, "main_service_controlled_restart.cpp")
+    recovery_cpp = _p(ctx, "main_service_recovery.cpp")
+    require_text(restart_cpp, "service_poisoned_runtime_plan_or_exit(reason, corroboratedDriverFailure);",
+                 "the poisoned-runtime exit follows the shared, tested plan")
+    require_text(recovery_cpp, "service_poisoned_runtime_exit_plan(",
+                 "the plan comes from the policy header")
+    require_text(recovery_cpp, "service_exit_poisoned_runtime_for_ordinary_restart(reason);",
+                 "a poisoned runtime without intent exits for an ordinary restart")
     require_order(main_cpp,
                   "install_crash_handlers(false);",
                   "service_try_dispatch_controlled_restart_helper(&helperExitCode)",

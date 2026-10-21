@@ -790,6 +790,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         { (LPWSTR)L"GreenCurveService", service_main },
         { nullptr, nullptr },
     };
+    g_serviceDispatcherThreadId = GetCurrentThreadId();
     StartServiceCtrlDispatcherW(table);
     return 0;
 }

@@ -27,6 +27,13 @@
 // handler-list lock released (the entry is reference counted instead), so the
 // only state left behind is whatever the faulting thread itself held -- the
 // same as before, and the reason recovery is a process restart.
+//
+// Not every thread may be ended.  A thread nobody recreates and nobody watches
+// (the service's own main thread, which is also the watchdog, or the SCM
+// control dispatcher) would leave a live process that never recovers -- worse
+// than the crash, because the SCM restarts a dead service but not a hung one.
+// `mayEndCurrentThread` says no for those, and the fault then takes the
+// ordinary crash path.
 
 #include <windows.h>
 #include <strsafe.h>
@@ -54,6 +61,9 @@ struct GcVehDriverFaultHandler {
     void (*record)(EXCEPTION_POINTERS* info, const WCHAR* modulePath,
                    const GcVehDriverFaultRecord* fault, void* context);
     void* context;
+    // Whether the faulting (calling) thread may be ended.  Null means yes.
+    // On no the fault is not claimed and continues as an ordinary crash.
+    bool (*mayEndCurrentThread)(void* context);
 };
 
 // Loader path of the image containing `address`; false when it is in no image.
@@ -150,12 +160,15 @@ static inline void gc_veh_driver_fault_format(const GcVehDriverFaultRecord* reco
 }
 
 // The vectored handler body: EXCEPTION_CONTINUE_SEARCH for anything that is
-// not ours; for ours, record and end the faulting thread -- it never returns.
+// not ours or whose thread may not be ended; otherwise record and end the
+// faulting thread -- it never returns.
 static inline LONG gc_veh_handle_driver_fault(EXCEPTION_POINTERS* info,
                                               const GcVehDriverFaultHandler* handler) {
     HMODULE module = nullptr;
     WCHAR modulePath[MAX_PATH] = {};
     if (!gc_veh_driver_fault_is_ours(info, handler, &module, modulePath, MAX_PATH))
+        return EXCEPTION_CONTINUE_SEARCH;
+    if (handler->mayEndCurrentThread && !handler->mayEndCurrentThread(handler->context))
         return EXCEPTION_CONTINUE_SEARCH;
     if (handler->record) {
         GcVehDriverFaultRecord fault;

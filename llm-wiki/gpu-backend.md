@@ -1105,7 +1105,7 @@ predicate and the recorder.
   (`g_nvmlVehFaultRecord`, `crash_artifacts_forward.h`) before the crash count
   moves; the main loop, or a VEH-corroborated mutex abandonment, logs it once:
   `VEH driver fault: ended thread tid=<n> at nvml.dll+0x<off> (read of 0x<addr>); crashCount=<n>`.
-- Tests 7100-7129 (`tests/veh_driver_fault_tests.cpp`): claim decision and log
+- Tests 7100-7139 (`tests/veh_driver_fault_tests.cpp`): claim decision and log
   record on synthesised records; real access violations on real threads in
   process; and on x64 a child re-launched with
   `PROCESS_CREATION_MITIGATION_POLICY2_CET_USER_SHADOW_STACKS_STRICT_MODE` plus
@@ -1116,12 +1116,38 @@ predicate and the recorder.
   builds skip the real-fault half. Gates in `tools/crash_artifacts.py`
   (F-VEH-CET) forbid `ContextRecord->Rip`/`->Pc` and continue-execution in the
   VEH sources.
+- Never the main or dispatcher thread (2026-10-21 audit follow-up): the
+  service's `service_main` thread is also the watchdog and runs NvAPI before
+  RUNNING and the stop-time reset; the SCM dispatcher thread is nobody's to
+  recreate. Ending either would leave a live process stuck in
+  START_PENDING/STOP_PENDING that the SCM never restarts, so
+  `mayEndCurrentThread` declines them and their faults take the ordinary crash
+  path (dump, SCM restart, handback). Tests 7107 (synthesised, on a worker
+  thread) and 7108 (real fault in a child whose unhandled-exception filter must
+  run); dropping the hook fails 7107.
+- What follows a claimed fault: every NVML call runs under the runtime mutex,
+  so a claimed fault abandons it and the next acquirer takes
+  `service_emergency_restart_from_poisoned_runtime()`. Its exit is now
+  `service_poisoned_runtime_exit_plan()` (`service_recovery_policy.h`): intent
+  on disk -> controlled restart (replay); a corroborated failure with no
+  snapshot and no live intent -> ordinary restart WITHOUT a lockout
+  (`service_exit_poisoned_runtime_for_ordinary_restart`, STOPPED with an error
+  so the SCM's non-crash failure actions restart it); anything else -> latch
+  and stop, as before. It used to latch AUTOMATIC_APPLY_FAILED whenever the
+  helper could not be prepared, which after a Reset meant a driver update
+  silently blocked the next logon's profile. Tests 7130-7134. Log line:
+  `controlled recovery: poisoned runtime exit plan=<n> corroborated= snapshot= liveIntent=`.
+- Field dump (2026-10-21, RTX 5070): the faulting thread was the fan runtime
+  thread (`service_fan_runtime_thread_proc` -> `apply_fan_curve_tick` ->
+  `nvml_read_temperature` -> `nvmlDeviceGetTemperature`); all ten VEH dumps
+  since 2026-09-11 fault at the same `nvml.dll` offset, one series per driver
+  install. WER LocalDumps captured the fast-fail too, even with WER reporting
+  disabled machine-wide.
 - Invariant: no exception handler in a `/cetcompat` image may continue at a
   rewritten instruction pointer.
 - Open: the fixed path (thread end -> controlled restart -> replay after a
   driver update) is software-verified only; it needs a live driver update with
-  a mature proof. Which thread faulted in the field is unknown (the WER dump
-  sits in the admin-only service directory and was not read).
+  a mature proof.
 
 Current source anchors:
 

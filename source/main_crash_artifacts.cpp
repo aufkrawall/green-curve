@@ -565,8 +565,18 @@ static void green_curve_veh_record_driver_fault(EXCEPTION_POINTERS* info,
     }
 }
 
+// The service main thread is also the watchdog, and the SCM control dispatcher
+// is nobody's to recreate: ending either leaves a live process that never
+// recovers (START_PENDING/STOP_PENDING forever, and the SCM restarts a dead
+// service, not a hung one).  Their faults take the ordinary crash path.
+static bool green_curve_veh_may_end_current_thread(void*) {
+    const DWORD threadId = GetCurrentThreadId();
+    return threadId != g_serviceMainThreadId && threadId != g_serviceDispatcherThreadId;
+}
+
 static const GcVehDriverFaultHandler kGreenCurveVehDriverFault = {
-    green_curve_veh_owns_module, green_curve_veh_record_driver_fault, nullptr };
+    green_curve_veh_owns_module, green_curve_veh_record_driver_fault, nullptr,
+    green_curve_veh_may_end_current_thread };
 
 static LONG CALLBACK green_curve_vectored_handler(EXCEPTION_POINTERS* info) {
     return gc_veh_handle_driver_fault(info, &kGreenCurveVehDriverFault);

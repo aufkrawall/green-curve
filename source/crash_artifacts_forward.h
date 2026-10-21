@@ -29,6 +29,9 @@ static LONG CALLBACK green_curve_vectored_handler(EXCEPTION_POINTERS* info);
 static GcVehDriverFaultRecord g_nvmlVehFaultRecord = {};
 static volatile LONG g_nvmlVehFaultRecordState = 0;  // 0 none, 1 writing, 2 published
 static volatile LONG g_nvmlVehFaultLogged = 0;
+// The thread running StartServiceCtrlDispatcherW; with g_serviceMainThreadId,
+// one of the two threads that handler must never end.
+static DWORD g_serviceDispatcherThreadId = 0;
 
 // Installs the unhandled-exception filter and the fast-fail reporter, plus the
 // vectored handler when asked.  One entry point so the GUI, the service and the

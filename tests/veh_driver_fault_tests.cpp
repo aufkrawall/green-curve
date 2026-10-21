@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 //
 // Native fixture for the service's vectored driver-fault flow
-// (veh_driver_fault_win32.h), assertion codes 7100-7129.
+// (veh_driver_fault_win32.h) and what follows a claimed fault
+// (service_poisoned_runtime_exit_plan), assertion codes 7100-7139.
 //
 // The claim decision and the log record run against synthesised exception
 // records.  The flow itself runs against REAL access violations on real
@@ -12,15 +13,49 @@
 // (instruction pointer rewritten to ExitThread) as a negative control: it must
 // die with 0xC0000409, which proves the child really enforces the rule the
 // production flow has to respect.  Hosts without CET hardware report so and
-// skip only the child half.
+// skip only the child half.  A third child proves that a thread the handler
+// may not end (the service's main/dispatcher threads) reaches the ordinary
+// crash path instead of being ended or hanging.
 //
 // The bounded waits below only turn a regression (a hang) into a failure code;
 // no assertion depends on how long anything takes.
 //
-// Windows only: the POSIX build of the harness runs nothing here.
+// The exit-plan policy runs on every host; everything else is Windows only.
 
 #include <stdio.h>
 #include <string.h>
+
+#include "service_recovery_policy.h"
+
+// What a poisoned runtime does next (portable policy).
+static int veh_exit_plan_tests() {
+    const ServiceRestartSnapshotState states[] = {
+        SERVICE_RESTART_SNAPSHOT_ABSENT, SERVICE_RESTART_SNAPSHOT_PRESENT,
+        SERVICE_RESTART_SNAPSHOT_UNKNOWN };
+    // 7130: an uncorroborated poison always stops without replay, latched.
+    for (ServiceRestartSnapshotState state : states) {
+        if (service_poisoned_runtime_exit_plan(false, state, false) !=
+                SERVICE_POISONED_EXIT_LATCH_AND_STOP ||
+            service_poisoned_runtime_exit_plan(false, state, true) !=
+                SERVICE_POISONED_EXIT_LATCH_AND_STOP) return 7130;
+    }
+    // 7131: a driver failure with intent on disk restarts through the helper.
+    if (service_poisoned_runtime_exit_plan(true, SERVICE_RESTART_SNAPSHOT_PRESENT, false) !=
+            SERVICE_POISONED_EXIT_CONTROLLED_RESTART ||
+        service_poisoned_runtime_exit_plan(true, SERVICE_RESTART_SNAPSHOT_PRESENT, true) !=
+            SERVICE_POISONED_EXIT_CONTROLLED_RESTART) return 7131;
+    // 7132: an undeterminable snapshot still tries; preparation re-proves it.
+    if (service_poisoned_runtime_exit_plan(true, SERVICE_RESTART_SNAPSHOT_UNKNOWN, false) !=
+            SERVICE_POISONED_EXIT_CONTROLLED_RESTART) return 7132;
+    // 7133: nothing to restore is a plain restart, NOT a lockout: latching here
+    // blocked the next logon's profile after a driver update without intent.
+    if (service_poisoned_runtime_exit_plan(true, SERVICE_RESTART_SNAPSHOT_ABSENT, false) !=
+            SERVICE_POISONED_EXIT_ORDINARY_RESTART) return 7133;
+    // 7134: live intent without a snapshot cannot be restored: stay fail-closed.
+    if (service_poisoned_runtime_exit_plan(true, SERVICE_RESTART_SNAPSHOT_ABSENT, true) !=
+            SERVICE_POISONED_EXIT_LATCH_AND_STOP) return 7134;
+    return 0;
+}
 
 #if defined(_WIN32)
 
@@ -47,6 +82,8 @@ constexpr const char* kChildFlag = "--veh-driver-fault-child";
 // Child exit codes besides 0 (pass) and a 71xx failure code.
 constexpr int kChildNoCet = 3;
 constexpr int kChildLegacySurvived = 4;
+// The declined child's unhandled-exception filter exits with this.
+constexpr int kChildDeclinedReachedCrashPath = 0x7108;
 // What ntdll's FAST_FAIL_SET_CONTEXT_DENIED ends a process with.
 constexpr DWORD kFastFailExitCode = 0xC0000409;
 
@@ -77,7 +114,26 @@ void record_fault(EXCEPTION_POINTERS*, const WCHAR* modulePath,
     }
 }
 
-const GcVehDriverFaultHandler kFixtureHandler = { owns_self, record_fault, &g_sink };
+const GcVehDriverFaultHandler kFixtureHandler = { owns_self, record_fault, &g_sink, nullptr };
+
+int g_refuseThreadEndCalls = 0;
+void* g_refuseThreadEndContext = nullptr;
+bool refuse_thread_end(void* context) {
+    ++g_refuseThreadEndCalls;
+    g_refuseThreadEndContext = context;
+    return false;
+}
+
+// The declined child: a handler that owns the fault but may not end the thread.
+FaultSink g_declinedSink = {};
+const GcVehDriverFaultHandler kDeclinedHandler = {
+    owns_self, record_fault, &g_declinedSink, refuse_thread_end };
+LONG CALLBACK declined_vectored_handler(EXCEPTION_POINTERS* info) {
+    return gc_veh_handle_driver_fault(info, &kDeclinedHandler);
+}
+LONG WINAPI declined_crash_filter(EXCEPTION_POINTERS*) {
+    ExitProcess((UINT)kChildDeclinedReachedCrashPath);
+}
 
 // ntdll keeps an entry whose handler ended its thread referenced, so a removed
 // handler may still be called; it only acts while armed.
@@ -104,6 +160,24 @@ bool resolve_self_path() {
     return n > 0 && n < MAX_PATH;
 }
 
+// 7107 body: a synthesised owned fault on a thread the hook refuses to end.
+DWORD WINAPI declined_claim_thread(void*) {
+    CONTEXT context = {};
+    EXCEPTION_RECORD record = {};
+    record.ExceptionCode = EXCEPTION_ACCESS_VIOLATION;
+    record.ExceptionAddress = (void*)&faulting_thread;
+    EXCEPTION_POINTERS info = { &record, &context };
+    FaultSink declinedSink = {};
+    GcVehDriverFaultHandler declines = {
+        owns_self, record_fault, &declinedSink, refuse_thread_end };
+    g_refuseThreadEndCalls = 0;
+    g_refuseThreadEndContext = nullptr;
+    bool ok = gc_veh_handle_driver_fault(&info, &declines) == EXCEPTION_CONTINUE_SEARCH &&
+        declinedSink.calls == 0 && g_refuseThreadEndCalls == 1 &&
+        g_refuseThreadEndContext == &declinedSink;
+    return ok ? 0 : 7107;
+}
+
 // Synthesised records: nothing is raised, so a rejection cannot kill us.
 int claim_decision_tests() {
     CONTEXT context = {};
@@ -115,9 +189,9 @@ int claim_decision_tests() {
     record.ExceptionInformation[0] = 1;
     record.ExceptionInformation[1] = 0x20;
     EXCEPTION_POINTERS info = { &record, &context };
-    GcVehDriverFaultHandler ownsAll = { owns_self, nullptr, nullptr };
-    GcVehDriverFaultHandler ownsNone = { owns_nothing, nullptr, nullptr };
-    GcVehDriverFaultHandler noPredicate = { nullptr, nullptr, nullptr };
+    GcVehDriverFaultHandler ownsAll = { owns_self, nullptr, nullptr, nullptr };
+    GcVehDriverFaultHandler ownsNone = { owns_nothing, nullptr, nullptr, nullptr };
+    GcVehDriverFaultHandler noPredicate = { nullptr, nullptr, nullptr, nullptr };
     HMODULE module = nullptr;
     WCHAR path[MAX_PATH] = {};
 
@@ -191,6 +265,17 @@ int claim_decision_tests() {
     known.moduleName[0] = 0;
     gc_veh_driver_fault_format(&known, 2, line, sizeof(line));
     if (strstr(line, "<unknown>+0x1a2b (unknown of 0x10); crashCount=2") == nullptr) return 7106;
+
+    // 7107: a thread the handler may not end is not claimed and nothing is
+    // recorded; the hook sees the handler's context.  Run on a worker thread:
+    // a regression ends the calling thread, which must not be this one.
+    HANDLE worker = CreateThread(nullptr, 0, declined_claim_thread, nullptr, 0, nullptr);
+    if (!worker) return 7107;
+    DWORD joined = WaitForSingleObject(worker, kHangMs);
+    DWORD workerExit = 7107;
+    GetExitCodeThread(worker, &workerExit);
+    CloseHandle(worker);
+    if (joined != WAIT_OBJECT_0 || workerExit != 0) return 7107;
     return 0;
 }
 
@@ -253,25 +338,11 @@ bool user_shadow_stack_enforced() {
         policy.EnableUserShadowStack;
 }
 
-#if defined(_M_X64) || defined(__x86_64__)
-// The handler as it was before the fix: rewrite the instruction pointer to
-// ExitThread and continue.  Only ever run in the negative-control child.
-LONG CALLBACK legacy_redirect_handler(EXCEPTION_POINTERS* info) {
-    if (InterlockedCompareExchange(&g_armed, 0, 0) == 0 || !info || !info->ExceptionRecord ||
-        info->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
-        return EXCEPTION_CONTINUE_SEARCH;
-    FARPROC exitThread = GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "ExitThread");
-    if (!exitThread) return EXCEPTION_CONTINUE_SEARCH;
-    info->ContextRecord->Rip = (ULONG_PTR)exitThread;
-    info->ContextRecord->Rcx = 0;
-    info->ContextRecord->Rsp = (info->ContextRecord->Rsp & ~(ULONG_PTR)15) - 8;
-    return EXCEPTION_CONTINUE_EXECUTION;
-}
-
-// Starts this executable as a child in `mode` with user shadow stacks in
-// strict mode and context-IP validation forced on.  False when the host
-// refuses the policy (no CET support in the OS).
-bool run_cet_child(const char* mode, DWORD* exitCodeOut) {
+// Starts this executable as a child in `mode`; with `forceCet`, user shadow
+// stacks in strict mode and context-IP validation are forced on.  False when
+// the child could not be started (with `forceCet`: the host refuses the
+// policy, i.e. no CET support in the OS).
+bool run_child(const char* mode, bool forceCet, DWORD* exitCodeOut) {
     WCHAR commandLine[MAX_PATH + 96] = {};
     if (FAILED(StringCchPrintfW(commandLine, ARRAYSIZE(commandLine), L"\"%ls\" %hs %hs",
             g_selfPath, kChildFlag, mode))) return false;
@@ -284,8 +355,9 @@ bool run_cet_child(const char* mode, DWORD* exitCodeOut) {
     DWORD64 policy[2] = { 0,
         PROCESS_CREATION_MITIGATION_POLICY2_CET_USER_SHADOW_STACKS_STRICT_MODE |
         PROCESS_CREATION_MITIGATION_POLICY2_USER_CET_SET_CONTEXT_IP_VALIDATION_ALWAYS_ON };
-    bool ok = UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
-                                        policy, sizeof(policy), nullptr, nullptr) != FALSE;
+    bool ok = !forceCet ||
+        UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
+                                  policy, sizeof(policy), nullptr, nullptr) != FALSE;
     STARTUPINFOEXW startup = {};
     startup.StartupInfo.cb = sizeof(startup);
     startup.lpAttributeList = attributes;
@@ -305,11 +377,26 @@ bool run_cet_child(const char* mode, DWORD* exitCodeOut) {
     return true;
 }
 
+#if defined(_M_X64) || defined(__x86_64__)
+// The handler as it was before the fix: rewrite the instruction pointer to
+// ExitThread and continue.  Only ever run in the negative-control child.
+LONG CALLBACK legacy_redirect_handler(EXCEPTION_POINTERS* info) {
+    if (InterlockedCompareExchange(&g_armed, 0, 0) == 0 || !info || !info->ExceptionRecord ||
+        info->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
+        return EXCEPTION_CONTINUE_SEARCH;
+    FARPROC exitThread = GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "ExitThread");
+    if (!exitThread) return EXCEPTION_CONTINUE_SEARCH;
+    info->ContextRecord->Rip = (ULONG_PTR)exitThread;
+    info->ContextRecord->Rcx = 0;
+    info->ContextRecord->Rsp = (info->ContextRecord->Rsp & ~(ULONG_PTR)15) - 8;
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
 int cet_child_tests() {
     // 7120: the production flow survives a real fault under enforced shadow
     // stacks with context-IP validation.
     DWORD flowExit = 0;
-    if (!run_cet_child("flow", &flowExit)) {
+    if (!run_child("flow", true, &flowExit)) {
         printf("veh driver fault: CET child policy refused by this host; shadow-stack half skipped\n");
         return 0;
     }
@@ -324,7 +411,7 @@ int cet_child_tests() {
     // 7121: negative control.  The pre-fix instruction-pointer rewrite must
     // fast-fail the same child; if it survives, 7120 proved nothing.
     DWORD legacyExit = 0;
-    if (!run_cet_child("legacy", &legacyExit) || legacyExit != kFastFailExitCode) {
+    if (!run_child("legacy", true, &legacyExit) || legacyExit != kFastFailExitCode) {
         fprintf(stderr, "veh driver fault: legacy child exit 0x%08lX (expected 0xC0000409)\n",
                 (unsigned long)legacyExit);
         return 7121;
@@ -332,6 +419,19 @@ int cet_child_tests() {
     return 0;
 }
 #endif
+
+// 7108: a real fault on a thread the handler may not end reaches the ordinary
+// crash path (the child's unhandled-exception filter) -- not ended, not hung.
+int declined_child_test() {
+    DWORD exitCode = 0;
+    if (!run_child("declined", false, &exitCode) ||
+        exitCode != (DWORD)kChildDeclinedReachedCrashPath) {
+        fprintf(stderr, "veh driver fault: declined child exit 0x%08lX (expected 0x%08X)\n",
+                (unsigned long)exitCode, (unsigned)kChildDeclinedReachedCrashPath);
+        return 7108;
+    }
+    return 0;
+}
 
 }  // namespace
 
@@ -343,6 +443,16 @@ int run_veh_driver_fault_child(int argc, char** argv, bool* isChild) {
     // A fast-fail must end the child, not open an error dialog that waits.
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     if (!resolve_self_path()) return 7122;
+    if (strcmp(argv[2], "declined") == 0) {
+        SetUnhandledExceptionFilter(declined_crash_filter);
+        if (!AddVectoredExceptionHandler(1, declined_vectored_handler)) return 7122;
+        HANDLE thread = CreateThread(nullptr, 0, faulting_thread, nullptr, 0, nullptr);
+        if (!thread) return 7122;
+        WaitForSingleObject(thread, kHangMs);
+        CloseHandle(thread);
+        // Reaching here means the thread was ended or the wait timed out.
+        return 7108;
+    }
     if (!user_shadow_stack_enforced()) return kChildNoCet;
     if (strcmp(argv[2], "flow") == 0) return real_fault_tests();
 #if defined(_M_X64) || defined(__x86_64__)
@@ -360,6 +470,7 @@ int run_veh_driver_fault_child(int argc, char** argv, bool* isChild) {
 }
 
 int run_veh_driver_fault_tests() {
+    if (int failure = veh_exit_plan_tests()) return failure;
     if (!resolve_self_path()) return 7100;
     if (int failure = claim_decision_tests()) return failure;
 #if defined(GC_VEH_FIXTURE_ASAN)
@@ -369,6 +480,7 @@ int run_veh_driver_fault_tests() {
     return 0;
 #else
     if (int failure = real_fault_tests()) return failure;
+    if (int failure = declined_child_test()) return failure;
 #if defined(_M_X64) || defined(__x86_64__)
     if (int failure = cet_child_tests()) return failure;
 #endif
@@ -382,6 +494,6 @@ int run_veh_driver_fault_child(int, char**, bool* isChild) {
     *isChild = false;
     return 0;
 }
-int run_veh_driver_fault_tests() { return 0; }
+int run_veh_driver_fault_tests() { return veh_exit_plan_tests(); }
 
 #endif  // _WIN32

@@ -455,7 +455,10 @@ that logon-event redundancy is degraded.
    faulting thread, never the process: a process death is a crash restart,
    which hands back to stock and cannot replay. The VEH therefore ends the
    thread without rewriting its context, which CET refuses (2026-10-21, see
-   "VEH thread exit under CET" in [gpu-backend](gpu-backend.md)).
+   "VEH thread exit under CET" in [gpu-backend](gpu-backend.md)). The
+   service's own main and dispatcher threads are never ended (a fault there
+   crashes as before), and a fault while nothing is applied restarts the
+   service without latching a lockout.
 
 ## Diagnostics and state
 

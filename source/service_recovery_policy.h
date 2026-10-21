@@ -112,6 +112,43 @@ service_classify_controlled_recovery_scm_stop_state(
         : SERVICE_CONTROLLED_RECOVERY_SCM_REJECT;
 }
 
+// What the service does once its runtime mutex is poisoned (a thread died
+// holding it, or hardware work wedged inside the driver).  The process must go
+// either way; the question is how, and whether automatic restore stays armed.
+enum ServiceRestartSnapshotState {
+    SERVICE_RESTART_SNAPSHOT_ABSENT = 0,  // no settings intent was persisted
+    SERVICE_RESTART_SNAPSHOT_PRESENT,
+    SERVICE_RESTART_SNAPSHOT_UNKNOWN,     // could not be determined
+};
+
+enum ServicePoisonedRuntimeExit {
+    // Corroborated driver failure with intent on disk: the nonce-bound helper
+    // restarts the service, which replays that intent after the proof gates.
+    SERVICE_POISONED_EXIT_CONTROLLED_RESTART = 0,
+    // Corroborated driver failure with nothing to restore: an ordinary restart
+    // replays nothing by construction, so there is nothing to lock out.
+    // Latching here used to block the NEXT logon's configured profile because
+    // a driver update happened while no profile was applied.
+    SERVICE_POISONED_EXIT_ORDINARY_RESTART,
+    // Anything else (uncorroborated poison, intent that cannot be proven
+    // absent): stop without replay and latch the lockout.
+    SERVICE_POISONED_EXIT_LATCH_AND_STOP,
+};
+
+// `liveIntentHint` is the unlocked in-memory flag: it may only ever make the
+// outcome stricter, because the runtime it belongs to is no longer trusted.
+// An undeterminable snapshot still attempts the controlled restart: its
+// preparation re-proves the file by fingerprint and falls back to the latch.
+static inline ServicePoisonedRuntimeExit service_poisoned_runtime_exit_plan(
+    bool corroboratedDriverFailure, ServiceRestartSnapshotState snapshot,
+    bool liveIntentHint) {
+    if (!corroboratedDriverFailure) return SERVICE_POISONED_EXIT_LATCH_AND_STOP;
+    if (snapshot != SERVICE_RESTART_SNAPSHOT_ABSENT)
+        return SERVICE_POISONED_EXIT_CONTROLLED_RESTART;
+    return liveIntentHint ? SERVICE_POISONED_EXIT_LATCH_AND_STOP
+                          : SERVICE_POISONED_EXIT_ORDINARY_RESTART;
+}
+
 static inline bool service_controlled_recovery_start_is_authorized(
     const ServiceControlledRecoveryStartGate& gate) {
     return gate.argumentsValid && gate.explicitlyRequested &&

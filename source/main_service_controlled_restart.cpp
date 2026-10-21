@@ -513,16 +513,19 @@ static bool service_prepare_controlled_restart(const char* reason,
     }
     InterlockedExchange(&g_serviceClientRequestsReady, 0);
 
+    // Never returns for a plain restart (nothing to restore).
+    const ServicePoisonedRuntimeExit plan =
+        service_poisoned_runtime_plan_or_exit(reason, corroboratedDriverFailure);
     bool prepared = false;
     char err[256] = {};
     ServiceRecoveryEvidenceKey diagnosticEvidence = {};
-    bool evidenceRecorded = !corroboratedDriverFailure ||
+    bool evidenceRecorded = plan != SERVICE_POISONED_EXIT_CONTROLLED_RESTART ||
         service_record_current_recovery_evidence(
             SERVICE_RECOVERY_EVIDENCE_DRIVER, &diagnosticEvidence);
-    if (corroboratedDriverFailure && evidenceRecorded &&
+    if (plan == SERVICE_POISONED_EXIT_CONTROLLED_RESTART && evidenceRecorded &&
         InterlockedExchangeAdd(&g_serviceExternalStopRequested, 0) == 0) {
         prepared = service_prepare_controlled_restart(reason, err, sizeof(err));
-    } else if (corroboratedDriverFailure && !evidenceRecorded) {
+    } else if (plan == SERVICE_POISONED_EXIT_CONTROLLED_RESTART && !evidenceRecorded) {
         set_message(err, sizeof(err),
             "Recovery evidence could not be persisted");
     }
