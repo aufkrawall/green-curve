@@ -643,6 +643,25 @@ the regression harness asserts on either host.
   `greencurve_crash_` sorts before `greencurve_veh_` for every possible date, so
   a whole-name sweep would delete the newest terminal crash dump and keep stale
   recovered ones forever. Only names this project formats are ever deleted.
+- **Service dumps are announced, not moved (2026-10-21).** Service dumps stay
+  in the admin-only machine directory (a SYSTEM dump can hold another
+  account's data), which made them hard to find. Whenever the service
+  resolves a user's paths (every service start for a session), it scans
+  `greencurve_*.dmp` there and `WerDumps\*.dmp` with its own rights, then,
+  under that user's token, writes `greencurve_service_crash_dumps.txt` in the
+  user's Green Curve folder (newest five of each kind, totals, and the
+  elevated PowerShell copy command), or removes it when no dumps are left. A
+  failed scan leaves an existing notice alone. Sources:
+  `crash_dump_notice_policy.h` (selection/text), `crash_dump_notice_win32.h`
+  (scan, atomic write), `main_service_crash_notice.cpp` (identity glue,
+  called from `resolve_service_user_data_paths()`). Log line:
+  `crash dump notice: written|none (notice removed) serviceDumps= werDumps= ok= error=`.
+  Tests 7140-7147 (`tests/crash_dump_notice_tests.cpp`, real scan/write in a
+  `%TEMP%` scratch folder); gates in `tools/crash_artifacts.py` pin the
+  scan-before-impersonation order and forbid copying dumps. Field note: WER
+  LocalDumps wrote a service dump even with WER reporting disabled
+  machine-wide (`...\Windows Error Reporting\Disabled=1`). Not yet observed
+  live: the notice after a real service crash.
 - **The GUI no longer suppresses driver-DLL dumps.** It used to write only a
   breadcrumb for a crash inside `nvml`/`nvapi64`/`nvcuda`/`nvwgf2umx` to avoid
   filling the disk on every driver update. Rotation now bounds that

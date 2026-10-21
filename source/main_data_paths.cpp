@@ -353,6 +353,8 @@ static bool service_user_paths_identity_matches(DWORD sessionId) {
     return strcmp(g_serviceUserPathsSid, sid) == 0;
 }
 
+#include "main_service_crash_notice.cpp"
+
 static bool resolve_service_user_data_paths(DWORD sessionId, char* err, size_t errSize) {
     if (service_user_paths_identity_matches(sessionId)) {
         return true;
@@ -425,6 +427,11 @@ static bool resolve_service_user_data_paths(DWORD sessionId, char* err, size_t e
         set_message(err, errSize, "Resolved storage paths are too long");
         return false;
     }
+    // Scanned with the service's rights before the user's token takes over.
+    char crashNotice[4096] = {};
+    size_t crashDumps = 0, crashWerDumps = 0;
+    const ServiceCrashNoticeScan crashNoticeScan = service_compose_crash_dump_notice(
+        g_userDataDir, crashNotice, sizeof(crashNotice), &crashDumps, &crashWerDumps);
     ScopedHandle logToken(gc_debug_log_user_token(hToken));
     GcDebugLogIdentity userIdentity(logToken.valid() ? logToken.get() : nullptr, true);
     if (!userIdentity.valid() || !gc_debug_log_user_directory(g_userDataDir)) {
@@ -435,6 +442,9 @@ static bool resolve_service_user_data_paths(DWORD sessionId, char* err, size_t e
     g_serviceUserPathsSessionId = sessionId;
     StringCchCopyA(g_serviceUserPathsSid, ARRAY_COUNT(g_serviceUserPathsSid), userSid);
     debug_log_set_route_path(g_debugLogPath, hToken);
+    // Still under the user's token, and logged to the user's route.
+    service_store_crash_dump_notice_as_user(g_userDataDir, crashNoticeScan, crashNotice,
+        crashDumps, crashWerDumps);
     return true;
 }
 

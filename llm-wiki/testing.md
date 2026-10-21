@@ -266,7 +266,9 @@ the service VEH's driver-fault flow against real access violations, on x64 also
 in a child the harness re-launches with CET shadow stacks forced on, via the
 `--veh-driver-fault-child` argument `main()` dispatches first, plus the
 declined-thread child and the portable poisoned-runtime exit plan; see
-[gpu-backend](gpu-backend.md)); `service_install_tests.cpp` owns
+[gpu-backend](gpu-backend.md)), `tests/crash_dump_notice_tests.cpp` (7140-7159:
+the service crash-dump notice text, plus the real scan and atomic write in a
+`%TEMP%` scratch folder; see [windows-architecture](windows-architecture.md)); `service_install_tests.cpp` owns
 assertions 5720-5786: SCM checkpoint-wait policy, the location content rule,
 the exact-DACL predicate, handle-bound hardening with propagation to existing
 files, the release-to-inherited contract, and the native location verdicts;

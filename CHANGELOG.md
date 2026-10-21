@@ -31,6 +31,10 @@
 
 Local protection and diagnostic privacy improve while existing installation locations remain supported.
 
+### New
+
+- **Crash dump notice:** when the background service has crash dumps, `greencurve_service_crash_dumps.txt` in your Green Curve folder says where they are and how to copy them.
+
 ### Improved
 
 - **Support logs:** Personal paths are redacted consistently, with separate references when a message names multiple locations.

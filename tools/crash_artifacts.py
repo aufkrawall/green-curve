@@ -89,6 +89,23 @@ def check_windows_crash_artifacts(ctx, require_text, forbid_text, require_order,
                  "the plan comes from the policy header")
     require_text(recovery_cpp, "service_exit_poisoned_runtime_for_ordinary_restart(reason);",
                  "a poisoned runtime without intent exits for an ordinary restart")
+
+    # The user-facing crash-dump notice: scanned with the service's rights,
+    # written under the user's token, and the dumps themselves never leave the
+    # admin-only directory (a SYSTEM dump can hold other accounts' data).
+    paths_cpp = _p(ctx, "main_data_paths.cpp")
+    notice_cpp = _p(ctx, "main_service_crash_notice.cpp")
+    require_order(paths_cpp, "service_compose_crash_dump_notice(",
+                  "GcDebugLogIdentity userIdentity(",
+                  "the dump folders are scanned before the user's token takes over")
+    require_order(paths_cpp, "debug_log_set_route_path(g_debugLogPath, hToken);",
+                  "service_store_crash_dump_notice_as_user(",
+                  "the notice is written under the user's token, logged to the user's route")
+    require_text(notice_cpp, "GcDebugLogIdentity self(nullptr, false);",
+                 "the scan runs as the service even inside a client impersonation")
+    for needle in ("CopyFile", "MoveFile", "write_text_file_atomic"):
+        forbid_text(notice_cpp, needle,
+                    "the notice never copies dumps or writes with the service's own rights")
     require_order(main_cpp,
                   "install_crash_handlers(false);",
                   "service_try_dispatch_controlled_restart_helper(&helperExitCode)",

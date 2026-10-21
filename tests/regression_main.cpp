@@ -987,6 +987,8 @@ int run_fan_worker_lock_tests();
 // enforced shadow stacks.
 int run_veh_driver_fault_tests();
 int run_veh_driver_fault_child(int argc, char** argv, bool* isChild);
+// Service crash-dump notice (tests/crash_dump_notice_tests.cpp, 7140-7159).
+int run_crash_dump_notice_tests();
 // F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
 // are over a kilobyte each and several are live at once; under ASan's
 // redzones that is enough to overflow main()'s frame, which already carries
@@ -1804,6 +1806,10 @@ int main(int argc, char** argv) {
     if (int vehFaultFailure = run_veh_driver_fault_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", vehFaultFailure);
         return vehFaultFailure;
+    }
+    if (int noticeFailure = run_crash_dump_notice_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", noticeFailure);
+        return noticeFailure;
     }
     if (int correctionFailure = run_apply_correction_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", correctionFailure);
