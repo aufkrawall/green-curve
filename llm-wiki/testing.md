@@ -2150,9 +2150,10 @@ See the tail-drift measurement in `llm-wiki/gpu-backend.md` for a real-world usa
 - `tools/wiki_public_gates.py`: the public/private wiki split. The real-tree
   check (`check_all()`, reached through `security_gates.check_public_wiki()`
   from `run_source_regression_checks()`, i.e. `--test` and `--gates`) fails if
-  anything under `llm-wiki/log/` or `llm-wiki/private/` is tracked, if
-  `.gitignore` loses those rules or re-ignores a public page, if `AGENTS.md`
-  is missing or not a regular file, or if a tracked agent/wiki page contains an email,
+  anything under `llm-wiki/private/` is tracked, if `.gitignore` loses that
+  rule or ignores a public page or the log (public and tracked since
+  2026-10-21; `llm-wiki/log/recent.md` must be tracked), if `AGENTS.md`
+  is missing or not a regular file, or if a tracked agent/wiki/log page contains an email,
   a Windows auto host name, a non-documentation IPv4 address, a secret-shaped
   token, or the developer's own OS account name; separately, ANY tracked path or
   text file naming a third-party GPU tool (denylist, word-bounded, fragment-built). `run_self_tests()` (called

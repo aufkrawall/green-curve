@@ -444,7 +444,7 @@ cache race (ziglang/zig#14815 thread), cache-race regressions as late as
 never exercises the failure path: its earlier `--check --target all` step warms
 the cache before the release-build step, and the release workflow runs on
 Linux. The 2026-08-28 matrix failure on the native Windows host is the
-canonical incident (the full investigation is kept in the local-only log).
+canonical incident (the investigation is in the `llm-wiki/log/` archives).
 
 `tools/zig_cache.py` (one-way dependency) provides two defenses, wired at
 every Zig link call site (`_run_zig_link` in build.py for the three release
@@ -853,8 +853,9 @@ public repository's existing tags (`0.22.1`, `0.22`, ...).
 
 `aufkrawall/green-curve` (public, default branch `main`) is the development
 repository. Everything ignored or untracked (logs, dumps, PDBs, toolchains,
-release archives, baselines, `llm-wiki/log/`, `llm-wiki/private/`,
-`update-procedure.md`) must never be committed; `tools/security_gates.py`
+release archives, baselines, `llm-wiki/private/`, `update-procedure.md`)
+must never be committed (the `llm-wiki/log/` engineering log is tracked and
+public since 2026-10-21); `tools/security_gates.py`
 enforces the parts that can be checked mechanically. Force-pushing or deleting
 refs on the public repo is never an option (it rewrites history and can disturb
 forks); a bad publish is undone with `git revert`. Releases are published only

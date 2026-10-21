@@ -1,18 +1,19 @@
 """Public-wiki gates for Green Curve.
 
-`AGENTS.md` and the `llm-wiki/*.md` topic pages are tracked in Git
-and published on GitHub.  `llm-wiki/log/` (chronology) and `llm-wiki/private/`
-(incident records, open security findings, machine-specific notes) stay
-local-only.  Nothing about that split is visible to a compiler, and a slip is
-permanent once pushed, so it is enforced here instead of being left to memory:
+`AGENTS.md`, the `llm-wiki/*.md` topic pages and (since 2026-10-21) the
+engineering log under `llm-wiki/log/` are tracked in Git and published on
+GitHub.  `llm-wiki/private/` is a frozen, gitignored historic archive that no
+workflow reads or writes.  Nothing about that split is visible to a compiler,
+and a slip is permanent once pushed, so it is enforced here instead of being
+left to memory:
 
-* nothing under the two private directories may be tracked;
-* `.gitignore` must keep ignoring them, and must not start ignoring the public
-  pages again (a re-ignored page silently drops out of `git add -A`);
-* `AGENTS.md` must stay tracked as a regular file;
-* the public pages must not contain email addresses, Windows auto-generated
-  host names, non-documentation IPv4 addresses, secret-shaped tokens, or the
-  current developer's OS account name;
+* nothing under `llm-wiki/private/` may be tracked;
+* `.gitignore` must keep ignoring it, and must not start ignoring the public
+  pages or the log (a re-ignored page silently drops out of `git add -A`);
+* `AGENTS.md`, the wiki index and `llm-wiki/log/recent.md` must stay tracked;
+* the public pages (log included) must not contain email addresses, Windows
+  auto-generated host names, non-documentation IPv4 addresses, secret-shaped
+  tokens, or the current developer's OS account name;
 * NO tracked file (path or text, any directory) may name a third-party GPU
   tuning, overclocking, monitoring or fan-control application, its binaries or
   its authors.  Docs and comments say "an external tool" and state the
@@ -40,15 +41,17 @@ import re
 import subprocess
 import sys
 
-PRIVATE_WIKI_PREFIXES = ("llm-wiki/log/", "llm-wiki/private/")
-IGNORE_RULES_REQUIRED = ("/llm-wiki/log/", "/llm-wiki/private/")
+PRIVATE_WIKI_PREFIXES = ("llm-wiki/private/",)
+IGNORE_RULES_REQUIRED = ("/llm-wiki/private/",)
 
-# Patterns that would (re-)ignore a public page.  Compared as whole lines, so an
-# unrelated rule such as `/llm-wiki/log/` never matches.
+# Patterns that would (re-)ignore a public page or the public log.  Compared as
+# whole lines, so an unrelated rule such as `/llm-wiki/private/` never matches.
 IGNORE_RULES_FORBIDDEN = frozenset({
     "AGENTS.md", "/AGENTS.md",
     "llm-wiki", "/llm-wiki", "llm-wiki/", "/llm-wiki/",
     "llm-wiki/*", "/llm-wiki/*", "llm-wiki/*.md", "/llm-wiki/*.md",
+    "llm-wiki/log", "/llm-wiki/log", "llm-wiki/log/", "/llm-wiki/log/",
+    "llm-wiki/log/*", "/llm-wiki/log/*", "llm-wiki/log/*.md", "/llm-wiki/log/*.md",
     "*.md", "/*.md",
 })
 
@@ -56,6 +59,7 @@ IGNORE_RULES_FORBIDDEN = frozenset({
 REQUIRED_TRACKED = (
     "AGENTS.md",
     "llm-wiki/index.md", "llm-wiki/secret-leak-prevention.md",
+    "llm-wiki/log/recent.md",
 )
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)")
@@ -205,9 +209,8 @@ def gitignore_errors(text):
         if rule in IGNORE_RULES_FORBIDDEN:
             errors.append(f".gitignore: `{rule}` would ignore a public "
                           "agent-instruction / wiki page")
-        if rule.startswith("!") and "llm-wiki" in rule and (
-                "log" in rule or "private" in rule):
-            errors.append(f".gitignore: `{rule}` re-includes a local-only wiki area")
+        if rule.startswith("!") and "llm-wiki" in rule and "private" in rule:
+            errors.append(f".gitignore: `{rule}` re-includes the private wiki archive")
     return errors
 
 
@@ -386,10 +389,11 @@ def check_all(ctx, tracked):
             errors += gitignore_errors(handle.read())
     except OSError:
         errors.append(".gitignore: unreadable")
-    for probe in ("llm-wiki/log/recent.md", "llm-wiki/private/notes.md"):
+    for probe in ("llm-wiki/private/notes.md",):
         if _ignored_by_git(root, probe) is False:
             errors.append(f"{probe}: git does not ignore this local-only path")
-    for probe in ("AGENTS.md", "llm-wiki/index.md"):
+    for probe in ("AGENTS.md", "llm-wiki/index.md", "llm-wiki/log/recent.md",
+                  "llm-wiki/log/archive-x.md"):
         if _ignored_by_git(root, probe) is True:
             errors.append(f"{probe}: git ignores this public page")
     agents_mode, agents_data = _index_entry(root, "AGENTS.md")
@@ -424,48 +428,54 @@ def run_self_tests():
         if not condition:
             failures.append(message)
 
-    # --- tracked private areas -------------------------------------------------
-    expect(private_wiki_errors(["llm-wiki/log/recent.md"]),
-           "a tracked llm-wiki/log file must fail")
+    # --- tracked private archive -----------------------------------------------
     expect(private_wiki_errors(["llm-wiki/private/notes.md"]),
            "a tracked llm-wiki/private file must fail")
-    expect(private_wiki_errors(["llm-wiki\\log\\archive.md"]),
+    expect(private_wiki_errors(["llm-wiki\\private\\archive.md"]),
            "backslash spelling of a private path must fail")
     expect(private_wiki_errors(["LLM-Wiki/Private/x.md"]),
            "case variants collide on Windows and must fail")
-    expect(private_wiki_errors(["./llm-wiki/log/x.md"]),
+    expect(private_wiki_errors(["./llm-wiki/private/x.md"]),
            "a leading ./ must not hide a private path")
     expect(private_wiki_errors(["llm-wiki/private"]),
            "a file named like the private directory must fail")
     expect(not private_wiki_errors(
         ["llm-wiki/index.md", "llm-wiki/updates.md", "AGENTS.md",
+         "llm-wiki/log/recent.md", "llm-wiki/log/archive-2026H1.md",
          "llm-wiki/logbook.md", "llm-wiki/privately.md", "tools/log_gates.py"]),
-           "public pages and look-alike names must pass")
+           "public pages, the public log and look-alike names must pass")
+    expect(is_public_text_path("llm-wiki/log/recent.md") and
+           is_public_text_path("llm-wiki/log/archive-2026H1.md"),
+           "log pages get the public-text checks")
 
     # --- required tracked files ------------------------------------------------
     full = ["AGENTS.md", "llm-wiki/index.md",
-            "llm-wiki/secret-leak-prevention.md"]
+            "llm-wiki/secret-leak-prevention.md", "llm-wiki/log/recent.md"]
     expect(not required_tracked_errors(full), "all required files present must pass")
     expect(required_tracked_errors([p for p in full if p != "AGENTS.md"]),
            "a missing AGENTS.md must fail")
     expect(required_tracked_errors([p for p in full if p != "llm-wiki/index.md"]),
            "a missing wiki index must fail")
+    expect(required_tracked_errors([p for p in full if p != "llm-wiki/log/recent.md"]),
+           "an untracked public log must fail")
 
     # --- .gitignore ------------------------------------------------------------
-    good_ignore = "# c\n/llm-wiki/log/\n/llm-wiki/private/\n*.exe\n"
+    good_ignore = "# c\n/llm-wiki/private/\n*.exe\n"
     expect(not gitignore_errors(good_ignore), "the intended .gitignore must pass")
-    expect(gitignore_errors("*.exe\n/llm-wiki/log/\n"),
+    expect(gitignore_errors("*.exe\n"),
            "a missing private-directory rule must fail")
-    expect(gitignore_errors("/llm-wiki/private/\n"),
-           "a missing log-directory rule must fail")
+    expect(gitignore_errors(good_ignore + "/llm-wiki/log/\n"),
+           "re-ignoring the public log must fail")
+    expect(gitignore_errors(good_ignore + "llm-wiki/log/*.md\n"),
+           "ignoring the public log's pages must fail")
     expect(gitignore_errors(good_ignore + "llm-wiki/\n"),
            "re-ignoring the whole wiki must fail")
     expect(gitignore_errors(good_ignore + "AGENTS.md\n"),
            "re-ignoring AGENTS.md must fail")
     expect(gitignore_errors(good_ignore + "*.md\n"),
            "ignoring every markdown file must fail")
-    expect(gitignore_errors(good_ignore + "!llm-wiki/log/keep.md\n"),
-           "a negation that re-includes a private area must fail")
+    expect(gitignore_errors(good_ignore + "!llm-wiki/private/keep.md\n"),
+           "a negation that re-includes the private archive must fail")
     expect(not gitignore_errors(good_ignore + "# AGENTS.md\n  \n"),
            "a comment mentioning a forbidden rule must not fail")
 

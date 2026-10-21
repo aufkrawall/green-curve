@@ -306,7 +306,7 @@ existing target or a leaf reparse point refuses before any DACL write.
 
 A dedicated **subfolder** is fine when it is not itself a shell folder, which
 keeps `C:\Program Files\Green Curve` and a deliberate portable folder working.
-Verified against a real machine (probe output kept in the local-only log).
+Verified against a real machine (probe output not kept in the repository).
 
 The gate stands in front of all three doors: `service_install_prepare_target`
 (portable/CLI, on the pinned handle), `gc_commit_folder_page` (setup's folder

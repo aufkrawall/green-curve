@@ -541,8 +541,8 @@ the new curve with the full boost offset applied to every tail point — HARD mo
 does not floor the tail, only FLATTEN does — and pinned the clock over a second
 later. Measured 2026-09-13 under game load: tail readback 2947…3637 MHz for
 1.21 s with nothing capping it, then `nvlddmkm` event 153. The full timeline,
-and the HARD → HARD control case in the same log that did *not* crash, are kept
-in the local-only log.
+and the HARD → HARD control case in the same log that did *not* crash, are in
+the `llm-wiki/log/` archives.
 
 An NVML locked-clock ceiling is armed before the first clock-affecting write:
 
@@ -913,7 +913,7 @@ A controlled measurement on an RTX 5070 (Blackwell) compared two ways of holding
 
 | Aspect | Graduated offsets (Green Curve at the time) | Uniform offset (reference run) |
 |--------|-------------|-------------|
-| Tail offset strategy | Per-point graduated offsets (e.g. +480000 at p76, -225000 at p126) | Uniform offset (-1052000 kHz) for ALL tail points from p77 to p126 |
+| Tail offset strategy | Per-point graduated offsets (e.g. +480000 at p76, -225000 at p126) | One uniform offset just beyond the reported range minimum for ALL tail points from p77 to p126 |
 | Tail drift after load | +8 to +15 MHz (47/51 points >2 MHz from target) | 0 MHz (0/51 points drifted) |
 | Correction loop | 25-pass incremental correction based on live readback | Single uniform write (no correction loop) |
 | Offset range limit | Hard-coded fallback ±300 MHz; uses driver-reported range | Writes through to driver regardless of reported range |
@@ -925,7 +925,7 @@ The correction loop in `gpu_backend_apply.cpp` computes per-point offsets as:
 
 For tail points at higher voltages (990-1240 mV), the stock curve's natural frequency is 3100-3200 MHz. To hold these points at 2962 MHz requires offsets of -200 to -240 MHz. However, the correction loop converges at apply time, but the driver gradually re-asserts its internal curve shape — the graduated offsets don't fully suppress the boost mechanism.
 
-The reference run used a single massive negative offset (-1052000 kHz ≈ -1052 MHz) for all tail points. This value is far beyond the conventional range limits but the driver accepts it. The uniform offset overwhelms the driver's per-voltage curve adjustment, keeping the tail flat.
+The reference run used a single large negative offset, just beyond the reported range minimum, for all tail points. The driver accepts it. The uniform offset overwhelms the driver's per-voltage curve adjustment, keeping the tail flat.
 
 ### Applied fix v1: Range limit increase (Build 107-108, FAILED)
 
@@ -942,7 +942,7 @@ Increased `FALLBACK_VF_OFFSET_LIMIT_KHZ` and reordered range priority to prefer 
 Changes:
 1. **Initial tail offset computation** (`gpu_backend_apply.cpp`): Lock point uses per-point computation; all other tail points use `floorTailOffsetKHz` (= range minimum).
 2. **Correction passes** (`gpu_backend_apply.cpp`): Same uniform floor applied during correction iterations for tail points.
-3. The range minimum (-1000000 kHz) is only 5.2% less negative than the reference run's -1052000 kHz, suggesting it should produce comparable tail-flatten behavior.
+3. The range minimum (-1000000 kHz) is within about 5% of the reference run's uniform offset, suggesting it should produce comparable tail-flatten behavior.
 
 **Status:** Code written, builds clean, regression tests pass. GPU testing needed to verify the uniform floor produces a flat tail.
 

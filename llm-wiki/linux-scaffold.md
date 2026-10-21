@@ -984,7 +984,7 @@ matters because the Linux build uses `-fexceptions -frtti` and `std::string`
     it emits, because `open()` is async-signal-safe while formatting is not.
   - **Invariant (F-LNX-CRASH-LAZY): a report file exists ⇔ a crash wrote bytes
     into it.** Arming creates nothing. This is structural, not a cleanup step —
-    a 0-byte-report spam bug (recorded in the local-only log) made it so, and
+    a 0-byte-report spam bug (recorded in the engineering log) made it so, and
     why "close it on exit" cannot work (`execve` from the TUI relaunch, `_exit`,
     `SIGKILL`). Guards: `O_CREAT` is *forbidden* in `linux_crash_report.cpp`,
     `gc_crash_report_open_on_demand` and the zero-length-emit early return are

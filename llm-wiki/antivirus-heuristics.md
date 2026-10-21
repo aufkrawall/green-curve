@@ -6,8 +6,8 @@ exactly what it is: each executable links only the code its role can run, its
 identity metadata is correct and consistent, and nothing is packed, hidden or
 disguised. Source and artifact gates keep it that way. What remains are the
 imports the features genuinely need. This page records principles and
-invariants, not scan verdicts; per-hash verdicts are local-only and are not
-tracked.
+invariants, not scan verdicts; per-hash verdicts are not kept in the
+repository.
 
 Source anchors: `tools/pe_verify.py` (`stamp_pe_checksum`, `verify_pe_checksum`,
 `verify_version_identity`, `verify_windows_binary_metadata`, `pe_imports`,
@@ -199,5 +199,5 @@ Source anchors: `tools/pe_verify.py` (`stamp_pe_checksum`, `verify_pe_checksum`,
 - Authenticode and a Windows-hosted clang-cl release path remain open external
   release decisions; neither can be replaced by hiding imports.
 
-Last verified: 2026-10-06 (public rewrite; chronology, hashes and scan verdicts
-live in the local-only notes).
+Last verified: 2026-10-06 (public rewrite; per-hash scan verdicts are not kept
+in the repository).

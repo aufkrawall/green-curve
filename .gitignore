@@ -1,7 +1,7 @@
-# AGENTS.md and the llm-wiki/*.md topic pages are tracked and PUBLIC.
-# Only the wiki's chronology and private notes stay local; tools/wiki_public_gates.py
-# fails the build if these two rules disappear or either area becomes tracked.
-/llm-wiki/log/
+# AGENTS.md, the llm-wiki/*.md topic pages and the llm-wiki/log/ engineering log
+# are tracked and PUBLIC.  llm-wiki/private/ is a frozen historic archive that
+# nothing relies on; tools/wiki_public_gates.py fails the build if this rule
+# disappears, private/ becomes tracked, or the log becomes ignored.
 /llm-wiki/private/
 # Local-only release operator runbook (machine paths, signing procedure).
 /update-procedure.md

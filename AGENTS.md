@@ -42,12 +42,12 @@ Keep always-on rules here (commit gates, tool and platform precedence, stop cond
 - A remediation commit is PUBLIC: never name the thing being remediated in the
   subject, body, or a tracked code comment. No leaked value, no affected version
   range, no "this was exposed since X"! Describe the rule the change enforces.
-  The incident record belongs in the gitignored, local-only `llm-wiki/log/` or
-  `llm-wiki/private/` -- never in a tracked file, and never in a topic page!
-- `AGENTS.md` and the `llm-wiki/*.md` topic pages are PUBLIC (tracked
-  and published on GitHub). They obey the same masking rule as public commits;
-  see "`llm-wiki/` workflow" and `llm-wiki/secret-leak-prevention.md`
-  ("Public wiki safety")!
+  Incident details stay out of the repository altogether: not in a tracked
+  file, not in a topic page, not in the public log!
+- `AGENTS.md`, the `llm-wiki/*.md` topic pages and the `llm-wiki/log/` engineering
+  log are PUBLIC (tracked and published on GitHub). They obey the same masking
+  rule as public commits; see "`llm-wiki/` workflow" and
+  `llm-wiki/secret-leak-prevention.md` ("Public wiki safety")!
 
 ## Engineering rules
 
@@ -136,22 +136,22 @@ Keep always-on rules here (commit gates, tool and platform precedence, stop cond
 ## `llm-wiki/` workflow
 
 - `llm-wiki/` is canonical LLM-maintained derived memory, not the sole source of truth.
-- PUBLIC vs LOCAL: `llm-wiki/*.md` topic pages (and this file) are tracked in git and public. `llm-wiki/log/` (rolling log, archives) and `llm-wiki/private/` (incident/remediation records, open security findings, machine-specific notes) are gitignored and local-only; they are absent from a fresh clone, so never make a topic page depend on them. `tools/wiki_public_gates.py` (run by `python build.py --test` and `--gates`) fails if either is tracked or no longer ignored, or if a public page contains an email, host name, IP address or secret-shaped token.
+- PUBLIC vs PRIVATE: `llm-wiki/*.md` topic pages, the engineering log `llm-wiki/log/` (rolling `recent.md` plus archives) and this file are tracked in git and public. `llm-wiki/private/` is a frozen, gitignored historic archive: never read it for decisions, never write new records to it, and never make a tracked page depend on it or on any other untracked file. `tools/wiki_public_gates.py` (run by `python build.py --test` and `--gates`) fails if `private/` is tracked or no longer ignored, if the log is untracked or ignored, or if a public page (log included) contains an email, host name, IP address, secret-shaped token or the developer's account name.
 - Vendor neutrality, for EVERY tracked file (docs, comments, tests, strings, workflows): never name third-party GPU tuning, overclocking, monitoring or fan-control applications, their binaries or their authors. Write "an external tool" / "another fan controller" and state the behaviour as our own observation or as driver behaviour, never as analysis of another product. NVIDIA driver, NVML and NvAPI names (including NVML fan-control policy entry points), OS components and dev/build tooling are fine. `tools/wiki_public_gates.py` enforces a denylist over every tracked path and text file (`python build.py --test` / `--gates`); if a hit sits in a user-visible string, functional code, a test name or a detection list, do not change behaviour: report it to the maintainer.
-- Public-wiki safety, for EVERY edit to a topic page: no real names (the public handle `aufkrawall` is fine), emails, host/machine names, IPs, user-profile or home paths, dev-machine tool locations, key/signing-key locations or ACL details, tokens or key material, leaked values, affected version ranges or "exposed since X" narration, release-operator runbook steps, exploit steps for anything unfixed, open/deferred security findings, profanity, or disparaging remarks about people/vendors/tools. Describe the rule or invariant instead; put the story in `llm-wiki/log/` or `llm-wiki/private/`!
+- Public-wiki safety, for EVERY edit to a topic page or the log: no real names (the public handle `aufkrawall` is fine), emails, host/machine names, IPs, user-profile or home paths, dev-machine tool locations, key/signing-key locations or ACL details, tokens or key material, leaked values, affected version ranges or "exposed since X" narration, release-operator runbook steps, exploit steps for anything unfixed, open/deferred security findings, profanity, or disparaging remarks about people/vendors/tools. Describe the rule or invariant instead; incident stories, open security findings and operator steps do not go into the repository at all!
 - For substantial work, start with `llm-wiki/index.md`, read only relevant topic pages, then read `llm-wiki/log/recent.md` for active/stale-risk areas.
 - Read archives only when historical context is needed or explicitly linked.
 - For trivial localized edits, skip broad wiki loading unless the area is unfamiliar or stale-risk is likely.
-- If `llm-wiki/` is missing during substantial work, create `index.md`, `overview.md`, and `log/recent.md` by inspecting repo structure, build/test entry points, config, docs, and workflows. A fresh clone has the topic pages but no `log/` or `private/`; create them locally when needed (they are gitignored).
+- If `llm-wiki/` is missing during substantial work, create `index.md`, `overview.md`, and `log/recent.md` by inspecting repo structure, build/test entry points, config, docs, and workflows. A fresh clone has the topic pages and the log; `private/` exists only where the historic archive was kept, and nothing may depend on it.
 - Mistrust wiki claims until verified against code (but mistrust code too!), tests, build scripts, config, or observed behavior.
 - Prefer updating existing pages over creating new ones; create new pages only for reusable topics.
-- Keep topic pages focused on current best understanding; put chronology, partial investigations, and temporary notes in `llm-wiki/log/recent.md`, and incident/remediation records and open security findings in `llm-wiki/private/`.
+- Keep topic pages focused on current best understanding; put chronology, partial investigations, and temporary notes in `llm-wiki/log/recent.md` (public: the same safety rules as topic pages apply).
 - Mark uncertainty explicitly as open question, stale-risk, or unverified claim.
 - Do not dump raw logs or long command output unless it establishes durable knowledge.
 - Update the wiki when durable knowledge changes: architecture, behavior, build/test/package/deploy/debug workflows, bugs/root causes, invariants, conventions, rejected approaches, follow-ups, or code style.
 - Do not update the wiki for trivial edits with no future-useful context.
 - `llm-wiki/debug-tools.md` contains additional available debug commands and tool paths.
 - `llm-wiki/index.md` is a compact routing table with page link, purpose, last verified date, and stale-risk.
-- Durable topic pages should include summary, source anchors, invariants, diagnostics/failure modes, open questions/stale-risk, and last verified details. Open questions are verification gaps and design limits; unfixed or unverified SECURITY findings go to `llm-wiki/private/` instead.
+- Durable topic pages should include summary, source anchors, invariants, diagnostics/failure modes, open questions/stale-risk, and last verified details. Open questions are verification gaps and design limits; unfixed or unverified SECURITY findings are not recorded in the wiki or the log.
 - `llm-wiki/log/recent.md` is newest-first rolling memory; archive older entries when it gets too long.
 - After both wiki updates and code changes, perform a semantic quality check for contradictions, stale claims, duplicates, orphan pages, broken links, missing source anchors, and merge/delete/archive candidates.
