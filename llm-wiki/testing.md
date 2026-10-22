@@ -1,5 +1,25 @@
 # Testing
 
+## Linux GPU selection across PCI bus renumbering (2026-10-22)
+
+Source anchors: `tests/linux_gpu_location_tests.cpp`,
+`source/linux_gpu_selection.h`, `tests/regression_main.cpp` (614-618),
+`tools/linux_gates.py` (`check_gpu_location`).
+Fixtures 7340-7355 drive `linux_resolve_stored_gpu_target()`: the single-GPU
+bus move with a role-less record (7340; the removed exact resolver returned
+-1), a different model or board never resolving under any role, distinct
+models moving only with a recorded advisory role, identical twins failing
+closed, bare locations and location-less models, duplicate live locations,
+NvAPI word order, and an unreadable live model. 7356-7360 cover the backend
+init write decision (7357: a different model on a one-GPU system no longer
+receives the stored intent, which the old `adapterCount == 1` shortcut
+allowed). 7361-7362 model the daemon's resolve-then-compare request check.
+7363-7367 cover role selection and the shared role parser; 7368-7370 bound the
+diagnostic line. The old 614-618 assertions now run against the new resolver
+with the `required` role. Not covered automatically: config.ini persistence
+of the role (no harness links `linux_port_profiles.cpp`; source-guarded) and
+any run on real renumbered hardware.
+
 ## GPU selection across PCI bus renumbering (2026-10-22)
 
 Source anchors: `tests/gpu_location_role_tests.cpp`,

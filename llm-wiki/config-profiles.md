@@ -766,6 +766,9 @@ same card was the only one present. Adding or removing any upstream device
   an identical card that later lands exactly on a stale stored location is
   indistinguishable from the original, as before. The refresh shortens that
   window to the first GUI start after the move.
+- Linux applies the same rule to its stored targets (config.ini, daemon
+  records, requests); see linux-scaffold.md, "GPU selection across PCI bus
+  renumbering".
 - Diagnostics: `format_configured_gpu_resolution_detail()` prints one bounded
   line (stored model@location, role, first four live adapters). It is logged by
   the in-process enumeration on failure and on a move, by the service logon

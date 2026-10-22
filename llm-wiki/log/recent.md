@@ -5,6 +5,20 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-22: Linux follows a renumbered GPU too
+
+- Windows fix verified on the reporting system after updating: the service
+  followed the model from bus 07 to 06 and the GUI rewrote `[gpu]` with bus 6
+  and `role=advisory`.
+- Linux stored targets (config.ini, ACTIVE and startup records, requests) now
+  resolve through `linux_resolve_stored_gpu_target()`. The daemon no longer
+  refuses a stale request for the active GPU, a one-GPU init no longer
+  resolves writes for a different model, the startup record re-binds after
+  booting on a moved GPU, and the client resolves and refreshes config.ini
+  with its recorded role before naming it. See linux-scaffold.md, "GPU
+  selection across PCI bus renumbering".
+- Fixtures 7340-7370 (testing.md); `check_gpu_location()` source guards.
+
 ## 2026-10-22: A PCI bus renumbering no longer orphans the selected GPU
 
 - Disabling an on-board NIC in the firmware setup moved a single RTX 5070 from
@@ -18,8 +32,8 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   config-profiles.md, "The PCI location is a tiebreaker, not the identity".
 - Fixtures 7300-7329 (testing.md); 7300 fails on the previous resolver.
   Resolution diagnostics now name stored and live locations in one line.
-- Linux has a related but different limitation (stale BDF target, no heal path);
-  recorded as an open question in linux-scaffold.md, not changed here.
+- Linux had a related but different limitation (stale BDF target, no heal
+  path); fixed in the entry above.
 
 ## 2026-10-22: Stable 0.30.0 publication verified
 

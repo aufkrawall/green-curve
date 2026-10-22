@@ -659,6 +659,59 @@ reports its own errno), and the directory is fsynced after the rename
 relative names, a symlinked dir as user, refusal as root, and an unfollowed leaf
 symlink.
 
+## GPU selection across PCI bus renumbering (2026-10-22)
+
+Firmware assigns PCI bus numbers at boot, so a stored BDF goes stale when an
+upstream device appears or disappears (the Windows report: an on-board NIC
+disabled in the firmware setup moved a single GPU from bus 07 to bus 06). The
+Linux port now applies the Windows rule (config-profiles.md, "The PCI location
+is a tiebreaker, not the identity") to every STORED target; live-to-live
+comparisons (fan worker ownership, mutation authority, TUI binding, the same-
+boot recovery rebind) keep the exact `linux_gpu_identity_matches()`.
+
+- `linux_resolve_stored_gpu_target()` (`linux_gpu_selection.h`): a known model
+  (device, subsystem; NvAPI word order tolerated) must match; one adapter at
+  the stored BDF wins, two are ambiguous; otherwise the model is followed to
+  its one live adapter when `configured_gpu_location_may_move()` allows it. A
+  bare BDF without a model never moves. `linux_resolve_gpu_identity()` is gone;
+  the old assertions 614-618 run against the new resolver with the `required`
+  role, which is the old exact rule.
+- Backend init (`linux_gpu_init_selection()`): requests carry no role, so a
+  targeted init uses `UNRECORDED` (follow a move only with one adapter present)
+  and resolves writes only for the adapter its target resolved to. The old
+  `writeIdentityResolved = adapterCount == 1 || ...` shortcut resolved writes
+  for ANY target on a one-GPU system, so a swapped-in different model would
+  have received the committed or startup intent at boot; it now gets nothing.
+  An untargeted init still writes to a lone adapter.
+- Daemon requests: `select_request_gpu()` resolves the request target against
+  the live adapters before the active-intent check, so a stale config.ini no
+  longer gets "GPU X has active Green Curve settings; Reset it before selecting
+  Y" for the very GPU that is active. `linux_backend_select_target()` keeps the
+  selected backend when the target resolves to it instead of re-initializing
+  on every request.
+- Records: auto-restore already re-commits the ACTIVE record with the live
+  adapter. `apply_startup_profile_policy()` now re-binds the startup-profile
+  record to the live BDF after it booted on a moved GPU (logged "re-bound from
+  ... to ..."; a failed store is logged and harmless).
+- Client (`linux_gpu_target_config.cpp`): config.ini `[gpu]` gains
+  `selected_pci_location_role` (same spellings and parser,
+  `configured_gpu_location_role_parse()`, as Windows; an unknown spelling
+  makes the whole selection ignored). Before the first daemon request that
+  names config.ini's GPU (`clientTarget()` in `linux_main.cpp`: dump-live,
+  startup-policy bind, apply, reset, TUI), the client resolves it against an
+  untargeted snapshot with the recorded role, rewrites a moved or role-less
+  record (never as root: an unasked rewrite could hand the file to root), and
+  sends the live adapter. `--gpu` records the role
+  (`linux_gpu_location_role_for_selection()`). The in-process `--self-test`
+  keeps the raw stored target and the init rule.
+- Diagnostics: `linux_format_stored_gpu_detail()` (stored model@BDF, role,
+  first four live adapters) in the backend's "stored GPU target ..." line, the
+  client's "gpu selection:" lines and the persist line; the daemon logs a moved
+  request target on the first occurrence and every 100th after.
+- Tests: `tests/linux_gpu_location_tests.cpp` (7340-7370, pure; run natively
+  and in the Linux cross-link). Guards: `check_gpu_location()` in
+  `tools/linux_gates.py`.
+
 ## Automatic restore: crash-loop guard, resume, and reset-before-apply
 
 Everything that writes the GPU **without a user asking** goes through
@@ -1533,22 +1586,13 @@ escaped" was true only of the shell layer; read it that way.
 
 ## Open questions / stale-risk
 
-- **The Linux GPU selection treats the PCI location as the identity**
-  (code review, 2026-10-22; not exercised on hardware). `[gpu]` stores
-  `selected_bdf` plus device/subsystem IDs, and `linux_gpu_identity_matches()`
-  requires the exact BDF, so a firmware bus renumbering (the Windows case in
-  config-profiles.md, "The PCI location is a tiebreaker") leaves a stale
-  target. With one adapter, `linux_backend_init()` still sets
-  `writeIdentityResolved` for any target, so boot restore and the fan worker
-  keep working on the new bus, but a client request carrying the stale target
-  is refused by `select_request_gpu()` while an intent is active ("has active
-  Green Curve settings; Reset it before selecting ..."), nothing heals the
-  config (only `--gpu` rewrites it), and the one-adapter shortcut does not
-  compare device IDs, so a swapped-in different model would also receive the
-  stored intent. With two identical boards, an unrelated board that lands on
-  the stale BDF matches it. The Windows location-role rule is the intended
-  model; porting it needs the role in the Linux record, a model check on the
-  one-adapter shortcut, and a heal path.
+- **Identical boards remain location-bound** (design limit). Two GPUs with
+  the same device and subsystem IDs are told apart only by their BDF, so all
+  their locations changing fails closed, and an unrelated identical board that
+  lands exactly on a stale stored BDF matches it. Only a per-board ID (the NVML
+  UUID) could close this; the client refresh and the daemon's re-commits keep
+  the window to the first run after the move. Also unexercised on hardware:
+  the renumbering itself on Linux (fixtures 7340-7370 only).
 
 - **Profile boot apply is hardware-exercised.** On the RTX 5070 (2026-07-28),
   a configured profile startup applied and verified its five phases and the
