@@ -858,10 +858,23 @@ def _workflow_structure_errors(path, text):
 def check_workflow_structure(ctx):
     """Keep the security/test merge workflows loadable."""
     all_errors = []
-    for name in ("ci.yml", "release.yml"):
+    for name in ("ci.yml", "release.yml", "freshness.yml"):
         path = os.path.join(ctx.SCRIPT_DIR, ".github", "workflows", name)
         with open(path, "r", encoding="utf-8") as handle:
             all_errors.extend(_workflow_structure_errors(path, handle.read()))
+    # The freshness reminder: a daily, read-only, secret-free check whose
+    # failure is the maintainer's prompt to renew (tools/freshness_watch.py).
+    freshness_path = os.path.join(ctx.SCRIPT_DIR, ".github", "workflows", "freshness.yml")
+    with open(freshness_path, "r", encoding="utf-8") as handle:
+        freshness_text = handle.read()
+    for needle, why in (("permissions:\n  contents: read\n", "must request contents:read only"),
+                        ("  schedule:\n    - cron: ", "must run on a schedule"),
+                        ("run: python3 tools/freshness_watch.py\n", "must run the freshness watch"),
+                        ("persist-credentials: false", "must not keep the checkout token")):
+        if needle not in freshness_text:
+            all_errors.append(f"{freshness_path}: {why}")
+    if re.search(r"\$\{\{\s*secrets\.", freshness_text) or ": write" in freshness_text:
+        all_errors.append(f"{freshness_path}: the reminder needs no secrets or write scopes")
     ci_path = os.path.join(ctx.SCRIPT_DIR, ".github", "workflows", "ci.yml")
     with open(ci_path, "r", encoding="utf-8") as handle:
         ci_text = handle.read()

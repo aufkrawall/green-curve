@@ -1,0 +1,29 @@
+name: Update freshness
+
+# Daily reminder to renew the signed v2 update-freshness envelope.  Clients
+# refuse update metadata once it expires, and renewal is a maintainer action
+# (release_post.py --renew-freshness).  This job fails ten days before expiry;
+# GitHub notifies the maintainer about a failed scheduled run.  It reads only
+# public release assets and needs no secrets.
+#
+# GitHub pauses scheduled workflows after 60 days without repository activity;
+# re-enable it from the Actions tab if that happens.
+permissions:
+  contents: read
+env:
+  PYTHONUNBUFFERED: "1"
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  freshness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the published update freshness envelope
+        run: python3 tools/freshness_watch.py

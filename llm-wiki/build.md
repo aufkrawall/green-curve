@@ -810,6 +810,14 @@ build regression gates through `tools/release_manifest.py` and early in the
 manual release workflow. It deliberately does not count words or contact the
 remote; the workflow's separate tag check prevents republishing a version.
 
+`.github/workflows/freshness.yml` (2026-10-22) is the third workflow: a daily
+scheduled, read-only, secret-free run of `tools/freshness_watch.py`, which
+fetches the latest release's v2 freshness pair anonymously, verifies it
+against `GC_UPDATE_PUBLIC_KEY_ACTIVE` and fails from 10 days before expiry (see
+updates.md). `check_workflow_structure()` holds it to `contents: read`, a
+schedule, `persist-credentials: false` and no `secrets.`/write scopes. GitHub
+pauses scheduled workflows after 60 days without repository activity.
+
 `.github/workflows/release.yml` is the manual stable-release workflow
 (`workflow_dispatch` only). On one `ubuntu-latest` runner it:
 

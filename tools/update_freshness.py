@@ -17,16 +17,23 @@ def build_envelope(manifest, issued=None):
             + manifest)
 
 
-def unwrap(envelope, now=None):
-    now = int(time.time()) if now is None else now
+def read_header(envelope):
+    """(issued, expires, payload offset) of a well-formed envelope, at any time."""
     match = re.match(rb"freshness=1\nissued=([0-9]{1,12})\nexpires=([0-9]{1,12})\n", envelope)
     if not match:
         raise ValueError("missing signed freshness header")
     issued, expires = map(int, match.groups())
-    if not (0 < issued < expires <= issued + MAX_LIFETIME and
-            now > 0 and issued <= now + 300 and now < expires):
+    if not 0 < issued < expires <= issued + MAX_LIFETIME:
+        raise ValueError("invalid freshness lifetime")
+    return issued, expires, match.end()
+
+
+def unwrap(envelope, now=None):
+    now = int(time.time()) if now is None else now
+    issued, expires, offset = read_header(envelope)
+    if not (now > 0 and issued <= now + 300 and now < expires):
         raise ValueError("expired or future-dated update metadata")
-    return envelope[match.end():]
+    return envelope[offset:]
 
 
 def run_self_tests():

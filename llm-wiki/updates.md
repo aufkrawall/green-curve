@@ -136,6 +136,13 @@ verifies provenance before signing, validates both local signatures even in
 dry-run, requires the latest release before signing/upload, and compares all
 four delivered assets with local bytes. No real
 release asset was signed or published by either change; renewal remains a maintainer action.
+The prompt for it is `.github/workflows/freshness.yml` (2026-10-22): a daily
+run of `tools/freshness_watch.py` that anonymously fetches the latest v2 pair,
+verifies it against `GC_UPDATE_PUBLIC_KEY_ACTIVE`, and fails from
+`RENEW_AHEAD_DAYS` (10) before expiry, or when the pair is expired,
+future-dated, malformed or unverifiable (exit 1; 2 when it cannot check).
+Self-tests run from `release_post.run_self_tests()`. Locally,
+`python tools/freshness_watch.py` prints the current expiry.
 
 Refusal reasons are classified (`GcUpdateFreshStatus`): EXPIRED ("waiting to
 be renewed"; the publisher's job, recovers on a later check), FUTURE/NO_CLOCK
@@ -146,6 +153,14 @@ expires and now. Residuals: replay remains possible INSIDE the signed 30-day win
 REGRESSED/STALE remain notices; an attacker may withhold metadata; client clock
 correctness and first-install/key trust remain required. Bootstrap freshness
 is not guaranteed for old v1 clients.
+
+No high-water mark of `issued` is persisted, deliberately: it would not
+shorten that window. Envelopes are issued in order, so the newest one a party
+in the delivery path holds is also the one that expires last, and serving it
+holds a client exactly as long as replaying an older one could. An older
+release's envelope is already surfaced by the REGRESSED notice through
+`highest_seen_version`. Shortening the window means a shorter
+`GC_UPDATE_FRESH_MAX_LIFETIME` (more frequent renewal), not client state.
 
 Regression anchors: `tests/security_audit_tests.cpp`,
 `tests/review_followup_tests.cpp` (6250-6258 status classification), the
