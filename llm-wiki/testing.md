@@ -1,5 +1,18 @@
 # Testing
 
+## Path redaction and command fragments (2026-10-22)
+
+Source anchors: `source/log_path_redaction.h`,
+`tests/diagnostics_followup_tests.cpp` (7040, 7049-7050).
+The production-header cases cover Unix root files, root entries named like
+switches, first components containing spaces, quoted paths and the existing
+Windows/Unix forms. Exact-output controls retain recognized command switches
+and their exit fields. Command context stops at prose, arguments, quotes,
+semicolons and line boundaries, so a later path is independently redacted.
+The formatter adds no runtime logging because its own diagnostics would recurse
+through the logging boundary; existing diagnostic fields remain the useful
+observation. These cases run in the regular and sanitizer regression harnesses.
+
 ## Restart snapshot retirement (2026-10-22)
 
 Source anchors: `tests/restart_snapshot_cleanup_tests.cpp`,

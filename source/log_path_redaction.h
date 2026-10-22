@@ -6,8 +6,60 @@
 #include <string.h>
 
 static inline bool gc_log_path_boundary(char value) {
-    return value == 0 || value == ' ' || value == '\t' || value == '=' ||
+    return value == 0 || value == ' ' || value == '\t' || value == '\r' || value == '\n' || value == '=' ||
            value == '\'' || value == '"' || value == '(' || value == ':';
+}
+
+static inline bool gc_log_word_equal(const char* word, size_t length, const char* expected) {
+    if (length != strlen(expected)) return false;
+    for (size_t i = 0; i < length; ++i) {
+        const char lower = word[i] >= 'A' && word[i] <= 'Z' ? (char)(word[i] + ('a' - 'A')) : word[i];
+        if (lower != expected[i]) return false;
+    }
+    return true;
+}
+
+// Only switches in a recognized command fragment are exempt from path
+// redaction. A bare /delete, /S, or /file.ini can also be a Unix root entry.
+static inline int gc_log_switch_group(const char* word, size_t length) {
+    if (!length || word[0] != '/') return 0;
+    ++word;
+    --length;
+    static const char* const kTaskSwitches[] = { "delete", "query", "create", "tn", "xml", "f" };
+    for (const char* taskSwitch : kTaskSwitches) {
+        if (gc_log_word_equal(word, length, taskSwitch)) return 1;
+    }
+    if (gc_log_word_equal(word, length, "s") || gc_log_word_equal(word, length, "d")) return 2;
+    return 0;
+}
+
+static inline bool gc_log_windows_switch(const char* text, size_t at) {
+    if (at && (text[at - 1] == '\'' || text[at - 1] == '"')) return false;
+    size_t end = at;
+    while (text[end] && !gc_log_path_boundary(text[end]) && text[end] != '\r' &&
+           text[end] != '\n' && text[end] != ';') ++end;
+    const int group = gc_log_switch_group(text + at, end - at);
+    if (!group) return false;
+    // Walk only preceding switches and whitespace, stopping at any argument,
+    // prose, quote or line boundary. This keeps a later path in the same
+    // diagnostic from inheriting an earlier command's switch exemption.
+    end = at;
+    while (end) {
+        while (end && (text[end - 1] == ' ' || text[end - 1] == '\t')) --end;
+        size_t begin = end;
+        while (begin && !gc_log_path_boundary(text[begin - 1]) && text[begin - 1] != '\r' &&
+               text[begin - 1] != '\n' && text[begin - 1] != ';') --begin;
+        if (begin == end) return false;
+        const char* word = text + begin;
+        const size_t length = end - begin;
+        if (group == 1 && (gc_log_word_equal(word, length, "schtasks") ||
+                           gc_log_word_equal(word, length, "schtasks.exe"))) return true;
+        if (group == 2 && (gc_log_word_equal(word, length, "setup") ||
+                           gc_log_word_equal(word, length, "setup.exe"))) return true;
+        if (gc_log_switch_group(word, length) != group) return false;
+        end = begin;
+    }
+    return false;
 }
 
 static inline bool gc_log_path_start(const char* text, size_t at) {
@@ -18,14 +70,7 @@ static inline bool gc_log_path_start(const char* text, size_t at) {
     if (p[0] == '\\' && p[1] == '\\') return true;
     if (p[0] == '.' && (p[1] == '\\' || p[1] == '/')) return true;
     if (p[0] != '/' || !p[1] || p[1] == '/' || p[1] == ' ' || p[1] == '\n') return false;
-    // A Unix path names a folder AND an entry in it ("/home/<name>", "/tmp/x"):
-    // its first component is followed by another '/'.  A lone "/word" is a
-    // command switch ("schtasks /delete", "/tn", "/S"); taking it for a path
-    // tokenized the rest of the line, exit codes included.
-    for (size_t i = 1; p[i] && !gc_log_path_boundary(p[i]) && p[i] != '\r' && p[i] != '\n'; ++i) {
-        if (p[i] == '/') return true;
-    }
-    return false;
+    return !gc_log_windows_switch(text, at);
 }
 
 // Paths in formatted error messages are not always quoted. Conservatively

@@ -40,11 +40,19 @@ int run_log_path_redaction_tests() {
         "open /tmp/sample account/settings.ini (error 5)\n",
         "open './sample account/settings.ini' (error 5)\n",
         "open .\\sample account\\settings.ini (error 5)\n",
+        "open /private-config.ini (error 5)\n",
+        "open '/sample account/settings.ini' (error 5)\n",
+        "open /sample account/settings.ini (error 5)\n",
+        "open /delete (error 5)\n",
+        "open '/query' (error 5)\n",
+        "open /S (error 5)\n",
     };
     for (const char* input : inputs) {
         char output[512] = {};
         gc_log_redact_paths(input, output, sizeof(output));
         if (strstr(output, "sample") || strstr(output, "settings.ini") ||
+            strstr(output, "private-config") || strstr(output, "/delete") ||
+            strstr(output, "/query") || strstr(output, "/S") ||
             !strstr(output, "[path #") || !strstr(output, "(error 5)") ||
             output[strlen(output) - 1] != '\n') return 7040;
         char again[512] = {};
@@ -75,7 +83,8 @@ int run_log_path_redaction_tests() {
     // 7049: command switches are not paths.  "/delete" used to start a "Unix
     // path" that swallowed the rest of the line, exit code included.
     for (const char* kept : {"schtasks /delete exit=1 error=5", "schtasks /query /tn task exit=0",
-                             "setup /S /D=target"}) {
+                             "setup /S /D=target", "autostart: schtasks /create exit=0",
+                             "SCHTASKS.EXE /QUERY /TN task exit=0", "setup.exe /s /d=target"}) {
         char out[128] = {};
         gc_log_redact_paths(kept, out, sizeof(out));
         if (strcmp(out, kept)) return 7049;
@@ -83,6 +92,17 @@ int run_log_path_redaction_tests() {
     char unixPath[128] = {};
     gc_log_redact_paths("open /home/testuser/settings.ini exit=1", unixPath, sizeof(unixPath));
     if (strstr(unixPath, "testuser") || !strstr(unixPath, "open [path #")) return 7049;
+    // A command earlier in a message never exempts a later path, a quoted
+    // argument, or a path on the next line (7050).
+    for (const char* input : {"schtasks /delete failed opening /query (error 5)",
+                              "schtasks /delete '/query' (error 5)",
+                              "schtasks /delete; /query (error 5)",
+                              "schtasks /delete\n/query (error 5)",
+                              "setup /S failed opening /D (error 5)"}) {
+        char output[256] = {};
+        gc_log_redact_paths(input, output, sizeof(output));
+        if (!strstr(output, "[path #") || !strstr(output, "(error 5)")) return 7050;
+    }
 
     // 7048: one text, one token: narrow, wide, and the line redaction agree,
     // also beyond ASCII (U+00E9, and U+1F600 as a UTF-16 surrogate pair).

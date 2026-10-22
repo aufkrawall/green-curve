@@ -5,6 +5,17 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-22: Path redaction retains command context explicitly
+
+- Unix root entries, including first components containing spaces and names
+  resembling switches, are redacted. Recognized unquoted command fragments
+  preserve their switches and diagnostic fields; prose, arguments, quotes and
+  separators end that context. Tests 7040/7049/7050 cover both contracts.
+- Diagnostics are assessed at the formatter boundary: preserve existing exit
+  and error fields, and avoid recursive logging from the redactor itself.
+- Full UBSan regression and source gates pass. The focused production-header
+  fixture fails against the previous header and passes with the current rules.
+
 ## 2026-10-22: Snapshot retirement binds to the authorized file object
 
 - Recovery cleanup proves the snapshot's volume/file identity, content, length

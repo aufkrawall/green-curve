@@ -132,12 +132,16 @@ existing format. Regression anchors: `tests/diagnostics_followup_tests.cpp`
 and `tools/log_gates.py`. These are correlation fingerprints, not cryptographic
 anonymization of predictable input.
 
-Since 2026-10-22 (tests 7048-7049): a `/word` counts as a Unix path only when
-another `/` follows inside the same word (`/home/<name>/...`), so command
-switches (`schtasks /delete exit=1`, `/tn`) keep the rest of the line; and wide
-paths/identifiers are hashed as their UTF-8 encoding, so the same text gets the
-same token whether logged wide, narrow, or caught by the line redaction. To
-keep fields AFTER a path on the same line, quote the path in the format
+Verified 2026-10-22 (tests 7040, 7048-7050): Unix root entries and first
+components containing spaces are paths too. Only recognized, unquoted command
+fragments exempt slash switches: the recorded `schtasks` verbs/options and
+setup's `/S` and `/D`. Preceding switches may carry the same command context;
+arguments, prose, quotes, semicolons and line boundaries end it. A bare `/delete`
+or `/S` is still a path. The pure redactor emits no recursive diagnostics; its
+fixtures check retained exit/error fields as well as removed path text.
+Wide paths/identifiers are hashed as their UTF-8 encoding, so the same text gets
+the same token whether logged wide, narrow, or caught by the line redaction.
+To keep fields AFTER a path on the same line, quote the path in the format
 string (`'%ls'`); an unquoted path is tokenized to the line end.
 
 `source/log_redaction_policy.h` turns account names, SIDs, authentication LUIDs
