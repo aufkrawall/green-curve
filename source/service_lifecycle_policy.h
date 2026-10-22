@@ -175,7 +175,9 @@ enum ServiceLifecycleEventType {
     SERVICE_LIFECYCLE_EVENT_STANDBY_WRITE_STARTED,
     SERVICE_LIFECYCLE_EVENT_STANDBY_WRITE_FINISHED,
     SERVICE_LIFECYCLE_EVENT_DRIVER_RECOVERY,
-    SERVICE_LIFECYCLE_EVENT_DRIVER_PROOF_SIGNAL,
+    // No "proof ready" event: the worker re-attempts the driver restore on
+    // every wake (driver_recovery_flow.h), and DRIVER_WRITE_STARTED carries the
+    // proof and validation it was attempted with.
     SERVICE_LIFECYCLE_EVENT_DRIVER_WRITE_STARTED,
     SERVICE_LIFECYCLE_EVENT_DRIVER_WRITE_FINISHED,
     SERVICE_LIFECYCLE_EVENT_DEVNODES_CHANGED,
@@ -440,14 +442,6 @@ static inline ServiceLifecycleDecision service_lifecycle_reduce(
                 decision.result = SERVICE_LIFECYCLE_RESULT_PENDING;
             } else {
                 decision.result = SERVICE_LIFECYCLE_RESULT_LOCKED_OUT;
-            }
-            break;
-
-        case SERVICE_LIFECYCLE_EVENT_DRIVER_PROOF_SIGNAL:
-            if (state->driverPending && !state->driverWriteIssued &&
-                event->driverProofReady && !state->lockedOut) {
-                decision.wakeWorker = true;
-                decision.trigger = SERVICE_LIFECYCLE_TRIGGER_DRIVER_RECOVERY;
             }
             break;
 

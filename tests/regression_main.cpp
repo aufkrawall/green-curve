@@ -7242,9 +7242,11 @@ static int run_all_tests(int argc, char** argv) {
         decision = service_lifecycle_reduce(&driverFailure, &event);
         if (decision.result != SERVICE_LIFECYCLE_RESULT_FAILED ||
             driverFailure.driverPending) return 593;
+        // The worker's next attempt finds a terminal write: never retried.
         event = {};
-        event.type = SERVICE_LIFECYCLE_EVENT_DRIVER_PROOF_SIGNAL;
+        event.type = SERVICE_LIFECYCLE_EVENT_DRIVER_WRITE_STARTED;
         event.driverProofReady = 1;
+        event.controlledRecoveryValidated = 1;
         decision = service_lifecycle_reduce(&driverFailure, &event);
         if (decision.wakeWorker || decision.authorizeDriverWrite) return 594;
 
@@ -7487,10 +7489,10 @@ static int run_all_tests(int argc, char** argv) {
         event.type = SERVICE_LIFECYCLE_EVENT_DRIVER_WRITE_STARTED;
         decision = service_lifecycle_reduce(&recovery, &event);
         if (decision.authorizeDriverWrite) return 428;
-        event.type = SERVICE_LIFECYCLE_EVENT_DRIVER_PROOF_SIGNAL;
+        // A later wake re-attempts with the proof established; the restore is
+        // still pending and unissued after the refused start.
+        if (!recovery.driverPending || recovery.driverWriteIssued) return 429;
         event.driverProofReady = 1;
-        decision = service_lifecycle_reduce(&recovery, &event);
-        if (!decision.wakeWorker) return 429;
         event.type = SERVICE_LIFECYCLE_EVENT_DRIVER_WRITE_STARTED;
         decision = service_lifecycle_reduce(&recovery, &event);
         if (decision.authorizeDriverWrite) return 488; // old/non-nonce process
