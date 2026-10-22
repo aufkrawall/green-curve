@@ -20,12 +20,13 @@ struct DaemonListener {
 // ships and tests, not a second design.
 //
 // The gap it closes: the serve loop is single-threaded and handles one request
-// to completion before the next accept(), with a backlog of 8 and NO rate
-// limit anywhere.  One peer issuing back-to-back APPLY requests (each up to
-// ~18.7 s) therefore fills the backlog and every other client's connect() then
+// to completion before the next accept(), with a backlog of 8, so a peer
+// flooding requests fills the backlog and every other client's connect() then
 // returns EAGAIN, which the client is told to read as "the daemon is busy".
-// The flood is nearly invisible in the log because failure messages de-duplicate
-// on text.
+// The bucket bounds the request RATE per account.  Time the loop spends waiting
+// on a stalled peer is rationed separately, in time (linux_daemon_stall_policy.h).
+// Handler time is not rationed: an account issuing back-to-back legitimate
+// mutations keeps other clients waiting, which is a design limit, not a fault.
 //
 // Identity is the peer uid from the ucred log_peer() already reads, formatted
 // as a stable string.  Deliberately NOT the bare pid: a client that forks gets
@@ -67,6 +68,22 @@ static void daemon_admission_charge(const ServiceIpcThrottleKey* key,
     if (!key || !key->valid) return;
     service_ipc_charge(&g_daemonAdmissionTable, *key, SERVICE_IPC_CLASS_NORMAL,
                        costTokens, monotonic_ms());
+}
+
+// A failed exchange: the transport-fault cost the Windows transport charges,
+// plus the time the peer made the loop wait, repaid as a hold.  One line per
+// hold, no identity in it; a peer can earn at most one per hold period.
+static void daemon_admission_fault(const ServiceIpcThrottleKey* key,
+                                   const char* phase,
+                                   unsigned long long stalledMs) {
+    daemon_admission_charge(key, SERVICE_IPC_COST_TRANSPORT_FAULT);
+    const unsigned long long holdMs = gc_daemon_peer_stall_hold_ms(stalledMs);
+    if (!key || !key->valid || holdMs == 0) return;
+    const unsigned long long nowMs = monotonic_ms();
+    service_ipc_hold(&g_daemonAdmissionTable, *key, nowMs + holdMs, nowMs);
+    dlog("daemon: peer stalled %llu ms in the %s; refusing that account for "
+         "%llu ms (stall rationing)\n", stalledMs, phase ? phase : "exchange",
+         holdMs);
 }
 
 // Root-owned, group-accessible.  The daemon updates and verifies the
@@ -234,7 +251,9 @@ static int daemon_serve_until_stopped(int srv) {
         // Metered BEFORE the request is read, so a peer that floods spends its
         // own budget rather than the backlog's.  The charge happens after the
         // outcome is known, so a transport fault weighs more than a completed
-        // request -- the same weighting the Windows transport uses.
+        // request -- the same weighting the Windows transport uses.  A failed
+        // response write is a fault too: a peer that stops reading its answer
+        // holds the loop exactly like one that never sends its request.
         ServiceIpcThrottleKey throttleKey;
         const bool admitted = daemon_admission_admit(conn, &throttleKey);
         if (!admitted) {
@@ -242,13 +261,23 @@ static int daemon_serve_until_stopped(int srv) {
             // loop. Best-effort nonblocking output tells healthy clients busy.
             daemon_answer_busy(conn);
             daemon_admission_charge(&throttleKey, 0);
-        } else if (daemon_read_request(conn, &req)) {
-            ServiceResponse resp;
-            handle_request(&req, &resp);
-            daemon_write_response(conn, &resp);
-            daemon_admission_charge(&throttleKey, SERVICE_IPC_COST_SUCCESS);
         } else {
-            daemon_admission_charge(&throttleKey, SERVICE_IPC_COST_TRANSPORT_FAULT);
+            const unsigned long long readStartMs = monotonic_ms();
+            if (!daemon_read_request(conn, &req)) {
+                daemon_admission_fault(&throttleKey, "request read",
+                                       monotonic_ms() - readStartMs);
+            } else {
+                ServiceResponse resp;
+                handle_request(&req, &resp);
+                // Measured from here so handler time never counts as a stall.
+                const unsigned long long writeStartMs = monotonic_ms();
+                if (daemon_write_response(conn, &resp)) {
+                    daemon_admission_charge(&throttleKey, SERVICE_IPC_COST_SUCCESS);
+                } else {
+                    daemon_admission_fault(&throttleKey, "response write",
+                                           monotonic_ms() - writeStartMs);
+                }
+            }
         }
         close(conn);
     }

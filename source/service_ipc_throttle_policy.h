@@ -229,6 +229,9 @@ struct ServiceIpcIdentitySlot {
     ServiceIpcThrottleKey key;
     ServiceIpcBucket normalBucket;
     ServiceIpcBucket handoffBucket;
+    // Time-based refusal set by service_ipc_hold(); never set on Windows.
+    bool holdActive;
+    unsigned long long holdUntilMs;
 };
 
 struct ServiceIpcAdmissionTable {
@@ -329,6 +332,12 @@ inline ServiceIpcAdmissionDecision service_ipc_decide_admission(
         // outcome is charged, so an unidentifiable flood gains nothing.
         return SERVICE_IPC_ADMITTED;
     }
+    // A hold refuses until it ends, whatever the bucket holds.
+    if (slot->holdActive) {
+        if (!service_ipc_time_at_or_after(nowMs, slot->holdUntilMs))
+            return SERVICE_IPC_REJECTED_RATE;
+        slot->holdActive = false;
+    }
     unsigned long long needed = (unsigned long long)SERVICE_IPC_COST_SUCCESS *
                                 1000ULL;
     ServiceIpcBucket& bucket = cls == SERVICE_IPC_CLASS_HANDOFF
@@ -369,6 +378,26 @@ inline void service_ipc_charge(ServiceIpcAdmissionTable* table,
             SERVICE_IPC_REFILL_PER_SECOND_MILLI);
         slot->normalBucket.spend(costMilli);
     }
+}
+
+// Refuse `key` until `untilMs` regardless of its bucket; an existing longer
+// hold is never shortened.  Only the single-threaded Linux serve loop calls
+// this, to repay a stall in time (linux_daemon_stall_policy.h).  The Windows
+// transport bounds stalls with per-account worker leases instead, so its slots
+// never carry a hold and its decisions are unchanged.
+inline void service_ipc_hold(ServiceIpcAdmissionTable* table,
+                             const ServiceIpcThrottleKey& key,
+                             unsigned long long untilMs,
+                             unsigned long long nowMs) {
+    if (!table || !key.valid || untilMs == nowMs ||
+        !service_ipc_time_at_or_after(untilMs, nowMs)) return;
+    ServiceIpcIdentitySlot* slot =
+        table->acquire(key, service_ipc_key_hash(key), nowMs);
+    if (!slot) return;
+    if (slot->holdActive &&
+        service_ipc_time_at_or_after(slot->holdUntilMs, untilMs)) return;
+    slot->holdActive = true;
+    slot->holdUntilMs = untilMs;
 }
 
 // ---------------------------------------------------------------------------

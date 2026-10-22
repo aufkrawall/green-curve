@@ -54,6 +54,7 @@ Driver-update recovery, diagnostic privacy and local protections improve while e
 - **Windows setup:** Improved protection when running setup or portable helpers from Downloads and shared folders.
 - **Desktop shortcuts:** Safer shortcut creation and removal preserve support for redirected desktop folders.
 - **Setup folder warning:** the suggested administrator command keeps folder names with `$` or backticks intact, so it can no longer act on a different folder.
+- **Linux service:** a client that stops responding no longer holds up other clients.
 
 ### Compatibility notes
 

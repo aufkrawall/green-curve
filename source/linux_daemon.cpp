@@ -19,6 +19,9 @@
 // host-neutral pure logic (a monotonic clock in, a decision out), so reusing it
 // here is a port of an existing, tested control rather than a second design.
 #include "service_ipc_throttle_policy.h"
+// What the bucket cannot ration on a single-threaded loop: time spent waiting
+// on a stalled peer, repaid in time.
+#include "linux_daemon_stall_policy.h"
 #include "linux_mutation_authority.h"
 #include "profile_persistence_policy.h"
 // The platform-neutral "replay the complete active intent" request builder the

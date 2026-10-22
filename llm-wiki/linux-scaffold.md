@@ -586,6 +586,37 @@ recover; no refusal charge is needed. Overspending saturates tokens to zero.
 Regression cases 5980-5987, the security audit fixture and native transport
 fixture cover independent peers, quiet recovery and silent refusal.
 
+### Stall rationing (F-LNX-STALL, 2026-10-22)
+
+Tokens alone cannot ration a stall on a one-thread loop: a stall costs 10
+tokens, the bucket refills 40 during one 2000 ms stall window, and admission
+needs one token, so a peer stalling every connection kept the loop busy
+almost all the time. `linux_daemon_stall_policy.h` repays a stall in time.
+
+- A failed request read OR a failed response write (a peer that stops reading
+  its answer) is a fault: cost 10, plus a hold of `2 x` the measured stall
+  (`GC_DAEMON_PEER_STALL_HOLD_FACTOR`) during which that account is refused.
+  One account's stalls get at most a third of the loop.
+- Faults under 100 ms (EOF, reset) earn no hold. Holds are capped at 8000 ms,
+  below the 60 s idle expiry (`static_assert`), and never shortened.
+- Handler time is never a stall: the write's clock starts after
+  `handle_request()` (order gate in `tools/linux_gates.py`).
+- `service_ipc_hold()` lives in the shared throttle header, but only the Linux
+  loop calls it; Windows bounds stalls with per-account worker leases, so its
+  decisions are unchanged.
+- Log line: `daemon: peer stalled <n> ms in the <phase>; refusing that account
+  for <m> ms (stall rationing)`, with no identity in it.
+
+Tests 7240-7257 (`tests/peer_stall_tests.cpp`) include a simulated peer
+stalling every connection: about 100% of the loop with the bucket alone,
+at most a third with the hold.
+
+Design limit: handler time is not rationed. An account issuing back-to-back
+legitimate mutations (an APPLY can take up to ~18.7 s) keeps other clients
+waiting, and several accounts acting together add up. Every account the
+daemon admits is in the `greencurve` group and may change GPU settings
+anyway; no fairness between accounts is claimed.
+
 **Client side of a refusal (review fix 2026-10-01).** Because the daemon answers
 and closes before reading, the client's request write races that close. If the
 close wins, `send()` fails with EPIPE (or poll reports only error bits, EIO)

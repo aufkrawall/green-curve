@@ -958,6 +958,24 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
                  "the Linux serve loop asks the admission policy before handling")
     require_text(serve_h, "SERVICE_IPC_COST_TRANSPORT_FAULT",
                  "a peer that connects without delivering a frame is charged for it")
+    # F-LNX-STALL: a stall is repaid in time, because the bucket refills faster
+    # than a stall costs (tests/peer_stall_tests.cpp, 7240-7259).  Each rule is
+    # a negative: dropping one leaves every request working.
+    require_text(daemon_cpp, '#include "linux_daemon_stall_policy.h"',
+                 "the Linux daemon rations stalls with the pure stall policy")
+    require_text(serve_h, "gc_daemon_peer_stall_hold_ms(stalledMs)",
+                 "a stall's hold comes from the tested policy")
+    require_text(serve_h, "service_ipc_hold(&g_daemonAdmissionTable",
+                 "a stalling account is refused for a time, not only charged tokens")
+    require_text(serve_h, 'daemon_admission_fault(&throttleKey, "request read",',
+                 "a stalled request read is a fault with a hold")
+    require_text(serve_h, 'daemon_admission_fault(&throttleKey, "response write",',
+                 "a peer that stops reading its answer is a fault with a hold")
+    # Handler time must never count as a stall: the write's clock starts after
+    # handle_request(), or a long legitimate APPLY would hold an honest client.
+    require_order(serve_h, "handle_request(&req, &resp);",
+                  "const unsigned long long writeStartMs = monotonic_ms();",
+                  "the response-write stall is measured after the handler ran")
     # The identity is the peer uid, not the pid: a client that forks would
     # otherwise get a fresh, unmetered bucket every request.
     require_text(serve_h, "SO_PEERCRED",
