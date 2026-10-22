@@ -310,10 +310,14 @@ all-or-nothing format, first start / unchanged / changed / unreadable; see
 simulated service and the real reducer and recovery policies -- one write,
 ordering, every refusal with zero writes; mutation-checked; see
 [auto-restore-policy](auto-restore-policy.md)), `tests/peer_stall_tests.cpp`
-(7240-7257: Linux serve-loop stall rationing -- hold arithmetic,
-`service_ipc_hold()` table rules, and a simulated peer stalling every
-connection, ~100% of the loop on the bucket alone versus at most a third with
-the hold; mutation-checked; see [linux-scaffold](linux-scaffold.md));
+(7240-7270, range reserved to 7279: Linux serve-loop stall rationing -- hold
+arithmetic, `service_ipc_hold()` table rules, the exchange settlement, and
+simulated peers settled through `gc_daemon_exchange_account()`: a read
+timeout, a request completing just inside its deadline, and that request
+followed by a write timeout, each ~100% (or ~49%) of the loop without the
+both-phase hold versus at most a third with it, and a prompt client with a
+long handler never refused; mutation-checked; see
+[linux-scaffold](linux-scaffold.md));
 `service_install_tests.cpp` owns
 assertions 5720-5786: SCM checkpoint-wait policy, the location content rule,
 the exact-DACL predicate, handle-bound hardening with propagation to existing

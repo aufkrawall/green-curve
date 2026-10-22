@@ -956,23 +956,32 @@ def check_auto_restore(ctx, require_text, forbid_text, require_order):
                  "the Linux serve loop owns an admission table")
     require_text(serve_h, "service_ipc_decide_admission(",
                  "the Linux serve loop asks the admission policy before handling")
-    require_text(serve_h, "SERVICE_IPC_COST_TRANSPORT_FAULT",
+    stall_h = _p(ctx, "linux_daemon_stall_policy.h")
+    require_text(stall_h, ": (unsigned int)SERVICE_IPC_COST_TRANSPORT_FAULT;",
                  "a peer that connects without delivering a frame is charged for it")
-    # F-LNX-STALL: a stall is repaid in time, because the bucket refills faster
-    # than a stall costs (tests/peer_stall_tests.cpp, 7240-7259).  Each rule is
-    # a negative: dropping one leaves every request working.
+    # F-LNX-STALL: transport time is repaid in time, because the bucket refills
+    # faster than a stall costs (tests/peer_stall_tests.cpp, 7240-7279).  Each
+    # rule is a negative: dropping one leaves every request working.
     require_text(daemon_cpp, '#include "linux_daemon_stall_policy.h"',
                  "the Linux daemon rations stalls with the pure stall policy")
-    require_text(serve_h, "gc_daemon_peer_stall_hold_ms(stalledMs)",
-                 "a stall's hold comes from the tested policy")
-    require_text(serve_h, "service_ipc_hold(&g_daemonAdmissionTable",
+    require_text(serve_h, "&g_daemonAdmissionTable, *key, outcome, readMs, writeMs, monotonic_ms());",
+                 "every admitted exchange is settled by the tested policy")
+    require_text(stall_h, "service_ipc_hold(table, key, nowMs + settled.holdMs, nowMs);",
                  "a stalling account is refused for a time, not only charged tokens")
-    require_text(serve_h, 'daemon_admission_fault(&throttleKey, "request read",',
-                 "a stalled request read is a fault with a hold")
-    require_text(serve_h, 'daemon_admission_fault(&throttleKey, "response write",',
-                 "a peer that stops reading its answer is a fault with a hold")
-    # Handler time must never count as a stall: the write's clock starts after
-    # handle_request(), or a long legitimate APPLY would hold an honest client.
+    # Both phases count whatever the outcome: a request that completes just
+    # inside its deadline holds the loop as long as one that misses it.
+    require_text(serve_h, "daemon_admission_settle(&throttleKey, outcome, readMs, writeMs);",
+                 "the hold covers the request read and the response write together")
+    forbid_text(serve_h, "daemon_admission_charge(&throttleKey, SERVICE_IPC_COST_SUCCESS)",
+                "a completed exchange is not charged around the stall accounting")
+    forbid_text(serve_h, "daemon_admission_fault(",
+                "no hold is decided from the failing phase alone")
+    # Handler time must never count as a stall: the read's clock stops before
+    # handle_request() and the write's starts after it, or a long legitimate
+    # APPLY would hold an honest client.
+    require_order(serve_h, "const unsigned long long readMs = monotonic_ms() - readStartMs;",
+                  "handle_request(&req, &resp);",
+                  "the request-read time is closed before the handler runs")
     require_order(serve_h, "handle_request(&req, &resp);",
                   "const unsigned long long writeStartMs = monotonic_ms();",
                   "the response-write stall is measured after the handler ran")

@@ -593,23 +593,35 @@ tokens, the bucket refills 40 during one 2000 ms stall window, and admission
 needs one token, so a peer stalling every connection kept the loop busy
 almost all the time. `linux_daemon_stall_policy.h` repays a stall in time.
 
-- A failed request read OR a failed response write (a peer that stops reading
-  its answer) is a fault: cost 10, plus a hold of `2 x` the measured stall
+- Every admitted exchange is settled once by `gc_daemon_exchange_account()`:
+  the outcome prices the tokens (completed 1, failed read or failed response
+  write 10), and the TRANSPORT time -- request read plus response write,
+  whatever the outcome -- earns a hold of `2 x` that time
   (`GC_DAEMON_PEER_STALL_HOLD_FACTOR`) during which that account is refused.
-  One account's stalls get at most a third of the loop.
-- Faults under 100 ms (EOF, reset) earn no hold. Holds are capped at 8000 ms,
-  below the 60 s idle expiry (`static_assert`), and never shortened.
-- Handler time is never a stall: the write's clock starts after
-  `handle_request()` (order gate in `tools/linux_gates.py`).
+  One account's transport gets at most a third of the loop.
+- Success is not an exemption. The first version held only a failed phase, so
+  a peer whose request always completed just inside its deadline kept the loop
+  busy 100% of the time, and a slow read followed by a write timeout was held
+  for the write alone (~49%). Both are now ~33%.
+- Transport under 100 ms (a prompt local client, EOF, reset) earns no hold.
+  Holds are capped at 8000 ms (both phases at their deadline), below the 60 s
+  idle expiry (`static_assert`), and never shortened.
+- Handler time is never transport: the read's clock stops before
+  `handle_request()` and the write's starts after it, and the settlement has
+  no handler parameter (order gates in `tools/linux_gates.py`).
 - `service_ipc_hold()` lives in the shared throttle header, but only the Linux
   loop calls it; Windows bounds stalls with per-account worker leases, so its
   decisions are unchanged.
-- Log line: `daemon: peer stalled <n> ms in the <phase>; refusing that account
-  for <m> ms (stall rationing)`, with no identity in it.
+- Log line: `daemon: peer held the loop <n> ms in transport (request read <r>
+  ms, response write <w> ms, <outcome>); refusing that account for <m> ms
+  (stall rationing)`, with no identity in it.
 
-Tests 7240-7257 (`tests/peer_stall_tests.cpp`) include a simulated peer
-stalling every connection: about 100% of the loop with the bucket alone,
-at most a third with the hold.
+Tests 7240-7270 (`tests/peer_stall_tests.cpp`) settle simulated peers through
+the daemon's own `gc_daemon_exchange_account()`: a read timeout, a request
+completing 100 ms before its deadline, and that request followed by a write
+timeout each take about 100% (or ~49%) of the loop on the bucket alone or the
+old rule, and at most a third with the hold; a prompt client with a 5 s
+handler is never refused.
 
 Design limit: handler time is not rationed. An account issuing back-to-back
 legitimate mutations (an APPLY can take up to ~18.7 s) keeps other clients

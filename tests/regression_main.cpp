@@ -998,7 +998,7 @@ int run_restart_snapshot_cleanup_tests();
 // reducer and recovery policies (tests/driver_recovery_sequence_tests.cpp,
 // 7210-7239).
 int run_driver_recovery_sequence_tests();
-// Linux serve-loop stall rationing (tests/peer_stall_tests.cpp, 7240-7259).
+// Linux serve-loop stall rationing (tests/peer_stall_tests.cpp, 7240-7279).
 int run_peer_stall_tests();
 // F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
 // are over a kilobyte each and several are live at once; under ASan's

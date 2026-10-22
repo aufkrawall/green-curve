@@ -5,6 +5,22 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-22: Stall rationing counts successful exchanges and both phases
+
+- Review follow-up to F-LNX-STALL (linux-scaffold.md). The hold was decided
+  only on a failed phase, from that phase's time: a request that completed
+  just inside its read deadline earned one token and no hold (the loop was
+  busy 100% of the time), and a write timeout after a slow read was held for
+  the write alone (~49%).
+- Fix: `gc_daemon_exchange_account()` (`linux_daemon_stall_policy.h`) settles
+  every admitted exchange once; the outcome prices the tokens, read + write
+  transport time decides the hold. Handler time is still excluded.
+- Tests 7258-7270 (`tests/peer_stall_tests.cpp`), with the simulated peers now
+  settled through the daemon's own function. Mutation check: with the old rule
+  restored the suite fails at 7259 and the simulated shares are 1000 and
+  494 per mille; with the fix all three shapes are 333.
+- Not verified against a live daemon.
+
 ## 2026-10-22: `llm-wiki/private/` retired
 
 - Reviewed in full before removal. The uncurated log copy is superseded by

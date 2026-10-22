@@ -70,20 +70,23 @@ static void daemon_admission_charge(const ServiceIpcThrottleKey* key,
                        costTokens, monotonic_ms());
 }
 
-// A failed exchange: the transport-fault cost the Windows transport charges,
-// plus the time the peer made the loop wait, repaid as a hold.  One line per
+// An admitted exchange, successful or not: the outcome's token cost (the
+// weighting the Windows transport uses), plus the time the peer made the loop
+// wait in the request read and response write, repaid as a hold.  One line per
 // hold, no identity in it; a peer can earn at most one per hold period.
-static void daemon_admission_fault(const ServiceIpcThrottleKey* key,
-                                   const char* phase,
-                                   unsigned long long stalledMs) {
-    daemon_admission_charge(key, SERVICE_IPC_COST_TRANSPORT_FAULT);
-    const unsigned long long holdMs = gc_daemon_peer_stall_hold_ms(stalledMs);
-    if (!key || !key->valid || holdMs == 0) return;
-    const unsigned long long nowMs = monotonic_ms();
-    service_ipc_hold(&g_daemonAdmissionTable, *key, nowMs + holdMs, nowMs);
-    dlog("daemon: peer stalled %llu ms in the %s; refusing that account for "
-         "%llu ms (stall rationing)\n", stalledMs, phase ? phase : "exchange",
-         holdMs);
+static void daemon_admission_settle(const ServiceIpcThrottleKey* key,
+                                    GcDaemonExchangeOutcome outcome,
+                                    unsigned long long readMs,
+                                    unsigned long long writeMs) {
+    if (!key) return;
+    const GcDaemonExchangeSettlement settled = gc_daemon_exchange_account(
+        &g_daemonAdmissionTable, *key, outcome, readMs, writeMs, monotonic_ms());
+    if (!key->valid || settled.holdMs == 0) return;
+    dlog("daemon: peer held the loop %llu ms in transport (request read %llu ms, "
+         "response write %llu ms, %s); refusing that account for %llu ms "
+         "(stall rationing)\n", settled.transportMs, readMs,
+         outcome == GC_DAEMON_EXCHANGE_READ_FAILED ? 0ull : writeMs,
+         gc_daemon_exchange_outcome_name(outcome), settled.holdMs);
 }
 
 // Root-owned, group-accessible.  The daemon updates and verifies the
@@ -253,7 +256,10 @@ static int daemon_serve_until_stopped(int srv) {
         // outcome is known, so a transport fault weighs more than a completed
         // request -- the same weighting the Windows transport uses.  A failed
         // response write is a fault too: a peer that stops reading its answer
-        // holds the loop exactly like one that never sends its request.
+        // holds the loop exactly like one that never sends its request.  The
+        // hold is decided by the transport time of BOTH phases whatever the
+        // outcome, so a request that completes just inside its deadline is
+        // rationed like one that misses it.
         ServiceIpcThrottleKey throttleKey;
         const bool admitted = daemon_admission_admit(conn, &throttleKey);
         if (!admitted) {
@@ -262,22 +268,22 @@ static int daemon_serve_until_stopped(int srv) {
             daemon_answer_busy(conn);
             daemon_admission_charge(&throttleKey, 0);
         } else {
+            GcDaemonExchangeOutcome outcome = GC_DAEMON_EXCHANGE_READ_FAILED;
             const unsigned long long readStartMs = monotonic_ms();
-            if (!daemon_read_request(conn, &req)) {
-                daemon_admission_fault(&throttleKey, "request read",
-                                       monotonic_ms() - readStartMs);
-            } else {
+            const bool requestRead = daemon_read_request(conn, &req);
+            const unsigned long long readMs = monotonic_ms() - readStartMs;
+            unsigned long long writeMs = 0;
+            if (requestRead) {
                 ServiceResponse resp;
                 handle_request(&req, &resp);
                 // Measured from here so handler time never counts as a stall.
                 const unsigned long long writeStartMs = monotonic_ms();
-                if (daemon_write_response(conn, &resp)) {
-                    daemon_admission_charge(&throttleKey, SERVICE_IPC_COST_SUCCESS);
-                } else {
-                    daemon_admission_fault(&throttleKey, "response write",
-                                           monotonic_ms() - writeStartMs);
-                }
+                const bool responded = daemon_write_response(conn, &resp);
+                writeMs = monotonic_ms() - writeStartMs;
+                outcome = responded ? GC_DAEMON_EXCHANGE_COMPLETED
+                                    : GC_DAEMON_EXCHANGE_WRITE_FAILED;
             }
+            daemon_admission_settle(&throttleKey, outcome, readMs, writeMs);
         }
         close(conn);
     }
