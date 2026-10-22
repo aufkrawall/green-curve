@@ -20,7 +20,7 @@ from pe_verify import (
     pe_imports, pe_resource_ids, pe_section_names, version_string_value,
     verify_no_buildid_section, verify_pe_checksum, verify_pe_import_surface,
     verify_service_resources, verify_setup_has_no_decompressor,
-    verify_pe_dependent_load_flags,
+    verify_pe_dependent_load_flags, verify_cfg_pointer_slots,
     verify_version_identity, verify_windows_binary_imports,
     verify_windows_binary_metadata, verify_windows_manifest_identity,
 )
@@ -219,6 +219,33 @@ def _synthetic_metadata_pe(original_filename, with_buildid=False,
     ])
     data += "040904B0".encode("utf-16le") + b"\0\0"
     struct.pack_into("<I", data, _checksum_field_offset(data), pe_image_checksum(data))
+    return bytes(data)
+
+
+def _synthetic_cfg_pe(check_rva, dispatch_rva, declared=148):
+    """PE32+ with an executable .text and a data .rdata holding the load config
+    whose CFG check/dispatch slots point at the given RVAs (0 = no slot)."""
+    image_base = 0x140000000
+    data = bytearray(0x800)
+    data[0:2] = b"MZ"
+    struct.pack_into("<I", data, 0x3C, 0x80)
+    data[0x80:0x84] = b"PE\x00\x00"
+    struct.pack_into("<HH", data, 0x84, 0x8664, 2)       # Machine, NumberOfSections
+    struct.pack_into("<H", data, 0x80 + 20, 0xF0)        # SizeOfOptionalHeader
+    optional = 0x98
+    struct.pack_into("<H", data, optional, 0x20B)
+    struct.pack_into("<Q", data, optional + 24, image_base)
+    struct.pack_into("<II", data, optional + 112 + 10 * 8, 0x2000, declared)
+    table = optional + 0xF0
+    for index, (name, rva, raw, flags) in enumerate((
+            (b".text", 0x1000, 0x400, 0x60000020), (b".rdata", 0x2000, 0x600, 0x40000040))):
+        entry = table + index * 40
+        data[entry:entry + 8] = name.ljust(8, b"\0")
+        struct.pack_into("<IIII", data, entry + 8, 0x1000, rva, 0x200, raw)
+        struct.pack_into("<I", data, entry + 36, flags)
+    struct.pack_into("<I", data, 0x600, declared)
+    for field, rva in ((112, check_rva), (120, dispatch_rva)):
+        struct.pack_into("<Q", data, 0x600 + field, image_base + rva if rva else 0)
     return bytes(data)
 
 
@@ -551,6 +578,22 @@ def run_self_tests():
         failures.append("an inconsistent StringFileInfo block passed verify_version_identity")
     except RuntimeError:
         pass
+
+    # CFG pointer slots: the loader writes through them, so code is refused.
+    expect(verify_cfg_pointer_slots(_synthetic_cfg_pe(0x2100, 0x2108)) ==
+           {"check": ".rdata", "dispatch": ".rdata"}, "CFG slots in .rdata are accepted")
+    expect(verify_cfg_pointer_slots(_synthetic_cfg_pe(0, 0)) == {},
+           "an image without CFG slots is accepted")
+    expect(verify_cfg_pointer_slots(_synthetic_cfg_pe(0x2100, 0x2108, declared=112)) == {},
+           "slots beyond the declared load-config size are not read")
+    for check, dispatch, label in ((0x1010, 0x2108, "a check slot in .text"),
+                                   (0x2100, 0x1010, "a dispatch slot in .text"),
+                                   (0x9000, 0x2108, "a slot outside every section")):
+        try:
+            verify_cfg_pointer_slots(_synthetic_cfg_pe(check, dispatch))
+            failures.append(f"{label} passed verify_cfg_pointer_slots")
+        except RuntimeError:
+            pass
 
     if failures:
         raise RuntimeError("pe_verify self-tests failed:\n  " + "\n  ".join(failures))

@@ -9,11 +9,11 @@
 // diagnostics at all.  A null hook keeps the installer behaving exactly as
 // before.
 //
-// This file was split out of cfg_glue.cpp when the MSVC-ABI (clang-cl)
-// toolchain was introduced: under that toolchain Control Flow Guard is
-// enforced by the OS through the PE load config, so the MinGW
-// __guard_check_icall_fptr shim that used to live beside this code has no
-// reason to exist — but the fatal-dump hook and the mitigation policies do.
+// Control Flow Guard is the OS's own under both toolchains: the loader writes
+// its validator and dispatcher through the load config's pointer slots.  A
+// MinGW __guard_check_icall_fptr override that used to live beside this code
+// was never called (x64 code calls the dispatch slot) and made the loader
+// write over .text; it is gone (pe_verify.verify_cfg_pointer_slots).
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX

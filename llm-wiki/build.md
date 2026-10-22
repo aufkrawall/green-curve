@@ -3,7 +3,7 @@
 ## Security gate and artifact follow-up (verified 2026-10-01)
 
 Source anchors: `tools/secret_scan.py`, `.github/workflows/ci.yml`, `.github/workflows/release.yml`,
-`build.py`, `tools/pe_verify.py`, `source/cfg_glue.cpp`.
+`build.py`, `tools/pe_verify.py`, `source/process_hardening.cpp`.
 Both CI and release scan full Git history with pinned gitleaks 8.30.1 from its
 SHA-256-verified archive, with redacted output and full checkout depth. Release
 also executes --test and 5000 fuzz runs before building/publishing; exit traps
@@ -106,8 +106,9 @@ and `-Oz` is unavailable — `-O1` is the size floor):
   including setup/uninstaller (`installer_main.cpp:WinMain`, since 4b91037).
   Dynamic loader restrictions begin at that call; they cannot protect static
   imports resolved before entry.
-  `cfg_glue.cpp` (the MinGW CFG shim) and `ssp_glue.cpp` (canary glue) are
-  MinGW-only, replaced under clang-cl by /GS and the OS GFIDS validator.
+  `ssp_glue.cpp` (canary glue) is MinGW-only, replaced under clang-cl by /GS.
+  (`cfg_glue.cpp`, a MinGW CFG "shim", was removed 2026-10-22; see "CFG on
+  llvm-mingw x64" below.)
 - The MinGW driver implicitly appends `user32` to every link;
   `WINDOWS_SERVICE_LINK_LIBS` now names it explicitly (lld-link has no
   implicit libraries).
@@ -386,8 +387,8 @@ PE verification.
 - Windows ARM64 does not enable x64-specific CFG glue. PE ASLR/DEP/high-entropy
   VA remain mandatory and are verified post-link.
 - x64 Windows `msvc` uses clang-cl/lld-link with real CFG and CET; the
-  `release` variant retains llvm-mingw, LTO, ICF, CFG, and the narrowly audited
-  known CFG-shim duplicate. Linux x64 also uses full LTO while retaining PIE,
+  `release` variant retains llvm-mingw, LTO, ICF and OS-enforced CFG, and links
+  with no duplicate symbol at all. Linux x64 also uses full LTO while retaining PIE,
   RELRO, immediate binding, NX stack, CET instrumentation and split private
   symbols.
 
@@ -410,7 +411,8 @@ to 7 jobs, and a small CI runner stays serial).
   - Windows x64 `msvc`: clang-cl object-first compilation with `/GS`,
     `/guard:cf`, `/cetcompat`, and lld-link. The `release` variant uses the
     10-TU LTO object-first path with `-flto -c`, `-gcodeview`, `--icf=safe`,
-    static linking, stripping, and the known CFG-shim duplicate audit.
+    static linking, stripping, and the duplicate-symbol audit (any duplicate
+    fails the link).
   - Linux x64: the 23 TUs compile to LTO bitcode objects with `-flto -c`, then
     link with the same `-flto` plus the complete ELF hardening and symbol flags.
   - ARM64 (both Windows variants + Linux): the object-first paths keep their
@@ -643,6 +645,50 @@ Note: The Linux target enables `-fexceptions` and `-frtti` to support STL `<stri
 - Version injected: `-DAPP_VERSION="X.XX"` from `VERSION` file
 - Build number injected: `-DAPP_BUILD_NUMBER=N` from `BUILD_NUMBER`
 
+## CFG on llvm-mingw x64 (corrected 2026-10-22)
+
+Source anchors: `WINDOWS_FLAGS` and `_audit_compiler_output()` in `build.py`,
+`verify_cfg_pointer_slots()` in `tools/pe_verify.py` (self-tests in
+`tools/pe_verify_tests.py`).
+
+What actually happens with `-mguard=cf` on `x86_64-w64-windows-gnu`:
+
+- Clang uses the DISPATCH mechanism on x64: every guarded indirect call is
+  `jmp/call *__guard_dispatch_icall_fptr(%rip)` (measured: 374 sites in
+  `greencurve.exe`, 0 references to the check pointer). The CRT's
+  `mingw_cfguard_support.o` defines both `__guard_check_icall_fptr` and
+  `__guard_dispatch_icall_fptr` as data in `.00cfg` (merged into `.rdata`).
+- lld sets `IMAGE_DLLCHARACTERISTICS_GUARD_CF`, `CF_INSTRUMENTED` and a GFIDS
+  table (319 entries), so the loader writes its validator and dispatcher
+  through the load config's check/dispatch pointer slots. CFG on this build is
+  therefore the OS's own, exactly as under clang-cl.
+
+The former `cfg_glue.cpp` defined `__guard_check_icall_fptr` as a FUNCTION
+(a "module-range check") and linked with `--allow-multiple-definition`, which
+produced `ld.lld: warning: duplicate symbol: __guard_check_icall_fptr` on
+every x64 GUI/service/setup/uninstaller link, allowed by an audit exemption
+and documented as cosmetic. It was not:
+
+- The function was never called (dispatch mechanism, above).
+- The load config's check slot then pointed at that function in `.text`, so
+  the loader wrote its validator over the function's first eight bytes at
+  every start (read back from a running GUI: `endbr64; sub rsp` on disk,
+  an ntdll address in memory).
+
+Removed 2026-10-22: the shim, `--allow-multiple-definition`, and the audit
+exemption (any duplicate-symbol diagnostic now fails the link). The CRT's own
+data slots are used. `verify_cfg_pointer_slots()` fails any image whose CFG
+check or dispatch slot lies in an executable section or outside every
+section, and x64 additionally requires the dispatch slot; it failed on the
+pre-fix release binaries and passes on the MSVC-ABI ones.
+
+The earlier rationale ("prevents crashes on `GetProcAddress`-returned
+pointers", "`RtlValidateUserCallTarget` fast-fails during CRT init") does not
+apply to x64: the OS validator accepts exports of non-CFG modules (see the
+MSVC-ABI assessment below), and the release builds have been running under it
+all along. A CFG violation now fast-fails inside ntdll; the WER LocalDumps
+backstop (`wer_local_dumps_policy.h`) is what records it.
+
 ## Windows-specific
 
 - Compiler: host-native llvm-mingw (`llvm-mingw/bin/clang++.exe` on Windows,
@@ -652,22 +698,8 @@ Note: The Linux target enables `-fexceptions` and `-frtti` to support STL `<stri
 - LTO + ICF: `-flto -Wl,--icf=safe` reduces binary size via cross-module optimization and identical code folding
 - `-Wl,-Xlink=-merge:.buildid=.rdata` (same `-Wl` argument as ICF): LLD's MinGW mode otherwise puts the CodeView/RSDS debug directory in a dedicated `.buildid` section. Merged, the PDB linkage is unchanged (verified with `llvm-symbolizer` against the private PDB) and the x64 images carry only MSVC-style section names; `pe_verify.verify_no_buildid_section()` gates x64. Zig ARM64 still emits `.buildid` (its DWARF `.debug` extraction path was not changed).
 - Hardening flags: `-mguard=cf -fcf-protection=full -ftrivial-auto-var-init=pattern -fno-delete-null-pointer-checks`
-  - CFG (`-mguard=cf`) enabled via `source/cfg_glue.cpp` which overrides the
-    MinGW CRT's `__guard_check_icall_fptr` with a proper implementation that
-    validates targets against all loaded modules (not just our GFIDS table).
-    This prevents crashes on `GetProcAddress`-returned function pointers.
-    - Uses `GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, ...)`
-      module-range check (robust across CRT init, NvAPI dispatch, NVML exports).
-    - ntdll!`RtlValidateUserCallTarget` (ordinal 1647) was also tested — it
-      is the OS-level CFG bitmap validator and works correctly for exports,
-      but fast-fails during MinGW CRT init when called from our override.
-      Module-range check is the proven choice.
-    - **Known warning**: `ld.lld: warning: duplicate symbol: __guard_check_icall_fptr`.
-      This is cosmetic and unavoidable. The MinGW CRT's `loadcfg.o` always
-      references `__guard_check_icall_fptr`, pulling in `mingw_cfguard_support.o`
-      which defines it as a data pointer in `.00cfg`. Our override defines it as
-      a function. LLD uses our definition (first on command line). The CRT's
-      `.00cfg` data pointer is dead code eliminated by `--gc-sections` + LTO.
+  - CFG (`-mguard=cf`) is OS-enforced, the same mechanism as the MSVC-ABI
+    build. See "CFG on llvm-mingw x64" below.
   - CET forward-edge (`-fcf-protection=full`) **is effective on our own code**;
     only the shadow-stack opt-in bit is missing. See
     "Windows x64 — CET: `endbr64` present, CET_COMPAT opt-in absent" below for
@@ -679,7 +711,7 @@ Note: The Linux target enables `-fexceptions` and `-frtti` to support STL `<stri
 - GUI links: `-luser32 -lgdi32 -ladvapi32 -lshell32 -lole32 -lwtsapi32 -luuid`
 - Service links: `-lgdi32 -ladvapi32 -lshell32 -lole32 -lwtsapi32 -luserenv -luuid` (no `-luser32`)
 - Service compiled with `-DGREEN_CURVE_SERVICE_BINARY=1`
-- CRT override files: `ssp_glue.cpp` (stack protector canaries) + `cfg_glue.cpp` (CFG indirect-call validation for external DLL exports)
+- CRT override file: `ssp_glue.cpp` (stack protector canaries). No CFG override: CFG uses the CRT's own `.00cfg` slots (see "CFG on llvm-mingw x64")
 - Runtime mitigation policy (`initialize_process_mitigations()`): System32-only
   runtime DLL search, dynamic-code prohibition, extension-point disablement, and
   strict handle checking. These do not constrain the separate installer/update
@@ -981,8 +1013,10 @@ in `temp/cfg_audit/` (untracked).
 
 Verified gains over the MinGW build:
 
-- **Real kernel-enforced CFG**: the MinGW `cfg_glue.cpp` shim is a weaker
-  module-range check; the MSVC-ABI build gets the GFIDS bitmap validator.
+- **Kernel-enforced CFG**: the GFIDS bitmap validator. (This trial believed the
+  MinGW build relied on the `cfg_glue.cpp` module-range shim; it did not. The
+  shim was never called and MinGW x64 had OS CFG too; see "CFG on llvm-mingw
+  x64" below.)
   Negative control (call a non-GFIDS address in our own image) fast-fails with
   `0xC0000409`; all NVAPI/NVML `GetProcAddress` calls pass, including exports
   NOT in nvml.dll's GFIDS table (the OS tolerates non-enforcing modules and

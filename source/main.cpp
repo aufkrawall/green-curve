@@ -69,7 +69,7 @@ static bool nvml_crash_recovery_active() {
 static volatile LONG g_serviceRestartRequested = 0;
 static void request_service_restart(const char* reason);
 
-// Declared in cfg_glue.cpp — set process-wide security mitigation policies.
+// Declared in process_hardening.cpp — set process-wide security mitigation policies.
 extern "C" void initialize_process_mitigations();
 
 #include "app_license_text.h"

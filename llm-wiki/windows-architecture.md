@@ -465,7 +465,7 @@ compatible with v4 records.
 - **Unicode filesystem boundary:** internal paths remain UTF-8. `win32_utf8_paths.h` performs strict `MB_ERR_INVALID_CHARS` UTF-8→UTF-16 conversion and wraps filesystem, directory, canonicalization/final-path, module/system path, INI/profile, enumeration, and file-open APIs. Conversion failures log the operation and Win32 error without logging the sensitive path. Existing path-size limits remain intentional; this does not claim partial long-path support.
 - **Service-binary EoP hardening (F-SEC-1):** the SCM registers the service by absolute path. On install, `ensure_secure_service_binary_path()` uses the current executable directory as the adjacent service directory, applies and verifies protected DACLs on the directory and binary (SYSTEM + Administrators Full, BUILTIN\Users Read+Execute, inheritance disabled), and **fails closed** if hardening or verification fails. This preserves side-by-side GUI/service layout without registering an unprotected user-writable SYSTEM service binary. On uninstall, `cleanup_secure_service_binary_after_remove()` uses the SCM-registered path captured before `DeleteService` and reverts the protected binary and directory DACLs to inherited ACLs so the unregistered payload can be managed normally. Helpers live in `source/service_acl.cpp` (unit-tested). **Location policy (2026-09-22):** "under Program Files" is no longer a gate — `service_path_chain_policy.h` / `service_path_chain.cpp` prove the actual property per path component (admin-owned, non-reparse, no non-admin substitution rights anywhere in the parent chain), and the administrator acknowledges anything weaker; see `installer.md` "Where may it be installed?". A filesystem without persistent ACLs (FAT/exFAT) skips hardening as a loud, acknowledged capability gap instead of failing mysteriously.
 - **Shared-bank config DACL (F-SEC-6):** the shared bank (`%ProgramData%\Green Curve\shared-profiles.ini`) and its directory get a protected DACL (`SYSTEM` + `Administrators`: Full, `BUILTIN\Users`: Read / Read+Execute) so unelevated GUIs can read and display/load the shared profiles but cannot modify them, and a non-admin cannot plant/delete files in the bank directory (`apply_protected_machine_config_dacl` / `apply_protected_machine_config_dir_dacl`). Admin-only writes are also enforced by explicit `is_elevated()` checks in every writer. Publish, clear, default-slot, policy, and migration writes now fail closed if the DACL cannot be applied and verified.
-- **DLL-search hardening (F-SEC-2):** `initialize_process_mitigations()` (`cfg_glue.cpp`) calls `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS)` + `SetDllDirectoryW(L"")` before any runtime `LoadLibrary`, blocking DLL planting of non-KnownDLLs (e.g. `dbghelp.dll`, `version.dll`).
+- **DLL-search hardening (F-SEC-2):** `initialize_process_mitigations()` (`process_hardening.cpp`) calls `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS)` + `SetDllDirectoryW(L"")` before any runtime `LoadLibrary`, blocking DLL planting of non-KnownDLLs (e.g. `dbghelp.dll`, `version.dll`).
 - **IPC trust boundary (F-SEC-4):** `validate_desired_settings_for_ipc()` clamps every numeric field reachable from an Authenticated-User request — including `lockCi`, `gpuOffsetExcludeLowCount`, `fanMode`, and the embedded fan curve — before the service applies it. Wire booleans are fixed-width `gc_bool8`; request/response validators canonicalize them to `0/1` before privileged logic or GUI adoption.
 - **GPU target/recovery identity:** APPLY/RESET requests validate the requested GPU index and PCI identity against the live adapter list before mutating service-global selection. Controlled-recovery snapshots persist both desired settings and target `GpuAdapterInfo`; old snapshots without identity are cleared, and a validated controlled restore skips rather than targeting a different adapter. Ordinary startup never consumes the snapshot.
 
@@ -624,19 +624,21 @@ the regression harness asserts on either host.
   exception, GPU-driver-DLL crash, VEH-recovered, fast-fail). There were three
   near-identical copies, which is how the VEH copy ended up on a different
   directory rule; a source gate pins the `MiniDumpWriteDump(` count at 1.
-- **Fast-fail and stack-smash crashes now produce dumps.** `__fastfail` (the CFG
-  violation in `cfg_glue.cpp`) bypasses the vectored handler *and*
+- **Fast-fail and stack-smash crashes now produce dumps.** `__fastfail`
+  bypasses the vectored handler *and*
   `SetUnhandledExceptionFilter` by design, so those crashes used to leave
   nothing on disk at all.
   `source/fatal_dump_hook.h` is the seam: a null-by-default function pointer
-  owned by `cfg_glue.cpp` (which is also linked into the setup program, where a
-  null hook keeps the old behaviour), invoked *before* the uncatchable
-  instruction. `green_curve_report_fatal_dump()` synthesises an
+  owned by `process_hardening.cpp` (also linked into the setup program, where a
+  null hook keeps the old behaviour), invoked by `ssp_glue.cpp` *before* the
+  uncatchable instruction. A CFG violation is a fast-fail raised by the OS
+  validator in ntdll (the MinGW `cfg_glue.cpp` hook was never reached and was
+  removed 2026-10-22; build.md "CFG on llvm-mingw x64"), so it is recorded by
+  the WER LocalDumps backstop. `green_curve_report_fatal_dump()` synthesises an
   `EXCEPTION_RECORD` from a live `RtlCaptureContext`, so the dump opens in
   cdb/WinDbg normally and `.ecxr` lands on the detecting frame.
-  `gc_invoke_fatal_dump_hook()` is **one-shot** — `__guard_check_icall_fptr` runs
-  before every indirect call in the program, including the hook's own, so an
-  unguarded call would recurse until the stack ran out.
+  `gc_invoke_fatal_dump_hook()` is **one-shot**, so a failure detected inside
+  the reporter cannot recurse until the stack runs out.
   `__stack_chk_fail` reports through the same hook instead of relying on its
   `__debugbreak()` being caught, which stops working with a debugger attached.
 - **Bounded on disk.** `rotate_crash_artifacts_for_process()` runs once per fresh

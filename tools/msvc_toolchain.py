@@ -9,9 +9,10 @@ never imports build.py.  build.py passes in everything that is build-specific
 What this buys over llvm-mingw (verified empirically on 2026-08-28, see
 llm-wiki/build.md "MSVC-ABI toolchain assessment"):
 
-- Real OS-enforced Control Flow Guard.  The MinGW build emulates CFG with the
-  module-range shim in cfg_glue.cpp; here /guard:cf produces the GFIDS table
-  and the kernel validates every indirect call against it.
+- OS-enforced Control Flow Guard from /guard:cf.  (The llvm-mingw x64 build has
+  it too: -mguard=cf emits the GFIDS table and the CRT's .00cfg pointers the
+  loader fills with its validator; the module-range shim once believed to do
+  the job was never called and is gone.)
 - Hardware shadow stacks on x64 via lld-link /cetcompat (the PE
   EX_DLLCHARACTERISTICS CET_COMPAT opt-in).  ld.lld's GNU mode has no
   equivalent, which is why llvm-mingw cannot have this.
@@ -352,7 +353,7 @@ def link_windows(lld_link, link_flags, objects, res_path, libs, output_path,
     """Link one Windows binary from objects + the compiled resource script."""
     cmd = [lld_link, *link_flags, f"-out:{output_path}",
            *objects, res_path, *libs]
-    return run_compiler(cmd, allow_cfg_collision=True)
+    return run_compiler(cmd)
 
 
 # ---------------------------------------------------------------------------

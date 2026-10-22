@@ -5,6 +5,21 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-22: The MinGW CFG shim and its linker warning are gone
+
+- Every llvm-mingw x64 link (GUI, service, setup, uninstaller) warned
+  `duplicate symbol: __guard_check_icall_fptr`, documented as cosmetic. It was
+  not: x64 clang uses CFG *dispatch* (374 call sites, 0 references to the
+  check pointer), so the `cfg_glue.cpp` override was never called, and the
+  load config's check slot pointed at it in `.text`; a running GUI showed the
+  loader's validator address written over the function's first 8 bytes.
+- Removed the shim, `--allow-multiple-definition` and the audit exemption;
+  any duplicate symbol now fails the link. New `pe_verify.verify_cfg_pointer_slots()`
+  refuses a CFG slot in code (failed on the pre-fix binaries, passes on the
+  MSVC-ABI ones); self-tests in `pe_verify_tests.py`.
+- Corrected build.md ("CFG on llvm-mingw x64"), windows-architecture.md and
+  testing.md, which described the shim as the CFG mechanism.
+
 ## 2026-10-22: Applied-profile tick flickered at every client start
 
 - Symptom: the tray read "Manual settings" for about a second after the GUI

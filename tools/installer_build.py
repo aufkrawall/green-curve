@@ -82,11 +82,9 @@ INSTALLER_SOURCE_NAMES = [
     "service_acl_handle.cpp",
     "service_install_location.cpp",
     "ssp_glue.cpp",
-    "cfg_glue.cpp",
     # Toolchain-neutral glue: defines gc_invoke_fatal_dump_hook, which
-    # ssp_glue.cpp/cfg_glue.cpp reference. Without it the MinGW link of the
-    # setup/uninstaller stubs fails with an undefined symbol (the function
-    # used to live in cfg_glue.cpp before the MSVC-ABI split).
+    # ssp_glue.cpp references. Without it the MinGW link of the
+    # setup/uninstaller stubs fails with an undefined symbol.
     "process_hardening.cpp",
 ]
 
@@ -107,7 +105,6 @@ UNINSTALLER_SOURCE_NAMES = [
     "installer_util.cpp",
     "installer_stop.cpp",
     "ssp_glue.cpp",
-    "cfg_glue.cpp",
     "process_hardening.cpp",
 ]
 
@@ -322,7 +319,7 @@ def _compile_installer_binary_msvc(ctx, output_path, arch, uninstaller, work,
     No private symbols are retained for these stubs (the llvm-mingw path
     strips them via -s), so the build omits -Zi and no PDB is emitted."""
     toolchain = ctx.MSVC_TOOLCHAIN
-    glue = {"ssp_glue.cpp", "cfg_glue.cpp"}
+    glue = {"ssp_glue.cpp"}
     msvc_sources = [path for path in sources
                     if os.path.basename(path) not in glue]
     compile_flags = msvc_toolchain.windows_compile_flags(
@@ -420,9 +417,9 @@ def compile_installer_binary(ctx, output_path, arch, uninstaller, work):
         # build's links are running (see zig_cache for the poisoning failure).
         link_rc = zig_cache.run_zig_link(
             cmd, work, ctx.ZIG_CACHE_ROOTS, log=print,
-            audit=lambda text, rc: 1 if ctx._audit_compiler_output(text, True) else rc)
+            audit=lambda text, rc: 1 if ctx._audit_compiler_output(text) else rc)
     else:
-        link_rc = ctx._run_compiler(cmd, cwd=work, allow_cfg_collision=True)
+        link_rc = ctx._run_compiler(cmd, cwd=work)
     if link_rc != 0:
         raise RuntimeError(f"installer compilation failed ({arch}, uninstaller={uninstaller})")
     if arch == "arm64":
@@ -665,8 +662,8 @@ def check_all(ctx, require_text, forbid_text):
                     f"{name} stays independent of the application model")
 
     # The toolchain-neutral fatal-dump hook definition must link into every
-    # Windows binary, including the setup/uninstaller stubs: ssp_glue.cpp and
-    # cfg_glue.cpp reference gc_invoke_fatal_dump_hook. Dropping it from this
+    # Windows binary, including the setup/uninstaller stubs: ssp_glue.cpp
+    # references gc_invoke_fatal_dump_hook. Dropping it from this
     # list turns every MinGW stub link into an undefined-symbol failure
     # (2026-08-29 release-packaging CI).
     for label, names in (("INSTALLER_SOURCE_NAMES", INSTALLER_SOURCE_NAMES),
@@ -686,7 +683,6 @@ def check_all(ctx, require_text, forbid_text):
         "installer_util.cpp",
         "installer_stop.cpp",
         "ssp_glue.cpp",
-        "cfg_glue.cpp",
         "process_hardening.cpp",
     }
     if set(UNINSTALLER_SOURCE_NAMES) != expected_uninstaller_sources:

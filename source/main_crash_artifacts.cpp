@@ -384,7 +384,7 @@ static LONG WINAPI green_curve_unhandled_exception_filter(EXCEPTION_POINTERS* in
 // register context, so the dump opens in cdb/WinDbg exactly like any other and
 // `.ecxr` lands on the frame that detected the failure.
 //
-// Called with the one-shot guard in cfg_glue.cpp already taken, so this runs at
+// Called with the one-shot guard in process_hardening.cpp already taken, so this runs at
 // most once per process and never re-enters itself.
 static void green_curve_report_fatal_dump(unsigned long reason, const char* label) {
     SYSTEMTIME now = {};

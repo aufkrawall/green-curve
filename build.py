@@ -155,7 +155,6 @@ WINDOWS_SOURCE_FILES = [
     os.path.join(SOURCE_DIR, "config_text_utils.cpp"),
     os.path.join(SOURCE_DIR, "fan_curve.cpp"),
     os.path.join(SOURCE_DIR, "ssp_glue.cpp"),
-    os.path.join(SOURCE_DIR, "cfg_glue.cpp"),
     os.path.join(SOURCE_DIR, "process_hardening.cpp"),
     os.path.join(SOURCE_DIR, "service_acl.cpp"),
     os.path.join(SOURCE_DIR, "service_path_chain.cpp"),
@@ -165,11 +164,10 @@ WINDOWS_SOURCE_FILES = [
 ]
 
 # The MSVC-ABI (clang-cl) toolchain compiles the same Windows sources minus the
-# two MinGW-CRT glue files: the /GS cookie replaces ssp_glue.cpp's canary glue
-# and the OS's GFIDS validator replaces cfg_glue.cpp's module-range shim.
-# process_hardening.cpp is their toolchain-neutral half (fatal-dump hook +
+# MinGW-CRT canary glue: the /GS cookie replaces ssp_glue.cpp.
+# process_hardening.cpp is its toolchain-neutral half (fatal-dump hook +
 # process mitigation policies) and is linked by BOTH toolchains.
-_WINDOWS_MINGW_ONLY_GLUE = {"ssp_glue.cpp", "cfg_glue.cpp"}
+_WINDOWS_MINGW_ONLY_GLUE = {"ssp_glue.cpp"}
 WINDOWS_MSVC_SOURCE_FILES = [
     path for path in WINDOWS_SOURCE_FILES
     if os.path.basename(path) not in _WINDOWS_MINGW_ONLY_GLUE
@@ -294,11 +292,12 @@ SANITIZER_FLAGS = [
 ]
 
 WINDOWS_FLAGS = [
-    # --allow-multiple-definition is REQUIRED: the MinGW CRT always defines
-    # __guard_check_icall_fptr as data in .00cfg (mingw_cfguard_support.o via
-    # loadcfg.o); cfg_glue.cpp overrides it with a real function and LLD keeps
-    # ours (first on the command line).  A known MinGW CFG limitation.
-    "-Wl,--subsystem,windows,--dynamicbase,--nxcompat,--high-entropy-va,--allow-multiple-definition,--dependent-load-flag=0x800",
+    # No --allow-multiple-definition: every duplicate symbol is a link error.
+    # CFG is the OS's own: the loader writes its validator and dispatcher
+    # through the CRT's .00cfg pointers (x64 code calls the dispatch one).  A
+    # function that overrode __guard_check_icall_fptr was never called and made
+    # the loader write over .text (pe_verify.verify_cfg_pointer_slots).
+    "-Wl,--subsystem,windows,--dynamicbase,--nxcompat,--high-entropy-va,--dependent-load-flag=0x800",
     "-mguard=cf",
     "-fcf-protection=full",
     "-flto",
@@ -763,25 +762,19 @@ def _compile_only_flags(flags):
             and flag not in ("-static", "-s", "-pie", "-flto")]
 
 
-def _audit_compiler_output(combined, allow_cfg_collision=False):
-    """Return 1 when the output carries an unexpected duplicate-symbol
-    diagnostic; the documented llvm-mingw CFG shim collision stays allowed."""
+def _audit_compiler_output(combined):
+    """Return 1 when the output carries any duplicate-symbol diagnostic."""
     duplicate_lines = [line for line in combined.splitlines()
                        if "duplicate symbol" in line.lower() or "multiple definition" in line.lower()]
-    unexpected = []
-    for line in duplicate_lines:
-        if allow_cfg_collision and "__guard_check_icall_fptr" in line:
-            continue
-        unexpected.append(line)
-    if unexpected:
-        print("ERROR: unexpected duplicate-symbol diagnostic:")
-        for line in unexpected:
+    if duplicate_lines:
+        print("ERROR: duplicate-symbol diagnostic:")
+        for line in duplicate_lines:
             print(f"  {line}")
         return 1
     return 0
 
 
-def _run_compiler(cmd, cwd=SCRIPT_DIR, allow_cfg_collision=False):
+def _run_compiler(cmd, cwd=SCRIPT_DIR):
     """Run a compiler with audited output and poisoned-cache diagnosis.
     Capturing output makes the broad linker allowance auditable instead of
     silently accepting unrelated duplicates."""
@@ -789,7 +782,7 @@ def _run_compiler(cmd, cwd=SCRIPT_DIR, allow_cfg_collision=False):
     combined = (result.stdout or "") + (result.stderr or "")
     if combined:
         print(combined, end="" if combined.endswith("\n") else "\n")
-    if _audit_compiler_output(combined, allow_cfg_collision):
+    if _audit_compiler_output(combined):
         return 1
     if result.returncode != 0:
         zig_cache.diagnose_missing_cache_artifacts(combined, ZIG_CACHE_ROOTS)
@@ -900,7 +893,7 @@ def _link_windows_x64(temp_output, objects, pdb_path, service=False):
                pdb_path, "greencurve-service.pdb" if service else "greencurve.pdb"),
            "-o", temp_output, *objects, (SERVICE_ICON_RES if service else ICON_RES),
            *(WINDOWS_SERVICE_LINK_LIBS if service else WINDOWS_LINK_LIBS)]
-    return _run_compiler(cmd, allow_cfg_collision=True)
+    return _run_compiler(cmd)
 
 
 def _linux_object_compile_flags(arch):
@@ -1204,7 +1197,7 @@ def compile_windows_binary(output_path=WINDOWS_OUTPUT_EXE, temp_output=WINDOWS_T
             if returncode == 0:
                 os.replace(link_pdb_path, pdb_path)
         else:
-            returncode = _run_compiler(cmd, allow_cfg_collision=True)
+            returncode = _run_compiler(cmd)
             if returncode == 0:
                 os.replace(link_pdb_path, pdb_path)
         if returncode == 0:
@@ -1261,7 +1254,7 @@ def compile_windows_service_binary(output_path=WINDOWS_SERVICE_OUTPUT_EXE, temp_
             if returncode == 0:
                 os.replace(link_pdb_path, pdb_path)
         else:
-            returncode = _run_compiler(cmd, allow_cfg_collision=True)
+            returncode = _run_compiler(cmd)
             if returncode == 0:
                 os.replace(link_pdb_path, pdb_path)
         if returncode == 0:
@@ -2604,8 +2597,8 @@ def run_source_regression_checks():
     # F-SEC-2: DLL-search hardening runs in initialize_process_mitigations(),
     # which both the GUI (entry.cpp) and service (main.cpp) entry points call
     # before any runtime LoadLibrary — blocks DLL planting of non-KnownDLLs.
-    # The function lives in process_hardening.cpp: the toolchain-neutral half
-    # of the former cfg_glue.cpp, linked by BOTH Windows toolchains.
+    # The function lives in process_hardening.cpp: toolchain-neutral and
+    # linked by BOTH Windows toolchains.
     process_hardening_cpp = os.path.join(SOURCE_DIR, "process_hardening.cpp")
     require_text(process_hardening_cpp, "SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32", "startup hardens the DLL search path against planting")
     require_text(process_hardening_cpp, "SetDllDirectoryW(L\"\")", "startup removes the CWD from the DLL search path")

@@ -1704,7 +1704,6 @@ The table below names the physical source shard that owns each rule:
 | `main_crash_artifacts.cpp` | `gc_crash_dir_source(` | The crash artifact directory comes from the shared fail-closed policy |
 | `main_crash_artifacts.cpp` | absence of `StringCchCopyA(out, outSize, ".")` | Crash artifacts never fall back to the current working directory |
 | `main_crash_artifacts.cpp` | `MiniDumpWriteDump(` x1 | Every crash path shares one minidump writer |
-| `cfg_glue.cpp` | `gc_invoke_fatal_dump_hook(GC_FATAL_CFG_VIOLATION` before the fast-fail | A CFG violation is reported before the uncatchable instruction |
 | `ssp_glue.cpp` | `gc_invoke_fatal_dump_hook(GC_FATAL_STACK_SMASH` before `__debugbreak();` | A smashed stack is reported without depending on breakpoint dispatch |
 | `linux_crash_breadcrumb.h` | `gc_crash_report_fd_slot()`, `gc_crash_report_path_slot()`, absence of `setrlimit(` | One program-wide report descriptor and path; the user's `ulimit -c` is never overridden |
 | `linux_crash_breadcrumb.h` / `linux_crash_report.cpp` | `gc_crash_report_open_on_demand`, `if (!data \|\| length == 0) return;`, `gc_crash_report_reserve_slot`, absence of `O_CREAT` in the .cpp | F-LNX-CRASH-LAZY: the report file is created by the handler, never at arm time, so a report exists ⇔ a crash wrote to it |

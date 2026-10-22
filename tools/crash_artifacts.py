@@ -142,7 +142,6 @@ def check_windows_crash_artifacts(ctx, require_text, forbid_text, require_order,
     crash_cpp = _p(ctx, "main_crash_artifacts.cpp")
     policy_h = _p(ctx, "crash_artifact_policy.h")
     hook_h = _p(ctx, "fatal_dump_hook.h")
-    cfg_glue = _p(ctx, "cfg_glue.cpp")
     hardening = _p(ctx, "process_hardening.cpp")
     ssp_glue = _p(ctx, "ssp_glue.cpp")
     entry_cpp = _p(ctx, "entry.cpp")
@@ -317,18 +316,14 @@ def check_windows_crash_artifacts(ctx, require_text, forbid_text, require_order,
     # F-CRASH-2: report before the uncatchable instruction.
     require_text(hook_h, "gc_invoke_fatal_dump_hook",
                  "the fast-fail reporting seam exists")
-    require_order(cfg_glue,
-                  "gc_invoke_fatal_dump_hook(GC_FATAL_CFG_VIOLATION",
-                  "FAST_FAIL_GUARD_ICALL_OR_TARGET_FAILURE)",
-                  "a CFG violation is reported before the uncatchable fast-fail")
     require_order(ssp_glue,
                   "gc_invoke_fatal_dump_hook(GC_FATAL_STACK_SMASH",
                   "__debugbreak();",
                   "a smashed stack is reported without depending on breakpoint dispatch")
-    # The one-shot reporter lives in process_hardening.cpp: the toolchain-
-    # neutral half of the former cfg_glue.cpp, linked by BOTH toolchains.
+    # The one-shot reporter lives in process_hardening.cpp, linked by BOTH
+    # toolchains.
     require_text(hardening, "InterlockedCompareExchange(&g_gcFatalDumpReported, 1, 0)",
-                 "the fatal reporter is one-shot so the CFG validator cannot recurse")
+                 "the fatal reporter is one-shot so a failure inside it cannot recurse")
     require_text(crash_cpp, "green_curve_report_fatal_dump",
                  "the fatal reporter synthesises a record from the live register context")
     require_text(crash_cpp, "RtlCaptureContext(&context)",

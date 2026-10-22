@@ -8,10 +8,10 @@
 // main_crash_artifacts.cpp uses to write a minidump next to config.ini.  Two
 // classes of fatal failure deliberately BYPASS that path:
 //
-//   * __fastfail / int 0x29 (cfg_glue.cpp's Control Flow Guard violation).  By
-//     design it hands control straight to the kernel — no vectored handler, no
-//     unhandled-exception filter, no SEH unwind.  Nothing we install can catch
-//     it after the fact.
+//   * __fastfail / int 0x29.  By design it hands control straight to the
+//     kernel — no vectored handler, no unhandled-exception filter, no SEH
+//     unwind.  Nothing we install can catch it after the fact.  A Control Flow
+//     Guard violation is one, raised by the OS validator in ntdll.
 //   * __stack_chk_fail (ssp_glue.cpp).  It happened to reach the filter only
 //     because __debugbreak() raises a catchable STATUS_BREAKPOINT first; that
 //     is incidental, and it stops working the moment a debugger is attached.
@@ -24,7 +24,7 @@
 // (wer_local_dumps_policy.h).
 //
 // It is a function POINTER, defaulting to null, and not a direct call, because
-// ssp_glue.cpp and cfg_glue.cpp are also linked into the setup program, which
+// ssp_glue.cpp is also linked into the setup program, which
 // contains none of the diagnostics code.  A null hook means "no dump", which is
 // exactly the installer's previous behaviour.
 
@@ -34,7 +34,7 @@
 // Application-defined exception codes for failures that never produced a real
 // EXCEPTION_RECORD.  Severity 0b11 (error) + the customer bit, so they can
 // never collide with a system status value.
-#define GC_FATAL_CFG_VIOLATION   0xE0C50001UL
+// 0xE0C50001 was the MinGW CFG shim's code; it stays retired.
 #define GC_FATAL_STACK_SMASH     0xE0C50002UL
 
 #ifdef __cplusplus
@@ -50,10 +50,10 @@ void gc_set_fatal_dump_hook(GcFatalDumpHook hook);
 // Report a fatal failure that is about to terminate the process.
 //
 // One-shot: the first caller wins and every later or re-entrant call returns
-// immediately.  Re-entrancy is not theoretical here — __guard_check_icall_fptr
-// runs before EVERY indirect call in the program, including the ones the hook
-// itself makes, so an unguarded call would recurse until the stack ran out and
-// replace the crash we wanted to record with one we caused.
+// immediately.  Re-entrancy is not theoretical here — a stack smash detected
+// inside the reporter would call it again, and an unguarded call would recurse
+// until the stack ran out and replace the crash we wanted to record with one
+// we caused.
 void gc_invoke_fatal_dump_hook(unsigned long reason, const char* label);
 
 #ifdef __cplusplus

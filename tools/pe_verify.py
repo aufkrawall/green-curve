@@ -5,8 +5,9 @@
 Moved out of build.py (one-way dependency, same pattern as the other tools/
 modules) and extended for the two Windows toolchains:
 
-- llvm-mingw: OS CFG is emulated by the cfg_glue.cpp shim; the load config
-  carries a Guard CF function table and CET_COMPAT opt-in but no /GS cookie.
+- llvm-mingw: OS-enforced CFG through the CRT's .00cfg check/dispatch pointers
+  (x64 code calls the dispatch one); the load config carries a Guard CF
+  function table and CET_COMPAT opt-in but no /GS cookie.
 - clang-cl (MSVC ABI): real kernel-enforced CFG, a /GS security cookie, and —
   on x64 — the /cetcompat shadow-stack opt-in bit in the debug directory.
   ARM64 additionally gains CFG metadata (GFIDS) the Zig build never had.
@@ -176,7 +177,6 @@ def _import_name_matches(name, banned):
 def verify_pe_import_surface(data, label, required_dlls=(), forbidden_dlls=(),
                              required_functions=(), forbidden_functions=(),
                              reject_exports=False):
-    pe = struct.unpack_from("<I", data, 0x3C)[0]
     export_rva, export_size = _pe_data_directory(data, 0)
     if reject_exports and (export_rva or export_size):
         raise RuntimeError(f"{label}: PE exports are not allowed")
@@ -396,6 +396,62 @@ def verify_pe_dependent_load_flags(data):
         raise RuntimeError("PE static imports are not restricted to System32")
 
 
+_IMAGE_SCN_CNT_CODE = 0x00000020
+_IMAGE_SCN_MEM_EXECUTE = 0x20000000
+# IMAGE_LOAD_CONFIG_DIRECTORY64: GuardCFCheckFunctionPointer and
+# GuardCFDispatchFunctionPointer (VAs of the slots, not of the functions).
+_LOAD_CONFIG_CFG_POINTER_FIELDS = (("check", 112), ("dispatch", 120))
+
+
+def verify_cfg_pointer_slots(data):
+    """The load config's CFG function-pointer slots must be data, never code.
+
+    In every CFG image the Windows loader writes its validator and dispatcher
+    THROUGH these slots.  A MinGW link that let a C++ function override the
+    CRT's __guard_check_icall_fptr (--allow-multiple-definition) pointed the
+    check slot at that function in .text, so the loader overwrote its first
+    eight bytes at every start; nothing called it, x64 code uses the dispatch
+    slot.  Returns {"check"|"dispatch": section name} for the slots present.
+    """
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    optional = pe + 24
+    if struct.unpack_from("<H", data, optional)[0] != 0x20B:
+        return {}
+    image_base = struct.unpack_from("<Q", data, optional + 24)[0]
+    section_table = optional + struct.unpack_from("<H", data, pe + 20)[0]
+    sections = []
+    for index in range(struct.unpack_from("<H", data, pe + 6)[0]):
+        entry = section_table + index * 40
+        name = data[entry:entry + 8].rstrip(b"\0").decode("ascii", "replace")
+        virtual_size, virtual_address, raw_size = struct.unpack_from("<III", data, entry + 8)
+        characteristics = struct.unpack_from("<I", data, entry + 36)[0]
+        sections.append((name, virtual_address, max(virtual_size, raw_size), characteristics))
+    load_rva, load_size = _pe_data_directory(data, 10)
+    load_off = _rva_to_offset(_sections_of(data, pe, optional), load_rva) if load_rva else None
+    if load_off is None or load_off + 4 > len(data):
+        return {}
+    declared = min(struct.unpack_from("<I", data, load_off)[0], load_size)
+    slots = {}
+    for label, field in _LOAD_CONFIG_CFG_POINTER_FIELDS:
+        if declared < field + 8 or load_off + field + 8 > len(data):
+            continue
+        slot_va = struct.unpack_from("<Q", data, load_off + field)[0]
+        if not slot_va:
+            continue
+        rva = slot_va - image_base
+        owner = next((s for s in sections if s[1] <= rva < s[1] + s[2]), None)
+        if owner is None:
+            raise RuntimeError(f"CFG {label} function-pointer slot 0x{slot_va:x} "
+                               "lies outside every section")
+        if owner[3] & (_IMAGE_SCN_CNT_CODE | _IMAGE_SCN_MEM_EXECUTE):
+            raise RuntimeError(
+                f"CFG {label} function-pointer slot 0x{slot_va:x} lies in executable "
+                f"section {owner[0]}: the loader would write its CFG pointer over code "
+                "(a symbol is overriding the CRT's .00cfg slot)")
+        slots[label] = owner[0]
+    return slots
+
+
 def verify_pe_hardening(data, arch, windows_toolchain="llvm-mingw"):
     if len(data) < 0x100 or data[:2] != b"MZ":
         raise RuntimeError("not a PE image")
@@ -431,6 +487,8 @@ def verify_pe_hardening(data, arch, windows_toolchain="llvm-mingw"):
         guard_count = struct.unpack_from("<Q", data, load_off + 136)[0]
         if not guard_table or not guard_count:
             raise RuntimeError("Windows x64 CFG function table is empty")
+        if "dispatch" not in verify_cfg_pointer_slots(data):
+            raise RuntimeError("Windows x64 CFG dispatch pointer slot is missing")
     elif arch == "arm64" and windows_toolchain == "clang-cl":
         # New with the MSVC-ABI build: real CFG metadata on ARM64.  The Zig
         # build never had it, so this gate is toolchain-conditional.
@@ -440,6 +498,9 @@ def verify_pe_hardening(data, arch, windows_toolchain="llvm-mingw"):
         guard_count = struct.unpack_from("<Q", data, load_off + 136)[0]
         if not guard_table or not guard_count:
             raise RuntimeError("Windows arm64 CFG function table is empty")
+    # Every image, whatever its CFG state: a slot the loader writes through
+    # may never be code.
+    verify_cfg_pointer_slots(data)
     if arch == "x64":
         # The /cetcompat shadow-stack opt-in lives in the debug directory, not
         # the load config.  Require it so the flag can never silently stop
