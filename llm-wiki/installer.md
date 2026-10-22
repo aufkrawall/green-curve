@@ -644,7 +644,13 @@ Buffered in memory for the whole run; written to
 `greencurve-setup-error.log` next to the setup executable **only if a step
 failed** (falling back to `%TEMP%` when that location is read-only, the common
 case for a setup file run from a mounted image). A successful install leaves
-nothing behind. Log creation uses `CREATE_NEW` plus
+nothing behind. Its footprint in the debug log is the service's first start
+of the new build (2026-10-22): `version change: Green Curve changed from <old>
+build <n> to <new> build <m> since the service last started`, compared with a
+one-line record in the service's admin-only data folder
+(`run_version_record_policy.h`, tests 7200-7206; a missing record logs "no
+earlier service start recorded", a damaged one "previous record unreadable",
+both then rewritten). Downgrades and same-version rebuilds count as changes. Log creation uses `CREATE_NEW` plus
 `FILE_FLAG_OPEN_REPARSE_POINT`; an existing name receives a random sibling
 filename rather than being truncated or followed. The transcript includes the
 steps that succeeded, because "how far did it get" is the first question a

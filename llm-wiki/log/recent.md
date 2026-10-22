@@ -5,6 +5,32 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-22: Live driver-update restore; driver and build versions in the log
+
+- Live test on x64 with a 0.30 dev build: the standard NVIDIA installer run
+  twice (older over newer, then back), each about 16 minutes after the last
+  Apply or restore. Both times a service thread faulted in `nvml.dll`, the VEH
+  ended it, the controlled restart replayed the full intent after a real DXGI
+  readiness signal (`proof=preserved-mature`), and the device restarted once
+  per install, never again after the restore. That answers the OPEN item
+  below for this installer: the replay's stamp was not challenged by a second
+  restart, so no waiver change is made. The immature-proof waiver path stays
+  unobserved live.
+- The log could not say which driver a recovery crossed: versions were only
+  printed by the immature-proof branch. The NvAPI loader now prints the mapped
+  image's version and release (7189), the controlled-restart authorization the
+  outgoing process's driver, and the recovery outcome the driver it restored
+  under. Source gates in `tools/crash_artifacts.py`.
+- Setup logs nothing on success, so an install was visible only as a changed
+  session header. The service's first start of a new build now logs
+  `version change: ... changed from <old> build <n> to <new> build <m>`
+  against a one-line record in its admin-only data folder (7200-7206, after
+  RUNNING; gate fails if the call is dropped, checked by removing it).
+- Coverage review of the restore chain (see "Open questions" in
+  [auto-restore-policy](../auto-restore-policy.md)): per-step policy tests
+  exist, but the service wiring is held by source-text gates only, some of
+  which cannot see a dropped call, and there is no sequence test. Follow-up.
+
 ## 2026-10-22: Prepare version 0.30
 
 - VERSION is exactly `0.30`, without a trailing newline. Installation examples,

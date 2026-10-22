@@ -7,7 +7,9 @@
 > a persisted per-boot crash-loop guard. The reset-to-stock rule below is
 > genuinely shared code.
 
-Last verified: 2026-10-22 (snapshot retirement identity, native file fixtures);
+Last verified: 2026-10-22 (live: two NVIDIA installer runs with a mature proof
+restored the profile through the VEH/controlled-restart path, see invariant 9);
+2026-10-22 (snapshot retirement identity, native file fixtures);
 2026-10-21 (invariant 9: a driver fault must not kill the
 service; field crash root-caused, fix software-verified only); 2026-10-17
 (failed automatic apply announced, protocol v29, software only); 2026-09-23 (once-per-crash ownership handback, software only);
@@ -523,7 +525,11 @@ that logon-event redundancy is degraded.
    "VEH thread exit under CET" in [gpu-backend](gpu-backend.md)). The
    service's own main and dispatcher threads are never ended (a fault there
    crashes as before), and a fault while nothing is applied restarts the
-   service without latching a lockout.
+   service without latching a lockout. Live-verified 2026-10-22 for a mature
+   proof: the standard NVIDIA installer restarted the device once per install
+   and never again after the restore, so the replay's preserved stamp was not
+   challenged. The immature-proof waiver path (an install within 10 minutes of
+   an Apply or logon restore) is still unobserved live.
 
 ## Diagnostics and state
 
@@ -537,6 +543,14 @@ LUID`, `standby generation`, `unbiased proof`, `controlled recovery`, and
 `auto-restore lockout`. Never commit these files or customer logs because they
 may contain machine, account, GPU, and settings context.
 
+Driver versions in the log (2026-10-22): every NvAPI load prints the mapped
+image's version (`nvapi_qi: load ... -> loaded driver=`), the controlled-restart
+authorization prints the outgoing process's (`outgoing driver=`), and
+`lifecycle driver recovery: full-intent write ... driver=` the one the restore
+ran under, so a log shows whether a recovery crossed a driver change even when
+the proof was mature. A changed Green Curve build is logged once by the first
+service start of that build (`version change:`, see [installer](installer.md)).
+
 ## Open questions / stale-risk
 
 Windows power, WTS, and PnP notification ordering varies by driver and Windows
@@ -547,6 +561,19 @@ systems whenever lifecycle code changes.
 Failure to enumerate active WTS sessions is transient and fail-closed; the
 service does not substitute the active console session because that could bind
 an automatic write to the wrong authenticated login.
+
+Test coverage of the driver-update restore (assessed 2026-10-22): every step
+has pure-policy tests and some have native fixtures, but the regression harness
+does not compile the service shards, so the wiring between those policies is
+held only by source-text gates. Some gates scan a combined surface that also
+contains the callee's definition and so cannot see a dropped call (the gate for
+the worker's `service_lifecycle_attempt_driver_restore()` call scans
+`_lifecycle_surface`), and no gate covers the snapshot writes after a
+successful Apply. Nothing drives the
+chain as a sequence (fault -> exit plan -> validated startup -> handback ->
+readiness -> proof -> one write). The reducer's `DRIVER_PROOF_SIGNAL` event is
+tested but never posted by production code, which retries from the worker
+loop instead.
 # Config-watch readiness invariant
 
 Logon profile materialization watches the parent directory so atomic config

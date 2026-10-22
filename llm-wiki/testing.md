@@ -301,7 +301,11 @@ the all-or-nothing command, plus the real scan and atomic write in a
 `tests/module_version_tests.cpp` (7180-7189: the mapped-image version reader
 against synthesised PE32/PE32+ images and their malformed mutations, and on
 Windows a real image moved away under its mapping and replaced by another
-version; see [gpu-backend](gpu-backend.md)); `service_install_tests.cpp` owns
+version; 7189 the log spelling `32.0.15.8180 (581.80)`; see
+[gpu-backend](gpu-backend.md)), `tests/diagnostics_followup_tests.cpp` also
+holds 7200-7206 (the service's last-started-build record: strict parse,
+all-or-nothing format, first start / unchanged / changed / unreadable; see
+[installer](installer.md)); `service_install_tests.cpp` owns
 assertions 5720-5786: SCM checkpoint-wait policy, the location content rule,
 the exact-DACL predicate, handle-bound hardening with propagation to existing
 files, the release-to-inherited contract, and the native location verdicts;

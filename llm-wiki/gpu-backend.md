@@ -1173,9 +1173,24 @@ predicate and the recorder.
   disabled machine-wide.
 - Invariant: no exception handler in a `/cetcompat` image may continue at a
   rewritten instruction pointer.
-- Open: the fixed path (thread end -> controlled restart -> replay after a
-  driver update) is software-verified only; it needs a live driver update with
-  a mature proof.
+- Field-verified 2026-10-22 (RTX 5070, x64, 0.30 dev build): two standard
+  NVIDIA installer runs over each other (older over newer, then back), each
+  about 16 minutes after the previous Apply or restore, so with a mature
+  proof. Each time one service thread faulted in `nvml.dll` as the driver
+  unloaded, the VEH ended it, the exit plan chose the controlled restart
+  (`plan=0 corroborated=1 snapshot=1 liveIntent=1 ownedState=1`), the fresh
+  process handed the fan back, waited on `Failed to initialize NvAPI` until a
+  DXGI adapter-set change, then wrote the full intent once (`proof=
+  preserved-mature`). One device restart per install, no second one after
+  the restore, no lockout. The immature-proof driver-update waiver did not
+  run and is still unobserved live.
+- Since 2026-10-22 the loader logs the mapped NvAPI image's version
+  (`nvapi_qi: load nvapi64.dll -> loaded driver=32.0.15.8180 (581.80)`;
+  release = last digit of field 3 plus field 4, `gc_driver_version_text()`,
+  test 7189), the controlled-restart authorization names the outgoing
+  process's driver (`outgoing driver=`), and the recovery outcome line names
+  the driver it restored under (`driver=`). Before, a mature-proof recovery
+  logged no driver version at all.
 
 Current source anchors:
 
