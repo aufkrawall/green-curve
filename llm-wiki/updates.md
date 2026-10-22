@@ -1285,8 +1285,10 @@ Two things this must get right or it proves nothing:
   stop/write/start order (a fake service records the seen value at each call),
   no write under a service that did not stop, restart after a failed write, the
   elevated-child report round trip and its failure messages, and the SCM wait
-  verdicts. Last verified: 2026-10-22 (fakes only; no live elevated teardown
-  run yet).
+  verdicts. Last verified: 2026-10-22, including one live `teardown
+  --restore-seen-only` from a normal prompt: one UAC prompt, the child stopped
+  the running service, restored the value, started it again, and the record
+  was removed. A full teardown with the GitHub steps has not run since.
 
 Everything else is repo-independent and therefore faithful: asset names carry
 the version and arch but not the repo, and the host allowlist is unchanged

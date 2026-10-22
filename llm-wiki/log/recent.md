@@ -20,8 +20,10 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   a normal prompt it asks for elevation once and runs that as a child. New
   `tools/windows_service_control.py` ports the product's SCM wait protocol.
   Runbook step 5 rewritten (gitignored local file).
-- Not verified: no live elevated teardown has run (fakes and a read-only SCM
-  query only).
+- Live check: one `teardown --restore-seen-only` from a normal prompt took
+  one UAC prompt, stopped and restarted the running service, restored the
+  recorded value and removed the record (exit 0). A full teardown including
+  the GitHub steps has not run since the change.
 
 ## 2026-10-22: Stall rationing counts successful exchanges and both phases
 
