@@ -2,8 +2,9 @@
 
 `AGENTS.md`, the `llm-wiki/*.md` topic pages and (since 2026-10-21) the
 engineering log under `llm-wiki/log/` are tracked in Git and published on
-GitHub.  `llm-wiki/private/` is a frozen, gitignored historic archive that no
-workflow reads or writes.  Nothing about that split is visible to a compiler,
+GitHub.  `llm-wiki/private/` was retired on 2026-10-22; the path stays
+gitignored so a stray local copy can never be committed.  Nothing about that
+split is visible to a compiler,
 and a slip is permanent once pushed, so it is enforced here instead of being
 left to memory:
 

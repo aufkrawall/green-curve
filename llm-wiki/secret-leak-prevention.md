@@ -28,7 +28,7 @@ Before every agent-created commit:
 
 1. Inspect the complete staged-file inventory (`git status`) and relevant untracked files intended for staging.
 2. Review the staged patch, not only the working-tree diff (`git diff --cached`).
-3. Check for unexpectedly staged local configuration, credential files, keys, dumps, logs, captures, databases, generated artifacts, or other sensitive files. Nothing under `llm-wiki/private/` may ever be staged (it is a gitignored, frozen historic archive; the build gates fail if it is tracked). `llm-wiki/log/` IS tracked and public: review its staged lines like any topic page.
+3. Check for unexpectedly staged local configuration, credential files, keys, dumps, logs, captures, databases, generated artifacts, or other sensitive files. Nothing under `llm-wiki/private/` may ever be staged (the area was retired on 2026-10-22 and stays gitignored as a guard; the build gates fail if it is tracked). `llm-wiki/log/` IS tracked and public: review its staged lines like any topic page.
 4. Run repository-provided security gates: `python build.py` executes `tools/security_gates.py`, verifying that no private keys, developer paths, private wiki areas, or prohibited artifacts are tracked.
 5. When a suitable local secrets scanner such as `gitleaks` is available, run it against staged changes:
    ```powershell
@@ -65,7 +65,7 @@ For a multi-commit outgoing branch, run an additional secrets review over the co
 
 ## Public wiki safety
 
-`AGENTS.md`, the `llm-wiki/*.md` topic pages and the `llm-wiki/log/` engineering log (since 2026-10-21) are tracked in Git and published on GitHub. They obey the same masking rule as public commits and code comments. `llm-wiki/private/` is a gitignored, frozen historic archive: nothing reads it for decisions, nothing new is written to it, and no tracked page may depend on it or on any other untracked file.
+`AGENTS.md`, the `llm-wiki/*.md` topic pages and the `llm-wiki/log/` engineering log (since 2026-10-21) are tracked in Git and published on GitHub. They obey the same masking rule as public commits and code comments. There is no private wiki: `llm-wiki/private/` was retired on 2026-10-22 (its durable content was either already public, fixed, or curated into the topic pages as design limits) and stays gitignored only as a guard. No tracked page may depend on an untracked file.
 
 Never write any of the following into a tracked page or the log:
 
@@ -82,13 +82,15 @@ Where the content goes instead:
 | Content | Home |
 |---|---|
 | Chronology, partial investigations, timelines (public; same rules) | `llm-wiki/log/recent.md` (and its archives) |
-| Incident/remediation records, leak stories, open security findings, machine-specific notes | nowhere in the repository (`llm-wiki/private/` is frozen and takes no new records) |
+| Open or unverified security findings | a draft GitHub security advisory on the repository (visible to maintainers only) until fixed; then the rule goes on the topic page |
+| Incident/remediation records, leak stories, machine-specific notes | nowhere in the repository |
+| A design limit (inherent, accepted, not exploitable beyond what the actor already has) | the topic page's open questions / design limits, in neutral words |
 | Release-operator procedure | `update-procedure.md` (gitignored) |
 | The rule or invariant itself, in neutral words | the public topic page |
 
 Enforcement is layered, and none of it replaces reviewing the staged patch:
 
-- `.gitignore` ignores `llm-wiki/private/` and must not ignore the log.
+- `.gitignore` keeps ignoring the retired `llm-wiki/private/` path and must not ignore the log.
 - `tools/wiki_public_gates.py` (run by `python build.py --test` and `--gates`) fails if anything under `llm-wiki/private/` is tracked or it is no longer ignored, if `llm-wiki/log/recent.md` is untracked or the log is ignored, if a tracked agent-instruction, wiki or log page contains an email address, a Windows host-name pattern, an IPv4 address outside documentation ranges, or a secret-shaped token, or if ANY tracked path or text file names a third-party tool (case-insensitive, word-bounded denylist, built from fragments so the file does not contain the names; NVML identifiers and the phrase "fan control" never match). It self-tests each rule with bad inputs.
 - `check_no_developer_profile_paths()` and `check_no_signing_key_material()` already scan every tracked text file, so they cover the wiki too.
 - CI scans full history with `gitleaks` (`tools/secret_scan.py`, `.gitleaks.toml`).
@@ -103,7 +105,7 @@ If a real credential or other sensitive value is found after commit:
 - remove the sensitive material from the working tree and amend/rewrite the affected local commit (`git reset --soft HEAD~1` or `git commit --amend`);
 - remember the public remediation rule: never name the leaked secret, the exposed value, or the affected version range in the commit subject, body, code comments, or any tracked wiki page. Describe only the rule the change enforces;
 - rotate and revoke any real credential that was exposed, especially if the commit, patch, terminal output, or logs left the local machine;
-- keep the incident details out of the repository: not in a topic page, not in the public log, and not in the frozen `llm-wiki/private/` archive.
+- keep the incident details out of the repository: not in a topic page and not in the public log.
 
 ## Reporting
 

@@ -5,6 +5,32 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-22: `llm-wiki/private/` retired
+
+- Reviewed in full before removal. The uncurated log copy is superseded by
+  the public log: every dated entry is there, and only masked detail differs.
+  The older write-ups of already fixed issues and the dated antivirus work
+  log are superseded by the current topic pages. Machine and key-custody notes stay out of the repository, and
+  operator steps moved into the gitignored runbook. Nothing that the tracked
+  tree needs was lost.
+- Fixed rather than recorded: Linux serve-loop stall rationing (F-LNX-STALL,
+  linux-scaffold.md, 7240-7257), and a daily freshness-expiry reminder
+  workflow (`tools/freshness_watch.py`, updates.md / build.md).
+- Recorded as design limits on the topic pages: another account's redirected
+  known folder (installer.md, service-install.md), per-account pipe leases
+  (windows-architecture.md), unrationed Linux handler time
+  (linux-scaffold.md), and no high-water mark of the envelope's issue time
+  (updates.md). The elevated CLI log location was reviewed: logs go to the
+  running account's own LocalAppData (debug-tools.md).
+- Policy: there is no private wiki any more. Unfixed security findings go to
+  a draft GitHub security advisory until fixed (`secret-leak-prevention.md`,
+  `AGENTS.md`). The path stays gitignored, and `wiki_public_gates.py`
+  unchanged, as a guard.
+- Not verified: the reminder workflow has not run on GitHub (nothing pushed;
+  the same check was run locally against the published release), and stall
+  rationing was not exercised against a live daemon (simulated peer and
+  mutation checks only).
+
 ## 2026-10-22: Driver-recovery flow under test
 
 - Follow-up to the coverage review below. The fresh process's arming,

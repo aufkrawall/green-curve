@@ -1,7 +1,8 @@
 # AGENTS.md, the llm-wiki/*.md topic pages and the llm-wiki/log/ engineering log
-# are tracked and PUBLIC.  llm-wiki/private/ is a frozen historic archive that
-# nothing relies on; tools/wiki_public_gates.py fails the build if this rule
-# disappears, private/ becomes tracked, or the log becomes ignored.
+# are tracked and PUBLIC.  llm-wiki/private/ was retired (2026-10-22) and stays
+# ignored only so a stray copy can never be committed; tools/wiki_public_gates.py
+# fails the build if this rule disappears, private/ becomes tracked, or the log
+# becomes ignored.
 /llm-wiki/private/
 # Local-only release operator runbook (machine paths, signing procedure).
 /update-procedure.md

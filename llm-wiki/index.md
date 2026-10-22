@@ -4,9 +4,10 @@ Routing table for durable project knowledge.
 
 > **Every page in this directory is PUBLIC**, including the engineering log
 > under `log/` (tracked in git and published on GitHub together with
-> `AGENTS.md`). `llm-wiki/private/` is a gitignored, frozen historic archive
-> that nothing may depend on. See `secret-leak-prevention.md`, "Public wiki
-> safety", before editing any page or log entry.
+> `AGENTS.md`). There is no private wiki: `llm-wiki/private/` was retired on
+> 2026-10-22 and stays gitignored only as a guard. See
+> `secret-leak-prevention.md`, "Public wiki safety", before editing any page
+> or log entry.
 
 ## Pages
 
@@ -36,7 +37,7 @@ Routing table for durable project knowledge.
 
 Engineering log (public, tracked): `log/recent.md` (newest-first rolling
 memory) and `log/archive-*.md` (older entries), curated for publication on
-2026-10-21. `private/` is a gitignored, frozen historic archive, not a page.
+2026-10-21. `private/` was retired on 2026-10-22; it is not a page.
 
 ## Key files outside llm-wiki
 

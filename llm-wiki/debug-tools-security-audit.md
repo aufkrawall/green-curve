@@ -783,4 +783,5 @@ When this template is copied into a concrete project, add only durable project-s
 Keep chronology and historical build observations in the public `llm-wiki/log/`,
 following the same public-safety rules as this inventory. Personal or
 machine-specific details do not belong anywhere in the repository.
-`llm-wiki/private/` is a frozen, ignored archive that no workflow depends on.
+`llm-wiki/private/` was retired on 2026-10-22 and stays ignored only so a
+stray copy can never be committed.
