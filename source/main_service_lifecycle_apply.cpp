@@ -784,11 +784,11 @@ static void service_lifecycle_attempt_driver_restore() {
     service_lifecycle_set_result_locked(
         SERVICE_LIFECYCLE_TRIGGER_DRIVER_RECOVERY, decision.result);
     LeaveCriticalSection(&g_appLock);
-    debug_log("lifecycle driver recovery: full-intent write attempted=%d success=%d proof=%s priorAgeMs=%llu detail=%s\n",
+    debug_log("lifecycle driver recovery: full-intent write attempted=%d success=%d proof=%s priorAgeMs=%llu driver=%s detail=%s\n",
         writeAttempted ? 1 : 0, success ? 1 : 0,
         !success ? "not-committed" : preserveMatureProof
             ? "preserved-mature" : "restarted",
-        (unsigned long long)matureProofAgeMs,
+        (unsigned long long)matureProofAgeMs, service_loaded_driver_label().text,
         detail[0] ? detail : "none");
     if (success) {
         // Driver recovery has released precedence. Revisit any coalesced logon

@@ -468,6 +468,10 @@ struct AppData {
     HFONT hCachedFontSmall;
 
     HMODULE hNvApi;
+    // Version of the mapped hNvApi image, read once at load (0/0 = unknown).
+    // A driver update replaces the file on disk, never this process's mapping.
+    DWORD nvapiImageVersionMs;
+    DWORD nvapiImageVersionLs;
     GPU_HANDLE gpuHandle;
     unsigned int selectedGpuIndex;
     unsigned int selectedNvmlIndex;

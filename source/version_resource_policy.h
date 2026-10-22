@@ -23,6 +23,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #define GC_VS_FIXED_FILE_INFO_SIGNATURE 0xFEEF04BDu
 // VS_VERSIONINFO: wLength, wValueLength, wType, L"VS_VERSION_INFO\0", then
@@ -128,6 +129,37 @@ static inline bool gc_pe_image_version_resource(const unsigned char* base, size_
     *outData = base + dataRva;
     *outSize = dataSize;
     return true;
+}
+
+// A driver image version for the log. NVIDIA numbers its user-mode images
+// <a>.<b>.<c>.<d> with the release spelled by the last digit of <c> and all of
+// <d>: 32.0.15.8180 is release 581.80. Diagnostics only, nothing decides on
+// it. "32.0.15.8180 (581.80)"; without a release reading just the four
+// fields; "unknown" for 0/0.
+static inline void gc_driver_version_text(uint32_t ms, uint32_t ls, char* out, size_t outSize) {
+    if (!out || !outSize) return;
+    if (!ms && !ls) {
+        snprintf(out, outSize, "unknown");
+        return;
+    }
+    const unsigned a = ms >> 16, b = ms & 0xFFFFu, c = ls >> 16, d = ls & 0xFFFFu;
+    if (d < 10000u) {
+        const unsigned release = (c % 10u) * 10000u + d;
+        snprintf(out, outSize, "%u.%u.%u.%u (%u.%02u)", a, b, c, d, release / 100u, release % 100u);
+    } else {
+        snprintf(out, outSize, "%u.%u.%u.%u", a, b, c, d);
+    }
+}
+
+// The same spelling as a value, for use inside one log call's arguments.
+struct GcDriverVersionLabel {
+    char text[48];
+};
+
+static inline GcDriverVersionLabel gc_driver_version_label(uint32_t ms, uint32_t ls) {
+    GcDriverVersionLabel label = {};
+    gc_driver_version_text(ms, ls, label.text, sizeof(label.text));
+    return label;
 }
 
 #endif  // GREEN_CURVE_VERSION_RESOURCE_POLICY_H

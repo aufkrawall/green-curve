@@ -135,6 +135,31 @@ int version_resource_policy_tests() {
     make_image(image, false, 1, 2);
     if (image_version(image, 0x300, &ms, &ls) || image_version(image, 0x50, &ms, &ls) ||
         image_version(nullptr, sizeof(image), &ms, &ls)) return 7182;
+
+    // 7189: the log spelling of a driver image version, with the NVIDIA
+    // release read from the last digit of field 3 and all of field 4.
+    struct Spelling { uint32_t ms, ls; const char* text; };
+    const Spelling spellings[] = {
+        { 0x00200000u, 0x000F1FF4u, "32.0.15.8180 (581.80)" },
+        { 0x00200000u, 0x000F17CEu, "32.0.15.6094 (560.94)" },
+        { 0x001F0000u, 0x000F0005u, "31.0.15.5 (500.05)" },
+        { 0x00200000u, 0x000E2710u, "32.0.14.10000" },  // no release reading
+        { 0u, 0u, "unknown" },
+    };
+    char text[48];
+    for (const Spelling& s : spellings) {
+        memset(text, 'x', sizeof(text));
+        gc_driver_version_text(s.ms, s.ls, text, sizeof(text));
+        if (strcmp(text, s.text) != 0) {
+            printf("  7189: %08x/%08x -> '%s', expected '%s'\n", (unsigned)s.ms, (unsigned)s.ls,
+                   text, s.text);
+            return 7189;
+        }
+    }
+    char small[8];
+    gc_driver_version_text(0x00200000u, 0x000F1FF4u, small, sizeof(small));
+    if (strlen(small) != sizeof(small) - 1) return 7189;  // truncated, still terminated
+    gc_driver_version_text(1, 2, nullptr, 0);
     return 0;
 }
 

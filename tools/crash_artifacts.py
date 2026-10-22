@@ -139,6 +139,19 @@ def check_windows_crash_artifacts(ctx, require_text, forbid_text, require_order,
     # module's load path names the new file.
     require_text(identity_cpp, "return gc_module_mapped_version(mod, outMs, outLs);",
                  "the in-process driver version is read from the mapped image")
+    # Which driver each process ran under, so a log shows whether a recovery
+    # restart crossed a driver change (outgoing process vs replacement).
+    loader_cpp = _p(ctx, "nvapi_loader.cpp")
+    require_text(loader_cpp, "if (!gc_module_mapped_version(g_app.hNvApi, &ms, &ls)) ms = ls = 0;",
+                 "the loader reads the version of the image it mapped")
+    require_text(loader_cpp, "nvapi_qi: load %s -> loaded driver=%s",
+                 "the loader logs the driver version it runs under")
+    require_text(_p(ctx, "main_service_persist.cpp"), "; outgoing driver=%s",
+                 "a controlled restart logs the driver of the process it replaces")
+    require_text(_p(ctx, "main_service_lifecycle_apply.cpp"), "priorAgeMs=%llu driver=%s detail=%s",
+                 "the driver-recovery outcome names the driver it restored under")
+    require_text(identity_cpp, "gc_driver_version_label(g_app.nvapiImageVersionMs, g_app.nvapiImageVersionLs)",
+                 "recovery log lines name the version the loader recorded")
 
     # The SCM failure-action start (2 s after the controlled exit) yields to a
     # live recovery helper before the startup gate can clear its authorization.

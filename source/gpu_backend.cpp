@@ -77,6 +77,8 @@ static void close_nvapi() {
         FreeLibrary(g_app.hNvApi);
         g_app.hNvApi = nullptr;
     }
+    g_app.nvapiImageVersionMs = 0;
+    g_app.nvapiImageVersionLs = 0;
     // Invalidate the nvapi_qi() module-level cache so the next call reloads the
     // architecture-selected NVAPI module with fresh pointers.  Without this,
     // after a GPU driver restart (VEH crash), the cached pointer points

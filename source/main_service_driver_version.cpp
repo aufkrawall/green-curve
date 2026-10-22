@@ -37,6 +37,12 @@ static bool service_get_module_version(HMODULE mod, DWORD* outMs, DWORD* outLs) 
     return gc_module_mapped_version(mod, outMs, outLs);
 }
 
+// The NvAPI image this process loaded, as read once by nvapi_qi(), for log
+// lines ("unknown" before the first load or after close_nvapi()).
+static GcDriverVersionLabel service_loaded_driver_label() {
+    return gc_driver_version_label(g_app.nvapiImageVersionMs, g_app.nvapiImageVersionLs);
+}
+
 // Build the on-disk path for nvml.dll.  Prefers the NVSMI copy
 // (%ProgramFiles%\NVIDIA Corporation\NVSMI\nvml.dll) because the driver
 // installer updates both copies in lockstep.  Falls back to system32.

@@ -12,6 +12,10 @@
 // presenting the protected restart helper's nonce may re-apply a snapshot.
 #include "service_restart_snapshot_schema.h"
 #include "restart_snapshot_file_win32.h"
+#include "version_resource_policy.h"
+
+// The NvAPI image this process loaded (main_service_driver_version.cpp).
+static GcDriverVersionLabel service_loaded_driver_label();
 
 #define SERVICE_CONTROLLED_RECOVERY_MAGIC   0x47434352u /* 'GCCR' */
 #define SERVICE_CONTROLLED_RECOVERY_VERSION 4u
@@ -202,10 +206,13 @@ static bool service_create_controlled_recovery_authorization(const char* reason,
         debug_log("controlled recovery authorization: commit failed; recovery restore will be suppressed\n");
         return false;
     }
-    debug_log("controlled recovery authorization: nonce bound to pid=%lu%s%s\n",
+    // The driver this process ran under: the replacement process logs the one
+    // it loads, so the pair shows whether the restart crossed a driver change.
+    debug_log("controlled recovery authorization: nonce bound to pid=%lu%s%s; outgoing driver=%s\n",
         (unsigned long)GetCurrentProcessId(),
         reason && reason[0] ? " for " : "",
-        reason && reason[0] ? reason : "");
+        reason && reason[0] ? reason : "",
+        service_loaded_driver_label().text);
     return true;
 }
 
