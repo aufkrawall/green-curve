@@ -1108,6 +1108,18 @@ The PE load-config `Security Cookie` field is zero because MinGW uses `__stack_c
 
 ## Last Verified
 
+- 2026-10-22: Stable 0.30.0 release workflow `39832643745` built the full
+  Windows/Linux x64/ARM64 matrix from `bba83d97bb4e11da517855f1d9076088cd7a7a35` with pinned hermetic tools.
+  Exact-commit tests, fuzzing, source/security gates, clean-tree and artifact
+  checks passed. All eight program packages and the toolchain record carry
+  verified exact-commit release-workflow provenance; the commit's
+  `Provenance & Attestation` status and signed tag are verified. CI `39830049166`
+  passed, as did the local regression suite and plain `python build.py` with
+  12 fresh native artifacts. All 21 published assets matched GitHub digests,
+  all package sidecars matched, and the release body matched the reviewed
+  changelog. Arch recipe digests were repinned from the verified published
+  Linux archives and the source archive compared with the exact release tree.
+
 - 2026-10-19: Stable 0.29.0 release run `39249109401` built the full matrix
   on `ubuntu-latest` from commit `0ac74a70293d36f44bf46dc154bf2fb4c3167437` using the pinned hermetic release
   toolchains, verified the exact artifact set and clean tree, created tag and

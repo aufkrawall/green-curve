@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-22: Stable 0.30.0 publication verified
+
+- Published `bba83d97bb4e11da517855f1d9076088cd7a7a35` through CI `39830049166` and release workflow `39832643745`.
+  The signed tag, all 21 assets, program/toolchain provenance, package digests
+  and release notes were verified; see build.md, "Last Verified".
+- Both updater metadata formats verify through anonymous client URLs. The
+  floorless manifest passes the oldest public client's policy and the actual
+  0.29.0-to-0.30.0 Windows x64 update preserved all 334 captured settings and
+  profile-identity fields; see updates.md, "Last verified", for coverage limits
+  and signed freshness expiry.
+- Repinned both Arch recipes to the delivered release bytes after comparing
+  the published source archive against the reviewed Git tree.
+
 ## 2026-10-22: Stable 0.30.0 preparation and two-hop update verification
 
 - Versioned notes and installation examples use the exact 0.30.0 asset spelling.

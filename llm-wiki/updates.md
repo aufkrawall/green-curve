@@ -1699,6 +1699,27 @@ be started, the closed GUIs are not relaunched.
 
 ## Last verified
 
+- 2026-10-22 (**0.30.0 released**): stable tag targets `bba83d97bb4e11da517855f1d9076088cd7a7a35`;
+  CI `39830049166` and release workflow `39832643745` passed. All 21 assets are
+  published. `tools/release_post.py` verified both GitHub-built installers'
+  exact-commit provenance before signing the floorless v1 manifest and v2
+  freshness envelope. Anonymous delivery checks verified both signatures,
+  the v2-to-v1 payload binding, both installer sizes/hashes and allowlisted hosts.
+  The signed envelope expires at `2026-11-21T18:39:52+00:00`. The delivered manifest passed
+  production policy probes from public 0.23, 0.29.0 and current source on both
+  Windows architectures; signing trust continuity was verified.
+  A live Windows x64 production-channel update from the published 0.29.0
+  client verified and installed the actual 0.30.0 package, consumed the
+  version-bound handoff through production replay and preserved all 334
+  captured applied-settings and profile-identity fields. CLI/service-protocol
+  commands drove the update; update-dialog button capture was not automated.
+  Live ARM64 hardware, install relocation/uninstall and post-stop fault
+  injection were not rerun; evidence for those areas is limited to deterministic
+  fixtures and artifact checks. The release body matches the changelog, the tag is
+  verified, and all eight programs plus the toolchain record passed provenance
+  verification. Source-archive bytes matched all 620
+  reviewed Git-tree files before the Arch recipes were repinned.
+
 - 2026-10-19 (**0.29.0 released**): published stable from commit `0ac74a70293d36f44bf46dc154bf2fb4c3167437`,
   tag `0.29.0`, with a floorless signed manifest so all public clients (0.23+)
   are eligible. CI run `39247438156` and release run `39249109401` were green.
