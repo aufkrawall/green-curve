@@ -1096,5 +1096,8 @@ bool running_exe_dir_differs_from_registered_service();
 // Service startup: log the service binary directory's protection verdict and
 // warn (without blocking) when it is less protected than Program Files.
 void service_log_path_protection_at_startup();
+// Service startup: log once when the installed build differs from the one
+// that last started here, and record the current one.
+void service_log_version_change_at_startup();
 
 #endif

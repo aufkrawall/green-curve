@@ -968,7 +968,8 @@ int run_review_followup_tests();
 // fan maintenance (tests/apply_profile_followup_tests.cpp, 6430-6499).
 int run_apply_profile_followup_tests();
 // 0.28 field-log diagnostics: steady-state log summarizer and the bounded CLI
-// log append (tests/diagnostics_followup_tests.cpp, 6700-6799).
+// log append (tests/diagnostics_followup_tests.cpp, 6700-6799; the
+// last-started-build record, 7200-7206).
 int run_diagnostics_followup_tests();
 // The apply's VF correction loop against a simulated driver
 // (tests/apply_correction_tests.cpp, 6500-6549).

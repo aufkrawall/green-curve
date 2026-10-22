@@ -439,6 +439,7 @@ static void WINAPI service_main(DWORD argc, LPWSTR* argv) {
     // install must be visible in the support log, but gathering that fact
     // costs a SAM round trip and must never sit between the SCM and RUNNING.
     service_log_path_protection_at_startup();
+    service_log_version_change_at_startup();
 
     // The one startup write: returning what a crashed previous instance still
     // owned.  The worker runs it as soon as the GPU is ready.

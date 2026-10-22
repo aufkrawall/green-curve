@@ -152,6 +152,15 @@ def check_windows_crash_artifacts(ctx, require_text, forbid_text, require_order,
                  "the driver-recovery outcome names the driver it restored under")
     require_text(identity_cpp, "gc_driver_version_label(g_app.nvapiImageVersionMs, g_app.nvapiImageVersionLs)",
                  "recovery log lines name the version the loader recorded")
+    # Setup writes no log on success; the service's first start of a build is
+    # the install's footprint in the debug log.
+    require_order(_p(ctx, "main_service_host.cpp"),
+                  "g_serviceStatus.dwCurrentState = SERVICE_RUNNING;",
+                  "service_log_version_change_at_startup();",
+                  "the build-change line runs after RUNNING (diagnostic only)")
+    require_text(_p(ctx, "main_service_admin_client.cpp"),
+                 "gc_run_version_compare(present, text, read,",
+                 "the build-change line follows the shared, tested record policy")
 
     # The SCM failure-action start (2 s after the controlled exit) yields to a
     # live recovery helper before the startup gate can clear its authorization.

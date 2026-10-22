@@ -38,6 +38,7 @@ Driver-update recovery, diagnostic privacy and local protections improve while e
 ### Improved
 
 - **Support logs:** Personal paths, including Linux root entries and folders with spaces, are redacted consistently while command results stay readable.
+- **Driver and update details in logs:** the debug log names the graphics driver version behind each automatic restore and notes when Green Curve was installed or updated.
 - **Automatic restore notices:** Green Curve now also says when a profile was not restored because the graphics driver restarted soon after it was applied, or restarted repeatedly.
 
 ### Fixed

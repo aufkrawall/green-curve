@@ -4,6 +4,7 @@
 // Bounded UI waits, elevation helpers, and protected service-binary staging.
 
 #include "log_redaction_policy.h"
+#include "run_version_record_policy.h"
 
 static volatile LONG g_serviceAdminWaitCancelled = 0;
 
@@ -375,6 +376,76 @@ void service_log_path_protection_at_startup() {
               (int)protection.verdict.reason);
     if (gc_path_protection_requires_acknowledgment(&protection.verdict)) {
         debug_log("path protection WARNING: %s\n", GC_PATH_PROTECTION_SUMMARY_UNPROTECTED);
+    }
+}
+
+// Service startup: say once when this build differs from the one that last
+// started here (run_version_record_policy.h). Setup restarts the service as
+// its last step, so this line marks an install, update or downgrade in the
+// log; a successful setup run writes no log of its own.
+void service_log_version_change_at_startup() {
+    char dir[MAX_PATH] = {};
+    char path[MAX_PATH] = {};
+    if (!resolve_service_machine_data_dir(dir, sizeof(dir)) ||
+        FAILED(StringCchPrintfA(path, ARRAY_COUNT(path), "%s\\%s", dir, GC_RUN_VERSION_RECORD_NAME))) {
+        debug_log("version change: record path unavailable; running %s build %lu\n",
+            APP_VERSION, (unsigned long)APP_BUILD_NUMBER);
+        return;
+    }
+    char text[GC_RUN_VERSION_RECORD_MAX + 2] = {};
+    DWORD read = 0;
+    DWORD openError = ERROR_SUCCESS;
+    HANDLE h = gc_CreateFileUtf8(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        openError = GetLastError();
+    } else {
+        // One byte past the limit, so an oversized record reads as unreadable.
+        if (!ReadFile(h, text, GC_RUN_VERSION_RECORD_MAX + 1, &read, nullptr)) read = 0;
+        CloseHandle(h);
+    }
+    const bool present = openError != ERROR_FILE_NOT_FOUND && openError != ERROR_PATH_NOT_FOUND;
+    GcRunVersion previous = {};
+    const GcRunVersionChange change = gc_run_version_compare(present, text, read,
+        APP_VERSION, (unsigned long)APP_BUILD_NUMBER, &previous);
+    switch (change) {
+    case GC_RUN_VERSION_UNCHANGED:
+        return;
+    case GC_RUN_VERSION_CHANGED:
+        debug_log("version change: Green Curve changed from %s build %lu to %s build %lu since the service last started\n",
+            previous.version, previous.build, APP_VERSION, (unsigned long)APP_BUILD_NUMBER);
+        break;
+    case GC_RUN_VERSION_UNREADABLE:
+        debug_log("version change: previous record unreadable (error=%lu bytes=%lu); running %s build %lu\n",
+            (unsigned long)openError, (unsigned long)read, APP_VERSION, (unsigned long)APP_BUILD_NUMBER);
+        break;
+    case GC_RUN_VERSION_FIRST_START:
+    default:
+        debug_log("version change: no earlier service start recorded; running %s build %lu\n",
+            APP_VERSION, (unsigned long)APP_BUILD_NUMBER);
+        break;
+    }
+    char record[GC_RUN_VERSION_RECORD_MAX + 1] = {};
+    char tempPath[MAX_PATH] = {};
+    char pathErr[256] = {};
+    if (!gc_run_version_format(APP_VERSION, (unsigned long)APP_BUILD_NUMBER, record, sizeof(record)) ||
+        !ensure_parent_directory_for_file(path, pathErr, sizeof(pathErr)) ||
+        FAILED(StringCchPrintfA(tempPath, ARRAY_COUNT(tempPath), "%s.tmp.%lu", path,
+            (unsigned long)GetCurrentProcessId()))) {
+        debug_log("version change: record not saved (could not prepare it)\n");
+        return;
+    }
+    const DWORD length = (DWORD)strlen(record);
+    HANDLE out = gc_CreateFileUtf8(tempPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    DWORD written = 0;
+    bool ok = out != INVALID_HANDLE_VALUE &&
+        WriteFile(out, record, length, &written, nullptr) && written == length;
+    if (out != INVALID_HANDLE_VALUE) CloseHandle(out);
+    if (ok) ok = gc_MoveFileExUtf8(tempPath, path, MOVEFILE_REPLACE_EXISTING) != FALSE;
+    if (!ok) {
+        debug_log("version change: record not saved (error=%lu)\n", GetLastError());
+        gc_DeleteFileUtf8(tempPath);
     }
 }
 

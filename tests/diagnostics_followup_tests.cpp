@@ -6,8 +6,9 @@
 // (debug_log_steady_state_policy.h) and the bounded CLI-log append the silent
 // logon paths now use (cli_log_append_policy.h), and the GUI notice for a
 // failed automatic apply plus its protocol-v29 wire record
-// (auto_apply_failure_notice_policy.h).  Pure headers plus one temp file; no
-// GPU, no service.
+// (auto_apply_failure_notice_policy.h).  Also the service's last-started-build
+// record (run_version_record_policy.h, 7200-7206).  Pure headers plus one temp
+// file; no GPU, no service.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +30,7 @@
 #include "debug_log_steady_state_policy.h"
 #include "log_path_redaction.h"
 #include "log_redaction_policy.h"
+#include "run_version_record_policy.h"
 
 namespace {
 
@@ -491,6 +493,87 @@ int run_auto_apply_wire_tests() {
     return 0;
 }
 
+// The service's last-started-build record (run_version_record_policy.h),
+// 7200-7206.
+int run_version_record_tests() {
+    // 7200: format and parse round-trip, LF and CRLF.
+    char record[GC_RUN_VERSION_RECORD_MAX + 1] = {};
+    if (!gc_run_version_format("0.30", 331, record, sizeof(record)) ||
+        strcmp(record, "version=0.30 build=331\n") != 0) return 7200;
+    GcRunVersion parsed = {};
+    if (!gc_run_version_parse(record, strlen(record), &parsed) ||
+        strcmp(parsed.version, "0.30") != 0 || parsed.build != 331) return 7200;
+    const char crlf[] = "version=0.29.0 build=14\r\n";
+    if (!gc_run_version_parse(crlf, sizeof(crlf) - 1, &parsed) ||
+        strcmp(parsed.version, "0.29.0") != 0 || parsed.build != 14) return 7200;
+    const char bare[] = "version=1.0-rc1 build=4294967295";
+    if (!gc_run_version_parse(bare, sizeof(bare) - 1, &parsed) ||
+        parsed.build != 4294967295ul) return 7200;
+
+    // 7201: anything else is not a record, and leaves nothing behind.
+    const char* bad[] = {
+        "", "version= build=1\n", "version=0.30 build=\n", "version=0.30build=1\n",
+        "Version=0.30 build=1\n", "version=0.30 build=1\nversion=0.31 build=2\n",
+        "version=0.30 build=1 \n", "version=0.30 build=4294967296\n",
+        "version=0.30 build=12345678901\n", "version=0 30 build=1\n",
+        "version=0.30/x build=1\n", "version=0.30 build=-1\n",
+        "version=0123456789012345678901234567890123 build=1\n",
+    };
+    for (const char* text : bad) {
+        memset(&parsed, 'x', sizeof(parsed));
+        if (gc_run_version_parse(text, strlen(text), &parsed) || parsed.version[0] || parsed.build)
+            return 7201;
+    }
+    const char nul[] = "version=0.30\0build=1\n";
+    if (gc_run_version_parse(nul, sizeof(nul) - 1, &parsed)) return 7201;
+    char oversized[GC_RUN_VERSION_RECORD_MAX + 2];
+    memset(oversized, '1', sizeof(oversized));
+    memcpy(oversized, "version=0.30 build=", 19);
+    if (gc_run_version_parse(oversized, sizeof(oversized), &parsed)) return 7201;
+    if (gc_run_version_parse(nullptr, 0, &parsed) || gc_run_version_parse(record, 5, nullptr))
+        return 7201;
+
+    // 7202: format is all-or-nothing and refuses a version that would not
+    // read back.
+    if (gc_run_version_format("0.30", 331, record, 10) || record[0]) return 7202;
+    if (gc_run_version_format("", 1, record, sizeof(record)) || record[0]) return 7202;
+    if (gc_run_version_format("0.30 build=9", 1, record, sizeof(record)) || record[0]) return 7202;
+    if (gc_run_version_format(nullptr, 1, record, sizeof(record)) || record[0]) return 7202;
+    if (gc_run_version_format("0.30", 1, nullptr, 0)) return 7202;
+
+    // 7203: no record is a first start; the same build is unchanged.
+    GcRunVersion previous = {};
+    if (gc_run_version_compare(false, nullptr, 0, "0.30", 331, &previous) !=
+            GC_RUN_VERSION_FIRST_START || previous.version[0]) return 7203;
+    const char same[] = "version=0.30 build=331\n";
+    if (gc_run_version_compare(true, same, sizeof(same) - 1, "0.30", 331, &previous) !=
+        GC_RUN_VERSION_UNCHANGED) return 7203;
+
+    // 7204: a different version or only a different build is a change (a dev
+    // rebuild, a downgrade), reported with the previous build.
+    const char older[] = "version=0.29.0 build=330\n";
+    if (gc_run_version_compare(true, older, sizeof(older) - 1, "0.30", 331, &previous) !=
+            GC_RUN_VERSION_CHANGED || strcmp(previous.version, "0.29.0") != 0 ||
+        previous.build != 330) return 7204;
+    if (gc_run_version_compare(true, same, sizeof(same) - 1, "0.30", 332, nullptr) !=
+        GC_RUN_VERSION_CHANGED) return 7204;
+    if (gc_run_version_compare(true, same, sizeof(same) - 1, "0.29.0", 331, nullptr) !=
+        GC_RUN_VERSION_CHANGED) return 7204;
+
+    // 7205: a record that exists but does not parse (or could not be read) is
+    // unreadable, never a first start.
+    if (gc_run_version_compare(true, "garbage", 7, "0.30", 331, &previous) !=
+            GC_RUN_VERSION_UNREADABLE || previous.version[0]) return 7205;
+    if (gc_run_version_compare(true, nullptr, 0, "0.30", 331, nullptr) !=
+        GC_RUN_VERSION_UNREADABLE) return 7205;
+
+    // 7206: what the service writes for this build reads back as unchanged.
+    if (!gc_run_version_format("0.30", 331, record, sizeof(record)) ||
+        gc_run_version_compare(true, record, strlen(record), "0.30", 331, nullptr) !=
+            GC_RUN_VERSION_UNCHANGED) return 7206;
+    return 0;
+}
+
 }  // namespace
 
 int run_gui_auto_restore_notice_tests();
@@ -502,5 +585,6 @@ int run_diagnostics_followup_tests() {
     if (int r = run_auto_apply_notice_tests()) return r;
     if (int r = run_auto_apply_wire_tests()) return r;
     if (int r = run_gui_auto_restore_notice_tests()) return r;
+    if (int r = run_version_record_tests()) return r;
     return 0;
 }
