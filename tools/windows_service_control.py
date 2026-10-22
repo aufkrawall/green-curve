@@ -19,7 +19,9 @@ exactly as the product's waiter does.  tests: simulate_release_tests.py.
 
 import ctypes
 import os
+import re
 import time
+from pathlib import Path
 
 # installer_common.h GC_SETUP_SERVICE_NAME (asserted by the tests).
 SERVICE_NAME = "GreenCurveService"
@@ -53,6 +55,16 @@ WAIT_OVERALL_TIMEOUT = "overall-timeout"
 
 def state_name(state):
     return STATE_NAMES.get(state, f"state-{state}")
+
+
+def image_path_executable(command_line):
+    """The executable of an SCM ImagePath (`"C:\\...\\x.exe" --service-run`)."""
+    text = os.path.expandvars((command_line or "").strip())
+    if text.startswith('"'):
+        end = text.find('"', 1)
+        return Path(text[1:end]) if end > 1 else None
+    match = re.match(r"(.+?\.exe)(?:\s|$)", text, re.IGNORECASE)
+    return Path(match.group(1)) if match else None
 
 
 def stall_budget_ms(wait_hint_ms):
@@ -100,8 +112,18 @@ class ServiceStatusProcess(ctypes.Structure):
                                          ("service_flags", ctypes.c_uint32)]
 
 
+class QueryServiceConfig(ctypes.Structure):
+    _fields_ = [("service_type", ctypes.c_uint32), ("start_type", ctypes.c_uint32),
+                ("error_control", ctypes.c_uint32), ("binary_path_name", ctypes.c_wchar_p),
+                ("load_order_group", ctypes.c_wchar_p), ("tag_id", ctypes.c_uint32),
+                ("dependencies", ctypes.c_wchar_p), ("service_start_name", ctypes.c_wchar_p),
+                ("display_name", ctypes.c_wchar_p)]
+
+
 _SC_MANAGER_CONNECT = 0x0001
+_SERVICE_QUERY_CONFIG = 0x0001
 _SERVICE_QUERY_STATUS = 0x0004
+_ERROR_INSUFFICIENT_BUFFER = 122
 _SERVICE_START = 0x0010
 _SERVICE_STOP = 0x0020
 _SERVICE_CONTROL_STOP = 1
@@ -127,6 +149,9 @@ def _advapi():
     api.ControlService.restype = ctypes.c_int
     api.StartServiceW.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p]
     api.StartServiceW.restype = ctypes.c_int
+    api.QueryServiceConfigW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32,
+                                        ctypes.POINTER(ctypes.c_uint32)]
+    api.QueryServiceConfigW.restype = ctypes.c_int
     return api
 
 
@@ -183,6 +208,29 @@ class WindowsServiceController:
                 api.CloseServiceHandle(service)
             api.CloseServiceHandle(scm)
 
+    def install_directory(self):
+        """The folder the SCM runs the service from, or None when not installed."""
+        api, scm, service = self._open(_SERVICE_QUERY_CONFIG)
+        try:
+            if service is None:
+                return None
+            needed = ctypes.c_uint32()
+            if not api.QueryServiceConfigW(service, None, 0, ctypes.byref(needed)):
+                error = ctypes.get_last_error()
+                if error != _ERROR_INSUFFICIENT_BUFFER:
+                    raise ctypes.WinError(error)
+            buffer = ctypes.create_string_buffer(max(needed.value,
+                                                     ctypes.sizeof(QueryServiceConfig)))
+            if not api.QueryServiceConfigW(service, buffer, len(buffer), ctypes.byref(needed)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            config = ctypes.cast(buffer, ctypes.POINTER(QueryServiceConfig)).contents
+            executable = image_path_executable(config.binary_path_name)
+            return executable.parent if executable else None
+        finally:
+            if service:
+                api.CloseServiceHandle(service)
+            api.CloseServiceHandle(scm)
+
     def _transition(self, access, request, desired):
         api, scm, service = self._open(_SERVICE_QUERY_STATUS | access)
         if service is None:
@@ -231,6 +279,9 @@ class NoServiceController:
     name = SERVICE_NAME
 
     def query_state(self):
+        return None
+
+    def install_directory(self):
         return None
 
     def stop(self):

@@ -75,12 +75,22 @@ restart after a failed write, a stopping service waited for but not
 restarted, the elevated-child report round trip, and the SCM wait verdicts of
 `tools/windows_service_control.py` (constants asserted equal to
 `service_scm_wait_policy.h`). Mutation-checked: with the old file-only write
-three of these fail. `HighestSeenRestoreTests` patches the service controller
-in `setUp`, so no test reaches the real SCM; the one native SCM test only
-queries. Source: `tools/simulate_release_tests.py`,
-`tools/windows_config_lock.py`, `tools/windows_service_control.py`; verified
-2026-10-22. Linux CI injects a lock only for the byte-editor fixtures; the
-native fixtures are Windows-only.
+three of these fail. The restart carries the applied settings across it like
+setup does: `ServiceRestartTests` asserts the capture -> stop -> start ->
+re-apply -> discard order and every failure path (export failed: nothing
+stopped or written; nothing applied; failed re-apply; failed write; start
+failure), and `SettingsTransferTests` the exit-code taxonomy, verbs,
+timeouts and snapshot cleanup, with constants asserted equal to
+`settings_transfer_exit_policy.h`, `installer_apply.cpp` and
+`installer_util.cpp`. Mutation-checked: without the carry-over six of the
+seven fail. Each test class patches the service controller and the transfer
+in `setUp`, so no test reaches the real SCM or CLI; the native tests only
+query (SCM state/config, the Program Files known folder). Source:
+`tools/simulate_release_tests.py`, `tools/simulate_release_restore_tests.py`,
+`tools/windows_service_tools_tests.py`, `tools/windows_config_lock.py`,
+`tools/windows_service_control.py`, `tools/windows_settings_transfer.py`;
+verified 2026-10-22. Linux CI injects a lock only for the byte-editor
+fixtures; the native fixtures are Windows-only.
 
 Arch recipe checks run through Linux packaging source gates on every host.
 They verify actual local source bytes and real remote checksum pins, with

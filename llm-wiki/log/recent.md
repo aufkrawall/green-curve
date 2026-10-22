@@ -24,6 +24,13 @@ rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
   one UAC prompt, stopped and restarted the running service, restored the
   recorded value and removed the record (exit 0). A full teardown including
   the GitHub steps has not run since the change.
+- Follow-up the same day: that restart returned the GPU to stock (a clean
+  service stop resets the intent it owns) and the new instance applied
+  nothing, so the next install found no active settings to carry over and
+  restored none. Teardown now carries the applied settings across its own
+  restart exactly as setup does (`tools/windows_settings_transfer.py`:
+  export before the stop, re-apply after the start; an export that fails
+  leaves the service running). Fakes only; the carry-over has not run live.
 
 ## 2026-10-22: Stall rationing counts successful exchanges and both phases
 

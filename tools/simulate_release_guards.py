@@ -31,6 +31,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import update_signing
 import windows_service_control
+import windows_settings_transfer
 from windows_config_lock import config_storage_lock
 
 SIMULATION_KEY_NAME = "simulation-update-signing-key.txt"
@@ -191,6 +192,8 @@ def patch_update_keys(source_dir, pubkey_hex):
 # running service and print "restart it before its next check"; a teardown run
 # from a normal prompt only printed an elevated command.  Both were easy to
 # miss, and the real build then warned about an older release on every check.
+# The restart in turn must carry the applied settings across it, as setup does
+# (windows_settings_transfer.py): a clean stop resets the GPU to stock.
 
 def machine_config_path():
     program_data = os.environ.get("ProgramData") or r"C:\ProgramData"
@@ -439,43 +442,87 @@ def service_controller():
     return windows_service_control.default_controller()
 
 
-def _write_with_service_stopped(ini_path, target, layout, service):
-    """Stop the owning service, write and verify, then start it again.
+def settings_transfer_for(service):
+    """Carries the service's applied settings across its restart (replaced by the tests)."""
+    directory = service.install_directory()
+    return windows_settings_transfer.SettingsTransfer(
+        directory / windows_settings_transfer.GUI_EXE if directory else None)
 
-    Returns the service steps taken.  Raises when the value cannot be made to
-    stick: a service that does not stop is never written under, and a write
-    that fails still restarts the service.
+
+def _write_with_service_stopped(ini_path, target, layout, service):
+    """Save the applied settings, stop the owning service, write and verify,
+    start it again and re-apply what was saved.
+
+    A clean stop returns the GPU to stock and a started service applies
+    nothing on its own, so a bare restart silently dropped the user's profile
+    (setup carries it across its own stop the same way).  Returns the steps
+    taken.  Raises when the value cannot be made to stick or the settings did
+    not come back: a service whose settings could not be saved, or that does
+    not stop, is never written under; a failed write still restarts the
+    service and re-applies the settings.
     """
     state = service.query_state()
     stop = state is not None and state != windows_service_control.STATE_STOPPED
-    # A service already on its way down is waited for, not brought back.
+    # A service already on its way down is waited for, not brought back: its
+    # settings are being reset by that stop already.
     restart = stop and state != windows_service_control.STATE_STOP_PENDING
     steps = []
-    if stop:
-        service.stop()
-        steps.append(f"stopped {service.name} "
-                     f"(was {windows_service_control.state_name(state)})")
-    error = None
-    try:
-        set_highest_seen(ini_path, target, layout if target is None else None)
-        current = read_highest_seen(ini_path)
-        if current != target:
-            raise RuntimeError(f"{SEEN_KEY} reads back as {current or '<absent>'}, "
-                               f"not {target or '<absent>'}")
-    except (OSError, RuntimeError, ValueError) as exc:
-        error = exc
+    transfer = None
     if restart:
+        transfer = settings_transfer_for(service)
+        captured, detail = transfer.capture()
+        log(f"settings transfer: export {captured} ({detail})")
+        if captured == windows_settings_transfer.CAPTURE_FAILED:
+            raise RuntimeError(
+                f"could not save the settings {service.name} has applied ({detail}); "
+                "the service was not stopped, because stopping it returns the GPU to "
+                "stock. Retry, or Reset to stock in Green Curve first if nothing needs "
+                "keeping")
+        if captured == windows_settings_transfer.CAPTURE_NONE_ACTIVE:
+            transfer = None
+            steps.append("no applied settings to carry over")
+        else:
+            steps.append("saved the applied settings")
+    try:
+        if stop:
+            service.stop()
+            steps.append(f"stopped {service.name} "
+                         f"(was {windows_service_control.state_name(state)})")
+        error = None
         try:
-            service.start()
-        except (OSError, RuntimeError) as exc:
-            outcome = f"the restore failed ({error}) and" if error else \
-                f"{SEEN_KEY} was restored, but"
-            raise RuntimeError(f"{outcome} {service.name} did not start again: {exc}. "
-                               f"Start it with: sc start {service.name}") from exc
-        steps.append(f"started {service.name}")
-    if error:
-        raise error
-    return steps
+            set_highest_seen(ini_path, target, layout if target is None else None)
+            current = read_highest_seen(ini_path)
+            if current != target:
+                raise RuntimeError(f"{SEEN_KEY} reads back as {current or '<absent>'}, "
+                                   f"not {target or '<absent>'}")
+        except (OSError, RuntimeError, ValueError) as exc:
+            error = exc
+        lost = "; the saved settings were NOT re-applied: apply your profile in " \
+               "Green Curve" if transfer else ""
+        if restart:
+            try:
+                service.start()
+            except (OSError, RuntimeError) as exc:
+                outcome = f"the restore failed ({error}) and" if error else \
+                    f"{SEEN_KEY} was restored, but"
+                raise RuntimeError(f"{outcome} {service.name} did not start again: {exc}. "
+                                   f"Start it with: sc start {service.name}{lost}") from exc
+            steps.append(f"started {service.name}")
+        if transfer:
+            applied, detail = transfer.reapply()
+            log(f"settings transfer: re-apply {'ok' if applied else 'FAILED'} ({detail})")
+            if not applied:
+                outcome = f"the restore failed ({error}), and" if error else \
+                    f"{SEEN_KEY} was restored, but"
+                raise RuntimeError(f"{outcome} the saved settings were NOT re-applied "
+                                   f"({detail}); apply your profile in Green Curve")
+            steps.append("re-applied the saved settings")
+        if error:
+            raise error
+        return steps
+    finally:
+        if transfer:
+            transfer.discard()
 
 
 def restore_highest_seen(state_path=None, ini_path=None, override=None, elevated=None,
@@ -545,9 +592,10 @@ def restore_highest_seen(state_path=None, ini_path=None, override=None, elevated
 # JSON file next to the pre-simulation record.
 
 RESTORE_REPORT_NAME = "teardown-restore-report.json"
-# The child stops and starts the service (each wait bounded at 60 s by the SCM
-# protocol) and waits up to 5 s for the configuration mutex.
-ELEVATED_RESTORE_WAIT_MS = 180000
+# The child exports the settings (20 s), stops and starts the service (each
+# wait bounded at 60 s by the SCM protocol), waits up to 5 s for the
+# configuration mutex and re-applies the settings (180 s, setup's bound).
+ELEVATED_RESTORE_WAIT_MS = 360000
 
 
 def elevated_restore_args(state_path, report_path, override=None):

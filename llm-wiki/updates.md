@@ -1250,9 +1250,21 @@ Two things this must get right or it proves nothing:
   read back, start it again (`_write_with_service_stopped()` in
   `tools/simulate_release_guards.py`; SCM waits in
   `tools/windows_service_control.py` follow the product's
-  `service_scm_wait_policy.h` protocol, constants asserted equal). A service
-  that does not stop is never written under; a failed write still restarts it;
-  a service already stopping is waited for and not restarted. From a normal
+  `service_scm_wait_policy.h` protocol, constants asserted equal). A clean
+  stop returns the GPU to stock and a started service applies nothing on its
+  own, so the transaction is wrapped like setup's own stop
+  (`tools/windows_settings_transfer.py`): `greencurve.exe
+  --export-active-settings` into an administrator-only scratch folder directly
+  under Program Files before the stop, `--apply-settings-file` after the
+  start, the same exit-code contract and timeouts as `installer_apply.cpp`
+  (asserted equal). An export that fails leaves the service running and
+  nothing written; exit 4 (nothing applied) restarts without a re-apply; a
+  failed re-apply exits 2 telling the operator to apply the profile by hand. A
+  service that does not stop is never written under; a failed write still
+  restarts it and re-applies; a service already stopping is waited for and
+  not restarted. The installed `greencurve.exe` is found from the service's
+  SCM ImagePath; an installed build too old for the export verb costs the
+  20 s export timeout and leaves the service running. From a normal
   prompt teardown asks for elevation once and runs `teardown
   --restore-seen-only --no-elevate --report <json>` as an elevated child
   (`run_elevated_restore()`); `--no-elevate` only prints the command. Exit 2
@@ -1285,10 +1297,14 @@ Two things this must get right or it proves nothing:
   stop/write/start order (a fake service records the seen value at each call),
   no write under a service that did not stop, restart after a failed write, the
   elevated-child report round trip and its failure messages, and the SCM wait
-  verdicts. Last verified: 2026-10-22, including one live `teardown
-  --restore-seen-only` from a normal prompt: one UAC prompt, the child stopped
-  the running service, restored the value, started it again, and the record
-  was removed. A full teardown with the GitHub steps has not run since.
+  verdicts, plus the settings carry-over order (capture, stop, start,
+  re-apply, discard) and each of its failure paths
+  (`tools/simulate_release_restore_tests.py`,
+  `tools/windows_service_tools_tests.py`). Last verified: 2026-10-22. One live
+  `teardown --restore-seen-only` ran from a normal prompt BEFORE the carry-over
+  existed: the restore itself worked, and the bare restart returned the GPU to
+  stock and dropped the applied profile, which is how the gap was found. The
+  carry-over has not run live yet.
 
 Everything else is repo-independent and therefore faithful: asset names carry
 the version and arch but not the repo, and the host allowlist is unchanged
