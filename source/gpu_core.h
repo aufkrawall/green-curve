@@ -354,14 +354,15 @@ static_assert(offsetof(nvapiGpuArchInfo_t, architecture) == 4, "nvapi arch-info 
 static_assert(offsetof(nvmlClockOffset_v1_t, clockOffsetMHz) == 12, "nvml clock-offset layout (arm64?)");
 static_assert(sizeof(nvmlClockOffset_v1_t) == 24, "nvml clock-offset size (arm64?)");
 
-typedef enum {
+// Like LockMode, a fixed type lets IPC validators safely read any wire bits.
+enum GpuFamily : int {
     GPU_FAMILY_UNKNOWN = 0,
     GPU_FAMILY_PASCAL = 1,
     GPU_FAMILY_TURING = 2,
     GPU_FAMILY_AMPERE = 3,
     GPU_FAMILY_LOVELACE = 4,
     GPU_FAMILY_BLACKWELL = 5,
-} GpuFamily;
+};
 
 // ---------------------------------------------------------------------------
 // VF backend dispatch + curve data model

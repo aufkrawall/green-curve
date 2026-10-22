@@ -1,5 +1,25 @@
 # Testing
 
+## GPU-family wire representation (2026-10-22)
+
+Source anchors: `source/gpu_core.h` (`GpuFamily`),
+`source/service_protocol_validation.h`, `tests/gpu_family_wire_tests.cpp`,
+`tests/diagnostics_followup_tests.cpp`, `build.py`, `tools/security_gates.py`.
+Like `LockMode`, `GpuFamily` has a fixed `int` underlying type: every 32-bit
+wire pattern is safe to load before semantic range checks reject it. Its
+four-byte representation and the protocol layouts stay unchanged. An enum
+without a fixed type can trigger undefined behavior in the range check itself.
+
+Fixtures 7280-7284 inject raw bytes into snapshot and adapter families, covering
+negative values, range boundaries, the sanitizer-reported value and integer
+extremes. They reject malformed full responses and payload-free refusal shapes,
+and accept every valid family twice. Both native and cross-linked regression
+harnesses include them. A standalone `GC_GPU_FAMILY_WIRE_FIXTURE_MAIN` build
+links `fan_curve.cpp` and `config_text_utils.cpp`; the pre-fix Linux UBSan run
+failed in the production envelope validator and the fixed ASan/UBSan run passed.
+The pure validator adds no runtime logging: existing invalid-envelope diagnostics
+and sanitizer field locations remain the useful failure evidence.
+
 ## Path redaction and command fragments (2026-10-22)
 
 Source anchors: `source/log_path_redaction.h`,

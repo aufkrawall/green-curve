@@ -5,6 +5,19 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-22: GPU-family wire validation is defined for every input
+
+- Linux CI's response fuzzer stopped in the envelope validator while reading an
+  out-of-range `GpuFamily`. The range check could not safely reject it because
+  the enum lacked a fixed underlying type.
+- `GpuFamily : int` follows the existing `LockMode` rule, preserving its
+  four-byte wire layout and the validators' semantic rejection rules.
+- New raw-byte fixtures 7280-7284 cover snapshot and adapter fields, refusal
+  payload checks, invalid integer extremes and all accepted families. They run
+  in both native and Linux cross-linked regression harnesses. The standalone
+  Linux sanitizer fixture failed before the fix and passed afterward; see
+  testing.md, "GPU-family wire representation".
+
 ## 2026-10-22: The MinGW CFG shim and its linker warning are gone
 
 - Every llvm-mingw x64 link (GUI, service, setup, uninstaller) warned

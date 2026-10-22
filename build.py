@@ -1652,7 +1652,7 @@ def run_regression_tests(extra_flags=None):
             harness_path,
             *[os.path.join(SCRIPT_DIR, "tests", name) for name in ("clock_transition_tests.cpp",
               "service_install_tests.cpp", "apply_profile_followup_tests.cpp",
-              "apply_correction_tests.cpp", "fan_worker_lock_tests.cpp", "security_audit_tests.cpp", "installer_fuzz_harness_tests.cpp", "review_followup_tests.cpp", "wer_local_dumps_tests.cpp", "diagnostics_followup_tests.cpp", "offset_intent_tests.cpp", "gui_auto_restore_notice_tests.cpp", "scalar_shift_retention_tests.cpp", "debug_log_identity_tests.cpp", "veh_driver_fault_tests.cpp", "crash_dump_notice_tests.cpp", "module_version_tests.cpp", "restart_snapshot_cleanup_tests.cpp", "driver_recovery_sequence_tests.cpp", "peer_stall_tests.cpp")],
+              "apply_correction_tests.cpp", "fan_worker_lock_tests.cpp", "security_audit_tests.cpp", "installer_fuzz_harness_tests.cpp", "review_followup_tests.cpp", "wer_local_dumps_tests.cpp", "diagnostics_followup_tests.cpp", "gpu_family_wire_tests.cpp", "offset_intent_tests.cpp", "gui_auto_restore_notice_tests.cpp", "scalar_shift_retention_tests.cpp", "debug_log_identity_tests.cpp", "veh_driver_fault_tests.cpp", "crash_dump_notice_tests.cpp", "module_version_tests.cpp", "restart_snapshot_cleanup_tests.cpp", "driver_recovery_sequence_tests.cpp", "peer_stall_tests.cpp")],
             os.path.join(SOURCE_DIR, "fan_curve.cpp"),
             os.path.join(SOURCE_DIR, "config_text_utils.cpp"),
             os.path.join(SOURCE_DIR, "app_shared.cpp"),
