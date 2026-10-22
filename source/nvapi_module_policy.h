@@ -49,6 +49,19 @@ static inline const char* nvapi_module_candidate(int arch, int index) {
     }
 }
 
+// The image this build settles on: the first candidate for `arch` that
+// `accept(name)` takes, or nullptr when none does.  The loader accepts "it
+// loaded"; the driver-update proof accepts "it is on disk", so the version it
+// compares is the image the loader maps.  On ARM64 that is nvapia64.dll, never
+// the x64 emulation copy shipped beside it, which carries its own version.
+template <typename Accept>
+static inline const char* nvapi_module_first(int arch, Accept accept) {
+    for (int i = 0;; ++i) {
+        const char* name = nvapi_module_candidate(arch, i);
+        if (!name || accept(name)) return name;
+    }
+}
+
 // The architecture this translation unit is being compiled for.
 static inline int nvapi_module_host_arch() {
 #if defined(__aarch64__) || defined(_M_ARM64)

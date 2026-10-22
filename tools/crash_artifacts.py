@@ -105,6 +105,19 @@ def check_windows_crash_artifacts(ctx, require_text, forbid_text, require_order,
                  "the proof stamp records the driver the settings were applied under")
     require_text(clock_cpp, "return service_driver_recovery_proof_accepts(ageMs, SERVICE_OC_STABILIZATION_WINDOW_MS, updated);",
                  "the driver-recovery proof gate uses the shared waiver policy")
+    # The on-disk side must be the image the loader maps (nvapia64.dll on
+    # ARM64), never a fixed name the native ARM64 driver does not use.
+    identity_cpp = _p(ctx, "main_service_driver_version.cpp")
+    require_text(identity_cpp, "nvapi_module_first(nvapi_module_host_arch(),",
+                 "the proof's disk image follows the loader's module walk")
+    require_text(_p(ctx, "nvapi_loader.cpp"), "nvapi_module_first(nvapi_module_host_arch(),",
+                 "the loader takes the same module walk as the proof")
+    forbid_text(identity_cpp, "\\\\nvapi64.dll\"",
+                "no fixed NvAPI image name in the driver-version proof")
+    # "In-process" means the mapped image: after an in-place update the
+    # module's load path names the new file.
+    require_text(identity_cpp, "return gc_module_mapped_version(mod, outMs, outLs);",
+                 "the in-process driver version is read from the mapped image")
 
     # The SCM failure-action start (2 s after the controlled exit) yields to a
     # live recovery helper before the startup gate can clear its authorization.

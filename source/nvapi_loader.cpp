@@ -17,12 +17,13 @@ static void* (*g_nvapiQi)(unsigned int) = nullptr;
 // package are the x64/x86 emulation copies a native arm64 process cannot load.
 static void* nvapi_qi(unsigned int id) {
     if (!g_nvapiQi) {
-        for (int i = 0; !g_app.hNvApi; ++i) {
-            const char* name = nvapi_module_candidate(nvapi_module_host_arch(), i);
-            if (!name) break;
-            g_app.hNvApi = load_system_library_a(name);
-            debug_log("nvapi_qi: load %s -> %s\n", name,
-                      g_app.hNvApi ? "loaded" : "not present");
+        if (!g_app.hNvApi) {
+            nvapi_module_first(nvapi_module_host_arch(), [](const char* name) {
+                g_app.hNvApi = load_system_library_a(name);
+                debug_log("nvapi_qi: load %s -> %s\n", name,
+                          g_app.hNvApi ? "loaded" : "not present");
+                return g_app.hNvApi != nullptr;
+            });
         }
         if (!g_app.hNvApi) return nullptr;
         g_nvapiQi = (void* (*)(unsigned int))GetProcAddress(g_app.hNvApi, "nvapi_QueryInterface");

@@ -989,6 +989,8 @@ int run_veh_driver_fault_tests();
 int run_veh_driver_fault_child(int argc, char** argv, bool* isChild);
 // Service crash-dump notice (tests/crash_dump_notice_tests.cpp, 7140-7159).
 int run_crash_dump_notice_tests();
+// Mapped-image driver version (tests/module_version_tests.cpp, 7180-7189).
+int run_module_version_tests();
 // F-PERSIST-SCHEMA fixtures, in their own frame.  The frozen record layouts
 // are over a kilobyte each and several are live at once; under ASan's
 // redzones that is enough to overflow main()'s frame, which already carries
@@ -1811,6 +1813,10 @@ int main(int argc, char** argv) {
         fprintf(stderr, "regression assertion failed: code %d\n", noticeFailure);
         return noticeFailure;
     }
+    if (int moduleVersionFailure = run_module_version_tests()) {
+        fprintf(stderr, "regression assertion failed: code %d\n", moduleVersionFailure);
+        return moduleVersionFailure;
+    }
     if (int correctionFailure = run_apply_correction_tests()) {
         fprintf(stderr, "regression assertion failed: code %d\n", correctionFailure);
 #if !defined(_WIN32)
@@ -2486,6 +2492,31 @@ static int run_all_tests(int argc, char** argv) {
             if (a && strcmp(a, "nvapi.dll") == 0) return 2187;
         }
         if (nvapi_module_candidate(NVAPI_HOST_ARCH_X64, -1) != nullptr) return 2188;
+
+        // 2189: the shared walk the loader and the driver-update proof both
+        // take.  An ARM64 package ships the x64 copy too; the proof must
+        // still pick the native image, because the x64 copy versions on its
+        // own and the stamp holds the native one.
+        auto present = [](std::initializer_list<const char*> files) {
+            return [files](const char* name) {
+                for (const char* file : files) if (strcmp(file, name) == 0) return true;
+                return false;
+            };
+        };
+        const char* arm = nvapi_module_first(NVAPI_HOST_ARCH_ARM64,
+            present({"nvapi64.dll", "nvapi.dll", "nvapia64.dll"}));
+        const char* armFallback = nvapi_module_first(NVAPI_HOST_ARCH_ARM64, present({"nvapi64.dll"}));
+        const char* x64 = nvapi_module_first(NVAPI_HOST_ARCH_X64,
+            present({"nvapia64.dll", "nvapi.dll", "nvapi64.dll"}));
+        int asked = 0;
+        const char* stopped = nvapi_module_first(NVAPI_HOST_ARCH_X64,
+            [&](const char*) { return ++asked == 1; });
+        if (!arm || strcmp(arm, "nvapia64.dll") != 0 ||
+            !armFallback || strcmp(armFallback, "nvapi64.dll") != 0 ||
+            !x64 || strcmp(x64, "nvapi64.dll") != 0 ||
+            nvapi_module_first(NVAPI_HOST_ARCH_ARM64, present({"nvapi.dll"})) != nullptr ||
+            nvapi_module_first(NVAPI_HOST_ARCH_X64, present({"nvapia64.dll"})) != nullptr ||
+            !stopped || asked != 1) return 2189;
     }
 
     // Windows driver self-test verdict/exit policy.  FULL is permitted only

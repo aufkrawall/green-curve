@@ -320,10 +320,12 @@ static bool service_auto_restore_allowed_after_driver_event(DWORD* lockoutReason
         service_get_file_version(nvapiPath, &diskMs, &diskLs);
     const bool updated = diskKnown && service_driver_version_changed(
         stamp.driverVersionMs, stamp.driverVersionLs, diskMs, diskLs);
-    debug_log("oc stabilization: proof age %llu ms is below the %llu ms window; driver at apply %u.%u.%u.%u, on disk %u.%u.%u.%u -> %s\n",
+    const WCHAR* diskImage = wcsrchr(nvapiPath, L'\\');
+    debug_log("oc stabilization: proof age %llu ms is below the %llu ms window; driver at apply %u.%u.%u.%u, on disk (%ls) %u.%u.%u.%u -> %s\n",
         (unsigned long long)ageMs, (unsigned long long)SERVICE_OC_STABILIZATION_WINDOW_MS,
         (unsigned)(stamp.driverVersionMs >> 16), (unsigned)(stamp.driverVersionMs & 0xFFFFu),
         (unsigned)(stamp.driverVersionLs >> 16), (unsigned)(stamp.driverVersionLs & 0xFFFFu),
+        diskImage ? diskImage + 1 : L"none",
         (unsigned)(diskMs >> 16), (unsigned)(diskMs & 0xFFFFu),
         (unsigned)(diskLs >> 16), (unsigned)(diskLs & 0xFFFFu),
         updated ? "driver updated, accepted (not stability evidence)" : "refused");

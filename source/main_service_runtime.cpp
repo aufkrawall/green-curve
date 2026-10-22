@@ -4,6 +4,7 @@
 // Windows service runtime aggregation. The active implementation is split by
 // responsibility; the immutable session resolver consumes this enum later.
 
+#include "main_service_driver_version.cpp"
 #include "main_service_runtime_identity.cpp"
 // Before any shard that acquires the runtime lock for a GPU write.
 #include "main_service_update_guard.cpp"
