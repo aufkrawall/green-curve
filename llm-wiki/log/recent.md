@@ -5,6 +5,20 @@ Newest-first rolling memory. Archive older entries to `archive-YYYY-Www.md` when
 This log is PUBLIC (tracked since 2026-10-22): every entry follows the same
 rules as the topic pages (`secret-leak-prevention.md`, "Public wiki safety").
 
+## 2026-10-22: Prepare version 0.30
+
+- VERSION is exactly `0.30`, without a trailing newline. Installation examples,
+  Arch recipe versions, release notes and exact-version updater-restore fixtures
+  agree. Compatibility and downloads sections follow the release-note format.
+- Remote Arch recipe verification is pending published 0.30 inputs; locally
+  generated Arch packages do not consume those remote inputs.
+- Final normal and ASan/UBSan regressions, source gates, static-analysis ratchet
+  (no new findings), release-note validation and 5000 runs per fuzz target pass.
+  Plain `python build.py` produces the full matrix. Independent checks establish
+  12 fresh installers/archives/packages, matching checksum sidecars, installer
+  footer/entry CRCs and runtime bytes, archive content/modes and Arch metadata.
+  Live driver-update, SCM and native ARM64 acceptance remain unverified.
+
 ## 2026-10-22: Path redaction retains command context explicitly
 
 - Unix root entries, including first components containing spaces and names

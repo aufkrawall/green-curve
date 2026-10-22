@@ -7,7 +7,8 @@
 > a persisted per-boot crash-loop guard. The reset-to-stock rule below is
 > genuinely shared code.
 
-Last verified: 2026-10-21 (invariant 9: a driver fault must not kill the
+Last verified: 2026-10-22 (snapshot retirement identity, native file fixtures);
+2026-10-21 (invariant 9: a driver fault must not kill the
 service; field crash root-caused, fix software-verified only); 2026-10-17
 (failed automatic apply announced, protocol v29, software only); 2026-09-23 (once-per-crash ownership handback, software only);
 2026-07-31 (the shared restore-request builder; the rest 2026-07-12). Source anchors: `source/service_protocol.h`,

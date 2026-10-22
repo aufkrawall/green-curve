@@ -27,9 +27,9 @@
 
 # Changelog
 
-## Unreleased
+## 0.30
 
-Local protection and diagnostic privacy improve while existing installation locations remain supported.
+Driver-update recovery, diagnostic privacy and local protections improve while existing installations and GPU support remain compatible.
 
 ### New
 
@@ -37,7 +37,7 @@ Local protection and diagnostic privacy improve while existing installation loca
 
 ### Improved
 
-- **Support logs:** Personal paths are redacted consistently, with separate references when a message names multiple locations.
+- **Support logs:** Personal paths, including Linux root entries and folders with spaces, are redacted consistently while command results stay readable.
 - **Automatic restore notices:** Green Curve now also says when a profile was not restored because the graphics driver restarted soon after it was applied, or restarted repeatedly.
 
 ### Fixed
@@ -46,7 +46,7 @@ Local protection and diagnostic privacy improve while existing installation loca
 - **GPU reconnecting:** the status no longer stays on "GPU reconnecting" after a driver recovery that was not allowed to restore the profile.
 - **Driver updates without a fan curve:** your profile is now restored after a driver update even when no fan curve is running and the Green Curve window is closed.
 - **Driver updates soon after applying:** a profile applied less than 10 minutes before a driver update is now restored too; a driver crash in that window still pauses automatic restore.
-- **Driver recovery restart:** a rare timing race no longer leaves the GPU at stock instead of restoring your profile after a driver recovery.
+- **Driver recovery restart:** overlapping service restarts preserve the saved state needed to restore your profile.
 
 ### Security
 
@@ -60,9 +60,11 @@ Existing installation paths, service-location choices, GPU support and update se
 
 ### Downloads and verification
 
-These changes are in development; no new public release has been published. Current downloads and verification information remain in the latest release section below.
+- **Windows:** use the setup installer to install or upgrade, or `.7z` for a portable copy.
+- **Linux:** install the Arch package, or extract `.tar.xz` and run `greencurve-setup.sh`.
+- **Verification:** packages include SHA-256 files and [GitHub build attestations](https://github.com/aufkrawall/green-curve/attestations); verify with `gh attestation verify <artifact> --repo aufkrawall/green-curve`.
 
-**Full changelog:** [0.29.0...HEAD](https://github.com/aufkrawall/green-curve/compare/0.29.0...HEAD)
+**Full changelog:** [0.29.0...0.30](https://github.com/aufkrawall/green-curve/compare/0.29.0...0.30)
 
 ## 0.29.0
 
