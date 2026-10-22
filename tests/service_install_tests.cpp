@@ -572,6 +572,24 @@ int run_location_verdict_tests() {
     return cleanupAnd(0);
 }
 
+// Whether two spellings name the same file.  The shell resolves a link target
+// to its long form, while %TEMP% may be spelled with 8.3 components (CI runners
+// use RUNNER~1), so the target is compared by identity, not by text.
+bool same_file_object(const wchar_t* a, const wchar_t* b) {
+    auto identify = [](const wchar_t* path, BY_HANDLE_FILE_INFORMATION* info) {
+        HANDLE file = CreateFileW(path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                  FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return false;
+        bool ok = GetFileInformationByHandle(file, info) != FALSE;
+        CloseHandle(file);
+        return ok;
+    };
+    BY_HANDLE_FILE_INFORMATION left = {}, right = {};
+    return identify(a, &left) && identify(b, &right) &&
+           left.dwVolumeSerialNumber == right.dwVolumeSerialNumber &&
+           left.nFileIndexHigh == right.nFileIndexHigh && left.nFileIndexLow == right.nFileIndexLow;
+}
+
 int run_shortcut_stream_tests() {
     wchar_t directory[MAX_PATH] = {};
     if (!make_temp_dir(L"gc_shortcut", directory, MAX_PATH)) return 7080;
@@ -663,7 +681,8 @@ int run_shortcut_stream_tests() {
         SUCCEEDED(loaded->QueryInterface(IID_IPersistFile, (void**)&reader)) &&
         SUCCEEDED(reader->Load(destination, STGM_READ)) &&
         SUCCEEDED(loaded->GetPath(actual, MAX_PATH, nullptr, SLGP_RAWPATH)) &&
-        !_wcsicmp(actual, victim);
+        same_file_object(actual, victim);
+    if (!ok) printf("shortcut fixture: link target \"%ls\" is not \"%ls\"\n", actual, victim);
     if (reader) reader->Release();
     if (loaded) loaded->Release();
     if (stream) stream->Release();
