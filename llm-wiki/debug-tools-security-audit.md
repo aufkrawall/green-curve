@@ -780,4 +780,7 @@ When this template is copied into a concrete project, add only durable project-s
 - subsystem-specific invariants needed to interpret diagnostics
 - runtime flags that are diagnostic-only and their side effects
 
-Keep one-off incident timelines, historical bug signatures, stale build-specific facts, and user/machine-specific absolute paths out of this public inventory; they belong in the local-only `llm-wiki/log/` and `llm-wiki/private/` areas.
+Keep chronology and historical build observations in the public `llm-wiki/log/`,
+following the same public-safety rules as this inventory. Personal or
+machine-specific details do not belong anywhere in the repository.
+`llm-wiki/private/` is a frozen, ignored archive that no workflow depends on.
