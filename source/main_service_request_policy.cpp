@@ -287,6 +287,15 @@ static bool service_resolve_configured_gpu_target(
     unsigned int resolved = configured->legacyIndex;
     ConfiguredGpuResolveResult resolution = resolve_configured_gpu_selection(
         configured, g_app.adapters, g_app.adapterCount, &resolved);
+    char resolutionDetail[256] = {};
+    format_configured_gpu_resolution_detail(configured, g_app.adapters,
+        g_app.adapterCount, resolutionDetail, sizeof(resolutionDetail));
+    if (resolution == CONFIGURED_GPU_RESOLVE_NOT_FOUND ||
+        resolution == CONFIGURED_GPU_RESOLVE_AMBIGUOUS) {
+        debug_log("service shared GPU binding: %s (%s)\n",
+            resolution == CONFIGURED_GPU_RESOLVE_AMBIGUOUS
+                ? "ambiguous" : "not present", resolutionDetail);
+    }
     if (resolution == CONFIGURED_GPU_RESOLVE_LEGACY_ORDINAL &&
         g_app.adapterCount != 1) {
         set_message(err, errSize,
@@ -315,10 +324,11 @@ static bool service_resolve_configured_gpu_target(
         return false;
     }
     *targetOut = target;
-    debug_log("service shared GPU binding: resolved legacy=%u result=%d to nvapi=%u stable=%d name=%s\n",
+    debug_log("service shared GPU binding: resolved legacy=%u result=%d to nvapi=%u stable=%d moved=%d name=%s (%s)\n",
         configured->legacyIndex, (int)resolution, target.nvapiIndex,
         configured->stableIdentityPresent ? 1 : 0,
-        target.name[0] ? target.name : "<unnamed>");
+        configured_gpu_selection_location_moved(configured, &target) ? 1 : 0,
+        target.name[0] ? target.name : "<unnamed>", resolutionDetail);
     return true;
 }
 

@@ -206,6 +206,30 @@ static bool service_lifecycle_select_context_gpu(
     ConfiguredGpuResolveResult resolution = resolve_configured_gpu_selection(
         &context->configuredGpu, g_app.adapters, g_app.adapterCount,
         &resolvedIndex);
+    const bool moved = resolution == CONFIGURED_GPU_RESOLVE_STABLE &&
+        resolvedIndex < g_app.adapterCount &&
+        resolvedIndex < MAX_GPU_ADAPTERS &&
+        configured_gpu_selection_location_moved(
+            &context->configuredGpu, &g_app.adapters[resolvedIndex]);
+    if (moved || resolution == CONFIGURED_GPU_RESOLVE_NOT_FOUND ||
+        resolution == CONFIGURED_GPU_RESOLVE_AMBIGUOUS) {
+        // Lifecycle retries re-resolve the same context; log each distinct
+        // stored-versus-live picture once instead of once per retry.
+        static char lastLogged[256];
+        char resolutionDetail[256] = {};
+        format_configured_gpu_resolution_detail(&context->configuredGpu,
+            g_app.adapters, g_app.adapterCount, resolutionDetail,
+            sizeof(resolutionDetail));
+        if (strcmp(lastLogged, resolutionDetail) != 0) {
+            StringCchCopyA(lastLogged, ARRAY_COUNT(lastLogged),
+                resolutionDetail);
+            debug_log("lifecycle logon: configured GPU %s (%s)\n",
+                moved ? "followed its model to a new PCI location"
+                    : resolution == CONFIGURED_GPU_RESOLVE_AMBIGUOUS
+                        ? "is ambiguous" : "is not present",
+                resolutionDetail);
+        }
+    }
     if (resolution == CONFIGURED_GPU_RESOLVE_LEGACY_ORDINAL &&
         g_app.adapterCount > 1) {
         set_message(detail, detailSize,

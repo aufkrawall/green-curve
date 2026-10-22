@@ -242,12 +242,21 @@ static bool nvapi_enum_gpu() {
         unsigned int resolved = configured.legacyIndex;
         ConfiguredGpuResolveResult resolution = resolve_configured_gpu_selection(
             &configured, g_app.adapters, adapterCount, &resolved);
+        char resolutionDetail[256] = {};
+        format_configured_gpu_resolution_detail(&configured, g_app.adapters,
+            adapterCount, resolutionDetail, sizeof(resolutionDetail));
         if (resolution == CONFIGURED_GPU_RESOLVE_STABLE) {
             g_app.selectedGpuIndex = resolved;
             g_app.selectedNvmlIndex = resolved;
             g_app.configuredGpuSelectionUnresolved = false;
-            debug_log("gpu selection: resolved durable PCI identity to nvapi=%u (saved ordinal=%u)\n",
-                resolved, configured.legacyIndex);
+            if (configured_gpu_selection_location_moved(
+                    &configured, &g_app.adapters[resolved])) {
+                debug_log("gpu selection: resolved durable identity to nvapi=%u (saved ordinal=%u) after the model moved from its stored PCI location (%s)\n",
+                    resolved, configured.legacyIndex, resolutionDetail);
+            } else {
+                debug_log("gpu selection: resolved durable PCI identity to nvapi=%u (saved ordinal=%u)\n",
+                    resolved, configured.legacyIndex);
+            }
         } else if (resolution == CONFIGURED_GPU_RESOLVE_LEGACY_ORDINAL &&
                    adapterCount > 1) {
             g_app.configuredGpuSelectionUnresolved = true;
@@ -260,9 +269,10 @@ static bool nvapi_enum_gpu() {
             g_app.selectedGpuIndex = 0;
             g_app.selectedNvmlIndex = 0;
             g_app.selectedGpuExplicit = false;
-            debug_log("gpu selection: durable identity %s; automatic writes are blocked until the user selects a GPU\n",
+            debug_log("gpu selection: durable identity %s; automatic writes are blocked until the user selects a GPU (%s)\n",
                 resolution == CONFIGURED_GPU_RESOLVE_AMBIGUOUS
-                    ? "is ambiguous" : "is not present");
+                    ? "is ambiguous" : "is not present",
+                resolutionDetail);
         }
     }
     if (g_app.selectedGpuIndex >= adapterCount) {
