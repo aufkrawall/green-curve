@@ -89,6 +89,10 @@ def check_windows_crash_artifacts(ctx, require_text, forbid_text, require_order,
                  "the plan comes from the policy header")
     require_text(recovery_cpp, "service_exit_poisoned_runtime_for_ordinary_restart(reason);",
                  "a poisoned runtime without intent exits for an ordinary restart")
+    # A write in flight has committed only its ownership marker; that is
+    # evidence of a failed apply, not "nothing to restore".
+    require_text(recovery_cpp, "corroboratedDriverFailure, snapshot, liveIntent, ownedState);",
+                 "the poisoned-runtime plan weighs GPU state this process owns")
 
     # A driver update stops/starts the selected GPU without removing it; the
     # exact-device arrival decides through the shared, tested policy.

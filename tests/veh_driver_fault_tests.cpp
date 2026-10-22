@@ -3,7 +3,7 @@
 //
 // Native fixture for the service's vectored driver-fault flow
 // (veh_driver_fault_win32.h) and what follows a claimed fault
-// (service_poisoned_runtime_exit_plan), assertion codes 7100-7139 and
+// (service_poisoned_runtime_exit_plan), assertion codes 7100-7139, 7163 and
 // 7170-7179 (the failure-action yield to the recovery helper).
 //
 // The claim decision and the log record run against synthesised exception
@@ -35,26 +35,32 @@ static int veh_exit_plan_tests() {
         SERVICE_RESTART_SNAPSHOT_UNKNOWN };
     // 7130: an uncorroborated poison always stops without replay, latched.
     for (ServiceRestartSnapshotState state : states) {
-        if (service_poisoned_runtime_exit_plan(false, state, false) !=
-                SERVICE_POISONED_EXIT_LATCH_AND_STOP ||
-            service_poisoned_runtime_exit_plan(false, state, true) !=
-                SERVICE_POISONED_EXIT_LATCH_AND_STOP) return 7130;
+        for (int hints = 0; hints < 4; ++hints) {
+            if (service_poisoned_runtime_exit_plan(false, state, (hints & 1) != 0,
+                    (hints & 2) != 0) != SERVICE_POISONED_EXIT_LATCH_AND_STOP) return 7130;
+        }
     }
     // 7131: a driver failure with intent on disk restarts through the helper.
-    if (service_poisoned_runtime_exit_plan(true, SERVICE_RESTART_SNAPSHOT_PRESENT, false) !=
+    if (service_poisoned_runtime_exit_plan(true, SERVICE_RESTART_SNAPSHOT_PRESENT, false, false) !=
             SERVICE_POISONED_EXIT_CONTROLLED_RESTART ||
-        service_poisoned_runtime_exit_plan(true, SERVICE_RESTART_SNAPSHOT_PRESENT, true) !=
+        service_poisoned_runtime_exit_plan(true, SERVICE_RESTART_SNAPSHOT_PRESENT, true, true) !=
             SERVICE_POISONED_EXIT_CONTROLLED_RESTART) return 7131;
     // 7132: an undeterminable snapshot still tries; preparation re-proves it.
-    if (service_poisoned_runtime_exit_plan(true, SERVICE_RESTART_SNAPSHOT_UNKNOWN, false) !=
+    if (service_poisoned_runtime_exit_plan(true, SERVICE_RESTART_SNAPSHOT_UNKNOWN, false, false) !=
             SERVICE_POISONED_EXIT_CONTROLLED_RESTART) return 7132;
     // 7133: nothing to restore is a plain restart, NOT a lockout: latching here
     // blocked the next logon's profile after a driver update without intent.
-    if (service_poisoned_runtime_exit_plan(true, SERVICE_RESTART_SNAPSHOT_ABSENT, false) !=
+    if (service_poisoned_runtime_exit_plan(true, SERVICE_RESTART_SNAPSHOT_ABSENT, false, false) !=
             SERVICE_POISONED_EXIT_ORDINARY_RESTART) return 7133;
     // 7134: live intent without a snapshot cannot be restored: stay fail-closed.
-    if (service_poisoned_runtime_exit_plan(true, SERVICE_RESTART_SNAPSHOT_ABSENT, true) !=
+    if (service_poisoned_runtime_exit_plan(true, SERVICE_RESTART_SNAPSHOT_ABSENT, true, false) !=
             SERVICE_POISONED_EXIT_LATCH_AND_STOP) return 7134;
+    // 7163: a first Apply or logon apply that faults or wedges mid-write has
+    // neither intent nor a snapshot yet -- only the ownership marker it
+    // committed before writing.  That is a failed apply, so it latches; it
+    // used to come out as "nothing to restore" and re-applied at every logon.
+    if (service_poisoned_runtime_exit_plan(true, SERVICE_RESTART_SNAPSHOT_ABSENT, false, true) !=
+            SERVICE_POISONED_EXIT_LATCH_AND_STOP) return 7163;
 
     // The other way a driver restart reaches recovery: the selected GPU's
     // exact-device STARTED notification.

@@ -112,6 +112,12 @@ static bool service_ownership_marker_clear(const char* reason) {
     return ok;
 }
 
+// Whether this process has committed the marker for GPU state it wrote (or is
+// writing).  Lock-free: read by the poisoned-runtime exit, which may not wait.
+static bool service_ownership_marker_committed() {
+    return InterlockedExchangeAdd(&g_serviceOwnershipMarkerCommitted, 0) != 0;
+}
+
 static bool service_ownership_current_target(GpuAdapterInfo* out) {
     memset(out, 0, sizeof(*out));
     if (g_app.selectedGpu.valid) {

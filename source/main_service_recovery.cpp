@@ -7,6 +7,7 @@
 // Defined in shards the aggregator includes after this one.
 static void service_clear_controlled_recovery_files();
 static void debug_log_drain_pending_for_crash();
+static bool service_ownership_marker_committed();
 
 // Stop every autonomous restoration path without touching live hardware. The
 // user's saved profile remains available for an explicit GUI/CLI apply, which
@@ -86,10 +87,12 @@ static ServicePoisonedRuntimeExit service_poisoned_runtime_plan_or_exit(
     const char* reason, bool corroboratedDriverFailure) {
     const ServiceRestartSnapshotState snapshot = service_restart_snapshot_state();
     const bool liveIntent = g_serviceHasActiveDesired;
+    const bool ownedState = service_ownership_marker_committed();
     const ServicePoisonedRuntimeExit plan = service_poisoned_runtime_exit_plan(
-        corroboratedDriverFailure, snapshot, liveIntent);
-    debug_log("controlled recovery: poisoned runtime exit plan=%d corroborated=%d snapshot=%d liveIntent=%d\n",
-        (int)plan, corroboratedDriverFailure ? 1 : 0, (int)snapshot, liveIntent ? 1 : 0);
+        corroboratedDriverFailure, snapshot, liveIntent, ownedState);
+    debug_log("controlled recovery: poisoned runtime exit plan=%d corroborated=%d snapshot=%d liveIntent=%d ownedState=%d\n",
+        (int)plan, corroboratedDriverFailure ? 1 : 0, (int)snapshot, liveIntent ? 1 : 0,
+        ownedState ? 1 : 0);
     if (plan == SERVICE_POISONED_EXIT_ORDINARY_RESTART) {
         service_exit_poisoned_runtime_for_ordinary_restart(reason);
     }

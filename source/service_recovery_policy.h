@@ -192,16 +192,23 @@ enum ServicePoisonedRuntimeExit {
 
 // `liveIntentHint` is the unlocked in-memory flag: it may only ever make the
 // outcome stricter, because the runtime it belongs to is no longer trusted.
+// `ownedStateHint` (the ownership marker is committed) does the same for a
+// write that has not succeeded yet: the marker goes down before the FIRST
+// hardware write, while intent and its snapshot only follow a success, so a
+// fault or wedge inside a first Apply or logon apply shows neither.  That is
+// the strongest instability evidence there is, not "nothing to restore", and
+// it latches like any other failed apply.  A successful Reset retires the
+// marker, so a driver update with no profile applied still restarts plainly.
 // An undeterminable snapshot still attempts the controlled restart: its
 // preparation re-proves the file by fingerprint and falls back to the latch.
 static inline ServicePoisonedRuntimeExit service_poisoned_runtime_exit_plan(
     bool corroboratedDriverFailure, ServiceRestartSnapshotState snapshot,
-    bool liveIntentHint) {
+    bool liveIntentHint, bool ownedStateHint) {
     if (!corroboratedDriverFailure) return SERVICE_POISONED_EXIT_LATCH_AND_STOP;
     if (snapshot != SERVICE_RESTART_SNAPSHOT_ABSENT)
         return SERVICE_POISONED_EXIT_CONTROLLED_RESTART;
-    return liveIntentHint ? SERVICE_POISONED_EXIT_LATCH_AND_STOP
-                          : SERVICE_POISONED_EXIT_ORDINARY_RESTART;
+    return (liveIntentHint || ownedStateHint) ? SERVICE_POISONED_EXIT_LATCH_AND_STOP
+                                              : SERVICE_POISONED_EXIT_ORDINARY_RESTART;
 }
 
 // What an exact-device arrival (CM STARTED) of the selected GPU means.
